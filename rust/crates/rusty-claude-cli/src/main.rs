@@ -5316,6 +5316,8 @@ mod tests {
     }
     #[test]
     fn defaults_to_repl_when_no_args() {
+        let _guard = env_lock();
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         assert_eq!(
             parse_args(&[]).expect("args should parse"),
             CliAction::Repl {
@@ -5396,6 +5398,8 @@ mod tests {
 
     #[test]
     fn parses_prompt_subcommand() {
+        let _guard = env_lock();
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         let args = vec![
             "prompt".to_string(),
             "hello".to_string(),
@@ -5415,6 +5419,8 @@ mod tests {
 
     #[test]
     fn parses_bare_prompt_and_json_output_flag() {
+        let _guard = env_lock();
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         let args = vec![
             "--output-format=json".to_string(),
             "--model".to_string(),
@@ -5436,6 +5442,8 @@ mod tests {
 
     #[test]
     fn resolves_model_aliases_in_args() {
+        let _guard = env_lock();
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         let args = vec![
             "--model".to_string(),
             "opus".to_string(),
@@ -5489,6 +5497,8 @@ mod tests {
 
     #[test]
     fn parses_allowed_tools_flags_with_aliases_and_lists() {
+        let _guard = env_lock();
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         let args = vec![
             "--allowedTools".to_string(),
             "read,glob".to_string(),
@@ -5571,6 +5581,8 @@ mod tests {
 
     #[test]
     fn parses_single_word_command_aliases_without_falling_back_to_prompt_mode() {
+        let _guard = env_lock();
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         assert_eq!(
             parse_args(&["help".to_string()]).expect("help should parse"),
             CliAction::Help
@@ -5601,6 +5613,8 @@ mod tests {
 
     #[test]
     fn multi_word_prompt_still_uses_shorthand_prompt_mode() {
+        let _guard = env_lock();
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         assert_eq!(
             parse_args(&["help".to_string(), "me".to_string(), "debug".to_string()])
                 .expect("prompt shorthand should still work"),
