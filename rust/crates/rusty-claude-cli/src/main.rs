@@ -252,6 +252,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         CliAction::Doctor { output_format } => run_doctor(output_format)?,
         CliAction::Acp { output_format } => print_acp_status(output_format)?,
         CliAction::State { output_format } => run_worker_state(output_format)?,
+        CliAction::ServeWeb => {
+            let bind = std::env::var("CLAW_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
+            let database_url = std::env::var("CLAW_SERVER_DATABASE_URL")
+                .unwrap_or_else(|_| "sqlite:claw-server.db".into());
+            let data_dir = std::env::var("CLAW_SERVER_DATA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./claw-server-data"));
+            let master_key = std::env::var("CLAW_MASTER_KEY").map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "CLAW_MASTER_KEY must be set for the web server",
+                )
+            })?;
+            let static_dir = std::env::var("CLAW_WEB_DIST").ok().map(PathBuf::from);
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(claw_server::serve(
+                &bind,
+                &database_url,
+                data_dir,
+                master_key,
+                static_dir,
+            ))?;
+        }
         CliAction::Init { output_format } => run_init(output_format)?,
         CliAction::Export {
             session_reference,
@@ -346,6 +369,8 @@ enum CliAction {
     State {
         output_format: CliOutputFormat,
     },
+    /// Multi-tenant workspace HTTP server (`claw serve web`).
+    ServeWeb,
     Init {
         output_format: CliOutputFormat,
     },
@@ -521,6 +546,24 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 allow_broad_cwd = true;
                 index += 1;
             }
+            "--workspace-root" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "missing value for --workspace-root".to_string())?;
+                let path = PathBuf::from(value);
+                std::env::set_current_dir(&path).map_err(|error| {
+                    format!("failed to set working directory to --workspace-root {value}: {error}")
+                })?;
+                index += 2;
+            }
+            flag if flag.starts_with("--workspace-root=") => {
+                let value = &flag[17..];
+                let path = PathBuf::from(value);
+                std::env::set_current_dir(&path).map_err(|error| {
+                    format!("failed to set working directory to --workspace-root={value}: {error}")
+                })?;
+                index += 1;
+            }
             "-p" => {
                 // Claw Code compat: -p "prompt" = one-shot prompt
                 let prompt = args[index + 1..].join(" ");
@@ -673,6 +716,13 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
         }
         "system-prompt" => parse_system_prompt_args(&rest[1..], output_format),
         "acp" => parse_acp_args(&rest[1..], output_format),
+        "serve" => match rest.get(1).map(String::as_str) {
+            Some("web") => Ok(CliAction::ServeWeb),
+            _ => Err(
+                "unsupported serve subcommand (use `claw serve web` for the workspace web server)"
+                    .into(),
+            ),
+        },
         "login" | "logout" => Err(removed_auth_surface_error(rest[0].as_str())),
         "init" => Ok(CliAction::Init { output_format }),
         "export" => parse_export_args(&rest[1..], output_format),

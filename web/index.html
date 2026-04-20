@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claw Workspace</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; background: #111; color: #e8e8e8; }
+    body { max-width: 960px; margin: 0 auto; padding: 1rem; }
+    h1 { font-size: 1.25rem; }
+    section { border: 1px solid #333; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+    label { display: block; margin: 0.35rem 0 0.1rem; font-size: 0.85rem; color: #aaa; }
+    input, select, textarea, button { width: 100%; box-sizing: border-box; padding: 0.45rem; border-radius: 4px; border: 1px solid #444; background: #1a1a1a; color: #eee; }
+    textarea { min-height: 120px; font-family: ui-monospace, monospace; }
+    button { margin-top: 0.5rem; cursor: pointer; background: #2a4; border-color: #2a4; font-weight: 600; }
+    button.secondary { background: #333; border-color: #555; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    pre { background: #0a0a0a; padding: 0.75rem; overflow: auto; border-radius: 4px; font-size: 0.8rem; }
+    .err { color: #f66; }
+    .ok { color: #8d8; }
+  </style>
+</head>
+<body>
+  <h1>Claw Workspace（Web）</h1>
+  <p>先登录，再管理 workspace 与模型配置；发送消息前必须选择 workspace 与 provider profile。</p>
+
+  <section id="auth">
+    <h2>登录 / 注册</h2>
+    <label>邮箱</label>
+    <input id="email" type="email" autocomplete="username" />
+    <label>密码（≥8 字符）</label>
+    <input id="password" type="password" autocomplete="current-password" />
+    <div class="row">
+      <button type="button" id="btnLogin">登录</button>
+      <button type="button" class="secondary" id="btnRegister">注册</button>
+    </div>
+    <button type="button" class="secondary" id="btnLogout">退出</button>
+    <pre id="authOut"></pre>
+  </section>
+
+  <section id="workspaces">
+    <h2>Workspaces</h2>
+    <label>新 workspace 名称</label>
+    <input id="wsName" placeholder="例如 my-app" />
+    <button type="button" id="btnWsCreate">创建</button>
+    <label>当前 workspace</label>
+    <select id="wsSelect"></select>
+    <button type="button" class="secondary" id="btnWsRefresh">刷新列表</button>
+    <button type="button" class="secondary" id="btnWsDelete">删除当前</button>
+  </section>
+
+  <section id="profiles">
+    <h2>模型 API（Provider profile）</h2>
+    <label>名称</label>
+    <input id="pfName" />
+    <label>类型</label>
+    <select id="pfKind">
+      <option value="anthropic">anthropic</option>
+      <option value="openai_compat">openai_compat（DeepSeek / OpenRouter 等）</option>
+      <option value="dashscope">dashscope（阿里云）</option>
+      <option value="xai">xai</option>
+    </select>
+    <label>Base URL（非 anthropic 必填）</label>
+    <input id="pfBase" placeholder="https://api.openai.com/v1" />
+    <label>Model</label>
+    <input id="pfModel" placeholder="gpt-4o-mini 或 claude-…" />
+    <label>API Key（仅创建时发送，不会回显）</label>
+    <input id="pfKey" type="password" autocomplete="off" />
+    <button type="button" id="btnPfCreate">保存 profile</button>
+    <label>当前 profile</label>
+    <select id="pfSelect"></select>
+    <button type="button" class="secondary" id="btnPfRefresh">刷新</button>
+    <button type="button" class="secondary" id="btnPfDelete">删除当前</button>
+  </section>
+
+  <section id="chat">
+    <h2>对话</h2>
+    <p class="err" id="chatHint" style="display:none"></p>
+    <label>Prompt</label>
+    <textarea id="prompt"></textarea>
+    <label>Session id（可选，填 new 每次新会话）</label>
+    <input id="sessionId" placeholder="new 或留空=新会话" />
+    <button type="button" id="btnSend">发送（JSON）</button>
+    <button type="button" class="secondary" id="btnSse">发送（SSE 分块）</button>
+    <pre id="chatOut"></pre>
+  </section>
+
+  <script>
+    const api = (path, opts = {}) => {
+      const base = '';
+      return fetch(base + path, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+        ...opts,
+      });
+    };
+
+    const authOut = document.getElementById('authOut');
+    const log = (el, msg, ok) => {
+      el.textContent = typeof msg === 'string' ? msg : JSON.stringify(msg, null, 2);
+      el.className = ok ? 'ok' : '';
+    };
+
+    document.getElementById('btnLogin').onclick = async () => {
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+      const t = await r.text();
+      try { log(authOut, JSON.parse(t), r.ok); } catch { log(authOut, t, r.ok); }
+      if (r.ok) await refreshAll();
+    };
+    document.getElementById('btnRegister').onclick = async () => {
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const r = await api('/api/register', { method: 'POST', body: JSON.stringify({ email, password }) });
+      const t = await r.text();
+      try { log(authOut, JSON.parse(t), r.ok); } catch { log(authOut, t, r.ok); }
+    };
+    document.getElementById('btnLogout').onclick = async () => {
+      await api('/api/logout', { method: 'POST' });
+      log(authOut, 'logged out', true);
+    };
+
+    async function refreshWorkspaces() {
+      const r = await api('/api/workspaces');
+      const list = await r.json();
+      const sel = document.getElementById('wsSelect');
+      sel.innerHTML = '';
+      (list || []).forEach((w) => {
+        const o = document.createElement('option');
+        o.value = w.id;
+        o.textContent = w.name + ' — ' + w.root_path;
+        sel.appendChild(o);
+      });
+    }
+    async function refreshProfiles() {
+      const r = await api('/api/provider-profiles');
+      const list = await r.json();
+      const sel = document.getElementById('pfSelect');
+      sel.innerHTML = '';
+      (list || []).forEach((p) => {
+        const o = document.createElement('option');
+        o.value = p.id;
+        o.textContent = p.name + ' (' + p.provider_kind + ')';
+        sel.appendChild(o);
+      });
+    }
+    async function refreshAll() {
+      await refreshWorkspaces();
+      await refreshProfiles();
+    }
+
+    document.getElementById('btnWsCreate').onclick = async () => {
+      const name = document.getElementById('wsName').value.trim();
+      await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) });
+      await refreshWorkspaces();
+    };
+    document.getElementById('btnWsRefresh').onclick = refreshWorkspaces;
+    document.getElementById('btnWsDelete').onclick = async () => {
+      const id = document.getElementById('wsSelect').value;
+      if (!id) return;
+      if (!confirm('删除 workspace？')) return;
+      await api('/api/workspaces/' + encodeURIComponent(id), { method: 'DELETE' });
+      await refreshWorkspaces();
+    };
+
+    document.getElementById('btnPfCreate').onclick = async () => {
+      const body = {
+        name: document.getElementById('pfName').value.trim(),
+        provider_kind: document.getElementById('pfKind').value,
+        base_url: document.getElementById('pfBase').value.trim() || null,
+        model: document.getElementById('pfModel').value.trim(),
+        api_key: document.getElementById('pfKey').value,
+      };
+      await api('/api/provider-profiles', { method: 'POST', body: JSON.stringify(body) });
+      document.getElementById('pfKey').value = '';
+      await refreshProfiles();
+    };
+    document.getElementById('btnPfRefresh').onclick = refreshProfiles;
+    document.getElementById('btnPfDelete').onclick = async () => {
+      const id = document.getElementById('pfSelect').value;
+      if (!id) return;
+      if (!confirm('删除 profile？')) return;
+      await api('/api/provider-profiles/' + encodeURIComponent(id), { method: 'DELETE' });
+      await refreshProfiles();
+    };
+
+    function chatGuard() {
+      const hint = document.getElementById('chatHint');
+      const ws = document.getElementById('wsSelect').value;
+      const pf = document.getElementById('pfSelect').value;
+      if (!ws || !pf) {
+        hint.style.display = 'block';
+        hint.textContent = '请选择 workspace 与 provider profile 后再发送。';
+        return false;
+      }
+      hint.style.display = 'none';
+      return true;
+    }
+
+    document.getElementById('btnSend').onclick = async () => {
+      if (!chatGuard()) return;
+      const out = document.getElementById('chatOut');
+      const body = {
+        workspace_id: document.getElementById('wsSelect').value,
+        provider_profile_id: document.getElementById('pfSelect').value,
+        prompt: document.getElementById('prompt').value,
+        session_id: document.getElementById('sessionId').value.trim() || null,
+      };
+      const r = await api('/api/chat', { method: 'POST', body: JSON.stringify(body) });
+      const t = await r.text();
+      try { log(out, JSON.parse(t), r.ok); } catch { log(out, t, r.ok); }
+    };
+
+    document.getElementById('btnSse').onclick = async () => {
+      if (!chatGuard()) return;
+      const out = document.getElementById('chatOut');
+      out.textContent = '';
+      const params = new URLSearchParams({
+        workspace_id: document.getElementById('wsSelect').value,
+        provider_profile_id: document.getElementById('pfSelect').value,
+        prompt: document.getElementById('prompt').value,
+        session_id: document.getElementById('sessionId').value.trim() || '',
+      });
+      const es = new EventSource('/api/chat/stream?' + params.toString(), { withCredentials: true });
+      es.onmessage = (ev) => { out.textContent += ev.data; };
+      es.addEventListener('done', () => { es.close(); });
+      es.addEventListener('error', (ev) => {
+        if (ev instanceof MessageEvent) out.textContent += '\n[error] ' + ev.data;
+        es.close();
+      });
+      es.onerror = () => { /* EventSource retries; close after done */ };
+    };
+  </script>
+</body>
+</html>

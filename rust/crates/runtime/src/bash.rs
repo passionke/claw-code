@@ -1,4 +1,3 @@
-use std::env;
 use std::io;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -68,7 +67,7 @@ pub struct BashCommandOutput {
 
 /// Executes a shell command with the requested sandbox settings.
 pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
-    let cwd = env::current_dir()?;
+    let cwd = crate::tool_effective_cwd()?;
     let sandbox_status = sandbox_status_for_input(&input, &cwd);
 
     if input.run_in_background.unwrap_or(false) {
