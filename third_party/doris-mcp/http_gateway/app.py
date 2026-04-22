@@ -23,6 +23,8 @@ CLAW_BIN = os.getenv("CLAW_BIN", "claw")
 DS_REGISTRY_PATH = Path(os.getenv("CLAW_DS_REGISTRY", "/app/http_gateway/config/datasources.yaml"))
 WORK_ROOT = Path(os.getenv("CLAW_WORK_ROOT", "/var/lib/claw-runs"))
 DORIS_MCP_IMAGE = os.getenv("DORIS_MCP_IMAGE", "ghcr.io/passionke/claw-code:latest")
+DEFAULT_DORIS_MCP_COMMAND = os.getenv("DORIS_MCP_COMMAND", "node")
+DEFAULT_DORIS_MCP_ARGS = os.getenv("DORIS_MCP_ARGS", "/app/dist/index.js")
 DEFAULT_TIMEOUT_SECONDS = int(os.getenv("CLAW_HTTP_TIMEOUT_SECONDS", "240"))
 
 
@@ -98,21 +100,14 @@ def _build_doris_cluster_config(ds_id: int, ds_cfg: dict[str, Any]) -> dict[str,
 
 
 def _build_claw_settings(doris_cfg_path: Path) -> dict[str, Any]:
+    mcp_args = [x.strip() for x in DEFAULT_DORIS_MCP_ARGS.split(" ") if x.strip()]
     return {
         "mcpServers": {
             "doris": {
                 "type": "stdio",
-                "command": "podman",
-                "args": [
-                    "run",
-                    "--rm",
-                    "-i",
-                    "-e",
-                    "DORIS_CONFIG=/app/config/doris_clusters.yaml",
-                    "-v",
-                    f"{doris_cfg_path}:/app/config/doris_clusters.yaml:ro,Z",
-                    DORIS_MCP_IMAGE,
-                ],
+                "command": DEFAULT_DORIS_MCP_COMMAND,
+                "args": mcp_args,
+                "env": {"DORIS_CONFIG": str(doris_cfg_path)},
             }
         }
     }
@@ -162,7 +157,9 @@ def healthz() -> dict[str, Any]:
         "clawBin": CLAW_BIN,
         "registryPath": str(DS_REGISTRY_PATH),
         "workRoot": str(WORK_ROOT),
-        "dorisMcpImage": DORIS_MCP_IMAGE,
+        "dorisMcpCommand": DEFAULT_DORIS_MCP_COMMAND,
+        "dorisMcpArgs": DEFAULT_DORIS_MCP_ARGS,
+        "dorisMcpImageCompat": DORIS_MCP_IMAGE,
     }
 
 
