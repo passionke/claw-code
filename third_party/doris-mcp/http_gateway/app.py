@@ -122,7 +122,7 @@ def _run_claw_prompt(
 ) -> tuple[int, str, Optional[dict[str, Any]]]:
     cmd = [CLAW_BIN, "--output-format", "json"]
     if model and model.strip():
-        cmd.extend(["-m", model.strip()])
+        cmd.extend(["--model", model.strip()])
     cmd.extend(["prompt", user_prompt])
     try:
         proc = subprocess.run(
