@@ -46,6 +46,10 @@ For HTTP mode:
 - `CLAW_WORK_ROOT` request workspace root
 - HTTP mode uses in-image MCP command by default: `node /app/dist/index.js` (no nested podman required)
 - HTTP mode uses in-image `claw` binary at `/usr/local/bin/claw` (no host binary mount required)
+- Datasource resolve source: `CLAW_DS_SOURCE=auto|sqlbot_api|sqlbot_pg|yaml` (default `auto`)
+- SQLBot API source: `SQLBOT_BASE_URL`, optional `SQLBOT_API_TOKEN`, `SQLBOT_API_COOKIE`
+- SQLBot PG source: `SQLBOT_PG_HOST`, `SQLBOT_PG_PORT`, `SQLBOT_PG_USER`, `SQLBOT_PG_PASSWORD`, `SQLBOT_PG_DB`
+- SQLBot AES key override: `SQLBOT_AES_KEY` (default `SQLBot1234567890`)
 
 ## MCP config example
 

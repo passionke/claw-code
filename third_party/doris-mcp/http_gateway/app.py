@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import time
 import uuid
+import urllib.request
+from base64 import b64decode
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,6 +28,17 @@ DORIS_MCP_IMAGE = os.getenv("DORIS_MCP_IMAGE", "ghcr.io/passionke/claw-code:late
 DEFAULT_DORIS_MCP_COMMAND = os.getenv("DORIS_MCP_COMMAND", "node")
 DEFAULT_DORIS_MCP_ARGS = os.getenv("DORIS_MCP_ARGS", "/app/dist/index.js")
 DEFAULT_TIMEOUT_SECONDS = int(os.getenv("CLAW_HTTP_TIMEOUT_SECONDS", "240"))
+DEFAULT_DS_SOURCE = os.getenv("CLAW_DS_SOURCE", "auto").strip().lower()  # auto|sqlbot_api|sqlbot_pg|yaml
+SQLBOT_BASE_URL = os.getenv("SQLBOT_BASE_URL", "").strip().rstrip("/")
+SQLBOT_TIMEOUT_SECONDS = int(os.getenv("SQLBOT_TIMEOUT_SECONDS", "10"))
+SQLBOT_API_TOKEN = os.getenv("SQLBOT_API_TOKEN", "").strip()
+SQLBOT_API_COOKIE = os.getenv("SQLBOT_API_COOKIE", "").strip()
+SQLBOT_PG_HOST = os.getenv("SQLBOT_PG_HOST", "").strip()
+SQLBOT_PG_PORT = int(os.getenv("SQLBOT_PG_PORT", "5432"))
+SQLBOT_PG_USER = os.getenv("SQLBOT_PG_USER", "").strip()
+SQLBOT_PG_PASSWORD = os.getenv("SQLBOT_PG_PASSWORD", "")
+SQLBOT_PG_DB = os.getenv("SQLBOT_PG_DB", "").strip()
+SQLBOT_AES_KEY = os.getenv("SQLBOT_AES_KEY", "SQLBot1234567890")
 
 
 class SolveRequest(BaseModel):
@@ -63,7 +76,7 @@ def _load_registry() -> dict[str, Any]:
     return data["datasources"]
 
 
-def _resolve_ds_config(ds_id: int) -> dict[str, Any]:
+def _resolve_ds_config_from_yaml(ds_id: int) -> dict[str, Any]:
     datasources = _load_registry()
     raw = datasources.get(str(ds_id))
     if raw is None:
@@ -78,6 +91,130 @@ def _resolve_ds_config(ds_id: int) -> dict[str, Any]:
             detail=f"Datasource dsId={ds_id} missing required fields: {', '.join(missing)}",
         )
     return raw
+
+
+def _aes_decrypt_sqlbot_config(encrypted: str) -> dict[str, Any]:
+    try:
+        from Crypto.Cipher import AES
+        from Crypto.Util.Padding import unpad
+    except Exception as exc:
+        raise RuntimeError("pycryptodome is required for SQLBot config decryption") from exc
+    cipher = AES.new(SQLBOT_AES_KEY.encode("utf-8"), AES.MODE_ECB)
+    plain = unpad(cipher.decrypt(b64decode(encrypted)), AES.block_size).decode("utf-8")
+    data = json.loads(plain)
+    if not isinstance(data, dict):
+        raise ValueError("decrypted datasource configuration is not a JSON object")
+    return data
+
+
+def _from_sqlbot_record(record: dict[str, Any], tables: list[str]) -> dict[str, Any]:
+    conf = _aes_decrypt_sqlbot_config(str(record.get("configuration") or ""))
+    user = str(conf.get("username") or conf.get("user") or "").strip()
+    database = str(conf.get("dbSchema") or conf.get("database") or "").strip()
+    ds_cfg = {
+        "host": conf.get("host"),
+        "port": int(conf.get("port") or 0),
+        "user": user,
+        "password": conf.get("password"),
+        "default_database": database,
+        "ssl": bool(conf.get("ssl", False)),
+        "allowed_tables": [t for t in tables if str(t).strip()],
+    }
+    required = ("host", "port", "user", "password", "default_database")
+    missing = [k for k in required if ds_cfg.get(k) in (None, "", 0)]
+    if missing:
+        raise RuntimeError(f"sqlbot record missing required config fields: {', '.join(missing)}")
+    return ds_cfg
+
+
+def _sqlbot_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if SQLBOT_API_TOKEN:
+        headers["Authorization"] = f"Bearer {SQLBOT_API_TOKEN}"
+    if SQLBOT_API_COOKIE:
+        headers["Cookie"] = SQLBOT_API_COOKIE
+    return headers
+
+
+def _fetch_ds_config_from_sqlbot_api(ds_id: int) -> dict[str, Any]:
+    if not SQLBOT_BASE_URL:
+        raise RuntimeError("SQLBOT_BASE_URL is empty")
+    req_ds = urllib.request.Request(
+        f"{SQLBOT_BASE_URL}/datasource/get/{ds_id}",
+        method="POST",
+        headers=_sqlbot_headers(),
+        data=b"{}",
+    )
+    with urllib.request.urlopen(req_ds, timeout=SQLBOT_TIMEOUT_SECONDS) as resp:
+        ds_record = json.loads(resp.read().decode("utf-8"))
+    req_tables = urllib.request.Request(
+        f"{SQLBOT_BASE_URL}/datasource/tableList/{ds_id}",
+        method="POST",
+        headers=_sqlbot_headers(),
+        data=b"{}",
+    )
+    with urllib.request.urlopen(req_tables, timeout=SQLBOT_TIMEOUT_SECONDS) as resp:
+        table_records = json.loads(resp.read().decode("utf-8"))
+    table_names = [str(x.get("table_name") or "").strip() for x in (table_records or []) if x.get("checked")]
+    return _from_sqlbot_record(ds_record, table_names)
+
+
+def _fetch_ds_config_from_sqlbot_pg(ds_id: int) -> dict[str, Any]:
+    if not (SQLBOT_PG_HOST and SQLBOT_PG_USER and SQLBOT_PG_DB):
+        raise RuntimeError("SQLBOT_PG_* environment variables are incomplete")
+    try:
+        import psycopg2
+    except Exception as exc:
+        raise RuntimeError("psycopg2-binary is required for SQLBot PG fallback") from exc
+    conn = psycopg2.connect(
+        host=SQLBOT_PG_HOST,
+        port=SQLBOT_PG_PORT,
+        user=SQLBOT_PG_USER,
+        password=SQLBOT_PG_PASSWORD,
+        dbname=SQLBOT_PG_DB,
+        connect_timeout=SQLBOT_TIMEOUT_SECONDS,
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, configuration FROM core_datasource WHERE id = %s", (ds_id,))
+            row = cur.fetchone()
+            if not row:
+                raise RuntimeError(f"datasource id={ds_id} not found in sqlbot pg")
+            cur.execute(
+                "SELECT table_name FROM core_table WHERE ds_id = %s AND checked = true ORDER BY id ASC",
+                (ds_id,),
+            )
+            tables = [r[0] for r in cur.fetchall()]
+        return _from_sqlbot_record({"id": row[0], "configuration": row[1]}, tables)
+    finally:
+        conn.close()
+
+
+def _resolve_ds_config(ds_id: int) -> dict[str, Any]:
+    source = DEFAULT_DS_SOURCE
+    errors: list[str] = []
+    if source in ("auto", "sqlbot_api"):
+        try:
+            return _fetch_ds_config_from_sqlbot_api(ds_id)
+        except Exception as exc:
+            errors.append(f"sqlbot_api: {exc}")
+            if source == "sqlbot_api":
+                raise HTTPException(status_code=500, detail=f"Failed to load datasource from SQLBot API: {exc}") from exc
+    if source in ("auto", "sqlbot_pg"):
+        try:
+            return _fetch_ds_config_from_sqlbot_pg(ds_id)
+        except Exception as exc:
+            errors.append(f"sqlbot_pg: {exc}")
+            if source == "sqlbot_pg":
+                raise HTTPException(status_code=500, detail=f"Failed to load datasource from SQLBot PG: {exc}") from exc
+    if source in ("auto", "yaml"):
+        try:
+            return _resolve_ds_config_from_yaml(ds_id)
+        except Exception as exc:
+            errors.append(f"yaml: {exc}")
+            if source == "yaml":
+                raise
+    raise HTTPException(status_code=500, detail=f"Failed to resolve datasource dsId={ds_id}. Tried: {' | '.join(errors)}")
 
 
 def _build_doris_cluster_config(ds_id: int, ds_cfg: dict[str, Any]) -> dict[str, Any]:
@@ -154,6 +291,7 @@ def healthz() -> dict[str, Any]:
     return {
         "ok": True,
         "serviceMode": os.getenv("CLAW_SERVICE_MODE", "mcp"),
+        "dsSource": DEFAULT_DS_SOURCE,
         "clawBin": CLAW_BIN,
         "registryPath": str(DS_REGISTRY_PATH),
         "workRoot": str(WORK_ROOT),
