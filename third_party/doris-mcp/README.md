@@ -44,6 +44,9 @@ For HTTP mode:
 
 - `CLAW_DS_REGISTRY` datasource registry yaml
 - `CLAW_WORK_ROOT` request workspace root
+- `CLAW_DEFAULT_MODEL` default model when request body does not pass `model` (default `deepseek-chat`)
+- `DEEPSEEK_API_KEY` optional alias for `OPENAI_API_KEY`
+- `DEEPSEEK_BASE_URL` optional alias for `OPENAI_BASE_URL` (default `https://api.deepseek.com/v1`)
 - HTTP mode uses in-image MCP command by default: `node /app/dist/index.js` (no nested podman required)
 - HTTP mode uses in-image `claw` binary at `/usr/local/bin/claw` (no host binary mount required)
 - Datasource resolve source: `CLAW_DS_SOURCE=auto|sqlbot_api|sqlbot_pg|yaml` (default `auto`)

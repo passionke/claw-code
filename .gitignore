@@ -10,3 +10,5 @@ archive/
 .claw/sessions/
 .clawhip/
 status-help.txt
+claw-server-data/
+rust/claw-server.db
