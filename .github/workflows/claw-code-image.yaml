@@ -31,6 +31,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve build base images
+        id: base_images
+        run: |
+          set -euo pipefail
+          NODE_IMAGE="docker.1ms.run/library/node:20-bookworm-slim"
+          RUST_IMAGE="docker.1ms.run/library/rust:1.88-bookworm"
+          if ! docker buildx imagetools inspect "${NODE_IMAGE}" >/dev/null 2>&1; then
+            echo "mirror miss for node image, fallback to docker.io"
+            NODE_IMAGE="docker.io/library/node:20-bookworm-slim"
+          fi
+          if ! docker buildx imagetools inspect "${RUST_IMAGE}" >/dev/null 2>&1; then
+            echo "mirror miss for rust image, fallback to docker.io"
+            RUST_IMAGE="docker.io/library/rust:1.88-bookworm"
+          fi
+          echo "node_image=${NODE_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
+
       - name: Compute image tags
         id: meta
         run: |
@@ -47,6 +64,9 @@ jobs:
           context: .
           file: ./third_party/doris-mcp/Containerfile
           push: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}
+            RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
           tags: ${{ steps.meta.outputs.sha_tag }}
 
       - name: Build and push (latest)
@@ -56,4 +76,7 @@ jobs:
           context: .
           file: ./third_party/doris-mcp/Containerfile
           push: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}
+            RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
           tags: ${{ steps.meta.outputs.latest_tag }}

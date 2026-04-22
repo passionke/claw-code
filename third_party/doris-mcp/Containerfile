@@ -1,4 +1,7 @@
-FROM docker.1ms.run/library/node:20-bookworm-slim AS build
+ARG NODE_BASE_IMAGE=docker.1ms.run/library/node:20-bookworm-slim
+ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
+
+FROM ${NODE_BASE_IMAGE} AS build
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /app
@@ -11,7 +14,7 @@ COPY third_party/doris-mcp/src ./src
 COPY third_party/doris-mcp/scripts ./scripts
 RUN npm run build
 
-FROM docker.1ms.run/library/rust:1.88-bookworm AS claw_build
+FROM ${RUST_BASE_IMAGE} AS claw_build
 
 WORKDIR /src
 RUN apt-get update \
@@ -21,7 +24,7 @@ RUN apt-get update \
 COPY rust ./rust
 RUN cd /src/rust && cargo build -p rusty-claude-cli --release
 
-FROM docker.1ms.run/library/node:20-bookworm-slim AS runtime
+FROM ${NODE_BASE_IMAGE} AS runtime
 
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV PYTHONUNBUFFERED=1 \
