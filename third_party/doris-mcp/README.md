@@ -27,11 +27,24 @@ cd third_party/doris-mcp
 ./scripts/podman_run_stdio.sh
 ```
 
+HTTP mode (for external API integration):
+
+```bash
+cd third_party/doris-mcp
+./scripts/podman_run_http.sh
+```
+
 Environment options:
 
 - `IMAGE_TAG` (default `localhost/claw-code:local`)
 - `DORIS_CONFIG` (default `./config/doris_clusters.yaml`)
 - `NPM_REGISTRY`, `PIP_INDEX_URL` for China mirrors
+
+For HTTP mode:
+
+- `CLAW_DS_REGISTRY` datasource registry yaml
+- `CLAW_WORK_ROOT` request workspace root
+- `CLAW_BIN_HOST_PATH` host `claw` binary mounted into container
 
 ## MCP config example
 
@@ -59,3 +72,4 @@ Environment options:
 
 - `config/doris_clusters.yaml` is a template only. Do not commit real credentials.
 - CI workflow publishes image as `ghcr.io/<owner>/claw-code`.
+- Image supports two modes via `CLAW_SERVICE_MODE`: `mcp` (default stdio) and `http`.

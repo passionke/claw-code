@@ -1,0 +1,16 @@
+# Datasource registry template for claw-code HTTP gateway.
+# Do NOT commit real credentials. Author: kejiqing
+
+datasources:
+  "10":
+    host: 10.200.11.250
+    port: 9030
+    user: readonly_user
+    password: "REPLACE_ME"
+    default_database: db_demo
+    ssl: false
+    allowed_tables:
+      - db_demo.fact_sales
+      - db_demo.dim_store
+    env:
+      TIMEZONE_HOUR_OFFSET: "8"
