@@ -1,6 +1,6 @@
-# Doris Query MCP (Vendored)
+# Claw-code Doris MCP Module (Vendored)
 
-This is a vendored copy of `doris-mcp` for this repository, so you can commit changes and build/publish images from GitHub CI directly.
+This is a vendored copy of `doris-mcp` inside `claw-code`. The published image name follows `claw-code`, while Doris MCP is one bundled capability.
 
 Author: kejiqing
 
@@ -29,7 +29,7 @@ cd third_party/doris-mcp
 
 Environment options:
 
-- `IMAGE_TAG` (default `localhost/doris-mcp:local`)
+- `IMAGE_TAG` (default `localhost/claw-code:local`)
 - `DORIS_CONFIG` (default `./config/doris_clusters.yaml`)
 - `NPM_REGISTRY`, `PIP_INDEX_URL` for China mirrors
 
@@ -48,7 +48,7 @@ Environment options:
         "DORIS_CONFIG=/app/config/doris_clusters.yaml",
         "-v",
         "/absolute/path/doris_clusters.yaml:/app/config/doris_clusters.yaml:ro,Z",
-        "localhost/doris-mcp:local"
+        "localhost/claw-code:local"
       ]
     }
   }
@@ -58,3 +58,4 @@ Environment options:
 ## Note
 
 - `config/doris_clusters.yaml` is a template only. Do not commit real credentials.
+- CI workflow publishes image as `ghcr.io/<owner>/claw-code`.

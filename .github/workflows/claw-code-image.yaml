@@ -1,10 +1,10 @@
-name: doris-mcp-image
+name: claw-code-image
 
 on:
   push:
     paths:
       - "third_party/doris-mcp/**"
-      - ".github/workflows/doris-mcp-image.yaml"
+      - ".github/workflows/claw-code-image.yaml"
   workflow_dispatch:
 
 permissions:
@@ -34,7 +34,7 @@ jobs:
       - name: Compute image tags
         id: meta
         run: |
-          IMAGE="ghcr.io/${{ github.repository_owner }}/doris-mcp"
+          IMAGE="ghcr.io/${{ github.repository_owner }}/claw-code"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "sha_tag=${IMAGE}:sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
           if [ "${GITHUB_REF_NAME}" = "main" ]; then

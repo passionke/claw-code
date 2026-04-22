@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run doris-mcp image in stdio mode for MCP clients.
+# Run claw-code image in stdio mode for MCP clients.
 # Author: kejiqing
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_TAG="${IMAGE_TAG:-localhost/doris-mcp:local}"
+IMAGE_TAG="${IMAGE_TAG:-localhost/claw-code:local}"
 CONFIG_PATH="${DORIS_CONFIG:-${ROOT_DIR}/config/doris_clusters.yaml}"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build doris-mcp image for podman.
+# Build claw-code image (with Doris MCP capability) for podman.
 # Author: kejiqing
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_TAG="${IMAGE_TAG:-localhost/doris-mcp:local}"
+IMAGE_TAG="${IMAGE_TAG:-localhost/claw-code:local}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 
