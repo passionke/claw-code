@@ -46,6 +46,9 @@ For HTTP mode:
 - `CLAW_WORK_ROOT` request workspace root
 - `CLAW_DEFAULT_MODEL` default model when request body does not pass `model` (default `deepseek-chat`)
 - `CLAW_HTTP_LOG_LEVEL` gateway log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`; default `INFO`)
+- `CLAW_HTTP_LOG_FILE` optional log file path (enables stdout + file dual logging)
+- `CLAW_HTTP_LOG_ROTATE_BYTES` optional rotate threshold in bytes (default `10485760`)
+- `CLAW_HTTP_LOG_BACKUP_COUNT` optional rotate backup file count (default `5`)
 - `DEEPSEEK_API_KEY` optional alias for `OPENAI_API_KEY`
 - `DEEPSEEK_BASE_URL` optional alias for `OPENAI_BASE_URL` (default `https://api.deepseek.com/v1`)
 - HTTP mode uses in-image MCP command by default: `node /app/dist/index.js` (no nested podman required)

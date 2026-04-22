@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import os
 import subprocess
 import tempfile
@@ -22,6 +23,10 @@ from pydantic import BaseModel, Field
 
 APP = FastAPI(title="claw-code HTTP Gateway", version="0.1.0")
 
+DEFAULT_LOG_FILE = os.getenv("CLAW_HTTP_LOG_FILE", "").strip()
+DEFAULT_LOG_ROTATE_BYTES = int(os.getenv("CLAW_HTTP_LOG_ROTATE_BYTES", "10485760"))
+DEFAULT_LOG_BACKUP_COUNT = int(os.getenv("CLAW_HTTP_LOG_BACKUP_COUNT", "5"))
+
 
 def _build_logger() -> logging.Logger:
     level_name = os.getenv("CLAW_HTTP_LOG_LEVEL", "INFO").upper()
@@ -35,6 +40,21 @@ def _build_logger() -> logging.Logger:
         )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
+        if DEFAULT_LOG_FILE:
+            try:
+                log_path = Path(DEFAULT_LOG_FILE)
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                file_handler = logging.handlers.RotatingFileHandler(
+                    filename=str(log_path),
+                    maxBytes=max(DEFAULT_LOG_ROTATE_BYTES, 1),
+                    backupCount=max(DEFAULT_LOG_BACKUP_COUNT, 1),
+                    encoding="utf-8",
+                )
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
+            except Exception as exc:
+                # Keep service available even when file logging setup fails.
+                logger.error("failed to initialize file logger path=%s error=%s", DEFAULT_LOG_FILE, exc)
     logger.setLevel(level)
     logger.propagate = False
     return logger
@@ -50,6 +70,7 @@ DEFAULT_DORIS_MCP_COMMAND = os.getenv("DORIS_MCP_COMMAND", "node")
 DEFAULT_DORIS_MCP_ARGS = os.getenv("DORIS_MCP_ARGS", "/app/dist/index.js")
 DEFAULT_TIMEOUT_SECONDS = int(os.getenv("CLAW_HTTP_TIMEOUT_SECONDS", "240"))
 DEFAULT_DS_SOURCE = os.getenv("CLAW_DS_SOURCE", "auto").strip().lower()  # auto|sqlbot_api|sqlbot_pg|yaml
+DEFAULT_LOG_PREVIEW_CHARS = int(os.getenv("CLAW_HTTP_LOG_PREVIEW_CHARS", "400"))
 SQLBOT_BASE_URL = os.getenv("SQLBOT_BASE_URL", "").strip().rstrip("/")
 SQLBOT_TIMEOUT_SECONDS = int(os.getenv("SQLBOT_TIMEOUT_SECONDS", "10"))
 SQLBOT_API_TOKEN = os.getenv("SQLBOT_API_TOKEN", "").strip()
@@ -62,12 +83,13 @@ SQLBOT_PG_DB = os.getenv("SQLBOT_PG_DB", "").strip()
 SQLBOT_AES_KEY = os.getenv("SQLBOT_AES_KEY", "SQLBot1234567890")
 
 LOGGER.info(
-    "gateway startup service_mode=%s ds_source=%s claw_bin=%s registry=%s work_root=%s",
+    "gateway startup service_mode=%s ds_source=%s claw_bin=%s registry=%s work_root=%s log_file=%s",
     os.getenv("CLAW_SERVICE_MODE", "mcp"),
     DEFAULT_DS_SOURCE,
     CLAW_BIN,
     DS_REGISTRY_PATH,
     WORK_ROOT,
+    DEFAULT_LOG_FILE or "(stdout-only)",
 )
 
 
@@ -323,6 +345,7 @@ def _run_claw_prompt(
         len(user_prompt),
         work_dir,
     )
+    started = time.time()
     try:
         proc = subprocess.run(
             cmd,
@@ -336,16 +359,51 @@ def _run_claw_prompt(
         raise HTTPException(status_code=500, detail=f"claw binary not found: {CLAW_BIN}") from exc
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail=f"claw request timeout: {timeout_seconds}s") from exc
-    raw = (proc.stdout or "").strip()
-    if not raw and proc.stderr:
-        raw = proc.stderr.strip()
+    exec_ms = int((time.time() - started) * 1000)
+    stderr_text = (proc.stderr or "").strip()
+    stdout_text = (proc.stdout or "").strip()
+    LOGGER.info(
+        "claw subprocess done exit_code=%s exec_ms=%s stdout_chars=%s stderr_chars=%s",
+        proc.returncode,
+        exec_ms,
+        len(stdout_text),
+        len(stderr_text),
+    )
+    if stderr_text:
+        preview = (
+            stderr_text[:DEFAULT_LOG_PREVIEW_CHARS] + "..."
+            if len(stderr_text) > DEFAULT_LOG_PREVIEW_CHARS
+            else stderr_text
+        )
+        LOGGER.warning("claw stderr preview=%s", preview)
+    raw = stdout_text
+    if not raw and stderr_text:
+        raw = stderr_text
     parsed = None
     if raw:
         try:
             parsed = json.loads(raw)
         except Exception:
             parsed = None
-    return proc.returncode, raw, parsed
+    if isinstance(parsed, dict):
+        usage = parsed.get("usage") if isinstance(parsed.get("usage"), dict) else {}
+        tool_uses = parsed.get("tool_uses") if isinstance(parsed.get("tool_uses"), list) else []
+        tool_names: list[str] = []
+        for item in tool_uses:
+            if isinstance(item, dict):
+                name = item.get("name")
+                if isinstance(name, str) and name:
+                    tool_names.append(name)
+        LOGGER.info(
+            "claw result summary iterations=%s usage_in=%s usage_out=%s tool_uses=%s tool_names=%s estimated_cost=%s",
+            parsed.get("iterations"),
+            usage.get("input_tokens"),
+            usage.get("output_tokens"),
+            len(tool_uses),
+            tool_names[:8],
+            parsed.get("estimated_cost"),
+        )
+    return proc.returncode, raw, parsed, exec_ms
 
 
 @APP.get("/healthz")
@@ -360,6 +418,7 @@ def healthz() -> dict[str, Any]:
         "dorisMcpCommand": DEFAULT_DORIS_MCP_COMMAND,
         "dorisMcpArgs": DEFAULT_DORIS_MCP_ARGS,
         "dorisMcpImageCompat": DORIS_MCP_IMAGE,
+        "logFile": DEFAULT_LOG_FILE or None,
     }
 
 
@@ -405,7 +464,7 @@ def solve(req: SolveRequest) -> SolveResponse:
         encoding="utf-8",
     )
 
-    code, out_text, out_json = _run_claw_prompt(
+    code, out_text, out_json, claw_exec_ms = _run_claw_prompt(
         work_dir=ds_work_dir,
         user_prompt=req.userPrompt.strip(),
         model=req.model,
@@ -413,11 +472,12 @@ def solve(req: SolveRequest) -> SolveResponse:
     )
     duration_ms = int((time.time() - started) * 1000)
     LOGGER.info(
-        "request=%s solve done dsId=%s exit_code=%s duration_ms=%s output_chars=%s output_json=%s",
+        "request=%s solve done dsId=%s exit_code=%s duration_ms=%s claw_exec_ms=%s output_chars=%s output_json=%s",
         request_id,
         req.dsId,
         code,
         duration_ms,
+        claw_exec_ms,
         len(out_text),
         out_json is not None,
     )
