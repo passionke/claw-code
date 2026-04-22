@@ -464,6 +464,7 @@ struct ManagedMcpServer {
     bootstrap: McpClientBootstrap,
     process: Option<McpStdioProcess>,
     initialized: bool,
+    preferred_framing: JsonRpcStdioFraming,
 }
 
 impl ManagedMcpServer {
@@ -472,6 +473,7 @@ impl ManagedMcpServer {
             bootstrap,
             process: None,
             initialized: false,
+            preferred_framing: JsonRpcStdioFraming::ContentLength,
         }
     }
 }
@@ -527,6 +529,19 @@ impl McpServerManager {
     #[must_use]
     pub fn server_names(&self) -> Vec<String> {
         self.servers.keys().cloned().collect()
+    }
+
+    pub fn prime_tool_routes(&mut self, discovered_tools: &[ManagedMcpTool]) {
+        self.tool_index.clear();
+        for tool in discovered_tools {
+            self.tool_index.insert(
+                tool.qualified_name.clone(),
+                ToolRoute {
+                    server_name: tool.server_name.clone(),
+                    raw_name: tool.raw_name.clone(),
+                },
+            );
+        }
     }
 
     pub async fn discover_tools(&mut self) -> Result<Vec<ManagedMcpTool>, McpServerManagerError> {
@@ -1013,6 +1028,20 @@ impl McpServerManager {
         )
     }
 
+    fn should_enable_newline_json_fallback(
+        error: &McpServerManagerError,
+        current_framing: JsonRpcStdioFraming,
+    ) -> bool {
+        if current_framing != JsonRpcStdioFraming::ContentLength {
+            return false;
+        }
+        match error {
+            McpServerManagerError::Timeout { method, .. }
+            | McpServerManagerError::Transport { method, .. } => *method == "initialize",
+            _ => false,
+        }
+    }
+
     async fn run_process_request<T, F>(
         server_name: &str,
         method: &'static str,
@@ -1064,7 +1093,9 @@ impl McpServerManager {
 
             if needs_spawn {
                 let server = self.server_mut(server_name)?;
-                server.process = Some(spawn_mcp_stdio_process(&server.bootstrap)?);
+                let mut process = spawn_mcp_stdio_process(&server.bootstrap)?;
+                process.set_framing_mode(server.preferred_framing);
+                server.process = Some(process);
                 server.initialized = false;
             }
 
@@ -1101,7 +1132,22 @@ impl McpServerManager {
 
             let response = match response {
                 Ok(response) => response,
-                Err(error) if attempts == 0 && Self::is_retryable_error(&error) => {
+                Err(error) if attempts < 2 && Self::is_retryable_error(&error) => {
+                    let should_try_newline = self
+                        .servers
+                        .get(server_name)
+                        .map(|server| {
+                            attempts > 0
+                                && Self::should_enable_newline_json_fallback(
+                                    &error,
+                                    server.preferred_framing,
+                                )
+                        })
+                        .unwrap_or(false);
+                    if should_try_newline {
+                        let server = self.server_mut(server_name)?;
+                        server.preferred_framing = JsonRpcStdioFraming::NewlineDelimited;
+                    }
                     self.reset_server(server_name).await?;
                     attempts += 1;
                     continue;
@@ -1144,6 +1190,13 @@ pub struct McpStdioProcess {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    framing_mode: JsonRpcStdioFraming,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonRpcStdioFraming {
+    ContentLength,
+    NewlineDelimited,
 }
 
 impl McpStdioProcess {
@@ -1170,7 +1223,12 @@ impl McpStdioProcess {
             child,
             stdin,
             stdout: BufReader::new(stdout),
+            framing_mode: JsonRpcStdioFraming::ContentLength,
         })
+    }
+
+    fn set_framing_mode(&mut self, framing_mode: JsonRpcStdioFraming) {
+        self.framing_mode = framing_mode;
     }
 
     pub async fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -1249,13 +1307,29 @@ impl McpStdioProcess {
     pub async fn write_jsonrpc_message<T: Serialize>(&mut self, message: &T) -> io::Result<()> {
         let body = serde_json::to_vec(message)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        self.write_frame(&body).await
+        match self.framing_mode {
+            JsonRpcStdioFraming::ContentLength => self.write_frame(&body).await,
+            JsonRpcStdioFraming::NewlineDelimited => {
+                self.write_all(&body).await?;
+                self.write_all(b"\n").await?;
+                self.flush().await
+            }
+        }
     }
 
     pub async fn read_jsonrpc_message<T: DeserializeOwned>(&mut self) -> io::Result<T> {
-        let payload = self.read_frame().await?;
-        serde_json::from_slice(&payload)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        match self.framing_mode {
+            JsonRpcStdioFraming::ContentLength => {
+                let payload = self.read_frame().await?;
+                serde_json::from_slice(&payload)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            }
+            JsonRpcStdioFraming::NewlineDelimited => {
+                let line = self.read_line().await?;
+                serde_json::from_str(line.trim_end_matches(['\r', '\n']))
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            }
+        }
     }
 
     pub async fn send_request<T: Serialize>(
@@ -1494,6 +1568,89 @@ mod tests {
             r"}).encode()",
             r"sys.stdout.buffer.write(f'{header_name}: {len(response)}\r\n\r\n'.encode() + response)",
             "sys.stdout.buffer.flush()",
+            "",
+        ]
+        .join("\n");
+        fs::write(&script_path, script).expect("write script");
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod");
+        script_path
+    }
+
+    fn write_newline_jsonrpc_server_script() -> PathBuf {
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("temp dir");
+        let script_path = root.join("newline-jsonrpc-mcp.py");
+        let script = [
+            "#!/usr/bin/env python3",
+            "import json, sys",
+            "",
+            "def read_message():",
+            "    while True:",
+            "        line = sys.stdin.readline()",
+            "        if not line:",
+            "            return None",
+            "        try:",
+            "            return json.loads(line)",
+            "        except json.JSONDecodeError:",
+            "            continue",
+            "",
+            "def send_message(message):",
+            "    sys.stdout.write(json.dumps(message) + '\\n')",
+            "    sys.stdout.flush()",
+            "",
+            "while True:",
+            "    request = read_message()",
+            "    if request is None:",
+            "        break",
+            "    method = request.get('method')",
+            "    if method == 'initialize':",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'result': {",
+            "                'protocolVersion': request['params']['protocolVersion'],",
+            "                'capabilities': {'tools': {}},",
+            "                'serverInfo': {'name': 'newline-mcp', 'version': '1.0.0'}",
+            "            }",
+            "        })",
+            "    elif method == 'tools/list':",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'result': {",
+            "                'tools': [",
+            "                    {",
+            "                        'name': 'echo',",
+            "                        'description': 'Echo tool',",
+            "                        'inputSchema': {",
+            "                            'type': 'object',",
+            "                            'properties': {'text': {'type': 'string'}},",
+            "                            'required': ['text']",
+            "                        }",
+            "                    }",
+            "                ]",
+            "            }",
+            "        })",
+            "    elif method == 'tools/call':",
+            "        args = (request.get('params') or {}).get('arguments') or {}",
+            "        text = args.get('text', '')",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'result': {",
+            "                'content': [{'type': 'text', 'text': f'echo:{text}'}],",
+            "                'structuredContent': {'echoed': text},",
+            "                'isError': False",
+            "            }",
+            "        })",
+            "    else:",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'error': {'code': -32601, 'message': f'unknown method: {method}'}",
+            "        })",
             "",
         ]
         .join("\n");
@@ -2232,6 +2389,48 @@ mod tests {
 
             manager.shutdown().await.expect("shutdown");
             cleanup_script(&script_path);
+        });
+    }
+
+    #[test]
+    fn manager_falls_back_to_newline_json_stdio_protocol() {
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let script_path = write_newline_jsonrpc_server_script();
+            let root = script_path.parent().expect("script parent");
+            let log_path = root.join("newline.log");
+            let servers = BTreeMap::from([(
+                "newline".to_string(),
+                manager_server_config(&script_path, "newline", &log_path),
+            )]);
+            let mut manager = McpServerManager::from_servers(&servers);
+
+            let tools = manager.discover_tools().await.expect("discover tools");
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].qualified_name, mcp_tool_name("newline", "echo"));
+
+            let response = manager
+                .call_tool(
+                    &mcp_tool_name("newline", "echo"),
+                    Some(json!({"text": "fallback"})),
+                )
+                .await
+                .expect("call newline tool");
+            assert_eq!(
+                response
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.structured_content.as_ref())
+                    .and_then(|value| value.get("echoed")),
+                Some(&json!("fallback"))
+            );
+
+            manager.shutdown().await.expect("shutdown");
+            cleanup_script(&script_path);
+            let _ = fs::remove_file(log_path);
         });
     }
 

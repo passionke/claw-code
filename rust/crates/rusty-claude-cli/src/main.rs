@@ -10,9 +10,10 @@ mod init;
 mod input;
 mod render;
 
-use std::collections::BTreeSet;
+use std::collections::{hash_map::DefaultHasher, BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{self, IsTerminal, Read, Write};
 use std::net::TcpListener;
 use std::ops::{Deref, DerefMut};
@@ -21,7 +22,7 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use api::{
     detect_provider_kind, resolve_startup_auth_source, AnthropicClient, AuthSource,
@@ -50,8 +51,9 @@ use runtime::{
     ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError, Session, TokenUsage,
     ToolError, ToolExecutor, UsageTracker,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use telemetry::{JsonlTelemetrySink, SessionTracer};
 use tools::{
     execute_tool, mvp_tool_specs, GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput,
 };
@@ -150,6 +152,23 @@ impl ModelProvenance {
 fn max_tokens_for_model(model: &str) -> u32 {
     api::max_tokens_for_model(model)
 }
+const BOUNDARY_LOG_ENV: &str = "CLAW_BOUNDARY_LOG";
+
+fn boundary_log_enabled() -> bool {
+    match std::env::var(BOUNDARY_LOG_ENV) {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+fn boundary_log(stage: &str, message: impl AsRef<str>) {
+    if boundary_log_enabled() {
+        eprintln!("[runtime-boundary] stage={stage} {}", message.as_ref());
+    }
+}
 // Build-time constants injected by build.rs (fall back to static values when
 // build.rs hasn't run, e.g. in doc-test or unusual toolchain environments).
 const DEFAULT_DATE: &str = match option_env!("BUILD_DATE") {
@@ -224,8 +243,10 @@ fn main() {
             // don't need to regex-scrape the prose.
             let kind = classify_error_kind(&message);
             if message.contains("`claw --help`") {
-                eprintln!("[error-kind: {kind}]
-error: {message}");
+                eprintln!(
+                    "[error-kind: {kind}]
+error: {message}"
+                );
             } else {
                 eprintln!(
                     "[error-kind: {kind}]
@@ -368,7 +389,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             model_flag_raw,
             permission_mode,
             output_format,
-        } => print_status_snapshot(&model, model_flag_raw.as_deref(), permission_mode, output_format)?,
+        } => print_status_snapshot(
+            &model,
+            model_flag_raw.as_deref(),
+            permission_mode,
+            output_format,
+        )?,
         CliAction::Sandbox { output_format } => print_sandbox_status_snapshot(output_format)?,
         CliAction::Prompt {
             prompt,
@@ -408,19 +434,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         CliAction::Config {
             section,
             output_format,
-        } => {
-            match output_format {
-                CliOutputFormat::Text => {
-                    println!("{}", render_config_report(section.as_deref())?);
-                }
-                CliOutputFormat::Json => {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&render_config_json(section.as_deref())?)?
-                    );
-                }
+        } => match output_format {
+            CliOutputFormat::Text => {
+                println!("{}", render_config_report(section.as_deref())?);
             }
-        }
+            CliOutputFormat::Json => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&render_config_json(section.as_deref())?)?
+                );
+            }
+        },
         CliAction::Diff { output_format } => match output_format {
             CliOutputFormat::Text => {
                 println!("{}", render_diff_report()?);
@@ -623,13 +647,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             }
             "--help" | "-h"
                 if !rest.is_empty()
-                    && matches!(
-                        rest[0].as_str(),
-                        "prompt"
-                            | "commit"
-                            | "pr"
-                            | "issue"
-                    ) =>
+                    && matches!(rest[0].as_str(), "prompt" | "commit" | "pr" | "issue") =>
             {
                 // `--help` following a subcommand that would otherwise forward
                 // the arg to the API (e.g. `claw prompt --help`) should show
@@ -840,9 +858,13 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     if let Some(action) = parse_local_help_action(&rest) {
         return action;
     }
-    if let Some(action) =
-        parse_single_word_command_alias(&rest, &model, model_flag_raw.as_deref(), permission_mode_override, output_format)
-    {
+    if let Some(action) = parse_single_word_command_alias(
+        &rest,
+        &model,
+        model_flag_raw.as_deref(),
+        permission_mode_override,
+        output_format,
+    ) {
         return action;
     }
 
@@ -1308,7 +1330,6 @@ fn suggest_closest_term<'a>(input: &str, candidates: &'a [&'a str]) -> Option<&'
     ranked_suggestions(input, candidates).into_iter().next()
 }
 
-
 fn suggest_similar_subcommand(input: &str) -> Option<Vec<String>> {
     const KNOWN_SUBCOMMANDS: &[&str] = &[
         "help",
@@ -1338,8 +1359,7 @@ fn suggest_similar_subcommand(input: &str) -> Option<Vec<String>> {
             let prefix_match = common_prefix_len(&normalized_input, &normalized_candidate) >= 4;
             let substring_match = normalized_candidate.contains(&normalized_input)
                 || normalized_input.contains(&normalized_candidate);
-            ((distance <= 2) || prefix_match || substring_match)
-                .then_some((distance, *candidate))
+            ((distance <= 2) || prefix_match || substring_match).then_some((distance, *candidate))
         })
         .collect::<Vec<_>>();
     ranked.sort_by(|left, right| left.cmp(right).then_with(|| left.1.cmp(right.1)));
@@ -1358,7 +1378,6 @@ fn common_prefix_len(left: &str, right: &str) -> usize {
         .take_while(|(l, r)| l == r)
         .count()
 }
-
 
 fn looks_like_subcommand_typo(input: &str) -> bool {
     !input.is_empty()
@@ -1469,13 +1488,11 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
             err_msg.push_str("\nDid you mean `openai/");
             err_msg.push_str(trimmed);
             err_msg.push_str("`? (Requires OPENAI_API_KEY env var)");
-        }
-        else if trimmed.starts_with("qwen") {
+        } else if trimmed.starts_with("qwen") {
             err_msg.push_str("\nDid you mean `qwen/");
             err_msg.push_str(trimmed);
             err_msg.push_str("`? (Requires DASHSCOPE_API_KEY env var)");
-        }
-        else if trimmed.starts_with("grok") {
+        } else if trimmed.starts_with("grok") {
             err_msg.push_str("\nDid you mean `xai/");
             err_msg.push_str(trimmed);
             err_msg.push_str("`? (Requires XAI_API_KEY env var)");
@@ -3676,6 +3693,41 @@ struct RuntimeMcpState {
     degraded_report: Option<runtime::McpDegradedReport>,
 }
 
+const MCP_DISCOVERY_CACHE_FILE: &str = "mcp_discovery_cache.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedMcpDiscoveryFile {
+    cache_key: String,
+    generated_at_ms: u128,
+    tools: Vec<CachedManagedMcpTool>,
+    failed_servers: Vec<CachedMcpDiscoveryFailure>,
+    unsupported_servers: Vec<CachedUnsupportedMcpServer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedManagedMcpTool {
+    server_name: String,
+    qualified_name: String,
+    raw_name: String,
+    tool: runtime::McpTool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedMcpDiscoveryFailure {
+    server_name: String,
+    phase: runtime::McpLifecyclePhase,
+    error: String,
+    recoverable: bool,
+    context: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedUnsupportedMcpServer {
+    server_name: String,
+    transport: String,
+    reason: String,
+}
+
 struct BuiltRuntime {
     runtime: Option<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>>,
     plugin_registry: PluginRegistry,
@@ -3784,13 +3836,43 @@ impl RuntimeMcpState {
     fn new(
         runtime_config: &runtime::RuntimeConfig,
     ) -> Result<Option<(Self, runtime::McpToolDiscoveryReport)>, Box<dyn std::error::Error>> {
+        let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let cache_key = mcp_cache_key(runtime_config, &cwd);
         let mut manager = McpServerManager::from_runtime_config(runtime_config);
         if manager.server_names().is_empty() && manager.unsupported_servers().is_empty() {
             return Ok(None);
         }
 
         let runtime = tokio::runtime::Runtime::new()?;
-        let discovery = runtime.block_on(manager.discover_tools_best_effort());
+        let discovery = if let Some(cached) = load_mcp_discovery_cache(&cwd, &cache_key) {
+            boundary_log(
+                "mcp_discovery_cache_hit",
+                format!(
+                    "cache_key={} tools={} failed_servers={} unsupported_servers={}",
+                    cache_key,
+                    cached.tools.len(),
+                    cached.failed_servers.len(),
+                    cached.unsupported_servers.len()
+                ),
+            );
+            cached
+        } else {
+            boundary_log(
+                "mcp_discovery_cache_miss",
+                format!("cache_key={} reason=missing_or_stale", cache_key),
+            );
+            let discovered = runtime.block_on(manager.discover_tools_best_effort());
+            if let Err(error) = save_mcp_discovery_cache(&cwd, &cache_key, &discovered) {
+                boundary_log("mcp_discovery_cache_write_failed", format!("error={error}"));
+            } else {
+                boundary_log(
+                    "mcp_discovery_cache_written",
+                    format!("cache_key={cache_key}"),
+                );
+            }
+            discovered
+        };
+        manager.prime_tool_routes(&discovery.tools);
         let pending_servers = discovery
             .failed_servers
             .iter()
@@ -3966,6 +4048,217 @@ impl RuntimeMcpState {
             "contents": result.contents,
         }))
         .map_err(|error| ToolError::new(error.to_string()))
+    }
+}
+
+fn mcp_cache_file_path(cwd: &Path) -> PathBuf {
+    cwd.join(".claw").join(MCP_DISCOVERY_CACHE_FILE)
+}
+
+fn mcp_cache_key(runtime_config: &runtime::RuntimeConfig, cwd: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    if let Some(git_sha) = GIT_SHA {
+        git_sha.hash(&mut hasher);
+    }
+    for (server_name, scoped) in runtime_config.mcp().servers() {
+        server_name.hash(&mut hasher);
+        format!("{:?}", scoped.scope).hash(&mut hasher);
+        hash_mcp_server_config(cwd, &scoped.config, &mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+fn hash_mcp_server_config(
+    cwd: &Path,
+    config: &runtime::McpServerConfig,
+    hasher: &mut DefaultHasher,
+) {
+    match config {
+        runtime::McpServerConfig::Stdio(stdio) => {
+            "stdio".hash(hasher);
+            hash_path_fingerprint(cwd, &stdio.command, hasher);
+            for arg in &stdio.args {
+                hash_path_fingerprint(cwd, arg, hasher);
+            }
+            stdio.tool_call_timeout_ms.hash(hasher);
+            for (key, value) in &stdio.env {
+                key.hash(hasher);
+                if key == "DORIS_CONFIG" {
+                    hash_file_content_fingerprint(cwd, value, hasher);
+                } else {
+                    value.hash(hasher);
+                }
+            }
+        }
+        runtime::McpServerConfig::Sse(remote) | runtime::McpServerConfig::Http(remote) => {
+            "remote".hash(hasher);
+            remote.url.hash(hasher);
+            for (key, value) in &remote.headers {
+                key.hash(hasher);
+                value.hash(hasher);
+            }
+            remote.headers_helper.hash(hasher);
+            format!("{:?}", remote.oauth).hash(hasher);
+        }
+        runtime::McpServerConfig::Ws(ws) => {
+            "ws".hash(hasher);
+            ws.url.hash(hasher);
+            for (key, value) in &ws.headers {
+                key.hash(hasher);
+                value.hash(hasher);
+            }
+            ws.headers_helper.hash(hasher);
+        }
+        runtime::McpServerConfig::Sdk(sdk) => {
+            "sdk".hash(hasher);
+            sdk.name.hash(hasher);
+        }
+        runtime::McpServerConfig::ManagedProxy(proxy) => {
+            "managed_proxy".hash(hasher);
+            proxy.url.hash(hasher);
+            proxy.id.hash(hasher);
+        }
+    }
+}
+
+fn hash_path_fingerprint(cwd: &Path, value: &str, hasher: &mut DefaultHasher) {
+    value.hash(hasher);
+    let raw = PathBuf::from(value);
+    let resolved = if raw.is_absolute() {
+        raw
+    } else {
+        cwd.join(raw)
+    };
+    if let Ok(metadata) = fs::metadata(&resolved) {
+        metadata.len().hash(hasher);
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(duration) = modified.duration_since(UNIX_EPOCH) {
+                duration.as_secs().hash(hasher);
+                duration.subsec_nanos().hash(hasher);
+            }
+        }
+    }
+}
+
+fn hash_file_content_fingerprint(cwd: &Path, value: &str, hasher: &mut DefaultHasher) {
+    let raw = PathBuf::from(value);
+    let resolved = if raw.is_absolute() {
+        raw
+    } else {
+        cwd.join(raw)
+    };
+    if let Ok(content) = fs::read(&resolved) {
+        content.hash(hasher);
+        return;
+    }
+    // Fallback keeps behavior deterministic even when file is missing.
+    value.hash(hasher);
+}
+
+fn load_mcp_discovery_cache(
+    cwd: &Path,
+    cache_key: &str,
+) -> Option<runtime::McpToolDiscoveryReport> {
+    let cache_path = mcp_cache_file_path(cwd);
+    let raw = fs::read_to_string(cache_path).ok()?;
+    let parsed: CachedMcpDiscoveryFile = serde_json::from_str(&raw).ok()?;
+    if parsed.cache_key != cache_key {
+        return None;
+    }
+    Some(runtime::McpToolDiscoveryReport {
+        tools: parsed
+            .tools
+            .into_iter()
+            .map(|tool| runtime::ManagedMcpTool {
+                server_name: tool.server_name,
+                qualified_name: tool.qualified_name,
+                raw_name: tool.raw_name,
+                tool: tool.tool,
+            })
+            .collect(),
+        failed_servers: parsed
+            .failed_servers
+            .into_iter()
+            .map(|failure| runtime::McpDiscoveryFailure {
+                server_name: failure.server_name,
+                phase: failure.phase,
+                error: failure.error,
+                recoverable: failure.recoverable,
+                context: failure.context,
+            })
+            .collect(),
+        unsupported_servers: parsed
+            .unsupported_servers
+            .into_iter()
+            .map(|server| runtime::UnsupportedMcpServer {
+                server_name: server.server_name,
+                transport: mcp_transport_from_string(&server.transport),
+                reason: server.reason,
+            })
+            .collect(),
+        degraded_startup: None,
+    })
+}
+
+fn save_mcp_discovery_cache(
+    cwd: &Path,
+    cache_key: &str,
+    discovery: &runtime::McpToolDiscoveryReport,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cache_path = mcp_cache_file_path(cwd);
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let cache = CachedMcpDiscoveryFile {
+        cache_key: cache_key.to_string(),
+        generated_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        tools: discovery
+            .tools
+            .iter()
+            .map(|tool| CachedManagedMcpTool {
+                server_name: tool.server_name.clone(),
+                qualified_name: tool.qualified_name.clone(),
+                raw_name: tool.raw_name.clone(),
+                tool: tool.tool.clone(),
+            })
+            .collect(),
+        failed_servers: discovery
+            .failed_servers
+            .iter()
+            .map(|failure| CachedMcpDiscoveryFailure {
+                server_name: failure.server_name.clone(),
+                phase: failure.phase,
+                error: failure.error.clone(),
+                recoverable: failure.recoverable,
+                context: failure.context.clone(),
+            })
+            .collect(),
+        unsupported_servers: discovery
+            .unsupported_servers
+            .iter()
+            .map(|server| CachedUnsupportedMcpServer {
+                server_name: server.server_name.clone(),
+                transport: format!("{:?}", server.transport).to_ascii_lowercase(),
+                reason: server.reason.clone(),
+            })
+            .collect(),
+    };
+    fs::write(cache_path, serde_json::to_string_pretty(&cache)?)?;
+    Ok(())
+}
+
+fn mcp_transport_from_string(value: &str) -> runtime::McpTransport {
+    match value {
+        "stdio" => runtime::McpTransport::Stdio,
+        "sse" => runtime::McpTransport::Sse,
+        "http" => runtime::McpTransport::Http,
+        "ws" => runtime::McpTransport::Ws,
+        "sdk" => runtime::McpTransport::Sdk,
+        "managedproxy" | "managed_proxy" | "managed-proxy" => runtime::McpTransport::ManagedProxy,
+        _ => runtime::McpTransport::Stdio,
     }
 }
 
@@ -4325,7 +4618,6 @@ impl LiveCli {
         Ok(())
     }
 
-
     fn run_prompt_compact_json(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
         let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(false)?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
@@ -4352,9 +4644,33 @@ impl LiveCli {
     }
 
     fn run_prompt_json(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let prompt_started_at = Instant::now();
+        boundary_log(
+            "prompt_json_start",
+            format!("model={} input_chars={}", self.model, input.chars().count()),
+        );
+        let prepare_started_at = Instant::now();
         let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(false)?;
+        boundary_log(
+            "prompt_json_runtime_ready",
+            format!(
+                "model={} elapsed_ms={}",
+                self.model,
+                prepare_started_at.elapsed().as_millis()
+            ),
+        );
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
+        let run_turn_started_at = Instant::now();
         let result = runtime.run_turn(input, Some(&mut permission_prompter));
+        boundary_log(
+            "prompt_json_run_turn_done",
+            format!(
+                "model={} elapsed_ms={} total_elapsed_ms={}",
+                self.model,
+                run_turn_started_at.elapsed().as_millis(),
+                prompt_started_at.elapsed().as_millis()
+            ),
+        );
         hook_abort_monitor.stop();
         let summary = result?;
         self.replace_runtime(runtime)?;
@@ -5443,7 +5759,13 @@ fn print_status_snapshot(
     match output_format {
         CliOutputFormat::Text => println!(
             "{}",
-            format_status_report(&provenance.resolved, usage, permission_mode.as_str(), &context, Some(&provenance))
+            format_status_report(
+                &provenance.resolved,
+                usage,
+                permission_mode.as_str(),
+                &context,
+                Some(&provenance)
+            )
         ),
         CliOutputFormat::Json => println!(
             "{}",
@@ -6847,9 +7169,30 @@ fn build_system_prompt() -> Result<Vec<String>, Box<dyn std::error::Error>> {
 }
 
 fn build_runtime_plugin_state() -> Result<RuntimePluginState, Box<dyn std::error::Error>> {
+    let started_at = Instant::now();
     let cwd = env::current_dir()?;
+    boundary_log(
+        "runtime_plugin_state_cwd",
+        format!(
+            "cwd={} elapsed_ms={}",
+            cwd.display(),
+            started_at.elapsed().as_millis()
+        ),
+    );
     let loader = ConfigLoader::default_for(&cwd);
+    boundary_log(
+        "runtime_plugin_state_loader_ready",
+        format!("elapsed_ms={}", started_at.elapsed().as_millis()),
+    );
     let runtime_config = loader.load()?;
+    boundary_log(
+        "runtime_plugin_state_config_loaded",
+        format!(
+            "elapsed_ms={} mcp_servers={}",
+            started_at.elapsed().as_millis(),
+            runtime_config.mcp().servers().len()
+        ),
+    );
     build_runtime_plugin_state_with_loader(&cwd, &loader, &runtime_config)
 }
 
@@ -6858,17 +7201,46 @@ fn build_runtime_plugin_state_with_loader(
     loader: &ConfigLoader,
     runtime_config: &runtime::RuntimeConfig,
 ) -> Result<RuntimePluginState, Box<dyn std::error::Error>> {
+    let started_at = Instant::now();
     let plugin_manager = build_plugin_manager(cwd, loader, runtime_config);
+    boundary_log(
+        "runtime_plugin_state_plugin_manager",
+        format!("elapsed_ms={}", started_at.elapsed().as_millis()),
+    );
     let plugin_registry = plugin_manager.plugin_registry()?;
+    boundary_log(
+        "runtime_plugin_state_plugin_registry",
+        format!("elapsed_ms={}", started_at.elapsed().as_millis()),
+    );
     let plugin_hook_config =
         runtime_hook_config_from_plugin_hooks(plugin_registry.aggregated_hooks()?);
+    boundary_log(
+        "runtime_plugin_state_plugin_hooks",
+        format!("elapsed_ms={}", started_at.elapsed().as_millis()),
+    );
     let feature_config = runtime_config
         .feature_config()
         .clone()
         .with_hooks(runtime_config.hooks().merged(&plugin_hook_config));
+    boundary_log(
+        "runtime_plugin_state_feature_config",
+        format!("elapsed_ms={}", started_at.elapsed().as_millis()),
+    );
     let (mcp_state, runtime_tools) = build_runtime_mcp_state(runtime_config)?;
+    boundary_log(
+        "runtime_plugin_state_mcp_built",
+        format!(
+            "elapsed_ms={} runtime_tools={}",
+            started_at.elapsed().as_millis(),
+            runtime_tools.len()
+        ),
+    );
     let tool_registry = GlobalToolRegistry::with_plugin_tools(plugin_registry.aggregated_tools()?)?
         .with_runtime_tools(runtime_tools)?;
+    boundary_log(
+        "runtime_plugin_state_tool_registry",
+        format!("elapsed_ms={}", started_at.elapsed().as_millis()),
+    );
     Ok(RuntimePluginState {
         feature_config,
         tool_registry,
@@ -7262,8 +7634,15 @@ fn build_runtime(
     permission_mode: PermissionMode,
     progress_reporter: Option<InternalPromptProgressReporter>,
 ) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
+    let started_at = Instant::now();
     let runtime_plugin_state = build_runtime_plugin_state()?;
-    build_runtime_with_plugin_state(
+    let plugin_state_ms = started_at.elapsed().as_millis();
+    boundary_log(
+        "build_runtime_plugin_state_done",
+        format!("elapsed_ms={plugin_state_ms}"),
+    );
+    let build_with_state_started_at = Instant::now();
+    let runtime = build_runtime_with_plugin_state(
         session,
         session_id,
         model,
@@ -7274,7 +7653,17 @@ fn build_runtime(
         permission_mode,
         progress_reporter,
         runtime_plugin_state,
-    )
+    )?;
+    boundary_log(
+        "build_runtime_done",
+        format!(
+            "plugin_state_ms={} build_with_state_ms={} total_ms={}",
+            plugin_state_ms,
+            build_with_state_started_at.elapsed().as_millis(),
+            started_at.elapsed().as_millis()
+        ),
+    );
+    Ok(runtime)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -7325,10 +7714,46 @@ fn build_runtime_with_plugin_state(
         system_prompt,
         &feature_config,
     );
+    if let Some(session_tracer) = session_tracer_from_env(session_id) {
+        runtime = runtime.with_session_tracer(session_tracer);
+    }
     if emit_output {
         runtime = runtime.with_hook_progress_reporter(Box::new(CliHookProgressReporter));
     }
     Ok(BuiltRuntime::new(runtime, plugin_registry, mcp_state))
+}
+
+fn session_tracer_from_env(session_id: &str) -> Option<SessionTracer> {
+    let trace_id = env::var("CLAW_TRACE_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| session_id.to_string());
+    let trace_file = trace_file_path_from_env(&trace_id)?;
+    let sink = JsonlTelemetrySink::new(trace_file).ok()?;
+    Some(SessionTracer::new(trace_id, Arc::new(sink)))
+}
+
+fn trace_file_path_from_env(trace_id: &str) -> Option<PathBuf> {
+    if let Ok(value) = env::var("CLAW_TRACE_FILE") {
+        let path = value.trim();
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    let enabled = env::var("CLAW_TRACE_ENABLED")
+        .unwrap_or_else(|_| "0".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(enabled.as_str(), "1" | "true" | "yes" | "on") {
+        return None;
+    }
+    let dir = env::var("CLAW_TRACE_DIR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| ".claw/traces".to_string());
+    Some(PathBuf::from(dir).join(format!("{trace_id}.ndjson")))
 }
 
 struct CliHookProgressReporter;
@@ -7517,20 +7942,61 @@ impl ApiClient for AnthropicRuntimeClient {
         if let Some(progress_reporter) = &self.progress_reporter {
             progress_reporter.mark_model_phase();
         }
+        let stream_started_at = Instant::now();
         let is_post_tool = request_ends_with_tool_result(&request);
+        let messages_started_at = Instant::now();
+        let messages = convert_messages(&request.messages);
+        let messages_elapsed_ms = messages_started_at.elapsed().as_millis();
+        let system_started_at = Instant::now();
+        let system =
+            (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n"));
+        let system_elapsed_ms = system_started_at.elapsed().as_millis();
+        let tools_started_at = Instant::now();
+        let tools = self
+            .enable_tools
+            .then(|| filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref()));
+        let tools_elapsed_ms = tools_started_at.elapsed().as_millis();
+        let tools_count = tools.as_ref().map_or(0usize, std::vec::Vec::len);
+        let tools_schema_chars = tools.as_ref().map_or(0usize, |value| {
+            serde_json::to_string(value).map_or(0usize, |raw| raw.len())
+        });
+        let system_chars = system.as_ref().map_or(0usize, std::string::String::len);
+        boundary_log(
+            "request_build",
+            format!(
+                "model={} max_tokens={} messages={} system_chars={} tools={} tools_schema_chars={} elapsed_ms_total={} messages_ms={} system_ms={} tools_ms={}",
+                self.model,
+                max_tokens_for_model(&self.model),
+                messages.len(),
+                system_chars,
+                tools_count,
+                tools_schema_chars,
+                stream_started_at.elapsed().as_millis(),
+                messages_elapsed_ms,
+                system_elapsed_ms,
+                tools_elapsed_ms
+            ),
+        );
         let message_request = MessageRequest {
             model: self.model.clone(),
             max_tokens: max_tokens_for_model(&self.model),
-            messages: convert_messages(&request.messages),
-            system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
-            tools: self
-                .enable_tools
-                .then(|| filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref())),
+            messages,
+            system,
+            tools,
             tool_choice: self.enable_tools.then_some(ToolChoice::Auto),
             stream: true,
             reasoning_effort: self.reasoning_effort.clone(),
             ..Default::default()
         };
+        boundary_log(
+            "request_ready",
+            format!(
+                "model={} elapsed_ms_total={} post_tool_retry_enabled={}",
+                message_request.model,
+                stream_started_at.elapsed().as_millis(),
+                is_post_tool
+            ),
+        );
 
         self.runtime.block_on(async {
             // When resuming after tool execution, apply a stall timeout on the
@@ -7570,6 +8036,20 @@ impl AnthropicRuntimeClient {
         message_request: &MessageRequest,
         apply_stall_timeout: bool,
     ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        let consume_started_at = Instant::now();
+        boundary_log(
+            "provider_stream_call_start",
+            format!(
+                "model={} apply_stall_timeout={} tools={} messages={}",
+                message_request.model,
+                apply_stall_timeout,
+                message_request
+                    .tools
+                    .as_ref()
+                    .map_or(0usize, std::vec::Vec::len),
+                message_request.messages.len()
+            ),
+        );
         let mut stream = self
             .client
             .stream_message(message_request)
@@ -7577,6 +8057,14 @@ impl AnthropicRuntimeClient {
             .map_err(|error| {
                 RuntimeError::new(format_user_visible_api_error(&self.session_id, &error))
             })?;
+        boundary_log(
+            "provider_stream_call_done",
+            format!(
+                "model={} elapsed_ms={}",
+                message_request.model,
+                consume_started_at.elapsed().as_millis()
+            ),
+        );
         let mut stdout = io::stdout();
         let mut sink = io::sink();
         let out: &mut dyn Write = if self.emit_output {
@@ -7613,6 +8101,16 @@ impl AnthropicRuntimeClient {
             let Some(event) = next else {
                 break;
             };
+            if !received_any_event {
+                boundary_log(
+                    "provider_first_event",
+                    format!(
+                        "model={} elapsed_ms={}",
+                        message_request.model,
+                        consume_started_at.elapsed().as_millis()
+                    ),
+                );
+            }
             received_any_event = true;
 
             match event {
@@ -9009,26 +9507,24 @@ fn print_help(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::
 mod tests {
     use super::{
         build_runtime_plugin_state_with_loader, build_runtime_with_plugin_state,
-        collect_session_prompt_history, create_managed_session_handle, describe_tool_progress,
-        filter_tool_specs, format_bughunter_report, format_commit_preflight_report,
-        format_commit_skipped_report, format_compact_report, format_connected_line,
-        format_cost_report, format_history_timestamp, format_internal_prompt_progress_line,
-        format_issue_report, format_model_report, format_model_switch_report,
-        format_permissions_report, format_permissions_switch_report, format_pr_report,
-        format_resume_report, format_status_report, format_tool_call_start, format_tool_result,
-        format_ultraplan_report, format_unknown_slash_command,
+        classify_error_kind, collect_session_prompt_history, create_managed_session_handle,
+        describe_tool_progress, filter_tool_specs, format_bughunter_report,
+        format_commit_preflight_report, format_commit_skipped_report, format_compact_report,
+        format_connected_line, format_cost_report, format_history_timestamp,
+        format_internal_prompt_progress_line, format_issue_report, format_model_report,
+        format_model_switch_report, format_permissions_report, format_permissions_switch_report,
+        format_pr_report, format_resume_report, format_status_report, format_tool_call_start,
+        format_tool_result, format_ultraplan_report, format_unknown_slash_command,
         format_unknown_slash_command_message, format_user_visible_api_error,
-        classify_error_kind,
         merge_prompt_with_stdin, normalize_permission_mode, parse_args, parse_export_args,
         parse_git_status_branch, parse_git_status_metadata_for, parse_git_workspace_summary,
         parse_history_count, permission_policy, print_help_to, push_output_block,
-        render_config_report, render_diff_report, render_diff_report_for, render_memory_report,
-        split_error_hint,
-        render_help_topic, render_prompt_history_report, render_repl_help, render_resume_usage,
+        render_config_report, render_diff_report, render_diff_report_for, render_help_topic,
+        render_memory_report, render_prompt_history_report, render_repl_help, render_resume_usage,
         render_session_markdown, resolve_model_alias, resolve_model_alias_with_config,
         resolve_repl_model, resolve_session_reference, response_to_events,
         resume_supported_slash_commands, run_resume_command, short_tool_id,
-        slash_command_completion_candidates_with_sessions, status_context,
+        slash_command_completion_candidates_with_sessions, split_error_hint, status_context,
         summarize_tool_payload_for_markdown, try_resolve_bare_skill_prompt, validate_no_args,
         write_mcp_server_fixture, CliAction, CliOutputFormat, CliToolExecutor, GitWorkspaceSummary,
         InternalPromptProgressEvent, InternalPromptProgressState, LiveCli, LocalHelpTopic,
@@ -10009,8 +10505,8 @@ mod tests {
         // with a specific error instead of falling through to the prompt
         // path (where they surface a misleading "missing Anthropic
         // credentials" error or burn API tokens on an empty prompt).
-        let empty_err = parse_args(&["".to_string()])
-            .expect_err("empty positional arg should be rejected");
+        let empty_err =
+            parse_args(&["".to_string()]).expect_err("empty positional arg should be rejected");
         assert!(
             empty_err.starts_with("empty prompt:"),
             "empty-arg error should be specific, got: {empty_err}"
@@ -10227,7 +10723,8 @@ mod tests {
         .expect("write malformed .claw.json");
 
         let context = with_current_dir(&cwd, || {
-            super::status_context(None).expect("status_context should not hard-fail on config parse errors (#143)")
+            super::status_context(None)
+                .expect("status_context should not hard-fail on config parse errors (#143)")
         });
 
         // Phase 1 contract: config_load_error is populated with the parse error.
@@ -10264,7 +10761,8 @@ mod tests {
             cumulative: runtime::TokenUsage::default(),
             estimated_tokens: 0,
         };
-        let json = super::status_json_value(Some("test-model"), usage, "workspace-write", &context, None);
+        let json =
+            super::status_json_value(Some("test-model"), usage, "workspace-write", &context, None);
         assert_eq!(
             json.get("status").and_then(|v| v.as_str()),
             Some("degraded"),
@@ -10281,8 +10779,14 @@ mod tests {
             json.get("model").and_then(|v| v.as_str()),
             Some("test-model")
         );
-        assert!(json.get("workspace").is_some(), "workspace field still reported");
-        assert!(json.get("sandbox").is_some(), "sandbox field still reported");
+        assert!(
+            json.get("workspace").is_some(),
+            "workspace field still reported"
+        );
+        assert!(
+            json.get("sandbox").is_some(),
+            "sandbox field still reported"
+        );
 
         // Clean path: no config error → status: "ok", config_load_error: null.
         let clean_cwd = root.join("project-with-clean-config");
@@ -10291,8 +10795,13 @@ mod tests {
             super::status_context(None).expect("clean status_context should succeed")
         });
         assert!(clean_context.config_load_error.is_none());
-        let clean_json =
-            super::status_json_value(Some("test-model"), usage, "workspace-write", &clean_context, None);
+        let clean_json = super::status_json_value(
+            Some("test-model"),
+            usage,
+            "workspace-write",
+            &clean_context,
+            None,
+        );
         assert_eq!(
             clean_json.get("status").and_then(|v| v.as_str()),
             Some("ok"),
@@ -10391,11 +10900,18 @@ mod tests {
         // Other unrecognized args should NOT trigger the --json hint.
         let err_other = parse_args(&["doctor".to_string(), "garbage".to_string()])
             .expect_err("`doctor garbage` should fail without --json hint");
-        assert!(!err_other.contains("--output-format json"),
-            "unrelated args should not trigger --json hint: {err_other}");
+        assert!(
+            !err_other.contains("--output-format json"),
+            "unrelated args should not trigger --json hint: {err_other}"
+        );
         // #154: model syntax error should hint at provider prefix when applicable
-        let err_gpt = parse_args(&["prompt".to_string(), "test".to_string(), "--model".to_string(), "gpt-4".to_string()])
-            .expect_err("`--model gpt-4` should fail with OpenAI hint");
+        let err_gpt = parse_args(&[
+            "prompt".to_string(),
+            "test".to_string(),
+            "--model".to_string(),
+            "gpt-4".to_string(),
+        ])
+        .expect_err("`--model gpt-4` should fail with OpenAI hint");
         assert!(
             err_gpt.contains("Did you mean `openai/gpt-4`?"),
             "GPT model error should hint openai/ prefix: {err_gpt}"
@@ -10404,8 +10920,13 @@ mod tests {
             err_gpt.contains("OPENAI_API_KEY"),
             "GPT model error should mention env var: {err_gpt}"
         );
-        let err_qwen = parse_args(&["prompt".to_string(), "test".to_string(), "--model".to_string(), "qwen-plus".to_string()])
-            .expect_err("`--model qwen-plus` should fail with DashScope hint");
+        let err_qwen = parse_args(&[
+            "prompt".to_string(),
+            "test".to_string(),
+            "--model".to_string(),
+            "qwen-plus".to_string(),
+        ])
+        .expect_err("`--model qwen-plus` should fail with DashScope hint");
         assert!(
             err_qwen.contains("Did you mean `qwen/qwen-plus`?"),
             "Qwen model error should hint qwen/ prefix: {err_qwen}"
@@ -10415,8 +10936,13 @@ mod tests {
             "Qwen model error should mention env var: {err_qwen}"
         );
         // Unrelated invalid model should NOT get a hint
-        let err_garbage = parse_args(&["prompt".to_string(), "test".to_string(), "--model".to_string(), "asdfgh".to_string()])
-            .expect_err("`--model asdfgh` should fail");
+        let err_garbage = parse_args(&[
+            "prompt".to_string(),
+            "test".to_string(),
+            "--model".to_string(),
+            "asdfgh".to_string(),
+        ])
+        .expect_err("`--model asdfgh` should fail");
         assert!(
             !err_garbage.contains("Did you mean"),
             "Unrelated model errors should not get a hint: {err_garbage}"
@@ -10426,15 +10952,42 @@ mod tests {
     #[test]
     fn classify_error_kind_returns_correct_discriminants() {
         // #77: error kind classification for JSON error payloads
-        assert_eq!(classify_error_kind("missing Anthropic credentials; export ..."), "missing_credentials");
-        assert_eq!(classify_error_kind("no worker state file found at /tmp/..."), "missing_worker_state");
-        assert_eq!(classify_error_kind("session not found: abc123"), "session_not_found");
-        assert_eq!(classify_error_kind("failed to restore session: no managed sessions found"), "session_load_failed");
-        assert_eq!(classify_error_kind("unrecognized argument `--foo` for subcommand `doctor`"), "cli_parse");
-        assert_eq!(classify_error_kind("invalid model syntax: 'gpt-4'. Expected ..."), "invalid_model_syntax");
-        assert_eq!(classify_error_kind("unsupported resumed command: /blargh"), "unsupported_resumed_command");
-        assert_eq!(classify_error_kind("api failed after 3 attempts: ..."), "api_http_error");
-        assert_eq!(classify_error_kind("something completely unknown"), "unknown");
+        assert_eq!(
+            classify_error_kind("missing Anthropic credentials; export ..."),
+            "missing_credentials"
+        );
+        assert_eq!(
+            classify_error_kind("no worker state file found at /tmp/..."),
+            "missing_worker_state"
+        );
+        assert_eq!(
+            classify_error_kind("session not found: abc123"),
+            "session_not_found"
+        );
+        assert_eq!(
+            classify_error_kind("failed to restore session: no managed sessions found"),
+            "session_load_failed"
+        );
+        assert_eq!(
+            classify_error_kind("unrecognized argument `--foo` for subcommand `doctor`"),
+            "cli_parse"
+        );
+        assert_eq!(
+            classify_error_kind("invalid model syntax: 'gpt-4'. Expected ..."),
+            "invalid_model_syntax"
+        );
+        assert_eq!(
+            classify_error_kind("unsupported resumed command: /blargh"),
+            "unsupported_resumed_command"
+        );
+        assert_eq!(
+            classify_error_kind("api failed after 3 attempts: ..."),
+            "api_http_error"
+        );
+        assert_eq!(
+            classify_error_kind("something completely unknown"),
+            "unknown"
+        );
     }
 
     #[test]
@@ -10905,7 +11458,6 @@ mod tests {
         assert!(report.contains("Use /help"));
     }
 
-
     #[test]
     fn typoed_doctor_subcommand_returns_did_you_mean_error() {
         let error = parse_args(&["doctorr".to_string()]).expect_err("doctorr should error");
@@ -10987,7 +11539,6 @@ mod tests {
             }
         );
     }
-
 
     #[test]
     fn punctuation_bearing_single_token_still_dispatches_to_prompt() {
