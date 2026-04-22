@@ -44,7 +44,7 @@ jobs:
       - name: Build and push (sha)
         uses: docker/build-push-action@v6
         with:
-          context: ./third_party/doris-mcp
+          context: .
           file: ./third_party/doris-mcp/Containerfile
           push: true
           tags: ${{ steps.meta.outputs.sha_tag }}
@@ -53,7 +53,7 @@ jobs:
         if: github.ref_name == 'main'
         uses: docker/build-push-action@v6
         with:
-          context: ./third_party/doris-mcp
+          context: .
           file: ./third_party/doris-mcp/Containerfile
           push: true
           tags: ${{ steps.meta.outputs.latest_tag }}

@@ -44,8 +44,8 @@ For HTTP mode:
 
 - `CLAW_DS_REGISTRY` datasource registry yaml
 - `CLAW_WORK_ROOT` request workspace root
-- `CLAW_BIN_HOST_PATH` host `claw` binary mounted into container
 - HTTP mode uses in-image MCP command by default: `node /app/dist/index.js` (no nested podman required)
+- HTTP mode uses in-image `claw` binary at `/usr/local/bin/claw` (no host binary mount required)
 
 ## MCP config example
 

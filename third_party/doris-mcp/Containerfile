@@ -1,24 +1,34 @@
-FROM node:20-bookworm-slim AS build
+FROM docker.1ms.run/library/node:20-bookworm-slim AS build
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /app
 
-COPY package*.json ./
+COPY third_party/doris-mcp/package*.json ./
 RUN npm config set registry "${NPM_REGISTRY}" && npm ci
 
-COPY tsconfig.json ./
-COPY src ./src
-COPY scripts ./scripts
+COPY third_party/doris-mcp/tsconfig.json ./
+COPY third_party/doris-mcp/src ./src
+COPY third_party/doris-mcp/scripts ./scripts
 RUN npm run build
 
-FROM node:20-bookworm-slim AS runtime
+FROM docker.1ms.run/library/rust:1.88-bookworm AS claw_build
+
+WORKDIR /src
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY rust ./rust
+RUN cd /src/rust && cargo build -p rusty-claude-cli --release
+
+FROM docker.1ms.run/library/node:20-bookworm-slim AS runtime
 
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV PYTHONUNBUFFERED=1 \
     DORIS_CONFIG=/app/config/doris_clusters.yaml \
     CLAW_SERVICE_MODE=mcp \
     CLAW_HTTP_PORT=18080 \
-    CLAW_BIN=claw
+    CLAW_BIN=/usr/local/bin/claw
 
 WORKDIR /app
 
@@ -28,13 +38,14 @@ RUN apt-get update \
       sqlglot fastapi uvicorn pydantic PyYAML \
     && rm -rf /var/lib/apt/lists/*
 
-COPY package*.json ./
+COPY third_party/doris-mcp/package*.json ./
 RUN npm ci --omit=dev
 
 COPY --from=build /app/dist ./dist
-COPY scripts ./scripts
-COPY config ./config
-COPY http_gateway ./http_gateway
+COPY --from=claw_build /src/rust/target/release/claw /usr/local/bin/claw
+COPY third_party/doris-mcp/scripts ./scripts
+COPY third_party/doris-mcp/config ./config
+COPY third_party/doris-mcp/http_gateway ./http_gateway
 RUN chmod +x /app/scripts/entrypoint.sh
 EXPOSE 18080
 

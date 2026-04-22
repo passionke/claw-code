@@ -9,8 +9,6 @@ IMAGE_TAG="${IMAGE_TAG:-localhost/claw-code:local}"
 PORT="${PORT:-18080}"
 DS_REGISTRY="${CLAW_DS_REGISTRY:-${ROOT_DIR}/http_gateway/config/datasources.example.yaml}"
 WORK_ROOT="${CLAW_WORK_ROOT:-${ROOT_DIR}/runs}"
-CLAW_BIN_HOST_PATH="${CLAW_BIN_HOST_PATH:-/usr/local/bin/claw}"
-CLAW_BIN_IN_CONTAINER="${CLAW_BIN_IN_CONTAINER:-/usr/local/bin/claw}"
 
 if [[ ! -f "${DS_REGISTRY}" ]]; then
   echo "[error] datasource registry not found: ${DS_REGISTRY}" >&2
@@ -25,8 +23,6 @@ podman run --rm -it \
   -e "CLAW_DS_REGISTRY=/app/http_gateway/config/datasources.yaml" \
   -e "CLAW_WORK_ROOT=/var/lib/claw-runs" \
   -e "DORIS_MCP_IMAGE=${IMAGE_TAG}" \
-  -e "CLAW_BIN=${CLAW_BIN_IN_CONTAINER}" \
   -v "${DS_REGISTRY}:/app/http_gateway/config/datasources.yaml:ro,Z" \
   -v "${WORK_ROOT}:/var/lib/claw-runs:Z" \
-  -v "${CLAW_BIN_HOST_PATH}:${CLAW_BIN_IN_CONTAINER}:ro,Z" \
   "${IMAGE_TAG}"
