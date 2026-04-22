@@ -1457,8 +1457,9 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
         ));
     }
     // Check provider/model format: provider_id/model_id
-    let parts: Vec<&str> = trimmed.split('/').collect();
-    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+    // Allow nested model IDs (e.g. openai/inclusionai/ling-2.6-flash:free)
+    // by splitting only on the first slash.
+    let Some((provider_id, model_id)) = trimmed.split_once('/') else {
         // #154: hint if the model looks like it belongs to a different provider
         let mut err_msg = format!(
             "invalid model syntax: '{}'. Expected provider/model (e.g., anthropic/claude-opus-4-6) or known alias (opus, sonnet, haiku)",
@@ -1480,6 +1481,12 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
             err_msg.push_str("`? (Requires XAI_API_KEY env var)");
         }
         return Err(err_msg);
+    };
+    if provider_id.is_empty() || model_id.is_empty() {
+        return Err(format!(
+            "invalid model syntax: '{}'. Expected provider/model (e.g., anthropic/claude-opus-4-6) or known alias (opus, sonnet, haiku)",
+            trimmed
+        ));
     }
     Ok(())
 }
