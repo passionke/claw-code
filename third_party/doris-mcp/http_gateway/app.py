@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -20,6 +21,26 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 APP = FastAPI(title="claw-code HTTP Gateway", version="0.1.0")
+
+
+def _build_logger() -> logging.Logger:
+    level_name = os.getenv("CLAW_HTTP_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logger = logging.getLogger("claw-http-gateway")
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+            "%Y-%m-%d %H:%M:%S",
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    logger.setLevel(level)
+    logger.propagate = False
+    return logger
+
+
+LOGGER = _build_logger()
 
 CLAW_BIN = os.getenv("CLAW_BIN", "claw")
 DS_REGISTRY_PATH = Path(os.getenv("CLAW_DS_REGISTRY", "/app/http_gateway/config/datasources.yaml"))
@@ -39,6 +60,15 @@ SQLBOT_PG_USER = os.getenv("SQLBOT_PG_USER", "").strip()
 SQLBOT_PG_PASSWORD = os.getenv("SQLBOT_PG_PASSWORD", "")
 SQLBOT_PG_DB = os.getenv("SQLBOT_PG_DB", "").strip()
 SQLBOT_AES_KEY = os.getenv("SQLBOT_AES_KEY", "SQLBot1234567890")
+
+LOGGER.info(
+    "gateway startup service_mode=%s ds_source=%s claw_bin=%s registry=%s work_root=%s",
+    os.getenv("CLAW_SERVICE_MODE", "mcp"),
+    DEFAULT_DS_SOURCE,
+    CLAW_BIN,
+    DS_REGISTRY_PATH,
+    WORK_ROOT,
+)
 
 
 class SolveRequest(BaseModel):
@@ -190,28 +220,53 @@ def _fetch_ds_config_from_sqlbot_pg(ds_id: int) -> dict[str, Any]:
         conn.close()
 
 
-def _resolve_ds_config(ds_id: int) -> dict[str, Any]:
+def _resolve_ds_config(ds_id: int, request_id: str) -> dict[str, Any]:
     source = DEFAULT_DS_SOURCE
     errors: list[str] = []
+    LOGGER.info("request=%s datasource resolve start dsId=%s source=%s", request_id, ds_id, source)
     if source in ("auto", "sqlbot_api"):
         try:
-            return _fetch_ds_config_from_sqlbot_api(ds_id)
+            ds_cfg = _fetch_ds_config_from_sqlbot_api(ds_id)
+            LOGGER.info("request=%s datasource resolved via sqlbot_api dsId=%s", request_id, ds_id)
+            return ds_cfg
         except Exception as exc:
             errors.append(f"sqlbot_api: {exc}")
+            LOGGER.warning(
+                "request=%s datasource resolve failed via sqlbot_api dsId=%s error=%s",
+                request_id,
+                ds_id,
+                exc,
+            )
             if source == "sqlbot_api":
                 raise HTTPException(status_code=500, detail=f"Failed to load datasource from SQLBot API: {exc}") from exc
     if source in ("auto", "sqlbot_pg"):
         try:
-            return _fetch_ds_config_from_sqlbot_pg(ds_id)
+            ds_cfg = _fetch_ds_config_from_sqlbot_pg(ds_id)
+            LOGGER.info("request=%s datasource resolved via sqlbot_pg dsId=%s", request_id, ds_id)
+            return ds_cfg
         except Exception as exc:
             errors.append(f"sqlbot_pg: {exc}")
+            LOGGER.warning(
+                "request=%s datasource resolve failed via sqlbot_pg dsId=%s error=%s",
+                request_id,
+                ds_id,
+                exc,
+            )
             if source == "sqlbot_pg":
                 raise HTTPException(status_code=500, detail=f"Failed to load datasource from SQLBot PG: {exc}") from exc
     if source in ("auto", "yaml"):
         try:
-            return _resolve_ds_config_from_yaml(ds_id)
+            ds_cfg = _resolve_ds_config_from_yaml(ds_id)
+            LOGGER.info("request=%s datasource resolved via yaml dsId=%s", request_id, ds_id)
+            return ds_cfg
         except Exception as exc:
             errors.append(f"yaml: {exc}")
+            LOGGER.warning(
+                "request=%s datasource resolve failed via yaml dsId=%s error=%s",
+                request_id,
+                ds_id,
+                exc,
+            )
             if source == "yaml":
                 raise
     raise HTTPException(status_code=500, detail=f"Failed to resolve datasource dsId={ds_id}. Tried: {' | '.join(errors)}")
@@ -261,6 +316,13 @@ def _run_claw_prompt(
     if model and model.strip():
         cmd.extend(["--model", model.strip()])
     cmd.extend(["prompt", user_prompt])
+    LOGGER.info(
+        "claw exec model=%s timeout=%ss prompt_chars=%s work_dir=%s",
+        model or "(default)",
+        timeout_seconds,
+        len(user_prompt),
+        work_dir,
+    )
     try:
         proc = subprocess.run(
             cmd,
@@ -303,8 +365,16 @@ def healthz() -> dict[str, Any]:
 
 @APP.post("/v1/solve", response_model=SolveResponse)
 def solve(req: SolveRequest) -> SolveResponse:
-    ds_cfg = _resolve_ds_config(req.dsId)
     request_id = uuid.uuid4().hex
+    LOGGER.info(
+        "request=%s solve start dsId=%s model=%s timeout=%s prompt_chars=%s",
+        request_id,
+        req.dsId,
+        req.model or "(default)",
+        req.timeoutSeconds or DEFAULT_TIMEOUT_SECONDS,
+        len(req.userPrompt),
+    )
+    ds_cfg = _resolve_ds_config(req.dsId, request_id)
     timeout_seconds = req.timeoutSeconds or DEFAULT_TIMEOUT_SECONDS
     started = time.time()
 
@@ -342,6 +412,21 @@ def solve(req: SolveRequest) -> SolveResponse:
         timeout_seconds=timeout_seconds,
     )
     duration_ms = int((time.time() - started) * 1000)
+    LOGGER.info(
+        "request=%s solve done dsId=%s exit_code=%s duration_ms=%s output_chars=%s output_json=%s",
+        request_id,
+        req.dsId,
+        code,
+        duration_ms,
+        len(out_text),
+        out_json is not None,
+    )
+    if code != 0:
+        LOGGER.warning(
+            "request=%s claw non-zero exit output_preview=%s",
+            request_id,
+            (out_text[:400] + "...") if len(out_text) > 400 else out_text,
+        )
 
     return SolveResponse(
         requestId=request_id,
