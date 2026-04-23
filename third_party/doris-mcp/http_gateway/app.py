@@ -11,7 +11,6 @@ import logging.handlers
 import os
 import selectors
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -22,7 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -120,6 +119,14 @@ SQLBOT_PG_USER = os.getenv("SQLBOT_PG_USER", "").strip()
 SQLBOT_PG_PASSWORD = os.getenv("SQLBOT_PG_PASSWORD", "")
 SQLBOT_PG_DB = os.getenv("SQLBOT_PG_DB", "").strip()
 SQLBOT_AES_KEY = os.getenv("SQLBOT_AES_KEY", "SQLBot1234567890")
+SQLBOT_MCP_RAW = os.getenv("SQLBOT_MCP", "").strip()
+SQLBOT_MCP_HOST = os.getenv("SQLBOT_MCP_HOST", "").strip()
+SQLBOT_MCP_PORT = os.getenv("SQLBOT_MCP_PORT", "").strip()
+SQLBOT_MCP_SCHEME = os.getenv("SQLBOT_MCP_SCHEME", "http").strip() or "http"
+SQLBOT_MCP_PATH = os.getenv("SQLBOT_MCP_PATH", "").strip()
+SQLBOT_MCP_SERVER_NAME = os.getenv("SQLBOT_MCP_SERVER_NAME", "sqlbot").strip() or "sqlbot"
+SQLBOT_MCP_AK = os.getenv("SQLBOT_MCP_AK", "").strip()
+SQLBOT_MCP_SK = os.getenv("SQLBOT_MCP_SK", "").strip() or os.getenv("SQLBOT_MCT_SK", "").strip()
 TRACE_ENABLED = os.getenv("CLAW_TRACE_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 TRACE_SAMPLE_RATE = max(0.0, min(1.0, float(os.getenv("CLAW_TRACE_SAMPLE_RATE", "1.0"))))
 TRACE_FILE_RAW = os.getenv("CLAW_TRACE_FILE", "").strip()
@@ -223,8 +230,51 @@ class SolveTaskResponse(BaseModel):
     error: Optional[dict[str, Any]] = None
 
 
+class InjectMcpRequest(BaseModel):
+    dsId: int = Field(..., ge=1, description="Datasource ID bound to runtime workspace.")
+    mcpServers: dict[str, Any] = Field(..., description="MCP server configs in claw settings JSON style.")
+    replace: bool = Field(default=False, description="Replace existing injected servers for this dsId.")
+    probeTimeoutSeconds: int = Field(default=15, ge=1, le=120)
+
+
+class InjectMcpResponse(BaseModel):
+    requestId: str
+    dsId: int
+    injectedServerNames: list[str]
+    loaded: bool
+    missingServers: list[str]
+    configuredServers: int
+    status: str
+    mcpReport: Optional[dict[str, Any]] = None
+
+
+class GetInjectedMcpResponse(BaseModel):
+    requestId: str
+    dsId: int
+    injectedServerNames: list[str]
+    loaded: bool
+    missingServers: list[str]
+    configuredServers: int
+    status: str
+    mcpReport: Optional[dict[str, Any]] = None
+
+
+class DeleteInjectedMcpResponse(BaseModel):
+    requestId: str
+    dsId: int
+    removedServerNames: list[str]
+    injectedServerNames: list[str]
+    loaded: bool
+    missingServers: list[str]
+    configuredServers: int
+    status: str
+    mcpReport: Optional[dict[str, Any]] = None
+
+
 TASKS_LOCK = threading.Lock()
 TASKS: dict[str, dict[str, Any]] = {}
+INJECTED_MCP_LOCK = threading.Lock()
+INJECTED_MCP_BY_DS: dict[int, dict[str, Any]] = {}
 
 
 def _now_ms() -> int:
@@ -819,18 +869,191 @@ def _build_doris_cluster_config(ds_id: int, ds_cfg: dict[str, Any]) -> dict[str,
     return {"clusters": {cluster_name: cluster}}
 
 
-def _build_claw_settings(doris_cfg_path: Path) -> dict[str, Any]:
+def _normalize_mcp_servers_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict) or not raw:
+        raise HTTPException(status_code=400, detail="mcpServers must be a non-empty JSON object.")
+    normalized: dict[str, Any] = {}
+    for raw_name, raw_config in raw.items():
+        name = str(raw_name).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="mcpServers contains an empty server name.")
+        if not isinstance(raw_config, dict):
+            raise HTTPException(status_code=400, detail=f"mcpServers.{name} must be a JSON object.")
+        has_shape_key = any(k in raw_config for k in ("type", "command", "url", "name"))
+        if not has_shape_key:
+            raise HTTPException(
+                status_code=400,
+                detail=f"mcpServers.{name} must include one of: type, command, url, name.",
+            )
+        try:
+            normalized[name] = json.loads(json.dumps(raw_config, ensure_ascii=False))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"mcpServers.{name} is not JSON-serializable: {exc}",
+            ) from exc
+    return normalized
+
+
+def _extract_mcp_servers_value(raw: Any) -> dict[str, Any]:
+    value = raw
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        value = json.loads(text)
+    if not isinstance(value, dict):
+        raise ValueError("MCP config must be a JSON object.")
+    if isinstance(value.get("mcpServers"), dict):
+        value = value["mcpServers"]
+    if any(key in value for key in ("type", "command", "url", "name")):
+        value = {SQLBOT_MCP_SERVER_NAME: value}
+    return _normalize_mcp_servers_payload(value)
+
+
+def _sqlbot_mcp_servers_from_env() -> dict[str, Any]:
+    if SQLBOT_MCP_RAW:
+        try:
+            return _extract_mcp_servers_value(SQLBOT_MCP_RAW)
+        except Exception as exc:
+            LOGGER.warning("invalid SQLBOT_MCP, ignored: %s", exc)
+            return {}
+    if not (SQLBOT_MCP_HOST and SQLBOT_MCP_PORT):
+        return {}
+    base_url = f"{SQLBOT_MCP_SCHEME}://{SQLBOT_MCP_HOST}:{SQLBOT_MCP_PORT}"
+    url = f"{base_url}{SQLBOT_MCP_PATH}" if SQLBOT_MCP_PATH else base_url
+    headers: dict[str, str] = {}
+    if SQLBOT_MCP_AK:
+        headers["x-ak"] = SQLBOT_MCP_AK
+    if SQLBOT_MCP_SK:
+        headers["x-sk"] = SQLBOT_MCP_SK
+    server_config: dict[str, Any] = {
+        "type": "http",
+        "url": url,
+    }
+    if headers:
+        server_config["headers"] = headers
+    return {SQLBOT_MCP_SERVER_NAME: server_config}
+
+
+def _builtin_mcp_server_names() -> list[str]:
+    names = ["doris"]
+    names.extend(sorted(_sqlbot_mcp_servers_from_env().keys()))
+    # Keep stable output and avoid duplicates if names overlap.
+    return sorted(set(names))
+
+
+def _merge_mcp_servers(ds_id: int, base_servers: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base_servers)
+    with INJECTED_MCP_LOCK:
+        injected = INJECTED_MCP_BY_DS.get(ds_id, {})
+        for name, config in injected.items():
+            merged[name] = config
+    return merged
+
+
+def _stable_doris_config_path(work_dir: Path, ds_id: int, config_payload: dict[str, Any]) -> tuple[Path, str]:
+    canonical_json = json.dumps(
+        config_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()[:16]
+    file_path = work_dir / f"doris_{ds_id}_{digest}.yaml"
+    yaml_text = yaml.safe_dump(
+        config_payload,
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    return file_path, yaml_text
+
+
+def _build_claw_settings(
+    doris_cfg_path: Path,
+    ds_id: int,
+) -> dict[str, Any]:
     mcp_args = [x.strip() for x in DEFAULT_DORIS_MCP_ARGS.split(" ") if x.strip()]
-    return {
-        "mcpServers": {
-            "doris": {
-                "type": "stdio",
-                "command": DEFAULT_DORIS_MCP_COMMAND,
-                "args": mcp_args,
-                "env": {"DORIS_CONFIG": str(doris_cfg_path)},
-            }
+    base_servers = {
+        "doris": {
+            "type": "stdio",
+            "command": DEFAULT_DORIS_MCP_COMMAND,
+            "args": mcp_args,
+            "env": {"DORIS_CONFIG": str(doris_cfg_path)},
         }
     }
+    sqlbot_env_servers = _sqlbot_mcp_servers_from_env()
+    merged_base = dict(base_servers)
+    merged_base.update(sqlbot_env_servers)
+    merged_servers = _merge_mcp_servers(ds_id, merged_base)
+    return {
+        "mcpServers": merged_servers
+    }
+
+
+def _probe_mcp_load(work_dir: Path, timeout_seconds: int) -> tuple[dict[str, Any], list[str], int, str]:
+    cmd = [CLAW_BIN, "mcp", "--output-format", "json"]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(work_dir),
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=f"claw binary not found for mcp probe: {CLAW_BIN}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail=f"claw mcp probe timeout: {timeout_seconds}s") from exc
+
+    raw = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    parsed: dict[str, Any] = {}
+    if raw:
+        try:
+            value = json.loads(raw)
+            if isinstance(value, dict):
+                parsed = value
+        except Exception:
+            parsed = {"raw": raw}
+    servers = parsed.get("servers") if isinstance(parsed.get("servers"), list) else []
+    loaded_names: list[str] = []
+    for item in servers:
+        if isinstance(item, dict):
+            name = item.get("name")
+            if isinstance(name, str) and name:
+                loaded_names.append(name)
+    configured_servers = int(parsed.get("configured_servers") or len(loaded_names) or 0)
+    status = str(parsed.get("status") or ("ok" if proc.returncode == 0 else "error"))
+    parsed["exitCode"] = proc.returncode
+    return parsed, loaded_names, configured_servers, status
+
+
+def _apply_settings_and_probe(
+    ds_id: int,
+    request_id: str,
+    probe_timeout_seconds: int,
+) -> tuple[dict[str, Any], list[str], int, str]:
+    ds_cfg = _resolve_ds_config(ds_id, request_id)
+    ds_work_dir = WORK_ROOT / f"ds_{ds_id}"
+    ds_work_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_claw_workspace_initialized(ds_work_dir, request_id, ds_id)
+
+    cluster_config = _build_doris_cluster_config(ds_id, ds_cfg)
+    doris_config_path, doris_yaml = _stable_doris_config_path(ds_work_dir, ds_id, cluster_config)
+    if not doris_config_path.exists():
+        doris_config_path.write_text(doris_yaml, encoding="utf-8")
+
+    claw_dir = ds_work_dir / ".claw"
+    claw_dir.mkdir(parents=True, exist_ok=True)
+    settings = _build_claw_settings(doris_config_path, ds_id)
+    (claw_dir / "settings.json").write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return _probe_mcp_load(ds_work_dir, probe_timeout_seconds)
 
 
 def _run_claw_prompt(
@@ -1037,6 +1260,7 @@ def healthz() -> dict[str, Any]:
         "clawBin": CLAW_BIN,
         "registryPath": str(DS_REGISTRY_PATH),
         "workRoot": str(WORK_ROOT),
+        "builtinMcpServers": _builtin_mcp_server_names(),
         "dorisMcpCommand": DEFAULT_DORIS_MCP_COMMAND,
         "dorisMcpArgs": DEFAULT_DORIS_MCP_ARGS,
         "dorisMcpImageCompat": DORIS_MCP_IMAGE,
@@ -1258,23 +1482,16 @@ def _run_solve_request(req: SolveRequest, request_id: str) -> SolveResponse:
     claw_dir.mkdir(parents=True, exist_ok=True)
 
     prepare_started = time.time()
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".yaml",
-        prefix=f"doris_{req.dsId}_",
-        dir=str(ds_work_dir),
-        encoding="utf-8",
-        delete=False,
-    ) as fp:
-        doris_config_path = Path(fp.name)
-        yaml.safe_dump(
-            _build_doris_cluster_config(req.dsId, ds_cfg),
-            fp,
-            allow_unicode=True,
-            sort_keys=False,
-        )
+    cluster_config = _build_doris_cluster_config(req.dsId, ds_cfg)
+    doris_config_path, doris_yaml = _stable_doris_config_path(
+        ds_work_dir,
+        req.dsId,
+        cluster_config,
+    )
+    if not doris_config_path.exists():
+        doris_config_path.write_text(doris_yaml, encoding="utf-8")
 
-    settings = _build_claw_settings(doris_config_path)
+    settings = _build_claw_settings(doris_config_path, req.dsId)
     (claw_dir / "settings.json").write_text(
         json.dumps(settings, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1419,6 +1636,129 @@ def solve_async(req: SolveRequest) -> SolveAsyncResponse:
         status="queued",
         pollUrl=f"/v1/tasks/{task_id}",
         traceUrl=f"/v1/traces/{task_id}",
+    )
+
+
+@APP.post("/v1/mcp/inject", response_model=InjectMcpResponse)
+def inject_mcp(req: InjectMcpRequest) -> InjectMcpResponse:
+    request_id = uuid.uuid4().hex
+    normalized = _normalize_mcp_servers_payload(req.mcpServers)
+
+    if req.replace:
+        with INJECTED_MCP_LOCK:
+            INJECTED_MCP_BY_DS[req.dsId] = normalized
+    else:
+        with INJECTED_MCP_LOCK:
+            current = dict(INJECTED_MCP_BY_DS.get(req.dsId, {}))
+            current.update(normalized)
+            INJECTED_MCP_BY_DS[req.dsId] = current
+
+    report, loaded_names, configured_servers, status = _apply_settings_and_probe(
+        req.dsId,
+        request_id,
+        req.probeTimeoutSeconds,
+    )
+    injected_names = sorted(normalized.keys())
+    missing = sorted([name for name in injected_names if name not in set(loaded_names)])
+    loaded = not missing and status == "ok"
+    return InjectMcpResponse(
+        requestId=request_id,
+        dsId=req.dsId,
+        injectedServerNames=injected_names,
+        loaded=loaded,
+        missingServers=missing,
+        configuredServers=configured_servers,
+        status=status,
+        mcpReport=report,
+    )
+
+
+@APP.get("/v1/mcp/injected/{ds_id}", response_model=GetInjectedMcpResponse)
+def get_injected_mcp(
+    ds_id: int,
+    probe_timeout_seconds: int = Query(default=15, ge=1, le=120),
+) -> GetInjectedMcpResponse:
+    request_id = uuid.uuid4().hex
+    with INJECTED_MCP_LOCK:
+        injected = dict(INJECTED_MCP_BY_DS.get(ds_id, {}))
+    injected_names = sorted(injected.keys())
+
+    report, loaded_names, configured_servers, status = _apply_settings_and_probe(
+        ds_id,
+        request_id,
+        probe_timeout_seconds,
+    )
+    missing = sorted([name for name in injected_names if name not in set(loaded_names)])
+    loaded = not missing and status == "ok"
+    return GetInjectedMcpResponse(
+        requestId=request_id,
+        dsId=ds_id,
+        injectedServerNames=injected_names,
+        loaded=loaded,
+        missingServers=missing,
+        configuredServers=configured_servers,
+        status=status,
+        mcpReport=report,
+    )
+
+
+@APP.delete("/v1/mcp/injected/{ds_id}", response_model=DeleteInjectedMcpResponse)
+def delete_injected_mcp(
+    ds_id: int,
+    server_names: Optional[str] = Query(
+        default=None,
+        description="Comma-separated injected server names to remove. Omit to clear all injected servers for the dsId.",
+    ),
+    probe_timeout_seconds: int = Query(default=15, ge=1, le=120),
+) -> DeleteInjectedMcpResponse:
+    request_id = uuid.uuid4().hex
+    with INJECTED_MCP_LOCK:
+        current = dict(INJECTED_MCP_BY_DS.get(ds_id, {}))
+        if server_names is None or not server_names.strip():
+            removed = sorted(current.keys())
+            INJECTED_MCP_BY_DS.pop(ds_id, None)
+            remaining = {}
+        else:
+            targets = {
+                token.strip()
+                for token in server_names.split(",")
+                if token.strip()
+            }
+            if not targets:
+                raise HTTPException(status_code=400, detail="server_names is empty after parsing.")
+            missing_targets = sorted([name for name in targets if name not in current])
+            if missing_targets:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"injected server(s) not found for dsId={ds_id}: {', '.join(missing_targets)}",
+                )
+            removed = sorted(targets)
+            for name in removed:
+                current.pop(name, None)
+            if current:
+                INJECTED_MCP_BY_DS[ds_id] = current
+            else:
+                INJECTED_MCP_BY_DS.pop(ds_id, None)
+            remaining = current
+
+    report, loaded_names, configured_servers, status = _apply_settings_and_probe(
+        ds_id,
+        request_id,
+        probe_timeout_seconds,
+    )
+    remaining_names = sorted(remaining.keys())
+    missing = sorted([name for name in remaining_names if name not in set(loaded_names)])
+    loaded = not missing and status == "ok"
+    return DeleteInjectedMcpResponse(
+        requestId=request_id,
+        dsId=ds_id,
+        removedServerNames=removed,
+        injectedServerNames=remaining_names,
+        loaded=loaded,
+        missingServers=missing,
+        configuredServers=configured_servers,
+        status=status,
+        mcpReport=report,
     )
 
 

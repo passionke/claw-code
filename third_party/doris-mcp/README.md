@@ -34,6 +34,44 @@ cd third_party/doris-mcp
 ./scripts/podman_run_http.sh
 ```
 
+Production-hardened HTTP deployment (outer-layer hardening):
+
+```bash
+cd third_party/doris-mcp
+
+IMAGE_TAG="${IMAGE_TAG:-localhost/claw-code:local}"
+PORT="${PORT:-18080}"
+DS_REGISTRY="${CLAW_DS_REGISTRY:-$PWD/http_gateway/config/datasources.example.yaml}"
+WORK_ROOT="${CLAW_WORK_ROOT:-$PWD/runs}"
+
+mkdir -p "${WORK_ROOT}"
+
+podman run --rm -it \
+  -p "127.0.0.1:${PORT}:18080" \
+  --userns=keep-id \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --read-only \
+  --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+  --pids-limit 256 \
+  --memory 2g \
+  --cpus 2 \
+  -e "CLAW_SERVICE_MODE=http" \
+  -e "CLAW_DS_REGISTRY=/app/http_gateway/config/datasources.yaml" \
+  -e "CLAW_WORK_ROOT=/var/lib/claw-runs" \
+  -e "DORIS_MCP_IMAGE=${IMAGE_TAG}" \
+  -v "${DS_REGISTRY}:/app/http_gateway/config/datasources.yaml:ro,Z" \
+  -v "${WORK_ROOT}:/var/lib/claw-runs:Z" \
+  "${IMAGE_TAG}"
+```
+
+Notes for hardened mode:
+
+- `--read-only` requires explicit writable paths; this command keeps `/var/lib/claw-runs` writable for per-request workspaces and runtime artifacts.
+- `--tmpfs /tmp` keeps temporary files off the image layer while preserving normal process behavior.
+- `-p 127.0.0.1:...` binds HTTP to loopback only; place a reverse proxy in front if remote access is required.
+- Keep `datasources.yaml` mounted read-only and avoid committing real credentials.
+
 Environment options:
 
 - `IMAGE_TAG` (default `localhost/claw-code:local`)
