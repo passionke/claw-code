@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""HTTP gateway for claw prompt with datasource binding. Author: kejiqing"""
+"""HTTP gateway for claw prompt with datasource binding (claw-code: third_party/claw-http-gateway). Author: kejiqing"""
 
 from __future__ import annotations
 
@@ -124,10 +124,22 @@ SQLBOT_MCP_HOST = os.getenv("SQLBOT_MCP_HOST", "").strip()
 SQLBOT_MCP_PORT = os.getenv("SQLBOT_MCP_PORT", "").strip()
 SQLBOT_MCP_SCHEME = os.getenv("SQLBOT_MCP_SCHEME", "http").strip() or "http"
 SQLBOT_MCP_PATH = os.getenv("SQLBOT_MCP_PATH", "").strip()
+SQLBOT_MCP_TRANSPORT = os.getenv("SQLBOT_MCP_TRANSPORT", "sse").strip().lower() or "sse"
 SQLBOT_MCP_SERVER_NAME = os.getenv("SQLBOT_MCP_SERVER_NAME", "sqlbot").strip() or "sqlbot"
 SQLBOT_MCP_AK = os.getenv("SQLBOT_MCP_AK", "").strip()
 SQLBOT_MCP_SK = os.getenv("SQLBOT_MCP_SK", "").strip() or os.getenv("SQLBOT_MCT_SK", "").strip()
-TRACE_ENABLED = os.getenv("CLAW_TRACE_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+MCP_HTTP_BRIDGE_ENABLED = os.getenv("MCP_HTTP_BRIDGE_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+MCP_HTTP_BRIDGE_COMMAND = os.getenv("MCP_HTTP_BRIDGE_COMMAND", "node").strip() or "node"
+MCP_HTTP_BRIDGE_SCRIPT = os.getenv(
+    "MCP_HTTP_BRIDGE_SCRIPT",
+    "/app/dist/http_stdio_bridge.js",
+).strip() or "/app/dist/http_stdio_bridge.js"
+TRACE_ENABLED = os.getenv("CLAW_TRACE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 TRACE_SAMPLE_RATE = max(0.0, min(1.0, float(os.getenv("CLAW_TRACE_SAMPLE_RATE", "1.0"))))
 TRACE_FILE_RAW = os.getenv("CLAW_TRACE_FILE", "").strip()
 TRACE_DIR = Path(os.getenv("CLAW_TRACE_DIR", str(WORK_ROOT / "logs")).strip() or str(WORK_ROOT / "logs"))
@@ -930,12 +942,56 @@ def _sqlbot_mcp_servers_from_env() -> dict[str, Any]:
     if SQLBOT_MCP_SK:
         headers["x-sk"] = SQLBOT_MCP_SK
     server_config: dict[str, Any] = {
-        "type": "http",
+        "type": SQLBOT_MCP_TRANSPORT if SQLBOT_MCP_TRANSPORT in ("http", "sse") else "sse",
         "url": url,
     }
     if headers:
         server_config["headers"] = headers
     return {SQLBOT_MCP_SERVER_NAME: server_config}
+
+
+def _bridge_http_server_config(server_name: str, server_config: dict[str, Any]) -> dict[str, Any]:
+    transport = str(server_config.get("type") or "").strip().lower()
+    # Claw runtime now supports HTTP MCP natively. Keep bridge only for
+    # legacy SSE transport to avoid double-adapting streamable HTTP servers.
+    if transport != "sse":
+        return server_config
+    url = str(server_config.get("url") or "").strip()
+    if not url:
+        return server_config
+    args: list[str] = [
+        MCP_HTTP_BRIDGE_SCRIPT,
+        "--name",
+        f"{server_name}-bridge",
+        "--transport",
+        transport,
+        "--url",
+        url,
+    ]
+    headers = server_config.get("headers")
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            k = str(key).strip()
+            if not k:
+                continue
+            args.extend(["--header", f"{k}:{value}"])
+    return {
+        "type": "stdio",
+        "command": MCP_HTTP_BRIDGE_COMMAND,
+        "args": args,
+    }
+
+
+def _wrap_remote_mcp_servers(mcp_servers: dict[str, Any]) -> dict[str, Any]:
+    if not MCP_HTTP_BRIDGE_ENABLED:
+        return dict(mcp_servers)
+    wrapped: dict[str, Any] = {}
+    for name, config in mcp_servers.items():
+        if isinstance(config, dict):
+            wrapped[name] = _bridge_http_server_config(name, dict(config))
+        else:
+            wrapped[name] = config
+    return wrapped
 
 
 def _builtin_mcp_server_names() -> list[str]:
@@ -988,6 +1044,7 @@ def _build_claw_settings(
     merged_base = dict(base_servers)
     merged_base.update(sqlbot_env_servers)
     merged_servers = _merge_mcp_servers(ds_id, merged_base)
+    merged_servers = _wrap_remote_mcp_servers(merged_servers)
     return {
         "mcpServers": merged_servers
     }
@@ -1031,6 +1088,15 @@ def _probe_mcp_load(work_dir: Path, timeout_seconds: int) -> tuple[dict[str, Any
     return parsed, loaded_names, configured_servers, status
 
 
+def _clear_mcp_discovery_cache(work_dir: Path) -> None:
+    cache_path = work_dir / ".claw" / "mcp_discovery_cache.json"
+    try:
+        if cache_path.exists():
+            cache_path.unlink()
+    except Exception as exc:
+        LOGGER.warning("failed to clear mcp discovery cache path=%s error=%s", cache_path, exc)
+
+
 def _apply_settings_and_probe(
     ds_id: int,
     request_id: str,
@@ -1053,6 +1119,7 @@ def _apply_settings_and_probe(
         json.dumps(settings, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    _clear_mcp_discovery_cache(ds_work_dir)
     return _probe_mcp_load(ds_work_dir, probe_timeout_seconds)
 
 
@@ -1496,6 +1563,7 @@ def _run_solve_request(req: SolveRequest, request_id: str) -> SolveResponse:
         json.dumps(settings, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    _clear_mcp_discovery_cache(ds_work_dir)
     prepare_ms = int((time.time() - prepare_started) * 1000)
 
     try:
