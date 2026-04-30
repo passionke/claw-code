@@ -27,8 +27,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use api::{
     detect_provider_kind, resolve_startup_auth_source, AnthropicClient, AuthSource,
     ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
-    OutputContentBlock, PromptCache, ProviderClient as ApiProviderClient, ProviderKind,
-    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    MessageStream, OutputContentBlock, PromptCache, ProviderClient as ApiProviderClient,
+    ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
+    ToolResultContentBlock,
 };
 
 use commands::{
@@ -46,10 +47,10 @@ use runtime::{
     check_base_commit, format_stale_base_warning, format_usd, load_oauth_credentials,
     load_system_prompt, pricing_for_model, resolve_expected_base, resolve_sandbox_status,
     ApiClient, ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource,
-    ContentBlock, ConversationMessage, ConversationRuntime, McpServer, McpServerManager,
-    McpServerSpec, McpTool, MessageRole, ModelPricing, PermissionMode, PermissionPolicy,
-    ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError, Session, TokenUsage,
-    ToolError, ToolExecutor, UsageTracker,
+    ContentBlock, ConversationMessage, ConversationRuntime, HookAbortSignal, McpServer,
+    McpServerManager, McpServerSpec, McpTool, MessageRole, ModelPricing, PermissionMode,
+    PermissionPolicy, ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError,
+    Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -152,20 +153,8 @@ impl ModelProvenance {
 fn max_tokens_for_model(model: &str) -> u32 {
     api::max_tokens_for_model(model)
 }
-const BOUNDARY_LOG_ENV: &str = "CLAW_BOUNDARY_LOG";
-
-fn boundary_log_enabled() -> bool {
-    match std::env::var(BOUNDARY_LOG_ENV) {
-        Ok(value) => !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
-        ),
-        Err(_) => true,
-    }
-}
-
 fn boundary_log(stage: &str, message: impl AsRef<str>) {
-    if boundary_log_enabled() {
+    if api::boundary_log_enabled() {
         eprintln!("[runtime-boundary] stage={stage} {}", message.as_ref());
     }
 }
@@ -420,7 +409,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 None
             };
             let effective_prompt = merge_prompt_with_stdin(&prompt, stdin_context.as_deref());
-            let mut cli = LiveCli::new(model, true, allowed_tools, permission_mode)?;
+            // Match REPL: when `--model` is omitted, apply `ANTHROPIC_MODEL` and
+            // project `.claw.json` `model` (see `resolve_repl_model`). Without this,
+            // one-shot `claw prompt` always used the compiled-in default (Anthropic).
+            let resolved_model = resolve_repl_model(model);
+            let mut cli = LiveCli::new(resolved_model, true, allowed_tools, permission_mode)?;
             cli.set_reasoning_effort(reasoning_effort);
             cli.run_turn_with_output(&effective_prompt, output_format, compact)?;
         }
@@ -1529,6 +1522,7 @@ fn current_tool_registry() -> Result<GlobalToolRegistry, String> {
     let cwd = env::current_dir().map_err(|error| error.to_string())?;
     let loader = ConfigLoader::default_for(&cwd);
     let runtime_config = loader.load().map_err(|error| error.to_string())?;
+    runtime::apply_config_env_if_unset(&runtime_config);
     let state = build_runtime_plugin_state_with_loader(&cwd, &loader, &runtime_config)
         .map_err(|error| error.to_string())?;
     let registry = state.tool_registry.clone();
@@ -3752,11 +3746,14 @@ impl BuiltRuntime {
     }
 
     fn with_hook_abort_signal(mut self, hook_abort_signal: runtime::HookAbortSignal) -> Self {
-        let runtime = self
+        let mut runtime = self
             .runtime
             .take()
             .expect("runtime should exist before installing hook abort signal");
-        self.runtime = Some(runtime.with_hook_abort_signal(hook_abort_signal));
+        let interrupt = hook_abort_signal.clone();
+        runtime = runtime.with_hook_abort_signal(hook_abort_signal);
+        runtime.api_client_mut().set_interrupt_signal(interrupt);
+        self.runtime = Some(runtime);
         self
     }
 
@@ -7185,6 +7182,9 @@ fn build_runtime_plugin_state() -> Result<RuntimePluginState, Box<dyn std::error
         format!("elapsed_ms={}", started_at.elapsed().as_millis()),
     );
     let runtime_config = loader.load()?;
+    // Project/user `env` in .claw.json (e.g. local OPENAI_BASE_URL) is not read by
+    // the API client unless it exists in the process environment — apply as defaults.
+    runtime::apply_config_env_if_unset(&runtime_config);
     boundary_log(
         "runtime_plugin_state_config_loaded",
         format!(
@@ -7741,8 +7741,10 @@ fn trace_file_path_from_env(trace_id: &str) -> Option<PathBuf> {
             return Some(PathBuf::from(path));
         }
     }
+    // Default on for CLI runs so JSONL trace files are written to `.claw/traces/`
+    // without extra env. Set `CLAW_TRACE_ENABLED=0` (or `false` / `off` / `no`) to disable.
     let enabled = env::var("CLAW_TRACE_ENABLED")
-        .unwrap_or_else(|_| "0".to_string())
+        .unwrap_or_else(|_| "1".to_string())
         .trim()
         .to_ascii_lowercase();
     if !matches!(enabled.as_str(), "1" | "true" | "yes" | "on") {
@@ -7855,6 +7857,8 @@ struct AnthropicRuntimeClient {
     tool_registry: GlobalToolRegistry,
     progress_reporter: Option<InternalPromptProgressReporter>,
     reasoning_effort: Option<String>,
+    /// Shared with `HookAbortMonitor` (Ctrl+C) so in-flight LLM requests can exit.
+    interrupt: Option<HookAbortSignal>,
 }
 
 impl AnthropicRuntimeClient {
@@ -7920,7 +7924,12 @@ impl AnthropicRuntimeClient {
             tool_registry,
             progress_reporter,
             reasoning_effort: None,
+            interrupt: None,
         })
+    }
+
+    fn set_interrupt_signal(&mut self, signal: HookAbortSignal) {
+        self.interrupt = Some(signal);
     }
 
     fn set_reasoning_effort(&mut self, effort: Option<String>) {
@@ -8027,6 +8036,88 @@ impl ApiClient for AnthropicRuntimeClient {
     }
 }
 
+const HOOK_ABORT_POLL: Duration = Duration::from_millis(50);
+
+async fn wait_hook_abort(signal: &HookAbortSignal) {
+    while !signal.is_aborted() {
+        tokio::time::sleep(HOOK_ABORT_POLL).await;
+    }
+}
+
+async fn open_llm_stream_or_ctrl_c(
+    client: &ApiProviderClient,
+    request: &MessageRequest,
+    interrupt: Option<&HookAbortSignal>,
+    session_id: &str,
+) -> Result<MessageStream, RuntimeError> {
+    if let Some(sig) = interrupt {
+        tokio::select! {
+            result = client.stream_message(request) => {
+                result.map_err(|error| {
+                    RuntimeError::new(format_user_visible_api_error(session_id, &error))
+                })
+            }
+            _ = wait_hook_abort(sig) => {
+                Err(RuntimeError::new("interrupted (Ctrl+C)"))
+            }
+        }
+    } else {
+        client
+            .stream_message(request)
+            .await
+            .map_err(|error| RuntimeError::new(format_user_visible_api_error(session_id, &error)))
+    }
+}
+
+async fn stream_next_event_or_ctrl_c(
+    stream: &mut MessageStream,
+    interrupt: Option<&HookAbortSignal>,
+    session_id: &str,
+) -> Result<Option<ApiStreamEvent>, RuntimeError> {
+    if let Some(sig) = interrupt {
+        tokio::select! {
+            result = stream.next_event() => {
+                result.map_err(|error| {
+                    RuntimeError::new(format_user_visible_api_error(session_id, &error))
+                })
+            }
+            _ = wait_hook_abort(sig) => {
+                Err(RuntimeError::new("interrupted (Ctrl+C)"))
+            }
+        }
+    } else {
+        stream
+            .next_event()
+            .await
+            .map_err(|error| RuntimeError::new(format_user_visible_api_error(session_id, &error)))
+    }
+}
+
+async fn send_message_non_stream_or_ctrl_c(
+    client: &ApiProviderClient,
+    request: &MessageRequest,
+    interrupt: Option<&HookAbortSignal>,
+    session_id: &str,
+) -> Result<MessageResponse, RuntimeError> {
+    if let Some(sig) = interrupt {
+        tokio::select! {
+            result = client.send_message(request) => {
+                result.map_err(|error| {
+                    RuntimeError::new(format_user_visible_api_error(session_id, &error))
+                })
+            }
+            _ = wait_hook_abort(sig) => {
+                Err(RuntimeError::new("interrupted (Ctrl+C)"))
+            }
+        }
+    } else {
+        client
+            .send_message(request)
+            .await
+            .map_err(|error| RuntimeError::new(format_user_visible_api_error(session_id, &error)))
+    }
+}
+
 impl AnthropicRuntimeClient {
     /// Consume a single streaming response, optionally applying a stall
     /// timeout on the first event for post-tool continuations.
@@ -8050,13 +8141,13 @@ impl AnthropicRuntimeClient {
                 message_request.messages.len()
             ),
         );
-        let mut stream = self
-            .client
-            .stream_message(message_request)
-            .await
-            .map_err(|error| {
-                RuntimeError::new(format_user_visible_api_error(&self.session_id, &error))
-            })?;
+        let mut stream = open_llm_stream_or_ctrl_c(
+            &self.client,
+            message_request,
+            self.interrupt.as_ref(),
+            &self.session_id,
+        )
+        .await?;
         boundary_log(
             "provider_stream_call_done",
             format!(
@@ -8082,10 +8173,18 @@ impl AnthropicRuntimeClient {
 
         loop {
             let next = if apply_stall_timeout && !received_any_event {
-                match tokio::time::timeout(POST_TOOL_STALL_TIMEOUT, stream.next_event()).await {
-                    Ok(inner) => inner.map_err(|error| {
-                        RuntimeError::new(format_user_visible_api_error(&self.session_id, &error))
-                    })?,
+                match tokio::time::timeout(
+                    POST_TOOL_STALL_TIMEOUT,
+                    stream_next_event_or_ctrl_c(
+                        &mut stream,
+                        self.interrupt.as_ref(),
+                        &self.session_id,
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(inner)) => inner,
+                    Ok(Err(err)) => return Err(err),
                     Err(_elapsed) => {
                         return Err(RuntimeError::new(
                             "post-tool stall: model did not respond within timeout",
@@ -8093,9 +8192,8 @@ impl AnthropicRuntimeClient {
                     }
                 }
             } else {
-                stream.next_event().await.map_err(|error| {
-                    RuntimeError::new(format_user_visible_api_error(&self.session_id, &error))
-                })?
+                stream_next_event_or_ctrl_c(&mut stream, self.interrupt.as_ref(), &self.session_id)
+                    .await?
             };
 
             let Some(event) = next else {
@@ -8214,16 +8312,16 @@ impl AnthropicRuntimeClient {
             return Ok(events);
         }
 
-        let response = self
-            .client
-            .send_message(&MessageRequest {
+        let response = send_message_non_stream_or_ctrl_c(
+            &self.client,
+            &MessageRequest {
                 stream: false,
                 ..message_request.clone()
-            })
-            .await
-            .map_err(|error| {
-                RuntimeError::new(format_user_visible_api_error(&self.session_id, &error))
-            })?;
+            },
+            self.interrupt.as_ref(),
+            &self.session_id,
+        )
+        .await?;
         let mut events = response_to_events(response, out)?;
         push_prompt_cache_record(&self.client, &mut events);
         Ok(events)
@@ -11904,6 +12002,27 @@ mod tests {
         let resolved = with_current_dir(&root, || resolve_repl_model(DEFAULT_MODEL.to_string()));
 
         assert_eq!(resolved, DEFAULT_MODEL);
+
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn resolve_repl_model_uses_cwd_claw_json_model_when_default() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("root dir");
+        let config_home = root.join("config");
+        fs::create_dir_all(&config_home).expect("config home dir");
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::remove_var("ANTHROPIC_MODEL");
+        let claw_json = root.join(".claw.json");
+        fs::write(&claw_json, r#"{"model":"openai/mimo-v2.5-pro","env":{}}"#)
+            .expect("write .claw.json");
+
+        let resolved = with_current_dir(&root, || resolve_repl_model(DEFAULT_MODEL.to_string()));
+
+        assert_eq!(resolved, "openai/mimo-v2.5-pro");
 
         std::env::remove_var("CLAW_CONFIG_HOME");
         fs::remove_dir_all(root).expect("cleanup temp dir");

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 import logging.handlers
 import os
@@ -69,9 +68,6 @@ LOGGER = _build_logger()
 CLAW_BIN = os.getenv("CLAW_BIN", "claw")
 DS_REGISTRY_PATH = Path(os.getenv("CLAW_DS_REGISTRY", "/app/http_gateway/config/datasources.yaml"))
 WORK_ROOT = Path(os.getenv("CLAW_WORK_ROOT", "/var/lib/claw-runs"))
-DORIS_MCP_IMAGE = os.getenv("DORIS_MCP_IMAGE", "ghcr.io/passionke/claw-code:latest")
-DEFAULT_DORIS_MCP_COMMAND = os.getenv("DORIS_MCP_COMMAND", "node")
-DEFAULT_DORIS_MCP_ARGS = os.getenv("DORIS_MCP_ARGS", "/app/dist/index.js")
 DEFAULT_ALLOWED_TOOLS_RAW = os.getenv("CLAW_ALLOWED_TOOLS", "").strip()
 DEFAULT_TIMEOUT_SECONDS = int(os.getenv("CLAW_HTTP_TIMEOUT_SECONDS", "240"))
 DEFAULT_DS_SOURCE = os.getenv("CLAW_DS_SOURCE", "auto").strip().lower()  # auto|sqlbot_api|sqlbot_pg|yaml
@@ -128,17 +124,6 @@ SQLBOT_MCP_TRANSPORT = os.getenv("SQLBOT_MCP_TRANSPORT", "sse").strip().lower() 
 SQLBOT_MCP_SERVER_NAME = os.getenv("SQLBOT_MCP_SERVER_NAME", "sqlbot").strip() or "sqlbot"
 SQLBOT_MCP_AK = os.getenv("SQLBOT_MCP_AK", "").strip()
 SQLBOT_MCP_SK = os.getenv("SQLBOT_MCP_SK", "").strip() or os.getenv("SQLBOT_MCT_SK", "").strip()
-MCP_HTTP_BRIDGE_ENABLED = os.getenv("MCP_HTTP_BRIDGE_ENABLED", "1").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-MCP_HTTP_BRIDGE_COMMAND = os.getenv("MCP_HTTP_BRIDGE_COMMAND", "node").strip() or "node"
-MCP_HTTP_BRIDGE_SCRIPT = os.getenv(
-    "MCP_HTTP_BRIDGE_SCRIPT",
-    "/app/dist/http_stdio_bridge.js",
-).strip() or "/app/dist/http_stdio_bridge.js"
 TRACE_ENABLED = os.getenv("CLAW_TRACE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 TRACE_SAMPLE_RATE = max(0.0, min(1.0, float(os.getenv("CLAW_TRACE_SAMPLE_RATE", "1.0"))))
 TRACE_FILE_RAW = os.getenv("CLAW_TRACE_FILE", "").strip()
@@ -862,25 +847,6 @@ def _resolve_ds_config(ds_id: int, request_id: str) -> dict[str, Any]:
     raise HTTPException(status_code=500, detail=f"Failed to resolve datasource dsId={ds_id}. Tried: {' | '.join(errors)}")
 
 
-def _build_doris_cluster_config(ds_id: int, ds_cfg: dict[str, Any]) -> dict[str, Any]:
-    cluster_name = f"ds_{ds_id}"
-    cluster = {
-        "host": ds_cfg["host"],
-        "port": int(ds_cfg["port"]),
-        "user": ds_cfg["user"],
-        "password": ds_cfg["password"],
-        "default_database": ds_cfg["default_database"],
-        "ssl": bool(ds_cfg.get("ssl", False)),
-    }
-    allowed_tables = ds_cfg.get("allowed_tables")
-    if isinstance(allowed_tables, list):
-        cluster["allowed_tables"] = [str(x).strip() for x in allowed_tables if str(x).strip()]
-    env_map = ds_cfg.get("env")
-    if isinstance(env_map, dict):
-        cluster["env"] = {str(k): str(v) for k, v in env_map.items()}
-    return {"clusters": {cluster_name: cluster}}
-
-
 def _normalize_mcp_servers_payload(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict) or not raw:
         raise HTTPException(status_code=400, detail="mcpServers must be a non-empty JSON object.")
@@ -950,52 +916,8 @@ def _sqlbot_mcp_servers_from_env() -> dict[str, Any]:
     return {SQLBOT_MCP_SERVER_NAME: server_config}
 
 
-def _bridge_http_server_config(server_name: str, server_config: dict[str, Any]) -> dict[str, Any]:
-    transport = str(server_config.get("type") or "").strip().lower()
-    # Claw runtime now supports HTTP MCP natively. Keep bridge only for
-    # legacy SSE transport to avoid double-adapting streamable HTTP servers.
-    if transport != "sse":
-        return server_config
-    url = str(server_config.get("url") or "").strip()
-    if not url:
-        return server_config
-    args: list[str] = [
-        MCP_HTTP_BRIDGE_SCRIPT,
-        "--name",
-        f"{server_name}-bridge",
-        "--transport",
-        transport,
-        "--url",
-        url,
-    ]
-    headers = server_config.get("headers")
-    if isinstance(headers, dict):
-        for key, value in headers.items():
-            k = str(key).strip()
-            if not k:
-                continue
-            args.extend(["--header", f"{k}:{value}"])
-    return {
-        "type": "stdio",
-        "command": MCP_HTTP_BRIDGE_COMMAND,
-        "args": args,
-    }
-
-
-def _wrap_remote_mcp_servers(mcp_servers: dict[str, Any]) -> dict[str, Any]:
-    if not MCP_HTTP_BRIDGE_ENABLED:
-        return dict(mcp_servers)
-    wrapped: dict[str, Any] = {}
-    for name, config in mcp_servers.items():
-        if isinstance(config, dict):
-            wrapped[name] = _bridge_http_server_config(name, dict(config))
-        else:
-            wrapped[name] = config
-    return wrapped
-
-
 def _builtin_mcp_server_names() -> list[str]:
-    names = ["doris"]
+    names: list[str] = []
     names.extend(sorted(_sqlbot_mcp_servers_from_env().keys()))
     # Keep stable output and avoid duplicates if names overlap.
     return sorted(set(names))
@@ -1010,41 +932,12 @@ def _merge_mcp_servers(ds_id: int, base_servers: dict[str, Any]) -> dict[str, An
     return merged
 
 
-def _stable_doris_config_path(work_dir: Path, ds_id: int, config_payload: dict[str, Any]) -> tuple[Path, str]:
-    canonical_json = json.dumps(
-        config_payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    digest = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()[:16]
-    file_path = work_dir / f"doris_{ds_id}_{digest}.yaml"
-    yaml_text = yaml.safe_dump(
-        config_payload,
-        allow_unicode=True,
-        sort_keys=False,
-    )
-    return file_path, yaml_text
-
-
-def _build_claw_settings(
-    doris_cfg_path: Path,
-    ds_id: int,
-) -> dict[str, Any]:
-    mcp_args = [x.strip() for x in DEFAULT_DORIS_MCP_ARGS.split(" ") if x.strip()]
-    base_servers = {
-        "doris": {
-            "type": "stdio",
-            "command": DEFAULT_DORIS_MCP_COMMAND,
-            "args": mcp_args,
-            "env": {"DORIS_CONFIG": str(doris_cfg_path)},
-        }
-    }
+def _build_claw_settings(ds_id: int) -> dict[str, Any]:
+    base_servers: dict[str, Any] = {}
     sqlbot_env_servers = _sqlbot_mcp_servers_from_env()
     merged_base = dict(base_servers)
     merged_base.update(sqlbot_env_servers)
     merged_servers = _merge_mcp_servers(ds_id, merged_base)
-    merged_servers = _wrap_remote_mcp_servers(merged_servers)
     return {
         "mcpServers": merged_servers
     }
@@ -1102,19 +995,13 @@ def _apply_settings_and_probe(
     request_id: str,
     probe_timeout_seconds: int,
 ) -> tuple[dict[str, Any], list[str], int, str]:
-    ds_cfg = _resolve_ds_config(ds_id, request_id)
     ds_work_dir = WORK_ROOT / f"ds_{ds_id}"
     ds_work_dir.mkdir(parents=True, exist_ok=True)
     _ensure_claw_workspace_initialized(ds_work_dir, request_id, ds_id)
 
-    cluster_config = _build_doris_cluster_config(ds_id, ds_cfg)
-    doris_config_path, doris_yaml = _stable_doris_config_path(ds_work_dir, ds_id, cluster_config)
-    if not doris_config_path.exists():
-        doris_config_path.write_text(doris_yaml, encoding="utf-8")
-
     claw_dir = ds_work_dir / ".claw"
     claw_dir.mkdir(parents=True, exist_ok=True)
-    settings = _build_claw_settings(doris_config_path, ds_id)
+    settings = _build_claw_settings(ds_id)
     (claw_dir / "settings.json").write_text(
         json.dumps(settings, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1328,9 +1215,6 @@ def healthz() -> dict[str, Any]:
         "registryPath": str(DS_REGISTRY_PATH),
         "workRoot": str(WORK_ROOT),
         "builtinMcpServers": _builtin_mcp_server_names(),
-        "dorisMcpCommand": DEFAULT_DORIS_MCP_COMMAND,
-        "dorisMcpArgs": DEFAULT_DORIS_MCP_ARGS,
-        "dorisMcpImageCompat": DORIS_MCP_IMAGE,
         "logFile": DEFAULT_LOG_FILE or None,
         "defaultModel": DEFAULT_MODEL_RAW or LEGACY_MODEL_RAW or DEFAULT_OPENAI_FALLBACK_MODEL,
         "disableAnthropicRouting": DISABLE_ANTHROPIC_ROUTING,
@@ -1526,7 +1410,7 @@ def _run_solve_request(req: SolveRequest, request_id: str) -> SolveResponse:
         },
     )
     ds_resolve_started = time.time()
-    ds_cfg = _resolve_ds_config(req.dsId, request_id)
+    _resolve_ds_config(req.dsId, request_id)
     ds_resolve_ms = int((time.time() - ds_resolve_started) * 1000)
     _trace_emit(
         trace_id=request_id,
@@ -1549,16 +1433,7 @@ def _run_solve_request(req: SolveRequest, request_id: str) -> SolveResponse:
     claw_dir.mkdir(parents=True, exist_ok=True)
 
     prepare_started = time.time()
-    cluster_config = _build_doris_cluster_config(req.dsId, ds_cfg)
-    doris_config_path, doris_yaml = _stable_doris_config_path(
-        ds_work_dir,
-        req.dsId,
-        cluster_config,
-    )
-    if not doris_config_path.exists():
-        doris_config_path.write_text(doris_yaml, encoding="utf-8")
-
-    settings = _build_claw_settings(doris_config_path, req.dsId)
+    settings = _build_claw_settings(req.dsId)
     (claw_dir / "settings.json").write_text(
         json.dumps(settings, ensure_ascii=False, indent=2),
         encoding="utf-8",

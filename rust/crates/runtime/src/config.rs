@@ -416,6 +416,30 @@ impl RuntimeConfig {
     }
 }
 
+/// Apply top-level `env` from merged runtime config to the process environment.
+///
+/// Only sets a variable when it is **not** already present, so a shell
+/// `export OPENAI_BASE_URL=...` (or any parent process) still wins. This makes
+/// project `.claw.json` `env` act as defaults for local OpenAI-compatible
+/// servers (`OPENAI_BASE_URL`, optional `OPENAI_API_KEY` placeholders) without
+/// requiring a separate export every session.
+pub fn apply_config_env_if_unset(config: &RuntimeConfig) {
+    let Some(value) = config.get("env") else {
+        return;
+    };
+    let Some(map) = value.as_object() else {
+        return;
+    };
+    for (key, entry) in map {
+        if std::env::var_os(key).is_some() {
+            continue;
+        }
+        if let Some(string) = entry.as_str() {
+            std::env::set_var(key, string);
+        }
+    }
+}
+
 impl RuntimeFeatureConfig {
     #[must_use]
     pub fn with_hooks(mut self, hooks: RuntimeHookConfig) -> Self {
@@ -1244,8 +1268,8 @@ fn push_unique(target: &mut Vec<String>, value: String) {
 #[cfg(test)]
 mod tests {
     use super::{
-        deep_merge_objects, parse_permission_mode_label, ConfigLoader, ConfigSource,
-        McpServerConfig, McpTransport, ResolvedPermissionMode, RuntimeHookConfig,
+        apply_config_env_if_unset, deep_merge_objects, parse_permission_mode_label, ConfigLoader,
+        ConfigSource, McpServerConfig, McpTransport, ResolvedPermissionMode, RuntimeHookConfig,
         RuntimePluginConfig, CLAW_SETTINGS_SCHEMA_NAME,
     };
     use crate::json::JsonValue;
@@ -2116,6 +2140,31 @@ mod tests {
             "error should suggest the closest known key, got: {rendered}"
         );
 
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn apply_config_env_if_unset_fills_missing_and_respects_shell() {
+        const KEY: &str = "CLAW_TEST_CONFIG_ENV_APPLY_URL";
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let home = root.join("home").join(".claw");
+        fs::create_dir_all(&home).expect("home config dir");
+        fs::create_dir_all(&cwd).expect("project dir");
+        fs::write(
+            cwd.join(".claw.json"),
+            format!(r#"{{"env":{{"{KEY}":"http://local.test/v1"}}}}"#),
+        )
+        .expect("write project config");
+
+        let config = ConfigLoader::new(&cwd, &home).load().expect("load config");
+        std::env::remove_var(KEY);
+        apply_config_env_if_unset(&config);
+        assert_eq!(std::env::var(KEY).as_deref(), Ok("http://local.test/v1"));
+        std::env::set_var(KEY, "http://shell");
+        apply_config_env_if_unset(&config);
+        assert_eq!(std::env::var(KEY).as_deref(), Ok("http://shell"));
+        std::env::remove_var(KEY);
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 }

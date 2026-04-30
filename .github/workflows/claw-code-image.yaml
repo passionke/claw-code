@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "third_party/doris-mcp/**"
+      - "third_party/claw-http-gateway/**"
       - ".github/workflows/claw-code-image.yaml"
   workflow_dispatch:
 
@@ -62,7 +63,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./third_party/doris-mcp/Containerfile
+          file: ./third_party/claw-http-gateway/Containerfile
           push: true
           build-args: |
             NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}
@@ -74,7 +75,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./third_party/doris-mcp/Containerfile
+          file: ./third_party/claw-http-gateway/Containerfile
           push: true
           build-args: |
             NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}

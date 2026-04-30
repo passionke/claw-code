@@ -5,6 +5,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::boundary_log::boundary_log_enabled;
 use crate::error::ApiError;
 use crate::http_client::build_http_client_or_default;
 use crate::types::{
@@ -26,7 +27,6 @@ const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(128);
 const DEFAULT_MAX_RETRIES: u32 = 8;
 const SSE_DEBUG_ENV: &str = "CLAW_SSE_DEBUG";
 const SSE_DEBUG_PREVIEW_CHARS_ENV: &str = "CLAW_SSE_DEBUG_PREVIEW_CHARS";
-const BOUNDARY_LOG_ENV: &str = "CLAW_BOUNDARY_LOG";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenAiCompatConfig {
@@ -1531,16 +1531,6 @@ fn sse_debug(provider: &str, model: &str, stage: &str, message: impl Into<String
         "[sse-debug] provider={provider} model={model} stage={stage} {}",
         message.into()
     );
-}
-
-fn boundary_log_enabled() -> bool {
-    match std::env::var(BOUNDARY_LOG_ENV) {
-        Ok(value) => !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
-        ),
-        Err(_) => true,
-    }
 }
 
 fn log_boundary_request(provider: &str, model: &str, request_url: &str, payload: &Value) {

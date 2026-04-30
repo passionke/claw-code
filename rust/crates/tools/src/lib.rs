@@ -230,6 +230,22 @@ impl GlobalToolRegistry {
                 .filter(|token| !token.is_empty())
             {
                 let normalized = normalize_tool_name(token);
+                if normalized.contains('*') || normalized.contains('?') {
+                    let matches = name_map
+                        .iter()
+                        .filter_map(|(candidate, canonical)| {
+                            wildcard_matches(&normalized, candidate).then_some(canonical.clone())
+                        })
+                        .collect::<Vec<_>>();
+                    if matches.is_empty() {
+                        return Err(format!(
+                            "unsupported tool pattern in --allowedTools: {token} (no matches in: {})",
+                            canonical_names.join(", ")
+                        ));
+                    }
+                    allowed.extend(matches);
+                    continue;
+                }
                 let canonical = name_map.get(&normalized).ok_or_else(|| {
                     format!(
                         "unsupported tool in --allowedTools: {token} (expected one of: {})",
@@ -369,6 +385,48 @@ impl GlobalToolRegistry {
 
 fn normalize_tool_name(value: &str) -> String {
     value.trim().replace('-', "_").to_ascii_lowercase()
+}
+
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    let pattern_bytes = pattern.as_bytes();
+    let value_bytes = value.as_bytes();
+    let mut pattern_idx = 0usize;
+    let mut value_idx = 0usize;
+    let mut star_idx: Option<usize> = None;
+    let mut next_match_idx = 0usize;
+
+    while value_idx < value_bytes.len() {
+        if pattern_idx < pattern_bytes.len()
+            && (pattern_bytes[pattern_idx] == b'?'
+                || pattern_bytes[pattern_idx] == value_bytes[value_idx])
+        {
+            pattern_idx += 1;
+            value_idx += 1;
+            continue;
+        }
+
+        if pattern_idx < pattern_bytes.len() && pattern_bytes[pattern_idx] == b'*' {
+            star_idx = Some(pattern_idx);
+            pattern_idx += 1;
+            next_match_idx = value_idx;
+            continue;
+        }
+
+        if let Some(star) = star_idx {
+            pattern_idx = star + 1;
+            next_match_idx += 1;
+            value_idx = next_match_idx;
+            continue;
+        }
+
+        return false;
+    }
+
+    while pattern_idx < pattern_bytes.len() && pattern_bytes[pattern_idx] == b'*' {
+        pattern_idx += 1;
+    }
+
+    pattern_idx == pattern_bytes.len()
 }
 
 fn permission_mode_from_plugin(value: &str) -> Result<PermissionMode, String> {
@@ -6947,6 +7005,75 @@ mod tests {
             output["mcp_degraded"]["failed_servers"][0]["phase"],
             "tool_discovery"
         );
+    }
+
+    #[test]
+    fn normalize_allowed_tools_supports_wildcard_patterns() {
+        let registry = GlobalToolRegistry::builtin()
+            .with_runtime_tools(vec![
+                super::RuntimeToolDefinition {
+                    name: "mcp__demo__echo".to_string(),
+                    description: Some("Echo text from the demo MCP server".to_string()),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": { "text": { "type": "string" } },
+                        "additionalProperties": false
+                    }),
+                    required_permission: runtime::PermissionMode::ReadOnly,
+                },
+                super::RuntimeToolDefinition {
+                    name: "mcp__demo__sum".to_string(),
+                    description: Some("Add two numbers".to_string()),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "left": { "type": "number" },
+                            "right": { "type": "number" }
+                        },
+                        "additionalProperties": false
+                    }),
+                    required_permission: runtime::PermissionMode::ReadOnly,
+                },
+            ])
+            .expect("runtime tools should register");
+
+        let allowed = registry
+            .normalize_allowed_tools(&["mcp__demo__*".to_string()])
+            .expect("runtime wildcard allow-list should parse")
+            .expect("allow-list should be populated");
+
+        assert!(allowed.contains("mcp__demo__echo"));
+        assert!(allowed.contains("mcp__demo__sum"));
+
+        let definitions = registry.definitions(Some(&allowed));
+        let definition_names = definitions
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            definition_names,
+            BTreeSet::from(["mcp__demo__echo", "mcp__demo__sum"])
+        );
+    }
+
+    #[test]
+    fn normalize_allowed_tools_wildcard_allows_all_tools() {
+        let registry = GlobalToolRegistry::builtin();
+        let allowed = registry
+            .normalize_allowed_tools(&["*".to_string()])
+            .expect("global wildcard allow-list should parse")
+            .expect("allow-list should be populated");
+        assert!(allowed.contains("read_file"));
+        assert!(allowed.contains("MCP"));
+    }
+
+    #[test]
+    fn normalize_allowed_tools_wildcard_without_match_fails() {
+        let registry = GlobalToolRegistry::builtin();
+        let error = registry
+            .normalize_allowed_tools(&["mcp__no_such_server__*".to_string()])
+            .expect_err("wildcard without any matches must fail");
+        assert!(error.contains("unsupported tool pattern in --allowedTools"));
     }
 
     #[test]

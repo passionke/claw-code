@@ -1,3 +1,4 @@
+mod boundary_log;
 mod client;
 mod error;
 mod http_client;
@@ -6,6 +7,7 @@ mod providers;
 mod sse;
 mod types;
 
+pub use boundary_log::{boundary_log_enabled, BOUNDARY_LOG_ENV};
 pub use client::{
     oauth_token_is_expired, read_base_url, read_xai_base_url, resolve_saved_oauth_token,
     resolve_startup_auth_source, MessageStream, OAuthTokenSet, ProviderClient,

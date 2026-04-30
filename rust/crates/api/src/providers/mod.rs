@@ -295,6 +295,18 @@ pub fn max_tokens_for_model_with_override(model: &str, plugin_override: Option<u
 #[must_use]
 pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
     let canonical = resolve_model_alias(model);
+    let lower = canonical.to_ascii_lowercase();
+    // OpenAI-compat Qwen 3.x on local vLLM: 32k total context is typical. Use a **low**
+    // default max output so preflight (input + max_tokens <= 32k) still passes: Claw
+    // ships a large system prompt and tool schemas, so 16_384 output often blocks with
+    // "Context window blocked" before the request is sent. Users can raise with
+    // `CLAW_CODE_MAX_TOKENS` when the deployment has more headroom. kejiqing
+    if lower.starts_with("openai/qwen3.6") || lower.starts_with("openai/qwen3-") {
+        return Some(ModelTokenLimit {
+            max_output_tokens: 4_096,
+            context_window_tokens: 32_768,
+        });
+    }
     match canonical.as_str() {
         "claude-opus-4-6" => Some(ModelTokenLimit {
             max_output_tokens: 32_000,
@@ -709,6 +721,15 @@ mod tests {
         let _override = EnvVarGuard::set("CLAW_CODE_MAX_TOKENS", Some("not-a-number"));
 
         assert_eq!(max_tokens_for_model("openai/gpt-4o"), 64_000);
+    }
+
+    #[test]
+    fn openai_qwen3_local_limits_match_common_32k_vllm_deployments() {
+        assert_eq!(max_tokens_for_model("openai/qwen3.6-35b"), 4_096);
+        assert_eq!(max_tokens_for_model("openai/Qwen3.6-7B"), 4_096);
+        let lim = model_token_limit("openai/qwen3.6-35b").expect("limit");
+        assert_eq!(lim.max_output_tokens, 4_096);
+        assert_eq!(lim.context_window_tokens, 32_768);
     }
 
     #[test]

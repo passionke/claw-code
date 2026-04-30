@@ -19,3 +19,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Prefer small, reviewable changes and keep generated bootstrap files aligned with actual repo workflows.
 - Keep shared defaults in `.claude.json`; reserve `.claude/settings.local.json` for machine-local overrides.
 - Do not overwrite existing `CLAUDE.md` content automatically; update it intentionally when repo workflows change.
+
+## Claw stack boundaries (claw-code)
+- **Canonical table** (Claw / gateway / Doris / SQLBot / adapter / three channels): `docs/boundaries-claw-stack.md` — update it when adding MCPs or env; avoid ad-hoc explanations that contradict it.
+- **Runbook:** `third_party/claw-http-gateway/README.md` — gateway + `mcp__sqlbot__*`.
+- Author: kejiqing
