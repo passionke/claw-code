@@ -14,10 +14,9 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use runtime::{
-    ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ContentBlock, ConversationMessage,
-    ConfigLoader, ConversationRuntime, McpServerManager, MessageRole, PermissionMode,
-    PermissionPolicy, Session, ToolError,
-    ToolExecutor as RuntimeToolExecutor,
+    ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
+    ConversationMessage, ConversationRuntime, McpServerManager, MessageRole, PermissionMode,
+    PermissionPolicy, Session, ToolError, ToolExecutor as RuntimeToolExecutor, load_system_prompt,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -29,6 +28,11 @@ use tools::{execute_tool, initialize_mcp_bridge, mvp_tool_specs};
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+const DEFAULT_SYSTEM_DATE: &str = match option_env!("BUILD_DATE") {
+    Some(value) if !value.is_empty() => value,
+    _ => "1970-01-01",
+};
 
 #[derive(Clone)]
 struct AppState {
@@ -98,6 +102,11 @@ struct InitRequest {
     ds_id: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdateProjectClaudeRequest {
+    content: String,
+}
+
 #[derive(Debug, Serialize)]
 struct InitResponse {
     #[serde(rename = "dsId")]
@@ -105,6 +114,27 @@ struct InitResponse {
     #[serde(rename = "workDir")]
     work_dir: String,
     initialized: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectClaudeResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "workDir")]
+    work_dir: String,
+    path: String,
+    exists: bool,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct EffectivePromptResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "workDir")]
+    work_dir: String,
+    sections: Vec<String>,
+    message: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -253,7 +283,7 @@ impl RuntimeApiClient for DirectApiClient {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(stream_events(&self.provider, &req))
         })
-            .map_err(|e| runtime::RuntimeError::new(e.to_string()))
+        .map_err(|e| runtime::RuntimeError::new(e.to_string()))
     }
 }
 
@@ -364,6 +394,14 @@ async fn main() {
         .route("/v1/solve", post(solve))
         .route("/v1/solve_async", post(solve_async))
         .route("/v1/tasks/{task_id}", get(get_task))
+        .route(
+            "/v1/project/claude/{ds_id}",
+            get(get_project_claude_md).post(update_project_claude_md),
+        )
+        .route(
+            "/v1/project/prompt/{ds_id}/effective",
+            get(get_effective_prompt).post(post_effective_prompt),
+        )
         .route("/v1/mcp/inject", post(inject_mcp))
         .route("/v1/mcp/injected/{ds_id}", get(get_injected_mcp))
         .route("/v1/mcp/injected/{ds_id}", delete(delete_injected_mcp))
@@ -393,6 +431,26 @@ async fn docs() -> Html<String> {
         ("POST", "/v1/solve", "Run sync solve"),
         ("POST", "/v1/solve_async", "Create async solve task"),
         ("GET", "/v1/tasks/{task_id}", "Get async task status"),
+        (
+            "GET",
+            "/v1/project/claude/{ds_id}",
+            "Get project CLAUDE.md for ds",
+        ),
+        (
+            "POST",
+            "/v1/project/claude/{ds_id}",
+            "Update project CLAUDE.md for ds",
+        ),
+        (
+            "GET",
+            "/v1/project/prompt/{ds_id}/effective",
+            "Get effective system prompt for ds",
+        ),
+        (
+            "POST",
+            "/v1/project/prompt/{ds_id}/effective",
+            "Reload and get effective system prompt for ds",
+        ),
         ("POST", "/v1/mcp/inject", "Inject MCP servers"),
         ("GET", "/v1/mcp/injected/{ds_id}", "Get MCP servers for ds"),
         (
@@ -451,6 +509,34 @@ async fn openapi() -> Json<Value> {
                         "dsId": { "type": "integer", "format": "int64" },
                         "workDir": { "type": "string" },
                         "initialized": { "type": "boolean" }
+                    }
+                },
+                "UpdateProjectClaudeRequest": {
+                    "type": "object",
+                    "required": ["content"],
+                    "properties": {
+                        "content": { "type": "string", "description": "CLAUDE.md content" }
+                    }
+                },
+                "ProjectClaudeResponse": {
+                    "type": "object",
+                    "required": ["dsId", "workDir", "path", "exists", "content"],
+                    "properties": {
+                        "dsId": { "type": "integer", "format": "int64" },
+                        "workDir": { "type": "string" },
+                        "path": { "type": "string" },
+                        "exists": { "type": "boolean" },
+                        "content": { "type": "string" }
+                    }
+                },
+                "EffectivePromptResponse": {
+                    "type": "object",
+                    "required": ["dsId", "workDir", "sections", "message"],
+                    "properties": {
+                        "dsId": { "type": "integer", "format": "int64" },
+                        "workDir": { "type": "string" },
+                        "sections": { "type": "array", "items": { "type": "string" } },
+                        "message": { "type": "string" }
                     }
                 },
                 "SolveResponse": {
@@ -575,6 +661,50 @@ async fn openapi() -> Json<Value> {
                     }
                 }
             },
+            "/v1/project/claude/{ds_id}": {
+                "get": {
+                    "summary": "Get project CLAUDE.md for ds",
+                    "parameters": [
+                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                    ],
+                    "responses": {
+                        "200": { "description": "Current CLAUDE.md", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectClaudeResponse" } } } }
+                    }
+                },
+                "post": {
+                    "summary": "Update project CLAUDE.md for ds",
+                    "parameters": [
+                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateProjectClaudeRequest" } } }
+                    },
+                    "responses": {
+                        "200": { "description": "Updated CLAUDE.md", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectClaudeResponse" } } } }
+                    }
+                }
+            },
+            "/v1/project/prompt/{ds_id}/effective": {
+                "get": {
+                    "summary": "Get effective system prompt for ds",
+                    "parameters": [
+                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                    ],
+                    "responses": {
+                        "200": { "description": "Effective system prompt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EffectivePromptResponse" } } } }
+                    }
+                },
+                "post": {
+                    "summary": "Reload and get effective system prompt for ds",
+                    "parameters": [
+                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                    ],
+                    "responses": {
+                        "200": { "description": "Effective system prompt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EffectivePromptResponse" } } } }
+                    }
+                }
+            },
             "/v1/mcp/inject": {
                 "post": {
                     "summary": "Inject MCP servers",
@@ -672,11 +802,161 @@ async fn init_workspace(
                 format!("write settings failed: {e}"),
             )
         })?;
+    let claude_md_path = work_dir.join("CLAUDE.md");
+    match fs::metadata(&claude_md_path).await {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::write(&claude_md_path, "").await.map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write CLAUDE.md failed: {e}"),
+                )
+            })?;
+        }
+        Err(error) => {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("stat CLAUDE.md failed: {error}"),
+            ));
+        }
+    }
     Ok(Json(InitResponse {
         ds_id: req.ds_id,
         work_dir: work_dir.display().to_string(),
         initialized: true,
     }))
+}
+
+async fn get_project_claude_md(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+) -> Result<Json<ProjectClaudeResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create work dir failed: {e}"),
+            )
+        })?;
+    let lock = get_ds_lock(&state, ds_id).await;
+    let _guard = lock.lock().await;
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let claude_md_path = work_dir.join("CLAUDE.md");
+    let content = fs::read_to_string(&claude_md_path).await;
+    let (exists, content) = match content {
+        Ok(text) => (true, text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (false, String::new()),
+        Err(error) => {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read CLAUDE.md failed: {error}"),
+            ));
+        }
+    };
+    Ok(Json(ProjectClaudeResponse {
+        ds_id,
+        work_dir: work_dir.display().to_string(),
+        path: claude_md_path.display().to_string(),
+        exists,
+        content,
+    }))
+}
+
+async fn update_project_claude_md(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+    Json(req): Json<UpdateProjectClaudeRequest>,
+) -> Result<Json<ProjectClaudeResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create work dir failed: {e}"),
+            )
+        })?;
+    let lock = get_ds_lock(&state, ds_id).await;
+    let _guard = lock.lock().await;
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let claude_md_path = work_dir.join("CLAUDE.md");
+    fs::write(&claude_md_path, req.content.as_bytes())
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write CLAUDE.md failed: {e}"),
+            )
+        })?;
+    Ok(Json(ProjectClaudeResponse {
+        ds_id,
+        work_dir: work_dir.display().to_string(),
+        path: claude_md_path.display().to_string(),
+        exists: true,
+        content: req.content,
+    }))
+}
+
+async fn get_effective_prompt(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+) -> Result<Json<EffectivePromptResponse>, ApiError> {
+    build_effective_prompt_response(&state, ds_id).await.map(Json)
+}
+
+async fn post_effective_prompt(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+) -> Result<Json<EffectivePromptResponse>, ApiError> {
+    build_effective_prompt_response(&state, ds_id).await.map(Json)
+}
+
+async fn build_effective_prompt_response(
+    state: &AppState,
+    ds_id: i64,
+) -> Result<EffectivePromptResponse, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create work dir failed: {e}"),
+            )
+        })?;
+    let lock = get_ds_lock(state, ds_id).await;
+    let _guard = lock.lock().await;
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let sections = load_system_prompt(
+        work_dir.to_path_buf(),
+        DEFAULT_SYSTEM_DATE.to_string(),
+        std::env::consts::OS,
+        "unknown",
+    )
+    .map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("load system prompt failed: {e}"),
+        )
+    })?;
+    let message = sections.join("\n\n");
+    Ok(EffectivePromptResponse {
+        ds_id,
+        work_dir: work_dir.display().to_string(),
+        sections,
+        message,
+    })
 }
 
 async fn solve_async(
@@ -1025,8 +1305,14 @@ async fn ensure_workspace_initialized(_claw_bin: &str, work_dir: &Path) -> Resul
 
 fn initialize_mcp_runtime(
     work_dir: &Path,
-) -> Result<(Vec<ToolDefinition>, HashSet<String>, Option<Arc<StdMutex<McpServerManager>>>), ApiError>
-{
+) -> Result<
+    (
+        Vec<ToolDefinition>,
+        HashSet<String>,
+        Option<Arc<StdMutex<McpServerManager>>>,
+    ),
+    ApiError,
+> {
     let runtime_cfg = ConfigLoader::default_for(work_dir).load().map_err(|e| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1039,7 +1325,8 @@ fn initialize_mcp_runtime(
     }
 
     let report = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async { manager.discover_tools_best_effort().await })
+        tokio::runtime::Handle::current()
+            .block_on(async { manager.discover_tools_best_effort().await })
     });
 
     let manager = Arc::new(StdMutex::new(manager));
@@ -1082,6 +1369,18 @@ fn run_runtime_prompt(
         .map(str::to_string)
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
         .unwrap_or_else(|| "openai/deepseek-v4-pro".to_string());
+    let system_prompt = load_system_prompt(
+        work_dir.to_path_buf(),
+        DEFAULT_SYSTEM_DATE.to_string(),
+        std::env::consts::OS,
+        "unknown",
+    )
+    .map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("load system prompt failed: {e}"),
+        )
+    })?;
     let (runtime_mcp_tools, runtime_mcp_tool_names, runtime_mcp_manager) =
         initialize_mcp_runtime(work_dir)?;
     let allowed_tools = parse_allowed_tools(std::env::var("CLAW_ALLOWED_TOOLS").ok());
@@ -1105,7 +1404,7 @@ fn run_runtime_prompt(
         api_client,
         tool_executor,
         policy,
-        Vec::new(),
+        system_prompt,
     );
     runtime = runtime.with_max_iterations(max_iterations);
     let started = Instant::now();

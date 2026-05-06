@@ -103,7 +103,11 @@ pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
         // We may be called from an async host (e.g. HTTP gateway). Reuse the
         // active runtime to avoid creating a nested Tokio runtime and panicking.
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(execute_bash_async(input, sandbox_status, cwd))
+            tokio::runtime::Handle::current().block_on(execute_bash_async(
+                input,
+                sandbox_status,
+                cwd,
+            ))
         })
     } else {
         // CLI/tests can invoke this from a plain sync context; create a local runtime.
