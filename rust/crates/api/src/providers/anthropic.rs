@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -289,15 +289,16 @@ impl AnthropicClient {
             ..request.clone()
         };
 
+        let wire_request = request.without_reasoning_replay_blocks();
         if let Some(prompt_cache) = &self.prompt_cache {
-            if let Some(response) = prompt_cache.lookup_completion(&request) {
+            if let Some(response) = prompt_cache.lookup_completion(&wire_request) {
                 return Ok(response);
             }
         }
 
         self.preflight_message_request(&request).await?;
 
-        let http_response = self.send_with_retry(&request).await?;
+        let http_response = self.send_with_retry(&wire_request).await?;
         let request_id = request_id_from_headers(http_response.headers());
         let body = http_response.text().await.map_err(ApiError::from)?;
         let mut response = serde_json::from_str::<MessageResponse>(&body).map_err(|error| {
@@ -308,7 +309,7 @@ impl AnthropicClient {
         }
 
         if let Some(prompt_cache) = &self.prompt_cache {
-            let record = prompt_cache.record_response(&request, &response);
+            let record = prompt_cache.record_response(&wire_request, &response);
             self.store_last_prompt_cache_record(record);
         }
         if let Some(session_tracer) = &self.session_tracer {
@@ -341,8 +342,9 @@ impl AnthropicClient {
         request: &MessageRequest,
     ) -> Result<MessageStream, ApiError> {
         self.preflight_message_request(request).await?;
+        let wire_request = request.without_reasoning_replay_blocks();
         let response = self
-            .send_with_retry(&request.clone().with_streaming())
+            .send_with_retry(&wire_request.clone().with_streaming())
             .await?;
         Ok(MessageStream {
             request_id: request_id_from_headers(response.headers()),
@@ -350,7 +352,7 @@ impl AnthropicClient {
             parser: SseParser::new().with_context("Anthropic", request.model.clone()),
             pending: VecDeque::new(),
             done: false,
-            request: request.clone(),
+            request: wire_request,
             prompt_cache: self.prompt_cache.clone(),
             latest_usage: None,
             usage_recorded: false,
@@ -468,19 +470,29 @@ impl AnthropicClient {
         request: &MessageRequest,
     ) -> Result<reqwest::Response, ApiError> {
         let request_url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-        let mut request_body = self.request_profile.render_json_body(request)?;
+        let wire_request = request.without_reasoning_replay_blocks();
+        let mut request_body = self.request_profile.render_json_body(&wire_request)?;
         strip_unsupported_beta_body_fields(&mut request_body);
-        let request_builder = self.build_request(&request_url).json(&request_body);
+        let request_builder = self
+            .build_request(&request_url, &request.extra_headers)
+            .json(&request_body);
         request_builder.send().await.map_err(ApiError::from)
     }
 
-    fn build_request(&self, request_url: &str) -> reqwest::RequestBuilder {
+    fn build_request(
+        &self,
+        request_url: &str,
+        extra_headers: &BTreeMap<String, String>,
+    ) -> reqwest::RequestBuilder {
         let request_builder = self
             .http
             .post(request_url)
             .header("content-type", "application/json");
         let mut request_builder = self.auth.apply(request_builder);
         for (header_name, header_value) in self.request_profile.header_pairs() {
+            request_builder = request_builder.header(header_name, header_value);
+        }
+        for (header_name, header_value) in extra_headers {
             request_builder = request_builder.header(header_name, header_value);
         }
         request_builder
@@ -529,10 +541,11 @@ impl AnthropicClient {
             "{}/v1/messages/count_tokens",
             self.base_url.trim_end_matches('/')
         );
-        let mut request_body = self.request_profile.render_json_body(request)?;
+        let wire_request = request.without_reasoning_replay_blocks();
+        let mut request_body = self.request_profile.render_json_body(&wire_request)?;
         strip_unsupported_beta_body_fields(&mut request_body);
         let response = self
-            .build_request(&request_url)
+            .build_request(&request_url, &request.extra_headers)
             .json(&request_body)
             .send()
             .await
@@ -600,8 +613,9 @@ fn jitter_for_base(base: Duration) -> Duration {
     }
     let raw_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0);
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+        });
     let tick = JITTER_COUNTER.fetch_add(1, Ordering::Relaxed);
     // splitmix64 finalizer — mixes the low bits so large bases still see
     // jitter across their full range instead of being clamped to subsec nanos.
@@ -844,19 +858,17 @@ impl MessageStream {
             StreamEvent::MessageDelta(MessageDeltaEvent { usage, .. }) => {
                 self.latest_usage = Some(usage.clone());
             }
-            StreamEvent::MessageStop(_) => {
-                if !self.usage_recorded {
-                    if let (Some(prompt_cache), Some(usage)) =
-                        (&self.prompt_cache, self.latest_usage.as_ref())
-                    {
-                        let record = prompt_cache.record_usage(&self.request, usage);
-                        *self
-                            .last_prompt_cache_record
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(record);
-                    }
-                    self.usage_recorded = true;
+            StreamEvent::MessageStop(_) if !self.usage_recorded => {
+                if let (Some(prompt_cache), Some(usage)) =
+                    (&self.prompt_cache, self.latest_usage.as_ref())
+                {
+                    let record = prompt_cache.record_usage(&self.request, usage);
+                    *self
+                        .last_prompt_cache_record
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(record);
                 }
+                self.usage_recorded = true;
             }
             _ => {}
         }

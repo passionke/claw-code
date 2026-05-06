@@ -333,7 +333,12 @@ impl OpenAiCompatClient {
             .http
             .post(&request_url)
             .header("content-type", "application/json")
-            .bearer_auth(&self.api_key)
+            .bearer_auth(&self.api_key);
+        let mut response_builder = response;
+        for (header_name, header_value) in &request.extra_headers {
+            response_builder = response_builder.header(header_name, header_value);
+        }
+        let response = response_builder
             .json(&payload)
             .send()
             .await
@@ -396,8 +401,9 @@ fn jitter_for_base(base: Duration) -> Duration {
     }
     let raw_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0);
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+        });
     let tick = JITTER_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut mixed = raw_nanos
         .wrapping_add(tick)
@@ -448,6 +454,7 @@ impl MessageStream {
         self.request_id.as_deref()
     }
 
+    #[allow(clippy::too_many_lines, clippy::single_match_else)]
     pub async fn next_event(&mut self) -> Result<Option<StreamEvent>, ApiError> {
         loop {
             if let Some(event) = self.pending.pop_front() {
@@ -604,6 +611,7 @@ impl OpenAiSseParser {
 struct StreamState {
     model: String,
     message_started: bool,
+    reasoning_block_open: bool,
     text_started: bool,
     text_finished: bool,
     finished: bool,
@@ -617,6 +625,7 @@ impl StreamState {
         Self {
             model,
             message_started: false,
+            reasoning_block_open: false,
             text_started: false,
             text_finished: false,
             finished: false,
@@ -626,6 +635,16 @@ impl StreamState {
         }
     }
 
+    fn push_reasoning_stop_if_open(&mut self, events: &mut Vec<StreamEvent>) {
+        if self.reasoning_block_open {
+            events.push(StreamEvent::ContentBlockStop(ContentBlockStopEvent {
+                index: 0,
+            }));
+            self.reasoning_block_open = false;
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn ingest_chunk(&mut self, chunk: ChatCompletionChunk) -> Result<Vec<StreamEvent>, ApiError> {
         let mut events = Vec::new();
         if !self.message_started {
@@ -660,7 +679,31 @@ impl StreamState {
         }
 
         for choice in chunk.choices {
+            if let Some(reasoning) = choice
+                .delta
+                .reasoning_content
+                .filter(|value| !value.is_empty())
+            {
+                if !self.reasoning_block_open {
+                    events.push(StreamEvent::ContentBlockStart(ContentBlockStartEvent {
+                        index: 0,
+                        content_block: OutputContentBlock::Thinking {
+                            thinking: String::new(),
+                            signature: None,
+                        },
+                    }));
+                    self.reasoning_block_open = true;
+                }
+                events.push(StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
+                    index: 0,
+                    delta: ContentBlockDelta::ThinkingDelta {
+                        thinking: reasoning,
+                    },
+                }));
+            }
+
             if let Some(content) = choice.delta.content.filter(|value| !value.is_empty()) {
+                self.push_reasoning_stop_if_open(&mut events);
                 if !self.text_started {
                     self.text_started = true;
                     events.push(StreamEvent::ContentBlockStart(ContentBlockStartEvent {
@@ -677,6 +720,7 @@ impl StreamState {
             }
 
             for tool_call in choice.delta.tool_calls {
+                self.push_reasoning_stop_if_open(&mut events);
                 let state = self.tool_calls.entry(tool_call.index).or_default();
                 state.apply(tool_call);
                 let block_index = state.block_index();
@@ -724,6 +768,7 @@ impl StreamState {
         self.finished = true;
 
         let mut events = Vec::new();
+        self.push_reasoning_stop_if_open(&mut events);
         if self.text_started && !self.text_finished {
             self.text_finished = true;
             events.push(StreamEvent::ContentBlockStop(ContentBlockStopEvent {
@@ -857,6 +902,8 @@ struct ChatMessage {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
     tool_calls: Vec<ResponseToolCall>,
 }
 
@@ -902,6 +949,8 @@ struct ChunkChoice {
 struct ChunkDelta {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     tool_calls: Vec<DeltaToolCall>,
 }
@@ -968,7 +1017,10 @@ fn strip_routing_prefix(model: &str) -> &str {
         let prefix = &model[..pos];
         // Only strip if the prefix before "/" is a known routing prefix,
         // not if "/" appears in the middle of the model name for other reasons.
-        if matches!(prefix, "openai" | "xai" | "grok" | "qwen" | "kimi") {
+        if matches!(
+            prefix,
+            "openai" | "xai" | "grok" | "qwen" | "kimi" | "deepseek"
+        ) {
             &model[pos + 1..]
         } else {
             model
@@ -976,6 +1028,18 @@ fn strip_routing_prefix(model: &str) -> &str {
     } else {
         model
     }
+}
+
+/// Wire-model id for `DeepSeek` OpenAI-compatible endpoints (`deepseek-chat`, `deepseek-v4-pro`, …).
+#[must_use]
+pub fn is_deepseek_wire_model(model: &str) -> bool {
+    let lowered = model.to_ascii_lowercase();
+    let canonical = lowered.rsplit('/').next().unwrap_or(lowered.as_str());
+    canonical.starts_with("deepseek")
+}
+
+fn deepseek_thinking_active(request: &MessageRequest, wire_model: &str) -> bool {
+    is_deepseek_wire_model(wire_model) && request.thinking_enabled != Some(false)
 }
 
 /// Estimate the serialized JSON size of a request payload in bytes.
@@ -1064,8 +1128,9 @@ pub fn build_chat_completion_request(
 
     // OpenAI-compatible tuning parameters — only included when explicitly set.
     // Reasoning models (o1/o3/o4/grok-3-mini) reject these params with 400;
+    // DeepSeek thinking mode ignores them — omit while thinking is active.
     // silently strip them to avoid cryptic provider errors.
-    if !is_reasoning_model(&request.model) {
+    if !is_reasoning_model(&request.model) && !deepseek_thinking_active(request, wire_model) {
         if let Some(temperature) = request.temperature {
             payload["temperature"] = json!(temperature);
         }
@@ -1090,11 +1155,17 @@ pub fn build_chat_completion_request(
         payload["reasoning_effort"] = json!(effort);
     }
 
+    if is_deepseek_wire_model(wire_model) {
+        if let Some(enabled) = request.thinking_enabled {
+            payload["thinking"] = json!({
+                "type": if enabled { "enabled" } else { "disabled" }
+            });
+        }
+    }
+
     payload
 }
 
-/// Returns true for models that do NOT support the `is_error` field in tool results.
-/// kimi models (via Moonshot AI/Dashscope) reject this field with 400 Bad Request.
 /// Returns true for models that do NOT support the `is_error` field in tool results.
 /// kimi models (via Moonshot AI/Dashscope) reject this field with 400 Bad Request.
 /// Public for benchmarking and testing purposes.
@@ -1115,10 +1186,14 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
     match message.role.as_str() {
         "assistant" => {
             let mut text = String::new();
+            let mut reasoning = String::new();
             let mut tool_calls = Vec::new();
             for block in &message.content {
                 match block {
                     InputContentBlock::Text { text: value } => text.push_str(value),
+                    InputContentBlock::ReasoningContent { text: value } => {
+                        reasoning.push_str(value);
+                    }
                     InputContentBlock::ToolUse { id, name, input } => tool_calls.push(json!({
                         "id": id,
                         "type": "function",
@@ -1131,6 +1206,14 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                 }
             }
             if text.is_empty() && tool_calls.is_empty() {
+                // DeepSeek replay: preserve reasoning-only assistant turns (no visible reply yet).
+                if is_deepseek_wire_model(model) && !reasoning.is_empty() {
+                    return vec![json!({
+                        "role": "assistant",
+                        "content": Value::Null,
+                        "reasoning_content": reasoning,
+                    })];
+                }
                 Vec::new()
             } else {
                 let mut msg = serde_json::json!({
@@ -1141,6 +1224,12 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                 // assistant messages with an explicit empty tool_calls array.
                 if !tool_calls.is_empty() {
                     msg["tool_calls"] = json!(tool_calls);
+                }
+                if is_deepseek_wire_model(model) && !tool_calls.is_empty() {
+                    // DeepSeek requires `reasoning_content` on tool-call turns when thinking is on.
+                    msg["reasoning_content"] = json!(reasoning);
+                } else if is_deepseek_wire_model(model) && !reasoning.is_empty() {
+                    msg["reasoning_content"] = json!(reasoning);
                 }
                 vec![msg]
             }
@@ -1170,7 +1259,9 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                     }
                     Some(msg)
                 }
-                InputContentBlock::ToolUse { .. } => None,
+                InputContentBlock::ReasoningContent { .. } | InputContentBlock::ToolUse { .. } => {
+                    None
+                }
             })
             .collect(),
     }
@@ -1349,6 +1440,16 @@ fn normalize_response(
             "chat completion response missing choices",
         ))?;
     let mut content = Vec::new();
+    if let Some(reasoning) = choice
+        .message
+        .reasoning_content
+        .filter(|value| !value.is_empty())
+    {
+        content.push(OutputContentBlock::Thinking {
+            thinking: reasoning,
+            signature: None,
+        });
+    }
     if let Some(text) = choice.message.content.filter(|value| !value.is_empty()) {
         content.push(OutputContentBlock::Text { text });
     }
@@ -1718,9 +1819,9 @@ impl StringExt for String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_completion_request, chat_completions_endpoint, is_reasoning_model,
-        normalize_finish_reason, openai_tool_choice, parse_tool_arguments, OpenAiCompatClient,
-        OpenAiCompatConfig,
+        build_chat_completion_request, chat_completions_endpoint, is_deepseek_wire_model,
+        is_reasoning_model, normalize_finish_reason, openai_tool_choice, parse_tool_arguments,
+        translate_message, OpenAiCompatClient, OpenAiCompatConfig,
     };
     use crate::error::ApiError;
     use crate::types::{
@@ -1959,6 +2060,7 @@ mod tests {
             presence_penalty: Some(0.3),
             stop: Some(vec!["\n".to_string()]),
             reasoning_effort: None,
+            thinking_enabled: None,
         };
         let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
         assert_eq!(payload["temperature"], 0.7);
@@ -2006,6 +2108,121 @@ mod tests {
         assert!(!is_reasoning_model("gpt-4o"));
         assert!(!is_reasoning_model("grok-3"));
         assert!(!is_reasoning_model("claude-sonnet-4-6"));
+    }
+
+    #[test]
+    fn deepseek_wire_models_are_detected() {
+        assert!(is_deepseek_wire_model("deepseek-v4-pro"));
+        assert!(is_deepseek_wire_model("openai/deepseek-chat"));
+        assert!(!is_deepseek_wire_model("gpt-4o"));
+    }
+
+    #[test]
+    fn deepseek_thinking_toggle_is_emitted_when_set() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            max_tokens: 64,
+            messages: vec![],
+            stream: false,
+            thinking_enabled: Some(false),
+            ..Default::default()
+        };
+        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        assert_eq!(payload["thinking"]["type"], json!("disabled"));
+    }
+
+    #[test]
+    fn deepseek_translate_replays_reasoning_content_with_tool_calls() {
+        let msg = InputMessage {
+            role: "assistant".to_string(),
+            content: vec![
+                InputContentBlock::ReasoningContent {
+                    text: "plan".to_string(),
+                },
+                InputContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "TodoWrite".to_string(),
+                    input: json!({}),
+                },
+            ],
+        };
+        let out = translate_message(&msg, "deepseek-v4-pro");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["reasoning_content"], json!("plan"));
+        assert!(out[0].get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn deepseek_translate_replays_reasoning_only_assistant_turn() {
+        let msg = InputMessage {
+            role: "assistant".to_string(),
+            content: vec![InputContentBlock::ReasoningContent {
+                text: "internal only".to_string(),
+            }],
+        };
+        let out = translate_message(&msg, "deepseek-chat");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], json!("assistant"));
+        assert_eq!(out[0]["content"], json!(null));
+        assert_eq!(out[0]["reasoning_content"], json!("internal only"));
+    }
+
+    #[test]
+    fn deepseek_translate_reasoning_only_turn_dropped_for_non_deepseek() {
+        let msg = InputMessage {
+            role: "assistant".to_string(),
+            content: vec![InputContentBlock::ReasoningContent {
+                text: "cot".to_string(),
+            }],
+        };
+        assert!(translate_message(&msg, "gpt-4o").is_empty());
+    }
+
+    #[test]
+    fn deepseek_translate_tool_calls_emit_empty_reasoning_content_when_absent() {
+        let msg = InputMessage {
+            role: "assistant".to_string(),
+            content: vec![InputContentBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "TodoWrite".to_string(),
+                input: json!({}),
+            }],
+        };
+        let out = translate_message(&msg, "deepseek-v4-pro");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["reasoning_content"], json!(""));
+        assert!(out[0].get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn deepseek_thinking_toggle_enabled_emitted_when_true() {
+        let request = MessageRequest {
+            model: "deepseek-chat".to_string(),
+            max_tokens: 64,
+            messages: vec![],
+            stream: false,
+            thinking_enabled: Some(true),
+            ..Default::default()
+        };
+        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        assert_eq!(payload["thinking"]["type"], json!("enabled"));
+    }
+
+    #[test]
+    fn deepseek_thinking_payload_omitted_when_toggle_unset() {
+        let request = MessageRequest {
+            model: "deepseek-reasoner".to_string(),
+            max_tokens: 64,
+            messages: vec![],
+            stream: false,
+            thinking_enabled: None,
+            ..Default::default()
+        };
+        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        assert!(
+            payload.get("thinking").is_none(),
+            "omit thinking key so the provider default applies"
+        );
     }
 
     #[test]
