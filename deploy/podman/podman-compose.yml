@@ -1,0 +1,28 @@
+services:
+  gateway-rs:
+    image: ${GATEWAY_IMAGE}
+    container_name: claw-gateway-rs
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      CLAW_HTTP_ADDR: 0.0.0.0:8080
+      CLAW_BIN: /usr/local/bin/claw
+      CLAW_WORK_ROOT: /var/lib/claw/workspace
+      CLAW_CONFIG_FILE: /app/.claw.json
+      CLAW_TIMEOUT_SECONDS: ${CLAW_TIMEOUT_SECONDS}
+      OPENAI_BASE_URL: ${INTERNAL_CLAUDE_TAP_HOST}/v1
+    ports:
+      - "${GATEWAY_HOST_PORT}:8080"
+    volumes:
+      - claw_workspace:/var/lib/claw/workspace
+      - ../../.claw.json:/app/.claw.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz | grep -q '\"ok\":true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  claw_workspace:

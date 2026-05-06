@@ -65,6 +65,9 @@ pub struct RuntimeFeatureConfig {
     sandbox: SandboxConfig,
     provider_fallbacks: ProviderFallbackConfig,
     trusted_roots: Vec<String>,
+    /// `DeepSeek` OpenAI-compat thinking switch (`thinkingEnabled` in `.claw.json`).
+    /// `None` omits the request field so the provider default applies.
+    thinking_enabled: Option<bool>,
 }
 
 /// Ordered chain of fallback model identifiers used when the primary
@@ -315,6 +318,7 @@ impl ConfigLoader {
             sandbox: parse_optional_sandbox_config(&merged_value)?,
             provider_fallbacks: parse_optional_provider_fallbacks(&merged_value)?,
             trusted_roots: parse_optional_trusted_roots(&merged_value)?,
+            thinking_enabled: parse_optional_thinking_enabled(&merged_value),
         };
 
         Ok(RuntimeConfig {
@@ -414,6 +418,11 @@ impl RuntimeConfig {
     pub fn trusted_roots(&self) -> &[String] {
         &self.feature_config.trusted_roots
     }
+
+    #[must_use]
+    pub fn thinking_enabled(&self) -> Option<bool> {
+        self.feature_config.thinking_enabled
+    }
 }
 
 /// Apply top-level `env` from merged runtime config to the process environment.
@@ -506,6 +515,11 @@ impl RuntimeFeatureConfig {
     #[must_use]
     pub fn trusted_roots(&self) -> &[String] {
         &self.trusted_roots
+    }
+
+    #[must_use]
+    pub fn thinking_enabled(&self) -> Option<bool> {
+        self.thinking_enabled
     }
 }
 
@@ -764,6 +778,12 @@ fn parse_optional_model(root: &JsonValue) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn parse_optional_thinking_enabled(root: &JsonValue) -> Option<bool> {
+    root.as_object()
+        .and_then(|object| object.get("thinkingEnabled"))
+        .and_then(JsonValue::as_bool)
+}
+
 fn parse_optional_aliases(root: &JsonValue) -> Result<BTreeMap<String, String>, ConfigError> {
     let Some(object) = root.as_object() else {
         return Ok(BTreeMap::new());
@@ -992,9 +1012,11 @@ fn parse_mcp_server_config(
         "sse" => Ok(McpServerConfig::Sse(parse_mcp_remote_server_config(
             object, context,
         )?)),
-        "http" => Ok(McpServerConfig::Http(parse_mcp_remote_server_config(
-            object, context,
-        )?)),
+        // `streamable-http` is the MCP spec label for HTTP transports that use the streamable
+        // HTTP RPC mapping (same config surface as `http`: url + headers + oauth).
+        "http" | "streamable-http" | "streamable_http" => Ok(McpServerConfig::Http(
+            parse_mcp_remote_server_config(object, context)?,
+        )),
         "ws" => Ok(McpServerConfig::Ws(McpWebSocketServerConfig {
             url: expect_string(object, "url", context)?.to_string(),
             headers: optional_string_map(object, "headers", context)?.unwrap_or_default(),
@@ -1670,6 +1692,40 @@ mod tests {
             McpServerConfig::Http(config) => {
                 assert_eq!(config.url, "https://example.test/mcp");
             }
+            other => panic!("expected http config, got {other:?}"),
+        }
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn parses_streamable_http_mcp_server_as_http_config() {
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let home = root.join("home").join(".claw");
+        fs::create_dir_all(&home).expect("home config dir");
+        fs::create_dir_all(&cwd).expect("project dir");
+        fs::write(
+            home.join("settings.json"),
+            r#"{
+              "mcpServers": {
+                "streamable": {
+                  "type": "streamable-http",
+                  "url": "https://gw.example/mcp"
+                }
+              }
+            }"#,
+        )
+        .expect("write mcp settings");
+
+        let loaded = ConfigLoader::new(&cwd, &home)
+            .load()
+            .expect("config should load");
+
+        let server = loaded.mcp().get("streamable").expect("server should exist");
+        assert_eq!(server.transport(), McpTransport::Http);
+        match &server.config {
+            McpServerConfig::Http(cfg) => assert_eq!(cfg.url, "https://gw.example/mcp"),
             other => panic!("expected http config, got {other:?}"),
         }
 

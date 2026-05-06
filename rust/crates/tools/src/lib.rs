@@ -14,7 +14,7 @@ use runtime::{
     check_freshness, dedupe_superseded_commit_events, edit_file, execute_bash, glob_search,
     grep_search, load_system_prompt,
     lsp_client::LspRegistry,
-    mcp_tool_bridge::McpToolRegistry,
+    mcp_tool_bridge::{McpConnectionStatus, McpResourceInfo, McpToolInfo, McpToolRegistry},
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
     read_file,
     summary_compression::compress_summary_text,
@@ -42,6 +42,60 @@ fn global_mcp_registry() -> &'static McpToolRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<McpToolRegistry> = OnceLock::new();
     REGISTRY.get_or_init(McpToolRegistry::new)
+}
+
+/// Initialize and refresh the global MCP bridge used by MCP wrapper tools.
+///
+/// This wires the MCP manager into the global registry and synchronizes
+/// discovered tool metadata so `MCP` / `ListMcpResources` style tools can work.
+pub fn initialize_mcp_bridge(
+    manager: std::sync::Arc<std::sync::Mutex<runtime::McpServerManager>>,
+    report: &runtime::McpToolDiscoveryReport,
+) {
+    let registry = global_mcp_registry();
+    let _ = registry.set_manager(manager);
+
+    let mut per_server_tools: BTreeMap<String, Vec<McpToolInfo>> = BTreeMap::new();
+    for discovered in &report.tools {
+        per_server_tools
+            .entry(discovered.server_name.clone())
+            .or_default()
+            .push(McpToolInfo {
+                name: discovered.raw_name.clone(),
+                description: discovered.tool.description.clone(),
+                input_schema: discovered.tool.input_schema.clone(),
+            });
+    }
+
+    for (server_name, tools) in per_server_tools {
+        registry.register_server(
+            &server_name,
+            McpConnectionStatus::Connected,
+            tools,
+            Vec::<McpResourceInfo>::new(),
+            None,
+        );
+    }
+
+    for failed in &report.failed_servers {
+        registry.register_server(
+            &failed.server_name,
+            McpConnectionStatus::Error,
+            Vec::new(),
+            Vec::new(),
+            Some(failed.error.clone()),
+        );
+    }
+
+    for unsupported in &report.unsupported_servers {
+        registry.register_server(
+            &unsupported.server_name,
+            McpConnectionStatus::Error,
+            Vec::new(),
+            Vec::new(),
+            Some(unsupported.reason.clone()),
+        );
+    }
 }
 
 fn global_team_registry() -> &'static TeamRegistry {
@@ -2046,8 +2100,7 @@ fn git_ref_exists(reference: &str) -> bool {
     Command::new("git")
         .args(["rev-parse", "--verify", "--quiet", reference])
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|output| output.status.success())
 }
 
 fn git_stdout(args: &[&str]) -> Option<String> {
@@ -4710,8 +4763,12 @@ async fn stream_with_provider(
                         input.push_str(&partial_json);
                     }
                 }
-                ContentBlockDelta::ThinkingDelta { .. }
-                | ContentBlockDelta::SignatureDelta { .. } => {}
+                ContentBlockDelta::ThinkingDelta { thinking } => {
+                    if !thinking.is_empty() {
+                        events.push(AssistantEvent::ThinkingDelta(thinking));
+                    }
+                }
+                ContentBlockDelta::SignatureDelta { .. } => {}
             },
             ApiStreamEvent::ContentBlockStop(stop) => {
                 if let Some((id, name, input)) = pending_tools.remove(&stop.index) {
@@ -4733,6 +4790,7 @@ async fn stream_with_provider(
     if !saw_stop
         && events.iter().any(|event| {
             matches!(event, AssistantEvent::TextDelta(text) if !text.is_empty())
+                || matches!(event, AssistantEvent::ThinkingDelta(text) if !text.is_empty())
                 || matches!(event, AssistantEvent::ToolUse { .. })
         })
     {
@@ -4810,6 +4868,9 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
                 .iter()
                 .map(|block| match block {
                     ContentBlock::Text { text } => InputContentBlock::Text { text: text.clone() },
+                    ContentBlock::ReasoningContent { text } => {
+                        InputContentBlock::ReasoningContent { text: text.clone() }
+                    }
                     ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
@@ -4862,7 +4923,12 @@ fn push_output_block(
             };
             pending_tools.insert(block_index, (id, name, initial_input));
         }
-        OutputContentBlock::Thinking { .. } | OutputContentBlock::RedactedThinking { .. } => {}
+        OutputContentBlock::Thinking { thinking, .. } => {
+            if !thinking.is_empty() {
+                events.push(AssistantEvent::ThinkingDelta(thinking));
+            }
+        }
+        OutputContentBlock::RedactedThinking { .. } => {}
     }
 }
 
@@ -5975,8 +6041,7 @@ fn command_exists(command: &str) -> bool {
         .arg("-lc")
         .arg(format!("command -v {command} >/dev/null 2>&1"))
         .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .is_ok_and(|status| status.success())
 }
 
 #[allow(clippy::too_many_lines)]

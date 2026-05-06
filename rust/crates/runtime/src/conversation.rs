@@ -30,6 +30,7 @@ pub struct ApiRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssistantEvent {
     TextDelta(String),
+    ThinkingDelta(String),
     ToolUse {
         id: String,
         name: String,
@@ -744,7 +745,10 @@ where
             "output_size".to_string(),
             Value::from(output.chars().count() as u64),
         );
-        attributes.insert("duration_ms".to_string(), Value::from(duration_ms as u64));
+        attributes.insert(
+            "duration_ms".to_string(),
+            Value::from(u64::try_from(duration_ms).unwrap_or(u64::MAX)),
+        );
         if *is_error {
             let output_char_count = output.chars().count();
             let error_preview: String = output.chars().take(400).collect();
@@ -766,7 +770,10 @@ where
             "output_size".to_string(),
             Value::from(output.chars().count() as u64),
         );
-        trace_attributes.insert("duration_ms".to_string(), Value::from(duration_ms as u64));
+        trace_attributes.insert(
+            "duration_ms".to_string(),
+            Value::from(u64::try_from(duration_ms).unwrap_or(u64::MAX)),
+        );
         trace_attributes.insert("phase".to_string(), Value::String("finished".to_string()));
         if *is_error {
             let output_char_count = output.chars().count();
@@ -852,6 +859,7 @@ fn build_assistant_message(
     RuntimeError,
 > {
     let mut text = String::new();
+    let mut reasoning = String::new();
     let mut blocks = Vec::new();
     let mut prompt_cache_events = Vec::new();
     let mut finished = false;
@@ -859,8 +867,13 @@ fn build_assistant_message(
 
     for event in events {
         match event {
-            AssistantEvent::TextDelta(delta) => text.push_str(&delta),
+            AssistantEvent::TextDelta(delta) => {
+                flush_reasoning_block(&mut reasoning, &mut blocks);
+                text.push_str(&delta);
+            }
+            AssistantEvent::ThinkingDelta(delta) => reasoning.push_str(&delta),
             AssistantEvent::ToolUse { id, name, input } => {
+                flush_reasoning_block(&mut reasoning, &mut blocks);
                 flush_text_block(&mut text, &mut blocks);
                 blocks.push(ContentBlock::ToolUse { id, name, input });
             }
@@ -872,6 +885,7 @@ fn build_assistant_message(
         }
     }
 
+    flush_reasoning_block(&mut reasoning, &mut blocks);
     flush_text_block(&mut text, &mut blocks);
 
     if !finished {
@@ -894,6 +908,14 @@ fn flush_text_block(text: &mut String, blocks: &mut Vec<ContentBlock>) {
     if !text.is_empty() {
         blocks.push(ContentBlock::Text {
             text: std::mem::take(text),
+        });
+    }
+}
+
+fn flush_reasoning_block(reasoning: &mut String, blocks: &mut Vec<ContentBlock>) {
+    if !reasoning.is_empty() {
+        blocks.push(ContentBlock::ReasoningContent {
+            text: std::mem::take(reasoning),
         });
     }
 }

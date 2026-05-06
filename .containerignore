@@ -1,0 +1,5 @@
+rust/target
+rust/.sandbox-home
+rust/.sandbox-tmp
+rust/.claude
+rust/.claw

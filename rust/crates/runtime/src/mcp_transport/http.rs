@@ -255,9 +255,12 @@ impl McpRemoteProcess {
                     "timed out waiting for SSE JSON-RPC response",
                 )
             })?
-            .map_err(|_| io::Error::new(io::ErrorKind::UnexpectedEof, "SSE response channel closed"))?;
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "SSE response channel closed")
+            })?;
 
-        serde_json::from_value(message).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        serde_json::from_value(message)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
     async fn post_sse_message(&self, request_url: &str, payload: Vec<u8>) -> io::Result<()> {
@@ -324,6 +327,7 @@ impl McpRemoteProcess {
             let mut parser = IncrementalSseParser::new();
             let mut endpoint_tx = Some(endpoint_tx);
             let mut stream = response;
+            #[allow(clippy::match_same_arms)]
             loop {
                 match stream.chunk().await {
                     Ok(Some(chunk)) => {
@@ -409,7 +413,10 @@ fn default_headers_for_transport(transport: &McpClientTransport) -> io::Result<H
     Ok(map)
 }
 
-pub(crate) fn extract_sse_message_url(base_url: &str, event_data: &str) -> io::Result<Option<String>> {
+pub(crate) fn extract_sse_message_url(
+    base_url: &str,
+    event_data: &str,
+) -> io::Result<Option<String>> {
     let data = event_data.trim();
     if data.is_empty() {
         return Ok(None);

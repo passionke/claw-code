@@ -30,6 +30,10 @@ pub enum ContentBlock {
     Text {
         text: String,
     },
+    /// `DeepSeek` `reasoning_content` replay (OpenAI-compat); omitted on Anthropic wire.
+    ReasoningContent {
+        text: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -737,6 +741,13 @@ impl ContentBlock {
                 object.insert("type".to_string(), JsonValue::String("text".to_string()));
                 object.insert("text".to_string(), JsonValue::String(text.clone()));
             }
+            Self::ReasoningContent { text } => {
+                object.insert(
+                    "type".to_string(),
+                    JsonValue::String("reasoning_content".to_string()),
+                );
+                object.insert("text".to_string(), JsonValue::String(text.clone()));
+            }
             Self::ToolUse { id, name, input } => {
                 object.insert(
                     "type".to_string(),
@@ -781,6 +792,9 @@ impl ContentBlock {
             .ok_or_else(|| SessionError::Format("missing block type".to_string()))?
         {
             "text" => Ok(Self::Text {
+                text: required_string(object, "text")?,
+            }),
+            "reasoning_content" => Ok(Self::ReasoningContent {
                 text: required_string(object, "text")?,
             }),
             "tool_use" => Ok(Self::ToolUse {
@@ -1206,6 +1220,36 @@ mod tests {
             17
         );
         assert_eq!(restored.session_id, session.session_id);
+    }
+
+    #[test]
+    fn persists_and_restores_reasoning_content_block_jsonl() {
+        let mut session = Session::new();
+        session
+            .push_message(ConversationMessage::assistant(vec![
+                ContentBlock::ReasoningContent {
+                    text: "step A".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "c1".to_string(),
+                    name: "Read".to_string(),
+                    input: "{}".to_string(),
+                },
+            ]))
+            .expect("assistant with reasoning should append");
+
+        let path = temp_session_path("reasoning-jsonl");
+        session.save_to_path(&path).expect("session should save");
+        let restored = Session::load_from_path(&path).expect("session should load");
+        fs::remove_file(&path).expect("temp file should be removable");
+
+        match restored.messages[0].blocks.as_slice() {
+            [ContentBlock::ReasoningContent { text }, ContentBlock::ToolUse { id, .. }] => {
+                assert_eq!(text, "step A");
+                assert_eq!(id, "c1");
+            }
+            other => panic!("unexpected message blocks: {other:?}"),
+        }
     }
 
     #[test]

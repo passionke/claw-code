@@ -2,6 +2,16 @@
     dead_code,
     unused_imports,
     unused_variables,
+    clippy::doc_markdown,
+    clippy::ignored_unit_patterns,
+    clippy::manual_string_new,
+    clippy::map_unwrap_or,
+    clippy::match_same_arms,
+    clippy::result_large_err,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_trailing_comma,
     clippy::unneeded_struct_pattern,
     clippy::unnecessary_wraps,
     clippy::unused_self
@@ -395,6 +405,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             base_commit,
             reasoning_effort,
             allow_broad_cwd,
+            thinking_enabled,
         } => {
             enforce_broad_cwd_policy(allow_broad_cwd, output_format)?;
             run_stale_base_preflight(base_commit.as_deref());
@@ -413,7 +424,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // project `.claw.json` `model` (see `resolve_repl_model`). Without this,
             // one-shot `claw prompt` always used the compiled-in default (Anthropic).
             let resolved_model = resolve_repl_model(model);
-            let mut cli = LiveCli::new(resolved_model, true, allowed_tools, permission_mode)?;
+            let mut cli = LiveCli::new(
+                resolved_model,
+                true,
+                allowed_tools,
+                permission_mode,
+                thinking_enabled,
+            )?;
             cli.set_reasoning_effort(reasoning_effort);
             cli.run_turn_with_output(&effective_prompt, output_format, compact)?;
         }
@@ -462,6 +479,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             base_commit,
             reasoning_effort,
             allow_broad_cwd,
+            thinking_enabled,
         } => run_repl(
             model,
             allowed_tools,
@@ -469,6 +487,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             base_commit,
             reasoning_effort,
             allow_broad_cwd,
+            thinking_enabled,
         )?,
         CliAction::HelpTopic(topic) => print_help_topic(topic),
         CliAction::Help { output_format } => print_help(output_format)?,
@@ -537,6 +556,8 @@ enum CliAction {
         base_commit: Option<String>,
         reasoning_effort: Option<String>,
         allow_broad_cwd: bool,
+        /// Overrides `.claw.json` `thinkingEnabled` when set (`--thinking` / `--no-thinking`).
+        thinking_enabled: Option<bool>,
     },
     Doctor {
         output_format: CliOutputFormat,
@@ -571,6 +592,7 @@ enum CliAction {
         base_commit: Option<String>,
         reasoning_effort: Option<String>,
         allow_broad_cwd: bool,
+        thinking_enabled: Option<bool>,
     },
     HelpTopic(LocalHelpTopic),
     // prompt-mode formatting is only supported for non-interactive runs
@@ -628,6 +650,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     let mut compact = false;
     let mut base_commit: Option<String> = None;
     let mut reasoning_effort: Option<String> = None;
+    let mut thinking_enabled: Option<bool> = None;
     let mut allow_broad_cwd = false;
     let mut rest: Vec<String> = Vec::new();
     let mut index = 0;
@@ -736,6 +759,14 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 reasoning_effort = Some(value.to_string());
                 index += 1;
             }
+            "--thinking" => {
+                thinking_enabled = Some(true);
+                index += 1;
+            }
+            "--no-thinking" => {
+                thinking_enabled = Some(false);
+                index += 1;
+            }
             "--allow-broad-cwd" => {
                 allow_broad_cwd = true;
                 index += 1;
@@ -757,6 +788,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                     base_commit: base_commit.clone(),
                     reasoning_effort: reasoning_effort.clone(),
                     allow_broad_cwd,
+                    thinking_enabled,
                 });
             }
             "--print" => {
@@ -833,6 +865,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                     base_commit,
                     reasoning_effort,
                     allow_broad_cwd,
+                    thinking_enabled,
                 });
             }
         }
@@ -843,6 +876,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             base_commit,
             reasoning_effort: reasoning_effort.clone(),
             allow_broad_cwd,
+            thinking_enabled,
         });
     }
     if rest.first().map(String::as_str) == Some("--resume") {
@@ -943,6 +977,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                     base_commit,
                     reasoning_effort: reasoning_effort.clone(),
                     allow_broad_cwd,
+                    thinking_enabled,
                 }),
                 SkillSlashDispatch::Local => Ok(CliAction::Skills {
                     args,
@@ -970,6 +1005,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 base_commit: base_commit.clone(),
                 reasoning_effort: reasoning_effort.clone(),
                 allow_broad_cwd,
+                thinking_enabled,
             })
         }
         other if other.starts_with('/') => parse_direct_slash_cli_action(
@@ -982,6 +1018,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             base_commit,
             reasoning_effort,
             allow_broad_cwd,
+            thinking_enabled,
         ),
         other => {
             if rest.len() == 1 && looks_like_subcommand_typo(other) {
@@ -1020,6 +1057,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 base_commit,
                 reasoning_effort: reasoning_effort.clone(),
                 allow_broad_cwd,
+                thinking_enabled,
             })
         }
     }
@@ -1198,6 +1236,7 @@ fn parse_direct_slash_cli_action(
     base_commit: Option<String>,
     reasoning_effort: Option<String>,
     allow_broad_cwd: bool,
+    thinking_enabled: Option<bool>,
 ) -> Result<CliAction, String> {
     let raw = rest.join(" ");
     match SlashCommand::parse(&raw) {
@@ -1227,6 +1266,7 @@ fn parse_direct_slash_cli_action(
                     base_commit,
                     reasoning_effort: reasoning_effort.clone(),
                     allow_broad_cwd,
+                    thinking_enabled,
                 }),
                 SkillSlashDispatch::Local => Ok(CliAction::Skills {
                     args,
@@ -3579,11 +3619,18 @@ fn run_repl(
     base_commit: Option<String>,
     reasoning_effort: Option<String>,
     allow_broad_cwd: bool,
+    thinking_enabled: Option<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     enforce_broad_cwd_policy(allow_broad_cwd, CliOutputFormat::Text)?;
     run_stale_base_preflight(base_commit.as_deref());
     let resolved_model = resolve_repl_model(model);
-    let mut cli = LiveCli::new(resolved_model, true, allowed_tools, permission_mode)?;
+    let mut cli = LiveCli::new(
+        resolved_model,
+        true,
+        allowed_tools,
+        permission_mode,
+        thinking_enabled,
+    )?;
     cli.set_reasoning_effort(reasoning_effort);
     let mut editor =
         input::LineEditor::new("> ", cli.repl_completion_candidates().unwrap_or_default());
@@ -3661,6 +3708,8 @@ struct LiveCli {
     model: String,
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
+    /// CLI `--thinking` / `--no-thinking` override for `.claw.json` `thinkingEnabled`.
+    thinking_enabled_cli: Option<bool>,
     system_prompt: Vec<String>,
     runtime: BuiltRuntime,
     session: SessionHandle,
@@ -3900,13 +3949,13 @@ impl RuntimeMcpState {
                 .iter()
                 .map(|failure| runtime::McpFailedServer {
                     server_name: failure.server_name.clone(),
-                    phase: runtime::McpLifecyclePhase::ToolDiscovery,
+                    phase: failure.phase,
                     error: runtime::McpErrorSurface::new(
-                        runtime::McpLifecyclePhase::ToolDiscovery,
+                        failure.phase,
                         Some(failure.server_name.clone()),
                         failure.error.clone(),
-                        std::collections::BTreeMap::new(),
-                        true,
+                        failure.context.clone(),
+                        failure.recoverable,
                     ),
                 })
                 .chain(discovery.unsupported_servers.iter().map(|server| {
@@ -4429,6 +4478,7 @@ impl LiveCli {
         enable_tools: bool,
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
+        thinking_enabled_cli: Option<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let system_prompt = build_system_prompt()?;
         let session_state = new_cli_session()?;
@@ -4443,11 +4493,13 @@ impl LiveCli {
             allowed_tools.clone(),
             permission_mode,
             None,
+            thinking_enabled_cli,
         )?;
         let cli = Self {
             model,
             allowed_tools,
             permission_mode,
+            thinking_enabled_cli,
             system_prompt,
             runtime,
             session,
@@ -4533,6 +4585,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.thinking_enabled_cli,
         )?
         .with_hook_abort_signal(hook_abort_signal.clone());
         let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
@@ -5003,6 +5056,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.thinking_enabled_cli,
         )?;
         self.replace_runtime(runtime)?;
         self.model.clone_from(&model);
@@ -5049,6 +5103,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.thinking_enabled_cli,
         )?;
         self.replace_runtime(runtime)?;
         println!(
@@ -5079,6 +5134,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.thinking_enabled_cli,
         )?;
         self.replace_runtime(runtime)?;
         println!(
@@ -5120,6 +5176,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.thinking_enabled_cli,
         )?;
         self.replace_runtime(runtime)?;
         self.session = SessionHandle {
@@ -5276,6 +5333,7 @@ impl LiveCli {
                     self.allowed_tools.clone(),
                     self.permission_mode,
                     None,
+                    self.thinking_enabled_cli,
                 )?;
                 self.replace_runtime(runtime)?;
                 self.session = SessionHandle {
@@ -5311,6 +5369,7 @@ impl LiveCli {
                     self.allowed_tools.clone(),
                     self.permission_mode,
                     None,
+                    self.thinking_enabled_cli,
                 )?;
                 self.replace_runtime(runtime)?;
                 self.session = handle;
@@ -5407,6 +5466,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.thinking_enabled_cli,
         )?;
         self.replace_runtime(runtime)?;
         self.persist_session()
@@ -5427,6 +5487,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.thinking_enabled_cli,
         )?;
         self.replace_runtime(runtime)?;
         self.persist_session()?;
@@ -5451,6 +5512,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             progress,
+            self.thinking_enabled_cli,
         )?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
         let summary = runtime.run_turn(prompt, Some(&mut permission_prompter))?;
@@ -6917,6 +6979,9 @@ fn render_export_text(session: &Session) -> String {
         for block in &message.blocks {
             match block {
                 ContentBlock::Text { text } => lines.push(text.clone()),
+                ContentBlock::ReasoningContent { text } => {
+                    lines.push(format!("[reasoning_content] {text}"));
+                }
                 ContentBlock::ToolUse { id, name, input } => {
                     lines.push(format!("[tool_use id={id} name={name}] {input}"));
                 }
@@ -7100,6 +7165,14 @@ fn render_session_markdown(session: &Session, session_id: &str, session_path: &P
                     let trimmed = text.trim_end();
                     if !trimmed.is_empty() {
                         lines.push(trimmed.to_string());
+                        lines.push(String::new());
+                    }
+                }
+                ContentBlock::ReasoningContent { text } => {
+                    lines.push("**Model reasoning** _(chain-of-thought)_".to_string());
+                    let trimmed = text.trim_end();
+                    if !trimmed.is_empty() {
+                        lines.push(format!("> {}", trimmed.replace('\n', "\n> ")));
                         lines.push(String::new());
                     }
                 }
@@ -7633,9 +7706,12 @@ fn build_runtime(
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
     progress_reporter: Option<InternalPromptProgressReporter>,
+    thinking_enabled_cli_override: Option<bool>,
 ) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
     let started_at = Instant::now();
     let runtime_plugin_state = build_runtime_plugin_state()?;
+    let thinking_enabled_effective =
+        thinking_enabled_cli_override.or(runtime_plugin_state.feature_config.thinking_enabled());
     let plugin_state_ms = started_at.elapsed().as_millis();
     boundary_log(
         "build_runtime_plugin_state_done",
@@ -7653,6 +7729,7 @@ fn build_runtime(
         permission_mode,
         progress_reporter,
         runtime_plugin_state,
+        thinking_enabled_effective,
     )?;
     boundary_log(
         "build_runtime_done",
@@ -7679,6 +7756,7 @@ fn build_runtime_with_plugin_state(
     permission_mode: PermissionMode,
     progress_reporter: Option<InternalPromptProgressReporter>,
     runtime_plugin_state: RuntimePluginState,
+    thinking_enabled: Option<bool>,
 ) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
     // Persist the model in session metadata so resumed sessions can report it.
     if session.model.is_none() {
@@ -7703,6 +7781,7 @@ fn build_runtime_with_plugin_state(
             allowed_tools.clone(),
             tool_registry.clone(),
             progress_reporter,
+            thinking_enabled,
         )?,
         CliToolExecutor::new(
             allowed_tools.clone(),
@@ -7857,6 +7936,7 @@ struct AnthropicRuntimeClient {
     tool_registry: GlobalToolRegistry,
     progress_reporter: Option<InternalPromptProgressReporter>,
     reasoning_effort: Option<String>,
+    thinking_enabled: Option<bool>,
     /// Shared with `HookAbortMonitor` (Ctrl+C) so in-flight LLM requests can exit.
     interrupt: Option<HookAbortSignal>,
 }
@@ -7870,6 +7950,7 @@ impl AnthropicRuntimeClient {
         allowed_tools: Option<AllowedToolSet>,
         tool_registry: GlobalToolRegistry,
         progress_reporter: Option<InternalPromptProgressReporter>,
+        thinking_enabled: Option<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Dispatch to the correct provider at construction time.
         // `ApiProviderClient` (exposed by the api crate as
@@ -7924,6 +8005,7 @@ impl AnthropicRuntimeClient {
             tool_registry,
             progress_reporter,
             reasoning_effort: None,
+            thinking_enabled,
             interrupt: None,
         })
     }
@@ -7995,6 +8077,7 @@ impl ApiClient for AnthropicRuntimeClient {
             tool_choice: self.enable_tools.then_some(ToolChoice::Auto),
             stream: true,
             reasoning_effort: self.reasoning_effort.clone(),
+            thinking_enabled: self.thinking_enabled,
             ..Default::default()
         };
         boundary_log(
@@ -8253,10 +8336,13 @@ impl AnthropicRuntimeClient {
                             input.push_str(&partial_json);
                         }
                     }
-                    ContentBlockDelta::ThinkingDelta { .. } => {
-                        if !block_has_thinking_summary {
-                            render_thinking_block_summary(out, None, false)?;
-                            block_has_thinking_summary = true;
+                    ContentBlockDelta::ThinkingDelta { thinking } => {
+                        if !thinking.is_empty() {
+                            if !block_has_thinking_summary {
+                                render_thinking_block_summary(out, None, false)?;
+                                block_has_thinking_summary = true;
+                            }
+                            events.push(AssistantEvent::ThinkingDelta(thinking));
                         }
                     }
                     ContentBlockDelta::SignatureDelta { .. } => {}
@@ -8299,6 +8385,7 @@ impl AnthropicRuntimeClient {
         if !saw_stop
             && events.iter().any(|event| {
                 matches!(event, AssistantEvent::TextDelta(text) if !text.is_empty())
+                    || matches!(event, AssistantEvent::ThinkingDelta(text) if !text.is_empty())
                     || matches!(event, AssistantEvent::ToolUse { .. })
             })
         {
@@ -9184,6 +9271,9 @@ fn push_output_block(
         OutputContentBlock::Thinking { thinking, .. } => {
             render_thinking_block_summary(out, Some(thinking.chars().count()), false)?;
             *block_has_thinking_summary = true;
+            if !thinking.is_empty() {
+                events.push(AssistantEvent::ThinkingDelta(thinking));
+            }
         }
         OutputContentBlock::RedactedThinking { .. } => {
             render_thinking_block_summary(out, None, true)?;
@@ -9402,6 +9492,9 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
                 .iter()
                 .map(|block| match block {
                     ContentBlock::Text { text } => InputContentBlock::Text { text: text.clone() },
+                    ContentBlock::ReasoningContent { text } => {
+                        InputContentBlock::ReasoningContent { text: text.clone() }
+                    }
                     ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
@@ -9937,6 +10030,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -10071,6 +10165,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -10162,6 +10257,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -10193,6 +10289,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -10236,6 +10333,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -10315,6 +10413,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -10336,6 +10435,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -10366,6 +10466,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -10393,6 +10494,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -10496,6 +10598,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
         assert_eq!(
@@ -11428,6 +11531,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -11496,6 +11600,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
         assert_eq!(
@@ -11523,6 +11628,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
         let error = parse_args(&["/status".to_string()])
@@ -11615,6 +11721,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -11634,6 +11741,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -11663,6 +11771,7 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+                thinking_enabled: None,
             }
         );
     }
@@ -11930,6 +12039,7 @@ mod tests {
                 true,
                 None,
                 PermissionMode::DangerFullAccess,
+                None,
             )
             .expect("cli should initialize")
             .startup_banner()
@@ -13292,8 +13402,10 @@ UU conflicted.rs",
 
         let loader = ConfigLoader::new(&workspace, &config_home);
         let runtime_config = loader.load().expect("runtime config should load");
-        let state = build_runtime_plugin_state_with_loader(&workspace, &loader, &runtime_config)
-            .expect("runtime plugin state should load");
+        let state = with_current_dir(&workspace, || {
+            build_runtime_plugin_state_with_loader(&workspace, &loader, &runtime_config)
+        })
+        .expect("runtime plugin state should load");
 
         let allowed = state
             .tool_registry
@@ -13340,7 +13452,7 @@ UU conflicted.rs",
         );
         assert_eq!(
             search_json["mcp_degraded"]["failed_servers"][0]["phase"],
-            "tool_discovery"
+            "initialize_handshake"
         );
         assert_eq!(
             search_json["mcp_degraded"]["available_tools"][0],
@@ -13399,8 +13511,10 @@ UU conflicted.rs",
 
         let loader = ConfigLoader::new(&workspace, &config_home);
         let runtime_config = loader.load().expect("runtime config should load");
-        let state = build_runtime_plugin_state_with_loader(&workspace, &loader, &runtime_config)
-            .expect("runtime plugin state should load");
+        let state = with_current_dir(&workspace, || {
+            build_runtime_plugin_state_with_loader(&workspace, &loader, &runtime_config)
+        })
+        .expect("runtime plugin state should load");
         let mut executor = CliToolExecutor::new(
             None,
             false,
@@ -13420,11 +13534,11 @@ UU conflicted.rs",
         );
         assert_eq!(
             search_json["mcp_degraded"]["failed_servers"][0]["phase"],
-            "server_registration"
+            "initialize_handshake"
         );
         assert_eq!(
-            search_json["mcp_degraded"]["failed_servers"][0]["error"]["context"]["transport"],
-            "http"
+            search_json["mcp_degraded"]["failed_servers"][0]["error"]["context"]["method"],
+            "initialize"
         );
 
         let _ = fs::remove_dir_all(config_home);
@@ -13468,6 +13582,7 @@ UU conflicted.rs",
             PermissionMode::DangerFullAccess,
             None,
             runtime_plugin_state,
+            None,
         )
         .expect("runtime should build");
 

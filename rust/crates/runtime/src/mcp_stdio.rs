@@ -9,15 +9,13 @@ use tokio::time::timeout;
 
 use crate::config::{McpTransport, RuntimeConfig, ScopedMcpServerConfig};
 use crate::mcp::mcp_tool_name;
-use crate::mcp_client::{
-    McpClientBootstrap, McpClientTransport, DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS,
-};
-use crate::mcp_transport::process::{spawn_mcp_process, McpProcess};
-pub use crate::mcp_transport::stdio::{spawn_mcp_stdio_process, McpStdioProcess};
-use crate::mcp_transport::stdio::JsonRpcStdioFraming;
+use crate::mcp_client::{McpClientBootstrap, McpClientTransport, DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS};
 use crate::mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase,
 };
+use crate::mcp_transport::process::{spawn_mcp_process, McpProcess};
+use crate::mcp_transport::stdio::JsonRpcStdioFraming;
+pub use crate::mcp_transport::stdio::{spawn_mcp_stdio_process, McpStdioProcess};
 
 #[cfg(test)]
 const MCP_INITIALIZE_TIMEOUT_MS: u64 = 200;
@@ -1140,17 +1138,13 @@ impl McpServerManager {
             let response = match response {
                 Ok(response) => response,
                 Err(error) if attempts < 2 && Self::is_retryable_error(&error) => {
-                    let should_try_newline = self
-                        .servers
-                        .get(server_name)
-                        .map(|server| {
-                            attempts > 0
-                                && Self::should_enable_newline_json_fallback(
-                                    &error,
-                                    server.preferred_framing,
-                                )
-                        })
-                        .unwrap_or(false);
+                    let should_try_newline = self.servers.get(server_name).is_some_and(|server| {
+                        attempts > 0
+                            && Self::should_enable_newline_json_fallback(
+                                &error,
+                                server.preferred_framing,
+                            )
+                    });
                     if should_try_newline {
                         let server = self.server_mut(server_name)?;
                         server.preferred_framing = JsonRpcStdioFraming::NewlineDelimited;

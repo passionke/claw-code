@@ -1,0 +1,60 @@
+{
+  "data_period": {
+    "start": "2023-05",
+    "end": "2026-05"
+  },
+  "current_active_stores": 12690,
+  "avg_new_stores_per_month": 1080.5,
+  "std_new_stores": 290.1417756890586,
+  "forecast": {
+    "forecast_horizon_months": 36,
+    "forecast_end_date": "2029-05",
+    "lower_end": 36993,
+    "central_end": 48751,
+    "upper_end": 62033,
+    "monthly_detail": [
+      {
+        "months_out": 6,
+        "date": "2026-11",
+        "lower": 17333,
+        "central": 19105,
+        "upper": 20913
+      },
+      {
+        "months_out": 12,
+        "date": "2027-05",
+        "lower": 21739,
+        "central": 25358,
+        "upper": 29137
+      },
+      {
+        "months_out": 18,
+        "date": "2027-11",
+        "lower": 25908,
+        "central": 31450,
+        "upper": 37361
+      },
+      {
+        "months_out": 24,
+        "date": "2028-05",
+        "lower": 29840,
+        "central": 37379,
+        "upper": 45585
+      },
+      {
+        "months_out": 30,
+        "date": "2028-11",
+        "lower": 33535,
+        "central": 43146,
+        "upper": 53809
+      },
+      {
+        "months_out": 36,
+        "date": "2029-05",
+        "lower": 36993,
+        "central": 48751,
+        "upper": 62033
+      }
+    ]
+  }
+}
