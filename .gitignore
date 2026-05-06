@@ -18,6 +18,8 @@ rust/.claw.json
 .env.*
 !.env.example
 rust/.sandbox-home/
+.sandbox-home/
+.traces/
 rust/crates/rusty-claude-cli/.claw/
 status-help.txt
 claw-server-data/
