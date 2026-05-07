@@ -642,6 +642,7 @@ impl McpServerManager {
         &mut self,
         qualified_tool_name: &str,
         arguments: Option<JsonValue>,
+        meta: Option<JsonValue>,
     ) -> Result<JsonRpcResponse<McpToolCallResult>, McpServerManagerError> {
         let route = self
             .tool_index
@@ -674,7 +675,7 @@ impl McpServerManager {
                         McpToolCallParams {
                             name: route.raw_name,
                             arguments,
-                            meta: None,
+                            meta,
                         },
                     ),
                 )

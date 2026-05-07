@@ -65,6 +65,8 @@ struct SolveRequest {
     model: Option<String>,
     #[serde(rename = "timeoutSeconds")]
     timeout_seconds: Option<u64>,
+    #[serde(rename = "extraSession")]
+    extra_session: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -289,6 +291,7 @@ impl RuntimeApiClient for DirectApiClient {
 
 struct DirectToolExecutor {
     allowed_tools: Vec<String>,
+    extra_session: Option<Value>,
     runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
     runtime_mcp_tool_names: HashSet<String>,
 }
@@ -300,6 +303,10 @@ impl RuntimeToolExecutor for DirectToolExecutor {
         }
         if self.runtime_mcp_tool_names.contains(tool_name) {
             let args = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
+            let meta = self
+                .extra_session
+                .as_ref()
+                .map(|value| json!({ "extra_session": value }));
             let Some(manager) = &self.runtime_mcp_manager else {
                 return Err(ToolError::new("MCP manager not initialized"));
             };
@@ -310,7 +317,7 @@ impl RuntimeToolExecutor for DirectToolExecutor {
                         .lock()
                         .map_err(|_| ToolError::new("MCP manager lock poisoned"))?;
                     guard
-                        .call_tool(tool_name, Some(args))
+                        .call_tool(tool_name, Some(args), meta)
                         .await
                         .map_err(|e| ToolError::new(e.to_string()))
                 })
@@ -1040,6 +1047,22 @@ async fn run_solve_request(
             "userPrompt cannot be empty",
         ));
     }
+    if let Some(extra_session) = &req.extra_session {
+        if !extra_session.is_object() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "extraSession must be a JSON object when present",
+            ));
+        }
+        if let Ok(serialized) = serde_json::to_vec(extra_session) {
+            if serialized.len() > 8 * 1024 {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "extraSession is too large (max 8KB)",
+                ));
+            }
+        }
+    }
     let started = Instant::now();
     let timeout_seconds = req
         .timeout_seconds
@@ -1083,6 +1106,7 @@ async fn run_solve_request(
         req.model.as_deref(),
         timeout_seconds,
         &request_id,
+        req.extra_session.clone(),
         state.cfg.default_max_iterations,
     )?;
     Ok(SolveResponse {
@@ -1357,6 +1381,7 @@ fn run_runtime_prompt(
     model: Option<&str>,
     timeout_seconds: u64,
     clawcode_session_id: &str,
+    extra_session: Option<Value>,
     max_iterations: usize,
 ) -> Result<(i32, String, Option<Value>), ApiError> {
     std::env::set_current_dir(work_dir).map_err(|e| {
@@ -1392,6 +1417,7 @@ fn run_runtime_prompt(
     )?;
     let tool_executor = DirectToolExecutor {
         allowed_tools,
+        extra_session,
         runtime_mcp_manager,
         runtime_mcp_tool_names,
     };

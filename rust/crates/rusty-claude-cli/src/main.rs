@@ -4019,7 +4019,7 @@ impl RuntimeMcpState {
     ) -> Result<String, ToolError> {
         let response = self
             .runtime
-            .block_on(self.manager.call_tool(qualified_tool_name, arguments))
+            .block_on(self.manager.call_tool(qualified_tool_name, arguments, None))
             .map_err(|error| ToolError::new(error.to_string()))?;
         if let Some(error) = response.error {
             return Err(ToolError::new(format!(
@@ -9401,7 +9401,7 @@ impl CliToolExecutor {
                     .qualified_name
                     .or(input.tool)
                     .ok_or_else(|| ToolError::new("missing required field `qualifiedName`"))?;
-                mcp_state.call_tool(&qualified_name, input.arguments)
+                mcp_state.call_tool(&qualified_name, input.arguments, None)
             }
             "ListMcpResourcesTool" => {
                 let input: ListMcpResourcesRequest = serde_json::from_value(value)
@@ -9416,7 +9416,7 @@ impl CliToolExecutor {
                     .map_err(|error| ToolError::new(format!("invalid tool input JSON: {error}")))?;
                 mcp_state.read_resource(&input.server, &input.uri)
             }
-            _ => mcp_state.call_tool(tool_name, Some(value)),
+            _ => mcp_state.call_tool(tool_name, Some(value), None),
         }
     }
 }
