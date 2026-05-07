@@ -2136,6 +2136,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("newline", "echo"),
                     Some(json!({"text": "fallback"})),
+                    None,
                 )
                 .await
                 .expect("call newline tool");
@@ -2184,6 +2185,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "hello"})),
+                    None,
                 )
                 .await
                 .expect("call alpha tool");
@@ -2191,6 +2193,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("beta", "echo"),
                     Some(json!({"text": "world"})),
+                    None,
                 )
                 .await
                 .expect("call beta tool");
@@ -2248,6 +2251,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("slow", "echo"),
                     Some(json!({"text": "slow"})),
+                    None,
                 )
                 .await
                 .expect_err("slow tool call should time out");
@@ -2301,6 +2305,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("broken", "echo"),
                     Some(json!({"text": "invalid-json"})),
+                    None,
                 )
                 .await
                 .expect_err("invalid json should fail");
@@ -2352,6 +2357,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "reconnect"})),
+                    None,
                 )
                 .await
                 .expect_err("first call should fail after transport drops");
@@ -2373,6 +2379,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "reconnect"})),
+                    None,
                 )
                 .await
                 .expect("second tool call should succeed after reset");
@@ -2482,6 +2489,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "first"})),
+                    None,
                 )
                 .await
                 .expect_err("first tool call should fail when transport drops");
@@ -2503,6 +2511,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "second"})),
+                    None,
                 )
                 .await
                 .expect("second tool call should succeed after reset");
@@ -2672,7 +2681,11 @@ mod tests {
             assert!(degraded.missing_tools.is_empty());
 
             let response = manager
-                .call_tool(&mcp_tool_name("alpha", "echo"), Some(json!({"text": "ok"})))
+                .call_tool(
+                    &mcp_tool_name("alpha", "echo"),
+                    Some(json!({"text": "ok"})),
+                    None,
+                )
                 .await
                 .expect("healthy server should remain callable");
             assert_eq!(
@@ -2784,6 +2797,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "reuse"})),
+                    None,
                 )
                 .await
                 .expect("call tool");
@@ -2829,6 +2843,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "missing"),
                     Some(json!({"text": "nope"})),
+                    None,
                 )
                 .await
                 .expect_err("unknown qualified tool should fail");

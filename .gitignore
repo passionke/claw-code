@@ -24,3 +24,5 @@ rust/crates/rusty-claude-cli/.claw/
 status-help.txt
 claw-server-data/
 rust/claw-server.db
+deploy/podman/claude-tap.log
+deploy/podman/claude-tap.pid

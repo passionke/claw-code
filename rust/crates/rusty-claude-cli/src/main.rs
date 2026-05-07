@@ -4016,10 +4016,11 @@ impl RuntimeMcpState {
         &mut self,
         qualified_tool_name: &str,
         arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
     ) -> Result<String, ToolError> {
         let response = self
             .runtime
-            .block_on(self.manager.call_tool(qualified_tool_name, arguments, None))
+            .block_on(self.manager.call_tool(qualified_tool_name, arguments, meta))
             .map_err(|error| ToolError::new(error.to_string()))?;
         if let Some(error) = response.error {
             return Err(ToolError::new(format!(
