@@ -43,16 +43,19 @@ jobs:
           fi
           echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
 
-      - name: Image tags (sha-12 + latest)
+      - name: Image tags (release tag + sha-12 + latest)
         id: meta
         run: |
           set -euo pipefail
           IMAGE="ghcr.io/${{ github.repository_owner }}/claw-code"
           SHA12="${GITHUB_SHA:0:12}"
+          RELEASE_TAG="${GITHUB_REF_NAME}"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "sha12=${SHA12}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           {
             echo "tags<<EOF"
+            echo "${IMAGE}:${RELEASE_TAG}"
             echo "${IMAGE}:sha-${SHA12}"
             echo "${IMAGE}:latest"
             echo "EOF"
