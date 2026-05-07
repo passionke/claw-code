@@ -1,4 +1,0 @@
-# SQL validation dependency (Python)
-# Author: kejiqing
-sqlglot>=20.0.0
-cryptography>=41.0.0

@@ -99,8 +99,21 @@ pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
         });
     }
 
-    let runtime = Builder::new_current_thread().enable_all().build()?;
-    runtime.block_on(execute_bash_async(input, sandbox_status, cwd))
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // We may be called from an async host (e.g. HTTP gateway). Reuse the
+        // active runtime to avoid creating a nested Tokio runtime and panicking.
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(execute_bash_async(
+                input,
+                sandbox_status,
+                cwd,
+            ))
+        })
+    } else {
+        // CLI/tests can invoke this from a plain sync context; create a local runtime.
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(execute_bash_async(input, sandbox_status, cwd))
+    }
 }
 
 /// Detect git push to main and emit ship provenance event
@@ -122,7 +135,7 @@ fn detect_and_emit_ship_prepared(command: &str) {
             actor: get_git_actor().unwrap_or_else(|| "unknown".to_string()),
             pr_number: None,
         };
-        let _event = LaneEvent::ship_prepared(format!("{}", now), &provenance);
+        let _event = LaneEvent::ship_prepared(format!("{now}"), &provenance);
         // Log to stderr as interim routing before event stream integration
         eprintln!(
             "[ship.prepared] branch={} -> main, commits={}, actor={}",
@@ -172,7 +185,7 @@ async fn execute_bash_async(
 ) -> io::Result<BashCommandOutput> {
     // Detect and emit ship provenance for git push operations
     detect_and_emit_ship_prepared(&input.command);
-    
+
     let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
 
     let output_result = if let Some(timeout_ms) = input.timeout {

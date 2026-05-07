@@ -2537,6 +2537,7 @@ pub fn resolve_skill_path(cwd: &Path, skill: &str) -> std::io::Result<PathBuf> {
     ))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn render_mcp_report_for(
     loader: &ConfigLoader,
     cwd: &Path,
@@ -2600,6 +2601,7 @@ fn render_mcp_report_for(
     }
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn render_mcp_report_json_for(
     loader: &ConfigLoader,
     cwd: &Path,
@@ -2623,10 +2625,8 @@ fn render_mcp_report_json_for(
             // runs, the existing serializer adds `status: "ok"` below.
             match loader.load() {
                 Ok(runtime_config) => {
-                    let mut value = render_mcp_summary_report_json(
-                        cwd,
-                        runtime_config.mcp().servers(),
-                    );
+                    let mut value =
+                        render_mcp_summary_report_json(cwd, runtime_config.mcp().servers());
                     if let Some(map) = value.as_object_mut() {
                         map.insert("status".to_string(), Value::String("ok".to_string()));
                         map.insert("config_load_error".to_string(), Value::Null);

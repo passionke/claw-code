@@ -6,7 +6,23 @@ archive/
 .claude/settings.local.json
 .claude/sessions/
 # Claw Code local artifacts
+.claw/
+.claw.json
+rust/.claw.json
 .claw/settings.local.json
 .claw/sessions/
 .clawhip/
+.local-claw-runs/
+.tmp-latency/
+.env
+.env.*
+!.env.example
+rust/.sandbox-home/
+.sandbox-home/
+.traces/
+rust/crates/rusty-claude-cli/.claw/
 status-help.txt
+claw-server-data/
+rust/claw-server.db
+deploy/podman/claude-tap.log
+deploy/podman/claude-tap.pid

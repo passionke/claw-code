@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Verification
 - Run Rust verification from `rust/`: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`
+- Local CLI test ergonomics (`env_lock`, parallel `cargo test`, Cursor): see `docs/local-cli-testing.md`.
 - `src/` and `tests/` are both present; update both surfaces together when behavior changes.
 
 ## Repository shape
@@ -19,3 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Prefer small, reviewable changes and keep generated bootstrap files aligned with actual repo workflows.
 - Keep shared defaults in `.claude.json`; reserve `.claude/settings.local.json` for machine-local overrides.
 - Do not overwrite existing `CLAUDE.md` content automatically; update it intentionally when repo workflows change.
+
+## Claw stack boundaries (claw-code)
+- **Canonical table** (Claw / gateway / Doris / SQLBot / adapter / three channels): `docs/boundaries-claw-stack.md` — update it when adding MCPs or env; avoid ad-hoc explanations that contradict it.
+- Author: kejiqing

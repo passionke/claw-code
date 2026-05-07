@@ -252,6 +252,10 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
 
 #[must_use]
 pub fn max_tokens_for_model(model: &str) -> u32 {
+    apply_max_tokens_cap(default_max_tokens_for_model(model))
+}
+
+fn default_max_tokens_for_model(model: &str) -> u32 {
     model_token_limit(model).map_or_else(
         || {
             let canonical = resolve_model_alias(model);
@@ -265,17 +269,44 @@ pub fn max_tokens_for_model(model: &str) -> u32 {
     )
 }
 
+fn max_tokens_override_from_env() -> Option<u32> {
+    let from_process_env = std::env::var("CLAW_CODE_MAX_TOKENS")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let raw = from_process_env.or_else(|| dotenv_value("CLAW_CODE_MAX_TOKENS"));
+    raw.and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn apply_max_tokens_cap(tokens: u32) -> u32 {
+    max_tokens_override_from_env().map_or(tokens, |override_tokens| tokens.min(override_tokens))
+}
+
 /// Returns the effective max output tokens for a model, preferring a plugin
 /// override when present. Falls back to [`max_tokens_for_model`] when the
 /// override is `None`.
 #[must_use]
 pub fn max_tokens_for_model_with_override(model: &str, plugin_override: Option<u32>) -> u32 {
-    plugin_override.unwrap_or_else(|| max_tokens_for_model(model))
+    let base = plugin_override.unwrap_or_else(|| default_max_tokens_for_model(model));
+    apply_max_tokens_cap(base)
 }
 
 #[must_use]
 pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
     let canonical = resolve_model_alias(model);
+    let lower = canonical.to_ascii_lowercase();
+    // OpenAI-compat Qwen 3.x on local vLLM: 32k total context is typical. Use a **low**
+    // default max output so preflight (input + max_tokens <= 32k) still passes: Claw
+    // ships a large system prompt and tool schemas, so 16_384 output often blocks with
+    // "Context window blocked" before the request is sent. Users can raise with
+    // `CLAW_CODE_MAX_TOKENS` when the deployment has more headroom. kejiqing
+    if lower.starts_with("openai/qwen3.6") || lower.starts_with("openai/qwen3-") {
+        return Some(ModelTokenLimit {
+            max_output_tokens: 4_096,
+            context_window_tokens: 32_768,
+        });
+    }
     match canonical.as_str() {
         "claude-opus-4-6" => Some(ModelTokenLimit {
             max_output_tokens: 32_000,
@@ -667,6 +698,41 @@ mod tests {
     }
 
     #[test]
+    fn env_override_caps_openai_compat_model_defaults() {
+        let _lock = env_lock();
+        let _override = EnvVarGuard::set("CLAW_CODE_MAX_TOKENS", Some("2048"));
+
+        assert_eq!(max_tokens_for_model("openai/gpt-4o"), 2048);
+        assert_eq!(max_tokens_for_model("grok-3"), 2048);
+    }
+
+    #[test]
+    fn env_override_caps_plugin_max_output_tokens() {
+        let _lock = env_lock();
+        let _override = EnvVarGuard::set("CLAW_CODE_MAX_TOKENS", Some("2048"));
+
+        let effective = max_tokens_for_model_with_override("claude-opus-4-6", Some(12_345));
+        assert_eq!(effective, 2048);
+    }
+
+    #[test]
+    fn invalid_env_override_is_ignored() {
+        let _lock = env_lock();
+        let _override = EnvVarGuard::set("CLAW_CODE_MAX_TOKENS", Some("not-a-number"));
+
+        assert_eq!(max_tokens_for_model("openai/gpt-4o"), 64_000);
+    }
+
+    #[test]
+    fn openai_qwen3_local_limits_match_common_32k_vllm_deployments() {
+        assert_eq!(max_tokens_for_model("openai/qwen3.6-35b"), 4_096);
+        assert_eq!(max_tokens_for_model("openai/Qwen3.6-7B"), 4_096);
+        let lim = model_token_limit("openai/qwen3.6-35b").expect("limit");
+        assert_eq!(lim.max_output_tokens, 4_096);
+        assert_eq!(lim.context_window_tokens, 32_768);
+    }
+
+    #[test]
     fn returns_context_window_metadata_for_supported_models() {
         assert_eq!(
             model_token_limit("claude-sonnet-4-6")
@@ -753,14 +819,14 @@ mod tests {
     #[test]
     fn returns_context_window_metadata_for_kimi_models() {
         // kimi-k2.5
-        let k25_limit = model_token_limit("kimi-k2.5")
-            .expect("kimi-k2.5 should have token limit metadata");
+        let k25_limit =
+            model_token_limit("kimi-k2.5").expect("kimi-k2.5 should have token limit metadata");
         assert_eq!(k25_limit.max_output_tokens, 16_384);
         assert_eq!(k25_limit.context_window_tokens, 256_000);
 
         // kimi-k1.5
-        let k15_limit = model_token_limit("kimi-k1.5")
-            .expect("kimi-k1.5 should have token limit metadata");
+        let k15_limit =
+            model_token_limit("kimi-k1.5").expect("kimi-k1.5 should have token limit metadata");
         assert_eq!(k15_limit.max_output_tokens, 16_384);
         assert_eq!(k15_limit.context_window_tokens, 256_000);
     }
@@ -768,11 +834,13 @@ mod tests {
     #[test]
     fn kimi_alias_resolves_to_kimi_k25_token_limits() {
         // The "kimi" alias resolves to "kimi-k2.5" via resolve_model_alias()
-        let alias_limit = model_token_limit("kimi")
-            .expect("kimi alias should resolve to kimi-k2.5 limits");
-        let direct_limit = model_token_limit("kimi-k2.5")
-            .expect("kimi-k2.5 should have limits");
-        assert_eq!(alias_limit.max_output_tokens, direct_limit.max_output_tokens);
+        let alias_limit =
+            model_token_limit("kimi").expect("kimi alias should resolve to kimi-k2.5 limits");
+        let direct_limit = model_token_limit("kimi-k2.5").expect("kimi-k2.5 should have limits");
+        assert_eq!(
+            alias_limit.max_output_tokens,
+            direct_limit.max_output_tokens
+        );
         assert_eq!(
             alias_limit.context_window_tokens,
             direct_limit.context_window_tokens

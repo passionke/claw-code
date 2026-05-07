@@ -197,7 +197,7 @@ impl McpToolRegistry {
                             .await
                             .map_err(|error| error.to_string())?;
                         let response = manager
-                            .call_tool(&qualified_tool_name, arguments)
+                            .call_tool(&qualified_tool_name, arguments, None)
                             .await
                             .map_err(|error| error.to_string());
                         let shutdown = manager.shutdown().await.map_err(|error| error.to_string());

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
+use std::time::Instant;
 
 use serde_json::{Map, Value};
 use telemetry::SessionTracer;
@@ -29,6 +30,7 @@ pub struct ApiRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssistantEvent {
     TextDelta(String),
+    ThinkingDelta(String),
     ToolUse {
         id: String,
         name: String,
@@ -382,8 +384,10 @@ where
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            let turn_id = format!("turn-{iterations}");
             self.record_assistant_iteration(
                 iterations,
+                &turn_id,
                 &assistant_message,
                 pending_tool_uses.len(),
             );
@@ -398,6 +402,8 @@ where
             }
 
             for (tool_use_id, tool_name, input) in pending_tool_uses {
+                let tool_started_at = Instant::now();
+                let trace_tool_use_id = tool_use_id.clone();
                 let pre_hook_result = self.run_pre_tool_use_hook(&tool_name, &input);
                 let effective_input = pre_hook_result
                     .updated_input()
@@ -446,7 +452,13 @@ where
 
                 let result_message = match permission_outcome {
                     PermissionOutcome::Allow => {
-                        self.record_tool_started(iterations, &tool_name);
+                        self.record_tool_started(
+                            iterations,
+                            &turn_id,
+                            &tool_use_id,
+                            &tool_name,
+                            effective_input.len(),
+                        );
                         let (mut output, mut is_error) =
                             match self.tool_executor.execute(&tool_name, &effective_input) {
                                 Ok(output) => (output, false),
@@ -482,11 +494,16 @@ where
                                 || post_hook_result.is_cancelled(),
                         );
 
-                        ConversationMessage::tool_result(tool_use_id, tool_name, output, is_error)
+                        ConversationMessage::tool_result(
+                            tool_use_id.clone(),
+                            tool_name.clone(),
+                            output,
+                            is_error,
+                        )
                     }
                     PermissionOutcome::Deny { reason } => ConversationMessage::tool_result(
-                        tool_use_id,
-                        tool_name,
+                        tool_use_id.clone(),
+                        tool_name.clone(),
                         merge_hook_feedback(pre_hook_result.messages(), reason, true),
                         true,
                     ),
@@ -494,7 +511,13 @@ where
                 self.session
                     .push_message(result_message.clone())
                     .map_err(|error| RuntimeError::new(error.to_string()))?;
-                self.record_tool_finished(iterations, &result_message);
+                self.record_tool_finished(
+                    iterations,
+                    &turn_id,
+                    &trace_tool_use_id,
+                    &result_message,
+                    tool_started_at.elapsed().as_millis(),
+                );
                 tool_results.push(result_message);
             }
         }
@@ -593,6 +616,7 @@ where
     fn record_assistant_iteration(
         &self,
         iteration: usize,
+        turn_id: &str,
         assistant_message: &ConversationMessage,
         pending_tool_use_count: usize,
     ) {
@@ -602,6 +626,7 @@ where
 
         let mut attributes = Map::new();
         attributes.insert("iteration".to_string(), Value::from(iteration as u64));
+        attributes.insert("turn_id".to_string(), Value::String(turn_id.to_string()));
         attributes.insert(
             "assistant_blocks".to_string(),
             Value::from(assistant_message.blocks.len() as u64),
@@ -611,23 +636,88 @@ where
             Value::from(pending_tool_use_count as u64),
         );
         session_tracer.record("assistant_iteration_completed", attributes);
+        let mut decision_attributes = Map::new();
+        decision_attributes.insert("iteration".to_string(), Value::from(iteration as u64));
+        decision_attributes.insert(
+            "pending_tool_use_count".to_string(),
+            Value::from(pending_tool_use_count as u64),
+        );
+        decision_attributes.insert(
+            "assistant_preview".to_string(),
+            Value::String(
+                assistant_message
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+                    .chars()
+                    .take(400)
+                    .collect(),
+            ),
+        );
+        session_tracer.record_agent_trace(
+            telemetry::AgentTraceEventKind::Decision,
+            Some(turn_id.to_string()),
+            None,
+            None,
+            decision_attributes,
+        );
     }
 
-    fn record_tool_started(&self, iteration: usize, tool_name: &str) {
+    fn record_tool_started(
+        &self,
+        iteration: usize,
+        turn_id: &str,
+        tool_use_id: &str,
+        tool_name: &str,
+        input_size: usize,
+    ) {
         let Some(session_tracer) = &self.session_tracer else {
             return;
         };
 
         let mut attributes = Map::new();
         attributes.insert("iteration".to_string(), Value::from(iteration as u64));
+        attributes.insert("turn_id".to_string(), Value::String(turn_id.to_string()));
+        attributes.insert(
+            "tool_use_id".to_string(),
+            Value::String(tool_use_id.to_string()),
+        );
         attributes.insert(
             "tool_name".to_string(),
             Value::String(tool_name.to_string()),
         );
+        attributes.insert("input_size".to_string(), Value::from(input_size as u64));
         session_tracer.record("tool_execution_started", attributes);
+        let mut trace_attributes = Map::new();
+        trace_attributes.insert("iteration".to_string(), Value::from(iteration as u64));
+        trace_attributes.insert(
+            "tool_name".to_string(),
+            Value::String(tool_name.to_string()),
+        );
+        trace_attributes.insert("input_size".to_string(), Value::from(input_size as u64));
+        trace_attributes.insert("phase".to_string(), Value::String("started".to_string()));
+        session_tracer.record_agent_trace(
+            telemetry::AgentTraceEventKind::ToolCall,
+            Some(turn_id.to_string()),
+            Some(tool_use_id.to_string()),
+            None,
+            trace_attributes,
+        );
     }
 
-    fn record_tool_finished(&self, iteration: usize, result_message: &ConversationMessage) {
+    fn record_tool_finished(
+        &self,
+        iteration: usize,
+        turn_id: &str,
+        tool_use_id: &str,
+        result_message: &ConversationMessage,
+        duration_ms: u128,
+    ) {
         let Some(session_tracer) = &self.session_tracer else {
             return;
         };
@@ -635,6 +725,7 @@ where
         let Some(ContentBlock::ToolResult {
             tool_name,
             is_error,
+            output,
             ..
         }) = result_message.blocks.first()
         else {
@@ -643,9 +734,63 @@ where
 
         let mut attributes = Map::new();
         attributes.insert("iteration".to_string(), Value::from(iteration as u64));
+        attributes.insert("turn_id".to_string(), Value::String(turn_id.to_string()));
+        attributes.insert(
+            "tool_use_id".to_string(),
+            Value::String(tool_use_id.to_string()),
+        );
         attributes.insert("tool_name".to_string(), Value::String(tool_name.clone()));
         attributes.insert("is_error".to_string(), Value::Bool(*is_error));
+        attributes.insert(
+            "output_size".to_string(),
+            Value::from(output.chars().count() as u64),
+        );
+        attributes.insert(
+            "duration_ms".to_string(),
+            Value::from(u64::try_from(duration_ms).unwrap_or(u64::MAX)),
+        );
+        if *is_error {
+            let output_char_count = output.chars().count();
+            let error_preview: String = output.chars().take(400).collect();
+            attributes.insert(
+                "error_preview".to_string(),
+                Value::String(error_preview.clone()),
+            );
+            attributes.insert(
+                "error_preview_truncated".to_string(),
+                Value::Bool(output_char_count > 400),
+            );
+        }
         session_tracer.record("tool_execution_finished", attributes);
+        let mut trace_attributes = Map::new();
+        trace_attributes.insert("iteration".to_string(), Value::from(iteration as u64));
+        trace_attributes.insert("tool_name".to_string(), Value::String(tool_name.clone()));
+        trace_attributes.insert("is_error".to_string(), Value::Bool(*is_error));
+        trace_attributes.insert(
+            "output_size".to_string(),
+            Value::from(output.chars().count() as u64),
+        );
+        trace_attributes.insert(
+            "duration_ms".to_string(),
+            Value::from(u64::try_from(duration_ms).unwrap_or(u64::MAX)),
+        );
+        trace_attributes.insert("phase".to_string(), Value::String("finished".to_string()));
+        if *is_error {
+            let output_char_count = output.chars().count();
+            let error_preview: String = output.chars().take(400).collect();
+            trace_attributes.insert("error_preview".to_string(), Value::String(error_preview));
+            trace_attributes.insert(
+                "error_preview_truncated".to_string(),
+                Value::Bool(output_char_count > 400),
+            );
+        }
+        session_tracer.record_agent_trace(
+            telemetry::AgentTraceEventKind::ToolCall,
+            Some(turn_id.to_string()),
+            Some(tool_use_id.to_string()),
+            None,
+            trace_attributes,
+        );
     }
 
     fn record_turn_completed(&self, summary: &TurnSummary) {
@@ -714,6 +859,7 @@ fn build_assistant_message(
     RuntimeError,
 > {
     let mut text = String::new();
+    let mut reasoning = String::new();
     let mut blocks = Vec::new();
     let mut prompt_cache_events = Vec::new();
     let mut finished = false;
@@ -721,8 +867,13 @@ fn build_assistant_message(
 
     for event in events {
         match event {
-            AssistantEvent::TextDelta(delta) => text.push_str(&delta),
+            AssistantEvent::TextDelta(delta) => {
+                flush_reasoning_block(&mut reasoning, &mut blocks);
+                text.push_str(&delta);
+            }
+            AssistantEvent::ThinkingDelta(delta) => reasoning.push_str(&delta),
             AssistantEvent::ToolUse { id, name, input } => {
+                flush_reasoning_block(&mut reasoning, &mut blocks);
                 flush_text_block(&mut text, &mut blocks);
                 blocks.push(ContentBlock::ToolUse { id, name, input });
             }
@@ -734,6 +885,7 @@ fn build_assistant_message(
         }
     }
 
+    flush_reasoning_block(&mut reasoning, &mut blocks);
     flush_text_block(&mut text, &mut blocks);
 
     if !finished {
@@ -756,6 +908,14 @@ fn flush_text_block(text: &mut String, blocks: &mut Vec<ContentBlock>) {
     if !text.is_empty() {
         blocks.push(ContentBlock::Text {
             text: std::mem::take(text),
+        });
+    }
+}
+
+fn flush_reasoning_block(reasoning: &mut String, blocks: &mut Vec<ContentBlock>) {
+    if !reasoning.is_empty() {
+        blocks.push(ContentBlock::ReasoningContent {
+            text: std::mem::take(reasoning),
         });
     }
 }

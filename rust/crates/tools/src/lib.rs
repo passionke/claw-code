@@ -14,7 +14,7 @@ use runtime::{
     check_freshness, dedupe_superseded_commit_events, edit_file, execute_bash, glob_search,
     grep_search, load_system_prompt,
     lsp_client::LspRegistry,
-    mcp_tool_bridge::McpToolRegistry,
+    mcp_tool_bridge::{McpConnectionStatus, McpResourceInfo, McpToolInfo, McpToolRegistry},
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
     read_file,
     summary_compression::compress_summary_text,
@@ -42,6 +42,60 @@ fn global_mcp_registry() -> &'static McpToolRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<McpToolRegistry> = OnceLock::new();
     REGISTRY.get_or_init(McpToolRegistry::new)
+}
+
+/// Initialize and refresh the global MCP bridge used by MCP wrapper tools.
+///
+/// This wires the MCP manager into the global registry and synchronizes
+/// discovered tool metadata so `MCP` / `ListMcpResources` style tools can work.
+pub fn initialize_mcp_bridge(
+    manager: std::sync::Arc<std::sync::Mutex<runtime::McpServerManager>>,
+    report: &runtime::McpToolDiscoveryReport,
+) {
+    let registry = global_mcp_registry();
+    let _ = registry.set_manager(manager);
+
+    let mut per_server_tools: BTreeMap<String, Vec<McpToolInfo>> = BTreeMap::new();
+    for discovered in &report.tools {
+        per_server_tools
+            .entry(discovered.server_name.clone())
+            .or_default()
+            .push(McpToolInfo {
+                name: discovered.raw_name.clone(),
+                description: discovered.tool.description.clone(),
+                input_schema: discovered.tool.input_schema.clone(),
+            });
+    }
+
+    for (server_name, tools) in per_server_tools {
+        registry.register_server(
+            &server_name,
+            McpConnectionStatus::Connected,
+            tools,
+            Vec::<McpResourceInfo>::new(),
+            None,
+        );
+    }
+
+    for failed in &report.failed_servers {
+        registry.register_server(
+            &failed.server_name,
+            McpConnectionStatus::Error,
+            Vec::new(),
+            Vec::new(),
+            Some(failed.error.clone()),
+        );
+    }
+
+    for unsupported in &report.unsupported_servers {
+        registry.register_server(
+            &unsupported.server_name,
+            McpConnectionStatus::Error,
+            Vec::new(),
+            Vec::new(),
+            Some(unsupported.reason.clone()),
+        );
+    }
 }
 
 fn global_team_registry() -> &'static TeamRegistry {
@@ -230,6 +284,22 @@ impl GlobalToolRegistry {
                 .filter(|token| !token.is_empty())
             {
                 let normalized = normalize_tool_name(token);
+                if normalized.contains('*') || normalized.contains('?') {
+                    let matches = name_map
+                        .iter()
+                        .filter_map(|(candidate, canonical)| {
+                            wildcard_matches(&normalized, candidate).then_some(canonical.clone())
+                        })
+                        .collect::<Vec<_>>();
+                    if matches.is_empty() {
+                        return Err(format!(
+                            "unsupported tool pattern in --allowedTools: {token} (no matches in: {})",
+                            canonical_names.join(", ")
+                        ));
+                    }
+                    allowed.extend(matches);
+                    continue;
+                }
                 let canonical = name_map.get(&normalized).ok_or_else(|| {
                     format!(
                         "unsupported tool in --allowedTools: {token} (expected one of: {})",
@@ -369,6 +439,48 @@ impl GlobalToolRegistry {
 
 fn normalize_tool_name(value: &str) -> String {
     value.trim().replace('-', "_").to_ascii_lowercase()
+}
+
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    let pattern_bytes = pattern.as_bytes();
+    let value_bytes = value.as_bytes();
+    let mut pattern_idx = 0usize;
+    let mut value_idx = 0usize;
+    let mut star_idx: Option<usize> = None;
+    let mut next_match_idx = 0usize;
+
+    while value_idx < value_bytes.len() {
+        if pattern_idx < pattern_bytes.len()
+            && (pattern_bytes[pattern_idx] == b'?'
+                || pattern_bytes[pattern_idx] == value_bytes[value_idx])
+        {
+            pattern_idx += 1;
+            value_idx += 1;
+            continue;
+        }
+
+        if pattern_idx < pattern_bytes.len() && pattern_bytes[pattern_idx] == b'*' {
+            star_idx = Some(pattern_idx);
+            pattern_idx += 1;
+            next_match_idx = value_idx;
+            continue;
+        }
+
+        if let Some(star) = star_idx {
+            pattern_idx = star + 1;
+            next_match_idx += 1;
+            value_idx = next_match_idx;
+            continue;
+        }
+
+        return false;
+    }
+
+    while pattern_idx < pattern_bytes.len() && pattern_bytes[pattern_idx] == b'*' {
+        pattern_idx += 1;
+    }
+
+    pattern_idx == pattern_bytes.len()
 }
 
 fn permission_mode_from_plugin(value: &str) -> Result<PermissionMode, String> {
@@ -1988,8 +2100,7 @@ fn git_ref_exists(reference: &str) -> bool {
     Command::new("git")
         .args(["rev-parse", "--verify", "--quiet", reference])
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|output| output.status.success())
 }
 
 fn git_stdout(args: &[&str]) -> Option<String> {
@@ -4652,8 +4763,12 @@ async fn stream_with_provider(
                         input.push_str(&partial_json);
                     }
                 }
-                ContentBlockDelta::ThinkingDelta { .. }
-                | ContentBlockDelta::SignatureDelta { .. } => {}
+                ContentBlockDelta::ThinkingDelta { thinking } => {
+                    if !thinking.is_empty() {
+                        events.push(AssistantEvent::ThinkingDelta(thinking));
+                    }
+                }
+                ContentBlockDelta::SignatureDelta { .. } => {}
             },
             ApiStreamEvent::ContentBlockStop(stop) => {
                 if let Some((id, name, input)) = pending_tools.remove(&stop.index) {
@@ -4675,6 +4790,7 @@ async fn stream_with_provider(
     if !saw_stop
         && events.iter().any(|event| {
             matches!(event, AssistantEvent::TextDelta(text) if !text.is_empty())
+                || matches!(event, AssistantEvent::ThinkingDelta(text) if !text.is_empty())
                 || matches!(event, AssistantEvent::ToolUse { .. })
         })
     {
@@ -4752,6 +4868,9 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
                 .iter()
                 .map(|block| match block {
                     ContentBlock::Text { text } => InputContentBlock::Text { text: text.clone() },
+                    ContentBlock::ReasoningContent { text } => {
+                        InputContentBlock::ReasoningContent { text: text.clone() }
+                    }
                     ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
@@ -4804,7 +4923,12 @@ fn push_output_block(
             };
             pending_tools.insert(block_index, (id, name, initial_input));
         }
-        OutputContentBlock::Thinking { .. } | OutputContentBlock::RedactedThinking { .. } => {}
+        OutputContentBlock::Thinking { thinking, .. } => {
+            if !thinking.is_empty() {
+                events.push(AssistantEvent::ThinkingDelta(thinking));
+            }
+        }
+        OutputContentBlock::RedactedThinking { .. } => {}
     }
 }
 
@@ -5917,8 +6041,7 @@ fn command_exists(command: &str) -> bool {
         .arg("-lc")
         .arg(format!("command -v {command} >/dev/null 2>&1"))
         .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .is_ok_and(|status| status.success())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -6947,6 +7070,75 @@ mod tests {
             output["mcp_degraded"]["failed_servers"][0]["phase"],
             "tool_discovery"
         );
+    }
+
+    #[test]
+    fn normalize_allowed_tools_supports_wildcard_patterns() {
+        let registry = GlobalToolRegistry::builtin()
+            .with_runtime_tools(vec![
+                super::RuntimeToolDefinition {
+                    name: "mcp__demo__echo".to_string(),
+                    description: Some("Echo text from the demo MCP server".to_string()),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": { "text": { "type": "string" } },
+                        "additionalProperties": false
+                    }),
+                    required_permission: runtime::PermissionMode::ReadOnly,
+                },
+                super::RuntimeToolDefinition {
+                    name: "mcp__demo__sum".to_string(),
+                    description: Some("Add two numbers".to_string()),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "left": { "type": "number" },
+                            "right": { "type": "number" }
+                        },
+                        "additionalProperties": false
+                    }),
+                    required_permission: runtime::PermissionMode::ReadOnly,
+                },
+            ])
+            .expect("runtime tools should register");
+
+        let allowed = registry
+            .normalize_allowed_tools(&["mcp__demo__*".to_string()])
+            .expect("runtime wildcard allow-list should parse")
+            .expect("allow-list should be populated");
+
+        assert!(allowed.contains("mcp__demo__echo"));
+        assert!(allowed.contains("mcp__demo__sum"));
+
+        let definitions = registry.definitions(Some(&allowed));
+        let definition_names = definitions
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            definition_names,
+            BTreeSet::from(["mcp__demo__echo", "mcp__demo__sum"])
+        );
+    }
+
+    #[test]
+    fn normalize_allowed_tools_wildcard_allows_all_tools() {
+        let registry = GlobalToolRegistry::builtin();
+        let allowed = registry
+            .normalize_allowed_tools(&["*".to_string()])
+            .expect("global wildcard allow-list should parse")
+            .expect("allow-list should be populated");
+        assert!(allowed.contains("read_file"));
+        assert!(allowed.contains("MCP"));
+    }
+
+    #[test]
+    fn normalize_allowed_tools_wildcard_without_match_fails() {
+        let registry = GlobalToolRegistry::builtin();
+        let error = registry
+            .normalize_allowed_tools(&["mcp__no_such_server__*".to_string()])
+            .expect_err("wildcard without any matches must fail");
+        assert!(error.contains("unsupported tool pattern in --allowedTools"));
     }
 
     #[test]
