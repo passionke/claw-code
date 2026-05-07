@@ -2061,6 +2061,7 @@ mod tests {
             stop: Some(vec!["\n".to_string()]),
             reasoning_effort: None,
             thinking_enabled: None,
+            extra_headers: Default::default(),
         };
         let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
         assert_eq!(payload["temperature"], 0.7);

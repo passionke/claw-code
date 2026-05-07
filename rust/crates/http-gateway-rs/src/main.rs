@@ -14,9 +14,9 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use runtime::{
-    ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
-    ConversationMessage, ConversationRuntime, McpServerManager, MessageRole, PermissionMode,
-    PermissionPolicy, Session, ToolError, ToolExecutor as RuntimeToolExecutor, load_system_prompt,
+    load_system_prompt, ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader,
+    ContentBlock, ConversationMessage, ConversationRuntime, McpServerManager, MessageRole,
+    PermissionMode, PermissionPolicy, Session, ToolError, ToolExecutor as RuntimeToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -916,14 +916,18 @@ async fn get_effective_prompt(
     State(state): State<AppState>,
     AxumPath(ds_id): AxumPath<i64>,
 ) -> Result<Json<EffectivePromptResponse>, ApiError> {
-    build_effective_prompt_response(&state, ds_id).await.map(Json)
+    build_effective_prompt_response(&state, ds_id)
+        .await
+        .map(Json)
 }
 
 async fn post_effective_prompt(
     State(state): State<AppState>,
     AxumPath(ds_id): AxumPath<i64>,
 ) -> Result<Json<EffectivePromptResponse>, ApiError> {
-    build_effective_prompt_response(&state, ds_id).await.map(Json)
+    build_effective_prompt_response(&state, ds_id)
+        .await
+        .map(Json)
 }
 
 async fn build_effective_prompt_response(

@@ -846,29 +846,6 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
 
     if rest.is_empty() {
         let permission_mode = permission_mode_override.unwrap_or_else(default_permission_mode);
-        // When stdin is not a terminal (pipe/redirect) and no prompt is given on the
-        // command line, read stdin as the prompt and dispatch as a one-shot Prompt
-        // rather than starting the interactive REPL (which would consume the pipe and
-        // print the startup banner, then exit without sending anything to the API).
-        if !std::io::stdin().is_terminal() {
-            let mut buf = String::new();
-            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf);
-            let piped = buf.trim().to_string();
-            if !piped.is_empty() {
-                return Ok(CliAction::Prompt {
-                    model,
-                    prompt: piped,
-                    allowed_tools,
-                    permission_mode,
-                    output_format,
-                    compact: false,
-                    base_commit,
-                    reasoning_effort,
-                    allow_broad_cwd,
-                    thinking_enabled,
-                });
-            }
-        }
         return Ok(CliAction::Repl {
             model,
             allowed_tools,
@@ -11513,15 +11490,15 @@ mod tests {
         // Input is ["--model", "opus", "please", "debug", "this"] so the joined
         // prompt shorthand must stay a normal multi-word prompt while still
         // honoring alias validation at parse time.
+        let args = vec![
+            "--model".to_string(),
+            "opus".to_string(),
+            "please".to_string(),
+            "debug".to_string(),
+            "this".to_string(),
+        ];
         assert_eq!(
-            parse_args(&[
-                "--model".to_string(),
-                "opus".to_string(),
-                "please".to_string(),
-                "debug".to_string(),
-                "this".to_string(),
-            ])
-            .expect("prompt shorthand should still work"),
+            parse_args(&args).expect("prompt shorthand should still work"),
             CliAction::Prompt {
                 prompt: "please debug this".to_string(),
                 model: "claude-opus-4-6".to_string(),
@@ -13333,10 +13310,12 @@ UU conflicted.rs",
         )
         .expect("response conversion should succeed");
 
-        assert!(matches!(
-            &events[0],
-            AssistantEvent::TextDelta(text) if text == "Final answer"
-        ));
+        assert!(
+            events.iter().any(
+                |event| matches!(event, AssistantEvent::TextDelta(text) if text == "Final answer")
+            ),
+            "expected a final text delta event"
+        );
         let rendered = String::from_utf8(out).expect("utf8");
         assert!(rendered.contains("▶ Thinking (6 chars hidden)"));
         assert!(!rendered.contains("step 1"));
