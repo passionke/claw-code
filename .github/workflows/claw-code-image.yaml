@@ -12,6 +12,8 @@ permissions:
 
 jobs:
   build-and-push:
+    # Only package release tags; do not build on main (or other branches).
+    if: startsWith(github.ref, 'refs/tags/release-')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -41,17 +43,22 @@ jobs:
           fi
           echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
 
-      - name: Compute image tags
+      - name: Image tags (sha-12 + latest)
         id: meta
         run: |
+          set -euo pipefail
           IMAGE="ghcr.io/${{ github.repository_owner }}/claw-code"
+          SHA12="${GITHUB_SHA:0:12}"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=${IMAGE}:sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
-            echo "latest_tag=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
-          fi
+          echo "sha12=${SHA12}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:sha-${SHA12}"
+            echo "${IMAGE}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push (sha)
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -59,15 +66,4 @@ jobs:
           push: true
           build-args: |
             RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
-          tags: ${{ steps.meta.outputs.sha_tag }}
-
-      - name: Build and push (latest)
-        if: github.ref_name == 'main'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./deploy/podman/Containerfile.gateway-rs
-          push: true
-          build-args: |
-            RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
-          tags: ${{ steps.meta.outputs.latest_tag }}
+          tags: ${{ steps.meta.outputs.tags }}
