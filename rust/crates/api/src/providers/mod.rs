@@ -301,6 +301,15 @@ pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
     // ships a large system prompt and tool schemas, so 16_384 output often blocks with
     // "Context window blocked" before the request is sent. Users can raise with
     // `CLAW_CODE_MAX_TOKENS` when the deployment has more headroom. kejiqing
+    //
+    // qwen3-max deployments usually expose a much larger context window than
+    // local qwen3.* vLLM defaults; keep preflight permissive here.
+    if lower == "openai/qwen3-max" {
+        return Some(ModelTokenLimit {
+            max_output_tokens: 32_768,
+            context_window_tokens: 262_144,
+        });
+    }
     if lower.starts_with("openai/qwen3.6") || lower.starts_with("openai/qwen3-") {
         return Some(ModelTokenLimit {
             max_output_tokens: 4_096,
@@ -730,6 +739,14 @@ mod tests {
         let lim = model_token_limit("openai/qwen3.6-35b").expect("limit");
         assert_eq!(lim.max_output_tokens, 4_096);
         assert_eq!(lim.context_window_tokens, 32_768);
+    }
+
+    #[test]
+    fn openai_qwen3_max_uses_large_context_window() {
+        assert_eq!(max_tokens_for_model("openai/qwen3-max"), 32_768);
+        let lim = model_token_limit("openai/qwen3-max").expect("limit");
+        assert_eq!(lim.max_output_tokens, 32_768);
+        assert_eq!(lim.context_window_tokens, 262_144);
     }
 
     #[test]

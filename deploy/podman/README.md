@@ -14,6 +14,12 @@ This deployment runs two processes:
 ./deploy/podman/build.sh
 ```
 
+Optional: build with a specific tag (for release deployment):
+
+```bash
+./deploy/podman/build.sh release-v1.0.8
+```
+
 ## 2) Configure env
 
 ```bash

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+if [[ ! -d "${repo_root}/rust" ]]; then
+  echo "[pre-push] skip: rust workspace not found"
+  exit 0
+fi
+
+echo "[pre-push] running cargo fmt --all --check"
+(
+  cd "${repo_root}/rust"
+  cargo fmt --all --check
+)
+
+echo "[pre-push] rustfmt check passed"
+
+echo "[pre-push] running cargo clippy --workspace --all-targets -- -D warnings"
+(
+  cd "${repo_root}/rust"
+  cargo clippy --workspace --all-targets -- -D warnings
+)
+
+echo "[pre-push] clippy check passed"
+
+echo "[pre-push] running cargo test --workspace"
+(
+  cd "${repo_root}/rust"
+  cargo test --workspace
+)
+
+echo "[pre-push] all checks passed"

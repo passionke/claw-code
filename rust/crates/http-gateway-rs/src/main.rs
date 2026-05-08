@@ -51,7 +51,7 @@ const DEFAULT_SYSTEM_DATE: &str = match option_env!("BUILD_DATE") {
     _ => "1970-01-01",
 };
 
-/// Per-request id from `x-request-id` or generated; inserted by middleware. kejiqing
+/// Session id from `claw-session-id` (fallback `x-request-id`) or generated. kejiqing
 #[derive(Clone)]
 struct HttpRequestId(pub String);
 
@@ -98,6 +98,9 @@ struct SolveRequest {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct SolveResponse {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    // Backward-compat field; keep in sync with sessionId.
     #[serde(rename = "requestId")]
     request_id: String,
     #[serde(rename = "dsId")]
@@ -118,6 +121,9 @@ struct SolveResponse {
 struct SolveAsyncResponse {
     #[serde(rename = "taskId")]
     task_id: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    // Backward-compat field; keep in sync with sessionId.
     #[serde(rename = "requestId")]
     request_id: String,
     status: String,
@@ -170,6 +176,9 @@ struct EffectivePromptResponse {
 struct TaskRecord {
     #[serde(rename = "taskId")]
     task_id: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    // Backward-compat field; keep in sync with sessionId.
     #[serde(rename = "requestId")]
     request_id: String,
     status: String,
@@ -207,6 +216,9 @@ struct InjectMcpRequest {
 
 #[derive(Debug, Serialize)]
 struct McpResponse {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    // Backward-compat field; keep in sync with sessionId.
     #[serde(rename = "requestId")]
     request_id: String,
     #[serde(rename = "dsId")]
@@ -401,16 +413,31 @@ fn init_tracing() {
 async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
     let id = req
         .headers()
-        .get("x-request-id")
+        .get("claw-session-id")
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map_or_else(|| Uuid::new_v4().simple().to_string(), ToString::to_string);
+        .map(ToString::to_string)
+        .or_else(|| {
+            req.headers()
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
     req.extensions_mut().insert(HttpRequestId(id.clone()));
     let mut res = next.run(req).await;
     if let Ok(value) = http::HeaderValue::from_str(&id) {
         res.headers_mut()
             .insert(http::header::HeaderName::from_static("x-request-id"), value);
+    }
+    if let Ok(value) = http::HeaderValue::from_str(&id) {
+        res.headers_mut().insert(
+            http::header::HeaderName::from_static("claw-session-id"),
+            value,
+        );
     }
     res
 }
@@ -645,8 +672,9 @@ async fn openapi() -> Json<Value> {
                 },
                 "SolveResponse": {
                     "type": "object",
-                    "required": ["requestId", "dsId", "workDir", "durationMs", "clawExitCode", "outputText"],
+                    "required": ["sessionId", "requestId", "dsId", "workDir", "durationMs", "clawExitCode", "outputText"],
                     "properties": {
+                        "sessionId": { "type": "string" },
                         "requestId": { "type": "string" },
                         "dsId": { "type": "integer", "format": "int64" },
                         "workDir": { "type": "string" },
@@ -658,9 +686,10 @@ async fn openapi() -> Json<Value> {
                 },
                 "SolveAsyncResponse": {
                     "type": "object",
-                    "required": ["taskId", "requestId", "status", "pollUrl"],
+                    "required": ["taskId", "sessionId", "requestId", "status", "pollUrl"],
                     "properties": {
                         "taskId": { "type": "string" },
+                        "sessionId": { "type": "string" },
                         "requestId": { "type": "string" },
                         "status": { "type": "string" },
                         "pollUrl": { "type": "string" }
@@ -677,8 +706,9 @@ async fn openapi() -> Json<Value> {
                 },
                 "McpResponse": {
                     "type": "object",
-                    "required": ["requestId", "dsId", "injectedServerNames", "loaded", "missingServers", "configuredServers", "status", "mcpReport"],
+                    "required": ["sessionId", "requestId", "dsId", "injectedServerNames", "loaded", "missingServers", "configuredServers", "status", "mcpReport"],
                     "properties": {
+                        "sessionId": { "type": "string" },
                         "requestId": { "type": "string" },
                         "dsId": { "type": "integer", "format": "int64" },
                         "injectedServerNames": { "type": "array", "items": { "type": "string" } },
@@ -691,9 +721,10 @@ async fn openapi() -> Json<Value> {
                 },
                 "TaskRecord": {
                     "type": "object",
-                    "required": ["taskId", "requestId", "status", "createdAtMs"],
+                    "required": ["taskId", "sessionId", "requestId", "status", "createdAtMs"],
                     "properties": {
                         "taskId": { "type": "string" },
+                        "sessionId": { "type": "string" },
                         "requestId": { "type": "string" },
                         "status": { "type": "string" },
                         "createdAtMs": { "type": "integer", "format": "int64" },
@@ -1089,7 +1120,8 @@ async fn solve_async(
     Json(req): Json<SolveRequest>,
 ) -> Result<Json<SolveAsyncResponse>, ApiError> {
     let request_id = http_request_id.0.clone();
-    let task_id = Uuid::new_v4().simple().to_string();
+    // Keep async tracking stable: taskId is the same logical id as requestId.
+    let task_id = request_id.clone();
     info!(
         request_id = %request_id,
         task_id = %task_id,
@@ -1104,6 +1136,7 @@ async fn solve_async(
             task_id.clone(),
             TaskRecord {
                 task_id: task_id.clone(),
+                session_id: request_id.clone(),
                 request_id: request_id.clone(),
                 status: "queued".to_string(),
                 created_at_ms: now_ms(),
@@ -1174,6 +1207,7 @@ async fn solve_async(
     });
     Ok(Json(SolveAsyncResponse {
         task_id: task_id.clone(),
+        session_id: request_id.clone(),
         request_id: request_id.clone(),
         status: "queued".to_string(),
         poll_url: format!("/v1/tasks/{task_id}"),
@@ -1298,6 +1332,7 @@ async fn run_solve_request(
         "gateway_solve"
     );
     Ok(SolveResponse {
+        session_id: request_id.clone(),
         request_id,
         ds_id: req.ds_id,
         work_dir: work_dir.display().to_string(),
@@ -1310,9 +1345,10 @@ async fn run_solve_request(
 
 async fn inject_mcp(
     State(state): State<AppState>,
+    Extension(http_request_id): Extension<HttpRequestId>,
     Json(req): Json<InjectMcpRequest>,
 ) -> Result<Json<McpResponse>, ApiError> {
-    let request_id = Uuid::new_v4().simple().to_string();
+    let request_id = http_request_id.0.clone();
     if req.ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
     }
@@ -1337,6 +1373,7 @@ async fn inject_mcp(
         .cloned()
         .collect::<Vec<_>>();
     Ok(Json(McpResponse {
+        session_id: request_id.clone(),
         request_id,
         ds_id: req.ds_id,
         injected_server_names: names,
@@ -1351,9 +1388,10 @@ async fn inject_mcp(
 async fn get_injected_mcp(
     State(state): State<AppState>,
     AxumPath(ds_id): AxumPath<i64>,
+    Extension(http_request_id): Extension<HttpRequestId>,
     Query(query): Query<ProbeQuery>,
 ) -> Result<Json<McpResponse>, ApiError> {
-    let request_id = Uuid::new_v4().simple().to_string();
+    let request_id = http_request_id.0.clone();
     let timeout_seconds = query.probe_timeout_seconds.unwrap_or(15);
     let (report, loaded_names, configured_servers, status, names) =
         apply_settings_and_probe(&state, ds_id, timeout_seconds).await?;
@@ -1364,6 +1402,7 @@ async fn get_injected_mcp(
         .cloned()
         .collect::<Vec<_>>();
     Ok(Json(McpResponse {
+        session_id: request_id.clone(),
         request_id,
         ds_id,
         injected_server_names: names,
@@ -1378,9 +1417,10 @@ async fn get_injected_mcp(
 async fn delete_injected_mcp(
     State(state): State<AppState>,
     AxumPath(ds_id): AxumPath<i64>,
+    Extension(http_request_id): Extension<HttpRequestId>,
     Query(query): Query<DeleteQuery>,
 ) -> Result<Json<McpResponse>, ApiError> {
-    let request_id = Uuid::new_v4().simple().to_string();
+    let request_id = http_request_id.0.clone();
     {
         let mut injected = state.injected_mcp.lock().await;
         if let Some(names) = query.server_names {
@@ -1411,6 +1451,7 @@ async fn delete_injected_mcp(
         .cloned()
         .collect::<Vec<_>>();
     Ok(Json(McpResponse {
+        session_id: request_id.clone(),
         request_id,
         ds_id,
         injected_server_names: names,

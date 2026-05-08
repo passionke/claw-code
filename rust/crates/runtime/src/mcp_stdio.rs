@@ -639,6 +639,7 @@ impl McpServerManager {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn call_tool(
         &mut self,
         qualified_tool_name: &str,
@@ -723,12 +724,9 @@ impl McpServerManager {
                 self.reset_server(&route.server_name).await?;
             }
         } else if let Ok(payload) = &response {
-            let result_chars = payload
-                .result
-                .as_ref()
-                .map_or(0usize, |result| {
-                    serde_json::to_string(result).map_or(0usize, |s| s.chars().count())
-                });
+            let result_chars = payload.result.as_ref().map_or(0usize, |result| {
+                serde_json::to_string(result).map_or(0usize, |s| s.chars().count())
+            });
             // For boundary debugging: when the model calls `mcp_start`, print the full returned payload.
             // This is intentionally verbose to make it provable what session token fields are returned.
             let mcp_start_full_result = tool_name
