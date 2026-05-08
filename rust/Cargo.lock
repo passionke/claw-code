@@ -1582,6 +1582,7 @@ dependencies = [
  "sha2",
  "telemetry",
  "tokio",
+ "tracing",
  "walkdir",
 ]
 

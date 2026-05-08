@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tokio::time::timeout;
+use tracing::{info, warn};
 
 use crate::config::{McpTransport, RuntimeConfig, ScopedMcpServerConfig};
 use crate::mcp::mcp_tool_name;
@@ -653,9 +654,36 @@ impl McpServerManager {
             })?;
 
         let timeout_ms = self.tool_call_timeout_ms(&route.server_name)?;
+        let tool_name = route.raw_name.clone();
+        let server_name = route.server_name.clone();
+        let arguments_chars = arguments
+            .as_ref()
+            .map_or(0usize, |value| value.to_string().chars().count());
+        let has_meta = meta.is_some();
+        let has_meta_extra = meta
+            .as_ref()
+            .and_then(|value| value.get("extra_session"))
+            .is_some();
+        let meta_extra = meta
+            .as_ref()
+            .and_then(|value| value.get("extra_session"))
+            .cloned()
+            .unwrap_or(JsonValue::Null);
 
         self.ensure_server_ready(&route.server_name).await?;
         let request_id = self.take_request_id();
+        info!(
+            target: "claw.mcp.boundary",
+            server_name = %server_name,
+            tool_name = %tool_name,
+            qualified_tool_name = %qualified_tool_name,
+            timeout_ms,
+            arguments_chars,
+            has_meta,
+            has_meta_extra,
+            meta_extra = %meta_extra,
+            "mcp_tools_call_start"
+        );
         let response =
             {
                 let server = self.server_mut(&route.server_name)?;
@@ -673,7 +701,7 @@ impl McpServerManager {
                     process.call_tool(
                         request_id,
                         McpToolCallParams {
-                            name: route.raw_name,
+                            name: tool_name.clone(),
                             arguments,
                             meta,
                         },
@@ -683,9 +711,45 @@ impl McpServerManager {
             };
 
         if let Err(error) = &response {
+            warn!(
+                target: "claw.mcp.boundary",
+                server_name = %server_name,
+                tool_name = %tool_name,
+                qualified_tool_name = %qualified_tool_name,
+                error = %error,
+                "mcp_tools_call_error"
+            );
             if Self::should_reset_server(error) {
                 self.reset_server(&route.server_name).await?;
             }
+        } else if let Ok(payload) = &response {
+            let result_chars = payload
+                .result
+                .as_ref()
+                .map_or(0usize, |result| {
+                    serde_json::to_string(result).map_or(0usize, |s| s.chars().count())
+                });
+            // For boundary debugging: when the model calls `mcp_start`, print the full returned payload.
+            // This is intentionally verbose to make it provable what session token fields are returned.
+            let mcp_start_full_result = tool_name
+                .contains("mcp_start")
+                .then(|| {
+                    payload
+                        .result
+                        .as_ref()
+                        .and_then(|r| serde_json::to_string(r).ok())
+                })
+                .flatten();
+            info!(
+                target: "claw.mcp.boundary",
+                server_name = %server_name,
+                tool_name = %tool_name,
+                qualified_tool_name = %qualified_tool_name,
+                has_jsonrpc_error = payload.error.is_some(),
+                result_chars,
+                mcp_start_full_result = mcp_start_full_result.as_deref().unwrap_or(""),
+                "mcp_tools_call_finish"
+            );
         }
 
         response
