@@ -1,6 +1,6 @@
-//! Provider/runtime trace lines (`[runtime-boundary]`, `[boundary-out]`, …).
-//! **On by default** so agent failures are diagnosable; set `CLAW_BOUNDARY_LOG=0` (or `false` /
-//! `no` / `off`) for a quiet console. kejiqing
+//! Provider boundary diagnostics: emitted via `tracing` target `claw.boundary` (JSON when the
+//! process uses `tracing-subscriber` JSON). **On by default**; set `CLAW_BOUNDARY_LOG=0` (or
+//! `false` / `no` / `off`) to disable. kejiqing
 
 /// Process env: unset or truthy → stderr boundary traces on; `0` / `false` / `no` / `off` → off.
 pub const BOUNDARY_LOG_ENV: &str = "CLAW_BOUNDARY_LOG";

@@ -12,10 +12,16 @@ services:
       CLAW_CONFIG_FILE: /app/.claw.json
       CLAW_TIMEOUT_SECONDS: ${CLAW_TIMEOUT_SECONDS}
       OPENAI_BASE_URL: ${INTERNAL_CLAUDE_TAP_HOST}/v1
+      CLAW_LOG_FORMAT: json
+      CLAW_LOG_LEVEL: ${CLAW_LOG_LEVEL:-info}
+      CLAW_TRACE_ENABLED: ${CLAW_TRACE_ENABLED:-1}
+      CLAW_TRACE_DIR: /var/log/claw/traces
+      CLAW_SSE_LOG_FILE: /var/log/claw/sse-debug.log
     ports:
       - "${GATEWAY_HOST_PORT}:8080"
     volumes:
       - claw_workspace:/var/lib/claw/workspace
+      - ${CLAW_HOST_LOG_DIR:-./claw-logs}:/var/log/claw
       - ../../.claw.json:/app/.claw.json:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz | grep -q '\"ok\":true'"]

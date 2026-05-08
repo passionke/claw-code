@@ -24,7 +24,7 @@ COPY --from=builder /build/target/release/http-gateway-rs /usr/local/bin/http-ga
 ENV CLAW_HTTP_ADDR=0.0.0.0:8080
 ENV CLAW_WORK_ROOT=/var/lib/claw/workspace
 
-RUN mkdir -p /var/lib/claw/workspace
+RUN mkdir -p /var/lib/claw/workspace /var/log/claw/traces
 
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/http-gateway-rs"]

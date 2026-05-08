@@ -24,6 +24,10 @@ Set in `deploy/podman/.env`:
 - `GATEWAY_IMAGE`
 - `GATEWAY_HOST_PORT`
 - `INTERNAL_CLAUDE_TAP_HOST` (usually `http://host.containers.internal:8080`)
+- `CLAW_HOST_LOG_DIR` (host bind mount for `/var/log/claw`: JSON stdout from `podman logs` is separate; trace `.ndjson` and `sse-debug.log` persist here across container recreation)
+- optional `CLAW_LOG_LEVEL` (default `info`), `CLAW_TRACE_ENABLED` (default `1`)
+
+If `CLAW_HOST_LOG_DIR` points at a path that does not exist yet, create it on the host (default in `.env.example` is `./claw-logs` under `deploy/podman/`).
 
 Set in root `.env`:
 - `OPENAI_API_KEY`

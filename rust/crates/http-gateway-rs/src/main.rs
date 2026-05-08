@@ -1,3 +1,17 @@
+//! Axum gateway: single-binary integration surface (keeps clippy noise localized).
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::result_large_err)]
+#![allow(clippy::await_holding_lock)]
+#![allow(clippy::format_push_string)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::implicit_clone)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::unnecessary_filter_map)]
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -8,8 +22,9 @@ use api::{
     ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, OutputContentBlock,
     ProviderClient, StreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -20,12 +35,14 @@ use runtime::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use telemetry::{JsonlTelemetrySink, SessionTracer};
 use tokio::fs;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tools::{execute_tool, initialize_mcp_bridge, mvp_tool_specs};
 use tower_http::trace::TraceLayer;
+use tracing::field::Empty;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -33,6 +50,16 @@ const DEFAULT_SYSTEM_DATE: &str = match option_env!("BUILD_DATE") {
     Some(value) if !value.is_empty() => value,
     _ => "1970-01-01",
 };
+
+/// Per-request id from `x-request-id` or generated; inserted by middleware. kejiqing
+#[derive(Clone)]
+struct HttpRequestId(pub String);
+
+#[derive(Clone)]
+struct RunSolveContext {
+    request_id: String,
+    task_id: Option<String>,
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -345,11 +372,52 @@ impl IntoResponse for ApiError {
     }
 }
 
+fn init_tracing() {
+    let filter = if let Ok(level) = std::env::var("CLAW_LOG_LEVEL") {
+        tracing_subscriber::EnvFilter::new(level)
+    } else {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+    };
+    let format = std::env::var("CLAW_LOG_FORMAT")
+        .unwrap_or_else(|_| "json".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    if format == "json" {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter)
+            .with_current_span(false)
+            .with_target(true)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .init();
+    }
+}
+
+async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
+    let id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| Uuid::new_v4().simple().to_string(), ToString::to_string);
+    req.extensions_mut().insert(HttpRequestId(id.clone()));
+    let mut res = next.run(req).await;
+    if let Ok(value) = http::HeaderValue::from_str(&id) {
+        res.headers_mut()
+            .insert(http::header::HeaderName::from_static("x-request-id"), value);
+    }
+    res
+}
+
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    init_tracing();
 
     let cfg = GatewayConfig {
         claw_bin: std::env::var("CLAW_BIN").unwrap_or_else(|_| "claw".to_string()),
@@ -412,7 +480,36 @@ async fn main() {
         .route("/v1/mcp/inject", post(inject_mcp))
         .route("/v1/mcp/injected/{ds_id}", get(get_injected_mcp))
         .route("/v1/mcp/injected/{ds_id}", delete(delete_injected_mcp))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &http::Request<axum::body::Body>| {
+                    let request_id = request
+                        .extensions()
+                        .get::<HttpRequestId>()
+                        .map_or("-", |h| h.0.as_str());
+                    tracing::info_span!(
+                        "http_request",
+                        http.method = %request.method(),
+                        http.uri = %request.uri(),
+                        http.version = ?request.version(),
+                        request_id = %request_id,
+                        http.status_code = Empty,
+                        latency_ms = Empty,
+                    )
+                })
+                .on_response(
+                    |response: &http::Response<axum::body::Body>,
+                     latency: std::time::Duration,
+                     span: &tracing::Span| {
+                        span.record(
+                            "http.status_code",
+                            tracing::field::display(response.status().as_u16()),
+                        );
+                        span.record("latency_ms", latency.as_millis() as u64);
+                    },
+                ),
+        )
+        .layer(middleware::from_fn(inject_http_request_id))
         .with_state(state);
 
     let addr = std::env::var("CLAW_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
@@ -768,10 +865,26 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
 
 async fn solve(
     State(state): State<AppState>,
+    Extension(http_request_id): Extension<HttpRequestId>,
     Json(req): Json<SolveRequest>,
 ) -> Result<Json<SolveResponse>, ApiError> {
-    let request_id = Uuid::new_v4().simple().to_string();
-    let result = run_solve_request(state, req, request_id).await?;
+    let request_id = http_request_id.0.clone();
+    info!(
+        request_id = %request_id,
+        ds_id = req.ds_id,
+        endpoint = "/v1/solve",
+        phase = "accepted",
+        "gateway_solve"
+    );
+    let result = run_solve_request(
+        state,
+        req,
+        RunSolveContext {
+            request_id,
+            task_id: None,
+        },
+    )
+    .await?;
     Ok(Json(result))
 }
 
@@ -972,16 +1085,26 @@ async fn build_effective_prompt_response(
 
 async fn solve_async(
     State(state): State<AppState>,
+    Extension(http_request_id): Extension<HttpRequestId>,
     Json(req): Json<SolveRequest>,
 ) -> Result<Json<SolveAsyncResponse>, ApiError> {
+    let request_id = http_request_id.0.clone();
     let task_id = Uuid::new_v4().simple().to_string();
+    info!(
+        request_id = %request_id,
+        task_id = %task_id,
+        ds_id = req.ds_id,
+        endpoint = "/v1/solve_async",
+        phase = "queued",
+        "gateway_solve_async"
+    );
     {
         let mut tasks = state.tasks.lock().await;
         tasks.insert(
             task_id.clone(),
             TaskRecord {
                 task_id: task_id.clone(),
-                request_id: task_id.clone(),
+                request_id: request_id.clone(),
                 status: "queued".to_string(),
                 created_at_ms: now_ms(),
                 started_at_ms: None,
@@ -993,6 +1116,7 @@ async fn solve_async(
     }
     let state_clone = state.clone();
     let task_id_for_worker = task_id.clone();
+    let rid = request_id.clone();
     tokio::spawn(async move {
         {
             let mut tasks = state_clone.tasks.lock().await;
@@ -1001,26 +1125,56 @@ async fn solve_async(
                 task.started_at_ms = Some(now_ms());
             }
         }
-        let result = run_solve_request(state_clone.clone(), req, task_id_for_worker.clone()).await;
+        info!(
+            request_id = %rid,
+            task_id = %task_id_for_worker,
+            phase = "running",
+            "gateway_solve_async"
+        );
+        let result = run_solve_request(
+            state_clone.clone(),
+            req,
+            RunSolveContext {
+                request_id: rid.clone(),
+                task_id: Some(task_id_for_worker.clone()),
+            },
+        )
+        .await;
         let mut tasks = state_clone.tasks.lock().await;
         if let Some(task) = tasks.get_mut(&task_id_for_worker) {
             task.finished_at_ms = Some(now_ms());
             match result {
                 Ok(v) => {
+                    let duration_ms = v.duration_ms;
                     task.status = "succeeded".to_string();
                     task.result = Some(v);
+                    info!(
+                        request_id = %rid,
+                        task_id = %task_id_for_worker,
+                        phase = "succeeded",
+                        duration_ms,
+                        "gateway_solve_async"
+                    );
                 }
                 Err(e) => {
                     task.status = "failed".to_string();
                     task.error =
                         Some(json!({"status_code": e.status.as_u16(), "detail": e.message}));
+                    warn!(
+                        request_id = %rid,
+                        task_id = %task_id_for_worker,
+                        phase = "failed",
+                        status_code = e.status.as_u16(),
+                        error = %e.message,
+                        "gateway_solve_async"
+                    );
                 }
             }
         }
     });
     Ok(Json(SolveAsyncResponse {
         task_id: task_id.clone(),
-        request_id: task_id.clone(),
+        request_id: request_id.clone(),
         status: "queued".to_string(),
         poll_url: format!("/v1/tasks/{task_id}"),
     }))
@@ -1029,19 +1183,33 @@ async fn solve_async(
 async fn get_task(
     State(state): State<AppState>,
     AxumPath(task_id): AxumPath<String>,
+    Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
     let tasks = state.tasks.lock().await;
     let task = tasks.get(&task_id).cloned().ok_or_else(|| {
         ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
     })?;
+    info!(
+        request_id = %http_request_id.0,
+        task_id = %task_id,
+        task_request_id = %task.request_id,
+        task_status = %task.status,
+        endpoint = "/v1/tasks/{task_id}",
+        phase = "poll",
+        "gateway_task"
+    );
     Ok(Json(task))
 }
 
 async fn run_solve_request(
     state: AppState,
     req: SolveRequest,
-    request_id: String,
+    ctx: RunSolveContext,
 ) -> Result<SolveResponse, ApiError> {
+    let RunSolveContext {
+        request_id,
+        task_id,
+    } = ctx;
     if req.ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
     }
@@ -1068,6 +1236,13 @@ async fn run_solve_request(
         }
     }
     let started = Instant::now();
+    info!(
+        request_id = %request_id,
+        task_id = task_id.as_deref().unwrap_or("-"),
+        ds_id = req.ds_id,
+        phase = "solve_run_start",
+        "gateway_solve"
+    );
     let timeout_seconds = req
         .timeout_seconds
         .unwrap_or(state.cfg.default_timeout_seconds);
@@ -1113,11 +1288,20 @@ async fn run_solve_request(
         req.extra_session.clone(),
         state.cfg.default_max_iterations,
     )?;
+    let duration_ms = started.elapsed().as_millis() as i64;
+    info!(
+        request_id = %request_id,
+        task_id = task_id.as_deref().unwrap_or("-"),
+        ds_id = req.ds_id,
+        phase = "solve_run_ok",
+        duration_ms,
+        "gateway_solve"
+    );
     Ok(SolveResponse {
         request_id,
         ds_id: req.ds_id,
         work_dir: work_dir.display().to_string(),
-        duration_ms: started.elapsed().as_millis() as i64,
+        duration_ms,
         claw_exit_code: code,
         output_text,
         output_json,
@@ -1379,6 +1563,40 @@ fn initialize_mcp_runtime(
     Ok((runtime_mcp_tools, runtime_mcp_tool_names, Some(manager)))
 }
 
+/// Runtime JSONL trace for gateway solves; mirrors CLI env (`CLAW_TRACE_*`). kejiqing
+fn gateway_trace_file_path(trace_id: &str) -> Option<PathBuf> {
+    if let Ok(raw) = std::env::var("CLAW_TRACE_FILE") {
+        let p = raw.trim();
+        if !p.is_empty() {
+            return Some(PathBuf::from(p));
+        }
+    }
+    let enabled = std::env::var("CLAW_TRACE_ENABLED")
+        .unwrap_or_else(|_| "1".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(enabled.as_str(), "1" | "true" | "yes" | "on") {
+        return None;
+    }
+    let dir = std::env::var("CLAW_TRACE_DIR")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/var/log/claw/traces".to_string());
+    Some(PathBuf::from(dir).join(format!("{trace_id}.ndjson")))
+}
+
+fn gateway_session_tracer(request_id: &str) -> Option<SessionTracer> {
+    let trace_id = std::env::var("CLAW_TRACE_ID")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| request_id.to_string());
+    let path = gateway_trace_file_path(&trace_id)?;
+    let sink = JsonlTelemetrySink::new(path).ok()?;
+    Some(SessionTracer::new(trace_id, Arc::new(sink)))
+}
+
 fn run_runtime_prompt(
     work_dir: &Path,
     prompt: &str,
@@ -1437,6 +1655,9 @@ fn run_runtime_prompt(
         system_prompt,
     );
     runtime = runtime.with_max_iterations(max_iterations);
+    if let Some(tracer) = gateway_session_tracer(clawcode_session_id) {
+        runtime = runtime.with_session_tracer(tracer);
+    }
     let started = Instant::now();
     let result = runtime.run_turn(prompt, None).map_err(|e| {
         ApiError::new(

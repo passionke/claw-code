@@ -1,5 +1,9 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -27,6 +31,9 @@ const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(128);
 const DEFAULT_MAX_RETRIES: u32 = 8;
 const SSE_DEBUG_ENV: &str = "CLAW_SSE_DEBUG";
 const SSE_DEBUG_PREVIEW_CHARS_ENV: &str = "CLAW_SSE_DEBUG_PREVIEW_CHARS";
+/// Log file for SSE debug lines when `CLAW_SSE_DEBUG` is enabled (not mixed into stderr / main JSON logs). kejiqing
+const SSE_LOG_FILE_ENV: &str = "CLAW_SSE_LOG_FILE";
+const DEFAULT_SSE_LOG_PATH: &str = "/var/log/claw/sse-debug.log";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenAiCompatConfig {
@@ -177,14 +184,15 @@ impl OpenAiCompatClient {
         let body = response.text().await.map_err(ApiError::from)?;
         if boundary_log_enabled() {
             let body_elapsed_ms = boundary_started_at.elapsed().as_millis();
-            eprintln!(
-                "[boundary-body] provider={} model={} header_elapsed_ms={} body_elapsed_ms={} body_chars={} request_id={}",
-                self.config.provider_name,
-                request.model,
+            tracing::info!(
+                target: "claw.boundary",
+                event = "boundary_body",
+                provider = self.config.provider_name,
+                model = %request.model,
                 header_elapsed_ms,
                 body_elapsed_ms,
-                body.len(),
-                request_id.clone().unwrap_or_else(|| "-".to_string())
+                body_chars = body.len(),
+                request_id = request_id.as_deref().unwrap_or("-"),
             );
         }
         // Some backends return {"error":{"message":"...","type":"...","code":...}}
@@ -478,13 +486,14 @@ impl MessageStream {
                         self.saw_first_chunk = true;
                         first_chunk_just_seen = true;
                         if boundary_log_enabled() {
-                            eprintln!(
-                                "[boundary-stream-first] provider={} model={} elapsed_ms={} bytes={} request_id={}",
-                                self.parser.provider,
-                                self.parser.model,
+                            tracing::info!(
+                                target: "claw.boundary",
+                                event = "boundary_stream_first",
+                                provider = self.parser.provider,
+                                model = %self.parser.model,
                                 elapsed_ms,
-                                chunk.len(),
-                                self.request_id.clone().unwrap_or_else(|| "-".to_string())
+                                bytes = chunk.len(),
+                                request_id = self.request_id.as_deref().unwrap_or("-"),
                             );
                         }
                     }
@@ -545,14 +554,15 @@ impl MessageStream {
                 }
                 None => {
                     if boundary_log_enabled() {
-                        eprintln!(
-                            "[boundary-stream-eof] provider={} model={} elapsed_ms={} raw_chunks={} parsed_chunks={} request_id={}",
-                            self.parser.provider,
-                            self.parser.model,
-                            self.request_started_at.elapsed().as_millis(),
-                            self.raw_chunk_count,
-                            self.parsed_chunk_count,
-                            self.request_id.clone().unwrap_or_else(|| "-".to_string())
+                        tracing::info!(
+                            target: "claw.boundary",
+                            event = "boundary_stream_eof",
+                            provider = self.parser.provider,
+                            model = %self.parser.model,
+                            elapsed_ms = self.request_started_at.elapsed().as_millis(),
+                            raw_chunks = self.raw_chunk_count,
+                            parsed_chunks = self.parsed_chunk_count,
+                            request_id = self.request_id.as_deref().unwrap_or("-"),
                         );
                     }
                     if self.debug_enabled {
@@ -1627,11 +1637,50 @@ fn preview_for_log(payload: &str) -> String {
     }
 }
 
+static SSE_LOG_FILE: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
+
+fn sse_log_path() -> PathBuf {
+    std::env::var(SSE_LOG_FILE_ENV)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| PathBuf::from(DEFAULT_SSE_LOG_PATH), PathBuf::from)
+}
+
+fn sse_log_append_line(line: &str) {
+    let mutex = SSE_LOG_FILE.get_or_init(|| Mutex::new(None));
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if guard.is_none() {
+        let path = sse_log_path();
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        *guard = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok();
+    }
+    if let Some(file) = guard.as_mut() {
+        let _ = writeln!(file, "{line}");
+        let _ = file.flush();
+    } else {
+        tracing::warn!(
+            target: "claw.sse",
+            path = %sse_log_path().display(),
+            "sse_debug_log_open_failed"
+        );
+    }
+}
+
 fn sse_debug(provider: &str, model: &str, stage: &str, message: impl Into<String>) {
-    eprintln!(
+    let line = format!(
         "[sse-debug] provider={provider} model={model} stage={stage} {}",
         message.into()
     );
+    sse_log_append_line(&line);
 }
 
 fn log_boundary_request(provider: &str, model: &str, request_url: &str, payload: &Value) {
@@ -1674,17 +1723,22 @@ fn log_boundary_request(provider: &str, model: &str, request_url: &str, payload:
         })
         .take(20)
         .collect();
-    eprintln!(
-        "[boundary-out] provider={provider} model={model} url={request_url} payload_chars={payload_chars} messages={} system_msgs={} user_msgs={} assistant_msgs={} tool_msgs={} message_chars={} tools={} tool_schema_chars={} tool_names={:?}",
-        messages.len(),
+    tracing::info!(
+        target: "claw.boundary",
+        event = "boundary_out",
+        provider,
+        model,
+        url = request_url,
+        payload_chars,
+        messages = messages.len(),
         system_msgs,
         user_msgs,
         assistant_msgs,
         tool_msgs,
         message_chars,
-        tools.len(),
+        tools = tools.len(),
         tool_schema_chars,
-        tool_names
+        ?tool_names,
     );
 }
 
@@ -1700,12 +1754,15 @@ fn log_boundary_response(
         .get("content-length")
         .and_then(|value| value.to_str().ok())
         .unwrap_or("-");
-    eprintln!(
-        "[boundary-in] provider={provider} model={model} status={} elapsed_ms={} request_id={} content_length={}",
-        response.status(),
+    tracing::info!(
+        target: "claw.boundary",
+        event = "boundary_in",
+        provider,
+        model,
+        status = %response.status(),
         elapsed_ms,
         request_id,
-        content_length
+        content_length,
     );
 }
 
@@ -2061,7 +2118,7 @@ mod tests {
             stop: Some(vec!["\n".to_string()]),
             reasoning_effort: None,
             thinking_enabled: None,
-            extra_headers: Default::default(),
+            extra_headers: std::collections::BTreeMap::default(),
         };
         let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
         assert_eq!(payload["temperature"], 0.7);

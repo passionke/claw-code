@@ -20,6 +20,7 @@ use api::{
 };
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
+use std::collections::BTreeMap;
 
 /// Create a sample message request with various content types
 fn create_sample_request(message_count: usize) -> MessageRequest {
@@ -77,6 +78,7 @@ fn create_sample_request(message_count: usize) -> MessageRequest {
         stop: None,
         reasoning_effort: None,
         thinking_enabled: None,
+        extra_headers: BTreeMap::new(),
     }
 }
 
