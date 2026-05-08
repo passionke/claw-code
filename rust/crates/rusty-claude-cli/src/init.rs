@@ -376,16 +376,21 @@ fn framework_notes(detection: &RepoDetection) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{initialize_repo, render_init_claude_md, InitStatus};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
     fn temp_dir() -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("rusty-claude-init-{nanos}"))
+        let seq = TEMP_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("rusty-claude-init-{pid}-{nanos}-{seq}"))
     }
 
     #[test]
