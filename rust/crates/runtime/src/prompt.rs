@@ -3,6 +3,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde_json::Value;
+
 use crate::config::{ConfigError, ConfigLoader, RuntimeConfig};
 use crate::git_context::GitContext;
 
@@ -55,7 +57,7 @@ pub struct ContextFile {
 }
 
 /// Project-local context injected into the rendered system prompt.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectContext {
     pub cwd: PathBuf,
     pub current_date: String,
@@ -63,6 +65,8 @@ pub struct ProjectContext {
     pub git_diff: Option<String>,
     pub git_context: Option<GitContext>,
     pub instruction_files: Vec<ContextFile>,
+    /// HTTP gateway `extraSession` payload merged into `# Project context`. Author: kejiqing.
+    pub extra_session: Option<Value>,
 }
 
 impl ProjectContext {
@@ -79,6 +83,7 @@ impl ProjectContext {
             git_diff: None,
             git_context: None,
             instruction_files,
+            extra_session: None,
         })
     }
 
@@ -95,7 +100,7 @@ impl ProjectContext {
 }
 
 /// Builder for the runtime system prompt and dynamic environment sections.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SystemPromptBuilder {
     output_style_name: Option<String>,
     output_style_prompt: Option<String>,
@@ -302,6 +307,13 @@ fn render_project_context(project_context: &ProjectContext) -> String {
         ));
     }
     lines.extend(prepend_bullets(bullets));
+    if let Some(extra) = &project_context.extra_session {
+        lines.push(String::new());
+        lines.push("## HTTP gateway extraSession".to_string());
+        lines.push("Session-scoped JSON from the caller (tenant/user/workspace metadata, etc.). Use when relevant to the task.".to_string());
+        let body = serde_json::to_string_pretty(extra).unwrap_or_else(|_| extra.to_string());
+        lines.push(format!("```json\n{body}\n```"));
+    }
     if let Some(status) = &project_context.git_status {
         lines.push(String::new());
         lines.push("Git status snapshot:".to_string());
@@ -438,9 +450,11 @@ pub fn load_system_prompt(
     current_date: impl Into<String>,
     os_name: impl Into<String>,
     os_version: impl Into<String>,
+    extra_session: Option<Value>,
 ) -> Result<Vec<String>, PromptBuildError> {
     let cwd = cwd.into();
-    let project_context = ProjectContext::discover_with_git(&cwd, current_date.into())?;
+    let mut project_context = ProjectContext::discover_with_git(&cwd, current_date.into())?;
+    project_context.extra_session = extra_session;
     let config = ConfigLoader::default_for(&cwd).load()?;
     Ok(SystemPromptBuilder::new()
         .with_os(os_name, os_version)
@@ -530,6 +544,7 @@ mod tests {
         SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     };
     use crate::config::ConfigLoader;
+    use serde_json::json;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -812,7 +827,7 @@ mod tests {
         std::env::set_var("HOME", &root);
         std::env::set_var("CLAW_CONFIG_HOME", root.join("missing-home"));
         std::env::set_current_dir(&root).expect("change cwd");
-        let prompt = super::load_system_prompt(&root, "2026-03-31", "linux", "6.8")
+        let prompt = super::load_system_prompt(&root, "2026-03-31", "linux", "6.8", None)
             .expect("system prompt should load")
             .join(
                 "
@@ -909,5 +924,22 @@ mod tests {
         assert!(rendered.contains("# Claude instructions"));
         assert!(rendered.contains("scope: /tmp/project"));
         assert!(rendered.contains("Project rules"));
+    }
+
+    #[test]
+    fn injects_extra_session_into_project_context_section() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        let mut ctx = ProjectContext::discover(&root, "2026-03-31").expect("context");
+        ctx.extra_session = Some(json!({ "tenantId": "t1", "userId": "u2" }));
+        let prompt = SystemPromptBuilder::new()
+            .with_os("linux", "6.8")
+            .with_project_context(ctx)
+            .render();
+        assert!(prompt.contains("# Project context"));
+        assert!(prompt.contains("HTTP gateway extraSession"));
+        assert!(prompt.contains("\"tenantId\""));
+        assert!(prompt.contains("\"t1\""));
+        fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 }
