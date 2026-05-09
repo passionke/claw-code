@@ -1029,40 +1029,42 @@ async fn init_workspace(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(&state, req.ds_id).await;
-    let _guard = lock.lock().await;
-    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    let settings = build_settings(&state, req.ds_id).await;
-    let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("serialize settings failed: {e}"),
-        )
-    })?;
-    fs::write(work_dir.join(".claw/settings.json"), settings_content)
-        .await
-        .map_err(|e| {
+    {
+        let lock = get_ds_lock(&state, req.ds_id).await;
+        let _guard = lock.lock().await;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+        let settings = build_settings(&state, req.ds_id).await;
+        let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write settings failed: {e}"),
+                format!("serialize settings failed: {e}"),
             )
         })?;
-    let claude_md_path = work_dir.join("CLAUDE.md");
-    match fs::metadata(&claude_md_path).await {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::write(&claude_md_path, "").await.map_err(|e| {
+        fs::write(work_dir.join(".claw/settings.json"), settings_content)
+            .await
+            .map_err(|e| {
                 ApiError::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("write CLAUDE.md failed: {e}"),
+                    format!("write settings failed: {e}"),
                 )
             })?;
-        }
-        Err(error) => {
-            return Err(ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("stat CLAUDE.md failed: {error}"),
-            ));
+        let claude_md_path = work_dir.join("CLAUDE.md");
+        match fs::metadata(&claude_md_path).await {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::write(&claude_md_path, "").await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("write CLAUDE.md failed: {e}"),
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("stat CLAUDE.md failed: {error}"),
+                ));
+            }
         }
     }
     Ok(Json(InitResponse {
@@ -1088,8 +1090,6 @@ async fn get_project_claude_md(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(&state, ds_id).await;
-    let _guard = lock.lock().await;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
     let claude_md_path = work_dir.join("CLAUDE.md");
     let content = fs::read_to_string(&claude_md_path).await;
@@ -1129,18 +1129,21 @@ async fn update_project_claude_md(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(&state, ds_id).await;
-    let _guard = lock.lock().await;
-    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    {
+        let lock = get_ds_lock(&state, ds_id).await;
+        let _guard = lock.lock().await;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+        let claude_md_path = work_dir.join("CLAUDE.md");
+        fs::write(&claude_md_path, req.content.as_bytes())
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write CLAUDE.md failed: {e}"),
+                )
+            })?;
+    }
     let claude_md_path = work_dir.join("CLAUDE.md");
-    fs::write(&claude_md_path, req.content.as_bytes())
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write CLAUDE.md failed: {e}"),
-            )
-        })?;
     Ok(Json(ProjectClaudeResponse {
         ds_id,
         work_dir: work_dir.display().to_string(),
@@ -1184,8 +1187,6 @@ async fn build_effective_prompt_response(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(state, ds_id).await;
-    let _guard = lock.lock().await;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
     let sections = load_system_prompt(
         work_dir.to_path_buf(),
@@ -1515,8 +1516,8 @@ async fn run_solve_request(
         resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
     validate_ds_exists(req.ds_id, &state.cfg.ds_registry_path).await?;
 
-    let work_dir = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
-    fs::create_dir_all(work_dir.join(".claw"))
+    let ds_home = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
+    fs::create_dir_all(ds_home.join(".claw"))
         .await
         .map_err(|e| {
             ApiError::new(
@@ -1525,37 +1526,76 @@ async fn run_solve_request(
             )
         })?;
 
-    let ds_lock = get_ds_lock(&state, req.ds_id).await;
-    let _guard = ds_lock.lock().await;
+    let settings_content: Vec<u8> = {
+        let ds_lock = get_ds_lock(&state, req.ds_id).await;
+        let _guard = ds_lock.lock().await;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &ds_home).await?;
+        let settings = build_settings(&state, req.ds_id).await;
+        let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("serialize settings failed: {e}"),
+            )
+        })?;
+        fs::write(ds_home.join(".claw/settings.json"), &settings_content)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write settings failed: {e}"),
+                )
+            })?;
+        let _ = fs::remove_file(ds_home.join(".claw/mcp_discovery_cache.json")).await;
+        settings_content
+    };
 
-    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    let settings = build_settings(&state, req.ds_id).await;
-    let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("serialize settings failed: {e}"),
+    let session_dir = session_solve_workspace_dir(&state.cfg.work_root, req.ds_id);
+    let prompt_result = async {
+        copy_ds_home_snapshot_for_solve(&ds_home, &session_dir).await?;
+        fs::write(session_dir.join(".claw/settings.json"), &settings_content)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write session settings failed: {e}"),
+                )
+            })?;
+        fs::write(
+            session_dir.join(".claw/.gateway_init_done"),
+            now_ms().to_string(),
         )
-    })?;
-    fs::write(work_dir.join(".claw/settings.json"), settings_content)
         .await
         .map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write settings failed: {e}"),
+                format!("write session init marker failed: {e}"),
             )
         })?;
-    let _ = fs::remove_file(work_dir.join(".claw/mcp_discovery_cache.json")).await;
+        run_runtime_prompt(
+            &session_dir,
+            &state.cfg.work_root,
+            &req.user_prompt,
+            req.model.as_deref(),
+            timeout_seconds,
+            &request_id,
+            req.extra_session.clone(),
+            effective_allowed_tools,
+            state.cfg.default_max_iterations,
+        )
+    }
+    .await;
 
-    let (code, output_text, output_json) = run_runtime_prompt(
-        &work_dir,
-        &req.user_prompt,
-        req.model.as_deref(),
-        timeout_seconds,
-        &request_id,
-        req.extra_session.clone(),
-        effective_allowed_tools,
-        state.cfg.default_max_iterations,
-    )?;
+    if fs::metadata(&session_dir).await.is_ok() {
+        if let Err(e) = fs::remove_dir_all(&session_dir).await {
+            warn!(
+                session_dir = %session_dir.display(),
+                error = %e,
+                "gateway_session_cleanup_failed"
+            );
+        }
+    }
+
+    let (code, output_text, output_json) = prompt_result?;
     let duration_ms = started.elapsed().as_millis() as i64;
     info!(
         request_id = %request_id,
@@ -1569,7 +1609,7 @@ async fn run_solve_request(
         session_id: request_id.clone(),
         request_id,
         ds_id: req.ds_id,
-        work_dir: work_dir.display().to_string(),
+        work_dir: session_dir.display().to_string(),
         duration_ms,
         claw_exit_code: code,
         output_text,
@@ -1711,25 +1751,27 @@ async fn apply_settings_and_probe(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(state, ds_id).await;
-    let _guard = lock.lock().await;
-    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    let settings = build_settings(state, ds_id).await;
-    let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("serialize settings failed: {e}"),
-        )
-    })?;
-    fs::write(work_dir.join(".claw/settings.json"), settings_content)
-        .await
-        .map_err(|e| {
+    {
+        let lock = get_ds_lock(state, ds_id).await;
+        let _guard = lock.lock().await;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+        let settings = build_settings(state, ds_id).await;
+        let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write settings failed: {e}"),
+                format!("serialize settings failed: {e}"),
             )
         })?;
-    let _ = fs::remove_file(work_dir.join(".claw/mcp_discovery_cache.json")).await;
+        fs::write(work_dir.join(".claw/settings.json"), settings_content)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write settings failed: {e}"),
+                )
+            })?;
+        let _ = fs::remove_file(work_dir.join(".claw/mcp_discovery_cache.json")).await;
+    }
     let (report, loaded_names, configured_servers, status) =
         probe_mcp_load(&state.cfg.claw_bin, &work_dir, probe_timeout_seconds).await?;
     let names = {
@@ -1790,6 +1832,47 @@ async fn ensure_workspace_initialized(_claw_bin: &str, work_dir: &Path) -> Resul
     Ok(())
 }
 
+fn session_solve_workspace_dir(work_root: &Path, ds_id: i64) -> PathBuf {
+    work_root
+        .join("sessions")
+        .join(format!("ds_{ds_id}-{}", Uuid::new_v4().simple()))
+}
+
+/// Snapshot minimal files from `ds_home` into an ephemeral session directory. kejiqing
+async fn copy_ds_home_snapshot_for_solve(ds_home: &Path, session: &Path) -> Result<(), ApiError> {
+    fs::create_dir_all(session.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create session .claw failed: {e}"),
+            )
+        })?;
+    let claude = ds_home.join("CLAUDE.md");
+    if fs::metadata(&claude).await.is_ok() {
+        fs::copy(&claude, session.join("CLAUDE.md"))
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("copy CLAUDE.md to session failed: {e}"),
+                )
+            })?;
+    }
+    let claw_json = ds_home.join(".claw.json");
+    if fs::metadata(&claw_json).await.is_ok() {
+        fs::copy(&claw_json, session.join(".claw.json"))
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("copy .claw.json to session failed: {e}"),
+                )
+            })?;
+    }
+    Ok(())
+}
+
 fn initialize_mcp_runtime(
     work_dir: &Path,
 ) -> Result<
@@ -1838,8 +1921,9 @@ fn initialize_mcp_runtime(
     Ok((runtime_mcp_tools, runtime_mcp_tool_names, Some(manager)))
 }
 
-/// Runtime JSONL trace for gateway solves; mirrors CLI env (`CLAW_TRACE_*`). kejiqing
-fn gateway_trace_file_path(trace_id: &str) -> Option<PathBuf> {
+/// Runtime JSONL trace for gateway solves; mirrors CLI env (`CLAW_TRACE_*`).
+/// When `CLAW_TRACE_DIR` is unset, defaults to `{work_root}/traces`. kejiqing
+fn gateway_trace_file_path(trace_id: &str, work_root: &Path) -> Option<PathBuf> {
     if let Ok(raw) = std::env::var("CLAW_TRACE_FILE") {
         let p = raw.trim();
         if !p.is_empty() {
@@ -1853,21 +1937,27 @@ fn gateway_trace_file_path(trace_id: &str) -> Option<PathBuf> {
     if !matches!(enabled.as_str(), "1" | "true" | "yes" | "on") {
         return None;
     }
-    let dir = std::env::var("CLAW_TRACE_DIR")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "/var/log/claw/traces".to_string());
-    Some(PathBuf::from(dir).join(format!("{trace_id}.ndjson")))
+    let dir = match std::env::var("CLAW_TRACE_DIR") {
+        Ok(raw) => {
+            let s = raw.trim();
+            if s.is_empty() {
+                work_root.join("traces")
+            } else {
+                PathBuf::from(s)
+            }
+        }
+        Err(_) => work_root.join("traces"),
+    };
+    Some(dir.join(format!("{trace_id}.ndjson")))
 }
 
-fn gateway_session_tracer(request_id: &str) -> Option<SessionTracer> {
+fn gateway_session_tracer(request_id: &str, work_root: &Path) -> Option<SessionTracer> {
     let trace_id = std::env::var("CLAW_TRACE_ID")
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| request_id.to_string());
-    let path = gateway_trace_file_path(&trace_id)?;
+    let path = gateway_trace_file_path(&trace_id, work_root)?;
     let sink = JsonlTelemetrySink::new(path).ok()?;
     Some(SessionTracer::new(trace_id, Arc::new(sink)))
 }
@@ -1875,6 +1965,7 @@ fn gateway_session_tracer(request_id: &str) -> Option<SessionTracer> {
 #[allow(clippy::too_many_arguments)]
 fn run_runtime_prompt(
     work_dir: &Path,
+    work_root: &Path,
     prompt: &str,
     model: Option<&str>,
     timeout_seconds: u64,
@@ -1944,7 +2035,7 @@ fn run_runtime_prompt(
         system_prompt,
     );
     runtime = runtime.with_max_iterations(max_iterations);
-    if let Some(tracer) = gateway_session_tracer(clawcode_session_id) {
+    if let Some(tracer) = gateway_session_tracer(clawcode_session_id, work_root) {
         runtime = runtime.with_session_tracer(tracer);
     }
     let started = Instant::now();

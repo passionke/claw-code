@@ -14,6 +14,9 @@ This deployment runs two processes:
 ./deploy/podman/build.sh
 ```
 
+- **Local default**: pulls builder/runtime bases from `docker.1ms.run` (easier on CN networks).
+- **docker.io**: set `CLAW_USE_DOCKER_IO=1` (or run on GitHub Actions, where `GITHUB_ACTIONS=true` is set automatically).
+
 Optional: build with a specific tag (for release deployment):
 
 ```bash
@@ -35,7 +38,7 @@ Edit **repository root** `.env`:
 - optional `CLAW_LOG_LEVEL`, `CLAW_TRACE_ENABLED`
 - for `start-with-tap.sh`: `UPSTREAM_OPENAI_BASE_URL`, `CLAUDE_TAP_PORT`, `CLAUDE_TAP_LIVE_PORT`
 
-Mount **repository root** `.claw.json` at `/app/.claw.json` (see `podman-compose.yml`). The gateway applies `.claw.json` `env` (when unset) and `model` (after `CLAW_DEFAULT_MODEL`) on each solve.
+Mount **repository root** `.claw.json` at `/app/.claw.json` (see `podman-compose.yml`). The gateway applies `.claw.json` `env` (when unset) and `model` (after `CLAW_DEFAULT_MODEL`) on each solve. `up.sh` / `start-with-tap.sh` **only create an empty `{}` if the file is missing** — they do not overwrite your local `.claw.json`.
 
 `podman-compose.yml` also loads `deploy/podman/gateway-allowlist.env` after the root `.env` so `CLAW_ALLOWED_TOOLS` can override an empty `CLAW_ALLOWED_TOOLS=` in the root file (Compose `environment:` cannot fix that). Edit that file to test per-request `allowedTools` against a global allowlist.
 

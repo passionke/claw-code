@@ -60,6 +60,8 @@ cp deploy/podman/.env.example deploy/podman/.env
 ./deploy/podman/build.sh
 ```
 
+构建脚本默认用 `docker.1ms.run` 拉基础镜像（本地友好）；需要 `docker.io` 时加 `CLAW_USE_DOCKER_IO=1`。在 GitHub Actions 里会自动选 `docker.io`。
+
 ### 3) 启动
 
 ```bash
