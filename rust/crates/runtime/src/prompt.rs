@@ -40,8 +40,12 @@ impl From<ConfigError> for PromptBuildError {
 pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
 /// Human-readable default frontier model name embedded into generated prompts.
 pub const FRONTIER_MODEL_NAME: &str = "Claude Opus 4.6";
-const MAX_INSTRUCTION_FILE_CHARS: usize = 4_000;
-const MAX_TOTAL_INSTRUCTION_CHARS: usize = 12_000;
+const MAX_INSTRUCTION_FILE_CHARS: usize = 8_000;
+/// Upper bound on characters injected from **all** discovered instruction files combined
+/// (`CLAUDE.md`, `.claw/instructions.md`, etc.) into the system prompt’s `# Claude instructions`
+/// block. Hard-coded (not config/env); per-file cap is still [`MAX_INSTRUCTION_FILE_CHARS`].
+/// Author: kejiqing.
+const MAX_TOTAL_INSTRUCTION_CHARS: usize = 24_000;
 
 /// Contents of an instruction file included in prompt construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -522,7 +526,8 @@ mod tests {
     use super::{
         collapse_blank_lines, display_context_path, normalize_instruction_content,
         render_instruction_content, render_instruction_files, truncate_instruction_content,
-        ContextFile, ProjectContext, SystemPromptBuilder, SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+        ContextFile, ProjectContext, SystemPromptBuilder, MAX_INSTRUCTION_FILE_CHARS,
+        SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     };
     use crate::config::ConfigLoader;
     use std::fs;
@@ -613,9 +618,12 @@ mod tests {
 
     #[test]
     fn truncates_large_instruction_content_for_rendering() {
-        let rendered = render_instruction_content(&"x".repeat(4500));
+        let rendered = render_instruction_content(&"x".repeat(8500));
         assert!(rendered.contains("[truncated]"));
-        assert!(rendered.len() < 4_100);
+        assert!(
+            rendered.chars().count()
+                <= MAX_INSTRUCTION_FILE_CHARS + "\n\n[truncated]".chars().count()
+        );
     }
 
     #[test]
