@@ -42,6 +42,28 @@ Base URL 示例：`http://127.0.0.1:18088`
 - `GET /v1/tasks/{task_id}`
   - 用途：查询异步任务状态与结果
 
+- `POST /v1/tasks/{task_id}/cancel`
+  - 用途：按 `taskId`（与异步会话 `sessionId` 同值）取消仍处于 `queued` 或 `running` 的 solve 异步任务
+  - 成功时：任务状态变为 `cancelled`，`finishedAtMs` 写入，`error` 为 `{"detail":"cancelled by client"}`
+  - 若任务已是 `succeeded` / `failed` / `cancelled`：返回 `400`
+  - 若 `task_id` 未知：返回 `404`
+  - 说明：取消通过中止网关侧异步 worker 实现；若当前正阻塞在长时间同步推理 `run_turn` 中，可能要等该段同步逻辑返回后 worker 才会结束，但**不会**再用成功结果覆盖已为 `cancelled` 的状态
+
+- `GET /v1/biz_advice_report?task_id=<taskId>`
+  - 用途：基于异步任务原始输出，生成清洗后的最终业务报告（去除中间过程与工具轨迹）
+  - 查询参数：
+    - `task_id`：必填，`/v1/solve_async` 返回的任务 ID
+  - 前置条件：
+    - 目标任务状态必须是 `succeeded`
+    - 若任务为 `queued/running/failed`，返回 `400`
+  - 返回字段：
+    - `taskId`：目标任务 ID
+    - `sourceRequestId`：原任务 requestId
+    - `sourceDsId`：原任务 dsId
+    - `sourceStatus`：原任务状态（通常为 `succeeded`）
+    - `reportText`：清洗后的报告文本（字符串）
+    - `reportJson`：清洗后的结构化 JSON（如模型返回 JSON）
+
 ## MCP
 
 - `POST /v1/mcp/inject`

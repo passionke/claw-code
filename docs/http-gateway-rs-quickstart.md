@@ -111,6 +111,29 @@ curl -sS -X POST "http://127.0.0.1:18088/v1/solve_async" \
 curl -sS "http://127.0.0.1:18088/v1/tasks/<taskId>"
 ```
 
+仍在排队或运行中时，可按同一 `taskId` 取消：
+
+```bash
+curl -sS -X POST "http://127.0.0.1:18088/v1/tasks/<taskId>/cancel"
+```
+
+### 生成清洗后的最终报告
+
+当 `/v1/tasks/<taskId>` 返回 `status=succeeded` 后，可调用报告接口：
+
+```bash
+curl -sS "http://127.0.0.1:18088/v1/biz_advice_report?task_id=<taskId>"
+```
+
+返回关键字段：
+
+- `taskId`：原异步任务 ID
+- `sourceRequestId`：原任务 requestId
+- `sourceDsId`：原任务 dsId
+- `sourceStatus`：原任务状态
+- `reportText`：清洗后的最终报告文本
+- `reportJson`：清洗后的结构化结果
+
 ### MCP 注入/查看
 
 ```bash

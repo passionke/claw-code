@@ -40,6 +40,7 @@ use telemetry::{JsonlTelemetrySink, SessionTracer};
 use tokio::fs;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio::task::AbortHandle;
 use tokio::time::timeout;
 use tools::{execute_tool, initialize_mcp_bridge, mvp_tool_specs};
 use tower_http::trace::TraceLayer;
@@ -66,7 +67,7 @@ struct RunSolveContext {
 
 #[derive(Clone)]
 struct AppState {
-    tasks: Arc<Mutex<HashMap<String, TaskRecord>>>,
+    tasks: Arc<Mutex<HashMap<String, TaskInner>>>,
     injected_mcp: Arc<Mutex<HashMap<i64, HashMap<String, Value>>>>,
     ds_locks: Arc<Mutex<HashMap<i64, Arc<Mutex<()>>>>>,
     cfg: Arc<GatewayConfig>,
@@ -175,6 +176,13 @@ struct EffectivePromptResponse {
     work_dir: String,
     sections: Vec<String>,
     message: String,
+}
+
+/// In-memory task row plus a handle to abort the async worker (not serialized). kejiqing
+struct TaskInner {
+    record: TaskRecord,
+    /// Present while `queued` / `running`; cleared when the worker finishes or after cancel.
+    cancel: Option<AbortHandle>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -522,6 +530,7 @@ async fn main() {
         .route("/v1/solve", post(solve))
         .route("/v1/solve_async", post(solve_async))
         .route("/v1/tasks/{task_id}", get(get_task))
+        .route("/v1/tasks/{task_id}/cancel", post(cancel_task))
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route(
             "/v1/project/claude/{ds_id}",
@@ -589,6 +598,11 @@ async fn docs() -> Html<String> {
         ("POST", "/v1/solve", "Run sync solve"),
         ("POST", "/v1/solve_async", "Create async solve task"),
         ("GET", "/v1/tasks/{task_id}", "Get async task status"),
+        (
+            "POST",
+            "/v1/tasks/{task_id}/cancel",
+            "Cancel a queued or running async solve task",
+        ),
         (
             "GET",
             "/v1/biz_advice_report?task_id=xx",
@@ -843,6 +857,19 @@ async fn openapi() -> Json<Value> {
                     ],
                     "responses": {
                         "200": { "description": "Task status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TaskRecord" } } } }
+                    }
+                }
+            },
+            "/v1/tasks/{task_id}/cancel": {
+                "post": {
+                    "summary": "Cancel a queued or running async solve task",
+                    "parameters": [
+                        { "name": "task_id", "in": "path", "required": true, "schema": { "type": "string" } }
+                    ],
+                    "responses": {
+                        "200": { "description": "Task marked cancelled", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TaskRecord" } } } },
+                        "400": { "description": "Task already finished" },
+                        "404": { "description": "Unknown task id" }
                     }
                 }
             },
@@ -1195,28 +1222,35 @@ async fn solve_async(
         let mut tasks = state.tasks.lock().await;
         tasks.insert(
             task_id.clone(),
-            TaskRecord {
-                task_id: task_id.clone(),
-                session_id: request_id.clone(),
-                request_id: request_id.clone(),
-                status: "queued".to_string(),
-                created_at_ms: now_ms(),
-                started_at_ms: None,
-                finished_at_ms: None,
-                result: None,
-                error: None,
+            TaskInner {
+                record: TaskRecord {
+                    task_id: task_id.clone(),
+                    session_id: request_id.clone(),
+                    request_id: request_id.clone(),
+                    status: "queued".to_string(),
+                    created_at_ms: now_ms(),
+                    started_at_ms: None,
+                    finished_at_ms: None,
+                    result: None,
+                    error: None,
+                },
+                cancel: None,
             },
         );
     }
     let state_clone = state.clone();
     let task_id_for_worker = task_id.clone();
     let rid = request_id.clone();
-    tokio::spawn(async move {
+    let join = tokio::spawn(async move {
         {
             let mut tasks = state_clone.tasks.lock().await;
-            if let Some(task) = tasks.get_mut(&task_id_for_worker) {
-                task.status = "running".to_string();
-                task.started_at_ms = Some(now_ms());
+            if let Some(inner) = tasks.get_mut(&task_id_for_worker) {
+                if inner.record.status == "cancelled" {
+                    inner.cancel = None;
+                    return;
+                }
+                inner.record.status = "running".to_string();
+                inner.record.started_at_ms = Some(now_ms());
             }
         }
         info!(
@@ -1235,13 +1269,17 @@ async fn solve_async(
         )
         .await;
         let mut tasks = state_clone.tasks.lock().await;
-        if let Some(task) = tasks.get_mut(&task_id_for_worker) {
-            task.finished_at_ms = Some(now_ms());
+        if let Some(inner) = tasks.get_mut(&task_id_for_worker) {
+            inner.cancel = None;
+            if inner.record.status == "cancelled" {
+                return;
+            }
+            inner.record.finished_at_ms = Some(now_ms());
             match result {
                 Ok(v) => {
                     let duration_ms = v.duration_ms;
-                    task.status = "succeeded".to_string();
-                    task.result = Some(v);
+                    inner.record.status = "succeeded".to_string();
+                    inner.record.result = Some(v);
                     info!(
                         request_id = %rid,
                         task_id = %task_id_for_worker,
@@ -1251,8 +1289,8 @@ async fn solve_async(
                     );
                 }
                 Err(e) => {
-                    task.status = "failed".to_string();
-                    task.error =
+                    inner.record.status = "failed".to_string();
+                    inner.record.error =
                         Some(json!({"status_code": e.status.as_u16(), "detail": e.message}));
                     warn!(
                         request_id = %rid,
@@ -1266,6 +1304,13 @@ async fn solve_async(
             }
         }
     });
+    let cancel = join.abort_handle();
+    {
+        let mut tasks = state.tasks.lock().await;
+        if let Some(inner) = tasks.get_mut(&task_id) {
+            inner.cancel = Some(cancel);
+        }
+    }
     Ok(Json(SolveAsyncResponse {
         task_id: task_id.clone(),
         session_id: request_id.clone(),
@@ -1281,9 +1326,12 @@ async fn get_task(
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
     let tasks = state.tasks.lock().await;
-    let task = tasks.get(&task_id).cloned().ok_or_else(|| {
-        ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
-    })?;
+    let task = tasks
+        .get(&task_id)
+        .map(|inner| inner.record.clone())
+        .ok_or_else(|| {
+            ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
+        })?;
     info!(
         request_id = %http_request_id.0,
         task_id = %task_id,
@@ -1296,18 +1344,59 @@ async fn get_task(
     Ok(Json(task))
 }
 
+async fn cancel_task(
+    State(state): State<AppState>,
+    AxumPath(task_id): AxumPath<String>,
+    Extension(http_request_id): Extension<HttpRequestId>,
+) -> Result<Json<TaskRecord>, ApiError> {
+    let mut tasks = state.tasks.lock().await;
+    let inner = tasks.get_mut(&task_id).ok_or_else(|| {
+        ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
+    })?;
+    match inner.record.status.as_str() {
+        "succeeded" | "failed" | "cancelled" => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "task {} is already finished (status: {})",
+                    task_id, inner.record.status
+                ),
+            ));
+        }
+        _ => {}
+    }
+    if let Some(h) = inner.cancel.take() {
+        h.abort();
+    }
+    inner.record.status = "cancelled".to_string();
+    inner.record.finished_at_ms = Some(now_ms());
+    inner.record.result = None;
+    inner.record.error = Some(json!({"detail": "cancelled by client"}));
+    info!(
+        request_id = %http_request_id.0,
+        task_id = %task_id,
+        endpoint = "/v1/tasks/{task_id}/cancel",
+        phase = "cancel",
+        "gateway_task"
+    );
+    Ok(Json(inner.record.clone()))
+}
+
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
 ) -> Result<Json<BizAdviceReportResponse>, ApiError> {
     let task = {
         let tasks = state.tasks.lock().await;
-        tasks.get(&query.task_id).cloned().ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                format!("task not found: {}", query.task_id),
-            )
-        })?
+        tasks
+            .get(&query.task_id)
+            .map(|inner| inner.record.clone())
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    format!("task not found: {}", query.task_id),
+                )
+            })?
     };
     let source_status = task.status.clone();
     if source_status != "succeeded" {
