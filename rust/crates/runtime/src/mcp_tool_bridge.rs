@@ -178,6 +178,7 @@ impl McpToolRegistry {
         manager: Arc<Mutex<McpServerManager>>,
         qualified_tool_name: String,
         arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         let join_handle = std::thread::Builder::new()
             .name(format!("mcp-tool-call-{qualified_tool_name}"))
@@ -197,7 +198,7 @@ impl McpToolRegistry {
                             .await
                             .map_err(|error| error.to_string())?;
                         let response = manager
-                            .call_tool(&qualified_tool_name, arguments, None)
+                            .call_tool(&qualified_tool_name, arguments, meta)
                             .await
                             .map_err(|error| error.to_string());
                         let shutdown = manager.shutdown().await.map_err(|error| error.to_string());
@@ -237,12 +238,11 @@ impl McpToolRegistry {
         })?
     }
 
-    pub fn call_tool(
+    fn resolve_manager_for_tool(
         &self,
         server_name: &str,
         tool_name: &str,
-        arguments: &serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<Arc<Mutex<McpServerManager>>, String> {
         let inner = self.inner.lock().expect("mcp registry lock poisoned");
         let state = inner
             .get(server_name)
@@ -264,16 +264,41 @@ impl McpToolRegistry {
 
         drop(inner);
 
-        let manager = self
-            .manager
+        self.manager
             .get()
             .cloned()
-            .ok_or_else(|| "MCP server manager is not configured".to_string())?;
+            .ok_or_else(|| "MCP server manager is not configured".to_string())
+    }
 
+    pub fn call_tool(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let manager = self.resolve_manager_for_tool(server_name, tool_name)?;
         Self::spawn_tool_call(
             manager,
             mcp_tool_name(server_name, tool_name),
             (!arguments.is_null()).then(|| arguments.clone()),
+            None,
+        )
+    }
+
+    /// Like [`Self::call_tool`], but forwards `meta` to MCP `tools/call` (e.g. `_meta.extra_session` from the HTTP gateway).
+    pub fn call_tool_with_meta(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+        meta: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let manager = self.resolve_manager_for_tool(server_name, tool_name)?;
+        Self::spawn_tool_call(
+            manager,
+            mcp_tool_name(server_name, tool_name),
+            (!arguments.is_null()).then(|| arguments.clone()),
+            meta,
         )
     }
 

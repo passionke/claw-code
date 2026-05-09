@@ -1938,6 +1938,49 @@ fn run_mcp_tool(input: McpToolInput) -> Result<String, String> {
     }
 }
 
+/// Generic [`MCP`] tool with optional HTTP gateway `extraSession` forwarded as MCP `tools/call` `_meta.extra_session`.
+///
+/// `extra_session` object keys are passed through unchanged. Only MCP server / raw tool *names* are normalized when building the qualified tool id (`mcp__...__...`).
+/// Author: kejiqing
+pub fn execute_mcp_tool_with_extra_session(
+    input_json: &str,
+    extra_session: Option<&Value>,
+) -> Result<String, String> {
+    let root: Value =
+        serde_json::from_str(input_json).map_err(|e| format!("invalid MCP tool JSON: {e}"))?;
+    let server = root
+        .get("server")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "MCP tool input missing `server`".to_string())?
+        .to_string();
+    let tool = root
+        .get("tool")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "MCP tool input missing `tool`".to_string())?
+        .to_string();
+    let args = root
+        .get("arguments")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(|| json!({}));
+    let registry = global_mcp_registry();
+    let meta = extra_session.map(|value| json!({ "extra_session": value }));
+    match registry.call_tool_with_meta(&server, &tool, &args, meta) {
+        Ok(result) => to_pretty_json(json!({
+            "server": server,
+            "tool": tool,
+            "result": result,
+            "status": "success"
+        })),
+        Err(e) => to_pretty_json(json!({
+            "server": server,
+            "tool": tool,
+            "error": e,
+            "status": "error"
+        })),
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)]
 fn run_testing_permission(input: TestingPermissionInput) -> Result<String, String> {
     to_pretty_json(json!({

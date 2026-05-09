@@ -42,7 +42,9 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::AbortHandle;
 use tokio::time::timeout;
-use tools::{execute_tool, initialize_mcp_bridge, mvp_tool_specs};
+use tools::{
+    execute_mcp_tool_with_extra_session, execute_tool, initialize_mcp_bridge, mvp_tool_specs,
+};
 use tower_http::trace::TraceLayer;
 use tracing::field::Empty;
 use tracing::{info, warn};
@@ -373,6 +375,10 @@ impl RuntimeToolExecutor for DirectToolExecutor {
     fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError> {
         if !is_tool_allowed(tool_name, &self.allowed_tools) {
             return Err(ToolError::new(format!("tool not allowed: {tool_name}")));
+        }
+        if tool_name == "MCP" {
+            return execute_mcp_tool_with_extra_session(input, self.extra_session.as_ref())
+                .map_err(ToolError::new);
         }
         if self.runtime_mcp_tool_names.contains(tool_name) {
             let args = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
