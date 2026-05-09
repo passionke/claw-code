@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# HTTP checks for plan "Gateway ds read-ephemeral-solve":
+# HTTP smoke: concurrent reads during solve_async; workDir is canonical ds_home.
 # - Read paths stay fast while an async solve runs (no ds_lock starvation on GET CLAUDE.md).
-# - After solve, ephemeral session dirs under work_root/sessions are cleaned up.
-# - Successful solve reports workDir under sessions/ds_{id}-*.
+# - Successful solve: workDir should be .../ds_{id} (not a separate sessions/ tree).
 #
 # Author: kejiqing
 set -euo pipefail
@@ -104,15 +103,11 @@ echo "[plan] async task status: $ST"
 
 if [[ "$ST" == "succeeded" ]]; then
   WD="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["workDir"])' <<<"$RECORD")"
-  case "$WD" in
-    *sessions/ds_10-*)
-      echo "[plan] workDir is session path: $WD"
-      ;;
-    *)
-      echo "FAIL: expected workDir under sessions/ds_10-*, got: $WD" >&2
-      exit 1
-      ;;
-  esac
+  if [[ "$WD" != *"/ds_10"* ]] && [[ "$WD" != *"\\ds_10"* ]]; then
+    echo "FAIL: expected workDir to contain ds_10 (canonical ds_home), got: $WD" >&2
+    exit 1
+  fi
+  echo "[plan] workDir is ds_home: $WD"
 else
   echo "[plan] solve did not succeed (often missing model API keys); skipping workDir shape assert"
 fi
@@ -121,11 +116,10 @@ sleep 0.3
 if [[ -d "$WORK_ROOT/sessions" ]]; then
   LEFT="$(find "$WORK_ROOT/sessions" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')"
   if [[ "$LEFT" != "0" ]]; then
-    echo "FAIL: ephemeral session dirs remain under $WORK_ROOT/sessions (count=$LEFT)" >&2
-    find "$WORK_ROOT/sessions" -mindepth 1 -maxdepth 1 -print >&2 || true
+    echo "FAIL: unexpected files under $WORK_ROOT/sessions (count=$LEFT)" >&2
     exit 1
   fi
 fi
-echo "[plan] sessions/ is clean after solve"
+echo "[plan] no stray work_root/sessions content"
 
 echo "OK — http-gateway-plan-scenarios"

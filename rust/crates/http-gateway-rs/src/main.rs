@@ -1526,7 +1526,7 @@ async fn run_solve_request(
             )
         })?;
 
-    let settings_content: Vec<u8> = {
+    {
         let ds_lock = get_ds_lock(&state, req.ds_id).await;
         let _guard = ds_lock.lock().await;
         ensure_workspace_initialized(&state.cfg.claw_bin, &ds_home).await?;
@@ -1546,56 +1546,19 @@ async fn run_solve_request(
                 )
             })?;
         let _ = fs::remove_file(ds_home.join(".claw/mcp_discovery_cache.json")).await;
-        settings_content
-    };
-
-    let session_dir = session_solve_workspace_dir(&state.cfg.work_root, req.ds_id);
-    let prompt_result = async {
-        copy_ds_home_snapshot_for_solve(&ds_home, &session_dir).await?;
-        fs::write(session_dir.join(".claw/settings.json"), &settings_content)
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("write session settings failed: {e}"),
-                )
-            })?;
-        fs::write(
-            session_dir.join(".claw/.gateway_init_done"),
-            now_ms().to_string(),
-        )
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write session init marker failed: {e}"),
-            )
-        })?;
-        run_runtime_prompt(
-            &session_dir,
-            &state.cfg.work_root,
-            &req.user_prompt,
-            req.model.as_deref(),
-            timeout_seconds,
-            &request_id,
-            req.extra_session.clone(),
-            effective_allowed_tools,
-            state.cfg.default_max_iterations,
-        )
-    }
-    .await;
-
-    if fs::metadata(&session_dir).await.is_ok() {
-        if let Err(e) = fs::remove_dir_all(&session_dir).await {
-            warn!(
-                session_dir = %session_dir.display(),
-                error = %e,
-                "gateway_session_cleanup_failed"
-            );
-        }
     }
 
-    let (code, output_text, output_json) = prompt_result?;
+    let (code, output_text, output_json) = run_runtime_prompt(
+        &ds_home,
+        &state.cfg.work_root,
+        &req.user_prompt,
+        req.model.as_deref(),
+        timeout_seconds,
+        &request_id,
+        req.extra_session.clone(),
+        effective_allowed_tools,
+        state.cfg.default_max_iterations,
+    )?;
     let duration_ms = started.elapsed().as_millis() as i64;
     info!(
         request_id = %request_id,
@@ -1609,7 +1572,7 @@ async fn run_solve_request(
         session_id: request_id.clone(),
         request_id,
         ds_id: req.ds_id,
-        work_dir: session_dir.display().to_string(),
+        work_dir: ds_home.display().to_string(),
         duration_ms,
         claw_exit_code: code,
         output_text,
@@ -1829,47 +1792,6 @@ async fn ensure_workspace_initialized(_claw_bin: &str, work_dir: &Path) -> Resul
             format!("write init marker failed: {e}"),
         )
     })?;
-    Ok(())
-}
-
-fn session_solve_workspace_dir(work_root: &Path, ds_id: i64) -> PathBuf {
-    work_root
-        .join("sessions")
-        .join(format!("ds_{ds_id}-{}", Uuid::new_v4().simple()))
-}
-
-/// Snapshot minimal files from `ds_home` into an ephemeral session directory. kejiqing
-async fn copy_ds_home_snapshot_for_solve(ds_home: &Path, session: &Path) -> Result<(), ApiError> {
-    fs::create_dir_all(session.join(".claw"))
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create session .claw failed: {e}"),
-            )
-        })?;
-    let claude = ds_home.join("CLAUDE.md");
-    if fs::metadata(&claude).await.is_ok() {
-        fs::copy(&claude, session.join("CLAUDE.md"))
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("copy CLAUDE.md to session failed: {e}"),
-                )
-            })?;
-    }
-    let claw_json = ds_home.join(".claw.json");
-    if fs::metadata(&claw_json).await.is_ok() {
-        fs::copy(&claw_json, session.join(".claw.json"))
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("copy .claw.json to session failed: {e}"),
-                )
-            })?;
-    }
     Ok(())
 }
 
