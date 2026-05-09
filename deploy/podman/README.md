@@ -20,26 +20,24 @@ Optional: build with a specific tag (for release deployment):
 ./deploy/podman/build.sh release-v1.0.8
 ```
 
-## 2) Configure env
+## 2) Configure env (repo root only)
 
 ```bash
-cp deploy/podman/.env.example deploy/podman/.env
+cp .env.example .env
 ```
 
-Set in `deploy/podman/.env`:
-- `GATEWAY_IMAGE`
-- `GATEWAY_HOST_PORT`
-- `INTERNAL_CLAUDE_TAP_HOST` (usually `http://host.containers.internal:8080`)
-- `CLAW_HOST_LOG_DIR` (host bind mount for `/var/log/claw`: JSON stdout from `podman logs` is separate; trace `.ndjson` and `sse-debug.log` persist here across container recreation)
-- optional `CLAW_LOG_LEVEL` (default `info`), `CLAW_TRACE_ENABLED` (default `1`)
+Edit **repository root** `.env`:
 
-If `CLAW_HOST_LOG_DIR` points at a path that does not exist yet, create it on the host (default in `.env.example` is `./claw-logs` under `deploy/podman/`).
+- `GATEWAY_IMAGE`, `GATEWAY_HOST_PORT`
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL` (e.g. claude-tap: `http://host.containers.internal:8080/v1`)
+- `INTERNAL_CLAUDE_TAP_HOST` (for docs/scripts; gateway does not inject `OPENAI_BASE_URL` automatically)
+- `CLAW_HOST_LOG_DIR` (default `./deploy/podman/claw-logs` — create the directory if missing)
+- optional `CLAW_LOG_LEVEL`, `CLAW_TRACE_ENABLED`
+- for `start-with-tap.sh`: `UPSTREAM_OPENAI_BASE_URL`, `CLAUDE_TAP_PORT`, `CLAUDE_TAP_LIVE_PORT`
 
-Set in root `.env`:
-- `OPENAI_API_KEY`
-- `UPSTREAM_OPENAI_BASE_URL` (or existing `OPENAI_BASE_URL`, e.g. `https://api.deepseek.com`)
-- optional `CLAUDE_TAP_PORT` (default 8080)
-- optional `CLAUDE_TAP_LIVE_PORT` (default 3000)
+Mount **repository root** `.claw.json` at `/app/.claw.json` (see `podman-compose.yml`). The gateway applies `.claw.json` `env` (when unset) and `model` (after `CLAW_DEFAULT_MODEL`) on each solve.
+
+`podman-compose.yml` also loads `deploy/podman/gateway-allowlist.env` after the root `.env` so `CLAW_ALLOWED_TOOLS` can override an empty `CLAW_ALLOWED_TOOLS=` in the root file (Compose `environment:` cannot fix that). Edit that file to test per-request `allowedTools` against a global allowlist.
 
 ## 3) Start (gateway + claude-tap)
 

@@ -22,6 +22,8 @@ cargo run -p http-gateway-rs
 - `CLAW_HTTP_ADDR`：监听地址，例 `127.0.0.1:8088`
 - `CLAW_BIN`：`claw` 可执行文件路径
 - `CLAW_WORK_ROOT`：工作目录，默认 `/tmp/claw-workspace`
+- `CLAW_CONFIG_FILE`：项目 `.claw.json` 路径（用于合并 `mcpServers`）；不设则不从文件读 MCP
+- `CLAW_PROJECT_CONFIG_ROOT`：可选，显式指定 `ConfigLoader` 目录；不设则用 `CLAW_CONFIG_FILE` 的父目录
 - `CLAW_TIMEOUT_SECONDS`：`solve` 超时秒数
 - `CLAW_DEFAULT_HTTP_MCP_NAME`：默认 HTTP MCP 名称（例 `claude-tap`）
 - `CLAW_DEFAULT_HTTP_MCP_URL`：默认 HTTP MCP URL（例 `http://127.0.0.1:9091/mcp`）

@@ -170,10 +170,7 @@ fn boundary_log(stage: &str, message: impl AsRef<str>) {
 }
 // Build-time constants injected by build.rs (fall back to static values when
 // build.rs hasn't run, e.g. in doc-test or unusual toolchain environments).
-const DEFAULT_DATE: &str = match option_env!("BUILD_DATE") {
-    Some(d) => d,
-    None => "unknown",
-};
+const BUILD_DATE: Option<&str> = option_env!("BUILD_DATE");
 const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 4545;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD_TARGET: Option<&str> = option_env!("TARGET");
@@ -1648,7 +1645,7 @@ fn parse_system_prompt_args(
     output_format: CliOutputFormat,
 ) -> Result<CliAction, String> {
     let mut cwd = env::current_dir().map_err(|error| error.to_string())?;
-    let mut date = DEFAULT_DATE.to_string();
+    let mut date = default_system_date();
     let mut index = 0;
 
     while index < args.len() {
@@ -1970,7 +1967,7 @@ fn render_doctor_report() -> Result<DoctorReport, Box<dyn std::error::Error>> {
     let config_loader = ConfigLoader::default_for(&cwd);
     let config = config_loader.load();
     let discovered_config = config_loader.discover();
-    let project_context = ProjectContext::discover_with_git(&cwd, DEFAULT_DATE)?;
+    let project_context = ProjectContext::discover_with_git(&cwd, default_system_date())?;
     let (project_root, git_branch) =
         parse_git_status_metadata(project_context.git_status.as_deref());
     let git_summary = parse_git_workspace_summary(project_context.git_status.as_deref());
@@ -5920,7 +5917,7 @@ fn status_context(
             Some(err.to_string()),
         ),
     };
-    let project_context = ProjectContext::discover_with_git(&cwd, DEFAULT_DATE)?;
+    let project_context = ProjectContext::discover_with_git(&cwd, default_system_date())?;
     let (project_root, git_branch) =
         parse_git_status_metadata(project_context.git_status.as_deref());
     let git_summary = parse_git_workspace_summary(project_context.git_status.as_deref());
@@ -6384,7 +6381,7 @@ fn render_config_json(
 
 fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let project_context = ProjectContext::discover(&cwd, DEFAULT_DATE)?;
+    let project_context = ProjectContext::discover(&cwd, default_system_date())?;
     let mut lines = vec![format!(
         "Memory
   Working directory {}
@@ -6423,7 +6420,7 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
 
 fn render_memory_json() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let project_context = ProjectContext::discover(&cwd, DEFAULT_DATE)?;
+    let project_context = ProjectContext::discover(&cwd, default_system_date())?;
     let files: Vec<_> = project_context
         .instruction_files
         .iter()
@@ -6939,8 +6936,9 @@ fn parse_titled_body(value: &str) -> Option<(String, String)> {
 fn render_version_report() -> String {
     let git_sha = GIT_SHA.unwrap_or("unknown");
     let target = BUILD_TARGET.unwrap_or("unknown");
+    let build_date = BUILD_DATE.unwrap_or("unknown");
     format!(
-        "Claw Code\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {DEFAULT_DATE}"
+        "Claw Code\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {build_date}"
     )
 }
 
@@ -7210,10 +7208,26 @@ fn short_tool_id(id: &str) -> String {
 fn build_system_prompt() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     Ok(load_system_prompt(
         env::current_dir()?,
-        DEFAULT_DATE,
+        default_system_date(),
         env::consts::OS,
         "unknown",
     )?)
+}
+
+fn default_system_date() -> String {
+    match BUILD_DATE {
+        Some(value) if !value.is_empty() => value.to_string(),
+        _ => current_utc_date(),
+    }
+}
+
+fn current_utc_date() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let days_since_epoch = i64::try_from(now.as_secs() / 86_400).unwrap_or(0);
+    let (year, month, day) = civil_from_days(days_since_epoch);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 fn build_runtime_plugin_state() -> Result<RuntimePluginState, Box<dyn std::error::Error>> {

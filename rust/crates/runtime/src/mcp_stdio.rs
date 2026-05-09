@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use crate::config::{McpTransport, RuntimeConfig, ScopedMcpServerConfig};
 use crate::mcp::mcp_tool_name;
-use crate::mcp_client::{McpClientBootstrap, McpClientTransport, DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS};
+use crate::mcp_client::{default_mcp_tool_call_timeout_ms, McpClientBootstrap, McpClientTransport};
 use crate::mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase,
 };
@@ -845,7 +845,7 @@ impl McpServerManager {
         match &server.bootstrap.transport {
             McpClientTransport::Stdio(transport) => Ok(transport.resolved_tool_call_timeout_ms()),
             McpClientTransport::Http(_) | McpClientTransport::Sse(_) => {
-                Ok(DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS)
+                Ok(default_mcp_tool_call_timeout_ms())
             }
             other => Err(McpServerManagerError::InvalidResponse {
                 server_name: server_name.to_string(),

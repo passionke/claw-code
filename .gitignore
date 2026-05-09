@@ -14,9 +14,13 @@ rust/.claw.json
 .clawhip/
 .local-claw-runs/
 .tmp-latency/
+# Env files (secrets / machine-local); templates use .env.example or *.example.env
 .env
 .env.*
 !.env.example
+!**/.env.example
+*.env
+!**/*.example.env
 rust/.sandbox-home/
 .sandbox-home/
 .traces/

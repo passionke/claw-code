@@ -29,9 +29,10 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use runtime::{
-    load_system_prompt, ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader,
-    ContentBlock, ConversationMessage, ConversationRuntime, McpServerManager, MessageRole,
-    PermissionMode, PermissionPolicy, Session, ToolError, ToolExecutor as RuntimeToolExecutor,
+    apply_config_env_if_unset, load_system_prompt, ApiClient as RuntimeApiClient, ApiRequest,
+    AssistantEvent, ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime,
+    McpServerManager, MessageRole, PermissionMode, PermissionPolicy, RuntimeConfig, Session,
+    ToolError, ToolExecutor as RuntimeToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -46,10 +47,12 @@ use tracing::field::Empty;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-const DEFAULT_SYSTEM_DATE: &str = match option_env!("BUILD_DATE") {
-    Some(value) if !value.is_empty() => value,
-    _ => "1970-01-01",
-};
+fn default_system_date() -> String {
+    match option_env!("BUILD_DATE") {
+        Some(value) if !value.is_empty() => value.to_string(),
+        _ => current_utc_date(),
+    }
+}
 
 /// Session id from `claw-session-id` (fallback `x-request-id`) or generated. kejiqing
 #[derive(Clone)]
@@ -94,6 +97,8 @@ struct SolveRequest {
     timeout_seconds: Option<u64>,
     #[serde(rename = "extraSession")]
     extra_session: Option<Value>,
+    #[serde(rename = "allowedTools")]
+    allowed_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -196,6 +201,27 @@ struct TaskRecord {
 struct ProbeQuery {
     #[serde(rename = "probe_timeout_seconds")]
     probe_timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BizAdviceReportQuery {
+    task_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BizAdviceReportResponse {
+    #[serde(rename = "taskId")]
+    task_id: String,
+    #[serde(rename = "sourceRequestId")]
+    source_request_id: String,
+    #[serde(rename = "sourceDsId")]
+    source_ds_id: i64,
+    #[serde(rename = "sourceStatus")]
+    source_status: String,
+    #[serde(rename = "reportText")]
+    report_text: String,
+    #[serde(rename = "reportJson")]
+    report_json: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -496,6 +522,7 @@ async fn main() {
         .route("/v1/solve", post(solve))
         .route("/v1/solve_async", post(solve_async))
         .route("/v1/tasks/{task_id}", get(get_task))
+        .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route(
             "/v1/project/claude/{ds_id}",
             get(get_project_claude_md).post(update_project_claude_md),
@@ -564,6 +591,11 @@ async fn docs() -> Html<String> {
         ("GET", "/v1/tasks/{task_id}", "Get async task status"),
         (
             "GET",
+            "/v1/biz_advice_report?task_id=xx",
+            "Generate cleaned final report from async task output",
+        ),
+        (
+            "GET",
             "/v1/project/claude/{ds_id}",
             "Get project CLAUDE.md for ds",
         ),
@@ -623,7 +655,13 @@ async fn openapi() -> Json<Value> {
                         "dsId": { "type": "integer", "format": "int64", "minimum": 1, "description": "Datasource ID" },
                         "userPrompt": { "type": "string", "minLength": 1, "description": "User prompt text" },
                         "model": { "type": "string", "nullable": true, "description": "Optional model override" },
-                        "timeoutSeconds": { "type": "integer", "format": "int64", "nullable": true, "description": "Optional timeout in seconds" }
+                        "timeoutSeconds": { "type": "integer", "format": "int64", "nullable": true, "description": "Optional timeout in seconds" },
+                        "allowedTools": {
+                            "type": "array",
+                            "nullable": true,
+                            "description": "Optional per-request tool allowlist/patterns; applied to both /v1/solve and /v1/solve_async.",
+                            "items": { "type": "string" }
+                        }
                     }
                 },
                 "InitRequest": {
@@ -733,6 +771,18 @@ async fn openapi() -> Json<Value> {
                         "result": { "$ref": "#/components/schemas/SolveResponse", "nullable": true },
                         "error": { "type": "object", "nullable": true }
                     }
+                },
+                "BizAdviceReportResponse": {
+                    "type": "object",
+                    "required": ["taskId", "sourceRequestId", "sourceDsId", "sourceStatus", "reportText"],
+                    "properties": {
+                        "taskId": { "type": "string" },
+                        "sourceRequestId": { "type": "string" },
+                        "sourceDsId": { "type": "integer", "format": "int64" },
+                        "sourceStatus": { "type": "string" },
+                        "reportText": { "type": "string" },
+                        "reportJson": { "type": "object", "nullable": true }
+                    }
                 }
             }
         },
@@ -793,6 +843,17 @@ async fn openapi() -> Json<Value> {
                     ],
                     "responses": {
                         "200": { "description": "Task status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TaskRecord" } } } }
+                    }
+                }
+            },
+            "/v1/biz_advice_report": {
+                "get": {
+                    "summary": "Generate cleaned business advice report from async task output",
+                    "parameters": [
+                        { "name": "task_id", "in": "query", "required": true, "schema": { "type": "string" } }
+                    ],
+                    "responses": {
+                        "200": { "description": "Cleaned business advice report", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
                     }
                 }
             },
@@ -1095,7 +1156,7 @@ async fn build_effective_prompt_response(
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
     let sections = load_system_prompt(
         work_dir.to_path_buf(),
-        DEFAULT_SYSTEM_DATE.to_string(),
+        default_system_date(),
         std::env::consts::OS,
         "unknown",
     )
@@ -1235,6 +1296,80 @@ async fn get_task(
     Ok(Json(task))
 }
 
+async fn get_biz_advice_report(
+    State(state): State<AppState>,
+    Query(query): Query<BizAdviceReportQuery>,
+) -> Result<Json<BizAdviceReportResponse>, ApiError> {
+    let task = {
+        let tasks = state.tasks.lock().await;
+        tasks.get(&query.task_id).cloned().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("task not found: {}", query.task_id),
+            )
+        })?
+    };
+    let source_status = task.status.clone();
+    if source_status != "succeeded" {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "task {} is not succeeded yet (status: {})",
+                query.task_id, source_status
+            ),
+        ));
+    }
+    let source_result = task.result.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "task {} has no result yet (status: {})",
+                query.task_id, source_status
+            ),
+        )
+    })?;
+    let raw_json = source_result.output_json.as_ref().map_or_else(
+        || "null".to_string(),
+        |v| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()),
+    );
+    let prompt = format!(
+        "你是资深业务分析顾问。下面给你一段原始输出，其中包含中间过程、思考草稿或噪声信息。\n\
+请只输出“最终干净报告”，要求：\n\
+1) 不要输出任何中间过程、思考轨迹、工具调用痕迹。\n\
+2) 结构清晰，使用简洁中文。\n\
+3) 保留关键结论、依据与可执行建议。\n\
+4) 如果信息不足，明确写出“信息不足”并给出最小补充数据清单。\n\
+5) 不要添加与原文无关的事实。\n\n\
+【原始文本输出】\n{}\n\n\
+【原始 JSON 输出】\n{}",
+        source_result.output_text, raw_json
+    );
+    let report = run_solve_request(
+        state,
+        SolveRequest {
+            ds_id: source_result.ds_id,
+            user_prompt: prompt,
+            model: None,
+            timeout_seconds: None,
+            extra_session: None,
+            allowed_tools: None,
+        },
+        RunSolveContext {
+            request_id: Uuid::new_v4().simple().to_string(),
+            task_id: None,
+        },
+    )
+    .await?;
+    Ok(Json(BizAdviceReportResponse {
+        task_id: query.task_id,
+        source_request_id: task.request_id,
+        source_ds_id: source_result.ds_id,
+        source_status,
+        report_text: report.output_text,
+        report_json: report.output_json,
+    }))
+}
+
 async fn run_solve_request(
     state: AppState,
     req: SolveRequest,
@@ -1280,6 +1415,8 @@ async fn run_solve_request(
     let timeout_seconds = req
         .timeout_seconds
         .unwrap_or(state.cfg.default_timeout_seconds);
+    let effective_allowed_tools =
+        resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
     validate_ds_exists(req.ds_id, &state.cfg.ds_registry_path).await?;
 
     let work_dir = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
@@ -1320,6 +1457,7 @@ async fn run_solve_request(
         timeout_seconds,
         &request_id,
         req.extra_session.clone(),
+        effective_allowed_tools,
         state.cfg.default_max_iterations,
     )?;
     let duration_ms = started.elapsed().as_millis() as i64;
@@ -1638,6 +1776,7 @@ fn gateway_session_tracer(request_id: &str) -> Option<SessionTracer> {
     Some(SessionTracer::new(trace_id, Arc::new(sink)))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_runtime_prompt(
     work_dir: &Path,
     prompt: &str,
@@ -1645,6 +1784,7 @@ fn run_runtime_prompt(
     timeout_seconds: u64,
     clawcode_session_id: &str,
     extra_session: Option<Value>,
+    allowed_tools: Vec<String>,
     max_iterations: usize,
 ) -> Result<(i32, String, Option<Value>), ApiError> {
     std::env::set_current_dir(work_dir).map_err(|e| {
@@ -1653,13 +1793,25 @@ fn run_runtime_prompt(
             format!("set current dir failed: {e}"),
         )
     })?;
+    // Project config: `CLAW_PROJECT_CONFIG_ROOT` or parent of `CLAW_CONFIG_FILE` (set by deploy; no path hardcoded).
+    let project_cfg = match project_config_loader_root() {
+        Some(root) => ConfigLoader::default_for(&root).load().map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("load claw config from {}: {e}", root.display()),
+            )
+        })?,
+        None => RuntimeConfig::empty(),
+    };
+    apply_config_env_if_unset(&project_cfg);
     let effective_model = model
         .map(str::to_string)
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
+        .or_else(|| project_cfg.model().map(str::to_string))
         .unwrap_or_else(|| "openai/deepseek-v4-pro".to_string());
     let system_prompt = load_system_prompt(
         work_dir.to_path_buf(),
-        DEFAULT_SYSTEM_DATE.to_string(),
+        default_system_date(),
         std::env::consts::OS,
         "unknown",
     )
@@ -1671,7 +1823,6 @@ fn run_runtime_prompt(
     })?;
     let (runtime_mcp_tools, runtime_mcp_tool_names, runtime_mcp_manager) =
         initialize_mcp_runtime(work_dir)?;
-    let allowed_tools = parse_allowed_tools(std::env::var("CLAW_ALLOWED_TOOLS").ok());
     let api_client = DirectApiClient::new(
         effective_model.clone(),
         &allowed_tools,
@@ -1840,8 +1991,62 @@ fn now_ms() -> i64 {
     now.as_millis() as i64
 }
 
+fn current_utc_date() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let days_since_epoch = (now.as_secs() / 86_400) as i64;
+    let (year, month, day) = civil_from_days(days_since_epoch);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+// Computes civil (Gregorian) year/month/day from days since the Unix epoch
+// (1970-01-01) using Howard Hinnant's `civil_from_days` algorithm.
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation
+)]
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 {
+        z / 146_097
+    } else {
+        (z - 146_096) / 146_097
+    };
+    let doe = (z - era * 146_097) as u64; // [0, 146_096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = y + i64::from(m <= 2);
+    (y as i32, m as u32, d as u32)
+}
+
+/// Config directory for `ConfigLoader` (e.g. contains `.claw.json`). Set via env only. kejiqing
+fn project_config_loader_root() -> Option<PathBuf> {
+    if let Ok(raw) = std::env::var("CLAW_PROJECT_CONFIG_ROOT") {
+        let root = PathBuf::from(raw.trim());
+        if root.as_os_str().is_empty() {
+            return None;
+        }
+        return Some(root);
+    }
+    let Ok(cfg_file) = std::env::var("CLAW_CONFIG_FILE") else {
+        return None;
+    };
+    let path = PathBuf::from(cfg_file.trim());
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+}
+
 fn load_mcp_servers_from_claw_config() -> HashMap<String, Value> {
-    let path = std::env::var("CLAW_CONFIG_FILE").unwrap_or_else(|_| "/app/.claw.json".to_string());
+    let Ok(path) = std::env::var("CLAW_CONFIG_FILE") else {
+        return HashMap::new();
+    };
     let raw = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(_) => return HashMap::new(),
@@ -1866,23 +2071,68 @@ fn parse_allowed_tools(raw: Option<String>) -> Vec<String> {
     };
     let mut values = Vec::new();
     for token in raw.split(',') {
-        let mut name = token.trim().to_string();
+        let name = normalize_allowed_tool_name(token);
         if name.is_empty() {
             continue;
         }
-        name = match name.as_str() {
-            "read" | "ReadFile" | "ead_file" => "read_file".to_string(),
-            "glob" | "GlobSearch" | "glob_searchr" => "glob_search".to_string(),
-            "grep" | "GrepSearch" => "grep_search".to_string(),
-            "MCPTool" => "MCP".to_string(),
-            "ListMcpResourcesToolMCP" => "ListMcpResources".to_string(),
-            other => other.to_string(),
-        };
         if !values.contains(&name) {
             values.push(name);
         }
     }
     values
+}
+
+fn normalize_allowed_tool_name(raw: &str) -> String {
+    let name = raw.trim();
+    match name {
+        "read" | "ReadFile" | "ead_file" => "read_file".to_string(),
+        "glob" | "GlobSearch" | "glob_searchr" => "glob_search".to_string(),
+        "grep" | "GrepSearch" => "grep_search".to_string(),
+        "MCPTool" => "MCP".to_string(),
+        "ListMcpResourcesToolMCP" => "ListMcpResources".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn resolve_effective_allowed_tools(
+    global_allowed_tools: &[String],
+    requested_allowed_tools: Option<&[String]>,
+) -> Result<Vec<String>, ApiError> {
+    let Some(requested) = requested_allowed_tools else {
+        return Ok(global_allowed_tools.to_vec());
+    };
+
+    let mut normalized = Vec::new();
+    for raw in requested {
+        let name = normalize_allowed_tool_name(raw);
+        if name.is_empty() {
+            continue;
+        }
+        if !normalized.contains(&name) {
+            normalized.push(name);
+        }
+    }
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+    if global_allowed_tools.is_empty() {
+        return Ok(normalized);
+    }
+
+    for requested in &normalized {
+        let allowed = if requested.ends_with('*') {
+            global_allowed_tools.contains(requested)
+        } else {
+            is_tool_allowed(requested, global_allowed_tools)
+        };
+        if !allowed {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("requested tool pattern is not allowed by gateway policy: {requested}"),
+            ));
+        }
+    }
+    Ok(normalized)
 }
 
 fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {

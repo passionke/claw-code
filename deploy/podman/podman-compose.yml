@@ -5,13 +5,13 @@ services:
     restart: unless-stopped
     env_file:
       - ../../.env
+      - ./gateway-allowlist.env
     environment:
       CLAW_HTTP_ADDR: 0.0.0.0:8080
       CLAW_BIN: /usr/local/bin/claw
       CLAW_WORK_ROOT: /var/lib/claw/workspace
       CLAW_CONFIG_FILE: /app/.claw.json
       CLAW_TIMEOUT_SECONDS: ${CLAW_TIMEOUT_SECONDS}
-      OPENAI_BASE_URL: ${INTERNAL_CLAUDE_TAP_HOST}/v1
       CLAW_LOG_FORMAT: json
       CLAW_LOG_LEVEL: ${CLAW_LOG_LEVEL:-info}
       CLAW_TRACE_ENABLED: ${CLAW_TRACE_ENABLED:-1}

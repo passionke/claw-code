@@ -1,9 +1,22 @@
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use crate::config::{McpOAuthConfig, McpServerConfig, ScopedMcpServerConfig};
 use crate::mcp::{mcp_server_signature, mcp_tool_prefix, normalize_name_for_mcp};
 
 pub const DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS: u64 = 60_000;
+static MCP_TOOL_CALL_TIMEOUT_MS: OnceLock<u64> = OnceLock::new();
+
+#[must_use]
+pub fn default_mcp_tool_call_timeout_ms() -> u64 {
+    *MCP_TOOL_CALL_TIMEOUT_MS.get_or_init(|| {
+        std::env::var("CLAW_MCP_TOOL_CALL_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS)
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpClientTransport {
@@ -113,7 +126,7 @@ impl McpStdioTransport {
     #[must_use]
     pub fn resolved_tool_call_timeout_ms(&self) -> u64 {
         self.tool_call_timeout_ms
-            .unwrap_or(DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS)
+            .unwrap_or(default_mcp_tool_call_timeout_ms())
     }
 }
 
