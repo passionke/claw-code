@@ -1186,6 +1186,7 @@ async fn build_effective_prompt_response(
         default_system_date(),
         std::env::consts::OS,
         "unknown",
+        None,
     )
     .map_err(|e| {
         ApiError::new(
@@ -1903,6 +1904,7 @@ fn run_runtime_prompt(
         default_system_date(),
         std::env::consts::OS,
         "unknown",
+        extra_session.clone(),
     )
     .map_err(|e| {
         ApiError::new(
