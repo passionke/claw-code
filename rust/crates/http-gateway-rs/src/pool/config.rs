@@ -15,6 +15,10 @@ pub struct DockerPoolConfig {
     pub extra_run_args: Vec<String>,
     /// If `None`, a random 8-char stem is generated (production).
     pub name_stem: Option<String>,
+    /// When a slot returns from `Leased` to `Idle`, run this shell inside the worker via
+    /// `sh -lc` (e.g. `pkill -f pattern` for stray `run_in_background` children). Set from env
+    /// `CLAW_DOCKER_POOL_ON_RELEASE` / `CLAW_PODMAN_POOL_ON_RELEASE`. Empty / unset = skip.
+    pub on_release_exec: Option<String>,
 }
 
 impl DockerPoolConfig {
@@ -54,6 +58,7 @@ mod tests {
             network_args: vec![],
             extra_run_args: vec![],
             name_stem: Some("ab".into()),
+            on_release_exec: None,
         };
         assert!(c.validate().is_err());
     }
@@ -69,6 +74,7 @@ mod tests {
             network_args: vec![],
             extra_run_args: vec![],
             name_stem: Some("ab".into()),
+            on_release_exec: None,
         };
         assert!(c.validate().is_err());
     }

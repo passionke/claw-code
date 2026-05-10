@@ -39,6 +39,8 @@ pub struct DockerPoolManager {
     image: String,
     network_args: Vec<String>,
     extra_run_args: Vec<String>,
+    /// Optional `sh -lc` body run inside the worker when a lease is returned to idle.
+    on_release_exec: Option<String>,
 }
 
 impl DockerPoolManager {
@@ -61,6 +63,7 @@ impl DockerPoolManager {
             image: cfg.image,
             network_args: cfg.network_args,
             extra_run_args: cfg.extra_run_args,
+            on_release_exec: cfg.on_release_exec,
         }))
     }
 
@@ -88,6 +91,10 @@ impl DockerPoolManager {
         let extra_run_args = std::env::var(format!("{pfx}EXTRA_ARGS"))
             .map(|s| s.split_whitespace().map(str::to_string).collect::<Vec<_>>())
             .unwrap_or_default();
+        let on_release_exec = std::env::var(format!("{pfx}POOL_ON_RELEASE"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         Self::from_config(DockerPoolConfig {
             runtime_bin: default_bin.to_string(),
             work_root: work_root.to_path_buf(),
@@ -97,6 +104,7 @@ impl DockerPoolManager {
             network_args,
             extra_run_args,
             name_stem: None,
+            on_release_exec,
         })
     }
 
@@ -288,16 +296,62 @@ impl DockerPoolManager {
     }
 
     pub async fn release_slot(self: &Arc<Self>, slot: SlotLease) -> Result<(), String> {
-        let mut slots = self.slots.lock().await;
-        let s = slots
-            .get_mut(slot.slot_index)
-            .ok_or_else(|| "release: bad slot index".to_string())?;
-        if s.state == SlotState::Leased {
-            s.state = SlotState::Idle;
+        let (was_leased, container_name) = {
+            let mut slots = self.slots.lock().await;
+            let s = slots
+                .get_mut(slot.slot_index)
+                .ok_or_else(|| "release: bad slot index".to_string())?;
+            let was_leased = s.state == SlotState::Leased;
+            let name = s.container_name.clone();
+            if was_leased {
+                s.state = SlotState::Idle;
+            }
+            (was_leased, name)
+        };
+        if was_leased {
+            if let Some(ref script) = self.on_release_exec {
+                if !script.trim().is_empty() {
+                    self.run_on_release_hook(&container_name, script).await;
+                }
+            }
         }
-        drop(slots);
         Self::schedule_warm(self);
         Ok(())
+    }
+
+    /// Best-effort cleanup inside the worker after a normal lease return (not on `force_kill`).
+    async fn run_on_release_hook(&self, container_name: &str, script: &str) {
+        let argv = [
+            "exec",
+            "-e",
+            "CLAW_GATEWAY_WORK_ROOT=/claw_host_root",
+            "--workdir",
+            "/",
+            container_name,
+            "sh",
+            "-lc",
+            script,
+        ];
+        match runtime_exec(&self.bin, &argv).await {
+            Ok(out) if out.status.success() => {
+                tracing::debug!(container = %container_name, "pool POOL_ON_RELEASE hook finished");
+            }
+            Ok(out) => {
+                warn!(
+                    container = %container_name,
+                    code = ?out.status.code(),
+                    stderr = %String::from_utf8_lossy(&out.stderr),
+                    "pool POOL_ON_RELEASE hook exited non-zero"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    container = %container_name,
+                    error = %e,
+                    "pool POOL_ON_RELEASE hook spawn failed"
+                );
+            }
+        }
     }
 
     pub async fn force_kill_slot(self: &Arc<Self>, slot_index: usize) -> Result<(), String> {
@@ -405,6 +459,7 @@ esac
             network_args: vec![],
             extra_run_args: vec![],
             name_stem: Some("tstem".into()),
+            on_release_exec: None,
         })
         .unwrap();
         let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
@@ -440,6 +495,7 @@ esac
             network_args: vec![],
             extra_run_args: vec![],
             name_stem: Some("killme".into()),
+            on_release_exec: None,
         })
         .unwrap();
         let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
@@ -474,6 +530,7 @@ esac
             network_args: vec![],
             extra_run_args: vec![],
             name_stem: Some("conc".into()),
+            on_release_exec: None,
         })
         .unwrap();
         let p1 = Arc::clone(&pool);
@@ -504,6 +561,7 @@ esac
             network_args: vec![],
             extra_run_args: vec![],
             name_stem: Some("rel".into()),
+            on_release_exec: None,
         })
         .unwrap();
         let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
@@ -529,6 +587,7 @@ esac
             network_args: vec![],
             extra_run_args: vec![],
             name_stem: Some("dbl".into()),
+            on_release_exec: None,
         })
         .unwrap();
         let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
@@ -536,5 +595,38 @@ esac
             .await
             .unwrap();
         DockerPoolManager::release_slot(&pool, lease).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn release_runs_configured_on_release_hook() {
+        let (base, work, bin_path) = test_layout();
+        let state_dir = base.join("docker_state");
+        let pool = DockerPoolManager::from_config(DockerPoolConfig {
+            runtime_bin: bin_path.to_string_lossy().into_owned(),
+            work_root: work,
+            pool_size: 1,
+            min_idle: 0,
+            image: "fake:latest".into(),
+            network_args: vec![],
+            extra_run_args: vec![],
+            name_stem: Some("relhook".into()),
+            on_release_exec: Some("echo pool_on_release".into()),
+        })
+        .unwrap();
+        let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
+        pool.exec_solve(&lease, ".claw-gateway-pool-tasks/x.json", 1, "claw", None)
+            .await
+            .unwrap();
+        DockerPoolManager::release_slot(&pool, lease).await.unwrap();
+        let log = read_log(&state_dir);
+        let exec_lines: Vec<&str> = log.lines().filter(|l| l.starts_with("exec:")).collect();
+        assert!(
+            exec_lines.len() >= 2,
+            "expected solve exec + release hook exec, log:\n{log}"
+        );
+        assert!(
+            log.contains("pool_on_release"),
+            "release hook should run sh -lc script, log:\n{log}"
+        );
     }
 }
