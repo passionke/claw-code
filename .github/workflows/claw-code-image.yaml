@@ -44,16 +44,10 @@ jobs:
         id: base_images
         run: |
           set -euo pipefail
-          RUST_IMAGE="docker.1ms.run/library/rust:1.88-bookworm"
-          DEBIAN_IMAGE="docker.1ms.run/library/debian:bookworm-slim"
-          if ! docker buildx imagetools inspect "${RUST_IMAGE}" >/dev/null 2>&1; then
-            echo "mirror miss for rust image, fallback to docker.io"
-            RUST_IMAGE="docker.io/library/rust:1.88-bookworm"
-          fi
-          if ! docker buildx imagetools inspect "${DEBIAN_IMAGE}" >/dev/null 2>&1; then
-            echo "mirror miss for debian image, fallback to docker.io"
-            DEBIAN_IMAGE="docker.io/library/debian:bookworm-slim"
-          fi
+          # GitHub-hosted runners: use Docker Hub directly. Some mirrors pass
+          # imagetools inspect but fail layer pulls (missing blob / not found).
+          RUST_IMAGE="docker.io/library/rust:1.88-bookworm"
+          DEBIAN_IMAGE="docker.io/library/debian:bookworm-slim"
           echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
 
