@@ -1,5 +1,6 @@
 //! Solve path via container pool (`docker exec claw gateway-solve-once`). Author: kejiqing
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -7,10 +8,12 @@ use axum::http::StatusCode;
 use gateway_solve_turn::GatewaySolveTaskFile;
 use tokio::fs;
 use tracing::info;
-use uuid::Uuid;
 
 use crate::pool::{parse_gateway_solve_exec_stdout, DockerPoolManager, SlotLease};
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
+
+/// Fixed name inside the per-session bind mount (no `..`, not client-controlled).
+const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
 
 /// If the async worker is aborted (e.g. `tokio::spawn` cancel), release the slot and drop the
 /// cancel map entry so the pool does not leak `Leased` rows and `force_kill` can still run.
@@ -54,6 +57,7 @@ pub async fn run_solve_request_docker(
     pool: Arc<DockerPoolManager>,
     started: Instant,
     effective_allowed_tools: Vec<String>,
+    session_home: PathBuf,
 ) -> Result<SolveResponse, ApiError> {
     let RunSolveContext {
         request_id,
@@ -63,21 +67,7 @@ pub async fn run_solve_request_docker(
         .timeout_seconds
         .unwrap_or(state.cfg.default_timeout_seconds);
 
-    let ds_home = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
-    let task_dir = state.cfg.work_root.join(".claw-gateway-pool-tasks");
-    fs::create_dir_all(&task_dir).await.map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("create pool task dir failed: {e}"),
-        )
-    })?;
-    // Task path must not incorporate client-controlled `request_id` (from `claw-session-id` /
-    // `x-request-id`): path segments like `../` would escape `.claw-gateway-pool-tasks/`.
-    // Author: kejiqing
-    let task_file_stem = Uuid::new_v4().simple().to_string();
-    let task_file_name = format!("{task_file_stem}.json");
-    let task_path = task_dir.join(&task_file_name);
-    let task_rel = format!(".claw-gateway-pool-tasks/{task_file_name}");
+    let task_path = session_home.join(GATEWAY_SOLVE_TASK_FILE);
 
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
@@ -102,7 +92,10 @@ pub async fn run_solve_request_docker(
     })?;
 
     let lease = pool
-        .acquire_slot(Duration::from_secs(timeout_seconds.saturating_add(30)))
+        .acquire_slot(
+            Duration::from_secs(timeout_seconds.saturating_add(30)),
+            session_home.clone(),
+        )
         .await
         .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
 
@@ -129,8 +122,7 @@ pub async fn run_solve_request_docker(
     let exec_result = pool
         .exec_solve(
             lease_cleanup.lease.as_ref().expect("lease set for exec"),
-            task_rel.as_str(),
-            req.ds_id,
+            GATEWAY_SOLVE_TASK_FILE,
             state.cfg.claw_bin.as_str(),
             Some(request_id.as_str()),
         )
@@ -197,7 +189,7 @@ pub async fn run_solve_request_docker(
         session_id: request_id.clone(),
         request_id,
         ds_id: req.ds_id,
-        work_dir: ds_home.display().to_string(),
+        work_dir: session_home.display().to_string(),
         duration_ms,
         claw_exit_code,
         output_text,

@@ -1470,20 +1470,35 @@ async fn run_solve_request(
         resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
     validate_ds_exists(req.ds_id, &state.cfg.ds_registry_path).await?;
 
-    let ds_home = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
-    fs::create_dir_all(ds_home.join(".claw"))
+    // Per-solve workspace under shared `ds_{id}/` so parallel solves cannot read each other's
+    // files; pool workers bind only this subtree to /claw_host_root. Author: kejiqing
+    let ds_base = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
+    let session_fs_id = Uuid::new_v4().simple().to_string();
+    let session_home = ds_base.join("sessions").join(&session_fs_id);
+    fs::create_dir_all(session_home.join(".claw"))
         .await
         .map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create work dir failed: {e}"),
+                format!("create session work dir failed: {e}"),
             )
         })?;
 
     {
         let ds_lock = get_ds_lock(&state, req.ds_id).await;
         let _guard = ds_lock.lock().await;
-        ensure_workspace_initialized(&state.cfg.claw_bin, &ds_home).await?;
+        fs::create_dir_all(&ds_base).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create ds dir failed: {e}"),
+            )
+        })?;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &ds_base).await?;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &session_home).await?;
+        let ds_claude = ds_base.join("CLAUDE.md");
+        if fs::metadata(&ds_claude).await.is_ok_and(|m| m.is_file()) {
+            let _ = fs::copy(&ds_claude, session_home.join("CLAUDE.md")).await;
+        }
         let settings = build_settings(&state, req.ds_id).await;
         let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
             ApiError::new(
@@ -1491,7 +1506,7 @@ async fn run_solve_request(
                 format!("serialize settings failed: {e}"),
             )
         })?;
-        fs::write(ds_home.join(".claw/settings.json"), &settings_content)
+        fs::write(session_home.join(".claw/settings.json"), &settings_content)
             .await
             .map_err(|e| {
                 ApiError::new(
@@ -1499,13 +1514,13 @@ async fn run_solve_request(
                     format!("write settings failed: {e}"),
                 )
             })?;
-        let _ = fs::remove_file(ds_home.join(".claw/mcp_discovery_cache.json")).await;
+        let _ = fs::remove_file(session_home.join(".claw/mcp_discovery_cache.json")).await;
     }
 
     match state.cfg.solve_isolation {
         SolveIsolation::InProcess => {
             let (code, output_text, output_json) = run_runtime_prompt(
-                &ds_home,
+                &session_home,
                 &state.cfg.work_root,
                 &req.user_prompt,
                 req.model.as_deref(),
@@ -1528,7 +1543,7 @@ async fn run_solve_request(
                 session_id: ctx.request_id.clone(),
                 request_id: ctx.request_id,
                 ds_id: req.ds_id,
-                work_dir: ds_home.display().to_string(),
+                work_dir: session_home.display().to_string(),
                 duration_ms,
                 claw_exit_code: code,
                 output_text,
@@ -1549,6 +1564,7 @@ async fn run_solve_request(
                 pool,
                 started,
                 effective_allowed_tools,
+                session_home,
             )
             .await
         }
