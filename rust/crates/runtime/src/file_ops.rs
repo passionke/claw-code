@@ -12,8 +12,27 @@ use walkdir::WalkDir;
 /// Maximum file size that can be read (10 MB).
 const MAX_READ_SIZE: u64 = 10 * 1024 * 1024;
 
-/// Maximum file size that can be written (10 MB).
-const MAX_WRITE_SIZE: usize = 10 * 1024 * 1024;
+/// Default maximum bytes for a single [`write_file`] `content` (container / CLI / gateway worker).
+const DEFAULT_WRITE_FILE_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+/// Max bytes allowed for one `write_file` body (`content`).
+///
+/// Override with env **`CLAW_WRITE_FILE_MAX_BYTES`** (positive integer). Unset, empty, `0`, or
+/// invalid parse → **10 MiB**. Read on each call so tests and worker shells can tune without rebuild.
+/// Author: kejiqing
+#[must_use]
+pub fn write_file_max_bytes() -> usize {
+    std::env::var("CLAW_WRITE_FILE_MAX_BYTES")
+        .ok()
+        .and_then(|raw| {
+            let t = raw.trim();
+            if t.is_empty() {
+                return None;
+            }
+            t.parse::<usize>().ok().filter(|&n| n > 0)
+        })
+        .unwrap_or(DEFAULT_WRITE_FILE_MAX_BYTES)
+}
 
 /// Check whether a file appears to contain binary content by examining
 /// the first chunk for NUL bytes.
@@ -222,13 +241,14 @@ pub fn read_file(
 
 /// Replaces a file's contents and returns patch metadata.
 pub fn write_file(path: &str, content: &str) -> io::Result<WriteFileOutput> {
-    if content.len() > MAX_WRITE_SIZE {
+    let max_bytes = write_file_max_bytes();
+    if content.len() > max_bytes {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "content is too large ({} bytes, max {} bytes)",
                 content.len(),
-                MAX_WRITE_SIZE
+                max_bytes
             ),
         ));
     }
@@ -655,7 +675,7 @@ mod tests {
 
     use super::{
         edit_file, expand_braces, glob_search, grep_search, is_symlink_escape, read_file,
-        read_file_in_workspace, write_file, GrepSearchInput, MAX_WRITE_SIZE,
+        read_file_in_workspace, write_file, write_file_max_bytes, GrepSearchInput,
     };
 
     fn temp_path(name: &str) -> std::path::PathBuf {
@@ -701,13 +721,25 @@ mod tests {
 
     #[test]
     fn rejects_oversized_writes() {
+        let _guard = crate::test_env_lock();
+        std::env::set_var("CLAW_WRITE_FILE_MAX_BYTES", "100");
         let path = temp_path("oversize-write.txt");
-        let huge = "x".repeat(MAX_WRITE_SIZE + 1);
+        let huge = "x".repeat(101);
         let result = write_file(path.to_string_lossy().as_ref(), &huge);
+        std::env::remove_var("CLAW_WRITE_FILE_MAX_BYTES");
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("too large"));
+    }
+
+    #[test]
+    fn write_file_max_bytes_env_controls_limit() {
+        let _guard = crate::test_env_lock();
+        std::env::set_var("CLAW_WRITE_FILE_MAX_BYTES", "2048");
+        assert_eq!(write_file_max_bytes(), 2048);
+        std::env::remove_var("CLAW_WRITE_FILE_MAX_BYTES");
+        assert_eq!(write_file_max_bytes(), 10 * 1024 * 1024);
     }
 
     #[test]

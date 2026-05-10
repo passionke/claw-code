@@ -534,7 +534,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "write_file",
-            description: "Write a text file in the workspace.",
+            description: "Write a text file in the workspace. Single-call body size cap: env CLAW_WRITE_FILE_MAX_BYTES (bytes, default 10 MiB).",
             input_schema: json!({
                 "type": "object",
                 "properties": {

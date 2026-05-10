@@ -25,5 +25,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /build/target/release/claw /usr/local/bin/claw
 COPY scripts/claw-gateway-worker.sh /usr/local/bin/claw-gateway-worker.sh
 RUN chmod +x /usr/local/bin/claw-gateway-worker.sh
+# Optional: ENV CLAW_WRITE_FILE_MAX_BYTES=<bytes> to cap each write_file body (default 10 MiB in runtime).
 
 ENTRYPOINT ["/usr/local/bin/claw-gateway-worker.sh"]

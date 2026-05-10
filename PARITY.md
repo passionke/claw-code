@@ -77,7 +77,7 @@ Canonical scenario map: `rust/mock_parity_scenarios.json`
 - **Status:** merged on `main`.
 - **Feature commit:** `284163b` — `feat(file_ops): add edge-case guards — binary detection, size limits, workspace boundary, symlink escape`
 - **Merge commit:** `a98f2b6` — `Merge jobdori/file-tool-edge-cases: binary detection, size limits, workspace boundary guards`
-- **Evidence:** `rust/crates/runtime/src/file_ops.rs` is **744 LOC** and now includes `MAX_READ_SIZE`, `MAX_WRITE_SIZE`, NUL-byte binary detection, and canonical workspace-boundary validation.
+- **Evidence:** `rust/crates/runtime/src/file_ops.rs` is **744 LOC** and now includes `MAX_READ_SIZE`, `write_file` size cap (`CLAW_WRITE_FILE_MAX_BYTES`, default 10 MiB), NUL-byte binary detection, and canonical workspace-boundary validation.
 - **Harness coverage:** `read_file_roundtrip`, `grep_chunk_assembly`, `write_file_allowed`, and `write_file_denied` are in the manifest and exercised by the clean-env harness.
 
 ### File tools — harness-validated flows
