@@ -7,6 +7,7 @@ use axum::http::StatusCode;
 use gateway_solve_turn::GatewaySolveTaskFile;
 use tokio::fs;
 use tracing::info;
+use uuid::Uuid;
 
 use crate::pool::{parse_gateway_solve_exec_stdout, DockerPoolManager, SlotLease};
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
@@ -70,7 +71,11 @@ pub async fn run_solve_request_docker(
             format!("create pool task dir failed: {e}"),
         )
     })?;
-    let task_file_name = format!("{request_id}.json");
+    // Task path must not incorporate client-controlled `request_id` (from `claw-session-id` /
+    // `x-request-id`): path segments like `../` would escape `.claw-gateway-pool-tasks/`.
+    // Author: kejiqing
+    let task_file_stem = Uuid::new_v4().simple().to_string();
+    let task_file_name = format!("{task_file_stem}.json");
     let task_path = task_dir.join(&task_file_name);
     let task_rel = format!(".claw-gateway-pool-tasks/{task_file_name}");
 
