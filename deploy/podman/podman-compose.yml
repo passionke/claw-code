@@ -10,6 +10,7 @@ services:
       CLAW_HTTP_ADDR: 0.0.0.0:8080
       CLAW_BIN: /usr/local/bin/claw
       CLAW_WORK_ROOT: /var/lib/claw/workspace
+      CLAW_SOLVE_ISOLATION: ${CLAW_SOLVE_ISOLATION:-podman_pool}
       CLAW_POOL_WORK_ROOT_HOST: ${CLAW_POOL_WORK_ROOT_HOST}
       CLAW_CONFIG_FILE: /app/.claw.json
       CLAW_TIMEOUT_SECONDS: ${CLAW_TIMEOUT_SECONDS}

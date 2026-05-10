@@ -1,6 +1,5 @@
 # shellcheck shell=bash
-# Shared Podman Compose -f list when CLAW_SOLVE_ISOLATION=podman_pool. Source from deploy/podman/*.sh.
-# Sets CLAW_PODMAN_COMPOSE_ARGS and CLAW_POOL_WORK_ROOT_HOST. Author: kejiqing
+# Sets CLAW_POOL_WORK_ROOT_HOST and CLAW_PODMAN_COMPOSE_ARGS. Default solve mode is podman_pool (second compose file). Author: kejiqing
 
 claw_podman_export_pool_workspace() {
   local script_dir="$1"
@@ -19,10 +18,12 @@ claw_podman_load_compose_args() {
   # shellcheck disable=SC1090
   source "${env_file}"
   set +a
-  if [[ "${CLAW_SOLVE_ISOLATION:-inprocess}" == "podman_pool" ]]; then
+  # Default CLAW_SOLVE_ISOLATION is podman_pool (see podman-compose + Rust); inprocess skips socket overlay.
+  if [[ "${CLAW_SOLVE_ISOLATION:-podman_pool}" != "inprocess" ]]; then
     if [[ -z "${PODMAN_HOST_SOCK:-}" ]]; then
-      echo "error: CLAW_SOLVE_ISOLATION=podman_pool requires PODMAN_HOST_SOCK (host Podman API socket)." >&2
-      echo "example (rootless Linux): PODMAN_HOST_SOCK=/run/user/\$(id -u)/podman/podman.sock" >&2
+      echo "error: default mode is podman_pool; set PODMAN_HOST_SOCK to the host Podman API socket." >&2
+      echo "examples: Linux rootless /run/user/\$(id -u)/podman/podman.sock · macOS: \`podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}'\`" >&2
+      echo "to run without a pool inside this stack: CLAW_SOLVE_ISOLATION=inprocess (no worker containers)." >&2
       return 1
     fi
     CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.podman-api.yml" )

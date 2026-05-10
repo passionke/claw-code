@@ -79,14 +79,15 @@ enum SolveIsolation {
 
 impl SolveIsolation {
     fn from_env() -> Self {
+        // Default product mode is Podman container pool; set CLAW_SOLVE_ISOLATION=inprocess to disable.
         match std::env::var("CLAW_SOLVE_ISOLATION")
             .map(|v| v.trim().to_ascii_lowercase())
             .unwrap_or_default()
             .as_str()
         {
+            "inprocess" => Self::InProcess,
             "docker_pool" => Self::DockerPool,
-            "podman_pool" => Self::PodmanPool,
-            _ => Self::InProcess,
+            _ => Self::PodmanPool,
         }
     }
 
