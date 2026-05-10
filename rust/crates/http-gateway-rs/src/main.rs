@@ -349,6 +349,24 @@ async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
     res
 }
 
+/// Directory on the **host** used for pool bind mounts (`worker -v …:/claw_host_root`).
+/// When the gateway runs in a container, set `CLAW_POOL_WORK_ROOT_HOST` to the same host path
+/// as the `CLAW_WORK_ROOT` bind (see `deploy/podman/up.sh`). Author: kejiqing
+fn pool_host_bind_root(work_root: &Path, isolation: SolveIsolation) -> PathBuf {
+    match isolation {
+        SolveIsolation::InProcess => work_root.to_path_buf(),
+        SolveIsolation::DockerPool | SolveIsolation::PodmanPool => {
+            if let Ok(raw) = std::env::var("CLAW_POOL_WORK_ROOT_HOST") {
+                let trimmed = raw.trim();
+                if !trimmed.is_empty() {
+                    return PathBuf::from(trimmed);
+                }
+            }
+            work_root.to_path_buf()
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let solve_isolation = SolveIsolation::from_env();
@@ -369,15 +387,29 @@ async fn main() {
         http_addr = %std::env::var("CLAW_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
         "http-gateway-rs tracing ready; when file_log_enabled, stdout is JSON too (same subscriber layers)"
     );
+    let pool_binding_root = pool_host_bind_root(&work_root, solve_isolation);
+    if matches!(
+        solve_isolation,
+        SolveIsolation::DockerPool | SolveIsolation::PodmanPool
+    ) {
+        info!(
+            target: "claw_gateway_orchestration",
+            component = "startup",
+            phase = "pool_host_paths",
+            work_root = %work_root.display(),
+            pool_host_bind_root = %pool_binding_root.display(),
+            "container pool uses pool_host_bind_root on the runtime host for worker -v mounts"
+        );
+    }
     let docker_pool: Option<Arc<pool::DockerPoolManager>> = match solve_isolation {
         SolveIsolation::DockerPool => Some(
-            pool::DockerPoolManager::try_from_env(false, &work_root).unwrap_or_else(|e| {
+            pool::DockerPoolManager::try_from_env(false, &pool_binding_root).unwrap_or_else(|e| {
                 eprintln!("http-gateway-rs: invalid Docker pool configuration: {e}");
                 std::process::exit(1);
             }),
         ),
         SolveIsolation::PodmanPool => Some(
-            pool::DockerPoolManager::try_from_env(true, &work_root).unwrap_or_else(|e| {
+            pool::DockerPoolManager::try_from_env(true, &pool_binding_root).unwrap_or_else(|e| {
                 eprintln!("http-gateway-rs: invalid Podman pool configuration: {e}");
                 std::process::exit(1);
             }),

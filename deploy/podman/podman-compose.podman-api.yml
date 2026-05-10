@@ -1,0 +1,10 @@
+# Overlay: mount host Podman API socket into gateway when using podman_pool.
+# Use with: podman compose -f podman-compose.yml -f podman-compose.podman-api.yml up -d
+# Requires PODMAN_HOST_SOCK in .env (e.g. unix path for rootless: /run/user/1000/podman/podman.sock).
+# Author: kejiqing
+services:
+  gateway-rs:
+    volumes:
+      - "${PODMAN_HOST_SOCK}:/run/claw-podman/podman.sock:ro"
+    environment:
+      CONTAINER_HOST: unix:///run/claw-podman/podman.sock

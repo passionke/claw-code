@@ -10,6 +10,7 @@ services:
       CLAW_HTTP_ADDR: 0.0.0.0:8080
       CLAW_BIN: /usr/local/bin/claw
       CLAW_WORK_ROOT: /var/lib/claw/workspace
+      CLAW_POOL_WORK_ROOT_HOST: ${CLAW_POOL_WORK_ROOT_HOST}
       CLAW_CONFIG_FILE: /app/.claw.json
       CLAW_TIMEOUT_SECONDS: ${CLAW_TIMEOUT_SECONDS}
       CLAW_LOG_FORMAT: json
@@ -20,7 +21,8 @@ services:
     ports:
       - "${GATEWAY_HOST_PORT}:8080"
     volumes:
-      - claw_workspace:/var/lib/claw/workspace
+      # Bind mount so podman_pool on the host can use the same path as CLAW_POOL_WORK_ROOT_HOST.
+      - ./claw-workspace:/var/lib/claw/workspace
       - ${CLAW_HOST_LOG_DIR:-./claw-logs}:/var/log/claw
       - ../../.claw.json:/app/.claw.json:ro
     healthcheck:
@@ -29,6 +31,3 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-
-volumes:
-  claw_workspace:

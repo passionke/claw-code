@@ -82,10 +82,25 @@ impl DockerPoolManager {
         } else {
             ("docker", "CLAW_DOCKER_")
         };
-        let pool_size = std::env::var(format!("{pfx}POOL_SIZE"))
+        let mut pool_size = std::env::var(format!("{pfx}POOL_SIZE"))
             .unwrap_or_else(|_| "2".to_string())
             .parse::<usize>()
             .map_err(|_| format!("{pfx}POOL_SIZE must be a positive integer"))?;
+        if let Ok(cap_s) = std::env::var("CLAW_POOL_SIZE_CAP") {
+            if let Ok(cap) = cap_s.trim().parse::<usize>() {
+                if cap > 0 && pool_size > cap {
+                    warn!(
+                        target: "claw_gateway_pool",
+                        component = "docker_pool",
+                        phase = "pool_size_capped",
+                        requested = pool_size,
+                        cap,
+                        "CLAW_POOL_SIZE_CAP applied"
+                    );
+                    pool_size = cap;
+                }
+            }
+        }
         let min_idle = std::env::var(format!("{pfx}POOL_MIN_IDLE"))
             .unwrap_or_else(|_| "1".to_string())
             .parse::<usize>()
@@ -96,9 +111,23 @@ impl DockerPoolManager {
             Ok(n) if !n.trim().is_empty() => vec!["--network".to_string(), n.trim().to_string()],
             _ => Vec::new(),
         };
-        let extra_run_args = std::env::var(format!("{pfx}EXTRA_ARGS"))
+        let mut extra_run_args = std::env::var(format!("{pfx}EXTRA_ARGS"))
             .map(|s| s.split_whitespace().map(str::to_string).collect::<Vec<_>>())
             .unwrap_or_default();
+        if let Ok(cpus) = std::env::var(format!("{pfx}POOL_CPUS")) {
+            let t = cpus.trim();
+            if !t.is_empty() {
+                extra_run_args.push("--cpus".into());
+                extra_run_args.push(t.to_string());
+            }
+        }
+        if let Ok(mem) = std::env::var(format!("{pfx}POOL_MEMORY")) {
+            let t = mem.trim();
+            if !t.is_empty() {
+                extra_run_args.push("--memory".into());
+                extra_run_args.push(t.to_string());
+            }
+        }
         let on_release_exec = std::env::var(format!("{pfx}POOL_ON_RELEASE"))
             .ok()
             .map(|s| s.trim().to_string())

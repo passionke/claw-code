@@ -18,5 +18,10 @@ if [[ ! -f "${CLAW_JSON}" ]]; then
   printf '%s\n' '{}' > "${CLAW_JSON}"
 fi
 
-podman compose --env-file "${ENV_FILE}" -f "${SCRIPT_DIR}/podman-compose.yml" up -d
+# shellcheck disable=SC1090
+source "${SCRIPT_DIR}/compose-include.sh"
+claw_podman_export_pool_workspace "${SCRIPT_DIR}"
+claw_podman_load_compose_args "${SCRIPT_DIR}" "${ENV_FILE}"
+
+podman compose --env-file "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d
 echo "Services started."

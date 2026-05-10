@@ -7,7 +7,11 @@ ROOT_ENV="${REPO_ROOT}/.env"
 PID_FILE="${SCRIPT_DIR}/claude-tap.pid"
 
 if [[ -f "${ROOT_ENV}" ]]; then
-  podman compose --env-file "${ROOT_ENV}" -f "${SCRIPT_DIR}/podman-compose.yml" down
+  # shellcheck disable=SC1090
+  source "${SCRIPT_DIR}/compose-include.sh"
+  claw_podman_export_pool_workspace "${SCRIPT_DIR}"
+  claw_podman_load_compose_args "${SCRIPT_DIR}" "${ROOT_ENV}"
+  podman compose --env-file "${ROOT_ENV}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" down
 else
   podman compose -f "${SCRIPT_DIR}/podman-compose.yml" down
 fi

@@ -14,9 +14,11 @@ RUN rustup toolchain install nightly && rustup default nightly && \
     cargo build -p http-gateway-rs --release
 
 FROM ${DEBIAN_BASE_IMAGE}
+# podman: remote client for CLAW_SOLVE_ISOLATION=podman_pool (API socket mounted from host).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    podman \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

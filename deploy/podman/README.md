@@ -41,6 +41,17 @@ podman build \
 
 The gateway bind‑mounts **`CLAW_WORK_ROOT`** at **`/claw_host_root`** inside each worker; see `docs/http-gateway-container-pool.md` §6.1–6.3.
 
+### Local `podman_pool` (compose)
+
+1. Build **gateway** and **worker** images (`./deploy/podman/build.sh` and worker `podman build` from README above).
+2. In repo-root `.env`, set for example:
+   - `CLAW_SOLVE_ISOLATION=podman_pool`
+   - `CLAW_POOL_SIZE_CAP=4` and `CLAW_PODMAN_POOL_SIZE=4` (max workers), `CLAW_PODMAN_POOL_MIN_IDLE=1` (keep at least one warm idle slot)
+   - `CLAW_PODMAN_IMAGE=claw-gateway-worker:local`
+   - Optional cgroup caps: `CLAW_PODMAN_POOL_CPUS=1`, `CLAW_PODMAN_POOL_MEMORY=1g`
+   - `PODMAN_HOST_SOCK` = host API socket (rootless Linux often `/run/user/$(id -u)/podman/podman.sock`; ensure `podman system service` or equivalent is available).
+3. `./deploy/podman/up.sh` or `start-with-tap.sh` exports `CLAW_POOL_WORK_ROOT_HOST` to `deploy/podman/claw-workspace` and merges `podman-compose.podman-api.yml` when `CLAW_SOLVE_ISOLATION=podman_pool`.
+
 ## 2) Configure env (repo root only)
 
 ```bash

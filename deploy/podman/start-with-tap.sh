@@ -61,6 +61,11 @@ if [[ ! -f "${CLAW_JSON}" ]]; then
   printf '%s\n' '{}' > "${CLAW_JSON}"
 fi
 
-podman compose --env-file "${ROOT_ENV}" -f "${SCRIPT_DIR}/podman-compose.yml" up -d
+# shellcheck disable=SC1090
+source "${SCRIPT_DIR}/compose-include.sh"
+claw_podman_export_pool_workspace "${SCRIPT_DIR}"
+claw_podman_load_compose_args "${SCRIPT_DIR}" "${ROOT_ENV}"
+
+podman compose --env-file "${ROOT_ENV}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d
 echo "gateway started on port ${GATEWAY_HOST_PORT}"
 echo "claude-tap live viewer: http://127.0.0.1:${CLAUDE_TAP_LIVE_PORT}"

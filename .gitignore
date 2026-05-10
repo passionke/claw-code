@@ -31,3 +31,4 @@ rust/claw-server.db
 deploy/podman/claude-tap.log
 deploy/podman/claude-tap.pid
 deploy/podman/claw-logs/
+deploy/podman/claw-workspace/
