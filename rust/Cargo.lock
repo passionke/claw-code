@@ -568,6 +568,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gateway-solve-turn"
+version = "0.1.0"
+dependencies = [
+ "api",
+ "runtime",
+ "serde",
+ "serde_json",
+ "telemetry",
+ "tokio",
+ "tools",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -718,6 +731,7 @@ version = "0.1.0"
 dependencies = [
  "api",
  "axum",
+ "gateway-solve-turn",
  "http",
  "runtime",
  "serde",
@@ -1667,6 +1681,7 @@ dependencies = [
  "commands",
  "compat-harness",
  "crossterm",
+ "gateway-solve-turn",
  "mock-anthropic-service",
  "plugins",
  "pulldown-cmark",

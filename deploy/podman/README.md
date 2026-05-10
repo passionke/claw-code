@@ -23,6 +23,20 @@ Optional: build with a specific tag (for release deployment):
 ./deploy/podman/build.sh release-v1.0.8
 ```
 
+### Worker image (container pool)
+
+When `CLAW_SOLVE_ISOLATION=docker_pool` / `podman_pool`, the gateway expects **`CLAW_DOCKER_IMAGE`** / **`CLAW_PODMAN_IMAGE`** to point at a long‑lived worker (default entrypoint: `scripts/claw-gateway-worker.sh` → `sleep infinity`; solve runs via `docker exec … claw gateway-solve-once`).
+
+Build from the **repository root**:
+
+```bash
+podman build \
+  -f deploy/podman/Containerfile.gateway-worker \
+  -t claw-gateway-worker:local .
+```
+
+The gateway bind‑mounts **`CLAW_WORK_ROOT`** at **`/claw_host_root`** inside each worker; see `docs/http-gateway-container-pool.md` §6.1–6.3.
+
 ## 2) Configure env (repo root only)
 
 ```bash

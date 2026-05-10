@@ -50,6 +50,7 @@ use commands::{
     slash_command_specs, validate_slash_command_input, SkillSlashDispatch, SlashCommand,
 };
 use compat_harness::{extract_manifest, UpstreamPaths};
+use gateway_solve_turn::run_gateway_solve_turn;
 use init::initialize_repo;
 use plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
@@ -344,6 +345,57 @@ fn merge_prompt_with_stdin(prompt: &str, stdin_content: Option<&str>) -> String 
     format!("{prompt}\n\n{trimmed}")
 }
 
+/// `claw gateway-solve-once --task-file <json>` — used from `docker exec` by the gateway pool.
+/// Author: kejiqing
+fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let raw = fs::read_to_string(task_file)?;
+    let task: gateway_solve_turn::GatewaySolveTaskFile = serde_json::from_str(&raw)?;
+    let work_dir = env::current_dir()?;
+    let work_root = env::var("CLAW_GATEWAY_WORK_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| work_dir.clone());
+    let timeout_seconds = task.timeout_seconds.unwrap_or(120);
+    let max_iterations = task.max_iterations.unwrap_or(64);
+    let allowed_tools = task.allowed_tools.unwrap_or_default();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = {
+        let _enter = rt.enter();
+        run_gateway_solve_turn(
+            &work_dir,
+            &work_root,
+            &task.user_prompt,
+            task.model.as_deref(),
+            timeout_seconds,
+            &task.request_id,
+            task.extra_session.clone(),
+            allowed_tools,
+            max_iterations,
+        )
+    };
+    match result {
+        Ok((claw_exit_code, output_text, output_json)) => {
+            let payload = json!({
+                "clawExitCode": claw_exit_code,
+                "outputText": output_text,
+                "outputJson": output_json,
+            });
+            println!("{}", serde_json::to_string(&payload)?);
+            Ok(())
+        }
+        Err(e) => {
+            let payload = json!({
+                "clawExitCode": 1,
+                "error": e.message,
+                "httpStatusHint": e.status,
+            });
+            println!("{}", serde_json::to_string(&payload)?);
+            Err(format!("gateway-solve-once failed: {e}").into())
+        }
+    }
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     match parse_args(&args)? {
@@ -488,6 +540,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?,
         CliAction::HelpTopic(topic) => print_help_topic(topic),
         CliAction::Help { output_format } => print_help(output_format)?,
+        CliAction::GatewaySolveOnce { task_file } => run_gateway_solve_once(&task_file)?,
     }
     Ok(())
 }
@@ -595,6 +648,10 @@ enum CliAction {
     // prompt-mode formatting is only supported for non-interactive runs
     Help {
         output_format: CliOutputFormat,
+    },
+    /// Non-interactive single turn for `http-gateway-rs` container pool (`claw gateway-solve-once`).
+    GatewaySolveOnce {
+        task_file: PathBuf,
     },
 }
 
@@ -872,6 +929,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     let permission_mode = permission_mode_override.unwrap_or_else(default_permission_mode);
 
     match rest[0].as_str() {
+        "gateway-solve-once" => parse_gateway_solve_once(&rest[1..]),
         "dump-manifests" => parse_dump_manifests_args(&rest[1..], output_format),
         "bootstrap-plan" => Ok(CliAction::BootstrapPlan { output_format }),
         "agents" => Ok(CliAction::Agents {
@@ -1135,6 +1193,7 @@ fn bare_slash_command_guidance(command_name: &str) -> Option<String> {
     if matches!(
         command_name,
         "dump-manifests"
+            | "gateway-solve-once"
             | "bootstrap-plan"
             | "agents"
             | "mcp"
@@ -1638,6 +1697,36 @@ fn filter_tool_specs(
     allowed_tools: Option<&AllowedToolSet>,
 ) -> Vec<ToolDefinition> {
     tool_registry.definitions(allowed_tools)
+}
+
+fn parse_gateway_solve_once(args: &[String]) -> Result<CliAction, String> {
+    let mut task_file: Option<PathBuf> = None;
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--task-file" => {
+                let p = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --task-file".to_string())?;
+                task_file = Some(PathBuf::from(p));
+                i += 2;
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unknown gateway-solve-once option: {other}"));
+            }
+            other => {
+                if task_file.is_some() {
+                    return Err(format!("unexpected extra argument: {other}"));
+                }
+                task_file = Some(PathBuf::from(other));
+                i += 1;
+            }
+        }
+    }
+    let task_file = task_file.ok_or_else(|| {
+        "gateway-solve-once requires a task JSON path (--task-file PATH or PATH)".to_string()
+    })?;
+    Ok(CliAction::GatewaySolveOnce { task_file })
 }
 
 fn parse_system_prompt_args(

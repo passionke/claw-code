@@ -20,6 +20,8 @@ runtime = { path = "../runtime" }
 api = { path = "../api" }
 tools = { path = "../tools" }
 telemetry = { path = "../telemetry" }
+gateway-solve-turn = { path = "../gateway-solve-turn" }
+
 
 [lints]
 workspace = true
