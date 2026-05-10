@@ -47,6 +47,15 @@ The gateway bind‑mounts **`CLAW_WORK_ROOT`** at **`/claw_host_root`** inside e
 2. Repo-root `.env` (see `.env.example`): **`PODMAN_HOST_SOCK`** is required unless you set **`CLAW_SOLVE_ISOLATION=inprocess`**. Defaults include pool size / worker image.
 3. `./deploy/podman/up.sh` or `start-with-tap.sh` sets `CLAW_POOL_WORK_ROOT_HOST` and merges `podman-compose.podman-api.yml` whenever mode is not `inprocess`.
 
+### Local Podman vs remote Docker (same gateway binary)
+
+| Where | `CLAW_SOLVE_ISOLATION` | Runtime CLI | Env prefix | Socket / access |
+| --- | --- | --- | --- | --- |
+| **This compose stack (dev laptop)** | `podman_pool` (default) | `podman` (in image) | `CLAW_PODMAN_*` | `PODMAN_HOST_SOCK` → `podman-compose.podman-api.yml` |
+| **Remote / server (Docker Engine)** | `docker_pool` | `docker` | `CLAW_DOCKER_*` | Mount `docker.sock` or set `DOCKER_HOST`; image must include **`docker` CLI** (this Podman-focused image installs `podman` only—use a small Docker-client layer or host-run gateway for `docker_pool`) |
+
+Worker image name differs only by env: `CLAW_PODMAN_IMAGE` vs `CLAW_DOCKER_IMAGE`. Pool sizing / caps (`CLAW_POOL_SIZE_CAP`, `POOL_SIZE`, `POOL_MIN_IDLE`, `POOL_CPUS`, `POOL_MEMORY`) use the same **per-runtime** prefix (`CLAW_PODMAN_…` / `CLAW_DOCKER_…`) as in `docs/http-gateway-container-pool.md`.
+
 ## 2) Configure env (repo root only)
 
 ```bash
