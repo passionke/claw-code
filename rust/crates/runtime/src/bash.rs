@@ -178,6 +178,24 @@ fn get_git_actor() -> Option<String> {
     Some(name)
 }
 
+/// When the model omits `timeout` on the bash tool, apply this ceiling (milliseconds) if set.
+/// Example: `CLAW_BASH_DEFAULT_TIMEOUT_MS=120000` caps wall time without changing tool JSON.
+/// Author: kejiqing
+fn default_bash_timeout_ms_from_env() -> Option<u64> {
+    std::env::var("CLAW_BASH_DEFAULT_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+}
+
+fn coalesce_bash_timeout(explicit: Option<u64>, default_ms: Option<u64>) -> Option<u64> {
+    explicit.or(default_ms)
+}
+
+fn effective_bash_timeout_ms(input: &BashCommandInput) -> Option<u64> {
+    coalesce_bash_timeout(input.timeout, default_bash_timeout_ms_from_env())
+}
+
 async fn execute_bash_async(
     input: BashCommandInput,
     sandbox_status: SandboxStatus,
@@ -188,7 +206,8 @@ async fn execute_bash_async(
 
     let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
 
-    let output_result = if let Some(timeout_ms) = input.timeout {
+    let timeout_ms = effective_bash_timeout_ms(&input);
+    let output_result = if let Some(timeout_ms) = timeout_ms {
         match timeout(Duration::from_millis(timeout_ms), command.output()).await {
             Ok(result) => (result?, false),
             Err(_) => {
@@ -322,8 +341,15 @@ fn prepare_sandbox_dirs(cwd: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{execute_bash, BashCommandInput};
+    use super::{coalesce_bash_timeout, execute_bash, BashCommandInput};
     use crate::sandbox::FilesystemIsolationMode;
+
+    #[test]
+    fn coalesce_bash_timeout_prefers_explicit() {
+        assert_eq!(coalesce_bash_timeout(Some(5), Some(99)), Some(5));
+        assert_eq!(coalesce_bash_timeout(None, Some(99)), Some(99));
+        assert_eq!(coalesce_bash_timeout(None, None), None);
+    }
 
     #[test]
     fn executes_simple_command() {
