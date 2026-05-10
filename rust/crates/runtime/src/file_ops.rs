@@ -743,6 +743,42 @@ mod tests {
     }
 
     #[test]
+    fn write_at_exact_configured_max_bytes_succeeds() {
+        let _guard = crate::test_env_lock();
+        std::env::set_var("CLAW_WRITE_FILE_MAX_BYTES", "64");
+        let path = temp_path("exact-max-write.txt");
+        let body = "y".repeat(64);
+        let out = write_file(path.to_string_lossy().as_ref(), &body).expect("at-limit write");
+        assert_eq!(out.kind, "create");
+        std::env::remove_var("CLAW_WRITE_FILE_MAX_BYTES");
+    }
+
+    #[test]
+    fn invalid_write_max_bytes_env_falls_back_default_small_write_ok() {
+        let _guard = crate::test_env_lock();
+        std::env::set_var("CLAW_WRITE_FILE_MAX_BYTES", "not-a-number");
+        assert_eq!(write_file_max_bytes(), 10 * 1024 * 1024);
+        let path = temp_path("invalid-env-small.txt");
+        write_file(path.to_string_lossy().as_ref(), "hi")
+            .expect("invalid env must not block normal writes");
+        std::env::remove_var("CLAW_WRITE_FILE_MAX_BYTES");
+    }
+
+    #[test]
+    fn write_max_bytes_env_whitespace_trimmed() {
+        let _guard = crate::test_env_lock();
+        std::env::set_var("CLAW_WRITE_FILE_MAX_BYTES", "  128  ");
+        assert_eq!(write_file_max_bytes(), 128);
+        let path = temp_path("trim-max.txt");
+        let ok = "b".repeat(128);
+        write_file(path.to_string_lossy().as_ref(), &ok).expect("trimmed limit should apply");
+        let huge = "c".repeat(129);
+        let err = write_file(path.to_string_lossy().as_ref(), &huge).expect_err("over trim limit");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        std::env::remove_var("CLAW_WRITE_FILE_MAX_BYTES");
+    }
+
+    #[test]
     fn enforces_workspace_boundary() {
         let workspace = temp_path("workspace-boundary");
         std::fs::create_dir_all(&workspace).expect("workspace dir should be created");

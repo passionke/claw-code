@@ -396,6 +396,61 @@ impl DockerPoolManager {
     }
 }
 
+#[cfg(test)]
+impl DockerPoolManager {
+    pub(crate) fn test_exec_solve_argv_prefix(&self) -> Vec<String> {
+        self.exec_solve_argv_prefix()
+    }
+}
+
+#[cfg(test)]
+mod exec_solve_argv_prefix_tests {
+    use std::sync::Arc;
+
+    use super::DockerPoolManager;
+    use crate::pool::config::DockerPoolConfig;
+
+    fn pool(exec_user: Option<&str>) -> Arc<DockerPoolManager> {
+        let base =
+            std::env::temp_dir().join(format!("gw-exec-prefix-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&base).unwrap();
+        DockerPoolManager::from_config(DockerPoolConfig {
+            runtime_bin: "docker".into(),
+            work_root: base,
+            pool_size: 1,
+            min_idle: 0,
+            image: "fake:latest".into(),
+            network_args: vec![],
+            extra_run_args: vec![],
+            name_stem: Some("pfxtest".into()),
+            on_release_exec: None,
+            exec_user: exec_user.map(str::to_string),
+        })
+        .expect("from_config")
+    }
+
+    #[test]
+    fn exec_prefix_omits_user_when_unset() {
+        let p = pool(None);
+        assert_eq!(p.test_exec_solve_argv_prefix(), vec!["exec".to_string()]);
+    }
+
+    #[test]
+    fn exec_prefix_includes_trimmed_user() {
+        let p = pool(Some("  claw  "));
+        assert_eq!(
+            p.test_exec_solve_argv_prefix(),
+            vec!["exec".to_string(), "--user".to_string(), "claw".to_string()]
+        );
+    }
+
+    #[test]
+    fn exec_prefix_skips_whitespace_only_user() {
+        let p = pool(Some("   \t  "));
+        assert_eq!(p.test_exec_solve_argv_prefix(), vec!["exec".to_string()]);
+    }
+}
+
 #[cfg(all(test, unix))]
 mod docker_pool_integration_tests {
     use std::fs;
