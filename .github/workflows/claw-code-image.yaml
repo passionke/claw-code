@@ -4,6 +4,10 @@
 # - Push tag refs/tags/release-* → build + push to ghcr.io (claw-code + claw-gateway-worker).
 # - workflow_dispatch on any branch → same Dockerfiles/build-args, build only (no push); use this to verify packaging.
 # - PR/main path-filter builds: see gateway-image-ci.yml (podman build.sh).
+#
+# Optional repo/org Actions variable CONTAINER_BASE_REGISTRY (hostname only, no path):
+# - unset → docker.io (recommended on github-hosted runners; mirrors may serve incomplete blobs).
+# - example → docker.1ms.run → pulls library/rust + library/debian from that mirror.
 name: claw-code-image
 
 on:
@@ -42,12 +46,17 @@ jobs:
 
       - name: Resolve build base images
         id: base_images
+        env:
+          CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
         run: |
           set -euo pipefail
-          # GitHub-hosted runners: use Docker Hub directly. Some mirrors pass
-          # imagetools inspect but fail layer pulls (missing blob / not found).
-          RUST_IMAGE="docker.io/library/rust:1.88-bookworm"
-          DEBIAN_IMAGE="docker.io/library/debian:bookworm-slim"
+          REG="${CONTAINER_BASE_REGISTRY:-}"
+          if [ -z "${REG}" ]; then
+            REG="docker.io"
+          fi
+          RUST_IMAGE="${REG}/library/rust:1.88-bookworm"
+          DEBIAN_IMAGE="${REG}/library/debian:bookworm-slim"
+          echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
           echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
 
