@@ -1,3 +1,4 @@
+# Publishes gateway + pool worker images to GHCR (two packages). Author: kejiqing
 name: claw-code-image
 
 on:
@@ -49,8 +50,8 @@ jobs:
           echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
 
-      - name: Image tags (release tag + sha-12 + latest)
-        id: meta
+      - name: Image tags — gateway (claw-code)
+        id: meta_gateway
         run: |
           set -euo pipefail
           IMAGE="ghcr.io/${{ github.repository_owner }}/claw-code"
@@ -67,7 +68,22 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Image tags — pool worker (claw-gateway-worker)
+        id: meta_worker
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${{ github.repository_owner }}/claw-gateway-worker"
+          SHA12="${GITHUB_SHA:0:12}"
+          RELEASE_TAG="${GITHUB_REF_NAME}"
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${RELEASE_TAG}"
+            echo "${IMAGE}:sha-${SHA12}"
+            echo "${IMAGE}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push gateway
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -76,4 +92,15 @@ jobs:
           build-args: |
             RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
             DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta_gateway.outputs.tags }}
+
+      - name: Build and push pool worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/podman/Containerfile.gateway-worker
+          push: true
+          build-args: |
+            RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
+            DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
+          tags: ${{ steps.meta_worker.outputs.tags }}
