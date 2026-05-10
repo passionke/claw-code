@@ -1,4 +1,5 @@
 # Build gateway + worker images (same as deploy/podman/build.sh). Author: kejiqing
+# GHCR publish (buildx, same Containerfiles): claw-code-image workflow on tag release-* or manual verify.
 name: Gateway container images
 
 on:
