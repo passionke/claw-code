@@ -1,0 +1,52 @@
+# Build gateway + worker images (same as deploy/podman/build.sh). Author: kejiqing
+name: Gateway container images
+
+on:
+  push:
+    branches:
+      - main
+      - 'gaebal/**'
+      - 'omx-issue-*'
+    paths:
+      - .github/workflows/gateway-image-ci.yml
+      - deploy/podman/**
+      - rust/crates/http-gateway-rs/**
+      - rust/crates/rusty-claude-cli/**
+      - rust/crates/gateway-solve-turn/**
+      - scripts/claw-gateway-worker.sh
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/gateway-image-ci.yml
+      - deploy/podman/**
+      - rust/crates/http-gateway-rs/**
+      - rust/crates/rusty-claude-cli/**
+      - rust/crates/gateway-solve-turn/**
+      - scripts/claw-gateway-worker.sh
+  workflow_dispatch:
+
+concurrency:
+  group: gateway-image-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  podman-build:
+    name: podman build (gateway + worker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      # build.sh uses docker.io when GITHUB_ACTIONS=true
+      - name: Build images
+        env:
+          GITHUB_ACTIONS: "true"
+        run: ./deploy/podman/build.sh "ci-${{ github.sha }}"
+
+      - name: Show images
+        run: podman images | head -20
