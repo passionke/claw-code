@@ -8,8 +8,43 @@ use gateway_solve_turn::GatewaySolveTaskFile;
 use tokio::fs;
 use tracing::info;
 
-use crate::pool::{parse_gateway_solve_exec_stdout, DockerPoolManager};
+use crate::pool::{parse_gateway_solve_exec_stdout, DockerPoolManager, SlotLease};
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
+
+/// If the async worker is aborted (e.g. `tokio::spawn` cancel), release the slot and drop the
+/// cancel map entry so the pool does not leak `Leased` rows and `force_kill` can still run.
+struct DockerLeaseCleanup {
+    pool: Arc<DockerPoolManager>,
+    lease: Option<SlotLease>,
+    state: AppState,
+    task_id: Option<String>,
+}
+
+impl Drop for DockerLeaseCleanup {
+    fn drop(&mut self) {
+        let Some(lease) = self.lease.take() else {
+            return;
+        };
+        let pool = self.pool.clone();
+        let state = self.state.clone();
+        let tid = self.task_id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Some(ref t) = tid {
+                    state.docker_slots.lock().await.remove(t);
+                }
+                if let Err(e) = DockerPoolManager::release_slot(&pool, lease).await {
+                    tracing::warn!(
+                        error = %e,
+                        "docker lease cleanup: release_slot failed after abort/cancel"
+                    );
+                }
+            });
+        } else {
+            tracing::warn!("no tokio runtime; docker pool slot may leak until next warm pass");
+        }
+    }
+}
 
 pub async fn run_solve_request_docker(
     state: AppState,
@@ -66,26 +101,44 @@ pub async fn run_solve_request_docker(
         .await
         .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
 
+    let mut lease_cleanup = DockerLeaseCleanup {
+        pool: Arc::clone(&pool),
+        lease: Some(lease),
+        state: state.clone(),
+        task_id: task_id.clone(),
+    };
+
     if let Some(ref tid) = task_id {
+        let slot_index = lease_cleanup
+            .lease
+            .as_ref()
+            .expect("lease set after acquire")
+            .slot_index;
         state
             .docker_slots
             .lock()
             .await
-            .insert(tid.clone(), (Arc::clone(&pool), lease.slot_index));
+            .insert(tid.clone(), (Arc::clone(&pool), slot_index));
     }
 
     let exec_result = pool
         .exec_solve(
-            &lease,
+            lease_cleanup.lease.as_ref().expect("lease set for exec"),
             task_rel.as_str(),
             req.ds_id,
             state.cfg.claw_bin.as_str(),
+            Some(request_id.as_str()),
         )
         .await;
 
     if let Some(ref tid) = task_id {
         state.docker_slots.lock().await.remove(tid);
     }
+
+    let lease = lease_cleanup
+        .lease
+        .take()
+        .expect("lease present until explicit handoff to release_slot");
 
     if let Ok(ref outcome) = exec_result {
         if !outcome.stderr.trim().is_empty() {

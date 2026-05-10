@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::config::DockerPoolConfig;
-use super::docker_cli::runtime_exec;
+use super::docker_cli::{runtime_exec, runtime_exec_with_live_stderr};
 use super::{SlotLease, TaskOutcome};
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
@@ -253,6 +253,7 @@ impl DockerPoolManager {
         task_rel_under_root: &str,
         ds_id: i64,
         claw_bin: &str,
+        request_id: Option<&str>,
     ) -> Result<TaskOutcome, String> {
         let name = {
             let slots = self.slots.lock().await;
@@ -266,7 +267,6 @@ impl DockerPoolManager {
         let task_path = format!("{GUEST_WORK_ROOT}/{task_rel_under_root}");
         let argv = [
             "exec",
-            "-i",
             "-e",
             "CLAW_GATEWAY_WORK_ROOT=/claw_host_root",
             "--workdir",
@@ -277,7 +277,7 @@ impl DockerPoolManager {
             "--task-file",
             task_path.as_str(),
         ];
-        let out = runtime_exec(&self.bin, &argv)
+        let out = runtime_exec_with_live_stderr(&self.bin, &argv, request_id)
             .await
             .map_err(|e| format!("{} exec: {e}", self.bin))?;
         Ok(TaskOutcome {
@@ -310,7 +310,12 @@ impl DockerPoolManager {
             s.state = SlotState::Dead;
             n
         };
-        let _ = runtime_exec(&self.bin, &["kill", &name]).await;
+        // Propagate a cooperative stop to the worker first; `sleep infinity` exits on SIGTERM,
+        // which tears down in-flight `docker exec` sessions. Follow with SIGKILL for stubborn
+        // containers so the pool slot can be revived.
+        let _ = runtime_exec(&self.bin, &["kill", "-s", "SIGTERM", name.as_str()]).await;
+        sleep(Duration::from_millis(400)).await;
+        let _ = runtime_exec(&self.bin, &["kill", "-s", "SIGKILL", name.as_str()]).await;
         Self::schedule_warm(self);
         Ok(())
     }
@@ -404,7 +409,7 @@ esac
         .unwrap();
         let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
         let out = pool
-            .exec_solve(&lease, ".claw-gateway-pool-tasks/x.json", 1, "claw")
+            .exec_solve(&lease, ".claw-gateway-pool-tasks/x.json", 1, "claw", None)
             .await
             .unwrap();
         assert_eq!(out.exit_code, 0);
@@ -506,7 +511,7 @@ esac
             .await
             .unwrap();
         let err = pool
-            .exec_solve(&lease, "t.json", 1, "claw")
+            .exec_solve(&lease, "t.json", 1, "claw", None)
             .await
             .expect_err("exec on released lease must fail");
         assert!(err.contains("invalid or released"), "unexpected err: {err}");

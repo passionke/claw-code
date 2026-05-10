@@ -494,7 +494,34 @@ async fn main() {
         .await
         .expect("bind listener");
     info!("http gateway rs listening on {}", addr);
-    axum::serve(listener, app).await.expect("start axum");
+    let shutdown = async {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+                tokio::select! {
+                    res = tokio::signal::ctrl_c() => {
+                        if res.is_ok() {
+                            info!(phase = "shutdown", "http gateway received SIGINT");
+                        }
+                    }
+                    _ = sigterm.recv() => {
+                        info!(phase = "shutdown", "http gateway received SIGTERM");
+                    }
+                }
+            } else if tokio::signal::ctrl_c().await.is_ok() {
+                info!(phase = "shutdown", "http gateway received SIGINT");
+            }
+        }
+        #[cfg(not(unix))]
+        if tokio::signal::ctrl_c().await.is_ok() {
+            info!(phase = "shutdown", "http gateway received SIGINT");
+        }
+    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await
+        .expect("start axum");
 }
 
 async fn root() -> Html<&'static str> {
@@ -1296,11 +1323,13 @@ async fn cancel_task(
         inner.record.error = Some(json!({"detail": "cancelled by client"}));
         h
     };
-    if let Some(h) = cancel {
-        h.abort();
-    }
+    // Stop the container worker before aborting the host task: `kill_on_drop` then tears down
+    // the `docker exec` client, and in-flight stderr can still flush while the container exits.
     if let Some((pool, idx)) = state.docker_slots.lock().await.remove(&task_id) {
         let _ = pool::DockerPoolManager::force_kill_slot(&pool, idx).await;
+    }
+    if let Some(h) = cancel {
+        h.abort();
     }
     info!(
         request_id = %http_request_id.0,
