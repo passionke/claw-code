@@ -19,11 +19,29 @@ pub async fn runtime_exec(bin: &str, args: &[&str]) -> std::io::Result<std::proc
 /// `docker exec` (long-running): stream stderr lines to tracing while collecting stdout/stderr.
 /// Without this, progress and errors inside the worker only appear after the process exits
 /// because `output()` buffers until EOF.
+fn argv_summary(args: &[&str], max_bytes: usize) -> String {
+    let s = args.join(" ");
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let start = s.floor_char_boundary(s.len().saturating_sub(max_bytes));
+    format!("…{}", &s[start..])
+}
+
 pub async fn runtime_exec_with_live_stderr(
     bin: &str,
     args: &[&str],
     request_id: Option<&str>,
 ) -> std::io::Result<std::process::Output> {
+    tracing::debug!(
+        target: "claw_gateway_pool",
+        component = "docker_cli",
+        phase = "exec_spawn",
+        %bin,
+        argv_summary = %argv_summary(args, 1800),
+        request_id = request_id.unwrap_or(""),
+        "spawning docker/podman exec (stderr streamed to target claw_gateway_solve)"
+    );
     let mut child = Command::new(bin)
         .args(args)
         .kill_on_drop(true)
@@ -52,19 +70,31 @@ pub async fn runtime_exec_with_live_stderr(
                             Some(id) => {
                                 tracing::info!(
                                     target: "claw_gateway_solve",
+                                    component = "worker_stderr",
                                     request_id = %id,
-                                    "{}",
-                                    trimmed
+                                    line = %trimmed,
+                                    "claw gateway-solve-once stderr line"
                                 );
                             }
                             None => {
-                                tracing::info!(target: "claw_gateway_solve", "{}", trimmed);
+                                tracing::info!(
+                                    target: "claw_gateway_solve",
+                                    component = "worker_stderr",
+                                    line = %trimmed,
+                                    "claw gateway-solve-once stderr line"
+                                );
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::debug!(error = %e, "gateway docker exec stderr read ended");
+                    tracing::debug!(
+                        target: "claw_gateway_pool",
+                        component = "docker_cli",
+                        phase = "exec_stderr_reader_done",
+                        error = %e,
+                        "gateway docker exec stderr stream ended"
+                    );
                     break;
                 }
             }

@@ -147,7 +147,13 @@ impl DockerPoolManager {
         let s = Arc::clone(self);
         tokio::spawn(async move {
             if let Err(e) = s.ensure_warm().await {
-                warn!(error = %e, "pool ensure_warm failed");
+                warn!(
+                    target: "claw_gateway_pool",
+                    component = "docker_pool",
+                    phase = "ensure_warm_failed",
+                    error = %e,
+                    "pool ensure_warm failed"
+                );
             }
         });
     }
@@ -230,17 +236,37 @@ impl DockerPoolManager {
         args.push("sleep".into());
         args.push("infinity".into());
         let exec_argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        info!(container = %name, bin = %self.bin, "pool run worker");
         let out = runtime_exec(&self.bin, &exec_argv)
             .await
             .map_err(|e| format!("spawn {}: {e}", self.bin))?;
         if !out.status.success() {
+            warn!(
+                target: "claw_gateway_pool",
+                component = "docker_pool",
+                phase = "worker_run_failed",
+                container = %name,
+                bind_mount = %host_abs.display(),
+                code = ?out.status.code(),
+                stderr = %String::from_utf8_lossy(&out.stderr).chars().take(2000).collect::<String>(),
+                "{} run worker failed",
+                self.bin
+            );
             return Err(format!(
                 "{} run failed: {}",
                 self.bin,
                 String::from_utf8_lossy(&out.stderr)
             ));
         }
+        info!(
+            target: "claw_gateway_pool",
+            component = "docker_pool",
+            phase = "worker_run_ok",
+            container = %name,
+            bind_mount = %host_abs.display(),
+            image = %self.image,
+            "{} run worker ok",
+            self.bin
+        );
         Ok(())
     }
 
@@ -272,10 +298,19 @@ impl DockerPoolManager {
                     .find(|(_, s)| s.state == SlotState::Idle)
                 {
                     let cname = slots[i].container_name.clone();
+                    // Reserve before `rm`/`run` so a concurrent acquire cannot pick the same idle slot.
+                    slots[i].state = SlotState::Leased;
                     drop(slots);
                     let _ = self.rm_container(&cname).await;
                     if let Err(e) = self.run_worker_container(&cname, &session_abs).await {
-                        warn!(error = %e, "pool rebind worker for session mount failed");
+                        warn!(
+                            target: "claw_gateway_pool",
+                            component = "docker_pool",
+                            phase = "rebind_worker_failed",
+                            slot_index = i,
+                            error = %e,
+                            "pool rebind worker for session mount failed"
+                        );
                         let mut slots = self.slots.lock().await;
                         if let Some(s) = slots.get_mut(i) {
                             s.state = SlotState::Dead;
@@ -284,32 +319,60 @@ impl DockerPoolManager {
                         sleep(Duration::from_millis(200)).await;
                         continue;
                     }
-                    slots = self.slots.lock().await;
-                    if let Some(s) = slots.get_mut(i) {
-                        s.state = SlotState::Leased;
-                    }
+                    info!(
+                        target: "claw_gateway_pool",
+                        component = "docker_pool",
+                        phase = "acquire_slot_ok",
+                        slot_index = i,
+                        session_bind = %session_abs.display(),
+                        container = %cname,
+                        "reused idle slot; worker rebound to session directory"
+                    );
                     return Ok(SlotLease { slot_index: i });
                 }
                 let total = slots.len();
                 if total < self.pool_size {
                     let idx = total;
                     let name = self.container_name(idx);
+                    // Reserve slot index before `run` so concurrent acquires cannot claim the same idx.
+                    slots.push(Slot {
+                        container_name: name.clone(),
+                        state: SlotState::Leased,
+                    });
                     drop(slots);
                     match self.run_worker_container(&name, &session_abs).await {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            info!(
+                                target: "claw_gateway_pool",
+                                component = "docker_pool",
+                                phase = "acquire_slot_ok",
+                                slot_index = idx,
+                                session_bind = %session_abs.display(),
+                                container = %name,
+                                "new pool slot created on demand with session bind"
+                            );
+                            return Ok(SlotLease { slot_index: idx });
+                        }
                         Err(e) => {
-                            warn!(error = %e, "pool on-demand worker create failed");
+                            warn!(
+                                target: "claw_gateway_pool",
+                                component = "docker_pool",
+                                phase = "on_demand_worker_create_failed",
+                                slot_index = idx,
+                                error = %e,
+                                "pool on-demand worker create failed"
+                            );
+                            let mut slots = self.slots.lock().await;
+                            if slots.len() == idx + 1 && slots[idx].container_name == name {
+                                slots.pop();
+                            } else if let Some(s) = slots.get_mut(idx) {
+                                s.state = SlotState::Dead;
+                            }
+                            drop(slots);
                             sleep(Duration::from_millis(200)).await;
                             continue;
                         }
                     }
-                    slots = self.slots.lock().await;
-                    slots.push(Slot {
-                        container_name: name,
-                        state: SlotState::Leased,
-                    });
-                    let i = slots.len() - 1;
-                    return Ok(SlotLease { slot_index: i });
                 }
                 drop(slots);
                 sleep(Duration::from_millis(50)).await;
@@ -336,8 +399,20 @@ impl DockerPoolManager {
                 .map(|s| s.container_name.clone())
                 .ok_or_else(|| "invalid or released slot".to_string())?
         };
+        let container_log = name.clone();
         let workdir = GUEST_WORK_ROOT.to_string();
         let task_path = format!("{GUEST_WORK_ROOT}/{task_rel_under_root}");
+        info!(
+            target: "claw_gateway_pool",
+            component = "docker_pool",
+            phase = "exec_solve_start",
+            slot_index = slot.slot_index,
+            container = %container_log,
+            workdir = %workdir,
+            task_path = %task_path,
+            claw_bin = %claw_bin,
+            "docker exec gateway-solve-once starting"
+        );
         let mut argv = self.exec_solve_argv_prefix();
         argv.extend([
             "-e".into(),
@@ -354,8 +429,20 @@ impl DockerPoolManager {
         let out = runtime_exec_with_live_stderr(&self.bin, &argv_refs, request_id)
             .await
             .map_err(|e| format!("{} exec: {e}", self.bin))?;
+        let exit_code = out.status.code().unwrap_or(-1);
+        info!(
+            target: "claw_gateway_pool",
+            component = "docker_pool",
+            phase = "exec_solve_done",
+            slot_index = slot.slot_index,
+            container = %container_log,
+            exit_code,
+            stdout_len = out.stdout.len(),
+            stderr_len = out.stderr.len(),
+            "docker exec gateway-solve-once finished"
+        );
         Ok(TaskOutcome {
-            exit_code: out.status.code().unwrap_or(-1),
+            exit_code,
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         })
@@ -400,10 +487,19 @@ impl DockerPoolManager {
         ];
         match runtime_exec(&self.bin, &argv).await {
             Ok(out) if out.status.success() => {
-                tracing::debug!(container = %container_name, "pool POOL_ON_RELEASE hook finished");
+                tracing::debug!(
+                    target: "claw_gateway_pool",
+                    component = "docker_pool",
+                    phase = "on_release_ok",
+                    container = %container_name,
+                    "pool POOL_ON_RELEASE hook finished"
+                );
             }
             Ok(out) => {
                 warn!(
+                    target: "claw_gateway_pool",
+                    component = "docker_pool",
+                    phase = "on_release_nonzero",
                     container = %container_name,
                     code = ?out.status.code(),
                     stderr = %String::from_utf8_lossy(&out.stderr),
@@ -412,6 +508,9 @@ impl DockerPoolManager {
             }
             Err(e) => {
                 warn!(
+                    target: "claw_gateway_pool",
+                    component = "docker_pool",
+                    phase = "on_release_spawn_failed",
                     container = %container_name,
                     error = %e,
                     "pool POOL_ON_RELEASE hook spawn failed"

@@ -38,6 +38,7 @@ use tracing::field::Empty;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+mod gateway_logging;
 mod pool;
 mod solve_pool;
 
@@ -86,6 +87,14 @@ impl SolveIsolation {
             "docker_pool" => Self::DockerPool,
             "podman_pool" => Self::PodmanPool,
             _ => Self::InProcess,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InProcess => "inprocess",
+            Self::DockerPool => "docker_pool",
+            Self::PodmanPool => "podman_pool",
         }
     }
 }
@@ -308,32 +317,6 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn init_tracing() {
-    let filter = if let Ok(level) = std::env::var("CLAW_LOG_LEVEL") {
-        tracing_subscriber::EnvFilter::new(level)
-    } else {
-        tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
-    };
-    let format = std::env::var("CLAW_LOG_FORMAT")
-        .unwrap_or_else(|_| "json".to_string())
-        .trim()
-        .to_ascii_lowercase();
-    if format == "json" {
-        tracing_subscriber::fmt()
-            .json()
-            .with_env_filter(filter)
-            .with_current_span(false)
-            .with_target(true)
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_target(true)
-            .init();
-    }
-}
-
 async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
     let id = req
         .headers()
@@ -368,11 +351,23 @@ async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
 
 #[tokio::main]
 async fn main() {
-    init_tracing();
-
     let solve_isolation = SolveIsolation::from_env();
     let work_root = PathBuf::from(
         std::env::var("CLAW_WORK_ROOT").unwrap_or_else(|_| "/tmp/claw-workspace".to_string()),
+    );
+    gateway_logging::init(&work_root);
+    let file_log = gateway_logging::resolved_file_log_dir(&work_root);
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "startup",
+        phase = "process_boot",
+        work_root = %work_root.display(),
+        solve_isolation = solve_isolation.as_str(),
+        file_log_dir = file_log.as_ref().map(|p| p.display().to_string()),
+        file_log_enabled = file_log.is_some(),
+        stdout_json_forced_for_file_sink = file_log.is_some(),
+        http_addr = %std::env::var("CLAW_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
+        "http-gateway-rs tracing ready; when file_log_enabled, stdout is JSON too (same subscriber layers)"
     );
     let docker_pool: Option<Arc<pool::DockerPoolManager>> = match solve_isolation {
         SolveIsolation::DockerPool => Some(
@@ -909,11 +904,7 @@ async fn openapi() -> Json<Value> {
 }
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
-    let isolation = match state.cfg.solve_isolation {
-        SolveIsolation::InProcess => "inprocess",
-        SolveIsolation::DockerPool => "docker_pool",
-        SolveIsolation::PodmanPool => "podman_pool",
-    };
+    let isolation = state.cfg.solve_isolation.as_str();
     Json(json!({
         "ok": true,
         "clawBin": state.cfg.claw_bin,
@@ -1456,16 +1447,19 @@ async fn run_solve_request(
         }
     }
     let started = Instant::now();
+    let timeout_seconds = req
+        .timeout_seconds
+        .unwrap_or(state.cfg.default_timeout_seconds);
     info!(
+        target: "claw_gateway_orchestration",
+        component = "solve",
         request_id = %ctx.request_id,
         task_id = ctx.task_id.as_deref().unwrap_or("-"),
         ds_id = req.ds_id,
         phase = "solve_run_start",
-        "gateway_solve"
+        timeout_seconds,
+        "gateway_solve accepted; validating and preparing workspace"
     );
-    let timeout_seconds = req
-        .timeout_seconds
-        .unwrap_or(state.cfg.default_timeout_seconds);
     let effective_allowed_tools =
         resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
     validate_ds_exists(req.ds_id, &state.cfg.ds_registry_path).await?;
@@ -1517,6 +1511,20 @@ async fn run_solve_request(
         let _ = fs::remove_file(session_home.join(".claw/mcp_discovery_cache.json")).await;
     }
 
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "solve_prepare",
+        phase = "workspace_ready",
+        ds_id = req.ds_id,
+        request_id = %ctx.request_id,
+        task_id = ctx.task_id.as_deref(),
+        session_fs_id = %session_fs_id,
+        session_home = %session_home.display(),
+        solve_isolation = state.cfg.solve_isolation.as_str(),
+        timeout_seconds,
+        "session .claw/settings.json written; starting solve (in-process or pool)"
+    );
+
     match state.cfg.solve_isolation {
         SolveIsolation::InProcess => {
             let (code, output_text, output_json) = run_runtime_prompt(
@@ -1532,12 +1540,16 @@ async fn run_solve_request(
             )?;
             let duration_ms = started.elapsed().as_millis() as i64;
             info!(
+                target: "claw_gateway_orchestration",
+                component = "solve_inprocess",
                 request_id = %ctx.request_id,
                 task_id = ctx.task_id.as_deref().unwrap_or("-"),
                 ds_id = req.ds_id,
                 phase = "solve_run_ok",
                 duration_ms,
-                "gateway_solve"
+                session_home = %session_home.display(),
+                claw_exit_code = code,
+                "in-process gateway_solve finished"
             );
             Ok(SolveResponse {
                 session_id: ctx.request_id.clone(),
