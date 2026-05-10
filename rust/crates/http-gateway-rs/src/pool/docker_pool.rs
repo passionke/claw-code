@@ -41,6 +41,8 @@ pub struct DockerPoolManager {
     extra_run_args: Vec<String>,
     /// Optional `sh -lc` body run inside the worker when a lease is returned to idle.
     on_release_exec: Option<String>,
+    /// `docker exec --user` for solve only (see [`DockerPoolConfig::exec_user`]).
+    exec_user: Option<String>,
 }
 
 impl DockerPoolManager {
@@ -64,6 +66,7 @@ impl DockerPoolManager {
             network_args: cfg.network_args,
             extra_run_args: cfg.extra_run_args,
             on_release_exec: cfg.on_release_exec,
+            exec_user: cfg.exec_user,
         }))
     }
 
@@ -95,6 +98,10 @@ impl DockerPoolManager {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let exec_user = std::env::var(format!("{pfx}POOL_EXEC_USER"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         Self::from_config(DockerPoolConfig {
             runtime_bin: default_bin.to_string(),
             work_root: work_root.to_path_buf(),
@@ -105,6 +112,7 @@ impl DockerPoolManager {
             extra_run_args,
             name_stem: None,
             on_release_exec,
+            exec_user,
         })
     }
 
@@ -116,6 +124,18 @@ impl DockerPoolManager {
 
     fn container_name(&self, idx: usize) -> String {
         format!("claw-gw-{}-{idx}", self.name_stem)
+    }
+
+    fn exec_solve_argv_prefix(&self) -> Vec<String> {
+        let mut v = vec!["exec".to_string()];
+        if let Some(ref u) = self.exec_user {
+            let t = u.trim();
+            if !t.is_empty() {
+                v.push("--user".to_string());
+                v.push(t.to_string());
+            }
+        }
+        v
     }
 
     pub fn schedule_warm(self: &Arc<Self>) {
@@ -273,19 +293,20 @@ impl DockerPoolManager {
         };
         let workdir = format!("{GUEST_WORK_ROOT}/ds_{ds_id}");
         let task_path = format!("{GUEST_WORK_ROOT}/{task_rel_under_root}");
-        let argv = [
-            "exec",
-            "-e",
-            "CLAW_GATEWAY_WORK_ROOT=/claw_host_root",
-            "--workdir",
-            workdir.as_str(),
-            name.as_str(),
-            claw_bin,
-            "gateway-solve-once",
-            "--task-file",
-            task_path.as_str(),
-        ];
-        let out = runtime_exec_with_live_stderr(&self.bin, &argv, request_id)
+        let mut argv = self.exec_solve_argv_prefix();
+        argv.extend([
+            "-e".into(),
+            "CLAW_GATEWAY_WORK_ROOT=/claw_host_root".into(),
+            "--workdir".into(),
+            workdir,
+            name,
+            claw_bin.to_string(),
+            "gateway-solve-once".into(),
+            "--task-file".into(),
+            task_path,
+        ]);
+        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let out = runtime_exec_with_live_stderr(&self.bin, &argv_refs, request_id)
             .await
             .map_err(|e| format!("{} exec: {e}", self.bin))?;
         Ok(TaskOutcome {
@@ -460,6 +481,7 @@ esac
             extra_run_args: vec![],
             name_stem: Some("tstem".into()),
             on_release_exec: None,
+            exec_user: None,
         })
         .unwrap();
         let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
@@ -496,6 +518,7 @@ esac
             extra_run_args: vec![],
             name_stem: Some("killme".into()),
             on_release_exec: None,
+            exec_user: None,
         })
         .unwrap();
         let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
@@ -531,6 +554,7 @@ esac
             extra_run_args: vec![],
             name_stem: Some("conc".into()),
             on_release_exec: None,
+            exec_user: None,
         })
         .unwrap();
         let p1 = Arc::clone(&pool);
@@ -562,6 +586,7 @@ esac
             extra_run_args: vec![],
             name_stem: Some("rel".into()),
             on_release_exec: None,
+            exec_user: None,
         })
         .unwrap();
         let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
@@ -588,6 +613,7 @@ esac
             extra_run_args: vec![],
             name_stem: Some("dbl".into()),
             on_release_exec: None,
+            exec_user: None,
         })
         .unwrap();
         let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
@@ -611,6 +637,7 @@ esac
             extra_run_args: vec![],
             name_stem: Some("relhook".into()),
             on_release_exec: Some("echo pool_on_release".into()),
+            exec_user: None,
         })
         .unwrap();
         let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
@@ -627,6 +654,34 @@ esac
         assert!(
             log.contains("pool_on_release"),
             "release hook should run sh -lc script, log:\n{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_solve_includes_user_when_configured() {
+        let (base, work, bin_path) = test_layout();
+        let state_dir = base.join("docker_state");
+        let pool = DockerPoolManager::from_config(DockerPoolConfig {
+            runtime_bin: bin_path.to_string_lossy().into_owned(),
+            work_root: work,
+            pool_size: 1,
+            min_idle: 0,
+            image: "fake:latest".into(),
+            network_args: vec![],
+            extra_run_args: vec![],
+            name_stem: Some("uidtest".into()),
+            on_release_exec: None,
+            exec_user: Some("claw".into()),
+        })
+        .unwrap();
+        let lease = pool.acquire_slot(Duration::from_secs(5)).await.unwrap();
+        pool.exec_solve(&lease, ".claw-gateway-pool-tasks/x.json", 1, "claw", None)
+            .await
+            .unwrap();
+        let log = read_log(&state_dir);
+        assert!(
+            log.contains("--user") && log.contains("claw"),
+            "solve exec should pass --user claw, log:\n{log}"
         );
     }
 }

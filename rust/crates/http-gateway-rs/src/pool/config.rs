@@ -19,6 +19,11 @@ pub struct DockerPoolConfig {
     /// `sh -lc` (e.g. `pkill -f pattern` for stray `run_in_background` children). Set from env
     /// `CLAW_DOCKER_POOL_ON_RELEASE` / `CLAW_PODMAN_POOL_ON_RELEASE`. Empty / unset = skip.
     pub on_release_exec: Option<String>,
+    /// `docker exec --user …` for solve (`gateway-solve-once`). E.g. `claw` or `1000:1000`. Unset =
+    /// run as container default (usually root). Match worker image user; host `work_root` should
+    /// allow writes for that uid. `POOL_ON_RELEASE` runs **without** this (as root) so cleanup
+    /// can `pkill -u claw` etc.
+    pub exec_user: Option<String>,
 }
 
 impl DockerPoolConfig {
@@ -59,6 +64,7 @@ mod tests {
             extra_run_args: vec![],
             name_stem: Some("ab".into()),
             on_release_exec: None,
+            exec_user: None,
         };
         assert!(c.validate().is_err());
     }
@@ -75,6 +81,7 @@ mod tests {
             extra_run_args: vec![],
             name_stem: Some("ab".into()),
             on_release_exec: None,
+            exec_user: None,
         };
         assert!(c.validate().is_err());
     }

@@ -99,6 +99,8 @@ sequenceDiagram
 | `CLAW_DOCKER_IMAGE` / `CLAW_PODMAN_IMAGE` | Worker 镜像名 |
 | `CLAW_DOCKER_NETWORK` / `CLAW_PODMAN_NETWORK` | 可选，接入与 MCP 相同 network |
 | `CLAW_DOCKER_EXTRA_ARGS` / `CLAW_PODMAN_EXTRA_ARGS` | 透传额外 `docker run` / `podman run` 参数 |
+| `CLAW_DOCKER_POOL_ON_RELEASE` / `CLAW_PODMAN_POOL_ON_RELEASE` | 可选：槽位从 `leased` 正常归还为 `idle` 时，在容器内执行 `sh -lc` 的**整段脚本**；空则跳过（`force_kill` 不走此钩子） |
+| `CLAW_DOCKER_POOL_EXEC_USER` / `CLAW_PODMAN_POOL_EXEC_USER` | 可选：`docker exec --user …`（如 `claw` 或 `1000:1000`），仅作用于 **`gateway-solve-once` 那次 exec**；与 worker 镜像内用户一致；宿主 `work_root` 需对该 uid 可写。归还钩子不带 `--user`（默认 root），便于执行 `pkill -u claw` 等 |
 
 **池管理内部行为**（网关不调）：`start()` 时首次 `ensure_warm`；之后 **`release` 后或定时 tick** 再调用，使 **idle ≥ min_idle** 且 **总数 ≤ pool_size**；缩容只删 **多余 idle** 容器，不中断已 lease。
 
