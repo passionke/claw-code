@@ -67,7 +67,7 @@ cp deploy/podman/.env.example deploy/podman/.env
 ./deploy/podman/build.sh
 ```
 
-构建脚本默认用 `docker.1ms.run` 拉基础镜像（本地友好）；需要 `docker.io` 时加 `CLAW_USE_DOCKER_IO=1`。在 GitHub Actions 里会自动选 `docker.io`。
+构建脚本会加载仓库根目录 `.env`；默认 `CONTAINER_BASE_REGISTRY=docker.1ms.run`（与 GitHub Actions 里同名变量一致，可在仓库 Variables 里配置）。需要 `docker.io` 时加 `CLAW_USE_DOCKER_IO=1`。在 GitHub Actions 的 `gateway-image-ci` 里会设 `GITHUB_ACTIONS=true` 从而用 `docker.io`。
 
 ### 3) 启动
 

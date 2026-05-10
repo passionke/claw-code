@@ -14,7 +14,7 @@ This deployment runs two processes:
 ./deploy/podman/build.sh
 ```
 
-- **Local default**: pulls builder/runtime bases from `docker.1ms.run` (easier on CN networks).
+- **Local default**: `CONTAINER_BASE_REGISTRY=docker.1ms.run` (set in repo-root `.env` or the environment; `build.sh` loads `.env` automatically). Same variable name as GitHub Actions for the image workflow.
 - **docker.io**: set `CLAW_USE_DOCKER_IO=1` (or run on GitHub Actions, where `GITHUB_ACTIONS=true` is set automatically).
 
 Optional: build with a specific tag (for release deployment):
@@ -30,7 +30,11 @@ When `CLAW_SOLVE_ISOLATION=docker_pool` / `podman_pool`, the gateway expects **`
 Build from the **repository root**:
 
 ```bash
+# Uses the same CONTAINER_BASE_REGISTRY / CLAW_USE_DOCKER_IO as build.sh if you export them or `set -a; source .env; set +a`
+REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
 podman build \
+  --build-arg "RUST_BASE_IMAGE=${REG}/library/rust:1.88-bookworm" \
+  --build-arg "DEBIAN_BASE_IMAGE=${REG}/library/debian:bookworm-slim" \
   -f deploy/podman/Containerfile.gateway-worker \
   -t claw-gateway-worker:local .
 ```

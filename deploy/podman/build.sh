@@ -1,22 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Base image registry:
-# - Local default: docker.1ms.run (China network friendly; kejiqing)
+# Base image registry (hostname only, no path); same name as GitHub Actions variable
+# CONTAINER_BASE_REGISTRY in claw-code-image workflow.
+# - Local: default docker.1ms.run unless overridden in env or repo-root .env
 # - docker.io when GITHUB_ACTIONS=true (GitHub CI) or CLAW_USE_DOCKER_IO=1
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/.env"
+  set +a
+fi
+
 IMAGE_TAG="${1:-local}"
 IMAGE_NAME="claw-gateway-rs:${IMAGE_TAG}"
 
 if [[ "${CLAW_USE_DOCKER_IO:-}" == "1" ]] || [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-  RUST_BASE_IMAGE="docker.io/library/rust:1.88-bookworm"
-  DEBIAN_BASE_IMAGE="docker.io/library/debian:bookworm-slim"
+  REG="docker.io"
   echo "Using docker.io base images (CI or CLAW_USE_DOCKER_IO=1)"
 else
-  RUST_BASE_IMAGE="docker.1ms.run/library/rust:1.88-bookworm"
-  DEBIAN_BASE_IMAGE="docker.1ms.run/library/debian:bookworm-slim"
-  echo "Using docker.1ms.run base images (local default; set CLAW_USE_DOCKER_IO=1 for docker.io)"
+  REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
+  REG="${REG%/}"
+  echo "Using ${REG} for base images (set CONTAINER_BASE_REGISTRY or CLAW_USE_DOCKER_IO=1 for docker.io)"
 fi
+RUST_BASE_IMAGE="${REG}/library/rust:1.88-bookworm"
+DEBIAN_BASE_IMAGE="${REG}/library/debian:bookworm-slim"
 
 podman build \
   --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
