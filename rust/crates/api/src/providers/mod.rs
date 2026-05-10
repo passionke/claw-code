@@ -495,6 +495,23 @@ pub(crate) fn dotenv_value(key: &str) -> Option<String> {
     values.get(key).filter(|value| !value.is_empty()).cloned()
 }
 
+/// Merge keys from each existing `.env` **file** path into the process environment.
+/// For each key, only sets [`std::env::set_var`] when that key is not already present
+/// in the real environment, so exports and earlier files win. Later paths only fill gaps.
+/// Author: kejiqing
+pub fn apply_dotenv_search_paths(paths: &[std::path::PathBuf]) {
+    for path in paths {
+        let Some(map) = load_dotenv_file(path) else {
+            continue;
+        };
+        for (k, v) in map {
+            if std::env::var_os(&k).is_none() && !v.is_empty() {
+                std::env::set_var(k, v);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;

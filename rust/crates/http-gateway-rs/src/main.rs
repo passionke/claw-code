@@ -12,43 +12,35 @@
 #![allow(clippy::match_same_arms)]
 #![allow(clippy::unnecessary_filter_map)]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use api::{
-    ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, OutputContentBlock,
-    ProviderClient, StreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
-};
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use runtime::{
-    apply_config_env_if_unset, load_system_prompt, ApiClient as RuntimeApiClient, ApiRequest,
-    AssistantEvent, ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime,
-    McpServerManager, MessageRole, PermissionMode, PermissionPolicy, RuntimeConfig, Session,
-    ToolError, ToolExecutor as RuntimeToolExecutor,
-};
+use gateway_solve_turn::run_gateway_solve_turn;
+use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use telemetry::{JsonlTelemetrySink, SessionTracer};
 use tokio::fs;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::AbortHandle;
 use tokio::time::timeout;
-use tools::{
-    execute_mcp_tool_with_extra_session, execute_tool, initialize_mcp_bridge, mvp_tool_specs,
-};
 use tower_http::trace::TraceLayer;
 use tracing::field::Empty;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+mod gateway_logging;
+mod pool;
+mod solve_pool;
 
 fn default_system_date() -> String {
     match option_env!("BUILD_DATE") {
@@ -73,10 +65,43 @@ struct AppState {
     injected_mcp: Arc<Mutex<HashMap<i64, HashMap<String, Value>>>>,
     ds_locks: Arc<Mutex<HashMap<i64, Arc<Mutex<()>>>>>,
     cfg: Arc<GatewayConfig>,
+    /// When using `docker_pool` / `podman_pool`, active async task id → pool + slot for cancel.
+    docker_slots: Arc<Mutex<HashMap<String, (Arc<pool::DockerPoolManager>, usize)>>>,
+    docker_pool: Option<Arc<pool::DockerPoolManager>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SolveIsolation {
+    InProcess,
+    DockerPool,
+    PodmanPool,
+}
+
+impl SolveIsolation {
+    fn from_env() -> Self {
+        match std::env::var("CLAW_SOLVE_ISOLATION")
+            .map(|v| v.trim().to_ascii_lowercase())
+            .unwrap_or_default()
+            .as_str()
+        {
+            "docker_pool" => Self::DockerPool,
+            "podman_pool" => Self::PodmanPool,
+            _ => Self::InProcess,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InProcess => "inprocess",
+            Self::DockerPool => "docker_pool",
+            Self::PodmanPool => "podman_pool",
+        }
+    }
 }
 
 #[derive(Clone)]
 struct GatewayConfig {
+    solve_isolation: SolveIsolation,
     claw_bin: String,
     work_root: PathBuf,
     ds_registry_path: PathBuf,
@@ -286,167 +311,9 @@ impl ApiError {
     }
 }
 
-struct DirectApiClient {
-    model: String,
-    provider: ProviderClient,
-    tools: Vec<ToolDefinition>,
-    clawcode_session_id: String,
-}
-
-impl DirectApiClient {
-    fn new(
-        model: String,
-        allowed_tools: &[String],
-        runtime_mcp_tools: Vec<ToolDefinition>,
-        clawcode_session_id: String,
-    ) -> Result<Self, ApiError> {
-        let provider = ProviderClient::from_model(&model).map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("provider init failed: {e}"),
-            )
-        })?;
-        let mut tools: Vec<ToolDefinition> = mvp_tool_specs()
-            .into_iter()
-            .filter(|spec| is_tool_allowed(spec.name, allowed_tools))
-            .map(|spec| ToolDefinition {
-                name: spec.name.to_string(),
-                description: Some(spec.description.to_string()),
-                input_schema: spec.input_schema,
-            })
-            .collect();
-        tools.extend(
-            runtime_mcp_tools
-                .into_iter()
-                .filter(|tool| is_tool_allowed(&tool.name, allowed_tools)),
-        );
-        Ok(Self {
-            model,
-            provider,
-            tools,
-            clawcode_session_id,
-        })
-    }
-}
-
-impl RuntimeApiClient for DirectApiClient {
-    fn stream(
-        &mut self,
-        request: ApiRequest,
-    ) -> Result<Vec<AssistantEvent>, runtime::RuntimeError> {
-        let system =
-            (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n"));
-        let messages = convert_runtime_messages_to_api(&request.messages);
-        let req = MessageRequest {
-            model: self.model.clone(),
-            max_tokens: api::max_tokens_for_model(&self.model),
-            messages,
-            system,
-            tools: Some(self.tools.clone()),
-            tool_choice: Some(ToolChoice::Auto),
-            stream: true,
-            extra_headers: BTreeMap::from([
-                (
-                    "clawcode-session-id".to_string(),
-                    self.clawcode_session_id.clone(),
-                ),
-                (
-                    "claw-session-id".to_string(),
-                    self.clawcode_session_id.clone(),
-                ),
-            ]),
-            ..Default::default()
-        };
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(stream_events(&self.provider, &req))
-        })
-        .map_err(|e| runtime::RuntimeError::new(e.to_string()))
-    }
-}
-
-struct DirectToolExecutor {
-    allowed_tools: Vec<String>,
-    extra_session: Option<Value>,
-    runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
-    runtime_mcp_tool_names: HashSet<String>,
-}
-
-impl RuntimeToolExecutor for DirectToolExecutor {
-    fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError> {
-        if !is_tool_allowed(tool_name, &self.allowed_tools) {
-            return Err(ToolError::new(format!("tool not allowed: {tool_name}")));
-        }
-        if tool_name == "MCP" {
-            return execute_mcp_tool_with_extra_session(input, self.extra_session.as_ref())
-                .map_err(ToolError::new);
-        }
-        if self.runtime_mcp_tool_names.contains(tool_name) {
-            let args = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-            let meta = self
-                .extra_session
-                .as_ref()
-                .map(|value| json!({ "extra_session": value }));
-            let Some(manager) = &self.runtime_mcp_manager else {
-                return Err(ToolError::new("MCP manager not initialized"));
-            };
-            let manager = Arc::clone(manager);
-            let response = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    let mut guard = manager
-                        .lock()
-                        .map_err(|_| ToolError::new("MCP manager lock poisoned"))?;
-                    guard
-                        .call_tool(tool_name, Some(args), meta)
-                        .await
-                        .map_err(|e| ToolError::new(e.to_string()))
-                })
-            })?;
-            if let Some(error) = response.error {
-                return Err(ToolError::new(format!(
-                    "MCP tool call failed: {} ({})",
-                    error.message, error.code
-                )));
-            }
-            let result = response
-                .result
-                .ok_or_else(|| ToolError::new("MCP tool call returned no result"))?;
-            return serde_json::to_string(&result)
-                .map_err(|e| ToolError::new(format!("serialize MCP result failed: {e}")));
-        }
-        let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-        execute_tool(tool_name, &parsed).map_err(ToolError::new)
-    }
-}
-
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.status, Json(json!({ "detail": self.message }))).into_response()
-    }
-}
-
-fn init_tracing() {
-    let filter = if let Ok(level) = std::env::var("CLAW_LOG_LEVEL") {
-        tracing_subscriber::EnvFilter::new(level)
-    } else {
-        tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
-    };
-    let format = std::env::var("CLAW_LOG_FORMAT")
-        .unwrap_or_else(|_| "json".to_string())
-        .trim()
-        .to_ascii_lowercase();
-    if format == "json" {
-        tracing_subscriber::fmt()
-            .json()
-            .with_env_filter(filter)
-            .with_current_span(false)
-            .with_target(true)
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_target(true)
-            .init();
     }
 }
 
@@ -484,13 +351,47 @@ async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
 
 #[tokio::main]
 async fn main() {
-    init_tracing();
+    let solve_isolation = SolveIsolation::from_env();
+    let work_root = PathBuf::from(
+        std::env::var("CLAW_WORK_ROOT").unwrap_or_else(|_| "/tmp/claw-workspace".to_string()),
+    );
+    gateway_logging::init(&work_root);
+    let file_log = gateway_logging::resolved_file_log_dir(&work_root);
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "startup",
+        phase = "process_boot",
+        work_root = %work_root.display(),
+        solve_isolation = solve_isolation.as_str(),
+        file_log_dir = file_log.as_ref().map(|p| p.display().to_string()),
+        file_log_enabled = file_log.is_some(),
+        stdout_json_forced_for_file_sink = file_log.is_some(),
+        http_addr = %std::env::var("CLAW_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
+        "http-gateway-rs tracing ready; when file_log_enabled, stdout is JSON too (same subscriber layers)"
+    );
+    let docker_pool: Option<Arc<pool::DockerPoolManager>> = match solve_isolation {
+        SolveIsolation::DockerPool => Some(
+            pool::DockerPoolManager::try_from_env(false, &work_root).unwrap_or_else(|e| {
+                eprintln!("http-gateway-rs: invalid Docker pool configuration: {e}");
+                std::process::exit(1);
+            }),
+        ),
+        SolveIsolation::PodmanPool => Some(
+            pool::DockerPoolManager::try_from_env(true, &work_root).unwrap_or_else(|e| {
+                eprintln!("http-gateway-rs: invalid Podman pool configuration: {e}");
+                std::process::exit(1);
+            }),
+        ),
+        SolveIsolation::InProcess => None,
+    };
+    if let Some(p) = &docker_pool {
+        pool::DockerPoolManager::schedule_warm(p);
+    }
 
     let cfg = GatewayConfig {
+        solve_isolation,
         claw_bin: std::env::var("CLAW_BIN").unwrap_or_else(|_| "claw".to_string()),
-        work_root: PathBuf::from(
-            std::env::var("CLAW_WORK_ROOT").unwrap_or_else(|_| "/tmp/claw-workspace".to_string()),
-        ),
+        work_root,
         ds_registry_path: PathBuf::from(std::env::var("CLAW_DS_REGISTRY").unwrap_or_else(|_| {
             "third_party/claw-http-gateway/http_gateway/config/datasources.example.yaml".to_string()
         })),
@@ -524,6 +425,8 @@ async fn main() {
         injected_mcp: Arc::new(Mutex::new(HashMap::new())),
         ds_locks: Arc::new(Mutex::new(HashMap::new())),
         cfg: Arc::new(cfg),
+        docker_slots: Arc::new(Mutex::new(HashMap::new())),
+        docker_pool,
     };
 
     let app = Router::new()
@@ -586,7 +489,34 @@ async fn main() {
         .await
         .expect("bind listener");
     info!("http gateway rs listening on {}", addr);
-    axum::serve(listener, app).await.expect("start axum");
+    let shutdown = async {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+                tokio::select! {
+                    res = tokio::signal::ctrl_c() => {
+                        if res.is_ok() {
+                            info!(phase = "shutdown", "http gateway received SIGINT");
+                        }
+                    }
+                    _ = sigterm.recv() => {
+                        info!(phase = "shutdown", "http gateway received SIGTERM");
+                    }
+                }
+            } else if tokio::signal::ctrl_c().await.is_ok() {
+                info!(phase = "shutdown", "http gateway received SIGINT");
+            }
+        }
+        #[cfg(not(unix))]
+        if tokio::signal::ctrl_c().await.is_ok() {
+            info!(phase = "shutdown", "http gateway received SIGINT");
+        }
+    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await
+        .expect("start axum");
 }
 
 async fn root() -> Html<&'static str> {
@@ -974,6 +904,7 @@ async fn openapi() -> Json<Value> {
 }
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
+    let isolation = state.cfg.solve_isolation.as_str();
     Json(json!({
         "ok": true,
         "clawBin": state.cfg.claw_bin,
@@ -984,7 +915,9 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "defaultHttpMcpName": state.cfg.default_http_mcp_name,
         "defaultHttpMcpUrl": state.cfg.default_http_mcp_url,
         "defaultHttpMcpTransport": state.cfg.default_http_mcp_transport,
-        "allowedTools": state.cfg.allowed_tools
+        "allowedTools": state.cfg.allowed_tools,
+        "solveIsolation": isolation,
+        "containerPool": state.docker_pool.is_some(),
     }))
 }
 
@@ -1029,40 +962,42 @@ async fn init_workspace(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(&state, req.ds_id).await;
-    let _guard = lock.lock().await;
-    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    let settings = build_settings(&state, req.ds_id).await;
-    let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("serialize settings failed: {e}"),
-        )
-    })?;
-    fs::write(work_dir.join(".claw/settings.json"), settings_content)
-        .await
-        .map_err(|e| {
+    {
+        let lock = get_ds_lock(&state, req.ds_id).await;
+        let _guard = lock.lock().await;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+        let settings = build_settings(&state, req.ds_id).await;
+        let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write settings failed: {e}"),
+                format!("serialize settings failed: {e}"),
             )
         })?;
-    let claude_md_path = work_dir.join("CLAUDE.md");
-    match fs::metadata(&claude_md_path).await {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::write(&claude_md_path, "").await.map_err(|e| {
+        fs::write(work_dir.join(".claw/settings.json"), settings_content)
+            .await
+            .map_err(|e| {
                 ApiError::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("write CLAUDE.md failed: {e}"),
+                    format!("write settings failed: {e}"),
                 )
             })?;
-        }
-        Err(error) => {
-            return Err(ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("stat CLAUDE.md failed: {error}"),
-            ));
+        let claude_md_path = work_dir.join("CLAUDE.md");
+        match fs::metadata(&claude_md_path).await {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::write(&claude_md_path, "").await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("write CLAUDE.md failed: {e}"),
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("stat CLAUDE.md failed: {error}"),
+                ));
+            }
         }
     }
     Ok(Json(InitResponse {
@@ -1088,8 +1023,6 @@ async fn get_project_claude_md(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(&state, ds_id).await;
-    let _guard = lock.lock().await;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
     let claude_md_path = work_dir.join("CLAUDE.md");
     let content = fs::read_to_string(&claude_md_path).await;
@@ -1129,18 +1062,21 @@ async fn update_project_claude_md(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(&state, ds_id).await;
-    let _guard = lock.lock().await;
-    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    {
+        let lock = get_ds_lock(&state, ds_id).await;
+        let _guard = lock.lock().await;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+        let claude_md_path = work_dir.join("CLAUDE.md");
+        fs::write(&claude_md_path, req.content.as_bytes())
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write CLAUDE.md failed: {e}"),
+                )
+            })?;
+    }
     let claude_md_path = work_dir.join("CLAUDE.md");
-    fs::write(&claude_md_path, req.content.as_bytes())
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write CLAUDE.md failed: {e}"),
-            )
-        })?;
     Ok(Json(ProjectClaudeResponse {
         ds_id,
         work_dir: work_dir.display().to_string(),
@@ -1184,8 +1120,6 @@ async fn build_effective_prompt_response(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(state, ds_id).await;
-    let _guard = lock.lock().await;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
     let sections = load_system_prompt(
         work_dir.to_path_buf(),
@@ -1356,29 +1290,38 @@ async fn cancel_task(
     AxumPath(task_id): AxumPath<String>,
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
-    let mut tasks = state.tasks.lock().await;
-    let inner = tasks.get_mut(&task_id).ok_or_else(|| {
-        ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
-    })?;
-    match inner.record.status.as_str() {
-        "succeeded" | "failed" | "cancelled" => {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "task {} is already finished (status: {})",
-                    task_id, inner.record.status
-                ),
-            ));
+    let cancel = {
+        let mut tasks = state.tasks.lock().await;
+        let inner = tasks.get_mut(&task_id).ok_or_else(|| {
+            ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
+        })?;
+        match inner.record.status.as_str() {
+            "succeeded" | "failed" | "cancelled" => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "task {} is already finished (status: {})",
+                        task_id, inner.record.status
+                    ),
+                ));
+            }
+            _ => {}
         }
-        _ => {}
+        let h = inner.cancel.take();
+        inner.record.status = "cancelled".to_string();
+        inner.record.finished_at_ms = Some(now_ms());
+        inner.record.result = None;
+        inner.record.error = Some(json!({"detail": "cancelled by client"}));
+        h
+    };
+    // Stop the container worker before aborting the host task: `kill_on_drop` then tears down
+    // the `docker exec` client, and in-flight stderr can still flush while the container exits.
+    if let Some((pool, idx)) = state.docker_slots.lock().await.remove(&task_id) {
+        let _ = pool::DockerPoolManager::force_kill_slot(&pool, idx).await;
     }
-    if let Some(h) = inner.cancel.take() {
+    if let Some(h) = cancel {
         h.abort();
     }
-    inner.record.status = "cancelled".to_string();
-    inner.record.finished_at_ms = Some(now_ms());
-    inner.record.result = None;
-    inner.record.error = Some(json!({"detail": "cancelled by client"}));
     info!(
         request_id = %http_request_id.0,
         task_id = %task_id,
@@ -1386,7 +1329,14 @@ async fn cancel_task(
         phase = "cancel",
         "gateway_task"
     );
-    Ok(Json(inner.record.clone()))
+    let tasks = state.tasks.lock().await;
+    let record = tasks
+        .get(&task_id)
+        .map(|inner| inner.record.clone())
+        .ok_or_else(|| {
+            ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
+        })?;
+    Ok(Json(record))
 }
 
 async fn get_biz_advice_report(
@@ -1471,10 +1421,6 @@ async fn run_solve_request(
     req: SolveRequest,
     ctx: RunSolveContext,
 ) -> Result<SolveResponse, ApiError> {
-    let RunSolveContext {
-        request_id,
-        task_id,
-    } = ctx;
     if req.ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
     }
@@ -1501,80 +1447,140 @@ async fn run_solve_request(
         }
     }
     let started = Instant::now();
-    info!(
-        request_id = %request_id,
-        task_id = task_id.as_deref().unwrap_or("-"),
-        ds_id = req.ds_id,
-        phase = "solve_run_start",
-        "gateway_solve"
-    );
     let timeout_seconds = req
         .timeout_seconds
         .unwrap_or(state.cfg.default_timeout_seconds);
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "solve",
+        request_id = %ctx.request_id,
+        task_id = ctx.task_id.as_deref().unwrap_or("-"),
+        ds_id = req.ds_id,
+        phase = "solve_run_start",
+        timeout_seconds,
+        "gateway_solve accepted; validating and preparing workspace"
+    );
     let effective_allowed_tools =
         resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
     validate_ds_exists(req.ds_id, &state.cfg.ds_registry_path).await?;
 
-    let work_dir = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
-    fs::create_dir_all(work_dir.join(".claw"))
+    // Per-solve workspace under shared `ds_{id}/` so parallel solves cannot read each other's
+    // files; pool workers bind only this subtree to /claw_host_root. Author: kejiqing
+    let ds_base = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
+    let session_fs_id = Uuid::new_v4().simple().to_string();
+    let session_home = ds_base.join("sessions").join(&session_fs_id);
+    fs::create_dir_all(session_home.join(".claw"))
         .await
         .map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create work dir failed: {e}"),
+                format!("create session work dir failed: {e}"),
             )
         })?;
 
-    let ds_lock = get_ds_lock(&state, req.ds_id).await;
-    let _guard = ds_lock.lock().await;
-
-    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    let settings = build_settings(&state, req.ds_id).await;
-    let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("serialize settings failed: {e}"),
-        )
-    })?;
-    fs::write(work_dir.join(".claw/settings.json"), settings_content)
-        .await
-        .map_err(|e| {
+    {
+        let ds_lock = get_ds_lock(&state, req.ds_id).await;
+        let _guard = ds_lock.lock().await;
+        fs::create_dir_all(&ds_base).await.map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write settings failed: {e}"),
+                format!("create ds dir failed: {e}"),
             )
         })?;
-    let _ = fs::remove_file(work_dir.join(".claw/mcp_discovery_cache.json")).await;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &ds_base).await?;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &session_home).await?;
+        let ds_claude = ds_base.join("CLAUDE.md");
+        if fs::metadata(&ds_claude).await.is_ok_and(|m| m.is_file()) {
+            let _ = fs::copy(&ds_claude, session_home.join("CLAUDE.md")).await;
+        }
+        let settings = build_settings(&state, req.ds_id).await;
+        let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("serialize settings failed: {e}"),
+            )
+        })?;
+        fs::write(session_home.join(".claw/settings.json"), &settings_content)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write settings failed: {e}"),
+                )
+            })?;
+        let _ = fs::remove_file(session_home.join(".claw/mcp_discovery_cache.json")).await;
+    }
 
-    let (code, output_text, output_json) = run_runtime_prompt(
-        &work_dir,
-        &req.user_prompt,
-        req.model.as_deref(),
-        timeout_seconds,
-        &request_id,
-        req.extra_session.clone(),
-        effective_allowed_tools,
-        state.cfg.default_max_iterations,
-    )?;
-    let duration_ms = started.elapsed().as_millis() as i64;
     info!(
-        request_id = %request_id,
-        task_id = task_id.as_deref().unwrap_or("-"),
+        target: "claw_gateway_orchestration",
+        component = "solve_prepare",
+        phase = "workspace_ready",
         ds_id = req.ds_id,
-        phase = "solve_run_ok",
-        duration_ms,
-        "gateway_solve"
+        request_id = %ctx.request_id,
+        task_id = ctx.task_id.as_deref(),
+        session_fs_id = %session_fs_id,
+        session_home = %session_home.display(),
+        solve_isolation = state.cfg.solve_isolation.as_str(),
+        timeout_seconds,
+        "session .claw/settings.json written; starting solve (in-process or pool)"
     );
-    Ok(SolveResponse {
-        session_id: request_id.clone(),
-        request_id,
-        ds_id: req.ds_id,
-        work_dir: work_dir.display().to_string(),
-        duration_ms,
-        claw_exit_code: code,
-        output_text,
-        output_json,
-    })
+
+    match state.cfg.solve_isolation {
+        SolveIsolation::InProcess => {
+            let (code, output_text, output_json) = run_runtime_prompt(
+                &session_home,
+                &state.cfg.work_root,
+                &req.user_prompt,
+                req.model.as_deref(),
+                timeout_seconds,
+                &ctx.request_id,
+                req.extra_session.clone(),
+                effective_allowed_tools,
+                state.cfg.default_max_iterations,
+            )?;
+            let duration_ms = started.elapsed().as_millis() as i64;
+            info!(
+                target: "claw_gateway_orchestration",
+                component = "solve_inprocess",
+                request_id = %ctx.request_id,
+                task_id = ctx.task_id.as_deref().unwrap_or("-"),
+                ds_id = req.ds_id,
+                phase = "solve_run_ok",
+                duration_ms,
+                session_home = %session_home.display(),
+                claw_exit_code = code,
+                "in-process gateway_solve finished"
+            );
+            Ok(SolveResponse {
+                session_id: ctx.request_id.clone(),
+                request_id: ctx.request_id,
+                ds_id: req.ds_id,
+                work_dir: session_home.display().to_string(),
+                duration_ms,
+                claw_exit_code: code,
+                output_text,
+                output_json,
+            })
+        }
+        SolveIsolation::DockerPool | SolveIsolation::PodmanPool => {
+            let pool = state.docker_pool.clone().ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "container pool is not initialized",
+                )
+            })?;
+            solve_pool::run_solve_request_docker(
+                state,
+                req,
+                ctx,
+                pool,
+                started,
+                effective_allowed_tools,
+                session_home,
+            )
+            .await
+        }
+    }
 }
 
 async fn inject_mcp(
@@ -1711,25 +1717,27 @@ async fn apply_settings_and_probe(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(state, ds_id).await;
-    let _guard = lock.lock().await;
-    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    let settings = build_settings(state, ds_id).await;
-    let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("serialize settings failed: {e}"),
-        )
-    })?;
-    fs::write(work_dir.join(".claw/settings.json"), settings_content)
-        .await
-        .map_err(|e| {
+    {
+        let lock = get_ds_lock(state, ds_id).await;
+        let _guard = lock.lock().await;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+        let settings = build_settings(state, ds_id).await;
+        let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write settings failed: {e}"),
+                format!("serialize settings failed: {e}"),
             )
         })?;
-    let _ = fs::remove_file(work_dir.join(".claw/mcp_discovery_cache.json")).await;
+        fs::write(work_dir.join(".claw/settings.json"), settings_content)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write settings failed: {e}"),
+                )
+            })?;
+        let _ = fs::remove_file(work_dir.join(".claw/mcp_discovery_cache.json")).await;
+    }
     let (report, loaded_names, configured_servers, status) =
         probe_mcp_load(&state.cfg.claw_bin, &work_dir, probe_timeout_seconds).await?;
     let names = {
@@ -1790,91 +1798,10 @@ async fn ensure_workspace_initialized(_claw_bin: &str, work_dir: &Path) -> Resul
     Ok(())
 }
 
-fn initialize_mcp_runtime(
-    work_dir: &Path,
-) -> Result<
-    (
-        Vec<ToolDefinition>,
-        HashSet<String>,
-        Option<Arc<StdMutex<McpServerManager>>>,
-    ),
-    ApiError,
-> {
-    let runtime_cfg = ConfigLoader::default_for(work_dir).load().map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("load runtime config failed: {e}"),
-        )
-    })?;
-    let mut manager = McpServerManager::from_runtime_config(&runtime_cfg);
-    if manager.server_names().is_empty() && manager.unsupported_servers().is_empty() {
-        return Ok((Vec::new(), HashSet::new(), None));
-    }
-
-    let report = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(async { manager.discover_tools_best_effort().await })
-    });
-
-    let manager = Arc::new(StdMutex::new(manager));
-    initialize_mcp_bridge(Arc::clone(&manager), &report);
-
-    let mut runtime_mcp_tools = Vec::new();
-    let mut runtime_mcp_tool_names = HashSet::new();
-    for discovered in report.tools {
-        let name = discovered.qualified_name;
-        let input_schema = discovered
-            .tool
-            .input_schema
-            .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
-        runtime_mcp_tools.push(ToolDefinition {
-            name: name.clone(),
-            description: discovered.tool.description,
-            input_schema,
-        });
-        runtime_mcp_tool_names.insert(name);
-    }
-
-    Ok((runtime_mcp_tools, runtime_mcp_tool_names, Some(manager)))
-}
-
-/// Runtime JSONL trace for gateway solves; mirrors CLI env (`CLAW_TRACE_*`). kejiqing
-fn gateway_trace_file_path(trace_id: &str) -> Option<PathBuf> {
-    if let Ok(raw) = std::env::var("CLAW_TRACE_FILE") {
-        let p = raw.trim();
-        if !p.is_empty() {
-            return Some(PathBuf::from(p));
-        }
-    }
-    let enabled = std::env::var("CLAW_TRACE_ENABLED")
-        .unwrap_or_else(|_| "1".to_string())
-        .trim()
-        .to_ascii_lowercase();
-    if !matches!(enabled.as_str(), "1" | "true" | "yes" | "on") {
-        return None;
-    }
-    let dir = std::env::var("CLAW_TRACE_DIR")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "/var/log/claw/traces".to_string());
-    Some(PathBuf::from(dir).join(format!("{trace_id}.ndjson")))
-}
-
-fn gateway_session_tracer(request_id: &str) -> Option<SessionTracer> {
-    let trace_id = std::env::var("CLAW_TRACE_ID")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| request_id.to_string());
-    let path = gateway_trace_file_path(&trace_id)?;
-    let sink = JsonlTelemetrySink::new(path).ok()?;
-    Some(SessionTracer::new(trace_id, Arc::new(sink)))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn run_runtime_prompt(
     work_dir: &Path,
+    work_root: &Path,
     prompt: &str,
     model: Option<&str>,
     timeout_seconds: u64,
@@ -1883,109 +1810,24 @@ fn run_runtime_prompt(
     allowed_tools: Vec<String>,
     max_iterations: usize,
 ) -> Result<(i32, String, Option<Value>), ApiError> {
-    std::env::set_current_dir(work_dir).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("set current dir failed: {e}"),
-        )
-    })?;
-    // Project config: `CLAW_PROJECT_CONFIG_ROOT` or parent of `CLAW_CONFIG_FILE` (set by deploy; no path hardcoded).
-    let project_cfg = match project_config_loader_root() {
-        Some(root) => ConfigLoader::default_for(&root).load().map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("load claw config from {}: {e}", root.display()),
-            )
-        })?,
-        None => RuntimeConfig::empty(),
-    };
-    apply_config_env_if_unset(&project_cfg);
-    let effective_model = model
-        .map(str::to_string)
-        .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
-        .or_else(|| project_cfg.model().map(str::to_string))
-        .unwrap_or_else(|| "openai/deepseek-v4-pro".to_string());
-    let system_prompt = load_system_prompt(
-        work_dir.to_path_buf(),
-        default_system_date(),
-        std::env::consts::OS,
-        "unknown",
-        extra_session.clone(),
+    run_gateway_solve_turn(
+        work_dir,
+        work_root,
+        prompt,
+        model,
+        timeout_seconds,
+        clawcode_session_id,
+        extra_session,
+        allowed_tools,
+        max_iterations,
     )
     .map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("load system prompt failed: {e}"),
-        )
-    })?;
-    let (runtime_mcp_tools, runtime_mcp_tool_names, runtime_mcp_manager) =
-        initialize_mcp_runtime(work_dir)?;
-    let api_client = DirectApiClient::new(
-        effective_model.clone(),
-        &allowed_tools,
-        runtime_mcp_tools,
-        clawcode_session_id.to_string(),
-    )?;
-    let tool_executor = DirectToolExecutor {
-        allowed_tools,
-        extra_session,
-        runtime_mcp_manager,
-        runtime_mcp_tool_names,
-    };
-    let mut policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
-    for spec in mvp_tool_specs() {
-        policy = policy.with_tool_requirement(spec.name.to_string(), spec.required_permission);
-    }
-    let mut runtime = ConversationRuntime::new(
-        Session::new().with_workspace_root(work_dir),
-        api_client,
-        tool_executor,
-        policy,
-        system_prompt,
-    );
-    runtime = runtime.with_max_iterations(max_iterations);
-    if let Some(tracer) = gateway_session_tracer(clawcode_session_id) {
-        runtime = runtime.with_session_tracer(tracer);
-    }
-    let started = Instant::now();
-    let result = runtime.run_turn(prompt, None).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("runtime prompt failed: {e}"),
-        )
-    })?;
-    if started.elapsed() > Duration::from_secs(timeout_seconds) {
-        return Err(ApiError::new(
-            StatusCode::GATEWAY_TIMEOUT,
-            format!("claw prompt timeout: {timeout_seconds}s"),
-        ));
-    }
-    let message = result
-        .assistant_messages
-        .iter()
-        .flat_map(|m| m.blocks.iter())
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let out_json = json!({
-        "model": effective_model,
-        "iterations": result.iterations,
-        "message": message,
-        "usage": {
-            "input_tokens": result.usage.input_tokens,
-            "output_tokens": result.usage.output_tokens,
-            "cache_creation_input_tokens": result.usage.cache_creation_input_tokens,
-            "cache_read_input_tokens": result.usage.cache_read_input_tokens
-        }
-    });
-    Ok((
-        0,
-        serde_json::to_string(&out_json).unwrap_or_default(),
-        Some(out_json),
-    ))
+        let status = match e.status {
+            504 => StatusCode::GATEWAY_TIMEOUT,
+            _ => StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        ApiError::new(status, e.message)
+    })
 }
 
 async fn probe_mcp_load(
@@ -2122,24 +1964,6 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     (y as i32, m as u32, d as u32)
 }
 
-/// Config directory for `ConfigLoader` (e.g. contains `.claw.json`). Set via env only. kejiqing
-fn project_config_loader_root() -> Option<PathBuf> {
-    if let Ok(raw) = std::env::var("CLAW_PROJECT_CONFIG_ROOT") {
-        let root = PathBuf::from(raw.trim());
-        if root.as_os_str().is_empty() {
-            return None;
-        }
-        return Some(root);
-    }
-    let Ok(cfg_file) = std::env::var("CLAW_CONFIG_FILE") else {
-        return None;
-    };
-    let path = PathBuf::from(cfg_file.trim());
-    path.parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-}
-
 fn load_mcp_servers_from_claw_config() -> HashMap<String, Value> {
     let Ok(path) = std::env::var("CLAW_CONFIG_FILE") else {
         return HashMap::new();
@@ -2191,7 +2015,7 @@ fn normalize_allowed_tool_name(raw: &str) -> String {
     }
 }
 
-fn resolve_effective_allowed_tools(
+pub(crate) fn resolve_effective_allowed_tools(
     global_allowed_tools: &[String],
     requested_allowed_tools: Option<&[String]>,
 ) -> Result<Vec<String>, ApiError> {
@@ -2247,144 +2071,4 @@ fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {
         }
     }
     false
-}
-
-fn convert_runtime_messages_to_api(messages: &[ConversationMessage]) -> Vec<InputMessage> {
-    messages
-        .iter()
-        .map(|message| {
-            let role = match message.role {
-                MessageRole::System => "system",
-                MessageRole::User => "user",
-                MessageRole::Assistant => "assistant",
-                MessageRole::Tool => "user",
-            }
-            .to_string();
-            let content = message
-                .blocks
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text } => {
-                        Some(InputContentBlock::Text { text: text.clone() })
-                    }
-                    ContentBlock::ReasoningContent { text } => {
-                        Some(InputContentBlock::ReasoningContent { text: text.clone() })
-                    }
-                    ContentBlock::ToolUse { id, name, input } => {
-                        let parsed =
-                            serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-                        Some(InputContentBlock::ToolUse {
-                            id: id.clone(),
-                            name: name.clone(),
-                            input: parsed,
-                        })
-                    }
-                    ContentBlock::ToolResult {
-                        tool_use_id,
-                        output,
-                        is_error,
-                        ..
-                    } => Some(InputContentBlock::ToolResult {
-                        tool_use_id: tool_use_id.clone(),
-                        content: vec![ToolResultContentBlock::Text {
-                            text: output.clone(),
-                        }],
-                        is_error: *is_error,
-                    }),
-                })
-                .collect::<Vec<_>>();
-            InputMessage { role, content }
-        })
-        .collect()
-}
-
-async fn stream_events(
-    provider: &ProviderClient,
-    req: &MessageRequest,
-) -> Result<Vec<AssistantEvent>, api::ApiError> {
-    let mut stream = provider.stream_message(req).await?;
-    let mut events = Vec::new();
-    let mut pending_tools: HashMap<u32, (String, String, String)> = HashMap::new();
-    while let Some(event) = stream.next_event().await? {
-        match event {
-            StreamEvent::MessageStart(start) => {
-                for block in start.message.content {
-                    match block {
-                        OutputContentBlock::Text { text } => {
-                            if !text.is_empty() {
-                                events.push(AssistantEvent::TextDelta(text));
-                            }
-                        }
-                        OutputContentBlock::ToolUse { id, name, input } => {
-                            let initial_input = if input.is_object()
-                                && input.as_object().is_some_and(serde_json::Map::is_empty)
-                            {
-                                String::new()
-                            } else {
-                                input.to_string()
-                            };
-                            pending_tools.insert(0, (id, name, initial_input));
-                        }
-                        OutputContentBlock::Thinking { thinking, .. } => {
-                            if !thinking.is_empty() {
-                                events.push(AssistantEvent::ThinkingDelta(thinking));
-                            }
-                        }
-                        OutputContentBlock::RedactedThinking { .. } => {}
-                    }
-                }
-            }
-            StreamEvent::ContentBlockStart(start) => match start.content_block {
-                OutputContentBlock::ToolUse { id, name, input } => {
-                    let initial_input = if input.is_object()
-                        && input.as_object().is_some_and(serde_json::Map::is_empty)
-                    {
-                        String::new()
-                    } else {
-                        input.to_string()
-                    };
-                    pending_tools.insert(start.index, (id, name, initial_input));
-                }
-                OutputContentBlock::Text { text } => {
-                    if !text.is_empty() {
-                        events.push(AssistantEvent::TextDelta(text));
-                    }
-                }
-                OutputContentBlock::Thinking { thinking, .. } => {
-                    if !thinking.is_empty() {
-                        events.push(AssistantEvent::ThinkingDelta(thinking));
-                    }
-                }
-                OutputContentBlock::RedactedThinking { .. } => {}
-            },
-            StreamEvent::ContentBlockDelta(delta) => match delta.delta {
-                ContentBlockDelta::TextDelta { text } => {
-                    if !text.is_empty() {
-                        events.push(AssistantEvent::TextDelta(text));
-                    }
-                }
-                ContentBlockDelta::InputJsonDelta { partial_json } => {
-                    if let Some((_, _, input)) = pending_tools.get_mut(&delta.index) {
-                        input.push_str(&partial_json);
-                    }
-                }
-                ContentBlockDelta::ThinkingDelta { thinking } => {
-                    if !thinking.is_empty() {
-                        events.push(AssistantEvent::ThinkingDelta(thinking));
-                    }
-                }
-                ContentBlockDelta::SignatureDelta { .. } => {}
-            },
-            StreamEvent::ContentBlockStop(stop) => {
-                if let Some((id, name, input)) = pending_tools.remove(&stop.index) {
-                    events.push(AssistantEvent::ToolUse { id, name, input });
-                }
-            }
-            StreamEvent::MessageDelta(delta) => {
-                events.push(AssistantEvent::Usage(delta.usage.token_usage()));
-            }
-            StreamEvent::MessageStop(_) => events.push(AssistantEvent::MessageStop),
-        }
-    }
-    Ok(events)
 }

@@ -1,3 +1,9 @@
+# Publishes gateway + pool worker images to GHCR (two packages). Author: kejiqing
+#
+# Chain:
+# - Push tag refs/tags/release-* → build + push to ghcr.io (claw-code + claw-gateway-worker).
+# - workflow_dispatch on any branch → same Dockerfiles/build-args, build only (no push); use this to verify packaging.
+# - PR/main path-filter builds: see gateway-image-ci.yml (podman build.sh).
 name: claw-code-image
 
 on:
@@ -12,8 +18,9 @@ permissions:
 
 jobs:
   build-and-push:
-    # Only package release tags; do not build on main (or other branches).
-    if: startsWith(github.ref, 'refs/tags/release-')
+    if: |
+      startsWith(github.ref, 'refs/tags/release-') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -26,6 +33,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
+        if: startsWith(github.ref, 'refs/tags/release-')
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -49,13 +57,17 @@ jobs:
           echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
 
-      - name: Image tags (release tag + sha-12 + latest)
-        id: meta
+      - name: Image tags — gateway (claw-code)
+        id: meta_gateway
         run: |
           set -euo pipefail
           IMAGE="ghcr.io/${{ github.repository_owner }}/claw-code"
           SHA12="${GITHUB_SHA:0:12}"
-          RELEASE_TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RELEASE_TAG="preview-${SHA12}"
+          else
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          fi
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "sha12=${SHA12}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
@@ -67,13 +79,48 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Image tags — pool worker (claw-gateway-worker)
+        id: meta_worker
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${{ github.repository_owner }}/claw-gateway-worker"
+          SHA12="${GITHUB_SHA:0:12}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RELEASE_TAG="preview-${SHA12}"
+          else
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${RELEASE_TAG}"
+            echo "${IMAGE}:sha-${SHA12}"
+            echo "${IMAGE}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push gateway
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./deploy/podman/Containerfile.gateway-rs
-          push: true
+          push: ${{ startsWith(github.ref, 'refs/tags/release-') }}
           build-args: |
             RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
             DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta_gateway.outputs.tags }}
+
+      - name: Build and push pool worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/podman/Containerfile.gateway-worker
+          push: ${{ startsWith(github.ref, 'refs/tags/release-') }}
+          build-args: |
+            RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
+            DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
+          tags: ${{ steps.meta_worker.outputs.tags }}
+
+      - name: Packaging note (manual run)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "OK: same build as release; push skipped (only refs/tags/release-* publishes to GHCR)."

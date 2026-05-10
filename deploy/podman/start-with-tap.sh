@@ -54,6 +54,13 @@ else
   echo "claude-tap started pid=$(cat "${PID_FILE}") port=${CLAUDE_TAP_PORT} live=${CLAUDE_TAP_LIVE_PORT}"
 fi
 
+# Compose bind-mounts repo-root `.claw.json`. Never overwrite an existing file — only create `{}` if missing. kejiqing
+CLAW_JSON="${ROOT_DIR}/.claw.json"
+if [[ ! -f "${CLAW_JSON}" ]]; then
+  echo "note: ${CLAW_JSON} missing; creating empty {} stub (existing files are never touched)." >&2
+  printf '%s\n' '{}' > "${CLAW_JSON}"
+fi
+
 podman compose --env-file "${ROOT_ENV}" -f "${SCRIPT_DIR}/podman-compose.yml" up -d
 echo "gateway started on port ${GATEWAY_HOST_PORT}"
 echo "claude-tap live viewer: http://127.0.0.1:${CLAUDE_TAP_LIVE_PORT}"

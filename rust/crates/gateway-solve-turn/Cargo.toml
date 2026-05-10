@@ -1,0 +1,18 @@
+[package]
+name = "gateway-solve-turn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+api = { path = "../api" }
+runtime = { path = "../runtime" }
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+telemetry = { path = "../telemetry" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+tools = { path = "../tools" }
+
+[lints]
+workspace = true

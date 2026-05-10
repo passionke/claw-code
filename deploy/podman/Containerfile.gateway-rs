@@ -1,3 +1,5 @@
+# Base images default to docker.1ms.run; override: podman build --build-arg RUST_BASE_IMAGE=... --build-arg DEBIAN_BASE_IMAGE=...
+# Author: kejiqing
 ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
 ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
 

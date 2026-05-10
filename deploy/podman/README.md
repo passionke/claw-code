@@ -14,11 +14,28 @@ This deployment runs two processes:
 ./deploy/podman/build.sh
 ```
 
+- **Local default**: pulls builder/runtime bases from `docker.1ms.run` (easier on CN networks).
+- **docker.io**: set `CLAW_USE_DOCKER_IO=1` (or run on GitHub Actions, where `GITHUB_ACTIONS=true` is set automatically).
+
 Optional: build with a specific tag (for release deployment):
 
 ```bash
 ./deploy/podman/build.sh release-v1.0.8
 ```
+
+### Worker image (container pool)
+
+When `CLAW_SOLVE_ISOLATION=docker_pool` / `podman_pool`, the gateway expects **`CLAW_DOCKER_IMAGE`** / **`CLAW_PODMAN_IMAGE`** to point at a long‑lived worker (default entrypoint: `scripts/claw-gateway-worker.sh` → `sleep infinity`; solve runs via `docker exec … claw gateway-solve-once`).
+
+Build from the **repository root**:
+
+```bash
+podman build \
+  -f deploy/podman/Containerfile.gateway-worker \
+  -t claw-gateway-worker:local .
+```
+
+The gateway bind‑mounts **`CLAW_WORK_ROOT`** at **`/claw_host_root`** inside each worker; see `docs/http-gateway-container-pool.md` §6.1–6.3.
 
 ## 2) Configure env (repo root only)
 
@@ -35,7 +52,7 @@ Edit **repository root** `.env`:
 - optional `CLAW_LOG_LEVEL`, `CLAW_TRACE_ENABLED`
 - for `start-with-tap.sh`: `UPSTREAM_OPENAI_BASE_URL`, `CLAUDE_TAP_PORT`, `CLAUDE_TAP_LIVE_PORT`
 
-Mount **repository root** `.claw.json` at `/app/.claw.json` (see `podman-compose.yml`). The gateway applies `.claw.json` `env` (when unset) and `model` (after `CLAW_DEFAULT_MODEL`) on each solve.
+Mount **repository root** `.claw.json` at `/app/.claw.json` (see `podman-compose.yml`). The gateway applies `.claw.json` `env` (when unset) and `model` (after `CLAW_DEFAULT_MODEL`) on each solve. `up.sh` / `start-with-tap.sh` **only create an empty `{}` if the file is missing** — they do not overwrite your local `.claw.json`.
 
 `podman-compose.yml` also loads `deploy/podman/gateway-allowlist.env` after the root `.env` so `CLAW_ALLOWED_TOOLS` can override an empty `CLAW_ALLOWED_TOOLS=` in the root file (Compose `environment:` cannot fix that). Edit that file to test per-request `allowedTools` against a global allowlist.
 

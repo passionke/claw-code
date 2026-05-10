@@ -11,5 +11,12 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
+# Compose bind-mounts repo-root `.claw.json`. Never overwrite an existing file — only create `{}` if missing. kejiqing
+CLAW_JSON="${REPO_ROOT}/.claw.json"
+if [[ ! -f "${CLAW_JSON}" ]]; then
+  echo "note: ${CLAW_JSON} missing; creating empty {} stub (existing files are never touched)." >&2
+  printf '%s\n' '{}' > "${CLAW_JSON}"
+fi
+
 podman compose --env-file "${ENV_FILE}" -f "${SCRIPT_DIR}/podman-compose.yml" up -d
 echo "Services started."

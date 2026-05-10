@@ -1,0 +1,30 @@
+# Worker image for `CLAW_SOLVE_ISOLATION=docker_pool` / `podman_pool` (long-lived `sleep`, solve via `docker exec`).
+# Build from repo root: `podman build -f deploy/podman/Containerfile.gateway-worker -t claw-gateway-worker:local .`
+# Author: kejiqing
+ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
+ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
+
+FROM ${RUST_BASE_IMAGE} AS builder
+WORKDIR /build
+COPY rust/Cargo.toml /build/Cargo.toml
+COPY rust/Cargo.lock /build/Cargo.lock
+COPY rust/crates/ /build/crates/
+RUN rustup toolchain install nightly && rustup default nightly && \
+    cargo build -p rusty-claude-cli --bin claw --release
+
+FROM ${DEBIAN_BASE_IMAGE}
+# Non-root user for `docker exec --user` (see CLAW_*_POOL_EXEC_USER); PID1 stays root (idle sleep).
+# Host `work_root` should be writable by uid 1000 (e.g. `chown -R 1000:1000` on the bind mount).
+# Author: kejiqing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 claw \
+    && useradd -m -u 1000 -g 1000 -s /bin/sh claw
+
+COPY --from=builder /build/target/release/claw /usr/local/bin/claw
+COPY scripts/claw-gateway-worker.sh /usr/local/bin/claw-gateway-worker.sh
+RUN chmod +x /usr/local/bin/claw-gateway-worker.sh
+# Optional: ENV CLAW_WRITE_FILE_MAX_BYTES=<bytes> to cap each write_file body (default 10 MiB in runtime).
+
+ENTRYPOINT ["/usr/local/bin/claw-gateway-worker.sh"]

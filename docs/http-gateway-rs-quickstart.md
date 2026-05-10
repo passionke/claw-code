@@ -29,6 +29,13 @@ cargo run -p http-gateway-rs
 - `CLAW_DEFAULT_HTTP_MCP_URL`：默认 HTTP MCP URL（例 `http://127.0.0.1:9091/mcp`）
 - `CLAW_DEFAULT_HTTP_MCP_TRANSPORT`：`http` 或 `sse`
 
+**网关可观测性（本仓库 `http-gateway-rs` 专用）**
+
+- `CLAW_GATEWAY_LOG_DIR`：可选；**JSON 行**按天滚动写入该目录（文件前缀 `http-gateway`）。不设时默认 **`$CLAW_WORK_ROOT/.claw-gateway-logs/`**（进程启动前会 `mkdir`）。
+- `CLAW_GATEWAY_FILE_LOG`：设为 `0` / `false` / `off` 时**只打 stdout**，不写上述目录（适合本地短时调试）。
+- 结构化字段与 `target`：`claw_gateway_orchestration`（编排）、`claw_gateway_pool`（`docker run/exec`）、`claw_gateway_solve_pool`（池化 solve 编排）、`claw_gateway_solve`（worker 子进程 stderr 行）。可用 `RUST_LOG=claw_gateway_pool=debug` 等收窄噪声。
+- 与全进程共用：`CLAW_LOG_LEVEL`。`CLAW_LOG_FORMAT`：在**未启用**上述文件 sink 时控制 stdout；**一旦**写 `CLAW_GATEWAY_LOG_DIR`（或默认目录）且未 `CLAW_GATEWAY_FILE_LOG=off`，**stdout 与文件均为 JSON**（`tracing-subscriber` 双层的类型限制）。
+
 示例：
 
 ```bash
@@ -59,6 +66,8 @@ cp deploy/podman/.env.example deploy/podman/.env
 ```bash
 ./deploy/podman/build.sh
 ```
+
+构建脚本默认用 `docker.1ms.run` 拉基础镜像（本地友好）；需要 `docker.io` 时加 `CLAW_USE_DOCKER_IO=1`。在 GitHub Actions 里会自动选 `docker.io`。
 
 ### 3) 启动
 

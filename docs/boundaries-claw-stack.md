@@ -53,3 +53,4 @@ Author: kejiqing
 
 - `third_party/claw-http-gateway/README.md` — operator runbook
 - `third_party/doris-mcp/README.md` — Doris-only build
+- `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 用 **Docker/Podman 容器池**隔离 solve：**PoolManager** 启动读 env 管池大小与预热；**网关**只租借与编排（与 Python `claw-http-gateway` 对照的 Rust 侧方案）

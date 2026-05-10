@@ -498,7 +498,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "bash",
-            description: "Execute a shell command in the current workspace.",
+            description: "Execute a shell command in the current workspace. `timeout` is optional per-call wall time in ms; if omitted, set env `CLAW_BASH_DEFAULT_TIMEOUT_MS` to apply a global cap.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -534,7 +534,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "write_file",
-            description: "Write a text file in the workspace.",
+            description: "Write a text file in the workspace. Single-call body size cap: env CLAW_WRITE_FILE_MAX_BYTES (bytes, default 10 MiB).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
