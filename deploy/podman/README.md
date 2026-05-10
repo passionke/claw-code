@@ -16,6 +16,7 @@ This deployment runs two processes:
 
 - **Local default**: `CONTAINER_BASE_REGISTRY=docker.1ms.run` (set in repo-root `.env` or the environment; `build.sh` loads `.env` automatically). Same variable name as GitHub Actions for the image workflow.
 - **docker.io**: set `CLAW_USE_DOCKER_IO=1` (or run on GitHub Actions, where `GITHUB_ACTIONS=true` is set automatically).
+- **Rust (China, optional)**: copy `rust/.cargo/config.toml.example` → `rust/.cargo/config.toml` for a **USTC** sparse index on the host; skip if DNS fails for `*.ustclug.org`. For `podman build`, set **`CLAW_USE_CN_RUST_MIRROR=1`** in `.env` to use USTC **rustup** inside the builder (default is **static.rust-lang.org**). The **claw-code-image** workflow uses official rustup.
 
 Optional: build with a specific tag (for release deployment):
 

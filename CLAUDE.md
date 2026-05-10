@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Verification
 - Run Rust verification from `rust/`: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`
+- Optional China `cargo` mirror: `cp rust/.cargo/config.toml.example rust/.cargo/config.toml` (see example header); default is crates.io only.
 - Local CLI test ergonomics (`env_lock`, parallel `cargo test`, Cursor): see `docs/local-cli-testing.md`.
 - `src/` and `tests/` are both present; update both surfaces together when behavior changes.
 

@@ -5,6 +5,11 @@ ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
 ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
 
 FROM ${RUST_BASE_IMAGE} AS builder
+ARG RUSTUP_DIST_SERVER=https://static.rust-lang.org
+ARG RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
+    RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT}
+
 WORKDIR /build
 COPY rust/Cargo.toml /build/Cargo.toml
 COPY rust/Cargo.lock /build/Cargo.lock

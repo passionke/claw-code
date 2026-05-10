@@ -1,0 +1,16 @@
+# Optional: copy to `config.toml` for faster `cargo` in China when your DNS can reach the mirror.
+#   cp rust/.cargo/config.toml.example rust/.cargo/config.toml
+#
+# If downloads fail with "Could not resolve host: crates-io.proxy.ustclug.org" (or TLS errors on
+# other mirrors), delete `config.toml` and use the default crates.io index.
+#
+# Author: kejiqing
+
+[source.crates-io]
+replace-with = "ustc-sparse"
+
+[source.ustc-sparse]
+registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
+
+[net]
+git-fetch-with-cli = true

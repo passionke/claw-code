@@ -5,6 +5,12 @@ ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
 
 FROM ${RUST_BASE_IMAGE} AS builder
 
+# Default: official rustup. Pass USTC (or other) via build-arg from build.sh when CLAW_USE_CN_RUST_MIRROR=1.
+ARG RUSTUP_DIST_SERVER=https://static.rust-lang.org
+ARG RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
+    RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT}
+
 WORKDIR /build
 COPY rust/Cargo.toml /build/Cargo.toml
 COPY rust/Cargo.lock /build/Cargo.lock

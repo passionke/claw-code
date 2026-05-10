@@ -27,9 +27,22 @@ fi
 RUST_BASE_IMAGE="${REG}/library/rust:1.88-bookworm"
 DEBIAN_BASE_IMAGE="${REG}/library/debian:bookworm-slim"
 
+# rustup: official by default; optional USTC when CLAW_USE_CN_RUST_MIRROR=1 (DNS must resolve mirror hosts).
+RUSTUP_BUILD_ARGS=()
+if [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+  RUSTUP_BUILD_ARGS=(
+    --build-arg "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static"
+    --build-arg "RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup"
+  )
+  echo "rustup: USTC mirror (CLAW_USE_CN_RUST_MIRROR=1)"
+else
+  echo "rustup: static.rust-lang.org (set CLAW_USE_CN_RUST_MIRROR=1 in .env for USTC on podman build)"
+fi
+
 podman build \
   --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
   --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+  "${RUSTUP_BUILD_ARGS[@]}" \
   -f "${ROOT_DIR}/deploy/podman/Containerfile.gateway-rs" \
   -t "${IMAGE_NAME}" \
   "${ROOT_DIR}"

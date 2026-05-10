@@ -110,6 +110,8 @@ jobs:
           build-args: |
             RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
             DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
+            RUSTUP_DIST_SERVER=https://static.rust-lang.org
+            RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
           tags: ${{ steps.meta_gateway.outputs.tags }}
 
       - name: Build and push pool worker
@@ -121,6 +123,8 @@ jobs:
           build-args: |
             RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
             DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
+            RUSTUP_DIST_SERVER=https://static.rust-lang.org
+            RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
           tags: ${{ steps.meta_worker.outputs.tags }}
 
       - name: Packaging note (manual run)
