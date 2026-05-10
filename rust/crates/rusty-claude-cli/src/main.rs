@@ -10814,6 +10814,42 @@ mod tests {
             typo_err.starts_with("unknown subcommand:"),
             "typo guard should fire for 'sttaus', got: {typo_err}"
         );
+        // gateway-solve-once: task file via --task-file or positional (pool contract).
+        match parse_args(&[
+            "gateway-solve-once".to_string(),
+            "--task-file".to_string(),
+            "/tmp/gw-task.json".to_string(),
+        ])
+        .expect("gateway-solve-once --task-file should parse")
+        {
+            CliAction::GatewaySolveOnce { task_file } => {
+                assert_eq!(task_file, std::path::PathBuf::from("/tmp/gw-task.json"));
+            }
+            other => panic!("expected GatewaySolveOnce, got: {other:?}"),
+        }
+        match parse_args(&[
+            "gateway-solve-once".to_string(),
+            "/data/task.json".to_string(),
+        ])
+        .expect("gateway-solve-once positional path should parse")
+        {
+            CliAction::GatewaySolveOnce { task_file } => {
+                assert_eq!(task_file, std::path::PathBuf::from("/data/task.json"));
+            }
+            other => panic!("expected GatewaySolveOnce, got: {other:?}"),
+        }
+        let missing_tf = parse_args(&["gateway-solve-once".to_string()])
+            .expect_err("gateway-solve-once without path should error");
+        assert!(
+            missing_tf.contains("task JSON path"),
+            "unexpected error: {missing_tf}"
+        );
+        let bad_flag = parse_args(&["gateway-solve-once".to_string(), "--bogus".to_string()])
+            .expect_err("unknown flag should error");
+        assert!(
+            bad_flag.contains("unknown gateway-solve-once option"),
+            "unexpected error: {bad_flag}"
+        );
         // #148: `--model` flag must be captured as model_flag_raw so status
         // JSON can report provenance (source: flag, raw: <user-input>).
         match parse_args(&[

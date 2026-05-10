@@ -5,11 +5,10 @@ use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use gateway_solve_turn::GatewaySolveTaskFile;
-use serde_json::{json, Value};
 use tokio::fs;
 use tracing::info;
 
-use crate::pool::DockerPoolManager;
+use crate::pool::{parse_gateway_solve_exec_stdout, DockerPoolManager};
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
 
 pub async fn run_solve_request_docker(
@@ -88,32 +87,43 @@ pub async fn run_solve_request_docker(
         state.docker_slots.lock().await.remove(tid);
     }
 
-    DockerPoolManager::release_slot(&pool, lease)
-        .await
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if let Ok(ref outcome) = exec_result {
+        if !outcome.stderr.trim().is_empty() {
+            tracing::debug!(
+                request_id = %request_id,
+                stderr = %outcome.stderr,
+                "gateway docker exec wrote stderr"
+            );
+        }
+    }
 
-    let outcome = exec_result.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    // Parse before `release_slot` so bookkeeping failures never hide a good exec payload.
+    let parsed = exec_result
+        .as_ref()
+        .ok()
+        .map(|outcome| parse_gateway_solve_exec_stdout(&outcome.stdout, outcome.exit_code));
+
+    if let Err(e) = DockerPoolManager::release_slot(&pool, lease).await {
+        tracing::warn!(
+            error = %e,
+            request_id = %request_id,
+            "docker pool release_slot failed after exec"
+        );
+    }
 
     let _ = fs::remove_file(&task_path).await;
 
-    let parsed: Value = serde_json::from_str(outcome.stdout.trim()).unwrap_or_else(|_| {
-        json!({
-            "clawExitCode": outcome.exit_code,
-            "outputText": outcome.stdout,
-            "outputJson": Value::Null,
-            "stderr": outcome.stderr,
-        })
-    });
-    let claw_exit_code = parsed
-        .get("clawExitCode")
-        .and_then(Value::as_i64)
-        .unwrap_or(i64::from(outcome.exit_code)) as i32;
-    let output_text = parsed
-        .get("outputText")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let output_json = parsed.get("outputJson").cloned();
+    exec_result.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let Some(parsed) = parsed else {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal: missing gateway exec parse",
+        ));
+    };
+
+    let claw_exit_code = parsed.claw_exit_code;
+    let output_text = parsed.output_text;
+    let output_json = parsed.output_json;
 
     let duration_ms = started.elapsed().as_millis() as i64;
     info!(

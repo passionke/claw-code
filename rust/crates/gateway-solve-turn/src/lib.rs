@@ -600,3 +600,29 @@ pub fn run_gateway_solve_turn(
         Some(out_json),
     ))
 }
+
+#[cfg(test)]
+mod gateway_solve_task_file_tests {
+    use super::GatewaySolveTaskFile;
+    use serde_json::json;
+
+    #[test]
+    fn gateway_solve_task_file_serde_roundtrip() {
+        let t = GatewaySolveTaskFile {
+            request_id: "r1".into(),
+            user_prompt: "hello".into(),
+            model: Some("claude-sonnet-4-6".into()),
+            timeout_seconds: Some(120),
+            extra_session: Some(json!({"k": 1})),
+            allowed_tools: Some(vec!["bash".into()]),
+            max_iterations: Some(4),
+        };
+        let v = serde_json::to_value(&t).unwrap();
+        let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
+        assert_eq!(t.request_id, back.request_id);
+        assert_eq!(t.user_prompt, back.user_prompt);
+        assert_eq!(t.model, back.model);
+        assert_eq!(t.timeout_seconds, back.timeout_seconds);
+        assert_eq!(t.max_iterations, back.max_iterations);
+    }
+}
