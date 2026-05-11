@@ -30,6 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=builder /build/target/release/claw /usr/local/bin/claw
 COPY --from=builder /build/target/release/http-gateway-rs /usr/local/bin/http-gateway-rs
+# Same GHCR image as the gateway: host can `docker|podman run --entrypoint cat … /usr/local/bin/claw-pool-daemon` for pool-daemon-up. Author: kejiqing
+COPY --from=builder /build/target/release/claw-pool-daemon /usr/local/bin/claw-pool-daemon
 
 ENV CLAW_HTTP_ADDR=0.0.0.0:8080
 ENV CLAW_WORK_ROOT=/var/lib/claw/workspace

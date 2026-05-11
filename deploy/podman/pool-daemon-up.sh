@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Start host `claw-pool-daemon` on TCP (always `cargo build --release` first). Author: kejiqing
+# Start host `claw-pool-daemon` on TCP. Dev: cargo build. Prod: CLAW_POOL_DAEMON_SKIP_BUILD=1 + CLAW_POOL_DAEMON_BIN (e.g. from GHCR image). Author: kejiqing
 set -euo pipefail
 SCRIPT_DIR="$1"
 REPO_ROOT="$2"
 WORK_ROOT="${CLAW_POOL_WORK_ROOT_BIND_SRC:?missing CLAW_POOL_WORK_ROOT_BIND_SRC}"
 RPC_DIR="${SCRIPT_DIR}/.claw-pool-rpc"
-BIN="${REPO_ROOT}/rust/target/release/claw-pool-daemon"
+BIN="${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}"
 PORT="${CLAW_POOL_DAEMON_PORT:-9943}"
 BIND="0.0.0.0:${PORT}"
 
@@ -20,8 +20,16 @@ if [[ -f "${RPC_DIR}/daemon.pid" ]]; then
   rm -f "${RPC_DIR}/daemon.pid"
 fi
 
-echo "cargo build claw-pool-daemon (release) …" >&2
-(cd "${REPO_ROOT}/rust" && cargo build -p http-gateway-rs --bin claw-pool-daemon --release)
+if [[ "${CLAW_POOL_DAEMON_SKIP_BUILD:-0}" == "1" ]]; then
+  if [[ ! -x "${BIN}" ]]; then
+    echo "error: CLAW_POOL_DAEMON_SKIP_BUILD=1 but missing or not executable: ${BIN}" >&2
+    echo "hint: ./deploy/podman/install-pool-daemon-from-image.sh /usr/local/bin/claw-pool-daemon" >&2
+    exit 1
+  fi
+else
+  echo "cargo build claw-pool-daemon (release) …" >&2
+  (cd "${REPO_ROOT}/rust" && cargo build -p http-gateway-rs --bin claw-pool-daemon --release)
+fi
 
 nohup env \
   CLAW_WORK_ROOT="${WORK_ROOT}" \

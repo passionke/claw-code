@@ -4,6 +4,8 @@ Author: kejiqing
 
 **稳定做法只有一条**：在仓库根目录准备好 `.env`，打好镜像，用 **`./deploy/podman/up.sh`** 起服务。不要用「手写一长串 compose / 只挂单个 compose 文件 / 在容器里配 macOS 的 `/Users/...` 路径」这类容易翻车的玩法。
 
+**线上部署（与 GitHub 打包一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，镜像推到 **`ghcr.io/<owner>/claw-code`** 与 **`ghcr.io/<owner>/claw-gateway-worker`**。服务器上 `.env` 只填 **`GATEWAY_IMAGE`** / **`CLAW_DOCKER_IMAGE`**（或 Podman 前缀）为上述 tag，**不要**在服务器跑 `build.sh`。宿主机池守护进程与网关**同版本**：网关镜像内已带 **`/usr/local/bin/claw-pool-daemon`**，执行一次 **`sudo ./deploy/podman/install-pool-daemon-from-image.sh`** 安装到本机，并设 **`CLAW_POOL_DAEMON_SKIP_BUILD=1`**、**`CLAW_POOL_DAEMON_BIN`**（见 `.env.example`），再 **`./deploy/podman/up.sh`**。校验构建见 [`gateway-image-ci.yml`](../../.github/workflows/gateway-image-ci.yml)。
+
 **同一套脚本、本地与线上共用**：`build.sh` / `up.sh` / `down.sh` / tap / `bench-pool-30s.sh` 通过 **`CLAW_CONTAINER_RUNTIME`** 选 CLI——默认 **`auto`**（PATH 里**有 podman 先用 podman**，否则 **docker**）。线上常只有 docker，无需改 `.env`；本机有 podman 也会自动走 podman。只有两台都装了且必须指定时，才设 **`CLAW_CONTAINER_RUNTIME=podman`** 或 **`docker`**。
 
 更全的接口与本地调试见：`docs/http-gateway-rs-quickstart.md`（第二节已与本文对齐）。
@@ -31,6 +33,8 @@ cp .env.example .env
 可选：`CLAW_SOLVE_ISOLATION=inprocess` 关闭容器池（只有一个网关容器、无 `claw-gw-*` worker；适合只想快速试 HTTP）。
 
 ### 1.2 镜像
+
+**本地开发**才在仓库内构建：
 
 ```bash
 ./deploy/podman/build.sh
