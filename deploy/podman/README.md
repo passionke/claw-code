@@ -25,12 +25,10 @@ cp .env.example .env
 | 变量 | 作用 |
 | --- | --- |
 | `CLAW_CONTAINER_RUNTIME` | `auto`（默认）或 `podman` / `docker`；与线上/本地无关，按需覆盖 |
-| `PODMAN_HOST_SOCK` | 仅 **`CLAW_POOL_HOST_DAEMON=0`** 的 legacy 路径需要（网关内 `podman` 连宿主 API） |
+| `CLAW_POOL_HOST_DAEMON` | **必须为 `1`**（宿主机 `claw-pool-daemon` + TCP RPC）；旧版网关内嵌 Podman 池已移除 |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 模型 |
 | `GATEWAY_HOST_PORT` | 宿主机端口，默认 `8088` |
 | `CLAW_PODMAN_IMAGE` / `CLAW_DOCKER_IMAGE` | worker 镜像名（与 `CLAW_SOLVE_ISOLATION` 前缀一致） |
-
-可选：`CLAW_SOLVE_ISOLATION=inprocess` 关闭容器池（只有一个网关容器、无 `claw-gw-*` worker；适合只想快速试 HTTP）。
 
 ### 1.2 镜像
 
@@ -63,8 +61,7 @@ CLI="$(claw_container_runtime_cli)"
 `up.sh` 会：
 
 - 生成 `deploy/podman/.claw-pool-workspace.env`（其中 **`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`**，与容器内工作目录一致；不要在容器场景下写 macOS `/Users/...`）。
-- 默认 **`CLAW_POOL_HOST_DAEMON=1`**：合并 **`podman-compose.pool-rpc.yml`**，宿主机起 `claw-pool-daemon`（TCP），网关只连 RPC。
-- **`CLAW_POOL_HOST_DAEMON=0`**：合并 **`podman-compose.podman-api.yml`**（宿主 Podman API socket 挂进网关）。
+- 默认 **`CLAW_POOL_HOST_DAEMON=1`**：合并 **`podman-compose.pool-rpc.yml`**，宿主机起 `claw-pool-daemon`（TCP），网关只连 RPC（`CLAW_POOL_DAEMON_TCP`）。
 - **`claw_compose`**：按 **`CLAW_CONTAINER_RUNTIME`** 调用 **`docker compose`** 或 **`podman compose`**（`podman` 时若装了 **`podman-compose`** 会用作后端，减轻 macOS 混用问题）。
 - 使用 **`up -d --force-recreate`**，避免只改 env 文件却沿用旧容器环境。
 
@@ -76,7 +73,7 @@ curl -sS "http://127.0.0.1:${GATEWAY_HOST_PORT:-8088}/healthz"
 podman ps   # 或  docker ps
 ```
 
-`/healthz` 里应有 `"containerPool": true`（池模式）或 `false`（`inprocess`）。池化正常时，宿主机上还能看到 `claw-gw-*` worker。
+`/healthz` 里应有 `"containerPool": true` 且 `poolRpcRemote` 为 true。池化正常时，宿主机上还能看到 `claw-gw-*` worker。
 
 ### 1.4 停止
 
@@ -100,7 +97,7 @@ podman ps   # 或  docker ps
 ## 2. 设计约定（知道这些就够排障）
 
 - **网关容器内**的池化路径必须是 Linux 里存在的路径；compose 把 `deploy/podman/claw-workspace` 挂到 **`/var/lib/claw/workspace`**，池绑定根目录与之一致。
-- **Podman API**：`podman-compose.podman-api.yml` 挂载的是 **socket 所在目录**（不是只挂单个 `.sock` 文件），避免 macOS 上 `statfs … operation not supported`。
+- **池 RPC**：worker 由 **宿主机 `claw-pool-daemon`** 创建；网关只持有 `CLAW_POOL_DAEMON_TCP`（或 Unix socket）客户端。
 - **Compose 后端**：需要 `podman-compose` 时 `brew install podman-compose`；勿假定 `podman compose` 一定走 Docker 的 compose。
 
 远程 Docker / `docker_pool` 与 env 前缀对照仍见文末表格；细节设计见 `docs/http-gateway-container-pool.md`。
@@ -112,8 +109,8 @@ podman ps   # 或  docker ps
 | 现象 | 处理 |
 | --- | --- |
 | `podman ps` 看不到网关 | 可能已退出：`podman ps -a \| grep claw-gateway-rs`，看 `podman logs claw-gateway-rs` |
-| 只有 `claw-gateway-rs` 没有 `claw-gw-*` | 是否打了 **worker 镜像**；网关镜像是否含 `podman`；`PODMAN_HOST_SOCK` 是否对。 **macOS**：网关跑在容器里时，挂载的 Podman API socket 往往在容器内 **无法 dial**（`connection refused` / `operation not supported`），worker 起不来——`/healthz` 仍可能 `containerPool: true`（表示配置了池）。要验证池是否真在工作：`podman exec claw-gateway-rs sh -lc 'podman --url "$CONTAINER_HOST" version'`。失败时请用 **`CLAW_SOLVE_ISOLATION=inprocess`**，或把网关跑在 **Linux 宿主机**（或能直连 Podman API 的环境） |
-| 启动报 canonicalize `/Users/...` | 容器内不能拿 macOS 路径当 `CLAW_POOL_WORK_ROOT_HOST`；用 **`./deploy/podman/up.sh`** 生成 env，或设 `inprocess` |
+| 只有 `claw-gateway-rs` 没有 `claw-gw-*` | **`claw-pool-daemon` 是否在宿主机跑起来**；`podman ps \| grep claw-gw`；`CLAW_POOL_DAEMON_TCP` / `CLAW_POOL_DAEMON_TCP_HOST` 是否能在网关容器里 dial 到 daemon；worker 镜像 `CLAW_PODMAN_IMAGE` / `CLAW_DOCKER_IMAGE` 是否已 build。旧版「网关容器内嵌 podman」已移除。 |
+| 启动报 canonicalize `/Users/...` | 容器内不能拿 macOS 路径当 `CLAW_POOL_WORK_ROOT_HOST`；用 **`./deploy/podman/up.sh`** 生成 env。 |
 | 改 `.env` 不生效 | 必须用 **`up.sh`**（带 `--force-recreate`），不要指望无重建的 `up` |
 
 联通性脚本：`./deploy/podman/check-connectivity.sh`。
@@ -135,9 +132,8 @@ podman ps   # 或  docker ps
 | --- | --- | --- | --- | --- |
 | 本仓库 compose（默认） | `podman_pool` | `podman`（宿主机 `claw-pool-daemon`） | `CLAW_PODMAN_*` | `CLAW_POOL_HOST_DAEMON=1` → TCP RPC；默认 `CLAW_POOL_DAEMON_TCP_HOST=host.containers.internal` |
 | 线上 Docker（推荐与默认脚本对齐） | `docker_pool` | `docker`（宿主机或旁路容器里的 daemon） | `CLAW_DOCKER_*` | 同上，但 `.env` 改 `CLAW_POOL_DAEMON_TCP_HOST=host.docker.internal`（Linux 已用 `podman-compose.pool-rpc.yml` 的 `extra_hosts`）或填 compose 服务名 |
-| 网关内嵌池（备选） | `docker_pool` / `podman_pool` | `docker` / `podman` 在**网关容器**内 | 同上 | **不设** `CLAW_POOL_DAEMON_TCP`：走进程内 `DockerPoolManager`；需 sock 挂载 + 镜像带对应 CLI（当前 `Containerfile.gateway-rs` 仅装 `podman`） |
 
-**会话模型不变**：每次 solve 仍绑定 **一个 worker 容器 + `sessions/{uuid}/` 目录**，见 `docs/http-gateway-container-pool.md` §2。变的只是「谁执行 `docker run`」：宿主机 daemon（默认脚本）vs 网关进程。
+**会话模型不变**：每次 solve 仍绑定 **一个 worker 容器 + `sessions/{uuid}/` 目录**，见 `docs/http-gateway-container-pool.md` §2。`docker run` / `podman run` **只** 在 **`claw-pool-daemon` 进程** 中执行。
 
 线上只有 Docker 时 **`CLAW_CONTAINER_RUNTIME` 可不写**（`auto` 会选 docker）；仍用同一套 `deploy/podman/podman-compose*.yml`（文件名历史原因）。
 

@@ -24,7 +24,6 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use gateway_solve_turn::run_gateway_solve_turn;
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -39,8 +38,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 mod gateway_logging;
-mod pool;
 mod solve_pool;
+
+use http_gateway_rs::pool;
 
 fn default_system_date() -> String {
     match option_env!("BUILD_DATE") {
@@ -65,27 +65,29 @@ struct AppState {
     injected_mcp: Arc<Mutex<HashMap<i64, HashMap<String, Value>>>>,
     ds_locks: Arc<Mutex<HashMap<i64, Arc<Mutex<()>>>>>,
     cfg: Arc<GatewayConfig>,
-    /// When using `docker_pool` / `podman_pool`, active async task id → pool + slot for cancel.
+    /// Active async task id → pool + slot for cancel (container pool RPC).
     docker_slots: Arc<Mutex<HashMap<String, (Arc<dyn pool::PoolOps + Send + Sync>, usize)>>>,
-    docker_pool: Option<Arc<dyn pool::PoolOps + Send + Sync>>,
+    docker_pool: Arc<dyn pool::PoolOps + Send + Sync>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SolveIsolation {
-    InProcess,
     DockerPool,
     PodmanPool,
 }
 
 impl SolveIsolation {
     fn from_env() -> Self {
-        // Default product mode is Podman container pool; set CLAW_SOLVE_ISOLATION=inprocess to disable.
-        match std::env::var("CLAW_SOLVE_ISOLATION")
+        let raw = std::env::var("CLAW_SOLVE_ISOLATION")
             .map(|v| v.trim().to_ascii_lowercase())
-            .unwrap_or_default()
-            .as_str()
-        {
-            "inprocess" => Self::InProcess,
+            .unwrap_or_default();
+        if raw == "inprocess" {
+            eprintln!(
+                "http-gateway-rs: CLAW_SOLVE_ISOLATION=inprocess was removed. Use podman_pool or docker_pool with CLAW_POOL_DAEMON_TCP or CLAW_POOL_DAEMON_SOCKET (host claw-pool-daemon). See docs/http-gateway-container-pool.md"
+            );
+            std::process::exit(1);
+        }
+        match raw.as_str() {
             "docker_pool" => Self::DockerPool,
             _ => Self::PodmanPool,
         }
@@ -93,7 +95,6 @@ impl SolveIsolation {
 
     fn as_str(self) -> &'static str {
         match self {
-            Self::InProcess => "inprocess",
             Self::DockerPool => "docker_pool",
             Self::PodmanPool => "podman_pool",
         }
@@ -362,30 +363,25 @@ async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
 /// In the Podman compose stack this is the container path `/var/lib/claw/workspace` (same as `CLAW_WORK_ROOT`).
 /// If `CLAW_POOL_WORK_ROOT_HOST` points at a path that does not exist in this filesystem (e.g. a macOS
 /// `/Users/...` path inside a Linux gateway container), we fall back to `work_root`. Author: kejiqing
-fn pool_host_bind_root(work_root: &Path, isolation: SolveIsolation) -> PathBuf {
-    match isolation {
-        SolveIsolation::InProcess => work_root.to_path_buf(),
-        SolveIsolation::DockerPool | SolveIsolation::PodmanPool => {
-            if let Ok(raw) = std::env::var("CLAW_POOL_WORK_ROOT_HOST") {
-                let trimmed = raw.trim();
-                if !trimmed.is_empty() {
-                    let p = PathBuf::from(trimmed);
-                    if p.exists() {
-                        return p;
-                    }
-                    warn!(
-                        target: "claw_gateway_orchestration",
-                        component = "startup",
-                        phase = "pool_host_bind_root_fallback",
-                        configured = %trimmed,
-                        fallback = %work_root.display(),
-                        "CLAW_POOL_WORK_ROOT_HOST not found in this filesystem; using CLAW_WORK_ROOT"
-                    );
-                }
+fn pool_host_bind_root(work_root: &Path) -> PathBuf {
+    if let Ok(raw) = std::env::var("CLAW_POOL_WORK_ROOT_HOST") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let p = PathBuf::from(trimmed);
+            if p.exists() {
+                return p;
             }
-            work_root.to_path_buf()
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "startup",
+                phase = "pool_host_bind_root_fallback",
+                configured = %trimmed,
+                fallback = %work_root.display(),
+                "CLAW_POOL_WORK_ROOT_HOST not found in this filesystem; using CLAW_WORK_ROOT"
+            );
         }
     }
+    work_root.to_path_buf()
 }
 
 #[tokio::main]
@@ -408,20 +404,15 @@ async fn main() {
         http_addr = %std::env::var("CLAW_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
         "http-gateway-rs tracing ready; when file_log_enabled, stdout is JSON too (same subscriber layers)"
     );
-    let pool_binding_root = pool_host_bind_root(&work_root, solve_isolation);
-    if matches!(
-        solve_isolation,
-        SolveIsolation::DockerPool | SolveIsolation::PodmanPool
-    ) {
-        info!(
-            target: "claw_gateway_orchestration",
-            component = "startup",
-            phase = "pool_host_paths",
-            work_root = %work_root.display(),
-            pool_host_bind_root = %pool_binding_root.display(),
-            "container pool uses pool_host_bind_root on the runtime host for worker -v mounts"
-        );
-    }
+    let pool_host_bind_logged = pool_host_bind_root(&work_root);
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "startup",
+        phase = "pool_host_paths",
+        work_root = %work_root.display(),
+        pool_host_bind_root = %pool_host_bind_logged.display(),
+        "container pool uses pool_host_bind_root on the runtime host for worker -v mounts (daemon side)"
+    );
     let pool_rpc_host_work_root = std::env::var("CLAW_POOL_RPC_HOST_WORK_ROOT")
         .ok()
         .map(|v| v.trim().to_string())
@@ -441,43 +432,33 @@ async fn main() {
     let pool_rpc_tcp_cfg = pool_daemon_tcp.clone();
     let pool_rpc_unix_cfg = pool_daemon_socket.clone();
 
-    let docker_pool: Option<Arc<dyn pool::PoolOps + Send + Sync>> = match solve_isolation {
-        SolveIsolation::DockerPool | SolveIsolation::PodmanPool => {
-            if let Some(ref tcp_addr) = pool_daemon_tcp {
-                if pool_rpc_host_work_root.is_none() {
-                    warn!(
-                        target: "claw_gateway_orchestration",
-                        component = "startup",
-                        phase = "pool_rpc_missing_host_root",
-                        "CLAW_POOL_DAEMON_TCP is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
-                    );
-                }
-                let client = pool::PoolRpcClient::new_tcp(tcp_addr.clone());
-                Some(Arc::new(client))
-            } else if let Some(ref sock_path) = pool_daemon_socket {
-                if pool_rpc_host_work_root.is_none() {
-                    warn!(
-                        target: "claw_gateway_orchestration",
-                        component = "startup",
-                        phase = "pool_rpc_missing_host_root",
-                        "CLAW_POOL_DAEMON_SOCKET is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
-                    );
-                }
-                let client = pool::PoolRpcClient::new(PathBuf::from(sock_path));
-                Some(Arc::new(client))
-            } else {
-                let podman = matches!(solve_isolation, SolveIsolation::PodmanPool);
-                let p = pool::DockerPoolManager::try_from_env(podman, &pool_binding_root)
-                    .unwrap_or_else(|e| {
-                        let runtime = if podman { "Podman" } else { "Docker" };
-                        eprintln!("http-gateway-rs: invalid {runtime} pool configuration: {e}");
-                        std::process::exit(1);
-                    });
-                pool::DockerPoolManager::schedule_warm(&p);
-                Some(Arc::new(pool::LocalPoolOps(p)))
-            }
+    let docker_pool: Arc<dyn pool::PoolOps + Send + Sync> = if let Some(ref tcp_addr) =
+        pool_daemon_tcp
+    {
+        if pool_rpc_host_work_root.is_none() {
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "startup",
+                phase = "pool_rpc_missing_host_root",
+                "CLAW_POOL_DAEMON_TCP is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
+            );
         }
-        SolveIsolation::InProcess => None,
+        Arc::new(pool::PoolRpcClient::new_tcp(tcp_addr.clone()))
+    } else if let Some(ref sock_path) = pool_daemon_socket {
+        if pool_rpc_host_work_root.is_none() {
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "startup",
+                phase = "pool_rpc_missing_host_root",
+                "CLAW_POOL_DAEMON_SOCKET is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
+            );
+        }
+        Arc::new(pool::PoolRpcClient::new(PathBuf::from(sock_path)))
+    } else {
+        eprintln!(
+                "http-gateway-rs: container pool requires CLAW_POOL_DAEMON_TCP or CLAW_POOL_DAEMON_SOCKET (out-of-process claw-pool-daemon). In-gateway podman/docker pool drivers were removed."
+            );
+        std::process::exit(1);
     };
 
     let cfg = GatewayConfig {
@@ -488,9 +469,10 @@ async fn main() {
         pool_rpc_tcp: pool_rpc_tcp_cfg,
         pool_rpc_unix_socket: pool_rpc_unix_cfg,
         pool_rpc_remote: pool_daemon_tcp.is_some() || pool_daemon_socket.is_some(),
-        ds_registry_path: PathBuf::from(std::env::var("CLAW_DS_REGISTRY").unwrap_or_else(|_| {
-            "third_party/claw-http-gateway/http_gateway/config/datasources.example.yaml".to_string()
-        })),
+        ds_registry_path: PathBuf::from(
+            std::env::var("CLAW_DS_REGISTRY")
+                .unwrap_or_else(|_| "deploy/config/datasources.example.yaml".to_string()),
+        ),
         default_timeout_seconds: std::env::var("CLAW_TIMEOUT_SECONDS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -1013,7 +995,7 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "defaultHttpMcpTransport": state.cfg.default_http_mcp_transport,
         "allowedTools": state.cfg.allowed_tools,
         "solveIsolation": isolation,
-        "containerPool": state.docker_pool.is_some(),
+        "containerPool": true,
         "poolRpcRemote": state.cfg.pool_rpc_remote,
         "poolRpcTcp": state.cfg.pool_rpc_tcp,
         "poolRpcUnixSocket": state.cfg.pool_rpc_unix_socket,
@@ -1622,65 +1604,20 @@ async fn run_solve_request(
         session_home = %session_home.display(),
         solve_isolation = state.cfg.solve_isolation.as_str(),
         timeout_seconds,
-        "session .claw/settings.json written; starting solve (in-process or pool)"
+        "session .claw/settings.json written; starting solve (container pool)"
     );
 
-    match state.cfg.solve_isolation {
-        SolveIsolation::InProcess => {
-            let (code, output_text, output_json) = run_runtime_prompt(
-                &session_home,
-                &state.cfg.work_root,
-                &req.user_prompt,
-                req.model.as_deref(),
-                timeout_seconds,
-                &ctx.request_id,
-                req.extra_session.clone(),
-                effective_allowed_tools,
-                state.cfg.default_max_iterations,
-            )?;
-            let duration_ms = started.elapsed().as_millis() as i64;
-            info!(
-                target: "claw_gateway_orchestration",
-                component = "solve_inprocess",
-                request_id = %ctx.request_id,
-                task_id = ctx.task_id.as_deref().unwrap_or("-"),
-                ds_id = req.ds_id,
-                phase = "solve_run_ok",
-                duration_ms,
-                session_home = %session_home.display(),
-                claw_exit_code = code,
-                "in-process gateway_solve finished"
-            );
-            Ok(SolveResponse {
-                session_id: ctx.request_id.clone(),
-                request_id: ctx.request_id,
-                ds_id: req.ds_id,
-                work_dir: session_home.display().to_string(),
-                duration_ms,
-                claw_exit_code: code,
-                output_text,
-                output_json,
-            })
-        }
-        SolveIsolation::DockerPool | SolveIsolation::PodmanPool => {
-            let pool = state.docker_pool.clone().ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "container pool is not initialized",
-                )
-            })?;
-            solve_pool::run_solve_request_docker(
-                state,
-                req,
-                ctx,
-                pool,
-                started,
-                effective_allowed_tools,
-                session_home,
-            )
-            .await
-        }
-    }
+    let pool = state.docker_pool.clone();
+    solve_pool::run_solve_request_docker(
+        state,
+        req,
+        ctx,
+        pool,
+        started,
+        effective_allowed_tools,
+        session_home,
+    )
+    .await
 }
 
 async fn inject_mcp(
@@ -1896,38 +1833,6 @@ async fn ensure_workspace_initialized(_claw_bin: &str, work_dir: &Path) -> Resul
         )
     })?;
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_runtime_prompt(
-    work_dir: &Path,
-    work_root: &Path,
-    prompt: &str,
-    model: Option<&str>,
-    timeout_seconds: u64,
-    clawcode_session_id: &str,
-    extra_session: Option<Value>,
-    allowed_tools: Vec<String>,
-    max_iterations: usize,
-) -> Result<(i32, String, Option<Value>), ApiError> {
-    run_gateway_solve_turn(
-        work_dir,
-        work_root,
-        prompt,
-        model,
-        timeout_seconds,
-        clawcode_session_id,
-        extra_session,
-        allowed_tools,
-        max_iterations,
-    )
-    .map_err(|e| {
-        let status = match e.status {
-            504 => StatusCode::GATEWAY_TIMEOUT,
-            _ => StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-        };
-        ApiError::new(status, e.message)
-    })
 }
 
 async fn probe_mcp_load(

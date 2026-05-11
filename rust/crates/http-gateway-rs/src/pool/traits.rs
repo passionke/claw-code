@@ -20,7 +20,7 @@ pub struct TaskOutcome {
     pub stderr: String,
 }
 
-/// Abstract pool: in-process [`super::DockerPoolManager`] or host RPC client. Author: kejiqing
+/// Abstract pool: host [`super::rpc::PoolRpcClient`] talking to `claw-pool-daemon`. Author: kejiqing
 #[async_trait]
 pub trait PoolOps: Send + Sync {
     async fn acquire_slot(

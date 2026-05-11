@@ -1,4 +1,4 @@
-# Datasource registry template for claw-code HTTP gateway.
+# Datasource registry template for claw-code HTTP gateway (http-gateway-rs).
 # Do NOT commit real credentials. Author: kejiqing
 
 datasources:

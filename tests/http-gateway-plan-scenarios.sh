@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_DIR="$REPO_ROOT/rust"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/claw-gateway-plan.XXXXXX")"
-REGISTRY="$REPO_ROOT/third_party/claw-http-gateway/http_gateway/config/datasources.example.yaml"
+REGISTRY="$REPO_ROOT/deploy/config/datasources.example.yaml"
 BIN="$RUST_DIR/target/debug/http-gateway-rs"
 CLAW_BIN="${CLAW_BIN:-$RUST_DIR/target/debug/claw}"
 
@@ -19,20 +19,87 @@ cleanup() {
     kill "$GATEWAY_PID" 2>/dev/null || true
     wait "$GATEWAY_PID" 2>/dev/null || true
   fi
+  if [[ -n "${DAEMON_PID:-}" ]] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
   rm -rf "$WORK_ROOT"
 }
 trap cleanup EXIT
 
 cd "$RUST_DIR"
 if [[ "${SKIP_GATEWAY_BUILD:-}" != "1" ]]; then
-  echo "[plan] cargo build -p http-gateway-rs -p rusty-claude-cli (set SKIP_GATEWAY_BUILD=1 to skip)..."
-  cargo build -p http-gateway-rs -p rusty-claude-cli
+  echo "[plan] cargo build -p http-gateway-rs -p rusty-claude-cli --bin claw-pool-daemon (set SKIP_GATEWAY_BUILD=1 to skip)..."
+  cargo build -p http-gateway-rs -p rusty-claude-cli --bin claw-pool-daemon
+fi
+
+FAKE_RT="$WORK_ROOT/fake-runtime"
+DSTATE="$WORK_ROOT/docker_state"
+mkdir -p "$FAKE_RT" "$DSTATE"
+cat >"$FAKE_RT/podman" <<EOS
+#!/bin/sh
+set -eu
+d='$DSTATE'
+mkdir -p "\$d"
+log() { printf '%s\n' "\$*" >>"\$d/log.txt"; }
+case "\${1:-}" in
+run)
+  log "run:\$*"
+  exit 0
+  ;;
+exec)
+  log "exec:\$*"
+  printf '%s\n' '{"clawExitCode":0,"outputText":"ok","outputJson":null}'
+  exit 0
+  ;;
+kill)
+  log "kill:\$*"
+  exit 0
+  ;;
+rm)
+  log "rm:\$*"
+  exit 0
+  ;;
+*)
+  log "unknown:\$*"
+  exit 1
+  ;;
+esac
+EOS
+chmod +x "$FAKE_RT/podman"
+
+DAEMON_SOCK="$WORK_ROOT/pool.sock"
+rm -f "$DAEMON_SOCK"
+export PATH="$FAKE_RT:$PATH"
+export CLAW_PODMAN_IMAGE="fake:latest"
+export CLAW_PODMAN_POOL_SIZE=1
+export CLAW_PODMAN_POOL_MIN_IDLE=0
+unset CLAW_POOL_DAEMON_TCP_BIND
+
+export CLAW_WORK_ROOT="$WORK_ROOT"
+export CLAW_SOLVE_ISOLATION=podman_pool
+export CLAW_POOL_DAEMON_LISTEN="$DAEMON_SOCK"
+"$RUST_DIR/target/debug/claw-pool-daemon" >>"$WORK_ROOT/daemon.log" 2>&1 &
+DAEMON_PID=$!
+
+for _ in $(seq 1 100); do
+  if [[ -S "$DAEMON_SOCK" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ ! -S "$DAEMON_SOCK" ]]; then
+  echo "pool daemon did not create $DAEMON_SOCK (see $WORK_ROOT/daemon.log)" >&2
+  exit 1
 fi
 
 export CLAW_HTTP_ADDR="127.0.0.1:$PORT"
 export CLAW_WORK_ROOT="$WORK_ROOT"
 export CLAW_DS_REGISTRY="$REGISTRY"
 export CLAW_BIN
+export CLAW_SOLVE_ISOLATION=podman_pool
+export CLAW_POOL_DAEMON_SOCKET="$DAEMON_SOCK"
+export CLAW_POOL_RPC_HOST_WORK_ROOT="$WORK_ROOT"
 
 GW_LOG="$WORK_ROOT/gateway.log"
 "$BIN" >>"$GW_LOG" 2>&1 &

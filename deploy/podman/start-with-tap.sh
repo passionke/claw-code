@@ -79,7 +79,7 @@ source "${SCRIPT_DIR}/compose-include.sh"
 claw_podman_export_pool_workspace "${SCRIPT_DIR}"
 claw_podman_load_compose_args "${SCRIPT_DIR}" "${ROOT_ENV}"
 
-if [[ "${CLAW_SOLVE_ISOLATION:-podman_pool}" != "inprocess" ]] && [[ "${CLAW_POOL_HOST_DAEMON:-1}" == "1" ]]; then
+if [[ "${CLAW_POOL_HOST_DAEMON:-1}" == "1" ]]; then
   "${SCRIPT_DIR}/pool-daemon-up.sh" "${SCRIPT_DIR}" "${ROOT_DIR}"
 fi
 

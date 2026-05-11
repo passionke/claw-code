@@ -28,7 +28,7 @@ set -a
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
 set +a
-if [[ "${CLAW_SOLVE_ISOLATION:-podman_pool}" != "inprocess" ]] && [[ "${CLAW_POOL_HOST_DAEMON:-1}" == "1" ]]; then
+if [[ "${CLAW_POOL_HOST_DAEMON:-1}" == "1" ]]; then
   "${SCRIPT_DIR}/pool-daemon-up.sh" "${SCRIPT_DIR}" "${REPO_ROOT}"
 fi
 

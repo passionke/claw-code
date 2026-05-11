@@ -12,7 +12,7 @@ Author: kejiqing
 
 | 现状 | 问题 |
 | --- | --- |
-| `run_solve_request` 里直接 `run_runtime_prompt` | 与网关 **同进程**；`set_current_dir(ds_home)` 是 **进程级**，并行 solve 会互相踩 cwd（以及任何依赖 cwd 的库行为）。 |
+| ~~`run_solve_request` 里直接 `run_runtime_prompt`~~（已删除） | 历史上与网关 **同进程** 跑 solve 会踩 **进程级 cwd**；现网 **只** 走 worker 容器池。 |
 | 每请求 `docker run` / `podman run` 全新容器 | **冷启动** 往往 0.5～数秒，并发时抖动大。 |
 
 **容器池**：预先维持 **N 个已启动的空闲容器**（或 N 个「槽位」），solve 来时 **占用一个槽 → 挂载/同步工作区 → 在容器内执行 claw → 归还槽**。摊销掉「创建容器 + 启动进程」的成本，把常见路径压到 **接近一次 `docker exec` / `podman exec` + 准备目录** 的耗时。
@@ -23,13 +23,13 @@ Author: kejiqing
 
 1. **网关进程（`http-gateway-rs`）**  
    - 仍负责 HTTP、任务队列、`dsId` 锁、写 **`ds_home/.claw/settings.json`**（与现在一致）。  
-   - **不再**在网关进程里调用 `run_runtime_prompt`（或仅作 fallback）。  
-   - **只管租借与编排**：`acquire` → `dispatch`（`docker exec` 等）→ 读结果 → `release`；取消时 **`force_kill`**。**不**决定池大小、**不**调 `ensure_warm`（这些属池化管理）。
+   - **不再**在网关进程里跑 `claw` solve；**只管租借与编排**：经 **`PoolRpcClient`** 调宿主机 **`claw-pool-daemon`** 完成 `acquire` → `dispatch`（`docker exec` / `podman exec`）→ 读结果 → `release`；取消时 **`force_kill`**。  
+   - **不**决定池大小、**不**调 `ensure_warm`（这些在 **池守护进程** 内）。
 
-2. **池化管理（PoolManager / ContainerPool 实现）**  
+2. **池守护进程（`claw-pool-daemon`，宿主机）**  
    - **进程启动时一次性**从环境变量读取 **`CLAW_DOCKER_POOL_SIZE` / `CLAW_DOCKER_POOL_MIN_IDLE`**（Podman 对应 `CLAW_PODMAN_POOL_*`）等并固定；**不做热更新**（改参须重启进程）。  
    - 内部负责 **`ensure_warm` / 缩 idle**、worker **创建与汰换**；维护 **上限 N** 与状态机 **idle → leased → idle**（lease 超时则强制回收）。  
-   - v1 可与网关 **同进程**（`tokio` + `Mutex`）；旁路服务为后话。
+   - 通过 **TCP 或 Unix socket** 对网关暴露 JSON-RPC 式协议（`CLAW_POOL_DAEMON_TCP` / `CLAW_POOL_DAEMON_SOCKET`）。
 
 3. **Worker 容器**  
    - 镜像：与现网一致的 **Debian slim + `claw`（+ 可选 `ca-certificates`/`curl`）**（见 `deploy/podman/Containerfile.gateway-rs` 的 runtime 层思路）。  
@@ -96,7 +96,7 @@ sequenceDiagram
 
 | 环境变量 | 含义 |
 | --- | --- |
-| `CLAW_SOLVE_ISOLATION` | `podman_pool`（本仓库 Podman compose 默认） / `docker_pool`（远程 Docker 宿主机或挂载 `docker.sock` 的部署） / `inprocess`（显式关闭池） |
+| `CLAW_SOLVE_ISOLATION` | `podman_pool`（本仓库 Podman compose 默认） / `docker_pool`（远程 Docker 宿主机或挂载 `docker.sock` 的部署）。`inprocess` 与网关内嵌池已移除；网关 **必须** 配置 `CLAW_POOL_DAEMON_TCP` 或 `CLAW_POOL_DAEMON_SOCKET` 指向宿主机 `claw-pool-daemon`。 |
 | `CLAW_DOCKER_POOL_SIZE` / `CLAW_PODMAN_POOL_SIZE` | 池 **总量上限** N（worker 容器个数上限） |
 | `CLAW_DOCKER_POOL_MIN_IDLE` / `CLAW_PODMAN_POOL_MIN_IDLE` | **最低保活** idle 槽位数（`0..=POOL_SIZE`）；**池管理内部**在 `release` 后或定时 tick 调用 `ensure_warm`，使 idle ≥ 该值 |
 | `CLAW_POOL_SIZE_CAP` | 可选：全局上限，将 `POOL_SIZE` **裁剪**到不超过该值（例如本地 `4`）；不设置则不额外裁剪 |
@@ -115,8 +115,8 @@ sequenceDiagram
 
 1. **Phase A（本方案 + 无代码或脚本 PoC）**  
    - 手工：`docker run -d`（或 `podman run -d`）起一个 worker，`docker exec` 挂好 `ds_home`，跑 `claw`，确认 MCP/模型与路径。  
-2. **Phase B（进程内 PoolManager + exec）**  
-   - 在 `http-gateway-rs` 内实现 **`PoolManager` / `ContainerPool` trait**，`run_solve_request` 仅做 **租借编排**（`acquire` / `dispatch` / `release`）；保留 `inprocess` fallback。  
+2. **Phase B（宿主机池守护进程 + RPC）**  
+   - `http-gateway-rs` 的 `run_solve_request` 只做 **租借编排**（`acquire` / `dispatch` / `release`），通过 **`PoolRpcClient`** 与 **`claw-pool-daemon`** 通信；**不再**在网关进程内嵌 `DockerPoolManager`，也不提供 `inprocess` solve。  
 3. **Phase C（CLI 契约）**  
    - `rusty-claude-cli` 增加 **单次 solve 输出稳定 JSON** 的子命令，避免解析日志。  
 4. **Phase D（硬隔离）**  
@@ -134,8 +134,8 @@ sequenceDiagram
 | `CLAW_PROJECT_CONFIG_ROOT` / `CLAW_CONFIG_FILE` | **项目 `.claw.json` 树**；由 **`gateway-solve-turn`** 在网关侧加载；**不应**落在可被子进程或 worker 横向遍历的 `CLAW_WORK_ROOT` 会话卷上。 |
 
 - **Docker / Podman 权限**：网关进程需能访问 **`docker.sock`**（常见：用户加入 `docker` 组）或等价 API；生产上慎防 **容器内挂载 sock 逃逸**。  
-- **并发与同数据源**：多 solve 共享 **`ds_{id}/` 下只读/半共享文件**（如 `CLAUDE.md`）时由网关 **按需拷贝进各 `sessions/{uuid}/`**；会话间文件工具隔离依赖 **每会话 bind 根**（池化）或 **进程内 `cwd` 为会话目录**（`inprocess`）。  
-- **Windows/macOS 开发机**：池化仍以 Linux 为一级目标；本地可继续 `inprocess`。
+- **并发与同数据源**：多 solve 共享 **`ds_{id}/` 下只读/半共享文件**（如 `CLAUDE.md`）时由网关 **按需拷贝进各 `sessions/{uuid}/`**；会话间文件工具隔离依赖 **每会话 bind 根**（worker 容器池）。  
+- **Windows/macOS 开发机**：池化仍以 Linux 为一级目标；网关需能稳定访问宿主机上的 `claw-pool-daemon`（compose 默认 `host.containers.internal` / `host.docker.internal`）。
 
 ## 6.1 结果回传（stdout + 挂载文件，v1）
 

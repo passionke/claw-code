@@ -1,4 +1,4 @@
-//! One-turn gateway solve (shared by `http-gateway-rs` in-process path and `claw gateway-solve-once`).
+//! One-turn gateway solve (used by worker containers via `claw gateway-solve-once`).
 //! Author: kejiqing
 #![allow(
     clippy::await_holding_lock,

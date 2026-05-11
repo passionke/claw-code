@@ -9,10 +9,10 @@ use gateway_solve_turn::GatewaySolveTaskFile;
 use tokio::fs;
 use tracing::{info, warn};
 
-use crate::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease};
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
+use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease};
 
-/// When the gateway uses [`PoolRpcClient`](crate::pool::PoolRpcClient) (TCP or Unix), session dirs
+/// When the gateway uses [`PoolRpcClient`](http_gateway_rs::pool::PoolRpcClient) (TCP or Unix), session dirs
 /// live under the container `CLAW_WORK_ROOT` but the host daemon must bind-mount the host path. Author: kejiqing
 pub(crate) fn session_mount_for_pool_acquire(
     session_home: &Path,

@@ -1,5 +1,4 @@
-# Production-style bundle: gateway + host pool RPC overlay (same merge as compose-include.sh
-# when CLAW_POOL_HOST_DAEMON=1 and not inprocess). Author: kejiqing
+# Production-style bundle: gateway + host pool RPC overlay (same merge as compose-include.sh). Author: kejiqing
 #
 # Prefer one-click: ./deploy/server-252/deploy-one-click.sh release-x.y.z
 # Manual (after generated files exist — run deploy-one-click once, or ./deploy/podman/up.sh):
