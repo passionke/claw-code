@@ -25,6 +25,11 @@ Base URL 示例：`http://127.0.0.1:18088`
     - `extraSession`：可选，**JSON 对象**，业务会话级上下文（例如用户、租户、workspace 等标识）
       - 若存在但不是 object，将返回 `400`（`extraSession must be a JSON object when present`）
       - 序列化后大小上限约为 `8KB`，超出将返回 `400`（`extraSession is too large (max 8KB)`）
+    - `allowedTools`：可选，字符串数组，指定**本次 solve**允许暴露给模型并执行的工具名（与异步 `/v1/solve_async` 相同）。
+      - **未传 `allowedTools`**：沿用网关进程环境变量 `CLAW_ALLOWED_TOOLS`（逗号分隔，与 `GET /healthz` 中 `allowedTools` 字段一致）。若该环境变量也未配置（空），则下游 `gateway-solve-turn` 将空列表视为「不额外收紧」，**内置 MVP 工具（含 `bash` 等）会全部挂上**。
+      - **已配置全局 `CLAW_ALLOWED_TOOLS`（非空）**：请求里的 `allowedTools` 若出现，则其中**每一项**都必须被全局策略放行（支持前缀通配：全局项若以 `*` 结尾，则匹配该前缀开头的工具名；请求侧若以 `*` 结尾，则该项须与全局列表中的某一项字面完全一致）。否则返回 `400`，提示 `requested tool pattern is not allowed by gateway policy`。因此若部署里把全局白名单写得很窄（例如仅 `read_file,glob_search`），仅靠请求体无法「偷偷」加上 `bash`，需要先把 **`CLAW_ALLOWED_TOOLS` 扩大到包含 `bash`（或 `bash*`）等**。
+      - 常见内置名（与 `rust/crates/tools` 中 `mvp_tool_specs` 一致，按需选用）：`bash`、`read_file`、`write_file`、`edit_file`、`glob_search`、`grep_search`、`WebFetch`、`WebSearch`、`MCP`、`Skill`、`TodoWrite` 等；MCP 动态工具名按运行时注册为准。
+      - 典型「交给 resolve/solve 里强 agent 自决」时，在**全局白名单已包含**的前提下，可在一次调用里显式放宽，例如：`"allowedTools": ["read_file","glob_search","grep_search","bash","write_file","edit_file","MCP"]`。
   - 追踪约定：
     - 网关会为本次调用确定 `sessionId`（等于 `claw-session-id`）
     - 响应体主字段使用 `sessionId`，并保留 `requestId` 兼容字段（同值）

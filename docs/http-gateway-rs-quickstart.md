@@ -83,6 +83,21 @@ curl -sS -X POST "http://127.0.0.1:18088/v1/solve" \
   }'
 ```
 
+若网关配置了非空的 `CLAW_ALLOWED_TOOLS`，请求里的 `allowedTools` 只能从中再选子集；要让模型用 shell、写文件、调 MCP，需全局白名单先包含这些名，再在 body 里列出，例如：
+
+```bash
+curl -sS -X POST "http://127.0.0.1:18088/v1/solve" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dsId": 1,
+    "userPrompt": "把任务说明里的内容整理成 .claw/skills/foo/SKILL.md 并自检",
+    "allowedTools": [
+      "read_file", "glob_search", "grep_search",
+      "bash", "write_file", "edit_file", "MCP"
+    ]
+  }'
+```
+
 ### 异步调用 + 轮询
 
 ```bash
