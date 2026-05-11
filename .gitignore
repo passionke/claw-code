@@ -33,5 +33,6 @@ deploy/podman/claude-tap.pid
 deploy/podman/claw-logs/
 deploy/podman/claw-workspace/
 deploy/podman/claw-gateway-sessions/
+deploy/podman/claude-tap-data/
 deploy/podman/deploy/
 deploy/podman/.claw-pool-rpc/
