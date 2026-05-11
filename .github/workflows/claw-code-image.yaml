@@ -1,9 +1,9 @@
 # Publishes gateway + pool worker images to GHCR (two packages). Author: kejiqing
 #
 # Chain:
-# - Push tag refs/tags/release-* → build + push to ghcr.io (claw-code + claw-gateway-worker) in parallel matrix jobs.
-# - workflow_dispatch on any branch → same Dockerfiles/build-args, build only (no push); use this to verify packaging.
-# - Podman parity build (build.sh): gateway-image-ci on tag release-* or PR / manual (not on main push).
+# - Push tag refs/tags/release-v*.*.* → build + push to ghcr.io (claw-code + claw-gateway-worker) in parallel matrix jobs.
+# - Packaging is tag-only; no PR/manual trigger.
+# - Podman parity build (build.sh): gateway-image-ci on same release tag family.
 #
 # Optional repo/org Actions variable CONTAINER_BASE_REGISTRY (hostname only, no path):
 # - unset → docker.io (recommended on github-hosted runners; mirrors may serve incomplete blobs).
@@ -13,8 +13,7 @@ name: claw-code-image
 on:
   push:
     tags:
-      - "release-*"
-  workflow_dispatch:
+      - "release-v*.*.*"
 
 permissions:
   contents: read
@@ -22,9 +21,7 @@ permissions:
 
 jobs:
   build-and-push:
-    if: |
-      startsWith(github.ref, 'refs/tags/release-') ||
-      github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/release-v')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -74,11 +71,7 @@ jobs:
           set -euo pipefail
           IMAGE="ghcr.io/${{ github.repository_owner }}/${{ matrix.package }}"
           SHA12="${GITHUB_SHA:0:12}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            RELEASE_TAG="preview-${SHA12}"
-          else
-            RELEASE_TAG="${GITHUB_REF_NAME}"
-          fi
+          RELEASE_TAG="${GITHUB_REF_NAME}"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "sha12=${SHA12}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
@@ -95,7 +88,7 @@ jobs:
         with:
           context: .
           file: ./${{ matrix.dockerfile }}
-          push: ${{ startsWith(github.ref, 'refs/tags/release-') }}
+          push: ${{ startsWith(github.ref, 'refs/tags/release-v') }}
           build-args: |
             RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
             DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
@@ -103,7 +96,3 @@ jobs:
             RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
           tags: ${{ steps.meta.outputs.tags }}
 
-      - name: Packaging note (manual run)
-        if: github.event_name == 'workflow_dispatch' && matrix.package == 'claw-code'
-        run: |
-          echo "OK: same build as release; push skipped (only refs/tags/release-* publishes to GHCR)."
