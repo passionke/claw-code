@@ -1,22 +1,11 @@
 # Build gateway + worker images (same as deploy/podman/build.sh). Author: kejiqing
-# Push 仅 tag `release-*`（如 release-v1.0.17）；GHCR 发布见 claw-code-image。PR / workflow_dispatch 可验证构建。
+# Packaging is tag-only: run only on `release-v*.*.*` tags.
 name: Gateway container images
 
 on:
   push:
     tags:
-      - "release-*"
-  pull_request:
-    branches:
-      - main
-    paths:
-      - .github/workflows/gateway-image-ci.yml
-      - deploy/podman/**
-      - rust/crates/http-gateway-rs/**
-      - rust/crates/rusty-claude-cli/**
-      - rust/crates/gateway-solve-turn/**
-      - scripts/claw-gateway-worker.sh
-  workflow_dispatch:
+      - "release-v*.*.*"
 
 concurrency:
   group: gateway-image-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
