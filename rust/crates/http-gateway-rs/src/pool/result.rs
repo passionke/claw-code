@@ -23,10 +23,11 @@ pub fn parse_gateway_solve_exec_stdout(
             "outputJson": Value::Null,
         })
     });
-    let claw_exit_code = parsed
+    let raw_exit = parsed
         .get("clawExitCode")
         .and_then(Value::as_i64)
-        .unwrap_or(i64::from(fallback_exit_code)) as i32;
+        .unwrap_or(i64::from(fallback_exit_code));
+    let claw_exit_code = i32::try_from(raw_exit).unwrap_or(fallback_exit_code);
     let output_text = parsed
         .get("outputText")
         .and_then(|v| v.as_str())

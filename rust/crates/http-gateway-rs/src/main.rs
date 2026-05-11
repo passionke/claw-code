@@ -66,8 +66,8 @@ struct AppState {
     ds_locks: Arc<Mutex<HashMap<i64, Arc<Mutex<()>>>>>,
     cfg: Arc<GatewayConfig>,
     /// When using `docker_pool` / `podman_pool`, active async task id → pool + slot for cancel.
-    docker_slots: Arc<Mutex<HashMap<String, (Arc<pool::DockerPoolManager>, usize)>>>,
-    docker_pool: Option<Arc<pool::DockerPoolManager>>,
+    docker_slots: Arc<Mutex<HashMap<String, (Arc<dyn pool::PoolOps + Send + Sync>, usize)>>>,
+    docker_pool: Option<Arc<dyn pool::PoolOps + Send + Sync>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +105,14 @@ struct GatewayConfig {
     solve_isolation: SolveIsolation,
     claw_bin: String,
     work_root: PathBuf,
+    /// Host `CLAW_WORK_ROOT` equivalent when the gateway is containerized and uses [`pool::PoolRpcClient`].
+    pool_rpc_host_work_root: Option<PathBuf>,
+    /// `CLAW_POOL_DAEMON_TCP` (`host:port`) when using TCP to host daemon.
+    pool_rpc_tcp: Option<String>,
+    /// `CLAW_POOL_DAEMON_SOCKET` when using Unix RPC (optional).
+    pool_rpc_unix_socket: Option<String>,
+    /// True when pool RPC goes to out-of-process daemon (TCP or Unix).
+    pool_rpc_remote: bool,
     ds_registry_path: PathBuf,
     default_timeout_seconds: u64,
     default_max_iterations: usize,
@@ -350,9 +358,10 @@ async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
     res
 }
 
-/// Directory on the **host** used for pool bind mounts (`worker -v …:/claw_host_root`).
-/// When the gateway runs in a container, set `CLAW_POOL_WORK_ROOT_HOST` to the same host path
-/// as the `CLAW_WORK_ROOT` bind (see `deploy/podman/up.sh`). Author: kejiqing
+/// Directory used for pool bind mounts (`worker -v …:/claw_host_root`), as seen by the gateway process.
+/// In the Podman compose stack this is the container path `/var/lib/claw/workspace` (same as `CLAW_WORK_ROOT`).
+/// If `CLAW_POOL_WORK_ROOT_HOST` points at a path that does not exist in this filesystem (e.g. a macOS
+/// `/Users/...` path inside a Linux gateway container), we fall back to `work_root`. Author: kejiqing
 fn pool_host_bind_root(work_root: &Path, isolation: SolveIsolation) -> PathBuf {
     match isolation {
         SolveIsolation::InProcess => work_root.to_path_buf(),
@@ -360,7 +369,18 @@ fn pool_host_bind_root(work_root: &Path, isolation: SolveIsolation) -> PathBuf {
             if let Ok(raw) = std::env::var("CLAW_POOL_WORK_ROOT_HOST") {
                 let trimmed = raw.trim();
                 if !trimmed.is_empty() {
-                    return PathBuf::from(trimmed);
+                    let p = PathBuf::from(trimmed);
+                    if p.exists() {
+                        return p;
+                    }
+                    warn!(
+                        target: "claw_gateway_orchestration",
+                        component = "startup",
+                        phase = "pool_host_bind_root_fallback",
+                        configured = %trimmed,
+                        fallback = %work_root.display(),
+                        "CLAW_POOL_WORK_ROOT_HOST not found in this filesystem; using CLAW_WORK_ROOT"
+                    );
                 }
             }
             work_root.to_path_buf()
@@ -402,29 +422,72 @@ async fn main() {
             "container pool uses pool_host_bind_root on the runtime host for worker -v mounts"
         );
     }
-    let docker_pool: Option<Arc<pool::DockerPoolManager>> = match solve_isolation {
-        SolveIsolation::DockerPool => Some(
-            pool::DockerPoolManager::try_from_env(false, &pool_binding_root).unwrap_or_else(|e| {
-                eprintln!("http-gateway-rs: invalid Docker pool configuration: {e}");
-                std::process::exit(1);
-            }),
-        ),
-        SolveIsolation::PodmanPool => Some(
-            pool::DockerPoolManager::try_from_env(true, &pool_binding_root).unwrap_or_else(|e| {
-                eprintln!("http-gateway-rs: invalid Podman pool configuration: {e}");
-                std::process::exit(1);
-            }),
-        ),
+    let pool_rpc_host_work_root = std::env::var("CLAW_POOL_RPC_HOST_WORK_ROOT")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+
+    let pool_daemon_tcp = std::env::var("CLAW_POOL_DAEMON_TCP")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
+    let pool_daemon_socket = std::env::var("CLAW_POOL_DAEMON_SOCKET")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
+    let pool_rpc_tcp_cfg = pool_daemon_tcp.clone();
+    let pool_rpc_unix_cfg = pool_daemon_socket.clone();
+
+    let docker_pool: Option<Arc<dyn pool::PoolOps + Send + Sync>> = match solve_isolation {
+        SolveIsolation::DockerPool | SolveIsolation::PodmanPool => {
+            if let Some(ref tcp_addr) = pool_daemon_tcp {
+                if pool_rpc_host_work_root.is_none() {
+                    warn!(
+                        target: "claw_gateway_orchestration",
+                        component = "startup",
+                        phase = "pool_rpc_missing_host_root",
+                        "CLAW_POOL_DAEMON_TCP is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
+                    );
+                }
+                let client = pool::PoolRpcClient::new_tcp(tcp_addr.clone());
+                Some(Arc::new(client))
+            } else if let Some(ref sock_path) = pool_daemon_socket {
+                if pool_rpc_host_work_root.is_none() {
+                    warn!(
+                        target: "claw_gateway_orchestration",
+                        component = "startup",
+                        phase = "pool_rpc_missing_host_root",
+                        "CLAW_POOL_DAEMON_SOCKET is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
+                    );
+                }
+                let client = pool::PoolRpcClient::new(PathBuf::from(sock_path));
+                Some(Arc::new(client))
+            } else {
+                let podman = matches!(solve_isolation, SolveIsolation::PodmanPool);
+                let p = pool::DockerPoolManager::try_from_env(podman, &pool_binding_root)
+                    .unwrap_or_else(|e| {
+                        let runtime = if podman { "Podman" } else { "Docker" };
+                        eprintln!("http-gateway-rs: invalid {runtime} pool configuration: {e}");
+                        std::process::exit(1);
+                    });
+                pool::DockerPoolManager::schedule_warm(&p);
+                Some(Arc::new(pool::LocalPoolOps(p)))
+            }
+        }
         SolveIsolation::InProcess => None,
     };
-    if let Some(p) = &docker_pool {
-        pool::DockerPoolManager::schedule_warm(p);
-    }
 
     let cfg = GatewayConfig {
         solve_isolation,
         claw_bin: std::env::var("CLAW_BIN").unwrap_or_else(|_| "claw".to_string()),
         work_root,
+        pool_rpc_host_work_root,
+        pool_rpc_tcp: pool_rpc_tcp_cfg,
+        pool_rpc_unix_socket: pool_rpc_unix_cfg,
+        pool_rpc_remote: pool_daemon_tcp.is_some() || pool_daemon_socket.is_some(),
         ds_registry_path: PathBuf::from(std::env::var("CLAW_DS_REGISTRY").unwrap_or_else(|_| {
             "third_party/claw-http-gateway/http_gateway/config/datasources.example.yaml".to_string()
         })),
@@ -951,6 +1014,10 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "allowedTools": state.cfg.allowed_tools,
         "solveIsolation": isolation,
         "containerPool": state.docker_pool.is_some(),
+        "poolRpcRemote": state.cfg.pool_rpc_remote,
+        "poolRpcTcp": state.cfg.pool_rpc_tcp,
+        "poolRpcUnixSocket": state.cfg.pool_rpc_unix_socket,
+        "poolRpcHostWorkRoot": state.cfg.pool_rpc_host_work_root.as_ref().map(|p| p.display().to_string()),
     }))
 }
 
@@ -1350,7 +1417,7 @@ async fn cancel_task(
     // Stop the container worker before aborting the host task: `kill_on_drop` then tears down
     // the `docker exec` client, and in-flight stderr can still flush while the container exits.
     if let Some((pool, idx)) = state.docker_slots.lock().await.remove(&task_id) {
-        let _ = pool::DockerPoolManager::force_kill_slot(&pool, idx).await;
+        let _ = pool.force_kill_slot(idx).await;
     }
     if let Some(h) = cancel {
         h.abort();

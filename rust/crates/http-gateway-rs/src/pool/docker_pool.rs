@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::config::DockerPoolConfig;
 use super::docker_cli::{runtime_exec, runtime_exec_with_live_stderr};
-use super::{SlotLease, TaskOutcome};
+use super::traits::{SlotLease, TaskOutcome};
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
 

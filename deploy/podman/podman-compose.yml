@@ -6,12 +6,20 @@ services:
     env_file:
       - ../../.env
       - ./gateway-allowlist.env
+      # Written by compose-include (up.sh / start-with-tap.sh / down.sh). Do not set
+      # CLAW_POOL_WORK_ROOT_HOST in `environment:` with empty ${…} — it overrides env_file and breaks worker bind mounts.
+      - ./.claw-pool-workspace.env
     environment:
       CLAW_HTTP_ADDR: 0.0.0.0:8080
       CLAW_BIN: /usr/local/bin/claw
       CLAW_WORK_ROOT: /var/lib/claw/workspace
       CLAW_SOLVE_ISOLATION: ${CLAW_SOLVE_ISOLATION:-podman_pool}
-      CLAW_POOL_WORK_ROOT_HOST: ${CLAW_POOL_WORK_ROOT_HOST}
+      # Pool sizing / image: explicit defaults so a bare `podman compose` still gets worker settings when
+      # project-dir `.env` is missing (always prefer `./deploy/podman/up.sh --env-file repo/.env`).
+      CLAW_POOL_SIZE_CAP: ${CLAW_POOL_SIZE_CAP:-4}
+      CLAW_PODMAN_POOL_SIZE: ${CLAW_PODMAN_POOL_SIZE:-4}
+      CLAW_PODMAN_POOL_MIN_IDLE: ${CLAW_PODMAN_POOL_MIN_IDLE:-1}
+      CLAW_PODMAN_IMAGE: ${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}
       CLAW_CONFIG_FILE: /app/.claw.json
       CLAW_TIMEOUT_SECONDS: ${CLAW_TIMEOUT_SECONDS}
       CLAW_LOG_FORMAT: json

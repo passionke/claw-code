@@ -23,5 +23,15 @@ source "${SCRIPT_DIR}/compose-include.sh"
 claw_podman_export_pool_workspace "${SCRIPT_DIR}"
 claw_podman_load_compose_args "${SCRIPT_DIR}" "${ENV_FILE}"
 
-podman compose --env-file "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d
+# Host pool daemon must listen before the gateway connects on first solve. kejiqing
+set -a
+# shellcheck disable=SC1090
+source "${ENV_FILE}"
+set +a
+if [[ "${CLAW_SOLVE_ISOLATION:-podman_pool}" != "inprocess" ]] && [[ "${CLAW_POOL_HOST_DAEMON:-1}" == "1" ]]; then
+  "${SCRIPT_DIR}/pool-daemon-up.sh" "${SCRIPT_DIR}" "${REPO_ROOT}"
+fi
+
+# Recreate so env_file changes (e.g. .claw-pool-workspace.env) apply; plain `up -d` can leave stale env. kejiqing
+claw_compose --env-file "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
 echo "Services started."

@@ -12,6 +12,8 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
   source "${ROOT_DIR}/.env"
   set +a
 fi
+# shellcheck source=/dev/null
+source "${ROOT_DIR}/deploy/podman/compose-include.sh"
 
 IMAGE_TAG="${1:-local}"
 IMAGE_NAME="claw-gateway-rs:${IMAGE_TAG}"
@@ -36,15 +38,21 @@ if [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && [[ "${GITHUB_ACTIONS:-}" != "
   )
   echo "rustup: USTC mirror (CLAW_USE_CN_RUST_MIRROR=1)"
 else
-  echo "rustup: static.rust-lang.org (set CLAW_USE_CN_RUST_MIRROR=1 in .env for USTC on podman build)"
+  echo "rustup: static.rust-lang.org (set CLAW_USE_CN_RUST_MIRROR=1 in .env for USTC on container build)"
 fi
 
-podman build \
+CONTAINER_CLI="$(claw_container_runtime_cli)" || exit 1
+echo "container CLI: ${CONTAINER_CLI} (override with CLAW_CONTAINER_RUNTIME=podman|docker)"
+
+# Bash 3.2 + `set -u`: expanding an empty array with "${arr[@]}" errors; allow empty expansion here. kejiqing
+set +u
+"${CONTAINER_CLI}" build \
   --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
   --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
   "${RUSTUP_BUILD_ARGS[@]}" \
   -f "${ROOT_DIR}/deploy/podman/Containerfile.gateway-rs" \
   -t "${IMAGE_NAME}" \
   "${ROOT_DIR}"
+set -u
 
 echo "Built image: ${IMAGE_NAME}"

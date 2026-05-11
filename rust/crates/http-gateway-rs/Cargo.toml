@@ -5,11 +5,24 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+name = "http_gateway_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "http-gateway-rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "claw-pool-daemon"
+path = "src/bin/claw-pool-daemon.rs"
+
 [dependencies]
+async-trait = "0.1"
 axum = { version = "0.8", features = ["macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
-tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-appender = "0.2"

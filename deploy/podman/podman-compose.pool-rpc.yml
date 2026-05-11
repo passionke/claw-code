@@ -1,0 +1,9 @@
+# Overlay: gateway reaches host `claw-pool-daemon` via TCP (`CLAW_POOL_DAEMON_TCP`).
+# Linux Docker Engine 常无 host.docker.internal；host-gateway 把该名解析到宿主机。Podman 可保留默认 CLAW_POOL_DAEMON_TCP_HOST。
+# Author: kejiqing
+services:
+  gateway-rs:
+    env_file:
+      - ./.claw-pool-rpc/gateway.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

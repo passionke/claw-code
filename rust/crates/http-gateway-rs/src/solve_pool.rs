@@ -1,6 +1,6 @@
 //! Solve path via container pool (`docker exec claw gateway-solve-once`). Author: kejiqing
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,8 +9,26 @@ use gateway_solve_turn::GatewaySolveTaskFile;
 use tokio::fs;
 use tracing::{info, warn};
 
-use crate::pool::{parse_gateway_solve_exec_stdout, DockerPoolManager, SlotLease};
+use crate::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease};
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
+
+/// When the gateway uses [`PoolRpcClient`](crate::pool::PoolRpcClient) (TCP or Unix), session dirs
+/// live under the container `CLAW_WORK_ROOT` but the host daemon must bind-mount the host path. Author: kejiqing
+pub(crate) fn session_mount_for_pool_acquire(
+    session_home: &Path,
+    cfg: &crate::GatewayConfig,
+) -> PathBuf {
+    let Some(host_root) = cfg.pool_rpc_host_work_root.as_ref() else {
+        return session_home.to_path_buf();
+    };
+    let sh = session_home.to_string_lossy();
+    let wr = cfg.work_root.to_string_lossy();
+    if let Some(rest) = sh.strip_prefix(wr.as_ref()) {
+        let rel = rest.trim_start_matches('/');
+        return host_root.join(rel);
+    }
+    session_home.to_path_buf()
+}
 
 /// Fixed name inside the per-session bind mount (no `..`, not client-controlled).
 const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
@@ -18,7 +36,7 @@ const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
 /// If the async worker is aborted (e.g. `tokio::spawn` cancel), release the slot and drop the
 /// cancel map entry so the pool does not leak `Leased` rows and `force_kill` can still run.
 struct DockerLeaseCleanup {
-    pool: Arc<DockerPoolManager>,
+    pool: Arc<dyn PoolOps + Send + Sync>,
     lease: Option<SlotLease>,
     state: AppState,
     task_id: Option<String>,
@@ -37,7 +55,7 @@ impl Drop for DockerLeaseCleanup {
                 if let Some(ref t) = tid {
                     state.docker_slots.lock().await.remove(t);
                 }
-                if let Err(e) = DockerPoolManager::release_slot(&pool, lease).await {
+                if let Err(e) = pool.release_slot(lease).await {
                     warn!(
                         target: "claw_gateway_solve_pool",
                         component = "docker_solve",
@@ -62,7 +80,7 @@ pub async fn run_solve_request_docker(
     state: AppState,
     req: SolveRequest,
     ctx: RunSolveContext,
-    pool: Arc<DockerPoolManager>,
+    pool: Arc<dyn PoolOps + Send + Sync>,
     started: Instant,
     effective_allowed_tools: Vec<String>,
     session_home: PathBuf,
@@ -99,6 +117,8 @@ pub async fn run_solve_request_docker(
         )
     })?;
 
+    let session_for_pool = session_mount_for_pool_acquire(&session_home, &state.cfg);
+
     info!(
         target: "claw_gateway_solve_pool",
         component = "docker_solve",
@@ -108,13 +128,14 @@ pub async fn run_solve_request_docker(
         task_id = task_id.as_deref(),
         task_path = %task_path.display(),
         session_home = %session_home.display(),
+        pool_acquire_path = %session_for_pool.display(),
         task_bytes = task_bytes.len(),
         "pool solve: gateway-solve task JSON written under session dir"
     );
 
     let acquire_wait = Duration::from_secs(timeout_seconds.saturating_add(30));
     let lease = pool
-        .acquire_slot(acquire_wait, session_home.clone())
+        .acquire_slot(acquire_wait, session_for_pool.clone())
         .await
         .map_err(|e| {
             warn!(
@@ -223,7 +244,7 @@ pub async fn run_solve_request_docker(
         .ok()
         .map(|outcome| parse_gateway_solve_exec_stdout(&outcome.stdout, outcome.exit_code));
 
-    if let Err(e) = DockerPoolManager::release_slot(&pool, lease).await {
+    if let Err(e) = pool.release_slot(lease).await {
         warn!(
             target: "claw_gateway_solve_pool",
             component = "docker_solve",
@@ -281,4 +302,62 @@ fn tail_for_log(s: &str, max_bytes: usize) -> String {
     }
     let start = s.floor_char_boundary(s.len().saturating_sub(max_bytes));
     format!("…{}", &s[start..])
+}
+
+#[cfg(test)]
+mod session_path_tests {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    use super::session_mount_for_pool_acquire;
+
+    #[test]
+    fn strips_container_work_root_for_rpc_host() {
+        let cfg = crate::GatewayConfig {
+            solve_isolation: crate::SolveIsolation::PodmanPool,
+            claw_bin: "claw".into(),
+            work_root: PathBuf::from("/var/lib/claw/workspace"),
+            pool_rpc_host_work_root: Some(PathBuf::from("/host/claw/ws")),
+            pool_rpc_tcp: Some("host.containers.internal:9943".into()),
+            pool_rpc_unix_socket: None,
+            pool_rpc_remote: true,
+            ds_registry_path: Path::new("/dev/null").to_path_buf(),
+            default_timeout_seconds: 1,
+            default_max_iterations: 1,
+            default_http_mcp_name: None,
+            default_http_mcp_url: None,
+            default_http_mcp_transport: "http".into(),
+            config_mcp_servers: HashMap::default(),
+            allowed_tools: vec![],
+        };
+        let got = session_mount_for_pool_acquire(
+            Path::new("/var/lib/claw/workspace/ds_1/sessions/abc"),
+            &cfg,
+        );
+        assert_eq!(got, PathBuf::from("/host/claw/ws/ds_1/sessions/abc"));
+    }
+
+    #[test]
+    fn no_host_mapping_returns_session_unchanged() {
+        let cfg = crate::GatewayConfig {
+            solve_isolation: crate::SolveIsolation::PodmanPool,
+            claw_bin: "claw".into(),
+            work_root: PathBuf::from("/var/lib/claw/workspace"),
+            pool_rpc_host_work_root: None,
+            pool_rpc_tcp: None,
+            pool_rpc_unix_socket: None,
+            pool_rpc_remote: false,
+            ds_registry_path: Path::new("/dev/null").to_path_buf(),
+            default_timeout_seconds: 1,
+            default_max_iterations: 1,
+            default_http_mcp_name: None,
+            default_http_mcp_url: None,
+            default_http_mcp_transport: "http".into(),
+            config_mcp_servers: HashMap::default(),
+            allowed_tools: vec![],
+        };
+        let p = PathBuf::from("/tmp/sess");
+        let got = session_mount_for_pool_acquire(&p, &cfg);
+        assert_eq!(got, p);
+    }
 }

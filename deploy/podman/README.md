@@ -1,100 +1,144 @@
-# Podman Deployment (Gateway + Claude-Tap Proxy)
+# Podman：网关（http-gateway-rs）稳定部署说明
 
-中文快速上手请看：`docs/http-gateway-rs-quickstart.md`
+Author: kejiqing
 
-This deployment runs two processes:
-- `gateway-rs` in podman container
-- `claude-tap` on host as API proxy/trace viewer
+**稳定做法只有一条**：在仓库根目录准备好 `.env`，打好镜像，用 **`./deploy/podman/up.sh`** 起服务。不要用「手写一长串 compose / 只挂单个 compose 文件 / 在容器里配 macOS 的 `/Users/...` 路径」这类容易翻车的玩法。
 
-`claude-tap` is not an MCP server. It proxies model API traffic and records traces.
+**同一套脚本、本地与线上共用**：`build.sh` / `up.sh` / `down.sh` / tap / `bench-pool-30s.sh` 通过 **`CLAW_CONTAINER_RUNTIME`** 选 CLI——默认 **`auto`**（PATH 里**有 podman 先用 podman**，否则 **docker**）。线上常只有 docker，无需改 `.env`；本机有 podman 也会自动走 podman。只有两台都装了且必须指定时，才设 **`CLAW_CONTAINER_RUNTIME=podman`** 或 **`docker`**。
 
-## 1) Build gateway image
+更全的接口与本地调试见：`docs/http-gateway-rs-quickstart.md`（第二节已与本文对齐）。
+
+---
+
+## 1. 稳定路径（按顺序做）
+
+### 1.1 环境
+
+```bash
+cp .env.example .env
+```
+
+在 **仓库根目录** `.env` 里至少保证：
+
+| 变量 | 作用 |
+| --- | --- |
+| `CLAW_CONTAINER_RUNTIME` | `auto`（默认）或 `podman` / `docker`；与线上/本地无关，按需覆盖 |
+| `PODMAN_HOST_SOCK` | 仅 **`CLAW_POOL_HOST_DAEMON=0`** 的 legacy 路径需要（网关内 `podman` 连宿主 API） |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 模型 |
+| `GATEWAY_HOST_PORT` | 宿主机端口，默认 `8088` |
+| `CLAW_PODMAN_IMAGE` / `CLAW_DOCKER_IMAGE` | worker 镜像名（与 `CLAW_SOLVE_ISOLATION` 前缀一致） |
+
+可选：`CLAW_SOLVE_ISOLATION=inprocess` 关闭容器池（只有一个网关容器、无 `claw-gw-*` worker；适合只想快速试 HTTP）。
+
+### 1.2 镜像
 
 ```bash
 ./deploy/podman/build.sh
 ```
 
-- **Local default**: `CONTAINER_BASE_REGISTRY=docker.1ms.run` (set in repo-root `.env` or the environment; `build.sh` loads `.env` automatically). Same variable name as GitHub Actions for the image workflow.
-- **docker.io**: set `CLAW_USE_DOCKER_IO=1` (or run on GitHub Actions, where `GITHUB_ACTIONS=true` is set automatically).
-- **Rust (China, optional)**: copy `rust/.cargo/config.toml.example` → `rust/.cargo/config.toml` for a **USTC** sparse index on the host; skip if DNS fails for `*.ustclug.org`. For `podman build`, set **`CLAW_USE_CN_RUST_MIRROR=1`** in `.env` to use USTC **rustup** inside the builder (default is **static.rust-lang.org**). The **claw-code-image** workflow uses official rustup.
-
-Optional: build with a specific tag (for release deployment):
+容器池还需要 worker 镜像（在**仓库根**执行）：
 
 ```bash
-./deploy/podman/build.sh release-v1.0.8
-```
-
-### Worker image (container pool)
-
-When `CLAW_SOLVE_ISOLATION=docker_pool` / `podman_pool`, the gateway expects **`CLAW_DOCKER_IMAGE`** / **`CLAW_PODMAN_IMAGE`** to point at a long‑lived worker (default entrypoint: `scripts/claw-gateway-worker.sh` → `sleep infinity`; solve runs via `docker exec … claw gateway-solve-once`).
-
-Build from the **repository root**:
-
-```bash
-# Uses the same CONTAINER_BASE_REGISTRY / CLAW_USE_DOCKER_IO as build.sh if you export them or `set -a; source .env; set +a`
+set -a && [ -f .env ] && . ./.env && set +a
+. ./deploy/podman/compose-include.sh
 REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
-podman build \
+CLI="$(claw_container_runtime_cli)"
+"${CLI}" build \
   --build-arg "RUST_BASE_IMAGE=${REG}/library/rust:1.88-bookworm" \
   --build-arg "DEBIAN_BASE_IMAGE=${REG}/library/debian:bookworm-slim" \
   -f deploy/podman/Containerfile.gateway-worker \
   -t claw-gateway-worker:local .
 ```
 
-The gateway bind‑mounts **`CLAW_WORK_ROOT`** at **`/claw_host_root`** inside each worker; see `docs/http-gateway-container-pool.md` §6.1–6.3.
-
-### Local compose (default = `podman_pool`)
-
-1. Build **gateway** and **worker** images (`./deploy/podman/build.sh` and worker `podman build` from README above).
-2. Repo-root `.env` (see `.env.example`): **`PODMAN_HOST_SOCK`** is required unless you set **`CLAW_SOLVE_ISOLATION=inprocess`**. Defaults include pool size / worker image.
-3. `./deploy/podman/up.sh` or `start-with-tap.sh` sets `CLAW_POOL_WORK_ROOT_HOST` and merges `podman-compose.podman-api.yml` whenever mode is not `inprocess`.
-
-### Local Podman vs remote Docker (same gateway binary)
-
-| Where | `CLAW_SOLVE_ISOLATION` | Runtime CLI | Env prefix | Socket / access |
-| --- | --- | --- | --- | --- |
-| **This compose stack (dev laptop)** | `podman_pool` (default) | `podman` (in image) | `CLAW_PODMAN_*` | `PODMAN_HOST_SOCK` → `podman-compose.podman-api.yml` |
-| **Remote / server (Docker Engine)** | `docker_pool` | `docker` | `CLAW_DOCKER_*` | Mount `docker.sock` or set `DOCKER_HOST`; image must include **`docker` CLI** (this Podman-focused image installs `podman` only—use a small Docker-client layer or host-run gateway for `docker_pool`) |
-
-Worker image name differs only by env: `CLAW_PODMAN_IMAGE` vs `CLAW_DOCKER_IMAGE`. Pool sizing / caps (`CLAW_POOL_SIZE_CAP`, `POOL_SIZE`, `POOL_MIN_IDLE`, `POOL_CPUS`, `POOL_MEMORY`) use the same **per-runtime** prefix (`CLAW_PODMAN_…` / `CLAW_DOCKER_…`) as in `docs/http-gateway-container-pool.md`.
-
-## 2) Configure env (repo root only)
+### 1.3 启动与检查
 
 ```bash
-cp .env.example .env
+./deploy/podman/up.sh
 ```
 
-Edit **repository root** `.env`:
+`up.sh` 会：
 
-- `GATEWAY_IMAGE`, `GATEWAY_HOST_PORT`
-- `OPENAI_API_KEY`, `OPENAI_BASE_URL` (e.g. claude-tap: `http://host.containers.internal:8080/v1`)
-- `INTERNAL_CLAUDE_TAP_HOST` (for docs/scripts; gateway does not inject `OPENAI_BASE_URL` automatically)
-- `CLAW_HOST_LOG_DIR` (default `./deploy/podman/claw-logs` — create the directory if missing)
-- optional `CLAW_LOG_LEVEL`, `CLAW_TRACE_ENABLED`
-- for `start-with-tap.sh`: `UPSTREAM_OPENAI_BASE_URL`, `CLAUDE_TAP_PORT`, `CLAUDE_TAP_LIVE_PORT`
+- 生成 `deploy/podman/.claw-pool-workspace.env`（其中 **`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`**，与容器内工作目录一致；不要在容器场景下写 macOS `/Users/...`）。
+- 默认 **`CLAW_POOL_HOST_DAEMON=1`**：合并 **`podman-compose.pool-rpc.yml`**，宿主机起 `claw-pool-daemon`（TCP），网关只连 RPC。
+- **`CLAW_POOL_HOST_DAEMON=0`**：合并 **`podman-compose.podman-api.yml`**（宿主 Podman API socket 挂进网关）。
+- **`claw_compose`**：按 **`CLAW_CONTAINER_RUNTIME`** 调用 **`docker compose`** 或 **`podman compose`**（`podman` 时若装了 **`podman-compose`** 会用作后端，减轻 macOS 混用问题）。
+- 使用 **`up -d --force-recreate`**，避免只改 env 文件却沿用旧容器环境。
 
-Mount **repository root** `.claw.json` at `/app/.claw.json` (see `podman-compose.yml`). The gateway applies `.claw.json` `env` (when unset) and `model` (after `CLAW_DEFAULT_MODEL`) on each solve. `up.sh` / `start-with-tap.sh` **only create an empty `{}` if the file is missing** — they do not overwrite your local `.claw.json`.
+检查：
 
-`podman-compose.yml` also loads `deploy/podman/gateway-allowlist.env` after the root `.env` so `CLAW_ALLOWED_TOOLS` can override an empty `CLAW_ALLOWED_TOOLS=` in the root file (Compose `environment:` cannot fix that). Edit that file to test per-request `allowedTools` against a global allowlist.
+```bash
+curl -sS "http://127.0.0.1:${GATEWAY_HOST_PORT:-8088}/healthz"
+# 与当前 CLAW_CONTAINER_RUNTIME 一致（auto 时与 build/up 相同）：
+podman ps   # 或  docker ps
+```
 
-## 3) Start (gateway + claude-tap)
+`/healthz` 里应有 `"containerPool": true`（池模式）或 `false`（`inprocess`）。池化正常时，宿主机上还能看到 `claw-gw-*` worker。
+
+### 1.4 停止
+
+```bash
+./deploy/podman/down.sh
+```
+
+### 1.5 带 claude-tap 的一体脚本
 
 ```bash
 ./deploy/podman/start-with-tap.sh
-```
-
-## 4) Verify connectivity chain
-
-```bash
-./deploy/podman/check-connectivity.sh
-```
-
-This script validates:
-- gateway `/healthz`
-- async solve path
-- default MCP wiring (`CLAW_DEFAULT_HTTP_MCP_NAME`) inside gateway
-
-## 5) Stop
-
-```bash
 ./deploy/podman/stop-with-tap.sh
 ```
+
+`claude-tap` 在宿主机跑，只做 API 代理/抓包，不是 MCP。
+
+---
+
+## 2. 设计约定（知道这些就够排障）
+
+- **网关容器内**的池化路径必须是 Linux 里存在的路径；compose 把 `deploy/podman/claw-workspace` 挂到 **`/var/lib/claw/workspace`**，池绑定根目录与之一致。
+- **Podman API**：`podman-compose.podman-api.yml` 挂载的是 **socket 所在目录**（不是只挂单个 `.sock` 文件），避免 macOS 上 `statfs … operation not supported`。
+- **Compose 后端**：需要 `podman-compose` 时 `brew install podman-compose`；勿假定 `podman compose` 一定走 Docker 的 compose。
+
+远程 Docker / `docker_pool` 与 env 前缀对照仍见文末表格；细节设计见 `docs/http-gateway-container-pool.md`。
+
+---
+
+## 3. 常见问题（短）
+
+| 现象 | 处理 |
+| --- | --- |
+| `podman ps` 看不到网关 | 可能已退出：`podman ps -a \| grep claw-gateway-rs`，看 `podman logs claw-gateway-rs` |
+| 只有 `claw-gateway-rs` 没有 `claw-gw-*` | 是否打了 **worker 镜像**；网关镜像是否含 `podman`；`PODMAN_HOST_SOCK` 是否对。 **macOS**：网关跑在容器里时，挂载的 Podman API socket 往往在容器内 **无法 dial**（`connection refused` / `operation not supported`），worker 起不来——`/healthz` 仍可能 `containerPool: true`（表示配置了池）。要验证池是否真在工作：`podman exec claw-gateway-rs sh -lc 'podman --url "$CONTAINER_HOST" version'`。失败时请用 **`CLAW_SOLVE_ISOLATION=inprocess`**，或把网关跑在 **Linux 宿主机**（或能直连 Podman API 的环境） |
+| 启动报 canonicalize `/Users/...` | 容器内不能拿 macOS 路径当 `CLAW_POOL_WORK_ROOT_HOST`；用 **`./deploy/podman/up.sh`** 生成 env，或设 `inprocess` |
+| 改 `.env` 不生效 | 必须用 **`up.sh`**（带 `--force-recreate`），不要指望无重建的 `up` |
+
+联通性脚本：`./deploy/podman/check-connectivity.sh`。
+
+简易池压测（30s、每秒 3 次 `solve_async`，并采样 `claw-gw-*` 数量）：`./deploy/podman/bench-pool-30s.sh 'http://127.0.0.1:8088'`。
+
+---
+
+## 4. 构建说明摘录
+
+- 基础镜像仓库：默认 `CONTAINER_BASE_REGISTRY=docker.1ms.run`（`.env`）；`CLAW_USE_DOCKER_IO=1` 时用 `docker.io`。
+- 国内可选：`CLAW_USE_CN_RUST_MIRROR=1`，以及宿主 `rust/.cargo/config.toml.example` 拷贝（见 `.env.example` 注释）。
+
+---
+
+## 5. Local Podman vs remote Docker（对照）
+
+| 场景 | `CLAW_SOLVE_ISOLATION` | 运行时 CLI | 环境前缀 | 与网关的衔接 |
+| --- | --- | --- | --- | --- |
+| 本仓库 compose（默认） | `podman_pool` | `podman`（宿主机 `claw-pool-daemon`） | `CLAW_PODMAN_*` | `CLAW_POOL_HOST_DAEMON=1` → TCP RPC；默认 `CLAW_POOL_DAEMON_TCP_HOST=host.containers.internal` |
+| 线上 Docker（推荐与默认脚本对齐） | `docker_pool` | `docker`（宿主机或旁路容器里的 daemon） | `CLAW_DOCKER_*` | 同上，但 `.env` 改 `CLAW_POOL_DAEMON_TCP_HOST=host.docker.internal`（Linux 已用 `podman-compose.pool-rpc.yml` 的 `extra_hosts`）或填 compose 服务名 |
+| 网关内嵌池（备选） | `docker_pool` / `podman_pool` | `docker` / `podman` 在**网关容器**内 | 同上 | **不设** `CLAW_POOL_DAEMON_TCP`：走进程内 `DockerPoolManager`；需 sock 挂载 + 镜像带对应 CLI（当前 `Containerfile.gateway-rs` 仅装 `podman`） |
+
+**会话模型不变**：每次 solve 仍绑定 **一个 worker 容器 + `sessions/{uuid}/` 目录**，见 `docs/http-gateway-container-pool.md` §2。变的只是「谁执行 `docker run`」：宿主机 daemon（默认脚本）vs 网关进程。
+
+线上只有 Docker 时 **`CLAW_CONTAINER_RUNTIME` 可不写**（`auto` 会选 docker）；仍用同一套 `deploy/podman/podman-compose*.yml`（文件名历史原因）。
+
+Worker 镜像名：`CLAW_PODMAN_IMAGE` 与 `CLAW_DOCKER_IMAGE` 二选一；池大小等同名前缀变量，见 `docs/http-gateway-container-pool.md`。
+
+---
+
+## 6. `gateway-allowlist.env`
+
+`podman-compose.yml` 在根 `.env` 之后加载 `deploy/podman/gateway-allowlist.env`，用于覆盖例如全局 `CLAW_ALLOWED_TOOLS`（与仅根 `.env` 时空值行为配合）。一般不用动；要收紧工具白名单时改此文件。

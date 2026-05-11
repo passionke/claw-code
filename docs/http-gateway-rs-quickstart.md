@@ -50,42 +50,19 @@ cargo run -p http-gateway-rs
 
 ## 二、Podman 镜像运行（推荐）
 
-### 1) 准备环境文件
+**以 `deploy/podman/README.md` 为准**：根目录 `.env`、`./deploy/podman/build.sh`、worker 镜像、`./deploy/podman/up.sh` 一条链；不要自己拼 `podman compose` 参数。
+
+摘要：
 
 ```bash
-cp deploy/podman/.env.example deploy/podman/.env
-```
-
-至少改这两个：
-
-- `CLAUDE_TAP_IMAGE`
-- `CLAW_DEFAULT_HTTP_MCP_URL`（容器内地址，通常 `http://claude-tap:<port>/mcp`）
-
-### 2) 构建网关镜像
-
-```bash
+cp .env.example .env   # 编辑：PODMAN_HOST_SOCK、OPENAI_*、GATEWAY_HOST_PORT 等
 ./deploy/podman/build.sh
-```
-
-构建脚本会加载仓库根目录 `.env`；默认 `CONTAINER_BASE_REGISTRY=docker.1ms.run`（与 GitHub Actions 里同名变量一致，可在仓库 Variables 里配置）。需要 `docker.io` 时加 `CLAW_USE_DOCKER_IO=1`。在 GitHub Actions 的 `gateway-image-ci` 里会设 `GITHUB_ACTIONS=true` 从而用 `docker.io`。
-
-### 3) 启动
-
-```bash
+# 按 README 构建 claw-gateway-worker:local
 ./deploy/podman/up.sh
-```
-
-### 4) 联通性检查
-
-```bash
 ./deploy/podman/check-connectivity.sh
 ```
 
-### 5) 停止
-
-```bash
-./deploy/podman/down.sh
-```
+需要 claude-tap 时用 `./deploy/podman/start-with-tap.sh` / `stop-with-tap.sh`。停止 compose 栈：`./deploy/podman/down.sh`。
 
 ## 三、接口怎么调
 

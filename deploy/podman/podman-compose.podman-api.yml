@@ -1,8 +1,10 @@
 # Overlay: host Podman API for CLAW_SOLVE_ISOLATION=podman_pool (default). Omit via CLAW_SOLVE_ISOLATION=inprocess.
-# Author: kejiqing
+# Mount the socket's parent directory (not the socket path alone): on macOS, mounting the *.sock file
+# often fails with statfs "operation not supported"; the directory mount works. Author: kejiqing
+# Requires PODMAN_HOST_SOCK_DIR + PODMAN_HOST_SOCK_BASENAME (set by compose-include from PODMAN_HOST_SOCK).
 services:
   gateway-rs:
     volumes:
-      - "${PODMAN_HOST_SOCK}:/run/claw-podman/podman.sock:ro"
+      - "${PODMAN_HOST_SOCK_DIR}:/run/claw-podman-host:ro"
     environment:
-      CONTAINER_HOST: unix:///run/claw-podman/podman.sock
+      CONTAINER_HOST: unix:///run/claw-podman-host/${PODMAN_HOST_SOCK_BASENAME}
