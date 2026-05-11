@@ -13,8 +13,12 @@ fi
 IMG="${GATEWAY_IMAGE:?set GATEWAY_IMAGE in .env (e.g. ghcr.io/<owner>/claw-code:release-x.y.z)}"
 OUT="${1:-/usr/local/bin/claw-pool-daemon}"
 CLI="$(claw_container_runtime_cli)"
-echo "pull ${IMG} (if needed) …" >&2
-"${CLI}" pull "${IMG}"
+if [[ "${CLAW_POOL_DAEMON_INSTALL_SKIP_PULL:-0}" != "1" ]]; then
+  echo "pull ${IMG} (if needed) …" >&2
+  "${CLI}" pull "${IMG}"
+else
+  echo "skip pull (CLAW_POOL_DAEMON_INSTALL_SKIP_PULL=1); using local ${IMG}" >&2
+fi
 TMP="$(mktemp)"
 trap 'rm -f "${TMP}"' EXIT
 "${CLI}" run --rm --entrypoint cat "${IMG}" /usr/local/bin/claw-pool-daemon >"${TMP}"

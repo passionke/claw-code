@@ -1,0 +1,13 @@
+# Production-style bundle: gateway + host pool RPC overlay (same merge as compose-include.sh
+# when CLAW_POOL_HOST_DAEMON=1 and not inprocess). Author: kejiqing
+#
+# Prefer one-click: ./deploy/server-252/deploy-one-click.sh release-x.y.z
+# Manual (after generated files exist — run deploy-one-click once, or ./deploy/podman/up.sh):
+#   docker compose -f deploy/server-252/composer.yaml --env-file .env up -d --force-recreate
+name: claw-code
+
+include:
+  - path: ../podman/podman-compose.yml
+  - path: ../podman/podman-compose.pool-rpc.yml
+# claude-tap (docker) is merged by compose-include when CLAUDE_TAP_MODE!=host — use
+# ./deploy/podman/start-with-tap.sh or ./deploy/podman/up.sh so mode is respected.

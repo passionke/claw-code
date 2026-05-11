@@ -1,0 +1,34 @@
+# passionke fork: default Cmd + --tap-target ${UPSTREAM_OPENAI_BASE_URL} from repo-root .env.
+# Port linkage: CLAUDE_TAP_HOST_PORT / CLAUDE_TAP_LIVE_PORT (published) must match
+# OPENAI_BASE_URL / INTERNAL_CLAUDE_TAP_HOST (deploy-one-click keeps them in sync).
+# Author: kejiqing
+services:
+  claude-tap:
+    # GHCR image is amd64-only in manifest today; Apple Silicon / arm64 Linux need explicit platform.
+    platform: ${CLAUDE_TAP_PLATFORM:-linux/amd64}
+    image: ${CLAUDE_TAP_IMAGE:-ghcr.io/passionke/claude-tap:latest}
+    container_name: claw-claude-tap
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    ports:
+      - "${CLAUDE_TAP_HOST_PORT:-8080}:8080"
+      - "${CLAUDE_TAP_LIVE_PORT:-3000}:3000"
+    volumes:
+      - ./claude-tap-data:/data/traces
+    command:
+      - claude-tap
+      - --tap-no-launch
+      - --tap-host
+      - "0.0.0.0"
+      - --tap-port
+      - "8080"
+      - --tap-live
+      - --tap-live-port
+      - "3000"
+      - --tap-output-dir
+      - /data/traces
+      - --tap-no-update-check
+      - --tap-no-auto-update
+      - --tap-target
+      - "${UPSTREAM_OPENAI_BASE_URL}"

@@ -91,7 +91,9 @@ podman ps   # 或  docker ps
 ./deploy/podman/stop-with-tap.sh
 ```
 
-`claude-tap` 在宿主机跑，只做 API 代理/抓包，不是 MCP。
+`claude-tap` 默认用 compose 跑容器（`CLAUDE_TAP_MODE=docker`）。若在 **claw-code 同级目录** 有本机 `claude-tap` 工程，可在根 `.env` 里设 **`CLAUDE_TAP_BUILD_CONTEXT`**（相对 `deploy/podman` 可写 `../../claude-tap`）+ **`CLAUDE_TAP_IMAGE=claude-tap:local`**，compose 会 **本地 build** 该目录的 `Dockerfile` / **`CLAUDE_TAP_DOCKERFILE`**，不再拉 GHCR。`./deploy/podman/local-one-click.sh` 在检测到同级 `../claude-tap` 时会自动写入上述变量（可用 **`LOCAL_ONE_CLICK_USE_GHCR_TAP=1`** 强制仍用镜像仓库）。
+
+`claude-tap` 只做 API 代理/抓包，不是 MCP；**`CLAUDE_TAP_MODE=host`** 时才是宿主机进程，否则为容器。
 
 ---
 

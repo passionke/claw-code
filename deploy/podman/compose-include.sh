@@ -4,6 +4,7 @@
 claw_podman_export_pool_workspace() {
   local script_dir="$1"
   mkdir -p "${script_dir}/claw-workspace"
+  mkdir -p "${script_dir}/claude-tap-data"
   # Host directory for the compose bind mount (Mac/Linux laptop path). Not the same as CLAW_POOL_WORK_ROOT_HOST
   # inside the gateway container — see .claw-pool-workspace.env below. Author: kejiqing
   export CLAW_POOL_WORK_ROOT_BIND_SRC="$(cd "${script_dir}" && pwd)/claw-workspace"
@@ -27,6 +28,26 @@ claw_podman_load_compose_args() {
   # shellcheck disable=SC1090
   source "${env_file}"
   set +a
+  # Default: claude-tap runs as ${CLAUDE_TAP_IMAGE} (forked GHCR). Use CLAUDE_TAP_MODE=host for pip/uv CLI.
+  # Optional: CLAUDE_TAP_BUILD_CONTEXT= sibling repo (absolute or relative to deploy/podman/) → merge
+  # podman-compose.claude-tap.build.yml so compose builds the image instead of pulling GHCR.
+  if [[ "${CLAUDE_TAP_MODE:-docker}" != "host" ]]; then
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.claude-tap.yml" )
+    if [[ -n "${CLAUDE_TAP_BUILD_CONTEXT:-}" ]]; then
+      local tap_ctx="${CLAUDE_TAP_BUILD_CONTEXT}"
+      if [[ "${tap_ctx}" != /* ]]; then
+        tap_ctx="$(cd "${script_dir}" && cd "${tap_ctx}" && pwd)" || {
+          echo "error: CLAUDE_TAP_BUILD_CONTEXT not usable from ${script_dir}: ${CLAUDE_TAP_BUILD_CONTEXT}" >&2
+          return 1
+        }
+      elif [[ ! -d "${tap_ctx}" ]]; then
+        echo "error: CLAUDE_TAP_BUILD_CONTEXT is not a directory: ${tap_ctx}" >&2
+        return 1
+      fi
+      export CLAUDE_TAP_BUILD_CONTEXT="${tap_ctx}"
+      CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.claude-tap.build.yml" )
+    fi
+  fi
   # Default CLAW_SOLVE_ISOLATION is podman_pool (see podman-compose + Rust); inprocess skips pool overlays.
   if [[ "${CLAW_SOLVE_ISOLATION:-podman_pool}" == "inprocess" ]]; then
     return 0
@@ -108,7 +129,15 @@ claw_compose() {
   local rt
   rt="$(claw_container_runtime_cli)" || return 1
   if [[ "$rt" == docker ]]; then
-    docker compose "$@"
+    # Some hosts ship `docker-compose` (v2) without the `docker compose` CLI plugin. Author: kejiqing
+    if docker compose version >/dev/null 2>&1; then
+      docker compose "$@"
+    elif command -v docker-compose >/dev/null 2>&1; then
+      docker-compose "$@"
+    else
+      echo "error: need Docker Compose v2 ('docker compose' or docker-compose in PATH)" >&2
+      return 1
+    fi
     return
   fi
   if [[ -z "${PODMAN_COMPOSE_PROVIDER:-}" ]] && command -v podman-compose >/dev/null 2>&1; then

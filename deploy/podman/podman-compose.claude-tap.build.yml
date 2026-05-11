@@ -1,0 +1,9 @@
+# Merge after podman-compose.claude-tap.yml when CLAUDE_TAP_BUILD_CONTEXT is set (sibling clone).
+# Requires Dockerfile or set CLAUDE_TAP_DOCKERFILE=Containerfile. Resulting image tag: CLAUDE_TAP_IMAGE.
+# Author: kejiqing
+services:
+  claude-tap:
+    build:
+      context: "${CLAUDE_TAP_BUILD_CONTEXT}"
+      dockerfile: "${CLAUDE_TAP_DOCKERFILE:-Dockerfile}"
+    image: "${CLAUDE_TAP_IMAGE:-claude-tap:local}"
