@@ -1,20 +1,11 @@
 # Build gateway + worker images (same as deploy/podman/build.sh). Author: kejiqing
-# GHCR publish (buildx, same Containerfiles): claw-code-image workflow on tag release-* or manual verify.
+# Push 仅 tag `release-*`（如 release-v1.0.17）；GHCR 发布见 claw-code-image。PR / workflow_dispatch 可验证构建。
 name: Gateway container images
 
 on:
   push:
-    branches:
-      - main
-      - 'gaebal/**'
-      - 'omx-issue-*'
-    paths:
-      - .github/workflows/gateway-image-ci.yml
-      - deploy/podman/**
-      - rust/crates/http-gateway-rs/**
-      - rust/crates/rusty-claude-cli/**
-      - rust/crates/gateway-solve-turn/**
-      - scripts/claw-gateway-worker.sh
+    tags:
+      - "release-*"
   pull_request:
     branches:
       - main

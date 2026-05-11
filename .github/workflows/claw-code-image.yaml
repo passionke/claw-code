@@ -3,7 +3,7 @@
 # Chain:
 # - Push tag refs/tags/release-* → build + push to ghcr.io (claw-code + claw-gateway-worker).
 # - workflow_dispatch on any branch → same Dockerfiles/build-args, build only (no push); use this to verify packaging.
-# - PR/main path-filter builds: see gateway-image-ci.yml (podman build.sh).
+# - Podman parity build (build.sh): gateway-image-ci on tag release-* or PR / manual (not on main push).
 #
 # Optional repo/org Actions variable CONTAINER_BASE_REGISTRY (hostname only, no path):
 # - unset → docker.io (recommended on github-hosted runners; mirrors may serve incomplete blobs).
