@@ -88,6 +88,8 @@ ALLOW = (
     "CLAW_OPENAI_FALLBACK_MODEL",
     "CLAW_PREFER_OPENAI_PREFIX",
     "CLAW_DISABLE_ANTHROPIC_ROUTING",
+    # Pool workers run `claw` + MCP; must match runtime `CLAW_MCP_TOOL_CALL_TIMEOUT_MS` (see mcp_client.rs).
+    "CLAW_MCP_TOOL_CALL_TIMEOUT_MS",
 )
 
 
