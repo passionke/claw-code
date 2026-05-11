@@ -8,6 +8,21 @@ if [[ ! -d "${repo_root}/rust" ]]; then
   exit 0
 fi
 
+# Read pushed refs from stdin (`<local-ref> <local-sha> <remote-ref> <remote-sha>` per line).
+# If this push only updates tags, skip Rust checks entirely.
+only_tags=1
+while IFS=' ' read -r _local_ref _local_sha remote_ref _remote_sha; do
+  [[ -z "${remote_ref}" ]] && continue
+  if [[ "${remote_ref}" != refs/tags/* ]]; then
+    only_tags=0
+    break
+  fi
+done
+if [[ "${only_tags}" -eq 1 ]]; then
+  echo "[pre-push] skip: tag-only push"
+  exit 0
+fi
+
 base_ref=""
 if upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "@{upstream}" 2>/dev/null)"; then
   base_ref="${upstream}"
