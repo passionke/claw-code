@@ -2845,15 +2845,10 @@ fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, P
     roots
 }
 
-/// Prefer `SKILL.md`; accept legacy `SKILL.MD` (matches `http-gateway-rs` + tools crate). kejiqing
 fn skill_instruction_markdown_path(skill_dir: &Path) -> Option<PathBuf> {
-    let lower = skill_dir.join("SKILL.md");
-    if lower.is_file() {
-        return Some(lower);
-    }
-    let legacy = skill_dir.join("SKILL.MD");
-    if legacy.is_file() {
-        return Some(legacy);
+    let p = skill_dir.join("SKILL.md");
+    if p.is_file() {
+        return Some(p);
     }
     None
 }

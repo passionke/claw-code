@@ -3515,15 +3515,10 @@ fn resolve_skill_path_in_root(
     }
 }
 
-/// Prefer `SKILL.md`; accept legacy `SKILL.MD` (gateway previously wrote uppercase on Linux). kejiqing
 fn skill_instruction_markdown_path(skill_dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let lower = skill_dir.join("SKILL.md");
-    if lower.is_file() {
-        return Some(lower);
-    }
-    let legacy = skill_dir.join("SKILL.MD");
-    if legacy.is_file() {
-        return Some(legacy);
+    let p = skill_dir.join("SKILL.md");
+    if p.is_file() {
+        return Some(p);
     }
     None
 }

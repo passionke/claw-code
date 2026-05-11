@@ -109,7 +109,7 @@ Base URL 示例：`http://127.0.0.1:18088`
     - `skillName`：必填，仅允许 `[a-zA-Z0-9._-]`
     - `skillContent`：必填，写入 Skill 正文
   - 落盘路径：
-    - `ds_<dsId>/home/skills/<skillName>/SKILL.md`（与 `Skill` 工具 / CLI 一致；历史 `SKILL.MD` 仍可被工具解析）
+    - `ds_<dsId>/home/skills/<skillName>/SKILL.md`（与 `Skill` 工具 / CLI 一致）
   - 返回字段：
     - `dsId`、`skillName`、`skillPath`、`created`、`updated`、`bytesWritten`、`workDir`
     - `gitSync.repo`、`gitSync.branch`、`gitSync.commitId`、`gitSync.pushed`
