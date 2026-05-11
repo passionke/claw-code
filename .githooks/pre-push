@@ -8,6 +8,29 @@ if [[ ! -d "${repo_root}/rust" ]]; then
   exit 0
 fi
 
+base_ref=""
+if upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "@{upstream}" 2>/dev/null)"; then
+  base_ref="${upstream}"
+elif git rev-parse --verify origin/main >/dev/null 2>&1; then
+  base_ref="origin/main"
+fi
+
+if [[ -n "${base_ref}" ]]; then
+  rust_changed=0
+  while IFS= read -r path; do
+    if [[ "${path}" == rust/* ]]; then
+      rust_changed=1
+      break
+    fi
+  done < <(git diff --name-only --diff-filter=ACMR "${base_ref}...HEAD")
+  if [[ "${rust_changed}" -eq 0 ]]; then
+    echo "[pre-push] skip: no rust/** changes in ${base_ref}...HEAD"
+    exit 0
+  fi
+else
+  echo "[pre-push] warn: no upstream/base ref found, running rust checks"
+fi
+
 echo "[pre-push] running cargo fmt --all --check"
 (
   cd "${repo_root}/rust"
