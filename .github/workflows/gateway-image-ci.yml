@@ -1,11 +1,9 @@
 # Build gateway + worker images (same as deploy/podman/build.sh). Author: kejiqing
-# Packaging is tag-only: run only on `release-v*.*.*` tags.
+# Manual parity check workflow only (release tags use claw-code-image publish workflow).
 name: Gateway container images
 
 on:
-  push:
-    tags:
-      - "release-v*.*.*"
+  workflow_dispatch:
 
 concurrency:
   group: gateway-image-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
