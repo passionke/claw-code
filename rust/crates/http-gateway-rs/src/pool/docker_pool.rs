@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::config::DockerPoolConfig;
 use super::docker_cli::{runtime_exec, runtime_exec_with_live_stderr};
-use super::traits::{SlotLease, TaskOutcome};
+use super::traits::{PoolSessionHostMounts, SlotLease, TaskOutcome};
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
 
@@ -32,7 +32,8 @@ struct Slot {
 ///
 /// Each **lease** rebinds the worker with `docker run -v <session_dir>:GUEST_WORK_ROOT` so the
 /// container only sees one solve session directory (no sibling sessions / other `ds_*`).
-/// Idle warm slots use [`DockerPoolManager::warm_slot_dir`] under `work_root`.
+/// Optional extra binds: `ds_*/home/skills` → `.../home/skills:ro`, `ds_*/CLAUDE.md` → `.../CLAUDE.md:ro` (no per-session copy).
+/// Idle warm slots use [`DockerPoolManager::warm_slot_dir`] under `work_root` (empty until lease).
 /// Author: kejiqing
 pub struct DockerPoolManager {
     name_stem: String,
@@ -207,7 +208,9 @@ impl DockerPoolManager {
             let name = self.container_name(i);
             let warm = self.warm_slot_dir(i);
             let _ = tokio::fs::create_dir_all(&warm).await;
-            self.run_worker_container(&name, &warm).await?;
+            let empty_mounts = PoolSessionHostMounts::default();
+            self.run_worker_container(&name, &warm, &empty_mounts)
+                .await?;
             slots = self.slots.lock().await;
             slots[i] = Slot {
                 container_name: name,
@@ -222,7 +225,9 @@ impl DockerPoolManager {
             drop(slots);
             let warm = self.warm_slot_dir(idx);
             let _ = tokio::fs::create_dir_all(&warm).await;
-            self.run_worker_container(&name, &warm).await?;
+            let empty_mounts = PoolSessionHostMounts::default();
+            self.run_worker_container(&name, &warm, &empty_mounts)
+                .await?;
             slots = self.slots.lock().await;
             slots.push(Slot {
                 container_name: name,
@@ -246,9 +251,41 @@ impl DockerPoolManager {
         Ok(())
     }
 
-    async fn run_worker_container(&self, name: &str, host_bind: &Path) -> Result<(), String> {
-        let host_abs = std::fs::canonicalize(host_bind)
-            .map_err(|e| format!("canonicalize pool bind mount {}: {e}", host_bind.display()))?;
+    async fn run_worker_container(
+        &self,
+        name: &str,
+        session_host_bind: &Path,
+        host_mounts: &PoolSessionHostMounts,
+    ) -> Result<(), String> {
+        let session_abs = std::fs::canonicalize(session_host_bind).map_err(|e| {
+            format!(
+                "canonicalize pool bind mount {}: {e}",
+                session_host_bind.display()
+            )
+        })?;
+        let skills_abs =
+            if let Some(p) = host_mounts.skills_dir.as_ref() {
+                if std::fs::metadata(p).is_ok_and(|m| m.is_dir()) {
+                    Some(std::fs::canonicalize(p).map_err(|e| {
+                        format!("canonicalize skills bind mount {}: {e}", p.display())
+                    })?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+        let claude_abs = if let Some(p) = host_mounts.claude_md_file.as_ref() {
+            if std::fs::metadata(p).is_ok_and(|m| m.is_file()) {
+                Some(std::fs::canonicalize(p).map_err(|e| {
+                    format!("canonicalize CLAUDE.md bind mount {}: {e}", p.display())
+                })?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let mut args: Vec<String> = vec![
             "run".into(),
             "-d".into(),
@@ -260,7 +297,19 @@ impl DockerPoolManager {
         args.extend(self.network_args.iter().cloned());
         args.extend(self.extra_run_args.iter().cloned());
         args.push("-v".into());
-        args.push(format!("{}:{}:rw", host_abs.display(), GUEST_WORK_ROOT));
+        args.push(format!("{}:{}:rw", session_abs.display(), GUEST_WORK_ROOT));
+        if let Some(ref sk) = skills_abs {
+            args.push("-v".into());
+            args.push(format!(
+                "{}:{}/home/skills:ro",
+                sk.display(),
+                GUEST_WORK_ROOT
+            ));
+        }
+        if let Some(ref cl) = claude_abs {
+            args.push("-v".into());
+            args.push(format!("{}:{}/CLAUDE.md:ro", cl.display(), GUEST_WORK_ROOT));
+        }
         args.push(self.image.clone());
         args.push("sleep".into());
         args.push("infinity".into());
@@ -274,7 +323,7 @@ impl DockerPoolManager {
                 component = "docker_pool",
                 phase = "worker_run_failed",
                 container = %name,
-                bind_mount = %host_abs.display(),
+                bind_mount = %session_abs.display(),
                 code = ?out.status.code(),
                 stderr = %String::from_utf8_lossy(&out.stderr).chars().take(2000).collect::<String>(),
                 "{} run worker failed",
@@ -291,7 +340,9 @@ impl DockerPoolManager {
             component = "docker_pool",
             phase = "worker_run_ok",
             container = %name,
-            bind_mount = %host_abs.display(),
+            bind_mount = %session_abs.display(),
+            skills_bind = %skills_abs.as_ref().map_or_else(|| "-".into(), |p| p.display().to_string()),
+            claude_bind = %claude_abs.as_ref().map_or_else(|| "-".into(), |p| p.display().to_string()),
             image = %self.image,
             "{} run worker ok",
             self.bin
@@ -307,10 +358,12 @@ impl DockerPoolManager {
     /// `session_host_mount` must be an existing directory on the host (typically
     /// `…/ds_{id}/sessions/{uuid}/`); it is canonicalized and bound to [`GUEST_WORK_ROOT`] for this
     /// lease (replacing any warm-slot bind).
+    #[allow(clippy::too_many_lines)]
     pub async fn acquire_slot(
         self: &Arc<Self>,
         wait: Duration,
         session_host_mount: PathBuf,
+        host_mounts: PoolSessionHostMounts,
     ) -> Result<SlotLease, String> {
         let session_abs = std::fs::canonicalize(&session_host_mount).map_err(|e| {
             format!(
@@ -318,7 +371,8 @@ impl DockerPoolManager {
                 session_host_mount.display()
             )
         })?;
-        timeout(wait, async {
+        let host_mounts = host_mounts.clone();
+        timeout(wait, async move {
             loop {
                 let mut slots = self.slots.lock().await;
                 if let Some((i, _)) = slots
@@ -331,7 +385,10 @@ impl DockerPoolManager {
                     slots[i].state = SlotState::Leased;
                     drop(slots);
                     let _ = self.rm_container(&cname).await;
-                    if let Err(e) = self.run_worker_container(&cname, &session_abs).await {
+                    if let Err(e) = self
+                        .run_worker_container(&cname, &session_abs, &host_mounts)
+                        .await
+                    {
                         warn!(
                             target: "claw_gateway_pool",
                             component = "docker_pool",
@@ -369,7 +426,10 @@ impl DockerPoolManager {
                         state: SlotState::Leased,
                     });
                     drop(slots);
-                    match self.run_worker_container(&name, &session_abs).await {
+                    match self
+                        .run_worker_container(&name, &session_abs, &host_mounts)
+                        .await
+                    {
                         Ok(()) => {
                             info!(
                                 target: "claw_gateway_pool",
@@ -634,6 +694,7 @@ mod docker_pool_integration_tests {
 
     use super::DockerPoolManager;
     use crate::pool::config::DockerPoolConfig;
+    use crate::pool::traits::PoolSessionHostMounts;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -720,7 +781,11 @@ esac
         .unwrap();
         let bind = session_bind(&work);
         let lease = pool
-            .acquire_slot(Duration::from_secs(5), bind)
+            .acquire_slot(
+                Duration::from_secs(5),
+                bind,
+                PoolSessionHostMounts::default(),
+            )
             .await
             .unwrap();
         let out = pool
@@ -761,7 +826,11 @@ esac
         .unwrap();
         let bind = session_bind(&work);
         let lease = pool
-            .acquire_slot(Duration::from_secs(5), bind)
+            .acquire_slot(
+                Duration::from_secs(5),
+                bind,
+                PoolSessionHostMounts::default(),
+            )
             .await
             .unwrap();
         let idx = lease.slot_index;
@@ -804,8 +873,8 @@ esac
         let b1 = session_bind(&work);
         let b2 = session_bind(&work);
         let (a, b) = tokio::join!(
-            p1.acquire_slot(Duration::from_secs(5), b1),
-            p2.acquire_slot(Duration::from_secs(5), b2),
+            p1.acquire_slot(Duration::from_secs(5), b1, PoolSessionHostMounts::default()),
+            p2.acquire_slot(Duration::from_secs(5), b2, PoolSessionHostMounts::default()),
         );
         let a = a.unwrap();
         let b = b.unwrap();
@@ -835,7 +904,11 @@ esac
         .unwrap();
         let bind = session_bind(&work);
         let lease = pool
-            .acquire_slot(Duration::from_secs(5), bind)
+            .acquire_slot(
+                Duration::from_secs(5),
+                bind,
+                PoolSessionHostMounts::default(),
+            )
             .await
             .unwrap();
         DockerPoolManager::release_slot(&pool, lease.clone())
@@ -866,7 +939,11 @@ esac
         .unwrap();
         let bind = session_bind(&work);
         let lease = pool
-            .acquire_slot(Duration::from_secs(5), bind)
+            .acquire_slot(
+                Duration::from_secs(5),
+                bind,
+                PoolSessionHostMounts::default(),
+            )
             .await
             .unwrap();
         DockerPoolManager::release_slot(&pool, lease.clone())
@@ -894,7 +971,11 @@ esac
         .unwrap();
         let bind = session_bind(&work);
         let lease = pool
-            .acquire_slot(Duration::from_secs(5), bind)
+            .acquire_slot(
+                Duration::from_secs(5),
+                bind,
+                PoolSessionHostMounts::default(),
+            )
             .await
             .unwrap();
         pool.exec_solve(&lease, "gateway-solve-task.json", "claw", None)
@@ -932,7 +1013,11 @@ esac
         .unwrap();
         let bind = session_bind(&work);
         let lease = pool
-            .acquire_slot(Duration::from_secs(5), bind)
+            .acquire_slot(
+                Duration::from_secs(5),
+                bind,
+                PoolSessionHostMounts::default(),
+            )
             .await
             .unwrap();
         pool.exec_solve(&lease, "gateway-solve-task.json", "claw", None)

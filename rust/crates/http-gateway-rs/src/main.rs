@@ -33,7 +33,7 @@ use tokio::fs;
 use tokio::process::Command;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::task::AbortHandle;
-use tokio::time::timeout;
+use tokio::time::{interval, timeout, MissedTickBehavior};
 use tower_http::trace::TraceLayer;
 use tracing::field::Empty;
 use tracing::{info, warn};
@@ -74,6 +74,8 @@ struct AppState {
     /// When using `docker_pool` / `podman_pool`, active async task id → pool + slot for cancel.
     docker_slots: Arc<Mutex<HashMap<String, (Arc<dyn pool::PoolOps + Send + Sync>, usize)>>>,
     docker_pool: Option<Arc<dyn pool::PoolOps + Send + Sync>>,
+    /// Serialize git and working-tree reads/writes on the shared `.claw-code-projects` clone. kejiqing
+    projects_git_mirror_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +129,15 @@ struct GatewayConfig {
     default_http_mcp_transport: String,
     config_mcp_servers: HashMap<String, Value>,
     allowed_tools: Vec<String>,
+    /// Remote URL for `claw-code-projects` mirror (SSH or HTTPS; no embedded token).
+    projects_git_url: String,
+    projects_git_branch: String,
+    /// Passed to `git commit --author`.
+    projects_git_author: String,
+    /// When set with an `https://` `projects_git_url`, used for clone/pull/push (GitHub: `x-access-token`).
+    projects_git_token: Option<String>,
+    /// When set, periodically `git pull` the mirror and refresh each `ds_*/home` when that ds lock is idle (multi-node). kejiqing
+    projects_git_ds_home_poll_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -154,6 +165,9 @@ struct SolveResponse {
     // Backward-compat field; keep in sync with sessionId.
     #[serde(rename = "requestId")]
     request_id: String,
+    /// Relative to `CLAW_WORK_ROOT` (matches DB `gateway_sessions.session_home`). kejiqing
+    #[serde(rename = "sessionHomeRel")]
+    session_home_rel: String,
     #[serde(rename = "dsId")]
     ds_id: i64,
     #[serde(rename = "workDir")]
@@ -193,6 +207,14 @@ struct UpdateProjectClaudeRequest {
     content: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct UpsertProjectSkillRequest {
+    #[serde(rename = "skillName")]
+    skill_name: String,
+    #[serde(rename = "skillContent")]
+    skill_content: String,
+}
+
 #[derive(Debug, Serialize)]
 struct InitResponse {
     #[serde(rename = "dsId")]
@@ -211,6 +233,33 @@ struct ProjectClaudeResponse {
     path: String,
     exists: bool,
     content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GitSyncResponse {
+    repo: String,
+    branch: String,
+    #[serde(rename = "commitId")]
+    commit_id: String,
+    pushed: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectSkillResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "skillName")]
+    skill_name: String,
+    #[serde(rename = "skillPath")]
+    skill_path: String,
+    created: bool,
+    updated: bool,
+    #[serde(rename = "bytesWritten")]
+    bytes_written: usize,
+    #[serde(rename = "workDir")]
+    work_dir: String,
+    #[serde(rename = "gitSync")]
+    git_sync: GitSyncResponse,
 }
 
 #[derive(Debug, Serialize)]
@@ -327,6 +376,10 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    fn detail(&self) -> &str {
+        &self.message
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -434,6 +487,38 @@ fn pool_host_bind_root(work_root: &Path, isolation: SolveIsolation) -> PathBuf {
     }
 }
 
+fn mandatory_nonempty_env(var: &'static str) -> String {
+    if let Ok(value) = std::env::var(var) {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            eprintln!(
+                "http-gateway-rs: {var} is set but empty; set a non-empty value (e.g. in deploy .env)."
+            );
+            std::process::exit(1);
+        }
+        trimmed.to_string()
+    } else {
+        eprintln!(
+            "http-gateway-rs: {var} is required for project Git sync; set it in the environment (see repo root .env.example)."
+        );
+        std::process::exit(1);
+    }
+}
+
+fn validate_projects_git_at_startup(url: &str, token: Option<&str>) {
+    if url.starts_with("https://") {
+        let rest = url.trim_start_matches("https://");
+        let has_userinfo = rest.contains('@');
+        let has_token = token.is_some_and(|t| !t.trim().is_empty());
+        if !has_userinfo && !has_token {
+            eprintln!(
+                "http-gateway-rs: CLAW_PROJECTS_GIT_URL is HTTPS without embedded credentials (no userinfo before host) and CLAW_PROJECTS_GIT_TOKEN is unset or empty; set CLAW_PROJECTS_GIT_TOKEN or use an SSH URL."
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let solve_isolation = SolveIsolation::from_env();
@@ -526,6 +611,15 @@ async fn main() {
         SolveIsolation::InProcess => None,
     };
 
+    let projects_git_url = mandatory_nonempty_env("CLAW_PROJECTS_GIT_URL");
+    let projects_git_branch = mandatory_nonempty_env("CLAW_PROJECTS_GIT_BRANCH");
+    let projects_git_author = mandatory_nonempty_env("CLAW_PROJECTS_GIT_AUTHOR");
+    let projects_git_token = std::env::var("CLAW_PROJECTS_GIT_TOKEN")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    validate_projects_git_at_startup(&projects_git_url, projects_git_token.as_deref());
+
     let cfg = GatewayConfig {
         solve_isolation,
         claw_bin: std::env::var("CLAW_BIN").unwrap_or_else(|_| "claw".to_string()),
@@ -561,6 +655,16 @@ async fn main() {
             .unwrap_or_else(|| "http".to_string()),
         config_mcp_servers: load_mcp_servers_from_claw_config(),
         allowed_tools: parse_allowed_tools(std::env::var("CLAW_ALLOWED_TOOLS").ok()),
+        projects_git_url,
+        projects_git_branch,
+        projects_git_author,
+        projects_git_token,
+        projects_git_ds_home_poll_interval_secs: std::env::var(
+            "CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS",
+        )
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&s| s > 0),
     };
     let session_db = Arc::new(
         session_db::GatewaySessionDb::open(&cfg.work_root)
@@ -586,7 +690,20 @@ async fn main() {
         cfg: Arc::new(cfg),
         docker_slots: Arc::new(Mutex::new(HashMap::new())),
         docker_pool,
+        projects_git_mirror_lock: Arc::new(Mutex::new(())),
     };
+
+    if let Some(secs) = state.cfg.projects_git_ds_home_poll_interval_secs {
+        let poller_state = state.clone();
+        tokio::spawn(async move { projects_git_ds_home_poll_loop(poller_state, secs).await });
+        info!(
+            target: "claw_gateway_orchestration",
+            component = "startup",
+            phase = "projects_git_poll",
+            interval_secs = secs,
+            "background ds home sync from mirror enabled"
+        );
+    }
 
     let app = Router::new()
         .route("/", get(root))
@@ -604,6 +721,7 @@ async fn main() {
             "/v1/project/claude/{ds_id}",
             get(get_project_claude_md).post(update_project_claude_md),
         )
+        .route("/v1/project/skills/{ds_id}", post(upsert_project_skill))
         .route(
             "/v1/project/prompt/{ds_id}/effective",
             get(get_effective_prompt).post(post_effective_prompt),
@@ -714,6 +832,11 @@ async fn docs() -> Html<String> {
             "Update project CLAUDE.md for ds",
         ),
         (
+            "POST",
+            "/v1/project/skills/{ds_id}",
+            "Create or update project skill for ds",
+        ),
+        (
             "GET",
             "/v1/project/prompt/{ds_id}/effective",
             "Get effective system prompt for ds",
@@ -808,6 +931,38 @@ async fn openapi() -> Json<Value> {
                         "content": { "type": "string" }
                     }
                 },
+                "UpsertProjectSkillRequest": {
+                    "type": "object",
+                    "required": ["skillName", "skillContent"],
+                    "properties": {
+                        "skillName": { "type": "string", "description": "Skill name; allowed chars: [a-zA-Z0-9._-]" },
+                        "skillContent": { "type": "string", "description": "Content written into SKILL.md (same as Skill tool / CLI)" }
+                    }
+                },
+                "GitSyncResponse": {
+                    "type": "object",
+                    "required": ["repo", "branch", "commitId", "pushed"],
+                    "properties": {
+                        "repo": { "type": "string" },
+                        "branch": { "type": "string" },
+                        "commitId": { "type": "string" },
+                        "pushed": { "type": "boolean" }
+                    }
+                },
+                "ProjectSkillResponse": {
+                    "type": "object",
+                    "required": ["dsId", "skillName", "skillPath", "created", "updated", "bytesWritten", "workDir", "gitSync"],
+                    "properties": {
+                        "dsId": { "type": "integer", "format": "int64" },
+                        "skillName": { "type": "string" },
+                        "skillPath": { "type": "string" },
+                        "created": { "type": "boolean" },
+                        "updated": { "type": "boolean" },
+                        "bytesWritten": { "type": "integer", "format": "int64" },
+                        "workDir": { "type": "string" },
+                        "gitSync": { "$ref": "#/components/schemas/GitSyncResponse" }
+                    }
+                },
                 "EffectivePromptResponse": {
                     "type": "object",
                     "required": ["dsId", "workDir", "sections", "message"],
@@ -820,10 +975,11 @@ async fn openapi() -> Json<Value> {
                 },
                 "SolveResponse": {
                     "type": "object",
-                    "required": ["sessionId", "requestId", "dsId", "workDir", "durationMs", "clawExitCode", "outputText"],
+                    "required": ["sessionId", "requestId", "sessionHomeRel", "dsId", "workDir", "durationMs", "clawExitCode", "outputText"],
                     "properties": {
                         "sessionId": { "type": "string" },
                         "requestId": { "type": "string" },
+                        "sessionHomeRel": { "type": "string", "description": "Under CLAW_WORK_ROOT; same as gateway_sessions.session_home. New sessions use ds_{id}/sessions/<segment> where <segment> equals sessionId when it is a safe single path component; otherwise a deterministic 32-hex segment." },
                         "dsId": { "type": "integer", "format": "int64" },
                         "workDir": { "type": "string" },
                         "durationMs": { "type": "integer", "format": "int64" },
@@ -985,7 +1141,7 @@ async fn openapi() -> Json<Value> {
             },
             "/v1/project/claude/{ds_id}": {
                 "get": {
-                    "summary": "Get project CLAUDE.md for ds",
+                    "summary": "Get project CLAUDE.md for ds (from ds_home/home)",
                     "parameters": [
                         { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
                     ],
@@ -994,7 +1150,7 @@ async fn openapi() -> Json<Value> {
                     }
                 },
                 "post": {
-                    "summary": "Update project CLAUDE.md for ds",
+                    "summary": "Update project CLAUDE.md for ds and sync to git",
                     "parameters": [
                         { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
                     ],
@@ -1004,6 +1160,21 @@ async fn openapi() -> Json<Value> {
                     },
                     "responses": {
                         "200": { "description": "Updated CLAUDE.md", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectClaudeResponse" } } } }
+                    }
+                }
+            },
+            "/v1/project/skills/{ds_id}": {
+                "post": {
+                    "summary": "Create or update a skill for ds and sync to git",
+                    "parameters": [
+                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpsertProjectSkillRequest" } } }
+                    },
+                    "responses": {
+                        "200": { "description": "Skill upserted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectSkillResponse" } } } }
                     }
                 }
             },
@@ -1066,6 +1237,651 @@ async fn openapi() -> Json<Value> {
     }))
 }
 
+fn projects_git_effective_clone_url(url: &str, token: Option<&str>) -> String {
+    let base = url.trim();
+    if let Some(t) = token.filter(|s| !s.trim().is_empty()) {
+        if let Some(rest) = base.strip_prefix("https://") {
+            if !rest.contains('@') {
+                return format!("https://x-access-token:{t}@{rest}");
+            }
+        }
+    }
+    base.to_string()
+}
+
+async fn sync_projects_git_remote(cfg: &GatewayConfig, repo_dir: &Path) -> Result<(), ApiError> {
+    let git_dir = repo_dir.join(".git");
+    if !fs::metadata(&git_dir).await.is_ok_and(|m| m.is_dir()) {
+        return Ok(());
+    }
+    let url =
+        projects_git_effective_clone_url(&cfg.projects_git_url, cfg.projects_git_token.as_deref());
+    run_git(repo_dir, &["remote", "set-url", "origin", &url])
+        .await
+        .map(|_| ())
+}
+
+fn ds_work_dir(work_root: &Path, ds_id: i64) -> PathBuf {
+    work_root.join(format!("ds_{ds_id}"))
+}
+
+fn projects_repo_dir(work_root: &Path) -> PathBuf {
+    work_root.join(".claw-code-projects")
+}
+
+fn project_claude_paths(work_dir: &Path) -> (PathBuf, PathBuf) {
+    (work_dir.join("home/CLAUDE.md"), work_dir.join("CLAUDE.md"))
+}
+
+fn normalize_rel_for_git(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// `CLAW_PROJECTS_GIT_AUTHOR` is typically `Name <email>`; used for git author/committer env. kejiqing
+fn parse_projects_git_author(author: &str) -> (String, String) {
+    let s = author.trim();
+    if let (Some(i), Some(j)) = (s.find('<'), s.rfind('>')) {
+        if i < j {
+            let name = s[..i].trim();
+            let email = s[i + 1..j].trim();
+            if !email.is_empty() {
+                let name_owned = if name.is_empty() {
+                    "claw-gateway".to_string()
+                } else {
+                    name.to_string()
+                };
+                return (name_owned, email.to_string());
+            }
+        }
+    }
+    (s.to_string(), "noreply@claw.local".to_string())
+}
+
+fn validate_skill_name(skill_name: &str) -> Result<(), ApiError> {
+    if skill_name.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "skillName cannot be empty",
+        ));
+    }
+    if skill_name
+        .chars()
+        .any(|ch| !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.'))
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "skillName only allows [a-zA-Z0-9._-]",
+        ));
+    }
+    Ok(())
+}
+
+async fn copy_tree(src_root: &Path, dst_root: &Path) -> Result<(), ApiError> {
+    if !fs::metadata(src_root).await.is_ok_and(|m| m.is_dir()) {
+        return Ok(());
+    }
+    let mut stack: Vec<(PathBuf, PathBuf)> = vec![(src_root.to_path_buf(), dst_root.to_path_buf())];
+    while let Some((src_dir, dst_dir)) = stack.pop() {
+        fs::create_dir_all(&dst_dir).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create dir during sync failed: {e}"),
+            )
+        })?;
+        let mut entries = fs::read_dir(&src_dir).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read dir during sync failed: {e}"),
+            )
+        })?;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("iterate dir during sync failed: {e}"),
+            )
+        })? {
+            let entry_path = entry.path();
+            let dst_path = dst_dir.join(entry.file_name());
+            let file_type = entry.file_type().await.map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("read file type during sync failed: {e}"),
+                )
+            })?;
+            if file_type.is_dir() {
+                stack.push((entry_path, dst_path));
+            } else if file_type.is_file() {
+                if let Some(parent) = dst_path.parent() {
+                    fs::create_dir_all(parent).await.map_err(|e| {
+                        ApiError::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("create parent dir during sync failed: {e}"),
+                        )
+                    })?;
+                }
+                fs::copy(&entry_path, &dst_path).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("copy file during sync failed: {e}"),
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// In-process solve uses `session_home` as cwd: symlink `home/skills` and root `CLAUDE.md` from
+/// `ds_*` (no per-session copy). Pool solve uses read-only bind mounts instead
+/// (`DockerPoolManager::run_worker_container`). Author: kejiqing
+async fn prepare_inprocess_session_read_through_from_ds(
+    ds_base: &Path,
+    session_home: &Path,
+) -> Result<(), ApiError> {
+    #[cfg(unix)]
+    {
+        let src_dir = ds_base.join("home/skills");
+        let link_path = session_home.join("home/skills");
+        let home_parent = session_home.join("home");
+        fs::create_dir_all(&home_parent).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create session home/ for skills symlink failed: {e}"),
+            )
+        })?;
+        if let Ok(meta) = fs::symlink_metadata(&link_path).await {
+            if meta.is_symlink() {
+                fs::remove_file(&link_path).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("remove stale skills symlink failed: {e}"),
+                    )
+                })?;
+            } else if meta.is_dir() {
+                fs::remove_dir_all(&link_path).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("remove stale skills dir failed: {e}"),
+                    )
+                })?;
+            } else {
+                fs::remove_file(&link_path).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("remove stale skills path failed: {e}"),
+                    )
+                })?;
+            }
+        }
+        if fs::metadata(&src_dir).await.is_ok_and(|m| m.is_dir()) {
+            fs::symlink("../../home/skills", &link_path)
+                .await
+                .map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("symlink session home/skills failed: {e}"),
+                    )
+                })?;
+        }
+
+        let claude_src = ds_base.join("CLAUDE.md");
+        let claude_link = session_home.join("CLAUDE.md");
+        if let Ok(meta) = fs::symlink_metadata(&claude_link).await {
+            if meta.is_symlink() {
+                fs::remove_file(&claude_link).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("remove stale CLAUDE.md symlink failed: {e}"),
+                    )
+                })?;
+            } else if meta.is_file() {
+                fs::remove_file(&claude_link).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("remove stale session CLAUDE.md failed: {e}"),
+                    )
+                })?;
+            }
+        }
+        if fs::metadata(&claude_src).await.is_ok_and(|m| m.is_file()) {
+            fs::symlink("../../CLAUDE.md", &claude_link)
+                .await
+                .map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("symlink session CLAUDE.md failed: {e}"),
+                    )
+                })?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let src = ds_base.join("home/skills");
+        let dst = session_home.join("home/skills");
+        if fs::metadata(&dst).await.is_ok() {
+            let _ = fs::remove_dir_all(&dst).await;
+            let _ = fs::remove_file(&dst).await;
+        }
+        if fs::metadata(&src).await.is_ok_and(|m| m.is_dir()) {
+            copy_tree(&src, &dst).await?;
+        }
+        let claude_src = ds_base.join("CLAUDE.md");
+        let claude_dst = session_home.join("CLAUDE.md");
+        if fs::metadata(&claude_src).await.is_ok_and(|m| m.is_file()) {
+            let _ = fs::remove_file(&claude_dst).await;
+            fs::copy(&claude_src, &claude_dst).await.map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("copy session CLAUDE.md failed: {e}"),
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
+async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, ApiError> {
+    run_git_env(cwd, &[], args).await
+}
+
+async fn run_git_env(
+    cwd: &Path,
+    env_pairs: &[(&str, &str)],
+    args: &[&str],
+) -> Result<String, ApiError> {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(cwd);
+    for (k, v) in env_pairs {
+        cmd.env(k, v);
+    }
+    let output = cmd
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("git command failed to start: {e}"),
+            )
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        let detail = if stderr.is_empty() { stdout } else { stderr };
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("git {} failed: {}", args.join(" "), detail),
+        ));
+    }
+    Ok(stdout)
+}
+
+/// Retries for `push` after `pull --rebase` when other hosts race on the same branch. kejiqing
+const PROJECTS_GIT_PUSH_MAX_ATTEMPTS: u32 = 20;
+
+fn projects_git_message_suggests_push_retry(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("non-fast-forward")
+        || m.contains("failed to push")
+        || m.contains("! [remote rejected]")
+        || m.contains("updates were rejected")
+        || m.contains("stale info")
+}
+
+async fn projects_git_rebase_in_progress(repo_dir: &Path) -> bool {
+    fs::metadata(repo_dir.join(".git/rebase-merge"))
+        .await
+        .is_ok_and(|m| m.is_dir())
+        || fs::metadata(repo_dir.join(".git/rebase-apply"))
+            .await
+            .is_ok_and(|m| m.is_dir())
+}
+
+async fn projects_git_abort_rebase_best_effort(repo_dir: &Path) {
+    if projects_git_rebase_in_progress(repo_dir).await {
+        let _ = run_git(repo_dir, &["rebase", "--abort"]).await;
+    }
+}
+
+/// When `pull --rebase` stopped only on `rel_git_path`, take workspace copy and continue. kejiqing
+async fn projects_git_try_resolve_rebase_with_workspace(
+    repo_dir: &Path,
+    projects_git_author: &str,
+    src: &Path,
+    dst: &Path,
+    rel_git_path: &str,
+) -> Result<bool, ApiError> {
+    if !projects_git_rebase_in_progress(repo_dir).await {
+        return Ok(false);
+    }
+    let unmerged = match run_git(repo_dir, &["diff", "--name-only", "--diff-filter=U"]).await {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
+    };
+    let paths: Vec<&str> = unmerged
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if paths.len() == 1 && paths[0] == rel_git_path {
+        fs::copy(src, dst).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("re-resolve conflict file from workspace failed: {e}"),
+            )
+        })?;
+        run_git(repo_dir, &["add", rel_git_path]).await?;
+        let (git_name, git_email) = parse_projects_git_author(projects_git_author);
+        run_git_env(
+            repo_dir,
+            &[
+                ("GIT_AUTHOR_NAME", git_name.as_str()),
+                ("GIT_AUTHOR_EMAIL", git_email.as_str()),
+                ("GIT_COMMITTER_NAME", git_name.as_str()),
+                ("GIT_COMMITTER_EMAIL", git_email.as_str()),
+                ("GIT_EDITOR", "true"),
+            ],
+            &["rebase", "--continue"],
+        )
+        .await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+async fn ensure_projects_repo_ready(
+    work_root: &Path,
+    cfg: &GatewayConfig,
+) -> Result<PathBuf, ApiError> {
+    let repo_dir = projects_repo_dir(work_root);
+    if fs::metadata(&repo_dir).await.is_ok_and(|m| m.is_dir()) {
+        sync_projects_git_remote(cfg, &repo_dir).await?;
+        return Ok(repo_dir);
+    }
+    fs::create_dir_all(work_root).await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("create work root failed: {e}"),
+        )
+    })?;
+    let clone_url =
+        projects_git_effective_clone_url(&cfg.projects_git_url, cfg.projects_git_token.as_deref());
+    run_git(
+        work_root,
+        &[
+            "clone",
+            "--branch",
+            cfg.projects_git_branch.as_str(),
+            &clone_url,
+            ".claw-code-projects",
+        ],
+    )
+    .await?;
+    Ok(repo_dir)
+}
+
+async fn pull_projects_repo(repo_dir: &Path, cfg: &GatewayConfig) -> Result<(), ApiError> {
+    sync_projects_git_remote(cfg, repo_dir).await?;
+    run_git(repo_dir, &["checkout", cfg.projects_git_branch.as_str()]).await?;
+    run_git(
+        repo_dir,
+        &[
+            "pull",
+            "--ff-only",
+            "origin",
+            cfg.projects_git_branch.as_str(),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn sync_ds_home_from_repo(
+    repo_dir: &Path,
+    work_dir: &Path,
+    ds_id: i64,
+) -> Result<(), ApiError> {
+    let ds_repo_home = repo_dir.join(format!("ds_{ds_id}/home"));
+    let ds_work_home = work_dir.join("home");
+    if fs::metadata(&ds_work_home).await.is_ok_and(|m| m.is_dir()) {
+        fs::remove_dir_all(&ds_work_home).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("cleanup stale ds home failed: {e}"),
+            )
+        })?;
+    }
+    if fs::metadata(&ds_repo_home).await.is_ok_and(|m| m.is_dir()) {
+        copy_tree(&ds_repo_home, &ds_work_home).await?;
+    } else {
+        fs::create_dir_all(&ds_work_home).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create empty ds home failed: {e}"),
+            )
+        })?;
+    }
+    let (home_claude, root_claude) = project_claude_paths(work_dir);
+    if fs::metadata(&home_claude).await.is_ok_and(|m| m.is_file()) {
+        fs::copy(&home_claude, &root_claude).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("mirror home CLAUDE.md to root failed: {e}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Clone-or-open mirror repo and `git pull --ff-only` (no local `ds_*` writes). Caller must hold
+/// [`AppState::projects_git_mirror_lock`] for the duration if other tasks may touch the mirror. kejiqing
+async fn projects_git_mirror_pull_impl(
+    work_root: &Path,
+    cfg: &GatewayConfig,
+) -> Result<PathBuf, ApiError> {
+    let repo_dir = ensure_projects_repo_ready(work_root, cfg).await?;
+    pull_projects_repo(&repo_dir, cfg).await?;
+    Ok(repo_dir)
+}
+
+/// Copy one file from `ds_<id>/` workspace into the mirror, then commit + push. Caller must hold
+/// `projects_git_mirror_lock` (same critical section as pull) and `ds_lock` for `ds_id`.
+///
+/// Other hosts may push the same branch: after commit we `pull --rebase` and retry `push` with
+/// backoff; if rebase stops only on this path, workspace content wins. kejiqing
+async fn projects_git_mirror_copy_commit_push_impl(
+    cfg: &GatewayConfig,
+    work_root: &Path,
+    repo_dir: &Path,
+    ds_id: i64,
+    rel_path_under_ds: &Path,
+    commit_message: &str,
+) -> Result<GitSyncResponse, ApiError> {
+    let work_dir = ds_work_dir(work_root, ds_id);
+    let src = work_dir.join(rel_path_under_ds);
+    let ds_root_in_repo = repo_dir.join(format!("ds_{ds_id}"));
+    let dst = ds_root_in_repo.join(rel_path_under_ds);
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create repo parent dir failed: {e}"),
+            )
+        })?;
+    }
+    fs::copy(&src, &dst).await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("copy file into git repo failed: {e}"),
+        )
+    })?;
+    let rel_git_path = format!("ds_{ds_id}/{}", normalize_rel_for_git(rel_path_under_ds));
+    run_git(repo_dir, &["add", &rel_git_path]).await?;
+    let dirty = run_git(repo_dir, &["status", "--porcelain", "--", &rel_git_path]).await?;
+    let mut pushed = false;
+    if !dirty.trim().is_empty() {
+        sync_projects_git_remote(cfg, repo_dir).await?;
+        let (git_name, git_email) = parse_projects_git_author(cfg.projects_git_author.as_str());
+        run_git_env(
+            repo_dir,
+            &[
+                ("GIT_AUTHOR_NAME", git_name.as_str()),
+                ("GIT_AUTHOR_EMAIL", git_email.as_str()),
+                ("GIT_COMMITTER_NAME", git_name.as_str()),
+                ("GIT_COMMITTER_EMAIL", git_email.as_str()),
+            ],
+            &[
+                "commit",
+                "--author",
+                cfg.projects_git_author.as_str(),
+                "-m",
+                commit_message,
+            ],
+        )
+        .await?;
+
+        let branch = cfg.projects_git_branch.as_str();
+        for attempt in 0..PROJECTS_GIT_PUSH_MAX_ATTEMPTS {
+            sync_projects_git_remote(cfg, repo_dir).await?;
+
+            match run_git(repo_dir, &["pull", "--rebase", "origin", branch]).await {
+                Ok(_) => {}
+                Err(e) => {
+                    let detail = e.detail();
+                    if projects_git_rebase_in_progress(repo_dir).await {
+                        if projects_git_try_resolve_rebase_with_workspace(
+                            repo_dir,
+                            cfg.projects_git_author.as_str(),
+                            &src,
+                            &dst,
+                            &rel_git_path,
+                        )
+                        .await?
+                        {
+                            continue;
+                        }
+                        projects_git_abort_rebase_best_effort(repo_dir).await;
+                        return Err(ApiError::new(
+                            StatusCode::CONFLICT,
+                            format!(
+                                "projects git rebase conflict (multiple writers or overlapping paths): {detail}"
+                            ),
+                        ));
+                    }
+                    return Err(e);
+                }
+            }
+
+            match run_git(repo_dir, &["push", "origin", branch]).await {
+                Ok(_) => {
+                    pushed = true;
+                    break;
+                }
+                Err(e) => {
+                    let detail = e.detail();
+                    if projects_git_message_suggests_push_retry(detail)
+                        && attempt + 1 < PROJECTS_GIT_PUSH_MAX_ATTEMPTS
+                    {
+                        let ms = 40_u64.saturating_mul(1_u64 << attempt.min(8));
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        if !pushed {
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "projects git push exhausted retries (remote busy or concurrent writers)",
+            ));
+        }
+    }
+    let commit_id = run_git(repo_dir, &["rev-parse", "HEAD"]).await?;
+    Ok(GitSyncResponse {
+        repo: cfg.projects_git_url.clone(),
+        branch: cfg.projects_git_branch.clone(),
+        commit_id,
+        pushed,
+    })
+}
+
+async fn projects_git_ds_home_poll_loop(state: AppState, interval_secs: u64) {
+    let mut ticker = interval(Duration::from_secs(interval_secs));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        match tick_projects_git_ds_home_poll(&state).await {
+            Ok(()) => {}
+            Err(e) => {
+                warn!(
+                    target: "claw_gateway_orchestration",
+                    component = "projects_git_poll",
+                    phase = "tick_failed",
+                    status = %e.status,
+                    error = %e.detail(),
+                    "periodic project mirror / ds home sync failed"
+                );
+            }
+        }
+    }
+}
+
+async fn tick_projects_git_ds_home_poll(state: &AppState) -> Result<(), ApiError> {
+    let repo_dir = {
+        let _mirror = state.projects_git_mirror_lock.lock().await;
+        projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?
+    };
+    let ids = list_ds_ids_under_work_root(&state.cfg.work_root).await?;
+    for ds_id in ids {
+        let lock = get_ds_lock(state, ds_id).await;
+        let Ok(_guard) = lock.try_lock() else {
+            continue;
+        };
+        let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+        if !fs::metadata(work_dir.join(".claw"))
+            .await
+            .is_ok_and(|m| m.is_dir())
+        {
+            continue;
+        }
+        sync_ds_home_from_repo(&repo_dir, &work_dir, ds_id).await?;
+    }
+    Ok(())
+}
+
+async fn list_ds_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiError> {
+    let mut out = Vec::new();
+    let mut rd = fs::read_dir(work_root).await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("list work_root for ds poll failed: {e}"),
+        )
+    })?;
+    while let Some(ent) = rd.next_entry().await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read work_root entry failed: {e}"),
+        )
+    })? {
+        let name = ent.file_name().to_string_lossy().to_string();
+        let Some(rest) = name.strip_prefix("ds_") else {
+            continue;
+        };
+        if let Ok(id) = rest.parse::<i64>() {
+            if id >= 1 {
+                out.push(id);
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     let isolation = state.cfg.solve_isolation.as_str();
     Json(json!({
@@ -1086,6 +1902,9 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "poolRpcUnixSocket": state.cfg.pool_rpc_unix_socket,
         "poolRpcHostWorkRoot": state.cfg.pool_rpc_host_work_root.as_ref().map(|p| p.display().to_string()),
         "sessionDbPath": state.session_db.path().display().to_string(),
+        "projectsGitUrl": state.cfg.projects_git_url.clone(),
+        "projectsGitBranch": state.cfg.projects_git_branch.clone(),
+        "projectsGitDsHomePollIntervalSecs": state.cfg.projects_git_ds_home_poll_interval_secs,
     }))
 }
 
@@ -1137,7 +1956,7 @@ async fn init_workspace(
     if req.ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
     }
-    let work_dir = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
+    let work_dir = ds_work_dir(&state.cfg.work_root, req.ds_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -1146,6 +1965,12 @@ async fn init_workspace(
                 format!("create work dir failed: {e}"),
             )
         })?;
+    {
+        let _mirror = state.projects_git_mirror_lock.lock().await;
+        let repo_dir =
+            projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?;
+        sync_ds_home_from_repo(&repo_dir, &work_dir, req.ds_id).await?;
+    }
     {
         let lock = get_ds_lock(&state, req.ds_id).await;
         let _guard = lock.lock().await;
@@ -1198,7 +2023,7 @@ async fn get_project_claude_md(
     if ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
     }
-    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -1208,11 +2033,24 @@ async fn get_project_claude_md(
             )
         })?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    let claude_md_path = work_dir.join("CLAUDE.md");
-    let content = fs::read_to_string(&claude_md_path).await;
+    let (home_claude_md_path, root_claude_md_path) = project_claude_paths(&work_dir);
+    let content = fs::read_to_string(&home_claude_md_path).await;
     let (exists, content) = match content {
         Ok(text) => (true, text),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (false, String::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match fs::read_to_string(&root_claude_md_path).await {
+                Ok(text) => (true, text),
+                Err(root_err) if root_err.kind() == std::io::ErrorKind::NotFound => {
+                    (false, String::new())
+                }
+                Err(root_err) => {
+                    return Err(ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("read CLAUDE.md failed: {root_err}"),
+                    ));
+                }
+            }
+        }
         Err(error) => {
             return Err(ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1223,7 +2061,7 @@ async fn get_project_claude_md(
     Ok(Json(ProjectClaudeResponse {
         ds_id,
         work_dir: work_dir.display().to_string(),
-        path: claude_md_path.display().to_string(),
+        path: home_claude_md_path.display().to_string(),
         exists,
         content,
     }))
@@ -1237,7 +2075,7 @@ async fn update_project_claude_md(
     if ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
     }
-    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -1246,12 +2084,31 @@ async fn update_project_claude_md(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    {
+    let git_sync = {
+        let _mirror = state.projects_git_mirror_lock.lock().await;
         let lock = get_ds_lock(&state, ds_id).await;
         let _guard = lock.lock().await;
         ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-        let claude_md_path = work_dir.join("CLAUDE.md");
-        fs::write(&claude_md_path, req.content.as_bytes())
+        let repo_dir =
+            projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?;
+        let (home_claude_md_path, root_claude_md_path) = project_claude_paths(&work_dir);
+        if let Some(parent) = home_claude_md_path.parent() {
+            fs::create_dir_all(parent).await.map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("create home dir failed: {e}"),
+                )
+            })?;
+        }
+        fs::write(&home_claude_md_path, req.content.as_bytes())
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write home/CLAUDE.md failed: {e}"),
+                )
+            })?;
+        fs::write(&root_claude_md_path, req.content.as_bytes())
             .await
             .map_err(|e| {
                 ApiError::new(
@@ -1259,14 +2116,102 @@ async fn update_project_claude_md(
                     format!("write CLAUDE.md failed: {e}"),
                 )
             })?;
-    }
-    let claude_md_path = work_dir.join("CLAUDE.md");
+        projects_git_mirror_copy_commit_push_impl(
+            state.cfg.as_ref(),
+            &state.cfg.work_root,
+            &repo_dir,
+            ds_id,
+            Path::new("home/CLAUDE.md"),
+            &format!("update ds_{ds_id} CLAUDE.md"),
+        )
+        .await?
+    };
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "project_claude",
+        ds_id,
+        branch = %git_sync.branch,
+        commit_id = %git_sync.commit_id,
+        pushed = git_sync.pushed,
+        "project CLAUDE.md git synced"
+    );
+    let claude_md_path = work_dir.join("home/CLAUDE.md");
     Ok(Json(ProjectClaudeResponse {
         ds_id,
         work_dir: work_dir.display().to_string(),
         path: claude_md_path.display().to_string(),
         exists: true,
         content: req.content,
+    }))
+}
+
+async fn upsert_project_skill(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+    Json(req): Json<UpsertProjectSkillRequest>,
+) -> Result<Json<ProjectSkillResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let skill_name = req.skill_name.trim().to_string();
+    validate_skill_name(&skill_name)?;
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create work dir failed: {e}"),
+            )
+        })?;
+    let skill_rel = PathBuf::from("home")
+        .join("skills")
+        .join(&skill_name)
+        .join("SKILL.md");
+    let skill_path = work_dir.join(&skill_rel);
+    let existed = fs::metadata(&skill_path).await.is_ok_and(|m| m.is_file());
+    let git_sync = {
+        let _mirror = state.projects_git_mirror_lock.lock().await;
+        let lock = get_ds_lock(&state, ds_id).await;
+        let _guard = lock.lock().await;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+        let repo_dir =
+            projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?;
+        if let Some(parent) = skill_path.parent() {
+            fs::create_dir_all(parent).await.map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("create skill dir failed: {e}"),
+                )
+            })?;
+        }
+        fs::write(&skill_path, req.skill_content.as_bytes())
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write SKILL.md failed: {e}"),
+                )
+            })?;
+        projects_git_mirror_copy_commit_push_impl(
+            state.cfg.as_ref(),
+            &state.cfg.work_root,
+            &repo_dir,
+            ds_id,
+            &skill_rel,
+            &format!("upsert ds_{ds_id} skill {skill_name}"),
+        )
+        .await?
+    };
+    Ok(Json(ProjectSkillResponse {
+        ds_id,
+        skill_name,
+        skill_path: skill_path.display().to_string(),
+        created: !existed,
+        updated: existed,
+        bytes_written: req.skill_content.len(),
+        work_dir: work_dir.display().to_string(),
+        git_sync,
     }))
 }
 
@@ -1702,7 +2647,7 @@ async fn run_solve_request(
 
     let (session_home, need_insert_row, purge_mcp_discovery, session_fs_label) =
         if ctx.skip_session_db {
-            let session_fs_id = Uuid::new_v4().simple().to_string();
+            let session_fs_id = session_merge::sessions_directory_segment(&ctx.request_id);
             let session_home = ds_base.join("sessions").join(&session_fs_id);
             (session_home, false, true, session_fs_id)
         } else {
@@ -1729,11 +2674,15 @@ async fn run_solve_request(
                     "unknown sessionId (no session history for this dsId)",
                 ));
             } else {
-                let session_fs_id = Uuid::new_v4().simple().to_string();
+                let session_fs_id = session_merge::sessions_directory_segment(&ctx.request_id);
                 let session_home = ds_base.join("sessions").join(&session_fs_id);
                 (session_home, true, true, session_fs_id)
             }
         };
+
+    let session_home_rel =
+        session_merge::session_home_rel_under_work_root(&state.cfg.work_root, &session_home)
+            .map_err(session_routing_error)?;
 
     fs::create_dir_all(session_home.join(".claw"))
         .await
@@ -1754,10 +2703,8 @@ async fn run_solve_request(
             )
         })?;
         ensure_workspace_initialized(&state.cfg.claw_bin, &ds_base).await?;
-        ensure_workspace_initialized(&state.cfg.claw_bin, &session_home).await?;
-        let ds_claude = ds_base.join("CLAUDE.md");
-        if fs::metadata(&ds_claude).await.is_ok_and(|m| m.is_file()) {
-            let _ = fs::copy(&ds_claude, session_home.join("CLAUDE.md")).await;
+        if matches!(state.cfg.solve_isolation, SolveIsolation::InProcess) {
+            prepare_inprocess_session_read_through_from_ds(&ds_base, &session_home).await?;
         }
         let settings = build_settings(&state, req.ds_id).await;
         let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
@@ -1780,12 +2727,9 @@ async fn run_solve_request(
     }
 
     if need_insert_row {
-        let rel =
-            session_merge::session_home_rel_under_work_root(&state.cfg.work_root, &session_home)
-                .map_err(session_routing_error)?;
         state
             .session_db
-            .insert_session(&ctx.request_id, req.ds_id, &rel, now_ms())
+            .insert_session(&ctx.request_id, req.ds_id, &session_home_rel, now_ms())
             .await
             .map_err(|e| session_db_err(&e))?;
     } else if !ctx.skip_session_db {
@@ -1839,6 +2783,7 @@ async fn run_solve_request(
             Ok(SolveResponse {
                 session_id: ctx.request_id.clone(),
                 request_id: ctx.request_id,
+                session_home_rel: session_home_rel.clone(),
                 ds_id: req.ds_id,
                 work_dir: session_home.display().to_string(),
                 duration_ms,
@@ -1861,7 +2806,10 @@ async fn run_solve_request(
                 pool,
                 started,
                 effective_allowed_tools,
-                session_home,
+                solve_pool::SolveSessionPaths {
+                    session_home,
+                    session_home_rel,
+                },
             )
             .await
         }
@@ -2356,4 +3304,94 @@ fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_skill_name_accepts_expected_charset() {
+        assert!(validate_skill_name("abc").is_ok());
+        assert!(validate_skill_name("a-b_c.d").is_ok());
+        assert!(validate_skill_name("Skill_01").is_ok());
+    }
+
+    #[test]
+    fn validate_skill_name_rejects_empty_or_unsafe_names() {
+        assert!(validate_skill_name("").is_err());
+        assert!(validate_skill_name("   ").is_err());
+        assert!(validate_skill_name("../escape").is_err());
+        assert!(validate_skill_name("bad/name").is_err());
+        assert!(validate_skill_name("中文").is_err());
+    }
+
+    #[test]
+    fn ds_work_dir_and_claude_paths_match_contract() {
+        let root = Path::new("/tmp/gateway-work");
+        let work_dir = ds_work_dir(root, 27);
+        assert_eq!(work_dir, PathBuf::from("/tmp/gateway-work/ds_27"));
+        let (home_claude, root_claude) = project_claude_paths(&work_dir);
+        assert_eq!(
+            home_claude,
+            PathBuf::from("/tmp/gateway-work/ds_27/home/CLAUDE.md")
+        );
+        assert_eq!(
+            root_claude,
+            PathBuf::from("/tmp/gateway-work/ds_27/CLAUDE.md")
+        );
+    }
+
+    #[test]
+    fn projects_git_effective_clone_url_inserts_github_pat() {
+        let u = projects_git_effective_clone_url(
+            "https://github.com/passionke/claw-code-projects.git",
+            Some("ghp_secret"),
+        );
+        assert_eq!(
+            u,
+            "https://x-access-token:ghp_secret@github.com/passionke/claw-code-projects.git"
+        );
+    }
+
+    #[test]
+    fn projects_git_effective_clone_url_skips_injection_when_userinfo_present() {
+        let u = projects_git_effective_clone_url(
+            "https://user:pass@github.com/passionke/claw-code-projects.git",
+            Some("ghp_secret"),
+        );
+        assert_eq!(
+            u,
+            "https://user:pass@github.com/passionke/claw-code-projects.git"
+        );
+    }
+
+    #[test]
+    fn projects_git_effective_clone_url_ssh_ignores_token() {
+        let u = projects_git_effective_clone_url(
+            "git@github.com:passionke/claw-code-projects.git",
+            Some("ghp_secret"),
+        );
+        assert_eq!(u, "git@github.com:passionke/claw-code-projects.git");
+    }
+
+    #[test]
+    fn projects_git_message_suggests_push_retry_detects_common_git_errors() {
+        assert!(projects_git_message_suggests_push_retry(
+            "error: failed to push some refs ... ! [rejected] ... (non-fast-forward)"
+        ));
+        assert!(projects_git_message_suggests_push_retry(
+            "Updates were rejected because the remote contains work that you do not have locally."
+        ));
+        assert!(!projects_git_message_suggests_push_retry(
+            "fatal: could not read Username"
+        ));
+    }
+
+    #[test]
+    fn parse_projects_git_author_splits_name_email() {
+        let (n, e) = parse_projects_git_author("kejiqing <kejiqing@local>");
+        assert_eq!(n, "kejiqing");
+        assert_eq!(e, "kejiqing@local");
+    }
 }

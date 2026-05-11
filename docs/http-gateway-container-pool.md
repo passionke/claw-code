@@ -129,12 +129,12 @@ sequenceDiagram
 | 路径 | 角色 |
 | --- | --- |
 | `CLAW_WORK_ROOT/ds_{id}/` | 数据源级：如 **`/v1/init`** 写的 `CLAUDE.md`、网关探针用的共享上下文；**不**作为 worker 的整盘 bind 根。 |
-| `CLAW_WORK_ROOT/ds_{id}/sessions/{uuid}/` | **单次 solve** 的可写工作区；`.claw/settings.json`、pool 的 `gateway-solve-task.json` 在此。 |
+| `CLAW_WORK_ROOT/ds_{id}/sessions/{uuid}/` | **单次 solve** 的可写工作区；`.claw/settings.json`、pool 的 `gateway-solve-task.json` 在此；**不**再拷贝 `ds_{id}/CLAUDE.md` / `home/skills`（池内以只读 bind 暴露；进程内为相对 symlink）。 |
 | `CLAW_WORK_ROOT/.claw-gateway-pool-warm/slot-*` | 仅池 **idle 预热** 用的空目录 bind（真实 solve 前会被 `rm`+`run` 换成会话目录）。 |
 | `CLAW_PROJECT_CONFIG_ROOT` / `CLAW_CONFIG_FILE` | **项目 `.claw.json` 树**；由 **`gateway-solve-turn`** 在网关侧加载；**不应**落在可被子进程或 worker 横向遍历的 `CLAW_WORK_ROOT` 会话卷上。 |
 
 - **Docker / Podman 权限**：网关进程需能访问 **`docker.sock`**（常见：用户加入 `docker` 组）或等价 API；生产上慎防 **容器内挂载 sock 逃逸**。  
-- **并发与同数据源**：多 solve 共享 **`ds_{id}/` 下只读/半共享文件**（如 `CLAUDE.md`）时由网关 **按需拷贝进各 `sessions/{uuid}/`**；会话间文件工具隔离依赖 **每会话 bind 根**（池化）或 **进程内 `cwd` 为会话目录**（`inprocess`）。  
+- **并发与同数据源**：多 solve 共享 **`ds_{id}/` 下只读文件**（`CLAUDE.md`、`home/skills`）时由网关 **只读 bind（池）或 symlink（进程内）** 挂进会话视图，**不**每会话整文件拷贝；会话间文件工具隔离仍依赖 **每会话 bind 根**（池化）或 **进程内 `cwd` 为会话目录**（`inprocess`）。  
 - **Windows/macOS 开发机**：池化仍以 Linux 为一级目标；本地可继续 `inprocess`。
 
 ## 6.1 结果回传（stdout + 挂载文件，v1）

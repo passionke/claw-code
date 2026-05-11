@@ -2484,10 +2484,9 @@ pub fn resolve_skill_path(cwd: &Path, skill: &str) -> std::io::Result<PathBuf> {
                     if !entry.path().is_dir() {
                         continue;
                     }
-                    let skill_path = entry.path().join("SKILL.md");
-                    if !skill_path.is_file() {
+                    let Some(skill_path) = skill_instruction_markdown_path(&entry.path()) else {
                         continue;
-                    }
+                    };
                     let contents = fs::read_to_string(&skill_path)?;
                     let (name, _) = parse_skill_frontmatter(&contents);
                     entries.push((
@@ -2498,10 +2497,9 @@ pub fn resolve_skill_path(cwd: &Path, skill: &str) -> std::io::Result<PathBuf> {
                 SkillOrigin::LegacyCommandsDir => {
                     let path = entry.path();
                     let markdown_path = if path.is_dir() {
-                        let skill_path = path.join("SKILL.md");
-                        if !skill_path.is_file() {
+                        let Some(skill_path) = skill_instruction_markdown_path(&path) else {
                             continue;
-                        }
+                        };
                         skill_path
                     } else if path
                         .extension()
@@ -2847,6 +2845,19 @@ fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, P
     roots
 }
 
+/// Prefer `SKILL.md`; accept legacy `SKILL.MD` (matches `http-gateway-rs` + tools crate). kejiqing
+fn skill_instruction_markdown_path(skill_dir: &Path) -> Option<PathBuf> {
+    let lower = skill_dir.join("SKILL.md");
+    if lower.is_file() {
+        return Some(lower);
+    }
+    let legacy = skill_dir.join("SKILL.MD");
+    if legacy.is_file() {
+        return Some(legacy);
+    }
+    None
+}
+
 #[allow(clippy::too_many_lines)]
 fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
     let mut roots = Vec::new();
@@ -2878,8 +2889,14 @@ fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::ProjectClaude,
+            DefinitionSource::ProjectClaw,
             ancestor.join(".claude").join("skills"),
+            SkillOrigin::SkillsDir,
+        );
+        push_unique_skill_root(
+            &mut roots,
+            DefinitionSource::ProjectClaw,
+            ancestor.join("home").join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
@@ -3292,11 +3309,10 @@ fn load_skills_from_roots(roots: &[SkillRoot]) -> std::io::Result<Vec<SkillSumma
                     if !entry.path().is_dir() {
                         continue;
                     }
-                    let skill_path = entry.path().join("SKILL.md");
-                    if !skill_path.is_file() {
+                    let Some(skill_path) = skill_instruction_markdown_path(&entry.path()) else {
                         continue;
-                    }
-                    let contents = fs::read_to_string(skill_path)?;
+                    };
+                    let contents = fs::read_to_string(&skill_path)?;
                     let (name, description) = parse_skill_frontmatter(&contents);
                     root_skills.push(SkillSummary {
                         name: name
@@ -3310,10 +3326,9 @@ fn load_skills_from_roots(roots: &[SkillRoot]) -> std::io::Result<Vec<SkillSumma
                 SkillOrigin::LegacyCommandsDir => {
                     let path = entry.path();
                     let markdown_path = if path.is_dir() {
-                        let skill_path = path.join("SKILL.md");
-                        if !skill_path.is_file() {
+                        let Some(skill_path) = skill_instruction_markdown_path(&path) else {
                             continue;
-                        }
+                        };
                         skill_path
                     } else if path
                         .extension()

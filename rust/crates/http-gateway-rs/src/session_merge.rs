@@ -2,6 +2,36 @@
 
 use std::path::{Path, PathBuf};
 
+use uuid::Uuid;
+
+/// Single directory name under `ds_*/sessions/` aligned with the effective gateway `session_id`
+/// when that id is safe as one path segment; otherwise a deterministic 32-hex segment (UUID v5). kejiqing
+#[must_use]
+pub fn sessions_directory_segment(session_id: &str) -> String {
+    let s = session_id.trim();
+    if is_safe_sessions_dir_segment(s) {
+        s.to_string()
+    } else {
+        Uuid::new_v5(&Uuid::NAMESPACE_URL, s.as_bytes())
+            .simple()
+            .to_string()
+    }
+}
+
+fn is_safe_sessions_dir_segment(s: &str) -> bool {
+    if s.is_empty() || s.len() > 200 {
+        return false;
+    }
+    if s == "." || s == ".." {
+        return false;
+    }
+    if s.contains("..") || s.contains('/') || s.contains('\\') {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 /// Whether the inbound request supplied `claw-session-id` / `x-request-id` (vs gateway-generated).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HttpRequestIdKind {
@@ -185,5 +215,24 @@ mod tests {
             join_session_home_from_rel(wr, "  /ds/s1  "),
             Path::new("/w/ds/s1")
         );
+    }
+
+    #[test]
+    fn sessions_directory_segment_uses_id_when_safe() {
+        assert_eq!(
+            sessions_directory_segment("a1b2c3d4e5f678901234567890abCDEF"),
+            "a1b2c3d4e5f678901234567890abCDEF"
+        );
+        assert_eq!(sessions_directory_segment("  my-sid_1.x  "), "my-sid_1.x");
+    }
+
+    #[test]
+    fn sessions_directory_segment_v5_when_unsafe() {
+        let a = sessions_directory_segment("bad/id");
+        let b = sessions_directory_segment("bad/id");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, "bad/id");
     }
 }
