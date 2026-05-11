@@ -552,13 +552,20 @@ pub fn run_gateway_solve_turn(
     for spec in mvp_tool_specs() {
         policy = policy.with_tool_requirement(spec.name.to_string(), spec.required_permission);
     }
-    let mut runtime = ConversationRuntime::new(
-        Session::new().with_workspace_root(work_dir),
-        api_client,
-        tool_executor,
-        policy,
-        system_prompt,
-    );
+    let gateway_jsonl = work_dir.join(".claw").join("gateway-solve-session.jsonl");
+    let session = if gateway_jsonl.exists() {
+        Session::load_from_path(&gateway_jsonl).map_err(|e| {
+            err(
+                HTTP_INTERNAL,
+                format!("load gateway session transcript: {e}"),
+            )
+        })?
+    } else {
+        Session::new().with_persistence_path(gateway_jsonl.clone())
+    }
+    .with_workspace_root(work_dir);
+    let mut runtime =
+        ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
     runtime = runtime.with_max_iterations(max_iterations);
     if let Some(tracer) = gateway_session_tracer(clawcode_session_id, work_root) {
         runtime = runtime.with_session_tracer(tracer);
