@@ -34,6 +34,12 @@ use tools::{
 const HTTP_INTERNAL: u16 = 500;
 const HTTP_GATEWAY_TIMEOUT: u16 = 504;
 
+/// Fixed transcript path under a session workspace (gateway continues-by-sid). kejiqing
+#[must_use]
+pub fn gateway_solve_session_persistence_path(work_dir: &Path) -> PathBuf {
+    work_dir.join(".claw").join("gateway-solve-session.jsonl")
+}
+
 /// Error from a single gateway solve turn (HTTP status hint for gateway mapping).
 #[derive(Debug)]
 pub struct GatewaySolveTurnError {
@@ -552,7 +558,7 @@ pub fn run_gateway_solve_turn(
     for spec in mvp_tool_specs() {
         policy = policy.with_tool_requirement(spec.name.to_string(), spec.required_permission);
     }
-    let gateway_jsonl = work_dir.join(".claw").join("gateway-solve-session.jsonl");
+    let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
     let session = if gateway_jsonl.exists() {
         Session::load_from_path(&gateway_jsonl).map_err(|e| {
             err(
@@ -606,6 +612,19 @@ pub fn run_gateway_solve_turn(
         serde_json::to_string(&out_json).unwrap_or_default(),
         Some(out_json),
     ))
+}
+
+#[cfg(test)]
+mod persistence_path_tests {
+    use std::path::Path;
+
+    use super::gateway_solve_session_persistence_path;
+
+    #[test]
+    fn gateway_solve_session_jsonl_under_dot_claw() {
+        let p = gateway_solve_session_persistence_path(Path::new("/tmp/sess1"));
+        assert_eq!(p, Path::new("/tmp/sess1/.claw/gateway-solve-session.jsonl"));
+    }
 }
 
 #[cfg(test)]

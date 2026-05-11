@@ -25,6 +25,7 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use gateway_solve_turn::run_gateway_solve_turn;
+use http_gateway_rs::{session_db, session_merge};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -40,7 +41,6 @@ use uuid::Uuid;
 
 mod gateway_logging;
 mod pool;
-mod session_db;
 mod solve_pool;
 
 fn default_system_date() -> String {
@@ -53,13 +53,6 @@ fn default_system_date() -> String {
 /// Session id from `claw-session-id` (fallback `x-request-id`) or generated. kejiqing
 #[derive(Clone)]
 struct HttpRequestId(pub String);
-
-/// Whether the inbound request supplied `claw-session-id` / `x-request-id` (vs gateway-generated).
-#[derive(Clone, Copy)]
-enum HttpRequestIdKind {
-    FromClientHeader,
-    Generated,
-}
 
 #[derive(Clone)]
 struct RunSolveContext {
@@ -342,6 +335,16 @@ impl IntoResponse for ApiError {
     }
 }
 
+fn session_routing_error(e: session_merge::SessionRoutingError) -> ApiError {
+    let status = match e {
+        session_merge::SessionRoutingError::AbsNotUnderWorkRoot => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        _ => StatusCode::BAD_REQUEST,
+    };
+    ApiError::new(status, e.detail())
+}
+
 async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
     let id_claw = req
         .headers()
@@ -358,13 +361,13 @@ async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
         .filter(|s| !s.is_empty())
         .map(ToString::to_string);
     let (id, kind) = if let Some(id) = id_claw {
-        (id, HttpRequestIdKind::FromClientHeader)
+        (id, session_merge::HttpRequestIdKind::FromClientHeader)
     } else if let Some(id) = id_xreq {
-        (id, HttpRequestIdKind::FromClientHeader)
+        (id, session_merge::HttpRequestIdKind::FromClientHeader)
     } else {
         (
             Uuid::new_v4().simple().to_string(),
-            HttpRequestIdKind::Generated,
+            session_merge::HttpRequestIdKind::Generated,
         )
     };
     req.extensions_mut().insert(HttpRequestId(id.clone()));
@@ -384,60 +387,6 @@ async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
         }
     }
     res
-}
-
-fn trim_session_body(req: &SolveRequest) -> Option<&str> {
-    req.session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-}
-
-fn merge_effective_session_id(
-    req: &SolveRequest,
-    ext: &HttpRequestId,
-    kind: HttpRequestIdKind,
-) -> Result<String, ApiError> {
-    if let Some(body_sid) = trim_session_body(req) {
-        if matches!(kind, HttpRequestIdKind::FromClientHeader) && body_sid != ext.0 {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "sessionId conflicts with claw-session-id or x-request-id header",
-            ));
-        }
-        Ok(body_sid.to_string())
-    } else {
-        Ok(ext.0.clone())
-    }
-}
-
-fn validate_session_home_rel(rel: &str) -> Result<(), ApiError> {
-    let rel = rel.trim();
-    if rel.is_empty() || rel.contains("..") {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid session_home in session registry",
-        ));
-    }
-    Ok(())
-}
-
-fn session_home_rel_under_work_root(work_root: &Path, abs: &Path) -> Result<String, ApiError> {
-    let rel = abs.strip_prefix(work_root).map_err(|_| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session workspace path is not under CLAW_WORK_ROOT",
-        )
-    })?;
-    Ok(rel
-        .to_string_lossy()
-        .replace('\\', "/")
-        .trim_matches('/')
-        .to_string())
-}
-
-fn join_session_home_from_rel(work_root: &Path, rel: &str) -> PathBuf {
-    work_root.join(rel.trim().trim_start_matches('/'))
 }
 
 async fn get_session_solve_lock(state: &AppState, ds_id: i64, session_id: &str) -> Arc<Mutex<()>> {
@@ -1143,10 +1092,13 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
 async fn solve(
     State(state): State<AppState>,
     Extension(http_request_id): Extension<HttpRequestId>,
-    Extension(id_kind): Extension<HttpRequestIdKind>,
+    Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
     Json(req): Json<SolveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let effective = merge_effective_session_id(&req, &http_request_id, id_kind)?;
+    let body_sid = session_merge::trim_session_id(req.session_id.as_deref());
+    let effective =
+        session_merge::merge_effective_session_id(body_sid, &http_request_id.0, id_kind)
+            .map_err(session_routing_error)?;
     info!(
         request_id = %effective,
         ds_id = req.ds_id,
@@ -1378,11 +1330,14 @@ async fn build_effective_prompt_response(
 async fn solve_async(
     State(state): State<AppState>,
     Extension(http_request_id): Extension<HttpRequestId>,
-    Extension(id_kind): Extension<HttpRequestIdKind>,
+    Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
     Json(req): Json<SolveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let effective = merge_effective_session_id(&req, &http_request_id, id_kind)?;
-    if trim_session_body(&req).is_some() {
+    let body_sid = session_merge::trim_session_id(req.session_id.as_deref());
+    let effective =
+        session_merge::merge_effective_session_id(body_sid, &http_request_id.0, id_kind)
+            .map_err(session_routing_error)?;
+    if session_merge::trim_session_id(req.session_id.as_deref()).is_some() {
         let row = state
             .session_db
             .get_session_home_rel(&effective, req.ds_id)
@@ -1743,7 +1698,7 @@ async fn run_solve_request(
     };
 
     let ds_base = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
-    let explicit_continuation = trim_session_body(&req).is_some();
+    let explicit_continuation = session_merge::trim_session_id(req.session_id.as_deref()).is_some();
 
     let (session_home, need_insert_row, purge_mcp_discovery, session_fs_label) =
         if ctx.skip_session_db {
@@ -1757,11 +1712,10 @@ async fn run_solve_request(
                 .await
                 .map_err(|e| session_db_err(&e))?;
             if let Some(rel) = row_opt {
-                validate_session_home_rel(&rel)?;
-                let session_home = join_session_home_from_rel(&state.cfg.work_root, &rel);
-                let exists = fs::metadata(&session_home)
-                    .await
-                    .is_ok_and(|m| m.is_dir());
+                session_merge::validate_session_home_rel(&rel).map_err(session_routing_error)?;
+                let session_home =
+                    session_merge::join_session_home_from_rel(&state.cfg.work_root, &rel);
+                let exists = fs::metadata(&session_home).await.is_ok_and(|m| m.is_dir());
                 if !exists {
                     return Err(ApiError::new(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1826,7 +1780,9 @@ async fn run_solve_request(
     }
 
     if need_insert_row {
-        let rel = session_home_rel_under_work_root(&state.cfg.work_root, &session_home)?;
+        let rel =
+            session_merge::session_home_rel_under_work_root(&state.cfg.work_root, &session_home)
+                .map_err(session_routing_error)?;
         state
             .session_db
             .insert_session(&ctx.request_id, req.ds_id, &rel, now_ms())

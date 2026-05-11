@@ -21,7 +21,13 @@ impl GatewaySessionDb {
             .map(|s| PathBuf::from(s.trim()))
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| work_root.join("gateway-sessions.sqlite"));
+        Self::open_at_path(&db_path).await
+    }
 
+    /// Opens or creates the session index at `db_path` (creates parent directories). Ignores
+    /// `CLAW_GATEWAY_SESSION_DB` (tests and deterministic deployments).
+    pub async fn open_at_path(db_path: &Path) -> Result<Self, SqlxError> {
+        let db_path = db_path.to_path_buf();
         if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -118,5 +124,90 @@ impl GatewaySessionDb {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    async fn fetch_updated_at_ms_for_test(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<Option<i64>, SqlxError> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT updated_at_ms FROM gateway_sessions WHERE session_id = ? AND ds_id = ?",
+        )
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn now_ms() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0_i64, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+    }
+
+    #[tokio::test]
+    async fn insert_get_touch_flow() {
+        let dir =
+            std::env::temp_dir().join(format!("claw_gw_sess_{}", uuid::Uuid::new_v4().simple()));
+        let db_file = dir.join("idx.sqlite");
+        let db = GatewaySessionDb::open_at_path(&db_file).await.unwrap();
+        assert_eq!(db.path(), db_file.as_path());
+
+        assert!(db.get_session_home_rel("s1", 7).await.unwrap().is_none());
+
+        db.insert_session("s1", 7, "ds_7/sessions/u1", now_ms())
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_session_home_rel("s1", 7).await.unwrap().as_deref(),
+            Some("ds_7/sessions/u1")
+        );
+
+        let t2 = now_ms() + 10_000;
+        db.touch_updated("s1", 7, t2).await.unwrap();
+        assert_eq!(db.fetch_updated_at_ms_for_test("s1", 7).await.unwrap(), Some(t2));
+        assert_eq!(
+            db.get_session_home_rel("s1", 7).await.unwrap().as_deref(),
+            Some("ds_7/sessions/u1")
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn primary_key_per_ds_id() {
+        let dir =
+            std::env::temp_dir().join(format!("claw_gw_sess_pk_{}", uuid::Uuid::new_v4().simple()));
+        let db_file = dir.join("idx.sqlite");
+        let db = GatewaySessionDb::open_at_path(&db_file).await.unwrap();
+        let t = now_ms();
+        db.insert_session("same_sid", 1, "a", t).await.unwrap();
+        db.insert_session("same_sid", 2, "b", t).await.unwrap();
+        assert_eq!(
+            db.get_session_home_rel("same_sid", 1)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            db.get_session_home_rel("same_sid", 2)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("b")
+        );
+
+        assert!(db.insert_session("same_sid", 1, "c", t).await.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 }
