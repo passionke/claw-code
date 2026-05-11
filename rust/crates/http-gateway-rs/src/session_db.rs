@@ -173,7 +173,10 @@ mod tests {
 
         let t2 = now_ms() + 10_000;
         db.touch_updated("s1", 7, t2).await.unwrap();
-        assert_eq!(db.fetch_updated_at_ms_for_test("s1", 7).await.unwrap(), Some(t2));
+        assert_eq!(
+            db.fetch_updated_at_ms_for_test("s1", 7).await.unwrap(),
+            Some(t2)
+        );
         assert_eq!(
             db.get_session_home_rel("s1", 7).await.unwrap().as_deref(),
             Some("ds_7/sessions/u1")
