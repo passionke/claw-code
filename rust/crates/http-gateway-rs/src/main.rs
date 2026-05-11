@@ -19,18 +19,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use gateway_solve_turn::run_gateway_solve_turn;
+use http_gateway_rs::{session_db, session_merge};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::fs;
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::task::AbortHandle;
 use tokio::time::timeout;
 use tower_http::trace::TraceLayer;
@@ -57,6 +58,8 @@ struct HttpRequestId(pub String);
 struct RunSolveContext {
     request_id: String,
     task_id: Option<String>,
+    /// When true, do not read/write the gateway session `SQLite` (e.g. internal biz report solve).
+    skip_session_db: bool,
 }
 
 #[derive(Clone)]
@@ -64,6 +67,9 @@ struct AppState {
     tasks: Arc<Mutex<HashMap<String, TaskInner>>>,
     injected_mcp: Arc<Mutex<HashMap<i64, HashMap<String, Value>>>>,
     ds_locks: Arc<Mutex<HashMap<i64, Arc<Mutex<()>>>>>,
+    /// Serialize solve per `(ds_id, session_id)` for transcript + workspace safety.
+    session_solve_locks: Arc<Mutex<HashMap<(i64, String), Arc<Mutex<()>>>>>,
+    session_db: Arc<session_db::GatewaySessionDb>,
     cfg: Arc<GatewayConfig>,
     /// When using `docker_pool` / `podman_pool`, active async task id → pool + slot for cancel.
     docker_slots: Arc<Mutex<HashMap<String, (Arc<dyn pool::PoolOps + Send + Sync>, usize)>>>,
@@ -129,6 +135,9 @@ struct SolveRequest {
     ds_id: i64,
     #[serde(rename = "userPrompt")]
     user_prompt: String,
+    /// When set, continue an existing gateway session for this `dsId` (must exist in session DB).
+    #[serde(default, rename = "sessionId")]
+    session_id: Option<String>,
     model: Option<String>,
     #[serde(rename = "timeoutSeconds")]
     timeout_seconds: Option<u64>,
@@ -326,36 +335,73 @@ impl IntoResponse for ApiError {
     }
 }
 
+fn session_routing_error(e: session_merge::SessionRoutingError) -> ApiError {
+    let status = match e {
+        session_merge::SessionRoutingError::AbsNotUnderWorkRoot => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        _ => StatusCode::BAD_REQUEST,
+    };
+    ApiError::new(status, e.detail())
+}
+
 async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
-    let id = req
+    let id_claw = req
         .headers()
         .get("claw-session-id")
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
-        .or_else(|| {
-            req.headers()
-                .get("x-request-id")
-                .and_then(|v| v.to_str().ok())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToString::to_string)
-        })
-        .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
+        .map(ToString::to_string);
+    let id_xreq = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let (id, kind) = if let Some(id) = id_claw {
+        (id, session_merge::HttpRequestIdKind::FromClientHeader)
+    } else if let Some(id) = id_xreq {
+        (id, session_merge::HttpRequestIdKind::FromClientHeader)
+    } else {
+        (
+            Uuid::new_v4().simple().to_string(),
+            session_merge::HttpRequestIdKind::Generated,
+        )
+    };
     req.extensions_mut().insert(HttpRequestId(id.clone()));
+    req.extensions_mut().insert(kind);
     let mut res = next.run(req).await;
-    if let Ok(value) = http::HeaderValue::from_str(&id) {
-        res.headers_mut()
-            .insert(http::header::HeaderName::from_static("x-request-id"), value);
+    let xrid = header::HeaderName::from_static("x-request-id");
+    let csid = header::HeaderName::from_static("claw-session-id");
+    // Handlers such as `/v1/solve` set these from the merged effective session id; do not overwrite.
+    if !res.headers().contains_key(&xrid) {
+        if let Ok(value) = HeaderValue::from_str(&id) {
+            res.headers_mut().insert(xrid, value);
+        }
     }
-    if let Ok(value) = http::HeaderValue::from_str(&id) {
-        res.headers_mut().insert(
-            http::header::HeaderName::from_static("claw-session-id"),
-            value,
-        );
+    if !res.headers().contains_key(&csid) {
+        if let Ok(value) = HeaderValue::from_str(&id) {
+            res.headers_mut().insert(csid, value);
+        }
     }
     res
+}
+
+async fn get_session_solve_lock(state: &AppState, ds_id: i64, session_id: &str) -> Arc<Mutex<()>> {
+    let mut locks = state.session_solve_locks.lock().await;
+    locks
+        .entry((ds_id, session_id.to_string()))
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+fn session_db_err(e: &sqlx::Error) -> ApiError {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("gateway session database error: {e}"),
+    )
 }
 
 /// Directory used for pool bind mounts (`worker -v …:/claw_host_root`), as seen by the gateway process.
@@ -516,10 +562,27 @@ async fn main() {
         config_mcp_servers: load_mcp_servers_from_claw_config(),
         allowed_tools: parse_allowed_tools(std::env::var("CLAW_ALLOWED_TOOLS").ok()),
     };
+    let session_db = Arc::new(
+        session_db::GatewaySessionDb::open(&cfg.work_root)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("http-gateway-rs: failed to open gateway session SQLite: {e}");
+                std::process::exit(1);
+            }),
+    );
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "startup",
+        phase = "session_db",
+        session_db_path = %session_db.path().display(),
+        "gateway session SQLite ready (CLAW_GATEWAY_SESSION_DB or work_root/gateway-sessions.sqlite)"
+    );
     let state = AppState {
         tasks: Arc::new(Mutex::new(HashMap::new())),
         injected_mcp: Arc::new(Mutex::new(HashMap::new())),
         ds_locks: Arc::new(Mutex::new(HashMap::new())),
+        session_solve_locks: Arc::new(Mutex::new(HashMap::new())),
+        session_db,
         cfg: Arc::new(cfg),
         docker_slots: Arc::new(Mutex::new(HashMap::new())),
         docker_pool,
@@ -700,6 +763,7 @@ async fn openapi() -> Json<Value> {
                     "properties": {
                         "dsId": { "type": "integer", "format": "int64", "minimum": 1, "description": "Datasource ID" },
                         "userPrompt": { "type": "string", "minLength": 1, "description": "User prompt text" },
+                        "sessionId": { "type": "string", "nullable": true, "description": "Optional: continue an existing gateway session for this dsId (must exist in gateway session DB). When set, conflicts with an explicit claw-session-id / x-request-id header yield 400." },
                         "model": { "type": "string", "nullable": true, "description": "Optional model override" },
                         "timeoutSeconds": { "type": "integer", "format": "int64", "nullable": true, "description": "Optional timeout in seconds" },
                         "allowedTools": {
@@ -865,7 +929,8 @@ async fn openapi() -> Json<Value> {
                         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveRequest" } } }
                     },
                     "responses": {
-                        "200": { "description": "Solve finished", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveResponse" } } } }
+                        "200": { "description": "Solve finished", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveResponse" } } } },
+                        "400": { "description": "Unknown sessionId for continuation or header/body session conflict" }
                     }
                 }
             },
@@ -877,7 +942,9 @@ async fn openapi() -> Json<Value> {
                         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveRequest" } } }
                     },
                     "responses": {
-                        "200": { "description": "Task created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveAsyncResponse" } } } }
+                        "200": { "description": "Task created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveAsyncResponse" } } } },
+                        "400": { "description": "Unknown sessionId for continuation" },
+                        "409": { "description": "Same sessionId already has a queued or running async task" }
                     }
                 }
             },
@@ -1018,17 +1085,22 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "poolRpcTcp": state.cfg.pool_rpc_tcp,
         "poolRpcUnixSocket": state.cfg.pool_rpc_unix_socket,
         "poolRpcHostWorkRoot": state.cfg.pool_rpc_host_work_root.as_ref().map(|p| p.display().to_string()),
+        "sessionDbPath": state.session_db.path().display().to_string(),
     }))
 }
 
 async fn solve(
     State(state): State<AppState>,
     Extension(http_request_id): Extension<HttpRequestId>,
+    Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
     Json(req): Json<SolveRequest>,
-) -> Result<Json<SolveResponse>, ApiError> {
-    let request_id = http_request_id.0.clone();
+) -> Result<impl IntoResponse, ApiError> {
+    let body_sid = session_merge::trim_session_id(req.session_id.as_deref());
+    let effective =
+        session_merge::merge_effective_session_id(body_sid, &http_request_id.0, id_kind)
+            .map_err(session_routing_error)?;
     info!(
-        request_id = %request_id,
+        request_id = %effective,
         ds_id = req.ds_id,
         endpoint = "/v1/solve",
         phase = "accepted",
@@ -1038,12 +1110,24 @@ async fn solve(
         state,
         req,
         RunSolveContext {
-            request_id,
+            request_id: effective.clone(),
             task_id: None,
+            skip_session_db: false,
         },
     )
     .await?;
-    Ok(Json(result))
+    let claw = HeaderValue::from_str(&effective).map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid characters in session id for response header",
+        )
+    })?;
+    let xrid = header::HeaderName::from_static("x-request-id");
+    let csid = header::HeaderName::from_static("claw-session-id");
+    Ok((
+        AppendHeaders([(xrid, claw.clone()), (csid, claw)]),
+        Json(result),
+    ))
 }
 
 async fn init_workspace(
@@ -1246,13 +1330,29 @@ async fn build_effective_prompt_response(
 async fn solve_async(
     State(state): State<AppState>,
     Extension(http_request_id): Extension<HttpRequestId>,
+    Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
     Json(req): Json<SolveRequest>,
-) -> Result<Json<SolveAsyncResponse>, ApiError> {
-    let request_id = http_request_id.0.clone();
-    // Keep async tracking stable: taskId is the same logical id as requestId.
-    let task_id = request_id.clone();
+) -> Result<impl IntoResponse, ApiError> {
+    let body_sid = session_merge::trim_session_id(req.session_id.as_deref());
+    let effective =
+        session_merge::merge_effective_session_id(body_sid, &http_request_id.0, id_kind)
+            .map_err(session_routing_error)?;
+    if session_merge::trim_session_id(req.session_id.as_deref()).is_some() {
+        let row = state
+            .session_db
+            .get_session_home_rel(&effective, req.ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?;
+        if row.is_none() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "unknown sessionId (no session history for this dsId)",
+            ));
+        }
+    }
+    let task_id = effective.clone();
     info!(
-        request_id = %request_id,
+        request_id = %effective,
         task_id = %task_id,
         ds_id = req.ds_id,
         endpoint = "/v1/solve_async",
@@ -1261,13 +1361,21 @@ async fn solve_async(
     );
     {
         let mut tasks = state.tasks.lock().await;
+        if let Some(inner) = tasks.get(&task_id) {
+            if inner.record.status == "queued" || inner.record.status == "running" {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "session has active async task",
+                ));
+            }
+        }
         tasks.insert(
             task_id.clone(),
             TaskInner {
                 record: TaskRecord {
                     task_id: task_id.clone(),
-                    session_id: request_id.clone(),
-                    request_id: request_id.clone(),
+                    session_id: effective.clone(),
+                    request_id: effective.clone(),
                     status: "queued".to_string(),
                     created_at_ms: now_ms(),
                     started_at_ms: None,
@@ -1281,7 +1389,7 @@ async fn solve_async(
     }
     let state_clone = state.clone();
     let task_id_for_worker = task_id.clone();
-    let rid = request_id.clone();
+    let rid = effective.clone();
     let join = tokio::spawn(async move {
         {
             let mut tasks = state_clone.tasks.lock().await;
@@ -1306,6 +1414,7 @@ async fn solve_async(
             RunSolveContext {
                 request_id: rid.clone(),
                 task_id: Some(task_id_for_worker.clone()),
+                skip_session_db: false,
             },
         )
         .await;
@@ -1352,13 +1461,24 @@ async fn solve_async(
             inner.cancel = Some(cancel);
         }
     }
-    Ok(Json(SolveAsyncResponse {
-        task_id: task_id.clone(),
-        session_id: request_id.clone(),
-        request_id: request_id.clone(),
-        status: "queued".to_string(),
-        poll_url: format!("/v1/tasks/{task_id}"),
-    }))
+    let claw = HeaderValue::from_str(&effective).map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid characters in session id for response header",
+        )
+    })?;
+    let xrid = header::HeaderName::from_static("x-request-id");
+    let csid = header::HeaderName::from_static("claw-session-id");
+    Ok((
+        AppendHeaders([(xrid, claw.clone()), (csid, claw)]),
+        Json(SolveAsyncResponse {
+            task_id: task_id.clone(),
+            session_id: effective.clone(),
+            request_id: effective.clone(),
+            status: "queued".to_string(),
+            poll_url: format!("/v1/tasks/{task_id}"),
+        }),
+    ))
 }
 
 async fn get_task(
@@ -1495,6 +1615,7 @@ async fn get_biz_advice_report(
         SolveRequest {
             ds_id: source_result.ds_id,
             user_prompt: prompt,
+            session_id: None,
             model: None,
             timeout_seconds: None,
             extra_session: None,
@@ -1503,6 +1624,7 @@ async fn get_biz_advice_report(
         RunSolveContext {
             request_id: Uuid::new_v4().simple().to_string(),
             task_id: None,
+            skip_session_db: true,
         },
     )
     .await?;
@@ -1564,11 +1686,55 @@ async fn run_solve_request(
         resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
     validate_ds_exists(req.ds_id, &state.cfg.ds_registry_path).await?;
 
-    // Per-solve workspace under shared `ds_{id}/` so parallel solves cannot read each other's
-    // files; pool workers bind only this subtree to /claw_host_root. Author: kejiqing
+    let _session_lock_guard: Option<OwnedMutexGuard<()>> = if ctx.skip_session_db {
+        None
+    } else {
+        Some(
+            get_session_solve_lock(&state, req.ds_id, &ctx.request_id)
+                .await
+                .lock_owned()
+                .await,
+        )
+    };
+
     let ds_base = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
-    let session_fs_id = Uuid::new_v4().simple().to_string();
-    let session_home = ds_base.join("sessions").join(&session_fs_id);
+    let explicit_continuation = session_merge::trim_session_id(req.session_id.as_deref()).is_some();
+
+    let (session_home, need_insert_row, purge_mcp_discovery, session_fs_label) =
+        if ctx.skip_session_db {
+            let session_fs_id = Uuid::new_v4().simple().to_string();
+            let session_home = ds_base.join("sessions").join(&session_fs_id);
+            (session_home, false, true, session_fs_id)
+        } else {
+            let row_opt = state
+                .session_db
+                .get_session_home_rel(&ctx.request_id, req.ds_id)
+                .await
+                .map_err(|e| session_db_err(&e))?;
+            if let Some(rel) = row_opt {
+                session_merge::validate_session_home_rel(&rel).map_err(session_routing_error)?;
+                let session_home =
+                    session_merge::join_session_home_from_rel(&state.cfg.work_root, &rel);
+                let exists = fs::metadata(&session_home).await.is_ok_and(|m| m.is_dir());
+                if !exists {
+                    return Err(ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "session workspace is missing on disk (database path is stale)",
+                    ));
+                }
+                (session_home, false, false, rel)
+            } else if explicit_continuation {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "unknown sessionId (no session history for this dsId)",
+                ));
+            } else {
+                let session_fs_id = Uuid::new_v4().simple().to_string();
+                let session_home = ds_base.join("sessions").join(&session_fs_id);
+                (session_home, true, true, session_fs_id)
+            }
+        };
+
     fs::create_dir_all(session_home.join(".claw"))
         .await
         .map_err(|e| {
@@ -1608,7 +1774,26 @@ async fn run_solve_request(
                     format!("write settings failed: {e}"),
                 )
             })?;
-        let _ = fs::remove_file(session_home.join(".claw/mcp_discovery_cache.json")).await;
+        if purge_mcp_discovery {
+            let _ = fs::remove_file(session_home.join(".claw/mcp_discovery_cache.json")).await;
+        }
+    }
+
+    if need_insert_row {
+        let rel =
+            session_merge::session_home_rel_under_work_root(&state.cfg.work_root, &session_home)
+                .map_err(session_routing_error)?;
+        state
+            .session_db
+            .insert_session(&ctx.request_id, req.ds_id, &rel, now_ms())
+            .await
+            .map_err(|e| session_db_err(&e))?;
+    } else if !ctx.skip_session_db {
+        state
+            .session_db
+            .touch_updated(&ctx.request_id, req.ds_id, now_ms())
+            .await
+            .map_err(|e| session_db_err(&e))?;
     }
 
     info!(
@@ -1618,7 +1803,7 @@ async fn run_solve_request(
         ds_id = req.ds_id,
         request_id = %ctx.request_id,
         task_id = ctx.task_id.as_deref(),
-        session_fs_id = %session_fs_id,
+        session_fs_id = %session_fs_label,
         session_home = %session_home.display(),
         solve_isolation = state.cfg.solve_isolation.as_str(),
         timeout_seconds,

@@ -23,6 +23,19 @@ source "${SCRIPT_DIR}/compose-include.sh"
 claw_podman_export_pool_workspace "${SCRIPT_DIR}"
 claw_podman_load_compose_args "${SCRIPT_DIR}" "${ENV_FILE}"
 
+cleanup_stale_gateway_workers() {
+  local rt ids
+  rt="$(claw_container_runtime_cli)"
+  ids="$("${rt}" ps -aq --filter name='^claw-gw-' || true)"
+  if [[ -z "${ids//[$'\t\r\n ']}" ]]; then
+    return 0
+  fi
+  echo "Removing stale gateway workers before startup..."
+  # Keep startup deterministic: stale workers from previous runs can survive compose recreate.
+  # Explicitly removing only `claw-gw-*` avoids touching other project containers. Author: kejiqing
+  "${rt}" rm -f ${ids}
+}
+
 # Host pool daemon must listen before the gateway connects on first solve. kejiqing
 set -a
 # shellcheck disable=SC1090
@@ -31,6 +44,8 @@ set +a
 if [[ "${CLAW_SOLVE_ISOLATION:-podman_pool}" != "inprocess" ]] && [[ "${CLAW_POOL_HOST_DAEMON:-1}" == "1" ]]; then
   "${SCRIPT_DIR}/pool-daemon-up.sh" "${SCRIPT_DIR}" "${REPO_ROOT}"
 fi
+
+cleanup_stale_gateway_workers
 
 # Recreate so env_file changes (e.g. .claw-pool-workspace.env) apply; plain `up -d` can leave stale env. kejiqing
 claw_compose --env-file "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
