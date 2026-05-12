@@ -108,7 +108,15 @@ claw_compose() {
   local rt
   rt="$(claw_container_runtime_cli)" || return 1
   if [[ "$rt" == docker ]]; then
-    docker compose "$@"
+    # Ubuntu 22.04 packages may ship `docker-compose` without the `docker compose` CLI plugin.
+    if docker compose version >/dev/null 2>&1; then
+      docker compose "$@"
+    elif command -v docker-compose >/dev/null 2>&1; then
+      docker-compose "$@"
+    else
+      echo "error: need \`docker compose\` (plugin) or \`docker-compose\` on PATH" >&2
+      return 1
+    fi
     return
   fi
   if [[ -z "${PODMAN_COMPOSE_PROVIDER:-}" ]] && command -v podman-compose >/dev/null 2>&1; then
