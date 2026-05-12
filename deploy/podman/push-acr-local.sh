@@ -2,9 +2,11 @@
 # Build linux/amd64 gateway + worker images locally and push to any Docker registry
 # (Aliyun ACR personal, Azure ACR, Harbor, …). No GitHub Actions required. kejiqing
 #
-# Prereq: log in once (hostname only, no path):
+# Prereq: either log in once (hostname only, no path):
 #   podman login crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com
-#   # or: docker login …
+# or set non-interactive creds (not committed to git):
+#   ACR_USERNAME or ACR_USER  +  ACR_PASSWORD
+# The script runs login before push when both user and password are set.
 #
 # Usage:
 #   ./deploy/podman/push-acr-local.sh <registry-prefix> <tag>
@@ -17,6 +19,7 @@
 #   CLAW_USE_DOCKER_IO=1             # base images from docker.io (same as build.sh)
 #   CLAW_USE_CN_RUST_MIRROR=1      # USTC rustup mirror during build (see build.sh)
 #   CLAW_LOCAL_PUSH_DRY_RUN=1       # build + tag only, no push
+#   CLAW_LOCAL_PUSH_SKIP_LOGIN=1    # do not run registry login (use existing auth)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,7 +36,8 @@ Usage:
 
 <tag>                e.g. release-v1.0.27 (pushed as prefix/claw-code:tag and …/claw-gateway-worker:tag)
 
-Optional env: CLAW_PUSH_PLATFORM (default linux/amd64), CLAW_LOCAL_PUSH_DRY_RUN=1
+Optional env: CLAW_PUSH_PLATFORM (default linux/amd64), CLAW_LOCAL_PUSH_DRY_RUN=1,
+  ACR_USER or ACR_USERNAME + ACR_PASSWORD for non-interactive login before push.
 EOF
 }
 
@@ -77,8 +81,29 @@ fi
 
 GATEWAY_REMOTE="${REGISTRY_PREFIX}/claw-code:${TAG}"
 WORKER_REMOTE="${REGISTRY_PREFIX}/claw-gateway-worker:${TAG}"
+LOGIN_HOST="${REGISTRY_PREFIX%%/*}"
+
+claw_registry_login_noninteractive() {
+  if [[ "${CLAW_LOCAL_PUSH_SKIP_LOGIN:-0}" == "1" ]]; then
+    echo "CLAW_LOCAL_PUSH_SKIP_LOGIN=1: skipping registry login"
+    return 0
+  fi
+  local user="${ACR_USERNAME:-${ACR_USER:-}}"
+  local pass="${ACR_PASSWORD:-}"
+  if [[ -z "${user}" ]] || [[ -z "${pass}" ]]; then
+    echo "note: ACR_USERNAME (or ACR_USER) + ACR_PASSWORD unset; assuming already logged in to ${LOGIN_HOST}"
+    return 0
+  fi
+  echo "registry login: ${LOGIN_HOST} (user from env)"
+  if [[ "${CLI}" == docker ]]; then
+    printf '%s\n' "${pass}" | docker login "${LOGIN_HOST}" --username "${user}" --password-stdin
+  else
+    printf '%s\n' "${pass}" | podman login "${LOGIN_HOST}" --username "${user}" --password-stdin
+  fi
+}
 
 echo "CLI=${CLI} PLATFORM=${PLATFORM}"
+echo "login host    -> ${LOGIN_HOST}"
 echo "push gateway  -> ${GATEWAY_REMOTE}"
 echo "push worker   -> ${WORKER_REMOTE}"
 if [[ "${CLAW_LOCAL_PUSH_DRY_RUN:-0}" == "1" ]]; then
@@ -108,6 +133,8 @@ if [[ "${CLAW_LOCAL_PUSH_DRY_RUN:-0}" == "1" ]]; then
   echo "dry-run done (images built and tagged locally)."
   exit 0
 fi
+
+claw_registry_login_noninteractive
 
 "${CLI}" push "${GATEWAY_REMOTE}"
 "${CLI}" push "${WORKER_REMOTE}"
