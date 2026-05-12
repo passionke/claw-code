@@ -1,8 +1,9 @@
 # shellcheck shell=bash
-# Helpers for pinning ghcr.io gateway/worker tags without editing .env. Author: kejiqing
+# Helpers for pinning remote registry gateway/worker tags (GHCR, ACR, …) without editing .env. Author: kejiqing
 
 claw_ghcr_image_prefix_from_env() {
-  local prefix="${CLAW_GHCR_PREFIX:-}"
+  # CLAW_IMAGE_PREFIX wins (registry-agnostic name); CLAW_GHCR_PREFIX kept for back-compat.
+  local prefix="${CLAW_IMAGE_PREFIX:-${CLAW_GHCR_PREFIX:-}}"
   if [[ -n "$prefix" ]]; then
     printf '%s' "$prefix"
     return 0
@@ -24,7 +25,7 @@ claw_apply_release_image_tag() {
   local tag="${1:?}"
   local prefix
   prefix="$(claw_ghcr_image_prefix_from_env)" || {
-    echo "error: cannot derive GHCR prefix; set CLAW_GHCR_PREFIX=ghcr.io/<owner> in .env or use GATEWAY_IMAGE=.../claw-code:<anytag>" >&2
+    echo "error: cannot derive image registry prefix; set CLAW_IMAGE_PREFIX=<registry> or CLAW_GHCR_PREFIX=ghcr.io/<owner> in .env, or GATEWAY_IMAGE=.../claw-code:<anytag>" >&2
     return 1
   }
   export GATEWAY_IMAGE="${prefix}/claw-code:${tag}"
@@ -66,8 +67,8 @@ claw_parse_up_release_args() {
         ;;
       -h | --help)
         echo "usage: $0 [--release <tag>|release-v*]" >&2
-        echo "  --release <tag>   pin ghcr gateway + worker images for this run; writes deploy/podman/.claw-image-release.env" >&2
-        echo "                    (merged after .env). Requires CLAW_GHCR_PREFIX or .../claw-code:* in GATEWAY_IMAGE." >&2
+        echo "  --release <tag>   pin gateway + worker images for this run; writes deploy/podman/.claw-image-release.env" >&2
+        echo "                    (merged after .env). Needs CLAW_IMAGE_PREFIX / CLAW_GHCR_PREFIX or .../claw-code:* in GATEWAY_IMAGE." >&2
         echo "  release-v*        same as --release release-v*" >&2
         echo "  Subsequent runs without --release still use .claw-image-release.env if present; remove that file to follow .env only." >&2
         return 2
