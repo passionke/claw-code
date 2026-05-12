@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Build gateway (http-gateway-rs + claw-pool-daemon) and worker (claw) images in one run.
+# Same rust/ tree, same base images and rustup build-args — pair after any Rust change. Author: kejiqing
+#
 # Base image registry (hostname only, no path); same name as GitHub Actions variable
 # CONTAINER_BASE_REGISTRY in claw-code-image workflow.
 # - Local: default docker.1ms.run unless overridden in env or repo-root .env
 # - docker.io when GITHUB_ACTIONS=true (GitHub CI) or CLAW_USE_DOCKER_IO=1
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 if [[ -f "${ROOT_DIR}/.env" ]]; then
   set -a
   # shellcheck source=/dev/null
@@ -13,7 +16,7 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
   set +a
 fi
 # shellcheck source=/dev/null
-source "${ROOT_DIR}/deploy/podman/compose-include.sh"
+source "${ROOT_DIR}/deploy/stack/lib/compose-include.sh"
 
 IMAGE_TAG="${1:-local}"
 IMAGE_NAME="claw-gateway-rs:${IMAGE_TAG}"
@@ -50,9 +53,31 @@ set +u
   --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
   --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
   "${RUSTUP_BUILD_ARGS[@]}" \
-  -f "${ROOT_DIR}/deploy/podman/Containerfile.gateway-rs" \
+  -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs" \
   -t "${IMAGE_NAME}" \
   "${ROOT_DIR}"
 set -u
 
 echo "Built image: ${IMAGE_NAME}"
+
+WORKER_IMAGE_NAME="claw-gateway-worker:${IMAGE_TAG}"
+echo "Building worker image: ${WORKER_IMAGE_NAME} …"
+set +u
+"${CONTAINER_CLI}" build \
+  --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
+  --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+  "${RUSTUP_BUILD_ARGS[@]}" \
+  -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker" \
+  -t "${WORKER_IMAGE_NAME}" \
+  "${ROOT_DIR}"
+set -u
+
+echo "Built image: ${WORKER_IMAGE_NAME}"
+
+# macOS dev: host `claw-pool-daemon` is the real pool (Linux image cannot replace Mach-O); keep it in
+# sync with `rust/` whenever you run `gateway.sh build`, so `up`/`restart` does not resurrect stale names/logic.
+if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
+  echo "Building host claw-pool-daemon (Darwin + cargo in PATH) …"
+  (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
+  echo "Host binary: ${ROOT_DIR}/rust/target/release/claw-pool-daemon"
+fi
