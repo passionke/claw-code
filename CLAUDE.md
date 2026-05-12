@@ -22,12 +22,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Keep shared defaults in `.claude.json`; reserve `.claude/settings.local.json` for machine-local overrides.
 - Do not overwrite existing `CLAUDE.md` content automatically; update it intentionally when repo workflows change.
 
-## Design principle (KISS)
-- **Cursor IDE:** canonical wording lives in `.cursor/rules/kiss-principle.mdc` (`alwaysApply: true`). Update that file when this principle changes.
-- **Summary:** KISS — no unnecessary forks; one default path; stop and align with the maintainer before adding a second supported mode.
-
-Author: kejiqing
-
 ## Claw stack boundaries (claw-code)
 - **Canonical table** (Claw / gateway / Doris / SQLBot / adapter / three channels): `docs/boundaries-claw-stack.md` — update it when adding MCPs or env; avoid ad-hoc explanations that contradict it.
 - Author: kejiqing
