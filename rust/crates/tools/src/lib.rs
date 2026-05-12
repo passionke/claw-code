@@ -3451,6 +3451,12 @@ fn push_project_skill_lookup_roots(roots: &mut Vec<SkillLookupRoot>, cwd: &std::
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".claw"));
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".codex"));
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".claude"));
+        // `http-gateway-rs` project skills: `ds_<id>/home/skills/<name>/SKILL.md` (same layout as git mirror).
+        push_skill_lookup_root(
+            roots,
+            ancestor.join("home").join("skills"),
+            SkillLookupOrigin::SkillsDir,
+        );
     }
 }
 
@@ -3507,13 +3513,20 @@ fn resolve_skill_path_in_root(
     }
 }
 
+fn skill_instruction_markdown_path(skill_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let p = skill_dir.join("SKILL.md");
+    if p.is_file() {
+        return Some(p);
+    }
+    None
+}
+
 fn resolve_skill_path_in_skills_dir(
     root: &std::path::Path,
     requested: &str,
 ) -> Option<std::path::PathBuf> {
-    let direct = root.join(requested).join("SKILL.md");
-    if direct.is_file() {
-        return Some(direct);
+    if let Some(p) = skill_instruction_markdown_path(&root.join(requested)) {
+        return Some(p);
     }
 
     let entries = std::fs::read_dir(root).ok()?;
@@ -3521,10 +3534,9 @@ fn resolve_skill_path_in_skills_dir(
         if !entry.path().is_dir() {
             continue;
         }
-        let skill_path = entry.path().join("SKILL.md");
-        if !skill_path.is_file() {
+        let Some(skill_path) = skill_instruction_markdown_path(&entry.path()) else {
             continue;
-        }
+        };
         if entry
             .file_name()
             .to_string_lossy()
@@ -3542,9 +3554,8 @@ fn resolve_skill_path_in_legacy_commands_dir(
     root: &std::path::Path,
     requested: &str,
 ) -> Option<std::path::PathBuf> {
-    let direct_dir = root.join(requested).join("SKILL.md");
-    if direct_dir.is_file() {
-        return Some(direct_dir);
+    if let Some(p) = skill_instruction_markdown_path(&root.join(requested)) {
+        return Some(p);
     }
 
     let direct_markdown = root.join(format!("{requested}.md"));
@@ -3556,10 +3567,9 @@ fn resolve_skill_path_in_legacy_commands_dir(
     for entry in entries.flatten() {
         let path = entry.path();
         let candidate_path = if path.is_dir() {
-            let skill_path = path.join("SKILL.md");
-            if !skill_path.is_file() {
+            let Some(skill_path) = skill_instruction_markdown_path(&path) else {
                 continue;
-            }
+            };
             skill_path
         } else if path
             .extension()

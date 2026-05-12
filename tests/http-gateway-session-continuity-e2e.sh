@@ -39,6 +39,9 @@ export CLAW_GATEWAY_SESSION_DB="$SESSION_DB"
 export CLAW_DS_REGISTRY="$REGISTRY"
 export CLAW_BIN
 export CLAW_SOLVE_ISOLATION=inprocess
+export CLAW_PROJECTS_GIT_URL="${CLAW_PROJECTS_GIT_URL:-git@github.com:passionke/claw-code-projects.git}"
+export CLAW_PROJECTS_GIT_BRANCH="${CLAW_PROJECTS_GIT_BRANCH:-main}"
+export CLAW_PROJECTS_GIT_AUTHOR="${CLAW_PROJECTS_GIT_AUTHOR:-kejiqing <kejiqing@local>}"
 
 GW_LOG="$WORK_ROOT/gateway.log"
 "$BIN" >>"$GW_LOG" 2>&1 &
