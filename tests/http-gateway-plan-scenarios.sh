@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_DIR="$REPO_ROOT/rust"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/claw-gateway-plan.XXXXXX")"
-REGISTRY="$REPO_ROOT/third_party/claw-http-gateway/http_gateway/config/datasources.example.yaml"
+REGISTRY="$REPO_ROOT/rust/crates/http-gateway-rs/datasources.example.yaml"
 BIN="$RUST_DIR/target/debug/http-gateway-rs"
 CLAW_BIN="${CLAW_BIN:-$RUST_DIR/target/debug/claw}"
 
@@ -33,6 +33,7 @@ export CLAW_HTTP_ADDR="127.0.0.1:$PORT"
 export CLAW_WORK_ROOT="$WORK_ROOT"
 export CLAW_DS_REGISTRY="$REGISTRY"
 export CLAW_BIN
+export CLAW_SOLVE_ISOLATION=inprocess
 
 GW_LOG="$WORK_ROOT/gateway.log"
 "$BIN" >>"$GW_LOG" 2>&1 &
@@ -110,6 +111,23 @@ if [[ "$ST" == "succeeded" ]]; then
   echo "[plan] workDir is ds_home: $WD"
 else
   echo "[plan] solve did not succeed (often missing model API keys); skipping workDir shape assert"
+fi
+
+echo "[plan] GET /v1/skills/10 list + GET /v1/skills/10/plan_skill..."
+mkdir -p "$WORK_ROOT/ds_10/.claw/skills/plan_skill"
+printf '%s\n' '---' 'name: plan_skill' '---' 'skill body line' >"$WORK_ROOT/ds_10/.claw/skills/plan_skill/SKILL.md"
+SK_JSON="$(curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10")"
+python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ds_id")==10; assert isinstance(d.get("skills"),list); assert any(x.get("skill_name")=="plan_skill" for x in d["skills"])' <<<"$SK_JSON"
+ONE_JSON="$(curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10/plan_skill")"
+python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("skill_name")=="plan_skill"; assert "skill body line" in d.get("skill_content","")' <<<"$ONE_JSON"
+if curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10/missing_skill_xyz" >/dev/null 2>&1; then
+  echo "FAIL: expected 404 for missing skill" >&2
+  exit 1
+fi
+HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time "$CURL_MAX" "$BASE/v1/skills/10/missing_skill_xyz")"
+if [[ "$HTTP_CODE" != "404" ]]; then
+  echo "FAIL: missing skill should return 404, got $HTTP_CODE" >&2
+  exit 1
 fi
 
 sleep 0.3

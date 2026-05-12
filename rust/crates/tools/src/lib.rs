@@ -653,7 +653,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                                 "activeForm": { "type": "string" },
                                 "status": {
                                     "type": "string",
-                                    "enum": ["pending", "in_progress", "completed"]
+                                    "enum": ["pending", "completed"]
                                 }
                             },
                             "required": ["content", "activeForm", "status"],
@@ -2446,7 +2446,6 @@ struct TodoItem {
 #[serde(rename_all = "snake_case")]
 enum TodoStatus {
     Pending,
-    InProgress,
     Completed,
 }
 
@@ -3345,7 +3344,6 @@ fn validate_todos(todos: &[TodoItem]) -> Result<(), String> {
     if todos.is_empty() {
         return Err(String::from("todos must not be empty"));
     }
-    // Allow multiple in_progress items for parallel workflows
     if todos.iter().any(|todo| todo.content.trim().is_empty()) {
         return Err(String::from("todo content must not be empty"));
     }
@@ -7431,7 +7429,7 @@ mod tests {
             "TodoWrite",
             &json!({
                 "todos": [
-                    {"content": "Add tool", "activeForm": "Adding tool", "status": "in_progress"},
+                    {"content": "Add tool", "activeForm": "Adding tool", "status": "pending"},
                     {"content": "Run tests", "activeForm": "Running tests", "status": "pending"}
                 ]
             }),
@@ -7478,17 +7476,16 @@ mod tests {
             .expect_err("empty todos should fail");
         assert!(empty.contains("todos must not be empty"));
 
-        // Multiple in_progress items are now allowed for parallel workflows
-        let _multi_active = execute_tool(
+        let _multi_pending = execute_tool(
             "TodoWrite",
             &json!({
                 "todos": [
-                    {"content": "One", "activeForm": "Doing one", "status": "in_progress"},
-                    {"content": "Two", "activeForm": "Doing two", "status": "in_progress"}
+                    {"content": "One", "activeForm": "Doing one", "status": "pending"},
+                    {"content": "Two", "activeForm": "Doing two", "status": "pending"}
                 ]
             }),
         )
-        .expect("multiple in-progress todos should succeed");
+        .expect("multiple pending todos should succeed");
 
         let blank_content = execute_tool(
             "TodoWrite",

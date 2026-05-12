@@ -11,7 +11,7 @@ RUST_DIR="$REPO_ROOT/rust"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/claw-gateway-sess-e2e.XXXXXX")"
 SESSION_DB="${WORK_ROOT}/gateway-sessions.sqlite"
-REGISTRY="$REPO_ROOT/third_party/claw-http-gateway/http_gateway/config/datasources.example.yaml"
+REGISTRY="$REPO_ROOT/rust/crates/http-gateway-rs/datasources.example.yaml"
 BIN="${BIN:-$RUST_DIR/target/release/http-gateway-rs}"
 CLAW_BIN="${CLAW_BIN:-$RUST_DIR/target/release/claw}"
 

@@ -223,6 +223,26 @@ struct EffectivePromptResponse {
     message: String,
 }
 
+/// Per-datasource skill file under `<work_root>/ds_<id>/.claw/skills/<name>/SKILL.md`. kejiqing
+#[derive(Debug, Serialize)]
+struct DsSkillEntry {
+    skill_name: String,
+    skill_content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DsSkillsListResponse {
+    ds_id: i64,
+    skills: Vec<DsSkillEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct DsSkillGetResponse {
+    ds_id: i64,
+    skill_name: String,
+    skill_content: String,
+}
+
 /// In-memory task row plus a handle to abort the async worker (not serialized). kejiqing
 struct TaskInner {
     record: TaskRecord,
@@ -534,9 +554,10 @@ async fn main() {
         pool_rpc_tcp: pool_rpc_tcp_cfg,
         pool_rpc_unix_socket: pool_rpc_unix_cfg,
         pool_rpc_remote: pool_daemon_tcp.is_some() || pool_daemon_socket.is_some(),
-        ds_registry_path: PathBuf::from(std::env::var("CLAW_DS_REGISTRY").unwrap_or_else(|_| {
-            "third_party/claw-http-gateway/http_gateway/config/datasources.example.yaml".to_string()
-        })),
+        ds_registry_path: std::env::var("CLAW_DS_REGISTRY").map_or_else(
+            |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("datasources.example.yaml"),
+            PathBuf::from,
+        ),
         default_timeout_seconds: std::env::var("CLAW_TIMEOUT_SECONDS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -608,6 +629,8 @@ async fn main() {
             "/v1/project/prompt/{ds_id}/effective",
             get(get_effective_prompt).post(post_effective_prompt),
         )
+        .route("/v1/skills/{ds_id}/{skill_name}", get(get_ds_skill))
+        .route("/v1/skills/{ds_id}", get(list_ds_skills))
         .route("/v1/mcp/inject", post(inject_mcp))
         .route("/v1/mcp/injected/{ds_id}", get(get_injected_mcp))
         .route("/v1/mcp/injected/{ds_id}", delete(delete_injected_mcp))
@@ -723,6 +746,16 @@ async fn docs() -> Html<String> {
             "/v1/project/prompt/{ds_id}/effective",
             "Reload and get effective system prompt for ds",
         ),
+        (
+            "GET",
+            "/v1/skills/{ds_id}",
+            "List ds workspace skills (.claw/skills/*/SKILL.md)",
+        ),
+        (
+            "GET",
+            "/v1/skills/{ds_id}/{skill_name}",
+            "Get one skill file content for ds",
+        ),
         ("POST", "/v1/mcp/inject", "Inject MCP servers"),
         ("GET", "/v1/mcp/injected/{ds_id}", "Get MCP servers for ds"),
         (
@@ -816,6 +849,31 @@ async fn openapi() -> Json<Value> {
                         "workDir": { "type": "string" },
                         "sections": { "type": "array", "items": { "type": "string" } },
                         "message": { "type": "string" }
+                    }
+                },
+                "DsSkillEntry": {
+                    "type": "object",
+                    "required": ["skill_name", "skill_content"],
+                    "properties": {
+                        "skill_name": { "type": "string" },
+                        "skill_content": { "type": "string" }
+                    }
+                },
+                "DsSkillsListResponse": {
+                    "type": "object",
+                    "required": ["ds_id", "skills"],
+                    "properties": {
+                        "ds_id": { "type": "integer", "format": "int64" },
+                        "skills": { "type": "array", "items": { "$ref": "#/components/schemas/DsSkillEntry" } }
+                    }
+                },
+                "DsSkillGetResponse": {
+                    "type": "object",
+                    "required": ["ds_id", "skill_name", "skill_content"],
+                    "properties": {
+                        "ds_id": { "type": "integer", "format": "int64" },
+                        "skill_name": { "type": "string" },
+                        "skill_content": { "type": "string" }
                     }
                 },
                 "SolveResponse": {
@@ -1024,6 +1082,30 @@ async fn openapi() -> Json<Value> {
                     ],
                     "responses": {
                         "200": { "description": "Effective system prompt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EffectivePromptResponse" } } } }
+                    }
+                }
+            },
+            "/v1/skills/{ds_id}": {
+                "get": {
+                    "summary": "List skills under ds workspace (.claw/skills/*/SKILL.md)",
+                    "parameters": [
+                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                    ],
+                    "responses": {
+                        "200": { "description": "Skills list", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DsSkillsListResponse" } } } }
+                    }
+                }
+            },
+            "/v1/skills/{ds_id}/{skill_name}": {
+                "get": {
+                    "summary": "Get one skill by name for ds",
+                    "parameters": [
+                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } },
+                        { "name": "skill_name", "in": "path", "required": true, "schema": { "type": "string" } }
+                    ],
+                    "responses": {
+                        "200": { "description": "Skill content", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DsSkillGetResponse" } } } },
+                        "404": { "description": "Skill not found" }
                     }
                 }
             },
@@ -1325,6 +1407,112 @@ async fn build_effective_prompt_response(
         sections,
         message,
     })
+}
+
+fn is_safe_skill_dir_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
+}
+
+async fn load_skills_from_ds_workdir(work_dir: &Path) -> std::io::Result<Vec<DsSkillEntry>> {
+    let skills_root = work_dir.join(".claw").join("skills");
+    let mut out = Vec::new();
+    if !fs::metadata(&skills_root).await.is_ok_and(|m| m.is_dir()) {
+        return Ok(out);
+    }
+    let mut rd = fs::read_dir(&skills_root).await?;
+    while let Some(entry) = rd.next_entry().await? {
+        if !entry.file_type().await?.is_dir() {
+            continue;
+        }
+        let skill_name = entry.file_name().to_string_lossy().to_string();
+        if !is_safe_skill_dir_name(&skill_name) {
+            continue;
+        }
+        let path = entry.path().join("SKILL.md");
+        if !fs::metadata(&path).await.is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        let skill_content = fs::read_to_string(&path).await?;
+        out.push(DsSkillEntry {
+            skill_name,
+            skill_content,
+        });
+    }
+    out.sort_by(|a, b| a.skill_name.cmp(&b.skill_name));
+    Ok(out)
+}
+
+async fn list_ds_skills(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+) -> Result<Json<DsSkillsListResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create work dir failed: {e}"),
+            )
+        })?;
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let skills = load_skills_from_ds_workdir(&work_dir).await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("list skills failed: {e}"),
+        )
+    })?;
+    Ok(Json(DsSkillsListResponse { ds_id, skills }))
+}
+
+async fn get_ds_skill(
+    State(state): State<AppState>,
+    AxumPath((ds_id, skill_name)): AxumPath<(i64, String)>,
+) -> Result<Json<DsSkillGetResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    if !is_safe_skill_dir_name(&skill_name) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid skill_name"));
+    }
+    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create work dir failed: {e}"),
+            )
+        })?;
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let path = work_dir
+        .join(".claw")
+        .join("skills")
+        .join(&skill_name)
+        .join("SKILL.md");
+    let skill_content = match fs::read_to_string(&path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("skill not found: {skill_name}"),
+            ));
+        }
+        Err(e) => {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read skill failed: {e}"),
+            ));
+        }
+    };
+    Ok(Json(DsSkillGetResponse {
+        ds_id,
+        skill_name,
+        skill_content,
+    }))
 }
 
 async fn solve_async(

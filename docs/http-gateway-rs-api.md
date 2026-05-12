@@ -69,6 +69,19 @@ Base URL 示例：`http://127.0.0.1:18088`
     - `reportText`：清洗后的报告文本（字符串）
     - `reportJson`：清洗后的结构化 JSON（如模型返回 JSON）
 
+## Skills（按 ds 工作区）
+
+技能文件约定：`<CLAW_WORK_ROOT>/ds_<dsId>/.claw/skills/<skill_name>/SKILL.md`（与 Claw 技能目录布局一致）。`skill_name` 为目录名，不含 `/`、`\` 或 `..`。
+
+- `GET /v1/skills/{ds_id}`
+  - 用途：列出该 `dsId` 下所有已存在的技能（仅包含存在 `SKILL.md` 的子目录）
+  - 成功响应 JSON：`{ "ds_id": <int>, "skills": [ { "skill_name": "<str>", "skill_content": "<str>" }, ... ] }`（按 `skill_name` 排序）
+
+- `GET /v1/skills/{ds_id}/{skill_name}`
+  - 用途：读取单个技能的完整 `SKILL.md` 文本
+  - 成功响应 JSON：`{ "ds_id": <int>, "skill_name": "<str>", "skill_content": "<str>" }`
+  - 若文件不存在：返回 `404`
+
 ## MCP
 
 - `POST /v1/mcp/inject`
