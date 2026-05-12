@@ -19,7 +19,24 @@ claw_podman_export_pool_workspace() {
 claw_podman_load_compose_args() {
   local script_dir="$1"
   local env_file="$2"
-  CLAW_PODMAN_COMPOSE_ARGS=( -f "${script_dir}/podman-compose.yml" )
+  unset CLAW_COMPOSE_WORKING_DIRECTORY
+  script_dir="$(cd "${script_dir}" && pwd)"
+  # Absolute `-f /.../deploy/podman/*.yml` makes Compose use `deploy/podman/` as project dir and auto-load
+  # `deploy/podman/.env`, which can override `--env-file` image pins. Use `-f` relative to repo root and
+  # run compose from that directory. kejiqing
+  local repo_root rel=""
+  if [[ -f "${env_file}" ]]; then
+    repo_root="$(cd "$(dirname "${env_file}")" && pwd)"
+    if [[ "${script_dir}" == "${repo_root}/"* ]]; then
+      rel="${script_dir#"${repo_root}/"}"
+      export CLAW_COMPOSE_WORKING_DIRECTORY="${repo_root}"
+    fi
+  fi
+  if [[ -n "${rel}" ]]; then
+    CLAW_PODMAN_COMPOSE_ARGS=( -f "${rel}/podman-compose.yml" )
+  else
+    CLAW_PODMAN_COMPOSE_ARGS=( -f "${script_dir}/podman-compose.yml" )
+  fi
   if [[ ! -f "${env_file}" ]]; then
     return 0
   fi
@@ -42,7 +59,11 @@ claw_podman_load_compose_args() {
       printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"
       printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
     } >"${script_dir}/.claw-pool-rpc/gateway.env"
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.pool-rpc.yml" )
+    if [[ -n "${rel}" ]]; then
+      CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.pool-rpc.yml" )
+    else
+      CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.pool-rpc.yml" )
+    fi
     return 0
   fi
   # Legacy: podman CLI inside the gateway container + host API socket mount.
@@ -57,7 +78,11 @@ claw_podman_load_compose_args() {
     echo "to run without a pool: CLAW_SOLVE_ISOLATION=inprocess" >&2
     return 1
   fi
-  CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.podman-api.yml" )
+  if [[ -n "${rel}" ]]; then
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.podman-api.yml" )
+  else
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.podman-api.yml" )
+  fi
   return 0
 }
 
@@ -107,6 +132,19 @@ claw_container_runtime_cli() {
 claw_compose() {
   local rt
   rt="$(claw_container_runtime_cli)" || return 1
+  if [[ -n "${CLAW_COMPOSE_WORKING_DIRECTORY:-}" ]]; then
+    (
+      cd "${CLAW_COMPOSE_WORKING_DIRECTORY}" || exit 1
+      claw_compose_in_pwd "$rt" "$@"
+    )
+    return $?
+  fi
+  claw_compose_in_pwd "$rt" "$@"
+}
+
+claw_compose_in_pwd() {
+  local rt="$1"
+  shift
   if [[ "$rt" == docker ]]; then
     # Ubuntu 22.04 packages may ship `docker-compose` without the `docker compose` CLI plugin.
     if docker compose version >/dev/null 2>&1; then
