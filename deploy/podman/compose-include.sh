@@ -117,3 +117,8 @@ claw_compose() {
   fi
   podman compose "$@"
 }
+
+# Optional `up.sh --release …` image pin (.claw-image-release.env). Author: kejiqing
+_claw_podman_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${_claw_podman_dir}/release-images.sh"

@@ -20,6 +20,37 @@ fi
 
 # shellcheck disable=SC1090
 source "${SCRIPT_DIR}/compose-include.sh"
+if ! claw_parse_up_release_args "$@"; then
+  rc=$?
+  if [[ "${rc}" == 2 ]]; then
+    exit 0
+  fi
+  exit "${rc}"
+fi
+
+set -a
+# shellcheck disable=SC1090
+source "${ENV_FILE}"
+set +a
+
+if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
+  claw_apply_release_image_tag "${CLAW_IMAGE_RELEASE_TAG}"
+  claw_write_release_pin_env "${SCRIPT_DIR}"
+  rt="$(claw_container_runtime_cli)"
+  echo "pull ${GATEWAY_IMAGE} …" >&2
+  "${rt}" pull "${GATEWAY_IMAGE}"
+  case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
+    docker_pool)
+      echo "pull ${CLAW_DOCKER_IMAGE} …" >&2
+      "${rt}" pull "${CLAW_DOCKER_IMAGE}"
+      ;;
+    *)
+      echo "pull ${CLAW_PODMAN_IMAGE} …" >&2
+      "${rt}" pull "${CLAW_PODMAN_IMAGE}"
+      ;;
+  esac
+fi
+
 claw_podman_export_pool_workspace "${SCRIPT_DIR}"
 claw_podman_load_compose_args "${SCRIPT_DIR}" "${ENV_FILE}"
 
@@ -48,5 +79,5 @@ fi
 cleanup_stale_gateway_workers
 
 # Recreate so env_file changes (e.g. .claw-pool-workspace.env) apply; plain `up -d` can leave stale env. kejiqing
-claw_compose --env-file "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
+claw_compose_with_root_env "${SCRIPT_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
 echo "Services started."

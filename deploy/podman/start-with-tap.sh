@@ -70,6 +70,6 @@ if [[ "${CLAW_SOLVE_ISOLATION:-podman_pool}" != "inprocess" ]] && [[ "${CLAW_POO
   "${SCRIPT_DIR}/pool-daemon-up.sh" "${SCRIPT_DIR}" "${ROOT_DIR}"
 fi
 
-claw_compose --env-file "${ROOT_ENV}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
+claw_compose_with_root_env "${SCRIPT_DIR}" "${ROOT_ENV}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
 echo "gateway started on port ${GATEWAY_HOST_PORT}"
 echo "claude-tap live viewer: http://127.0.0.1:${CLAUDE_TAP_LIVE_PORT}"
