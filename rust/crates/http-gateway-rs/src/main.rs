@@ -1582,6 +1582,8 @@ async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, ApiError> {
     run_git_env(cwd, &[], args).await
 }
 
+/// All subprocess git calls use HTTP/1.1 for libcurl remotes to reduce HTTP/2 framing / packfile
+/// failures on some networks (common with long-haul links). Local-only commands ignore this. kejiqing
 async fn run_git_env(
     cwd: &Path,
     env_pairs: &[(&str, &str)],
@@ -1589,11 +1591,12 @@ async fn run_git_env(
 ) -> Result<String, ApiError> {
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd);
+    cmd.args(["-c", "http.version=HTTP/1.1"]);
     for (k, v) in env_pairs {
         cmd.env(k, v);
     }
+    cmd.args(args);
     let output = cmd
-        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -1608,9 +1611,14 @@ async fn run_git_env(
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !output.status.success() {
         let detail = if stderr.is_empty() { stdout } else { stderr };
+        let shown = if args.is_empty() {
+            "-c http.version=HTTP/1.1".to_string()
+        } else {
+            format!("-c http.version=HTTP/1.1 {}", args.join(" "))
+        };
         return Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("git {} failed: {}", args.join(" "), detail),
+            format!("git {shown} failed: {detail}"),
         ));
     }
     Ok(stdout)
