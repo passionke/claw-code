@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # E2E: session SQLite + same workDir on continuation + 400 for unknown sessionId.
-# Uses in-process gateway (no container pool). Requires OPENAI_* if you want solve to succeed;
-# without keys, healthz / init / 400 path still validate wiring.
+# Defaults to podman_pool (same as deploy). Requires worker image / pool env; OPENAI_* only if solve must succeed.
 #
 # Author: kejiqing
 set -euo pipefail
@@ -11,7 +10,7 @@ RUST_DIR="$REPO_ROOT/rust"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/claw-gateway-sess-e2e.XXXXXX")"
 SESSION_DB="${WORK_ROOT}/gateway-sessions.sqlite"
-REGISTRY="$REPO_ROOT/third_party/claw-http-gateway/http_gateway/config/datasources.example.yaml"
+REGISTRY="$REPO_ROOT/rust/crates/http-gateway-rs/datasources.example.yaml"
 BIN="${BIN:-$RUST_DIR/target/release/http-gateway-rs}"
 CLAW_BIN="${CLAW_BIN:-$RUST_DIR/target/release/claw}"
 
@@ -38,7 +37,11 @@ export CLAW_WORK_ROOT="$WORK_ROOT"
 export CLAW_GATEWAY_SESSION_DB="$SESSION_DB"
 export CLAW_DS_REGISTRY="$REGISTRY"
 export CLAW_BIN
-export CLAW_SOLVE_ISOLATION=inprocess
+export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
+export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
+export CLAW_PROJECTS_GIT_URL="${CLAW_PROJECTS_GIT_URL:-git@github.com:passionke/claw-code-projects.git}"
+export CLAW_PROJECTS_GIT_BRANCH="${CLAW_PROJECTS_GIT_BRANCH:-main}"
+export CLAW_PROJECTS_GIT_AUTHOR="${CLAW_PROJECTS_GIT_AUTHOR:-kejiqing <kejiqing@local>}"
 
 GW_LOG="$WORK_ROOT/gateway.log"
 "$BIN" >>"$GW_LOG" 2>&1 &

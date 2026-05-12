@@ -20,4 +20,4 @@ pub use rpc::{
     PoolRpcClient,
 };
 #[allow(unused_imports)]
-pub use traits::{PoolOps, SlotLease, TaskOutcome};
+pub use traits::{PoolOps, PoolSessionHostMounts, SlotLease, TaskOutcome};

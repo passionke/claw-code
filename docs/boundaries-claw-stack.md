@@ -19,10 +19,9 @@ Author: kejiqing
 | Component | Code / deploy | Owns | Does **not** own |
 | --- | --- | --- | --- |
 | **Claw** | `rust/` | Tool surface, `mcp__*` allowlist, session | HTTP, datasource encryption, SQLBot product |
-| **HTTP gateway** | `third_party/claw-http-gateway/http_gateway/` | FastAPI, `claw` spawn, `mcpServers` merge, `dsId` → config, env injection | Doris query implementation, SQLBot server code |
+| **HTTP gateway** | `rust/crates/http-gateway-rs/`（`http-gateway-rs` 二进制） | Axum HTTP、`claw` 编排、solve 会话 SQLite、`mcpServers` 合并、`dsId` 工作区、MCP 注入、按 ds 读技能等 | Doris 查询实现、SQLBot 产品服务本体 |
 | **Doris MCP** | `third_party/doris-mcp/` | Read-only SQL + metadata **only** (`mcp__doris__*`) | Gateway, SQLBot, transport bridge |
 | **SQLBot (product)** | Your cluster (e.g. :8000 / :8001) | NL 问数、MCP 工具 `mcp_start` / `mcp_question`、业务库 | This repo (except optional PG/API **read** for config) |
-| **Transport adapter** | `third_party/claw-http-gateway/mcp_sse_bridge/` | Remote MCP (SSE/HTTP) **wire** → one stdio-shaped child for the gateway | **Not** the name “SQLBot MCP” in front of Claw; Claw sees **`mcp__sqlbot__*`** from the **merged** server config |
 | **SQLBot Postgres (metadata)** | `SQLBOT_PG_*` | Encrypted datasource rows for **resolve** | Not the MCP port; not “running SQLBot” inside gateway |
 
 ## Three different “SQLBot channels” (do not mix)
@@ -44,13 +43,12 @@ Author: kejiqing
 
 | You want to… | Edit |
 | --- | --- |
-| HTTP routes, timeout, inject MCP, `SQLBOT_MCP_*` | `claw-http-gateway/http_gateway/app.py` |
+| HTTP routes, timeout, inject MCP, 容器池、`SQLBOT_MCP_*` | `rust/crates/http-gateway-rs/` |
 | Doris SQL guard / `doris_query` | `doris-mcp/src/` |
-| Remote→stdio wire | `mcp_sse_bridge/src/` (only if transport changes) |
 | Claw tool naming / allowlist | `rust/crates/tools/` + env `CLAW_ALLOWED_TOOLS` |
 
 ## See also
 
-- `third_party/claw-http-gateway/README.md` — operator runbook
+- `rust/crates/http-gateway-rs/datasources.example.yaml` — 数据源 registry 模板（勿提交真实凭据）
 - `third_party/doris-mcp/README.md` — Doris-only build
-- `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 用 **Docker/Podman 容器池**隔离 solve：**PoolManager** 启动读 env 管池大小与预热；**网关**只租借与编排（与 Python `claw-http-gateway` 对照的 Rust 侧方案）
+- `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 用 **Docker/Podman 容器池**隔离 solve：**PoolManager** 启动读 env 管池大小与预热；网关只租借与编排

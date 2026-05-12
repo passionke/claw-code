@@ -24,6 +24,7 @@ FROM ${DEBIAN_BASE_IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    git \
     podman \
     && rm -rf /var/lib/apt/lists/*
 

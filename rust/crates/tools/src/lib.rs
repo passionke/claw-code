@@ -653,7 +653,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                                 "activeForm": { "type": "string" },
                                 "status": {
                                     "type": "string",
-                                    "enum": ["pending", "in_progress", "completed"]
+                                    "enum": ["pending", "completed"]
                                 }
                             },
                             "required": ["content", "activeForm", "status"],
@@ -2446,7 +2446,6 @@ struct TodoItem {
 #[serde(rename_all = "snake_case")]
 enum TodoStatus {
     Pending,
-    InProgress,
     Completed,
 }
 
@@ -3345,7 +3344,6 @@ fn validate_todos(todos: &[TodoItem]) -> Result<(), String> {
     if todos.is_empty() {
         return Err(String::from("todos must not be empty"));
     }
-    // Allow multiple in_progress items for parallel workflows
     if todos.iter().any(|todo| todo.content.trim().is_empty()) {
         return Err(String::from("todo content must not be empty"));
     }
@@ -3453,6 +3451,12 @@ fn push_project_skill_lookup_roots(roots: &mut Vec<SkillLookupRoot>, cwd: &std::
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".claw"));
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".codex"));
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".claude"));
+        // `http-gateway-rs` project skills: `ds_<id>/home/skills/<name>/SKILL.md` (same layout as git mirror).
+        push_skill_lookup_root(
+            roots,
+            ancestor.join("home").join("skills"),
+            SkillLookupOrigin::SkillsDir,
+        );
     }
 }
 
@@ -3509,13 +3513,20 @@ fn resolve_skill_path_in_root(
     }
 }
 
+fn skill_instruction_markdown_path(skill_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let p = skill_dir.join("SKILL.md");
+    if p.is_file() {
+        return Some(p);
+    }
+    None
+}
+
 fn resolve_skill_path_in_skills_dir(
     root: &std::path::Path,
     requested: &str,
 ) -> Option<std::path::PathBuf> {
-    let direct = root.join(requested).join("SKILL.md");
-    if direct.is_file() {
-        return Some(direct);
+    if let Some(p) = skill_instruction_markdown_path(&root.join(requested)) {
+        return Some(p);
     }
 
     let entries = std::fs::read_dir(root).ok()?;
@@ -3523,10 +3534,9 @@ fn resolve_skill_path_in_skills_dir(
         if !entry.path().is_dir() {
             continue;
         }
-        let skill_path = entry.path().join("SKILL.md");
-        if !skill_path.is_file() {
+        let Some(skill_path) = skill_instruction_markdown_path(&entry.path()) else {
             continue;
-        }
+        };
         if entry
             .file_name()
             .to_string_lossy()
@@ -3544,9 +3554,8 @@ fn resolve_skill_path_in_legacy_commands_dir(
     root: &std::path::Path,
     requested: &str,
 ) -> Option<std::path::PathBuf> {
-    let direct_dir = root.join(requested).join("SKILL.md");
-    if direct_dir.is_file() {
-        return Some(direct_dir);
+    if let Some(p) = skill_instruction_markdown_path(&root.join(requested)) {
+        return Some(p);
     }
 
     let direct_markdown = root.join(format!("{requested}.md"));
@@ -3558,10 +3567,9 @@ fn resolve_skill_path_in_legacy_commands_dir(
     for entry in entries.flatten() {
         let path = entry.path();
         let candidate_path = if path.is_dir() {
-            let skill_path = path.join("SKILL.md");
-            if !skill_path.is_file() {
+            let Some(skill_path) = skill_instruction_markdown_path(&path) else {
                 continue;
-            }
+            };
             skill_path
         } else if path
             .extension()
@@ -7431,7 +7439,7 @@ mod tests {
             "TodoWrite",
             &json!({
                 "todos": [
-                    {"content": "Add tool", "activeForm": "Adding tool", "status": "in_progress"},
+                    {"content": "Add tool", "activeForm": "Adding tool", "status": "pending"},
                     {"content": "Run tests", "activeForm": "Running tests", "status": "pending"}
                 ]
             }),
@@ -7478,17 +7486,16 @@ mod tests {
             .expect_err("empty todos should fail");
         assert!(empty.contains("todos must not be empty"));
 
-        // Multiple in_progress items are now allowed for parallel workflows
-        let _multi_active = execute_tool(
+        let _multi_pending = execute_tool(
             "TodoWrite",
             &json!({
                 "todos": [
-                    {"content": "One", "activeForm": "Doing one", "status": "in_progress"},
-                    {"content": "Two", "activeForm": "Doing two", "status": "in_progress"}
+                    {"content": "One", "activeForm": "Doing one", "status": "pending"},
+                    {"content": "Two", "activeForm": "Doing two", "status": "pending"}
                 ]
             }),
         )
-        .expect("multiple in-progress todos should succeed");
+        .expect("multiple pending todos should succeed");
 
         let blank_content = execute_tool(
             "TodoWrite",

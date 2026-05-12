@@ -12,10 +12,15 @@
 
 ```bash
 cd rust
+CLAW_PROJECTS_GIT_URL=git@github.com:passionke/claw-code-projects.git \
+CLAW_PROJECTS_GIT_BRANCH=main \
+CLAW_PROJECTS_GIT_AUTHOR='kejiqing <kejiqing@local>' \
 cargo run -p http-gateway-rs
 ```
 
 默认监听：`0.0.0.0:8080`
+
+**必填（未设置或空串时进程启动即退出）**：`CLAW_PROJECTS_GIT_URL`、`CLAW_PROJECTS_GIT_BRANCH`、`CLAW_PROJECTS_GIT_AUTHOR`。若 `CLAW_PROJECTS_GIT_URL` 为不带凭据的 `https://...`（URL 中无 `@` 前用户段），还须设置 **`CLAW_PROJECTS_GIT_TOKEN`**。详见仓库根 `.env.example`。
 
 可选环境变量：
 
@@ -42,6 +47,9 @@ cargo run -p http-gateway-rs
 cd rust
 CLAW_HTTP_ADDR=127.0.0.1:8088 \
 CLAW_BIN=/Users/$USER/work/claw-code/rust/target/debug/claw \
+CLAW_PROJECTS_GIT_URL=git@github.com:passionke/claw-code-projects.git \
+CLAW_PROJECTS_GIT_BRANCH=main \
+CLAW_PROJECTS_GIT_AUTHOR='kejiqing <kejiqing@local>' \
 CLAW_DEFAULT_HTTP_MCP_NAME=claude-tap \
 CLAW_DEFAULT_HTTP_MCP_URL=http://127.0.0.1:9091/mcp \
 CLAW_DEFAULT_HTTP_MCP_TRANSPORT=http \

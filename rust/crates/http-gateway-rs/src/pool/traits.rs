@@ -6,6 +6,15 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+/// Optional read-only host paths rebinding into the session guest root (`/claw_host_root`). kejiqing
+#[derive(Clone, Debug, Default)]
+pub struct PoolSessionHostMounts {
+    /// Host `ds_*/home/skills` directory → guest `.../home/skills:ro`.
+    pub skills_dir: Option<PathBuf>,
+    /// Host `ds_*/CLAUDE.md` file → guest `.../CLAUDE.md:ro`.
+    pub claude_md_file: Option<PathBuf>,
+}
+
 /// Lease for one worker slot (index into the pool).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlotLease {
@@ -23,10 +32,13 @@ pub struct TaskOutcome {
 /// Abstract pool: in-process [`super::DockerPoolManager`] or host RPC client. Author: kejiqing
 #[async_trait]
 pub trait PoolOps: Send + Sync {
+    /// `host_mounts`: optional read-only binds for ds-level `home/skills` and root `CLAUDE.md`
+    /// (no per-session copy; see [`PoolSessionHostMounts`]).
     async fn acquire_slot(
         &self,
         wait: Duration,
         session_host_mount: PathBuf,
+        host_mounts: PoolSessionHostMounts,
     ) -> Result<SlotLease, String>;
 
     async fn exec_solve(

@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
 
 use super::docker_pool::DockerPoolManager;
-use super::traits::{PoolOps, SlotLease, TaskOutcome};
+use super::traits::{PoolOps, PoolSessionHostMounts, SlotLease, TaskOutcome};
 
 #[derive(Debug, Clone)]
 enum PoolRpcTransport {
@@ -24,6 +24,11 @@ pub enum PoolRpcReq {
     Acquire {
         timeout_ms: u64,
         session_host_mount: String,
+        #[serde(default)]
+        skills_host_mount: Option<String>,
+        /// Host path to `ds_*/CLAUDE.md` for optional ro file bind (gateway ≥ pool daemon that understands this field).
+        #[serde(default)]
+        claude_md_host_mount: Option<String>,
     },
     Exec {
         slot_index: usize,
@@ -119,11 +124,20 @@ impl PoolOps for PoolRpcClient {
         &self,
         wait: Duration,
         session_host_mount: PathBuf,
+        host_mounts: PoolSessionHostMounts,
     ) -> Result<SlotLease, String> {
         let r = self
             .call(PoolRpcReq::Acquire {
                 timeout_ms: u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
                 session_host_mount: session_host_mount.to_string_lossy().into_owned(),
+                skills_host_mount: host_mounts
+                    .skills_dir
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                claude_md_host_mount: host_mounts
+                    .claude_md_file
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
             })
             .await?;
         if !r.ok {
@@ -182,10 +196,16 @@ async fn dispatch_pool_rpc(
         PoolRpcReq::Acquire {
             timeout_ms,
             session_host_mount,
+            skills_host_mount,
+            claude_md_host_mount,
         } => match pool
             .acquire_slot(
                 Duration::from_millis(timeout_ms),
                 PathBuf::from(session_host_mount),
+                PoolSessionHostMounts {
+                    skills_dir: skills_host_mount.map(PathBuf::from),
+                    claude_md_file: claude_md_host_mount.map(PathBuf::from),
+                },
             )
             .await
         {

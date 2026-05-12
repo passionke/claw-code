@@ -9,7 +9,7 @@ use gateway_solve_turn::GatewaySolveTaskFile;
 use tokio::fs;
 use tracing::{info, warn};
 
-use crate::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease};
+use crate::pool::{parse_gateway_solve_exec_stdout, PoolOps, PoolSessionHostMounts, SlotLease};
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
 
 /// When the gateway uses [`PoolRpcClient`](crate::pool::PoolRpcClient) (TCP or Unix), session dirs
@@ -32,6 +32,12 @@ pub(crate) fn session_mount_for_pool_acquire(
 
 /// Fixed name inside the per-session bind mount (no `..`, not client-controlled).
 const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
+
+/// Resolved session directory on disk plus path relative to `CLAW_WORK_ROOT` (same string as DB `session_home`).
+pub(crate) struct SolveSessionPaths {
+    pub session_home: PathBuf,
+    pub session_home_rel: String,
+}
 
 /// If the async worker is aborted (e.g. `tokio::spawn` cancel), release the slot and drop the
 /// cancel map entry so the pool does not leak `Leased` rows and `force_kill` can still run.
@@ -83,8 +89,12 @@ pub async fn run_solve_request_docker(
     pool: Arc<dyn PoolOps + Send + Sync>,
     started: Instant,
     effective_allowed_tools: Vec<String>,
-    session_home: PathBuf,
+    paths: SolveSessionPaths,
 ) -> Result<SolveResponse, ApiError> {
+    let SolveSessionPaths {
+        session_home,
+        session_home_rel,
+    } = paths;
     let RunSolveContext {
         request_id,
         task_id,
@@ -119,6 +129,29 @@ pub async fn run_solve_request_docker(
     })?;
 
     let session_for_pool = session_mount_for_pool_acquire(&session_home, &state.cfg);
+    let ds_base = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
+    let ds_skills_host = ds_base.join("home/skills");
+    let skills_for_pool = if fs::metadata(&ds_skills_host)
+        .await
+        .is_ok_and(|m| m.is_dir())
+    {
+        Some(session_mount_for_pool_acquire(&ds_skills_host, &state.cfg))
+    } else {
+        None
+    };
+    let ds_claude_host = ds_base.join("CLAUDE.md");
+    let claude_for_pool = if fs::metadata(&ds_claude_host)
+        .await
+        .is_ok_and(|m| m.is_file())
+    {
+        Some(session_mount_for_pool_acquire(&ds_claude_host, &state.cfg))
+    } else {
+        None
+    };
+    let host_mounts = PoolSessionHostMounts {
+        skills_dir: skills_for_pool.clone(),
+        claude_md_file: claude_for_pool.clone(),
+    };
 
     info!(
         target: "claw_gateway_solve_pool",
@@ -130,13 +163,19 @@ pub async fn run_solve_request_docker(
         task_path = %task_path.display(),
         session_home = %session_home.display(),
         pool_acquire_path = %session_for_pool.display(),
+        skills_pool_path = %skills_for_pool
+            .as_ref()
+            .map_or_else(|| "-".into(), |p| p.display().to_string()),
+        claude_pool_path = %claude_for_pool
+            .as_ref()
+            .map_or_else(|| "-".into(), |p| p.display().to_string()),
         task_bytes = task_bytes.len(),
         "pool solve: gateway-solve task JSON written under session dir"
     );
 
     let acquire_wait = Duration::from_secs(timeout_seconds.saturating_add(30));
     let lease = pool
-        .acquire_slot(acquire_wait, session_for_pool.clone())
+        .acquire_slot(acquire_wait, session_for_pool.clone(), host_mounts)
         .await
         .map_err(|e| {
             warn!(
@@ -288,6 +327,7 @@ pub async fn run_solve_request_docker(
     Ok(SolveResponse {
         session_id: request_id.clone(),
         request_id,
+        session_home_rel,
         ds_id: req.ds_id,
         work_dir: session_home.display().to_string(),
         duration_ms,
@@ -330,6 +370,11 @@ mod session_path_tests {
             default_http_mcp_transport: "http".into(),
             config_mcp_servers: HashMap::default(),
             allowed_tools: vec![],
+            projects_git_url: "git@github.com:passionke/claw-code-projects.git".into(),
+            projects_git_branch: "main".into(),
+            projects_git_author: "kejiqing <kejiqing@local>".into(),
+            projects_git_token: None,
+            projects_git_ds_home_poll_interval_secs: None,
         };
         let got = session_mount_for_pool_acquire(
             Path::new("/var/lib/claw/workspace/ds_1/sessions/abc"),
@@ -356,6 +401,11 @@ mod session_path_tests {
             default_http_mcp_transport: "http".into(),
             config_mcp_servers: HashMap::default(),
             allowed_tools: vec![],
+            projects_git_url: "git@github.com:passionke/claw-code-projects.git".into(),
+            projects_git_branch: "main".into(),
+            projects_git_author: "kejiqing <kejiqing@local>".into(),
+            projects_git_token: None,
+            projects_git_ds_home_poll_interval_secs: None,
         };
         let p = PathBuf::from("/tmp/sess");
         let got = session_mount_for_pool_acquire(&p, &cfg);

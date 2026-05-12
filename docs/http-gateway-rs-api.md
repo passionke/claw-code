@@ -30,6 +30,7 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 追踪约定：
     - 网关会为本次调用确定 `sessionId`（等于 `claw-session-id`）
     - 响应体主字段使用 `sessionId`，并保留 `requestId` 兼容字段（同值）
+    - 响应体含 `sessionHomeRel`：相对 `CLAW_WORK_ROOT` 的会话工作目录（与 SQLite `gateway_sessions.session_home` 一致），与 `workDir`（绝对路径）成对出现。**新建会话**时目录名为 `ds_{dsId}/sessions/<segment>`：在 `sessionId` 可作为安全单段路径名时 `<segment>` **与 `sessionId` 相同**（网关生成的 32 位十六进制 id 即落在该目录下）；若 `sessionId` 含路径分隔符等不安全字符，则 `<segment>` 为对该 id 做 UUID v5 派生的 32 位十六进制名（与 id 一一对应、可复现）。续聊仍按库中已有 `session_home` 打开原目录。
     - 在访问上游模型时透传 HTTP 头：
       - `clawcode-session-id: <sessionId>`
       - `claw-session-id: <sessionId>`
@@ -69,6 +70,19 @@ Base URL 示例：`http://127.0.0.1:18088`
     - `reportText`：清洗后的报告文本（字符串）
     - `reportJson`：清洗后的结构化 JSON（如模型返回 JSON）
 
+## Skills（按 ds 工作区）
+
+技能文件与 `POST /v1/project/skills` 一致：`<CLAW_WORK_ROOT>/ds_<dsId>/home/skills/<skill_name>/SKILL.md`。`skill_name` 为目录名，不含 `/`、`\` 或 `..`。
+
+- `GET /v1/skills/{ds_id}`
+  - 用途：列出该 `dsId` 下所有已存在的技能（仅包含存在 `SKILL.md` 的子目录）
+  - 成功响应 JSON：`{ "ds_id": <int>, "skills": [ { "skill_name": "<str>", "skill_content": "<str>" }, ... ] }`（按 `skill_name` 排序）
+
+- `GET /v1/skills/{ds_id}/{skill_name}`
+  - 用途：读取单个技能的完整 `SKILL.md` 文本
+  - 成功响应 JSON：`{ "ds_id": <int>, "skill_name": "<str>", "skill_content": "<str>" }`
+  - 若文件不存在：返回 `404`
+
 ## MCP
 
 - `POST /v1/mcp/inject`
@@ -79,3 +93,36 @@ Base URL 示例：`http://127.0.0.1:18088`
 
 - `DELETE /v1/mcp/injected/{ds_id}`
   - 用途：删除 `dsId` 对应 MCP 注入（支持按名称删除）
+
+## Project Storage
+
+- `POST /v1/init`
+  - 用途：初始化指定 `dsId` 的本地工作区（`ds_home`）
+  - Git 语义：该接口负责触发项目仓库拉取刷新（仓库 URL、分支、作者、可选 HTTPS Token **均由环境变量提供，代码内无默认值**；缺失或空串时网关进程启动失败），将远端 `ds_<dsId>/home` 同步到本地 `ds_<dsId>/home`
+  - 环境变量：`CLAW_PROJECTS_GIT_URL`、`CLAW_PROJECTS_GIT_BRANCH`、`CLAW_PROJECTS_GIT_AUTHOR`（必填）；`CLAW_PROJECTS_GIT_TOKEN`（当且仅当使用无凭据的 `https://` URL 时必填）（见仓库根 `.env.example`）
+  - 多机：可选 `CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS`（秒，大于 0 启用）——后台对镜像 `git pull`，并对 `work_root` 下每个已初始化的 `ds_*` 在 **该 ds 锁空闲时** 执行与 `init` 相同的 `home` 目录同步；忙则跳过本轮，避免与 `project/claude`、`project/skills` 写路径长时间互斥。
+  - 说明：未启用轮询时，业务接口（`solve` / `solve_async` / `project`）自身不会在每次请求里 `git pull`；多机靠显式 `init`、本轮询或运维侧 webhook/cron 组合。
+
+- `GET /v1/project/claude/{ds_id}`
+  - 用途：读取 `dsId` 对应 CLAUDE 文档
+  - 读取路径：优先 `ds_<dsId>/home/CLAUDE.md`，兼容回退 `ds_<dsId>/CLAUDE.md`
+
+- `POST /v1/project/claude/{ds_id}`
+  - 用途：更新 `dsId` 对应 CLAUDE 文档，并同步提交到 Git
+  - 请求体字段：
+    - `content`：必填，写入 CLAUDE 文本
+  - 落盘路径：
+    - `ds_<dsId>/home/CLAUDE.md`
+  - 返回字段：
+    - `dsId`、`workDir`、`path`、`exists`、`content`
+
+- `POST /v1/project/skills/{ds_id}`
+  - 用途：创建或更新 `dsId` 对应 Skill，并同步提交到 Git
+  - 请求体字段：
+    - `skillName`：必填，仅允许 `[a-zA-Z0-9._-]`
+    - `skillContent`：必填，写入 Skill 正文
+  - 落盘路径：
+    - `ds_<dsId>/home/skills/<skillName>/SKILL.md`（与 `Skill` 工具 / CLI 一致）
+  - 返回字段：
+    - `dsId`、`skillName`、`skillPath`、`created`、`updated`、`bytesWritten`、`workDir`
+    - `gitSync.repo`、`gitSync.branch`、`gitSync.commitId`、`gitSync.pushed`
