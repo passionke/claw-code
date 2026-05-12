@@ -273,7 +273,7 @@ struct EffectivePromptResponse {
     message: String,
 }
 
-/// Per-datasource skill file under `<work_root>/ds_<id>/.claw/skills/<name>/SKILL.md`. kejiqing
+/// Per-datasource skill files under `<work_root>/ds_<id>/home/skills/<name>/SKILL.md` (same tree as `POST /v1/project/skills`). kejiqing
 #[derive(Debug, Serialize)]
 struct DsSkillEntry {
     skill_name: String,
@@ -873,7 +873,7 @@ async fn docs() -> Html<String> {
         (
             "GET",
             "/v1/skills/{ds_id}",
-            "List ds workspace skills (.claw/skills/*/SKILL.md)",
+            "List ds workspace skills (home/skills/*/SKILL.md)",
         ),
         (
             "GET",
@@ -1259,7 +1259,7 @@ async fn openapi() -> Json<Value> {
             },
             "/v1/skills/{ds_id}": {
                 "get": {
-                    "summary": "List skills under ds workspace (.claw/skills/*/SKILL.md)",
+                    "summary": "List skills under ds workspace (home/skills/*/SKILL.md)",
                     "parameters": [
                         { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
                     ],
@@ -2360,7 +2360,7 @@ fn is_safe_skill_dir_name(name: &str) -> bool {
 }
 
 async fn load_skills_from_ds_workdir(work_dir: &Path) -> std::io::Result<Vec<DsSkillEntry>> {
-    let skills_root = work_dir.join(".claw").join("skills");
+    let skills_root = work_dir.join("home").join("skills");
     let mut out = Vec::new();
     if !fs::metadata(&skills_root).await.is_ok_and(|m| m.is_dir()) {
         return Ok(out);
@@ -2435,7 +2435,7 @@ async fn get_ds_skill(
         })?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
     let path = work_dir
-        .join(".claw")
+        .join("home")
         .join("skills")
         .join(&skill_name)
         .join("SKILL.md");

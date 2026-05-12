@@ -72,7 +72,7 @@ Base URL 示例：`http://127.0.0.1:18088`
 
 ## Skills（按 ds 工作区）
 
-技能文件约定：`<CLAW_WORK_ROOT>/ds_<dsId>/.claw/skills/<skill_name>/SKILL.md`（与 Claw 技能目录布局一致）。`skill_name` 为目录名，不含 `/`、`\` 或 `..`。
+技能文件与 `POST /v1/project/skills` 一致：`<CLAW_WORK_ROOT>/ds_<dsId>/home/skills/<skill_name>/SKILL.md`。`skill_name` 为目录名，不含 `/`、`\` 或 `..`。
 
 - `GET /v1/skills/{ds_id}`
   - 用途：列出该 `dsId` 下所有已存在的技能（仅包含存在 `SKILL.md` 的子目录）

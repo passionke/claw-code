@@ -120,8 +120,8 @@ else
 fi
 
 echo "[plan] GET /v1/skills/10 list + GET /v1/skills/10/plan_skill..."
-mkdir -p "$WORK_ROOT/ds_10/.claw/skills/plan_skill"
-printf '%s\n' '---' 'name: plan_skill' '---' 'skill body line' >"$WORK_ROOT/ds_10/.claw/skills/plan_skill/SKILL.md"
+mkdir -p "$WORK_ROOT/ds_10/home/skills/plan_skill"
+printf '%s\n' '---' 'name: plan_skill' '---' 'skill body line' >"$WORK_ROOT/ds_10/home/skills/plan_skill/SKILL.md"
 SK_JSON="$(curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10")"
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ds_id")==10; assert isinstance(d.get("skills"),list); assert any(x.get("skill_name")=="plan_skill" for x in d["skills"])' <<<"$SK_JSON"
 ONE_JSON="$(curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10/plan_skill")"
