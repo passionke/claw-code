@@ -4,8 +4,8 @@ services:
     container_name: claw-gateway-rs
     restart: unless-stopped
     env_file:
+      # Human-maintained env: repo root `.env` only (`CLAW_ALLOWED_TOOLS` etc.). Do not add deploy/podman/.env.
       - ../../.env
-      - ./gateway-allowlist.env
       # Written by compose-include (up.sh / start-with-tap.sh / down.sh). Do not set
       # CLAW_POOL_WORK_ROOT_HOST in `environment:` with empty ${…} — it overrides env_file and breaks worker bind mounts.
       - ./.claw-pool-workspace.env

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Gateway compose entrypoint. Human config: repo root `.env` only. Generated files under deploy/podman/ are overwritten — do not edit. kejiqing
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

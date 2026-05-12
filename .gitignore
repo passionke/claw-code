@@ -36,3 +36,5 @@ deploy/podman/claw-gateway-sessions/
 deploy/podman/claude-tap-data/
 deploy/podman/deploy/
 deploy/podman/.claw-pool-rpc/
+# Compose auto-loads this filename next to podman-compose.yml — do not create; use repo root `.env` only.
+deploy/podman/.env
