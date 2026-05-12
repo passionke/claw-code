@@ -105,7 +105,7 @@ sequenceDiagram
 | `CLAW_DOCKER_POOL_MEMORY` / `CLAW_PODMAN_POOL_MEMORY` | 可选：每个 worker `run` 追加 `--memory …`（如 `512m`、`1g`） |
 | `CLAW_DOCKER_IMAGE` / `CLAW_PODMAN_IMAGE` | Worker 镜像名 |
 | `CLAW_DOCKER_NETWORK` / `CLAW_PODMAN_NETWORK` | 可选，接入与 MCP 相同 network |
-| `CLAW_DOCKER_EXTRA_ARGS` / `CLAW_PODMAN_EXTRA_ARGS` | 透传额外 `docker run` / `podman run` 参数（**空格分词**拼进 argv；改后须 **重启** 网关或 `claw-pool-daemon`）。例：让 worker 内 `claw` 默认拉长 MCP `tools/call` 等待：`CLAW_PODMAN_EXTRA_ARGS=-e CLAW_MCP_TOOL_CALL_TIMEOUT_MS=180000`（`docker_pool` 时用 `CLAW_DOCKER_EXTRA_ARGS`）。宿主机池：`./deploy/podman/up.sh` 在起 daemon 前会 `source` 仓库根 `.env`，写在 `.env` 即可被 daemon 继承。 |
+| `CLAW_DOCKER_EXTRA_ARGS` / `CLAW_PODMAN_EXTRA_ARGS` | 透传额外 `docker run` / `podman run` 参数（**空格分词**拼进 argv；改后须 **重启** 网关或 `claw-pool-daemon`）。例：`CLAW_PODMAN_EXTRA_ARGS=-e CLAW_MCP_TOOL_CALL_TIMEOUT_MS=180000`（`docker_pool` 时用 `CLAW_DOCKER_EXTRA_ARGS`）。写在**仓库根** `.env`，由 `podman-compose.yml` 的 `env_file` 进网关容器；宿主机池时 `up.sh` 已 `source` 根 `.env`，daemon 可继承。**勿**在 compose 的 `environment:` 里对同名变量写 `${VAR:-}`：compose 插值读不到根 `.env`，空串会覆盖 `env_file`。 |
 | `CLAW_DOCKER_POOL_ON_RELEASE` / `CLAW_PODMAN_POOL_ON_RELEASE` | 可选：槽位从 `leased` 正常归还为 `idle` 时，在容器内执行 `sh -lc` 的**整段脚本**；空则跳过（`force_kill` 不走此钩子） |
 | `CLAW_DOCKER_POOL_EXEC_USER` / `CLAW_PODMAN_POOL_EXEC_USER` | 可选：`docker exec --user …`（如 `claw` 或 `1000:1000`），仅作用于 **`gateway-solve-once` 那次 exec**；与 worker 镜像内用户一致；宿主 `work_root` 需对该 uid 可写。归还钩子不带 `--user`（默认 root），便于执行 `pkill -u claw` 等 |
 
