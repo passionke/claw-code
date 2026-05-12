@@ -19,6 +19,8 @@ Author: kejiqing
 
 **国内拉 GHCR 很慢**：同一 tag 可由 [`.github/workflows/claw-code-acr.yaml`](../../.github/workflows/claw-code-acr.yaml) 推到 **ACR**（`myregistry.azurecr.io/claw-code:<tag>` 等）。在仓库根 **`.env`** 里设 **`CLAW_IMAGE_PREFIX=myregistry.azurecr.io`**（不要 `https://`），并先 **`podman login myregistry.azurecr.io`**（或 docker login），再执行 **`./deploy/podman/up.sh --release release-v…`**，脚本会从 ACR 拉取而不是 `ghcr.io`。与 **`CLAW_IMAGE_PREFIX`** 等价的老变量名是 **`CLAW_GHCR_PREFIX`**。
 
+**GHCR 握手超时 / 服务器拉不下来**：在能稳定访问镜像源的环境执行 **`./deploy/podman/ship-release-tar-to-remote.sh release-v1.0.25`**（默认推到 **`admin@192.168.9.252` 的 `~`**）；本机若也拉不动 GHCR，可先设 **`CLAW_SHIP_REGISTRY_PREFIX=…`** 指向已能拉到的 ACR 前缀再跑脚本。远端 **`podman load -i`** / **`docker load -i`** 后，再在服务器上 **`CLAW_IMAGE_PREFIX=… ./deploy/podman/up.sh --release …`**。
+
 **同一套脚本、本地与线上共用**：`build.sh` / `up.sh` / `down.sh` / tap / `bench-pool-30s.sh` 通过 **`CLAW_CONTAINER_RUNTIME`** 选 CLI——默认 **`auto`**（PATH 里**有 podman 先用 podman**，否则 **docker**）。线上常只有 docker，无需改 `.env`；本机有 podman 也会自动走 podman。只有两台都装了且必须指定时，才设 **`CLAW_CONTAINER_RUNTIME=podman`** 或 **`docker`**。
 
 更全的接口与本地调试见：`docs/http-gateway-rs-quickstart.md`（第二节已与本文对齐）。
