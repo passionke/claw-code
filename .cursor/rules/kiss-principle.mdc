@@ -1,0 +1,12 @@
+---
+description: KISS — avoid unnecessary forks; one default path; stop to align when needed
+alwaysApply: true
+---
+
+# Design principle (KISS)
+
+- **Keep it simple (KISS):** do not add new functional forks, parallel code paths, or extra configuration surfaces unless there is a **clear, documented** need.
+- **One default path:** prefer a single supported way (one env contract, one deploy flow, one Git transport story) over parallel modes that each need maintenance and testing.
+- **Stop and align:** if a change implies a real trade-off or a **second** supported mode, pause and discuss with the maintainer before implementing.
+
+Author: kejiqing

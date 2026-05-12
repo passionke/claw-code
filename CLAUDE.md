@@ -23,9 +23,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Do not overwrite existing `CLAUDE.md` content automatically; update it intentionally when repo workflows change.
 
 ## Design principle (KISS)
-- **Keep it simple (KISS):** do not add new functional forks, alternate code paths, or extra configuration surfaces unless there is a clear, documented need.
-- **One default path:** prefer a single supported way (one env contract, one deploy flow) over parallel modes that each need maintenance and testing.
-- **Stop and align:** if a change implies a real trade-off or a second supported mode, pause and discuss with the maintainer before implementing.
+- **Cursor IDE:** canonical wording lives in `.cursor/rules/kiss-principle.mdc` (`alwaysApply: true`). Update that file when this principle changes.
+- **Summary:** KISS — no unnecessary forks; one default path; stop and align with the maintainer before adding a second supported mode.
 
 Author: kejiqing
 
