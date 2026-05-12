@@ -87,7 +87,8 @@ enum SolveIsolation {
 
 impl SolveIsolation {
     fn from_env() -> Self {
-        // Default product mode is Podman container pool; set CLAW_SOLVE_ISOLATION=inprocess to disable.
+        // Default product mode is Podman container pool (`podman_pool`). `docker_pool` for Docker workers.
+        // `inprocess` remains as a legacy escape hatch only (not recommended for production).
         match std::env::var("CLAW_SOLVE_ISOLATION")
             .map(|v| v.trim().to_ascii_lowercase())
             .unwrap_or_default()

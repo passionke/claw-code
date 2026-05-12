@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # E2E: session SQLite + same workDir on continuation + 400 for unknown sessionId.
-# Uses in-process gateway (no container pool). Requires OPENAI_* if you want solve to succeed;
-# without keys, healthz / init / 400 path still validate wiring.
+# Defaults to podman_pool (same as deploy). Requires worker image / pool env; OPENAI_* only if solve must succeed.
 #
 # Author: kejiqing
 set -euo pipefail
@@ -38,7 +37,8 @@ export CLAW_WORK_ROOT="$WORK_ROOT"
 export CLAW_GATEWAY_SESSION_DB="$SESSION_DB"
 export CLAW_DS_REGISTRY="$REGISTRY"
 export CLAW_BIN
-export CLAW_SOLVE_ISOLATION=inprocess
+export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
+export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
 export CLAW_PROJECTS_GIT_URL="${CLAW_PROJECTS_GIT_URL:-git@github.com:passionke/claw-code-projects.git}"
 export CLAW_PROJECTS_GIT_BRANCH="${CLAW_PROJECTS_GIT_BRANCH:-main}"
 export CLAW_PROJECTS_GIT_AUTHOR="${CLAW_PROJECTS_GIT_AUTHOR:-kejiqing <kejiqing@local>}"
