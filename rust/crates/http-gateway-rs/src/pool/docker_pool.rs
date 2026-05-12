@@ -158,7 +158,7 @@ impl DockerPoolManager {
     }
 
     fn container_name(&self, idx: usize) -> String {
-        format!("claw-gw-{}-{idx}", self.name_stem)
+        format!("claw-worker-{}-{idx}", self.name_stem)
     }
 
     fn exec_solve_argv_prefix(&self) -> Vec<String> {
