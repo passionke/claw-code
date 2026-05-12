@@ -1,12 +1,21 @@
-# Publishes gateway + worker images to Azure Container Registry (same tag family as GHCR).
+# Publishes gateway + worker images to a Docker registry (Azure ACR, Aliyun ACR, etc.).
 # Trigger: push tag release-vx.y.z (same pattern as claw-code-image.yaml). Author: kejiqing
 #
-# Configure in GitHub → Settings → Secrets and variables → Actions:
-#   Secrets:  ACR_USERNAME, ACR_PASSWORD
-#   Variables: ACR_REGISTRY  (login server only, e.g. myregistry.azurecr.io — no https:// path)
+# Use a GitHub Environment (recommended) so creds stay scoped:
+#   Settings → Environments → create e.g. `claw-acr` → add Variables + Secrets there.
+# Or use repository-level Actions variables/secrets (same names).
 #
-# Image paths: ${ACR_REGISTRY}/claw-code:${RELEASE_TAG} and ${ACR_REGISTRY}/claw-gateway-worker:${RELEASE_TAG}
-# plus :sha-<12> and :latest on each repository (mirrors GHCR tagging).
+# Variables:
+#   ACR_REGISTRY — image name prefix (no tag), no https://
+#     • Azure ACR: myregistry.azurecr.io
+#     • Aliyun personal: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/<namespace>
+#       (login uses hostname only; namespace stays in the image path)
+# Optional: CONTAINER_BASE_REGISTRY (default docker.io) for rust/debian base images in the Dockerfile.
+#
+# Secrets: ACR_USERNAME, ACR_PASSWORD (registry login; Aliyun: use RAM fixed account or temp token per console).
+#
+# Images pushed: ${ACR_REGISTRY}/claw-code:<tags> and ${ACR_REGISTRY}/claw-gateway-worker:<tags>
+# (<tags> = release tag, sha-12, latest).
 name: claw-code-acr
 
 on:
@@ -21,6 +30,8 @@ jobs:
   build-and-push-acr:
     if: startsWith(github.ref, 'refs/tags/release-v')
     runs-on: ubuntu-latest
+    # Resolve vars/secrets from this environment (create under Settings → Environments).
+    environment: claw-acr
     strategy:
       fail-fast: false
       matrix:
@@ -39,20 +50,24 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Verify ACR registry variable
+      - name: Verify ACR_REGISTRY and derive login host
+        id: reg
         env:
           ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
         run: |
           set -euo pipefail
           if [ -z "${ACR_REGISTRY}" ]; then
-            echo "::error::Set Actions repository variable ACR_REGISTRY (login server only, e.g. myregistry.azurecr.io)." >&2
+            echo "::error::Set variable ACR_REGISTRY on environment \`claw-acr\` (or repo vars). Examples: myregistry.azurecr.io OR crpi-xxx.cn-hangzhou.personal.cr.aliyuncs.com/<namespace> — no https://." >&2
             exit 1
           fi
+          LOGIN_HOST="${ACR_REGISTRY%%/*}"
+          echo "login_host=${LOGIN_HOST}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
 
-      - name: Login to ACR
+      - name: Login to registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ vars.ACR_REGISTRY }}
+          registry: ${{ steps.reg.outputs.login_host }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
@@ -72,13 +87,13 @@ jobs:
           echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
 
-      - name: Image tags (ACR)
+      - name: Image tags
         id: meta
         env:
-          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
         run: |
           set -euo pipefail
-          IMAGE="${ACR_REGISTRY}/${{ matrix.package }}"
+          IMAGE="${PREFIX}/${{ matrix.package }}"
           SHA12="${GITHUB_SHA:0:12}"
           RELEASE_TAG="${GITHUB_REF_NAME}"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
@@ -92,7 +107,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push ${{ matrix.package }} to ACR
+      - name: Build and push ${{ matrix.package }}
         uses: docker/build-push-action@v6
         with:
           context: .
