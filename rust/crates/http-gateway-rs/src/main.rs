@@ -135,7 +135,7 @@ struct GatewayConfig {
     projects_git_branch: String,
     /// Passed to `git commit --author`.
     projects_git_author: String,
-    /// When set with an `https://` `projects_git_url`, used for clone/pull/push (GitHub: `x-access-token`).
+    /// When set with an `https://` or credential-less `http://` `projects_git_url`, used for clone/pull/push (injected as `x-access-token` user; GitHub-compatible; GitLab may need userinfo URL).
     projects_git_token: Option<String>,
     /// When set, periodically `git pull` the mirror and refresh each `ds_*/home` when that ds lock is idle (multi-node). kejiqing
     projects_git_ds_home_poll_interval_secs: Option<u64>,
@@ -527,16 +527,22 @@ fn mandatory_nonempty_env(var: &'static str) -> String {
 }
 
 fn validate_projects_git_at_startup(url: &str, token: Option<&str>) {
-    if url.starts_with("https://") {
-        let rest = url.trim_start_matches("https://");
-        let has_userinfo = rest.contains('@');
-        let has_token = token.is_some_and(|t| !t.trim().is_empty());
-        if !has_userinfo && !has_token {
-            eprintln!(
-                "http-gateway-rs: CLAW_PROJECTS_GIT_URL is HTTPS without embedded credentials (no userinfo before host) and CLAW_PROJECTS_GIT_TOKEN is unset or empty; set CLAW_PROJECTS_GIT_TOKEN or use an SSH URL."
-            );
-            std::process::exit(1);
-        }
+    let base = url.trim();
+    let needs_creds = base.starts_with("https://") || base.starts_with("http://");
+    if !needs_creds {
+        return;
+    }
+    let rest = base
+        .strip_prefix("https://")
+        .or_else(|| base.strip_prefix("http://"))
+        .unwrap_or("");
+    let has_userinfo = rest.contains('@');
+    let has_token = token.is_some_and(|t| !t.trim().is_empty());
+    if !has_userinfo && !has_token {
+        eprintln!(
+            "http-gateway-rs: CLAW_PROJECTS_GIT_URL is HTTP(S) without embedded credentials (no userinfo before host) and CLAW_PROJECTS_GIT_TOKEN is unset or empty; set CLAW_PROJECTS_GIT_TOKEN or embed user:token@ in the URL."
+        );
+        std::process::exit(1);
     }
 }
 
@@ -1320,12 +1326,20 @@ async fn openapi() -> Json<Value> {
     }))
 }
 
+/// Injects `CLAW_PROJECTS_GIT_TOKEN` as `x-access-token:<token>@host` when the URL has no userinfo.
+/// Applies to both `https://` (GitHub-style PAT) and `http://` (e.g. internal GitLab). GitLab deploy
+/// tokens that need `oauth2:` or `gitlab-ci-token:` can use an explicit userinfo URL instead. kejiqing
 fn projects_git_effective_clone_url(url: &str, token: Option<&str>) -> String {
     let base = url.trim();
     if let Some(t) = token.filter(|s| !s.trim().is_empty()) {
         if let Some(rest) = base.strip_prefix("https://") {
             if !rest.contains('@') {
                 return format!("https://x-access-token:{t}@{rest}");
+            }
+        }
+        if let Some(rest) = base.strip_prefix("http://") {
+            if !rest.contains('@') {
+                return format!("http://x-access-token:{t}@{rest}");
             }
         }
     }
@@ -3540,6 +3554,18 @@ mod tests {
         assert_eq!(
             u,
             "https://x-access-token:ghp_secret@github.com/passionke/claw-code-projects.git"
+        );
+    }
+
+    #[test]
+    fn projects_git_effective_clone_url_inserts_pat_for_plain_http() {
+        let u = projects_git_effective_clone_url(
+            "http://code.sunmi.com/minidata/claw-projects-home.git",
+            Some("glpat_secret"),
+        );
+        assert_eq!(
+            u,
+            "http://x-access-token:glpat_secret@code.sunmi.com/minidata/claw-projects-home.git"
         );
     }
 
