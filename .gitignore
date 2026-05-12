@@ -28,13 +28,13 @@ rust/crates/rusty-claude-cli/.claw/
 status-help.txt
 claw-server-data/
 rust/claw-server.db
-deploy/podman/claude-tap.log
-deploy/podman/claude-tap.pid
-deploy/podman/claw-logs/
-deploy/podman/claw-workspace/
-deploy/podman/claw-gateway-sessions/
-deploy/podman/claude-tap-data/
-deploy/podman/deploy/
-deploy/podman/.claw-pool-rpc/
+deploy/stack/claude-tap.log
+deploy/stack/claude-tap.pid
+deploy/stack/claw-logs/
+deploy/stack/claw-workspace/
+deploy/stack/claw-gateway-sessions/
+deploy/stack/claude-tap-data/
+deploy/stack/deploy/
+deploy/stack/.claw-pool-rpc/
 # Compose auto-loads this filename next to podman-compose.yml — do not create; use repo root `.env` only.
-deploy/podman/.env
+deploy/stack/.env

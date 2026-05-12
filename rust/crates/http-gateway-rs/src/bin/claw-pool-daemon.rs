@@ -19,11 +19,13 @@ async fn main() {
         .unwrap_or_default();
     let podman = match solve_isolation.as_str() {
         "docker_pool" => false,
-        "inprocess" => {
-            eprintln!("claw-pool-daemon: CLAW_SOLVE_ISOLATION=inprocess is invalid here");
+        "podman_pool" | "" => true,
+        other => {
+            eprintln!(
+                "claw-pool-daemon: invalid CLAW_SOLVE_ISOLATION={other:?}; use podman_pool or docker_pool."
+            );
             std::process::exit(1);
         }
-        _ => true,
     };
 
     let pool_binding_root = pool_host_bind_root(&work_root);

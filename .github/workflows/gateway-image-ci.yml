@@ -1,4 +1,4 @@
-# Build gateway + worker images (same as deploy/podman/build.sh). Author: kejiqing
+# Build gateway + worker images (same as deploy/stack/lib/build.sh). Author: kejiqing
 # Manual parity check workflow only (release tags use claw-code-image publish workflow).
 name: Gateway container images
 
@@ -25,7 +25,7 @@ jobs:
       - name: Build images
         env:
           GITHUB_ACTIONS: "true"
-        run: ./deploy/podman/build.sh "ci-${{ github.sha }}"
+        run: ./deploy/stack/lib/build.sh "ci-${{ github.sha }}"
 
       - name: Show images
         run: podman images | head -20

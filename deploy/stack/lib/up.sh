@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Gateway compose entrypoint. Human config: repo root `.env` only. Generated files under deploy/podman/ are overwritten — do not edit. kejiqing
+# Gateway compose entrypoint. Human config: repo root `.env` only. Generated files under deploy/stack/ are overwritten — do not edit. kejiqing
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 ENV_FILE="${REPO_ROOT}/.env"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
@@ -20,7 +21,7 @@ if [[ ! -f "${CLAW_JSON}" ]]; then
 fi
 
 # shellcheck disable=SC1090
-source "${SCRIPT_DIR}/compose-include.sh"
+source "${PODMAN_DIR}/lib/compose-include.sh"
 if ! claw_parse_up_release_args "$@"; then
   rc=$?
   if [[ "${rc}" == 2 ]]; then
@@ -36,7 +37,7 @@ set +a
 
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   claw_apply_release_image_tag "${CLAW_IMAGE_RELEASE_TAG}"
-  claw_write_release_pin_env "${SCRIPT_DIR}"
+  claw_write_release_pin_env "${PODMAN_DIR}"
   rt="$(claw_container_runtime_cli)"
   echo "pull ${GATEWAY_IMAGE} …" >&2
   "${rt}" pull "${GATEWAY_IMAGE}"
@@ -52,19 +53,21 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   esac
 fi
 
-claw_podman_export_pool_workspace "${SCRIPT_DIR}"
-claw_podman_load_compose_args "${SCRIPT_DIR}" "${ENV_FILE}"
+claw_podman_export_pool_workspace "${PODMAN_DIR}"
+claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
 
 cleanup_stale_gateway_workers() {
-  local rt ids
+  local rt ids_w ids_g ids
   rt="$(claw_container_runtime_cli)"
-  ids="$("${rt}" ps -aq --filter name='^claw-gw-' || true)"
+  ids_w="$("${rt}" ps -aq --filter name='claw-worker-' 2>/dev/null || true)"
+  ids_g="$("${rt}" ps -aq --filter name='claw-gw-' 2>/dev/null || true)"
+  ids="${ids_w} ${ids_g}"
   if [[ -z "${ids//[$'\t\r\n ']}" ]]; then
     return 0
   fi
   echo "Removing stale gateway workers before startup..."
-  # Keep startup deterministic: stale workers from previous runs can survive compose recreate.
-  # Explicitly removing only `claw-gw-*` avoids touching other project containers. Author: kejiqing
+  # Only pool worker name prefixes; removes legacy claw-gw-* after rename to claw-worker-*. Author: kejiqing
+  # shellcheck disable=SC2086
   "${rt}" rm -f ${ids}
 }
 
@@ -73,12 +76,17 @@ set -a
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
 set +a
-if [[ "${CLAW_SOLVE_ISOLATION:-podman_pool}" != "inprocess" ]] && [[ "${CLAW_POOL_HOST_DAEMON:-1}" == "1" ]]; then
-  "${SCRIPT_DIR}/pool-daemon-up.sh" "${SCRIPT_DIR}" "${REPO_ROOT}"
+
+install_args=()
+if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
+  install_args+=("--release" "${CLAW_IMAGE_RELEASE_TAG}")
 fi
+install_args+=("${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}")
+"${PODMAN_DIR}/lib/install-pool-daemon-from-image.sh" "${install_args[@]}"
+"${PODMAN_DIR}/lib/pool-daemon-up.sh" "${PODMAN_DIR}" "${REPO_ROOT}"
 
 cleanup_stale_gateway_workers
 
 # Recreate so env_file changes (e.g. .claw-pool-workspace.env) apply; plain `up -d` can leave stale env. kejiqing
-claw_compose_with_root_env "${SCRIPT_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
+claw_compose_with_root_env "${PODMAN_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
 echo "Services started."

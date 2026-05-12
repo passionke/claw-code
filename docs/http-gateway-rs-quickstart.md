@@ -58,19 +58,19 @@ cargo run -p http-gateway-rs
 
 ## 二、Podman 镜像运行（推荐）
 
-**以 `deploy/podman/README.md` 为准**：根目录 `.env`、`./deploy/podman/build.sh`、worker 镜像、`./deploy/podman/up.sh` 一条链；不要自己拼 `podman compose` 参数。
+**以 `deploy/stack/README.md` 为准**：根目录 `.env`、**`./deploy/stack/gateway.sh build`**、worker 镜像、**`./deploy/stack/gateway.sh up`** 一条链；不要自己拼 `podman compose` 参数。
 
 摘要：
 
 ```bash
-cp .env.example .env   # 编辑：PODMAN_HOST_SOCK、OPENAI_*、GATEWAY_HOST_PORT 等
-./deploy/podman/build.sh
+cp .env.example .env   # 编辑：OPENAI_*、GATEWAY_HOST_PORT、CLAW_POOL_DAEMON_TCP_HOST（Docker 时常见 host.docker.internal）等
+./deploy/stack/gateway.sh build
 # 按 README 构建 claw-gateway-worker:local
-./deploy/podman/up.sh
-./deploy/podman/check-connectivity.sh
+./deploy/stack/gateway.sh up
+./deploy/stack/gateway.sh check
 ```
 
-需要 claude-tap 时用 `./deploy/podman/start-with-tap.sh` / `stop-with-tap.sh`。停止 compose 栈：`./deploy/podman/down.sh`。
+需要 claude-tap 时用 **`./deploy/stack/gateway.sh tap-up`** / **`tap-down`**。停止 compose 栈：**`./deploy/stack/gateway.sh down`**。
 
 ## 三、接口怎么调
 

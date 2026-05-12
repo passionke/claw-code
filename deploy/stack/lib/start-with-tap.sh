@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
+ROOT_DIR="$(cd "${PODMAN_DIR}/../.." && pwd)"
 ROOT_ENV="${ROOT_DIR}/.env"
-PID_FILE="${SCRIPT_DIR}/claude-tap.pid"
-LOG_FILE="${SCRIPT_DIR}/claude-tap.log"
+PID_FILE="${PODMAN_DIR}/claude-tap.pid"
+LOG_FILE="${PODMAN_DIR}/claude-tap.log"
 
 if [[ ! -f "${ROOT_ENV}" ]]; then
   echo "missing ${ROOT_ENV}" >&2
@@ -62,14 +63,18 @@ if [[ ! -f "${CLAW_JSON}" ]]; then
 fi
 
 # shellcheck disable=SC1090
-source "${SCRIPT_DIR}/compose-include.sh"
-claw_podman_export_pool_workspace "${SCRIPT_DIR}"
-claw_podman_load_compose_args "${SCRIPT_DIR}" "${ROOT_ENV}"
+source "${PODMAN_DIR}/lib/compose-include.sh"
+claw_podman_export_pool_workspace "${PODMAN_DIR}"
+claw_podman_load_compose_args "${PODMAN_DIR}" "${ROOT_ENV}"
 
-if [[ "${CLAW_SOLVE_ISOLATION:-podman_pool}" != "inprocess" ]] && [[ "${CLAW_POOL_HOST_DAEMON:-1}" == "1" ]]; then
-  "${SCRIPT_DIR}/pool-daemon-up.sh" "${SCRIPT_DIR}" "${ROOT_DIR}"
+install_args=()
+if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
+  install_args+=("--release" "${CLAW_IMAGE_RELEASE_TAG}")
 fi
+install_args+=("${CLAW_POOL_DAEMON_BIN:-${ROOT_DIR}/rust/target/release/claw-pool-daemon}")
+"${PODMAN_DIR}/lib/install-pool-daemon-from-image.sh" "${install_args[@]}"
+"${PODMAN_DIR}/lib/pool-daemon-up.sh" "${PODMAN_DIR}" "${ROOT_DIR}"
 
-claw_compose_with_root_env "${SCRIPT_DIR}" "${ROOT_ENV}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
+claw_compose_with_root_env "${PODMAN_DIR}" "${ROOT_ENV}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
 echo "gateway started on port ${GATEWAY_HOST_PORT}"
 echo "claude-tap live viewer: http://127.0.0.1:${CLAUDE_TAP_LIVE_PORT}"

@@ -40,9 +40,9 @@ jobs:
       matrix:
         include:
           - package: claw-code
-            dockerfile: deploy/podman/Containerfile.gateway-rs
+            dockerfile: deploy/stack/Containerfile.gateway-rs
           - package: claw-gateway-worker
-            dockerfile: deploy/podman/Containerfile.gateway-worker
+            dockerfile: deploy/stack/Containerfile.gateway-worker
     steps:
       - name: Checkout
         uses: actions/checkout@v4
