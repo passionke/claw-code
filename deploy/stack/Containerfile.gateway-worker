@@ -1,5 +1,5 @@
 # Worker image for `CLAW_SOLVE_ISOLATION=docker_pool` / `podman_pool` (long-lived `sleep`, solve via `docker exec`).
-# Build from repo root: `podman build -f deploy/podman/Containerfile.gateway-worker -t claw-gateway-worker:local .`
+# Built together with the gateway by `deploy/stack/lib/build.sh` / `./deploy/stack/gateway.sh build` (same rust/ + build-args).
 # Author: kejiqing
 ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
 ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim

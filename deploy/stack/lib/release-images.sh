@@ -67,7 +67,7 @@ claw_parse_up_release_args() {
         ;;
       -h | --help)
         echo "usage: $0 [--release <tag>|release-v*]" >&2
-        echo "  --release <tag>   pin gateway + worker images for this run; writes deploy/podman/.claw-image-release.env" >&2
+        echo "  --release <tag>   pin gateway + worker images for this run; writes deploy/stack/.claw-image-release.env" >&2
         echo "                    (merged after .env). Needs CLAW_IMAGE_PREFIX / CLAW_GHCR_PREFIX or .../claw-code:* in GATEWAY_IMAGE." >&2
         echo "  release-v*        same as --release release-v*" >&2
         echo "  Subsequent runs without --release still use .claw-image-release.env if present; remove that file to follow .env only." >&2

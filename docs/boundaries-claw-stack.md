@@ -21,16 +21,16 @@ Author: kejiqing
 | **Claw** | `rust/` | Tool surface, `mcp__*` allowlist, session | HTTP, datasource encryption, SQLBot product |
 | **HTTP gateway** | `rust/crates/http-gateway-rs/`（`http-gateway-rs` 二进制） | Axum HTTP、`claw` 编排、solve 会话 SQLite、`mcpServers` 合并、`dsId` 工作区、MCP 注入、按 ds 读技能等 | Doris 查询实现、SQLBot 产品服务本体 |
 | **Doris MCP** | `third_party/doris-mcp/` | Read-only SQL + metadata **only** (`mcp__doris__*`) | Gateway, SQLBot, transport bridge |
-| **SQLBot (product)** | Your cluster (e.g. :8000 / :8001) | NL 问数、MCP 工具 `mcp_start` / `mcp_question`、业务库 | This repo (except optional PG/API **read** for config) |
-| **SQLBot Postgres (metadata)** | `SQLBOT_PG_*` | Encrypted datasource rows for **resolve** | Not the MCP port; not “running SQLBot” inside gateway |
+| **SQLBot (product)** | Your cluster (e.g. :8000 / :8001) | NL 问数、MCP 工具 `mcp_start` / `mcp_question`、业务库 | This repo |
 
-## Three different “SQLBot channels” (do not mix)
+## Two SQLBot product channels (do not mix)
 
 | Channel | Typical | Auth / use |
 | --- | --- | --- |
 | **SQLBot REST** | `:8000` | `X-SQLBOT-TOKEN` (user JWT) — docs, admin, **not** what `mcp__sqlbot__*` uses |
-| **SQLBot MCP** | `:8001` `/mcp` | `x-ak` / `x-sk` to **reach** the MCP HTTP endpoint; inside tools, `mcp_start` uses **username/password** |
-| **SQLBot PG (metadata)** | `:5432` | Gateway reads config to **build Doris connection** for `dsId` — not “executing” SQLBot chat here |
+| **SQLBot MCP** | `:8001` `/mcp` (or streamable path) | `x-ak` / `x-sk` to **reach** the MCP HTTP endpoint; inside tools, `mcp_start` uses **username/password** |
+
+`http-gateway-rs` **does not** read SQLBot Postgres for `dsId` → Doris wiring. Optional `dsId` checks use **`CLAW_DS_REGISTRY`** (YAML) only; see `rust/crates/http-gateway-rs/datasources.example.yaml`.
 
 ## Invariants (if you break these, you get a tangle)
 
@@ -43,7 +43,7 @@ Author: kejiqing
 
 | You want to… | Edit |
 | --- | --- |
-| HTTP routes, timeout, inject MCP, 容器池、`SQLBOT_MCP_*` | `rust/crates/http-gateway-rs/` |
+| HTTP routes, timeout, inject MCP, 容器池、`CLAW_DEFAULT_HTTP_MCP_*`、根 `.claw.json` | `rust/crates/http-gateway-rs/` |
 | Doris SQL guard / `doris_query` | `doris-mcp/src/` |
 | Claw tool naming / allowlist | `rust/crates/tools/` + env `CLAW_ALLOWED_TOOLS` |
 

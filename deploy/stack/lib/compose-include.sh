@@ -21,8 +21,8 @@ claw_podman_load_compose_args() {
   local env_file="$2"
   unset CLAW_COMPOSE_WORKING_DIRECTORY
   script_dir="$(cd "${script_dir}" && pwd)"
-  # Absolute `-f /.../deploy/podman/*.yml` makes Compose use `deploy/podman/` as project dir and auto-load
-  # `deploy/podman/.env`, which can override `--env-file` image pins. Use `-f` relative to repo root and
+  # Absolute `-f /.../deploy/stack/*.yml` makes Compose use `deploy/stack/` as project dir and auto-load
+  # `deploy/stack/.env`, which can override `--env-file` image pins. Use `-f` relative to repo root and
   # run compose from that directory. kejiqing
   local repo_root rel=""
   if [[ -f "${env_file}" ]]; then
@@ -44,44 +44,29 @@ claw_podman_load_compose_args() {
   # shellcheck disable=SC1090
   source "${env_file}"
   set +a
-  # Default CLAW_SOLVE_ISOLATION is podman_pool (see podman-compose + Rust); inprocess skips pool overlays.
-  if [[ "${CLAW_SOLVE_ISOLATION:-podman_pool}" == "inprocess" ]]; then
-    return 0
-  fi
-  # Host `claw-pool-daemon` creates workers on the real Podman; gateway uses TCP to host (line JSON RPC).
-  if [[ "${CLAW_POOL_HOST_DAEMON:-1}" == "1" ]]; then
-    mkdir -p "${script_dir}/.claw-pool-rpc"
-    local pool_port="${CLAW_POOL_DAEMON_PORT:-9943}"
-    # Podman 默认 host.containers.internal；Docker Engine（尤其 Linux）常用 host.docker.internal，或 compose 里 pool-daemon 服务名。
-    local tcp_host="${CLAW_POOL_DAEMON_TCP_HOST:-host.containers.internal}"
-    {
-      printf '%s\n' '# GENERATED — do not edit. Overwritten by compose-include (pool RPC). kejiqing'
-      printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"
-      printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
-    } >"${script_dir}/.claw-pool-rpc/gateway.env"
-    if [[ -n "${rel}" ]]; then
-      CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.pool-rpc.yml" )
-    else
-      CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.pool-rpc.yml" )
-    fi
-    return 0
-  fi
-  # Legacy: podman CLI inside the gateway container + host API socket mount.
-  if [[ -n "${PODMAN_HOST_SOCK:-}" ]]; then
-    PODMAN_HOST_SOCK_DIR="$(dirname "${PODMAN_HOST_SOCK}")"
-    PODMAN_HOST_SOCK_BASENAME="$(basename "${PODMAN_HOST_SOCK}")"
-    export PODMAN_HOST_SOCK_DIR PODMAN_HOST_SOCK_BASENAME
-  fi
-  if [[ -z "${PODMAN_HOST_SOCK:-}" ]]; then
-    echo "error: CLAW_POOL_HOST_DAEMON=0 requires PODMAN_HOST_SOCK (host Podman API socket)." >&2
-    echo "or set CLAW_POOL_HOST_DAEMON=1 (default) to use host claw-pool-daemon instead." >&2
-    echo "to run without a pool: CLAW_SOLVE_ISOLATION=inprocess" >&2
+  if [[ "${CLAW_POOL_HOST_DAEMON:-1}" == "0" ]]; then
+    echo "error: CLAW_POOL_HOST_DAEMON=0 (Podman API socket into the gateway container) is removed." >&2
+    echo "use the default host claw-pool-daemon + TCP (unset CLAW_POOL_HOST_DAEMON)." >&2
     return 1
   fi
+  if [[ -n "${PODMAN_HOST_SOCK:-}" ]]; then
+    echo "error: PODMAN_HOST_SOCK is no longer used; remove it from .env (host claw-pool-daemon is the only compose pool path)." >&2
+    return 1
+  fi
+  # Host `claw-pool-daemon` creates workers; gateway uses TCP to the daemon.
+  mkdir -p "${script_dir}/.claw-pool-rpc"
+  local pool_port="${CLAW_POOL_DAEMON_PORT:-9943}"
+  # Podman 默认 host.containers.internal；Docker Engine（尤其 Linux）常用 host.docker.internal，或 compose 里 pool-daemon 服务名。
+  local tcp_host="${CLAW_POOL_DAEMON_TCP_HOST:-host.containers.internal}"
+  {
+    printf '%s\n' '# GENERATED — do not edit. Overwritten by compose-include (pool RPC). kejiqing'
+    printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"
+    printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
+  } >"${script_dir}/.claw-pool-rpc/gateway.env"
   if [[ -n "${rel}" ]]; then
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.podman-api.yml" )
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.pool-rpc.yml" )
   else
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.podman-api.yml" )
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.pool-rpc.yml" )
   fi
   return 0
 }

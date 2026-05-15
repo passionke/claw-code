@@ -158,7 +158,7 @@ impl DockerPoolManager {
     }
 
     fn container_name(&self, idx: usize) -> String {
-        format!("claw-gw-{}-{idx}", self.name_stem)
+        format!("claw-worker-{}-{idx}", self.name_stem)
     }
 
     fn exec_solve_argv_prefix(&self) -> Vec<String> {
@@ -503,9 +503,19 @@ impl DockerPoolManager {
             "docker exec gateway-solve-once starting"
         );
         let mut argv = self.exec_solve_argv_prefix();
+        argv.extend(["-e".into(), "CLAW_GATEWAY_WORK_ROOT=/claw_host_root".into()]);
+        // Worker `docker run` does not inherit the pool host env; forward MCP tool-call budget so
+        // long SQLBot/streamable HTTP calls respect CLAW_MCP_TOOL_CALL_TIMEOUT_MS. Author: kejiqing
+        if let Ok(value) = std::env::var("CLAW_MCP_TOOL_CALL_TIMEOUT_MS") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                argv.extend([
+                    "-e".into(),
+                    format!("CLAW_MCP_TOOL_CALL_TIMEOUT_MS={trimmed}"),
+                ]);
+            }
+        }
         argv.extend([
-            "-e".into(),
-            "CLAW_GATEWAY_WORK_ROOT=/claw_host_root".into(),
             "--workdir".into(),
             workdir,
             name,

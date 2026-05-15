@@ -30,7 +30,7 @@ use biz_advice_report::{
     build_biz_advice_polish_prompt, load_boss_report_writer_instructions, raw_json_from_output,
     BizAdviceReportPayload, BizReportStreamMsg,
 };
-use gateway_solve_turn::{run_gateway_solve_turn, run_gateway_solve_turn_streaming};
+use gateway_solve_turn::run_gateway_solve_turn_streaming;
 use http_gateway_rs::{session_db, session_merge};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
@@ -84,36 +84,42 @@ struct AppState {
     cfg: Arc<GatewayConfig>,
     /// When using `docker_pool` / `podman_pool`, active async task id → pool + slot for cancel.
     docker_slots: Arc<Mutex<HashMap<String, (Arc<dyn pool::PoolOps + Send + Sync>, usize)>>>,
-    docker_pool: Option<Arc<dyn pool::PoolOps + Send + Sync>>,
+    docker_pool: Arc<dyn pool::PoolOps + Send + Sync>,
     /// Serialize git and working-tree reads/writes on the shared `.claw-code-projects` clone. kejiqing
     projects_git_mirror_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SolveIsolation {
-    InProcess,
     DockerPool,
     PodmanPool,
 }
 
 impl SolveIsolation {
     fn from_env() -> Self {
-        // Default product mode is Podman container pool (`podman_pool`). `docker_pool` for Docker workers.
-        // `inprocess` remains as a legacy escape hatch only (not recommended for production).
-        match std::env::var("CLAW_SOLVE_ISOLATION")
+        let raw = std::env::var("CLAW_SOLVE_ISOLATION")
             .map(|v| v.trim().to_ascii_lowercase())
-            .unwrap_or_default()
-            .as_str()
-        {
-            "inprocess" => Self::InProcess,
+            .unwrap_or_default();
+        match raw.as_str() {
+            "" | "podman_pool" => Self::PodmanPool,
             "docker_pool" => Self::DockerPool,
-            _ => Self::PodmanPool,
+            "inprocess" => {
+                eprintln!(
+                    "http-gateway-rs: CLAW_SOLVE_ISOLATION=inprocess is removed; use podman_pool or docker_pool."
+                );
+                std::process::exit(1);
+            }
+            other => {
+                eprintln!(
+                    "http-gateway-rs: invalid CLAW_SOLVE_ISOLATION={other:?}; expected podman_pool or docker_pool."
+                );
+                std::process::exit(1);
+            }
         }
     }
 
     fn as_str(self) -> &'static str {
         match self {
-            Self::InProcess => "inprocess",
             Self::DockerPool => "docker_pool",
             Self::PodmanPool => "podman_pool",
         }
@@ -496,30 +502,25 @@ fn session_db_err(e: &sqlx::Error) -> ApiError {
 /// In the Podman compose stack this is the container path `/var/lib/claw/workspace` (same as `CLAW_WORK_ROOT`).
 /// If `CLAW_POOL_WORK_ROOT_HOST` points at a path that does not exist in this filesystem (e.g. a macOS
 /// `/Users/...` path inside a Linux gateway container), we fall back to `work_root`. Author: kejiqing
-fn pool_host_bind_root(work_root: &Path, isolation: SolveIsolation) -> PathBuf {
-    match isolation {
-        SolveIsolation::InProcess => work_root.to_path_buf(),
-        SolveIsolation::DockerPool | SolveIsolation::PodmanPool => {
-            if let Ok(raw) = std::env::var("CLAW_POOL_WORK_ROOT_HOST") {
-                let trimmed = raw.trim();
-                if !trimmed.is_empty() {
-                    let p = PathBuf::from(trimmed);
-                    if p.exists() {
-                        return p;
-                    }
-                    warn!(
-                        target: "claw_gateway_orchestration",
-                        component = "startup",
-                        phase = "pool_host_bind_root_fallback",
-                        configured = %trimmed,
-                        fallback = %work_root.display(),
-                        "CLAW_POOL_WORK_ROOT_HOST not found in this filesystem; using CLAW_WORK_ROOT"
-                    );
-                }
+fn pool_host_bind_root(work_root: &Path) -> PathBuf {
+    if let Ok(raw) = std::env::var("CLAW_POOL_WORK_ROOT_HOST") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let p = PathBuf::from(trimmed);
+            if p.exists() {
+                return p;
             }
-            work_root.to_path_buf()
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "startup",
+                phase = "pool_host_bind_root_fallback",
+                configured = %trimmed,
+                fallback = %work_root.display(),
+                "CLAW_POOL_WORK_ROOT_HOST not found in this filesystem; using CLAW_WORK_ROOT"
+            );
         }
     }
+    work_root.to_path_buf()
 }
 
 fn mandatory_nonempty_env(var: &'static str) -> String {
@@ -580,20 +581,15 @@ async fn main() {
         http_addr = %std::env::var("CLAW_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
         "http-gateway-rs tracing ready; when file_log_enabled, stdout is JSON too (same subscriber layers)"
     );
-    let pool_binding_root = pool_host_bind_root(&work_root, solve_isolation);
-    if matches!(
-        solve_isolation,
-        SolveIsolation::DockerPool | SolveIsolation::PodmanPool
-    ) {
-        info!(
-            target: "claw_gateway_orchestration",
-            component = "startup",
-            phase = "pool_host_paths",
-            work_root = %work_root.display(),
-            pool_host_bind_root = %pool_binding_root.display(),
-            "container pool uses pool_host_bind_root on the runtime host for worker -v mounts"
-        );
-    }
+    let pool_binding_root = pool_host_bind_root(&work_root);
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "startup",
+        phase = "pool_host_paths",
+        work_root = %work_root.display(),
+        pool_host_bind_root = %pool_binding_root.display(),
+        "container pool uses pool_host_bind_root on the runtime host for worker -v mounts"
+    );
     let pool_rpc_host_work_root = std::env::var("CLAW_POOL_RPC_HOST_WORK_ROOT")
         .ok()
         .map(|v| v.trim().to_string())
@@ -613,43 +609,40 @@ async fn main() {
     let pool_rpc_tcp_cfg = pool_daemon_tcp.clone();
     let pool_rpc_unix_cfg = pool_daemon_socket.clone();
 
-    let docker_pool: Option<Arc<dyn pool::PoolOps + Send + Sync>> = match solve_isolation {
-        SolveIsolation::DockerPool | SolveIsolation::PodmanPool => {
-            if let Some(ref tcp_addr) = pool_daemon_tcp {
-                if pool_rpc_host_work_root.is_none() {
-                    warn!(
-                        target: "claw_gateway_orchestration",
-                        component = "startup",
-                        phase = "pool_rpc_missing_host_root",
-                        "CLAW_POOL_DAEMON_TCP is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
-                    );
-                }
-                let client = pool::PoolRpcClient::new_tcp(tcp_addr.clone());
-                Some(Arc::new(client))
-            } else if let Some(ref sock_path) = pool_daemon_socket {
-                if pool_rpc_host_work_root.is_none() {
-                    warn!(
-                        target: "claw_gateway_orchestration",
-                        component = "startup",
-                        phase = "pool_rpc_missing_host_root",
-                        "CLAW_POOL_DAEMON_SOCKET is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
-                    );
-                }
-                let client = pool::PoolRpcClient::new(PathBuf::from(sock_path));
-                Some(Arc::new(client))
-            } else {
-                let podman = matches!(solve_isolation, SolveIsolation::PodmanPool);
-                let p = pool::DockerPoolManager::try_from_env(podman, &pool_binding_root)
-                    .unwrap_or_else(|e| {
-                        let runtime = if podman { "Podman" } else { "Docker" };
-                        eprintln!("http-gateway-rs: invalid {runtime} pool configuration: {e}");
-                        std::process::exit(1);
-                    });
-                pool::DockerPoolManager::schedule_warm(&p);
-                Some(Arc::new(pool::LocalPoolOps(p)))
-            }
+    let docker_pool: Arc<dyn pool::PoolOps + Send + Sync> = if let Some(ref tcp_addr) =
+        pool_daemon_tcp
+    {
+        if pool_rpc_host_work_root.is_none() {
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "startup",
+                phase = "pool_rpc_missing_host_root",
+                "CLAW_POOL_DAEMON_TCP is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
+            );
         }
-        SolveIsolation::InProcess => None,
+        let client = pool::PoolRpcClient::new_tcp(tcp_addr.clone());
+        Arc::new(client)
+    } else if let Some(ref sock_path) = pool_daemon_socket {
+        if pool_rpc_host_work_root.is_none() {
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "startup",
+                phase = "pool_rpc_missing_host_root",
+                "CLAW_POOL_DAEMON_SOCKET is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
+            );
+        }
+        let client = pool::PoolRpcClient::new(PathBuf::from(sock_path));
+        Arc::new(client)
+    } else {
+        let podman = matches!(solve_isolation, SolveIsolation::PodmanPool);
+        let p =
+            pool::DockerPoolManager::try_from_env(podman, &pool_binding_root).unwrap_or_else(|e| {
+                let runtime = if podman { "Podman" } else { "Docker" };
+                eprintln!("http-gateway-rs: invalid {runtime} pool configuration: {e}");
+                std::process::exit(1);
+            });
+        pool::DockerPoolManager::schedule_warm(&p);
+        Arc::new(pool::LocalPoolOps(p))
     };
 
     let projects_git_url = mandatory_nonempty_env("CLAW_PROJECTS_GIT_URL");
@@ -1483,116 +1476,6 @@ async fn copy_tree(src_root: &Path, dst_root: &Path) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// In-process solve uses `session_home` as cwd: symlink `home/skills` and root `CLAUDE.md` from
-/// `ds_*` (no per-session copy). Pool solve uses read-only bind mounts instead
-/// (`DockerPoolManager::run_worker_container`). Author: kejiqing
-async fn prepare_inprocess_session_read_through_from_ds(
-    ds_base: &Path,
-    session_home: &Path,
-) -> Result<(), ApiError> {
-    #[cfg(unix)]
-    {
-        let src_dir = ds_base.join("home/skills");
-        let link_path = session_home.join("home/skills");
-        let home_parent = session_home.join("home");
-        fs::create_dir_all(&home_parent).await.map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create session home/ for skills symlink failed: {e}"),
-            )
-        })?;
-        if let Ok(meta) = fs::symlink_metadata(&link_path).await {
-            if meta.is_symlink() {
-                fs::remove_file(&link_path).await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("remove stale skills symlink failed: {e}"),
-                    )
-                })?;
-            } else if meta.is_dir() {
-                fs::remove_dir_all(&link_path).await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("remove stale skills dir failed: {e}"),
-                    )
-                })?;
-            } else {
-                fs::remove_file(&link_path).await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("remove stale skills path failed: {e}"),
-                    )
-                })?;
-            }
-        }
-        if fs::metadata(&src_dir).await.is_ok_and(|m| m.is_dir()) {
-            fs::symlink("../../home/skills", &link_path)
-                .await
-                .map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("symlink session home/skills failed: {e}"),
-                    )
-                })?;
-        }
-
-        let claude_src = ds_base.join("CLAUDE.md");
-        let claude_link = session_home.join("CLAUDE.md");
-        if let Ok(meta) = fs::symlink_metadata(&claude_link).await {
-            if meta.is_symlink() {
-                fs::remove_file(&claude_link).await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("remove stale CLAUDE.md symlink failed: {e}"),
-                    )
-                })?;
-            } else if meta.is_file() {
-                fs::remove_file(&claude_link).await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("remove stale session CLAUDE.md failed: {e}"),
-                    )
-                })?;
-            }
-        }
-        if fs::metadata(&claude_src).await.is_ok_and(|m| m.is_file()) {
-            fs::symlink("../../CLAUDE.md", &claude_link)
-                .await
-                .map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("symlink session CLAUDE.md failed: {e}"),
-                    )
-                })?;
-        }
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        let src = ds_base.join("home/skills");
-        let dst = session_home.join("home/skills");
-        if fs::metadata(&dst).await.is_ok() {
-            let _ = fs::remove_dir_all(&dst).await;
-            let _ = fs::remove_file(&dst).await;
-        }
-        if fs::metadata(&src).await.is_ok_and(|m| m.is_dir()) {
-            copy_tree(&src, &dst).await?;
-        }
-        let claude_src = ds_base.join("CLAUDE.md");
-        let claude_dst = session_home.join("CLAUDE.md");
-        if fs::metadata(&claude_src).await.is_ok_and(|m| m.is_file()) {
-            let _ = fs::remove_file(&claude_dst).await;
-            fs::copy(&claude_src, &claude_dst).await.map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("copy session CLAUDE.md failed: {e}"),
-                )
-            })?;
-        }
-        Ok(())
-    }
-}
-
 async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, ApiError> {
     run_git_env(cwd, &[], args).await
 }
@@ -2016,7 +1899,7 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "defaultHttpMcpTransport": state.cfg.default_http_mcp_transport,
         "allowedTools": state.cfg.allowed_tools,
         "solveIsolation": isolation,
-        "containerPool": state.docker_pool.is_some(),
+        "containerPool": true,
         "poolRpcRemote": state.cfg.pool_rpc_remote,
         "poolRpcTcp": state.cfg.pool_rpc_tcp,
         "poolRpcUnixSocket": state.cfg.pool_rpc_unix_socket,
@@ -2896,6 +2779,114 @@ impl futures_util::stream::Stream for BizReportSseStream {
     }
 }
 
+/// In-process polish session cwd: symlink `home/skills` and `CLAUDE.md` from `ds_*` (pool solve uses binds).
+async fn prepare_inprocess_session_read_through_from_ds(
+    ds_base: &Path,
+    session_home: &Path,
+) -> Result<(), ApiError> {
+    #[cfg(unix)]
+    {
+        let src_dir = ds_base.join("home/skills");
+        let link_path = session_home.join("home/skills");
+        let home_parent = session_home.join("home");
+        fs::create_dir_all(&home_parent).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create session home/ for skills symlink failed: {e}"),
+            )
+        })?;
+        if let Ok(meta) = fs::symlink_metadata(&link_path).await {
+            if meta.is_symlink() {
+                fs::remove_file(&link_path).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("remove stale skills symlink failed: {e}"),
+                    )
+                })?;
+            } else if meta.is_dir() {
+                fs::remove_dir_all(&link_path).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("remove stale skills dir failed: {e}"),
+                    )
+                })?;
+            } else {
+                fs::remove_file(&link_path).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("remove stale skills path failed: {e}"),
+                    )
+                })?;
+            }
+        }
+        if fs::metadata(&src_dir).await.is_ok_and(|m| m.is_dir()) {
+            fs::symlink("../../home/skills", &link_path)
+                .await
+                .map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("symlink session home/skills failed: {e}"),
+                    )
+                })?;
+        }
+
+        let claude_src = ds_base.join("CLAUDE.md");
+        let claude_link = session_home.join("CLAUDE.md");
+        if let Ok(meta) = fs::symlink_metadata(&claude_link).await {
+            if meta.is_symlink() {
+                fs::remove_file(&claude_link).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("remove stale CLAUDE.md symlink failed: {e}"),
+                    )
+                })?;
+            } else if meta.is_file() {
+                fs::remove_file(&claude_link).await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("remove stale session CLAUDE.md failed: {e}"),
+                    )
+                })?;
+            }
+        }
+        if fs::metadata(&claude_src).await.is_ok_and(|m| m.is_file()) {
+            fs::symlink("../../CLAUDE.md", &claude_link)
+                .await
+                .map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("symlink session CLAUDE.md failed: {e}"),
+                    )
+                })?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let src = ds_base.join("home/skills");
+        let dst = session_home.join("home/skills");
+        if fs::metadata(&dst).await.is_ok() {
+            let _ = fs::remove_dir_all(&dst).await;
+            let _ = fs::remove_file(&dst).await;
+        }
+        if fs::metadata(&src).await.is_ok_and(|m| m.is_dir()) {
+            copy_tree(&src, &dst).await?;
+        }
+        let claude_src = ds_base.join("CLAUDE.md");
+        let claude_dst = session_home.join("CLAUDE.md");
+        if fs::metadata(&claude_src).await.is_ok_and(|m| m.is_file()) {
+            let _ = fs::remove_file(&claude_dst).await;
+            fs::copy(&claude_src, &claude_dst).await.map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("copy session CLAUDE.md failed: {e}"),
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
 async fn prepare_biz_report_polish_session(
     state: &AppState,
     ds_id: i64,
@@ -3064,9 +3055,6 @@ async fn run_solve_request(
             )
         })?;
         ensure_workspace_initialized(&state.cfg.claw_bin, &ds_base).await?;
-        if matches!(state.cfg.solve_isolation, SolveIsolation::InProcess) {
-            prepare_inprocess_session_read_through_from_ds(&ds_base, &session_home).await?;
-        }
         let settings = build_settings(&state, req.ds_id).await;
         let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
             ApiError::new(
@@ -3112,69 +3100,23 @@ async fn run_solve_request(
         session_home = %session_home.display(),
         solve_isolation = state.cfg.solve_isolation.as_str(),
         timeout_seconds,
-        "session .claw/settings.json written; starting solve (in-process or pool)"
+        "session .claw/settings.json written; starting solve (container pool)"
     );
 
-    match state.cfg.solve_isolation {
-        SolveIsolation::InProcess => {
-            let (code, output_text, output_json) = run_runtime_prompt(
-                &session_home,
-                &state.cfg.work_root,
-                &req.user_prompt,
-                req.model.as_deref(),
-                timeout_seconds,
-                &ctx.request_id,
-                req.extra_session.clone(),
-                effective_allowed_tools,
-                state.cfg.default_max_iterations,
-            )?;
-            let duration_ms = started.elapsed().as_millis() as i64;
-            info!(
-                target: "claw_gateway_orchestration",
-                component = "solve_inprocess",
-                request_id = %ctx.request_id,
-                task_id = ctx.task_id.as_deref().unwrap_or("-"),
-                ds_id = req.ds_id,
-                phase = "solve_run_ok",
-                duration_ms,
-                session_home = %session_home.display(),
-                claw_exit_code = code,
-                "in-process gateway_solve finished"
-            );
-            Ok(SolveResponse {
-                session_id: ctx.request_id.clone(),
-                request_id: ctx.request_id,
-                session_home_rel: session_home_rel.clone(),
-                ds_id: req.ds_id,
-                work_dir: session_home.display().to_string(),
-                duration_ms,
-                claw_exit_code: code,
-                output_text,
-                output_json,
-            })
-        }
-        SolveIsolation::DockerPool | SolveIsolation::PodmanPool => {
-            let pool = state.docker_pool.clone().ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "container pool is not initialized",
-                )
-            })?;
-            solve_pool::run_solve_request_docker(
-                state,
-                req,
-                ctx,
-                pool,
-                started,
-                effective_allowed_tools,
-                solve_pool::SolveSessionPaths {
-                    session_home,
-                    session_home_rel,
-                },
-            )
-            .await
-        }
-    }
+    let pool = state.docker_pool.clone();
+    solve_pool::run_solve_request_docker(
+        state,
+        req,
+        ctx,
+        pool,
+        started,
+        effective_allowed_tools,
+        solve_pool::SolveSessionPaths {
+            session_home,
+            session_home_rel,
+        },
+    )
+    .await
 }
 
 async fn inject_mcp(
@@ -3400,32 +3342,7 @@ fn map_gateway_solve_turn_err(e: gateway_solve_turn::GatewaySolveTurnError) -> A
     ApiError::new(status, e.message)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_runtime_prompt(
-    work_dir: &Path,
-    work_root: &Path,
-    prompt: &str,
-    model: Option<&str>,
-    timeout_seconds: u64,
-    clawcode_session_id: &str,
-    extra_session: Option<Value>,
-    allowed_tools: Vec<String>,
-    max_iterations: usize,
-) -> Result<(i32, String, Option<Value>), ApiError> {
-    run_gateway_solve_turn(
-        work_dir,
-        work_root,
-        prompt,
-        model,
-        timeout_seconds,
-        clawcode_session_id,
-        extra_session,
-        allowed_tools,
-        max_iterations,
-    )
-    .map_err(map_gateway_solve_turn_err)
-}
-
+/// In-process polish for `biz_advice_report?stream=true` (main solve path is container-pool only).
 #[allow(clippy::too_many_arguments)]
 fn run_runtime_prompt_streaming<F>(
     work_dir: &Path,
@@ -3749,14 +3666,14 @@ mod tests {
     }
 
     #[test]
-    fn projects_git_effective_clone_url_inserts_pat_for_plain_http() {
+    fn projects_git_effective_clone_url_inserts_pat_for_gitlab_https() {
         let u = projects_git_effective_clone_url(
-            "http://code.sunmi.com/minidata/claw-projects-home.git",
+            "https://code.sunmi.com/minidata/claw-projects-home.git",
             Some("glpat_secret"),
         );
         assert_eq!(
             u,
-            "http://x-access-token:glpat_secret@code.sunmi.com/minidata/claw-projects-home.git"
+            "https://x-access-token:glpat_secret@code.sunmi.com/minidata/claw-projects-home.git"
         );
     }
 

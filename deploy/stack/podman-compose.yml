@@ -4,8 +4,8 @@ services:
     container_name: claw-gateway-rs
     restart: unless-stopped
     env_file:
-      # Human-maintained env: repo root `.env` only (`CLAW_ALLOWED_TOOLS` etc.). Do not add deploy/podman/.env.
-      # Paths relative to this file's directory: `deploy/podman/` → `../..` is repo root.
+      # Human-maintained env: repo root `.env` only (`CLAW_ALLOWED_TOOLS` etc.). Do not add deploy/stack/.env.
+      # Paths relative to this file's directory: `deploy/stack/` → `../..` is repo root.
       - ../../.env
       # Written by compose-include (up.sh / start-with-tap.sh / down.sh). Do not set
       # CLAW_POOL_WORK_ROOT_HOST in `environment:` with empty ${…} — it overrides env_file and breaks worker bind mounts.
@@ -18,11 +18,13 @@ services:
       CLAW_GATEWAY_SESSION_DB: ${CLAW_GATEWAY_SESSION_DB:-/var/lib/claw/gateway-sessions/gateway-sessions.sqlite}
       CLAW_SOLVE_ISOLATION: ${CLAW_SOLVE_ISOLATION:-podman_pool}
       # Pool sizing / image: explicit defaults so a bare `podman compose` still gets worker settings when
-      # project-dir `.env` is missing (always prefer `./deploy/podman/up.sh --env-file repo/.env`).
+      # project-dir `.env` is missing (always prefer `./deploy/stack/gateway.sh up` from repo root with `.env`).
       CLAW_POOL_SIZE_CAP: ${CLAW_POOL_SIZE_CAP:-4}
       CLAW_PODMAN_POOL_SIZE: ${CLAW_PODMAN_POOL_SIZE:-4}
       CLAW_PODMAN_POOL_MIN_IDLE: ${CLAW_PODMAN_POOL_MIN_IDLE:-1}
       CLAW_PODMAN_IMAGE: ${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}
+      # Do not list CLAW_PODMAN_EXTRA_ARGS / CLAW_DOCKER_EXTRA_ARGS / CLAW_MCP_TOOL_CALL_TIMEOUT_MS
+      # here with "${VAR:-}" — compose interpolation does not read ../../.env, so empty defaults override env_file.
       CLAW_CONFIG_FILE: /app/.claw.json
       CLAW_TIMEOUT_SECONDS: ${CLAW_TIMEOUT_SECONDS}
       CLAW_LOG_FORMAT: json
