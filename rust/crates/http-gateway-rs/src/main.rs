@@ -21,15 +21,26 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::sse::Event;
+use axum::response::sse::Sse;
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use biz_advice_report::{
+    build_biz_advice_polish_prompt, load_boss_report_writer_instructions, raw_json_from_output,
+    BizAdviceReportPayload, BizReportStreamMsg,
+};
+use gateway_solve_turn::run_gateway_biz_polish_llm;
 use http_gateway_rs::{session_db, session_merge};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio::fs;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::task::AbortHandle;
 use tokio::time::{interval, timeout, MissedTickBehavior};
@@ -38,6 +49,7 @@ use tracing::field::Empty;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+mod biz_advice_report;
 mod gateway_logging;
 mod pool;
 mod solve_pool;
@@ -334,6 +346,9 @@ struct ProbeQuery {
 #[derive(Debug, Deserialize)]
 struct BizAdviceReportQuery {
     task_id: String,
+    /// `true` 时返回 `text/event-stream`（`biz.report.start` / `delta` / `done`）。
+    #[serde(default)]
+    stream: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1189,10 +1204,11 @@ async fn openapi() -> Json<Value> {
                 "get": {
                     "summary": "Generate cleaned business advice report from async task output",
                     "parameters": [
-                        { "name": "task_id", "in": "query", "required": true, "schema": { "type": "string" } }
+                        { "name": "task_id", "in": "query", "required": true, "schema": { "type": "string" } },
+                        { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "When true, response is text/event-stream (biz.report.start / delta / done)" }
                     ],
                     "responses": {
-                        "200": { "description": "Cleaned business advice report", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
+                        "200": { "description": "Cleaned business advice report (JSON) or SSE when stream=true", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
                     }
                 }
             },
@@ -2600,7 +2616,7 @@ async fn cancel_task(
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
-) -> Result<Json<BizAdviceReportResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let task = {
         let tasks = state.tasks.lock().await;
         tasks
@@ -2632,48 +2648,126 @@ async fn get_biz_advice_report(
             ),
         )
     })?;
-    let raw_json = source_result.output_json.as_ref().map_or_else(
-        || "null".to_string(),
-        |v| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()),
-    );
-    let prompt = format!(
-        "你是资深业务分析顾问。下面给你一段原始输出，其中包含中间过程、思考草稿或噪声信息。\n\
-请只输出“最终干净报告”，要求：\n\
-1) 不要输出任何中间过程、思考轨迹、工具调用痕迹。\n\
-2) 结构清晰，使用简洁中文。\n\
-3) 保留关键结论、依据与可执行建议。\n\
-4) 如果信息不足，明确写出“信息不足”并给出最小补充数据清单。\n\
-5) 不要添加与原文无关的事实。\n\n\
-【原始文本输出】\n{}\n\n\
-【原始 JSON 输出】\n{}",
-        source_result.output_text, raw_json
-    );
-    let report = run_solve_request(
-        state,
-        SolveRequest {
-            ds_id: source_result.ds_id,
-            user_prompt: prompt,
-            session_id: None,
-            model: None,
-            timeout_seconds: None,
-            extra_session: None,
-            allowed_tools: None,
-        },
-        RunSolveContext {
-            request_id: Uuid::new_v4().simple().to_string(),
-            task_id: None,
-            skip_session_db: true,
-        },
-    )
-    .await?;
+    let ds_id = source_result.ds_id;
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let instructions = load_boss_report_writer_instructions(&work_dir).await;
+    let raw_json = raw_json_from_output(source_result.output_json.as_ref());
+    let prompt =
+        build_biz_advice_polish_prompt(&instructions, &source_result.output_text, &raw_json);
+    let request_id = Uuid::new_v4().simple().to_string();
+    let timeout_seconds = state.cfg.default_timeout_seconds;
+    if query.stream {
+        return Ok(biz_report_llm_stream_response(
+            BizAdviceReportPayload {
+                task_id: query.task_id.clone(),
+                source_request_id: task.request_id.clone(),
+                source_ds_id: ds_id,
+                source_status: source_status.clone(),
+                report_text: None,
+                report_json: None,
+            },
+            prompt,
+            request_id,
+            timeout_seconds,
+        ));
+    }
+    let (report_text, report_json) = tokio::task::spawn_blocking(move || {
+        run_gateway_biz_polish_llm(
+            &prompt,
+            None,
+            timeout_seconds,
+            &request_id,
+            None::<fn(&str)>,
+        )
+    })
+    .await
+    .map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("polish task join failed: {e}"),
+        )
+    })?
+    .map_err(map_gateway_solve_turn_err)?;
     Ok(Json(BizAdviceReportResponse {
         task_id: query.task_id,
         source_request_id: task.request_id,
-        source_ds_id: source_result.ds_id,
+        source_ds_id: ds_id,
         source_status,
-        report_text: report.output_text,
-        report_json: report.output_json,
-    }))
+        report_text,
+        report_json,
+    })
+    .into_response())
+}
+
+/// `stream=true`: direct LLM polish; each model `TextDelta` is forwarded as `biz.report.delta`.
+fn biz_report_llm_stream_response(
+    meta: BizAdviceReportPayload,
+    prompt: String,
+    request_id: String,
+    timeout_seconds: u64,
+) -> Response {
+    let (tx, rx) = mpsc::unbounded_channel::<BizReportStreamMsg>();
+    let meta_done = meta.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut send_delta = |delta: &str| {
+            let _ = tx.send(BizReportStreamMsg::Delta(delta.to_string()));
+        };
+        match run_gateway_biz_polish_llm(
+            &prompt,
+            None,
+            timeout_seconds,
+            &request_id,
+            Some(&mut send_delta),
+        ) {
+            Ok((output_text, output_json)) => {
+                let _ = tx.send(BizReportStreamMsg::Done(BizAdviceReportPayload {
+                    task_id: meta_done.task_id,
+                    source_request_id: meta_done.source_request_id,
+                    source_ds_id: meta_done.source_ds_id,
+                    source_status: meta_done.source_status,
+                    report_text: Some(output_text),
+                    report_json: output_json,
+                }));
+            }
+            Err(e) => {
+                let _ = tx.send(BizReportStreamMsg::Error(e.message));
+            }
+        }
+    });
+    Sse::new(BizReportSseStream {
+        meta,
+        rx,
+        start_sent: false,
+    })
+    .into_response()
+}
+
+struct BizReportSseStream {
+    meta: BizAdviceReportPayload,
+    rx: mpsc::UnboundedReceiver<BizReportStreamMsg>,
+    start_sent: bool,
+}
+
+impl futures_util::stream::Stream for BizReportSseStream {
+    type Item = Result<Event, Infallible>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if !self.start_sent {
+            self.start_sent = true;
+            let data = serde_json::json!({ "taskId": self.meta.task_id }).to_string();
+            return Poll::Ready(Some(Ok(Event::default()
+                .event("biz.report.start")
+                .data(data))));
+        }
+        match Pin::new(&mut self.rx).poll_recv(cx) {
+            Poll::Ready(Some(msg)) => {
+                Poll::Ready(Some(Ok(biz_advice_report::stream_msg_to_event(&msg))))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 async fn run_solve_request(
@@ -3073,6 +3167,14 @@ async fn ensure_workspace_initialized(_claw_bin: &str, work_dir: &Path) -> Resul
         )
     })?;
     Ok(())
+}
+
+fn map_gateway_solve_turn_err(e: gateway_solve_turn::GatewaySolveTurnError) -> ApiError {
+    let status = match e.status {
+        504 => StatusCode::GATEWAY_TIMEOUT,
+        _ => StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    ApiError::new(status, e.message)
 }
 
 async fn probe_mcp_load(
