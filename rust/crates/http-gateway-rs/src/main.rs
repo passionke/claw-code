@@ -21,16 +21,26 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::sse::Event;
+use axum::response::sse::Sse;
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use gateway_solve_turn::run_gateway_solve_turn;
+use biz_advice_report::{
+    build_biz_advice_polish_prompt, load_boss_report_writer_instructions, raw_json_from_output,
+    BizAdviceReportPayload, BizReportStreamMsg,
+};
+use gateway_solve_turn::{run_gateway_solve_turn, run_gateway_solve_turn_streaming};
 use http_gateway_rs::{session_db, session_merge};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio::fs;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::task::AbortHandle;
 use tokio::time::{interval, timeout, MissedTickBehavior};
@@ -39,6 +49,7 @@ use tracing::field::Empty;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+mod biz_advice_report;
 mod gateway_logging;
 mod pool;
 mod solve_pool;
@@ -329,6 +340,9 @@ struct ProbeQuery {
 #[derive(Debug, Deserialize)]
 struct BizAdviceReportQuery {
     task_id: String,
+    /// `true` 时返回 `text/event-stream`（`biz.report.start` / `delta` / `done`）。
+    #[serde(default)]
+    stream: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1197,10 +1211,11 @@ async fn openapi() -> Json<Value> {
                 "get": {
                     "summary": "Generate cleaned business advice report from async task output",
                     "parameters": [
-                        { "name": "task_id", "in": "query", "required": true, "schema": { "type": "string" } }
+                        { "name": "task_id", "in": "query", "required": true, "schema": { "type": "string" } },
+                        { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "When true, response is text/event-stream (biz.report.start / delta / done)" }
                     ],
                     "responses": {
-                        "200": { "description": "Cleaned business advice report", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
+                        "200": { "description": "Cleaned business advice report (JSON) or SSE when stream=true", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
                     }
                 }
             },
@@ -2718,7 +2733,7 @@ async fn cancel_task(
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
-) -> Result<Json<BizAdviceReportResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let task = {
         let tasks = state.tasks.lock().await;
         tasks
@@ -2750,26 +2765,33 @@ async fn get_biz_advice_report(
             ),
         )
     })?;
-    let raw_json = source_result.output_json.as_ref().map_or_else(
-        || "null".to_string(),
-        |v| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()),
-    );
-    let prompt = format!(
-        "你是资深业务分析顾问。下面给你一段原始输出，其中包含中间过程、思考草稿或噪声信息。\n\
-请只输出“最终干净报告”，要求：\n\
-1) 不要输出任何中间过程、思考轨迹、工具调用痕迹。\n\
-2) 结构清晰，使用简洁中文。\n\
-3) 保留关键结论、依据与可执行建议。\n\
-4) 如果信息不足，明确写出“信息不足”并给出最小补充数据清单。\n\
-5) 不要添加与原文无关的事实。\n\n\
-【原始文本输出】\n{}\n\n\
-【原始 JSON 输出】\n{}",
-        source_result.output_text, raw_json
-    );
+    let ds_id = source_result.ds_id;
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let instructions = load_boss_report_writer_instructions(&work_dir).await;
+    let raw_json = raw_json_from_output(source_result.output_json.as_ref());
+    let prompt =
+        build_biz_advice_polish_prompt(&instructions, &source_result.output_text, &raw_json);
+    if query.stream {
+        return biz_report_llm_stream_response(
+            state,
+            BizAdviceReportPayload {
+                task_id: query.task_id.clone(),
+                source_request_id: task.request_id.clone(),
+                source_ds_id: ds_id,
+                source_status: source_status.clone(),
+                report_text: None,
+                report_json: None,
+            },
+            prompt,
+            ds_id,
+        )
+        .await;
+    }
     let report = run_solve_request(
-        state,
+        state.clone(),
         SolveRequest {
-            ds_id: source_result.ds_id,
+            ds_id,
             user_prompt: prompt,
             session_id: None,
             model: None,
@@ -2787,11 +2809,139 @@ async fn get_biz_advice_report(
     Ok(Json(BizAdviceReportResponse {
         task_id: query.task_id,
         source_request_id: task.request_id,
-        source_ds_id: source_result.ds_id,
+        source_ds_id: ds_id,
         source_status,
         report_text: report.output_text,
         report_json: report.output_json,
-    }))
+    })
+    .into_response())
+}
+
+/// `stream=true`: in-process solve; each model `TextDelta` is forwarded as `biz.report.delta` (not post-hoc chunking).
+async fn biz_report_llm_stream_response(
+    state: AppState,
+    meta: BizAdviceReportPayload,
+    prompt: String,
+    ds_id: i64,
+) -> Result<Response, ApiError> {
+    let request_id = Uuid::new_v4().simple().to_string();
+    let session_home = prepare_biz_report_polish_session(&state, ds_id, &request_id).await?;
+    let timeout_seconds = state.cfg.default_timeout_seconds;
+    let work_root = state.cfg.work_root.clone();
+    let (tx, rx) = mpsc::unbounded_channel::<BizReportStreamMsg>();
+    let meta_done = meta.clone();
+    tokio::task::spawn_blocking(move || {
+        let send_delta = |delta: &str| {
+            let _ = tx.send(BizReportStreamMsg::Delta(delta.to_string()));
+        };
+        match run_runtime_prompt_streaming(
+            &session_home,
+            &work_root,
+            &prompt,
+            None,
+            timeout_seconds,
+            &request_id,
+            None,
+            Vec::new(),
+            1,
+            send_delta,
+        ) {
+            Ok((_, output_text, output_json)) => {
+                let _ = tx.send(BizReportStreamMsg::Done(BizAdviceReportPayload {
+                    task_id: meta_done.task_id,
+                    source_request_id: meta_done.source_request_id,
+                    source_ds_id: meta_done.source_ds_id,
+                    source_status: meta_done.source_status,
+                    report_text: Some(output_text),
+                    report_json: output_json,
+                }));
+            }
+            Err(e) => {
+                let _ = tx.send(BizReportStreamMsg::Error(e.detail().to_string()));
+            }
+        }
+    });
+    Ok(Sse::new(BizReportSseStream {
+        meta,
+        rx,
+        start_sent: false,
+    })
+    .into_response())
+}
+
+struct BizReportSseStream {
+    meta: BizAdviceReportPayload,
+    rx: mpsc::UnboundedReceiver<BizReportStreamMsg>,
+    start_sent: bool,
+}
+
+impl futures_util::stream::Stream for BizReportSseStream {
+    type Item = Result<Event, Infallible>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if !self.start_sent {
+            self.start_sent = true;
+            let data = serde_json::json!({ "taskId": self.meta.task_id }).to_string();
+            return Poll::Ready(Some(Ok(Event::default()
+                .event("biz.report.start")
+                .data(data))));
+        }
+        match Pin::new(&mut self.rx).poll_recv(cx) {
+            Poll::Ready(Some(msg)) => {
+                Poll::Ready(Some(Ok(biz_advice_report::stream_msg_to_event(&msg))))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+async fn prepare_biz_report_polish_session(
+    state: &AppState,
+    ds_id: i64,
+    request_id: &str,
+) -> Result<PathBuf, ApiError> {
+    validate_ds_exists(ds_id, &state.cfg.ds_registry_path).await?;
+    let ds_base = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    let session_fs_id = session_merge::sessions_directory_segment(request_id);
+    let session_home = ds_base.join("sessions").join(&session_fs_id);
+    fs::create_dir_all(session_home.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create session work dir failed: {e}"),
+            )
+        })?;
+    {
+        let ds_lock = get_ds_lock(state, ds_id).await;
+        let _guard = ds_lock.lock().await;
+        fs::create_dir_all(&ds_base).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create ds dir failed: {e}"),
+            )
+        })?;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &ds_base).await?;
+        prepare_inprocess_session_read_through_from_ds(&ds_base, &session_home).await?;
+        let settings = build_settings(state, ds_id).await;
+        let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("serialize settings failed: {e}"),
+            )
+        })?;
+        fs::write(session_home.join(".claw/settings.json"), &settings_content)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write settings failed: {e}"),
+                )
+            })?;
+        let _ = fs::remove_file(session_home.join(".claw/mcp_discovery_cache.json")).await;
+    }
+    Ok(session_home)
 }
 
 async fn run_solve_request(
@@ -3242,6 +3392,14 @@ async fn ensure_workspace_initialized(_claw_bin: &str, work_dir: &Path) -> Resul
     Ok(())
 }
 
+fn map_gateway_solve_turn_err(e: gateway_solve_turn::GatewaySolveTurnError) -> ApiError {
+    let status = match e.status {
+        504 => StatusCode::GATEWAY_TIMEOUT,
+        _ => StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    ApiError::new(status, e.message)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_runtime_prompt(
     work_dir: &Path,
@@ -3265,13 +3423,38 @@ fn run_runtime_prompt(
         allowed_tools,
         max_iterations,
     )
-    .map_err(|e| {
-        let status = match e.status {
-            504 => StatusCode::GATEWAY_TIMEOUT,
-            _ => StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-        };
-        ApiError::new(status, e.message)
-    })
+    .map_err(map_gateway_solve_turn_err)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_runtime_prompt_streaming<F>(
+    work_dir: &Path,
+    work_root: &Path,
+    prompt: &str,
+    model: Option<&str>,
+    timeout_seconds: u64,
+    clawcode_session_id: &str,
+    extra_session: Option<Value>,
+    allowed_tools: Vec<String>,
+    max_iterations: usize,
+    on_text_delta: F,
+) -> Result<(i32, String, Option<Value>), ApiError>
+where
+    F: FnMut(&str),
+{
+    run_gateway_solve_turn_streaming(
+        work_dir,
+        work_root,
+        prompt,
+        model,
+        timeout_seconds,
+        clawcode_session_id,
+        extra_session,
+        allowed_tools,
+        max_iterations,
+        on_text_delta,
+    )
+    .map_err(map_gateway_solve_turn_err)
 }
 
 async fn probe_mcp_load(

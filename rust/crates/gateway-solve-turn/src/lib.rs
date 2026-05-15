@@ -614,6 +614,122 @@ pub fn run_gateway_solve_turn(
     ))
 }
 
+/// In-process polish/solve with live model text deltas (same setup as [`run_gateway_solve_turn`]).
+#[allow(clippy::too_many_arguments)]
+pub fn run_gateway_solve_turn_streaming<F>(
+    work_dir: &Path,
+    work_root: &Path,
+    prompt: &str,
+    model: Option<&str>,
+    timeout_seconds: u64,
+    clawcode_session_id: &str,
+    extra_session: Option<Value>,
+    allowed_tools: Vec<String>,
+    max_iterations: usize,
+    mut on_text_delta: F,
+) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError>
+where
+    F: FnMut(&str),
+{
+    std::env::set_current_dir(work_dir)
+        .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
+    let project_cfg = match project_config_loader_root() {
+        Some(root) => ConfigLoader::default_for(&root).load().map_err(|e| {
+            err(
+                HTTP_INTERNAL,
+                format!("load claw config from {}: {e}", root.display()),
+            )
+        })?,
+        None => RuntimeConfig::empty(),
+    };
+    apply_config_env_if_unset(&project_cfg);
+    let effective_model = model
+        .map(str::to_string)
+        .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
+        .or_else(|| project_cfg.model().map(str::to_string))
+        .unwrap_or_else(|| "openai/deepseek-v4-pro".to_string());
+    let system_prompt = load_system_prompt(
+        work_dir.to_path_buf(),
+        default_system_date(),
+        std::env::consts::OS,
+        "unknown",
+        extra_session.clone(),
+    )
+    .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
+    let (runtime_mcp_tools, runtime_mcp_tool_names, runtime_mcp_manager) =
+        initialize_mcp_runtime(work_dir)?;
+    let api_client = DirectApiClient::new(
+        effective_model.clone(),
+        &allowed_tools,
+        runtime_mcp_tools,
+        clawcode_session_id.to_string(),
+    )?;
+    let tool_executor = DirectToolExecutor {
+        allowed_tools,
+        extra_session,
+        runtime_mcp_manager,
+        runtime_mcp_tool_names,
+    };
+    let mut policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
+    for spec in mvp_tool_specs() {
+        policy = policy.with_tool_requirement(spec.name.to_string(), spec.required_permission);
+    }
+    let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
+    let session = if gateway_jsonl.exists() {
+        Session::load_from_path(&gateway_jsonl).map_err(|e| {
+            err(
+                HTTP_INTERNAL,
+                format!("load gateway session transcript: {e}"),
+            )
+        })?
+    } else {
+        Session::new().with_persistence_path(gateway_jsonl.clone())
+    }
+    .with_workspace_root(work_dir);
+    let mut runtime =
+        ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
+    runtime = runtime.with_max_iterations(max_iterations);
+    if let Some(tracer) = gateway_session_tracer(clawcode_session_id, work_root) {
+        runtime = runtime.with_session_tracer(tracer);
+    }
+    let started = Instant::now();
+    let result = runtime
+        .run_turn_streaming(prompt, &mut on_text_delta, None)
+        .map_err(|e| err(HTTP_INTERNAL, format!("runtime prompt failed: {e}")))?;
+    if started.elapsed() > Duration::from_secs(timeout_seconds) {
+        return Err(err(
+            HTTP_GATEWAY_TIMEOUT,
+            format!("claw prompt timeout: {timeout_seconds}s"),
+        ));
+    }
+    let message = result
+        .assistant_messages
+        .iter()
+        .flat_map(|m| m.blocks.iter())
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let out_json = json!({
+        "model": effective_model,
+        "iterations": result.iterations,
+        "message": message,
+        "usage": {
+            "input_tokens": result.usage.input_tokens,
+            "output_tokens": result.usage.output_tokens,
+            "cache_creation_input_tokens": result.usage.cache_creation_input_tokens,
+            "cache_read_input_tokens": result.usage.cache_read_input_tokens
+        }
+    });
+    Ok((
+        0,
+        serde_json::to_string(&out_json).unwrap_or_default(),
+        Some(out_json),
+    ))
+}
+
 #[cfg(test)]
 mod persistence_path_tests {
     use std::path::Path;

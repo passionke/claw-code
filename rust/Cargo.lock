@@ -870,6 +870,7 @@ dependencies = [
  "api",
  "async-trait",
  "axum",
+ "futures-util",
  "gateway-solve-turn",
  "http",
  "runtime",

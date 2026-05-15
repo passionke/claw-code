@@ -312,10 +312,35 @@ where
         }
     }
 
+    /// Same as [`Self::run_turn`], but invokes `on_text_delta` for each model text chunk as it arrives.
+    #[allow(clippy::too_many_lines)]
+    pub fn run_turn_streaming<F>(
+        &mut self,
+        user_input: impl Into<String>,
+        mut on_text_delta: F,
+        prompter: Option<&mut dyn PermissionPrompter>,
+    ) -> Result<TurnSummary, RuntimeError>
+    where
+        F: FnMut(&str),
+    {
+        let mut cb: &mut dyn FnMut(&str) = &mut on_text_delta;
+        self.run_turn_inner(user_input, Some(&mut cb), prompter)
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn run_turn(
         &mut self,
         user_input: impl Into<String>,
+        prompter: Option<&mut dyn PermissionPrompter>,
+    ) -> Result<TurnSummary, RuntimeError> {
+        self.run_turn_inner(user_input, None, prompter)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn run_turn_inner(
+        &mut self,
+        user_input: impl Into<String>,
+        mut on_text_delta: Option<&mut dyn FnMut(&str)>,
         mut prompter: Option<&mut dyn PermissionPrompter>,
     ) -> Result<TurnSummary, RuntimeError> {
         let user_input = user_input.into();
@@ -362,6 +387,13 @@ where
                     return Err(error);
                 }
             };
+            if let Some(cb) = on_text_delta.as_deref_mut() {
+                for event in &events {
+                    if let AssistantEvent::TextDelta(delta) = event {
+                        cb(delta);
+                    }
+                }
+            }
             let (assistant_message, usage, turn_prompt_cache_events) =
                 match build_assistant_message(events) {
                     Ok(result) => result,
