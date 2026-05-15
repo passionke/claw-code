@@ -30,7 +30,7 @@ use biz_advice_report::{
     build_biz_advice_polish_prompt, load_boss_report_writer_instructions, raw_json_from_output,
     BizAdviceReportPayload, BizReportStreamMsg,
 };
-use gateway_solve_turn::run_gateway_solve_turn_streaming;
+use gateway_solve_turn::run_gateway_biz_polish_llm;
 use http_gateway_rs::{session_db, session_merge};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
@@ -2655,9 +2655,10 @@ async fn get_biz_advice_report(
     let raw_json = raw_json_from_output(source_result.output_json.as_ref());
     let prompt =
         build_biz_advice_polish_prompt(&instructions, &source_result.output_text, &raw_json);
+    let request_id = Uuid::new_v4().simple().to_string();
+    let timeout_seconds = state.cfg.default_timeout_seconds;
     if query.stream {
-        return biz_report_llm_stream_response(
-            state,
+        return Ok(biz_report_llm_stream_response(
             BizAdviceReportPayload {
                 task_id: query.task_id.clone(),
                 source_request_id: task.request_id.clone(),
@@ -2667,69 +2668,59 @@ async fn get_biz_advice_report(
                 report_json: None,
             },
             prompt,
-            ds_id,
-        )
-        .await;
+            request_id,
+            timeout_seconds,
+        ));
     }
-    let report = run_solve_request(
-        state.clone(),
-        SolveRequest {
-            ds_id,
-            user_prompt: prompt,
-            session_id: None,
-            model: None,
-            timeout_seconds: None,
-            extra_session: None,
-            allowed_tools: None,
-        },
-        RunSolveContext {
-            request_id: Uuid::new_v4().simple().to_string(),
-            task_id: None,
-            skip_session_db: true,
-        },
-    )
-    .await?;
+    let (report_text, report_json) = tokio::task::spawn_blocking(move || {
+        run_gateway_biz_polish_llm(
+            &prompt,
+            None,
+            timeout_seconds,
+            &request_id,
+            None::<fn(&str)>,
+        )
+    })
+    .await
+    .map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("polish task join failed: {e}"),
+        )
+    })?
+    .map_err(map_gateway_solve_turn_err)?;
     Ok(Json(BizAdviceReportResponse {
         task_id: query.task_id,
         source_request_id: task.request_id,
         source_ds_id: ds_id,
         source_status,
-        report_text: report.output_text,
-        report_json: report.output_json,
+        report_text,
+        report_json,
     })
     .into_response())
 }
 
-/// `stream=true`: in-process solve; each model `TextDelta` is forwarded as `biz.report.delta` (not post-hoc chunking).
-async fn biz_report_llm_stream_response(
-    state: AppState,
+/// `stream=true`: direct LLM polish; each model `TextDelta` is forwarded as `biz.report.delta`.
+fn biz_report_llm_stream_response(
     meta: BizAdviceReportPayload,
     prompt: String,
-    ds_id: i64,
-) -> Result<Response, ApiError> {
-    let request_id = Uuid::new_v4().simple().to_string();
-    let session_home = prepare_biz_report_polish_session(&state, ds_id, &request_id).await?;
-    let timeout_seconds = state.cfg.default_timeout_seconds;
-    let work_root = state.cfg.work_root.clone();
+    request_id: String,
+    timeout_seconds: u64,
+) -> Response {
     let (tx, rx) = mpsc::unbounded_channel::<BizReportStreamMsg>();
     let meta_done = meta.clone();
     tokio::task::spawn_blocking(move || {
-        let send_delta = |delta: &str| {
+        let mut send_delta = |delta: &str| {
             let _ = tx.send(BizReportStreamMsg::Delta(delta.to_string()));
         };
-        match run_runtime_prompt_streaming(
-            &session_home,
-            &work_root,
+        match run_gateway_biz_polish_llm(
             &prompt,
             None,
             timeout_seconds,
             &request_id,
-            None,
-            Vec::new(),
-            1,
-            send_delta,
+            Some(&mut send_delta),
         ) {
-            Ok((_, output_text, output_json)) => {
+            Ok((output_text, output_json)) => {
                 let _ = tx.send(BizReportStreamMsg::Done(BizAdviceReportPayload {
                     task_id: meta_done.task_id,
                     source_request_id: meta_done.source_request_id,
@@ -2740,16 +2731,16 @@ async fn biz_report_llm_stream_response(
                 }));
             }
             Err(e) => {
-                let _ = tx.send(BizReportStreamMsg::Error(e.detail().to_string()));
+                let _ = tx.send(BizReportStreamMsg::Error(e.message));
             }
         }
     });
-    Ok(Sse::new(BizReportSseStream {
+    Sse::new(BizReportSseStream {
         meta,
         rx,
         start_sent: false,
     })
-    .into_response())
+    .into_response()
 }
 
 struct BizReportSseStream {
@@ -2777,162 +2768,6 @@ impl futures_util::stream::Stream for BizReportSseStream {
             Poll::Pending => Poll::Pending,
         }
     }
-}
-
-/// In-process polish session cwd: symlink `home/skills` and `CLAUDE.md` from `ds_*` (pool solve uses binds).
-async fn prepare_inprocess_session_read_through_from_ds(
-    ds_base: &Path,
-    session_home: &Path,
-) -> Result<(), ApiError> {
-    #[cfg(unix)]
-    {
-        let src_dir = ds_base.join("home/skills");
-        let link_path = session_home.join("home/skills");
-        let home_parent = session_home.join("home");
-        fs::create_dir_all(&home_parent).await.map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create session home/ for skills symlink failed: {e}"),
-            )
-        })?;
-        if let Ok(meta) = fs::symlink_metadata(&link_path).await {
-            if meta.is_symlink() {
-                fs::remove_file(&link_path).await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("remove stale skills symlink failed: {e}"),
-                    )
-                })?;
-            } else if meta.is_dir() {
-                fs::remove_dir_all(&link_path).await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("remove stale skills dir failed: {e}"),
-                    )
-                })?;
-            } else {
-                fs::remove_file(&link_path).await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("remove stale skills path failed: {e}"),
-                    )
-                })?;
-            }
-        }
-        if fs::metadata(&src_dir).await.is_ok_and(|m| m.is_dir()) {
-            fs::symlink("../../home/skills", &link_path)
-                .await
-                .map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("symlink session home/skills failed: {e}"),
-                    )
-                })?;
-        }
-
-        let claude_src = ds_base.join("CLAUDE.md");
-        let claude_link = session_home.join("CLAUDE.md");
-        if let Ok(meta) = fs::symlink_metadata(&claude_link).await {
-            if meta.is_symlink() {
-                fs::remove_file(&claude_link).await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("remove stale CLAUDE.md symlink failed: {e}"),
-                    )
-                })?;
-            } else if meta.is_file() {
-                fs::remove_file(&claude_link).await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("remove stale session CLAUDE.md failed: {e}"),
-                    )
-                })?;
-            }
-        }
-        if fs::metadata(&claude_src).await.is_ok_and(|m| m.is_file()) {
-            fs::symlink("../../CLAUDE.md", &claude_link)
-                .await
-                .map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("symlink session CLAUDE.md failed: {e}"),
-                    )
-                })?;
-        }
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        let src = ds_base.join("home/skills");
-        let dst = session_home.join("home/skills");
-        if fs::metadata(&dst).await.is_ok() {
-            let _ = fs::remove_dir_all(&dst).await;
-            let _ = fs::remove_file(&dst).await;
-        }
-        if fs::metadata(&src).await.is_ok_and(|m| m.is_dir()) {
-            copy_tree(&src, &dst).await?;
-        }
-        let claude_src = ds_base.join("CLAUDE.md");
-        let claude_dst = session_home.join("CLAUDE.md");
-        if fs::metadata(&claude_src).await.is_ok_and(|m| m.is_file()) {
-            let _ = fs::remove_file(&claude_dst).await;
-            fs::copy(&claude_src, &claude_dst).await.map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("copy session CLAUDE.md failed: {e}"),
-                )
-            })?;
-        }
-        Ok(())
-    }
-}
-
-async fn prepare_biz_report_polish_session(
-    state: &AppState,
-    ds_id: i64,
-    request_id: &str,
-) -> Result<PathBuf, ApiError> {
-    validate_ds_exists(ds_id, &state.cfg.ds_registry_path).await?;
-    let ds_base = state.cfg.work_root.join(format!("ds_{ds_id}"));
-    let session_fs_id = session_merge::sessions_directory_segment(request_id);
-    let session_home = ds_base.join("sessions").join(&session_fs_id);
-    fs::create_dir_all(session_home.join(".claw"))
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create session work dir failed: {e}"),
-            )
-        })?;
-    {
-        let ds_lock = get_ds_lock(state, ds_id).await;
-        let _guard = ds_lock.lock().await;
-        fs::create_dir_all(&ds_base).await.map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create ds dir failed: {e}"),
-            )
-        })?;
-        ensure_workspace_initialized(&state.cfg.claw_bin, &ds_base).await?;
-        prepare_inprocess_session_read_through_from_ds(&ds_base, &session_home).await?;
-        let settings = build_settings(state, ds_id).await;
-        let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("serialize settings failed: {e}"),
-            )
-        })?;
-        fs::write(session_home.join(".claw/settings.json"), &settings_content)
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("write settings failed: {e}"),
-                )
-            })?;
-        let _ = fs::remove_file(session_home.join(".claw/mcp_discovery_cache.json")).await;
-    }
-    Ok(session_home)
 }
 
 async fn run_solve_request(
@@ -3340,38 +3175,6 @@ fn map_gateway_solve_turn_err(e: gateway_solve_turn::GatewaySolveTurnError) -> A
         _ => StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
     };
     ApiError::new(status, e.message)
-}
-
-/// In-process polish for `biz_advice_report?stream=true` (main solve path is container-pool only).
-#[allow(clippy::too_many_arguments)]
-fn run_runtime_prompt_streaming<F>(
-    work_dir: &Path,
-    work_root: &Path,
-    prompt: &str,
-    model: Option<&str>,
-    timeout_seconds: u64,
-    clawcode_session_id: &str,
-    extra_session: Option<Value>,
-    allowed_tools: Vec<String>,
-    max_iterations: usize,
-    on_text_delta: F,
-) -> Result<(i32, String, Option<Value>), ApiError>
-where
-    F: FnMut(&str),
-{
-    run_gateway_solve_turn_streaming(
-        work_dir,
-        work_root,
-        prompt,
-        model,
-        timeout_seconds,
-        clawcode_session_id,
-        extra_session,
-        allowed_tools,
-        max_iterations,
-        on_text_delta,
-    )
-    .map_err(map_gateway_solve_turn_err)
 }
 
 async fn probe_mcp_load(
