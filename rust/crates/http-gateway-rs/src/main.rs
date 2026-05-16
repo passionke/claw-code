@@ -1334,8 +1334,7 @@ async fn openapi() -> Json<Value> {
                         { "name": "task_id", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
                     "responses": {
-                        "200": { "description": "Task marked cancelled", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TaskRecord" } } } },
-                        "400": { "description": "Task already finished" },
+                        "200": { "description": "Task cancelled, or idempotent no-op when already terminal (see TaskRecord.error)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TaskRecord" } } } },
                         "404": { "description": "Unknown task id" }
                     }
                 }
@@ -3220,6 +3219,31 @@ async fn get_task(
     Ok(Json(task))
 }
 
+fn task_status_is_terminal_for_cancel(status: &str) -> bool {
+    matches!(status, "succeeded" | "failed" | "cancelled")
+}
+
+/// Terminal-state cancel is idempotent: HTTP 200, `error` explains no state change. kejiqing
+fn task_cancel_idempotent_response(record: TaskRecord) -> TaskRecord {
+    let status_at_cancel = record.status.clone();
+    let previous_error = record.error.clone();
+    let detail = match status_at_cancel.as_str() {
+        "cancelled" => "task already cancelled; duplicate cancel ignored".to_string(),
+        "succeeded" => "task already succeeded; cancel had no effect".to_string(),
+        "failed" => "task already failed; cancel had no effect".to_string(),
+        other => format!("task already in terminal state ({other}); cancel had no effect"),
+    };
+    let mut out = record;
+    out.error = Some(json!({
+        "detail": detail,
+        "outcome": "idempotent",
+        "cancelApplied": false,
+        "statusAtCancel": status_at_cancel,
+        "previousError": previous_error,
+    }));
+    out
+}
+
 async fn cancel_task(
     State(state): State<AppState>,
     AxumPath(task_id): AxumPath<String>,
@@ -3230,23 +3254,28 @@ async fn cancel_task(
         let inner = tasks.get_mut(&task_id).ok_or_else(|| {
             ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
         })?;
-        match inner.record.status.as_str() {
-            "succeeded" | "failed" | "cancelled" => {
-                return Err(ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "task {} is already finished (status: {})",
-                        task_id, inner.record.status
-                    ),
-                ));
-            }
-            _ => {}
+        if task_status_is_terminal_for_cancel(&inner.record.status) {
+            let task_status = inner.record.status.clone();
+            let record = task_cancel_idempotent_response(inner.record.clone());
+            info!(
+                request_id = %http_request_id.0,
+                task_id = %task_id,
+                task_status = %task_status,
+                endpoint = "/v1/tasks/{task_id}/cancel",
+                phase = "cancel_idempotent",
+                "gateway_task"
+            );
+            return Ok(Json(record));
         }
         let h = inner.cancel.take();
         inner.record.status = "cancelled".to_string();
         inner.record.finished_at_ms = Some(now_ms());
         inner.record.result = None;
-        inner.record.error = Some(json!({"detail": "cancelled by client"}));
+        inner.record.error = Some(json!({
+            "detail": "cancelled by client",
+            "outcome": "cancelled",
+            "cancelApplied": true,
+        }));
         h
     };
     // Stop the container worker before aborting the host task: `kill_on_drop` then tears down
