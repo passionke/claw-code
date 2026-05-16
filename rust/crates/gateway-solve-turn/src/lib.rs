@@ -622,6 +622,8 @@ where
         system: None,
         tools: None,
         tool_choice: None,
+        // Polish must return plain assistant text only; DeepSeek defaults thinking on.
+        thinking_enabled: Some(false),
         stream: true,
         extra_headers: BTreeMap::from([
             (
@@ -791,6 +793,37 @@ pub fn run_gateway_solve_turn(
         serde_json::to_string(&out_json).unwrap_or_default(),
         Some(out_json),
     ))
+}
+
+#[cfg(test)]
+mod polish_output_tests {
+    use runtime::{AssistantEvent, TokenUsage};
+
+    use super::polish_output_from_events;
+
+    #[test]
+    fn polish_rejects_thinking_delta() {
+        let events = vec![
+            AssistantEvent::ThinkingDelta("cot".into()),
+            AssistantEvent::MessageStop,
+        ];
+        let err = polish_output_from_events(&events, "deepseek-v4-pro").unwrap_err();
+        assert!(err
+            .message
+            .contains("must not use tools or extended reasoning"));
+    }
+
+    #[test]
+    fn polish_accepts_text_only_stream() {
+        let events = vec![
+            AssistantEvent::TextDelta("report".into()),
+            AssistantEvent::Usage(TokenUsage::default()),
+            AssistantEvent::MessageStop,
+        ];
+        let (text, json) = polish_output_from_events(&events, "deepseek-v4-pro").unwrap();
+        assert!(text.contains("report"));
+        assert_eq!(json["message"], "report");
+    }
 }
 
 #[cfg(test)]
