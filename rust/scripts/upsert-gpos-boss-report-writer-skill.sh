@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Upsert GPOS_BOSS_REPORT_WRITER skill on a claw gateway (default ds_id=1). Author: kejiqing
+#
+# Default skill body is Chinese (gpos-boss-report-writer.SKILL.md), aligned with gateway builtin fallback.
+# Optional locale for demos only: CLAW_BOSS_REPORT_SKILL_LOCALE=ja → gpos-boss-report-writer.ja.SKILL.md
 set -euo pipefail
 
 GATEWAY_BASE="${CLAW_GATEWAY_BASE:-http://192.168.9.252:18088}"
@@ -7,6 +10,9 @@ DS_ID="${CLAW_DS_ID:-1}"
 SKILL_NAME="GPOS_BOSS_REPORT_WRITER"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_MD="${SCRIPT_DIR}/gpos-boss-report-writer.SKILL.md"
+if [[ "${CLAW_BOSS_REPORT_SKILL_LOCALE:-zh}" == "ja" ]]; then
+  SKILL_MD="${SCRIPT_DIR}/gpos-boss-report-writer.ja.SKILL.md"
+fi
 
 if [[ ! -f "$SKILL_MD" ]]; then
   echo "missing skill template: $SKILL_MD" >&2
@@ -25,4 +31,4 @@ fi
 curl "${curl_args[@]}"
 
 echo ""
-echo "OK: ${SKILL_NAME} on ds_${DS_ID} at ${GATEWAY_BASE}"
+echo "OK: ${SKILL_NAME} on ds_${DS_ID} at ${GATEWAY_BASE} (source ${SKILL_MD})"
