@@ -1,7 +1,16 @@
 # shellcheck shell=bash
 # Helpers for pinning remote registry gateway/worker tags (GHCR, ACR, …) without editing .env. Author: kejiqing
 
-claw_ghcr_image_prefix_from_env() {
+# Default namespaces when `.env` omits CLAW_IMAGE_PREFIX (personal ACR + passionke org on GHCR).
+claw_default_acr_image_prefix() {
+  printf '%s' "${CLAW_ACR_IMAGE_PREFIX:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke}"
+}
+
+claw_default_ghcr_image_prefix() {
+  printf '%s' "${CLAW_GHCR_DEFAULT_PREFIX:-ghcr.io/passionke}"
+}
+
+claw_image_registry_prefix_from_env() {
   # CLAW_IMAGE_PREFIX wins (registry-agnostic name); CLAW_GHCR_PREFIX kept for back-compat.
   local prefix="${CLAW_IMAGE_PREFIX:-${CLAW_GHCR_PREFIX:-}}"
   if [[ -n "$prefix" ]]; then
@@ -17,17 +26,27 @@ claw_ghcr_image_prefix_from_env() {
     printf '%s' "${gw%/claw-code}"
     return 0
   fi
-  return 1
+
+  # No explicit prefix and no claw-code in GATEWAY_IMAGE (e.g. local :local tags): pick backend.
+  local backend="${CLAW_IMAGE_REGISTRY:-acr}"
+  backend="$(printf '%s' "$backend" | tr '[:upper:]' '[:lower:]')"
+  case "$backend" in
+    ghcr)
+      claw_default_ghcr_image_prefix
+      return 0
+      ;;
+    acr | *)
+      claw_default_acr_image_prefix
+      return 0
+      ;;
+  esac
 }
 
 # After sourcing .env: set GATEWAY_IMAGE + worker image to <prefix>/...:<tag>.
 claw_apply_release_image_tag() {
   local tag="${1:?}"
   local prefix
-  prefix="$(claw_ghcr_image_prefix_from_env)" || {
-    echo "error: cannot derive image registry prefix; set CLAW_IMAGE_PREFIX=<registry> or CLAW_GHCR_PREFIX=ghcr.io/<owner> in .env, or GATEWAY_IMAGE=.../claw-code:<anytag>" >&2
-    return 1
-  }
+  prefix="$(claw_image_registry_prefix_from_env)"
   export GATEWAY_IMAGE="${prefix}/claw-code:${tag}"
   case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
     docker_pool) export CLAW_DOCKER_IMAGE="${prefix}/claw-gateway-worker:${tag}" ;;
@@ -68,7 +87,7 @@ claw_parse_up_release_args() {
       -h | --help)
         echo "usage: $0 [--release <tag>|release-v*]" >&2
         echo "  --release <tag>   pin gateway + worker images for this run; writes deploy/stack/.claw-image-release.env" >&2
-        echo "                    (merged after .env). Needs CLAW_IMAGE_PREFIX / CLAW_GHCR_PREFIX or .../claw-code:* in GATEWAY_IMAGE." >&2
+        echo "                    (merged after .env). Uses CLAW_IMAGE_PREFIX if set; else CLAW_IMAGE_REGISTRY=acr (default ACR) or ghcr." >&2
         echo "  release-v*        same as --release release-v*" >&2
         echo "  Subsequent runs without --release still use .claw-image-release.env if present; remove that file to follow .env only." >&2
         return 2

@@ -31,9 +31,13 @@ pub fn parse_gateway_solve_exec_stdout(
     let output_text = parsed
         .get("outputText")
         .and_then(|v| v.as_str())
+        .or_else(|| parsed.get("error").and_then(|v| v.as_str()))
         .unwrap_or("")
         .to_string();
-    let output_json = parsed.get("outputJson").cloned();
+    let output_json = parsed
+        .get("outputJson")
+        .cloned()
+        .or_else(|| parsed.get("error").map(|_| parsed.clone()));
     ParsedGatewaySolvePayload {
         claw_exit_code,
         output_text,
@@ -77,5 +81,23 @@ mod tests {
         let p = parse_gateway_solve_exec_stdout(r#"{"outputText":"x"}"#, 7);
         assert_eq!(p.claw_exit_code, 7);
         assert_eq!(p.output_text, "x");
+    }
+
+    #[test]
+    fn keeps_gateway_error_payload() {
+        let p = parse_gateway_solve_exec_stdout(
+            r#"{"clawExitCode":1,"error":"runtime prompt failed","httpStatusHint":500}"#,
+            1,
+        );
+        assert_eq!(p.claw_exit_code, 1);
+        assert_eq!(p.output_text, "runtime prompt failed");
+        assert_eq!(
+            p.output_json,
+            Some(json!({
+                "clawExitCode": 1,
+                "error": "runtime prompt failed",
+                "httpStatusHint": 500
+            }))
+        );
     }
 }

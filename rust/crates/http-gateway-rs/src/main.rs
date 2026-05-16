@@ -30,7 +30,10 @@ use biz_advice_report::{
     load_boss_report_writer_instructions, raw_json_from_output, BizAdviceReportPayload,
     BizReportStreamMsg,
 };
-use gateway_solve_turn::{run_gateway_biz_polish_llm, run_gateway_biz_polish_llm_async};
+use gateway_solve_turn::{
+    run_gateway_biz_polish_llm, run_gateway_biz_polish_llm_async, ReportPolishDeepseek,
+    BOSS_REPORT_SKILL_DS_ID,
+};
 use http_gateway_rs::{session_db, session_merge};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
@@ -153,6 +156,8 @@ struct GatewayConfig {
     projects_git_token: Option<String>,
     /// When set, periodically `git pull` the mirror and refresh each `ds_*/home` when that ds lock is idle (multi-node). kejiqing
     projects_git_ds_home_poll_interval_secs: Option<u64>,
+    /// When set (`REPORT_LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY`), `/v1/biz_advice_report` polish calls `DeepSeek` official API. kejiqing
+    report_polish_deepseek: Option<ReportPolishDeepseek>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -665,6 +670,56 @@ async fn main() {
         .filter(|v| !v.is_empty());
     validate_projects_git_at_startup(&projects_git_url, projects_git_token.as_deref());
 
+    let report_polish_deepseek = {
+        let raw = std::env::var("REPORT_LLM_PROVIDER")
+            .ok()
+            .map(|v| v.trim().to_lowercase())
+            .filter(|s| !s.is_empty());
+        match raw.as_deref() {
+            None | Some("") => None,
+            Some("deepseek") => {
+                let api_key = std::env::var("DEEPSEEK_API_KEY")
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                if let Some(api_key) = api_key {
+                    let model = std::env::var("REPORT_DEEPSEEK_MODEL")
+                        .ok()
+                        .map(|v| v.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "deepseek-v4-pro".to_string());
+                    info!(
+                        target: "claw_gateway_orchestration",
+                        component = "startup",
+                        phase = "report_llm",
+                        provider = "deepseek",
+                        model = %model,
+                        "biz_advice_report polish routes to DeepSeek official API (DEEPSEEK_BASE_URL or default)"
+                    );
+                    Some(ReportPolishDeepseek { api_key, model })
+                } else {
+                    warn!(
+                        target: "claw_gateway_orchestration",
+                        component = "startup",
+                        phase = "report_llm",
+                        "REPORT_LLM_PROVIDER=deepseek but DEEPSEEK_API_KEY is empty; using default report LLM routing"
+                    );
+                    None
+                }
+            }
+            Some(other) => {
+                warn!(
+                    target: "claw_gateway_orchestration",
+                    component = "startup",
+                    phase = "report_llm",
+                    provider = %other,
+                    "unknown REPORT_LLM_PROVIDER; expected unset or deepseek; using default report LLM routing"
+                );
+                None
+            }
+        }
+    };
+
     let cfg = GatewayConfig {
         solve_isolation,
         claw_bin: std::env::var("CLAW_BIN").unwrap_or_else(|_| "claw".to_string()),
@@ -711,6 +766,7 @@ async fn main() {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&s| s > 0),
+        report_polish_deepseek,
     };
     let session_db = Arc::new(
         session_db::GatewaySessionDb::open(&cfg.work_root)
@@ -1923,6 +1979,8 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "projectsGitUrl": state.cfg.projects_git_url.clone(),
         "projectsGitBranch": state.cfg.projects_git_branch.clone(),
         "projectsGitDsHomePollIntervalSecs": state.cfg.projects_git_ds_home_poll_interval_secs,
+        "reportPolishUsesDeepseek": state.cfg.report_polish_deepseek.is_some(),
+        "reportDeepseekModel": state.cfg.report_polish_deepseek.as_ref().map(|d| d.model.clone()),
     }))
 }
 
@@ -2730,10 +2788,32 @@ async fn get_biz_advice_report(
             ),
         )
     })?;
+    if source_result.claw_exit_code != 0 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "task {} did not complete successfully (clawExitCode: {})",
+                query.task_id, source_result.claw_exit_code
+            ),
+        ));
+    }
+    let source_json_is_empty = match source_result.output_json.as_ref() {
+        None => true,
+        Some(value) => value.is_null(),
+    };
+    if source_result.output_text.trim().is_empty() && source_json_is_empty {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "task {} has empty output; cannot build report prompt",
+                query.task_id
+            ),
+        ));
+    }
     let ds_id = source_result.ds_id;
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
-    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    let instructions = load_boss_report_writer_instructions(&work_dir).await;
+    let skill_work_dir = ds_work_dir(&state.cfg.work_root, BOSS_REPORT_SKILL_DS_ID);
+    ensure_workspace_initialized(&state.cfg.claw_bin, &skill_work_dir).await?;
+    let instructions = load_boss_report_writer_instructions(&skill_work_dir).await;
     let raw_json = raw_json_from_output(source_result.output_json.as_ref());
     let prompt =
         build_biz_advice_polish_prompt(&instructions, &source_result.output_text, &raw_json);
@@ -2749,14 +2829,17 @@ async fn get_biz_advice_report(
             report_json: None,
         };
         let task_id = meta.task_id.clone();
+        let polish_ds = state.cfg.report_polish_deepseek.clone();
         return Ok(biz_report_llm_stream_response(
             &task_id,
             meta,
             prompt,
             request_id,
             timeout_seconds,
+            polish_ds,
         ));
     }
+    let polish_ds = state.cfg.report_polish_deepseek.clone();
     let (report_text, report_json) = tokio::task::spawn_blocking(move || {
         run_gateway_biz_polish_llm(
             &prompt,
@@ -2764,6 +2847,7 @@ async fn get_biz_advice_report(
             timeout_seconds,
             &request_id,
             None::<fn(&str)>,
+            polish_ds.as_ref(),
         )
     })
     .await
@@ -2792,6 +2876,7 @@ fn biz_report_llm_stream_response(
     prompt: String,
     request_id: String,
     timeout_seconds: u64,
+    report_polish_deepseek: Option<ReportPolishDeepseek>,
 ) -> Response {
     let (tx, rx) = mpsc::unbounded_channel::<BizReportStreamMsg>();
     tokio::spawn(async move {
@@ -2804,6 +2889,7 @@ fn biz_report_llm_stream_response(
             timeout_seconds,
             &request_id,
             Some(&mut send_delta),
+            report_polish_deepseek.as_ref(),
         )
         .await
         {

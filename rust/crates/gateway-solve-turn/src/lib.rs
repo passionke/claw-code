@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use api::{
     ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, OutputContentBlock,
@@ -32,7 +32,16 @@ use tools::{
 };
 
 const HTTP_INTERNAL: u16 = 500;
-const HTTP_GATEWAY_TIMEOUT: u16 = 504;
+
+/// DeepSeek-official routing for `/v1/biz_advice_report` polish only (`REPORT_LLM_PROVIDER=deepseek`). kejiqing
+#[derive(Clone, Debug)]
+pub struct ReportPolishDeepseek {
+    pub api_key: String,
+    pub model: String,
+}
+
+/// Fixed `ds_id` for boss-report skill content (`home/skills/GPOS_BOSS_REPORT_WRITER/SKILL.md`). kejiqing
+pub const BOSS_REPORT_SKILL_DS_ID: i64 = 1;
 
 /// Fixed transcript path under a session workspace (gateway continues-by-sid). kejiqing
 #[must_use]
@@ -582,16 +591,25 @@ fn polish_output_from_events(
 async fn run_gateway_biz_polish_llm_inner<F>(
     user_prompt: &str,
     model: Option<&str>,
-    timeout_seconds: u64,
+    _timeout_seconds: u64,
     clawcode_session_id: &str,
     mut on_text_delta: Option<F>,
+    report_deepseek: Option<&ReportPolishDeepseek>,
 ) -> Result<(String, Option<Value>), GatewaySolveTurnError>
 where
     F: FnMut(&str),
 {
-    let effective_model = resolve_polish_model(model);
-    let provider = ProviderClient::from_model(&effective_model)
-        .map_err(|e| err(HTTP_INTERNAL, format!("provider init failed: {e}")))?;
+    let (provider, effective_model) = if let Some(ds) = report_deepseek {
+        (
+            ProviderClient::from_deepseek_official(ds.api_key.as_str()),
+            ds.model.clone(),
+        )
+    } else {
+        let effective_model = resolve_polish_model(model);
+        let provider = ProviderClient::from_model(&effective_model)
+            .map_err(|e| err(HTTP_INTERNAL, format!("provider init failed: {e}")))?;
+        (provider, effective_model)
+    };
     let req = MessageRequest {
         model: effective_model.clone(),
         max_tokens: api::max_tokens_for_model(&effective_model),
@@ -617,16 +635,9 @@ where
         ]),
         ..Default::default()
     };
-    let started = Instant::now();
     let events = stream_events(&provider, &req, on_text_delta.as_mut())
         .await
         .map_err(|e| err(HTTP_INTERNAL, format!("polish stream failed: {e}")))?;
-    if started.elapsed() > Duration::from_secs(timeout_seconds) {
-        return Err(err(
-            HTTP_GATEWAY_TIMEOUT,
-            format!("polish timeout: {timeout_seconds}s"),
-        ));
-    }
     let (output_text, output_json) = polish_output_from_events(&events, &effective_model)?;
     Ok((output_text, Some(output_json)))
 }
@@ -638,6 +649,7 @@ pub fn run_gateway_biz_polish_llm<F>(
     timeout_seconds: u64,
     clawcode_session_id: &str,
     on_text_delta: Option<F>,
+    report_deepseek: Option<&ReportPolishDeepseek>,
 ) -> Result<(String, Option<Value>), GatewaySolveTurnError>
 where
     F: FnMut(&str),
@@ -649,6 +661,7 @@ where
             timeout_seconds,
             clawcode_session_id,
             on_text_delta,
+            report_deepseek,
         ))
     })
 }
@@ -660,6 +673,7 @@ pub async fn run_gateway_biz_polish_llm_async<F>(
     timeout_seconds: u64,
     clawcode_session_id: &str,
     on_text_delta: Option<F>,
+    report_deepseek: Option<&ReportPolishDeepseek>,
 ) -> Result<(String, Option<Value>), GatewaySolveTurnError>
 where
     F: FnMut(&str),
@@ -670,6 +684,7 @@ where
         timeout_seconds,
         clawcode_session_id,
         on_text_delta,
+        report_deepseek,
     )
     .await
 }
@@ -680,7 +695,7 @@ pub fn run_gateway_solve_turn(
     work_root: &Path,
     prompt: &str,
     model: Option<&str>,
-    timeout_seconds: u64,
+    _timeout_seconds: u64,
     clawcode_session_id: &str,
     extra_session: Option<Value>,
     allowed_tools: Vec<String>,
@@ -747,16 +762,9 @@ pub fn run_gateway_solve_turn(
     if let Some(tracer) = gateway_session_tracer(clawcode_session_id, work_root) {
         runtime = runtime.with_session_tracer(tracer);
     }
-    let started = Instant::now();
     let result = runtime
         .run_turn(prompt, None)
         .map_err(|e| err(HTTP_INTERNAL, format!("runtime prompt failed: {e}")))?;
-    if started.elapsed() > Duration::from_secs(timeout_seconds) {
-        return Err(err(
-            HTTP_GATEWAY_TIMEOUT,
-            format!("claw prompt timeout: {timeout_seconds}s"),
-        ));
-    }
     let message = result
         .assistant_messages
         .iter()

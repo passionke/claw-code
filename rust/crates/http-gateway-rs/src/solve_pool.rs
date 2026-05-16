@@ -309,6 +309,18 @@ pub async fn run_solve_request_docker(
     let claw_exit_code = parsed.claw_exit_code;
     let output_text = parsed.output_text;
     let output_json = parsed.output_json;
+    if claw_exit_code != 0 {
+        let detail = output_text
+            .lines()
+            .map(str::trim)
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("gateway-solve-once failed");
+        return Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            format!("gateway-solve-once failed with clawExitCode={claw_exit_code}: {detail}"),
+        ));
+    }
 
     let duration_ms = started.elapsed().as_millis() as i64;
     info!(
@@ -375,6 +387,7 @@ mod session_path_tests {
             projects_git_author: "kejiqing <kejiqing@local>".into(),
             projects_git_token: None,
             projects_git_ds_home_poll_interval_secs: None,
+            report_polish_deepseek: None,
         };
         let got = session_mount_for_pool_acquire(
             Path::new("/var/lib/claw/workspace/ds_1/sessions/abc"),
@@ -406,6 +419,7 @@ mod session_path_tests {
             projects_git_author: "kejiqing <kejiqing@local>".into(),
             projects_git_token: None,
             projects_git_ds_home_poll_interval_secs: None,
+            report_polish_deepseek: None,
         };
         let p = PathBuf::from("/tmp/sess");
         let got = session_mount_for_pool_acquire(&p, &cfg);

@@ -1,4 +1,4 @@
-//! Boss 报表清洗：从异步任务结果加载 `GPOS_BOSS_REPORT_WRITER` skill 润色，支持 SSE 流式输出。Author: kejiqing
+//! Boss 报表清洗：网关固定从 `ds_1` 工作区读取 `GPOS_BOSS_REPORT_WRITER` skill 作为润色指令，支持 SSE 流式输出。Author: kejiqing
 
 use std::convert::Infallible;
 use std::path::Path;
