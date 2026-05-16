@@ -27,7 +27,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use biz_advice_report::{
     biz_report_sse_event_stream, build_biz_advice_polish_prompt,
-    load_boss_report_writer_instructions, raw_json_from_output, BizAdviceReportPayload,
+    load_boss_report_writer_instructions, report_body_from_solve_output, BizAdviceReportPayload,
     BizReportStreamMsg,
 };
 use gateway_solve_turn::read_progress_history;
@@ -3476,26 +3476,21 @@ async fn get_biz_advice_report(
             ),
         ));
     }
-    let source_json_is_empty = match source_result.output_json.as_ref() {
-        None => true,
-        Some(value) => value.is_null(),
-    };
-    if source_result.output_text.trim().is_empty() && source_json_is_empty {
-        return Err(ApiError::new(
+    let report_body = report_body_from_solve_output(
+        &source_result.output_text,
+        source_result.output_json.as_ref(),
+    )
+    .map_err(|detail| {
+        ApiError::new(
             StatusCode::BAD_REQUEST,
-            format!(
-                "task {} has empty output; cannot build report prompt",
-                query.task_id
-            ),
-        ));
-    }
+            format!("task {} has empty report message: {detail}", query.task_id),
+        )
+    })?;
     let ds_id = source_result.ds_id;
     let skill_work_dir = ds_work_dir(&state.cfg.work_root, BOSS_REPORT_SKILL_DS_ID);
     ensure_workspace_initialized(&state.cfg.claw_bin, &skill_work_dir).await?;
     let instructions = load_boss_report_writer_instructions(&skill_work_dir).await;
-    let raw_json = raw_json_from_output(source_result.output_json.as_ref());
-    let prompt =
-        build_biz_advice_polish_prompt(&instructions, &source_result.output_text, &raw_json);
+    let prompt = build_biz_advice_polish_prompt(&instructions, &report_body);
     let request_id = Uuid::new_v4().simple().to_string();
     let timeout_seconds = state.cfg.default_timeout_seconds;
     if query.stream {

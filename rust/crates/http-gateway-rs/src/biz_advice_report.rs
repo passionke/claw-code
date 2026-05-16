@@ -14,23 +14,9 @@ use tracing::warn;
 /// Skill 目录名（`home/skills/<name>/SKILL.md`），可通过 `POST /v1/project/skills/{ds_id}` 维护。
 pub const GPOS_BOSS_REPORT_WRITER_SKILL_NAME: &str = "GPOS_BOSS_REPORT_WRITER";
 
-/// 默认润色说明（skill 未部署时的回退，与历史网关内联 prompt 一致）。
+/// 默认润色说明（skill 未部署时的回退，与 `rust/scripts/gpos-boss-report-writer.SKILL.md` 一致）。Author: kejiqing
 pub fn default_gpos_boss_report_writer_skill_md() -> &'static str {
-    r"---
-name: GPOS_BOSS_REPORT_WRITER
-description: Boss 报表分析输出清洗与润色（去除中间过程，产出最终业务报告；最终报告语言须与用户原始提问语言一致）
----
-
-你是高级商业分析顾问。以下将提供包含中间过程、思考草稿与噪声的原始输出。
-请仅输出「最终的干净报告」，要求：
-1) 不得输出任何中间过程、思考轨迹或工具调用痕迹。
-2) 结构清晰，用简洁自然的语言表达；标题、列表、正文须与用户原始提问使用同一种语言，避免混用其他语言。
-3) 保留重要结论、依据与可执行建议。
-4) 若信息不足，明确标注并列出最少需要的补充数据（使用与用户原始提问相同的语言）。
-5) 不得添加原文中不存在的事实。
-
-以用户附带的【原始文本输出】和【原始 JSON 输出】为唯一事实来源；报告书写语言以用户原始提问的语言为准。
-"
+    include_str!("../../../scripts/gpos-boss-report-writer.SKILL.md")
 }
 
 /// 去掉 SKILL.md YAML frontmatter，保留正文作为润色指令。
@@ -50,12 +36,36 @@ pub fn skill_instructions_for_prompt(skill_content: &str) -> String {
         .to_string()
 }
 
-pub fn build_biz_advice_polish_prompt(
-    instructions: &str,
+/// Solve 报告正文，与 `GET /v1/tasks` → `result.outputJson.message` 同源。Author: kejiqing
+pub fn report_body_from_solve_output(
     output_text: &str,
-    raw_json: &str,
-) -> String {
-    format!("{instructions}\n\n【原始文本输出】\n{output_text}\n\n【原始 JSON 输出】\n{raw_json}")
+    output_json: Option<&Value>,
+) -> Result<String, String> {
+    if let Some(json) = output_json {
+        if let Some(msg) = json.get("message").and_then(Value::as_str) {
+            if !msg.trim().is_empty() {
+                return Ok(msg.to_string());
+            }
+        }
+    }
+    let trimmed = output_text.trim();
+    if trimmed.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+            if let Some(msg) = v.get("message").and_then(Value::as_str) {
+                if !msg.trim().is_empty() {
+                    return Ok(msg.to_string());
+                }
+            }
+        }
+    }
+    if !trimmed.is_empty() {
+        return Ok(trimmed.to_string());
+    }
+    Err("solve output has no report message (outputJson.message)".to_string())
+}
+
+pub fn build_biz_advice_polish_prompt(instructions: &str, report_body: &str) -> String {
+    format!("{instructions}\n\n【报告正文】\n{report_body}")
 }
 
 pub async fn load_boss_report_writer_instructions(work_dir: &Path) -> String {
@@ -87,13 +97,6 @@ pub async fn load_boss_report_writer_instructions(work_dir: &Path) -> String {
             skill_instructions_for_prompt(default_gpos_boss_report_writer_skill_md())
         }
     }
-}
-
-pub fn raw_json_from_output(output_json: Option<&Value>) -> String {
-    output_json.as_ref().map_or_else(
-        || "null".to_string(),
-        |v| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()),
-    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -157,11 +160,19 @@ mod tests {
     }
 
     #[test]
-    fn build_prompt_includes_sections() {
-        let p = build_biz_advice_polish_prompt("instr", "text", "{}");
+    fn build_prompt_includes_report_body_section() {
+        let p = build_biz_advice_polish_prompt("instr", "report text");
         assert!(p.contains("instr"));
-        assert!(p.contains("【原始文本输出】"));
-        assert!(p.contains("text"));
-        assert!(p.contains("【原始 JSON 输出】"));
+        assert!(p.contains("【报告正文】"));
+        assert!(p.contains("report text"));
+    }
+
+    #[test]
+    fn report_body_prefers_output_json_message() {
+        let json = serde_json::json!({"message": "body", "iterations": 1});
+        assert_eq!(
+            report_body_from_solve_output("", Some(&json)).unwrap(),
+            "body"
+        );
     }
 }
