@@ -12,8 +12,8 @@ Usage:
   ./deploy/stack/gateway.sh <command>
 
 Commands:
-  build         Build gateway + worker images (single step; always run both after Rust changes)
-  up            Start/recreate gateway stack
+  build         Build gateway + worker images; full log → deploy/stack/.build.log (see: build --help)
+  up            Start/recreate gateway stack (`up --release TAG` = down + kill pool + rm all workers + pull + up)
   down          Stop gateway stack
   restart       Recreate stack (down + up)
   check         Connectivity smoke check
@@ -33,10 +33,10 @@ cmd="${1:-help}"
 shift || true
 
 case "${cmd}" in
-  build) "${LIB}/build.sh" "$@" ;;
+  build) "${LIB}/build.sh" "$@" ;; # pass --log PATH | --no-log | IMAGE_TAG
   up) "${LIB}/up.sh" "$@" ;;
   down) "${LIB}/down.sh" "$@" ;;
-  restart) "${LIB}/down.sh" && "${LIB}/up.sh" ;;
+  restart) "${LIB}/down.sh" && "${LIB}/up.sh" "$@" ;;
   check) "${LIB}/check-connectivity.sh" "$@" ;;
   tap-up) "${LIB}/start-with-tap.sh" "$@" ;;
   tap-down) "${LIB}/stop-with-tap.sh" "$@" ;;
@@ -45,8 +45,9 @@ case "${cmd}" in
     podman logs -f claw-gateway-rs
     ;;
   ps)
+    rt="$(command -v docker >/dev/null 2>&1 && echo docker || echo podman)"
     "${rt}" ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' \
-      | rg 'claw-gateway-rs|claw-worker-|claw-gw-|claw-claude-tap|sqlbot|NAMES' || true
+      | rg 'claw-gateway|claw-worker|claw-gw-|claw-claude-tap|sqlbot|NAMES' || true
     ;;
   e2e)
     "${REPO_ROOT}/tests/http-gateway-session-continuity-e2e.sh" "$@"

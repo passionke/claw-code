@@ -30,14 +30,24 @@ use biz_advice_report::{
     load_boss_report_writer_instructions, raw_json_from_output, BizAdviceReportPayload,
     BizReportStreamMsg,
 };
+use gateway_solve_turn::read_progress_history;
 use gateway_solve_turn::{
-    run_gateway_biz_polish_llm, run_gateway_biz_polish_llm_async, ReportPolishDeepseek,
+    read_task_progress, reset_task_progress, run_gateway_biz_polish_llm,
+    run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
     BOSS_REPORT_SKILL_DS_ID,
 };
 use http_gateway_rs::{session_db, session_merge};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use session_execution::{
+    discover_trace_paths, join_session_home, read_trace_tail, trace_tail_suggests_tool_call,
+    SessionExecutionResponse, SessionExecutionTask,
+};
+use task_status::{
+    count_gateway_tasks, ensure_report_progress_in_allowed_tools, resolve_current_task_desc,
+    TaskStatusRow,
+};
 use tokio::fs;
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -52,7 +62,9 @@ use uuid::Uuid;
 mod biz_advice_report;
 mod gateway_logging;
 mod pool;
+mod session_execution;
 mod solve_pool;
+mod task_status;
 
 fn default_system_date() -> String {
     match option_env!("BUILD_DATE") {
@@ -317,6 +329,7 @@ struct TaskInner {
     record: TaskRecord,
     /// Present while `queued` / `running`; cleared when the worker finishes or after cancel.
     cancel: Option<AbortHandle>,
+    ds_id: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -328,6 +341,8 @@ struct TaskRecord {
     // Backward-compat field; keep in sync with sessionId.
     #[serde(rename = "requestId")]
     request_id: String,
+    #[serde(rename = "dsId")]
+    ds_id: i64,
     status: String,
     #[serde(rename = "createdAtMs")]
     created_at_ms: i64,
@@ -335,6 +350,13 @@ struct TaskRecord {
     started_at_ms: Option<i64>,
     #[serde(rename = "finishedAtMs")]
     finished_at_ms: Option<i64>,
+    #[serde(rename = "currentTaskDesc", skip_serializing_if = "Option::is_none")]
+    current_task_desc: Option<String>,
+    #[serde(
+        rename = "progressUpdatedAtMs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    progress_updated_at_ms: Option<i64>,
     result: Option<SolveResponse>,
     error: Option<Value>,
 }
@@ -795,6 +817,8 @@ async fn main() {
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
     };
 
+    run_startup_projects_git_sync(&state).await;
+
     if let Some(secs) = state.cfg.projects_git_ds_home_poll_interval_secs {
         let poller_state = state.clone();
         tokio::spawn(async move { projects_git_ds_home_poll_loop(poller_state, secs).await });
@@ -818,6 +842,10 @@ async fn main() {
         .route("/v1/solve_async", post(solve_async))
         .route("/v1/tasks/{task_id}", get(get_task))
         .route("/v1/tasks/{task_id}/cancel", post(cancel_task))
+        .route(
+            "/v1/sessions/{session_id}/execution",
+            get(get_session_execution),
+        )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route(
             "/v1/dev/biz_report_seed_task",
@@ -1168,15 +1196,18 @@ async fn openapi() -> Json<Value> {
                 },
                 "TaskRecord": {
                     "type": "object",
-                    "required": ["taskId", "sessionId", "requestId", "status", "createdAtMs"],
+                    "required": ["taskId", "sessionId", "requestId", "dsId", "status", "createdAtMs"],
                     "properties": {
                         "taskId": { "type": "string" },
                         "sessionId": { "type": "string" },
                         "requestId": { "type": "string" },
+                        "dsId": { "type": "integer", "format": "int64" },
                         "status": { "type": "string" },
                         "createdAtMs": { "type": "integer", "format": "int64" },
                         "startedAtMs": { "type": "integer", "format": "int64", "nullable": true },
                         "finishedAtMs": { "type": "integer", "format": "int64", "nullable": true },
+                        "currentTaskDesc": { "type": "string", "nullable": true },
+                        "progressUpdatedAtMs": { "type": "integer", "format": "int64", "nullable": true },
                         "result": { "$ref": "#/components/schemas/SolveResponse", "nullable": true },
                         "error": { "type": "object", "nullable": true }
                     }
@@ -1449,6 +1480,64 @@ fn project_claude_paths(work_dir: &Path) -> (PathBuf, PathBuf) {
     (work_dir.join("home/CLAUDE.md"), work_dir.join("CLAUDE.md"))
 }
 
+/// Non-empty CLAUDE.md on one of the project paths. kejiqing
+async fn claude_instructions_usable(path: &Path) -> bool {
+    let meta = match fs::metadata(path).await {
+        Ok(m) if m.is_file() => m,
+        _ => return false,
+    };
+    if meta.len() == 0 {
+        return false;
+    }
+    match fs::read_to_string(path).await {
+        Ok(text) => !text.trim().is_empty(),
+        Err(_) => false,
+    }
+}
+
+/// Project tree is ready for solve when CLAUDE instructions exist and are non-empty (pool bind-mount contract). kejiqing
+async fn ds_project_tree_ready(work_dir: &Path) -> bool {
+    let (home_claude, root_claude) = project_claude_paths(work_dir);
+    claude_instructions_usable(&home_claude).await || claude_instructions_usable(&root_claude).await
+}
+
+fn ds_environment_not_prepared_error(ds_id: i64, projects_git_url: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::PRECONDITION_FAILED,
+        format!(
+            "ds {ds_id} environment not prepared: missing or empty home/CLAUDE.md on this gateway; \
+             add ds_{ds_id}/home to projects git ({projects_git_url}) and call POST /v1/init"
+        ),
+    )
+}
+
+async fn sync_ds_project_from_git_mirror(state: &AppState, ds_id: i64) -> Result<(), ApiError> {
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let _mirror = state.projects_git_mirror_lock.lock().await;
+    let repo_dir = projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?;
+    sync_ds_home_from_repo(&repo_dir, &work_dir, ds_id).await
+}
+
+/// Before pool acquire: local `ds_<id>` must already have non-empty CLAUDE (provision via `POST /v1/init` or poll). kejiqing
+async fn ensure_ds_project_ready(state: &AppState, ds_id: i64) -> Result<(), ApiError> {
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create ds work dir failed: {e}"),
+            )
+        })?;
+    if ds_project_tree_ready(&work_dir).await {
+        return Ok(());
+    }
+    Err(ds_environment_not_prepared_error(
+        ds_id,
+        state.cfg.projects_git_url.as_str(),
+    ))
+}
+
 fn normalize_rel_for_git(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -1549,6 +1638,149 @@ async fn copy_tree(src_root: &Path, dst_root: &Path) -> Result<(), ApiError> {
 
 async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, ApiError> {
     run_git_env(cwd, &[], args).await
+}
+
+/// Bind-mounted `.claw-code-projects` is often owned by the host user; gateway runs as another uid. kejiqing
+async fn ensure_projects_git_safe_directory(work_root: &Path) {
+    let repo_dir = projects_repo_dir(work_root);
+    let path = repo_dir.display().to_string();
+    if let Err(e) = run_git(
+        work_root,
+        &["config", "--global", "--add", "safe.directory", &path],
+    )
+    .await
+    {
+        warn!(
+            target: "claw_gateway_orchestration",
+            component = "projects_git",
+            phase = "safe_directory",
+            repo_dir = %repo_dir.display(),
+            error = %e.detail(),
+            "git safe.directory failed; mirror pull/init may fail with dubious ownership"
+        );
+    }
+}
+
+/// Best-effort `git rev-parse` for health/diagnostics (no pull). kejiqing
+async fn git_rev_parse_optional(cwd: &Path, spec: &str) -> Option<String> {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(cwd);
+    cmd.args(["rev-parse", spec]);
+    let output = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        None
+    } else {
+        Some(stdout)
+    }
+}
+
+async fn count_skill_dirs(skills_root: &Path) -> u64 {
+    let mut rd = match fs::read_dir(skills_root).await {
+        Ok(rd) => rd,
+        Err(_) => return 0,
+    };
+    let mut n = 0u64;
+    while let Ok(Some(ent)) = rd.next_entry().await {
+        if ent.file_type().await.is_ok_and(|t| t.is_dir()) {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Read-only snapshot of projects-git mirror + per-`ds_*` workspace readiness (for `/healthz`). kejiqing
+async fn build_ds_workspaces_health(work_root: &Path, cfg: &GatewayConfig) -> Value {
+    let repo_dir = projects_repo_dir(work_root);
+    let mirror_present = fs::metadata(&repo_dir).await.is_ok_and(|m| m.is_dir());
+    let mirror_head = if mirror_present {
+        git_rev_parse_optional(&repo_dir, "HEAD").await
+    } else {
+        None
+    };
+
+    let on_disk = list_ds_ids_under_work_root(work_root)
+        .await
+        .unwrap_or_default();
+    let in_mirror = if mirror_present {
+        list_ds_ids_in_projects_mirror(&repo_dir)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let ids = merge_sorted_ds_ids(on_disk, in_mirror);
+
+    let mut workspaces = Vec::new();
+    let mut prepared_count = 0u64;
+    for ds_id in ids {
+        let work_dir = ds_work_dir(work_root, ds_id);
+        let work_dir_present = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
+        let environment_prepared = work_dir_present && ds_project_tree_ready(&work_dir).await;
+        if environment_prepared {
+            prepared_count += 1;
+        }
+        let (home_claude, root_claude) = project_claude_paths(&work_dir);
+        let claude_home_present = fs::metadata(&home_claude).await.is_ok_and(|m| m.is_file());
+        let claude_root_present = fs::metadata(&root_claude).await.is_ok_and(|m| m.is_file());
+        let claude_home_bytes = if claude_home_present {
+            fs::metadata(&home_claude).await.ok().map(|m| m.len())
+        } else {
+            None
+        };
+        let skills_root = work_dir.join("home/skills");
+        let skills_count = if fs::metadata(&skills_root).await.is_ok_and(|m| m.is_dir()) {
+            count_skill_dirs(&skills_root).await
+        } else {
+            0
+        };
+
+        let mirror_ds_home = repo_dir.join(format!("ds_{ds_id}/home"));
+        let mirror_has_ds_home = mirror_present
+            && fs::metadata(&mirror_ds_home)
+                .await
+                .is_ok_and(|m| m.is_dir());
+        let mirror_ds_home_tree_rev = if mirror_has_ds_home {
+            git_rev_parse_optional(&repo_dir, &format!("HEAD:ds_{ds_id}/home")).await
+        } else {
+            None
+        };
+
+        workspaces.push(json!({
+            "dsId": ds_id,
+            "workDir": work_dir.display().to_string(),
+            "workDirPresent": work_dir_present,
+            "environmentPrepared": environment_prepared,
+            "claudeHomePath": home_claude.display().to_string(),
+            "claudeHomePresent": claude_home_present,
+            "claudeHomeBytes": claude_home_bytes,
+            "claudeRootPresent": claude_root_present,
+            "skillsCount": skills_count,
+            "projectsGit": {
+                "mirrorHasDsHome": mirror_has_ds_home,
+                "mirrorDsHomeTreeRev": mirror_ds_home_tree_rev,
+            }
+        }));
+    }
+
+    json!({
+        "mirrorPath": repo_dir.display().to_string(),
+        "mirrorPresent": mirror_present,
+        "branch": cfg.projects_git_branch,
+        "url": cfg.projects_git_url,
+        "mirrorHead": mirror_head,
+        "dsWorkspaceCount": workspaces.len(),
+        "environmentPreparedCount": prepared_count,
+        "dsWorkspaces": workspaces,
+    })
 }
 
 /// All subprocess git calls use HTTP/1.1 for libcurl remotes to reduce HTTP/2 framing / packfile
@@ -1670,6 +1902,7 @@ async fn ensure_projects_repo_ready(
     work_root: &Path,
     cfg: &GatewayConfig,
 ) -> Result<PathBuf, ApiError> {
+    ensure_projects_git_safe_directory(work_root).await;
     let repo_dir = projects_repo_dir(work_root);
     if fs::metadata(&repo_dir).await.is_ok_and(|m| m.is_dir()) {
         sync_projects_git_remote(cfg, &repo_dir).await?;
@@ -1883,8 +2116,35 @@ async fn projects_git_mirror_copy_commit_push_impl(
     })
 }
 
+/// Pull projects git and sync `ds_*/home` before HTTP listen (and once per poll tick). kejiqing
+async fn run_startup_projects_git_sync(state: &AppState) {
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "startup",
+        phase = "projects_git_startup_sync",
+        "pulling projects git and syncing ds home trees before accepting traffic"
+    );
+    match tick_projects_git_ds_home_poll(state).await {
+        Ok(()) => info!(
+            target: "claw_gateway_orchestration",
+            component = "startup",
+            phase = "projects_git_startup_sync",
+            "startup projects-git / ds home sync completed"
+        ),
+        Err(e) => warn!(
+            target: "claw_gateway_orchestration",
+            component = "startup",
+            phase = "projects_git_startup_sync",
+            status = %e.status,
+            error = %e.detail(),
+            "startup projects-git sync failed; gateway will still listen (solve may return environment not prepared until sync succeeds)"
+        ),
+    }
+}
+
 async fn projects_git_ds_home_poll_loop(state: AppState, interval_secs: u64) {
-    let mut ticker = interval(Duration::from_secs(interval_secs));
+    let start = tokio::time::Instant::now() + Duration::from_secs(interval_secs);
+    let mut ticker = tokio::time::interval_at(start, Duration::from_secs(interval_secs));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
         ticker.tick().await;
@@ -1904,24 +2164,69 @@ async fn projects_git_ds_home_poll_loop(state: AppState, interval_secs: u64) {
     }
 }
 
+async fn list_ds_ids_in_projects_mirror(repo_dir: &Path) -> Result<Vec<i64>, ApiError> {
+    let mut out = Vec::new();
+    let mut rd = fs::read_dir(repo_dir).await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("list projects mirror failed: {e}"),
+        )
+    })?;
+    while let Some(ent) = rd.next_entry().await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read projects mirror entry failed: {e}"),
+        )
+    })? {
+        let name = ent.file_name().to_string_lossy().to_string();
+        let Some(rest) = name.strip_prefix("ds_") else {
+            continue;
+        };
+        if let Ok(id) = rest.parse::<i64>() {
+            if id >= 1 {
+                out.push(id);
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
+fn merge_sorted_ds_ids(mut a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    a.extend(b);
+    a.sort_unstable();
+    a.dedup();
+    a
+}
+
 async fn tick_projects_git_ds_home_poll(state: &AppState) -> Result<(), ApiError> {
     let repo_dir = {
         let _mirror = state.projects_git_mirror_lock.lock().await;
         projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?
     };
-    let ids = list_ds_ids_under_work_root(&state.cfg.work_root).await?;
+    let on_disk = list_ds_ids_under_work_root(&state.cfg.work_root).await?;
+    let in_mirror = list_ds_ids_in_projects_mirror(&repo_dir).await?;
+    let ids = merge_sorted_ds_ids(on_disk, in_mirror);
     for ds_id in ids {
         let lock = get_ds_lock(state, ds_id).await;
         let Ok(_guard) = lock.try_lock() else {
             continue;
         };
         let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
-        if !fs::metadata(work_dir.join(".claw"))
-            .await
-            .is_ok_and(|m| m.is_dir())
-        {
+        let ds_repo_home = repo_dir.join(format!("ds_{ds_id}/home"));
+        if !fs::metadata(&ds_repo_home).await.is_ok_and(|m| m.is_dir()) {
             continue;
         }
+        fs::create_dir_all(work_dir.join(".claw"))
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("create ds work dir failed: {e}"),
+                )
+            })?;
+        // Refresh even when CLAUDE already exists (multi-node: A pushed, B pulls).
         sync_ds_home_from_repo(&repo_dir, &work_dir, ds_id).await?;
     }
     Ok(())
@@ -1958,6 +2263,7 @@ async fn list_ds_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiEr
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     let isolation = state.cfg.solve_isolation.as_str();
+    let ds_workspaces = build_ds_workspaces_health(&state.cfg.work_root, state.cfg.as_ref()).await;
     Json(json!({
         "ok": true,
         "clawBin": state.cfg.claw_bin,
@@ -1979,6 +2285,7 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "projectsGitUrl": state.cfg.projects_git_url.clone(),
         "projectsGitBranch": state.cfg.projects_git_branch.clone(),
         "projectsGitDsHomePollIntervalSecs": state.cfg.projects_git_ds_home_poll_interval_secs,
+        "projectsGitMirror": ds_workspaces,
         "reportPolishUsesDeepseek": state.cfg.report_polish_deepseek.is_some(),
         "reportDeepseekModel": state.cfg.report_polish_deepseek.as_ref().map(|d| d.model.clone()),
     }))
@@ -2042,14 +2349,15 @@ async fn init_workspace(
             )
         })?;
     {
-        let _mirror = state.projects_git_mirror_lock.lock().await;
-        let repo_dir =
-            projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?;
-        sync_ds_home_from_repo(&repo_dir, &work_dir, req.ds_id).await?;
-    }
-    {
         let lock = get_ds_lock(&state, req.ds_id).await;
         let _guard = lock.lock().await;
+        sync_ds_project_from_git_mirror(&state, req.ds_id).await?;
+        if !ds_project_tree_ready(&work_dir).await {
+            return Err(ds_environment_not_prepared_error(
+                req.ds_id,
+                state.cfg.projects_git_url.as_str(),
+            ));
+        }
         ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
         let settings = build_settings(&state, req.ds_id).await;
         let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
@@ -2454,6 +2762,186 @@ async fn get_ds_skill(
     }))
 }
 
+fn progress_poll_interval_ms() -> u64 {
+    std::env::var("CLAW_TASK_PROGRESS_POLL_MS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|&n| n >= 100)
+        .unwrap_or(400)
+}
+
+fn gateway_queue_snapshot(tasks: &HashMap<String, TaskInner>) -> task_status::GatewayQueueSnapshot {
+    let rows: HashMap<String, TaskStatusRow> = tasks
+        .iter()
+        .map(|(id, inner)| {
+            (
+                id.clone(),
+                TaskStatusRow {
+                    status: inner.record.status.clone(),
+                },
+            )
+        })
+        .collect();
+    count_gateway_tasks(&rows)
+}
+
+async fn resolve_session_home_path(
+    state: &AppState,
+    ds_id: i64,
+    session_id: &str,
+) -> Option<PathBuf> {
+    let rel = state
+        .session_db
+        .get_session_home_rel(session_id, ds_id)
+        .await
+        .ok()??;
+    session_merge::validate_session_home_rel(&rel).ok()?;
+    Some(join_session_home(&state.cfg.work_root, &rel))
+}
+
+async fn refresh_task_progress(state: &AppState, task_id: &str) {
+    let snapshot = {
+        let (status, ds_id, session_id) = {
+            let tasks = state.tasks.lock().await;
+            let Some(inner) = tasks.get(task_id) else {
+                return;
+            };
+            (
+                inner.record.status.clone(),
+                inner.ds_id,
+                inner.record.session_id.clone(),
+            )
+        };
+        let session_home = resolve_session_home_path(state, ds_id, &session_id).await;
+        let queue = {
+            let tasks = state.tasks.lock().await;
+            gateway_queue_snapshot(&tasks)
+        };
+        let trace_paths = session_home
+            .as_ref()
+            .map(|home| discover_trace_paths(home, &state.cfg.work_root, &session_id))
+            .unwrap_or_default();
+        let tool = trace_tail_suggests_tool_call(&trace_paths);
+        let desc = resolve_current_task_desc(&status, session_home.as_deref(), &queue, tool);
+        let updated_ms = session_home
+            .as_ref()
+            .and_then(|home| read_task_progress(home))
+            .map(|p| p.updated_at_ms);
+        (desc, updated_ms)
+    };
+    let mut tasks = state.tasks.lock().await;
+    if let Some(inner) = tasks.get_mut(task_id) {
+        inner.record.current_task_desc = snapshot.0;
+        inner.record.progress_updated_at_ms = snapshot.1;
+    }
+}
+
+fn spawn_task_progress_poller(state: AppState, task_id: String) {
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_millis(progress_poll_interval_ms()));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let active = {
+                let tasks = state.tasks.lock().await;
+                tasks.get(&task_id).is_some_and(|inner| {
+                    matches!(inner.record.status.as_str(), "queued" | "running")
+                })
+            };
+            if !active {
+                break;
+            }
+            refresh_task_progress(&state, &task_id).await;
+        }
+    });
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionExecutionQuery {
+    #[serde(rename = "ds_id")]
+    ds_id: i64,
+    #[serde(default)]
+    include_trace: bool,
+}
+
+async fn get_session_execution(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(query): Query<SessionExecutionQuery>,
+    Extension(http_request_id): Extension<HttpRequestId>,
+) -> Result<Json<SessionExecutionResponse>, ApiError> {
+    if query.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "ds_id must be >= 1"));
+    }
+    let session_home_rel = state
+        .session_db
+        .get_session_home_rel(&session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("session not found: {session_id} ds_id={}", query.ds_id),
+            )
+        })?;
+    session_merge::validate_session_home_rel(&session_home_rel).map_err(session_routing_error)?;
+    let session_home = join_session_home(&state.cfg.work_root, &session_home_rel);
+
+    refresh_task_progress(&state, &session_id).await;
+
+    let (task_snapshot, queue) = {
+        let tasks = state.tasks.lock().await;
+        let queue = gateway_queue_snapshot(&tasks);
+        let task_snapshot = tasks.get(&session_id).map(|inner| SessionExecutionTask {
+            task_id: inner.record.task_id.clone(),
+            status: inner.record.status.clone(),
+            created_at_ms: inner.record.created_at_ms,
+            started_at_ms: inner.record.started_at_ms,
+            finished_at_ms: inner.record.finished_at_ms,
+            current_task_desc: inner.record.current_task_desc.clone(),
+        });
+        (task_snapshot, queue)
+    };
+
+    let task = task_snapshot.unwrap_or_else(|| SessionExecutionTask {
+        task_id: session_id.clone(),
+        status: "unknown".to_string(),
+        created_at_ms: 0,
+        started_at_ms: None,
+        finished_at_ms: None,
+        current_task_desc: None,
+    });
+
+    let progress = read_task_progress(&session_home);
+    let progress_history = read_progress_history(&session_home, 50)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let trace_paths = discover_trace_paths(&session_home, &state.cfg.work_root, &session_id);
+    let trace_tail = if query.include_trace {
+        read_trace_tail(&trace_paths, 50, true)
+    } else {
+        read_trace_tail(&trace_paths, 20, false)
+    };
+
+    info!(
+        request_id = %http_request_id.0,
+        session_id = %session_id,
+        ds_id = query.ds_id,
+        endpoint = "/v1/sessions/{session_id}/execution",
+        "gateway_session_execution"
+    );
+
+    Ok(Json(SessionExecutionResponse {
+        session_id,
+        ds_id: query.ds_id,
+        session_home_rel,
+        task,
+        progress,
+        progress_history,
+        queue,
+        trace_tail,
+    }))
+}
+
 async fn solve_async(
     State(state): State<AppState>,
     Extension(http_request_id): Extension<HttpRequestId>,
@@ -2478,6 +2966,19 @@ async fn solve_async(
         }
     }
     let task_id = effective.clone();
+    let ds_id = req.ds_id;
+    if let Some(rel) = state
+        .session_db
+        .get_session_home_rel(&effective, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        let home = join_session_home(&state.cfg.work_root, &rel);
+        if let Err(e) = reset_task_progress(&home, &effective) {
+            warn!(error = %e, "reset task progress before async solve failed");
+        }
+        let _ = truncate_progress_history(&home);
+    }
     info!(
         request_id = %effective,
         task_id = %task_id,
@@ -2496,6 +2997,8 @@ async fn solve_async(
                 ));
             }
         }
+        let queue = gateway_queue_snapshot(&tasks);
+        let initial_desc = resolve_current_task_desc("queued", None, &queue, false);
         tasks.insert(
             task_id.clone(),
             TaskInner {
@@ -2503,17 +3006,22 @@ async fn solve_async(
                     task_id: task_id.clone(),
                     session_id: effective.clone(),
                     request_id: effective.clone(),
+                    ds_id,
                     status: "queued".to_string(),
                     created_at_ms: now_ms(),
                     started_at_ms: None,
                     finished_at_ms: None,
+                    current_task_desc: initial_desc,
+                    progress_updated_at_ms: None,
                     result: None,
                     error: None,
                 },
                 cancel: None,
+                ds_id,
             },
         );
     }
+    spawn_task_progress_poller(state.clone(), task_id.clone());
     let state_clone = state.clone();
     let task_id_for_worker = task_id.clone();
     let rid = effective.clone();
@@ -2545,8 +3053,11 @@ async fn solve_async(
             },
         )
         .await;
-        let mut tasks = state_clone.tasks.lock().await;
-        if let Some(inner) = tasks.get_mut(&task_id_for_worker) {
+        let refresh_progress = {
+            let mut tasks = state_clone.tasks.lock().await;
+            let Some(inner) = tasks.get_mut(&task_id_for_worker) else {
+                return;
+            };
             inner.cancel = None;
             if inner.record.status == "cancelled" {
                 return;
@@ -2579,6 +3090,10 @@ async fn solve_async(
                     );
                 }
             }
+            true
+        };
+        if refresh_progress {
+            refresh_task_progress(&state_clone, &task_id_for_worker).await;
         }
     });
     let cancel = join.abort_handle();
@@ -2588,6 +3103,7 @@ async fn solve_async(
             inner.cancel = Some(cancel);
         }
     }
+    refresh_task_progress(&state, &task_id).await;
     let claw = HeaderValue::from_str(&effective).map_err(|_| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2613,6 +3129,7 @@ async fn get_task(
     AxumPath(task_id): AxumPath<String>,
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
+    refresh_task_progress(&state, &task_id).await;
     let tasks = state.tasks.lock().await;
     let task = tasks
         .get(&task_id)
@@ -2729,10 +3246,13 @@ async fn dev_seed_biz_report_task(
         task_id: tid.clone(),
         session_id: tid.clone(),
         request_id: tid.clone(),
+        ds_id: body.ds_id,
         status: "succeeded".to_string(),
         created_at_ms: now,
         started_at_ms: Some(now),
         finished_at_ms: Some(now),
+        current_task_desc: Some("分析完成".to_string()),
+        progress_updated_at_ms: Some(now),
         result: Some(result),
         error: None,
     };
@@ -2743,6 +3263,7 @@ async fn dev_seed_biz_report_task(
             TaskInner {
                 record,
                 cancel: None,
+                ds_id: body.ds_id,
             },
         );
     }
@@ -2961,8 +3482,9 @@ async fn run_solve_request(
         timeout_seconds,
         "gateway_solve accepted; validating and preparing workspace"
     );
-    let effective_allowed_tools =
+    let mut effective_allowed_tools =
         resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
+    ensure_report_progress_in_allowed_tools(&mut effective_allowed_tools);
     validate_ds_exists(req.ds_id, &state.cfg.ds_registry_path).await?;
 
     let _session_lock_guard: Option<OwnedMutexGuard<()>> = if ctx.skip_session_db {
@@ -3030,6 +3552,7 @@ async fn run_solve_request(
     {
         let ds_lock = get_ds_lock(&state, req.ds_id).await;
         let _guard = ds_lock.lock().await;
+        ensure_ds_project_ready(&state, req.ds_id).await?;
         fs::create_dir_all(&ds_base).await.map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3585,6 +4108,21 @@ mod tests {
         assert!(validate_skill_name("../escape").is_err());
         assert!(validate_skill_name("bad/name").is_err());
         assert!(validate_skill_name("中文").is_err());
+    }
+
+    #[tokio::test]
+    async fn ds_project_tree_ready_requires_claude_md() {
+        let tmp = std::env::temp_dir().join(format!("claw-gw-ds-ready-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!ds_project_tree_ready(&tmp).await);
+        let (home_claude, _) = project_claude_paths(&tmp);
+        std::fs::create_dir_all(home_claude.parent().unwrap()).unwrap();
+        std::fs::write(&home_claude, "# test").unwrap();
+        assert!(ds_project_tree_ready(&tmp).await);
+        std::fs::write(&home_claude, "   \n").unwrap();
+        assert!(!ds_project_tree_ready(&tmp).await);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

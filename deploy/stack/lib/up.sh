@@ -7,6 +7,9 @@ PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 ENV_FILE="${REPO_ROOT}/.env"
 
+# shellcheck disable=SC1091
+source "${LIB_DIR}/nuclear-pool-reset.sh"
+
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "missing ${ENV_FILE}" >&2
   echo "copy ${REPO_ROOT}/.env.example to ${ENV_FILE} and edit" >&2
@@ -35,9 +38,21 @@ set -a
 source "${ENV_FILE}"
 set +a
 
+claw_podman_export_pool_workspace "${PODMAN_DIR}"
+claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
+
+# load_compose_args re-sources .env and resets GATEWAY_IMAGE to :local; re-pin after. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   claw_apply_release_image_tag "${CLAW_IMAGE_RELEASE_TAG}"
   claw_write_release_pin_env "${PODMAN_DIR}"
+fi
+
+# Release up: compose down + kill pool + delete every worker, then pull fresh images. kejiqing
+if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
+  echo "==> release ${CLAW_IMAGE_RELEASE_TAG}: compose down + nuclear pool reset" >&2
+  echo "    gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
+  claw_compose_with_root_env "${PODMAN_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" down 2>/dev/null || true
+  claw_nuclear_pool_reset "${PODMAN_DIR}"
   rt="$(claw_container_runtime_cli)"
   echo "pull ${GATEWAY_IMAGE} …" >&2
   "${rt}" pull "${GATEWAY_IMAGE}"
@@ -53,29 +68,16 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   esac
 fi
 
-claw_podman_export_pool_workspace "${PODMAN_DIR}"
-claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
-
-cleanup_stale_gateway_workers() {
-  local rt ids_w ids_g ids
-  rt="$(claw_container_runtime_cli)"
-  ids_w="$("${rt}" ps -aq --filter name='claw-worker-' 2>/dev/null || true)"
-  ids_g="$("${rt}" ps -aq --filter name='claw-gw-' 2>/dev/null || true)"
-  ids="${ids_w} ${ids_g}"
-  if [[ -z "${ids//[$'\t\r\n ']}" ]]; then
-    return 0
-  fi
-  echo "Removing stale gateway workers before startup..."
-  # Only pool worker name prefixes; removes legacy claw-gw-* after rename to claw-worker-*. Author: kejiqing
-  # shellcheck disable=SC2086
-  "${rt}" rm -f ${ids}
-}
-
-# Host pool daemon must listen before the gateway connects on first solve. kejiqing
-set -a
-# shellcheck disable=SC1090
-source "${ENV_FILE}"
-set +a
+# Pin images for pool daemon (never re-source repo .env — it has :local and overwrites release). kejiqing
+if [[ -f "${PODMAN_DIR}/.claw-image-release.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${PODMAN_DIR}/.claw-image-release.env"
+  set +a
+elif [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
+  claw_apply_release_image_tag "${CLAW_IMAGE_RELEASE_TAG}"
+fi
+echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
 
 install_args=()
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
@@ -85,8 +87,8 @@ install_args+=("${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-po
 "${PODMAN_DIR}/lib/install-pool-daemon-from-image.sh" "${install_args[@]}"
 "${PODMAN_DIR}/lib/pool-daemon-up.sh" "${PODMAN_DIR}" "${REPO_ROOT}"
 
-cleanup_stale_gateway_workers
+claw_remove_all_gateway_workers
 
-# Recreate so env_file changes (e.g. .claw-pool-workspace.env) apply; plain `up -d` can leave stale env. kejiqing
+# Recreate gateway container; pool is fresh with pinned worker image. kejiqing
 claw_compose_with_root_env "${PODMAN_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
-echo "Services started."
+echo "Services started (gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}})."

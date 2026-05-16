@@ -122,6 +122,30 @@ def _parse_sse_block(lines: list[str]) -> tuple[str | None, str | None]:
     return event, data
 
 
+def _read_sse_events(resp: Any, start: float) -> list[tuple[str | None, float, str | None]]:
+    """Timestamp complete SSE events as the client receives their blank-line delimiter."""
+    events: list[tuple[str | None, float, str | None]] = []
+    buf: list[str] = []
+    while True:
+        raw = resp.readline()
+        now = time.monotonic()
+        if not raw:
+            if buf:
+                event, data = _parse_sse_block(buf)
+                events.append((event, now - start, data))
+            break
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if line == "":
+            if not buf:
+                continue
+            event, data = _parse_sse_block(buf)
+            events.append((event, now - start, data))
+            buf = []
+            continue
+        buf.append(line)
+    return events
+
+
 def _stream_biz_report(gateway: str, task_id: str, timeout: float = 300.0) -> list[tuple[str, float, str | None]]:
     """Return list of (event_name, monotonic_time, raw_data_or_none)."""
     url = f"{gateway.rstrip('/')}/v1/biz_advice_report?task_id={task_id}&stream=true"
@@ -131,21 +155,9 @@ def _stream_biz_report(gateway: str, task_id: str, timeout: float = 300.0) -> li
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         if resp.status != 200:
             raise RuntimeError(f"unexpected status {resp.status}")
-        buf: list[str] = []
-        while True:
-            raw = resp.readline()
-            if not raw:
-                break
-            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-            if line == "":
-                if not buf:
-                    continue
-                event, data = _parse_sse_block(buf)
-                buf = []
-                if event:
-                    out.append((event, time.monotonic() - t0, data))
-                continue
-            buf.append(line)
+        for event, elapsed, data in _read_sse_events(resp, t0):
+            if event:
+                out.append((event, elapsed, data))
     return out
 
 
@@ -340,9 +352,18 @@ def cmd_probe_upstream(args: argparse.Namespace) -> int:
         sys.stderr.write(f"missing API key: env var {api_key_env} (or pass --api-key)\n")
         return 2
 
-    skill = _strip_skill_frontmatter(Path(args.skill_file).read_text(encoding="utf-8", errors="replace"))
-    report = Path(args.report_file).read_text(encoding="utf-8", errors="replace").strip()
-    prompt = f"{skill}\n\n【原始文本输出】\n{report}\n\n【原始 JSON 输出】\nnull"
+    if args.prompt_file is not None:
+        skill = ""
+        report = ""
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8", errors="replace")
+    elif args.prompt_text is not None:
+        skill = ""
+        report = ""
+        prompt = args.prompt_text
+    else:
+        skill = _strip_skill_frontmatter(Path(args.skill_file).read_text(encoding="utf-8", errors="replace"))
+        report = Path(args.report_file).read_text(encoding="utf-8", errors="replace").strip()
+        prompt = f"{skill}\n\n【原始文本输出】\n{report}\n\n【原始 JSON 输出】\nnull"
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -350,7 +371,9 @@ def cmd_probe_upstream(args: argparse.Namespace) -> int:
         "max_tokens": args.max_tokens,
         "temperature": args.temperature,
     }
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    sdk_extra_body = {"enable_thinking": args.enable_thinking}
+    wire_payload = {**payload, **sdk_extra_body}
+    data = json.dumps(wire_payload, ensure_ascii=False).encode("utf-8")
     url = f"{base_url.rstrip('/')}/chat/completions"
     req = urllib.request.Request(
         url,
@@ -366,68 +389,181 @@ def cmd_probe_upstream(args: argparse.Namespace) -> int:
     print(f"base_url={base_url}")
     print(f"api_key_env={api_key_env}")
     print(f"model={model}")
-    print(f"skill_file={args.skill_file}")
-    print(f"report_file={args.report_file}")
+    print(f"enable_thinking={args.enable_thinking}")
+    if args.prompt_file is not None:
+        print(f"prompt_source={args.prompt_file}")
+    elif args.prompt_text is None:
+        print(f"skill_file={args.skill_file}")
+        print(f"report_file={args.report_file}")
+    else:
+        print("prompt_source=--prompt-text")
     print(f"prompt_chars={len(prompt)} report_chars={len(report)}")
+    if args.client == "openai":
+        try:
+            from openai import OpenAI
+        except ImportError:
+            sys.stderr.write(
+                "missing Python package 'openai'; run in a venv, e.g. "
+                "python3 -m venv /tmp/claw-openai-verify-venv && "
+                "/tmp/claw-openai-verify-venv/bin/python -m pip install openai\n"
+            )
+            return 2
+        start = time.monotonic()
+        client = OpenAI(api_key=api_key, base_url=base_url.rstrip("/"))
+        try:
+            stream = client.chat.completions.create(**payload, extra_body=sdk_extra_body)
+        except Exception as e:  # noqa: BLE001 - diagnostic CLI, preserve provider error text.
+            sys.stderr.write(f"OpenAI SDK request failed: {type(e).__name__}: {e}\n")
+            return 1
+
+        first_data_s: float | None = None
+        last_data_s: float | None = None
+        preview: list[str] = []
+        count = 0
+        for chunk in stream:
+            now = time.monotonic()
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            content = getattr(delta, "content", None) if delta is not None else None
+            if content is None:
+                continue
+            count += 1
+            if first_data_s is None:
+                first_data_s = now - start
+            last_data_s = now - start
+            if content and len(preview) < 8:
+                preview.append(content[:80].replace("\n", "\\n"))
+            if count <= args.print_first_chunks or count % args.print_every == 0:
+                print(
+                    "sdk event index=%d elapsed_ms=%d delta_chars=%d delta_preview=%s"
+                    % (
+                        count,
+                        int((now - start) * 1000),
+                        len(content),
+                        content[:80].replace("\n", "\\n"),
+                    )
+                )
+        total_s = time.monotonic() - start
+        print(
+            "summary client=openai_sdk content_events=%d total_ms=%d first_data_ms=%s last_data_ms=%s spread_ms=%s"
+            % (
+                count,
+                int(total_s * 1000),
+                int(first_data_s * 1000) if first_data_s is not None else None,
+                int(last_data_s * 1000) if last_data_s is not None else None,
+                int((last_data_s - first_data_s) * 1000)
+                if first_data_s is not None and last_data_s is not None
+                else None,
+            )
+        )
+        print("preview=" + " | ".join(preview))
+        return 0
+
     start = time.monotonic()
-    raw_chunks = 0
-    sse_data_events = 0
-    first_raw_s: float | None = None
-    first_data_s: float | None = None
-    last_data_s: float | None = None
-    preview: list[str] = []
     try:
         with urllib.request.urlopen(req, timeout=args.timeout) as resp:
             print(
                 "http_status=%s connect_ms=%d content_type=%s"
                 % (resp.status, int((time.monotonic() - start) * 1000), resp.headers.get("content-type"))
             )
-            while True:
-                chunk = resp.read1(args.read_size)
-                now = time.monotonic()
-                if not chunk:
-                    break
-                raw_chunks += 1
-                if first_raw_s is None:
-                    first_raw_s = now - start
-                text = chunk.decode("utf-8", errors="replace")
-                data_lines = [line[5:].strip() for line in text.splitlines() if line.startswith("data:")]
-                for item in data_lines:
-                    if item == "[DONE]":
-                        continue
-                    sse_data_events += 1
-                    if first_data_s is None:
-                        first_data_s = now - start
-                    last_data_s = now - start
-                    delta = _extract_openai_delta(item)
-                    if delta and len(preview) < 8:
-                        preview.append(delta[:80].replace("\n", "\\n"))
-                if raw_chunks <= args.print_first_chunks or raw_chunks % args.print_every == 0:
-                    print(
-                        "chunk index=%d bytes=%d elapsed_ms=%d data_lines=%d"
-                        % (raw_chunks, len(chunk), int((now - start) * 1000), len(data_lines))
+            if args.read_mode == "chunk":
+                raw_chunks = 0
+                sse_data_events = 0
+                first_raw_s: float | None = None
+                first_data_s: float | None = None
+                last_data_s: float | None = None
+                preview: list[str] = []
+                # Low-level diagnostic only: read1() drains Python/TLS/socket buffers, so equal
+                # elapsed_ms values here do not prove the upstream emitted those SSE frames together.
+                # Use the default line mode for user-visible stream timing. Author: kejiqing
+                while True:
+                    chunk = resp.read1(args.read_size)
+                    now = time.monotonic()
+                    if not chunk:
+                        break
+                    raw_chunks += 1
+                    if first_raw_s is None:
+                        first_raw_s = now - start
+                    text = chunk.decode("utf-8", errors="replace")
+                    data_lines = [line[5:].strip() for line in text.splitlines() if line.startswith("data:")]
+                    for item in data_lines:
+                        if item == "[DONE]":
+                            continue
+                        sse_data_events += 1
+                        if first_data_s is None:
+                            first_data_s = now - start
+                        last_data_s = now - start
+                        delta = _extract_openai_delta(item)
+                        if delta and len(preview) < 8:
+                            preview.append(delta[:80].replace("\n", "\\n"))
+                    if raw_chunks <= args.print_first_chunks or raw_chunks % args.print_every == 0:
+                        print(
+                            "chunk index=%d bytes=%d elapsed_ms=%d data_lines=%d"
+                            % (raw_chunks, len(chunk), int((now - start) * 1000), len(data_lines))
+                        )
+                total_s = time.monotonic() - start
+                print(
+                    "summary raw_chunks=%d sse_data_events=%d total_ms=%d first_raw_ms=%s first_data_ms=%s last_data_ms=%s"
+                    % (
+                        raw_chunks,
+                        sse_data_events,
+                        int(total_s * 1000),
+                        int(first_raw_s * 1000) if first_raw_s is not None else None,
+                        int(first_data_s * 1000) if first_data_s is not None else None,
+                        int(last_data_s * 1000) if last_data_s is not None else None,
                     )
+                )
+                print("preview=" + " | ".join(preview))
+                if raw_chunks <= 1 and sse_data_events > 1:
+                    sys.stderr.write(
+                        "OBSERVED: multiple SSE data events were read from one client buffer; "
+                        "rerun without --read-mode chunk for event timing.\n"
+                    )
+                return 0
+
+            events = _read_sse_events(resp, start)
+            data_events = [(t, data) for _event, t, data in events if data and data.strip() != "[DONE]"]
+            preview: list[str] = []
+            first_data_s: float | None = None
+            last_data_s: float | None = None
+            for index, (elapsed, data) in enumerate(data_events, start=1):
+                if first_data_s is None:
+                    first_data_s = elapsed
+                last_data_s = elapsed
+                delta = _extract_openai_delta(data or "")
+                if delta and len(preview) < 8:
+                    preview.append(delta[:80].replace("\n", "\\n"))
+                if index <= args.print_first_chunks or index % args.print_every == 0:
+                    print(
+                        "event index=%d elapsed_ms=%d data_bytes=%d delta_preview=%s"
+                        % (
+                            index,
+                            int(elapsed * 1000),
+                            len((data or "").encode("utf-8")),
+                            delta[:80].replace("\n", "\\n"),
+                        )
+                    )
+            total_s = time.monotonic() - start
+            print(
+                "summary sse_data_events=%d total_ms=%d first_data_ms=%s last_data_ms=%s spread_ms=%s"
+                % (
+                    len(data_events),
+                    int(total_s * 1000),
+                    int(first_data_s * 1000) if first_data_s is not None else None,
+                    int(last_data_s * 1000) if last_data_s is not None else None,
+                    int((last_data_s - first_data_s) * 1000)
+                    if first_data_s is not None and last_data_s is not None
+                    else None,
+                )
+            )
+            print("preview=" + " | ".join(preview))
+            return 0
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         sys.stderr.write(f"HTTP {e.code}: {body[:2000]}\n")
         return 1
-
-    total_s = time.monotonic() - start
-    print(
-        "summary raw_chunks=%d sse_data_events=%d total_ms=%d first_raw_ms=%s first_data_ms=%s last_data_ms=%s"
-        % (
-            raw_chunks,
-            sse_data_events,
-            int(total_s * 1000),
-            int(first_raw_s * 1000) if first_raw_s is not None else None,
-            int(first_data_s * 1000) if first_data_s is not None else None,
-            int(last_data_s * 1000) if last_data_s is not None else None,
-        )
-    )
-    print("preview=" + " | ".join(preview))
-    if raw_chunks <= 1 and sse_data_events > 1:
-        sys.stderr.write("OBSERVED: upstream returned multiple SSE data events inside one raw HTTP chunk.\n")
-    return 0
 
 
 def main() -> int:
@@ -502,9 +638,48 @@ def main() -> int:
         default="scripts/fixtures/e2b529_biz_report.md",
         dest="report_file",
     )
+    u.add_argument(
+        "--prompt-text",
+        default=None,
+        dest="prompt_text",
+        help="send this exact user prompt instead of skill + report fixture",
+    )
+    u.add_argument(
+        "--prompt-file",
+        default=None,
+        dest="prompt_file",
+        help="read exact user prompt from this UTF-8 file instead of skill + report fixture",
+    )
     u.add_argument("--max-tokens", type=int, default=4096, dest="max_tokens")
     u.add_argument("--temperature", type=float, default=0.0)
     u.add_argument("--timeout", type=float, default=1800.0)
+    thinking = u.add_mutually_exclusive_group()
+    thinking.add_argument(
+        "--enable-thinking",
+        action="store_true",
+        default=False,
+        dest="enable_thinking",
+        help="send extra_body/top-level enable_thinking=true",
+    )
+    thinking.add_argument(
+        "--disable-thinking",
+        action="store_false",
+        dest="enable_thinking",
+        help="send extra_body/top-level enable_thinking=false (default)",
+    )
+    u.add_argument(
+        "--client",
+        choices=("openai", "urllib"),
+        default="openai",
+        help="stream via official OpenAI Python SDK (default) or urllib SSE parser",
+    )
+    u.add_argument(
+        "--read-mode",
+        choices=("line", "chunk"),
+        default="line",
+        dest="read_mode",
+        help="line timestamps complete SSE events (default); chunk shows low-level client read buffers",
+    )
     u.add_argument("--read-size", type=int, default=65536, dest="read_size")
     u.add_argument("--print-first-chunks", type=int, default=20, dest="print_first_chunks")
     u.add_argument("--print-every", type=int, default=20, dest="print_every")

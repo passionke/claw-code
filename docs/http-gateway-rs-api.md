@@ -47,6 +47,12 @@ Base URL 示例：`http://127.0.0.1:18088`
 
 - `GET /v1/tasks/{task_id}`
   - 用途：查询异步任务状态与结果
+  - 响应除 `status` 外含 **`currentTaskDesc`**（用户可见进度一句，camelCase JSON）：主要来自 agent 调用的内部工具 `report_progress` 写入会话目录 `.claw/task-progress.json`；`queued` 时网关可返回「排队中（x 个等待，y 个执行中）」；`running` 且无上报时兜底「处理中」或「工具调用中」（不暴露具体工具名）。**不**从 `gateway-solve-session.jsonl` 最后一条 assistant 推导。
+  - 另含 `dsId`、`progressUpdatedAtMs`（与 progress 文件一致时更新）
+
+- `GET /v1/sessions/{session_id}/execution?ds_id=<int>`
+  - 用途：按 `(sessionId, dsId)` 查看当前进度快照、`progressHistory`（`.claw/task-progress.ndjson` 尾部）、网关队列统计、脱敏 trace 尾（`include_trace=true` 时含更多字段）
+  - 无该会话行：404
 
 - `POST /v1/tasks/{task_id}/cancel`
   - 用途：按 `taskId`（与异步会话 `sessionId` 同值）取消仍处于 `queued` 或 `running` 的 solve 异步任务

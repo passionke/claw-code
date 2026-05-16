@@ -31,6 +31,15 @@ use tools::{
     execute_mcp_tool_with_extra_session, execute_tool, initialize_mcp_bridge, mvp_tool_specs,
 };
 
+pub mod task_progress;
+pub use task_progress::{
+    gateway_progress_system_section, gateway_user_communication_section, read_progress_history,
+    read_task_progress, report_progress_tool_definition, reset_task_progress, run_report_progress,
+    sanitize_current_task_desc, task_progress_history_path, task_progress_json_path,
+    truncate_progress_history, ReportProgressInput, TaskProgressFile, TaskProgressTodo,
+    REPORT_PROGRESS_TOOL_NAME,
+};
+
 const HTTP_INTERNAL: u16 = 500;
 
 /// DeepSeek-official routing for `/v1/biz_advice_report` polish only (`REPORT_LLM_PROVIDER=deepseek`). kejiqing
@@ -259,6 +268,9 @@ impl DirectApiClient {
                 .into_iter()
                 .filter(|tool| is_tool_allowed(&tool.name, allowed_tools)),
         );
+        if is_tool_allowed(REPORT_PROGRESS_TOOL_NAME, allowed_tools) {
+            tools.push(report_progress_tool_definition());
+        }
         Ok(Self {
             model,
             provider,
@@ -305,16 +317,36 @@ impl RuntimeApiClient for DirectApiClient {
 }
 
 struct DirectToolExecutor {
+    session_home: PathBuf,
+    session_id: String,
     allowed_tools: Vec<String>,
     extra_session: Option<Value>,
     runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
     runtime_mcp_tool_names: HashSet<String>,
+    session_tracer: Option<SessionTracer>,
 }
 
 impl RuntimeToolExecutor for DirectToolExecutor {
     fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError> {
         if !is_tool_allowed(tool_name, &self.allowed_tools) {
             return Err(ToolError::new(format!("tool not allowed: {tool_name}")));
+        }
+        if tool_name == REPORT_PROGRESS_TOOL_NAME {
+            let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
+            let result = run_report_progress(&self.session_home, &self.session_id, &parsed)
+                .map_err(ToolError::new)?;
+            if let Some(tracer) = &self.session_tracer {
+                if let Some(progress) = read_task_progress(&self.session_home) {
+                    let mut attrs = serde_json::Map::new();
+                    attrs.insert(
+                        "current_task_desc".to_string(),
+                        Value::String(progress.current_task_desc.clone()),
+                    );
+                    attrs.insert("phase".to_string(), Value::String(progress.phase.clone()));
+                    tracer.record("user_progress", attrs);
+                }
+            }
+            return Ok(result);
         }
         if tool_name == "MCP" {
             return execute_mcp_tool_with_extra_session(input, self.extra_session.as_ref())
@@ -691,7 +723,7 @@ where
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn run_gateway_solve_turn(
     work_dir: &Path,
     work_root: &Path,
@@ -720,7 +752,7 @@ pub fn run_gateway_solve_turn(
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
         .or_else(|| project_cfg.model().map(str::to_string))
         .unwrap_or_else(|| "openai/deepseek-v4-pro".to_string());
-    let system_prompt = load_system_prompt(
+    let mut system_prompt = load_system_prompt(
         work_dir.to_path_buf(),
         default_system_date(),
         std::env::consts::OS,
@@ -728,6 +760,8 @@ pub fn run_gateway_solve_turn(
         extra_session.clone(),
     )
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
+    system_prompt.push(gateway_progress_system_section().to_string());
+    system_prompt.push(gateway_user_communication_section().to_string());
     let (runtime_mcp_tools, runtime_mcp_tool_names, runtime_mcp_manager) =
         initialize_mcp_runtime(work_dir)?;
     let api_client = DirectApiClient::new(
@@ -736,16 +770,10 @@ pub fn run_gateway_solve_turn(
         runtime_mcp_tools,
         clawcode_session_id.to_string(),
     )?;
-    let tool_executor = DirectToolExecutor {
-        allowed_tools,
-        extra_session,
-        runtime_mcp_manager,
-        runtime_mcp_tool_names,
-    };
-    let mut policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
-    for spec in mvp_tool_specs() {
-        policy = policy.with_tool_requirement(spec.name.to_string(), spec.required_permission);
-    }
+    reset_task_progress(work_dir, clawcode_session_id)
+        .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
+    let _ = truncate_progress_history(work_dir);
+
     let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
     let session = if gateway_jsonl.exists() {
         Session::load_from_path(&gateway_jsonl).map_err(|e| {
@@ -758,10 +786,29 @@ pub fn run_gateway_solve_turn(
         Session::new().with_persistence_path(gateway_jsonl.clone())
     }
     .with_workspace_root(work_dir);
+    let session_tracer = gateway_session_tracer(clawcode_session_id, work_root);
+    let tool_executor = DirectToolExecutor {
+        session_home: work_dir.to_path_buf(),
+        session_id: clawcode_session_id.to_string(),
+        allowed_tools,
+        extra_session,
+        runtime_mcp_manager,
+        runtime_mcp_tool_names,
+        session_tracer: session_tracer.clone(),
+    };
+    let mut policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
+    for spec in mvp_tool_specs() {
+        policy = policy.with_tool_requirement(spec.name.to_string(), spec.required_permission);
+    }
+    policy = policy.with_tool_requirement(
+        REPORT_PROGRESS_TOOL_NAME.to_string(),
+        PermissionMode::ReadOnly,
+    );
+
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
     runtime = runtime.with_max_iterations(max_iterations);
-    if let Some(tracer) = gateway_session_tracer(clawcode_session_id, work_root) {
+    if let Some(tracer) = session_tracer {
         runtime = runtime.with_session_tracer(tracer);
     }
     let result = runtime

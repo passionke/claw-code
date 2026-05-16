@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Start host `claw-pool-daemon` on TCP. Binary must already exist (gateway.sh up runs install-pool-daemon-from-image.sh first). Author: kejiqing
 set -euo pipefail
-PODMAN_DIR="$1"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
 REPO_ROOT="$2"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/nuclear-pool-reset.sh"
 # Always refresh worker env snapshot from repo-root .env before (re)starting the daemon so pool
 # workers never inherit stale keys (e.g. CLAW_MCP_TOOL_CALL_TIMEOUT_MS). Author: kejiqing
 "${PODMAN_DIR}/lib/sync-worker-openai-env.sh"
@@ -22,23 +25,11 @@ if [[ -f "${RPC_DIR}/daemon.pid" ]]; then
   fi
   rm -f "${RPC_DIR}/daemon.pid"
 fi
+claw_kill_tcp_listeners "${PORT}"
 
-# Drop every pool worker so the next daemon warm pass always `docker run`s fresh containers that
-# read the just-synced worker-openai.env (stack / daemon restart must not reuse stale workers). kejiqing
 # shellcheck source=/dev/null
 source "${PODMAN_DIR}/lib/compose-include.sh"
-rt="$(claw_container_runtime_cli)" || {
-  echo "error: pool-daemon-up needs docker or podman in PATH to remove stale claw-worker-* / claw-gw-* workers" >&2
-  exit 1
-}
-ids_w="$("${rt}" ps -aq --filter name='claw-worker-' 2>/dev/null || true)"
-ids_g="$("${rt}" ps -aq --filter name='claw-gw-' 2>/dev/null || true)"
-ids="${ids_w} ${ids_g}"
-if [[ -n "${ids//[$'\t\r\n ']}" ]]; then
-  echo "Removing pool worker containers before pool-daemon (re)start…" >&2
-  # shellcheck disable=SC2086
-  "${rt}" rm -f ${ids}
-fi
+claw_remove_all_gateway_workers
 
 if [[ ! -x "${BIN}" ]]; then
   echo "error: claw-pool-daemon missing or not executable: ${BIN}" >&2
@@ -47,16 +38,24 @@ if [[ ! -x "${BIN}" ]]; then
   exit 1
 fi
 
-nohup env \
-  CLAW_WORK_ROOT="${WORK_ROOT}" \
-  CLAW_POOL_WORK_ROOT_HOST="${WORK_ROOT}" \
-  CLAW_POOL_DAEMON_TCP_BIND="${BIND}" \
-  CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}" \
-  "${BIN}" >>"${RPC_DIR}/daemon.log" 2>&1 &
+daemon_env=(
+  CLAW_WORK_ROOT="${WORK_ROOT}"
+  CLAW_POOL_WORK_ROOT_HOST="${WORK_ROOT}"
+  CLAW_POOL_DAEMON_TCP_BIND="${BIND}"
+  CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
+)
+if [[ -n "${CLAW_DOCKER_IMAGE:-}" ]]; then
+  daemon_env+=(CLAW_DOCKER_IMAGE="${CLAW_DOCKER_IMAGE}")
+fi
+if [[ -n "${CLAW_PODMAN_IMAGE:-}" ]]; then
+  daemon_env+=(CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE}")
+fi
+nohup env "${daemon_env[@]}" "${BIN}" >>"${RPC_DIR}/daemon.log" 2>&1 &
 echo $! >"${RPC_DIR}/daemon.pid"
 
 for _ in $(seq 1 100); do
   if python3 -c "import socket; s=socket.socket(); s.settimeout(0.2); s.connect(('127.0.0.1', int('${PORT}'))); s.close()" 2>/dev/null; then
+    echo "claw-pool-daemon listening on 127.0.0.1:${PORT} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
     exit 0
   fi
   sleep 0.05

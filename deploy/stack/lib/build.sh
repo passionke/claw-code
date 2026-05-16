@@ -4,10 +4,11 @@ set -euo pipefail
 # Build gateway (http-gateway-rs + claw-pool-daemon) and worker (claw) images in one run.
 # Same rust/ tree, same base images and rustup build-args — pair after any Rust change. Author: kejiqing
 #
+# Full output is always tee'd to deploy/stack/.build.log (override: --log PATH, disable: --no-log).
+# Do not pipe this script to `tail` if you need the middle — open the log file instead.
+#
 # Base image registry (hostname only, no path); same name as GitHub Actions variable
 # CONTAINER_BASE_REGISTRY in claw-code-image workflow.
-# - Local: default docker.1ms.run unless overridden in env or repo-root .env
-# - docker.io when GITHUB_ACTIONS=true (GitHub CI) or CLAW_USE_DOCKER_IO=1
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 if [[ -f "${ROOT_DIR}/.env" ]]; then
   set -a
@@ -18,21 +19,87 @@ fi
 # shellcheck source=/dev/null
 source "${ROOT_DIR}/deploy/stack/lib/compose-include.sh"
 
+CLAW_BUILD_NO_LOG="${CLAW_BUILD_NO_LOG:-}"
+BUILD_LOG="${CLAW_BUILD_LOG:-${ROOT_DIR}/deploy/stack/.build.log}"
+
+build_usage() {
+  cat <<EOF
+Usage: gateway.sh build [IMAGE_TAG] [options]
+
+Options:
+  --log PATH    Tee full stdout/stderr to PATH (default: deploy/stack/.build.log)
+  --no-log      Print only to terminal (no log file)
+  -h, --help    Show this help
+
+Tips:
+  Full log while building:  tail -f deploy/stack/.build.log
+  Avoid losing output:      do not pipe build to \`tail\`; read the log file instead.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h | --help)
+      build_usage
+      exit 0
+      ;;
+    --log)
+      [[ $# -ge 2 ]] || {
+        echo "--log requires a path" >&2
+        exit 2
+      }
+      BUILD_LOG="$2"
+      shift 2
+      ;;
+    --no-log)
+      CLAW_BUILD_NO_LOG=1
+      shift
+      ;;
+    --*)
+      echo "unknown build option: $1" >&2
+      build_usage >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 IMAGE_TAG="${1:-local}"
 IMAGE_NAME="claw-gateway-rs:${IMAGE_TAG}"
 
+step() {
+  echo ""
+  echo "========== $* =========="
+  echo ""
+}
+
+setup_build_log() {
+  if [[ "${CLAW_BUILD_NO_LOG}" == "1" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "${BUILD_LOG}")"
+  : >"${BUILD_LOG}"
+  echo "==> build log: ${BUILD_LOG}"
+  echo "==> started: $(date '+%Y-%m-%d %H:%M:%S %z')"
+  echo "==> tip: in another terminal run: tail -f ${BUILD_LOG}"
+  exec > >(tee -a "${BUILD_LOG}") 2>&1
+}
+
+setup_build_log
+
 if [[ "${CLAW_USE_DOCKER_IO:-}" == "1" ]] || [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   REG="docker.io"
-  echo "Using docker.io base images (CI or CLAW_USE_DOCKER_IO=1)"
+  step "config: base images from docker.io (CI or CLAW_USE_DOCKER_IO=1)"
 else
   REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
   REG="${REG%/}"
-  echo "Using ${REG} for base images (set CONTAINER_BASE_REGISTRY or CLAW_USE_DOCKER_IO=1 for docker.io)"
+  step "config: base images from ${REG}"
 fi
 RUST_BASE_IMAGE="${REG}/library/rust:1.88-bookworm"
 DEBIAN_BASE_IMAGE="${REG}/library/debian:bookworm-slim"
 
-# rustup: official by default; optional USTC when CLAW_USE_CN_RUST_MIRROR=1 (DNS must resolve mirror hosts).
 RUSTUP_BUILD_ARGS=()
 if [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
   RUSTUP_BUILD_ARGS=(
@@ -47,7 +114,7 @@ fi
 CONTAINER_CLI="$(claw_container_runtime_cli)" || exit 1
 echo "container CLI: ${CONTAINER_CLI} (override with CLAW_CONTAINER_RUNTIME=podman|docker)"
 
-# Bash 3.2 + `set -u`: expanding an empty array with "${arr[@]}" errors; allow empty expansion here. kejiqing
+step "1/3 image ${IMAGE_NAME} (Containerfile.gateway-rs)"
 set +u
 "${CONTAINER_CLI}" build \
   --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
@@ -57,11 +124,10 @@ set +u
   -t "${IMAGE_NAME}" \
   "${ROOT_DIR}"
 set -u
-
 echo "Built image: ${IMAGE_NAME}"
 
 WORKER_IMAGE_NAME="claw-gateway-worker:${IMAGE_TAG}"
-echo "Building worker image: ${WORKER_IMAGE_NAME} …"
+step "2/3 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker)"
 set +u
 "${CONTAINER_CLI}" build \
   --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
@@ -71,13 +137,18 @@ set +u
   -t "${WORKER_IMAGE_NAME}" \
   "${ROOT_DIR}"
 set -u
-
 echo "Built image: ${WORKER_IMAGE_NAME}"
 
-# macOS dev: host `claw-pool-daemon` is the real pool (Linux image cannot replace Mach-O); keep it in
-# sync with `rust/` whenever you run `gateway.sh build`, so `up`/`restart` does not resurrect stale names/logic.
 if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
-  echo "Building host claw-pool-daemon (Darwin + cargo in PATH) …"
+  step "3/3 host claw-pool-daemon (cargo release, Darwin)"
   (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
   echo "Host binary: ${ROOT_DIR}/rust/target/release/claw-pool-daemon"
+else
+  step "3/3 host claw-pool-daemon skipped (not Darwin or no cargo in PATH)"
+fi
+
+step "done"
+echo "finished: $(date '+%Y-%m-%d %H:%M:%S %z')"
+if [[ "${CLAW_BUILD_NO_LOG}" != "1" ]]; then
+  echo "full log: ${BUILD_LOG}"
 fi

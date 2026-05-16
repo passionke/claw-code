@@ -2,4 +2,6 @@
 
 pub mod pool;
 pub mod session_db;
+pub mod session_execution;
 pub mod session_merge;
+pub mod task_status;
