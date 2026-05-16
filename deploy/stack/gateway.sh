@@ -17,8 +17,9 @@ Commands:
   down          Stop gateway stack
   restart       Recreate stack (down + up)
   check         Connectivity smoke check
-  tap-up        Start gateway + claude-tap
+  tap-up        Start gateway + claude-tap (see CLAUDE_TAP_MODE in .env)
   tap-down      Stop gateway + claude-tap
+  build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
   bench         Pool bench 30s
   logs          Follow gateway logs
   ps            Show relevant containers
@@ -40,6 +41,19 @@ case "${cmd}" in
   check) "${LIB}/check-connectivity.sh" "$@" ;;
   tap-up) "${LIB}/start-with-tap.sh" "$@" ;;
   tap-down) "${LIB}/stop-with-tap.sh" "$@" ;;
+  build-tap)
+    set -a
+    # shellcheck disable=SC1090
+    [[ -f "${REPO_ROOT}/.env" ]] && source "${REPO_ROOT}/.env"
+    set +a
+    # shellcheck source=/dev/null
+    source "${LIB}/compose-include.sh"
+    # shellcheck source=/dev/null
+    source "${LIB}/claude-tap-local.sh"
+    ctx="$(claw_claude_tap_resolve_context "${REPO_ROOT}")"
+    rt="$(claw_container_runtime_cli)"
+    claw_claude_tap_build_image "${rt}" "${ctx}" "${CLAUDE_TAP_IMAGE:-claude-tap:local}"
+    ;;
   bench) "${LIB}/bench-pool-30s.sh" "$@" ;;
   logs)
     podman logs -f claw-gateway-rs

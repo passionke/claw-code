@@ -26,11 +26,7 @@ claw_remove_all_gateway_workers() {
   ids_g="$("${rt}" ps -aq --filter name='claw-gw-' 2>/dev/null || true)"
   ids_by_image="$(
     "${rt}" ps -a --format '{{.ID}} {{.Image}}' 2>/dev/null \
-      | while read -r cid img _; do
-          case "${img}" in
-            *claw-gateway-worker*) printf '%s\n' "${cid}" ;;
-          esac
-        done \
+      | awk '/claw-gateway-worker/ { print $1 }' \
       | sort -u \
       | tr '\n' ' '
   )"

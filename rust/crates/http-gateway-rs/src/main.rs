@@ -85,6 +85,14 @@ struct RunSolveContext {
     skip_session_db: bool,
 }
 
+/// Session workspace paths after sync registry prepare (before docker solve). kejiqing
+#[allow(clippy::struct_field_names)]
+struct PreparedGatewaySession {
+    session_home: PathBuf,
+    session_home_rel: String,
+    session_fs_label: String,
+}
+
 #[derive(Clone)]
 struct AppState {
     tasks: Arc<Mutex<HashMap<String, TaskInner>>>,
@@ -228,7 +236,18 @@ struct SolveAsyncResponse {
     poll_url: String,
 }
 
-/// Async session bootstrap (`POST /v1/start`): same enqueue as `solve_async`, ids only in body. kejiqing
+/// Session bootstrap (`POST /v1/start`): sync `SQLite` + workspace only (no solve). kejiqing
+#[derive(Debug, Serialize, Deserialize)]
+struct StartRequest {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    /// When set, continue an existing gateway session for this `dsId` (must exist in session DB).
+    #[serde(default, rename = "sessionId")]
+    session_id: Option<String>,
+    #[serde(default, rename = "extraSession")]
+    extra_session: Option<Value>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SolveStartResponse {
     #[serde(rename = "sessionId")]
@@ -958,7 +977,7 @@ async fn docs() -> Html<String> {
         (
             "POST",
             "/v1/start",
-            "Enqueue async solve (session bootstrap; returns sessionId / requestId)",
+            "Register session in SQLite (sync); returns sessionId / requestId (no solve)",
         ),
         ("POST", "/v1/solve_async", "Create async solve task"),
         ("GET", "/v1/tasks/{task_id}", "Get async task status"),
@@ -1185,11 +1204,20 @@ async fn openapi() -> Json<Value> {
                         "pollUrl": { "type": "string" }
                     }
                 },
+                "StartRequest": {
+                    "type": "object",
+                    "required": ["dsId"],
+                    "properties": {
+                        "dsId": { "type": "integer", "format": "int64", "minimum": 1, "description": "Datasource ID" },
+                        "sessionId": { "type": "string", "nullable": true, "description": "Optional: continue an existing gateway session for this dsId (must exist in gateway session DB)." },
+                        "extraSession": { "type": "object", "nullable": true, "description": "Optional session-level context stored with the workspace (max 8KB serialized)" }
+                    }
+                },
                 "SolveStartResponse": {
                     "type": "object",
                     "required": ["sessionId", "requestId"],
                     "properties": {
-                        "sessionId": { "type": "string", "description": "Gateway session id (same as async taskId)" },
+                        "sessionId": { "type": "string", "description": "Gateway session id (registered in SQLite before response)" },
                         "requestId": { "type": "string", "description": "Same value as sessionId for tracing" }
                     }
                 },
@@ -1289,16 +1317,15 @@ async fn openapi() -> Json<Value> {
             },
             "/v1/start": {
                 "post": {
-                    "summary": "Enqueue async solve (session bootstrap)",
-                    "description": "Same as solve_async but response body only exposes sessionId and requestId. Prefer over sync /v1/solve for BFF agent/start.",
+                    "summary": "Register gateway session (sync)",
+                    "description": "Synchronously writes (sessionId, dsId) to gateway SQLite, prepares session workspace, and returns sessionId/requestId. Does not run solve; use /v1/solve or /v1/solve_async with the returned sessionId for the first question.",
                     "requestBody": {
                         "required": true,
-                        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveRequest" } } }
+                        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StartRequest" } } }
                     },
                     "responses": {
-                        "200": { "description": "Task queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveStartResponse" } } } },
-                        "400": { "description": "Unknown sessionId for continuation" },
-                        "409": { "description": "Same sessionId already has a queued or running async task" }
+                        "200": { "description": "Session registered", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveStartResponse" } } } },
+                        "400": { "description": "Unknown sessionId for continuation" }
                     }
                 }
             },
@@ -3169,16 +3196,47 @@ async fn solve_start(
     State(state): State<AppState>,
     Extension(http_request_id): Extension<HttpRequestId>,
     Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
-    Json(req): Json<SolveRequest>,
+    Json(req): Json<StartRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let async_out =
-        enqueue_solve_async(state, http_request_id.clone(), id_kind, req, "/v1/start").await?;
-    let headers = solve_async_response_headers(&async_out.session_id)?;
+    let body_sid = session_merge::trim_session_id(req.session_id.as_deref());
+    let effective =
+        session_merge::merge_effective_session_id(body_sid, &http_request_id.0, id_kind)
+            .map_err(session_routing_error)?;
+    if body_sid.is_some() {
+        let row = state
+            .session_db
+            .get_session_home_rel(&effective, req.ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?;
+        if row.is_none() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "unknown sessionId (no session history for this dsId)",
+            ));
+        }
+    }
+    prepare_gateway_session(
+        &state,
+        req.ds_id,
+        req.session_id.as_deref(),
+        req.extra_session.as_ref(),
+        &effective,
+        false,
+    )
+    .await?;
+    info!(
+        request_id = %effective,
+        ds_id = req.ds_id,
+        endpoint = "/v1/start",
+        phase = "session_ready",
+        "gateway_start: session registered in SQLite before response"
+    );
+    let headers = solve_async_response_headers(&effective)?;
     Ok((
         headers,
         Json(SolveStartResponse {
-            session_id: async_out.session_id,
-            request_id: async_out.request_id,
+            session_id: effective.clone(),
+            request_id: effective,
         }),
     ))
 }
@@ -3538,21 +3596,8 @@ fn biz_report_llm_stream_response(
         .into_response()
 }
 
-async fn run_solve_request(
-    state: AppState,
-    req: SolveRequest,
-    ctx: RunSolveContext,
-) -> Result<SolveResponse, ApiError> {
-    if req.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
-    }
-    if req.user_prompt.trim().is_empty() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "userPrompt cannot be empty",
-        ));
-    }
-    if let Some(extra_session) = &req.extra_session {
+fn validate_extra_session(extra_session: Option<&Value>) -> Result<(), ApiError> {
+    if let Some(extra_session) = extra_session {
         if !extra_session.is_object() {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -3568,73 +3613,85 @@ async fn run_solve_request(
             }
         }
     }
-    let started = Instant::now();
-    let timeout_seconds = req
-        .timeout_seconds
-        .unwrap_or(state.cfg.default_timeout_seconds);
-    info!(
-        target: "claw_gateway_orchestration",
-        component = "solve",
-        request_id = %ctx.request_id,
-        task_id = ctx.task_id.as_deref().unwrap_or("-"),
-        ds_id = req.ds_id,
-        phase = "solve_run_start",
-        timeout_seconds,
-        "gateway_solve accepted; validating and preparing workspace"
-    );
-    let mut effective_allowed_tools =
-        resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
-    ensure_report_progress_in_allowed_tools(&mut effective_allowed_tools);
-    validate_ds_exists(req.ds_id, &state.cfg.ds_registry_path).await?;
+    Ok(())
+}
 
-    let _session_lock_guard: Option<OwnedMutexGuard<()>> = if ctx.skip_session_db {
+fn validate_solve_request_fields(req: &SolveRequest) -> Result<(), ApiError> {
+    if req.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    if req.user_prompt.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "userPrompt cannot be empty",
+        ));
+    }
+    validate_extra_session(req.extra_session.as_ref())
+}
+
+/// Ensures `(sessionId, dsId)` exists in `SQLite` and session `.claw/settings.json` on disk. kejiqing
+async fn prepare_gateway_session(
+    state: &AppState,
+    ds_id: i64,
+    body_session_id: Option<&str>,
+    extra_session: Option<&Value>,
+    request_id: &str,
+    skip_session_db: bool,
+) -> Result<PreparedGatewaySession, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    validate_extra_session(extra_session)?;
+    validate_ds_exists(ds_id, &state.cfg.ds_registry_path).await?;
+
+    let _session_lock_guard: Option<OwnedMutexGuard<()>> = if skip_session_db {
         None
     } else {
         Some(
-            get_session_solve_lock(&state, req.ds_id, &ctx.request_id)
+            get_session_solve_lock(state, ds_id, request_id)
                 .await
                 .lock_owned()
                 .await,
         )
     };
 
-    let ds_base = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
-    let explicit_continuation = session_merge::trim_session_id(req.session_id.as_deref()).is_some();
+    let ds_base = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    let explicit_continuation = session_merge::trim_session_id(body_session_id).is_some();
 
-    let (session_home, need_insert_row, purge_mcp_discovery, session_fs_label) =
-        if ctx.skip_session_db {
-            let session_fs_id = session_merge::sessions_directory_segment(&ctx.request_id);
-            let session_home = ds_base.join("sessions").join(&session_fs_id);
-            (session_home, false, true, session_fs_id)
-        } else {
-            let row_opt = state
-                .session_db
-                .get_session_home_rel(&ctx.request_id, req.ds_id)
-                .await
-                .map_err(|e| session_db_err(&e))?;
-            if let Some(rel) = row_opt {
-                session_merge::validate_session_home_rel(&rel).map_err(session_routing_error)?;
-                let session_home =
-                    session_merge::join_session_home_from_rel(&state.cfg.work_root, &rel);
-                let exists = fs::metadata(&session_home).await.is_ok_and(|m| m.is_dir());
-                if !exists {
-                    return Err(ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "session workspace is missing on disk (database path is stale)",
-                    ));
-                }
-                (session_home, false, false, rel)
-            } else if explicit_continuation {
+    let (session_home, need_insert_row, purge_mcp_discovery, session_fs_label) = if skip_session_db
+    {
+        let session_fs_id = session_merge::sessions_directory_segment(request_id);
+        let session_home = ds_base.join("sessions").join(&session_fs_id);
+        (session_home, false, true, session_fs_id)
+    } else {
+        let row_opt = state
+            .session_db
+            .get_session_home_rel(request_id, ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?;
+        if let Some(rel) = row_opt {
+            session_merge::validate_session_home_rel(&rel).map_err(session_routing_error)?;
+            let session_home =
+                session_merge::join_session_home_from_rel(&state.cfg.work_root, &rel);
+            let exists = fs::metadata(&session_home).await.is_ok_and(|m| m.is_dir());
+            if !exists {
                 return Err(ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "unknown sessionId (no session history for this dsId)",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "session workspace is missing on disk (database path is stale)",
                 ));
-            } else {
-                let session_fs_id = session_merge::sessions_directory_segment(&ctx.request_id);
-                let session_home = ds_base.join("sessions").join(&session_fs_id);
-                (session_home, true, true, session_fs_id)
             }
-        };
+            (session_home, false, false, rel)
+        } else if explicit_continuation {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "unknown sessionId (no session history for this dsId)",
+            ));
+        } else {
+            let session_fs_id = session_merge::sessions_directory_segment(request_id);
+            let session_home = ds_base.join("sessions").join(&session_fs_id);
+            (session_home, true, true, session_fs_id)
+        }
+    };
 
     let session_home_rel =
         session_merge::session_home_rel_under_work_root(&state.cfg.work_root, &session_home)
@@ -3650,9 +3707,9 @@ async fn run_solve_request(
         })?;
 
     {
-        let ds_lock = get_ds_lock(&state, req.ds_id).await;
+        let ds_lock = get_ds_lock(state, ds_id).await;
         let _guard = ds_lock.lock().await;
-        ensure_ds_project_ready(&state, req.ds_id).await?;
+        ensure_ds_project_ready(state, ds_id).await?;
         fs::create_dir_all(&ds_base).await.map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3660,7 +3717,7 @@ async fn run_solve_request(
             )
         })?;
         ensure_workspace_initialized(&state.cfg.claw_bin, &ds_base).await?;
-        let settings = build_settings(&state, req.ds_id).await;
+        let settings = build_settings(state, ds_id).await;
         let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3683,16 +3740,57 @@ async fn run_solve_request(
     if need_insert_row {
         state
             .session_db
-            .insert_session(&ctx.request_id, req.ds_id, &session_home_rel, now_ms())
+            .insert_session(request_id, ds_id, &session_home_rel, now_ms())
             .await
             .map_err(|e| session_db_err(&e))?;
-    } else if !ctx.skip_session_db {
+    } else if !skip_session_db {
         state
             .session_db
-            .touch_updated(&ctx.request_id, req.ds_id, now_ms())
+            .touch_updated(request_id, ds_id, now_ms())
             .await
             .map_err(|e| session_db_err(&e))?;
     }
+
+    Ok(PreparedGatewaySession {
+        session_home,
+        session_home_rel,
+        session_fs_label,
+    })
+}
+
+async fn run_solve_request(
+    state: AppState,
+    req: SolveRequest,
+    ctx: RunSolveContext,
+) -> Result<SolveResponse, ApiError> {
+    validate_solve_request_fields(&req)?;
+    let started = Instant::now();
+    let timeout_seconds = req
+        .timeout_seconds
+        .unwrap_or(state.cfg.default_timeout_seconds);
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "solve",
+        request_id = %ctx.request_id,
+        task_id = ctx.task_id.as_deref().unwrap_or("-"),
+        ds_id = req.ds_id,
+        phase = "solve_run_start",
+        timeout_seconds,
+        "gateway_solve accepted; validating and preparing workspace"
+    );
+    let mut effective_allowed_tools =
+        resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
+    ensure_report_progress_in_allowed_tools(&mut effective_allowed_tools);
+
+    let prepared = prepare_gateway_session(
+        &state,
+        req.ds_id,
+        req.session_id.as_deref(),
+        req.extra_session.as_ref(),
+        &ctx.request_id,
+        ctx.skip_session_db,
+    )
+    .await?;
 
     info!(
         target: "claw_gateway_orchestration",
@@ -3701,8 +3799,8 @@ async fn run_solve_request(
         ds_id = req.ds_id,
         request_id = %ctx.request_id,
         task_id = ctx.task_id.as_deref(),
-        session_fs_id = %session_fs_label,
-        session_home = %session_home.display(),
+        session_fs_id = %prepared.session_fs_label,
+        session_home = %prepared.session_home.display(),
         solve_isolation = state.cfg.solve_isolation.as_str(),
         timeout_seconds,
         "session .claw/settings.json written; starting solve (container pool)"
@@ -3717,8 +3815,8 @@ async fn run_solve_request(
         started,
         effective_allowed_tools,
         solve_pool::SolveSessionPaths {
-            session_home,
-            session_home_rel,
+            session_home: prepared.session_home,
+            session_home_rel: prepared.session_home_rel,
         },
     )
     .await

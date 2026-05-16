@@ -33,11 +33,10 @@ use tools::{
 
 pub mod task_progress;
 pub use task_progress::{
-    gateway_progress_system_section, gateway_user_communication_section, read_progress_history,
-    read_task_progress, report_progress_tool_definition, reset_task_progress, run_report_progress,
-    sanitize_current_task_desc, task_progress_history_path, task_progress_json_path,
-    truncate_progress_history, ReportProgressInput, TaskProgressFile, TaskProgressTodo,
-    REPORT_PROGRESS_TOOL_NAME,
+    read_progress_history, read_task_progress, report_progress_tool_definition,
+    reset_task_progress, run_report_progress, sanitize_current_task_desc,
+    task_progress_history_path, task_progress_json_path, truncate_progress_history,
+    ReportProgressInput, TaskProgressFile, TaskProgressTodo, REPORT_PROGRESS_TOOL_NAME,
 };
 
 const HTTP_INTERNAL: u16 = 500;
@@ -752,7 +751,7 @@ pub fn run_gateway_solve_turn(
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
         .or_else(|| project_cfg.model().map(str::to_string))
         .unwrap_or_else(|| "openai/deepseek-v4-pro".to_string());
-    let mut system_prompt = load_system_prompt(
+    let system_prompt = load_system_prompt(
         work_dir.to_path_buf(),
         default_system_date(),
         std::env::consts::OS,
@@ -760,8 +759,6 @@ pub fn run_gateway_solve_turn(
         extra_session.clone(),
     )
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
-    system_prompt.push(gateway_progress_system_section().to_string());
-    system_prompt.push(gateway_user_communication_section().to_string());
     let (runtime_mcp_tools, runtime_mcp_tool_names, runtime_mcp_manager) =
         initialize_mcp_runtime(work_dir)?;
     let api_client = DirectApiClient::new(

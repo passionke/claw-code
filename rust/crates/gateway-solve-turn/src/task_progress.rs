@@ -84,8 +84,7 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Minimal pass-through for API read path: hide obvious internal tool id strings only.
-/// User-facing wording is enforced via system prompt (future: small fast model gate). Author: kejiqing
+/// Minimal pass-through for API read path: hide obvious internal tool id strings only. Author: kejiqing
 #[must_use]
 pub fn sanitize_current_task_desc(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -230,44 +229,20 @@ pub fn run_report_progress(
     Ok(json!({ "ok": true, "updatedAtMs": progress.updated_at_ms }).to_string())
 }
 
-/// Appended to gateway solve system prompt so the model reports user-visible progress. Author: kejiqing
-#[must_use]
-pub fn gateway_progress_system_section() -> &'static str {
-    r"## Gateway user-visible progress (required)
-
-- Call the `report_progress` tool whenever the user-visible phase changes (planning, each todo start/finish, before/after long tool use, completion).
-- Set `current_task_desc` to one short **business** sentence the boss can understand (<=80 chars): say **what you are doing on the business task**, not how the system works.
-- **Prefer specific progress** tied to the user ask, e.g. 「获取昨日门店销售数据」「核对门店营业额口径」「汇总区域同比」「撰写经营结论要点」. Do **not** default to vague lines like only 「数据查询中」 or 「处理中」 when you can name the actual step.
-- Generic fallbacks are OK only when no clearer business step exists yet (e.g. first moment: 「分析计划组织中」).
-- Forbidden in `current_task_desc`, `plan_title`, and `todos[].title`: file paths, CSV/JSON/XLSX, workspace directories, database/SQL/MCP/SQLBot names, connection errors, upload prompts, HTTP/API retries, docker/podman, tokens, or apologies for missing data—never explain *why* a tool or file failed.
-- Put intermediate reasoning and drafts only in normal assistant messages, not in `report_progress`.
-- Update `todos` when the plan or step status changes; keep todo titles business-facing like `current_task_desc`."
-}
-
-/// Constraints for final user-visible assistant replies (not only progress). Author: kejiqing
-#[must_use]
-pub fn gateway_user_communication_section() -> &'static str {
-    r"## User-facing replies (required)
-
-- Speak to the store manager/boss in plain business Chinese. Never expose implementation details.
-- Do NOT mention: missing local files, CSV/JSON paths, workspace folders, MCP/SQLBot/database connection failures, HTTP errors, retries, containers, or asking the user to upload data files unless the product UI explicitly supports uploads.
-- If data or tools are unavailable, give a brief neutral outcome only (e.g. 「暂时无法完成本次分析，请稍后再试」) without technical reasons or remediation steps aimed at engineers.
-- Separate channels: `report_progress` = progress only; final answer = conclusions/recommendations only—no infrastructure narration in either channel."
-}
-
 #[must_use]
 pub fn report_progress_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: REPORT_PROGRESS_TOOL_NAME.to_string(),
         description: Some(
-            "Report user-visible task progress: one short business sentence naming the current step (e.g. 获取昨日门店销售数据); not generic 处理中/数据查询中 unless unavoidable; no file/DB/MCP/errors.".to_string(),
+            "Update task progress shown in the gateway UI (writes `.claw/task-progress.json`)."
+                .to_string(),
         ),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "current_task_desc": {
                     "type": "string",
-                    "description": "One boss-facing progress sentence (<=80 chars), specific to the task, e.g. 获取昨日门店销售数据、汇总营业额同比；avoid vague 数据查询中 unless no clearer step"
+                    "description": "Short user-visible status (<=80 chars)"
                 },
                 "phase": {
                     "type": "string",
