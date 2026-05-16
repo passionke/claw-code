@@ -177,9 +177,9 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `current_task_desc` | string | **建议在 BFF 或网关任务查询层新增**：人类可读的任务进度说明（例如「排队中」「模型推理中」「工具调用: SQLBot」），用于与 `status`（`queued` / `running` / `succeeded` / `failed` / `cancelled`）组合展示 |
+| `current_task_desc` | string | 网关 `GET /v1/tasks/{task_id}` 的 **`currentTaskDesc`**（BFF 映射为本字段）：agent 通过 `report_progress` 写的用户向进度句；排队态由网关生成；**不**暴露 SQLBot/MCP 等内部工具名 |
 
-> **实现说明**：若当前 Rust 网关 `GET /v1/tasks/{task_id}` 尚未返回 `current_task_desc`，需要在本仓库 `http-gateway-rs` 任务结构中补充该字段的写入与序列化，或由 BFF 根据 `status` 与内部阶段枚举映射生成同名字段，前后端以本字段为准对齐展示文案。
+> **实现说明**：权威来源为 `http-gateway-rs` 任务轮询；可选 `GET /v1/sessions/{sessionId}/execution?ds_id=` 获取 `progress` / `progressHistory` / `queue`。
 
 ---
 
@@ -193,6 +193,7 @@
 
 | 日期 | 说明 |
 |------|------|
+| 2026-05-16 | `current_task_desc` 由网关 `currentTaskDesc` 提供（`report_progress` + 排队/兜底） |
 | 2026-05-12 | 初稿：async / report / status 三条接口、固定租户与业务维度、`sessionId` 串联、`current_task_desc` 约定 |
 | 2026-05-12 | 标明设计稿性质；新增 `GET /api/v1/admittance`（入参四元组、返回 `admittance`）、与分析及调用顺序说明 |
 | 2026-05-12 | 对外 `POST /api/v1/analysis/async`：`userPrompt` 改为 `question`；不再暴露 `model` / `timeoutSeconds` / `extraSession`，由 BFF 内部默认或组装 |

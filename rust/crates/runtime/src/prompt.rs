@@ -42,12 +42,50 @@ impl From<ConfigError> for PromptBuildError {
 pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
 /// Human-readable default frontier model name embedded into generated prompts.
 pub const FRONTIER_MODEL_NAME: &str = "Claude Opus 4.6";
-const MAX_INSTRUCTION_FILE_CHARS: usize = 8_000;
-/// Upper bound on characters injected from **all** discovered instruction files combined
-/// (`CLAUDE.md`, `.claw/instructions.md`, etc.) into the system prompt’s `# Claude instructions`
-/// block. Hard-coded (not config/env); per-file cap is still [`MAX_INSTRUCTION_FILE_CHARS`].
-/// Author: kejiqing.
-const MAX_TOTAL_INSTRUCTION_CHARS: usize = 24_000;
+
+/// Env: max characters per instruction file (`CLAUDE.md`, etc.) in the system prompt.
+pub const INSTRUCTION_FILE_MAX_CHARS_ENV: &str = "CLAW_INSTRUCTION_FILE_MAX_CHARS";
+/// Env: max characters for **all** instruction files combined in `# Claude instructions`.
+pub const INSTRUCTION_TOTAL_MAX_CHARS_ENV: &str = "CLAW_INSTRUCTION_TOTAL_MAX_CHARS";
+
+/// Default per-file cap when [`INSTRUCTION_FILE_MAX_CHARS_ENV`] is unset or invalid.
+pub const DEFAULT_MAX_INSTRUCTION_FILE_CHARS: usize = 8_000;
+/// Default combined cap when [`INSTRUCTION_TOTAL_MAX_CHARS_ENV`] is unset or invalid.
+pub const DEFAULT_MAX_TOTAL_INSTRUCTION_CHARS: usize = 24_000;
+
+/// Per-file instruction budget. Override with [`INSTRUCTION_FILE_MAX_CHARS_ENV`]; read each call.
+/// Author: kejiqing
+#[must_use]
+pub fn max_instruction_file_chars() -> usize {
+    instruction_char_limit_from_env(
+        INSTRUCTION_FILE_MAX_CHARS_ENV,
+        DEFAULT_MAX_INSTRUCTION_FILE_CHARS,
+    )
+}
+
+/// Combined instruction budget across all discovered files. Override with
+/// [`INSTRUCTION_TOTAL_MAX_CHARS_ENV`]; read each call. Author: kejiqing
+#[must_use]
+pub fn max_total_instruction_chars() -> usize {
+    instruction_char_limit_from_env(
+        INSTRUCTION_TOTAL_MAX_CHARS_ENV,
+        DEFAULT_MAX_TOTAL_INSTRUCTION_CHARS,
+    )
+}
+
+#[must_use]
+fn instruction_char_limit_from_env(var: &str, default: usize) -> usize {
+    std::env::var(var)
+        .ok()
+        .and_then(|raw| {
+            let t = raw.trim();
+            if t.is_empty() {
+                return None;
+            }
+            t.parse::<usize>().ok().filter(|&n| n > 0)
+        })
+        .unwrap_or(default)
+}
 
 /// Contents of an instruction file included in prompt construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,7 +383,7 @@ fn render_project_context(project_context: &ProjectContext) -> String {
 
 fn render_instruction_files(files: &[ContextFile]) -> String {
     let mut sections = vec!["# Claude instructions".to_string()];
-    let mut remaining_chars = MAX_TOTAL_INSTRUCTION_CHARS;
+    let mut remaining_chars = max_total_instruction_chars();
     for file in files {
         if remaining_chars == 0 {
             sections.push(
@@ -407,7 +445,7 @@ fn describe_instruction_file(file: &ContextFile, files: &[ContextFile]) -> Strin
 }
 
 fn truncate_instruction_content(content: &str, remaining_chars: usize) -> String {
-    let hard_limit = MAX_INSTRUCTION_FILE_CHARS.min(remaining_chars);
+    let hard_limit = max_instruction_file_chars().min(remaining_chars);
     let trimmed = content.trim();
     if trimmed.chars().count() <= hard_limit {
         return trimmed.to_string();
@@ -419,7 +457,7 @@ fn truncate_instruction_content(content: &str, remaining_chars: usize) -> String
 }
 
 fn render_instruction_content(content: &str) -> String {
-    truncate_instruction_content(content, MAX_INSTRUCTION_FILE_CHARS)
+    truncate_instruction_content(content, max_instruction_file_chars())
 }
 
 fn display_context_path(path: &Path) -> String {
@@ -540,7 +578,8 @@ mod tests {
     use super::{
         collapse_blank_lines, display_context_path, normalize_instruction_content,
         render_instruction_content, render_instruction_files, truncate_instruction_content,
-        ContextFile, ProjectContext, SystemPromptBuilder, MAX_INSTRUCTION_FILE_CHARS,
+        max_instruction_file_chars, ContextFile, ProjectContext, SystemPromptBuilder,
+        DEFAULT_MAX_INSTRUCTION_FILE_CHARS, INSTRUCTION_FILE_MAX_CHARS_ENV,
         SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     };
     use crate::config::ConfigLoader;
@@ -637,7 +676,19 @@ mod tests {
         assert!(rendered.contains("[truncated]"));
         assert!(
             rendered.chars().count()
-                <= MAX_INSTRUCTION_FILE_CHARS + "\n\n[truncated]".chars().count()
+                <= max_instruction_file_chars() + "\n\n[truncated]".chars().count()
+        );
+    }
+
+    #[test]
+    fn instruction_file_max_chars_respects_env_override() {
+        let _guard = env_lock();
+        std::env::set_var(INSTRUCTION_FILE_MAX_CHARS_ENV, "500");
+        assert_eq!(max_instruction_file_chars(), 500);
+        std::env::remove_var(INSTRUCTION_FILE_MAX_CHARS_ENV);
+        assert_eq!(
+            max_instruction_file_chars(),
+            DEFAULT_MAX_INSTRUCTION_FILE_CHARS
         );
     }
 

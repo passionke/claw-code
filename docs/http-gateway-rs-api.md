@@ -37,6 +37,12 @@ Base URL 示例：`http://127.0.0.1:18088`
     - 在访问下游 MCP 服务（包括 SQLBot）时，会通过 MCP 协议 `tools/call._meta.extra_session` 向工具端暴露 `extraSession`（如存在），用于会话级业务上下文消费。
   - 对话状态：同一会话目录下使用 `.claw/gateway-solve-session.jsonl` 持久化消息；若文件损坏导致无法加载，返回 `500`（不会静默丢弃历史）。
 
+- `POST /v1/start`
+  - 用途：异步提交 solve（与 `solve_async` 相同入队逻辑），**立即**返回 `sessionId` / `requestId`（二者同值，且等于 `taskId`）；供 BFF「agent/start」等会话引导场景使用，**不要**再同步调用 `/v1/solve` 阻塞等待。
+  - 请求体：与 `/v1/solve_async` 相同（`SolveRequest`）。
+  - 响应体：仅 `sessionId`、`requestId`；响应头 `claw-session-id` / `x-request-id` 与体字段一致。
+  - 错误语义：与 `solve_async` 相同（未知续聊 `sessionId` → `400`；同会话已有 `queued`/`running` 任务 → `409`）。
+
 - `POST /v1/solve_async`
   - 用途：异步提交 solve 任务，返回 `taskId`
   - ID 约定：`taskId` 与 `sessionId` 为同一个值（同一逻辑会话 ID），用于统一追踪与轮询。

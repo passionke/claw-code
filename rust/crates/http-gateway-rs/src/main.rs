@@ -228,6 +228,15 @@ struct SolveAsyncResponse {
     poll_url: String,
 }
 
+/// Async session bootstrap (`POST /v1/start`): same enqueue as `solve_async`, ids only in body. kejiqing
+#[derive(Debug, Serialize, Deserialize)]
+struct SolveStartResponse {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "requestId")]
+    request_id: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct InitRequest {
     #[serde(rename = "dsId")]
@@ -839,6 +848,7 @@ async fn main() {
         .route("/healthz", get(healthz))
         .route("/v1/init", post(init_workspace))
         .route("/v1/solve", post(solve))
+        .route("/v1/start", post(solve_start))
         .route("/v1/solve_async", post(solve_async))
         .route("/v1/tasks/{task_id}", get(get_task))
         .route("/v1/tasks/{task_id}/cancel", post(cancel_task))
@@ -945,6 +955,11 @@ async fn docs() -> Html<String> {
         ("GET", "/healthz", "Health check"),
         ("POST", "/v1/init", "Initialize workspace for dsId"),
         ("POST", "/v1/solve", "Run sync solve"),
+        (
+            "POST",
+            "/v1/start",
+            "Enqueue async solve (session bootstrap; returns sessionId / requestId)",
+        ),
         ("POST", "/v1/solve_async", "Create async solve task"),
         ("GET", "/v1/tasks/{task_id}", "Get async task status"),
         (
@@ -1170,6 +1185,14 @@ async fn openapi() -> Json<Value> {
                         "pollUrl": { "type": "string" }
                     }
                 },
+                "SolveStartResponse": {
+                    "type": "object",
+                    "required": ["sessionId", "requestId"],
+                    "properties": {
+                        "sessionId": { "type": "string", "description": "Gateway session id (same as async taskId)" },
+                        "requestId": { "type": "string", "description": "Same value as sessionId for tracing" }
+                    }
+                },
                 "InjectMcpRequest": {
                     "type": "object",
                     "required": ["dsId", "mcpServers"],
@@ -1261,6 +1284,21 @@ async fn openapi() -> Json<Value> {
                     "responses": {
                         "200": { "description": "Solve finished", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveResponse" } } } },
                         "400": { "description": "Unknown sessionId for continuation or header/body session conflict" }
+                    }
+                }
+            },
+            "/v1/start": {
+                "post": {
+                    "summary": "Enqueue async solve (session bootstrap)",
+                    "description": "Same as solve_async but response body only exposes sessionId and requestId. Prefer over sync /v1/solve for BFF agent/start.",
+                    "requestBody": {
+                        "required": true,
+                        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveRequest" } } }
+                    },
+                    "responses": {
+                        "200": { "description": "Task queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SolveStartResponse" } } } },
+                        "400": { "description": "Unknown sessionId for continuation" },
+                        "409": { "description": "Same sessionId already has a queued or running async task" }
                     }
                 }
             },
@@ -2942,12 +2980,27 @@ async fn get_session_execution(
     }))
 }
 
-async fn solve_async(
-    State(state): State<AppState>,
-    Extension(http_request_id): Extension<HttpRequestId>,
-    Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
-    Json(req): Json<SolveRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+fn solve_async_response_headers(
+    effective: &str,
+) -> Result<AppendHeaders<[(header::HeaderName, HeaderValue); 2]>, ApiError> {
+    let claw = HeaderValue::from_str(effective).map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid characters in session id for response header",
+        )
+    })?;
+    let xrid = header::HeaderName::from_static("x-request-id");
+    let csid = header::HeaderName::from_static("claw-session-id");
+    Ok(AppendHeaders([(xrid, claw.clone()), (csid, claw)]))
+}
+
+async fn enqueue_solve_async(
+    state: AppState,
+    http_request_id: HttpRequestId,
+    id_kind: session_merge::HttpRequestIdKind,
+    req: SolveRequest,
+    endpoint: &'static str,
+) -> Result<SolveAsyncResponse, ApiError> {
     let body_sid = session_merge::trim_session_id(req.session_id.as_deref());
     let effective =
         session_merge::merge_effective_session_id(body_sid, &http_request_id.0, id_kind)
@@ -2983,7 +3036,7 @@ async fn solve_async(
         request_id = %effective,
         task_id = %task_id,
         ds_id = req.ds_id,
-        endpoint = "/v1/solve_async",
+        endpoint,
         phase = "queued",
         "gateway_solve_async"
     );
@@ -3104,24 +3157,42 @@ async fn solve_async(
         }
     }
     refresh_task_progress(&state, &task_id).await;
-    let claw = HeaderValue::from_str(&effective).map_err(|_| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "invalid characters in session id for response header",
-        )
-    })?;
-    let xrid = header::HeaderName::from_static("x-request-id");
-    let csid = header::HeaderName::from_static("claw-session-id");
+    Ok(SolveAsyncResponse {
+        task_id: task_id.clone(),
+        session_id: effective.clone(),
+        request_id: effective.clone(),
+        status: "queued".to_string(),
+        poll_url: format!("/v1/tasks/{task_id}"),
+    })
+}
+
+async fn solve_start(
+    State(state): State<AppState>,
+    Extension(http_request_id): Extension<HttpRequestId>,
+    Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
+    Json(req): Json<SolveRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let async_out =
+        enqueue_solve_async(state, http_request_id.clone(), id_kind, req, "/v1/start").await?;
+    let headers = solve_async_response_headers(&async_out.session_id)?;
     Ok((
-        AppendHeaders([(xrid, claw.clone()), (csid, claw)]),
-        Json(SolveAsyncResponse {
-            task_id: task_id.clone(),
-            session_id: effective.clone(),
-            request_id: effective.clone(),
-            status: "queued".to_string(),
-            poll_url: format!("/v1/tasks/{task_id}"),
+        headers,
+        Json(SolveStartResponse {
+            session_id: async_out.session_id,
+            request_id: async_out.request_id,
         }),
     ))
+}
+
+async fn solve_async(
+    State(state): State<AppState>,
+    Extension(http_request_id): Extension<HttpRequestId>,
+    Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
+    Json(req): Json<SolveRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let out = enqueue_solve_async(state, http_request_id, id_kind, req, "/v1/solve_async").await?;
+    let headers = solve_async_response_headers(&out.session_id)?;
+    Ok((headers, Json(out)))
 }
 
 async fn get_task(
