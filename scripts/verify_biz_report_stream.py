@@ -632,7 +632,11 @@ def main() -> int:
     )
     u.add_argument("--model", default=None)
     u.add_argument("--strip-openai-prefix", action="store_true", dest="strip_openai_prefix")
-    u.add_argument("--skill-file", default="rust/scripts/gpos-boss-report-writer.SKILL.md", dest="skill_file")
+    u.add_argument(
+        "--skill-file",
+        default="rust/crates/http-gateway-rs/skills/gpos-boss-report-writer.SKILL.md",
+        dest="skill_file",
+    )
     u.add_argument(
         "--report-file",
         default="scripts/fixtures/e2b529_biz_report.md",

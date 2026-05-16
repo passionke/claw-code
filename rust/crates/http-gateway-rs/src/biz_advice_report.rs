@@ -14,9 +14,9 @@ use tracing::warn;
 /// Skill 目录名（`home/skills/<name>/SKILL.md`），可通过 `POST /v1/project/skills/{ds_id}` 维护。
 pub const GPOS_BOSS_REPORT_WRITER_SKILL_NAME: &str = "GPOS_BOSS_REPORT_WRITER";
 
-/// 默认润色说明（skill 未部署时的回退，与 `rust/scripts/gpos-boss-report-writer.SKILL.md` 一致）。Author: kejiqing
+/// 默认润色说明（skill 未部署时的回退，与 crate `skills/gpos-boss-report-writer.SKILL.md` 一致）。Author: kejiqing
 pub fn default_gpos_boss_report_writer_skill_md() -> &'static str {
-    include_str!("../../../scripts/gpos-boss-report-writer.SKILL.md")
+    include_str!("../skills/gpos-boss-report-writer.SKILL.md")
 }
 
 /// 去掉 SKILL.md YAML frontmatter，保留正文作为润色指令。
