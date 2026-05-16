@@ -21,23 +21,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
-use axum::response::sse::Event;
-use axum::response::sse::Sse;
+use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use biz_advice_report::{
-    build_biz_advice_polish_prompt, load_boss_report_writer_instructions, raw_json_from_output,
-    BizAdviceReportPayload, BizReportStreamMsg,
+    biz_report_sse_event_stream, build_biz_advice_polish_prompt,
+    load_boss_report_writer_instructions, raw_json_from_output, BizAdviceReportPayload,
+    BizReportStreamMsg,
 };
-use gateway_solve_turn::run_gateway_biz_polish_llm;
+use gateway_solve_turn::{run_gateway_biz_polish_llm, run_gateway_biz_polish_llm_async};
 use http_gateway_rs::{session_db, session_merge};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::convert::Infallible;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use tokio::fs;
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -349,6 +346,20 @@ struct BizAdviceReportQuery {
     /// `true` 时返回 `text/event-stream`（`biz.report.start` / `delta` / `done`）。
     #[serde(default)]
     stream: bool,
+}
+
+/// Dev-only: inject a succeeded task so `GET /v1/biz_advice_report` can run without `solve_async`.
+/// Enable with `CLAW_GATEWAY_DEV_BIZ_REPORT_SEED=1`. Author: kejiqing
+#[derive(Debug, Deserialize)]
+struct DevBizReportSeedRequest {
+    #[serde(rename = "taskId")]
+    task_id: Option<String>,
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "outputText", default)]
+    output_text: String,
+    #[serde(rename = "outputJson")]
+    output_json: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -752,6 +763,10 @@ async fn main() {
         .route("/v1/tasks/{task_id}", get(get_task))
         .route("/v1/tasks/{task_id}/cancel", post(cancel_task))
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
+        .route(
+            "/v1/dev/biz_report_seed_task",
+            post(dev_seed_biz_report_task),
+        )
         .route(
             "/v1/project/claude/{ds_id}",
             get(get_project_claude_md).post(update_project_claude_md),
@@ -2613,6 +2628,73 @@ async fn cancel_task(
     Ok(Json(record))
 }
 
+/// `CLAW_GATEWAY_DEV_BIZ_REPORT_SEED=1` only; otherwise 404.
+async fn dev_seed_biz_report_task(
+    State(state): State<AppState>,
+    Json(body): Json<DevBizReportSeedRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if std::env::var("CLAW_GATEWAY_DEV_BIZ_REPORT_SEED")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not found"));
+    }
+    if body.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let tid = body
+        .task_id
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| Uuid::new_v4().simple().to_string(), ToString::to_string);
+    let work_dir = ds_work_dir(&state.cfg.work_root, body.ds_id);
+    let now = now_ms();
+    let output_text = if body.output_text.trim().is_empty() {
+        "mock raw boss output for polish".to_string()
+    } else {
+        body.output_text.clone()
+    };
+    let result = SolveResponse {
+        session_id: tid.clone(),
+        request_id: tid.clone(),
+        session_home_rel: format!("ds_{}/sessions/dev-seed", body.ds_id),
+        ds_id: body.ds_id,
+        work_dir: work_dir.to_string_lossy().to_string(),
+        duration_ms: 0,
+        claw_exit_code: 0,
+        output_text,
+        output_json: body.output_json.clone(),
+    };
+    let record = TaskRecord {
+        task_id: tid.clone(),
+        session_id: tid.clone(),
+        request_id: tid.clone(),
+        status: "succeeded".to_string(),
+        created_at_ms: now,
+        started_at_ms: Some(now),
+        finished_at_ms: Some(now),
+        result: Some(result),
+        error: None,
+    };
+    {
+        let mut tasks = state.tasks.lock().await;
+        tasks.insert(
+            tid.clone(),
+            TaskInner {
+                record,
+                cancel: None,
+            },
+        );
+    }
+    let stream_url = format!("/v1/biz_advice_report?task_id={tid}&stream=true");
+    Ok(Json(json!({
+        "taskId": tid,
+        "bizAdviceReportStreamUrl": stream_url,
+    })))
+}
+
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
@@ -2658,15 +2740,18 @@ async fn get_biz_advice_report(
     let request_id = Uuid::new_v4().simple().to_string();
     let timeout_seconds = state.cfg.default_timeout_seconds;
     if query.stream {
+        let meta = BizAdviceReportPayload {
+            task_id: query.task_id.clone(),
+            source_request_id: task.request_id.clone(),
+            source_ds_id: ds_id,
+            source_status: source_status.clone(),
+            report_text: None,
+            report_json: None,
+        };
+        let task_id = meta.task_id.clone();
         return Ok(biz_report_llm_stream_response(
-            BizAdviceReportPayload {
-                task_id: query.task_id.clone(),
-                source_request_id: task.request_id.clone(),
-                source_ds_id: ds_id,
-                source_status: source_status.clone(),
-                report_text: None,
-                report_json: None,
-            },
+            &task_id,
+            meta,
             prompt,
             request_id,
             timeout_seconds,
@@ -2702,24 +2787,26 @@ async fn get_biz_advice_report(
 
 /// `stream=true`: direct LLM polish; each model `TextDelta` is forwarded as `biz.report.delta`.
 fn biz_report_llm_stream_response(
-    meta: BizAdviceReportPayload,
+    task_id: &str,
+    meta_done: BizAdviceReportPayload,
     prompt: String,
     request_id: String,
     timeout_seconds: u64,
 ) -> Response {
     let (tx, rx) = mpsc::unbounded_channel::<BizReportStreamMsg>();
-    let meta_done = meta.clone();
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         let mut send_delta = |delta: &str| {
             let _ = tx.send(BizReportStreamMsg::Delta(delta.to_string()));
         };
-        match run_gateway_biz_polish_llm(
+        match run_gateway_biz_polish_llm_async(
             &prompt,
             None,
             timeout_seconds,
             &request_id,
             Some(&mut send_delta),
-        ) {
+        )
+        .await
+        {
             Ok((output_text, output_json)) => {
                 let _ = tx.send(BizReportStreamMsg::Done(BizAdviceReportPayload {
                     task_id: meta_done.task_id,
@@ -2735,39 +2822,13 @@ fn biz_report_llm_stream_response(
             }
         }
     });
-    Sse::new(BizReportSseStream {
-        meta,
-        rx,
-        start_sent: false,
-    })
-    .into_response()
-}
-
-struct BizReportSseStream {
-    meta: BizAdviceReportPayload,
-    rx: mpsc::UnboundedReceiver<BizReportStreamMsg>,
-    start_sent: bool,
-}
-
-impl futures_util::stream::Stream for BizReportSseStream {
-    type Item = Result<Event, Infallible>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if !self.start_sent {
-            self.start_sent = true;
-            let data = serde_json::json!({ "taskId": self.meta.task_id }).to_string();
-            return Poll::Ready(Some(Ok(Event::default()
-                .event("biz.report.start")
-                .data(data))));
-        }
-        match Pin::new(&mut self.rx).poll_recv(cx) {
-            Poll::Ready(Some(msg)) => {
-                Poll::Ready(Some(Ok(biz_advice_report::stream_msg_to_event(&msg))))
-            }
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
+    let no_buffer = header::HeaderName::from_static("x-accel-buffering");
+    let no_buffer_val = HeaderValue::from_static("no");
+    (
+        AppendHeaders([(no_buffer, no_buffer_val)]),
+        Sse::new(biz_report_sse_event_stream(task_id, rx)).keep_alive(KeepAlive::default()),
+    )
+        .into_response()
 }
 
 async fn run_solve_request(

@@ -1,11 +1,14 @@
 //! Boss 报表清洗：从异步任务结果加载 `GPOS_BOSS_REPORT_WRITER` skill 润色，支持 SSE 流式输出。Author: kejiqing
 
+use std::convert::Infallible;
 use std::path::Path;
 
 use axum::response::sse::Event;
+use futures_util::stream::{self, Stream, StreamExt as _};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::fs;
+use tokio::sync::mpsc;
 use tracing::warn;
 
 /// Skill 目录名（`home/skills/<name>/SKILL.md`），可通过 `POST /v1/project/skills/{ds_id}` 维护。
@@ -126,6 +129,21 @@ pub fn stream_msg_to_event(msg: &BizReportStreamMsg) -> Event {
             .event("biz.report.error")
             .data(serde_json::json!({ "detail": detail }).to_string()),
     }
+}
+
+/// SSE body: `start` then channel messages; yields between frames so hyper can flush.
+pub fn biz_report_sse_event_stream(
+    task_id: &str,
+    rx: mpsc::UnboundedReceiver<BizReportStreamMsg>,
+) -> impl Stream<Item = Result<Event, Infallible>> + Send {
+    let start_data = serde_json::json!({ "taskId": task_id }).to_string();
+    let start = Event::default().event("biz.report.start").data(start_data);
+    stream::once(async move { Ok(start) }).chain(stream::unfold(rx, |mut rx| async move {
+        let msg = rx.recv().await?;
+        let event = stream_msg_to_event(&msg);
+        tokio::task::yield_now().await;
+        Some((Ok(event), rx))
+    }))
 }
 
 #[cfg(test)]

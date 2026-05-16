@@ -579,13 +579,12 @@ fn polish_output_from_events(
     ))
 }
 
-/// Single-turn LLM polish for boss reports: no workspace, MCP, or session setup.
-pub fn run_gateway_biz_polish_llm<F>(
+async fn run_gateway_biz_polish_llm_inner<F>(
     user_prompt: &str,
     model: Option<&str>,
     timeout_seconds: u64,
     clawcode_session_id: &str,
-    on_text_delta: Option<F>,
+    mut on_text_delta: Option<F>,
 ) -> Result<(String, Option<Value>), GatewaySolveTurnError>
 where
     F: FnMut(&str),
@@ -619,15 +618,9 @@ where
         ..Default::default()
     };
     let started = Instant::now();
-    let mut on_text_delta = on_text_delta;
-    let events = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(stream_events(
-            &provider,
-            &req,
-            on_text_delta.as_mut(),
-        ))
-    })
-    .map_err(|e| err(HTTP_INTERNAL, format!("polish stream failed: {e}")))?;
+    let events = stream_events(&provider, &req, on_text_delta.as_mut())
+        .await
+        .map_err(|e| err(HTTP_INTERNAL, format!("polish stream failed: {e}")))?;
     if started.elapsed() > Duration::from_secs(timeout_seconds) {
         return Err(err(
             HTTP_GATEWAY_TIMEOUT,
@@ -636,6 +629,49 @@ where
     }
     let (output_text, output_json) = polish_output_from_events(&events, &effective_model)?;
     Ok((output_text, Some(output_json)))
+}
+
+/// Single-turn LLM polish for boss reports: no workspace, MCP, or session setup.
+pub fn run_gateway_biz_polish_llm<F>(
+    user_prompt: &str,
+    model: Option<&str>,
+    timeout_seconds: u64,
+    clawcode_session_id: &str,
+    on_text_delta: Option<F>,
+) -> Result<(String, Option<Value>), GatewaySolveTurnError>
+where
+    F: FnMut(&str),
+{
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(run_gateway_biz_polish_llm_inner(
+            user_prompt,
+            model,
+            timeout_seconds,
+            clawcode_session_id,
+            on_text_delta,
+        ))
+    })
+}
+
+/// Async polish for gateway SSE (`biz.report.delta`); avoids `spawn_blocking` + `block_on` batching.
+pub async fn run_gateway_biz_polish_llm_async<F>(
+    user_prompt: &str,
+    model: Option<&str>,
+    timeout_seconds: u64,
+    clawcode_session_id: &str,
+    on_text_delta: Option<F>,
+) -> Result<(String, Option<Value>), GatewaySolveTurnError>
+where
+    F: FnMut(&str),
+{
+    run_gateway_biz_polish_llm_inner(
+        user_prompt,
+        model,
+        timeout_seconds,
+        clawcode_session_id,
+        on_text_delta,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
