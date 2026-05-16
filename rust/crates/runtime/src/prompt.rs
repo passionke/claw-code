@@ -576,9 +576,9 @@ fn get_actions_section() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        collapse_blank_lines, display_context_path, normalize_instruction_content,
-        render_instruction_content, render_instruction_files, truncate_instruction_content,
-        max_instruction_file_chars, ContextFile, ProjectContext, SystemPromptBuilder,
+        collapse_blank_lines, display_context_path, max_instruction_file_chars,
+        normalize_instruction_content, render_instruction_content, render_instruction_files,
+        truncate_instruction_content, ContextFile, ProjectContext, SystemPromptBuilder,
         DEFAULT_MAX_INSTRUCTION_FILE_CHARS, INSTRUCTION_FILE_MAX_CHARS_ENV,
         SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     };
