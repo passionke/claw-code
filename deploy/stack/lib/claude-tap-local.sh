@@ -1,6 +1,29 @@
 #!/usr/bin/env bash
-# Start/stop claude-tap from local fork (docker/podman image or editable venv). Author: kejiqing
+# Start/stop claw-tap (PyPI / fork) from docker, source venv, or uv tool. Author: kejiqing
 set -euo pipefail
+
+# Resolved CLI from `uv tool install claw-tap` (PyPI may still ship `claude-tap` entry until renamed).
+# Override with CLAW_TAP_BIN=/path/to/binary.
+claw_tap_resolve_bin() {
+  if [[ -n "${CLAW_TAP_BIN:-}" ]] && command -v "${CLAW_TAP_BIN}" >/dev/null 2>&1; then
+    command -v "${CLAW_TAP_BIN}"
+    return 0
+  fi
+  local uv_local="${HOME}/.local/bin"
+  export PATH="${uv_local}:${PATH}"
+  local cand
+  for cand in claw-tap claude-tap; do
+    if command -v "${cand}" >/dev/null 2>&1; then
+      command -v "${cand}"
+      return 0
+    fi
+    if [[ -x "${uv_local}/${cand}" ]]; then
+      printf '%s\n' "${uv_local}/${cand}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 if [[ -n "${BASH_SOURCE[0]+set}" ]]; then
   _CLAUDE_TAP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,7 +37,11 @@ claw_claude_tap_resolve_context() {
     printf '%s\n' "${CLAUDE_TAP_BUILD_CONTEXT}"
     return 0
   fi
-  printf '%s\n' "${root_dir}/../claude-tap"
+  if [[ -d "${root_dir}/../claw-tap" ]]; then
+    printf '%s\n' "${root_dir}/../claw-tap"
+  else
+    printf '%s\n' "${root_dir}/../claude-tap"
+  fi
 }
 
 claw_claude_tap_runtime_cli() {
@@ -26,7 +53,9 @@ claw_claude_tap_runtime_cli() {
 claw_claude_tap_stop() {
   local podman_dir="$1"
   local pid_file="${podman_dir}/claude-tap.pid"
-  local container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
+  local container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claw-tap}"
+  local tap_bin
+  tap_bin="$(claw_tap_resolve_bin 2>/dev/null || true)"
 
   if [[ -f "${pid_file}" ]]; then
     local pid
@@ -43,7 +72,12 @@ claw_claude_tap_stop() {
   if command -v docker >/dev/null 2>&1; then
     docker rm -f "${container_name}" 2>/dev/null || true
   fi
-  pkill -f 'claude-tap.*--tap-no-launch' 2>/dev/null || true
+  if [[ -n "${tap_bin}" ]]; then
+    pkill -f "$(basename "${tap_bin}").*--tap-no-launch" 2>/dev/null || true
+  else
+    pkill -f 'claw-tap.*--tap-no-launch' 2>/dev/null || true
+    pkill -f 'claude-tap.*--tap-no-launch' 2>/dev/null || true
+  fi
 }
 
 claw_claude_tap_build_image() {
@@ -73,8 +107,13 @@ claw_claude_tap_start_docker() {
   local rt="$1"
   local podman_dir="$2"
   local ctx="$3"
-  local image="${CLAUDE_TAP_IMAGE:-claude-tap:local}"
-  local container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
+  local tap_bin
+  tap_bin="$(claw_tap_resolve_bin)" || {
+    echo "claw-tap/claude-tap not found; uv tool install claw-tap" >&2
+    exit 1
+  }
+  local image="${CLAUDE_TAP_IMAGE:-claw-tap:local}"
+  local container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claw-tap}"
   local port="${CLAUDE_TAP_PORT:-8080}"
   local live_port="${CLAUDE_TAP_LIVE_PORT:-3000}"
   local traces_dir="${CLAUDE_TAP_TRACES_DIR:-${podman_dir}/claude-tap-data/traces}"
@@ -96,7 +135,7 @@ claw_claude_tap_start_docker() {
     -p "${live_port}:3000" \
     -v "${traces_dir}:/data/traces" \
     "${image}" \
-    claude-tap \
+    "$(basename "${tap_bin}")" \
     --tap-no-launch \
     --tap-host 0.0.0.0 \
     --tap-port 8080 \
@@ -111,12 +150,12 @@ claw_claude_tap_start_docker() {
   local cid
   cid="$("${rt}" ps -q --filter "name=^${container_name}$")"
   [[ -n "${cid}" ]] || {
-    echo "claude-tap container failed to start; see ${log_file}" >&2
+    echo "$(basename "${tap_bin}") container failed to start; see ${log_file}" >&2
     "${rt}" logs "${container_name}" 2>&1 | tail -30 >&2 || true
     exit 1
   }
   echo "container:${container_name}" >"${podman_dir}/claude-tap.pid"
-  echo "claude-tap container ${container_name} (${image}) port=${port} live=${live_port} traces=${traces_dir}"
+  echo "$(basename "${tap_bin}") container ${container_name} (${image}) port=${port} live=${live_port} traces=${traces_dir}"
 }
 
 claw_claude_tap_start_source() {
@@ -135,19 +174,25 @@ claw_claude_tap_start_source() {
   }
 
   if [[ -z "${bin}" ]]; then
-    if [[ -x "${ctx}/.venv/bin/claude-tap" ]]; then
+    if [[ -x "${ctx}/.venv/bin/claw-tap" ]]; then
+      bin="${ctx}/.venv/bin/claw-tap"
+    elif [[ -x "${ctx}/.venv/bin/claude-tap" ]]; then
       bin="${ctx}/.venv/bin/claude-tap"
     elif command -v uv >/dev/null 2>&1; then
-      echo "==> syncing claude-tap venv in ${ctx} (uv sync)" >&2
+      echo "==> syncing claw-tap venv in ${ctx} (uv sync)" >&2
       (cd "${ctx}" && uv sync)
-      bin="${ctx}/.venv/bin/claude-tap"
+      if [[ -x "${ctx}/.venv/bin/claw-tap" ]]; then
+        bin="${ctx}/.venv/bin/claw-tap"
+      else
+        bin="${ctx}/.venv/bin/claude-tap"
+      fi
     else
-      echo "no ${ctx}/.venv/bin/claude-tap; install with: cd ${ctx} && uv sync" >&2
+      echo "no ${ctx}/.venv/bin/claw-tap; install with: cd ${ctx} && uv sync" >&2
       exit 1
     fi
   fi
   [[ -x "${bin}" ]] || {
-    echo "claude-tap binary not executable: ${bin}" >&2
+    echo "tap binary not executable: ${bin}" >&2
     exit 1
   }
 
@@ -166,10 +211,10 @@ claw_claude_tap_start_source() {
   echo $! >"${podman_dir}/claude-tap.pid"
   sleep 1
   if ! kill -0 "$(cat "${podman_dir}/claude-tap.pid")" >/dev/null 2>&1; then
-    echo "failed to start source claude-tap, check ${log_file}" >&2
+    echo "failed to start source $(basename "${bin}"), check ${log_file}" >&2
     exit 1
   fi
-  echo "claude-tap source ${bin} pid=$(cat "${podman_dir}/claude-tap.pid") port=${port} live=${live_port}"
+  echo "$(basename "${bin}") source ${bin} pid=$(cat "${podman_dir}/claude-tap.pid") port=${port} live=${live_port}"
 }
 
 claw_claude_tap_start_native() {
@@ -178,14 +223,15 @@ claw_claude_tap_start_native() {
   local live_port="${CLAUDE_TAP_LIVE_PORT:-3000}"
   local tap_target="$2"
   local log_file="${podman_dir}/claude-tap.log"
-
-  if ! command -v claude-tap >/dev/null 2>&1; then
-    echo "claude-tap not in PATH (CLAUDE_TAP_MODE=native). Use CLAUDE_TAP_MODE=docker|source or:" >&2
-    echo "  uv tool install claude-tap" >&2
+  local tap_bin
+  tap_bin="$(claw_tap_resolve_bin)" || {
+    echo "claw-tap not in PATH (CLAUDE_TAP_MODE=native). Use CLAUDE_TAP_MODE=docker|source or:" >&2
+    echo "  uv tool install claw-tap" >&2
+    echo "  export PATH=\"\${HOME}/.local/bin:\${PATH}\"" >&2
     exit 1
-  fi
+  }
 
-  nohup claude-tap \
+  nohup "${tap_bin}" \
     --tap-no-launch \
     --tap-live \
     --tap-port "${port}" \
@@ -195,16 +241,16 @@ claw_claude_tap_start_native() {
   echo $! >"${podman_dir}/claude-tap.pid"
   sleep 1
   if ! kill -0 "$(cat "${podman_dir}/claude-tap.pid")" >/dev/null 2>&1; then
-    echo "failed to start claude-tap, check ${log_file}" >&2
+    echo "failed to start $(basename "${tap_bin}"), check ${log_file}" >&2
     exit 1
   fi
-  echo "claude-tap native pid=$(cat "${podman_dir}/claude-tap.pid") port=${port} live=${live_port}"
+  echo "$(basename "${tap_bin}") native pid=$(cat "${podman_dir}/claude-tap.pid") port=${port} live=${live_port}"
 }
 
 claw_claude_tap_is_running() {
   local podman_dir="$1"
   local pid_file="${podman_dir}/claude-tap.pid"
-  local container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
+  local container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claw-tap}"
 
   if [[ -f "${pid_file}" ]]; then
     local pid
@@ -236,7 +282,7 @@ claw_claude_tap_start() {
   fi
 
   if claw_claude_tap_is_running "${podman_dir}"; then
-    echo "claude-tap already running ($(cat "${podman_dir}/claude-tap.pid")) mode=${mode}"
+    echo "claw-tap already running ($(cat "${podman_dir}/claude-tap.pid")) mode=${mode}"
     return 0
   fi
 

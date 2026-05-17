@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatewayEventTapLine",
+  "type": "object",
+  "required": ["type", "taskId"],
+  "properties": {
+    "type": {
+      "enum": [
+        "solve.queued",
+        "text.delta",
+        "tool.start",
+        "tool.end",
+        "interrupt.required",
+        "solve.finished",
+        "solve.failed"
+      ]
+    },
+    "taskId": { "type": "string" },
+    "text": { "type": "string" },
+    "toolName": { "type": "string" },
+    "toolCallId": { "type": "string" },
+    "ok": { "type": "boolean" },
+    "interruptId": { "type": "string" },
+    "reason": { "type": "string" },
+    "payload": { "type": "object" },
+    "status": { "type": "string" },
+    "detail": { "type": "string" },
+    "dsId": { "type": "integer" }
+  },
+  "additionalProperties": true
+}

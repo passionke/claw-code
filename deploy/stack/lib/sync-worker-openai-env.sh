@@ -29,7 +29,7 @@ die() {
 
 [[ -f "${ENV_FILE}" ]] || die "missing ${ENV_FILE}"
 
-echo "==> refresh claw-code LLM URL vs claude-tap ports (${ENV_FILE})"
+echo "==> refresh claw-code LLM URL vs claw-tap ports (${ENV_FILE})"
 REFRESH_PY="${PODMAN_DIR}/refresh-tap-llm-chain-in-env.py"
 [[ -f "${REFRESH_PY}" ]] || die "missing ${REFRESH_PY}"
 python3 "${REFRESH_PY}" "${ENV_FILE}"
@@ -159,7 +159,7 @@ echo "OK: ${WORKER_ENV_ABS} and CLAW_*_EXTRA_ARGS updated."
 if [[ "${1:-}" == "--restart" ]]; then
   echo "==> restarting stack (stop-with-tap / start-with-tap)"
   "${PODMAN_DIR}/lib/stop-with-tap.sh" || true
-  pkill -f 'claude-tap.*--tap-no-launch' 2>/dev/null || true
+  pkill -f 'claw-tap.*--tap-no-launch' 2>/dev/null || true
   sleep 0.5
   # shellcheck source=/dev/null
   source "${PODMAN_DIR}/lib/compose-include.sh"

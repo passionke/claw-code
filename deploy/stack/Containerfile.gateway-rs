@@ -17,7 +17,8 @@ COPY rust/Cargo.lock /build/Cargo.lock
 COPY rust/crates/ /build/crates/
 RUN rustup toolchain install nightly && rustup default nightly && \
     cargo build -p rusty-claude-cli --bin claw --release && \
-    cargo build -p http-gateway-rs --release
+    cargo build -p http-gateway-rs --release && \
+    cargo build -p ag-ui-claw-bridge --release
 
 FROM ${DEBIAN_BASE_IMAGE}
 # podman: remote client for CLAW_SOLVE_ISOLATION=podman_pool (API socket mounted from host).
@@ -31,6 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=builder /build/target/release/claw /usr/local/bin/claw
 COPY --from=builder /build/target/release/http-gateway-rs /usr/local/bin/http-gateway-rs
+COPY --from=builder /build/target/release/ag-ui-claw-bridge /usr/local/bin/ag-ui-claw-bridge
 # Same GHCR image as the gateway: host can `docker|podman run --entrypoint cat … /usr/local/bin/claw-pool-daemon` for pool-daemon-up. Author: kejiqing
 COPY --from=builder /build/target/release/claw-pool-daemon /usr/local/bin/claw-pool-daemon
 

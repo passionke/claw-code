@@ -2,7 +2,7 @@
 """Sync OPENAI_BASE_URL / INTERNAL_CLAUDE_TAP_HOST from CLAUDE_TAP_* using UPSTREAM_OPENAI_BASE_URL.
 
 Chain (repo-root .env):
-  UPSTREAM_OPENAI_BASE_URL  -> real LLM (claude-tap --tap-target in compose)
+  UPSTREAM_OPENAI_BASE_URL  -> real LLM (claw-tap --tap-target in compose)
   OPENAI_BASE_URL           -> http://$CLAUDE_TAP_BIND_HOST:$CLAUDE_TAP_HOST_PORT  (no /v1; claw appends /chat/completions)
 
 Author: kejiqing
@@ -50,13 +50,13 @@ def main() -> None:
         if m:
             cur = m.group(1).strip()
             if cur and "host.docker.internal" not in cur and "host.containers.internal" not in cur:
-                if not cur.startswith("http://claude-tap"):
+                if not cur.startswith("http://claw-tap"):
                     text += f"\nUPSTREAM_OPENAI_BASE_URL={cur}\n"
 
     if has_key(text, "UPSTREAM_OPENAI_BASE_URL"):
         # Do NOT append /v1: openai_compat::chat_completions_endpoint adds "/chat/completions"
         # to the trimmed base, producing .../chat/completions (tap OK). A base ending in /v1
-        # becomes .../v1/chat/completions which this claude-tap stack answers with 404.
+        # becomes .../v1/chat/completions which this claw-tap stack answers with 404.
         openai_tap = f"http://{bind}:{port}"
         internal_tap = openai_tap
         text = upsert_line(text, "OPENAI_BASE_URL", openai_tap)

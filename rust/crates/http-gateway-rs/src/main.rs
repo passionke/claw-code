@@ -107,6 +107,9 @@ struct AppState {
     docker_pool: Arc<dyn pool::PoolOps + Send + Sync>,
     /// Serialize git and working-tree reads/writes on the shared `.claw-code-projects` clone. kejiqing
     projects_git_mirror_lock: Arc<Mutex<()>>,
+    event_tap: http_gateway_rs::agui::EventTapHub,
+    interrupt_hub: http_gateway_rs::agui::InterruptHub,
+    auth_audit: http_gateway_rs::auth_audit::AuthAuditState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +183,7 @@ struct GatewayConfig {
     report_polish_deepseek: Option<ReportPolishDeepseek>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SolveRequest {
     #[serde(rename = "dsId")]
     ds_id: i64,
@@ -415,6 +418,31 @@ struct DevBizReportSeedRequest {
     output_text: String,
     #[serde(rename = "outputJson")]
     output_json: Option<Value>,
+}
+
+/// Dev-only AG-UI verify seeds. Enable with `CLAW_GATEWAY_DEV_AGUI=1`. Author: kejiqing
+#[derive(Debug, Deserialize)]
+struct DevAguiSeedTaskRequest {
+    #[serde(rename = "taskId")]
+    task_id: Option<String>,
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "outputText", default)]
+    output_text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DevAguiSeedInterruptRequest {
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    payload: Option<Value>,
+}
+
+fn dev_agui_enabled() -> bool {
+    std::env::var("CLAW_GATEWAY_DEV_AGUI")
+        .ok()
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -843,6 +871,9 @@ async fn main() {
         docker_slots: Arc::new(Mutex::new(HashMap::new())),
         docker_pool,
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
+        event_tap: http_gateway_rs::agui::EventTapHub::default(),
+        interrupt_hub: http_gateway_rs::agui::InterruptHub::default(),
+        auth_audit: http_gateway_rs::auth_audit::AuthAuditState::from_env(),
     };
 
     run_startup_projects_git_sync(&state).await;
@@ -880,6 +911,11 @@ async fn main() {
             "/v1/dev/biz_report_seed_task",
             post(dev_seed_biz_report_task),
         )
+        .route("/v1/dev/agui/seed-task", post(dev_seed_agui_task))
+        .route(
+            "/v1/dev/agui/seed-interrupt/{task_id}",
+            post(dev_seed_agui_interrupt),
+        )
         .route(
             "/v1/project/claude/{ds_id}",
             get(get_project_claude_md).post(update_project_claude_md),
@@ -894,6 +930,12 @@ async fn main() {
         .route("/v1/mcp/inject", post(inject_mcp))
         .route("/v1/mcp/injected/{ds_id}", get(get_injected_mcp))
         .route("/v1/mcp/injected/{ds_id}", delete(delete_injected_mcp))
+        .route("/v1/events/{task_id}", get(gateway_get_events))
+        .route(
+            "/v1/interrupts/{interrupt_id}/resolve",
+            post(gateway_resolve_interrupt),
+        )
+        .route("/v1/audit", get(get_audit))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &http::Request<axum::body::Body>| {
@@ -3100,6 +3142,12 @@ async fn enqueue_solve_async(
             },
         );
     }
+    push_agui_event(
+        &state,
+        &task_id,
+        "solve.queued",
+        json!({"dsId": ds_id}),
+    );
     spawn_task_progress_poller(state.clone(), task_id.clone());
     let state_clone = state.clone();
     let task_id_for_worker = task_id.clone();
@@ -3146,7 +3194,22 @@ async fn enqueue_solve_async(
                 Ok(v) => {
                     let duration_ms = v.duration_ms;
                     inner.record.status = "succeeded".to_string();
-                    inner.record.result = Some(v);
+                    inner.record.result = Some(v.clone());
+                    push_agui_event(
+                        &state_clone,
+                        &task_id_for_worker,
+                        "solve.finished",
+                        json!({"status":"succeeded","durationMs": duration_ms}),
+                    );
+                    let preview: String = v.output_text.chars().take(200).collect();
+                    if !preview.is_empty() {
+                        push_agui_event(
+                            &state_clone,
+                            &task_id_for_worker,
+                            "text.delta",
+                            json!({"text": preview}),
+                        );
+                    }
                     info!(
                         request_id = %rid,
                         task_id = %task_id_for_worker,
@@ -3159,6 +3222,12 @@ async fn enqueue_solve_async(
                     inner.record.status = "failed".to_string();
                     inner.record.error =
                         Some(json!({"status_code": e.status.as_u16(), "detail": e.message}));
+                    push_agui_event(
+                        &state_clone,
+                        &task_id_for_worker,
+                        "solve.failed",
+                        json!({"detail": e.message}),
+                    );
                     warn!(
                         request_id = %rid,
                         task_id = %task_id_for_worker,
@@ -3243,11 +3312,34 @@ async fn solve_start(
 
 async fn solve_async(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Extension(http_request_id): Extension<HttpRequestId>,
     Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
     Json(req): Json<SolveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let out = enqueue_solve_async(state, http_request_id, id_kind, req, "/v1/solve_async").await?;
+    let auth = state
+        .auth_audit
+        .parse_bearer(&headers)
+        .map_err(|s| ApiError::new(s, "unauthorized"))?;
+    state
+        .auth_audit
+        .authorize_ds(&auth, req.ds_id)
+        .map_err(|s| ApiError::new(s, "forbidden for dsId"))?;
+    let out = enqueue_solve_async(
+        state.clone(),
+        http_request_id,
+        id_kind,
+        req.clone(),
+        "/v1/solve_async",
+    )
+    .await?;
+    state.auth_audit.record(
+        &auth,
+        &out.session_id,
+        req.ds_id,
+        "solve.async",
+        json!({"taskId": out.task_id}),
+    );
     let headers = solve_async_response_headers(&out.session_id)?;
     Ok((headers, Json(out)))
 }
@@ -3429,6 +3521,127 @@ async fn dev_seed_biz_report_task(
     Ok(Json(json!({
         "taskId": tid,
         "bizAdviceReportStreamUrl": stream_url,
+    })))
+}
+
+/// `CLAW_GATEWAY_DEV_AGUI=1` only: in-memory succeeded task + event tap lines for verify. kejiqing
+async fn dev_seed_agui_task(
+    State(state): State<AppState>,
+    Json(body): Json<DevAguiSeedTaskRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if !dev_agui_enabled() {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not found"));
+    }
+    if body.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let tid = body
+        .task_id
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| Uuid::new_v4().simple().to_string(), ToString::to_string);
+    let work_dir = ds_work_dir(&state.cfg.work_root, body.ds_id);
+    let now = now_ms();
+    let output_text = if body.output_text.trim().is_empty() {
+        "dev agui seed output".to_string()
+    } else {
+        body.output_text.clone()
+    };
+    push_agui_event(
+        &state,
+        &tid,
+        "solve.queued",
+        json!({"dsId": body.ds_id}),
+    );
+    push_agui_event(
+        &state,
+        &tid,
+        "text.delta",
+        json!({"text": output_text.as_str()}),
+    );
+    let result = SolveResponse {
+        session_id: tid.clone(),
+        request_id: tid.clone(),
+        session_home_rel: format!("ds_{}/sessions/dev-agui-seed", body.ds_id),
+        ds_id: body.ds_id,
+        work_dir: work_dir.to_string_lossy().to_string(),
+        duration_ms: 0,
+        claw_exit_code: 0,
+        output_text: output_text.clone(),
+        output_json: None,
+    };
+    push_agui_event(
+        &state,
+        &tid,
+        "solve.finished",
+        json!({"status": "succeeded"}),
+    );
+    let record = TaskRecord {
+        task_id: tid.clone(),
+        session_id: tid.clone(),
+        request_id: tid.clone(),
+        ds_id: body.ds_id,
+        status: "succeeded".to_string(),
+        created_at_ms: now,
+        started_at_ms: Some(now),
+        finished_at_ms: Some(now),
+        current_task_desc: Some("dev agui seed".to_string()),
+        progress_updated_at_ms: Some(now),
+        result: Some(result),
+        error: None,
+    };
+    {
+        let mut tasks = state.tasks.lock().await;
+        tasks.insert(
+            tid.clone(),
+            TaskInner {
+                record,
+                cancel: None,
+                ds_id: body.ds_id,
+            },
+        );
+    }
+    Ok(Json(json!({
+        "taskId": tid,
+        "sessionId": tid,
+        "eventsUrl": format!("/v1/events/{tid}"),
+    })))
+}
+
+async fn dev_seed_agui_interrupt(
+    State(state): State<AppState>,
+    AxumPath(task_id): AxumPath<String>,
+    Json(body): Json<DevAguiSeedInterruptRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if !dev_agui_enabled() {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not found"));
+    }
+    let interrupt_id = Uuid::new_v4().simple().to_string();
+    let reason = body
+        .reason
+        .unwrap_or_else(|| "permission".to_string());
+    let payload = body.payload.unwrap_or_else(|| {
+        json!({
+            "toolName": "bash",
+            "options": ["allow_once", "deny"]
+        })
+    });
+    let _pending = state.interrupt_hub.register(interrupt_id.clone()).await;
+    push_agui_event(
+        &state,
+        &task_id,
+        "interrupt.required",
+        json!({
+            "interruptId": interrupt_id,
+            "reason": reason,
+            "payload": payload,
+        }),
+    );
+    Ok(Json(json!({
+        "interruptId": interrupt_id,
+        "taskId": task_id,
+        "resolveUrl": format!("/v1/interrupts/{interrupt_id}/resolve"),
     })))
 }
 
@@ -4283,7 +4496,45 @@ fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {
     false
 }
 
-#[cfg(test)]
+fn push_agui_event(state: &AppState, task_id: &str, event_type: &str, extra: Value) {
+    let line = http_gateway_rs::agui::tap_line(task_id, event_type, &extra);
+    state.event_tap.push(task_id, &line);
+}
+
+async fn gateway_get_events(
+    State(state): State<AppState>,
+    AxumPath(task_id): AxumPath<String>,
+) -> impl IntoResponse {
+    http_gateway_rs::agui::get_events(AxumPath(task_id), State(state.event_tap.clone())).await
+}
+
+async fn gateway_resolve_interrupt(
+    State(state): State<AppState>,
+    AxumPath(interrupt_id): AxumPath<String>,
+    Json(body): Json<http_gateway_rs::agui::InterruptResolveBody>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    http_gateway_rs::agui::resolve_interrupt(
+        AxumPath(interrupt_id),
+        State(state.interrupt_hub.clone()),
+        Json(body),
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditQuery {
+    #[serde(rename = "tenantId")]
+    tenant_id: Option<String>,
+}
+
+async fn get_audit(
+    State(state): State<AppState>,
+    Query(query): Query<AuditQuery>,
+) -> Json<Value> {
+    let rows = state.auth_audit.list_audit(query.tenant_id.as_deref());
+    Json(json!({"rows": rows}))
+}
+
 mod tests {
     use super::*;
 

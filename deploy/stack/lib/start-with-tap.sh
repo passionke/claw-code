@@ -43,4 +43,4 @@ install_args+=("${CLAW_POOL_DAEMON_BIN:-${ROOT_DIR}/rust/target/release/claw-poo
 
 claw_compose_with_root_env "${PODMAN_DIR}" "${ROOT_ENV}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
 echo "gateway started on port ${GATEWAY_HOST_PORT}"
-echo "claude-tap mode=${CLAUDE_TAP_MODE:-docker} live viewer: http://127.0.0.1:${CLAUDE_TAP_LIVE_PORT:-3000}"
+echo "claw-tap mode=${CLAUDE_TAP_MODE:-docker} live viewer: http://127.0.0.1:${CLAUDE_TAP_LIVE_PORT:-3000}"

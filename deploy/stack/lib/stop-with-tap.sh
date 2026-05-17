@@ -28,4 +28,4 @@ fi
 source "${LIB_DIR}/claude-tap-local.sh"
 claw_claude_tap_stop "${PODMAN_DIR}"
 
-echo "gateway stopped, claude-tap stopped"
+echo "gateway stopped, claw-tap stopped"

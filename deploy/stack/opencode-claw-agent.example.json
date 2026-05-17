@@ -1,0 +1,11 @@
+{
+  "agent": {
+    "backend": "ag-ui",
+    "agUiBaseUrl": "http://127.0.0.1:8090",
+    "forwardedProps": {
+      "dsId": 1,
+      "extraSession": {}
+    }
+  },
+  "_comment": "Example only — align field names with your OpenCode version and docs/contracts/L1-opencode-to-agui.md. Author: kejiqing"
+}

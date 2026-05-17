@@ -47,3 +47,42 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+
+  ag-ui-bridge:
+    image: ${GATEWAY_IMAGE}
+    container_name: claw-ag-ui-bridge
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/ag-ui-claw-bridge"]
+    env_file:
+      - ../../.env
+    environment:
+      CLAW_AGUI_BRIDGE_ADDR: 0.0.0.0:8090
+      CLAW_GATEWAY_BASE_URL: http://gateway-rs:8080
+    ports:
+      - "${CLAW_AGUI_BRIDGE_HOST_PORT:-8090}:8090"
+    depends_on:
+      gateway-rs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8090/healthz | grep -q '\"ok\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+  code-server:
+    image: docker.1ms.run/codercom/code-server:latest
+    container_name: claw-code-server
+    restart: unless-stopped
+    user: root
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      PASSWORD: ${CLAW_CODE_SERVER_PASSWORD:-claw}
+    ports:
+      - "${CLAW_CODE_SERVER_PORT:-4101}:8080"
+    volumes:
+      # Read-only workspace mirror (Phase 2). Author: kejiqing
+      - ./claw-workspace:/home/coder/workspace:ro
+    profiles:
+      - code-server

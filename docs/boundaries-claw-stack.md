@@ -18,8 +18,10 @@ Author: kejiqing
 
 | Component | Code / deploy | Owns | Does **not** own |
 | --- | --- | --- | --- |
+| **OpenCode Web** | upstream `opencode web` + [deploy/stack](../deploy/stack/) | 浏览器 IDE、会话 UI、Agent 配置指向 AG-UI bridge | `dsId` 编排、gateway 路由、工具执行 |
+| **AG-UI bridge** | `rust/crates/ag-ui-claw-bridge/` | AG-UI SSE、协议翻译、interrupt 挂起/恢复 | MCP、容器池、solve 业务逻辑 |
 | **Claw** | `rust/` | Tool surface, `mcp__*` allowlist, session | HTTP, datasource encryption, SQLBot product |
-| **HTTP gateway** | `rust/crates/http-gateway-rs/`（`http-gateway-rs` 二进制） | Axum HTTP、`claw` 编排、solve 会话 SQLite、`mcpServers` 合并、`dsId` 工作区、MCP 注入、按 ds 读技能等 | Doris 查询实现、SQLBot 产品服务本体 |
+| **HTTP gateway** | `rust/crates/http-gateway-rs/`（`http-gateway-rs` 二进制） | Axum HTTP、`claw` 编排、solve 会话 SQLite、`mcpServers` 合并、`dsId` 工作区、MCP 注入、按 ds 读技能、事件 tap / interrupt resolve | Doris 查询实现、SQLBot 产品服务本体 |
 | **Doris MCP** | `third_party/doris-mcp/` | Read-only SQL + metadata **only** (`mcp__doris__*`) | Gateway, SQLBot, transport bridge |
 | **SQLBot (product)** | Your cluster (e.g. :8000 / :8001) | NL 问数、MCP 工具 `mcp_start` / `mcp_question`、业务库 | This repo |
 
@@ -49,6 +51,7 @@ Author: kejiqing
 
 ## See also
 
+- `docs/contracts/` — **Claw Web** 层间契约（OpenCode Web ↔ AG-UI bridge ↔ gateway ↔ worker）
 - `rust/crates/http-gateway-rs/datasources.example.yaml` — 数据源 registry 模板（勿提交真实凭据）
 - `third_party/doris-mcp/README.md` — Doris-only build
 - `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 用 **Docker/Podman 容器池**隔离 solve：**PoolManager** 启动读 env 管池大小与预热；网关只租借与编排
