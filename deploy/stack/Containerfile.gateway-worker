@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # Worker image for `CLAW_SOLVE_ISOLATION=docker_pool` / `podman_pool` (long-lived `sleep`, solve via `docker exec`).
 # Built together with the gateway by `deploy/stack/lib/build.sh` / `./deploy/stack/gateway.sh build` (same rust/ + build-args).
 # Author: kejiqing
@@ -13,8 +14,11 @@ ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
 WORKDIR /build
 COPY rust/Cargo.toml /build/Cargo.toml
 COPY rust/Cargo.lock /build/Cargo.lock
+RUN rustup toolchain install nightly && rustup default nightly
 COPY rust/crates/ /build/crates/
-RUN rustup toolchain install nightly && rustup default nightly && \
+ARG HOST_CARGO_BIND
+ENV CARGO_HOME=/build/cargo-registry-cache
+RUN --mount=type=bind,source=${HOST_CARGO_BIND},target=/build/cargo-registry-cache,rw \
     cargo build -p rusty-claude-cli --bin claw --release
 
 FROM ${DEBIAN_BASE_IMAGE}

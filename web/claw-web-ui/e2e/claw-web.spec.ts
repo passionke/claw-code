@@ -60,8 +60,10 @@ test.describe("Claw Web UI", () => {
 
 test("W5: session execution visible after message", async ({ page }) => {
   await page.goto("/");
-  const threadId = await page.getByTestId("thread-id").getAttribute("title");
-  test.skip(!threadId, "no thread id in header");
+  const sessionEl = page.getByTestId("claw-session-id");
+  await expect(sessionEl).toBeVisible({ timeout: 30_000 });
+  const threadId = (await sessionEl.locator(".claw-session-id-value").textContent())?.trim();
+  test.skip(!threadId, "no claw-session-id in sidebar");
 
   const input = page.locator('textarea, input[type="text"], [contenteditable="true"]').first();
   await input.waitFor({ state: "visible", timeout: 30_000 });
@@ -72,7 +74,9 @@ test("W5: session execution visible after message", async ({ page }) => {
   const deadline = Date.now() + 60_000;
   let saw = false;
   while (Date.now() < deadline) {
-    const res = await fetch(`${gatewayUrl}/v1/sessions/${threadId}/execution`);
+    const res = await fetch(
+      `${gatewayUrl}/v1/sessions/${threadId}/execution?ds_id=1`,
+    );
     if (res.ok) {
       saw = true;
       break;

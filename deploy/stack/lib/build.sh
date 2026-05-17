@@ -114,12 +114,49 @@ fi
 CONTAINER_CLI="$(claw_container_runtime_cli)" || exit 1
 echo "container CLI: ${CONTAINER_CLI} (override with CLAW_CONTAINER_RUNTIME=podman|docker)"
 
+# Bind host CARGO_HOME into builder so crate sources are not re-downloaded each image build.
+# target/ is NOT mounted — release compile stays clean inside the image layer. Author: kejiqing
+HOST_CARGO_BIND_ABS="${CLAW_BUILD_HOST_CARGO_HOME:-${CARGO_HOME:-${HOME}/.cargo}}"
+if [[ "${CLAW_BUILD_MOUNT_HOST_CARGO:-1}" == "1" ]]; then
+  mkdir -p "${HOST_CARGO_BIND_ABS}/registry" "${HOST_CARGO_BIND_ABS}/git"
+else
+  HOST_CARGO_BIND_ABS="${ROOT_DIR}/deploy/stack/.cargo-build-cache"
+  mkdir -p "${HOST_CARGO_BIND_ABS}/registry" "${HOST_CARGO_BIND_ABS}/git"
+fi
+HOST_CARGO_BIND_ABS="$(cd "${HOST_CARGO_BIND_ABS}" && pwd)"
+# Podman build context is ROOT_DIR; RUN --mount source must be a path relative to that context.
+if [[ "${HOST_CARGO_BIND_ABS}" == "${ROOT_DIR}"/* ]]; then
+  HOST_CARGO_BIND="${HOST_CARGO_BIND_ABS#${ROOT_DIR}/}"
+elif [[ "${HOST_CARGO_BIND_ABS}" == "${ROOT_DIR}" ]]; then
+  HOST_CARGO_BIND="."
+else
+  HOST_CARGO_BIND="deploy/stack/.cargo-build-cache"
+  CACHE_ROOT="${ROOT_DIR}/${HOST_CARGO_BIND}"
+  mkdir -p "${CACHE_ROOT}/registry" "${CACHE_ROOT}/git"
+  # Podman on Darwin: bind source must stay under repo; seed once from host ~/.cargo. kejiqing
+  if [[ ! -f "${CACHE_ROOT}/.seeded-from-host" ]] && [[ -d "${HOME}/.cargo/registry" ]]; then
+    echo "cargo cache: seeding ${CACHE_ROOT} from ${HOME}/.cargo (one-time, avoids re-download in image build)" >&2
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a "${HOME}/.cargo/registry/" "${CACHE_ROOT}/registry/"
+      [[ -d "${HOME}/.cargo/git" ]] && rsync -a "${HOME}/.cargo/git/" "${CACHE_ROOT}/git/"
+    else
+      cp -R "${HOME}/.cargo/registry/." "${CACHE_ROOT}/registry/" 2>/dev/null || true
+      [[ -d "${HOME}/.cargo/git" ]] && cp -R "${HOME}/.cargo/git/." "${CACHE_ROOT}/git/" 2>/dev/null || true
+    fi
+    touch "${CACHE_ROOT}/.seeded-from-host"
+  fi
+  echo "cargo registry bind: host ~/.cargo outside Podman context; using ${CACHE_ROOT}" >&2
+fi
+echo "cargo registry bind: ${HOST_CARGO_BIND} (under build context) -> /build/cargo-registry-cache"
+CARGO_BIND_BUILD_ARG=(--build-arg "HOST_CARGO_BIND=${HOST_CARGO_BIND}")
+
 step "1/3 image ${IMAGE_NAME} (Containerfile.gateway-rs)"
 set +u
 "${CONTAINER_CLI}" build \
   --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
   --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
   "${RUSTUP_BUILD_ARGS[@]}" \
+  "${CARGO_BIND_BUILD_ARG[@]}" \
   -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs" \
   -t "${IMAGE_NAME}" \
   "${ROOT_DIR}"
@@ -133,6 +170,7 @@ set +u
   --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
   --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
   "${RUSTUP_BUILD_ARGS[@]}" \
+  "${CARGO_BIND_BUILD_ARG[@]}" \
   -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker" \
   -t "${WORKER_IMAGE_NAME}" \
   "${ROOT_DIR}"

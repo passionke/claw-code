@@ -51,3 +51,5 @@ CI / no browser: `./tests/verify-claw-web.sh --tier smoke` or `--tier full`.
 [deploy/stack/claw-web.env.example](../deploy/stack/claw-web.env.example)
 
 Web UI README: [web/claw-web-ui/README.md](../web/claw-web-ui/README.md)
+
+**持续迭代计划**: [claw-web-work-plan.md](claw-web-work-plan.md)

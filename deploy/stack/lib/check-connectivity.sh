@@ -18,6 +18,24 @@ echo "[1/3] gateway healthz"
 curl -fsS "http://127.0.0.1:${GATEWAY_HOST_PORT}/healthz" >/tmp/claw_gateway_healthz.json
 cat /tmp/claw_gateway_healthz.json
 echo
+python3 - <<'PY'
+import json
+import sys
+
+h = json.load(open("/tmp/claw_gateway_healthz.json"))
+if not h.get("poolRpcRemote"):
+    print(
+        "error: healthz poolRpcRemote is not true — gateway is not using host claw-pool-daemon.",
+        "Run ./deploy/stack/gateway.sh down && ./deploy/stack/gateway.sh up",
+        "Never start gateway without deploy/stack/.claw-pool-rpc/gateway.env (in-container podman is forbidden).",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+if not h.get("poolRpcTcp"):
+    print("error: healthz poolRpcTcp missing", file=sys.stderr)
+    sys.exit(1)
+print(f"pool RPC ok: {h.get('poolRpcTcp')}")
+PY
 
 echo "[2/3] solve_async smoke"
 TASK_JSON="$(curl -fsS -X POST "http://127.0.0.1:${GATEWAY_HOST_PORT}/v1/solve_async" \

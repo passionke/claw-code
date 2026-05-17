@@ -12,7 +12,7 @@ pub use docker_pool::DockerPoolManager;
 pub use local_ops::LocalPoolOps;
 // Used by the `http-gateway-rs` binary (`solve_pool`); not referenced from the library target alone.
 #[allow(unused_imports)]
-pub use result::parse_gateway_solve_exec_stdout;
+pub use result::{normalize_user_visible_output_text, parse_gateway_solve_exec_stdout};
 // `serve_pool_rpc` / `handle_pool_rpc_connection` are for `claw-pool-daemon` and tests.
 #[allow(unused_imports)]
 pub use rpc::{

@@ -10,6 +10,8 @@ use super::docker_pool::DockerPoolManager;
 use super::traits::{PoolOps, PoolSessionHostMounts, SlotLease, TaskOutcome};
 
 /// Adapter so [`Arc<dyn PoolOps>`] can wrap the local [`DockerPoolManager`]. Author: kejiqing
+/// In-process pool (host `claw-pool-daemon` only). Gateway must not construct this — use [`super::PoolRpcClient`].
+#[allow(dead_code)]
 pub struct LocalPoolOps(pub Arc<DockerPoolManager>);
 
 #[async_trait]

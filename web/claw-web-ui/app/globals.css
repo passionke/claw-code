@@ -32,6 +32,20 @@ a {
   color: var(--claw-accent);
 }
 
+.claw-hydrate-placeholder {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  background: var(--claw-bg);
+}
+
+.claw-hydrate-placeholder-text {
+  margin: 0;
+  color: var(--claw-muted);
+  font-size: 0.95rem;
+}
+
 .claw-main {
   flex: 1;
   min-width: 0;
@@ -39,16 +53,75 @@ a {
   overflow: auto;
 }
 
-.claw-main h1 {
-  font-size: 1.35rem;
+.claw-hero h1 {
+  font-size: 1.5rem;
   font-weight: 600;
-  margin: 0 0 0.75rem;
+  margin: 0 0 0.5rem;
 }
 
-.claw-main p {
+.claw-hero .claw-session-id {
+  margin-top: 0.75rem;
+  border-radius: 8px;
+}
+
+.claw-hero-lead {
   color: var(--claw-muted);
   line-height: 1.55;
-  max-width: 42rem;
+  max-width: 36rem;
+  margin: 0 0 1.25rem;
+}
+
+.claw-hero-lead strong {
+  color: var(--claw-accent);
+  font-weight: 600;
+}
+
+.claw-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.claw-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.85rem 1rem;
+  background: var(--claw-panel);
+  border: 1px solid var(--claw-border);
+  border-radius: 10px;
+  text-decoration: none;
+  color: inherit;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+
+a.claw-card:hover {
+  border-color: var(--claw-accent);
+  background: #1e2a3d;
+}
+
+.claw-card-static {
+  cursor: default;
+}
+
+.claw-card-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--claw-muted);
+}
+
+.claw-card-value {
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.claw-card-value.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
 }
 
 .claw-code-server-frame {
@@ -113,7 +186,7 @@ a {
   min-height: 0;
 }
 
-.claw-settings {
+.claw-header .claw-settings {
   position: relative;
   margin-left: auto;
 }

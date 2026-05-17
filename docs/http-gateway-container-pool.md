@@ -8,6 +8,13 @@ Author: kejiqing
 
 **本地怎么起栈（稳定步骤）**：只看 `deploy/stack/README.md` 即可；本文偏设计与配置项说明，不负责替代运维手册。
 
+## 0. 硬约束（禁止回退，Author: kejiqing）
+
+1. **Worker 只由宿主机 `claw-pool-daemon` 创建**（`podman`/`docker` 在**宿主机**命名空间执行）。
+2. **`http-gateway-rs` 禁止**在未配置 **`CLAW_POOL_DAEMON_TCP`**（或 Unix socket）时，于**网关进程内**使用 `LocalPoolOps` / 容器内 `podman`（Mac 上 overlay 套 overlay 必挂）。
+3. **部署入口**：仅 `./deploy/stack/gateway.sh up`；`down` 须停 **compose + pool daemon**（见 `lib/pool-daemon-down.sh`），避免重复 daemon 占端口。
+4. **验收**：`GET /healthz` → `"poolRpcRemote": true`，`poolRpcTcp` 形如 `host.containers.internal:9943`。
+
 ## 1. 要解决什么问题
 
 | 现状 | 问题 |

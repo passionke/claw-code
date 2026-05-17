@@ -1,9 +1,9 @@
 "use client";
 
 import { CopilotSidebar } from "@copilotkit/react-ui";
+import { ClawMainPanel } from "./ClawMainPanel";
 import { ClawShell } from "./ClawShell";
-import { useClawUi } from "./ClawCopilotProvider";
-
+import { ClawSidebarHeader } from "./ClawSidebarHeader";
 type Props = {
   bridgeUrl: string;
   gatewayUrl: string;
@@ -12,49 +12,28 @@ type Props = {
 };
 
 export function ClawHome({ bridgeUrl, gatewayUrl, tapUrl, codeServerUrl }: Props) {
-  const { threadId } = useClawUi();
-
   return (
-    <>
-      <ClawShell bridgeUrl={bridgeUrl} gatewayUrl={gatewayUrl} threadId={threadId}>
-        <main className="claw-main" data-testid="claw-main">
-          <h1>Claw agent workspace</h1>
-          <p>
-            Use the Copilot sidebar to talk to the Claw agent. Requests go through{" "}
-            <code>/api/copilotkit</code> → AG-UI bridge → gateway — not directly to gateway JSON.
-          </p>
-          <p>
-            Live tap:{" "}
-            <a href={tapUrl} target="_blank" rel="noreferrer">
-              {tapUrl}
-            </a>
-          </p>
-          {codeServerUrl && (
-            <>
-              <p>
-                Workspace (read-only):{" "}
-                <a href={codeServerUrl} target="_blank" rel="noreferrer">
-                  code-server
-                </a>
-              </p>
-              <iframe
-                title="code-server"
-                className="claw-code-server-frame"
-                data-testid="code-server-frame"
-                src={codeServerUrl}
-              />
-            </>
-          )}
-        </main>
+    <CopilotSidebar
+      defaultOpen
+      clickOutsideToClose={false}
+      hitEscapeToClose={false}
+      className="claw-copilot-sidebar"
+      Header={ClawSidebarHeader}
+      labels={{
+        title: "Claw",
+        initial: "Ask the Claw agent — tasks run via gateway worker pool.",
+        placeholder: "Message Claw…",
+      }}
+      instructions="You are Claw, a coding agent. Be concise. Use tools when needed. The user's dsId is in forwardedProps."
+      suggestions={[
+        { title: "Smoke test", message: "Reply with exactly: ok" },
+        { title: "Status", message: "Summarize what you can do in one sentence." },
+        { title: "Next step", message: "What should I check in the workspace first?" },
+      ]}
+    >
+      <ClawShell bridgeUrl={bridgeUrl} gatewayUrl={gatewayUrl}>
+        <ClawMainPanel tapUrl={tapUrl} codeServerUrl={codeServerUrl} />
       </ClawShell>
-      <CopilotSidebar
-        defaultOpen
-        labels={{
-          title: "Claw",
-          initial: "Ask the Claw agent…",
-        }}
-        clickOutsideToClose={false}
-      />
-    </>
+    </CopilotSidebar>
   );
 }

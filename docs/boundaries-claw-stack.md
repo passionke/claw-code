@@ -40,6 +40,7 @@ Author: kejiqing
 2. **SQLBot MCP** = what Claw names **`mcp__sqlbot__*`**; the adapter is **invisible** at the Claw tool layer.
 3. **Gateway** = composes processes and env; it is **not** “Doris” and **not** “SQLBot product” — it orchestrates.
 4. **Image** = convenience bundle (gateway + Doris dist + adapter script + `claw`); **repository** boundaries still split for understanding.
+5. **Worker pool** = **host `claw-pool-daemon` only**; gateway **must** use `CLAW_POOL_DAEMON_TCP`. **Never** nested podman inside the gateway container (`deploy/stack/README.md` §2.0).
 
 ## Where to change what
 

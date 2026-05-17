@@ -728,15 +728,15 @@ async fn main() {
         let client = pool::PoolRpcClient::new(PathBuf::from(sock_path));
         Arc::new(client)
     } else {
-        let podman = matches!(solve_isolation, SolveIsolation::PodmanPool);
-        let p =
-            pool::DockerPoolManager::try_from_env(podman, &pool_binding_root).unwrap_or_else(|e| {
-                let runtime = if podman { "Podman" } else { "Docker" };
-                eprintln!("http-gateway-rs: invalid {runtime} pool configuration: {e}");
-                std::process::exit(1);
-            });
-        pool::DockerPoolManager::schedule_warm(&p);
-        Arc::new(pool::LocalPoolOps(p))
+        // Never run podman/docker from inside the gateway container (overlay-on-overlay fails on Mac).
+        // Workers are created only by the host `claw-pool-daemon` reached via CLAW_POOL_DAEMON_TCP.
+        eprintln!(
+            "http-gateway-rs: CLAW_SOLVE_ISOLATION={} requires CLAW_POOL_DAEMON_TCP or CLAW_POOL_DAEMON_SOCKET \
+             (host claw-pool-daemon). In-gateway container pool is forbidden. \
+             Start with: ./deploy/stack/gateway.sh up",
+            solve_isolation.as_str()
+        );
+        std::process::exit(1);
     };
 
     let projects_git_url = mandatory_nonempty_env("CLAW_PROJECTS_GIT_URL");
@@ -3142,6 +3142,7 @@ async fn enqueue_solve_async(
             },
         );
     }
+    state.event_tap.clear(&task_id);
     push_agui_event(
         &state,
         &task_id,
@@ -3194,22 +3195,28 @@ async fn enqueue_solve_async(
                 Ok(v) => {
                     let duration_ms = v.duration_ms;
                     inner.record.status = "succeeded".to_string();
-                    inner.record.result = Some(v.clone());
+                    let visible = pool::normalize_user_visible_output_text(
+                        &v.output_text,
+                        &v.output_json,
+                    );
+                    let mut stored = v.clone();
+                    stored.output_text = visible.clone();
+                    inner.record.result = Some(stored);
+                    // L2 tap order: assistant text before solve.finished (bridge closes text on finished).
+                    if !visible.is_empty() {
+                        push_agui_event(
+                            &state_clone,
+                            &task_id_for_worker,
+                            "text.delta",
+                            json!({"text": visible.as_str()}),
+                        );
+                    }
                     push_agui_event(
                         &state_clone,
                         &task_id_for_worker,
                         "solve.finished",
                         json!({"status":"succeeded","durationMs": duration_ms}),
                     );
-                    let preview: String = v.output_text.chars().take(200).collect();
-                    if !preview.is_empty() {
-                        push_agui_event(
-                            &state_clone,
-                            &task_id_for_worker,
-                            "text.delta",
-                            json!({"text": preview}),
-                        );
-                    }
                     info!(
                         request_id = %rid,
                         task_id = %task_id_for_worker,
@@ -3344,29 +3351,75 @@ async fn solve_async(
     Ok((headers, Json(out)))
 }
 
+#[derive(Debug, Deserialize)]
+struct GetTaskQuery {
+    #[serde(rename = "dsId")]
+    ds_id: Option<i64>,
+}
+
+fn idle_task_record(task_id: &str, ds_id: i64) -> TaskRecord {
+    TaskRecord {
+        task_id: task_id.to_string(),
+        session_id: task_id.to_string(),
+        request_id: task_id.to_string(),
+        ds_id,
+        status: "idle".to_string(),
+        created_at_ms: 0,
+        started_at_ms: None,
+        finished_at_ms: None,
+        current_task_desc: None,
+        progress_updated_at_ms: None,
+        result: None,
+        error: None,
+    }
+}
+
 async fn get_task(
     State(state): State<AppState>,
     AxumPath(task_id): AxumPath<String>,
+    Query(query): Query<GetTaskQuery>,
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
     refresh_task_progress(&state, &task_id).await;
     let tasks = state.tasks.lock().await;
-    let task = tasks
-        .get(&task_id)
-        .map(|inner| inner.record.clone())
-        .ok_or_else(|| {
-            ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
-        })?;
-    info!(
-        request_id = %http_request_id.0,
-        task_id = %task_id,
-        task_request_id = %task.request_id,
-        task_status = %task.status,
-        endpoint = "/v1/tasks/{task_id}",
-        phase = "poll",
-        "gateway_task"
-    );
-    Ok(Json(task))
+    if let Some(inner) = tasks.get(&task_id) {
+        let task = inner.record.clone();
+        drop(tasks);
+        info!(
+            request_id = %http_request_id.0,
+            task_id = %task_id,
+            task_request_id = %task.request_id,
+            task_status = %task.status,
+            endpoint = "/v1/tasks/{task_id}",
+            phase = "poll",
+            "gateway_task"
+        );
+        return Ok(Json(task));
+    }
+    drop(tasks);
+    if let Some(ds_id) = query.ds_id.filter(|&id| id >= 1) {
+        let known = state
+            .session_db
+            .get_session_home_rel(&task_id, ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?;
+        if known.is_some() {
+            let task = idle_task_record(&task_id, ds_id);
+            info!(
+                request_id = %http_request_id.0,
+                task_id = %task_id,
+                task_status = %task.status,
+                endpoint = "/v1/tasks/{task_id}",
+                phase = "poll_idle",
+                "gateway_task"
+            );
+            return Ok(Json(task));
+        }
+    }
+    Err(ApiError::new(
+        StatusCode::NOT_FOUND,
+        format!("task not found: {task_id}"),
+    ))
 }
 
 fn task_status_is_terminal_for_cancel(status: &str) -> bool {

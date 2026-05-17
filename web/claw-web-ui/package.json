@@ -11,10 +11,13 @@
   },
   "dependencies": {
     "@ag-ui/client": "0.0.43",
+    "@aws-sdk/client-s3": "^3.709.0",
     "@copilotkit/react-core": "1.52.1",
     "@copilotkit/react-ui": "1.52.1",
     "@copilotkit/runtime": "1.52.1",
+    "@types/pg": "^8.11.10",
     "next": "15.5.7",
+    "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

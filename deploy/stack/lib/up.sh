@@ -41,6 +41,14 @@ set +a
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
 
+POOL_RPC_ENV="${PODMAN_DIR}/.claw-pool-rpc/gateway.env"
+if [[ ! -f "${POOL_RPC_ENV}" ]] || ! grep -q '^CLAW_POOL_DAEMON_TCP=' "${POOL_RPC_ENV}"; then
+  echo "error: missing ${POOL_RPC_ENV} (CLAW_POOL_DAEMON_TCP)." >&2
+  echo "  Do NOT run bare \`podman compose up\` — only ./deploy/stack/gateway.sh up" >&2
+  echo "  Gateway must use host claw-pool-daemon, not in-container podman." >&2
+  exit 1
+fi
+
 # load_compose_args re-sources .env and resets GATEWAY_IMAGE to :local; re-pin after. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   claw_apply_release_image_tag "${CLAW_IMAGE_RELEASE_TAG}"

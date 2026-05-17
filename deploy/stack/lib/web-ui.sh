@@ -40,6 +40,27 @@ check_health "${BRIDGE_URL}" "AG-UI bridge"
 check_health "${GW_URL}" "gateway"
 require_ui_deps
 
+PG_PORT="${CLAW_WEB_PG_PORT:-5433}"
+PG_USER="${CLAW_WEB_PG_USER:-claw}"
+PG_PASS="${CLAW_WEB_PG_PASSWORD:-claw}"
+PG_DB="${CLAW_WEB_PG_DB:-claw_web}"
+export CLAW_WEB_DATABASE_URL="${CLAW_WEB_DATABASE_URL:-postgresql://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_PORT}/${PG_DB}}"
+
+pg_ready() {
+  if command -v pg_isready >/dev/null 2>&1; then
+    pg_isready -h 127.0.0.1 -p "${PG_PORT}" -U "${PG_USER}" -d "${PG_DB}" -q 2>/dev/null && return 0
+  fi
+  if command -v podman >/dev/null 2>&1 && podman container exists claw-pg 2>/dev/null; then
+    podman exec claw-pg pg_isready -U "${PG_USER}" -d "${PG_DB}" -q 2>/dev/null && return 0
+  fi
+  return 1
+}
+if ! pg_ready; then
+  echo "claw-web-ui: PostgreSQL not ready on 127.0.0.1:${PG_PORT}" >&2
+  echo "  Run: ./deploy/stack/gateway.sh pg-up" >&2
+  exit 1
+fi
+
 export CLAW_AGUI_BRIDGE_URL="${BRIDGE_URL}"
 export CLAW_GATEWAY_BASE_URL="${GW_URL}"
 export NEXT_PUBLIC_CLAW_AGUI_BRIDGE_URL="${BRIDGE_URL}"

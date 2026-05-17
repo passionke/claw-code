@@ -31,6 +31,14 @@ impl EventTapHub {
             .cloned()
             .unwrap_or_default()
     }
+
+    /// Drop tap lines for a new async solve on the same session (taskId). Author: kejiqing
+    pub fn clear(&self, task_id: &str) {
+        self.lines
+            .lock()
+            .expect("event tap lock")
+            .remove(task_id);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -143,6 +151,17 @@ mod tests {
         let hub = EventTapHub::default();
         hub.push("t1", &json!({"type":"solve.queued"}));
         let snap = hub.snapshot("t1");
+        assert_eq!(snap.len(), 1);
+        assert!(snap[0].contains("solve.queued"));
+    }
+
+    #[test]
+    fn event_tap_clear_removes_prior_turn() {
+        let hub = EventTapHub::default();
+        hub.push("sess", &json!({"type":"text.delta","text":"turn1"}));
+        hub.clear("sess");
+        hub.push("sess", &json!({"type":"solve.queued"}));
+        let snap = hub.snapshot("sess");
         assert_eq!(snap.len(), 1);
         assert!(snap[0].contains("solve.queued"));
     }

@@ -5,14 +5,15 @@ import { SettingsPanel } from "./SettingsPanel";
 
 type Health = "loading" | "ok" | "err";
 
-function useHealth(url: string, label: string): { label: string; status: Health } {
+function useHealth(url: string, _label: string): { label: string; status: Health } {
   const [status, setStatus] = useState<Health>("loading");
 
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       try {
-        const res = await fetch(`${url}/healthz`, { cache: "no-store" });
+        const healthUrl = url.includes("/api/health/") ? url : `${url}/healthz`;
+        const res = await fetch(healthUrl, { cache: "no-store" });
         if (!cancelled) setStatus(res.ok ? "ok" : "err");
       } catch {
         if (!cancelled) setStatus("err");
@@ -26,22 +27,16 @@ function useHealth(url: string, label: string): { label: string; status: Health 
     };
   }, [url]);
 
-  return { label, status };
+  return { label: _label, status };
 }
 
 type Props = {
   bridgeUrl: string;
   gatewayUrl: string;
-  threadId: string | null;
   children: React.ReactNode;
 };
 
-export function ClawShell({
-  bridgeUrl,
-  gatewayUrl,
-  threadId,
-  children,
-}: Props) {
+export function ClawShell({ bridgeUrl, gatewayUrl, children }: Props) {
   const bridge = useHealth(bridgeUrl, "Bridge");
   const gateway = useHealth(gatewayUrl, "Gateway");
 
@@ -60,11 +55,6 @@ export function ClawShell({
         <span className="claw-brand">Claw Web</span>
         {pill("Bridge", bridge.status)}
         {pill("Gateway", gateway.status)}
-        {threadId && (
-          <span className="claw-thread" data-testid="thread-id" title={threadId}>
-            thread: {threadId.slice(0, 8)}…
-          </span>
-        )}
         <SettingsPanel />
       </header>
       <div className="claw-body">{children}</div>

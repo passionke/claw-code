@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Session bd5592f8… — Claw diagnostics</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3d8bfd;
+      --err: #f87171;
+      --mono: ui-monospace, "SF Mono", Menlo, monospace;
+      --header-h: 52px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .top {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      padding: 0.45rem 1rem;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      min-height: var(--header-h);
+    }
+    .top a.back {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.75rem;
+    }
+    .top a.back:hover { color: var(--accent); }
+    .top h1 {
+      margin: 0;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    .sid {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--accent);
+    }
+    .pill {
+      font-size: 0.65rem;
+      font-weight: 600;
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+    .pill.fail { background: rgba(248, 113, 113, 0.2); color: var(--err); }
+    .btn {
+      font: inherit;
+      font-size: 0.72rem;
+      padding: 0.2rem 0.45rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .err-strip {
+      padding: 0.35rem 1rem;
+      font-size: 0.75rem;
+      background: rgba(248, 113, 113, 0.1);
+      border-bottom: 1px solid rgba(248, 113, 113, 0.35);
+      color: var(--err);
+    }
+    .err-strip code {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+    }
+    .shell {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+  .index {
+      position: sticky;
+      top: var(--header-h);
+      align-self: start;
+      max-height: calc(100vh - var(--header-h));
+      overflow-y: auto;
+      padding: 0.4rem 0;
+      border-right: 1px solid var(--border);
+      font-size: 0.72rem;
+    }
+    .index-title {
+      padding: 0.25rem 0.6rem;
+      color: var(--muted);
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .index a {
+      display: block;
+      padding: 0.15rem 0.6rem;
+      color: var(--muted);
+      text-decoration: none;
+      font-family: var(--mono);
+      border-left: 2px solid transparent;
+    }
+    .index a:hover { color: var(--accent); background: rgba(61, 139, 253, 0.08); }
+    .index a.err { color: var(--err); }
+    .index a:target,
+    .index a.active { border-left-color: var(--accent); color: var(--text); }
+    .timeline { padding: 0.25rem 0; }
+    .row {
+      scroll-margin-top: calc(var(--header-h) + 8px);
+      display: grid;
+      grid-template-columns: 62px 88px 1fr;
+      gap: 0.35rem 0.5rem;
+      align-items: baseline;
+      padding: 0.2rem 0.75rem;
+      border-bottom: 1px solid rgba(45, 58, 77, 0.45);
+      font-size: 0.78rem;
+    }
+    .row:hover { background: rgba(255, 255, 255, 0.03); }
+    .row.err { background: rgba(248, 113, 113, 0.06); }
+    .row:target { background: rgba(61, 139, 253, 0.1); outline: none; }
+    .row time a {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .row time a:hover { text-decoration: underline; }
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.2rem;
+    }
+    .tag {
+      font-size: 0.62rem;
+      padding: 0 0.25rem;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, 0.07);
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .msg {
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .msg.err { color: var(--err); white-space: normal; line-height: 1.3; }
+    .msg code {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+    }
+    .foot {
+      grid-column: 1 / -1;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.68rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      border-top: 1px solid var(--border);
+    }
+    @media (max-width: 640px) {
+      .shell { grid-template-columns: 1fr; }
+      .index {
+        position: static;
+        max-height: none;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.2rem;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+      .index-title { width: 100%; }
+      .index a { display: inline-block; padding: 0.15rem 0.4rem; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <a class="back" href="http://localhost:4100/">← Claw</a>
+    <h1>Session diagnostics</h1>
+    <span class="sid" id="sid" title="仅为 UI 示例，非真实会话">（示例 UUID，请用侧栏「诊断」）</span>
+    <span class="pill fail">failed</span>
+    <button type="button" class="btn" onclick="navigator.clipboard.writeText(document.getElementById('sid').textContent)">Copy id</button>
+    <button type="button" class="btn">刷新</button>
+  </header>
+
+  <p class="err-strip">
+    <strong>clawExitCode=1</strong>
+    gateway-solve-once:
+    <code>runtime prompt failed: api returned 400 Bad Request (): Param Incorrect</code>
+  </p>
+
+  <div class="shell">
+    <nav class="index" aria-label="跳转">
+      <div class="index-title">时间 · 点击跳转</div>
+      <a href="#e1">16:42:01</a>
+      <a href="#e2">16:42:01</a>
+      <a href="#e3">16:42:02</a>
+      <a href="#e4">16:42:03</a>
+      <a href="#e5">16:42:08</a>
+      <a class="err" href="#e6">16:42:14</a>
+      <a class="err" href="#e7">16:42:14</a>
+      <a href="#e8">16:42:14</a>
+      <a href="#e9">16:42:14</a>
+    </nav>
+
+    <main class="timeline">
+      <article id="e1" class="row">
+        <time><a href="#e1">16:42:01</a></time>
+        <div class="tags"><span class="tag">web</span></div>
+        <p class="msg">POST /api/copilotkit</p>
+      </article>
+      <article id="e2" class="row">
+        <time><a href="#e2">16:42:01</a></time>
+        <div class="tags"><span class="tag">bridge</span></div>
+        <p class="msg"><code>RUN_STARTED</code></p>
+      </article>
+      <article id="e3" class="row">
+        <time><a href="#e3">16:42:02</a></time>
+        <div class="tags"><span class="tag">gw</span><span class="tag">tap</span></div>
+        <p class="msg"><code>solve.queued</code></p>
+      </article>
+      <article id="e4" class="row">
+        <time><a href="#e4">16:42:03</a></time>
+        <div class="tags"><span class="tag">gw</span><span class="tag">progress</span></div>
+        <p class="msg">正在调用模型…</p>
+      </article>
+      <article id="e5" class="row">
+        <time><a href="#e5">16:42:08</a></time>
+        <div class="tags"><span class="tag">worker</span></div>
+        <p class="msg"><code>gateway-solve-once starting</code></p>
+      </article>
+      <article id="e6" class="row err">
+        <time><a href="#e6">16:42:14</a></time>
+        <div class="tags"><span class="tag">worker</span><span class="tag">claw</span></div>
+        <p class="msg err"><code>gateway-solve-once failed</code> · 400 Param Incorrect</p>
+      </article>
+      <article id="e7" class="row err">
+        <time><a href="#e7">16:42:14</a></time>
+        <div class="tags"><span class="tag">gw</span><span class="tag">task</span></div>
+        <p class="msg err"><code>failed</code> · <code>solve.failed</code></p>
+      </article>
+      <article id="e8" class="row">
+        <time><a href="#e8">16:42:14</a></time>
+        <div class="tags"><span class="tag">bridge</span></div>
+        <p class="msg"><code>RUN_ERROR</code></p>
+      </article>
+      <article id="e9" class="row">
+        <time><a href="#e9">16:42:14</a></time>
+        <div class="tags"><span class="tag">trace</span></div>
+        <p class="msg"><code>llm_request_error</code> status 400</p>
+      </article>
+    </main>
+
+    <footer class="foot">
+      独立页 · 未来路由示例 /session/{sessionId}?dsId=1 · API: tasks / events / execution
+    </footer>
+  </div>
+</body>
+</html>

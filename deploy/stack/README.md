@@ -53,20 +53,29 @@ cp .env.example .env
 
 `solve` 始终走 **容器池**（`podman_pool` 或 `docker_pool`）；未设置 `CLAW_SOLVE_ISOLATION` 时与 compose 默认一致为 **`podman_pool`**。
 
-### 1.2 镜像
-
-**本地开发**：改 `rust/` 后**一次**编网关 + worker（同一套 base / rustup 参数，避免只新网关、worker 还是旧的）：
+### 1.2 改 Rust 之后：只有一条命令（固化，别绕）
 
 ```bash
-./deploy/stack/gateway.sh build
+./deploy/stack/gateway.sh deploy
 ```
 
-等价：`./deploy/stack/lib/build.sh`（可选 tag 参数，默认 `local` → `claw-gateway-rs:local` 与 `claw-gateway-worker:local`）。**在 macOS 上**同一步还会 **`cargo build --release` 宿主 `claw-pool-daemon`**（池逻辑改在 `rust/` 里时，只 `restart` 不够，须先 `build` 或手编 daemon，否则宿主机仍跑旧二进制）。
+顺序固定：**`build`（容器内编 Linux 镜像）→ `up`（宿主 pool daemon + compose）→ `check`（含 `poolRpcRemote`）**。日志：`deploy/stack/.build.log`。
 
-### 1.3 启动与检查
+| 禁止 | 原因 |
+| --- | --- |
+| Mac 上 `cargo build` 再 `podman cp` 进容器 | 架构不对，网关直接挂 |
+| 容器里临时 `podman run rust`「热更新」 | 非可重复路径，和镜像漂移 |
+| 只 `compose up` 不走 `gateway.sh up` | 缺 `gateway.env`，会退回容器内 podman |
+| 并行开多个 `gateway.sh build` | 抢缓存、半天在下载 rust-std |
+
+本地只想编 daemon、不动镜像：改 `rust/` 后仍须 **`deploy`** 或至少 **`build` + `up`**；不要 `restart` 糊弄。
+
+### 1.3 拆开看（一般不必手跑）
 
 ```bash
+./deploy/stack/gateway.sh build   # 等价 lib/build.sh → claw-gateway-rs:local + worker:local
 ./deploy/stack/gateway.sh up
+./deploy/stack/gateway.sh check
 ```
 
 `gateway.sh up`（`lib/up.sh`）会：
@@ -110,6 +119,18 @@ podman ps   # 或  docker ps
 ---
 
 ## 2. 设计约定（知道这些就够排障）
+
+### 2.0 禁止：网关容器里再跑 Podman/Docker 起 worker（会复发、难排查）
+
+| 错误做法 | 后果 |
+| --- | --- |
+| 只 `podman compose -f deploy/stack/podman-compose.yml up`，未生成 **`.claw-pool-rpc/gateway.env`** | 旧版网关会在**容器内**调 `podman run`，Mac 上常见 `overlay is not supported over overlayfs`，侧栏发消息无回复 |
+| 手动 `podman cp` 宿主机二进制进网关容器 | `Exec format error`，网关起不来 |
+| 重复起多个 **`claw-pool-daemon`** 或占着 **9943** 不释放 | 连错 daemon / 端口冲突，worker 行为诡异 |
+
+**唯一稳定入口**：`./deploy/stack/gateway.sh up`（生成 `gateway.env`、起宿主 **claw-pool-daemon**、再 `compose up`）。**`gateway.sh down`** 会停 compose **并**杀 daemon、释放 RPC 端口。
+
+**代码层**：`http-gateway-rs` 在 `CLAW_SOLVE_ISOLATION=podman_pool|docker_pool` 且未设置 **`CLAW_POOL_DAEMON_TCP` / `CLAW_POOL_DAEMON_SOCKET` 时直接退出**，不再回退到容器内池。`curl …/healthz` 应见 **`"poolRpcRemote": true`** 与非空 **`poolRpcTcp`**（`gateway.sh check` 会校验）。
 
 - **网关容器内**的池化路径必须是 Linux 里存在的路径；compose 把 `deploy/stack/claw-workspace` 挂到 **`/var/lib/claw/workspace`**，池绑定根目录与之一致。
 - **`CLAW_GATEWAY_SESSION_DB`（会话表 SQLite）**：`podman-compose.yml` 默认把库文件放在 **`/var/lib/claw/gateway-sessions/gateway-sessions.sqlite`**，并 **`./claw-gateway-sessions` → `/var/lib/claw/gateway-sessions`** 绑定到宿主机，**容器重建不丢** `sessionId` ↔ 工作区路径映射。不设该变量时网关会把库落在 **`CLAW_WORK_ROOT/gateway-sessions.sqlite`**（与 workspace 同卷时同样持久；compose 显式卷是为了路径清晰、便于单独备份）。生产也可把 `CLAW_GATEWAY_SESSION_DB` 指到任意**已挂载**的绝对路径（见根目录 `.env.example`）。`/healthz` 的 **`sessionDbPath`** 可核对当前使用的文件路径。

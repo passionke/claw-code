@@ -1,4 +1,6 @@
+# syntax=docker/dockerfile:1.4
 # Base images default to docker.1ms.run; override: podman build --build-arg RUST_BASE_IMAGE=... --build-arg DEBIAN_BASE_IMAGE=...
+# Host ~/.cargo bind: HOST_CARGO_BIND from deploy/stack/lib/build.sh (registry only; target/ stays in-layer clean compile).
 # Author: kejiqing
 ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
 ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
@@ -14,8 +16,13 @@ ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
 WORKDIR /build
 COPY rust/Cargo.toml /build/Cargo.toml
 COPY rust/Cargo.lock /build/Cargo.lock
+# Toolchain layer caches across crate edits (avoid re-downloading rust-std every build).
+RUN rustup toolchain install nightly && rustup default nightly
 COPY rust/crates/ /build/crates/
-RUN rustup toolchain install nightly && rustup default nightly && \
+ARG HOST_CARGO_BIND
+# Bind registry cache only — do not mount over /usr/local/cargo (rustup toolchain lives there). kejiqing
+ENV CARGO_HOME=/build/cargo-registry-cache
+RUN --mount=type=bind,source=${HOST_CARGO_BIND},target=/build/cargo-registry-cache,rw \
     cargo build -p rusty-claude-cli --bin claw --release && \
     cargo build -p http-gateway-rs --release && \
     cargo build -p ag-ui-claw-bridge --release

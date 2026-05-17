@@ -27,7 +27,8 @@ export const POST = async (req: NextRequest) => {
   const dsId = dsIdFromRequest(req);
   const runtime = new CopilotRuntime({
     agents: {
-      [CLAW_AGENT_ID]: createClawHttpAgent(dsId),
+      // HttpAgent vs nested @ag-ui/client version mismatch in CopilotKit 1.52
+      [CLAW_AGENT_ID]: createClawHttpAgent(dsId) as never,
     },
   });
 

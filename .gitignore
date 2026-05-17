@@ -28,11 +28,14 @@ rust/crates/rusty-claude-cli/.claw/
 status-help.txt
 claw-server-data/
 rust/claw-server.db
+deploy/stack/.build.log
+deploy/stack/.cargo-build-cache/
 deploy/stack/claude-tap.log
 deploy/stack/claude-tap.pid
 deploy/stack/claw-logs/
 deploy/stack/claw-workspace/
 deploy/stack/claw-gateway-sessions/
+deploy/stack/claw-pg-data/
 deploy/stack/claude-tap-data/
 deploy/stack/deploy/
 deploy/stack/.claw-pool-rpc/

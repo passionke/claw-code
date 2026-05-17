@@ -12,6 +12,7 @@ Usage:
   ./deploy/stack/gateway.sh <command>
 
 Commands:
+  deploy        ONLY path after rust/ changes: build → up → check (see lib/deploy.sh)
   build         Build gateway + worker images; full log → deploy/stack/.build.log (see: build --help)
   up            Start/recreate gateway stack (`up --release TAG` = down + kill pool + rm all workers + pull + up)
   down          Stop gateway stack
@@ -25,6 +26,7 @@ Commands:
   ps            Show relevant containers
   e2e           Run tests/http-gateway-session-continuity-e2e.sh
   verify-web    Run tests/verify-claw-web.sh (after up; needs CLAW_GATEWAY_DEV_AGUI=1 for full)
+  pg-up         Start PostgreSQL for Claw Web conversation store (port 5433)
   web-ui        Start CopilotKit Claw Web UI on CLAW_WEB_UI_PORT (default 4100)
   verify-web-ui Run verify-claw-web full + Playwright (requires tap-up + web-ui)
   code-server-up   Start read-only code-server on CLAW_CODE_SERVER_PORT (default 4101)
@@ -39,6 +41,7 @@ cmd="${1:-help}"
 shift || true
 
 case "${cmd}" in
+  deploy) "${LIB}/deploy.sh" "$@" ;;
   build) "${LIB}/build.sh" "$@" ;; # pass --log PATH | --no-log | IMAGE_TAG
   up) "${LIB}/up.sh" "$@" ;;
   down) "${LIB}/down.sh" "$@" ;;
@@ -79,6 +82,7 @@ case "${cmd}" in
     export CLAW_GATEWAY_BASE_URL="${CLAW_GATEWAY_BASE_URL:-http://127.0.0.1:${GATEWAY_HOST_PORT:-8088}}"
     "${REPO_ROOT}/tests/verify-claw-web.sh" --tier all "$@"
     ;;
+  pg-up) "${LIB}/pg-up.sh" "$@" ;;
   web-ui) "${LIB}/web-ui.sh" "$@" ;;
   verify-web-ui)
     set -a

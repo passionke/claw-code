@@ -613,10 +613,8 @@ fn polish_output_from_events(
             "cache_read_input_tokens": usage.cache_read_input_tokens
         }
     });
-    Ok((
-        serde_json::to_string(&out_json).unwrap_or_default(),
-        out_json,
-    ))
+    // outputText = user-visible prose; structured fields live in outputJson only.
+    Ok((text, out_json))
 }
 
 async fn run_gateway_biz_polish_llm_inner<F>(
@@ -832,11 +830,7 @@ pub fn run_gateway_solve_turn(
             "cache_read_input_tokens": result.usage.cache_read_input_tokens
         }
     });
-    Ok((
-        0,
-        serde_json::to_string(&out_json).unwrap_or_default(),
-        Some(out_json),
-    ))
+    Ok((0, message, Some(out_json)))
 }
 
 #[cfg(test)]

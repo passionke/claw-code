@@ -22,3 +22,18 @@ export function defaultDsId(): number {
 
 export const STORAGE_DS_ID = "claw_web_ds_id";
 export const STORAGE_THREAD_ID = "claw_web_thread_id";
+
+/** Legacy single-session key (migrated on load). Prefer conversation store active session. */
+export function readStoredThreadId(): string | null {
+  if (typeof window === "undefined") return null;
+  const id = localStorage.getItem(STORAGE_THREAD_ID);
+  return id && id.trim() ? id.trim() : null;
+}
+
+export function readStoredDsId(): number {
+  if (typeof window === "undefined") return defaultDsId();
+  const d = localStorage.getItem(STORAGE_DS_ID);
+  if (!d) return defaultDsId();
+  const n = Number.parseInt(d, 10);
+  return Number.isFinite(n) && n > 0 ? n : defaultDsId();
+}

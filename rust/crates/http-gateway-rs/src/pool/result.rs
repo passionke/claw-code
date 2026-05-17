@@ -28,7 +28,7 @@ pub fn parse_gateway_solve_exec_stdout(
         .and_then(Value::as_i64)
         .unwrap_or(i64::from(fallback_exit_code));
     let claw_exit_code = i32::try_from(raw_exit).unwrap_or(fallback_exit_code);
-    let output_text = parsed
+    let mut output_text = parsed
         .get("outputText")
         .and_then(|v| v.as_str())
         .or_else(|| parsed.get("error").and_then(|v| v.as_str()))
@@ -38,11 +38,32 @@ pub fn parse_gateway_solve_exec_stdout(
         .get("outputJson")
         .cloned()
         .or_else(|| parsed.get("error").map(|_| parsed.clone()));
+    output_text = normalize_user_visible_output_text(&output_text, &output_json);
     ParsedGatewaySolvePayload {
         claw_exit_code,
         output_text,
         output_json,
     }
+}
+
+/// Legacy workers put the full solve JSON bundle in `outputText`; prefer `message` / `outputJson.message`.
+pub fn normalize_user_visible_output_text(output_text: &str, output_json: &Option<Value>) -> String {
+    if let Some(msg) = output_json
+        .as_ref()
+        .and_then(|j| j.get("message"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return msg.to_string();
+    }
+    if let Ok(v) = serde_json::from_str::<Value>(output_text.trim()) {
+        if let Some(msg) = v.get("message").and_then(Value::as_str) {
+            if v.get("iterations").is_some() || v.get("usage").is_some() {
+                return msg.to_string();
+            }
+        }
+    }
+    output_text.to_string()
 }
 
 #[cfg(test)]
@@ -81,6 +102,23 @@ mod tests {
         let p = parse_gateway_solve_exec_stdout(r#"{"outputText":"x"}"#, 7);
         assert_eq!(p.claw_exit_code, 7);
         assert_eq!(p.output_text, "x");
+    }
+
+    #[test]
+    fn unwraps_legacy_json_bundle_in_output_text() {
+        let bundle = json!({
+            "model": "m",
+            "iterations": 1,
+            "message": "Hello!",
+            "usage": {}
+        });
+        let line = json!({
+            "clawExitCode": 0,
+            "outputText": bundle.to_string(),
+            "outputJson": bundle,
+        });
+        let p = parse_gateway_solve_exec_stdout(&line.to_string(), 0);
+        assert_eq!(p.output_text, "Hello!");
     }
 
     #[test]

@@ -11,8 +11,8 @@ Bridge orchestrates gateway solve APIs and translates gateway progress into AG-U
 
 | Method | Path | Use |
 |--------|------|-----|
-| POST | `/v1/solve_async` | Start solve; returns `taskId` / `sessionId` |
-| GET | `/v1/tasks/{task_id}` | Poll until terminal status |
+| POST | `/v1/solve_async` | Start solve; returns `sessionId` (`taskId` in JSON = same value, see [L0](L0-shared-identifiers.md)) |
+| GET | `/v1/tasks/{task_id}` | Poll until terminal status; `?dsId=` returns `status: idle` when session exists but no in-memory task |
 | GET | `/v1/sessions/{session_id}/execution?ds_id=` | Progress + optional trace |
 | GET | `/v1/events/{task_id}` | **Event tap** (NDJSON stream, v1 extension) |
 | POST | `/v1/interrupts/{interrupt_id}/resolve` | Resume after human input (L4) |
@@ -37,8 +37,8 @@ Maps L1 `RunAgentInput` to `SolveRequest`:
 
 Headers:
 
-- `claw-session-id: <threadId>`
-- `x-request-id: <runId>`
+- `claw-session-id: <threadId>` → gateway `sessionId`
+- `x-request-id: <runId>` → one turn per user send (not gateway `taskId`)
 
 ## Event tap (NDJSON)
 
