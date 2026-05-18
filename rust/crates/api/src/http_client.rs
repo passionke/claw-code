@@ -81,7 +81,10 @@ pub fn build_http_client_or_default() -> reqwest::Client {
 /// and `https_proxy` fields and is registered as both an HTTP and HTTPS
 /// proxy so a single value can route every outbound request.
 pub fn build_http_client_with(config: &ProxyConfig) -> Result<reqwest::Client, ApiError> {
-    let mut builder = reqwest::Client::builder().no_proxy();
+    // llm-gw-sh buffers SSE on HTTP/1.1 (~13s TTFB) but streams on HTTP/2 (~0.5s). Author: kejiqing
+    let mut builder = reqwest::Client::builder()
+        .http2_adaptive_window(true)
+        .no_proxy();
 
     let no_proxy = config
         .no_proxy
