@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use gateway_solve_turn::GatewaySolveTaskFile;
 use tokio::fs;
+use tokio::time::{timeout, Duration as TokioDuration};
 use tracing::{info, warn};
 
 use crate::pool::{parse_gateway_solve_exec_stdout, PoolOps, PoolSessionHostMounts, SlotLease};
@@ -32,6 +33,17 @@ pub(crate) fn session_mount_for_pool_acquire(
 
 /// Fixed name inside the per-session bind mount (no `..`, not client-controlled).
 const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
+
+/// Path to `claw` inside worker images. Host `CLAW_BIN` may be a macOS absolute path unusable in `podman exec`. kejiqing
+const POOL_WORKER_CLAW_BIN: &str = "/usr/local/bin/claw";
+
+fn claw_bin_for_pool_exec(cfg: &crate::GatewayConfig) -> &str {
+    let bin = cfg.claw_bin.trim();
+    if bin == "claw" || bin.starts_with("/usr/local/") {
+        return bin;
+    }
+    POOL_WORKER_CLAW_BIN
+}
 
 /// Resolved session directory on disk plus path relative to `CLAW_WORK_ROOT` (same string as DB `session_home`).
 pub(crate) struct SolveSessionPaths {
@@ -223,14 +235,45 @@ pub async fn run_solve_request_docker(
             .insert(tid.clone(), (Arc::clone(&pool), slot_index));
     }
 
-    let exec_result = pool
-        .exec_solve(
-            lease_cleanup.lease.as_ref().expect("lease set for exec"),
-            GATEWAY_SOLVE_TASK_FILE,
-            state.cfg.claw_bin.as_str(),
-            Some(request_id.as_str()),
-        )
-        .await;
+    let slot_index = lease_cleanup
+        .lease
+        .as_ref()
+        .expect("lease set for exec")
+        .slot_index;
+    let exec_fut = pool.exec_solve(
+        lease_cleanup.lease.as_ref().expect("lease set for exec"),
+        GATEWAY_SOLVE_TASK_FILE,
+        claw_bin_for_pool_exec(&state.cfg),
+        Some(request_id.as_str()),
+    );
+    let exec_result =
+        if let Ok(outcome) = timeout(TokioDuration::from_secs(timeout_seconds), exec_fut).await {
+            outcome
+        } else {
+            warn!(
+                target: "claw_gateway_solve_pool",
+                component = "docker_solve",
+                phase = "exec_solve_timeout",
+                ds_id = req.ds_id,
+                request_id = %request_id,
+                slot_index,
+                timeout_seconds,
+                "docker exec gateway-solve-once exceeded timeout; force-killing worker"
+            );
+            if let Err(e) = pool.force_kill_slot(slot_index).await {
+                warn!(
+                    target: "claw_gateway_solve_pool",
+                    component = "docker_solve",
+                    phase = "exec_solve_timeout_force_kill_failed",
+                    error = %e,
+                    slot_index,
+                    "force_kill after solve timeout failed"
+                );
+            }
+            Err(format!(
+                "gateway-solve-once timed out after {timeout_seconds}s"
+            ))
+        };
 
     if let Some(ref tid) = task_id {
         state.docker_slots.lock().await.remove(tid);
@@ -299,7 +342,14 @@ pub async fn run_solve_request_docker(
 
     let _ = fs::remove_file(&task_path).await;
 
-    exec_result.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    exec_result.map_err(|e| {
+        let status = if e.contains("timed out") {
+            StatusCode::GATEWAY_TIMEOUT
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        ApiError::new(status, e)
+    })?;
     let Some(parsed) = parsed else {
         return Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,

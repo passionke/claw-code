@@ -70,9 +70,9 @@ pub use config_validate::{
     DiagnosticKind, ValidationResult,
 };
 pub use conversation::{
-    auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
-    ConversationRuntime, PromptCacheEvent, RuntimeError, StaticToolExecutor, ToolError,
-    ToolExecutor, TurnSummary,
+    auto_compaction_threshold_from_env, is_background_sqlbot_analysis_tool, ApiClient, ApiRequest,
+    AssistantEvent, AutoCompactionEvent, ConversationRuntime, PromptCacheEvent, RuntimeError,
+    SharedToolExecutor, StaticToolExecutor, ToolError, ToolExecutor, TurnSummary,
 };
 pub use file_ops::{
     edit_file, glob_search, grep_search, read_file, write_file, write_file_max_bytes,
@@ -95,8 +95,9 @@ pub use mcp::{
     scoped_mcp_config_hash, unwrap_ccr_proxy_url,
 };
 pub use mcp_client::{
-    McpClientAuth, McpClientBootstrap, McpClientTransport, McpManagedProxyTransport,
-    McpRemoteTransport, McpSdkTransport, McpStdioTransport,
+    default_mcp_max_concurrent, McpClientAuth, McpClientBootstrap, McpClientTransport,
+    McpManagedProxyTransport, McpRemoteTransport, McpSdkTransport, McpStdioTransport,
+    DEFAULT_MCP_MAX_CONCURRENT,
 };
 pub use mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase, McpLifecycleState,

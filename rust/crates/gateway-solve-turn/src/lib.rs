@@ -19,14 +19,16 @@ use api::{
     ProviderClient, StreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 use runtime::{
-    apply_config_env_if_unset, load_system_prompt, ApiClient as RuntimeApiClient, ApiRequest,
-    AssistantEvent, ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime,
-    McpServerManager, MessageRole, PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError,
-    Session, ToolError, ToolExecutor as RuntimeToolExecutor,
+    apply_config_env_if_unset, default_mcp_max_concurrent, load_system_prompt,
+    ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
+    ConversationMessage, ConversationRuntime, McpServerManager, MessageRole, PermissionMode,
+    PermissionPolicy, RuntimeConfig, RuntimeError, Session, SharedToolExecutor, ToolError,
+    ToolExecutor as RuntimeToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use telemetry::{JsonlTelemetrySink, SessionTracer};
+use tokio::sync::Semaphore;
 use tools::{
     execute_mcp_tool_with_extra_session, execute_tool, initialize_mcp_bridge, mvp_tool_specs,
 };
@@ -316,6 +318,10 @@ impl RuntimeApiClient for DirectApiClient {
 }
 
 struct DirectToolExecutor {
+    inner: Arc<DirectToolExecutorInner>,
+}
+
+struct DirectToolExecutorInner {
     session_home: PathBuf,
     session_id: String,
     allowed_tools: Vec<String>,
@@ -323,10 +329,38 @@ struct DirectToolExecutor {
     runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
     runtime_mcp_tool_names: HashSet<String>,
     session_tracer: Option<SessionTracer>,
+    mcp_semaphore: Arc<Semaphore>,
+    /// `gateway-solve-once` enters this runtime on the main thread; background analysis
+    /// tools call MCP via `Handle::block_on` from worker threads. Author: kejiqing
+    async_runtime: tokio::runtime::Handle,
 }
 
-impl RuntimeToolExecutor for DirectToolExecutor {
-    fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+impl DirectToolExecutorInner {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        session_home: PathBuf,
+        session_id: String,
+        allowed_tools: Vec<String>,
+        extra_session: Option<Value>,
+        runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
+        runtime_mcp_tool_names: HashSet<String>,
+        session_tracer: Option<SessionTracer>,
+        async_runtime: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            session_home,
+            session_id,
+            allowed_tools,
+            extra_session,
+            runtime_mcp_manager,
+            runtime_mcp_tool_names,
+            session_tracer,
+            mcp_semaphore: Arc::new(Semaphore::new(default_mcp_max_concurrent())),
+            async_runtime,
+        }
+    }
+
+    fn execute_impl(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
         if !is_tool_allowed(tool_name, &self.allowed_tools) {
             return Err(ToolError::new(format!("tool not allowed: {tool_name}")));
         }
@@ -352,40 +386,64 @@ impl RuntimeToolExecutor for DirectToolExecutor {
                 .map_err(ToolError::new);
         }
         if self.runtime_mcp_tool_names.contains(tool_name) {
-            let args = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-            let meta = self
-                .extra_session
-                .as_ref()
-                .map(|value| json!({ "extra_session": value }));
-            let Some(manager) = &self.runtime_mcp_manager else {
-                return Err(ToolError::new("MCP manager not initialized"));
-            };
-            let manager = Arc::clone(manager);
-            let response = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    let mut guard = manager
-                        .lock()
-                        .map_err(|_| ToolError::new("MCP manager lock poisoned"))?;
-                    guard
-                        .call_tool(tool_name, Some(args), meta)
-                        .await
-                        .map_err(|e| ToolError::new(e.to_string()))
-                })
-            })?;
-            if let Some(error) = response.error {
-                return Err(ToolError::new(format!(
-                    "MCP tool call failed: {} ({})",
-                    error.message, error.code
-                )));
-            }
-            let Some(result) = response.result else {
-                return Err(ToolError::new("MCP tool call returned no result"));
-            };
-            return serde_json::to_string(&result)
-                .map_err(|e| ToolError::new(format!("serialize MCP result failed: {e}")));
+            return self.call_runtime_mcp_tool(tool_name, input);
         }
         let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
         execute_tool(tool_name, &parsed).map_err(ToolError::new)
+    }
+
+    fn call_runtime_mcp_tool(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+        let args = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
+        let meta = self
+            .extra_session
+            .as_ref()
+            .map(|value| json!({ "extra_session": value }));
+        let Some(manager) = &self.runtime_mcp_manager else {
+            return Err(ToolError::new("MCP manager not initialized"));
+        };
+        let manager = Arc::clone(manager);
+        let semaphore = Arc::clone(&self.mcp_semaphore);
+        let tool_name = tool_name.to_string();
+        let response = self.async_runtime.block_on(async move {
+            let _permit = semaphore
+                .acquire()
+                .await
+                .map_err(|_| ToolError::new("MCP concurrency semaphore closed"))?;
+            let mut guard = manager
+                .lock()
+                .map_err(|_| ToolError::new("MCP manager lock poisoned"))?;
+            guard
+                .call_tool(&tool_name, Some(args), meta)
+                .await
+                .map_err(|e| ToolError::new(e.to_string()))
+        })?;
+        if let Some(error) = response.error {
+            return Err(ToolError::new(format!(
+                "MCP tool call failed: {} ({})",
+                error.message, error.code
+            )));
+        }
+        let Some(result) = response.result else {
+            return Err(ToolError::new("MCP tool call returned no result"));
+        };
+        serde_json::to_string(&result)
+            .map_err(|e| ToolError::new(format!("serialize MCP result failed: {e}")))
+    }
+}
+
+impl SharedToolExecutor for DirectToolExecutorInner {
+    fn execute_shared(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+        self.execute_impl(tool_name, input)
+    }
+}
+
+impl RuntimeToolExecutor for DirectToolExecutor {
+    fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+        self.inner.execute_impl(tool_name, input)
+    }
+
+    fn shared_executor(&self) -> Option<Arc<dyn SharedToolExecutor>> {
+        Some(self.inner.clone())
     }
 }
 
@@ -784,14 +842,23 @@ pub fn run_gateway_solve_turn(
     }
     .with_workspace_root(work_dir);
     let session_tracer = gateway_session_tracer(clawcode_session_id, work_root);
+    let async_runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+        err(
+            HTTP_INTERNAL,
+            "gateway solve requires a Tokio runtime (gateway-solve-once must call run_gateway_solve_turn inside rt.enter())",
+        )
+    })?;
     let tool_executor = DirectToolExecutor {
-        session_home: work_dir.to_path_buf(),
-        session_id: clawcode_session_id.to_string(),
-        allowed_tools,
-        extra_session,
-        runtime_mcp_manager,
-        runtime_mcp_tool_names,
-        session_tracer: session_tracer.clone(),
+        inner: Arc::new(DirectToolExecutorInner::new(
+            work_dir.to_path_buf(),
+            clawcode_session_id.to_string(),
+            allowed_tools,
+            extra_session,
+            runtime_mcp_manager,
+            runtime_mcp_tool_names,
+            session_tracer.clone(),
+            async_runtime,
+        )),
     };
     let mut policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
     for spec in mvp_tool_specs() {
@@ -808,6 +875,7 @@ pub fn run_gateway_solve_turn(
     if let Some(tracer) = session_tracer {
         runtime = runtime.with_session_tracer(tracer);
     }
+    // Turn deadline is enforced by the gateway pool (`timeout` on `docker exec` + `force_kill_slot`).
     let result = runtime
         .run_turn(prompt, None)
         .map_err(|e| err(HTTP_INTERNAL, format!("runtime prompt failed: {e}")))?;

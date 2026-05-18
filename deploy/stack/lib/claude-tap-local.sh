@@ -201,6 +201,14 @@ claw_claude_tap_start_native() {
   echo "claude-tap native pid=$(cat "${podman_dir}/claude-tap.pid") port=${port} live=${live_port}"
 }
 
+claw_claude_tap_container_running() {
+  local rt="$1"
+  local container_name="$2"
+  local status
+  status="$("${rt}" inspect -f '{{.State.Running}}' "${container_name}" 2>/dev/null || echo false)"
+  [[ "${status}" == "true" ]]
+}
+
 claw_claude_tap_is_running() {
   local podman_dir="$1"
   local pid_file="${podman_dir}/claude-tap.pid"
@@ -212,12 +220,16 @@ claw_claude_tap_is_running() {
     if [[ "${pid}" =~ ^container: ]]; then
       local rt
       rt="$(claw_claude_tap_runtime_cli)"
-      "${rt}" container exists "${container_name}" 2>/dev/null && return 0
+      if claw_claude_tap_container_running "${rt}" "${container_name}"; then
+        return 0
+      fi
+      rm -f "${pid_file}"
       return 1
     fi
     if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" >/dev/null 2>&1; then
       return 0
     fi
+    rm -f "${pid_file}"
   fi
   return 1
 }
