@@ -7,6 +7,7 @@ use crate::mcp::{mcp_server_signature, mcp_tool_prefix, normalize_name_for_mcp};
 pub const DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS: u64 = 60_000;
 static MCP_TOOL_CALL_TIMEOUT_MS: OnceLock<u64> = OnceLock::new();
 
+/// Fallback when `CLAW_MCP_MAX_CONCURRENT` is unset; tune concurrency via env only. Author: kejiqing
 pub const DEFAULT_MCP_MAX_CONCURRENT: usize = 4;
 static MCP_MAX_CONCURRENT: OnceLock<usize> = OnceLock::new();
 
@@ -283,7 +284,7 @@ mod tests {
     #[test]
     fn mcp_max_concurrent_parse_normalizes_zero_to_one() {
         assert_eq!(super::parse_mcp_max_concurrent(Some("0")), 1);
-        assert_eq!(super::parse_mcp_max_concurrent(Some("4")), 4);
+        assert_eq!(super::parse_mcp_max_concurrent(Some("8")), 8);
         assert_eq!(super::parse_mcp_max_concurrent(None), 4);
         assert_eq!(super::parse_mcp_max_concurrent(Some("")), 4);
     }
