@@ -8,7 +8,7 @@ Base URL 示例：`http://127.0.0.1:18088`
 
 - `GET /healthz`
   - 用途：健康检查与关键运行配置回显
-  - 回显字段含 `sessionDbPath`：网关 **SQLite** 会话索引文件路径（`sessionId` ↔ 工作目录相对路径）。由环境变量 `CLAW_GATEWAY_SESSION_DB` 指定（推荐宿主机持久路径或 volume 挂载）；未设置时默认为 `CLAW_WORK_ROOT/gateway-sessions.sqlite`（与 workspace 同卷时需保证 `CLAW_WORK_ROOT` 已持久挂载）。
+  - 回显字段含 `sessionDatabaseBackend`（`postgresql`）、`gatewayDatabaseUrl`（脱敏连接串）。会话/轮次/反馈表在 **PostgreSQL**，由环境变量 **`CLAW_GATEWAY_DATABASE_URL`** 指定（compose 默认连栈内 `postgres` 服务；生产可指向独立 PG 集群）。
 
 ## Solve
 
@@ -17,7 +17,7 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 会话 ID 约定：
     - **有效 `sessionId`**：请求体可选字段 `sessionId`（非空）优先；否则使用请求头 `claw-session-id`；再否则 `x-request-id`；皆无则网关生成 UUID。响应头 `claw-session-id` / `x-request-id` 与响应体 `sessionId` / `requestId` 与有效值一致。
     - 若请求头已带 `claw-session-id` 或 `x-request-id`，且请求体 **`sessionId` 与头不一致**，返回 `400`（`sessionId conflicts with claw-session-id or x-request-id header`）。
-  - **续聊与路径**：网关将 `(sessionId, dsId)` 与工作区目录的映射写入 SQLite。请求体传入 **`sessionId` 且非空** 表示显式续聊：若库中无该 `(sessionId, dsId)` 行，返回 `400`（`unknown sessionId (no session history for this dsId)`）。未传 `sessionId` 但头里携带的会话在库中已有记录时，会 **复用同一工作目录** 与磁盘上的对话 jsonl，实现多轮连续。
+  - **续聊与路径**：网关将 `(sessionId, dsId)` 与工作区目录的映射写入 PostgreSQL（`gateway_sessions`）。请求体传入 **`sessionId` 且非空** 表示显式续聊：若库中无该 `(sessionId, dsId)` 行，返回 `400`（`unknown sessionId (no session history for this dsId)`）。未传 `sessionId` 但头里携带的会话在库中已有记录时，会 **复用同一工作目录** 与磁盘上的对话 jsonl，实现多轮连续。
   - 请求体字段：
     - `dsId`：必填，数据源 ID，整数且需 `>= 1`
     - `userPrompt`：必填，用户自然语言输入，非空字符串
@@ -30,7 +30,7 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 追踪约定：
     - 网关会为本次调用确定 `sessionId`（等于 `claw-session-id`）
     - 响应体主字段使用 `sessionId`，并保留 `requestId` 兼容字段（同值）
-    - 响应体含 `sessionHomeRel`：相对 `CLAW_WORK_ROOT` 的会话工作目录（与 SQLite `gateway_sessions.session_home` 一致），与 `workDir`（绝对路径）成对出现。**新建会话**时目录名为 `ds_{dsId}/sessions/<segment>`：在 `sessionId` 可作为安全单段路径名时 `<segment>` **与 `sessionId` 相同**（网关生成的 32 位十六进制 id 即落在该目录下）；若 `sessionId` 含路径分隔符等不安全字符，则 `<segment>` 为对该 id 做 UUID v5 派生的 32 位十六进制名（与 id 一一对应、可复现）。续聊仍按库中已有 `session_home` 打开原目录。
+    - 响应体含 `sessionHomeRel`：相对 `CLAW_WORK_ROOT` 的会话工作目录（与 PG 表 `gateway_sessions.session_home` 一致），与 `workDir`（绝对路径）成对出现；含 **`turnId`**（当次轮次，`T_<32位小写hex>`）。**新建会话**时目录名为 `ds_{dsId}/sessions/<segment>`：在 `sessionId` 可作为安全单段路径名时 `<segment>` **与 `sessionId` 相同**（网关生成的 32 位十六进制 id 即落在该目录下）；若 `sessionId` 含路径分隔符等不安全字符，则 `<segment>` 为对该 id 做 UUID v5 派生的 32 位十六进制名（与 id 一一对应、可复现）。续聊仍按库中已有 `session_home` 打开原目录。
     - 在访问上游模型时透传 HTTP 头：
       - `clawcode-session-id: <sessionId>`
       - `claw-session-id: <sessionId>`
@@ -46,13 +46,14 @@ Base URL 示例：`http://127.0.0.1:18088`
 - `POST /v1/solve_async`
   - 用途：异步提交 solve 任务，返回 `taskId`
   - ID 约定：`taskId` 与 `sessionId` 为同一个值（同一逻辑会话 ID），用于统一追踪与轮询。
-  - 响应兼容：同时返回 `requestId`（值等于 `sessionId`）；响应头 `claw-session-id` / `x-request-id` 与有效 `sessionId` 一致（与 `/v1/solve` 相同合并规则）。
+  - 响应兼容：同时返回 `requestId`（值等于 `sessionId`）、**`turnId`**（当次轮次，`T_<32位小写hex>`）；响应头 `claw-session-id` / `x-request-id` 与有效 `sessionId` 一致（与 `/v1/solve` 相同合并规则）。
   - **显式续聊**：请求体带非空 `sessionId` 时，若库中无该 `(sessionId, dsId)`，在入队前返回 `400`（文案同同步接口）。
   - **串行**：同一 `sessionId` 已存在状态为 `queued` 或 `running` 的异步任务时，再次 `POST /v1/solve_async` 返回 **`409 Conflict`**（`session has active async task`），需等待完成或取消后再提交。
   - 追踪约定：异步调用同样透传 `clawcode-session-id` 与 `claw-session-id`（值均为该次任务的网关层会话 ID）
 
 - `GET /v1/tasks/{task_id}`
   - 用途：查询异步任务状态与结果
+  - 响应含 **`turnId`**（与本次 async 入队时返回的值一致）
   - 响应除 `status` 外含 **`currentTaskDesc`**（用户可见进度一句，camelCase JSON）：主要来自 agent 调用的内部工具 `report_progress` 写入会话目录 `.claw/task-progress.json`；`queued` 时网关可返回「排队中（x 个等待，y 个执行中）」；`running` 且无上报时兜底「处理中」或「工具调用中」（不暴露具体工具名）。**不**从 `gateway-solve-session.jsonl` 最后一条 assistant 推导。
   - 另含 `dsId`、`progressUpdatedAtMs`（与 progress 文件一致时更新）
 
@@ -66,6 +67,21 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 对已是终态 `succeeded` / `failed` / `cancelled`：幂等返回 **`200`**（不改动 `status` / `result`），`error` 说明未再取消，例如：`{"detail":"task already succeeded; cancel had no effect","outcome":"idempotent","cancelApplied":false,"statusAtCancel":"succeeded","previousError":...}`（可安全重试、连点取消）
   - 若 `task_id` 未知：返回 `404`
   - 说明：取消通过中止网关侧异步 worker 实现；若当前正阻塞在长时间同步推理 `run_turn` 中，可能要等该段同步逻辑返回后 worker 才会结束，但**不会**再用成功结果覆盖已为 `cancelled` 的状态
+
+- `POST /v1/agent/feedback`
+  - 用途：对会话内**某一轮** Agent 回复点赞/点踩（须带 `turnId`）
+  - 请求体：`dsId`（≥1）、`sessionId`、`turnId`（格式 `T_<32位小写hex>`）、`feedback`（`good` | `bad`）
+  - 校验：`(sessionId, dsId)` 须在 `gateway_sessions`；`turnId` 须属于该会话（`gateway_turns`）
+  - 成功：`sessionId`、`dsId`、`turnId`、`feedback`、`updatedAtMs`
+  - 同一轮再次提交为覆盖更新
+
+- `GET /v1/agent/feedback?sessionId=<id>&dsId=<int>`
+  - 用途：查询该会话下**已有反馈**的轮次（未操作的 `turnId` 不出现）
+  - Query：`dsId` 或 `ds_id` 二选一
+  - 成功：`{ "sessionId", "dsId", "items": { "<turnId>": "good"|"bad", ... } }`
+  - 未知会话：**404**
+
+- `turnId` 签发：每次 `POST /v1/solve` / `POST /v1/solve_async` 入队或同步受理时由网关生成；响应体与 `GET /v1/tasks/{task_id}` 含 `turnId`。`POST /v1/start` 不签发。
 
 - `GET /v1/biz_advice_report?task_id=<taskId>`
   - 用途：基于异步任务原始输出，生成清洗后的最终业务报告（去除中间过程与工具轨迹）

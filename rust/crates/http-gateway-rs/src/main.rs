@@ -36,7 +36,7 @@ use gateway_solve_turn::{
     run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
     BOSS_REPORT_SKILL_DS_ID,
 };
-use http_gateway_rs::{session_db, session_merge};
+use http_gateway_rs::{session_db, session_merge, turn_id};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -81,6 +81,8 @@ struct HttpRequestId(pub String);
 struct RunSolveContext {
     request_id: String,
     task_id: Option<String>,
+    /// Per-solve turn id (`T_<32 hex>`); persisted in `gateway_turns`.
+    turn_id: String,
     /// When true, do not read/write the gateway session `SQLite` (e.g. internal biz report solve).
     skip_session_db: bool,
 }
@@ -220,6 +222,8 @@ struct SolveResponse {
     output_text: String,
     #[serde(rename = "outputJson")]
     output_json: Option<Value>,
+    #[serde(rename = "turnId")]
+    turn_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -231,6 +235,8 @@ struct SolveAsyncResponse {
     // Backward-compat field; keep in sync with sessionId.
     #[serde(rename = "requestId")]
     request_id: String,
+    #[serde(rename = "turnId")]
+    turn_id: String,
     status: String,
     #[serde(rename = "pollUrl")]
     poll_url: String,
@@ -387,6 +393,57 @@ struct TaskRecord {
     progress_updated_at_ms: Option<i64>,
     result: Option<SolveResponse>,
     error: Option<Value>,
+    #[serde(rename = "turnId")]
+    turn_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentFeedbackPostRequest {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "turnId")]
+    turn_id: String,
+    feedback: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentFeedbackGetQuery {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "dsId")]
+    ds_id: Option<i64>,
+    #[serde(rename = "ds_id")]
+    ds_id_alt: Option<i64>,
+}
+
+impl AgentFeedbackGetQuery {
+    fn resolved_ds_id(&self) -> Option<i64> {
+        self.ds_id.or(self.ds_id_alt)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct AgentFeedbackPostResponse {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "turnId")]
+    turn_id: String,
+    feedback: String,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentFeedbackGetResponse {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    items: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -555,6 +612,40 @@ async fn get_session_solve_lock(state: &AppState, ds_id: i64, session_id: &str) 
         .entry((ds_id, session_id.to_string()))
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
+}
+
+async fn register_solve_turn(
+    db: &session_db::GatewaySessionDb,
+    turn_id: &str,
+    session_id: &str,
+    ds_id: i64,
+) -> Result<(), ApiError> {
+    db.insert_turn(turn_id, session_id, ds_id, "queued", now_ms())
+        .await
+        .map_err(|e| session_db_err(&e))
+}
+
+async fn set_solve_turn_status(
+    db: &session_db::GatewaySessionDb,
+    turn_id: &str,
+    status: &str,
+    finished: bool,
+) {
+    let finished_at = finished.then_some(now_ms());
+    if let Err(e) = db.update_turn_status(turn_id, status, finished_at).await {
+        warn!(turn_id = %turn_id, error = %e, "update gateway_turns status failed");
+    }
+}
+
+fn validate_feedback_value(feedback: &str) -> Result<(), ApiError> {
+    if feedback == "good" || feedback == "bad" {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "feedback must be good or bad",
+        ))
+    }
 }
 
 fn session_db_err(e: &sqlx::Error) -> ApiError {
@@ -819,10 +910,12 @@ async fn main() {
         report_polish_deepseek,
     };
     let session_db = Arc::new(
-        session_db::GatewaySessionDb::open(&cfg.work_root)
+        session_db::GatewaySessionDb::open()
             .await
             .unwrap_or_else(|e| {
-                eprintln!("http-gateway-rs: failed to open gateway session SQLite: {e}");
+                eprintln!(
+                    "http-gateway-rs: failed to connect gateway PostgreSQL (CLAW_GATEWAY_DATABASE_URL): {e}"
+                );
                 std::process::exit(1);
             }),
     );
@@ -830,8 +923,8 @@ async fn main() {
         target: "claw_gateway_orchestration",
         component = "startup",
         phase = "session_db",
-        session_db_path = %session_db.path().display(),
-        "gateway session SQLite ready (CLAW_GATEWAY_SESSION_DB or work_root/gateway-sessions.sqlite)"
+        gateway_database_url = %session_db.database_url_redacted(),
+        "gateway session PostgreSQL ready (CLAW_GATEWAY_DATABASE_URL)"
     );
     let state = AppState {
         tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -894,6 +987,10 @@ async fn main() {
         .route("/v1/mcp/inject", post(inject_mcp))
         .route("/v1/mcp/injected/{ds_id}", get(get_injected_mcp))
         .route("/v1/mcp/injected/{ds_id}", delete(delete_injected_mcp))
+        .route(
+            "/v1/agent/feedback",
+            post(post_agent_feedback).get(get_agent_feedback),
+        )
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &http::Request<axum::body::Body>| {
@@ -2345,7 +2442,8 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "poolRpcTcp": state.cfg.pool_rpc_tcp,
         "poolRpcUnixSocket": state.cfg.pool_rpc_unix_socket,
         "poolRpcHostWorkRoot": state.cfg.pool_rpc_host_work_root.as_ref().map(|p| p.display().to_string()),
-        "sessionDbPath": state.session_db.path().display().to_string(),
+        "sessionDatabaseBackend": "postgresql",
+        "gatewayDatabaseUrl": state.session_db.database_url_redacted(),
         "projectsGitUrl": state.cfg.projects_git_url.clone(),
         "projectsGitBranch": state.cfg.projects_git_branch.clone(),
         "projectsGitDsHomePollIntervalSecs": state.cfg.projects_git_ds_home_poll_interval_secs,
@@ -2372,16 +2470,28 @@ async fn solve(
         phase = "accepted",
         "gateway_solve"
     );
+    let new_turn_id = turn_id::mint_turn_id();
+    register_solve_turn(&state.session_db, &new_turn_id, &effective, req.ds_id).await?;
     let result = run_solve_request(
-        state,
+        state.clone(),
         req,
         RunSolveContext {
             request_id: effective.clone(),
             task_id: None,
+            turn_id: new_turn_id.clone(),
             skip_session_db: false,
         },
     )
-    .await?;
+    .await;
+    match &result {
+        Ok(_) => {
+            set_solve_turn_status(&state.session_db, &new_turn_id, "succeeded", true).await;
+        }
+        Err(_) => {
+            set_solve_turn_status(&state.session_db, &new_turn_id, "failed", true).await;
+        }
+    }
+    let result = result?;
     let claw = HeaderValue::from_str(&effective).map_err(|_| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -3046,6 +3156,8 @@ async fn enqueue_solve_async(
     }
     let task_id = effective.clone();
     let ds_id = req.ds_id;
+    let new_turn_id = turn_id::mint_turn_id();
+    register_solve_turn(&state.session_db, &new_turn_id, &effective, ds_id).await?;
     if let Some(rel) = state
         .session_db
         .get_session_home_rel(&effective, ds_id)
@@ -3094,6 +3206,7 @@ async fn enqueue_solve_async(
                     progress_updated_at_ms: None,
                     result: None,
                     error: None,
+                    turn_id: new_turn_id.clone(),
                 },
                 cancel: None,
                 ds_id,
@@ -3104,21 +3217,37 @@ async fn enqueue_solve_async(
     let state_clone = state.clone();
     let task_id_for_worker = task_id.clone();
     let rid = effective.clone();
+    let turn_id_for_worker = new_turn_id.clone();
     let join = tokio::spawn(async move {
         {
             let mut tasks = state_clone.tasks.lock().await;
             if let Some(inner) = tasks.get_mut(&task_id_for_worker) {
                 if inner.record.status == "cancelled" {
                     inner.cancel = None;
+                    set_solve_turn_status(
+                        &state_clone.session_db,
+                        &turn_id_for_worker,
+                        "cancelled",
+                        true,
+                    )
+                    .await;
                     return;
                 }
                 inner.record.status = "running".to_string();
                 inner.record.started_at_ms = Some(now_ms());
             }
         }
+        set_solve_turn_status(
+            &state_clone.session_db,
+            &turn_id_for_worker,
+            "running",
+            false,
+        )
+        .await;
         info!(
             request_id = %rid,
             task_id = %task_id_for_worker,
+            turn_id = %turn_id_for_worker,
             phase = "running",
             "gateway_solve_async"
         );
@@ -3128,6 +3257,7 @@ async fn enqueue_solve_async(
             RunSolveContext {
                 request_id: rid.clone(),
                 task_id: Some(task_id_for_worker.clone()),
+                turn_id: turn_id_for_worker.clone(),
                 skip_session_db: false,
             },
         )
@@ -3139,6 +3269,13 @@ async fn enqueue_solve_async(
             };
             inner.cancel = None;
             if inner.record.status == "cancelled" {
+                set_solve_turn_status(
+                    &state_clone.session_db,
+                    &turn_id_for_worker,
+                    "cancelled",
+                    true,
+                )
+                .await;
                 return;
             }
             inner.record.finished_at_ms = Some(now_ms());
@@ -3147,6 +3284,13 @@ async fn enqueue_solve_async(
                     let duration_ms = v.duration_ms;
                     inner.record.status = "succeeded".to_string();
                     inner.record.result = Some(v);
+                    set_solve_turn_status(
+                        &state_clone.session_db,
+                        &turn_id_for_worker,
+                        "succeeded",
+                        true,
+                    )
+                    .await;
                     info!(
                         request_id = %rid,
                         task_id = %task_id_for_worker,
@@ -3159,6 +3303,13 @@ async fn enqueue_solve_async(
                     inner.record.status = "failed".to_string();
                     inner.record.error =
                         Some(json!({"status_code": e.status.as_u16(), "detail": e.message}));
+                    set_solve_turn_status(
+                        &state_clone.session_db,
+                        &turn_id_for_worker,
+                        "failed",
+                        true,
+                    )
+                    .await;
                     warn!(
                         request_id = %rid,
                         task_id = %task_id_for_worker,
@@ -3187,6 +3338,7 @@ async fn enqueue_solve_async(
         task_id: task_id.clone(),
         session_id: effective.clone(),
         request_id: effective.clone(),
+        turn_id: new_turn_id,
         status: "queued".to_string(),
         poll_url: format!("/v1/tasks/{task_id}"),
     })
@@ -3389,6 +3541,7 @@ async fn dev_seed_biz_report_task(
     } else {
         body.output_text.clone()
     };
+    let seed_turn_id = turn_id::mint_turn_id();
     let result = SolveResponse {
         session_id: tid.clone(),
         request_id: tid.clone(),
@@ -3399,6 +3552,7 @@ async fn dev_seed_biz_report_task(
         claw_exit_code: 0,
         output_text,
         output_json: body.output_json.clone(),
+        turn_id: seed_turn_id.clone(),
     };
     let record = TaskRecord {
         task_id: tid.clone(),
@@ -3413,6 +3567,7 @@ async fn dev_seed_biz_report_task(
         progress_updated_at_ms: Some(now),
         result: Some(result),
         error: None,
+        turn_id: seed_turn_id,
     };
     {
         let mut tasks = state.tasks.lock().await;
@@ -3753,12 +3908,118 @@ async fn prepare_gateway_session(
     })
 }
 
+async fn post_agent_feedback(
+    State(state): State<AppState>,
+    Json(body): Json<AgentFeedbackPostRequest>,
+) -> Result<Json<AgentFeedbackPostResponse>, ApiError> {
+    if body.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let session_id = body.session_id.trim();
+    if session_id.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "sessionId must be non-empty",
+        ));
+    }
+    let turn = body.turn_id.trim();
+    if !turn_id::validate_turn_id(turn) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "turnId must match T_<32 hex>",
+        ));
+    }
+    validate_feedback_value(body.feedback.trim())?;
+    let feedback = body.feedback.trim();
+    if !state
+        .session_db
+        .session_exists(session_id, body.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "unknown sessionId for dsId",
+        ));
+    }
+    if !state
+        .session_db
+        .turn_belongs_to_session(turn, session_id, body.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "unknown turnId for session",
+        ));
+    }
+    let updated_at_ms = now_ms();
+    state
+        .session_db
+        .upsert_feedback(session_id, body.ds_id, turn, feedback, updated_at_ms)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(Json(AgentFeedbackPostResponse {
+        session_id: session_id.to_string(),
+        ds_id: body.ds_id,
+        turn_id: turn.to_string(),
+        feedback: feedback.to_string(),
+        updated_at_ms,
+    }))
+}
+
+async fn get_agent_feedback(
+    State(state): State<AppState>,
+    Query(query): Query<AgentFeedbackGetQuery>,
+) -> Result<Json<AgentFeedbackGetResponse>, ApiError> {
+    let Some(ds_id) = query.resolved_ds_id() else {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "dsId or ds_id query parameter is required",
+        ));
+    };
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let session_id = query.session_id.trim();
+    if session_id.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "sessionId must be non-empty",
+        ));
+    }
+    if !state
+        .session_db
+        .session_exists(session_id, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "unknown sessionId for dsId",
+        ));
+    }
+    let items = state
+        .session_db
+        .list_feedback(session_id, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(Json(AgentFeedbackGetResponse {
+        session_id: session_id.to_string(),
+        ds_id,
+        items,
+    }))
+}
+
 async fn run_solve_request(
     state: AppState,
     req: SolveRequest,
     ctx: RunSolveContext,
 ) -> Result<SolveResponse, ApiError> {
     validate_solve_request_fields(&req)?;
+    if !ctx.skip_session_db {
+        set_solve_turn_status(&state.session_db, &ctx.turn_id, "running", false).await;
+    }
     let started = Instant::now();
     let timeout_seconds = req
         .timeout_seconds

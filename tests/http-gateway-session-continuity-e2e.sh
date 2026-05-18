@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# E2E: session SQLite + same workDir on continuation + 400 for unknown sessionId.
+# E2E: session PostgreSQL + same workDir on continuation + 400 for unknown sessionId.
 # Defaults to podman_pool (same as deploy). Requires worker image / pool env; OPENAI_* only if solve must succeed.
 #
 # Author: kejiqing
@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_DIR="$REPO_ROOT/rust"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/claw-gateway-sess-e2e.XXXXXX")"
-SESSION_DB="${WORK_ROOT}/gateway-sessions.sqlite"
+GATEWAY_PG_URL="${CLAW_GATEWAY_DATABASE_URL:-postgres://claw_gateway:clawGw9Dev_Pg@127.0.0.1:5433/claw_gateway}"
 REGISTRY="$REPO_ROOT/rust/crates/http-gateway-rs/datasources.example.yaml"
 BIN="${BIN:-$RUST_DIR/target/release/http-gateway-rs}"
 CLAW_BIN="${CLAW_BIN:-$RUST_DIR/target/release/claw}"
@@ -34,7 +34,7 @@ fi
 
 export CLAW_HTTP_ADDR="127.0.0.1:$PORT"
 export CLAW_WORK_ROOT="$WORK_ROOT"
-export CLAW_GATEWAY_SESSION_DB="$SESSION_DB"
+export CLAW_GATEWAY_DATABASE_URL="$GATEWAY_PG_URL"
 export CLAW_DS_REGISTRY="$REGISTRY"
 export CLAW_BIN
 export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
@@ -61,8 +61,8 @@ if ! curl -sf --max-time "$CURL_MAX" "$BASE/healthz" >/dev/null; then
 fi
 
 HZ="$(curl -sf --max-time "$CURL_MAX" "$BASE/healthz")"
-python3 -c 'import json,sys; o=json.loads(sys.argv[1]); assert o.get("ok") is True, o; p=o.get("sessionDbPath",""); assert "gateway-sessions.sqlite" in p, o' "$HZ"
-echo "[e2e] healthz ok; sessionDbPath under work root"
+python3 -c 'import json,sys; o=json.loads(sys.argv[1]); assert o.get("ok") is True, o; assert o.get("sessionDatabaseBackend")=="postgresql", o; assert "postgres" in o.get("gatewayDatabaseUrl",""), o' "$HZ"
+echo "[e2e] healthz ok; gateway PostgreSQL configured"
 
 curl -sf --max-time "$CURL_MAX" -X POST "$BASE/v1/init" -H 'Content-Type: application/json' -d '{"dsId":1}' >/dev/null
 echo "[e2e] init ds 1 ok"
