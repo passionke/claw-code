@@ -330,9 +330,13 @@ struct DirectToolExecutorInner {
     runtime_mcp_tool_names: HashSet<String>,
     session_tracer: Option<SessionTracer>,
     mcp_semaphore: Arc<Semaphore>,
+    /// `gateway-solve-once` enters this runtime on the main thread; background analysis
+    /// tools call MCP via `Handle::block_on` from worker threads. Author: kejiqing
+    async_runtime: tokio::runtime::Handle,
 }
 
 impl DirectToolExecutorInner {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         session_home: PathBuf,
         session_id: String,
@@ -341,6 +345,7 @@ impl DirectToolExecutorInner {
         runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
         runtime_mcp_tool_names: HashSet<String>,
         session_tracer: Option<SessionTracer>,
+        async_runtime: tokio::runtime::Handle,
     ) -> Self {
         Self {
             session_home,
@@ -351,6 +356,7 @@ impl DirectToolExecutorInner {
             runtime_mcp_tool_names,
             session_tracer,
             mcp_semaphore: Arc::new(Semaphore::new(default_mcp_max_concurrent())),
+            async_runtime,
         }
     }
 
@@ -398,20 +404,18 @@ impl DirectToolExecutorInner {
         let manager = Arc::clone(manager);
         let semaphore = Arc::clone(&self.mcp_semaphore);
         let tool_name = tool_name.to_string();
-        let response = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let _permit = semaphore
-                    .acquire()
-                    .await
-                    .map_err(|_| ToolError::new("MCP concurrency semaphore closed"))?;
-                let mut guard = manager
-                    .lock()
-                    .map_err(|_| ToolError::new("MCP manager lock poisoned"))?;
-                guard
-                    .call_tool(&tool_name, Some(args), meta)
-                    .await
-                    .map_err(|e| ToolError::new(e.to_string()))
-            })
+        let response = self.async_runtime.block_on(async move {
+            let _permit = semaphore
+                .acquire()
+                .await
+                .map_err(|_| ToolError::new("MCP concurrency semaphore closed"))?;
+            let mut guard = manager
+                .lock()
+                .map_err(|_| ToolError::new("MCP manager lock poisoned"))?;
+            guard
+                .call_tool(&tool_name, Some(args), meta)
+                .await
+                .map_err(|e| ToolError::new(e.to_string()))
         })?;
         if let Some(error) = response.error {
             return Err(ToolError::new(format!(
@@ -838,6 +842,12 @@ pub fn run_gateway_solve_turn(
     }
     .with_workspace_root(work_dir);
     let session_tracer = gateway_session_tracer(clawcode_session_id, work_root);
+    let async_runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+        err(
+            HTTP_INTERNAL,
+            "gateway solve requires a Tokio runtime (gateway-solve-once must call run_gateway_solve_turn inside rt.enter())",
+        )
+    })?;
     let tool_executor = DirectToolExecutor {
         inner: Arc::new(DirectToolExecutorInner::new(
             work_dir.to_path_buf(),
@@ -847,6 +857,7 @@ pub fn run_gateway_solve_turn(
             runtime_mcp_manager,
             runtime_mcp_tool_names,
             session_tracer.clone(),
+            async_runtime,
         )),
     };
     let mut policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
@@ -864,6 +875,7 @@ pub fn run_gateway_solve_turn(
     if let Some(tracer) = session_tracer {
         runtime = runtime.with_session_tracer(tracer);
     }
+    // Turn deadline is enforced by the gateway pool (`timeout` on `docker exec` + `force_kill_slot`).
     let result = runtime
         .run_turn(prompt, None)
         .map_err(|e| err(HTTP_INTERNAL, format!("runtime prompt failed: {e}")))?;

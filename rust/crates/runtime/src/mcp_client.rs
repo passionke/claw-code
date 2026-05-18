@@ -21,14 +21,16 @@ pub fn default_mcp_tool_call_timeout_ms() -> u64 {
     })
 }
 
+fn parse_mcp_max_concurrent(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .map_or(DEFAULT_MCP_MAX_CONCURRENT, |value| value.max(1))
+}
+
 /// Max in-flight MCP `tools/call` per process (gateway solve). Author: kejiqing
 #[must_use]
 pub fn default_mcp_max_concurrent() -> usize {
     *MCP_MAX_CONCURRENT.get_or_init(|| {
-        std::env::var("CLAW_MCP_MAX_CONCURRENT")
-            .ok()
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .map_or(DEFAULT_MCP_MAX_CONCURRENT, |value| value.max(1))
+        parse_mcp_max_concurrent(std::env::var("CLAW_MCP_MAX_CONCURRENT").ok().as_deref())
     })
 }
 
@@ -276,5 +278,13 @@ mod tests {
     #[test]
     fn default_mcp_max_concurrent_default_is_four() {
         assert_eq!(super::DEFAULT_MCP_MAX_CONCURRENT, 4);
+    }
+
+    #[test]
+    fn mcp_max_concurrent_parse_normalizes_zero_to_one() {
+        assert_eq!(super::parse_mcp_max_concurrent(Some("0")), 1);
+        assert_eq!(super::parse_mcp_max_concurrent(Some("4")), 4);
+        assert_eq!(super::parse_mcp_max_concurrent(None), 4);
+        assert_eq!(super::parse_mcp_max_concurrent(Some("")), 4);
     }
 }

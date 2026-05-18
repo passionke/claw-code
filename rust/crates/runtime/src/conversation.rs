@@ -91,6 +91,13 @@ struct BackgroundToolJob {
     pre_hook_result: HookRunResult,
 }
 
+/// Join any analysis tools still waiting in `background_jobs` (e.g. early `?` return). Author: kejiqing
+fn join_remaining_background_jobs(jobs: &mut HashMap<String, BackgroundToolJob>) {
+    for (_, job) in jobs.drain() {
+        let _ = job.handle.join();
+    }
+}
+
 /// Error returned when a tool invocation fails locally.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolError {
@@ -605,109 +612,112 @@ where
             }
         }
 
-        for (tool_use_id, tool_name, input) in pending_tool_uses {
-            let trace_tool_use_id = tool_use_id.clone();
-            if let Some(result_message) = prebuilt_results.remove(&tool_use_id) {
-                self.session
-                    .push_message(result_message.clone())
-                    .map_err(|error| RuntimeError::new(error.to_string()))?;
-                self.record_tool_finished(
-                    iterations,
-                    turn_id,
-                    &trace_tool_use_id,
-                    &result_message,
-                    0,
-                );
-                tool_results.push(result_message);
-                continue;
-            }
-
-            if let Some(job) = background_jobs.remove(&tool_use_id) {
-                let raw = job.handle.join().unwrap_or(ToolExecuteRawOutcome {
-                    output: String::from("background tool thread panicked"),
-                    is_error: true,
-                });
-                let result_message = self.tool_result_from_raw_execution(
-                    &tool_use_id,
-                    &tool_name,
-                    &job.pre_hook_result,
-                    &job.effective_input,
-                    raw,
-                );
-                self.session
-                    .push_message(result_message.clone())
-                    .map_err(|error| RuntimeError::new(error.to_string()))?;
-                self.record_tool_finished(
-                    iterations,
-                    turn_id,
-                    &trace_tool_use_id,
-                    &result_message,
-                    job.started_at.elapsed().as_millis(),
-                );
-                tool_results.push(result_message);
-                continue;
-            }
-
-            let tool_started_at = Instant::now();
-            let pre_hook_result = self.run_pre_tool_use_hook(&tool_name, &input);
-            let effective_input = pre_hook_result
-                .updated_input()
-                .map_or_else(|| input.clone(), ToOwned::to_owned);
-            let permission_outcome = Self::permission_outcome_for_tool(
-                self,
-                &tool_name,
-                &effective_input,
-                &pre_hook_result,
-                prompter,
-            );
-            let result_message = match permission_outcome {
-                PermissionOutcome::Allow => {
-                    self.record_tool_started(
+        let dispatch_result = (|| -> Result<(), RuntimeError> {
+            for (tool_use_id, tool_name, input) in pending_tool_uses {
+                let trace_tool_use_id = tool_use_id.clone();
+                if let Some(result_message) = prebuilt_results.remove(&tool_use_id) {
+                    self.session
+                        .push_message(result_message.clone())
+                        .map_err(|error| RuntimeError::new(error.to_string()))?;
+                    self.record_tool_finished(
                         iterations,
                         turn_id,
-                        &tool_use_id,
-                        &tool_name,
-                        effective_input.len(),
+                        &trace_tool_use_id,
+                        &result_message,
+                        0,
                     );
-                    let raw = match self.tool_executor.execute(&tool_name, &effective_input) {
-                        Ok(output) => ToolExecuteRawOutcome {
-                            output,
-                            is_error: false,
-                        },
-                        Err(error) => ToolExecuteRawOutcome {
-                            output: error.to_string(),
-                            is_error: true,
-                        },
-                    };
-                    self.tool_result_from_raw_execution(
+                    tool_results.push(result_message);
+                    continue;
+                }
+
+                if let Some(job) = background_jobs.remove(&tool_use_id) {
+                    let raw = job.handle.join().unwrap_or(ToolExecuteRawOutcome {
+                        output: String::from("background tool thread panicked"),
+                        is_error: true,
+                    });
+                    let result_message = self.tool_result_from_raw_execution(
                         &tool_use_id,
                         &tool_name,
-                        &pre_hook_result,
-                        &effective_input,
+                        &job.pre_hook_result,
+                        &job.effective_input,
                         raw,
-                    )
+                    );
+                    self.session
+                        .push_message(result_message.clone())
+                        .map_err(|error| RuntimeError::new(error.to_string()))?;
+                    self.record_tool_finished(
+                        iterations,
+                        turn_id,
+                        &trace_tool_use_id,
+                        &result_message,
+                        job.started_at.elapsed().as_millis(),
+                    );
+                    tool_results.push(result_message);
+                    continue;
                 }
-                PermissionOutcome::Deny { reason } => ConversationMessage::tool_result(
-                    tool_use_id.clone(),
-                    tool_name.clone(),
-                    merge_hook_feedback(pre_hook_result.messages(), reason, true),
-                    true,
-                ),
-            };
-            self.session
-                .push_message(result_message.clone())
-                .map_err(|error| RuntimeError::new(error.to_string()))?;
-            self.record_tool_finished(
-                iterations,
-                turn_id,
-                &trace_tool_use_id,
-                &result_message,
-                tool_started_at.elapsed().as_millis(),
-            );
-            tool_results.push(result_message);
-        }
 
-        Ok(())
+                let tool_started_at = Instant::now();
+                let pre_hook_result = self.run_pre_tool_use_hook(&tool_name, &input);
+                let effective_input = pre_hook_result
+                    .updated_input()
+                    .map_or_else(|| input.clone(), ToOwned::to_owned);
+                let permission_outcome = Self::permission_outcome_for_tool(
+                    self,
+                    &tool_name,
+                    &effective_input,
+                    &pre_hook_result,
+                    prompter,
+                );
+                let result_message = match permission_outcome {
+                    PermissionOutcome::Allow => {
+                        self.record_tool_started(
+                            iterations,
+                            turn_id,
+                            &tool_use_id,
+                            &tool_name,
+                            effective_input.len(),
+                        );
+                        let raw = match self.tool_executor.execute(&tool_name, &effective_input) {
+                            Ok(output) => ToolExecuteRawOutcome {
+                                output,
+                                is_error: false,
+                            },
+                            Err(error) => ToolExecuteRawOutcome {
+                                output: error.to_string(),
+                                is_error: true,
+                            },
+                        };
+                        self.tool_result_from_raw_execution(
+                            &tool_use_id,
+                            &tool_name,
+                            &pre_hook_result,
+                            &effective_input,
+                            raw,
+                        )
+                    }
+                    PermissionOutcome::Deny { reason } => ConversationMessage::tool_result(
+                        tool_use_id.clone(),
+                        tool_name.clone(),
+                        merge_hook_feedback(pre_hook_result.messages(), reason, true),
+                        true,
+                    ),
+                };
+                self.session
+                    .push_message(result_message.clone())
+                    .map_err(|error| RuntimeError::new(error.to_string()))?;
+                self.record_tool_finished(
+                    iterations,
+                    turn_id,
+                    &trace_tool_use_id,
+                    &result_message,
+                    tool_started_at.elapsed().as_millis(),
+                );
+                tool_results.push(result_message);
+            }
+            Ok(())
+        })();
+        join_remaining_background_jobs(&mut background_jobs);
+        dispatch_result
     }
 
     fn permission_outcome_for_tool(
@@ -1206,10 +1216,10 @@ impl ToolExecutor for StaticToolExecutor {
 mod tests {
     use super::{
         build_assistant_message, is_background_sqlbot_analysis_tool,
-        parse_auto_compaction_threshold, ApiClient, ApiRequest, AssistantEvent,
-        AutoCompactionEvent, ConversationRuntime, PromptCacheEvent, RuntimeError,
-        SharedToolExecutor, StaticToolExecutor, ToolExecutor,
-        DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+        join_remaining_background_jobs, parse_auto_compaction_threshold, ApiClient, ApiRequest,
+        AssistantEvent, AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
+        PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
+        ToolExecuteRawOutcome, ToolExecutor, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
     use crate::compact::CompactionConfig;
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
@@ -1221,10 +1231,11 @@ mod tests {
     use crate::session::{ContentBlock, MessageRole, Session};
     use crate::usage::TokenUsage;
     use crate::ToolError;
+    use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use telemetry::{MemoryTelemetrySink, SessionTracer, TelemetryEvent};
 
     struct ScriptedApiClient {
@@ -2196,6 +2207,35 @@ mod tests {
     }
 
     #[test]
+    fn join_remaining_background_jobs_waits_for_handles() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_worker = Arc::clone(&finished);
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            finished_worker.store(true, Ordering::SeqCst);
+            ToolExecuteRawOutcome {
+                output: String::new(),
+                is_error: false,
+            }
+        });
+        let mut jobs = HashMap::new();
+        jobs.insert(
+            "orphan".to_string(),
+            BackgroundToolJob {
+                handle,
+                started_at: Instant::now(),
+                effective_input: String::new(),
+                pre_hook_result: HookRunResult::allow(vec![]),
+            },
+        );
+        join_remaining_background_jobs(&mut jobs);
+        assert!(jobs.is_empty());
+        assert!(finished.load(Ordering::SeqCst));
+    }
+
+    #[test]
     fn background_sqlbot_analysis_tool_suffix_match() {
         assert!(is_background_sqlbot_analysis_tool(
             "mcp__sqlbot-streamable__mcp_question_then_analysis"
@@ -2203,29 +2243,135 @@ mod tests {
         assert!(!is_background_sqlbot_analysis_tool(
             "mcp__sqlbot-streamable__mcp_question"
         ));
+        assert!(!is_background_sqlbot_analysis_tool("read_file"));
+        assert!(is_background_sqlbot_analysis_tool(
+            "prefix__mcp_question_then_analysis"
+        ));
     }
 
-    #[test]
-    #[allow(clippy::too_many_lines)]
-    fn background_analysis_tools_run_concurrently_during_serial_tool() {
+    mod background_tool_dispatch {
+        use super::*;
+        use std::collections::BTreeMap;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Mutex;
+        use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
-        struct TrackingInner {
-            active: AtomicUsize,
-            max_active: AtomicUsize,
+        const ANALYSIS: &str = "mcp__sqlbot-streamable__mcp_question_then_analysis";
+
+        fn session_tool_result_rows(session: &Session) -> Vec<(String, String, bool, String)> {
+            session
+                .messages
+                .iter()
+                .filter(|message| message.role == MessageRole::Tool)
+                .map(|message| {
+                    let block = message
+                        .blocks
+                        .first()
+                        .expect("tool message should have one block");
+                    match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            tool_name,
+                            output,
+                            is_error,
+                            ..
+                        } => (
+                            tool_use_id.clone(),
+                            tool_name.clone(),
+                            *is_error,
+                            output.clone(),
+                        ),
+                        other => panic!("unexpected tool block: {other:?}"),
+                    }
+                })
+                .collect()
         }
 
-        impl SharedToolExecutor for TrackingInner {
-            fn execute_shared(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
-                let _ = (tool_name, input);
-                let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        struct ScriptedToolTurnApi {
+            tool_uses: Vec<(String, String, String)>,
+            final_text: String,
+            call_count: usize,
+        }
+
+        impl ScriptedToolTurnApi {
+            fn single_turn(tool_uses: Vec<(String, String, String)>) -> Self {
+                Self {
+                    tool_uses,
+                    final_text: String::from("done"),
+                    call_count: 0,
+                }
+            }
+        }
+
+        impl ApiClient for ScriptedToolTurnApi {
+            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.call_count += 1;
+                match self.call_count {
+                    1 => {
+                        let mut events = Vec::new();
+                        for (id, name, input) in &self.tool_uses {
+                            events.push(AssistantEvent::ToolUse {
+                                id: id.clone(),
+                                name: name.clone(),
+                                input: input.clone(),
+                            });
+                        }
+                        events.push(AssistantEvent::MessageStop);
+                        Ok(events)
+                    }
+                    2 => {
+                        let tool_messages = request
+                            .messages
+                            .iter()
+                            .filter(|message| message.role == MessageRole::Tool)
+                            .count();
+                        assert_eq!(
+                            tool_messages,
+                            self.tool_uses.len(),
+                            "model should see one tool result per pending tool_use"
+                        );
+                        Ok(vec![
+                            AssistantEvent::TextDelta(self.final_text.clone()),
+                            AssistantEvent::MessageStop,
+                        ])
+                    }
+                    other => panic!("unexpected api call count: {other}"),
+                }
+            }
+        }
+
+        struct RecordingSharedInner {
+            active: AtomicUsize,
+            max_active: AtomicUsize,
+            max_concurrent: Option<usize>,
+            calls: Mutex<Vec<(String, String)>>,
+            outcomes: Mutex<BTreeMap<String, Result<String, ToolError>>>,
+        }
+
+        impl RecordingSharedInner {
+            fn with_outcomes(outcomes: BTreeMap<String, Result<String, ToolError>>) -> Arc<Self> {
+                Self::with_outcomes_and_limit(outcomes, None)
+            }
+
+            fn with_outcomes_and_limit(
+                outcomes: BTreeMap<String, Result<String, ToolError>>,
+                max_concurrent: Option<usize>,
+            ) -> Arc<Self> {
+                Arc::new(Self {
+                    active: AtomicUsize::new(0),
+                    max_active: AtomicUsize::new(0),
+                    max_concurrent,
+                    calls: Mutex::new(Vec::new()),
+                    outcomes: Mutex::new(outcomes),
+                })
+            }
+
+            fn observe_peak(&self, active_after_acquire: usize) {
                 let mut observed = self.max_active.load(Ordering::SeqCst);
-                while now > observed {
+                while active_after_acquire > observed {
                     match self.max_active.compare_exchange_weak(
                         observed,
-                        now,
+                        active_after_acquire,
                         Ordering::SeqCst,
                         Ordering::SeqCst,
                     ) {
@@ -2233,27 +2379,86 @@ mod tests {
                         Err(current) => observed = current,
                     }
                 }
-                std::thread::sleep(Duration::from_millis(80));
+            }
+
+            fn acquire_permit(&self) {
+                let limit = self.max_concurrent.unwrap_or(usize::MAX);
+                loop {
+                    let current = self.active.load(Ordering::SeqCst);
+                    if current >= limit {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    if self
+                        .active
+                        .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        self.observe_peak(current + 1);
+                        return;
+                    }
+                }
+            }
+
+            fn release_permit(&self) {
                 self.active.fetch_sub(1, Ordering::SeqCst);
-                Ok(String::from("ok"))
             }
         }
 
-        struct TrackingExecutor {
-            inner: Arc<TrackingInner>,
-            serial_started: Mutex<bool>,
+        impl SharedToolExecutor for RecordingSharedInner {
+            fn execute_shared(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+                let tool_use_id = input.trim();
+                self.acquire_permit();
+                self.calls
+                    .lock()
+                    .expect("calls lock")
+                    .push((tool_use_id.to_string(), tool_name.to_string()));
+                std::thread::sleep(Duration::from_millis(60));
+                let outcome = self
+                    .outcomes
+                    .lock()
+                    .expect("outcomes lock")
+                    .get(tool_use_id)
+                    .cloned()
+                    .unwrap_or(Ok(format!("ok:{tool_use_id}")));
+                self.release_permit();
+                outcome
+            }
         }
 
-        impl ToolExecutor for TrackingExecutor {
+        struct RecordingExecutor {
+            inner: Arc<RecordingSharedInner>,
+            sync_calls: Arc<Mutex<Vec<String>>>,
+            serial_block_until_idle: bool,
+        }
+
+        impl RecordingExecutor {
+            fn new(inner: Arc<RecordingSharedInner>, serial_block_until_idle: bool) -> Self {
+                Self {
+                    inner,
+                    sync_calls: Arc::new(Mutex::new(Vec::new())),
+                    serial_block_until_idle,
+                }
+            }
+        }
+
+        impl ToolExecutor for RecordingExecutor {
             fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError> {
-                if tool_name == "serial_blocker" {
-                    *self.serial_started.lock().expect("lock") = true;
+                let input_key = input.trim();
+                self.sync_calls
+                    .lock()
+                    .expect("sync_calls lock")
+                    .push(input_key.to_string());
+                if input_key == "fail-sync" {
+                    return Err(ToolError::new("sync failed"));
+                }
+                if self.serial_block_until_idle && tool_name == "serial_blocker" {
                     while self.inner.active.load(Ordering::SeqCst) > 0 {
                         std::thread::sleep(Duration::from_millis(5));
                     }
                     return Ok(String::from("serial-done"));
                 }
-                self.inner.execute_shared(tool_name, input)
+                Ok(format!("sync:{input}"))
             }
 
             fn shared_executor(&self) -> Option<Arc<dyn SharedToolExecutor>> {
@@ -2261,70 +2466,418 @@ mod tests {
             }
         }
 
-        struct TwoAnalysisThenSerialApi {
-            call_count: usize,
+        struct SyncOnlyExecutor {
+            calls: Arc<Mutex<Vec<String>>>,
         }
 
-        impl ApiClient for TwoAnalysisThenSerialApi {
-            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
-                self.call_count += 1;
-                match self.call_count {
-                    1 => Ok(vec![
-                        AssistantEvent::ToolUse {
-                            id: "a1".to_string(),
-                            name: "mcp__sqlbot-streamable__mcp_question_then_analysis".to_string(),
-                            input: "{}".to_string(),
-                        },
-                        AssistantEvent::ToolUse {
-                            id: "b".to_string(),
-                            name: "serial_blocker".to_string(),
-                            input: "{}".to_string(),
-                        },
-                        AssistantEvent::ToolUse {
-                            id: "a2".to_string(),
-                            name: "mcp__sqlbot-streamable__mcp_question_then_analysis".to_string(),
-                            input: "{}".to_string(),
-                        },
-                        AssistantEvent::MessageStop,
-                    ]),
-                    2 => {
-                        assert!(request
-                            .messages
-                            .iter()
-                            .any(|message| { message.role == MessageRole::Tool }));
-                        Ok(vec![
-                            AssistantEvent::TextDelta("done".to_string()),
-                            AssistantEvent::MessageStop,
-                        ])
-                    }
-                    _ => unreachable!("unexpected api call"),
-                }
+        impl ToolExecutor for SyncOnlyExecutor {
+            fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+                self.calls
+                    .lock()
+                    .expect("calls lock")
+                    .push(format!("{tool_name}:{input}"));
+                Ok(format!("sync:{input}"))
             }
         }
 
-        let inner = Arc::new(TrackingInner {
-            active: AtomicUsize::new(0),
-            max_active: AtomicUsize::new(0),
-        });
-        let mut runtime = ConversationRuntime::new(
-            Session::new(),
-            TwoAnalysisThenSerialApi { call_count: 0 },
-            TrackingExecutor {
-                inner: Arc::clone(&inner),
-                serial_started: Mutex::new(false),
-            },
-            PermissionPolicy::new(PermissionMode::DangerFullAccess),
-            vec!["system".to_string()],
-        );
+        fn run_tool_turn(
+            tool_uses: Vec<(String, String, String)>,
+            executor: RecordingExecutor,
+        ) -> (crate::TurnSummary, Session) {
+            let mut runtime = ConversationRuntime::new(
+                Session::new(),
+                ScriptedToolTurnApi::single_turn(tool_uses),
+                executor,
+                PermissionPolicy::new(PermissionMode::DangerFullAccess),
+                vec!["system".to_string()],
+            );
+            let summary = runtime
+                .run_turn("analyze", None)
+                .expect("tool turn should succeed");
+            let session = runtime.into_session();
+            (summary, session)
+        }
 
-        runtime
-            .run_turn("analyze", None)
-            .expect("turn should complete");
+        #[test]
+        fn tool_results_preserve_assistant_tool_use_order() {
+            let tool_uses = vec![
+                ("a1".to_string(), ANALYSIS.to_string(), "a1".to_string()),
+                (
+                    "b".to_string(),
+                    "serial_blocker".to_string(),
+                    "b".to_string(),
+                ),
+                ("a2".to_string(), ANALYSIS.to_string(), "a2".to_string()),
+                ("d".to_string(), "read_file".to_string(), "d".to_string()),
+            ];
+            let inner = RecordingSharedInner::with_outcomes(BTreeMap::new());
+            let executor = RecordingExecutor::new(Arc::clone(&inner), false);
+            let sync_calls = Arc::clone(&executor.sync_calls);
+            let (_summary, session) = run_tool_turn(tool_uses.clone(), executor);
 
-        assert!(
-            inner.max_active.load(Ordering::SeqCst) >= 2,
-            "expected overlapping analysis tools, max_active={}",
-            inner.max_active.load(Ordering::SeqCst)
-        );
+            let rows = session_tool_result_rows(&session);
+            assert_eq!(rows.len(), 4, "expected four tool results");
+            assert_eq!(
+                sync_calls.lock().expect("sync_calls lock").as_slice(),
+                &["b", "d"],
+                "analysis tools must use shared path, not sync execute"
+            );
+            assert_eq!(inner.calls.lock().expect("calls lock").len(), 2);
+            assert_eq!(
+                rows.iter()
+                    .map(|(id, _, _, _)| id.clone())
+                    .collect::<Vec<_>>(),
+                vec!["a1", "b", "a2", "d"]
+            );
+            assert_eq!(rows[0].3, "ok:a1");
+            assert_eq!(rows[1].3, "sync:b");
+            assert_eq!(rows[2].3, "ok:a2");
+            assert_eq!(rows[3].3, "sync:d");
+            assert!(rows.iter().all(|(_, _, is_error, _)| !is_error));
+        }
+
+        #[test]
+        fn analysis_tools_overlap_while_serial_tool_runs() {
+            let tool_uses = vec![
+                ("a1".to_string(), ANALYSIS.to_string(), "a1".to_string()),
+                (
+                    "b".to_string(),
+                    "serial_blocker".to_string(),
+                    "b".to_string(),
+                ),
+                ("a2".to_string(), ANALYSIS.to_string(), "a2".to_string()),
+            ];
+            let inner = RecordingSharedInner::with_outcomes(BTreeMap::new());
+            let (_summary, _session) =
+                run_tool_turn(tool_uses, RecordingExecutor::new(Arc::clone(&inner), true));
+
+            assert!(
+                inner.max_active.load(Ordering::SeqCst) >= 2,
+                "expected concurrent analysis execution, max_active={}",
+                inner.max_active.load(Ordering::SeqCst)
+            );
+            let shared_calls = inner.calls.lock().expect("calls lock");
+            assert_eq!(shared_calls.len(), 2);
+            assert_eq!(shared_calls[0].0, "a1");
+            assert_eq!(shared_calls[1].0, "a2");
+        }
+
+        #[test]
+        fn one_analysis_failure_does_not_block_other_results() {
+            let mut outcomes = BTreeMap::new();
+            outcomes.insert("a1".to_string(), Ok(String::from("ok:a1")));
+            outcomes.insert("a2".to_string(), Err(ToolError::new("sqlbot timeout")));
+            outcomes.insert("a3".to_string(), Ok(String::from("ok:a3")));
+
+            let tool_uses = vec![
+                ("a1".to_string(), ANALYSIS.to_string(), "a1".to_string()),
+                ("a2".to_string(), ANALYSIS.to_string(), "a2".to_string()),
+                ("a3".to_string(), ANALYSIS.to_string(), "a3".to_string()),
+            ];
+            let inner = RecordingSharedInner::with_outcomes(outcomes);
+            let (_summary, session) =
+                run_tool_turn(tool_uses, RecordingExecutor::new(Arc::clone(&inner), false));
+
+            let rows = session_tool_result_rows(&session);
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[0].0, "a1");
+            assert!(!rows[0].2);
+            assert_eq!(rows[1].0, "a2");
+            assert!(rows[1].2, "failed analysis should surface is_error");
+            assert!(rows[1].3.contains("sqlbot timeout"));
+            assert_eq!(rows[2].0, "a3");
+            assert!(!rows[2].2);
+        }
+
+        #[test]
+        fn without_shared_executor_analysis_runs_on_sync_path() {
+            let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+
+            let tool_uses = vec![
+                ("a1".to_string(), ANALYSIS.to_string(), "a1".to_string()),
+                ("a2".to_string(), ANALYSIS.to_string(), "a2".to_string()),
+            ];
+            let mut runtime = ConversationRuntime::new(
+                Session::new(),
+                ScriptedToolTurnApi::single_turn(tool_uses),
+                SyncOnlyExecutor {
+                    calls: Arc::clone(&calls),
+                },
+                PermissionPolicy::new(PermissionMode::DangerFullAccess),
+                vec!["system".to_string()],
+            );
+            runtime
+                .run_turn("analyze", None)
+                .expect("sync-only turn should succeed");
+
+            let recorded = calls.lock().expect("calls lock");
+            assert_eq!(recorded.len(), 2);
+            assert!(recorded[0].contains(ANALYSIS));
+            assert!(recorded[1].contains(ANALYSIS));
+        }
+
+        #[test]
+        fn denied_analysis_is_prebuilt_without_shared_call() {
+            let inner = RecordingSharedInner::with_outcomes(BTreeMap::new());
+            let tool_uses = vec![
+                ("a1".to_string(), ANALYSIS.to_string(), "a1".to_string()),
+                ("a2".to_string(), ANALYSIS.to_string(), "a2".to_string()),
+            ];
+            let mut runtime = ConversationRuntime::new(
+                Session::new(),
+                ScriptedToolTurnApi::single_turn(tool_uses),
+                RecordingExecutor::new(Arc::clone(&inner), false),
+                PermissionPolicy::new(PermissionMode::ReadOnly),
+                vec!["system".to_string()],
+            );
+            runtime
+                .run_turn("analyze", None)
+                .expect("denied analysis turn should still complete");
+
+            assert!(
+                inner.calls.lock().expect("calls lock").is_empty(),
+                "denied analysis tools must not spawn shared execution"
+            );
+            let rows = session_tool_result_rows(runtime.session());
+            assert_eq!(rows.len(), 2);
+            assert!(rows.iter().all(|(_, _, is_error, output)| {
+                *is_error && output.contains("danger-full-access permission")
+            }));
+        }
+
+        #[test]
+        fn single_turn_iteration_count_unchanged_with_multiple_tools() {
+            let tool_uses = vec![
+                ("a1".to_string(), ANALYSIS.to_string(), "a1".to_string()),
+                ("a2".to_string(), ANALYSIS.to_string(), "a2".to_string()),
+            ];
+            let inner = RecordingSharedInner::with_outcomes(BTreeMap::new());
+            let (summary, _session) =
+                run_tool_turn(tool_uses, RecordingExecutor::new(Arc::clone(&inner), false));
+            assert_eq!(
+                summary.iterations, 2,
+                "one tool round + one final assistant"
+            );
+            assert_eq!(summary.tool_results.len(), 2);
+        }
+
+        #[test]
+        fn all_parallel_analysis_tools_use_shared_path_only() {
+            let tool_uses = vec![
+                ("a1".to_string(), ANALYSIS.to_string(), "a1".to_string()),
+                ("a2".to_string(), ANALYSIS.to_string(), "a2".to_string()),
+                ("a3".to_string(), ANALYSIS.to_string(), "a3".to_string()),
+                ("a4".to_string(), ANALYSIS.to_string(), "a4".to_string()),
+            ];
+            let inner = RecordingSharedInner::with_outcomes(BTreeMap::new());
+            let executor = RecordingExecutor::new(Arc::clone(&inner), false);
+            let sync_calls = Arc::clone(&executor.sync_calls);
+            let (_summary, session) = run_tool_turn(tool_uses, executor);
+
+            assert!(
+                sync_calls.lock().expect("sync_calls lock").is_empty(),
+                "analysis-only turn must not call sync execute"
+            );
+            assert_eq!(inner.calls.lock().expect("calls lock").len(), 4);
+            assert!(
+                inner.max_active.load(Ordering::SeqCst) >= 2,
+                "expected overlap among four analysis tools"
+            );
+            let rows = session_tool_result_rows(&session);
+            assert_eq!(rows.len(), 4);
+            assert!(rows.iter().all(|(_, _, is_error, _)| !*is_error));
+            assert_eq!(
+                rows.iter()
+                    .map(|(id, _, _, _)| id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["a1", "a2", "a3", "a4"]
+            );
+        }
+
+        #[test]
+        fn all_serial_tools_never_touch_shared_executor() {
+            let tool_uses = vec![
+                ("r1".to_string(), "read_file".to_string(), "r1".to_string()),
+                ("w1".to_string(), "Write".to_string(), "w1".to_string()),
+            ];
+            let inner = RecordingSharedInner::with_outcomes(BTreeMap::new());
+            let executor = RecordingExecutor::new(Arc::clone(&inner), false);
+            let sync_calls = Arc::clone(&executor.sync_calls);
+            let (_summary, session) = run_tool_turn(tool_uses, executor);
+
+            assert!(inner.calls.lock().expect("calls lock").is_empty());
+            assert_eq!(
+                sync_calls.lock().expect("sync_calls lock").as_slice(),
+                &["r1", "w1"]
+            );
+            let rows = session_tool_result_rows(&session);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].3, "sync:r1");
+            assert_eq!(rows[1].3, "sync:w1");
+        }
+
+        #[test]
+        fn pending_analysis_exceeding_concurrency_cap_never_spikes_above_limit() {
+            const LIMIT: usize = 2;
+            const PENDING: usize = 6;
+            let tool_uses = (1..=PENDING)
+                .map(|index| {
+                    let id = format!("a{index}");
+                    (id.clone(), ANALYSIS.to_string(), id)
+                })
+                .collect::<Vec<_>>();
+            let inner = RecordingSharedInner::with_outcomes_and_limit(BTreeMap::new(), Some(LIMIT));
+            let (_summary, session) =
+                run_tool_turn(tool_uses, RecordingExecutor::new(Arc::clone(&inner), false));
+
+            assert!(
+                inner.max_active.load(Ordering::SeqCst) <= LIMIT,
+                "max_active={} must respect semaphore limit={LIMIT}",
+                inner.max_active.load(Ordering::SeqCst)
+            );
+            assert_eq!(inner.calls.lock().expect("calls lock").len(), PENDING);
+            let rows = session_tool_result_rows(&session);
+            assert_eq!(rows.len(), PENDING);
+            assert!(rows.iter().all(|(_, _, is_error, _)| !*is_error));
+        }
+
+        #[test]
+        fn all_analysis_tools_fail_still_produce_ordered_results() {
+            let mut outcomes = BTreeMap::new();
+            for id in ["a1", "a2", "a3"] {
+                outcomes.insert(
+                    id.to_string(),
+                    Err(ToolError::new(format!("analysis failed: {id}"))),
+                );
+            }
+            let tool_uses = vec![
+                ("a1".to_string(), ANALYSIS.to_string(), "a1".to_string()),
+                ("a2".to_string(), ANALYSIS.to_string(), "a2".to_string()),
+                ("a3".to_string(), ANALYSIS.to_string(), "a3".to_string()),
+            ];
+            let inner = RecordingSharedInner::with_outcomes(outcomes);
+            let (_summary, session) =
+                run_tool_turn(tool_uses, RecordingExecutor::new(Arc::clone(&inner), false));
+
+            let rows = session_tool_result_rows(&session);
+            assert_eq!(rows.len(), 3);
+            assert!(rows.iter().all(|(_, _, is_error, _)| *is_error));
+            assert_eq!(
+                rows.iter()
+                    .map(|(id, _, _, _)| id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["a1", "a2", "a3"]
+            );
+        }
+
+        #[test]
+        fn mixed_sync_failure_and_parallel_analysis_success() {
+            let tool_uses = vec![
+                ("a1".to_string(), ANALYSIS.to_string(), "a1".to_string()),
+                (
+                    "b".to_string(),
+                    "read_file".to_string(),
+                    "fail-sync".to_string(),
+                ),
+                ("a2".to_string(), ANALYSIS.to_string(), "a2".to_string()),
+            ];
+            let inner = RecordingSharedInner::with_outcomes(BTreeMap::new());
+            let (_summary, session) =
+                run_tool_turn(tool_uses, RecordingExecutor::new(Arc::clone(&inner), false));
+
+            let rows = session_tool_result_rows(&session);
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[0].0, "a1");
+            assert!(!rows[0].2);
+            assert_eq!(rows[1].0, "b");
+            assert!(rows[1].2);
+            assert!(rows[1].3.contains("sync failed"));
+            assert_eq!(rows[2].0, "a2");
+            assert!(!rows[2].2);
+            assert_eq!(inner.calls.lock().expect("calls lock").len(), 2);
+        }
+
+        #[test]
+        fn mixed_partial_denied_parallel_and_serial_success() {
+            let tool_uses = vec![
+                ("a1".to_string(), ANALYSIS.to_string(), "a1".to_string()),
+                ("r1".to_string(), "read_file".to_string(), "r1".to_string()),
+                ("a2".to_string(), ANALYSIS.to_string(), "a2".to_string()),
+            ];
+            let inner = RecordingSharedInner::with_outcomes(BTreeMap::new());
+            let policy = PermissionPolicy::new(PermissionMode::ReadOnly)
+                .with_tool_requirement("read_file", PermissionMode::ReadOnly);
+            let mut runtime = ConversationRuntime::new(
+                Session::new(),
+                ScriptedToolTurnApi::single_turn(tool_uses),
+                RecordingExecutor::new(Arc::clone(&inner), false),
+                policy,
+                vec!["system".to_string()],
+            );
+            runtime
+                .run_turn("analyze", None)
+                .expect("mixed denied turn should complete");
+
+            let rows = session_tool_result_rows(runtime.session());
+            assert_eq!(rows.len(), 3);
+            assert!(rows[0].2 && rows[2].2, "analysis denied under read-only");
+            assert!(!rows[1].2, "serial tool should still run");
+            assert_eq!(rows[1].3, "sync:r1");
+            assert!(
+                inner.calls.lock().expect("calls lock").is_empty(),
+                "denied analysis must not hit shared executor"
+            );
+        }
+
+        struct PanickingShared;
+
+        impl SharedToolExecutor for PanickingShared {
+            fn execute_shared(&self, _tool_name: &str, input: &str) -> Result<String, ToolError> {
+                if input.trim() == "panic" {
+                    std::panic::panic_any("shared executor panic");
+                }
+                Ok(format!("ok:{}", input.trim()))
+            }
+        }
+
+        struct PanicHarnessExecutor {
+            shared: Arc<PanickingShared>,
+        }
+
+        impl ToolExecutor for PanicHarnessExecutor {
+            fn execute(&mut self, _tool_name: &str, input: &str) -> Result<String, ToolError> {
+                Ok(format!("sync:{input}"))
+            }
+
+            fn shared_executor(&self) -> Option<Arc<dyn SharedToolExecutor>> {
+                Some(self.shared.clone())
+            }
+        }
+
+        #[test]
+        fn background_analysis_thread_panic_surfaces_as_tool_error() {
+            let tool_uses = vec![("a1".to_string(), ANALYSIS.to_string(), "panic".to_string())];
+            let mut runtime = ConversationRuntime::new(
+                Session::new(),
+                ScriptedToolTurnApi::single_turn(tool_uses),
+                PanicHarnessExecutor {
+                    shared: Arc::new(PanickingShared),
+                },
+                PermissionPolicy::new(PermissionMode::DangerFullAccess),
+                vec!["system".to_string()],
+            );
+            runtime
+                .run_turn("analyze", None)
+                .expect("panicked analysis should not abort the turn");
+
+            let rows = session_tool_result_rows(runtime.session());
+            assert_eq!(rows.len(), 1);
+            assert!(rows[0].2);
+            assert!(
+                rows[0].3.contains("background tool thread panicked"),
+                "output={}",
+                rows[0].3
+            );
+        }
     }
 }
