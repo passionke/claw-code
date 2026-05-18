@@ -45,7 +45,7 @@ cp .env.example .env
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 模型 |
 | `GATEWAY_HOST_PORT` | 宿主机端口，默认 `8088` |
 | `CLAW_PODMAN_IMAGE` / `CLAW_DOCKER_IMAGE` | worker 镜像名（与 `CLAW_SOLVE_ISOLATION` 前缀一致） |
-| `CLAW_GATEWAY_SESSION_DB` | 可选；不设时 compose 默认已挂 **`./claw-gateway-sessions`** 对应容器内路径（见 `podman-compose.yml`） |
+| `CLAW_GATEWAY_DATABASE_URL` | 必填（网关进程）；compose 内网关连 **`postgres:5432`**；宿主机映射默认 **`127.0.0.1:5433`**（`CLAW_GATEWAY_PG_HOST_PORT`，避开 sqlbot 常用 5432） |
 | `CLAW_PROJECTS_GIT_URL` | **必填**：`ds_*` 项目镜像仓库（SSH 或 HTTPS），代码无默认值 |
 | `CLAW_PROJECTS_GIT_BRANCH` | **必填**：例如 `main` |
 | `CLAW_PROJECTS_GIT_AUTHOR` | **必填**：`git commit --author`，例如 `kejiqing <kejiqing@local>` |
@@ -112,7 +112,7 @@ podman ps   # 或  docker ps
 ## 2. 设计约定（知道这些就够排障）
 
 - **网关容器内**的池化路径必须是 Linux 里存在的路径；compose 把 `deploy/stack/claw-workspace` 挂到 **`/var/lib/claw/workspace`**，池绑定根目录与之一致。
-- **`CLAW_GATEWAY_SESSION_DB`（会话表 SQLite）**：`podman-compose.yml` 默认把库文件放在 **`/var/lib/claw/gateway-sessions/gateway-sessions.sqlite`**，并 **`./claw-gateway-sessions` → `/var/lib/claw/gateway-sessions`** 绑定到宿主机，**容器重建不丢** `sessionId` ↔ 工作区路径映射。不设该变量时网关会把库落在 **`CLAW_WORK_ROOT/gateway-sessions.sqlite`**（与 workspace 同卷时同样持久；compose 显式卷是为了路径清晰、便于单独备份）。生产也可把 `CLAW_GATEWAY_SESSION_DB` 指到任意**已挂载**的绝对路径（见根目录 `.env.example`）。`/healthz` 的 **`sessionDbPath`** 可核对当前使用的文件路径。
+- **会话 / 轮次 / 反馈（PostgreSQL）**：`podman-compose.yml` 启动 **`postgres`**（数据卷 **`./claw-postgres-data`**），网关通过 **`CLAW_GATEWAY_DATABASE_URL`** 连接。生产可将 URL 指向**独立 PG**（仅改连接串，无需与网关同 compose）。`/healthz` 的 **`gatewayDatabaseUrl`**（脱敏）与 **`sessionDatabaseBackend`** 可核对。
 - **Compose 后端**：需要 `podman-compose` 时 `brew install podman-compose`；勿假定 `podman compose` 一定走 Docker 的 compose。
 
 远程 Docker / `docker_pool` 与 env 前缀对照仍见文末表格；细节设计见 `docs/http-gateway-container-pool.md`。
@@ -151,7 +151,7 @@ podman ps   # 或  docker ps
 | 线上 Docker（推荐与默认脚本对齐） | `docker_pool` | `docker`（宿主机或旁路容器里的 daemon） | `CLAW_DOCKER_*` | 同上，但 `.env` 改 `CLAW_POOL_DAEMON_TCP_HOST=host.docker.internal`（Linux 已用 `podman-compose.pool-rpc.yml` 的 `extra_hosts`）或填 compose 服务名 |
 | 网关内嵌池（备选） | `docker_pool` / `podman_pool` | `docker` / `podman` 在**网关容器**内 | 同上 | **不设** `CLAW_POOL_DAEMON_TCP`：走进程内 `DockerPoolManager`；需 sock 挂载 + 镜像带对应 CLI（当前 `Containerfile.gateway-rs` 仅装 `podman`） |
 
-**会话与磁盘**：每次 solve 仍绑定 **一个 worker 容器 + 会话工作区**（目录名由网关分配并记入 SQLite）；**续聊**靠 body `sessionId` + 会话库，见 `docs/http-gateway-rs-api.md`。池化细节仍见 `docs/http-gateway-container-pool.md` §2。本仓库 **`gateway.sh up` compose 栈**只使用 **宿主机 `claw-pool-daemon` + TCP RPC**；若运行时不存在 `CLAW_POOL_DAEMON_TCP`，网关会退回 **进程内 `PoolManager`**（下表「网关内嵌池」一行）。
+**会话与磁盘**：每次 solve 仍绑定 **一个 worker 容器 + 会话工作区**（目录名由网关分配并记入 PostgreSQL）；**续聊**靠 body `sessionId` + 会话库，见 `docs/http-gateway-rs-api.md`。池化细节仍见 `docs/http-gateway-container-pool.md` §2。本仓库 **`gateway.sh up` compose 栈**只使用 **宿主机 `claw-pool-daemon` + TCP RPC**；若运行时不存在 `CLAW_POOL_DAEMON_TCP`，网关会退回 **进程内 `PoolManager`**（下表「网关内嵌池」一行）。
 
 线上只有 Docker 时 **`CLAW_CONTAINER_RUNTIME` 可不写**（`auto` 会选 docker）；仍用同一套 `deploy/stack/podman-compose*.yml`（文件名历史原因）。
 

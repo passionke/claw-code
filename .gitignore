@@ -33,6 +33,7 @@ deploy/stack/claude-tap.pid
 deploy/stack/claw-logs/
 deploy/stack/claw-workspace/
 deploy/stack/claw-gateway-sessions/
+deploy/stack/claw-postgres-data/
 deploy/stack/claude-tap-data/
 deploy/stack/deploy/
 deploy/stack/.claw-pool-rpc/
