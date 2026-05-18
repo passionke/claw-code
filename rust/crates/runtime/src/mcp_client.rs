@@ -7,6 +7,9 @@ use crate::mcp::{mcp_server_signature, mcp_tool_prefix, normalize_name_for_mcp};
 pub const DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS: u64 = 60_000;
 static MCP_TOOL_CALL_TIMEOUT_MS: OnceLock<u64> = OnceLock::new();
 
+pub const DEFAULT_MCP_MAX_CONCURRENT: usize = 4;
+static MCP_MAX_CONCURRENT: OnceLock<usize> = OnceLock::new();
+
 #[must_use]
 pub fn default_mcp_tool_call_timeout_ms() -> u64 {
     *MCP_TOOL_CALL_TIMEOUT_MS.get_or_init(|| {
@@ -15,6 +18,17 @@ pub fn default_mcp_tool_call_timeout_ms() -> u64 {
             .and_then(|value| value.trim().parse::<u64>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS)
+    })
+}
+
+/// Max in-flight MCP `tools/call` per process (gateway solve). Author: kejiqing
+#[must_use]
+pub fn default_mcp_max_concurrent() -> usize {
+    *MCP_MAX_CONCURRENT.get_or_init(|| {
+        std::env::var("CLAW_MCP_MAX_CONCURRENT")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .map_or(DEFAULT_MCP_MAX_CONCURRENT, |value| value.max(1))
     })
 }
 
@@ -257,5 +271,10 @@ mod tests {
             }
             other => panic!("expected sdk transport, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn default_mcp_max_concurrent_default_is_four() {
+        assert_eq!(super::DEFAULT_MCP_MAX_CONCURRENT, 4);
     }
 }

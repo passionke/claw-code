@@ -1,5 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 use serde_json::{Map, Value};
@@ -59,6 +61,34 @@ pub trait ApiClient {
 /// Trait implemented by tool dispatchers that execute model-requested tools.
 pub trait ToolExecutor {
     fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError>;
+
+    /// When set, specific tools may run on background threads via [`SharedToolExecutor`].
+    fn shared_executor(&self) -> Option<Arc<dyn SharedToolExecutor>> {
+        None
+    }
+}
+
+/// Thread-safe tool execution surface used for background `SQLBot` analysis calls. Author: kejiqing
+pub trait SharedToolExecutor: Send + Sync {
+    fn execute_shared(&self, tool_name: &str, input: &str) -> Result<String, ToolError>;
+}
+
+/// `SQLBot` analysis MCP tools may run concurrently within one assistant turn. Author: kejiqing
+#[must_use]
+pub fn is_background_sqlbot_analysis_tool(tool_name: &str) -> bool {
+    tool_name.ends_with("mcp_question_then_analysis")
+}
+
+struct ToolExecuteRawOutcome {
+    output: String,
+    is_error: bool,
+}
+
+struct BackgroundToolJob {
+    handle: JoinHandle<ToolExecuteRawOutcome>,
+    started_at: Instant,
+    effective_input: String,
+    pre_hook_result: HookRunResult,
 }
 
 /// Error returned when a tool invocation fails locally.
@@ -433,125 +463,13 @@ where
                 break;
             }
 
-            for (tool_use_id, tool_name, input) in pending_tool_uses {
-                let tool_started_at = Instant::now();
-                let trace_tool_use_id = tool_use_id.clone();
-                let pre_hook_result = self.run_pre_tool_use_hook(&tool_name, &input);
-                let effective_input = pre_hook_result
-                    .updated_input()
-                    .map_or_else(|| input.clone(), ToOwned::to_owned);
-                let permission_context = PermissionContext::new(
-                    pre_hook_result.permission_override(),
-                    pre_hook_result.permission_reason().map(ToOwned::to_owned),
-                );
-
-                let permission_outcome = if pre_hook_result.is_cancelled() {
-                    PermissionOutcome::Deny {
-                        reason: format_hook_message(
-                            &pre_hook_result,
-                            &format!("PreToolUse hook cancelled tool `{tool_name}`"),
-                        ),
-                    }
-                } else if pre_hook_result.is_failed() {
-                    PermissionOutcome::Deny {
-                        reason: format_hook_message(
-                            &pre_hook_result,
-                            &format!("PreToolUse hook failed for tool `{tool_name}`"),
-                        ),
-                    }
-                } else if pre_hook_result.is_denied() {
-                    PermissionOutcome::Deny {
-                        reason: format_hook_message(
-                            &pre_hook_result,
-                            &format!("PreToolUse hook denied tool `{tool_name}`"),
-                        ),
-                    }
-                } else if let Some(prompt) = prompter.as_mut() {
-                    self.permission_policy.authorize_with_context(
-                        &tool_name,
-                        &effective_input,
-                        &permission_context,
-                        Some(*prompt),
-                    )
-                } else {
-                    self.permission_policy.authorize_with_context(
-                        &tool_name,
-                        &effective_input,
-                        &permission_context,
-                        None,
-                    )
-                };
-
-                let result_message = match permission_outcome {
-                    PermissionOutcome::Allow => {
-                        self.record_tool_started(
-                            iterations,
-                            &turn_id,
-                            &tool_use_id,
-                            &tool_name,
-                            effective_input.len(),
-                        );
-                        let (mut output, mut is_error) =
-                            match self.tool_executor.execute(&tool_name, &effective_input) {
-                                Ok(output) => (output, false),
-                                Err(error) => (error.to_string(), true),
-                            };
-                        output = merge_hook_feedback(pre_hook_result.messages(), output, false);
-
-                        let post_hook_result = if is_error {
-                            self.run_post_tool_use_failure_hook(
-                                &tool_name,
-                                &effective_input,
-                                &output,
-                            )
-                        } else {
-                            self.run_post_tool_use_hook(
-                                &tool_name,
-                                &effective_input,
-                                &output,
-                                false,
-                            )
-                        };
-                        if post_hook_result.is_denied()
-                            || post_hook_result.is_failed()
-                            || post_hook_result.is_cancelled()
-                        {
-                            is_error = true;
-                        }
-                        output = merge_hook_feedback(
-                            post_hook_result.messages(),
-                            output,
-                            post_hook_result.is_denied()
-                                || post_hook_result.is_failed()
-                                || post_hook_result.is_cancelled(),
-                        );
-
-                        ConversationMessage::tool_result(
-                            tool_use_id.clone(),
-                            tool_name.clone(),
-                            output,
-                            is_error,
-                        )
-                    }
-                    PermissionOutcome::Deny { reason } => ConversationMessage::tool_result(
-                        tool_use_id.clone(),
-                        tool_name.clone(),
-                        merge_hook_feedback(pre_hook_result.messages(), reason, true),
-                        true,
-                    ),
-                };
-                self.session
-                    .push_message(result_message.clone())
-                    .map_err(|error| RuntimeError::new(error.to_string()))?;
-                self.record_tool_finished(
-                    iterations,
-                    &turn_id,
-                    &trace_tool_use_id,
-                    &result_message,
-                    tool_started_at.elapsed().as_millis(),
-                );
-                tool_results.push(result_message);
-            }
+            self.execute_pending_tool_uses(
+                iterations,
+                &turn_id,
+                pending_tool_uses,
+                &mut prompter,
+                &mut tool_results,
+            )?;
         }
 
         let auto_compaction = self.maybe_auto_compact();
@@ -605,6 +523,279 @@ where
     #[must_use]
     pub fn into_session(self) -> Session {
         self.session
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn execute_pending_tool_uses(
+        &mut self,
+        iterations: usize,
+        turn_id: &str,
+        pending_tool_uses: Vec<(String, String, String)>,
+        prompter: &mut Option<&mut dyn PermissionPrompter>,
+        tool_results: &mut Vec<ConversationMessage>,
+    ) -> Result<(), RuntimeError> {
+        let shared_executor = self.tool_executor.shared_executor();
+        let mut background_jobs: HashMap<String, BackgroundToolJob> = HashMap::new();
+        let mut prebuilt_results: HashMap<String, ConversationMessage> = HashMap::new();
+
+        if let Some(shared) = shared_executor {
+            for (tool_use_id, tool_name, input) in &pending_tool_uses {
+                if !is_background_sqlbot_analysis_tool(tool_name) {
+                    continue;
+                }
+                let pre_hook_result = self.run_pre_tool_use_hook(tool_name, input);
+                let effective_input = pre_hook_result
+                    .updated_input()
+                    .map_or_else(|| input.clone(), ToOwned::to_owned);
+                let permission_outcome = Self::permission_outcome_for_tool(
+                    self,
+                    tool_name,
+                    &effective_input,
+                    &pre_hook_result,
+                    prompter,
+                );
+
+                match permission_outcome {
+                    PermissionOutcome::Deny { reason } => {
+                        prebuilt_results.insert(
+                            tool_use_id.clone(),
+                            ConversationMessage::tool_result(
+                                tool_use_id.clone(),
+                                tool_name.clone(),
+                                merge_hook_feedback(pre_hook_result.messages(), reason, true),
+                                true,
+                            ),
+                        );
+                    }
+                    PermissionOutcome::Allow => {
+                        self.record_tool_started(
+                            iterations,
+                            turn_id,
+                            tool_use_id,
+                            tool_name,
+                            effective_input.len(),
+                        );
+                        let started_at = Instant::now();
+                        let shared = Arc::clone(&shared);
+                        let tool_name = tool_name.clone();
+                        let effective_input_spawn = effective_input.clone();
+                        let handle = std::thread::spawn(move || {
+                            match shared.execute_shared(&tool_name, &effective_input_spawn) {
+                                Ok(output) => ToolExecuteRawOutcome {
+                                    output,
+                                    is_error: false,
+                                },
+                                Err(error) => ToolExecuteRawOutcome {
+                                    output: error.to_string(),
+                                    is_error: true,
+                                },
+                            }
+                        });
+                        background_jobs.insert(
+                            tool_use_id.clone(),
+                            BackgroundToolJob {
+                                handle,
+                                started_at,
+                                effective_input,
+                                pre_hook_result,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        for (tool_use_id, tool_name, input) in pending_tool_uses {
+            let trace_tool_use_id = tool_use_id.clone();
+            if let Some(result_message) = prebuilt_results.remove(&tool_use_id) {
+                self.session
+                    .push_message(result_message.clone())
+                    .map_err(|error| RuntimeError::new(error.to_string()))?;
+                self.record_tool_finished(
+                    iterations,
+                    turn_id,
+                    &trace_tool_use_id,
+                    &result_message,
+                    0,
+                );
+                tool_results.push(result_message);
+                continue;
+            }
+
+            if let Some(job) = background_jobs.remove(&tool_use_id) {
+                let raw = job.handle.join().unwrap_or(ToolExecuteRawOutcome {
+                    output: String::from("background tool thread panicked"),
+                    is_error: true,
+                });
+                let result_message = self.tool_result_from_raw_execution(
+                    &tool_use_id,
+                    &tool_name,
+                    &job.pre_hook_result,
+                    &job.effective_input,
+                    raw,
+                );
+                self.session
+                    .push_message(result_message.clone())
+                    .map_err(|error| RuntimeError::new(error.to_string()))?;
+                self.record_tool_finished(
+                    iterations,
+                    turn_id,
+                    &trace_tool_use_id,
+                    &result_message,
+                    job.started_at.elapsed().as_millis(),
+                );
+                tool_results.push(result_message);
+                continue;
+            }
+
+            let tool_started_at = Instant::now();
+            let pre_hook_result = self.run_pre_tool_use_hook(&tool_name, &input);
+            let effective_input = pre_hook_result
+                .updated_input()
+                .map_or_else(|| input.clone(), ToOwned::to_owned);
+            let permission_outcome = Self::permission_outcome_for_tool(
+                self,
+                &tool_name,
+                &effective_input,
+                &pre_hook_result,
+                prompter,
+            );
+            let result_message = match permission_outcome {
+                PermissionOutcome::Allow => {
+                    self.record_tool_started(
+                        iterations,
+                        turn_id,
+                        &tool_use_id,
+                        &tool_name,
+                        effective_input.len(),
+                    );
+                    let raw = match self.tool_executor.execute(&tool_name, &effective_input) {
+                        Ok(output) => ToolExecuteRawOutcome {
+                            output,
+                            is_error: false,
+                        },
+                        Err(error) => ToolExecuteRawOutcome {
+                            output: error.to_string(),
+                            is_error: true,
+                        },
+                    };
+                    self.tool_result_from_raw_execution(
+                        &tool_use_id,
+                        &tool_name,
+                        &pre_hook_result,
+                        &effective_input,
+                        raw,
+                    )
+                }
+                PermissionOutcome::Deny { reason } => ConversationMessage::tool_result(
+                    tool_use_id.clone(),
+                    tool_name.clone(),
+                    merge_hook_feedback(pre_hook_result.messages(), reason, true),
+                    true,
+                ),
+            };
+            self.session
+                .push_message(result_message.clone())
+                .map_err(|error| RuntimeError::new(error.to_string()))?;
+            self.record_tool_finished(
+                iterations,
+                turn_id,
+                &trace_tool_use_id,
+                &result_message,
+                tool_started_at.elapsed().as_millis(),
+            );
+            tool_results.push(result_message);
+        }
+
+        Ok(())
+    }
+
+    fn permission_outcome_for_tool(
+        &self,
+        tool_name: &str,
+        effective_input: &str,
+        pre_hook_result: &HookRunResult,
+        prompter: &mut Option<&mut dyn PermissionPrompter>,
+    ) -> PermissionOutcome {
+        let permission_context = PermissionContext::new(
+            pre_hook_result.permission_override(),
+            pre_hook_result.permission_reason().map(ToOwned::to_owned),
+        );
+
+        if pre_hook_result.is_cancelled() {
+            PermissionOutcome::Deny {
+                reason: format_hook_message(
+                    pre_hook_result,
+                    &format!("PreToolUse hook cancelled tool `{tool_name}`"),
+                ),
+            }
+        } else if pre_hook_result.is_failed() {
+            PermissionOutcome::Deny {
+                reason: format_hook_message(
+                    pre_hook_result,
+                    &format!("PreToolUse hook failed for tool `{tool_name}`"),
+                ),
+            }
+        } else if pre_hook_result.is_denied() {
+            PermissionOutcome::Deny {
+                reason: format_hook_message(
+                    pre_hook_result,
+                    &format!("PreToolUse hook denied tool `{tool_name}`"),
+                ),
+            }
+        } else if let Some(prompt) = prompter.as_mut() {
+            self.permission_policy.authorize_with_context(
+                tool_name,
+                effective_input,
+                &permission_context,
+                Some(*prompt),
+            )
+        } else {
+            self.permission_policy.authorize_with_context(
+                tool_name,
+                effective_input,
+                &permission_context,
+                None,
+            )
+        }
+    }
+
+    fn tool_result_from_raw_execution(
+        &mut self,
+        tool_use_id: &str,
+        tool_name: &str,
+        pre_hook_result: &HookRunResult,
+        effective_input: &str,
+        raw: ToolExecuteRawOutcome,
+    ) -> ConversationMessage {
+        let mut output = merge_hook_feedback(pre_hook_result.messages(), raw.output, raw.is_error);
+        let mut is_error = raw.is_error;
+
+        let post_hook_result = if is_error {
+            self.run_post_tool_use_failure_hook(tool_name, effective_input, &output)
+        } else {
+            self.run_post_tool_use_hook(tool_name, effective_input, &output, false)
+        };
+        if post_hook_result.is_denied()
+            || post_hook_result.is_failed()
+            || post_hook_result.is_cancelled()
+        {
+            is_error = true;
+        }
+        output = merge_hook_feedback(
+            post_hook_result.messages(),
+            output,
+            post_hook_result.is_denied()
+                || post_hook_result.is_failed()
+                || post_hook_result.is_cancelled(),
+        );
+
+        ConversationMessage::tool_result(
+            tool_use_id.to_string(),
+            tool_name.to_string(),
+            output,
+            is_error,
+        )
     }
 
     fn maybe_auto_compact(&mut self) -> Option<AutoCompactionEvent> {
@@ -1014,9 +1205,11 @@ impl ToolExecutor for StaticToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_assistant_message, parse_auto_compaction_threshold, ApiClient, ApiRequest,
-        AssistantEvent, AutoCompactionEvent, ConversationRuntime, PromptCacheEvent, RuntimeError,
-        StaticToolExecutor, ToolExecutor, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+        build_assistant_message, is_background_sqlbot_analysis_tool,
+        parse_auto_compaction_threshold, ApiClient, ApiRequest, AssistantEvent,
+        AutoCompactionEvent, ConversationRuntime, PromptCacheEvent, RuntimeError,
+        SharedToolExecutor, StaticToolExecutor, ToolExecutor,
+        DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
     use crate::compact::CompactionConfig;
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
@@ -2000,5 +2193,138 @@ mod tests {
 
         // then
         assert_eq!(error.to_string(), "upstream failed");
+    }
+
+    #[test]
+    fn background_sqlbot_analysis_tool_suffix_match() {
+        assert!(is_background_sqlbot_analysis_tool(
+            "mcp__sqlbot-streamable__mcp_question_then_analysis"
+        ));
+        assert!(!is_background_sqlbot_analysis_tool(
+            "mcp__sqlbot-streamable__mcp_question"
+        ));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn background_analysis_tools_run_concurrently_during_serial_tool() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        struct TrackingInner {
+            active: AtomicUsize,
+            max_active: AtomicUsize,
+        }
+
+        impl SharedToolExecutor for TrackingInner {
+            fn execute_shared(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+                let _ = (tool_name, input);
+                let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut observed = self.max_active.load(Ordering::SeqCst);
+                while now > observed {
+                    match self.max_active.compare_exchange_weak(
+                        observed,
+                        now,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => break,
+                        Err(current) => observed = current,
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(80));
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                Ok(String::from("ok"))
+            }
+        }
+
+        struct TrackingExecutor {
+            inner: Arc<TrackingInner>,
+            serial_started: Mutex<bool>,
+        }
+
+        impl ToolExecutor for TrackingExecutor {
+            fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+                if tool_name == "serial_blocker" {
+                    *self.serial_started.lock().expect("lock") = true;
+                    while self.inner.active.load(Ordering::SeqCst) > 0 {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    return Ok(String::from("serial-done"));
+                }
+                self.inner.execute_shared(tool_name, input)
+            }
+
+            fn shared_executor(&self) -> Option<Arc<dyn SharedToolExecutor>> {
+                Some(self.inner.clone())
+            }
+        }
+
+        struct TwoAnalysisThenSerialApi {
+            call_count: usize,
+        }
+
+        impl ApiClient for TwoAnalysisThenSerialApi {
+            fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.call_count += 1;
+                match self.call_count {
+                    1 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "a1".to_string(),
+                            name: "mcp__sqlbot-streamable__mcp_question_then_analysis".to_string(),
+                            input: "{}".to_string(),
+                        },
+                        AssistantEvent::ToolUse {
+                            id: "b".to_string(),
+                            name: "serial_blocker".to_string(),
+                            input: "{}".to_string(),
+                        },
+                        AssistantEvent::ToolUse {
+                            id: "a2".to_string(),
+                            name: "mcp__sqlbot-streamable__mcp_question_then_analysis".to_string(),
+                            input: "{}".to_string(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    2 => {
+                        assert!(request
+                            .messages
+                            .iter()
+                            .any(|message| { message.role == MessageRole::Tool }));
+                        Ok(vec![
+                            AssistantEvent::TextDelta("done".to_string()),
+                            AssistantEvent::MessageStop,
+                        ])
+                    }
+                    _ => unreachable!("unexpected api call"),
+                }
+            }
+        }
+
+        let inner = Arc::new(TrackingInner {
+            active: AtomicUsize::new(0),
+            max_active: AtomicUsize::new(0),
+        });
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            TwoAnalysisThenSerialApi { call_count: 0 },
+            TrackingExecutor {
+                inner: Arc::clone(&inner),
+                serial_started: Mutex::new(false),
+            },
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        runtime
+            .run_turn("analyze", None)
+            .expect("turn should complete");
+
+        assert!(
+            inner.max_active.load(Ordering::SeqCst) >= 2,
+            "expected overlapping analysis tools, max_active={}",
+            inner.max_active.load(Ordering::SeqCst)
+        );
     }
 }
