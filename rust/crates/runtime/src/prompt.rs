@@ -672,6 +672,8 @@ mod tests {
 
     #[test]
     fn truncates_large_instruction_content_for_rendering() {
+        let _guard = env_lock();
+        std::env::remove_var(INSTRUCTION_FILE_MAX_CHARS_ENV);
         let rendered = render_instruction_content(&"x".repeat(8500));
         assert!(rendered.contains("[truncated]"));
         assert!(
