@@ -33,7 +33,7 @@ use biz_advice_report::{
     BizReportStreamMsg,
 };
 use biz_advice_report_live::{
-    spawn_live_report_sse_worker, turn_spill_file_exists, LiveReportContext,
+    spawn_live_report_sse_worker, turn_use_live_spill_report, LiveReportContext,
 };
 use gateway_solve_turn::read_progress_events;
 use gateway_solve_turn::{
@@ -412,7 +412,7 @@ struct TaskRecord {
         skip_serializing_if = "Vec::is_empty"
     )]
     progress_history: Vec<gateway_solve_turn::ProgressEvent>,
-    /// Running: spill contains `__CLAW_REPORT_START__`. Succeeded without spill file: `true`.
+    /// `true` when succeeded, or while running once spill/result contains `__CLAW_REPORT_START__`.
     #[serde(rename = "hasReport")]
     has_report: bool,
 }
@@ -1407,7 +1407,7 @@ async fn openapi() -> Json<Value> {
                         "progressUpdatedAtMs": { "type": "integer", "format": "int64", "nullable": true },
                         "hasReport": {
                             "type": "boolean",
-                            "description": "True while streaming when spill contains __CLAW_REPORT_START__; true when succeeded and no spill file (opens GET /v1/biz_advice_report → LLM polish stream)"
+                            "description": "True when status is succeeded, or while running once spill/result contains __CLAW_REPORT_START__"
                         },
                         "turnId": { "type": "string" },
                         "progressHistory": {
@@ -3520,7 +3520,7 @@ async fn get_task(
 }
 
 fn task_has_report(task: &TaskRecord, session_home: &std::path::Path) -> bool {
-    if task.status == "succeeded" && !turn_spill_file_exists(session_home, &task.turn_id) {
+    if task.status == "succeeded" {
         return true;
     }
     gateway_solve_turn::spill_contains_report_start_marker(session_home, &task.turn_id)
@@ -3779,7 +3779,7 @@ async fn get_biz_advice_report(
     let state = Arc::new(state);
     let ctx =
         prepare_live_report_context(&state, &query.session_id, &query.turn_id, query.ds_id).await?;
-    if !turn_spill_file_exists(&ctx.session_home, &ctx.turn_id) {
+    if !turn_use_live_spill_report(&ctx.session_home, &ctx.turn_id) {
         return respond_biz_advice_polish_for_context(state, ctx, query.stream).await;
     }
     if query.stream {
@@ -4994,7 +4994,7 @@ mod tests {
     }
 
     #[test]
-    fn task_has_report_false_when_succeeded_but_spill_exists_without_marker() {
+    fn task_has_report_true_when_succeeded_even_if_spill_lacks_report_marker() {
         let home =
             std::env::temp_dir().join(format!("claw-has-report-spill-{}", std::process::id()));
         let claw = home.join(".claw");
@@ -5022,7 +5022,7 @@ mod tests {
             progress_history: vec![],
             has_report: false,
         };
-        assert!(!task_has_report(&task, &home));
+        assert!(task_has_report(&task, &home));
         let _ = std::fs::remove_dir_all(&home);
     }
 

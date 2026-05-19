@@ -27,6 +27,13 @@ pub fn turn_spill_file_exists(session_home: &Path, turn_id: &str) -> bool {
     assistant_stream_spill_path(session_home, turn_id).is_file()
 }
 
+/// Live spill-tail SSE only when spill exists and already contains the report start marker.
+#[must_use]
+pub fn turn_use_live_spill_report(session_home: &Path, turn_id: &str) -> bool {
+    turn_spill_file_exists(session_home, turn_id)
+        && gateway_solve_turn::spill_contains_report_start_marker(session_home, turn_id)
+}
+
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone)]
