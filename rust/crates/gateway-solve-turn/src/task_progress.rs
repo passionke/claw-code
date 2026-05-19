@@ -16,8 +16,39 @@ use crate::entity_labels::{
 pub const REPORT_PROGRESS_TOOL_NAME: &str = "report_progress";
 
 const PROGRESS_VERSION: u32 = 1;
-const MAX_CURRENT_TASK_DESC_CHARS: usize = 80;
+pub const DEFAULT_PROGRESS_MESSAGE_MAX_CHARS: usize = 80;
+const PROGRESS_MESSAGE_TRUNCATE_SUFFIX: &str = "...";
 const MAX_EVENT_HISTORY_LINES: usize = 200;
+
+/// Max Unicode scalars per progress line (`progressHistory` / `currentTaskDesc`). Env: `CLAW_PROGRESS_MESSAGE_MAX_CHARS`. Author: kejiqing
+#[must_use]
+pub fn progress_message_max_chars() -> usize {
+    std::env::var("CLAW_PROGRESS_MESSAGE_MAX_CHARS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_PROGRESS_MESSAGE_MAX_CHARS)
+}
+
+fn truncate_to_max_chars(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let count = s.chars().count();
+    if count <= max {
+        return s.to_string();
+    }
+    let suffix_len = PROGRESS_MESSAGE_TRUNCATE_SUFFIX.chars().count();
+    if max <= suffix_len {
+        return s.chars().take(max).collect();
+    }
+    let take = max - suffix_len;
+    format!(
+        "{}{}",
+        s.chars().take(take).collect::<String>(),
+        PROGRESS_MESSAGE_TRUNCATE_SUFFIX
+    )
+}
 
 /// Append-only factual timeline entry (not todo snapshots). Author: kejiqing
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,11 +174,7 @@ pub fn sanitize_current_task_desc(raw: &str) -> String {
     {
         return "工具调用中".to_string();
     }
-    let mut out = trimmed.to_string();
-    if out.chars().count() > MAX_CURRENT_TASK_DESC_CHARS {
-        out = out.chars().take(MAX_CURRENT_TASK_DESC_CHARS).collect();
-    }
-    out
+    truncate_to_max_chars(trimmed, progress_message_max_chars())
 }
 
 pub fn reset_task_progress(session_home: &Path, session_id: &str) -> Result<(), String> {
@@ -235,11 +262,7 @@ pub fn progress_message_from_mcp_input_with_labels(
 }
 
 fn truncate_progress_label(label: &str) -> String {
-    let trimmed = label.trim();
-    if trimmed.chars().count() <= MAX_CURRENT_TASK_DESC_CHARS {
-        return trimmed.to_string();
-    }
-    trimmed.chars().take(MAX_CURRENT_TASK_DESC_CHARS).collect()
+    truncate_to_max_chars(label.trim(), progress_message_max_chars())
 }
 
 /// Completed event text tied to the matching `mcp_tool_started` line. Author: kejiqing
@@ -247,9 +270,9 @@ fn truncate_progress_label(label: &str) -> String {
 pub fn progress_event_completed_message(started_message: &str) -> String {
     let label = truncate_progress_label(started_message);
     if label.is_empty() || label == "数据查询中" {
-        return "已完成：MCP 连接就绪".to_string();
+        return "MCP 连接就绪".to_string();
     }
-    format!("已完成：{label}")
+    label
 }
 
 /// Failed event text tied to the matching `mcp_tool_started` line. Author: kejiqing
@@ -414,9 +437,7 @@ pub fn run_report_progress(
     if desc.is_empty() {
         return Err("current_task_desc is required and cannot be empty".to_string());
     }
-    if desc.chars().count() > MAX_CURRENT_TASK_DESC_CHARS {
-        desc = desc.chars().take(MAX_CURRENT_TASK_DESC_CHARS).collect();
-    }
+    desc = truncate_to_max_chars(&desc, progress_message_max_chars());
     let phase = parsed
         .phase
         .filter(|p| !p.trim().is_empty())
@@ -448,7 +469,7 @@ pub fn report_progress_tool_definition() -> ToolDefinition {
             "properties": {
                 "current_task_desc": {
                     "type": "string",
-                    "description": "Short user-visible status (<=80 chars)"
+                    "description": "Short user-visible status (length capped by CLAW_PROGRESS_MESSAGE_MAX_CHARS, default 80)"
                 },
                 "phase": {
                     "type": "string",
@@ -516,14 +537,22 @@ mod tests {
     }
 
     #[test]
+    fn truncate_appends_ellipsis_when_over_limit() {
+        let long = "查".repeat(100);
+        let out = truncate_to_max_chars(&long, 80);
+        assert!(out.ends_with("..."));
+        assert_eq!(out.chars().count(), 80);
+    }
+
+    #[test]
     fn completed_message_references_started_query() {
         let started = "查询门店 S20241007172800004204 在 2026-05-17 的销售总额";
         let done = progress_event_completed_message(started);
-        assert!(done.starts_with("已完成："));
+        assert!(!done.starts_with("已完成"));
         assert!(done.contains("销售总额"));
         assert_eq!(
             progress_event_completed_message("数据查询中"),
-            "已完成：MCP 连接就绪"
+            "MCP 连接就绪"
         );
     }
 

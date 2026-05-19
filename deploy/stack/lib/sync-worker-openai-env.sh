@@ -98,6 +98,8 @@ ALLOW = (
     # `load_system_prompt` / # Claude instructions budgets (runtime/prompt.rs). Author: kejiqing
     "CLAW_INSTRUCTION_FILE_MAX_CHARS",
     "CLAW_INSTRUCTION_TOTAL_MAX_CHARS",
+    # progressHistory / MCP progress line length (gateway-solve-turn/task_progress.rs).
+    "CLAW_PROGRESS_MESSAGE_MAX_CHARS",
 )
 
 
