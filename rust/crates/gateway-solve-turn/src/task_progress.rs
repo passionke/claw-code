@@ -522,9 +522,9 @@ mod tests {
         assert_eq!(events[0].kind, "mcp_tool_started");
         assert_eq!(events[0].message, "分析门店营业额趋势");
         assert!(
-            !events.iter().any(|e| {
-                e.kind == "mcp_tool_completed" || e.kind == "mcp_tool_failed"
-            }),
+            !events
+                .iter()
+                .any(|e| { e.kind == "mcp_tool_completed" || e.kind == "mcp_tool_failed" }),
             "MCP finish should not append completed/failed progress lines"
         );
         let _ = fs::remove_dir_all(&dir);
