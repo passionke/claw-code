@@ -1,4 +1,4 @@
-//! Gateway user-visible progress (`report_progress` tool → `.claw/task-progress.json`). Author: kejiqing
+//! Gateway user-visible progress (`report_progress` tool → `.claw/task-progress.json` + `.claw/progress-events.ndjson`). Author: kejiqing
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -14,6 +14,8 @@ use crate::entity_labels::{
 };
 
 pub const REPORT_PROGRESS_TOOL_NAME: &str = "report_progress";
+/// `progressHistory` kind when the model calls [`REPORT_PROGRESS_TOOL_NAME`]. Author: kejiqing
+pub const REPORT_PROGRESS_EVENT_KIND: &str = "report_progress";
 
 const PROGRESS_VERSION: u32 = 1;
 pub const DEFAULT_PROGRESS_MESSAGE_MAX_CHARS: usize = 80;
@@ -261,40 +263,6 @@ pub fn progress_message_from_mcp_input_with_labels(
     "数据查询中".to_string()
 }
 
-fn truncate_progress_label(label: &str) -> String {
-    truncate_to_max_chars(label.trim(), progress_message_max_chars())
-}
-
-/// Completed event text tied to the matching `mcp_tool_started` line. Author: kejiqing
-#[must_use]
-pub fn progress_event_completed_message(started_message: &str) -> String {
-    let label = truncate_progress_label(started_message);
-    if label.is_empty() || label == "数据查询中" {
-        return "MCP 连接就绪".to_string();
-    }
-    label
-}
-
-/// Failed event text tied to the matching `mcp_tool_started` line. Author: kejiqing
-#[must_use]
-pub fn progress_event_failed_message(started_message: &str) -> String {
-    let label = truncate_progress_label(started_message);
-    if label.is_empty() || label == "数据查询中" {
-        return "查询失败：MCP 连接".to_string();
-    }
-    format!("查询失败：{label}")
-}
-
-/// MCP call returned no payload (not “zero rows” in a report). User-facing wording. Author: kejiqing
-#[must_use]
-pub fn progress_event_empty_result_message(started_message: &str) -> String {
-    let label = truncate_progress_label(started_message);
-    if label.is_empty() || label == "数据查询中" {
-        return "分析服务暂未返回结果，请稍后重试".to_string();
-    }
-    format!("{label}——暂未返回分析结果，请稍后重试")
-}
-
 pub fn record_mcp_tool_started(
     session_home: &Path,
     session_id: &str,
@@ -313,17 +281,18 @@ pub fn record_mcp_tool_started(
     )
 }
 
-pub fn record_mcp_tool_finished(
+/// Append model-reported user-visible status to `.claw/progress-events.ndjson`. Author: kejiqing
+pub fn record_report_progress_event(
     session_home: &Path,
-    kind: &str,
     message: &str,
+    ts_ms: i64,
 ) -> Result<(), String> {
     append_progress_event(
         session_home,
         &ProgressEvent {
-            kind: kind.to_string(),
+            kind: REPORT_PROGRESS_EVENT_KIND.to_string(),
             message: message.to_string(),
-            ts_ms: now_ms(),
+            ts_ms,
         },
     )
 }
@@ -453,6 +422,11 @@ pub fn run_report_progress(
         updated_at_ms: now_ms(),
     };
     write_task_progress(session_home, &progress)?;
+    record_report_progress_event(
+        session_home,
+        &progress.current_task_desc,
+        progress.updated_at_ms,
+    )?;
     Ok(json!({ "ok": true, "updatedAtMs": progress.updated_at_ms }).to_string())
 }
 
@@ -461,7 +435,7 @@ pub fn report_progress_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: REPORT_PROGRESS_TOOL_NAME.to_string(),
         description: Some(
-            "Update task progress shown in the gateway UI (writes `.claw/task-progress.json`)."
+            "Update task progress shown in the gateway UI (writes `.claw/task-progress.json` and appends `.claw/progress-events.ndjson`)."
                 .to_string(),
         ),
         input_schema: json!({
@@ -521,19 +495,11 @@ mod tests {
         run_report_progress(&dir, "sess-pass", &input).unwrap();
         let p = read_task_progress(&dir).unwrap();
         assert_eq!(p.current_task_desc, "正在汇总门店营业额");
+        let events = read_progress_events(&dir, 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, REPORT_PROGRESS_EVENT_KIND);
+        assert_eq!(events[0].message, "正在汇总门店营业额");
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn empty_result_message_is_user_facing() {
-        let msg = progress_event_empty_result_message("查询门店营业额");
-        assert!(msg.contains("查询门店营业额"));
-        assert!(msg.contains("暂未返回分析结果"));
-        assert!(!msg.to_lowercase().contains("mcp"));
-        assert_eq!(
-            progress_event_empty_result_message("数据查询中"),
-            "分析服务暂未返回结果，请稍后重试"
-        );
     }
 
     #[test]
@@ -545,15 +511,23 @@ mod tests {
     }
 
     #[test]
-    fn completed_message_references_started_query() {
-        let started = "查询门店 S20241007172800004204 在 2026-05-17 的销售总额";
-        let done = progress_event_completed_message(started);
-        assert!(!done.starts_with("已完成"));
-        assert!(done.contains("销售总额"));
-        assert_eq!(
-            progress_event_completed_message("数据查询中"),
-            "MCP 连接就绪"
+    fn mcp_progress_history_only_records_started() {
+        let dir = std::env::temp_dir().join(format!("claw-mcp-done-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let args = json!({ "question": "分析门店营业额趋势" });
+        record_mcp_tool_started(&dir, "sess-dup", None, &args).unwrap();
+        let events = read_progress_events(&dir, 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "mcp_tool_started");
+        assert_eq!(events[0].message, "分析门店营业额趋势");
+        assert!(
+            !events.iter().any(|e| {
+                e.kind == "mcp_tool_completed" || e.kind == "mcp_tool_failed"
+            }),
+            "MCP finish should not append completed/failed progress lines"
         );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -645,6 +619,10 @@ mod tests {
         let p = read_task_progress(&dir).unwrap();
         assert_eq!(p.current_task_desc, "分析计划组织中");
         assert_eq!(p.phase, "planning");
+        let events = read_progress_events(&dir, 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "report_progress");
+        assert_eq!(events[0].message, "分析计划组织中");
         let _ = fs::remove_dir_all(&dir);
     }
 }

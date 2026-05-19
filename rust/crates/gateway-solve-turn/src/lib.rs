@@ -48,9 +48,8 @@ pub use assistant_stream_spill::{
 };
 pub use session_report::final_assistant_report_text_from_jsonl;
 pub use task_progress::{
-    progress_event_completed_message, progress_event_empty_result_message,
-    progress_event_failed_message, progress_events_path, progress_message_from_mcp_input,
-    read_progress_events, read_progress_history, read_task_progress, record_mcp_tool_finished,
+    progress_events_path, progress_message_from_mcp_input,
+    read_progress_events, read_progress_history, read_task_progress,
     record_mcp_tool_started, report_progress_tool_definition, reset_task_progress,
     run_report_progress, sanitize_current_task_desc, should_emit_tool_progress_event,
     task_progress_history_path, task_progress_json_path, truncate_progress_history, ProgressEvent,
@@ -442,11 +441,6 @@ impl DirectToolExecutorInner {
         }
         if tool_name == "MCP" {
             let args = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-            let query_label = progress_message_from_mcp_input(
-                &self.session_home,
-                self.extra_session.as_ref(),
-                &args,
-            );
             if should_emit_tool_progress_event(tool_name, false, Some(&args)) {
                 let _ = record_mcp_tool_started(
                     &self.session_home,
@@ -467,18 +461,6 @@ impl DirectToolExecutorInner {
                         false,
                     );
                 }
-                let (kind, msg) = if out.is_ok() {
-                    (
-                        "mcp_tool_completed",
-                        progress_event_completed_message(&query_label),
-                    )
-                } else {
-                    (
-                        "mcp_tool_failed",
-                        progress_event_failed_message(&query_label),
-                    )
-                };
-                let _ = record_mcp_tool_finished(&self.session_home, kind, &msg);
             }
             return out;
         }
@@ -491,8 +473,6 @@ impl DirectToolExecutorInner {
 
     fn call_runtime_mcp_tool(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
         let args = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-        let query_label =
-            progress_message_from_mcp_input(&self.session_home, self.extra_session.as_ref(), &args);
         let emit = should_emit_tool_progress_event(tool_name, true, Some(&args));
         if emit {
             let _ = record_mcp_tool_started(
@@ -507,13 +487,6 @@ impl DirectToolExecutorInner {
             .as_ref()
             .map(|value| json!({ "extra_session": value }));
         let Some(manager) = &self.runtime_mcp_manager else {
-            if emit {
-                let _ = record_mcp_tool_finished(
-                    &self.session_home,
-                    "mcp_tool_failed",
-                    &progress_event_failed_message(&query_label),
-                );
-            }
             return Err(ToolError::new("MCP manager not initialized"));
         };
         let manager = Arc::clone(manager);
@@ -536,36 +509,17 @@ impl DirectToolExecutorInner {
         match response {
             Ok(resp) => {
                 if let Some(error) = resp.error {
-                    if emit {
-                        let _ = record_mcp_tool_finished(
-                            &self.session_home,
-                            "mcp_tool_failed",
-                            &progress_event_failed_message(&query_label),
-                        );
-                    }
                     return Err(ToolError::new(format!(
                         "MCP tool call failed: {} ({})",
                         error.message, error.code
                     )));
                 }
                 let Some(result) = resp.result else {
-                    if emit {
-                        let _ = record_mcp_tool_finished(
-                            &self.session_home,
-                            "mcp_tool_failed",
-                            &progress_event_empty_result_message(&query_label),
-                        );
-                    }
                     return Err(ToolError::new("MCP tool call returned no result"));
                 };
                 let output = serde_json::to_string(&result)
                     .map_err(|e| ToolError::new(format!("serialize MCP result failed: {e}")))?;
                 if emit {
-                    let _ = record_mcp_tool_finished(
-                        &self.session_home,
-                        "mcp_tool_completed",
-                        &progress_event_completed_message(&query_label),
-                    );
                     let _ = entity_labels::ingest_entity_labels_from_mcp_response(
                         &self.session_home,
                         self.extra_session.as_ref(),
@@ -576,16 +530,7 @@ impl DirectToolExecutorInner {
                 }
                 Ok(output)
             }
-            Err(e) => {
-                if emit {
-                    let _ = record_mcp_tool_finished(
-                        &self.session_home,
-                        "mcp_tool_failed",
-                        &progress_event_failed_message(&query_label),
-                    );
-                }
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 }

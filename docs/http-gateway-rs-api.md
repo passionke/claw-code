@@ -60,7 +60,7 @@ Base URL 示例：`http://127.0.0.1:18088`
 
 - `GET /v1/sessions/{session_id}/execution?ds_id=<int>`
   - 用途：按 `(sessionId, dsId)` 查看当前进度快照、`progressHistory`（`.claw/progress-events.ndjson` 尾部）、网关队列统计、脱敏 trace 尾（`include_trace=true` 时含更多字段）
-  - `progressHistory` 每条 `message` 默认最多 **80** 个 Unicode 字符，超出截断并追加 `...`；环境变量 **`CLAW_PROGRESS_MESSAGE_MAX_CHARS`**（正整数）可覆盖。`mcp_tool_completed` 与对应 `mcp_tool_started` 使用同一句文案（不再加「已完成：」前缀）
+  - `progressHistory` 每条 `message` 默认最多 **80** 个 Unicode 字符，超出截断并追加 `...`；环境变量 **`CLAW_PROGRESS_MESSAGE_MAX_CHARS`**（正整数）可覆盖。事件 `kind`：`report_progress`（模型 `report_progress` 工具上报）、`mcp_tool_started`（NL 查询类 MCP 发起时一条；不追加 `mcp_tool_completed` / `mcp_tool_failed`，避免重复或失败文案刷屏）
   - 无该会话行：404
 
 - `POST /v1/tasks/{task_id}/cancel`
