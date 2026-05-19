@@ -383,8 +383,7 @@ mod tests {
             assert_eq!(
                 preflight_enabled(),
                 expected,
-                "preflight_enabled for {:?}",
-                value
+                "preflight_enabled for {value:?}"
             );
         }
         match prev {
