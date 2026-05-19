@@ -9,6 +9,8 @@ use tokio::time::{sleep, timeout};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use gateway_solve_turn::WORKER_ENV_MOUNT_PATH;
+
 use super::config::DockerPoolConfig;
 use super::docker_cli::{runtime_exec, runtime_exec_with_live_stderr};
 use super::traits::{PoolSessionHostMounts, SlotLease, TaskOutcome};
@@ -50,6 +52,7 @@ pub struct DockerPoolManager {
     on_release_exec: Option<String>,
     /// `docker exec --user` for solve only (see [`DockerPoolConfig::exec_user`]).
     exec_user: Option<String>,
+    worker_env_host_file: Option<PathBuf>,
 }
 
 impl DockerPoolManager {
@@ -74,6 +77,7 @@ impl DockerPoolManager {
             extra_run_args: cfg.extra_run_args,
             on_release_exec: cfg.on_release_exec,
             exec_user: cfg.exec_user,
+            worker_env_host_file: cfg.worker_env_host_file,
         }))
     }
 
@@ -138,6 +142,12 @@ impl DockerPoolManager {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let worker_env_host_file = std::env::var("CLAW_WORKER_ENV_FILE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_file());
         Self::from_config(DockerPoolConfig {
             runtime_bin: default_bin.to_string(),
             work_root: work_root.to_path_buf(),
@@ -149,6 +159,7 @@ impl DockerPoolManager {
             name_stem: None,
             on_release_exec,
             exec_user,
+            worker_env_host_file,
         })
     }
 
@@ -333,6 +344,22 @@ impl DockerPoolManager {
                 cat.display(),
                 GUEST_WORK_ROOT
             ));
+        }
+        if let Some(ref host_env) = self.worker_env_host_file {
+            let env_abs = std::fs::canonicalize(host_env).map_err(|e| {
+                format!(
+                    "canonicalize CLAW_WORKER_ENV_FILE {}: {e}",
+                    host_env.display()
+                )
+            })?;
+            args.push("-v".into());
+            args.push(format!(
+                "{}:{}:ro",
+                env_abs.display(),
+                WORKER_ENV_MOUNT_PATH
+            ));
+            args.push("-e".into());
+            args.push(format!("CLAW_WORKER_ENV_FILE={WORKER_ENV_MOUNT_PATH}"));
         }
         args.push(self.image.clone());
         args.push("sleep".into());
@@ -693,6 +720,7 @@ mod exec_solve_argv_prefix_tests {
             name_stem: Some("pfxtest".into()),
             on_release_exec: None,
             exec_user: exec_user.map(str::to_string),
+            worker_env_host_file: None,
         })
         .expect("from_config")
     }
@@ -812,6 +840,7 @@ esac
             name_stem: Some("tstem".into()),
             on_release_exec: None,
             exec_user: None,
+            worker_env_host_file: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -857,6 +886,7 @@ esac
             name_stem: Some("killme".into()),
             on_release_exec: None,
             exec_user: None,
+            worker_env_host_file: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -901,6 +931,7 @@ esac
             name_stem: Some("conc".into()),
             on_release_exec: None,
             exec_user: None,
+            worker_env_host_file: None,
         })
         .unwrap();
         let p1 = Arc::clone(&pool);
@@ -935,6 +966,7 @@ esac
             name_stem: Some("rel".into()),
             on_release_exec: None,
             exec_user: None,
+            worker_env_host_file: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -970,6 +1002,7 @@ esac
             name_stem: Some("dbl".into()),
             on_release_exec: None,
             exec_user: None,
+            worker_env_host_file: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1002,6 +1035,7 @@ esac
             name_stem: Some("relhook".into()),
             on_release_exec: Some("echo pool_on_release".into()),
             exec_user: None,
+            worker_env_host_file: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1044,6 +1078,7 @@ esac
             name_stem: Some("uidtest".into()),
             on_release_exec: None,
             exec_user: Some("claw".into()),
+            worker_env_host_file: None,
         })
         .unwrap();
         let bind = session_bind(&work);

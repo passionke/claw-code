@@ -24,6 +24,9 @@ pub struct DockerPoolConfig {
     /// allow writes for that uid. `POOL_ON_RELEASE` runs **without** this (as root) so cleanup
     /// can `pkill -u claw` etc.
     pub exec_user: Option<String>,
+    /// Host path to repo `.env` (from `CLAW_WORKER_ENV_FILE` on the pool daemon). Mounted ro at
+    /// [`gateway_solve_turn::WORKER_ENV_MOUNT_PATH`] for `apply_worker_env` inside the worker.
+    pub worker_env_host_file: Option<PathBuf>,
 }
 
 impl DockerPoolConfig {
@@ -65,6 +68,7 @@ mod tests {
             name_stem: Some("ab".into()),
             on_release_exec: None,
             exec_user: None,
+            worker_env_host_file: None,
         };
         assert!(c.validate().is_err());
     }
@@ -82,6 +86,7 @@ mod tests {
             name_stem: Some("ab".into()),
             on_release_exec: None,
             exec_user: None,
+            worker_env_host_file: None,
         };
         assert!(c.validate().is_err());
     }

@@ -347,6 +347,7 @@ fn merge_prompt_with_stdin(prompt: &str, stdin_content: Option<&str>) -> String 
 /// `claw gateway-solve-once --task-file <json>` — used from `docker exec` by the gateway pool.
 /// Author: kejiqing
 fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    gateway_solve_turn::apply_worker_env();
     let raw = fs::read_to_string(task_file)?;
     let task: gateway_solve_turn::GatewaySolveTaskFile = serde_json::from_str(&raw)?;
     let work_dir = env::current_dir()?;

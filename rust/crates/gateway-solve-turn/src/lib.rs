@@ -38,6 +38,7 @@ pub mod entity_labels;
 pub mod session_report;
 pub mod sqlbot_preflight;
 pub mod task_progress;
+pub mod worker_env;
 pub use assistant_stream_spill::{
     assistant_stream_spill_enabled_from_env, assistant_stream_spill_path,
     resolve_assistant_stream_spill, spill_bytes_contain_end_marker,
@@ -54,6 +55,9 @@ pub use task_progress::{
     run_report_progress, sanitize_current_task_desc, should_emit_tool_progress_event,
     task_progress_history_path, task_progress_json_path, truncate_progress_history, ProgressEvent,
     ReportProgressInput, TaskProgressFile, TaskProgressTodo, REPORT_PROGRESS_TOOL_NAME,
+};
+pub use worker_env::{
+    apply_worker_env, worker_env_keys_set, WORKER_ENV_KEYS, WORKER_ENV_MOUNT_PATH,
 };
 
 const HTTP_INTERNAL: u16 = 500;
