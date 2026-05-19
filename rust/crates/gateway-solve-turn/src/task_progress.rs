@@ -9,6 +9,10 @@ use api::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::entity_labels::{
+    entity_labels_for_progress, substitute_entity_ids_in_text, EntityLabelMap,
+};
+
 pub const REPORT_PROGRESS_TOOL_NAME: &str = "report_progress";
 
 const PROGRESS_VERSION: u32 = 1;
@@ -25,11 +29,29 @@ pub struct ProgressEvent {
     pub ts_ms: i64,
 }
 
-/// Whether tool execution should append to `.claw/progress-events.ndjson`.
-/// Whitelist: registered runtime MCP tools and the legacy `MCP` wrapper only. Author: kejiqing
+/// NL query / analysis MCP tools only (excludes gateway `SQLBot` preflight: start, datasource list, tables).
+/// Author: kejiqing
 #[must_use]
-pub fn should_emit_tool_progress_event(tool_name: &str, is_registered_runtime_mcp: bool) -> bool {
-    is_registered_runtime_mcp || tool_name == "MCP"
+pub fn is_mcp_query_progress_tool(tool_name: &str) -> bool {
+    tool_name.contains("mcp_question")
+}
+
+/// Whether tool execution should append to `.claw/progress-events.ndjson`.
+/// Whitelist: `mcp_question*` runtime tools and legacy `MCP` wrapper when `tool` is query-class. Author: kejiqing
+#[must_use]
+pub fn should_emit_tool_progress_event(
+    tool_name: &str,
+    is_registered_runtime_mcp: bool,
+    mcp_args: Option<&Value>,
+) -> bool {
+    if tool_name == "MCP" {
+        let inner = mcp_args
+            .and_then(|a| a.get("tool"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return is_mcp_query_progress_tool(inner);
+    }
+    is_registered_runtime_mcp && is_mcp_query_progress_tool(tool_name)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -181,14 +203,28 @@ fn trim_ndjson_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// User-visible line from MCP tool args (`question`, `query`, …). Author: kejiqing
+/// User-visible line from MCP tool args (`question`, `query`, …), with id→name substitution. Author: kejiqing
 #[must_use]
-pub fn progress_message_from_mcp_input(args: &Value) -> String {
+pub fn progress_message_from_mcp_input(
+    session_home: &Path,
+    extra_session: Option<&Value>,
+    args: &Value,
+) -> String {
+    let labels = entity_labels_for_progress(session_home, extra_session);
+    progress_message_from_mcp_input_with_labels(args, &labels)
+}
+
+#[must_use]
+pub fn progress_message_from_mcp_input_with_labels(
+    args: &Value,
+    labels: &EntityLabelMap,
+) -> String {
     for key in ["question", "query", "prompt", "message", "text"] {
         if let Some(s) = args.get(key).and_then(Value::as_str) {
             let trimmed = s.trim();
             if !trimmed.is_empty() {
-                let out = sanitize_current_task_desc(trimmed);
+                let substituted = substitute_entity_ids_in_text(trimmed, labels);
+                let out = sanitize_current_task_desc(&substituted);
                 if !out.is_empty() {
                     return out;
                 }
@@ -239,9 +275,10 @@ pub fn progress_event_empty_result_message(started_message: &str) -> String {
 pub fn record_mcp_tool_started(
     session_home: &Path,
     session_id: &str,
+    extra_session: Option<&Value>,
     args: &Value,
 ) -> Result<(), String> {
-    let message = progress_message_from_mcp_input(args);
+    let message = progress_message_from_mcp_input(session_home, extra_session, args);
     patch_current_task_desc(session_home, session_id, &message, "executing")?;
     append_progress_event(
         session_home,
@@ -491,14 +528,64 @@ mod tests {
     }
 
     #[test]
-    fn whitelist_only_runtime_mcp_and_mcp_wrapper() {
+    fn whitelist_only_mcp_question_tools() {
         assert!(should_emit_tool_progress_event(
             "mcp__sqlbot-streamable__mcp_question_then_analysis",
-            true
+            true,
+            None,
         ));
-        assert!(!should_emit_tool_progress_event("Bash", false));
-        assert!(!should_emit_tool_progress_event("Read", false));
-        assert!(should_emit_tool_progress_event("MCP", false));
+        assert!(should_emit_tool_progress_event(
+            "mcp__sqlbot-streamable__mcp_question",
+            true,
+            None,
+        ));
+        assert!(!should_emit_tool_progress_event(
+            "mcp__sqlbot-streamable__mcp_start",
+            true,
+            None,
+        ));
+        assert!(!should_emit_tool_progress_event(
+            "mcp__sqlbot-streamable__mcp_datasource_list",
+            true,
+            None,
+        ));
+        assert!(!should_emit_tool_progress_event(
+            "mcp__sqlbot-streamable__mcp_datasource_tables",
+            true,
+            None,
+        ));
+        assert!(!should_emit_tool_progress_event("Bash", false, None));
+        assert!(!should_emit_tool_progress_event("Read", false, None));
+        let query_wrapper = json!({ "server": "sqlbot", "tool": "mcp_question", "arguments": {} });
+        assert!(should_emit_tool_progress_event(
+            "MCP",
+            false,
+            Some(&query_wrapper)
+        ));
+        let preflight_wrapper = json!({ "server": "sqlbot", "tool": "mcp_start", "arguments": {} });
+        assert!(!should_emit_tool_progress_event(
+            "MCP",
+            false,
+            Some(&preflight_wrapper)
+        ));
+    }
+
+    #[test]
+    fn progress_message_substitutes_store_id_when_cached() {
+        let dir = std::env::temp_dir().join(format!("claw-labels-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".claw")).unwrap();
+        let labels_path = dir.join(".claw/entity-labels.json");
+        fs::write(
+            &labels_path,
+            r#"{"stores":{"S20241007172800004204":"外滩店"},"orgs":{}}"#,
+        )
+        .unwrap();
+        let args = json!({ "question": "统计门店 S20241007172800004204 营业额" });
+        let msg = progress_message_from_mcp_input(&dir, None, &args);
+        assert!(msg.contains("外滩店"));
+        assert!(!msg.contains("S20241007172800004204"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -507,12 +594,12 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let args = json!({ "question": "统计门店营业额" });
-        record_mcp_tool_started(&dir, "sess-ev", &args).unwrap();
+        record_mcp_tool_started(&dir, "sess-ev", None, &args).unwrap();
         let events = read_progress_events(&dir, 10).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "mcp_tool_started");
         assert_eq!(events[0].message, "统计门店营业额");
-        assert!(!should_emit_tool_progress_event("Glob", false));
+        assert!(!should_emit_tool_progress_event("Glob", false, None));
         let _ = fs::remove_dir_all(&dir);
     }
 

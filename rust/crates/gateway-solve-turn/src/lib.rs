@@ -34,6 +34,7 @@ use tools::{
 };
 
 pub mod assistant_stream_spill;
+pub mod entity_labels;
 pub mod session_report;
 pub mod sqlbot_preflight;
 pub mod task_progress;
@@ -437,13 +438,31 @@ impl DirectToolExecutorInner {
         }
         if tool_name == "MCP" {
             let args = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-            let query_label = progress_message_from_mcp_input(&args);
-            if should_emit_tool_progress_event(tool_name, false) {
-                let _ = record_mcp_tool_started(&self.session_home, &self.session_id, &args);
+            let query_label = progress_message_from_mcp_input(
+                &self.session_home,
+                self.extra_session.as_ref(),
+                &args,
+            );
+            if should_emit_tool_progress_event(tool_name, false, Some(&args)) {
+                let _ = record_mcp_tool_started(
+                    &self.session_home,
+                    &self.session_id,
+                    self.extra_session.as_ref(),
+                    &args,
+                );
             }
             let out = execute_mcp_tool_with_extra_session(input, self.extra_session.as_ref())
                 .map_err(ToolError::new);
-            if should_emit_tool_progress_event(tool_name, false) {
+            if should_emit_tool_progress_event(tool_name, false, Some(&args)) {
+                if let Ok(ref text) = &out {
+                    let _ = entity_labels::ingest_entity_labels_from_mcp_response(
+                        &self.session_home,
+                        self.extra_session.as_ref(),
+                        &args,
+                        text,
+                        false,
+                    );
+                }
                 let (kind, msg) = if out.is_ok() {
                     (
                         "mcp_tool_completed",
@@ -468,10 +487,16 @@ impl DirectToolExecutorInner {
 
     fn call_runtime_mcp_tool(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
         let args = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-        let query_label = progress_message_from_mcp_input(&args);
-        let emit = should_emit_tool_progress_event(tool_name, true);
+        let query_label =
+            progress_message_from_mcp_input(&self.session_home, self.extra_session.as_ref(), &args);
+        let emit = should_emit_tool_progress_event(tool_name, true, Some(&args));
         if emit {
-            let _ = record_mcp_tool_started(&self.session_home, &self.session_id, &args);
+            let _ = record_mcp_tool_started(
+                &self.session_home,
+                &self.session_id,
+                self.extra_session.as_ref(),
+                &args,
+            );
         }
         let meta = self
             .extra_session
@@ -490,6 +515,7 @@ impl DirectToolExecutorInner {
         let manager = Arc::clone(manager);
         let semaphore = Arc::clone(&self.mcp_semaphore);
         let tool_name_owned = tool_name.to_string();
+        let args_for_labels = args.clone();
         let response = self.async_runtime.block_on(async move {
             let _permit = semaphore
                 .acquire()
@@ -528,15 +554,23 @@ impl DirectToolExecutorInner {
                     }
                     return Err(ToolError::new("MCP tool call returned no result"));
                 };
+                let output = serde_json::to_string(&result)
+                    .map_err(|e| ToolError::new(format!("serialize MCP result failed: {e}")))?;
                 if emit {
                     let _ = record_mcp_tool_finished(
                         &self.session_home,
                         "mcp_tool_completed",
                         &progress_event_completed_message(&query_label),
                     );
+                    let _ = entity_labels::ingest_entity_labels_from_mcp_response(
+                        &self.session_home,
+                        self.extra_session.as_ref(),
+                        &args_for_labels,
+                        &output,
+                        false,
+                    );
                 }
-                serde_json::to_string(&result)
-                    .map_err(|e| ToolError::new(format!("serialize MCP result failed: {e}")))
+                Ok(output)
             }
             Err(e) => {
                 if emit {
