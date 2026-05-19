@@ -350,7 +350,48 @@ pub(crate) fn run_gateway_resolve_preflight(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
     use super::*;
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn preflight_enabled_respects_env() {
+        let _guard = env_lock();
+        let key = PREFLIGHT_ENV;
+        let prev: Option<OsString> = std::env::var_os(key);
+        for (value, expected) in [
+            (Some("0"), false),
+            (Some("false"), false),
+            (Some("OFF"), false),
+            (Some("no"), false),
+            (Some("1"), true),
+            (Some("true"), true),
+            (None, true),
+        ] {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+            assert_eq!(
+                preflight_enabled(),
+                expected,
+                "preflight_enabled for {:?}",
+                value
+            );
+        }
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
 
     #[test]
     fn pick_datasource_prefers_recommended_config() {

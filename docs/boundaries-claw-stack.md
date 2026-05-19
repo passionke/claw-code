@@ -39,6 +39,7 @@ Author: kejiqing
 3. **Gateway** = composes processes and env; it is **not** “Doris” and **not** “SQLBot product” — it orchestrates.
 4. **Image** = convenience bundle (gateway + Doris dist + adapter script + `claw`); **repository** boundaries still split for understanding.
 5. **`CLAW_MCP_PARALLEL_FANOUT`**: unset or truthy → gateway solve may run multiple `mcp_question_then_analysis` calls from one assistant turn concurrently; `0` / `false` / `off` forces serial MCP for those tools and drops the `[parallel-friendly]` tool-description hint (`rust/crates/runtime/src/mcp_client.rs`).
+6. **`CLAW_GATEWAY_SQLBOT_PREFLIGHT`**: unset or truthy → before the first LLM turn, gateway solve injects `mcp_start` + datasource list + table catalog into session jsonl; `0` / `false` / `off` / `no` disables (`rust/crates/gateway-solve-turn/src/sqlbot_preflight.rs`, worker env key in `worker_env.rs`).
 
 ## Where to change what
 

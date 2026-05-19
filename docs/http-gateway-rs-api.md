@@ -36,6 +36,7 @@ Base URL 示例：`http://127.0.0.1:18088`
       - `claw-session-id: <sessionId>`
     - 在访问下游 MCP 服务（包括 SQLBot）时，会通过 MCP 协议 `tools/call._meta.extra_session` 向工具端暴露 `extraSession`（如存在），用于会话级业务上下文消费。
   - 对话状态：同一会话目录下使用 `.claw/gateway-solve-session.jsonl` 持久化消息；若文件损坏导致无法加载，返回 `500`（不会静默丢弃历史）。
+  - **SQLBot 预注入（可选）**：环境变量 **`CLAW_GATEWAY_SQLBOT_PREFLIGHT`**（根 `.env`，经 worker 白名单传入 solve 进程）。**未设置时默认开启**：在首轮 LLM 之前自动执行 `mcp_start`、`mcp_datasource_list`、`mcp_datasource_tables`，并把 `tool_use` / `tool_result` 写入会话 jsonl。设为 **`0`** / **`false`** / **`off`** / **`no`** 可关闭，由模型按系统提示自行调用 MCP，避免与用户 prompt / CLAUDE 指令冲突。
 
 - `POST /v1/start`
   - 用途：异步提交 solve（与 `solve_async` 相同入队逻辑），**立即**返回 `sessionId` / `requestId`（二者同值，且等于 `taskId`）；供 BFF「agent/start」等会话引导场景使用，**不要**再同步调用 `/v1/solve` 阻塞等待。
