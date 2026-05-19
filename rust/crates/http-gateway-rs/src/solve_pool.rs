@@ -44,7 +44,7 @@ fn effective_assistant_stream_spill(
         return enabled;
     }
     if is_async {
-        return cfg.default_assistant_stream_spill;
+        return cfg.live_biz_report_spill_enabled;
     }
     false
 }
@@ -464,7 +464,7 @@ mod session_path_tests {
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
             default_max_iterations: 1,
-            default_assistant_stream_spill: false,
+            live_biz_report_spill_enabled: false,
             default_http_mcp_name: None,
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),
@@ -497,7 +497,7 @@ mod session_path_tests {
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
             default_max_iterations: 1,
-            default_assistant_stream_spill: false,
+            live_biz_report_spill_enabled: false,
             default_http_mcp_name: None,
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),

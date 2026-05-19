@@ -50,12 +50,13 @@ Base URL 示例：`http://127.0.0.1:18088`
   - **显式续聊**：请求体带非空 `sessionId` 时，若库中无该 `(sessionId, dsId)`，在入队前返回 `400`（文案同同步接口）。
   - **串行**：同一 `sessionId` 已存在状态为 `queued` 或 `running` 的异步任务时，再次 `POST /v1/solve_async` 返回 **`409 Conflict`**（`session has active async task`），需等待完成或取消后再提交。
   - 追踪约定：异步调用同样透传 `clawcode-session-id` 与 `claw-session-id`（值均为该次任务的网关层会话 ID）
+  - **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`**（默认未设）：async 默认写 `.claw/assistant-stream-spill-{turnId}.txt`；请求体 `assistantStreamSpill: false` 可关闭单次任务
 
 - `GET /v1/tasks/{task_id}`
   - 用途：查询异步任务状态与结果
   - 响应含 **`turnId`**（与本次 async 入队时返回的值一致）
   - 响应除 `status` 外含 **`currentTaskDesc`**（用户可见进度一句，camelCase JSON）：主要来自 agent 调用的内部工具 `report_progress` 写入会话目录 `.claw/task-progress.json`；`queued` 时网关可返回「排队中（x 个等待，y 个执行中）」；`running` 且无上报时兜底「处理中」或「工具调用中」（不暴露具体工具名）。**不**从 `gateway-solve-session.jsonl` 最后一条 assistant 推导。
-  - 另含 `dsId`、`progressUpdatedAtMs`（与 progress 文件一致时更新）、**`hasReport`**（bool）：当该 turn 的 `.claw/assistant-stream-spill-{turnId}.txt` 中出现 **`__CLAW_REPORT_START__`** 时为 `true`（系统提示词在 project `CLAUDE.md` 之前已要求模型输出该标记），否则 `false`；供前端决定是否拉起 `GET /v1/biz_advice_report`（须 `assistantStreamSpill: true`）
+  - 另含 `dsId`、`progressUpdatedAtMs`（与 progress 文件一致时更新）、**`hasReport`**（bool）：`succeeded` 时为 `true`；**仅当**环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`** 时，`running` 且 spill 中出现 **`__CLAW_REPORT_START__`** 也可为 `true`（供提前拉报告 SSE）。默认未设置该变量时不会在运行中提前为 `true`
 
 - `GET /v1/sessions/{session_id}/execution?ds_id=<int>`
   - 用途：按 `(sessionId, dsId)` 查看当前进度快照、`progressHistory`（`.claw/task-progress.ndjson` 尾部）、网关队列统计、脱敏 trace 尾（`include_trace=true` 时含更多字段）
@@ -84,13 +85,14 @@ Base URL 示例：`http://127.0.0.1:18088`
 - `turnId` 签发：每次 `POST /v1/solve` / `POST /v1/solve_async` 入队或同步受理时由网关生成；响应体与 `GET /v1/tasks/{task_id}` 含 `turnId`。`POST /v1/start` 不签发。
 
 - `GET /v1/biz_advice_report?sessionId=<id>&turnId=<T_…>&dsId=<int>`
-  - 用途：拉取**实时**业务报告——先 tail `.claw/assistant-stream-spill-{turnId}.txt`（需 solve 时开启 `assistantStreamSpill`；`turnId` 与 query 一致），再在结束标记或 turn 成功后切换为 **session jsonl / task 结果** 全量正文
+  - 用途：**默认**与 `biz_advice_report_bak` 相同——基于 solve 终态 `outputJson.message` 经 **`GPOS_BOSS_REPORT_WRITER` LLM 润色**（`stream` 可选 SSE）。仅当 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`** 且 spill 已含 `__CLAW_REPORT_START__` 时，才走 spill 文件 tail + 终态全量（无润色）
   - 查询参数：
     - `sessionId`、`turnId`（`T_<32 hex>`）、`dsId`（≥1）必填
     - `stream`：默认 `true`；为 `true` 时 `text/event-stream`（`biz.report.start` / `biz.report.delta` / `biz.report.done`，与旧版事件名一致）
   - 结束条件（SSE）：spill 中出现 `__CLAW_ASSISTANT_STREAM_END__`（turn 结束时写入），或 `gateway_turns` 状态为 `succeeded` 且全量正文可读
   - 非流式（`stream=false`）：仅 turn 终态可读，返回 JSON（`reportText` / `reportJson.message`）
-  - `reportJson` 含 `sessionId`、`turnId`、`message`（无 LLM 润色）
+  - **标记剥离（始终）**：与 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL` 无关；对外 `reportText`、`reportJson.message`、`biz.report.delta` 均剔除内部行 **`__CLAW_REPORT_START__`**（及紧随换行）。默认润色路径在读取 solve 正文与润色输出/SSE 出口各剥一次
+  - live spill 模式下 `reportJson.message` 来自 session 全量（无 LLM 润色）；润色模式下经 `GPOS_BOSS_REPORT_WRITER`
 
 - `GET /v1/biz_advice_report_bak?task_id=<taskId>`
   - 用途：**旧版**——基于异步任务 `outputJson.message` 再经 `GPOS_BOSS_REPORT_WRITER` skill **LLM 润色**

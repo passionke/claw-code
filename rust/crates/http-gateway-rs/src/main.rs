@@ -29,8 +29,9 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use biz_advice_report::{
     biz_report_sse_event_stream, build_biz_advice_polish_prompt,
-    load_boss_report_writer_instructions, report_body_from_solve_output, BizAdviceReportPayload,
-    BizReportStreamMsg,
+    load_boss_report_writer_instructions, report_body_from_solve_output, sanitize_biz_report_parts,
+    sanitize_external_report_text, sanitize_report_payload, BizAdviceReportPayload,
+    BizReportStreamMsg, ReportExportSanitizer,
 };
 use biz_advice_report_live::{
     spawn_live_report_sse_worker, turn_use_live_spill_report, LiveReportContext,
@@ -170,8 +171,8 @@ struct GatewayConfig {
     ds_registry_path: PathBuf,
     default_timeout_seconds: u64,
     default_max_iterations: usize,
-    /// Default for `solve_async` when the request omits `assistantStreamSpill` (`CLAW_GATEWAY_ASSISTANT_STREAM_SPILL`).
-    default_assistant_stream_spill: bool,
+    /// `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`: solve 写 spill、`hasReport` 提前、报告 SSE tail；默认关 → 仅 LLM 润色。
+    live_biz_report_spill_enabled: bool,
     default_http_mcp_name: Option<String>,
     default_http_mcp_url: Option<String>,
     default_http_mcp_transport: String,
@@ -206,7 +207,7 @@ struct SolveRequest {
     extra_session: Option<Value>,
     #[serde(rename = "allowedTools")]
     allowed_tools: Option<Vec<String>>,
-    /// When true (async solve), worker appends to `.claw/assistant-stream-spill-{turnId}.txt`.
+    /// Per-request override for spill file (`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL` is the gateway default when omitted).
     #[serde(rename = "assistantStreamSpill", default)]
     assistant_stream_spill: Option<bool>,
 }
@@ -919,12 +920,7 @@ async fn main() {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(64),
-        default_assistant_stream_spill: std::env::var("CLAW_GATEWAY_ASSISTANT_STREAM_SPILL")
-            .ok()
-            .is_some_and(|v| {
-                let s = v.trim().to_ascii_lowercase();
-                matches!(s.as_str(), "1" | "true" | "yes" | "on")
-            }),
+        live_biz_report_spill_enabled: gateway_env_enabled("CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL"),
         default_http_mcp_name: std::env::var("CLAW_DEFAULT_HTTP_MCP_NAME")
             .ok()
             .map(|v| v.trim().to_string())
@@ -1130,7 +1126,7 @@ async fn docs() -> Html<String> {
         (
             "GET",
             "/v1/biz_advice_report?sessionId=…&turnId=…&dsId=…",
-            "Report SSE: spill tail when spill file exists; else LLM polish from solve output",
+            "Report: default LLM polish (biz_advice_report_bak); live spill when CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1",
         ),
         (
             "GET",
@@ -1530,7 +1526,7 @@ async fn openapi() -> Json<Value> {
             },
             "/v1/biz_advice_report": {
                 "get": {
-                    "summary": "Business report: spill tail when spill file exists; else LLM polish from solve output",
+                    "summary": "Business report: default LLM polish; live spill tail when CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1",
                     "parameters": [
                         { "name": "sessionId", "in": "query", "required": true, "schema": { "type": "string" } },
                         { "name": "turnId", "in": "query", "required": true, "schema": { "type": "string" } },
@@ -2529,6 +2525,7 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "projectsGitMirror": ds_workspaces,
         "reportPolishUsesDeepseek": state.cfg.report_polish_deepseek.is_some(),
         "reportDeepseekModel": state.cfg.report_polish_deepseek.as_ref().map(|d| d.model.clone()),
+        "liveBizReportSpillEnabled": state.cfg.live_biz_report_spill_enabled,
     }))
 }
 
@@ -3148,7 +3145,11 @@ async fn get_session_execution(
         let task_snapshot = tasks.get(&session_id).map(|inner| SessionExecutionTask {
             task_id: inner.record.task_id.clone(),
             status: inner.record.status.clone(),
-            has_report: task_has_report(&inner.record, &session_home),
+            has_report: task_has_report(
+                &inner.record,
+                &session_home,
+                state.cfg.live_biz_report_spill_enabled,
+            ),
             created_at_ms: inner.record.created_at_ms,
             started_at_ms: inner.record.started_at_ms,
             finished_at_ms: inner.record.finished_at_ms,
@@ -3503,7 +3504,7 @@ async fn get_task(
     if let Some(home) = resolve_session_home_path(&state, ds_id, &task.session_id).await {
         task.progress_history = read_progress_events(&home, 50)
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        task.has_report = task_has_report(&task, &home);
+        task.has_report = task_has_report(&task, &home, state.cfg.live_biz_report_spill_enabled);
     }
     info!(
         request_id = %http_request_id.0,
@@ -3519,9 +3520,16 @@ async fn get_task(
     Ok(Json(task))
 }
 
-fn task_has_report(task: &TaskRecord, session_home: &std::path::Path) -> bool {
+fn task_has_report(
+    task: &TaskRecord,
+    session_home: &std::path::Path,
+    live_biz_report_spill_enabled: bool,
+) -> bool {
     if task.status == "succeeded" {
         return true;
+    }
+    if !live_biz_report_spill_enabled {
+        return false;
     }
     gateway_solve_turn::spill_contains_report_start_marker(session_home, &task.turn_id)
         || task_result_contains_report_start_marker(task)
@@ -3779,7 +3787,9 @@ async fn get_biz_advice_report(
     let state = Arc::new(state);
     let ctx =
         prepare_live_report_context(&state, &query.session_id, &query.turn_id, query.ds_id).await?;
-    if !turn_use_live_spill_report(&ctx.session_home, &ctx.turn_id) {
+    let use_live_spill = state.cfg.live_biz_report_spill_enabled
+        && turn_use_live_spill_report(&ctx.session_home, &ctx.turn_id);
+    if !use_live_spill {
         return respond_biz_advice_polish_for_context(state, ctx, query.stream).await;
     }
     if query.stream {
@@ -3795,6 +3805,7 @@ async fn get_biz_advice_report(
     }
     let (report_text, report_json) =
         biz_advice_report_live::live_report_json_response(&state, ctx.clone()).await?;
+    let (report_text, report_json) = sanitize_biz_report_parts(&report_text, Some(report_json));
     let status = biz_advice_report_live::turn_status(
         &state.session_db,
         &ctx.turn_id,
@@ -3809,7 +3820,7 @@ async fn get_biz_advice_report(
         source_ds_id: ctx.ds_id,
         source_status: status,
         report_text,
-        report_json: Some(report_json),
+        report_json,
     })
     .into_response())
 }
@@ -3884,6 +3895,7 @@ async fn respond_biz_advice_polish_for_context(
         )
     })?
     .map_err(map_gateway_solve_turn_err)?;
+    let (report_text, report_json) = sanitize_biz_report_parts(&report_text, report_json);
     Ok(Json(BizAdviceReportResponse {
         task_id: ctx.session_id.clone(),
         source_request_id: ctx.session_id,
@@ -3995,6 +4007,7 @@ async fn get_biz_advice_report_bak(
         )
     })?
     .map_err(map_gateway_solve_turn_err)?;
+    let (report_text, report_json) = sanitize_biz_report_parts(&report_text, report_json);
     Ok(Json(BizAdviceReportResponse {
         task_id: query.task_id,
         source_request_id: task.request_id,
@@ -4017,8 +4030,12 @@ fn biz_report_llm_stream_response(
 ) -> Response {
     let (tx, rx) = mpsc::unbounded_channel::<BizReportStreamMsg>();
     tokio::spawn(async move {
+        let mut export_sanitizer = ReportExportSanitizer::new(true);
         let mut send_delta = |delta: &str| {
-            let _ = tx.send(BizReportStreamMsg::Delta(delta.to_string()));
+            let clean = export_sanitizer.push_chunk(delta);
+            if !clean.is_empty() {
+                let _ = tx.send(BizReportStreamMsg::Delta(clean));
+            }
         };
         match run_gateway_biz_polish_llm_async(
             &prompt,
@@ -4031,14 +4048,16 @@ fn biz_report_llm_stream_response(
         .await
         {
             Ok((output_text, output_json)) => {
-                let _ = tx.send(BizReportStreamMsg::Done(BizAdviceReportPayload {
+                let mut done = BizAdviceReportPayload {
                     task_id: meta_done.task_id,
                     source_request_id: meta_done.source_request_id,
                     source_ds_id: meta_done.source_ds_id,
                     source_status: meta_done.source_status,
-                    report_text: Some(output_text),
+                    report_text: Some(sanitize_external_report_text(&output_text)),
                     report_json: output_json,
-                }));
+                };
+                sanitize_report_payload(&mut done);
+                let _ = tx.send(BizReportStreamMsg::Done(done));
             }
             Err(e) => {
                 let _ = tx.send(BizReportStreamMsg::Error(e.message));
@@ -4765,6 +4784,14 @@ fn load_mcp_servers_from_claw_config() -> HashMap<String, Value> {
     out
 }
 
+/// `1` / `true` / `yes` / `on` (case-insensitive); unset or any other value → false.
+fn gateway_env_enabled(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|v| {
+        let s = v.trim().to_ascii_lowercase();
+        matches!(s.as_str(), "1" | "true" | "yes" | "on")
+    })
+}
+
 fn parse_allowed_tools(raw: Option<String>) -> Vec<String> {
     let Some(raw) = raw else {
         return Vec::new();
@@ -4989,7 +5016,8 @@ mod tests {
             progress_history: vec![],
             has_report: false,
         };
-        assert!(task_has_report(&task, &home));
+        assert!(task_has_report(&task, &home, true));
+        assert!(task_has_report(&task, &home, false));
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -5022,7 +5050,7 @@ mod tests {
             progress_history: vec![],
             has_report: false,
         };
-        assert!(task_has_report(&task, &home));
+        assert!(task_has_report(&task, &home, true));
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -5047,7 +5075,44 @@ mod tests {
             progress_history: vec![],
             has_report: false,
         };
-        assert!(!task_has_report(&task, &home));
+        assert!(!task_has_report(&task, &home, true));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn task_has_report_false_while_running_with_spill_marker_when_live_disabled() {
+        let home =
+            std::env::temp_dir().join(format!("claw-has-report-live-off-{}", std::process::id()));
+        let claw = home.join(".claw");
+        std::fs::create_dir_all(&claw).unwrap();
+        let turn_id = "T_00000000000000000000000000000004";
+        std::fs::write(
+            claw.join(format!("assistant-stream-spill-{turn_id}.txt")),
+            format!(
+                "{}\n# 报告\n",
+                gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER
+            ),
+        )
+        .unwrap();
+        let task = TaskRecord {
+            task_id: "t4".into(),
+            session_id: "t4".into(),
+            request_id: "t4".into(),
+            ds_id: 10,
+            status: "running".into(),
+            created_at_ms: 0,
+            started_at_ms: Some(0),
+            finished_at_ms: None,
+            current_task_desc: None,
+            progress_updated_at_ms: None,
+            result: None,
+            error: None,
+            turn_id: turn_id.into(),
+            progress_history: vec![],
+            has_report: false,
+        };
+        assert!(task_has_report(&task, &home, true));
+        assert!(!task_has_report(&task, &home, false));
         let _ = std::fs::remove_dir_all(&home);
     }
 }

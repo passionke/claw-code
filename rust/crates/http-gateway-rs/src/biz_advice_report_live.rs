@@ -7,16 +7,19 @@ use std::time::Duration;
 
 use gateway_solve_turn::{
     assistant_stream_spill_path, final_assistant_report_text_from_jsonl,
-    spill_bytes_contain_end_marker, split_spill_end_marker,
+    spill_bytes_contain_end_marker, split_spill_end_marker, strip_report_start_marker,
+    ASSISTANT_STREAM_REPORT_START_MARKER,
 };
 use serde_json::{json, Value};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Instant};
+use tracing::warn;
 
 use crate::biz_advice_report::{
-    report_body_from_solve_output, BizAdviceReportPayload, BizReportStreamMsg,
+    report_body_from_solve_output, sanitize_external_report_text, BizAdviceReportPayload,
+    BizReportStreamMsg,
 };
 use crate::session_db::GatewaySessionDb;
 use crate::{ApiError, AppState};
@@ -27,14 +30,18 @@ pub fn turn_spill_file_exists(session_home: &Path, turn_id: &str) -> bool {
     assistant_stream_spill_path(session_home, turn_id).is_file()
 }
 
-/// Live spill-tail SSE only when spill exists and already contains the report start marker.
+/// Live spill-tail SSE when spill exists and contains the report start marker.
+/// Gated by gateway env `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1` (spill write + report SSE + `hasReport`).
 #[must_use]
 pub fn turn_use_live_spill_report(session_home: &Path, turn_id: &str) -> bool {
     turn_spill_file_exists(session_home, turn_id)
         && gateway_solve_turn::spill_contains_report_start_marker(session_home, turn_id)
 }
 
-const POLL_INTERVAL: Duration = Duration::from_millis(150);
+/// Poll spill growth frequently enough to tail model output smoothly.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// Max Unicode scalars per `biz.report.delta` so one poll burst is not a single huge frame.
+const MAX_DELTA_CHARS: usize = 128;
 
 #[derive(Debug, Clone)]
 pub struct LiveReportContext {
@@ -90,7 +97,7 @@ pub async fn resolve_formal_report_text(
             "formal report not ready (empty session transcript)",
         ));
     }
-    Ok(text)
+    Ok(strip_report_start_marker(&text))
 }
 
 pub async fn turn_status(
@@ -134,8 +141,9 @@ fn emit_done(
     tx: &mpsc::UnboundedSender<BizReportStreamMsg>,
     ctx: &LiveReportContext,
     source_status: &str,
-    report_text: String,
+    report_text: &str,
 ) {
+    let report_text = sanitize_external_report_text(report_text);
     let message = report_text.clone();
     let _ = tx.send(BizReportStreamMsg::Done(BizAdviceReportPayload {
         task_id: ctx.session_id.clone(),
@@ -155,6 +163,82 @@ fn emit_error(tx: &mpsc::UnboundedSender<BizReportStreamMsg>, detail: impl Into<
     let _ = tx.send(BizReportStreamMsg::Error(detail.into()));
 }
 
+/// Consumer-visible report body from cumulative spill (after end-marker split).
+#[must_use]
+fn spill_visible_export(visible: &str) -> String {
+    if !visible.contains(ASSISTANT_STREAM_REPORT_START_MARKER) {
+        return String::new();
+    }
+    sanitize_external_report_text(visible)
+}
+
+/// Emit `full_export[emitted..]` as multiple SSE deltas (UTF-8 safe, `max_chars` per frame).
+fn emit_export_deltas(
+    tx: &mpsc::UnboundedSender<BizReportStreamMsg>,
+    full_export: &str,
+    emitted_len: &mut usize,
+    delta_sent: &mut String,
+) {
+    while *emitted_len < full_export.len() {
+        let rest = &full_export[*emitted_len..];
+        let chunk_end = rest
+            .char_indices()
+            .nth(MAX_DELTA_CHARS)
+            .map_or(rest.len(), |(byte_idx, _)| byte_idx);
+        let piece = &rest[..chunk_end];
+        *emitted_len += chunk_end;
+        if !piece.is_empty() {
+            delta_sent.push_str(piece);
+            let _ = tx.send(BizReportStreamMsg::Delta(piece.to_string()));
+        }
+    }
+}
+
+#[must_use]
+fn longest_common_prefix_len(a: &str, b: &str) -> usize {
+    let mut last_end = 0usize;
+    for ((ia, ca), (_, cb)) in a.char_indices().zip(b.char_indices()) {
+        if ca != cb {
+            break;
+        }
+        last_end = ia + ca.len_utf8();
+    }
+    last_end
+}
+
+/// Before `done`, ensure SSE deltas cover all of `report` (formal jsonl may be longer than spill).
+fn flush_remaining_deltas(
+    tx: &mpsc::UnboundedSender<BizReportStreamMsg>,
+    report: &str,
+    delta_sent: &mut String,
+) {
+    if report.is_empty() {
+        return;
+    }
+    if delta_sent == report {
+        return;
+    }
+    let mut emit_from = if report.starts_with(delta_sent.as_str()) {
+        delta_sent.len()
+    } else {
+        let common = longest_common_prefix_len(report, delta_sent);
+        if common < delta_sent.len() {
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "biz_advice_report_live",
+                delta_sent_len = delta_sent.len(),
+                report_len = report.len(),
+                common_prefix_len = common,
+                "spill deltas diverged from formal report; resyncing tail from common prefix"
+            );
+            delta_sent.truncate(common);
+        }
+        common
+    };
+    emit_export_deltas(tx, report, &mut emit_from, delta_sent);
+    debug_assert_eq!(delta_sent.as_str(), report);
+}
+
 /// Poll spill then fall back to formal jsonl / task output; SSE uses existing `biz.report.*` events.
 pub fn spawn_live_report_sse_worker(
     state: Arc<AppState>,
@@ -164,7 +248,9 @@ pub fn spawn_live_report_sse_worker(
     tokio::spawn(async move {
         let spill_path = assistant_stream_spill_path(&ctx.session_home, &ctx.turn_id);
         let mut spill_offset: u64 = 0;
-        let mut emitted_spill_len: usize = 0;
+        let mut raw_spill = String::new();
+        let mut emitted_export_len: usize = 0;
+        let mut delta_sent = String::new();
         let started = Instant::now();
         let max_wait = Duration::from_secs(state.cfg.default_timeout_seconds.saturating_add(60));
 
@@ -219,20 +305,22 @@ pub fn spawn_live_report_sse_worker(
                         if spill_bytes_contain_end_marker(&chunk) {
                             switch_to_formal = true;
                         }
-                        if let Ok(s) = String::from_utf8(chunk) {
-                            let (visible, saw_marker) = split_spill_end_marker(&s);
-                            if saw_marker {
-                                switch_to_formal = true;
-                            }
-                            let delta = if visible.len() > emitted_spill_len {
-                                visible[emitted_spill_len..].to_string()
-                            } else {
-                                String::new()
-                            };
-                            emitted_spill_len = visible.len();
-                            if !delta.is_empty() && !switch_to_formal {
-                                let _ = tx.send(BizReportStreamMsg::Delta(delta));
-                            }
+                        if !chunk.is_empty() {
+                            let piece = String::from_utf8_lossy(&chunk);
+                            raw_spill.push_str(&piece);
+                        }
+                        let (visible, saw_end) = split_spill_end_marker(&raw_spill);
+                        if saw_end {
+                            switch_to_formal = true;
+                        }
+                        let full_export = spill_visible_export(&visible);
+                        if !switch_to_formal {
+                            emit_export_deltas(
+                                &tx,
+                                &full_export,
+                                &mut emitted_export_len,
+                                &mut delta_sent,
+                            );
                         }
                     }
                     Err(e) => {
@@ -258,8 +346,10 @@ pub fn spawn_live_report_sse_worker(
                 } else {
                     formal
                 };
+                let report = sanitize_external_report_text(&report);
+                flush_remaining_deltas(&tx, &report, &mut delta_sent);
                 let st = status.as_deref().unwrap_or("succeeded");
-                emit_done(&tx, &ctx, st, report);
+                emit_done(&tx, &ctx, st, &report);
                 return;
             }
 
@@ -299,4 +389,53 @@ pub async fn live_report_json_response(
         "message": report_text,
     });
     Ok((report_text, report_json))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_deltas_splits_by_max_chars() {
+        let text: String = "字".repeat(300);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut emitted = 0usize;
+        let mut delta_sent = String::new();
+        emit_export_deltas(&tx, &text, &mut emitted, &mut delta_sent);
+        assert_eq!(emitted, text.len());
+        assert_eq!(delta_sent, text);
+        let mut deltas = Vec::new();
+        while let Ok(BizReportStreamMsg::Delta(d)) = rx.try_recv() {
+            deltas.push(d);
+        }
+        assert_eq!(deltas.len(), 3);
+        assert_eq!(deltas[0].chars().count(), MAX_DELTA_CHARS);
+        assert_eq!(deltas[1].chars().count(), MAX_DELTA_CHARS);
+        assert_eq!(deltas[2].chars().count(), 300 - 2 * MAX_DELTA_CHARS);
+    }
+
+    #[test]
+    fn flush_remaining_emits_formal_tail_after_partial_spill() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let spill_part = "报告开头";
+        let full_report = "报告开头报告结尾";
+        let mut delta_sent = spill_part.to_string();
+        let mut emitted = spill_part.len();
+        emit_export_deltas(&tx, spill_part, &mut emitted, &mut delta_sent);
+        while rx.try_recv().is_ok() {}
+        flush_remaining_deltas(&tx, full_report, &mut delta_sent);
+        let mut tail = String::new();
+        while let Ok(BizReportStreamMsg::Delta(d)) = rx.try_recv() {
+            tail.push_str(&d);
+        }
+        assert_eq!(tail, "报告结尾");
+        assert_eq!(delta_sent, full_report);
+    }
+
+    #[test]
+    fn spill_visible_export_strips_marker() {
+        let raw = format!("{ASSISTANT_STREAM_REPORT_START_MARKER}\n# 标题\n正文");
+        assert_eq!(spill_visible_export(&raw), "# 标题\n正文");
+        assert!(spill_visible_export("分析中…").is_empty());
+    }
 }

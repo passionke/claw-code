@@ -30,10 +30,10 @@ fn env_flag(name: &str) -> bool {
     })
 }
 
-/// Worker-side default when the task file omits `assistantStreamSpill`.
+/// Worker-side default when the task file omits `assistantStreamSpill` (same env as gateway live report).
 #[must_use]
 pub fn assistant_stream_spill_enabled_from_env() -> bool {
-    env_flag("CLAW_GATEWAY_ASSISTANT_STREAM_SPILL")
+    env_flag("CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL")
 }
 
 /// Resolve spill for `gateway-solve-once` (task JSON overrides env).
@@ -114,6 +114,16 @@ pub fn split_spill_end_marker(content: &str) -> (String, bool) {
     (content.to_string(), false)
 }
 
+/// Remove internal report-start marker (and optional following newline) for external APIs.
+#[must_use]
+pub fn strip_report_start_marker(content: &str) -> String {
+    let Some(idx) = content.find(ASSISTANT_STREAM_REPORT_START_MARKER) else {
+        return content.to_string();
+    };
+    let after = &content[idx + ASSISTANT_STREAM_REPORT_START_MARKER.len()..];
+    after.trim_start_matches(['\n', '\r']).to_string()
+}
+
 /// Whether this turn's spill file exists and contains [`ASSISTANT_STREAM_REPORT_START_MARKER`].
 #[must_use]
 pub fn spill_contains_report_start_marker(session_home: &Path, turn_id: &str) -> bool {
@@ -154,6 +164,13 @@ mod tests {
         assert!(raw.starts_with("hello"));
         assert!(raw.contains(ASSISTANT_STREAM_SPILL_END_MARKER));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strip_report_start_marker_removes_marker_line() {
+        let raw = format!("分析中…\n{ASSISTANT_STREAM_REPORT_START_MARKER}\n# 报告\n正文");
+        assert_eq!(strip_report_start_marker(&raw), "# 报告\n正文");
+        assert_eq!(strip_report_start_marker("no marker"), "no marker");
     }
 
     #[test]

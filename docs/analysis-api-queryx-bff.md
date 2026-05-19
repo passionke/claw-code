@@ -117,7 +117,7 @@
 | `sessionId` | string | 否 | 续聊必填；首聊省略则由网关生成 |
 | `question` | string | 是 | 用户自然语言问题，非空；BFF 映射为网关请求体字段 **`userPrompt`** |
 
-BFF 调网关 `solve_async` 时建议固定附带 **`assistantStreamSpill": true`**（或依赖网关 env 默认），否则无 spill 文件、`hasReport` 恒为 `false`。
+Live 报告 spill 由网关单一环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`** 控制（写 spill + 提前 `hasReport` + 报告 SSE）；默认关闭。BFF **无需**再单独传 `assistantStreamSpill`（请求体显式 `false` 仍会关闭该次任务）。
 
 **BFF 侧（设计约定，非对外字段）**  
 
@@ -153,9 +153,9 @@ BFF 调网关 `solve_async` 时建议固定附带 **`assistantStreamSpill": true
 
 **行为说明**  
 
-- BFF 调网关时建议 **`stream=true`**（网关默认即为流式）：进行中 tail spill，结束后一次 `biz.report.done` 带全量 `reportText`（来自 session jsonl，无二次润色）。  
-- 非流式 JSON 需 turn 已终态且正文非空。  
-- 若仍需旧版 LLM 润色报告，BFF 改调 `biz_advice_report_bak`。
+- **默认（未设 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`）**：`GET /v1/biz_advice_report` 与 **`biz_advice_report_bak` 同为 LLM 润色**；须 turn **`succeeded`** 后再拉（`has_report` 运行中不会提前为 true）。对外报告正文仍会去掉内部标记 **`__CLAW_REPORT_START__`**（与 spill 开关无关）。  
+- **开启 live spill**（仅设 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`，网关会为 async solve 默认写 spill）：`stream=true` 时 tail spill，结束后 `biz.report.done` 全量正文（无润色）。  
+- 非流式 JSON 需 turn 已终态且正文非空。
 
 ---
 
@@ -186,7 +186,7 @@ BFF 调网关 `solve_async` 时建议固定附带 **`assistantStreamSpill": true
 
 **前端建议顺序（hacking）**
 
-1. `POST /api/v1/analysis/async`（`assistantStreamSpill: true` 由 BFF 写入网关体）  
+1. `POST /api/v1/analysis/async`（live 模式由部署侧 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1` 开启）  
 2. 轮询 `GET /api/v1/analysis/status`，直到 `has_report === true`（或任务终态）  
 3. `has_report === true` 时建立报告 SSE（`stream=true`）；任务 `succeeded` 后 SSE 会切全量 jsonl 并 `biz.report.done`  
 

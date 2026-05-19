@@ -41,9 +41,9 @@ pub mod task_progress;
 pub use assistant_stream_spill::{
     assistant_stream_spill_enabled_from_env, assistant_stream_spill_path,
     resolve_assistant_stream_spill, spill_bytes_contain_end_marker,
-    spill_contains_report_start_marker, split_spill_end_marker, AssistantStreamSpill,
-    ASSISTANT_STREAM_REPORT_START_MARKER, ASSISTANT_STREAM_SPILL_BASENAME_PREFIX,
-    ASSISTANT_STREAM_SPILL_END_MARKER,
+    spill_contains_report_start_marker, split_spill_end_marker, strip_report_start_marker,
+    AssistantStreamSpill, ASSISTANT_STREAM_REPORT_START_MARKER,
+    ASSISTANT_STREAM_SPILL_BASENAME_PREFIX, ASSISTANT_STREAM_SPILL_END_MARKER,
 };
 pub use session_report::final_assistant_report_text_from_jsonl;
 pub use task_progress::{
