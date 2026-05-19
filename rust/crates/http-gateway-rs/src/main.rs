@@ -3146,6 +3146,7 @@ async fn get_session_execution(
         let task_snapshot = tasks.get(&session_id).map(|inner| SessionExecutionTask {
             task_id: inner.record.task_id.clone(),
             status: inner.record.status.clone(),
+            has_report: task_has_report(&inner.record, &session_home),
             created_at_ms: inner.record.created_at_ms,
             started_at_ms: inner.record.started_at_ms,
             finished_at_ms: inner.record.finished_at_ms,
@@ -3157,6 +3158,7 @@ async fn get_session_execution(
     let task = task_snapshot.unwrap_or_else(|| SessionExecutionTask {
         task_id: session_id.clone(),
         status: "unknown".to_string(),
+        has_report: false,
         created_at_ms: 0,
         started_at_ms: None,
         finished_at_ms: None,
@@ -3499,8 +3501,7 @@ async fn get_task(
     if let Some(home) = resolve_session_home_path(&state, ds_id, &task.session_id).await {
         task.progress_history = read_progress_events(&home, 50)
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        task.has_report =
-            gateway_solve_turn::spill_contains_report_start_marker(&home, &task.turn_id);
+        task.has_report = task_has_report(&task, &home);
     }
     info!(
         request_id = %http_request_id.0,
@@ -3514,6 +3515,28 @@ async fn get_task(
         "gateway_task"
     );
     Ok(Json(task))
+}
+
+fn task_has_report(task: &TaskRecord, session_home: &std::path::Path) -> bool {
+    gateway_solve_turn::spill_contains_report_start_marker(session_home, &task.turn_id)
+        || task_result_contains_report_start_marker(task)
+}
+
+fn task_result_contains_report_start_marker(task: &TaskRecord) -> bool {
+    let Some(result) = &task.result else {
+        return false;
+    };
+    result
+        .output_text
+        .contains(gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER)
+        || result
+            .output_json
+            .as_ref()
+            .and_then(|v| v.get("message"))
+            .and_then(Value::as_str)
+            .is_some_and(|message| {
+                message.contains(gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER)
+            })
 }
 
 fn task_status_is_terminal_for_cancel(status: &str) -> bool {

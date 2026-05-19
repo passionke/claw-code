@@ -33,6 +33,8 @@ pub struct SessionExecutionTask {
     #[serde(rename = "taskId")]
     pub task_id: String,
     pub status: String,
+    #[serde(rename = "hasReport")]
+    pub has_report: bool,
     #[serde(rename = "createdAtMs")]
     pub created_at_ms: i64,
     #[serde(rename = "startedAtMs", skip_serializing_if = "Option::is_none")]
