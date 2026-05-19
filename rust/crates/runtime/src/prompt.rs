@@ -641,22 +641,23 @@ fn get_simple_doing_tasks_section() -> String {
         .join("\n")
 }
 
-/// Relative path under ds workspace root for SQLBot table catalog (`ds_*/home/DATA_CATALOG.md`). Author: kejiqing
+/// Relative path under ds workspace root for `SQLBot` table catalog (`ds_*/home/DATA_CATALOG.md`). Author: kejiqing
 pub const GATEWAY_DATA_CATALOG_REL: &str = "home/DATA_CATALOG.md";
 
 /// Marker streamed into `assistant-stream-spill-{turnId}.txt`; gateway `GET /v1/tasks` sets `hasReport`. Author: kejiqing
 pub const GATEWAY_LIVE_REPORT_START_MARKER: &str = "__CLAW_REPORT_START__";
 
-/// SQLBot MCP start tool (gateway ds workspaces). Author: kejiqing
+/// `SQLBot` MCP start tool (gateway ds workspaces). Author: kejiqing
 pub const GATEWAY_SQLBOT_MCP_START_TOOL: &str = "mcp__sqlbot-streamable__mcp_start";
 
-/// SQLBot MCP datasource catalog tools (gateway preflight). Author: kejiqing
+/// `SQLBot` MCP datasource catalog tools (gateway preflight). Author: kejiqing
 pub const GATEWAY_SQLBOT_MCP_DATASOURCE_LIST_TOOL: &str =
     "mcp__sqlbot-streamable__mcp_datasource_list";
 pub const GATEWAY_SQLBOT_MCP_DATASOURCE_TABLES_TOOL: &str =
     "mcp__sqlbot-streamable__mcp_datasource_tables";
 
 /// Load `home/DATA_CATALOG.md` walking up from session cwd (e.g. `ds_1/sessions/<id>` → `ds_1/home/...`).
+#[must_use]
 pub fn load_gateway_data_catalog(cwd: &Path) -> Option<String> {
     let mut cursor = Some(cwd);
     while let Some(dir) = cursor {

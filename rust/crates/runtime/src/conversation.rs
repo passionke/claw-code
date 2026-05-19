@@ -383,7 +383,7 @@ where
         self.run_turn_inner(user_input, None, prompter)
     }
 
-    /// Continue a turn when the latest user message is already in the session (e.g. gateway SQLBot preflight). Author: kejiqing
+    /// Continue a turn when the latest user message is already in the session (e.g. gateway `SQLBot` preflight). Author: kejiqing
     pub fn run_turn_after_user_message(
         &mut self,
         prompter: Option<&mut dyn PermissionPrompter>,
