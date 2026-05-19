@@ -95,9 +95,10 @@ pub use mcp::{
     scoped_mcp_config_hash, unwrap_ccr_proxy_url,
 };
 pub use mcp_client::{
-    default_mcp_max_concurrent, is_parallel_friendly_mcp_tool, McpClientAuth, McpClientBootstrap,
-    McpClientTransport, McpManagedProxyTransport, McpRemoteTransport, McpSdkTransport,
-    McpStdioTransport, DEFAULT_MCP_MAX_CONCURRENT,
+    default_mcp_max_concurrent, is_parallel_friendly_mcp_tool, mcp_parallel_fanout_enabled,
+    McpClientAuth, McpClientBootstrap, McpClientTransport, McpManagedProxyTransport,
+    McpRemoteTransport, McpSdkTransport, McpStdioTransport, DEFAULT_MCP_MAX_CONCURRENT,
+    MCP_PARALLEL_FANOUT_ENV,
 };
 pub use mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase, McpLifecycleState,

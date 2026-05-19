@@ -20,10 +20,10 @@ use api::{
 };
 use runtime::{
     apply_config_env_if_unset, default_mcp_max_concurrent, is_parallel_friendly_mcp_tool,
-    load_system_prompt, ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader,
-    ContentBlock, ConversationMessage, ConversationRuntime, McpServerManager, MessageRole,
-    PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError, Session, SharedToolExecutor,
-    ToolError, ToolExecutor as RuntimeToolExecutor,
+    load_system_prompt, mcp_parallel_fanout_enabled, ApiClient as RuntimeApiClient, ApiRequest,
+    AssistantEvent, ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime,
+    McpServerManager, MessageRole, PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError,
+    Session, SharedToolExecutor, ToolError, ToolExecutor as RuntimeToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -64,7 +64,7 @@ const HTTP_INTERNAL: u16 = 500;
 const PARALLEL_FRIENDLY_TOOL_DESCRIPTION_HINT: &str = "\n\n[parallel-friendly] This tool is safe to call multiple times concurrently within a single assistant turn. When you have N independent sub-questions, emit N tool_use blocks in the same response instead of one per turn; the backend executes them in parallel with bounded concurrency.";
 
 fn decorate_mcp_tool_description(tool_name: &str, original: Option<String>) -> Option<String> {
-    if !is_parallel_friendly_mcp_tool(tool_name) {
+    if !mcp_parallel_fanout_enabled() || !is_parallel_friendly_mcp_tool(tool_name) {
         return original;
     }
     let base = original.unwrap_or_default();
@@ -563,6 +563,9 @@ impl RuntimeToolExecutor for DirectToolExecutor {
     }
 
     fn shared_executor(&self) -> Option<Arc<dyn SharedToolExecutor>> {
+        if !mcp_parallel_fanout_enabled() {
+            return None;
+        }
         Some(self.inner.clone())
     }
 }

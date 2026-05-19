@@ -103,7 +103,7 @@ pub struct ProjectContext {
     pub git_diff: Option<String>,
     pub git_context: Option<GitContext>,
     pub instruction_files: Vec<ContextFile>,
-    /// HTTP gateway `extraSession` payload; rendered last in the system prompt (session-varying). Author: kejiqing.
+    /// HTTP gateway `extraSession` payload merged into `# Project context`. Author: kejiqing.
     pub extra_session: Option<Value>,
 }
 
@@ -134,17 +134,6 @@ impl ProjectContext {
         context.git_diff = read_git_diff(&context.cwd);
         context.git_context = GitContext::detect(&context.cwd);
         Ok(context)
-    }
-
-    /// When true, omit the generic built-in scaffold (`# System`, etc.) and rely on workspace `CLAUDE.md`.
-    /// Matches HTTP gateway layout: `home/CLAUDE.md` or `CLAUDE.md` under cwd or an ancestor. Author: kejiqing
-    #[must_use]
-    pub fn uses_workspace_claude_instructions(&self) -> bool {
-        workspace_has_claude_instructions(&self.cwd)
-            || self
-                .instruction_files
-                .iter()
-                .any(|file| is_project_claude_md_file(&file.path))
     }
 }
 
@@ -201,57 +190,25 @@ impl SystemPromptBuilder {
     #[must_use]
     pub fn build(&self) -> Vec<String> {
         let mut sections = Vec::new();
-        let skip_builtin_scaffold = self
-            .project_context
-            .as_ref()
-            .is_some_and(ProjectContext::uses_workspace_claude_instructions);
-        let instruction_files = self
-            .project_context
-            .as_ref()
-            .map_or::<&[ContextFile], _>(&[], |ctx| ctx.instruction_files.as_slice());
-        let include_live_report_marker = self
-            .project_context
-            .as_ref()
-            .is_some_and(ProjectContext::uses_workspace_claude_instructions);
-
-        if !skip_builtin_scaffold {
-            sections.push(get_simple_intro_section(self.output_style_name.is_some()));
-            if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt)
-            {
-                sections.push(format!("# Output Style: {name}\n{prompt}"));
-            }
-            sections.push(get_simple_system_section());
-            sections.push(get_simple_doing_tasks_section());
-            sections.push(get_actions_section());
-            sections.push(get_parallel_tool_calls_section());
-        } else if !instruction_files.is_empty() {
-            if include_live_report_marker {
-                sections.push(get_live_report_stream_marker_section());
-            }
-            sections.push(render_instruction_files(instruction_files));
+        sections.push(get_simple_intro_section(self.output_style_name.is_some()));
+        if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt) {
+            sections.push(format!("# Output Style: {name}\n{prompt}"));
         }
+        sections.push(get_simple_system_section());
+        sections.push(get_simple_doing_tasks_section());
+        sections.push(get_actions_section());
         sections.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY.to_string());
-        if !skip_builtin_scaffold && !instruction_files.is_empty() {
-            if include_live_report_marker {
-                sections.push(get_live_report_stream_marker_section());
+        sections.push(self.environment_section());
+        if let Some(project_context) = &self.project_context {
+            sections.push(render_project_context(project_context));
+            if !project_context.instruction_files.is_empty() {
+                sections.push(render_instruction_files(&project_context.instruction_files));
             }
-            sections.push(render_instruction_files(instruction_files));
-        } else if include_live_report_marker && instruction_files.is_empty() {
-            sections.push(get_live_report_stream_marker_section());
         }
         if let Some(config) = &self.config {
             sections.push(render_config_section(config));
         }
-        sections.push(self.environment_section());
-        if let Some(project_context) = &self.project_context {
-            sections.push(render_project_context(project_context));
-        }
         sections.extend(self.append_sections.iter().cloned());
-        if let Some(project_context) = &self.project_context {
-            if let Some(extra) = &project_context.extra_session {
-                sections.push(render_extra_session_section(extra));
-            }
-        }
         sections
     }
 
@@ -288,33 +245,6 @@ impl SystemPromptBuilder {
 #[must_use]
 pub fn prepend_bullets(items: Vec<String>) -> Vec<String> {
     items.into_iter().map(|item| format!(" - {item}")).collect()
-}
-
-fn is_project_claude_md_file(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some("CLAUDE.md" | "CLAUDE.local.md")
-    )
-}
-
-fn claude_md_file_usable(path: &Path) -> bool {
-    fs::read_to_string(path)
-        .ok()
-        .is_some_and(|content| !content.trim().is_empty())
-}
-
-/// Non-empty project `CLAUDE.md` on cwd or an ancestor (`CLAUDE.md` or `home/CLAUDE.md`, gateway ds layout).
-fn workspace_has_claude_instructions(cwd: &Path) -> bool {
-    let mut cursor = Some(cwd);
-    while let Some(dir) = cursor {
-        for candidate in [dir.join("CLAUDE.md"), dir.join("home/CLAUDE.md")] {
-            if claude_md_file_usable(&candidate) {
-                return true;
-            }
-        }
-        cursor = dir.parent();
-    }
-    false
 }
 
 fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
@@ -416,6 +346,13 @@ fn render_project_context(project_context: &ProjectContext) -> String {
         ));
     }
     lines.extend(prepend_bullets(bullets));
+    if let Some(extra) = &project_context.extra_session {
+        lines.push(String::new());
+        lines.push("## HTTP gateway extraSession".to_string());
+        lines.push("Session-scoped JSON from the caller (tenant/user/workspace metadata, etc.). Use when relevant to the task.".to_string());
+        let body = serde_json::to_string_pretty(extra).unwrap_or_else(|_| extra.to_string());
+        lines.push(format!("```json\n{body}\n```"));
+    }
     if let Some(status) = &project_context.git_status {
         lines.push(String::new());
         lines.push("Git status snapshot:".to_string());
@@ -442,18 +379,6 @@ fn render_project_context(project_context: &ProjectContext) -> String {
             lines.push(rendered);
         }
     }
-    lines.join("\n")
-}
-
-fn render_extra_session_section(extra: &Value) -> String {
-    let mut lines = vec!["# Session context".to_string()];
-    lines.push(String::new());
-    lines.push("## HTTP gateway extraSession".to_string());
-    lines.push(
-        "Session-scoped JSON from the caller (tenant/user/workspace metadata, etc.). Use when relevant to the task.".to_string(),
-    );
-    let body = serde_json::to_string_pretty(extra).unwrap_or_else(|_| extra.to_string());
-    lines.push(format!("```json\n{body}\n```"));
     lines.join("\n")
 }
 
@@ -673,21 +598,6 @@ pub fn load_gateway_data_catalog(cwd: &Path) -> Option<String> {
     None
 }
 
-/// Inserted in system prompt **before** project `CLAUDE.md` / instruction files (gateway workspaces).
-fn get_live_report_stream_marker_section() -> String {
-    let items = prepend_bullets(vec![
-        format!(
-            "Immediately before you begin the user-facing **final business report** (Markdown prose for the end user, after data gathering and tool use), output a single line containing only this exact token on its own line: `{GATEWAY_LIVE_REPORT_START_MARKER}`"
-        ),
-        "Do not wrap the token in code fences or add extra text on that line. Resume the report body on the following lines.".to_string(),
-        "Do not emit this token during intermediate analysis, tool narration, or partial conclusions—only once, right before the final report section.".to_string(),
-    ]);
-    std::iter::once("# Live report stream (gateway)".to_string())
-        .chain(items)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn get_actions_section() -> String {
     [
         "# Executing actions with care".to_string(),
@@ -696,33 +606,14 @@ fn get_actions_section() -> String {
     .join("\n")
 }
 
-/// Default fallback for workspaces without a `CLAUDE.md`. Workspaces that ship their own
-/// `CLAUDE.md` (e.g. each `ds_*/home/CLAUDE.md`) take ownership of phrasing and are not
-/// overridden here. Tools that should fan out are marked via
-/// `runtime::is_parallel_friendly_mcp_tool` and additionally carry an inline
-/// `[parallel-friendly]` hint inside their tool description. Author: kejiqing
-fn get_parallel_tool_calls_section() -> String {
-    let items = prepend_bullets(vec![
-        "When the user's request decomposes into >=2 sub-tasks whose tool inputs do NOT depend on each other's tool results, emit all of their `tool_use` blocks in the same assistant turn instead of calling them one per turn.".to_string(),
-        "Independent sub-tasks include separate read-only queries (e.g. different stores, dates, or metrics). Sequential dependencies (one call's input is built from another call's output) must remain serial.".to_string(),
-        "Tools whose description carries the `[parallel-friendly]` marker are guaranteed safe to fan out within a single turn; the backend executes them concurrently with bounded concurrency. Unmarked tools should default to serial unless the workspace instructions say otherwise.".to_string(),
-        "Per-turn progress-reporting tools (e.g. `report_progress`) are not counted as parallel sub-tasks; keep them at <=1 invocation per turn.".to_string(),
-    ]);
-
-    std::iter::once("# Parallel tool calls".to_string())
-        .chain(items)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         collapse_blank_lines, display_context_path, max_instruction_file_chars,
         normalize_instruction_content, render_instruction_content, render_instruction_files,
         truncate_instruction_content, ContextFile, ProjectContext, SystemPromptBuilder,
-        DEFAULT_MAX_INSTRUCTION_FILE_CHARS, GATEWAY_LIVE_REPORT_START_MARKER,
-        INSTRUCTION_FILE_MAX_CHARS_ENV, SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+        DEFAULT_MAX_INSTRUCTION_FILE_CHARS, INSTRUCTION_FILE_MAX_CHARS_ENV,
+        SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     };
     use crate::config::ConfigLoader;
     use serde_json::json;
@@ -1069,63 +960,13 @@ mod tests {
             .with_runtime_config(config)
             .render();
 
-        assert!(!prompt.contains("# System"));
-        assert!(!prompt.contains("software engineering tasks"));
+        assert!(prompt.contains("# System"));
         assert!(prompt.contains("# Project context"));
         assert!(prompt.contains("# Claude instructions"));
         assert!(prompt.contains("Project rules"));
         assert!(prompt.contains("permissionMode"));
         assert!(prompt.contains(SYSTEM_PROMPT_DYNAMIC_BOUNDARY));
-        let boundary_pos = prompt
-            .find(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
-            .expect("boundary");
-        let instructions_pos = prompt.find("# Claude instructions").expect("instructions");
-        assert!(
-            instructions_pos < boundary_pos,
-            "workspace CLAUDE.md should precede the dynamic boundary"
-        );
 
-        fs::remove_dir_all(root).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn skips_builtin_scaffold_when_home_claude_md_present() {
-        let root = temp_dir();
-        fs::create_dir_all(root.join("home")).expect("home dir");
-        fs::write(root.join("home/CLAUDE.md"), "经营分析规范").expect("write home CLAUDE.md");
-        let ctx = ProjectContext::discover(&root, "2026-03-31").expect("context");
-        assert!(ctx.uses_workspace_claude_instructions());
-        let prompt = SystemPromptBuilder::new()
-            .with_os("linux", "6.8")
-            .with_project_context(ctx)
-            .render();
-        assert!(!prompt.contains("software engineering tasks"));
-        assert!(!prompt.contains("# System"));
-        assert!(prompt.contains("经营分析规范"));
-        assert!(
-            !prompt.contains("# Parallel tool calls"),
-            "workspace-owned CLAUDE.md must not be shadowed by the builtin parallel-tool-calls fallback"
-        );
-        fs::remove_dir_all(root).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn includes_builtin_scaffold_without_workspace_claude_md() {
-        let root = temp_dir();
-        fs::create_dir_all(&root).expect("root dir");
-        let ctx = ProjectContext::discover(&root, "2026-03-31").expect("context");
-        assert!(!ctx.uses_workspace_claude_instructions());
-        let prompt = SystemPromptBuilder::new()
-            .with_os("linux", "6.8")
-            .with_project_context(ctx)
-            .render();
-        assert!(prompt.contains("software engineering tasks"));
-        assert!(prompt.contains("# System"));
-        assert!(
-            prompt.contains("# Parallel tool calls"),
-            "builtin scaffold must ship the default parallel-tool-calls guidance"
-        );
-        assert!(prompt.contains("[parallel-friendly]"));
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 
@@ -1172,10 +1013,9 @@ mod tests {
     }
 
     #[test]
-    fn renders_extra_session_last_after_project_context() {
+    fn injects_extra_session_into_project_context_section() {
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
-        fs::write(root.join("CLAUDE.md"), "Project rules").expect("write CLAUDE.md");
         let mut ctx = ProjectContext::discover(&root, "2026-03-31").expect("context");
         ctx.extra_session = Some(json!({ "tenantId": "t1", "userId": "u2" }));
         let prompt = SystemPromptBuilder::new()
@@ -1183,45 +1023,9 @@ mod tests {
             .with_project_context(ctx)
             .render();
         assert!(prompt.contains("# Project context"));
-        assert!(prompt.contains("# Session context"));
         assert!(prompt.contains("HTTP gateway extraSession"));
         assert!(prompt.contains("\"tenantId\""));
         assert!(prompt.contains("\"t1\""));
-        let project_pos = prompt.find("# Project context").expect("project context");
-        let session_pos = prompt.find("# Session context").expect("session context");
-        assert!(
-            project_pos < session_pos,
-            "extraSession section should follow # Project context"
-        );
-        let instructions_pos = prompt.find("# Claude instructions").expect("instructions");
-        assert!(
-            instructions_pos < session_pos,
-            "session-scoped extraSession should be last among workspace sections"
-        );
-        fs::remove_dir_all(root).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn live_report_marker_section_before_project_claude_md() {
-        let root = temp_dir();
-        fs::create_dir_all(&root).expect("root dir");
-        fs::write(root.join("CLAUDE.md"), "Boss report rules").expect("write CLAUDE.md");
-        let ctx = ProjectContext::discover(&root, "2026-03-31").expect("context");
-        assert!(ctx.uses_workspace_claude_instructions());
-        let prompt = SystemPromptBuilder::new()
-            .with_os("linux", "6.8")
-            .with_project_context(ctx)
-            .render();
-        assert!(prompt.contains("# Live report stream (gateway)"));
-        assert!(prompt.contains(GATEWAY_LIVE_REPORT_START_MARKER));
-        let marker_pos = prompt
-            .find("# Live report stream (gateway)")
-            .expect("marker section");
-        let claude_pos = prompt.find("Boss report rules").expect("CLAUDE.md body");
-        assert!(
-            marker_pos < claude_pos,
-            "live report marker must appear before project CLAUDE.md content"
-        );
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 }

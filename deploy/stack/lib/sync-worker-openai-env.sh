@@ -94,6 +94,7 @@ ALLOW = (
     # Pool workers run `claw` + MCP; must match runtime `CLAW_MCP_TOOL_CALL_TIMEOUT_MS` (see mcp_client.rs).
     "CLAW_MCP_TOOL_CALL_TIMEOUT_MS",
     "CLAW_MCP_MAX_CONCURRENT",
+    "CLAW_MCP_PARALLEL_FANOUT",
     # `load_system_prompt` / # Claude instructions budgets (runtime/prompt.rs). Author: kejiqing
     "CLAW_INSTRUCTION_FILE_MAX_CHARS",
     "CLAW_INSTRUCTION_TOTAL_MAX_CHARS",
