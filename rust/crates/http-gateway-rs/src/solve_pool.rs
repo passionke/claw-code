@@ -437,7 +437,10 @@ fn tail_for_log(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s.to_string();
     }
-    let start = s.floor_char_boundary(s.len().saturating_sub(max_bytes));
+    let mut start = s.len().saturating_sub(max_bytes);
+    while start > 0 && !s.is_char_boundary(start) {
+        start -= 1;
+    }
     format!("…{}", &s[start..])
 }
 

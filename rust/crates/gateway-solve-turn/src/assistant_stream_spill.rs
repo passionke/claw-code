@@ -13,7 +13,7 @@ pub const ASSISTANT_STREAM_SPILL_BASENAME_PREFIX: &str = "assistant-stream-spill
 /// Written at turn end (`mark_turn_stream_complete`); live report SSE switches to session jsonl.
 pub const ASSISTANT_STREAM_SPILL_END_MARKER: &str = "__CLAW_ASSISTANT_STREAM_END__";
 
-/// Same token as system-prompt instruction (`runtime::GATEWAY_LIVE_REPORT_START_MARKER`).
+/// Report-start token for spill detection (must match `runtime::GATEWAY_LIVE_REPORT_START_MARKER`).
 pub const ASSISTANT_STREAM_REPORT_START_MARKER: &str = GATEWAY_LIVE_REPORT_START_MARKER;
 
 #[must_use]

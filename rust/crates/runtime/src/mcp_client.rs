@@ -11,6 +11,10 @@ static MCP_TOOL_CALL_TIMEOUT_MS: OnceLock<u64> = OnceLock::new();
 pub const DEFAULT_MCP_MAX_CONCURRENT: usize = 4;
 static MCP_MAX_CONCURRENT: OnceLock<usize> = OnceLock::new();
 
+/// When `0`/`false`/`no`/`off`, gateway solve skips `SQLBot` analysis MCP **same-turn parallel fan-out**
+/// (no `[parallel-friendly]` description suffix; tools run serially). Unset defaults to enabled. Author: kejiqing
+pub const MCP_PARALLEL_FANOUT_ENV: &str = "CLAW_MCP_PARALLEL_FANOUT";
+
 #[must_use]
 pub fn default_mcp_tool_call_timeout_ms() -> u64 {
     *MCP_TOOL_CALL_TIMEOUT_MS.get_or_init(|| {
@@ -33,6 +37,23 @@ pub fn default_mcp_max_concurrent() -> usize {
     *MCP_MAX_CONCURRENT.get_or_init(|| {
         parse_mcp_max_concurrent(std::env::var("CLAW_MCP_MAX_CONCURRENT").ok().as_deref())
     })
+}
+
+/// Gateway `SQLBot` MCP parallel fan-out within one assistant turn (see [`MCP_PARALLEL_FANOUT_ENV`]).
+/// Read on each call so tests and workers can toggle without process-wide cache surprises. Author: kejiqing
+#[must_use]
+pub fn mcp_parallel_fanout_enabled() -> bool {
+    match std::env::var(MCP_PARALLEL_FANOUT_ENV) {
+        Err(_) => true,
+        Ok(raw) => {
+            let s = raw.trim().to_ascii_lowercase();
+            if s.is_empty() {
+                true
+            } else {
+                !matches!(s.as_str(), "0" | "false" | "no" | "off")
+            }
+        }
+    }
 }
 
 /// SQLBot-style analysis tools that may run concurrently within one assistant turn. Author: kejiqing
@@ -293,5 +314,19 @@ mod tests {
         assert_eq!(super::parse_mcp_max_concurrent(Some("8")), 8);
         assert_eq!(super::parse_mcp_max_concurrent(None), 4);
         assert_eq!(super::parse_mcp_max_concurrent(Some("")), 4);
+    }
+
+    #[test]
+    fn mcp_parallel_fanout_respects_env() {
+        let _guard = crate::test_env_lock();
+        std::env::remove_var(super::MCP_PARALLEL_FANOUT_ENV);
+        assert!(super::mcp_parallel_fanout_enabled());
+        std::env::set_var(super::MCP_PARALLEL_FANOUT_ENV, "0");
+        assert!(!super::mcp_parallel_fanout_enabled());
+        std::env::set_var(super::MCP_PARALLEL_FANOUT_ENV, "false");
+        assert!(!super::mcp_parallel_fanout_enabled());
+        std::env::set_var(super::MCP_PARALLEL_FANOUT_ENV, "1");
+        assert!(super::mcp_parallel_fanout_enabled());
+        std::env::remove_var(super::MCP_PARALLEL_FANOUT_ENV);
     }
 }

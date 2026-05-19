@@ -38,6 +38,7 @@ Author: kejiqing
 2. **SQLBot MCP** = what Claw names **`mcp__sqlbot__*`**; the adapter is **invisible** at the Claw tool layer.
 3. **Gateway** = composes processes and env; it is **not** “Doris” and **not** “SQLBot product” — it orchestrates.
 4. **Image** = convenience bundle (gateway + Doris dist + adapter script + `claw`); **repository** boundaries still split for understanding.
+5. **`CLAW_MCP_PARALLEL_FANOUT`**: unset or truthy → gateway solve may run multiple `mcp_question_then_analysis` calls from one assistant turn concurrently; `0` / `false` / `off` forces serial MCP for those tools and drops the `[parallel-friendly]` tool-description hint (`rust/crates/runtime/src/mcp_client.rs`).
 
 ## Where to change what
 
