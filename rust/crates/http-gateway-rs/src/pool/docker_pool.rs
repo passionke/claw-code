@@ -32,7 +32,8 @@ struct Slot {
 ///
 /// Each **lease** rebinds the worker with `docker run -v <session_dir>:GUEST_WORK_ROOT` so the
 /// container only sees one solve session directory (no sibling sessions / other `ds_*`).
-/// Optional extra binds: `ds_*/home/skills` → `.../home/skills:ro`, `ds_*/CLAUDE.md` → `.../CLAUDE.md:ro` (no per-session copy).
+/// Optional extra binds: `ds_*/home/skills` → `.../home/skills:ro`, `ds_*/CLAUDE.md` → `.../CLAUDE.md:ro`,
+/// `ds_*/home/DATA_CATALOG.md` → `.../home/DATA_CATALOG.md:ro` (no per-session copy).
 /// Idle warm slots use [`DockerPoolManager::warm_slot_dir`] under `work_root` (empty until lease).
 /// Author: kejiqing
 pub struct DockerPoolManager {
@@ -286,6 +287,20 @@ impl DockerPoolManager {
         } else {
             None
         };
+        let catalog_abs = if let Some(p) = host_mounts.data_catalog_file.as_ref() {
+            if std::fs::metadata(p).is_ok_and(|m| m.is_file()) {
+                Some(std::fs::canonicalize(p).map_err(|e| {
+                    format!(
+                        "canonicalize DATA_CATALOG.md bind mount {}: {e}",
+                        p.display()
+                    )
+                })?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let mut args: Vec<String> = vec![
             "run".into(),
             "-d".into(),
@@ -309,6 +324,14 @@ impl DockerPoolManager {
         if let Some(ref cl) = claude_abs {
             args.push("-v".into());
             args.push(format!("{}:{}/CLAUDE.md:ro", cl.display(), GUEST_WORK_ROOT));
+        }
+        if let Some(ref cat) = catalog_abs {
+            args.push("-v".into());
+            args.push(format!(
+                "{}:{}/home/DATA_CATALOG.md:ro",
+                cat.display(),
+                GUEST_WORK_ROOT
+            ));
         }
         args.push(self.image.clone());
         args.push("sleep".into());
@@ -343,6 +366,7 @@ impl DockerPoolManager {
             bind_mount = %session_abs.display(),
             skills_bind = %skills_abs.as_ref().map_or_else(|| "-".into(), |p| p.display().to_string()),
             claude_bind = %claude_abs.as_ref().map_or_else(|| "-".into(), |p| p.display().to_string()),
+            catalog_bind = %catalog_abs.as_ref().map_or_else(|| "-".into(), |p| p.display().to_string()),
             image = %self.image,
             "{} run worker ok",
             self.bin

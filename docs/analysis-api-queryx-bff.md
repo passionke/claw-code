@@ -117,6 +117,8 @@
 | `sessionId` | string | 否 | 续聊必填；首聊省略则由网关生成 |
 | `question` | string | 是 | 用户自然语言问题，非空；BFF 映射为网关请求体字段 **`userPrompt`** |
 
+BFF 调网关 `solve_async` 时建议固定附带 **`assistantStreamSpill": true`**（或依赖网关 env 默认），否则无 spill 文件、`hasReport` 恒为 `false`。
+
 **BFF 侧（设计约定，非对外字段）**  
 
 - 根据 `tenant_code`、`solution_code`、`biz_type`、`store_id`（及可选内部配置表）解析出整数 **`dsId`（≥ 1）**，再组装网关 `POST /v1/solve_async` 请求体。  
@@ -135,7 +137,7 @@
 | 项目 | 说明 |
 |------|------|
 | **用途** | 在异步任务 **成功** 后，获取清洗后的业务报告（去除中间过程与工具轨迹） |
-| **映射 claw 网关** | `GET /v1/biz_advice_report?task_id=<taskId>` |
+| **映射 claw 网关** | `GET /v1/biz_advice_report?sessionId=<sessionId>&turnId=<turnId>&dsId=…`（BFF 由 `task_id`/`sessionId` 与门店解析 `dsId`）；旧润色路径：`GET /v1/biz_advice_report_bak?task_id=…` |
 
 **Query 参数（QueryX 风格）**
 
@@ -146,12 +148,14 @@
 | `biz_type` | 是 | `BOSS_REPORT` |
 | `store_id` | 是 | 与发起分析时一致，便于 BFF 校验与审计 |
 | `sessionId` | 建议 | 与当时异步会话一致，便于日志关联（网关仅以 `task_id` 取报告） |
-| `task_id` | 是 | 等于 `async` 返回的 `taskId` |
+| `task_id` | 是 | 等于 `async` 返回的 `taskId`（与 `sessionId` 同值） |
+| `turnId` | 是 | 与 `async` 响应中的 `turnId` 一致（`T_<32 hex>`） |
 
 **行为说明**  
 
-- 网关要求任务状态为 **`succeeded`**；否则 **400**。  
-- 返回字段与网关一致：`taskId`、`sourceRequestId`、`sourceDsId`、`sourceStatus`、`reportText`、`reportJson` 等。
+- BFF 调网关时建议 **`stream=true`**（网关默认即为流式）：进行中 tail spill，结束后一次 `biz.report.done` 带全量 `reportText`（来自 session jsonl，无二次润色）。  
+- 非流式 JSON 需 turn 已终态且正文非空。  
+- 若仍需旧版 LLM 润色报告，BFF 改调 `biz_advice_report_bak`。
 
 ---
 
@@ -178,6 +182,15 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `current_task_desc` | string | 网关 `GET /v1/tasks/{task_id}` 的 **`currentTaskDesc`**（BFF 映射为本字段）：agent 通过 `report_progress` 写的用户向进度句；排队态由网关生成；**不**暴露 SQLBot/MCP 等内部工具名 |
+| `has_report` | boolean | 网关 **`hasReport`**：该 turn 的增量 spill 中已出现 **`__CLAW_REPORT_START__`** 时为 `true`；前端可在 `has_report === true` 时调用 `GET /api/v1/analysis/report`（映射 `GET /v1/biz_advice_report?sessionId&turnId&dsId&stream=true`） |
+
+**前端建议顺序（hacking）**
+
+1. `POST /api/v1/analysis/async`（`assistantStreamSpill: true` 由 BFF 写入网关体）  
+2. 轮询 `GET /api/v1/analysis/status`，直到 `has_report === true`（或任务终态）  
+3. `has_report === true` 时建立报告 SSE（`stream=true`）；任务 `succeeded` 后 SSE 会切全量 jsonl 并 `biz.report.done`  
+
+网关 solve 的系统提示词（project 级 `CLAUDE.md` **之前**）已要求模型在最终报告正文前单独输出一行 `__CLAW_REPORT_START__`（进入 `assistant-stream-spill-{turnId}.txt`）；无需再在项目 `CLAUDE.md` 里重复写。
 
 > **实现说明**：权威来源为 `http-gateway-rs` 任务轮询；可选 `GET /v1/sessions/{sessionId}/execution?ds_id=` 获取 `progress` / `progressHistory` / `queue`。
 

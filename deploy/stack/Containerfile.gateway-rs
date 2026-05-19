@@ -15,7 +15,9 @@ WORKDIR /build
 COPY rust/Cargo.toml /build/Cargo.toml
 COPY rust/Cargo.lock /build/Cargo.lock
 COPY rust/crates/ /build/crates/
-RUN rustup toolchain install nightly && rustup default nightly && \
+# Reference ARG in RUN so changing RUSTUP_* build-args busts cache (otherwise ENV layer keeps static.rust-lang.org). kejiqing
+RUN echo "rustup dist=${RUSTUP_DIST_SERVER}" && \
+    rustup toolchain install nightly && rustup default nightly && \
     cargo build -p rusty-claude-cli --bin claw --release && \
     cargo build -p http-gateway-rs --release
 

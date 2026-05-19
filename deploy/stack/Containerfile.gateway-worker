@@ -14,7 +14,8 @@ WORKDIR /build
 COPY rust/Cargo.toml /build/Cargo.toml
 COPY rust/Cargo.lock /build/Cargo.lock
 COPY rust/crates/ /build/crates/
-RUN rustup toolchain install nightly && rustup default nightly && \
+RUN echo "rustup dist=${RUSTUP_DIST_SERVER}" && \
+    rustup toolchain install nightly && rustup default nightly && \
     cargo build -p rusty-claude-cli --bin claw --release
 
 FROM ${DEBIAN_BASE_IMAGE}

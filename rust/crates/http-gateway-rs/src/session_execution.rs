@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::session_merge;
 use crate::task_status::GatewayQueueSnapshot;
-use gateway_solve_turn::TaskProgressFile;
+use gateway_solve_turn::{ProgressEvent, TaskProgressFile};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -21,7 +21,7 @@ pub struct SessionExecutionResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<TaskProgressFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub progress_history: Vec<TaskProgressFile>,
+    pub progress_history: Vec<ProgressEvent>,
     pub queue: GatewayQueueSnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trace_tail: Vec<Value>,

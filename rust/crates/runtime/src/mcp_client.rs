@@ -35,6 +35,12 @@ pub fn default_mcp_max_concurrent() -> usize {
     })
 }
 
+/// SQLBot-style analysis tools that may run concurrently within one assistant turn. Author: kejiqing
+#[must_use]
+pub fn is_parallel_friendly_mcp_tool(tool_name: &str) -> bool {
+    tool_name.contains("mcp_question_then_analysis")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpClientTransport {
     Stdio(McpStdioTransport),

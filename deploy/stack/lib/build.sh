@@ -107,6 +107,7 @@ if [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && [[ "${GITHUB_ACTIONS:-}" != "
     --build-arg "RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup"
   )
   echo "rustup: USTC mirror (CLAW_USE_CN_RUST_MIRROR=1)"
+  echo "note: first USTC build re-runs STEP rustup (not cached); rustc ~150MB — use: tail -f ${BUILD_LOG}"
 else
   echo "rustup: static.rust-lang.org (set CLAW_USE_CN_RUST_MIRROR=1 in .env for USTC on container build)"
 fi

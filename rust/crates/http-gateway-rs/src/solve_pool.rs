@@ -34,6 +34,21 @@ pub(crate) fn session_mount_for_pool_acquire(
 /// Fixed name inside the per-session bind mount (no `..`, not client-controlled).
 const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
 
+/// Request field overrides gateway env default; async-only env default when omitted.
+fn effective_assistant_stream_spill(
+    req: &SolveRequest,
+    cfg: &crate::GatewayConfig,
+    is_async: bool,
+) -> bool {
+    if let Some(enabled) = req.assistant_stream_spill {
+        return enabled;
+    }
+    if is_async {
+        return cfg.default_assistant_stream_spill;
+    }
+    false
+}
+
 /// Path to `claw` inside worker images. Host `CLAW_BIN` may be a macOS absolute path unusable in `podman exec`. kejiqing
 const POOL_WORKER_CLAW_BIN: &str = "/usr/local/bin/claw";
 
@@ -119,6 +134,8 @@ pub async fn run_solve_request_docker(
 
     let task_path = session_home.join(GATEWAY_SOLVE_TASK_FILE);
 
+    let assistant_stream_spill =
+        effective_assistant_stream_spill(&req, &state.cfg, task_id.is_some());
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
@@ -127,6 +144,8 @@ pub async fn run_solve_request_docker(
         extra_session: req.extra_session.clone(),
         allowed_tools: Some(effective_allowed_tools),
         max_iterations: Some(state.cfg.default_max_iterations),
+        turn_id: turn_id.clone(),
+        assistant_stream_spill: Some(assistant_stream_spill),
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(
@@ -161,9 +180,19 @@ pub async fn run_solve_request_docker(
     } else {
         None
     };
+    let ds_catalog_host = ds_base.join("home/DATA_CATALOG.md");
+    let catalog_for_pool = if fs::metadata(&ds_catalog_host)
+        .await
+        .is_ok_and(|m| m.is_file())
+    {
+        Some(session_mount_for_pool_acquire(&ds_catalog_host, &state.cfg))
+    } else {
+        None
+    };
     let host_mounts = PoolSessionHostMounts {
         skills_dir: skills_for_pool.clone(),
         claude_md_file: claude_for_pool.clone(),
+        data_catalog_file: catalog_for_pool.clone(),
     };
 
     info!(
@@ -180,6 +209,9 @@ pub async fn run_solve_request_docker(
             .as_ref()
             .map_or_else(|| "-".into(), |p| p.display().to_string()),
         claude_pool_path = %claude_for_pool
+            .as_ref()
+            .map_or_else(|| "-".into(), |p| p.display().to_string()),
+        catalog_pool_path = %catalog_for_pool
             .as_ref()
             .map_or_else(|| "-".into(), |p| p.display().to_string()),
         task_bytes = task_bytes.len(),
@@ -429,6 +461,7 @@ mod session_path_tests {
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
             default_max_iterations: 1,
+            default_assistant_stream_spill: false,
             default_http_mcp_name: None,
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),
@@ -461,6 +494,7 @@ mod session_path_tests {
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
             default_max_iterations: 1,
+            default_assistant_stream_spill: false,
             default_http_mcp_name: None,
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),

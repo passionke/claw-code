@@ -55,7 +55,7 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 用途：查询异步任务状态与结果
   - 响应含 **`turnId`**（与本次 async 入队时返回的值一致）
   - 响应除 `status` 外含 **`currentTaskDesc`**（用户可见进度一句，camelCase JSON）：主要来自 agent 调用的内部工具 `report_progress` 写入会话目录 `.claw/task-progress.json`；`queued` 时网关可返回「排队中（x 个等待，y 个执行中）」；`running` 且无上报时兜底「处理中」或「工具调用中」（不暴露具体工具名）。**不**从 `gateway-solve-session.jsonl` 最后一条 assistant 推导。
-  - 另含 `dsId`、`progressUpdatedAtMs`（与 progress 文件一致时更新）
+  - 另含 `dsId`、`progressUpdatedAtMs`（与 progress 文件一致时更新）、**`hasReport`**（bool）：当该 turn 的 `.claw/assistant-stream-spill-{turnId}.txt` 中出现 **`__CLAW_REPORT_START__`** 时为 `true`（系统提示词在 project `CLAUDE.md` 之前已要求模型输出该标记），否则 `false`；供前端决定是否拉起 `GET /v1/biz_advice_report`（须 `assistantStreamSpill: true`）
 
 - `GET /v1/sessions/{session_id}/execution?ds_id=<int>`
   - 用途：按 `(sessionId, dsId)` 查看当前进度快照、`progressHistory`（`.claw/task-progress.ndjson` 尾部）、网关队列统计、脱敏 trace 尾（`include_trace=true` 时含更多字段）
@@ -83,20 +83,19 @@ Base URL 示例：`http://127.0.0.1:18088`
 
 - `turnId` 签发：每次 `POST /v1/solve` / `POST /v1/solve_async` 入队或同步受理时由网关生成；响应体与 `GET /v1/tasks/{task_id}` 含 `turnId`。`POST /v1/start` 不签发。
 
-- `GET /v1/biz_advice_report?task_id=<taskId>`
-  - 用途：基于异步任务原始输出，生成清洗后的最终业务报告（去除中间过程与工具轨迹）
+- `GET /v1/biz_advice_report?sessionId=<id>&turnId=<T_…>&dsId=<int>`
+  - 用途：拉取**实时**业务报告——先 tail `.claw/assistant-stream-spill-{turnId}.txt`（需 solve 时开启 `assistantStreamSpill`；`turnId` 与 query 一致），再在结束标记或 turn 成功后切换为 **session jsonl / task 结果** 全量正文
   - 查询参数：
-    - `task_id`：必填，`/v1/solve_async` 返回的任务 ID
-  - 前置条件：
-    - 目标任务状态必须是 `succeeded`
-    - 若任务为 `queued/running/failed`，返回 `400`
-  - 返回字段：
-    - `taskId`：目标任务 ID
-    - `sourceRequestId`：原任务 requestId
-    - `sourceDsId`：原任务 dsId
-    - `sourceStatus`：原任务状态（通常为 `succeeded`）
-    - `reportText`：清洗后的报告文本（字符串）
-    - `reportJson`：清洗后的结构化 JSON（如模型返回 JSON）
+    - `sessionId`、`turnId`（`T_<32 hex>`）、`dsId`（≥1）必填
+    - `stream`：默认 `true`；为 `true` 时 `text/event-stream`（`biz.report.start` / `biz.report.delta` / `biz.report.done`，与旧版事件名一致）
+  - 结束条件（SSE）：spill 中出现 `__CLAW_ASSISTANT_STREAM_END__`（turn 结束时写入），或 `gateway_turns` 状态为 `succeeded` 且全量正文可读
+  - 非流式（`stream=false`）：仅 turn 终态可读，返回 JSON（`reportText` / `reportJson.message`）
+  - `reportJson` 含 `sessionId`、`turnId`、`message`（无 LLM 润色）
+
+- `GET /v1/biz_advice_report_bak?task_id=<taskId>`
+  - 用途：**旧版**——基于异步任务 `outputJson.message` 再经 `GPOS_BOSS_REPORT_WRITER` skill **LLM 润色**
+  - 查询参数：`task_id` 必填；`stream` 可选（默认 `false`）
+  - 前置条件：任务 `succeeded` 且 `clawExitCode=0`
 
 ## Skills（按 ds 工作区）
 

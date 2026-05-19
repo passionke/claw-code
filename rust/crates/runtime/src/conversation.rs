@@ -175,6 +175,8 @@ pub struct ConversationRuntime<C, T> {
     hook_abort_signal: HookAbortSignal,
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
+    /// Invoked after an assistant message is appended to the session (and jsonl when configured).
+    on_assistant_persisted: Option<Box<dyn FnMut() + Send>>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -224,7 +226,15 @@ where
             hook_abort_signal: HookAbortSignal::default(),
             hook_progress_reporter: None,
             session_tracer: None,
+            on_assistant_persisted: None,
         }
+    }
+
+    /// Hook for gateway assistant stream spill cleanup (after each assistant jsonl line). Author: kejiqing
+    #[must_use]
+    pub fn with_on_assistant_persisted(mut self, hook: impl FnMut() + Send + 'static) -> Self {
+        self.on_assistant_persisted = Some(Box::new(hook));
+        self
     }
 
     #[must_use]
@@ -373,6 +383,14 @@ where
         self.run_turn_inner(user_input, None, prompter)
     }
 
+    /// Continue a turn when the latest user message is already in the session (e.g. gateway SQLBot preflight). Author: kejiqing
+    pub fn run_turn_after_user_message(
+        &mut self,
+        prompter: Option<&mut dyn PermissionPrompter>,
+    ) -> Result<TurnSummary, RuntimeError> {
+        self.run_turn_inner("", None, prompter)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn run_turn_inner(
         &mut self,
@@ -394,9 +412,11 @@ where
         }
 
         self.record_turn_started(&user_input);
-        self.session
-            .push_user_text(user_input)
-            .map_err(|error| RuntimeError::new(error.to_string()))?;
+        if !user_input.is_empty() {
+            self.session
+                .push_user_text(user_input)
+                .map_err(|error| RuntimeError::new(error.to_string()))?;
+        }
 
         let mut assistant_messages = Vec::new();
         let mut tool_results = Vec::new();
@@ -464,6 +484,9 @@ where
             self.session
                 .push_message(assistant_message.clone())
                 .map_err(|error| RuntimeError::new(error.to_string()))?;
+            if let Some(hook) = self.on_assistant_persisted.as_mut() {
+                hook();
+            }
             assistant_messages.push(assistant_message);
 
             if pending_tool_uses.is_empty() {

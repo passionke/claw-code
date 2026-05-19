@@ -190,6 +190,23 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    pub async fn get_turn_status(
+        &self,
+        turn_id: &str,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<Option<String>, SqlxError> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT status FROM gateway_turns WHERE turn_id = $1 AND session_id = $2 AND ds_id = $3 LIMIT 1",
+        )
+        .bind(turn_id)
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(status,)| status))
+    }
+
     pub async fn turn_belongs_to_session(
         &self,
         turn_id: &str,

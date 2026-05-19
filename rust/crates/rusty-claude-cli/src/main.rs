@@ -362,6 +362,11 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
         .build()?;
     let result = {
         let _enter = rt.enter();
+        let turn_id = if task.turn_id.trim().is_empty() {
+            task.request_id.as_str()
+        } else {
+            task.turn_id.as_str()
+        };
         run_gateway_solve_turn(
             &work_dir,
             &work_root,
@@ -372,6 +377,8 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
             task.extra_session.clone(),
             allowed_tools,
             max_iterations,
+            turn_id,
+            gateway_solve_turn::resolve_assistant_stream_spill(task.assistant_stream_spill),
         )
     };
     match result {

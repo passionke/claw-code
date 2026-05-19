@@ -1,4 +1,5 @@
 //! Axum gateway: single-binary integration surface (keeps clippy noise localized).
+#![recursion_limit = "256"]
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::result_large_err)]
@@ -30,7 +31,8 @@ use biz_advice_report::{
     load_boss_report_writer_instructions, report_body_from_solve_output, BizAdviceReportPayload,
     BizReportStreamMsg,
 };
-use gateway_solve_turn::read_progress_history;
+use biz_advice_report_live::{spawn_live_report_sse_worker, LiveReportContext};
+use gateway_solve_turn::read_progress_events;
 use gateway_solve_turn::{
     read_task_progress, reset_task_progress, run_gateway_biz_polish_llm,
     run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
@@ -60,6 +62,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 mod biz_advice_report;
+mod biz_advice_report_live;
 mod gateway_logging;
 mod pool;
 mod session_execution;
@@ -164,6 +167,8 @@ struct GatewayConfig {
     ds_registry_path: PathBuf,
     default_timeout_seconds: u64,
     default_max_iterations: usize,
+    /// Default for `solve_async` when the request omits `assistantStreamSpill` (`CLAW_GATEWAY_ASSISTANT_STREAM_SPILL`).
+    default_assistant_stream_spill: bool,
     default_http_mcp_name: Option<String>,
     default_http_mcp_url: Option<String>,
     default_http_mcp_transport: String,
@@ -198,6 +203,9 @@ struct SolveRequest {
     extra_session: Option<Value>,
     #[serde(rename = "allowedTools")]
     allowed_tools: Option<Vec<String>>,
+    /// When true (async solve), worker appends to `.claw/assistant-stream-spill-{turnId}.txt`.
+    #[serde(rename = "assistantStreamSpill", default)]
+    assistant_stream_spill: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -395,6 +403,15 @@ struct TaskRecord {
     error: Option<Value>,
     #[serde(rename = "turnId")]
     turn_id: String,
+    #[serde(
+        rename = "progressHistory",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    progress_history: Vec<gateway_solve_turn::ProgressEvent>,
+    /// `true` when `.claw/assistant-stream-spill-{turnId}.txt` contains `__CLAW_REPORT_START__`.
+    #[serde(rename = "hasReport")]
+    has_report: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -453,11 +470,28 @@ struct ProbeQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct BizAdviceReportQuery {
+struct BizAdviceReportBakQuery {
     task_id: String,
-    /// `true` 时返回 `text/event-stream`（`biz.report.start` / `delta` / `done`）。
+    /// `true` 时返回 `text/event-stream`（`biz.report.start` / `delta` / `done`），走 LLM 润色。
     #[serde(default)]
     stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct BizAdviceReportQuery {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "turnId")]
+    turn_id: String,
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    /// `true`（默认）时 tail `.claw/assistant-stream-spill-{turnId}.txt` 并 SSE；结束后用 session jsonl 全量。
+    #[serde(default = "default_biz_report_stream")]
+    stream: bool,
+}
+
+fn default_biz_report_stream() -> bool {
+    true
 }
 
 /// Dev-only: inject a succeeded task so `GET /v1/biz_advice_report` can run without `solve_async`.
@@ -882,6 +916,13 @@ async fn main() {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(64),
+        default_assistant_stream_spill: std::env::var("CLAW_GATEWAY_ASSISTANT_STREAM_SPILL")
+            .ok()
+            .map(|v| {
+                let s = v.trim().to_ascii_lowercase();
+                matches!(s.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false),
         default_http_mcp_name: std::env::var("CLAW_DEFAULT_HTTP_MCP_NAME")
             .ok()
             .map(|v| v.trim().to_string())
@@ -969,6 +1010,7 @@ async fn main() {
             get(get_session_execution),
         )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
+        .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
         .route(
             "/v1/dev/biz_report_seed_task",
             post(dev_seed_biz_report_task),
@@ -1085,8 +1127,13 @@ async fn docs() -> Html<String> {
         ),
         (
             "GET",
-            "/v1/biz_advice_report?task_id=xx",
-            "Generate cleaned final report from async task output",
+            "/v1/biz_advice_report?sessionId=…&turnId=…&dsId=…",
+            "Live report SSE from assistant spill then session jsonl",
+        ),
+        (
+            "GET",
+            "/v1/biz_advice_report_bak?task_id=xx",
+            "Legacy LLM-polished report from async task output",
         ),
         (
             "GET",
@@ -1356,6 +1403,22 @@ async fn openapi() -> Json<Value> {
                         "finishedAtMs": { "type": "integer", "format": "int64", "nullable": true },
                         "currentTaskDesc": { "type": "string", "nullable": true },
                         "progressUpdatedAtMs": { "type": "integer", "format": "int64", "nullable": true },
+                        "hasReport": {
+                            "type": "boolean",
+                            "description": "True when assistant-stream-spill for this turnId contains __CLAW_REPORT_START__ (frontend may open GET /v1/biz_advice_report)"
+                        },
+                        "turnId": { "type": "string" },
+                        "progressHistory": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "kind": { "type": "string" },
+                                    "message": { "type": "string" },
+                                    "tsMs": { "type": "integer", "format": "int64" }
+                                }
+                            }
+                        },
                         "result": { "$ref": "#/components/schemas/SolveResponse", "nullable": true },
                         "error": { "type": "object", "nullable": true }
                     }
@@ -1465,13 +1528,27 @@ async fn openapi() -> Json<Value> {
             },
             "/v1/biz_advice_report": {
                 "get": {
-                    "summary": "Generate cleaned business advice report from async task output",
+                    "summary": "Live business report: tail assistant stream spill, then session jsonl full text",
+                    "parameters": [
+                        { "name": "sessionId", "in": "query", "required": true, "schema": { "type": "string" } },
+                        { "name": "turnId", "in": "query", "required": true, "schema": { "type": "string" } },
+                        { "name": "dsId", "in": "query", "required": true, "schema": { "type": "integer", "format": "int64" } },
+                        { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": true }, "description": "When true (default), text/event-stream from spill then formal jsonl (biz.report.*)" }
+                    ],
+                    "responses": {
+                        "200": { "description": "Report JSON or SSE", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
+                    }
+                }
+            },
+            "/v1/biz_advice_report_bak": {
+                "get": {
+                    "summary": "Legacy: LLM-polished report from async task output (task_id)",
                     "parameters": [
                         { "name": "task_id", "in": "query", "required": true, "schema": { "type": "string" } },
                         { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "When true, response is text/event-stream (biz.report.start / delta / done)" }
                     ],
                     "responses": {
-                        "200": { "description": "Cleaned business advice report (JSON) or SSE when stream=true", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
+                        "200": { "description": "Polished business advice report (JSON) or SSE when stream=true", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
                     }
                 }
             },
@@ -3087,7 +3164,7 @@ async fn get_session_execution(
     });
 
     let progress = read_task_progress(&session_home);
-    let progress_history = read_progress_history(&session_home, 50)
+    let progress_history = read_progress_events(&session_home, 50)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let trace_paths = discover_trace_paths(&session_home, &state.cfg.work_root, &session_id);
     let trace_tail = if query.include_trace {
@@ -3207,6 +3284,8 @@ async fn enqueue_solve_async(
                     result: None,
                     error: None,
                     turn_id: new_turn_id.clone(),
+                    progress_history: Vec::new(),
+                    has_report: false,
                 },
                 cancel: None,
                 ds_id,
@@ -3410,18 +3489,26 @@ async fn get_task(
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
     refresh_task_progress(&state, &task_id).await;
-    let tasks = state.tasks.lock().await;
-    let task = tasks
-        .get(&task_id)
-        .map(|inner| inner.record.clone())
-        .ok_or_else(|| {
+    let (mut task, ds_id) = {
+        let tasks = state.tasks.lock().await;
+        let inner = tasks.get(&task_id).ok_or_else(|| {
             ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
         })?;
+        (inner.record.clone(), inner.ds_id)
+    };
+    if let Some(home) = resolve_session_home_path(&state, ds_id, &task.session_id).await {
+        task.progress_history = read_progress_events(&home, 50)
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        task.has_report =
+            gateway_solve_turn::spill_contains_report_start_marker(&home, &task.turn_id);
+    }
     info!(
         request_id = %http_request_id.0,
         task_id = %task_id,
         task_request_id = %task.request_id,
         task_status = %task.status,
+        has_report = task.has_report,
+        progress_events = task.progress_history.len(),
         endpoint = "/v1/tasks/{task_id}",
         phase = "poll",
         "gateway_task"
@@ -3567,7 +3654,9 @@ async fn dev_seed_biz_report_task(
         progress_updated_at_ms: Some(now),
         result: Some(result),
         error: None,
-        turn_id: seed_turn_id,
+        turn_id: seed_turn_id.clone(),
+        progress_history: Vec::new(),
+        has_report: false,
     };
     {
         let mut tasks = state.tasks.lock().await;
@@ -3580,16 +3669,131 @@ async fn dev_seed_biz_report_task(
             },
         );
     }
-    let stream_url = format!("/v1/biz_advice_report?task_id={tid}&stream=true");
+    let stream_url = format!(
+        "/v1/biz_advice_report?sessionId={tid}&turnId={seed_turn_id}&dsId={}&stream=true",
+        body.ds_id
+    );
     Ok(Json(json!({
         "taskId": tid,
         "bizAdviceReportStreamUrl": stream_url,
     })))
 }
 
+async fn prepare_live_report_context(
+    state: &AppState,
+    session_id: &str,
+    turn_id: &str,
+    ds_id: i64,
+) -> Result<LiveReportContext, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "dsId must be >= 1",
+        ));
+    }
+    if !turn_id::validate_turn_id(turn_id) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "turnId must match T_<32 hex>",
+        ));
+    }
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "sessionId must be non-empty",
+        ));
+    }
+    if !state
+        .session_db
+        .session_exists(session_id, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("session not found: {session_id} ds_id={ds_id}"),
+        ));
+    }
+    if !state
+        .session_db
+        .turn_belongs_to_session(turn_id, session_id, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "unknown turnId for session",
+        ));
+    }
+    let session_home_rel = state
+        .session_db
+        .get_session_home_rel(session_id, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("session not found: {session_id} ds_id={ds_id}"),
+            )
+        })?;
+    session_merge::validate_session_home_rel(&session_home_rel).map_err(session_routing_error)?;
+    let session_home = join_session_home(&state.cfg.work_root, &session_home_rel);
+    Ok(LiveReportContext {
+        session_id: session_id.to_string(),
+        turn_id: turn_id.to_string(),
+        ds_id,
+        session_home,
+    })
+}
+
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
+) -> Result<Response, ApiError> {
+    let state = Arc::new(state);
+    let ctx = prepare_live_report_context(
+        &state,
+        &query.session_id,
+        &query.turn_id,
+        query.ds_id,
+    )
+    .await?;
+    if query.stream {
+        let rx = spawn_live_report_sse_worker(Arc::clone(&state), ctx.clone());
+        let no_buffer = header::HeaderName::from_static("x-accel-buffering");
+        let no_buffer_val = HeaderValue::from_static("no");
+        return Ok((
+            AppendHeaders([(no_buffer, no_buffer_val)]),
+            Sse::new(biz_report_sse_event_stream(&ctx.session_id, rx))
+                .keep_alive(KeepAlive::default()),
+        )
+            .into_response());
+    }
+    let (report_text, report_json) =
+        biz_advice_report_live::live_report_json_response(&state, ctx.clone()).await?;
+    let status = biz_advice_report_live::turn_status(
+        &state.session_db,
+        &ctx.turn_id,
+        &ctx.session_id,
+        ctx.ds_id,
+    )
+    .await?
+    .unwrap_or_else(|| "succeeded".to_string());
+    Ok(Json(BizAdviceReportResponse {
+        task_id: ctx.session_id.clone(),
+        source_request_id: ctx.session_id,
+        source_ds_id: ctx.ds_id,
+        source_status: status,
+        report_text,
+        report_json: Some(report_json),
+    })
+    .into_response())
+}
+
+async fn get_biz_advice_report_bak(
+    State(state): State<AppState>,
+    Query(query): Query<BizAdviceReportBakQuery>,
 ) -> Result<Response, ApiError> {
     let task = {
         let tasks = state.tasks.lock().await;
