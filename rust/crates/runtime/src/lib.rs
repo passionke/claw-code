@@ -133,13 +133,13 @@ pub use policy_engine::{
     PolicyEngine, PolicyRule, ReconcileReason, ReviewStatus,
 };
 pub use prompt::{
-    load_system_prompt, max_instruction_file_chars, max_total_instruction_chars, prepend_bullets,
-    ContextFile, ProjectContext, PromptBuildError, SystemPromptBuilder,
-    DEFAULT_MAX_INSTRUCTION_FILE_CHARS, DEFAULT_MAX_TOTAL_INSTRUCTION_CHARS, FRONTIER_MODEL_NAME,
-    GATEWAY_DATA_CATALOG_REL, GATEWAY_LIVE_REPORT_START_MARKER, GATEWAY_SQLBOT_MCP_DATASOURCE_LIST_TOOL,
-    GATEWAY_SQLBOT_MCP_DATASOURCE_TABLES_TOOL, GATEWAY_SQLBOT_MCP_START_TOOL,
-    INSTRUCTION_FILE_MAX_CHARS_ENV, load_gateway_data_catalog,
-    INSTRUCTION_TOTAL_MAX_CHARS_ENV, SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    load_gateway_data_catalog, load_system_prompt, max_instruction_file_chars,
+    max_total_instruction_chars, prepend_bullets, ContextFile, ProjectContext, PromptBuildError,
+    SystemPromptBuilder, DEFAULT_MAX_INSTRUCTION_FILE_CHARS, DEFAULT_MAX_TOTAL_INSTRUCTION_CHARS,
+    FRONTIER_MODEL_NAME, GATEWAY_DATA_CATALOG_REL, GATEWAY_LIVE_REPORT_START_MARKER,
+    GATEWAY_SQLBOT_MCP_DATASOURCE_LIST_TOOL, GATEWAY_SQLBOT_MCP_DATASOURCE_TABLES_TOOL,
+    GATEWAY_SQLBOT_MCP_START_TOOL, INSTRUCTION_FILE_MAX_CHARS_ENV, INSTRUCTION_TOTAL_MAX_CHARS_ENV,
+    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 };
 pub use recovery_recipes::{
     attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,

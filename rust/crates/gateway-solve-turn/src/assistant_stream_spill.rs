@@ -170,7 +170,10 @@ mod tests {
         let turn_id = "T_a1b2c3d4e5f6478990abcdef12345678";
         let spill = AssistantStreamSpill::new(Path::new(&dir), turn_id);
         spill.begin_iteration().unwrap();
-        assert!(!spill_contains_report_start_marker(Path::new(&dir), turn_id));
+        assert!(!spill_contains_report_start_marker(
+            Path::new(&dir),
+            turn_id
+        ));
         spill
             .append(&format!(
                 "分析中…\n{ASSISTANT_STREAM_REPORT_START_MARKER}\n# 报告\n"

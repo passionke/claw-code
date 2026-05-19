@@ -13,7 +13,8 @@ pub fn final_assistant_report_text_from_jsonl(session_home: &Path) -> Result<Str
     if !path.is_file() {
         return Ok(String::new());
     }
-    let contents = fs::read_to_string(&path).map_err(|e| format!("read session jsonl failed: {e}"))?;
+    let contents =
+        fs::read_to_string(&path).map_err(|e| format!("read session jsonl failed: {e}"))?;
     let mut parts = Vec::new();
     for line in contents.lines() {
         let line = line.trim();

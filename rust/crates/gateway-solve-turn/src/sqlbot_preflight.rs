@@ -4,13 +4,13 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::{DirectToolExecutor, GatewaySolveTurnError};
 use runtime::{
     ContentBlock, ConversationMessage, Session, ToolExecutor,
     GATEWAY_SQLBOT_MCP_DATASOURCE_LIST_TOOL, GATEWAY_SQLBOT_MCP_DATASOURCE_TABLES_TOOL,
     GATEWAY_SQLBOT_MCP_START_TOOL,
 };
 use serde_json::{json, Value};
-use crate::{DirectToolExecutor, GatewaySolveTurnError};
 
 const PREFLIGHT_ENV: &str = "CLAW_GATEWAY_SQLBOT_PREFLIGHT";
 
@@ -53,7 +53,10 @@ fn session_has_tool_result(messages: &[ConversationMessage], tool_substr: &str) 
     })
 }
 
-fn last_successful_tool_output(messages: &[ConversationMessage], tool_substr: &str) -> Option<String> {
+fn last_successful_tool_output(
+    messages: &[ConversationMessage],
+    tool_substr: &str,
+) -> Option<String> {
     let mut found = None;
     for msg in messages {
         for block in &msg.blocks {
@@ -82,11 +85,13 @@ fn inject_tool_exchange(
     is_error: bool,
 ) -> Result<(), GatewaySolveTurnError> {
     session
-        .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
-            id: tool_use_id.clone(),
-            name: tool_name.to_string(),
-            input: input.to_string(),
-        }]))
+        .push_message(ConversationMessage::assistant(vec![
+            ContentBlock::ToolUse {
+                id: tool_use_id.clone(),
+                name: tool_name.to_string(),
+                input: input.to_string(),
+            },
+        ]))
         .map_err(|e| {
             crate::err(
                 crate::HTTP_INTERNAL,
@@ -160,12 +165,8 @@ fn sqlbot_payload_is_error(output: &str) -> bool {
 
 /// Unwrap MCP tool wrapper (`content[0].text` JSON) to SQLBot `{code,data,msg}`.
 fn parse_sqlbot_inner_json(output: &str) -> Result<Value, String> {
-    let outer: Value =
-        serde_json::from_str(output).map_err(|e| format!("outer json: {e}"))?;
-    if let Some(text) = outer
-        .pointer("/content/0/text")
-        .and_then(Value::as_str)
-    {
+    let outer: Value = serde_json::from_str(output).map_err(|e| format!("outer json: {e}"))?;
+    if let Some(text) = outer.pointer("/content/0/text").and_then(Value::as_str) {
         return serde_json::from_str(text).map_err(|e| format!("inner json: {e}"));
     }
     Ok(outer)
@@ -178,10 +179,11 @@ fn credentials_from_start_inner(inner: &Value) -> Option<SqlbotCredentials> {
     Some(SqlbotCredentials { token, chat_id })
 }
 
-fn credentials_from_session(messages: &[ConversationMessage]) -> Result<SqlbotCredentials, GatewaySolveTurnError> {
-    let output = last_successful_tool_output(messages, "mcp_start").ok_or_else(|| {
-        crate::err(crate::HTTP_INTERNAL, "preflight: mcp_start result missing")
-    })?;
+fn credentials_from_session(
+    messages: &[ConversationMessage],
+) -> Result<SqlbotCredentials, GatewaySolveTurnError> {
+    let output = last_successful_tool_output(messages, "mcp_start")
+        .ok_or_else(|| crate::err(crate::HTTP_INTERNAL, "preflight: mcp_start result missing"))?;
     let inner = parse_sqlbot_inner_json(&output).map_err(|e| {
         crate::err(
             crate::HTTP_INTERNAL,
@@ -218,7 +220,9 @@ fn pick_datasource_id_from_list_inner(inner: &Value) -> Option<i64> {
         .and_then(Value::as_i64)
 }
 
-fn datasource_id_from_session(messages: &[ConversationMessage]) -> Result<i64, GatewaySolveTurnError> {
+fn datasource_id_from_session(
+    messages: &[ConversationMessage],
+) -> Result<i64, GatewaySolveTurnError> {
     let output = last_successful_tool_output(messages, "mcp_datasource_list").ok_or_else(|| {
         crate::err(
             crate::HTTP_INTERNAL,
@@ -252,7 +256,13 @@ fn ensure_mcp_start(
             format!("preflight tool not allowed: {GATEWAY_SQLBOT_MCP_START_TOOL}"),
         ));
     }
-    let output = run_preflight_mcp(session, executor, "mcp_start", GATEWAY_SQLBOT_MCP_START_TOOL, "{}")?;
+    let output = run_preflight_mcp(
+        session,
+        executor,
+        "mcp_start",
+        GATEWAY_SQLBOT_MCP_START_TOOL,
+        "{}",
+    )?;
     let inner = parse_sqlbot_inner_json(&output).map_err(|e| {
         crate::err(
             crate::HTTP_INTERNAL,
@@ -366,5 +376,4 @@ mod tests {
         assert_eq!(creds.token, "tok");
         assert_eq!(creds.chat_id, 99);
     }
-
 }

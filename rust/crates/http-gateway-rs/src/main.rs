@@ -3686,10 +3686,7 @@ async fn prepare_live_report_context(
     ds_id: i64,
 ) -> Result<LiveReportContext, ApiError> {
     if ds_id < 1 {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "dsId must be >= 1",
-        ));
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
     }
     if !turn_id::validate_turn_id(turn_id) {
         return Err(ApiError::new(
@@ -3752,13 +3749,8 @@ async fn get_biz_advice_report(
     Query(query): Query<BizAdviceReportQuery>,
 ) -> Result<Response, ApiError> {
     let state = Arc::new(state);
-    let ctx = prepare_live_report_context(
-        &state,
-        &query.session_id,
-        &query.turn_id,
-        query.ds_id,
-    )
-    .await?;
+    let ctx =
+        prepare_live_report_context(&state, &query.session_id, &query.turn_id, query.ds_id).await?;
     if query.stream {
         let rx = spawn_live_report_sse_worker(Arc::clone(&state), ctx.clone());
         let no_buffer = header::HeaderName::from_static("x-accel-buffering");

@@ -100,7 +100,10 @@ fn is_terminal_turn_status(status: &str) -> bool {
     matches!(status, "succeeded" | "failed" | "cancelled")
 }
 
-async fn read_spill_from_offset(path: &Path, offset: u64) -> Result<(Vec<u8>, u64), std::io::Error> {
+async fn read_spill_from_offset(
+    path: &Path,
+    offset: u64,
+) -> Result<(Vec<u8>, u64), std::io::Error> {
     let mut file = fs::File::open(path).await?;
     let len = file.metadata().await?.len();
     if offset >= len {
@@ -225,7 +228,9 @@ pub fn spawn_live_report_sse_worker(
                     }
                 }
             } else if !formal.trim().is_empty()
-                && status.as_deref().is_some_and(|s| is_terminal_turn_status(s))
+                && status
+                    .as_deref()
+                    .is_some_and(|s| is_terminal_turn_status(s))
             {
                 switch_to_formal = true;
             }
@@ -257,13 +262,7 @@ pub async fn live_report_json_response(
     state: &AppState,
     ctx: LiveReportContext,
 ) -> Result<(String, Value), ApiError> {
-    let status = turn_status(
-        &state.session_db,
-        &ctx.turn_id,
-        &ctx.session_id,
-        ctx.ds_id,
-    )
-    .await?;
+    let status = turn_status(&state.session_db, &ctx.turn_id, &ctx.session_id, ctx.ds_id).await?;
     let Some(status) = status else {
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
