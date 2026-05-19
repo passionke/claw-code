@@ -21,6 +21,12 @@ use crate::biz_advice_report::{
 use crate::session_db::GatewaySessionDb;
 use crate::{ApiError, AppState};
 
+/// Whether this turn's assistant stream spill file exists on disk.
+#[must_use]
+pub fn turn_spill_file_exists(session_home: &Path, turn_id: &str) -> bool {
+    assistant_stream_spill_path(session_home, turn_id).is_file()
+}
+
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone)]
