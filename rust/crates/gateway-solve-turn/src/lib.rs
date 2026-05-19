@@ -160,7 +160,8 @@ fn current_utc_date() -> String {
 #[allow(
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation
+    clippy::cast_possible_truncation,
+    clippy::similar_names
 )]
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let z = days + 719_468;

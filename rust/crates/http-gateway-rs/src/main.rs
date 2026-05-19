@@ -12,6 +12,7 @@
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::match_same_arms)]
 #![allow(clippy::unnecessary_filter_map)]
+#![allow(clippy::similar_names)]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

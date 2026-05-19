@@ -11,7 +11,6 @@
     clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::uninlined_format_args,
-    clippy::unnecessary_trailing_comma,
     clippy::unneeded_struct_pattern,
     clippy::unnecessary_wraps,
     clippy::unused_self
@@ -6900,7 +6899,8 @@ fn format_history_timestamp(timestamp_ms: u64) -> String {
 #[allow(
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation
+    clippy::cast_possible_truncation,
+    clippy::similar_names
 )]
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let z = days + 719_468;
@@ -11001,7 +11001,7 @@ mod tests {
         ];
         for (subcommand, expected_topic) in cases {
             for flag in ["--help", "-h"] {
-                let parsed = parse_args(&[subcommand.to_string(), flag.to_string()])
+                let parsed = parse_args(&[(*subcommand).to_string(), flag.to_string()])
                     .unwrap_or_else(|error| {
                         panic!("`{subcommand} {flag}` should parse as help but errored: {error}")
                     });
