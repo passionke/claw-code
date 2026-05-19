@@ -32,7 +32,9 @@ use biz_advice_report::{
     load_boss_report_writer_instructions, report_body_from_solve_output, BizAdviceReportPayload,
     BizReportStreamMsg,
 };
-use biz_advice_report_live::{spawn_live_report_sse_worker, LiveReportContext};
+use biz_advice_report_live::{
+    spawn_live_report_sse_worker, turn_spill_file_exists, LiveReportContext,
+};
 use gateway_solve_turn::read_progress_events;
 use gateway_solve_turn::{
     read_task_progress, reset_task_progress, run_gateway_biz_polish_llm,
@@ -410,7 +412,7 @@ struct TaskRecord {
         skip_serializing_if = "Vec::is_empty"
     )]
     progress_history: Vec<gateway_solve_turn::ProgressEvent>,
-    /// `true` when `.claw/assistant-stream-spill-{turnId}.txt` contains `__CLAW_REPORT_START__`.
+    /// Running: spill contains `__CLAW_REPORT_START__`. Succeeded without spill file: `true`.
     #[serde(rename = "hasReport")]
     has_report: bool,
 }
@@ -1128,7 +1130,7 @@ async fn docs() -> Html<String> {
         (
             "GET",
             "/v1/biz_advice_report?sessionId=…&turnId=…&dsId=…",
-            "Live report SSE from assistant spill then session jsonl",
+            "Report SSE: spill tail when spill file exists; else LLM polish from solve output",
         ),
         (
             "GET",
@@ -1405,7 +1407,7 @@ async fn openapi() -> Json<Value> {
                         "progressUpdatedAtMs": { "type": "integer", "format": "int64", "nullable": true },
                         "hasReport": {
                             "type": "boolean",
-                            "description": "True when assistant-stream-spill for this turnId contains __CLAW_REPORT_START__ (frontend may open GET /v1/biz_advice_report)"
+                            "description": "True while streaming when spill contains __CLAW_REPORT_START__; true when succeeded and no spill file (opens GET /v1/biz_advice_report → LLM polish stream)"
                         },
                         "turnId": { "type": "string" },
                         "progressHistory": {
@@ -1528,12 +1530,12 @@ async fn openapi() -> Json<Value> {
             },
             "/v1/biz_advice_report": {
                 "get": {
-                    "summary": "Live business report: tail assistant stream spill, then session jsonl full text",
+                    "summary": "Business report: spill tail when spill file exists; else LLM polish from solve output",
                     "parameters": [
                         { "name": "sessionId", "in": "query", "required": true, "schema": { "type": "string" } },
                         { "name": "turnId", "in": "query", "required": true, "schema": { "type": "string" } },
                         { "name": "dsId", "in": "query", "required": true, "schema": { "type": "integer", "format": "int64" } },
-                        { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": true }, "description": "When true (default), text/event-stream from spill then formal jsonl (biz.report.*)" }
+                        { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": true }, "description": "When true (default): spill SSE if spill file exists, else biz.report.* LLM polish stream from solve output" }
                     ],
                     "responses": {
                         "200": { "description": "Report JSON or SSE", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
@@ -3518,6 +3520,9 @@ async fn get_task(
 }
 
 fn task_has_report(task: &TaskRecord, session_home: &std::path::Path) -> bool {
+    if task.status == "succeeded" && !turn_spill_file_exists(session_home, &task.turn_id) {
+        return true;
+    }
     gateway_solve_turn::spill_contains_report_start_marker(session_home, &task.turn_id)
         || task_result_contains_report_start_marker(task)
 }
@@ -3774,6 +3779,9 @@ async fn get_biz_advice_report(
     let state = Arc::new(state);
     let ctx =
         prepare_live_report_context(&state, &query.session_id, &query.turn_id, query.ds_id).await?;
+    if !turn_spill_file_exists(&ctx.session_home, &ctx.turn_id) {
+        return respond_biz_advice_polish_for_context(state, ctx, query.stream).await;
+    }
     if query.stream {
         let rx = spawn_live_report_sse_worker(Arc::clone(&state), ctx.clone());
         let no_buffer = header::HeaderName::from_static("x-accel-buffering");
@@ -3802,6 +3810,87 @@ async fn get_biz_advice_report(
         source_status: status,
         report_text,
         report_json: Some(report_json),
+    })
+    .into_response())
+}
+
+/// No spill file: polish solve `outputJson.message` (legacy `_bak` path) for JSON or SSE.
+async fn respond_biz_advice_polish_for_context(
+    state: Arc<AppState>,
+    ctx: LiveReportContext,
+    stream: bool,
+) -> Result<Response, ApiError> {
+    let status = biz_advice_report_live::turn_status(
+        &state.session_db,
+        &ctx.turn_id,
+        &ctx.session_id,
+        ctx.ds_id,
+    )
+    .await?;
+    let Some(status) = status else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "unknown turnId for session",
+        ));
+    };
+    if status != "succeeded" {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("turn not finished yet (status: {status})"),
+        ));
+    }
+    let report_body =
+        biz_advice_report_live::resolve_formal_report_text(state.as_ref(), &ctx).await?;
+    let skill_work_dir = ds_work_dir(&state.cfg.work_root, BOSS_REPORT_SKILL_DS_ID);
+    ensure_workspace_initialized(&state.cfg.claw_bin, &skill_work_dir).await?;
+    let instructions = load_boss_report_writer_instructions(&skill_work_dir).await;
+    let prompt = build_biz_advice_polish_prompt(&instructions, &report_body);
+    let request_id = Uuid::new_v4().simple().to_string();
+    let timeout_seconds = state.cfg.default_timeout_seconds;
+    let polish_ds = state.cfg.report_polish_deepseek.clone();
+    let meta = BizAdviceReportPayload {
+        task_id: ctx.session_id.clone(),
+        source_request_id: ctx.session_id.clone(),
+        source_ds_id: ctx.ds_id,
+        source_status: status,
+        report_text: None,
+        report_json: None,
+    };
+    if stream {
+        return Ok(biz_report_llm_stream_response(
+            &ctx.session_id,
+            meta,
+            prompt,
+            request_id,
+            timeout_seconds,
+            polish_ds,
+        ));
+    }
+    let (report_text, report_json) = tokio::task::spawn_blocking(move || {
+        run_gateway_biz_polish_llm(
+            &prompt,
+            None,
+            timeout_seconds,
+            &request_id,
+            None::<fn(&str)>,
+            polish_ds.as_ref(),
+        )
+    })
+    .await
+    .map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("polish task join failed: {e}"),
+        )
+    })?
+    .map_err(map_gateway_solve_turn_err)?;
+    Ok(Json(BizAdviceReportResponse {
+        task_id: ctx.session_id.clone(),
+        source_request_id: ctx.session_id,
+        source_ds_id: ctx.ds_id,
+        source_status: meta.source_status,
+        report_text,
+        report_json,
     })
     .into_response())
 }
@@ -4877,5 +4966,88 @@ mod tests {
         let (n, e) = parse_projects_git_author("kejiqing <kejiqing@local>");
         assert_eq!(n, "kejiqing");
         assert_eq!(e, "kejiqing@local");
+    }
+
+    #[test]
+    fn task_has_report_true_when_succeeded_and_no_spill_file() {
+        let home = std::env::temp_dir().join(format!("claw-has-report-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&home);
+        let task = TaskRecord {
+            task_id: "t1".into(),
+            session_id: "t1".into(),
+            request_id: "t1".into(),
+            ds_id: 10,
+            status: "succeeded".into(),
+            created_at_ms: 0,
+            started_at_ms: None,
+            finished_at_ms: Some(1),
+            current_task_desc: None,
+            progress_updated_at_ms: None,
+            result: None,
+            error: None,
+            turn_id: "T_00000000000000000000000000000001".into(),
+            progress_history: vec![],
+            has_report: false,
+        };
+        assert!(task_has_report(&task, &home));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn task_has_report_false_when_succeeded_but_spill_exists_without_marker() {
+        let home =
+            std::env::temp_dir().join(format!("claw-has-report-spill-{}", std::process::id()));
+        let claw = home.join(".claw");
+        std::fs::create_dir_all(&claw).unwrap();
+        let turn_id = "T_00000000000000000000000000000003";
+        std::fs::write(
+            claw.join(format!("assistant-stream-spill-{turn_id}.txt")),
+            "partial stream only",
+        )
+        .unwrap();
+        let task = TaskRecord {
+            task_id: "t3".into(),
+            session_id: "t3".into(),
+            request_id: "t3".into(),
+            ds_id: 10,
+            status: "succeeded".into(),
+            created_at_ms: 0,
+            started_at_ms: None,
+            finished_at_ms: Some(1),
+            current_task_desc: None,
+            progress_updated_at_ms: None,
+            result: None,
+            error: None,
+            turn_id: turn_id.into(),
+            progress_history: vec![],
+            has_report: false,
+        };
+        assert!(!task_has_report(&task, &home));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn task_has_report_false_while_running_without_marker() {
+        let home = std::env::temp_dir().join(format!("claw-has-report-run-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&home);
+        let task = TaskRecord {
+            task_id: "t2".into(),
+            session_id: "t2".into(),
+            request_id: "t2".into(),
+            ds_id: 10,
+            status: "running".into(),
+            created_at_ms: 0,
+            started_at_ms: Some(0),
+            finished_at_ms: None,
+            current_task_desc: None,
+            progress_updated_at_ms: None,
+            result: None,
+            error: None,
+            turn_id: "T_00000000000000000000000000000002".into(),
+            progress_history: vec![],
+            has_report: false,
+        };
+        assert!(!task_has_report(&task, &home));
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
