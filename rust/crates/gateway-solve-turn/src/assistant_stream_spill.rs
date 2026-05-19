@@ -24,13 +24,10 @@ pub fn assistant_stream_spill_path(session_home: &Path, turn_id: &str) -> PathBu
 }
 
 fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|v| {
-            let s = v.trim().to_ascii_lowercase();
-            matches!(s.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(false)
+    std::env::var(name).ok().is_some_and(|v| {
+        let s = v.trim().to_ascii_lowercase();
+        matches!(s.as_str(), "1" | "true" | "yes" | "on")
+    })
 }
 
 /// Worker-side default when the task file omits `assistantStreamSpill`.

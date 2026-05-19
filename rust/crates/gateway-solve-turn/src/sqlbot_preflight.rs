@@ -1,4 +1,4 @@
-//! Gateway resolve preflight: before the first LLM turn, run SQLBot `mcp_start`,
+//! Gateway resolve preflight: before the first LLM turn, run `SQLBot` `mcp_start`,
 //! `mcp_datasource_list`, and `mcp_datasource_tables`, then inject into session transcript.
 //! Author: kejiqing
 
@@ -17,7 +17,6 @@ const PREFLIGHT_ENV: &str = "CLAW_GATEWAY_SQLBOT_PREFLIGHT";
 #[derive(Debug, Clone)]
 struct SqlbotCredentials {
     token: String,
-    chat_id: i64,
 }
 
 fn preflight_enabled() -> bool {
@@ -163,7 +162,7 @@ fn sqlbot_payload_is_error(output: &str) -> bool {
         .is_some_and(|code| code != 0)
 }
 
-/// Unwrap MCP tool wrapper (`content[0].text` JSON) to SQLBot `{code,data,msg}`.
+/// Unwrap MCP tool wrapper (`content[0].text` JSON) to `SQLBot` `{code,data,msg}`.
 fn parse_sqlbot_inner_json(output: &str) -> Result<Value, String> {
     let outer: Value = serde_json::from_str(output).map_err(|e| format!("outer json: {e}"))?;
     if let Some(text) = outer.pointer("/content/0/text").and_then(Value::as_str) {
@@ -175,8 +174,8 @@ fn parse_sqlbot_inner_json(output: &str) -> Result<Value, String> {
 fn credentials_from_start_inner(inner: &Value) -> Option<SqlbotCredentials> {
     let data = inner.get("data")?;
     let token = data.get("access_token")?.as_str()?.to_string();
-    let chat_id = data.get("chat_id").and_then(Value::as_i64)?;
-    Some(SqlbotCredentials { token, chat_id })
+    data.get("chat_id").and_then(Value::as_i64)?;
+    Some(SqlbotCredentials { token })
 }
 
 fn credentials_from_session(
@@ -301,7 +300,7 @@ fn ensure_datasource_list(
     Ok(())
 }
 
-/// SQLBot `mcp_datasource_tables`: full table models under a datasource (MCP metadata).
+/// `SQLBot` `mcp_datasource_tables`: full table models under a datasource (MCP metadata).
 /// Requires `token` from `mcp_start.access_token` and `datasource_id` for the current workspace.
 /// Does not take `chat_id`. Author: kejiqing
 fn ensure_datasource_tables(
@@ -334,7 +333,7 @@ fn ensure_datasource_tables(
 }
 
 /// Run gateway resolve preflight on a **new** session turn (call after `push_user_text`, before LLM).
-/// Catalog/schema land in session messages as real SQLBot MCP `tool_use` + `tool_result` (not static md).
+/// Catalog/schema land in session messages as real `SQLBot` MCP `tool_use` + `tool_result` (not static md).
 pub(crate) fn run_gateway_resolve_preflight(
     session: &mut Session,
     executor: &mut DirectToolExecutor,
@@ -374,6 +373,5 @@ mod tests {
         )
         .expect("creds");
         assert_eq!(creds.token, "tok");
-        assert_eq!(creds.chat_id, 99);
     }
 }

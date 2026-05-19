@@ -252,6 +252,7 @@ impl DockerPoolManager {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // podman run argv + bind mounts. Author: kejiqing
     async fn run_worker_container(
         &self,
         name: &str,

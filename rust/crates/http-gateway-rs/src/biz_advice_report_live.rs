@@ -228,9 +228,7 @@ pub fn spawn_live_report_sse_worker(
                     }
                 }
             } else if !formal.trim().is_empty()
-                && status
-                    .as_deref()
-                    .is_some_and(|s| is_terminal_turn_status(s))
+                && status.as_deref().is_some_and(is_terminal_turn_status)
             {
                 switch_to_formal = true;
             }
@@ -281,7 +279,7 @@ pub async fn live_report_json_response(
             "solve turn failed",
         ));
     }
-    let report_text = resolve_formal_report_text(&state, &ctx).await?;
+    let report_text = resolve_formal_report_text(state, &ctx).await?;
     let report_json = json!({
         "sessionId": ctx.session_id,
         "turnId": ctx.turn_id,

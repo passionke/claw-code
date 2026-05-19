@@ -918,11 +918,10 @@ async fn main() {
             .unwrap_or(64),
         default_assistant_stream_spill: std::env::var("CLAW_GATEWAY_ASSISTANT_STREAM_SPILL")
             .ok()
-            .map(|v| {
+            .is_some_and(|v| {
                 let s = v.trim().to_ascii_lowercase();
                 matches!(s.as_str(), "1" | "true" | "yes" | "on")
-            })
-            .unwrap_or(false),
+            }),
         default_http_mcp_name: std::env::var("CLAW_DEFAULT_HTTP_MCP_NAME")
             .ok()
             .map(|v| v.trim().to_string())
