@@ -84,6 +84,11 @@ echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}
 
 claw_remove_all_gateway_workers
 
+rt="$(claw_container_runtime_cli)"
+pg_img="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
+echo "pull ${pg_img} (postgres) …" >&2
+"${rt}" pull "${pg_img}"
+
 # Recreate gateway container; pool is fresh with pinned worker image. kejiqing
 claw_compose_with_root_env "${PODMAN_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
 echo "Services started (gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}})."

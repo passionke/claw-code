@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: ${CLAW_GATEWAY_PG_IMAGE:-docker.1ms.run/library/postgres:17-alpine}
+    image: ${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}
     container_name: claw-gateway-postgres
     restart: unless-stopped
     environment:

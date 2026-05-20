@@ -178,10 +178,24 @@ claw_container_runtime_cli() {
   esac
 }
 
+# docker-compose + rootless podman: project dir is `deploy/stack/` → network `stack_default`. Author: kejiqing
+claw_compose_ensure_project_network() {
+  local rt project net
+  rt="$(claw_container_runtime_cli)" || return 1
+  project="${COMPOSE_PROJECT_NAME:-stack}"
+  net="${project}_default"
+  if "${rt}" network exists "${net}" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "creating ${rt} network ${net} (rootless podman / compose CNI) …" >&2
+  "${rt}" network create "${net}"
+}
+
 claw_compose() {
   local rt
   rt="$(claw_container_runtime_cli)" || return 1
   claw_compose_prepare_socket || return 1
+  claw_compose_ensure_project_network || return 1
   if [[ -n "${CLAW_COMPOSE_WORKING_DIRECTORY:-}" ]]; then
     (
       cd "${CLAW_COMPOSE_WORKING_DIRECTORY}" || exit 1
