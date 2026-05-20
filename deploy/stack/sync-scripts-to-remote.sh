@@ -25,6 +25,7 @@ rsync -avz \
   --exclude '.build.log' \
   --exclude 'worker-openai.env' \
   --exclude '.claw-pool-workspace.env' \
+  --exclude '.claw-pool-daemon.env' \
   --exclude '.claw-image-release.env' \
   --exclude '__pycache__/' \
   --exclude 'deploy/' \

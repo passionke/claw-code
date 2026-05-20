@@ -15,7 +15,7 @@ Author: kejiqing
 
 其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh` 一次串联**：先 **`Containerfile.gateway-rs`**（`http-gateway-rs` + 宿主机用的 **`claw-pool-daemon`**），再 **`Containerfile.gateway-worker`**（池内 **`claw`**），共用同一套 **`rust/`** 与 base / rustup build-arg，避免「网关新、worker 旧」。
 
-**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，镜像推到 **`ghcr.io/<owner>/claw-code`** 与 **`ghcr.io/<owner>/claw-gateway-worker`**。服务器上 `.env` 填 **`GATEWAY_IMAGE`** / **`CLAW_DOCKER_IMAGE`**（或 Podman 前缀）为上述 tag，**不要**在服务器跑 **`./deploy/stack/gateway.sh build`**（用预构建镜像即可）。**`./deploy/stack/gateway.sh up`** 在起池前会**始终**从 **`GATEWAY_IMAGE`** 抽出 **`claw-pool-daemon`** 安装到 **`CLAW_POOL_DAEMON_BIN`**（未设置时默认为仓库内 **`rust/target/release/claw-pool-daemon`**；写到 **`/usr/local/bin/...`** 时需对 `install` 命令有写权限，常见为 `sudo` 跑 up 或事先 `sudo install …`），保证宿主机 daemon 与网关镜像**同版本**。也可单独执行 **`./deploy/stack/lib/install-pool-daemon-from-image.sh`**。校验构建见 [`gateway-image-ci.yml`](../../.github/workflows/gateway-image-ci.yml)。
+**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，镜像推到 **`ghcr.io/<owner>/claw-code`** 与 **`ghcr.io/<owner>/claw-gateway-worker`**。服务器上 `.env` 填 **`GATEWAY_IMAGE`** / **`CLAW_DOCKER_IMAGE`**（或 Podman 前缀）为上述 tag，**不要**在服务器跑 **`./deploy/stack/gateway.sh build`**（用预构建镜像即可）。**`./deploy/stack/gateway.sh up`** 用同一 **`GATEWAY_IMAGE`** 起 compose 服务 **`claw-pool-daemon`**（挂容器引擎 socket + 工作区宿主机路径），**不再**向宿主机 `install` 二进制。横向扩容：每台机器 **`up --release <tag>` + 根目录 `.env`** 即可。校验构建见 [`gateway-image-ci.yml`](../../.github/workflows/gateway-image-ci.yml)。
 
 **镜像仓库默认（国内）**：未设置 **`CLAW_IMAGE_PREFIX`** / **`CLAW_GHCR_PREFIX`** 且 **`GATEWAY_IMAGE`** 不含 `…/claw-code` 时，`./deploy/stack/gateway.sh up --release …` 默认从 **阿里云个人版 ACR**（`crpi-….personal.cr.aliyuncs.com/passionke`，可由 **`CLAW_ACR_IMAGE_PREFIX`** 覆盖）拼接镜像名；若要改用 GHCR，在根目录 **`.env`** 设 **`CLAW_IMAGE_REGISTRY=ghcr`**（默认前缀 **`ghcr.io/passionke`**，可由 **`CLAW_GHCR_DEFAULT_PREFIX`** 覆盖）。仍可直接设 **`CLAW_IMAGE_PREFIX=…`**（不要 `https://`），优先级最高。
 
@@ -72,7 +72,7 @@ cp .env.example .env
 `gateway.sh up`（`lib/up.sh`）会：
 
 - 生成 `deploy/stack/.claw-pool-workspace.env`（其中 **`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`**，与容器内工作目录一致；不要在容器场景下写 macOS `/Users/...`）。
-- 合并 **`podman-compose.pool-rpc.yml`**：宿主机起 **`claw-pool-daemon`（TCP）**，网关只连 RPC；**不再支持**在网关容器内挂 Podman API socket 起 worker。
+- 合并 **`podman-compose.pool-rpc.yml`**：compose 内 **`claw-pool-daemon`（TCP）**，网关只连 RPC；**不再支持**在网关容器内挂 Podman API socket 起 worker。
 - **`claw_compose`**：按 **`CLAW_CONTAINER_RUNTIME`** 调用 **`docker compose`** 或 **`podman compose`**（`podman` 时若装了 **`podman-compose`** 会用作后端，减轻 macOS 混用问题）。
 - 使用 **`up -d --force-recreate`**，避免只改 env 文件却沿用旧容器环境。
 

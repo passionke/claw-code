@@ -33,13 +33,7 @@ source "${PODMAN_DIR}/lib/compose-include.sh"
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ROOT_ENV}"
 
-install_args=()
-if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
-  install_args+=("--release" "${CLAW_IMAGE_RELEASE_TAG}")
-fi
-install_args+=("${CLAW_POOL_DAEMON_BIN:-${ROOT_DIR}/rust/target/release/claw-pool-daemon}")
-"${PODMAN_DIR}/lib/install-pool-daemon-from-image.sh" "${install_args[@]}"
-"${PODMAN_DIR}/lib/pool-daemon-up.sh" "${PODMAN_DIR}" "${ROOT_DIR}"
+"${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
 
 claw_compose_with_root_env "${PODMAN_DIR}" "${ROOT_ENV}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
 echo "gateway started on port ${GATEWAY_HOST_PORT}"

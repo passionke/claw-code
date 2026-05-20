@@ -1,9 +1,40 @@
-# Overlay: gateway reaches host `claw-pool-daemon` via TCP (`CLAW_POOL_DAEMON_TCP`).
-# Linux Docker Engine 常无 host.docker.internal；host-gateway 把该名解析到宿主机。Podman 可保留默认 CLAW_POOL_DAEMON_TCP_HOST。
-# Author: kejiqing
+# Pool daemon runs in compose (same GATEWAY_IMAGE); gateway dials claw-pool-daemon:9943.
+# Host paths in bind mounts must match CLAW_POOL_RPC_HOST_WORK_ROOT (see compose-include). Author: kejiqing
 services:
+  claw-pool-daemon:
+    image: ${GATEWAY_IMAGE}
+    container_name: claw-pool-daemon
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/claw-pool-daemon"]
+    env_file:
+      - ../../.env
+      - ./.claw-pool-daemon.env
+    environment:
+      CLAW_POOL_DAEMON_TCP_BIND: "0.0.0.0:${CLAW_POOL_DAEMON_PORT:-9943}"
+    volumes:
+      - "${CLAW_CONTAINER_SOCKET}:${CLAW_CONTAINER_SOCKET}"
+      - "${CLAW_POOL_WORK_ROOT_BIND_SRC}:${CLAW_POOL_WORK_ROOT_BIND_SRC}:rw"
+      - "${CLAW_REPO_ROOT}/.env:${CLAW_REPO_ROOT}/.env:ro"
+    ports:
+      - "127.0.0.1:${CLAW_POOL_DAEMON_PORT:-9943}:${CLAW_POOL_DAEMON_PORT:-9943}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "timeout 1 bash -c 'echo > /dev/tcp/127.0.0.1/${CLAW_POOL_DAEMON_PORT:-9943}'",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
   gateway-rs:
     env_file:
       - ./.claw-pool-rpc/gateway.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      claw-pool-daemon:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"

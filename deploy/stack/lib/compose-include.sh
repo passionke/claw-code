@@ -1,6 +1,36 @@
 # shellcheck shell=bash
 # Sets CLAW_POOL_WORK_ROOT_HOST and CLAW_PODMAN_COMPOSE_ARGS. Default solve mode is podman_pool (second compose file). Author: kejiqing
 
+claw_container_socket_path() {
+  if [[ -n "${CLAW_CONTAINER_SOCKET:-}" ]]; then
+    printf '%s' "${CLAW_CONTAINER_SOCKET}"
+    return 0
+  fi
+  local rt
+  rt="$(claw_container_runtime_cli)" || return 1
+  case "$rt" in
+    podman) printf '%s' /run/podman/podman.sock ;;
+    *) printf '%s' /var/run/docker.sock ;;
+  esac
+}
+
+# Absolute paths + container socket for compose `claw-pool-daemon` (no host binary install). Author: kejiqing
+claw_podman_write_pool_daemon_sidecar_env() {
+  local script_dir="$1"
+  local repo_root ws sock
+  repo_root="$(cd "${script_dir}/../.." && pwd)"
+  ws="${CLAW_POOL_WORK_ROOT_BIND_SRC:?CLAW_POOL_WORK_ROOT_BIND_SRC unset; call claw_podman_export_pool_workspace first}"
+  sock="$(claw_container_socket_path)" || return 1
+  export CLAW_REPO_ROOT="${repo_root}"
+  export CLAW_CONTAINER_SOCKET="${sock}"
+  {
+    printf '%s\n' '# GENERATED — do not edit. Overwritten by compose-include (pool sidecar). kejiqing'
+    printf '%s\n' "CLAW_WORK_ROOT=${ws}"
+    printf '%s\n' "CLAW_POOL_WORK_ROOT_HOST=${ws}"
+    printf '%s\n' "CLAW_WORKER_ENV_FILE=${repo_root}/.env"
+  } >"${script_dir}/.claw-pool-daemon.env"
+}
+
 claw_podman_export_pool_workspace() {
   local script_dir="$1"
   mkdir -p "${script_dir}/claw-workspace"
@@ -53,11 +83,11 @@ claw_podman_load_compose_args() {
     echo "error: PODMAN_HOST_SOCK is no longer used; remove it from .env (host claw-pool-daemon is the only compose pool path)." >&2
     return 1
   fi
-  # Host `claw-pool-daemon` creates workers; gateway uses TCP to the daemon.
+  # Compose service `claw-pool-daemon` creates workers; gateway uses TCP on the compose network.
   mkdir -p "${script_dir}/.claw-pool-rpc"
+  claw_podman_write_pool_daemon_sidecar_env "${script_dir}" || return 1
   local pool_port="${CLAW_POOL_DAEMON_PORT:-9943}"
-  # Podman 默认 host.containers.internal；Docker Engine（尤其 Linux）常用 host.docker.internal，或 compose 里 pool-daemon 服务名。
-  local tcp_host="${CLAW_POOL_DAEMON_TCP_HOST:-host.containers.internal}"
+  local tcp_host="${CLAW_POOL_DAEMON_TCP_HOST:-claw-pool-daemon}"
   {
     printf '%s\n' '# GENERATED — do not edit. Overwritten by compose-include (pool RPC). kejiqing'
     printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"

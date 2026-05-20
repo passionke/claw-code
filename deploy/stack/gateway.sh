@@ -13,7 +13,7 @@ Usage:
 
 Commands:
   build         Build gateway + worker images; full log → deploy/stack/.build.log (see: build --help)
-  up            Start/recreate gateway stack (`up --release TAG` = down + kill pool + rm all workers + pull + up)
+  up            Start stack (`up --release TAG` = pull images + compose up; pool daemon is a compose service)
   down          Stop gateway stack
   restart       Recreate stack (down + up)
   check         Connectivity smoke check

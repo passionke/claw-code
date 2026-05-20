@@ -79,13 +79,8 @@ elif [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
 fi
 echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
 
-install_args=()
-if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
-  install_args+=("--release" "${CLAW_IMAGE_RELEASE_TAG}")
-fi
-install_args+=("${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}")
-"${PODMAN_DIR}/lib/install-pool-daemon-from-image.sh" "${install_args[@]}"
-"${PODMAN_DIR}/lib/pool-daemon-up.sh" "${PODMAN_DIR}" "${REPO_ROOT}"
+# Legacy host nohup daemon (pre-compose sidecar); stop if still running.
+"${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
 
 claw_remove_all_gateway_workers
 

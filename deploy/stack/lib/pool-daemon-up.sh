@@ -52,7 +52,26 @@ if [[ -n "${CLAW_PODMAN_IMAGE:-}" ]]; then
   daemon_env+=(CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE}")
 fi
 nohup env "${daemon_env[@]}" "${BIN}" >>"${RPC_DIR}/daemon.log" 2>&1 &
-echo $! >"${RPC_DIR}/daemon.pid"
+dpid=$!
+echo "${dpid}" >"${RPC_DIR}/daemon.pid"
+
+sleep 0.15
+if ! kill -0 "${dpid}" 2>/dev/null; then
+  wait "${dpid}" 2>/dev/null || true
+  rc=$?
+  echo "error: claw-pool-daemon exited immediately (pid ${dpid}, wait status ${rc})" >&2
+  if command -v file >/dev/null 2>&1; then
+    file "${BIN}" >&2 || true
+  fi
+  if command -v ldd >/dev/null 2>&1; then
+    ldd "${BIN}" >&2 || true
+  fi
+  echo "hint: reinstall from GATEWAY_IMAGE (must match gateway tag):" >&2
+  echo "  ./deploy/stack/lib/install-pool-daemon-from-image.sh ${BIN}" >&2
+  echo "  do not copy rust/target/release/claw-pool-daemon from macOS to Linux" >&2
+  tail -40 "${RPC_DIR}/daemon.log" >&2 || true
+  exit 1
+fi
 
 for _ in $(seq 1 100); do
   if python3 -c "import socket; s=socket.socket(); s.settimeout(0.2); s.connect(('127.0.0.1', int('${PORT}'))); s.close()" 2>/dev/null; then
