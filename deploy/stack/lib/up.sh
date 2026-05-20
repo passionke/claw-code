@@ -40,6 +40,9 @@ set +a
 
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/preflight.sh"
+claw_deploy_preflight "${PODMAN_DIR}"
 
 # load_compose_args re-sources .env and resets GATEWAY_IMAGE to :local; re-pin after. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
@@ -83,11 +86,6 @@ echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}
 "${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
 
 claw_remove_all_gateway_workers
-
-rt="$(claw_container_runtime_cli)"
-pg_img="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
-echo "pull ${pg_img} (postgres) …" >&2
-"${rt}" pull "${pg_img}"
 
 # Recreate gateway container; pool is fresh with pinned worker image. kejiqing
 claw_compose_with_root_env "${PODMAN_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate

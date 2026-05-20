@@ -96,10 +96,11 @@ claw_podman_load_compose_args() {
       export CLAW_COMPOSE_WORKING_DIRECTORY="${repo_root}"
     fi
   fi
+  export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
   if [[ -n "${rel}" ]]; then
-    CLAW_PODMAN_COMPOSE_ARGS=( -f "${rel}/podman-compose.yml" )
+    CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${rel}/podman-compose.yml" )
   else
-    CLAW_PODMAN_COMPOSE_ARGS=( -f "${script_dir}/podman-compose.yml" )
+    CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${script_dir}/podman-compose.yml" )
   fi
   if [[ ! -f "${env_file}" ]]; then
     return 0
@@ -178,11 +179,10 @@ claw_container_runtime_cli() {
   esac
 }
 
-# docker-compose + rootless podman: project dir is `deploy/stack/` → network `stack_default`. Author: kejiqing
 claw_compose_ensure_project_network() {
   local rt project net
   rt="$(claw_container_runtime_cli)" || return 1
-  project="${COMPOSE_PROJECT_NAME:-stack}"
+  project="${COMPOSE_PROJECT_NAME:-claw}"
   net="${project}_default"
   if "${rt}" network exists "${net}" >/dev/null 2>&1; then
     return 0

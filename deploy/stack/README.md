@@ -4,6 +4,10 @@ Author: kejiqing
 
 **稳定做法只有一条**：在仓库根目录准备好 `.env`，打好镜像，用 **`./deploy/stack/gateway.sh up`** 起服务。不要用「手写一长串 compose / 只挂单个 compose 文件 / 在容器里配 macOS 的 `/Users/...` 路径」这类容易翻车的玩法。
 
+**阿里云 rootless podman（常见踩坑）**：`podman ps` 能用不代表 compose 能连 socket——compose 往往走 `/var/run/docker.sock`（root:root），而 rootless 实际 socket 在 `/run/user/<uid>/podman/podman.sock`。在 `.env` 设 `CLAW_CONTAINER_SOCKET`（见 `deploy/stack/env.production.rootless.example`）。`gateway.sh up` 会跑 **preflight**（socket / 网络 / postgres 镜像 / Git 必填项）。
+
+**已知脆弱点**：Ubuntu 上的 **`docker-compose` 1.x + `podman compose` 后端** 对 CNI 网络、双 `--env-file` 不友好；`dep_all_in_one` 分支用子 shell 注入 env、固定 `COMPOSE_PROJECT_NAME=claw`、启动前 preflight。长期应换 **rootful podman** 或 **原生 docker + compose v2**。
+
 **单入口（推荐）**：只记一个命令 **`./deploy/stack/gateway.sh`**。实现脚本在 **`deploy/stack/lib/`**（由 gateway 调用；一般不要直接跑）。常用：
 
 ```bash
