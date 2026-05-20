@@ -27,6 +27,7 @@ rsync -avz \
   --exclude '.claw-pool-workspace.env' \
   --exclude '.claw-pool-daemon.env' \
   --exclude '.claw-image-release.env' \
+  --exclude '.claw-pool-worker.env' \
   --exclude '__pycache__/' \
   --exclude 'deploy/' \
   "${STACK_DIR}/" "${DEST}"

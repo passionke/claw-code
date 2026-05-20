@@ -133,6 +133,8 @@ claw_podman_load_compose_args() {
   else
     CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.pool-rpc.yml" )
   fi
+  claw_export_pool_worker_image_matched_to_gateway
+  claw_write_pool_worker_env_override "${script_dir}"
   return 0
 }
 
@@ -251,6 +253,7 @@ claw_compose_pg_service() {
   printf '%s' "${CLAW_COMPOSE_PG_SERVICE:-postgres}"
 }
 
+# Space-separated service names from the loaded compose files, excluding postgres.
 claw_compose_gateway_service_list() {
   local podman_dir="$1"
   local repo_env="$2"

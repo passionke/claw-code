@@ -35,7 +35,7 @@ Base URL 示例：`http://127.0.0.1:18088`
       - `clawcode-session-id: <sessionId>`
       - `claw-session-id: <sessionId>`
     - 在访问下游 MCP 服务（包括 SQLBot）时，会通过 MCP 协议 `tools/call._meta.extra_session` 向工具端暴露 `extraSession`（如存在），用于会话级业务上下文消费。
-  - 对话状态：同一会话目录下使用 `.claw/gateway-solve-session.jsonl` 持久化消息；若文件损坏导致无法加载，返回 `500`（不会静默丢弃历史）。
+  - 对话状态（见 `docs/persistence-model.md`）：**运行中** worker 主写本地 `.claw/gateway-solve-session.jsonl`；**solve 正常结束** flush 到 PostgreSQL（`cc_messages`、`gateway_turns` 等）。**续聊 / 多机交接** 以 PG 为准，网关 `ensure_jsonl_from_db` 重建 jsonl。运行中崩溃可丢失当轮未 flush 内容，从上一段已提交 turn 继续。可选 `CLAW_SESSION_EXPORT_JSONL=1` 额外镜像。若续聊时 PG 无历史且 jsonl 不可用，返回 `500`。
   - **SQLBot 预注入（可选）**：环境变量 **`CLAW_GATEWAY_SQLBOT_PREFLIGHT`**（根 `.env`，经 worker 白名单传入 solve 进程）。**未设置时默认开启**：在首轮 LLM 之前自动执行 `mcp_start`、`mcp_datasource_list`、`mcp_datasource_tables`，并把 `tool_use` / `tool_result` 写入会话 jsonl。设为 **`0`** / **`false`** / **`off`** / **`no`** 可关闭，由模型按系统提示自行调用 MCP，避免与用户 prompt / CLAUDE 指令冲突。
 
 - `POST /v1/start`
@@ -53,8 +53,15 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 追踪约定：异步调用同样透传 `clawcode-session-id` 与 `claw-session-id`（值均为该次任务的网关层会话 ID）
   - **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`**（默认未设）：async 默认写 `.claw/assistant-stream-spill-{turnId}.txt`；请求体 `assistantStreamSpill: false` 可关闭单次任务
 
+- `GET /v1/sessions/{session_id}/transcript?dsId=<int>&turnId=<T_…>&format=json|jsonl`
+  - 用途：只读导出会话或单轮 transcript（来自 `cc_messages`，与 jsonl `message` 行同构）
+  - `turnId` 省略：整会话按 turn 创建时间与 `seq` 排序；指定则仅该轮
+  - `format=json`（默认）：`{ sessionId, dsId, turnId?, messages: [{ role, blocks, usage? }] }`
+  - `format=jsonl`：`Content-Type: application/x-ndjson`，含合成 `session_meta` 与 `message` 行（兼容 `.claw/gateway-solve-session.jsonl` 消费者）
+
 - `GET /v1/tasks/{task_id}`
   - 用途：查询异步任务状态与结果
+  - 任务行持久化在 **`gateway_async_tasks`**；网关重启后仍可按 `task_id` 查询（内存队列为运行中 worker 加速）
   - 响应含 **`turnId`**（与本次 async 入队时返回的值一致）
   - 响应除 `status` 外含 **`currentTaskDesc`**（用户可见进度一句，camelCase JSON）：主要来自 agent 调用的内部工具 `report_progress` 写入会话目录 `.claw/task-progress.json`；`queued` 时网关可返回「排队中（x 个等待，y 个执行中）」；`running` 且无上报时兜底「处理中」或「工具调用中」（不暴露具体工具名）。**不**从 `gateway-solve-session.jsonl` 最后一条 assistant 推导。
   - 另含 `dsId`、`progressUpdatedAtMs`（与 progress 文件一致时更新）、**`hasReport`**（bool）：`succeeded` 时为 `true`；**仅当**环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`** 时，`running` 且 spill 中出现 **`__CLAW_REPORT_START__`** 也可为 `true`（供提前拉报告 SSE）。默认未设置该变量时不会在运行中提前为 `true`
@@ -94,7 +101,8 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 结束条件（SSE）：spill 中出现 `__CLAW_ASSISTANT_STREAM_END__`（turn 结束时写入），或 `gateway_turns` 状态为 `succeeded` 且全量正文可读
   - 非流式（`stream=false`）：仅 turn 终态可读，返回 JSON（`reportText` / `reportJson.message`）
   - **标记剥离（始终）**：与 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL` 无关；对外 `reportText`、`reportJson.message`、`biz.report.delta` 均剔除内部行 **`__CLAW_REPORT_START__`**（及紧随换行）。默认润色路径在读取 solve 正文与润色输出/SSE 出口各剥一次
-  - live spill 模式下 `reportJson.message` 来自 session 全量（无 LLM 润色）；润色模式下经 `GPOS_BOSS_REPORT_WRITER`
+  - **按轮正文**：优先读 `gateway_turns.report_message`（该 `turnId`）；其次内存中活跃任务；再则该轮 `cc_messages`。**不会**拼接整会话 jsonl（避免旧轮报告变长）
+  - live spill 模式下 `reportJson.message` 来自 spill 全量（无 LLM 润色）；润色模式下经 `GPOS_BOSS_REPORT_WRITER`
 
 - `GET /v1/biz_advice_report_bak?task_id=<taskId>`
   - 用途：**旧版**——基于异步任务 `outputJson.message` 再经 `GPOS_BOSS_REPORT_WRITER` skill **LLM 润色**

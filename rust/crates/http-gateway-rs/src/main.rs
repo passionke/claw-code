@@ -27,12 +27,6 @@ use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use biz_advice_report::{
-    biz_report_sse_event_stream, build_biz_advice_polish_prompt,
-    load_boss_report_writer_instructions, report_body_from_solve_output, sanitize_biz_report_parts,
-    sanitize_external_report_text, sanitize_report_payload, BizAdviceReportPayload,
-    BizReportStreamMsg, ReportExportSanitizer,
-};
 use biz_advice_report_live::{
     spawn_live_report_sse_worker, turn_use_live_spill_report, LiveReportContext,
 };
@@ -42,6 +36,13 @@ use gateway_solve_turn::{
     run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
     BOSS_REPORT_SKILL_DS_ID,
 };
+use http_gateway_rs::biz_advice_report::{
+    biz_report_sse_event_stream, build_biz_advice_polish_prompt,
+    load_boss_report_writer_instructions, report_body_from_solve_output, sanitize_biz_report_parts,
+    sanitize_external_report_text, sanitize_report_payload, BizAdviceReportPayload,
+    BizReportStreamMsg, ReportExportSanitizer,
+};
+use http_gateway_rs::persistence::ensure_jsonl_from_db;
 use http_gateway_rs::{session_db, session_merge, turn_id};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
@@ -65,7 +66,6 @@ use tracing::field::Empty;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-mod biz_advice_report;
 mod biz_advice_report_live;
 mod gateway_logging;
 mod pool;
@@ -657,10 +657,84 @@ async fn register_solve_turn(
     turn_id: &str,
     session_id: &str,
     ds_id: i64,
+    user_prompt: Option<&str>,
 ) -> Result<(), ApiError> {
-    db.insert_turn(turn_id, session_id, ds_id, "queued", now_ms())
+    db.insert_turn(turn_id, session_id, ds_id, "queued", now_ms(), user_prompt)
         .await
         .map_err(|e| session_db_err(&e))
+}
+
+async fn persist_async_task_record(db: &session_db::GatewaySessionDb, record: &TaskRecord) {
+    if let Err(e) = db
+        .upsert_async_task(
+            &record.task_id,
+            &record.session_id,
+            record.ds_id,
+            &record.turn_id,
+            &record.status,
+            record.created_at_ms,
+            record.started_at_ms,
+            record.finished_at_ms,
+            record.current_task_desc.as_deref(),
+            record.progress_updated_at_ms,
+            record.has_report,
+        )
+        .await
+    {
+        warn!(
+            turn_id = %record.turn_id,
+            task_id = %record.task_id,
+            error = %e,
+            "persist gateway_async_tasks failed"
+        );
+    }
+}
+
+async fn task_record_from_db(
+    db: &session_db::GatewaySessionDb,
+    task_id: &str,
+) -> Result<Option<TaskRecord>, sqlx::Error> {
+    let Some(row) = db.get_async_task(task_id).await? else {
+        return Ok(None);
+    };
+    let mut result = None;
+    if row.status == "succeeded" {
+        if let Some(output_json) = db
+            .get_turn_output_json(&row.active_turn_id, &row.session_id, row.ds_id)
+            .await?
+        {
+            let output_text = serde_json::to_string(&output_json).unwrap_or_default();
+            result = Some(SolveResponse {
+                session_id: row.session_id.clone(),
+                request_id: row.session_id.clone(),
+                session_home_rel: String::new(),
+                ds_id: row.ds_id,
+                work_dir: String::new(),
+                duration_ms: 0,
+                claw_exit_code: 0,
+                output_text,
+                output_json: Some(output_json),
+                turn_id: row.active_turn_id.clone(),
+            });
+        }
+    }
+    Ok(Some(TaskRecord {
+        task_id: row.task_id.clone(),
+        session_id: row.session_id.clone(),
+        request_id: row.session_id.clone(),
+        ds_id: row.ds_id,
+        status: row.status,
+        created_at_ms: row.created_at_ms,
+        started_at_ms: row.started_at_ms,
+        finished_at_ms: row.finished_at_ms,
+        current_task_desc: row.current_task_desc,
+        progress_updated_at_ms: row.progress_updated_at_ms,
+        result,
+        error: None,
+        turn_id: row.active_turn_id,
+        progress_history: Vec::new(),
+        has_report: row.has_report,
+    }))
 }
 
 async fn set_solve_turn_status(
@@ -1006,6 +1080,10 @@ async fn main() {
         .route(
             "/v1/sessions/{session_id}/execution",
             get(get_session_execution),
+        )
+        .route(
+            "/v1/sessions/{session_id}/transcript",
+            get(get_session_transcript),
         )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
@@ -2547,7 +2625,14 @@ async fn solve(
         "gateway_solve"
     );
     let new_turn_id = turn_id::mint_turn_id();
-    register_solve_turn(&state.session_db, &new_turn_id, &effective, req.ds_id).await?;
+    register_solve_turn(
+        &state.session_db,
+        &new_turn_id,
+        &effective,
+        req.ds_id,
+        Some(req.user_prompt.as_str()),
+    )
+    .await?;
     let result = run_solve_request(
         state.clone(),
         req,
@@ -3083,6 +3168,9 @@ async fn refresh_task_progress(state: &AppState, task_id: &str) {
     if let Some(inner) = tasks.get_mut(task_id) {
         inner.record.current_task_desc = snapshot.0;
         inner.record.progress_updated_at_ms = snapshot.1;
+        let record = inner.record.clone();
+        drop(tasks);
+        persist_async_task_record(&state.session_db, &record).await;
     }
 }
 
@@ -3112,6 +3200,137 @@ struct SessionExecutionQuery {
     ds_id: i64,
     #[serde(default)]
     include_trace: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionTranscriptQuery {
+    #[serde(rename = "dsId")]
+    ds_id: Option<i64>,
+    #[serde(rename = "ds_id")]
+    ds_id_alt: Option<i64>,
+    #[serde(rename = "turnId")]
+    turn_id: Option<String>,
+    #[serde(default = "default_transcript_format")]
+    format: String,
+}
+
+fn default_transcript_format() -> String {
+    "json".to_string()
+}
+
+impl SessionTranscriptQuery {
+    fn resolved_ds_id(&self) -> Option<i64> {
+        self.ds_id.or(self.ds_id_alt)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SessionTranscriptResponse {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "turnId", skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+    messages: Vec<Value>,
+}
+
+async fn get_session_transcript(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(query): Query<SessionTranscriptQuery>,
+) -> Result<Response, ApiError> {
+    let ds_id = query
+        .resolved_ds_id()
+        .filter(|&id| id >= 1)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"))?;
+    if !state
+        .session_db
+        .session_exists(&session_id, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "unknown sessionId for dsId",
+        ));
+    }
+    let rows = if let Some(ref turn) = query.turn_id {
+        if !turn_id::validate_turn_id(turn) {
+            return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid turnId"));
+        }
+        if !state
+            .session_db
+            .turn_belongs_to_session(turn, &session_id, ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?
+        {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown turnId for session",
+            ));
+        }
+        state
+            .session_db
+            .list_messages_for_turn(turn)
+            .await
+            .map_err(|e| session_db_err(&e))?
+    } else {
+        state
+            .session_db
+            .list_messages_for_session(&session_id, ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?
+    };
+    let messages: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            let mut message = json!({ "role": r.role, "blocks": r.blocks });
+            if let Some(usage) = r.usage {
+                message["usage"] = usage;
+            }
+            message
+        })
+        .collect();
+    if query.format == "jsonl" {
+        let mut lines = Vec::new();
+        let now = now_ms();
+        lines.push(
+            json!({
+                "type": "session_meta",
+                "session_id": session_id,
+                "version": 1,
+                "created_at_ms": now,
+                "updated_at_ms": now,
+            })
+            .to_string(),
+        );
+        for msg in &messages {
+            lines.push(
+                json!({
+                    "type": "message",
+                    "message": msg,
+                })
+                .to_string(),
+            );
+        }
+        let body = format!("{}\n", lines.join("\n"));
+        return Ok((
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/x-ndjson"),
+            )],
+            body,
+        )
+            .into_response());
+    }
+    Ok(Json(SessionTranscriptResponse {
+        session_id,
+        ds_id,
+        turn_id: query.turn_id,
+        messages,
+    })
+    .into_response())
 }
 
 async fn get_session_execution(
@@ -3239,7 +3458,14 @@ async fn enqueue_solve_async(
     let task_id = effective.clone();
     let ds_id = req.ds_id;
     let new_turn_id = turn_id::mint_turn_id();
-    register_solve_turn(&state.session_db, &new_turn_id, &effective, ds_id).await?;
+    register_solve_turn(
+        &state.session_db,
+        &new_turn_id,
+        &effective,
+        ds_id,
+        Some(req.user_prompt.as_str()),
+    )
+    .await?;
     if let Some(rel) = state
         .session_db
         .get_session_home_rel(&effective, ds_id)
@@ -3272,26 +3498,28 @@ async fn enqueue_solve_async(
         }
         let queue = gateway_queue_snapshot(&tasks);
         let initial_desc = resolve_current_task_desc("queued", None, &queue, false);
+        let record = TaskRecord {
+            task_id: task_id.clone(),
+            session_id: effective.clone(),
+            request_id: effective.clone(),
+            ds_id,
+            status: "queued".to_string(),
+            created_at_ms: now_ms(),
+            started_at_ms: None,
+            finished_at_ms: None,
+            current_task_desc: initial_desc,
+            progress_updated_at_ms: None,
+            result: None,
+            error: None,
+            turn_id: new_turn_id.clone(),
+            progress_history: Vec::new(),
+            has_report: false,
+        };
+        persist_async_task_record(&state.session_db, &record).await;
         tasks.insert(
             task_id.clone(),
             TaskInner {
-                record: TaskRecord {
-                    task_id: task_id.clone(),
-                    session_id: effective.clone(),
-                    request_id: effective.clone(),
-                    ds_id,
-                    status: "queued".to_string(),
-                    created_at_ms: now_ms(),
-                    started_at_ms: None,
-                    finished_at_ms: None,
-                    current_task_desc: initial_desc,
-                    progress_updated_at_ms: None,
-                    result: None,
-                    error: None,
-                    turn_id: new_turn_id.clone(),
-                    progress_history: Vec::new(),
-                    has_report: false,
-                },
+                record,
                 cancel: None,
                 ds_id,
             },
@@ -3404,6 +3632,8 @@ async fn enqueue_solve_async(
                     );
                 }
             }
+            let record = inner.record.clone();
+            persist_async_task_record(&state_clone.session_db, &record).await;
             true
         };
         if refresh_progress {
@@ -3496,10 +3726,19 @@ async fn get_task(
     refresh_task_progress(&state, &task_id).await;
     let (mut task, ds_id) = {
         let tasks = state.tasks.lock().await;
-        let inner = tasks.get(&task_id).ok_or_else(|| {
-            ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
-        })?;
-        (inner.record.clone(), inner.ds_id)
+        if let Some(inner) = tasks.get(&task_id) {
+            (inner.record.clone(), inner.ds_id)
+        } else {
+            drop(tasks);
+            let task = task_record_from_db(state.session_db.as_ref(), &task_id)
+                .await
+                .map_err(|e| session_db_err(&e))?
+                .ok_or_else(|| {
+                    ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
+                })?;
+            let ds_id = task.ds_id;
+            (task, ds_id)
+        }
     };
     if let Some(home) = resolve_session_home_path(&state, ds_id, &task.session_id).await {
         task.progress_history = read_progress_events(&home, 50)
@@ -4226,6 +4465,21 @@ async fn prepare_gateway_session(
             .touch_updated(request_id, ds_id, now_ms())
             .await
             .map_err(|e| session_db_err(&e))?;
+    }
+
+    if !skip_session_db {
+        let sid = request_id.to_string();
+        if let Err(e) =
+            ensure_jsonl_from_db(state.session_db.as_ref(), &sid, ds_id, &session_home).await
+        {
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "persistence",
+                session_id = %sid,
+                error = %e,
+                "ensure jsonl from database failed"
+            );
+        }
     }
 
     Ok(PreparedGatewaySession {
