@@ -179,16 +179,32 @@ claw_container_runtime_cli() {
   esac
 }
 
+# `docker network exists` missing on older docker.io; fall back to network ls. Author: kejiqing
+claw_network_exists() {
+  local rt="$1" name="$2"
+  if "${rt}" network exists "${name}" >/dev/null 2>&1; then
+    return 0
+  fi
+  "${rt}" network ls --format '{{.Name}}' 2>/dev/null | grep -qx "${name}"
+}
+
+claw_network_ensure() {
+  local rt="$1" name="$2"
+  if claw_network_exists "${rt}" "${name}"; then
+    return 0
+  fi
+  echo "creating ${rt} network ${name} …" >&2
+  if ! "${rt}" network create "${name}" 2>/dev/null; then
+    claw_network_exists "${rt}" "${name}" || return 1
+  fi
+}
+
 claw_compose_ensure_project_network() {
   local rt project net
   rt="$(claw_container_runtime_cli)" || return 1
   project="${COMPOSE_PROJECT_NAME:-claw}"
   net="${project}_default"
-  if "${rt}" network exists "${net}" >/dev/null 2>&1; then
-    return 0
-  fi
-  echo "creating ${rt} network ${net} (rootless podman / compose CNI) …" >&2
-  "${rt}" network create "${net}"
+  claw_network_ensure "${rt}" "${net}"
 }
 
 claw_compose() {

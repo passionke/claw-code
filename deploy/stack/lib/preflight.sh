@@ -29,14 +29,8 @@ claw_deploy_preflight() {
 
   export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
   local net="${COMPOSE_PROJECT_NAME}_default"
-  if ! "${rt}" network exists "${net}" >/dev/null 2>&1; then
-    echo "    creating network ${net} …" >&2
-    "${rt}" network create "${net}"
-  fi
-  # Legacy compose project dir name `stack` (deploy/stack/*.yml).
-  if ! "${rt}" network exists "stack_default" >/dev/null 2>&1; then
-    "${rt}" network create stack_default 2>/dev/null || true
-  fi
+  claw_network_ensure "${rt}" "${net}"
+  claw_network_ensure "${rt}" "stack_default"
 
   local pg="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
   if ! "${rt}" image exists "${pg}" >/dev/null 2>&1; then
