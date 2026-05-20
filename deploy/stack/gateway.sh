@@ -13,9 +13,11 @@ Usage:
 
 Commands:
   build         Build gateway + worker images; full log → deploy/stack/.build.log (see: build --help)
-  up            Start/recreate gateway stack (`up --release TAG` = down + kill pool + rm all workers + pull + up)
-  down          Stop gateway stack
-  restart       Recreate stack (down + up)
+  up            Start/recreate gateway + pool only (does not stop/start postgres)
+  down          Stop gateway + pool only (postgres keeps running)
+  pg-up         Start postgres only
+  pg-down       Stop postgres only (data volume kept)
+  restart       Recreate gateway stack (down + up)
   check         Connectivity smoke check
   tap-up        Start claude-tap only (see CLAUDE_TAP_MODE in .env)
   tap-down      Stop claude-tap only
@@ -37,6 +39,8 @@ case "${cmd}" in
   build) "${LIB}/build.sh" "$@" ;; # pass --log PATH | --no-log | IMAGE_TAG
   up) "${LIB}/up.sh" "$@" ;;
   down) "${LIB}/down.sh" "$@" ;;
+  pg-up) "${LIB}/pg-up.sh" "$@" ;;
+  pg-down) "${LIB}/pg-down.sh" "$@" ;;
   restart) "${LIB}/down.sh" && "${LIB}/up.sh" "$@" ;;
   check) "${LIB}/check-connectivity.sh" "$@" ;;
   tap-up) bash "${LIB}/tap-up.sh" "$@" ;;

@@ -54,7 +54,7 @@ fi
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   echo "==> release ${CLAW_IMAGE_RELEASE_TAG}: compose down + nuclear pool reset" >&2
   echo "    gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
-  claw_compose_with_root_env "${PODMAN_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" down 2>/dev/null || true
+  claw_compose_gateway_down "${PODMAN_DIR}" "${ENV_FILE}" 2>/dev/null || true
   claw_nuclear_pool_reset "${PODMAN_DIR}"
   rt="$(claw_container_runtime_cli)"
   echo "pull ${GATEWAY_IMAGE} …" >&2
@@ -88,5 +88,6 @@ echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}
 claw_remove_all_gateway_workers
 
 # Recreate gateway container; pool is fresh with pinned worker image. kejiqing
-claw_compose_with_root_env "${PODMAN_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
-echo "Services started (gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}})."
+claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
+echo "Gateway stack started (gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}})."
+echo "Postgres: use ./deploy/stack/gateway.sh pg-up if not already running."

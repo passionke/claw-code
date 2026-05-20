@@ -246,6 +246,71 @@ claw_compose_in_pwd() {
   podman compose "$@"
 }
 
+# Postgres: `gateway.sh pg-up` / `pg-down`; `up` / `down` only gateway + pool. kejiqing
+claw_compose_pg_service() {
+  printf '%s' "${CLAW_COMPOSE_PG_SERVICE:-postgres}"
+}
+
+claw_compose_gateway_service_list() {
+  local podman_dir="$1"
+  local repo_env="$2"
+  local pg
+  pg="$(claw_compose_pg_service)"
+  local svc
+  while IFS= read -r svc; do
+    [[ -z "${svc}" ]] && continue
+    [[ "${svc}" == "${pg}" ]] && continue
+    printf '%s ' "${svc}"
+  done < <(
+    claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" config --services 2>/dev/null
+  )
+}
+
+claw_compose_gateway_down() {
+  local podman_dir="$1"
+  local repo_env="$2"
+  local -a svcs=()
+  # shellcheck disable=SC2206
+  svcs=($(claw_compose_gateway_service_list "${podman_dir}" "${repo_env}"))
+  if [[ ${#svcs[@]} -eq 0 ]]; then
+    echo "error: no gateway compose services found (expected besides postgres)" >&2
+    return 1
+  fi
+  claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" stop "${svcs[@]}"
+  claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" rm -f "${svcs[@]}" 2>/dev/null || true
+}
+
+claw_compose_gateway_up() {
+  local podman_dir="$1"
+  local repo_env="$2"
+  shift 2
+  local -a extra=("$@")
+  local -a svcs=()
+  # shellcheck disable=SC2206
+  svcs=($(claw_compose_gateway_service_list "${podman_dir}" "${repo_env}"))
+  if [[ ${#svcs[@]} -eq 0 ]]; then
+    echo "error: no gateway compose services found (expected besides postgres)" >&2
+    return 1
+  fi
+  claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d "${extra[@]}" "${svcs[@]}"
+}
+
+claw_compose_pg_up() {
+  local podman_dir="$1"
+  local repo_env="$2"
+  local pg
+  pg="$(claw_compose_pg_service)"
+  claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d "${pg}"
+}
+
+claw_compose_pg_down() {
+  local podman_dir="$1"
+  local repo_env="$2"
+  local pg
+  pg="$(claw_compose_pg_service)"
+  claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" stop "${pg}" 2>/dev/null || true
+}
+
 # Optional `up.sh --release …` image pin (.claw-image-release.env). Author: kejiqing
 _claw_podman_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
