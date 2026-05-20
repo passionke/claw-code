@@ -8,10 +8,44 @@ claw_container_socket_path() {
   fi
   local rt
   rt="$(claw_container_runtime_cli)" || return 1
+  if [[ "$rt" == podman ]] && command -v podman >/dev/null 2>&1; then
+    local p=""
+    p="$(podman info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null || true)"
+    if [[ -n "${p}" && "${p}" != "<nil>" && -S "${p}" ]]; then
+      printf '%s' "${p}"
+      return 0
+    fi
+  fi
   case "$rt" in
-    podman) printf '%s' /run/podman/podman.sock ;;
+    podman)
+      if [[ -S /run/podman/podman.sock ]]; then
+        printf '%s' /run/podman/podman.sock
+      else
+        printf '%s' /var/run/docker.sock
+      fi
+      ;;
     *) printf '%s' /var/run/docker.sock ;;
   esac
+}
+
+# docker-compose v1 (podman compose backend on many Linux hosts) needs DOCKER_HOST + socket RW. Author: kejiqing
+claw_compose_prepare_socket() {
+  local sock rt
+  rt="$(claw_container_runtime_cli)" || return 1
+  sock="$(claw_container_socket_path)" || return 1
+  export CLAW_CONTAINER_SOCKET="${sock}"
+  export DOCKER_HOST="unix://${sock}"
+  if [[ ! -S "${sock}" ]]; then
+    echo "error: container API socket not found: ${sock}" >&2
+    echo "hint: start ${rt}, or set CLAW_CONTAINER_SOCKET in .env" >&2
+    return 1
+  fi
+  if [[ ! -r "${sock}" || ! -w "${sock}" ]]; then
+    echo "error: permission denied on ${sock} (compose cannot talk to ${rt})" >&2
+    echo "hint: sudo usermod -aG podman \"\$(whoami)\"  # or: docker" >&2
+    echo "      then log out and SSH in again (or: newgrp podman)" >&2
+    return 1
+  fi
 }
 
 # Absolute paths + container socket for compose `claw-pool-daemon` (no host binary install). Author: kejiqing
@@ -147,6 +181,7 @@ claw_container_runtime_cli() {
 claw_compose() {
   local rt
   rt="$(claw_container_runtime_cli)" || return 1
+  claw_compose_prepare_socket || return 1
   if [[ -n "${CLAW_COMPOSE_WORKING_DIRECTORY:-}" ]]; then
     (
       cd "${CLAW_COMPOSE_WORKING_DIRECTORY}" || exit 1
