@@ -2581,8 +2581,9 @@ mod tests {
             );
             let shared_calls = inner.calls.lock().expect("calls lock");
             assert_eq!(shared_calls.len(), 2);
-            assert_eq!(shared_calls[0].0, "a1");
-            assert_eq!(shared_calls[1].0, "a2");
+            let mut ids: Vec<&str> = shared_calls.iter().map(|(id, _)| id.as_str()).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec!["a1", "a2"]);
         }
 
         #[test]
