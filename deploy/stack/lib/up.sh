@@ -80,6 +80,11 @@ if [[ -f "${PODMAN_DIR}/.claw-image-release.env" ]]; then
 elif [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   claw_apply_release_image_tag "${CLAW_IMAGE_RELEASE_TAG}"
 fi
+claw_export_pool_worker_image_matched_to_gateway
+if [[ -f "${PODMAN_DIR}/.claw-image-release.env" ]]; then
+  claw_write_release_pin_env "${PODMAN_DIR}"
+fi
+claw_write_pool_worker_env_override "${PODMAN_DIR}"
 echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
 
 # Legacy host nohup daemon (pre-compose sidecar); stop if still running.

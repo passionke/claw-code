@@ -62,10 +62,10 @@ echo "[pre-push] running cargo clippy --workspace --all-targets -- -D warnings"
 
 echo "[pre-push] clippy check passed"
 
-echo "[pre-push] running cargo test --workspace"
+echo "[pre-push] running cargo test --workspace (-j 1, --test-threads=1)"
 (
   cd "${repo_root}/rust"
-  cargo test --workspace
+  cargo test --workspace -j 1 -- --test-threads=1
 )
 
 echo "[pre-push] all checks passed"

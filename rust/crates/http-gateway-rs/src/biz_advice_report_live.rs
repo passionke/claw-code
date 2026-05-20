@@ -6,9 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gateway_solve_turn::{
-    assistant_stream_spill_path, final_assistant_report_text_from_jsonl,
-    spill_bytes_contain_end_marker, split_spill_end_marker, strip_report_start_marker,
-    ASSISTANT_STREAM_REPORT_START_MARKER,
+    assistant_stream_spill_path, spill_bytes_contain_end_marker, split_spill_end_marker,
+    strip_report_start_marker, ASSISTANT_STREAM_REPORT_START_MARKER,
 };
 use serde_json::{json, Value};
 use tokio::fs;
@@ -17,12 +16,13 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Instant};
 use tracing::warn;
 
-use crate::biz_advice_report::{
+use crate::{ApiError, AppState};
+use http_gateway_rs::biz_advice_report::{
     report_body_from_solve_output, sanitize_external_report_text, BizAdviceReportPayload,
     BizReportStreamMsg,
 };
-use crate::session_db::GatewaySessionDb;
-use crate::{ApiError, AppState};
+use http_gateway_rs::persistence::{report_body_from_turn_messages, JsonlMessage};
+use http_gateway_rs::session_db::GatewaySessionDb;
 
 /// Whether this turn's assistant stream spill file exists on disk.
 #[must_use]
@@ -51,11 +51,21 @@ pub struct LiveReportContext {
     pub session_home: PathBuf,
 }
 
-/// Resolve formal report text: task result `message` when succeeded, else session jsonl.
+/// Resolve formal report text for a specific `turn_id` (DB source of truth, then in-memory task for active turn).
 pub async fn resolve_formal_report_text(
     state: &AppState,
     ctx: &LiveReportContext,
 ) -> Result<String, ApiError> {
+    if let Ok(Some(msg)) = state
+        .session_db
+        .get_turn_report_message(&ctx.turn_id, &ctx.session_id, ctx.ds_id)
+        .await
+    {
+        if !msg.trim().is_empty() {
+            return Ok(strip_report_start_marker(&msg));
+        }
+    }
+
     let tasks = state.tasks.lock().await;
     if let Some(inner) = tasks.get(&ctx.session_id) {
         if inner.record.turn_id == ctx.turn_id {
@@ -74,30 +84,36 @@ pub async fn resolve_formal_report_text(
         }
     }
     drop(tasks);
-    let text = tokio::task::spawn_blocking({
-        let home = ctx.session_home.clone();
-        move || final_assistant_report_text_from_jsonl(&home)
-    })
-    .await
-    .map_err(|e| {
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("report read join failed: {e}"),
-        )
-    })?
-    .map_err(|detail| {
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read session report failed: {detail}"),
-        )
-    })?;
-    if text.trim().is_empty() {
-        return Err(ApiError::new(
-            axum::http::StatusCode::BAD_REQUEST,
-            "formal report not ready (empty session transcript)",
-        ));
+
+    let db_messages = state
+        .session_db
+        .list_messages_for_turn(&ctx.turn_id)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("list turn messages failed: {e}"),
+            )
+        })?;
+    if !db_messages.is_empty() {
+        let messages: Vec<JsonlMessage> = db_messages
+            .into_iter()
+            .map(|r| JsonlMessage {
+                role: r.role,
+                blocks: r.blocks,
+                usage: r.usage,
+            })
+            .collect();
+        let body = report_body_from_turn_messages(&messages);
+        if !body.trim().is_empty() {
+            return Ok(body);
+        }
     }
-    Ok(strip_report_start_marker(&text))
+
+    Err(ApiError::new(
+        axum::http::StatusCode::BAD_REQUEST,
+        "formal report not ready for turnId",
+    ))
 }
 
 pub async fn turn_status(
