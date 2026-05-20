@@ -42,7 +42,7 @@ use gateway_solve_turn::{
     run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
     BOSS_REPORT_SKILL_DS_ID,
 };
-use http_gateway_rs::{session_db, session_merge, turn_id};
+use http_gateway_rs::{project_config_apply, session_db, session_merge, turn_id};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -300,6 +300,39 @@ struct InitResponse {
     #[serde(rename = "workDir")]
     work_dir: String,
     initialized: bool,
+}
+
+/// Body for `PUT /v1/project/config/{ds_id}` — see `docs/project-config-model.md`. Author: kejiqing
+#[derive(Debug, Deserialize)]
+struct UpsertProjectConfigRequest {
+    #[serde(rename = "contentRev")]
+    content_rev: String,
+    #[serde(rename = "rulesJson", default)]
+    rules_json: Value,
+    #[serde(rename = "mcpServersJson", default)]
+    mcp_servers_json: Value,
+    #[serde(rename = "skillsSourcesJson", default)]
+    skills_sources_json: Value,
+    #[serde(rename = "claudeMd")]
+    claude_md: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectConfigResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "contentRev")]
+    content_rev: String,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: i64,
+    #[serde(rename = "rulesJson")]
+    rules_json: Value,
+    #[serde(rename = "mcpServersJson")]
+    mcp_servers_json: Value,
+    #[serde(rename = "skillsSourcesJson")]
+    skills_sources_json: Value,
+    #[serde(rename = "claudeMd")]
+    claude_md: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1105,6 +1138,10 @@ async fn main() {
             "/v1/project/prompt/{ds_id}/effective",
             get(get_effective_prompt).post(post_effective_prompt),
         )
+        .route(
+            "/v1/project/config/{ds_id}",
+            get(get_project_config).put(put_project_config),
+        )
         .route("/v1/skills/{ds_id}/{skill_name}", get(get_ds_skill))
         .route("/v1/skills/{ds_id}", get(list_ds_skills))
         .route("/v1/mcp/inject", post(inject_mcp))
@@ -1240,6 +1277,16 @@ async fn docs() -> Html<String> {
             "POST",
             "/v1/project/prompt/{ds_id}/effective",
             "Reload and get effective system prompt for ds",
+        ),
+        (
+            "GET",
+            "/v1/project/config/{ds_id}",
+            "Get project_config row for ds (PostgreSQL)",
+        ),
+        (
+            "PUT",
+            "/v1/project/config/{ds_id}",
+            "Upsert project_config for ds (rules / MCP / skills sources / CLAUDE.md)",
         ),
         (
             "GET",
@@ -1820,14 +1867,80 @@ async fn ds_project_tree_ready(work_dir: &Path) -> bool {
     claude_instructions_usable(&home_claude).await || claude_instructions_usable(&root_claude).await
 }
 
-fn ds_environment_not_prepared_error(ds_id: i64, projects_git_url: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::PRECONDITION_FAILED,
+fn ds_environment_not_prepared_error(
+    ds_id: i64,
+    projects_git_url: &str,
+    has_project_config: bool,
+) -> ApiError {
+    let hint = if has_project_config {
+        format!(
+            "ds {ds_id} environment not prepared: project_config exists but home/CLAUDE.md is missing or empty; \
+             set claudeMd in PUT /v1/project/config/{ds_id} or fix skills/rules materialization, then POST /v1/init"
+        )
+    } else {
         format!(
             "ds {ds_id} environment not prepared: missing or empty home/CLAUDE.md on this gateway; \
-             add ds_{ds_id}/home to projects git ({projects_git_url}) and call POST /v1/init"
-        ),
-    )
+             add ds_{ds_id}/home to projects git ({projects_git_url}) and call POST /v1/init, \
+             or PUT /v1/project/config/{ds_id}"
+        )
+    };
+    ApiError::new(StatusCode::PRECONDITION_FAILED, hint)
+}
+
+fn map_project_config_apply_err(e: &project_config_apply::ProjectConfigApplyError) -> ApiError {
+    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
+async fn write_ds_settings_json(state: &AppState, ds_id: i64) -> Result<(), ApiError> {
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let settings = build_settings(state, ds_id).await;
+    let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("serialize settings failed: {e}"),
+        )
+    })?;
+    fs::write(work_dir.join(".claw/settings.json"), settings_content)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write settings failed: {e}"),
+            )
+        })?;
+    Ok(())
+}
+
+/// Materialize `project_config` from `PostgreSQL` when present (`content_rev` or missing CLAUDE). Author: kejiqing
+async fn apply_project_config_for_ds(
+    state: &AppState,
+    ds_id: i64,
+    force: bool,
+) -> Result<(), ApiError> {
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create ds work dir failed: {e}"),
+            )
+        })?;
+    let tree_ready = ds_project_tree_ready(&work_dir).await;
+    let force_apply = force || !tree_ready;
+    project_config_apply::apply_if_needed(&work_dir, &row, force_apply)
+        .await
+        .map_err(|e| map_project_config_apply_err(&e))?;
+    write_ds_settings_json(state, ds_id).await
 }
 
 async fn sync_ds_project_from_git_mirror(state: &AppState, ds_id: i64) -> Result<(), ApiError> {
@@ -1848,12 +1961,20 @@ async fn ensure_ds_project_ready(state: &AppState, ds_id: i64) -> Result<(), Api
                 format!("create ds work dir failed: {e}"),
             )
         })?;
+    let has_project_config = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .is_some();
+    apply_project_config_for_ds(state, ds_id, false).await?;
     if ds_project_tree_ready(&work_dir).await {
         return Ok(());
     }
     Err(ds_environment_not_prepared_error(
         ds_id,
         state.cfg.projects_git_url.as_str(),
+        has_project_config,
     ))
 }
 
@@ -2526,17 +2647,18 @@ async fn tick_projects_git_ds_home_poll(state: &AppState) -> Result<(), ApiError
     };
     let on_disk = list_ds_ids_under_work_root(&state.cfg.work_root).await?;
     let in_mirror = list_ds_ids_in_projects_mirror(&repo_dir).await?;
-    let ids = merge_sorted_ds_ids(on_disk, in_mirror);
+    let in_config = state
+        .session_db
+        .list_project_config_ds_ids()
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let ids = merge_sorted_ds_ids(merge_sorted_ds_ids(on_disk, in_mirror), in_config);
     for ds_id in ids {
         let lock = get_ds_lock(state, ds_id).await;
         let Ok(_guard) = lock.try_lock() else {
             continue;
         };
         let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
-        let ds_repo_home = repo_dir.join(format!("ds_{ds_id}/home"));
-        if !fs::metadata(&ds_repo_home).await.is_ok_and(|m| m.is_dir()) {
-            continue;
-        }
         fs::create_dir_all(work_dir.join(".claw"))
             .await
             .map_err(|e| {
@@ -2545,6 +2667,24 @@ async fn tick_projects_git_ds_home_poll(state: &AppState) -> Result<(), ApiError
                     format!("create ds work dir failed: {e}"),
                 )
             })?;
+
+        let cfg_row = state
+            .session_db
+            .get_project_config(ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?;
+        if let Some(row) = cfg_row {
+            let applied = project_config_apply::read_applied_content_rev(&work_dir).await;
+            if applied.as_deref() != Some(row.content_rev.as_str()) {
+                apply_project_config_for_ds(state, ds_id, false).await?;
+            }
+            continue;
+        }
+
+        let ds_repo_home = repo_dir.join(format!("ds_{ds_id}/home"));
+        if !fs::metadata(&ds_repo_home).await.is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
         // Refresh even when CLAUDE already exists (multi-node: A pushed, B pulls).
         sync_ds_home_from_repo(&repo_dir, &work_dir, ds_id).await?;
     }
@@ -2691,29 +2831,26 @@ async fn init_workspace(
     {
         let lock = get_ds_lock(&state, req.ds_id).await;
         let _guard = lock.lock().await;
-        sync_ds_project_from_git_mirror(&state, req.ds_id).await?;
+        let has_project_config = state
+            .session_db
+            .get_project_config(req.ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?
+            .is_some();
+        if has_project_config {
+            apply_project_config_for_ds(&state, req.ds_id, true).await?;
+        } else {
+            sync_ds_project_from_git_mirror(&state, req.ds_id).await?;
+        }
         if !ds_project_tree_ready(&work_dir).await {
             return Err(ds_environment_not_prepared_error(
                 req.ds_id,
                 state.cfg.projects_git_url.as_str(),
+                has_project_config,
             ));
         }
         ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-        let settings = build_settings(&state, req.ds_id).await;
-        let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("serialize settings failed: {e}"),
-            )
-        })?;
-        fs::write(work_dir.join(".claw/settings.json"), settings_content)
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("write settings failed: {e}"),
-                )
-            })?;
+        write_ds_settings_json(&state, req.ds_id).await?;
         let claude_md_path = work_dir.join("CLAUDE.md");
         match fs::metadata(&claude_md_path).await {
             Ok(_) => {}
@@ -2738,6 +2875,182 @@ async fn init_workspace(
         work_dir: work_dir.display().to_string(),
         initialized: true,
     }))
+}
+
+fn project_config_row_to_response(row: session_db::ProjectConfigRow) -> ProjectConfigResponse {
+    ProjectConfigResponse {
+        ds_id: row.ds_id,
+        content_rev: row.content_rev,
+        updated_at_ms: row.updated_at_ms,
+        rules_json: row.rules_json,
+        mcp_servers_json: row.mcp_servers_json,
+        skills_sources_json: row.skills_sources_json,
+        claude_md: row.claude_md,
+    }
+}
+
+const SKILLS_SOURCES_FORBIDDEN_CRED_KEYS: &[&str] = &[
+    "token",
+    "gitToken",
+    "accessToken",
+    "password",
+    "secret",
+    "pat",
+];
+
+/// Git credentials for `project_config` skills sources: env only (`tokenEnv`), never in JSON/DB.
+fn validate_skills_sources_json(sources: &Value) -> Result<(), ApiError> {
+    let arr = sources.as_array().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "skillsSourcesJson must be a JSON array",
+        )
+    })?;
+    for (i, item) in arr.iter().enumerate() {
+        let obj = item.as_object().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("skillsSourcesJson[{i}] must be a JSON object"),
+            )
+        })?;
+        for key in SKILLS_SOURCES_FORBIDDEN_CRED_KEYS {
+            if obj.contains_key(*key) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "skillsSourcesJson[{i}]: git credentials must not be stored in project_config; use tokenEnv pointing to a gateway environment variable"
+                    ),
+                ));
+            }
+        }
+        let Some(git_url) = obj
+            .get("gitUrl")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let is_http = git_url.starts_with("https://") || git_url.starts_with("http://");
+        if is_http && git_url.contains('@') {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "skillsSourcesJson[{i}]: gitUrl must not embed userinfo; set tokenEnv to an env var name (git token is env-only)"
+                ),
+            ));
+        }
+        if is_http {
+            let token_env = obj
+                .get("tokenEnv")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let Some(token_env) = token_env else {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "skillsSourcesJson[{i}]: tokenEnv is required for HTTP(S) gitUrl without embedded credentials"
+                    ),
+                ));
+            };
+            if !token_env
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "skillsSourcesJson[{i}]: tokenEnv must be an ASCII env var name [A-Za-z0-9_]"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(), ApiError> {
+    let rev = req.content_rev.trim();
+    if rev.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "contentRev must be non-empty",
+        ));
+    }
+    if !req.rules_json.is_array() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "rulesJson must be a JSON array",
+        ));
+    }
+    if !req.mcp_servers_json.is_object() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "mcpServersJson must be a JSON object",
+        ));
+    }
+    validate_skills_sources_json(&req.skills_sources_json)?;
+    Ok(())
+}
+
+async fn get_project_config(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+) -> Result<Json<ProjectConfigResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(row) = row else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for ds {ds_id}"),
+        ));
+    };
+    Ok(Json(project_config_row_to_response(row)))
+}
+
+async fn put_project_config(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+    Json(req): Json<UpsertProjectConfigRequest>,
+) -> Result<Json<ProjectConfigResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    validate_project_config_payload(&req)?;
+    let now = now_ms();
+    let content_rev = req.content_rev.trim().to_string();
+    state
+        .session_db
+        .upsert_project_config(session_db::ProjectConfigUpsert {
+            ds_id,
+            content_rev: &content_rev,
+            updated_at_ms: now,
+            rules_json: &req.rules_json,
+            mcp_servers_json: &req.mcp_servers_json,
+            skills_sources_json: &req.skills_sources_json,
+            claude_md: req.claude_md.as_deref(),
+        })
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .expect("row exists after upsert");
+    {
+        let lock = get_ds_lock(&state, ds_id).await;
+        let _guard = lock.lock().await;
+        apply_project_config_for_ds(&state, ds_id, true).await?;
+    }
+    Ok(Json(project_config_row_to_response(row)))
 }
 
 async fn get_project_claude_md(
@@ -4838,6 +5151,13 @@ async fn build_settings(state: &AppState, ds_id: i64) -> Value {
             }),
         );
     }
+    if let Ok(Some(row)) = state.session_db.get_project_config(ds_id).await {
+        if let Some(extra) = row.mcp_servers_json.as_object() {
+            for (k, v) in extra {
+                servers.insert(k.clone(), v.clone());
+            }
+        }
+    }
     let injected = state.injected_mcp.lock().await;
     if let Some(extra) = injected.get(&ds_id) {
         for (k, v) in extra {
@@ -5146,6 +5466,31 @@ mod tests {
         assert!(validate_skill_name("../escape").is_err());
         assert!(validate_skill_name("bad/name").is_err());
         assert!(validate_skill_name("中文").is_err());
+    }
+
+    #[test]
+    fn validate_skills_sources_json_requires_token_env_for_https() {
+        let ok = json!([{
+            "gitUrl": "https://example.com/a.git",
+            "gitRef": "main",
+            "tokenEnv": "CLAW_PROJECTS_GIT_TOKEN"
+        }]);
+        assert!(validate_skills_sources_json(&ok).is_ok());
+        let missing = json!([{"gitUrl": "https://example.com/a.git", "gitRef": "main"}]);
+        assert!(validate_skills_sources_json(&missing).is_err());
+    }
+
+    #[test]
+    fn validate_skills_sources_json_rejects_token_in_body_and_userinfo_url() {
+        let with_token = json!([{"gitUrl": "https://x.com/a.git", "token": "secret"}]);
+        assert!(validate_skills_sources_json(&with_token).is_err());
+        let with_userinfo = json!([{
+            "gitUrl": "https://user:pass@example.com/a.git",
+            "gitRef": "main"
+        }]);
+        assert!(validate_skills_sources_json(&with_userinfo).is_err());
+        let ssh = json!([{"gitUrl": "git@github.com:org/repo.git", "gitRef": "main"}]);
+        assert!(validate_skills_sources_json(&ssh).is_ok());
     }
 
     #[tokio::test]

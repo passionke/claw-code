@@ -23,7 +23,7 @@ This document aligns runtime behavior with the **Claw persistence design** plan 
 | `output_json` | Optional full solve JSON payload for handoff. |
 | `claw_exit_code` | Exit code from the worker when succeeded. |
 
-Schema is applied at gateway startup via `GatewaySessionDb::migrate` (`ALTER TABLE ... IF NOT EXISTS` for new columns).
+Schema is applied at gateway startup via `GatewaySessionDb::migrate` (`ALTER TABLE ... IF NOT EXISTS` for new columns). Per-`ds_id` agent bundle storage lives in **`project_config`** (see `docs/project-config-model.md`).
 
 ## Gateway process restart
 

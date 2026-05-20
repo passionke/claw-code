@@ -127,6 +127,24 @@ Base URL 示例：`http://127.0.0.1:18088`
 - `DELETE /v1/mcp/injected/{ds_id}`
   - 用途：删除 `dsId` 对应 MCP 注入（支持按名称删除）
 
+## Project config (PostgreSQL)
+
+按 `dsId` 在 **`project_config`** 表存储规则清单、MCP map、skills git 来源与可选 `CLAUDE.md` 正文；JSON 字段约定见 **`docs/project-config-model.md`**。`PUT` 成功后网关会物化到 `ds_<dsId>/home`；`POST /v1/init` / solve 前 / 轮询（`CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS`）在 `contentRev` 变化时刷新。无 `project_config` 行时仍走下方 **Project Storage** 全局 projects git。
+
+- `GET /v1/project/config/{ds_id}`
+  - 用途：读取该 `dsId` 的配置行
+  - 无行：**404**
+
+- `PUT /v1/project/config/{ds_id}`
+  - 用途：插入或覆盖配置（`contentRev` 必填且非空）
+  - 请求体（camelCase）：
+    - `contentRev`：内容版本号或 git SHA（轮询/幂等物化用）
+    - `rulesJson`：数组，默认 `[]`
+    - `mcpServersJson`：对象，默认 `{}`（与 `.claw/settings.json` 的 `mcpServers` 同形）
+    - `skillsSourcesJson`：数组，默认 `[]`（git 坐标列表，见设计文档）
+    - `claudeMd`：可选，对应 `home/CLAUDE.md` 全文
+  - **Git token 仅 env**：`skillsSourcesJson` 元素用 **`tokenEnv`** 指定环境变量名（如 `CLAW_PROJECTS_GIT_TOKEN`）；禁止在 JSON 里写 `token` 等字段，禁止在 `gitUrl` 里写 `user:token@`。无 userinfo 的 HTTPS `gitUrl` 必须带非空 `tokenEnv`，且该 env 在网关进程中已配置。
+
 ## Project Storage
 
 - `POST /v1/init`

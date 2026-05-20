@@ -4,6 +4,9 @@
 //! runtime source of truth on disk; `gateway_turns` stores per-`turn_id` terminal snapshots
 //! (`report_message`, `output_json`, …) so gateway restarts and `GET /v1/tasks` handoff stay
 //! consistent at **turn** granularity.
+//!
+//! **Per-`ds_id` agent bundle:** `project_config` stores rules / MCP / skills sources for
+//! materializing `ds_<id>/home` (see `docs/project-config-model.md`). Author: kejiqing
 
 use std::collections::BTreeMap;
 
@@ -25,6 +28,30 @@ pub struct LatestTurnRow {
     pub output_json: Option<Value>,
     pub claw_exit_code: Option<i32>,
     pub user_prompt: Option<String>,
+}
+
+/// One row per `ds_id`: rules, MCP map, skills git sources, optional `CLAUDE.md` body.
+#[derive(Debug, Clone)]
+pub struct ProjectConfigRow {
+    pub ds_id: i64,
+    pub content_rev: String,
+    pub updated_at_ms: i64,
+    pub rules_json: Value,
+    pub mcp_servers_json: Value,
+    pub skills_sources_json: Value,
+    pub claude_md: Option<String>,
+}
+
+/// Payload for [`GatewaySessionDb::upsert_project_config`].
+#[derive(Debug, Clone)]
+pub struct ProjectConfigUpsert<'a> {
+    pub ds_id: i64,
+    pub content_rev: &'a str,
+    pub updated_at_ms: i64,
+    pub rules_json: &'a Value,
+    pub mcp_servers_json: &'a Value,
+    pub skills_sources_json: &'a Value,
+    pub claude_md: Option<&'a str>,
 }
 
 /// Gateway session index: one row per `(session_id, ds_id)` with a workspace-relative `session_home`.
@@ -118,6 +145,93 @@ impl GatewaySessionDb {
         ] {
             sqlx::query(ddl).execute(pool).await?;
         }
+
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS project_config (
+                ds_id BIGINT PRIMARY KEY,
+                content_rev TEXT NOT NULL DEFAULT '',
+                updated_at_ms BIGINT NOT NULL,
+                rules_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                mcp_servers_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                skills_sources_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                claude_md TEXT
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn list_project_config_ds_ids(&self) -> Result<Vec<i64>, SqlxError> {
+        let rows = sqlx::query_scalar::<_, i64>("SELECT ds_id FROM project_config ORDER BY ds_id")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_project_config(
+        &self,
+        ds_id: i64,
+    ) -> Result<Option<ProjectConfigRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT ds_id, content_rev, updated_at_ms, rules_json, mcp_servers_json,
+                      skills_sources_json, claude_md
+               FROM project_config WHERE ds_id = $1",
+        )
+        .bind(ds_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let ds_id: i64 = row.try_get("ds_id")?;
+        let content_rev: String = row.try_get("content_rev")?;
+        let updated_at_ms: i64 = row.try_get("updated_at_ms")?;
+        let rules_json: Value = row.try_get::<Json<Value>, _>("rules_json")?.0;
+        let mcp_servers_json: Value = row.try_get::<Json<Value>, _>("mcp_servers_json")?.0;
+        let skills_sources_json: Value = row.try_get::<Json<Value>, _>("skills_sources_json")?.0;
+        let claude_md: Option<String> = row.try_get("claude_md")?;
+
+        Ok(Some(ProjectConfigRow {
+            ds_id,
+            content_rev,
+            updated_at_ms,
+            rules_json,
+            mcp_servers_json,
+            skills_sources_json,
+            claude_md,
+        }))
+    }
+
+    pub async fn upsert_project_config(
+        &self,
+        row: ProjectConfigUpsert<'_>,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO project_config (
+                ds_id, content_rev, updated_at_ms,
+                rules_json, mcp_servers_json, skills_sources_json, claude_md
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (ds_id) DO UPDATE SET
+                content_rev = EXCLUDED.content_rev,
+                updated_at_ms = EXCLUDED.updated_at_ms,
+                rules_json = EXCLUDED.rules_json,
+                mcp_servers_json = EXCLUDED.mcp_servers_json,
+                skills_sources_json = EXCLUDED.skills_sources_json,
+                claude_md = EXCLUDED.claude_md",
+        )
+        .bind(row.ds_id)
+        .bind(row.content_rev)
+        .bind(row.updated_at_ms)
+        .bind(Json(row.rules_json))
+        .bind(Json(row.mcp_servers_json))
+        .bind(Json(row.skills_sources_json))
+        .bind(row.claude_md)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -682,5 +796,59 @@ mod tests {
             .unwrap()
             .expect("output_json expected");
         assert_eq!(oj["message"].as_str(), Some("only-json-body"));
+    }
+
+    #[tokio::test]
+    async fn project_config_upsert_get() {
+        let Some(db) = test_db().await else {
+            eprintln!("skip project_config_upsert_get: set CLAW_GATEWAY_TEST_DATABASE_URL");
+            return;
+        };
+        let ds_id = i64::try_from(uuid::Uuid::new_v4().as_u128() % 900_000_000).unwrap_or(42) + 1;
+
+        assert!(db.get_project_config(ds_id).await.unwrap().is_none());
+
+        let rules =
+            json!([{"ruleId": "r1", "relativePath": ".cursor/rules/r1.mdc", "content": "# R"}]);
+        let mcp = json!({"demo": {"type": "http", "url": "http://127.0.0.1:9"}});
+        let skills = json!([{
+            "gitUrl": "https://example.com/skills.git",
+            "gitRef": "main",
+            "tokenEnv": "CLAW_PROJECTS_GIT_TOKEN"
+        }]);
+        let t = now_ms();
+        db.upsert_project_config(ProjectConfigUpsert {
+            ds_id,
+            content_rev: "rev-1",
+            updated_at_ms: t,
+            rules_json: &rules,
+            mcp_servers_json: &mcp,
+            skills_sources_json: &skills,
+            claude_md: Some("# Claude\n"),
+        })
+        .await
+        .unwrap();
+
+        let row = db.get_project_config(ds_id).await.unwrap().unwrap();
+        assert_eq!(row.content_rev, "rev-1");
+        assert_eq!(row.rules_json, rules);
+        assert_eq!(row.mcp_servers_json, mcp);
+        assert_eq!(row.skills_sources_json, skills);
+        assert_eq!(row.claude_md.as_deref(), Some("# Claude\n"));
+
+        db.upsert_project_config(ProjectConfigUpsert {
+            ds_id,
+            content_rev: "rev-2",
+            updated_at_ms: t + 1,
+            rules_json: &json!([]),
+            mcp_servers_json: &json!({}),
+            skills_sources_json: &json!([]),
+            claude_md: None,
+        })
+        .await
+        .unwrap();
+        let row2 = db.get_project_config(ds_id).await.unwrap().unwrap();
+        assert_eq!(row2.content_rev, "rev-2");
+        assert!(row2.claude_md.is_none());
     }
 }
