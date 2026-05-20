@@ -13,12 +13,12 @@ Usage:
 
 Commands:
   build         Build gateway + worker images; full log → deploy/stack/.build.log (see: build --help)
-  up            Start stack (`up --release TAG` = pull images + compose up; pool daemon is a compose service)
+  up            Start/recreate gateway stack (`up --release TAG` = down + kill pool + rm all workers + pull + up)
   down          Stop gateway stack
   restart       Recreate stack (down + up)
   check         Connectivity smoke check
-  tap-up        Start gateway + claude-tap (see CLAUDE_TAP_MODE in .env)
-  tap-down      Stop gateway + claude-tap
+  tap-up        Start claude-tap only (see CLAUDE_TAP_MODE in .env)
+  tap-down      Stop claude-tap only
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
   bench         Pool bench 30s
   logs          Follow gateway logs
@@ -39,8 +39,8 @@ case "${cmd}" in
   down) "${LIB}/down.sh" "$@" ;;
   restart) "${LIB}/down.sh" && "${LIB}/up.sh" "$@" ;;
   check) "${LIB}/check-connectivity.sh" "$@" ;;
-  tap-up) "${LIB}/start-with-tap.sh" "$@" ;;
-  tap-down) "${LIB}/stop-with-tap.sh" "$@" ;;
+  tap-up) "${LIB}/tap-up.sh" "$@" ;;
+  tap-down) "${LIB}/tap-down.sh" "$@" ;;
   build-tap)
     set -a
     # shellcheck disable=SC1090

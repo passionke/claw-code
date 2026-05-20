@@ -96,12 +96,16 @@ podman ps   # 或  docker ps
 ./deploy/stack/gateway.sh down
 ```
 
-### 1.5 带 claude-tap 的一体脚本
+### 1.5 claude-tap（与 gateway 分开）
 
 ```bash
-./deploy/stack/gateway.sh tap-up
-./deploy/stack/gateway.sh tap-down
+./deploy/stack/gateway.sh tap-up    # 只起 tap，并刷新 .env 里 OPENAI_BASE_URL
+./deploy/stack/gateway.sh tap-down  # 只停 tap
+
+./deploy/stack/gateway.sh up        # gateway 另起（生产 release 同上）
 ```
+
+旧的一体脚本仍可用：`lib/start-with-tap.sh` = `tap-up` + `up`。
 
 `claude-tap` 在宿主机跑，只做 API 代理/抓包，不是 MCP。
 
