@@ -109,14 +109,18 @@ claw_compose_with_root_env() {
   local repo_env="$2"
   shift 2
   local sticky="${podman_dir}/.claw-image-release.env"
-  if [[ -f "${sticky}" ]]; then
-    # Docker Compose prefers process environment over `--env-file`. `up.sh` sources `.env` before compose,
-    # which would pin old GATEWAY_IMAGE and defeat the sticky override — drop these for this invocation.
-    (
-      unset GATEWAY_IMAGE CLAW_DOCKER_IMAGE CLAW_PODMAN_IMAGE || true
-      claw_compose --env-file "${repo_env}" --env-file "${sticky}" "$@"
-    )
-  else
-    claw_compose --env-file "${repo_env}" "$@"
-  fi
+  # Legacy `docker-compose` v1 (common behind podman on Aliyun) accepts only one `--env-file`;
+  # a second `--env-file` prints usage and exits. Source env in a subshell instead. Author: kejiqing
+  (
+    unset GATEWAY_IMAGE CLAW_DOCKER_IMAGE CLAW_PODMAN_IMAGE || true
+    set -a
+    # shellcheck disable=SC1090
+    source "${repo_env}"
+    if [[ -f "${sticky}" ]]; then
+      # shellcheck disable=SC1090
+      source "${sticky}"
+    fi
+    set +a
+    claw_compose "$@"
+  )
 }
