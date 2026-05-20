@@ -143,6 +143,61 @@ pub async fn import_turn_messages_to_db(
     Ok(())
 }
 
+async fn insert_model_usage_from_solve_json(
+    db: &GatewaySessionDb,
+    turn_id: &str,
+    output_json: &Value,
+    model: Option<&str>,
+    duration_ms: i64,
+) -> Result<(), sqlx::Error> {
+    let model_name = output_json
+        .get("model")
+        .and_then(Value::as_str)
+        .or(model)
+        .unwrap_or("unknown");
+    let usage = output_json.get("usage");
+    let input_tokens = i32::try_from(
+        usage
+            .and_then(|u| u.get("input_tokens"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+    )
+    .unwrap_or(i32::MAX);
+    let output_tokens = i32::try_from(
+        usage
+            .and_then(|u| u.get("output_tokens"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+    )
+    .unwrap_or(i32::MAX);
+    let cache_creation = i32::try_from(
+        usage
+            .and_then(|u| u.get("cache_creation_input_tokens"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+    )
+    .unwrap_or(i32::MAX);
+    let cache_read = i32::try_from(
+        usage
+            .and_then(|u| u.get("cache_read_input_tokens"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+    )
+    .unwrap_or(i32::MAX);
+    db.insert_model_usage(
+        turn_id,
+        None,
+        model_name,
+        input_tokens,
+        output_tokens,
+        cache_creation,
+        cache_read,
+        Some(duration_ms),
+        "solve",
+    )
+    .await
+}
+
 /// After solve: sync latest jsonl turn and persist turn result columns.
 pub async fn persist_turn_after_solve(
     pool: &PgPool,
@@ -201,52 +256,7 @@ pub async fn persist_turn_after_solve(
     .await?;
 
     if let Some(json) = output_json {
-        let model_name = json
-            .get("model")
-            .and_then(Value::as_str)
-            .or(model)
-            .unwrap_or("unknown");
-        let usage = json.get("usage");
-        let input_tokens = i32::try_from(
-            usage
-                .and_then(|u| u.get("input_tokens"))
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
-        )
-        .unwrap_or(i32::MAX);
-        let output_tokens = i32::try_from(
-            usage
-                .and_then(|u| u.get("output_tokens"))
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
-        )
-        .unwrap_or(i32::MAX);
-        let cache_creation = i32::try_from(
-            usage
-                .and_then(|u| u.get("cache_creation_input_tokens"))
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
-        )
-        .unwrap_or(i32::MAX);
-        let cache_read = i32::try_from(
-            usage
-                .and_then(|u| u.get("cache_read_input_tokens"))
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
-        )
-        .unwrap_or(i32::MAX);
-        db.insert_model_usage(
-            turn_id,
-            None,
-            model_name,
-            input_tokens,
-            output_tokens,
-            cache_creation,
-            cache_read,
-            Some(duration_ms),
-            "solve",
-        )
-        .await?;
+        insert_model_usage_from_solve_json(db, turn_id, json, model, duration_ms).await?;
     }
 
     let mount = session_home.display().to_string();
