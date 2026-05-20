@@ -39,8 +39,8 @@ case "${cmd}" in
   down) "${LIB}/down.sh" "$@" ;;
   restart) "${LIB}/down.sh" && "${LIB}/up.sh" "$@" ;;
   check) "${LIB}/check-connectivity.sh" "$@" ;;
-  tap-up) "${LIB}/tap-up.sh" "$@" ;;
-  tap-down) "${LIB}/tap-down.sh" "$@" ;;
+  tap-up) bash "${LIB}/tap-up.sh" "$@" ;;
+  tap-down) bash "${LIB}/tap-down.sh" "$@" ;;
   build-tap)
     set -a
     # shellcheck disable=SC1090
