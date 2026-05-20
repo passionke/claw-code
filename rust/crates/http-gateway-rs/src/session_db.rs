@@ -275,7 +275,30 @@ impl GatewaySessionDb {
         .await
     }
 
-    /// `created_at_ms` for this turn (used to order turns within a session for jsonl slicing).
+    /// Terminal solve `output_json` snapshot for this turn, if persisted (`finalize_turn_terminal`).
+    pub async fn get_turn_output_json(
+        &self,
+        turn_id: &str,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<Option<Value>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT output_json FROM gateway_turns
+              WHERE turn_id = $1 AND session_id = $2 AND ds_id = $3
+                AND output_json IS NOT NULL",
+        )
+        .bind(turn_id)
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(r) = row else {
+            return Ok(None);
+        };
+        r.try_get("output_json")
+    }
+
+    /// `created_at_ms` for this turn (ordering within a session; tests / future callers).
     pub async fn get_turn_created_at_ms(
         &self,
         turn_id: &str,
@@ -637,5 +660,27 @@ mod tests {
             .unwrap();
         let idx = db.turn_index_in_session(tid2, &sid, 1, t2).await.unwrap();
         assert_eq!(idx, 2);
+
+        db.finalize_turn_terminal(
+            tid2,
+            "succeeded",
+            Some(t + 11),
+            None,
+            Some(&json!({"message": "only-json-body"})),
+            Some(0),
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .get_turn_report_message(tid2, &sid, 1)
+            .await
+            .unwrap()
+            .is_none());
+        let oj = db
+            .get_turn_output_json(tid2, &sid, 1)
+            .await
+            .unwrap()
+            .expect("output_json expected");
+        assert_eq!(oj["message"].as_str(), Some("only-json-body"));
     }
 }

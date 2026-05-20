@@ -1,4 +1,4 @@
-//! Live business report from assistant stream spill + session jsonl (no polish LLM). Author: kejiqing
+//! Live business report from assistant stream spill + per-turn `gateway_turns` snapshot (no polish LLM). Author: kejiqing
 
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -6,9 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gateway_solve_turn::{
-    assistant_stream_spill_path, final_assistant_report_text_from_jsonl,
-    final_assistant_report_text_from_jsonl_for_user_turn_index, spill_bytes_contain_end_marker,
-    split_spill_end_marker, strip_report_start_marker, ASSISTANT_STREAM_REPORT_START_MARKER,
+    assistant_stream_spill_path, spill_bytes_contain_end_marker, split_spill_end_marker,
+    strip_report_start_marker, ASSISTANT_STREAM_REPORT_START_MARKER,
 };
 use serde_json::{json, Value};
 use tokio::fs;
@@ -51,105 +50,78 @@ pub struct LiveReportContext {
     pub session_home: PathBuf,
 }
 
-/// Resolve formal report text: task result `message` when succeeded, else session jsonl.
+/// Pure merge of `gateway_turns` snapshot fields — same policy as [`resolve_formal_report_text`].
+/// `report_message` wins when non-empty after trim; else `output_json` via [`report_body_from_solve_output`].
+/// Unit-test this without `PostgreSQL` or a full gateway `AppState`. Author: kejiqing
+#[must_use]
+pub fn formal_report_text_from_db_snapshot(
+    report_message: Option<&str>,
+    output_json: Option<&Value>,
+) -> Option<String> {
+    if let Some(text) = report_message {
+        if !text.trim().is_empty() {
+            return Some(strip_report_start_marker(text));
+        }
+    }
+    if let Some(json) = output_json {
+        if let Ok(body) = report_body_from_solve_output("", Some(json)) {
+            if !body.trim().is_empty() {
+                return Some(strip_report_start_marker(&body));
+            }
+        }
+    }
+    None
+}
+
+/// Resolve formal report text from `gateway_turns` only (`report_message` or `output_json.message`).
+/// Does not read in-memory task state or session jsonl (avoids multi-turn transcript merge). Author: kejiqing
 pub async fn resolve_formal_report_text(
     state: &AppState,
     ctx: &LiveReportContext,
 ) -> Result<String, ApiError> {
-    let tasks = state.tasks.lock().await;
-    if let Some(inner) = tasks.get(&ctx.session_id) {
-        if inner.record.turn_id == ctx.turn_id {
-            if let Some(ref result) = inner.record.result {
-                if result.claw_exit_code == 0 {
-                    if let Ok(body) = report_body_from_solve_output(
-                        &result.output_text,
-                        result.output_json.as_ref(),
-                    ) {
-                        if !body.trim().is_empty() {
-                            return Ok(body);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    drop(tasks);
-
-    match state
+    let report_message = match state
         .session_db
         .get_turn_report_message(&ctx.turn_id, &ctx.session_id, ctx.ds_id)
         .await
     {
-        Ok(Some(text)) if !text.trim().is_empty() => {
-            return Ok(strip_report_start_marker(&text));
-        }
-        Ok(_) => {}
+        Ok(v) => v,
         Err(e) => {
             return Err(ApiError::new(
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("turn report_message query failed: {e}"),
             ));
         }
-    }
+    };
 
-    if let Ok(Some(t_ms)) = state
-        .session_db
-        .get_turn_created_at_ms(&ctx.turn_id, &ctx.session_id, ctx.ds_id)
-        .await
+    let output_json = if report_message
+        .as_ref()
+        .is_some_and(|t| !t.trim().is_empty())
     {
-        if let Ok(idx) = state
+        None
+    } else {
+        match state
             .session_db
-            .turn_index_in_session(&ctx.turn_id, &ctx.session_id, ctx.ds_id, t_ms)
+            .get_turn_output_json(&ctx.turn_id, &ctx.session_id, ctx.ds_id)
             .await
         {
-            let idx_usize = usize::try_from(idx).unwrap_or(1);
-            let home = ctx.session_home.clone();
-            let scoped = tokio::task::spawn_blocking(move || {
-                final_assistant_report_text_from_jsonl_for_user_turn_index(&home, idx_usize)
-            })
-            .await
-            .map_err(|e| {
-                ApiError::new(
+            Ok(v) => v,
+            Err(e) => {
+                return Err(ApiError::new(
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("report scoped jsonl join failed: {e}"),
-                )
-            })?
-            .map_err(|detail| {
-                ApiError::new(
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("read scoped session report failed: {detail}"),
-                )
-            })?;
-            if !scoped.trim().is_empty() {
-                return Ok(strip_report_start_marker(&scoped));
+                    format!("turn output_json query failed: {e}"),
+                ));
             }
         }
-    }
+    };
 
-    let text = tokio::task::spawn_blocking({
-        let home = ctx.session_home.clone();
-        move || final_assistant_report_text_from_jsonl(&home)
-    })
-    .await
-    .map_err(|e| {
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("report read join failed: {e}"),
-        )
-    })?
-    .map_err(|detail| {
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read session report failed: {detail}"),
-        )
-    })?;
-    if text.trim().is_empty() {
-        return Err(ApiError::new(
-            axum::http::StatusCode::BAD_REQUEST,
-            "formal report not ready (empty session transcript)",
-        ));
-    }
-    Ok(strip_report_start_marker(&text))
+    formal_report_text_from_db_snapshot(report_message.as_deref(), output_json.as_ref()).ok_or_else(
+        || {
+            ApiError::new(
+                axum::http::StatusCode::BAD_REQUEST,
+                "formal report not ready (no turn snapshot in database)",
+            )
+        },
+    )
 }
 
 pub async fn turn_status(
@@ -489,5 +461,55 @@ mod tests {
         let raw = format!("{ASSISTANT_STREAM_REPORT_START_MARKER}\n# 标题\n正文");
         assert_eq!(spill_visible_export(&raw), "# 标题\n正文");
         assert!(spill_visible_export("分析中…").is_empty());
+    }
+
+    #[test]
+    fn formal_db_snapshot_prefers_report_message_over_output_json() {
+        let j = json!({"message": "ignored"});
+        assert_eq!(
+            formal_report_text_from_db_snapshot(Some("body-from-column"), Some(&j)).as_deref(),
+            Some("body-from-column")
+        );
+    }
+
+    #[test]
+    fn formal_db_snapshot_falls_back_to_output_json_message() {
+        assert_eq!(
+            formal_report_text_from_db_snapshot(None, Some(&json!({"message": "from-json"})))
+                .as_deref(),
+            Some("from-json")
+        );
+    }
+
+    #[test]
+    fn formal_db_snapshot_whitespace_only_message_uses_json() {
+        assert_eq!(
+            formal_report_text_from_db_snapshot(
+                Some(" \t "),
+                Some(&json!({"message": "from-json"})),
+            )
+            .as_deref(),
+            Some("from-json")
+        );
+    }
+
+    #[test]
+    fn formal_db_snapshot_none_when_no_usable_fields() {
+        assert!(formal_report_text_from_db_snapshot(None, None).is_none());
+        assert!(formal_report_text_from_db_snapshot(None, Some(&json!({}))).is_none());
+        assert!(formal_report_text_from_db_snapshot(None, Some(&json!({"message": ""}))).is_none());
+    }
+
+    #[test]
+    fn formal_db_snapshot_strips_internal_start_marker() {
+        let marked = format!("{ASSISTANT_STREAM_REPORT_START_MARKER}\n# 标题");
+        assert_eq!(
+            formal_report_text_from_db_snapshot(Some(marked.as_str()), None).as_deref(),
+            Some("# 标题")
+        );
+        assert_eq!(
+            formal_report_text_from_db_snapshot(None, Some(&json!({"message": marked}))).as_deref(),
+            Some("# 标题")
+        );
     }
 }
