@@ -657,8 +657,11 @@ async fn register_solve_turn(
     turn_id: &str,
     session_id: &str,
     ds_id: i64,
+    user_prompt: &str,
 ) -> Result<(), ApiError> {
-    db.insert_turn(turn_id, session_id, ds_id, "queued", now_ms())
+    let prompt = user_prompt.trim();
+    let user_prompt = (!prompt.is_empty()).then_some(prompt);
+    db.insert_turn(turn_id, session_id, ds_id, "queued", now_ms(), user_prompt)
         .await
         .map_err(|e| session_db_err(&e))
 }
@@ -672,6 +675,65 @@ async fn set_solve_turn_status(
     let finished_at = finished.then_some(now_ms());
     if let Err(e) = db.update_turn_status(turn_id, status, finished_at).await {
         warn!(turn_id = %turn_id, error = %e, "update gateway_turns status failed");
+    }
+}
+
+/// Persist terminal solve outcome on `gateway_turns` for restart / `GET /v1/tasks` handoff. Author: kejiqing
+async fn finalize_solve_turn_success(
+    db: &session_db::GatewaySessionDb,
+    turn_id: &str,
+    result: &SolveResponse,
+) {
+    let finished_at = Some(now_ms());
+    let report =
+        report_body_from_solve_output(&result.output_text, result.output_json.as_ref()).ok();
+    if let Err(e) = db
+        .finalize_turn_terminal(
+            turn_id,
+            "succeeded",
+            finished_at,
+            report.as_deref(),
+            result.output_json.as_ref(),
+            Some(result.claw_exit_code),
+        )
+        .await
+    {
+        warn!(
+            turn_id = %turn_id,
+            error = %e,
+            "finalize gateway_turns succeeded snapshot failed"
+        );
+    }
+}
+
+async fn finalize_solve_turn_failed(
+    db: &session_db::GatewaySessionDb,
+    turn_id: &str,
+    err: &ApiError,
+) {
+    let detail = json!({"status_code": err.status.as_u16(), "detail": err.message});
+    if let Err(e) = db
+        .finalize_turn_terminal(turn_id, "failed", Some(now_ms()), None, Some(&detail), None)
+        .await
+    {
+        warn!(
+            turn_id = %turn_id,
+            error = %e,
+            "finalize gateway_turns failed snapshot failed"
+        );
+    }
+}
+
+async fn finalize_solve_turn_cancelled(db: &session_db::GatewaySessionDb, turn_id: &str) {
+    if let Err(e) = db
+        .finalize_turn_terminal(turn_id, "cancelled", Some(now_ms()), None, None, None)
+        .await
+    {
+        warn!(
+            turn_id = %turn_id,
+            error = %e,
+            "finalize gateway_turns cancelled snapshot failed"
+        );
     }
 }
 
@@ -948,16 +1010,37 @@ async fn main() {
         .filter(|&s| s > 0),
         report_polish_deepseek,
     };
-    let session_db = Arc::new(
-        session_db::GatewaySessionDb::open()
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!(
-                    "http-gateway-rs: failed to connect gateway PostgreSQL (CLAW_GATEWAY_DATABASE_URL): {e}"
-                );
-                std::process::exit(1);
-            }),
-    );
+    let session_db = session_db::GatewaySessionDb::open()
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "http-gateway-rs: failed to connect gateway PostgreSQL (CLAW_GATEWAY_DATABASE_URL): {e}"
+            );
+            std::process::exit(1);
+        });
+    match session_db
+        .reconcile_interrupted_turns_on_startup(now_ms())
+        .await
+    {
+        Ok(n) if n > 0 => {
+            info!(
+                target: "claw_gateway_orchestration",
+                component = "startup",
+                phase = "session_db_reconcile",
+                reconciled_turn_rows = n,
+                "marked in-flight gateway_turns as failed after gateway restart"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => warn!(
+            target: "claw_gateway_orchestration",
+            component = "startup",
+            phase = "session_db_reconcile",
+            error = %e,
+            "reconcile_interrupted_turns_on_startup failed"
+        ),
+    }
+    let session_db = Arc::new(session_db);
     info!(
         target: "claw_gateway_orchestration",
         component = "startup",
@@ -2547,7 +2630,14 @@ async fn solve(
         "gateway_solve"
     );
     let new_turn_id = turn_id::mint_turn_id();
-    register_solve_turn(&state.session_db, &new_turn_id, &effective, req.ds_id).await?;
+    register_solve_turn(
+        &state.session_db,
+        &new_turn_id,
+        &effective,
+        req.ds_id,
+        &req.user_prompt,
+    )
+    .await?;
     let result = run_solve_request(
         state.clone(),
         req,
@@ -2560,11 +2650,11 @@ async fn solve(
     )
     .await;
     match &result {
-        Ok(_) => {
-            set_solve_turn_status(&state.session_db, &new_turn_id, "succeeded", true).await;
+        Ok(success) => {
+            finalize_solve_turn_success(&state.session_db, &new_turn_id, success).await;
         }
-        Err(_) => {
-            set_solve_turn_status(&state.session_db, &new_turn_id, "failed", true).await;
+        Err(err) => {
+            finalize_solve_turn_failed(&state.session_db, &new_turn_id, err).await;
         }
     }
     let result = result?;
@@ -3239,7 +3329,14 @@ async fn enqueue_solve_async(
     let task_id = effective.clone();
     let ds_id = req.ds_id;
     let new_turn_id = turn_id::mint_turn_id();
-    register_solve_turn(&state.session_db, &new_turn_id, &effective, ds_id).await?;
+    register_solve_turn(
+        &state.session_db,
+        &new_turn_id,
+        &effective,
+        ds_id,
+        &req.user_prompt,
+    )
+    .await?;
     if let Some(rel) = state
         .session_db
         .get_session_home_rel(&effective, ds_id)
@@ -3308,13 +3405,8 @@ async fn enqueue_solve_async(
             if let Some(inner) = tasks.get_mut(&task_id_for_worker) {
                 if inner.record.status == "cancelled" {
                     inner.cancel = None;
-                    set_solve_turn_status(
-                        &state_clone.session_db,
-                        &turn_id_for_worker,
-                        "cancelled",
-                        true,
-                    )
-                    .await;
+                    finalize_solve_turn_cancelled(&state_clone.session_db, &turn_id_for_worker)
+                        .await;
                     return;
                 }
                 inner.record.status = "running".to_string();
@@ -3353,28 +3445,17 @@ async fn enqueue_solve_async(
             };
             inner.cancel = None;
             if inner.record.status == "cancelled" {
-                set_solve_turn_status(
-                    &state_clone.session_db,
-                    &turn_id_for_worker,
-                    "cancelled",
-                    true,
-                )
-                .await;
+                finalize_solve_turn_cancelled(&state_clone.session_db, &turn_id_for_worker).await;
                 return;
             }
             inner.record.finished_at_ms = Some(now_ms());
             match result {
-                Ok(v) => {
+                Ok(ref v) => {
                     let duration_ms = v.duration_ms;
                     inner.record.status = "succeeded".to_string();
-                    inner.record.result = Some(v);
-                    set_solve_turn_status(
-                        &state_clone.session_db,
-                        &turn_id_for_worker,
-                        "succeeded",
-                        true,
-                    )
-                    .await;
+                    inner.record.result = Some(v.clone());
+                    finalize_solve_turn_success(&state_clone.session_db, &turn_id_for_worker, v)
+                        .await;
                     info!(
                         request_id = %rid,
                         task_id = %task_id_for_worker,
@@ -3383,17 +3464,12 @@ async fn enqueue_solve_async(
                         "gateway_solve_async"
                     );
                 }
-                Err(e) => {
+                Err(ref e) => {
                     inner.record.status = "failed".to_string();
                     inner.record.error =
                         Some(json!({"status_code": e.status.as_u16(), "detail": e.message}));
-                    set_solve_turn_status(
-                        &state_clone.session_db,
-                        &turn_id_for_worker,
-                        "failed",
-                        true,
-                    )
-                    .await;
+                    finalize_solve_turn_failed(&state_clone.session_db, &turn_id_for_worker, e)
+                        .await;
                     warn!(
                         request_id = %rid,
                         task_id = %task_id_for_worker,
@@ -3488,19 +3564,138 @@ async fn solve_async(
     Ok((headers, Json(out)))
 }
 
+/// In-memory async task row, or after gateway restart the latest `gateway_turns` row for this
+/// `session_id` (`task_id`). Author: kejiqing
+async fn try_load_task_record(
+    state: &AppState,
+    task_id: &str,
+) -> Result<Option<(TaskRecord, i64)>, ApiError> {
+    {
+        let tasks = state.tasks.lock().await;
+        if let Some(inner) = tasks.get(task_id) {
+            return Ok(Some((inner.record.clone(), inner.ds_id)));
+        }
+    }
+    let Some(row) = state
+        .session_db
+        .fetch_latest_turn_for_session(task_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(
+        task_record_from_latest_turn_row(state, task_id, row).await?,
+    ))
+}
+
+async fn task_record_from_latest_turn_row(
+    state: &AppState,
+    task_id: &str,
+    row: session_db::LatestTurnRow,
+) -> Result<(TaskRecord, i64), ApiError> {
+    let session_home_rel = state
+        .session_db
+        .get_session_home_rel(task_id, row.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .unwrap_or_default();
+    let work_dir = join_session_home(&state.cfg.work_root, &session_home_rel)
+        .to_string_lossy()
+        .to_string();
+    let duration_ms = row
+        .finished_at_ms
+        .unwrap_or(row.created_at_ms)
+        .saturating_sub(row.created_at_ms);
+    let output_text = row
+        .report_message
+        .clone()
+        .or_else(|| {
+            row.output_json.as_ref().and_then(|j| {
+                j.get("message")
+                    .and_then(Value::as_str)
+                    .map(std::string::ToString::to_string)
+            })
+        })
+        .unwrap_or_default();
+    let result = if row.status == "succeeded" {
+        Some(SolveResponse {
+            session_id: task_id.to_string(),
+            request_id: task_id.to_string(),
+            session_home_rel: session_home_rel.clone(),
+            ds_id: row.ds_id,
+            work_dir,
+            duration_ms,
+            claw_exit_code: row.claw_exit_code.unwrap_or(0),
+            output_text,
+            output_json: row.output_json.clone(),
+            turn_id: row.turn_id.clone(),
+        })
+    } else {
+        None
+    };
+    let error = if row.status == "failed" {
+        row.output_json
+            .clone()
+            .or_else(|| Some(json!({"detail": "solve turn failed"})))
+    } else if row.status == "cancelled" {
+        Some(json!({"detail":"cancelled by client","outcome":"cancelled"}))
+    } else {
+        None
+    };
+    let session_home = resolve_session_home_path(state, row.ds_id, task_id).await;
+    let queue = {
+        let tasks = state.tasks.lock().await;
+        gateway_queue_snapshot(&tasks)
+    };
+    let trace_paths = session_home
+        .as_ref()
+        .map(|home| discover_trace_paths(home, &state.cfg.work_root, task_id))
+        .unwrap_or_default();
+    let tool = trace_tail_suggests_tool_call(&trace_paths);
+    let current_task_desc =
+        resolve_current_task_desc(&row.status, session_home.as_deref(), &queue, tool);
+    let progress_updated_at_ms = session_home
+        .as_ref()
+        .and_then(|home| read_task_progress(home))
+        .map(|p| p.updated_at_ms);
+    let mut record = TaskRecord {
+        task_id: task_id.to_string(),
+        session_id: task_id.to_string(),
+        request_id: task_id.to_string(),
+        ds_id: row.ds_id,
+        status: row.status.clone(),
+        created_at_ms: row.created_at_ms,
+        started_at_ms: Some(row.created_at_ms),
+        finished_at_ms: row.finished_at_ms,
+        current_task_desc,
+        progress_updated_at_ms,
+        result,
+        error,
+        turn_id: row.turn_id.clone(),
+        progress_history: Vec::new(),
+        has_report: false,
+    };
+    if let Some(ref home) = session_home {
+        record.progress_history = read_progress_events(home, 50)
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        record.has_report = task_has_report(&record, home, state.cfg.live_biz_report_spill_enabled);
+    }
+    let ds_id = record.ds_id;
+    Ok((record, ds_id))
+}
+
 async fn get_task(
     State(state): State<AppState>,
     AxumPath(task_id): AxumPath<String>,
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
     refresh_task_progress(&state, &task_id).await;
-    let (mut task, ds_id) = {
-        let tasks = state.tasks.lock().await;
-        let inner = tasks.get(&task_id).ok_or_else(|| {
+    let (mut task, ds_id) = try_load_task_record(&state, &task_id)
+        .await?
+        .ok_or_else(|| {
             ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
         })?;
-        (inner.record.clone(), inner.ds_id)
-    };
     if let Some(home) = resolve_session_home_path(&state, ds_id, &task.session_id).await {
         task.progress_history = read_progress_events(&home, 50)
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -3577,16 +3772,69 @@ fn task_cancel_idempotent_response(record: TaskRecord) -> TaskRecord {
     out
 }
 
+async fn cancel_task_cold_db(
+    state: &AppState,
+    task_id: &str,
+    http_request_id: &HttpRequestId,
+) -> Result<Json<TaskRecord>, ApiError> {
+    let Some(row) = state
+        .session_db
+        .fetch_latest_turn_for_session(task_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("task not found: {task_id}"),
+        ));
+    };
+    if task_status_is_terminal_for_cancel(&row.status) {
+        let (record, _) = task_record_from_latest_turn_row(state, task_id, row).await?;
+        let task_status = record.status.clone();
+        let out = task_cancel_idempotent_response(record);
+        info!(
+            request_id = %http_request_id.0,
+            task_id = %task_id,
+            task_status = %task_status,
+            endpoint = "/v1/tasks/{task_id}/cancel",
+            phase = "cancel_idempotent_db",
+            "gateway_task"
+        );
+        return Ok(Json(out));
+    }
+    finalize_solve_turn_cancelled(&state.session_db, &row.turn_id).await;
+    let Some(row2) = state
+        .session_db
+        .fetch_latest_turn_for_session(task_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "task row missing after cancel",
+        ));
+    };
+    let (record, _) = task_record_from_latest_turn_row(state, task_id, row2).await?;
+    info!(
+        request_id = %http_request_id.0,
+        task_id = %task_id,
+        endpoint = "/v1/tasks/{task_id}/cancel",
+        phase = "cancel_cold_db",
+        "gateway_task"
+    );
+    Ok(Json(record))
+}
+
 async fn cancel_task(
     State(state): State<AppState>,
     AxumPath(task_id): AxumPath<String>,
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
-    let cancel = {
+    let cancel_handle = {
         let mut tasks = state.tasks.lock().await;
-        let inner = tasks.get_mut(&task_id).ok_or_else(|| {
-            ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
-        })?;
+        let Some(inner) = tasks.get_mut(&task_id) else {
+            return cancel_task_cold_db(&state, &task_id, &http_request_id).await;
+        };
         if task_status_is_terminal_for_cancel(&inner.record.status) {
             let task_status = inner.record.status.clone();
             let record = task_cancel_idempotent_response(inner.record.clone());
@@ -3616,7 +3864,7 @@ async fn cancel_task(
     if let Some((pool, idx)) = state.docker_slots.lock().await.remove(&task_id) {
         let _ = pool.force_kill_slot(idx).await;
     }
-    if let Some(h) = cancel {
+    if let Some(h) = cancel_handle {
         h.abort();
     }
     info!(
@@ -3633,6 +3881,7 @@ async fn cancel_task(
         .ok_or_else(|| {
             ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
         })?;
+    finalize_solve_turn_cancelled(&state.session_db, &record.turn_id).await;
     Ok(Json(record))
 }
 

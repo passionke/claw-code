@@ -46,7 +46,10 @@ pub use assistant_stream_spill::{
     AssistantStreamSpill, ASSISTANT_STREAM_REPORT_START_MARKER,
     ASSISTANT_STREAM_SPILL_BASENAME_PREFIX, ASSISTANT_STREAM_SPILL_END_MARKER,
 };
-pub use session_report::final_assistant_report_text_from_jsonl;
+pub use session_report::{
+    final_assistant_report_text_from_jsonl,
+    final_assistant_report_text_from_jsonl_for_user_turn_index,
+};
 pub use task_progress::{
     progress_events_path, progress_message_from_mcp_input, read_progress_events,
     read_progress_history, read_task_progress, record_mcp_tool_started,

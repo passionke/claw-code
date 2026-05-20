@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use gateway_solve_turn::{
     assistant_stream_spill_path, final_assistant_report_text_from_jsonl,
-    spill_bytes_contain_end_marker, split_spill_end_marker, strip_report_start_marker,
-    ASSISTANT_STREAM_REPORT_START_MARKER,
+    final_assistant_report_text_from_jsonl_for_user_turn_index, spill_bytes_contain_end_marker,
+    split_spill_end_marker, strip_report_start_marker, ASSISTANT_STREAM_REPORT_START_MARKER,
 };
 use serde_json::{json, Value};
 use tokio::fs;
@@ -74,6 +74,58 @@ pub async fn resolve_formal_report_text(
         }
     }
     drop(tasks);
+
+    match state
+        .session_db
+        .get_turn_report_message(&ctx.turn_id, &ctx.session_id, ctx.ds_id)
+        .await
+    {
+        Ok(Some(text)) if !text.trim().is_empty() => {
+            return Ok(strip_report_start_marker(&text));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("turn report_message query failed: {e}"),
+            ));
+        }
+    }
+
+    if let Ok(Some(t_ms)) = state
+        .session_db
+        .get_turn_created_at_ms(&ctx.turn_id, &ctx.session_id, ctx.ds_id)
+        .await
+    {
+        if let Ok(idx) = state
+            .session_db
+            .turn_index_in_session(&ctx.turn_id, &ctx.session_id, ctx.ds_id, t_ms)
+            .await
+        {
+            let idx_usize = usize::try_from(idx).unwrap_or(1);
+            let home = ctx.session_home.clone();
+            let scoped = tokio::task::spawn_blocking(move || {
+                final_assistant_report_text_from_jsonl_for_user_turn_index(&home, idx_usize)
+            })
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("report scoped jsonl join failed: {e}"),
+                )
+            })?
+            .map_err(|detail| {
+                ApiError::new(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("read scoped session report failed: {detail}"),
+                )
+            })?;
+            if !scoped.trim().is_empty() {
+                return Ok(strip_report_start_marker(&scoped));
+            }
+        }
+    }
+
     let text = tokio::task::spawn_blocking({
         let home = ctx.session_home.clone();
         move || final_assistant_report_text_from_jsonl(&home)
