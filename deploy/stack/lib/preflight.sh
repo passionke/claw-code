@@ -28,9 +28,11 @@ claw_deploy_preflight() {
   echo "    socket=${sock}" >&2
 
   export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
-  local net="${COMPOSE_PROJECT_NAME}_default"
-  claw_network_ensure "${rt}" "${net}"
-  claw_network_ensure "${rt}" "stack_default"
+  # Docker Compose v2 owns project networks; manual `network create` breaks labels.
+  if [[ "${rt}" == podman ]]; then
+    claw_network_ensure "${rt}" "${COMPOSE_PROJECT_NAME}_default"
+    claw_network_ensure "${rt}" "stack_default"
+  fi
 
   local pg="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
   if ! "${rt}" image exists "${pg}" >/dev/null 2>&1; then
@@ -45,5 +47,5 @@ claw_deploy_preflight() {
     fi
   done
 
-  echo "==> preflight ok (compose project=${COMPOSE_PROJECT_NAME}, network=${net})" >&2
+  echo "==> preflight ok (compose project=${COMPOSE_PROJECT_NAME})" >&2
 }

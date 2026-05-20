@@ -211,7 +211,9 @@ claw_compose() {
   local rt
   rt="$(claw_container_runtime_cli)" || return 1
   claw_compose_prepare_socket || return 1
-  claw_compose_ensure_project_network || return 1
+  if [[ "${rt}" == podman ]]; then
+    claw_compose_ensure_project_network || return 1
+  fi
   if [[ -n "${CLAW_COMPOSE_WORKING_DIRECTORY:-}" ]]; then
     (
       cd "${CLAW_COMPOSE_WORKING_DIRECTORY}" || exit 1
