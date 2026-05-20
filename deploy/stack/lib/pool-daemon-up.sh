@@ -9,6 +9,17 @@ source "${LIB_DIR}/nuclear-pool-reset.sh"
 # Always refresh worker env snapshot from repo-root .env before (re)starting the daemon so pool
 # workers never inherit stale keys (e.g. CLAW_MCP_TOOL_CALL_TIMEOUT_MS). Author: kejiqing
 "${PODMAN_DIR}/lib/sync-worker-openai-env.sh"
+# sync-worker sources repo .env and overwrites image vars in this shell; re-apply release pin + worker derived from gateway. kejiqing
+# shellcheck disable=SC1091
+source "${PODMAN_DIR}/lib/compose-include.sh"
+if [[ -f "${PODMAN_DIR}/.claw-image-release.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${PODMAN_DIR}/.claw-image-release.env"
+  set +a
+fi
+claw_export_pool_worker_image_matched_to_gateway
+
 WORK_ROOT="${CLAW_POOL_WORK_ROOT_BIND_SRC:?missing CLAW_POOL_WORK_ROOT_BIND_SRC}"
 RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"
 BIN="${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}"
@@ -27,8 +38,6 @@ if [[ -f "${RPC_DIR}/daemon.pid" ]]; then
 fi
 claw_kill_tcp_listeners "${PORT}"
 
-# shellcheck source=/dev/null
-source "${PODMAN_DIR}/lib/compose-include.sh"
 claw_remove_all_gateway_workers
 
 if [[ ! -x "${BIN}" ]]; then

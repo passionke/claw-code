@@ -8,14 +8,17 @@ Author: kejiqing
 
 ```bash
 ./deploy/stack/gateway.sh build
-./deploy/stack/gateway.sh up
+./deploy/stack/gateway.sh pg-up      # Postgres（数据在 deploy/stack/claw-postgres-data）
+./deploy/stack/gateway.sh up         # 网关 + pool；不启停 PG
+./deploy/stack/gateway.sh down       # 只停网关 + pool
+./deploy/stack/gateway.sh pg-down    # 只停 PG（保留卷）
 ./deploy/stack/gateway.sh check
 ./deploy/stack/gateway.sh ps
 ```
 
 其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh` 一次串联**：先 **`Containerfile.gateway-rs`**（`http-gateway-rs` + 宿主机用的 **`claw-pool-daemon`**），再 **`Containerfile.gateway-worker`**（池内 **`claw`**），共用同一套 **`rust/`** 与 base / rustup build-arg，避免「网关新、worker 旧」。
 
-**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，镜像推到 **`ghcr.io/<owner>/claw-code`** 与 **`ghcr.io/<owner>/claw-gateway-worker`**。服务器上 `.env` 填 **`GATEWAY_IMAGE`** / **`CLAW_DOCKER_IMAGE`**（或 Podman 前缀）为上述 tag，**不要**在服务器跑 **`./deploy/stack/gateway.sh build`**（用预构建镜像即可）。**`./deploy/stack/gateway.sh up`** 在起池前会**始终**从 **`GATEWAY_IMAGE`** 抽出 **`claw-pool-daemon`** 安装到 **`CLAW_POOL_DAEMON_BIN`**（未设置时默认为仓库内 **`rust/target/release/claw-pool-daemon`**；写到 **`/usr/local/bin/...`** 时需对 `install` 命令有写权限，常见为 `sudo` 跑 up 或事先 `sudo install …`），保证宿主机 daemon 与网关镜像**同版本**。也可单独执行 **`./deploy/stack/lib/install-pool-daemon-from-image.sh`**。校验构建见 [`gateway-image-ci.yml`](../../.github/workflows/gateway-image-ci.yml)。
+**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，镜像推到 **`ghcr.io/<owner>/claw-code`** 与 **`ghcr.io/<owner>/claw-gateway-worker`**。服务器上 `.env` 填 **`GATEWAY_IMAGE`** / **`CLAW_DOCKER_IMAGE`**（或 Podman 前缀）为上述 tag，**不要**在服务器跑 **`./deploy/stack/gateway.sh build`**（用预构建镜像即可）。**`./deploy/stack/gateway.sh up`** 在起池前会**始终**从 **`GATEWAY_IMAGE`** 抽出 **`claw-pool-daemon`** 安装到 **`CLAW_POOL_DAEMON_BIN`**（未设置时默认为仓库内 **`rust/target/release/claw-pool-daemon`**；写到 **`/usr/local/bin/...`** 时需对 `install` 命令有写权限，常见为 `sudo` 跑 up 或事先 `sudo install …`），保证宿主机 daemon 与网关镜像**同版本**。也可单独执行 **`./deploy/stack/lib/install-pool-daemon-from-image.sh`**。校验构建见 [`gateway-image-ci.yml`](../../.github/workflows/gateway-image-ci.yml)。**Worker 镜像**：若 **`GATEWAY_IMAGE`** 含 **`claw-code`**，脚本会把 **`CLAW_DOCKER_IMAGE` / `CLAW_PODMAN_IMAGE`** 设为同 registry/tag 的 **`claw-gateway-worker`**（并在存在 **`deploy/stack/.claw-image-release.env`** 时于起 daemon 前重新套用，避免 `sync-worker-openai-env.sh` 全量 `source` 根 `.env` 把钉选冲掉）。若必须独立指定 worker 镜像，在根 **`.env`** 设 **`CLAW_POOL_WORKER_IMAGE_EXPLICIT=1`**。
 
 **镜像仓库默认（国内）**：未设置 **`CLAW_IMAGE_PREFIX`** / **`CLAW_GHCR_PREFIX`** 且 **`GATEWAY_IMAGE`** 不含 `…/claw-code` 时，`./deploy/stack/gateway.sh up --release …` 默认从 **阿里云个人版 ACR**（`crpi-….personal.cr.aliyuncs.com/passionke`，可由 **`CLAW_ACR_IMAGE_PREFIX`** 覆盖）拼接镜像名；若要改用 GHCR，在根目录 **`.env`** 设 **`CLAW_IMAGE_REGISTRY=ghcr`**（默认前缀 **`ghcr.io/passionke`**，可由 **`CLAW_GHCR_DEFAULT_PREFIX`** 覆盖）。仍可直接设 **`CLAW_IMAGE_PREFIX=…`**（不要 `https://`），优先级最高。
 
@@ -92,12 +95,16 @@ podman ps   # 或  docker ps
 ./deploy/stack/gateway.sh down
 ```
 
-### 1.5 带 claude-tap 的一体脚本
+### 1.5 claude-tap（与 gateway 分开）
 
 ```bash
-./deploy/stack/gateway.sh tap-up
-./deploy/stack/gateway.sh tap-down
+./deploy/stack/gateway.sh tap-up    # 只起 tap，并刷新 .env 里 OPENAI_BASE_URL
+./deploy/stack/gateway.sh tap-down  # 只停 tap
+
+./deploy/stack/gateway.sh up        # gateway 另起（生产 release 同上）
 ```
+
+旧的一体脚本仍可用：`lib/start-with-tap.sh` = `tap-up` + `up`。
 
 `claude-tap` 在宿主机跑，只做 API 代理/抓包，不是 MCP。
 
@@ -149,7 +156,7 @@ podman ps   # 或  docker ps
 | --- | --- | --- | --- | --- |
 | 本仓库 compose（默认） | `podman_pool` | `podman`（宿主机 `claw-pool-daemon`） | `CLAW_PODMAN_*` | 合并 **`podman-compose.pool-rpc.yml`**；默认 `CLAW_POOL_DAEMON_TCP_HOST=host.containers.internal` |
 | 线上 Docker（推荐与默认脚本对齐） | `docker_pool` | `docker`（宿主机或旁路容器里的 daemon） | `CLAW_DOCKER_*` | 同上，但 `.env` 改 `CLAW_POOL_DAEMON_TCP_HOST=host.docker.internal`（Linux 已用 `podman-compose.pool-rpc.yml` 的 `extra_hosts`）或填 compose 服务名 |
-| 网关内嵌池（备选） | `docker_pool` / `podman_pool` | `docker` / `podman` 在**网关容器**内 | 同上 | **不设** `CLAW_POOL_DAEMON_TCP`：走进程内 `DockerPoolManager`；需 sock 挂载 + 镜像带对应 CLI（当前 `Containerfile.gateway-rs` 仅装 `podman`） |
+| 网关内嵌池（备选） | `docker_pool` / `podman_pool` | `docker` / `podman` 在**网关容器**内 | 同上 | **不设** `CLAW_POOL_DAEMON_TCP`：走进程内 `DockerPoolManager`；需 sock 挂载 + 镜像带对应 CLI（`Containerfile.gateway-rs`：`podman` + **Docker 官方静态 `docker` CLI**，避免 Debian `docker.io` 过旧、客户端 API 低于宿主机 daemon 要求） |
 
 **会话与磁盘**：每次 solve 仍绑定 **一个 worker 容器 + 会话工作区**（目录名由网关分配并记入 PostgreSQL）；**续聊**靠 body `sessionId` + 会话库，见 `docs/http-gateway-rs-api.md`。池化细节仍见 `docs/http-gateway-container-pool.md` §2。本仓库 **`gateway.sh up` compose 栈**只使用 **宿主机 `claw-pool-daemon` + TCP RPC**；若运行时不存在 `CLAW_POOL_DAEMON_TCP`，网关会退回 **进程内 `PoolManager`**（下表「网关内嵌池」一行）。
 

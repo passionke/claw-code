@@ -22,13 +22,21 @@ RUN echo "rustup dist=${RUSTUP_DIST_SERVER}" && \
     cargo build -p http-gateway-rs --release
 
 FROM ${DEBIAN_BASE_IMAGE}
-# podman: remote client for CLAW_SOLVE_ISOLATION=podman_pool (API socket mounted from host).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    git \
-    podman \
-    && rm -rf /var/lib/apt/lists/*
+# podman_pool: podman. docker_pool: `docker` CLI inside claw-pool-daemon talks to host engine via mounted socket.
+# Debian `docker.io` ships an old client (API 1.41); modern daemons may require >=1.44 — use Docker static client. kejiqing
+ARG DOCKER_CLI_VERSION=27.4.1
+ARG TARGETARCH
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl git podman; \
+    rm -rf /var/lib/apt/lists/*; \
+    arch="${TARGETARCH:-amd64}"; \
+    case "$arch" in amd64) darch=x86_64 ;; arm64) darch=aarch64 ;; \
+      *) echo "unsupported TARGETARCH=$arch (need amd64 or arm64)" >&2; exit 1 ;; esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${darch}/docker-${DOCKER_CLI_VERSION}.tgz" \
+      | tar -xz --strip-components=1 -C /usr/local/bin docker/docker; \
+    chmod +x /usr/local/bin/docker; \
+    docker --version
 
 WORKDIR /app
 COPY --from=builder /build/target/release/claw /usr/local/bin/claw

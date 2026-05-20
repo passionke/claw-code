@@ -26,6 +26,7 @@ rsync -avz \
   --exclude 'worker-openai.env' \
   --exclude '.claw-pool-workspace.env' \
   --exclude '.claw-image-release.env' \
+  --exclude '.claw-pool-worker.env' \
   --exclude '__pycache__/' \
   --exclude 'deploy/' \
   "${STACK_DIR}/" "${DEST}"

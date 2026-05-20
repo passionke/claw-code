@@ -54,9 +54,58 @@ claw_apply_release_image_tag() {
   esac
 }
 
+# One upgrade knob: pool worker image follows GATEWAY_IMAGE tag/registry (unless explicit opt-out). kejiqing
+claw_export_pool_worker_image_matched_to_gateway() {
+  local gw="${GATEWAY_IMAGE:-}"
+  [[ -n "$gw" ]] || return 0
+  [[ "$gw" == *claw-code* ]] || return 0
+  if [[ "${CLAW_POOL_WORKER_IMAGE_EXPLICIT:-0}" == "1" ]]; then
+    return 0
+  fi
+  local derived="${gw/claw-code/claw-gateway-worker}"
+  case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
+    docker_pool) export CLAW_DOCKER_IMAGE="$derived" ;;
+    podman_pool) export CLAW_PODMAN_IMAGE="$derived" ;;
+  esac
+}
+
+# Compose pool sidecar reads env files from disk — last file wins; override stale CLAW_*_IMAGE in repo .env.
+claw_write_pool_worker_env_override() {
+  local script_dir="${1:?}"
+  local f="${script_dir}/.claw-pool-worker.env"
+  local gw="${GATEWAY_IMAGE:-}"
+  if [[ "$gw" != *claw-code* ]] || [[ "${CLAW_POOL_WORKER_IMAGE_EXPLICIT:-0}" == "1" ]]; then
+    rm -f "${f}"
+    return 0
+  fi
+  case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
+    docker_pool)
+      [[ -n "${CLAW_DOCKER_IMAGE:-}" ]] || {
+        rm -f "${f}"
+        return 0
+      }
+      {
+        printf '%s\n' '# GENERATED — do not edit. CLAW_DOCKER_IMAGE synced from GATEWAY_IMAGE (claw-code→claw-gateway-worker). Set CLAW_POOL_WORKER_IMAGE_EXPLICIT=1 to use repo .env only. kejiqing'
+        printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}"
+      } >"${f}"
+      ;;
+    *)
+      [[ -n "${CLAW_PODMAN_IMAGE:-}" ]] || {
+        rm -f "${f}"
+        return 0
+      }
+      {
+        printf '%s\n' '# GENERATED — do not edit. CLAW_PODMAN_IMAGE synced from GATEWAY_IMAGE. kejiqing'
+        printf '%s\n' "CLAW_PODMAN_IMAGE=${CLAW_PODMAN_IMAGE}"
+      } >"${f}"
+      ;;
+  esac
+}
+
 # Compose reads --env-file from disk; second file overrides keys from repo .env.
 claw_write_release_pin_env() {
   local podman_dir="$1"
+  claw_export_pool_worker_image_matched_to_gateway
   local f="${podman_dir}/.claw-image-release.env"
   {
     printf '%s\n' "# GENERATED — do not edit. rm file to drop pin. Author: kejiqing"

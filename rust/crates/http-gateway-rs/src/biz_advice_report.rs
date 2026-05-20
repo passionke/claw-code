@@ -19,6 +19,7 @@ use tracing::warn;
 pub const GPOS_BOSS_REPORT_WRITER_SKILL_NAME: &str = "GPOS_BOSS_REPORT_WRITER";
 
 /// 默认润色说明（skill 未部署时的回退，与 crate `skills/gpos-boss-report-writer.SKILL.md` 一致）。Author: kejiqing
+#[must_use]
 pub fn default_gpos_boss_report_writer_skill_md() -> &'static str {
     include_str!("../skills/gpos-boss-report-writer.SKILL.md")
 }
@@ -93,6 +94,7 @@ pub fn sanitize_report_json_value(json: &mut Value) {
 }
 
 /// Non-SSE JSON body (`reportText` + `reportJson.message`).
+#[must_use]
 pub fn sanitize_biz_report_parts(
     report_text: &str,
     report_json: Option<Value>,
@@ -133,6 +135,7 @@ pub fn report_body_from_solve_output(
     Err("solve output has no report message (outputJson.message)".to_string())
 }
 
+#[must_use]
 pub fn build_biz_advice_polish_prompt(instructions: &str, report_body: &str) -> String {
     format!("{instructions}\n\n【报告正文】\n{report_body}")
 }
