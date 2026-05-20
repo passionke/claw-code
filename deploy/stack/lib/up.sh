@@ -40,6 +40,9 @@ set +a
 
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/preflight.sh"
+claw_deploy_preflight "${PODMAN_DIR}"
 
 # load_compose_args re-sources .env and resets GATEWAY_IMAGE to :local; re-pin after. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
@@ -51,7 +54,7 @@ fi
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   echo "==> release ${CLAW_IMAGE_RELEASE_TAG}: compose down + nuclear pool reset" >&2
   echo "    gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
-  claw_compose_with_root_env "${PODMAN_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" down 2>/dev/null || true
+  claw_compose_gateway_down "${PODMAN_DIR}" "${ENV_FILE}" 2>/dev/null || true
   claw_nuclear_pool_reset "${PODMAN_DIR}"
   rt="$(claw_container_runtime_cli)"
   echo "pull ${GATEWAY_IMAGE} …" >&2
@@ -79,16 +82,12 @@ elif [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
 fi
 echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
 
-install_args=()
-if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
-  install_args+=("--release" "${CLAW_IMAGE_RELEASE_TAG}")
-fi
-install_args+=("${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}")
-"${PODMAN_DIR}/lib/install-pool-daemon-from-image.sh" "${install_args[@]}"
-"${PODMAN_DIR}/lib/pool-daemon-up.sh" "${PODMAN_DIR}" "${REPO_ROOT}"
+# Legacy host nohup daemon (pre-compose sidecar); stop if still running.
+"${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
 
 claw_remove_all_gateway_workers
 
 # Recreate gateway container; pool is fresh with pinned worker image. kejiqing
-claw_compose_with_root_env "${PODMAN_DIR}" "${ENV_FILE}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --force-recreate
-echo "Services started (gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}})."
+claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
+echo "Gateway stack started (gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}})."
+echo "Postgres: use ./deploy/stack/gateway.sh pg-up if not already running."

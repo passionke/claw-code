@@ -69,6 +69,27 @@ claw_claude_tap_build_image() {
   "${rt}" build "${build_args[@]}" -f "${ctx}/Dockerfile" -t "${image}" "${ctx}"
 }
 
+# Local fork build, or `docker pull` when only CLAUDE_TAP_IMAGE is set (production). Author: kejiqing
+claw_claude_tap_ensure_image() {
+  local rt="$1"
+  local ctx="$2"
+  local image="$3"
+
+  if [[ "${CLAUDE_TAP_REBUILD:-0}" == "1" ]] && [[ -d "${ctx}" && -f "${ctx}/Dockerfile" ]]; then
+    claw_claude_tap_build_image "${rt}" "${ctx}" "${image}"
+    return 0
+  fi
+  if "${rt}" image exists "${image}" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -d "${ctx}" && -f "${ctx}/Dockerfile" ]]; then
+    claw_claude_tap_build_image "${rt}" "${ctx}" "${image}"
+    return 0
+  fi
+  echo "==> pull ${image} (${rt})" >&2
+  "${rt}" pull "${image}"
+}
+
 claw_claude_tap_start_docker() {
   local rt="$1"
   local podman_dir="$2"
@@ -84,8 +105,11 @@ claw_claude_tap_start_docker() {
   mkdir -p "${traces_dir}"
   traces_dir="$(cd "${traces_dir}" && pwd)"
 
-  if [[ "${CLAUDE_TAP_REBUILD:-0}" == "1" ]] || ! "${rt}" image exists "${image}" >/dev/null 2>&1; then
-    claw_claude_tap_build_image "${rt}" "${ctx}" "${image}"
+  if [[ "${CLAUDE_TAP_REBUILD:-0}" == "1" ]] && [[ ! -d "${ctx}" || ! -f "${ctx}/Dockerfile" ]]; then
+    echo "==> pull ${image} (CLAUDE_TAP_REBUILD=1, no local Dockerfile)" >&2
+    "${rt}" pull "${image}"
+  else
+    claw_claude_tap_ensure_image "${rt}" "${ctx}" "${image}"
   fi
 
   "${rt}" rm -f "${container_name}" 2>/dev/null || true
@@ -237,7 +261,7 @@ claw_claude_tap_is_running() {
 claw_claude_tap_start() {
   local podman_dir="$1"
   local root_dir="$2"
-  local mode="${CLAUDE_TAP_MODE:-native}"
+  local mode="${CLAUDE_TAP_MODE:-docker}"
   local ctx
   ctx="$(claw_claude_tap_resolve_context "${root_dir}")"
   local upstream="${UPSTREAM_OPENAI_BASE_URL:-${OPENAI_BASE_URL:-}}"

@@ -22,12 +22,13 @@ RUN echo "rustup dist=${RUSTUP_DIST_SERVER}" && \
     cargo build -p http-gateway-rs --release
 
 FROM ${DEBIAN_BASE_IMAGE}
-# podman: remote client for CLAW_SOLVE_ISOLATION=podman_pool (API socket mounted from host).
+# podman_pool: podman CLI; docker_pool: claw-pool-daemon sidecar runs `docker` against mounted socket. kejiqing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
     podman \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install host `claw-pool-daemon` binary from the same gateway image as production (GHCR). No Rust on server. Author: kejiqing
+# Legacy: install host `claw-pool-daemon` binary (normal deploy uses compose sidecar; see podman-compose.pool-rpc.yml). Author: kejiqing
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=/dev/null

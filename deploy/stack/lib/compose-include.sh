@@ -1,6 +1,70 @@
 # shellcheck shell=bash
 # Sets CLAW_POOL_WORK_ROOT_HOST and CLAW_PODMAN_COMPOSE_ARGS. Default solve mode is podman_pool (second compose file). Author: kejiqing
 
+claw_container_socket_path() {
+  if [[ -n "${CLAW_CONTAINER_SOCKET:-}" ]]; then
+    printf '%s' "${CLAW_CONTAINER_SOCKET}"
+    return 0
+  fi
+  local rt
+  rt="$(claw_container_runtime_cli)" || return 1
+  if [[ "$rt" == podman ]] && command -v podman >/dev/null 2>&1; then
+    local p=""
+    p="$(podman info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null || true)"
+    if [[ -n "${p}" && "${p}" != "<nil>" && -S "${p}" ]]; then
+      printf '%s' "${p}"
+      return 0
+    fi
+  fi
+  case "$rt" in
+    podman)
+      if [[ -S /run/podman/podman.sock ]]; then
+        printf '%s' /run/podman/podman.sock
+      else
+        printf '%s' /var/run/docker.sock
+      fi
+      ;;
+    *) printf '%s' /var/run/docker.sock ;;
+  esac
+}
+
+# docker-compose v1 (podman compose backend on many Linux hosts) needs DOCKER_HOST + socket RW. Author: kejiqing
+claw_compose_prepare_socket() {
+  local sock rt
+  rt="$(claw_container_runtime_cli)" || return 1
+  sock="$(claw_container_socket_path)" || return 1
+  export CLAW_CONTAINER_SOCKET="${sock}"
+  export DOCKER_HOST="unix://${sock}"
+  if [[ ! -S "${sock}" ]]; then
+    echo "error: container API socket not found: ${sock}" >&2
+    echo "hint: start ${rt}, or set CLAW_CONTAINER_SOCKET in .env" >&2
+    return 1
+  fi
+  if [[ ! -r "${sock}" || ! -w "${sock}" ]]; then
+    echo "error: permission denied on ${sock} (compose cannot talk to ${rt})" >&2
+    echo "hint: sudo usermod -aG podman \"\$(whoami)\"  # or: docker" >&2
+    echo "      then log out and SSH in again (or: newgrp podman)" >&2
+    return 1
+  fi
+}
+
+# Absolute paths + container socket for compose `claw-pool-daemon` (no host binary install). Author: kejiqing
+claw_podman_write_pool_daemon_sidecar_env() {
+  local script_dir="$1"
+  local repo_root ws sock
+  repo_root="$(cd "${script_dir}/../.." && pwd)"
+  ws="${CLAW_POOL_WORK_ROOT_BIND_SRC:?CLAW_POOL_WORK_ROOT_BIND_SRC unset; call claw_podman_export_pool_workspace first}"
+  sock="$(claw_container_socket_path)" || return 1
+  export CLAW_REPO_ROOT="${repo_root}"
+  export CLAW_CONTAINER_SOCKET="${sock}"
+  {
+    printf '%s\n' '# GENERATED — do not edit. Overwritten by compose-include (pool sidecar). kejiqing'
+    printf '%s\n' "CLAW_WORK_ROOT=${ws}"
+    printf '%s\n' "CLAW_POOL_WORK_ROOT_HOST=${ws}"
+    printf '%s\n' "CLAW_WORKER_ENV_FILE=${repo_root}/.env"
+  } >"${script_dir}/.claw-pool-daemon.env"
+}
+
 claw_podman_export_pool_workspace() {
   local script_dir="$1"
   mkdir -p "${script_dir}/claw-workspace"
@@ -32,10 +96,11 @@ claw_podman_load_compose_args() {
       export CLAW_COMPOSE_WORKING_DIRECTORY="${repo_root}"
     fi
   fi
+  export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
   if [[ -n "${rel}" ]]; then
-    CLAW_PODMAN_COMPOSE_ARGS=( -f "${rel}/podman-compose.yml" )
+    CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${rel}/podman-compose.yml" )
   else
-    CLAW_PODMAN_COMPOSE_ARGS=( -f "${script_dir}/podman-compose.yml" )
+    CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${script_dir}/podman-compose.yml" )
   fi
   if [[ ! -f "${env_file}" ]]; then
     return 0
@@ -53,11 +118,11 @@ claw_podman_load_compose_args() {
     echo "error: PODMAN_HOST_SOCK is no longer used; remove it from .env (host claw-pool-daemon is the only compose pool path)." >&2
     return 1
   fi
-  # Host `claw-pool-daemon` creates workers; gateway uses TCP to the daemon.
+  # Compose service `claw-pool-daemon` creates workers; gateway uses TCP on the compose network.
   mkdir -p "${script_dir}/.claw-pool-rpc"
+  claw_podman_write_pool_daemon_sidecar_env "${script_dir}" || return 1
   local pool_port="${CLAW_POOL_DAEMON_PORT:-9943}"
-  # Podman 默认 host.containers.internal；Docker Engine（尤其 Linux）常用 host.docker.internal，或 compose 里 pool-daemon 服务名。
-  local tcp_host="${CLAW_POOL_DAEMON_TCP_HOST:-host.containers.internal}"
+  local tcp_host="${CLAW_POOL_DAEMON_TCP_HOST:-claw-pool-daemon}"
   {
     printf '%s\n' '# GENERATED — do not edit. Overwritten by compose-include (pool RPC). kejiqing'
     printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"
@@ -114,9 +179,41 @@ claw_container_runtime_cli() {
   esac
 }
 
+# `docker network exists` missing on older docker.io; fall back to network ls. Author: kejiqing
+claw_network_exists() {
+  local rt="$1" name="$2"
+  if "${rt}" network exists "${name}" >/dev/null 2>&1; then
+    return 0
+  fi
+  "${rt}" network ls --format '{{.Name}}' 2>/dev/null | grep -qx "${name}"
+}
+
+claw_network_ensure() {
+  local rt="$1" name="$2"
+  if claw_network_exists "${rt}" "${name}"; then
+    return 0
+  fi
+  echo "creating ${rt} network ${name} …" >&2
+  if ! "${rt}" network create "${name}" 2>/dev/null; then
+    claw_network_exists "${rt}" "${name}" || return 1
+  fi
+}
+
+claw_compose_ensure_project_network() {
+  local rt project net
+  rt="$(claw_container_runtime_cli)" || return 1
+  project="${COMPOSE_PROJECT_NAME:-claw}"
+  net="${project}_default"
+  claw_network_ensure "${rt}" "${net}"
+}
+
 claw_compose() {
   local rt
   rt="$(claw_container_runtime_cli)" || return 1
+  claw_compose_prepare_socket || return 1
+  if [[ "${rt}" == podman ]]; then
+    claw_compose_ensure_project_network || return 1
+  fi
   if [[ -n "${CLAW_COMPOSE_WORKING_DIRECTORY:-}" ]]; then
     (
       cd "${CLAW_COMPOSE_WORKING_DIRECTORY}" || exit 1
@@ -147,6 +244,71 @@ claw_compose_in_pwd() {
     export PODMAN_COMPOSE_PROVIDER
   fi
   podman compose "$@"
+}
+
+# Postgres: `gateway.sh pg-up` / `pg-down`; `up` / `down` only gateway + pool. kejiqing
+claw_compose_pg_service() {
+  printf '%s' "${CLAW_COMPOSE_PG_SERVICE:-postgres}"
+}
+
+claw_compose_gateway_service_list() {
+  local podman_dir="$1"
+  local repo_env="$2"
+  local pg
+  pg="$(claw_compose_pg_service)"
+  local svc
+  while IFS= read -r svc; do
+    [[ -z "${svc}" ]] && continue
+    [[ "${svc}" == "${pg}" ]] && continue
+    printf '%s ' "${svc}"
+  done < <(
+    claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" config --services 2>/dev/null
+  )
+}
+
+claw_compose_gateway_down() {
+  local podman_dir="$1"
+  local repo_env="$2"
+  local -a svcs=()
+  # shellcheck disable=SC2206
+  svcs=($(claw_compose_gateway_service_list "${podman_dir}" "${repo_env}"))
+  if [[ ${#svcs[@]} -eq 0 ]]; then
+    echo "error: no gateway compose services found (expected besides postgres)" >&2
+    return 1
+  fi
+  claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" stop "${svcs[@]}"
+  claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" rm -f "${svcs[@]}" 2>/dev/null || true
+}
+
+claw_compose_gateway_up() {
+  local podman_dir="$1"
+  local repo_env="$2"
+  shift 2
+  local -a extra=("$@")
+  local -a svcs=()
+  # shellcheck disable=SC2206
+  svcs=($(claw_compose_gateway_service_list "${podman_dir}" "${repo_env}"))
+  if [[ ${#svcs[@]} -eq 0 ]]; then
+    echo "error: no gateway compose services found (expected besides postgres)" >&2
+    return 1
+  fi
+  claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d "${extra[@]}" "${svcs[@]}"
+}
+
+claw_compose_pg_up() {
+  local podman_dir="$1"
+  local repo_env="$2"
+  local pg
+  pg="$(claw_compose_pg_service)"
+  claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d "${pg}"
+}
+
+claw_compose_pg_down() {
+  local podman_dir="$1"
+  local repo_env="$2"
+  local pg
+  pg="$(claw_compose_pg_service)"
+  claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" stop "${pg}" 2>/dev/null || true
 }
 
 # Optional `up.sh --release …` image pin (.claw-image-release.env). Author: kejiqing

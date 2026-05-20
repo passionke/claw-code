@@ -76,16 +76,10 @@ upsert_env_kv "CLAW_PODMAN_EXTRA_ARGS" "${POOL_WORKER_RUN_EXTRA}"
 echo "OK: pool worker run extras updated (no worker-openai.env snapshot). Set CLAW_WORKER_ENV_FILE in pool daemon to repo .env."
 
 if [[ "${1:-}" == "--restart" ]]; then
-  echo "==> restarting stack (stop-with-tap / start-with-tap)"
-  "${PODMAN_DIR}/lib/stop-with-tap.sh" || true
-  pkill -f 'claude-tap.*--tap-no-launch' 2>/dev/null || true
+  echo "==> restarting tap + gateway (tap-down / down / tap-up / up)"
+  "${PODMAN_DIR}/lib/tap-down.sh" || true
+  "${PODMAN_DIR}/lib/down.sh" || true
   sleep 0.5
-  # shellcheck source=/dev/null
-  source "${PODMAN_DIR}/lib/compose-include.sh"
-  RT="$(claw_container_runtime_cli)" || die "need docker or podman"
-  mapfile -t STALE < <("${RT}" ps -aq --filter "name=claw-" 2>/dev/null || true)
-  if [[ "${#STALE[@]}" -gt 0 ]]; then
-    "${RT}" rm -f "${STALE[@]}" || true
-  fi
-  "${PODMAN_DIR}/lib/start-with-tap.sh"
+  "${PODMAN_DIR}/lib/tap-up.sh"
+  "${PODMAN_DIR}/lib/up.sh"
 fi
