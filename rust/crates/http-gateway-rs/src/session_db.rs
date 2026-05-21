@@ -39,6 +39,7 @@ pub struct ProjectConfigRow {
     pub rules_json: Value,
     pub mcp_servers_json: Value,
     pub skills_sources_json: Value,
+    pub allowed_tools_json: Value,
     pub claude_md: Option<String>,
 }
 
@@ -51,6 +52,7 @@ pub struct ProjectConfigUpsert<'a> {
     pub rules_json: &'a Value,
     pub mcp_servers_json: &'a Value,
     pub skills_sources_json: &'a Value,
+    pub allowed_tools_json: &'a Value,
     pub claude_md: Option<&'a str>,
 }
 
@@ -154,8 +156,14 @@ impl GatewaySessionDb {
                 rules_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                 mcp_servers_json JSONB NOT NULL DEFAULT '{}'::jsonb,
                 skills_sources_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                allowed_tools_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                 claude_md TEXT
             )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS allowed_tools_json JSONB NOT NULL DEFAULT '[]'::jsonb",
         )
         .execute(pool)
         .await?;
@@ -176,7 +184,7 @@ impl GatewaySessionDb {
     ) -> Result<Option<ProjectConfigRow>, SqlxError> {
         let row = sqlx::query(
             r"SELECT ds_id, content_rev, updated_at_ms, rules_json, mcp_servers_json,
-                      skills_sources_json, claude_md
+                      skills_sources_json, allowed_tools_json, claude_md
                FROM project_config WHERE ds_id = $1",
         )
         .bind(ds_id)
@@ -193,6 +201,7 @@ impl GatewaySessionDb {
         let rules_json: Value = row.try_get::<Json<Value>, _>("rules_json")?.0;
         let mcp_servers_json: Value = row.try_get::<Json<Value>, _>("mcp_servers_json")?.0;
         let skills_sources_json: Value = row.try_get::<Json<Value>, _>("skills_sources_json")?.0;
+        let allowed_tools_json: Value = row.try_get::<Json<Value>, _>("allowed_tools_json")?.0;
         let claude_md: Option<String> = row.try_get("claude_md")?;
 
         Ok(Some(ProjectConfigRow {
@@ -202,6 +211,7 @@ impl GatewaySessionDb {
             rules_json,
             mcp_servers_json,
             skills_sources_json,
+            allowed_tools_json,
             claude_md,
         }))
     }
@@ -213,14 +223,15 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO project_config (
                 ds_id, content_rev, updated_at_ms,
-                rules_json, mcp_servers_json, skills_sources_json, claude_md
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                rules_json, mcp_servers_json, skills_sources_json, allowed_tools_json, claude_md
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (ds_id) DO UPDATE SET
                 content_rev = EXCLUDED.content_rev,
                 updated_at_ms = EXCLUDED.updated_at_ms,
                 rules_json = EXCLUDED.rules_json,
                 mcp_servers_json = EXCLUDED.mcp_servers_json,
                 skills_sources_json = EXCLUDED.skills_sources_json,
+                allowed_tools_json = EXCLUDED.allowed_tools_json,
                 claude_md = EXCLUDED.claude_md",
         )
         .bind(row.ds_id)
@@ -229,6 +240,7 @@ impl GatewaySessionDb {
         .bind(Json(row.rules_json))
         .bind(Json(row.mcp_servers_json))
         .bind(Json(row.skills_sources_json))
+        .bind(Json(row.allowed_tools_json))
         .bind(row.claude_md)
         .execute(&self.pool)
         .await?;
@@ -817,6 +829,7 @@ mod tests {
             "tokenEnv": "CLAW_PROJECTS_GIT_TOKEN"
         }]);
         let t = now_ms();
+        let tools = json!(["bash", "read_file"]);
         db.upsert_project_config(ProjectConfigUpsert {
             ds_id,
             content_rev: "rev-1",
@@ -824,6 +837,7 @@ mod tests {
             rules_json: &rules,
             mcp_servers_json: &mcp,
             skills_sources_json: &skills,
+            allowed_tools_json: &tools,
             claude_md: Some("# Claude\n"),
         })
         .await
@@ -834,6 +848,7 @@ mod tests {
         assert_eq!(row.rules_json, rules);
         assert_eq!(row.mcp_servers_json, mcp);
         assert_eq!(row.skills_sources_json, skills);
+        assert_eq!(row.allowed_tools_json, tools);
         assert_eq!(row.claude_md.as_deref(), Some("# Claude\n"));
 
         db.upsert_project_config(ProjectConfigUpsert {
@@ -843,6 +858,7 @@ mod tests {
             rules_json: &json!([]),
             mcp_servers_json: &json!({}),
             skills_sources_json: &json!([]),
+            allowed_tools_json: &json!([]),
             claude_md: None,
         })
         .await

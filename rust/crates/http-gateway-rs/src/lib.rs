@@ -2,6 +2,7 @@
 
 pub mod pool;
 pub mod project_config_apply;
+pub mod project_tools;
 pub mod session_db;
 pub mod session_execution;
 pub mod session_merge;

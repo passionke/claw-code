@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claw Gateway — 项目管理</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --radius: 8px;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+    a { color: var(--accent); }
+    header {
+      padding: 12px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: end;
+    }
+    header label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+    header input, header select, button {
+      font: inherit; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--text); padding: 8px 10px;
+    }
+    button { cursor: pointer; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    button.secondary { background: transparent; color: var(--muted); border-color: var(--border); }
+    button.danger { background: var(--err); border-color: var(--err); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .layout { flex: 1; display: flex; min-height: 0; }
+    nav.tabs {
+      width: 200px;
+      flex-shrink: 0;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      padding: 12px 0;
+    }
+    nav.tabs button {
+      display: block; width: 100%; text-align: left;
+      background: transparent; border: none; color: var(--muted);
+      padding: 10px 16px; border-radius: 0; font-weight: 500;
+    }
+    nav.tabs button.active { background: rgba(59,130,246,0.15); color: var(--text); border-left: 3px solid var(--accent); }
+    main.panel { flex: 1; overflow: auto; padding: 16px 20px; }
+    .panel-section { display: none; }
+    .panel-section.active { display: block; }
+    h2 { margin: 0 0 8px; font-size: 18px; }
+    .hint { font-size: 12px; color: var(--muted); margin-bottom: 14px; line-height: 1.5; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+    th { color: var(--muted); font-weight: 600; }
+    tr.selected { background: rgba(59,130,246,0.12); }
+    tr { cursor: pointer; }
+    tr:hover { background: rgba(255,255,255,0.03); }
+    .badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; }
+    .badge.ok { background: rgba(34,197,94,0.2); color: var(--ok); }
+    .badge.no { background: rgba(239,68,68,0.15); color: var(--err); }
+    textarea, pre.json-view {
+      width: 100%; min-height: 280px; font-family: ui-monospace, Menlo, monospace;
+      font-size: 12px; line-height: 1.45; padding: 10px 12px;
+      border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--panel); color: var(--text); resize: vertical;
+    }
+    pre.json-view { min-height: 120px; overflow: auto; white-space: pre-wrap; }
+    .split { display: grid; grid-template-columns: 220px 1fr; gap: 12px; min-height: 320px; }
+    .skill-list { border: 1px solid var(--border); border-radius: var(--radius); overflow: auto; max-height: 400px; }
+    .skill-list button {
+      display: block; width: 100%; text-align: left; background: transparent;
+      border: none; border-bottom: 1px solid var(--border); color: var(--text);
+      padding: 8px 10px; font-weight: 400;
+    }
+    .skill-list button.active { background: rgba(59,130,246,0.15); }
+    #toast {
+      position: fixed; bottom: 16px; right: 16px; max-width: 360px;
+      padding: 10px 14px; border-radius: var(--radius); background: var(--panel);
+      border: 1px solid var(--border); font-size: 13px; display: none; z-index: 9;
+    }
+    #toast.err { border-color: var(--err); color: #fca5a5; }
+    #toast.ok { border-color: var(--ok); }
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 8px;
+      max-height: 420px;
+      overflow-y: auto;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: rgba(0,0,0,0.12);
+    }
+    .tool-item {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .tool-item:hover { background: rgba(255,255,255,0.04); }
+    .tool-item.disabled { opacity: 0.45; pointer-events: none; }
+    .tool-item label { cursor: pointer; flex: 1; }
+    .tool-item .name { font-weight: 600; font-family: ui-monospace, Menlo, monospace; }
+    .tool-item .desc { color: var(--muted); margin-top: 2px; line-height: 1.35; }
+    .tool-item .src { font-size: 10px; color: var(--muted); margin-top: 4px; }
+    input.inline-rev {
+      width: 100%; max-width: 320px; margin: 6px 0 10px; padding: 8px;
+      border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <label>网关
+      <select id="gateway-base">
+        <option value="http://127.0.0.1:18088">localhost</option>
+        <option value="http://192.168.9.252:18088">192.168.9.252</option>
+        <option value="http://10.200.2.171:18088">10.200.2.171</option>
+      </select>
+    </label>
+    <label>ds_id
+      <input id="ds-id" type="number" min="1" value="1" style="width:88px" />
+    </label>
+    <button type="button" id="btn-refresh-projects">刷新项目列表</button>
+    <a href="/" style="margin-left:auto;font-size:13px">← solve_async 调试</a>
+  </header>
+  <div class="layout">
+    <nav class="tabs">
+      <button type="button" data-tab="project" class="active">1. 项目</button>
+      <button type="button" data-tab="skills">2. Skills</button>
+      <button type="button" data-tab="mcp">3. MCP</button>
+      <button type="button" data-tab="rules">4. Rules</button>
+      <button type="button" data-tab="prompt">5. 系统提示词</button>
+      <button type="button" data-tab="tools">6. Tools</button>
+    </nav>
+    <main class="panel">
+      <section id="tab-project" class="panel-section active">
+        <h2>项目管理</h2>
+        <p class="hint">
+          项目以 <code>dsId</code> 为键，配置落在 <code>work_root/ds_{id}/home</code>（Git 同步）。
+          PostgreSQL 仅存 <code>gateway_sessions</code> / <code>gateway_turns</code> / <code>gateway_feedback</code>，不存项目正文。
+        </p>
+        <div class="toolbar">
+          <button type="button" id="btn-init-ds">初始化当前 ds</button>
+        </div>
+        <table>
+          <thead>
+            <tr><th>dsId</th><th>环境就绪</th><th>Skills</th><th>CLAUDE.md</th><th>workDir</th></tr>
+          </thead>
+          <tbody id="project-rows"></tbody>
+        </table>
+        <pre class="json-view" id="project-detail" style="margin-top:12px"></pre>
+      </section>
+
+      <section id="tab-skills" class="panel-section">
+        <h2>Project Skills</h2>
+        <p class="hint">路径：<code>ds_{id}/home/skills/&lt;name&gt;/SKILL.md</code>。列表 <code>GET /v1/skills/{ds_id}</code>，保存 <code>POST /v1/project/skills/{ds_id}</code>。</p>
+        <div class="split">
+          <div class="skill-list" id="skill-names"></div>
+          <div>
+            <label style="font-size:12px;color:var(--muted)">skillName（新建时填写）</label>
+            <input id="skill-name" type="text" placeholder="a-zA-Z0-9._-" style="width:100%;margin:6px 0 8px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)" />
+            <textarea id="skill-content" placeholder="SKILL.md 正文"></textarea>
+            <div class="toolbar" style="margin-top:8px">
+              <button type="button" id="btn-skill-save">保存 Skill</button>
+              <button type="button" class="secondary" id="btn-skill-reload">重新加载</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-mcp" class="panel-section">
+        <h2>Project MCP</h2>
+        <p class="hint">
+          注入存网关内存并写入 <code>.claw/settings.json</code>。
+          <code>GET /v1/mcp/injected/{ds_id}</code> 仅返回名称与探针结果，不返回完整配置；全量编辑请粘贴 JSON 后「全量替换」。
+        </p>
+        <pre class="json-view" id="mcp-status"></pre>
+        <label style="font-size:12px;color:var(--muted)">mcpServers（JSON 对象）</label>
+        <textarea id="mcp-servers" placeholder='{"sqlbot-streamable": {"type":"http","url":"..."}}'></textarea>
+        <div class="toolbar">
+          <button type="button" id="btn-mcp-merge">追加注入</button>
+          <button type="button" id="btn-mcp-replace">全量替换</button>
+          <button type="button" class="secondary" id="btn-mcp-reload">刷新状态</button>
+          <button type="button" class="danger" id="btn-mcp-clear">清空注入</button>
+        </div>
+      </section>
+
+      <section id="tab-rules" class="panel-section">
+        <h2>Project Rules</h2>
+        <p class="hint">
+          对应项目规则文档 <code>home/CLAUDE.md</code>（网关 <code>GET/POST /v1/project/claude/{ds_id}</code>），与下方「系统提示词」不同：后者为运行时拼装后的完整 system prompt。
+        </p>
+        <textarea id="rules-content" placeholder="CLAUDE.md 内容"></textarea>
+        <div class="toolbar">
+          <button type="button" id="btn-rules-save">保存 Rules</button>
+          <button type="button" class="secondary" id="btn-rules-reload">重新加载</button>
+        </div>
+      </section>
+
+      <section id="tab-prompt" class="panel-section">
+        <h2>系统提示词（Effective Prompt）</h2>
+        <p class="hint"><code>GET /v1/project/prompt/{ds_id}/effective</code> — 只读预览；<code>POST</code> 同路径触发重新加载。</p>
+        <div class="toolbar">
+          <button type="button" id="btn-prompt-load">加载</button>
+          <button type="button" class="secondary" id="btn-prompt-reload">重新加载 (POST)</button>
+        </div>
+        <pre class="json-view" id="prompt-sections"></pre>
+        <textarea id="prompt-message" readonly placeholder="message 全文"></textarea>
+      </section>
+
+      <section id="tab-tools" class="panel-section">
+        <h2>Tools 配置</h2>
+        <p class="hint">
+          存 <code>project_config.allowed_tools_json</code>（<code>PUT /v1/project/config/{ds_id}</code>）。
+          勾选为空表示不额外限制，沿用网关全局 <code>CLAW_ALLOWED_TOOLS</code>。
+        </p>
+        <label style="font-size:12px;color:var(--muted)">contentRev（保存时必填，可填版本号或时间戳）</label>
+        <input id="tools-content-rev" class="inline-rev" type="text" placeholder="例如 admin-20260520-1" />
+        <pre class="json-view" id="tools-gateway-policy" style="min-height:48px;margin-bottom:10px"></pre>
+        <div class="toolbar">
+          <button type="button" class="secondary" id="btn-tools-select-all">全选可选</button>
+          <button type="button" class="secondary" id="btn-tools-clear">清空勾选</button>
+          <button type="button" id="btn-tools-reload">重新加载</button>
+          <button type="button" id="btn-tools-save">保存到 project_config</button>
+        </div>
+        <div class="tool-grid" id="tools-catalog"></div>
+      </section>
+    </main>
+  </div>
+  <div id="toast"></div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let projects = [];
+    let projectConfigCache = null;
+    let toolsCatalog = null;
+
+    function gatewayBase() {
+      return $("gateway-base").value.trim().replace(/\/$/, "");
+    }
+    function dsId() {
+      const n = parseInt($("ds-id").value, 10);
+      return Number.isFinite(n) && n >= 1 ? n : 1;
+    }
+
+    function toast(msg, ok) {
+      const el = $("toast");
+      el.textContent = msg;
+      el.className = ok ? "ok" : "err";
+      el.style.display = "block";
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => { el.style.display = "none"; }, 4000);
+    }
+
+    async function proxyHttp(method, path, body) {
+      const res = await fetch("/__proxy__", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: gatewayBase(),
+          method,
+          path,
+          body: body === undefined ? null : body,
+          headers: {},
+        }),
+      });
+      const wrap = await res.json().catch(() => ({}));
+      if (!wrap.ok) {
+        let msg = wrap.bodyText || wrap.error || "请求失败";
+        try {
+          const j = JSON.parse(wrap.bodyText);
+          if (j && j.detail) msg = j.detail;
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      try {
+        return JSON.parse(wrap.bodyText);
+      } catch (_) {
+        return wrap.bodyText;
+      }
+    }
+
+    function renderProjectTable() {
+      const tbody = $("project-rows");
+      tbody.innerHTML = "";
+      const cur = dsId();
+      for (const p of projects) {
+        const tr = document.createElement("tr");
+        if (p.dsId === cur) tr.className = "selected";
+        tr.innerHTML =
+          "<td>" + p.dsId + "</td>" +
+          '<td><span class="badge ' + (p.environmentPrepared ? "ok" : "no") + '">' +
+          (p.environmentPrepared ? "就绪" : "未就绪") + "</span></td>" +
+          "<td>" + (p.skillsCount ?? 0) + "</td>" +
+          "<td>" + (p.claudeHomePresent ? (p.claudeHomeBytes || 0) + " B" : "—") + "</td>" +
+          "<td style='font-size:11px;color:var(--muted)'>" + (p.workDir || "") + "</td>";
+        tr.addEventListener("click", () => {
+          $("ds-id").value = String(p.dsId);
+          $("project-detail").textContent = JSON.stringify(p, null, 2);
+          renderProjectTable();
+          loadTabData();
+        });
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function loadProjects() {
+      const h = await proxyHttp("GET", "/healthz");
+      projects = (h.projectsGitMirror && h.projectsGitMirror.dsWorkspaces) || [];
+      projects.sort((a, b) => a.dsId - b.dsId);
+      renderProjectTable();
+      const cur = projects.find((p) => p.dsId === dsId());
+      $("project-detail").textContent = cur ? JSON.stringify(cur, null, 2) : "（无该 ds 工作区，可先初始化）";
+      toast("已加载 " + projects.length + " 个项目", true);
+    }
+
+    async function initDs() {
+      const id = dsId();
+      const r = await proxyHttp("POST", "/v1/init", { dsId: id });
+      toast("ds_" + id + " 初始化完成", true);
+      $("project-detail").textContent = JSON.stringify(r, null, 2);
+      await loadProjects();
+    }
+
+    async function loadSkills() {
+      const id = dsId();
+      const data = await proxyHttp("GET", "/v1/skills/" + id);
+      const list = $("skill-names");
+      list.innerHTML = "";
+      const skills = data.skills || [];
+      if (!skills.length) {
+        list.innerHTML = "<div style='padding:10px;color:var(--muted)'>无 Skill</div>";
+        $("skill-content").value = "";
+        return;
+      }
+      skills.forEach((s, i) => {
+        const btn = document.createElement("button");
+        btn.textContent = s.skill_name;
+        btn.addEventListener("click", () => {
+          list.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+          $("skill-name").value = s.skill_name;
+          $("skill-content").value = s.skill_content || "";
+        });
+        if (i === 0) {
+          btn.classList.add("active");
+          $("skill-name").value = s.skill_name;
+          $("skill-content").value = s.skill_content || "";
+        }
+        list.appendChild(btn);
+      });
+    }
+
+    async function saveSkill() {
+      const name = $("skill-name").value.trim();
+      const content = $("skill-content").value;
+      if (!name) throw new Error("skillName 不能为空");
+      const r = await proxyHttp("POST", "/v1/project/skills/" + dsId(), {
+        skillName: name,
+        skillContent: content,
+      });
+      toast("Skill 已保存 " + (r.gitSync && r.gitSync.commitId ? r.gitSync.commitId.slice(0, 8) : ""), true);
+      await loadSkills();
+    }
+
+    async function loadMcp() {
+      const data = await proxyHttp("GET", "/v1/mcp/injected/" + dsId());
+      $("mcp-status").textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function injectMcp(replace) {
+      let servers;
+      try {
+        servers = JSON.parse($("mcp-servers").value || "{}");
+      } catch (e) {
+        throw new Error("mcpServers JSON 无效");
+      }
+      if (typeof servers !== "object" || Array.isArray(servers)) {
+        throw new Error("mcpServers 必须是 JSON 对象");
+      }
+      const r = await proxyHttp("POST", "/v1/mcp/inject", {
+        dsId: dsId(),
+        mcpServers: servers,
+        replace,
+      });
+      $("mcp-status").textContent = JSON.stringify(r, null, 2);
+      toast(replace ? "MCP 全量替换完成" : "MCP 追加注入完成", true);
+    }
+
+    async function clearMcp() {
+      const r = await proxyHttp("DELETE", "/v1/mcp/injected/" + dsId());
+      $("mcp-servers").value = "{}";
+      $("mcp-status").textContent = JSON.stringify(r, null, 2);
+      toast("已清空 MCP 注入", true);
+    }
+
+    async function loadRules() {
+      const r = await proxyHttp("GET", "/v1/project/claude/" + dsId());
+      $("rules-content").value = r.content || "";
+      toast(r.exists ? "Rules 已加载" : "CLAUDE.md 不存在（空）", true);
+    }
+
+    async function saveRules() {
+      const r = await proxyHttp("POST", "/v1/project/claude/" + dsId(), {
+        content: $("rules-content").value,
+      });
+      toast("Rules 已保存 → " + (r.path || "CLAUDE.md"), true);
+    }
+
+    async function loadPrompt(reload) {
+      const method = reload ? "POST" : "GET";
+      const r = await proxyHttp(method, "/v1/project/prompt/" + dsId() + "/effective");
+      $("prompt-sections").textContent = "sections:\n" + JSON.stringify(r.sections || [], null, 2);
+      $("prompt-message").value = r.message || "";
+      toast(reload ? "系统提示词已重新加载" : "系统提示词已加载", true);
+    }
+
+    function matchToolPattern(pattern, name) {
+      if (pattern === name) return true;
+      if (!pattern.includes("*")) return false;
+      if (pattern.endsWith("*")) {
+        return name.startsWith(pattern.slice(0, -1));
+      }
+      return false;
+    }
+
+    function toolSelectableByGateway(name, gatewayAllowed) {
+      if (!gatewayAllowed || gatewayAllowed.length === 0) return true;
+      return gatewayAllowed.some((p) => matchToolPattern(p, name));
+    }
+
+    async function loadProjectConfig() {
+      const id = dsId();
+      try {
+        projectConfigCache = await proxyHttp("GET", "/v1/project/config/" + id);
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (msg.indexOf("no project_config") >= 0 || msg.indexOf("404") >= 0) {
+          projectConfigCache = {
+            dsId: id,
+            contentRev: "",
+            rulesJson: [],
+            mcpServersJson: {},
+            skillsSourcesJson: [],
+            allowedToolsJson: [],
+            claudeMd: null,
+          };
+        } else {
+          throw e;
+        }
+      }
+      if (!$("tools-content-rev").value.trim() && projectConfigCache.contentRev) {
+        $("tools-content-rev").value = projectConfigCache.contentRev;
+      }
+      return projectConfigCache;
+    }
+
+    function renderToolsCatalog() {
+      const grid = $("tools-catalog");
+      grid.innerHTML = "";
+      if (!toolsCatalog || !toolsCatalog.tools) {
+        grid.textContent = "（无 catalog 数据，请先重新加载）";
+        return;
+      }
+      const gatewayAllowed = toolsCatalog.gatewayAllowedTools || [];
+      $("tools-gateway-policy").textContent =
+        "gatewayAllowedTools: " +
+        (gatewayAllowed.length ? JSON.stringify(gatewayAllowed) : "（空 = 不限制内置工具名）");
+
+      const selected = new Set(
+        Array.isArray(projectConfigCache && projectConfigCache.allowedToolsJson)
+          ? projectConfigCache.allowedToolsJson
+          : []
+      );
+      const emptyMeansAll = selected.size === 0;
+
+      toolsCatalog.tools.forEach((t) => {
+        const ok = toolSelectableByGateway(t.name, gatewayAllowed);
+        const row = document.createElement("div");
+        row.className = "tool-item" + (ok ? "" : " disabled");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.dataset.toolName = t.name;
+        if (!emptyMeansAll && selected.has(t.name)) cb.checked = true;
+        const lbl = document.createElement("label");
+        const nameEl = document.createElement("div");
+        nameEl.className = "name";
+        nameEl.textContent = t.name;
+        const descEl = document.createElement("div");
+        descEl.className = "desc";
+        descEl.textContent = t.description || "";
+        const srcEl = document.createElement("div");
+        srcEl.className = "src";
+        srcEl.textContent = t.source || "";
+        lbl.appendChild(nameEl);
+        lbl.appendChild(descEl);
+        lbl.appendChild(srcEl);
+        lbl.prepend(cb);
+        row.appendChild(lbl);
+        grid.appendChild(row);
+      });
+    }
+
+    async function loadTools() {
+      toolsCatalog = await proxyHttp("GET", "/v1/project/tools/catalog");
+      await loadProjectConfig();
+      if (!$("tools-content-rev").value.trim()) {
+        $("tools-content-rev").value = "admin-" + Date.now();
+      }
+      renderToolsCatalog();
+      toast("Tools 配置已加载", true);
+    }
+
+    function collectSelectedTools() {
+      const names = [];
+      $("tools-catalog").querySelectorAll('input[type="checkbox"]:checked').forEach((cb) => {
+        if (cb.dataset.toolName) names.push(cb.dataset.toolName);
+      });
+      return names;
+    }
+
+    async function saveTools() {
+      const rev = $("tools-content-rev").value.trim();
+      if (!rev) throw new Error("contentRev 不能为空");
+      await loadProjectConfig();
+      const cfg = projectConfigCache || {};
+      const allowedToolsJson = collectSelectedTools();
+      const body = {
+        contentRev: rev,
+        rulesJson: cfg.rulesJson || [],
+        mcpServersJson: cfg.mcpServersJson || {},
+        skillsSourcesJson: cfg.skillsSourcesJson || [],
+        allowedToolsJson,
+        claudeMd: cfg.claudeMd || undefined,
+      };
+      const r = await proxyHttp("PUT", "/v1/project/config/" + dsId(), body);
+      projectConfigCache = r;
+      $("tools-content-rev").value = r.contentRev || rev;
+      renderToolsCatalog();
+      toast(
+        "已保存 allowedToolsJson（" + allowedToolsJson.length + " 项" +
+          (allowedToolsJson.length === 0 ? "，空=仅用全局策略" : "") + "）",
+        true
+      );
+    }
+
+    function loadTabData() {
+      const tab = document.querySelector("nav.tabs button.active").dataset.tab;
+      if (tab === "skills") loadSkills().catch((e) => toast(e.message, false));
+      if (tab === "mcp") loadMcp().catch((e) => toast(e.message, false));
+      if (tab === "rules") loadRules().catch((e) => toast(e.message, false));
+      if (tab === "prompt") loadPrompt(false).catch((e) => toast(e.message, false));
+      if (tab === "tools") loadTools().catch((e) => toast(e.message, false));
+    }
+
+    document.querySelectorAll("nav.tabs button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".panel-section").forEach((s) => s.classList.remove("active"));
+        btn.classList.add("active");
+        $("tab-" + btn.dataset.tab).classList.add("active");
+        loadTabData();
+      });
+    });
+
+    $("btn-refresh-projects").addEventListener("click", () => loadProjects().catch((e) => toast(e.message, false)));
+    $("btn-init-ds").addEventListener("click", () => initDs().catch((e) => toast(e.message, false)));
+    $("btn-skill-save").addEventListener("click", () => saveSkill().catch((e) => toast(e.message, false)));
+    $("btn-skill-reload").addEventListener("click", () => loadSkills().catch((e) => toast(e.message, false)));
+    $("btn-mcp-merge").addEventListener("click", () => injectMcp(false).catch((e) => toast(e.message, false)));
+    $("btn-mcp-replace").addEventListener("click", () => injectMcp(true).catch((e) => toast(e.message, false)));
+    $("btn-mcp-reload").addEventListener("click", () => loadMcp().catch((e) => toast(e.message, false)));
+    $("btn-mcp-clear").addEventListener("click", () => clearMcp().catch((e) => toast(e.message, false)));
+    $("btn-rules-save").addEventListener("click", () => saveRules().catch((e) => toast(e.message, false)));
+    $("btn-rules-reload").addEventListener("click", () => loadRules().catch((e) => toast(e.message, false)));
+    $("btn-prompt-load").addEventListener("click", () => loadPrompt(false).catch((e) => toast(e.message, false)));
+    $("btn-prompt-reload").addEventListener("click", () => loadPrompt(true).catch((e) => toast(e.message, false)));
+    $("btn-tools-reload").addEventListener("click", () => loadTools().catch((e) => toast(e.message, false)));
+    $("btn-tools-save").addEventListener("click", () => saveTools().catch((e) => toast(e.message, false)));
+    $("btn-tools-select-all").addEventListener("click", () => {
+      $("tools-catalog").querySelectorAll(".tool-item:not(.disabled) input[type=checkbox]").forEach((cb) => {
+        cb.checked = true;
+      });
+    });
+    $("btn-tools-clear").addEventListener("click", () => {
+      $("tools-catalog").querySelectorAll("input[type=checkbox]").forEach((cb) => {
+        cb.checked = false;
+      });
+    });
+    $("ds-id").addEventListener("change", () => {
+      projectConfigCache = null;
+      $("tools-content-rev").value = "";
+      renderProjectTable();
+      loadTabData();
+    });
+
+    loadProjects().catch((e) => toast(e.message, false));
+  </script>
+</body>
+</html>

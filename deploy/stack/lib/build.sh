@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build gateway (http-gateway-rs + claw-pool-daemon) and worker (claw) images in one run.
-# Same rust/ tree, same base images and rustup build-args — pair after any Rust change. Author: kejiqing
-#
-# Full output is always tee'd to deploy/stack/.build.log (override: --log PATH, disable: --no-log).
-# Do not pipe this script to `tail` if you need the middle — open the log file instead.
-#
-# Base image registry (hostname only, no path); same name as GitHub Actions variable
-# CONTAINER_BASE_REGISTRY in claw-code-image workflow.
+# Build gateway + worker images. Darwin default: linux-compile (podman run + cache volumes) then
+# prebuilt Containerfiles (no cargo during `podman build`). CI/Linux: full Containerfile.*.
+# Author: kejiqing
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 if [[ -f "${ROOT_DIR}/.env" ]]; then
   set -a
@@ -27,21 +22,27 @@ build_usage() {
 Usage: gateway.sh build [IMAGE_TAG] [options]
 
 Options:
-  --log PATH    Tee full stdout/stderr to PATH (default: deploy/stack/.build.log)
-  --no-log      Print only to terminal (no log file)
-  -h, --help    Show this help
+  --no-clean       Skip gateway.sh clean before build (default: clean first)
+  --log PATH       Tee full stdout/stderr to PATH (default: deploy/stack/.build.log)
+  --no-log         Print only to terminal
+  --in-container   Force in-image cargo build (slow on macOS; hits crates.io in build)
+  -h, --help       Show this help
 
-Tips:
-  Full log while building:  tail -f deploy/stack/.build.log
-  Avoid losing output:      do not pipe build to \`tail\`; read the log file instead.
+Darwin default: podman run compile + prebuilt images (see deploy/stack/lib/linux-compile.sh).
 EOF
 }
 
+CLAW_BUILD_IN_CONTAINER_IMAGE=0
+CLAW_BUILD_NO_CLEAN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h | --help)
       build_usage
       exit 0
+      ;;
+    --no-clean)
+      CLAW_BUILD_NO_CLEAN=1
+      shift
       ;;
     --log)
       [[ $# -ge 2 ]] || {
@@ -53,6 +54,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-log)
       CLAW_BUILD_NO_LOG=1
+      shift
+      ;;
+    --in-container)
+      CLAW_BUILD_IN_CONTAINER_IMAGE=1
       shift
       ;;
     --*)
@@ -68,6 +73,7 @@ done
 
 IMAGE_TAG="${1:-local}"
 IMAGE_NAME="claw-gateway-rs:${IMAGE_TAG}"
+WORKER_IMAGE_NAME="claw-gateway-worker:${IMAGE_TAG}"
 
 step() {
   echo ""
@@ -83,73 +89,109 @@ setup_build_log() {
   : >"${BUILD_LOG}"
   echo "==> build log: ${BUILD_LOG}"
   echo "==> started: $(date '+%Y-%m-%d %H:%M:%S %z')"
-  echo "==> tip: in another terminal run: tail -f ${BUILD_LOG}"
   exec > >(tee -a "${BUILD_LOG}") 2>&1
 }
 
 setup_build_log
 
+if [[ "${CLAW_BUILD_NO_CLEAN}" != "1" ]]; then
+  step "0/N clean (default before build; gateway.sh build --no-clean to skip)"
+  "${ROOT_DIR}/deploy/stack/lib/clean.sh"
+fi
+
 if [[ "${CLAW_USE_DOCKER_IO:-}" == "1" ]] || [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   REG="docker.io"
-  step "config: base images from docker.io (CI or CLAW_USE_DOCKER_IO=1)"
 else
   REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
   REG="${REG%/}"
-  step "config: base images from ${REG}"
 fi
 RUST_BASE_IMAGE="${REG}/library/rust:1.88-bookworm"
 DEBIAN_BASE_IMAGE="${REG}/library/debian:bookworm-slim"
 
-RUSTUP_BUILD_ARGS=()
-if [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
-  RUSTUP_BUILD_ARGS=(
-    --build-arg "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static"
-    --build-arg "RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup"
-  )
-  echo "rustup: USTC mirror (CLAW_USE_CN_RUST_MIRROR=1)"
-  echo "note: first USTC build re-runs STEP rustup (not cached); rustc ~150MB — use: tail -f ${BUILD_LOG}"
-else
-  echo "rustup: static.rust-lang.org (set CLAW_USE_CN_RUST_MIRROR=1 in .env for USTC on container build)"
-fi
+cn_mirror_enabled() {
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]] && return 1
+  [[ "${CLAW_USE_CN_CRATES_MIRROR:-0}" == "1" ]] || [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]]
+}
+
+use_prebuilt_linux_path() {
+  [[ "${CLAW_BUILD_IN_CONTAINER_IMAGE}" == "1" ]] && return 1
+  [[ "$(uname -s)" == "Darwin" ]]
+}
 
 CONTAINER_CLI="$(claw_container_runtime_cli)" || exit 1
-echo "container CLI: ${CONTAINER_CLI} (override with CLAW_CONTAINER_RUNTIME=podman|docker)"
+CN_FLAG=0
+cn_mirror_enabled && CN_FLAG=1
 
-step "1/3 image ${IMAGE_NAME} (Containerfile.gateway-rs)"
-set +u
-"${CONTAINER_CLI}" build \
-  --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
-  --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
-  "${RUSTUP_BUILD_ARGS[@]}" \
-  -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs" \
-  -t "${IMAGE_NAME}" \
-  "${ROOT_DIR}"
-set -u
-echo "Built image: ${IMAGE_NAME}"
+if use_prebuilt_linux_path; then
+  step "config: Darwin → podman run compile + prebuilt images (no cargo in podman build)"
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/deploy/stack/lib/linux-compile.sh"
+  step "1/3 linux compile (podman run; volumes claw-cargo-registry / claw-cargo-git persist)"
+  claw_linux_compile_release "${ROOT_DIR}" "${CONTAINER_CLI}" "${RUST_BASE_IMAGE}" "${CN_FLAG}"
 
-WORKER_IMAGE_NAME="claw-gateway-worker:${IMAGE_TAG}"
-step "2/3 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker)"
-set +u
-"${CONTAINER_CLI}" build \
-  --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
-  --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
-  "${RUSTUP_BUILD_ARGS[@]}" \
-  -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker" \
-  -t "${WORKER_IMAGE_NAME}" \
-  "${ROOT_DIR}"
-set -u
-echo "Built image: ${WORKER_IMAGE_NAME}"
+  step "2/3 image ${IMAGE_NAME} (Containerfile.gateway-rs.prebuilt)"
+  "${CONTAINER_CLI}" build \
+    --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs.prebuilt" \
+    -t "${IMAGE_NAME}" \
+    "${ROOT_DIR}"
 
-if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
-  step "3/3 host claw-pool-daemon (cargo release, Darwin)"
-  (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
-  echo "Host binary: ${ROOT_DIR}/rust/target/release/claw-pool-daemon"
+  step "3/3 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
+  "${CONTAINER_CLI}" build \
+    --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker.prebuilt" \
+    -t "${WORKER_IMAGE_NAME}" \
+    "${ROOT_DIR}"
+
+  if command -v cargo >/dev/null 2>&1; then
+    step "host claw-pool-daemon (macOS sidecar; optional if image binary used)"
+    (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon) || true
+    echo "Host binary (pool sidecar): ${ROOT_DIR}/rust/target/release/claw-pool-daemon"
+  fi
 else
-  step "3/3 host claw-pool-daemon skipped (not Darwin or no cargo in PATH)"
+  step "config: in-image cargo build (Containerfile.gateway-rs)"
+  RUSTUP_BUILD_ARGS=()
+  CARGO_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_CRATES_MIRROR=0")
+  if [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+    RUSTUP_BUILD_ARGS=(
+      --build-arg "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static"
+      --build-arg "RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup"
+    )
+  fi
+  if cn_mirror_enabled; then
+    CARGO_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_CRATES_MIRROR=1")
+  fi
+
+  step "1/3 image ${IMAGE_NAME}"
+  # shellcheck disable=SC2086
+  "${CONTAINER_CLI}" build \
+    --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
+    --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+    "${RUSTUP_BUILD_ARGS[@]}" \
+    "${CARGO_MIRROR_BUILD_ARGS[@]}" \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs" \
+    -t "${IMAGE_NAME}" \
+    "${ROOT_DIR}"
+
+  step "2/3 image ${WORKER_IMAGE_NAME}"
+  # shellcheck disable=SC2086
+  "${CONTAINER_CLI}" build \
+    --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
+    --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+    "${RUSTUP_BUILD_ARGS[@]}" \
+    "${CARGO_MIRROR_BUILD_ARGS[@]}" \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker" \
+    -t "${WORKER_IMAGE_NAME}" \
+    "${ROOT_DIR}"
+
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
+    step "3/3 host claw-pool-daemon"
+    (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
+  fi
 fi
 
 step "done"
-echo "finished: $(date '+%Y-%m-%d %H:%M:%S %z')"
+echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME}"
 if [[ "${CLAW_BUILD_NO_LOG}" != "1" ]]; then
-  echo "full log: ${BUILD_LOG}"
+  echo "log: ${BUILD_LOG}"
 fi

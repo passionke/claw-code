@@ -4,18 +4,39 @@ Author: kejiqing
 
 **稳定做法只有一条**：在仓库根目录准备好 `.env`，打好镜像，用 **`./deploy/stack/gateway.sh up`** 起服务。不要用「手写一长串 compose / 只挂单个 compose 文件 / 在容器里配 macOS 的 `/Users/...` 路径」这类容易翻车的玩法。
 
-**约定**：**生产机一律 Docker**（`deploy/stack/env.production.docker.example`）；**本地开发**才用 podman（`env.production.rootless.example`）。生产 `.env` 写 `CLAW_CONTAINER_RUNTIME=docker`、`CLAW_SOLVE_ISOLATION=docker_pool`，不要 `CLAW_CONTAINER_SOCKET`。装真 Docker 后 `sudo touch /etc/containers/nodocker`，避免 podman 冒充 `docker` 命令。
+**约定（两套并存，用 `.env` 选一套，脚本共用 `gateway.sh`）**：
+
+| 环境 | 模板 | 关键变量 |
+| --- | --- | --- |
+| 生产 Linux | `env.production.docker.example` | `CLAW_CONTAINER_RUNTIME=docker`，`CLAW_SOLVE_ISOLATION=docker_pool`，**不要** `CLAW_CONTAINER_SOCKET` |
+| 本地 / rootless podman | `env.production.rootless.example` | `CLAW_CONTAINER_RUNTIME=podman`；Linux 可选手写 socket；**macOS** 一般留空（自动用 `podman machine` API sock） |
+
+`compose-include.sh` 按 `CLAW_CONTAINER_RUNTIME` 解析 socket：**docker 只认** `/var/run/docker.sock`；**podman 不会在 macOS 上误回落到 docker.sock**。装真 Docker 的生产机可 `sudo touch /etc/containers/nodocker`，避免 podman 冒充 `docker` 命令。
 
 `gateway.sh up` 会跑 **preflight**（socket / postgres 镜像 / Git 必填项）；**Docker 下不由脚本预建 compose 网络**（避免 `claw_default` 标签冲突）。
 
-**单入口（推荐）**：只记一个命令 **`./deploy/stack/gateway.sh`**。实现脚本在 **`deploy/stack/lib/`**（由 gateway 调用；一般不要直接跑）。常用：
+**单入口**：**`./deploy/stack/gateway.sh`**。本地打包+部署记下面两条即可（不要等 `podman build` 里 cargo，那会卡 `Updating crates.io index`）。
 
 ```bash
-./deploy/stack/gateway.sh build
-./deploy/stack/gateway.sh up
-./deploy/stack/gateway.sh check
-./deploy/stack/gateway.sh ps
+# 标准：改 rust 后打包并重启（日志 deploy/stack/.build.log，可 tail -f）
+./deploy/stack/gateway.sh pack-deploy
+
+# 仅清编译缓存（rust/target、.linux-artifacts；默认不删 claw-workspace）
+./deploy/stack/gateway.sh clean
+
+# 或拆开：
+./deploy/stack/gateway.sh build          # 默认先 clean，再 podman run 编译 + 打镜像
+./deploy/stack/gateway.sh build --no-clean local   # 增量编译、省时间
+./deploy/stack/gateway.sh restart
+
+# 只重启、不重新编译（镜像已是新的才有效）
+./deploy/stack/gateway.sh restart
+
+# 宿主机单轮 solve（不经过 worker 容器）
+./deploy/stack/gateway.sh solve-once-local
 ```
+
+实现脚本在 **`deploy/stack/lib/`**（`pack-deploy.sh`、`build.sh`、`solve-once-local.sh` 等）。**不要**用 `build --in-container`（镜像内 cargo，慢且易超时）。`scripts/local-pack-deploy.sh` 等仅为兼容，转调 `gateway.sh`。
 
 其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh` 一次串联**：先 **`Containerfile.gateway-rs`**（`http-gateway-rs` + 宿主机用的 **`claw-pool-daemon`**），再 **`Containerfile.gateway-worker`**（池内 **`claw`**），共用同一套 **`rust/`** 与 base / rustup build-arg，避免「网关新、worker 旧」。
 
@@ -59,13 +80,9 @@ cp .env.example .env
 
 ### 1.2 镜像
 
-**本地开发**：改 `rust/` 后**一次**编网关 + worker（同一套 base / rustup 参数，避免只新网关、worker 还是旧的）：
+**本地开发（macOS）**：**首次** `podman run` 编译会慢（拉依赖，和 Rust 有关，不是网关逻辑慢）；**第二次起** 卷 `claw-cargo-registry` 缓存后明显变快。镜像打包只做 COPY（秒级）。`.env` 保留 `CLAW_USE_CN_CRATES_MIRROR=1`。
 
-```bash
-./deploy/stack/gateway.sh build
-```
-
-等价：`./deploy/stack/lib/build.sh`（可选 tag 参数，默认 `local` → `claw-gateway-rs:local` 与 `claw-gateway-worker:local`）。**在 macOS 上**同一步还会 **`cargo build --release` 宿主 `claw-pool-daemon`**（池逻辑改在 `rust/` 里时，只 `restart` 不够，须先 `build` 或手编 daemon，否则宿主机仍跑旧二进制）。
+**Linux / CI**：镜像内完整编译，用同一 `gateway.sh build`（非 Darwin 路径）。
 
 ### 1.3 启动与检查
 
@@ -147,7 +164,7 @@ podman ps   # 或  docker ps
 ## 4. 构建说明摘录
 
 - 基础镜像仓库：默认 `CONTAINER_BASE_REGISTRY=docker.1ms.run`（`.env`）；`CLAW_USE_DOCKER_IO=1` 时用 `docker.io`。
-- 国内可选：`CLAW_USE_CN_RUST_MIRROR=1`，以及宿主 `rust/.cargo/config.toml.example` 拷贝（见 `.env.example` 注释）。
+- 国内可选：`CLAW_USE_CN_RUST_MIRROR=1`（仅影响 **首次** rustup 相关层；镜像已改为用 base 镜像自带 **stable**，不再 `rustup install nightly`，避免 nightly 每天更新导致反复下 `rust-std`）。宿主 `rust/.cargo/config.toml.example` 拷贝见 `.env.example` 注释。
 
 ---
 

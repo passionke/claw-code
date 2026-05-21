@@ -1,31 +1,77 @@
 # shellcheck shell=bash
 # Sets CLAW_POOL_WORK_ROOT_HOST and CLAW_PODMAN_COMPOSE_ARGS. Default solve mode is podman_pool (second compose file). Author: kejiqing
 
+# Resolve a socket path that exists on the **host** (compose / pool-daemon talk to the API here).
+# Docker hosts: /var/run/docker.sock only. Podman: never guess docker.sock on macOS (VM socket ≠ host path).
+# Author: kejiqing
+claw_socket_usable() {
+  local s="$1"
+  [[ -n "${s}" && -S "${s}" && -r "${s}" && -w "${s}" ]]
+}
+
+claw_podman_machine_host_socket() {
+  command -v podman >/dev/null 2>&1 || return 1
+  local p=""
+  p="$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null || true)"
+  if claw_socket_usable "${p}"; then
+    printf '%s' "${p}"
+    return 0
+  fi
+  return 1
+}
+
 claw_container_socket_path() {
   if [[ -n "${CLAW_CONTAINER_SOCKET:-}" ]]; then
     printf '%s' "${CLAW_CONTAINER_SOCKET}"
     return 0
   fi
+
   local rt
   rt="$(claw_container_runtime_cli)" || return 1
-  if [[ "$rt" == podman ]] && command -v podman >/dev/null 2>&1; then
-    local p=""
+
+  if [[ "${rt}" == docker ]]; then
+    printf '%s' /var/run/docker.sock
+    return 0
+  fi
+
+  # podman — try host-visible sockets only (skip VM-only paths from `podman info` on macOS).
+  local -a tried=() p=""
+  if command -v podman >/dev/null 2>&1; then
     p="$(podman info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null || true)"
-    if [[ -n "${p}" && "${p}" != "<nil>" && -S "${p}" ]]; then
+    if [[ -n "${p}" && "${p}" != "<nil>" ]]; then
+      tried+=("${p}")
+      if claw_socket_usable "${p}"; then
+        printf '%s' "${p}"
+        return 0
+      fi
+    fi
+    if p="$(claw_podman_machine_host_socket)"; then
+      tried+=("${p}")
       printf '%s' "${p}"
       return 0
     fi
   fi
-  case "$rt" in
-    podman)
-      if [[ -S /run/podman/podman.sock ]]; then
-        printf '%s' /run/podman/podman.sock
-      else
-        printf '%s' /var/run/docker.sock
-      fi
-      ;;
-    *) printf '%s' /var/run/docker.sock ;;
-  esac
+
+  local uid_path="/run/user/$(id -u)/podman/podman.sock"
+  tried+=("${uid_path}" /run/podman/podman.sock)
+  for p in "${uid_path}" /run/podman/podman.sock; do
+    if claw_socket_usable "${p}"; then
+      printf '%s' "${p}"
+      return 0
+    fi
+  done
+
+  # Linux only: podman-docker shim may expose docker.sock (do not use this default on Darwin).
+  if [[ "$(uname -s)" != Darwin ]] && claw_socket_usable /var/run/docker.sock; then
+    printf '%s' /var/run/docker.sock
+    return 0
+  fi
+
+  echo "error: no podman API socket on host (runtime=podman)" >&2
+  echo "  tried: ${tried[*]}" >&2
+  echo "hint: macOS → podman machine start; Linux rootless → set CLAW_CONTAINER_SOCKET in .env" >&2
+  echo "      (podman info --format '{{.Host.RemoteSocket.Path}}' or podman machine inspect)" >&2
+  return 1
 }
 
 # docker-compose v1 (podman compose backend on many Linux hosts) needs DOCKER_HOST + socket RW. Author: kejiqing

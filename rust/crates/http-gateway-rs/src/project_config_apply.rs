@@ -3,13 +3,15 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use crate::project_tools::parse_allowed_tools_json;
 use crate::session_db::ProjectConfigRow;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::process::Stdio;
 use tokio::fs;
 use tokio::process::Command;
 
 pub const APPLIED_REV_MARKER: &str = ".claw/project_config_applied_rev";
+pub const ALLOWED_TOOLS_MARKER: &str = ".claw/project_allowed_tools.json";
 
 #[derive(Debug)]
 pub struct ProjectConfigApplyError {
@@ -386,6 +388,27 @@ async fn apply_full(work_dir: &Path, row: &ProjectConfigRow) -> ApplyResult<()> 
         write_claude(work_dir, text).await?;
     }
     materialize_skills_sources(work_dir, &row.skills_sources_json).await?;
+    write_allowed_tools_marker(work_dir, row).await?;
+    Ok(())
+}
+
+async fn write_allowed_tools_marker(work_dir: &Path, row: &ProjectConfigRow) -> ApplyResult<()> {
+    let claw_dir = work_dir.join(".claw");
+    fs::create_dir_all(&claw_dir)
+        .await
+        .map_err(|e| ProjectConfigApplyError::new(format!("create .claw: {e}")))?;
+    let selected = parse_allowed_tools_json(&row.allowed_tools_json)
+        .map_err(|e| ProjectConfigApplyError::new(format!("allowed_tools_json invalid: {e}")))?;
+    let body = json!({
+        "contentRev": row.content_rev,
+        "allowedTools": selected,
+    });
+    let bytes = serde_json::to_vec_pretty(&body).map_err(|e| {
+        ProjectConfigApplyError::new(format!("serialize project_allowed_tools: {e}"))
+    })?;
+    fs::write(work_dir.join(ALLOWED_TOOLS_MARKER), bytes)
+        .await
+        .map_err(|e| ProjectConfigApplyError::new(format!("write project_allowed_tools: {e}")))?;
     Ok(())
 }
 

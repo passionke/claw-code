@@ -37,5 +37,8 @@ deploy/stack/claw-postgres-data/
 deploy/stack/claude-tap-data/
 deploy/stack/deploy/
 deploy/stack/.claw-pool-rpc/
+deploy/stack/.linux-artifacts/
+deploy/stack/.build.log
+rust/.cargo/config.toml
 # Compose auto-loads this filename next to podman-compose.yml — do not create; use repo root `.env` only.
 deploy/stack/.env

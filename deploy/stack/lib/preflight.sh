@@ -22,7 +22,11 @@ claw_deploy_preflight() {
   export DOCKER_HOST="unix://${sock}"
   if [[ ! -S "${sock}" ]] || [[ ! -r "${sock}" || ! -w "${sock}" ]]; then
     echo "error: cannot use container socket: ${sock}" >&2
-    echo "hint: podman info --format '{{.Host.RemoteSocket.Path}}' → set CLAW_CONTAINER_SOCKET in .env" >&2
+    if [[ "${rt}" == docker ]]; then
+      echo "hint: start Docker; production uses CLAW_CONTAINER_RUNTIME=docker (no CLAW_CONTAINER_SOCKET)" >&2
+    else
+      echo "hint: podman machine start (macOS) or set CLAW_CONTAINER_SOCKET (Linux rootless)" >&2
+    fi
     return 1
   fi
   echo "    socket=${sock}" >&2

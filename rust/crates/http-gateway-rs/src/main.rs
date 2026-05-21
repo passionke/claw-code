@@ -42,7 +42,7 @@ use gateway_solve_turn::{
     run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
     BOSS_REPORT_SKILL_DS_ID,
 };
-use http_gateway_rs::{project_config_apply, session_db, session_merge, turn_id};
+use http_gateway_rs::{project_config_apply, project_tools, session_db, session_merge, turn_id};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -313,8 +313,17 @@ struct UpsertProjectConfigRequest {
     mcp_servers_json: Value,
     #[serde(rename = "skillsSourcesJson", default)]
     skills_sources_json: Value,
+    #[serde(rename = "allowedToolsJson", default)]
+    allowed_tools_json: Value,
     #[serde(rename = "claudeMd")]
     claude_md: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectToolsCatalogResponse {
+    tools: Vec<project_tools::ToolCatalogEntry>,
+    #[serde(rename = "gatewayAllowedTools")]
+    gateway_allowed_tools: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -331,6 +340,8 @@ struct ProjectConfigResponse {
     mcp_servers_json: Value,
     #[serde(rename = "skillsSourcesJson")]
     skills_sources_json: Value,
+    #[serde(rename = "allowedToolsJson")]
+    allowed_tools_json: Value,
     #[serde(rename = "claudeMd")]
     claude_md: Option<String>,
 }
@@ -1142,6 +1153,7 @@ async fn main() {
             "/v1/project/config/{ds_id}",
             get(get_project_config).put(put_project_config),
         )
+        .route("/v1/project/tools/catalog", get(get_project_tools_catalog))
         .route("/v1/skills/{ds_id}/{skill_name}", get(get_ds_skill))
         .route("/v1/skills/{ds_id}", get(list_ds_skills))
         .route("/v1/mcp/inject", post(inject_mcp))
@@ -1286,7 +1298,12 @@ async fn docs() -> Html<String> {
         (
             "PUT",
             "/v1/project/config/{ds_id}",
-            "Upsert project_config for ds (rules / MCP / skills sources / CLAUDE.md)",
+            "Upsert project_config for ds (rules / MCP / skills sources / tools / CLAUDE.md)",
+        ),
+        (
+            "GET",
+            "/v1/project/tools/catalog",
+            "Gateway-registered tool catalog for project selection",
         ),
         (
             "GET",
@@ -2885,8 +2902,39 @@ fn project_config_row_to_response(row: session_db::ProjectConfigRow) -> ProjectC
         rules_json: row.rules_json,
         mcp_servers_json: row.mcp_servers_json,
         skills_sources_json: row.skills_sources_json,
+        allowed_tools_json: row.allowed_tools_json,
         claude_md: row.claude_md,
     }
+}
+
+async fn project_selected_allowed_tools(
+    state: &AppState,
+    ds_id: i64,
+) -> Result<Option<Vec<String>>, ApiError> {
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let selected = project_tools::parse_allowed_tools_json(&row.allowed_tools_json)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if selected.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(selected))
+    }
+}
+
+async fn get_project_tools_catalog(
+    State(state): State<AppState>,
+) -> Json<ProjectToolsCatalogResponse> {
+    Json(ProjectToolsCatalogResponse {
+        tools: project_tools::gateway_registered_tool_catalog(),
+        gateway_allowed_tools: state.cfg.allowed_tools.clone(),
+    })
 }
 
 const SKILLS_SOURCES_FORBIDDEN_CRED_KEYS: &[&str] = &[
@@ -2970,7 +3018,10 @@ fn validate_skills_sources_json(sources: &Value) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(), ApiError> {
+fn validate_project_config_payload(
+    req: &UpsertProjectConfigRequest,
+    global_allowed_tools: &[String],
+) -> Result<(), ApiError> {
     let rev = req.content_rev.trim();
     if rev.is_empty() {
         return Err(ApiError::new(
@@ -2990,7 +3041,18 @@ fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(
             "mcpServersJson must be a JSON object",
         ));
     }
+    if !req.allowed_tools_json.is_array() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "allowedToolsJson must be a JSON array",
+        ));
+    }
     validate_skills_sources_json(&req.skills_sources_json)?;
+    project_tools::validate_project_allowed_tools_json(
+        &req.allowed_tools_json,
+        global_allowed_tools,
+    )
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     Ok(())
 }
 
@@ -3023,7 +3085,7 @@ async fn put_project_config(
     if ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
     }
-    validate_project_config_payload(&req)?;
+    validate_project_config_payload(&req, &state.cfg.allowed_tools)?;
     let now = now_ms();
     let content_rev = req.content_rev.trim().to_string();
     state
@@ -3035,6 +3097,7 @@ async fn put_project_config(
             rules_json: &req.rules_json,
             mcp_servers_json: &req.mcp_servers_json,
             skills_sources_json: &req.skills_sources_json,
+            allowed_tools_json: &req.allowed_tools_json,
             claude_md: req.claude_md.as_deref(),
         })
         .await
@@ -4923,8 +4986,12 @@ async fn run_solve_request(
         timeout_seconds,
         "gateway_solve accepted; validating and preparing workspace"
     );
-    let mut effective_allowed_tools =
-        resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
+    let project_selected = project_selected_allowed_tools(&state, req.ds_id).await?;
+    let mut effective_allowed_tools = resolve_effective_allowed_tools_for_ds(
+        &state.cfg.allowed_tools,
+        project_selected.as_deref(),
+        req.allowed_tools.as_deref(),
+    )?;
     ensure_report_progress_in_allowed_tools(&mut effective_allowed_tools);
 
     let prepared = prepare_gateway_session(
@@ -5379,73 +5446,31 @@ fn parse_allowed_tools(raw: Option<String>) -> Vec<String> {
 }
 
 fn normalize_allowed_tool_name(raw: &str) -> String {
-    let name = raw.trim();
-    match name {
-        "read" | "ReadFile" | "ead_file" => "read_file".to_string(),
-        "glob" | "GlobSearch" | "glob_searchr" => "glob_search".to_string(),
-        "grep" | "GrepSearch" => "grep_search".to_string(),
-        "MCPTool" => "MCP".to_string(),
-        "ListMcpResourcesToolMCP" => "ListMcpResources".to_string(),
-        other => other.to_string(),
-    }
+    project_tools::normalize_allowed_tool_name(raw)
 }
 
 pub(crate) fn resolve_effective_allowed_tools(
     global_allowed_tools: &[String],
     requested_allowed_tools: Option<&[String]>,
 ) -> Result<Vec<String>, ApiError> {
-    let Some(requested) = requested_allowed_tools else {
-        return Ok(global_allowed_tools.to_vec());
-    };
+    resolve_effective_allowed_tools_for_ds(global_allowed_tools, None, requested_allowed_tools)
+}
 
-    let mut normalized = Vec::new();
-    for raw in requested {
-        let name = normalize_allowed_tool_name(raw);
-        if name.is_empty() {
-            continue;
-        }
-        if !normalized.contains(&name) {
-            normalized.push(name);
-        }
-    }
-    if normalized.is_empty() {
-        return Ok(Vec::new());
-    }
-    if global_allowed_tools.is_empty() {
-        return Ok(normalized);
-    }
-
-    for requested in &normalized {
-        let allowed = if requested.ends_with('*') {
-            global_allowed_tools.contains(requested)
-        } else {
-            is_tool_allowed(requested, global_allowed_tools)
-        };
-        if !allowed {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!("requested tool pattern is not allowed by gateway policy: {requested}"),
-            ));
-        }
-    }
-    Ok(normalized)
+pub(crate) fn resolve_effective_allowed_tools_for_ds(
+    global_allowed_tools: &[String],
+    project_selected: Option<&[String]>,
+    requested_allowed_tools: Option<&[String]>,
+) -> Result<Vec<String>, ApiError> {
+    project_tools::resolve_effective_allowed_tools_for_ds(
+        global_allowed_tools,
+        project_selected,
+        requested_allowed_tools,
+    )
+    .map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))
 }
 
 fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {
-    if allowed_tools.is_empty() {
-        return true;
-    }
-    for pattern in allowed_tools {
-        if pattern == tool_name {
-            return true;
-        }
-        if let Some(prefix) = pattern.strip_suffix('*') {
-            if tool_name.starts_with(prefix) {
-                return true;
-            }
-        }
-    }
-    false
+    project_tools::is_tool_allowed(tool_name, allowed_tools)
 }
 
 #[cfg(test)]

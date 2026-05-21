@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Compile Linux release binaries via `podman run` (Darwin local path). Artifacts land in
+# deploy/stack/.linux-artifacts/release/ — image build only COPY, no crates.io in `podman build`.
+# Author: kejiqing
+set -euo pipefail
+
+claw_linux_compile_release() {
+  local root_dir="$1"
+  local container_cli="$2"
+  local rust_image="$3"
+  local use_cn_cargo="$4"
+
+  local rust_dir="${root_dir}/rust"
+  local out_root="${root_dir}/deploy/stack/.linux-artifacts"
+  local out_dir="${out_root}/release"
+  mkdir -p "${out_dir}"
+
+  mkdir -p "${rust_dir}/.cargo"
+  if [[ "${use_cn_cargo}" == "1" ]] && [[ ! -f "${rust_dir}/.cargo/config.toml" ]]; then
+    cp "${rust_dir}/.cargo/config.toml.example" "${rust_dir}/.cargo/config.toml"
+  fi
+
+  echo "linux compile: ${container_cli} run (registry/git/target volumes persist across runs)"
+  echo "  source: ${rust_dir}"
+  echo "  target: ${out_dir}"
+
+  # shellcheck disable=SC2086
+  "${container_cli}" run --rm \
+    -v "${rust_dir}:/build:Z" \
+    -v claw-cargo-registry:/usr/local/cargo/registry \
+    -v claw-cargo-git:/usr/local/cargo/git \
+    -v "${out_root}:/artifacts:Z" \
+    -w /build \
+    "${rust_image}" \
+    bash -c '
+      set -eu
+      export PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      export CARGO_TARGET_DIR=/artifacts
+      if [ -f .cargo/config.toml.example ] && [ ! -f .cargo/config.toml ]; then
+        cp .cargo/config.toml.example .cargo/config.toml
+      fi
+      rustc --version
+      cargo build --release -p rusty-claude-cli --bin claw
+      cargo build --release -p http-gateway-rs
+      cargo build --release -p http-gateway-rs --bin claw-pool-daemon
+      ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw /artifacts/release/claw-pool-daemon
+    '
+
+  for bin in http-gateway-rs claw claw-pool-daemon; do
+    if [[ ! -f "${out_dir}/${bin}" ]]; then
+      echo "error: missing ${out_dir}/${bin} after linux compile" >&2
+      exit 1
+    fi
+  done
+  echo "linux compile: ok → ${out_dir}"
+}

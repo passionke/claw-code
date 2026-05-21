@@ -1,36 +1,32 @@
-# Worker image for `CLAW_SOLVE_ISOLATION=docker_pool` / `podman_pool` (long-lived `sleep`, solve via `docker exec`).
-# Built together with the gateway by `deploy/stack/lib/build.sh` / `./deploy/stack/gateway.sh build` (same rust/ + build-args).
-# Author: kejiqing
+# Full in-image compile (CI / Linux). Local macOS: Containerfile.gateway-worker.prebuilt. Author: kejiqing
 ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
 ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
 
 FROM ${RUST_BASE_IMAGE} AS builder
-ARG RUSTUP_DIST_SERVER=https://static.rust-lang.org
-ARG RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
-ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
-    RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT}
+
+ARG CLAW_USE_CN_CRATES_MIRROR=0
 
 WORKDIR /build
 COPY rust/Cargo.toml /build/Cargo.toml
 COPY rust/Cargo.lock /build/Cargo.lock
 COPY rust/crates/ /build/crates/
-RUN echo "rustup dist=${RUSTUP_DIST_SERVER}" && \
-    rustup toolchain install nightly && rustup default nightly && \
+COPY rust/.cargo/config.toml.example /tmp/cargo-mirror.toml
+RUN if [ "${CLAW_USE_CN_CRATES_MIRROR}" = "1" ]; then \
+      mkdir -p /build/.cargo && cp /tmp/cargo-mirror.toml /build/.cargo/config.toml; \
+    fi
+RUN echo "rustc: $(rustc --version)" && \
     cargo build -p rusty-claude-cli --bin claw --release
 
 FROM ${DEBIAN_BASE_IMAGE}
-# Non-root user for `docker exec --user` (see CLAW_*_POOL_EXEC_USER); PID1 stays root (idle sleep).
-# Host `work_root` should be writable by uid 1000 (e.g. `chown -R 1000:1000` on the bind mount).
-# Author: kejiqing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1000 claw \
     && useradd -m -u 1000 -g 1000 -s /bin/sh claw
 
+WORKDIR /app
 COPY --from=builder /build/target/release/claw /usr/local/bin/claw
-COPY scripts/claw-gateway-worker.sh /usr/local/bin/claw-gateway-worker.sh
-RUN chmod +x /usr/local/bin/claw-gateway-worker.sh
-# Optional: ENV CLAW_WRITE_FILE_MAX_BYTES=<bytes> to cap each write_file body (default 10 MiB in runtime).
+RUN chmod +x /usr/local/bin/claw
 
-ENTRYPOINT ["/usr/local/bin/claw-gateway-worker.sh"]
+USER claw
+ENTRYPOINT ["sleep", "infinity"]
