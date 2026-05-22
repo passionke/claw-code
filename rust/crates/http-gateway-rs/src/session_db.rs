@@ -15,6 +15,16 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::types::Json;
 use sqlx::{Error as SqlxError, PgPool, Row};
 
+/// One live assistant-stream chunk row (`gateway_turn_live_chunks`). Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveChunkRow {
+    pub seq: i64,
+    pub chunk: String,
+}
+
+/// PostgreSQL `NOTIFY` channel for live report tail (`payload`: `turnId`, `maxSeq`, optional `kind`). Author: kejiqing
+pub const LIVE_CHUNK_NOTIFY_CHANNEL: &str = "claw_turn_live";
+
 /// Latest `gateway_turns` row for a session (see [`GatewaySessionDb::fetch_latest_turn_for_session`]).
 #[derive(Debug, Clone)]
 pub struct LatestTurnRow {
@@ -167,6 +177,21 @@ impl GatewaySessionDb {
     #[must_use]
     pub fn database_url_redacted(&self) -> &str {
         &self.database_url_redacted
+    }
+
+    #[must_use]
+    pub fn pg_pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    pub async fn turn_exists(&self, turn_id: &str) -> Result<bool, SqlxError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM gateway_turns WHERE turn_id = $1)",
+        )
+        .bind(turn_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
     }
 
     async fn migrate(pool: &PgPool) -> Result<(), SqlxError> {
@@ -351,6 +376,25 @@ impl GatewaySessionDb {
         sqlx::query(
             r"CREATE INDEX IF NOT EXISTS idx_project_entity_revision_list
              ON project_entity_revision (ds_id, domain, entity_key, created_at_ms DESC)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS gateway_turn_live_chunks (
+                turn_id TEXT NOT NULL,
+                seq BIGINT NOT NULL,
+                chunk TEXT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (turn_id, seq),
+                FOREIGN KEY (turn_id) REFERENCES gateway_turns(turn_id) ON DELETE CASCADE
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"CREATE INDEX IF NOT EXISTS idx_live_chunks_turn
+             ON gateway_turn_live_chunks(turn_id, seq)",
         )
         .execute(pool)
         .await?;
@@ -1122,6 +1166,144 @@ impl GatewaySessionDb {
         Ok(row.is_some())
     }
 
+    /// `true` when at least one live chunk exists for `turn_id`. Author: kejiqing
+    pub async fn turn_has_live_chunks(&self, turn_id: &str) -> Result<bool, SqlxError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM gateway_turn_live_chunks WHERE turn_id = $1)",
+        )
+        .bind(turn_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
+    /// Incremental live chunks with `seq > after_seq`, ascending. Author: kejiqing
+    pub async fn stream_live_chunks_since(
+        &self,
+        turn_id: &str,
+        after_seq: i64,
+    ) -> Result<Vec<LiveChunkRow>, SqlxError> {
+        let rows = sqlx::query_as::<_, (i64, String)>(
+            r"SELECT seq, chunk FROM gateway_turn_live_chunks
+              WHERE turn_id = $1 AND seq > $2
+              ORDER BY seq ASC",
+        )
+        .bind(turn_id)
+        .bind(after_seq)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(seq, chunk)| LiveChunkRow { seq, chunk })
+            .collect())
+    }
+
+    /// Append chunks in one transaction; returns max `seq` written. Author: kejiqing
+    pub async fn append_live_chunks(
+        &self,
+        turn_id: &str,
+        chunks: &[String],
+        created_at_ms: i64,
+    ) -> Result<Option<i64>, SqlxError> {
+        if chunks.is_empty() {
+            return Ok(None);
+        }
+        let mut tx = self.pool.begin().await?;
+        let base: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq), 0) FROM gateway_turn_live_chunks WHERE turn_id = $1",
+        )
+        .bind(turn_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let mut max_seq = base;
+        for (i, chunk) in chunks.iter().enumerate() {
+            let seq = base + i64::try_from(i).unwrap_or(i64::MAX) + 1;
+            sqlx::query(
+                r"INSERT INTO gateway_turn_live_chunks (turn_id, seq, chunk, created_at_ms)
+                  VALUES ($1, $2, $3, $4)",
+            )
+            .bind(turn_id)
+            .bind(seq)
+            .bind(chunk)
+            .bind(created_at_ms)
+            .execute(&mut *tx)
+            .await?;
+            max_seq = seq;
+        }
+        let payload = json!({
+            "turnId": turn_id,
+            "maxSeq": max_seq,
+            "kind": "chunk",
+        });
+        let payload_str = payload.to_string();
+        sqlx::query("SELECT pg_notify($1, $2::text)")
+            .bind(LIVE_CHUNK_NOTIFY_CHANNEL)
+            .bind(payload_str)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(max_seq))
+    }
+
+    /// Wake live SSE waiters when a turn reaches terminal state (before optional chunk delete). Author: kejiqing
+    pub async fn notify_turn_live_terminal(&self, turn_id: &str) -> Result<(), SqlxError> {
+        let payload = json!({
+            "turnId": turn_id,
+            "kind": "terminal",
+        });
+        sqlx::query("SELECT pg_notify($1, $2::text)")
+            .bind(LIVE_CHUNK_NOTIFY_CHANNEL)
+            .bind(payload.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_live_chunks(&self, turn_id: &str) -> Result<(), SqlxError> {
+        sqlx::query("DELETE FROM gateway_turn_live_chunks WHERE turn_id = $1")
+            .bind(turn_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Ops / [`scripts/purge-gateway-turn-live-chunks.sh`]: remove stale live rows. Author: kejiqing
+    pub async fn purge_stale_live_chunks_for_ops(
+        &self,
+        finished_age_ms: i64,
+        now_ms: i64,
+    ) -> Result<u64, SqlxError> {
+        let cutoff = now_ms.saturating_sub(finished_age_ms);
+        let r1 = sqlx::query(
+            r"DELETE FROM gateway_turn_live_chunks c
+              USING gateway_turns t
+              WHERE c.turn_id = t.turn_id
+                AND t.status IN ('failed', 'cancelled')
+                AND t.finished_at_ms IS NOT NULL
+                AND t.finished_at_ms < $1",
+        )
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+        let r2 = sqlx::query(
+            r"DELETE FROM gateway_turn_live_chunks c
+              USING gateway_turns t
+              WHERE c.turn_id = t.turn_id
+                AND t.status = 'succeeded'
+                AND EXISTS (SELECT 1 FROM gateway_turn_live_chunks x WHERE x.turn_id = c.turn_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+        let r3 = sqlx::query(
+            "DELETE FROM gateway_turn_live_chunks WHERE turn_id NOT IN (SELECT turn_id FROM gateway_turns)",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(u64::from(r1.rows_affected())
+            .saturating_add(r2.rows_affected().into())
+            .saturating_add(r3.rows_affected().into()))
+    }
+
     pub async fn upsert_feedback(
         &self,
         session_id: &str,
@@ -1196,22 +1378,28 @@ pub fn redact_database_url(url: &str) -> String {
     format!("{scheme}://{after_scheme}")
 }
 
+/// Test DB from `CLAW_GATEWAY_TEST_DATABASE_URL` or `CLAW_GATEWAY_DATABASE_URL`. Author: kejiqing
+#[cfg(test)]
+pub async fn connect_gateway_test_db() -> Option<GatewaySessionDb> {
+    let url = std::env::var("CLAW_GATEWAY_TEST_DATABASE_URL")
+        .or_else(|_| std::env::var("CLAW_GATEWAY_DATABASE_URL"))
+        .ok()?;
+    GatewaySessionDb::connect(url.trim()).await.ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    async fn test_db() -> Option<GatewaySessionDb> {
+        connect_gateway_test_db().await
+    }
+
     fn now_ms() -> i64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0_i64, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-    }
-
-    async fn test_db() -> Option<GatewaySessionDb> {
-        let url = std::env::var("CLAW_GATEWAY_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("CLAW_GATEWAY_DATABASE_URL"))
-            .ok()?;
-        GatewaySessionDb::connect(url.trim()).await.ok()
     }
 
     #[test]
@@ -1435,5 +1623,39 @@ mod tests {
         let row2 = db.get_project_config(ds_id).await.unwrap().unwrap();
         assert_eq!(row2.content_rev, "rev-2");
         assert!(row2.claude_md.is_none());
+    }
+
+    #[tokio::test]
+    async fn live_chunks_append_stream_delete() {
+        let Some(db) = test_db().await else {
+            eprintln!("skip live_chunks_append_stream_delete: set CLAW_GATEWAY_TEST_DATABASE_URL");
+            return;
+        };
+        let t = now_ms();
+        let sid = format!("slive_{}", uuid::Uuid::new_v4().simple());
+        let turn_id = format!("T_{}", uuid::Uuid::new_v4().simple());
+        db.insert_session(&sid, 1, "ds_1/sessions/live", t)
+            .await
+            .unwrap();
+        db.insert_turn(&turn_id, &sid, 1, "running", t, Some("p"))
+            .await
+            .unwrap();
+        assert!(!db.turn_has_live_chunks(&turn_id).await.unwrap());
+        let max = db
+            .append_live_chunks(&turn_id, &["hello".into(), "世界".into()], t)
+            .await
+            .unwrap()
+            .expect("max seq");
+        assert_eq!(max, 2);
+        assert!(db.turn_has_live_chunks(&turn_id).await.unwrap());
+        let rows = db.stream_live_chunks_since(&turn_id, 0).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].chunk, "hello");
+        assert_eq!(rows[1].chunk, "世界");
+        let tail = db.stream_live_chunks_since(&turn_id, 1).await.unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].seq, 2);
+        db.delete_live_chunks(&turn_id).await.unwrap();
+        assert!(!db.turn_has_live_chunks(&turn_id).await.unwrap());
     }
 }

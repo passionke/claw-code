@@ -37,14 +37,11 @@ const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
 /// Request field overrides gateway env default; async-only env default when omitted.
 fn effective_assistant_stream_spill(
     req: &SolveRequest,
-    cfg: &crate::GatewayConfig,
+    _cfg: &crate::GatewayConfig,
     is_async: bool,
 ) -> bool {
     if let Some(enabled) = req.assistant_stream_spill {
-        return enabled;
-    }
-    if is_async {
-        return cfg.live_biz_report_spill_enabled;
+        return enabled && !is_async;
     }
     false
 }

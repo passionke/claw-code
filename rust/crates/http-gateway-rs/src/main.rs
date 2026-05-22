@@ -36,7 +36,7 @@ use biz_advice_report::{
     BizReportStreamMsg, ReportExportSanitizer,
 };
 use biz_advice_report_live::{
-    spawn_live_report_sse_worker, turn_use_live_spill_report, LiveReportContext,
+    should_use_live_pg_report, spawn_live_report_sse_worker, LiveReportContext,
 };
 use gateway_solve_turn::read_progress_events;
 use gateway_solve_turn::{
@@ -78,6 +78,11 @@ mod pool;
 mod session_execution;
 mod solve_pool;
 mod task_status;
+mod turn_live;
+mod live_report_ports;
+
+#[cfg(test)]
+mod live_report_mocks;
 
 fn default_system_date() -> String {
     match option_env!("BUILD_DATE") {
@@ -109,7 +114,7 @@ struct PreparedGatewaySession {
 }
 
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     tasks: Arc<Mutex<HashMap<String, TaskInner>>>,
     injected_mcp: Arc<Mutex<HashMap<i64, HashMap<String, Value>>>>,
     ds_locks: Arc<Mutex<HashMap<i64, Arc<Mutex<()>>>>>,
@@ -122,10 +127,12 @@ struct AppState {
     docker_pool: Arc<dyn pool::PoolOps + Send + Sync>,
     /// Serialize git and working-tree reads/writes on the shared `.claw-code-projects` clone. kejiqing
     projects_git_mirror_lock: Arc<Mutex<()>>,
+    live_ingest_closed: turn_live::LiveIngestRegistry,
+    live_notify_hub: Arc<turn_live::LiveNotifyHub>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SolveIsolation {
+pub(crate) enum SolveIsolation {
     DockerPool,
     PodmanPool,
 }
@@ -162,7 +169,7 @@ impl SolveIsolation {
 }
 
 #[derive(Clone)]
-struct GatewayConfig {
+pub(crate) struct GatewayConfig {
     solve_isolation: SolveIsolation,
     claw_bin: String,
     work_root: PathBuf,
@@ -773,7 +780,7 @@ struct McpResponse {
 }
 
 #[derive(Debug)]
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     message: String,
 }
@@ -887,7 +894,7 @@ async fn set_solve_turn_status(
 
 /// Persist terminal solve outcome on `gateway_turns` for restart / `GET /v1/tasks` handoff. Author: kejiqing
 async fn finalize_solve_turn_success(
-    db: &session_db::GatewaySessionDb,
+    db: Arc<session_db::GatewaySessionDb>,
     turn_id: &str,
     result: &SolveResponse,
 ) {
@@ -910,6 +917,27 @@ async fn finalize_solve_turn_success(
             error = %e,
             "finalize gateway_turns succeeded snapshot failed"
         );
+        return;
+    }
+    if report.as_ref().is_some_and(|t| !t.trim().is_empty()) {
+        if let Err(e) = db.notify_turn_live_terminal(turn_id).await {
+            warn!(
+                turn_id = %turn_id,
+                error = %e,
+                "notify_turn_live_terminal failed"
+            );
+        }
+        let db_del = db.clone();
+        let tid = turn_id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = db_del.delete_live_chunks(&tid).await {
+                warn!(
+                    turn_id = %tid,
+                    error = %e,
+                    "delete_live_chunks after succeeded failed"
+                );
+            }
+        });
     }
 }
 
@@ -1267,6 +1295,10 @@ async fn main() {
         gateway_database_url = %session_db.database_url_redacted(),
         "gateway session PostgreSQL ready (CLAW_GATEWAY_DATABASE_URL)"
     );
+    let live_notify_hub = Arc::new(turn_live::LiveNotifyHub::new());
+    if let Ok(db_url) = std::env::var("CLAW_GATEWAY_DATABASE_URL") {
+        turn_live::LiveNotifyHub::spawn_listener(db_url, Arc::clone(&live_notify_hub));
+    }
     let state = AppState {
         tasks: Arc::new(Mutex::new(HashMap::new())),
         injected_mcp: Arc::new(Mutex::new(HashMap::new())),
@@ -1277,6 +1309,8 @@ async fn main() {
         docker_slots: Arc::new(Mutex::new(HashMap::new())),
         docker_pool,
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
+        live_ingest_closed: turn_live::LiveIngestRegistry::default(),
+        live_notify_hub,
     };
 
     run_startup_project_config_apply(&state).await;
@@ -1313,6 +1347,10 @@ async fn main() {
             get(get_session_execution),
         )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
+        .route(
+            "/v1/internal/turns/{turn_id}/assistant-stream",
+            post(internal_assistant_stream),
+        )
         .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
         .route(
             "/v1/dev/biz_report_seed_task",
@@ -3479,7 +3517,7 @@ async fn solve(
     .await;
     match &result {
         Ok(success) => {
-            finalize_solve_turn_success(&state.session_db, &new_turn_id, success).await;
+            finalize_solve_turn_success(Arc::clone(&state.session_db), &new_turn_id, success).await;
         }
         Err(err) => {
             finalize_solve_turn_failed(&state.session_db, &new_turn_id, err).await;
@@ -5185,23 +5223,25 @@ async fn get_session_execution(
 
     refresh_task_progress(&state, &session_id).await;
 
-    let (task_snapshot, queue) = {
+    let (record_opt, queue) = {
         let tasks = state.tasks.lock().await;
         let queue = gateway_queue_snapshot(&tasks);
-        let task_snapshot = tasks.get(&session_id).map(|inner| SessionExecutionTask {
-            task_id: inner.record.task_id.clone(),
-            status: inner.record.status.clone(),
-            has_report: task_has_report(
-                &inner.record,
-                &session_home,
-                state.cfg.live_biz_report_spill_enabled,
-            ),
-            created_at_ms: inner.record.created_at_ms,
-            started_at_ms: inner.record.started_at_ms,
-            finished_at_ms: inner.record.finished_at_ms,
-            current_task_desc: inner.record.current_task_desc.clone(),
-        });
-        (task_snapshot, queue)
+        let record = tasks.get(&session_id).map(|inner| inner.record.clone());
+        (record, queue)
+    };
+    let task_snapshot = if let Some(record) = record_opt {
+        let has_report = task_has_report(&state.session_db, &record).await;
+        Some(SessionExecutionTask {
+            task_id: record.task_id.clone(),
+            status: record.status.clone(),
+            has_report,
+            created_at_ms: record.created_at_ms,
+            started_at_ms: record.started_at_ms,
+            finished_at_ms: record.finished_at_ms,
+            current_task_desc: record.current_task_desc.clone(),
+        })
+    } else {
+        None
     };
 
     let task = task_snapshot.unwrap_or_else(|| SessionExecutionTask {
@@ -5410,7 +5450,11 @@ async fn enqueue_solve_async(
                     let duration_ms = v.duration_ms;
                     inner.record.status = "succeeded".to_string();
                     inner.record.result = Some(v.clone());
-                    finalize_solve_turn_success(&state_clone.session_db, &turn_id_for_worker, v)
+                    finalize_solve_turn_success(
+                        Arc::clone(&state_clone.session_db),
+                        &turn_id_for_worker,
+                        v,
+                    )
                         .await;
                     info!(
                         request_id = %rid,
@@ -5635,8 +5679,9 @@ async fn task_record_from_latest_turn_row(
     if let Some(ref home) = session_home {
         record.progress_history = read_progress_events(home, 50)
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        record.has_report = task_has_report(&record, home, state.cfg.live_biz_report_spill_enabled);
+        let _ = home;
     }
+    record.has_report = task_has_report(&state.session_db, &record).await;
     let ds_id = record.ds_id;
     Ok((record, ds_id))
 }
@@ -5655,8 +5700,8 @@ async fn get_task(
     if let Some(home) = resolve_session_home_path(&state, ds_id, &task.session_id).await {
         task.progress_history = read_progress_events(&home, 50)
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        task.has_report = task_has_report(&task, &home, state.cfg.live_biz_report_spill_enabled);
     }
+    task.has_report = task_has_report(&state.session_db, &task).await;
     info!(
         request_id = %http_request_id.0,
         task_id = %task_id,
@@ -5671,36 +5716,13 @@ async fn get_task(
     Ok(Json(task))
 }
 
-fn task_has_report(
-    task: &TaskRecord,
-    session_home: &std::path::Path,
-    live_biz_report_spill_enabled: bool,
-) -> bool {
+async fn task_has_report(db: &session_db::GatewaySessionDb, task: &TaskRecord) -> bool {
     if task.status == "succeeded" {
         return true;
     }
-    if !live_biz_report_spill_enabled {
-        return false;
-    }
-    gateway_solve_turn::spill_contains_report_start_marker(session_home, &task.turn_id)
-        || task_result_contains_report_start_marker(task)
-}
-
-fn task_result_contains_report_start_marker(task: &TaskRecord) -> bool {
-    let Some(result) = &task.result else {
-        return false;
-    };
-    result
-        .output_text
-        .contains(gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER)
-        || result
-            .output_json
-            .as_ref()
-            .and_then(|v| v.get("message"))
-            .and_then(Value::as_str)
-            .is_some_and(|message| {
-                message.contains(gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER)
-            })
+    db.turn_has_live_chunks(&task.turn_id)
+        .await
+        .unwrap_or(false)
 }
 
 fn task_status_is_terminal_for_cancel(status: &str) -> bool {
@@ -5985,6 +6007,15 @@ async fn prepare_live_report_context(
     })
 }
 
+async fn internal_assistant_stream(
+    State(state): State<AppState>,
+    AxumPath(turn_id): AxumPath<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Body,
+) -> Result<Response, ApiError> {
+    turn_live::post_assistant_stream(state, turn_id, headers, body).await
+}
+
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
@@ -5992,9 +6023,8 @@ async fn get_biz_advice_report(
     let state = Arc::new(state);
     let ctx =
         prepare_live_report_context(&state, &query.session_id, &query.turn_id, query.ds_id).await?;
-    let use_live_spill = state.cfg.live_biz_report_spill_enabled
-        && turn_use_live_spill_report(&ctx.session_home, &ctx.turn_id);
-    if !use_live_spill {
+    let use_live_pg = should_use_live_pg_report(state.as_ref(), &ctx).await?;
+    if !use_live_pg {
         return respond_biz_advice_polish_for_context(state, ctx, query.stream).await;
     }
     if query.stream {
@@ -7246,10 +7276,8 @@ mod tests {
         assert_eq!(e, "kejiqing@local");
     }
 
-    #[test]
-    fn task_has_report_true_when_succeeded_and_no_spill_file() {
-        let home = std::env::temp_dir().join(format!("claw-has-report-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&home);
+    #[tokio::test]
+    async fn task_has_report_true_when_succeeded() {
         let task = TaskRecord {
             task_id: "t1".into(),
             session_id: "t1".into(),
@@ -7267,103 +7295,53 @@ mod tests {
             progress_history: vec![],
             has_report: false,
         };
-        assert!(task_has_report(&task, &home, true));
-        assert!(task_has_report(&task, &home, false));
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn task_has_report_true_when_succeeded_even_if_spill_lacks_report_marker() {
-        let home =
-            std::env::temp_dir().join(format!("claw-has-report-spill-{}", std::process::id()));
-        let claw = home.join(".claw");
-        std::fs::create_dir_all(&claw).unwrap();
-        let turn_id = "T_00000000000000000000000000000003";
-        std::fs::write(
-            claw.join(format!("assistant-stream-spill-{turn_id}.txt")),
-            "partial stream only",
-        )
-        .unwrap();
-        let task = TaskRecord {
-            task_id: "t3".into(),
-            session_id: "t3".into(),
-            request_id: "t3".into(),
-            ds_id: 10,
-            status: "succeeded".into(),
-            created_at_ms: 0,
-            started_at_ms: None,
-            finished_at_ms: Some(1),
-            current_task_desc: None,
-            progress_updated_at_ms: None,
-            result: None,
-            error: None,
-            turn_id: turn_id.into(),
-            progress_history: vec![],
-            has_report: false,
+        let url = match std::env::var("CLAW_GATEWAY_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("CLAW_GATEWAY_DATABASE_URL"))
+        {
+            Ok(u) => u,
+            Err(_) => return,
         };
-        assert!(task_has_report(&task, &home, true));
-        let _ = std::fs::remove_dir_all(&home);
+        let db = session_db::GatewaySessionDb::connect(url.trim()).await.unwrap();
+        assert!(task_has_report(&db, &task).await);
     }
 
-    #[test]
-    fn task_has_report_false_while_running_without_marker() {
-        let home = std::env::temp_dir().join(format!("claw-has-report-run-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&home);
+    #[tokio::test]
+    async fn task_has_report_true_when_live_chunks_exist() {
+        let url = match std::env::var("CLAW_GATEWAY_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("CLAW_GATEWAY_DATABASE_URL"))
+        {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        let db = session_db::GatewaySessionDb::connect(url.trim()).await.unwrap();
+        let t = now_ms();
+        let sid = format!("hr_{}", uuid::Uuid::new_v4().simple());
+        let turn_id = format!("T_{}", uuid::Uuid::new_v4().simple());
+        db.insert_session(&sid, 1, "ds_1/sessions/hr", t).await.unwrap();
+        db.insert_turn(&turn_id, &sid, 1, "running", t, None)
+            .await
+            .unwrap();
+        db.append_live_chunks(&turn_id, &["x".into()], t)
+            .await
+            .unwrap();
         let task = TaskRecord {
-            task_id: "t2".into(),
-            session_id: "t2".into(),
-            request_id: "t2".into(),
-            ds_id: 10,
+            task_id: sid.clone(),
+            session_id: sid,
+            request_id: "r".into(),
+            ds_id: 1,
             status: "running".into(),
-            created_at_ms: 0,
-            started_at_ms: Some(0),
+            created_at_ms: t,
+            started_at_ms: Some(t),
             finished_at_ms: None,
             current_task_desc: None,
             progress_updated_at_ms: None,
             result: None,
             error: None,
-            turn_id: "T_00000000000000000000000000000002".into(),
+            turn_id,
             progress_history: vec![],
             has_report: false,
         };
-        assert!(!task_has_report(&task, &home, true));
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn task_has_report_false_while_running_with_spill_marker_when_live_disabled() {
-        let home =
-            std::env::temp_dir().join(format!("claw-has-report-live-off-{}", std::process::id()));
-        let claw = home.join(".claw");
-        std::fs::create_dir_all(&claw).unwrap();
-        let turn_id = "T_00000000000000000000000000000004";
-        std::fs::write(
-            claw.join(format!("assistant-stream-spill-{turn_id}.txt")),
-            format!(
-                "{}\n# 报告\n",
-                gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER
-            ),
-        )
-        .unwrap();
-        let task = TaskRecord {
-            task_id: "t4".into(),
-            session_id: "t4".into(),
-            request_id: "t4".into(),
-            ds_id: 10,
-            status: "running".into(),
-            created_at_ms: 0,
-            started_at_ms: Some(0),
-            finished_at_ms: None,
-            current_task_desc: None,
-            progress_updated_at_ms: None,
-            result: None,
-            error: None,
-            turn_id: turn_id.into(),
-            progress_history: vec![],
-            has_report: false,
-        };
-        assert!(task_has_report(&task, &home, true));
-        assert!(!task_has_report(&task, &home, false));
-        let _ = std::fs::remove_dir_all(&home);
+        assert!(task_has_report(&db, &task).await);
+        let _ = db.delete_live_chunks(&task.turn_id).await;
     }
 }

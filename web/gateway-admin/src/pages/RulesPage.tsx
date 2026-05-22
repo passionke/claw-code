@@ -5,6 +5,7 @@ import { useApp } from "../context/AppContext";
 import type { RuleEditorItem } from "../types/project";
 import { ruleFieldsFromRevisionBody } from "../utils/entityRevision";
 import { parseRuleJsonItem, rulesJsonFromList, slugRuleTitle } from "../utils/rules";
+import EditorLengthHint from "../components/EditorLengthHint";
 import EntityVersionPanel from "../components/EntityVersionPanel";
 import { putProjectConfigDraft } from "../utils/projectConfig";
 
@@ -143,12 +144,6 @@ export default function RulesPage() {
   return (
     <div>
       <Typography.Title level={4}>Rules</Typography.Title>
-      <Typography.Paragraph type="secondary">
-        从下拉选择已有规则编辑；点「新增 Rule」创建条目。保存写入<strong>本项目草稿</strong>（
-        <Typography.Text code>__draft__</Typography.Text>，与「项目」页临时版相同），设为生效后物化到{" "}
-        <Typography.Text code>home/.cursor/rules/&lt;ruleId&gt;.mdc</Typography.Text>。
-      </Typography.Paragraph>
-
       <Space wrap style={{ marginBottom: 8 }}>
         <Select
           style={{ minWidth: 320 }}
@@ -211,6 +206,7 @@ export default function RulesPage() {
         />
       )}
       <Input value="ALWAYS" readOnly style={{ maxWidth: 420, marginBottom: 8 }} />
+      <EditorLengthHint text={ruleContent} label="Rule 正文" />
       <TextArea
         rows={12}
         value={ruleContent}

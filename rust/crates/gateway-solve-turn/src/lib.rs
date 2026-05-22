@@ -34,6 +34,7 @@ use tools::{
 };
 
 pub mod assistant_stream_spill;
+pub mod turn_output_stream;
 pub mod entity_labels;
 pub mod session_report;
 pub mod sqlbot_preflight;
@@ -46,6 +47,7 @@ pub use assistant_stream_spill::{
     AssistantStreamSpill, ASSISTANT_STREAM_REPORT_START_MARKER,
     ASSISTANT_STREAM_SPILL_BASENAME_PREFIX, ASSISTANT_STREAM_SPILL_END_MARKER,
 };
+pub use turn_output_stream::TurnOutputStreamClient;
 pub use session_report::{
     final_assistant_report_text_from_jsonl,
     final_assistant_report_text_from_jsonl_for_user_turn_index,
@@ -296,6 +298,7 @@ struct DirectApiClient {
     tools: Vec<ToolDefinition>,
     clawcode_session_id: String,
     stream_spill: Option<Arc<StdMutex<AssistantStreamSpill>>>,
+    output_stream: Option<Arc<TurnOutputStreamClient>>,
 }
 
 impl DirectApiClient {
@@ -305,6 +308,7 @@ impl DirectApiClient {
         runtime_mcp_tools: Vec<ToolDefinition>,
         clawcode_session_id: String,
         stream_spill: Option<Arc<StdMutex<AssistantStreamSpill>>>,
+        output_stream: Option<Arc<TurnOutputStreamClient>>,
     ) -> Result<Self, GatewaySolveTurnError> {
         let provider = ProviderClient::from_model(&model)
             .map_err(|e| err(HTTP_INTERNAL, format!("provider init failed: {e}")))?;
@@ -331,6 +335,7 @@ impl DirectApiClient {
             tools,
             clawcode_session_id,
             stream_spill,
+            output_stream,
         })
     }
 }
@@ -366,12 +371,14 @@ impl RuntimeApiClient for DirectApiClient {
             }
         }
         let spill_ref = self.stream_spill.as_ref();
+        let output_ref = self.output_stream.as_deref();
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(stream_events::<fn(&str)>(
                 &self.provider,
                 &req,
                 None,
                 spill_ref,
+                output_ref,
             ))
         })
         .map_err(|e| RuntimeError::new(e.to_string()))
@@ -635,6 +642,7 @@ fn push_text_delta<F>(
     text: String,
     on_text_delta: &mut Option<&mut F>,
     stream_spill: Option<&Arc<StdMutex<AssistantStreamSpill>>>,
+    output_stream: Option<&TurnOutputStreamClient>,
 ) where
     F: FnMut(&str),
 {
@@ -644,7 +652,9 @@ fn push_text_delta<F>(
     if let Some(cb) = on_text_delta.as_deref_mut() {
         cb(&text);
     }
-    if let Some(spill) = stream_spill {
+    if let Some(stream) = output_stream {
+        stream.push_text_delta(&text);
+    } else if let Some(spill) = stream_spill {
         if let Ok(spill) = spill.lock() {
             let _ = spill.append(&text);
         }
@@ -657,6 +667,7 @@ async fn stream_events<F>(
     req: &MessageRequest,
     on_text_delta: Option<&mut F>,
     stream_spill: Option<&Arc<StdMutex<AssistantStreamSpill>>>,
+    output_stream: Option<&TurnOutputStreamClient>,
 ) -> Result<Vec<AssistantEvent>, api::ApiError>
 where
     F: FnMut(&str),
@@ -671,7 +682,13 @@ where
                 for block in start.message.content {
                     match block {
                         OutputContentBlock::Text { text } => {
-                            push_text_delta(&mut events, text, &mut on_text_delta, stream_spill);
+                            push_text_delta(
+                                &mut events,
+                                text,
+                                &mut on_text_delta,
+                                stream_spill,
+                                output_stream,
+                            );
                         }
                         OutputContentBlock::ToolUse { id, name, input } => {
                             let initial_input = if input.is_object()
@@ -704,7 +721,13 @@ where
                     pending_tools.insert(start.index, (id, name, initial_input));
                 }
                 OutputContentBlock::Text { text } => {
-                    push_text_delta(&mut events, text, &mut on_text_delta, stream_spill);
+                    push_text_delta(
+                        &mut events,
+                        text,
+                        &mut on_text_delta,
+                        stream_spill,
+                        output_stream,
+                    );
                 }
                 OutputContentBlock::Thinking { thinking, .. } => {
                     if !thinking.is_empty() {
@@ -715,7 +738,13 @@ where
             },
             StreamEvent::ContentBlockDelta(delta) => match delta.delta {
                 ContentBlockDelta::TextDelta { text } => {
-                    push_text_delta(&mut events, text, &mut on_text_delta, stream_spill);
+                    push_text_delta(
+                        &mut events,
+                        text,
+                        &mut on_text_delta,
+                        stream_spill,
+                        output_stream,
+                    );
                 }
                 ContentBlockDelta::InputJsonDelta { partial_json } => {
                     if let Some((_, _, input)) = pending_tools.get_mut(&delta.index) {
@@ -850,7 +879,7 @@ where
         ]),
         ..Default::default()
     };
-    let events = stream_events(&provider, &req, on_text_delta.as_mut(), None)
+    let events = stream_events(&provider, &req, on_text_delta.as_mut(), None, None)
         .await
         .map_err(|e| err(HTTP_INTERNAL, format!("polish stream failed: {e}")))?;
     let (output_text, output_json) = polish_output_from_events(&events, &effective_model)?;
@@ -945,7 +974,10 @@ pub fn run_gateway_solve_turn(
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
     let (runtime_mcp_tools, runtime_mcp_tool_names, runtime_mcp_manager) =
         initialize_mcp_runtime(work_dir)?;
-    let stream_spill = if assistant_stream_spill {
+    let output_stream = TurnOutputStreamClient::try_new(turn_id).map(Arc::new);
+    let stream_spill = if output_stream.is_some() {
+        None
+    } else if assistant_stream_spill {
         Some(Arc::new(StdMutex::new(AssistantStreamSpill::new(
             work_dir, turn_id,
         ))))
@@ -958,6 +990,7 @@ pub fn run_gateway_solve_turn(
         runtime_mcp_tools,
         clawcode_session_id.to_string(),
         stream_spill.clone(),
+        output_stream.clone(),
     )?;
     reset_task_progress(work_dir, clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;

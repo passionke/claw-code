@@ -6,8 +6,12 @@ import { useCallback, useEffect, useState } from "react";
 import ReactDiffViewer, { DiffMethod } from "react-diff-viewer-continued";
 import { proxyHttp } from "../api/client";
 import { useApp } from "../context/AppContext";
-import { fetchEntityRevisionBody, type EntityDomain } from "../utils/entityRevision";
-import { mergeSideLabels, stableStringifyValue } from "../utils/mergeCompare";
+import {
+  entityBodyToDiffText,
+  fetchEntityRevisionBody,
+  type EntityDomain,
+} from "../utils/entityRevision";
+import { mergeSideLabels } from "../utils/mergeCompare";
 import { versionOptionLabel } from "../utils/versionDisplay";
 import { diffViewerStyles } from "../utils/diffViewerTheme";
 
@@ -36,7 +40,9 @@ interface EntityVersionPanelProps {
   entityKey: string;
   title?: string;
   refreshKey?: string | number;
-  /** 将历史快照填入页面上方编辑框（不写库，需用户再点保存） */
+  /** 单条目页面（如 CLAUDE.md）始终有 entityKey，不显示「请先选择条目」 */
+  singleton?: boolean;
+  /** 将历史快照填入页面上方编辑框（需再点本页「保存」写库） */
   onLoadIntoEditor: (body: unknown, entityRev: string) => void;
 }
 
@@ -55,6 +61,7 @@ export default function EntityVersionPanel({
   entityKey,
   title = "条目历史",
   refreshKey,
+  singleton = false,
   onLoadIntoEditor,
 }: EntityVersionPanelProps) {
   const { gatewayBase, dsId } = useApp();
@@ -65,8 +72,6 @@ export default function EntityVersionPanel({
   const [compareLoading, setCompareLoading] = useState(false);
   const [loadRev, setLoadRev] = useState<string | undefined>();
   const [loadLoading, setLoadLoading] = useState(false);
-
-  const newestRev = versions[0]?.entityRev;
 
   const load = useCallback(async () => {
     if (!entityKey.trim()) {
@@ -122,10 +127,6 @@ export default function EntityVersionPanel({
   const onPickLoadRev = async (rev: string | undefined) => {
     setLoadRev(rev);
     if (!rev || !entityKey.trim()) return;
-    if (rev === newestRev) {
-      message.info("已是最近一次保存的快照；若要还原更早版本请选其它条目。");
-      return;
-    }
     setLoadLoading(true);
     try {
       const body = await fetchEntityRevisionBody(
@@ -136,9 +137,6 @@ export default function EntityVersionPanel({
         rev
       );
       onLoadIntoEditor(body, rev);
-      message.success(
-        `已载入 ${versionOptionLabel({ rev, createdAtMs: versions.find((x) => x.entityRev === rev)?.createdAtMs })} 到上方编辑区，确认后点保存即可`
-      );
     } catch (e) {
       message.error(String((e as Error).message || e));
       setLoadRev(undefined);
@@ -160,8 +158,12 @@ export default function EntityVersionPanel({
   const fromMs = versions.find((v) => v.entityRev === fromRev)?.createdAtMs;
   const toMs = versions.find((v) => v.entityRev === toRev)?.createdAtMs;
   const sideLabels = mergeSideLabels(fromRev, toRev, fromMs, toMs);
-  const oldValue = bodiesReady(compare) ? stableStringifyValue(compare!.fromBody) : "";
-  const newValue = bodiesReady(compare) ? stableStringifyValue(compare!.toBody) : "";
+  const oldValue = bodiesReady(compare)
+    ? entityBodyToDiffText(domain, compare!.fromBody)
+    : "";
+  const newValue = bodiesReady(compare)
+    ? entityBodyToDiffText(domain, compare!.toBody)
+    : "";
 
   return (
     <Collapse
@@ -170,48 +172,27 @@ export default function EntityVersionPanel({
         {
           key: "l2",
           label: title,
-          children: !entityKey.trim() ? (
+          children: !entityKey.trim() && !singleton ? (
             <Typography.Text type="secondary">请先选择或保存条目</Typography.Text>
           ) : (
             <>
-              <Alert
-                type="info"
-                showIcon
-                style={{ marginBottom: 12 }}
-                message="与「项目」页临时草稿是同一层"
-                description={
-                  <>
-                    本页点「保存」写入的是<strong>整个项目（当前 ds）</strong>的编辑草稿（
-                    <Typography.Text code>__draft__</Typography.Text>
-                    ），不是单独某条条目的生效版。要在 solve 里生效，仍需到「项目」页保存正式版并「设为生效」后才会物化到{" "}
-                    <Typography.Text code>home/</Typography.Text>。
-                    下方选历史版本只会<strong>填入上方编辑框</strong>，不会直接改库。
-                  </>
-                }
-              />
               {versions.length === 0 ? (
                 <Typography.Text type="secondary">尚无历史版本（保存一次后会有记录）</Typography.Text>
               ) : (
                 <Space direction="vertical" style={{ width: "100%" }} size="middle">
-                  <Space wrap align="center">
-                    <Typography.Text type="secondary">载入历史到编辑区</Typography.Text>
-                    <Select
-                      style={{ minWidth: 360 }}
-                      placeholder="选择历史版本（显示保存时间）"
-                      value={loadRev}
-                      loading={loadLoading}
-                      options={revOptions}
-                      onChange={(rev) => onPickLoadRev(rev).catch(() => {})}
-                      allowClear
-                      onClear={() => setLoadRev(undefined)}
-                    />
-                  </Space>
+                  <Select
+                    style={{ minWidth: 360 }}
+                    placeholder="载入历史版本到编辑区"
+                    value={loadRev}
+                    loading={loadLoading}
+                    options={revOptions}
+                    onChange={(rev) => onPickLoadRev(rev).catch(() => {})}
+                    allowClear
+                    onClear={() => setLoadRev(undefined)}
+                  />
 
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    版本比对（可选）
-                  </Typography.Text>
                   <Space wrap>
-                    <Typography.Text type="secondary">基准版</Typography.Text>
+                    <Typography.Text type="secondary">对比</Typography.Text>
                     <Select
                       style={{ minWidth: 280 }}
                       value={fromRev || undefined}

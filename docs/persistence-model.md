@@ -54,6 +54,19 @@ This matches the rule: after restart, an “in-flight” DB row is not trustwort
 - `rust/crates/http-gateway-rs/src/biz_advice_report_live.rs` — `resolve_formal_report_text`.
 - `rust/crates/gateway-solve-turn/src/session_report.rs` — jsonl helpers including per–user-turn index.
 
+## `gateway_turn_live_chunks` (live report tail, v1)
+
+| Column | Role |
+| --- | --- |
+| `turn_id`, `seq` | Primary key; monotonic chunk sequence per turn. |
+| `chunk` | UTF-8 text delta from worker `POST /v1/internal/turns/{turnId}/assistant-stream`. |
+| `created_at_ms` | Insert time (batch ingest). |
+
+- **Ingest:** pool worker streams NDJSON to the gateway; gateway `INSERT` + `NOTIFY claw_turn_live` (`maxSeq` / `terminal`).
+- **`hasReport`:** `EXISTS` live row while `running`; `succeeded` is always true.
+- **Live SSE:** `LISTEN` wake → `SELECT seq > cursor` → `biz.report.delta`; terminal uses `gateway_turns.report_message` + `flush_remaining_deltas` + `biz.report.done`.
+- **Cleanup:** `succeeded` → `terminal NOTIFY` then `DELETE` live rows; failed/cancelled/orphans → [`scripts/purge-gateway-turn-live-chunks.sh`](../scripts/purge-gateway-turn-live-chunks.sh).
+
 ## Future (not in this KISS slice)
 
 - Versioned SQL migrations directory, `cc_messages`, dedicated `gateway_async_tasks` table, transcript HTTP API — see the design plan Phase 1–2 items; implement when multi-node SoT for every message is required.

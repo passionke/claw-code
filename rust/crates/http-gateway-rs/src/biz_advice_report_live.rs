@@ -1,17 +1,11 @@
-//! Live business report from assistant stream spill + per-turn `gateway_turns` snapshot (no polish LLM). Author: kejiqing
+//! Live business report from PostgreSQL `gateway_turn_live_chunks` + per-turn snapshot. Author: kejiqing
 
-use std::io::SeekFrom;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gateway_solve_turn::{
-    assistant_stream_spill_path, spill_bytes_contain_end_marker, split_spill_end_marker,
-    strip_report_start_marker, ASSISTANT_STREAM_REPORT_START_MARKER,
-};
+use gateway_solve_turn::strip_report_start_marker;
 use serde_json::{json, Value};
-use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Instant};
 use tracing::warn;
@@ -20,25 +14,13 @@ use crate::biz_advice_report::{
     report_body_from_solve_output, sanitize_external_report_text, BizAdviceReportPayload,
     BizReportStreamMsg,
 };
-use crate::session_db::GatewaySessionDb;
+use crate::live_report_ports::{LiveReportPort, SessionDbLiveReportAdapter};
+use crate::session_db::{GatewaySessionDb, LiveChunkRow};
+use crate::turn_live::LiveNotifyHub;
 use crate::{ApiError, AppState};
 
-/// Whether this turn's assistant stream spill file exists on disk.
-#[must_use]
-pub fn turn_spill_file_exists(session_home: &Path, turn_id: &str) -> bool {
-    assistant_stream_spill_path(session_home, turn_id).is_file()
-}
-
-/// Live spill-tail SSE when spill exists and contains the report start marker.
-/// Gated by gateway env `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1` (spill write + report SSE + `hasReport`).
-#[must_use]
-pub fn turn_use_live_spill_report(session_home: &Path, turn_id: &str) -> bool {
-    turn_spill_file_exists(session_home, turn_id)
-        && gateway_solve_turn::spill_contains_report_start_marker(session_home, turn_id)
-}
-
-/// Poll spill growth frequently enough to tail model output smoothly.
-const POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// Fallback when `LISTEN` is quiet but ingest may still be running. Author: kejiqing
+const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Max Unicode scalars per `biz.report.delta` so one poll burst is not a single huge frame.
 const MAX_DELTA_CHARS: usize = 128;
 
@@ -144,21 +126,24 @@ fn is_terminal_turn_status(status: &str) -> bool {
     matches!(status, "succeeded" | "failed" | "cancelled")
 }
 
-async fn read_spill_from_offset(
-    path: &Path,
-    offset: u64,
-) -> Result<(Vec<u8>, u64), std::io::Error> {
-    let mut file = fs::File::open(path).await?;
-    let len = file.metadata().await?.len();
-    if offset >= len {
-        return Ok((Vec::new(), offset));
+/// Use PG live tail when chunks exist or the turn may still be streaming. Author: kejiqing
+pub async fn should_use_live_pg_report(
+    state: &AppState,
+    ctx: &LiveReportContext,
+) -> Result<bool, ApiError> {
+    if state
+        .session_db
+        .turn_has_live_chunks(&ctx.turn_id)
+        .await
+        .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    {
+        return Ok(true);
     }
-    file.seek(SeekFrom::Start(offset)).await?;
-    let to_read = (len - offset) as usize;
-    let mut buf = vec![0_u8; to_read];
-    let n = file.read(&mut buf).await?;
-    buf.truncate(n);
-    Ok((buf, offset + u64::try_from(n).unwrap_or(0)))
+    let status = turn_status(&state.session_db, &ctx.turn_id, &ctx.session_id, ctx.ds_id).await?;
+    Ok(matches!(
+        status.as_deref(),
+        Some("running") | Some("queued")
+    ))
 }
 
 fn emit_done(
@@ -185,15 +170,6 @@ fn emit_done(
 
 fn emit_error(tx: &mpsc::UnboundedSender<BizReportStreamMsg>, detail: impl Into<String>) {
     let _ = tx.send(BizReportStreamMsg::Error(detail.into()));
-}
-
-/// Consumer-visible report body from cumulative spill (after end-marker split).
-#[must_use]
-fn spill_visible_export(visible: &str) -> String {
-    if !visible.contains(ASSISTANT_STREAM_REPORT_START_MARKER) {
-        return String::new();
-    }
-    sanitize_external_report_text(visible)
 }
 
 /// Emit `full_export[emitted..]` as multiple SSE deltas (UTF-8 safe, `max_chars` per frame).
@@ -263,38 +239,99 @@ fn flush_remaining_deltas(
     debug_assert_eq!(delta_sent.as_str(), report);
 }
 
-/// Poll spill then fall back to formal jsonl / task output; SSE uses existing `biz.report.*` events.
+fn emit_live_chunk_rows(
+    tx: &mpsc::UnboundedSender<BizReportStreamMsg>,
+    rows: &[LiveChunkRow],
+    cumulative: &mut String,
+    emitted_export_len: &mut usize,
+    delta_sent: &mut String,
+    last_emitted_seq: &mut i64,
+) {
+    for row in rows {
+        cumulative.push_str(&row.chunk);
+        *last_emitted_seq = row.seq;
+        let visible = sanitize_external_report_text(cumulative);
+        emit_export_deltas(tx, &visible, emitted_export_len, delta_sent);
+    }
+}
+
+async fn try_finish_formal_port(
+    port: &dyn LiveReportPort,
+    ctx: &LiveReportContext,
+    tx: &mpsc::UnboundedSender<BizReportStreamMsg>,
+    status: &Option<String>,
+    delta_sent: &mut String,
+) -> bool {
+    let formal = match port
+        .formal_report_text(&ctx.turn_id, &ctx.session_id, ctx.ds_id)
+        .await
+    {
+        Ok(Some(t)) => t,
+        Ok(None) => return false,
+        Err(e) => {
+            emit_error(tx, e);
+            return true;
+        }
+    };
+    if status.as_deref() == Some("succeeded") && !formal.trim().is_empty() {
+        let report = sanitize_external_report_text(&formal);
+        flush_remaining_deltas(tx, &report, delta_sent);
+        let st = status.as_deref().unwrap_or("succeeded");
+        emit_done(tx, ctx, st, &report);
+        return true;
+    }
+    false
+}
+
+/// SSE worker dependencies (mock [`LiveReportPort`] in tests). Author: kejiqing
+pub struct LiveReportWorkerDeps {
+    pub port: Arc<dyn LiveReportPort>,
+    pub notify_hub: Arc<LiveNotifyHub>,
+    pub max_wait: Duration,
+}
+
+/// `LISTEN/NOTIFY` + `SELECT` live chunks; terminal formal from turn snapshot. Author: kejiqing
 pub fn spawn_live_report_sse_worker(
     state: Arc<AppState>,
     ctx: LiveReportContext,
 ) -> mpsc::UnboundedReceiver<BizReportStreamMsg> {
+    spawn_live_report_sse_worker_deps(
+        LiveReportWorkerDeps {
+            port: Arc::new(SessionDbLiveReportAdapter(Arc::clone(&state.session_db))),
+            notify_hub: Arc::clone(&state.live_notify_hub),
+            max_wait: Duration::from_secs(state.cfg.default_timeout_seconds.saturating_add(60)),
+        },
+        ctx,
+    )
+}
+
+pub fn spawn_live_report_sse_worker_deps(
+    deps: LiveReportWorkerDeps,
+    ctx: LiveReportContext,
+) -> mpsc::UnboundedReceiver<BizReportStreamMsg> {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
-        let spill_path = assistant_stream_spill_path(&ctx.session_home, &ctx.turn_id);
-        let mut spill_offset: u64 = 0;
-        let mut raw_spill = String::new();
+        let notify = deps.notify_hub.subscribe(&ctx.turn_id).await;
+        let mut last_emitted_seq: i64 = 0;
+        let mut cumulative = String::new();
         let mut emitted_export_len: usize = 0;
         let mut delta_sent = String::new();
         let started = Instant::now();
-        let max_wait = Duration::from_secs(state.cfg.default_timeout_seconds.saturating_add(60));
 
         loop {
-            if started.elapsed() > max_wait {
+            if started.elapsed() > deps.max_wait {
                 emit_error(&tx, "live report stream timed out");
                 return;
             }
 
-            let status = match turn_status(
-                &state.session_db,
-                &ctx.turn_id,
-                &ctx.session_id,
-                ctx.ds_id,
-            )
-            .await
+            let status = match deps
+                .port
+                .turn_status(&ctx.turn_id, &ctx.session_id, ctx.ds_id)
+                .await
             {
                 Ok(s) => s,
                 Err(e) => {
-                    emit_error(&tx, e.detail());
+                    emit_error(&tx, e);
                     return;
                 }
             };
@@ -308,76 +345,47 @@ pub fn spawn_live_report_sse_worker(
                 return;
             }
 
-            let formal = match resolve_formal_report_text(&state, &ctx).await {
-                Ok(t) => t,
-                Err(e) if e.status == axum::http::StatusCode::BAD_REQUEST => String::new(),
-                Err(e) => {
-                    emit_error(&tx, e.detail());
-                    return;
-                }
-            };
-
-            let mut switch_to_formal = false;
-            if status.as_deref() == Some("succeeded") && !formal.trim().is_empty() {
-                switch_to_formal = true;
-            }
-
-            if spill_path.is_file() {
-                match read_spill_from_offset(&spill_path, spill_offset).await {
-                    Ok((chunk, new_off)) => {
-                        spill_offset = new_off;
-                        if spill_bytes_contain_end_marker(&chunk) {
-                            switch_to_formal = true;
-                        }
-                        if !chunk.is_empty() {
-                            let piece = String::from_utf8_lossy(&chunk);
-                            raw_spill.push_str(&piece);
-                        }
-                        let (visible, saw_end) = split_spill_end_marker(&raw_spill);
-                        if saw_end {
-                            switch_to_formal = true;
-                        }
-                        let full_export = spill_visible_export(&visible);
-                        if !switch_to_formal {
-                            emit_export_deltas(
-                                &tx,
-                                &full_export,
-                                &mut emitted_export_len,
-                                &mut delta_sent,
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        emit_error(&tx, format!("read spill failed: {e}"));
-                        return;
-                    }
-                }
-            } else if !formal.trim().is_empty()
-                && status.as_deref().is_some_and(is_terminal_turn_status)
+            if try_finish_formal_port(deps.port.as_ref(), &ctx, &tx, &status, &mut delta_sent).await
             {
-                switch_to_formal = true;
-            }
-
-            if switch_to_formal {
-                let report = if formal.trim().is_empty() {
-                    match resolve_formal_report_text(&state, &ctx).await {
-                        Ok(t) => t,
-                        Err(e) => {
-                            emit_error(&tx, e.detail());
-                            return;
-                        }
-                    }
-                } else {
-                    formal
-                };
-                let report = sanitize_external_report_text(&report);
-                flush_remaining_deltas(&tx, &report, &mut delta_sent);
-                let st = status.as_deref().unwrap_or("succeeded");
-                emit_done(&tx, &ctx, st, &report);
                 return;
             }
 
-            sleep(POLL_INTERVAL).await;
+            let rows = match deps
+                .port
+                .stream_live_chunks_since(&ctx.turn_id, last_emitted_seq)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    emit_error(&tx, format!("live chunks query failed: {e}"));
+                    return;
+                }
+            };
+            if !rows.is_empty() {
+                emit_live_chunk_rows(
+                    &tx,
+                    &rows,
+                    &mut cumulative,
+                    &mut emitted_export_len,
+                    &mut delta_sent,
+                    &mut last_emitted_seq,
+                );
+            } else if try_finish_formal_port(
+                deps.port.as_ref(),
+                &ctx,
+                &tx,
+                &status,
+                &mut delta_sent,
+            )
+            .await
+            {
+                return;
+            }
+
+            tokio::select! {
+                _ = notify.notified() => {}
+                _ = sleep(STATUS_POLL_INTERVAL) => {}
+            }
         }
     });
     rx
@@ -457,13 +465,6 @@ mod tests {
     }
 
     #[test]
-    fn spill_visible_export_strips_marker() {
-        let raw = format!("{ASSISTANT_STREAM_REPORT_START_MARKER}\n# 标题\n正文");
-        assert_eq!(spill_visible_export(&raw), "# 标题\n正文");
-        assert!(spill_visible_export("分析中…").is_empty());
-    }
-
-    #[test]
     fn formal_db_snapshot_prefers_report_message_over_output_json() {
         let j = json!({"message": "ignored"});
         assert_eq!(
@@ -502,7 +503,10 @@ mod tests {
 
     #[test]
     fn formal_db_snapshot_strips_internal_start_marker() {
-        let marked = format!("{ASSISTANT_STREAM_REPORT_START_MARKER}\n# 标题");
+        let marked = format!(
+            "{}\n# 标题",
+            gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER
+        );
         assert_eq!(
             formal_report_text_from_db_snapshot(Some(marked.as_str()), None).as_deref(),
             Some("# 标题")
@@ -511,5 +515,60 @@ mod tests {
             formal_report_text_from_db_snapshot(None, Some(&json!({"message": marked}))).as_deref(),
             Some("# 标题")
         );
+    }
+
+    #[tokio::test]
+    async fn live_report_sse_worker_emits_delta_then_done_with_mock_port() {
+        use crate::live_report_mocks::MockLiveReportPort;
+
+        let mock = Arc::new(MockLiveReportPort::default());
+        let mock_ctl = Arc::clone(&mock);
+        *mock.status.lock().await = Some("running".into());
+        mock.push_chunk("T_10000000000000000000000000000001", 1, "流式")
+            .await;
+        let port: Arc<dyn LiveReportPort> = mock;
+        let hub = Arc::new(crate::turn_live::LiveNotifyHub::new());
+        let ctx = LiveReportContext {
+            session_id: "sess-mock".into(),
+            turn_id: "T_10000000000000000000000000000001".into(),
+            ds_id: 1,
+            session_home: std::path::PathBuf::from("/tmp"),
+        };
+        let mut rx = spawn_live_report_sse_worker_deps(
+            LiveReportWorkerDeps {
+                port,
+                notify_hub: Arc::clone(&hub),
+                max_wait: Duration::from_secs(30),
+            },
+            ctx,
+        );
+        hub.signal_turn("T_10000000000000000000000000000001")
+            .await;
+        let mut saw_delta = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(BizReportStreamMsg::Delta(d)) = rx.try_recv() {
+                if !d.is_empty() {
+                    saw_delta = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(saw_delta, "mock live chunks should produce biz.report.delta");
+        mock_ctl.set_succeeded("流式正文").await;
+        hub.signal_turn("T_10000000000000000000000000000001")
+            .await;
+        let mut saw_done = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(BizReportStreamMsg::Done(payload)) = rx.try_recv() {
+                assert_eq!(payload.report_text.as_deref(), Some("流式正文"));
+                saw_done = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(saw_done, "mock formal snapshot + signal_turn should yield Done");
     }
 }

@@ -13,6 +13,7 @@ serde_json.workspace = true
 telemetry = { path = "../telemetry" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 tools = { path = "../tools" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 [lints]
 workspace = true

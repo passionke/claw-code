@@ -1,9 +1,14 @@
 /** L2 entity revision helpers. Author: kejiqing */
 
 import { proxyHttp } from "../api/client";
-export type EntityDomain = "rule" | "skill" | "mcp";
-import { parseRuleJsonItem } from "./rules";
 import type { RuleEditorItem } from "../types/project";
+import { stableStringifyValue } from "./mergeCompare";
+import { parseRuleJsonItem } from "./rules";
+
+export type EntityDomain = "rule" | "skill" | "mcp" | "claude";
+
+/** Fixed L2 entity_key for CLAUDE.md (gateway normalizes any input to this). Author: kejiqing */
+export const CLAUDE_ENTITY_KEY = "_";
 
 interface EntityCompareResponse {
   fromBody?: unknown;
@@ -54,3 +59,31 @@ export function mcpConfigJsonFromRevisionBody(body: unknown): string {
     return "{}\n";
   }
 }
+
+export function claudeContentFromRevisionBody(body: unknown): string {
+  if (body && typeof body === "object" && "content" in body) {
+    const c = (body as { content?: unknown }).content;
+    return typeof c === "string" ? c : "";
+  }
+  return "";
+}
+
+/** Text shown in L2 diff viewer per domain. Author: kejiqing */
+export function entityBodyToDiffText(domain: EntityDomain, body: unknown): string {
+  switch (domain) {
+    case "claude":
+      return claudeContentFromRevisionBody(body);
+    case "skill":
+      return skillContentFromRevisionBody(body);
+    case "mcp":
+      return mcpConfigJsonFromRevisionBody(body);
+    case "rule": {
+      const { ruleTitle, ruleContent } = ruleFieldsFromRevisionBody(body);
+      const title = ruleTitle.trim();
+      return title ? `# ${title}\n\n${ruleContent}` : ruleContent;
+    }
+    default:
+      return stableStringifyValue(body);
+  }
+}
+

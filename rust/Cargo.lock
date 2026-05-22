@@ -764,6 +764,7 @@ name = "gateway-solve-turn"
 version = "0.1.0"
 dependencies = [
  "api",
+ "reqwest",
  "runtime",
  "serde",
  "serde_json",

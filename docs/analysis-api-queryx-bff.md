@@ -117,7 +117,7 @@
 | `sessionId` | string | 否 | 续聊必填；首聊省略则由网关生成 |
 | `question` | string | 是 | 用户自然语言问题，非空；BFF 映射为网关请求体字段 **`userPrompt`** |
 
-Live 报告 spill 由网关单一环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`** 控制（写 spill + 提前 `hasReport` + 报告 SSE）；默认关闭。BFF **无需**再单独传 `assistantStreamSpill`（请求体显式 `false` 仍会关闭该次任务）。
+Live 报告由 worker 将模型输出写入 PostgreSQL live chunk 表（部署需配置 **`CLAW_GATEWAY_INTERNAL_BASE_URL`** + **`CLAW_GATEWAY_INTERNAL_TOKEN`**，见根目录 `.env.example`）。BFF **无需**传 `assistantStreamSpill`。
 
 **BFF 侧（设计约定，非对外字段）**  
 
@@ -153,8 +153,8 @@ Live 报告 spill 由网关单一环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SP
 
 **行为说明**  
 
-- **默认（未设 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`）**：`GET /v1/biz_advice_report` 与 **`biz_advice_report_bak` 同为 LLM 润色**；须 turn **`succeeded`** 后再拉（`has_report` 运行中不会提前为 true）。对外报告正文仍会去掉内部标记 **`__CLAW_REPORT_START__`**（与 spill 开关无关）。  
-- **开启 live spill**（仅设 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`，网关会为 async solve 默认写 spill）：`stream=true` 时 tail spill，结束后 `biz.report.done` 全量正文（无润色）。  
+- **有 live chunk 或 turn 进行中**：`stream=true` 时 tail PostgreSQL + 终态 `biz.report.done` 全量（无润色）。  
+- **无 live 且已终态**：与 `biz_advice_report_bak` 同为 LLM 润色路径。  
 - 非流式 JSON 需 turn 已终态且正文非空。
 
 ---
@@ -182,15 +182,13 @@ Live 报告 spill 由网关单一环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SP
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `current_task_desc` | string | 网关 `GET /v1/tasks/{task_id}` 的 **`currentTaskDesc`**（BFF 映射为本字段）：agent 通过 `report_progress` 写的用户向进度句；排队态由网关生成；**不**暴露 SQLBot/MCP 等内部工具名 |
-| `has_report` | boolean | 网关 **`hasReport`**：该 turn 的增量 spill 中已出现 **`__CLAW_REPORT_START__`** 时为 `true`；前端可在 `has_report === true` 时调用 `GET /api/v1/analysis/report`（映射 `GET /v1/biz_advice_report?sessionId&turnId&dsId&stream=true`） |
+| `has_report` | boolean | 网关 **`hasReport`**：`succeeded` 为 true；`running` 时首个非空 assistant `TextDelta` 写入 live 表后为 true |
 
 **前端建议顺序（hacking）**
 
-1. `POST /api/v1/analysis/async`（live 模式由部署侧 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1` 开启）  
+1. `POST /api/v1/analysis/async`  
 2. 轮询 `GET /api/v1/analysis/status`，直到 `has_report === true`（或任务终态）  
-3. `has_report === true` 时建立报告 SSE（`stream=true`）；任务 `succeeded` 后 SSE 会切全量 jsonl 并 `biz.report.done`  
-
-网关 solve 的系统提示词（project 级 `CLAUDE.md` **之前**）已要求模型在最终报告正文前单独输出一行 `__CLAW_REPORT_START__`（进入 `assistant-stream-spill-{turnId}.txt`）；无需再在项目 `CLAUDE.md` 里重复写。
+3. `has_report === true` 时建立报告 SSE（`stream=true`）；`succeeded` 后 SSE 以 `gateway_turns` 正式报告收尾（`biz.report.done` 全量）
 
 > **实现说明**：权威来源为 `http-gateway-rs` 任务轮询；可选 `GET /v1/sessions/{sessionId}/execution?ds_id=` 获取 `progress` / `progressHistory` / `queue`。
 

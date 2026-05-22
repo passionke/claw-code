@@ -1,51 +1,114 @@
 import { Button, Input, Space, Typography, message } from "antd";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../api/client";
+import EditorLengthHint from "../components/EditorLengthHint";
+import EntityVersionPanel from "../components/EntityVersionPanel";
 import { useApp } from "../context/AppContext";
+import {
+  CLAUDE_ENTITY_KEY,
+  claudeContentFromRevisionBody,
+} from "../utils/entityRevision";
+import { putProjectConfigDraft } from "../utils/projectConfig";
 
 const { TextArea } = Input;
 
-export default function ClaudePage() {
-  const { gatewayBase, dsId, refreshProjectConfig } = useApp();
-  const [content, setContent] = useState("");
+function hasClaudeOverride(md: string | null | undefined): boolean {
+  return !!(md && md.trim());
+}
 
-  const load = async () => {
+export default function ClaudePage() {
+  const { gatewayBase, dsId, projectConfig, refreshProjectConfig } = useApp();
+  const [content, setContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [l2Refresh, setL2Refresh] = useState(0);
+
+  const load = useCallback(async () => {
+    const cfg = projectConfig ?? (await refreshProjectConfig());
+    if (hasClaudeOverride(cfg.claudeMd)) {
+      const md = cfg.claudeMd ?? "";
+      setContent(md);
+      return;
+    }
     const r = await proxyHttp<{ content?: string; exists?: boolean }>(
       gatewayBase,
       "GET",
       `/v1/project/claude/${dsId}`
     );
-    setContent(r.content || "");
-    message.info(r.exists ? "CLAUDE.md 已加载" : "文件不存在（空）");
-  };
+    const c = r.content || "";
+    setContent(c);
+  }, [gatewayBase, dsId, projectConfig, refreshProjectConfig]);
 
   useEffect(() => {
     load().catch((e) => message.error(String((e as Error).message)));
-  }, [gatewayBase, dsId]);
+  }, [load]);
+
+  useEffect(() => {
+    if (!projectConfig) return;
+    const md = projectConfig.claudeMd;
+    if (hasClaudeOverride(md)) {
+      setContent(md ?? "");
+    }
+  }, [projectConfig?.contentRev, projectConfig?.claudeMd, dsId]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await proxyHttp(gatewayBase, "POST", `/v1/project/claude/${dsId}`, { content });
+      message.success("CLAUDE.md 已写入项目草稿");
+      await refreshProjectConfig();
+      setL2Refresh((n) => n + 1);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const restoreDefault = async () => {
+    const cfg = projectConfig ?? (await refreshProjectConfig());
+    setRestoring(true);
+    try {
+      await putProjectConfigDraft(gatewayBase, dsId, cfg, { claudeMd: null });
+      setContent("");
+      message.success("已恢复默认（已清空项目 CLAUDE.md 覆盖）");
+      await refreshProjectConfig();
+      await load();
+      setL2Refresh((n) => n + 1);
+    } finally {
+      setRestoring(false);
+    }
+  };
 
   return (
     <div>
       <Typography.Title level={4}>CLAUDE.md</Typography.Title>
-      <Typography.Paragraph type="secondary">
-        保存<strong>非空</strong>内容时，将作为<strong>完整系统提示词</strong>（不再前置系统默认段）。
-        留空则使用数据库中的系统默认模板 + Rules / Skills 等。恢复默认请到「系统提示词」页。
-      </Typography.Paragraph>
+      <EditorLengthHint text={content} label="CLAUDE.md 正文" />
       <TextArea rows={18} value={content} onChange={(e) => setContent(e.target.value)} />
-      <Space style={{ marginTop: 8 }}>
+      <Space style={{ marginTop: 8 }} wrap>
         <Button
           type="primary"
-          onClick={async () => {
-            await proxyHttp(gatewayBase, "POST", `/v1/project/claude/${dsId}`, {
-              content,
-            });
-            message.success("CLAUDE.md 已写入临时版");
-            await refreshProjectConfig();
-          }}
+          loading={saving}
+          onClick={() => save().catch((e) => message.error(String(e)))}
         >
           保存 CLAUDE.md
         </Button>
-        <Button onClick={() => load()}>重新加载</Button>
+        <Button onClick={() => load().catch((e) => message.error(String(e)))}>
+          重新加载
+        </Button>
+        <Button
+          loading={restoring}
+          onClick={() => restoreDefault().catch((e) => message.error(String(e)))}
+        >
+          恢复默认（清空覆盖）
+        </Button>
       </Space>
+      <EntityVersionPanel
+        domain="claude"
+        entityKey={CLAUDE_ENTITY_KEY}
+        title="条目历史"
+        refreshKey={l2Refresh}
+        singleton
+        onLoadIntoEditor={(body) => setContent(claudeContentFromRevisionBody(body))}
+      />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../context/AppContext";
 import type { McpEditorItem } from "../utils/mcp";
 import { mcpListFromRecord, mcpRecordFromList } from "../utils/mcp";
+import EditorLengthHint from "../components/EditorLengthHint";
 import EntityVersionPanel from "../components/EntityVersionPanel";
 import { mcpConfigJsonFromRevisionBody } from "../utils/entityRevision";
 import { putProjectConfigDraft } from "../utils/projectConfig";
@@ -112,11 +113,6 @@ export default function McpPage() {
   return (
     <div>
       <Typography.Title level={4}>MCP</Typography.Title>
-      <Typography.Paragraph type="secondary">
-        按 server 名称管理（与 solve 使用的 <Typography.Text code>mcpServers</Typography.Text>{" "}
-        对象键一致）。保存 / 删除均写入本项目草稿（<Typography.Text code>__draft__</Typography.Text>）。
-      </Typography.Paragraph>
-
       <Space wrap style={{ marginBottom: 8 }}>
         <Select
           style={{ minWidth: 280 }}
@@ -163,14 +159,11 @@ export default function McpPage() {
         </Typography.Paragraph>
       )}
 
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        配置 JSON（如 http: type+url，stdio: command+args）
-      </Typography.Text>
+      <EditorLengthHint text={configJson} label="MCP 配置" />
       <TextArea
         rows={12}
         value={configJson}
         onChange={(e) => setConfigJson(e.target.value)}
-        style={{ marginTop: 4 }}
       />
       <Space style={{ marginTop: 8 }}>
         <Button type="primary" onClick={() => save().catch((e) => message.error(String(e)))}>
