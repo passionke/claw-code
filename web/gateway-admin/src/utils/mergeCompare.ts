@@ -7,6 +7,7 @@ import type {
 } from "../types/compare";
 import { MERGEABLE_FIELDS } from "../types/compare";
 import type { ProjectConfigCompareResponse } from "../types/compare";
+import { formatVersionTime } from "./versionDisplay";
 
 export const EMPTY_PROJECT_CONFIG_DOCUMENT: ProjectConfigDocument = {
   claudeMd: null,
@@ -17,12 +18,15 @@ export const EMPTY_PROJECT_CONFIG_DOCUMENT: ProjectConfigDocument = {
 };
 
 /** Labels for merge radios (Git-style: base vs incoming). Author: kejiqing */
-export function mergeSideLabels(fromRev: string, toRev: string) {
-  const base = fromRev || "基准";
-  const incoming = toRev || "对照";
+export function mergeSideLabels(
+  fromRev: string,
+  toRev: string,
+  fromMs?: number | null,
+  toMs?: number | null
+) {
   return {
-    from: `基准版 · ${base}`,
-    to: `对照版 · ${incoming}`,
+    from: `基准版 · ${formatVersionTime(fromRev, fromMs)}`,
+    to: `对照版 · ${formatVersionTime(toRev, toMs)}`,
     fromShort: "基准版",
     toShort: "对照版",
   };
@@ -47,6 +51,12 @@ export function hasCompareDocuments(
 
 export function stableStringify(doc: ProjectConfigDocument | undefined): string {
   return JSON.stringify(doc ?? EMPTY_PROJECT_CONFIG_DOCUMENT, null, 2);
+}
+
+/** Pretty JSON for L2 entity bodies or arbitrary snapshots. Author: kejiqing */
+export function stableStringifyValue(value: unknown): string {
+  if (value === undefined) return "";
+  return JSON.stringify(value, null, 2);
 }
 
 export function fieldChanged(

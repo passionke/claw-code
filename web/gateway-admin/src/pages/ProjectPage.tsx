@@ -20,6 +20,7 @@ import { proxyHttp } from "../api/client";
 import { useApp } from "../context/AppContext";
 import type { ProjectConfig, VersionEntry, VersionsResponse } from "../types/project";
 import VersionNoteCell from "../components/VersionNoteCell";
+import { formatVersionTime, formatVersionTitle } from "../utils/versionDisplay";
 import VersionComparePanel from "../components/VersionComparePanel";
 import { putProjectConfigDraft } from "../utils/projectConfig";
 
@@ -167,18 +168,23 @@ export default function ProjectPage() {
 
   const columns: ColumnsType<VersionEntry> = [
     {
-      title: "版本号",
+      title: "版本时间",
       dataIndex: "contentRev",
-      render: (_, v) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text code>{v.isDraft ? "__draft__" : v.contentRev}</Typography.Text>
-          {!v.isDraft && (
-            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-              {new Date(v.createdAtMs).toLocaleString()}
-            </Typography.Text>
-          )}
-        </Space>
-      ),
+      render: (_, v) => {
+        const { primary, secondary } = formatVersionTitle(v.contentRev, v.createdAtMs, {
+          isDraft: v.isDraft,
+        });
+        return (
+          <Space direction="vertical" size={0}>
+            <Typography.Text strong>{primary}</Typography.Text>
+            {secondary ? (
+              <Typography.Text type="secondary" style={{ fontSize: 11 }} code>
+                {secondary}
+              </Typography.Text>
+            ) : null}
+          </Space>
+        );
+      },
     },
     {
       title: "备注",
@@ -242,7 +248,15 @@ export default function ProjectPage() {
     },
   ];
 
-  const effective = versions?.activeContentRev || projectConfig?.stableContentRev || "—";
+  const effectiveRev =
+    versions?.activeContentRev || projectConfig?.stableContentRev || "";
+  const effectiveLabel = effectiveRev
+    ? formatVersionTime(
+        effectiveRev,
+        versions?.versions.find((v) => v.contentRev === effectiveRev && !v.isDraft)
+          ?.createdAtMs
+      )
+    : "—";
 
   return (
     <div>
@@ -283,7 +297,9 @@ export default function ProjectPage() {
           <Typography.Text type="secondary">
             {row.environmentPrepared ? "环境就绪" : "环境未就绪"}
             {row.draftOpen ? " · 有草稿" : ""}
-            {row.contentRev ? ` · 生效 ${row.contentRev}` : ""}
+            {row.contentRev
+              ? ` · 生效 ${formatVersionTime(row.contentRev)}`
+              : ""}
           </Typography.Text>
         )}
       </Space>
@@ -365,7 +381,12 @@ export default function ProjectPage() {
             <Space wrap size="middle">
               <span>
                 生效（solve 用）{" "}
-                <Typography.Text code>{effective}</Typography.Text>
+                <Typography.Text>{effectiveLabel}</Typography.Text>
+                {effectiveRev && effectiveRev !== "__draft__" ? (
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }} code>
+                    {effectiveRev}
+                  </Typography.Text>
+                ) : null}
               </span>
               <span>
                 临时版{" "}

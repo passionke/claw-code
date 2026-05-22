@@ -31,28 +31,9 @@ import {
   MERGE_FIELD_LABELS,
   stableStringify,
 } from "../utils/mergeCompare";
+import { diffViewerStyles } from "../utils/diffViewerTheme";
 import { putProjectConfigDraft } from "../utils/projectConfig";
-
-const diffStyles = {
-  variables: {
-    dark: {
-      diffViewerBackground: "#0d1117",
-      diffViewerColor: "#e6edf3",
-      addedBackground: "#033a16",
-      addedColor: "#aff5b4",
-      removedBackground: "#67060c",
-      removedColor: "#ffdcd7",
-      wordAddedBackground: "#055d1c",
-      wordRemovedBackground: "#8e1519",
-      gutterBackground: "#161b22",
-      gutterColor: "#8b949e",
-    },
-  },
-  contentText: {
-    fontSize: 12,
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-  },
-};
+import { formatVersionTime, versionOptionLabel } from "../utils/versionDisplay";
 
 interface VersionComparePanelProps {
   gatewayBase: string;
@@ -62,8 +43,14 @@ interface VersionComparePanelProps {
   onMerged: () => Promise<void>;
 }
 
-function sideRadioOptions(fromRev: string, toRev: string) {
-  const L = mergeSideLabels(fromRev, toRev);
+function sideRadioOptions(
+  fromRev: string,
+  toRev: string,
+  versionRows: VersionsResponse["versions"] | undefined
+) {
+  const fromMs = versionRows?.find((v) => v.contentRev === fromRev)?.createdAtMs;
+  const toMs = versionRows?.find((v) => v.contentRev === toRev)?.createdAtMs;
+  const L = mergeSideLabels(fromRev, toRev, fromMs, toMs);
   return [
     { label: L.from, value: "from" as MergePickSide },
     { label: L.to, value: "to" as MergePickSide },
@@ -88,10 +75,15 @@ export default function VersionComparePanel({
     () =>
       (versions?.versions || []).map((v) => ({
         value: v.contentRev,
-        label:
-          (v.isDraft ? "临时 __draft__" : v.contentRev) +
-          (v.note ? ` — ${v.note}` : "") +
-          (v.isActive ? " · 生效" : ""),
+        label: versionOptionLabel({
+          rev: v.contentRev,
+          createdAtMs: v.createdAtMs,
+          note: v.note,
+          tags: [
+            v.isDraft ? "编辑草稿" : undefined,
+            v.isActive ? "生效" : undefined,
+          ].filter((x): x is string => !!x),
+        }),
       })),
     [versions]
   );
@@ -234,7 +226,7 @@ export default function VersionComparePanel({
 
   const fromRev = result?.from ?? compareFrom;
   const toRev = result?.to ?? compareTo;
-  const radioOpts = sideRadioOptions(fromRev, toRev);
+  const radioOpts = sideRadioOptions(fromRev, toRev, versions?.versions);
 
   return (
     <div>
@@ -249,14 +241,14 @@ export default function VersionComparePanel({
       <Space wrap style={{ marginBottom: 8 }}>
         <Typography.Text type="secondary">基准版</Typography.Text>
         <Select
-          style={{ minWidth: 220 }}
+          style={{ minWidth: 280 }}
           value={compareFrom || undefined}
           onChange={setCompareFrom}
           options={versionOptions}
         />
         <Typography.Text type="secondary">对照版</Typography.Text>
         <Select
-          style={{ minWidth: 220 }}
+          style={{ minWidth: 280 }}
           value={compareTo || undefined}
           onChange={setCompareTo}
           options={versionOptions}
@@ -299,7 +291,14 @@ export default function VersionComparePanel({
                   <span>摘要：{result.changes.length} 处差异</span>
                   <span>
                     当前 solve 生效{" "}
-                    <Typography.Text code>{result.activeContentRev}</Typography.Text>
+                    <Typography.Text>
+                      {formatVersionTime(
+                        result.activeContentRev,
+                        versions?.versions.find(
+                          (v) => v.contentRev === result.activeContentRev && !v.isDraft
+                        )?.createdAtMs
+                      )}
+                    </Typography.Text>
                   </span>
                 </Space>
               }
@@ -324,7 +323,7 @@ export default function VersionComparePanel({
                 compareMethod={DiffMethod.WORDS}
                 leftTitle={`基准版 · ${fromRev}`}
                 rightTitle={`对照版 · ${toRev}`}
-                styles={diffStyles}
+                styles={diffViewerStyles}
               />
             </div>
           )}

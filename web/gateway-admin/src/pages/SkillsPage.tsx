@@ -5,6 +5,7 @@ import { proxyHttp } from "../api/client";
 import { useApp } from "../context/AppContext";
 import type { SkillRow } from "../types/project";
 import EntityVersionPanel from "../components/EntityVersionPanel";
+import { skillContentFromRevisionBody } from "../utils/entityRevision";
 import { putProjectConfigDraft } from "../utils/projectConfig";
 
 const { TextArea } = Input;
@@ -70,7 +71,7 @@ export default function SkillsPage() {
       skillName,
       skillContent: content,
     });
-    message.success(creating ? `已新增 Skill「${skillName}」到临时版` : `已保存 Skill「${skillName}」`);
+    message.success(creating ? `已新增 Skill「${skillName}」到项目草稿` : `已保存 Skill「${skillName}」到项目草稿`);
     setCreating(false);
     setPick(skillName);
     setNewName("");
@@ -100,7 +101,8 @@ export default function SkillsPage() {
     <div>
       <Typography.Title level={4}>Skills</Typography.Title>
       <Typography.Paragraph type="secondary">
-        从下拉选择已有 Skill 编辑正文；点「新增 Skill」创建新条目。保存写入临时版，「设为生效」后物化到{" "}
+        从下拉选择已有 Skill 编辑正文；点「新增 Skill」创建新条目。保存写入本项目草稿（
+        <Typography.Text code>__draft__</Typography.Text>），在「项目」页设为生效后物化到{" "}
         <Typography.Text code>home/skills/&lt;name&gt;/SKILL.md</Typography.Text>。
       </Typography.Paragraph>
 
@@ -173,6 +175,7 @@ export default function SkillsPage() {
         domain="skill"
         entityKey={creating ? "" : pick}
         refreshKey={l2Refresh}
+        onLoadIntoEditor={(body) => setContent(skillContentFromRevisionBody(body))}
       />
     </div>
   );

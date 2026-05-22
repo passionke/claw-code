@@ -5,6 +5,7 @@ import { useApp } from "../context/AppContext";
 import type { McpEditorItem } from "../utils/mcp";
 import { mcpListFromRecord, mcpRecordFromList } from "../utils/mcp";
 import EntityVersionPanel from "../components/EntityVersionPanel";
+import { mcpConfigJsonFromRevisionBody } from "../utils/entityRevision";
 import { putProjectConfigDraft } from "../utils/projectConfig";
 
 const { TextArea } = Input;
@@ -113,7 +114,7 @@ export default function McpPage() {
       <Typography.Title level={4}>MCP</Typography.Title>
       <Typography.Paragraph type="secondary">
         按 server 名称管理（与 solve 使用的 <Typography.Text code>mcpServers</Typography.Text>{" "}
-        对象键一致）。保存 / 删除均写入临时版。
+        对象键一致）。保存 / 删除均写入本项目草稿（<Typography.Text code>__draft__</Typography.Text>）。
       </Typography.Paragraph>
 
       <Space wrap style={{ marginBottom: 8 }}>
@@ -188,6 +189,7 @@ export default function McpPage() {
         domain="mcp"
         entityKey={creating ? "" : pick}
         refreshKey={l2Refresh}
+        onLoadIntoEditor={(body) => setConfigJson(mcpConfigJsonFromRevisionBody(body))}
       />
     </div>
   );

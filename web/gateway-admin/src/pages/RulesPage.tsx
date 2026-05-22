@@ -3,6 +3,7 @@ import { PlusOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../context/AppContext";
 import type { RuleEditorItem } from "../types/project";
+import { ruleFieldsFromRevisionBody } from "../utils/entityRevision";
 import { parseRuleJsonItem, rulesJsonFromList, slugRuleTitle } from "../utils/rules";
 import EntityVersionPanel from "../components/EntityVersionPanel";
 import { putProjectConfigDraft } from "../utils/projectConfig";
@@ -143,7 +144,8 @@ export default function RulesPage() {
     <div>
       <Typography.Title level={4}>Rules</Typography.Title>
       <Typography.Paragraph type="secondary">
-        从下拉选择已有规则编辑；点「新增 Rule」创建条目。保存写入临时版，物化到{" "}
+        从下拉选择已有规则编辑；点「新增 Rule」创建条目。保存写入<strong>本项目草稿</strong>（
+        <Typography.Text code>__draft__</Typography.Text>，与「项目」页临时版相同），设为生效后物化到{" "}
         <Typography.Text code>home/.cursor/rules/&lt;ruleId&gt;.mdc</Typography.Text>。
       </Typography.Paragraph>
 
@@ -232,6 +234,11 @@ export default function RulesPage() {
         domain="rule"
         entityKey={creating ? "" : pick}
         refreshKey={l2Refresh}
+        onLoadIntoEditor={(body) => {
+          const { ruleTitle: t, ruleContent: c } = ruleFieldsFromRevisionBody(body);
+          setRuleTitle(t);
+          setRuleContent(c);
+        }}
       />
     </div>
   );

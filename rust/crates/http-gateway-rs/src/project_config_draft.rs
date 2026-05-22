@@ -26,12 +26,12 @@ pub fn is_draft_content_rev(rev: &str) -> bool {
     rev.trim() == DRAFT_CONTENT_REV
 }
 
-/// Formal version id: local `YYYYMMDDHHmmss` (second resolution). Author: kejiqing
+/// Formal version id: local `YYYY-MM-DD_HH-mm-ss` (second resolution). Author: kejiqing
 pub fn format_formal_content_rev_local_ms(ms: i64) -> String {
     let Some(dt) = Local.timestamp_millis_opt(ms).single() else {
         return ms.to_string();
     };
-    dt.format("%Y%m%d%H%M%S").to_string()
+    dt.format("%Y-%m-%d_%H-%M-%S").to_string()
 }
 
 /// Pick unused formal `content_rev` for `ds_id` (suffix `-2` on collision). Author: kejiqing

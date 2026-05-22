@@ -157,7 +157,7 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
 
 - `POST /v1/project/config/{ds_id}/versions/commit`
   - 用途：将临时版**保存为正式版**（不可变）；**不**切换生效版、不物化
-  - 请求体：`{ "note": "可选备注" }`（版本号由服务端按本地时间生成 `YYYYMMDDHHmmss`，冲突时 `-2`、`-3`…）
+  - 请求体：`{ "note": "可选备注" }`（版本号由服务端按本地时间生成 `YYYY-MM-DD_HH-mm-ss`，冲突时 `-2`、`-3`…；Admin 下拉以 `createdAtMs` 显示为可读时间）
   - 响应：`{ "savedContentRev", "activated": false, "stableContentRev", "materialized": false, "activeConfig" }`
 
 - `DELETE /v1/project/config/{ds_id}/versions/{content_rev}`
