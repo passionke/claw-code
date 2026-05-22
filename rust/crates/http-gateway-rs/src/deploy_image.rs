@@ -1,11 +1,13 @@
 //! Deploy image ref/tag for `/healthz` (from `CLAW_GATEWAY_IMAGE_REF` / compose `GATEWAY_IMAGE`). Author: kejiqing
 
 /// Compose `GATEWAY_IMAGE` value passed into the running gateway container.
+#[must_use]
 pub fn image_ref_from_env() -> String {
     std::env::var("CLAW_GATEWAY_IMAGE_REF").unwrap_or_default()
 }
 
 /// User-facing tag: `local`, `release-v1.2.3`, or the image tag segment.
+#[must_use]
 pub fn deploy_image_tag(image_ref: &str) -> String {
     let s = image_ref.trim();
     if s.is_empty() {

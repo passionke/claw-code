@@ -192,14 +192,18 @@ async fn write_skills_json(work_dir: &Path, skills: &Value) -> ApplyResult<()> {
 /// Author: kejiqing
 pub fn git_excluded_home_relpaths(row: &ProjectConfigRow) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if row.claude_md.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+    if row
+        .claude_md
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
         out.push(PathBuf::from("CLAUDE.md"));
     }
     if row.skills_json.as_array().is_some_and(|a| !a.is_empty()) {
         out.push(PathBuf::from("skills"));
     }
     if let Some(items) = row.rules_json.as_array() {
-        for item in items.iter() {
+        for item in items {
             let rel = item
                 .get("relativePath")
                 .and_then(Value::as_str)

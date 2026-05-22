@@ -27,6 +27,7 @@ pub struct TurnToolRecord {
     pub output_truncated: bool,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde `skip_serializing_if` passes `&bool`
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -69,7 +70,8 @@ fn max_field_chars() -> usize {
         .unwrap_or(DEFAULT_MAX_FIELD_CHARS)
 }
 
-/// List tool_use / tool_result pairs for the `user_turn_index_1based`-th user message in jsonl.
+/// List `tool_use` / `tool_result` pairs for the `user_turn_index_1based`-th user message in jsonl.
+#[allow(clippy::too_many_lines)]
 pub fn list_tool_executions_for_user_turn(
     session_home: &Path,
     user_turn_index_1based: usize,
@@ -133,10 +135,7 @@ pub fn list_tool_executions_for_user_turn(
                     let Some(name) = block.get("name").and_then(Value::as_str) else {
                         continue;
                     };
-                    let input_raw = block
-                        .get("input")
-                        .and_then(Value::as_str)
-                        .unwrap_or("{}");
+                    let input_raw = block.get("input").and_then(Value::as_str).unwrap_or("{}");
                     pending.insert(
                         id.to_string(),
                         (name.to_string(), parse_tool_input(input_raw)),
@@ -149,12 +148,10 @@ pub fn list_tool_executions_for_user_turn(
                     let (tool_name, input) = pending
                         .remove(use_id)
                         .or_else(|| {
-                            block.get("tool_name").and_then(Value::as_str).map(|n| {
-                                (
-                                    n.to_string(),
-                                    Value::Object(serde_json::Map::new()),
-                                )
-                            })
+                            block
+                                .get("tool_name")
+                                .and_then(Value::as_str)
+                                .map(|n| (n.to_string(), Value::Object(serde_json::Map::new())))
                         })
                         .unwrap_or_else(|| {
                             ("unknown".to_string(), Value::Object(serde_json::Map::new()))

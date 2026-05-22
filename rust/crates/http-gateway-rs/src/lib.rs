@@ -10,7 +10,6 @@ pub mod project_config_version;
 pub mod project_entity_revision;
 pub mod project_git_sync;
 pub mod project_tools;
-pub mod live_report_audit;
 pub mod session_db;
 pub mod session_execution;
 pub mod session_merge;

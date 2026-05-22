@@ -36,7 +36,7 @@ pub struct DockerPoolConfig {
     pub worker_report_container_port: u16,
     /// `host_publish` mode: host clients dial this address (e.g. `127.0.0.1` or LAN IP).
     pub worker_report_advertise_host: String,
-    /// `host_publish` mode: host port = base + slot_index.
+    /// `host_publish` mode: host port = base + `slot_index`.
     pub worker_report_publish_base: Option<u16>,
 }
 

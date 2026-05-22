@@ -198,9 +198,8 @@ mod tests {
     #[test]
     fn resolve_request_must_fit_project() {
         let project = vec!["read_file".into()];
-        let err =
-            resolve_effective_allowed_tools_for_ds(Some(&project), Some(&["bash".into()]))
-                .unwrap_err();
+        let err = resolve_effective_allowed_tools_for_ds(Some(&project), Some(&["bash".into()]))
+            .unwrap_err();
         assert!(err.contains("project"));
     }
 }

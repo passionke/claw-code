@@ -31,6 +31,7 @@ pub struct ProjectConfigCompareResponse {
 }
 
 /// Canonical compare/merge document (one project revision as flat JSON). Author: kejiqing
+#[must_use]
 pub fn revision_row_to_document(row: &ProjectConfigRevisionRow) -> Value {
     serde_json::json!({
         "contentRev": row.content_rev,
@@ -43,8 +44,8 @@ pub fn revision_row_to_document(row: &ProjectConfigRevisionRow) -> Value {
     })
 }
 
-fn claude_summary(md: &Option<String>) -> String {
-    match md.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+fn claude_summary(md: Option<&str>) -> String {
+    match md.map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => format!("{} chars", s.len()),
         None => "empty".into(),
     }
@@ -146,6 +147,7 @@ fn push_set_change(
 }
 
 /// Compare two stored revisions (`from` → `to`). Author: kejiqing
+#[must_use]
 pub fn compare_revision_rows(
     ds_id: i64,
     active_content_rev: &str,
@@ -160,8 +162,8 @@ pub fn compare_revision_rows(
             kind: "modified".into(),
             detail: format!(
                 "{} → {}",
-                claude_summary(&from.claude_md),
-                claude_summary(&to.claude_md)
+                claude_summary(from.claude_md.as_deref()),
+                claude_summary(to.claude_md.as_deref())
             ),
         });
     }
@@ -238,7 +240,10 @@ mod tests {
         assert!(!r.same);
         assert!(r.changes.iter().any(|c| c.field == "claudeMd"));
         assert!(r.changes.iter().any(|c| c.field == "skillsJson"));
-        assert_eq!(r.from_document.get("contentRev").and_then(Value::as_str), Some("a"));
+        assert_eq!(
+            r.from_document.get("contentRev").and_then(Value::as_str),
+            Some("a")
+        );
         assert_ne!(r.from_document, r.to_document);
     }
 

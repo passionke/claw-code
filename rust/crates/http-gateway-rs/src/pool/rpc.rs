@@ -195,6 +195,7 @@ impl PoolOps for PoolRpcClient {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn dispatch_pool_rpc(
     pool: &std::sync::Arc<DockerPoolManager>,
     req: PoolRpcReq,
@@ -237,10 +238,7 @@ async fn dispatch_pool_rpc(
             claw_bin,
             request_id,
         } => {
-            let worker_host = pool
-                .slot_worker_host(slot_index)
-                .await
-                .unwrap_or_default();
+            let worker_host = pool.slot_worker_host(slot_index).await.unwrap_or_default();
             let worker_report_port = pool
                 .slot_worker_report_port(slot_index)
                 .await

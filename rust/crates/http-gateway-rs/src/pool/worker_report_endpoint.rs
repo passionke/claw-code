@@ -67,6 +67,7 @@ pub fn host_publish_port_mapping(
 }
 
 /// Pick `(host, port)` stored on the lease and in `gateway_turns`. Author: kejiqing
+#[allow(clippy::too_many_arguments)]
 pub async fn resolve_worker_report_endpoint(
     runtime_bin: &str,
     mode: WorkerReportResolve,
@@ -101,11 +102,7 @@ pub async fn resolve_worker_report_endpoint(
                 .and_then(|b| host_publish_port(b, slot_index))
                 .unwrap_or(container_sse_port);
             let host = advertise_host.trim();
-            let host = if host.is_empty() {
-                "127.0.0.1"
-            } else {
-                host
-            };
+            let host = if host.is_empty() { "127.0.0.1" } else { host };
             (host.to_string(), port)
         }
     }

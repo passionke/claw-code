@@ -13,6 +13,7 @@
 #![allow(clippy::match_same_arms)]
 #![allow(clippy::unnecessary_filter_map)]
 #![allow(clippy::similar_names)]
+#![allow(dead_code)] // monolithic binary: handlers wired incrementally
 
 mod project_config_draft;
 
@@ -27,19 +28,16 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use biz_advice_report::{
-    biz_report_sse_event_stream, build_biz_advice_polish_prompt, enqueue_snapshot_biz_report_sse,
+    biz_report_sse_event_stream, build_biz_advice_polish_prompt,
     load_boss_report_writer_instructions, report_body_from_solve_output, sanitize_biz_report_parts,
     sanitize_external_report_text, sanitize_report_payload, BizAdviceReportPayload,
     BizReportStreamMsg, ReportExportSanitizer,
 };
-use crate::live_report_ports::SessionDbLiveReportAdapter;
-use biz_advice_report_live::{
-    should_use_live_pg_report, spawn_live_report_sse_worker, LiveReportContext,
-};
 use gateway_solve_turn::read_progress_events;
+use gateway_solve_turn::spill_contains_report_start_marker;
 use gateway_solve_turn::{
     read_task_progress, reset_task_progress, run_gateway_biz_polish_llm,
     run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
@@ -49,7 +47,9 @@ use http_gateway_rs::{
     gateway_global_settings, project_config_apply, project_config_version, project_entity_revision,
     project_git_sync, project_tools, session_db, session_merge, turn_id, turn_tools_api,
 };
-use project_git_sync::{git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome};
+use project_git_sync::{
+    git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
+};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -73,20 +73,11 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 mod biz_advice_report;
-mod biz_advice_report_live;
-mod turn_report_relay;
-mod turn_worker_proxy;
-mod live_report_audit;
 mod gateway_logging;
 mod pool;
 mod session_execution;
 mod solve_pool;
 mod task_status;
-mod turn_live;
-mod live_report_ports;
-
-#[cfg(test)]
-mod live_report_mocks;
 
 fn default_system_date() -> String {
     match option_env!("BUILD_DATE") {
@@ -131,12 +122,6 @@ pub(crate) struct AppState {
     docker_pool: Arc<dyn pool::PoolOps + Send + Sync>,
     /// Serialize git and working-tree reads/writes on the shared `.claw-code-projects` clone. kejiqing
     projects_git_mirror_lock: Arc<Mutex<()>>,
-    live_ingest_closed: turn_live::LiveIngestRegistry,
-    live_notify_hub: Arc<turn_live::LiveNotifyHub>,
-    /// Worker `POST …/report-stream` → admin GET proxy (legacy ingest). Author: kejiqing
-    report_relay: Arc<turn_report_relay::TurnReportRelay>,
-    /// `turn_id` → `http://{worker_container}:{port}` for live report proxy. Author: kejiqing
-    worker_streams: Arc<turn_worker_proxy::TurnWorkerStreamRegistry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,10 +177,8 @@ pub(crate) struct GatewayConfig {
     ds_registry_path: PathBuf,
     default_timeout_seconds: u64,
     default_max_iterations: usize,
-    /// `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`: solve 写 spill、`hasReport` 提前、报告 SSE tail；默认关 → 仅 LLM 润色。
+    /// `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`: solve 写 spill 文件；`hasReport` 见 spill 标记。默认关。
     live_biz_report_spill_enabled: bool,
-    /// Worker in-container report SSE port (`CLAW_WORKER_REPORT_SSE_PORT`, default 18765). Author: kejiqing
-    worker_report_sse_port: u16,
     default_http_mcp_name: Option<String>,
     default_http_mcp_url: Option<String>,
     default_http_mcp_transport: String,
@@ -319,8 +302,9 @@ fn default_true() -> bool {
     true
 }
 
-/// `GET /v1/projects` — list `project_config` from PostgreSQL + disk overlay. Author: kejiqing
+/// `GET /v1/projects` — list `project_config` from `PostgreSQL` + disk overlay. Author: kejiqing
 #[derive(Debug, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 struct ProjectListEntry {
     #[serde(rename = "dsId")]
     ds_id: i64,
@@ -716,13 +700,9 @@ struct BizAdviceReportQuery {
     turn_id: String,
     #[serde(rename = "dsId")]
     ds_id: i64,
-    /// `true`（默认）时 tail PG live chunks 并 SSE；结束后用 turn 快照全量 `biz.report.done`。
-    #[serde(default = "default_biz_report_stream")]
+    /// `true` 时走与 `biz_advice_report_bak` 相同的 LLM 润色 SSE；默认 `false` 返回 JSON。
+    #[serde(default)]
     stream: bool,
-}
-
-fn default_biz_report_stream() -> bool {
-    true
 }
 
 /// Dev-only: inject a succeeded task so `GET /v1/biz_advice_report` can run without `solve_async`.
@@ -932,28 +912,7 @@ async fn finalize_solve_turn_success(
         );
         return;
     }
-    if report.as_ref().is_some_and(|t| !t.trim().is_empty()) {
-        if let Err(e) = db.notify_turn_live_terminal(turn_id).await {
-            warn!(
-                turn_id = %turn_id,
-                error = %e,
-                "notify_turn_live_terminal failed"
-            );
-        }
-        if gateway_env_enabled("CLAW_GATEWAY_DELETE_LIVE_CHUNKS_ON_SUCCESS") {
-            let db_del = db.clone();
-            let tid = turn_id.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = db_del.delete_live_chunks(&tid).await {
-                    warn!(
-                        turn_id = %tid,
-                        error = %e,
-                        "delete_live_chunks after succeeded failed"
-                    );
-                }
-            });
-        }
-    }
+    let _ = report;
 }
 
 async fn finalize_solve_turn_failed(
@@ -1247,10 +1206,6 @@ async fn main() {
             .filter(|value| *value > 0)
             .unwrap_or(64),
         live_biz_report_spill_enabled: gateway_env_enabled("CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL"),
-        worker_report_sse_port: std::env::var("CLAW_WORKER_REPORT_SSE_PORT")
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(18765),
         default_http_mcp_name: std::env::var("CLAW_DEFAULT_HTTP_MCP_NAME")
             .ok()
             .map(|v| v.trim().to_string())
@@ -1269,11 +1224,13 @@ async fn main() {
         projects_git_branch,
         projects_git_author,
         projects_git_token,
-        projects_git_ds_home_poll_interval_secs: std::env::var("CLAW_PROJECT_CONFIG_POLL_INTERVAL_SECS")
-            .or_else(|_| std::env::var("CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS"))
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .filter(|&s| s > 0),
+        projects_git_ds_home_poll_interval_secs: std::env::var(
+            "CLAW_PROJECT_CONFIG_POLL_INTERVAL_SECS",
+        )
+        .or_else(|_| std::env::var("CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS"))
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&s| s > 0),
         report_polish_deepseek,
     };
     let session_db = session_db::GatewaySessionDb::open()
@@ -1314,10 +1271,6 @@ async fn main() {
         gateway_database_url = %session_db.database_url_redacted(),
         "gateway session PostgreSQL ready (CLAW_GATEWAY_DATABASE_URL)"
     );
-    let live_notify_hub = Arc::new(turn_live::LiveNotifyHub::new());
-    if let Ok(db_url) = std::env::var("CLAW_GATEWAY_DATABASE_URL") {
-        turn_live::LiveNotifyHub::spawn_listener(db_url, Arc::clone(&live_notify_hub));
-    }
     let state = AppState {
         tasks: Arc::new(Mutex::new(HashMap::new())),
         injected_mcp: Arc::new(Mutex::new(HashMap::new())),
@@ -1328,10 +1281,6 @@ async fn main() {
         docker_slots: Arc::new(Mutex::new(HashMap::new())),
         docker_pool,
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
-        live_ingest_closed: turn_live::LiveIngestRegistry::default(),
-        live_notify_hub,
-        report_relay: Arc::new(turn_report_relay::TurnReportRelay::default()),
-        worker_streams: Arc::new(turn_worker_proxy::TurnWorkerStreamRegistry::default()),
     };
 
     run_startup_project_config_apply(&state).await;
@@ -1372,14 +1321,6 @@ async fn main() {
             get(get_turn_tools),
         )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
-        .route(
-            "/v1/internal/turns/{turn_id}/assistant-stream",
-            post(internal_assistant_stream),
-        )
-        .route(
-            "/v1/internal/turns/{turn_id}/report-stream",
-            post(internal_report_stream),
-        )
         .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
         .route(
             "/v1/dev/biz_report_seed_task",
@@ -2279,7 +2220,10 @@ async fn maybe_push_project_git(state: &AppState, ds_id: i64) {
 }
 
 /// One-way push `home/` → per-project remote; updates `git_sync_json` lastPush* in DB. Author: kejiqing
-async fn try_push_project_git(state: &AppState, ds_id: i64) -> Result<GitPushOutcome, project_git_sync::ProjectGitSyncError> {
+async fn try_push_project_git(
+    state: &AppState,
+    ds_id: i64,
+) -> Result<GitPushOutcome, project_git_sync::ProjectGitSyncError> {
     let row = state
         .session_db
         .get_project_config(ds_id)
@@ -2329,7 +2273,9 @@ async fn try_push_project_git(state: &AppState, ds_id: i64) -> Result<GitPushOut
             let git_sync_json = git_sync_to_json(&updated);
             persist_git_sync_status(state, &row, &git_sync_json)
                 .await
-                .map_err(|e| project_git_sync::ProjectGitSyncError::new(format!("db upsert: {e}")))?;
+                .map_err(|e| {
+                    project_git_sync::ProjectGitSyncError::new(format!("db upsert: {e}"))
+                })?;
             Ok(outcome)
         }
         Err(e) => {
@@ -2558,18 +2504,19 @@ fn project_config_version_entry_from_summary(
     }
 }
 
-fn project_config_version_entry_from_draft(row: &session_db::ProjectConfigRow) -> ProjectConfigVersionEntry {
+fn project_config_version_entry_from_draft(
+    row: &session_db::ProjectConfigRow,
+) -> ProjectConfigVersionEntry {
     let claude_in_db = row
         .claude_md
         .as_deref()
         .is_some_and(|s| !s.trim().is_empty());
-    let skills_count_db = row.skills_json.as_array().map(|a| a.len() as i64).unwrap_or(0);
-    let rules_count_db = row.rules_json.as_array().map(|a| a.len() as i64).unwrap_or(0);
+    let skills_count_db = row.skills_json.as_array().map_or(0, |a| a.len() as i64);
+    let rules_count_db = row.rules_json.as_array().map_or(0, |a| a.len() as i64);
     let mcp_servers_count_db = row
         .mcp_servers_json
         .as_object()
-        .map(|o| o.len() as i64)
-        .unwrap_or(0);
+        .map_or(0, |o| o.len() as i64);
     ProjectConfigVersionEntry {
         content_rev: project_config_draft::DRAFT_CONTENT_REV.to_string(),
         created_at_ms: row.updated_at_ms,
@@ -2607,7 +2554,9 @@ async fn load_revision_for_compare(
         .map_err(draft_err)
 }
 
-fn revision_row_from_active(row: &session_db::ProjectConfigRow) -> session_db::ProjectConfigRevisionRow {
+fn revision_row_from_active(
+    row: &session_db::ProjectConfigRow,
+) -> session_db::ProjectConfigRevisionRow {
     session_db::ProjectConfigRevisionRow {
         ds_id: row.ds_id,
         content_rev: row.content_rev.clone(),
@@ -2674,11 +2623,9 @@ async fn activate_project_config_revision_row(
     let lock = get_ds_lock(state, ds_id).await;
     let _guard = lock.lock().await;
     apply_project_config_for_ds_inner(state, ds_id, true, true).await?;
-    let applied = project_config_apply::read_applied_content_rev(&ds_work_dir(
-        &state.cfg.work_root,
-        ds_id,
-    ))
-    .await;
+    let applied =
+        project_config_apply::read_applied_content_rev(&ds_work_dir(&state.cfg.work_root, ds_id))
+            .await;
     Ok(applied.as_deref() == Some(rev.content_rev.as_str()))
 }
 
@@ -2688,7 +2635,10 @@ fn merge_git_sync_from_put(incoming: &Value, existing: &Value) -> Value {
     let pat_id_in_incoming = incoming.get("gitPatId").is_some();
     if !pat_id_in_incoming {
         inc.git_pat_id = ex.git_pat_id;
-    } else if incoming.get("gitPatId").map_or(false, |v| v.is_null()) {
+    } else if incoming
+        .get("gitPatId")
+        .is_some_and(serde_json::Value::is_null)
+    {
         inc.git_pat_id = None;
     }
     let uses_global_pat = inc
@@ -2702,8 +2652,8 @@ fn merge_git_sync_from_put(incoming: &Value, existing: &Value) -> Value {
         .git_token
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .is_none()
+        .as_ref()
+        .is_none_or(|s| s.is_empty())
     {
         inc.git_token = ex.git_token;
     }
@@ -2735,12 +2685,15 @@ fn git_sync_token_set(
     {
         return true;
     }
-    let Some(id) = sync.git_pat_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+    let Some(id) = sync
+        .git_pat_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
         return false;
     };
-    tokens
-        .map(|t| t.tokens.contains_key(id))
-        .unwrap_or(false)
+    tokens.is_some_and(|t| t.tokens.contains_key(id))
 }
 
 async fn load_project_config_or_default(
@@ -2775,9 +2728,9 @@ fn merge_skill_into_skills_json(skills_json: &mut Value, skill_name: &str, skill
 }
 
 fn validate_skills_json(skills: &Value) -> Result<(), ApiError> {
-    let arr = skills.as_array().ok_or_else(|| {
-        ApiError::new(StatusCode::BAD_REQUEST, "skillsJson must be a JSON array")
-    })?;
+    let arr = skills
+        .as_array()
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "skillsJson must be a JSON array"))?;
     for (i, item) in arr.iter().enumerate() {
         let obj = item.as_object().ok_or_else(|| {
             ApiError::new(
@@ -3471,9 +3424,7 @@ async fn list_ds_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiEr
 async fn healthz(State(state): State<AppState>, headers: HeaderMap) -> Json<Value> {
     let isolation = state.cfg.solve_isolation.as_str();
     let ds_workspaces = build_ds_workspaces_health(&state.cfg.work_root).await;
-    let request_host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok());
+    let request_host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
     let deploy_image_ref = http_gateway_rs::deploy_image::image_ref_from_env();
     let deploy_image_tag = http_gateway_rs::deploy_image::deploy_image_tag(&deploy_image_ref);
     Json(json!({
@@ -3609,18 +3560,22 @@ async fn ds_exists_on_stack(state: &AppState, ds_id: i64) -> Result<bool, ApiErr
 
 async fn scaffold_ds_workspace(work_dir: &Path, ds_id: i64) -> Result<(), ApiError> {
     let claude = default_project_claude_md(ds_id);
-    fs::create_dir_all(work_dir.join(".claw")).await.map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("create .claw failed: {e}"),
-        )
-    })?;
-    fs::create_dir_all(work_dir.join("home/skills")).await.map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("create home/skills failed: {e}"),
-        )
-    })?;
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create .claw failed: {e}"),
+            )
+        })?;
+    fs::create_dir_all(work_dir.join("home/skills"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create home/skills failed: {e}"),
+            )
+        })?;
     fs::write(work_dir.join("home/CLAUDE.md"), &claude)
         .await
         .map_err(|e| {
@@ -3629,12 +3584,14 @@ async fn scaffold_ds_workspace(work_dir: &Path, ds_id: i64) -> Result<(), ApiErr
                 format!("write home/CLAUDE.md failed: {e}"),
             )
         })?;
-    fs::write(work_dir.join("CLAUDE.md"), &claude).await.map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("write CLAUDE.md failed: {e}"),
-        )
-    })?;
+    fs::write(work_dir.join("CLAUDE.md"), &claude)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write CLAUDE.md failed: {e}"),
+            )
+        })?;
     Ok(())
 }
 
@@ -3756,7 +3713,9 @@ async fn projects_git_remove_ds_tree(
     ))
 }
 
-async fn list_projects(State(state): State<AppState>) -> Result<Json<ProjectListResponse>, ApiError> {
+async fn list_projects(
+    State(state): State<AppState>,
+) -> Result<Json<ProjectListResponse>, ApiError> {
     let summaries = state
         .session_db
         .list_project_config_summaries()
@@ -3766,8 +3725,7 @@ async fn list_projects(State(state): State<AppState>) -> Result<Json<ProjectList
     for s in summaries {
         let work_dir = ds_work_dir(&state.cfg.work_root, s.ds_id);
         let work_dir_present = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
-        let environment_prepared =
-            work_dir_present && ds_project_tree_ready(&work_dir).await;
+        let environment_prepared = work_dir_present && ds_project_tree_ready(&work_dir).await;
         let (home_claude, _) = project_claude_paths(&work_dir);
         let claude_on_disk = claude_instructions_usable(&home_claude).await;
         let skills_root = work_dir.join("home/skills");
@@ -4320,13 +4278,9 @@ async fn activate_project_config_version(
     let rev = project_config_draft::require_formal_revision(&state.session_db, ds_id, content_rev)
         .await
         .map_err(draft_err)?;
-    let materialized = activate_project_config_revision_row(
-        &state,
-        ds_id,
-        rev,
-        active_row.git_sync_json.clone(),
-    )
-    .await?;
+    let materialized =
+        activate_project_config_revision_row(&state, ds_id, rev, active_row.git_sync_json.clone())
+            .await?;
     Ok(Json(ActivateProjectConfigVersionResponse {
         ds_id,
         active_content_rev: content_rev.to_string(),
@@ -4817,12 +4771,10 @@ async fn upsert_project_skill(
         .await
         .map_err(|e| session_db_err(&e))?
         .expect("row exists");
-    let existed = row
-        .skills_json
-        .as_array()
-        .is_some_and(|a| a.iter().any(|item| {
-            item.get("skillName").and_then(Value::as_str) == Some(skill_name.as_str())
-        }));
+    let existed = row.skills_json.as_array().is_some_and(|a| {
+        a.iter()
+            .any(|item| item.get("skillName").and_then(Value::as_str) == Some(skill_name.as_str()))
+    });
     merge_skill_into_skills_json(&mut row.skills_json, &skill_name, &req.skill_content);
     row.draft_open = true;
     row.content_rev = project_config_draft::DRAFT_CONTENT_REV.to_string();
@@ -4832,7 +4784,9 @@ async fn upsert_project_skill(
         .as_array()
         .and_then(|a| {
             a.iter()
-                .find(|item| item.get("skillName").and_then(Value::as_str) == Some(skill_name.as_str()))
+                .find(|item| {
+                    item.get("skillName").and_then(Value::as_str) == Some(skill_name.as_str())
+                })
                 .cloned()
         })
         .unwrap_or_else(|| {
@@ -5354,10 +5308,7 @@ async fn get_turn_tools(
         .await
         .map_err(|e| session_db_err(&e))?
         .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                format!("turn not found: {turn_id}"),
-            )
+            ApiError::new(StatusCode::NOT_FOUND, format!("turn not found: {turn_id}"))
         })?;
     let user_turn_index = state
         .session_db
@@ -5558,7 +5509,7 @@ async fn enqueue_solve_async(
                         &turn_id_for_worker,
                         v,
                     )
-                        .await;
+                    .await;
                     info!(
                         request_id = %rid,
                         task_id = %task_id_for_worker,
@@ -5785,8 +5736,8 @@ async fn task_record_from_latest_turn_row(
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         let _ = home;
     }
-    record.has_report = task_has_report(&state, &record).await;
-    record.report_time_ms = task_report_time_ms(&state, &record).await;
+    record.has_report = task_has_report(state, &record).await;
+    record.report_time_ms = task_report_time_ms(state, &record).await;
     let ds_id = record.ds_id;
     Ok((record, ds_id))
 }
@@ -5824,71 +5775,29 @@ async fn get_task(
 }
 
 async fn task_has_report(state: &AppState, task: &TaskRecord) -> bool {
-    task_has_report_parts(state, &state.report_relay, &state.session_db, task).await
-}
-
-async fn task_has_report_parts(
-    state: &AppState,
-    relay: &turn_report_relay::TurnReportRelay,
-    db: &session_db::GatewaySessionDb,
-    task: &TaskRecord,
-) -> bool {
     if task.status == "succeeded" {
         return true;
     }
-    if let Some(target) = turn_worker_proxy::resolve_worker_stream_target(
-        &state.worker_streams,
-        &state.session_db,
-        &task.turn_id,
-        &task.session_id,
-        task.ds_id,
-    )
-    .await
-    {
-        if turn_worker_proxy::worker_has_report(&target, &task.turn_id).await {
-            return true;
-        }
+    if let Some(home) = resolve_session_home_path(state, task.ds_id, &task.session_id).await {
+        return spill_contains_report_start_marker(&home, &task.turn_id);
     }
-    if relay.has_report(&task.turn_id) {
-        return true;
-    }
-    db.turn_has_live_chunks(&task.turn_id)
-        .await
-        .unwrap_or(false)
+    false
 }
 
-/// When [`task_has_report`] is true: relay first byte, else PG chunk time, else `finishedAtMs`. Author: kejiqing
+/// When [`task_has_report`] is true: spill file mtime if present, else `finishedAtMs`. Author: kejiqing
 async fn task_report_time_ms(state: &AppState, task: &TaskRecord) -> Option<i64> {
-    task_report_time_ms_parts(state, &state.report_relay, &state.session_db, task).await
-}
-
-async fn task_report_time_ms_parts(
-    state: &AppState,
-    relay: &turn_report_relay::TurnReportRelay,
-    db: &session_db::GatewaySessionDb,
-    task: &TaskRecord,
-) -> Option<i64> {
-    if !task_has_report_parts(state, relay, db, task).await {
+    if !task_has_report(state, task).await {
         return None;
     }
-    if let Some(target) = turn_worker_proxy::resolve_worker_stream_target(
-        &state.worker_streams,
-        &state.session_db,
-        &task.turn_id,
-        &task.session_id,
-        task.ds_id,
-    )
-    .await
-    {
-        if let Some(t) = turn_worker_proxy::worker_report_time_ms(&target, &task.turn_id).await {
-            return Some(t);
+    if let Some(home) = resolve_session_home_path(state, task.ds_id, &task.session_id).await {
+        let path = gateway_solve_turn::assistant_stream_spill_path(&home, &task.turn_id);
+        if let Ok(meta) = tokio::fs::metadata(&path).await {
+            if let Ok(modified) = meta.modified() {
+                if let Ok(dur) = modified.duration_since(UNIX_EPOCH) {
+                    return Some(i64::try_from(dur.as_millis()).unwrap_or(i64::MAX));
+                }
+            }
         }
-    }
-    if let Some(t) = relay.first_byte_at_ms(&task.turn_id) {
-        return Some(t);
-    }
-    if let Ok(Some(t)) = db.turn_first_live_chunk_at_ms(&task.turn_id).await {
-        return Some(t);
     }
     task.finished_at_ms
 }
@@ -6111,259 +6020,45 @@ async fn dev_seed_biz_report_task(
     })))
 }
 
-async fn prepare_live_report_context(
+/// Resolve in-memory `solve_async` task id for legacy `sessionId`+`turnId` query. Author: kejiqing
+async fn resolve_biz_report_task_id(
     state: &AppState,
-    session_id: &str,
-    turn_id: &str,
-    ds_id: i64,
-) -> Result<LiveReportContext, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    query: &BizAdviceReportQuery,
+) -> Result<String, ApiError> {
+    let tasks = state.tasks.lock().await;
+    for (id, inner) in tasks.iter() {
+        let r = &inner.record;
+        if r.turn_id == query.turn_id && r.session_id == query.session_id && r.ds_id == query.ds_id
+        {
+            return Ok(id.clone());
+        }
     }
-    if !turn_id::validate_turn_id(turn_id) {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "turnId must match T_<32 hex>",
-        ));
+    if tasks.contains_key(&query.session_id) {
+        return Ok(query.session_id.clone());
     }
-    let session_id = session_id.trim();
-    if session_id.is_empty() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "sessionId must be non-empty",
-        ));
-    }
-    if !state
-        .session_db
-        .session_exists(session_id, ds_id)
-        .await
-        .map_err(|e| session_db_err(&e))?
-    {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            format!("session not found: {session_id} ds_id={ds_id}"),
-        ));
-    }
-    if !state
-        .session_db
-        .turn_belongs_to_session(turn_id, session_id, ds_id)
-        .await
-        .map_err(|e| session_db_err(&e))?
-    {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "unknown turnId for session",
-        ));
-    }
-    let session_home_rel = state
-        .session_db
-        .get_session_home_rel(session_id, ds_id)
-        .await
-        .map_err(|e| session_db_err(&e))?
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                format!("session not found: {session_id} ds_id={ds_id}"),
-            )
-        })?;
-    session_merge::validate_session_home_rel(&session_home_rel).map_err(session_routing_error)?;
-    let session_home = join_session_home(&state.cfg.work_root, &session_home_rel);
-    Ok(LiveReportContext {
-        session_id: session_id.to_string(),
-        turn_id: turn_id.to_string(),
-        ds_id,
-        session_home,
-    })
+    Err(ApiError::new(
+        StatusCode::NOT_FOUND,
+        format!(
+            "no async task for sessionId={} turnId={}; use GET /v1/biz_advice_report_bak?task_id=<solve task id>",
+            query.session_id, query.turn_id
+        ),
+    ))
 }
 
-async fn internal_assistant_stream(
-    State(state): State<AppState>,
-    AxumPath(turn_id): AxumPath<String>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Body,
-) -> Result<Response, ApiError> {
-    turn_live::post_assistant_stream(state, turn_id, headers, body).await
-}
-
-async fn internal_report_stream(
-    State(state): State<AppState>,
-    AxumPath(turn_id): AxumPath<String>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Body,
-) -> Result<Response, ApiError> {
-    turn_report_relay::post_report_stream(state, turn_id, headers, body).await
-}
-
+/// Same as [`get_biz_advice_report_bak`] (LLM polish only; no worker/PG live SSE). Author: kejiqing
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
 ) -> Result<Response, ApiError> {
-    let state = Arc::new(state);
-    let ctx =
-        prepare_live_report_context(&state, &query.session_id, &query.turn_id, query.ds_id).await?;
-    let use_live_pg = should_use_live_pg_report(state.as_ref(), &ctx).await?;
-    if !use_live_pg {
-        live_report_audit::log_biz_advice_report_route(
-            &ctx.turn_id,
-            &ctx.session_id,
-            ctx.ds_id,
-            query.stream,
-            "snapshot",
-            "should_use_live_pg_report=false; polish disabled",
-        );
-        return respond_biz_advice_snapshot_for_context(state, ctx, query.stream).await;
-    }
-    if query.stream {
-        if let Some(target) = turn_worker_proxy::resolve_worker_stream_target(
-            &state.worker_streams,
-            &state.session_db,
-            &ctx.turn_id,
-            &ctx.session_id,
-            ctx.ds_id,
-        )
-        .await
-        {
-            live_report_audit::log_biz_advice_report_route(
-                &ctx.turn_id,
-                &ctx.session_id,
-                ctx.ds_id,
-                true,
-                "worker_proxy",
-                &format!("{}:{}", target.worker_host, target.port),
-            );
-            return Ok(
-                turn_worker_proxy::proxy_worker_report_sse(target, &ctx.turn_id).await?,
-            );
-        }
-        if state.cfg.live_biz_report_spill_enabled {
-            live_report_audit::log_biz_advice_report_route(
-                &ctx.turn_id,
-                &ctx.session_id,
-                ctx.ds_id,
-                true,
-                "report_relay",
-                "worker route missing; relay",
-            );
-            return Ok(
-                turn_report_relay::relay_proxy_response(
-                    Arc::clone(&state.report_relay),
-                    ctx.turn_id.clone(),
-                )
-                .await,
-            );
-        }
-        live_report_audit::log_biz_advice_report_route(
-            &ctx.turn_id,
-            &ctx.session_id,
-            ctx.ds_id,
-            true,
-            "pg_live_sse",
-            "worker route missing; spill off",
-        );
-        let rx = spawn_live_report_sse_worker(Arc::clone(&state), ctx.clone());
-        let no_buffer = header::HeaderName::from_static("x-accel-buffering");
-        let no_buffer_val = HeaderValue::from_static("no");
-        return Ok((
-            AppendHeaders([(no_buffer, no_buffer_val)]),
-            Sse::new(biz_report_sse_event_stream(&ctx.session_id, rx))
-                .keep_alive(KeepAlive::default()),
-        )
-            .into_response());
-    }
-    live_report_audit::log_biz_advice_report_route(
-        &ctx.turn_id,
-        &ctx.session_id,
-        ctx.ds_id,
-        false,
-        "live_json",
-        "stream=false",
-    );
-    let (report_text, report_json) =
-        biz_advice_report_live::live_report_json_response(&state, ctx.clone()).await?;
-    let (report_text, report_json) = sanitize_biz_report_parts(&report_text, Some(report_json));
-    let status = biz_advice_report_live::turn_status(
-        &state.session_db,
-        &ctx.turn_id,
-        &ctx.session_id,
-        ctx.ds_id,
+    let task_id = resolve_biz_report_task_id(&state, &query).await?;
+    get_biz_advice_report_bak(
+        State(state),
+        Query(BizAdviceReportBakQuery {
+            task_id,
+            stream: query.stream,
+        }),
     )
-    .await?
-    .unwrap_or_else(|| "succeeded".to_string());
-    Ok(Json(BizAdviceReportResponse {
-        task_id: ctx.session_id.clone(),
-        source_request_id: ctx.session_id,
-        source_ds_id: ctx.ds_id,
-        source_status: status,
-        report_text,
-        report_json,
-    })
-    .into_response())
-}
-
-/// Terminal turn: return DB snapshot only (no LLM polish). Author: kejiqing
-async fn respond_biz_advice_snapshot_for_context(
-    state: Arc<AppState>,
-    ctx: LiveReportContext,
-    stream: bool,
-) -> Result<Response, ApiError> {
-    let status = biz_advice_report_live::turn_status(
-        &state.session_db,
-        &ctx.turn_id,
-        &ctx.session_id,
-        ctx.ds_id,
-    )
-    .await?;
-    let Some(status) = status else {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown turnId for session",
-        ));
-    };
-    if status != "succeeded" {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            format!("turn not finished yet (status: {status})"),
-        ));
-    }
-    let report_body =
-        biz_advice_report_live::resolve_formal_report_text(state.as_ref(), &ctx).await?;
-    let output_json = state
-        .session_db
-        .get_turn_output_json(&ctx.turn_id, &ctx.session_id, ctx.ds_id)
-        .await
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let (report_text, report_json) =
-        sanitize_biz_report_parts(&report_body, output_json.as_ref().map(|v| v.clone()));
-    let payload = BizAdviceReportPayload {
-        task_id: ctx.session_id.clone(),
-        source_request_id: ctx.session_id.clone(),
-        source_ds_id: ctx.ds_id,
-        source_status: status.clone(),
-        report_text: Some(report_text.clone()),
-        report_json: report_json.clone(),
-    };
-    if stream {
-        let (tx, rx) = mpsc::unbounded_channel::<BizReportStreamMsg>();
-        enqueue_snapshot_biz_report_sse(&tx, payload, report_text);
-        drop(tx);
-        let no_buffer = header::HeaderName::from_static("x-accel-buffering");
-        let no_buffer_val = HeaderValue::from_static("no");
-        return Ok((
-            AppendHeaders([(no_buffer, no_buffer_val)]),
-            Sse::new(biz_report_sse_event_stream(&ctx.session_id, rx))
-                .keep_alive(KeepAlive::default()),
-        )
-            .into_response());
-    }
-    Ok(Json(BizAdviceReportResponse {
-        task_id: ctx.session_id.clone(),
-        source_request_id: ctx.session_id,
-        source_ds_id: ctx.ds_id,
-        source_status: status,
-        report_text,
-        report_json,
-    })
-    .into_response())
+    .await
 }
 
 async fn get_biz_advice_report_bak(
@@ -6868,11 +6563,7 @@ async fn run_solve_request(
 }
 
 /// Merge MCP map for `project_config.mcp_servers_json` (solve uses DB only). Author: kejiqing
-fn merge_mcp_servers_json(
-    existing: &Value,
-    patch: HashMap<String, Value>,
-    replace: bool,
-) -> Value {
+fn merge_mcp_servers_json(existing: &Value, patch: HashMap<String, Value>, replace: bool) -> Value {
     if replace {
         return Value::Object(patch.into_iter().collect());
     }
@@ -6937,7 +6628,7 @@ async fn clear_mcp_servers_for_ds(
         .is_none()
     {
         return Ok(());
-    };
+    }
     project_config_draft::ensure_draft(&state.session_db, ds_id)
         .await
         .map_err(draft_err)?;
@@ -7338,11 +7029,8 @@ pub(crate) fn resolve_effective_allowed_tools_for_ds(
     project_selected: Option<&[String]>,
     requested_allowed_tools: Option<&[String]>,
 ) -> Result<Vec<String>, ApiError> {
-    project_tools::resolve_effective_allowed_tools_for_ds(
-        project_selected,
-        requested_allowed_tools,
-    )
-    .map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))
+    project_tools::resolve_effective_allowed_tools_for_ds(project_selected, requested_allowed_tools)
+        .map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))
 }
 
 #[cfg(test)]
@@ -7520,56 +7208,7 @@ mod tests {
             has_report: false,
             report_time_ms: None,
         };
-        let url = match std::env::var("CLAW_GATEWAY_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("CLAW_GATEWAY_DATABASE_URL"))
-        {
-            Ok(u) => u,
-            Err(_) => return,
-        };
-        let _db = session_db::GatewaySessionDb::connect(url.trim()).await.unwrap();
+        // `task_has_report` returns true for terminal succeeded without spill/DB.
         assert_eq!(task.status, "succeeded");
-    }
-
-    #[tokio::test]
-    async fn task_has_report_true_when_live_chunks_exist() {
-        let url = match std::env::var("CLAW_GATEWAY_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("CLAW_GATEWAY_DATABASE_URL"))
-        {
-            Ok(u) => u,
-            Err(_) => return,
-        };
-        let db = session_db::GatewaySessionDb::connect(url.trim()).await.unwrap();
-        let t = now_ms();
-        let sid = format!("hr_{}", uuid::Uuid::new_v4().simple());
-        let turn_id = format!("T_{}", uuid::Uuid::new_v4().simple());
-        db.insert_session(&sid, 1, "ds_1/sessions/hr", t).await.unwrap();
-        db.insert_turn(&turn_id, &sid, 1, "running", t, None)
-            .await
-            .unwrap();
-        db.append_live_chunks(&turn_id, &["x".into()], t)
-            .await
-            .unwrap();
-        let task = TaskRecord {
-            task_id: sid.clone(),
-            session_id: sid,
-            request_id: "r".into(),
-            ds_id: 1,
-            status: "running".into(),
-            created_at_ms: t,
-            started_at_ms: Some(t),
-            finished_at_ms: None,
-            current_task_desc: None,
-            progress_updated_at_ms: None,
-            result: None,
-            error: None,
-            turn_id,
-            progress_history: vec![],
-            has_report: false,
-            report_time_ms: None,
-        };
-        assert!(db.turn_has_live_chunks(&task.turn_id).await.unwrap());
-        let rt = db.turn_first_live_chunk_at_ms(&task.turn_id).await.unwrap();
-        assert_eq!(rt, Some(t));
-        let _ = db.delete_live_chunks(&task.turn_id).await;
     }
 }

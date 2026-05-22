@@ -192,9 +192,7 @@ pub fn stream_msg_to_event(msg: &BizReportStreamMsg) -> Event {
     match msg {
         BizReportStreamMsg::Delta(text) => Event::default()
             .event("biz.report.delta")
-            .data(
-                serde_json::json!({ "text": sanitize_external_report_text(text) }).to_string(),
-            ),
+            .data(serde_json::json!({ "text": sanitize_external_report_text(text) }).to_string()),
         BizReportStreamMsg::Done(payload) => {
             let mut payload = payload.clone();
             sanitize_report_payload(&mut payload);
@@ -211,9 +209,9 @@ pub fn stream_msg_to_event(msg: &BizReportStreamMsg) -> Event {
 pub fn enqueue_snapshot_biz_report_sse(
     tx: &mpsc::UnboundedSender<BizReportStreamMsg>,
     mut payload: BizAdviceReportPayload,
-    report_text: String,
+    report_text: &str,
 ) {
-    let clean = sanitize_external_report_text(&report_text);
+    let clean = sanitize_external_report_text(report_text);
     if !clean.is_empty() {
         let _ = tx.send(BizReportStreamMsg::Delta(clean));
     }

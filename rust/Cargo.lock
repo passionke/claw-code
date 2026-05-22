@@ -764,7 +764,6 @@ name = "gateway-solve-turn"
 version = "0.1.0"
 dependencies = [
  "api",
- "axum",
  "futures-util",
  "reqwest",
  "runtime",

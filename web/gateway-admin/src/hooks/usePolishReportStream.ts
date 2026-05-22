@@ -25,19 +25,13 @@ function proxySseTarget(gatewayBase: string, path: string): string {
   return `/__proxy_sse__?target=${encodeURIComponent(u)}`;
 }
 
-/** Standard biz.report SSE (same as playground): start clears, delta appends, done finishes. Author: kejiqing */
-export function useReportStream(
-  gatewayBase: string,
-  sessionId: string,
-  turnId: string,
-  dsId: number
-) {
+/** LLM polish only: `GET /v1/biz_advice_report_bak?task_id=…&stream=true`. Author: kejiqing */
+export function usePolishReportStream(gatewayBase: string, taskId: string) {
   const [text, setText] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const bufferRef = useRef("");
-  /** `done` = terminal `biz.report.done`; `error` = biz.report.error or EventSource drop. */
   const endReasonRef = useRef<"idle" | "done" | "error">("idle");
 
   const close = useCallback(() => {
@@ -51,16 +45,12 @@ export function useReportStream(
     }
   }, []);
 
-  /** Open (or reopen) SSE; gateway replays PG catch-up via `delta` after `start`. Author: kejiqing */
   const open = useCallback(() => {
-    if (!gatewayBase) return;
+    if (!gatewayBase || !taskId) return;
     close();
     endReasonRef.current = "idle";
     const path =
-      `/v1/biz_advice_report?sessionId=${encodeURIComponent(sessionId)}` +
-      `&turnId=${encodeURIComponent(turnId)}` +
-      `&dsId=${encodeURIComponent(String(dsId))}` +
-      "&stream=true";
+      `/v1/biz_advice_report_bak?task_id=${encodeURIComponent(taskId)}` + "&stream=true";
     setStreaming(true);
     setError(false);
     bufferRef.current = "";
@@ -83,7 +73,6 @@ export function useReportStream(
       close();
     };
 
-    // Worker/gateway replay always sends `start` after `open()` already cleared; do not wipe live buffer.
     es.addEventListener("biz.report.start", () => {});
 
     es.addEventListener("biz.report.delta", (ev) => {
@@ -104,16 +93,14 @@ export function useReportStream(
       const detail =
         (data && (data.detail || data.message || data.error)) ||
         ev.data ||
-        "报告流错误";
+        "报告润色流错误";
       bufferRef.current = String(detail);
       setText(bufferRef.current);
       close();
     });
 
     es.onerror = () => {
-      if (endReasonRef.current === "done") {
-        return;
-      }
+      if (endReasonRef.current === "done") return;
       setStreaming(false);
       const buf = bufferRef.current;
       if (buf) {
@@ -127,15 +114,12 @@ export function useReportStream(
       setText("（报告连接中断）");
       close();
     };
-  }, [gatewayBase, sessionId, turnId, dsId, close]);
-
-  const canReconnect =
-    endReasonRef.current !== "done";
+  }, [gatewayBase, taskId, close]);
 
   useEffect(() => {
     endReasonRef.current = "idle";
     return () => close();
-  }, [sessionId, turnId, dsId, gatewayBase, close]);
+  }, [taskId, gatewayBase, close]);
 
-  return { text, streaming, error, open, close, canReconnect };
-};
+  return { text, streaming, error, open, close };
+}

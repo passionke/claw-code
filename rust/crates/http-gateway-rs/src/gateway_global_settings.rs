@@ -38,7 +38,7 @@ pub struct GitPatPublic {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct GatewayGlobalSettingsStore {
+pub struct GatewayGlobalSettingsStore {
     #[serde(rename = "gitPats", default)]
     git_pats: Vec<GitPatEntry>,
 }
@@ -72,8 +72,7 @@ pub struct GatewayGlobalSettingsResponse {
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 fn normalize_pat_id(raw: &str) -> Option<String> {
@@ -104,7 +103,7 @@ fn parse_settings_store(v: &serde_json::Value) -> GatewayGlobalSettingsStore {
 }
 
 fn parse_tokens_store(v: &serde_json::Value) -> GitPatTokensStore {
-    if v.is_object() && !v.get("tokens").is_some() {
+    if v.is_object() && v.get("tokens").is_none() {
         GitPatTokensStore {
             tokens: serde_json::from_value(v.clone()).unwrap_or_default(),
         }
@@ -134,12 +133,15 @@ pub async fn save_gateway_global_settings(
     tokens: &GitPatTokensStore,
     updated_at_ms: i64,
 ) -> Result<(), sqlx::Error> {
-    let settings_v = serde_json::to_value(settings).unwrap_or_else(|_| serde_json::json!({"gitPats":[]}));
+    let settings_v =
+        serde_json::to_value(settings).unwrap_or_else(|_| serde_json::json!({"gitPats":[]}));
     db.save_gateway_global_settings_raw(&settings_v, &tokens_to_json(tokens), updated_at_ms)
         .await
 }
 
-pub async fn load_public(db: &GatewaySessionDb) -> Result<GatewayGlobalSettingsPublic, sqlx::Error> {
+pub async fn load_public(
+    db: &GatewaySessionDb,
+) -> Result<GatewayGlobalSettingsPublic, sqlx::Error> {
     let (settings, tokens, _) = get_gateway_global_settings(db).await?;
     Ok(to_public(&settings, &tokens))
 }
@@ -160,8 +162,7 @@ pub async fn validate_git_sync_json_with_global(
 ) -> Result<(), String> {
     let sync = crate::project_git_sync::parse_git_sync_json(v);
     let tokens = load_git_pat_tokens(db).await.map_err(|e| e.to_string())?;
-    let resolved =
-        crate::project_git_sync::resolve_git_sync_credentials(&sync, &tokens.tokens);
+    let resolved = crate::project_git_sync::resolve_git_sync_credentials(&sync, &tokens.tokens);
     crate::project_git_sync::validate_git_sync_resolved(&resolved)
 }
 
@@ -191,7 +192,12 @@ pub async fn upsert_git_pat(
         entry.name = name.to_string();
         entry.note = note;
         entry.updated_at_ms = now;
-        if let Some(tok) = input.token.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(tok) = input
+            .token
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             tokens.tokens.insert(id.clone(), tok.to_string());
         }
     } else {
@@ -239,6 +245,7 @@ pub async fn delete_git_pat(db: &GatewaySessionDb, pat_id: &str) -> Result<bool,
     Ok(true)
 }
 
+#[must_use]
 pub fn resolve_git_pat_token(pat_id: Option<&str>, tokens: &GitPatTokensStore) -> Option<String> {
     let id = pat_id?.trim();
     if id.is_empty() {
@@ -262,6 +269,7 @@ pub async fn load_system_prompt_default(db: &GatewaySessionDb) -> Result<String,
     })
 }
 
+#[must_use]
 pub fn to_public(
     settings: &GatewayGlobalSettingsStore,
     tokens: &GitPatTokensStore,

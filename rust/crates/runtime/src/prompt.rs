@@ -147,6 +147,7 @@ pub const GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL: &str = ".claw/system_prompt_u
 pub const GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL: &str = ".claw/system_prompt_scaffold.md";
 
 /// Builder for the runtime system prompt and dynamic environment sections.
+#[derive(Default)]
 pub struct SystemPromptBuilder {
     output_style_name: Option<String>,
     output_style_prompt: Option<String>,
@@ -157,21 +158,6 @@ pub struct SystemPromptBuilder {
     config: Option<RuntimeConfig>,
     /// When set, replaces hardcoded intro/system/doing-tasks/actions blocks.
     builtin_scaffold_override: Option<String>,
-}
-
-impl Default for SystemPromptBuilder {
-    fn default() -> Self {
-        Self {
-            output_style_name: None,
-            output_style_prompt: None,
-            os_name: None,
-            os_version: None,
-            append_sections: Vec::new(),
-            project_context: None,
-            config: None,
-            builtin_scaffold_override: None,
-        }
-    }
 }
 
 impl SystemPromptBuilder {
@@ -223,12 +209,14 @@ impl SystemPromptBuilder {
         let mut sections = Vec::new();
         if let Some(scaffold) = self.builtin_scaffold_override.as_ref() {
             sections.push(scaffold.trim().to_string());
-            if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt) {
+            if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt)
+            {
                 sections.push(format!("# Output Style: {name}\n{prompt}"));
             }
         } else {
             sections.push(get_simple_intro_section(self.output_style_name.is_some()));
-            if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt) {
+            if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt)
+            {
                 sections.push(format!("# Output Style: {name}\n{prompt}"));
             }
             sections.push(get_simple_system_section());
@@ -319,7 +307,7 @@ fn discover_project_rules_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>>
         let rules_root = dir.join("home").join(".cursor").join("rules");
         if fs::metadata(&rules_root).is_ok_and(|m| m.is_dir()) {
             let mut files = Vec::new();
-            collect_rule_mdc_files(&rules_root, &rules_root, &mut files)?;
+            collect_rule_mdc_files(&rules_root, &mut files)?;
             files.sort_by(|a, b| a.path.cmp(&b.path));
             return Ok(files);
         }
@@ -328,16 +316,12 @@ fn discover_project_rules_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>>
     Ok(Vec::new())
 }
 
-fn collect_rule_mdc_files(
-    rules_root: &Path,
-    dir: &Path,
-    out: &mut Vec<ContextFile>,
-) -> std::io::Result<()> {
+fn collect_rule_mdc_files(dir: &Path, out: &mut Vec<ContextFile>) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if entry.file_type()?.is_dir() {
-            collect_rule_mdc_files(rules_root, &path, out)?;
+            collect_rule_mdc_files(&path, out)?;
         } else if entry.file_type()?.is_file() {
             let is_mdc = path
                 .extension()
@@ -488,7 +472,8 @@ fn render_instruction_files(files: &[ContextFile]) -> String {
 fn render_project_rules(files: &[ContextFile]) -> String {
     let mut sections = vec![
         "# Project rules".to_string(),
-        "Rules from `project_config.rulesJson` (materialized under `home/.cursor/rules/`).".to_string(),
+        "Rules from `project_config.rulesJson` (materialized under `home/.cursor/rules/`)."
+            .to_string(),
     ];
     let mut remaining_chars = max_total_instruction_chars();
     for file in files {
@@ -498,11 +483,10 @@ fn render_project_rules(files: &[ContextFile]) -> String {
             );
             break;
         }
-        let label = file
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| file.path.display().to_string());
+        let label = file.path.file_name().map_or_else(
+            || file.path.display().to_string(),
+            |n| n.to_string_lossy().to_string(),
+        );
         let raw_content = truncate_instruction_content(&file.content, remaining_chars);
         let rendered_content = render_instruction_content(&raw_content);
         let consumed = rendered_content.chars().count().min(remaining_chars);
@@ -758,8 +742,7 @@ mod tests {
     use super::{
         collapse_blank_lines, display_context_path, max_instruction_file_chars,
         normalize_instruction_content, render_instruction_content, render_instruction_files,
-        render_project_rules, truncate_instruction_content, ContextFile, ProjectContext,
-        SystemPromptBuilder,
+        truncate_instruction_content, ContextFile, ProjectContext, SystemPromptBuilder,
         DEFAULT_MAX_INSTRUCTION_FILE_CHARS, INSTRUCTION_FILE_MAX_CHARS_ENV,
         SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     };
@@ -1098,8 +1081,13 @@ mod tests {
         let claude_idx = rendered
             .find("# Claude instructions")
             .expect("claude instructions section");
-        let rules_idx = rendered.find("# Project rules").expect("project rules section");
-        assert!(claude_idx < rules_idx, "rules must follow CLAUDE instructions");
+        let rules_idx = rendered
+            .find("# Project rules")
+            .expect("project rules section");
+        assert!(
+            claude_idx < rules_idx,
+            "rules must follow CLAUDE instructions"
+        );
         assert!(rendered.contains("CLAUDE body"));
         assert!(rendered.contains("rule body"));
         fs::remove_dir_all(root).expect("cleanup");

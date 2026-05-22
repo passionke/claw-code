@@ -24,7 +24,7 @@ pub struct LiveChunkRow {
     pub created_at_ms: i64,
 }
 
-/// PostgreSQL `NOTIFY` channel for live report tail (`payload`: `turnId`, `maxSeq`, optional `kind`). Author: kejiqing
+/// `PostgreSQL` `NOTIFY` channel for live report tail (`payload`: `turnId`, `maxSeq`, optional `kind`). Author: kejiqing
 pub const LIVE_CHUNK_NOTIFY_CHANNEL: &str = "claw_turn_live";
 
 /// Latest `gateway_turns` row for a session (see [`GatewaySessionDb::fetch_latest_turn_for_session`]).
@@ -187,12 +187,11 @@ impl GatewaySessionDb {
     }
 
     pub async fn turn_exists(&self, turn_id: &str) -> Result<bool, SqlxError> {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM gateway_turns WHERE turn_id = $1)",
-        )
-        .bind(turn_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM gateway_turns WHERE turn_id = $1)")
+                .bind(turn_id)
+                .fetch_one(&self.pool)
+                .await?;
         Ok(exists)
     }
 
@@ -210,6 +209,7 @@ impl GatewaySessionDb {
         Ok(row)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn migrate(pool: &PgPool) -> Result<(), SqlxError> {
         sqlx::query(
             r"CREATE TABLE IF NOT EXISTS gateway_sessions (
@@ -295,11 +295,9 @@ impl GatewaySessionDb {
         )
         .execute(pool)
         .await?;
-        sqlx::query(
-            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS stable_content_rev TEXT",
-        )
-        .execute(pool)
-        .await?;
+        sqlx::query("ALTER TABLE project_config ADD COLUMN IF NOT EXISTS stable_content_rev TEXT")
+            .execute(pool)
+            .await?;
         sqlx::query(
             "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS draft_open BOOLEAN NOT NULL DEFAULT false",
         )
@@ -378,7 +376,7 @@ impl GatewaySessionDb {
         .execute(pool)
         .await?;
         sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS project_entity_revision (
+            r"CREATE TABLE IF NOT EXISTS project_entity_revision (
                 ds_id BIGINT NOT NULL,
                 domain TEXT NOT NULL,
                 entity_key TEXT NOT NULL,
@@ -387,7 +385,7 @@ impl GatewaySessionDb {
                 note TEXT,
                 body JSONB NOT NULL,
                 PRIMARY KEY (ds_id, domain, entity_key, entity_rev)
-            )"#,
+            )",
         )
         .execute(pool)
         .await?;
@@ -421,9 +419,7 @@ impl GatewaySessionDb {
     }
 
     /// System-level default scaffold (no public write API; update via DB migration). Author: kejiqing
-    pub async fn get_gateway_system_prompt_default(
-        &self,
-    ) -> Result<(String, String), SqlxError> {
+    pub async fn get_gateway_system_prompt_default(&self) -> Result<(String, String), SqlxError> {
         let row = sqlx::query(
             r"SELECT system_prompt_default, system_prompt_version
                FROM gateway_global_settings WHERE singleton_id = 1",
@@ -439,9 +435,7 @@ impl GatewaySessionDb {
     }
 
     /// Gateway-wide settings row (PAT vault, etc.). Author: kejiqing
-    pub async fn get_gateway_global_settings_raw(
-        &self,
-    ) -> Result<(Value, Value, i64), SqlxError> {
+    pub async fn get_gateway_global_settings_raw(&self) -> Result<(Value, Value, i64), SqlxError> {
         let row = sqlx::query(
             r"SELECT settings_json, git_pat_tokens_json, updated_at_ms
                FROM gateway_global_settings WHERE singleton_id = 1",
@@ -487,7 +481,9 @@ impl GatewaySessionDb {
     }
 
     /// Admin list: one row per `project_config` (DB truth for skills / CLAUDE). Author: kejiqing
-    pub async fn list_project_config_summaries(&self) -> Result<Vec<ProjectConfigSummary>, SqlxError> {
+    pub async fn list_project_config_summaries(
+        &self,
+    ) -> Result<Vec<ProjectConfigSummary>, SqlxError> {
         let rows = sqlx::query(
             r"SELECT ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms, claude_md,
                       skills_json, rules_json, mcp_servers_json, git_sync_json
@@ -508,15 +504,16 @@ impl GatewaySessionDb {
             let rules_json: Value = row.try_get::<Json<Value>, _>("rules_json")?.0;
             let mcp_servers_json: Value = row.try_get::<Json<Value>, _>("mcp_servers_json")?.0;
             let git_sync_json: Value = row.try_get::<Json<Value>, _>("git_sync_json")?.0;
-            let claude_in_db = claude_md
-                .as_deref()
-                .is_some_and(|s| !s.trim().is_empty());
-            let skills_count_db = skills_json.as_array().map(|a| a.len() as i64).unwrap_or(0);
-            let rules_count_db = rules_json.as_array().map(|a| a.len() as i64).unwrap_or(0);
+            let claude_in_db = claude_md.as_deref().is_some_and(|s| !s.trim().is_empty());
+            let skills_count_db = skills_json
+                .as_array()
+                .map_or(0, |a| i64::try_from(a.len()).unwrap_or(i64::MAX));
+            let rules_count_db = rules_json
+                .as_array()
+                .map_or(0, |a| i64::try_from(a.len()).unwrap_or(i64::MAX));
             let mcp_servers_count_db = mcp_servers_json
                 .as_object()
-                .map(|o| o.len() as i64)
-                .unwrap_or(0);
+                .map_or(0, |o| i64::try_from(o.len()).unwrap_or(i64::MAX));
             out.push(ProjectConfigSummary {
                 ds_id,
                 content_rev,
@@ -704,12 +701,15 @@ impl GatewaySessionDb {
                 created_at_ms: row.try_get("created_at_ms")?,
                 note: row.try_get("note")?,
                 claude_in_db: claude_md.as_deref().is_some_and(|s| !s.trim().is_empty()),
-                skills_count_db: skills_json.as_array().map(|a| a.len() as i64).unwrap_or(0),
-                rules_count_db: rules_json.as_array().map(|a| a.len() as i64).unwrap_or(0),
+                skills_count_db: skills_json
+                    .as_array()
+                    .map_or(0, |a| i64::try_from(a.len()).unwrap_or(i64::MAX)),
+                rules_count_db: rules_json
+                    .as_array()
+                    .map_or(0, |a| i64::try_from(a.len()).unwrap_or(i64::MAX)),
                 mcp_servers_count_db: mcp_servers_json
                     .as_object()
-                    .map(|o| o.len() as i64)
-                    .unwrap_or(0),
+                    .map_or(0, |o| i64::try_from(o.len()).unwrap_or(i64::MAX)),
             });
         }
         Ok(out)
@@ -1354,18 +1354,6 @@ impl GatewaySessionDb {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        if crate::live_report_audit::enabled() {
-            tracing::info!(
-                target: "claw_gateway_orchestration",
-                component = "session_db",
-                phase = "pg_notify_sent",
-                turn_id = %turn_id,
-                max_seq,
-                sent_at_ms = crate::live_report_audit::now_ms(),
-                chunk_rows = chunks.len(),
-                "live chunk PG notify sent"
-            );
-        }
         Ok(Some(max_seq))
     }
 
@@ -1423,9 +1411,10 @@ impl GatewaySessionDb {
         )
         .execute(&self.pool)
         .await?;
-        Ok(u64::from(r1.rows_affected())
-            .saturating_add(r2.rows_affected().into())
-            .saturating_add(r3.rows_affected().into()))
+        Ok(r1
+            .rows_affected()
+            .saturating_add(r2.rows_affected())
+            .saturating_add(r3.rows_affected()))
     }
 
     pub async fn upsert_feedback(
@@ -1790,7 +1779,9 @@ mod tests {
     #[tokio::test]
     async fn turn_worker_route_persist_and_clear() {
         let Some(db) = test_db().await else {
-            eprintln!("skip turn_worker_route_persist_and_clear: set CLAW_GATEWAY_TEST_DATABASE_URL");
+            eprintln!(
+                "skip turn_worker_route_persist_and_clear: set CLAW_GATEWAY_TEST_DATABASE_URL"
+            );
             return;
         };
         let t = now_ms();
@@ -1802,14 +1793,8 @@ mod tests {
         db.set_turn_worker_route(&turn_id, "claw-worker-test-0", 18765)
             .await
             .unwrap();
-        let route = db
-            .get_turn_worker_route(&turn_id, &sid, 9)
-            .await
-            .unwrap();
-        assert_eq!(
-            route,
-            Some(("claw-worker-test-0".to_string(), 18765))
-        );
+        let route = db.get_turn_worker_route(&turn_id, &sid, 9).await.unwrap();
+        assert_eq!(route, Some(("claw-worker-test-0".to_string(), 18765)));
         db.finalize_turn_terminal(&turn_id, "succeeded", Some(t), Some("done"), None, Some(0))
             .await
             .unwrap();

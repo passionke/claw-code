@@ -16,7 +16,9 @@ pub async fn runtime_inspect_container_ip(
 ) -> Option<String> {
     let net_escaped = network.replace('\\', "\\\\").replace('"', "\\\"");
     let format = format!(r#"{{{{(index .NetworkSettings.Networks "{net_escaped}").IPAddress}}}}"#);
-    let out = runtime_exec(bin, &["inspect", "-f", &format, container]).await.ok()?;
+    let out = runtime_exec(bin, &["inspect", "-f", &format, container])
+        .await
+        .ok()?;
     if !out.status.success() {
         return None;
     }

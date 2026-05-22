@@ -2,12 +2,12 @@
 pub mod config;
 mod docker_cli;
 mod docker_pool;
-mod worker_report_endpoint;
 mod local_ops;
 #[allow(dead_code)]
 mod result;
 pub mod rpc;
 mod traits;
+mod worker_report_endpoint;
 
 pub use docker_pool::DockerPoolManager;
 pub use local_ops::LocalPoolOps;

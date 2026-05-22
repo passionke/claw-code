@@ -14,9 +14,7 @@ use gateway_solve_turn::WORKER_ENV_MOUNT_PATH;
 use super::config::DockerPoolConfig;
 use super::docker_cli::{runtime_exec, runtime_exec_with_live_stderr};
 use super::traits::{PoolSessionHostMounts, SlotLease, TaskOutcome};
-use super::worker_report_endpoint::{
-    resolve_worker_report_endpoint, WorkerReportResolve,
-};
+use super::worker_report_endpoint::{resolve_worker_report_endpoint, WorkerReportResolve};
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
 
@@ -97,6 +95,7 @@ impl DockerPoolManager {
     }
 
     /// Read `CLAW_DOCKER_POOL_*` or `CLAW_PODMAN_POOL_*` once at construction.
+    #[allow(clippy::too_many_lines)]
     pub fn try_from_env(podman: bool, work_root: &Path) -> Result<Arc<Self>, String> {
         let (default_bin, pfx) = if podman {
             ("podman", "CLAW_PODMAN_")
@@ -214,9 +213,7 @@ impl DockerPoolManager {
     /// Gateway-reachable report SSE host for this slot. Author: kejiqing
     pub async fn slot_worker_host(&self, slot_index: usize) -> Option<String> {
         let slots = self.slots.lock().await;
-        slots
-            .get(slot_index)
-            .map(|s| s.worker_report_host.clone())
+        slots.get(slot_index).map(|s| s.worker_report_host.clone())
     }
 
     pub async fn slot_worker_report_port(&self, slot_index: usize) -> Option<u16> {
@@ -243,7 +240,7 @@ impl DockerPoolManager {
         .await;
         let mut slots = self.slots.lock().await;
         if let Some(s) = slots.get_mut(slot_index) {
-            s.worker_report_host = host.clone();
+            s.worker_report_host.clone_from(&host);
             s.worker_report_port = port;
         }
         info!(

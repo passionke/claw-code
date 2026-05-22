@@ -17,16 +17,20 @@ use axum::http::StatusCode;
 use chrono::{Local, TimeZone};
 use serde_json::Value;
 
-use crate::session_db::{GatewaySessionDb, ProjectConfigRevisionRow, ProjectConfigRow, ProjectConfigUpsert};
+use crate::session_db::{
+    GatewaySessionDb, ProjectConfigRevisionRow, ProjectConfigRow, ProjectConfigUpsert,
+};
 
 /// The single in-progress temp revision id (never effective, never in formal list).
 pub const DRAFT_CONTENT_REV: &str = "__draft__";
 
+#[must_use]
 pub fn is_draft_content_rev(rev: &str) -> bool {
     rev.trim() == DRAFT_CONTENT_REV
 }
 
 /// Formal version id: local `YYYY-MM-DD_HH-mm-ss` (second resolution). Author: kejiqing
+#[must_use]
 pub fn format_formal_content_rev_local_ms(ms: i64) -> String {
     let Some(dt) = Local.timestamp_millis_opt(ms).single() else {
         return ms.to_string();
@@ -52,6 +56,7 @@ pub async fn allocate_formal_content_rev(
 
 const MAX_REVISION_NOTE_LEN: usize = 500;
 
+#[must_use]
 pub fn normalize_revision_note(note: Option<String>) -> Option<String> {
     note.map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -142,6 +147,7 @@ pub async fn ensure_formal_revision_recorded(
     Ok(())
 }
 
+#[must_use]
 pub fn revision_row_from_config_row(
     row: &ProjectConfigRow,
     content_rev: &str,
@@ -161,6 +167,7 @@ pub fn revision_row_from_config_row(
     }
 }
 
+#[must_use]
 pub fn config_row_from_revision(
     ds_id: i64,
     rev: &ProjectConfigRevisionRow,
@@ -183,6 +190,7 @@ pub fn config_row_from_revision(
     }
 }
 
+#[must_use]
 pub fn upsert_from_row<'a>(
     row: &'a ProjectConfigRow,
     content_rev: &'a str,
@@ -267,9 +275,12 @@ pub async fn ensure_draft(
         git_sync_json: &row.git_sync_json,
     };
     db.upsert_project_config(upsert).await?;
-    db.get_project_config(ds_id)
-        .await?
-        .ok_or_else(|| DraftError::new(StatusCode::INTERNAL_SERVER_ERROR, "draft row missing after upsert"))
+    db.get_project_config(ds_id).await?.ok_or_else(|| {
+        DraftError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "draft row missing after upsert",
+        )
+    })
 }
 
 /// Close temp draft; `project_config` row becomes effective formal content (STEADY).
@@ -295,16 +306,18 @@ pub async fn close_draft_to_stable(
         Some(stable_content_rev),
     ))
     .await?;
-    db.get_project_config(ds_id)
-        .await?
-        .ok_or_else(|| DraftError::new(StatusCode::INTERNAL_SERVER_ERROR, "row missing after close draft"))
+    db.get_project_config(ds_id).await?.ok_or_else(|| {
+        DraftError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "row missing after close draft",
+        )
+    })
 }
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 #[derive(Debug)]

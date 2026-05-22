@@ -23,11 +23,23 @@ pub struct ProjectGitSync {
     pub git_pat_id: Option<String>,
     #[serde(rename = "gitToken", default, skip_serializing_if = "Option::is_none")]
     pub git_token: Option<String>,
-    #[serde(rename = "authorName", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "authorName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub author_name: Option<String>,
-    #[serde(rename = "authorEmail", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "authorEmail",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub author_email: Option<String>,
-    #[serde(rename = "lastPushAtMs", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "lastPushAtMs",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_push_at_ms: Option<i64>,
     #[serde(
         rename = "lastPushCommitId",
@@ -35,7 +47,11 @@ pub struct ProjectGitSync {
         skip_serializing_if = "Option::is_none"
     )]
     pub last_push_commit_id: Option<String>,
-    #[serde(rename = "lastPushError", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "lastPushError",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_push_error: Option<String>,
 }
 
@@ -78,6 +94,7 @@ impl std::error::Error for ProjectGitSyncError {}
 
 type SyncResult<T> = Result<T, ProjectGitSyncError>;
 
+#[must_use]
 pub fn parse_git_sync_json(v: &Value) -> ProjectGitSync {
     if v.is_null() {
         return ProjectGitSync {
@@ -126,7 +143,12 @@ pub fn resolve_git_sync_credentials(
     pat_tokens: &std::collections::BTreeMap<String, String>,
 ) -> ProjectGitSync {
     let mut out = sync.clone();
-    if let Some(id) = out.git_pat_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(id) = out
+        .git_pat_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         if let Some(tok) = pat_tokens.get(id) {
             out.git_token = Some(tok.clone());
         }
@@ -139,7 +161,6 @@ pub fn validate_git_sync_json(v: &Value) -> Result<(), String> {
 }
 
 pub fn validate_git_sync_resolved(sync: &ProjectGitSync) -> Result<(), String> {
-    let sync = sync;
     if !sync.enabled {
         return Ok(());
     }
@@ -151,7 +172,8 @@ pub fn validate_git_sync_resolved(sync: &ProjectGitSync) -> Result<(), String> {
     let is_ssh = url.starts_with("git@") || url.starts_with("ssh://");
     if !is_http && !is_ssh {
         return Err(
-            "gitSync.gitUrl must be https://, http://, git@, or ssh:// (GitHub/GitLab style)".into(),
+            "gitSync.gitUrl must be https://, http://, git@, or ssh:// (GitHub/GitLab style)"
+                .into(),
         );
     }
     if is_http && url.contains('@') {
@@ -277,8 +299,7 @@ async fn git_run_env(cwd: &Path, env_pairs: &[(&str, &str)], args: &[&str]) -> S
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(ProjectGitSyncError::new(format!(
-            "git {:?} failed: {stderr}",
-            args
+            "git {args:?} failed: {stderr}"
         )));
     }
     Ok(())
@@ -287,18 +308,22 @@ async fn git_run_env(cwd: &Path, env_pairs: &[(&str, &str)], args: &[&str]) -> S
 async fn ensure_safe_directory(path: &Path) {
     let parent = path.parent().unwrap_or(path);
     let p = path.display().to_string();
-    let _ = git_run(parent, &["config", "--global", "--add", "safe.directory", &p]).await;
+    let _ = git_run(
+        parent,
+        &["config", "--global", "--add", "safe.directory", &p],
+    )
+    .await;
 }
 
 /// True when `rel` (under `home/`) is the same as or under a DB-materialized path. Author: kejiqing
+#[must_use]
 pub fn is_home_rel_db_controlled(rel: &Path, excluded: &[PathBuf]) -> bool {
     excluded.iter().any(|base| {
         if rel == base {
             return true;
         }
         rel.strip_prefix(base)
-            .map(|tail| !tail.as_os_str().is_empty())
-            .unwrap_or(false)
+            .is_ok_and(|tail| !tail.as_os_str().is_empty())
     })
 }
 
@@ -385,11 +410,7 @@ async fn ensure_git_repo(cache_dir: &Path, clone_url: &str, git_ref: &str) -> Sy
     let git_dir = cache_dir.join(".git");
     if fs::metadata(&git_dir).await.is_ok_and(|m| m.is_dir()) {
         git_run(cache_dir, &["remote", "set-url", "origin", clone_url]).await?;
-        git_run(
-            cache_dir,
-            &["fetch", "--depth", "1", "origin", git_ref],
-        )
-        .await?;
+        git_run(cache_dir, &["fetch", "--depth", "1", "origin", git_ref]).await?;
         git_run(cache_dir, &["checkout", "-f", git_ref]).await?;
         return Ok(());
     }

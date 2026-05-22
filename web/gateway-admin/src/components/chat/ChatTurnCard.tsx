@@ -1,7 +1,7 @@
 import { Collapse, Space, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { proxyHttp } from "../../api/client";
-import { useReportStream } from "../../hooks/useReportStream";
+import { usePolishReportStream } from "../../hooks/usePolishReportStream";
 import type { ProgressEvent, SolveTask } from "../../types/chat";
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import TurnToolsDrawer from "./TurnToolsDrawer";
@@ -50,13 +50,8 @@ export default function ChatTurnCard({
   const [visibleProgressCount, setVisibleProgressCount] = useState(0);
   const [errorText, setErrorText] = useState("");
   const [fallbackOutput, setFallbackOutput] = useState("");
-  const reportOpened = useRef(false);
-  const reportLenRef = useRef(0);
-  const report = useReportStream(gatewayBase, sessionId, turnId, dsId);
-
-  useEffect(() => {
-    reportLenRef.current = report.text.length;
-  }, [report.text]);
+  const polishOpened = useRef(false);
+  const report = usePolishReportStream(gatewayBase, taskId);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,10 +65,6 @@ export default function ChatTurnCard({
         );
         if (cancelled) return null;
         setTask(t);
-        if (t.hasReport && !reportOpened.current) {
-          reportOpened.current = true;
-          report.open();
-        }
         return t;
       } catch (e) {
         if (!cancelled) setErrorText(String((e as Error).message || e));
@@ -87,11 +78,17 @@ export default function ChatTurnCard({
         if (!t) break;
         const terminal = ["succeeded", "failed", "cancelled"].includes(t.status || "");
         if (terminal) {
-          // Do not call report.open() here: it clears the buffer and the gateway switches to
-          // polish_llm (not worker_proxy) after succeeded — user sees empty report. Author: kejiqing
+          if (t.status === "succeeded" && !polishOpened.current) {
+            polishOpened.current = true;
+            report.open();
+          }
           if (t.error) {
             setErrorText(JSON.stringify(t.error, null, 2));
-          } else if (t.hasReport && !reportLenRef.current && t.result?.outputText) {
+          } else if (
+            t.status === "succeeded" &&
+            !report.text &&
+            t.result?.outputText
+          ) {
             const txt = t.result.outputText;
             setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
           } else if (!t.hasReport && t.result?.outputText) {
@@ -110,7 +107,7 @@ export default function ChatTurnCard({
       report.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gatewayBase, taskId, sessionId, turnId, dsId]);
+  }, [gatewayBase, taskId]);
 
   const history = task.progressHistory || [];
   const reportActive = report.streaming || report.text.length > 0;
@@ -213,7 +210,7 @@ export default function ChatTurnCard({
       <div className={styles.turnBody}>
         {(reportActive || report.error) && (
           <div className={styles.section}>
-            <div className={styles.sectionLabel}>报告</div>
+            <div className={styles.sectionLabel}>报告（润色）</div>
             <article
               className={`${styles.reportProse} ${report.streaming ? styles.reportStreaming : ""} ${
                 report.error ? styles.reportErr : ""

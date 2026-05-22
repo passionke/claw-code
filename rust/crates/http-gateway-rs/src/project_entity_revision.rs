@@ -122,7 +122,12 @@ pub async fn append_revision(
     Ok(entity_rev)
 }
 
-pub async fn append_rule(db: &GatewaySessionDb, ds_id: i64, rule: &Value, now_ms: i64) -> Result<(), EntityRevisionError> {
+pub async fn append_rule(
+    db: &GatewaySessionDb,
+    ds_id: i64,
+    rule: &Value,
+    now_ms: i64,
+) -> Result<(), EntityRevisionError> {
     let key = rule_entity_key(rule)?;
     let _ = append_revision(db, ds_id, DOMAIN_RULE, &key, rule.clone(), None, now_ms).await?;
     Ok(())
@@ -155,16 +160,7 @@ pub async fn append_mcp_server(
     config: Value,
     now_ms: i64,
 ) -> Result<(), EntityRevisionError> {
-    let _ = append_revision(
-        db,
-        ds_id,
-        DOMAIN_MCP,
-        server_name,
-        config,
-        None,
-        now_ms,
-    )
-    .await?;
+    let _ = append_revision(db, ds_id, DOMAIN_MCP, server_name, config, None, now_ms).await?;
     Ok(())
 }
 
@@ -246,6 +242,7 @@ fn rule_entity_key(rule: &Value) -> Result<String, EntityRevisionError> {
 }
 
 /// Record L2 revisions after draft PUT when slices changed. Author: kejiqing
+#[allow(clippy::too_many_arguments)]
 pub async fn record_draft_put_sidecars(
     db: &GatewaySessionDb,
     ds_id: i64,
@@ -510,10 +507,7 @@ fn apply_entity_body_to_draft_row(
         }
         DOMAIN_SKILL => {
             let arr = row.skills_json.as_array_mut().ok_or_else(|| {
-                EntityRevisionError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "skillsJson not array",
-                )
+                EntityRevisionError::new(StatusCode::INTERNAL_SERVER_ERROR, "skillsJson not array")
             })?;
             let mut found = false;
             for item in arr.iter_mut() {
@@ -528,22 +522,16 @@ fn apply_entity_body_to_draft_row(
             }
         }
         DOMAIN_MCP => {
-            let obj = row
-                .mcp_servers_json
-                .as_object_mut()
-                .ok_or_else(|| {
-                    EntityRevisionError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "mcpServersJson not object",
-                    )
-                })?;
+            let obj = row.mcp_servers_json.as_object_mut().ok_or_else(|| {
+                EntityRevisionError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "mcpServersJson not object",
+                )
+            })?;
             obj.insert(entity_key.to_string(), body.clone());
         }
         DOMAIN_CLAUDE => {
-            let content = body
-                .get("content")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let content = body.get("content").and_then(Value::as_str).unwrap_or("");
             row.claude_md = if content.trim().is_empty() {
                 None
             } else {
@@ -569,8 +557,7 @@ fn apply_entity_body_to_draft_row(
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 fn draft_err(e: project_config_draft::DraftError) -> EntityRevisionError {
