@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -25,9 +25,6 @@ use crate::report_sse_timing;
 
 /// Default in-container report SSE port (gateway proxies `http://{container}:{port}/…`). Author: kejiqing
 pub const DEFAULT_REPORT_SSE_PORT: u16 = 18765;
-
-const COALESCE_MIN_CHARS: usize = 48;
-const COALESCE_MAX_WAIT: Duration = Duration::from_millis(80);
 
 #[derive(Clone)]
 struct ReplayChunk {
@@ -107,8 +104,8 @@ fn replay_tail(replay: &[ReplayChunk], cursor: usize) -> (Vec<ReplayChunk>, usiz
     (tail, replay.len())
 }
 
-fn delta_event(text: &str) -> Event {
-    let data = serde_json::json!({ "text": text }).to_string();
+fn delta_event(text: &str, hub_push_ms: i64) -> Event {
+    let data = serde_json::json!({ "text": text, "t": hub_push_ms }).to_string();
     Event::default().event("biz.report.delta").data(data)
 }
 
@@ -143,12 +140,28 @@ async fn report_status(
     })
 }
 
+/// Catch-up replay spacing from original `hub_push_ms` gaps (16–80ms), not one browser tick burst.
+fn replay_emit_delay_ms(prev_hub_push_ms: i64, hub_push_ms: i64) -> u64 {
+    let gap = hub_push_ms.saturating_sub(prev_hub_push_ms);
+    if gap == 0 {
+        16
+    } else {
+        gap.clamp(16, 80) as u64
+    }
+}
+
 async fn replay_pump(hub: Hub, tx: tokio_mpsc::UnboundedSender<Event>, subscriber_idx: u64) {
     let mut cursor = 0usize;
+    let mut prev_hub_ms = 0i64;
     loop {
         let (chunks, new_cursor) = hub.replay_tail(cursor);
         cursor = new_cursor;
         for (idx, chunk) in chunks.into_iter().enumerate() {
+            if prev_hub_ms > 0 {
+                let wait = replay_emit_delay_ms(prev_hub_ms, chunk.hub_push_ms);
+                tokio::time::sleep(Duration::from_millis(wait)).await;
+            }
+            prev_hub_ms = chunk.hub_push_ms;
             let sse_emit_ms = report_sse_timing::now_ms();
             let chars = chunk.text.chars().count();
             let chunk_idx = cursor + idx;
@@ -161,7 +174,7 @@ async fn replay_pump(hub: Hub, tx: tokio_mpsc::UnboundedSender<Event>, subscribe
                 chunk_idx,
                 subscriber_idx,
             );
-            if tx.send(delta_event(&chunk.text)).is_err() {
+            if tx.send(delta_event(&chunk.text, chunk.hub_push_ms)).is_err() {
                 return;
             }
         }
@@ -233,31 +246,12 @@ impl Drop for ReportSseServerGuard {
     }
 }
 
+/// One model `push_text_delta` → one hub chunk (no 48-char / 80ms / try_recv batching). Author: kejiqing
 fn coalesce_loop(hub: Hub, rx: mpsc::Receiver<String>) {
-    let mut buffer = String::new();
-    let mut batch_trunk_first_ms: Option<i64> = None;
-    let mut last_flush = Instant::now();
     while let Ok(piece) = rx.recv() {
-        if batch_trunk_first_ms.is_none() {
-            batch_trunk_first_ms = Some(report_sse_timing::now_ms());
-        }
-        buffer.push_str(&piece);
-        while let Ok(more) = rx.try_recv() {
-            buffer.push_str(&more);
-        }
-        let ready = buffer.chars().count() >= COALESCE_MIN_CHARS
-            || last_flush.elapsed() >= COALESCE_MAX_WAIT;
-        if ready && !buffer.is_empty() {
-            let trunk_first = batch_trunk_first_ms.take().unwrap_or_else(report_sse_timing::now_ms);
-            let hub_push_ms = report_sse_timing::now_ms();
-            hub.push_delta(std::mem::take(&mut buffer), trunk_first, hub_push_ms);
-            last_flush = Instant::now();
-        }
-    }
-    if !buffer.is_empty() {
-        let trunk_first = batch_trunk_first_ms.unwrap_or_else(report_sse_timing::now_ms);
+        let trunk_first = report_sse_timing::now_ms();
         let hub_push_ms = report_sse_timing::now_ms();
-        hub.push_delta(buffer, trunk_first, hub_push_ms);
+        hub.push_delta(piece, trunk_first, hub_push_ms);
     }
 }
 
@@ -362,6 +356,66 @@ mod tests {
         let (tail, cur) = replay_tail(&replay, 2);
         assert!(tail.is_empty());
         assert_eq!(cur, 2);
+    }
+
+    #[test]
+    fn replay_emit_delay_ms_uses_hub_gap_not_zero() {
+        assert_eq!(replay_emit_delay_ms(100, 100), 16);
+        assert_eq!(replay_emit_delay_ms(100, 200), 80);
+        assert_eq!(replay_emit_delay_ms(100, 130), 30);
+    }
+
+    /// Late SSE client must not receive all catch-up deltas in one instant (paced by hub_push_ms).
+    #[tokio::test]
+    async fn late_subscriber_catch_up_is_time_spaced() {
+        use std::time::Instant;
+
+        use futures_util::StreamExt;
+
+        let turn_id = "T_pace_late_subscriber00000001";
+        let port = 38767_u16;
+        let (handle, _guard) = spawn(turn_id, port).expect("spawn");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let h = handle.clone();
+        tokio::task::spawn_blocking(move || {
+            for i in 0..4 {
+                h.push_text_delta(&format!("seg{i}"));
+                if i < 3 {
+                    std::thread::sleep(Duration::from_millis(60));
+                }
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(320)).await;
+
+        let url = format!("http://127.0.0.1:{port}/v1/turns/{turn_id}/report");
+        let resp = reqwest::get(&url).await.expect("GET SSE");
+        assert!(resp.status().is_success());
+        let mut stream = resp.bytes_stream();
+        let mut buf = Vec::new();
+        let mut delta_at: Vec<Instant> = Vec::new();
+        let marker = b"event: biz.report.delta";
+        while let Some(Ok(bytes)) = stream.next().await {
+            buf.extend_from_slice(&bytes);
+            while let Some(pos) = buf.windows(marker.len()).position(|w| w == marker) {
+                delta_at.push(Instant::now());
+                buf.drain(..pos + marker.len());
+            }
+            if delta_at.len() >= 4 {
+                break;
+            }
+        }
+        assert!(delta_at.len() >= 3, "expected multiple deltas, got {}", delta_at.len());
+        let mut gaps_ms: Vec<u128> = delta_at
+            .windows(2)
+            .map(|w| w[1].duration_since(w[0]).as_millis())
+            .collect();
+        gaps_ms.sort();
+        let max_gap = *gaps_ms.last().unwrap_or(&0);
+        assert!(
+            max_gap >= 12,
+            "catch-up should be paced (max inter-delta gap {max_gap}ms), gaps={gaps_ms:?}"
+        );
     }
 
     #[test]

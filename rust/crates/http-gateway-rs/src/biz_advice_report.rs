@@ -207,6 +207,20 @@ pub fn stream_msg_to_event(msg: &BizReportStreamMsg) -> Event {
     }
 }
 
+/// Push snapshot text once then `done` (no LLM polish). Author: kejiqing
+pub fn enqueue_snapshot_biz_report_sse(
+    tx: &mpsc::UnboundedSender<BizReportStreamMsg>,
+    mut payload: BizAdviceReportPayload,
+    report_text: String,
+) {
+    let clean = sanitize_external_report_text(&report_text);
+    if !clean.is_empty() {
+        let _ = tx.send(BizReportStreamMsg::Delta(clean));
+    }
+    sanitize_report_payload(&mut payload);
+    let _ = tx.send(BizReportStreamMsg::Done(payload));
+}
+
 /// SSE body: `biz.report.start` then ordered `delta` / `done` (PG catch-up via `delta` only). Author: kejiqing
 pub fn biz_report_sse_event_stream(
     task_id: &str,

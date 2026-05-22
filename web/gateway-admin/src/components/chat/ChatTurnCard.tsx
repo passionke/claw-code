@@ -51,9 +51,6 @@ export default function ChatTurnCard({
   const [errorText, setErrorText] = useState("");
   const [fallbackOutput, setFallbackOutput] = useState("");
   const reportOpened = useRef(false);
-  const reportLenAtPollRef = useRef(0);
-  const reportGrowthStallPolls = useRef(0);
-  /** Poll loop must read live report state via refs (avoid stale `report.*` in closure). Author: kejiqing */
   const reportLenRef = useRef(0);
   const report = useReportStream(gatewayBase, sessionId, turnId, dsId);
 
@@ -73,26 +70,9 @@ export default function ChatTurnCard({
         );
         if (cancelled) return null;
         setTask(t);
-        if (t.hasReport) {
-          if (!reportOpened.current) {
-            reportOpened.current = true;
-            reportGrowthStallPolls.current = 0;
-            reportLenAtPollRef.current = 0;
-            report.open();
-          } else if ((t.status || "") === "running") {
-            const len = reportLenRef.current;
-            // ES can stay "open" while proxy buffers; reopen replays PG by seq.
-            if (len > 0 && len === reportLenAtPollRef.current) {
-              reportGrowthStallPolls.current += 1;
-              if (reportGrowthStallPolls.current >= 3) {
-                reportGrowthStallPolls.current = 0;
-                report.open();
-              }
-            } else {
-              reportGrowthStallPolls.current = 0;
-              reportLenAtPollRef.current = len;
-            }
-          }
+        if (t.hasReport && !reportOpened.current) {
+          reportOpened.current = true;
+          report.open();
         }
         return t;
       } catch (e) {
@@ -107,20 +87,21 @@ export default function ChatTurnCard({
         if (!t) break;
         const terminal = ["succeeded", "failed", "cancelled"].includes(t.status || "");
         if (terminal) {
-          // Worker SSE ends without `biz.report.done`; reopen for polish / formal `done`.
-          if (t.status === "succeeded" && t.hasReport) {
-            reportOpened.current = true;
-            report.open();
-          }
+          // Do not call report.open() here: it clears the buffer and the gateway switches to
+          // polish_llm (not worker_proxy) after succeeded — user sees empty report. Author: kejiqing
           if (t.error) {
             setErrorText(JSON.stringify(t.error, null, 2));
+          } else if (t.hasReport && !reportLenRef.current && t.result?.outputText) {
+            const txt = t.result.outputText;
+            setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
           } else if (!t.hasReport && t.result?.outputText) {
             const txt = t.result.outputText;
             setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
           }
           break;
         }
-        await new Promise((r) => setTimeout(r, 800));
+        const delay = (t.status || "") === "running" ? 300 : 800;
+        await new Promise((r) => setTimeout(r, delay));
       }
     })();
 

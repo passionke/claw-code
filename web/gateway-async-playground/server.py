@@ -430,15 +430,29 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
+            upstream_bytes = 0
+            delta_frames = 0
+            parse_buf = b""
             try:
                 while True:
                     chunk = upstream.read(4096)
                     if not chunk:
                         break
+                    upstream_bytes += len(chunk)
+                    parse_buf += chunk
+                    while b"\n\n" in parse_buf:
+                        frame, parse_buf = parse_buf.split(b"\n\n", 1)
+                        if b"event: biz.report.delta" in frame:
+                            delta_frames += 1
                     self.wfile.write(chunk)
                     self.wfile.flush()
             finally:
                 upstream.close()
+                sys.stderr.write(
+                    f"claw_proxy_sse_end target={target!r} "
+                    f"bytes={upstream_bytes} delta_frames={delta_frames}\n"
+                )
+                sys.stderr.flush()
             return
 
         if path in ("/", "/index.html"):

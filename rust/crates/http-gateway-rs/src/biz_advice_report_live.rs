@@ -138,6 +138,19 @@ pub async fn should_use_live_pg_report(
         return Ok(true);
     }
     if state.cfg.live_biz_report_spill_enabled {
+        if let Some(target) = crate::turn_worker_proxy::resolve_worker_stream_target(
+            &state.worker_streams,
+            &state.session_db,
+            &ctx.turn_id,
+            &ctx.session_id,
+            ctx.ds_id,
+        )
+        .await
+        {
+            if crate::turn_worker_proxy::worker_has_report(&target, &ctx.turn_id).await {
+                return Ok(true);
+            }
+        }
         let status =
             turn_status(&state.session_db, &ctx.turn_id, &ctx.session_id, ctx.ds_id).await?;
         if matches!(status.as_deref(), Some("running") | Some("queued")) {

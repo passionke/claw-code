@@ -30,7 +30,7 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use biz_advice_report::{
-    biz_report_sse_event_stream, build_biz_advice_polish_prompt,
+    biz_report_sse_event_stream, build_biz_advice_polish_prompt, enqueue_snapshot_biz_report_sse,
     load_boss_report_writer_instructions, report_body_from_solve_output, sanitize_biz_report_parts,
     sanitize_external_report_text, sanitize_report_payload, BizAdviceReportPayload,
     BizReportStreamMsg, ReportExportSanitizer,
@@ -6203,7 +6203,15 @@ async fn get_biz_advice_report(
         prepare_live_report_context(&state, &query.session_id, &query.turn_id, query.ds_id).await?;
     let use_live_pg = should_use_live_pg_report(state.as_ref(), &ctx).await?;
     if !use_live_pg {
-        return respond_biz_advice_polish_for_context(state, ctx, query.stream).await;
+        live_report_audit::log_biz_advice_report_route(
+            &ctx.turn_id,
+            &ctx.session_id,
+            ctx.ds_id,
+            query.stream,
+            "snapshot",
+            "should_use_live_pg_report=false; polish disabled",
+        );
+        return respond_biz_advice_snapshot_for_context(state, ctx, query.stream).await;
     }
     if query.stream {
         if let Some(target) = turn_worker_proxy::resolve_worker_stream_target(
@@ -6215,11 +6223,27 @@ async fn get_biz_advice_report(
         )
         .await
         {
+            live_report_audit::log_biz_advice_report_route(
+                &ctx.turn_id,
+                &ctx.session_id,
+                ctx.ds_id,
+                true,
+                "worker_proxy",
+                &format!("{}:{}", target.worker_host, target.port),
+            );
             return Ok(
                 turn_worker_proxy::proxy_worker_report_sse(target, &ctx.turn_id).await?,
             );
         }
         if state.cfg.live_biz_report_spill_enabled {
+            live_report_audit::log_biz_advice_report_route(
+                &ctx.turn_id,
+                &ctx.session_id,
+                ctx.ds_id,
+                true,
+                "report_relay",
+                "worker route missing; relay",
+            );
             return Ok(
                 turn_report_relay::relay_proxy_response(
                     Arc::clone(&state.report_relay),
@@ -6228,6 +6252,14 @@ async fn get_biz_advice_report(
                 .await,
             );
         }
+        live_report_audit::log_biz_advice_report_route(
+            &ctx.turn_id,
+            &ctx.session_id,
+            ctx.ds_id,
+            true,
+            "pg_live_sse",
+            "worker route missing; spill off",
+        );
         let rx = spawn_live_report_sse_worker(Arc::clone(&state), ctx.clone());
         let no_buffer = header::HeaderName::from_static("x-accel-buffering");
         let no_buffer_val = HeaderValue::from_static("no");
@@ -6238,6 +6270,14 @@ async fn get_biz_advice_report(
         )
             .into_response());
     }
+    live_report_audit::log_biz_advice_report_route(
+        &ctx.turn_id,
+        &ctx.session_id,
+        ctx.ds_id,
+        false,
+        "live_json",
+        "stream=false",
+    );
     let (report_text, report_json) =
         biz_advice_report_live::live_report_json_response(&state, ctx.clone()).await?;
     let (report_text, report_json) = sanitize_biz_report_parts(&report_text, Some(report_json));
@@ -6260,8 +6300,8 @@ async fn get_biz_advice_report(
     .into_response())
 }
 
-/// No spill file: polish solve `outputJson.message` (legacy `_bak` path) for JSON or SSE.
-async fn respond_biz_advice_polish_for_context(
+/// Terminal turn: return DB snapshot only (no LLM polish). Author: kejiqing
+async fn respond_biz_advice_snapshot_for_context(
     state: Arc<AppState>,
     ctx: LiveReportContext,
     stream: bool,
@@ -6287,55 +6327,39 @@ async fn respond_biz_advice_polish_for_context(
     }
     let report_body =
         biz_advice_report_live::resolve_formal_report_text(state.as_ref(), &ctx).await?;
-    let skill_work_dir = ds_work_dir(&state.cfg.work_root, BOSS_REPORT_SKILL_DS_ID);
-    ensure_workspace_initialized(&state.cfg.claw_bin, &skill_work_dir).await?;
-    let instructions = load_boss_report_writer_instructions(&skill_work_dir).await;
-    let prompt = build_biz_advice_polish_prompt(&instructions, &report_body);
-    let request_id = Uuid::new_v4().simple().to_string();
-    let timeout_seconds = state.cfg.default_timeout_seconds;
-    let polish_ds = state.cfg.report_polish_deepseek.clone();
-    let meta = BizAdviceReportPayload {
+    let output_json = state
+        .session_db
+        .get_turn_output_json(&ctx.turn_id, &ctx.session_id, ctx.ds_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (report_text, report_json) =
+        sanitize_biz_report_parts(&report_body, output_json.as_ref().map(|v| v.clone()));
+    let payload = BizAdviceReportPayload {
         task_id: ctx.session_id.clone(),
         source_request_id: ctx.session_id.clone(),
         source_ds_id: ctx.ds_id,
-        source_status: status,
-        report_text: None,
-        report_json: None,
+        source_status: status.clone(),
+        report_text: Some(report_text.clone()),
+        report_json: report_json.clone(),
     };
     if stream {
-        return Ok(biz_report_llm_stream_response(
-            &ctx.session_id,
-            meta,
-            prompt,
-            request_id,
-            timeout_seconds,
-            polish_ds,
-        ));
+        let (tx, rx) = mpsc::unbounded_channel::<BizReportStreamMsg>();
+        enqueue_snapshot_biz_report_sse(&tx, payload, report_text);
+        drop(tx);
+        let no_buffer = header::HeaderName::from_static("x-accel-buffering");
+        let no_buffer_val = HeaderValue::from_static("no");
+        return Ok((
+            AppendHeaders([(no_buffer, no_buffer_val)]),
+            Sse::new(biz_report_sse_event_stream(&ctx.session_id, rx))
+                .keep_alive(KeepAlive::default()),
+        )
+            .into_response());
     }
-    let (report_text, report_json) = tokio::task::spawn_blocking(move || {
-        run_gateway_biz_polish_llm(
-            &prompt,
-            None,
-            timeout_seconds,
-            &request_id,
-            None::<fn(&str)>,
-            polish_ds.as_ref(),
-        )
-    })
-    .await
-    .map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("polish task join failed: {e}"),
-        )
-    })?
-    .map_err(map_gateway_solve_turn_err)?;
-    let (report_text, report_json) = sanitize_biz_report_parts(&report_text, report_json);
     Ok(Json(BizAdviceReportResponse {
         task_id: ctx.session_id.clone(),
         source_request_id: ctx.session_id,
         source_ds_id: ctx.ds_id,
-        source_status: meta.source_status,
+        source_status: status,
         report_text,
         report_json,
     })

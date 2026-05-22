@@ -37,25 +37,10 @@ export function useReportStream(
   const [error, setError] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const bufferRef = useRef("");
-  const rafRef = useRef<number | null>(null);
   /** `done` = terminal `biz.report.done`; `error` = biz.report.error or EventSource drop. */
   const endReasonRef = useRef<"idle" | "done" | "error">("idle");
 
-  const flushToScreen = useCallback(() => {
-    rafRef.current = null;
-    setText(bufferRef.current);
-  }, []);
-
-  const scheduleFlush = useCallback(() => {
-    if (rafRef.current != null) return;
-    rafRef.current = requestAnimationFrame(flushToScreen);
-  }, [flushToScreen]);
-
   const close = useCallback(() => {
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
     if (esRef.current) {
       try {
         esRef.current.close();
@@ -87,14 +72,10 @@ export function useReportStream(
     const appendDelta = (chunk: string) => {
       if (!chunk) return;
       bufferRef.current += chunk;
-      scheduleFlush();
+      setText(bufferRef.current);
     };
 
     const finish = (finalText: string) => {
-      if (rafRef.current != null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
       endReasonRef.current = "done";
       setStreaming(false);
       if (finalText) bufferRef.current = finalText;
@@ -116,10 +97,6 @@ export function useReportStream(
     });
 
     es.addEventListener("biz.report.error", (ev) => {
-      if (rafRef.current != null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
       endReasonRef.current = "error";
       setStreaming(false);
       setError(true);
@@ -134,10 +111,6 @@ export function useReportStream(
     });
 
     es.onerror = () => {
-      if (rafRef.current != null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
       if (endReasonRef.current === "done") {
         return;
       }
@@ -154,7 +127,7 @@ export function useReportStream(
       setText("（报告连接中断）");
       close();
     };
-  }, [gatewayBase, sessionId, turnId, dsId, close, scheduleFlush]);
+  }, [gatewayBase, sessionId, turnId, dsId, close]);
 
   const canReconnect =
     endReasonRef.current !== "done";
