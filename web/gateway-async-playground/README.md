@@ -2,7 +2,7 @@
 
 ## 技术栈（测试心智）
 
-- **本目录**：`server.py` 仅用 **Python 3 标准库**（`http.server` + `urllib`），前端为 **`index.html`**（solve 调试）与 **`../gateway-admin/dist`**（`/admin` React 管理台）。不建 Rust crate、不跑 `cargo`、**不需要 `pip install`**（admin 构建用 Node，见 `web/gateway-admin/README.md`）。
+- **本目录**：`server.py` 仅用 **Python 3 标准库**（`http.server` + `urllib`），solve 对话在 **`../gateway-admin`** 的 **`/admin/chat`**（Ant Design）；`/` 重定向到该页。`index.html` 仅作遗留参考。不建 Rust crate、不跑 `cargo`、**不需要 `pip install`**（admin 构建用 Node，见 `web/gateway-admin/README.md`）。
 - **被测对象**：**claw `http-gateway-rs` 网关**（Rust）只是 HTTP 对端；本工具做同源代理 + 静态页。
 
 用于在浏览器里走通 `POST /v1/solve_async` 相关链路：提交任务 → 轮询 `GET /v1/tasks/{taskId}` → `hasReport` 时 SSE 报告。

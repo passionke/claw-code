@@ -57,7 +57,8 @@ services:
       # here with "${VAR:-}" — compose interpolation does not read ../../.env, so empty defaults override env_file.
       CLAW_CONFIG_FILE: /app/.claw.json
       # Browser-facing tap Live/proxy URLs (playground / healthz); avoid Host=gateway-rs:8080 in links.
-      CLAW_GATEWAY_PUBLIC_BASE_URL: ${CLAW_GATEWAY_PUBLIC_BASE_URL:-http://127.0.0.1:${GATEWAY_HOST_PORT:-18088}}
+      # Literal default only — nested ${GATEWAY_HOST_PORT} is not expanded inside the container and breaks /healthz claudeTap URLs.
+      CLAW_GATEWAY_PUBLIC_BASE_URL: ${CLAW_GATEWAY_PUBLIC_BASE_URL:-http://127.0.0.1:18088}
       CLAW_TIMEOUT_SECONDS: ${CLAW_TIMEOUT_SECONDS}
       CLAW_LOG_FORMAT: json
       CLAW_LOG_LEVEL: ${CLAW_LOG_LEVEL:-info}

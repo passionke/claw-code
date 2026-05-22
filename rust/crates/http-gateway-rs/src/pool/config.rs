@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use super::worker_report_endpoint::WorkerReportResolve;
+
 /// Snapshot of pool parameters (read once at construction; no hot reload).
 #[derive(Debug, Clone)]
 pub struct DockerPoolConfig {
@@ -27,6 +29,15 @@ pub struct DockerPoolConfig {
     /// Host path to repo `.env` (from `CLAW_WORKER_ENV_FILE` on the pool daemon). Mounted ro at
     /// [`gateway_solve_turn::WORKER_ENV_MOUNT_PATH`] for `apply_worker_env` inside the worker.
     pub worker_env_host_file: Option<PathBuf>,
+    /// `CLAW_*_NETWORK` name (not full argv); used for report endpoint inspect.
+    pub pool_network: Option<String>,
+    pub worker_report_resolve: WorkerReportResolve,
+    /// In-container SSE port (maps to `CLAW_WORKER_REPORT_SSE_PORT`).
+    pub worker_report_container_port: u16,
+    /// `host_publish` mode: host clients dial this address (e.g. `127.0.0.1` or LAN IP).
+    pub worker_report_advertise_host: String,
+    /// `host_publish` mode: host port = base + slot_index.
+    pub worker_report_publish_base: Option<u16>,
 }
 
 impl DockerPoolConfig {
@@ -45,6 +56,14 @@ impl DockerPoolConfig {
         }
         if self.runtime_bin.trim().is_empty() {
             return Err("runtime_bin must be non-empty".to_string());
+        }
+        if self.worker_report_resolve == WorkerReportResolve::HostPublish
+            && self.worker_report_publish_base.is_none()
+        {
+            return Err(
+                "worker_report_publish_base required when WORKER_REPORT_RESOLVE=host_publish"
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -69,6 +88,11 @@ mod tests {
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::ContainerName,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
         };
         assert!(c.validate().is_err());
     }
@@ -87,6 +111,34 @@ mod tests {
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::ContainerName,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
+        };
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_requires_publish_base_for_host_publish() {
+        let c = DockerPoolConfig {
+            runtime_bin: "docker".into(),
+            work_root: PathBuf::from("/tmp"),
+            pool_size: 2,
+            min_idle: 0,
+            image: "x".into(),
+            network_args: vec![],
+            extra_run_args: vec![],
+            name_stem: Some("ab".into()),
+            on_release_exec: None,
+            exec_user: None,
+            worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::HostPublish,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
         };
         assert!(c.validate().is_err());
     }

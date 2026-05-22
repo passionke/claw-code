@@ -192,7 +192,9 @@ pub fn stream_msg_to_event(msg: &BizReportStreamMsg) -> Event {
     match msg {
         BizReportStreamMsg::Delta(text) => Event::default()
             .event("biz.report.delta")
-            .data(serde_json::json!({ "text": sanitize_external_report_text(text) }).to_string()),
+            .data(
+                serde_json::json!({ "text": sanitize_external_report_text(text) }).to_string(),
+            ),
         BizReportStreamMsg::Done(payload) => {
             let mut payload = payload.clone();
             sanitize_report_payload(&mut payload);
@@ -205,7 +207,7 @@ pub fn stream_msg_to_event(msg: &BizReportStreamMsg) -> Event {
     }
 }
 
-/// SSE body: `start` then channel messages; yields between frames so hyper can flush.
+/// SSE body: `biz.report.start` then ordered `delta` / `done` (PG catch-up via `delta` only). Author: kejiqing
 pub fn biz_report_sse_event_stream(
     task_id: &str,
     rx: mpsc::UnboundedReceiver<BizReportStreamMsg>,

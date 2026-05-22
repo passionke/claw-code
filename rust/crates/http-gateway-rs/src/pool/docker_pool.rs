@@ -14,6 +14,9 @@ use gateway_solve_turn::WORKER_ENV_MOUNT_PATH;
 use super::config::DockerPoolConfig;
 use super::docker_cli::{runtime_exec, runtime_exec_with_live_stderr};
 use super::traits::{PoolSessionHostMounts, SlotLease, TaskOutcome};
+use super::worker_report_endpoint::{
+    resolve_worker_report_endpoint, WorkerReportResolve,
+};
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
 
@@ -27,6 +30,8 @@ enum SlotState {
 #[derive(Debug, Clone)]
 struct Slot {
     container_name: String,
+    worker_report_host: String,
+    worker_report_port: u16,
     state: SlotState,
 }
 
@@ -53,6 +58,11 @@ pub struct DockerPoolManager {
     /// `docker exec --user` for solve only (see [`DockerPoolConfig::exec_user`]).
     exec_user: Option<String>,
     worker_env_host_file: Option<PathBuf>,
+    pool_network: Option<String>,
+    worker_report_resolve: WorkerReportResolve,
+    worker_report_container_port: u16,
+    worker_report_advertise_host: String,
+    worker_report_publish_base: Option<u16>,
 }
 
 impl DockerPoolManager {
@@ -78,6 +88,11 @@ impl DockerPoolManager {
             on_release_exec: cfg.on_release_exec,
             exec_user: cfg.exec_user,
             worker_env_host_file: cfg.worker_env_host_file,
+            pool_network: cfg.pool_network,
+            worker_report_resolve: cfg.worker_report_resolve,
+            worker_report_container_port: cfg.worker_report_container_port,
+            worker_report_advertise_host: cfg.worker_report_advertise_host,
+            worker_report_publish_base: cfg.worker_report_publish_base,
         }))
     }
 
@@ -113,10 +128,32 @@ impl DockerPoolManager {
             .map_err(|_| format!("{pfx}POOL_MIN_IDLE must be an integer"))?;
         let image = std::env::var(format!("{pfx}IMAGE"))
             .map_err(|_| format!("{pfx}IMAGE is required for container pool"))?;
-        let network_args = match std::env::var(format!("{pfx}NETWORK")) {
-            Ok(n) if !n.trim().is_empty() => vec!["--network".to_string(), n.trim().to_string()],
-            _ => Vec::new(),
-        };
+        let pool_network = std::env::var(format!("{pfx}NETWORK"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let network_args = pool_network
+            .as_ref()
+            .map(|n| vec!["--network".to_string(), n.clone()])
+            .unwrap_or_default();
+        let worker_report_resolve = WorkerReportResolve::from_env(pfx, pool_network.is_some());
+        let worker_report_container_port = std::env::var("CLAW_WORKER_REPORT_SSE_PORT")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .filter(|p| *p > 0)
+            .unwrap_or(18765);
+        let worker_report_advertise_host = std::env::var("CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "host.containers.internal".to_string());
+        let worker_report_publish_base = std::env::var(format!("{pfx}WORKER_REPORT_PUBLISH_BASE"))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .filter(|p| *p > 0)
+            .or(Some(
+                super::worker_report_endpoint::DEFAULT_WORKER_REPORT_PUBLISH_BASE,
+            ));
         let mut extra_run_args = std::env::var(format!("{pfx}EXTRA_ARGS"))
             .map(|s| s.split_whitespace().map(str::to_string).collect::<Vec<_>>())
             .unwrap_or_default();
@@ -160,6 +197,11 @@ impl DockerPoolManager {
             on_release_exec,
             exec_user,
             worker_env_host_file,
+            pool_network,
+            worker_report_resolve,
+            worker_report_container_port,
+            worker_report_advertise_host,
+            worker_report_publish_base,
         })
     }
 
@@ -167,6 +209,66 @@ impl DockerPoolManager {
     #[cfg(test)]
     pub async fn test_ensure_warm_now(self: &Arc<Self>) -> Result<(), String> {
         self.ensure_warm().await
+    }
+
+    /// Gateway-reachable report SSE host for this slot. Author: kejiqing
+    pub async fn slot_worker_host(&self, slot_index: usize) -> Option<String> {
+        let slots = self.slots.lock().await;
+        slots
+            .get(slot_index)
+            .map(|s| s.worker_report_host.clone())
+    }
+
+    pub async fn slot_worker_report_port(&self, slot_index: usize) -> Option<u16> {
+        let slots = self.slots.lock().await;
+        slots.get(slot_index).map(|s| s.worker_report_port)
+    }
+
+    async fn apply_worker_report_endpoint(&self, slot_index: usize, container_name: &str) {
+        let container_ip = if let Some(net) = self.pool_network.as_deref() {
+            super::docker_cli::runtime_inspect_container_ip(&self.bin, container_name, net).await
+        } else {
+            None
+        };
+        let (host, port) = resolve_worker_report_endpoint(
+            &self.bin,
+            self.worker_report_resolve,
+            self.pool_network.as_deref(),
+            container_name,
+            slot_index,
+            self.worker_report_container_port,
+            &self.worker_report_advertise_host,
+            self.worker_report_publish_base,
+        )
+        .await;
+        let mut slots = self.slots.lock().await;
+        if let Some(s) = slots.get_mut(slot_index) {
+            s.worker_report_host = host.clone();
+            s.worker_report_port = port;
+        }
+        info!(
+            target: "claw_gateway_pool",
+            component = "docker_pool",
+            phase = "worker_report_endpoint",
+            slot_index,
+            container = %container_name,
+            container_ip = ?container_ip,
+            worker_report_host = %host,
+            worker_report_port = port,
+            resolve = ?self.worker_report_resolve,
+            "worker report endpoint resolved (gateways dial host:port; -p maps host port to in-container SSE)"
+        );
+    }
+
+    fn lease_from_slot(slots: &[Slot], slot_index: usize) -> Result<SlotLease, String> {
+        let s = slots
+            .get(slot_index)
+            .ok_or_else(|| format!("invalid slot index {slot_index}"))?;
+        Ok(SlotLease {
+            slot_index,
+            worker_host: s.worker_report_host.clone(),
+            worker_report_port: s.worker_report_port,
+        })
     }
 
     fn container_name(&self, idx: usize) -> String {
@@ -221,11 +323,14 @@ impl DockerPoolManager {
             let warm = self.warm_slot_dir(i);
             let _ = tokio::fs::create_dir_all(&warm).await;
             let empty_mounts = PoolSessionHostMounts::default();
-            self.run_worker_container(&name, &warm, &empty_mounts)
+            self.run_worker_container(i, &name, &warm, &empty_mounts)
                 .await?;
+            self.apply_worker_report_endpoint(i, &name).await;
             slots = self.slots.lock().await;
             slots[i] = Slot {
                 container_name: name,
+                worker_report_host: slots[i].worker_report_host.clone(),
+                worker_report_port: slots[i].worker_report_port,
                 state: SlotState::Idle,
             };
         }
@@ -234,17 +339,20 @@ impl DockerPoolManager {
         while idle < self.min_idle && total < self.pool_size {
             let idx = total;
             let name = self.container_name(idx);
+            slots.push(Slot {
+                container_name: name.clone(),
+                worker_report_host: String::new(),
+                worker_report_port: self.worker_report_container_port,
+                state: SlotState::Idle,
+            });
             drop(slots);
             let warm = self.warm_slot_dir(idx);
             let _ = tokio::fs::create_dir_all(&warm).await;
             let empty_mounts = PoolSessionHostMounts::default();
-            self.run_worker_container(&name, &warm, &empty_mounts)
+            self.run_worker_container(idx, &name, &warm, &empty_mounts)
                 .await?;
+            self.apply_worker_report_endpoint(idx, &name).await;
             slots = self.slots.lock().await;
-            slots.push(Slot {
-                container_name: name,
-                state: SlotState::Idle,
-            });
             idle += 1;
             total += 1;
         }
@@ -266,6 +374,7 @@ impl DockerPoolManager {
     #[allow(clippy::too_many_lines)] // podman run argv + bind mounts. Author: kejiqing
     async fn run_worker_container(
         &self,
+        slot_index: usize,
         name: &str,
         session_host_bind: &Path,
         host_mounts: &PoolSessionHostMounts,
@@ -323,6 +432,19 @@ impl DockerPoolManager {
         ];
         args.extend(self.network_args.iter().cloned());
         args.extend(self.extra_run_args.iter().cloned());
+        if self.worker_report_resolve == WorkerReportResolve::HostPublish {
+            let base = self
+                .worker_report_publish_base
+                .unwrap_or(super::worker_report_endpoint::DEFAULT_WORKER_REPORT_PUBLISH_BASE);
+            if let Some(mapping) = super::worker_report_endpoint::host_publish_port_mapping(
+                base,
+                slot_index,
+                self.worker_report_container_port,
+            ) {
+                args.push("-p".into());
+                args.push(mapping);
+            }
+        }
         args.push("-v".into());
         args.push(format!("{}:{}:rw", session_abs.display(), GUEST_WORK_ROOT));
         if let Some(ref sk) = skills_abs {
@@ -438,7 +560,7 @@ impl DockerPoolManager {
                     drop(slots);
                     let _ = self.rm_container(&cname).await;
                     if let Err(e) = self
-                        .run_worker_container(&cname, &session_abs, &host_mounts)
+                        .run_worker_container(i, &cname, &session_abs, &host_mounts)
                         .await
                     {
                         warn!(
@@ -457,6 +579,7 @@ impl DockerPoolManager {
                         sleep(Duration::from_millis(200)).await;
                         continue;
                     }
+                    self.apply_worker_report_endpoint(i, &cname).await;
                     info!(
                         target: "claw_gateway_pool",
                         component = "docker_pool",
@@ -466,7 +589,8 @@ impl DockerPoolManager {
                         container = %cname,
                         "reused idle slot; worker rebound to session directory"
                     );
-                    return Ok(SlotLease { slot_index: i });
+                    let slots = self.slots.lock().await;
+                    return Self::lease_from_slot(&slots, i);
                 }
                 let total = slots.len();
                 if total < self.pool_size {
@@ -475,14 +599,17 @@ impl DockerPoolManager {
                     // Reserve slot index before `run` so concurrent acquires cannot claim the same idx.
                     slots.push(Slot {
                         container_name: name.clone(),
+                        worker_report_host: String::new(),
+                        worker_report_port: self.worker_report_container_port,
                         state: SlotState::Leased,
                     });
                     drop(slots);
                     match self
-                        .run_worker_container(&name, &session_abs, &host_mounts)
+                        .run_worker_container(idx, &name, &session_abs, &host_mounts)
                         .await
                     {
                         Ok(()) => {
+                            self.apply_worker_report_endpoint(idx, &name).await;
                             info!(
                                 target: "claw_gateway_pool",
                                 component = "docker_pool",
@@ -492,7 +619,8 @@ impl DockerPoolManager {
                                 container = %name,
                                 "new pool slot created on demand with session bind"
                             );
-                            return Ok(SlotLease { slot_index: idx });
+                            let slots = self.slots.lock().await;
+                            return Self::lease_from_slot(&slots, idx);
                         }
                         Err(e) => {
                             warn!(
@@ -704,6 +832,7 @@ mod exec_solve_argv_prefix_tests {
 
     use super::DockerPoolManager;
     use crate::pool::config::DockerPoolConfig;
+    use crate::pool::worker_report_endpoint::WorkerReportResolve;
 
     fn pool(exec_user: Option<&str>) -> Arc<DockerPoolManager> {
         let base =
@@ -721,6 +850,11 @@ mod exec_solve_argv_prefix_tests {
             on_release_exec: None,
             exec_user: exec_user.map(str::to_string),
             worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::ContainerName,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
         })
         .expect("from_config")
     }
@@ -758,6 +892,7 @@ mod docker_pool_integration_tests {
     use super::DockerPoolManager;
     use crate::pool::config::DockerPoolConfig;
     use crate::pool::traits::PoolSessionHostMounts;
+    use crate::pool::worker_report_endpoint::WorkerReportResolve;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -841,6 +976,11 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::ContainerName,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -887,6 +1027,11 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::ContainerName,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -932,6 +1077,11 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::ContainerName,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
         })
         .unwrap();
         let p1 = Arc::clone(&pool);
@@ -967,6 +1117,11 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::ContainerName,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1003,6 +1158,11 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::ContainerName,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1036,6 +1196,11 @@ esac
             on_release_exec: Some("echo pool_on_release".into()),
             exec_user: None,
             worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::ContainerName,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1079,6 +1244,11 @@ esac
             on_release_exec: None,
             exec_user: Some("claw".into()),
             worker_env_host_file: None,
+            pool_network: None,
+            worker_report_resolve: WorkerReportResolve::ContainerName,
+            worker_report_container_port: 18765,
+            worker_report_advertise_host: "127.0.0.1".into(),
+            worker_report_publish_base: None,
         })
         .unwrap();
         let bind = session_bind(&work);

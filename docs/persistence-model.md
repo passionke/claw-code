@@ -22,6 +22,8 @@ This document aligns runtime behavior with the **Claw persistence design** plan 
 | `report_message` | Formal report body for this turn (same basis as `outputJson.message` / `report_body_from_solve_output`). |
 | `output_json` | Optional full solve JSON payload for handoff. |
 | `claw_exit_code` | Exit code from the worker when succeeded. |
+| `worker_report_host` | Gateway-reachable host for live report SSE proxy (container IP, name, or published host). |
+| `worker_report_port` | TCP port paired with `worker_report_host` (in-container 18765 or published host port). |
 
 Schema is applied at gateway startup via `GatewaySessionDb::migrate` (`ALTER TABLE ... IF NOT EXISTS` for new columns). Per-`ds_id` agent bundle storage lives in **`project_config`** (see `docs/project-config-model.md`).
 
@@ -54,18 +56,53 @@ This matches the rule: after restart, an “in-flight” DB row is not trustwort
 - `rust/crates/http-gateway-rs/src/biz_advice_report_live.rs` — `resolve_formal_report_text`.
 - `rust/crates/gateway-solve-turn/src/session_report.rs` — jsonl helpers including per–user-turn index.
 
+## Live report contract (locked; Author: kejiqing)
+
+Product/BFF/admin **must** follow this; do not substitute alternate gates (e.g. open SSE on `running` without `hasReport`, client `frameSeq` / `afterSeq`, or `start.snapshotText`).
+
+| # | Rule |
+| --- | --- |
+| 1 | **`hasReport`** means the gateway has received at least one byte on `POST /v1/internal/turns/{turnId}/report-stream` for this turn (in-memory relay), **or** legacy PG live chunks exist, **or** turn `succeeded`. Frontend opens report SSE **only after** `GET /v1/tasks` returns `hasReport: true`. |
+| 2 | **Worker:** model `TextDelta` → in-container HTTP on fixed port **`CLAW_WORKER_REPORT_SSE_PORT` (default 18765)** — `GET /v1/turns/{turnId}/report` (SSE) and `GET …/report/status` (`hasReport`). Text coalesced (≥48 chars or 80ms) before `biz.report.delta`. |
+| 3 | **Gateway:** on pool lease, daemon **`podman run -p 0.0.0.0:{publish_port}:18765`** and persists **dial** `worker_report_host` / `worker_report_port` (`CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST` + `CLAW_*_WORKER_REPORT_PUBLISH_BASE + slot`) on `gateway_turns`. Container IP is logged for ops only. Any gateway can proxy live SSE. Cleared on turn terminal / startup reconcile. |
+| 4 | **SSE to client:** standard events only — `biz.report.start`, `biz.report.delta` `{"text":"…"}`, `biz.report.done`. Client does **not** use `afterSeq`; reconnect opens a new GET; worker replays its in-memory coalesced-delta buffer from the start, then tails new deltas. |
+
+Legacy `POST …/assistant-stream` (NDJSON → `gateway_turn_live_chunks`) remains for old workers; new pool workers use `report-stream` only.
+
 ## `gateway_turn_live_chunks` (live report tail, v1)
 
 | Column | Role |
 | --- | --- |
-| `turn_id`, `seq` | Primary key; monotonic chunk sequence per turn. |
-| `chunk` | UTF-8 text delta from worker `POST /v1/internal/turns/{turnId}/assistant-stream`. |
-| `created_at_ms` | Insert time (batch ingest). |
+| `turn_id`, `seq` | Primary key; monotonic chunk sequence per turn (strong ordering). |
+| `chunk` | Opaque UTF-8 text fragment exactly as worker sent in that NDJSON line (**not** merged into paragraphs in SQL). |
+| `created_at_ms` | Insert time (per-line ingest). |
 
-- **Ingest:** pool worker streams NDJSON to the gateway; gateway `INSERT` + `NOTIFY claw_turn_live` (`maxSeq` / `terminal`).
-- **`hasReport`:** `EXISTS` live row while `running`; `succeeded` is always true.
-- **Live SSE:** `LISTEN` wake → `SELECT seq > cursor` → `biz.report.delta`; terminal uses `gateway_turns.report_message` + `flush_remaining_deltas` + `biz.report.done`.
-- **Cleanup:** `succeeded` → `terminal NOTIFY` then `DELETE` live rows; failed/cancelled/orphans → [`scripts/purge-gateway-turn-live-chunks.sh`](../scripts/purge-gateway-turn-live-chunks.sh).
+- **Ingest:** pool worker streams NDJSON to the gateway; gateway **per non-empty line** `INSERT` + one `NOTIFY claw_turn_live` per transaction (`maxSeq` in payload; `terminal` on turn end).
+- **`hasReport`:** `running` → `EXISTS` live row for `turn_id`; `succeeded` → always `true` (`task_has_report` in `http-gateway-rs`).
+- **Live SSE:** subscribe → bootstrap `seq > 0` rows in order → loop `SELECT seq > last_emitted_seq ORDER BY seq ASC` → map each row’s `chunk` to `biz.report.delta` (+ optional 128-scalar frame split); on `succeeded` + formal `report_message` → `biz.report.done` (skip redundant formal flush when live body already matches length; see `should_skip_formal_flush_after_live_pg`).
+- **Cleanup:** `succeeded` → `terminal NOTIFY` then optional `DELETE` live rows (`CLAW_GATEWAY_DELETE_LIVE_CHUNKS_ON_SUCCESS`); failed/cancelled/orphans → [`scripts/purge-gateway-turn-live-chunks.sh`](../scripts/purge-gateway-turn-live-chunks.sh).
+
+**Reconstructing full text:** `string_agg(chunk, '' ORDER BY seq)` equals the streamed assistant body for that turn (modulo marker strip in sanitizer on export, not in stored `chunk`).
+
+**Report SSE timing (debug):** set `CLAW_REPORT_SSE_TIMING=1` (or `CLAW_SSE_DEBUG=1`) on **gateway and pool worker** containers. Logs use target `claw_report_sse_timing` with phases `trunk_in` → `hub_push` (`trunk_to_hub_ms`) → `sse_emit` (`hub_to_sse_ms`, `trunk_to_sse_ms`) on the worker, and `gateway_proxy_connect` / `gateway_proxy_first_byte` / `gateway_proxy_chunk` on the gateway proxy. Example:
+
+```bash
+rg 'claw_report_sse_timing|T_555814ed' deploy/stack/claw-logs/
+```
+
+**Live report audit (debug):** set `CLAW_LIVE_SSE_EMIT_TRACE=1` or `CLAW_SSE_DEBUG=1` on the gateway, then:
+
+```bash
+podman logs -f claw-gateway-rs 2>&1 | rg 'live (chunk PG notify|report SSE)'
+```
+
+| `phase` | Meaning |
+| --- | --- |
+| `pg_notify_sent` | After PG `INSERT` commit, `pg_notify` fired (`sent_at_ms`, `max_seq`) |
+| `pg_notify_received` | `LISTEN claw_turn_live` got payload (`received_at_ms`, `notify_max_seq`) |
+| `sse_loop_wake` | SSE worker iteration start (`wake_reason`: `after_bootstrap` / `pg_notify` / `poll_timer_2s`) |
+| `sse_bootstrap_query` / `sse_tail_query` | `SELECT seq > …` (`query_start_ms`, `query_done_ms`, `query_elapsed_ms`) |
+| `sse_*_emit` | Per-row SSE send (`seq`, `pg_created_at_ms`, `sse_emitted_at_ms`, `lag_ms`) |
 
 ## Future (not in this KISS slice)
 

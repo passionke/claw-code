@@ -20,6 +20,8 @@ use sqlx::{Error as SqlxError, PgPool, Row};
 pub struct LiveChunkRow {
     pub seq: i64,
     pub chunk: String,
+    /// PG insert time (`gateway_turn_live_chunks.created_at_ms`). Author: kejiqing
+    pub created_at_ms: i64,
 }
 
 /// PostgreSQL `NOTIFY` channel for live report tail (`payload`: `turnId`, `maxSeq`, optional `kind`). Author: kejiqing
@@ -194,6 +196,20 @@ impl GatewaySessionDb {
         Ok(exists)
     }
 
+    /// `session_id` + `ds_id` for a `turn_id` (report relay terminal `done`). Author: kejiqing
+    pub async fn turn_session_scope(
+        &self,
+        turn_id: &str,
+    ) -> Result<Option<(String, i64)>, SqlxError> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT session_id, ds_id FROM gateway_turns WHERE turn_id = $1 LIMIT 1",
+        )
+        .bind(turn_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     async fn migrate(pool: &PgPool) -> Result<(), SqlxError> {
         sqlx::query(
             r"CREATE TABLE IF NOT EXISTS gateway_sessions (
@@ -244,6 +260,8 @@ impl GatewaySessionDb {
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS report_message TEXT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS output_json JSONB",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS claw_exit_code INT",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS worker_report_host TEXT",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS worker_report_port INT",
         ] {
             sqlx::query(ddl).execute(pool).await?;
         }
@@ -957,6 +975,78 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Persist in-flight report SSE proxy target so any gateway instance can reach the worker. Author: kejiqing
+    pub async fn set_turn_worker_route(
+        &self,
+        turn_id: &str,
+        worker_host: &str,
+        worker_report_port: u16,
+    ) -> Result<(), SqlxError> {
+        let host = worker_host.trim();
+        if host.is_empty() {
+            return Ok(());
+        }
+        let result = sqlx::query(
+            r"UPDATE gateway_turns SET worker_report_host = $1, worker_report_port = $2
+              WHERE turn_id = $3",
+        )
+        .bind(host)
+        .bind(i32::from(worker_report_port))
+        .bind(turn_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            tracing::warn!(
+                target: "claw_gateway_session_db",
+                turn_id = %turn_id,
+                worker_report_host = %host,
+                worker_report_port,
+                "set_turn_worker_route: no gateway_turns row updated (turn missing?)"
+            );
+        }
+        Ok(())
+    }
+
+    /// Drop worker route when solve ends or turn is no longer live. Author: kejiqing
+    pub async fn clear_turn_worker_route(&self, turn_id: &str) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"UPDATE gateway_turns SET worker_report_host = NULL, worker_report_port = NULL
+              WHERE turn_id = $1",
+        )
+        .bind(turn_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Active (`queued` / `running`) turn with a persisted worker endpoint. Author: kejiqing
+    pub async fn get_turn_worker_route(
+        &self,
+        turn_id: &str,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<Option<(String, u16)>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT worker_report_host, worker_report_port FROM gateway_turns
+              WHERE turn_id = $1 AND session_id = $2 AND ds_id = $3
+                AND status IN ('queued', 'running')
+                AND worker_report_host IS NOT NULL AND btrim(worker_report_host) <> ''
+                AND worker_report_port IS NOT NULL AND worker_report_port > 0",
+        )
+        .bind(turn_id)
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let host: String = row.get("worker_report_host");
+        let port_i: i32 = row.get("worker_report_port");
+        let port = u16::try_from(port_i).ok().filter(|p| *p > 0);
+        Ok(port.map(|p| (host, p)))
+    }
+
     /// Writes terminal solve outcome for one user turn (`T_*`). Safe to call for `failed` /
     /// `cancelled` with `report_message` / `output_json` / `claw_exit_code` all `None`.
     pub async fn finalize_turn_terminal(
@@ -974,7 +1064,9 @@ impl GatewaySessionDb {
                 finished_at_ms = $2,
                 report_message = $3,
                 output_json = $4,
-                claw_exit_code = $5
+                claw_exit_code = $5,
+                worker_report_host = NULL,
+                worker_report_port = NULL
               WHERE turn_id = $6",
         )
         .bind(status)
@@ -1090,7 +1182,9 @@ impl GatewaySessionDb {
                 finished_at_ms = $1,
                 report_message = NULL,
                 output_json = $2,
-                claw_exit_code = NULL
+                claw_exit_code = NULL,
+                worker_report_host = NULL,
+                worker_report_port = NULL
               WHERE status IN ('queued', 'running')",
         )
         .bind(now_ms)
@@ -1177,14 +1271,28 @@ impl GatewaySessionDb {
         Ok(exists)
     }
 
+    /// `MIN(created_at_ms)` for live chunks; `None` when no rows. Author: kejiqing
+    pub async fn turn_first_live_chunk_at_ms(
+        &self,
+        turn_id: &str,
+    ) -> Result<Option<i64>, SqlxError> {
+        let t: Option<i64> = sqlx::query_scalar(
+            "SELECT MIN(created_at_ms) FROM gateway_turn_live_chunks WHERE turn_id = $1",
+        )
+        .bind(turn_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(t)
+    }
+
     /// Incremental live chunks with `seq > after_seq`, ascending. Author: kejiqing
     pub async fn stream_live_chunks_since(
         &self,
         turn_id: &str,
         after_seq: i64,
     ) -> Result<Vec<LiveChunkRow>, SqlxError> {
-        let rows = sqlx::query_as::<_, (i64, String)>(
-            r"SELECT seq, chunk FROM gateway_turn_live_chunks
+        let rows = sqlx::query_as::<_, (i64, String, i64)>(
+            r"SELECT seq, chunk, created_at_ms FROM gateway_turn_live_chunks
               WHERE turn_id = $1 AND seq > $2
               ORDER BY seq ASC",
         )
@@ -1194,7 +1302,11 @@ impl GatewaySessionDb {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(seq, chunk)| LiveChunkRow { seq, chunk })
+            .map(|(seq, chunk, created_at_ms)| LiveChunkRow {
+                seq,
+                chunk,
+                created_at_ms,
+            })
             .collect())
     }
 
@@ -1242,6 +1354,18 @@ impl GatewaySessionDb {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        if crate::live_report_audit::enabled() {
+            tracing::info!(
+                target: "claw_gateway_orchestration",
+                component = "session_db",
+                phase = "pg_notify_sent",
+                turn_id = %turn_id,
+                max_seq,
+                sent_at_ms = crate::live_report_audit::now_ms(),
+                chunk_rows = chunks.len(),
+                "live chunk PG notify sent"
+            );
+        }
         Ok(Some(max_seq))
     }
 
@@ -1648,6 +1772,10 @@ mod tests {
             .expect("max seq");
         assert_eq!(max, 2);
         assert!(db.turn_has_live_chunks(&turn_id).await.unwrap());
+        assert_eq!(
+            db.turn_first_live_chunk_at_ms(&turn_id).await.unwrap(),
+            Some(t)
+        );
         let rows = db.stream_live_chunks_since(&turn_id, 0).await.unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].chunk, "hello");
@@ -1657,5 +1785,38 @@ mod tests {
         assert_eq!(tail[0].seq, 2);
         db.delete_live_chunks(&turn_id).await.unwrap();
         assert!(!db.turn_has_live_chunks(&turn_id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn turn_worker_route_persist_and_clear() {
+        let Some(db) = test_db().await else {
+            eprintln!("skip turn_worker_route_persist_and_clear: set CLAW_GATEWAY_TEST_DATABASE_URL");
+            return;
+        };
+        let t = now_ms();
+        let sid = format!("wr_{}", uuid::Uuid::new_v4().simple());
+        let turn_id = format!("T_{}", uuid::Uuid::new_v4().simple());
+        db.insert_turn(&turn_id, &sid, 9, "running", t, None)
+            .await
+            .unwrap();
+        db.set_turn_worker_route(&turn_id, "claw-worker-test-0", 18765)
+            .await
+            .unwrap();
+        let route = db
+            .get_turn_worker_route(&turn_id, &sid, 9)
+            .await
+            .unwrap();
+        assert_eq!(
+            route,
+            Some(("claw-worker-test-0".to_string(), 18765))
+        );
+        db.finalize_turn_terminal(&turn_id, "succeeded", Some(t), Some("done"), None, Some(0))
+            .await
+            .unwrap();
+        assert!(db
+            .get_turn_worker_route(&turn_id, &sid, 9)
+            .await
+            .unwrap()
+            .is_none());
     }
 }

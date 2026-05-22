@@ -38,7 +38,7 @@ pub fn build_claude_tap_health(request_host: Option<&str>) -> ClaudeTapHealthSna
     let live_port = env_u16(&["CLAUDE_TAP_LIVE_PORT"], DEFAULT_TAP_LIVE_PORT);
     let internal_proxy = env_nonempty("INTERNAL_CLAUDE_TAP_HOST");
 
-    let gateway_public = env_nonempty("CLAW_GATEWAY_PUBLIC_BASE_URL");
+    let gateway_public = env_nonempty("CLAW_GATEWAY_PUBLIC_BASE_URL").map(|s| expand_compose_gateway_port_template(&s));
     let (scheme, hostname) = resolve_public_origin(request_host, gateway_public.as_deref());
 
     let public_proxy = format!("{scheme}://{hostname}:{proxy_port}");
@@ -107,9 +107,59 @@ fn resolve_public_origin(request_host: Option<&str>, gateway_public: Option<&str
     ("http".to_string(), hostname)
 }
 
+/// Expand compose-style `${GATEWAY_HOST_PORT:-N}` left literal in container env (podman compose).
+pub fn expand_compose_gateway_port_template(input: &str) -> String {
+    const MARKER: &str = "${GATEWAY_HOST_PORT";
+    let port = env_u16(&["GATEWAY_HOST_PORT"], 18088).to_string();
+    let mut out = String::new();
+    let mut rest = input;
+    while let Some(i) = rest.find(MARKER) {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + MARKER.len()..];
+        if let Some(end) = after.find('}') {
+            out.push_str(&port);
+            rest = &after[end + 1..];
+        } else {
+            out.push_str(MARKER);
+            rest = after;
+            break;
+        }
+    }
+    out.push_str(rest);
+    while out.ends_with('}') && out.contains("://") && out.matches('}').count() > out.matches('{').count() {
+        out.pop();
+    }
+    out
+}
+
+/// Strip gateway port from authority (e.g. `192.168.1.10:18088` → `192.168.1.10`). Ignores `:` inside `${…}`.
+fn hostname_from_authority(authority: &str) -> Option<String> {
+    let authority = authority.trim();
+    if authority.is_empty() || authority.contains("${") {
+        return None;
+    }
+    let hostname = if let Some((host, port)) = authority.rsplit_once(':') {
+        if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+            host
+        } else {
+            authority
+        }
+    } else {
+        authority
+    };
+    let hostname = hostname
+        .trim_matches(|c| c == '[' || c == ']')
+        .to_string();
+    if hostname.is_empty() {
+        None
+    } else {
+        Some(hostname)
+    }
+}
+
 /// Strip gateway port from `Host` (e.g. `192.168.1.10:18088` → hostname `192.168.1.10`).
 fn origin_from_gateway_public_base(base: &str) -> Option<(String, String)> {
-    let trimmed = base.trim().trim_end_matches('/');
+    let trimmed = expand_compose_gateway_port_template(base.trim().trim_end_matches('/'));
     let (scheme, rest) = trimmed.split_once("://")?;
     let scheme = scheme.to_ascii_lowercase();
     let scheme = if scheme == "http" || scheme == "https" {
@@ -118,18 +168,7 @@ fn origin_from_gateway_public_base(base: &str) -> Option<(String, String)> {
         "http".to_string()
     };
     let authority = rest.split('/').next()?.split('@').next()?.trim();
-    if authority.is_empty() {
-        return None;
-    }
-    let hostname = authority
-        .rsplit_once(':')
-        .map(|(h, _)| h)
-        .unwrap_or(authority)
-        .trim_matches(|c| c == '[' || c == ']')
-        .to_string();
-    if hostname.is_empty() {
-        return None;
-    }
+    let hostname = hostname_from_authority(authority)?;
     Some((scheme, hostname))
 }
 
@@ -176,6 +215,29 @@ mod tests {
         let snap = build_claude_tap_health_for_test(None, Some("10.0.0.5:18088"), 8088, 3000);
         assert_eq!(snap.public_live_base_url, "http://10.0.0.5:3000");
         assert_eq!(snap.public_proxy_base_url, "http://10.0.0.5:8088");
+    }
+
+    #[test]
+    fn expand_compose_gateway_port_placeholder() {
+        std::env::set_var("GATEWAY_HOST_PORT", "18088");
+        let out = expand_compose_gateway_port_template(
+            "http://127.0.0.1:${GATEWAY_HOST_PORT:-18088}}",
+        );
+        assert_eq!(out, "http://127.0.0.1:18088");
+        let (scheme, host) = origin_from_gateway_public_base(&out).expect("origin");
+        assert_eq!(scheme, "http");
+        assert_eq!(host, "127.0.0.1");
+    }
+
+    #[test]
+    fn unexpanded_compose_public_base_must_not_poison_live_url() {
+        std::env::set_var("GATEWAY_HOST_PORT", "18088");
+        let raw = "http://127.0.0.1:${GATEWAY_HOST_PORT:-18088}}";
+        let (scheme, host) = origin_from_gateway_public_base(raw).expect("origin");
+        assert_eq!(scheme, "http");
+        assert_eq!(host, "127.0.0.1");
+        let live = format!("{scheme}://{host}:3000");
+        assert_eq!(live, "http://127.0.0.1:3000");
     }
 
     #[test]

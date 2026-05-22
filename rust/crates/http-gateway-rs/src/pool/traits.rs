@@ -17,10 +17,19 @@ pub struct PoolSessionHostMounts {
     pub data_catalog_file: Option<PathBuf>,
 }
 
+fn default_worker_report_port() -> u16 {
+    18765
+}
+
 /// Lease for one worker slot (index into the pool).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlotLease {
     pub slot_index: usize,
+    /// Gateway-reachable host (container IP, name, or published host). Author: kejiqing
+    pub worker_host: String,
+    /// Port for report SSE (`container` port or published host port). Author: kejiqing
+    #[serde(default = "default_worker_report_port")]
+    pub worker_report_port: u16,
 }
 
 /// Result of `docker exec` (or equivalent) running `claw gateway-solve-once`.

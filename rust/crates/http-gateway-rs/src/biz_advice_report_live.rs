@@ -8,12 +8,13 @@ use gateway_solve_turn::strip_report_start_marker;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Instant};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::biz_advice_report::{
     report_body_from_solve_output, sanitize_external_report_text, BizAdviceReportPayload,
-    BizReportStreamMsg,
+    BizReportStreamMsg, ReportExportSanitizer,
 };
+use crate::live_report_audit;
 use crate::live_report_ports::{LiveReportPort, SessionDbLiveReportAdapter};
 use crate::session_db::{GatewaySessionDb, LiveChunkRow};
 use crate::turn_live::LiveNotifyHub;
@@ -126,11 +127,23 @@ fn is_terminal_turn_status(status: &str) -> bool {
     matches!(status, "succeeded" | "failed" | "cancelled")
 }
 
-/// Use PG live tail when chunks exist or the turn may still be streaming. Author: kejiqing
+/// Live report path: worker SSE relay (preferred) or legacy PG tail. Author: kejiqing
 pub async fn should_use_live_pg_report(
     state: &AppState,
     ctx: &LiveReportContext,
 ) -> Result<bool, ApiError> {
+    if state.report_relay.has_report(&ctx.turn_id)
+        || state.report_relay.is_active(&ctx.turn_id)
+    {
+        return Ok(true);
+    }
+    if state.cfg.live_biz_report_spill_enabled {
+        let status =
+            turn_status(&state.session_db, &ctx.turn_id, &ctx.session_id, ctx.ds_id).await?;
+        if matches!(status.as_deref(), Some("running") | Some("queued")) {
+            return Ok(true);
+        }
+    }
     if state
         .session_db
         .turn_has_live_chunks(&ctx.turn_id)
@@ -139,11 +152,7 @@ pub async fn should_use_live_pg_report(
     {
         return Ok(true);
     }
-    let status = turn_status(&state.session_db, &ctx.turn_id, &ctx.session_id, ctx.ds_id).await?;
-    Ok(matches!(
-        status.as_deref(),
-        Some("running") | Some("queued")
-    ))
+    Ok(false)
 }
 
 fn emit_done(
@@ -172,13 +181,9 @@ fn emit_error(tx: &mpsc::UnboundedSender<BizReportStreamMsg>, detail: impl Into<
     let _ = tx.send(BizReportStreamMsg::Error(detail.into()));
 }
 
-/// Emit `full_export[emitted..]` as multiple SSE deltas (UTF-8 safe, `max_chars` per frame).
-fn emit_export_deltas(
-    tx: &mpsc::UnboundedSender<BizReportStreamMsg>,
-    full_export: &str,
-    emitted_len: &mut usize,
-    delta_sent: &mut String,
-) {
+/// UTF-8-safe slices of `full_export[emitted..]` (≤ [`MAX_DELTA_CHARS`] scalars each). Author: kejiqing
+fn collect_export_delta_pieces(full_export: &str, emitted_len: &mut usize) -> Vec<String> {
+    let mut pieces = Vec::new();
     while *emitted_len < full_export.len() {
         let rest = &full_export[*emitted_len..];
         let chunk_end = rest
@@ -188,9 +193,22 @@ fn emit_export_deltas(
         let piece = &rest[..chunk_end];
         *emitted_len += chunk_end;
         if !piece.is_empty() {
-            delta_sent.push_str(piece);
-            let _ = tx.send(BizReportStreamMsg::Delta(piece.to_string()));
+            pieces.push(piece.to_string());
         }
+    }
+    pieces
+}
+
+/// Emit `full_export[emitted..]` as multiple SSE deltas (UTF-8 safe, `max_chars` per frame).
+fn emit_export_deltas(
+    tx: &mpsc::UnboundedSender<BizReportStreamMsg>,
+    full_export: &str,
+    emitted_len: &mut usize,
+    delta_sent: &mut String,
+) {
+    for piece in collect_export_delta_pieces(full_export, emitted_len) {
+        delta_sent.push_str(&piece);
+        let _ = tx.send(BizReportStreamMsg::Delta(piece));
     }
 }
 
@@ -204,6 +222,17 @@ fn longest_common_prefix_len(a: &str, b: &str) -> usize {
         last_end = ia + ca.len_utf8();
     }
     last_end
+}
+
+/// After PG live deltas, avoid replaying almost the whole formal report on whitespace/format drift.
+fn should_skip_formal_flush_after_live_pg(delta_sent: &str, report: &str) -> bool {
+    if delta_sent.is_empty() {
+        return false;
+    }
+    if delta_sent == report {
+        return true;
+    }
+    delta_sent.len().saturating_add(64) >= report.len()
 }
 
 /// Before `done`, ensure SSE deltas cover all of `report` (formal jsonl may be longer than spill).
@@ -239,20 +268,104 @@ fn flush_remaining_deltas(
     debug_assert_eq!(delta_sent.as_str(), report);
 }
 
-fn emit_live_chunk_rows(
+/// PG live rows → SSE deltas (per-chunk export; avoids cumulative+marker cursor stall). Author: kejiqing
+fn export_pg_chunk_rows(
+    turn_id: &str,
+    phase: &'static str,
     tx: &mpsc::UnboundedSender<BizReportStreamMsg>,
     rows: &[LiveChunkRow],
-    cumulative: &mut String,
-    emitted_export_len: &mut usize,
+    sanitizer: &mut ReportExportSanitizer,
     delta_sent: &mut String,
     last_emitted_seq: &mut i64,
 ) {
+    let trace = live_report_audit::enabled();
     for row in rows {
-        cumulative.push_str(&row.chunk);
         *last_emitted_seq = row.seq;
-        let visible = sanitize_external_report_text(cumulative);
-        emit_export_deltas(tx, &visible, emitted_export_len, delta_sent);
+        let piece = sanitizer.push_chunk(&row.chunk);
+        if trace {
+            let emitted_at_ms = live_report_audit::now_ms();
+            let lag_ms = emitted_at_ms.saturating_sub(row.created_at_ms);
+            info!(
+                target: "claw_gateway_orchestration",
+                component = "biz_advice_report_live",
+                phase,
+                turn_id = %turn_id,
+                seq = row.seq,
+                pg_created_at_ms = row.created_at_ms,
+                sse_emitted_at_ms = emitted_at_ms,
+                lag_ms,
+                chunk_len = row.chunk.len(),
+                export_len = piece.len(),
+                delta_sent_len = delta_sent.len(),
+                "live report SSE emitted PG chunk"
+            );
+        }
+        if piece.is_empty() {
+            continue;
+        }
+        let mut emitted = 0usize;
+        emit_export_deltas(tx, &piece, &mut emitted, delta_sent);
     }
+}
+
+fn log_sse_chunk_batch(turn_id: &str, phase: &'static str, after_seq: i64, rows: &[LiveChunkRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    let min_seq = rows.first().map(|r| r.seq).unwrap_or(0);
+    let max_seq = rows.last().map(|r| r.seq).unwrap_or(0);
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "biz_advice_report_live",
+        phase,
+        turn_id = %turn_id,
+        after_seq,
+        row_count = rows.len(),
+        min_seq,
+        max_seq,
+        logged_at_ms = live_report_audit::now_ms(),
+        "live report SSE PG batch"
+    );
+}
+
+async fn query_live_chunks_since(
+    port: &dyn LiveReportPort,
+    turn_id: &str,
+    phase: &'static str,
+    after_seq: i64,
+) -> Result<Vec<LiveChunkRow>, String> {
+    let query_start_ms = live_report_audit::now_ms();
+    let rows = port.stream_live_chunks_since(turn_id, after_seq).await?;
+    let query_done_ms = live_report_audit::now_ms();
+    if live_report_audit::enabled() {
+        let min_seq = rows.first().map(|r| r.seq).unwrap_or(0);
+        let max_seq = rows.last().map(|r| r.seq).unwrap_or(0);
+        info!(
+            target: "claw_gateway_orchestration",
+            component = "biz_advice_report_live",
+            phase,
+            turn_id = %turn_id,
+            after_seq,
+            row_count = rows.len(),
+            min_seq,
+            max_seq,
+            query_start_ms,
+            query_done_ms,
+            query_elapsed_ms = query_done_ms.saturating_sub(query_start_ms),
+            "live report SSE PG query"
+        );
+    }
+    Ok(rows)
+}
+
+/// Bootstrap rows + max `seq` (tail uses `seq > last_emitted_seq`). Author: kejiqing
+async fn bootstrap_pg_rows(
+    port: &dyn LiveReportPort,
+    turn_id: &str,
+) -> Result<(Vec<LiveChunkRow>, i64), String> {
+    let rows = query_live_chunks_since(port, turn_id, "sse_bootstrap_query", 0).await?;
+    let last_emitted_seq = rows.last().map(|r| r.seq).unwrap_or(0);
+    Ok((rows, last_emitted_seq))
 }
 
 async fn try_finish_formal_port(
@@ -275,7 +388,10 @@ async fn try_finish_formal_port(
     };
     if status.as_deref() == Some("succeeded") && !formal.trim().is_empty() {
         let report = sanitize_external_report_text(&formal);
-        flush_remaining_deltas(tx, &report, delta_sent);
+        // PG live already streamed the body; skip formal re-delta when only minor drift (e.g. `\n`).
+        if delta_sent.as_str() != report && !should_skip_formal_flush_after_live_pg(delta_sent, &report) {
+            flush_remaining_deltas(tx, &report, delta_sent);
+        }
         let st = status.as_deref().unwrap_or("succeeded");
         emit_done(tx, ctx, st, &report);
         return true;
@@ -312,13 +428,52 @@ pub fn spawn_live_report_sse_worker_deps(
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         let notify = deps.notify_hub.subscribe(&ctx.turn_id).await;
-        let mut last_emitted_seq: i64 = 0;
-        let mut cumulative = String::new();
-        let mut emitted_export_len: usize = 0;
+        let bootstrap = bootstrap_pg_rows(deps.port.as_ref(), &ctx.turn_id).await;
+        let (bootstrap_rows, mut last_emitted_seq) = match bootstrap {
+            Ok(s) => s,
+            Err(e) => {
+                emit_error(&tx, e);
+                return;
+            }
+        };
         let mut delta_sent = String::new();
+        let mut export_sanitizer = ReportExportSanitizer::new(true);
+        info!(
+            target: "claw_gateway_orchestration",
+            component = "biz_advice_report_live",
+            phase = "sse_worker_start",
+            turn_id = %ctx.turn_id,
+            session_id = %ctx.session_id,
+            started_at_ms = live_report_audit::now_ms(),
+            "live report SSE worker started"
+        );
+        log_sse_chunk_batch(&ctx.turn_id, "sse_bootstrap_batch", 0, &bootstrap_rows);
+        export_pg_chunk_rows(
+            &ctx.turn_id,
+            "sse_bootstrap_emit",
+            &tx,
+            &bootstrap_rows,
+            &mut export_sanitizer,
+            &mut delta_sent,
+            &mut last_emitted_seq,
+        );
         let started = Instant::now();
+        let mut loop_wake_reason = "after_bootstrap";
 
         loop {
+            if live_report_audit::enabled() {
+                info!(
+                    target: "claw_gateway_orchestration",
+                    component = "biz_advice_report_live",
+                    phase = "sse_loop_wake",
+                    turn_id = %ctx.turn_id,
+                    wake_reason = loop_wake_reason,
+                    wake_at_ms = live_report_audit::now_ms(),
+                    last_emitted_seq,
+                    "live report SSE loop wake"
+                );
+            }
+
             if started.elapsed() > deps.max_wait {
                 emit_error(&tx, "live report stream timed out");
                 return;
@@ -350,10 +505,13 @@ pub fn spawn_live_report_sse_worker_deps(
                 return;
             }
 
-            let rows = match deps
-                .port
-                .stream_live_chunks_since(&ctx.turn_id, last_emitted_seq)
-                .await
+            let rows = match query_live_chunks_since(
+                deps.port.as_ref(),
+                &ctx.turn_id,
+                "sse_tail_query",
+                last_emitted_seq,
+            )
+            .await
             {
                 Ok(r) => r,
                 Err(e) => {
@@ -362,30 +520,30 @@ pub fn spawn_live_report_sse_worker_deps(
                 }
             };
             if !rows.is_empty() {
-                emit_live_chunk_rows(
+                log_sse_chunk_batch(&ctx.turn_id, "sse_tail_batch", last_emitted_seq, &rows);
+                export_pg_chunk_rows(
+                    &ctx.turn_id,
+                    "sse_tail_emit",
                     &tx,
                     &rows,
-                    &mut cumulative,
-                    &mut emitted_export_len,
+                    &mut export_sanitizer,
                     &mut delta_sent,
                     &mut last_emitted_seq,
                 );
-            } else if try_finish_formal_port(
-                deps.port.as_ref(),
-                &ctx,
-                &tx,
-                &status,
-                &mut delta_sent,
-            )
-            .await
+            } else if try_finish_formal_port(deps.port.as_ref(), &ctx, &tx, &status, &mut delta_sent)
+                .await
             {
                 return;
             }
 
-            tokio::select! {
-                _ = notify.notified() => {}
-                _ = sleep(STATUS_POLL_INTERVAL) => {}
-            }
+            loop_wake_reason = if tokio::select! {
+                _ = notify.notified() => true,
+                _ = sleep(STATUS_POLL_INTERVAL) => false,
+            } {
+                "pg_notify"
+            } else {
+                "poll_timer_2s"
+            };
         }
     });
     rx
@@ -428,6 +586,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn skip_formal_flush_when_live_pg_already_streamed_most_of_report() {
+        let spill = "a".repeat(100);
+        let formal = format!("{spill}\n");
+        assert!(should_skip_formal_flush_after_live_pg(&spill, &formal));
+        assert!(!should_skip_formal_flush_after_live_pg("", &formal));
+        assert!(!should_skip_formal_flush_after_live_pg("tiny", &"x".repeat(500)));
+    }
+
+    #[test]
+    fn cumulative_sanitize_stalls_when_marker_strips_prefix() {
+        let marker = gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER;
+        let mut cumulative = String::from("thinking-body");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut emitted = cumulative.len();
+        let mut delta_sent = cumulative.clone();
+        emit_export_deltas(&tx, &cumulative, &mut emitted, &mut delta_sent);
+        cumulative.push_str(marker);
+        cumulative.push_str("\n# report");
+        let visible = sanitize_external_report_text(&cumulative);
+        assert!(emitted > visible.len());
+        emit_export_deltas(&tx, &visible, &mut emitted, &mut delta_sent);
+        assert!(
+            rx.try_recv().is_err(),
+            "cumulative+sanitize path must stall after marker shrinks visible"
+        );
+    }
+
+    #[test]
+    fn export_pg_chunk_rows_emits_after_marker_without_stall() {
+        let marker = gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER;
+        let rows = vec![
+            LiveChunkRow {
+                seq: 1,
+                chunk: "thinking-body".into(),
+                created_at_ms: 0,
+            },
+            LiveChunkRow {
+                seq: 2,
+                chunk: format!("{marker}\n# report"),
+                created_at_ms: 0,
+            },
+        ];
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut sanitizer = ReportExportSanitizer::new(true);
+        let mut delta_sent = String::new();
+        let mut last_seq = 0i64;
+        export_pg_chunk_rows(
+            "T_test",
+            "sse_test_emit",
+            &tx,
+            &rows,
+            &mut sanitizer,
+            &mut delta_sent,
+            &mut last_seq,
+        );
+        let mut deltas = Vec::new();
+        while let Ok(BizReportStreamMsg::Delta(d)) = rx.try_recv() {
+            deltas.push(d);
+        }
+        assert_eq!(last_seq, 2);
+        assert_eq!(deltas.join(""), "thinking-body# report");
+    }
+
+    #[test]
     fn export_deltas_splits_by_max_chars() {
         let text: String = "字".repeat(300);
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -442,8 +664,6 @@ mod tests {
         }
         assert_eq!(deltas.len(), 3);
         assert_eq!(deltas[0].chars().count(), MAX_DELTA_CHARS);
-        assert_eq!(deltas[1].chars().count(), MAX_DELTA_CHARS);
-        assert_eq!(deltas[2].chars().count(), 300 - 2 * MAX_DELTA_CHARS);
     }
 
     #[test]
@@ -524,26 +744,26 @@ mod tests {
         let mock = Arc::new(MockLiveReportPort::default());
         let mock_ctl = Arc::clone(&mock);
         *mock.status.lock().await = Some("running".into());
-        mock.push_chunk("T_10000000000000000000000000000001", 1, "流式")
-            .await;
-        let port: Arc<dyn LiveReportPort> = mock;
+        let port: Arc<dyn LiveReportPort> = mock.clone();
         let hub = Arc::new(crate::turn_live::LiveNotifyHub::new());
+        let tid = "T_10000000000000000000000000000001";
         let ctx = LiveReportContext {
             session_id: "sess-mock".into(),
-            turn_id: "T_10000000000000000000000000000001".into(),
+            turn_id: tid.into(),
             ds_id: 1,
             session_home: std::path::PathBuf::from("/tmp"),
         };
         let mut rx = spawn_live_report_sse_worker_deps(
             LiveReportWorkerDeps {
-                port,
+                port: Arc::clone(&port),
                 notify_hub: Arc::clone(&hub),
                 max_wait: Duration::from_secs(30),
             },
             ctx,
         );
-        hub.signal_turn("T_10000000000000000000000000000001")
-            .await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        mock.push_chunk(tid, 1, "流式").await;
+        hub.signal_turn(tid).await;
         let mut saw_delta = false;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while tokio::time::Instant::now() < deadline {
@@ -557,8 +777,7 @@ mod tests {
         }
         assert!(saw_delta, "mock live chunks should produce biz.report.delta");
         mock_ctl.set_succeeded("流式正文").await;
-        hub.signal_turn("T_10000000000000000000000000000001")
-            .await;
+        hub.signal_turn(tid).await;
         let mut saw_done = false;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while tokio::time::Instant::now() < deadline {

@@ -34,16 +34,16 @@ pub(crate) fn session_mount_for_pool_acquire(
 /// Fixed name inside the per-session bind mount (no `..`, not client-controlled).
 const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
 
-/// Request field overrides gateway env default; async-only env default when omitted.
+/// Request field overrides gateway env; async defaults to `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL`. Author: kejiqing
 fn effective_assistant_stream_spill(
     req: &SolveRequest,
-    _cfg: &crate::GatewayConfig,
+    cfg: &crate::GatewayConfig,
     is_async: bool,
 ) -> bool {
     if let Some(enabled) = req.assistant_stream_spill {
-        return enabled && !is_async;
+        return enabled;
     }
-    false
+    is_async && cfg.live_biz_report_spill_enabled
 }
 
 /// Path to `claw` inside worker images. Host `CLAW_BIN` may be a macOS absolute path unusable in `podman exec`. kejiqing
@@ -264,6 +264,66 @@ pub async fn run_solve_request_docker(
             .insert(tid.clone(), (Arc::clone(&pool), slot_index));
     }
 
+    if state.cfg.live_biz_report_spill_enabled {
+        if let Some(lease) = lease_cleanup.lease.as_ref() {
+            let target = crate::turn_worker_proxy::WorkerStreamTarget {
+                worker_host: lease.worker_host.clone(),
+                port: if lease.worker_report_port > 0 {
+                    lease.worker_report_port
+                } else {
+                    state.cfg.worker_report_sse_port
+                },
+            };
+            if target.worker_host.trim().is_empty() {
+                warn!(
+                    target: "claw_gateway_solve_pool",
+                    component = "docker_solve",
+                    phase = "worker_report_route_skipped",
+                    turn_id = %turn_id,
+                    slot_index = lease.slot_index,
+                    worker_report_port = target.port,
+                    "pool lease has empty worker_report_host; live SSE proxy will not register in PG"
+                );
+            } else {
+                state
+                    .worker_streams
+                    .register(&turn_id, target.clone())
+                    .await;
+                if let Err(e) = state
+                    .session_db
+                    .set_turn_worker_route(&turn_id, &target.worker_host, target.port)
+                    .await
+                {
+                    warn!(
+                        target: "claw_gateway_solve_pool",
+                        turn_id = %turn_id,
+                        error = %e,
+                        "set_turn_worker_route failed"
+                    );
+                } else {
+                    info!(
+                        target: "claw_gateway_solve_pool",
+                        component = "docker_solve",
+                        phase = "worker_report_route_registered",
+                        turn_id = %turn_id,
+                        slot_index = lease.slot_index,
+                        worker_report_host = %target.worker_host,
+                        worker_report_port = target.port,
+                        "turn worker report route stored (PG + in-memory); cleared when solve ends"
+                    );
+                }
+            }
+        }
+    } else {
+        tracing::debug!(
+            target: "claw_gateway_solve_pool",
+            component = "docker_solve",
+            phase = "worker_report_route_disabled",
+            turn_id = %turn_id,
+            "CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL is off; worker SSE route will not be registered"
+        );
+    }
+
     let slot_index = lease_cleanup
         .lease
         .as_ref()
@@ -306,6 +366,15 @@ pub async fn run_solve_request_docker(
 
     if let Some(ref tid) = task_id {
         state.docker_slots.lock().await.remove(tid);
+    }
+    state.worker_streams.remove(&turn_id).await;
+    if let Err(e) = state.session_db.clear_turn_worker_route(&turn_id).await {
+        warn!(
+            target: "claw_gateway_solve_pool",
+            turn_id = %turn_id,
+            error = %e,
+            "clear_turn_worker_route failed"
+        );
     }
 
     let lease = lease_cleanup
@@ -462,6 +531,7 @@ mod session_path_tests {
             default_timeout_seconds: 1,
             default_max_iterations: 1,
             live_biz_report_spill_enabled: false,
+            worker_report_sse_port: 18765,
             default_http_mcp_name: None,
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),
@@ -494,6 +564,7 @@ mod session_path_tests {
             default_timeout_seconds: 1,
             default_max_iterations: 1,
             live_biz_report_spill_enabled: false,
+            worker_report_sse_port: 18765,
             default_http_mcp_name: None,
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),

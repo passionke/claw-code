@@ -2,6 +2,9 @@ __pycache__/
 archive/
 .omx/
 .clawd-agents/
+# Cursor IDE (machine-local rules, state)
+.cursor/
+
 # Claude Code local artifacts
 .claude/settings.local.json
 .claude/sessions/

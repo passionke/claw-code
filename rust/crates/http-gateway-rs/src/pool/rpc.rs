@@ -237,7 +237,19 @@ async fn dispatch_pool_rpc(
             claw_bin,
             request_id,
         } => {
-            let lease = SlotLease { slot_index };
+            let worker_host = pool
+                .slot_worker_host(slot_index)
+                .await
+                .unwrap_or_default();
+            let worker_report_port = pool
+                .slot_worker_report_port(slot_index)
+                .await
+                .unwrap_or(18765);
+            let lease = SlotLease {
+                slot_index,
+                worker_host,
+                worker_report_port,
+            };
             match pool
                 .exec_solve(&lease, &task_rel, &claw_bin, request_id.as_deref())
                 .await
@@ -257,7 +269,19 @@ async fn dispatch_pool_rpc(
             }
         }
         PoolRpcReq::Release { slot_index } => {
-            match pool.release_slot(SlotLease { slot_index }).await {
+            let worker_host = pool.slot_worker_host(slot_index).await.unwrap_or_default();
+            let worker_report_port = pool
+                .slot_worker_report_port(slot_index)
+                .await
+                .unwrap_or(18765);
+            match pool
+                .release_slot(SlotLease {
+                    slot_index,
+                    worker_host,
+                    worker_report_port,
+                })
+                .await
+            {
                 Ok(()) => PoolRpcResp {
                     ok: true,
                     error: None,

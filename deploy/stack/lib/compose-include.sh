@@ -123,6 +123,19 @@ claw_podman_write_pool_daemon_sidecar_env() {
     printf '%s\n' "CLAW_WORK_ROOT=${ws}"
     printf '%s\n' "CLAW_POOL_WORK_ROOT_HOST=${ws}"
     printf '%s\n' "CLAW_WORKER_ENV_FILE=${repo_root}/.env"
+    # Pool report publish (also in ../../.env env_file; duplicate for sidecar-only reads). kejiqing
+    if [[ -n "${CLAW_PODMAN_NETWORK:-}" ]]; then
+      printf '%s\n' "CLAW_PODMAN_NETWORK=${CLAW_PODMAN_NETWORK}"
+    fi
+    if [[ -n "${CLAW_PODMAN_WORKER_REPORT_PUBLISH_BASE:-}" ]]; then
+      printf '%s\n' "CLAW_PODMAN_WORKER_REPORT_PUBLISH_BASE=${CLAW_PODMAN_WORKER_REPORT_PUBLISH_BASE}"
+    fi
+    if [[ -n "${CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST:-}" ]]; then
+      printf '%s\n' "CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST=${CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST}"
+    fi
+    if [[ -n "${CLAW_WORKER_REPORT_SSE_PORT:-}" ]]; then
+      printf '%s\n' "CLAW_WORKER_REPORT_SSE_PORT=${CLAW_WORKER_REPORT_SSE_PORT}"
+    fi
   } >"${script_dir}/.claw-pool-daemon.env"
 }
 

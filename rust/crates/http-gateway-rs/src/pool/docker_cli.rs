@@ -8,6 +8,26 @@ use tokio::process::Command;
 /// Short-lived CLI calls (`run`, `rm`, `kill`). `kill_on_drop` tears down the client if the
 /// awaiting task is cancelled (e.g. async solve abort), so the runtime does not leave a stuck
 /// `docker exec` child on the host.
+/// IPv4 of `container` on `network` (`podman|docker inspect`). Author: kejiqing
+pub async fn runtime_inspect_container_ip(
+    bin: &str,
+    container: &str,
+    network: &str,
+) -> Option<String> {
+    let net_escaped = network.replace('\\', "\\\\").replace('"', "\\\"");
+    let format = format!(r#"{{{{(index .NetworkSettings.Networks "{net_escaped}").IPAddress}}}}"#);
+    let out = runtime_exec(bin, &["inspect", "-f", &format, container]).await.ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if ip.is_empty() || ip == "<no value>" {
+        None
+    } else {
+        Some(ip)
+    }
+}
+
 pub async fn runtime_exec(bin: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
     Command::new(bin)
         .args(args)

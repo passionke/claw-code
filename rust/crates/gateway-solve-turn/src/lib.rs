@@ -34,11 +34,14 @@ use tools::{
 };
 
 pub mod assistant_stream_spill;
+pub mod report_sse_server;
+pub mod report_sse_timing;
 pub mod turn_output_stream;
 pub mod entity_labels;
 pub mod session_report;
 pub mod sqlbot_preflight;
 pub mod task_progress;
+pub mod turn_tools;
 pub mod worker_env;
 pub use assistant_stream_spill::{
     assistant_stream_spill_enabled_from_env, assistant_stream_spill_path,
@@ -974,7 +977,11 @@ pub fn run_gateway_solve_turn(
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
     let (runtime_mcp_tools, runtime_mcp_tool_names, runtime_mcp_manager) =
         initialize_mcp_runtime(work_dir)?;
-    let output_stream = TurnOutputStreamClient::try_new(turn_id).map(Arc::new);
+    let output_stream = if assistant_stream_spill {
+        TurnOutputStreamClient::try_new(turn_id)
+    } else {
+        None
+    };
     let stream_spill = if output_stream.is_some() {
         None
     } else if assistant_stream_spill {

@@ -1,6 +1,8 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import { AppProvider } from "./context/AppContext";
+import { ChatSessionProvider } from "./context/ChatSessionContext";
 import AdminLayout from "./layout/AdminLayout";
+import ChatLayout from "./layout/ChatLayout";
 import LoginPage from "./pages/LoginPage";
 import RequireAuth from "./auth/RequireAuth";
 import ProjectPage from "./pages/ProjectPage";
@@ -11,6 +13,7 @@ import RulesPage from "./pages/RulesPage";
 import PromptPage from "./pages/PromptPage";
 import ToolsPage from "./pages/ToolsPage";
 import GlobalSettingsPage from "./pages/GlobalSettingsPage";
+import ChatPage from "./pages/ChatPage";
 
 export default function App() {
   return (
@@ -21,21 +24,33 @@ export default function App() {
           element={
             <RequireAuth>
               <AppProvider>
-                <AdminLayout />
+                <Outlet />
               </AppProvider>
             </RequireAuth>
           }
         >
-          <Route index element={<ProjectPage />} />
-          <Route path="skills" element={<SkillsPage />} />
-          <Route path="mcp" element={<McpPage />} />
-          <Route path="claude" element={<ClaudePage />} />
-          <Route path="rules" element={<RulesPage />} />
-          <Route path="prompt" element={<PromptPage />} />
-          <Route path="tools" element={<ToolsPage />} />
-          <Route path="global" element={<GlobalSettingsPage />} />
+          <Route
+            path="chat"
+            element={
+              <ChatSessionProvider>
+                <ChatLayout />
+              </ChatSessionProvider>
+            }
+          >
+            <Route index element={<ChatPage />} />
+          </Route>
+          <Route element={<AdminLayout />}>
+            <Route index element={<ProjectPage />} />
+            <Route path="skills" element={<SkillsPage />} />
+            <Route path="mcp" element={<McpPage />} />
+            <Route path="claude" element={<ClaudePage />} />
+            <Route path="rules" element={<RulesPage />} />
+            <Route path="prompt" element={<PromptPage />} />
+            <Route path="tools" element={<ToolsPage />} />
+            <Route path="global" element={<GlobalSettingsPage />} />
+          </Route>
         </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to="/chat" replace />} />
       </Routes>
     </BrowserRouter>
   );

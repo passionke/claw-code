@@ -2,6 +2,7 @@
 pub mod config;
 mod docker_cli;
 mod docker_pool;
+mod worker_report_endpoint;
 mod local_ops;
 #[allow(dead_code)]
 mod result;

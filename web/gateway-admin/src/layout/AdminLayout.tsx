@@ -67,11 +67,7 @@ export default function AdminLayout() {
     {
       key: "chat",
       icon: <CommentOutlined />,
-      label: (
-        <a href="/" style={{ color: "inherit" }}>
-          对话
-        </a>
-      ),
+      label: "对话",
     },
     { type: "divider" },
     {
@@ -146,6 +142,10 @@ export default function AdminLayout() {
             menu={{
               items: userMenuItems,
               onClick: async ({ key }) => {
+                if (key === "chat") {
+                  nav("/chat");
+                  return;
+                }
                 if (key === "logout") {
                   await adminLogout();
                   nav("/login");

@@ -31,6 +31,13 @@ claw_kill_tcp_listeners "${PORT}"
 source "${PODMAN_DIR}/lib/compose-include.sh"
 claw_remove_all_gateway_workers
 
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${REPO_ROOT}/.env"
+  set +a
+fi
+
 if [[ ! -x "${BIN}" ]]; then
   echo "error: claw-pool-daemon missing or not executable: ${BIN}" >&2
   echo "hint: ./deploy/stack/gateway.sh build then ./deploy/stack/gateway.sh up (installs from GATEWAY_IMAGE), or:" >&2
@@ -50,6 +57,18 @@ if [[ -n "${CLAW_DOCKER_IMAGE:-}" ]]; then
 fi
 if [[ -n "${CLAW_PODMAN_IMAGE:-}" ]]; then
   daemon_env+=(CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE}")
+fi
+if [[ -n "${CLAW_PODMAN_NETWORK:-}" ]]; then
+  daemon_env+=(CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK}")
+fi
+if [[ -n "${CLAW_PODMAN_WORKER_REPORT_PUBLISH_BASE:-}" ]]; then
+  daemon_env+=(CLAW_PODMAN_WORKER_REPORT_PUBLISH_BASE="${CLAW_PODMAN_WORKER_REPORT_PUBLISH_BASE}")
+fi
+if [[ -n "${CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST:-}" ]]; then
+  daemon_env+=(CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST="${CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST}")
+fi
+if [[ -n "${CLAW_WORKER_REPORT_SSE_PORT:-}" ]]; then
+  daemon_env+=(CLAW_WORKER_REPORT_SSE_PORT="${CLAW_WORKER_REPORT_SSE_PORT}")
 fi
 nohup env "${daemon_env[@]}" "${BIN}" >>"${RPC_DIR}/daemon.log" 2>&1 &
 dpid=$!

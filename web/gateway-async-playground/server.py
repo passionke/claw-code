@@ -442,7 +442,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path in ("/", "/index.html"):
-            send_html_bytes(self, 200, (DIR / "index.html").read_bytes())
+            send_redirect(self, "/admin/chat")
+            return
             return
 
         self.send_error(404, "not found")

@@ -11,7 +11,9 @@ use serde::Deserialize;
 use serde_json::json;
 use sqlx::postgres::PgListener;
 use tokio::sync::{Mutex, Notify};
-use tracing::warn;
+use tracing::{info, warn};
+
+use crate::live_report_audit;
 
 use crate::live_report_ports::{AssistantStreamStore, SessionDbIngestAdapter};
 use crate::{ApiError, AppState};
@@ -107,7 +109,22 @@ impl LiveNotifyHub {
                             match listener.recv().await {
                                 Ok(notif) => {
                                     let payload = notif.payload().to_string();
-                                    if let Some(tid) = parse_notify_turn_id(&payload) {
+                                    let received_at_ms = live_report_audit::now_ms();
+                                    if let Some((tid, max_seq, kind)) =
+                                        parse_live_notify_payload(&payload)
+                                    {
+                                        if live_report_audit::enabled() {
+                                            info!(
+                                                target: "claw_gateway_orchestration",
+                                                component = "turn_live",
+                                                phase = "pg_notify_received",
+                                                turn_id = %tid,
+                                                notify_max_seq = max_seq,
+                                                notify_kind = %kind,
+                                                received_at_ms,
+                                                "LISTEN claw_turn_live notify received"
+                                            );
+                                        }
                                         hub.wake(&tid).await;
                                     }
                                 }
@@ -139,10 +156,20 @@ impl LiveNotifyHub {
 }
 
 fn parse_notify_turn_id(payload: &str) -> Option<String> {
+    parse_live_notify_payload(payload).map(|(tid, _, _)| tid)
+}
+
+/// `pg_notify` payload: `turnId`, `maxSeq`, optional `kind`. Author: kejiqing
+fn parse_live_notify_payload(payload: &str) -> Option<(String, i64, String)> {
     let v: serde_json::Value = serde_json::from_str(payload).ok()?;
-    v.get("turnId")
+    let turn_id = v.get("turnId").and_then(|x| x.as_str())?.to_string();
+    let max_seq = v.get("maxSeq").and_then(serde_json::Value::as_i64).unwrap_or(0);
+    let kind = v
+        .get("kind")
         .and_then(|x| x.as_str())
-        .map(str::to_string)
+        .unwrap_or("chunk")
+        .to_string();
+    Some((turn_id, max_seq, kind))
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,7 +191,7 @@ fn internal_token_from_headers(headers: &HeaderMap) -> Option<String> {
         })
 }
 
-fn verify_internal_token(headers: &HeaderMap) -> Result<(), ApiError> {
+pub(crate) fn verify_internal_token(headers: &HeaderMap) -> Result<(), ApiError> {
     let Some(expected) = std::env::var("CLAW_GATEWAY_INTERNAL_TOKEN")
         .ok()
         .filter(|s| !s.trim().is_empty())
@@ -222,21 +249,45 @@ pub async fn post_assistant_stream_with_ctx(
         return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown turnId"));
     }
     if ctx.live_ingest_closed.is_closed(&turn_id).await {
+        warn!(
+            target: "claw_gateway_orchestration",
+            component = "turn_live",
+            phase = "ingest_rejected_closed",
+            turn_id = %turn_id,
+            "assistant-stream ingest rejected: turn already closed"
+        );
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "assistant-stream ingest closed for this turn",
         ));
     }
 
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "turn_live",
+        phase = "ingest_open",
+        turn_id = %turn_id,
+        "assistant-stream ingest connection opened"
+    );
+
     let mut stream = body.into_data_stream();
     let mut buf = Vec::new();
     let mut batch: Vec<String> = Vec::new();
-    let mut last_flush = tokio::time::Instant::now();
-    const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(75);
-    const BATCH_MAX_CHARS: usize = 4096;
-
+    let mut lines_in = 0u64;
+    let mut flushes = 0u64;
+    let mut chars_in = 0u64;
     while let Some(frame) = stream.next().await {
         let chunk = frame.map_err(|e| {
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "turn_live",
+                phase = "ingest_body_read_error",
+                turn_id = %turn_id,
+                error = %e,
+                lines_in,
+                flushes,
+                "assistant-stream body read failed (client disconnect or reset)"
+            );
             ApiError::new(
                 StatusCode::BAD_REQUEST,
                 format!("read assistant-stream body: {e}"),
@@ -260,12 +311,23 @@ pub async fn post_assistant_stream_with_ctx(
                 )
             })?;
             if !row.chunk.is_empty() {
+                chars_in += row.chunk.chars().count() as u64;
                 batch.push(row.chunk);
-            }
-            let batch_chars: usize = batch.iter().map(|s| s.chars().count()).sum();
-            if batch_chars >= BATCH_MAX_CHARS || last_flush.elapsed() >= FLUSH_INTERVAL {
+                lines_in += 1;
+                let n = batch.len();
                 flush_live_batch(&ctx.store, &turn_id, &mut batch).await?;
-                last_flush = tokio::time::Instant::now();
+                flushes += 1;
+                info!(
+                    target: "claw_gateway_orchestration",
+                    component = "turn_live",
+                    phase = "ingest_flush",
+                    turn_id = %turn_id,
+                    batch_lines = n,
+                    flushes,
+                    lines_in,
+                    chars_in,
+                    "assistant-stream flushed live chunks to PG"
+                );
             }
         }
     }
@@ -289,8 +351,33 @@ pub async fn post_assistant_stream_with_ctx(
             }
         }
     }
-    flush_live_batch(&ctx.store, &turn_id, &mut batch).await?;
+    if !batch.is_empty() {
+        let n = batch.len();
+        flush_live_batch(&ctx.store, &turn_id, &mut batch).await?;
+        flushes += 1;
+        info!(
+            target: "claw_gateway_orchestration",
+            component = "turn_live",
+            phase = "ingest_flush",
+            turn_id = %turn_id,
+            batch_lines = n,
+            flushes,
+            lines_in,
+            chars_in,
+            "assistant-stream final flush to PG"
+        );
+    }
     ctx.live_ingest_closed.mark_closed(&turn_id).await;
+    info!(
+        target: "claw_gateway_orchestration",
+        component = "turn_live",
+        phase = "ingest_done",
+        turn_id = %turn_id,
+        lines_in,
+        flushes,
+        chars_in,
+        "assistant-stream ingest finished OK"
+    );
     Ok(Response::builder()
         .status(StatusCode::OK)
         .body(Body::from(json!({"ok": true}).to_string()))

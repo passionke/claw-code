@@ -64,6 +64,7 @@ impl MockLiveReportPort {
         self.chunks.lock().await.push(LiveChunkRow {
             seq,
             chunk: chunk.to_string(),
+            created_at_ms: 0,
         });
         let _ = turn_id;
     }

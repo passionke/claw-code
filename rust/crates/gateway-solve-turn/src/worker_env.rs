@@ -34,6 +34,7 @@ pub const WORKER_ENV_KEYS: &[&str] = &[
     "CLAW_GATEWAY_SQLBOT_PREFLIGHT",
     "CLAW_GATEWAY_INTERNAL_BASE_URL",
     "CLAW_GATEWAY_INTERNAL_TOKEN",
+    "CLAW_WORKER_REPORT_SSE_PORT",
 ];
 
 fn worker_env_search_paths() -> Vec<PathBuf> {

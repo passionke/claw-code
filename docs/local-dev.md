@@ -15,6 +15,14 @@
 3. 快速重建 `claw-gateway-playground` 镜像（含 admin dist + solve_async）
 4. `pool-reset` → `up` → `check`
 
+## 只改根目录 `.env`（池网络、INTERNAL_*、模型 key 等）
+
+```bash
+./deploy/stack/gateway.sh up
+```
+
+会 `source .env`、重建 pool worker（新 `podman run --network` / 挂载的 `worker.env`）。**不必**为改 env 单独 `pack-deploy`。排查用 `gateway.sh ps` / `logs`，**不要**手搓 `podman exec` 起栈。
+
 ## 改 Rust 网关 / 全量镜像后
 
 ```bash

@@ -611,14 +611,14 @@
 
     async function runSend(userText) {
       const storeId = $("store-id").value.trim();
-      const orgId = $("org-id").value.trim();
+      const orgRaw = $("org-id").value;
       const extra = {
         tenant_code: "GPOS",
         solution_code: "restaurant",
         biz_type: "BOSS_REPORT",
       };
       if (storeId) extra.store_id = storeId;
-      if (orgId) extra.org_id = orgId;
+      if (orgRaw.length > 0) extra.org_id = orgRaw;
 
       const payload = {
         dsId: dsId(),
