@@ -144,7 +144,7 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
 
 - `GET /v1/project/tools/catalog`
   - 用途：列出网关当前注册的可选工具（内置 + `mcp__*` 模式），供 BFF 勾选 UI
-  - 响应：`{ "tools": [ { "name", "description", "source" }, ... ], "gatewayAllowedTools": [ ... ] }`（后者来自 `CLAW_ALLOWED_TOOLS`，空表示不限制内置工具名）
+  - 响应：`{ "tools": [ { "name", "description", "source" }, ... ] }`（勾选结果仅存 `allowedToolsJson`，不读 `CLAW_ALLOWED_TOOLS`）
 
 - `GET /v1/project/config/{ds_id}`
   - 用途：读取该 `dsId` 的配置行
@@ -176,6 +176,11 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
 
 - `POST /v1/project/config/{ds_id}/versions/{content_rev}/activate`
   - 用途：将**生效版本**切换为指定历史 `content_rev` 并物化到 `home/`
+
+- **L2 条目历史**（`domain`: `rule` | `skill` | `mcp` | `claude` | `tools`；`entity_key` 需 URL 编码，`claude`/`tools` 为 `_`）
+  - `GET /v1/project/config/{ds_id}/entities/{domain}/{entity_key}/versions` — 该条目追加历史列表（`entityRev`、`createdAtMs`、`note`）
+  - `GET .../versions/compare?from={entityRev}&to={entityRev}` — 两版 `fromBody` / `toBody` JSON 快照
+  - `POST .../restore` body `{ "entityRev": "…" }` — 写回 `__draft__` 聚合字段，不切换 L1 生效版、不物化
 
 - **全局配置（与 ds_id 无关）**
   - `GET /v1/gateway/global-settings` — `{ updatedAtMs, gitPats: [{ id, name, note?, createdAtMs, updatedAtMs, tokenSet }] }`（不返回 token 明文）

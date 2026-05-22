@@ -1,113 +1,238 @@
 import { Button, Input, Select, Space, Typography, message } from "antd";
-import { useEffect, useState } from "react";
+import { PlusOutlined } from "@ant-design/icons";
+import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../context/AppContext";
 import type { RuleEditorItem } from "../types/project";
-import { parseRuleJsonItem, rulesJsonFromList } from "../utils/rules";
+import { parseRuleJsonItem, rulesJsonFromList, slugRuleTitle } from "../utils/rules";
+import EntityVersionPanel from "../components/EntityVersionPanel";
 import { putProjectConfigDraft } from "../utils/projectConfig";
 
 const { TextArea } = Input;
 
+function ruleLabel(r: RuleEditorItem): string {
+  const title = (r.ruleTitle || "").trim();
+  const id = (r.ruleId || "").trim();
+  if (title && id && title !== id) return `${title} · ${id}`;
+  return title || id || "（未命名）";
+}
+
 export default function RulesPage() {
   const { gatewayBase, dsId, projectConfig, refreshProjectConfig } = useApp();
   const [list, setList] = useState<RuleEditorItem[]>([]);
-  const [idx, setIdx] = useState(-1);
+  /** 下拉选中 ruleId；新建模式下为空 */
+  const [pick, setPick] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [ruleTitle, setRuleTitle] = useState("");
+  const [ruleContent, setRuleContent] = useState("");
+  const [l2Refresh, setL2Refresh] = useState(0);
 
-  const load = async () => {
+  const activeId = creating
+    ? slugRuleTitle(newTitle.trim() || "new-rule")
+    : pick;
+
+  const load = useCallback(async () => {
     const cfg = await refreshProjectConfig();
     const arr = Array.isArray(cfg.rulesJson) ? cfg.rulesJson : [];
     const parsed = arr.map(parseRuleJsonItem);
     setList(parsed);
-    setIdx(parsed.length ? 0 : -1);
-    message.success(`Rules 已加载（${parsed.length} 条）`);
-  };
+    if (creating) return;
+    if (parsed.length) {
+      const keep =
+        pick && parsed.some((r) => r.ruleId === pick) ? pick : parsed[0].ruleId;
+      setPick(keep);
+      const cur = parsed.find((r) => r.ruleId === keep);
+      setRuleTitle(cur?.ruleTitle || "");
+      setRuleContent(cur?.ruleContent || "");
+    } else {
+      setPick("");
+      setRuleTitle("");
+      setRuleContent("");
+    }
+  }, [refreshProjectConfig, pick, creating]);
 
   useEffect(() => {
-    if (projectConfig) {
-      const arr = Array.isArray(projectConfig.rulesJson) ? projectConfig.rulesJson : [];
-      const parsed = arr.map(parseRuleJsonItem);
-      setList(parsed);
-      if (idx < 0 && parsed.length) setIdx(0);
+    load().catch((e) => message.error(String((e as Error).message)));
+  }, [load]);
+
+  useEffect(() => {
+    if (!projectConfig || creating) return;
+    const arr = Array.isArray(projectConfig.rulesJson) ? projectConfig.rulesJson : [];
+    const parsed = arr.map(parseRuleJsonItem);
+    setList(parsed);
+    if (pick && parsed.some((r) => r.ruleId === pick)) {
+      const cur = parsed.find((r) => r.ruleId === pick);
+      setRuleTitle(cur?.ruleTitle || "");
+      setRuleContent(cur?.ruleContent || "");
     }
-  }, [projectConfig, dsId]);
+  }, [projectConfig, dsId, creating, pick]);
 
-  const cur = idx >= 0 && idx < list.length ? list[idx] : null;
+  const onPick = (ruleId: string) => {
+    setCreating(false);
+    setNewTitle("");
+    setPick(ruleId);
+    const cur = list.find((r) => r.ruleId === ruleId);
+    setRuleTitle(cur?.ruleTitle || "");
+    setRuleContent(cur?.ruleContent || "");
+  };
 
-  const syncCur = (patch: Partial<RuleEditorItem>) => {
-    if (idx < 0) return;
-    const next = [...list];
-    next[idx] = { ...next[idx], ...patch };
-    setList(next);
+  const startCreate = () => {
+    setCreating(true);
+    setPick("");
+    setNewTitle("");
+    setRuleTitle("");
+    setRuleContent("");
+  };
+
+  const buildListForSave = (): RuleEditorItem[] => {
+    const id = activeId;
+    if (!id) throw new Error("请填写或选择 Rule");
+    const title = (creating ? newTitle : ruleTitle).trim() || id;
+    const item: RuleEditorItem = {
+      ruleId: id,
+      ruleTitle: title,
+      ruleScope: "ALWAYS",
+      ruleContent,
+    };
+    const others = list.filter((r) => r.ruleId !== id);
+    return [...others, item].sort((a, b) => ruleLabel(a).localeCompare(ruleLabel(b)));
+  };
+
+  const save = async () => {
+    if (!projectConfig) return;
+    if (creating && !newTitle.trim()) {
+      message.warning("请填写新 Rule 标题（用作 ruleId / 文件名）");
+      return;
+    }
+    if (!creating && !pick) {
+      message.warning("请从下拉选择 Rule，或点「新增 Rule」");
+      return;
+    }
+    const nextList = buildListForSave();
+    await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
+      rulesJson: rulesJsonFromList(nextList),
+    });
+    message.success(creating ? `已新增 Rule「${activeId}」` : `已保存 Rule「${pick}」`);
+    setCreating(false);
+    setPick(activeId);
+    setNewTitle("");
+    await refreshProjectConfig();
+    await load();
+    setL2Refresh((n) => n + 1);
+  };
+
+  const remove = async () => {
+    if (!projectConfig || creating || !pick) {
+      message.warning("请选择要删除的 Rule");
+      return;
+    }
+    const cur = list.find((r) => r.ruleId === pick);
+    const next = list.filter((r) => r.ruleId !== pick);
+    await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
+      rulesJson: rulesJsonFromList(next),
+    });
+    message.success(`已删除 Rule「${cur ? ruleLabel(cur) : pick}」`);
+    setPick("");
+    setRuleTitle("");
+    setRuleContent("");
+    await refreshProjectConfig();
+    await load();
   };
 
   return (
     <div>
       <Typography.Title level={4}>Rules</Typography.Title>
-      <Select
-        style={{ width: 420, marginBottom: 8 }}
-        value={idx >= 0 ? String(idx) : undefined}
-        placeholder="（无规则）"
-        options={list.map((r, i) => ({
-          value: String(i),
-          label: `${r.ruleTitle || r.ruleId} · ALWAYS`,
-        }))}
-        onChange={(v) => setIdx(parseInt(v, 10))}
-      />
-      <Input
-        placeholder="rule_title"
-        value={cur?.ruleTitle || ""}
-        onChange={(e) => syncCur({ ruleTitle: e.target.value })}
-        style={{ maxWidth: 420, marginBottom: 8 }}
-      />
+      <Typography.Paragraph type="secondary">
+        从下拉选择已有规则编辑；点「新增 Rule」创建条目。保存写入临时版，物化到{" "}
+        <Typography.Text code>home/.cursor/rules/&lt;ruleId&gt;.mdc</Typography.Text>。
+      </Typography.Paragraph>
+
+      <Space wrap style={{ marginBottom: 8 }}>
+        <Select
+          style={{ minWidth: 320 }}
+          value={creating ? undefined : pick || undefined}
+          placeholder={list.length ? "选择 Rule" : "（尚无 Rule，请新增）"}
+          disabled={creating}
+          options={list.map((r) => ({
+            value: r.ruleId,
+            label: ruleLabel(r),
+          }))}
+          onChange={onPick}
+        />
+        <Button icon={<PlusOutlined />} onClick={startCreate}>
+          新增 Rule
+        </Button>
+        {creating && (
+          <Button
+            onClick={() => {
+              setCreating(false);
+              if (list.length) onPick(list[0].ruleId);
+              else {
+                setPick("");
+                setRuleTitle("");
+                setRuleContent("");
+              }
+            }}
+          >
+            取消新建
+          </Button>
+        )}
+      </Space>
+
+      {creating && (
+        <div style={{ marginBottom: 8 }}>
+          <Typography.Text type="secondary">新 Rule 标题（生成 ruleId / 文件名）</Typography.Text>
+          <Input
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="例如 sql-safety"
+            style={{ maxWidth: 420, display: "block", marginTop: 4 }}
+          />
+        </div>
+      )}
+
+      {!creating && pick && (
+        <Typography.Paragraph style={{ marginBottom: 8 }}>
+          正在编辑：<Typography.Text code>{pick}</Typography.Text>
+          {ruleTitle.trim() && ruleTitle.trim() !== pick ? (
+            <Typography.Text type="secondary">（{ruleTitle.trim()}）</Typography.Text>
+          ) : null}
+        </Typography.Paragraph>
+      )}
+
+      {!creating && (
+        <Input
+          placeholder="规则标题（ruleTitle）"
+          value={ruleTitle}
+          onChange={(e) => setRuleTitle(e.target.value)}
+          style={{ maxWidth: 420, marginBottom: 8 }}
+        />
+      )}
       <Input value="ALWAYS" readOnly style={{ maxWidth: 420, marginBottom: 8 }} />
       <TextArea
         rows={12}
-        value={cur?.ruleContent || ""}
-        onChange={(e) => syncCur({ ruleContent: e.target.value })}
+        value={ruleContent}
+        onChange={(e) => setRuleContent(e.target.value)}
+        placeholder="规则正文（Markdown，不含 frontmatter 也可）"
       />
       <Space style={{ marginTop: 8 }}>
-        <Button
-          onClick={() => {
-            setList([
-              ...list,
-              {
-                ruleId: `new-rule-${Date.now()}`,
-                ruleTitle: "",
-                ruleScope: "ALWAYS",
-                ruleContent: "",
-              },
-            ]);
-            setIdx(list.length);
-          }}
-        >
-          新增
+        <Button type="primary" onClick={() => save().catch((e) => message.error(String(e)))}>
+          {creating ? "保存新 Rule" : "保存 Rule"}
         </Button>
         <Button
           danger
-          disabled={idx < 0}
-          onClick={() => {
-            const next = list.filter((_, i) => i !== idx);
-            setList(next);
-            setIdx(Math.min(idx, next.length - 1));
-            message.info("已删除当前条（需保存写入库）");
-          }}
+          disabled={creating || !pick}
+          onClick={() => remove().catch((e) => message.error(String(e)))}
         >
-          删除当前
+          删除 Rule
         </Button>
-        <Button
-          type="primary"
-          onClick={async () => {
-            if (!projectConfig) return;
-            await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
-              rulesJson: rulesJsonFromList(list),
-            });
-            message.success("Rules 已写入临时版");
-            await refreshProjectConfig();
-          }}
-        >
-          保存到 project_config
-        </Button>
-        <Button onClick={() => load()}>重新加载</Button>
+        <Button onClick={() => load().catch((e) => message.error(String(e)))}>重新加载</Button>
       </Space>
+      <EntityVersionPanel
+        domain="rule"
+        entityKey={creating ? "" : pick}
+        refreshKey={l2Refresh}
+      />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 //! Gateway-wide settings (not per `ds_id`): PAT vault for Git push, etc. Author: kejiqing
 
+use runtime::builtin_system_prompt_scaffold_default;
 use serde::{Deserialize, Serialize};
 
 use crate::session_db::GatewaySessionDb;
@@ -249,6 +250,16 @@ pub fn resolve_git_pat_token(pat_id: Option<&str>, tokens: &GitPatTokensStore) -
 pub async fn load_git_pat_tokens(db: &GatewaySessionDb) -> Result<GitPatTokensStore, sqlx::Error> {
     let (_, tokens, _) = get_gateway_global_settings(db).await?;
     Ok(tokens)
+}
+
+/// Builtin system prompt scaffold from PG (not exposed on Admin API). Author: kejiqing
+pub async fn load_system_prompt_default(db: &GatewaySessionDb) -> Result<String, sqlx::Error> {
+    let (text, _) = db.get_gateway_system_prompt_default().await?;
+    Ok(if text.trim().is_empty() {
+        builtin_system_prompt_scaffold_default()
+    } else {
+        text
+    })
 }
 
 pub fn to_public(

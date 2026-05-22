@@ -26,6 +26,10 @@ export default function ClaudePage() {
   return (
     <div>
       <Typography.Title level={4}>CLAUDE.md</Typography.Title>
+      <Typography.Paragraph type="secondary">
+        保存<strong>非空</strong>内容时，将作为<strong>完整系统提示词</strong>（不再前置系统默认段）。
+        留空则使用数据库中的系统默认模板 + Rules / Skills 等。恢复默认请到「系统提示词」页。
+      </Typography.Paragraph>
       <TextArea rows={18} value={content} onChange={(e) => setContent(e.target.value)} />
       <Space style={{ marginTop: 8 }}>
         <Button

@@ -47,7 +47,7 @@ Author: kejiqing
 | --- | --- |
 | HTTP routes, timeout, inject MCP, 容器池、`CLAW_DEFAULT_HTTP_MCP_*`、根 `.claw.json` | `rust/crates/http-gateway-rs/` |
 | Doris SQL guard / `doris_query` | `doris-mcp/src/` |
-| Claw tool naming / allowlist | `rust/crates/tools/` + env `CLAW_ALLOWED_TOOLS` |
+| Claw tool naming / per-ds allowlist | `rust/crates/tools/` + `project_config.allowed_tools_json` |
 
 ## See also
 

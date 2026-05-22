@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::project_tools::parse_allowed_tools_json;
 use crate::session_db::ProjectConfigRow;
+use runtime::{GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL, GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL};
 use serde_json::{json, Value};
 use tokio::fs;
 
@@ -231,12 +232,13 @@ pub async fn apply_if_needed(
     work_dir: &Path,
     row: &ProjectConfigRow,
     force: bool,
+    system_prompt_scaffold: &str,
 ) -> ApplyResult<bool> {
     let applied = read_applied_content_rev(work_dir).await;
     if !force && applied.as_deref() == Some(row.content_rev.as_str()) {
         return Ok(false);
     }
-    apply_full(work_dir, row).await?;
+    apply_full(work_dir, row, system_prompt_scaffold).await?;
     let marker = work_dir.join(APPLIED_REV_MARKER);
     if let Some(parent) = marker.parent() {
         fs::create_dir_all(parent).await.map_err(|e| {
@@ -249,11 +251,40 @@ pub async fn apply_if_needed(
     Ok(true)
 }
 
-async fn apply_full(work_dir: &Path, row: &ProjectConfigRow) -> ApplyResult<()> {
+async fn write_system_prompt_sidecars(
+    work_dir: &Path,
+    row: &ProjectConfigRow,
+    system_prompt_scaffold: &str,
+) -> ApplyResult<()> {
+    let claw_dir = work_dir.join(".claw");
+    fs::create_dir_all(&claw_dir)
+        .await
+        .map_err(|e| ProjectConfigApplyError::new(format!("create .claw: {e}")))?;
+    let override_path = work_dir.join(GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL);
+    let scaffold_path = work_dir.join(GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL);
+    if let Some(text) = row.claude_md.as_deref().filter(|s| !s.trim().is_empty()) {
+        fs::write(&override_path, text.as_bytes())
+            .await
+            .map_err(|e| ProjectConfigApplyError::new(format!("write user override: {e}")))?;
+    } else {
+        let _ = fs::remove_file(&override_path).await;
+    }
+    fs::write(scaffold_path, system_prompt_scaffold.as_bytes())
+        .await
+        .map_err(|e| ProjectConfigApplyError::new(format!("write system scaffold: {e}")))?;
+    Ok(())
+}
+
+async fn apply_full(
+    work_dir: &Path,
+    row: &ProjectConfigRow,
+    system_prompt_scaffold: &str,
+) -> ApplyResult<()> {
     let home = work_dir.join("home");
     fs::create_dir_all(&home)
         .await
         .map_err(|e| ProjectConfigApplyError::new(format!("create home: {e}")))?;
+    write_system_prompt_sidecars(work_dir, row, system_prompt_scaffold).await?;
     write_rules(&home, &row.rules_json).await?;
     if let Some(text) = row.claude_md.as_deref().filter(|s| !s.trim().is_empty()) {
         write_claude(work_dir, text).await?;

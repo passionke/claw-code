@@ -1,4 +1,4 @@
-//! Gateway tool catalog and per-`ds_id` allowed-tools resolution. Author: kejiqing
+//! Gateway tool catalog and per-`ds_id` allowed-tools resolution (DB only). Author: kejiqing
 
 use serde_json::Value;
 use tools::mvp_tool_specs;
@@ -82,11 +82,8 @@ fn catalog_allows_tool_name(name: &str, catalog: &[ToolCatalogEntry]) -> bool {
     false
 }
 
-/// Each selected tool must appear in the gateway catalog and satisfy global policy (if set).
-pub fn validate_project_allowed_tools_json(
-    value: &Value,
-    global_allowed_tools: &[String],
-) -> Result<Vec<String>, String> {
+/// Each selected tool must appear in the gateway catalog (`project_config.allowed_tools_json`).
+pub fn validate_project_allowed_tools_json(value: &Value) -> Result<Vec<String>, String> {
     let selected = parse_allowed_tools_json(value)?;
     if selected.is_empty() {
         return Ok(selected);
@@ -96,11 +93,6 @@ pub fn validate_project_allowed_tools_json(
         if !catalog_allows_tool_name(name, &catalog) {
             return Err(format!(
                 "allowedToolsJson: tool `{name}` is not in the gateway tool catalog"
-            ));
-        }
-        if !global_allowed_tools.is_empty() && !is_tool_allowed(name, global_allowed_tools) {
-            return Err(format!(
-                "allowedToolsJson: tool `{name}` is not allowed by gateway policy (CLAW_ALLOWED_TOOLS)"
             ));
         }
     }
@@ -125,33 +117,21 @@ pub fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {
     false
 }
 
-/// Project baseline: non-empty `project` restricts to that set (within global ceiling).
-/// Empty / missing project selection inherits global ceiling only.
+/// Project baseline from DB: non-empty list restricts solve; empty / missing → no restriction (all tools).
 #[must_use]
-pub fn project_baseline_allowed_tools(
-    global_allowed_tools: &[String],
-    project_selected: Option<&[String]>,
-) -> Vec<String> {
-    let Some(project) = project_selected.filter(|p| !p.is_empty()) else {
-        return global_allowed_tools.to_vec();
-    };
-    if global_allowed_tools.is_empty() {
-        return project.to_vec();
-    }
-    project
-        .iter()
-        .filter(|t| is_tool_allowed(t, global_allowed_tools))
-        .cloned()
-        .collect()
+pub fn project_baseline_allowed_tools(project_selected: Option<&[String]>) -> Vec<String> {
+    project_selected
+        .filter(|p| !p.is_empty())
+        .map(<[String]>::to_vec)
+        .unwrap_or_default()
 }
 
-/// Resolve tools for solve: global ceiling → project subset → optional request override.
+/// Resolve tools for solve: project DB subset → optional request override (no env ceiling).
 pub fn resolve_effective_allowed_tools_for_ds(
-    global_allowed_tools: &[String],
     project_selected: Option<&[String]>,
     requested_allowed_tools: Option<&[String]>,
 ) -> Result<Vec<String>, String> {
-    let baseline = project_baseline_allowed_tools(global_allowed_tools, project_selected);
+    let baseline = project_baseline_allowed_tools(project_selected);
     let Some(requested) = requested_allowed_tools else {
         return Ok(baseline);
     };
@@ -202,24 +182,24 @@ mod tests {
 
     #[test]
     fn validate_rejects_unknown_tool() {
-        let err =
-            validate_project_allowed_tools_json(&json!(["not_a_real_tool_xyz"]), &[]).unwrap_err();
+        let err = validate_project_allowed_tools_json(&json!(["not_a_real_tool_xyz"])).unwrap_err();
         assert!(err.contains("catalog"));
     }
 
     #[test]
-    fn project_baseline_intersects_global() {
-        let global = vec!["bash".into(), "read_file".into()];
-        let project = vec!["bash".into(), "write_file".into()];
-        let base = project_baseline_allowed_tools(&global, Some(&project));
-        assert_eq!(base, vec!["bash"]);
+    fn project_baseline_uses_db_selection_only() {
+        let project = vec!["bash".into(), "read_file".into()];
+        let base = project_baseline_allowed_tools(Some(&project));
+        assert_eq!(base, project);
+        assert!(project_baseline_allowed_tools(None).is_empty());
+        assert!(project_baseline_allowed_tools(Some(&[])).is_empty());
     }
 
     #[test]
     fn resolve_request_must_fit_project() {
         let project = vec!["read_file".into()];
         let err =
-            resolve_effective_allowed_tools_for_ds(&[], Some(&project), Some(&["bash".into()]))
+            resolve_effective_allowed_tools_for_ds(Some(&project), Some(&["bash".into()]))
                 .unwrap_err();
         assert!(err.contains("project"));
     }

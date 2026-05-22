@@ -45,8 +45,8 @@ use gateway_solve_turn::{
     BOSS_REPORT_SKILL_DS_ID,
 };
 use http_gateway_rs::{
-    gateway_global_settings, project_config_apply, project_config_version, project_git_sync,
-    project_tools, session_db, session_merge, turn_id,
+    gateway_global_settings, project_config_apply, project_config_version, project_entity_revision,
+    project_git_sync, project_tools, session_db, session_merge, turn_id,
 };
 use project_git_sync::{git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome};
 use runtime::load_system_prompt;
@@ -183,7 +183,6 @@ struct GatewayConfig {
     default_http_mcp_url: Option<String>,
     default_http_mcp_transport: String,
     config_mcp_servers: HashMap<String, Value>,
-    allowed_tools: Vec<String>,
     /// Remote URL for `claw-code-projects` mirror (SSH or HTTPS; no embedded token).
     projects_git_url: String,
     projects_git_branch: String,
@@ -416,8 +415,6 @@ struct CommitProjectConfigDraftRequest {
 #[derive(Debug, Serialize)]
 struct ProjectToolsCatalogResponse {
     tools: Vec<project_tools::ToolCatalogEntry>,
-    #[serde(rename = "gatewayAllowedTools")]
-    gateway_allowed_tools: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -555,6 +552,9 @@ struct EffectivePromptResponse {
     work_dir: String,
     sections: Vec<String>,
     message: String,
+    /// `user` = project `claudeMd` override only; `system` = DB scaffold + project context.
+    #[serde(rename = "promptSource")]
+    prompt_source: String,
 }
 
 /// Per-datasource skill files under `<work_root>/ds_<id>/home/skills/<name>/SKILL.md` (same tree as `POST /v1/project/skills`). kejiqing
@@ -1218,7 +1218,6 @@ async fn main() {
             .filter(|v| v == "http" || v == "sse")
             .unwrap_or_else(|| "http".to_string()),
         config_mcp_servers: load_mcp_servers_from_claw_config(),
-        allowed_tools: parse_allowed_tools(std::env::var("CLAW_ALLOWED_TOOLS").ok()),
         projects_git_url,
         projects_git_branch,
         projects_git_author,
@@ -1339,6 +1338,18 @@ async fn main() {
         .route(
             "/v1/project/config/{ds_id}/versions/compare",
             get(compare_project_config_versions),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/entities/{domain}/{entity_key}/versions/compare",
+            get(compare_project_entity_versions),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/entities/{domain}/{entity_key}/versions",
+            get(list_project_entity_versions),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/entities/{domain}/{entity_key}/restore",
+            post(restore_project_entity_revision),
         )
         .route(
             "/v1/project/config/{ds_id}/versions/commit",
@@ -2167,7 +2178,10 @@ async fn apply_project_config_for_ds_inner(
         })?;
     let tree_ready = ds_project_tree_ready(&work_dir).await;
     let force_apply = force || !tree_ready;
-    project_config_apply::apply_if_needed(&work_dir, &row, force_apply)
+    let scaffold = gateway_global_settings::load_system_prompt_default(&state.session_db)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    project_config_apply::apply_if_needed(&work_dir, &row, force_apply, &scaffold)
         .await
         .map_err(|e| map_project_config_apply_err(&e))?;
     write_ds_settings_json(state, ds_id).await?;
@@ -2353,6 +2367,70 @@ fn validate_skill_name(skill_name: &str) -> Result<(), ApiError> {
         ));
     }
     Ok(())
+}
+
+fn entity_revision_err(e: project_entity_revision::EntityRevisionError) -> ApiError {
+    ApiError::new(e.status, e.message)
+}
+
+async fn list_project_entity_versions(
+    State(state): State<AppState>,
+    AxumPath((ds_id, domain, entity_key)): AxumPath<(i64, String, String)>,
+) -> Result<Json<project_entity_revision::EntityVersionsListResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    project_entity_revision::list_entity_versions(&state.session_db, ds_id, &domain, &entity_key)
+        .await
+        .map(Json)
+        .map_err(entity_revision_err)
+}
+
+#[derive(Debug, Deserialize)]
+struct EntityCompareQuery {
+    from: String,
+    to: String,
+}
+
+async fn compare_project_entity_versions(
+    State(state): State<AppState>,
+    AxumPath((ds_id, domain, entity_key)): AxumPath<(i64, String, String)>,
+    Query(q): Query<EntityCompareQuery>,
+) -> Result<Json<project_entity_revision::EntityCompareResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    project_entity_revision::compare_entity_versions(
+        &state.session_db,
+        ds_id,
+        &domain,
+        &entity_key,
+        &q.from,
+        &q.to,
+    )
+    .await
+    .map(Json)
+    .map_err(entity_revision_err)
+}
+
+async fn restore_project_entity_revision(
+    State(state): State<AppState>,
+    AxumPath((ds_id, domain, entity_key)): AxumPath<(i64, String, String)>,
+    Json(req): Json<project_entity_revision::RestoreEntityRevisionRequest>,
+) -> Result<Json<project_entity_revision::RestoreEntityRevisionResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    project_entity_revision::restore_entity_revision_to_draft(
+        &state.session_db,
+        ds_id,
+        &domain,
+        &entity_key,
+        &req.entity_rev,
+    )
+    .await
+    .map(Json)
+    .map_err(entity_revision_err)
 }
 
 fn draft_err(e: project_config_draft::DraftError) -> ApiError {
@@ -3343,7 +3421,6 @@ async fn healthz(State(state): State<AppState>, headers: HeaderMap) -> Json<Valu
         "defaultHttpMcpName": state.cfg.default_http_mcp_name,
         "defaultHttpMcpUrl": state.cfg.default_http_mcp_url,
         "defaultHttpMcpTransport": state.cfg.default_http_mcp_transport,
-        "allowedTools": state.cfg.allowed_tools,
         "solveIsolation": isolation,
         "containerPool": true,
         "poolRpcRemote": state.cfg.pool_rpc_remote,
@@ -3901,11 +3978,10 @@ async fn project_selected_allowed_tools(
 }
 
 async fn get_project_tools_catalog(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
 ) -> Json<ProjectToolsCatalogResponse> {
     Json(ProjectToolsCatalogResponse {
         tools: project_tools::gateway_registered_tool_catalog(),
-        gateway_allowed_tools: state.cfg.allowed_tools.clone(),
     })
 }
 
@@ -3990,10 +4066,7 @@ fn validate_skills_sources_json(sources: &Value) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn validate_project_config_payload(
-    req: &UpsertProjectConfigRequest,
-    global_allowed_tools: &[String],
-) -> Result<(), ApiError> {
+fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(), ApiError> {
     if !req.rules_json.is_array() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -4014,11 +4087,8 @@ fn validate_project_config_payload(
     }
     reject_deprecated_skills_sources(&req.skills_sources_json)?;
     validate_skills_json(&req.skills_json)?;
-    project_tools::validate_project_allowed_tools_json(
-        &req.allowed_tools_json,
-        global_allowed_tools,
-    )
-    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    project_tools::validate_project_allowed_tools_json(&req.allowed_tools_json)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     Ok(())
 }
 
@@ -4232,7 +4302,7 @@ async fn put_project_config(
         claude_md: req.claude_md.clone(),
         git_sync_json: Some(git_sync_json.clone()),
     };
-    validate_project_config_payload(&req_for_validate, &state.cfg.allowed_tools)?;
+    validate_project_config_payload(&req_for_validate)?;
     gateway_global_settings::validate_git_sync_json_with_global(&state.session_db, &git_sync_json)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
@@ -4262,6 +4332,19 @@ async fn put_project_config(
         .upsert_project_config(upsert)
         .await
         .map_err(|e| session_db_err(&e))?;
+    project_entity_revision::record_draft_put_sidecars(
+        &state.session_db,
+        ds_id,
+        &existing,
+        &req.rules_json,
+        &req.skills_json,
+        &req.mcp_servers_json,
+        req.claude_md.as_deref(),
+        &req.allowed_tools_json,
+        now,
+    )
+    .await
+    .map_err(entity_revision_err)?;
     let active = state
         .session_db
         .get_project_config(ds_id)
@@ -4594,6 +4677,7 @@ async fn update_project_claude_md(
     row.draft_open = true;
     row.content_rev = project_config_draft::DRAFT_CONTENT_REV.to_string();
     row.updated_at_ms = now_ms();
+    let saved = req.content.clone();
     state
         .session_db
         .upsert_project_config(project_config_draft::upsert_from_row(
@@ -4605,13 +4689,17 @@ async fn update_project_claude_md(
         ))
         .await
         .map_err(|e| session_db_err(&e))?;
+    let now = row.updated_at_ms;
+    project_entity_revision::append_claude(&state.session_db, ds_id, &saved, now)
+        .await
+        .map_err(entity_revision_err)?;
     let claude_md_path = work_dir.join("home/CLAUDE.md");
     Ok(Json(ProjectClaudeResponse {
         ds_id,
         work_dir: work_dir.display().to_string(),
         path: claude_md_path.display().to_string(),
         exists: true,
-        content: req.content,
+        content: saved,
     }))
 }
 
@@ -4672,6 +4760,20 @@ async fn upsert_project_skill(
     row.draft_open = true;
     row.content_rev = project_config_draft::DRAFT_CONTENT_REV.to_string();
     row.updated_at_ms = now_ms();
+    let skill_body = row
+        .skills_json
+        .as_array()
+        .and_then(|a| {
+            a.iter()
+                .find(|item| item.get("skillName").and_then(Value::as_str) == Some(skill_name.as_str()))
+                .cloned()
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "skillName": skill_name,
+                "skillContent": req.skill_content,
+            })
+        });
     state
         .session_db
         .upsert_project_config(project_config_draft::upsert_from_row(
@@ -4683,6 +4785,15 @@ async fn upsert_project_skill(
         ))
         .await
         .map_err(|e| session_db_err(&e))?;
+    project_entity_revision::append_skill(
+        &state.session_db,
+        ds_id,
+        &skill_name,
+        skill_body,
+        row.updated_at_ms,
+    )
+    .await
+    .map_err(entity_revision_err)?;
     Ok(Json(ProjectSkillResponse {
         ds_id,
         skill_name,
@@ -4694,11 +4805,12 @@ async fn upsert_project_skill(
     }))
 }
 
+/// Admin preview: always materialize latest `project_config` before assembling prompt.
 async fn get_effective_prompt(
     State(state): State<AppState>,
     AxumPath(ds_id): AxumPath<i64>,
 ) -> Result<Json<EffectivePromptResponse>, ApiError> {
-    build_effective_prompt_response(&state, ds_id)
+    build_effective_prompt_response(&state, ds_id, true)
         .await
         .map(Json)
 }
@@ -4707,7 +4819,7 @@ async fn post_effective_prompt(
     State(state): State<AppState>,
     AxumPath(ds_id): AxumPath<i64>,
 ) -> Result<Json<EffectivePromptResponse>, ApiError> {
-    build_effective_prompt_response(&state, ds_id)
+    build_effective_prompt_response(&state, ds_id, true)
         .await
         .map(Json)
 }
@@ -4715,6 +4827,7 @@ async fn post_effective_prompt(
 async fn build_effective_prompt_response(
     state: &AppState,
     ds_id: i64,
+    force_apply: bool,
 ) -> Result<EffectivePromptResponse, ApiError> {
     if ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
@@ -4729,7 +4842,39 @@ async fn build_effective_prompt_response(
             )
         })?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    apply_project_config_for_ds(state, ds_id, false).await?;
+
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if let Some(text) = row
+        .as_ref()
+        .and_then(|r| r.claude_md.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let message = text.to_string();
+        if force_apply {
+            let scaffold = gateway_global_settings::load_system_prompt_default(&state.session_db)
+                .await
+                .map_err(|e| session_db_err(&e))?;
+            if let Some(ref r) = row {
+                project_config_apply::apply_if_needed(&work_dir, r, true, &scaffold)
+                    .await
+                    .map_err(|e| map_project_config_apply_err(&e))?;
+            }
+        }
+        return Ok(EffectivePromptResponse {
+            ds_id,
+            work_dir: work_dir.display().to_string(),
+            sections: vec![message.clone()],
+            message,
+            prompt_source: "user".to_string(),
+        });
+    }
+
+    apply_project_config_for_ds(state, ds_id, force_apply).await?;
     let sections = load_system_prompt(
         work_dir.to_path_buf(),
         default_system_date(),
@@ -4749,6 +4894,7 @@ async fn build_effective_prompt_response(
         work_dir: work_dir.display().to_string(),
         sections,
         message,
+        prompt_source: "system".to_string(),
     })
 }
 
@@ -6422,7 +6568,6 @@ async fn run_solve_request(
     );
     let project_selected = project_selected_allowed_tools(&state, req.ds_id).await?;
     let mut effective_allowed_tools = resolve_effective_allowed_tools_for_ds(
-        &state.cfg.allowed_tools,
         project_selected.as_deref(),
         req.allowed_tools.as_deref(),
     )?;
@@ -6935,49 +7080,15 @@ fn gateway_env_enabled(name: &str) -> bool {
     })
 }
 
-fn parse_allowed_tools(raw: Option<String>) -> Vec<String> {
-    let Some(raw) = raw else {
-        return Vec::new();
-    };
-    let mut values = Vec::new();
-    for token in raw.split(',') {
-        let name = normalize_allowed_tool_name(token);
-        if name.is_empty() {
-            continue;
-        }
-        if !values.contains(&name) {
-            values.push(name);
-        }
-    }
-    values
-}
-
-fn normalize_allowed_tool_name(raw: &str) -> String {
-    project_tools::normalize_allowed_tool_name(raw)
-}
-
-pub(crate) fn resolve_effective_allowed_tools(
-    global_allowed_tools: &[String],
-    requested_allowed_tools: Option<&[String]>,
-) -> Result<Vec<String>, ApiError> {
-    resolve_effective_allowed_tools_for_ds(global_allowed_tools, None, requested_allowed_tools)
-}
-
 pub(crate) fn resolve_effective_allowed_tools_for_ds(
-    global_allowed_tools: &[String],
     project_selected: Option<&[String]>,
     requested_allowed_tools: Option<&[String]>,
 ) -> Result<Vec<String>, ApiError> {
     project_tools::resolve_effective_allowed_tools_for_ds(
-        global_allowed_tools,
         project_selected,
         requested_allowed_tools,
     )
     .map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))
-}
-
-fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {
-    project_tools::is_tool_allowed(tool_name, allowed_tools)
 }
 
 #[cfg(test)]

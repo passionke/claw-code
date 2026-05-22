@@ -29,7 +29,7 @@ services:
     restart: unless-stopped
     # Postgres: `gateway.sh pg-up` / `pg_ensure` before `up` (no depends_on — avoids podman pod/name conflicts).
     env_file:
-      # Human-maintained env: repo root `.env` only (`CLAW_ALLOWED_TOOLS` etc.). Do not add deploy/stack/.env.
+      # Human-maintained env: repo root `.env` only. Tool allowlist is per-ds in PG, not env. Do not add deploy/stack/.env.
       # Paths relative to this file's directory: `deploy/stack/` → `../..` is repo root.
       - ../../.env
       # Written by compose-include (up.sh / start-with-tap.sh / down.sh). Do not set

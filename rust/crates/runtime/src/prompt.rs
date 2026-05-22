@@ -141,8 +141,12 @@ impl ProjectContext {
     }
 }
 
+/// Gateway-written full system prompt override (non-empty → skip scaffold + project sections).
+pub const GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL: &str = ".claw/system_prompt_user_override.md";
+/// Gateway-written builtin scaffold from DB (`gateway_global_settings.system_prompt_default`).
+pub const GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL: &str = ".claw/system_prompt_scaffold.md";
+
 /// Builder for the runtime system prompt and dynamic environment sections.
-#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SystemPromptBuilder {
     output_style_name: Option<String>,
     output_style_prompt: Option<String>,
@@ -151,6 +155,23 @@ pub struct SystemPromptBuilder {
     append_sections: Vec<String>,
     project_context: Option<ProjectContext>,
     config: Option<RuntimeConfig>,
+    /// When set, replaces hardcoded intro/system/doing-tasks/actions blocks.
+    builtin_scaffold_override: Option<String>,
+}
+
+impl Default for SystemPromptBuilder {
+    fn default() -> Self {
+        Self {
+            output_style_name: None,
+            output_style_prompt: None,
+            os_name: None,
+            os_version: None,
+            append_sections: Vec::new(),
+            project_context: None,
+            config: None,
+            builtin_scaffold_override: None,
+        }
+    }
 }
 
 impl SystemPromptBuilder {
@@ -192,15 +213,28 @@ impl SystemPromptBuilder {
     }
 
     #[must_use]
+    pub fn with_builtin_scaffold_override(mut self, text: Option<String>) -> Self {
+        self.builtin_scaffold_override = text.filter(|s| !s.trim().is_empty());
+        self
+    }
+
+    #[must_use]
     pub fn build(&self) -> Vec<String> {
         let mut sections = Vec::new();
-        sections.push(get_simple_intro_section(self.output_style_name.is_some()));
-        if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt) {
-            sections.push(format!("# Output Style: {name}\n{prompt}"));
+        if let Some(scaffold) = self.builtin_scaffold_override.as_ref() {
+            sections.push(scaffold.trim().to_string());
+            if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt) {
+                sections.push(format!("# Output Style: {name}\n{prompt}"));
+            }
+        } else {
+            sections.push(get_simple_intro_section(self.output_style_name.is_some()));
+            if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt) {
+                sections.push(format!("# Output Style: {name}\n{prompt}"));
+            }
+            sections.push(get_simple_system_section());
+            sections.push(get_simple_doing_tasks_section());
+            sections.push(get_actions_section());
         }
-        sections.push(get_simple_system_section());
-        sections.push(get_simple_doing_tasks_section());
-        sections.push(get_actions_section());
         sections.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY.to_string());
         sections.push(self.environment_section());
         if let Some(project_context) = &self.project_context {
@@ -557,6 +591,40 @@ fn collapse_blank_lines(content: &str) -> String {
     result
 }
 
+/// Default builtin scaffold (seeded into `gateway_global_settings.system_prompt_default`). Author: kejiqing
+#[must_use]
+pub fn builtin_system_prompt_scaffold_default() -> String {
+    [
+        get_simple_intro_section(false),
+        get_simple_system_section(),
+        get_simple_doing_tasks_section(),
+        get_actions_section(),
+    ]
+    .join("\n\n")
+}
+
+fn read_gateway_user_prompt_override(cwd: &Path) -> Option<String> {
+    let path = cwd.join(GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL);
+    let text = fs::read_to_string(path).ok()?;
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn read_gateway_scaffold_override(cwd: &Path) -> Option<String> {
+    let path = cwd.join(GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL);
+    let text = fs::read_to_string(path).ok()?;
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 /// Loads config and project context, then renders the system prompt text.
 pub fn load_system_prompt(
     cwd: impl Into<PathBuf>,
@@ -566,6 +634,10 @@ pub fn load_system_prompt(
     extra_session: Option<Value>,
 ) -> Result<Vec<String>, PromptBuildError> {
     let cwd = cwd.into();
+    if let Some(override_text) = read_gateway_user_prompt_override(&cwd) {
+        return Ok(vec![override_text]);
+    }
+    let scaffold_override = read_gateway_scaffold_override(&cwd);
     let mut project_context = ProjectContext::discover_with_git(&cwd, current_date.into())?;
     project_context.extra_session = extra_session;
     let config = ConfigLoader::default_for(&cwd).load()?;
@@ -573,6 +645,7 @@ pub fn load_system_prompt(
         .with_os(os_name, os_version)
         .with_project_context(project_context)
         .with_runtime_config(config)
+        .with_builtin_scaffold_override(scaffold_override)
         .build())
 }
 

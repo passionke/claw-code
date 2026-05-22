@@ -83,6 +83,25 @@ pub struct ProjectConfigRevisionRow {
     pub claude_md: Option<String>,
 }
 
+/// Immutable per-entity snapshot (L2 history). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct ProjectEntityRevisionRow {
+    pub ds_id: i64,
+    pub domain: String,
+    pub entity_key: String,
+    pub entity_rev: String,
+    pub created_at_ms: i64,
+    pub note: Option<String>,
+    pub body: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectEntityRevisionSummary {
+    pub entity_rev: String,
+    pub created_at_ms: i64,
+    pub note: Option<String>,
+}
+
 /// Summary row for version list API. Author: kejiqing
 #[derive(Debug, Clone)]
 pub struct ProjectConfigRevisionSummary {
@@ -295,8 +314,66 @@ impl GatewaySessionDb {
         )
         .execute(pool)
         .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS system_prompt_default TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS system_prompt_version TEXT NOT NULL DEFAULT 'v1'",
+        )
+        .execute(pool)
+        .await?;
+        let default_scaffold = runtime::builtin_system_prompt_scaffold_default();
+        sqlx::query(
+            r"UPDATE gateway_global_settings
+             SET system_prompt_default = $1, system_prompt_version = 'v1'
+             WHERE singleton_id = 1
+               AND (system_prompt_default = '' OR length(trim(system_prompt_default)) = 0)",
+        )
+        .bind(default_scaffold)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS project_entity_revision (
+                ds_id BIGINT NOT NULL,
+                domain TEXT NOT NULL,
+                entity_key TEXT NOT NULL,
+                entity_rev TEXT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                note TEXT,
+                body JSONB NOT NULL,
+                PRIMARY KEY (ds_id, domain, entity_key, entity_rev)
+            )"#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"CREATE INDEX IF NOT EXISTS idx_project_entity_revision_list
+             ON project_entity_revision (ds_id, domain, entity_key, created_at_ms DESC)",
+        )
+        .execute(pool)
+        .await?;
 
         Ok(())
+    }
+
+    /// System-level default scaffold (no public write API; update via DB migration). Author: kejiqing
+    pub async fn get_gateway_system_prompt_default(
+        &self,
+    ) -> Result<(String, String), SqlxError> {
+        let row = sqlx::query(
+            r"SELECT system_prompt_default, system_prompt_version
+               FROM gateway_global_settings WHERE singleton_id = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok((String::new(), "v1".to_string()));
+        };
+        let text: String = row.try_get("system_prompt_default")?;
+        let version: String = row.try_get("system_prompt_version")?;
+        Ok((text, version))
     }
 
     /// Gateway-wide settings row (PAT vault, etc.). Author: kejiqing
@@ -618,9 +695,100 @@ impl GatewaySessionDb {
         Ok(r.rows_affected())
     }
 
+    pub async fn insert_project_entity_revision_immutable(
+        &self,
+        row: &ProjectEntityRevisionRow,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO project_entity_revision (
+                ds_id, domain, entity_key, entity_rev, created_at_ms, note, body
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (ds_id, domain, entity_key, entity_rev) DO NOTHING",
+        )
+        .bind(row.ds_id)
+        .bind(&row.domain)
+        .bind(&row.entity_key)
+        .bind(&row.entity_rev)
+        .bind(row.created_at_ms)
+        .bind(&row.note)
+        .bind(Json(&row.body))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_project_entity_revision(
+        &self,
+        ds_id: i64,
+        domain: &str,
+        entity_key: &str,
+        entity_rev: &str,
+    ) -> Result<Option<ProjectEntityRevisionRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT ds_id, domain, entity_key, entity_rev, created_at_ms, note, body
+               FROM project_entity_revision
+               WHERE ds_id = $1 AND domain = $2 AND entity_key = $3 AND entity_rev = $4",
+        )
+        .bind(ds_id)
+        .bind(domain)
+        .bind(entity_key)
+        .bind(entity_rev)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(ProjectEntityRevisionRow {
+            ds_id: row.try_get("ds_id")?,
+            domain: row.try_get("domain")?,
+            entity_key: row.try_get("entity_key")?,
+            entity_rev: row.try_get("entity_rev")?,
+            created_at_ms: row.try_get("created_at_ms")?,
+            note: row.try_get("note")?,
+            body: row.try_get::<Json<Value>, _>("body")?.0,
+        }))
+    }
+
+    pub async fn list_project_entity_revisions(
+        &self,
+        ds_id: i64,
+        domain: &str,
+        entity_key: &str,
+    ) -> Result<Vec<ProjectEntityRevisionSummary>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT entity_rev, created_at_ms, note
+               FROM project_entity_revision
+               WHERE ds_id = $1 AND domain = $2 AND entity_key = $3
+               ORDER BY created_at_ms DESC, entity_rev DESC",
+        )
+        .bind(ds_id)
+        .bind(domain)
+        .bind(entity_key)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(ProjectEntityRevisionSummary {
+                entity_rev: row.try_get("entity_rev")?,
+                created_at_ms: row.try_get("created_at_ms")?,
+                note: row.try_get("note")?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn delete_project_entity_revisions(&self, ds_id: i64) -> Result<u64, SqlxError> {
+        let r = sqlx::query("DELETE FROM project_entity_revision WHERE ds_id = $1")
+            .bind(ds_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
     /// Remove `project_config` row for a ds (project delete). Author: kejiqing
     pub async fn delete_project_config(&self, ds_id: i64) -> Result<bool, SqlxError> {
         let _ = self.delete_project_config_revisions(ds_id).await?;
+        let _ = self.delete_project_entity_revisions(ds_id).await?;
         let r = sqlx::query("DELETE FROM project_config WHERE ds_id = $1")
             .bind(ds_id)
             .execute(&self.pool)

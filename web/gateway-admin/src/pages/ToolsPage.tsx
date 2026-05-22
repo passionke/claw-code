@@ -5,32 +5,18 @@ import { useApp } from "../context/AppContext";
 import type { ToolCatalogEntry } from "../types/project";
 import { putProjectConfigDraft } from "../utils/projectConfig";
 
-function matchToolPattern(pattern: string, name: string): boolean {
-  if (pattern === name) return true;
-  if (!pattern.includes("*")) return false;
-  if (pattern.endsWith("*")) return name.startsWith(pattern.slice(0, -1));
-  return false;
-}
-
-function toolSelectable(name: string, gatewayAllowed: string[]): boolean {
-  if (!gatewayAllowed.length) return true;
-  return gatewayAllowed.some((p) => matchToolPattern(p, name));
-}
-
 export default function ToolsPage() {
   const { gatewayBase, dsId, projectConfig, refreshProjectConfig } = useApp();
-  const [catalog, setCatalog] = useState<{
-    tools: ToolCatalogEntry[];
-    gatewayAllowedTools: string[];
-  } | null>(null);
+  const [catalog, setCatalog] = useState<ToolCatalogEntry[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const load = async () => {
-    const cat = await proxyHttp<{
-      tools: ToolCatalogEntry[];
-      gatewayAllowedTools: string[];
-    }>(gatewayBase, "GET", "/v1/project/tools/catalog");
-    setCatalog(cat);
+    const cat = await proxyHttp<{ tools: ToolCatalogEntry[] }>(
+      gatewayBase,
+      "GET",
+      "/v1/project/tools/catalog"
+    );
+    setCatalog(cat.tools || []);
     const cfg = await refreshProjectConfig();
     const arr = Array.isArray(cfg.allowedToolsJson) ? cfg.allowedToolsJson : [];
     setSelected(new Set(arr));
@@ -41,28 +27,23 @@ export default function ToolsPage() {
     load().catch((e) => message.error(String((e as Error).message)));
   }, [gatewayBase, dsId]);
 
-  const gatewayAllowed = catalog?.gatewayAllowedTools || [];
-  const emptyMeansAll = selected.size === 0;
-
   return (
     <div>
       <Typography.Title level={4}>Tools 配置</Typography.Title>
       <Typography.Paragraph type="secondary">
-        gatewayAllowedTools:{" "}
-        {gatewayAllowed.length ? JSON.stringify(gatewayAllowed) : "（空 = 不限制）"}
+        仅保存在 <Typography.Text code>project_config.allowed_tools_json</Typography.Text>
+        （DB）。勾选即启用；未勾选任何项时 solve 不限制工具。不再读取{" "}
+        <Typography.Text code>CLAW_ALLOWED_TOOLS</Typography.Text>。
       </Typography.Paragraph>
       <Space style={{ marginBottom: 12 }}>
         <Button
           onClick={() => {
-            const names = (catalog?.tools || [])
-              .filter((t) => toolSelectable(t.name, gatewayAllowed))
-              .map((t) => t.name);
-            setSelected(new Set(names));
+            setSelected(new Set((catalog || []).map((t) => t.name)));
           }}
         >
-          全选可选
+          全选
         </Button>
-        <Button onClick={() => setSelected(new Set())}>清空勾选</Button>
+        <Button onClick={() => setSelected(new Set())}>全不选</Button>
         <Button onClick={() => load()}>重新加载</Button>
         <Button
           type="primary"
@@ -79,9 +60,8 @@ export default function ToolsPage() {
         </Button>
       </Space>
       <Row gutter={[8, 8]}>
-        {(catalog?.tools || []).map((t) => {
-          const ok = toolSelectable(t.name, gatewayAllowed);
-          const checked = !emptyMeansAll && selected.has(t.name);
+        {(catalog || []).map((t) => {
+          const checked = selected.has(t.name);
           return (
             <Col xs={24} sm={12} lg={8} key={t.name}>
               <div
@@ -89,11 +69,9 @@ export default function ToolsPage() {
                   padding: 8,
                   border: "1px solid #2d3a4d",
                   borderRadius: 6,
-                  opacity: ok ? 1 : 0.45,
                 }}
               >
                 <Checkbox
-                  disabled={!ok}
                   checked={checked}
                   onChange={(e) => {
                     const next = new Set(selected);
