@@ -6,6 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Languages: Rust.
 - Frameworks: none detected from the supported starter markers.
 
+## Local gateway (macOS / podman_pool)
+
+- One-shot: `./deploy/stack/gateway.sh quick` from repo root (see `docs/local-dev.md`); includes `web/gateway-admin` → `dist/`.
+- Admin UI only: `./deploy/stack/gateway.sh admin-build` (Ant Design; do not hand-run npm unless debugging frontend).
+- Full image rebuild: `./deploy/stack/gateway.sh pack-deploy` (after Rust gateway changes).
+- Disk: `./deploy/stack/gateway.sh clean --debug-only` drops most of `rust/target` while keeping release binaries.
+- Do not run `gateway.sh` from `rust/` (wrong cwd).
+
 ## Verification
 - Run Rust verification from `rust/`: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`
 - Optional China `cargo` mirror: `cp rust/.cargo/config.toml.example rust/.cargo/config.toml` (see example header); default is crates.io only.

@@ -103,6 +103,8 @@ pub struct ProjectContext {
     pub git_diff: Option<String>,
     pub git_context: Option<GitContext>,
     pub instruction_files: Vec<ContextFile>,
+    /// `home/.cursor/rules/*.mdc` from `project_config.rulesJson` (after CLAUDE.md in prompt). kejiqing
+    pub rule_files: Vec<ContextFile>,
     /// HTTP gateway `extraSession` payload merged into `# Project context`. Author: kejiqing.
     pub extra_session: Option<Value>,
 }
@@ -114,6 +116,7 @@ impl ProjectContext {
     ) -> std::io::Result<Self> {
         let cwd = cwd.into();
         let instruction_files = discover_instruction_files(&cwd)?;
+        let rule_files = discover_project_rules_files(&cwd)?;
         Ok(Self {
             cwd,
             current_date: current_date.into(),
@@ -121,6 +124,7 @@ impl ProjectContext {
             git_diff: None,
             git_context: None,
             instruction_files,
+            rule_files,
             extra_session: None,
         })
     }
@@ -204,6 +208,9 @@ impl SystemPromptBuilder {
             if !project_context.instruction_files.is_empty() {
                 sections.push(render_instruction_files(&project_context.instruction_files));
             }
+            if !project_context.rule_files.is_empty() {
+                sections.push(render_project_rules(&project_context.rule_files));
+            }
         }
         if let Some(config) = &self.config {
             sections.push(render_config_section(config));
@@ -269,6 +276,44 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
         }
     }
     Ok(dedupe_instruction_files(files))
+}
+
+/// Materialized `project_config` rules under `home/.cursor/rules/` (nearest ancestor from `cwd`). kejiqing
+fn discover_project_rules_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
+    let mut cursor = Some(cwd);
+    while let Some(dir) = cursor {
+        let rules_root = dir.join("home").join(".cursor").join("rules");
+        if fs::metadata(&rules_root).is_ok_and(|m| m.is_dir()) {
+            let mut files = Vec::new();
+            collect_rule_mdc_files(&rules_root, &rules_root, &mut files)?;
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+            return Ok(files);
+        }
+        cursor = dir.parent();
+    }
+    Ok(Vec::new())
+}
+
+fn collect_rule_mdc_files(
+    rules_root: &Path,
+    dir: &Path,
+    out: &mut Vec<ContextFile>,
+) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_rule_mdc_files(rules_root, &path, out)?;
+        } else if entry.file_type()?.is_file() {
+            let is_mdc = path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("mdc"));
+            if is_mdc {
+                push_context_file(out, path)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn push_context_file(files: &mut Vec<ContextFile>, path: PathBuf) -> std::io::Result<()> {
@@ -400,6 +445,35 @@ fn render_instruction_files(files: &[ContextFile]) -> String {
         remaining_chars = remaining_chars.saturating_sub(consumed);
 
         sections.push(format!("## {}", describe_instruction_file(file, files)));
+        sections.push(rendered_content);
+    }
+    sections.join("\n\n")
+}
+
+/// Project rules section — always after `# Claude instructions` (CLAUDE.md). Author: kejiqing
+fn render_project_rules(files: &[ContextFile]) -> String {
+    let mut sections = vec![
+        "# Project rules".to_string(),
+        "Rules from `project_config.rulesJson` (materialized under `home/.cursor/rules/`).".to_string(),
+    ];
+    let mut remaining_chars = max_total_instruction_chars();
+    for file in files {
+        if remaining_chars == 0 {
+            sections.push(
+                "_Additional rule content omitted after reaching the prompt budget._".to_string(),
+            );
+            break;
+        }
+        let label = file
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| file.path.display().to_string());
+        let raw_content = truncate_instruction_content(&file.content, remaining_chars);
+        let rendered_content = render_instruction_content(&raw_content);
+        let consumed = rendered_content.chars().count().min(remaining_chars);
+        remaining_chars = remaining_chars.saturating_sub(consumed);
+        sections.push(format!("## {label}"));
         sections.push(rendered_content);
     }
     sections.join("\n\n")
@@ -611,7 +685,8 @@ mod tests {
     use super::{
         collapse_blank_lines, display_context_path, max_instruction_file_chars,
         normalize_instruction_content, render_instruction_content, render_instruction_files,
-        truncate_instruction_content, ContextFile, ProjectContext, SystemPromptBuilder,
+        render_project_rules, truncate_instruction_content, ContextFile, ProjectContext,
+        SystemPromptBuilder,
         DEFAULT_MAX_INSTRUCTION_FILE_CHARS, INSTRUCTION_FILE_MAX_CHARS_ENV,
         SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     };
@@ -935,6 +1010,26 @@ mod tests {
         assert!(prompt.contains("Project rules"));
         assert!(prompt.contains("permissionMode"));
         fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn system_prompt_orders_rules_after_claude_instructions() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join("home/.cursor/rules")).expect("rules dir");
+        fs::write(root.join("home/CLAUDE.md"), "CLAUDE body").expect("write claude");
+        fs::write(root.join("home/.cursor/rules/safety.mdc"), "rule body").expect("write rule");
+        let ctx = ProjectContext::discover(&root, "2026-03-31").expect("discover");
+        let rendered = SystemPromptBuilder::new()
+            .with_project_context(ctx)
+            .render();
+        let claude_idx = rendered
+            .find("# Claude instructions")
+            .expect("claude instructions section");
+        let rules_idx = rendered.find("# Project rules").expect("project rules section");
+        assert!(claude_idx < rules_idx, "rules must follow CLAUDE instructions");
+        assert!(rendered.contains("CLAUDE body"));
+        assert!(rendered.contains("rule body"));
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

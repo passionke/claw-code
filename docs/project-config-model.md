@@ -2,126 +2,121 @@
 
 Author: kejiqing
 
-## 目标（与用户诉求对齐）
+## 目标
 
-在网关已使用的 **`CLAW_GATEWAY_DATABASE_URL`（PostgreSQL）** 中增加 **`project_config`**，把「标准 Agent 能力」从**仅全局 env + projects git 镜像**扩展为**可按数据源（`ds_id`）版本化存储的配置**，并在运行时可还原为当前 Claw 网关已约定的**磁盘布局**。
+在 **`CLAW_GATEWAY_DATABASE_URL`（PostgreSQL）** 的 **`project_config`** 表中，按 **`ds_id`** 存储规则、MCP、**内联 Skills**、工具勾选与 **`CLAUDE.md`** 正文；网关按 `content_rev` 物化到 `ds_<id>/home`，solve 只认磁盘结果。
 
-本仓库现状（证据）：
+**不再**用 projects-git 同步 CLAUDE / Skills（`CLAW_PROJECTS_GIT_*` 可选且默认不启用）。
 
-- **会话 / 轮次 / 反馈**已在 PG：`GatewaySessionDb::migrate`（`rust/crates/http-gateway-rs/src/session_db.rs`）。
-- **`ds_<dsId>` 工作区**上，solve 前要求存在**非空 `CLAUDE.md` 指令树**：`ds_project_tree_ready` / `ensure_ds_project_ready`（`rust/crates/http-gateway-rs/src/main.rs`）。
-- **MCP** 由网关合并为 `session_home/.claw/settings.json` 的 `mcpServers`：`build_settings`（同上）。
-- **Skills** 约定路径为 `ds_<dsId>/home/skills/<skillName>/SKILL.md`：`docs/http-gateway-rs-api.md`「Skills（按 ds 工作区）」。
-- **projects git** 当前负责把远端 `ds_<id>/home` 同步到本地，并由 `POST /v1/init` 与可选轮询触发：`sync_ds_project_from_git_mirror`、`tick_projects_git_ds_home_poll`（`main.rs`）。
-
-## 表设计（KISS：一行一个 `ds_id`）
-
-DDL 由网关启动时 `GatewaySessionDb::migrate` 执行（与现有表一致），字段含义：
+## 表设计（一行一个 `ds_id`）
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
-| `ds_id` | `BIGINT PRIMARY KEY` | 与网关其余 API 的 `dsId` 一一对应（当前无单独 `project_id` 时，**项目 = 该 ds 工作区**）。 |
-| `content_rev` | `TEXT NOT NULL` | 业务侧内容版本号或 git SHA；用于轮询时判断「是否有新配置」而不必逐字节比对。 |
+| `ds_id` | `BIGINT PRIMARY KEY` | 与 API `dsId` 一致。 |
+| `content_rev` | `TEXT NOT NULL` | **当前生效**配置版本；轮询比对 `.claw/project_config_applied_rev`。 |
 | `updated_at_ms` | `BIGINT NOT NULL` | 行更新时间（毫秒）。 |
-| `rules_json` | `JSONB NOT NULL` | 规则清单 + 正文，见下 JSON 约定。 |
-| `mcp_servers_json` | `JSONB NOT NULL` | 与 `.claw/settings.json` 内 **`mcpServers` 对象**同形（网关 `build_settings` 合并逻辑不变，仅多一个来源）。 |
-| `skills_sources_json` | `JSONB NOT NULL` | Skills 来源列表（含 git 坐标），见下 JSON 约定。 |
-| `claude_md` | `TEXT` | 可选；若设置则物化为 `home/CLAUDE.md`（与现有 `ds_project_tree_ready` 判定一致）。 |
-| `allowed_tools_json` | `JSONB NOT NULL` | 本项目勾选的 **Claw 工具名** 数组（见下）；空数组表示不额外限制，沿用网关 `CLAW_ALLOWED_TOOLS`。 |
+| `rules_json` | `JSONB NOT NULL` | 规则清单，物化到 `home/.cursor/rules/`。 |
+| `mcp_servers_json` | `JSONB NOT NULL` | 与 `mcpServers` 同形；**solve 仅读此列**。 |
+| `skills_json` | `JSONB NOT NULL` | 内联 skills，见下。 |
+| `skills_sources_json` | `JSONB NOT NULL` | **已废弃**（须为空数组）；保留列兼容旧库。 |
+| `claude_md` | `TEXT` | 物化为 `home/CLAUDE.md`（非空才满足 `ds_project_tree_ready`）。 |
+| `allowed_tools_json` | `JSONB NOT NULL` | 本项目工具勾选。 |
+| `git_sync_json` | `JSONB NOT NULL` | 每项目 **单向** Git 推送配置（见下）；默认 `{}`。 |
 
-### `rules_json` 约定
+### `git_sync_json`（每项目单向 Git）
 
-推荐 **`array`**，元素示例：
+**方向**：`home/` 下**用户工作文件** → 远程仓库（单向）；**不**从远程拉回 DB。
 
-```json
-{
-  "ruleId": "sql-safety",
-  "relativePath": ".cursor/rules/sql-safety.mdc",
-  "content": "# Rule\n..."
-}
-```
+**不进入 Git**：推送时按当前 `project_config` 行计算排除列表（`project_config_apply::git_excluded_home_relpaths`）——即所有由 DB 物化到 `home/` 的路径：
 
-- **`ruleId`**：稳定键，供幂等 upsert / 删除未再出现的规则文件。
-- **`relativePath`**：相对于 **`ds_<dsId>/home/`** 的路径（UTF-8）；物化时创建父目录并写文件。
-- **`content`**：完整规则正文。
+- 非空 `claude_md` → `home/CLAUDE.md`
+- 非空 `skills_json` → `home/skills/` 整树
+- `rules_json` 每条 `relativePath`（如 `home/.cursor/rules/*.mdc`）
 
-说明：当前网关「是否 ready」仍以 **非空 `CLAUDE.md`** 为准（`ds_project_tree_ready`）；规则文件为附加能力，不替代 `CLAUDE.md` 门槛，除非后续产品明确修改该不变量。
+其余 `home/` 路径（用户 / Agent 工作成果）可进 Git。`sessions/`、`.claw/` 不在 `home/` 下，本就不推送。
 
-### `allowed_tools_json` 约定
+**对象**（camelCase，存于 `git_sync_json`）：
 
-- **目录（只读）**：`GET /v1/project/tools/catalog` 返回网关当前注册的工具列表（`mvp_tool_specs` 内置工具 + `mcp__*` 模式说明），以及全局策略 `gatewayAllowedTools`（来自 `CLAW_ALLOWED_TOOLS`）。
-- **存储**：`PUT /v1/project/config/{ds_id}` 请求体字段 **`allowedToolsJson`**，例如 `["read_file", "bash", "mcp__sqlbot__*"]`。
-- **校验**：每个名称须在 catalog 内，且 ⊆ 全局 `CLAW_ALLOWED_TOOLS`（全局非空时）。
-- **物化**：写入 `ds_<id>/.claw/project_allowed_tools.json`（`contentRev` + `allowedTools`），与 `project_config_applied_rev` 同轮刷新。
-- **运行时**：`POST /v1/solve` / `solve_async` 在全局策略之上应用本项目勾选；请求体 `allowedTools` 只能再缩小范围，不能超出项目配置。`report_progress` 仍由网关自动加入允许列表。
+| 字段 | 说明 |
+| --- | --- |
+| `enabled` | 是否启用；`false` 时不推送。 |
+| `gitUrl` | GitHub/GitLab 风格 HTTPS 或 `git@` / `ssh://`；HTTPS **禁止** URL 内嵌用户名密码。 |
+| `gitRef` | 分支名，默认 `main`。 |
+| `gitToken` | HTTPS 用 PAT（**仅存 PG**）；API 读/列表 **不返回** 明文，仅 `gitTokenSet`。 |
+| `authorName` / `authorEmail` | 可选；缺省用 `CLAW_PROJECTS_GIT_AUTHOR`。 |
+| `lastPushAtMs` / `lastPushCommitId` / `lastPushError` | 网关推送后回写。 |
 
-### `mcp_servers_json` 约定
+- 保存：`PUT /v1/project/config/{ds_id}` 的 `gitSyncJson`；PUT **省略** `gitSyncJson` 时保留库内已有配置；PAT 留空则保留已存 token。
+- 推送：`POST /v1/projects/{ds_id}/git/push`（先物化再 push）。
+- 物化成功后若 `enabled=true`，网关会 **尽力** 自动推送（失败仅 warn，不阻断 solve）。
 
-与运行时 **`mcpServers`** map 一致，例如：
+### `skills_json` 约定
 
-```json
-{
-  "sqlbot": { "type": "http", "url": "https://example/mcp" }
-}
-```
-
-合并顺序建议（实现时保持单一默认路径）：**全局网关 env 默认 MCP** → **`project_config.mcp_servers_json`** → **内存 `POST /v1/mcp/inject` 注入**（与现有 `build_settings` 插入顺序对齐，避免双轨行为）。
-
-### `skills_sources_json` 约定
-
-推荐 **`array`**，元素示例（把原「整仓 projects git」**内化**为可多条目的来源描述）：
+**`array`**，元素：
 
 ```json
 {
-  "gitUrl": "https://git.example.com/org/skills-bundle.git",
-  "gitRef": "main",
-  "pathInRepo": "packs/analytics",
-  "targetUnderHome": "skills",
-  "tokenEnv": "CLAW_PROJECT_SKILLS_GIT_TOKEN"
+  "skillName": "sql-safety",
+  "skillContent": "# Skill\n..."
 }
 ```
 
-- **`gitUrl` / `gitRef`**：拉取坐标（等价于原先全局 `CLAW_PROJECTS_GIT_*` 的**按项目拆分**）。
-- **`pathInRepo`**：仓库内子树，同步到本地时的源前缀。
-- **`targetUnderHome`**：默认 `skills`，表示落到 `home/skills/...`，与 `docs/http-gateway-rs-api.md` 路径一致。
+- 物化到 **`home/skills/<skillName>/SKILL.md`**（`project_config_apply::write_skills_json`）。
+- 管理 API：`POST /v1/project/skills/{ds_id}` 合并写库；`GET /v1/skills/{ds_id}` 优先读库。
 
-### Git 凭据（不变量：仅 env）
+### `rules_json` / `mcp_servers_json` / `allowed_tools_json`
 
-1. **禁止**在 `project_config`（含 `skills_sources_json`）或 `PUT` 请求体中存放 token / PAT / 密码等明文或密文字段（如 `token`、`gitToken`、`accessToken`）。
-2. **禁止**在 `gitUrl` 中嵌入 `user:token@`（HTTPS）；凭据只通过 **`tokenEnv`** 命名环境变量，由网关进程在 clone/pull 时 `std::env::var(tokenEnv)` 读取（与现有全局 `CLAW_PROJECTS_GIT_TOKEN` + `projects_git_effective_clone_url` 一致）。
-3. **`tokenEnv` 必填**：当 `gitUrl` 为无 userinfo 的 `http://` / `https://` 时；`git@` / `ssh://` 可不填。
-4. **禁止** BFF/请求体/PostgreSQL 作为 git token 的第二通道；MCP 的 `POST /v1/mcp/inject` **不**适用于 git 拉取凭据。
+与先前设计一致；MCP 见 `build_settings`（**仅** `mcp_servers_json`，无 `.claw.json` / env 回退）。
 
-运维在 compose / K8s / 本机为网关容器配置上述 env；BFF 只写 `tokenEnv` 变量名，不写 secret 值。
+### `skills_sources_json`
 
-## 配置的运行时使用（设计挂点）
+**禁止**在 `PUT` 中提交非空数组（返回 400）。历史 git 拉取逻辑已移除。
 
-### 1）某个 `ds` 初次使用：从 DB 物化并按规范初始化
+### 状态机（每 `ds_id`）
 
-挂点 **`prepare_gateway_session`** 内、在 **`ensure_ds_project_ready`** 之前或之内（`main.rs` 约 4436–4438 行附近）：若 PG 存在 `project_config` 行且 `content_rev` 与本地缓存标记不一致，则：
+```text
+STEADY:   draft_open=false，生效 E = 某一正式版（必在 project_config_revision）
+EDITING: draft_open=true，仅 1 个临时版 content_rev=__draft__，生效 E 不变
 
-1. 在 **`ds_<dsId>` 锁**下物化：`rules_json` → `home/` 下文件；`claude_md` → `home/CLAUDE.md`；`skills_sources_json` → 克隆/稀疏检出到 `home/skills/`。
-2. 写本地标记文件，例如 **`.claw/project_config_applied_rev`**（内容为 `content_rev`），避免每请求重复 git。
-3. 再执行现有 **`ensure_workspace_initialized`**、**`build_settings`** 写 **`session_home/.claw/settings.json`**（已存在流程）。
+各 Tab 保存     → 进入/更新 EDITING（从 E 的正式快照复制，仅一条临时版）
+保存为正式版     → 临时版 → 新正式版 F，回到 STEADY（生效仍为 E）
+设为生效(rev)   → E := rev（rev 必须是正式版），关闭临时版，物化
+废弃(rev)       → 删除正式版 rev（rev ≠ 当前 E）
+```
 
-这样仍满足 **`ds_project_tree_ready`** 对 **非空 CLAUDE** 的约束（需在配置或默认模板中保证 `claude_md` 或规则不替代 CLAUDE 门槛）。
+- **生效**只能从**正式版**选择；**临时版** `__draft__` 出现在版本列表首行（`isDraft: true`），不可设为生效、solve 不读临时版。
 
-### 2）定时加载最新内容（git 模态内化）
+### `project_config_revision`（正式版，不可变）
 
-挂点可与现有 **`CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS`** 轮询合并为**单一调度器**（KISS）：
+| 列 | 说明 |
+| --- | --- |
+| `(ds_id, content_rev)` PK | 某一版配置快照（不含 `git_sync_json`，Git 仍只在 `project_config` 行上）。 |
+| 其余列 | 与物化相关字段同 `project_config`（`rules_json`、`skills_json`、`claude_md` 等）。 |
+| `note` | 可选备注（Admin 填写，便于查找；版本号不手填）。 |
 
-- **若行存在 `project_config`**：按行的 git 源与 `content_rev` 拉取更新 → 物化 → 更新 `.claw/project_config_applied_rev`；必要时 bump 会话侧 **`mcp_discovery_cache` 清理**（与 `purge_mcp_discovery` 同类逻辑）。
-- **若行不存在**：保留现有 **全局 projects git 镜像**行为（向后兼容），避免第二套并行「仅 env」与「仅 DB」长期分叉。
+- **不可变**：`INSERT … ON CONFLICT DO NOTHING`；已存在的 `content_rev` 不能覆盖。
+- **临时版**：`project_config` 在编辑期使用 `content_rev = __draft__`、`draft_open = true`；`stable_content_rev` 为 solve 当前生效版。
+- **写入临时版**：`PUT /v1/project/config/{ds_id}`、Rules/Tools/Git、`POST …/claude`、`POST …/skills`、`POST/DELETE …/mcp/inject*` 均先 `ensure_draft`（无临时版时从生效版复制）。
+- **保存正式版**：`POST /v1/project/config/{ds_id}/versions/commit` body `{ note? }` — 服务端自动生成正式版号（本地 `YYYYMMDDHHmmss`，冲突加 `-2`）；临时版 → 正式版（不可变）；**不**改变当前生效版；关闭临时版。
+- **设为生效**（单独动作）：`POST .../versions/{content_rev}/activate` — 在正式版间切换 solve 物化目标。
+- **废弃**：`DELETE .../versions/{content_rev}` — 删除非生效的正式版（不可删当前生效版、`__draft__`）。
+- **比对**：`GET .../versions/compare?from=&to=` 返回 `fromDocument` / `toDocument`（展开 JSON：`claudeMd`、`rulesJson`、`skillsJson`、`mcpServersJson`、`allowedToolsJson` 等）及 `changes` 顶层摘要；Admin 侧用 GitHub 风格 split diff 展示，并可按顶层块选择「保留 from / to」合并进 `__draft__`（`PUT /v1/project/config/{ds_id}`）。
 
-## 与文档边界表的关系
+`project_config` 另增列：`stable_content_rev`、`draft_open`。
 
-更新 **`docs/boundaries-claw-stack.md`**：HTTP gateway 拥有 **`project_config` 表**及物化到 `ds_*` 工作区的职责；Claw 运行时仍只读本地 `.claw/settings.json` 与 `ConfigLoader`（`gateway-solve-turn` 不改变该边界）。
+## 运行时
+
+1. **`POST /v1/projects`**：插入 `project_config`（默认 `claude_md` + 空 skills），物化。
+2. **`PUT /v1/project/config/{ds_id}`**：更新临时版（不物化、不新增固化行）。
+3. **`POST …/versions/commit`**：临时版 → 正式版（历史表）；生效版不变。
+4. **`POST …/versions/{rev}/activate`**：切换生效版并物化。
+5. **`DELETE …/versions/{rev}`**：废弃非生效正式版。
+6. **`POST /v1/project/claude`** / skills / MCP：仅写临时版；物化仅在「设为生效」后发生。
+7. **`POST /v1/init`**：要求已有 `project_config` 行，再物化稳定版（**不**拉 projects-git）。
+8. **轮询**：`CLAW_PROJECT_CONFIG_POLL_INTERVAL_SECS` 按 `stable_content_rev` 物化（临时版不参与 solve）。
 
 ## 实现状态
 
-- **已完成**：DDL + `get` / `upsert` / `list_project_config_ds_ids`（`session_db.rs`）。
-- **已完成**：物化模块 `project_config_apply.rs`（rules、`claude_md`、skills git → `home/`，`.claw/project_config_applied_rev`）。
-- **已完成**：`POST /v1/init`、`ensure_ds_project_ready`（solve 前）、`PUT /v1/project/config`（写库后立即物化）、轮询 `tick_projects_git_ds_home_poll`（有 `project_config` 行时按 `content_rev` 刷新；无行则沿用全局 projects git 镜像）。
-- **已完成**：`build_settings` 合并 `mcp_servers_json`（顺序：全局 env → **project_config** → `POST /v1/mcp/inject`）。
-- **已完成**：`allowed_tools_json` + `GET /v1/project/tools/catalog` + solve 时按项目勾选合并工具策略（`project_tools.rs`）。
-- Git 凭据：**仅** `tokenEnv` → `std::env::var`（`project_config_apply::git_effective_clone_url`）。
+- DDL + `skills_json` 列（`session_db.rs` 迁移）。
+- 物化：`project_config_apply.rs`（rules、claude、**skills_json**）。
+- 每项目 Git：`project_git_sync.rs` + `git_sync_json` 列；全局 `CLAW_PROJECTS_GIT_URL` mirror 已废弃（可选、默认不启用）。

@@ -12,15 +12,20 @@ Usage:
   ./deploy/stack/gateway.sh <command>
 
 Commands:
-  clean         Remove rust/target + deploy/stack/.linux-artifacts (optional --workspace)
+  quick         Daily local stack: host pool-daemon + fast playground image + pool-reset + up + check
+  clean         Remove rust/target (or --debug-only) + .linux-artifacts; optional podman cache/images
   build         clean (default) + build images (Darwin: podman run compile; log: .build.log)
-  pack-deploy   Build images + restart stack (local standard; log: .build.log)
+  pack-deploy   Build gateway images + restart stack (slow; after Rust/image changes; log: .build.log)
+  playground    Run host playground UI (solve_async + /admin; builds admin dist first)
+  admin-build   Build web/gateway-admin dist only (npm ci && vite build)
+  admin-reload  admin-build + copy dist into running playground container
   solve-once-local  Host-side one-turn gateway-solve-once (no worker container)
   up            Start/recreate gateway + pool only (does not stop/start postgres)
   down          Stop gateway + pool only (postgres keeps running)
   pg-up         Start postgres only
   pg-down       Stop postgres only (data volume kept)
   restart       Recreate gateway stack (down + up)
+  pool-reset    Stop host pool daemon + remove all claw-worker containers
   check         Connectivity smoke check
   tap-up        Start claude-tap only (see CLAUDE_TAP_MODE in .env)
   tap-down      Stop claude-tap only
@@ -39,15 +44,20 @@ cmd="${1:-help}"
 shift || true
 
 case "${cmd}" in
+  quick) "${LIB}/quick.sh" "$@" ;;
   clean) "${LIB}/clean.sh" "$@" ;;
   build) "${LIB}/build.sh" "$@" ;;
   pack-deploy) "${LIB}/pack-deploy.sh" "$@" ;;
+  playground) "${LIB}/playground.sh" "$@" ;;
+  admin-build) "${LIB}/build-gateway-admin.sh" "$@" ;;
+  admin-reload) "${LIB}/admin-reload.sh" "$@" ;;
   solve-once-local) "${LIB}/solve-once-local.sh" "$@" ;;
   up) "${LIB}/up.sh" "$@" ;;
   down) "${LIB}/down.sh" "$@" ;;
   pg-up) "${LIB}/pg-up.sh" "$@" ;;
   pg-down) "${LIB}/pg-down.sh" "$@" ;;
   restart) "${LIB}/down.sh" && "${LIB}/up.sh" "$@" ;;
+  pool-reset) "${LIB}/pool-reset.sh" "$@" ;;
   check) "${LIB}/check-connectivity.sh" "$@" ;;
   tap-up) bash "${LIB}/tap-up.sh" "$@" ;;
   tap-down) bash "${LIB}/tap-down.sh" "$@" ;;

@@ -2,48 +2,49 @@
 
 ## 技术栈（测试心智）
 
-- **本目录**：`server.py` 仅用 **Python 3 标准库**（`http.server` + `urllib`），前端为 **单文件 `index.html`**。不建 Rust crate、不跑 `cargo`、**不需要 `pip install`**。
-- **被测对象**：你已在跑的 **claw `http-gateway-rs` 网关**（Rust）只是 HTTP 对端；本工具不实现网关逻辑，只做同源代理 + 静态页，方便浏览器里点几下做联调。
+- **本目录**：`server.py` 仅用 **Python 3 标准库**（`http.server` + `urllib`），前端为 **`index.html`**（solve 调试）与 **`../gateway-admin/dist`**（`/admin` React 管理台）。不建 Rust crate、不跑 `cargo`、**不需要 `pip install`**（admin 构建用 Node，见 `web/gateway-admin/README.md`）。
+- **被测对象**：**claw `http-gateway-rs` 网关**（Rust）只是 HTTP 对端；本工具做同源代理 + 静态页。
 
-用于在浏览器里走通与 `POST /v1/solve_async`（文档中常与 *resolve_async* 语义对齐）相关的链路：
-
-1. 提交异步任务（可选续聊 `sessionId`）
-2. 轮询 `GET /v1/tasks/{taskId}`
-3. 当 `hasReport === true` 时拉取 `GET /v1/biz_advice_report`（`stream=true`，SSE）
+用于在浏览器里走通 `POST /v1/solve_async` 相关链路：提交任务 → 轮询 `GET /v1/tasks/{taskId}` → `hasReport` 时 SSE 报告。
 
 ## 为何需要 `server.py`
 
-`http-gateway-rs` 未配置浏览器 CORS（仓库内无 `Access-Control-Allow-Origin`），直接用 `file://` 或任意前端源请求网关会被浏览器拦截。本目录的 **同源小代理** 只转发到固定 allowlist 的主机与端口 **18088**，用于本地调试。
+网关未配置浏览器 CORS。本代理只转发到 **allowlist** 主机/端口（见环境变量 `PLAYGROUND_ALLOWED_HOSTS` / `PLAYGROUND_ALLOWED_PORTS`）。
 
-## 运行
+## 本地运行（仅 Python）
 
 ```bash
 cd web/gateway-async-playground
 python3 server.py
 ```
 
-浏览器打开终端里提示的地址（默认 `http://127.0.0.1:18765/`）。
+默认 `http://127.0.0.1:18765/`；`GET /__config__` 返回 `defaultGatewayBase`（本机一条）与可选 `gatewayPresets`（仅 `PLAYGROUND_EXTRA_GATEWAY_BASES`）。
 
-solve_async 页顶部可配置 **claude-tap Live** 基址（默认 `http://127.0.0.1:3000`）；每轮卡片上的 **session** 点击后打开 `?session=<sessionId>`（与网关 `sessionId` / `taskId` 同值）。
+## 与 gateway 一并 compose 部署
 
-### 项目管理页
+`./deploy/stack/gateway.sh build` 会构建 **`claw-gateway-playground:local`**；`gateway.sh up` 会拉起 **`gateway-playground`**（与 `gateway-rs` 同批 up/down，不含 postgres）。
 
-- `http://127.0.0.1:18765/admin` — 按 `dsId` 管理项目工作区（数据来自 `/healthz` 的 `projectsGitMirror.dsWorkspaces`）：
-  1. **项目**：列表、`POST /v1/init` 初始化
-  2. **Skills**：`GET /v1/skills/{ds_id}`、`POST /v1/project/skills/{ds_id}`
-  3. **MCP**：`GET/POST/DELETE /v1/mcp/injected|inject`
-  4. **Rules**：`GET/POST /v1/project/claude/{ds_id}`（`home/CLAUDE.md`）
-  5. **系统提示词**：`GET/POST /v1/project/prompt/{ds_id}/effective`
-  6. **Tools**：`GET /v1/project/tools/catalog` + `GET/PUT /v1/project/config/{ds_id}`（`allowedToolsJson`）
+仓库根 `.env`（见 `.env.example`）：
 
-PostgreSQL 仅存会话/轮次/反馈；项目配置在 Git 工作区，见页面内说明。
+| 变量 | 作用 |
+| --- | --- |
+| `GATEWAY_PLAYGROUND_HOST_PORT` | 宿主机端口，默认 `18765` |
+| `PLAYGROUND_PUBLIC_GATEWAY_BASE` | 浏览器默认网关，如 `http://127.0.0.1:8088`（与 `GATEWAY_HOST_PORT` 对齐） |
+| `PLAYGROUND_GATEWAY_BASE` | 容器内代理上游，默认 `http://gateway-rs:8080` |
 
-## 预设网关 Base
+访问：
 
-- `http://127.0.0.1:18088`（localhost）
-- `http://192.168.9.252:18088`
-- `http://10.200.2.171:18088`
+- `http://127.0.0.1:${GATEWAY_PLAYGROUND_HOST_PORT:-18765}/` — solve_async 调试
+- `http://127.0.0.1:18765/admin` — 项目管理（需登录；账号密码见根目录 `.env` 的 `PLAYGROUND_ADMIN_USER` / `PLAYGROUND_ADMIN_PASSWORD`，默认 `admin` / `sunmi123`）
 
-与 `scripts/verify-live-report-flow.sh` 一致，请求体中带 `assistantStreamSpill: true` 与示例 `extraSession`（`tenant_code` / `solution_code` / `biz_type` + 你填的 `store_id` / `org_id`）。若网关未启用 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`，运行中 `hasReport` 可能长期为 `false`，报告仍可能在终态后走润色路径；详见 `docs/http-gateway-rs-api.md`。
+连通性：`./deploy/stack/gateway.sh check`（含 playground `/__config__`）。
+
+## 页面说明
+
+- **index**：网关下拉（含 compose 注入的 default preset）；**ds_id** 与 **claude-tap Live** 均从当前网关 `GET /healthz` 自动填充（`projectsGitMirror.dsWorkspaces`、`claudeTap`）；`store_id` / `org_id` 仍可选手填；多轮对话、呼吸灯 poll、`progressHistory`、报告 SSE；session 链接用 `liveSessionUrlTemplate`
+- **admin**（`web/gateway-admin`，Ant Design）：顶栏 **ds_id** 与 solve 页同源；`GET/POST` 项目、Skills、MCP、CLAUDE.md、Rules、prompt、tools catalog
+- 修改 admin UI：`cd web/gateway-admin && npm run build`，提交 `dist/`；旧单页备份 `admin.legacy.html`
+
+远程网关：在根 `.env` 设 `PLAYGROUND_EXTRA_GATEWAY_BASES`（逗号分隔 URL），不要在下拉里堆 localhost/default/compose 重复项。
 
 Author: kejiqing

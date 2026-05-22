@@ -74,6 +74,7 @@ done
 IMAGE_TAG="${1:-local}"
 IMAGE_NAME="claw-gateway-rs:${IMAGE_TAG}"
 WORKER_IMAGE_NAME="claw-gateway-worker:${IMAGE_TAG}"
+PLAYGROUND_IMAGE_NAME="claw-gateway-playground:${IMAGE_TAG}"
 
 step() {
   echo ""
@@ -126,21 +127,28 @@ if use_prebuilt_linux_path; then
   step "config: Darwin → podman run compile + prebuilt images (no cargo in podman build)"
   # shellcheck source=/dev/null
   source "${ROOT_DIR}/deploy/stack/lib/linux-compile.sh"
-  step "1/3 linux compile (podman run; volumes claw-cargo-registry / claw-cargo-git persist)"
+  step "1/4 linux compile (podman run; volumes claw-cargo-registry / claw-cargo-git persist)"
   claw_linux_compile_release "${ROOT_DIR}" "${CONTAINER_CLI}" "${RUST_BASE_IMAGE}" "${CN_FLAG}"
 
-  step "2/3 image ${IMAGE_NAME} (Containerfile.gateway-rs.prebuilt)"
+  step "2/4 image ${IMAGE_NAME} (Containerfile.gateway-rs.prebuilt)"
   "${CONTAINER_CLI}" build \
     --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs.prebuilt" \
     -t "${IMAGE_NAME}" \
     "${ROOT_DIR}"
 
-  step "3/3 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
+  step "3/4 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
   "${CONTAINER_CLI}" build \
     --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker.prebuilt" \
     -t "${WORKER_IMAGE_NAME}" \
+    "${ROOT_DIR}"
+
+  step "4/4 gateway-admin dist + image ${PLAYGROUND_IMAGE_NAME}"
+  "${ROOT_DIR}/deploy/stack/lib/build-gateway-admin.sh"
+  "${CONTAINER_CLI}" build \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground" \
+    -t "${PLAYGROUND_IMAGE_NAME}" \
     "${ROOT_DIR}"
 
   if command -v cargo >/dev/null 2>&1; then
@@ -173,7 +181,7 @@ else
     -t "${IMAGE_NAME}" \
     "${ROOT_DIR}"
 
-  step "2/3 image ${WORKER_IMAGE_NAME}"
+  step "2/4 image ${WORKER_IMAGE_NAME}"
   # shellcheck disable=SC2086
   "${CONTAINER_CLI}" build \
     --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
@@ -184,14 +192,21 @@ else
     -t "${WORKER_IMAGE_NAME}" \
     "${ROOT_DIR}"
 
+  step "3/4 gateway-admin dist + image ${PLAYGROUND_IMAGE_NAME}"
+  "${ROOT_DIR}/deploy/stack/lib/build-gateway-admin.sh"
+  "${CONTAINER_CLI}" build \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground" \
+    -t "${PLAYGROUND_IMAGE_NAME}" \
+    "${ROOT_DIR}"
+
   if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
-    step "3/3 host claw-pool-daemon"
+    step "4/4 host claw-pool-daemon"
     (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
   fi
 fi
 
 step "done"
-echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME}"
+echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME} ${PLAYGROUND_IMAGE_NAME}"
 if [[ "${CLAW_BUILD_NO_LOG}" != "1" ]]; then
   echo "log: ${BUILD_LOG}"
 fi

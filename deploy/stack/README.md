@@ -15,10 +15,16 @@ Author: kejiqing
 
 `gateway.sh up` 会跑 **preflight**（socket / postgres 镜像 / Git 必填项）；**Docker 下不由脚本预建 compose 网络**（避免 `claw_default` 标签冲突）。
 
-**单入口**：**`./deploy/stack/gateway.sh`**。本地打包+部署记下面两条即可（不要等 `podman build` 里 cargo，那会卡 `Updating crates.io index`）。
+**单入口**：**`./deploy/stack/gateway.sh`**。日常起栈用 **`quick`**；改 Rust 网关镜像后用 **`pack-deploy`**（不要等 `podman build` 里 cargo，那会卡 `Updating crates.io index`）。
 
 ```bash
-# 标准：改 rust 后打包并重启（日志 deploy/stack/.build.log，可 tail -f）
+# 日常：host pool-daemon + gateway-admin dist + playground 镜像 + up + check
+./deploy/stack/gateway.sh quick
+
+# 只改 React 管理台（web/gateway-admin/src）：
+./deploy/stack/gateway.sh admin-build   # 然后 quick 或 playground，并提交 dist/
+
+# 改 rust 网关 / worker 镜像后：全量 build + 重启（日志 deploy/stack/.build.log，可 tail -f）
 ./deploy/stack/gateway.sh pack-deploy
 
 # 仅清编译缓存（rust/target、.linux-artifacts；默认不删 claw-workspace）
@@ -69,6 +75,9 @@ cp .env.example .env
 | `CLAW_CONTAINER_RUNTIME` | `auto`（默认）或 `podman` / `docker`；与线上/本地无关，按需覆盖 |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 模型 |
 | `GATEWAY_HOST_PORT` | 宿主机端口，默认 `8088` |
+| `GATEWAY_PLAYGROUND_HOST_PORT` | solve_async / 项目管理 UI，默认 `18765`（compose 服务 `gateway-playground`） |
+| `PLAYGROUND_PUBLIC_GATEWAY_BASE` | 浏览器里 playground 默认网关，应与 `GATEWAY_HOST_PORT` 一致，如 `http://127.0.0.1:8088` |
+| `PLAYGROUND_ADMIN_USER` / `PLAYGROUND_ADMIN_PASSWORD` | `/admin` 登录账号密码（默认 `admin` / `sunmi123`） |
 | `CLAW_PODMAN_IMAGE` / `CLAW_DOCKER_IMAGE` | worker 镜像名（与 `CLAW_SOLVE_ISOLATION` 前缀一致） |
 | `CLAW_GATEWAY_DATABASE_URL` | 必填（网关进程）；compose 内网关连 **`postgres:5432`**；宿主机映射默认 **`127.0.0.1:5433`**（`CLAW_GATEWAY_PG_HOST_PORT`，避开 sqlbot 常用 5432） |
 | `CLAW_PROJECTS_GIT_URL` | **必填**：`ds_*` 项目镜像仓库（SSH 或 HTTPS），代码无默认值 |
@@ -101,6 +110,8 @@ cp .env.example .env
 
 ```bash
 curl -sS "http://127.0.0.1:${GATEWAY_HOST_PORT:-8088}/healthz"
+# 可选：async 调试页 + /admin（与 gateway 同 up/down）
+curl -sS "http://127.0.0.1:${GATEWAY_PLAYGROUND_HOST_PORT:-18765}/"
 # 与当前 CLAW_CONTAINER_RUNTIME 一致（auto 时与 build/up 相同）：
 podman ps   # 或  docker ps
 ```

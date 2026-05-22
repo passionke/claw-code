@@ -37,6 +37,7 @@ tools = { path = "../tools" }
 telemetry = { path = "../telemetry" }
 gateway-solve-turn = { path = "../gateway-solve-turn" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [lints]
 workspace = true

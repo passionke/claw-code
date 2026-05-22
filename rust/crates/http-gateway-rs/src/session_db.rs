@@ -30,17 +30,69 @@ pub struct LatestTurnRow {
     pub user_prompt: Option<String>,
 }
 
-/// One row per `ds_id`: rules, MCP map, skills git sources, optional `CLAUDE.md` body.
+/// One row per `ds_id`: rules, MCP map, inline skills, optional `CLAUDE.md` body. Author: kejiqing
 #[derive(Debug, Clone)]
 pub struct ProjectConfigRow {
     pub ds_id: i64,
     pub content_rev: String,
+    /// Solve/materialize target; unchanged while `draft_open`. Author: kejiqing
+    pub stable_content_rev: Option<String>,
+    /// In-progress edits use `content_rev = __draft__`. Author: kejiqing
+    pub draft_open: bool,
     pub updated_at_ms: i64,
     pub rules_json: Value,
     pub mcp_servers_json: Value,
+    /// Deprecated: git skill sources; kept for schema compat, not applied. Author: kejiqing
     pub skills_sources_json: Value,
+    /// `[{ "skillName", "skillContent" }, ...]` — sole skills source for materialize. Author: kejiqing
+    pub skills_json: Value,
     pub allowed_tools_json: Value,
     pub claude_md: Option<String>,
+    /// Per-project one-way git push: `{ gitUrl, gitRef, gitToken, enabled, lastPush* }`. Author: kejiqing
+    pub git_sync_json: Value,
+}
+
+/// Row summary for [`GatewaySessionDb::list_project_config_summaries`]. Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct ProjectConfigSummary {
+    pub ds_id: i64,
+    pub content_rev: String,
+    pub stable_content_rev: Option<String>,
+    pub draft_open: bool,
+    pub updated_at_ms: i64,
+    pub claude_in_db: bool,
+    pub skills_count_db: i64,
+    pub rules_count_db: i64,
+    pub mcp_servers_count_db: i64,
+    pub git_sync_json: Value,
+}
+
+/// Immutable snapshot for one `content_rev` (history); `git_sync_json` stays on active `project_config` only.
+#[derive(Debug, Clone)]
+pub struct ProjectConfigRevisionRow {
+    pub ds_id: i64,
+    pub content_rev: String,
+    pub created_at_ms: i64,
+    /// Optional label for admins (search / display). Author: kejiqing
+    pub note: Option<String>,
+    pub rules_json: Value,
+    pub mcp_servers_json: Value,
+    pub skills_sources_json: Value,
+    pub skills_json: Value,
+    pub allowed_tools_json: Value,
+    pub claude_md: Option<String>,
+}
+
+/// Summary row for version list API. Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct ProjectConfigRevisionSummary {
+    pub content_rev: String,
+    pub created_at_ms: i64,
+    pub note: Option<String>,
+    pub claude_in_db: bool,
+    pub skills_count_db: i64,
+    pub rules_count_db: i64,
+    pub mcp_servers_count_db: i64,
 }
 
 /// Payload for [`GatewaySessionDb::upsert_project_config`].
@@ -48,12 +100,16 @@ pub struct ProjectConfigRow {
 pub struct ProjectConfigUpsert<'a> {
     pub ds_id: i64,
     pub content_rev: &'a str,
+    pub stable_content_rev: Option<&'a str>,
+    pub draft_open: bool,
     pub updated_at_ms: i64,
     pub rules_json: &'a Value,
     pub mcp_servers_json: &'a Value,
     pub skills_sources_json: &'a Value,
+    pub skills_json: &'a Value,
     pub allowed_tools_json: &'a Value,
     pub claude_md: Option<&'a str>,
+    pub git_sync_json: &'a Value,
 }
 
 /// Gateway session index: one row per `(session_id, ds_id)` with a workspace-relative `session_home`.
@@ -167,7 +223,120 @@ impl GatewaySessionDb {
         )
         .execute(pool)
         .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS skills_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS git_sync_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS stable_content_rev TEXT",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS draft_open BOOLEAN NOT NULL DEFAULT false",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "UPDATE project_config SET stable_content_rev = content_rev WHERE stable_content_rev IS NULL OR stable_content_rev = ''",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS project_config_revision (
+                ds_id BIGINT NOT NULL,
+                content_rev TEXT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                rules_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                mcp_servers_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                skills_sources_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                skills_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                allowed_tools_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                claude_md TEXT,
+                PRIMARY KEY (ds_id, content_rev)
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"INSERT INTO project_config_revision (
+                ds_id, content_rev, created_at_ms, rules_json, mcp_servers_json,
+                skills_sources_json, skills_json, allowed_tools_json, claude_md
+            )
+            SELECT ds_id, content_rev, updated_at_ms, rules_json, mcp_servers_json,
+                   skills_sources_json, skills_json, allowed_tools_json, claude_md
+            FROM project_config
+            ON CONFLICT (ds_id, content_rev) DO NOTHING",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("ALTER TABLE project_config_revision ADD COLUMN IF NOT EXISTS note TEXT")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS gateway_global_settings (
+                singleton_id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (singleton_id = 1),
+                settings_json JSONB NOT NULL DEFAULT '{"gitPats":[]}'::jsonb,
+                git_pat_tokens_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_at_ms BIGINT NOT NULL DEFAULT 0
+            )"#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"INSERT INTO gateway_global_settings (singleton_id)
+             VALUES (1) ON CONFLICT (singleton_id) DO NOTHING",
+        )
+        .execute(pool)
+        .await?;
 
+        Ok(())
+    }
+
+    /// Gateway-wide settings row (PAT vault, etc.). Author: kejiqing
+    pub async fn get_gateway_global_settings_raw(
+        &self,
+    ) -> Result<(Value, Value, i64), SqlxError> {
+        let row = sqlx::query(
+            r"SELECT settings_json, git_pat_tokens_json, updated_at_ms
+               FROM gateway_global_settings WHERE singleton_id = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok((json!({"gitPats": []}), json!({}), 0));
+        };
+        let settings: Value = row.try_get::<Json<Value>, _>("settings_json")?.0;
+        let tokens: Value = row.try_get::<Json<Value>, _>("git_pat_tokens_json")?.0;
+        let updated_at_ms: i64 = row.try_get("updated_at_ms")?;
+        Ok((settings, tokens, updated_at_ms))
+    }
+
+    pub async fn save_gateway_global_settings_raw(
+        &self,
+        settings_json: &Value,
+        git_pat_tokens_json: &Value,
+        updated_at_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_global_settings (singleton_id, settings_json, git_pat_tokens_json, updated_at_ms)
+               VALUES (1, $1, $2, $3)
+               ON CONFLICT (singleton_id) DO UPDATE SET
+                 settings_json = EXCLUDED.settings_json,
+                 git_pat_tokens_json = EXCLUDED.git_pat_tokens_json,
+                 updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(Json(settings_json))
+        .bind(Json(git_pat_tokens_json))
+        .bind(updated_at_ms)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -178,13 +347,61 @@ impl GatewaySessionDb {
         Ok(rows)
     }
 
+    /// Admin list: one row per `project_config` (DB truth for skills / CLAUDE). Author: kejiqing
+    pub async fn list_project_config_summaries(&self) -> Result<Vec<ProjectConfigSummary>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms, claude_md,
+                      skills_json, rules_json, mcp_servers_json, git_sync_json
+               FROM project_config ORDER BY ds_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let ds_id: i64 = row.try_get("ds_id")?;
+            let content_rev: String = row.try_get("content_rev")?;
+            let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
+            let draft_open: bool = row.try_get("draft_open")?;
+            let updated_at_ms: i64 = row.try_get("updated_at_ms")?;
+            let claude_md: Option<String> = row.try_get("claude_md")?;
+            let skills_json: Value = row.try_get::<Json<Value>, _>("skills_json")?.0;
+            let rules_json: Value = row.try_get::<Json<Value>, _>("rules_json")?.0;
+            let mcp_servers_json: Value = row.try_get::<Json<Value>, _>("mcp_servers_json")?.0;
+            let git_sync_json: Value = row.try_get::<Json<Value>, _>("git_sync_json")?.0;
+            let claude_in_db = claude_md
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty());
+            let skills_count_db = skills_json.as_array().map(|a| a.len() as i64).unwrap_or(0);
+            let rules_count_db = rules_json.as_array().map(|a| a.len() as i64).unwrap_or(0);
+            let mcp_servers_count_db = mcp_servers_json
+                .as_object()
+                .map(|o| o.len() as i64)
+                .unwrap_or(0);
+            out.push(ProjectConfigSummary {
+                ds_id,
+                content_rev,
+                stable_content_rev,
+                draft_open,
+                updated_at_ms,
+                claude_in_db,
+                skills_count_db,
+                rules_count_db,
+                mcp_servers_count_db,
+                git_sync_json,
+            });
+        }
+        Ok(out)
+    }
+
     pub async fn get_project_config(
         &self,
         ds_id: i64,
     ) -> Result<Option<ProjectConfigRow>, SqlxError> {
         let row = sqlx::query(
-            r"SELECT ds_id, content_rev, updated_at_ms, rules_json, mcp_servers_json,
-                      skills_sources_json, allowed_tools_json, claude_md
+            r"SELECT ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
+                      rules_json, mcp_servers_json, skills_sources_json, skills_json,
+                      allowed_tools_json, claude_md, git_sync_json
                FROM project_config WHERE ds_id = $1",
         )
         .bind(ds_id)
@@ -201,18 +418,27 @@ impl GatewaySessionDb {
         let rules_json: Value = row.try_get::<Json<Value>, _>("rules_json")?.0;
         let mcp_servers_json: Value = row.try_get::<Json<Value>, _>("mcp_servers_json")?.0;
         let skills_sources_json: Value = row.try_get::<Json<Value>, _>("skills_sources_json")?.0;
+        let skills_json: Value = row.try_get::<Json<Value>, _>("skills_json")?.0;
         let allowed_tools_json: Value = row.try_get::<Json<Value>, _>("allowed_tools_json")?.0;
         let claude_md: Option<String> = row.try_get("claude_md")?;
+        let git_sync_json: Value = row.try_get::<Json<Value>, _>("git_sync_json")?.0;
+
+        let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
+        let draft_open: bool = row.try_get("draft_open")?;
 
         Ok(Some(ProjectConfigRow {
             ds_id,
             content_rev,
+            stable_content_rev,
+            draft_open,
             updated_at_ms,
             rules_json,
             mcp_servers_json,
             skills_sources_json,
+            skills_json,
             allowed_tools_json,
             claude_md,
+            git_sync_json,
         }))
     }
 
@@ -222,29 +448,197 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO project_config (
-                ds_id, content_rev, updated_at_ms,
-                rules_json, mcp_servers_json, skills_sources_json, allowed_tools_json, claude_md
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
+                rules_json, mcp_servers_json, skills_sources_json, skills_json,
+                allowed_tools_json, claude_md, git_sync_json
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (ds_id) DO UPDATE SET
                 content_rev = EXCLUDED.content_rev,
+                stable_content_rev = EXCLUDED.stable_content_rev,
+                draft_open = EXCLUDED.draft_open,
                 updated_at_ms = EXCLUDED.updated_at_ms,
                 rules_json = EXCLUDED.rules_json,
                 mcp_servers_json = EXCLUDED.mcp_servers_json,
                 skills_sources_json = EXCLUDED.skills_sources_json,
+                skills_json = EXCLUDED.skills_json,
                 allowed_tools_json = EXCLUDED.allowed_tools_json,
-                claude_md = EXCLUDED.claude_md",
+                claude_md = EXCLUDED.claude_md,
+                git_sync_json = EXCLUDED.git_sync_json",
         )
         .bind(row.ds_id)
         .bind(row.content_rev)
+        .bind(row.stable_content_rev)
+        .bind(row.draft_open)
         .bind(row.updated_at_ms)
         .bind(Json(row.rules_json))
         .bind(Json(row.mcp_servers_json))
         .bind(Json(row.skills_sources_json))
+        .bind(Json(row.skills_json))
         .bind(Json(row.allowed_tools_json))
         .bind(row.claude_md)
+        .bind(Json(row.git_sync_json))
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Insert saved revision; existing rows are not updated (immutable). Author: kejiqing
+    pub async fn insert_project_config_revision_immutable(
+        &self,
+        row: &ProjectConfigRevisionRow,
+    ) -> Result<bool, SqlxError> {
+        let r = sqlx::query(
+            r"INSERT INTO project_config_revision (
+                ds_id, content_rev, created_at_ms, note, rules_json, mcp_servers_json,
+                skills_sources_json, skills_json, allowed_tools_json, claude_md
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (ds_id, content_rev) DO NOTHING",
+        )
+        .bind(row.ds_id)
+        .bind(&row.content_rev)
+        .bind(row.created_at_ms)
+        .bind(&row.note)
+        .bind(Json(&row.rules_json))
+        .bind(Json(&row.mcp_servers_json))
+        .bind(Json(&row.skills_sources_json))
+        .bind(Json(&row.skills_json))
+        .bind(Json(&row.allowed_tools_json))
+        .bind(&row.claude_md)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    pub async fn get_project_config_revision(
+        &self,
+        ds_id: i64,
+        content_rev: &str,
+    ) -> Result<Option<ProjectConfigRevisionRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT ds_id, content_rev, created_at_ms, note, rules_json, mcp_servers_json,
+                      skills_sources_json, skills_json, allowed_tools_json, claude_md
+               FROM project_config_revision
+               WHERE ds_id = $1 AND content_rev = $2",
+        )
+        .bind(ds_id)
+        .bind(content_rev)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(ProjectConfigRevisionRow {
+            ds_id: row.try_get("ds_id")?,
+            content_rev: row.try_get("content_rev")?,
+            created_at_ms: row.try_get("created_at_ms")?,
+            note: row.try_get("note")?,
+            rules_json: row.try_get::<Json<Value>, _>("rules_json")?.0,
+            mcp_servers_json: row.try_get::<Json<Value>, _>("mcp_servers_json")?.0,
+            skills_sources_json: row.try_get::<Json<Value>, _>("skills_sources_json")?.0,
+            skills_json: row.try_get::<Json<Value>, _>("skills_json")?.0,
+            allowed_tools_json: row.try_get::<Json<Value>, _>("allowed_tools_json")?.0,
+            claude_md: row.try_get("claude_md")?,
+        }))
+    }
+
+    pub async fn list_project_config_revisions(
+        &self,
+        ds_id: i64,
+    ) -> Result<Vec<ProjectConfigRevisionSummary>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT content_rev, created_at_ms, note, claude_md, skills_json, rules_json, mcp_servers_json
+               FROM project_config_revision
+               WHERE ds_id = $1
+               ORDER BY created_at_ms DESC, content_rev DESC",
+        )
+        .bind(ds_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let claude_md: Option<String> = row.try_get("claude_md")?;
+            let skills_json: Value = row.try_get::<Json<Value>, _>("skills_json")?.0;
+            let rules_json: Value = row.try_get::<Json<Value>, _>("rules_json")?.0;
+            let mcp_servers_json: Value = row.try_get::<Json<Value>, _>("mcp_servers_json")?.0;
+            out.push(ProjectConfigRevisionSummary {
+                content_rev: row.try_get("content_rev")?,
+                created_at_ms: row.try_get("created_at_ms")?,
+                note: row.try_get("note")?,
+                claude_in_db: claude_md.as_deref().is_some_and(|s| !s.trim().is_empty()),
+                skills_count_db: skills_json.as_array().map(|a| a.len() as i64).unwrap_or(0),
+                rules_count_db: rules_json.as_array().map(|a| a.len() as i64).unwrap_or(0),
+                mcp_servers_count_db: mcp_servers_json
+                    .as_object()
+                    .map(|o| o.len() as i64)
+                    .unwrap_or(0),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Update remark on a formal revision (`note` only; config snapshot stays immutable). Author: kejiqing
+    pub async fn update_project_config_revision_note(
+        &self,
+        ds_id: i64,
+        content_rev: &str,
+        note: Option<&str>,
+    ) -> Result<bool, SqlxError> {
+        let r = sqlx::query(
+            "UPDATE project_config_revision SET note = $3 WHERE ds_id = $1 AND content_rev = $2",
+        )
+        .bind(ds_id)
+        .bind(content_rev)
+        .bind(note)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    /// Drop one saved revision (not the effective stable rev). Author: kejiqing
+    pub async fn delete_project_config_revision(
+        &self,
+        ds_id: i64,
+        content_rev: &str,
+    ) -> Result<bool, SqlxError> {
+        let r = sqlx::query(
+            "DELETE FROM project_config_revision WHERE ds_id = $1 AND content_rev = $2",
+        )
+        .bind(ds_id)
+        .bind(content_rev)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    pub async fn delete_project_config_revisions(&self, ds_id: i64) -> Result<u64, SqlxError> {
+        let r = sqlx::query("DELETE FROM project_config_revision WHERE ds_id = $1")
+            .bind(ds_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
+    /// Remove `project_config` row for a ds (project delete). Author: kejiqing
+    pub async fn delete_project_config(&self, ds_id: i64) -> Result<bool, SqlxError> {
+        let _ = self.delete_project_config_revisions(ds_id).await?;
+        let r = sqlx::query("DELETE FROM project_config WHERE ds_id = $1")
+            .bind(ds_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    /// Delete all sessions and turns for a ds (optional on project delete). Author: kejiqing
+    pub async fn delete_sessions_for_ds(&self, ds_id: i64) -> Result<u64, SqlxError> {
+        sqlx::query("DELETE FROM gateway_turns WHERE ds_id = $1")
+            .bind(ds_id)
+            .execute(&self.pool)
+            .await?;
+        let r = sqlx::query("DELETE FROM gateway_sessions WHERE ds_id = $1")
+            .bind(ds_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
     }
 
     pub async fn get_session_home_rel(
@@ -824,21 +1218,24 @@ mod tests {
             json!([{"ruleId": "r1", "relativePath": ".cursor/rules/r1.mdc", "content": "# R"}]);
         let mcp = json!({"demo": {"type": "http", "url": "http://127.0.0.1:9"}});
         let skills = json!([{
-            "gitUrl": "https://example.com/skills.git",
-            "gitRef": "main",
-            "tokenEnv": "CLAW_PROJECTS_GIT_TOKEN"
+            "skillName": "demo-skill",
+            "skillContent": "# Demo\n"
         }]);
         let t = now_ms();
         let tools = json!(["bash", "read_file"]);
         db.upsert_project_config(ProjectConfigUpsert {
             ds_id,
             content_rev: "rev-1",
+            stable_content_rev: Some("rev-1"),
+            draft_open: false,
             updated_at_ms: t,
             rules_json: &rules,
             mcp_servers_json: &mcp,
-            skills_sources_json: &skills,
+            skills_sources_json: &json!([]),
+            skills_json: &skills,
             allowed_tools_json: &tools,
             claude_md: Some("# Claude\n"),
+            git_sync_json: &json!({}),
         })
         .await
         .unwrap();
@@ -847,19 +1244,23 @@ mod tests {
         assert_eq!(row.content_rev, "rev-1");
         assert_eq!(row.rules_json, rules);
         assert_eq!(row.mcp_servers_json, mcp);
-        assert_eq!(row.skills_sources_json, skills);
+        assert_eq!(row.skills_json, skills);
         assert_eq!(row.allowed_tools_json, tools);
         assert_eq!(row.claude_md.as_deref(), Some("# Claude\n"));
 
         db.upsert_project_config(ProjectConfigUpsert {
             ds_id,
             content_rev: "rev-2",
+            stable_content_rev: Some("rev-2"),
+            draft_open: false,
             updated_at_ms: t + 1,
             rules_json: &json!([]),
             mcp_servers_json: &json!({}),
             skills_sources_json: &json!([]),
+            skills_json: &json!([]),
             allowed_tools_json: &json!([]),
             claude_md: None,
+            git_sync_json: &json!({}),
         })
         .await
         .unwrap();

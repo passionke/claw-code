@@ -1,14 +1,12 @@
-//! Materialize `project_config` rows onto `ds_<id>/home` (rules, CLAUDE.md, skills git sources).
-//! Git credentials: env only via `tokenEnv` on each skills source. Author: kejiqing
+//! Materialize `project_config` rows onto `ds_<id>/home` (rules, CLAUDE.md, inline skills from DB).
+//! Author: kejiqing
 
 use std::path::{Component, Path, PathBuf};
 
 use crate::project_tools::parse_allowed_tools_json;
 use crate::session_db::ProjectConfigRow;
 use serde_json::{json, Value};
-use std::process::Stdio;
 use tokio::fs;
-use tokio::process::Command;
 
 pub const APPLIED_REV_MARKER: &str = ".claw/project_config_applied_rev";
 pub const ALLOWED_TOOLS_MARKER: &str = ".claw/project_allowed_tools.json";
@@ -68,44 +66,6 @@ fn read_git_token_env(name: &str) -> ApplyResult<String> {
         )));
     }
     Ok(t.to_string())
-}
-
-async fn git_run(cwd: &Path, args: &[&str]) -> ApplyResult<String> {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(cwd);
-    cmd.args(["-c", "http.version=HTTP/1.1"]);
-    cmd.args(args);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| ProjectConfigApplyError::new(format!("git failed to start: {e}")))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
-        return Err(ProjectConfigApplyError::new(format!(
-            "git {:?} in {} failed ({}): {stderr}",
-            args,
-            cwd.display(),
-            output.status
-        )));
-    }
-    Ok(stdout)
-}
-
-async fn git_run_ok(cwd: &Path, args: &[&str]) -> ApplyResult<()> {
-    git_run(cwd, args).await?;
-    Ok(())
-}
-
-async fn ensure_safe_directory(path: &Path) {
-    let parent = path.parent().unwrap_or(path);
-    let p = path.display().to_string();
-    let _ = git_run(
-        parent,
-        &["config", "--global", "--add", "safe.directory", &p],
-    )
-    .await;
 }
 
 fn safe_rel_under_home(rel: &str) -> ApplyResult<PathBuf> {
@@ -174,94 +134,8 @@ async fn write_claude(work_dir: &Path, text: &str) -> ApplyResult<()> {
     Ok(())
 }
 
-async fn copy_tree(src_root: &Path, dst_root: &Path) -> ApplyResult<()> {
-    if !fs::metadata(src_root).await.is_ok_and(|m| m.is_dir()) {
-        return Ok(());
-    }
-    let mut stack: Vec<(PathBuf, PathBuf)> = vec![(src_root.to_path_buf(), dst_root.to_path_buf())];
-    while let Some((src_dir, dst_dir)) = stack.pop() {
-        fs::create_dir_all(&dst_dir).await.map_err(|e| {
-            ProjectConfigApplyError::new(format!("create dir during skills sync: {e}"))
-        })?;
-        let mut entries = fs::read_dir(&src_dir).await.map_err(|e| {
-            ProjectConfigApplyError::new(format!("read dir during skills sync: {e}"))
-        })?;
-        while let Some(entry) = entries.next_entry().await.map_err(|e| {
-            ProjectConfigApplyError::new(format!("iterate dir during skills sync: {e}"))
-        })? {
-            let entry_path = entry.path();
-            let dst_path = dst_dir.join(entry.file_name());
-            let file_type = entry.file_type().await.map_err(|e| {
-                ProjectConfigApplyError::new(format!("file_type during skills sync: {e}"))
-            })?;
-            if file_type.is_dir() {
-                stack.push((entry_path, dst_path));
-            } else if file_type.is_file() {
-                if let Some(parent) = dst_path.parent() {
-                    fs::create_dir_all(parent).await.map_err(|e| {
-                        ProjectConfigApplyError::new(format!(
-                            "create parent during skills sync: {e}"
-                        ))
-                    })?;
-                }
-                fs::copy(&entry_path, &dst_path).await.map_err(|e| {
-                    ProjectConfigApplyError::new(format!("copy during skills sync: {e}"))
-                })?;
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn ensure_git_cache_repo(
-    cache_dir: &Path,
-    git_url: &str,
-    git_ref: &str,
-    token_env: Option<&str>,
-) -> ApplyResult<()> {
-    ensure_safe_directory(cache_dir).await;
-    let clone_url = git_effective_clone_url(git_url, token_env)?;
-    let git_dir = cache_dir.join(".git");
-    if fs::metadata(&git_dir).await.is_ok_and(|m| m.is_dir()) {
-        git_run_ok(cache_dir, &["remote", "set-url", "origin", &clone_url]).await?;
-        git_run_ok(cache_dir, &["fetch", "--depth", "1", "origin", git_ref]).await?;
-        git_run_ok(cache_dir, &["checkout", "-f", git_ref]).await?;
-        return Ok(());
-    }
-    if cache_dir.exists() {
-        fs::remove_dir_all(cache_dir).await.map_err(|e| {
-            ProjectConfigApplyError::new(format!("remove stale skills git cache: {e}"))
-        })?;
-    }
-    if let Some(parent) = cache_dir.parent() {
-        fs::create_dir_all(parent).await.map_err(|e| {
-            ProjectConfigApplyError::new(format!("create skills git cache parent: {e}"))
-        })?;
-    }
-    let parent = cache_dir
-        .parent()
-        .ok_or_else(|| ProjectConfigApplyError::new("skills git cache has no parent"))?;
-    let leaf = cache_dir
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| ProjectConfigApplyError::new("invalid skills git cache dir name"))?;
-    if git_run_ok(
-        parent,
-        &[
-            "clone", "--depth", "1", "--branch", git_ref, &clone_url, leaf,
-        ],
-    )
-    .await
-    .is_err()
-    {
-        git_run_ok(parent, &["clone", "--depth", "1", &clone_url, leaf]).await?;
-        git_run_ok(cache_dir, &["checkout", "-f", git_ref]).await?;
-    }
-    Ok(())
-}
-
-async fn materialize_skills_sources(work_dir: &Path, sources: &Value) -> ApplyResult<()> {
-    let Some(arr) = sources.as_array() else {
+async fn write_skills_json(work_dir: &Path, skills: &Value) -> ApplyResult<()> {
+    let Some(arr) = skills.as_array() else {
         return Ok(());
     };
     if arr.is_empty() {
@@ -281,67 +155,64 @@ async fn materialize_skills_sources(work_dir: &Path, sources: &Value) -> ApplyRe
         .await
         .map_err(|e| ProjectConfigApplyError::new(format!("create home/skills: {e}")))?;
 
-    let cache_root = work_dir.join(".claw/project_config_git_cache");
-    fs::create_dir_all(&cache_root)
-        .await
-        .map_err(|e| ProjectConfigApplyError::new(format!("create git cache root: {e}")))?;
-
     for (i, item) in arr.iter().enumerate() {
         let obj = item.as_object().ok_or_else(|| {
-            ProjectConfigApplyError::new(format!("skillsSourcesJson[{i}] must be an object"))
+            ProjectConfigApplyError::new(format!("skillsJson[{i}] must be an object"))
         })?;
-        let git_url = obj
-            .get("gitUrl")
+        let skill_name = obj
+            .get("skillName")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
-                ProjectConfigApplyError::new(format!("skillsSourcesJson[{i}] missing gitUrl"))
+                ProjectConfigApplyError::new(format!("skillsJson[{i}] missing skillName"))
             })?;
-        let git_ref = obj
-            .get("gitRef")
+        let content = obj
+            .get("skillContent")
             .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("main");
-        let path_in_repo = obj
-            .get("pathInRepo")
-            .and_then(Value::as_str)
-            .map_or("", str::trim);
-        let target_under_home = obj
-            .get("targetUnderHome")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("skills");
-        let target_rel = safe_rel_under_home(target_under_home)?;
-        let token_env = obj.get("tokenEnv").and_then(Value::as_str).map(str::trim);
-        let is_http = git_url.starts_with("https://") || git_url.starts_with("http://");
-        let token_env = if is_http {
-            Some(token_env.ok_or_else(|| {
-                ProjectConfigApplyError::new(format!(
-                    "skillsSourcesJson[{i}]: tokenEnv required for HTTP(S) gitUrl"
-                ))
-            })?)
-        } else {
-            token_env
-        };
-
-        let cache_dir = cache_root.join(format!("src_{i}"));
-        ensure_git_cache_repo(&cache_dir, git_url, git_ref, token_env).await?;
-
-        let src_subtree = if path_in_repo.is_empty() {
-            cache_dir.clone()
-        } else {
-            cache_dir.join(path_in_repo)
-        };
-        let dst_subtree = home.join(&target_rel);
-        fs::create_dir_all(&dst_subtree)
+            .ok_or_else(|| {
+                ProjectConfigApplyError::new(format!("skillsJson[{i}] missing skillContent"))
+            })?;
+        let skill_dir = skills_dst.join(skill_name);
+        fs::create_dir_all(&skill_dir).await.map_err(|e| {
+            ProjectConfigApplyError::new(format!("create skill dir {}: {e}", skill_dir.display()))
+        })?;
+        let skill_path = skill_dir.join("SKILL.md");
+        fs::write(&skill_path, content.as_bytes())
             .await
-            .map_err(|e| ProjectConfigApplyError::new(format!("create skills target dir: {e}")))?;
-        copy_tree(&src_subtree, &dst_subtree).await?;
+            .map_err(|e| {
+                ProjectConfigApplyError::new(format!("write {}: {e}", skill_path.display()))
+            })?;
     }
     Ok(())
+}
+
+/// Relative paths under `home/` materialized from `project_config` — excluded from per-project git push.
+/// Author: kejiqing
+pub fn git_excluded_home_relpaths(row: &ProjectConfigRow) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if row.claude_md.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        out.push(PathBuf::from("CLAUDE.md"));
+    }
+    if row.skills_json.as_array().is_some_and(|a| !a.is_empty()) {
+        out.push(PathBuf::from("skills"));
+    }
+    if let Some(items) = row.rules_json.as_array() {
+        for item in items.iter() {
+            let rel = item
+                .get("relativePath")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let Some(rel) = rel else {
+                continue;
+            };
+            if safe_rel_under_home(rel).is_ok() {
+                out.push(PathBuf::from(rel));
+            }
+        }
+    }
+    out
 }
 
 pub async fn read_applied_content_rev(work_dir: &Path) -> Option<String> {
@@ -387,7 +258,7 @@ async fn apply_full(work_dir: &Path, row: &ProjectConfigRow) -> ApplyResult<()> 
     if let Some(text) = row.claude_md.as_deref().filter(|s| !s.trim().is_empty()) {
         write_claude(work_dir, text).await?;
     }
-    materialize_skills_sources(work_dir, &row.skills_sources_json).await?;
+    write_skills_json(work_dir, &row.skills_json).await?;
     write_allowed_tools_marker(work_dir, row).await?;
     Ok(())
 }
@@ -415,6 +286,32 @@ async fn write_allowed_tools_marker(work_dir: &Path, row: &ProjectConfigRow) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_db::ProjectConfigRow;
+
+    #[test]
+    fn git_excluded_paths_follow_db_config() {
+        let row = ProjectConfigRow {
+            ds_id: 1,
+            content_rev: "r".into(),
+            stable_content_rev: Some("r".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([{
+                "relativePath": ".cursor/rules/safety.mdc",
+                "content": "x"
+            }]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([{"skillName": "a", "skillContent": "b"}]),
+            allowed_tools_json: json!([]),
+            claude_md: Some("# c".into()),
+            git_sync_json: json!({}),
+        };
+        let ex = git_excluded_home_relpaths(&row);
+        assert!(ex.contains(&PathBuf::from("CLAUDE.md")));
+        assert!(ex.contains(&PathBuf::from("skills")));
+        assert!(ex.contains(&PathBuf::from(".cursor/rules/safety.mdc")));
+    }
 
     #[test]
     fn safe_rel_rejects_parent() {

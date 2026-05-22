@@ -9,6 +9,14 @@ Base URL 示例：`http://127.0.0.1:18088`
 - `GET /healthz`
   - 用途：健康检查与关键运行配置回显
   - 回显字段含 `sessionDatabaseBackend`（`postgresql`）、`gatewayDatabaseUrl`（脱敏连接串）。会话/轮次/反馈表在 **PostgreSQL**，由环境变量 **`CLAW_GATEWAY_DATABASE_URL`** 指定（compose 默认连栈内 `postgres` 服务；生产可指向独立 PG 集群）。
+  - **`deployImageRef`** / **`deployImageTag`**：由 **`./deploy/stack/gateway.sh up`** 带入的 **`GATEWAY_IMAGE`**（根 `.env` 或 `up --release release-vX.Y.Z` 写入的 `deploy/stack/.claw-image-release.env`）经 compose 注入 **`CLAW_GATEWAY_IMAGE_REF`**，无需单独配置。Admin 顶栏展示 `deployImageTag`：`…:local` → `local`；`…:release-v1.2.3` → `release-v1.2.3`。
+  - **`claudeTap`**（claude-tap 代理 / Live，与 MCP 的 `defaultHttpMcp*` 无关）：
+    - `internalProxyBaseUrl`：worker 侧 LLM 走 tap 的地址（通常 `INTERNAL_CLAUDE_TAP_HOST`，如 `http://host.docker.internal:8080`）
+    - `publicProxyBaseUrl` / `publicLiveBaseUrl`：浏览器从**当前访问网关的 Host** 推导（同主机、换端口 `CLAUDE_TAP_PORT` / `CLAUDE_TAP_LIVE_PORT`）；若设 **`CLAW_GATEWAY_PUBLIC_BASE_URL`**（如 `http://192.168.9.252:18088`、`http://127.0.0.1:18088`、`http://localhost:18088`）则以其 hostname 为准（`127.0.0.1` 与 `localhost` **原样保留**，不互相替换）
+    - 须为带 `http://` 或 `https://` 的**绝对 URL**；不支持无 scheme 的「相对」写法（如仅 `:18088` 或 `/healthz`）
+    - `liveSessionQueryParam`：固定 `session`
+    - `liveSessionUrlTemplate`：例 `http://192.168.9.252:3000/?session={sessionId}`（将 `{sessionId}` 换成网关 `sessionId`）
+    - 端口默认：`tapProxyPort=8080`（`CLAUDE_TAP_HOST_PORT` 或 `CLAUDE_TAP_PORT`）、`tapLivePort=3000`（`CLAUDE_TAP_LIVE_PORT`）
 
 ## Solve
 
@@ -118,18 +126,21 @@ Base URL 示例：`http://127.0.0.1:18088`
 
 ## MCP
 
+Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_servers_json`；无行则为空（不回退 `.claw.json`）。
+
 - `POST /v1/mcp/inject`
-  - 用途：为指定 `dsId` 注入 `mcpServers`
+  - 用途：写入/合并 `project_config.mcp_servers_json`（`replace: true` 全量替换该字段；否则按名合并）
+  - 自动生成 `contentRev`（`mcp-<ms>`）
 
 - `GET /v1/mcp/injected/{ds_id}`
-  - 用途：查看 `dsId` 对应 MCP 注入及加载结果
+  - 用途：按 DB 配置写 `ds_<id>/.claw/settings.json` 并探针；`injectedServerNames` 为当前 DB 中的 server 名（不返回 Bearer 等敏感字段）
 
 - `DELETE /v1/mcp/injected/{ds_id}`
-  - 用途：删除 `dsId` 对应 MCP 注入（支持按名称删除）
+  - 用途：清空或按 `server_names` 删除 `project_config` 中的 MCP 条目
 
 ## Project config (PostgreSQL)
 
-按 `dsId` 在 **`project_config`** 表存储规则清单、MCP map、skills git 来源、**工具勾选**与可选 `CLAUDE.md` 正文；JSON 字段约定见 **`docs/project-config-model.md`**。`PUT` 成功后网关会物化到 `ds_<dsId>/home`；`POST /v1/init` / solve 前 / 轮询（`CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS`）在 `contentRev` 变化时刷新。无 `project_config` 行时仍走下方 **Project Storage** 全局 projects git。
+按 `dsId` 在 **`project_config`** 表存储规则、MCP、**内联 `skillsJson`**、工具勾选与 **`claudeMd`**；约定见 **`docs/project-config-model.md`**。写库后物化到 `ds_<dsId>/home`；`POST /v1/init` / solve 前 / 轮询在 `contentRev` 变化时刷新。**须先有 `project_config` 行**（`POST /v1/projects` 或 `PUT`）。
 
 - `GET /v1/project/tools/catalog`
   - 用途：列出网关当前注册的可选工具（内置 + `mcp__*` 模式），供 BFF 勾选 UI
@@ -140,31 +151,71 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 无行：**404**
 
 - `PUT /v1/project/config/{ds_id}`
-  - 用途：插入或覆盖配置（`contentRev` 必填且非空）
-  - 请求体（camelCase）：
-    - `contentRev`：内容版本号或 git SHA（轮询/幂等物化用）
-    - `rulesJson`：数组，默认 `[]`
-    - `mcpServersJson`：对象，默认 `{}`（与 `.claw/settings.json` 的 `mcpServers` 同形）
-    - `skillsSourcesJson`：数组，默认 `[]`（git 坐标列表，见设计文档）
-    - `allowedToolsJson`：数组，默认 `[]`（本项目允许的工具名；须在 catalog 内。空数组=不额外限制，仅用全局 `CLAW_ALLOWED_TOOLS`）
-    - `claudeMd`：可选，对应 `home/CLAUDE.md` 全文
-  - **Git token 仅 env**：`skillsSourcesJson` 元素用 **`tokenEnv`** 指定环境变量名（如 `CLAW_PROJECTS_GIT_TOKEN`）；禁止在 JSON 里写 `token` 等字段，禁止在 `gitUrl` 里写 `user:token@`。无 userinfo 的 HTTPS `gitUrl` 必须带非空 `tokenEnv`，且该 env 在网关进程中已配置。
+  - 用途：写入**临时版**（`__draft__`）；不新增固化行、不切换生效、不物化（须已有 `project_config` 行）
+  - 请求体（camelCase）：`rulesJson`、`mcpServersJson`、`skillsJson`、`allowedToolsJson`、`claudeMd`、`gitSyncJson`（省略则保留 Git 配置）；`skillsSourcesJson` 须为 `[]`
+  - 响应：`{ "draftOpen": true, "stableContentRev", "activeConfig": { ... } }`（`activeConfig` 为临时版内容）
 
-## Project Storage
+- `POST /v1/project/config/{ds_id}/versions/commit`
+  - 用途：将临时版**保存为正式版**（不可变）；**不**切换生效版、不物化
+  - 请求体：`{ "note": "可选备注" }`（版本号由服务端按本地时间生成 `YYYYMMDDHHmmss`，冲突时 `-2`、`-3`…）
+  - 响应：`{ "savedContentRev", "activated": false, "stableContentRev", "materialized": false, "activeConfig" }`
+
+- `DELETE /v1/project/config/{ds_id}/versions/{content_rev}`
+  - 用途：**废弃**某正式版（非当前生效版）
+  - 当前生效版：**409**；`__draft__`：**400**
+
+- `PATCH /v1/project/config/{ds_id}/versions/{content_rev}`
+  - 用途：更新该正式版的**备注**（`{ "note": "…" }`，空字符串表示清空）；配置快照仍不可变
+  - `__draft__`：**400**
+
+- `GET /v1/project/config/{ds_id}/versions`
+  - 用途：列出正式版历史 + 若有编辑中临时版则首行 `__draft__`（`isDraft: true`）；含 `activeContentRev`、`appliedContentRev`、`draftOpen`、每项 `note` / `isActive`
+
+- `GET /v1/project/config/{ds_id}/versions/compare?from={rev}&to={rev}`
+  - 用途：两版展开 JSON 比对（`from`/`to` 可为 `__draft__`）；响应含 `fromDocument`、`toDocument`（`claudeMd`、`rulesJson`、`skillsJson`、`mcpServersJson`、`allowedToolsJson` 等）、`changes` 顶层摘要、`same`；不含 `gitSyncJson`（Git 仅在 `project_config` 行）
+
+- `POST /v1/project/config/{ds_id}/versions/{content_rev}/activate`
+  - 用途：将**生效版本**切换为指定历史 `content_rev` 并物化到 `home/`
+
+- **全局配置（与 ds_id 无关）**
+  - `GET /v1/gateway/global-settings` — `{ updatedAtMs, gitPats: [{ id, name, note?, createdAtMs, updatedAtMs, tokenSet }] }`（不返回 token 明文）
+  - `POST /v1/gateway/global-settings/git-pats` — 创建/更新 PAT；body `{ id?, name, note?, token? }`（新建须 `token`；更新可省略 `token` 保留原值）
+  - `DELETE /v1/gateway/global-settings/git-pats/{pat_id}` — 删除 PAT
+  - 项目 `gitSyncJson` 使用 `gitPatId` 引用全局 PAT；推送时由网关解析 token，**不在** `project_config` 存 PAT 明文（兼容旧 `gitToken` 内联）
+
+- `POST /v1/projects/{ds_id}/git/push`
+  - 用途：将 `home/` 下**非 DB 物化**文件单向推送到远程（排除路径由当前 `project_config` 行计算，与物化规则一致）
+  - 前置：`gitSyncJson.enabled=true` 且 URL/分支合法；会先按 DB 物化磁盘
+  - 成功：`{ "dsId", "outcome": { "pushed", "commitId", "branch", "gitUrl" }, "gitSyncJson": { ... } }`（含 `lastPush*`）
+  - 失败：**502**，`gitSyncJson.lastPushError` 会写入 PG
+
+## Projects (ds workspace lifecycle)
+
+- `GET /v1/projects`
+  - 用途：Admin 项目列表；**以 PostgreSQL `project_config` 为准**（`skillsCountDb`、`claudeInDb`、`contentRev` 等），并附带磁盘就绪（`environmentPrepared`、`skillsCountDisk`、`dbSyncedToDisk`）
+  - 响应：`{ "projects": [ ... ], "listedAtMs": <ms> }`；每项含 `gitSync` 摘要（`enabled`、`configured`、`gitTokenSet`、`lastPushOk`、`lastPushError` 等，无 PAT）
+
+- `POST /v1/projects`
+  - 用途：新建 `ds_<id>`（`work_root` + 空 `project_config` 行 + 占位 `CLAUDE.md`）；`dsId` 可选，省略则自动 `max(已有)+1`
+  - 冲突：该 id 已存在于工作区或 `project_config` 时 **409**
+  - 成功：同 `InitResponse`（`dsId`, `workDir`, `initialized`）
+
+- `DELETE /v1/projects/{ds_id}`
+  - 用途：删除 `work_root/ds_<id>`、`project_config` 行
+  - Query：`purgeSessions`（默认 `true`）是否删除该 ds 的 `gateway_sessions` / `gateway_turns`
+  - 无此 ds：**404**
+
+## Project workspace
 
 - `POST /v1/init`
-  - 用途：初始化指定 `dsId` 的本地工作区（`ds_home`）
-  - Git 语义：该接口负责触发项目仓库拉取刷新（仓库 URL、分支、作者、可选 HTTPS Token **均由环境变量提供，代码内无默认值**；缺失或空串时网关进程启动失败），将远端 `ds_<dsId>/home` 同步到本地 `ds_<dsId>/home`
-  - 环境变量：`CLAW_PROJECTS_GIT_URL`、`CLAW_PROJECTS_GIT_BRANCH`、`CLAW_PROJECTS_GIT_AUTHOR`（必填）；`CLAW_PROJECTS_GIT_TOKEN`（当且仅当使用无凭据的 `https://` URL 时必填）（见仓库根 `.env.example`）
-  - 多机：可选 `CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS`（秒，大于 0 启用）——后台对镜像 `git pull`，并对 `work_root` 下每个已初始化的 `ds_*` 在 **该 ds 锁空闲时** 执行与 `init` 相同的 `home` 目录同步；忙则跳过本轮，避免与 `project/claude`、`project/skills` 写路径长时间互斥。
-  - 说明：未启用轮询时，业务接口（`solve` / `solve_async` / `project`）自身不会在每次请求里 `git pull`；多机靠显式 `init`、本轮询或运维侧 webhook/cron 组合。
+  - 用途：要求已有 `project_config`，按 `content_rev` 物化到 `ds_<dsId>/home`（无 PG 行 **404**）
+  - 轮询：可选 `CLAW_PROJECT_CONFIG_POLL_INTERVAL_SECS`（或旧名 `CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS`）——仅刷新有 PG 行的 ds
 
 - `GET /v1/project/claude/{ds_id}`
-  - 用途：读取 `dsId` 对应 CLAUDE 文档
-  - 读取路径：优先 `ds_<dsId>/home/CLAUDE.md`，兼容回退 `ds_<dsId>/CLAUDE.md`
+  - 用途：读取 CLAUDE；优先 `project_config.claude_md`，否则磁盘 `home/CLAUDE.md`
 
 - `POST /v1/project/claude/{ds_id}`
-  - 用途：更新 `dsId` 对应 CLAUDE 文档，并同步提交到 Git
+  - 用途：写入 `project_config.claude_md` 并物化（**不写** projects-git）
   - 请求体字段：
     - `content`：必填，写入 CLAUDE 文本
   - 落盘路径：
@@ -173,12 +224,7 @@ Base URL 示例：`http://127.0.0.1:18088`
     - `dsId`、`workDir`、`path`、`exists`、`content`
 
 - `POST /v1/project/skills/{ds_id}`
-  - 用途：创建或更新 `dsId` 对应 Skill，并同步提交到 Git
-  - 请求体字段：
-    - `skillName`：必填，仅允许 `[a-zA-Z0-9._-]`
-    - `skillContent`：必填，写入 Skill 正文
-  - 落盘路径：
-    - `ds_<dsId>/home/skills/<skillName>/SKILL.md`（与 `Skill` 工具 / CLI 一致）
-  - 返回字段：
-    - `dsId`、`skillName`、`skillPath`、`created`、`updated`、`bytesWritten`、`workDir`
-    - `gitSync.repo`、`gitSync.branch`、`gitSync.commitId`、`gitSync.pushed`
+  - 用途：合并写入 `project_config.skills_json` 并物化
+  - 请求体：`skillName`（`[a-zA-Z0-9._-]`）、`skillContent`
+  - 落盘：`ds_<dsId>/home/skills/<skillName>/SKILL.md`
+  - 返回：`dsId`、`skillName`、`skillPath`、`created`、`updated`、`bytesWritten`、`workDir`

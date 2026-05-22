@@ -361,9 +361,9 @@ impl DockerPoolManager {
             args.push("-e".into());
             args.push(format!("CLAW_WORKER_ENV_FILE={WORKER_ENV_MOUNT_PATH}"));
         }
+        // Worker image ENTRYPOINT is already `sleep infinity`; extra `sleep infinity` args would
+        // append to ENTRYPOINT and become `sleep infinity sleep infinity` → exit 1, then exec gets 125.
         args.push(self.image.clone());
-        args.push("sleep".into());
-        args.push("infinity".into());
         let exec_argv: Vec<&str> = args.iter().map(String::as_str).collect();
         let out = runtime_exec(&self.bin, &exec_argv)
             .await

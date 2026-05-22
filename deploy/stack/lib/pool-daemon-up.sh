@@ -3,7 +3,7 @@
 set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
-REPO_ROOT="$2"
+REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/nuclear-pool-reset.sh"
 # Always refresh worker env snapshot from repo-root .env before (re)starting the daemon so pool

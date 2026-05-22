@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claw Gateway — 管理登录</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --err: #ef4444;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .card {
+      width: 100%; max-width: 380px; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 10px; padding: 28px 24px;
+    }
+    h1 { margin: 0 0 6px; font-size: 20px; }
+    p.sub { margin: 0 0 20px; font-size: 13px; color: var(--muted); }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+    input {
+      display: block; width: 100%; margin-top: 6px; padding: 10px 12px;
+      border-radius: 6px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--text); font: inherit;
+    }
+    button {
+      width: 100%; margin-top: 8px; padding: 10px; font: inherit; font-weight: 600;
+      border: none; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .err { color: #fca5a5; font-size: 13px; min-height: 1.2em; margin-top: 10px; }
+    a { color: var(--accent); font-size: 13px; text-decoration: none; }
+    .foot { margin-top: 18px; text-align: center; }
+  </style>
+</head>
+<body>
+  <form class="card" id="login-form">
+    <h1>项目管理登录</h1>
+    <p class="sub">账号密码由服务端环境变量配置（<code>PLAYGROUND_ADMIN_*</code>）</p>
+    <label>账号
+      <input id="user" name="user" type="text" autocomplete="username" required autofocus />
+    </label>
+    <label>密码
+      <input id="password" name="password" type="password" autocomplete="current-password" required />
+    </label>
+    <div class="err" id="err" aria-live="polite"></div>
+    <button type="submit" id="btn-login">登录</button>
+    <div class="foot"><a href="/">← 返回 solve_async 调试</a></div>
+  </form>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const next = params.get("next") || "/admin";
+
+    document.getElementById("login-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const btn = document.getElementById("btn-login");
+      const err = document.getElementById("err");
+      err.textContent = "";
+      btn.disabled = true;
+      try {
+        const res = await fetch("/__admin_login__", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({
+            user: document.getElementById("user").value.trim(),
+            password: document.getElementById("password").value,
+            next: next,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          err.textContent = data.error || "登录失败";
+          return;
+        }
+        const dest = (data.next && data.next.startsWith("/admin")) ? data.next : "/admin";
+        location.href = dest;
+      } catch (e) {
+        err.textContent = String(e.message || e);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

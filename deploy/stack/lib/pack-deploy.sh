@@ -24,11 +24,5 @@ echo "    另开终端: tail -f deploy/stack/.build.log"
 echo "==> 2/2 重启部署"
 "${LIB_DIR}/down.sh" && "${LIB_DIR}/up.sh" "$@"
 
-echo "==> 完成。健康检查（端口见 .env GATEWAY_HOST_PORT，默认 8088）:"
-set -a
-# shellcheck disable=SC1090
-source "${ROOT_DIR}/.env"
-set +a
-port="${GATEWAY_HOST_PORT:-8088}"
-curl -sS "http://127.0.0.1:${port}/healthz" | head -c 300
-echo
+echo "==> 完成。连通性检查:"
+"${LIB_DIR}/check-connectivity.sh"

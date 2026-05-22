@@ -297,19 +297,21 @@
       0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.55); }
       50% { opacity: 0.55; transform: scale(0.88); box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
     }
+    .tap-live-row { display: flex; flex-direction: column; gap: 2px; min-width: 200px; }
+    .tap-live-url {
+      font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--accent);
+      word-break: break-all;
+    }
+    .tap-live-hint { font-size: 11px; color: var(--muted); }
   </style>
 </head>
 <body>
   <header class="toolbar">
-    <label>网关 Base（端口 18088）
-      <select id="gateway-base">
-        <option value="http://127.0.0.1:18088">localhost — http://127.0.0.1:18088</option>
-        <option value="http://192.168.9.252:18088">LAN — http://192.168.9.252:18088</option>
-        <option value="http://10.200.2.171:18088">10.200.2.171 — http://10.200.2.171:18088</option>
-      </select>
+    <label>网关
+      <select id="gateway-base"></select>
     </label>
-    <label>ds_id（整数 ≥1）
-      <input id="ds-id" type="number" min="1" step="1" value="1" />
+    <label>ds_id（来自 /healthz）
+      <select id="ds-id" style="min-width:160px"></select>
     </label>
     <label>store_id（可选，写入 extraSession）
       <input id="store-id" type="text" placeholder="例 S20241007172800004204" autocomplete="off" />
@@ -317,9 +319,11 @@
     <label>org_id（可选，写入 extraSession）
       <input id="org-id" type="text" placeholder="与 store_id 二选一或同时填" autocomplete="off" />
     </label>
-    <label>claude-tap Live（session 跳转）
-      <input id="tap-base" type="url" value="http://127.0.0.1:3000" placeholder="http://127.0.0.1:3000" style="min-width:220px" />
-    </label>
+    <div class="tap-live-row">
+      <span style="font-size:12px;color:var(--muted)">claude-tap Live（session 跳转，自动）</span>
+      <a id="tap-live-url" class="tap-live-url" href="#" target="_blank" rel="noopener noreferrer">加载中…</a>
+      <span id="tap-live-hint" class="tap-live-hint">来自网关 /healthz · claudeTap.publicLiveBaseUrl</span>
+    </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
       <button type="button" class="secondary" id="btn-new-session">新会话</button>
       <button type="button" class="secondary" id="btn-health">健康检查</button>
@@ -334,8 +338,8 @@
     </div>
   </main>
   <script>
-    /** @type {{ sessionId: string | null, activeEs: EventSource | null }} */
-    const state = { sessionId: null, activeEs: null };
+    /** @type {{ sessionId: string | null, activeEs: EventSource | null, tapLiveBase: string, tapLiveTemplate: string }} */
+    const state = { sessionId: null, activeEs: null, tapLiveBase: "", tapLiveTemplate: "" };
 
     function $(id) { return document.getElementById(id); }
 
@@ -348,13 +352,14 @@
       return Number.isFinite(n) && n >= 1 ? n : 1;
     }
 
-    function claudeTapBase() {
-      return $("tap-base").value.trim().replace(/\/$/, "");
-    }
-
     function claudeTapSessionUrl(sessionId) {
-      const base = claudeTapBase();
-      if (!base || !sessionId) return "#";
+      if (!sessionId) return "#";
+      const tpl = state.tapLiveTemplate;
+      if (tpl) {
+        return tpl.replace("{sessionId}", encodeURIComponent(sessionId));
+      }
+      const base = state.tapLiveBase;
+      if (!base) return "#";
       try {
         const u = new URL(base);
         u.searchParams.set("session", sessionId);
@@ -598,6 +603,7 @@
       try {
         const { json, raw } = await proxyHttp("GET", "/healthz", undefined, {});
         appendBubble("sys", "healthz", json ? JSON.stringify(json, null, 2) : raw);
+        await refreshFromHealthz();
       } catch (e) {
         appendBubble("sys", "error", String(e.message || e), "err");
       }
@@ -789,18 +795,129 @@
       }
     });
 
-    (function restorePrefs() {
+    function fillGatewaySelect(cfg) {
+      const sel = $("gateway-base");
+      sel.innerHTML = "";
+      const def = cfg.defaultGatewayBase;
+      if (def) {
+        const opt = document.createElement("option");
+        opt.value = def;
+        opt.textContent = cfg.defaultGatewayLabel || def;
+        sel.appendChild(opt);
+      }
+      for (const p of cfg.gatewayPresets || []) {
+        if (!p.value || p.value === def) continue;
+        const opt = document.createElement("option");
+        opt.value = p.value;
+        opt.textContent = p.label || p.value;
+        sel.appendChild(opt);
+      }
+      let saved = "";
       try {
-        const gw = localStorage.getItem("claw-playground-gateway-base");
-        if (gw) $("gateway-base").value = gw;
-        const tap = localStorage.getItem("claw-playground-tap-base");
-        if (tap) $("tap-base").value = tap;
+        saved = localStorage.getItem("claw-playground-gateway-base") || "";
       } catch (_) {}
+      const values = [...sel.options].map((o) => o.value);
+      if (saved && values.includes(saved)) {
+        sel.value = saved;
+      } else if (def) {
+        sel.value = def;
+      }
+    }
+
+    async function applyPlaygroundConfig() {
+      try {
+        const r = await fetch("/__config__");
+        if (!r.ok) return;
+        fillGatewaySelect(await r.json());
+      } catch (_) {}
+    }
+
+    function populateDsSelect(workspaces) {
+      const sel = $("ds-id");
+      const prev = parseInt(sel.value, 10);
+      let saved = NaN;
+      try {
+        saved = parseInt(localStorage.getItem("claw-playground-ds-id") || "", 10);
+      } catch (_) {}
+      sel.innerHTML = "";
+      const list = Array.isArray(workspaces)
+        ? [...workspaces].sort((a, b) => a.dsId - b.dsId)
+        : [];
+      if (!list.length) {
+        const opt = document.createElement("option");
+        opt.value = "1";
+        opt.textContent = "（无 ds 列表，默认 1）";
+        sel.appendChild(opt);
+        return;
+      }
+      for (const w of list) {
+        const opt = document.createElement("option");
+        opt.value = String(w.dsId);
+        const ready = w.environmentPrepared ? "就绪" : "未就绪";
+        const sk = w.skillsCount != null ? " · skills " + w.skillsCount : "";
+        opt.textContent = "ds " + w.dsId + " — " + ready + sk;
+        sel.appendChild(opt);
+      }
+      const pick =
+        list.find((p) => p.dsId === saved) ||
+        list.find((p) => p.dsId === prev) ||
+        list.find((p) => p.environmentPrepared) ||
+        list[0];
+      sel.value = String(pick.dsId);
+    }
+
+    function renderTapLiveUi() {
+      const link = $("tap-live-url");
+      const hint = $("tap-live-hint");
+      if (state.tapLiveBase) {
+        link.textContent = state.tapLiveBase;
+        link.href = state.tapLiveBase;
+        hint.textContent = "来自 " + gatewayBase() + "/healthz · 切换网关会自动刷新";
+      } else {
+        link.textContent = "—";
+        link.href = "#";
+        hint.textContent = "无法从 /healthz 读取 claudeTap（请升级网关或检查代理）";
+      }
+    }
+
+    async function refreshFromHealthz() {
+      try {
+        const { json } = await proxyHttp("GET", "/healthz", undefined, {});
+        const tap = json && json.claudeTap;
+        if (tap && tap.publicLiveBaseUrl) {
+          state.tapLiveBase = String(tap.publicLiveBaseUrl).replace(/\/$/, "");
+          state.tapLiveTemplate = tap.liveSessionUrlTemplate
+            ? String(tap.liveSessionUrlTemplate)
+            : state.tapLiveBase + "/?session={sessionId}";
+        } else {
+          state.tapLiveBase = "";
+          state.tapLiveTemplate = "";
+        }
+        const workspaces =
+          (json && json.projectsGitMirror && json.projectsGitMirror.dsWorkspaces) || [];
+        populateDsSelect(workspaces);
+      } catch (_) {
+        state.tapLiveBase = "";
+        state.tapLiveTemplate = "";
+        populateDsSelect([]);
+      }
+      renderTapLiveUi();
+    }
+
+    (function restorePrefs() {
       $("gateway-base").addEventListener("change", () => {
         try { localStorage.setItem("claw-playground-gateway-base", $("gateway-base").value); } catch (_) {}
+        refreshFromHealthz();
       });
-      $("tap-base").addEventListener("change", () => {
-        try { localStorage.setItem("claw-playground-tap-base", $("tap-base").value.trim()); } catch (_) {}
+      $("ds-id").addEventListener("change", () => {
+        try { localStorage.setItem("claw-playground-ds-id", $("ds-id").value); } catch (_) {}
+      });
+      applyPlaygroundConfig().then(async () => {
+        try {
+          const gw = localStorage.getItem("claw-playground-gateway-base");
+          if (gw) $("gateway-base").value = gw;
+        } catch (_) {}
+        await refreshFromHealthz();
       });
     })();
 

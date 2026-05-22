@@ -82,12 +82,30 @@ elif [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
 fi
 echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
 
-# Legacy host nohup daemon (pre-compose sidecar); stop if still running.
-"${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
-
 claw_remove_all_gateway_workers
+
+if claw_pool_daemon_on_host; then
+  POOL_BIN="${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}"
+  if [[ ! -x "${POOL_BIN}" ]]; then
+    if [[ -x "${REPO_ROOT}/deploy/stack/.linux-artifacts/release/claw-pool-daemon" ]] && [[ "$(uname -s)" != Darwin ]]; then
+      POOL_BIN="${REPO_ROOT}/deploy/stack/.linux-artifacts/release/claw-pool-daemon"
+    else
+      echo "==> building host claw-pool-daemon (required on macOS / CLAW_POOL_HOST_DAEMON=1)" >&2
+      (cd "${REPO_ROOT}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
+      POOL_BIN="${REPO_ROOT}/rust/target/release/claw-pool-daemon"
+    fi
+  fi
+  export CLAW_POOL_DAEMON_BIN="${POOL_BIN}"
+  "${PODMAN_DIR}/lib/pool-daemon-up.sh"
+else
+  "${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
+fi
 
 # Recreate gateway container; pool is fresh with pinned worker image. kejiqing
 claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
-echo "Gateway stack started (gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}})."
+_gw_tag="${GATEWAY_IMAGE##*:}"
+if [[ -z "${_gw_tag}" || "${_gw_tag}" == "${GATEWAY_IMAGE}" ]]; then
+  _gw_tag="unknown"
+fi
+echo "Gateway stack started (gateway=${GATEWAY_IMAGE} deployImageTag=${_gw_tag} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}})."
 echo "Postgres: use ./deploy/stack/gateway.sh pg-up if not already running."
