@@ -1,5 +1,10 @@
 /** Gateway project / config types (camelCase API). Author: kejiqing */
 
+/** First-turn solve preflight (`project_config.solve_preflight_json`). Author: kejiqing */
+export interface SolvePreflightJson {
+  kind: "none" | "sqlbot_mcp_start" | string;
+}
+
 export interface GitSyncJson {
   enabled?: boolean;
   gitUrl?: string;
@@ -39,6 +44,7 @@ export interface ProjectConfig {
   allowedToolsJson: string[];
   claudeMd?: string | null;
   gitSyncJson?: GitSyncJson;
+  solvePreflightJson?: SolvePreflightJson;
 }
 
 export interface SkillJsonItem {

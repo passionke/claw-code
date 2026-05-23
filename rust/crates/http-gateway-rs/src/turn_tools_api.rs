@@ -1,6 +1,8 @@
 //! `GET /v1/sessions/{session_id}/turns/{turn_id}/tools`. Author: kejiqing
 
-use gateway_solve_turn::turn_tools::{list_tool_executions_for_user_turn, TurnToolRecord};
+use gateway_solve_turn::turn_tools::{
+    list_tool_executions_for_user_turn_with_time_window, TurnToolRecord,
+};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -16,6 +18,13 @@ pub struct TurnToolsResponse {
 pub fn list_turn_tools_from_session_home(
     session_home: &std::path::Path,
     user_turn_index_1based: usize,
+    turn_created_at_ms: Option<i64>,
+    turn_finished_at_ms: Option<i64>,
 ) -> Result<Vec<TurnToolRecord>, String> {
-    list_tool_executions_for_user_turn(session_home, user_turn_index_1based)
+    list_tool_executions_for_user_turn_with_time_window(
+        session_home,
+        user_turn_index_1based,
+        turn_created_at_ms,
+        turn_finished_at_ms,
+    )
 }

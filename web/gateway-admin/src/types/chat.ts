@@ -54,6 +54,8 @@ export interface GatewayTurnSummary {
   hasReport: boolean;
   /** 已解析的 `output_json.message` / JSON 形 `report_message`，历史回放秒出。Author: kejiqing */
   reportBody?: string | null;
+  /** failed 时 `output_json.detail`（solve 真因）。Author: kejiqing */
+  failureDetail?: string | null;
 }
 
 export interface ListSessionTurnsResponse {

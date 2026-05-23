@@ -21,6 +21,7 @@ interface TurnEntry {
   viewMode?: "live" | "history";
   hasReport?: boolean;
   historicalReport?: string;
+  failureDetail?: string;
 }
 
 interface SysEntry {
@@ -119,6 +120,7 @@ export default function ChatPage() {
             historicalReport: t.reportBody
               ? extractSolveReportMessage(t.reportBody)
               : undefined,
+            failureDetail: t.failureDetail?.trim() || undefined,
           }))
         );
       } catch (e) {
@@ -280,6 +282,7 @@ export default function ChatPage() {
                   viewMode={item.viewMode ?? "live"}
                   hasReport={item.hasReport}
                   historicalReport={item.historicalReport}
+                  failureDetail={item.failureDetail}
                 />
               </div>
             );

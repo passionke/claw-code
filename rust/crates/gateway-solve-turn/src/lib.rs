@@ -3,10 +3,19 @@
 #![allow(
     clippy::await_holding_lock,
     clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::format_push_string,
+    clippy::manual_let_else,
+    clippy::map_unwrap_or,
     clippy::match_same_arms,
+    clippy::needless_lifetimes,
+    clippy::needless_pass_by_value,
     clippy::result_large_err,
+    clippy::single_match_else,
+    clippy::too_many_arguments,
     clippy::type_complexity,
-    clippy::unnecessary_filter_map
+    clippy::unnecessary_filter_map,
+    clippy::useless_format
 )]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -19,11 +28,12 @@ use api::{
     ProviderClient, StreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 use runtime::{
-    apply_config_env_if_unset, default_mcp_max_concurrent, is_parallel_friendly_mcp_tool,
-    load_system_prompt, mcp_parallel_fanout_enabled, ApiClient as RuntimeApiClient, ApiRequest,
-    AssistantEvent, ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime,
-    McpServerManager, MessageRole, PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError,
-    Session, SharedToolExecutor, ToolError, ToolExecutor as RuntimeToolExecutor,
+    apply_config_env_if_unset, default_mcp_max_concurrent, gateway_schema_prompt_section,
+    is_parallel_friendly_mcp_tool, load_system_prompt, mcp_parallel_fanout_enabled,
+    ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
+    ConversationMessage, ConversationRuntime, McpServerManager, MessageRole, PermissionMode,
+    PermissionPolicy, RuntimeConfig, RuntimeError, Session, SharedToolExecutor, ToolError,
+    ToolExecutor as RuntimeToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,6 +45,7 @@ use tools::{
 
 pub mod entity_labels;
 pub mod gateway_stdout;
+pub mod project_preflight;
 pub mod session_report;
 pub mod sqlbot_preflight;
 pub mod task_progress;
@@ -917,7 +928,7 @@ pub fn run_gateway_solve_turn(
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
         .or_else(|| project_cfg.model().map(str::to_string))
         .unwrap_or_else(|| "openai/deepseek-v4-pro".to_string());
-    let system_prompt = load_system_prompt(
+    let mut system_prompt = load_system_prompt(
         work_dir.to_path_buf(),
         default_system_date(),
         std::env::consts::OS,
@@ -938,7 +949,9 @@ pub fn run_gateway_solve_turn(
     let _ = truncate_progress_history(work_dir);
 
     let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
-    let mut session = if gateway_jsonl.exists() {
+    // `true` when this `sessionId` already has `.claw/gateway-solve-session.jsonl` (续聊 turn).
+    let session_is_continuation = gateway_jsonl.exists();
+    let mut session = if session_is_continuation {
         Session::load_from_path(&gateway_jsonl).map_err(|e| {
             err(
                 HTTP_INTERNAL,
@@ -980,7 +993,13 @@ pub fn run_gateway_solve_turn(
     session
         .push_user_text(prompt)
         .map_err(|e| err(HTTP_INTERNAL, format!("push user message failed: {e}")))?;
-    sqlbot_preflight::run_gateway_resolve_preflight(&mut session, &mut tool_executor)?;
+    // Project preflight (e.g. SQLBot `mcp_start`) once per sessionId, after user text in transcript.
+    if !session_is_continuation {
+        project_preflight::run_first_turn_preflight(work_dir, &mut session, &mut tool_executor)?;
+        if let Some(section) = gateway_schema_prompt_section(work_dir) {
+            system_prompt.push(section);
+        }
+    }
 
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);

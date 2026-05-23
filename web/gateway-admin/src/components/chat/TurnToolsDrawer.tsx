@@ -4,6 +4,21 @@ import { useCallback, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import type { TurnToolRecord, TurnToolsResponse } from "../../types/turnTools";
 
+function toolDisplayName(t: TurnToolRecord): string {
+  return (t.toolName || t.name || "").trim() || "unknown";
+}
+
+function formatToolTime(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return "";
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  );
+}
+
 function formatJson(value: unknown): string {
   if (value === undefined || value === null) return "";
   if (typeof value === "string") {
@@ -62,15 +77,47 @@ export default function TurnToolsDrawer({
     void load();
   };
 
-  const items = (data?.tools || []).map((t: TurnToolRecord, i: number) => ({
+  const sortedTools = [...(data?.tools || [])].sort(
+    (a, b) => (a.sequence ?? 0) - (b.sequence ?? 0),
+  );
+
+  const items = sortedTools.map((t: TurnToolRecord, i: number) => {
+    const started = formatToolTime(t.startedAtMs);
+    const finished =
+      t.finishedAtMs != null && t.finishedAtMs !== t.startedAtMs
+        ? formatToolTime(t.finishedAtMs)
+        : "";
+    const timeLabel = started
+      ? finished
+        ? `${started} → ${finished}`
+        : started
+      : "";
+    const hasOutput = t.output != null && String(t.output).length > 0;
+
+    return {
     key: t.toolUseId || String(i),
     label: (
-      <span>
-        <Typography.Text code style={{ marginRight: 8 }}>
-          {t.toolName}
-        </Typography.Text>
-        {t.isError ? <Tag color="error">error</Tag> : <Tag color="success">ok</Tag>}
-        {t.output == null ? <Tag>无返回</Tag> : null}
+      <span style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        {t.sequence != null ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            #{t.sequence}
+          </Typography.Text>
+        ) : null}
+        <Typography.Text code>{toolDisplayName(t)}</Typography.Text>
+        {timeLabel ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {timeLabel}
+          </Typography.Text>
+        ) : null}
+        {hasOutput ? (
+          t.isError ? (
+            <Tag color="error">error</Tag>
+          ) : (
+            <Tag color="success">ok</Tag>
+          )
+        ) : (
+          <Tag>无返回</Tag>
+        )}
       </span>
     ),
     children: (
@@ -116,12 +163,13 @@ export default function TurnToolsDrawer({
               wordBreak: "break-word",
             }}
           >
-            {t.output ?? "（尚无 tool_result）"}
+            {hasOutput ? t.output : "（jsonl 中尚无 tool_result，或工具仍在执行）"}
           </pre>
         </div>
       </div>
     ),
-  }));
+  };
+  });
 
   return (
     <>

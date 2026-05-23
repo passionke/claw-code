@@ -19,6 +19,10 @@ source "${ROOT_ENV}"
 set +a
 
 # shellcheck source=/dev/null
+source "${LIB_DIR}/compose-include.sh"
+claw_export_llm_runtime_layout "${PODMAN_DIR}"
+
+# shellcheck source=/dev/null
 source "${LIB_DIR}/claude-tap-local.sh"
 claw_claude_tap_start "${PODMAN_DIR}" "${ROOT_DIR}"
 

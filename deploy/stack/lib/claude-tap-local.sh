@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Start/stop claude-tap from local fork (docker/podman image or editable venv). Author: kejiqing
+# Start/stop claude-tap from local fork (docker/podman image or editable venv).
+# Upstream hot-reload file: CLAW_TAP_UPSTREAM_CONFIG_FILE or ${repo}/.claw/claw-tap-upstream.json
+# (set by compose-include `claw_export_llm_runtime_layout`; gateway writes same path on LLM apply/poll). Author: kejiqing
 set -euo pipefail
 
 if [[ -n "${BASH_SOURCE[0]+set}" ]]; then
@@ -70,6 +72,35 @@ claw_claude_tap_build_image() {
 }
 
 # Local fork build, or `docker pull` when only CLAUDE_TAP_IMAGE is set (production). Author: kejiqing
+claw_claude_tap_upstream_config_path() {
+  local root_dir="$1"
+  if [[ -n "${CLAW_TAP_UPSTREAM_CONFIG_FILE:-}" ]]; then
+    printf '%s\n' "${CLAW_TAP_UPSTREAM_CONFIG_FILE}"
+    return 0
+  fi
+  printf '%s\n' "${root_dir}/.claw/claw-tap-upstream.json"
+}
+
+claw_claude_tap_ensure_upstream_config_file() {
+  local root_dir="$1"
+  local upstream="$2"
+  local cfg
+  cfg="$(claw_claude_tap_upstream_config_path "${root_dir}")"
+  mkdir -p "$(dirname "${cfg}")"
+  if [[ ! -f "${cfg}" ]] && [[ -n "${upstream}" ]]; then
+    printf '{"target":"%s"}\n' "${upstream}" >"${cfg}"
+  fi
+  (cd "$(dirname "${cfg}")" && printf '%s/%s\n' "$(pwd)" "$(basename "${cfg}")")
+}
+
+claw_claude_tap_upstream_args() {
+  local root_dir="$1"
+  local upstream="$2"
+  local cfg
+  cfg="$(claw_claude_tap_ensure_upstream_config_file "${root_dir}" "${upstream}")"
+  printf '%s\n' "${cfg}"
+}
+
 claw_claude_tap_ensure_image() {
   local rt="$1"
   local ctx="$2"
@@ -94,13 +125,16 @@ claw_claude_tap_start_docker() {
   local rt="$1"
   local podman_dir="$2"
   local ctx="$3"
+  local root_dir="$4"
   local image="${CLAUDE_TAP_IMAGE:-claude-tap:local}"
   local container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
   local port="${CLAUDE_TAP_PORT:-8080}"
   local live_port="${CLAUDE_TAP_LIVE_PORT:-3000}"
   local traces_dir="${CLAUDE_TAP_TRACES_DIR:-${podman_dir}/claude-tap-data/traces}"
-  local tap_target="$4"
+  local tap_target="$5"
   local log_file="${podman_dir}/claude-tap.log"
+  local upstream_cfg
+  upstream_cfg="$(claw_claude_tap_upstream_args "${root_dir}" "${tap_target}")"
 
   mkdir -p "${traces_dir}"
   traces_dir="$(cd "${traces_dir}" && pwd)"
@@ -119,6 +153,7 @@ claw_claude_tap_start_docker() {
     -p "${port}:8080" \
     -p "${live_port}:3000" \
     -v "${traces_dir}:/data/traces" \
+    -v "${upstream_cfg}:${upstream_cfg}:ro" \
     "${image}" \
     claude-tap \
     --tap-no-launch \
@@ -127,6 +162,7 @@ claw_claude_tap_start_docker() {
     --tap-live \
     --tap-live-port 3000 \
     --tap-target "${tap_target}" \
+    --tap-upstream-config "${upstream_cfg}" \
     --tap-output-dir /data/traces \
     --tap-no-update-check \
     --tap-no-auto-update \
@@ -146,10 +182,13 @@ claw_claude_tap_start_docker() {
 claw_claude_tap_start_source() {
   local podman_dir="$1"
   local ctx="$2"
+  local root_dir="$3"
   local port="${CLAUDE_TAP_PORT:-8080}"
   local live_port="${CLAUDE_TAP_LIVE_PORT:-3000}"
-  local tap_target="$3"
+  local tap_target="$4"
   local log_file="${podman_dir}/claude-tap.log"
+  local upstream_cfg
+  upstream_cfg="$(claw_claude_tap_upstream_args "${root_dir}" "${tap_target}")"
   local traces_dir="${CLAUDE_TAP_TRACES_DIR:-${podman_dir}/claude-tap-data/traces}"
   local bin="${CLAUDE_TAP_SOURCE_BIN:-}"
 
@@ -183,6 +222,7 @@ claw_claude_tap_start_source() {
     --tap-port "${port}" \
     --tap-live-port "${live_port}" \
     --tap-target "${tap_target}" \
+    --tap-upstream-config "${upstream_cfg}" \
     --tap-output-dir "${traces_dir}" \
     --tap-no-update-check \
     --tap-no-auto-update \
@@ -196,25 +236,67 @@ claw_claude_tap_start_source() {
   echo "claude-tap source ${bin} pid=$(cat "${podman_dir}/claude-tap.pid") port=${port} live=${live_port}"
 }
 
-claw_claude_tap_start_native() {
-  local podman_dir="$1"
-  local port="${CLAUDE_TAP_PORT:-8080}"
-  local live_port="${CLAUDE_TAP_LIVE_PORT:-3000}"
-  local tap_target="$2"
-  local log_file="${podman_dir}/claude-tap.log"
+# PyPI distribution is claw-tap; CLI remains claude-tap (https://pypi.org/project/claw-tap/). Author: kejiqing
+claw_claude_tap_pypi_version() {
+  printf '%s\n' "${CLAW_TAP_PYPI_VERSION:-${CLAUDE_TAP_PYPI_VERSION:-0.0.7}}"
+}
 
-  if ! command -v claude-tap >/dev/null 2>&1; then
-    echo "claude-tap not in PATH (CLAUDE_TAP_MODE=native). Use CLAUDE_TAP_MODE=docker|source or:" >&2
-    echo "  uv tool install claude-tap" >&2
+claw_claude_tap_ensure_pypi_bin() {
+  local version="$1"
+  local bin="${CLAUDE_TAP_NATIVE_BIN:-}"
+
+  if [[ -n "${bin}" ]]; then
+    [[ -x "${bin}" ]] || {
+      echo "CLAUDE_TAP_NATIVE_BIN not executable: ${bin}" >&2
+      exit 1
+    }
+    printf '%s\n' "${bin}"
+    return 0
+  fi
+
+  if command -v claude-tap >/dev/null 2>&1; then
+    command -v claude-tap
+    return 0
+  fi
+
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "claude-tap not in PATH; install uv then re-run tap-up, or:" >&2
+    echo "  uv tool install claw-tap==${version}" >&2
+    echo "  pip install claw-tap==${version}" >&2
     exit 1
   fi
 
-  nohup claude-tap \
+  echo "==> uv tool install claw-tap==${version} (PyPI; GHCR image has no linux/arm64)" >&2
+  # Optional: UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple for CN networks
+  uv tool install "claw-tap==${version}" --force
+  command -v claude-tap
+}
+
+claw_claude_tap_start_native() {
+  local podman_dir="$1"
+  local root_dir="$2"
+  local port="${CLAUDE_TAP_PORT:-8080}"
+  local live_port="${CLAUDE_TAP_LIVE_PORT:-3000}"
+  local tap_target="$3"
+  local log_file="${podman_dir}/claude-tap.log"
+  local upstream_cfg traces_dir bin pypi_ver
+  upstream_cfg="$(claw_claude_tap_upstream_args "${root_dir}" "${tap_target}")"
+  traces_dir="${CLAUDE_TAP_TRACES_DIR:-${podman_dir}/claude-tap-data/traces}"
+  pypi_ver="$(claw_claude_tap_pypi_version)"
+  bin="$(claw_claude_tap_ensure_pypi_bin "${pypi_ver}")"
+  mkdir -p "${traces_dir}"
+
+  nohup "${bin}" \
     --tap-no-launch \
     --tap-live \
+    --tap-host 0.0.0.0 \
     --tap-port "${port}" \
     --tap-live-port "${live_port}" \
     --tap-target "${tap_target}" \
+    --tap-upstream-config "${upstream_cfg}" \
+    --tap-output-dir "${traces_dir}" \
+    --tap-no-update-check \
+    --tap-no-auto-update \
     >"${log_file}" 2>&1 &
   echo $! >"${podman_dir}/claude-tap.pid"
   sleep 1
@@ -222,7 +304,7 @@ claw_claude_tap_start_native() {
     echo "failed to start claude-tap, check ${log_file}" >&2
     exit 1
   fi
-  echo "claude-tap native pid=$(cat "${podman_dir}/claude-tap.pid") port=${port} live=${live_port}"
+  echo "claude-tap pypi claw-tap==${pypi_ver} ${bin} pid=$(cat "${podman_dir}/claude-tap.pid") port=${port} live=${live_port}"
 }
 
 claw_claude_tap_container_running() {
@@ -280,16 +362,16 @@ claw_claude_tap_start() {
     docker | podman)
       local rt
       rt="$(claw_claude_tap_runtime_cli)"
-      claw_claude_tap_start_docker "${rt}" "${podman_dir}" "${ctx}" "${upstream}"
+      claw_claude_tap_start_docker "${rt}" "${podman_dir}" "${ctx}" "${root_dir}" "${upstream}"
       ;;
     source | editable | local)
-      claw_claude_tap_start_source "${podman_dir}" "${ctx}" "${upstream}"
+      claw_claude_tap_start_source "${podman_dir}" "${ctx}" "${root_dir}" "${upstream}"
       ;;
     native | pypi)
-      claw_claude_tap_start_native "${podman_dir}" "${upstream}"
+      claw_claude_tap_start_native "${podman_dir}" "${root_dir}" "${upstream}"
       ;;
     *)
-      echo "unknown CLAUDE_TAP_MODE=${mode} (use docker, source, or native)" >&2
+      echo "unknown CLAUDE_TAP_MODE=${mode} (use docker, source, native/pypi)" >&2
       exit 1
       ;;
   esac

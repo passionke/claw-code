@@ -44,7 +44,7 @@ Base URL 示例：`http://127.0.0.1:18088`
       - `claw-session-id: <sessionId>`
     - 在访问下游 MCP 服务（包括 SQLBot）时，会通过 MCP 协议 `tools/call._meta.extra_session` 向工具端暴露 `extraSession`（如存在），用于会话级业务上下文消费。
   - 对话状态：同一会话目录下使用 `.claw/gateway-solve-session.jsonl` 持久化消息；若文件损坏导致无法加载，返回 `500`（不会静默丢弃历史）。
-  - **SQLBot 预注入（可选）**：环境变量 **`CLAW_GATEWAY_SQLBOT_PREFLIGHT`**（根 `.env`，经 worker 白名单传入 solve 进程）。**未设置时默认开启**：在首轮 LLM 之前自动执行 `mcp_start`、`mcp_datasource_list`、`mcp_datasource_tables`，并把 `tool_use` / `tool_result` 写入会话 jsonl。设为 **`0`** / **`false`** / **`off`** / **`no`** 可关闭，由模型按系统提示自行调用 MCP，避免与用户 prompt / CLAUDE 指令冲突。
+  - **Solve preflight（按项目、可选）**：在 `ds_<id>/home/.claw/solve-preflight.json` 声明，例如 `{"kind":"sqlbot_mcp_start"}`。仅**该 `sessionId` 第一次**（尚无 `gateway-solve-session.jsonl`）时：先写入用户问题，再执行 preflight 并注入 transcript（当前仅 `sqlbot_mcp_start`：一次 `mcp_start`，暴露 `access_token` / `chat_id`）。续聊 turn 不跑 preflight。环境变量 **`CLAW_GATEWAY_SQLBOT_PREFLIGHT`**=`0`/`false`/`off`/`no` 可关闭 SQLBot 这一类。表结构不在 transcript 注入：由外部 job 维护 `ds_<id>/home/schema.md`（`CREATE TABLE` DDL），worker ro mount 到 `home/schema.md`，系统提示词引导模型读取该文件。
 
 - `POST /v1/start`
   - 用途：异步提交 solve（与 `solve_async` 相同入队逻辑），**立即**返回 `sessionId` / `requestId`（二者同值，且等于 `taskId`）；供 BFF「agent/start」等会话引导场景使用，**不要**再同步调用 `/v1/solve` 阻塞等待。
@@ -187,7 +187,14 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - `POST .../restore` body `{ "entityRev": "…" }` — 写回 `__draft__` 聚合字段，不切换 L1 生效版、不物化
 
 - **全局配置（与 ds_id 无关）**
-  - `GET /v1/gateway/global-settings` — `{ updatedAtMs, gitPats: [{ id, name, note?, createdAtMs, updatedAtMs, tokenSet }] }`（不返回 token 明文）
+  - `GET /v1/gateway/global-settings` — `{ updatedAtMs, gitPats, activeLlmConfig?: { name, baseModelUrl, modelName, apiKeySet }, activeLlmAppliedAtMs? }`（全局大模型**无版本**；不返回 apiKey 明文）
+  - `PUT /v1/gateway/global-settings/active-llm-config` — 保存全局大模型：body `{ name?, baseModelUrl, modelName, apiKey? }` → upsert PG 单行 `global`/`global` → 立即同步 `.env` + `.claw/claw-tap-upstream.json` + `llm_runtime`
+  - `POST /v1/gateway/global-settings/llm-models` — 与 `PUT active-llm-config` 相同语义（兼容旧客户端）
+  - `DELETE /v1/gateway/global-settings/llm-models/{model_id}` — 清除全局配置
+  - `GET .../versions` / `POST .../apply` — 已废弃（无版本）；请用 `PUT active-llm-config`
+  - 网关后台默认每 **30s** 轮询 DB 全局 LLM（`CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS`，`0` 关闭）；upstream 变更写 JSON 文件，tap 约 2s 内生效
+  - **落盘契约**（`gateway.sh up` / `tap-up` 生成 `deploy/stack/.claw-llm-runtime.env`）：宿主机 `${repo}/.env`（`OPENAI_API_KEY` / `CLAW_DEFAULT_MODEL`）与 `${repo}/.claw/claw-tap-upstream.json`（`{"target":"https://..."}`）；gateway 容器 rw 挂载 `/run/claw/worker.env` + `/run/claw/claw/…`，与 claude-tap `--tap-upstream-config`、pool worker 读同一宿主文件
+  - `DELETE /v1/gateway/global-settings/llm-models/{model_id}` — 删除模型及其全部 revision
   - `POST /v1/gateway/global-settings/git-pats` — 创建/更新 PAT；body `{ id?, name, note?, token? }`（新建须 `token`；更新可省略 `token` 保留原值）
   - `DELETE /v1/gateway/global-settings/git-pats/{pat_id}` — 删除 PAT
   - 项目 `gitSyncJson` 使用 `gitPatId` 引用全局 PAT；推送时由网关解析 token，**不在** `project_config` 存 PAT 明文（兼容旧 `gitToken` 内联）

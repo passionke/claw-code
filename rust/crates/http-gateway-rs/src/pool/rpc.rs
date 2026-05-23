@@ -29,9 +29,12 @@ pub enum PoolRpcReq {
         /// Host path to `ds_*/CLAUDE.md` for optional ro file bind (gateway ≥ pool daemon that understands this field).
         #[serde(default)]
         claude_md_host_mount: Option<String>,
-        /// Host path to `ds_*/home/DATA_CATALOG.md` for optional ro file bind.
+        /// Host path to `ds_*/home/schema.md` (or legacy catalog) for optional ro file bind.
         #[serde(default)]
         data_catalog_host_mount: Option<String>,
+        /// Host path to `ds_*/home/.claw/solve-preflight.json` for optional ro file bind.
+        #[serde(default)]
+        solve_preflight_host_mount: Option<String>,
     },
     Exec {
         slot_index: usize,
@@ -146,6 +149,10 @@ impl PoolOps for PoolRpcClient {
                     .data_catalog_file
                     .as_ref()
                     .map(|p| p.to_string_lossy().into_owned()),
+                solve_preflight_host_mount: host_mounts
+                    .solve_preflight_file
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
             })
             .await?;
         if !r.ok {
@@ -211,6 +218,7 @@ async fn dispatch_pool_rpc(
             skills_host_mount,
             claude_md_host_mount,
             data_catalog_host_mount,
+            solve_preflight_host_mount,
         } => match pool
             .acquire_slot(
                 Duration::from_millis(timeout_ms),
@@ -219,6 +227,7 @@ async fn dispatch_pool_rpc(
                     skills_dir: skills_host_mount.map(PathBuf::from),
                     claude_md_file: claude_md_host_mount.map(PathBuf::from),
                     data_catalog_file: data_catalog_host_mount.map(PathBuf::from),
+                    solve_preflight_file: solve_preflight_host_mount.map(PathBuf::from),
                 },
             )
             .await

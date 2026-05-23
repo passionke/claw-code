@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::biz_advice_report::report_body_from_persisted;
+use crate::biz_advice_report::{report_body_from_persisted, solve_failure_detail_from_output_json};
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::Json;
@@ -37,6 +37,17 @@ pub struct GatewayTurnSummary {
     pub has_report: bool,
     /// Extracted `message` for admin replay (not raw solve JSON). Author: kejiqing
     pub report_body: Option<String>,
+    /// `output_json.detail` when status is `failed` (admin error display). Author: kejiqing
+    pub failure_detail: Option<String>,
+}
+
+/// Row for tools API: session path + turn times + 1-based user turn index (single query). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct TurnToolsContext {
+    pub session_home_rel: String,
+    pub created_at_ms: i64,
+    pub finished_at_ms: Option<i64>,
+    pub user_turn_index: i64,
 }
 
 /// Latest `gateway_turns` row for a session (see [`GatewaySessionDb::fetch_latest_turn_for_session`]).
@@ -74,6 +85,8 @@ pub struct ProjectConfigRow {
     pub claude_md: Option<String>,
     /// Per-project one-way git push: `{ gitUrl, gitRef, gitToken, enabled, lastPush* }`. Author: kejiqing
     pub git_sync_json: Value,
+    /// First-turn solve preflight: `{ "kind": "none" | "sqlbot_mcp_start" }`. Materialized to disk. Author: kejiqing
+    pub solve_preflight_json: Value,
 }
 
 /// Row summary for [`GatewaySessionDb::list_project_config_summaries`]. Author: kejiqing
@@ -126,6 +139,18 @@ pub struct ProjectEntityRevisionSummary {
     pub note: Option<String>,
 }
 
+/// One immutable global LLM model revision (`gateway_llm_model_revision`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct GatewayLlmModelRevisionRow {
+    pub model_id: String,
+    pub model_rev: String,
+    pub created_at_ms: i64,
+    pub name: String,
+    pub base_model_url: String,
+    pub model_name: String,
+    pub note: Option<String>,
+}
+
 /// Summary row for version list API. Author: kejiqing
 #[derive(Debug, Clone)]
 pub struct ProjectConfigRevisionSummary {
@@ -174,6 +199,7 @@ pub struct ProjectConfigUpsert<'a> {
     pub allowed_tools_json: &'a Value,
     pub claude_md: Option<&'a str>,
     pub git_sync_json: &'a Value,
+    pub solve_preflight_json: &'a Value,
 }
 
 /// Gateway session index: one row per `(session_id, ds_id)` with a workspace-relative `session_home`.
@@ -357,6 +383,11 @@ impl GatewaySessionDb {
         .execute(pool)
         .await?;
         sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS solve_preflight_json JSONB NOT NULL DEFAULT '{\"kind\":\"none\"}'::jsonb",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
             "UPDATE project_config SET stable_content_rev = content_rev WHERE stable_content_rev IS NULL OR stable_content_rev = ''",
         )
         .execute(pool)
@@ -415,6 +446,120 @@ impl GatewaySessionDb {
         .await?;
         sqlx::query(
             "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS system_prompt_version TEXT NOT NULL DEFAULT 'v1'",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS llm_base_model_url TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS llm_model_name TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS llm_model_api_key TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS llm_model_updated_at_ms BIGINT NOT NULL DEFAULT 0",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS llm_model_applied_at_ms BIGINT",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"UPDATE gateway_global_settings SET
+                 llm_base_model_url = COALESCE(settings_json #>> '{llmModel,baseModelUrl}', ''),
+                 llm_model_name = COALESCE(settings_json #>> '{llmModel,modelName}', ''),
+                 llm_model_updated_at_ms = COALESCE(
+                   NULLIF(settings_json #>> '{llmModel,updatedAtMs}', '')::bigint, 0),
+                 llm_model_applied_at_ms = NULLIF(
+                   NULLIF(settings_json #>> '{llmModel,appliedAtMs}', '')::bigint, 0)
+             WHERE singleton_id = 1
+               AND llm_model_updated_at_ms = 0
+               AND settings_json ? 'llmModel'",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"UPDATE gateway_global_settings SET
+                 llm_model_api_key = COALESCE(git_pat_tokens_json ->> '__gateway_llm_api_key__', '')
+             WHERE singleton_id = 1
+               AND llm_model_api_key = ''
+               AND git_pat_tokens_json ? '__gateway_llm_api_key__'",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS llm_models_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS llm_model_api_keys_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS active_llm_model_id TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS active_llm_applied_at_ms BIGINT",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS active_llm_model_rev TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS gateway_llm_model_revision (
+                model_id TEXT NOT NULL,
+                model_rev TEXT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                name TEXT NOT NULL,
+                base_model_url TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                note TEXT,
+                PRIMARY KEY (model_id, model_rev)
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"CREATE INDEX IF NOT EXISTS idx_gateway_llm_model_revision_list
+             ON gateway_llm_model_revision (model_id, created_at_ms DESC)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"UPDATE gateway_global_settings SET
+                 llm_models_json = jsonb_build_array(jsonb_build_object(
+                   'id', 'llm-migrated',
+                   'name', 'Migrated',
+                   'baseModelUrl', llm_base_model_url,
+                   'modelName', llm_model_name,
+                   'createdAtMs', llm_model_updated_at_ms,
+                   'updatedAtMs', llm_model_updated_at_ms
+                 )),
+                 llm_model_api_keys_json = jsonb_build_object(
+                   'llm-migrated', llm_model_api_key),
+                 active_llm_model_id = 'llm-migrated',
+                 active_llm_applied_at_ms = llm_model_applied_at_ms
+             WHERE singleton_id = 1
+               AND jsonb_array_length(llm_models_json) = 0
+               AND length(trim(llm_base_model_url)) > 0
+               AND length(trim(llm_model_name)) > 0",
         )
         .execute(pool)
         .await?;
@@ -488,6 +633,177 @@ impl GatewaySessionDb {
         let tokens: Value = row.try_get::<Json<Value>, _>("git_pat_tokens_json")?.0;
         let updated_at_ms: i64 = row.try_get("updated_at_ms")?;
         Ok((settings, tokens, updated_at_ms))
+    }
+
+    /// LLM model list + active id in `gateway_global_settings` (api keys in `llm_model_api_keys_json`). Author: kejiqing
+    pub async fn get_gateway_llm_models_raw(
+        &self,
+    ) -> Result<(Value, Value, String, String, Option<i64>), SqlxError> {
+        let row = sqlx::query(
+            r"SELECT llm_models_json, llm_model_api_keys_json, active_llm_model_id,
+                      active_llm_model_rev, active_llm_applied_at_ms
+               FROM gateway_global_settings WHERE singleton_id = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok((json!([]), json!({}), String::new(), String::new(), None));
+        };
+        let models: Value = row.try_get::<Json<Value>, _>("llm_models_json")?.0;
+        let keys: Value = row.try_get::<Json<Value>, _>("llm_model_api_keys_json")?.0;
+        let active_id: String = row.try_get("active_llm_model_id")?;
+        let active_rev: String = row.try_get("active_llm_model_rev")?;
+        let applied: Option<i64> = row.try_get("active_llm_applied_at_ms")?;
+        Ok((models, keys, active_id, active_rev, applied))
+    }
+
+    pub async fn save_gateway_llm_models_raw(
+        &self,
+        models_json: &Value,
+        api_keys_json: &Value,
+        active_llm_model_id: &str,
+        active_llm_model_rev: &str,
+        active_llm_applied_at_ms: Option<i64>,
+        updated_at_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_global_settings (
+                 singleton_id, llm_models_json, llm_model_api_keys_json,
+                 active_llm_model_id, active_llm_model_rev, active_llm_applied_at_ms, updated_at_ms
+               ) VALUES (1, $1, $2, $3, $4, $5, $6)
+               ON CONFLICT (singleton_id) DO UPDATE SET
+                 llm_models_json = EXCLUDED.llm_models_json,
+                 llm_model_api_keys_json = EXCLUDED.llm_model_api_keys_json,
+                 active_llm_model_id = EXCLUDED.active_llm_model_id,
+                 active_llm_model_rev = EXCLUDED.active_llm_model_rev,
+                 active_llm_applied_at_ms = EXCLUDED.active_llm_applied_at_ms,
+                 updated_at_ms = GREATEST(gateway_global_settings.updated_at_ms, EXCLUDED.updated_at_ms),
+                 settings_json = gateway_global_settings.settings_json - 'llmModel',
+                 git_pat_tokens_json = gateway_global_settings.git_pat_tokens_json - '__gateway_llm_api_key__'",
+        )
+        .bind(Json(models_json))
+        .bind(Json(api_keys_json))
+        .bind(active_llm_model_id)
+        .bind(active_llm_model_rev)
+        .bind(active_llm_applied_at_ms)
+        .bind(updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_llm_model_revision(
+        &self,
+        model_id: &str,
+        model_rev: &str,
+    ) -> Result<Option<GatewayLlmModelRevisionRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT model_id, model_rev, created_at_ms, name, base_model_url, model_name, note
+               FROM gateway_llm_model_revision
+               WHERE model_id = $1 AND model_rev = $2",
+        )
+        .bind(model_id)
+        .bind(model_rev)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(GatewayLlmModelRevisionRow {
+            model_id: row.try_get("model_id")?,
+            model_rev: row.try_get("model_rev")?,
+            created_at_ms: row.try_get("created_at_ms")?,
+            name: row.try_get("name")?,
+            base_model_url: row.try_get("base_model_url")?,
+            model_name: row.try_get("model_name")?,
+            note: row.try_get("note")?,
+        }))
+    }
+
+    pub async fn list_llm_model_revisions(
+        &self,
+        model_id: &str,
+    ) -> Result<Vec<GatewayLlmModelRevisionRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT model_id, model_rev, created_at_ms, name, base_model_url, model_name, note
+               FROM gateway_llm_model_revision
+               WHERE model_id = $1
+               ORDER BY created_at_ms DESC",
+        )
+        .bind(model_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(GatewayLlmModelRevisionRow {
+                    model_id: row.try_get("model_id")?,
+                    model_rev: row.try_get("model_rev")?,
+                    created_at_ms: row.try_get("created_at_ms")?,
+                    name: row.try_get("name")?,
+                    base_model_url: row.try_get("base_model_url")?,
+                    model_name: row.try_get("model_name")?,
+                    note: row.try_get("note")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn insert_llm_model_revision(
+        &self,
+        row: &GatewayLlmModelRevisionRow,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_llm_model_revision (
+                 model_id, model_rev, created_at_ms, name, base_model_url, model_name, note
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+               ON CONFLICT (model_id, model_rev) DO NOTHING",
+        )
+        .bind(&row.model_id)
+        .bind(&row.model_rev)
+        .bind(row.created_at_ms)
+        .bind(&row.name)
+        .bind(&row.base_model_url)
+        .bind(&row.model_name)
+        .bind(&row.note)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Upsert global LLM row (no version history). Author: kejiqing
+    pub async fn upsert_llm_model_revision(
+        &self,
+        row: &GatewayLlmModelRevisionRow,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_llm_model_revision (
+                 model_id, model_rev, created_at_ms, name, base_model_url, model_name, note
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+               ON CONFLICT (model_id, model_rev) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 base_model_url = EXCLUDED.base_model_url,
+                 model_name = EXCLUDED.model_name,
+                 note = EXCLUDED.note,
+                 created_at_ms = EXCLUDED.created_at_ms",
+        )
+        .bind(&row.model_id)
+        .bind(&row.model_rev)
+        .bind(row.created_at_ms)
+        .bind(&row.name)
+        .bind(&row.base_model_url)
+        .bind(&row.model_name)
+        .bind(&row.note)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_llm_model_revisions(&self, model_id: &str) -> Result<(), SqlxError> {
+        sqlx::query("DELETE FROM gateway_llm_model_revision WHERE model_id = $1")
+            .bind(model_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn save_gateway_global_settings_raw(
@@ -576,7 +892,7 @@ impl GatewaySessionDb {
         let row = sqlx::query(
             r"SELECT ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                       rules_json, mcp_servers_json, skills_sources_json, skills_json,
-                      allowed_tools_json, claude_md, git_sync_json
+                      allowed_tools_json, claude_md, git_sync_json, solve_preflight_json
                FROM project_config WHERE ds_id = $1",
         )
         .bind(ds_id)
@@ -597,6 +913,7 @@ impl GatewaySessionDb {
         let allowed_tools_json: Value = row.try_get::<Json<Value>, _>("allowed_tools_json")?.0;
         let claude_md: Option<String> = row.try_get("claude_md")?;
         let git_sync_json: Value = row.try_get::<Json<Value>, _>("git_sync_json")?.0;
+        let solve_preflight_json: Value = row.try_get::<Json<Value>, _>("solve_preflight_json")?.0;
 
         let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
         let draft_open: bool = row.try_get("draft_open")?;
@@ -614,6 +931,7 @@ impl GatewaySessionDb {
             allowed_tools_json,
             claude_md,
             git_sync_json,
+            solve_preflight_json,
         }))
     }
 
@@ -625,8 +943,8 @@ impl GatewaySessionDb {
             r"INSERT INTO project_config (
                 ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                 rules_json, mcp_servers_json, skills_sources_json, skills_json,
-                allowed_tools_json, claude_md, git_sync_json
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                allowed_tools_json, claude_md, git_sync_json, solve_preflight_json
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (ds_id) DO UPDATE SET
                 content_rev = EXCLUDED.content_rev,
                 stable_content_rev = EXCLUDED.stable_content_rev,
@@ -638,7 +956,8 @@ impl GatewaySessionDb {
                 skills_json = EXCLUDED.skills_json,
                 allowed_tools_json = EXCLUDED.allowed_tools_json,
                 claude_md = EXCLUDED.claude_md,
-                git_sync_json = EXCLUDED.git_sync_json",
+                git_sync_json = EXCLUDED.git_sync_json,
+                solve_preflight_json = EXCLUDED.solve_preflight_json",
         )
         .bind(row.ds_id)
         .bind(row.content_rev)
@@ -652,6 +971,7 @@ impl GatewaySessionDb {
         .bind(Json(row.allowed_tools_json))
         .bind(row.claude_md)
         .bind(Json(row.git_sync_json))
+        .bind(Json(row.solve_preflight_json))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1200,6 +1520,42 @@ impl GatewaySessionDb {
         r.try_get("output_json")
     }
 
+    /// Session home + turn times + user turn index for `GET .../tools` (one query). Author: kejiqing
+    pub async fn get_turn_tools_context(
+        &self,
+        turn_id: &str,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<Option<TurnToolsContext>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT s.session_home, t.created_at_ms, t.finished_at_ms,
+                     (SELECT COUNT(*)::bigint FROM gateway_turns t2
+                      WHERE t2.session_id = t.session_id AND t2.ds_id = t.ds_id
+                        AND (t2.created_at_ms < t.created_at_ms
+                             OR (t2.created_at_ms = t.created_at_ms AND t2.turn_id <= t.turn_id))
+                     ) AS user_turn_index
+              FROM gateway_turns t
+              INNER JOIN gateway_sessions s
+                ON s.session_id = t.session_id AND s.ds_id = t.ds_id
+              WHERE t.turn_id = $1 AND t.session_id = $2 AND t.ds_id = $3",
+        )
+        .bind(turn_id)
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        use sqlx::Row;
+        Ok(Some(TurnToolsContext {
+            session_home_rel: row.try_get("session_home")?,
+            created_at_ms: row.try_get("created_at_ms")?,
+            finished_at_ms: row.try_get("finished_at_ms")?,
+            user_turn_index: row.try_get("user_turn_index")?,
+        }))
+    }
+
     /// `created_at_ms` for this turn (ordering within a session; tests / future callers).
     pub async fn get_turn_created_at_ms(
         &self,
@@ -1379,18 +1735,26 @@ impl GatewaySessionDb {
             let report_message: Option<String> = r.try_get("report_message")?;
             let output_json: Option<Json<Value>> = r.try_get("output_json")?;
             let output_value = output_json.map(|Json(v)| v);
-            let report_body = report_body_from_persisted(
-                report_message.as_deref(),
-                output_value.as_ref(),
-            );
+            let status: String = r.try_get("status")?;
+            let failure_detail = if status == "failed" {
+                solve_failure_detail_from_output_json(output_value.as_ref())
+            } else {
+                None
+            };
+            let report_body = if failure_detail.is_some() {
+                None
+            } else {
+                report_body_from_persisted(report_message.as_deref(), output_value.as_ref())
+            };
             out.push(GatewayTurnSummary {
                 turn_id: r.try_get("turn_id")?,
                 user_prompt: r.try_get("user_prompt")?,
-                status: r.try_get("status")?,
+                status,
                 created_at_ms: r.try_get("created_at_ms")?,
                 finished_at_ms: r.try_get("finished_at_ms")?,
                 has_report: r.try_get("has_report")?,
                 report_body,
+                failure_detail,
             });
         }
         Ok(out)
@@ -1694,6 +2058,14 @@ mod tests {
             .unwrap();
         let idx = db.turn_index_in_session(tid2, &sid, 1, t2).await.unwrap();
         assert_eq!(idx, 2);
+        let tools_ctx = db
+            .get_turn_tools_context(tid2, &sid, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(tools_ctx.user_turn_index, 2);
+        assert_eq!(tools_ctx.session_home_rel, "ds_1/sessions/x");
+        assert_eq!(tools_ctx.created_at_ms, t2);
 
         let sessions = db
             .list_sessions_for_ds(1, 50, None, None, None, None, None)
@@ -1814,6 +2186,7 @@ mod tests {
             allowed_tools_json: &tools,
             claude_md: Some("# Claude\n"),
             git_sync_json: &json!({}),
+            solve_preflight_json: &json!({"kind": "sqlbot_mcp_start"}),
         })
         .await
         .unwrap();
@@ -1839,6 +2212,7 @@ mod tests {
             allowed_tools_json: &json!([]),
             claude_md: None,
             git_sync_json: &json!({}),
+            solve_preflight_json: &json!({"kind": "none"}),
         })
         .await
         .unwrap();

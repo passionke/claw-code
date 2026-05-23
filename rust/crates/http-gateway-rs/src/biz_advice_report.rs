@@ -130,6 +130,16 @@ pub fn report_body_from_solve_output(
     Err("solve output has no report message (outputJson.message)".to_string())
 }
 
+/// Gateway async failure snapshot (`output_json.detail` from solve 502). Author: kejiqing
+pub fn solve_failure_detail_from_output_json(output_json: Option<&Value>) -> Option<String> {
+    let detail = output_json?
+        .get("detail")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    Some(sanitize_external_report_text(detail))
+}
+
 /// Prefer `output_json.message`, else parse JSON-shaped `report_message` (solve raw output). Author: kejiqing
 pub fn report_body_from_persisted(
     report_message: Option<&str>,
@@ -140,7 +150,10 @@ pub fn report_body_from_persisted(
             return Some(body);
         }
     }
-    report_body_from_solve_output("", output_json).ok()
+    if let Ok(body) = report_body_from_solve_output("", output_json) {
+        return Some(body);
+    }
+    solve_failure_detail_from_output_json(output_json)
 }
 
 pub fn build_biz_advice_polish_prompt(instructions: &str, report_body: &str) -> String {
@@ -399,6 +412,18 @@ mod tests {
         assert_eq!(
             report_body_from_solve_output("", Some(&json)).unwrap(),
             "body"
+        );
+    }
+
+    #[test]
+    fn report_body_from_persisted_uses_failure_detail() {
+        let json = serde_json::json!({
+            "detail": "api returned 404 Not Found",
+            "status_code": 502
+        });
+        assert_eq!(
+            report_body_from_persisted(None, Some(&json)).as_deref(),
+            Some("api returned 404 Not Found")
         );
     }
 

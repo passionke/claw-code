@@ -23,6 +23,8 @@ export interface ChatTurnCardProps {
   hasReport?: boolean;
   /** 列表接口已带正文时跳过二次请求。Author: kejiqing */
   historicalReport?: string;
+  /** failed 时列表已带 `output_json.detail`。Author: kejiqing */
+  failureDetail?: string;
 }
 
 function statusLabel(task: SolveTask): string {
@@ -74,9 +76,11 @@ export default function ChatTurnCard({
   viewMode = "live",
   hasReport = false,
   historicalReport: initialHistoricalReport,
+  failureDetail: initialFailureDetail,
 }: ChatTurnCardProps) {
   const historyMode = viewMode === "history";
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
+  const prefilledFailure = initialFailureDetail?.trim() ?? "";
   const [task, setTask] = useState<SolveTask>({
     status: initialStatus,
     hasReport: historyMode && (hasReport || Boolean(prefilledReport)),
@@ -84,7 +88,7 @@ export default function ChatTurnCard({
     progressHistory: [],
   });
   const [visibleProgressCount, setVisibleProgressCount] = useState(0);
-  const [errorText, setErrorText] = useState("");
+  const [errorText, setErrorText] = useState(prefilledFailure);
   const [fallbackOutput, setFallbackOutput] = useState("");
   const [historyReport, setHistoryReport] = useState(prefilledReport);
   const [historyReportLoading, setHistoryReportLoading] = useState(
@@ -101,15 +105,28 @@ export default function ChatTurnCard({
       currentTaskDesc: historyMode ? "历史记录" : "已提交",
       progressHistory: [],
     });
-    setErrorText("");
+    setErrorText(prefilledFailure);
     setFallbackOutput("");
     setHistoryReport(prefilled);
-    setHistoryReportLoading(historyMode && !prefilled);
+    setHistoryReportLoading(historyMode && !prefilled && !prefilledFailure);
     reportOpened.current = false;
-  }, [sessionId, turnId, initialStatus, historyMode, hasReport, initialHistoricalReport]);
+  }, [
+    sessionId,
+    turnId,
+    initialStatus,
+    historyMode,
+    hasReport,
+    initialHistoricalReport,
+    initialFailureDetail,
+  ]);
 
   useEffect(() => {
     if (!historyMode) return;
+    if (prefilledFailure) {
+      setErrorText(prefilledFailure);
+      setHistoryReportLoading(false);
+      return;
+    }
     const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
     if (prefilled) {
       setHistoryReport(prefilled);
@@ -147,6 +164,7 @@ export default function ChatTurnCard({
     dsId,
     hasReport,
     initialHistoricalReport,
+    prefilledFailure,
   ]);
 
   useEffect(() => {

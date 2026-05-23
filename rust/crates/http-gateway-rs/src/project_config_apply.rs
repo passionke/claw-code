@@ -11,6 +11,8 @@ use tokio::fs;
 
 pub const APPLIED_REV_MARKER: &str = ".claw/project_config_applied_rev";
 pub const ALLOWED_TOOLS_MARKER: &str = ".claw/project_allowed_tools.json";
+/// Materialized from `project_config.solve_preflight_json` (DB truth). Author: kejiqing
+pub const SOLVE_PREFLIGHT_MARKER: &str = "home/.claw/solve-preflight.json";
 
 #[derive(Debug)]
 pub struct ProjectConfigApplyError {
@@ -217,6 +219,14 @@ pub fn git_excluded_home_relpaths(row: &ProjectConfigRow) -> Vec<PathBuf> {
             }
         }
     }
+    if row
+        .solve_preflight_json
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|k| k != "none")
+    {
+        out.push(PathBuf::from(SOLVE_PREFLIGHT_MARKER));
+    }
     out
 }
 
@@ -295,6 +305,33 @@ async fn apply_full(
     }
     write_skills_json(work_dir, &row.skills_json).await?;
     write_allowed_tools_marker(work_dir, row).await?;
+    write_solve_preflight_marker(work_dir, row).await?;
+    Ok(())
+}
+
+async fn write_solve_preflight_marker(work_dir: &Path, row: &ProjectConfigRow) -> ApplyResult<()> {
+    gateway_solve_turn::project_preflight::validate_solve_preflight_json(&row.solve_preflight_json)
+        .map_err(ProjectConfigApplyError::new)?;
+    let path = work_dir.join(SOLVE_PREFLIGHT_MARKER);
+    let kind = row
+        .solve_preflight_json
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    if kind == "none" {
+        let _ = fs::remove_file(&path).await;
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.map_err(|e| {
+            ProjectConfigApplyError::new(format!("create {} parent: {e}", path.display()))
+        })?;
+    }
+    let bytes = serde_json::to_vec_pretty(&row.solve_preflight_json)
+        .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-preflight: {e}")))?;
+    fs::write(&path, bytes)
+        .await
+        .map_err(|e| ProjectConfigApplyError::new(format!("write {}: {e}", path.display())))?;
     Ok(())
 }
 
@@ -341,6 +378,7 @@ mod tests {
             allowed_tools_json: json!([]),
             claude_md: Some("# c".into()),
             git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
         };
         let ex = git_excluded_home_relpaths(&row);
         assert!(ex.contains(&PathBuf::from("CLAUDE.md")));

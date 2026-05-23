@@ -13,8 +13,10 @@ pub struct PoolSessionHostMounts {
     pub skills_dir: Option<PathBuf>,
     /// Host `ds_*/CLAUDE.md` file → guest `.../CLAUDE.md:ro`.
     pub claude_md_file: Option<PathBuf>,
-    /// Host `ds_*/home/DATA_CATALOG.md` → guest `.../home/DATA_CATALOG.md:ro` (gateway preflight). kejiqing
+    /// Host `ds_*/home/schema.md` (or legacy catalog) → guest `.../home/schema.md:ro`. kejiqing
     pub data_catalog_file: Option<PathBuf>,
+    /// Host `ds_*/home/.claw/solve-preflight.json` → guest `.../home/.claw/solve-preflight.json:ro`. kejiqing
+    pub solve_preflight_file: Option<PathBuf>,
 }
 
 /// Lease for one worker slot (index into the pool).

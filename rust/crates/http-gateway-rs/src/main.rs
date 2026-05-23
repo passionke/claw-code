@@ -28,7 +28,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use gateway_solve_turn::read_progress_events;
 use gateway_solve_turn::{
@@ -38,15 +38,14 @@ use gateway_solve_turn::{
 };
 use http_gateway_rs::biz_advice_report::{
     biz_report_sse_event_stream, build_biz_advice_polish_prompt, db_snapshot_report_sse_response,
-    load_boss_report_writer_instructions, report_body_from_persisted, report_body_from_solve_output,
-    sanitize_biz_report_parts,
-    sanitize_external_report_text, sanitize_report_payload, BizAdviceReportPayload,
-    BizReportStreamMsg, ReportExportSanitizer,
+    load_boss_report_writer_instructions, report_body_from_persisted,
+    report_body_from_solve_output, sanitize_biz_report_parts, sanitize_external_report_text,
+    sanitize_report_payload, BizAdviceReportPayload, BizReportStreamMsg, ReportExportSanitizer,
 };
 use http_gateway_rs::{
-    gateway_global_settings, pool, project_config_apply, project_config_version,
-    project_entity_revision, project_git_sync, project_tools, session_db, session_merge, turn_id,
-    turn_tools_api,
+    gateway_global_settings, gateway_llm_config_sync, pool, project_config_apply,
+    project_config_version, project_entity_revision, project_git_sync, project_tools, session_db,
+    session_merge, turn_id, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
@@ -121,6 +120,8 @@ pub(crate) struct AppState {
     docker_pool: Arc<dyn pool::PoolOps + Send + Sync>,
     /// Serialize git and working-tree reads/writes on the shared `.claw-code-projects` clone. kejiqing
     projects_git_mirror_lock: Arc<Mutex<()>>,
+    /// Active LLM model/api key from DB (refreshed on apply + poll). Author: kejiqing
+    llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,6 +194,8 @@ pub(crate) struct GatewayConfig {
     projects_git_token: Option<String>,
     /// When set, periodically `git pull` the mirror and refresh each `ds_*/home` when that ds lock is idle (multi-node). kejiqing
     projects_git_ds_home_poll_interval_secs: Option<u64>,
+    /// Poll DB active LLM → upstream JSON file + in-memory runtime (0 = disabled). Author: kejiqing
+    gateway_llm_config_poll_interval_secs: Option<u64>,
     /// When set (`REPORT_LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY`), `/v1/biz_advice_report` polish calls `DeepSeek` official API. kejiqing
     report_polish_deepseek: Option<ReportPolishDeepseek>,
 }
@@ -401,6 +404,9 @@ struct UpsertProjectConfigRequest {
     /// Omit on PUT to keep existing `git_sync_json`. Author: kejiqing
     #[serde(rename = "gitSyncJson", default)]
     git_sync_json: Option<Value>,
+    /// Omit on PUT to keep existing `solve_preflight_json`. Author: kejiqing
+    #[serde(rename = "solvePreflightJson", default)]
+    solve_preflight_json: Option<Value>,
 }
 
 /// Body for `POST /v1/project/config/{ds_id}/versions/commit` — save draft as immutable formal revision (does not change effective). Author: kejiqing
@@ -442,6 +448,8 @@ struct ProjectConfigResponse {
     claude_md: Option<String>,
     #[serde(rename = "gitSyncJson")]
     git_sync_json: Value,
+    #[serde(rename = "solvePreflightJson")]
+    solve_preflight_json: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -1266,6 +1274,13 @@ async fn main() {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&s| s > 0),
+        gateway_llm_config_poll_interval_secs: std::env::var(
+            "CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS",
+        )
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .or(Some(30))
+        .filter(|&s| s > 0),
         report_polish_deepseek,
     };
     let session_db = session_db::GatewaySessionDb::open()
@@ -1316,9 +1331,27 @@ async fn main() {
         docker_slots: Arc::new(Mutex::new(HashMap::new())),
         docker_pool,
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
+        llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
     };
 
     run_startup_project_config_apply(&state).await;
+    gateway_llm_config_sync::run_startup_llm_config_sync(&state.session_db, &state.llm_runtime)
+        .await;
+
+    if let Some(secs) = state.cfg.gateway_llm_config_poll_interval_secs {
+        let poll_db = state.session_db.clone();
+        let poll_handle = state.llm_runtime.clone();
+        tokio::spawn(async move {
+            gateway_llm_config_sync::llm_config_poll_loop(poll_db, poll_handle, secs).await
+        });
+        info!(
+            target: "claw_gateway_orchestration",
+            component = "startup",
+            phase = "llm_config_poll",
+            interval_secs = secs,
+            "background LLM config sync poll enabled"
+        );
+    }
 
     if let Some(secs) = state.cfg.projects_git_ds_home_poll_interval_secs {
         let poller_state = state.clone();
@@ -1339,10 +1372,7 @@ async fn main() {
         .route("/openapi.json", get(openapi))
         .route("/healthz", get(healthz))
         .route("/v1/projects", get(list_projects).post(create_project))
-        .route(
-            "/v1/projects/{ds_id}/sessions",
-            get(list_project_sessions),
-        )
+        .route("/v1/projects/{ds_id}/sessions", get(list_project_sessions))
         .route("/v1/projects/{ds_id}", delete(delete_project))
         .route("/v1/projects/{ds_id}/git/push", post(push_project_git))
         .route("/v1/init", post(init_workspace))
@@ -1355,10 +1385,7 @@ async fn main() {
             "/v1/sessions/{session_id}/execution",
             get(get_session_execution),
         )
-        .route(
-            "/v1/sessions/{session_id}/turns",
-            get(list_session_turns),
-        )
+        .route("/v1/sessions/{session_id}/turns", get(list_session_turns))
         .route(
             "/v1/sessions/{session_id}/turns/{turn_id}/tools",
             get(get_turn_tools),
@@ -1426,6 +1453,30 @@ async fn main() {
         .route(
             "/v1/gateway/global-settings/git-pats/{pat_id}",
             delete(delete_gateway_git_pat_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/active-llm-config",
+            put(put_gateway_active_llm_config_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models",
+            post(upsert_gateway_llm_model_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}",
+            delete(delete_gateway_llm_model_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}/versions",
+            get(list_gateway_llm_model_versions_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}/apply",
+            post(apply_gateway_llm_model_head_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}/versions/{model_rev}/apply",
+            post(apply_gateway_llm_model_revision_handler),
         )
         .route("/v1/skills/{ds_id}/{skill_name}", get(get_ds_skill))
         .route("/v1/skills/{ds_id}", get(list_ds_skills))
@@ -2507,6 +2558,7 @@ fn default_project_config_row(ds_id: i64) -> session_db::ProjectConfigRow {
         allowed_tools_json: json!([]),
         claude_md: None,
         git_sync_json: json!({}),
+        solve_preflight_json: json!({"kind": "none"}),
     }
 }
 
@@ -2643,6 +2695,7 @@ async fn activate_project_config_revision_row(
     ds_id: i64,
     rev: session_db::ProjectConfigRevisionRow,
     git_sync_json: Value,
+    solve_preflight_json: Value,
 ) -> Result<bool, ApiError> {
     let now = now_ms();
     state
@@ -2660,6 +2713,7 @@ async fn activate_project_config_revision_row(
             allowed_tools_json: &rev.allowed_tools_json,
             claude_md: rev.claude_md.as_deref(),
             git_sync_json: &git_sync_json,
+            solve_preflight_json: &solve_preflight_json,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -3877,6 +3931,7 @@ async fn create_project(
             allowed_tools_json: &empty_arr,
             claude_md: Some(&claude_md),
             git_sync_json: &json!({}),
+            solve_preflight_json: &json!({"kind": "none"}),
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -4029,6 +4084,7 @@ async fn project_config_row_to_response(
         allowed_tools_json: row.allowed_tools_json,
         claude_md: row.claude_md,
         git_sync_json: git_sync_json_for_api(state, &row.git_sync_json).await,
+        solve_preflight_json: row.solve_preflight_json.clone(),
     }
 }
 
@@ -4165,6 +4221,10 @@ fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(
     validate_skills_json(&req.skills_json)?;
     project_tools::validate_project_allowed_tools_json(&req.allowed_tools_json)
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if let Some(ref sp) = req.solve_preflight_json {
+        gateway_solve_turn::project_preflight::validate_solve_preflight_json(sp)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
     Ok(())
 }
 
@@ -4329,9 +4389,14 @@ async fn activate_project_config_version(
     let rev = project_config_draft::require_formal_revision(&state.session_db, ds_id, content_rev)
         .await
         .map_err(draft_err)?;
-    let materialized =
-        activate_project_config_revision_row(&state, ds_id, rev, active_row.git_sync_json.clone())
-            .await?;
+    let materialized = activate_project_config_revision_row(
+        &state,
+        ds_id,
+        rev,
+        active_row.git_sync_json.clone(),
+        active_row.solve_preflight_json.clone(),
+    )
+    .await?;
     Ok(Json(ActivateProjectConfigVersionResponse {
         ds_id,
         active_content_rev: content_rev.to_string(),
@@ -4364,6 +4429,10 @@ async fn put_project_config(
         Some(incoming) => merge_git_sync_from_put(incoming, &existing_git),
         None => existing_git,
     };
+    let solve_preflight_json = match &req.solve_preflight_json {
+        Some(incoming) => incoming.clone(),
+        None => existing.solve_preflight_json.clone(),
+    };
     let req_for_validate = UpsertProjectConfigRequest {
         content_rev: String::new(),
         rules_json: req.rules_json.clone(),
@@ -4373,6 +4442,7 @@ async fn put_project_config(
         allowed_tools_json: req.allowed_tools_json.clone(),
         claude_md: req.claude_md.clone(),
         git_sync_json: Some(git_sync_json.clone()),
+        solve_preflight_json: Some(solve_preflight_json.clone()),
     };
     validate_project_config_payload(&req_for_validate)?;
     gateway_global_settings::validate_git_sync_json_with_global(&state.session_db, &git_sync_json)
@@ -4398,6 +4468,7 @@ async fn put_project_config(
         allowed_tools_json: &req.allowed_tools_json,
         claude_md: req.claude_md.as_deref(),
         git_sync_json: &git_sync_json,
+        solve_preflight_json: &solve_preflight_json,
     };
     state
         .session_db
@@ -4479,6 +4550,7 @@ async fn commit_project_config_draft(
         ds_id,
         &prev_stable,
         &git_sync_json,
+        &row.solve_preflight_json,
     )
     .await
     .map_err(draft_err)?;
@@ -4522,6 +4594,93 @@ async fn delete_gateway_git_pat_handler(
     } else {
         Err(ApiError::new(StatusCode::NOT_FOUND, "git PAT not found"))
     }
+}
+
+async fn put_gateway_active_llm_config_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_global_settings::PutActiveLlmConfigInput>,
+) -> Result<Json<gateway_global_settings::ActiveLlmConfigPublic>, ApiError> {
+    let cfg = gateway_global_settings::put_active_llm_config(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    gateway_llm_config_sync::sync_llm_runtime_from_db(&state.session_db, &state.llm_runtime)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(cfg))
+}
+
+async fn upsert_gateway_llm_model_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_global_settings::PutLlmModelInput>,
+) -> Result<Json<gateway_global_settings::LlmModelPublic>, ApiError> {
+    let cfg = gateway_global_settings::upsert_llm_model(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    gateway_llm_config_sync::sync_llm_runtime_from_db(&state.session_db, &state.llm_runtime)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(cfg))
+}
+
+async fn delete_gateway_llm_model_handler(
+    State(state): State<AppState>,
+    AxumPath(model_id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    let deleted = gateway_global_settings::delete_llm_model(&state.session_db, &model_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::new(StatusCode::NOT_FOUND, "llm model not found"))
+    }
+}
+
+async fn list_gateway_llm_model_versions_handler(
+    State(state): State<AppState>,
+    AxumPath(model_id): AxumPath<String>,
+) -> Result<Json<gateway_global_settings::LlmModelVersionsResponse>, ApiError> {
+    let body = gateway_global_settings::list_llm_model_versions(&state.session_db, &model_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(body))
+}
+
+async fn apply_gateway_llm_model_head_handler(
+    State(state): State<AppState>,
+    AxumPath(model_id): AxumPath<String>,
+) -> Result<Json<gateway_global_settings::ApplyLlmModelResponse>, ApiError> {
+    let resp = apply_gateway_llm_model_with_sync(&state, &model_id, None).await?;
+    Ok(Json(resp))
+}
+
+async fn apply_gateway_llm_model_revision_handler(
+    State(state): State<AppState>,
+    AxumPath((model_id, model_rev)): AxumPath<(String, String)>,
+) -> Result<Json<gateway_global_settings::ApplyLlmModelResponse>, ApiError> {
+    let resp = apply_gateway_llm_model_with_sync(&state, &model_id, Some(&model_rev)).await?;
+    Ok(Json(resp))
+}
+
+async fn apply_gateway_llm_model_with_sync(
+    state: &AppState,
+    model_id: &str,
+    model_rev: Option<&str>,
+) -> Result<gateway_global_settings::ApplyLlmModelResponse, ApiError> {
+    let mut resp =
+        gateway_global_settings::apply_llm_model_by_id(&state.session_db, model_id, model_rev)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let sync =
+        gateway_llm_config_sync::sync_llm_runtime_from_db(&state.session_db, &state.llm_runtime)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if let Some(outcome) = sync.env_apply {
+        resp.outcome = outcome;
+    } else if let Some(path) = sync.upstream_config_file {
+        resp.outcome.env_file = path;
+    }
+    Ok(resp)
 }
 
 #[derive(Debug, Deserialize)]
@@ -5297,6 +5456,8 @@ struct GatewayTurnSummaryJson {
     has_report: bool,
     #[serde(rename = "reportBody", skip_serializing_if = "Option::is_none")]
     report_body: Option<String>,
+    #[serde(rename = "failureDetail", skip_serializing_if = "Option::is_none")]
+    failure_detail: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -5363,10 +5524,7 @@ async fn list_session_turns(
     if !exists {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!(
-                "session not found: {session_id} dsId={}",
-                query.ds_id
-            ),
+            format!("session not found: {session_id} dsId={}", query.ds_id),
         ));
     }
     let rows = state
@@ -5387,6 +5545,7 @@ async fn list_session_turns(
                 finished_at_ms: r.finished_at_ms,
                 has_report: r.has_report,
                 report_body: r.report_body,
+                failure_detail: r.failure_detail,
             })
             .collect(),
     }))
@@ -5501,41 +5660,35 @@ async fn get_turn_tools(
             "turnId must match T_<32 lowercase hex>",
         ));
     }
-    let session_home_rel = state
+    let ctx = state
         .session_db
-        .get_session_home_rel(&session_id, query.ds_id)
+        .get_turn_tools_context(&turn_id, &session_id, query.ds_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_FOUND,
-                format!("session not found: {session_id} ds_id={}", query.ds_id),
+                format!(
+                    "turn or session not found: {turn_id} session={session_id} ds_id={}",
+                    query.ds_id
+                ),
             )
         })?;
-    session_merge::validate_session_home_rel(&session_home_rel).map_err(session_routing_error)?;
-    let created_at_ms = state
-        .session_db
-        .get_turn_created_at_ms(&turn_id, &session_id, query.ds_id)
-        .await
-        .map_err(|e| session_db_err(&e))?
-        .ok_or_else(|| {
-            ApiError::new(StatusCode::NOT_FOUND, format!("turn not found: {turn_id}"))
-        })?;
-    let user_turn_index = state
-        .session_db
-        .turn_index_in_session(&turn_id, &session_id, query.ds_id, created_at_ms)
-        .await
-        .map_err(|e| session_db_err(&e))?;
+    session_merge::validate_session_home_rel(&ctx.session_home_rel)
+        .map_err(session_routing_error)?;
+    let user_turn_index = ctx.user_turn_index;
     if user_turn_index < 1 {
         return Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "invalid user_turn_index",
         ));
     }
-    let session_home = join_session_home(&state.cfg.work_root, &session_home_rel);
+    let session_home = join_session_home(&state.cfg.work_root, &ctx.session_home_rel);
     let tools = turn_tools_api::list_turn_tools_from_session_home(
         &session_home,
         usize::try_from(user_turn_index).unwrap_or(usize::MAX),
+        Some(ctx.created_at_ms),
+        ctx.finished_at_ms,
     )
     .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
@@ -7192,7 +7345,10 @@ async fn build_settings(state: &AppState, ds_id: i64) -> Value {
             }
         }
     }
-    json!({ "mcpServers": servers })
+    json!({
+        "mcpServers": servers,
+        "auto_hidden_system_prompt": 1
+    })
 }
 
 async fn ensure_workspace_initialized(_claw_bin: &str, work_dir: &Path) -> Result<(), ApiError> {

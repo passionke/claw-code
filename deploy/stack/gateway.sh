@@ -28,7 +28,7 @@ Commands:
   pool-reset    Stop host pool daemon + remove all claw-worker containers
   check         Connectivity smoke check
   verify        Stack truth checks (schema, pool registry, binary); fails loud
-  tap-up        Start claude-tap only (see CLAUDE_TAP_MODE in .env)
+  tap-up        Start claude-tap only (CLAUDE_TAP_MODE: native/pypi=PyPI claw-tap, docker=image)
   tap-down      Stop claude-tap only
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
   bench         Pool bench 30s

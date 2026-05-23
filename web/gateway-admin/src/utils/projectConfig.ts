@@ -10,6 +10,7 @@ export function emptyProjectConfig(dsId: number): ProjectConfig {
     skillsJson: [],
     allowedToolsJson: [],
     claudeMd: null,
+    solvePreflightJson: { kind: "none" },
   };
 }
 
@@ -45,6 +46,10 @@ export async function putProjectConfigDraft(
     allowedToolsJson: patch.allowedToolsJson ?? cfg.allowedToolsJson ?? [],
     claudeMd: patch.claudeMd !== undefined ? patch.claudeMd : cfg.claudeMd,
     gitSyncJson: patch.gitSyncJson !== undefined ? patch.gitSyncJson : cfg.gitSyncJson,
+    solvePreflightJson:
+      patch.solvePreflightJson !== undefined
+        ? patch.solvePreflightJson
+        : cfg.solvePreflightJson,
   };
   const r = await proxyHttp<{ activeConfig?: ProjectConfig } & ProjectConfig>(
     gatewayBase,

@@ -43,6 +43,7 @@ source "${LIB_DIR}/claw-pool-registry-env.sh"
 claw_export_pool_registry_env "${PODMAN_DIR}/.claw-pool-rpc"
 
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
+claw_export_llm_runtime_layout "${PODMAN_DIR}"
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/preflight.sh"

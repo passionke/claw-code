@@ -172,6 +172,7 @@ pub fn config_row_from_revision(
     ds_id: i64,
     rev: &ProjectConfigRevisionRow,
     git_sync_json: Value,
+    solve_preflight_json: Value,
     stable_content_rev: &str,
 ) -> ProjectConfigRow {
     ProjectConfigRow {
@@ -187,6 +188,7 @@ pub fn config_row_from_revision(
         allowed_tools_json: rev.allowed_tools_json.clone(),
         claude_md: rev.claude_md.clone(),
         git_sync_json,
+        solve_preflight_json,
     }
 }
 
@@ -211,6 +213,7 @@ pub fn upsert_from_row<'a>(
         allowed_tools_json: &row.allowed_tools_json,
         claude_md,
         git_sync_json: &row.git_sync_json,
+        solve_preflight_json: &row.solve_preflight_json,
     }
 }
 
@@ -231,6 +234,7 @@ pub async fn row_for_materialize(
             ds_id,
             &rev,
             row.git_sync_json.clone(),
+            row.solve_preflight_json.clone(),
             &effective,
         )));
     }
@@ -273,6 +277,7 @@ pub async fn ensure_draft(
         allowed_tools_json: &formal.allowed_tools_json,
         claude_md: formal.claude_md.as_deref(),
         git_sync_json: &row.git_sync_json,
+        solve_preflight_json: &row.solve_preflight_json,
     };
     db.upsert_project_config(upsert).await?;
     db.get_project_config(ds_id).await?.ok_or_else(|| {
@@ -289,6 +294,7 @@ pub async fn close_draft_to_stable(
     ds_id: i64,
     stable_content_rev: &str,
     git_sync_json: &Value,
+    solve_preflight_json: &Value,
 ) -> Result<ProjectConfigRow, DraftError> {
     if is_draft_content_rev(stable_content_rev) {
         return Err(DraftError::new(
@@ -297,7 +303,13 @@ pub async fn close_draft_to_stable(
         ));
     }
     let formal = require_formal_revision(db, ds_id, stable_content_rev).await?;
-    let row = config_row_from_revision(ds_id, &formal, git_sync_json.clone(), stable_content_rev);
+    let row = config_row_from_revision(
+        ds_id,
+        &formal,
+        git_sync_json.clone(),
+        solve_preflight_json.clone(),
+        stable_content_rev,
+    );
     db.upsert_project_config(upsert_from_row(
         &row,
         stable_content_rev,

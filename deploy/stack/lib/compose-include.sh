@@ -136,6 +136,33 @@ claw_podman_write_pool_daemon_sidecar_env() {
   } >"${script_dir}/.claw-pool-daemon.env"
 }
 
+# Repo-root LLM runtime files: gateway (rw) + claude-tap (ro) + pool workers (.env mount). Author: kejiqing
+claw_export_llm_runtime_layout() {
+  local script_dir="$1"
+  local repo_root host_env host_upstream
+  repo_root="$(cd "${script_dir}/../.." && pwd)"
+  host_env="${repo_root}/.env"
+  host_upstream="${repo_root}/.claw/claw-tap-upstream.json"
+  mkdir -p "${repo_root}/.claw"
+  local legacy="${repo_root}/.openclaw/claude-tap-upstream.json"
+  if [[ -f "${legacy}" && ! -f "${host_upstream}" ]]; then
+    mv "${legacy}" "${host_upstream}"
+    rmdir "${repo_root}/.openclaw" 2>/dev/null || true
+  fi
+  export CLAW_REPO_ROOT="${repo_root}"
+  export CLAW_WORKER_ENV_FILE="${host_env}"
+  export CLAW_TAP_UPSTREAM_CONFIG_FILE="${host_upstream}"
+  {
+    printf '%s\n' '# GENERATED — do not edit. Overwritten by up.sh / tap-up.sh. kejiqing'
+    printf '%s\n' '# Host paths (tap native + pool worker mount):'
+    printf '%s\n' "#   ${host_env}"
+    printf '%s\n' "#   ${host_upstream}"
+    printf '%s\n' '# Gateway container bind-mounts (Admin LLM sync writes here):'
+    printf '%s\n' 'CLAW_WORKER_ENV_FILE=/run/claw/worker.env'
+    printf '%s\n' 'CLAW_TAP_UPSTREAM_CONFIG_FILE=/run/claw/claw/claw-tap-upstream.json'
+  } >"${script_dir}/.claw-llm-runtime.env"
+}
+
 claw_podman_export_pool_workspace() {
   local script_dir="$1"
   mkdir -p "${script_dir}/claw-workspace"

@@ -1,4 +1,16 @@
 //! Library surface (pool + daemon). The `http-gateway-rs` binary links this crate. Author: kejiqing
+#![allow(
+    clippy::assigning_clones,
+    clippy::doc_markdown,
+    clippy::if_not_else,
+    clippy::items_after_statements,
+    clippy::map_unwrap_or,
+    clippy::option_map_unit_fn,
+    clippy::redundant_pattern_matching,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::match_result_ok
+)]
 
 pub mod biz_advice_report;
 pub mod biz_report_pool_proxy;
@@ -6,6 +18,9 @@ pub mod biz_report_sse_log;
 pub mod claude_tap_health;
 pub mod deploy_image;
 pub mod gateway_global_settings;
+pub mod gateway_llm_config_sync;
+pub mod gateway_llm_model_apply;
+pub mod gateway_llm_model_revision;
 pub mod live_report_audit;
 pub mod pool;
 pub mod pool_registry;

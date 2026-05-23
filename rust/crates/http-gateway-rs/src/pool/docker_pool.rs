@@ -74,7 +74,7 @@ struct Slot {
 /// Each **lease** rebinds the worker with `docker run -v <session_dir>:GUEST_WORK_ROOT` so the
 /// container only sees one solve session directory (no sibling sessions / other `ds_*`).
 /// Optional extra binds: `ds_*/home/skills` → `.../home/skills:ro`, `ds_*/CLAUDE.md` → `.../CLAUDE.md:ro`,
-/// `ds_*/home/DATA_CATALOG.md` → `.../home/DATA_CATALOG.md:ro` (no per-session copy).
+/// `ds_*/home/schema.md` (or legacy `DATA_CATALOG.md`) → `.../home/schema.md:ro`.
 /// Idle warm slots use [`DockerPoolManager::warm_slot_dir`] under `work_root` (empty until lease).
 /// Author: kejiqing
 pub struct DockerPoolManager {
@@ -378,8 +378,19 @@ impl DockerPoolManager {
         let catalog_abs = if let Some(p) = host_mounts.data_catalog_file.as_ref() {
             if std::fs::metadata(p).is_ok_and(|m| m.is_file()) {
                 Some(std::fs::canonicalize(p).map_err(|e| {
+                    format!("canonicalize schema.md bind mount {}: {e}", p.display())
+                })?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let preflight_abs = if let Some(p) = host_mounts.solve_preflight_file.as_ref() {
+            if std::fs::metadata(p).is_ok_and(|m| m.is_file()) {
+                Some(std::fs::canonicalize(p).map_err(|e| {
                     format!(
-                        "canonicalize DATA_CATALOG.md bind mount {}: {e}",
+                        "canonicalize solve-preflight bind mount {}: {e}",
                         p.display()
                     )
                 })?)
@@ -416,8 +427,16 @@ impl DockerPoolManager {
         if let Some(ref cat) = catalog_abs {
             args.push("-v".into());
             args.push(format!(
-                "{}:{}/home/DATA_CATALOG.md:ro",
+                "{}:{}/home/schema.md:ro",
                 cat.display(),
+                GUEST_WORK_ROOT
+            ));
+        }
+        if let Some(ref pf) = preflight_abs {
+            args.push("-v".into());
+            args.push(format!(
+                "{}:{}/home/.claw/solve-preflight.json:ro",
+                pf.display(),
                 GUEST_WORK_ROOT
             ));
         }
