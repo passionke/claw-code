@@ -10,10 +10,10 @@ use tokio::fs;
 use tokio::time::{timeout, Duration as TokioDuration};
 use tracing::{info, warn};
 
-use http_gateway_rs::pool::{
-    merge_stdout_hooks, parse_gateway_solve_exec_stdout, PoolOps, PoolSessionHostMounts, SlotLease,
-};
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
+use http_gateway_rs::pool::{
+    parse_gateway_solve_exec_stdout, PoolOps, PoolSessionHostMounts, SlotLease,
+};
 
 /// When the gateway uses [`PoolRpcClient`](http_gateway_rs::pool::PoolRpcClient) (TCP or Unix), session dirs
 /// live under the container `CLAW_WORK_ROOT` but the host daemon must bind-mount the host path. Author: kejiqing
@@ -121,6 +121,11 @@ pub async fn run_solve_request_docker(
 
     let task_path = session_home.join(GATEWAY_SOLVE_TASK_FILE);
 
+    let session_id = req
+        .session_id
+        .clone()
+        .or_else(|| task_id.clone())
+        .unwrap_or_else(|| request_id.clone());
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
@@ -130,6 +135,9 @@ pub async fn run_solve_request_docker(
         allowed_tools: Some(effective_allowed_tools),
         max_iterations: Some(state.cfg.default_max_iterations),
         turn_id: turn_id.clone(),
+        session_id: Some(session_id),
+        pool_id: None,
+        worker_name: None,
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(
@@ -256,18 +264,13 @@ pub async fn run_solve_request_docker(
         .as_ref()
         .expect("lease set for exec")
         .slot_index;
-    let stdout_hook = merge_stdout_hooks(
-        &turn_id,
-        Some(state.stdout_hub.clone()),
-        None,
-    );
     let exec_fut = pool.exec_solve(
         lease_cleanup.lease.as_ref().expect("lease set for exec"),
         GATEWAY_SOLVE_TASK_FILE,
         claw_bin_for_pool_exec(&state.cfg),
         Some(request_id.as_str()),
         &turn_id,
-        stdout_hook,
+        None,
     );
     let exec_result =
         if let Ok(outcome) = timeout(TokioDuration::from_secs(timeout_seconds), exec_fut).await {
@@ -451,6 +454,7 @@ mod session_path_tests {
             pool_rpc_tcp: Some("host.containers.internal:9943".into()),
             pool_rpc_unix_socket: None,
             pool_rpc_remote: true,
+            pool_http_base: "http://claw-pool-daemon:9944".into(),
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
             default_max_iterations: 1,
@@ -482,6 +486,7 @@ mod session_path_tests {
             pool_rpc_tcp: None,
             pool_rpc_unix_socket: None,
             pool_rpc_remote: false,
+            pool_http_base: String::new(),
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
             default_max_iterations: 1,

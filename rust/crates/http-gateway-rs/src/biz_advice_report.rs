@@ -6,8 +6,8 @@ use std::convert::Infallible;
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use axum::response::sse::Event;
 use crate::biz_report_sse_log::{log_sse_delta, log_sse_done, SseDensityAcc};
+use axum::response::sse::Event;
 use futures_util::stream::{self, Stream, StreamExt as _};
 use runtime::GATEWAY_LIVE_REPORT_START_MARKER;
 use serde::Serialize;
@@ -199,7 +199,12 @@ pub fn split_catchup_chunks(text: &str, max_chars: usize) -> Vec<String> {
 }
 
 /// SSE `biz.report.delta` payload (observability for burst / batching). Author: kejiqing
-pub fn biz_report_delta_json(text: &str, seq: u64, stream_started_at_ms: u64, server_delta_ms: u64) -> String {
+pub fn biz_report_delta_json(
+    text: &str,
+    seq: u64,
+    stream_started_at_ms: u64,
+    server_delta_ms: u64,
+) -> String {
     let clean = sanitize_external_report_text(text);
     serde_json::json!({
         "text": clean,
@@ -215,10 +220,7 @@ pub fn stream_msg_to_event(msg: &BizReportStreamMsg) -> Event {
     stream_msg_to_event_obs(msg, None)
 }
 
-pub fn stream_msg_to_event_obs(
-    msg: &BizReportStreamMsg,
-    obs: Option<(u64, u64, u64)>,
-) -> Event {
+pub fn stream_msg_to_event_obs(msg: &BizReportStreamMsg, obs: Option<(u64, u64, u64)>) -> Event {
     match msg {
         BizReportStreamMsg::Delta(text) => {
             let body = if let Some((seq, stream_started_at_ms, server_delta_ms)) = obs {
@@ -238,6 +240,31 @@ pub fn stream_msg_to_event_obs(
             .event("biz.report.error")
             .data(serde_json::json!({ "detail": detail }).to_string()),
     }
+}
+
+/// DB terminal snapshot: `start` + single `done` (no delta frames). Author: kejiqing
+pub fn db_snapshot_report_sse_response(
+    task_id: &str,
+    mut payload: BizAdviceReportPayload,
+    report_text: &str,
+) -> axum::response::Response {
+    use axum::http::{header, HeaderValue};
+    use axum::response::sse::{KeepAlive, Sse};
+    use axum::response::{AppendHeaders, IntoResponse};
+
+    let (tx, rx) = mpsc::unbounded_channel::<BizReportStreamMsg>();
+    sanitize_report_payload(&mut payload);
+    let _ = tx.send(BizReportStreamMsg::Done(payload));
+    drop(tx);
+
+    let no_buffer = header::HeaderName::from_static("x-accel-buffering");
+    let no_buffer_val = HeaderValue::from_static("no");
+    let _report_text = report_text;
+    (
+        AppendHeaders([(no_buffer, no_buffer_val)]),
+        Sse::new(biz_report_sse_event_stream(task_id, rx)).keep_alive(KeepAlive::default()),
+    )
+        .into_response()
 }
 
 /// Push snapshot text once then `done` (no LLM polish). Author: kejiqing
@@ -306,8 +333,7 @@ pub fn biz_report_sse_event_stream(
                     log_sse_done(&task_id, &acc, stream_duration_ms);
                     let mut payload = payload.clone();
                     sanitize_report_payload(&mut payload);
-                    let mut v =
-                        serde_json::to_value(&payload).unwrap_or_else(|_| json!({}));
+                    let mut v = serde_json::to_value(&payload).unwrap_or_else(|_| json!({}));
                     if let Some(obj) = v.as_object_mut() {
                         obj.insert("deltaCount".into(), json!(seq));
                         obj.insert("streamDurationMs".into(), json!(stream_duration_ms));
@@ -317,8 +343,7 @@ pub fn biz_report_sse_event_stream(
                             json!(acc.max_same_server_streak),
                         );
                     }
-                    let body =
-                        serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string());
+                    let body = serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string());
                     Event::default().event("biz.report.done").data(body)
                 }
                 _ => stream_msg_to_event_obs(&msg, None),

@@ -22,7 +22,13 @@ echo "    另开终端: tail -f deploy/stack/.build.log"
 "${LIB_DIR}/build.sh" "${TAG}"
 
 echo "==> 2/2 重启部署"
+export CLAW_POOL_REBUILD_DAEMON=1
 "${LIB_DIR}/down.sh" && "${LIB_DIR}/up.sh" "$@"
 
-echo "==> 完成。连通性检查:"
+echo "==> 3/3 栈真实性验收 (失败即非 0 退出)"
+"${LIB_DIR}/claw-stack-verify.sh"
+
+echo "==> 4/4 连通性冒烟"
 "${LIB_DIR}/check-connectivity.sh"
+
+echo "==> pack-deploy 完成（verify + connectivity 均已通过）"

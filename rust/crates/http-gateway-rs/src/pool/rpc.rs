@@ -245,10 +245,7 @@ async fn dispatch_pool_rpc(
         } => {
             let lease = SlotLease { slot_index };
             // Daemon path: do NOT pre-wrap with merge_stdout_hooks here. exec_solve
-            // already runs merge_stdout_hooks internally (using its own stdout_hub +
-            // any outer hook). Pre-wrapping would stack two layers and cause every
-            // worker stdout line to forward TWICE (one per layer's handle_claw_stdout_line
-            // call), producing per-chunk duplicate SSE deltas. Author: kejiqing
+            // already runs merge_stdout_hooks internally (pool-local LiveReportHub).
             match pool
                 .exec_solve(
                     &lease,

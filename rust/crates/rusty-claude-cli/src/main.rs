@@ -382,7 +382,11 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
     };
     match result {
         Ok((claw_exit_code, output_text, output_json)) => {
-            gateway_solve_turn::emit_solve_done(claw_exit_code, &output_text, output_json.as_ref())?;
+            gateway_solve_turn::emit_solve_done(
+                claw_exit_code,
+                &output_text,
+                output_json.as_ref(),
+            )?;
             Ok(())
         }
         Err(e) => {

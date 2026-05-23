@@ -114,6 +114,27 @@ pub struct ProjectConfigRevisionSummary {
     pub mcp_servers_count_db: i64,
 }
 
+/// Row for [`GatewaySessionDb::upsert_claw_pool`].
+#[derive(Debug, Clone)]
+pub struct ClawPoolUpsert<'a> {
+    pub pool_id: &'a str,
+    pub registration_time_ms: i64,
+    pub slots_max: i32,
+    pub slots_min: i32,
+    pub advertise_ip: &'a str,
+    pub sse_port: i32,
+    pub last_heartbeat_ms: i64,
+}
+
+/// Millisecond timestamp for pool registry (shared with daemon). Author: kejiqing
+#[must_use]
+pub fn now_ms_for_registry() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 /// Payload for [`GatewaySessionDb::upsert_project_config`].
 #[derive(Debug, Clone)]
 pub struct ProjectConfigUpsert<'a> {
@@ -248,9 +269,31 @@ impl GatewaySessionDb {
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS report_message TEXT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS output_json JSONB",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS claw_exit_code INT",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS pool_id TEXT",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS worker_name TEXT",
         ] {
             sqlx::query(ddl).execute(pool).await?;
         }
+
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS claw_pool (
+                pool_id TEXT PRIMARY KEY,
+                registration_time_ms BIGINT NOT NULL,
+                slots_max INT NOT NULL,
+                slots_min INT NOT NULL,
+                advertise_ip TEXT NOT NULL,
+                sse_port INT NOT NULL,
+                last_heartbeat_ms BIGINT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_gateway_turns_pool_id ON gateway_turns(pool_id)",
+        )
+        .execute(pool)
+        .await?;
 
         sqlx::query(
             r"CREATE TABLE IF NOT EXISTS project_config (
@@ -930,6 +973,119 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Register or refresh a pool node (`claw-pool-daemon` startup). Author: kejiqing
+    pub async fn upsert_claw_pool(&self, row: &ClawPoolUpsert<'_>) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO claw_pool (
+                pool_id, registration_time_ms, slots_max, slots_min,
+                advertise_ip, sse_port, last_heartbeat_ms
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+              ON CONFLICT (pool_id) DO UPDATE SET
+                slots_max = EXCLUDED.slots_max,
+                slots_min = EXCLUDED.slots_min,
+                advertise_ip = EXCLUDED.advertise_ip,
+                sse_port = EXCLUDED.sse_port,
+                last_heartbeat_ms = EXCLUDED.last_heartbeat_ms",
+        )
+        .bind(row.pool_id)
+        .bind(row.registration_time_ms)
+        .bind(row.slots_max)
+        .bind(row.slots_min)
+        .bind(row.advertise_ip)
+        .bind(row.sse_port)
+        .bind(row.last_heartbeat_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn touch_claw_pool_heartbeat(
+        &self,
+        pool_id: &str,
+        last_heartbeat_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query("UPDATE claw_pool SET last_heartbeat_ms = $2 WHERE pool_id = $1")
+            .bind(pool_id)
+            .bind(last_heartbeat_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Pre-bind co-located pool at turn enqueue (before worker slot). Live SSE can JOIN `claw_pool`. Author: kejiqing
+    pub async fn assign_turn_pool_id(&self, turn_id: &str, pool_id: &str) -> Result<(), SqlxError> {
+        sqlx::query("UPDATE gateway_turns SET pool_id = $2 WHERE turn_id = $1")
+            .bind(turn_id)
+            .bind(pool_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Bind turn to executing pool + worker container name when exec starts. Author: kejiqing
+    pub async fn assign_turn_pool_worker(
+        &self,
+        turn_id: &str,
+        pool_id: &str,
+        worker_name: &str,
+    ) -> Result<(), SqlxError> {
+        sqlx::query("UPDATE gateway_turns SET pool_id = $2, worker_name = $3 WHERE turn_id = $1")
+            .bind(turn_id)
+            .bind(pool_id)
+            .bind(worker_name)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_session_id_for_turn(
+        &self,
+        turn_id: &str,
+    ) -> Result<Option<String>, SqlxError> {
+        sqlx::query_scalar("SELECT session_id FROM gateway_turns WHERE turn_id = $1 LIMIT 1")
+            .bind(turn_id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn get_turn_pool_id(
+        &self,
+        turn_id: &str,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<Option<String>, SqlxError> {
+        sqlx::query_scalar(
+            "SELECT pool_id FROM gateway_turns WHERE turn_id = $1 AND session_id = $2 AND ds_id = $3 LIMIT 1",
+        )
+        .bind(turn_id)
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// `http://{advertise_ip}:{sse_port}` for live SSE proxy when turn has `pool_id`. Author: kejiqing
+    pub async fn resolve_pool_http_base_for_turn(
+        &self,
+        turn_id: &str,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<Option<String>, SqlxError> {
+        let row: Option<(String, i32)> = sqlx::query_as(
+            r"SELECT p.advertise_ip, p.sse_port
+              FROM gateway_turns t
+              JOIN claw_pool p ON t.pool_id = p.pool_id
+              WHERE t.turn_id = $1 AND t.session_id = $2 AND t.ds_id = $3
+              LIMIT 1",
+        )
+        .bind(turn_id)
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(ip, port)| format!("http://{ip}:{port}")))
+    }
+
     /// Terminal (or running) status update; does not clear `report_message` / `output_json` unless
     /// [`Self::finalize_turn_terminal`] is used for terminal transitions that should set them.
     pub async fn update_turn_status(
@@ -1413,6 +1569,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prebind_pool_id_resolves_http_base() {
+        let Some(db) = test_db().await else {
+            eprintln!(
+                "skip prebind_pool_id_resolves_http_base: set CLAW_GATEWAY_TEST_DATABASE_URL"
+            );
+            return;
+        };
+        let t = now_ms();
+        let sid = format!("spool_{}", uuid::Uuid::new_v4().simple());
+        let tid = "T_30000000000000000000000000000003";
+        let pool_id = format!("pool-test-{}", uuid::Uuid::new_v4().simple());
+        db.insert_session(&sid, 1, "ds_1/sessions/pool", t)
+            .await
+            .unwrap();
+        db.insert_turn(tid, &sid, 1, "queued", t, Some("q"))
+            .await
+            .unwrap();
+        db.upsert_claw_pool(&ClawPoolUpsert {
+            pool_id: &pool_id,
+            registration_time_ms: t,
+            slots_max: 4,
+            slots_min: 1,
+            advertise_ip: "10.0.0.8",
+            sse_port: 9944,
+            last_heartbeat_ms: t,
+        })
+        .await
+        .unwrap();
+        db.assign_turn_pool_id(tid, &pool_id).await.unwrap();
+        let base = db
+            .resolve_pool_http_base_for_turn(tid, &sid, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(base, "http://10.0.0.8:9944");
+        db.assign_turn_pool_worker(tid, &pool_id, "claw-worker-test-0")
+            .await
+            .unwrap();
+        let row: Option<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT pool_id, worker_name FROM gateway_turns WHERE turn_id = $1")
+                .bind(tid)
+                .fetch_optional(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            row,
+            Some((
+                Some(pool_id.clone()),
+                Some("claw-worker-test-0".to_string())
+            ))
+        );
+    }
+
+    #[tokio::test]
     async fn project_config_upsert_get() {
         let Some(db) = test_db().await else {
             eprintln!("skip project_config_upsert_get: set CLAW_GATEWAY_TEST_DATABASE_URL");
@@ -1476,5 +1686,4 @@ mod tests {
         assert_eq!(row2.content_rev, "rev-2");
         assert!(row2.claude_md.is_none());
     }
-
 }

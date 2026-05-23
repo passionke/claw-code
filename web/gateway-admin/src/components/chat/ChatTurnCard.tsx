@@ -4,6 +4,7 @@ import { proxyHttp } from "../../api/client";
 import { useBizReportStream } from "../../hooks/useBizReportStream";
 import type { ProgressEvent, SolveTask } from "../../types/chat";
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
+import ReportMarkdown from "./ReportMarkdown";
 import TurnToolsDrawer from "./TurnToolsDrawer";
 import styles from "./chat.module.css";
 
@@ -216,17 +217,13 @@ export default function ChatTurnCard({
         {reportVisible && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>报告</div>
-            <article
-              className={`${styles.reportProse} ${reportStream.live ? styles.reportStreaming : ""}`}
-            >
-              {reportText}
-            </article>
+            <ReportMarkdown text={reportText} streaming={reportStream.live} />
           </div>
         )}
         {fallbackOutput && !reportVisible && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>回复</div>
-            <Typography.Paragraph className={styles.reportProse}>{fallbackOutput}</Typography.Paragraph>
+            <ReportMarkdown text={fallbackOutput} />
           </div>
         )}
         {errorText && (

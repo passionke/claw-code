@@ -212,7 +212,7 @@ fn end_to_end_stale_lane_gets_merge_forward_action() {
     // when: build context and evaluate policy
     let context = LaneContext::new(
         "lane-9411",
-        3,                       // Workspace green
+        3,                                // Workspace green
         Duration::from_secs(5 * 60 * 60), // 5 hours stale, definitely over threshold
         LaneBlocker::None,
         ReviewStatus::Approved,

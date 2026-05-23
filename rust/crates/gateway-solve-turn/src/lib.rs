@@ -137,6 +137,12 @@ pub struct GatewaySolveTaskFile {
     pub max_iterations: Option<usize>,
     #[serde(rename = "turnId")]
     pub turn_id: String,
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
+    pub pool_id: Option<String>,
+    #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
+    pub worker_name: Option<String>,
 }
 
 fn default_system_date() -> String {
@@ -1155,6 +1161,9 @@ mod gateway_solve_task_file_tests {
             allowed_tools: Some(vec!["bash".into()]),
             max_iterations: Some(4),
             turn_id: "T_a1b2c3d4e5f6478990abcdef12345678".into(),
+            session_id: Some("sess-1".into()),
+            pool_id: None,
+            worker_name: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();

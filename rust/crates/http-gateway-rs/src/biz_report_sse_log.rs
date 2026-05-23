@@ -42,10 +42,7 @@ impl SseDensityAcc {
         if text_len >= 200 {
             self.large_ge200 += 1;
         }
-        *self
-            .server_bucket_1ms
-            .entry(server_delta_ms)
-            .or_insert(0) += 1;
+        *self.server_bucket_1ms.entry(server_delta_ms).or_insert(0) += 1;
         if self.last_server_ms == Some(server_delta_ms) {
             self.same_server_streak += 1;
         } else {
@@ -177,7 +174,7 @@ pub fn log_sse_done(task_id: &str, acc: &SseDensityAcc, stream_duration_ms: u64)
 pub fn log_stdout_ingest(turn_id: &str, text_len: usize) {
     tracing::info!(
         target: "biz_report_sse",
-        component = "turn_stdout_hub",
+        component = "live_report_hub",
         turn_id = %turn_id,
         text_len = text_len,
         "report.delta.ingest"

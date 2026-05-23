@@ -11,12 +11,14 @@ services:
       - ./.claw-pool-daemon.env
     environment:
       CLAW_POOL_DAEMON_TCP_BIND: "0.0.0.0:${CLAW_POOL_DAEMON_PORT:-9943}"
+      CLAW_POOL_HTTP_BIND: "0.0.0.0:${CLAW_POOL_HTTP_PORT:-9944}"
     volumes:
       - "${CLAW_CONTAINER_SOCKET}:${CLAW_CONTAINER_SOCKET}"
       - "${CLAW_POOL_WORK_ROOT_BIND_SRC}:${CLAW_POOL_WORK_ROOT_BIND_SRC}:rw"
       - "${CLAW_REPO_ROOT}/.env:${CLAW_REPO_ROOT}/.env:ro"
     ports:
       - "127.0.0.1:${CLAW_POOL_DAEMON_PORT:-9943}:${CLAW_POOL_DAEMON_PORT:-9943}"
+      - "127.0.0.1:${CLAW_POOL_HTTP_PORT:-9944}:${CLAW_POOL_HTTP_PORT:-9944}"
     healthcheck:
       test:
         [

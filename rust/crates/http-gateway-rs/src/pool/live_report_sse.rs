@@ -1,4 +1,4 @@
-//! Live `GET /v1/biz_advice_report?stream=true` from worker stdout hub. Author: kejiqing
+//! Live SSE from pool-local stdout hub (`GET /v1/biz_advice_report/live`). Author: kejiqing
 
 use std::sync::Arc;
 
@@ -9,17 +9,15 @@ use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::biz_advice_report::{
-    biz_report_sse_event_stream, split_catchup_chunks, sanitize_external_report_text,
+    biz_report_sse_event_stream, sanitize_external_report_text, split_catchup_chunks,
     BizAdviceReportPayload, BizReportStreamMsg,
 };
-use crate::turn_stdout_hub::{HubMsg, TurnStdoutHub};
+use crate::pool::live_report_hub::{HubMsg, LiveReportHub};
 
-/// Max chars per catch-up SSE delta when client connects after hub already has text.
 const CATCHUP_CHUNK_CHARS: usize = 48;
 
-/// SSE while solve is running: tail stdout `report.delta` events ingested from pool exec.
-pub fn live_stdout_report_sse(
-    hub: Arc<TurnStdoutHub>,
+pub fn live_report_sse_response(
+    hub: Arc<LiveReportHub>,
     turn_id: String,
     task_id: String,
     source_request_id: String,
@@ -27,23 +25,14 @@ pub fn live_stdout_report_sse(
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<BizReportStreamMsg>();
     let turn_id_worker = turn_id.clone();
+    let hub_done = Arc::clone(&hub);
     tokio::spawn(async move {
-        // Atomic (subscribe, snapshot) under one lock — broadcast deliveries strictly
-        // after this point are disjoint from the snapshot already in state.text.
-        // Without this, every chunk that landed between subscribe and snapshot_text
-        // would be emitted twice (catchup + broadcast), causing per-char interleaved
-        // duplication on the wire. Author: kejiqing
         let (mut sub, snapshot_raw) = hub.subscribe_with_snapshot(&turn_id_worker);
         let snapshot = sanitize_external_report_text(&snapshot_raw);
         for part in split_catchup_chunks(&snapshot, CATCHUP_CHUNK_CHARS) {
             let _ = tx.send(BizReportStreamMsg::Delta(part));
             tokio::task::yield_now().await;
         }
-        // FIFO termination: SolveDone arrives through the same broadcast channel
-        // as Delta, guaranteeing all prior deltas were drained before we exit.
-        // Polling `hub.solve_done()` alongside the receiver used to break too
-        // early, dropping tail chunks queued between the last consumed delta and
-        // the solve.done ingest. Author: kejiqing
         loop {
             match sub.recv().await {
                 Ok(HubMsg::Delta(chunk)) => {
@@ -64,6 +53,7 @@ pub fn live_stdout_report_sse(
             report_json: Some(json!({ "message": final_text })),
         };
         let _ = tx.send(BizReportStreamMsg::Done(done));
+        hub_done.try_remove_turn(&turn_id_worker);
     });
 
     let no_buffer = header::HeaderName::from_static("x-accel-buffering");

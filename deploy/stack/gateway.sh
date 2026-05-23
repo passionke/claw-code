@@ -27,6 +27,7 @@ Commands:
   restart       Recreate gateway stack (down + up)
   pool-reset    Stop host pool daemon + remove all claw-worker containers
   check         Connectivity smoke check
+  verify        Stack truth checks (schema, pool registry, binary); fails loud
   tap-up        Start claude-tap only (see CLAUDE_TAP_MODE in .env)
   tap-down      Stop claude-tap only
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
@@ -59,6 +60,7 @@ case "${cmd}" in
   restart) "${LIB}/down.sh" && "${LIB}/up.sh" "$@" ;;
   pool-reset) "${LIB}/pool-reset.sh" "$@" ;;
   check) "${LIB}/check-connectivity.sh" "$@" ;;
+  verify) "${LIB}/claw-stack-verify.sh" "$@" ;;
   tap-up) bash "${LIB}/tap-up.sh" "$@" ;;
   tap-down) bash "${LIB}/tap-down.sh" "$@" ;;
   build-tap)

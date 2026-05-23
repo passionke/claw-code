@@ -38,6 +38,10 @@ set -a
 source "${ENV_FILE}"
 set +a
 
+# shellcheck source=claw-pool-registry-env.sh
+source "${LIB_DIR}/claw-pool-registry-env.sh"
+claw_export_pool_registry_env "${PODMAN_DIR}/.claw-pool-rpc"
+
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
 # shellcheck disable=SC1091
@@ -86,11 +90,16 @@ claw_remove_all_gateway_workers
 
 if claw_pool_daemon_on_host; then
   POOL_BIN="${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}"
-  if [[ ! -x "${POOL_BIN}" ]]; then
-    if [[ -x "${REPO_ROOT}/deploy/stack/.linux-artifacts/release/claw-pool-daemon" ]] && [[ "$(uname -s)" != Darwin ]]; then
+  # macOS host daemon must match repo sources — never reuse a stale target/release binary. kejiqing
+  if [[ "$(uname -s)" == Darwin ]] || [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" == 1 ]]; then
+    echo "==> building host claw-pool-daemon (release, required on macOS / CLAW_POOL_REBUILD_DAEMON=1)" >&2
+    (cd "${REPO_ROOT}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
+    POOL_BIN="${REPO_ROOT}/rust/target/release/claw-pool-daemon"
+  elif [[ ! -x "${POOL_BIN}" ]]; then
+    if [[ -x "${REPO_ROOT}/deploy/stack/.linux-artifacts/release/claw-pool-daemon" ]]; then
       POOL_BIN="${REPO_ROOT}/deploy/stack/.linux-artifacts/release/claw-pool-daemon"
     else
-      echo "==> building host claw-pool-daemon (required on macOS / CLAW_POOL_HOST_DAEMON=1)" >&2
+      echo "==> building host claw-pool-daemon (missing binary)" >&2
       (cd "${REPO_ROOT}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
       POOL_BIN="${REPO_ROOT}/rust/target/release/claw-pool-daemon"
     fi

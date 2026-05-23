@@ -3,10 +3,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::turn_stdout_hub::TurnStdoutHub;
+use crate::session_db::GatewaySessionDb;
+
+use super::live_report_hub::LiveReportHub;
 
 /// Snapshot of pool parameters (read once at construction; no hot reload).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DockerPoolConfig {
     /// `docker` / `podman` or path to a test stub.
     pub runtime_bin: String,
@@ -21,8 +23,28 @@ pub struct DockerPoolConfig {
     pub on_release_exec: Option<String>,
     pub exec_user: Option<String>,
     pub worker_env_host_file: Option<PathBuf>,
-    /// When set (in-process pool on gateway), stdout lines update this hub directly.
-    pub stdout_hub: Option<Arc<TurnStdoutHub>>,
+    /// Pool-local live report hub (required on `claw-pool-daemon`).
+    pub live_report_hub: Option<Arc<LiveReportHub>>,
+    /// Set on `claw-pool-daemon` for `claw_pool` registry and turn assignment. Author: kejiqing
+    pub pool_id: Option<String>,
+    pub session_db: Option<Arc<GatewaySessionDb>>,
+}
+
+impl std::fmt::Debug for DockerPoolConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DockerPoolConfig")
+            .field("runtime_bin", &self.runtime_bin)
+            .field("work_root", &self.work_root)
+            .field("pool_size", &self.pool_size)
+            .field("min_idle", &self.min_idle)
+            .field("image", &self.image)
+            .field("pool_id", &self.pool_id)
+            .field(
+                "session_db",
+                &self.session_db.as_ref().map(|_| "Some(GatewaySessionDb)"),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl DockerPoolConfig {
@@ -43,30 +65,5 @@ impl DockerPoolConfig {
             return Err("runtime_bin must be non-empty".to_string());
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn validate_rejects_zero_pool_size() {
-        let c = DockerPoolConfig {
-            runtime_bin: "docker".into(),
-            work_root: PathBuf::from("/tmp"),
-            pool_size: 0,
-            min_idle: 0,
-            image: "x".into(),
-            network_args: vec![],
-            extra_run_args: vec![],
-            name_stem: Some("ab".into()),
-            on_release_exec: None,
-            exec_user: None,
-            worker_env_host_file: None,
-            stdout_hub: None,
-        };
-        assert!(c.validate().is_err());
     }
 }

@@ -156,10 +156,11 @@ if use_prebuilt_linux_path; then
     "${ROOT_DIR}"
 
   if command -v cargo >/dev/null 2>&1; then
-    step "host claw-pool-daemon (macOS sidecar; optional if image binary used)"
-    (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon) || true
+    step "host claw-pool-daemon (macOS sidecar; must match linux-compile gateway)"
+    (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
     echo "Host binary (pool sidecar): ${ROOT_DIR}/rust/target/release/claw-pool-daemon"
   fi
+  "${ROOT_DIR}/deploy/stack/lib/claw-write-build-stamp.sh"
 else
   step "config: in-image cargo build (Containerfile.gateway-rs)"
   RUSTUP_BUILD_ARGS=()
@@ -208,6 +209,8 @@ else
     (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
   fi
 fi
+
+"${ROOT_DIR}/deploy/stack/lib/claw-write-build-stamp.sh"
 
 step "done"
 echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME} ${PLAYGROUND_IMAGE_NAME}"

@@ -30,7 +30,7 @@ pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
 /// forward sequentially. Author: kejiqing
 pub fn merge_stdout_hooks(
     turn_id: &str,
-    hub: Option<Arc<crate::turn_stdout_hub::TurnStdoutHub>>,
+    hub: Option<Arc<super::live_report_hub::LiveReportHub>>,
     outer: Option<Arc<dyn Fn(String) + Send + Sync>>,
 ) -> Option<Arc<dyn Fn(String) + Send + Sync>> {
     let tid = turn_id.to_string();
@@ -43,12 +43,9 @@ pub fn merge_stdout_hooks(
             if let Some(ref o) = outer_for_worker {
                 o(line.clone());
             }
-            crate::turn_stdout_forward::handle_claw_stdout_line(
-                &tid_for_worker,
-                &line,
-                hub_for_worker.as_ref(),
-            )
-            .await;
+            if let Some(ref h) = hub_for_worker {
+                h.ingest_stdout_line(&tid_for_worker, &line);
+            }
         }
     });
     let hook: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line: String| {
@@ -93,7 +90,9 @@ pub struct DockerPoolManager {
     /// `docker exec --user` for solve only (see [`DockerPoolConfig::exec_user`]).
     exec_user: Option<String>,
     worker_env_host_file: Option<PathBuf>,
-    stdout_hub: Option<Arc<crate::turn_stdout_hub::TurnStdoutHub>>,
+    live_report_hub: Option<Arc<super::live_report_hub::LiveReportHub>>,
+    pool_id: Option<String>,
+    session_db: Option<Arc<crate::session_db::GatewaySessionDb>>,
 }
 
 impl DockerPoolManager {
@@ -119,8 +118,20 @@ impl DockerPoolManager {
             on_release_exec: cfg.on_release_exec,
             exec_user: cfg.exec_user,
             worker_env_host_file: cfg.worker_env_host_file,
-            stdout_hub: cfg.stdout_hub,
+            live_report_hub: cfg.live_report_hub,
+            pool_id: cfg.pool_id,
+            session_db: cfg.session_db,
         }))
+    }
+
+    #[must_use]
+    pub fn live_report_hub(&self) -> Option<Arc<super::live_report_hub::LiveReportHub>> {
+        self.live_report_hub.clone()
+    }
+
+    #[must_use]
+    pub fn slot_capacity(&self) -> (usize, usize) {
+        (self.pool_size, self.min_idle)
     }
 
     /// Read `CLAW_DOCKER_POOL_*` or `CLAW_PODMAN_POOL_*` once at construction.
@@ -128,7 +139,8 @@ impl DockerPoolManager {
     pub fn try_from_env(
         podman: bool,
         work_root: &Path,
-        stdout_hub: Option<Arc<crate::turn_stdout_hub::TurnStdoutHub>>,
+        live_report_hub: Option<Arc<super::live_report_hub::LiveReportHub>>,
+        registry: Option<(String, Arc<crate::session_db::GatewaySessionDb>)>,
     ) -> Result<Arc<Self>, String> {
         let (default_bin, pfx) = if podman {
             ("podman", "CLAW_PODMAN_")
@@ -211,7 +223,9 @@ impl DockerPoolManager {
             on_release_exec,
             exec_user,
             worker_env_host_file,
-            stdout_hub,
+            live_report_hub,
+            pool_id: registry.as_ref().map(|(id, _)| id.clone()),
+            session_db: registry.map(|(_, db)| db),
         })
     }
 
@@ -631,6 +645,41 @@ impl DockerPoolManager {
                 ]);
             }
         }
+        if let Some(ref pool_id) = self.pool_id {
+            if let Some(ref db) = self.session_db {
+                match db
+                    .assign_turn_pool_worker(turn_id, pool_id, &container_log)
+                    .await
+                {
+                    Ok(()) => info!(
+                        target: "claw_gateway_pool",
+                        component = "docker_pool",
+                        phase = "assign_turn_pool_worker_ok",
+                        turn_id = %turn_id,
+                        pool_id = %pool_id,
+                        worker_name = %container_log,
+                        "gateway_turns pool_id/worker_name written for live routing"
+                    ),
+                    Err(e) => warn!(
+                        target: "claw_gateway_pool",
+                        component = "docker_pool",
+                        phase = "assign_turn_pool_worker_failed",
+                        turn_id = %turn_id,
+                        pool_id = %pool_id,
+                        error = %e,
+                        "gateway_turns pool_id/worker_name update failed"
+                    ),
+                }
+            }
+            argv.extend(["-e".into(), format!("CLAW_POOL_ID={pool_id}")]);
+        }
+        argv.extend(["-e".into(), format!("CLAW_TURN_ID={turn_id}")]);
+        argv.extend(["-e".into(), format!("CLAW_WORKER_NAME={container_log}")]);
+        if let Some(ref db) = self.session_db {
+            if let Ok(Some(session_id)) = db.get_session_id_for_turn(turn_id).await {
+                argv.extend(["-e".into(), format!("CLAW_SESSION_ID={session_id}")]);
+            }
+        }
         argv.extend([
             "--workdir".into(),
             workdir,
@@ -641,15 +690,10 @@ impl DockerPoolManager {
             task_path,
         ]);
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let stdout_hook = merge_stdout_hooks(turn_id, self.stdout_hub.clone(), on_stdout_line);
-        let out = runtime_exec_with_live_streams(
-            &self.bin,
-            &argv_refs,
-            request_id,
-            stdout_hook,
-        )
-        .await
-        .map_err(|e| format!("{} exec: {e}", self.bin))?;
+        let stdout_hook = merge_stdout_hooks(turn_id, self.live_report_hub.clone(), on_stdout_line);
+        let out = runtime_exec_with_live_streams(&self.bin, &argv_refs, request_id, stdout_hook)
+            .await
+            .map_err(|e| format!("{} exec: {e}", self.bin))?;
         let exit_code = out.status.code().unwrap_or(-1);
         info!(
             target: "claw_gateway_pool",
@@ -791,7 +835,9 @@ mod exec_solve_argv_prefix_tests {
             on_release_exec: None,
             exec_user: exec_user.map(str::to_string),
             worker_env_host_file: None,
-            stdout_hub: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .expect("from_config")
     }
@@ -912,7 +958,9 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            stdout_hub: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -925,7 +973,14 @@ esac
             .await
             .unwrap();
         let out = pool
-            .exec_solve(&lease, "gateway-solve-task.json", "claw", None, "turn-test", None)
+            .exec_solve(
+                &lease,
+                "gateway-solve-task.json",
+                "claw",
+                None,
+                "turn-test",
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(out.exit_code, 0);
@@ -959,7 +1014,9 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            stdout_hub: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1005,7 +1062,9 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            stdout_hub: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let p1 = Arc::clone(&pool);
@@ -1041,7 +1100,9 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            stdout_hub: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1057,7 +1118,14 @@ esac
             .await
             .unwrap();
         let err = pool
-            .exec_solve(&lease, "gateway-solve-task.json", "claw", None, "turn-test", None)
+            .exec_solve(
+                &lease,
+                "gateway-solve-task.json",
+                "claw",
+                None,
+                "turn-test",
+                None,
+            )
             .await
             .expect_err("exec on released lease must fail");
         assert!(err.contains("invalid or released"), "unexpected err: {err}");
@@ -1078,7 +1146,9 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            stdout_hub: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1112,7 +1182,9 @@ esac
             on_release_exec: Some("echo pool_on_release".into()),
             exec_user: None,
             worker_env_host_file: None,
-            stdout_hub: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1124,9 +1196,16 @@ esac
             )
             .await
             .unwrap();
-        pool.exec_solve(&lease, "gateway-solve-task.json", "claw", None, "turn-test", None)
-            .await
-            .unwrap();
+        pool.exec_solve(
+            &lease,
+            "gateway-solve-task.json",
+            "claw",
+            None,
+            "turn-test",
+            None,
+        )
+        .await
+        .unwrap();
         DockerPoolManager::release_slot(&pool, lease).await.unwrap();
         let log = read_log(&state_dir);
         let exec_lines: Vec<&str> = log.lines().filter(|l| l.starts_with("exec:")).collect();
@@ -1156,7 +1235,9 @@ esac
             on_release_exec: None,
             exec_user: Some("claw".into()),
             worker_env_host_file: None,
-            stdout_hub: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1168,9 +1249,16 @@ esac
             )
             .await
             .unwrap();
-        pool.exec_solve(&lease, "gateway-solve-task.json", "claw", None, "turn-test", None)
-            .await
-            .unwrap();
+        pool.exec_solve(
+            &lease,
+            "gateway-solve-task.json",
+            "claw",
+            None,
+            "turn-test",
+            None,
+        )
+        .await
+        .unwrap();
         let log = read_log(&state_dir);
         assert!(
             log.contains("--user") && log.contains("claw"),

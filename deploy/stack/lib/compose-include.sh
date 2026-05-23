@@ -126,6 +126,13 @@ claw_podman_write_pool_daemon_sidecar_env() {
     if [[ -n "${CLAW_PODMAN_NETWORK:-}" ]]; then
       printf '%s\n' "CLAW_PODMAN_NETWORK=${CLAW_PODMAN_NETWORK}"
     fi
+    printf '%s\n' "CLAW_POOL_HTTP_BIND=0.0.0.0:${CLAW_POOL_HTTP_PORT:-9944}"
+    if [[ -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
+      printf '%s\n' "CLAW_POOL_ADVERTISE_HOST=${CLAW_POOL_ADVERTISE_HOST}"
+    fi
+    if [[ -n "${CLAW_POOL_ID:-}" ]]; then
+      printf '%s\n' "CLAW_POOL_ID=${CLAW_POOL_ID}"
+    fi
   } >"${script_dir}/.claw-pool-daemon.env"
 }
 
@@ -178,7 +185,18 @@ claw_podman_load_compose_args() {
     return 1
   fi
   mkdir -p "${script_dir}/.claw-pool-rpc"
+  if [[ -f "${script_dir}/.claw-pool-rpc/pool-registry.env" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${script_dir}/.claw-pool-rpc/pool-registry.env"
+    set +a
+  elif [[ -f "${script_dir}/lib/claw-pool-registry-env.sh" ]]; then
+    # shellcheck source=lib/claw-pool-registry-env.sh
+    source "${script_dir}/lib/claw-pool-registry-env.sh"
+    claw_export_pool_registry_env "${script_dir}/.claw-pool-rpc"
+  fi
   local pool_port="${CLAW_POOL_DAEMON_PORT:-9943}"
+  local pool_http_port="${CLAW_POOL_HTTP_PORT:-9944}"
   local tcp_host
   if claw_pool_daemon_on_host; then
     tcp_host="${CLAW_POOL_DAEMON_TCP_HOST:-host.containers.internal}"
@@ -188,7 +206,14 @@ claw_podman_load_compose_args() {
     {
       printf '%s\n' '# GENERATED — host claw-pool-daemon (no compose sidecar). kejiqing'
       printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"
+      printf '%s\n' "CLAW_POOL_HTTP_BASE=http://${tcp_host}:${pool_http_port}"
       printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
+      if [[ -n "${CLAW_POOL_ID:-}" ]]; then
+        printf '%s\n' "CLAW_POOL_ID=${CLAW_POOL_ID}"
+      fi
+      if [[ -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
+        printf '%s\n' "# pool registry advertise (claw_pool.advertise_ip): ${CLAW_POOL_ADVERTISE_HOST}"
+      fi
     } >"${script_dir}/.claw-pool-rpc/gateway.env"
     return 0
   fi
@@ -198,6 +223,7 @@ claw_podman_load_compose_args() {
   {
     printf '%s\n' '# GENERATED — compose claw-pool-daemon sidecar. kejiqing'
     printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"
+    printf '%s\n' "CLAW_POOL_HTTP_BASE=http://${tcp_host}:${pool_http_port}"
     printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
   } >"${script_dir}/.claw-pool-rpc/gateway.env"
   if [[ -n "${rel}" ]]; then
