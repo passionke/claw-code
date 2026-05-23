@@ -51,6 +51,8 @@ pub fn skill_instructions_for_prompt(skill_content: &str) -> String {
 #[must_use]
 pub fn sanitize_external_report_text(text: &str) -> String {
     text.replace(GATEWAY_LIVE_REPORT_START_MARKER, "")
+        .trim_start()
+        .to_string()
 }
 
 /// LLM polish stream sanitizer (legacy marker only).
