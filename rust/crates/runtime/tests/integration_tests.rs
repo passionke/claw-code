@@ -49,7 +49,7 @@ fn fresh_branch_does_not_trigger_stale_policy() {
     let fresh_context = LaneContext::new(
         "fresh-lane",
         0,
-        Duration::from_mins(30), // 30 min stale — under 1 hour threshold
+        Duration::from_secs(30 * 60), // 30 min stale — under 1 hour threshold
         LaneBlocker::None,
         ReviewStatus::Pending,
         DiffScope::Full,
@@ -261,8 +261,8 @@ fn end_to_end_stale_lane_gets_merge_forward_action() {
 fn fresh_approved_lane_gets_merge_action() {
     let context = LaneContext::new(
         "fresh-approved-lane",
-        3,                       // Workspace green
-        Duration::from_mins(30), // 30 min — under 1 hour threshold = fresh
+        3,                            // Workspace green
+        Duration::from_secs(30 * 60), // 30 min — under 1 hour threshold = fresh
         LaneBlocker::None,
         ReviewStatus::Approved,
         DiffScope::Scoped,
@@ -347,7 +347,7 @@ fn worker_provider_failure_flows_through_recovery_to_policy() {
     // (Simulating the policy check that would happen after successful recovery)
     let recovery_success = matches!(result, RecoveryResult::Recovered { .. });
     let green_level = 3; // Workspace green
-    let not_stale = Duration::from_mins(30); // 30 min — fresh
+    let not_stale = Duration::from_secs(30 * 60); // 30 min — fresh
 
     let post_recovery_context = LaneContext::new(
         "recovered-lane",
