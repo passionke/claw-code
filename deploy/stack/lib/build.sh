@@ -106,8 +106,12 @@ else
   REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
   REG="${REG%/}"
 fi
-RUST_BASE_IMAGE="${REG}/library/rust:1.88-bookworm"
+# shellcheck source=/dev/null
+source "${ROOT_DIR}/deploy/stack/rust-version.env"
+export CLAW_RUST_VERSION CLAW_RUST_IMAGE_TAG
+RUST_BASE_IMAGE="${REG}/library/rust:${CLAW_RUST_IMAGE_TAG}"
 DEBIAN_BASE_IMAGE="${REG}/library/debian:bookworm-slim"
+echo "==> Rust locked: ${CLAW_RUST_VERSION} (image ${RUST_BASE_IMAGE})"
 
 cn_mirror_enabled() {
   [[ "${GITHUB_ACTIONS:-}" == "true" ]] && return 1

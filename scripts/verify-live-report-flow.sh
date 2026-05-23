@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# E2E: solve_async → poll hasReport (PG live chunks) → biz_advice_report SSE tail.
+# E2E: solve_async → poll hasReport (stdout-v1) → biz_advice_report SSE tail.
 # Author: kejiqing
 set -euo pipefail
 
@@ -33,6 +33,7 @@ print(json.dumps({
     "userPrompt": os.environ["QUESTION"],
     "extraSession": {
         "store_id": os.environ["STORE_ID"],
+        "org_id": os.environ.get("ORG_ID", ""),
         "tenant_code": "GPOS",
         "solution_code": "restaurant",
         "biz_type": "BOSS_REPORT",

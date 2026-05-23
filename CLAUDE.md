@@ -15,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Do not run `gateway.sh` from `rust/` (wrong cwd).
 
 ## Verification
+- **Rust toolchain**: pinned `1.88.0` in `rust/rust-toolchain.toml` (same as `deploy/stack/rust-version.env` / pack-deploy image). Run commands from `rust/` so rustup matches.
 - Run Rust verification from `rust/`: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`
 - Optional China `cargo` mirror: `cp rust/.cargo/config.toml.example rust/.cargo/config.toml` (see example header); default is crates.io only.
 - Local CLI test ergonomics (`env_lock`, parallel `cargo test`, Cursor): see `docs/local-cli-testing.md`.

@@ -700,7 +700,7 @@ fn get_simple_doing_tasks_section() -> String {
 /// Relative path under ds workspace root for `SQLBot` table catalog (`ds_*/home/DATA_CATALOG.md`). Author: kejiqing
 pub const GATEWAY_DATA_CATALOG_REL: &str = "home/DATA_CATALOG.md";
 
-/// Marker streamed into `assistant-stream-spill-{turnId}.txt`; gateway `GET /v1/tasks` sets `hasReport`. Author: kejiqing
+/// Marker in model output; worker emits `report.delta` on stdout; gateway `GET /v1/tasks` sets `hasReport`. Author: kejiqing
 pub const GATEWAY_LIVE_REPORT_START_MARKER: &str = "__CLAW_REPORT_START__";
 
 /// `SQLBot` MCP start tool (gateway ds workspaces). Author: kejiqing

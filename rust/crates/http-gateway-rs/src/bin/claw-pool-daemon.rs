@@ -30,7 +30,8 @@ async fn main() {
 
     let pool_binding_root = pool_host_bind_root(&work_root);
     let pool =
-        match http_gateway_rs::pool::DockerPoolManager::try_from_env(podman, &pool_binding_root) {
+        match http_gateway_rs::pool::DockerPoolManager::try_from_env(podman, &pool_binding_root, None)
+        {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("claw-pool-daemon: {e}");
@@ -38,6 +39,10 @@ async fn main() {
             }
         };
     http_gateway_rs::pool::DockerPoolManager::schedule_warm(&pool);
+    http_gateway_rs::live_report_audit::log_live_report_startup(
+        "claw-pool-daemon",
+        "remote_exec_http_forward",
+    );
 
     let tcp_bind = std::env::var("CLAW_POOL_DAEMON_TCP_BIND")
         .ok()

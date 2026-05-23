@@ -25,7 +25,13 @@ claw_linux_compile_release() {
   echo "  target: ${out_dir}"
 
   # shellcheck disable=SC2086
+  # shellcheck source=/dev/null
+  source "${root_dir}/deploy/stack/rust-version.env"
+  export CLAW_RUST_VERSION
+
+  # shellcheck disable=SC2086
   "${container_cli}" run --rm \
+    -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
     -v "${rust_dir}:/build:Z" \
     -v claw-cargo-registry:/usr/local/cargo/registry \
     -v claw-cargo-git:/usr/local/cargo/git \
@@ -39,10 +45,16 @@ claw_linux_compile_release() {
       if [ -f .cargo/config.toml.example ] && [ ! -f .cargo/config.toml ]; then
         cp .cargo/config.toml.example .cargo/config.toml
       fi
-      rustc --version
-      cargo build --release -p rusty-claude-cli --bin claw
-      cargo build --release -p http-gateway-rs
-      cargo build --release -p http-gateway-rs --bin claw-pool-daemon
+      got=$(rustc --version | awk "{print \$2}")
+      want="${CLAW_RUST_VERSION:?CLAW_RUST_VERSION unset}"
+      if [ "$got" != "$want" ]; then
+        echo "rustc version mismatch: want $want got $got" >&2
+        exit 1
+      fi
+      echo "rustc $got (locked)"
+      cargo build --release -p rusty-claude-cli --bin claw \
+        -p http-gateway-rs --bin http-gateway-rs \
+        -p http-gateway-rs --bin claw-pool-daemon
       ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw /artifacts/release/claw-pool-daemon
     '
 

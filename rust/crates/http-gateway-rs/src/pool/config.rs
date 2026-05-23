@@ -1,8 +1,9 @@
 //! Pool construction from env or explicit config (tests inject a fake `docker`). Author: kejiqing
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use super::worker_report_endpoint::WorkerReportResolve;
+use crate::turn_stdout_hub::TurnStdoutHub;
 
 /// Snapshot of pool parameters (read once at construction; no hot reload).
 #[derive(Debug, Clone)]
@@ -17,27 +18,11 @@ pub struct DockerPoolConfig {
     pub extra_run_args: Vec<String>,
     /// If `None`, a random 8-char stem is generated (production).
     pub name_stem: Option<String>,
-    /// When a slot returns from `Leased` to `Idle`, run this shell inside the worker via
-    /// `sh -lc` (e.g. `pkill -f pattern` for stray `run_in_background` children). Set from env
-    /// `CLAW_DOCKER_POOL_ON_RELEASE` / `CLAW_PODMAN_POOL_ON_RELEASE`. Empty / unset = skip.
     pub on_release_exec: Option<String>,
-    /// `docker exec --user …` for solve (`gateway-solve-once`). E.g. `claw` or `1000:1000`. Unset =
-    /// run as container default (usually root). Match worker image user; host `work_root` should
-    /// allow writes for that uid. `POOL_ON_RELEASE` runs **without** this (as root) so cleanup
-    /// can `pkill -u claw` etc.
     pub exec_user: Option<String>,
-    /// Host path to repo `.env` (from `CLAW_WORKER_ENV_FILE` on the pool daemon). Mounted ro at
-    /// [`gateway_solve_turn::WORKER_ENV_MOUNT_PATH`] for `apply_worker_env` inside the worker.
     pub worker_env_host_file: Option<PathBuf>,
-    /// `CLAW_*_NETWORK` name (not full argv); used for report endpoint inspect.
-    pub pool_network: Option<String>,
-    pub worker_report_resolve: WorkerReportResolve,
-    /// In-container SSE port (maps to `CLAW_WORKER_REPORT_SSE_PORT`).
-    pub worker_report_container_port: u16,
-    /// `host_publish` mode: host clients dial this address (e.g. `127.0.0.1` or LAN IP).
-    pub worker_report_advertise_host: String,
-    /// `host_publish` mode: host port = base + `slot_index`.
-    pub worker_report_publish_base: Option<u16>,
+    /// When set (in-process pool on gateway), stdout lines update this hub directly.
+    pub stdout_hub: Option<Arc<TurnStdoutHub>>,
 }
 
 impl DockerPoolConfig {
@@ -56,14 +41,6 @@ impl DockerPoolConfig {
         }
         if self.runtime_bin.trim().is_empty() {
             return Err("runtime_bin must be non-empty".to_string());
-        }
-        if self.worker_report_resolve == WorkerReportResolve::HostPublish
-            && self.worker_report_publish_base.is_none()
-        {
-            return Err(
-                "worker_report_publish_base required when WORKER_REPORT_RESOLVE=host_publish"
-                    .to_string(),
-            );
         }
         Ok(())
     }
@@ -88,57 +65,7 @@ mod tests {
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::ContainerName,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
-        };
-        assert!(c.validate().is_err());
-    }
-
-    #[test]
-    fn validate_rejects_min_idle_gt_pool() {
-        let c = DockerPoolConfig {
-            runtime_bin: "docker".into(),
-            work_root: PathBuf::from("/tmp"),
-            pool_size: 1,
-            min_idle: 2,
-            image: "x".into(),
-            network_args: vec![],
-            extra_run_args: vec![],
-            name_stem: Some("ab".into()),
-            on_release_exec: None,
-            exec_user: None,
-            worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::ContainerName,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
-        };
-        assert!(c.validate().is_err());
-    }
-
-    #[test]
-    fn validate_requires_publish_base_for_host_publish() {
-        let c = DockerPoolConfig {
-            runtime_bin: "docker".into(),
-            work_root: PathBuf::from("/tmp"),
-            pool_size: 2,
-            min_idle: 0,
-            image: "x".into(),
-            network_args: vec![],
-            extra_run_args: vec![],
-            name_stem: Some("ab".into()),
-            on_release_exec: None,
-            exec_user: None,
-            worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::HostPublish,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
+            stdout_hub: None,
         };
         assert!(c.validate().is_err());
     }

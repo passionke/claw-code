@@ -1,16 +1,17 @@
 //! Boss 报表清洗：网关固定从 `ds_1` 工作区读取 `GPOS_BOSS_REPORT_WRITER` skill 作为润色指令，支持 SSE 流式输出。Author: kejiqing
 //!
-//! **内部标记剥离（与 spill 开关无关）**：凡对外报告出口（live spill SSE、LLM 润色 JSON/SSE、`report_body_from_solve_output`）
-//! 均经 [`sanitize_external_report_text`] 去掉 `__CLAW_REPORT_START__`；`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL` 只控制是否 tail spill，不关闭剥离。
+//! Live solve text is forwarded as-is; polish path may still strip legacy `__CLAW_REPORT_START__` on egress.
 
 use std::convert::Infallible;
 use std::path::Path;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::response::sse::Event;
+use crate::biz_report_sse_log::{log_sse_delta, log_sse_done, SseDensityAcc};
 use futures_util::stream::{self, Stream, StreamExt as _};
-use gateway_solve_turn::{strip_report_start_marker, ASSISTANT_STREAM_REPORT_START_MARKER};
+use runtime::GATEWAY_LIVE_REPORT_START_MARKER;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::fs;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -40,40 +41,28 @@ pub fn skill_instructions_for_prompt(skill_content: &str) -> String {
         .to_string()
 }
 
-/// Strip internal `__CLAW_REPORT_START__` on every external report egress (live spill off → polish still uses this).
+/// Strip legacy internal marker on polish/export egress (live stdout path does not use this).
 #[must_use]
 pub fn sanitize_external_report_text(text: &str) -> String {
-    strip_report_start_marker(text)
+    text.replace(GATEWAY_LIVE_REPORT_START_MARKER, "")
 }
 
-/// Stateful filter for spill tail / polish SSE deltas.
-#[derive(Debug, Clone)]
-pub struct ReportExportSanitizer {
-    report_section_started: bool,
-}
+/// LLM polish stream sanitizer (legacy marker only).
+#[derive(Debug, Clone, Default)]
+pub struct ReportExportSanitizer;
 
 impl ReportExportSanitizer {
     #[must_use]
-    pub fn new(report_section_already_started: bool) -> Self {
-        Self {
-            report_section_started: report_section_already_started,
-        }
+    pub fn new(_report_section_already_started: bool) -> Self {
+        Self
     }
 
-    /// Spill: hide bytes before marker; polish: pass through but strip marker if echoed.
     #[must_use]
     pub fn push_chunk(&mut self, chunk: &str) -> String {
-        if self.report_section_started {
-            if chunk.contains(ASSISTANT_STREAM_REPORT_START_MARKER) {
-                return sanitize_external_report_text(chunk);
-            }
-            return chunk.to_string();
+        if chunk.is_empty() {
+            return String::new();
         }
-        if chunk.contains(ASSISTANT_STREAM_REPORT_START_MARKER) {
-            self.report_section_started = true;
-            return sanitize_external_report_text(chunk);
-        }
-        String::new()
+        sanitize_external_report_text(chunk)
     }
 }
 
@@ -188,11 +177,57 @@ pub enum BizReportStreamMsg {
     Error(String),
 }
 
+fn wall_clock_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// Split catch-up text into small SSE deltas (avoid one giant snapshot on connect). Author: kejiqing
+pub fn split_catchup_chunks(text: &str, max_chars: usize) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let max_chars = max_chars.max(1);
+    text.chars()
+        .collect::<Vec<_>>()
+        .chunks(max_chars)
+        .map(|chunk| chunk.iter().collect::<String>())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// SSE `biz.report.delta` payload (observability for burst / batching). Author: kejiqing
+pub fn biz_report_delta_json(text: &str, seq: u64, stream_started_at_ms: u64, server_delta_ms: u64) -> String {
+    let clean = sanitize_external_report_text(text);
+    serde_json::json!({
+        "text": clean,
+        "seq": seq,
+        "serverDeltaMs": server_delta_ms,
+        "serverTsMs": stream_started_at_ms.saturating_add(server_delta_ms),
+        "textLen": clean.len(),
+    })
+    .to_string()
+}
+
 pub fn stream_msg_to_event(msg: &BizReportStreamMsg) -> Event {
+    stream_msg_to_event_obs(msg, None)
+}
+
+pub fn stream_msg_to_event_obs(
+    msg: &BizReportStreamMsg,
+    obs: Option<(u64, u64, u64)>,
+) -> Event {
     match msg {
-        BizReportStreamMsg::Delta(text) => Event::default()
-            .event("biz.report.delta")
-            .data(serde_json::json!({ "text": sanitize_external_report_text(text) }).to_string()),
+        BizReportStreamMsg::Delta(text) => {
+            let body = if let Some((seq, stream_started_at_ms, server_delta_ms)) = obs {
+                biz_report_delta_json(text, seq, stream_started_at_ms, server_delta_ms)
+            } else {
+                serde_json::json!({ "text": sanitize_external_report_text(text) }).to_string()
+            };
+            Event::default().event("biz.report.delta").data(body)
+        }
         BizReportStreamMsg::Done(payload) => {
             let mut payload = payload.clone();
             sanitize_report_payload(&mut payload);
@@ -224,14 +259,74 @@ pub fn biz_report_sse_event_stream(
     task_id: &str,
     rx: mpsc::UnboundedReceiver<BizReportStreamMsg>,
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send {
-    let start_data = serde_json::json!({ "taskId": task_id }).to_string();
+    let stream_started_at_ms = wall_clock_ms();
+    let start_data = serde_json::json!({
+        "taskId": task_id,
+        "streamStartedAtMs": stream_started_at_ms,
+    })
+    .to_string();
     let start = Event::default().event("biz.report.start").data(start_data);
-    stream::once(async move { Ok(start) }).chain(stream::unfold(rx, |mut rx| async move {
-        let msg = rx.recv().await?;
-        let event = stream_msg_to_event(&msg);
-        tokio::task::yield_now().await;
-        Some((Ok(event), rx))
-    }))
+    let t0 = Instant::now();
+    let task_id_log = task_id.to_string();
+    stream::once(async move { Ok(start) }).chain(stream::unfold(
+        (
+            rx,
+            t0,
+            stream_started_at_ms,
+            0u64,
+            SseDensityAcc::default(),
+            task_id_log,
+        ),
+        |(mut rx, t0, stream_started_at_ms, mut seq, mut acc, task_id)| async move {
+            let msg = rx.recv().await?;
+            let event = match &msg {
+                BizReportStreamMsg::Delta(text) => {
+                    seq += 1;
+                    let server_delta_ms =
+                        u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    let clean = sanitize_external_report_text(text);
+                    let text_len = u64::try_from(clean.len()).unwrap_or(u64::MAX);
+                    acc.on_delta(server_delta_ms, text_len);
+                    log_sse_delta(
+                        &task_id,
+                        seq,
+                        server_delta_ms,
+                        text_len,
+                        acc.same_server_streak(),
+                    );
+                    stream_msg_to_event_obs(
+                        &msg,
+                        Some((seq, stream_started_at_ms, server_delta_ms)),
+                    )
+                }
+                BizReportStreamMsg::Done(payload) => {
+                    let stream_duration_ms =
+                        u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    acc.finalize();
+                    log_sse_done(&task_id, &acc, stream_duration_ms);
+                    let mut payload = payload.clone();
+                    sanitize_report_payload(&mut payload);
+                    let mut v =
+                        serde_json::to_value(&payload).unwrap_or_else(|_| json!({}));
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("deltaCount".into(), json!(seq));
+                        obj.insert("streamDurationMs".into(), json!(stream_duration_ms));
+                        obj.insert("maxBucketCount1ms".into(), json!(acc.max_bucket_1ms()));
+                        obj.insert(
+                            "maxSameServerStreak".into(),
+                            json!(acc.max_same_server_streak),
+                        );
+                    }
+                    let body =
+                        serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string());
+                    Event::default().event("biz.report.done").data(body)
+                }
+                _ => stream_msg_to_event_obs(&msg, None),
+            };
+            tokio::task::yield_now().await;
+            Some((Ok(event), (rx, t0, stream_started_at_ms, seq, acc, task_id)))
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -262,21 +357,15 @@ mod tests {
     }
 
     #[test]
-    fn polish_sanitizer_passes_through_without_marker() {
-        let mut s = ReportExportSanitizer::new(true);
+    fn sanitizer_passes_through_without_marker() {
+        let mut s = ReportExportSanitizer::new(false);
+        assert_eq!(s.push_chunk("分析中…"), "分析中…");
         assert_eq!(s.push_chunk("润色正文"), "润色正文");
     }
 
     #[test]
-    fn spill_sanitizer_hides_until_marker() {
-        let mut s = ReportExportSanitizer::new(false);
-        assert_eq!(s.push_chunk("分析中…"), "");
-        assert_eq!(s.push_chunk("__CLAW_REPORT_START__\n# 报告"), "# 报告");
-    }
-
-    #[test]
-    fn polish_egress_strips_marker_when_live_spill_off() {
-        let marker = ASSISTANT_STREAM_REPORT_START_MARKER;
+    fn polish_egress_strips_legacy_marker() {
+        let marker = GATEWAY_LIVE_REPORT_START_MARKER;
         let (text, json) = sanitize_biz_report_parts(
             &format!("{marker}\n# 标题"),
             Some(serde_json::json!({ "message": format!("{marker}\n正文") })),
@@ -304,5 +393,22 @@ mod tests {
             report_body_from_solve_output("", Some(&json)).unwrap(),
             "# 报告\n正文"
         );
+    }
+
+    #[test]
+    fn delta_json_includes_observability_fields() {
+        let raw = biz_report_delta_json("ab", 3, 1_700_000_000_000, 42);
+        let v: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["text"].as_str(), Some("ab"));
+        assert_eq!(v["seq"].as_u64(), Some(3));
+        assert_eq!(v["serverDeltaMs"].as_u64(), Some(42));
+        assert_eq!(v["serverTsMs"].as_u64(), Some(1_700_000_000_042));
+        assert_eq!(v["textLen"].as_u64(), Some(2));
+    }
+
+    #[test]
+    fn split_catchup_chunks_respects_char_boundary() {
+        let parts = split_catchup_chunks("一二三四五", 2);
+        assert_eq!(parts, vec!["一二", "三四", "五"]);
     }
 }

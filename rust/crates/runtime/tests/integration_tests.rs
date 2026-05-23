@@ -22,7 +22,7 @@ fn stale_branch_detection_flows_into_policy_engine() {
     let stale_context = LaneContext::new(
         "stale-lane",
         0,
-        Duration::from_hours(2), // 2 hours stale
+        Duration::from_secs(2 * 60 * 60), // 2 hours stale
         LaneBlocker::None,
         ReviewStatus::Pending,
         DiffScope::Full,
@@ -213,7 +213,7 @@ fn end_to_end_stale_lane_gets_merge_forward_action() {
     let context = LaneContext::new(
         "lane-9411",
         3,                       // Workspace green
-        Duration::from_hours(5), // 5 hours stale, definitely over threshold
+        Duration::from_secs(5 * 60 * 60), // 5 hours stale, definitely over threshold
         LaneBlocker::None,
         ReviewStatus::Approved,
         DiffScope::Scoped,

@@ -61,15 +61,12 @@ fi
 if [[ -n "${CLAW_PODMAN_NETWORK:-}" ]]; then
   daemon_env+=(CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK}")
 fi
-if [[ -n "${CLAW_PODMAN_WORKER_REPORT_PUBLISH_BASE:-}" ]]; then
-  daemon_env+=(CLAW_PODMAN_WORKER_REPORT_PUBLISH_BASE="${CLAW_PODMAN_WORKER_REPORT_PUBLISH_BASE}")
-fi
-if [[ -n "${CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST:-}" ]]; then
-  daemon_env+=(CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST="${CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST}")
-fi
-if [[ -n "${CLAW_WORKER_REPORT_SSE_PORT:-}" ]]; then
-  daemon_env+=(CLAW_WORKER_REPORT_SSE_PORT="${CLAW_WORKER_REPORT_SSE_PORT}")
-fi
+# Host pool daemon forwards stdout via HTTP; must dial published gateway port, not compose DNS.
+GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18088}"
+daemon_env+=(
+  CLAW_GATEWAY_INTERNAL_BASE_URL="http://127.0.0.1:${GATEWAY_HOST_PORT}"
+  CLAW_GATEWAY_INTERNAL_TOKEN="${CLAW_GATEWAY_INTERNAL_TOKEN:-claw-internal-dev-token}"
+)
 nohup env "${daemon_env[@]}" "${BIN}" >>"${RPC_DIR}/daemon.log" 2>&1 &
 dpid=$!
 echo "${dpid}" >"${RPC_DIR}/daemon.pid"

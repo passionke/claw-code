@@ -378,26 +378,15 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
             allowed_tools,
             max_iterations,
             turn_id,
-            gateway_solve_turn::resolve_assistant_stream_spill(task.assistant_stream_spill),
         )
     };
     match result {
         Ok((claw_exit_code, output_text, output_json)) => {
-            let payload = json!({
-                "clawExitCode": claw_exit_code,
-                "outputText": output_text,
-                "outputJson": output_json,
-            });
-            println!("{}", serde_json::to_string(&payload)?);
+            gateway_solve_turn::emit_solve_done(claw_exit_code, &output_text, output_json.as_ref())?;
             Ok(())
         }
         Err(e) => {
-            let payload = json!({
-                "clawExitCode": 1,
-                "error": e.message,
-                "httpStatusHint": e.status,
-            });
-            println!("{}", serde_json::to_string(&payload)?);
+            gateway_solve_turn::emit_solve_error(&e.message, e.status)?;
             Err(format!("gateway-solve-once failed: {e}").into())
         }
     }

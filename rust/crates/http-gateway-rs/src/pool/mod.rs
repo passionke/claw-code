@@ -7,9 +7,7 @@ mod local_ops;
 mod result;
 pub mod rpc;
 mod traits;
-mod worker_report_endpoint;
-
-pub use docker_pool::DockerPoolManager;
+pub use docker_pool::{merge_stdout_hooks, DockerPoolManager};
 pub use local_ops::LocalPoolOps;
 // Used by the `http-gateway-rs` binary (`solve_pool`); not referenced from the library target alone.
 #[allow(unused_imports)]

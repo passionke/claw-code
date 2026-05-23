@@ -75,7 +75,7 @@ POOL_WORKER_RUN_EXTRA="${CLAW_POOL_WORKER_RUN_EXTRA:---add-host host.docker.inte
 upsert_env_kv "CLAW_DOCKER_EXTRA_ARGS" "${POOL_WORKER_RUN_EXTRA}"
 upsert_env_kv "CLAW_PODMAN_EXTRA_ARGS" "${POOL_WORKER_RUN_EXTRA}"
 
-# Worker TextDelta → POST /v1/internal/turns/{id}/assistant-stream (needs both vars in mounted .env).
+# Worker stdout → POST /v1/internal/turns/{id}/stdout-event (needs both vars in mounted .env).
 GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18088}"
 if [[ -z "${CLAW_GATEWAY_INTERNAL_BASE_URL:-}" ]]; then
   CLAW_GATEWAY_INTERNAL_BASE_URL="http://claw-gateway-rs:8080"

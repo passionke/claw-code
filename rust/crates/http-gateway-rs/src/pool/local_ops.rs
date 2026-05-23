@@ -31,9 +31,18 @@ impl PoolOps for LocalPoolOps {
         task_rel_under_root: &str,
         claw_bin: &str,
         request_id: Option<&str>,
+        turn_id: &str,
+        on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
         self.0
-            .exec_solve(slot, task_rel_under_root, claw_bin, request_id)
+            .exec_solve(
+                slot,
+                task_rel_under_root,
+                claw_bin,
+                request_id,
+                turn_id,
+                on_stdout_line,
+            )
             .await
     }
 

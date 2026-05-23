@@ -1,7 +1,7 @@
 import { Collapse, Space, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { proxyHttp } from "../../api/client";
-import { usePolishReportStream } from "../../hooks/usePolishReportStream";
+import { useBizReportStream } from "../../hooks/useBizReportStream";
 import type { ProgressEvent, SolveTask } from "../../types/chat";
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import TurnToolsDrawer from "./TurnToolsDrawer";
@@ -50,8 +50,8 @@ export default function ChatTurnCard({
   const [visibleProgressCount, setVisibleProgressCount] = useState(0);
   const [errorText, setErrorText] = useState("");
   const [fallbackOutput, setFallbackOutput] = useState("");
-  const polishOpened = useRef(false);
-  const report = usePolishReportStream(gatewayBase, taskId);
+  const reportOpened = useRef(false);
+  const reportStream = useBizReportStream(gatewayBase, sessionId, turnId, dsId);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,16 +77,20 @@ export default function ChatTurnCard({
         const t = await pollOnce();
         if (!t) break;
         const terminal = ["succeeded", "failed", "cancelled"].includes(t.status || "");
+        if (
+          !reportOpened.current &&
+          (t.status === "running" || t.status === "queued")
+        ) {
+          reportOpened.current = true;
+          reportStream.open();
+        }
         if (terminal) {
-          if (t.status === "succeeded" && !polishOpened.current) {
-            polishOpened.current = true;
-            report.open();
-          }
+          reportStream.close();
           if (t.error) {
             setErrorText(JSON.stringify(t.error, null, 2));
           } else if (
             t.status === "succeeded" &&
-            !report.text &&
+            !reportText &&
             t.result?.outputText
           ) {
             const txt = t.result.outputText;
@@ -104,13 +108,14 @@ export default function ChatTurnCard({
 
     return () => {
       cancelled = true;
-      report.close();
+      reportStream.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gatewayBase, taskId]);
 
   const history = task.progressHistory || [];
-  const reportActive = report.streaming || report.text.length > 0;
+  const reportText = reportStream.text;
+  const reportVisible = reportText.length > 0;
 
   useEffect(() => {
     setVisibleProgressCount((n) => (history.length > n ? history.length : n));
@@ -185,7 +190,7 @@ export default function ChatTurnCard({
         </div>
       </div>
 
-      {!reportActive && visibleProgressCount > 0 && (
+      {!reportVisible && visibleProgressCount > 0 && (
         <div className={styles.progressFeed}>
           <Collapse
             size="small"
@@ -208,19 +213,17 @@ export default function ChatTurnCard({
       )}
 
       <div className={styles.turnBody}>
-        {(reportActive || report.error) && (
+        {reportVisible && (
           <div className={styles.section}>
-            <div className={styles.sectionLabel}>报告（润色）</div>
+            <div className={styles.sectionLabel}>报告</div>
             <article
-              className={`${styles.reportProse} ${report.streaming ? styles.reportStreaming : ""} ${
-                report.error ? styles.reportErr : ""
-              }`}
+              className={`${styles.reportProse} ${reportStream.live ? styles.reportStreaming : ""}`}
             >
-              {report.text}
+              {reportText}
             </article>
           </div>
         )}
-        {fallbackOutput && !reportActive && (
+        {fallbackOutput && !reportVisible && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>回复</div>
             <Typography.Paragraph className={styles.reportProse}>{fallbackOutput}</Typography.Paragraph>

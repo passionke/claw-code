@@ -13,6 +13,7 @@ export function buildExtraSession({ storeId, orgId }: ExtraSessionInput): Record
   };
   const store = storeId.trim();
   if (store) extra.store_id = store;
-  if (orgId.length > 0) extra.org_id = orgId;
+  // SQLBot 权限门：org_id 传空字符串即可；须显式下发 key。Author: kejiqing
+  extra.org_id = orgId;
   return extra;
 }

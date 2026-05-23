@@ -5,7 +5,6 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::assistant_stream_spill::strip_report_start_marker;
 use crate::gateway_solve_session_persistence_path;
 
 /// Concatenate assistant `text` blocks for one **user turn** in jsonl order: lines after the
@@ -69,7 +68,7 @@ pub fn final_assistant_report_text_from_jsonl_for_user_turn_index(
             _ => {}
         }
     }
-    Ok(strip_report_start_marker(&parts.join("\n")))
+    Ok(parts.join("\n"))
 }
 
 /// Concatenate all assistant `text` blocks in jsonl order (same basis as solve `outputJson.message`).
@@ -111,7 +110,7 @@ pub fn final_assistant_report_text_from_jsonl(session_home: &Path) -> Result<Str
             }
         }
     }
-    Ok(strip_report_start_marker(&parts.join("\n")))
+    Ok(parts.join("\n"))
 }
 
 #[cfg(test)]

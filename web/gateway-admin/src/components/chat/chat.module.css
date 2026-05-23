@@ -215,14 +215,51 @@
 
 .composer {
   display: flex;
+  flex-direction: column;
   gap: 8px;
   padding-top: 12px;
   border-top: 1px solid #2d3a4d;
   flex-shrink: 0;
 }
 
-.composer button {
-  align-self: flex-end;
+.composerRow {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.composerRow .ant-btn {
+  flex-shrink: 0;
+}
+
+.quickPrompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.quickPromptBtn {
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #c9d4e3;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.quickPromptBtn:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(59, 130, 246, 0.55);
+  color: #e6edf3;
+}
+
+.quickPromptBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .reportProse {
