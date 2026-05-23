@@ -1,4 +1,5 @@
 # Full in-image compile (CI / Linux). Local macOS: Containerfile.gateway-worker.prebuilt. Author: kejiqing
+ARG RUST_VERSION=1.88.0
 ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
 ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
 
@@ -9,12 +10,14 @@ ARG CLAW_USE_CN_CRATES_MIRROR=0
 WORKDIR /build
 COPY rust/Cargo.toml /build/Cargo.toml
 COPY rust/Cargo.lock /build/Cargo.lock
+COPY rust/rust-toolchain.toml /build/rust-toolchain.toml
 COPY rust/crates/ /build/crates/
 COPY rust/.cargo/config.toml.example /tmp/cargo-mirror.toml
 RUN if [ "${CLAW_USE_CN_CRATES_MIRROR}" = "1" ]; then \
       mkdir -p /build/.cargo && cp /tmp/cargo-mirror.toml /build/.cargo/config.toml; \
     fi
-RUN echo "rustc: $(rustc --version)" && \
+RUN rustc --version | grep -q "${RUST_VERSION}" && \
+    echo "rustc: $(rustc --version)" && \
     cargo build -p rusty-claude-cli --bin claw --release
 
 FROM ${DEBIAN_BASE_IMAGE}

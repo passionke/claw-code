@@ -1,0 +1,5 @@
+# Locked for host rustup, CI, and pack-deploy (podman rust:1.88-bookworm). Do not bump one side only.
+# Author: kejiqing
+[toolchain]
+channel = "1.88.0"
+components = ["rustfmt", "clippy"]

@@ -38,6 +38,7 @@ pub enum PoolRpcReq {
         task_rel: String,
         claw_bin: String,
         request_id: Option<String>,
+        turn_id: String,
     },
     Release {
         slot_index: usize,
@@ -159,6 +160,8 @@ impl PoolOps for PoolRpcClient {
         task_rel_under_root: &str,
         claw_bin: &str,
         request_id: Option<&str>,
+        turn_id: &str,
+        _on_stdout_line: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
         let r = self
             .call(PoolRpcReq::Exec {
@@ -166,6 +169,7 @@ impl PoolOps for PoolRpcClient {
                 task_rel: task_rel_under_root.to_string(),
                 claw_bin: claw_bin.to_string(),
                 request_id: request_id.map(str::to_string),
+                turn_id: turn_id.to_string(),
             })
             .await?;
         if !r.ok {
@@ -237,19 +241,20 @@ async fn dispatch_pool_rpc(
             task_rel,
             claw_bin,
             request_id,
+            turn_id,
         } => {
-            let worker_host = pool.slot_worker_host(slot_index).await.unwrap_or_default();
-            let worker_report_port = pool
-                .slot_worker_report_port(slot_index)
-                .await
-                .unwrap_or(18765);
-            let lease = SlotLease {
-                slot_index,
-                worker_host,
-                worker_report_port,
-            };
+            let lease = SlotLease { slot_index };
+            // Daemon path: do NOT pre-wrap with merge_stdout_hooks here. exec_solve
+            // already runs merge_stdout_hooks internally (pool-local LiveReportHub).
             match pool
-                .exec_solve(&lease, &task_rel, &claw_bin, request_id.as_deref())
+                .exec_solve(
+                    &lease,
+                    &task_rel,
+                    &claw_bin,
+                    request_id.as_deref(),
+                    &turn_id,
+                    None,
+                )
                 .await
             {
                 Ok(outcome) => PoolRpcResp {
@@ -267,19 +272,7 @@ async fn dispatch_pool_rpc(
             }
         }
         PoolRpcReq::Release { slot_index } => {
-            let worker_host = pool.slot_worker_host(slot_index).await.unwrap_or_default();
-            let worker_report_port = pool
-                .slot_worker_report_port(slot_index)
-                .await
-                .unwrap_or(18765);
-            match pool
-                .release_slot(SlotLease {
-                    slot_index,
-                    worker_host,
-                    worker_report_port,
-                })
-                .await
-            {
+            match pool.release_slot(SlotLease { slot_index }).await {
                 Ok(()) => PoolRpcResp {
                     ok: true,
                     error: None,

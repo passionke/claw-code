@@ -8,7 +8,7 @@ export interface ProgressEvent {
 export interface SolveTask {
   status?: string;
   hasReport?: boolean;
-  /** First live-chunk time in PG (ms); gateway sets when `hasReport` is true. */
+  /** Report time (ms); set when `hasReport` is true (`running` / `succeeded`). */
   reportTime?: number;
   currentTaskDesc?: string;
   progressHistory?: ProgressEvent[];

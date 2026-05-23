@@ -28,6 +28,16 @@ interface SysEntry {
 
 type ThreadItem = TurnEntry | SysEntry;
 
+/** 输入框上方快捷问句（点击即发送）。Author: kejiqing */
+const QUICK_PROMPTS = [
+  "最近生意怎么样",
+  "哪个菜卖得好",
+  "今天营业额多少",
+  "和上周比怎么样",
+  "哪些时段客流最高",
+  "库存或原料有没有要关注的",
+] as const;
+
 function isSys(item: ThreadItem): item is SysEntry {
   return "kind" in item && item.kind === "sys";
 }
@@ -122,6 +132,16 @@ export default function ChatPage() {
     }
   };
 
+  const onQuickPrompt = async (text: string) => {
+    if (sending) return;
+    setSending(true);
+    try {
+      await runSend(text);
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
     <div className={styles.chatPage}>
       <div className={styles.chatToolbarRow}>
@@ -182,21 +202,36 @@ export default function ChatPage() {
           <div ref={logEndRef} />
         </div>
         <div className={styles.composer}>
-          <Input.TextArea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="输入任务描述（自然语言），Enter 发送；Shift+Enter 换行"
-            autoSize={{ minRows: 2, maxRows: 6 }}
-            onKeyDown={(ev) => {
-              if (ev.key === "Enter" && !ev.shiftKey) {
-                ev.preventDefault();
-                void onSend();
-              }
-            }}
-          />
-          <Button type="primary" loading={sending} onClick={() => void onSend()}>
-            发送
-          </Button>
+          <div className={styles.quickPrompts}>
+            {QUICK_PROMPTS.map((q) => (
+              <button
+                key={q}
+                type="button"
+                className={styles.quickPromptBtn}
+                disabled={sending}
+                onClick={() => void onQuickPrompt(q)}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+          <div className={styles.composerRow}>
+            <Input.TextArea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="输入任务描述（自然语言），Enter 发送；Shift+Enter 换行"
+              autoSize={{ minRows: 2, maxRows: 6 }}
+              onKeyDown={(ev) => {
+                if (ev.key === "Enter" && !ev.shiftKey) {
+                  ev.preventDefault();
+                  void onSend();
+                }
+              }}
+            />
+            <Button type="primary" loading={sending} onClick={() => void onSend()}>
+              发送
+            </Button>
+          </div>
         </div>
       </div>
     </div>

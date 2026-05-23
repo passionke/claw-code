@@ -105,9 +105,7 @@ sequenceDiagram
 | `CLAW_DOCKER_POOL_MEMORY` / `CLAW_PODMAN_POOL_MEMORY` | 可选：每个 worker `run` 追加 `--memory …`（如 `512m`、`1g`） |
 | `CLAW_DOCKER_IMAGE` / `CLAW_PODMAN_IMAGE` | Worker 镜像名 |
 | `CLAW_DOCKER_NETWORK` / `CLAW_PODMAN_NETWORK` | 可选，接入与 MCP / gateway 相同 network |
-| `CLAW_*_WORKER_REPORT_RESOLVE` | **默认 `host_publish`**：`podman run -p 0.0.0.0:{base+slot}:18765`；PG 存 `CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST` + 宿主机端口。可选 `container_ip` / `container_name`。 |
-| `CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST` | 网关拨号 host（compose 默认 `host.containers.internal`；宿主机网关用 `127.0.0.1`） |
-| `CLAW_*_WORKER_REPORT_PUBLISH_BASE` | 宿主机起始端口（默认 `29000`），slot *i* → `base + i` |
+| `CLAW_GATEWAY_INTERNAL_BASE_URL` / `CLAW_GATEWAY_INTERNAL_TOKEN` | 宿主机 **pool daemon** 将 worker stdout `report.delta` 转发到网关 `POST /v1/internal/turns/{turnId}/stdout-event`（`pool-daemon-up.sh` 默认 `http://127.0.0.1:${GATEWAY_HOST_PORT}`） |
 | `CLAW_WORKER_ENV_FILE` | 宿主机上仓库根 `.env` 路径（`pool-daemon-up.sh` 默认设为 `<repo>/.env`）。池 `podman/docker run` 只读挂载到容器内 `/run/claw/worker.env`；`claw gateway-solve-once` 启动时按 **`gateway-solve-turn/src/worker_env.rs`** 声明的 key 按需注入进程环境（**不再**生成 `deploy/stack/worker-openai.env`）。 |
 | `CLAW_DOCKER_EXTRA_ARGS` / `CLAW_PODMAN_EXTRA_ARGS` | 透传额外 `docker run` / `podman run` 参数（**空格分词**；改后须 **重启** daemon）。默认仅 `--add-host host.docker.internal:host-gateway`（见 `sync-worker-openai-env.sh`）。**勿**用 `--env-file` 拷贝子集 `.env`；LLM/MCP 变量走挂载 + `apply_worker_env`。**勿**在 compose `environment:` 写 `${VAR:-}` 覆盖 `env_file`。 |
 | `CLAW_DOCKER_POOL_ON_RELEASE` / `CLAW_PODMAN_POOL_ON_RELEASE` | 可选：槽位从 `leased` 正常归还为 `idle` 时，在容器内执行 `sh -lc` 的**整段脚本**；空则跳过（`force_kill` 不走此钩子） |

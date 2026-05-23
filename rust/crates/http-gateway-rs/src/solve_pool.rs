@@ -10,10 +10,12 @@ use tokio::fs;
 use tokio::time::{timeout, Duration as TokioDuration};
 use tracing::{info, warn};
 
-use crate::pool::{parse_gateway_solve_exec_stdout, PoolOps, PoolSessionHostMounts, SlotLease};
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
+use http_gateway_rs::pool::{
+    parse_gateway_solve_exec_stdout, PoolOps, PoolSessionHostMounts, SlotLease,
+};
 
-/// When the gateway uses [`PoolRpcClient`](crate::pool::PoolRpcClient) (TCP or Unix), session dirs
+/// When the gateway uses [`PoolRpcClient`](http_gateway_rs::pool::PoolRpcClient) (TCP or Unix), session dirs
 /// live under the container `CLAW_WORK_ROOT` but the host daemon must bind-mount the host path. Author: kejiqing
 pub(crate) fn session_mount_for_pool_acquire(
     session_home: &Path,
@@ -33,18 +35,6 @@ pub(crate) fn session_mount_for_pool_acquire(
 
 /// Fixed name inside the per-session bind mount (no `..`, not client-controlled).
 const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
-
-/// Request field overrides gateway env; async defaults to `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL`. Author: kejiqing
-fn effective_assistant_stream_spill(
-    req: &SolveRequest,
-    cfg: &crate::GatewayConfig,
-    is_async: bool,
-) -> bool {
-    if let Some(enabled) = req.assistant_stream_spill {
-        return enabled;
-    }
-    is_async && cfg.live_biz_report_spill_enabled
-}
 
 /// Path to `claw` inside worker images. Host `CLAW_BIN` may be a macOS absolute path unusable in `podman exec`. kejiqing
 const POOL_WORKER_CLAW_BIN: &str = "/usr/local/bin/claw";
@@ -131,8 +121,11 @@ pub async fn run_solve_request_docker(
 
     let task_path = session_home.join(GATEWAY_SOLVE_TASK_FILE);
 
-    let assistant_stream_spill =
-        effective_assistant_stream_spill(&req, &state.cfg, task_id.is_some());
+    let session_id = req
+        .session_id
+        .clone()
+        .or_else(|| task_id.clone())
+        .unwrap_or_else(|| request_id.clone());
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
@@ -142,7 +135,9 @@ pub async fn run_solve_request_docker(
         allowed_tools: Some(effective_allowed_tools),
         max_iterations: Some(state.cfg.default_max_iterations),
         turn_id: turn_id.clone(),
-        assistant_stream_spill: Some(assistant_stream_spill),
+        session_id: Some(session_id),
+        pool_id: None,
+        worker_name: None,
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(
@@ -274,6 +269,8 @@ pub async fn run_solve_request_docker(
         GATEWAY_SOLVE_TASK_FILE,
         claw_bin_for_pool_exec(&state.cfg),
         Some(request_id.as_str()),
+        &turn_id,
+        None,
     );
     let exec_result =
         if let Ok(outcome) = timeout(TokioDuration::from_secs(timeout_seconds), exec_fut).await {
@@ -457,10 +454,11 @@ mod session_path_tests {
             pool_rpc_tcp: Some("host.containers.internal:9943".into()),
             pool_rpc_unix_socket: None,
             pool_rpc_remote: true,
+            pool_http_base: "http://claw-pool-daemon:9944".into(),
+            co_located_pool_id: Some("pool-test".into()),
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
             default_max_iterations: 1,
-            live_biz_report_spill_enabled: false,
             default_http_mcp_name: None,
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),
@@ -489,10 +487,11 @@ mod session_path_tests {
             pool_rpc_tcp: None,
             pool_rpc_unix_socket: None,
             pool_rpc_remote: false,
+            pool_http_base: String::new(),
+            co_located_pool_id: None,
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
             default_max_iterations: 1,
-            live_biz_report_spill_enabled: false,
             default_http_mcp_name: None,
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),

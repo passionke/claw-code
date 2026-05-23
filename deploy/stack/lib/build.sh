@@ -106,8 +106,12 @@ else
   REG="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
   REG="${REG%/}"
 fi
-RUST_BASE_IMAGE="${REG}/library/rust:1.88-bookworm"
+# shellcheck source=/dev/null
+source "${ROOT_DIR}/deploy/stack/rust-version.env"
+export CLAW_RUST_VERSION CLAW_RUST_IMAGE_TAG
+RUST_BASE_IMAGE="${REG}/library/rust:${CLAW_RUST_IMAGE_TAG}"
 DEBIAN_BASE_IMAGE="${REG}/library/debian:bookworm-slim"
+echo "==> Rust locked: ${CLAW_RUST_VERSION} (image ${RUST_BASE_IMAGE})"
 
 cn_mirror_enabled() {
   [[ "${GITHUB_ACTIONS:-}" == "true" ]] && return 1
@@ -152,10 +156,11 @@ if use_prebuilt_linux_path; then
     "${ROOT_DIR}"
 
   if command -v cargo >/dev/null 2>&1; then
-    step "host claw-pool-daemon (macOS sidecar; optional if image binary used)"
-    (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon) || true
+    step "host claw-pool-daemon (macOS sidecar; must match linux-compile gateway)"
+    (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
     echo "Host binary (pool sidecar): ${ROOT_DIR}/rust/target/release/claw-pool-daemon"
   fi
+  "${ROOT_DIR}/deploy/stack/lib/claw-write-build-stamp.sh"
 else
   step "config: in-image cargo build (Containerfile.gateway-rs)"
   RUSTUP_BUILD_ARGS=()
@@ -204,6 +209,8 @@ else
     (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
   fi
 fi
+
+"${ROOT_DIR}/deploy/stack/lib/claw-write-build-stamp.sh"
 
 step "done"
 echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME} ${PLAYGROUND_IMAGE_NAME}"

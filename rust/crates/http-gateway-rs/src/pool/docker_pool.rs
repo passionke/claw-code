@@ -12,11 +12,49 @@ use uuid::Uuid;
 use gateway_solve_turn::WORKER_ENV_MOUNT_PATH;
 
 use super::config::DockerPoolConfig;
-use super::docker_cli::{runtime_exec, runtime_exec_with_live_stderr};
+use super::docker_cli::{runtime_exec, runtime_exec_with_live_streams};
 use super::traits::{PoolSessionHostMounts, SlotLease, TaskOutcome};
-use super::worker_report_endpoint::{resolve_worker_report_endpoint, WorkerReportResolve};
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
+
+/// Serial FIFO forwarder for one turn's stdout lines.
+///
+/// Each stdout line from `docker exec` arrives via the synchronous Fn callback below.
+/// We CANNOT `.await` inside that callback, so the prior implementation called
+/// `tokio::spawn(async { ... HTTP forward ... })` per line. That made N forwards
+/// race in parallel: under realistic streaming load the HTTP POSTs arrived at the
+/// gateway out of order, so SSE subscribers saw token sequence scrambled.
+///
+/// Fix: one mpsc channel + one consumer task per turn. The Fn just `send`s the line
+/// (lock-free, ordered); the single consumer drains in FIFO order and awaits each
+/// forward sequentially. Author: kejiqing
+#[must_use]
+#[allow(clippy::needless_pass_by_value)]
+pub fn merge_stdout_hooks(
+    turn_id: &str,
+    hub: Option<Arc<super::live_report_hub::LiveReportHub>>,
+    outer: Option<Arc<dyn Fn(String) + Send + Sync>>,
+) -> Option<Arc<dyn Fn(String) + Send + Sync>> {
+    let tid = turn_id.to_string();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let tid_for_worker = tid.clone();
+    let hub_for_worker = hub.clone();
+    let outer_for_worker = outer.clone();
+    tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            if let Some(ref o) = outer_for_worker {
+                o(line.clone());
+            }
+            if let Some(ref h) = hub_for_worker {
+                h.ingest_stdout_line(&tid_for_worker, &line);
+            }
+        }
+    });
+    let hook: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line: String| {
+        let _ = tx.send(line);
+    });
+    Some(hook)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlotState {
@@ -28,8 +66,6 @@ enum SlotState {
 #[derive(Debug, Clone)]
 struct Slot {
     container_name: String,
-    worker_report_host: String,
-    worker_report_port: u16,
     state: SlotState,
 }
 
@@ -56,11 +92,9 @@ pub struct DockerPoolManager {
     /// `docker exec --user` for solve only (see [`DockerPoolConfig::exec_user`]).
     exec_user: Option<String>,
     worker_env_host_file: Option<PathBuf>,
-    pool_network: Option<String>,
-    worker_report_resolve: WorkerReportResolve,
-    worker_report_container_port: u16,
-    worker_report_advertise_host: String,
-    worker_report_publish_base: Option<u16>,
+    live_report_hub: Option<Arc<super::live_report_hub::LiveReportHub>>,
+    pool_id: Option<String>,
+    session_db: Option<Arc<crate::session_db::GatewaySessionDb>>,
 }
 
 impl DockerPoolManager {
@@ -86,17 +120,30 @@ impl DockerPoolManager {
             on_release_exec: cfg.on_release_exec,
             exec_user: cfg.exec_user,
             worker_env_host_file: cfg.worker_env_host_file,
-            pool_network: cfg.pool_network,
-            worker_report_resolve: cfg.worker_report_resolve,
-            worker_report_container_port: cfg.worker_report_container_port,
-            worker_report_advertise_host: cfg.worker_report_advertise_host,
-            worker_report_publish_base: cfg.worker_report_publish_base,
+            live_report_hub: cfg.live_report_hub,
+            pool_id: cfg.pool_id,
+            session_db: cfg.session_db,
         }))
+    }
+
+    #[must_use]
+    pub fn live_report_hub(&self) -> Option<Arc<super::live_report_hub::LiveReportHub>> {
+        self.live_report_hub.clone()
+    }
+
+    #[must_use]
+    pub fn slot_capacity(&self) -> (usize, usize) {
+        (self.pool_size, self.min_idle)
     }
 
     /// Read `CLAW_DOCKER_POOL_*` or `CLAW_PODMAN_POOL_*` once at construction.
     #[allow(clippy::too_many_lines)]
-    pub fn try_from_env(podman: bool, work_root: &Path) -> Result<Arc<Self>, String> {
+    pub fn try_from_env(
+        podman: bool,
+        work_root: &Path,
+        live_report_hub: Option<Arc<super::live_report_hub::LiveReportHub>>,
+        registry: Option<(String, Arc<crate::session_db::GatewaySessionDb>)>,
+    ) -> Result<Arc<Self>, String> {
         let (default_bin, pfx) = if podman {
             ("podman", "CLAW_PODMAN_")
         } else {
@@ -135,24 +182,6 @@ impl DockerPoolManager {
             .as_ref()
             .map(|n| vec!["--network".to_string(), n.clone()])
             .unwrap_or_default();
-        let worker_report_resolve = WorkerReportResolve::from_env(pfx, pool_network.is_some());
-        let worker_report_container_port = std::env::var("CLAW_WORKER_REPORT_SSE_PORT")
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .filter(|p| *p > 0)
-            .unwrap_or(18765);
-        let worker_report_advertise_host = std::env::var("CLAW_POOL_WORKER_REPORT_ADVERTISE_HOST")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "host.containers.internal".to_string());
-        let worker_report_publish_base = std::env::var(format!("{pfx}WORKER_REPORT_PUBLISH_BASE"))
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .filter(|p| *p > 0)
-            .or(Some(
-                super::worker_report_endpoint::DEFAULT_WORKER_REPORT_PUBLISH_BASE,
-            ));
         let mut extra_run_args = std::env::var(format!("{pfx}EXTRA_ARGS"))
             .map(|s| s.split_whitespace().map(str::to_string).collect::<Vec<_>>())
             .unwrap_or_default();
@@ -196,11 +225,9 @@ impl DockerPoolManager {
             on_release_exec,
             exec_user,
             worker_env_host_file,
-            pool_network,
-            worker_report_resolve,
-            worker_report_container_port,
-            worker_report_advertise_host,
-            worker_report_publish_base,
+            live_report_hub,
+            pool_id: registry.as_ref().map(|(id, _)| id.clone()),
+            session_db: registry.map(|(_, db)| db),
         })
     }
 
@@ -210,62 +237,11 @@ impl DockerPoolManager {
         self.ensure_warm().await
     }
 
-    /// Gateway-reachable report SSE host for this slot. Author: kejiqing
-    pub async fn slot_worker_host(&self, slot_index: usize) -> Option<String> {
-        let slots = self.slots.lock().await;
-        slots.get(slot_index).map(|s| s.worker_report_host.clone())
-    }
-
-    pub async fn slot_worker_report_port(&self, slot_index: usize) -> Option<u16> {
-        let slots = self.slots.lock().await;
-        slots.get(slot_index).map(|s| s.worker_report_port)
-    }
-
-    async fn apply_worker_report_endpoint(&self, slot_index: usize, container_name: &str) {
-        let container_ip = if let Some(net) = self.pool_network.as_deref() {
-            super::docker_cli::runtime_inspect_container_ip(&self.bin, container_name, net).await
-        } else {
-            None
-        };
-        let (host, port) = resolve_worker_report_endpoint(
-            &self.bin,
-            self.worker_report_resolve,
-            self.pool_network.as_deref(),
-            container_name,
-            slot_index,
-            self.worker_report_container_port,
-            &self.worker_report_advertise_host,
-            self.worker_report_publish_base,
-        )
-        .await;
-        let mut slots = self.slots.lock().await;
-        if let Some(s) = slots.get_mut(slot_index) {
-            s.worker_report_host.clone_from(&host);
-            s.worker_report_port = port;
-        }
-        info!(
-            target: "claw_gateway_pool",
-            component = "docker_pool",
-            phase = "worker_report_endpoint",
-            slot_index,
-            container = %container_name,
-            container_ip = ?container_ip,
-            worker_report_host = %host,
-            worker_report_port = port,
-            resolve = ?self.worker_report_resolve,
-            "worker report endpoint resolved (gateways dial host:port; -p maps host port to in-container SSE)"
-        );
-    }
-
     fn lease_from_slot(slots: &[Slot], slot_index: usize) -> Result<SlotLease, String> {
-        let s = slots
+        let _ = slots
             .get(slot_index)
             .ok_or_else(|| format!("invalid slot index {slot_index}"))?;
-        Ok(SlotLease {
-            slot_index,
-            worker_host: s.worker_report_host.clone(),
-            worker_report_port: s.worker_report_port,
-        })
+        Ok(SlotLease { slot_index })
     }
 
     fn container_name(&self, idx: usize) -> String {
@@ -322,12 +298,9 @@ impl DockerPoolManager {
             let empty_mounts = PoolSessionHostMounts::default();
             self.run_worker_container(i, &name, &warm, &empty_mounts)
                 .await?;
-            self.apply_worker_report_endpoint(i, &name).await;
             slots = self.slots.lock().await;
             slots[i] = Slot {
                 container_name: name,
-                worker_report_host: slots[i].worker_report_host.clone(),
-                worker_report_port: slots[i].worker_report_port,
                 state: SlotState::Idle,
             };
         }
@@ -338,8 +311,6 @@ impl DockerPoolManager {
             let name = self.container_name(idx);
             slots.push(Slot {
                 container_name: name.clone(),
-                worker_report_host: String::new(),
-                worker_report_port: self.worker_report_container_port,
                 state: SlotState::Idle,
             });
             drop(slots);
@@ -348,7 +319,6 @@ impl DockerPoolManager {
             let empty_mounts = PoolSessionHostMounts::default();
             self.run_worker_container(idx, &name, &warm, &empty_mounts)
                 .await?;
-            self.apply_worker_report_endpoint(idx, &name).await;
             slots = self.slots.lock().await;
             idle += 1;
             total += 1;
@@ -371,7 +341,7 @@ impl DockerPoolManager {
     #[allow(clippy::too_many_lines)] // podman run argv + bind mounts. Author: kejiqing
     async fn run_worker_container(
         &self,
-        slot_index: usize,
+        _slot_index: usize,
         name: &str,
         session_host_bind: &Path,
         host_mounts: &PoolSessionHostMounts,
@@ -429,19 +399,6 @@ impl DockerPoolManager {
         ];
         args.extend(self.network_args.iter().cloned());
         args.extend(self.extra_run_args.iter().cloned());
-        if self.worker_report_resolve == WorkerReportResolve::HostPublish {
-            let base = self
-                .worker_report_publish_base
-                .unwrap_or(super::worker_report_endpoint::DEFAULT_WORKER_REPORT_PUBLISH_BASE);
-            if let Some(mapping) = super::worker_report_endpoint::host_publish_port_mapping(
-                base,
-                slot_index,
-                self.worker_report_container_port,
-            ) {
-                args.push("-p".into());
-                args.push(mapping);
-            }
-        }
         args.push("-v".into());
         args.push(format!("{}:{}:rw", session_abs.display(), GUEST_WORK_ROOT));
         if let Some(ref sk) = skills_abs {
@@ -576,7 +533,6 @@ impl DockerPoolManager {
                         sleep(Duration::from_millis(200)).await;
                         continue;
                     }
-                    self.apply_worker_report_endpoint(i, &cname).await;
                     info!(
                         target: "claw_gateway_pool",
                         component = "docker_pool",
@@ -596,8 +552,6 @@ impl DockerPoolManager {
                     // Reserve slot index before `run` so concurrent acquires cannot claim the same idx.
                     slots.push(Slot {
                         container_name: name.clone(),
-                        worker_report_host: String::new(),
-                        worker_report_port: self.worker_report_container_port,
                         state: SlotState::Leased,
                     });
                     drop(slots);
@@ -606,7 +560,6 @@ impl DockerPoolManager {
                         .await
                     {
                         Ok(()) => {
-                            self.apply_worker_report_endpoint(idx, &name).await;
                             info!(
                                 target: "claw_gateway_pool",
                                 component = "docker_pool",
@@ -650,12 +603,15 @@ impl DockerPoolManager {
 
     /// `task_rel_under_root` is a path relative to the session bind root (e.g.
     /// `gateway-solve-task.json`), not under other `ds_*` trees.
+    #[allow(clippy::too_many_lines)]
     pub async fn exec_solve(
         &self,
         slot: &SlotLease,
         task_rel_under_root: &str,
         claw_bin: &str,
         request_id: Option<&str>,
+        turn_id: &str,
+        on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
         let name = {
             let slots = self.slots.lock().await;
@@ -692,6 +648,41 @@ impl DockerPoolManager {
                 ]);
             }
         }
+        if let Some(ref pool_id) = self.pool_id {
+            if let Some(ref db) = self.session_db {
+                match db
+                    .assign_turn_pool_worker(turn_id, pool_id, &container_log)
+                    .await
+                {
+                    Ok(()) => info!(
+                        target: "claw_gateway_pool",
+                        component = "docker_pool",
+                        phase = "assign_turn_pool_worker_ok",
+                        turn_id = %turn_id,
+                        pool_id = %pool_id,
+                        worker_name = %container_log,
+                        "gateway_turns pool_id/worker_name written for live routing"
+                    ),
+                    Err(e) => warn!(
+                        target: "claw_gateway_pool",
+                        component = "docker_pool",
+                        phase = "assign_turn_pool_worker_failed",
+                        turn_id = %turn_id,
+                        pool_id = %pool_id,
+                        error = %e,
+                        "gateway_turns pool_id/worker_name update failed"
+                    ),
+                }
+            }
+            argv.extend(["-e".into(), format!("CLAW_POOL_ID={pool_id}")]);
+        }
+        argv.extend(["-e".into(), format!("CLAW_TURN_ID={turn_id}")]);
+        argv.extend(["-e".into(), format!("CLAW_WORKER_NAME={container_log}")]);
+        if let Some(ref db) = self.session_db {
+            if let Ok(Some(session_id)) = db.get_session_id_for_turn(turn_id).await {
+                argv.extend(["-e".into(), format!("CLAW_SESSION_ID={session_id}")]);
+            }
+        }
         argv.extend([
             "--workdir".into(),
             workdir,
@@ -702,7 +693,8 @@ impl DockerPoolManager {
             task_path,
         ]);
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let out = runtime_exec_with_live_stderr(&self.bin, &argv_refs, request_id)
+        let stdout_hook = merge_stdout_hooks(turn_id, self.live_report_hub.clone(), on_stdout_line);
+        let out = runtime_exec_with_live_streams(&self.bin, &argv_refs, request_id, stdout_hook)
             .await
             .map_err(|e| format!("{} exec: {e}", self.bin))?;
         let exit_code = out.status.code().unwrap_or(-1);
@@ -829,7 +821,6 @@ mod exec_solve_argv_prefix_tests {
 
     use super::DockerPoolManager;
     use crate::pool::config::DockerPoolConfig;
-    use crate::pool::worker_report_endpoint::WorkerReportResolve;
 
     fn pool(exec_user: Option<&str>) -> Arc<DockerPoolManager> {
         let base =
@@ -847,11 +838,9 @@ mod exec_solve_argv_prefix_tests {
             on_release_exec: None,
             exec_user: exec_user.map(str::to_string),
             worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::ContainerName,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .expect("from_config")
     }
@@ -889,7 +878,6 @@ mod docker_pool_integration_tests {
     use super::DockerPoolManager;
     use crate::pool::config::DockerPoolConfig;
     use crate::pool::traits::PoolSessionHostMounts;
-    use crate::pool::worker_report_endpoint::WorkerReportResolve;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -973,11 +961,9 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::ContainerName,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -990,7 +976,14 @@ esac
             .await
             .unwrap();
         let out = pool
-            .exec_solve(&lease, "gateway-solve-task.json", "claw", None)
+            .exec_solve(
+                &lease,
+                "gateway-solve-task.json",
+                "claw",
+                None,
+                "turn-test",
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(out.exit_code, 0);
@@ -1024,11 +1017,9 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::ContainerName,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1074,11 +1065,9 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::ContainerName,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let p1 = Arc::clone(&pool);
@@ -1114,11 +1103,9 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::ContainerName,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1134,7 +1121,14 @@ esac
             .await
             .unwrap();
         let err = pool
-            .exec_solve(&lease, "gateway-solve-task.json", "claw", None)
+            .exec_solve(
+                &lease,
+                "gateway-solve-task.json",
+                "claw",
+                None,
+                "turn-test",
+                None,
+            )
             .await
             .expect_err("exec on released lease must fail");
         assert!(err.contains("invalid or released"), "unexpected err: {err}");
@@ -1155,11 +1149,9 @@ esac
             on_release_exec: None,
             exec_user: None,
             worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::ContainerName,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1193,11 +1185,9 @@ esac
             on_release_exec: Some("echo pool_on_release".into()),
             exec_user: None,
             worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::ContainerName,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1209,9 +1199,16 @@ esac
             )
             .await
             .unwrap();
-        pool.exec_solve(&lease, "gateway-solve-task.json", "claw", None)
-            .await
-            .unwrap();
+        pool.exec_solve(
+            &lease,
+            "gateway-solve-task.json",
+            "claw",
+            None,
+            "turn-test",
+            None,
+        )
+        .await
+        .unwrap();
         DockerPoolManager::release_slot(&pool, lease).await.unwrap();
         let log = read_log(&state_dir);
         let exec_lines: Vec<&str> = log.lines().filter(|l| l.starts_with("exec:")).collect();
@@ -1241,11 +1238,9 @@ esac
             on_release_exec: None,
             exec_user: Some("claw".into()),
             worker_env_host_file: None,
-            pool_network: None,
-            worker_report_resolve: WorkerReportResolve::ContainerName,
-            worker_report_container_port: 18765,
-            worker_report_advertise_host: "127.0.0.1".into(),
-            worker_report_publish_base: None,
+            live_report_hub: None,
+            pool_id: None,
+            session_db: None,
         })
         .unwrap();
         let bind = session_bind(&work);
@@ -1257,9 +1252,16 @@ esac
             )
             .await
             .unwrap();
-        pool.exec_solve(&lease, "gateway-solve-task.json", "claw", None)
-            .await
-            .unwrap();
+        pool.exec_solve(
+            &lease,
+            "gateway-solve-task.json",
+            "claw",
+            None,
+            "turn-test",
+            None,
+        )
+        .await
+        .unwrap();
         let log = read_log(&state_dir);
         assert!(
             log.contains("--user") && log.contains("claw"),

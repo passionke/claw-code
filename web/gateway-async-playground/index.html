@@ -618,12 +618,11 @@
         biz_type: "BOSS_REPORT",
       };
       if (storeId) extra.store_id = storeId;
-      if (orgRaw.length > 0) extra.org_id = orgRaw;
+      extra.org_id = orgRaw;
 
       const payload = {
         dsId: dsId(),
         userPrompt: userText,
-        assistantStreamSpill: true,
         extraSession: extra,
       };
       if (state.sessionId) payload.sessionId = state.sessionId;

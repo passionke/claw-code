@@ -1,5 +1,6 @@
 # Full in-image compile (CI / Linux hosts). Local macOS: use linux-compile.sh + Containerfile.gateway-rs.prebuilt.
 # Author: kejiqing
+ARG RUST_VERSION=1.88.0
 ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
 ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
 
@@ -15,6 +16,7 @@ ARG CLAW_USE_CN_CRATES_MIRROR=0
 WORKDIR /build
 COPY rust/Cargo.toml /build/Cargo.toml
 COPY rust/Cargo.lock /build/Cargo.lock
+COPY rust/rust-toolchain.toml /build/rust-toolchain.toml
 COPY rust/crates/ /build/crates/
 COPY rust/.cargo/config.toml.example /tmp/cargo-mirror.toml
 RUN if [ "${CLAW_USE_CN_CRATES_MIRROR}" = "1" ]; then \
@@ -23,7 +25,8 @@ RUN if [ "${CLAW_USE_CN_CRATES_MIRROR}" = "1" ]; then \
     else \
       echo "cargo: crates.io index"; \
     fi
-RUN echo "rustc: $(rustc --version)" && \
+RUN rustc --version | grep -q "${RUST_VERSION}" && \
+    echo "rustc: $(rustc --version)" && \
     cargo build -p rusty-claude-cli --bin claw --release && \
     cargo build -p http-gateway-rs --release && \
     cargo build -p http-gateway-rs --bin claw-pool-daemon --release

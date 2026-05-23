@@ -1,6 +1,14 @@
-//! Host-side pool daemon: line-delimited JSON RPC over TCP (default) or Unix socket. Author: kejiqing
+//! Host-side pool daemon: line-delimited JSON RPC + HTTP live report SSE. Author: kejiqing
 
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use http_gateway_rs::pool::{
+    serve_pool_http, serve_pool_rpc, serve_pool_rpc_tcp, DockerPoolManager, LiveReportHub,
+};
+use http_gateway_rs::pool_registry;
+use http_gateway_rs::session_db::GatewaySessionDb;
+use tracing::warn;
 
 #[tokio::main]
 async fn main() {
@@ -29,15 +37,78 @@ async fn main() {
     };
 
     let pool_binding_root = pool_host_bind_root(&work_root);
+    let hub = Arc::new(LiveReportHub::default());
+
+    let pool_id = pool_registry::resolve_pool_id();
+    let registry_db = match GatewaySessionDb::open().await {
+        Ok(db) => Some(Arc::new(db)),
+        Err(e) => {
+            warn!(
+                target: "claw_gateway_pool",
+                component = "pool_daemon_main",
+                error = %e,
+                "CLAW_GATEWAY_DATABASE_URL missing or invalid; claw_pool registry disabled"
+            );
+            None
+        }
+    };
+    let registry = registry_db
+        .as_ref()
+        .map(|db| (pool_id.clone(), Arc::clone(db)));
+
     let pool =
-        match http_gateway_rs::pool::DockerPoolManager::try_from_env(podman, &pool_binding_root) {
+        match DockerPoolManager::try_from_env(podman, &pool_binding_root, Some(hub), registry) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("claw-pool-daemon: {e}");
                 std::process::exit(1);
             }
         };
-    http_gateway_rs::pool::DockerPoolManager::schedule_warm(&pool);
+    DockerPoolManager::schedule_warm(&pool);
+    http_gateway_rs::live_report_audit::log_live_report_startup(
+        "claw-pool-daemon",
+        "pool_local_hub",
+    );
+
+    let http_bind = std::env::var("CLAW_POOL_HTTP_BIND")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "0.0.0.0:9944".to_string());
+    let sse_port = pool_registry::port_from_bind(&http_bind);
+    let advertise_ip = pool_registry::resolve_advertise_host();
+
+    if let Some(db) = registry_db {
+        let (slots_max, slots_min) = pool.slot_capacity();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(pool_registry::run_pool_registry(
+            db,
+            pool_id.clone(),
+            advertise_ip.clone(),
+            sse_port,
+            slots_max,
+            slots_min,
+            shutdown_rx,
+        ));
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                let _ = shutdown_tx.send(true);
+            }
+        });
+    }
+
+    let pool_http = Arc::clone(&pool);
+    let http_bind_spawn = http_bind.clone();
+    tokio::spawn(async move {
+        if let Err(e) = serve_pool_http(&http_bind_spawn, pool_http).await {
+            tracing::error!(
+                target: "claw_gateway_pool",
+                component = "pool_daemon_main",
+                error = %e,
+                "claw-pool-daemon http server exited"
+            );
+        }
+    });
 
     let tcp_bind = std::env::var("CLAW_POOL_DAEMON_TCP_BIND")
         .ok()
@@ -49,13 +120,17 @@ async fn main() {
             target: "claw_gateway_pool",
             component = "pool_daemon_main",
             phase = "start",
+            pool_id = %pool_id,
             tcp_bind = %addr,
+            http_bind = %http_bind,
+            advertise_ip = %advertise_ip,
+            sse_port,
             work_root = %work_root.display(),
             pool_bind_root = %pool_binding_root.display(),
             podman,
-            "claw-pool-daemon (tcp)"
+            "claw-pool-daemon (tcp + http)"
         );
-        if let Err(e) = http_gateway_rs::pool::serve_pool_rpc_tcp(addr, pool).await {
+        if let Err(e) = serve_pool_rpc_tcp(addr, pool).await {
             eprintln!("claw-pool-daemon: {e}");
             std::process::exit(1);
         }
@@ -69,13 +144,17 @@ async fn main() {
         target: "claw_gateway_pool",
         component = "pool_daemon_main",
         phase = "start",
+        pool_id = %pool_id,
         listen = %path.display(),
+        http_bind = %http_bind,
+        advertise_ip = %advertise_ip,
+        sse_port,
         work_root = %work_root.display(),
         pool_bind_root = %pool_binding_root.display(),
         podman,
-        "claw-pool-daemon (unix)"
+        "claw-pool-daemon (unix + http)"
     );
-    if let Err(e) = http_gateway_rs::pool::serve_pool_rpc(&path, pool).await {
+    if let Err(e) = serve_pool_rpc(&path, pool).await {
         eprintln!("claw-pool-daemon: {e}");
         std::process::exit(1);
     }

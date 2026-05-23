@@ -30,22 +30,22 @@ use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use biz_advice_report::{
-    biz_report_sse_event_stream, build_biz_advice_polish_prompt,
-    load_boss_report_writer_instructions, report_body_from_solve_output, sanitize_biz_report_parts,
-    sanitize_external_report_text, sanitize_report_payload, BizAdviceReportPayload,
-    BizReportStreamMsg, ReportExportSanitizer,
-};
 use gateway_solve_turn::read_progress_events;
-use gateway_solve_turn::spill_contains_report_start_marker;
 use gateway_solve_turn::{
     read_task_progress, reset_task_progress, run_gateway_biz_polish_llm,
     run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
     BOSS_REPORT_SKILL_DS_ID,
 };
+use http_gateway_rs::biz_advice_report::{
+    biz_report_sse_event_stream, build_biz_advice_polish_prompt, db_snapshot_report_sse_response,
+    load_boss_report_writer_instructions, report_body_from_solve_output, sanitize_biz_report_parts,
+    sanitize_external_report_text, sanitize_report_payload, BizAdviceReportPayload,
+    BizReportStreamMsg, ReportExportSanitizer,
+};
 use http_gateway_rs::{
-    gateway_global_settings, project_config_apply, project_config_version, project_entity_revision,
-    project_git_sync, project_tools, session_db, session_merge, turn_id, turn_tools_api,
+    gateway_global_settings, pool, project_config_apply, project_config_version,
+    project_entity_revision, project_git_sync, project_tools, session_db, session_merge, turn_id,
+    turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
@@ -72,9 +72,7 @@ use tracing::field::Empty;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-mod biz_advice_report;
 mod gateway_logging;
-mod pool;
 mod session_execution;
 mod solve_pool;
 mod task_status;
@@ -174,11 +172,13 @@ pub(crate) struct GatewayConfig {
     pool_rpc_unix_socket: Option<String>,
     /// True when pool RPC goes to out-of-process daemon (TCP or Unix).
     pool_rpc_remote: bool,
+    /// Base URL for pool live report HTTP (e.g. `http://claw-pool-daemon:9944`).
+    pool_http_base: String,
+    /// Same-machine pool id (`CLAW_POOL_ID` / hostname); written on turn enqueue for live SSE JOIN.
+    co_located_pool_id: Option<String>,
     ds_registry_path: PathBuf,
     default_timeout_seconds: u64,
     default_max_iterations: usize,
-    /// `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`: solve 写 spill 文件；`hasReport` 见 spill 标记。默认关。
-    live_biz_report_spill_enabled: bool,
     default_http_mcp_name: Option<String>,
     default_http_mcp_url: Option<String>,
     default_http_mcp_transport: String,
@@ -212,9 +212,6 @@ struct SolveRequest {
     extra_session: Option<Value>,
     #[serde(rename = "allowedTools")]
     allowed_tools: Option<Vec<String>>,
-    /// Per-request override for spill file (`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL` is the gateway default when omitted).
-    #[serde(rename = "assistantStreamSpill", default)]
-    assistant_stream_spill: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -621,10 +618,10 @@ struct TaskRecord {
         skip_serializing_if = "Vec::is_empty"
     )]
     progress_history: Vec<gateway_solve_turn::ProgressEvent>,
-    /// `true` when succeeded, or `running` with PG live chunks.
+    /// `true` when `running` or `succeeded` (Admin opens live SSE; does not imply deltas yet). Author: kejiqing
     #[serde(rename = "hasReport")]
     has_report: bool,
-    /// First report material time (ms): `MIN(live_chunks.created_at_ms)` or `finishedAtMs` when succeeded without chunks.
+    /// First report material time (ms): stdout hub first delta, else `startedAtMs` / `finishedAtMs`.
     #[serde(rename = "reportTime", skip_serializing_if = "Option::is_none")]
     report_time_ms: Option<i64>,
 }
@@ -865,12 +862,35 @@ async fn register_solve_turn(
     session_id: &str,
     ds_id: i64,
     user_prompt: &str,
+    co_located_pool_id: Option<&str>,
 ) -> Result<(), ApiError> {
     let prompt = user_prompt.trim();
     let user_prompt = (!prompt.is_empty()).then_some(prompt);
     db.insert_turn(turn_id, session_id, ds_id, "queued", now_ms(), user_prompt)
         .await
-        .map_err(|e| session_db_err(&e))
+        .map_err(|e| session_db_err(&e))?;
+    if let Some(pool_id) = co_located_pool_id.map(str::trim).filter(|s| !s.is_empty()) {
+        match db.assign_turn_pool_id(turn_id, pool_id).await {
+            Ok(()) => info!(
+                target: "claw_live_report",
+                component = "gateway_turns",
+                phase = "prebind_pool_id",
+                turn_id = %turn_id,
+                pool_id = %pool_id,
+                "gateway_turns pool_id prebound at enqueue for live SSE routing"
+            ),
+            Err(e) => warn!(
+                target: "claw_live_report",
+                component = "gateway_turns",
+                phase = "prebind_pool_id_failed",
+                turn_id = %turn_id,
+                pool_id = %pool_id,
+                error = %e,
+                "gateway_turns pool_id prebind failed"
+            ),
+        }
+    }
+    Ok(())
 }
 
 async fn set_solve_turn_status(
@@ -1075,6 +1095,24 @@ async fn main() {
     let pool_rpc_tcp_cfg = pool_daemon_tcp.clone();
     let pool_rpc_unix_cfg = pool_daemon_socket.clone();
 
+    let pool_rpc_remote = pool_daemon_tcp.is_some() || pool_daemon_socket.is_some();
+    let co_located_pool_id = pool_rpc_remote.then(http_gateway_rs::pool_registry::resolve_pool_id);
+    let pool_http_base = std::env::var("CLAW_POOL_HTTP_BASE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_default();
+    tracing::info!(
+        target: "claw_live_report",
+        component = "gateway_startup",
+        contract = http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT,
+        pool_rpc_remote,
+        pool_http_base = %pool_http_base,
+        co_located_pool_id = ?co_located_pool_id,
+        "live_report.gateway — terminal snapshot from DB; live stream proxies via claw_pool JOIN only (no CLAW_POOL_HTTP_BASE fallback)"
+    );
+
+    // Pool RPC: single co-located daemon only (no DB pool_id routing). Author: kejiqing
     let docker_pool: Arc<dyn pool::PoolOps + Send + Sync> = if let Some(ref tcp_addr) =
         pool_daemon_tcp
     {
@@ -1100,15 +1138,10 @@ async fn main() {
         let client = pool::PoolRpcClient::new(PathBuf::from(sock_path));
         Arc::new(client)
     } else {
-        let podman = matches!(solve_isolation, SolveIsolation::PodmanPool);
-        let p =
-            pool::DockerPoolManager::try_from_env(podman, &pool_binding_root).unwrap_or_else(|e| {
-                let runtime = if podman { "Podman" } else { "Docker" };
-                eprintln!("http-gateway-rs: invalid {runtime} pool configuration: {e}");
-                std::process::exit(1);
-            });
-        pool::DockerPoolManager::schedule_warm(&p);
-        Arc::new(pool::LocalPoolOps(p))
+        eprintln!(
+            "http-gateway-rs: CLAW_POOL_DAEMON_TCP or CLAW_POOL_DAEMON_SOCKET is required (live report uses claw-pool-daemon)"
+        );
+        std::process::exit(1);
     };
 
     let projects_git_url = std::env::var("CLAW_PROJECTS_GIT_URL")
@@ -1191,7 +1224,9 @@ async fn main() {
         pool_rpc_host_work_root,
         pool_rpc_tcp: pool_rpc_tcp_cfg,
         pool_rpc_unix_socket: pool_rpc_unix_cfg,
-        pool_rpc_remote: pool_daemon_tcp.is_some() || pool_daemon_socket.is_some(),
+        pool_rpc_remote,
+        pool_http_base,
+        co_located_pool_id,
         ds_registry_path: std::env::var("CLAW_DS_REGISTRY").map_or_else(
             |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("datasources.example.yaml"),
             PathBuf::from,
@@ -1205,7 +1240,6 @@ async fn main() {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(64),
-        live_biz_report_spill_enabled: gateway_env_enabled("CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL"),
         default_http_mcp_name: std::env::var("CLAW_DEFAULT_HTTP_MCP_NAME")
             .ok()
             .map(|v| v.trim().to_string())
@@ -1488,7 +1522,7 @@ async fn docs() -> Html<String> {
         (
             "GET",
             "/v1/biz_advice_report?sessionId=…&turnId=…&dsId=…",
-            "Report: default LLM polish (biz_advice_report_bak); live spill when CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1",
+            "Report: live stdout SSE while running; LLM polish after succeeded (biz_advice_report_bak)",
         ),
         (
             "GET",
@@ -1780,7 +1814,7 @@ async fn openapi() -> Json<Value> {
                         "progressUpdatedAtMs": { "type": "integer", "format": "int64", "nullable": true },
                         "hasReport": {
                             "type": "boolean",
-                            "description": "True when status is succeeded, or while running once spill/result contains __CLAW_REPORT_START__"
+                            "description": "True when status is running or succeeded (stable contract for live report SSE / BFF)"
                         },
                         "turnId": { "type": "string" },
                         "progressHistory": {
@@ -1903,12 +1937,12 @@ async fn openapi() -> Json<Value> {
             },
             "/v1/biz_advice_report": {
                 "get": {
-                    "summary": "Business report: default LLM polish; live spill tail when CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1",
+                    "summary": "Business report: live stdout SSE while running; LLM polish after succeeded",
                     "parameters": [
                         { "name": "sessionId", "in": "query", "required": true, "schema": { "type": "string" } },
                         { "name": "turnId", "in": "query", "required": true, "schema": { "type": "string" } },
                         { "name": "dsId", "in": "query", "required": true, "schema": { "type": "integer", "format": "int64" } },
-                        { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": true }, "description": "When true (default): spill SSE if spill file exists, else biz.report.* LLM polish stream from solve output" }
+                        { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": true }, "description": "When true (default): live stdout SSE while running/queued; else biz.report.* LLM polish from solve output" }
                     ],
                     "responses": {
                         "200": { "description": "Report JSON or SSE", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
@@ -3453,7 +3487,14 @@ async fn healthz(State(state): State<AppState>, headers: HeaderMap) -> Json<Valu
         "projectsGitMirror": ds_workspaces,
         "reportPolishUsesDeepseek": state.cfg.report_polish_deepseek.is_some(),
         "reportDeepseekModel": state.cfg.report_polish_deepseek.as_ref().map(|d| d.model.clone()),
-        "liveBizReportSpillEnabled": state.cfg.live_biz_report_spill_enabled,
+        "liveReport": {
+            "contract": http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT,
+            "producer": "worker:claw gateway-solve-once stdout __CLAW_GATEWAY_STDOUT__ report.delta",
+            "ingest": "pool-local (claw-pool-daemon LiveReportHub)",
+            "terminalSnapshot": "gateway-db (GET biz_advice_report stream when succeeded)",
+            "live": "gateway-proxy → pool HTTP /v1/biz_advice_report/live",
+            "poolHttpBase": state.cfg.pool_http_base,
+        },
         "claudeTap": http_gateway_rs::claude_tap_health::claude_tap_health_json(request_host),
     }))
 }
@@ -3482,6 +3523,7 @@ async fn solve(
         &effective,
         req.ds_id,
         &req.user_prompt,
+        state.cfg.co_located_pool_id.as_deref(),
     )
     .await?;
     let result = run_solve_request(
@@ -5384,6 +5426,7 @@ async fn enqueue_solve_async(
         &effective,
         ds_id,
         &req.user_prompt,
+        state.cfg.co_located_pool_id.as_deref(),
     )
     .await?;
     if let Some(rel) = state
@@ -5774,32 +5817,17 @@ async fn get_task(
     Ok(Json(task))
 }
 
-async fn task_has_report(state: &AppState, task: &TaskRecord) -> bool {
-    if task.status == "succeeded" {
-        return true;
-    }
-    if let Some(home) = resolve_session_home_path(state, task.ds_id, &task.session_id).await {
-        return spill_contains_report_start_marker(&home, &task.turn_id);
-    }
-    false
+/// `hasReport`: true while `running` (Admin opens live report SSE) or `succeeded`. Author: kejiqing
+async fn task_has_report(_state: &AppState, task: &TaskRecord) -> bool {
+    matches!(task.status.as_str(), "running" | "succeeded")
 }
 
-/// When [`task_has_report`] is true: spill file mtime if present, else `finishedAtMs`. Author: kejiqing
-async fn task_report_time_ms(state: &AppState, task: &TaskRecord) -> Option<i64> {
-    if !task_has_report(state, task).await {
+/// When [`task_has_report`] is true: `startedAtMs` / `finishedAtMs`. Author: kejiqing
+async fn task_report_time_ms(_state: &AppState, task: &TaskRecord) -> Option<i64> {
+    if !task_has_report(_state, task).await {
         return None;
     }
-    if let Some(home) = resolve_session_home_path(state, task.ds_id, &task.session_id).await {
-        let path = gateway_solve_turn::assistant_stream_spill_path(&home, &task.turn_id);
-        if let Ok(meta) = tokio::fs::metadata(&path).await {
-            if let Ok(modified) = meta.modified() {
-                if let Ok(dur) = modified.duration_since(UNIX_EPOCH) {
-                    return Some(i64::try_from(dur.as_millis()).unwrap_or(i64::MAX));
-                }
-            }
-        }
-    }
-    task.finished_at_ms
+    task.started_at_ms.or(task.finished_at_ms)
 }
 
 fn task_status_is_terminal_for_cancel(status: &str) -> bool {
@@ -6020,41 +6048,184 @@ async fn dev_seed_biz_report_task(
     })))
 }
 
-/// Resolve in-memory `solve_async` task id for legacy `sessionId`+`turnId` query. Author: kejiqing
-async fn resolve_biz_report_task_id(
+/// DB-authoritative turn context for `GET /v1/biz_advice_report` (not in-memory tasks). Author: kejiqing
+struct BizReportDbCtx {
+    task_id: String,
+    turn_id: String,
+    status: String,
+}
+
+async fn resolve_biz_report_from_db(
+    state: &AppState,
+    query: &BizAdviceReportQuery,
+) -> Result<BizReportDbCtx, ApiError> {
+    let belongs = state
+        .session_db
+        .turn_belongs_to_session(&query.turn_id, &query.session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if !belongs {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!(
+                "no turn for sessionId={} turnId={} dsId={}",
+                query.session_id, query.turn_id, query.ds_id
+            ),
+        ));
+    }
+    let status = state
+        .session_db
+        .get_turn_status(&query.turn_id, &query.session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!(
+                    "no turn row for sessionId={} turnId={}",
+                    query.session_id, query.turn_id
+                ),
+            )
+        })?;
+    Ok(BizReportDbCtx {
+        task_id: query.session_id.clone(),
+        turn_id: query.turn_id.clone(),
+        status,
+    })
+}
+
+async fn load_turn_report_body_from_db(
     state: &AppState,
     query: &BizAdviceReportQuery,
 ) -> Result<String, ApiError> {
-    let tasks = state.tasks.lock().await;
-    for (id, inner) in tasks.iter() {
-        let r = &inner.record;
-        if r.turn_id == query.turn_id && r.session_id == query.session_id && r.ds_id == query.ds_id
-        {
-            return Ok(id.clone());
+    if let Some(msg) = state
+        .session_db
+        .get_turn_report_message(&query.turn_id, &query.session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        if !msg.trim().is_empty() {
+            return Ok(msg);
         }
     }
-    if tasks.contains_key(&query.session_id) {
-        return Ok(query.session_id.clone());
-    }
-    Err(ApiError::new(
-        StatusCode::NOT_FOUND,
-        format!(
-            "no async task for sessionId={} turnId={}; use GET /v1/biz_advice_report_bak?task_id=<solve task id>",
-            query.session_id, query.turn_id
-        ),
-    ))
+    let output_json = state
+        .session_db
+        .get_turn_output_json(&query.turn_id, &query.session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    report_body_from_solve_output("", output_json.as_ref()).map_err(|e| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!(
+                "turn {} has no persisted report message: {e}",
+                query.turn_id
+            ),
+        )
+    })
 }
 
-/// Same as [`get_biz_advice_report_bak`] (LLM polish only; no worker/PG live SSE). Author: kejiqing
+/// Live report: DB snapshot when succeeded; pool SSE proxy when running. Author: kejiqing
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
 ) -> Result<Response, ApiError> {
-    let task_id = resolve_biz_report_task_id(&state, &query).await?;
+    let ctx = resolve_biz_report_from_db(&state, &query).await?;
+
+    if query.stream {
+        if ctx.status == "succeeded" {
+            tracing::info!(
+                target: "claw_live_report",
+                component = "biz_advice_report",
+                phase = "route",
+                route = "db_snapshot_sse",
+                turn_id = %ctx.turn_id,
+                session_id = %query.session_id,
+                ds_id = query.ds_id,
+                status = %ctx.status,
+                "biz_advice_report stream — terminal snapshot from gateway_turns (no pool HTTP)"
+            );
+            let body = load_turn_report_body_from_db(&state, &query).await?;
+            let payload = BizAdviceReportPayload {
+                task_id: ctx.task_id.clone(),
+                source_request_id: ctx.task_id.clone(),
+                source_ds_id: query.ds_id,
+                source_status: "succeeded".into(),
+                report_text: Some(body.clone()),
+                report_json: Some(json!({ "message": body })),
+            };
+            return Ok(db_snapshot_report_sse_response(
+                &ctx.task_id,
+                payload,
+                &body,
+            ));
+        }
+        if matches!(ctx.status.as_str(), "running" | "queued") {
+            let pool_http_from_db = state
+                .session_db
+                .resolve_pool_http_base_for_turn(&ctx.turn_id, &query.session_id, query.ds_id)
+                .await
+                .map_err(|e| session_db_err(&e))?;
+            let Some(pool_http_base) = pool_http_from_db.filter(|b| !b.trim().is_empty()) else {
+                let pool_id = state
+                    .session_db
+                    .get_turn_pool_id(&ctx.turn_id, &query.session_id, query.ds_id)
+                    .await
+                    .map_err(|e| session_db_err(&e))?;
+                let detail = match pool_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    None => format!(
+                        "live report routing failed: gateway_turns.pool_id unset for turn {} (status={}). \
+                         Gateway must prebind CLAW_POOL_ID at solve enqueue; run pack-deploy and retry.",
+                        ctx.turn_id, ctx.status
+                    ),
+                    Some(pid) => format!(
+                        "live report routing failed: claw_pool has no row for pool_id={pid} (turn {}, status={}). \
+                         Start pool daemon with PG registry or run gateway.sh verify.",
+                        ctx.turn_id, ctx.status
+                    ),
+                };
+                tracing::error!(
+                    target: "claw_live_report",
+                    component = "biz_advice_report",
+                    phase = "route",
+                    route = "pool_proxy_sse_denied",
+                    turn_id = %ctx.turn_id,
+                    session_id = %query.session_id,
+                    ds_id = query.ds_id,
+                    status = %ctx.status,
+                    pool_id = ?pool_id,
+                    co_located_pool_id = ?state.cfg.co_located_pool_id,
+                    "biz_advice_report stream — refused (CLAW_POOL_HTTP_BASE env fallback disabled)"
+                );
+                return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, detail));
+            };
+            tracing::info!(
+                target: "claw_live_report",
+                component = "biz_advice_report",
+                phase = "route",
+                route = "pool_proxy_sse",
+                pool_http_source = "claw_pool_join",
+                turn_id = %ctx.turn_id,
+                session_id = %query.session_id,
+                ds_id = query.ds_id,
+                status = %ctx.status,
+                pool_http_base = %pool_http_base,
+                "biz_advice_report stream — proxy to pool HTTP /v1/biz_advice_report/live"
+            );
+            return http_gateway_rs::biz_report_pool_proxy::proxy_pool_live_report_sse(
+                &pool_http_base,
+                &ctx.turn_id,
+                &ctx.task_id,
+                query.ds_id,
+            )
+            .await
+            .map_err(|(status, detail)| ApiError::new(status, detail));
+        }
+    }
+
     get_biz_advice_report_bak(
         State(state),
         Query(BizAdviceReportBakQuery {
-            task_id,
+            task_id: ctx.task_id,
             stream: query.stream,
         }),
     )
@@ -6065,18 +6236,14 @@ async fn get_biz_advice_report_bak(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportBakQuery>,
 ) -> Result<Response, ApiError> {
-    let task = {
-        let tasks = state.tasks.lock().await;
-        tasks
-            .get(&query.task_id)
-            .map(|inner| inner.record.clone())
-            .ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::NOT_FOUND,
-                    format!("task not found: {}", query.task_id),
-                )
-            })?
-    };
+    let (task, _ds_id) = try_load_task_record(&state, &query.task_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("task not found: {}", query.task_id),
+            )
+        })?;
     let source_status = task.status.clone();
     if source_status != "succeeded" {
         return Err(ApiError::new(
@@ -7188,27 +7355,16 @@ mod tests {
         assert_eq!(e, "kejiqing@local");
     }
 
-    #[tokio::test]
-    async fn task_has_report_true_when_succeeded() {
-        let task = TaskRecord {
-            task_id: "t1".into(),
-            session_id: "t1".into(),
-            request_id: "t1".into(),
-            ds_id: 10,
-            status: "succeeded".into(),
-            created_at_ms: 0,
-            started_at_ms: None,
-            finished_at_ms: Some(1),
-            current_task_desc: None,
-            progress_updated_at_ms: None,
-            result: None,
-            error: None,
-            turn_id: "T_00000000000000000000000000000001".into(),
-            progress_history: vec![],
-            has_report: false,
-            report_time_ms: None,
-        };
-        // `task_has_report` returns true for terminal succeeded without spill/DB.
-        assert_eq!(task.status, "succeeded");
+    #[test]
+    fn task_has_report_contract() {
+        for (status, want) in [
+            ("queued", false),
+            ("running", true),
+            ("succeeded", true),
+            ("failed", false),
+        ] {
+            let got = matches!(status, "running" | "succeeded");
+            assert_eq!(got, want, "status={status}");
+        }
     }
 }

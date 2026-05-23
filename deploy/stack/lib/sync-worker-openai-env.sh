@@ -75,17 +75,8 @@ POOL_WORKER_RUN_EXTRA="${CLAW_POOL_WORKER_RUN_EXTRA:---add-host host.docker.inte
 upsert_env_kv "CLAW_DOCKER_EXTRA_ARGS" "${POOL_WORKER_RUN_EXTRA}"
 upsert_env_kv "CLAW_PODMAN_EXTRA_ARGS" "${POOL_WORKER_RUN_EXTRA}"
 
-# Worker TextDelta → POST /v1/internal/turns/{id}/assistant-stream (needs both vars in mounted .env).
-GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18088}"
-if [[ -z "${CLAW_GATEWAY_INTERNAL_BASE_URL:-}" ]]; then
-  CLAW_GATEWAY_INTERNAL_BASE_URL="http://claw-gateway-rs:8080"
-  upsert_env_kv "CLAW_GATEWAY_INTERNAL_BASE_URL" "${CLAW_GATEWAY_INTERNAL_BASE_URL}"
-fi
 if [[ -z "${CLAW_PODMAN_NETWORK:-}${CLAW_DOCKER_NETWORK:-}" ]]; then
   upsert_env_kv "CLAW_PODMAN_NETWORK" "stack_default"
-fi
-if [[ -z "${CLAW_GATEWAY_INTERNAL_TOKEN:-}" ]]; then
-  upsert_env_kv "CLAW_GATEWAY_INTERNAL_TOKEN" "claw-internal-dev-token"
 fi
 
 echo "OK: pool worker run extras updated (no worker-openai.env snapshot). Set CLAW_WORKER_ENV_FILE in pool daemon to repo .env."

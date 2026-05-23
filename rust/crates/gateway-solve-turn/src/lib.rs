@@ -33,19 +33,16 @@ use tools::{
     execute_mcp_tool_with_extra_session, execute_tool, initialize_mcp_bridge, mvp_tool_specs,
 };
 
-pub mod assistant_stream_spill;
 pub mod entity_labels;
+pub mod gateway_stdout;
 pub mod session_report;
 pub mod sqlbot_preflight;
 pub mod task_progress;
 pub mod turn_tools;
 pub mod worker_env;
-pub use assistant_stream_spill::{
-    assistant_stream_spill_enabled_from_env, assistant_stream_spill_path,
-    resolve_assistant_stream_spill, spill_bytes_contain_end_marker,
-    spill_contains_report_start_marker, split_spill_end_marker, strip_report_start_marker,
-    AssistantStreamSpill, ASSISTANT_STREAM_REPORT_START_MARKER,
-    ASSISTANT_STREAM_SPILL_BASENAME_PREFIX, ASSISTANT_STREAM_SPILL_END_MARKER,
+pub use gateway_stdout::{
+    emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
+    GATEWAY_STDOUT_LINE_PREFIX,
 };
 pub use session_report::{
     final_assistant_report_text_from_jsonl,
@@ -140,13 +137,12 @@ pub struct GatewaySolveTaskFile {
     pub max_iterations: Option<usize>,
     #[serde(rename = "turnId")]
     pub turn_id: String,
-    /// When true, append model text deltas to `.claw/assistant-stream-spill-{turnId}.txt`.
-    #[serde(
-        rename = "assistantStreamSpill",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub assistant_stream_spill: Option<bool>,
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
+    pub pool_id: Option<String>,
+    #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
+    pub worker_name: Option<String>,
 }
 
 fn default_system_date() -> String {
@@ -296,7 +292,6 @@ struct DirectApiClient {
     provider: ProviderClient,
     tools: Vec<ToolDefinition>,
     clawcode_session_id: String,
-    stream_spill: Option<Arc<StdMutex<AssistantStreamSpill>>>,
 }
 
 impl DirectApiClient {
@@ -305,7 +300,6 @@ impl DirectApiClient {
         allowed_tools: &[String],
         runtime_mcp_tools: Vec<ToolDefinition>,
         clawcode_session_id: String,
-        stream_spill: Option<Arc<StdMutex<AssistantStreamSpill>>>,
     ) -> Result<Self, GatewaySolveTurnError> {
         let provider = ProviderClient::from_model(&model)
             .map_err(|e| err(HTTP_INTERNAL, format!("provider init failed: {e}")))?;
@@ -331,7 +325,6 @@ impl DirectApiClient {
             provider,
             tools,
             clawcode_session_id,
-            stream_spill,
         })
     }
 }
@@ -361,18 +354,14 @@ impl RuntimeApiClient for DirectApiClient {
             ]),
             ..Default::default()
         };
-        if let Some(spill) = &self.stream_spill {
-            if let Ok(spill) = spill.lock() {
-                let _ = spill.begin_iteration();
-            }
-        }
-        let spill_ref = self.stream_spill.as_ref();
+        let mut on_delta = |text: &str| {
+            let _ = emit_report_delta(text);
+        };
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(stream_events::<fn(&str)>(
+            tokio::runtime::Handle::current().block_on(stream_events(
                 &self.provider,
                 &req,
-                None,
-                spill_ref,
+                Some(&mut on_delta),
             ))
         })
         .map_err(|e| RuntimeError::new(e.to_string()))
@@ -635,7 +624,6 @@ fn push_text_delta<F>(
     events: &mut Vec<AssistantEvent>,
     text: String,
     on_text_delta: &mut Option<&mut F>,
-    stream_spill: Option<&Arc<StdMutex<AssistantStreamSpill>>>,
 ) where
     F: FnMut(&str),
 {
@@ -645,11 +633,6 @@ fn push_text_delta<F>(
     if let Some(cb) = on_text_delta.as_deref_mut() {
         cb(&text);
     }
-    if let Some(spill) = stream_spill {
-        if let Ok(spill) = spill.lock() {
-            let _ = spill.append(&text);
-        }
-    }
     events.push(AssistantEvent::TextDelta(text));
 }
 
@@ -657,7 +640,6 @@ async fn stream_events<F>(
     provider: &ProviderClient,
     req: &MessageRequest,
     on_text_delta: Option<&mut F>,
-    stream_spill: Option<&Arc<StdMutex<AssistantStreamSpill>>>,
 ) -> Result<Vec<AssistantEvent>, api::ApiError>
 where
     F: FnMut(&str),
@@ -672,7 +654,7 @@ where
                 for block in start.message.content {
                     match block {
                         OutputContentBlock::Text { text } => {
-                            push_text_delta(&mut events, text, &mut on_text_delta, stream_spill);
+                            push_text_delta(&mut events, text, &mut on_text_delta);
                         }
                         OutputContentBlock::ToolUse { id, name, input } => {
                             let initial_input = if input.is_object()
@@ -705,7 +687,7 @@ where
                     pending_tools.insert(start.index, (id, name, initial_input));
                 }
                 OutputContentBlock::Text { text } => {
-                    push_text_delta(&mut events, text, &mut on_text_delta, stream_spill);
+                    push_text_delta(&mut events, text, &mut on_text_delta);
                 }
                 OutputContentBlock::Thinking { thinking, .. } => {
                     if !thinking.is_empty() {
@@ -716,7 +698,7 @@ where
             },
             StreamEvent::ContentBlockDelta(delta) => match delta.delta {
                 ContentBlockDelta::TextDelta { text } => {
-                    push_text_delta(&mut events, text, &mut on_text_delta, stream_spill);
+                    push_text_delta(&mut events, text, &mut on_text_delta);
                 }
                 ContentBlockDelta::InputJsonDelta { partial_json } => {
                     if let Some((_, _, input)) = pending_tools.get_mut(&delta.index) {
@@ -851,7 +833,7 @@ where
         ]),
         ..Default::default()
     };
-    let events = stream_events(&provider, &req, on_text_delta.as_mut(), None)
+    let events = stream_events(&provider, &req, on_text_delta.as_mut())
         .await
         .map_err(|e| err(HTTP_INTERNAL, format!("polish stream failed: {e}")))?;
     let (output_text, output_json) = polish_output_from_events(&events, &effective_model)?;
@@ -916,8 +898,7 @@ pub fn run_gateway_solve_turn(
     extra_session: Option<Value>,
     allowed_tools: Vec<String>,
     max_iterations: usize,
-    turn_id: &str,
-    assistant_stream_spill: bool,
+    _turn_id: &str,
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
@@ -946,14 +927,11 @@ pub fn run_gateway_solve_turn(
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
     let (runtime_mcp_tools, runtime_mcp_tool_names, runtime_mcp_manager) =
         initialize_mcp_runtime(work_dir)?;
-    let stream_spill = assistant_stream_spill
-        .then(|| Arc::new(StdMutex::new(AssistantStreamSpill::new(work_dir, turn_id))));
     let api_client = DirectApiClient::new(
         effective_model.clone(),
         &allowed_tools,
         runtime_mcp_tools,
         clawcode_session_id.to_string(),
-        stream_spill.clone(),
     )?;
     reset_task_progress(work_dir, clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
@@ -1012,9 +990,6 @@ pub fn run_gateway_solve_turn(
     }
     // Turn deadline is enforced by the gateway pool (`timeout` on `docker exec` + `force_kill_slot`).
     let turn_result = runtime.run_turn_after_user_message(None);
-    if stream_spill.is_some() {
-        let _ = AssistantStreamSpill::mark_turn_stream_complete(work_dir, turn_id);
-    }
     let result =
         turn_result.map_err(|e| err(HTTP_INTERNAL, format!("runtime prompt failed: {e}")))?;
     let message = result
@@ -1186,7 +1161,9 @@ mod gateway_solve_task_file_tests {
             allowed_tools: Some(vec!["bash".into()]),
             max_iterations: Some(4),
             turn_id: "T_a1b2c3d4e5f6478990abcdef12345678".into(),
-            assistant_stream_spill: Some(true),
+            session_id: Some("sess-1".into()),
+            pool_id: None,
+            worker_name: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
@@ -1195,6 +1172,5 @@ mod gateway_solve_task_file_tests {
         assert_eq!(t.model, back.model);
         assert_eq!(t.timeout_seconds, back.timeout_seconds);
         assert_eq!(t.max_iterations, back.max_iterations);
-        assert_eq!(t.assistant_stream_spill, back.assistant_stream_spill);
     }
 }

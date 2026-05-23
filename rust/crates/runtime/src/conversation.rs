@@ -175,8 +175,6 @@ pub struct ConversationRuntime<C, T> {
     hook_abort_signal: HookAbortSignal,
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
-    /// Invoked after an assistant message is appended to the session (and jsonl when configured).
-    on_assistant_persisted: Option<Box<dyn FnMut() + Send>>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -226,15 +224,7 @@ where
             hook_abort_signal: HookAbortSignal::default(),
             hook_progress_reporter: None,
             session_tracer: None,
-            on_assistant_persisted: None,
         }
-    }
-
-    /// Hook for gateway assistant stream spill cleanup (after each assistant jsonl line). Author: kejiqing
-    #[must_use]
-    pub fn with_on_assistant_persisted(mut self, hook: impl FnMut() + Send + 'static) -> Self {
-        self.on_assistant_persisted = Some(Box::new(hook));
-        self
     }
 
     #[must_use]
@@ -391,6 +381,19 @@ where
         self.run_turn_inner("", None, prompter)
     }
 
+    /// Like [`Self::run_turn_after_user_message`], but streams each model `TextDelta` to `on_text_delta`. Author: kejiqing
+    pub fn run_turn_after_user_message_streaming<F>(
+        &mut self,
+        mut on_text_delta: F,
+        prompter: Option<&mut dyn PermissionPrompter>,
+    ) -> Result<TurnSummary, RuntimeError>
+    where
+        F: FnMut(&str),
+    {
+        let mut cb: &mut dyn FnMut(&str) = &mut on_text_delta;
+        self.run_turn_inner("", Some(&mut cb), prompter)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn run_turn_inner(
         &mut self,
@@ -484,9 +487,6 @@ where
             self.session
                 .push_message(assistant_message.clone())
                 .map_err(|error| RuntimeError::new(error.to_string()))?;
-            if let Some(hook) = self.on_assistant_persisted.as_mut() {
-                hook();
-            }
             assistant_messages.push(assistant_message);
 
             if pending_tool_uses.is_empty() {

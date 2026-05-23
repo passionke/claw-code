@@ -382,7 +382,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path in ("/admin", "/admin/login") or path.startswith("/admin/"):
-            if path not in ("/admin/login",) and not read_session_user(self):
+            # Vite assets must not redirect to login (otherwise SPA never boots). Author: kejiqing
+            if (
+                path not in ("/admin/login",)
+                and not path.startswith("/admin/assets/")
+                and not read_session_user(self)
+            ):
                 nxt = urllib.parse.quote(path, safe="")
                 send_redirect(self, f"/admin/login?next={nxt}")
                 return

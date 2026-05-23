@@ -59,20 +59,18 @@ Base URL 示例：`http://127.0.0.1:18088`
   - **显式续聊**：请求体带非空 `sessionId` 时，若库中无该 `(sessionId, dsId)`，在入队前返回 `400`（文案同同步接口）。
   - **串行**：同一 `sessionId` 已存在状态为 `queued` 或 `running` 的异步任务时，再次 `POST /v1/solve_async` 返回 **`409 Conflict`**（`session has active async task`），需等待完成或取消后再提交。
   - 追踪约定：异步调用同样透传 `clawcode-session-id` 与 `claw-session-id`（值均为该次任务的网关层会话 ID）
-  - **Live 报告**：pool worker 将模型 `TextDelta` 经 `POST /v1/internal/turns/{turnId}/assistant-stream` 写入 PostgreSQL `gateway_turn_live_chunks`（需 `CLAW_GATEWAY_INTERNAL_BASE_URL` + `CLAW_GATEWAY_INTERNAL_TOKEN`；`./deploy/stack/lib/sync-worker-openai-env.sh` 会在根 `.env` 缺省时写入 `http://host.containers.internal:<GATEWAY_HOST_PORT>` 与 dev token）
-  - 终态清理：默认 **不** 在 `succeeded` 后删 live chunks（便于排查）；设 `CLAW_GATEWAY_DELETE_LIVE_CHUNKS_ON_SUCCESS=1` 恢复旧行为。failed/cancelled 仍用 `scripts/purge-gateway-turn-live-chunks.sh` 运维清理。
+  - **Live 报告**：stdout-v1 全链路见 [`docs/live-report-contract.md`](live-report-contract.md)（含顺序保证、已知缺陷与 `pack-deploy` 验收）
 
-- `POST /v1/internal/turns/{turnId}/assistant-stream`
-  - 用途：worker 上行 NDJSON `{"chunk":"…"}`；网关批量 `INSERT` + `NOTIFY claw_turn_live`
+- `POST /v1/internal/turns/{turnId}/stdout-event`
+  - 用途：池 daemon 转发 worker 结构化 stdout（JSON body，含 `ev` / `text` 等）
   - 鉴权：请求头 `x-claw-gateway-internal-token` 或 `Authorization: Bearer <CLAW_GATEWAY_INTERNAL_TOKEN>`
-  - ingest 结束后同 turn 再 POST 返回 **409**
 
 - `GET /v1/tasks/{task_id}`
   - 用途：查询异步任务状态与结果
   - 响应含 **`turnId`**（与本次 async 入队时返回的值一致）
-  - **网关重启后**：若进程内已无该 `taskId` 的内存任务，网关会按 `session_id = task_id` 从 PostgreSQL 读取 **`gateway_turns` 最新一行** 重建 `TaskRecord`（含 `status`、`result`/`error`、`turnId` 等），以便 BFF 继续轮询；进度句与 `hasReport` 仍尽量从会话目录的 progress / spill 文件恢复。
+  - **网关重启后**：若进程内已无该 `taskId` 的内存任务，网关会按 `session_id = task_id` 从 PostgreSQL 读取 **`gateway_turns` 最新一行** 重建 `TaskRecord`（含 `status`、`result`/`error`、`turnId` 等），以便 BFF 继续轮询；`currentTaskDesc` 仍尽量从会话目录 `.claw/task-progress.json` 恢复。
   - 响应除 `status` 外含 **`currentTaskDesc`**（用户可见进度一句，camelCase JSON）：主要来自 agent 调用的内部工具 `report_progress` 写入会话目录 `.claw/task-progress.json`；`queued` 时网关可返回「排队中（x 个等待，y 个执行中）」；`running` 且无上报时兜底「处理中」或「工具调用中」（不暴露具体工具名）。**不**从 `gateway-solve-session.jsonl` 最后一条 assistant 推导。
-  - 另含 `dsId`、`progressUpdatedAtMs`、**`hasReport`**（bool）、**`reportTime`**（ms，可选）：**`hasReport` = PG 里已有报告正文（至少一行 live chunk）**，用于告诉前端「可以开报告 SSE」；**不是**「任务在 running」。`running` 且无 live 行 → `hasReport: false`；`succeeded` 恒 `true`。`reportTime`：`hasReport` 为真时优先 `gateway_turn_live_chunks` 该 `turnId` 的 `MIN(created_at_ms)`；仅 `succeeded` 且无 live 行时用 `finishedAtMs`。完整四条契约见 `docs/persistence-model.md` § Live report contract (locked)。
+  - 另含 `dsId`、`progressUpdatedAtMs`、**`hasReport`**、**`reportTime`**：见 [`docs/live-report-contract.md`](live-report-contract.md) §6.4。成功后的报告正文在 **`result.outputJson.message`**（非响应顶层 `outputJson`）。
 
 - `GET /v1/sessions/{session_id}/turns/{turn_id}/tools?ds_id=<int>`
   - 用途：查看该 **gateway `turnId`** 对应用户轮次在 `.claw/gateway-solve-session.jsonl` 中的全部 **tool 调用**（`tool_use` 入参 + `tool_result` 返回）
@@ -107,14 +105,10 @@ Base URL 示例：`http://127.0.0.1:18088`
 - `turnId` 签发：每次 `POST /v1/solve` / `POST /v1/solve_async` 入队或同步受理时由网关生成；响应体与 `GET /v1/tasks/{task_id}` 含 `turnId`。`POST /v1/start` 不签发。
 
 - `GET /v1/biz_advice_report?sessionId=<id>&turnId=<T_…>&dsId=<int>`
-  - 用途：有 live chunk 或 turn 仍 `running`/`queued` 时，`stream=true` 走 PostgreSQL tail（`LISTEN/NOTIFY` + `SELECT seq ASC`）+ 终态 `gateway_turns.report_message`（无 LLM 润色）；否则与 `biz_advice_report_bak` 相同——终态 LLM 润色
-  - **前端约定（locked）：** 仅当 `GET /v1/tasks` 返回 **`hasReport: true`** 后建立 SSE；按 `seq` 顺序消费 `biz.report.delta` 的 `text` 拼接展示，**禁止**用 `running` 代替 `hasReport` 开门，**禁止**客户端 `frameSeq` / `afterSeq` / `start.snapshotText`。见 `docs/persistence-model.md` § Live report contract (locked)。
-  - 查询参数：
-    - `sessionId`、`turnId`（`T_<32 hex>`）、`dsId`（≥1）必填
-    - `stream`：默认 `true`；为 `true` 时 `text/event-stream`（`biz.report.start` / `biz.report.delta` / `biz.report.done`）
-  - 结束条件（SSE）：`gateway_turns.status=succeeded` 且 `report_message` 非空 → `biz.report.done`（正文在 `reportJson.message`）；`failed`/`cancelled` 发 error
+  - 用途：turn `queued`/`running` 且 `stream=true` 时走 **stdout hub** live SSE（无 LLM 润色）；`succeeded` 后 `stream=true` 走 LLM 润色（同 `biz_advice_report_bak`）；`stream=false` 仅终态 JSON
+  - 查询参数：`sessionId`、`turnId`（`T_<32 hex>`）、`dsId`（≥1）必填；`stream` 默认 `true`
+  - Live SSE：`biz.report.start` / `biz.report.delta` / `biz.report.done`；尾段完整性依赖 `HubMsg::SolveDone`（见 [`docs/live-report-contract.md`](live-report-contract.md) §7.4）
   - 非流式（`stream=false`）：仅 turn 终态可读，返回 JSON（`reportText` / `reportJson.message`）
-  - **正文来源顺序**（`resolve_formal_report_text`）：`gateway_turns.report_message` / `output_json`；详见 `docs/persistence-model.md`。
 
 - `GET /v1/biz_advice_report_bak?task_id=<taskId>`
   - 用途：**旧版**——基于异步任务 `outputJson.message` 再经 `GPOS_BOSS_REPORT_WRITER` skill **LLM 润色**
