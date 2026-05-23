@@ -1,13 +1,15 @@
-import { Button, Input, message } from "antd";
+import { Button, Input, Spin, message } from "antd";
 import { useCallback, useRef, useState } from "react";
+import ChatHistorySidebar from "../components/chat/ChatHistorySidebar";
 import ChatTurnCard from "../components/chat/ChatTurnCard";
 import ChatToolbar from "../components/chat/ChatToolbar";
 import styles from "../components/chat/chat.module.css";
 import { proxyHttp } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { useChatSession } from "../context/ChatSessionContext";
-import type { SolveAsyncResponse } from "../types/chat";
+import type { ListSessionTurnsResponse, SolveAsyncResponse } from "../types/chat";
 import { buildExtraSession } from "../utils/extraSession";
+import { extractSolveReportMessage } from "../utils/solveReportBody";
 
 interface TurnEntry {
   id: string;
@@ -16,6 +18,9 @@ interface TurnEntry {
   sessionId: string;
   turnId: string;
   initialStatus?: string;
+  viewMode?: "live" | "history";
+  hasReport?: boolean;
+  historicalReport?: string;
 }
 
 interface SysEntry {
@@ -49,11 +54,16 @@ export default function ChatPage() {
   const [thread, setThread] = useState<ThreadItem[]>([]);
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
-  const scrollLog = () => {
-    requestAnimationFrame(() => logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }));
+  const scrollLog = (smooth = true) => {
+    requestAnimationFrame(() =>
+      logEndRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" })
+    );
   };
 
   const appendSys = useCallback((b: Omit<SysEntry, "id" | "kind">) => {
@@ -63,12 +73,62 @@ export default function ChatPage() {
 
   const onNewSession = () => {
     sessionIdRef.current = null;
-    appendSys({
-      tag: "session",
-      text: "已清空本地 sessionId，下一轮将走新会话。",
-      variant: "warn",
-    });
+    setActiveSessionId(null);
+    setThread([]);
   };
+
+  const loadSessionHistory = useCallback(
+    async (sessionId: string) => {
+      if (!gatewayBase) {
+        message.error("未选择网关");
+        return;
+      }
+      setLoadingHistory(true);
+      setThread([]);
+      try {
+        const res = await proxyHttp<ListSessionTurnsResponse>(
+          gatewayBase,
+          "GET",
+          `/v1/sessions/${encodeURIComponent(sessionId)}/turns?dsId=${encodeURIComponent(String(dsId))}`
+        );
+        sessionIdRef.current = sessionId;
+        setActiveSessionId(sessionId);
+        const turns = res.turns ?? [];
+        if (!turns.length) {
+          setThread([
+            {
+              kind: "sys",
+              id: `sys-empty-${sessionId}`,
+              tag: "历史",
+              text: "该会话尚无已记录的轮次。",
+              variant: "warn",
+            },
+          ]);
+          return;
+        }
+        setThread(
+          turns.map((t) => ({
+            id: t.turnId,
+            userText: t.userPrompt?.trim() || "（无用户文案）",
+            taskId: sessionId,
+            sessionId,
+            turnId: t.turnId,
+            initialStatus: t.status,
+            viewMode: "history" as const,
+            hasReport: t.hasReport,
+            historicalReport: t.reportBody
+              ? extractSolveReportMessage(t.reportBody)
+              : undefined,
+          }))
+        );
+      } catch (e) {
+        message.error(String((e as Error).message || e));
+      } finally {
+        setLoadingHistory(false);
+      }
+    },
+    [gatewayBase, dsId]
+  );
 
   const runSend = async (userText: string) => {
     if (!gatewayBase) {
@@ -106,6 +166,8 @@ export default function ChatPage() {
     }
 
     sessionIdRef.current = asyncRes.sessionId;
+    setActiveSessionId(asyncRes.sessionId);
+    setHistoryRefreshKey((k) => k + 1);
     setThread((prev) => [
       ...prev,
       {
@@ -115,6 +177,7 @@ export default function ChatPage() {
         sessionId: asyncRes.sessionId,
         turnId: asyncRes.turnId,
         initialStatus: asyncRes.status || "queued",
+        viewMode: "live",
       },
     ]);
     scrollLog();
@@ -144,16 +207,35 @@ export default function ChatPage() {
 
   return (
     <div className={styles.chatPage}>
-      <div className={styles.chatToolbarRow}>
-        <ChatToolbar
-          onNewSession={onNewSession}
-          onHealth={(t) => appendSys({ tag: "healthz", text: t })}
-          onError={(t) => appendSys({ tag: "error", text: t, variant: "err" })}
-        />
-      </div>
-      <div className={styles.chatMain}>
-        <div className={styles.chatLog}>
-          {thread.map((item) => {
+      <ChatHistorySidebar
+        gatewayBase={gatewayBase}
+        dsId={dsId}
+        activeSessionId={activeSessionId}
+        refreshKey={historyRefreshKey}
+        onSelectSession={(id) => void loadSessionHistory(id)}
+        onNewSession={onNewSession}
+      />
+      <div className={styles.chatPageMain}>
+        <div className={styles.chatColumn}>
+        <div className={styles.chatToolbarRow}>
+          <ChatToolbar
+            onNewSession={onNewSession}
+            onHealth={(t) => appendSys({ tag: "healthz", text: t })}
+            onError={(t) => appendSys({ tag: "error", text: t, variant: "err" })}
+          />
+        </div>
+        <div className={styles.chatMain}>
+          <div className={styles.chatLog}>
+            {loadingHistory ? (
+              <div className={styles.chatLogOverlay} aria-busy="true">
+                <Spin tip="加载对话…" />
+              </div>
+            ) : null}
+            <div
+              className={styles.chatLogInner}
+              key={activeSessionId ?? "new-session"}
+            >
+            {thread.map((item) => {
             if (isSys(item)) {
               return (
                 <div
@@ -195,11 +277,15 @@ export default function ChatPage() {
                   tapLiveBase={tapLiveBase}
                   tapLiveTemplate={tapLiveTemplate}
                   initialStatus={item.initialStatus}
+                  viewMode={item.viewMode ?? "live"}
+                  hasReport={item.hasReport}
+                  historicalReport={item.historicalReport}
                 />
               </div>
             );
           })}
-          <div ref={logEndRef} />
+            <div ref={logEndRef} />
+            </div>
         </div>
         <div className={styles.composer}>
           <div className={styles.quickPrompts}>
@@ -232,6 +318,8 @@ export default function ChatPage() {
               发送
             </Button>
           </div>
+        </div>
+        </div>
         </div>
       </div>
     </div>

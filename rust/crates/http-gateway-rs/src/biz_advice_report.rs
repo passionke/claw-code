@@ -130,6 +130,19 @@ pub fn report_body_from_solve_output(
     Err("solve output has no report message (outputJson.message)".to_string())
 }
 
+/// Prefer `output_json.message`, else parse JSON-shaped `report_message` (solve raw output). Author: kejiqing
+pub fn report_body_from_persisted(
+    report_message: Option<&str>,
+    output_json: Option<&Value>,
+) -> Option<String> {
+    if let Some(raw) = report_message.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Ok(body) = report_body_from_solve_output(raw, None) {
+            return Some(body);
+        }
+    }
+    report_body_from_solve_output("", output_json).ok()
+}
+
 pub fn build_biz_advice_polish_prompt(instructions: &str, report_body: &str) -> String {
     format!("{instructions}\n\n【报告正文】\n{report_body}")
 }
@@ -386,6 +399,15 @@ mod tests {
         assert_eq!(
             report_body_from_solve_output("", Some(&json)).unwrap(),
             "body"
+        );
+    }
+
+    #[test]
+    fn report_body_from_persisted_parses_json_report_message() {
+        let raw = "{\"iterations\":1,\"message\":\"## 标题\\n正文\",\"model\":\"m\"}";
+        assert_eq!(
+            report_body_from_persisted(Some(raw), None).as_deref(),
+            Some("## 标题\n正文")
         );
     }
 

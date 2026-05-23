@@ -1,6 +1,9 @@
 .turnCard {
-  max-width: 92%;
   align-self: flex-start;
+  width: 100%;
+  max-width: min(92%, 760px);
+  min-width: 0;
+  box-sizing: border-box;
   background: #1a2332;
   border: 1px solid #2d3a4d;
   border-radius: 10px;
@@ -172,6 +175,11 @@
 .turnBody {
   padding: 10px 12px;
   font-size: 13px;
+  min-height: 100px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-x: auto;
 }
 
 .section {
@@ -192,18 +200,188 @@
 
 .chatPage {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   flex: 1;
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.chatPageMain {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+/** 固定对话列宽（920px），不随单条消息长短变化。Author: kejiqing */
+.chatColumn {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  max-width: 920px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0 auto;
+  padding: 0 16px 20px;
+  box-sizing: border-box;
+}
+
+.historySidebar {
+  width: 260px;
+  flex-shrink: 0;
+  align-self: stretch;
+  height: 100%;
+  border-right: 1px solid #2d3a4d;
+  background: #121820;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.historySidebarCollapsed {
+  width: 40px;
+  height: 100%;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 8px;
+}
+
+.historyNewChat {
+  flex-shrink: 0;
+}
+
+.historyScroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.historyCollapseBtn {
+  color: #8b9cb3 !important;
+}
+
+.historySidebarHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid #2d3a4d;
+  flex-shrink: 0;
+}
+
+.historyHeadActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.historyFilters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #2d3a4d;
+  flex-shrink: 0;
+}
+
+.historyList {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+.historyItem {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: #e6edf3;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.historyItem:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.historyItemActive {
+  background: rgba(37, 99, 235, 0.18);
+  border-left: 3px solid #3b82f6;
+  padding-left: 9px;
+}
+
+.historyItemTitle {
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.historyItemTime {
+  font-size: 11px;
+  color: #8b9cb3;
+  text-align: right;
+  margin-top: 6px;
+  line-height: 1.2;
+}
+
+.historySentinel {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 36px;
+  padding: 8px;
+  list-style: none;
+}
+
+.historyEndHint {
+  font-size: 11px;
+  color: #6b7c93;
+}
+
+.historyLoading {
+  padding: 12px;
+  text-align: center;
+}
+
+.historyEmpty,
+.historyError {
+  display: block;
+  padding: 8px 12px;
+  font-size: 12px;
 }
 
 .chatToolbarRow {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  padding: 8px 16px;
+  width: 100%;
+  padding: 8px 0;
   border-bottom: 1px solid #2d3a4d;
   align-items: flex-end;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .turnThread {
@@ -211,21 +389,34 @@
   flex-direction: column;
   gap: 10px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .composer {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  width: 100%;
   padding-top: 12px;
   border-top: 1px solid #2d3a4d;
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .composerRow {
   display: flex;
   gap: 8px;
   align-items: flex-end;
+  width: 100%;
+  min-width: 0;
+}
+
+.composerRow :global(.ant-input-textarea),
+.composerRow :global(textarea.ant-input) {
+  flex: 1;
+  min-width: 0;
+  width: 100% !important;
 }
 
 .composerRow .ant-btn {
@@ -275,6 +466,10 @@
   border-radius: 8px;
   min-height: 2em;
   max-height: 70vh;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-x: auto;
   overflow-y: auto;
 }
 
@@ -367,7 +562,9 @@
 }
 
 .reportProse table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
   margin: 0.75em 0;
   border-collapse: collapse;
   font-size: 13px;
@@ -434,17 +631,24 @@
 
 .bubbleUser {
   align-self: flex-end;
-  max-width: 92%;
-  padding: 10px 12px;
-  border-radius: 10px;
+  width: fit-content;
+  max-width: min(82%, 640px);
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border-radius: 12px 12px 4px 12px;
   background: rgba(37, 99, 235, 0.25);
   border: 1px solid rgba(37, 99, 235, 0.45);
   white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .bubbleSys {
   align-self: flex-start;
-  max-width: 92%;
+  width: fit-content;
+  max-width: min(82%, 640px);
+  min-width: 0;
+  box-sizing: border-box;
   padding: 10px 12px;
   border-radius: 10px;
   background: #1a2332;
@@ -479,22 +683,54 @@
 }
 
 .chatLog {
+  position: relative;
   flex: 1;
+  width: 100%;
+  min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   gap: 16px;
   padding: 12px 0 8px;
   min-height: 0;
+  box-sizing: border-box;
+}
+
+.chatLogInner {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: min(240px, 40vh);
+  box-sizing: border-box;
+}
+
+.chatLogOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 20, 25, 0.72);
+  pointer-events: none;
+}
+
+.turnBodyPlaceholder {
+  padding: 12px;
+  font-size: 13px;
+  color: #8b9cb3;
 }
 
 .chatMain {
   flex: 1;
   display: flex;
   flex-direction: column;
-  max-width: 920px;
   width: 100%;
-  margin: 0 auto;
-  padding: 12px 16px 20px;
+  min-width: 0;
   min-height: 0;
+  box-sizing: border-box;
 }

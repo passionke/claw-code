@@ -30,3 +30,40 @@ export interface ChatBubble {
   text: string;
   variant?: "warn" | "err";
 }
+
+export interface GatewaySessionSummary {
+  sessionId: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+  turnCount: number;
+  previewPrompt?: string | null;
+}
+
+export interface ListProjectSessionsResponse {
+  dsId: number;
+  sessions: GatewaySessionSummary[];
+  hasMore?: boolean;
+}
+
+export interface GatewayTurnSummary {
+  turnId: string;
+  userPrompt?: string | null;
+  status: string;
+  createdAtMs: number;
+  finishedAtMs?: number | null;
+  hasReport: boolean;
+  /** 已解析的 `output_json.message` / JSON 形 `report_message`，历史回放秒出。Author: kejiqing */
+  reportBody?: string | null;
+}
+
+export interface ListSessionTurnsResponse {
+  sessionId: string;
+  dsId: number;
+  turns: GatewayTurnSummary[];
+}
+
+/** `GET /v1/biz_advice_report?stream=false` per turn. Author: kejiqing */
+export interface BizAdviceReportResponse {
+  reportText?: string;
+  sourceStatus?: string;
+}

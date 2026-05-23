@@ -15,7 +15,15 @@ export default function ChatLayout() {
   }));
 
   return (
-    <Layout style={{ minHeight: "100vh", background: "#0f1419" }}>
+    <Layout
+      style={{
+        height: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        background: "#0f1419",
+        overflow: "hidden",
+      }}
+    >
       <Header
         style={{
           display: "flex",
@@ -57,7 +65,15 @@ export default function ChatLayout() {
           </Button>
         </Link>
       </Header>
-      <Content style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
+      <Content
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+          overflow: "hidden",
+        }}
+      >
         <Outlet />
       </Content>
     </Layout>

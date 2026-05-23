@@ -10,10 +10,34 @@
 
 use std::collections::BTreeMap;
 
+use crate::biz_advice_report::report_body_from_persisted;
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::Json;
 use sqlx::{Error as SqlxError, PgPool, Row};
+
+/// One row for [`GatewaySessionDb::list_sessions_for_ds`]. Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct GatewaySessionSummary {
+    pub session_id: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub turn_count: i64,
+    pub preview_prompt: Option<String>,
+}
+
+/// One row for [`GatewaySessionDb::list_turns_for_session`]. Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct GatewayTurnSummary {
+    pub turn_id: String,
+    pub user_prompt: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub finished_at_ms: Option<i64>,
+    pub has_report: bool,
+    /// Extracted `message` for admin replay (not raw solve JSON). Author: kejiqing
+    pub report_body: Option<String>,
+}
 
 /// Latest `gateway_turns` row for a session (see [`GatewaySessionDb::fetch_latest_turn_for_session`]).
 #[derive(Debug, Clone)]
@@ -1246,6 +1270,132 @@ impl GatewaySessionDb {
         Ok(r.rows_affected())
     }
 
+    /// Escape `%` / `_` for SQL `LIKE` / `ILIKE` patterns. Author: kejiqing
+    fn escape_like_pattern(raw: &str) -> String {
+        let mut out = String::with_capacity(raw.len());
+        for ch in raw.chars() {
+            match ch {
+                '%' | '_' | '\\' => {
+                    out.push('\\');
+                    out.push(ch);
+                }
+                other => out.push(other),
+            }
+        }
+        out
+    }
+
+    /// Recent sessions for admin chat history (keyset page + optional filters). Author: kejiqing
+    pub async fn list_sessions_for_ds(
+        &self,
+        ds_id: i64,
+        limit: i64,
+        before_updated_at_ms: Option<i64>,
+        before_session_id: Option<&str>,
+        updated_from_ms: Option<i64>,
+        updated_to_ms: Option<i64>,
+        title_q: Option<&str>,
+    ) -> Result<Vec<GatewaySessionSummary>, SqlxError> {
+        let limit = limit.clamp(1, 100);
+        let like_pat = title_q
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|q| format!("%{}%", Self::escape_like_pattern(q)));
+
+        let rows = sqlx::query(
+            r"SELECT s.session_id, s.created_at_ms, s.updated_at_ms,
+                     (SELECT COUNT(*)::bigint FROM gateway_turns t
+                        WHERE t.session_id = s.session_id AND t.ds_id = s.ds_id) AS turn_count,
+                     (SELECT t.user_prompt FROM gateway_turns t
+                        WHERE t.session_id = s.session_id AND t.ds_id = s.ds_id
+                        ORDER BY t.created_at_ms ASC, t.turn_id ASC
+                        LIMIT 1) AS preview_prompt
+              FROM gateway_sessions s
+              WHERE s.ds_id = $1
+                AND ($2::bigint IS NULL OR s.updated_at_ms >= $2)
+                AND ($3::bigint IS NULL OR s.updated_at_ms <= $3)
+                AND (
+                  $4::text IS NULL
+                  OR (
+                    SELECT t.user_prompt FROM gateway_turns t
+                      WHERE t.session_id = s.session_id AND t.ds_id = s.ds_id
+                      ORDER BY t.created_at_ms ASC, t.turn_id ASC
+                      LIMIT 1
+                  ) ILIKE $4 ESCAPE '\'
+                )
+                AND (
+                  $5::bigint IS NULL
+                  OR s.updated_at_ms < $5
+                  OR (s.updated_at_ms = $5 AND s.session_id < COALESCE($6, ''))
+                )
+              ORDER BY s.updated_at_ms DESC, s.session_id DESC
+              LIMIT $7",
+        )
+        .bind(ds_id)
+        .bind(updated_from_ms)
+        .bind(updated_to_ms)
+        .bind(like_pat.as_deref())
+        .bind(before_updated_at_ms)
+        .bind(before_session_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(GatewaySessionSummary {
+                session_id: r.try_get("session_id")?,
+                created_at_ms: r.try_get("created_at_ms")?,
+                updated_at_ms: r.try_get("updated_at_ms")?,
+                turn_count: r.try_get("turn_count")?,
+                preview_prompt: r.try_get("preview_prompt")?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Turns in chronological order for replay in admin chat. Author: kejiqing
+    pub async fn list_turns_for_session(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<Vec<GatewayTurnSummary>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT turn_id, user_prompt, status, created_at_ms, finished_at_ms,
+                     report_message, output_json,
+                     (
+                       (report_message IS NOT NULL AND btrim(report_message) <> '')
+                       OR output_json IS NOT NULL
+                     ) AS has_report
+              FROM gateway_turns
+              WHERE session_id = $1 AND ds_id = $2
+              ORDER BY created_at_ms ASC, turn_id ASC",
+        )
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let report_message: Option<String> = r.try_get("report_message")?;
+            let output_json: Option<Json<Value>> = r.try_get("output_json")?;
+            let output_value = output_json.map(|Json(v)| v);
+            let report_body = report_body_from_persisted(
+                report_message.as_deref(),
+                output_value.as_ref(),
+            );
+            out.push(GatewayTurnSummary {
+                turn_id: r.try_get("turn_id")?,
+                user_prompt: r.try_get("user_prompt")?,
+                status: r.try_get("status")?,
+                created_at_ms: r.try_get("created_at_ms")?,
+                finished_at_ms: r.try_get("finished_at_ms")?,
+                has_report: r.try_get("has_report")?,
+                report_body,
+            });
+        }
+        Ok(out)
+    }
+
     pub async fn fetch_latest_turn_for_session(
         &self,
         session_id: &str,
@@ -1544,6 +1694,16 @@ mod tests {
             .unwrap();
         let idx = db.turn_index_in_session(tid2, &sid, 1, t2).await.unwrap();
         assert_eq!(idx, 2);
+
+        let sessions = db
+            .list_sessions_for_ds(1, 50, None, None, None, None, None)
+            .await
+            .unwrap();
+        assert!(sessions.iter().any(|s| s.session_id == sid));
+        let listed = db.list_turns_for_session(&sid, 1).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].user_prompt.as_deref(), Some("a"));
+        assert_eq!(listed[1].status, "queued");
 
         db.finalize_turn_terminal(
             tid2,

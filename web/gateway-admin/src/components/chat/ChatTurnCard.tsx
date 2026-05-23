@@ -2,8 +2,9 @@ import { Collapse, Space, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useBizReportStream } from "../../hooks/useBizReportStream";
-import type { ProgressEvent, SolveTask } from "../../types/chat";
+import type { BizAdviceReportResponse, ProgressEvent, SolveTask } from "../../types/chat";
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
+import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import ReportMarkdown from "./ReportMarkdown";
 import TurnToolsDrawer from "./TurnToolsDrawer";
 import styles from "./chat.module.css";
@@ -17,6 +18,11 @@ export interface ChatTurnCardProps {
   tapLiveBase: string;
   tapLiveTemplate: string;
   initialStatus?: string;
+  /** `history`：只读回放，按 turn 拉报告，不 poll 最新 task。Author: kejiqing */
+  viewMode?: "live" | "history";
+  hasReport?: boolean;
+  /** 列表接口已带正文时跳过二次请求。Author: kejiqing */
+  historicalReport?: string;
 }
 
 function statusLabel(task: SolveTask): string {
@@ -32,6 +38,30 @@ function statusLabel(task: SolveTask): string {
   return st;
 }
 
+const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+
+/** 历史回放：按 turn 从 DB 拉 JSON 报告。Author: kejiqing */
+async function fetchHistoryReport(
+  gatewayBase: string,
+  sessionId: string,
+  turnId: string,
+  dsId: number
+): Promise<string> {
+  const q = new URLSearchParams({
+    sessionId,
+    turnId,
+    dsId: String(dsId),
+    stream: "false",
+  });
+  const res = await proxyHttp<BizAdviceReportResponse>(
+    gatewayBase,
+    "GET",
+    `/v1/biz_advice_report?${q.toString()}`
+  );
+  const raw = res.reportText?.trim() ?? "";
+  return extractSolveReportMessage(raw);
+}
+
 export default function ChatTurnCard({
   sessionId,
   turnId,
@@ -41,20 +71,87 @@ export default function ChatTurnCard({
   tapLiveBase,
   tapLiveTemplate,
   initialStatus = "queued",
+  viewMode = "live",
+  hasReport = false,
+  historicalReport: initialHistoricalReport,
 }: ChatTurnCardProps) {
+  const historyMode = viewMode === "history";
+  const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const [task, setTask] = useState<SolveTask>({
     status: initialStatus,
-    hasReport: false,
-    currentTaskDesc: "已提交",
+    hasReport: historyMode && (hasReport || Boolean(prefilledReport)),
+    currentTaskDesc: historyMode ? "历史记录" : "已提交",
     progressHistory: [],
   });
   const [visibleProgressCount, setVisibleProgressCount] = useState(0);
   const [errorText, setErrorText] = useState("");
   const [fallbackOutput, setFallbackOutput] = useState("");
+  const [historyReport, setHistoryReport] = useState(prefilledReport);
+  const [historyReportLoading, setHistoryReportLoading] = useState(
+    historyMode && !prefilledReport
+  );
   const reportOpened = useRef(false);
   const reportStream = useBizReportStream(gatewayBase, sessionId, turnId, dsId);
 
   useEffect(() => {
+    const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
+    setTask({
+      status: initialStatus,
+      hasReport: historyMode && (hasReport || Boolean(prefilled)),
+      currentTaskDesc: historyMode ? "历史记录" : "已提交",
+      progressHistory: [],
+    });
+    setErrorText("");
+    setFallbackOutput("");
+    setHistoryReport(prefilled);
+    setHistoryReportLoading(historyMode && !prefilled);
+    reportOpened.current = false;
+  }, [sessionId, turnId, initialStatus, historyMode, hasReport, initialHistoricalReport]);
+
+  useEffect(() => {
+    if (!historyMode) return;
+    const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
+    if (prefilled) {
+      setHistoryReport(prefilled);
+      setHistoryReportLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const body = await fetchHistoryReport(gatewayBase, sessionId, turnId, dsId);
+        if (cancelled) return;
+        if (body) {
+          setHistoryReport(body);
+        } else if (!hasReport) {
+          setErrorText("该轮次无已持久化的报告内容");
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setErrorText(String((e as Error).message || e));
+        }
+      } finally {
+        if (!cancelled) setHistoryReportLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    historyMode,
+    gatewayBase,
+    sessionId,
+    turnId,
+    dsId,
+    hasReport,
+    initialHistoricalReport,
+  ]);
+
+  useEffect(() => {
+    if (historyMode) return;
+
     let cancelled = false;
 
     const pollOnce = async (): Promise<SolveTask | null> => {
@@ -77,7 +174,7 @@ export default function ChatTurnCard({
       while (!cancelled) {
         const t = await pollOnce();
         if (!t) break;
-        const terminal = ["succeeded", "failed", "cancelled"].includes(t.status || "");
+        const terminal = TERMINAL.has(t.status || "");
         if (
           !reportOpened.current &&
           (t.status === "running" || t.status === "queued")
@@ -89,13 +186,11 @@ export default function ChatTurnCard({
           reportStream.close();
           if (t.error) {
             setErrorText(JSON.stringify(t.error, null, 2));
-          } else if (
-            t.status === "succeeded" &&
-            !reportText &&
-            t.result?.outputText
-          ) {
+          } else if (t.status === "succeeded" && t.result?.outputText) {
             const txt = t.result.outputText;
-            setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
+            if (!reportStream.text) {
+              setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
+            }
           } else if (!t.hasReport && t.result?.outputText) {
             const txt = t.result.outputText;
             setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
@@ -112,11 +207,13 @@ export default function ChatTurnCard({
       reportStream.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gatewayBase, taskId]);
+  }, [gatewayBase, taskId, historyMode]);
 
   const history = task.progressHistory || [];
-  const reportText = reportStream.text;
+  const liveReportText = reportStream.text;
+  const reportText = historyMode ? historyReport : liveReportText;
   const reportVisible = reportText.length > 0;
+  const reportStreaming = historyMode ? false : reportStream.live;
 
   useEffect(() => {
     setVisibleProgressCount((n) => (history.length > n ? history.length : n));
@@ -191,7 +288,7 @@ export default function ChatTurnCard({
         </div>
       </div>
 
-      {!reportVisible && visibleProgressCount > 0 && (
+      {!reportVisible && !historyMode && visibleProgressCount > 0 && (
         <div className={styles.progressFeed}>
           <Collapse
             size="small"
@@ -214,10 +311,13 @@ export default function ChatTurnCard({
       )}
 
       <div className={styles.turnBody}>
+        {historyMode && historyReportLoading && !reportVisible && !errorText && (
+          <div className={styles.turnBodyPlaceholder}>加载报告中…</div>
+        )}
         {reportVisible && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>报告</div>
-            <ReportMarkdown text={reportText} streaming={reportStream.live} />
+            <ReportMarkdown text={reportText} streaming={reportStreaming} />
           </div>
         )}
         {fallbackOutput && !reportVisible && (

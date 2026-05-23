@@ -38,7 +38,8 @@ use gateway_solve_turn::{
 };
 use http_gateway_rs::biz_advice_report::{
     biz_report_sse_event_stream, build_biz_advice_polish_prompt, db_snapshot_report_sse_response,
-    load_boss_report_writer_instructions, report_body_from_solve_output, sanitize_biz_report_parts,
+    load_boss_report_writer_instructions, report_body_from_persisted, report_body_from_solve_output,
+    sanitize_biz_report_parts,
     sanitize_external_report_text, sanitize_report_payload, BizAdviceReportPayload,
     BizReportStreamMsg, ReportExportSanitizer,
 };
@@ -1338,6 +1339,10 @@ async fn main() {
         .route("/openapi.json", get(openapi))
         .route("/healthz", get(healthz))
         .route("/v1/projects", get(list_projects).post(create_project))
+        .route(
+            "/v1/projects/{ds_id}/sessions",
+            get(list_project_sessions),
+        )
         .route("/v1/projects/{ds_id}", delete(delete_project))
         .route("/v1/projects/{ds_id}/git/push", post(push_project_git))
         .route("/v1/init", post(init_workspace))
@@ -1349,6 +1354,10 @@ async fn main() {
         .route(
             "/v1/sessions/{session_id}/execution",
             get(get_session_execution),
+        )
+        .route(
+            "/v1/sessions/{session_id}/turns",
+            get(list_session_turns),
         )
         .route(
             "/v1/sessions/{session_id}/turns/{turn_id}/tools",
@@ -5223,6 +5232,166 @@ struct SessionExecutionQuery {
     include_trace: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct ListProjectSessionsQuery {
+    #[serde(default = "default_session_list_limit")]
+    limit: i64,
+    /// Keyset: load rows strictly older than this `(updatedAtMs, sessionId)` pair.
+    #[serde(rename = "beforeUpdatedAtMs")]
+    before_updated_at_ms: Option<i64>,
+    #[serde(rename = "beforeSessionId")]
+    before_session_id: Option<String>,
+    #[serde(rename = "updatedFromMs")]
+    updated_from_ms: Option<i64>,
+    #[serde(rename = "updatedToMs")]
+    updated_to_ms: Option<i64>,
+    /// Fuzzy match on first-turn `user_prompt` (ILIKE).
+    q: Option<String>,
+}
+
+fn default_session_list_limit() -> i64 {
+    20
+}
+
+#[derive(Debug, Serialize)]
+struct GatewaySessionSummaryJson {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "createdAtMs")]
+    created_at_ms: i64,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: i64,
+    #[serde(rename = "turnCount")]
+    turn_count: i64,
+    #[serde(rename = "previewPrompt")]
+    preview_prompt: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListProjectSessionsResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    sessions: Vec<GatewaySessionSummaryJson>,
+    #[serde(rename = "hasMore")]
+    has_more: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListSessionTurnsQuery {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct GatewayTurnSummaryJson {
+    #[serde(rename = "turnId")]
+    turn_id: String,
+    #[serde(rename = "userPrompt")]
+    user_prompt: Option<String>,
+    status: String,
+    #[serde(rename = "createdAtMs")]
+    created_at_ms: i64,
+    #[serde(rename = "finishedAtMs")]
+    finished_at_ms: Option<i64>,
+    #[serde(rename = "hasReport")]
+    has_report: bool,
+    #[serde(rename = "reportBody", skip_serializing_if = "Option::is_none")]
+    report_body: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListSessionTurnsResponse {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    turns: Vec<GatewayTurnSummaryJson>,
+}
+
+async fn list_project_sessions(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+    Query(query): Query<ListProjectSessionsQuery>,
+) -> Result<Json<ListProjectSessionsResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let limit = query.limit;
+    let rows = state
+        .session_db
+        .list_sessions_for_ds(
+            ds_id,
+            limit,
+            query.before_updated_at_ms,
+            query.before_session_id.as_deref(),
+            query.updated_from_ms,
+            query.updated_to_ms,
+            query.q.as_deref(),
+        )
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let has_more = i64::try_from(rows.len()).unwrap_or(0) >= limit;
+    Ok(Json(ListProjectSessionsResponse {
+        ds_id,
+        sessions: rows
+            .into_iter()
+            .map(|r| GatewaySessionSummaryJson {
+                session_id: r.session_id,
+                created_at_ms: r.created_at_ms,
+                updated_at_ms: r.updated_at_ms,
+                turn_count: r.turn_count,
+                preview_prompt: r.preview_prompt,
+            })
+            .collect(),
+        has_more,
+    }))
+}
+
+async fn list_session_turns(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(query): Query<ListSessionTurnsQuery>,
+) -> Result<Json<ListSessionTurnsResponse>, ApiError> {
+    if query.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let exists = state
+        .session_db
+        .session_exists(&session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if !exists {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!(
+                "session not found: {session_id} dsId={}",
+                query.ds_id
+            ),
+        ));
+    }
+    let rows = state
+        .session_db
+        .list_turns_for_session(&session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(Json(ListSessionTurnsResponse {
+        session_id,
+        ds_id: query.ds_id,
+        turns: rows
+            .into_iter()
+            .map(|r| GatewayTurnSummaryJson {
+                turn_id: r.turn_id,
+                user_prompt: r.user_prompt,
+                status: r.status,
+                created_at_ms: r.created_at_ms,
+                finished_at_ms: r.finished_at_ms,
+                has_report: r.has_report,
+                report_body: r.report_body,
+            })
+            .collect(),
+    }))
+}
+
 async fn get_session_execution(
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,
@@ -6098,67 +6267,95 @@ async fn load_turn_report_body_from_db(
     state: &AppState,
     query: &BizAdviceReportQuery,
 ) -> Result<String, ApiError> {
-    if let Some(msg) = state
+    let report_message = state
         .session_db
         .get_turn_report_message(&query.turn_id, &query.session_id, query.ds_id)
         .await
-        .map_err(|e| session_db_err(&e))?
-    {
-        if !msg.trim().is_empty() {
-            return Ok(msg);
-        }
-    }
+        .map_err(|e| session_db_err(&e))?;
     let output_json = state
         .session_db
         .get_turn_output_json(&query.turn_id, &query.session_id, query.ds_id)
         .await
         .map_err(|e| session_db_err(&e))?;
-    report_body_from_solve_output("", output_json.as_ref()).map_err(|e| {
+    report_body_from_persisted(report_message.as_deref(), output_json.as_ref()).ok_or_else(|| {
         ApiError::new(
             StatusCode::NOT_FOUND,
             format!(
-                "turn {} has no persisted report message: {e}",
+                "turn {} has no persisted report message (outputJson.message)",
                 query.turn_id
             ),
         )
     })
 }
 
-/// Live report: DB snapshot when succeeded; pool SSE proxy when running. Author: kejiqing
+/// JSON report for one turn (`stream=false`); used by admin history replay. Author: kejiqing
+fn biz_report_json_response(
+    ctx: &BizReportDbCtx,
+    query: &BizAdviceReportQuery,
+    body: String,
+) -> Response {
+    Json(BizAdviceReportResponse {
+        task_id: ctx.task_id.clone(),
+        source_request_id: ctx.task_id.clone(),
+        source_ds_id: query.ds_id,
+        source_status: ctx.status.clone(),
+        report_text: body.clone(),
+        report_json: Some(json!({ "message": body })),
+    })
+    .into_response()
+}
+
+/// Live report: DB snapshot when terminal; pool SSE proxy when running. Author: kejiqing
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
 ) -> Result<Response, ApiError> {
     let ctx = resolve_biz_report_from_db(&state, &query).await?;
 
-    if query.stream {
-        if ctx.status == "succeeded" {
-            tracing::info!(
-                target: "claw_live_report",
-                component = "biz_advice_report",
-                phase = "route",
-                route = "db_snapshot_sse",
-                turn_id = %ctx.turn_id,
-                session_id = %query.session_id,
-                ds_id = query.ds_id,
-                status = %ctx.status,
-                "biz_advice_report stream — terminal snapshot from gateway_turns (no pool HTTP)"
-            );
-            let body = load_turn_report_body_from_db(&state, &query).await?;
-            let payload = BizAdviceReportPayload {
-                task_id: ctx.task_id.clone(),
-                source_request_id: ctx.task_id.clone(),
-                source_ds_id: query.ds_id,
-                source_status: "succeeded".into(),
-                report_text: Some(body.clone()),
-                report_json: Some(json!({ "message": body })),
-            };
-            return Ok(db_snapshot_report_sse_response(
-                &ctx.task_id,
-                payload,
-                &body,
+    if matches!(ctx.status.as_str(), "succeeded" | "failed" | "cancelled") {
+        if let Ok(body) = load_turn_report_body_from_db(&state, &query).await {
+            if !body.trim().is_empty() {
+                if query.stream {
+                    tracing::info!(
+                        target: "claw_live_report",
+                        component = "biz_advice_report",
+                        phase = "route",
+                        route = "db_snapshot_sse",
+                        turn_id = %ctx.turn_id,
+                        session_id = %query.session_id,
+                        ds_id = query.ds_id,
+                        status = %ctx.status,
+                        "biz_advice_report stream — terminal snapshot from gateway_turns (no pool HTTP)"
+                    );
+                    let payload = BizAdviceReportPayload {
+                        task_id: ctx.task_id.clone(),
+                        source_request_id: ctx.task_id.clone(),
+                        source_ds_id: query.ds_id,
+                        source_status: ctx.status.clone(),
+                        report_text: Some(body.clone()),
+                        report_json: Some(json!({ "message": body })),
+                    };
+                    return Ok(db_snapshot_report_sse_response(
+                        &ctx.task_id,
+                        payload,
+                        &body,
+                    ));
+                }
+                return Ok(biz_report_json_response(&ctx, &query, body));
+            }
+        }
+        if !query.stream {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!(
+                    "turn {} has no persisted report (status={})",
+                    query.turn_id, ctx.status
+                ),
             ));
         }
+    }
+
+    if query.stream {
         if matches!(ctx.status.as_str(), "running" | "queued") {
             let pool_http_from_db = state
                 .session_db
