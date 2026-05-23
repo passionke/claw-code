@@ -55,10 +55,9 @@ pub async fn proxy_pool_live_report_sse(
         return Ok((status, body).into_response());
     }
     let headers = upstream.headers().clone();
-    let byte_stream = upstream.bytes_stream().map(|r| {
-        r.map(|b| b)
-            .map_err(|e| std::io::Error::other(e.to_string()))
-    });
+    let byte_stream = upstream
+        .bytes_stream()
+        .map(|r| r.map_err(|e| std::io::Error::other(e.to_string())));
     let mut resp = Response::new(Body::from_stream(byte_stream));
     *resp.status_mut() = status;
     copy_sse_headers(&headers, resp.headers_mut());

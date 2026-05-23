@@ -19,6 +19,7 @@ pub fn port_from_bind(bind: &str) -> u16 {
 }
 
 /// Host/IP clients use to reach this pool's SSE (and RPC) from other machines.
+#[must_use]
 pub fn resolve_advertise_host() -> String {
     for key in ["CLAW_POOL_ADVERTISE_HOST", "CLAW_POOL_ADVERTISE_IP"] {
         if let Ok(v) = std::env::var(key) {
@@ -115,7 +116,7 @@ pub async fn run_pool_registry(
                     break;
                 }
             }
-            _ = tokio::time::sleep(Duration::from_secs(60)) => {
+            () = tokio::time::sleep(Duration::from_secs(60)) => {
                 let ts = crate::session_db::now_ms_for_registry();
                 if let Err(e) = db_hb.touch_claw_pool_heartbeat(&pool_id_hb, ts).await {
                     warn!(

@@ -260,6 +260,7 @@ pub fn effective_clone_url(url: &str, token: Option<&str>) -> SyncResult<String>
     Ok(base.to_string())
 }
 
+#[allow(clippy::similar_names)]
 async fn git_run(cwd: &Path, args: &[&str]) -> SyncResult<String> {
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd);
@@ -283,6 +284,7 @@ async fn git_run(cwd: &Path, args: &[&str]) -> SyncResult<String> {
     Ok(stdout)
 }
 
+#[allow(clippy::similar_names)]
 async fn git_run_env(cwd: &Path, env_pairs: &[(&str, &str)], args: &[&str]) -> SyncResult<()> {
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd);

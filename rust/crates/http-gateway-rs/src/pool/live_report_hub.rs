@@ -108,6 +108,7 @@ impl LiveReportHub {
     }
 
     /// Atomic (subscribe, snapshot): no overlap between catch-up and broadcast tail.
+    #[must_use]
     pub fn subscribe_with_snapshot(&self, turn_id: &str) -> (broadcast::Receiver<HubMsg>, String) {
         let mut guard = self.inner.lock().expect("live_report_hub lock");
         let state = guard

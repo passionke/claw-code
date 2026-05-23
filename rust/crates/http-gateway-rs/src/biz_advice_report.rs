@@ -2,6 +2,12 @@
 //!
 //! Live solve text is forwarded as-is; polish path may still strip legacy `__CLAW_REPORT_START__` on egress.
 
+#![allow(
+    clippy::must_use_candidate,
+    clippy::no_effect_underscore_binding,
+    clippy::match_wildcard_for_single_variants
+)]
+
 use std::convert::Infallible;
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};

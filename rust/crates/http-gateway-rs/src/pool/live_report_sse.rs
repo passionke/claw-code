@@ -18,13 +18,13 @@ const CATCHUP_CHUNK_CHARS: usize = 48;
 
 pub fn live_report_sse_response(
     hub: Arc<LiveReportHub>,
-    turn_id: String,
+    turn_id: &str,
     task_id: String,
     source_request_id: String,
     source_ds_id: i64,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<BizReportStreamMsg>();
-    let turn_id_worker = turn_id.clone();
+    let turn_id_worker = turn_id.to_string();
     let hub_done = Arc::clone(&hub);
     tokio::spawn(async move {
         let (mut sub, snapshot_raw) = hub.subscribe_with_snapshot(&turn_id_worker);
@@ -38,9 +38,8 @@ pub fn live_report_sse_response(
                 Ok(HubMsg::Delta(chunk)) => {
                     let _ = tx.send(BizReportStreamMsg::Delta(chunk));
                 }
-                Ok(HubMsg::SolveDone) => break,
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => break,
+                Ok(HubMsg::SolveDone) | Err(RecvError::Closed) => break,
+                Err(RecvError::Lagged(_)) => {}
             }
         }
         let final_text = sanitize_external_report_text(&hub.snapshot_text(&turn_id_worker));
@@ -60,7 +59,7 @@ pub fn live_report_sse_response(
     let no_buffer_val = HeaderValue::from_static("no");
     (
         AppendHeaders([(no_buffer, no_buffer_val)]),
-        Sse::new(biz_report_sse_event_stream(&turn_id, rx)).keep_alive(KeepAlive::default()),
+        Sse::new(biz_report_sse_event_stream(turn_id, rx)).keep_alive(KeepAlive::default()),
     )
         .into_response()
 }

@@ -1,5 +1,7 @@
 //! Structured logging for biz report SSE density (tracing + optional file). Author: kejiqing
 
+#![allow(clippy::must_use_candidate)]
+
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;

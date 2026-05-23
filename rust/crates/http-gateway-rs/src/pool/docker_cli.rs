@@ -112,14 +112,13 @@ pub async fn runtime_exec_with_live_streams(
         loop {
             line.clear();
             match reader.read_line(&mut line).await {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(_) => {
                     acc.push_str(&line);
                     if let Some(ref hook) = on_stdout_line {
                         hook(line.clone());
                     }
                 }
-                Err(_) => break,
             }
         }
         acc

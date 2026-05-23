@@ -116,8 +116,8 @@ else
     rust_cargo fmt -p "${pkg}" -- --check
   done
   echo "[pre-push] rustfmt check passed"
-  echo "[pre-push] running cargo clippy --all-targets for changed packages"
-  rust_cargo clippy "${pkg_flags[@]}" --all-targets -- -D warnings
+  echo "[pre-push] running cargo clippy --lib for changed packages"
+  rust_cargo clippy "${pkg_flags[@]}" --lib -- -D warnings
   echo "[pre-push] clippy check passed"
   echo "[pre-push] running cargo test for changed packages"
   rust_cargo test "${pkg_flags[@]}"

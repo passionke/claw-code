@@ -64,11 +64,7 @@ async fn get_biz_advice_report_live(
         "pool /v1/biz_advice_report/live — hub subscribe (direct or via gateway proxy)"
     );
     Ok(live_report_sse_response(
-        hub,
-        turn_id.to_string(),
-        task_id,
-        request_id,
-        ds_id,
+        hub, turn_id, task_id, request_id, ds_id,
     ))
 }
 

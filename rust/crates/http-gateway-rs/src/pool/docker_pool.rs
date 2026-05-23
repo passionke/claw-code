@@ -28,6 +28,8 @@ pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
 /// Fix: one mpsc channel + one consumer task per turn. The Fn just `send`s the line
 /// (lock-free, ordered); the single consumer drains in FIFO order and awaits each
 /// forward sequentially. Author: kejiqing
+#[must_use]
+#[allow(clippy::needless_pass_by_value)]
 pub fn merge_stdout_hooks(
     turn_id: &str,
     hub: Option<Arc<super::live_report_hub::LiveReportHub>>,
@@ -339,7 +341,7 @@ impl DockerPoolManager {
     #[allow(clippy::too_many_lines)] // podman run argv + bind mounts. Author: kejiqing
     async fn run_worker_container(
         &self,
-        slot_index: usize,
+        _slot_index: usize,
         name: &str,
         session_host_bind: &Path,
         host_mounts: &PoolSessionHostMounts,
@@ -601,6 +603,7 @@ impl DockerPoolManager {
 
     /// `task_rel_under_root` is a path relative to the session bind root (e.g.
     /// `gateway-solve-task.json`), not under other `ds_*` trees.
+    #[allow(clippy::too_many_lines)]
     pub async fn exec_solve(
         &self,
         slot: &SlotLease,
