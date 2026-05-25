@@ -134,7 +134,7 @@ fn mcp_json_bool(object: &JsonValue, key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// MCP `tools/list` annotation flag on `annotations` or `_meta` (camelCase + snake_case). Author: kejiqing
+/// MCP `tools/list` annotation flag on `annotations` or `_meta` (camelCase + `snake_case`). Author: kejiqing
 #[must_use]
 pub fn mcp_annotation_bool(annotations: Option<&JsonValue>, key: &str) -> bool {
     let Some(value) = annotations else {
@@ -165,7 +165,7 @@ pub fn mcp_tool_allows_concurrent_calls(tool: &McpTool) -> bool {
     read_only && !destructive && !open_world
 }
 
-/// SQLBot and others may mark parallel-safe tools in `description` (e.g. `parallel-friendly`). Author: kejiqing
+/// `SQLBot` and others may mark parallel-safe tools in `description` (e.g. `parallel-friendly`). Author: kejiqing
 #[must_use]
 pub fn mcp_description_parallel_friendly(tool: &McpTool) -> bool {
     tool.description
@@ -884,6 +884,7 @@ impl McpServerManager {
     }
 
     /// Concurrent MCP `tools/call` for HTTP streamable servers: brief manager lock only.
+    #[allow(clippy::await_holding_lock)]
     pub async fn call_tool_concurrent(
         manager: Arc<StdMutex<Self>>,
         qualified_tool_name: &str,
@@ -893,7 +894,11 @@ impl McpServerManager {
         let prep = {
             let mut guard = manager.lock().map_err(|_| manager_lock_poisoned())?;
             guard
-                .prepare_concurrent_http_call(qualified_tool_name, &arguments, &meta)
+                .prepare_concurrent_http_call(
+                    qualified_tool_name,
+                    arguments.as_ref(),
+                    meta.as_ref(),
+                )
                 .await?
         };
 
@@ -989,8 +994,8 @@ impl McpServerManager {
     async fn prepare_concurrent_http_call(
         &mut self,
         qualified_tool_name: &str,
-        arguments: &Option<JsonValue>,
-        meta: &Option<JsonValue>,
+        arguments: Option<&JsonValue>,
+        meta: Option<&JsonValue>,
     ) -> Result<Option<ConcurrentHttpPrep>, McpServerManagerError> {
         let route = self
             .tool_index
@@ -1018,16 +1023,12 @@ impl McpServerManager {
         };
 
         let timeout_ms = self.tool_call_timeout_ms(&route.server_name)?;
-        let arguments_chars = arguments
-            .as_ref()
-            .map_or(0usize, |value| value.to_string().chars().count());
+        let arguments_chars = arguments.map_or(0usize, |value| value.to_string().chars().count());
         let has_meta = meta.is_some();
         let has_meta_extra = meta
-            .as_ref()
             .and_then(|value| value.get("extra_session"))
             .is_some();
         let meta_extra = meta
-            .as_ref()
             .and_then(|value| value.get("extra_session"))
             .cloned()
             .unwrap_or(JsonValue::Null);
