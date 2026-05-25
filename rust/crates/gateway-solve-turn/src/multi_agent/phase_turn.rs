@@ -1,7 +1,5 @@
 //! Short-lived ConversationRuntime for a single multi-agent phase. Author: kejiqing
-use runtime::{
-    ContentBlock, ConversationRuntime, PermissionMode, PermissionPolicy, Session,
-};
+use runtime::{ContentBlock, ConversationRuntime, PermissionMode, PermissionPolicy, Session};
 
 use crate::gateway_stdout::emit_report_delta;
 use crate::{DirectApiClient, DirectToolExecutor, GatewaySolveTurnError};
@@ -30,13 +28,8 @@ pub fn run_phase_turn(
         .map_err(|e| err(HTTP_INTERNAL, format!("push user message failed: {e}")))?;
 
     let policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
-    let mut runtime = ConversationRuntime::new(
-        session,
-        api_client,
-        tool_executor,
-        policy,
-        system_prompt,
-    );
+    let mut runtime =
+        ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
     runtime = runtime.with_max_iterations(max_iterations);
 
     let result = if stream_text_to_report {
@@ -93,8 +86,7 @@ fn filter_allowed(base: &[String], want: &[&str]) -> Vec<String> {
         .filter(|w| {
             base.iter().any(|b| {
                 b == *w
-                    || b
-                        .strip_suffix('*')
+                    || b.strip_suffix('*')
                         .is_some_and(|prefix| w.starts_with(prefix))
             })
         })

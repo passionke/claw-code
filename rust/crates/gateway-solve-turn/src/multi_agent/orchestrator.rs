@@ -4,8 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use runtime::{
-    apply_config_env_if_unset, gateway_schema_prompt_section,
-    ConfigLoader, RuntimeConfig, Session,
+    apply_config_env_if_unset, gateway_schema_prompt_section, ConfigLoader, RuntimeConfig, Session,
 };
 use serde_json::json;
 use tracing::info;

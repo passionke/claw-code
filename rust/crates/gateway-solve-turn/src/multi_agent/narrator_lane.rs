@@ -82,13 +82,7 @@ fn narrator_loop(
         .expect("narrator tokio runtime");
     let _ = rt.block_on(async {
         narrator_loop_async(
-            work_dir,
-            session_id,
-            model,
-            executor,
-            event_bus,
-            stop,
-            throttle,
+            work_dir, session_id, model, executor, event_bus, stop, throttle,
         )
         .await;
     });
@@ -142,16 +136,11 @@ fn run_narrator_batch(
     let system = load_phase_prompt(work_dir, "narrator.md", DEFAULT_NARRATOR_MD);
     let allowed = vec![REPORT_PROGRESS_TOOL_NAME.to_string()];
     let tools: Vec<ToolDefinition> = vec![crate::report_progress_tool_definition()];
-    let api = DirectApiClient::new(
-        model.to_string(),
-        &allowed,
-        tools,
-        session_id.to_string(),
-    )
-    .map_err(|e| GatewaySolveTurnError {
-        status: 500,
-        message: e.message,
-    })?;
+    let api = DirectApiClient::new(model.to_string(), &allowed, tools, session_id.to_string())
+        .map_err(|e| GatewaySolveTurnError {
+            status: 500,
+            message: e.message,
+        })?;
     let phase_executor = executor.clone_with_allowed_tools(allowed);
     let user = format_events_for_narrator(batch);
     let _ = run_phase_turn(user, api, phase_executor, vec![system], 2, false);

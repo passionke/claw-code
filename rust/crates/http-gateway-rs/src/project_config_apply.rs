@@ -343,11 +343,12 @@ async fn write_solve_orchestration_marker(
             ProjectConfigApplyError::new(format!("create {} parent: {e}", path.display()))
         })?;
     }
-    let bytes = serde_json::to_vec_pretty(&gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
-        &row.solve_orchestration_json,
-    )).map_err(|e| {
-        ProjectConfigApplyError::new(format!("serialize solve-orchestration: {e}"))
-    })?;
+    let bytes = serde_json::to_vec_pretty(
+        &gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
+            &row.solve_orchestration_json,
+        ),
+    )
+    .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-orchestration: {e}")))?;
     fs::write(&path, bytes)
         .await
         .map_err(|e| ProjectConfigApplyError::new(format!("write {}: {e}", path.display())))?;

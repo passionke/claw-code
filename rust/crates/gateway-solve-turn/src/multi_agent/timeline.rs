@@ -116,10 +116,7 @@ fn lane(
 }
 
 fn ts(events: &[OrchestrationEvent], kind: &str) -> Option<i64> {
-    events
-        .iter()
-        .find(|e| e.kind == kind)
-        .map(|e| e.ts_ms)
+    events.iter().find(|e| e.kind == kind).map(|e| e.ts_ms)
 }
 
 fn query_title(events: &[OrchestrationEvent], todo_id: &str) -> String {
@@ -143,7 +140,10 @@ pub fn build_solve_turn_timeline(session_home: &Path) -> Option<SolveTurnTimelin
 
     let mut lanes = Vec::new();
 
-    if let (Some(s0), Some(s1)) = (ts(&events, "session_started"), ts(&events, "preflight_done")) {
+    if let (Some(s0), Some(s1)) = (
+        ts(&events, "session_started"),
+        ts(&events, "preflight_done"),
+    ) {
         lanes.push(lane(
             "preflight",
             "Preflight · SQLBot",
@@ -214,13 +214,7 @@ pub fn build_solve_turn_timeline(session_home: &Path) -> Option<SolveTurnTimelin
     }
     query_segments.sort_by_key(|s| s.start_ms);
     if !query_segments.is_empty() {
-        end = end.max(
-            query_segments
-                .iter()
-                .map(|s| s.end_ms)
-                .max()
-                .unwrap_or(end),
-        );
+        end = end.max(query_segments.iter().map(|s| s.end_ms).max().unwrap_or(end));
         lanes.push(lane(
             "query_fanout",
             "SQLBot 问数（并行）",
@@ -250,10 +244,7 @@ pub fn build_solve_turn_timeline(session_home: &Path) -> Option<SolveTurnTimelin
                 if ev.ts_ms < origin {
                     continue;
                 }
-                let next_end = report_events
-                    .get(i + 1)
-                    .map(|n| n.ts_ms)
-                    .unwrap_or(end);
+                let next_end = report_events.get(i + 1).map(|n| n.ts_ms).unwrap_or(end);
                 let label = ev.message.trim();
                 if label.is_empty() {
                     continue;
@@ -324,12 +315,7 @@ fn build_progress_only_timeline(session_home: &Path) -> Option<SolveTurnTimeline
         origin_ms: origin,
         end_ms: end,
         total_ms: end.saturating_sub(origin),
-        lanes: vec![lane(
-            "progress",
-            "执行进度",
-            false,
-            segments,
-        )],
+        lanes: vec![lane("progress", "执行进度", false, segments)],
         phases: Vec::new(),
     })
 }

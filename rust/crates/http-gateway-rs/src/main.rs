@@ -4118,9 +4118,10 @@ async fn project_config_row_to_response(
         claude_md: row.claude_md,
         git_sync_json: git_sync_json_for_api(state, &row.git_sync_json).await,
         solve_preflight_json: row.solve_preflight_json.clone(),
-        solve_orchestration_json: gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
-            &row.solve_orchestration_json,
-        ),
+        solve_orchestration_json:
+            gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
+                &row.solve_orchestration_json,
+            ),
     }
 }
 
@@ -7318,7 +7319,9 @@ fn mcp_server_names_from_settings(settings: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-async fn test_mcp(Json(req): Json<TestMcpRequest>) -> Result<Json<mcp_probe::McpTestResponse>, ApiError> {
+async fn test_mcp(
+    Json(req): Json<TestMcpRequest>,
+) -> Result<Json<mcp_probe::McpTestResponse>, ApiError> {
     let server_name = req.server_name.trim();
     if server_name.is_empty() {
         return Err(ApiError::new(

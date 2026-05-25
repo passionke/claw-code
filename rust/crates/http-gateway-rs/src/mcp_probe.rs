@@ -72,19 +72,18 @@ fn collect_warnings(server_name: &str, config: &Value) -> Vec<String> {
             ));
         }
     }
-    if config.get("headers").and_then(Value::as_object).is_none_or(|o| o.is_empty()) {
-        out.push(
-            "未配置 headers：HTTP MCP 通常需要 Authorization 或 x-ak/x-sk。".to_string(),
-        );
+    if config
+        .get("headers")
+        .and_then(Value::as_object)
+        .is_none_or(|o| o.is_empty())
+    {
+        out.push("未配置 headers：HTTP MCP 通常需要 Authorization 或 x-ak/x-sk。".to_string());
     }
     let _ = server_name;
     out
 }
 
-fn discovery_errors(
-    server_name: &str,
-    report: &runtime::McpToolDiscoveryReport,
-) -> Vec<String> {
+fn discovery_errors(server_name: &str, report: &runtime::McpToolDiscoveryReport) -> Vec<String> {
     let mut out = Vec::new();
     for failure in &report.failed_servers {
         if failure.server_name == server_name {
@@ -147,7 +146,11 @@ fn truncate(s: &str, max: usize) -> String {
     format!("{}…", &s[..max])
 }
 
-async fn write_probe_settings(work_dir: &Path, server_name: &str, config: &Value) -> Result<(), String> {
+async fn write_probe_settings(
+    work_dir: &Path,
+    server_name: &str,
+    config: &Value,
+) -> Result<(), String> {
     let claw = work_dir.join(".claw");
     fs::create_dir_all(&claw)
         .await
@@ -260,7 +263,9 @@ pub async fn probe_mcp_server(
                 .map(|u| format!("unsupported: {}", u.reason)),
         );
         if errors.is_empty() {
-            errors.push(format!("server {server_name:?} not registered (check type/url)"));
+            errors.push(format!(
+                "server {server_name:?} not registered (check type/url)"
+            ));
         }
         cleanup();
         return fail_response(
@@ -305,15 +310,11 @@ pub async fn probe_mcp_server(
             mcp_start_message = Some("tools/list 中无 mcp_start".to_string());
             warnings.push("未探测 mcp_start：工具列表里没有 mcp_start。".to_string());
         } else {
-            match manager
-                .call_tool(&start_tool, Some(json!({})), None)
-                .await
-            {
+            match manager.call_tool(&start_tool, Some(json!({})), None).await {
                 Ok(resp) => {
                     if let Some(err) = resp.error {
                         mcp_start_ok = Some(false);
-                        mcp_start_message =
-                            Some(format!("{} ({})", err.message, err.code));
+                        mcp_start_message = Some(format!("{} ({})", err.message, err.code));
                         errors.push(format!("mcp_start RPC error: {}", err.message));
                     } else if let Some(result) = resp.result {
                         let (ok, msg) = mcp_start_result_snippet(&result);

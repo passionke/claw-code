@@ -289,5 +289,4 @@ mod tests {
         assert_eq!(super::parse_mcp_max_concurrent(None), 4);
         assert_eq!(super::parse_mcp_max_concurrent(Some("")), 4);
     }
-
 }

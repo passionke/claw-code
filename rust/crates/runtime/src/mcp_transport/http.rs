@@ -439,7 +439,11 @@ where
     if let Some(session_id) = &snapshot.session_id {
         call = call.header("Mcp-Session-Id", session_id);
     }
-    let response = call.json(request).send().await.map_err(reqwest_error_to_io)?;
+    let response = call
+        .json(request)
+        .send()
+        .await
+        .map_err(reqwest_error_to_io)?;
     let mut new_session_id = None;
     if let Some(value) = response.headers().get("Mcp-Session-Id") {
         if let Ok(session_id) = value.to_str() {
@@ -512,8 +516,11 @@ pub(crate) async fn establish_isolated_http_mcp_session(
         Some(default_http_initialize_params()),
     );
     let (response, session_id) =
-        execute_http_tool_call::<McpInitializeParams, McpInitializeResult>(init_snapshot, &init_request)
-            .await?;
+        execute_http_tool_call::<McpInitializeParams, McpInitializeResult>(
+            init_snapshot,
+            &init_request,
+        )
+        .await?;
     if let Some(error) = response.error {
         return Err(io::Error::other(format!(
             "MCP initialize failed: {} ({})",
@@ -708,8 +715,13 @@ mod tests {
 
     async fn spawn_isolated_mock_server() -> (String, Arc<Mutex<Vec<String>>>) {
         let tool_session_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock mcp");
-        let base_url = format!("http://127.0.0.1:{}", listener.local_addr().expect("addr").port());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock mcp");
+        let base_url = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("addr").port()
+        );
         let log = Arc::clone(&tool_session_ids);
         tokio::spawn(async move {
             loop {
@@ -783,8 +795,7 @@ mod tests {
                         return;
                     };
                     let body = mock_initialize_result_body();
-                    let response =
-                        http_json_response("200 OK", "", &body);
+                    let response = http_json_response("200 OK", "", &body);
                     let _ = socket.write_all(response.as_bytes()).await;
                 });
             }
@@ -818,7 +829,10 @@ mod tests {
                 .expect("isolated tools/call");
         assert!(response.error.is_none());
         assert!(response.result.is_some());
-        assert_eq!(shared_session, None, "isolated call must not return shared session id");
+        assert_eq!(
+            shared_session, None,
+            "isolated call must not return shared session id"
+        );
         let used = tool_sessions.lock().expect("log lock");
         assert_eq!(used.len(), 1);
         assert_eq!(used[0], "isolated-sess-fresh");

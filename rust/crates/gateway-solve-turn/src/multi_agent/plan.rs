@@ -49,7 +49,7 @@ fn value_to_string(v: Value) -> Result<String, String> {
 }
 
 impl AnalysisPlan {
-  pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         let title = self.plan_title.trim();
         if title.is_empty() {
             return Err(String::from("planTitle must not be empty"));
@@ -118,7 +118,9 @@ pub fn parse_plan_from_text(text: &str) -> Result<AnalysisPlan, String> {
             return Ok(plan);
         }
     }
-    Err(String::from("could not parse AnalysisPlan JSON from planner output"))
+    Err(String::from(
+        "could not parse AnalysisPlan JSON from planner output",
+    ))
 }
 
 #[cfg(test)]

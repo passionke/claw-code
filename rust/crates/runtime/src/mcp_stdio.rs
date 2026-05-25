@@ -152,9 +152,7 @@ pub fn mcp_annotation_bool(annotations: Option<&JsonValue>, key: &str) -> bool {
 }
 
 fn mcp_tool_annotation_object(tool: &McpTool) -> Option<&JsonValue> {
-    tool.annotations
-        .as_ref()
-        .or(tool.meta.as_ref())
+    tool.annotations.as_ref().or(tool.meta.as_ref())
 }
 
 /// Whether MCP metadata allows concurrent in-flight `tools/call` within one turn. Author: kejiqing
@@ -901,9 +899,7 @@ impl McpServerManager {
 
         let Some(prep) = prep else {
             let mut guard = manager.lock().map_err(|_| manager_lock_poisoned())?;
-            return guard
-                .call_tool(qualified_tool_name, arguments, meta)
-                .await;
+            return guard.call_tool(qualified_tool_name, arguments, meta).await;
         };
 
         let ConcurrentHttpPrep {
@@ -3268,7 +3264,9 @@ mod tests {
     #[test]
     fn concurrent_mcp_tool_names_honors_config_tool_annotations() {
         use super::ManagedMcpTool;
-        use crate::config::{ConfigSource, McpRemoteServerConfig, McpServerConfig, ScopedMcpServerConfig};
+        use crate::config::{
+            ConfigSource, McpRemoteServerConfig, McpServerConfig, ScopedMcpServerConfig,
+        };
         use crate::json::JsonValue as ConfigJson;
 
         let tools = vec![ManagedMcpTool {
@@ -3285,10 +3283,7 @@ mod tests {
         }];
         let mut servers = BTreeMap::new();
         let mut ann = BTreeMap::new();
-        ann.insert(
-            "readOnlyHint".to_string(),
-            ConfigJson::Bool(true),
-        );
+        ann.insert("readOnlyHint".to_string(), ConfigJson::Bool(true));
         let mut tool_annotations = BTreeMap::new();
         tool_annotations.insert("analysis".to_string(), ConfigJson::Object(ann));
         servers.insert(

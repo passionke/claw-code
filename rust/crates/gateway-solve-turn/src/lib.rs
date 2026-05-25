@@ -28,10 +28,9 @@ use api::{
     ProviderClient, StreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 use runtime::{
-    apply_config_env_if_unset, apply_mcp_tool_annotations_from_config,
-    concurrent_mcp_tool_names, default_mcp_max_concurrent,
-    gateway_schema_prompt_section, load_system_prompt, mcp_description_parallel_friendly,
-    mcp_tool_parallel_fanout_eligible,
+    apply_config_env_if_unset, apply_mcp_tool_annotations_from_config, concurrent_mcp_tool_names,
+    default_mcp_max_concurrent, gateway_schema_prompt_section, load_system_prompt,
+    mcp_description_parallel_friendly, mcp_tool_parallel_fanout_eligible,
     ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
     ConversationMessage, ConversationRuntime, McpServerManager, McpTool, MessageRole,
     PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError, Session, SharedToolExecutor,
@@ -41,9 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use telemetry::{JsonlTelemetrySink, SessionTracer};
 use tokio::sync::Semaphore;
-use tools::{
-    execute_mcp_tool_with_meta, execute_tool, initialize_mcp_bridge, mvp_tool_specs,
-};
+use tools::{execute_mcp_tool_with_meta, execute_tool, initialize_mcp_bridge, mvp_tool_specs};
 
 pub mod entity_labels;
 pub mod gateway_stdout;
@@ -60,6 +57,10 @@ pub use gateway_stdout::{
     emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
     GATEWAY_STDOUT_LINE_PREFIX,
 };
+pub use mcp_call_context::{
+    build_mcp_call_meta, resolve_gateway_trace_id, GatewayMcpCallContext,
+    CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
+};
 pub use session_report::{
     final_assistant_report_text_from_jsonl,
     final_assistant_report_text_from_jsonl_for_user_turn_index,
@@ -74,10 +75,6 @@ pub use task_progress::{
 };
 pub use worker_env::{
     apply_worker_env, worker_env_keys_set, WORKER_ENV_KEYS, WORKER_ENV_MOUNT_PATH,
-};
-pub use mcp_call_context::{
-    build_mcp_call_meta, resolve_gateway_trace_id, GatewayMcpCallContext,
-    CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
 };
 
 pub(crate) const HTTP_INTERNAL: u16 = 500;
@@ -317,7 +314,13 @@ pub(crate) fn initialize_mcp_runtime(
         .map_err(|e| err(HTTP_INTERNAL, format!("load runtime config failed: {e}")))?;
     let mut manager = McpServerManager::from_runtime_config(&runtime_cfg);
     if manager.server_names().is_empty() && manager.unsupported_servers().is_empty() {
-        return Ok((Vec::new(), HashSet::new(), HashSet::new(), HashSet::new(), None));
+        return Ok((
+            Vec::new(),
+            HashSet::new(),
+            HashSet::new(),
+            HashSet::new(),
+            None,
+        ));
     }
 
     let report = tokio::task::block_in_place(|| {
@@ -346,10 +349,8 @@ pub(crate) fn initialize_mcp_runtime(
             .input_schema
             .clone()
             .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
-        let description = decorate_mcp_tool_description(
-            &discovered.tool,
-            discovered.tool.description.clone(),
-        );
+        let description =
+            decorate_mcp_tool_description(&discovered.tool, discovered.tool.description.clone());
         runtime_mcp_tools.push(ToolDefinition {
             name: name.clone(),
             description,
@@ -513,7 +514,7 @@ impl DirectToolExecutorInner {
                 self.mcp_context.clawcode_session_id(),
                 &parsed,
             )
-                .map_err(ToolError::new)?;
+            .map_err(ToolError::new)?;
             if let Some(tracer) = &self.session_tracer {
                 if let Some(progress) = read_task_progress(&self.session_home) {
                     let mut attrs = serde_json::Map::new();
@@ -538,8 +539,7 @@ impl DirectToolExecutorInner {
                 );
             }
             let meta = self.mcp_context.to_mcp_meta();
-            let out =
-                execute_mcp_tool_with_meta(input, Some(&meta)).map_err(ToolError::new);
+            let out = execute_mcp_tool_with_meta(input, Some(&meta)).map_err(ToolError::new);
             if should_emit_tool_progress_event(tool_name, false, Some(&args)) {
                 if let Ok(ref text) = &out {
                     let _ = entity_labels::ingest_entity_labels_from_mcp_response(

@@ -47,7 +47,10 @@ fn compress_mcp_result(raw: &str, max_chars: usize) -> (String, String) {
             summary.to_string()
         };
         let raw_trunc = if trimmed.chars().count() > max_chars * 2 {
-            format!("{}...", trimmed.chars().take(max_chars * 2).collect::<String>())
+            format!(
+                "{}...",
+                trimmed.chars().take(max_chars * 2).collect::<String>()
+            )
         } else {
             trimmed.to_string()
         };
@@ -69,7 +72,11 @@ fn sqlbot_inner_text(raw: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn build_fanout_tool_args(sqlbot_ctx: &SqlbotQueryContext, question: &str, isolated: bool) -> Value {
+fn build_fanout_tool_args(
+    sqlbot_ctx: &SqlbotQueryContext,
+    question: &str,
+    isolated: bool,
+) -> Value {
     if isolated {
         let mut args = json!({
             "token": sqlbot_ctx.token,
@@ -89,7 +96,11 @@ fn build_fanout_tool_args(sqlbot_ctx: &SqlbotQueryContext, question: &str, isola
     }
 }
 
-fn write_result_file(session_home: &Path, todo_id: &str, result: &QueryResult) -> Result<(), String> {
+fn write_result_file(
+    session_home: &Path,
+    todo_id: &str,
+    result: &QueryResult,
+) -> Result<(), String> {
     let dir = session_home.join(ANALYSIS_RESULTS_DIR);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create results dir: {e}"))?;
     let path = dir.join(format!("{todo_id}.json"));
@@ -148,7 +159,13 @@ async fn run_one_query(
             } else {
                 let _ = event_bus.query_done(&todo.id, elapsed);
             }
-            let _ = on_query_finished(session_home, session_id, &todo.id, &todo.title, !payload_error);
+            let _ = on_query_finished(
+                session_home,
+                session_id,
+                &todo.id,
+                &todo.title,
+                !payload_error,
+            );
             QueryResult {
                 todo_id: todo.id,
                 ok: !payload_error,

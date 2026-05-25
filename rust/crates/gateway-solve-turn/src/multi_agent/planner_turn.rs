@@ -46,9 +46,8 @@ pub fn run_planner_turn(
         message: e.message,
     })?;
     let phase_executor = executor.clone_with_allowed_tools(allowed);
-    let user = format!(
-        "User analysis request:\n{user_prompt}\n\nRespond with AnalysisPlan JSON only."
-    );
+    let user =
+        format!("User analysis request:\n{user_prompt}\n\nRespond with AnalysisPlan JSON only.");
     let (text, _iters) = run_phase_turn(
         user,
         api,

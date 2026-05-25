@@ -50,7 +50,8 @@ impl MultiAgentTimings {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("create timings dir: {e}"))?;
         }
-        let bytes = serde_json::to_vec_pretty(self).map_err(|e| format!("serialize timings: {e}"))?;
+        let bytes =
+            serde_json::to_vec_pretty(self).map_err(|e| format!("serialize timings: {e}"))?;
         fs::write(path, bytes).map_err(|e| format!("write timings: {e}"))?;
         Ok(())
     }

@@ -1238,11 +1238,11 @@ impl ToolExecutor for StaticToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_assistant_message,
-        join_remaining_background_jobs, parse_auto_compaction_threshold, ApiClient, ApiRequest,
-        AssistantEvent, AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
-        PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
-        ToolExecuteRawOutcome, ToolExecutor, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+        build_assistant_message, join_remaining_background_jobs, parse_auto_compaction_threshold,
+        ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent, BackgroundToolJob,
+        ConversationRuntime, HookRunResult, PromptCacheEvent, RuntimeError, SharedToolExecutor,
+        StaticToolExecutor, ToolExecuteRawOutcome, ToolExecutor,
+        DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
     use crate::compact::CompactionConfig;
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};

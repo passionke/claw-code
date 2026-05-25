@@ -73,8 +73,8 @@ impl EventBus {
         let mut obj = extra.as_object().cloned().unwrap_or_default();
         obj.insert(String::from("kind"), Value::String(kind.to_string()));
         obj.insert(String::from("tsMs"), json!(Self::now_ms()));
-        let event: OrchestrationEvent = serde_json::from_value(Value::Object(obj))
-            .map_err(|e| format!("build event: {e}"))?;
+        let event: OrchestrationEvent =
+            serde_json::from_value(Value::Object(obj)).map_err(|e| format!("build event: {e}"))?;
         self.append(event)
     }
 
