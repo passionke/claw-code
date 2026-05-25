@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use http_gateway_rs::gateway_global_settings::{self, PutActiveLlmConfigInput, PutLlmModelInput};
 use http_gateway_rs::gateway_llm_config_sync;
-use http_gateway_rs::gateway_llm_model_revision::{GLOBAL_LLM_MODEL_ID, GLOBAL_LLM_REV};
 use http_gateway_rs::session_db::GatewaySessionDb;
 use tokio::sync::RwLock;
 
@@ -56,21 +55,14 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
     assert_eq!(saved.base_model_url, "https://api.example.com/v1");
     assert_eq!(saved.model_name, "mock-model-v1");
     assert!(saved.api_key_set);
+    assert!(!saved.model_id.is_empty());
 
-    let row = db
-        .get_llm_model_revision(GLOBAL_LLM_MODEL_ID, GLOBAL_LLM_REV)
-        .await
-        .expect("query revision")
-        .expect("global revision row");
-    assert_eq!(row.base_model_url, "https://api.example.com/v1");
-    assert_eq!(row.model_name, "mock-model-v1");
-
-    let versions = gateway_global_settings::list_llm_model_versions(&db, GLOBAL_LLM_MODEL_ID)
+    let versions = gateway_global_settings::list_llm_model_versions(&db, &saved.model_id)
         .await
         .expect("list versions");
     assert!(
         versions.versions.is_empty(),
-        "global LLM must not expose version history"
+        "LLM must not expose version history"
     );
 
     let handle: gateway_llm_config_sync::LlmRuntimeHandle = Arc::new(RwLock::new(None));
@@ -101,11 +93,12 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
         .expect("active config");
     assert_eq!(loaded.base_model_url, "https://api.example.com/v1");
 
-    // POST llm-models same semantics
+    let first_id = saved.model_id.clone();
+
     gateway_global_settings::upsert_llm_model(
         &db,
         PutLlmModelInput {
-            id: None,
+            id: Some(first_id.clone()),
             name: "mock-集成测试".into(),
             base_model_url: "https://api.example.com/v1".into(),
             model_name: "mock-model-v2".into(),
@@ -116,12 +109,31 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
     .await
     .expect("upsert without new api key");
 
-    let row2 = db
-        .get_llm_model_revision(GLOBAL_LLM_MODEL_ID, GLOBAL_LLM_REV)
-        .await
-        .expect("query")
-        .expect("row");
-    assert_eq!(row2.model_name, "mock-model-v2");
+    let second = gateway_global_settings::upsert_llm_model(
+        &db,
+        PutLlmModelInput {
+            id: None,
+            name: "mock-第二模型".into(),
+            base_model_url: "https://api.example.com/v1".into(),
+            model_name: "mock-model-alt".into(),
+            api_key: Some("sk-mock-alt".into()),
+            note: None,
+        },
+    )
+    .await
+    .expect("create second model");
+    assert_ne!(second.id, first_id);
 
-    let _ = gateway_global_settings::delete_llm_model(&db, GLOBAL_LLM_MODEL_ID).await;
+    gateway_global_settings::apply_llm_model_by_id(&db, &second.id, None)
+        .await
+        .expect("apply second");
+    let active = gateway_global_settings::load_active_llm_config_public(&db)
+        .await
+        .expect("load")
+        .expect("active");
+    assert_eq!(active.model_id, second.id);
+    assert_eq!(active.model_name, "mock-model-alt");
+
+    let _ = gateway_global_settings::delete_llm_model(&db, &second.id).await;
+    let _ = gateway_global_settings::delete_llm_model(&db, &first_id).await;
 }

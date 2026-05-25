@@ -12,7 +12,9 @@ import ClaudePage from "./pages/ClaudePage";
 import RulesPage from "./pages/RulesPage";
 import PromptPage from "./pages/PromptPage";
 import ToolsPage from "./pages/ToolsPage";
-import GlobalSettingsPage from "./pages/GlobalSettingsPage";
+import GlobalSettingsRedirect from "./pages/GlobalSettingsRedirect";
+import GitPatsPage from "./pages/global/GitPatsPage";
+import LlmModelsPage from "./pages/global/LlmModelsPage";
 import ChatPage from "./pages/ChatPage";
 
 export default function App() {
@@ -47,7 +49,9 @@ export default function App() {
             <Route path="rules" element={<RulesPage />} />
             <Route path="prompt" element={<PromptPage />} />
             <Route path="tools" element={<ToolsPage />} />
-            <Route path="global" element={<GlobalSettingsPage />} />
+            <Route path="global" element={<GlobalSettingsRedirect />} />
+            <Route path="global/models" element={<LlmModelsPage />} />
+            <Route path="global/pats" element={<GitPatsPage />} />
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/chat" replace />} />

@@ -1,8 +1,8 @@
 //! Gateway-wide settings (not per `ds_id`): PAT vault for Git push, LLM model, etc. Author: kejiqing
 //!
-//! **全局大模型（无版本）**
-//! 1. Admin 保存 → 单行 `global` / `global` upsert 到 `gateway_llm_model_revision`。
-//! 2. 同时写 `active_llm_model_id/rev`（恒为 `global`）→ handler 调 `sync_llm_runtime_from_db`。
+//! **全局大模型（多模型列表 + 当前生效，无版本历史）**
+//! 1. Admin 保存 → `llm_models_json` 按 `id` upsert；revision 表存当前快照。
+//! 2. `active_llm_model_id/rev` 指向当前生效条目 → handler 调 `sync_llm_runtime_from_db`。
 //! 3. 落盘：`.env` + `.claw/claw-tap-upstream.json`（worker / claude-tap 读文件，非 Admin 缓存）。
 
 use runtime::builtin_system_prompt_scaffold_default;
@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use crate::gateway_llm_model_apply::{self, LlmModelApplyOutcome};
 use crate::gateway_llm_model_revision::{
-    format_model_rev_local_ms, llm_api_key_slot, GLOBAL_LLM_MODEL_ID, GLOBAL_LLM_REV,
+    format_model_rev_local_ms, llm_api_key_slot, GLOBAL_LLM_MODEL_ID,
 };
 use crate::project_config_draft::normalize_revision_note;
 use crate::session_db::{GatewayLlmModelRevisionRow, GatewaySessionDb};
@@ -57,7 +57,7 @@ pub struct LlmModelPublic {
     pub current_rev: String,
     #[serde(rename = "apiKeySet")]
     pub api_key_set: bool,
-    #[serde(skip_serializing)]
+    #[serde(rename = "active", default)]
     pub active: bool,
     #[serde(rename = "activeRev", skip_serializing)]
     pub active_rev: Option<String>,
@@ -144,7 +144,7 @@ pub struct GatewayGlobalSettingsPublic {
 /// 当前全局生效的 LLM（`active_llm_model_*` + revision 行）。Author: kejiqing
 #[derive(Debug, Clone, Serialize)]
 pub struct ActiveLlmConfigPublic {
-    #[serde(rename = "modelId", skip_serializing)]
+    #[serde(rename = "modelId")]
     pub model_id: String,
     pub name: String,
     #[serde(rename = "baseModelUrl")]
@@ -285,8 +285,24 @@ fn allocate_pat_id(existing: &[GitPatEntry]) -> String {
     }
 }
 
+fn allocate_llm_id(existing: &[LlmModelEntry]) -> String {
+    let base = format!("llm-{}", now_ms());
+    if existing.iter().any(|m| m.id == base) {
+        format!("{base}-2")
+    } else {
+        base
+    }
+}
+
 fn normalize_llm_id(raw: &str) -> Option<String> {
     normalize_pat_id(raw)
+}
+
+fn prune_llm_api_keys_for_model(store: &mut LlmModelsStore, model_id: &str) {
+    let prefix = format!("{model_id}:");
+    store
+        .api_keys
+        .retain(|k, _| k != model_id && !k.starts_with(&prefix));
 }
 
 fn parse_llm_models_store(
@@ -372,7 +388,7 @@ pub async fn load_active_llm_config_public(
         .map(|m| m.name.clone())
         .unwrap_or_else(|| runtime.model_id.clone());
     Ok(Some(ActiveLlmConfigPublic {
-        model_id: GLOBAL_LLM_MODEL_ID.to_string(),
+        model_id: runtime.model_id,
         name,
         base_model_url: runtime.base_model_url,
         model_name: runtime.model_name,
@@ -380,104 +396,159 @@ pub async fn load_active_llm_config_public(
     }))
 }
 
-fn resolve_global_api_key(
+fn resolve_llm_api_key_on_save(
     store: &LlmModelsStore,
+    model_id: &str,
+    current_rev: &str,
     input_key: Option<&str>,
+    is_new: bool,
 ) -> Result<String, String> {
     if let Some(key) = input_key.map(str::trim).filter(|s| !s.is_empty()) {
         return Ok(key.to_string());
     }
-    llm_api_key_for(store, GLOBAL_LLM_MODEL_ID, GLOBAL_LLM_REV)
-        .or_else(|| store.api_keys.get(GLOBAL_LLM_MODEL_ID).cloned())
-        .filter(|k| !k.trim().is_empty())
-        .ok_or_else(|| "apiKey is required".into())
+    if is_new {
+        return Err("apiKey is required".into());
+    }
+    llm_api_key_for(store, model_id, current_rev).ok_or_else(|| "apiKey is required".into())
 }
 
-/// 保存全局大模型（无版本）：upsert `global` 行 + 设为 active。Author: kejiqing
-pub async fn save_global_llm(
+/// Upsert one LLM model by `id` (create when `id` omitted). Does not change active unless none set. Author: kejiqing
+pub async fn upsert_llm_model(
     db: &GatewaySessionDb,
-    name: &str,
-    base_model_url: &str,
-    model_name: &str,
-    api_key: Option<String>,
-    note: Option<String>,
+    input: PutLlmModelInput,
 ) -> Result<LlmModelPublic, String> {
-    let name = name.trim();
+    let name = input.name.trim();
     if name.is_empty() {
         return Err("name is required".into());
     }
-    let base = gateway_llm_model_apply::normalize_upstream_base_url(base_model_url)
+    let base = gateway_llm_model_apply::normalize_upstream_base_url(&input.base_model_url)
         .ok_or_else(|| "invalid baseModelUrl".to_string())?;
-    let model = gateway_llm_model_apply::normalize_model_name_for_upstream(model_name, &base)
-        .ok_or_else(|| "invalid modelName".to_string())?;
+    let model =
+        gateway_llm_model_apply::normalize_model_name_for_upstream(&input.model_name, &base)
+            .ok_or_else(|| "invalid modelName".to_string())?;
+
     let mut store = load_llm_models_store(db).await.map_err(|e| e.to_string())?;
-    let api_key = resolve_global_api_key(&store, api_key.as_deref())?;
+    let id = if let Some(raw) = input.id.as_deref() {
+        normalize_llm_id(raw).ok_or_else(|| "invalid llm model id".to_string())?
+    } else {
+        allocate_llm_id(&store.models)
+    };
+
+    let is_new = !store.models.iter().any(|m| m.id == id);
+    let prev_rev = store
+        .models
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| m.current_rev.clone())
+        .unwrap_or_default();
+    let api_key =
+        resolve_llm_api_key_on_save(&store, &id, &prev_rev, input.api_key.as_deref(), is_new)?;
+
     let now = now_ms();
+    let rev = format_model_rev_local_ms(now);
     let row = GatewayLlmModelRevisionRow {
-        model_id: GLOBAL_LLM_MODEL_ID.to_string(),
-        model_rev: GLOBAL_LLM_REV.to_string(),
+        model_id: id.clone(),
+        model_rev: rev.clone(),
         created_at_ms: now,
         name: name.to_string(),
         base_model_url: base.clone(),
         model_name: model.clone(),
-        note: normalize_revision_note(note),
+        note: normalize_revision_note(input.note),
     };
     db.upsert_llm_model_revision(&row)
         .await
         .map_err(|e| e.to_string())?;
-    store.models = vec![LlmModelEntry {
-        id: GLOBAL_LLM_MODEL_ID.to_string(),
-        name: name.to_string(),
-        base_model_url: base,
-        model_name: model,
-        current_rev: GLOBAL_LLM_REV.to_string(),
-        created_at_ms: store.models.first().map(|m| m.created_at_ms).unwrap_or(now),
-        updated_at_ms: now,
-    }];
-    store.api_keys.clear();
-    store.api_keys.insert(
-        llm_api_key_slot(GLOBAL_LLM_MODEL_ID, GLOBAL_LLM_REV),
-        api_key,
-    );
-    store.active_id = GLOBAL_LLM_MODEL_ID.to_string();
-    store.active_rev = GLOBAL_LLM_REV.to_string();
-    store.active_applied_at_ms = Some(now);
+
+    prune_llm_api_keys_for_model(&mut store, &id);
+    store.api_keys.insert(llm_api_key_slot(&id, &rev), api_key);
+
+    if let Some(idx) = store.models.iter().position(|m| m.id == id) {
+        let entry = &mut store.models[idx];
+        entry.name = name.to_string();
+        entry.base_model_url = base.clone();
+        entry.model_name = model.clone();
+        entry.current_rev = rev.clone();
+        entry.updated_at_ms = now;
+    } else {
+        store.models.push(LlmModelEntry {
+            id: id.clone(),
+            name: name.to_string(),
+            base_model_url: base,
+            model_name: model,
+            current_rev: rev,
+            created_at_ms: now,
+            updated_at_ms: now,
+        });
+    }
+
+    if store.active_id.is_empty() {
+        store.active_id = id.clone();
+        store.active_rev = store
+            .models
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.current_rev.clone())
+            .unwrap_or_default();
+        store.active_applied_at_ms = Some(now);
+    }
+
     save_llm_models_store(db, &store, now)
         .await
         .map_err(|e| e.to_string())?;
     let entry = store
         .models
-        .first()
-        .ok_or_else(|| "global llm missing after save".to_string())?;
+        .iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| "llm model missing after save".to_string())?;
     llm_entry_to_public(db, entry, &store)
         .await
         .map_err(|e| e.to_string())
 }
 
-/// 保存全局大模型；handler 负责 `sync_llm_runtime_from_db`。Author: kejiqing
+/// 兼容旧客户端：更新当前/首条模型并设为 active。Author: kejiqing
 pub async fn put_active_llm_config(
     db: &GatewaySessionDb,
     input: PutActiveLlmConfigInput,
 ) -> Result<ActiveLlmConfigPublic, String> {
+    let store = load_llm_models_store(db).await.map_err(|e| e.to_string())?;
+    let target_id = if !store.active_id.is_empty() {
+        store.active_id.clone()
+    } else if store.models.iter().any(|m| m.id == GLOBAL_LLM_MODEL_ID) {
+        GLOBAL_LLM_MODEL_ID.to_string()
+    } else {
+        store
+            .models
+            .first()
+            .map(|m| m.id.clone())
+            .unwrap_or_default()
+    };
     let name = input
         .name
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("默认");
-    save_global_llm(
+    let saved = upsert_llm_model(
         db,
-        name,
-        &input.base_model_url,
-        &input.model_name,
-        input.api_key,
-        input.note,
+        PutLlmModelInput {
+            id: if target_id.is_empty() {
+                None
+            } else {
+                Some(target_id)
+            },
+            name: name.to_string(),
+            base_model_url: input.base_model_url,
+            model_name: input.model_name,
+            api_key: input.api_key,
+            note: input.note,
+        },
     )
     .await?;
+    apply_llm_model_by_id(db, &saved.id, None).await?;
     load_active_llm_config_public(db)
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "global LLM missing after save".into())
+        .ok_or_else(|| "active LLM missing after save".into())
 }
 
 pub(crate) async fn load_active_llm_runtime(
@@ -506,129 +577,11 @@ pub(crate) async fn load_active_llm_runtime(
     }))
 }
 
-async fn ensure_global_llm_singleton(
-    db: &GatewaySessionDb,
-    store: &mut LlmModelsStore,
-) -> Result<bool, sqlx::Error> {
-    let normalized = store.models.len() == 1
-        && store
-            .models
-            .first()
-            .is_some_and(|m| m.id == GLOBAL_LLM_MODEL_ID)
-        && store.active_id == GLOBAL_LLM_MODEL_ID
-        && store.active_rev == GLOBAL_LLM_REV;
-    if normalized {
-        if db
-            .get_llm_model_revision(GLOBAL_LLM_MODEL_ID, GLOBAL_LLM_REV)
-            .await?
-            .is_none()
-        {
-            if let Some(m) = store.models.first() {
-                let row = GatewayLlmModelRevisionRow {
-                    model_id: GLOBAL_LLM_MODEL_ID.to_string(),
-                    model_rev: GLOBAL_LLM_REV.to_string(),
-                    created_at_ms: m.updated_at_ms,
-                    name: m.name.clone(),
-                    base_model_url: m.base_model_url.clone(),
-                    model_name: m.model_name.clone(),
-                    note: None,
-                };
-                db.upsert_llm_model_revision(&row).await?;
-            }
-        }
-        return Ok(false);
-    }
-
-    let (name, base_model_url, model_name, created_at_ms, api_key) =
-        if !store.active_id.is_empty() && !store.active_rev.is_empty() {
-            let mut name = "默认".to_string();
-            let mut base_model_url = String::new();
-            let mut model_name = String::new();
-            let mut created_at_ms = now_ms();
-            if let Some(row) = db
-                .get_llm_model_revision(&store.active_id, &store.active_rev)
-                .await?
-            {
-                name = row.name;
-                base_model_url = row.base_model_url;
-                model_name = row.model_name;
-                created_at_ms = row.created_at_ms;
-            }
-            let api_key = llm_api_key_for(store, &store.active_id, &store.active_rev);
-            (name, base_model_url, model_name, created_at_ms, api_key)
-        } else if let Some(m) = store.models.first() {
-            let mut name = m.name.clone();
-            let mut base_model_url = m.base_model_url.clone();
-            let mut model_name = m.model_name.clone();
-            let mut created_at_ms = m.created_at_ms;
-            let rev = if m.current_rev.is_empty() {
-                GLOBAL_LLM_REV.to_string()
-            } else {
-                m.current_rev.clone()
-            };
-            let api_key = llm_api_key_for(store, &m.id, &rev);
-            if let Some(row) = db.get_llm_model_revision(&m.id, &rev).await? {
-                name = row.name;
-                base_model_url = row.base_model_url;
-                model_name = row.model_name;
-                created_at_ms = row.created_at_ms;
-            }
-            (name, base_model_url, model_name, created_at_ms, api_key)
-        } else {
-            return Ok(false);
-        };
-
-    for old in &store.models {
-        if old.id != GLOBAL_LLM_MODEL_ID {
-            db.delete_llm_model_revisions(&old.id).await?;
-        }
-    }
-    db.delete_llm_model_revisions(GLOBAL_LLM_MODEL_ID).await?;
-
-    let now = now_ms();
-    let row = GatewayLlmModelRevisionRow {
-        model_id: GLOBAL_LLM_MODEL_ID.to_string(),
-        model_rev: GLOBAL_LLM_REV.to_string(),
-        created_at_ms,
-        name: name.clone(),
-        base_model_url: base_model_url.clone(),
-        model_name: model_name.clone(),
-        note: None,
-    };
-    db.upsert_llm_model_revision(&row).await?;
-
-    store.api_keys.clear();
-    if let Some(k) = api_key.filter(|k| !k.trim().is_empty()) {
-        store
-            .api_keys
-            .insert(llm_api_key_slot(GLOBAL_LLM_MODEL_ID, GLOBAL_LLM_REV), k);
-    }
-
-    store.models = vec![LlmModelEntry {
-        id: GLOBAL_LLM_MODEL_ID.to_string(),
-        name,
-        base_model_url,
-        model_name,
-        current_rev: GLOBAL_LLM_REV.to_string(),
-        created_at_ms,
-        updated_at_ms: now,
-    }];
-    store.active_id = GLOBAL_LLM_MODEL_ID.to_string();
-    store.active_rev = GLOBAL_LLM_REV.to_string();
-    if store.active_applied_at_ms.is_none() {
-        store.active_applied_at_ms = Some(now);
-    }
-    Ok(true)
-}
-
 async fn load_llm_models_store(db: &GatewaySessionDb) -> Result<LlmModelsStore, sqlx::Error> {
     let (models_v, keys_v, active_id, active_rev, applied) =
         db.get_gateway_llm_models_raw().await?;
     let mut store = parse_llm_models_store(&models_v, &keys_v, &active_id, &active_rev, applied);
-    let mut changed = ensure_llm_model_versions_backfilled(db, &mut store).await?;
-    if ensure_global_llm_singleton(db, &mut store).await? {
-        changed = true;
-    }
+    let changed = ensure_llm_model_versions_backfilled(db, &mut store).await?;
     if changed {
         save_llm_models_store(db, &store, now_ms()).await?;
     }
@@ -794,81 +747,82 @@ pub async fn list_llm_model_versions(
     model_id: &str,
 ) -> Result<LlmModelVersionsResponse, String> {
     let id = normalize_llm_id(model_id).ok_or_else(|| "invalid llm model id".to_string())?;
-    if id != GLOBAL_LLM_MODEL_ID {
-        return Err("global LLM has no version history".into());
-    }
     let store = load_llm_models_store(db).await.map_err(|e| e.to_string())?;
-    if !store.models.iter().any(|m| m.id == GLOBAL_LLM_MODEL_ID) {
-        return Err("global LLM not configured".into());
-    }
+    let entry = store
+        .models
+        .iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| format!("llm model {id} not found"))?;
     Ok(LlmModelVersionsResponse {
-        model_id: GLOBAL_LLM_MODEL_ID.to_string(),
-        current_rev: GLOBAL_LLM_REV.to_string(),
+        model_id: id,
+        current_rev: entry.current_rev.clone(),
         active_rev: active_llm_model_rev_public(&store),
         versions: vec![],
     })
 }
 
-pub async fn upsert_llm_model(
-    db: &GatewaySessionDb,
-    input: PutLlmModelInput,
-) -> Result<LlmModelPublic, String> {
-    save_global_llm(
-        db,
-        &input.name,
-        &input.base_model_url,
-        &input.model_name,
-        input.api_key,
-        input.note,
-    )
-    .await
-}
-
-pub async fn delete_llm_model(db: &GatewaySessionDb, _model_id: &str) -> Result<bool, String> {
+pub async fn delete_llm_model(db: &GatewaySessionDb, model_id: &str) -> Result<bool, String> {
+    let id = normalize_llm_id(model_id).ok_or_else(|| "invalid llm model id".to_string())?;
     let mut store = load_llm_models_store(db).await.map_err(|e| e.to_string())?;
-    if store.models.is_empty() {
+    if !store.models.iter().any(|m| m.id == id) {
         return Ok(false);
     }
-    db.delete_llm_model_revisions(GLOBAL_LLM_MODEL_ID)
+    db.delete_llm_model_revisions(&id)
         .await
         .map_err(|e| e.to_string())?;
-    store.models.clear();
-    store.api_keys.clear();
-    store.active_id.clear();
-    store.active_rev.clear();
-    store.active_applied_at_ms = None;
+    store.models.retain(|m| m.id != id);
+    prune_llm_api_keys_for_model(&mut store, &id);
+    if store.active_id == id {
+        if let Some(next) = store.models.first() {
+            store.active_id = next.id.clone();
+            store.active_rev = next.current_rev.clone();
+        } else {
+            store.active_id.clear();
+            store.active_rev.clear();
+            store.active_applied_at_ms = None;
+        }
+    }
     save_llm_models_store(db, &store, now_ms())
         .await
         .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
-/// 兼容旧路由：全局 LLM 无「生效」步骤，保存即 active。Author: kejiqing
+/// 将指定模型设为当前生效并触发 runtime 同步（由 handler 调 sync）。Author: kejiqing
 pub async fn apply_llm_model_by_id(
     db: &GatewaySessionDb,
     model_id: &str,
     _model_rev: Option<&str>,
 ) -> Result<ApplyLlmModelResponse, String> {
     let id = normalize_llm_id(model_id).ok_or_else(|| "invalid llm model id".to_string())?;
-    if id != GLOBAL_LLM_MODEL_ID {
-        return Err("global LLM has no versions; save via PUT .../active-llm-config".into());
-    }
-    let store = load_llm_models_store(db).await.map_err(|e| e.to_string())?;
+    let mut store = load_llm_models_store(db).await.map_err(|e| e.to_string())?;
     let entry = store
         .models
         .iter()
-        .find(|m| m.id == GLOBAL_LLM_MODEL_ID)
-        .ok_or_else(|| "global LLM not configured".to_string())?;
-    if llm_api_key_for(&store, GLOBAL_LLM_MODEL_ID, GLOBAL_LLM_REV).is_none() {
+        .find(|m| m.id == id)
+        .ok_or_else(|| format!("llm model {id} not found"))?
+        .clone();
+    let rev = if entry.current_rev.is_empty() {
+        format_model_rev_local_ms(entry.updated_at_ms)
+    } else {
+        entry.current_rev.clone()
+    };
+    if llm_api_key_for(&store, &id, &rev).is_none() {
         return Err("apiKey is not configured".into());
     }
-    let applied_at_ms = store.active_applied_at_ms.unwrap_or_else(now_ms);
-    let public = llm_entry_to_public(db, entry, &store)
+    let applied_at_ms = now_ms();
+    store.active_id = id.clone();
+    store.active_rev = rev.clone();
+    store.active_applied_at_ms = Some(applied_at_ms);
+    save_llm_models_store(db, &store, applied_at_ms)
+        .await
+        .map_err(|e| e.to_string())?;
+    let public = llm_entry_to_public(db, &entry, &store)
         .await
         .map_err(|e| e.to_string())?;
     Ok(ApplyLlmModelResponse {
-        active_llm_model_id: GLOBAL_LLM_MODEL_ID.to_string(),
-        active_llm_model_rev: GLOBAL_LLM_REV.to_string(),
+        active_llm_model_id: id,
+        active_llm_model_rev: rev,
         active_llm_applied_at_ms: applied_at_ms,
         llm_model: public,
         outcome: LlmModelApplyOutcome {
@@ -876,7 +830,7 @@ pub async fn apply_llm_model_by_id(
             applied_at_ms,
             tap_chain_refreshed: false,
             tap_restarted: false,
-            message: Some("global LLM already active; gateway sync refreshes files".into()),
+            message: Some("active LLM updated; gateway sync refreshes files".into()),
         },
     })
 }

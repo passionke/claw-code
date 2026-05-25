@@ -19,7 +19,12 @@ import { useApp } from "../context/AppContext";
 
 const { Header, Sider, Content } = Layout;
 
-const TAB_ITEMS = [
+const GLOBAL_MENU_CHILDREN = [
+  { key: "/global/models", label: "模型配置" },
+  { key: "/global/pats", label: "PAT 配置" },
+];
+
+const TAB_ITEMS: MenuProps["items"] = [
   { key: "/", icon: <AppstoreOutlined />, label: "项目" },
   { key: "/skills", icon: <SettingOutlined />, label: "Skills" },
   { key: "/mcp", icon: <ApiOutlined />, label: "MCP" },
@@ -27,7 +32,12 @@ const TAB_ITEMS = [
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
   { key: "/prompt", icon: <FileTextOutlined />, label: "系统提示词" },
   { key: "/tools", icon: <ToolOutlined />, label: "Tools" },
-  { key: "/global", icon: <GlobalOutlined />, label: "全局配置" },
+  {
+    key: "global",
+    icon: <GlobalOutlined />,
+    label: "全局配置",
+    children: GLOBAL_MENU_CHILDREN,
+  },
 ];
 
 export default function AdminLayout() {
@@ -44,9 +54,28 @@ export default function AdminLayout() {
   const loc = useLocation();
   const nav = useNavigate();
   const [adminUser, setAdminUser] = useState("");
-  const selectedKey =
-    TAB_ITEMS.find((t) => t.key !== "/" && loc.pathname.startsWith(t.key))?.key ||
-    "/";
+  const [openKeys, setOpenKeys] = useState<string[]>([]);
+  const selectedKey = (() => {
+    if (loc.pathname.startsWith("/global")) {
+      return (
+        GLOBAL_MENU_CHILDREN.find((c) => loc.pathname.startsWith(c.key))?.key ??
+        "/global/models"
+      );
+    }
+    for (const t of TAB_ITEMS ?? []) {
+      if (!t || typeof t !== "object" || !("key" in t)) continue;
+      const k = String(t.key);
+      if (k === "/" || k === "global") continue;
+      if (loc.pathname.startsWith(k)) return k;
+    }
+    return "/";
+  })();
+
+  useEffect(() => {
+    if (loc.pathname.startsWith("/global")) {
+      setOpenKeys((prev) => (prev.includes("global") ? prev : [...prev, "global"]));
+    }
+  }, [loc.pathname]);
 
   useEffect(() => {
     fetchAdminMe()
@@ -166,9 +195,15 @@ export default function AdminLayout() {
         <Sider width={200} style={{ background: "#1a2332" }}>
           <Menu
             mode="inline"
+            triggerSubMenuAction="click"
             selectedKeys={[selectedKey]}
+            openKeys={openKeys}
+            onOpenChange={(keys) => setOpenKeys(keys)}
             items={TAB_ITEMS}
-            onClick={({ key }) => nav(key)}
+            onClick={({ key }) => {
+              if (key === "global") return;
+              nav(key);
+            }}
             style={{ height: "100%", borderRight: 0 }}
           />
         </Sider>

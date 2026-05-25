@@ -357,8 +357,7 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
     let timeout_seconds = task.timeout_seconds.unwrap_or(120);
     let max_iterations = task.max_iterations.unwrap_or(64);
     let allowed_tools = task.allowed_tools.clone().unwrap_or_default();
-    let mut mcp = gateway_solve_turn::GatewayMcpCallContext::from_task(&task);
-    mcp.extra_session = gateway_solve_turn::normalize_extra_session(mcp.extra_session);
+    let mcp = gateway_solve_turn::gateway_mcp_call_context_from_task(&task);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

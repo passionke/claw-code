@@ -46,7 +46,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use telemetry::{JsonlTelemetrySink, SessionTracer};
 use tokio::sync::Semaphore;
-use tools::{execute_mcp_tool_with_meta, execute_tool, initialize_mcp_bridge, mvp_tool_specs};
+use tools::{
+    execute_agent_with_mcp_context_json, execute_mcp_tool_with_meta, execute_tool,
+    initialize_mcp_bridge, mvp_tool_specs, AgentInput,
+};
 
 pub mod entity_labels;
 pub mod gateway_stdout;
@@ -64,9 +67,11 @@ pub use gateway_stdout::{
     GATEWAY_STDOUT_LINE_PREFIX,
 };
 pub use mcp_call_context::{
-    build_mcp_call_meta, resolve_gateway_trace_id, GatewayMcpCallContext,
+    build_mcp_call_meta, gateway_mcp_call_context_from_task, inject_mcp_call_meta,
+    resolve_gateway_mcp_call_context, resolve_gateway_trace_id, GatewayMcpCallContext,
     CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
 };
+pub use runtime::McpCallContext;
 pub use session_report::{
     final_assistant_report_text_from_jsonl,
     final_assistant_report_text_from_jsonl_for_user_turn_index,
@@ -544,7 +549,7 @@ impl DirectToolExecutorInner {
                     &args,
                 );
             }
-            let meta = self.mcp_context.to_mcp_meta();
+            let meta = inject_mcp_call_meta(&self.mcp_context);
             let out = execute_mcp_tool_with_meta(input, Some(&meta)).map_err(ToolError::new);
             if should_emit_tool_progress_event(tool_name, false, Some(&args)) {
                 if let Ok(ref text) = &out {
@@ -562,6 +567,15 @@ impl DirectToolExecutorInner {
         if self.runtime_mcp_tool_names.contains(tool_name) {
             return self.call_runtime_mcp_tool(tool_name, input);
         }
+        if tool_name == "Agent" {
+            let agent_input: AgentInput = serde_json::from_str(input)
+                .map_err(|e| ToolError::new(format!("invalid Agent tool JSON: {e}")))?;
+            return execute_agent_with_mcp_context_json(
+                agent_input,
+                Some(self.mcp_context.clone()),
+            )
+            .map_err(ToolError::new);
+        }
         let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
         execute_tool(tool_name, &parsed).map_err(ToolError::new)
     }
@@ -577,7 +591,7 @@ impl DirectToolExecutorInner {
                 &args,
             );
         }
-        let meta = self.mcp_context.to_mcp_meta();
+        let meta = inject_mcp_call_meta(&self.mcp_context);
         let Some(manager) = &self.runtime_mcp_manager else {
             return Err(ToolError::new("MCP manager not initialized"));
         };
@@ -1077,14 +1091,13 @@ pub fn run_gateway_solve_turn(
     prompt: &str,
     model: Option<&str>,
     timeout_seconds: u64,
-    mut mcp: GatewayMcpCallContext,
+    mcp: GatewayMcpCallContext,
     allowed_tools: Vec<String>,
     max_iterations: usize,
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
 
-    mcp.extra_session = normalize_extra_session(mcp.extra_session);
     let clawcode_session_id = mcp.clawcode_session_id().to_string();
 
     let orch_cfg = project_orchestration::resolve_solve_orchestration_config(work_dir);

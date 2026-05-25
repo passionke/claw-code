@@ -20,6 +20,7 @@ mod json;
 mod lane_events;
 pub mod lsp_client;
 mod mcp;
+mod mcp_call_context;
 mod mcp_client;
 pub mod mcp_lifecycle_hardened;
 pub mod mcp_server;
@@ -93,6 +94,11 @@ pub use lane_events::{
 pub use mcp::{
     mcp_server_signature, mcp_tool_name, mcp_tool_prefix, normalize_name_for_mcp,
     scoped_mcp_config_hash, unwrap_ccr_proxy_url,
+};
+pub use mcp_call_context::{
+    build_mcp_call_meta, current_mcp_call_context, inject_mcp_call_meta, resolve_gateway_trace_id,
+    with_mcp_call_context, McpCallContext, CLAW_EXTRA_SESSION_SESSION_ID,
+    CLAW_EXTRA_SESSION_TURN_ID,
 };
 pub use mcp_client::{
     default_mcp_max_concurrent, McpClientAuth, McpClientBootstrap, McpClientTransport,

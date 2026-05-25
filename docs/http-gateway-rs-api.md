@@ -187,11 +187,12 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - `POST .../restore` body `{ "entityRev": "…" }` — 写回 `__draft__` 聚合字段，不切换 L1 生效版、不物化
 
 - **全局配置（与 ds_id 无关）**
-  - `GET /v1/gateway/global-settings` — `{ updatedAtMs, gitPats, activeLlmConfig?: { name, baseModelUrl, modelName, apiKeySet }, activeLlmAppliedAtMs? }`（全局大模型**无版本**；不返回 apiKey 明文）
-  - `PUT /v1/gateway/global-settings/active-llm-config` — 保存全局大模型：body `{ name?, baseModelUrl, modelName, apiKey? }` → upsert PG 单行 `global`/`global` → 立即同步 `.env` + `.claw/claw-tap-upstream.json` + `llm_runtime`
-  - `POST /v1/gateway/global-settings/llm-models` — 与 `PUT active-llm-config` 相同语义（兼容旧客户端）
-  - `DELETE /v1/gateway/global-settings/llm-models/{model_id}` — 清除全局配置
-  - `GET .../versions` / `POST .../apply` — 已废弃（无版本）；请用 `PUT active-llm-config`
+  - `GET /v1/gateway/global-settings` — `{ updatedAtMs, gitPats, llmModels[], activeLlmModelId?, activeLlmConfig?, activeLlmAppliedAtMs? }`（多模型列表 + 当前生效；不返回 apiKey 明文）
+  - `POST /v1/gateway/global-settings/llm-models` — 新建/更新一条模型：`{ id?, name, baseModelUrl, modelName, apiKey? }`（新建须 `apiKey`）
+  - `POST /v1/gateway/global-settings/llm-models/{model_id}/apply` — 设为当前并同步 `.env` + `.claw/claw-tap-upstream.json`
+  - `DELETE /v1/gateway/global-settings/llm-models/{model_id}` — 删除一条模型
+  - `PUT /v1/gateway/global-settings/active-llm-config` — 兼容旧客户端：更新当前/首条并 apply
+  - `GET .../versions` — 无版本历史（`versions: []`）
   - 网关后台默认每 **30s** 轮询 DB 全局 LLM（`CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS`，`0` 关闭）；upstream 变更写 JSON 文件，tap 约 2s 内生效
   - **落盘契约**（`gateway.sh up` / `tap-up` 生成 `deploy/stack/.claw-llm-runtime.env`）：宿主机 `${repo}/.env`（`OPENAI_API_KEY` / `CLAW_DEFAULT_MODEL`）与 `${repo}/.claw/claw-tap-upstream.json`（`{"target":"https://..."}`）；gateway 容器 rw 挂载 `/run/claw/worker.env` + `/run/claw/claw/…`，与 claude-tap `--tap-upstream-config`、pool worker 读同一宿主文件
   - `DELETE /v1/gateway/global-settings/llm-models/{model_id}` — 删除模型及其全部 revision

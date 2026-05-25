@@ -11,8 +11,8 @@ use api::{
 use plugins::PluginTool;
 use reqwest::blocking::Client;
 use runtime::{
-    check_freshness, dedupe_superseded_commit_events, edit_file, execute_bash, glob_search,
-    grep_search, load_system_prompt,
+    check_freshness, current_mcp_call_context, dedupe_superseded_commit_events, edit_file,
+    execute_bash, glob_search, grep_search, inject_mcp_call_meta, load_system_prompt,
     lsp_client::LspRegistry,
     mcp_tool_bridge::{McpConnectionStatus, McpResourceInfo, McpToolInfo, McpToolRegistry},
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
@@ -20,13 +20,14 @@ use runtime::{
     summary_compression::compress_summary_text,
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
+    with_mcp_call_context,
     worker_boot::{WorkerReadySnapshot, WorkerRegistry, WorkerTaskReceipt},
     write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput, BashCommandOutput,
     BranchFreshness, ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime,
     GrepSearchInput, LaneCommitProvenance, LaneEvent, LaneEventBlocker, LaneEventName,
-    LaneEventStatus, LaneFailureClass, McpDegradedReport, MessageRole, PermissionMode,
-    PermissionPolicy, PromptCacheEvent, ProviderFallbackConfig, RuntimeError, Session, TaskPacket,
-    ToolError, ToolExecutor,
+    LaneEventStatus, LaneFailureClass, McpCallContext, McpDegradedReport, MessageRole,
+    PermissionMode, PermissionPolicy, PromptCacheEvent, ProviderFallbackConfig, RuntimeError,
+    Session, TaskPacket, ToolError, ToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1922,7 +1923,8 @@ fn run_remote_trigger(input: RemoteTriggerInput) -> Result<String, String> {
 fn run_mcp_tool(input: McpToolInput) -> Result<String, String> {
     let registry = global_mcp_registry();
     let args = input.arguments.unwrap_or(serde_json::json!({}));
-    match registry.call_tool(&input.server, &input.tool, &args) {
+    let meta = current_mcp_call_context().map(|ctx| inject_mcp_call_meta(&ctx));
+    match registry.call_tool_with_meta(&input.server, &input.tool, &args, meta) {
         Ok(result) => to_pretty_json(json!({
             "server": input.server,
             "tool": input.tool,
@@ -2455,7 +2457,7 @@ struct SkillInput {
 }
 
 #[derive(Debug, Deserialize)]
-struct AgentInput {
+pub struct AgentInput {
     description: String,
     prompt: String,
     subagent_type: Option<String>,
@@ -2767,6 +2769,7 @@ struct AgentJob {
     prompt: String,
     system_prompt: Vec<String>,
     allowed_tools: BTreeSet<String>,
+    mcp_call_context: Option<McpCallContext>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -3636,10 +3639,30 @@ const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
-    execute_agent_with_spawn(input, spawn_agent_job)
+    execute_agent_with_mcp_context(input, None)
 }
 
-fn execute_agent_with_spawn<F>(input: AgentInput, spawn_fn: F) -> Result<AgentOutput, String>
+/// Spawn a sub-agent with optional MCP `_meta.extra_session` (gateway solve passes parent turn context). Author: kejiqing
+pub(crate) fn execute_agent_with_mcp_context(
+    input: AgentInput,
+    mcp_call_context: Option<McpCallContext>,
+) -> Result<AgentOutput, String> {
+    execute_agent_with_spawn(input, mcp_call_context, spawn_agent_job)
+}
+
+/// Like [`execute_agent_with_mcp_context`], returning pretty-printed JSON for tool executors. Author: kejiqing
+pub fn execute_agent_with_mcp_context_json(
+    input: AgentInput,
+    mcp_call_context: Option<McpCallContext>,
+) -> Result<String, String> {
+    to_pretty_json(execute_agent_with_mcp_context(input, mcp_call_context)?)
+}
+
+fn execute_agent_with_spawn<F>(
+    input: AgentInput,
+    mcp_call_context: Option<McpCallContext>,
+    spawn_fn: F,
+) -> Result<AgentOutput, String>
 where
     F: FnOnce(AgentJob) -> Result<(), String>,
 {
@@ -3709,6 +3732,7 @@ where
         prompt: input.prompt,
         system_prompt,
         allowed_tools,
+        mcp_call_context,
     };
     if let Err(error) = spawn_fn(job) {
         let error = format!("failed to spawn sub-agent: {error}");
@@ -3721,11 +3745,18 @@ where
 
 fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
     let thread_name = format!("clawd-agent-{}", job.manifest.agent_id);
+    let mcp_ctx = job.mcp_call_context.clone();
     std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_agent_job(&job)));
+            let run = || run_agent_job(&job);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(ctx) = mcp_ctx {
+                    with_mcp_call_context(ctx, run)
+                } else {
+                    run()
+                }
+            }));
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
@@ -3767,6 +3798,7 @@ fn build_agent_runtime(
     let api_client = ProviderRuntimeClient::new(model, allowed_tools.clone())?;
     let permission_policy = agent_permission_policy();
     let tool_executor = SubagentToolExecutor::new(allowed_tools)
+        .with_mcp_call_context(job.mcp_call_context.clone())
         .with_enforcer(PermissionEnforcer::new(permission_policy.clone()));
     Ok(ConversationRuntime::new(
         Session::new(),
@@ -4869,6 +4901,7 @@ async fn stream_with_provider(
 struct SubagentToolExecutor {
     allowed_tools: BTreeSet<String>,
     enforcer: Option<PermissionEnforcer>,
+    mcp_call_context: Option<McpCallContext>,
 }
 
 impl SubagentToolExecutor {
@@ -4876,12 +4909,26 @@ impl SubagentToolExecutor {
         Self {
             allowed_tools,
             enforcer: None,
+            mcp_call_context: None,
         }
+    }
+
+    fn with_mcp_call_context(mut self, mcp_call_context: Option<McpCallContext>) -> Self {
+        self.mcp_call_context = mcp_call_context;
+        self
     }
 
     fn with_enforcer(mut self, enforcer: PermissionEnforcer) -> Self {
         self.enforcer = Some(enforcer);
         self
+    }
+
+    fn mcp_meta_for_call(&self) -> Option<Value> {
+        let ctx = self
+            .mcp_call_context
+            .clone()
+            .or_else(current_mcp_call_context)?;
+        Some(inject_mcp_call_meta(&ctx))
     }
 }
 
@@ -4891,6 +4938,10 @@ impl ToolExecutor for SubagentToolExecutor {
             return Err(ToolError::new(format!(
                 "tool `{tool_name}` is not enabled for this sub-agent"
             )));
+        }
+        if tool_name == "MCP" {
+            let meta = self.mcp_meta_for_call();
+            return execute_mcp_tool_with_meta(input, meta.as_ref()).map_err(ToolError::new);
         }
         let value = serde_json::from_str(input)
             .map_err(|error| ToolError::new(format!("invalid tool input JSON: {error}")))?;
@@ -6310,6 +6361,7 @@ mod tests {
     };
     use api::OutputContentBlock;
     use runtime::ProviderFallbackConfig;
+    use runtime::{inject_mcp_call_meta, McpCallContext, CLAW_EXTRA_SESSION_TURN_ID};
     use runtime::{
         permission_enforcer::PermissionEnforcer, ApiRequest, AssistantEvent, ConversationRuntime,
         PermissionMode, PermissionPolicy, RuntimeError, Session, TaskPacket, ToolExecutor,
@@ -7976,6 +8028,7 @@ mod tests {
                 name: Some("ship-audit".to_string()),
                 model: None,
             },
+            None,
             move |job| {
                 *captured_for_spawn
                     .lock()
@@ -8012,6 +8065,7 @@ mod tests {
         assert_eq!(captured_job.prompt, "Check tests and outstanding work.");
         assert!(captured_job.allowed_tools.contains("read_file"));
         assert!(!captured_job.allowed_tools.contains("Agent"));
+        assert!(captured_job.mcp_call_context.is_none());
 
         let normalized = execute_tool(
             "Agent",
@@ -8057,6 +8111,7 @@ mod tests {
                 name: Some("complete-task".to_string()),
                 model: Some("claude-sonnet-4-6".to_string()),
             },
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8114,6 +8169,7 @@ mod tests {
                 name: Some("fail-task".to_string()),
                 model: None,
             },
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8161,6 +8217,7 @@ mod tests {
                 name: Some("summary-floor".to_string()),
                 model: None,
             },
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8206,6 +8263,7 @@ mod tests {
                 name: Some("recovery-lane".to_string()),
                 model: None,
             },
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8254,6 +8312,7 @@ mod tests {
                 name: Some("review-lane".to_string()),
                 model: None,
             },
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8294,6 +8353,7 @@ mod tests {
                 name: Some("backlog-scan".to_string()),
                 model: None,
             },
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8340,6 +8400,7 @@ mod tests {
                 name: Some("artifact-lane".to_string()),
                 model: None,
             },
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8410,6 +8471,7 @@ mod tests {
                 name: Some("cron-closeout".to_string()),
                 model: None,
             },
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8451,6 +8513,7 @@ mod tests {
                 name: Some("spawn-error".to_string()),
                 model: None,
             },
+            None,
             |_| Err(String::from("thread creation failed")),
         )
         .expect_err("spawn errors should surface");
@@ -8660,6 +8723,76 @@ mod tests {
                 _ => unreachable!("extra mock stream call"),
             }
         }
+    }
+
+    #[test]
+    fn agent_spawn_propagates_mcp_call_context_to_job() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_path("agent-mcp-ctx");
+        std::env::set_var("CLAWD_AGENT_STORE", &dir);
+        let captured = Arc::new(Mutex::new(None::<AgentJob>));
+        let captured_for_spawn = Arc::clone(&captured);
+        let ctx = McpCallContext::new(
+            "sess-parent",
+            "T_parent",
+            "req-77",
+            Some(json!({"store_id": "S9", "org_id": ""})),
+        );
+
+        execute_agent_with_spawn(
+            AgentInput {
+                description: "MCP context probe".to_string(),
+                prompt: "Run checks.".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: None,
+                model: None,
+            },
+            Some(ctx.clone()),
+            move |job| {
+                *captured_for_spawn
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
+                Ok(())
+            },
+        )
+        .expect("Agent should succeed");
+        std::env::remove_var("CLAWD_AGENT_STORE");
+
+        let job = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .expect("job captured");
+        let stored = job.mcp_call_context.expect("mcp context on job");
+        assert_eq!(stored.session_id, "sess-parent");
+        assert_eq!(stored.turn_id, "T_parent");
+        let meta = inject_mcp_call_meta(&stored);
+        assert_eq!(meta["extra_session"]["store_id"], "S9");
+        assert_eq!(
+            meta["extra_session"][CLAW_EXTRA_SESSION_TURN_ID],
+            "T_parent"
+        );
+    }
+
+    #[test]
+    fn subagent_tool_executor_injects_mcp_meta_for_mcp_tool() {
+        let ctx = McpCallContext::new("sess", "T_1", "req", Some(json!({"org_id": ""})));
+        let mut executor = SubagentToolExecutor::new(BTreeSet::from([String::from("MCP")]))
+            .with_mcp_call_context(Some(ctx));
+        let input = json!({
+            "server": "noop",
+            "tool": "ping",
+            "arguments": {}
+        })
+        .to_string();
+        let out = executor
+            .execute("MCP", &input)
+            .expect("MCP tool returns JSON envelope");
+        let envelope: serde_json::Value = serde_json::from_str(&out).expect("valid MCP tool JSON");
+        assert_eq!(envelope["status"], "error");
+        assert_eq!(envelope["server"], "noop");
     }
 
     #[test]
