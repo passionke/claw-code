@@ -7,6 +7,7 @@ import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import ReportMarkdown from "./ReportMarkdown";
 import TurnToolsDrawer from "./TurnToolsDrawer";
+import TurnTimelineDrawer from "./TurnTimelineDrawer";
 import styles from "./chat.module.css";
 
 export interface ChatTurnCardProps {
@@ -25,6 +26,14 @@ export interface ChatTurnCardProps {
   historicalReport?: string;
   /** failed 时列表已带 `output_json.detail`。Author: kejiqing */
   failureDetail?: string;
+}
+
+function todoStatusMark(status: string): string {
+  const s = (status || "").toLowerCase();
+  if (s === "done") return "✓";
+  if (s === "in_progress" || s === "running") return "◐";
+  if (s === "failed" || s === "skipped") return "✗";
+  return "○";
 }
 
 function statusLabel(task: SolveTask): string {
@@ -296,6 +305,13 @@ export default function ChatTurnCard({
           <span className={`${styles.statusBadge} ${styles[`badge_${st}`] || ""}`}>{st}</span>
           <span className={styles.statusText}>{statusLabel(task)}</span>
           <Space size={8} style={{ marginLeft: "auto" }}>
+            <TurnTimelineDrawer
+              sessionId={sessionId}
+              turnId={turnId}
+              dsId={dsId}
+              gatewayBase={gatewayBase}
+              taskStatus={st}
+            />
             <TurnToolsDrawer
               sessionId={sessionId}
               turnId={turnId}
@@ -305,6 +321,27 @@ export default function ChatTurnCard({
           </Space>
         </div>
       </div>
+
+      {(task.planTitle || (task.todos && task.todos.length > 0)) && (
+        <div className={styles.planOutline}>
+          {task.planTitle ? (
+            <div className={styles.planTitle}>{task.planTitle}</div>
+          ) : null}
+          {task.todos && task.todos.length > 0 ? (
+            <ul className={styles.planTodos}>
+              {task.todos.map((todo) => (
+                <li
+                  key={todo.id}
+                  className={`${styles.planTodo} ${styles[`planTodo_${(todo.status || "pending").toLowerCase()}`] || ""}`}
+                >
+                  <span className={styles.planTodoMark}>{todoStatusMark(todo.status)}</span>
+                  <span className={styles.planTodoTitle}>{todo.title}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      )}
 
       {!reportVisible && !historyMode && visibleProgressCount > 0 && (
         <div className={styles.progressFeed}>

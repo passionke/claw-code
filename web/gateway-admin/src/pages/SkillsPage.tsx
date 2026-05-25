@@ -1,20 +1,19 @@
 import { Button, Input, Select, Space, Typography, message } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
-import { proxyHttp } from "../api/client";
-import { useApp } from "../context/AppContext";
-import type { SkillRow } from "../types/project";
+import DraftEditingBanner from "../components/DraftEditingBanner";
 import EditorLengthHint from "../components/EditorLengthHint";
 import EntityVersionPanel from "../components/EntityVersionPanel";
+import { useProjectConfigEditor } from "../hooks/useProjectConfigEditor";
+import type { SkillRow } from "../types/project";
 import { skillContentFromRevisionBody } from "../utils/entityRevision";
-import { putProjectConfigDraft } from "../utils/projectConfig";
+import { mergeSkillIntoJson, skillRowsFromConfig } from "../utils/projectConfigEditor";
 
 const { TextArea } = Input;
 
 export default function SkillsPage() {
-  const { gatewayBase, dsId, projectConfig, refreshProjectConfig } = useApp();
+  const { projectConfig, reloadEditingConfig, saveDraftPatch } = useProjectConfigEditor();
   const [skills, setSkills] = useState<SkillRow[]>([]);
-  /** 下拉选中项；新建模式下为空 */
   const [pick, setPick] = useState("");
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -23,29 +22,37 @@ export default function SkillsPage() {
 
   const activeName = creating ? newName.trim() : pick;
 
+  const applySkillsList = useCallback(
+    (list: SkillRow[], opts?: { keepPick?: string; skipIfCreating?: boolean }) => {
+      setSkills(list);
+      if (opts?.skipIfCreating && creating) return;
+      if (list.length) {
+        const want = opts?.keepPick ?? pick;
+        const keep = want && list.some((s) => s.skill_name === want) ? want : list[0].skill_name;
+        setPick(keep);
+        const s = list.find((x) => x.skill_name === keep);
+        setContent(s?.skill_content || "");
+      } else {
+        setPick("");
+        setContent("");
+      }
+    },
+    [pick, creating]
+  );
+
   const load = useCallback(async () => {
-    const data = await proxyHttp<{ skills: SkillRow[] }>(
-      gatewayBase,
-      "GET",
-      `/v1/skills/${dsId}`
-    );
-    const list = data.skills || [];
-    setSkills(list);
-    if (creating) return;
-    if (list.length) {
-      const keep = pick && list.some((s) => s.skill_name === pick) ? pick : list[0].skill_name;
-      setPick(keep);
-      const s = list.find((x) => x.skill_name === keep);
-      setContent(s?.skill_content || "");
-    } else {
-      setPick("");
-      setContent("");
-    }
-  }, [gatewayBase, dsId, pick, creating]);
+    const cfg = await reloadEditingConfig();
+    applySkillsList(skillRowsFromConfig(cfg), { skipIfCreating: true });
+  }, [reloadEditingConfig, applySkillsList]);
 
   useEffect(() => {
     load().catch((e) => message.error(String((e as Error).message)));
   }, [load]);
+
+  useEffect(() => {
+    if (!projectConfig) return;
+    applySkillsList(skillRowsFromConfig(projectConfig));
+  }, [projectConfig, creating, pick, applySkillsList]);
 
   const onPick = (n: string) => {
     setCreating(false);
@@ -68,16 +75,18 @@ export default function SkillsPage() {
       message.warning(creating ? "请填写新 Skill 名称" : "请从列表选择一个 Skill，或点「新增 Skill」");
       return;
     }
-    await proxyHttp(gatewayBase, "POST", `/v1/project/skills/${dsId}`, {
+    const base = projectConfig ?? (await reloadEditingConfig());
+    const skillsJson = mergeSkillIntoJson(
+      Array.isArray(base.skillsJson) ? base.skillsJson : [],
       skillName,
-      skillContent: content,
-    });
-    message.success(creating ? `已新增 Skill「${skillName}」到项目草稿` : `已保存 Skill「${skillName}」到项目草稿`);
+      content
+    );
+    const cfg = await saveDraftPatch({ skillsJson });
+    message.success(creating ? `已新增 Skill「${skillName}」` : `已保存 Skill「${skillName}」到草稿`);
     setCreating(false);
     setPick(skillName);
     setNewName("");
-    await refreshProjectConfig();
-    await load();
+    applySkillsList(skillRowsFromConfig(cfg), { keepPick: skillName });
     setL2Refresh((n) => n + 1);
   };
 
@@ -86,21 +95,21 @@ export default function SkillsPage() {
       message.warning("请选择要删除的 Skill");
       return;
     }
-    const cfg = projectConfig ?? (await refreshProjectConfig());
-    const skillsJson = (Array.isArray(cfg.skillsJson) ? cfg.skillsJson : []).filter(
+    const base = projectConfig ?? (await reloadEditingConfig());
+    const skillsJson = (Array.isArray(base.skillsJson) ? base.skillsJson : []).filter(
       (s) => s.skillName !== pick
     );
-    await putProjectConfigDraft(gatewayBase, dsId, cfg, { skillsJson });
+    const cfg = await saveDraftPatch({ skillsJson });
     message.success(`已删除 Skill「${pick}」`);
     setPick("");
     setContent("");
-    await refreshProjectConfig();
-    await load();
+    applySkillsList(skillRowsFromConfig(cfg));
   };
 
   return (
     <div>
       <Typography.Title level={4}>Skills</Typography.Title>
+      <DraftEditingBanner />
       <Space wrap style={{ marginBottom: 8 }}>
         <Select
           style={{ minWidth: 280 }}

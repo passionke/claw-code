@@ -68,15 +68,15 @@ pub trait ToolExecutor {
     }
 }
 
-/// Thread-safe tool execution surface used for background `SQLBot` analysis calls. Author: kejiqing
+/// Thread-safe tool execution surface used for concurrent MCP `tools/call`. Author: kejiqing
 pub trait SharedToolExecutor: Send + Sync {
     fn execute_shared(&self, tool_name: &str, input: &str) -> Result<String, ToolError>;
-}
 
-/// `SQLBot` analysis MCP tools may run concurrently within one assistant turn. Author: kejiqing
-#[must_use]
-pub fn is_background_sqlbot_analysis_tool(tool_name: &str) -> bool {
-    tool_name.ends_with("mcp_question_then_analysis")
+    /// MCP `tools/list` annotations: tool may run on a background thread within one turn.
+    fn allows_concurrent_mcp_call(&self, tool_name: &str) -> bool {
+        let _ = tool_name;
+        false
+    }
 }
 
 struct ToolExecuteRawOutcome {
@@ -570,7 +570,7 @@ where
 
         if let Some(shared) = shared_executor {
             for (tool_use_id, tool_name, input) in &pending_tool_uses {
-                if !is_background_sqlbot_analysis_tool(tool_name) {
+                if !shared.allows_concurrent_mcp_call(tool_name) {
                     continue;
                 }
                 let pre_hook_result = self.run_pre_tool_use_hook(tool_name, input);
@@ -1238,7 +1238,7 @@ impl ToolExecutor for StaticToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_assistant_message, is_background_sqlbot_analysis_tool,
+        build_assistant_message,
         join_remaining_background_jobs, parse_auto_compaction_threshold, ApiClient, ApiRequest,
         AssistantEvent, AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
         PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
@@ -2259,20 +2259,6 @@ mod tests {
         assert!(finished.load(Ordering::SeqCst));
     }
 
-    #[test]
-    fn background_sqlbot_analysis_tool_suffix_match() {
-        assert!(is_background_sqlbot_analysis_tool(
-            "mcp__sqlbot-streamable__mcp_question_then_analysis"
-        ));
-        assert!(!is_background_sqlbot_analysis_tool(
-            "mcp__sqlbot-streamable__mcp_question"
-        ));
-        assert!(!is_background_sqlbot_analysis_tool("read_file"));
-        assert!(is_background_sqlbot_analysis_tool(
-            "prefix__mcp_question_then_analysis"
-        ));
-    }
-
     mod background_tool_dispatch {
         use super::*;
         use std::collections::BTreeMap;
@@ -2368,6 +2354,7 @@ mod tests {
             active: AtomicUsize,
             max_active: AtomicUsize,
             max_concurrent: Option<usize>,
+            concurrent_tools: std::collections::HashSet<String>,
             calls: Mutex<Vec<(String, String)>>,
             outcomes: Mutex<BTreeMap<String, Result<String, ToolError>>>,
         }
@@ -2385,6 +2372,7 @@ mod tests {
                     active: AtomicUsize::new(0),
                     max_active: AtomicUsize::new(0),
                     max_concurrent,
+                    concurrent_tools: std::collections::HashSet::from([ANALYSIS.to_string()]),
                     calls: Mutex::new(Vec::new()),
                     outcomes: Mutex::new(outcomes),
                 })
@@ -2447,6 +2435,10 @@ mod tests {
                     .unwrap_or(Ok(format!("ok:{tool_use_id}")));
                 self.release_permit();
                 outcome
+            }
+
+            fn allows_concurrent_mcp_call(&self, tool_name: &str) -> bool {
+                self.concurrent_tools.contains(tool_name)
             }
         }
 
@@ -2862,6 +2854,10 @@ mod tests {
                     std::panic::panic_any("shared executor panic");
                 }
                 Ok(format!("ok:{}", input.trim()))
+            }
+
+            fn allows_concurrent_mcp_call(&self, tool_name: &str) -> bool {
+                tool_name == ANALYSIS
             }
         }
 

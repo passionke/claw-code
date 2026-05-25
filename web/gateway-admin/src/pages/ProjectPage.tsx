@@ -43,6 +43,7 @@ export default function ProjectPage() {
   const [detailJson, setDetailJson] = useState("");
   const [gitForm] = Form.useForm();
   const [preflightForm] = Form.useForm();
+  const [orchestrationForm] = Form.useForm();
   const [gitPatOptions, setGitPatOptions] = useState<{ value: string; label: string }[]>(
     []
   );
@@ -52,6 +53,14 @@ export default function ProjectPage() {
     {
       value: "sqlbot_mcp_start",
       label: "SQLBot mcp_start（首轮 session 在用户问题后注入 token/chat_id）",
+    },
+  ] as const;
+
+  const SOLVE_ORCHESTRATION_KIND_OPTIONS = [
+    { value: "single_turn", label: "单 turn（默认，现有 gateway-solve-turn）" },
+    {
+      value: "multi_agent_analysis",
+      label: "分阶段编排（Planner → 并行问数 → ReportWriter + ProgressNarrator）",
     },
   ] as const;
 
@@ -115,7 +124,16 @@ export default function ProjectPage() {
         ? kind
         : "none",
     });
-  }, [projectConfig, dsId, row, gitForm, preflightForm]);
+    const orchKind = projectConfig.solveOrchestrationJson?.kind || "single_turn";
+    orchestrationForm.setFieldsValue({
+      kind: SOLVE_ORCHESTRATION_KIND_OPTIONS.some((o) => o.value === orchKind)
+        ? orchKind
+        : "single_turn",
+      plannerMaxIter: projectConfig.solveOrchestrationJson?.plannerMaxIter ?? 6,
+      writerMaxIter: projectConfig.solveOrchestrationJson?.writerMaxIter ?? 4,
+      narratorThrottleMs: projectConfig.solveOrchestrationJson?.narratorThrottleMs ?? 3000,
+    });
+  }, [projectConfig, dsId, row, gitForm, preflightForm, orchestrationForm]);
 
   const activate = async (contentRev: string) => {
     const r = await proxyHttp<{
@@ -421,6 +439,71 @@ export default function ProjectPage() {
             <Tag color="blue">{projectConfig.solvePreflightJson.kind}</Tag>
           ) : (
             <Tag>未启用</Tag>
+          )}
+        </Space>
+      </Card>
+
+      <Card title="Solve 编排管道" size="small" style={{ marginBottom: 16 }}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          存于 <Typography.Text code>project_config.solve_orchestration_json</Typography.Text>
+          ，物化到 <Typography.Text code>home/.claw/solve-orchestration.json</Typography.Text>
+          。<Typography.Text code>multi_agent_analysis</Typography.Text> 启用分阶段编排（Planner → 并行问数 →
+          ReportWriter），ProgressNarrator 并行更新进度。详见{" "}
+          <Typography.Text code>docs/multi-agent-analysis.md</Typography.Text>。
+        </Typography.Paragraph>
+        <Form form={orchestrationForm} layout="vertical">
+          <Form.Item
+            name="kind"
+            label="管道类型"
+            rules={[{ required: true, message: "请选择编排类型" }]}
+          >
+            <Select style={{ maxWidth: 520 }} options={[...SOLVE_ORCHESTRATION_KIND_OPTIONS]} />
+          </Form.Item>
+          <Space wrap size="middle">
+            <Form.Item label="问数并发">
+              <Typography.Text type="secondary">
+                由 worker 环境变量 <Typography.Text code>CLAW_MCP_MAX_CONCURRENT</Typography.Text>{" "}
+                控制；工具是否可并行由 MCP <Typography.Text code>tools/list</Typography.Text>{" "}
+                annotations 决定
+              </Typography.Text>
+            </Form.Item>
+            <Form.Item name="plannerMaxIter" label="Planner max_iter">
+              <Input type="number" min={1} max={8} style={{ width: 100 }} />
+            </Form.Item>
+            <Form.Item name="writerMaxIter" label="Writer max_iter">
+              <Input type="number" min={1} max={8} style={{ width: 100 }} />
+            </Form.Item>
+            <Form.Item name="narratorThrottleMs" label="Narrator 节流 ms">
+              <Input type="number" min={500} max={30000} style={{ width: 120 }} />
+            </Form.Item>
+          </Space>
+        </Form>
+        <Space style={{ marginTop: 8 }}>
+          <Button
+            type="primary"
+            onClick={async () => {
+              if (!projectConfig) return;
+              const v = await orchestrationForm.validateFields();
+              const kind = String(v.kind || "single_turn").trim() || "single_turn";
+              await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
+                solveOrchestrationJson: {
+                  kind,
+                  plannerMaxIter: Number(v.plannerMaxIter) || 6,
+                  writerMaxIter: Number(v.writerMaxIter) || 4,
+                  narratorThrottleMs: Number(v.narratorThrottleMs) || 3000,
+                },
+              });
+              message.success("编排配置已保存到临时版；设为生效后物化到工作区");
+              await refreshProjectConfig();
+            }}
+          >
+            保存编排配置
+          </Button>
+          {projectConfig?.solveOrchestrationJson?.kind &&
+          projectConfig.solveOrchestrationJson.kind !== "single_turn" ? (
+            <Tag color="purple">{projectConfig.solveOrchestrationJson.kind}</Tag>
+          ) : (
+            <Tag>single_turn（默认）</Tag>
           )}
         </Space>
       </Card>

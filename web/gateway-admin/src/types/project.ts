@@ -5,6 +5,16 @@ export interface SolvePreflightJson {
   kind: "none" | "sqlbot_mcp_start" | string;
 }
 
+/** Solve orchestration pipeline (`project_config.solve_orchestration_json`). Author: kejiqing */
+export interface SolveOrchestrationJson {
+  kind: "single_turn" | "multi_agent_analysis" | string;
+  plannerMaxIter?: number;
+  writerMaxIter?: number;
+  queryConcurrency?: number;
+  narratorModel?: string | null;
+  narratorThrottleMs?: number;
+}
+
 export interface GitSyncJson {
   enabled?: boolean;
   gitUrl?: string;
@@ -45,6 +55,7 @@ export interface ProjectConfig {
   claudeMd?: string | null;
   gitSyncJson?: GitSyncJson;
   solvePreflightJson?: SolvePreflightJson;
+  solveOrchestrationJson?: SolveOrchestrationJson;
 }
 
 export interface SkillJsonItem {

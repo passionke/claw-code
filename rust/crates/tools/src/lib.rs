@@ -1938,13 +1938,13 @@ fn run_mcp_tool(input: McpToolInput) -> Result<String, String> {
     }
 }
 
-/// Generic [`MCP`] tool with optional HTTP gateway `extraSession` forwarded as MCP `tools/call` `_meta.extra_session`.
+/// Generic [`MCP`] tool with optional `tools/call` `_meta` (e.g. `{ "extra_session": { …, "_claw_session_id", "_claw_turn_id" } }`).
 ///
-/// `extra_session` object keys are passed through unchanged. Only MCP server / raw tool *names* are normalized when building the qualified tool id (`mcp__...__...`).
+/// Only MCP server / raw tool *names* are normalized when building the qualified tool id (`mcp__...__...`).
 /// Author: kejiqing
-pub fn execute_mcp_tool_with_extra_session(
+pub fn execute_mcp_tool_with_meta(
     input_json: &str,
-    extra_session: Option<&Value>,
+    meta: Option<&Value>,
 ) -> Result<String, String> {
     let root: Value =
         serde_json::from_str(input_json).map_err(|e| format!("invalid MCP tool JSON: {e}"))?;
@@ -1964,8 +1964,7 @@ pub fn execute_mcp_tool_with_extra_session(
         .filter(|v| !v.is_null())
         .unwrap_or_else(|| json!({}));
     let registry = global_mcp_registry();
-    let meta = extra_session.map(|value| json!({ "extra_session": value }));
-    match registry.call_tool_with_meta(&server, &tool, &args, meta) {
+    match registry.call_tool_with_meta(&server, &tool, &args, meta.cloned()) {
         Ok(result) => to_pretty_json(json!({
             "server": server,
             "tool": tool,

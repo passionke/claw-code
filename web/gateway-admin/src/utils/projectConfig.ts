@@ -11,9 +11,11 @@ export function emptyProjectConfig(dsId: number): ProjectConfig {
     allowedToolsJson: [],
     claudeMd: null,
     solvePreflightJson: { kind: "none" },
+    solveOrchestrationJson: { kind: "single_turn" },
   };
 }
 
+/** Load config for Admin editors: draft when open, else effective formal (server-side). */
 export async function loadProjectConfig(
   gatewayBase: string,
   dsId: number
@@ -50,6 +52,10 @@ export async function putProjectConfigDraft(
       patch.solvePreflightJson !== undefined
         ? patch.solvePreflightJson
         : cfg.solvePreflightJson,
+    solveOrchestrationJson:
+      patch.solveOrchestrationJson !== undefined
+        ? patch.solveOrchestrationJson
+        : cfg.solveOrchestrationJson,
   };
   const r = await proxyHttp<{ activeConfig?: ProjectConfig } & ProjectConfig>(
     gatewayBase,

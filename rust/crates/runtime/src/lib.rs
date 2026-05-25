@@ -70,7 +70,7 @@ pub use config_validate::{
     DiagnosticKind, ValidationResult,
 };
 pub use conversation::{
-    auto_compaction_threshold_from_env, is_background_sqlbot_analysis_tool, ApiClient, ApiRequest,
+    auto_compaction_threshold_from_env, ApiClient, ApiRequest,
     AssistantEvent, AutoCompactionEvent, ConversationRuntime, PromptCacheEvent, RuntimeError,
     SharedToolExecutor, StaticToolExecutor, ToolError, ToolExecutor, TurnSummary,
 };
@@ -95,10 +95,9 @@ pub use mcp::{
     scoped_mcp_config_hash, unwrap_ccr_proxy_url,
 };
 pub use mcp_client::{
-    default_mcp_max_concurrent, is_parallel_friendly_mcp_tool, mcp_parallel_fanout_enabled,
-    McpClientAuth, McpClientBootstrap, McpClientTransport, McpManagedProxyTransport,
-    McpRemoteTransport, McpSdkTransport, McpStdioTransport, DEFAULT_MCP_MAX_CONCURRENT,
-    MCP_PARALLEL_FANOUT_ENV,
+    default_mcp_max_concurrent, McpClientAuth, McpClientBootstrap, McpClientTransport,
+    McpManagedProxyTransport, McpRemoteTransport, McpSdkTransport, McpStdioTransport,
+    DEFAULT_MCP_MAX_CONCURRENT,
 };
 pub use mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase, McpLifecycleState,
@@ -106,6 +105,9 @@ pub use mcp_lifecycle_hardened::{
 };
 pub use mcp_server::{McpServer, McpServerSpec, ToolCallHandler, MCP_SERVER_PROTOCOL_VERSION};
 pub use mcp_stdio::{
+    apply_mcp_tool_annotations_from_config, concurrent_mcp_tool_names, mcp_annotation_bool,
+    mcp_description_parallel_friendly, mcp_tool_allows_concurrent_calls,
+    mcp_tool_parallel_fanout_eligible,
     spawn_mcp_stdio_process, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse,
     ManagedMcpTool, McpDiscoveryFailure, McpInitializeClientInfo, McpInitializeParams,
     McpInitializeResult, McpInitializeServerInfo, McpListResourcesParams, McpListResourcesResult,

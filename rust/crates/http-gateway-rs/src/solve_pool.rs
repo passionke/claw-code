@@ -204,11 +204,24 @@ pub async fn run_solve_request_docker(
     } else {
         None
     };
+    let ds_orchestration_host = ds_base.join("home/.claw/solve-orchestration.json");
+    let orchestration_for_pool = if fs::metadata(&ds_orchestration_host)
+        .await
+        .is_ok_and(|m| m.is_file())
+    {
+        Some(session_mount_for_pool_acquire(
+            &ds_orchestration_host,
+            &state.cfg,
+        ))
+    } else {
+        None
+    };
     let host_mounts = PoolSessionHostMounts {
         skills_dir: skills_for_pool.clone(),
         claude_md_file: claude_for_pool.clone(),
         data_catalog_file: schema_for_pool.clone(),
         solve_preflight_file: preflight_for_pool.clone(),
+        solve_orchestration_file: orchestration_for_pool.clone(),
     };
 
     info!(

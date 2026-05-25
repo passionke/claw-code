@@ -38,7 +38,7 @@ Author: kejiqing
 2. **SQLBot MCP** = what Claw names **`mcp__sqlbot__*`**; the adapter is **invisible** at the Claw tool layer.
 3. **Gateway** = composes processes and env; it is **not** “Doris” and **not** “SQLBot product” — it orchestrates.
 4. **Image** = convenience bundle (gateway + Doris dist + adapter script + `claw`); **repository** boundaries still split for understanding.
-5. **`CLAW_MCP_PARALLEL_FANOUT`**: unset or truthy → gateway solve may run multiple `mcp_question_then_analysis` calls from one assistant turn concurrently; `0` / `false` / `off` forces serial MCP for those tools and drops the `[parallel-friendly]` tool-description hint (`rust/crates/runtime/src/mcp_client.rs`).
+5. **`CLAW_MCP_MAX_CONCURRENT`**: max in-flight MCP `tools/call` per worker; values `> 1` also enable same-turn parallel SQLBot fan-out (`[parallel-friendly]` tool hint + `shared_executor`). Set `1` for fully serial MCP (`rust/crates/runtime/src/mcp_client.rs`).
 6. **Solve preflight (per `ds_*`)**: `ds_<id>/home/.claw/solve-preflight.json` with `kind` (e.g. `sqlbot_mcp_start`) → **first** `sessionId` turn only, after user text in jsonl, code-run preflight (`rust/crates/gateway-solve-turn/src/project_preflight.rs`). Table DDL: `ds_<id>/home/schema.md`, ro mount + system prompt (`GATEWAY_SCHEMA_MD_REL`). `CLAW_GATEWAY_SQLBOT_PREFLIGHT`=`0` disables SQLBot start inject (`sqlbot_preflight.rs`).
 
 ## Where to change what

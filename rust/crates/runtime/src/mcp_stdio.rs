@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::io;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use tokio::time::timeout;
 use tracing::{info, warn};
 
@@ -14,6 +15,7 @@ use crate::mcp_client::{default_mcp_tool_call_timeout_ms, McpClientBootstrap, Mc
 use crate::mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase,
 };
+use crate::mcp_transport::http::{execute_http_tool_call_isolated, HttpToolCallSnapshot};
 use crate::mcp_transport::process::{spawn_mcp_process, McpProcess};
 use crate::mcp_transport::stdio::JsonRpcStdioFraming;
 pub use crate::mcp_transport::stdio::{spawn_mcp_stdio_process, McpStdioProcess};
@@ -123,6 +125,115 @@ pub struct McpTool {
     pub annotations: Option<JsonValue>,
     #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<JsonValue>,
+}
+
+fn mcp_json_bool(object: &JsonValue, key: &str) -> bool {
+    object
+        .get(key)
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+}
+
+/// MCP `tools/list` annotation flag on `annotations` or `_meta` (camelCase + snake_case). Author: kejiqing
+#[must_use]
+pub fn mcp_annotation_bool(annotations: Option<&JsonValue>, key: &str) -> bool {
+    let Some(value) = annotations else {
+        return false;
+    };
+    if mcp_json_bool(value, key) {
+        return true;
+    }
+    match key {
+        "readOnlyHint" => mcp_json_bool(value, "read_only_hint"),
+        "destructiveHint" => mcp_json_bool(value, "destructive_hint"),
+        "openWorldHint" => mcp_json_bool(value, "open_world_hint"),
+        _ => false,
+    }
+}
+
+fn mcp_tool_annotation_object(tool: &McpTool) -> Option<&JsonValue> {
+    tool.annotations
+        .as_ref()
+        .or(tool.meta.as_ref())
+}
+
+/// Whether MCP metadata allows concurrent in-flight `tools/call` within one turn. Author: kejiqing
+#[must_use]
+pub fn mcp_tool_allows_concurrent_calls(tool: &McpTool) -> bool {
+    let ann = mcp_tool_annotation_object(tool);
+    let read_only = mcp_annotation_bool(ann, "readOnlyHint");
+    let destructive = mcp_annotation_bool(ann, "destructiveHint");
+    let open_world = mcp_annotation_bool(ann, "openWorldHint");
+    read_only && !destructive && !open_world
+}
+
+/// SQLBot and others may mark parallel-safe tools in `description` (e.g. `parallel-friendly`). Author: kejiqing
+#[must_use]
+pub fn mcp_description_parallel_friendly(tool: &McpTool) -> bool {
+    tool.description
+        .as_deref()
+        .is_some_and(|d| d.to_ascii_lowercase().contains("parallel-friendly"))
+}
+
+/// Eligible for gateway multi-agent `query_fanout` or in-turn MCP concurrency. Author: kejiqing
+#[must_use]
+pub fn mcp_tool_parallel_fanout_eligible(tool: &McpTool) -> bool {
+    mcp_tool_allows_concurrent_calls(tool) || mcp_description_parallel_friendly(tool)
+}
+
+fn config_json_to_serde(value: &crate::json::JsonValue) -> JsonValue {
+    match value {
+        crate::json::JsonValue::Null => JsonValue::Null,
+        crate::json::JsonValue::Bool(b) => JsonValue::Bool(*b),
+        crate::json::JsonValue::Number(n) => JsonValue::Number((*n).into()),
+        crate::json::JsonValue::String(s) => JsonValue::String(s.clone()),
+        crate::json::JsonValue::Array(items) => {
+            JsonValue::Array(items.iter().map(config_json_to_serde).collect())
+        }
+        crate::json::JsonValue::Object(map) => JsonValue::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), config_json_to_serde(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// Merge `mcpServers.<server>.toolAnnotations` into discovered tools before concurrency classification.
+pub fn apply_mcp_tool_annotations_from_config(
+    tools: &mut [ManagedMcpTool],
+    servers: &BTreeMap<String, crate::config::ScopedMcpServerConfig>,
+) {
+    for entry in tools.iter_mut() {
+        let Some(scoped) = servers.get(&entry.server_name) else {
+            continue;
+        };
+        let Some(override_ann) = scoped.tool_annotations.get(&entry.raw_name) else {
+            continue;
+        };
+        let override_ann = config_json_to_serde(override_ann);
+        let mut base = entry
+            .tool
+            .annotations
+            .take()
+            .unwrap_or_else(|| JsonValue::Object(JsonMap::new()));
+        if let (Some(b), Some(o)) = (base.as_object_mut(), override_ann.as_object()) {
+            for (k, v) in o {
+                b.insert(k.clone(), v.clone());
+            }
+        } else {
+            base = override_ann.clone();
+        }
+        entry.tool.annotations = Some(base);
+    }
+}
+
+#[must_use]
+pub fn concurrent_mcp_tool_names(tools: &[ManagedMcpTool]) -> HashSet<String> {
+    tools
+        .iter()
+        .filter(|entry| mcp_tool_parallel_fanout_eligible(&entry.tool))
+        .map(|entry| entry.qualified_name.clone())
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -459,6 +570,27 @@ struct ToolRoute {
     raw_name: String,
 }
 
+struct ConcurrentHttpPrep {
+    snapshot: HttpToolCallSnapshot,
+    request_id: JsonRpcId,
+    tool_name: String,
+    qualified_tool_name: String,
+    server_name: String,
+    timeout_ms: u64,
+    arguments_chars: usize,
+    has_meta: bool,
+    has_meta_extra: bool,
+    meta_extra: JsonValue,
+}
+
+fn manager_lock_poisoned() -> McpServerManagerError {
+    McpServerManagerError::InvalidResponse {
+        server_name: String::new(),
+        method: "tools/call",
+        details: "MCP manager lock poisoned".to_string(),
+    }
+}
+
 #[derive(Debug)]
 struct ManagedMcpServer {
     bootstrap: McpClientBootstrap,
@@ -751,6 +883,170 @@ impl McpServerManager {
         }
 
         response
+    }
+
+    /// Concurrent MCP `tools/call` for HTTP streamable servers: brief manager lock only.
+    pub async fn call_tool_concurrent(
+        manager: Arc<StdMutex<Self>>,
+        qualified_tool_name: &str,
+        arguments: Option<JsonValue>,
+        meta: Option<JsonValue>,
+    ) -> Result<JsonRpcResponse<McpToolCallResult>, McpServerManagerError> {
+        let prep = {
+            let mut guard = manager.lock().map_err(|_| manager_lock_poisoned())?;
+            guard
+                .prepare_concurrent_http_call(qualified_tool_name, &arguments, &meta)
+                .await?
+        };
+
+        let Some(prep) = prep else {
+            let mut guard = manager.lock().map_err(|_| manager_lock_poisoned())?;
+            return guard
+                .call_tool(qualified_tool_name, arguments, meta)
+                .await;
+        };
+
+        let ConcurrentHttpPrep {
+            snapshot,
+            request_id,
+            tool_name,
+            qualified_tool_name,
+            server_name,
+            timeout_ms,
+            arguments_chars,
+            has_meta,
+            has_meta_extra,
+            meta_extra,
+        } = prep;
+
+        info!(
+            target: "claw.mcp.boundary",
+            server_name = %server_name,
+            tool_name = %tool_name,
+            qualified_tool_name = %qualified_tool_name,
+            timeout_ms,
+            arguments_chars,
+            has_meta,
+            has_meta_extra,
+            meta_extra = %meta_extra,
+            "mcp_tools_call_start"
+        );
+
+        let request = JsonRpcRequest::new(
+            request_id.clone(),
+            "tools/call",
+            Some(McpToolCallParams {
+                name: tool_name.clone(),
+                arguments,
+                meta,
+            }),
+        );
+
+        let http_result = Self::run_process_request(
+            &server_name,
+            "tools/call",
+            timeout_ms,
+            execute_http_tool_call_isolated(snapshot, &request),
+        )
+        .await;
+
+        let (response, _isolated_session_not_shared) = match http_result {
+            Ok(pair) => pair,
+            Err(error) => {
+                warn!(
+                    target: "claw.mcp.boundary",
+                    server_name = %server_name,
+                    tool_name = %tool_name,
+                    qualified_tool_name = %qualified_tool_name,
+                    error = %error,
+                    "mcp_tools_call_error"
+                );
+                let mut guard = manager.lock().map_err(|_| manager_lock_poisoned())?;
+                if Self::should_reset_server(&error) {
+                    guard.reset_server(&server_name).await?;
+                }
+                return Err(error);
+            }
+        };
+
+        if let Some(payload) = &response.result {
+            let result_chars = serde_json::to_string(payload).map_or(0, |s| s.chars().count());
+            let mcp_start_full_result = tool_name
+                .contains("mcp_start")
+                .then(|| serde_json::to_string(payload).ok())
+                .flatten();
+            info!(
+                target: "claw.mcp.boundary",
+                server_name = %server_name,
+                tool_name = %tool_name,
+                qualified_tool_name = %qualified_tool_name,
+                has_jsonrpc_error = response.error.is_some(),
+                result_chars,
+                mcp_start_full_result = mcp_start_full_result.as_deref().unwrap_or(""),
+                "mcp_tools_call_finish"
+            );
+        }
+
+        Ok(response)
+    }
+
+    async fn prepare_concurrent_http_call(
+        &mut self,
+        qualified_tool_name: &str,
+        arguments: &Option<JsonValue>,
+        meta: &Option<JsonValue>,
+    ) -> Result<Option<ConcurrentHttpPrep>, McpServerManagerError> {
+        let route = self
+            .tool_index
+            .get(qualified_tool_name)
+            .cloned()
+            .ok_or_else(|| McpServerManagerError::UnknownTool {
+                qualified_name: qualified_tool_name.to_string(),
+            })?;
+
+        self.ensure_server_ready(&route.server_name).await?;
+
+        let server = self.servers.get(&route.server_name).ok_or_else(|| {
+            McpServerManagerError::UnknownServer {
+                server_name: route.server_name.clone(),
+            }
+        })?;
+        let Some(process) = server.process.as_ref() else {
+            return Ok(None);
+        };
+        let McpProcess::Remote(remote) = process else {
+            return Ok(None);
+        };
+        let Some(snapshot) = remote.http_tool_call_snapshot() else {
+            return Ok(None);
+        };
+
+        let timeout_ms = self.tool_call_timeout_ms(&route.server_name)?;
+        let arguments_chars = arguments
+            .as_ref()
+            .map_or(0usize, |value| value.to_string().chars().count());
+        let has_meta = meta.is_some();
+        let has_meta_extra = meta
+            .as_ref()
+            .and_then(|value| value.get("extra_session"))
+            .is_some();
+        let meta_extra = meta
+            .as_ref()
+            .and_then(|value| value.get("extra_session"))
+            .cloned()
+            .unwrap_or(JsonValue::Null);
+        Ok(Some(ConcurrentHttpPrep {
+            snapshot,
+            request_id: self.take_request_id(),
+            tool_name: route.raw_name.clone(),
+            qualified_tool_name: qualified_tool_name.to_string(),
+            server_name: route.server_name.clone(),
+            timeout_ms,
+            arguments_chars,
+            has_meta,
+            has_meta_extra,
+            meta_extra,
+        }))
     }
 
     pub async fn list_resources(
@@ -1711,6 +2007,7 @@ mod tests {
                 env: BTreeMap::from([("MCP_TEST_TOKEN".to_string(), "secret-value".to_string())]),
                 tool_call_timeout_ms: None,
             }),
+            tool_annotations: BTreeMap::new(),
         };
         McpClientBootstrap::from_scoped_config("stdio server", &config)
     }
@@ -1778,6 +2075,7 @@ mod tests {
                 env,
                 tool_call_timeout_ms: None,
             }),
+            tool_annotations: BTreeMap::new(),
         }
     }
 
@@ -1817,6 +2115,7 @@ mod tests {
             config: McpServerConfig::Sdk(crate::config::McpSdkServerConfig {
                 name: "sdk-server".to_string(),
             }),
+            tool_annotations: BTreeMap::new(),
         };
         let bootstrap = McpClientBootstrap::from_scoped_config("sdk server", &config);
         let error = spawn_mcp_stdio_process(&bootstrap).expect_err("non-stdio should fail");
@@ -2304,6 +2603,7 @@ mod tests {
                         )]),
                         tool_call_timeout_ms: Some(25),
                     }),
+                    tool_annotations: BTreeMap::new(),
                 },
             )]);
             let mut manager = McpServerManager::from_servers(&servers);
@@ -2358,6 +2658,7 @@ mod tests {
                         )]),
                         tool_call_timeout_ms: Some(1_000),
                     }),
+                    tool_annotations: BTreeMap::new(),
                 },
             )]);
             let mut manager = McpServerManager::from_servers(&servers);
@@ -2698,6 +2999,7 @@ mod tests {
                             env: BTreeMap::new(),
                             tool_call_timeout_ms: None,
                         }),
+                        tool_annotations: BTreeMap::new(),
                     },
                 ),
             ]);
@@ -2778,6 +3080,7 @@ mod tests {
                         headers_helper: None,
                         oauth: None,
                     }),
+                    tool_annotations: BTreeMap::new(),
                 },
             ),
             (
@@ -2787,6 +3090,7 @@ mod tests {
                     config: McpServerConfig::Sdk(McpSdkServerConfig {
                         name: "sdk-server".to_string(),
                     }),
+                    tool_annotations: BTreeMap::new(),
                 },
             ),
             (
@@ -2798,6 +3102,7 @@ mod tests {
                         headers: BTreeMap::new(),
                         headers_helper: None,
                     }),
+                    tool_annotations: BTreeMap::new(),
                 },
             ),
         ]);
@@ -2941,13 +3246,67 @@ mod tests {
     }
 
     #[test]
-    fn extracts_sse_endpoint_from_json_payload() {
-        let event_data = r#"{"endpoint":"/mcp/messages/?session_id=json"}"#;
-        assert_eq!(
-            extract_sse_message_url("https://example.test/mcp", event_data)
-                .expect("should resolve")
-                .as_deref(),
-            Some("https://example.test/mcp/messages/?session_id=json")
+    fn mcp_tool_concurrent_calls_follows_read_only_annotations() {
+        let concurrent = McpTool {
+            name: "analysis".to_string(),
+            description: None,
+            input_schema: None,
+            annotations: Some(json!({"readOnlyHint": true})),
+            meta: None,
+        };
+        let serial = McpTool {
+            name: "write".to_string(),
+            description: None,
+            input_schema: None,
+            annotations: Some(json!({"destructiveHint": true})),
+            meta: None,
+        };
+        assert!(super::mcp_tool_allows_concurrent_calls(&concurrent));
+        assert!(!super::mcp_tool_allows_concurrent_calls(&serial));
+    }
+
+    #[test]
+    fn concurrent_mcp_tool_names_honors_config_tool_annotations() {
+        use super::ManagedMcpTool;
+        use crate::config::{ConfigSource, McpRemoteServerConfig, McpServerConfig, ScopedMcpServerConfig};
+        use crate::json::JsonValue as ConfigJson;
+
+        let tools = vec![ManagedMcpTool {
+            qualified_name: "mcp__srv__analysis".to_string(),
+            server_name: "srv".to_string(),
+            raw_name: "analysis".to_string(),
+            tool: McpTool {
+                name: "analysis".to_string(),
+                description: None,
+                input_schema: None,
+                annotations: None,
+                meta: None,
+            },
+        }];
+        let mut servers = BTreeMap::new();
+        let mut ann = BTreeMap::new();
+        ann.insert(
+            "readOnlyHint".to_string(),
+            ConfigJson::Bool(true),
         );
+        let mut tool_annotations = BTreeMap::new();
+        tool_annotations.insert("analysis".to_string(), ConfigJson::Object(ann));
+        servers.insert(
+            "srv".to_string(),
+            ScopedMcpServerConfig {
+                scope: ConfigSource::Local,
+                config: McpServerConfig::Http(McpRemoteServerConfig {
+                    url: "http://127.0.0.1:1/mcp".to_string(),
+                    headers: BTreeMap::new(),
+                    headers_helper: None,
+                    oauth: None,
+                }),
+                tool_annotations,
+            },
+        );
+        let mut tools = tools;
+        super::apply_mcp_tool_annotations_from_config(&mut tools, &servers);
+        let names = super::concurrent_mcp_tool_names(&tools);
+        assert!(names.contains("mcp__srv__analysis"));
     }
 }

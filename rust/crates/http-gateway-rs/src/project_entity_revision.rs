@@ -471,6 +471,7 @@ pub async fn restore_entity_revision_to_draft(
         claude_md: row.claude_md.as_deref(),
         git_sync_json: &row.git_sync_json,
         solve_preflight_json: &row.solve_preflight_json,
+        solve_orchestration_json: &row.solve_orchestration_json,
     })
     .await
     .map_err(|e| EntityRevisionError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

@@ -42,7 +42,7 @@ Base URL 示例：`http://127.0.0.1:18088`
     - 在访问上游模型时透传 HTTP 头：
       - `clawcode-session-id: <sessionId>`
       - `claw-session-id: <sessionId>`
-    - 在访问下游 MCP 服务（包括 SQLBot）时，会通过 MCP 协议 `tools/call._meta.extra_session` 向工具端暴露 `extraSession`（如存在），用于会话级业务上下文消费。
+    - 在访问下游 MCP 服务（包括 SQLBot）时，`tools/call` 的 `_meta` 仅含 `extra_session` 对象（详见 [`gateway-mcp-call-meta.md`](gateway-mcp-call-meta.md)）：业务字段来自请求体 `extraSession`，并注入 `_claw_session_id`、`_claw_turn_id` 供串联。非 MCP HTTP 出站 header。
   - 对话状态：同一会话目录下使用 `.claw/gateway-solve-session.jsonl` 持久化消息；若文件损坏导致无法加载，返回 `500`（不会静默丢弃历史）。
   - **Solve preflight（按项目、可选）**：在 `ds_<id>/home/.claw/solve-preflight.json` 声明，例如 `{"kind":"sqlbot_mcp_start"}`。仅**该 `sessionId` 第一次**（尚无 `gateway-solve-session.jsonl`）时：先写入用户问题，再执行 preflight 并注入 transcript（当前仅 `sqlbot_mcp_start`：一次 `mcp_start`，暴露 `access_token` / `chat_id`）。续聊 turn 不跑 preflight。环境变量 **`CLAW_GATEWAY_SQLBOT_PREFLIGHT`**=`0`/`false`/`off`/`no` 可关闭 SQLBot 这一类。表结构不在 transcript 注入：由外部 job 维护 `ds_<id>/home/schema.md`（`CREATE TABLE` DDL），worker ro mount 到 `home/schema.md`，系统提示词引导模型读取该文件。
 

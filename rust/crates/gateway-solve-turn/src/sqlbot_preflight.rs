@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{DirectToolExecutor, GatewaySolveTurnError};
 use runtime::{
-    ContentBlock, ConversationMessage, Session, ToolExecutor, GATEWAY_SCHEMA_MD_REL,
+    ContentBlock, ConversationMessage, MessageRole, Session, ToolExecutor, GATEWAY_SCHEMA_MD_REL,
     GATEWAY_SQLBOT_MCP_DATASOURCE_EXAMPLES_TOOL, GATEWAY_SQLBOT_MCP_DATASOURCE_LIST_TOOL,
     GATEWAY_SQLBOT_MCP_DATASOURCE_TABLES_TOOL, GATEWAY_SQLBOT_MCP_DATASOURCE_TERMINOLOGIES_TOOL,
     GATEWAY_SQLBOT_MCP_START_TOOL, GATEWAY_SQL_EXAMPLES_MD_REL, GATEWAY_TABLES_AND_RELS_MD_REL,
@@ -643,17 +643,174 @@ pub(crate) fn run_sqlbot_preflight(
         format_sql_examples_md,
     );
 
-    inject_assistant_text(
-        session,
+    let preflight_note = format!(
         "[Gateway SQLBot preflight] Session context files (read with Read/bash):\n\
          - `home/schema.md` — table DDL / columns\n\
          - `home/tables_and_rels.md` — tables and relation graph from list\n\
          - `home/terminologies.md` — business terminology\n\
          - `home/sql_examples.md` — few-shot SQL examples\n\
          Missing files were skipped (see gateway logs). \
-         `access_token` and `chat_id` are in the latest `mcp_start` tool_result above.",
-    )?;
+         `access_token` and `chat_id` are in the latest `mcp_start` tool_result above.\n\
+         {PREFLIGHT_DATASOURCE_ID_NOTE} {datasource_id}."
+    );
+    inject_assistant_text(session, &preflight_note)?;
     Ok(())
+}
+
+/// SQLBot credentials for parallel fanout / shared-chat query tools (from preflight).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlbotQueryContext {
+    pub token: String,
+    /// Shared session chat from `mcp_start` (not used by `mcp_isolated_question_analysis`).
+    pub chat_id: i64,
+    /// Datasource chosen in preflight `mcp_datasource_list` (recommended for isolated fanout).
+    pub datasource_id: Option<i64>,
+}
+
+const PREFLIGHT_DATASOURCE_ID_NOTE: &str = "datasource_id for query tools:";
+
+/// Read `access_token` + `chat_id` from the latest successful `mcp_start` tool_result in the session.
+#[must_use]
+pub fn sqlbot_query_context_from_session(session: &Session) -> Option<SqlbotQueryContext> {
+    for msg in session.messages.iter().rev() {
+        for block in &msg.blocks {
+            let ContentBlock::ToolResult {
+                tool_name,
+                output,
+                is_error,
+                ..
+            } = block
+            else {
+                continue;
+            };
+            if *is_error || !tool_name.contains("mcp_start") {
+                continue;
+            }
+            let inner = parse_sqlbot_inner_json(output).ok()?;
+            let data = inner.get("data")?;
+            let token = data.get("access_token")?.as_str()?.to_string();
+            let chat_id = data.get("chat_id")?.as_i64()?;
+            let datasource_id = session_datasource_id_from_preflight_note(session);
+            return Some(SqlbotQueryContext {
+                token,
+                chat_id,
+                datasource_id,
+            });
+        }
+    }
+    None
+}
+
+fn session_datasource_id_from_preflight_note(session: &Session) -> Option<i64> {
+    for msg in session.messages.iter().rev() {
+        if !matches!(msg.role, MessageRole::Assistant) {
+            continue;
+        }
+        for block in &msg.blocks {
+            let ContentBlock::Text { text } = block else {
+                continue;
+            };
+            let Some(rest) = text.split(PREFLIGHT_DATASOURCE_ID_NOTE).nth(1) else {
+                continue;
+            };
+            let digits: String = rest
+                .chars()
+                .skip_while(|c| c.is_whitespace() || *c == '.')
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if let Ok(id) = digits.parse::<i64>() {
+                if id > 0 {
+                    return Some(id);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether an MCP tool output payload indicates SQLBot/application error.
+#[must_use]
+pub fn sqlbot_mcp_payload_is_error(output: &str) -> bool {
+    sqlbot_payload_is_error(output)
+}
+
+#[cfg(test)]
+mod sqlbot_query_context_tests {
+    use super::*;
+    use runtime::{ContentBlock, ConversationMessage, MessageRole};
+
+    #[test]
+    fn reads_context_from_mcp_start_tool_result() {
+        let inner = json!({
+            "code": 0,
+            "data": { "access_token": "tok123", "chat_id": 7361 }
+        });
+        let outer = json!({
+            "content": [{"type": "text", "text": inner.to_string()}]
+        });
+        let mut session = Session::new();
+        session
+            .push_message(ConversationMessage {
+                role: MessageRole::Tool,
+                blocks: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    tool_name: "mcp__sqlbot-streamable__mcp_start".into(),
+                    output: outer.to_string(),
+                    is_error: false,
+                }],
+                usage: None,
+            })
+            .unwrap();
+        let ctx = sqlbot_query_context_from_session(&session).unwrap();
+        assert_eq!(ctx.token, "tok123");
+        assert_eq!(ctx.chat_id, 7361);
+        assert_eq!(ctx.datasource_id, None);
+    }
+
+    #[test]
+    fn parses_datasource_id_from_preflight_assistant_note() {
+        let mut session = Session::new();
+        session
+            .push_message(ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: format!("{PREFLIGHT_DATASOURCE_ID_NOTE} 42."),
+            }]))
+            .unwrap();
+        assert_eq!(
+            super::session_datasource_id_from_preflight_note(&session),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn reads_datasource_id_from_preflight_note() {
+        let inner = json!({
+            "code": 0,
+            "data": { "access_token": "tok123", "chat_id": 7361 }
+        });
+        let outer = json!({
+            "content": [{"type": "text", "text": inner.to_string()}]
+        });
+        let mut session = Session::new();
+        session
+            .push_message(ConversationMessage {
+                role: MessageRole::Tool,
+                blocks: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    tool_name: "mcp__sqlbot-streamable__mcp_start".into(),
+                    output: outer.to_string(),
+                    is_error: false,
+                }],
+                usage: None,
+            })
+            .unwrap();
+        session
+            .push_message(ConversationMessage::assistant(vec![ContentBlock::Text {
+                text: format!("{PREFLIGHT_DATASOURCE_ID_NOTE} 42."),
+            }]))
+            .unwrap();
+        let ctx = sqlbot_query_context_from_session(&session).unwrap();
+        assert_eq!(ctx.datasource_id, Some(42));
+    }
 }
 
 #[cfg(test)]

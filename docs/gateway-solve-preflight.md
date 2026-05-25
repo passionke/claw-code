@@ -56,3 +56,11 @@ Author: kejiqing
 2. 在 `gateway-solve-turn/src/project_preflight.rs` 的 `match cfg.kind` 注册
 3. `validate_solve_preflight_json` 允许新 `kind` 字符串
 4. 项目 DB 中 `solvePreflightJson.kind` 选用
+
+## 相关：solve 编排（非 preflight）
+
+首轮 preflight（schema 注入）与 **编排管道** 独立配置：
+
+- DB：`project_config.solve_orchestration_json` → `home/.claw/solve-orchestration.json`
+- `kind: multi_agent_analysis` 启用分阶段 Planner / 并行问数 / Writer + 并行 Narrator
+- 详见 [`docs/multi-agent-analysis.md`](multi-agent-analysis.md)

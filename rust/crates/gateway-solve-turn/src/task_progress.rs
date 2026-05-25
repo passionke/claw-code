@@ -303,16 +303,10 @@ fn patch_current_task_desc(
     desc: &str,
     phase: &str,
 ) -> Result<(), String> {
-    let mut progress = read_task_progress(session_home).unwrap_or(TaskProgressFile {
-        version: PROGRESS_VERSION,
-        session_id: session_id.to_string(),
-        current_task_desc: String::new(),
-        phase: "starting".to_string(),
-        plan_title: None,
-        todos: Vec::new(),
-        current_todo_id: None,
-        updated_at_ms: now_ms(),
-    });
+    let Some(mut progress) = read_task_progress(session_home) else {
+        // Avoid clobbering plan/todos when orchestrator progress is still being written.
+        return Ok(());
+    };
     progress.session_id = session_id.to_string();
     progress.current_task_desc = desc.to_string();
     progress.phase = phase.to_string();
@@ -411,14 +405,29 @@ pub fn run_report_progress(
         .phase
         .filter(|p| !p.trim().is_empty())
         .unwrap_or_else(|| "executing_todo".to_string());
+    let existing = read_task_progress(session_home);
+    let todos = match &parsed.todos {
+        Some(items) if !items.is_empty() => items.clone(),
+        _ => existing
+            .as_ref()
+            .map(|p| p.todos.clone())
+            .unwrap_or_default(),
+    };
+    let plan_title = parsed
+        .plan_title
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| existing.as_ref().and_then(|p| p.plan_title.clone()));
     let progress = TaskProgressFile {
         version: PROGRESS_VERSION,
         session_id: session_id.to_string(),
         current_task_desc: desc,
         phase,
-        plan_title: parsed.plan_title.filter(|s| !s.trim().is_empty()),
-        todos: parsed.todos.unwrap_or_default(),
-        current_todo_id: parsed.current_todo_id.filter(|s| !s.trim().is_empty()),
+        plan_title,
+        todos,
+        current_todo_id: parsed
+            .current_todo_id
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| existing.and_then(|p| p.current_todo_id)),
         updated_at_ms: now_ms(),
     };
     write_task_progress(session_home, &progress)?;

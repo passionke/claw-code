@@ -173,6 +173,7 @@ pub fn config_row_from_revision(
     rev: &ProjectConfigRevisionRow,
     git_sync_json: Value,
     solve_preflight_json: Value,
+    solve_orchestration_json: Value,
     stable_content_rev: &str,
 ) -> ProjectConfigRow {
     ProjectConfigRow {
@@ -189,6 +190,7 @@ pub fn config_row_from_revision(
         claude_md: rev.claude_md.clone(),
         git_sync_json,
         solve_preflight_json,
+        solve_orchestration_json,
     }
 }
 
@@ -214,7 +216,39 @@ pub fn upsert_from_row<'a>(
         claude_md,
         git_sync_json: &row.git_sync_json,
         solve_preflight_json: &row.solve_preflight_json,
+        solve_orchestration_json: &row.solve_orchestration_json,
     }
+}
+
+/// Row for Admin editing UIs: open **draft** when `draft_open`, else effective **formal** snapshot.
+pub async fn row_for_editing(
+    db: &GatewaySessionDb,
+    ds_id: i64,
+) -> Result<Option<ProjectConfigRow>, sqlx::Error> {
+    let Some(row) = db.get_project_config(ds_id).await? else {
+        return Ok(None);
+    };
+    if row.draft_open && is_draft_content_rev(&row.content_rev) {
+        return Ok(Some(row));
+    }
+    let effective = match effective_formal_rev(&row) {
+        Ok(s) => s.to_string(),
+        Err(_) => return Ok(Some(row)),
+    };
+    if let Some(rev) = db.get_project_config_revision(ds_id, &effective).await? {
+        return Ok(Some(config_row_from_revision(
+            ds_id,
+            &rev,
+            row.git_sync_json.clone(),
+            row.solve_preflight_json.clone(),
+            row.solve_orchestration_json.clone(),
+            &effective,
+        )));
+    }
+    if !row.draft_open && row.content_rev == effective {
+        return Ok(Some(row));
+    }
+    Ok(Some(row))
 }
 
 /// Row used for `apply_if_needed` — always effective **formal** snapshot, never temp draft.
@@ -235,6 +269,7 @@ pub async fn row_for_materialize(
             &rev,
             row.git_sync_json.clone(),
             row.solve_preflight_json.clone(),
+            row.solve_orchestration_json.clone(),
             &effective,
         )));
     }
@@ -278,6 +313,7 @@ pub async fn ensure_draft(
         claude_md: formal.claude_md.as_deref(),
         git_sync_json: &row.git_sync_json,
         solve_preflight_json: &row.solve_preflight_json,
+        solve_orchestration_json: &row.solve_orchestration_json,
     };
     db.upsert_project_config(upsert).await?;
     db.get_project_config(ds_id).await?.ok_or_else(|| {
@@ -295,6 +331,7 @@ pub async fn close_draft_to_stable(
     stable_content_rev: &str,
     git_sync_json: &Value,
     solve_preflight_json: &Value,
+    solve_orchestration_json: &Value,
 ) -> Result<ProjectConfigRow, DraftError> {
     if is_draft_content_rev(stable_content_rev) {
         return Err(DraftError::new(
@@ -308,6 +345,7 @@ pub async fn close_draft_to_stable(
         &formal,
         git_sync_json.clone(),
         solve_preflight_json.clone(),
+        solve_orchestration_json.clone(),
         stable_content_rev,
     );
     db.upsert_project_config(upsert_from_row(

@@ -1,43 +1,43 @@
 import { Button, Input, Space, Typography, message } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../api/client";
+import DraftEditingBanner from "../components/DraftEditingBanner";
 import EditorLengthHint from "../components/EditorLengthHint";
 import EntityVersionPanel from "../components/EntityVersionPanel";
-import { useApp } from "../context/AppContext";
+import { useProjectConfigEditor } from "../hooks/useProjectConfigEditor";
 import {
   CLAUDE_ENTITY_KEY,
   claudeContentFromRevisionBody,
 } from "../utils/entityRevision";
-import { putProjectConfigDraft } from "../utils/projectConfig";
+import {
+  claudeMdFromConfig,
+  shouldFetchClaudeFromDisk,
+} from "../utils/projectConfigEditor";
 
 const { TextArea } = Input;
 
-function hasClaudeOverride(md: string | null | undefined): boolean {
-  return !!(md && md.trim());
-}
-
 export default function ClaudePage() {
-  const { gatewayBase, dsId, projectConfig, refreshProjectConfig } = useApp();
+  const { gatewayBase, dsId, projectConfig, reloadEditingConfig, saveDraftPatch } =
+    useProjectConfigEditor();
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [l2Refresh, setL2Refresh] = useState(0);
 
   const load = useCallback(async () => {
-    const cfg = projectConfig ?? (await refreshProjectConfig());
-    if (hasClaudeOverride(cfg.claudeMd)) {
-      const md = cfg.claudeMd ?? "";
-      setContent(md);
+    const cfg = await reloadEditingConfig();
+    const fromConfig = claudeMdFromConfig(cfg);
+    if (!shouldFetchClaudeFromDisk(cfg)) {
+      setContent(fromConfig);
       return;
     }
-    const r = await proxyHttp<{ content?: string; exists?: boolean }>(
+    const r = await proxyHttp<{ content?: string }>(
       gatewayBase,
       "GET",
       `/v1/project/claude/${dsId}`
     );
-    const c = r.content || "";
-    setContent(c);
-  }, [gatewayBase, dsId, projectConfig, refreshProjectConfig]);
+    setContent(r.content || "");
+  }, [gatewayBase, dsId, reloadEditingConfig]);
 
   useEffect(() => {
     load().catch((e) => message.error(String((e as Error).message)));
@@ -45,18 +45,21 @@ export default function ClaudePage() {
 
   useEffect(() => {
     if (!projectConfig) return;
-    const md = projectConfig.claudeMd;
-    if (hasClaudeOverride(md)) {
-      setContent(md ?? "");
+    if (projectConfig.draftOpen) {
+      setContent(projectConfig.claudeMd ?? "");
+      return;
     }
-  }, [projectConfig?.contentRev, projectConfig?.claudeMd, dsId]);
+    const fromConfig = claudeMdFromConfig(projectConfig);
+    if (fromConfig !== "" || projectConfig.claudeMd != null) {
+      setContent(fromConfig);
+    }
+  }, [projectConfig, projectConfig?.contentRev, projectConfig?.claudeMd, projectConfig?.draftOpen]);
 
   const save = async () => {
     setSaving(true);
     try {
-      await proxyHttp(gatewayBase, "POST", `/v1/project/claude/${dsId}`, { content });
+      await saveDraftPatch({ claudeMd: content });
       message.success("CLAUDE.md 已写入项目草稿");
-      await refreshProjectConfig();
       setL2Refresh((n) => n + 1);
     } finally {
       setSaving(false);
@@ -64,14 +67,11 @@ export default function ClaudePage() {
   };
 
   const restoreDefault = async () => {
-    const cfg = projectConfig ?? (await refreshProjectConfig());
     setRestoring(true);
     try {
-      await putProjectConfigDraft(gatewayBase, dsId, cfg, { claudeMd: null });
+      await saveDraftPatch({ claudeMd: null });
       setContent("");
       message.success("已恢复默认（已清空项目 CLAUDE.md 覆盖）");
-      await refreshProjectConfig();
-      await load();
       setL2Refresh((n) => n + 1);
     } finally {
       setRestoring(false);
@@ -81,6 +81,7 @@ export default function ClaudePage() {
   return (
     <div>
       <Typography.Title level={4}>CLAUDE.md</Typography.Title>
+      <DraftEditingBanner />
       <EditorLengthHint text={content} label="CLAUDE.md 正文" />
       <TextArea rows={18} value={content} onChange={(e) => setContent(e.target.value)} />
       <Space style={{ marginTop: 8 }} wrap>

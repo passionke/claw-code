@@ -5,12 +5,23 @@ export interface ProgressEvent {
   message?: string;
 }
 
+/** Multi-agent plan todo from `task-progress.json`. Author: kejiqing */
+export interface TaskProgressTodo {
+  id: string;
+  title: string;
+  status: string;
+}
+
 export interface SolveTask {
   status?: string;
   hasReport?: boolean;
   /** Report time (ms); set when `hasReport` is true (`running` / `succeeded`). */
   reportTime?: number;
   currentTaskDesc?: string;
+  /** Multi-agent analysis framework title. Author: kejiqing */
+  planTitle?: string;
+  /** Multi-agent todo checklist with status. Author: kejiqing */
+  todos?: TaskProgressTodo[];
   progressHistory?: ProgressEvent[];
   result?: { outputText?: string };
   error?: unknown;

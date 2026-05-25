@@ -1,58 +1,73 @@
-import { Button, Input, Select, Space, Typography, message } from "antd";
-import { PlusOutlined } from "@ant-design/icons";
+import { Alert, Button, Input, Select, Space, Spin, Typography, message } from "antd";
+import { PlusOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
-import { useApp } from "../context/AppContext";
+import type { McpTestResponse } from "../types/mcpTest";
+import { testMcpServer } from "../utils/mcpTest";
 import type { McpEditorItem } from "../utils/mcp";
 import { mcpListFromRecord, mcpRecordFromList } from "../utils/mcp";
+import DraftEditingBanner from "../components/DraftEditingBanner";
 import EditorLengthHint from "../components/EditorLengthHint";
 import EntityVersionPanel from "../components/EntityVersionPanel";
+import { useProjectConfigEditor } from "../hooks/useProjectConfigEditor";
 import { mcpConfigJsonFromRevisionBody } from "../utils/entityRevision";
-import { putProjectConfigDraft } from "../utils/projectConfig";
 
 const { TextArea } = Input;
 
 export default function McpPage() {
-  const { gatewayBase, dsId, projectConfig, refreshProjectConfig } = useApp();
+  const { gatewayBase, dsId, projectConfig, reloadEditingConfig, saveDraftPatch } =
+    useProjectConfigEditor();
   const [list, setList] = useState<McpEditorItem[]>([]);
   const [pick, setPick] = useState("");
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [configJson, setConfigJson] = useState("{\n}\n");
   const [l2Refresh, setL2Refresh] = useState(0);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<McpTestResponse | null>(null);
 
   const activeName = creating ? newName.trim() : pick;
 
-  const load = useCallback(async () => {
-    const cfg = await refreshProjectConfig();
-    const items = mcpListFromRecord(cfg.mcpServersJson);
-    setList(items);
-    if (creating) return;
-    if (items.length) {
-      const keep =
-        pick && items.some((x) => x.serverName === pick) ? pick : items[0].serverName;
-      setPick(keep);
-      const cur = items.find((x) => x.serverName === keep);
-      setConfigJson(cur?.configJson || "{\n}\n");
-    } else {
-      setPick("");
-      setConfigJson("{\n}\n");
-    }
-  }, [refreshProjectConfig, pick, creating]);
-
-  useEffect(() => {
-    if (projectConfig) {
-      const items = mcpListFromRecord(projectConfig.mcpServersJson);
+  const applyMcpList = useCallback(
+    (items: McpEditorItem[], opts?: { keepPick?: string; skipIfCreating?: boolean }) => {
       setList(items);
-      if (!creating && pick && items.some((x) => x.serverName === pick)) {
-        const cur = items.find((x) => x.serverName === pick);
+      if (opts?.skipIfCreating && creating) return;
+      if (items.length) {
+        const want = opts?.keepPick ?? pick;
+        const keep =
+          want && items.some((x) => x.serverName === want) ? want : items[0].serverName;
+        setPick(keep);
+        const cur = items.find((x) => x.serverName === keep);
         setConfigJson(cur?.configJson || "{\n}\n");
+      } else {
+        setPick("");
+        setConfigJson("{\n}\n");
       }
-    }
-  }, [projectConfig, dsId, creating, pick]);
+    },
+    [pick, creating]
+  );
+
+  const load = useCallback(async () => {
+    const cfg = await reloadEditingConfig();
+    applyMcpList(mcpListFromRecord(cfg.mcpServersJson), { skipIfCreating: true });
+  }, [reloadEditingConfig, applyMcpList]);
+
+  const configRevKey = projectConfig
+    ? `${projectConfig.dsId}:${projectConfig.contentRev}:${projectConfig.draftOpen ? 1 : 0}`
+    : "";
 
   useEffect(() => {
     load().catch((e) => message.error(String((e as Error).message)));
   }, [load]);
+
+  /** Sync list from server only when config revision changes (not on every local pick). */
+  useEffect(() => {
+    if (!projectConfig || !configRevKey) return;
+    applyMcpList(mcpListFromRecord(projectConfig.mcpServersJson), {
+      keepPick: pick || undefined,
+      skipIfCreating: creating,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by configRevKey only
+  }, [configRevKey]);
 
   const onPick = (name: string) => {
     setCreating(false);
@@ -82,17 +97,50 @@ export default function McpPage() {
   const save = async () => {
     if (!projectConfig) return;
     const nextList = buildListForSave();
-    mcpRecordFromList(nextList);
-    await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
+    const cfg = await saveDraftPatch({
       mcpServersJson: mcpRecordFromList(nextList),
     });
-    message.success(creating ? `已新增 MCP「${activeName}」` : `已保存 MCP「${activeName}」`);
+    message.success(creating ? `已新增 MCP「${activeName}」` : `已保存 MCP「${activeName}」到草稿`);
     setCreating(false);
     setPick(activeName);
     setNewName("");
-    await refreshProjectConfig();
-    await load();
+    applyMcpList(mcpListFromRecord(cfg.mcpServersJson), { keepPick: activeName });
     setL2Refresh((n) => n + 1);
+  };
+
+  const runTest = async () => {
+    const name = activeName;
+    if (!name) {
+      message.warning("请先填写或选择 MCP server 名称");
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(configJson || "{}") as Record<string, unknown>;
+    } catch {
+      message.error("MCP 配置 JSON 格式无效");
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const r = await testMcpServer(gatewayBase, {
+        dsId,
+        serverName: name,
+        config,
+        probeMcpStart: true,
+      });
+      setTestResult(r);
+      if (r.ok) {
+        message.success(`MCP「${name}」连通与认证通过（${r.durationMs}ms）`);
+      } else {
+        message.error(`MCP「${name}」测试未通过`);
+      }
+    } catch (e) {
+      message.error(String((e as Error).message));
+    } finally {
+      setTesting(false);
+    }
   };
 
   const remove = async () => {
@@ -101,18 +149,18 @@ export default function McpPage() {
       return;
     }
     const nextList = list.filter((x) => x.serverName !== pick);
-    await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
+    const cfg = await saveDraftPatch({
       mcpServersJson: mcpRecordFromList(nextList),
     });
     message.success(`已删除 MCP「${pick}」`);
     setPick("");
-    await refreshProjectConfig();
-    await load();
+    applyMcpList(mcpListFromRecord(cfg.mcpServersJson));
   };
 
   return (
     <div>
       <Typography.Title level={4}>MCP</Typography.Title>
+      <DraftEditingBanner />
       <Space wrap style={{ marginBottom: 8 }}>
         <Select
           style={{ minWidth: 280 }}
@@ -165,19 +213,101 @@ export default function McpPage() {
         value={configJson}
         onChange={(e) => setConfigJson(e.target.value)}
       />
-      <Space style={{ marginTop: 8 }}>
-        <Button type="primary" onClick={() => save().catch((e) => message.error(String(e)))}>
+      <Space style={{ marginTop: 8 }} wrap>
+        <Button
+          type="primary"
+          htmlType="button"
+          onClick={() => save().catch((e) => message.error(String(e)))}
+        >
           {creating ? "保存新 MCP" : "保存 MCP"}
         </Button>
         <Button
+          htmlType="button"
+          icon={<ThunderboltOutlined />}
+          loading={testing}
+          disabled={!activeName}
+          onClick={(e) => {
+            e.preventDefault();
+            void runTest().catch((err) => message.error(String(err)));
+          }}
+        >
+          测试连通
+        </Button>
+        <Button
+          htmlType="button"
           danger
           disabled={creating || !pick}
           onClick={() => remove().catch((e) => message.error(String(e)))}
         >
           删除 MCP
         </Button>
-        <Button onClick={() => load().catch((e) => message.error(String(e)))}>重新加载</Button>
+        <Button htmlType="button" onClick={() => load().catch((e) => message.error(String(e)))}>
+          重新加载
+        </Button>
       </Space>
+
+      {testing && (
+        <div style={{ marginTop: 12 }}>
+          <Spin tip="正在探测 MCP（initialize → tools/list → mcp_start）…" />
+        </div>
+      )}
+
+      {testResult && !testing && (
+        <Alert
+          style={{ marginTop: 12 }}
+          type={
+            testResult.ok ? "success" : testResult.discoverOk ? "warning" : "error"
+          }
+          showIcon
+          message={
+            testResult.ok
+              ? `通过 · ${testResult.serverName} · ${testResult.durationMs}ms`
+              : `未通过 · ${testResult.serverName} · ${testResult.status}`
+          }
+          description={
+            <div>
+              {testResult.url && (
+                <div>
+                  <Typography.Text type="secondary">URL：</Typography.Text>{" "}
+                  <Typography.Text code>{testResult.url}</Typography.Text>
+                </div>
+              )}
+              <div>
+                <Typography.Text type="secondary">发现工具：</Typography.Text>{" "}
+                {testResult.toolCount} 个
+                {(testResult.toolsSample?.length ?? 0) > 0 && (
+                  <>（{(testResult.toolsSample ?? []).join(", ")}…）</>
+                )}
+              </div>
+              {testResult.hasMcpStart && (
+                <div>
+                  <Typography.Text type="secondary">mcp_start：</Typography.Text>{" "}
+                  {testResult.mcpStartOk ? "成功" : "失败"}
+                  {testResult.mcpStartMessage && (
+                    <> — {testResult.mcpStartMessage}</>
+                  )}
+                </div>
+              )}
+              {(testResult.warnings ?? []).map((w) => (
+                <div key={w} style={{ marginTop: 4 }}>
+                  <Typography.Text type="warning">{w}</Typography.Text>
+                </div>
+              ))}
+              {(testResult.errors ?? []).map((e) => (
+                <div key={e} style={{ marginTop: 4 }}>
+                  <Typography.Text type="danger">{e}</Typography.Text>
+                </div>
+              ))}
+              <Typography.Paragraph
+                type="secondary"
+                style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
+              >
+                {testResult.hint}
+              </Typography.Paragraph>
+            </div>
+          }
+        />
+      )}
       <EntityVersionPanel
         domain="mcp"
         entityKey={creating ? "" : pick}

@@ -52,7 +52,12 @@ export default function PromptPage() {
 
   return (
     <div>
-      <Typography.Title level={4}>系统提示词</Typography.Title>
+      <Typography.Title level={4}>系统提示词（当前生效）</Typography.Title>
+      {projectConfig?.draftOpen ? (
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+          存在未提交草稿时，此处仍预览<strong>已生效正式版</strong>物化后的 system prompt，不是草稿内容。
+        </Typography.Paragraph>
+      ) : null}
       <EditorLengthHint text={messageText} label="运行时系统提示词预览" />
       <Spin spinning={loading}>
         <TextArea

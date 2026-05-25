@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use gateway_solve_turn::{
-    read_task_progress, sanitize_current_task_desc, REPORT_PROGRESS_TOOL_NAME,
+    read_task_progress, sanitize_current_task_desc, TaskProgressTodo, REPORT_PROGRESS_TOOL_NAME,
 };
 use serde::Serialize;
 
@@ -64,6 +64,20 @@ pub fn terminal_fallback_desc(status: &str) -> Option<String> {
         "cancelled" => Some("任务已取消".to_string()),
         _ => None,
     }
+}
+
+/// Plan outline fields from `.claw/task-progress.json` for task API. Author: kejiqing
+#[must_use]
+pub fn task_progress_plan_fields(
+    session_home: Option<&Path>,
+) -> (Option<String>, Vec<TaskProgressTodo>) {
+    let Some(home) = session_home else {
+        return (None, Vec::new());
+    };
+    let Some(p) = read_task_progress(home) else {
+        return (None, Vec::new());
+    };
+    (p.plan_title, p.todos)
 }
 
 /// Resolve user-visible progress for a task from on-disk progress file and task status.

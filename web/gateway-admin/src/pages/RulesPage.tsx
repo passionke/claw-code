@@ -1,13 +1,13 @@
 import { Button, Input, Select, Space, Typography, message } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
-import { useApp } from "../context/AppContext";
 import type { RuleEditorItem } from "../types/project";
-import { ruleFieldsFromRevisionBody } from "../utils/entityRevision";
-import { parseRuleJsonItem, rulesJsonFromList, slugRuleTitle } from "../utils/rules";
+import DraftEditingBanner from "../components/DraftEditingBanner";
 import EditorLengthHint from "../components/EditorLengthHint";
 import EntityVersionPanel from "../components/EntityVersionPanel";
-import { putProjectConfigDraft } from "../utils/projectConfig";
+import { useProjectConfigEditor } from "../hooks/useProjectConfigEditor";
+import { ruleFieldsFromRevisionBody } from "../utils/entityRevision";
+import { parseRuleJsonItem, rulesJsonFromList, slugRuleTitle } from "../utils/rules";
 
 const { TextArea } = Input;
 
@@ -19,7 +19,7 @@ function ruleLabel(r: RuleEditorItem): string {
 }
 
 export default function RulesPage() {
-  const { gatewayBase, dsId, projectConfig, refreshProjectConfig } = useApp();
+  const { projectConfig, reloadEditingConfig, saveDraftPatch } = useProjectConfigEditor();
   const [list, setList] = useState<RuleEditorItem[]>([]);
   /** 下拉选中 ruleId；新建模式下为空 */
   const [pick, setPick] = useState("");
@@ -33,41 +33,45 @@ export default function RulesPage() {
     ? slugRuleTitle(newTitle.trim() || "new-rule")
     : pick;
 
-  const load = useCallback(async () => {
-    const cfg = await refreshProjectConfig();
+  const applyRulesList = useCallback(
+    (parsed: RuleEditorItem[], opts?: { keepPick?: string; skipIfCreating?: boolean }) => {
+      setList(parsed);
+      if (opts?.skipIfCreating && creating) return;
+      if (parsed.length) {
+        const want = opts?.keepPick ?? pick;
+        const keep =
+          want && parsed.some((r) => r.ruleId === want) ? want : parsed[0].ruleId;
+        setPick(keep);
+        const cur = parsed.find((r) => r.ruleId === keep);
+        setRuleTitle(cur?.ruleTitle || "");
+        setRuleContent(cur?.ruleContent || "");
+      } else {
+        setPick("");
+        setRuleTitle("");
+        setRuleContent("");
+      }
+    },
+    [pick, creating]
+  );
+
+  const rulesFromConfig = (cfg: { rulesJson?: unknown }) => {
     const arr = Array.isArray(cfg.rulesJson) ? cfg.rulesJson : [];
-    const parsed = arr.map(parseRuleJsonItem);
-    setList(parsed);
-    if (creating) return;
-    if (parsed.length) {
-      const keep =
-        pick && parsed.some((r) => r.ruleId === pick) ? pick : parsed[0].ruleId;
-      setPick(keep);
-      const cur = parsed.find((r) => r.ruleId === keep);
-      setRuleTitle(cur?.ruleTitle || "");
-      setRuleContent(cur?.ruleContent || "");
-    } else {
-      setPick("");
-      setRuleTitle("");
-      setRuleContent("");
-    }
-  }, [refreshProjectConfig, pick, creating]);
+    return arr.map(parseRuleJsonItem);
+  };
+
+  const load = useCallback(async () => {
+    const cfg = await reloadEditingConfig();
+    applyRulesList(rulesFromConfig(cfg), { skipIfCreating: true });
+  }, [reloadEditingConfig, applyRulesList]);
 
   useEffect(() => {
     load().catch((e) => message.error(String((e as Error).message)));
   }, [load]);
 
   useEffect(() => {
-    if (!projectConfig || creating) return;
-    const arr = Array.isArray(projectConfig.rulesJson) ? projectConfig.rulesJson : [];
-    const parsed = arr.map(parseRuleJsonItem);
-    setList(parsed);
-    if (pick && parsed.some((r) => r.ruleId === pick)) {
-      const cur = parsed.find((r) => r.ruleId === pick);
-      setRuleTitle(cur?.ruleTitle || "");
-      setRuleContent(cur?.ruleContent || "");
-    }
-  }, [projectConfig, dsId, creating, pick]);
+    if (!projectConfig) return;
+    applyRulesList(rulesFromConfig(projectConfig));
+  }, [projectConfig, creating, pick, applyRulesList]);
 
   const onPick = (ruleId: string) => {
     setCreating(false);
@@ -111,15 +115,12 @@ export default function RulesPage() {
       return;
     }
     const nextList = buildListForSave();
-    await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
-      rulesJson: rulesJsonFromList(nextList),
-    });
-    message.success(creating ? `已新增 Rule「${activeId}」` : `已保存 Rule「${pick}」`);
+    const cfg = await saveDraftPatch({ rulesJson: rulesJsonFromList(nextList) });
+    message.success(creating ? `已新增 Rule「${activeId}」` : `已保存 Rule「${activeId}」到草稿`);
     setCreating(false);
     setPick(activeId);
     setNewTitle("");
-    await refreshProjectConfig();
-    await load();
+    applyRulesList(rulesFromConfig(cfg), { keepPick: activeId });
     setL2Refresh((n) => n + 1);
   };
 
@@ -130,20 +131,18 @@ export default function RulesPage() {
     }
     const cur = list.find((r) => r.ruleId === pick);
     const next = list.filter((r) => r.ruleId !== pick);
-    await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
-      rulesJson: rulesJsonFromList(next),
-    });
+    const cfg = await saveDraftPatch({ rulesJson: rulesJsonFromList(next) });
     message.success(`已删除 Rule「${cur ? ruleLabel(cur) : pick}」`);
     setPick("");
     setRuleTitle("");
     setRuleContent("");
-    await refreshProjectConfig();
-    await load();
+    applyRulesList(rulesFromConfig(cfg));
   };
 
   return (
     <div>
       <Typography.Title level={4}>Rules</Typography.Title>
+      <DraftEditingBanner />
       <Space wrap style={{ marginBottom: 8 }}>
         <Select
           style={{ minWidth: 320 }}

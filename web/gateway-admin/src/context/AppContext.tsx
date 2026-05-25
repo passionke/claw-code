@@ -29,6 +29,8 @@ interface AppContextValue {
   refreshProjects: (silent?: boolean) => Promise<void>;
   projectConfig: ProjectConfig | null;
   refreshProjectConfig: () => Promise<ProjectConfig>;
+  /** Apply PUT /v1/project/config response without an extra GET. */
+  applyProjectConfig: (cfg: ProjectConfig) => void;
   gatewayOptions: { label: string; value: string }[];
   /** From GET /healthz deployImageTag (local | release-vX.Y.Z | …). Author: kejiqing */
   gatewayImageTag: string;
@@ -115,6 +117,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return cfg;
   }, [gatewayBase, dsId]);
 
+  const applyProjectConfig = useCallback((cfg: ProjectConfig) => {
+    setProjectConfig(cfg);
+  }, []);
+
   const refreshProjects = useCallback(
     async (silent?: boolean) => {
       if (!gatewayBase) return;
@@ -183,6 +189,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshProjects,
     projectConfig,
     refreshProjectConfig,
+    applyProjectConfig,
     gatewayOptions,
     gatewayImageTag,
   };

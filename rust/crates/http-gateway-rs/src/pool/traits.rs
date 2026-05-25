@@ -17,6 +17,8 @@ pub struct PoolSessionHostMounts {
     pub data_catalog_file: Option<PathBuf>,
     /// Host `ds_*/home/.claw/solve-preflight.json` → guest `.../home/.claw/solve-preflight.json:ro`. kejiqing
     pub solve_preflight_file: Option<PathBuf>,
+    /// Host `ds_*/home/.claw/solve-orchestration.json` → guest `.../home/.claw/solve-orchestration.json:ro`. kejiqing
+    pub solve_orchestration_file: Option<PathBuf>,
 }
 
 /// Lease for one worker slot (index into the pool).

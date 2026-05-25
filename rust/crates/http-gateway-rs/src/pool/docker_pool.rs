@@ -400,6 +400,20 @@ impl DockerPoolManager {
         } else {
             None
         };
+        let orchestration_abs = if let Some(p) = host_mounts.solve_orchestration_file.as_ref() {
+            if std::fs::metadata(p).is_ok_and(|m| m.is_file()) {
+                Some(std::fs::canonicalize(p).map_err(|e| {
+                    format!(
+                        "canonicalize solve-orchestration bind mount {}: {e}",
+                        p.display()
+                    )
+                })?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let mut args: Vec<String> = vec![
             "run".into(),
             "-d".into(),
@@ -437,6 +451,14 @@ impl DockerPoolManager {
             args.push(format!(
                 "{}:{}/home/.claw/solve-preflight.json:ro",
                 pf.display(),
+                GUEST_WORK_ROOT
+            ));
+        }
+        if let Some(ref orch) = orchestration_abs {
+            args.push("-v".into());
+            args.push(format!(
+                "{}:{}/home/.claw/solve-orchestration.json:ro",
+                orch.display(),
                 GUEST_WORK_ROOT
             ));
         }

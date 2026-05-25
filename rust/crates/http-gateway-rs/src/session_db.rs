@@ -87,6 +87,8 @@ pub struct ProjectConfigRow {
     pub git_sync_json: Value,
     /// First-turn solve preflight: `{ "kind": "none" | "sqlbot_mcp_start" }`. Materialized to disk. Author: kejiqing
     pub solve_preflight_json: Value,
+    /// Solve orchestration pipeline: `{ "kind": "single_turn" | "multi_agent_analysis", ... }`. Author: kejiqing
+    pub solve_orchestration_json: Value,
 }
 
 /// Row summary for [`GatewaySessionDb::list_project_config_summaries`]. Author: kejiqing
@@ -200,6 +202,7 @@ pub struct ProjectConfigUpsert<'a> {
     pub claude_md: Option<&'a str>,
     pub git_sync_json: &'a Value,
     pub solve_preflight_json: &'a Value,
+    pub solve_orchestration_json: &'a Value,
 }
 
 /// Gateway session index: one row per `(session_id, ds_id)` with a workspace-relative `session_home`.
@@ -384,6 +387,11 @@ impl GatewaySessionDb {
         .await?;
         sqlx::query(
             "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS solve_preflight_json JSONB NOT NULL DEFAULT '{\"kind\":\"none\"}'::jsonb",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS solve_orchestration_json JSONB NOT NULL DEFAULT '{\"kind\":\"single_turn\"}'::jsonb",
         )
         .execute(pool)
         .await?;
@@ -892,7 +900,8 @@ impl GatewaySessionDb {
         let row = sqlx::query(
             r"SELECT ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                       rules_json, mcp_servers_json, skills_sources_json, skills_json,
-                      allowed_tools_json, claude_md, git_sync_json, solve_preflight_json
+                      allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
+                      solve_orchestration_json
                FROM project_config WHERE ds_id = $1",
         )
         .bind(ds_id)
@@ -914,6 +923,8 @@ impl GatewaySessionDb {
         let claude_md: Option<String> = row.try_get("claude_md")?;
         let git_sync_json: Value = row.try_get::<Json<Value>, _>("git_sync_json")?.0;
         let solve_preflight_json: Value = row.try_get::<Json<Value>, _>("solve_preflight_json")?.0;
+        let solve_orchestration_json: Value =
+            row.try_get::<Json<Value>, _>("solve_orchestration_json")?.0;
 
         let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
         let draft_open: bool = row.try_get("draft_open")?;
@@ -932,6 +943,7 @@ impl GatewaySessionDb {
             claude_md,
             git_sync_json,
             solve_preflight_json,
+            solve_orchestration_json,
         }))
     }
 
@@ -943,8 +955,9 @@ impl GatewaySessionDb {
             r"INSERT INTO project_config (
                 ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                 rules_json, mcp_servers_json, skills_sources_json, skills_json,
-                allowed_tools_json, claude_md, git_sync_json, solve_preflight_json
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
+                solve_orchestration_json
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (ds_id) DO UPDATE SET
                 content_rev = EXCLUDED.content_rev,
                 stable_content_rev = EXCLUDED.stable_content_rev,
@@ -957,7 +970,8 @@ impl GatewaySessionDb {
                 allowed_tools_json = EXCLUDED.allowed_tools_json,
                 claude_md = EXCLUDED.claude_md,
                 git_sync_json = EXCLUDED.git_sync_json,
-                solve_preflight_json = EXCLUDED.solve_preflight_json",
+                solve_preflight_json = EXCLUDED.solve_preflight_json,
+                solve_orchestration_json = EXCLUDED.solve_orchestration_json",
         )
         .bind(row.ds_id)
         .bind(row.content_rev)
@@ -972,6 +986,7 @@ impl GatewaySessionDb {
         .bind(row.claude_md)
         .bind(Json(row.git_sync_json))
         .bind(Json(row.solve_preflight_json))
+        .bind(Json(row.solve_orchestration_json))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -2187,6 +2202,7 @@ mod tests {
             claude_md: Some("# Claude\n"),
             git_sync_json: &json!({}),
             solve_preflight_json: &json!({"kind": "sqlbot_mcp_start"}),
+            solve_orchestration_json: &json!({"kind": "single_turn"}),
         })
         .await
         .unwrap();
@@ -2213,6 +2229,7 @@ mod tests {
             claude_md: None,
             git_sync_json: &json!({}),
             solve_preflight_json: &json!({"kind": "none"}),
+            solve_orchestration_json: &json!({"kind": "single_turn"}),
         })
         .await
         .unwrap();

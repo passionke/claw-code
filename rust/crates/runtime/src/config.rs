@@ -106,6 +106,8 @@ pub struct McpConfigCollection {
 pub struct ScopedMcpServerConfig {
     pub scope: ConfigSource,
     pub config: McpServerConfig,
+    /// Per raw tool name: merge into MCP `tools/list` `annotations` after discovery (`mcpServers.*.toolAnnotations`).
+    pub tool_annotations: BTreeMap<String, JsonValue>,
 }
 
 /// Transport families supported by configured MCP servers.
@@ -684,6 +686,15 @@ impl McpConfigCollection {
 
 impl ScopedMcpServerConfig {
     #[must_use]
+    pub fn new(scope: ConfigSource, config: McpServerConfig) -> Self {
+        Self {
+            scope,
+            config,
+            tool_annotations: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
     pub fn transport(&self) -> McpTransport {
         self.config.transport()
     }
@@ -755,16 +766,16 @@ fn merge_mcp_servers(
     };
     let servers = expect_object(mcp_servers, &format!("{}: mcpServers", path.display()))?;
     for (name, value) in servers {
-        let parsed = parse_mcp_server_config(
-            name,
-            value,
-            &format!("{}: mcpServers.{name}", path.display()),
-        )?;
+        let ctx = format!("{}: mcpServers.{name}", path.display());
+        let object = expect_object(value, &ctx)?;
+        let tool_annotations = parse_optional_tool_annotations(object, &ctx)?;
+        let parsed = parse_mcp_server_config(name, value, &ctx)?;
         target.insert(
             name.clone(),
             ScopedMcpServerConfig {
                 scope: source,
                 config: parsed,
+                tool_annotations,
             },
         );
     }
@@ -992,6 +1003,22 @@ fn parse_optional_oauth_config(
         manual_redirect_url,
         scopes,
     }))
+}
+
+fn parse_optional_tool_annotations(
+    object: &BTreeMap<String, JsonValue>,
+    context: &str,
+) -> Result<BTreeMap<String, JsonValue>, ConfigError> {
+    let Some(value) = object.get("toolAnnotations") else {
+        return Ok(BTreeMap::new());
+    };
+    let map = expect_object(value, &format!("{context}.toolAnnotations"))?;
+    let mut out = BTreeMap::new();
+    for (tool_name, ann) in map {
+        let ann_obj = expect_object(ann, &format!("{context}.toolAnnotations.{tool_name}"))?;
+        out.insert(tool_name.clone(), JsonValue::Object(ann_obj.clone()));
+    }
+    Ok(out)
 }
 
 fn parse_mcp_server_config(

@@ -356,28 +356,23 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
         .unwrap_or_else(|_| work_dir.clone());
     let timeout_seconds = task.timeout_seconds.unwrap_or(120);
     let max_iterations = task.max_iterations.unwrap_or(64);
-    let allowed_tools = task.allowed_tools.unwrap_or_default();
+    let allowed_tools = task.allowed_tools.clone().unwrap_or_default();
+    let mut mcp = gateway_solve_turn::GatewayMcpCallContext::from_task(&task);
+    mcp.extra_session = gateway_solve_turn::normalize_extra_session(mcp.extra_session);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let result = {
         let _enter = rt.enter();
-        let turn_id = if task.turn_id.trim().is_empty() {
-            task.request_id.as_str()
-        } else {
-            task.turn_id.as_str()
-        };
         run_gateway_solve_turn(
             &work_dir,
             &work_root,
             &task.user_prompt,
             task.model.as_deref(),
             timeout_seconds,
-            &task.request_id,
-            task.extra_session.clone(),
+            mcp,
             allowed_tools,
             max_iterations,
-            turn_id,
         )
     };
     match result {
