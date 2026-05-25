@@ -716,7 +716,7 @@ fn session_datasource_id_from_preflight_note(session: &Session) -> Option<i64> {
             let digits: String = rest
                 .chars()
                 .skip_while(|c| c.is_whitespace() || *c == '.')
-                .take_while(|c| c.is_ascii_digit())
+                .take_while(char::is_ascii_digit)
                 .collect();
             if let Ok(id) = digits.parse::<i64>() {
                 if id > 0 {

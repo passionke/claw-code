@@ -80,7 +80,7 @@ fn narrator_loop(
         .thread_name("claw-narrator-rt")
         .build()
         .expect("narrator tokio runtime");
-    let _ = rt.block_on(async {
+    rt.block_on(async {
         narrator_loop_async(
             work_dir, session_id, model, executor, event_bus, stop, throttle,
         )
