@@ -75,7 +75,7 @@ fn collect_warnings(server_name: &str, config: &Value) -> Vec<String> {
     if config
         .get("headers")
         .and_then(Value::as_object)
-        .is_none_or(|o| o.is_empty())
+        .is_none_or(serde_json::Map::is_empty)
     {
         out.push("未配置 headers：HTTP MCP 通常需要 Authorization 或 x-ak/x-sk。".to_string());
     }

@@ -9,7 +9,10 @@
     clippy::redundant_pattern_matching,
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    clippy::match_result_ok
+    clippy::match_result_ok,
+    clippy::redundant_closure_for_method_calls,
+    clippy::cast_possible_truncation,
+    clippy::must_use_candidate
 )]
 
 pub mod biz_advice_report;
