@@ -119,12 +119,73 @@ fn ts(events: &[OrchestrationEvent], kind: &str) -> Option<i64> {
     events.iter().find(|e| e.kind == kind).map(|e| e.ts_ms)
 }
 
-fn query_title(events: &[OrchestrationEvent], todo_id: &str) -> String {
+fn fanout_item_title(
+    events: &[OrchestrationEvent],
+    started_kind: &str,
+    item_id: &str,
+    fallback_prefix: &str,
+) -> String {
     events
         .iter()
-        .find(|e| e.kind == "query_started" && e.todo_id.as_deref() == Some(todo_id))
+        .find(|e| e.kind == started_kind && e.todo_id.as_deref() == Some(item_id))
         .and_then(|e| e.message.clone())
-        .unwrap_or_else(|| format!("query {todo_id}"))
+        .unwrap_or_else(|| format!("{fallback_prefix} {item_id}"))
+}
+
+fn build_parallel_fanout_segments(
+    events: &[OrchestrationEvent],
+    started_kind: &str,
+    done_kind: &str,
+    failed_kind: &str,
+    title_prefix: &str,
+) -> Vec<TimelineSegment> {
+    let mut starts: BTreeMap<String, i64> = BTreeMap::new();
+    let mut segments = Vec::new();
+    for ev in events {
+        match ev.kind.as_str() {
+            k if k == started_kind => {
+                if let Some(id) = &ev.todo_id {
+                    starts.entry(id.clone()).or_insert(ev.ts_ms);
+                }
+            }
+            k if k == done_kind => {
+                if let Some(id) = &ev.todo_id {
+                    let start = starts.get(id).copied().unwrap_or_else(|| {
+                        ev.duration_ms
+                            .map(|d| ev.ts_ms.saturating_sub(d))
+                            .unwrap_or(ev.ts_ms)
+                    });
+                    segments.push(seg(
+                        id.clone(),
+                        fanout_item_title(events, started_kind, id, title_prefix),
+                        start,
+                        ev.ts_ms,
+                        "ok",
+                        ev.duration_ms.map(|d| format!("{d}ms")),
+                    ));
+                }
+            }
+            k if k == failed_kind => {
+                if let Some(id) = &ev.todo_id {
+                    let start = starts
+                        .get(id)
+                        .copied()
+                        .unwrap_or(ev.ts_ms.saturating_sub(1));
+                    segments.push(seg(
+                        id.clone(),
+                        fanout_item_title(events, started_kind, id, title_prefix),
+                        start,
+                        ev.ts_ms,
+                        "failed",
+                        ev.error.clone(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    segments.sort_by_key(|s| s.start_ms);
+    segments
 }
 
 /// Build timeline lanes from session `.claw` artifacts.
@@ -167,52 +228,13 @@ pub fn build_solve_turn_timeline(session_home: &Path) -> Option<SolveTurnTimelin
         ));
     }
 
-    let mut query_starts: BTreeMap<String, i64> = BTreeMap::new();
-    let mut query_segments = Vec::new();
-    for ev in &events {
-        match ev.kind.as_str() {
-            "query_started" => {
-                if let Some(id) = &ev.todo_id {
-                    query_starts.entry(id.clone()).or_insert(ev.ts_ms);
-                }
-            }
-            "query_done" => {
-                if let Some(id) = &ev.todo_id {
-                    let start = query_starts.get(id).copied().unwrap_or_else(|| {
-                        ev.duration_ms
-                            .map(|d| ev.ts_ms.saturating_sub(d))
-                            .unwrap_or(ev.ts_ms)
-                    });
-                    query_segments.push(seg(
-                        id.clone(),
-                        query_title(&events, id),
-                        start,
-                        ev.ts_ms,
-                        "ok",
-                        ev.duration_ms.map(|d| format!("{d}ms")),
-                    ));
-                }
-            }
-            "query_failed" => {
-                if let Some(id) = &ev.todo_id {
-                    let start = query_starts
-                        .get(id)
-                        .copied()
-                        .unwrap_or(ev.ts_ms.saturating_sub(1));
-                    query_segments.push(seg(
-                        id.clone(),
-                        query_title(&events, id),
-                        start,
-                        ev.ts_ms,
-                        "failed",
-                        ev.error.clone(),
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-    query_segments.sort_by_key(|s| s.start_ms);
+    let query_segments = build_parallel_fanout_segments(
+        &events,
+        "query_started",
+        "query_done",
+        "query_failed",
+        "query",
+    );
     if !query_segments.is_empty() {
         end = end.max(query_segments.iter().map(|s| s.end_ms).max().unwrap_or(end));
         lanes.push(lane(
@@ -220,6 +242,23 @@ pub fn build_solve_turn_timeline(session_home: &Path) -> Option<SolveTurnTimelin
             "SQLBot 问数（并行）",
             true,
             query_segments,
+        ));
+    }
+
+    let agent_segments = build_parallel_fanout_segments(
+        &events,
+        "agent_started",
+        "agent_done",
+        "agent_failed",
+        "agent",
+    );
+    if !agent_segments.is_empty() {
+        end = end.max(agent_segments.iter().map(|s| s.end_ms).max().unwrap_or(end));
+        lanes.push(lane(
+            "agent_fanout",
+            "子代理 Agent（并行）",
+            true,
+            agent_segments,
         ));
     }
 
@@ -357,5 +396,26 @@ mod tests {
         let queries = t.lanes.iter().find(|l| l.id == "query_fanout").unwrap();
         assert!(queries.parallel);
         assert_eq!(queries.segments.len(), 2);
+    }
+
+    #[test]
+    fn builds_parallel_agent_lanes() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        write_events(
+            home,
+            &[
+                r#"{"kind":"session_started","tsMs":1000}"#,
+                r#"{"kind":"preflight_done","tsMs":1500}"#,
+                r#"{"kind":"agent_started","tsMs":2000,"todoId":"a1","message":"营收"}"#,
+                r#"{"kind":"agent_started","tsMs":2001,"todoId":"a2","message":"品类"}"#,
+                r#"{"kind":"agent_done","tsMs":5000,"todoId":"a1","durationMs":3000}"#,
+                r#"{"kind":"agent_done","tsMs":6000,"todoId":"a2","durationMs":3999}"#,
+            ],
+        );
+        let t = build_solve_turn_timeline(home).unwrap();
+        let agents = t.lanes.iter().find(|l| l.id == "agent_fanout").unwrap();
+        assert!(agents.parallel);
+        assert_eq!(agents.segments.len(), 2);
     }
 }

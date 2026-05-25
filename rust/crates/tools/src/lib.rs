@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use api::{
@@ -2734,11 +2735,11 @@ struct SkillOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct AgentOutput {
+pub struct AgentOutput {
     #[serde(rename = "agentId")]
-    agent_id: String,
+    pub agent_id: String,
     name: String,
-    description: String,
+    pub description: String,
     #[serde(rename = "subagentType")]
     subagent_type: Option<String>,
     model: Option<String>,
@@ -2763,13 +2764,31 @@ struct AgentOutput {
     error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-struct AgentJob {
-    manifest: AgentOutput,
+/// Optional hook for gateway orchestration timeline (`agent_done` / `agent_failed`). Author: kejiqing
+pub type AgentTerminalHook = Arc<dyn Fn(&'static str, Option<String>) + Send + Sync>;
+
+#[derive(Clone)]
+pub struct AgentJob {
+    pub manifest: AgentOutput,
     prompt: String,
     system_prompt: Vec<String>,
     allowed_tools: BTreeSet<String>,
     mcp_call_context: Option<McpCallContext>,
+    terminal_hook: Option<AgentTerminalHook>,
+}
+
+impl AgentJob {
+    #[must_use]
+    pub fn with_terminal_hook(mut self, hook: AgentTerminalHook) -> Self {
+        self.terminal_hook = Some(hook);
+        self
+    }
+
+    fn invoke_terminal_hook(&self, status: &'static str, error: Option<String>) {
+        if let Some(hook) = &self.terminal_hook {
+            hook(status, error);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -3639,28 +3658,48 @@ const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
-    execute_agent_with_mcp_context(input, None)
+    execute_agent_with_mcp_context(input, None, None)
 }
 
-/// Spawn a sub-agent with optional MCP `_meta.extra_session` (gateway solve passes parent turn context). Author: kejiqing
+/// Spawn a sub-agent with optional MCP `_meta.extra_session` and parent turn model inheritance. Author: kejiqing
 pub(crate) fn execute_agent_with_mcp_context(
     input: AgentInput,
     mcp_call_context: Option<McpCallContext>,
+    parent_turn_model: Option<&str>,
 ) -> Result<AgentOutput, String> {
-    execute_agent_with_spawn(input, mcp_call_context, spawn_agent_job)
+    execute_agent_with_spawn(input, mcp_call_context, parent_turn_model, spawn_agent_job)
 }
 
 /// Like [`execute_agent_with_mcp_context`], returning pretty-printed JSON for tool executors. Author: kejiqing
 pub fn execute_agent_with_mcp_context_json(
     input: AgentInput,
     mcp_call_context: Option<McpCallContext>,
+    parent_turn_model: Option<&str>,
 ) -> Result<String, String> {
-    to_pretty_json(execute_agent_with_mcp_context(input, mcp_call_context)?)
+    to_pretty_json(execute_agent_with_mcp_context(
+        input,
+        mcp_call_context,
+        parent_turn_model,
+    )?)
+}
+
+/// Gateway solve: custom spawn (e.g. orchestration `agent_started` before background thread). Author: kejiqing
+pub fn execute_agent_with_mcp_context_and_spawn<F>(
+    input: AgentInput,
+    mcp_call_context: Option<McpCallContext>,
+    parent_turn_model: Option<&str>,
+    spawn_fn: F,
+) -> Result<AgentOutput, String>
+where
+    F: FnOnce(AgentJob) -> Result<(), String>,
+{
+    execute_agent_with_spawn(input, mcp_call_context, parent_turn_model, spawn_fn)
 }
 
 fn execute_agent_with_spawn<F>(
     input: AgentInput,
     mcp_call_context: Option<McpCallContext>,
+    parent_turn_model: Option<&str>,
     spawn_fn: F,
 ) -> Result<AgentOutput, String>
 where
@@ -3679,7 +3718,7 @@ where
     let output_file = output_dir.join(format!("{agent_id}.md"));
     let manifest_file = output_dir.join(format!("{agent_id}.json"));
     let normalized_subagent_type = normalize_subagent_type(input.subagent_type.as_deref());
-    let model = resolve_agent_model(input.model.as_deref());
+    let model = resolve_agent_model(input.model.as_deref(), parent_turn_model);
     let agent_name = input
         .name
         .as_deref()
@@ -3688,7 +3727,11 @@ where
         .unwrap_or_else(|| slugify_agent_name(&input.description));
     let created_at = iso8601_now();
     let system_prompt = build_agent_system_prompt(&normalized_subagent_type)?;
-    let allowed_tools = allowed_tools_for_subagent(&normalized_subagent_type);
+    let mut allowed_tools = allowed_tools_for_subagent(&normalized_subagent_type);
+    // Gateway solve passes `mcp_call_context`; allow generic MCP tool on sub-agents. Author: kejiqing
+    if mcp_call_context.is_some() {
+        allowed_tools.insert(String::from("MCP"));
+    }
 
     let output_contents = format!(
         "# Agent Task
@@ -3733,6 +3776,7 @@ where
         system_prompt,
         allowed_tools,
         mcp_call_context,
+        terminal_hook: None,
     };
     if let Err(error) = spawn_fn(job) {
         let error = format!("failed to spawn sub-agent: {error}");
@@ -3743,7 +3787,8 @@ where
     Ok(manifest)
 }
 
-fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
+/// Run sub-agent on a background thread (manifest already written). Author: kejiqing
+pub fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
     let thread_name = format!("clawd-agent-{}", job.manifest.agent_id);
     let mcp_ctx = job.mcp_call_context.clone();
     std::thread::Builder::new()
@@ -3758,18 +3803,27 @@ fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
                 }
             }));
             match result {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    let _ =
-                        persist_agent_terminal_state(&job.manifest, "failed", None, Some(error));
+                Ok(Ok(())) => {
+                    job.invoke_terminal_hook("completed", None);
                 }
-                Err(_) => {
+                Ok(Err(error)) => {
                     let _ = persist_agent_terminal_state(
                         &job.manifest,
                         "failed",
                         None,
-                        Some(String::from("sub-agent thread panicked")),
+                        Some(error.clone()),
                     );
+                    job.invoke_terminal_hook("failed", Some(error));
+                }
+                Err(_) => {
+                    let panic_msg = String::from("sub-agent thread panicked");
+                    let _ = persist_agent_terminal_state(
+                        &job.manifest,
+                        "failed",
+                        None,
+                        Some(panic_msg.clone()),
+                    );
+                    job.invoke_terminal_hook("failed", Some(panic_msg));
                 }
             }
         })
@@ -3825,12 +3879,19 @@ fn build_agent_system_prompt(subagent_type: &str) -> Result<Vec<String>, String>
     Ok(prompt)
 }
 
-fn resolve_agent_model(model: Option<&str>) -> String {
-    model
+/// Agent tool `model` wins; else gateway parent turn model; else [`DEFAULT_AGENT_MODEL`]. Author: kejiqing
+fn resolve_agent_model(explicit: Option<&str>, parent_turn_model: Option<&str>) -> String {
+    explicit
         .map(str::trim)
         .filter(|model| !model.is_empty())
-        .unwrap_or(DEFAULT_AGENT_MODEL)
-        .to_string()
+        .map(str::to_string)
+        .or_else(|| {
+            parent_turn_model
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| DEFAULT_AGENT_MODEL.to_string())
 }
 
 fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
@@ -6356,8 +6417,9 @@ mod tests {
         derive_agent_state, execute_agent_with_spawn, execute_tool, extract_recovery_outcome,
         final_assistant_text, global_cron_registry, maybe_commit_provenance, mvp_tool_specs,
         permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
-        run_task_packet, AgentInput, AgentJob, GlobalToolRegistry, LaneEventName, LaneFailureClass,
-        ProviderRuntimeClient, SubagentToolExecutor,
+        resolve_agent_model, run_task_packet, AgentInput, AgentJob, GlobalToolRegistry,
+        LaneEventName, LaneFailureClass, ProviderRuntimeClient, SubagentToolExecutor,
+        DEFAULT_AGENT_MODEL,
     };
     use api::OutputContentBlock;
     use runtime::ProviderFallbackConfig;
@@ -8029,6 +8091,7 @@ mod tests {
                 model: None,
             },
             None,
+            None,
             move |job| {
                 *captured_for_spawn
                     .lock()
@@ -8112,6 +8175,7 @@ mod tests {
                 model: Some("claude-sonnet-4-6".to_string()),
             },
             None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8170,6 +8234,7 @@ mod tests {
                 model: None,
             },
             None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8218,6 +8283,7 @@ mod tests {
                 model: None,
             },
             None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8263,6 +8329,7 @@ mod tests {
                 name: Some("recovery-lane".to_string()),
                 model: None,
             },
+            None,
             None,
             |job| {
                 persist_agent_terminal_state(
@@ -8313,6 +8380,7 @@ mod tests {
                 model: None,
             },
             None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8353,6 +8421,7 @@ mod tests {
                 name: Some("backlog-scan".to_string()),
                 model: None,
             },
+            None,
             None,
             |job| {
                 persist_agent_terminal_state(
@@ -8400,6 +8469,7 @@ mod tests {
                 name: Some("artifact-lane".to_string()),
                 model: None,
             },
+            None,
             None,
             |job| {
                 persist_agent_terminal_state(
@@ -8472,6 +8542,7 @@ mod tests {
                 model: None,
             },
             None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8513,6 +8584,7 @@ mod tests {
                 name: Some("spawn-error".to_string()),
                 model: None,
             },
+            None,
             None,
             |_| Err(String::from("thread creation failed")),
         )
@@ -8726,6 +8798,53 @@ mod tests {
     }
 
     #[test]
+    fn resolve_agent_model_prefers_explicit_over_parent() {
+        assert_eq!(
+            resolve_agent_model(Some("openai/child"), Some("openai/parent")),
+            "openai/child"
+        );
+        assert_eq!(
+            resolve_agent_model(None, Some("openai/parent")),
+            "openai/parent"
+        );
+        assert_eq!(resolve_agent_model(None, None), DEFAULT_AGENT_MODEL);
+    }
+
+    #[test]
+    fn agent_spawn_inherits_parent_turn_model_when_input_omits_model() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_path("agent-parent-model");
+        std::env::set_var("CLAWD_AGENT_STORE", &dir);
+        let captured = Arc::new(Mutex::new(None::<AgentJob>));
+        let captured_for_spawn = Arc::clone(&captured);
+
+        let manifest = execute_agent_with_spawn(
+            AgentInput {
+                description: "inherit model".to_string(),
+                prompt: "work".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: None,
+                model: None,
+            },
+            None,
+            Some("openai/deepseek-v4-pro"),
+            move |job| {
+                *captured_for_spawn
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
+                Ok(())
+            },
+        )
+        .expect("Agent should succeed");
+        std::env::remove_var("CLAWD_AGENT_STORE");
+
+        assert_eq!(manifest.model.as_deref(), Some("openai/deepseek-v4-pro"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn agent_spawn_propagates_mcp_call_context_to_job() {
         let _guard = env_lock()
             .lock()
@@ -8750,6 +8869,7 @@ mod tests {
                 model: None,
             },
             Some(ctx.clone()),
+            None,
             move |job| {
                 *captured_for_spawn
                     .lock()

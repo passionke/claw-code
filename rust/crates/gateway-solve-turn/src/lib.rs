@@ -47,10 +47,11 @@ use serde_json::{json, Value};
 use telemetry::{JsonlTelemetrySink, SessionTracer};
 use tokio::sync::Semaphore;
 use tools::{
-    execute_agent_with_mcp_context_json, execute_mcp_tool_with_meta, execute_tool,
+    execute_agent_with_mcp_context_and_spawn, execute_mcp_tool_with_meta, execute_tool,
     initialize_mcp_bridge, mvp_tool_specs, AgentInput,
 };
 
+pub mod agent_orchestration;
 pub mod entity_labels;
 pub mod gateway_stdout;
 pub mod mcp_call_context;
@@ -475,6 +476,8 @@ impl Clone for DirectToolExecutor {
 struct DirectToolExecutorInner {
     session_home: PathBuf,
     mcp_context: GatewayMcpCallContext,
+    /// Parent solve turn model; sub-agents inherit when `Agent` omits `model`. Author: kejiqing
+    turn_model: String,
     allowed_tools: Vec<String>,
     runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
     runtime_mcp_tool_names: HashSet<String>,
@@ -492,6 +495,7 @@ impl DirectToolExecutorInner {
     fn new(
         session_home: PathBuf,
         mcp_context: GatewayMcpCallContext,
+        turn_model: String,
         allowed_tools: Vec<String>,
         runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
         runtime_mcp_tool_names: HashSet<String>,
@@ -503,6 +507,7 @@ impl DirectToolExecutorInner {
         Self {
             session_home,
             mcp_context,
+            turn_model,
             allowed_tools,
             runtime_mcp_manager,
             runtime_mcp_tool_names,
@@ -570,11 +575,15 @@ impl DirectToolExecutorInner {
         if tool_name == "Agent" {
             let agent_input: AgentInput = serde_json::from_str(input)
                 .map_err(|e| ToolError::new(format!("invalid Agent tool JSON: {e}")))?;
-            return execute_agent_with_mcp_context_json(
+            let bus = crate::multi_agent::EventBus::new(&self.session_home);
+            let out = execute_agent_with_mcp_context_and_spawn(
                 agent_input,
                 Some(self.mcp_context.clone()),
+                Some(self.turn_model.as_str()),
+                |job| crate::agent_orchestration::spawn_gateway_agent_with_events(&bus, job),
             )
-            .map_err(ToolError::new);
+            .map_err(ToolError::new)?;
+            return serde_json::to_string_pretty(&out).map_err(|e| ToolError::new(e.to_string()));
         }
         let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
         execute_tool(tool_name, &parsed).map_err(ToolError::new)
@@ -670,6 +679,7 @@ impl DirectToolExecutor {
     pub fn new(
         session_home: PathBuf,
         mcp_context: GatewayMcpCallContext,
+        turn_model: String,
         allowed_tools: Vec<String>,
         runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
         runtime_mcp_tool_names: HashSet<String>,
@@ -682,6 +692,7 @@ impl DirectToolExecutor {
             inner: Arc::new(DirectToolExecutorInner::new(
                 session_home,
                 mcp_context,
+                turn_model,
                 allowed_tools,
                 runtime_mcp_manager,
                 runtime_mcp_tool_names,
@@ -733,6 +744,7 @@ impl DirectToolExecutor {
             inner: Arc::new(DirectToolExecutorInner {
                 session_home: self.inner.session_home.clone(),
                 mcp_context: self.inner.mcp_context.clone(),
+                turn_model: self.inner.turn_model.clone(),
                 allowed_tools,
                 runtime_mcp_manager: self.inner.runtime_mcp_manager.clone(),
                 runtime_mcp_tool_names: self.inner.runtime_mcp_tool_names.clone(),
@@ -1155,6 +1167,9 @@ pub fn run_gateway_solve_turn(
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
     let _ = truncate_progress_history(work_dir);
 
+    let orchestration_bus = crate::multi_agent::EventBus::new(work_dir);
+    let _ = orchestration_bus.session_started();
+
     let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
     // `true` when this `sessionId` already has `.claw/gateway-solve-session.jsonl` (续聊 turn).
     let session_is_continuation = gateway_jsonl.exists();
@@ -1179,6 +1194,7 @@ pub fn run_gateway_solve_turn(
     let mut tool_executor = DirectToolExecutor::new(
         work_dir.to_path_buf(),
         mcp,
+        effective_model.clone(),
         allowed_tools,
         runtime_mcp_manager,
         runtime_mcp_tool_names,
@@ -1202,6 +1218,7 @@ pub fn run_gateway_solve_turn(
     // Project preflight (e.g. SQLBot `mcp_start`) once per sessionId, after user text in transcript.
     if !session_is_continuation {
         project_preflight::run_first_turn_preflight(work_dir, &mut session, &mut tool_executor)?;
+        let _ = orchestration_bus.preflight_done();
         if let Some(section) = gateway_schema_prompt_section(work_dir) {
             system_prompt.push(section);
         }

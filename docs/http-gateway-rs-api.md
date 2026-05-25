@@ -82,8 +82,15 @@ Base URL 示例：`http://127.0.0.1:18088`
   - `progressHistory` 每条 `message` 默认最多 **80** 个 Unicode 字符，超出截断并追加 `...`；环境变量 **`CLAW_PROGRESS_MESSAGE_MAX_CHARS`**（正整数）可覆盖。事件 `kind`：`report_progress`（模型 `report_progress` 工具上报）、`mcp_tool_started`（NL 查询类 MCP 发起时一条；不追加 `mcp_tool_completed` / `mcp_tool_failed`，避免重复或失败文案刷屏）
   - 无该会话行：404
 
+- `POST /v1/sessions/{session_id}/turns/{turn_id}/cancel?ds_id=<int>`
+  - 用途：按 **`sessionId` + `turnId` + `dsId`** 取消指定轮次（推荐 Admin / BFF 使用）
+  - 若该轮次对应当前内存中的 async worker（`record.turnId` 一致）：`abort` worker、`force_kill_slot`（有租约时）、`gateway_turns` → `cancelled`
+  - 若内存中无任务或活跃任务属于**另一** `turnId`：仅对 PG 中该 `turn_id` 行做 cold cancel（`queued`/`running` → `cancelled`）
+  - 终态幂等：返回 `200`，`cancelApplied: false`，`error` 说明未再取消
+  - 未知 `(session_id, turn_id, ds_id)`：**404**
+
 - `POST /v1/tasks/{task_id}/cancel`
-  - 用途：按 `taskId`（与异步会话 `sessionId` 同值）取消仍处于 `queued` 或 `running` 的 solve 异步任务
+  - 用途：按 `taskId`（与异步会话 `sessionId` 同值）取消仍处于 `queued` 或 `running` 的 solve 异步任务（等价于取消该 session **最新一轮**）
   - 对 `queued` / `running`：成功时状态变为 `cancelled`，`finishedAtMs` 写入，`error` 示例：`{"detail":"cancelled by client","outcome":"cancelled","cancelApplied":true}`（内存路径下还会 `abort` worker、并在有租约时 `force_kill_slot`）
   - 对已是终态 `succeeded` / `failed` / `cancelled`：幂等返回 **`200`**（不改动 `status` / `result`），`error` 说明未再取消，例如：`{"detail":"task already succeeded; cancel had no effect","outcome":"idempotent","cancelApplied":false,"statusAtCancel":"succeeded","previousError":...}`（可安全重试、连点取消）；**网关重启后无内存任务时**亦按 PostgreSQL **最新一轮** `gateway_turns` 状态做同样判断（终态只幂等，非终态则只写 DB 为 `cancelled`）
   - 若 `task_id` 在库中无任何 `gateway_turns` 行：返回 `404`

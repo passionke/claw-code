@@ -128,6 +128,18 @@ Admin `ChatTurnCard` 展示分析大纲 checklist。
 
 日志：`claw_gateway_orchestration` + `orchestration=multi_agent phase=...`。
 
+### 编排事件与泳道（统一契约）
+
+**可视化与耗时分析只认** `home/.claw/orchestration-events.ndjson`：各关键节点在发生时 **append 一条**（`EventBus`），`GET /v1/sessions/{sessionId}/turns/{turnId}/timeline` 据此生成泳道，**不扫描** `.clawd-agents` 等旁路文件。
+
+| 场景 | 典型 `kind` |
+|------|-------------|
+| 任意 solve 首轮 | `session_started` → `preflight_done`（`single_turn` 与 multi_agent 一致） |
+| multi_agent 编排 | `plan_ready`、`query_*`、`writer_*` |
+| 主 turn 调 `Agent` 子代理 | `agent_started` / `agent_done` / `agent_failed`（`todoId` = `agentId`，`message` = 子任务描述） |
+
+`agent_*` 由网关在 `DirectToolExecutor` 调 `Agent` 时 emit（spawn 成功写 `agent_started`，子线程结束写 done/failed）。Admin「耗时」抽屉会显示 **`agent_fanout` 并行泳道**（与 `query_fanout` 同 UI 模式）。
+
 ## 验收（P50 &lt; 120s）
 
 固定门店 + 固定问题集，对比 `single_turn` vs `multi_agent_analysis`：

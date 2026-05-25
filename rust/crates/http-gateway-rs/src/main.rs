@@ -1418,6 +1418,10 @@ async fn main() {
             "/v1/sessions/{session_id}/turns/{turn_id}/timeline",
             get(get_turn_timeline),
         )
+        .route(
+            "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
+            post(cancel_session_turn),
+        )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
         .route(
@@ -1607,6 +1611,11 @@ async fn docs() -> Html<String> {
             "POST",
             "/v1/tasks/{task_id}/cancel",
             "Cancel a queued or running async solve task",
+        ),
+        (
+            "POST",
+            "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
+            "Cancel a specific turn by sessionId + turnId + ds_id",
         ),
         (
             "GET",
@@ -6298,6 +6307,199 @@ fn task_cancel_idempotent_response(record: TaskRecord) -> TaskRecord {
         "previousError": previous_error,
     }));
     out
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TurnCancelResponse {
+    session_id: String,
+    turn_id: String,
+    ds_id: i64,
+    status: String,
+    #[serde(rename = "cancelApplied")]
+    cancel_applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Value>,
+}
+
+fn turn_cancel_idempotent_error(status: &str) -> Value {
+    let detail = match status {
+        "cancelled" => "turn already cancelled; duplicate cancel ignored".to_string(),
+        "succeeded" => "turn already succeeded; cancel had no effect".to_string(),
+        "failed" => "turn already failed; cancel had no effect".to_string(),
+        other => format!("turn already in terminal state ({other}); cancel had no effect"),
+    };
+    json!({
+        "detail": detail,
+        "outcome": "idempotent",
+        "cancelApplied": false,
+        "statusAtCancel": status,
+    })
+}
+
+async fn cancel_session_turn_cold(
+    state: &AppState,
+    session_id: &str,
+    turn_id: &str,
+    ds_id: i64,
+) -> Result<TurnCancelResponse, ApiError> {
+    let Some(status) = state
+        .session_db
+        .get_turn_status(turn_id, session_id, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("turn or session not found: {turn_id} session={session_id} ds_id={ds_id}"),
+        ));
+    };
+    if task_status_is_terminal_for_cancel(&status) {
+        let status_at_cancel = status.clone();
+        return Ok(TurnCancelResponse {
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            ds_id,
+            status,
+            cancel_applied: false,
+            error: Some(turn_cancel_idempotent_error(&status_at_cancel)),
+        });
+    }
+    finalize_solve_turn_cancelled(&state.session_db, turn_id).await;
+    Ok(TurnCancelResponse {
+        session_id: session_id.to_string(),
+        turn_id: turn_id.to_string(),
+        ds_id,
+        status: "cancelled".to_string(),
+        cancel_applied: true,
+        error: Some(json!({
+            "detail": "cancelled by client",
+            "outcome": "cancelled",
+            "cancelApplied": true,
+        })),
+    })
+}
+
+enum TurnMemoryCancel {
+    Idempotent(TurnCancelResponse),
+    Applied(Option<AbortHandle>),
+}
+
+async fn try_memory_cancel_turn(
+    state: &AppState,
+    session_id: &str,
+    turn_id: &str,
+    ds_id: i64,
+) -> Result<Option<TurnMemoryCancel>, ApiError> {
+    let mut tasks = state.tasks.lock().await;
+    let Some(inner) = tasks.get_mut(session_id) else {
+        return Ok(None);
+    };
+    if inner.record.turn_id != turn_id {
+        return Ok(None);
+    }
+    if inner.ds_id != ds_id {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!(
+                "turn ds_id mismatch: turn={turn_id} session={session_id} expected ds_id={ds_id}"
+            ),
+        ));
+    }
+    if task_status_is_terminal_for_cancel(&inner.record.status) {
+        let status = inner.record.status.clone();
+        return Ok(Some(TurnMemoryCancel::Idempotent(TurnCancelResponse {
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            ds_id,
+            status,
+            cancel_applied: false,
+            error: Some(turn_cancel_idempotent_error(inner.record.status.as_str())),
+        })));
+    }
+    let h = inner.cancel.take();
+    inner.record.status = "cancelled".to_string();
+    inner.record.finished_at_ms = Some(now_ms());
+    inner.record.result = None;
+    inner.record.error = Some(json!({
+        "detail": "cancelled by client",
+        "outcome": "cancelled",
+        "cancelApplied": true,
+    }));
+    Ok(Some(TurnMemoryCancel::Applied(h)))
+}
+
+async fn cancel_session_turn(
+    State(state): State<AppState>,
+    AxumPath((session_id, turn_id)): AxumPath<(String, String)>,
+    Query(query): Query<TurnToolsQuery>,
+    Extension(http_request_id): Extension<HttpRequestId>,
+) -> Result<Json<TurnCancelResponse>, ApiError> {
+    if query.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "ds_id must be >= 1"));
+    }
+    if !turn_id::validate_turn_id(&turn_id) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "turnId must match T_<32 lowercase hex>",
+        ));
+    }
+
+    match try_memory_cancel_turn(&state, &session_id, &turn_id, query.ds_id).await? {
+        Some(TurnMemoryCancel::Idempotent(out)) => {
+            info!(
+                request_id = %http_request_id.0,
+                session_id = %session_id,
+                turn_id = %turn_id,
+                endpoint = "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
+                phase = "cancel_idempotent",
+                "gateway_turn_cancel"
+            );
+            return Ok(Json(out));
+        }
+        Some(TurnMemoryCancel::Applied(cancel_handle)) => {
+            if let Some((pool, idx)) = state.docker_slots.lock().await.remove(&session_id) {
+                let _ = pool.force_kill_slot(idx).await;
+            }
+            if let Some(h) = cancel_handle {
+                h.abort();
+            }
+            finalize_solve_turn_cancelled(&state.session_db, &turn_id).await;
+            info!(
+                request_id = %http_request_id.0,
+                session_id = %session_id,
+                turn_id = %turn_id,
+                endpoint = "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
+                phase = "cancel_memory",
+                "gateway_turn_cancel"
+            );
+            return Ok(Json(TurnCancelResponse {
+                session_id,
+                turn_id,
+                ds_id: query.ds_id,
+                status: "cancelled".to_string(),
+                cancel_applied: true,
+                error: Some(json!({
+                    "detail": "cancelled by client",
+                    "outcome": "cancelled",
+                    "cancelApplied": true,
+                })),
+            }));
+        }
+        None => {}
+    }
+
+    let out = cancel_session_turn_cold(&state, &session_id, &turn_id, query.ds_id).await?;
+    info!(
+        request_id = %http_request_id.0,
+        session_id = %out.session_id,
+        turn_id = %out.turn_id,
+        cancel_applied = out.cancel_applied,
+        endpoint = "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
+        phase = "cancel_cold",
+        "gateway_turn_cancel"
+    );
+    Ok(Json(out))
 }
 
 async fn cancel_task_cold_db(

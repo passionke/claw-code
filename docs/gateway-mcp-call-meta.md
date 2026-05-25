@@ -43,6 +43,8 @@ Author: kejiqing
 
 主 solve turn 通过 `DirectToolExecutor` 调用 `Agent` 时，会将父 turn 的 `McpCallContext` **克隆**进子线程（`AgentJob.mcp_call_context`）。子代理内 `MCP` 工具调用与主 agent 使用相同的 `_claw_session_id` / `_claw_turn_id`（**继承主 turnId**，不派生子 turn）。
 
+**LLM 模型**：`Agent` 工具未传 `model` 时，子代理继承主 turn 的 `effective_model`（与 `solve` 请求体 `model` / `CLAW_DEFAULT_MODEL` / 项目配置一致）；仅当 `Agent` 入参显式带 `model` 时覆盖。未继承时回退为 `claude-opus-4-6`。
+
 `allowed_tools_for_subagent` 仍按 subagent 类型限制可用工具；本机制仅保证「允许调用 MCP 时」`_meta.extra_session` 不为空。
 
 ## 代码

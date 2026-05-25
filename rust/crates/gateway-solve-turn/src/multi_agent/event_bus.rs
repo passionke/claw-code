@@ -134,6 +134,37 @@ impl EventBus {
         self.emit("writer_done", json!({}))
     }
 
+    /// Sub-agent spawned by main-turn `Agent` tool (`todoId` = `agent_id`). Author: kejiqing
+    pub fn agent_started(&self, agent_id: &str, title: &str) -> Result<(), String> {
+        self.emit(
+            "agent_started",
+            json!({
+                "todoId": agent_id,
+                "message": title,
+            }),
+        )
+    }
+
+    pub fn agent_done(&self, agent_id: &str, duration_ms: i64) -> Result<(), String> {
+        self.emit(
+            "agent_done",
+            json!({
+                "todoId": agent_id,
+                "durationMs": duration_ms,
+            }),
+        )
+    }
+
+    pub fn agent_failed(&self, agent_id: &str, error: &str) -> Result<(), String> {
+        self.emit(
+            "agent_failed",
+            json!({
+                "todoId": agent_id,
+                "error": error,
+            }),
+        )
+    }
+
     /// Read all events (for narrator batch).
     pub fn read_all(&self) -> Result<Vec<OrchestrationEvent>, String> {
         if !self.path.is_file() {

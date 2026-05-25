@@ -106,6 +106,7 @@ pub fn run_multi_agent_solve_turn(
     let mut tool_executor = DirectToolExecutor::new(
         work_dir.to_path_buf(),
         mcp.clone(),
+        effective_model.clone(),
         allowed_tools.clone(),
         runtime_mcp_manager.clone(),
         runtime_mcp_tool_names.clone(),

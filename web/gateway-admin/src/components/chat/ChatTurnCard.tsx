@@ -1,8 +1,14 @@
-import { Collapse, Space, Typography } from "antd";
-import { useEffect, useRef, useState } from "react";
+import { StopOutlined } from "@ant-design/icons";
+import { Button, Collapse, Popconfirm, Space, Typography, message } from "antd";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useBizReportStream } from "../../hooks/useBizReportStream";
-import type { BizAdviceReportResponse, ProgressEvent, SolveTask } from "../../types/chat";
+import type {
+  BizAdviceReportResponse,
+  ProgressEvent,
+  SolveTask,
+  TurnCancelResponse,
+} from "../../types/chat";
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import ReportMarkdown from "./ReportMarkdown";
@@ -103,6 +109,7 @@ export default function ChatTurnCard({
   const [historyReportLoading, setHistoryReportLoading] = useState(
     historyMode && !prefilledReport
   );
+  const [cancelLoading, setCancelLoading] = useState(false);
   const reportOpened = useRef(false);
   const reportStream = useBizReportStream(gatewayBase, sessionId, turnId, dsId);
 
@@ -247,6 +254,34 @@ export default function ChatTurnCard({
   }, [history.length]);
 
   const st = task.status || "unknown";
+  const canCancel = !historyMode && (st === "queued" || st === "running");
+
+  const onCancelTurn = useCallback(async () => {
+    setCancelLoading(true);
+    try {
+      const res = await proxyHttp<TurnCancelResponse>(
+        gatewayBase,
+        "POST",
+        `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/cancel?ds_id=${encodeURIComponent(String(dsId))}`
+      );
+      setTask((prev) => ({
+        ...prev,
+        status: res.status || "cancelled",
+        currentTaskDesc: res.cancelApplied ? "已取消" : prev.currentTaskDesc,
+      }));
+      reportStream.close();
+      if (res.cancelApplied) {
+        message.success("已取消该轮次");
+      } else {
+        message.info("该轮次已结束，无需取消");
+      }
+    } catch (e) {
+      message.error(String((e as Error).message || e));
+    } finally {
+      setCancelLoading(false);
+    }
+  }, [gatewayBase, sessionId, turnId, dsId, reportStream]);
+
   const dotClass = [
     styles.dot,
     st === "queued" ? styles.pulseQueued : "",
@@ -305,6 +340,25 @@ export default function ChatTurnCard({
           <span className={`${styles.statusBadge} ${styles[`badge_${st}`] || ""}`}>{st}</span>
           <span className={styles.statusText}>{statusLabel(task)}</span>
           <Space size={8} style={{ marginLeft: "auto" }}>
+            {canCancel ? (
+              <Popconfirm
+                title="取消该轮次？"
+                description="将中止 worker 并将状态标为已取消。"
+                okText="取消任务"
+                cancelText="返回"
+                okButtonProps={{ danger: true, loading: cancelLoading }}
+                onConfirm={() => void onCancelTurn()}
+              >
+                <Button
+                  size="small"
+                  danger
+                  icon={<StopOutlined />}
+                  loading={cancelLoading}
+                >
+                  取消
+                </Button>
+              </Popconfirm>
+            ) : null}
             <TurnTimelineDrawer
               sessionId={sessionId}
               turnId={turnId}

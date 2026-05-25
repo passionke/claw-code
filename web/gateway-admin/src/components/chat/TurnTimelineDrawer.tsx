@@ -252,12 +252,21 @@ function TimeRuler({
   );
 }
 
-function ParallelQueryNote({
+const PARALLEL_FANOUT_LANE_IDS = new Set(["query_fanout", "agent_fanout"]);
+
+function parallelFanoutPhaseLabel(laneId: string): string {
+  if (laneId === "agent_fanout") return "子代理阶段";
+  return "问数阶段";
+}
+
+function ParallelFanoutNote({
   phaseWindow,
   segments,
+  phaseLabel,
 }: {
   phaseWindow: PhaseWindow;
   segments: TimelineSegment[];
+  phaseLabel: string;
 }) {
   const starts = segments.map((s) => s.startMs);
   const ends = segments.map((s) => s.endMs);
@@ -266,7 +275,7 @@ function ParallelQueryNote({
   const endSpread = ends.length > 0 ? Math.max(...ends) - Math.min(...ends) : 0;
   return (
     <p className={styles.phaseNote}>
-      问数子甬道已<strong>放大到问数阶段</strong>（墙钟 {formatDurationMs(phaseWindow.totalMs)}）：
+      并行子甬道已<strong>放大到{phaseLabel}</strong>（墙钟 {formatDurationMs(phaseWindow.totalMs)}）：
       记录显示 {segments.length} 路在 <strong>{formatDurationMs(startSpread)}</strong> 内先后发起、在{" "}
       <strong>{formatDurationMs(endSpread)}</strong> 内先后结束（非串行）。
       {startSpread > 0 && startSpread < phaseWindow.totalMs * 0.02 ? (
@@ -279,12 +288,14 @@ function ParallelQueryNote({
   );
 }
 
-function QueryFanoutDetailTable({
+function FanoutDetailTable({
   segments,
   phaseOriginMs,
+  sectionTitle,
 }: {
   segments: TimelineSegment[];
   phaseOriginMs: number;
+  sectionTitle: string;
 }) {
   const rows = [...segments]
     .sort((a, b) => a.startMs - b.startMs || a.id.localeCompare(b.id))
@@ -301,7 +312,7 @@ function QueryFanoutDetailTable({
   if (rows.length === 0) return null;
   return (
     <div className={styles.summary}>
-      <Typography.Text strong>问数各路起止（相对问数阶段起点）</Typography.Text>
+      <Typography.Text strong>{sectionTitle}</Typography.Text>
       <Table
         size="small"
         pagination={false}
@@ -327,24 +338,29 @@ function SwimlaneChart({ timeline }: { timeline: SolveTurnTimeline }) {
     return <Empty description="暂无可视化阶段" />;
   }
 
-  const queryLane = lanes.find((l) => l.id === "query_fanout" && l.parallel);
-  const queryPhase = queryLane ? phaseWindowForSegments(queryLane.segments) : null;
-
   return (
     <div className={styles.scrollWrap}>
       <div className={styles.chartInner}>
         <TimeRuler originMs={originMs} totalMs={totalMs} />
         {lanes.map((lane) => {
-          const isQueryParallel = lane.id === "query_fanout" && lane.parallel;
+          const isParallelFanout =
+            lane.parallel && PARALLEL_FANOUT_LANE_IDS.has(lane.id);
+          const phaseWindow = isParallelFanout
+            ? phaseWindowForSegments(lane.segments)
+            : null;
           return (
             <div key={lane.id}>
-              {isQueryParallel && queryPhase ? (
+              {isParallelFanout && phaseWindow ? (
                 <>
-                  <ParallelQueryNote phaseWindow={queryPhase} segments={lane.segments} />
+                  <ParallelFanoutNote
+                    phaseWindow={phaseWindow}
+                    segments={lane.segments}
+                    phaseLabel={parallelFanoutPhaseLabel(lane.id)}
+                  />
                   <TimeRuler
-                    originMs={queryPhase.originMs}
-                    totalMs={queryPhase.totalMs}
-                    label="问数阶段"
+                    originMs={phaseWindow.originMs}
+                    totalMs={phaseWindow.totalMs}
+                    label={parallelFanoutPhaseLabel(lane.id)}
                   />
                 </>
               ) : null}
@@ -361,7 +377,7 @@ function SwimlaneChart({ timeline }: { timeline: SolveTurnTimeline }) {
                   lane={lane}
                   originMs={originMs}
                   totalMs={totalMs}
-                  phaseWindow={isQueryParallel ? queryPhase : null}
+                  phaseWindow={isParallelFanout ? phaseWindow : null}
                 />
               </div>
             </div>
@@ -421,8 +437,8 @@ export default function TurnTimelineDrawer({
       ? data.taskFinishedAtMs - data.taskCreatedAtMs
       : timeline?.totalMs;
 
-  const queryLane = timeline?.lanes.find((l) => l.id === "query_fanout" && l.parallel);
-  const queryPhase = queryLane ? phaseWindowForSegments(queryLane.segments) : null;
+  const parallelFanoutLanes =
+    timeline?.lanes.filter((l) => l.parallel && PARALLEL_FANOUT_LANE_IDS.has(l.id)) ?? [];
 
   const phaseRows =
     timeline?.phases?.map((p) => ({
@@ -465,7 +481,7 @@ export default function TurnTimelineDrawer({
           {!loading && error && <Alert type="error" message={error} showIcon />}
 
           {!loading && !error && !timeline && (
-            <Empty description="暂无编排耗时数据（需 multi_agent 跑完并保留 session 产物）" />
+            <Empty description="暂无编排耗时数据（需存在 .claw/orchestration-events.ndjson，由关键节点 emit）" />
           )}
 
           {!loading && !error && timeline && (
@@ -481,12 +497,22 @@ export default function TurnTimelineDrawer({
                 · 起点 {new Date(timeline.originMs).toLocaleTimeString()}
               </div>
               <SwimlaneChart timeline={timeline} />
-              {queryLane && queryPhase ? (
-                <QueryFanoutDetailTable
-                  segments={queryLane.segments}
-                  phaseOriginMs={queryPhase.originMs}
-                />
-              ) : null}
+              {parallelFanoutLanes.map((lane) => {
+                const pw = phaseWindowForSegments(lane.segments);
+                if (!pw) return null;
+                const title =
+                  lane.id === "agent_fanout"
+                    ? "子代理各路起止（相对子代理阶段起点）"
+                    : "问数各路起止（相对问数阶段起点）";
+                return (
+                  <FanoutDetailTable
+                    key={lane.id}
+                    segments={lane.segments}
+                    phaseOriginMs={pw.originMs}
+                    sectionTitle={title}
+                  />
+                );
+              })}
               {phaseRows.length > 0 && (
                 <div className={styles.summary}>
                   <Typography.Text strong>阶段汇总（multi-agent-timings）</Typography.Text>

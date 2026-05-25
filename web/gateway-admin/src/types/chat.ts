@@ -12,6 +12,16 @@ export interface TaskProgressTodo {
   status: string;
 }
 
+/** `POST /v1/sessions/{sessionId}/turns/{turnId}/cancel`. Author: kejiqing */
+export interface TurnCancelResponse {
+  sessionId: string;
+  turnId: string;
+  dsId: number;
+  status: string;
+  cancelApplied: boolean;
+  error?: unknown;
+}
+
 export interface SolveTask {
   status?: string;
   hasReport?: boolean;
