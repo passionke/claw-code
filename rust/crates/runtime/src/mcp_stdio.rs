@@ -1025,9 +1025,7 @@ impl McpServerManager {
         let timeout_ms = self.tool_call_timeout_ms(&route.server_name)?;
         let arguments_chars = arguments.map_or(0usize, |value| value.to_string().chars().count());
         let has_meta = meta.is_some();
-        let has_meta_extra = meta
-            .and_then(|value| value.get("extra_session"))
-            .is_some();
+        let has_meta_extra = meta.and_then(|value| value.get("extra_session")).is_some();
         let meta_extra = meta
             .and_then(|value| value.get("extra_session"))
             .cloned()
