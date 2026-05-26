@@ -121,7 +121,7 @@ mod tests {
             Some(json!({"store_id": "S1", "org_id": ""})),
         );
         let meta = build_mcp_call_meta(&ctx);
-        assert_eq!(meta.as_object().map(|m| m.len()), Some(1));
+        assert_eq!(meta.as_object().map(serde_json::Map::len), Some(1));
         let es = &meta["extra_session"];
         assert_eq!(es[CLAW_EXTRA_SESSION_SESSION_ID], "sess");
         assert_eq!(es[CLAW_EXTRA_SESSION_TURN_ID], "T_1");

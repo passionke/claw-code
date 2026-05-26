@@ -28,7 +28,8 @@ pub use providers::openai_compat::{
 };
 pub use providers::{
     apply_dotenv_keys_from_paths, apply_dotenv_search_paths, detect_provider_kind,
-    max_tokens_for_model, max_tokens_for_model_with_override, resolve_model_alias, ProviderKind,
+    max_tokens_for_model, max_tokens_for_model_with_override, metadata_for_model,
+    resolve_model_alias, ProviderKind,
 };
 pub use sse::{parse_frame, SseParser};
 pub use types::{
