@@ -17,7 +17,7 @@
 #
 # Secrets: ACR_USERNAME, ACR_PASSWORD (registry login; Aliyun: use RAM fixed account or temp token per console).
 #
-# Images pushed: ${ACR_REGISTRY}/claw-code:<tags> and ${ACR_REGISTRY}/claw-gateway-worker:<tags>
+# Images pushed: ${ACR_REGISTRY}/claw-code, claw-gateway-worker, claw-gateway-playground (<tags> each)
 # (<tags> = release tag, sha-12, latest).
 name: claw-code-acr
 
@@ -43,6 +43,8 @@ jobs:
             dockerfile: deploy/stack/Containerfile.gateway-rs
           - package: claw-gateway-worker
             dockerfile: deploy/stack/Containerfile.gateway-worker
+          - package: claw-gateway-playground
+            dockerfile: deploy/stack/Containerfile.gateway-playground
     steps:
       - name: Checkout
         uses: actions/checkout@v4

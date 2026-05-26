@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pull gateway + worker images for one release tag, save to a single tar, scp to a remote host.
+# Pull gateway + worker + playground images for one release tag, save to a single tar, scp to a remote host.
 # Remote then: podman load -i ~/claw-release-<tag>.tar   (or docker load -i …)
 # Use when GHCR is flaky from the server but you can pull once from a better network. kejiqing
 #
@@ -38,6 +38,7 @@ PREFIX="${CLAW_SHIP_REGISTRY_PREFIX:-ghcr.io/passionke}"
 PREFIX="${PREFIX%/}"
 GATEWAY_IMG="${PREFIX}/claw-code:${TAG}"
 WORKER_IMG="${PREFIX}/claw-gateway-worker:${TAG}"
+PLAYGROUND_IMG="${PREFIX}/claw-gateway-playground:${TAG}"
 SAFE_TAG="${TAG//\//-}"
 TAR_NAME="claw-release-${SAFE_TAG}.tar"
 LOCAL_TAR="${CLAW_SHIP_TAR:-${ROOT_DIR}/deploy/stack/${TAR_NAME}}"
@@ -48,11 +49,13 @@ if [[ "${CLAW_SHIP_SKIP_SAVE:-0}" != "1" ]]; then
     "${CLI}" pull "${GATEWAY_IMG}"
     echo "pull ${WORKER_IMG} …"
     "${CLI}" pull "${WORKER_IMG}"
+    echo "pull ${PLAYGROUND_IMG} …"
+    "${CLI}" pull "${PLAYGROUND_IMG}"
   else
     echo "CLAW_SHIP_SKIP_PULL=1: assuming images already present locally"
   fi
   echo "save -> ${LOCAL_TAR}"
-  "${CLI}" save -o "${LOCAL_TAR}" "${GATEWAY_IMG}" "${WORKER_IMG}"
+  "${CLI}" save -o "${LOCAL_TAR}" "${GATEWAY_IMG}" "${WORKER_IMG}" "${PLAYGROUND_IMG}"
 else
   if [[ ! -f "${LOCAL_TAR}" ]]; then
     echo "error: CLAW_SHIP_SKIP_SAVE=1 but missing tar: ${LOCAL_TAR}" >&2

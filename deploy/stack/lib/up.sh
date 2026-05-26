@@ -64,6 +64,10 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   rt="$(claw_container_runtime_cli)"
   echo "pull ${GATEWAY_IMAGE} …" >&2
   "${rt}" pull "${GATEWAY_IMAGE}"
+  if [[ -n "${GATEWAY_PLAYGROUND_IMAGE:-}" ]]; then
+    echo "pull ${GATEWAY_PLAYGROUND_IMAGE} …" >&2
+    "${rt}" pull "${GATEWAY_PLAYGROUND_IMAGE}"
+  fi
   case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
     docker_pool)
       echo "pull ${CLAW_DOCKER_IMAGE} …" >&2

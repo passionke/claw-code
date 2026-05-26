@@ -1,7 +1,7 @@
 # Publishes gateway + pool worker images to GHCR (two packages). Author: kejiqing
 #
 # Chain:
-# - Push tag refs/tags/release-v*.*.* → build + push to ghcr.io (claw-code + claw-gateway-worker) in parallel matrix jobs.
+# - Push tag refs/tags/release-v*.*.* → build + push claw-code, claw-gateway-worker, claw-gateway-playground (same tag).
 # - Packaging is tag-only; no PR/manual trigger.
 # - Podman parity build (build.sh): gateway-image-ci on same release tag family.
 #
@@ -31,6 +31,8 @@ jobs:
             dockerfile: deploy/stack/Containerfile.gateway-rs
           - package: claw-gateway-worker
             dockerfile: deploy/stack/Containerfile.gateway-worker
+          - package: claw-gateway-playground
+            dockerfile: deploy/stack/Containerfile.gateway-playground
     steps:
       - name: Checkout
         uses: actions/checkout@v4

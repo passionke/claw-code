@@ -48,6 +48,7 @@ claw_apply_release_image_tag() {
   local prefix
   prefix="$(claw_image_registry_prefix_from_env)"
   export GATEWAY_IMAGE="${prefix}/claw-code:${tag}"
+  export GATEWAY_PLAYGROUND_IMAGE="${prefix}/claw-gateway-playground:${tag}"
   case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
     docker_pool) export CLAW_DOCKER_IMAGE="${prefix}/claw-gateway-worker:${tag}" ;;
     *) export CLAW_PODMAN_IMAGE="${prefix}/claw-gateway-worker:${tag}" ;;
@@ -116,6 +117,7 @@ claw_write_release_pin_env() {
   {
     printf '%s\n' "# GENERATED — do not edit. rm file to drop pin. Author: kejiqing"
     printf '%s\n' "GATEWAY_IMAGE=${GATEWAY_IMAGE}"
+    printf '%s\n' "GATEWAY_PLAYGROUND_IMAGE=${GATEWAY_PLAYGROUND_IMAGE}"
     case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
       docker_pool) printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}" ;;
       *) printf '%s\n' "CLAW_PODMAN_IMAGE=${CLAW_PODMAN_IMAGE}" ;;
@@ -167,7 +169,7 @@ claw_compose_with_root_env() {
   # Legacy `docker-compose` v1 (common behind podman on Aliyun) accepts only one `--env-file`;
   # a second `--env-file` prints usage and exits. Source env in a subshell instead. Author: kejiqing
   (
-    unset GATEWAY_IMAGE CLAW_DOCKER_IMAGE CLAW_PODMAN_IMAGE || true
+    unset GATEWAY_IMAGE GATEWAY_PLAYGROUND_IMAGE CLAW_DOCKER_IMAGE CLAW_PODMAN_IMAGE || true
     set -a
     # shellcheck disable=SC1090
     source "${repo_env}"
