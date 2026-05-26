@@ -88,7 +88,7 @@ export CLAW_IMAGE_RELEASE_TAG
 claw_remove_all_gateway_workers
 
 if claw_pool_daemon_on_host; then
-  POOL_BIN="$(claw_ensure_pool_daemon_binary "${PODMAN_DIR}" "${REPO_ROOT}")"
+  POOL_BIN="$(claw_ensure_pool_daemon_binary "${PODMAN_DIR}" "${REPO_ROOT}" | tail -n1)"
   export CLAW_POOL_DAEMON_BIN="${POOL_BIN}"
   echo "pool daemon binary: ${POOL_BIN}" >&2
   "${PODMAN_DIR}/lib/pool-daemon-up.sh"
