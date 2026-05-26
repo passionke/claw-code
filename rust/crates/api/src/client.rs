@@ -48,10 +48,7 @@ impl ProviderClient {
 
     /// Anthropic client from explicit API key and optional base URL (web / multi-tenant).
     #[must_use]
-    pub fn from_explicit_anthropic(
-        api_key: impl Into<String>,
-        base_url: Option<String>,
-    ) -> Self {
+    pub fn from_explicit_anthropic(api_key: impl Into<String>, base_url: Option<String>) -> Self {
         let mut client = AnthropicClient::new(api_key.into());
         if let Some(url) = base_url {
             client = client.with_base_url(url);
@@ -66,9 +63,7 @@ impl ProviderClient {
         base_url: impl Into<String>,
         config: OpenAiCompatConfig,
     ) -> Self {
-        Self::OpenAi(
-            OpenAiCompatClient::new(api_key.into(), config).with_base_url(base_url.into()),
-        )
+        Self::OpenAi(OpenAiCompatClient::new(api_key.into(), config).with_base_url(base_url.into()))
     }
 
     /// xAI Grok-compatible client with explicit key and base URL.
@@ -78,6 +73,8 @@ impl ProviderClient {
             OpenAiCompatClient::new(api_key.into(), OpenAiCompatConfig::xai())
                 .with_base_url(base_url.into()),
         )
+    }
+
     /// Official `DeepSeek` OpenAI-compatible API (`OpenAiCompatConfig::deepseek()` / `DEEPSEEK_BASE_URL`). kejiqing
     #[must_use]
     pub fn from_deepseek_official(api_key: impl Into<String>) -> Self {
