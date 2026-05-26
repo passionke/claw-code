@@ -9,12 +9,10 @@ use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::biz_advice_report::{
-    biz_report_sse_event_stream, sanitize_external_report_text, split_catchup_chunks,
-    BizAdviceReportPayload, BizReportStreamMsg,
+    biz_report_sse_event_stream, sanitize_external_report_text, BizAdviceReportPayload,
+    BizReportStreamMsg,
 };
 use crate::pool::live_report_hub::{HubMsg, LiveReportHub};
-
-const CATCHUP_CHUNK_CHARS: usize = 48;
 
 pub fn live_report_sse_response(
     hub: Arc<LiveReportHub>,
@@ -27,12 +25,8 @@ pub fn live_report_sse_response(
     let turn_id_worker = turn_id.to_string();
     let hub_done = Arc::clone(&hub);
     tokio::spawn(async move {
-        let (mut sub, snapshot_raw) = hub.subscribe_with_snapshot(&turn_id_worker);
-        let snapshot = sanitize_external_report_text(&snapshot_raw);
-        for part in split_catchup_chunks(&snapshot, CATCHUP_CHUNK_CHARS) {
-            let _ = tx.send(BizReportStreamMsg::Delta(part));
-            tokio::task::yield_now().await;
-        }
+        // Live tail only: no catch-up replay. Admin opens SSE when turn is running; `done` carries full text.
+        let (mut sub, _) = hub.subscribe_with_snapshot(&turn_id_worker);
         loop {
             match sub.recv().await {
                 Ok(HubMsg::Delta(chunk)) => {

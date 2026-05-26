@@ -5,6 +5,7 @@ import {
   type BizReportDeltaRecord,
   type BizReportDensity,
 } from "../utils/bizReportDensity";
+import { extractSolveReportMessage } from "../utils/solveReportBody";
 
 function parseSseJson(raw: string): Record<string, unknown> | null {
   try {
@@ -22,6 +23,23 @@ function proxySseTarget(gatewayBase: string, path: string): string {
 function numField(data: Record<string, unknown> | null, key: string): number | undefined {
   const v = data?.[key];
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/** Full report from `biz.report.done` (pool live or gateway snapshot). Author: kejiqing */
+function reportTextFromDonePayload(data: Record<string, unknown> | null): string {
+  if (!data) return "";
+  const direct = data.reportText;
+  if (typeof direct === "string" && direct.trim()) {
+    return extractSolveReportMessage(direct);
+  }
+  const rj = data.reportJson ?? data.report_json;
+  if (rj && typeof rj === "object" && rj !== null) {
+    const msg = (rj as Record<string, unknown>).message;
+    if (typeof msg === "string" && msg.trim()) {
+      return extractSolveReportMessage(msg);
+    }
+  }
+  return "";
 }
 
 export type BizReportStreamObs = {
@@ -136,6 +154,17 @@ export function useBizReportStream(
   const closedRef = useRef(false);
   const pendingRef = useRef("");
   const rafRef = useRef<number | null>(null);
+  const settledPromiseRef = useRef<Promise<void> | null>(null);
+  const settledResolveRef = useRef<(() => void) | null>(null);
+
+  const applyAuthoritativeReport = useCallback(
+    (raw: string) => {
+      const full = extractSolveReportMessage(raw);
+      if (!full) return;
+      setText((prev) => (full.length >= prev.length ? full : prev));
+    },
+    []
+  );
 
   const flushPending = useCallback(() => {
     if (!pendingRef.current) return;
@@ -170,7 +199,20 @@ export function useBizReportStream(
       esRef.current = null;
     }
     setLive(false);
+    settledResolveRef.current?.();
+    settledResolveRef.current = null;
   }, [flushPending]);
+
+  const waitForSettled = useCallback((timeoutMs: number) => {
+    const p = settledPromiseRef.current ?? Promise.resolve();
+    const t = Math.max(0, timeoutMs);
+    return Promise.race([
+      p,
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, t);
+      }),
+    ]);
+  }, []);
 
   const open = useCallback(() => {
     if (!gatewayBase || !sessionId || !turnId || !dsId) return;
@@ -184,6 +226,9 @@ export function useBizReportStream(
       esRef.current = null;
     }
     closedRef.current = false;
+    settledPromiseRef.current = new Promise<void>((resolve) => {
+      settledResolveRef.current = resolve;
+    });
     pendingRef.current = "";
     setText("");
     setLive(true);
@@ -255,6 +300,10 @@ export function useBizReportStream(
     es.addEventListener("biz.report.done", (ev) => {
       const data = parseSseJson(ev.data);
       flushPending();
+      const doneBody = reportTextFromDonePayload(data);
+      if (doneBody) {
+        applyAuthoritativeReport(doneBody);
+      }
       if (obs.sameServerMsStreak + 1 > obs.maxServerSameMsStreak) {
         obs.maxServerSameMsStreak = obs.sameServerMsStreak + 1;
         obs.maxServerSameMsAt = obs.lastServerMs ?? 0;
@@ -294,6 +343,8 @@ export function useBizReportStream(
         esRef.current = null;
       }
       setLive(false);
+      settledResolveRef.current?.();
+      settledResolveRef.current = null;
     });
 
     es.onerror = () => {
@@ -313,10 +364,21 @@ export function useBizReportStream(
         esRef.current = null;
       }
       setLive(false);
+      settledResolveRef.current?.();
+      settledResolveRef.current = null;
     };
-  }, [gatewayBase, sessionId, turnId, dsId, close, flushPending, scheduleFlush]);
+  }, [
+    gatewayBase,
+    sessionId,
+    turnId,
+    dsId,
+    close,
+    flushPending,
+    scheduleFlush,
+    applyAuthoritativeReport,
+  ]);
 
   useEffect(() => () => close(), [close]);
 
-  return { text, live, open, close };
+  return { text, live, open, close, waitForSettled, reconcileReport: applyAuthoritativeReport };
 }

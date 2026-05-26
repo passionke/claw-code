@@ -217,17 +217,24 @@ export default function ChatTurnCard({
           reportStream.open();
         }
         if (terminal) {
+          // Let pool/gateway send `biz.report.done` (full text) before cutting SSE.
+          await reportStream.waitForSettled(2500);
+          if (t.result?.outputText) {
+            reportStream.reconcileReport(t.result.outputText);
+          }
           reportStream.close();
           if (t.error) {
             setErrorText(JSON.stringify(t.error, null, 2));
           } else if (t.status === "succeeded" && t.result?.outputText) {
-            const txt = t.result.outputText;
-            if (!reportStream.text) {
+            const txt = extractSolveReportMessage(t.result.outputText);
+            if (!reportStream.text && txt) {
               setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
             }
           } else if (!t.hasReport && t.result?.outputText) {
-            const txt = t.result.outputText;
-            setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
+            const txt = extractSolveReportMessage(t.result.outputText);
+            if (!reportStream.text && txt) {
+              setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
+            }
           }
           break;
         }

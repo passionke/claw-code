@@ -60,7 +60,7 @@ pub fn run_writer_turn(
         phase_executor,
         vec![system],
         orch.writer_max_iter,
-        true,
+        false,
     )?;
     timings.push("writer", started, now_ms(), None);
     Ok(text)
