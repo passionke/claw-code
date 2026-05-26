@@ -555,3 +555,5 @@ _claw_podman_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_claw_podman_dir}/release-images.sh"
 # shellcheck disable=SC1091
 source "${_claw_podman_dir}/worker-llm-wiring.sh"
+# shellcheck disable=SC1091
+source "${_claw_podman_dir}/pool-daemon-binary.sh"

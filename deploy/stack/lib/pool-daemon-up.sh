@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start host `claw-pool-daemon` on TCP. Binary must already exist (gateway.sh up runs install-pool-daemon-from-image.sh first). Author: kejiqing
+# Start host `claw-pool-daemon` on TCP. Binary path from gateway.sh up (install under deploy/stack/.linux-artifacts/). Author: kejiqing
 set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
@@ -22,7 +22,7 @@ claw_reapply_pool_image_pins "${PODMAN_DIR}"
 
 WORK_ROOT="${CLAW_POOL_WORK_ROOT_BIND_SRC:?missing CLAW_POOL_WORK_ROOT_BIND_SRC; run gateway.sh up first}"
 RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"
-BIN="${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}"
+BIN="${CLAW_POOL_DAEMON_BIN:-$(claw_default_pool_daemon_bin "${PODMAN_DIR}")}"
 PORT="${CLAW_POOL_DAEMON_PORT:-9943}"
 BIND="0.0.0.0:${PORT}"
 

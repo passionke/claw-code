@@ -42,18 +42,24 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# gateway.sh up may already export a release-pinned GATEWAY_IMAGE; do not let .env :local override it.
+_pinned_gw=""
+if [[ "${GATEWAY_IMAGE:-}" == *claw-code* ]]; then
+  _pinned_gw="${GATEWAY_IMAGE}"
+fi
 if [[ -f "${ROOT}/.env" ]]; then
   set -a
   # shellcheck source=/dev/null
   source "${ROOT}/.env"
   set +a
 fi
-
-if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
+if [[ -n "${_pinned_gw}" ]]; then
+  export GATEWAY_IMAGE="${_pinned_gw}"
+elif [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   claw_apply_release_image_tag "${CLAW_IMAGE_RELEASE_TAG}"
 fi
 
-IMG="${GATEWAY_IMAGE:?set GATEWAY_IMAGE in .env (e.g. ghcr.io/<owner>/claw-code:release-x.y.z)}"
+IMG="${GATEWAY_IMAGE:?set GATEWAY_IMAGE in .env or run gateway.sh up --release <tag>}"
 CLI="$(claw_container_runtime_cli)"
 if [[ -f "${OUT}" ]] && file "${OUT}" 2>/dev/null | grep -q "Mach-O"; then
   echo "skip pool-daemon install: ${OUT} is a macOS binary (gateway image carries Linux); keep host build" >&2

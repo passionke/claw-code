@@ -88,22 +88,9 @@ export CLAW_IMAGE_RELEASE_TAG
 claw_remove_all_gateway_workers
 
 if claw_pool_daemon_on_host; then
-  POOL_BIN="${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}"
-  # macOS host daemon must match repo sources — never reuse a stale target/release binary. kejiqing
-  if [[ "$(uname -s)" == Darwin ]] || [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" == 1 ]]; then
-    echo "==> building host claw-pool-daemon (release, required on macOS / CLAW_POOL_REBUILD_DAEMON=1)" >&2
-    (cd "${REPO_ROOT}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
-    POOL_BIN="${REPO_ROOT}/rust/target/release/claw-pool-daemon"
-  elif [[ ! -x "${POOL_BIN}" ]]; then
-    if [[ -x "${REPO_ROOT}/deploy/stack/.linux-artifacts/release/claw-pool-daemon" ]]; then
-      POOL_BIN="${REPO_ROOT}/deploy/stack/.linux-artifacts/release/claw-pool-daemon"
-    else
-      echo "==> building host claw-pool-daemon (missing binary)" >&2
-      (cd "${REPO_ROOT}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
-      POOL_BIN="${REPO_ROOT}/rust/target/release/claw-pool-daemon"
-    fi
-  fi
+  POOL_BIN="$(claw_ensure_pool_daemon_binary "${PODMAN_DIR}" "${REPO_ROOT}")"
   export CLAW_POOL_DAEMON_BIN="${POOL_BIN}"
+  echo "pool daemon binary: ${POOL_BIN}" >&2
   "${PODMAN_DIR}/lib/pool-daemon-up.sh"
 else
   "${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
