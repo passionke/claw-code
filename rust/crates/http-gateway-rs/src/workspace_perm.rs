@@ -2,10 +2,8 @@
 
 use std::path::Path;
 
-/// Gateway creates session dirs on the bind-mounted work root (often as root). Workers run as
-/// `claw` (1000) and must write `.claw/task-progress.json` under the session mount.
-#[cfg(unix)]
-pub fn chown_session_tree_for_worker(path: &Path) -> Result<(), String> {
+#[must_use]
+pub fn worker_uid_gid() -> (u32, u32) {
     let uid = std::env::var("CLAW_WORKER_UID")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -14,6 +12,30 @@ pub fn chown_session_tree_for_worker(path: &Path) -> Result<(), String> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1000);
+    (uid, gid)
+}
+
+/// Gateway creates session dirs on the bind-mounted work root (often as root). Workers run as
+/// `claw` (1000) and must write `.claw/task-progress.json` under the session mount.
+#[cfg(unix)]
+#[must_use]
+pub fn session_tree_owned_by_worker(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let (uid, _) = worker_uid_gid();
+    std::fs::metadata(path)
+        .map(|m| m.uid() == uid)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+#[must_use]
+pub fn session_tree_owned_by_worker(_path: &Path) -> bool {
+    true
+}
+
+pub fn chown_session_tree_for_worker(path: &Path) -> Result<(), String> {
+    let (uid, gid) = worker_uid_gid();
     chown_tree(path, uid, gid).map_err(|e| {
         format!(
             "chown {} to {uid}:{gid} for pool worker: {e}",

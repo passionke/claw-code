@@ -98,6 +98,9 @@ fi
 
 # Recreate gateway container; pool is fresh with pinned worker image. kejiqing
 claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
+# shellcheck disable=SC1091
+source "${LIB_DIR}/fix-session-ownership.sh"
+claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-}"
 _gw_tag="${GATEWAY_IMAGE##*:}"
 if [[ -z "${_gw_tag}" || "${_gw_tag}" == "${GATEWAY_IMAGE}" ]]; then
   _gw_tag="unknown"
