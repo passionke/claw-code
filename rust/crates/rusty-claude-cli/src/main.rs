@@ -356,48 +356,35 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
         .unwrap_or_else(|_| work_dir.clone());
     let timeout_seconds = task.timeout_seconds.unwrap_or(120);
     let max_iterations = task.max_iterations.unwrap_or(64);
-    let allowed_tools = task.allowed_tools.unwrap_or_default();
+    let allowed_tools = task.allowed_tools.clone().unwrap_or_default();
+    let mcp = gateway_solve_turn::gateway_mcp_call_context_from_task(&task);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let result = {
         let _enter = rt.enter();
-        let turn_id = if task.turn_id.trim().is_empty() {
-            task.request_id.as_str()
-        } else {
-            task.turn_id.as_str()
-        };
         run_gateway_solve_turn(
             &work_dir,
             &work_root,
             &task.user_prompt,
             task.model.as_deref(),
             timeout_seconds,
-            &task.request_id,
-            task.extra_session.clone(),
+            mcp,
             allowed_tools,
             max_iterations,
-            turn_id,
-            gateway_solve_turn::resolve_assistant_stream_spill(task.assistant_stream_spill),
         )
     };
     match result {
         Ok((claw_exit_code, output_text, output_json)) => {
-            let payload = json!({
-                "clawExitCode": claw_exit_code,
-                "outputText": output_text,
-                "outputJson": output_json,
-            });
-            println!("{}", serde_json::to_string(&payload)?);
+            gateway_solve_turn::emit_solve_done(
+                claw_exit_code,
+                &output_text,
+                output_json.as_ref(),
+            )?;
             Ok(())
         }
         Err(e) => {
-            let payload = json!({
-                "clawExitCode": 1,
-                "error": e.message,
-                "httpStatusHint": e.status,
-            });
-            println!("{}", serde_json::to_string(&payload)?);
+            gateway_solve_turn::emit_solve_error(&e.message, e.status)?;
             Err(format!("gateway-solve-once failed: {e}").into())
         }
     }
@@ -1377,7 +1364,7 @@ fn omc_compatibility_note_for_unknown_slash_command(name: &str) -> Option<&'stat
 }
 
 fn render_suggestion_line(label: &str, suggestions: &[String]) -> Option<String> {
-    (!suggestions.is_empty()).then(|| format!("  {label:<16} {}", suggestions.join(", "),))
+    (!suggestions.is_empty()).then(|| format!("  {label:<16} {}", suggestions.join(", ")))
 }
 
 fn suggest_slash_commands(input: &str) -> Vec<String> {
@@ -6500,7 +6487,7 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
             } else {
                 preview
             };
-            lines.push(format!("  {}. {}", index + 1, file.path.display(),));
+            lines.push(format!("  {}. {}", index + 1, file.path.display()));
             lines.push(format!(
                 "     lines={} preview={}",
                 file.content.lines().count(),

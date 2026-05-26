@@ -19,7 +19,7 @@ Author: kejiqing
 | Component | Code / deploy | Owns | Does **not** own |
 | --- | --- | --- | --- |
 | **Claw** | `rust/` | Tool surface, `mcp__*` allowlist, session | HTTP, datasource encryption, SQLBot product |
-| **HTTP gateway** | `rust/crates/http-gateway-rs/`（`http-gateway-rs` 二进制） | Axum HTTP、`claw` 编排、**交接用 PG SoT**（solve 结束 flush；续聊/报告/transcript 读 PG，见 `docs/persistence-model.md`）、`gateway_async_tasks`、`mcpServers` 合并、`dsId` 工作区、MCP 注入、按 ds 读技能等 | Doris 查询实现、SQLBot 产品服务本体 |
+| **HTTP gateway** | `rust/crates/http-gateway-rs/`（`http-gateway-rs` 二进制） | Axum HTTP、`claw` 编排、solve 会话 PostgreSQL（`CLAW_GATEWAY_DATABASE_URL`）、`gateway_turns` 终态快照（`report_message` / `output_json` 等，用于重启后任务交接）、**`project_config` 按 `ds_id` 存规则/MCP/skills 源**（`docs/project-config-model.md`）、`mcpServers` 合并、`dsId` 工作区、MCP 注入、按 ds 读技能等 | Doris 查询实现、SQLBot 产品服务本体 |
 | **Doris MCP** | `third_party/doris-mcp/` | Read-only SQL + metadata **only** (`mcp__doris__*`) | Gateway, SQLBot, transport bridge |
 | **SQLBot (product)** | Your cluster (e.g. :8000 / :8001) | NL 问数、MCP 工具 `mcp_start` / `mcp_question`、业务库 | This repo |
 
@@ -38,8 +38,8 @@ Author: kejiqing
 2. **SQLBot MCP** = what Claw names **`mcp__sqlbot__*`**; the adapter is **invisible** at the Claw tool layer.
 3. **Gateway** = composes processes and env; it is **not** “Doris” and **not** “SQLBot product” — it orchestrates.
 4. **Image** = convenience bundle (gateway + Doris dist + adapter script + `claw`); **repository** boundaries still split for understanding.
-5. **`CLAW_MCP_PARALLEL_FANOUT`**: unset or truthy → gateway solve may run multiple `mcp_question_then_analysis` calls from one assistant turn concurrently; `0` / `false` / `off` forces serial MCP for those tools and drops the `[parallel-friendly]` tool-description hint (`rust/crates/runtime/src/mcp_client.rs`).
-6. **`CLAW_GATEWAY_SQLBOT_PREFLIGHT`**: unset or truthy → before the first LLM turn, gateway solve injects `mcp_start` + datasource list + table catalog into session jsonl; `0` / `false` / `off` / `no` disables (`rust/crates/gateway-solve-turn/src/sqlbot_preflight.rs`, worker env key in `worker_env.rs`).
+5. **`CLAW_MCP_MAX_CONCURRENT`**: max in-flight MCP `tools/call` per worker; values `> 1` also enable same-turn parallel SQLBot fan-out (`[parallel-friendly]` tool hint + `shared_executor`). Set `1` for fully serial MCP (`rust/crates/runtime/src/mcp_client.rs`).
+6. **Solve preflight (per `ds_*`)**: `ds_<id>/home/.claw/solve-preflight.json` with `kind` (e.g. `sqlbot_mcp_start`) → **first** `sessionId` turn only, after user text in jsonl, code-run preflight (`rust/crates/gateway-solve-turn/src/project_preflight.rs`). Table DDL: `ds_<id>/home/schema.md`, ro mount + system prompt (`GATEWAY_SCHEMA_MD_REL`). `CLAW_GATEWAY_SQLBOT_PREFLIGHT`=`0` disables SQLBot start inject (`sqlbot_preflight.rs`).
 
 ## Where to change what
 
@@ -47,10 +47,11 @@ Author: kejiqing
 | --- | --- |
 | HTTP routes, timeout, inject MCP, 容器池、`CLAW_DEFAULT_HTTP_MCP_*`、根 `.claw.json` | `rust/crates/http-gateway-rs/` |
 | Doris SQL guard / `doris_query` | `doris-mcp/src/` |
-| Claw tool naming / allowlist | `rust/crates/tools/` + env `CLAW_ALLOWED_TOOLS` |
+| Claw tool naming / per-ds allowlist | `rust/crates/tools/` + `project_config.allowed_tools_json` |
 
 ## See also
 
 - `rust/crates/http-gateway-rs/datasources.example.yaml` — 数据源 registry 模板（勿提交真实凭据）
 - `third_party/doris-mcp/README.md` — Doris-only build
 - `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 用 **Docker/Podman 容器池**隔离 solve：**PoolManager** 启动读 env 管池大小与预热；网关只租借与编排
+- `docs/persistence-model.md` — solve **磁盘 jsonl（运行时）** 与 **`gateway_turns` 终态（交接）** 的分工与 `turn_id` 边界

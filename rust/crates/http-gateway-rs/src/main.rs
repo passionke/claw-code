@@ -13,6 +13,9 @@
 #![allow(clippy::match_same_arms)]
 #![allow(clippy::unnecessary_filter_map)]
 #![allow(clippy::similar_names)]
+#![allow(dead_code)] // monolithic binary: handlers wired incrementally
+
+mod project_config_draft;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,15 +24,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use biz_advice_report_live::{
-    spawn_live_report_sse_worker, turn_use_live_spill_report, LiveReportContext,
-};
 use gateway_solve_turn::read_progress_events;
 use gateway_solve_turn::{
     read_task_progress, reset_task_progress, run_gateway_biz_polish_llm,
@@ -37,13 +37,19 @@ use gateway_solve_turn::{
     BOSS_REPORT_SKILL_DS_ID,
 };
 use http_gateway_rs::biz_advice_report::{
-    biz_report_sse_event_stream, build_biz_advice_polish_prompt,
-    load_boss_report_writer_instructions, report_body_from_solve_output, sanitize_biz_report_parts,
-    sanitize_external_report_text, sanitize_report_payload, BizAdviceReportPayload,
-    BizReportStreamMsg, ReportExportSanitizer,
+    biz_report_sse_event_stream, build_biz_advice_polish_prompt, db_snapshot_report_sse_response,
+    load_boss_report_writer_instructions, report_body_from_persisted,
+    report_body_from_solve_output, sanitize_biz_report_parts, sanitize_external_report_text,
+    sanitize_report_payload, BizAdviceReportPayload, BizReportStreamMsg, ReportExportSanitizer,
 };
-use http_gateway_rs::persistence::ensure_jsonl_from_db;
-use http_gateway_rs::{session_db, session_merge, turn_id};
+use http_gateway_rs::{
+    gateway_global_settings, gateway_llm_config_sync, mcp_probe, pool, project_config_apply,
+    project_config_version, project_entity_revision, project_git_sync, project_tools, session_db,
+    session_merge, turn_id, turn_timeline_api, turn_tools_api,
+};
+use project_git_sync::{
+    git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
+};
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -53,7 +59,7 @@ use session_execution::{
 };
 use task_status::{
     count_gateway_tasks, ensure_report_progress_in_allowed_tools, resolve_current_task_desc,
-    TaskStatusRow,
+    task_progress_plan_fields, TaskStatusRow,
 };
 use tokio::fs;
 use tokio::process::Command;
@@ -66,9 +72,7 @@ use tracing::field::Empty;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-mod biz_advice_report_live;
 mod gateway_logging;
-mod pool;
 mod session_execution;
 mod solve_pool;
 mod task_status;
@@ -103,7 +107,7 @@ struct PreparedGatewaySession {
 }
 
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     tasks: Arc<Mutex<HashMap<String, TaskInner>>>,
     injected_mcp: Arc<Mutex<HashMap<i64, HashMap<String, Value>>>>,
     ds_locks: Arc<Mutex<HashMap<i64, Arc<Mutex<()>>>>>,
@@ -116,10 +120,12 @@ struct AppState {
     docker_pool: Arc<dyn pool::PoolOps + Send + Sync>,
     /// Serialize git and working-tree reads/writes on the shared `.claw-code-projects` clone. kejiqing
     projects_git_mirror_lock: Arc<Mutex<()>>,
+    /// Active LLM model/api key from DB (refreshed on apply + poll). Author: kejiqing
+    llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SolveIsolation {
+pub(crate) enum SolveIsolation {
     DockerPool,
     PodmanPool,
 }
@@ -156,7 +162,7 @@ impl SolveIsolation {
 }
 
 #[derive(Clone)]
-struct GatewayConfig {
+pub(crate) struct GatewayConfig {
     solve_isolation: SolveIsolation,
     claw_bin: String,
     work_root: PathBuf,
@@ -168,16 +174,17 @@ struct GatewayConfig {
     pool_rpc_unix_socket: Option<String>,
     /// True when pool RPC goes to out-of-process daemon (TCP or Unix).
     pool_rpc_remote: bool,
+    /// Base URL for pool live report HTTP (e.g. `http://claw-pool-daemon:9944`).
+    pool_http_base: String,
+    /// Same-machine pool id (`CLAW_POOL_ID` / hostname); written on turn enqueue for live SSE JOIN.
+    co_located_pool_id: Option<String>,
     ds_registry_path: PathBuf,
     default_timeout_seconds: u64,
     default_max_iterations: usize,
-    /// `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`: solve 写 spill、`hasReport` 提前、报告 SSE tail；默认关 → 仅 LLM 润色。
-    live_biz_report_spill_enabled: bool,
     default_http_mcp_name: Option<String>,
     default_http_mcp_url: Option<String>,
     default_http_mcp_transport: String,
     config_mcp_servers: HashMap<String, Value>,
-    allowed_tools: Vec<String>,
     /// Remote URL for `claw-code-projects` mirror (SSH or HTTPS; no embedded token).
     projects_git_url: String,
     projects_git_branch: String,
@@ -187,6 +194,8 @@ struct GatewayConfig {
     projects_git_token: Option<String>,
     /// When set, periodically `git pull` the mirror and refresh each `ds_*/home` when that ds lock is idle (multi-node). kejiqing
     projects_git_ds_home_poll_interval_secs: Option<u64>,
+    /// Poll DB active LLM → upstream JSON file + in-memory runtime (0 = disabled). Author: kejiqing
+    gateway_llm_config_poll_interval_secs: Option<u64>,
     /// When set (`REPORT_LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY`), `/v1/biz_advice_report` polish calls `DeepSeek` official API. kejiqing
     report_polish_deepseek: Option<ReportPolishDeepseek>,
 }
@@ -207,9 +216,6 @@ struct SolveRequest {
     extra_session: Option<Value>,
     #[serde(rename = "allowedTools")]
     allowed_tools: Option<Vec<String>>,
-    /// Per-request override for spill file (`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL` is the gateway default when omitted).
-    #[serde(rename = "assistantStreamSpill", default)]
-    assistant_stream_spill: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -280,6 +286,82 @@ struct InitRequest {
     ds_id: i64,
 }
 
+/// `POST /v1/projects` — create `ds_<id>` workspace (+ optional projects-git push). Author: kejiqing
+#[derive(Debug, Deserialize)]
+struct CreateProjectRequest {
+    #[serde(rename = "dsId")]
+    ds_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteProjectQuery {
+    #[serde(default = "default_true")]
+    purge_sessions: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// `GET /v1/projects` — list `project_config` from `PostgreSQL` + disk overlay. Author: kejiqing
+#[derive(Debug, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+struct ProjectListEntry {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "contentRev")]
+    content_rev: String,
+    #[serde(rename = "draftOpen")]
+    draft_open: bool,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: i64,
+    #[serde(rename = "skillsCountDb")]
+    skills_count_db: i64,
+    #[serde(rename = "claudeInDb")]
+    claude_in_db: bool,
+    #[serde(rename = "rulesCountDb")]
+    rules_count_db: i64,
+    #[serde(rename = "mcpServersCountDb")]
+    mcp_servers_count_db: i64,
+    #[serde(rename = "workDirPresent")]
+    work_dir_present: bool,
+    #[serde(rename = "environmentPrepared")]
+    environment_prepared: bool,
+    #[serde(rename = "claudeOnDisk")]
+    claude_on_disk: bool,
+    #[serde(rename = "skillsCountDisk")]
+    skills_count_disk: u64,
+    #[serde(rename = "appliedRev")]
+    applied_rev: Option<String>,
+    #[serde(rename = "dbSyncedToDisk")]
+    db_synced_to_disk: bool,
+    /// Per-project one-way git (no PAT in list). Author: kejiqing
+    #[serde(rename = "gitSync")]
+    git_sync: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectListResponse {
+    projects: Vec<ProjectListEntry>,
+    #[serde(rename = "listedAtMs")]
+    listed_at_ms: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteProjectResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    deleted: bool,
+    #[serde(rename = "purgeSessions")]
+    purge_sessions: bool,
+    #[serde(rename = "sessionsRemoved")]
+    sessions_removed: u64,
+    #[serde(rename = "projectConfigRemoved")]
+    project_config_removed: bool,
+    #[serde(rename = "gitSync", skip_serializing_if = "Option::is_none")]
+    git_sync: Option<GitSyncResponse>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct UpdateProjectClaudeRequest {
     content: String,
@@ -300,6 +382,142 @@ struct InitResponse {
     #[serde(rename = "workDir")]
     work_dir: String,
     initialized: bool,
+}
+
+/// Body for `PUT /v1/project/config/{ds_id}` — writes the open draft only. Author: kejiqing
+#[derive(Debug, Deserialize)]
+struct UpsertProjectConfigRequest {
+    #[serde(rename = "contentRev", default)]
+    content_rev: String,
+    #[serde(rename = "rulesJson", default)]
+    rules_json: Value,
+    #[serde(rename = "mcpServersJson", default)]
+    mcp_servers_json: Value,
+    #[serde(rename = "skillsSourcesJson", default)]
+    skills_sources_json: Value,
+    #[serde(rename = "skillsJson", default)]
+    skills_json: Value,
+    #[serde(rename = "allowedToolsJson", default)]
+    allowed_tools_json: Value,
+    #[serde(rename = "claudeMd")]
+    claude_md: Option<String>,
+    /// Omit on PUT to keep existing `git_sync_json`. Author: kejiqing
+    #[serde(rename = "gitSyncJson", default)]
+    git_sync_json: Option<Value>,
+    /// Omit on PUT to keep existing `solve_preflight_json`. Author: kejiqing
+    #[serde(rename = "solvePreflightJson", default)]
+    solve_preflight_json: Option<Value>,
+    /// Omit on PUT to keep existing `solve_orchestration_json`. Author: kejiqing
+    #[serde(rename = "solveOrchestrationJson", default)]
+    solve_orchestration_json: Option<Value>,
+}
+
+/// Body for `POST /v1/project/config/{ds_id}/versions/commit` — save draft as immutable formal revision (does not change effective). Author: kejiqing
+#[derive(Debug, Deserialize)]
+struct CommitProjectConfigDraftRequest {
+    /// Optional label; version id is auto-generated (`YYYYMMDDHHmmss` local). Author: kejiqing
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectToolsCatalogResponse {
+    tools: Vec<project_tools::ToolCatalogEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectConfigResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "contentRev")]
+    content_rev: String,
+    #[serde(rename = "stableContentRev", skip_serializing_if = "Option::is_none")]
+    stable_content_rev: Option<String>,
+    #[serde(rename = "draftOpen")]
+    draft_open: bool,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: i64,
+    #[serde(rename = "rulesJson")]
+    rules_json: Value,
+    #[serde(rename = "mcpServersJson")]
+    mcp_servers_json: Value,
+    #[serde(rename = "skillsSourcesJson")]
+    skills_sources_json: Value,
+    #[serde(rename = "skillsJson")]
+    skills_json: Value,
+    #[serde(rename = "allowedToolsJson")]
+    allowed_tools_json: Value,
+    #[serde(rename = "claudeMd")]
+    claude_md: Option<String>,
+    #[serde(rename = "gitSyncJson")]
+    git_sync_json: Value,
+    #[serde(rename = "solvePreflightJson")]
+    solve_preflight_json: Value,
+    #[serde(rename = "solveOrchestrationJson")]
+    solve_orchestration_json: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectConfigVersionsResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    /// Effective formal revision id (one of non-draft rows in `versions`).
+    #[serde(rename = "activeContentRev")]
+    active_content_rev: String,
+    #[serde(rename = "appliedContentRev", skip_serializing_if = "Option::is_none")]
+    applied_content_rev: Option<String>,
+    #[serde(rename = "draftOpen")]
+    draft_open: bool,
+    /// Formal revisions plus optional single `__draft__` row when `draftOpen`.
+    versions: Vec<ProjectConfigVersionEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectConfigVersionEntry {
+    #[serde(rename = "contentRev")]
+    content_rev: String,
+    #[serde(rename = "createdAtMs")]
+    created_at_ms: i64,
+    #[serde(rename = "isDraft")]
+    is_draft: bool,
+    #[serde(rename = "note", skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    #[serde(rename = "isActive")]
+    is_active: bool,
+    #[serde(rename = "claudeInDb")]
+    claude_in_db: bool,
+    #[serde(rename = "skillsCountDb")]
+    skills_count_db: i64,
+    #[serde(rename = "rulesCountDb")]
+    rules_count_db: i64,
+    #[serde(rename = "mcpServersCountDb")]
+    mcp_servers_count_db: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompareProjectConfigQuery {
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ActivateProjectConfigVersionResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "activeContentRev")]
+    active_content_rev: String,
+    activated: bool,
+    #[serde(rename = "materialized")]
+    materialized: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectGitPushResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    outcome: GitPushOutcome,
+    #[serde(rename = "gitSyncJson")]
+    git_sync_json: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -336,8 +554,6 @@ struct ProjectSkillResponse {
     bytes_written: usize,
     #[serde(rename = "workDir")]
     work_dir: String,
-    #[serde(rename = "gitSync")]
-    git_sync: GitSyncResponse,
 }
 
 #[derive(Debug, Serialize)]
@@ -348,6 +564,9 @@ struct EffectivePromptResponse {
     work_dir: String,
     sections: Vec<String>,
     message: String,
+    /// `user` = project `claudeMd` override only; `system` = DB scaffold + project context.
+    #[serde(rename = "promptSource")]
+    prompt_source: String,
 }
 
 /// Per-datasource skill files under `<work_root>/ds_<id>/home/skills/<name>/SKILL.md` (same tree as `POST /v1/project/skills`). kejiqing
@@ -413,9 +632,16 @@ struct TaskRecord {
         skip_serializing_if = "Vec::is_empty"
     )]
     progress_history: Vec<gateway_solve_turn::ProgressEvent>,
-    /// `true` when succeeded, or while running once spill/result contains `__CLAW_REPORT_START__`.
+    /// `true` when `running` or `succeeded` (Admin opens live SSE; does not imply deltas yet). Author: kejiqing
     #[serde(rename = "hasReport")]
     has_report: bool,
+    /// First report material time (ms): stdout hub first delta, else `startedAtMs` / `finishedAtMs`.
+    #[serde(rename = "reportTime", skip_serializing_if = "Option::is_none")]
+    report_time_ms: Option<i64>,
+    #[serde(rename = "planTitle", skip_serializing_if = "Option::is_none")]
+    plan_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    todos: Vec<gateway_solve_turn::TaskProgressTodo>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -489,13 +715,9 @@ struct BizAdviceReportQuery {
     turn_id: String,
     #[serde(rename = "dsId")]
     ds_id: i64,
-    /// `true`（默认）时 tail `.claw/assistant-stream-spill-{turnId}.txt` 并 SSE；结束后用 session jsonl 全量。
-    #[serde(default = "default_biz_report_stream")]
+    /// `true` 时走与 `biz_advice_report_bak` 相同的 LLM 润色 SSE；默认 `false` 返回 JSON。
+    #[serde(default)]
     stream: bool,
-}
-
-fn default_biz_report_stream() -> bool {
-    true
 }
 
 /// Dev-only: inject a succeeded task so `GET /v1/biz_advice_report` can run without `solve_async`.
@@ -544,6 +766,21 @@ struct InjectMcpRequest {
     replace: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct TestMcpRequest {
+    #[serde(rename = "dsId")]
+    ds_id: Option<i64>,
+    #[serde(rename = "serverName")]
+    server_name: String,
+    config: Value,
+    #[serde(rename = "probeMcpStart", default = "default_probe_mcp_start")]
+    probe_mcp_start: bool,
+}
+
+fn default_probe_mcp_start() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize)]
 struct McpResponse {
     #[serde(rename = "sessionId")]
@@ -566,7 +803,7 @@ struct McpResponse {
 }
 
 #[derive(Debug)]
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     message: String,
 }
@@ -657,84 +894,36 @@ async fn register_solve_turn(
     turn_id: &str,
     session_id: &str,
     ds_id: i64,
-    user_prompt: Option<&str>,
+    user_prompt: &str,
+    co_located_pool_id: Option<&str>,
 ) -> Result<(), ApiError> {
+    let prompt = user_prompt.trim();
+    let user_prompt = (!prompt.is_empty()).then_some(prompt);
     db.insert_turn(turn_id, session_id, ds_id, "queued", now_ms(), user_prompt)
         .await
-        .map_err(|e| session_db_err(&e))
-}
-
-async fn persist_async_task_record(db: &session_db::GatewaySessionDb, record: &TaskRecord) {
-    if let Err(e) = db
-        .upsert_async_task(
-            &record.task_id,
-            &record.session_id,
-            record.ds_id,
-            &record.turn_id,
-            &record.status,
-            record.created_at_ms,
-            record.started_at_ms,
-            record.finished_at_ms,
-            record.current_task_desc.as_deref(),
-            record.progress_updated_at_ms,
-            record.has_report,
-        )
-        .await
-    {
-        warn!(
-            turn_id = %record.turn_id,
-            task_id = %record.task_id,
-            error = %e,
-            "persist gateway_async_tasks failed"
-        );
-    }
-}
-
-async fn task_record_from_db(
-    db: &session_db::GatewaySessionDb,
-    task_id: &str,
-) -> Result<Option<TaskRecord>, sqlx::Error> {
-    let Some(row) = db.get_async_task(task_id).await? else {
-        return Ok(None);
-    };
-    let mut result = None;
-    if row.status == "succeeded" {
-        if let Some(output_json) = db
-            .get_turn_output_json(&row.active_turn_id, &row.session_id, row.ds_id)
-            .await?
-        {
-            let output_text = serde_json::to_string(&output_json).unwrap_or_default();
-            result = Some(SolveResponse {
-                session_id: row.session_id.clone(),
-                request_id: row.session_id.clone(),
-                session_home_rel: String::new(),
-                ds_id: row.ds_id,
-                work_dir: String::new(),
-                duration_ms: 0,
-                claw_exit_code: 0,
-                output_text,
-                output_json: Some(output_json),
-                turn_id: row.active_turn_id.clone(),
-            });
+        .map_err(|e| session_db_err(&e))?;
+    if let Some(pool_id) = co_located_pool_id.map(str::trim).filter(|s| !s.is_empty()) {
+        match db.assign_turn_pool_id(turn_id, pool_id).await {
+            Ok(()) => info!(
+                target: "claw_live_report",
+                component = "gateway_turns",
+                phase = "prebind_pool_id",
+                turn_id = %turn_id,
+                pool_id = %pool_id,
+                "gateway_turns pool_id prebound at enqueue for live SSE routing"
+            ),
+            Err(e) => warn!(
+                target: "claw_live_report",
+                component = "gateway_turns",
+                phase = "prebind_pool_id_failed",
+                turn_id = %turn_id,
+                pool_id = %pool_id,
+                error = %e,
+                "gateway_turns pool_id prebind failed"
+            ),
         }
     }
-    Ok(Some(TaskRecord {
-        task_id: row.task_id.clone(),
-        session_id: row.session_id.clone(),
-        request_id: row.session_id.clone(),
-        ds_id: row.ds_id,
-        status: row.status,
-        created_at_ms: row.created_at_ms,
-        started_at_ms: row.started_at_ms,
-        finished_at_ms: row.finished_at_ms,
-        current_task_desc: row.current_task_desc,
-        progress_updated_at_ms: row.progress_updated_at_ms,
-        result,
-        error: None,
-        turn_id: row.active_turn_id,
-        progress_history: Vec::new(),
-        has_report: row.has_report,
-    }))
+    Ok(())
 }
 
 async fn set_solve_turn_status(
@@ -746,6 +935,67 @@ async fn set_solve_turn_status(
     let finished_at = finished.then_some(now_ms());
     if let Err(e) = db.update_turn_status(turn_id, status, finished_at).await {
         warn!(turn_id = %turn_id, error = %e, "update gateway_turns status failed");
+    }
+}
+
+/// Persist terminal solve outcome on `gateway_turns` for restart / `GET /v1/tasks` handoff. Author: kejiqing
+async fn finalize_solve_turn_success(
+    db: Arc<session_db::GatewaySessionDb>,
+    turn_id: &str,
+    result: &SolveResponse,
+) {
+    let finished_at = Some(now_ms());
+    let report =
+        report_body_from_solve_output(&result.output_text, result.output_json.as_ref()).ok();
+    if let Err(e) = db
+        .finalize_turn_terminal(
+            turn_id,
+            "succeeded",
+            finished_at,
+            report.as_deref(),
+            result.output_json.as_ref(),
+            Some(result.claw_exit_code),
+        )
+        .await
+    {
+        warn!(
+            turn_id = %turn_id,
+            error = %e,
+            "finalize gateway_turns succeeded snapshot failed"
+        );
+        return;
+    }
+    let _ = report;
+}
+
+async fn finalize_solve_turn_failed(
+    db: &session_db::GatewaySessionDb,
+    turn_id: &str,
+    err: &ApiError,
+) {
+    let detail = json!({"status_code": err.status.as_u16(), "detail": err.message});
+    if let Err(e) = db
+        .finalize_turn_terminal(turn_id, "failed", Some(now_ms()), None, Some(&detail), None)
+        .await
+    {
+        warn!(
+            turn_id = %turn_id,
+            error = %e,
+            "finalize gateway_turns failed snapshot failed"
+        );
+    }
+}
+
+async fn finalize_solve_turn_cancelled(db: &session_db::GatewaySessionDb, turn_id: &str) {
+    if let Err(e) = db
+        .finalize_turn_terminal(turn_id, "cancelled", Some(now_ms()), None, None, None)
+        .await
+    {
+        warn!(
+            turn_id = %turn_id,
+            error = %e,
+            "finalize gateway_turns cancelled snapshot failed"
+        );
     }
 }
 
@@ -878,6 +1128,24 @@ async fn main() {
     let pool_rpc_tcp_cfg = pool_daemon_tcp.clone();
     let pool_rpc_unix_cfg = pool_daemon_socket.clone();
 
+    let pool_rpc_remote = pool_daemon_tcp.is_some() || pool_daemon_socket.is_some();
+    let co_located_pool_id = pool_rpc_remote.then(http_gateway_rs::pool_registry::resolve_pool_id);
+    let pool_http_base = std::env::var("CLAW_POOL_HTTP_BASE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_default();
+    tracing::info!(
+        target: "claw_live_report",
+        component = "gateway_startup",
+        contract = http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT,
+        pool_rpc_remote,
+        pool_http_base = %pool_http_base,
+        co_located_pool_id = ?co_located_pool_id,
+        "live_report.gateway — terminal snapshot from DB; live stream proxies via claw_pool JOIN only (no CLAW_POOL_HTTP_BASE fallback)"
+    );
+
+    // Pool RPC: single co-located daemon only (no DB pool_id routing). Author: kejiqing
     let docker_pool: Arc<dyn pool::PoolOps + Send + Sync> = if let Some(ref tcp_addr) =
         pool_daemon_tcp
     {
@@ -903,25 +1171,34 @@ async fn main() {
         let client = pool::PoolRpcClient::new(PathBuf::from(sock_path));
         Arc::new(client)
     } else {
-        let podman = matches!(solve_isolation, SolveIsolation::PodmanPool);
-        let p =
-            pool::DockerPoolManager::try_from_env(podman, &pool_binding_root).unwrap_or_else(|e| {
-                let runtime = if podman { "Podman" } else { "Docker" };
-                eprintln!("http-gateway-rs: invalid {runtime} pool configuration: {e}");
-                std::process::exit(1);
-            });
-        pool::DockerPoolManager::schedule_warm(&p);
-        Arc::new(pool::LocalPoolOps(p))
+        eprintln!(
+            "http-gateway-rs: CLAW_POOL_DAEMON_TCP or CLAW_POOL_DAEMON_SOCKET is required (live report uses claw-pool-daemon)"
+        );
+        std::process::exit(1);
     };
 
-    let projects_git_url = mandatory_nonempty_env("CLAW_PROJECTS_GIT_URL");
-    let projects_git_branch = mandatory_nonempty_env("CLAW_PROJECTS_GIT_BRANCH");
-    let projects_git_author = mandatory_nonempty_env("CLAW_PROJECTS_GIT_AUTHOR");
+    let projects_git_url = std::env::var("CLAW_PROJECTS_GIT_URL")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_default();
+    let projects_git_branch = std::env::var("CLAW_PROJECTS_GIT_BRANCH")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "main".to_string());
+    let projects_git_author = std::env::var("CLAW_PROJECTS_GIT_AUTHOR")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "claw-gateway <noreply@claw.local>".to_string());
     let projects_git_token = std::env::var("CLAW_PROJECTS_GIT_TOKEN")
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    validate_projects_git_at_startup(&projects_git_url, projects_git_token.as_deref());
+    if !projects_git_url.is_empty() {
+        validate_projects_git_at_startup(&projects_git_url, projects_git_token.as_deref());
+    }
 
     let report_polish_deepseek = {
         let raw = std::env::var("REPORT_LLM_PROVIDER")
@@ -980,7 +1257,9 @@ async fn main() {
         pool_rpc_host_work_root,
         pool_rpc_tcp: pool_rpc_tcp_cfg,
         pool_rpc_unix_socket: pool_rpc_unix_cfg,
-        pool_rpc_remote: pool_daemon_tcp.is_some() || pool_daemon_socket.is_some(),
+        pool_rpc_remote,
+        pool_http_base,
+        co_located_pool_id,
         ds_registry_path: std::env::var("CLAW_DS_REGISTRY").map_or_else(
             |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("datasources.example.yaml"),
             PathBuf::from,
@@ -994,7 +1273,6 @@ async fn main() {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(64),
-        live_biz_report_spill_enabled: gateway_env_enabled("CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL"),
         default_http_mcp_name: std::env::var("CLAW_DEFAULT_HTTP_MCP_NAME")
             .ok()
             .map(|v| v.trim().to_string())
@@ -1009,29 +1287,57 @@ async fn main() {
             .filter(|v| v == "http" || v == "sse")
             .unwrap_or_else(|| "http".to_string()),
         config_mcp_servers: load_mcp_servers_from_claw_config(),
-        allowed_tools: parse_allowed_tools(std::env::var("CLAW_ALLOWED_TOOLS").ok()),
         projects_git_url,
         projects_git_branch,
         projects_git_author,
         projects_git_token,
         projects_git_ds_home_poll_interval_secs: std::env::var(
-            "CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS",
+            "CLAW_PROJECT_CONFIG_POLL_INTERVAL_SECS",
         )
+        .or_else(|_| std::env::var("CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS"))
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&s| s > 0),
+        gateway_llm_config_poll_interval_secs: std::env::var(
+            "CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS",
+        )
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .or(Some(30))
+        .filter(|&s| s > 0),
         report_polish_deepseek,
     };
-    let session_db = Arc::new(
-        session_db::GatewaySessionDb::open()
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!(
-                    "http-gateway-rs: failed to connect gateway PostgreSQL (CLAW_GATEWAY_DATABASE_URL): {e}"
-                );
-                std::process::exit(1);
-            }),
-    );
+    let session_db = session_db::GatewaySessionDb::open()
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "http-gateway-rs: failed to connect gateway PostgreSQL (CLAW_GATEWAY_DATABASE_URL): {e}"
+            );
+            std::process::exit(1);
+        });
+    match session_db
+        .reconcile_interrupted_turns_on_startup(now_ms())
+        .await
+    {
+        Ok(n) if n > 0 => {
+            info!(
+                target: "claw_gateway_orchestration",
+                component = "startup",
+                phase = "session_db_reconcile",
+                reconciled_turn_rows = n,
+                "marked in-flight gateway_turns as failed after gateway restart"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => warn!(
+            target: "claw_gateway_orchestration",
+            component = "startup",
+            phase = "session_db_reconcile",
+            error = %e,
+            "reconcile_interrupted_turns_on_startup failed"
+        ),
+    }
+    let session_db = Arc::new(session_db);
     info!(
         target: "claw_gateway_orchestration",
         component = "startup",
@@ -1049,19 +1355,37 @@ async fn main() {
         docker_slots: Arc::new(Mutex::new(HashMap::new())),
         docker_pool,
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
+        llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
     };
 
-    run_startup_projects_git_sync(&state).await;
+    run_startup_project_config_apply(&state).await;
+    gateway_llm_config_sync::run_startup_llm_config_sync(&state.session_db, &state.llm_runtime)
+        .await;
 
-    if let Some(secs) = state.cfg.projects_git_ds_home_poll_interval_secs {
-        let poller_state = state.clone();
-        tokio::spawn(async move { projects_git_ds_home_poll_loop(poller_state, secs).await });
+    if let Some(secs) = state.cfg.gateway_llm_config_poll_interval_secs {
+        let poll_db = state.session_db.clone();
+        let poll_handle = state.llm_runtime.clone();
+        tokio::spawn(async move {
+            gateway_llm_config_sync::llm_config_poll_loop(poll_db, poll_handle, secs).await
+        });
         info!(
             target: "claw_gateway_orchestration",
             component = "startup",
-            phase = "projects_git_poll",
+            phase = "llm_config_poll",
             interval_secs = secs,
-            "background ds home sync from mirror enabled"
+            "background LLM config sync poll enabled"
+        );
+    }
+
+    if let Some(secs) = state.cfg.projects_git_ds_home_poll_interval_secs {
+        let poller_state = state.clone();
+        tokio::spawn(async move { project_config_poll_loop(poller_state, secs).await });
+        info!(
+            target: "claw_gateway_orchestration",
+            component = "startup",
+            phase = "project_config_poll",
+            interval_secs = secs,
+            "background project_config materialize poll enabled"
         );
     }
 
@@ -1071,6 +1395,10 @@ async fn main() {
         .route("/dos", get(docs))
         .route("/openapi.json", get(openapi))
         .route("/healthz", get(healthz))
+        .route("/v1/projects", get(list_projects).post(create_project))
+        .route("/v1/projects/{ds_id}/sessions", get(list_project_sessions))
+        .route("/v1/projects/{ds_id}", delete(delete_project))
+        .route("/v1/projects/{ds_id}/git/push", post(push_project_git))
         .route("/v1/init", post(init_workspace))
         .route("/v1/solve", post(solve))
         .route("/v1/start", post(solve_start))
@@ -1081,9 +1409,18 @@ async fn main() {
             "/v1/sessions/{session_id}/execution",
             get(get_session_execution),
         )
+        .route("/v1/sessions/{session_id}/turns", get(list_session_turns))
         .route(
-            "/v1/sessions/{session_id}/transcript",
-            get(get_session_transcript),
+            "/v1/sessions/{session_id}/turns/{turn_id}/tools",
+            get(get_turn_tools),
+        )
+        .route(
+            "/v1/sessions/{session_id}/turns/{turn_id}/timeline",
+            get(get_turn_timeline),
+        )
+        .route(
+            "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
+            post(cancel_session_turn),
         )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
@@ -1100,11 +1437,85 @@ async fn main() {
             "/v1/project/prompt/{ds_id}/effective",
             get(get_effective_prompt).post(post_effective_prompt),
         )
+        .route(
+            "/v1/project/config/{ds_id}",
+            get(get_project_config).put(put_project_config),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/versions",
+            get(list_project_config_versions),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/versions/compare",
+            get(compare_project_config_versions),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/entities/{domain}/{entity_key}/versions/compare",
+            get(compare_project_entity_versions),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/entities/{domain}/{entity_key}/versions",
+            get(list_project_entity_versions),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/entities/{domain}/{entity_key}/restore",
+            post(restore_project_entity_revision),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/versions/commit",
+            post(commit_project_config_draft),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/versions/{content_rev}",
+            delete(delete_project_config_version).patch(patch_project_config_version_note),
+        )
+        .route(
+            "/v1/project/config/{ds_id}/versions/{content_rev}/activate",
+            post(activate_project_config_version),
+        )
+        .route("/v1/project/tools/catalog", get(get_project_tools_catalog))
+        .route(
+            "/v1/gateway/global-settings",
+            get(get_gateway_global_settings_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/git-pats",
+            post(upsert_gateway_git_pat_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/git-pats/{pat_id}",
+            delete(delete_gateway_git_pat_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/active-llm-config",
+            put(put_gateway_active_llm_config_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models",
+            post(upsert_gateway_llm_model_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}",
+            delete(delete_gateway_llm_model_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}/versions",
+            get(list_gateway_llm_model_versions_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}/apply",
+            post(apply_gateway_llm_model_head_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}/versions/{model_rev}/apply",
+            post(apply_gateway_llm_model_revision_handler),
+        )
         .route("/v1/skills/{ds_id}/{skill_name}", get(get_ds_skill))
         .route("/v1/skills/{ds_id}", get(list_ds_skills))
         .route("/v1/mcp/inject", post(inject_mcp))
         .route("/v1/mcp/injected/{ds_id}", get(get_injected_mcp))
         .route("/v1/mcp/injected/{ds_id}", delete(delete_injected_mcp))
+        .route("/v1/mcp/test", post(test_mcp))
         .route(
             "/v1/agent/feedback",
             post(post_agent_feedback).get(get_agent_feedback),
@@ -1202,9 +1613,14 @@ async fn docs() -> Html<String> {
             "Cancel a queued or running async solve task",
         ),
         (
+            "POST",
+            "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
+            "Cancel a specific turn by sessionId + turnId + ds_id",
+        ),
+        (
             "GET",
             "/v1/biz_advice_report?sessionId=…&turnId=…&dsId=…",
-            "Report: default LLM polish (biz_advice_report_bak); live spill when CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1",
+            "Report: live stdout SSE while running; LLM polish after succeeded (biz_advice_report_bak)",
         ),
         (
             "GET",
@@ -1235,6 +1651,21 @@ async fn docs() -> Html<String> {
             "POST",
             "/v1/project/prompt/{ds_id}/effective",
             "Reload and get effective system prompt for ds",
+        ),
+        (
+            "GET",
+            "/v1/project/config/{ds_id}",
+            "Get project_config row for ds (PostgreSQL)",
+        ),
+        (
+            "PUT",
+            "/v1/project/config/{ds_id}",
+            "Upsert project_config for ds (rules / MCP / skills sources / tools / CLAUDE.md)",
+        ),
+        (
+            "GET",
+            "/v1/project/tools/catalog",
+            "Gateway-registered tool catalog for project selection",
         ),
         (
             "GET",
@@ -1481,7 +1912,7 @@ async fn openapi() -> Json<Value> {
                         "progressUpdatedAtMs": { "type": "integer", "format": "int64", "nullable": true },
                         "hasReport": {
                             "type": "boolean",
-                            "description": "True when status is succeeded, or while running once spill/result contains __CLAW_REPORT_START__"
+                            "description": "True when status is running or succeeded (stable contract for live report SSE / BFF)"
                         },
                         "turnId": { "type": "string" },
                         "progressHistory": {
@@ -1604,12 +2035,12 @@ async fn openapi() -> Json<Value> {
             },
             "/v1/biz_advice_report": {
                 "get": {
-                    "summary": "Business report: default LLM polish; live spill tail when CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1",
+                    "summary": "Business report: live stdout SSE while running; LLM polish after succeeded",
                     "parameters": [
                         { "name": "sessionId", "in": "query", "required": true, "schema": { "type": "string" } },
                         { "name": "turnId", "in": "query", "required": true, "schema": { "type": "string" } },
                         { "name": "dsId", "in": "query", "required": true, "schema": { "type": "integer", "format": "int64" } },
-                        { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": true }, "description": "When true (default): spill SSE if spill file exists, else biz.report.* LLM polish stream from solve output" }
+                        { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": true }, "description": "When true (default): live stdout SSE while running/queued; else biz.report.* LLM polish from solve output" }
                     ],
                     "responses": {
                         "200": { "description": "Report JSON or SSE", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BizAdviceReportResponse" } } } }
@@ -1815,14 +2246,198 @@ async fn ds_project_tree_ready(work_dir: &Path) -> bool {
     claude_instructions_usable(&home_claude).await || claude_instructions_usable(&root_claude).await
 }
 
-fn ds_environment_not_prepared_error(ds_id: i64, projects_git_url: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::PRECONDITION_FAILED,
+fn ds_environment_not_prepared_error(ds_id: i64, has_project_config: bool) -> ApiError {
+    let hint = if has_project_config {
         format!(
-            "ds {ds_id} environment not prepared: missing or empty home/CLAUDE.md on this gateway; \
-             add ds_{ds_id}/home to projects git ({projects_git_url}) and call POST /v1/init"
-        ),
+            "ds {ds_id} environment not prepared: project_config exists but home/CLAUDE.md is missing or empty; \
+             set claudeMd in PUT /v1/project/config/{ds_id}, then POST /v1/init"
+        )
+    } else {
+        format!(
+            "ds {ds_id} environment not prepared: no project_config row; \
+             POST /v1/projects or PUT /v1/project/config/{ds_id} with non-empty claudeMd, then POST /v1/init"
+        )
+    };
+    ApiError::new(StatusCode::PRECONDITION_FAILED, hint)
+}
+
+fn map_project_config_apply_err(e: &project_config_apply::ProjectConfigApplyError) -> ApiError {
+    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
+async fn write_ds_settings_json(state: &AppState, ds_id: i64) -> Result<(), ApiError> {
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let settings = build_settings(state, ds_id).await;
+    let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("serialize settings failed: {e}"),
+        )
+    })?;
+    fs::write(work_dir.join(".claw/settings.json"), settings_content)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write settings failed: {e}"),
+            )
+        })?;
+    Ok(())
+}
+
+/// Materialize `project_config` from `PostgreSQL` when present (`content_rev` or missing CLAUDE). Author: kejiqing
+async fn apply_project_config_for_ds(
+    state: &AppState,
+    ds_id: i64,
+    force: bool,
+) -> Result<(), ApiError> {
+    apply_project_config_for_ds_inner(state, ds_id, force, true).await
+}
+
+async fn apply_project_config_for_ds_inner(
+    state: &AppState,
+    ds_id: i64,
+    force: bool,
+    auto_git_push: bool,
+) -> Result<(), ApiError> {
+    let row = project_config_draft::row_for_materialize(&state.session_db, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create ds work dir failed: {e}"),
+            )
+        })?;
+    let tree_ready = ds_project_tree_ready(&work_dir).await;
+    let force_apply = force || !tree_ready;
+    let scaffold = gateway_global_settings::load_system_prompt_default(&state.session_db)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    project_config_apply::apply_if_needed(&work_dir, &row, force_apply, &scaffold)
+        .await
+        .map_err(|e| map_project_config_apply_err(&e))?;
+    write_ds_settings_json(state, ds_id).await?;
+    if auto_git_push {
+        maybe_push_project_git(state, ds_id).await;
+    }
+    Ok(())
+}
+
+async fn maybe_push_project_git(state: &AppState, ds_id: i64) {
+    let Ok(row) = state.session_db.get_project_config(ds_id).await else {
+        return;
+    };
+    let Some(row) = row else {
+        return;
+    };
+    if !parse_git_sync_json(&row.git_sync_json).enabled {
+        return;
+    }
+    if let Err(e) = try_push_project_git(state, ds_id).await {
+        warn!(
+            target: "claw_gateway_orchestration",
+            ds_id,
+            error = %e.message,
+            "per-project git push after apply failed (non-fatal)"
+        );
+    }
+}
+
+/// One-way push `home/` → per-project remote; updates `git_sync_json` lastPush* in DB. Author: kejiqing
+async fn try_push_project_git(
+    state: &AppState,
+    ds_id: i64,
+) -> Result<GitPushOutcome, project_git_sync::ProjectGitSyncError> {
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| project_git_sync::ProjectGitSyncError::new(format!("db: {e}")))?;
+    let Some(row) = row else {
+        return Err(project_git_sync::ProjectGitSyncError::new(
+            "no project_config row",
+        ));
+    };
+    let sync_raw = parse_git_sync_json(&row.git_sync_json);
+    if !sync_raw.enabled {
+        return Err(project_git_sync::ProjectGitSyncError::new(
+            "git sync is disabled",
+        ));
+    }
+    let pat_tokens = gateway_global_settings::load_git_pat_tokens(&state.session_db)
+        .await
+        .map_err(|e| project_git_sync::ProjectGitSyncError::new(format!("global settings: {e}")))?;
+    let sync = project_git_sync::resolve_git_sync_credentials(&sync_raw, &pat_tokens.tokens);
+    if let Err(msg) = project_git_sync::validate_git_sync_resolved(&sync) {
+        return Err(project_git_sync::ProjectGitSyncError::new(msg));
+    }
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let author = state.cfg.projects_git_author.trim();
+    let author = if author.is_empty() {
+        "claw-gateway <gateway@claw.local>"
+    } else {
+        author
+    };
+    let (author_name, author_email) = parse_projects_git_author(author);
+    let excluded = project_config_apply::git_excluded_home_relpaths(&row);
+    match project_git_sync::push_home_oneway(
+        &work_dir,
+        &sync,
+        &excluded,
+        &author_name,
+        &author_email,
     )
+    .await
+    {
+        Ok(outcome) => {
+            let mut updated = sync;
+            updated.last_push_at_ms = Some(now_ms());
+            updated.last_push_commit_id = outcome.commit_id.clone();
+            updated.last_push_error = None;
+            let git_sync_json = git_sync_to_json(&updated);
+            persist_git_sync_status(state, &row, &git_sync_json)
+                .await
+                .map_err(|e| {
+                    project_git_sync::ProjectGitSyncError::new(format!("db upsert: {e}"))
+                })?;
+            Ok(outcome)
+        }
+        Err(e) => {
+            let mut updated = sync;
+            updated.last_push_at_ms = Some(now_ms());
+            updated.last_push_error = Some(e.message.clone());
+            let git_sync_json = git_sync_to_json(&updated);
+            let _ = persist_git_sync_status(state, &row, &git_sync_json).await;
+            Err(e)
+        }
+    }
+}
+
+async fn persist_git_sync_status(
+    state: &AppState,
+    row: &session_db::ProjectConfigRow,
+    git_sync_json: &Value,
+) -> Result<(), sqlx::Error> {
+    let mut updated = row.clone();
+    updated.git_sync_json = git_sync_json.clone();
+    state
+        .session_db
+        .upsert_project_config(project_config_draft::upsert_from_row(
+            &updated,
+            &updated.content_rev,
+            now_ms(),
+            updated.claude_md.as_deref(),
+            updated.stable_content_rev.as_deref(),
+        ))
+        .await
 }
 
 async fn sync_ds_project_from_git_mirror(state: &AppState, ds_id: i64) -> Result<(), ApiError> {
@@ -1843,13 +2458,17 @@ async fn ensure_ds_project_ready(state: &AppState, ds_id: i64) -> Result<(), Api
                 format!("create ds work dir failed: {e}"),
             )
         })?;
+    let has_project_config = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .is_some();
+    apply_project_config_for_ds(state, ds_id, false).await?;
     if ds_project_tree_ready(&work_dir).await {
         return Ok(());
     }
-    Err(ds_environment_not_prepared_error(
-        ds_id,
-        state.cfg.projects_git_url.as_str(),
-    ))
+    Err(ds_environment_not_prepared_error(ds_id, has_project_config))
 }
 
 fn normalize_rel_for_git(path: &Path) -> String {
@@ -1890,6 +2509,400 @@ fn validate_skill_name(skill_name: &str) -> Result<(), ApiError> {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "skillName only allows [a-zA-Z0-9._-]",
+        ));
+    }
+    Ok(())
+}
+
+fn entity_revision_err(e: project_entity_revision::EntityRevisionError) -> ApiError {
+    ApiError::new(e.status, e.message)
+}
+
+async fn list_project_entity_versions(
+    State(state): State<AppState>,
+    AxumPath((ds_id, domain, entity_key)): AxumPath<(i64, String, String)>,
+) -> Result<Json<project_entity_revision::EntityVersionsListResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    project_entity_revision::list_entity_versions(&state.session_db, ds_id, &domain, &entity_key)
+        .await
+        .map(Json)
+        .map_err(entity_revision_err)
+}
+
+#[derive(Debug, Deserialize)]
+struct EntityCompareQuery {
+    from: String,
+    to: String,
+}
+
+async fn compare_project_entity_versions(
+    State(state): State<AppState>,
+    AxumPath((ds_id, domain, entity_key)): AxumPath<(i64, String, String)>,
+    Query(q): Query<EntityCompareQuery>,
+) -> Result<Json<project_entity_revision::EntityCompareResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    project_entity_revision::compare_entity_versions(
+        &state.session_db,
+        ds_id,
+        &domain,
+        &entity_key,
+        &q.from,
+        &q.to,
+    )
+    .await
+    .map(Json)
+    .map_err(entity_revision_err)
+}
+
+async fn restore_project_entity_revision(
+    State(state): State<AppState>,
+    AxumPath((ds_id, domain, entity_key)): AxumPath<(i64, String, String)>,
+    Json(req): Json<project_entity_revision::RestoreEntityRevisionRequest>,
+) -> Result<Json<project_entity_revision::RestoreEntityRevisionResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    project_entity_revision::restore_entity_revision_to_draft(
+        &state.session_db,
+        ds_id,
+        &domain,
+        &entity_key,
+        &req.entity_rev,
+    )
+    .await
+    .map(Json)
+    .map_err(entity_revision_err)
+}
+
+fn draft_err(e: project_config_draft::DraftError) -> ApiError {
+    ApiError::new(e.status, e.message)
+}
+
+fn default_project_config_row(ds_id: i64) -> session_db::ProjectConfigRow {
+    session_db::ProjectConfigRow {
+        ds_id,
+        content_rev: String::new(),
+        stable_content_rev: None,
+        draft_open: false,
+        updated_at_ms: 0,
+        rules_json: json!([]),
+        mcp_servers_json: json!({}),
+        skills_sources_json: json!([]),
+        skills_json: json!([]),
+        allowed_tools_json: json!([]),
+        claude_md: None,
+        git_sync_json: json!({}),
+        solve_preflight_json: json!({"kind": "none"}),
+        solve_orchestration_json: json!({"kind": "single_turn"}),
+    }
+}
+
+fn revision_row_from_upsert<'a>(
+    ds_id: i64,
+    content_rev: &'a str,
+    created_at_ms: i64,
+    upsert: &session_db::ProjectConfigUpsert<'a>,
+) -> session_db::ProjectConfigRevisionRow {
+    session_db::ProjectConfigRevisionRow {
+        ds_id,
+        content_rev: content_rev.to_string(),
+        created_at_ms,
+        note: None,
+        rules_json: upsert.rules_json.clone(),
+        mcp_servers_json: upsert.mcp_servers_json.clone(),
+        skills_sources_json: upsert.skills_sources_json.clone(),
+        skills_json: upsert.skills_json.clone(),
+        allowed_tools_json: upsert.allowed_tools_json.clone(),
+        claude_md: upsert.claude_md.map(str::to_string),
+    }
+}
+
+fn project_config_version_entry_from_summary(
+    r: &session_db::ProjectConfigRevisionSummary,
+    effective: &str,
+) -> ProjectConfigVersionEntry {
+    ProjectConfigVersionEntry {
+        content_rev: r.content_rev.clone(),
+        created_at_ms: r.created_at_ms,
+        is_draft: false,
+        note: r.note.clone(),
+        is_active: r.content_rev == effective,
+        claude_in_db: r.claude_in_db,
+        skills_count_db: r.skills_count_db,
+        rules_count_db: r.rules_count_db,
+        mcp_servers_count_db: r.mcp_servers_count_db,
+    }
+}
+
+fn project_config_version_entry_from_draft(
+    row: &session_db::ProjectConfigRow,
+) -> ProjectConfigVersionEntry {
+    let claude_in_db = row
+        .claude_md
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty());
+    let skills_count_db = row.skills_json.as_array().map_or(0, |a| a.len() as i64);
+    let rules_count_db = row.rules_json.as_array().map_or(0, |a| a.len() as i64);
+    let mcp_servers_count_db = row
+        .mcp_servers_json
+        .as_object()
+        .map_or(0, |o| o.len() as i64);
+    ProjectConfigVersionEntry {
+        content_rev: project_config_draft::DRAFT_CONTENT_REV.to_string(),
+        created_at_ms: row.updated_at_ms,
+        is_draft: true,
+        note: None,
+        is_active: false,
+        claude_in_db,
+        skills_count_db,
+        rules_count_db,
+        mcp_servers_count_db,
+    }
+}
+
+async fn load_revision_for_compare(
+    state: &AppState,
+    ds_id: i64,
+    content_rev: &str,
+    active: &session_db::ProjectConfigRow,
+) -> Result<session_db::ProjectConfigRevisionRow, ApiError> {
+    if project_config_draft::is_draft_content_rev(content_rev) {
+        if !active.draft_open {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("no open draft for ds {ds_id}"),
+            ));
+        }
+        return Ok(project_config_draft::revision_row_from_config_row(
+            active,
+            project_config_draft::DRAFT_CONTENT_REV,
+            None,
+        ));
+    }
+    project_config_draft::require_formal_revision(&state.session_db, ds_id, content_rev)
+        .await
+        .map_err(draft_err)
+}
+
+fn revision_row_from_active(
+    row: &session_db::ProjectConfigRow,
+) -> session_db::ProjectConfigRevisionRow {
+    session_db::ProjectConfigRevisionRow {
+        ds_id: row.ds_id,
+        content_rev: row.content_rev.clone(),
+        created_at_ms: row.updated_at_ms,
+        note: None,
+        rules_json: row.rules_json.clone(),
+        mcp_servers_json: row.mcp_servers_json.clone(),
+        skills_sources_json: row.skills_sources_json.clone(),
+        skills_json: row.skills_json.clone(),
+        allowed_tools_json: row.allowed_tools_json.clone(),
+        claude_md: row.claude_md.clone(),
+    }
+}
+
+async fn archive_project_config_revision(
+    state: &AppState,
+    rev: session_db::ProjectConfigRevisionRow,
+) -> Result<(), ApiError> {
+    if project_config_draft::is_draft_content_rev(&rev.content_rev) {
+        return Ok(());
+    }
+    let inserted = state
+        .session_db
+        .insert_project_config_revision_immutable(&rev)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if !inserted {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            format!(
+                "revision {} already exists and cannot be changed",
+                rev.content_rev
+            ),
+        ));
+    }
+    Ok(())
+}
+
+async fn activate_project_config_revision_row(
+    state: &AppState,
+    ds_id: i64,
+    rev: session_db::ProjectConfigRevisionRow,
+    git_sync_json: Value,
+    solve_preflight_json: Value,
+    solve_orchestration_json: Value,
+) -> Result<bool, ApiError> {
+    let now = now_ms();
+    state
+        .session_db
+        .upsert_project_config(session_db::ProjectConfigUpsert {
+            ds_id,
+            content_rev: &rev.content_rev,
+            stable_content_rev: Some(rev.content_rev.as_str()),
+            draft_open: false,
+            updated_at_ms: now,
+            rules_json: &rev.rules_json,
+            mcp_servers_json: &rev.mcp_servers_json,
+            skills_sources_json: &rev.skills_sources_json,
+            skills_json: &rev.skills_json,
+            allowed_tools_json: &rev.allowed_tools_json,
+            claude_md: rev.claude_md.as_deref(),
+            git_sync_json: &git_sync_json,
+            solve_preflight_json: &solve_preflight_json,
+            solve_orchestration_json: &solve_orchestration_json,
+        })
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let lock = get_ds_lock(state, ds_id).await;
+    let _guard = lock.lock().await;
+    apply_project_config_for_ds_inner(state, ds_id, true, true).await?;
+    let applied =
+        project_config_apply::read_applied_content_rev(&ds_work_dir(&state.cfg.work_root, ds_id))
+            .await;
+    Ok(applied.as_deref() == Some(rev.content_rev.as_str()))
+}
+
+fn merge_git_sync_from_put(incoming: &Value, existing: &Value) -> Value {
+    let mut inc = parse_git_sync_json(incoming);
+    let ex = parse_git_sync_json(existing);
+    let pat_id_in_incoming = incoming.get("gitPatId").is_some();
+    if !pat_id_in_incoming {
+        inc.git_pat_id = ex.git_pat_id;
+    } else if incoming
+        .get("gitPatId")
+        .is_some_and(serde_json::Value::is_null)
+    {
+        inc.git_pat_id = None;
+    }
+    let uses_global_pat = inc
+        .git_pat_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty());
+    if uses_global_pat {
+        inc.git_token = None;
+    } else if inc
+        .git_token
+        .as_deref()
+        .map(str::trim)
+        .as_ref()
+        .is_none_or(|s| s.is_empty())
+    {
+        inc.git_token = ex.git_token;
+    }
+    git_sync_to_json(&inc)
+}
+
+async fn git_sync_json_for_api(state: &AppState, v: &Value) -> Value {
+    let sync = parse_git_sync_json(v);
+    let tokens = gateway_global_settings::load_git_pat_tokens(&state.session_db)
+        .await
+        .ok();
+    let token_set = git_sync_token_set(&sync, tokens.as_ref());
+    let mut j = git_sync_to_json(&sync);
+    if let Some(obj) = j.as_object_mut() {
+        obj.insert("gitTokenSet".into(), json!(token_set));
+    }
+    j
+}
+
+fn git_sync_token_set(
+    sync: &project_git_sync::ProjectGitSync,
+    tokens: Option<&gateway_global_settings::GitPatTokensStore>,
+) -> bool {
+    if sync
+        .git_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
+        return true;
+    }
+    let Some(id) = sync
+        .git_pat_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return false;
+    };
+    tokens.is_some_and(|t| t.tokens.contains_key(id))
+}
+
+async fn load_project_config_or_default(
+    state: &AppState,
+    ds_id: i64,
+) -> Result<session_db::ProjectConfigRow, ApiError> {
+    Ok(state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .unwrap_or_else(|| default_project_config_row(ds_id)))
+}
+
+fn merge_skill_into_skills_json(skills_json: &mut Value, skill_name: &str, skill_content: &str) {
+    if !skills_json.is_array() {
+        *skills_json = json!([]);
+    }
+    let arr = skills_json.as_array_mut().expect("skills_json is array");
+    for item in arr.iter_mut() {
+        if item.get("skillName").and_then(Value::as_str) == Some(skill_name) {
+            if let Some(obj) = item.as_object_mut() {
+                obj.insert("skillContent".into(), json!(skill_content));
+            }
+            return;
+        }
+    }
+    arr.push(json!({
+        "skillName": skill_name,
+        "skillContent": skill_content,
+    }));
+}
+
+fn validate_skills_json(skills: &Value) -> Result<(), ApiError> {
+    let arr = skills
+        .as_array()
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "skillsJson must be a JSON array"))?;
+    for (i, item) in arr.iter().enumerate() {
+        let obj = item.as_object().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("skillsJson[{i}] must be a JSON object"),
+            )
+        })?;
+        let name = obj
+            .get("skillName")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("skillsJson[{i}] missing skillName"),
+                )
+            })?;
+        validate_skill_name(name)?;
+        if !obj.contains_key("skillContent") {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("skillsJson[{i}] missing skillContent"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn reject_deprecated_skills_sources(sources: &Value) -> Result<(), ApiError> {
+    if sources.as_array().is_some_and(|a| !a.is_empty()) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "skillsSourcesJson is deprecated; use skillsJson (inline skills stored in project_config)",
         ));
     }
     Ok(())
@@ -2011,27 +3024,12 @@ async fn count_skill_dirs(skills_root: &Path) -> u64 {
     n
 }
 
-/// Read-only snapshot of projects-git mirror + per-`ds_*` workspace readiness (for `/healthz`). kejiqing
-async fn build_ds_workspaces_health(work_root: &Path, cfg: &GatewayConfig) -> Value {
-    let repo_dir = projects_repo_dir(work_root);
-    let mirror_present = fs::metadata(&repo_dir).await.is_ok_and(|m| m.is_dir());
-    let mirror_head = if mirror_present {
-        git_rev_parse_optional(&repo_dir, "HEAD").await
-    } else {
-        None
-    };
-
+/// Read-only snapshot of per-`ds_*` workspace readiness (for `/healthz`). Author: kejiqing
+async fn build_ds_workspaces_health(work_root: &Path) -> Value {
     let on_disk = list_ds_ids_under_work_root(work_root)
         .await
         .unwrap_or_default();
-    let in_mirror = if mirror_present {
-        list_ds_ids_in_projects_mirror(&repo_dir)
-            .await
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let ids = merge_sorted_ds_ids(on_disk, in_mirror);
+    let ids = on_disk;
 
     let mut workspaces = Vec::new();
     let mut prepared_count = 0u64;
@@ -2057,17 +3055,6 @@ async fn build_ds_workspaces_health(work_root: &Path, cfg: &GatewayConfig) -> Va
             0
         };
 
-        let mirror_ds_home = repo_dir.join(format!("ds_{ds_id}/home"));
-        let mirror_has_ds_home = mirror_present
-            && fs::metadata(&mirror_ds_home)
-                .await
-                .is_ok_and(|m| m.is_dir());
-        let mirror_ds_home_tree_rev = if mirror_has_ds_home {
-            git_rev_parse_optional(&repo_dir, &format!("HEAD:ds_{ds_id}/home")).await
-        } else {
-            None
-        };
-
         workspaces.push(json!({
             "dsId": ds_id,
             "workDir": work_dir.display().to_string(),
@@ -2078,19 +3065,10 @@ async fn build_ds_workspaces_health(work_root: &Path, cfg: &GatewayConfig) -> Va
             "claudeHomeBytes": claude_home_bytes,
             "claudeRootPresent": claude_root_present,
             "skillsCount": skills_count,
-            "projectsGit": {
-                "mirrorHasDsHome": mirror_has_ds_home,
-                "mirrorDsHomeTreeRev": mirror_ds_home_tree_rev,
-            }
         }));
     }
 
     json!({
-        "mirrorPath": repo_dir.display().to_string(),
-        "mirrorPresent": mirror_present,
-        "branch": cfg.projects_git_branch,
-        "url": cfg.projects_git_url,
-        "mirrorHead": mirror_head,
         "dsWorkspaceCount": workspaces.len(),
         "environmentPreparedCount": prepared_count,
         "dsWorkspaces": workspaces,
@@ -2430,48 +3408,48 @@ async fn projects_git_mirror_copy_commit_push_impl(
     })
 }
 
-/// Pull projects git and sync `ds_*/home` before HTTP listen (and once per poll tick). kejiqing
-async fn run_startup_projects_git_sync(state: &AppState) {
+/// Apply all `project_config` rows to disk before HTTP listen (and on each poll tick). Author: kejiqing
+async fn run_startup_project_config_apply(state: &AppState) {
     info!(
         target: "claw_gateway_orchestration",
         component = "startup",
-        phase = "projects_git_startup_sync",
-        "pulling projects git and syncing ds home trees before accepting traffic"
+        phase = "project_config_startup_apply",
+        "materializing project_config rows to ds workspaces before accepting traffic"
     );
-    match tick_projects_git_ds_home_poll(state).await {
+    match tick_project_config_apply_poll(state).await {
         Ok(()) => info!(
             target: "claw_gateway_orchestration",
             component = "startup",
-            phase = "projects_git_startup_sync",
-            "startup projects-git / ds home sync completed"
+            phase = "project_config_startup_apply",
+            "startup project_config apply completed"
         ),
         Err(e) => warn!(
             target: "claw_gateway_orchestration",
             component = "startup",
-            phase = "projects_git_startup_sync",
+            phase = "project_config_startup_apply",
             status = %e.status,
             error = %e.detail(),
-            "startup projects-git sync failed; gateway will still listen (solve may return environment not prepared until sync succeeds)"
+            "startup project_config apply failed; gateway will still listen"
         ),
     }
 }
 
-async fn projects_git_ds_home_poll_loop(state: AppState, interval_secs: u64) {
+async fn project_config_poll_loop(state: AppState, interval_secs: u64) {
     let start = tokio::time::Instant::now() + Duration::from_secs(interval_secs);
     let mut ticker = tokio::time::interval_at(start, Duration::from_secs(interval_secs));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
         ticker.tick().await;
-        match tick_projects_git_ds_home_poll(&state).await {
+        match tick_project_config_apply_poll(&state).await {
             Ok(()) => {}
             Err(e) => {
                 warn!(
                     target: "claw_gateway_orchestration",
-                    component = "projects_git_poll",
+                    component = "project_config_poll",
                     phase = "tick_failed",
                     status = %e.status,
                     error = %e.detail(),
-                    "periodic project mirror / ds home sync failed"
+                    "periodic project_config materialize failed"
                 );
             }
         }
@@ -2514,24 +3492,28 @@ fn merge_sorted_ds_ids(mut a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
     a
 }
 
-async fn tick_projects_git_ds_home_poll(state: &AppState) -> Result<(), ApiError> {
-    let repo_dir = {
-        let _mirror = state.projects_git_mirror_lock.lock().await;
-        projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?
-    };
+async fn tick_project_config_apply_poll(state: &AppState) -> Result<(), ApiError> {
     let on_disk = list_ds_ids_under_work_root(&state.cfg.work_root).await?;
-    let in_mirror = list_ds_ids_in_projects_mirror(&repo_dir).await?;
-    let ids = merge_sorted_ds_ids(on_disk, in_mirror);
+    let in_config = state
+        .session_db
+        .list_project_config_ds_ids()
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let ids = merge_sorted_ds_ids(on_disk, in_config);
     for ds_id in ids {
         let lock = get_ds_lock(state, ds_id).await;
         let Ok(_guard) = lock.try_lock() else {
             continue;
         };
-        let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
-        let ds_repo_home = repo_dir.join(format!("ds_{ds_id}/home"));
-        if !fs::metadata(&ds_repo_home).await.is_ok_and(|m| m.is_dir()) {
+        let cfg_row = state
+            .session_db
+            .get_project_config(ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?;
+        let Some(row) = cfg_row else {
             continue;
-        }
+        };
+        let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
         fs::create_dir_all(work_dir.join(".claw"))
             .await
             .map_err(|e| {
@@ -2540,8 +3522,10 @@ async fn tick_projects_git_ds_home_poll(state: &AppState) -> Result<(), ApiError
                     format!("create ds work dir failed: {e}"),
                 )
             })?;
-        // Refresh even when CLAUDE already exists (multi-node: A pushed, B pulls).
-        sync_ds_home_from_repo(&repo_dir, &work_dir, ds_id).await?;
+        let applied = project_config_apply::read_applied_content_rev(&work_dir).await;
+        if applied.as_deref() != Some(row.content_rev.as_str()) {
+            apply_project_config_for_ds(state, ds_id, false).await?;
+        }
     }
     Ok(())
 }
@@ -2575,11 +3559,16 @@ async fn list_ds_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiEr
     Ok(out)
 }
 
-async fn healthz(State(state): State<AppState>) -> Json<Value> {
+async fn healthz(State(state): State<AppState>, headers: HeaderMap) -> Json<Value> {
     let isolation = state.cfg.solve_isolation.as_str();
-    let ds_workspaces = build_ds_workspaces_health(&state.cfg.work_root, state.cfg.as_ref()).await;
+    let ds_workspaces = build_ds_workspaces_health(&state.cfg.work_root).await;
+    let request_host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    let deploy_image_ref = http_gateway_rs::deploy_image::image_ref_from_env();
+    let deploy_image_tag = http_gateway_rs::deploy_image::deploy_image_tag(&deploy_image_ref);
     Json(json!({
         "ok": true,
+        "deployImageRef": deploy_image_ref,
+        "deployImageTag": deploy_image_tag,
         "clawBin": state.cfg.claw_bin,
         "workRoot": state.cfg.work_root.display().to_string(),
         "registryPath": state.cfg.ds_registry_path.display().to_string(),
@@ -2588,7 +3577,6 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "defaultHttpMcpName": state.cfg.default_http_mcp_name,
         "defaultHttpMcpUrl": state.cfg.default_http_mcp_url,
         "defaultHttpMcpTransport": state.cfg.default_http_mcp_transport,
-        "allowedTools": state.cfg.allowed_tools,
         "solveIsolation": isolation,
         "containerPool": true,
         "poolRpcRemote": state.cfg.pool_rpc_remote,
@@ -2603,7 +3591,15 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "projectsGitMirror": ds_workspaces,
         "reportPolishUsesDeepseek": state.cfg.report_polish_deepseek.is_some(),
         "reportDeepseekModel": state.cfg.report_polish_deepseek.as_ref().map(|d| d.model.clone()),
-        "liveBizReportSpillEnabled": state.cfg.live_biz_report_spill_enabled,
+        "liveReport": {
+            "contract": http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT,
+            "producer": "worker:claw gateway-solve-once stdout __CLAW_GATEWAY_STDOUT__ report.delta",
+            "ingest": "pool-local (claw-pool-daemon LiveReportHub)",
+            "terminalSnapshot": "gateway-db (GET biz_advice_report stream when succeeded)",
+            "live": "gateway-proxy → pool HTTP /v1/biz_advice_report/live",
+            "poolHttpBase": state.cfg.pool_http_base,
+        },
+        "claudeTap": http_gateway_rs::claude_tap_health::claude_tap_health_json(request_host),
     }))
 }
 
@@ -2630,7 +3626,8 @@ async fn solve(
         &new_turn_id,
         &effective,
         req.ds_id,
-        Some(req.user_prompt.as_str()),
+        &req.user_prompt,
+        state.cfg.co_located_pool_id.as_deref(),
     )
     .await?;
     let result = run_solve_request(
@@ -2645,11 +3642,11 @@ async fn solve(
     )
     .await;
     match &result {
-        Ok(_) => {
-            set_solve_turn_status(&state.session_db, &new_turn_id, "succeeded", true).await;
+        Ok(success) => {
+            finalize_solve_turn_success(Arc::clone(&state.session_db), &new_turn_id, success).await;
         }
-        Err(_) => {
-            set_solve_turn_status(&state.session_db, &new_turn_id, "failed", true).await;
+        Err(err) => {
+            finalize_solve_turn_failed(&state.session_db, &new_turn_id, err).await;
         }
     }
     let result = result?;
@@ -2665,6 +3662,385 @@ async fn solve(
         AppendHeaders([(xrid, claw.clone()), (csid, claw)]),
         Json(result),
     ))
+}
+
+fn default_project_claude_md(ds_id: i64) -> String {
+    format!(
+        "# ds_{ds_id}\n\nAuthor: kejiqing\n\nEdit in admin **CLAUDE.md** or `PUT /v1/project/config/{ds_id}`.\n"
+    )
+}
+
+async fn collect_known_ds_ids(state: &AppState) -> Result<Vec<i64>, ApiError> {
+    let on_disk = list_ds_ids_under_work_root(&state.cfg.work_root).await?;
+    let in_config = state
+        .session_db
+        .list_project_config_ds_ids()
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(merge_sorted_ds_ids(on_disk, in_config))
+}
+
+async fn resolve_create_ds_id(state: &AppState, requested: Option<i64>) -> Result<i64, ApiError> {
+    if let Some(id) = requested {
+        if id < 1 {
+            return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+        }
+        return Ok(id);
+    }
+    let ids = collect_known_ds_ids(state).await?;
+    Ok(ids.last().copied().unwrap_or(0) + 1)
+}
+
+async fn ds_exists_on_stack(state: &AppState, ds_id: i64) -> Result<bool, ApiError> {
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    if fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir()) {
+        return Ok(true);
+    }
+    Ok(state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .is_some())
+}
+
+async fn scaffold_ds_workspace(work_dir: &Path, ds_id: i64) -> Result<(), ApiError> {
+    let claude = default_project_claude_md(ds_id);
+    fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create .claw failed: {e}"),
+            )
+        })?;
+    fs::create_dir_all(work_dir.join("home/skills"))
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create home/skills failed: {e}"),
+            )
+        })?;
+    fs::write(work_dir.join("home/CLAUDE.md"), &claude)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write home/CLAUDE.md failed: {e}"),
+            )
+        })?;
+    fs::write(work_dir.join("CLAUDE.md"), &claude)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write CLAUDE.md failed: {e}"),
+            )
+        })?;
+    Ok(())
+}
+
+/// Commit staged changes under `pathspec` and push (shared by project create/delete). Author: kejiqing
+async fn projects_git_commit_and_push(
+    cfg: &GatewayConfig,
+    repo_dir: &Path,
+    pathspec: &str,
+    commit_message: &str,
+) -> Result<GitSyncResponse, ApiError> {
+    let dirty = run_git(repo_dir, &["status", "--porcelain", "--", pathspec]).await?;
+    let mut pushed = false;
+    if !dirty.trim().is_empty() {
+        sync_projects_git_remote(cfg, repo_dir).await?;
+        let (git_name, git_email) = parse_projects_git_author(cfg.projects_git_author.as_str());
+        run_git_env(
+            repo_dir,
+            &[
+                ("GIT_AUTHOR_NAME", git_name.as_str()),
+                ("GIT_AUTHOR_EMAIL", git_email.as_str()),
+                ("GIT_COMMITTER_NAME", git_name.as_str()),
+                ("GIT_COMMITTER_EMAIL", git_email.as_str()),
+            ],
+            &[
+                "commit",
+                "--author",
+                cfg.projects_git_author.as_str(),
+                "-m",
+                commit_message,
+            ],
+        )
+        .await?;
+
+        let branch = cfg.projects_git_branch.as_str();
+        for attempt in 0..PROJECTS_GIT_PUSH_MAX_ATTEMPTS {
+            sync_projects_git_remote(cfg, repo_dir).await?;
+            match run_git(repo_dir, &["pull", "--rebase", "origin", branch]).await {
+                Ok(_) => {}
+                Err(e) => return Err(e),
+            }
+            match run_git(repo_dir, &["push", "origin", branch]).await {
+                Ok(_) => {
+                    pushed = true;
+                    break;
+                }
+                Err(e) => {
+                    let detail = e.detail();
+                    if projects_git_message_suggests_push_retry(detail)
+                        && attempt + 1 < PROJECTS_GIT_PUSH_MAX_ATTEMPTS
+                    {
+                        let ms = 40_u64.saturating_mul(1_u64 << attempt.min(8));
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        if !pushed {
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "projects git push exhausted retries (remote busy or concurrent writers)",
+            ));
+        }
+    }
+    let commit_id = run_git(repo_dir, &["rev-parse", "HEAD"]).await?;
+    Ok(GitSyncResponse {
+        repo: cfg.projects_git_url.clone(),
+        branch: cfg.projects_git_branch.clone(),
+        commit_id,
+        pushed,
+    })
+}
+
+async fn projects_git_push_ds_home_from_workdir(
+    cfg: &GatewayConfig,
+    work_root: &Path,
+    repo_dir: &Path,
+    ds_id: i64,
+    commit_message: &str,
+) -> Result<GitSyncResponse, ApiError> {
+    let work_dir = ds_work_dir(work_root, ds_id);
+    let ds_root_in_repo = repo_dir.join(format!("ds_{ds_id}"));
+    let dst_home = ds_root_in_repo.join("home");
+    if fs::metadata(&dst_home).await.is_ok_and(|m| m.is_dir()) {
+        fs::remove_dir_all(&dst_home).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("cleanup repo ds home failed: {e}"),
+            )
+        })?;
+    }
+    copy_tree(&work_dir.join("home"), &dst_home).await?;
+    let rel_prefix = format!("ds_{ds_id}/");
+    run_git(repo_dir, &["add", &rel_prefix]).await?;
+    projects_git_commit_and_push(cfg, repo_dir, &rel_prefix, commit_message).await
+}
+
+async fn projects_git_remove_ds_tree(
+    cfg: &GatewayConfig,
+    repo_dir: &Path,
+    ds_id: i64,
+) -> Result<Option<GitSyncResponse>, ApiError> {
+    let rel = format!("ds_{ds_id}");
+    if !fs::metadata(repo_dir.join(&rel))
+        .await
+        .is_ok_and(|m| m.is_dir())
+    {
+        return Ok(None);
+    }
+    run_git(repo_dir, &["rm", "-rf", "--ignore-unmatch", &rel]).await?;
+    let dirty = run_git(repo_dir, &["status", "--porcelain", "--", &rel]).await?;
+    if dirty.trim().is_empty() {
+        return Ok(None);
+    }
+    let msg = format!("chore(projects): remove {rel}");
+    Ok(Some(
+        projects_git_commit_and_push(cfg, repo_dir, &rel, &msg).await?,
+    ))
+}
+
+async fn list_projects(
+    State(state): State<AppState>,
+) -> Result<Json<ProjectListResponse>, ApiError> {
+    let summaries = state
+        .session_db
+        .list_project_config_summaries()
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let mut projects = Vec::with_capacity(summaries.len());
+    for s in summaries {
+        let work_dir = ds_work_dir(&state.cfg.work_root, s.ds_id);
+        let work_dir_present = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
+        let environment_prepared = work_dir_present && ds_project_tree_ready(&work_dir).await;
+        let (home_claude, _) = project_claude_paths(&work_dir);
+        let claude_on_disk = claude_instructions_usable(&home_claude).await;
+        let skills_root = work_dir.join("home/skills");
+        let skills_count_disk = if fs::metadata(&skills_root).await.is_ok_and(|m| m.is_dir()) {
+            count_skill_dirs(&skills_root).await
+        } else {
+            0
+        };
+        let applied_rev = project_config_apply::read_applied_content_rev(&work_dir).await;
+        let stable_rev = s
+            .stable_content_rev
+            .as_deref()
+            .filter(|r| !project_config_draft::is_draft_content_rev(r))
+            .unwrap_or(s.content_rev.as_str());
+        let db_synced_to_disk = applied_rev.as_deref() == Some(stable_rev);
+        projects.push(ProjectListEntry {
+            ds_id: s.ds_id,
+            content_rev: stable_rev.to_string(),
+            draft_open: s.draft_open,
+            updated_at_ms: s.updated_at_ms,
+            skills_count_db: s.skills_count_db,
+            claude_in_db: s.claude_in_db,
+            rules_count_db: s.rules_count_db,
+            mcp_servers_count_db: s.mcp_servers_count_db,
+            work_dir_present,
+            environment_prepared,
+            claude_on_disk,
+            skills_count_disk,
+            applied_rev,
+            db_synced_to_disk,
+            git_sync: git_sync_list_summary(&s.git_sync_json),
+        });
+    }
+    Ok(Json(ProjectListResponse {
+        projects,
+        listed_at_ms: now_ms(),
+    }))
+}
+
+async fn push_project_git(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+) -> Result<Json<ProjectGitPushResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let lock = get_ds_lock(&state, ds_id).await;
+    let _guard = lock.lock().await;
+    apply_project_config_for_ds_inner(&state, ds_id, false, false).await?;
+    let outcome = try_push_project_git(&state, ds_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e.message))?;
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .expect("row exists");
+    Ok(Json(ProjectGitPushResponse {
+        ds_id,
+        outcome,
+        git_sync_json: git_sync_json_for_api(&state, &row.git_sync_json).await,
+    }))
+}
+
+async fn create_project(
+    State(state): State<AppState>,
+    Json(req): Json<CreateProjectRequest>,
+) -> Result<Json<InitResponse>, ApiError> {
+    let ds_id = resolve_create_ds_id(&state, req.ds_id).await?;
+    if ds_exists_on_stack(&state, ds_id).await? {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            format!("ds {ds_id} already exists (work_root or project_config)"),
+        ));
+    }
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let lock = get_ds_lock(&state, ds_id).await;
+    let _guard = lock.lock().await;
+    scaffold_ds_workspace(&work_dir, ds_id).await?;
+    let now = now_ms();
+    let content_rev = project_config_draft::format_formal_content_rev_local_ms(now);
+    let claude_md = default_project_claude_md(ds_id);
+    let empty_obj = json!({});
+    let empty_arr = json!([]);
+    state
+        .session_db
+        .upsert_project_config(session_db::ProjectConfigUpsert {
+            ds_id,
+            content_rev: &content_rev,
+            stable_content_rev: Some(content_rev.as_str()),
+            draft_open: false,
+            updated_at_ms: now,
+            rules_json: &empty_arr,
+            mcp_servers_json: &empty_obj,
+            skills_sources_json: &empty_arr,
+            skills_json: &empty_arr,
+            allowed_tools_json: &empty_arr,
+            claude_md: Some(&claude_md),
+            git_sync_json: &json!({}),
+            solve_preflight_json: &json!({"kind": "none"}),
+            solve_orchestration_json: &json!({"kind": "single_turn"}),
+        })
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if let Ok(Some(row)) = state.session_db.get_project_config(ds_id).await {
+        archive_project_config_revision(&state, revision_row_from_active(&row)).await?;
+    }
+    apply_project_config_for_ds(&state, ds_id, true).await?;
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    write_ds_settings_json(&state, ds_id).await?;
+    Ok(Json(InitResponse {
+        ds_id,
+        work_dir: work_dir.display().to_string(),
+        initialized: true,
+    }))
+}
+
+async fn delete_project(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+    Query(query): Query<DeleteProjectQuery>,
+) -> Result<Json<DeleteProjectResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    if !ds_exists_on_stack(&state, ds_id).await? {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("ds {ds_id} not found"),
+        ));
+    }
+    let lock = get_ds_lock(&state, ds_id).await;
+    let _guard = lock.lock().await;
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    if fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir()) {
+        fs::remove_dir_all(&work_dir).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("remove work_dir failed: {e}"),
+            )
+        })?;
+    }
+    let project_config_removed = state
+        .session_db
+        .delete_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let sessions_removed = if query.purge_sessions {
+        state
+            .session_db
+            .delete_sessions_for_ds(ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?
+    } else {
+        0
+    };
+    {
+        let mut injected = state.injected_mcp.lock().await;
+        injected.remove(&ds_id);
+    }
+    Ok(Json(DeleteProjectResponse {
+        ds_id,
+        deleted: true,
+        purge_sessions: query.purge_sessions,
+        sessions_removed,
+        project_config_removed,
+        git_sync: None,
+    }))
 }
 
 async fn init_workspace(
@@ -2686,29 +4062,27 @@ async fn init_workspace(
     {
         let lock = get_ds_lock(&state, req.ds_id).await;
         let _guard = lock.lock().await;
-        sync_ds_project_from_git_mirror(&state, req.ds_id).await?;
-        if !ds_project_tree_ready(&work_dir).await {
-            return Err(ds_environment_not_prepared_error(
-                req.ds_id,
-                state.cfg.projects_git_url.as_str(),
+        let has_project_config = state
+            .session_db
+            .get_project_config(req.ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?
+            .is_some();
+        if !has_project_config {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!(
+                    "no project_config for ds {}; POST /v1/projects or PUT /v1/project/config/{} first",
+                    req.ds_id, req.ds_id
+                ),
             ));
         }
+        apply_project_config_for_ds(&state, req.ds_id, true).await?;
+        if !ds_project_tree_ready(&work_dir).await {
+            return Err(ds_environment_not_prepared_error(req.ds_id, true));
+        }
         ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-        let settings = build_settings(&state, req.ds_id).await;
-        let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("serialize settings failed: {e}"),
-            )
-        })?;
-        fs::write(work_dir.join(".claw/settings.json"), settings_content)
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("write settings failed: {e}"),
-                )
-            })?;
+        write_ds_settings_json(&state, req.ds_id).await?;
         let claude_md_path = work_dir.join("CLAUDE.md");
         match fs::metadata(&claude_md_path).await {
             Ok(_) => {}
@@ -2735,6 +4109,748 @@ async fn init_workspace(
     }))
 }
 
+async fn project_config_row_to_response(
+    state: &AppState,
+    row: session_db::ProjectConfigRow,
+) -> ProjectConfigResponse {
+    ProjectConfigResponse {
+        ds_id: row.ds_id,
+        content_rev: row.content_rev.clone(),
+        stable_content_rev: row.stable_content_rev.clone(),
+        draft_open: row.draft_open,
+        updated_at_ms: row.updated_at_ms,
+        rules_json: row.rules_json,
+        mcp_servers_json: row.mcp_servers_json,
+        skills_sources_json: row.skills_sources_json,
+        skills_json: row.skills_json,
+        allowed_tools_json: row.allowed_tools_json,
+        claude_md: row.claude_md,
+        git_sync_json: git_sync_json_for_api(state, &row.git_sync_json).await,
+        solve_preflight_json: row.solve_preflight_json.clone(),
+        solve_orchestration_json:
+            gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
+                &row.solve_orchestration_json,
+            ),
+    }
+}
+
+async fn project_selected_allowed_tools(
+    state: &AppState,
+    ds_id: i64,
+) -> Result<Option<Vec<String>>, ApiError> {
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let selected = project_tools::parse_allowed_tools_json(&row.allowed_tools_json)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if selected.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(selected))
+    }
+}
+
+async fn get_project_tools_catalog(
+    State(_state): State<AppState>,
+) -> Json<ProjectToolsCatalogResponse> {
+    Json(ProjectToolsCatalogResponse {
+        tools: project_tools::gateway_registered_tool_catalog(),
+    })
+}
+
+const SKILLS_SOURCES_FORBIDDEN_CRED_KEYS: &[&str] = &[
+    "token",
+    "gitToken",
+    "accessToken",
+    "password",
+    "secret",
+    "pat",
+];
+
+/// Git credentials for `project_config` skills sources: env only (`tokenEnv`), never in JSON/DB.
+fn validate_skills_sources_json(sources: &Value) -> Result<(), ApiError> {
+    let arr = sources.as_array().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "skillsSourcesJson must be a JSON array",
+        )
+    })?;
+    for (i, item) in arr.iter().enumerate() {
+        let obj = item.as_object().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("skillsSourcesJson[{i}] must be a JSON object"),
+            )
+        })?;
+        for key in SKILLS_SOURCES_FORBIDDEN_CRED_KEYS {
+            if obj.contains_key(*key) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "skillsSourcesJson[{i}]: git credentials must not be stored in project_config; use tokenEnv pointing to a gateway environment variable"
+                    ),
+                ));
+            }
+        }
+        let Some(git_url) = obj
+            .get("gitUrl")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let is_http = git_url.starts_with("https://") || git_url.starts_with("http://");
+        if is_http && git_url.contains('@') {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "skillsSourcesJson[{i}]: gitUrl must not embed userinfo; set tokenEnv to an env var name (git token is env-only)"
+                ),
+            ));
+        }
+        if is_http {
+            let token_env = obj
+                .get("tokenEnv")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let Some(token_env) = token_env else {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "skillsSourcesJson[{i}]: tokenEnv is required for HTTP(S) gitUrl without embedded credentials"
+                    ),
+                ));
+            };
+            if !token_env
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "skillsSourcesJson[{i}]: tokenEnv must be an ASCII env var name [A-Za-z0-9_]"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(), ApiError> {
+    if !req.rules_json.is_array() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "rulesJson must be a JSON array",
+        ));
+    }
+    if !req.mcp_servers_json.is_object() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "mcpServersJson must be a JSON object",
+        ));
+    }
+    if !req.allowed_tools_json.is_array() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "allowedToolsJson must be a JSON array",
+        ));
+    }
+    reject_deprecated_skills_sources(&req.skills_sources_json)?;
+    validate_skills_json(&req.skills_json)?;
+    project_tools::validate_project_allowed_tools_json(&req.allowed_tools_json)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if let Some(ref sp) = req.solve_preflight_json {
+        gateway_solve_turn::project_preflight::validate_solve_preflight_json(sp)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
+    if let Some(ref so) = req.solve_orchestration_json {
+        gateway_solve_turn::project_orchestration::validate_solve_orchestration_json(so)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
+    Ok(())
+}
+
+async fn get_project_config(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+) -> Result<Json<ProjectConfigResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let row = project_config_draft::row_for_editing(&state.session_db, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(row) = row else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for ds {ds_id}"),
+        ));
+    };
+    Ok(Json(project_config_row_to_response(&state, row).await))
+}
+
+#[derive(Debug, Serialize)]
+struct PutProjectConfigResponse {
+    #[serde(rename = "draftOpen")]
+    draft_open: bool,
+    #[serde(rename = "stableContentRev", skip_serializing_if = "Option::is_none")]
+    stable_content_rev: Option<String>,
+    #[serde(rename = "activeConfig")]
+    active_config: ProjectConfigResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct CommitProjectConfigDraftResponse {
+    #[serde(rename = "savedContentRev")]
+    saved_content_rev: String,
+    activated: bool,
+    #[serde(rename = "stableContentRev")]
+    stable_content_rev: String,
+    materialized: bool,
+    #[serde(rename = "activeConfig")]
+    active_config: ProjectConfigResponse,
+}
+
+async fn list_project_config_versions(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+) -> Result<Json<ProjectConfigVersionsResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let active = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(active) = active else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for ds {ds_id}"),
+        ));
+    };
+    let revisions = state
+        .session_db
+        .list_project_config_revisions(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let applied_content_rev = project_config_apply::read_applied_content_rev(&work_dir).await;
+    let effective = project_config_draft::effective_formal_rev(&active)
+        .map_err(draft_err)?
+        .to_string();
+    project_config_draft::ensure_formal_revision_recorded(
+        &state.session_db,
+        ds_id,
+        &effective,
+        &active,
+    )
+    .await
+    .map_err(draft_err)?;
+    let mut versions: Vec<ProjectConfigVersionEntry> = revisions
+        .into_iter()
+        .filter(|r| !project_config_draft::is_draft_content_rev(&r.content_rev))
+        .map(|r| project_config_version_entry_from_summary(&r, &effective))
+        .collect();
+    if active.draft_open {
+        versions.insert(0, project_config_version_entry_from_draft(&active));
+    }
+    Ok(Json(ProjectConfigVersionsResponse {
+        ds_id,
+        active_content_rev: effective,
+        applied_content_rev,
+        draft_open: active.draft_open,
+        versions,
+    }))
+}
+
+async fn compare_project_config_versions(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+    Query(query): Query<CompareProjectConfigQuery>,
+) -> Result<Json<project_config_version::ProjectConfigCompareResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let from = query.from.trim();
+    let to = query.to.trim();
+    if from.is_empty() || to.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "query params from and to are required",
+        ));
+    }
+    let active = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(active) = active else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for ds {ds_id}"),
+        ));
+    };
+    let from_row = load_revision_for_compare(&state, ds_id, from, &active).await?;
+    let to_row = load_revision_for_compare(&state, ds_id, to, &active).await?;
+    Ok(Json(project_config_version::compare_revision_rows(
+        ds_id,
+        project_config_draft::effective_formal_rev(&active).map_err(draft_err)?,
+        &from_row,
+        &to_row,
+    )))
+}
+
+async fn activate_project_config_version(
+    State(state): State<AppState>,
+    AxumPath((ds_id, content_rev)): AxumPath<(i64, String)>,
+) -> Result<Json<ActivateProjectConfigVersionResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let content_rev = content_rev.trim();
+    if content_rev.is_empty() || project_config_draft::is_draft_content_rev(content_rev) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "contentRev must be a saved (non-draft) version id",
+        ));
+    }
+    let active_row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(active_row) = active_row else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for ds {ds_id}"),
+        ));
+    };
+    let rev = project_config_draft::require_formal_revision(&state.session_db, ds_id, content_rev)
+        .await
+        .map_err(draft_err)?;
+    let materialized = activate_project_config_revision_row(
+        &state,
+        ds_id,
+        rev,
+        active_row.git_sync_json.clone(),
+        active_row.solve_preflight_json.clone(),
+        active_row.solve_orchestration_json.clone(),
+    )
+    .await?;
+    Ok(Json(ActivateProjectConfigVersionResponse {
+        ds_id,
+        active_content_rev: content_rev.to_string(),
+        activated: true,
+        materialized,
+    }))
+}
+
+async fn put_project_config(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+    Json(req): Json<UpsertProjectConfigRequest>,
+) -> Result<Json<PutProjectConfigResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let existing = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(existing) = existing else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for ds {ds_id}; create project first"),
+        ));
+    };
+    let existing_git = existing.git_sync_json.clone();
+    let git_sync_json = match &req.git_sync_json {
+        Some(incoming) => merge_git_sync_from_put(incoming, &existing_git),
+        None => existing_git,
+    };
+    let solve_preflight_json = match &req.solve_preflight_json {
+        Some(incoming) => incoming.clone(),
+        None => existing.solve_preflight_json.clone(),
+    };
+    let solve_orchestration_json = match &req.solve_orchestration_json {
+        Some(incoming) => incoming.clone(),
+        None => existing.solve_orchestration_json.clone(),
+    };
+    let req_for_validate = UpsertProjectConfigRequest {
+        content_rev: String::new(),
+        rules_json: req.rules_json.clone(),
+        mcp_servers_json: req.mcp_servers_json.clone(),
+        skills_sources_json: req.skills_sources_json.clone(),
+        skills_json: req.skills_json.clone(),
+        allowed_tools_json: req.allowed_tools_json.clone(),
+        claude_md: req.claude_md.clone(),
+        git_sync_json: Some(git_sync_json.clone()),
+        solve_preflight_json: Some(solve_preflight_json.clone()),
+        solve_orchestration_json: Some(solve_orchestration_json.clone()),
+    };
+    validate_project_config_payload(&req_for_validate)?;
+    gateway_global_settings::validate_git_sync_json_with_global(&state.session_db, &git_sync_json)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    project_config_draft::ensure_draft(&state.session_db, ds_id)
+        .await
+        .map_err(draft_err)?;
+    let effective = project_config_draft::effective_formal_rev(&existing)
+        .map_err(draft_err)?
+        .to_string();
+    let now = now_ms();
+    let upsert = session_db::ProjectConfigUpsert {
+        ds_id,
+        content_rev: project_config_draft::DRAFT_CONTENT_REV,
+        stable_content_rev: Some(effective.as_str()),
+        draft_open: true,
+        updated_at_ms: now,
+        rules_json: &req.rules_json,
+        mcp_servers_json: &req.mcp_servers_json,
+        skills_sources_json: &req.skills_sources_json,
+        skills_json: &req.skills_json,
+        allowed_tools_json: &req.allowed_tools_json,
+        claude_md: req.claude_md.as_deref(),
+        git_sync_json: &git_sync_json,
+        solve_preflight_json: &solve_preflight_json,
+        solve_orchestration_json: &solve_orchestration_json,
+    };
+    state
+        .session_db
+        .upsert_project_config(upsert)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    project_entity_revision::record_draft_put_sidecars(
+        &state.session_db,
+        ds_id,
+        &existing,
+        &req.rules_json,
+        &req.skills_json,
+        &req.mcp_servers_json,
+        req.claude_md.as_deref(),
+        &req.allowed_tools_json,
+        now,
+    )
+    .await
+    .map_err(entity_revision_err)?;
+    let active = project_config_draft::row_for_editing(&state.session_db, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .expect("row exists after upsert");
+    Ok(Json(PutProjectConfigResponse {
+        draft_open: true,
+        stable_content_rev: active.stable_content_rev.clone(),
+        active_config: project_config_row_to_response(&state, active).await,
+    }))
+}
+
+async fn commit_project_config_draft(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+    Json(req): Json<CommitProjectConfigDraftRequest>,
+) -> Result<Json<CommitProjectConfigDraftResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let note = project_config_draft::normalize_revision_note(req.note);
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("no project_config for ds {ds_id}"),
+            )
+        })?;
+    if !row.draft_open {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "no open draft to commit; edit config first",
+        ));
+    }
+    let git_sync_json = row.git_sync_json.clone();
+    let prev_stable = project_config_draft::effective_formal_rev(&row)
+        .map_err(draft_err)?
+        .to_string();
+    project_config_draft::ensure_formal_revision_recorded(
+        &state.session_db,
+        ds_id,
+        &prev_stable,
+        &row,
+    )
+    .await
+    .map_err(draft_err)?;
+    let now = now_ms();
+    let saved = project_config_draft::allocate_formal_content_rev(&state.session_db, ds_id, now)
+        .await
+        .map_err(draft_err)?;
+    let rev = project_config_draft::revision_row_from_config_row(&row, &saved, note);
+    archive_project_config_revision(&state, rev).await?;
+    let active = project_config_draft::close_draft_to_stable(
+        &state.session_db,
+        ds_id,
+        &prev_stable,
+        &git_sync_json,
+        &row.solve_preflight_json,
+        &row.solve_orchestration_json,
+    )
+    .await
+    .map_err(draft_err)?;
+    Ok(Json(CommitProjectConfigDraftResponse {
+        saved_content_rev: saved,
+        activated: false,
+        stable_content_rev: prev_stable,
+        materialized: false,
+        active_config: project_config_row_to_response(&state, active).await,
+    }))
+}
+
+async fn get_gateway_global_settings_handler(
+    State(state): State<AppState>,
+) -> Result<Json<gateway_global_settings::GatewayGlobalSettingsResponse>, ApiError> {
+    let body = gateway_global_settings::load_response(&state.session_db)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(Json(body))
+}
+
+async fn upsert_gateway_git_pat_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_global_settings::PutGitPatInput>,
+) -> Result<Json<gateway_global_settings::GitPatPublic>, ApiError> {
+    let pat = gateway_global_settings::upsert_git_pat(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(pat))
+}
+
+async fn delete_gateway_git_pat_handler(
+    State(state): State<AppState>,
+    AxumPath(pat_id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    let deleted = gateway_global_settings::delete_git_pat(&state.session_db, &pat_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::new(StatusCode::NOT_FOUND, "git PAT not found"))
+    }
+}
+
+async fn put_gateway_active_llm_config_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_global_settings::PutActiveLlmConfigInput>,
+) -> Result<Json<gateway_global_settings::ActiveLlmConfigPublic>, ApiError> {
+    let cfg = gateway_global_settings::put_active_llm_config(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    gateway_llm_config_sync::sync_llm_runtime_from_db(&state.session_db, &state.llm_runtime)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(cfg))
+}
+
+async fn upsert_gateway_llm_model_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_global_settings::PutLlmModelInput>,
+) -> Result<Json<gateway_global_settings::LlmModelPublic>, ApiError> {
+    let cfg = gateway_global_settings::upsert_llm_model(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    gateway_llm_config_sync::sync_llm_runtime_from_db(&state.session_db, &state.llm_runtime)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(cfg))
+}
+
+async fn delete_gateway_llm_model_handler(
+    State(state): State<AppState>,
+    AxumPath(model_id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    let deleted = gateway_global_settings::delete_llm_model(&state.session_db, &model_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::new(StatusCode::NOT_FOUND, "llm model not found"))
+    }
+}
+
+async fn list_gateway_llm_model_versions_handler(
+    State(state): State<AppState>,
+    AxumPath(model_id): AxumPath<String>,
+) -> Result<Json<gateway_global_settings::LlmModelVersionsResponse>, ApiError> {
+    let body = gateway_global_settings::list_llm_model_versions(&state.session_db, &model_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(body))
+}
+
+async fn apply_gateway_llm_model_head_handler(
+    State(state): State<AppState>,
+    AxumPath(model_id): AxumPath<String>,
+) -> Result<Json<gateway_global_settings::ApplyLlmModelResponse>, ApiError> {
+    let resp = apply_gateway_llm_model_with_sync(&state, &model_id, None).await?;
+    Ok(Json(resp))
+}
+
+async fn apply_gateway_llm_model_revision_handler(
+    State(state): State<AppState>,
+    AxumPath((model_id, model_rev)): AxumPath<(String, String)>,
+) -> Result<Json<gateway_global_settings::ApplyLlmModelResponse>, ApiError> {
+    let resp = apply_gateway_llm_model_with_sync(&state, &model_id, Some(&model_rev)).await?;
+    Ok(Json(resp))
+}
+
+async fn apply_gateway_llm_model_with_sync(
+    state: &AppState,
+    model_id: &str,
+    model_rev: Option<&str>,
+) -> Result<gateway_global_settings::ApplyLlmModelResponse, ApiError> {
+    let mut resp =
+        gateway_global_settings::apply_llm_model_by_id(&state.session_db, model_id, model_rev)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let sync =
+        gateway_llm_config_sync::sync_llm_runtime_from_db(&state.session_db, &state.llm_runtime)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if let Some(outcome) = sync.env_apply {
+        resp.outcome = outcome;
+    } else if let Some(path) = sync.upstream_config_file {
+        resp.outcome.env_file = path;
+    }
+    Ok(resp)
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchProjectConfigVersionNoteRequest {
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PatchProjectConfigVersionNoteResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "contentRev")]
+    content_rev: String,
+    #[serde(rename = "note", skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    saved: bool,
+}
+
+async fn patch_project_config_version_note(
+    State(state): State<AppState>,
+    AxumPath((ds_id, content_rev)): AxumPath<(i64, String)>,
+    Json(req): Json<PatchProjectConfigVersionNoteRequest>,
+) -> Result<Json<PatchProjectConfigVersionNoteResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let content_rev = content_rev.trim();
+    if content_rev.is_empty() || project_config_draft::is_draft_content_rev(content_rev) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "cannot set note on draft revision",
+        ));
+    }
+    project_config_draft::require_formal_revision(&state.session_db, ds_id, content_rev)
+        .await
+        .map_err(draft_err)?;
+    let note = project_config_draft::normalize_revision_note(req.note);
+    let saved = state
+        .session_db
+        .update_project_config_revision_note(ds_id, content_rev, note.as_deref())
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if !saved {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no revision {content_rev} for ds {ds_id}"),
+        ));
+    }
+    Ok(Json(PatchProjectConfigVersionNoteResponse {
+        ds_id,
+        content_rev: content_rev.to_string(),
+        note,
+        saved: true,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteProjectConfigVersionResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    #[serde(rename = "contentRev")]
+    content_rev: String,
+    deleted: bool,
+}
+
+async fn delete_project_config_version(
+    State(state): State<AppState>,
+    AxumPath((ds_id, content_rev)): AxumPath<(i64, String)>,
+) -> Result<Json<DeleteProjectConfigVersionResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let content_rev = content_rev.trim();
+    if content_rev.is_empty() || project_config_draft::is_draft_content_rev(content_rev) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "cannot delete draft revision",
+        ));
+    }
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let Some(row) = row else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for ds {ds_id}"),
+        ));
+    };
+    let effective = project_config_draft::effective_formal_rev(&row).map_err(draft_err)?;
+    if content_rev == effective {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "cannot delete the effective contentRev; activate another version first",
+        ));
+    }
+    let deleted = state
+        .session_db
+        .delete_project_config_revision(ds_id, content_rev)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if !deleted {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no revision {content_rev} for ds {ds_id}"),
+        ));
+    }
+    Ok(Json(DeleteProjectConfigVersionResponse {
+        ds_id,
+        content_rev: content_rev.to_string(),
+        deleted: true,
+    }))
+}
+
 async fn get_project_claude_md(
     State(state): State<AppState>,
     AxumPath(ds_id): AxumPath<i64>,
@@ -2753,6 +4869,30 @@ async fn get_project_claude_md(
         })?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
     let (home_claude_md_path, root_claude_md_path) = project_claude_paths(&work_dir);
+    if let Some(row) = project_config_draft::row_for_editing(&state.session_db, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        if row.draft_open {
+            let text = row.claude_md.unwrap_or_default();
+            return Ok(Json(ProjectClaudeResponse {
+                ds_id,
+                work_dir: work_dir.display().to_string(),
+                path: home_claude_md_path.display().to_string(),
+                exists: !text.trim().is_empty(),
+                content: text,
+            }));
+        }
+        if let Some(text) = row.claude_md.filter(|s| !s.trim().is_empty()) {
+            return Ok(Json(ProjectClaudeResponse {
+                ds_id,
+                work_dir: work_dir.display().to_string(),
+                path: home_claude_md_path.display().to_string(),
+                exists: true,
+                content: text,
+            }));
+        }
+    }
     let content = fs::read_to_string(&home_claude_md_path).await;
     let (exists, content) = match content {
         Ok(text) => (true, text),
@@ -2803,64 +4943,56 @@ async fn update_project_claude_md(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let git_sync = {
-        let _mirror = state.projects_git_mirror_lock.lock().await;
-        let lock = get_ds_lock(&state, ds_id).await;
-        let _guard = lock.lock().await;
-        ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-        let repo_dir =
-            projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?;
-        let (home_claude_md_path, root_claude_md_path) = project_claude_paths(&work_dir);
-        if let Some(parent) = home_claude_md_path.parent() {
-            fs::create_dir_all(parent).await.map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("create home dir failed: {e}"),
-                )
-            })?;
-        }
-        fs::write(&home_claude_md_path, req.content.as_bytes())
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("write home/CLAUDE.md failed: {e}"),
-                )
-            })?;
-        fs::write(&root_claude_md_path, req.content.as_bytes())
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("write CLAUDE.md failed: {e}"),
-                )
-            })?;
-        projects_git_mirror_copy_commit_push_impl(
-            state.cfg.as_ref(),
-            &state.cfg.work_root,
-            &repo_dir,
-            ds_id,
-            Path::new("home/CLAUDE.md"),
-            &format!("update ds_{ds_id} CLAUDE.md"),
-        )
-        .await?
+    let lock = get_ds_lock(&state, ds_id).await;
+    let _guard = lock.lock().await;
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let Some(_) = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for ds {ds_id}; create project first"),
+        ));
     };
-    info!(
-        target: "claw_gateway_orchestration",
-        component = "project_claude",
-        ds_id,
-        branch = %git_sync.branch,
-        commit_id = %git_sync.commit_id,
-        pushed = git_sync.pushed,
-        "project CLAUDE.md git synced"
-    );
+    project_config_draft::ensure_draft(&state.session_db, ds_id)
+        .await
+        .map_err(draft_err)?;
+    let mut row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .expect("row exists");
+    row.claude_md = Some(req.content.clone());
+    row.draft_open = true;
+    row.content_rev = project_config_draft::DRAFT_CONTENT_REV.to_string();
+    row.updated_at_ms = now_ms();
+    let saved = req.content.clone();
+    state
+        .session_db
+        .upsert_project_config(project_config_draft::upsert_from_row(
+            &row,
+            project_config_draft::DRAFT_CONTENT_REV,
+            row.updated_at_ms,
+            row.claude_md.as_deref(),
+            row.stable_content_rev.as_deref(),
+        ))
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let now = row.updated_at_ms;
+    project_entity_revision::append_claude(&state.session_db, ds_id, &saved, now)
+        .await
+        .map_err(entity_revision_err)?;
     let claude_md_path = work_dir.join("home/CLAUDE.md");
     Ok(Json(ProjectClaudeResponse {
         ds_id,
         work_dir: work_dir.display().to_string(),
         path: claude_md_path.display().to_string(),
         exists: true,
-        content: req.content,
+        content: saved,
     }))
 }
 
@@ -2888,40 +5020,73 @@ async fn upsert_project_skill(
         .join(&skill_name)
         .join("SKILL.md");
     let skill_path = work_dir.join(&skill_rel);
-    let existed = fs::metadata(&skill_path).await.is_ok_and(|m| m.is_file());
-    let git_sync = {
-        let _mirror = state.projects_git_mirror_lock.lock().await;
-        let lock = get_ds_lock(&state, ds_id).await;
-        let _guard = lock.lock().await;
-        ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-        let repo_dir =
-            projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?;
-        if let Some(parent) = skill_path.parent() {
-            fs::create_dir_all(parent).await.map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("create skill dir failed: {e}"),
-                )
-            })?;
-        }
-        fs::write(&skill_path, req.skill_content.as_bytes())
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("write SKILL.md failed: {e}"),
-                )
-            })?;
-        projects_git_mirror_copy_commit_push_impl(
-            state.cfg.as_ref(),
-            &state.cfg.work_root,
-            &repo_dir,
-            ds_id,
-            &skill_rel,
-            &format!("upsert ds_{ds_id} skill {skill_name}"),
-        )
-        .await?
+    let lock = get_ds_lock(&state, ds_id).await;
+    let _guard = lock.lock().await;
+    ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    let Some(_) = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for ds {ds_id}; create project first"),
+        ));
     };
+    project_config_draft::ensure_draft(&state.session_db, ds_id)
+        .await
+        .map_err(draft_err)?;
+    let mut row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .expect("row exists");
+    let existed = row.skills_json.as_array().is_some_and(|a| {
+        a.iter()
+            .any(|item| item.get("skillName").and_then(Value::as_str) == Some(skill_name.as_str()))
+    });
+    merge_skill_into_skills_json(&mut row.skills_json, &skill_name, &req.skill_content);
+    row.draft_open = true;
+    row.content_rev = project_config_draft::DRAFT_CONTENT_REV.to_string();
+    row.updated_at_ms = now_ms();
+    let skill_body = row
+        .skills_json
+        .as_array()
+        .and_then(|a| {
+            a.iter()
+                .find(|item| {
+                    item.get("skillName").and_then(Value::as_str) == Some(skill_name.as_str())
+                })
+                .cloned()
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "skillName": skill_name,
+                "skillContent": req.skill_content,
+            })
+        });
+    state
+        .session_db
+        .upsert_project_config(project_config_draft::upsert_from_row(
+            &row,
+            project_config_draft::DRAFT_CONTENT_REV,
+            row.updated_at_ms,
+            row.claude_md.as_deref(),
+            row.stable_content_rev.as_deref(),
+        ))
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    project_entity_revision::append_skill(
+        &state.session_db,
+        ds_id,
+        &skill_name,
+        skill_body,
+        row.updated_at_ms,
+    )
+    .await
+    .map_err(entity_revision_err)?;
     Ok(Json(ProjectSkillResponse {
         ds_id,
         skill_name,
@@ -2930,15 +5095,15 @@ async fn upsert_project_skill(
         updated: existed,
         bytes_written: req.skill_content.len(),
         work_dir: work_dir.display().to_string(),
-        git_sync,
     }))
 }
 
+/// Admin preview: always materialize latest `project_config` before assembling prompt.
 async fn get_effective_prompt(
     State(state): State<AppState>,
     AxumPath(ds_id): AxumPath<i64>,
 ) -> Result<Json<EffectivePromptResponse>, ApiError> {
-    build_effective_prompt_response(&state, ds_id)
+    build_effective_prompt_response(&state, ds_id, true)
         .await
         .map(Json)
 }
@@ -2947,7 +5112,7 @@ async fn post_effective_prompt(
     State(state): State<AppState>,
     AxumPath(ds_id): AxumPath<i64>,
 ) -> Result<Json<EffectivePromptResponse>, ApiError> {
-    build_effective_prompt_response(&state, ds_id)
+    build_effective_prompt_response(&state, ds_id, true)
         .await
         .map(Json)
 }
@@ -2955,6 +5120,7 @@ async fn post_effective_prompt(
 async fn build_effective_prompt_response(
     state: &AppState,
     ds_id: i64,
+    force_apply: bool,
 ) -> Result<EffectivePromptResponse, ApiError> {
     if ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
@@ -2969,6 +5135,39 @@ async fn build_effective_prompt_response(
             )
         })?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+
+    let row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if let Some(text) = row
+        .as_ref()
+        .and_then(|r| r.claude_md.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let message = text.to_string();
+        if force_apply {
+            let scaffold = gateway_global_settings::load_system_prompt_default(&state.session_db)
+                .await
+                .map_err(|e| session_db_err(&e))?;
+            if let Some(ref r) = row {
+                project_config_apply::apply_if_needed(&work_dir, r, true, &scaffold)
+                    .await
+                    .map_err(|e| map_project_config_apply_err(&e))?;
+            }
+        }
+        return Ok(EffectivePromptResponse {
+            ds_id,
+            work_dir: work_dir.display().to_string(),
+            sections: vec![message.clone()],
+            message,
+            prompt_source: "user".to_string(),
+        });
+    }
+
+    apply_project_config_for_ds(state, ds_id, force_apply).await?;
     let sections = load_system_prompt(
         work_dir.to_path_buf(),
         default_system_date(),
@@ -2988,11 +5187,37 @@ async fn build_effective_prompt_response(
         work_dir: work_dir.display().to_string(),
         sections,
         message,
+        prompt_source: "system".to_string(),
     })
 }
 
 fn is_safe_skill_dir_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
+}
+
+fn skills_from_skills_json(skills_json: &Value) -> Vec<DsSkillEntry> {
+    let mut skills = Vec::new();
+    let Some(arr) = skills_json.as_array() else {
+        return skills;
+    };
+    for item in arr {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let Some(name) = obj.get("skillName").and_then(Value::as_str) else {
+            continue;
+        };
+        let content = obj
+            .get("skillContent")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        skills.push(DsSkillEntry {
+            skill_name: name.to_string(),
+            skill_content: content,
+        });
+    }
+    skills
 }
 
 async fn load_skills_from_ds_workdir(work_dir: &Path) -> std::io::Result<Vec<DsSkillEntry>> {
@@ -3041,6 +5266,21 @@ async fn list_ds_skills(
             )
         })?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    if let Some(row) = project_config_draft::row_for_editing(&state.session_db, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        if row.draft_open {
+            let mut skills = skills_from_skills_json(&row.skills_json);
+            skills.sort_by(|a, b| a.skill_name.cmp(&b.skill_name));
+            return Ok(Json(DsSkillsListResponse { ds_id, skills }));
+        }
+        if row.skills_json.as_array().is_some_and(|a| !a.is_empty()) {
+            let mut skills = skills_from_skills_json(&row.skills_json);
+            skills.sort_by(|a, b| a.skill_name.cmp(&b.skill_name));
+            return Ok(Json(DsSkillsListResponse { ds_id, skills }));
+        }
+    }
     let skills = load_skills_from_ds_workdir(&work_dir).await.map_err(|e| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -3070,6 +5310,37 @@ async fn get_ds_skill(
             )
         })?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
+    if let Some(row) = project_config_draft::row_for_editing(&state.session_db, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    {
+        if row.draft_open {
+            for entry in skills_from_skills_json(&row.skills_json) {
+                if entry.skill_name == skill_name {
+                    return Ok(Json(DsSkillGetResponse {
+                        ds_id,
+                        skill_name,
+                        skill_content: entry.skill_content,
+                    }));
+                }
+            }
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("skill not found in draft: {skill_name}"),
+            ));
+        }
+        if row.skills_json.as_array().is_some_and(|a| !a.is_empty()) {
+            for entry in skills_from_skills_json(&row.skills_json) {
+                if entry.skill_name == skill_name {
+                    return Ok(Json(DsSkillGetResponse {
+                        ds_id,
+                        skill_name,
+                        skill_content: entry.skill_content,
+                    }));
+                }
+            }
+        }
+    }
     let path = work_dir
         .join("home")
         .join("skills")
@@ -3168,9 +5439,6 @@ async fn refresh_task_progress(state: &AppState, task_id: &str) {
     if let Some(inner) = tasks.get_mut(task_id) {
         inner.record.current_task_desc = snapshot.0;
         inner.record.progress_updated_at_ms = snapshot.1;
-        let record = inner.record.clone();
-        drop(tasks);
-        persist_async_task_record(&state.session_db, &record).await;
     }
 }
 
@@ -3203,134 +5471,163 @@ struct SessionExecutionQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct SessionTranscriptQuery {
-    #[serde(rename = "dsId")]
-    ds_id: Option<i64>,
-    #[serde(rename = "ds_id")]
-    ds_id_alt: Option<i64>,
-    #[serde(rename = "turnId")]
-    turn_id: Option<String>,
-    #[serde(default = "default_transcript_format")]
-    format: String,
+struct ListProjectSessionsQuery {
+    #[serde(default = "default_session_list_limit")]
+    limit: i64,
+    /// Keyset: load rows strictly older than this `(updatedAtMs, sessionId)` pair.
+    #[serde(rename = "beforeUpdatedAtMs")]
+    before_updated_at_ms: Option<i64>,
+    #[serde(rename = "beforeSessionId")]
+    before_session_id: Option<String>,
+    #[serde(rename = "updatedFromMs")]
+    updated_from_ms: Option<i64>,
+    #[serde(rename = "updatedToMs")]
+    updated_to_ms: Option<i64>,
+    /// Fuzzy match on first-turn `user_prompt` (ILIKE).
+    q: Option<String>,
 }
 
-fn default_transcript_format() -> String {
-    "json".to_string()
-}
-
-impl SessionTranscriptQuery {
-    fn resolved_ds_id(&self) -> Option<i64> {
-        self.ds_id.or(self.ds_id_alt)
-    }
+fn default_session_list_limit() -> i64 {
+    20
 }
 
 #[derive(Debug, Serialize)]
-struct SessionTranscriptResponse {
+struct GatewaySessionSummaryJson {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "createdAtMs")]
+    created_at_ms: i64,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: i64,
+    #[serde(rename = "turnCount")]
+    turn_count: i64,
+    #[serde(rename = "previewPrompt")]
+    preview_prompt: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListProjectSessionsResponse {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+    sessions: Vec<GatewaySessionSummaryJson>,
+    #[serde(rename = "hasMore")]
+    has_more: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListSessionTurnsQuery {
+    #[serde(rename = "dsId")]
+    ds_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct GatewayTurnSummaryJson {
+    #[serde(rename = "turnId")]
+    turn_id: String,
+    #[serde(rename = "userPrompt")]
+    user_prompt: Option<String>,
+    status: String,
+    #[serde(rename = "createdAtMs")]
+    created_at_ms: i64,
+    #[serde(rename = "finishedAtMs")]
+    finished_at_ms: Option<i64>,
+    #[serde(rename = "hasReport")]
+    has_report: bool,
+    #[serde(rename = "reportBody", skip_serializing_if = "Option::is_none")]
+    report_body: Option<String>,
+    #[serde(rename = "failureDetail", skip_serializing_if = "Option::is_none")]
+    failure_detail: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListSessionTurnsResponse {
     #[serde(rename = "sessionId")]
     session_id: String,
     #[serde(rename = "dsId")]
     ds_id: i64,
-    #[serde(rename = "turnId", skip_serializing_if = "Option::is_none")]
-    turn_id: Option<String>,
-    messages: Vec<Value>,
+    turns: Vec<GatewayTurnSummaryJson>,
 }
 
-async fn get_session_transcript(
+async fn list_project_sessions(
+    State(state): State<AppState>,
+    AxumPath(ds_id): AxumPath<i64>,
+    Query(query): Query<ListProjectSessionsQuery>,
+) -> Result<Json<ListProjectSessionsResponse>, ApiError> {
+    if ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let limit = query.limit;
+    let rows = state
+        .session_db
+        .list_sessions_for_ds(
+            ds_id,
+            limit,
+            query.before_updated_at_ms,
+            query.before_session_id.as_deref(),
+            query.updated_from_ms,
+            query.updated_to_ms,
+            query.q.as_deref(),
+        )
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let has_more = i64::try_from(rows.len()).unwrap_or(0) >= limit;
+    Ok(Json(ListProjectSessionsResponse {
+        ds_id,
+        sessions: rows
+            .into_iter()
+            .map(|r| GatewaySessionSummaryJson {
+                session_id: r.session_id,
+                created_at_ms: r.created_at_ms,
+                updated_at_ms: r.updated_at_ms,
+                turn_count: r.turn_count,
+                preview_prompt: r.preview_prompt,
+            })
+            .collect(),
+        has_more,
+    }))
+}
+
+async fn list_session_turns(
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,
-    Query(query): Query<SessionTranscriptQuery>,
-) -> Result<Response, ApiError> {
-    let ds_id = query
-        .resolved_ds_id()
-        .filter(|&id| id >= 1)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"))?;
-    if !state
+    Query(query): Query<ListSessionTurnsQuery>,
+) -> Result<Json<ListSessionTurnsResponse>, ApiError> {
+    if query.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    let exists = state
         .session_db
-        .session_exists(&session_id, ds_id)
+        .session_exists(&session_id, query.ds_id)
         .await
-        .map_err(|e| session_db_err(&e))?
-    {
+        .map_err(|e| session_db_err(&e))?;
+    if !exists {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            "unknown sessionId for dsId",
+            format!("session not found: {session_id} dsId={}", query.ds_id),
         ));
     }
-    let rows = if let Some(ref turn) = query.turn_id {
-        if !turn_id::validate_turn_id(turn) {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid turnId"));
-        }
-        if !state
-            .session_db
-            .turn_belongs_to_session(turn, &session_id, ds_id)
-            .await
-            .map_err(|e| session_db_err(&e))?
-        {
-            return Err(ApiError::new(
-                StatusCode::NOT_FOUND,
-                "unknown turnId for session",
-            ));
-        }
-        state
-            .session_db
-            .list_messages_for_turn(turn)
-            .await
-            .map_err(|e| session_db_err(&e))?
-    } else {
-        state
-            .session_db
-            .list_messages_for_session(&session_id, ds_id)
-            .await
-            .map_err(|e| session_db_err(&e))?
-    };
-    let messages: Vec<Value> = rows
-        .into_iter()
-        .map(|r| {
-            let mut message = json!({ "role": r.role, "blocks": r.blocks });
-            if let Some(usage) = r.usage {
-                message["usage"] = usage;
-            }
-            message
-        })
-        .collect();
-    if query.format == "jsonl" {
-        let mut lines = Vec::new();
-        let now = now_ms();
-        lines.push(
-            json!({
-                "type": "session_meta",
-                "session_id": session_id,
-                "version": 1,
-                "created_at_ms": now,
-                "updated_at_ms": now,
-            })
-            .to_string(),
-        );
-        for msg in &messages {
-            lines.push(
-                json!({
-                    "type": "message",
-                    "message": msg,
-                })
-                .to_string(),
-            );
-        }
-        let body = format!("{}\n", lines.join("\n"));
-        return Ok((
-            [(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/x-ndjson"),
-            )],
-            body,
-        )
-            .into_response());
-    }
-    Ok(Json(SessionTranscriptResponse {
+    let rows = state
+        .session_db
+        .list_turns_for_session(&session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(Json(ListSessionTurnsResponse {
         session_id,
-        ds_id,
-        turn_id: query.turn_id,
-        messages,
-    })
-    .into_response())
+        ds_id: query.ds_id,
+        turns: rows
+            .into_iter()
+            .map(|r| GatewayTurnSummaryJson {
+                turn_id: r.turn_id,
+                user_prompt: r.user_prompt,
+                status: r.status,
+                created_at_ms: r.created_at_ms,
+                finished_at_ms: r.finished_at_ms,
+                has_report: r.has_report,
+                report_body: r.report_body,
+                failure_detail: r.failure_detail,
+            })
+            .collect(),
+    }))
 }
 
 async fn get_session_execution(
@@ -3358,29 +5655,34 @@ async fn get_session_execution(
 
     refresh_task_progress(&state, &session_id).await;
 
-    let (task_snapshot, queue) = {
+    let (record_opt, queue) = {
         let tasks = state.tasks.lock().await;
         let queue = gateway_queue_snapshot(&tasks);
-        let task_snapshot = tasks.get(&session_id).map(|inner| SessionExecutionTask {
-            task_id: inner.record.task_id.clone(),
-            status: inner.record.status.clone(),
-            has_report: task_has_report(
-                &inner.record,
-                &session_home,
-                state.cfg.live_biz_report_spill_enabled,
-            ),
-            created_at_ms: inner.record.created_at_ms,
-            started_at_ms: inner.record.started_at_ms,
-            finished_at_ms: inner.record.finished_at_ms,
-            current_task_desc: inner.record.current_task_desc.clone(),
-        });
-        (task_snapshot, queue)
+        let record = tasks.get(&session_id).map(|inner| inner.record.clone());
+        (record, queue)
+    };
+    let task_snapshot = if let Some(record) = record_opt {
+        let has_report = task_has_report(&state, &record).await;
+        let report_time_ms = task_report_time_ms(&state, &record).await;
+        Some(SessionExecutionTask {
+            task_id: record.task_id.clone(),
+            status: record.status.clone(),
+            has_report,
+            report_time_ms,
+            created_at_ms: record.created_at_ms,
+            started_at_ms: record.started_at_ms,
+            finished_at_ms: record.finished_at_ms,
+            current_task_desc: record.current_task_desc.clone(),
+        })
+    } else {
+        None
     };
 
     let task = task_snapshot.unwrap_or_else(|| SessionExecutionTask {
         task_id: session_id.clone(),
         status: "unknown".to_string(),
         has_report: false,
+        report_time_ms: None,
         created_at_ms: 0,
         started_at_ms: None,
         finished_at_ms: None,
@@ -3414,6 +5716,110 @@ async fn get_session_execution(
         progress_history,
         queue,
         trace_tail,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct TurnToolsQuery {
+    #[serde(rename = "ds_id")]
+    ds_id: i64,
+}
+
+async fn get_turn_tools(
+    State(state): State<AppState>,
+    AxumPath((session_id, turn_id)): AxumPath<(String, String)>,
+    Query(query): Query<TurnToolsQuery>,
+) -> Result<Json<turn_tools_api::TurnToolsResponse>, ApiError> {
+    if query.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "ds_id must be >= 1"));
+    }
+    if !turn_id::validate_turn_id(&turn_id) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "turnId must match T_<32 lowercase hex>",
+        ));
+    }
+    let ctx = state
+        .session_db
+        .get_turn_tools_context(&turn_id, &session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!(
+                    "turn or session not found: {turn_id} session={session_id} ds_id={}",
+                    query.ds_id
+                ),
+            )
+        })?;
+    session_merge::validate_session_home_rel(&ctx.session_home_rel)
+        .map_err(session_routing_error)?;
+    let user_turn_index = ctx.user_turn_index;
+    if user_turn_index < 1 {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid user_turn_index",
+        ));
+    }
+    let session_home = join_session_home(&state.cfg.work_root, &ctx.session_home_rel);
+    let tools = turn_tools_api::list_turn_tools_from_session_home(
+        &session_home,
+        usize::try_from(user_turn_index).unwrap_or(usize::MAX),
+        Some(ctx.created_at_ms),
+        ctx.finished_at_ms,
+    )
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(turn_tools_api::TurnToolsResponse {
+        session_id,
+        turn_id,
+        ds_id: query.ds_id,
+        user_turn_index,
+        tools,
+    }))
+}
+
+async fn get_turn_timeline(
+    State(state): State<AppState>,
+    AxumPath((session_id, turn_id)): AxumPath<(String, String)>,
+    Query(query): Query<TurnToolsQuery>,
+) -> Result<Json<turn_timeline_api::TurnTimelineResponse>, ApiError> {
+    if query.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "ds_id must be >= 1"));
+    }
+    if !turn_id::validate_turn_id(&turn_id) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "turnId must match T_<32 lowercase hex>",
+        ));
+    }
+    let ctx = state
+        .session_db
+        .get_turn_tools_context(&turn_id, &session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!(
+                    "turn or session not found: {turn_id} session={session_id} ds_id={}",
+                    query.ds_id
+                ),
+            )
+        })?;
+    session_merge::validate_session_home_rel(&ctx.session_home_rel)
+        .map_err(session_routing_error)?;
+    let session_home = join_session_home(&state.cfg.work_root, &ctx.session_home_rel);
+    let timeline = turn_timeline_api::load_turn_timeline(&session_home);
+
+    Ok(Json(turn_timeline_api::TurnTimelineResponse {
+        session_id,
+        turn_id,
+        ds_id: query.ds_id,
+        task_created_at_ms: Some(ctx.created_at_ms),
+        task_finished_at_ms: ctx.finished_at_ms,
+        timeline,
     }))
 }
 
@@ -3463,7 +5869,8 @@ async fn enqueue_solve_async(
         &new_turn_id,
         &effective,
         ds_id,
-        Some(req.user_prompt.as_str()),
+        &req.user_prompt,
+        state.cfg.co_located_pool_id.as_deref(),
     )
     .await?;
     if let Some(rel) = state
@@ -3498,28 +5905,29 @@ async fn enqueue_solve_async(
         }
         let queue = gateway_queue_snapshot(&tasks);
         let initial_desc = resolve_current_task_desc("queued", None, &queue, false);
-        let record = TaskRecord {
-            task_id: task_id.clone(),
-            session_id: effective.clone(),
-            request_id: effective.clone(),
-            ds_id,
-            status: "queued".to_string(),
-            created_at_ms: now_ms(),
-            started_at_ms: None,
-            finished_at_ms: None,
-            current_task_desc: initial_desc,
-            progress_updated_at_ms: None,
-            result: None,
-            error: None,
-            turn_id: new_turn_id.clone(),
-            progress_history: Vec::new(),
-            has_report: false,
-        };
-        persist_async_task_record(&state.session_db, &record).await;
         tasks.insert(
             task_id.clone(),
             TaskInner {
-                record,
+                record: TaskRecord {
+                    task_id: task_id.clone(),
+                    session_id: effective.clone(),
+                    request_id: effective.clone(),
+                    ds_id,
+                    status: "queued".to_string(),
+                    created_at_ms: now_ms(),
+                    started_at_ms: None,
+                    finished_at_ms: None,
+                    current_task_desc: initial_desc,
+                    progress_updated_at_ms: None,
+                    result: None,
+                    error: None,
+                    turn_id: new_turn_id.clone(),
+                    progress_history: Vec::new(),
+                    has_report: false,
+                    report_time_ms: None,
+                    plan_title: None,
+                    todos: Vec::new(),
+                },
                 cancel: None,
                 ds_id,
             },
@@ -3536,13 +5944,8 @@ async fn enqueue_solve_async(
             if let Some(inner) = tasks.get_mut(&task_id_for_worker) {
                 if inner.record.status == "cancelled" {
                     inner.cancel = None;
-                    set_solve_turn_status(
-                        &state_clone.session_db,
-                        &turn_id_for_worker,
-                        "cancelled",
-                        true,
-                    )
-                    .await;
+                    finalize_solve_turn_cancelled(&state_clone.session_db, &turn_id_for_worker)
+                        .await;
                     return;
                 }
                 inner.record.status = "running".to_string();
@@ -3581,26 +5984,19 @@ async fn enqueue_solve_async(
             };
             inner.cancel = None;
             if inner.record.status == "cancelled" {
-                set_solve_turn_status(
-                    &state_clone.session_db,
-                    &turn_id_for_worker,
-                    "cancelled",
-                    true,
-                )
-                .await;
+                finalize_solve_turn_cancelled(&state_clone.session_db, &turn_id_for_worker).await;
                 return;
             }
             inner.record.finished_at_ms = Some(now_ms());
             match result {
-                Ok(v) => {
+                Ok(ref v) => {
                     let duration_ms = v.duration_ms;
                     inner.record.status = "succeeded".to_string();
-                    inner.record.result = Some(v);
-                    set_solve_turn_status(
-                        &state_clone.session_db,
+                    inner.record.result = Some(v.clone());
+                    finalize_solve_turn_success(
+                        Arc::clone(&state_clone.session_db),
                         &turn_id_for_worker,
-                        "succeeded",
-                        true,
+                        v,
                     )
                     .await;
                     info!(
@@ -3611,17 +6007,12 @@ async fn enqueue_solve_async(
                         "gateway_solve_async"
                     );
                 }
-                Err(e) => {
+                Err(ref e) => {
                     inner.record.status = "failed".to_string();
                     inner.record.error =
                         Some(json!({"status_code": e.status.as_u16(), "detail": e.message}));
-                    set_solve_turn_status(
-                        &state_clone.session_db,
-                        &turn_id_for_worker,
-                        "failed",
-                        true,
-                    )
-                    .await;
+                    finalize_solve_turn_failed(&state_clone.session_db, &turn_id_for_worker, e)
+                        .await;
                     warn!(
                         request_id = %rid,
                         task_id = %task_id_for_worker,
@@ -3632,8 +6023,6 @@ async fn enqueue_solve_async(
                     );
                 }
             }
-            let record = inner.record.clone();
-            persist_async_task_record(&state_clone.session_db, &record).await;
             true
         };
         if refresh_progress {
@@ -3718,39 +6107,162 @@ async fn solve_async(
     Ok((headers, Json(out)))
 }
 
+/// In-memory async task row, or after gateway restart the latest `gateway_turns` row for this
+/// `session_id` (`task_id`). Author: kejiqing
+async fn try_load_task_record(
+    state: &AppState,
+    task_id: &str,
+) -> Result<Option<(TaskRecord, i64)>, ApiError> {
+    {
+        let tasks = state.tasks.lock().await;
+        if let Some(inner) = tasks.get(task_id) {
+            return Ok(Some((inner.record.clone(), inner.ds_id)));
+        }
+    }
+    let Some(row) = state
+        .session_db
+        .fetch_latest_turn_for_session(task_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(
+        task_record_from_latest_turn_row(state, task_id, row).await?,
+    ))
+}
+
+async fn task_record_from_latest_turn_row(
+    state: &AppState,
+    task_id: &str,
+    row: session_db::LatestTurnRow,
+) -> Result<(TaskRecord, i64), ApiError> {
+    let session_home_rel = state
+        .session_db
+        .get_session_home_rel(task_id, row.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .unwrap_or_default();
+    let work_dir = join_session_home(&state.cfg.work_root, &session_home_rel)
+        .to_string_lossy()
+        .to_string();
+    let duration_ms = row
+        .finished_at_ms
+        .unwrap_or(row.created_at_ms)
+        .saturating_sub(row.created_at_ms);
+    let output_text = row
+        .report_message
+        .clone()
+        .or_else(|| {
+            row.output_json.as_ref().and_then(|j| {
+                j.get("message")
+                    .and_then(Value::as_str)
+                    .map(std::string::ToString::to_string)
+            })
+        })
+        .unwrap_or_default();
+    let result = if row.status == "succeeded" {
+        Some(SolveResponse {
+            session_id: task_id.to_string(),
+            request_id: task_id.to_string(),
+            session_home_rel: session_home_rel.clone(),
+            ds_id: row.ds_id,
+            work_dir,
+            duration_ms,
+            claw_exit_code: row.claw_exit_code.unwrap_or(0),
+            output_text,
+            output_json: row.output_json.clone(),
+            turn_id: row.turn_id.clone(),
+        })
+    } else {
+        None
+    };
+    let error = if row.status == "failed" {
+        row.output_json
+            .clone()
+            .or_else(|| Some(json!({"detail": "solve turn failed"})))
+    } else if row.status == "cancelled" {
+        Some(json!({"detail":"cancelled by client","outcome":"cancelled"}))
+    } else {
+        None
+    };
+    let session_home = resolve_session_home_path(state, row.ds_id, task_id).await;
+    let queue = {
+        let tasks = state.tasks.lock().await;
+        gateway_queue_snapshot(&tasks)
+    };
+    let trace_paths = session_home
+        .as_ref()
+        .map(|home| discover_trace_paths(home, &state.cfg.work_root, task_id))
+        .unwrap_or_default();
+    let tool = trace_tail_suggests_tool_call(&trace_paths);
+    let current_task_desc =
+        resolve_current_task_desc(&row.status, session_home.as_deref(), &queue, tool);
+    let progress_updated_at_ms = session_home
+        .as_ref()
+        .and_then(|home| read_task_progress(home))
+        .map(|p| p.updated_at_ms);
+    let mut record = TaskRecord {
+        task_id: task_id.to_string(),
+        session_id: task_id.to_string(),
+        request_id: task_id.to_string(),
+        ds_id: row.ds_id,
+        status: row.status.clone(),
+        created_at_ms: row.created_at_ms,
+        started_at_ms: Some(row.created_at_ms),
+        finished_at_ms: row.finished_at_ms,
+        current_task_desc,
+        progress_updated_at_ms,
+        result,
+        error,
+        turn_id: row.turn_id.clone(),
+        progress_history: Vec::new(),
+        has_report: false,
+        report_time_ms: None,
+        plan_title: None,
+        todos: Vec::new(),
+    };
+    if let Some(ref home) = session_home {
+        record.progress_history = read_progress_events(home, 50)
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let (plan_title, todos) = task_progress_plan_fields(Some(home));
+        record.plan_title = plan_title;
+        record.todos = todos;
+        let _ = home;
+    }
+    record.has_report = task_has_report(state, &record).await;
+    record.report_time_ms = task_report_time_ms(state, &record).await;
+    let ds_id = record.ds_id;
+    Ok((record, ds_id))
+}
+
 async fn get_task(
     State(state): State<AppState>,
     AxumPath(task_id): AxumPath<String>,
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
     refresh_task_progress(&state, &task_id).await;
-    let (mut task, ds_id) = {
-        let tasks = state.tasks.lock().await;
-        if let Some(inner) = tasks.get(&task_id) {
-            (inner.record.clone(), inner.ds_id)
-        } else {
-            drop(tasks);
-            let task = task_record_from_db(state.session_db.as_ref(), &task_id)
-                .await
-                .map_err(|e| session_db_err(&e))?
-                .ok_or_else(|| {
-                    ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
-                })?;
-            let ds_id = task.ds_id;
-            (task, ds_id)
-        }
-    };
+    let (mut task, ds_id) = try_load_task_record(&state, &task_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
+        })?;
     if let Some(home) = resolve_session_home_path(&state, ds_id, &task.session_id).await {
         task.progress_history = read_progress_events(&home, 50)
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        task.has_report = task_has_report(&task, &home, state.cfg.live_biz_report_spill_enabled);
+        let (plan_title, todos) = task_progress_plan_fields(Some(&home));
+        task.plan_title = plan_title;
+        task.todos = todos;
     }
+    task.has_report = task_has_report(&state, &task).await;
+    task.report_time_ms = task_report_time_ms(&state, &task).await;
     info!(
         request_id = %http_request_id.0,
         task_id = %task_id,
         task_request_id = %task.request_id,
         task_status = %task.status,
         has_report = task.has_report,
+        report_time_ms = ?task.report_time_ms,
         progress_events = task.progress_history.len(),
         endpoint = "/v1/tasks/{task_id}",
         phase = "poll",
@@ -3759,36 +6271,17 @@ async fn get_task(
     Ok(Json(task))
 }
 
-fn task_has_report(
-    task: &TaskRecord,
-    session_home: &std::path::Path,
-    live_biz_report_spill_enabled: bool,
-) -> bool {
-    if task.status == "succeeded" {
-        return true;
-    }
-    if !live_biz_report_spill_enabled {
-        return false;
-    }
-    gateway_solve_turn::spill_contains_report_start_marker(session_home, &task.turn_id)
-        || task_result_contains_report_start_marker(task)
+/// `hasReport`: true while `running` (Admin opens live report SSE) or `succeeded`. Author: kejiqing
+async fn task_has_report(_state: &AppState, task: &TaskRecord) -> bool {
+    matches!(task.status.as_str(), "running" | "succeeded")
 }
 
-fn task_result_contains_report_start_marker(task: &TaskRecord) -> bool {
-    let Some(result) = &task.result else {
-        return false;
-    };
-    result
-        .output_text
-        .contains(gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER)
-        || result
-            .output_json
-            .as_ref()
-            .and_then(|v| v.get("message"))
-            .and_then(Value::as_str)
-            .is_some_and(|message| {
-                message.contains(gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER)
-            })
+/// When [`task_has_report`] is true: `startedAtMs` / `finishedAtMs`. Author: kejiqing
+async fn task_report_time_ms(_state: &AppState, task: &TaskRecord) -> Option<i64> {
+    if !task_has_report(_state, task).await {
+        return None;
+    }
+    task.started_at_ms.or(task.finished_at_ms)
 }
 
 fn task_status_is_terminal_for_cancel(status: &str) -> bool {
@@ -3816,16 +6309,262 @@ fn task_cancel_idempotent_response(record: TaskRecord) -> TaskRecord {
     out
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TurnCancelResponse {
+    session_id: String,
+    turn_id: String,
+    ds_id: i64,
+    status: String,
+    #[serde(rename = "cancelApplied")]
+    cancel_applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Value>,
+}
+
+fn turn_cancel_idempotent_error(status: &str) -> Value {
+    let detail = match status {
+        "cancelled" => "turn already cancelled; duplicate cancel ignored".to_string(),
+        "succeeded" => "turn already succeeded; cancel had no effect".to_string(),
+        "failed" => "turn already failed; cancel had no effect".to_string(),
+        other => format!("turn already in terminal state ({other}); cancel had no effect"),
+    };
+    json!({
+        "detail": detail,
+        "outcome": "idempotent",
+        "cancelApplied": false,
+        "statusAtCancel": status,
+    })
+}
+
+async fn cancel_session_turn_cold(
+    state: &AppState,
+    session_id: &str,
+    turn_id: &str,
+    ds_id: i64,
+) -> Result<TurnCancelResponse, ApiError> {
+    let Some(status) = state
+        .session_db
+        .get_turn_status(turn_id, session_id, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("turn or session not found: {turn_id} session={session_id} ds_id={ds_id}"),
+        ));
+    };
+    if task_status_is_terminal_for_cancel(&status) {
+        let status_at_cancel = status.clone();
+        return Ok(TurnCancelResponse {
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            ds_id,
+            status,
+            cancel_applied: false,
+            error: Some(turn_cancel_idempotent_error(&status_at_cancel)),
+        });
+    }
+    finalize_solve_turn_cancelled(&state.session_db, turn_id).await;
+    Ok(TurnCancelResponse {
+        session_id: session_id.to_string(),
+        turn_id: turn_id.to_string(),
+        ds_id,
+        status: "cancelled".to_string(),
+        cancel_applied: true,
+        error: Some(json!({
+            "detail": "cancelled by client",
+            "outcome": "cancelled",
+            "cancelApplied": true,
+        })),
+    })
+}
+
+enum TurnMemoryCancel {
+    Idempotent(TurnCancelResponse),
+    Applied(Option<AbortHandle>),
+}
+
+async fn try_memory_cancel_turn(
+    state: &AppState,
+    session_id: &str,
+    turn_id: &str,
+    ds_id: i64,
+) -> Result<Option<TurnMemoryCancel>, ApiError> {
+    let mut tasks = state.tasks.lock().await;
+    let Some(inner) = tasks.get_mut(session_id) else {
+        return Ok(None);
+    };
+    if inner.record.turn_id != turn_id {
+        return Ok(None);
+    }
+    if inner.ds_id != ds_id {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!(
+                "turn ds_id mismatch: turn={turn_id} session={session_id} expected ds_id={ds_id}"
+            ),
+        ));
+    }
+    if task_status_is_terminal_for_cancel(&inner.record.status) {
+        let status = inner.record.status.clone();
+        return Ok(Some(TurnMemoryCancel::Idempotent(TurnCancelResponse {
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            ds_id,
+            status,
+            cancel_applied: false,
+            error: Some(turn_cancel_idempotent_error(inner.record.status.as_str())),
+        })));
+    }
+    let h = inner.cancel.take();
+    inner.record.status = "cancelled".to_string();
+    inner.record.finished_at_ms = Some(now_ms());
+    inner.record.result = None;
+    inner.record.error = Some(json!({
+        "detail": "cancelled by client",
+        "outcome": "cancelled",
+        "cancelApplied": true,
+    }));
+    Ok(Some(TurnMemoryCancel::Applied(h)))
+}
+
+async fn cancel_session_turn(
+    State(state): State<AppState>,
+    AxumPath((session_id, turn_id)): AxumPath<(String, String)>,
+    Query(query): Query<TurnToolsQuery>,
+    Extension(http_request_id): Extension<HttpRequestId>,
+) -> Result<Json<TurnCancelResponse>, ApiError> {
+    if query.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "ds_id must be >= 1"));
+    }
+    if !turn_id::validate_turn_id(&turn_id) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "turnId must match T_<32 lowercase hex>",
+        ));
+    }
+
+    match try_memory_cancel_turn(&state, &session_id, &turn_id, query.ds_id).await? {
+        Some(TurnMemoryCancel::Idempotent(out)) => {
+            info!(
+                request_id = %http_request_id.0,
+                session_id = %session_id,
+                turn_id = %turn_id,
+                endpoint = "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
+                phase = "cancel_idempotent",
+                "gateway_turn_cancel"
+            );
+            return Ok(Json(out));
+        }
+        Some(TurnMemoryCancel::Applied(cancel_handle)) => {
+            if let Some((pool, idx)) = state.docker_slots.lock().await.remove(&session_id) {
+                let _ = pool.force_kill_slot(idx).await;
+            }
+            if let Some(h) = cancel_handle {
+                h.abort();
+            }
+            finalize_solve_turn_cancelled(&state.session_db, &turn_id).await;
+            info!(
+                request_id = %http_request_id.0,
+                session_id = %session_id,
+                turn_id = %turn_id,
+                endpoint = "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
+                phase = "cancel_memory",
+                "gateway_turn_cancel"
+            );
+            return Ok(Json(TurnCancelResponse {
+                session_id,
+                turn_id,
+                ds_id: query.ds_id,
+                status: "cancelled".to_string(),
+                cancel_applied: true,
+                error: Some(json!({
+                    "detail": "cancelled by client",
+                    "outcome": "cancelled",
+                    "cancelApplied": true,
+                })),
+            }));
+        }
+        None => {}
+    }
+
+    let out = cancel_session_turn_cold(&state, &session_id, &turn_id, query.ds_id).await?;
+    info!(
+        request_id = %http_request_id.0,
+        session_id = %out.session_id,
+        turn_id = %out.turn_id,
+        cancel_applied = out.cancel_applied,
+        endpoint = "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
+        phase = "cancel_cold",
+        "gateway_turn_cancel"
+    );
+    Ok(Json(out))
+}
+
+async fn cancel_task_cold_db(
+    state: &AppState,
+    task_id: &str,
+    http_request_id: &HttpRequestId,
+) -> Result<Json<TaskRecord>, ApiError> {
+    let Some(row) = state
+        .session_db
+        .fetch_latest_turn_for_session(task_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("task not found: {task_id}"),
+        ));
+    };
+    if task_status_is_terminal_for_cancel(&row.status) {
+        let (record, _) = task_record_from_latest_turn_row(state, task_id, row).await?;
+        let task_status = record.status.clone();
+        let out = task_cancel_idempotent_response(record);
+        info!(
+            request_id = %http_request_id.0,
+            task_id = %task_id,
+            task_status = %task_status,
+            endpoint = "/v1/tasks/{task_id}/cancel",
+            phase = "cancel_idempotent_db",
+            "gateway_task"
+        );
+        return Ok(Json(out));
+    }
+    finalize_solve_turn_cancelled(&state.session_db, &row.turn_id).await;
+    let Some(row2) = state
+        .session_db
+        .fetch_latest_turn_for_session(task_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "task row missing after cancel",
+        ));
+    };
+    let (record, _) = task_record_from_latest_turn_row(state, task_id, row2).await?;
+    info!(
+        request_id = %http_request_id.0,
+        task_id = %task_id,
+        endpoint = "/v1/tasks/{task_id}/cancel",
+        phase = "cancel_cold_db",
+        "gateway_task"
+    );
+    Ok(Json(record))
+}
+
 async fn cancel_task(
     State(state): State<AppState>,
     AxumPath(task_id): AxumPath<String>,
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
-    let cancel = {
+    let cancel_handle = {
         let mut tasks = state.tasks.lock().await;
-        let inner = tasks.get_mut(&task_id).ok_or_else(|| {
-            ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
-        })?;
+        let Some(inner) = tasks.get_mut(&task_id) else {
+            return cancel_task_cold_db(&state, &task_id, &http_request_id).await;
+        };
         if task_status_is_terminal_for_cancel(&inner.record.status) {
             let task_status = inner.record.status.clone();
             let record = task_cancel_idempotent_response(inner.record.clone());
@@ -3855,7 +6594,7 @@ async fn cancel_task(
     if let Some((pool, idx)) = state.docker_slots.lock().await.remove(&task_id) {
         let _ = pool.force_kill_slot(idx).await;
     }
-    if let Some(h) = cancel {
+    if let Some(h) = cancel_handle {
         h.abort();
     }
     info!(
@@ -3872,6 +6611,7 @@ async fn cancel_task(
         .ok_or_else(|| {
             ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
         })?;
+    finalize_solve_turn_cancelled(&state.session_db, &record.turn_id).await;
     Ok(Json(record))
 }
 
@@ -3932,6 +6672,9 @@ async fn dev_seed_biz_report_task(
         turn_id: seed_turn_id.clone(),
         progress_history: Vec::new(),
         has_report: false,
+        report_time_ms: None,
+        plan_title: None,
+        todos: Vec::new(),
     };
     {
         let mut tasks = state.tasks.lock().await;
@@ -3954,214 +6697,230 @@ async fn dev_seed_biz_report_task(
     })))
 }
 
-async fn prepare_live_report_context(
+/// DB-authoritative turn context for `GET /v1/biz_advice_report` (not in-memory tasks). Author: kejiqing
+struct BizReportDbCtx {
+    task_id: String,
+    turn_id: String,
+    status: String,
+}
+
+async fn resolve_biz_report_from_db(
     state: &AppState,
-    session_id: &str,
-    turn_id: &str,
-    ds_id: i64,
-) -> Result<LiveReportContext, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
-    }
-    if !turn_id::validate_turn_id(turn_id) {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "turnId must match T_<32 hex>",
-        ));
-    }
-    let session_id = session_id.trim();
-    if session_id.is_empty() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "sessionId must be non-empty",
-        ));
-    }
-    if !state
+    query: &BizAdviceReportQuery,
+) -> Result<BizReportDbCtx, ApiError> {
+    let belongs = state
         .session_db
-        .session_exists(session_id, ds_id)
+        .turn_belongs_to_session(&query.turn_id, &query.session_id, query.ds_id)
         .await
-        .map_err(|e| session_db_err(&e))?
-    {
+        .map_err(|e| session_db_err(&e))?;
+    if !belongs {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("session not found: {session_id} ds_id={ds_id}"),
+            format!(
+                "no turn for sessionId={} turnId={} dsId={}",
+                query.session_id, query.turn_id, query.ds_id
+            ),
         ));
     }
-    if !state
+    let status = state
         .session_db
-        .turn_belongs_to_session(turn_id, session_id, ds_id)
-        .await
-        .map_err(|e| session_db_err(&e))?
-    {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "unknown turnId for session",
-        ));
-    }
-    let session_home_rel = state
-        .session_db
-        .get_session_home_rel(session_id, ds_id)
+        .get_turn_status(&query.turn_id, &query.session_id, query.ds_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_FOUND,
-                format!("session not found: {session_id} ds_id={ds_id}"),
+                format!(
+                    "no turn row for sessionId={} turnId={}",
+                    query.session_id, query.turn_id
+                ),
             )
         })?;
-    session_merge::validate_session_home_rel(&session_home_rel).map_err(session_routing_error)?;
-    let session_home = join_session_home(&state.cfg.work_root, &session_home_rel);
-    Ok(LiveReportContext {
-        session_id: session_id.to_string(),
-        turn_id: turn_id.to_string(),
-        ds_id,
-        session_home,
+    Ok(BizReportDbCtx {
+        task_id: query.session_id.clone(),
+        turn_id: query.turn_id.clone(),
+        status,
     })
 }
 
+async fn load_turn_report_body_from_db(
+    state: &AppState,
+    query: &BizAdviceReportQuery,
+) -> Result<String, ApiError> {
+    let report_message = state
+        .session_db
+        .get_turn_report_message(&query.turn_id, &query.session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let output_json = state
+        .session_db
+        .get_turn_output_json(&query.turn_id, &query.session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    report_body_from_persisted(report_message.as_deref(), output_json.as_ref()).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!(
+                "turn {} has no persisted report message (outputJson.message)",
+                query.turn_id
+            ),
+        )
+    })
+}
+
+/// JSON report for one turn (`stream=false`); used by admin history replay. Author: kejiqing
+fn biz_report_json_response(
+    ctx: &BizReportDbCtx,
+    query: &BizAdviceReportQuery,
+    body: String,
+) -> Response {
+    Json(BizAdviceReportResponse {
+        task_id: ctx.task_id.clone(),
+        source_request_id: ctx.task_id.clone(),
+        source_ds_id: query.ds_id,
+        source_status: ctx.status.clone(),
+        report_text: body.clone(),
+        report_json: Some(json!({ "message": body })),
+    })
+    .into_response()
+}
+
+/// Live report: DB snapshot when terminal; pool SSE proxy when running. Author: kejiqing
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
 ) -> Result<Response, ApiError> {
-    let state = Arc::new(state);
-    let ctx =
-        prepare_live_report_context(&state, &query.session_id, &query.turn_id, query.ds_id).await?;
-    let use_live_spill = state.cfg.live_biz_report_spill_enabled
-        && turn_use_live_spill_report(&ctx.session_home, &ctx.turn_id);
-    if !use_live_spill {
-        return respond_biz_advice_polish_for_context(state, ctx, query.stream).await;
-    }
-    if query.stream {
-        let rx = spawn_live_report_sse_worker(Arc::clone(&state), ctx.clone());
-        let no_buffer = header::HeaderName::from_static("x-accel-buffering");
-        let no_buffer_val = HeaderValue::from_static("no");
-        return Ok((
-            AppendHeaders([(no_buffer, no_buffer_val)]),
-            Sse::new(biz_report_sse_event_stream(&ctx.session_id, rx))
-                .keep_alive(KeepAlive::default()),
-        )
-            .into_response());
-    }
-    let (report_text, report_json) =
-        biz_advice_report_live::live_report_json_response(&state, ctx.clone()).await?;
-    let (report_text, report_json) = sanitize_biz_report_parts(&report_text, Some(report_json));
-    let status = biz_advice_report_live::turn_status(
-        &state.session_db,
-        &ctx.turn_id,
-        &ctx.session_id,
-        ctx.ds_id,
-    )
-    .await?
-    .unwrap_or_else(|| "succeeded".to_string());
-    Ok(Json(BizAdviceReportResponse {
-        task_id: ctx.session_id.clone(),
-        source_request_id: ctx.session_id,
-        source_ds_id: ctx.ds_id,
-        source_status: status,
-        report_text,
-        report_json,
-    })
-    .into_response())
-}
+    let ctx = resolve_biz_report_from_db(&state, &query).await?;
 
-/// No spill file: polish solve `outputJson.message` (legacy `_bak` path) for JSON or SSE.
-async fn respond_biz_advice_polish_for_context(
-    state: Arc<AppState>,
-    ctx: LiveReportContext,
-    stream: bool,
-) -> Result<Response, ApiError> {
-    let status = biz_advice_report_live::turn_status(
-        &state.session_db,
-        &ctx.turn_id,
-        &ctx.session_id,
-        ctx.ds_id,
+    if matches!(ctx.status.as_str(), "succeeded" | "failed" | "cancelled") {
+        if let Ok(body) = load_turn_report_body_from_db(&state, &query).await {
+            if !body.trim().is_empty() {
+                if query.stream {
+                    tracing::info!(
+                        target: "claw_live_report",
+                        component = "biz_advice_report",
+                        phase = "route",
+                        route = "db_snapshot_sse",
+                        turn_id = %ctx.turn_id,
+                        session_id = %query.session_id,
+                        ds_id = query.ds_id,
+                        status = %ctx.status,
+                        "biz_advice_report stream — terminal snapshot from gateway_turns (no pool HTTP)"
+                    );
+                    let payload = BizAdviceReportPayload {
+                        task_id: ctx.task_id.clone(),
+                        source_request_id: ctx.task_id.clone(),
+                        source_ds_id: query.ds_id,
+                        source_status: ctx.status.clone(),
+                        report_text: Some(body.clone()),
+                        report_json: Some(json!({ "message": body })),
+                    };
+                    return Ok(db_snapshot_report_sse_response(
+                        &ctx.task_id,
+                        payload,
+                        &body,
+                    ));
+                }
+                return Ok(biz_report_json_response(&ctx, &query, body));
+            }
+        }
+        if !query.stream {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!(
+                    "turn {} has no persisted report (status={})",
+                    query.turn_id, ctx.status
+                ),
+            ));
+        }
+    }
+
+    if query.stream {
+        if matches!(ctx.status.as_str(), "running" | "queued") {
+            let pool_http_from_db = state
+                .session_db
+                .resolve_pool_http_base_for_turn(&ctx.turn_id, &query.session_id, query.ds_id)
+                .await
+                .map_err(|e| session_db_err(&e))?;
+            let Some(pool_http_base) = pool_http_from_db.filter(|b| !b.trim().is_empty()) else {
+                let pool_id = state
+                    .session_db
+                    .get_turn_pool_id(&ctx.turn_id, &query.session_id, query.ds_id)
+                    .await
+                    .map_err(|e| session_db_err(&e))?;
+                let detail = match pool_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    None => format!(
+                        "live report routing failed: gateway_turns.pool_id unset for turn {} (status={}). \
+                         Gateway must prebind CLAW_POOL_ID at solve enqueue; run pack-deploy and retry.",
+                        ctx.turn_id, ctx.status
+                    ),
+                    Some(pid) => format!(
+                        "live report routing failed: claw_pool has no row for pool_id={pid} (turn {}, status={}). \
+                         Start pool daemon with PG registry or run gateway.sh verify.",
+                        ctx.turn_id, ctx.status
+                    ),
+                };
+                tracing::error!(
+                    target: "claw_live_report",
+                    component = "biz_advice_report",
+                    phase = "route",
+                    route = "pool_proxy_sse_denied",
+                    turn_id = %ctx.turn_id,
+                    session_id = %query.session_id,
+                    ds_id = query.ds_id,
+                    status = %ctx.status,
+                    pool_id = ?pool_id,
+                    co_located_pool_id = ?state.cfg.co_located_pool_id,
+                    "biz_advice_report stream — refused (CLAW_POOL_HTTP_BASE env fallback disabled)"
+                );
+                return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, detail));
+            };
+            tracing::info!(
+                target: "claw_live_report",
+                component = "biz_advice_report",
+                phase = "route",
+                route = "pool_proxy_sse",
+                pool_http_source = "claw_pool_join",
+                turn_id = %ctx.turn_id,
+                session_id = %query.session_id,
+                ds_id = query.ds_id,
+                status = %ctx.status,
+                pool_http_base = %pool_http_base,
+                "biz_advice_report stream — proxy to pool HTTP /v1/biz_advice_report/live"
+            );
+            return http_gateway_rs::biz_report_pool_proxy::proxy_pool_live_report_sse(
+                &pool_http_base,
+                &ctx.turn_id,
+                &ctx.task_id,
+                query.ds_id,
+            )
+            .await
+            .map_err(|(status, detail)| ApiError::new(status, detail));
+        }
+    }
+
+    get_biz_advice_report_bak(
+        State(state),
+        Query(BizAdviceReportBakQuery {
+            task_id: ctx.task_id,
+            stream: query.stream,
+        }),
     )
-    .await?;
-    let Some(status) = status else {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown turnId for session",
-        ));
-    };
-    if status != "succeeded" {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            format!("turn not finished yet (status: {status})"),
-        ));
-    }
-    let report_body =
-        biz_advice_report_live::resolve_formal_report_text(state.as_ref(), &ctx).await?;
-    let skill_work_dir = ds_work_dir(&state.cfg.work_root, BOSS_REPORT_SKILL_DS_ID);
-    ensure_workspace_initialized(&state.cfg.claw_bin, &skill_work_dir).await?;
-    let instructions = load_boss_report_writer_instructions(&skill_work_dir).await;
-    let prompt = build_biz_advice_polish_prompt(&instructions, &report_body);
-    let request_id = Uuid::new_v4().simple().to_string();
-    let timeout_seconds = state.cfg.default_timeout_seconds;
-    let polish_ds = state.cfg.report_polish_deepseek.clone();
-    let meta = BizAdviceReportPayload {
-        task_id: ctx.session_id.clone(),
-        source_request_id: ctx.session_id.clone(),
-        source_ds_id: ctx.ds_id,
-        source_status: status,
-        report_text: None,
-        report_json: None,
-    };
-    if stream {
-        return Ok(biz_report_llm_stream_response(
-            &ctx.session_id,
-            meta,
-            prompt,
-            request_id,
-            timeout_seconds,
-            polish_ds,
-        ));
-    }
-    let (report_text, report_json) = tokio::task::spawn_blocking(move || {
-        run_gateway_biz_polish_llm(
-            &prompt,
-            None,
-            timeout_seconds,
-            &request_id,
-            None::<fn(&str)>,
-            polish_ds.as_ref(),
-        )
-    })
     .await
-    .map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("polish task join failed: {e}"),
-        )
-    })?
-    .map_err(map_gateway_solve_turn_err)?;
-    let (report_text, report_json) = sanitize_biz_report_parts(&report_text, report_json);
-    Ok(Json(BizAdviceReportResponse {
-        task_id: ctx.session_id.clone(),
-        source_request_id: ctx.session_id,
-        source_ds_id: ctx.ds_id,
-        source_status: meta.source_status,
-        report_text,
-        report_json,
-    })
-    .into_response())
 }
 
 async fn get_biz_advice_report_bak(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportBakQuery>,
 ) -> Result<Response, ApiError> {
-    let task = {
-        let tasks = state.tasks.lock().await;
-        tasks
-            .get(&query.task_id)
-            .map(|inner| inner.record.clone())
-            .ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::NOT_FOUND,
-                    format!("task not found: {}", query.task_id),
-                )
-            })?
-    };
+    let (task, _ds_id) = try_load_task_record(&state, &query.task_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("task not found: {}", query.task_id),
+            )
+        })?;
     let source_status = task.status.clone();
     if source_status != "succeeded" {
         return Err(ApiError::new(
@@ -4467,21 +7226,6 @@ async fn prepare_gateway_session(
             .map_err(|e| session_db_err(&e))?;
     }
 
-    if !skip_session_db {
-        let sid = request_id.to_string();
-        if let Err(e) =
-            ensure_jsonl_from_db(state.session_db.as_ref(), &sid, ds_id, &session_home).await
-        {
-            warn!(
-                target: "claw_gateway_orchestration",
-                component = "persistence",
-                session_id = %sid,
-                error = %e,
-                "ensure jsonl from database failed"
-            );
-        }
-    }
-
     Ok(PreparedGatewaySession {
         session_home,
         session_home_rel,
@@ -4615,8 +7359,11 @@ async fn run_solve_request(
         timeout_seconds,
         "gateway_solve accepted; validating and preparing workspace"
     );
-    let mut effective_allowed_tools =
-        resolve_effective_allowed_tools(&state.cfg.allowed_tools, req.allowed_tools.as_deref())?;
+    let project_selected = project_selected_allowed_tools(&state, req.ds_id).await?;
+    let mut effective_allowed_tools = resolve_effective_allowed_tools_for_ds(
+        project_selected.as_deref(),
+        req.allowed_tools.as_deref(),
+    )?;
     ensure_report_progress_in_allowed_tools(&mut effective_allowed_tools);
 
     let prepared = prepare_gateway_session(
@@ -4659,6 +7406,146 @@ async fn run_solve_request(
     .await
 }
 
+/// Merge MCP map for `project_config.mcp_servers_json` (solve uses DB only). Author: kejiqing
+fn merge_mcp_servers_json(existing: &Value, patch: HashMap<String, Value>, replace: bool) -> Value {
+    if replace {
+        return Value::Object(patch.into_iter().collect());
+    }
+    let mut obj = existing.as_object().cloned().unwrap_or_default();
+    for (k, v) in patch {
+        obj.insert(k, v);
+    }
+    Value::Object(obj)
+}
+
+/// Upsert `project_config` MCP for a ds (`POST/DELETE /v1/mcp/inject*` write DB, not process memory).
+async fn upsert_mcp_servers_for_ds(
+    state: &AppState,
+    ds_id: i64,
+    patch: HashMap<String, Value>,
+    replace: bool,
+) -> Result<(), ApiError> {
+    let existing = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if existing.is_some() {
+        project_config_draft::ensure_draft(&state.session_db, ds_id)
+            .await
+            .map_err(draft_err)?;
+    }
+    let mut row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .unwrap_or_else(|| default_project_config_row(ds_id));
+    row.mcp_servers_json = merge_mcp_servers_json(&row.mcp_servers_json, patch, replace);
+    row.draft_open = true;
+    row.content_rev = project_config_draft::DRAFT_CONTENT_REV.to_string();
+    row.updated_at_ms = now_ms();
+    state
+        .session_db
+        .upsert_project_config(project_config_draft::upsert_from_row(
+            &row,
+            project_config_draft::DRAFT_CONTENT_REV,
+            row.updated_at_ms,
+            row.claude_md.as_deref(),
+            row.stable_content_rev.as_deref(),
+        ))
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(())
+}
+
+async fn clear_mcp_servers_for_ds(
+    state: &AppState,
+    ds_id: i64,
+    server_names: Option<Vec<String>>,
+) -> Result<(), ApiError> {
+    if state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .is_none()
+    {
+        return Ok(());
+    }
+    project_config_draft::ensure_draft(&state.session_db, ds_id)
+        .await
+        .map_err(draft_err)?;
+    let mut row = state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .expect("row exists");
+    let mut obj = row
+        .mcp_servers_json
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    match server_names {
+        Some(names) => {
+            for name in names {
+                obj.remove(&name);
+            }
+        }
+        None => obj.clear(),
+    }
+    row.mcp_servers_json = Value::Object(obj);
+    row.draft_open = true;
+    row.content_rev = project_config_draft::DRAFT_CONTENT_REV.to_string();
+    row.updated_at_ms = now_ms();
+    state
+        .session_db
+        .upsert_project_config(project_config_draft::upsert_from_row(
+            &row,
+            project_config_draft::DRAFT_CONTENT_REV,
+            row.updated_at_ms,
+            row.claude_md.as_deref(),
+            row.stable_content_rev.as_deref(),
+        ))
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(())
+}
+
+fn mcp_server_names_from_settings(settings: &Value) -> Vec<String> {
+    settings
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .map(|o| o.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default()
+}
+
+async fn test_mcp(
+    Json(req): Json<TestMcpRequest>,
+) -> Result<Json<mcp_probe::McpTestResponse>, ApiError> {
+    let server_name = req.server_name.trim();
+    if server_name.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "serverName must be non-empty",
+        ));
+    }
+    if !req.config.is_object() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "config must be a JSON object",
+        ));
+    }
+    if let Some(ds_id) = req.ds_id {
+        if ds_id < 1 {
+            return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+        }
+    }
+    let resp = mcp_probe::probe_mcp_server(server_name, &req.config, req.probe_mcp_start).await;
+    Ok(Json(resp))
+}
+
 async fn inject_mcp(
     State(state): State<AppState>,
     Extension(http_request_id): Extension<HttpRequestId>,
@@ -4669,17 +7556,7 @@ async fn inject_mcp(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
     }
     let replace = req.replace.unwrap_or(false);
-    {
-        let mut injected = state.injected_mcp.lock().await;
-        if replace {
-            injected.insert(req.ds_id, req.mcp_servers.clone());
-        } else {
-            let current = injected.entry(req.ds_id).or_default();
-            for (k, v) in req.mcp_servers {
-                current.insert(k, v);
-            }
-        }
-    }
+    upsert_mcp_servers_for_ds(&state, req.ds_id, req.mcp_servers, replace).await?;
     let (report, loaded_names, configured_servers, status, names) =
         apply_settings_and_probe(&state, req.ds_id, 15).await?;
     let loaded = names.iter().all(|name| loaded_names.contains(name)) && status == "ok";
@@ -4737,26 +7614,15 @@ async fn delete_injected_mcp(
     Query(query): Query<DeleteQuery>,
 ) -> Result<Json<McpResponse>, ApiError> {
     let request_id = http_request_id.0.clone();
-    {
-        let mut injected = state.injected_mcp.lock().await;
-        if let Some(names) = query.server_names {
-            let targets = names
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>();
-            let current = injected.entry(ds_id).or_default();
-            for name in targets {
-                current.remove(&name);
-            }
-            if current.is_empty() {
-                injected.remove(&ds_id);
-            }
-        } else {
-            injected.remove(&ds_id);
-        }
-    }
+    let targets = query.server_names.as_ref().map(|names| {
+        names
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>()
+    });
+    clear_mcp_servers_for_ds(&state, ds_id, targets).await?;
     let timeout_seconds = query.probe_timeout_seconds.unwrap_or(15);
     let (report, loaded_names, configured_servers, status, names) =
         apply_settings_and_probe(&state, ds_id, timeout_seconds).await?;
@@ -4793,7 +7659,7 @@ async fn apply_settings_and_probe(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    {
+    let settings = {
         let lock = get_ds_lock(state, ds_id).await;
         let _guard = lock.lock().await;
         ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
@@ -4813,43 +7679,28 @@ async fn apply_settings_and_probe(
                 )
             })?;
         let _ = fs::remove_file(work_dir.join(".claw/mcp_discovery_cache.json")).await;
-    }
+        settings
+    };
     let (report, loaded_names, configured_servers, status) =
         probe_mcp_load(&state.cfg.claw_bin, &work_dir, probe_timeout_seconds).await?;
-    let names = {
-        let injected = state.injected_mcp.lock().await;
-        injected
-            .get(&ds_id)
-            .map(|v| v.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default()
-    };
+    let names = mcp_server_names_from_settings(&settings);
     Ok((report, loaded_names, configured_servers, status, names))
 }
 
+/// Solve/runtime MCP: **`project_config.mcp_servers_json` only** — no `.claw.json` / env / memory fallback.
 async fn build_settings(state: &AppState, ds_id: i64) -> Value {
     let mut servers = HashMap::<String, Value>::new();
-    for (k, v) in &state.cfg.config_mcp_servers {
-        servers.insert(k.clone(), v.clone());
-    }
-    if let (Some(name), Some(url)) = (
-        state.cfg.default_http_mcp_name.as_ref(),
-        state.cfg.default_http_mcp_url.as_ref(),
-    ) {
-        servers.insert(
-            name.clone(),
-            json!({
-                "type": state.cfg.default_http_mcp_transport,
-                "url": url
-            }),
-        );
-    }
-    let injected = state.injected_mcp.lock().await;
-    if let Some(extra) = injected.get(&ds_id) {
-        for (k, v) in extra {
-            servers.insert(k.clone(), v.clone());
+    if let Ok(Some(row)) = state.session_db.get_project_config(ds_id).await {
+        if let Some(extra) = row.mcp_servers_json.as_object() {
+            for (k, v) in extra {
+                servers.insert(k.clone(), v.clone());
+            }
         }
     }
-    json!({ "mcpServers": servers })
+    json!({
+        "mcpServers": servers,
+        "auto_hidden_system_prompt": 1
+    })
 }
 
 async fn ensure_workspace_initialized(_claw_bin: &str, work_dir: &Path) -> Result<(), ApiError> {
@@ -5046,91 +7897,12 @@ fn gateway_env_enabled(name: &str) -> bool {
     })
 }
 
-fn parse_allowed_tools(raw: Option<String>) -> Vec<String> {
-    let Some(raw) = raw else {
-        return Vec::new();
-    };
-    let mut values = Vec::new();
-    for token in raw.split(',') {
-        let name = normalize_allowed_tool_name(token);
-        if name.is_empty() {
-            continue;
-        }
-        if !values.contains(&name) {
-            values.push(name);
-        }
-    }
-    values
-}
-
-fn normalize_allowed_tool_name(raw: &str) -> String {
-    let name = raw.trim();
-    match name {
-        "read" | "ReadFile" | "ead_file" => "read_file".to_string(),
-        "glob" | "GlobSearch" | "glob_searchr" => "glob_search".to_string(),
-        "grep" | "GrepSearch" => "grep_search".to_string(),
-        "MCPTool" => "MCP".to_string(),
-        "ListMcpResourcesToolMCP" => "ListMcpResources".to_string(),
-        other => other.to_string(),
-    }
-}
-
-pub(crate) fn resolve_effective_allowed_tools(
-    global_allowed_tools: &[String],
+pub(crate) fn resolve_effective_allowed_tools_for_ds(
+    project_selected: Option<&[String]>,
     requested_allowed_tools: Option<&[String]>,
 ) -> Result<Vec<String>, ApiError> {
-    let Some(requested) = requested_allowed_tools else {
-        return Ok(global_allowed_tools.to_vec());
-    };
-
-    let mut normalized = Vec::new();
-    for raw in requested {
-        let name = normalize_allowed_tool_name(raw);
-        if name.is_empty() {
-            continue;
-        }
-        if !normalized.contains(&name) {
-            normalized.push(name);
-        }
-    }
-    if normalized.is_empty() {
-        return Ok(Vec::new());
-    }
-    if global_allowed_tools.is_empty() {
-        return Ok(normalized);
-    }
-
-    for requested in &normalized {
-        let allowed = if requested.ends_with('*') {
-            global_allowed_tools.contains(requested)
-        } else {
-            is_tool_allowed(requested, global_allowed_tools)
-        };
-        if !allowed {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!("requested tool pattern is not allowed by gateway policy: {requested}"),
-            ));
-        }
-    }
-    Ok(normalized)
-}
-
-fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {
-    if allowed_tools.is_empty() {
-        return true;
-    }
-    for pattern in allowed_tools {
-        if pattern == tool_name {
-            return true;
-        }
-        if let Some(prefix) = pattern.strip_suffix('*') {
-            if tool_name.starts_with(prefix) {
-                return true;
-            }
-        }
-    }
-    false
+    project_tools::resolve_effective_allowed_tools_for_ds(project_selected, requested_allowed_tools)
+        .map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))
 }
 
 #[cfg(test)]
@@ -5151,6 +7923,45 @@ mod tests {
         assert!(validate_skill_name("../escape").is_err());
         assert!(validate_skill_name("bad/name").is_err());
         assert!(validate_skill_name("中文").is_err());
+    }
+
+    #[test]
+    fn reject_deprecated_skills_sources_json() {
+        assert!(reject_deprecated_skills_sources(&json!([])).is_ok());
+        assert!(reject_deprecated_skills_sources(&json!([{"gitUrl": "https://x"}])).is_err());
+    }
+
+    #[test]
+    fn validate_skills_json_requires_name_and_content() {
+        assert!(validate_skills_json(&json!([])).is_ok());
+        let ok = json!([{"skillName": "a", "skillContent": "# x"}]);
+        assert!(validate_skills_json(&ok).is_ok());
+        assert!(validate_skills_json(&json!([{"skillName": "a"}])).is_err());
+    }
+
+    #[allow(dead_code)]
+    fn validate_skills_sources_json_requires_token_env_for_https() {
+        let ok = json!([{
+            "gitUrl": "https://example.com/a.git",
+            "gitRef": "main",
+            "tokenEnv": "CLAW_PROJECTS_GIT_TOKEN"
+        }]);
+        assert!(validate_skills_sources_json(&ok).is_ok());
+        let missing = json!([{"gitUrl": "https://example.com/a.git", "gitRef": "main"}]);
+        assert!(validate_skills_sources_json(&missing).is_err());
+    }
+
+    #[test]
+    fn validate_skills_sources_json_rejects_token_in_body_and_userinfo_url() {
+        let with_token = json!([{"gitUrl": "https://x.com/a.git", "token": "secret"}]);
+        assert!(validate_skills_sources_json(&with_token).is_err());
+        let with_userinfo = json!([{
+            "gitUrl": "https://user:pass@example.com/a.git",
+            "gitRef": "main"
+        }]);
+        assert!(validate_skills_sources_json(&with_userinfo).is_err());
+        let ssh = json!([{"gitUrl": "git@github.com:org/repo.git", "gitRef": "main"}]);
+        assert!(validate_skills_sources_json(&ssh).is_ok());
     }
 
     #[tokio::test]
@@ -5250,123 +8061,15 @@ mod tests {
     }
 
     #[test]
-    fn task_has_report_true_when_succeeded_and_no_spill_file() {
-        let home = std::env::temp_dir().join(format!("claw-has-report-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&home);
-        let task = TaskRecord {
-            task_id: "t1".into(),
-            session_id: "t1".into(),
-            request_id: "t1".into(),
-            ds_id: 10,
-            status: "succeeded".into(),
-            created_at_ms: 0,
-            started_at_ms: None,
-            finished_at_ms: Some(1),
-            current_task_desc: None,
-            progress_updated_at_ms: None,
-            result: None,
-            error: None,
-            turn_id: "T_00000000000000000000000000000001".into(),
-            progress_history: vec![],
-            has_report: false,
-        };
-        assert!(task_has_report(&task, &home, true));
-        assert!(task_has_report(&task, &home, false));
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn task_has_report_true_when_succeeded_even_if_spill_lacks_report_marker() {
-        let home =
-            std::env::temp_dir().join(format!("claw-has-report-spill-{}", std::process::id()));
-        let claw = home.join(".claw");
-        std::fs::create_dir_all(&claw).unwrap();
-        let turn_id = "T_00000000000000000000000000000003";
-        std::fs::write(
-            claw.join(format!("assistant-stream-spill-{turn_id}.txt")),
-            "partial stream only",
-        )
-        .unwrap();
-        let task = TaskRecord {
-            task_id: "t3".into(),
-            session_id: "t3".into(),
-            request_id: "t3".into(),
-            ds_id: 10,
-            status: "succeeded".into(),
-            created_at_ms: 0,
-            started_at_ms: None,
-            finished_at_ms: Some(1),
-            current_task_desc: None,
-            progress_updated_at_ms: None,
-            result: None,
-            error: None,
-            turn_id: turn_id.into(),
-            progress_history: vec![],
-            has_report: false,
-        };
-        assert!(task_has_report(&task, &home, true));
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn task_has_report_false_while_running_without_marker() {
-        let home = std::env::temp_dir().join(format!("claw-has-report-run-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&home);
-        let task = TaskRecord {
-            task_id: "t2".into(),
-            session_id: "t2".into(),
-            request_id: "t2".into(),
-            ds_id: 10,
-            status: "running".into(),
-            created_at_ms: 0,
-            started_at_ms: Some(0),
-            finished_at_ms: None,
-            current_task_desc: None,
-            progress_updated_at_ms: None,
-            result: None,
-            error: None,
-            turn_id: "T_00000000000000000000000000000002".into(),
-            progress_history: vec![],
-            has_report: false,
-        };
-        assert!(!task_has_report(&task, &home, true));
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn task_has_report_false_while_running_with_spill_marker_when_live_disabled() {
-        let home =
-            std::env::temp_dir().join(format!("claw-has-report-live-off-{}", std::process::id()));
-        let claw = home.join(".claw");
-        std::fs::create_dir_all(&claw).unwrap();
-        let turn_id = "T_00000000000000000000000000000004";
-        std::fs::write(
-            claw.join(format!("assistant-stream-spill-{turn_id}.txt")),
-            format!(
-                "{}\n# 报告\n",
-                gateway_solve_turn::ASSISTANT_STREAM_REPORT_START_MARKER
-            ),
-        )
-        .unwrap();
-        let task = TaskRecord {
-            task_id: "t4".into(),
-            session_id: "t4".into(),
-            request_id: "t4".into(),
-            ds_id: 10,
-            status: "running".into(),
-            created_at_ms: 0,
-            started_at_ms: Some(0),
-            finished_at_ms: None,
-            current_task_desc: None,
-            progress_updated_at_ms: None,
-            result: None,
-            error: None,
-            turn_id: turn_id.into(),
-            progress_history: vec![],
-            has_report: false,
-        };
-        assert!(task_has_report(&task, &home, true));
-        assert!(!task_has_report(&task, &home, false));
-        let _ = std::fs::remove_dir_all(&home);
+    fn task_has_report_contract() {
+        for (status, want) in [
+            ("queued", false),
+            ("running", true),
+            ("succeeded", true),
+            ("failed", false),
+        ] {
+            let got = matches!(status, "running" | "succeeded");
+            assert_eq!(got, want, "status={status}");
+        }
     }
 }

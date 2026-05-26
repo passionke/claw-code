@@ -3,10 +3,25 @@
 #![allow(
     clippy::await_holding_lock,
     clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::format_push_string,
+    clippy::manual_let_else,
+    clippy::map_unwrap_or,
     clippy::match_same_arms,
+    clippy::needless_lifetimes,
+    clippy::needless_pass_by_value,
     clippy::result_large_err,
+    clippy::single_match_else,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::implicit_hasher,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::used_underscore_binding,
+    clippy::redundant_closure_for_method_calls,
     clippy::type_complexity,
-    clippy::unnecessary_filter_map
+    clippy::unnecessary_filter_map,
+    clippy::useless_format
 )]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -19,34 +34,49 @@ use api::{
     ProviderClient, StreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 use runtime::{
-    apply_config_env_if_unset, default_mcp_max_concurrent, is_parallel_friendly_mcp_tool,
-    load_system_prompt, mcp_parallel_fanout_enabled, ApiClient as RuntimeApiClient, ApiRequest,
-    AssistantEvent, ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime,
-    McpServerManager, MessageRole, PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError,
-    Session, SharedToolExecutor, ToolError, ToolExecutor as RuntimeToolExecutor,
+    apply_config_env_if_unset, apply_mcp_tool_annotations_from_config, concurrent_mcp_tool_names,
+    default_mcp_max_concurrent, gateway_schema_prompt_section, load_system_prompt,
+    mcp_description_parallel_friendly, mcp_tool_parallel_fanout_eligible,
+    ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
+    ConversationMessage, ConversationRuntime, McpServerManager, McpTool, MessageRole,
+    PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError, Session, SharedToolExecutor,
+    ToolError, ToolExecutor as RuntimeToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use telemetry::{JsonlTelemetrySink, SessionTracer};
 use tokio::sync::Semaphore;
 use tools::{
-    execute_mcp_tool_with_extra_session, execute_tool, initialize_mcp_bridge, mvp_tool_specs,
+    execute_agent_with_mcp_context_and_spawn, execute_mcp_tool_with_meta, execute_tool,
+    initialize_mcp_bridge, mvp_tool_specs, AgentInput,
 };
 
-pub mod assistant_stream_spill;
+pub mod agent_orchestration;
 pub mod entity_labels;
+pub mod gateway_stdout;
+pub mod mcp_call_context;
+pub mod multi_agent;
+pub mod project_orchestration;
+pub mod project_preflight;
 pub mod session_report;
 pub mod sqlbot_preflight;
 pub mod task_progress;
+pub mod turn_tools;
 pub mod worker_env;
-pub use assistant_stream_spill::{
-    assistant_stream_spill_enabled_from_env, assistant_stream_spill_path,
-    resolve_assistant_stream_spill, spill_bytes_contain_end_marker,
-    spill_contains_report_start_marker, split_spill_end_marker, strip_report_start_marker,
-    AssistantStreamSpill, ASSISTANT_STREAM_REPORT_START_MARKER,
-    ASSISTANT_STREAM_SPILL_BASENAME_PREFIX, ASSISTANT_STREAM_SPILL_END_MARKER,
+pub use gateway_stdout::{
+    emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
+    GATEWAY_STDOUT_LINE_PREFIX,
 };
-pub use session_report::final_assistant_report_text_from_jsonl;
+pub use mcp_call_context::{
+    build_mcp_call_meta, gateway_mcp_call_context_from_task, inject_mcp_call_meta,
+    resolve_gateway_mcp_call_context, resolve_gateway_trace_id, GatewayMcpCallContext,
+    CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
+};
+pub use runtime::McpCallContext;
+pub use session_report::{
+    final_assistant_report_text_from_jsonl,
+    final_assistant_report_text_from_jsonl_for_user_turn_index,
+};
 pub use task_progress::{
     progress_events_path, progress_message_from_mcp_input, read_progress_events,
     read_progress_history, read_task_progress, record_mcp_tool_started,
@@ -59,20 +89,18 @@ pub use worker_env::{
     apply_worker_env, worker_env_keys_set, WORKER_ENV_KEYS, WORKER_ENV_MOUNT_PATH,
 };
 
-const HTTP_INTERNAL: u16 = 500;
+pub(crate) const HTTP_INTERNAL: u16 = 500;
 
-/// Suffix appended to the LLM-facing description of every parallel-friendly MCP tool
-/// (see `runtime::is_parallel_friendly_mcp_tool`). Keep it short — every tool description
-/// is part of the request prompt-cache, so token cost multiplies by the tool count.
+/// Suffix appended to the LLM-facing description when MCP `tools/list` annotations allow concurrent calls.
 /// Author: kejiqing
 const PARALLEL_FRIENDLY_TOOL_DESCRIPTION_HINT: &str = "\n\n[parallel-friendly] This tool is safe to call multiple times concurrently within a single assistant turn. When you have N independent sub-questions, emit N tool_use blocks in the same response instead of one per turn; the backend executes them in parallel with bounded concurrency.";
 
-fn decorate_mcp_tool_description(tool_name: &str, original: Option<String>) -> Option<String> {
-    if !mcp_parallel_fanout_enabled() || !is_parallel_friendly_mcp_tool(tool_name) {
+fn decorate_mcp_tool_description(tool: &McpTool, original: Option<String>) -> Option<String> {
+    if default_mcp_max_concurrent() <= 1 || !mcp_tool_parallel_fanout_eligible(tool) {
         return original;
     }
     let base = original.unwrap_or_default();
-    if base.contains("[parallel-friendly]") {
+    if base.contains("[parallel-friendly]") || mcp_description_parallel_friendly(tool) {
         return Some(base);
     }
     let mut decorated = base;
@@ -111,10 +139,25 @@ impl std::fmt::Display for GatewaySolveTurnError {
 
 impl std::error::Error for GatewaySolveTurnError {}
 
-fn err(status: u16, msg: impl Into<String>) -> GatewaySolveTurnError {
+pub(crate) fn err(status: u16, msg: impl Into<String>) -> GatewaySolveTurnError {
     GatewaySolveTurnError {
         status,
         message: msg.into(),
+    }
+}
+
+/// SQLBot session variables: always include `org_id` (empty string if omitted). Author: kejiqing
+#[must_use]
+pub fn normalize_extra_session(extra_session: Option<Value>) -> Option<Value> {
+    match extra_session {
+        None => Some(json!({ "org_id": "" })),
+        Some(Value::Object(mut map)) => {
+            if !map.contains_key("org_id") {
+                map.insert("org_id".to_string(), Value::String(String::new()));
+            }
+            Some(Value::Object(map))
+        }
+        Some(other) => Some(other),
     }
 }
 
@@ -136,16 +179,15 @@ pub struct GatewaySolveTaskFile {
     pub max_iterations: Option<usize>,
     #[serde(rename = "turnId")]
     pub turn_id: String,
-    /// When true, append model text deltas to `.claw/assistant-stream-spill-{turnId}.txt`.
-    #[serde(
-        rename = "assistantStreamSpill",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub assistant_stream_spill: Option<bool>,
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
+    pub pool_id: Option<String>,
+    #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
+    pub worker_name: Option<String>,
 }
 
-fn default_system_date() -> String {
+pub(crate) fn default_system_date() -> String {
     match option_env!("BUILD_DATE") {
         Some(value) if !value.is_empty() => value.to_string(),
         _ => current_utc_date(),
@@ -185,7 +227,7 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     (y as i32, m as u32, d as u32)
 }
 
-fn project_config_loader_root() -> Option<PathBuf> {
+pub(crate) fn project_config_loader_root() -> Option<PathBuf> {
     if let Ok(raw) = std::env::var("CLAW_PROJECT_CONFIG_ROOT") {
         let root = PathBuf::from(raw.trim());
         if root.as_os_str().is_empty() {
@@ -230,22 +272,50 @@ fn gateway_trace_file_path(trace_id: &str, work_root: &Path) -> Option<PathBuf> 
     Some(dir.join(format!("{trace_id}.ndjson")))
 }
 
-fn gateway_session_tracer(request_id: &str, work_root: &Path) -> Option<SessionTracer> {
-    let trace_id = std::env::var("CLAW_TRACE_ID")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| request_id.to_string());
+pub(crate) fn gateway_session_tracer(request_id: &str, work_root: &Path) -> Option<SessionTracer> {
+    let trace_id = resolve_gateway_trace_id(request_id);
     let path = gateway_trace_file_path(&trace_id, work_root)?;
     let sink = JsonlTelemetrySink::new(path).ok()?;
     Some(SessionTracer::new(trace_id, Arc::new(sink)))
 }
 
-fn initialize_mcp_runtime(
+/// Pick MCP tool for multi-agent parallel fan-out: `queryMcpTool`, else description `parallel-friendly`, else annotations.
+#[must_use]
+pub fn resolve_query_fanout_tool_name(
+    registered: &HashSet<String>,
+    concurrent: &HashSet<String>,
+    parallel_friendly: &HashSet<String>,
+    query_mcp_tool: Option<&str>,
+) -> Option<String> {
+    if let Some(spec) = query_mcp_tool.map(str::trim).filter(|s| !s.is_empty()) {
+        if registered.contains(spec) {
+            return Some(spec.to_string());
+        }
+        let suffix = format!("__{spec}");
+        return registered
+            .iter()
+            .find(|n| n.as_str() == spec || n.ends_with(&suffix))
+            .cloned();
+    }
+    parallel_friendly
+        .iter()
+        .find(|name| registered.contains(*name))
+        .cloned()
+        .or_else(|| {
+            concurrent
+                .iter()
+                .find(|name| registered.contains(*name))
+                .cloned()
+        })
+}
+
+pub(crate) fn initialize_mcp_runtime(
     work_dir: &Path,
 ) -> Result<
     (
         Vec<ToolDefinition>,
+        HashSet<String>,
+        HashSet<String>,
         HashSet<String>,
         Option<Arc<StdMutex<McpServerManager>>>,
     ),
@@ -256,7 +326,13 @@ fn initialize_mcp_runtime(
         .map_err(|e| err(HTTP_INTERNAL, format!("load runtime config failed: {e}")))?;
     let mut manager = McpServerManager::from_runtime_config(&runtime_cfg);
     if manager.server_names().is_empty() && manager.unsupported_servers().is_empty() {
-        return Ok((Vec::new(), HashSet::new(), None));
+        return Ok((
+            Vec::new(),
+            HashSet::new(),
+            HashSet::new(),
+            HashSet::new(),
+            None,
+        ));
     }
 
     let report = tokio::task::block_in_place(|| {
@@ -267,15 +343,26 @@ fn initialize_mcp_runtime(
     let manager = Arc::new(StdMutex::new(manager));
     initialize_mcp_bridge(Arc::clone(&manager), &report);
 
+    let mut discovered_tools = report.tools;
+    apply_mcp_tool_annotations_from_config(&mut discovered_tools, runtime_cfg.mcp().servers());
+
+    let concurrent_mcp_tool_names = concurrent_mcp_tool_names(&discovered_tools);
+    let parallel_friendly_mcp_tool_names: HashSet<String> = discovered_tools
+        .iter()
+        .filter(|entry| mcp_description_parallel_friendly(&entry.tool))
+        .map(|entry| entry.qualified_name.clone())
+        .collect();
     let mut runtime_mcp_tools = Vec::new();
     let mut runtime_mcp_tool_names = HashSet::new();
-    for discovered in report.tools {
+    for discovered in discovered_tools {
         let name = discovered.qualified_name;
         let input_schema = discovered
             .tool
             .input_schema
+            .clone()
             .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
-        let description = decorate_mcp_tool_description(&name, discovered.tool.description);
+        let description =
+            decorate_mcp_tool_description(&discovered.tool, discovered.tool.description.clone());
         runtime_mcp_tools.push(ToolDefinition {
             name: name.clone(),
             description,
@@ -284,24 +371,28 @@ fn initialize_mcp_runtime(
         runtime_mcp_tool_names.insert(name);
     }
 
-    Ok((runtime_mcp_tools, runtime_mcp_tool_names, Some(manager)))
+    Ok((
+        runtime_mcp_tools,
+        runtime_mcp_tool_names,
+        concurrent_mcp_tool_names,
+        parallel_friendly_mcp_tool_names,
+        Some(manager),
+    ))
 }
 
-struct DirectApiClient {
+pub(crate) struct DirectApiClient {
     model: String,
     provider: ProviderClient,
     tools: Vec<ToolDefinition>,
     clawcode_session_id: String,
-    stream_spill: Option<Arc<StdMutex<AssistantStreamSpill>>>,
 }
 
 impl DirectApiClient {
-    fn new(
+    pub(crate) fn new(
         model: String,
         allowed_tools: &[String],
         runtime_mcp_tools: Vec<ToolDefinition>,
         clawcode_session_id: String,
-        stream_spill: Option<Arc<StdMutex<AssistantStreamSpill>>>,
     ) -> Result<Self, GatewaySolveTurnError> {
         let provider = ProviderClient::from_model(&model)
             .map_err(|e| err(HTTP_INTERNAL, format!("provider init failed: {e}")))?;
@@ -327,7 +418,6 @@ impl DirectApiClient {
             provider,
             tools,
             clawcode_session_id,
-            stream_spill,
         })
     }
 }
@@ -357,35 +447,42 @@ impl RuntimeApiClient for DirectApiClient {
             ]),
             ..Default::default()
         };
-        if let Some(spill) = &self.stream_spill {
-            if let Ok(spill) = spill.lock() {
-                let _ = spill.begin_iteration();
-            }
-        }
-        let spill_ref = self.stream_spill.as_ref();
+        let mut on_delta = |text: &str| {
+            let _ = emit_report_delta(text);
+        };
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(stream_events::<fn(&str)>(
+            tokio::runtime::Handle::current().block_on(stream_events(
                 &self.provider,
                 &req,
-                None,
-                spill_ref,
+                Some(&mut on_delta),
             ))
         })
         .map_err(|e| RuntimeError::new(e.to_string()))
     }
 }
 
-struct DirectToolExecutor {
+pub struct DirectToolExecutor {
     inner: Arc<DirectToolExecutorInner>,
+}
+
+impl Clone for DirectToolExecutor {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 
 struct DirectToolExecutorInner {
     session_home: PathBuf,
-    session_id: String,
+    mcp_context: GatewayMcpCallContext,
+    /// Parent solve turn model; sub-agents inherit when `Agent` omits `model`. Author: kejiqing
+    turn_model: String,
     allowed_tools: Vec<String>,
-    extra_session: Option<Value>,
     runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
     runtime_mcp_tool_names: HashSet<String>,
+    concurrent_mcp_tools: HashSet<String>,
+    parallel_friendly_mcp_tools: HashSet<String>,
     session_tracer: Option<SessionTracer>,
     mcp_semaphore: Arc<Semaphore>,
     /// `gateway-solve-once` enters this runtime on the main thread; background analysis
@@ -397,23 +494,27 @@ impl DirectToolExecutorInner {
     #[allow(clippy::too_many_arguments)]
     fn new(
         session_home: PathBuf,
-        session_id: String,
+        mcp_context: GatewayMcpCallContext,
+        turn_model: String,
         allowed_tools: Vec<String>,
-        extra_session: Option<Value>,
         runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
         runtime_mcp_tool_names: HashSet<String>,
+        concurrent_mcp_tools: HashSet<String>,
+        parallel_friendly_mcp_tools: HashSet<String>,
         session_tracer: Option<SessionTracer>,
         async_runtime: tokio::runtime::Handle,
     ) -> Self {
         Self {
             session_home,
-            session_id,
+            mcp_context,
+            turn_model,
             allowed_tools,
-            extra_session,
             runtime_mcp_manager,
             runtime_mcp_tool_names,
+            concurrent_mcp_tools,
+            parallel_friendly_mcp_tools,
             session_tracer,
-            mcp_semaphore: Arc::new(Semaphore::new(default_mcp_max_concurrent())),
+            mcp_semaphore: Arc::new(Semaphore::new(default_mcp_max_concurrent().max(1))),
             async_runtime,
         }
     }
@@ -424,8 +525,12 @@ impl DirectToolExecutorInner {
         }
         if tool_name == REPORT_PROGRESS_TOOL_NAME {
             let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-            let result = run_report_progress(&self.session_home, &self.session_id, &parsed)
-                .map_err(ToolError::new)?;
+            let result = run_report_progress(
+                &self.session_home,
+                self.mcp_context.clawcode_session_id(),
+                &parsed,
+            )
+            .map_err(ToolError::new)?;
             if let Some(tracer) = &self.session_tracer {
                 if let Some(progress) = read_task_progress(&self.session_home) {
                     let mut attrs = serde_json::Map::new();
@@ -444,18 +549,18 @@ impl DirectToolExecutorInner {
             if should_emit_tool_progress_event(tool_name, false, Some(&args)) {
                 let _ = record_mcp_tool_started(
                     &self.session_home,
-                    &self.session_id,
-                    self.extra_session.as_ref(),
+                    self.mcp_context.clawcode_session_id(),
+                    self.mcp_context.extra_session.as_ref(),
                     &args,
                 );
             }
-            let out = execute_mcp_tool_with_extra_session(input, self.extra_session.as_ref())
-                .map_err(ToolError::new);
+            let meta = inject_mcp_call_meta(&self.mcp_context);
+            let out = execute_mcp_tool_with_meta(input, Some(&meta)).map_err(ToolError::new);
             if should_emit_tool_progress_event(tool_name, false, Some(&args)) {
                 if let Ok(ref text) = &out {
                     let _ = entity_labels::ingest_entity_labels_from_mcp_response(
                         &self.session_home,
-                        self.extra_session.as_ref(),
+                        self.mcp_context.extra_session.as_ref(),
                         &args,
                         text,
                         false,
@@ -467,6 +572,19 @@ impl DirectToolExecutorInner {
         if self.runtime_mcp_tool_names.contains(tool_name) {
             return self.call_runtime_mcp_tool(tool_name, input);
         }
+        if tool_name == "Agent" {
+            let agent_input: AgentInput = serde_json::from_str(input)
+                .map_err(|e| ToolError::new(format!("invalid Agent tool JSON: {e}")))?;
+            let bus = crate::multi_agent::EventBus::new(&self.session_home);
+            let out = execute_agent_with_mcp_context_and_spawn(
+                agent_input,
+                Some(self.mcp_context.clone()),
+                Some(self.turn_model.as_str()),
+                |job| crate::agent_orchestration::spawn_gateway_agent_with_events(&bus, job),
+            )
+            .map_err(ToolError::new)?;
+            return serde_json::to_string_pretty(&out).map_err(|e| ToolError::new(e.to_string()));
+        }
         let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
         execute_tool(tool_name, &parsed).map_err(ToolError::new)
     }
@@ -477,15 +595,12 @@ impl DirectToolExecutorInner {
         if emit {
             let _ = record_mcp_tool_started(
                 &self.session_home,
-                &self.session_id,
-                self.extra_session.as_ref(),
+                self.mcp_context.clawcode_session_id(),
+                self.mcp_context.extra_session.as_ref(),
                 &args,
             );
         }
-        let meta = self
-            .extra_session
-            .as_ref()
-            .map(|value| json!({ "extra_session": value }));
+        let meta = inject_mcp_call_meta(&self.mcp_context);
         let Some(manager) = &self.runtime_mcp_manager else {
             return Err(ToolError::new("MCP manager not initialized"));
         };
@@ -498,13 +613,14 @@ impl DirectToolExecutorInner {
                 .acquire()
                 .await
                 .map_err(|_| ToolError::new("MCP concurrency semaphore closed"))?;
-            let mut guard = manager
-                .lock()
-                .map_err(|_| ToolError::new("MCP manager lock poisoned"))?;
-            guard
-                .call_tool(&tool_name_owned, Some(args), meta)
-                .await
-                .map_err(|e| ToolError::new(e.to_string()))
+            McpServerManager::call_tool_concurrent(
+                manager,
+                &tool_name_owned,
+                Some(args),
+                Some(meta),
+            )
+            .await
+            .map_err(|e| ToolError::new(e.to_string()))
         });
         match response {
             Ok(resp) => {
@@ -522,7 +638,7 @@ impl DirectToolExecutorInner {
                 if emit {
                     let _ = entity_labels::ingest_entity_labels_from_mcp_response(
                         &self.session_home,
-                        self.extra_session.as_ref(),
+                        self.mcp_context.extra_session.as_ref(),
                         &args_for_labels,
                         &output,
                         false,
@@ -539,6 +655,10 @@ impl SharedToolExecutor for DirectToolExecutorInner {
     fn execute_shared(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
         self.execute_impl(tool_name, input)
     }
+
+    fn allows_concurrent_mcp_call(&self, tool_name: &str) -> bool {
+        self.concurrent_mcp_tools.contains(tool_name)
+    }
 }
 
 impl RuntimeToolExecutor for DirectToolExecutor {
@@ -547,7 +667,7 @@ impl RuntimeToolExecutor for DirectToolExecutor {
     }
 
     fn shared_executor(&self) -> Option<Arc<dyn SharedToolExecutor>> {
-        if !mcp_parallel_fanout_enabled() {
+        if default_mcp_max_concurrent() <= 1 {
             return None;
         }
         Some(self.inner.clone())
@@ -555,6 +675,88 @@ impl RuntimeToolExecutor for DirectToolExecutor {
 }
 
 impl DirectToolExecutor {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        session_home: PathBuf,
+        mcp_context: GatewayMcpCallContext,
+        turn_model: String,
+        allowed_tools: Vec<String>,
+        runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
+        runtime_mcp_tool_names: HashSet<String>,
+        concurrent_mcp_tools: HashSet<String>,
+        parallel_friendly_mcp_tools: HashSet<String>,
+        session_tracer: Option<SessionTracer>,
+        async_runtime: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            inner: Arc::new(DirectToolExecutorInner::new(
+                session_home,
+                mcp_context,
+                turn_model,
+                allowed_tools,
+                runtime_mcp_manager,
+                runtime_mcp_tool_names,
+                concurrent_mcp_tools,
+                parallel_friendly_mcp_tools,
+                session_tracer,
+                async_runtime,
+            )),
+        }
+    }
+
+    /// First registered MCP tool whose `tools/list` annotations allow concurrent calls.
+    #[must_use]
+    pub fn first_concurrent_mcp_tool(&self, registered: &HashSet<String>) -> Option<String> {
+        self.inner
+            .concurrent_mcp_tools
+            .iter()
+            .find(|name| registered.contains(*name))
+            .cloned()
+    }
+
+    /// Resolve MCP tool for multi-agent `query_fanout` (`queryMcpTool` or `parallel-friendly` in description).
+    #[must_use]
+    pub fn resolve_query_fanout_tool(
+        &self,
+        registered: &HashSet<String>,
+        query_mcp_tool: Option<&str>,
+    ) -> Option<String> {
+        resolve_query_fanout_tool_name(
+            registered,
+            &self.inner.concurrent_mcp_tools,
+            &self.inner.parallel_friendly_mcp_tools,
+            query_mcp_tool,
+        )
+    }
+
+    /// Whether fanout should use isolated SQLBot args (`token` + `question`, no shared `chat_id`).
+    #[must_use]
+    pub fn query_fanout_uses_isolated_args(&self, tool_name: &str) -> bool {
+        self.inner.parallel_friendly_mcp_tools.contains(tool_name)
+    }
+
+    pub fn call_tool(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+        self.inner.execute_impl(tool_name, input)
+    }
+
+    pub fn clone_with_allowed_tools(&self, allowed_tools: Vec<String>) -> Self {
+        Self {
+            inner: Arc::new(DirectToolExecutorInner {
+                session_home: self.inner.session_home.clone(),
+                mcp_context: self.inner.mcp_context.clone(),
+                turn_model: self.inner.turn_model.clone(),
+                allowed_tools,
+                runtime_mcp_manager: self.inner.runtime_mcp_manager.clone(),
+                runtime_mcp_tool_names: self.inner.runtime_mcp_tool_names.clone(),
+                concurrent_mcp_tools: self.inner.concurrent_mcp_tools.clone(),
+                parallel_friendly_mcp_tools: self.inner.parallel_friendly_mcp_tools.clone(),
+                session_tracer: self.inner.session_tracer.clone(),
+                mcp_semaphore: Arc::clone(&self.inner.mcp_semaphore),
+                async_runtime: self.inner.async_runtime.clone(),
+            }),
+        }
+    }
+
     #[must_use]
     pub fn allows_tool(&self, tool_name: &str) -> bool {
         is_tool_allowed(tool_name, &self.inner.allowed_tools)
@@ -631,7 +833,6 @@ fn push_text_delta<F>(
     events: &mut Vec<AssistantEvent>,
     text: String,
     on_text_delta: &mut Option<&mut F>,
-    stream_spill: Option<&Arc<StdMutex<AssistantStreamSpill>>>,
 ) where
     F: FnMut(&str),
 {
@@ -641,11 +842,6 @@ fn push_text_delta<F>(
     if let Some(cb) = on_text_delta.as_deref_mut() {
         cb(&text);
     }
-    if let Some(spill) = stream_spill {
-        if let Ok(spill) = spill.lock() {
-            let _ = spill.append(&text);
-        }
-    }
     events.push(AssistantEvent::TextDelta(text));
 }
 
@@ -653,7 +849,6 @@ async fn stream_events<F>(
     provider: &ProviderClient,
     req: &MessageRequest,
     on_text_delta: Option<&mut F>,
-    stream_spill: Option<&Arc<StdMutex<AssistantStreamSpill>>>,
 ) -> Result<Vec<AssistantEvent>, api::ApiError>
 where
     F: FnMut(&str),
@@ -668,7 +863,7 @@ where
                 for block in start.message.content {
                     match block {
                         OutputContentBlock::Text { text } => {
-                            push_text_delta(&mut events, text, &mut on_text_delta, stream_spill);
+                            push_text_delta(&mut events, text, &mut on_text_delta);
                         }
                         OutputContentBlock::ToolUse { id, name, input } => {
                             let initial_input = if input.is_object()
@@ -701,7 +896,7 @@ where
                     pending_tools.insert(start.index, (id, name, initial_input));
                 }
                 OutputContentBlock::Text { text } => {
-                    push_text_delta(&mut events, text, &mut on_text_delta, stream_spill);
+                    push_text_delta(&mut events, text, &mut on_text_delta);
                 }
                 OutputContentBlock::Thinking { thinking, .. } => {
                     if !thinking.is_empty() {
@@ -712,7 +907,7 @@ where
             },
             StreamEvent::ContentBlockDelta(delta) => match delta.delta {
                 ContentBlockDelta::TextDelta { text } => {
-                    push_text_delta(&mut events, text, &mut on_text_delta, stream_spill);
+                    push_text_delta(&mut events, text, &mut on_text_delta);
                 }
                 ContentBlockDelta::InputJsonDelta { partial_json } => {
                     if let Some((_, _, input)) = pending_tools.get_mut(&delta.index) {
@@ -847,7 +1042,7 @@ where
         ]),
         ..Default::default()
     };
-    let events = stream_events(&provider, &req, on_text_delta.as_mut(), None)
+    let events = stream_events(&provider, &req, on_text_delta.as_mut())
         .await
         .map_err(|e| err(HTTP_INTERNAL, format!("polish stream failed: {e}")))?;
     let (output_text, output_json) = polish_output_from_events(&events, &effective_model)?;
@@ -907,16 +1102,31 @@ pub fn run_gateway_solve_turn(
     work_root: &Path,
     prompt: &str,
     model: Option<&str>,
-    _timeout_seconds: u64,
-    clawcode_session_id: &str,
-    extra_session: Option<Value>,
+    timeout_seconds: u64,
+    mcp: GatewayMcpCallContext,
     allowed_tools: Vec<String>,
     max_iterations: usize,
-    turn_id: &str,
-    assistant_stream_spill: bool,
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
+
+    let clawcode_session_id = mcp.clawcode_session_id().to_string();
+
+    let orch_cfg = project_orchestration::resolve_solve_orchestration_config(work_dir);
+    if orch_cfg.is_multi_agent_analysis() {
+        return multi_agent::run_multi_agent_solve_turn(
+            work_dir,
+            work_root,
+            prompt,
+            model,
+            timeout_seconds,
+            mcp,
+            allowed_tools,
+            max_iterations,
+            orch_cfg,
+        );
+    }
+
     let project_cfg = match project_config_loader_root() {
         Some(root) => ConfigLoader::default_for(&root).load().map_err(|e| {
             err(
@@ -932,36 +1142,38 @@ pub fn run_gateway_solve_turn(
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
         .or_else(|| project_cfg.model().map(str::to_string))
         .unwrap_or_else(|| "openai/deepseek-v4-pro".to_string());
-    let system_prompt = load_system_prompt(
+    let mut system_prompt = load_system_prompt(
         work_dir.to_path_buf(),
         default_system_date(),
         std::env::consts::OS,
         "unknown",
-        extra_session.clone(),
+        mcp.extra_session.clone(),
     )
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
-    let (runtime_mcp_tools, runtime_mcp_tool_names, runtime_mcp_manager) =
-        initialize_mcp_runtime(work_dir)?;
-    let stream_spill = if assistant_stream_spill {
-        Some(Arc::new(StdMutex::new(AssistantStreamSpill::new(
-            work_dir, turn_id,
-        ))))
-    } else {
-        None
-    };
+    let (
+        runtime_mcp_tools,
+        runtime_mcp_tool_names,
+        concurrent_mcp_tool_names,
+        parallel_friendly_mcp_tool_names,
+        runtime_mcp_manager,
+    ) = initialize_mcp_runtime(work_dir)?;
     let api_client = DirectApiClient::new(
         effective_model.clone(),
         &allowed_tools,
         runtime_mcp_tools,
-        clawcode_session_id.to_string(),
-        stream_spill.clone(),
+        clawcode_session_id.clone(),
     )?;
-    reset_task_progress(work_dir, clawcode_session_id)
+    reset_task_progress(work_dir, &clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
     let _ = truncate_progress_history(work_dir);
 
+    let orchestration_bus = crate::multi_agent::EventBus::new(work_dir);
+    let _ = orchestration_bus.session_started();
+
     let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
-    let mut session = if gateway_jsonl.exists() {
+    // `true` when this `sessionId` already has `.claw/gateway-solve-session.jsonl` (续聊 turn).
+    let session_is_continuation = gateway_jsonl.exists();
+    let mut session = if session_is_continuation {
         Session::load_from_path(&gateway_jsonl).map_err(|e| {
             err(
                 HTTP_INTERNAL,
@@ -972,25 +1184,25 @@ pub fn run_gateway_solve_turn(
         Session::new().with_persistence_path(gateway_jsonl.clone())
     }
     .with_workspace_root(work_dir);
-    let session_tracer = gateway_session_tracer(clawcode_session_id, work_root);
+    let session_tracer = gateway_session_tracer(&mcp.request_id, work_root);
     let async_runtime = tokio::runtime::Handle::try_current().map_err(|_| {
         err(
             HTTP_INTERNAL,
             "gateway solve requires a Tokio runtime (gateway-solve-once must call run_gateway_solve_turn inside rt.enter())",
         )
     })?;
-    let mut tool_executor = DirectToolExecutor {
-        inner: Arc::new(DirectToolExecutorInner::new(
-            work_dir.to_path_buf(),
-            clawcode_session_id.to_string(),
-            allowed_tools,
-            extra_session,
-            runtime_mcp_manager,
-            runtime_mcp_tool_names,
-            session_tracer.clone(),
-            async_runtime,
-        )),
-    };
+    let mut tool_executor = DirectToolExecutor::new(
+        work_dir.to_path_buf(),
+        mcp,
+        effective_model.clone(),
+        allowed_tools,
+        runtime_mcp_manager,
+        runtime_mcp_tool_names,
+        concurrent_mcp_tool_names,
+        parallel_friendly_mcp_tool_names,
+        session_tracer.clone(),
+        async_runtime,
+    );
     let mut policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
     for spec in mvp_tool_specs() {
         policy = policy.with_tool_requirement(spec.name.to_string(), spec.required_permission);
@@ -1003,7 +1215,14 @@ pub fn run_gateway_solve_turn(
     session
         .push_user_text(prompt)
         .map_err(|e| err(HTTP_INTERNAL, format!("push user message failed: {e}")))?;
-    sqlbot_preflight::run_gateway_resolve_preflight(&mut session, &mut tool_executor)?;
+    // Project preflight (e.g. SQLBot `mcp_start`) once per sessionId, after user text in transcript.
+    if !session_is_continuation {
+        project_preflight::run_first_turn_preflight(work_dir, &mut session, &mut tool_executor)?;
+        let _ = orchestration_bus.preflight_done();
+        if let Some(section) = gateway_schema_prompt_section(work_dir) {
+            system_prompt.push(section);
+        }
+    }
 
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
@@ -1013,9 +1232,6 @@ pub fn run_gateway_solve_turn(
     }
     // Turn deadline is enforced by the gateway pool (`timeout` on `docker exec` + `force_kill_slot`).
     let turn_result = runtime.run_turn_after_user_message(None);
-    if stream_spill.is_some() {
-        let _ = AssistantStreamSpill::mark_turn_stream_complete(work_dir, turn_id);
-    }
     let result =
         turn_result.map_err(|e| err(HTTP_INTERNAL, format!("runtime prompt failed: {e}")))?;
     let message = result
@@ -1093,62 +1309,134 @@ mod persistence_path_tests {
 #[cfg(test)]
 mod parallel_friendly_decoration_tests {
     use super::{decorate_mcp_tool_description, PARALLEL_FRIENDLY_TOOL_DESCRIPTION_HINT};
+    use runtime::McpTool;
+    use serde_json::json;
+
+    fn concurrent_analysis_tool() -> McpTool {
+        McpTool {
+            name: "mcp_question_then_analysis".to_string(),
+            description: Some("Run a SQLBot analysis on a sub-question.".to_string()),
+            input_schema: None,
+            annotations: Some(json!({"readOnlyHint": true})),
+            meta: None,
+        }
+    }
+
+    fn serial_mcp_tool() -> McpTool {
+        McpTool {
+            name: "mcp_question".to_string(),
+            description: Some("Resolve a single entity name.".to_string()),
+            input_schema: None,
+            annotations: None,
+            meta: None,
+        }
+    }
+
+    fn with_mcp_concurrency<F: FnOnce()>(value: &str, f: F) {
+        let _guard = test_env_lock();
+        let prev = std::env::var("CLAW_MCP_MAX_CONCURRENT").ok();
+        std::env::set_var("CLAW_MCP_MAX_CONCURRENT", value);
+        f();
+        if let Some(v) = prev {
+            std::env::set_var("CLAW_MCP_MAX_CONCURRENT", v);
+        } else {
+            std::env::remove_var("CLAW_MCP_MAX_CONCURRENT");
+        }
+    }
+
+    fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[test]
     fn parallel_friendly_tool_gets_hint_appended() {
-        let decorated = decorate_mcp_tool_description(
-            "mcp__sqlbot-streamable__mcp_question_then_analysis",
-            Some("Run a SQLBot analysis on a sub-question.".to_string()),
-        )
-        .expect("decorated description is Some");
-        assert!(decorated.starts_with("Run a SQLBot analysis on a sub-question."));
-        assert!(
-            decorated.ends_with(PARALLEL_FRIENDLY_TOOL_DESCRIPTION_HINT.trim_start_matches('\n'))
-                || decorated.contains(PARALLEL_FRIENDLY_TOOL_DESCRIPTION_HINT)
-        );
-        assert!(decorated.contains("[parallel-friendly]"));
+        with_mcp_concurrency("8", || {
+            let tool = concurrent_analysis_tool();
+            let decorated = decorate_mcp_tool_description(&tool, tool.description.clone())
+                .expect("decorated description is Some");
+            assert!(decorated.starts_with("Run a SQLBot analysis on a sub-question."));
+            assert!(decorated.contains("[parallel-friendly]"));
+            assert!(decorated.contains(PARALLEL_FRIENDLY_TOOL_DESCRIPTION_HINT));
+        });
     }
 
     #[test]
     fn parallel_friendly_tool_without_original_description_still_gets_hint() {
-        let decorated =
-            decorate_mcp_tool_description("mcp__custom__mcp_question_then_analysis", None)
+        with_mcp_concurrency("8", || {
+            let mut tool = concurrent_analysis_tool();
+            tool.description = None;
+            let decorated = decorate_mcp_tool_description(&tool, tool.description.clone())
                 .expect("decorated description is Some");
-        assert!(decorated.contains("[parallel-friendly]"));
-        assert!(decorated.contains("parallel"));
+            assert!(decorated.contains("[parallel-friendly]"));
+        });
     }
 
     #[test]
     fn non_parallel_tool_description_is_unchanged() {
-        let decorated = decorate_mcp_tool_description(
-            "mcp__sqlbot-streamable__mcp_question",
-            Some("Resolve a single entity name.".to_string()),
-        );
+        let tool = serial_mcp_tool();
+        let decorated = decorate_mcp_tool_description(&tool, tool.description.clone());
         assert_eq!(decorated.as_deref(), Some("Resolve a single entity name."));
+        let mut bare = serial_mcp_tool();
+        bare.description = None;
         assert_eq!(
-            decorate_mcp_tool_description("mcp__sqlbot-streamable__mcp_question", None),
+            decorate_mcp_tool_description(&bare, bare.description.clone()),
             None
         );
     }
 
     #[test]
     fn decoration_is_idempotent() {
-        let first = decorate_mcp_tool_description(
-            "mcp__sqlbot-streamable__mcp_question_then_analysis",
-            Some("Run analysis.".to_string()),
-        )
-        .expect("first decoration is Some");
-        let twice = decorate_mcp_tool_description(
-            "mcp__sqlbot-streamable__mcp_question_then_analysis",
-            Some(first.clone()),
-        )
-        .expect("second decoration is Some");
-        assert_eq!(first, twice);
-        assert_eq!(
-            twice.matches("[parallel-friendly]").count(),
-            1,
-            "hint must be appended exactly once"
-        );
+        with_mcp_concurrency("8", || {
+            let tool = concurrent_analysis_tool();
+            let first = decorate_mcp_tool_description(&tool, Some("Run analysis.".to_string()))
+                .expect("first decoration is Some");
+            let mut decorated = concurrent_analysis_tool();
+            decorated.description = Some(first.clone());
+            let twice = decorate_mcp_tool_description(&decorated, decorated.description.clone())
+                .expect("second decoration is Some");
+            assert_eq!(first, twice);
+            assert_eq!(twice.matches("[parallel-friendly]").count(), 1);
+        });
+    }
+
+    #[test]
+    fn serial_when_mcp_max_concurrent_is_one() {
+        with_mcp_concurrency("1", || {
+            let tool = concurrent_analysis_tool();
+            let decorated = decorate_mcp_tool_description(&tool, tool.description.clone());
+            assert_eq!(
+                decorated.as_deref(),
+                Some("Run a SQLBot analysis on a sub-question.")
+            );
+        });
+    }
+}
+
+#[cfg(test)]
+mod extra_session_tests {
+    use super::normalize_extra_session;
+    use serde_json::json;
+
+    #[test]
+    fn normalize_inserts_empty_org_id_when_missing() {
+        let out = normalize_extra_session(Some(json!({"store_id": "S1"}))).unwrap();
+        assert_eq!(out["org_id"], "");
+        assert_eq!(out["store_id"], "S1");
+    }
+
+    #[test]
+    fn normalize_preserves_explicit_org_id() {
+        let out = normalize_extra_session(Some(json!({"org_id": "O99"}))).unwrap();
+        assert_eq!(out["org_id"], "O99");
+    }
+
+    #[test]
+    fn normalize_none_becomes_empty_org_id_only() {
+        let out = normalize_extra_session(None).unwrap();
+        assert_eq!(out, json!({"org_id": ""}));
     }
 }
 
@@ -1168,7 +1456,9 @@ mod gateway_solve_task_file_tests {
             allowed_tools: Some(vec!["bash".into()]),
             max_iterations: Some(4),
             turn_id: "T_a1b2c3d4e5f6478990abcdef12345678".into(),
-            assistant_stream_spill: Some(true),
+            session_id: Some("sess-1".into()),
+            pool_id: None,
+            worker_name: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
@@ -1177,6 +1467,5 @@ mod gateway_solve_task_file_tests {
         assert_eq!(t.model, back.model);
         assert_eq!(t.timeout_seconds, back.timeout_seconds);
         assert_eq!(t.max_iterations, back.max_iterations);
-        assert_eq!(t.assistant_stream_spill, back.assistant_stream_spill);
     }
 }

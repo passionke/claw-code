@@ -117,7 +117,9 @@
 | `sessionId` | string | 否 | 续聊必填；首聊省略则由网关生成 |
 | `question` | string | 是 | 用户自然语言问题，非空；BFF 映射为网关请求体字段 **`userPrompt`** |
 
-Live 报告 spill 由网关单一环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`** 控制（写 spill + 提前 `hasReport` + 报告 SSE）；默认关闭。BFF **无需**再单独传 `assistantStreamSpill`（请求体显式 `false` 仍会关闭该次任务）。
+**Live 报告（stdout-v1，BFF 无需额外开关）**  
+
+Worker 将模型 `TextDelta` 写入 stdout 行 `__CLAW_GATEWAY_STDOUT__` `report.delta`；宿主机 pool daemon 转发至网关 `POST /v1/internal/turns/{turnId}/stdout-event`；Admin/BFF 通过 `GET /v1/biz_advice_report?stream=true` 收 SSE。部署 daemon 时需配置 **`CLAW_GATEWAY_INTERNAL_BASE_URL`** + **`CLAW_GATEWAY_INTERNAL_TOKEN`**（见根目录 `.env.example`）。完整契约见 [`docs/live-report-contract.md`](live-report-contract.md)。
 
 **BFF 侧（设计约定，非对外字段）**  
 
@@ -137,7 +139,7 @@ Live 报告 spill 由网关单一环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SP
 | 项目 | 说明 |
 |------|------|
 | **用途** | 在异步任务 **成功** 后，获取清洗后的业务报告（去除中间过程与工具轨迹） |
-| **映射 claw 网关** | `GET /v1/biz_advice_report?sessionId=<sessionId>&turnId=<turnId>&dsId=…`（BFF 由 `task_id`/`sessionId` 与门店解析 `dsId`）；旧润色路径：`GET /v1/biz_advice_report_bak?task_id=…` |
+| **映射 claw 网关** | `GET /v1/biz_advice_report?sessionId=<sessionId>&turnId=<turnId>&dsId=…&stream=…`（BFF 由 `task_id`/`sessionId` 与门店解析 `dsId`）；紧急备用润色：`GET /v1/biz_advice_report_bak?task_id=…`（默认不用） |
 
 **Query 参数（QueryX 风格）**
 
@@ -153,8 +155,9 @@ Live 报告 spill 由网关单一环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SP
 
 **行为说明**  
 
-- **默认（未设 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`）**：`GET /v1/biz_advice_report` 与 **`biz_advice_report_bak` 同为 LLM 润色**；须 turn **`succeeded`** 后再拉（`has_report` 运行中不会提前为 true）。对外报告正文仍会去掉内部标记 **`__CLAW_REPORT_START__`**（与 spill 开关无关）。  
-- **开启 live spill**（仅设 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`，网关会为 async solve 默认写 spill）：`stream=true` 时 tail spill，结束后 `biz.report.done` 全量正文（无润色）。  
+- **`queued` / `running` + `stream=true`**：网关 live SSE（stdout hub → `biz.report.start` / `biz.report.delta` / `biz.report.done`），无 LLM 润色。  
+- **`succeeded` + `stream=false`**：JSON 正文来自 **`result.outputJson.message`**（`GET /v1/tasks/{task_id}` 内 `result` 字段）。  
+- **`succeeded` + `stream=true`**：默认仍走 live 路径已结束；若需 LLM 润色可显式调 `_bak`（紧急备用，非主路径）。  
 - 非流式 JSON 需 turn 已终态且正文非空。
 
 ---
@@ -182,15 +185,13 @@ Live 报告 spill 由网关单一环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SP
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `current_task_desc` | string | 网关 `GET /v1/tasks/{task_id}` 的 **`currentTaskDesc`**（BFF 映射为本字段）：agent 通过 `report_progress` 写的用户向进度句；排队态由网关生成；**不**暴露 SQLBot/MCP 等内部工具名 |
-| `has_report` | boolean | 网关 **`hasReport`**：该 turn 的增量 spill 中已出现 **`__CLAW_REPORT_START__`** 时为 `true`；前端可在 `has_report === true` 时调用 `GET /api/v1/analysis/report`（映射 `GET /v1/biz_advice_report?sessionId&turnId&dsId&stream=true`） |
+| `has_report` | boolean | 网关 **`hasReport`**：任务 `running` 或 `succeeded` 时为 true（**不表示**已有 delta；无 delta 时 SSE 空转）。BFF/前端在 `running`/`queued` 即可开 live SSE。见 [`docs/live-report-contract.md`](live-report-contract.md) §6.4。 |
 
 **前端建议顺序（hacking）**
 
-1. `POST /api/v1/analysis/async`（live 模式由部署侧 `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1` 开启）  
+1. `POST /api/v1/analysis/async`  
 2. 轮询 `GET /api/v1/analysis/status`，直到 `has_report === true`（或任务终态）  
-3. `has_report === true` 时建立报告 SSE（`stream=true`）；任务 `succeeded` 后 SSE 会切全量 jsonl 并 `biz.report.done`  
-
-网关 solve 的系统提示词（project 级 `CLAUDE.md` **之前**）已要求模型在最终报告正文前单独输出一行 `__CLAW_REPORT_START__`（进入 `assistant-stream-spill-{turnId}.txt`）；无需再在项目 `CLAUDE.md` 里重复写。
+3. 任务进入 `running`/`queued` 后建立报告 SSE（`stream=true`）；终态正文以 `GET /v1/tasks` → **`result.outputJson.message`** 为准
 
 > **实现说明**：权威来源为 `http-gateway-rs` 任务轮询；可选 `GET /v1/sessions/{sessionId}/execution?ds_id=` 获取 `progress` / `progressHistory` / `queue`。
 
@@ -206,6 +207,8 @@ Live 报告 spill 由网关单一环境变量 **`CLAW_GATEWAY_LIVE_BIZ_REPORT_SP
 
 | 日期 | 说明 |
 |------|------|
+| 2026-05-23 | Live 报告对齐 stdout-v1（`docs/live-report-contract.md`）；移除 PG live chunk / assistantStreamSpill 描述 |
+| 2026-05-22 | Live 报告契约初稿（已由 stdout-v1 文档取代） |
 | 2026-05-16 | `current_task_desc` 由网关 `currentTaskDesc` 提供（`report_progress` + 排队/兜底） |
 | 2026-05-12 | 初稿：async / report / status 三条接口、固定租户与业务维度、`sessionId` 串联、`current_task_desc` 约定 |
 | 2026-05-12 | 标明设计稿性质；新增 `GET /api/v1/admittance`（入参四元组、返回 `admittance`）、与分析及调用顺序说明 |

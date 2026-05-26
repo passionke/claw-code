@@ -1,0 +1,6 @@
+# Used inside image build when CLAW_CARGO_OFFLINE=1 (host ran `cargo vendor`). Author: kejiqing
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

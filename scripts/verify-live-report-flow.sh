@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# E2E: solve_async + assistantStreamSpill → poll hasReport → biz_advice_report SSE tail.
+# E2E: solve_async → poll hasReport (stdout-v1) → biz_advice_report SSE tail.
 # Author: kejiqing
 set -euo pipefail
 
@@ -31,9 +31,9 @@ import json, os
 print(json.dumps({
     "dsId": int(os.environ["DS_ID"]),
     "userPrompt": os.environ["QUESTION"],
-    "assistantStreamSpill": True,
     "extraSession": {
         "store_id": os.environ["STORE_ID"],
+        "org_id": os.environ.get("ORG_ID", ""),
         "tenant_code": "GPOS",
         "solution_code": "restaurant",
         "biz_type": "BOSS_REPORT",
@@ -41,7 +41,7 @@ print(json.dumps({
 }, ensure_ascii=False))
 ')"
 
-echo "==> solve_async (assistantStreamSpill=true)"
+echo "==> solve_async"
 ASYNC="$(curl -sf -X POST "${BASE}/v1/solve_async" -H 'Content-Type: application/json' -d "$BODY")"
 echo "$ASYNC" | python3 -m json.tool
 TASK_ID="$(echo "$ASYNC" | python3 -c 'import json,sys; print(json.load(sys.stdin)["taskId"])')"
@@ -81,7 +81,7 @@ print(t.get("status",""), "true" if t.get("hasReport") else "false")
           | python3 -m json.tool | head -n 30
       fi
       if [[ "$HAS_REPORT" != "true" && "$STATUS" == "succeeded" ]]; then
-        echo "WARN: succeeded but hasReport was never true (check spill / model emitted __CLAW_REPORT_START__)" >&2
+        echo "WARN: succeeded but hasReport was never true (check worker CLAW_GATEWAY_INTERNAL_* and TextDelta ingest)" >&2
         exit 1
       fi
       exit 0

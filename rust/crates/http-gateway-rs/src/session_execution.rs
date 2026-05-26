@@ -35,6 +35,8 @@ pub struct SessionExecutionTask {
     pub status: String,
     #[serde(rename = "hasReport")]
     pub has_report: bool,
+    #[serde(rename = "reportTime", skip_serializing_if = "Option::is_none")]
+    pub report_time_ms: Option<i64>,
     #[serde(rename = "createdAtMs")]
     pub created_at_ms: i64,
     #[serde(rename = "startedAtMs", skip_serializing_if = "Option::is_none")]

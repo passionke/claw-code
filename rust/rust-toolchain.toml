@@ -1,6 +1,5 @@
-# Pinned stable for workspace + container builds (see deploy/stack/Containerfile.gateway-*).
-# Bump together with ARG RUST_BASE_IMAGE `rust:MAJOR.MINOR-bookworm`. Author: kejiqing
+# Locked for host rustup, CI, and pack-deploy (podman rust:1.88-bookworm). Do not bump one side only.
+# Author: kejiqing
 [toolchain]
-channel = "1.88"
+channel = "1.88.0"
 components = ["rustfmt", "clippy"]
-profile = "minimal"

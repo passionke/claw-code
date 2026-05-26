@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::config::{ConfigError, ConfigLoader, RuntimeConfig};
 use crate::git_context::GitContext;
+use crate::json::JsonValue;
 
 /// Errors raised while assembling the final system prompt.
 #[derive(Debug)]
@@ -40,6 +41,9 @@ impl From<ConfigError> for PromptBuildError {
 
 /// Marker separating static prompt scaffolding from dynamic runtime context.
 pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
+/// `.claw/settings.json` key: when truthy (default), omit hardcoded intro/system/doing-tasks/actions
+/// if any non-empty instruction file (e.g. `home/CLAUDE.md`) is present. Author: kejiqing
+pub const AUTO_HIDDEN_SYSTEM_PROMPT_KEY: &str = "auto_hidden_system_prompt";
 /// Human-readable default frontier model name embedded into generated prompts.
 pub const FRONTIER_MODEL_NAME: &str = "Claude Opus 4.6";
 
@@ -103,6 +107,8 @@ pub struct ProjectContext {
     pub git_diff: Option<String>,
     pub git_context: Option<GitContext>,
     pub instruction_files: Vec<ContextFile>,
+    /// `home/.cursor/rules/*.mdc` from `project_config.rulesJson` (after CLAUDE.md in prompt). kejiqing
+    pub rule_files: Vec<ContextFile>,
     /// HTTP gateway `extraSession` payload merged into `# Project context`. Author: kejiqing.
     pub extra_session: Option<Value>,
 }
@@ -114,6 +120,7 @@ impl ProjectContext {
     ) -> std::io::Result<Self> {
         let cwd = cwd.into();
         let instruction_files = discover_instruction_files(&cwd)?;
+        let rule_files = discover_project_rules_files(&cwd)?;
         Ok(Self {
             cwd,
             current_date: current_date.into(),
@@ -121,6 +128,7 @@ impl ProjectContext {
             git_diff: None,
             git_context: None,
             instruction_files,
+            rule_files,
             extra_session: None,
         })
     }
@@ -137,8 +145,13 @@ impl ProjectContext {
     }
 }
 
+/// Gateway-written full system prompt override (non-empty → skip scaffold + project sections).
+pub const GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL: &str = ".claw/system_prompt_user_override.md";
+/// Gateway-written builtin scaffold from DB (`gateway_global_settings.system_prompt_default`).
+pub const GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL: &str = ".claw/system_prompt_scaffold.md";
+
 /// Builder for the runtime system prompt and dynamic environment sections.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Default)]
 pub struct SystemPromptBuilder {
     output_style_name: Option<String>,
     output_style_prompt: Option<String>,
@@ -147,6 +160,8 @@ pub struct SystemPromptBuilder {
     append_sections: Vec<String>,
     project_context: Option<ProjectContext>,
     config: Option<RuntimeConfig>,
+    /// When set, replaces hardcoded intro/system/doing-tasks/actions blocks.
+    builtin_scaffold_override: Option<String>,
 }
 
 impl SystemPromptBuilder {
@@ -188,22 +203,42 @@ impl SystemPromptBuilder {
     }
 
     #[must_use]
+    pub fn with_builtin_scaffold_override(mut self, text: Option<String>) -> Self {
+        self.builtin_scaffold_override = text.filter(|s| !s.trim().is_empty());
+        self
+    }
+
+    #[must_use]
     pub fn build(&self) -> Vec<String> {
         let mut sections = Vec::new();
-        sections.push(get_simple_intro_section(self.output_style_name.is_some()));
-        if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt) {
-            sections.push(format!("# Output Style: {name}\n{prompt}"));
+        if let Some(scaffold) = self.builtin_scaffold_override.as_ref() {
+            sections.push(scaffold.trim().to_string());
+            if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt)
+            {
+                sections.push(format!("# Output Style: {name}\n{prompt}"));
+            }
+        } else if self.should_include_hardcoded_builtin_scaffold() {
+            sections.push(get_simple_intro_section(self.output_style_name.is_some()));
+            if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt)
+            {
+                sections.push(format!("# Output Style: {name}\n{prompt}"));
+            }
+            sections.push(get_simple_system_section());
+            sections.push(get_simple_doing_tasks_section());
+            sections.push(get_actions_section());
         }
-        sections.push(get_simple_system_section());
-        sections.push(get_simple_doing_tasks_section());
-        sections.push(get_actions_section());
         sections.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY.to_string());
-        sections.push(self.environment_section());
         if let Some(project_context) = &self.project_context {
-            sections.push(render_project_context(project_context));
             if !project_context.instruction_files.is_empty() {
                 sections.push(render_instruction_files(&project_context.instruction_files));
             }
+            if !project_context.rule_files.is_empty() {
+                sections.push(render_project_rules(&project_context.rule_files));
+            }
+        }
+        sections.push(self.environment_section());
+        if let Some(project_context) = &self.project_context {
+            sections.push(render_project_context(project_context));
         }
         if let Some(config) = &self.config {
             sections.push(render_config_section(config));
@@ -215,6 +250,16 @@ impl SystemPromptBuilder {
     #[must_use]
     pub fn render(&self) -> String {
         self.build().join("\n\n")
+    }
+
+    fn should_include_hardcoded_builtin_scaffold(&self) -> bool {
+        if !auto_hidden_system_prompt_enabled(self.config.as_ref()) {
+            return true;
+        }
+        let Some(ctx) = &self.project_context else {
+            return true;
+        };
+        ctx.instruction_files.is_empty()
     }
 
     fn environment_section(&self) -> String {
@@ -239,6 +284,37 @@ impl SystemPromptBuilder {
         ]));
         lines.join("\n")
     }
+}
+
+/// Whether [`AUTO_HIDDEN_SYSTEM_PROMPT_KEY`] is enabled (default **true** when unset).
+#[must_use]
+pub fn auto_hidden_system_prompt_enabled(config: Option<&RuntimeConfig>) -> bool {
+    let Some(config) = config else {
+        return true;
+    };
+    let Some(value) = config.get(AUTO_HIDDEN_SYSTEM_PROMPT_KEY) else {
+        return true;
+    };
+    parse_settings_truthy(value, true)
+}
+
+fn parse_settings_truthy(value: &JsonValue, default_when_unrecognized: bool) -> bool {
+    if let Some(b) = value.as_bool() {
+        return b;
+    }
+    if let Some(n) = value.as_i64() {
+        return n != 0;
+    }
+    if let Some(s) = value.as_str() {
+        let t = s.trim();
+        if matches!(t, "0" | "false" | "no" | "off") {
+            return false;
+        }
+        if matches!(t, "1" | "true" | "yes" | "on") {
+            return true;
+        }
+    }
+    default_when_unrecognized
 }
 
 /// Formats each item as an indented bullet for prompt sections.
@@ -269,6 +345,40 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
         }
     }
     Ok(dedupe_instruction_files(files))
+}
+
+/// Materialized `project_config` rules under `home/.cursor/rules/` (nearest ancestor from `cwd`). kejiqing
+fn discover_project_rules_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
+    let mut cursor = Some(cwd);
+    while let Some(dir) = cursor {
+        let rules_root = dir.join("home").join(".cursor").join("rules");
+        if fs::metadata(&rules_root).is_ok_and(|m| m.is_dir()) {
+            let mut files = Vec::new();
+            collect_rule_mdc_files(&rules_root, &mut files)?;
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+            return Ok(files);
+        }
+        cursor = dir.parent();
+    }
+    Ok(Vec::new())
+}
+
+fn collect_rule_mdc_files(dir: &Path, out: &mut Vec<ContextFile>) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_rule_mdc_files(&path, out)?;
+        } else if entry.file_type()?.is_file() {
+            let is_mdc = path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("mdc"));
+            if is_mdc {
+                push_context_file(out, path)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn push_context_file(files: &mut Vec<ContextFile>, path: PathBuf) -> std::io::Result<()> {
@@ -405,6 +515,35 @@ fn render_instruction_files(files: &[ContextFile]) -> String {
     sections.join("\n\n")
 }
 
+/// Project rules section — always after `# Claude instructions` (CLAUDE.md). Author: kejiqing
+fn render_project_rules(files: &[ContextFile]) -> String {
+    let mut sections = vec![
+        "# Project rules".to_string(),
+        "Rules from `project_config.rulesJson` (materialized under `home/.cursor/rules/`)."
+            .to_string(),
+    ];
+    let mut remaining_chars = max_total_instruction_chars();
+    for file in files {
+        if remaining_chars == 0 {
+            sections.push(
+                "_Additional rule content omitted after reaching the prompt budget._".to_string(),
+            );
+            break;
+        }
+        let label = file.path.file_name().map_or_else(
+            || file.path.display().to_string(),
+            |n| n.to_string_lossy().to_string(),
+        );
+        let raw_content = truncate_instruction_content(&file.content, remaining_chars);
+        let rendered_content = render_instruction_content(&raw_content);
+        let consumed = rendered_content.chars().count().min(remaining_chars);
+        remaining_chars = remaining_chars.saturating_sub(consumed);
+        sections.push(format!("## {label}"));
+        sections.push(rendered_content);
+    }
+    sections.join("\n\n")
+}
+
 fn dedupe_instruction_files(files: Vec<ContextFile>) -> Vec<ContextFile> {
     let mut deduped = Vec::new();
     let mut seen_hashes = Vec::new();
@@ -483,6 +622,40 @@ fn collapse_blank_lines(content: &str) -> String {
     result
 }
 
+/// Default builtin scaffold (seeded into `gateway_global_settings.system_prompt_default`). Author: kejiqing
+#[must_use]
+pub fn builtin_system_prompt_scaffold_default() -> String {
+    [
+        get_simple_intro_section(false),
+        get_simple_system_section(),
+        get_simple_doing_tasks_section(),
+        get_actions_section(),
+    ]
+    .join("\n\n")
+}
+
+fn read_gateway_user_prompt_override(cwd: &Path) -> Option<String> {
+    let path = cwd.join(GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL);
+    let text = fs::read_to_string(path).ok()?;
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn read_gateway_scaffold_override(cwd: &Path) -> Option<String> {
+    let path = cwd.join(GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL);
+    let text = fs::read_to_string(path).ok()?;
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 /// Loads config and project context, then renders the system prompt text.
 pub fn load_system_prompt(
     cwd: impl Into<PathBuf>,
@@ -492,6 +665,10 @@ pub fn load_system_prompt(
     extra_session: Option<Value>,
 ) -> Result<Vec<String>, PromptBuildError> {
     let cwd = cwd.into();
+    if let Some(override_text) = read_gateway_user_prompt_override(&cwd) {
+        return Ok(vec![override_text]);
+    }
+    let scaffold_override = read_gateway_scaffold_override(&cwd);
     let mut project_context = ProjectContext::discover_with_git(&cwd, current_date.into())?;
     project_context.extra_session = extra_session;
     let config = ConfigLoader::default_for(&cwd).load()?;
@@ -499,6 +676,7 @@ pub fn load_system_prompt(
         .with_os(os_name, os_version)
         .with_project_context(project_context)
         .with_runtime_config(config)
+        .with_builtin_scaffold_override(scaffold_override)
         .build())
 }
 
@@ -566,36 +744,112 @@ fn get_simple_doing_tasks_section() -> String {
         .join("\n")
 }
 
-/// Relative path under ds workspace root for `SQLBot` table catalog (`ds_*/home/DATA_CATALOG.md`). Author: kejiqing
+/// Relative path under session / `ds_*` home: table DDL from `mcp_datasource_tables`. Author: kejiqing
+pub const GATEWAY_SCHEMA_MD_REL: &str = "home/schema.md";
+/// Tables + relation graph from `mcp_datasource_list` (`table_relation`). Author: kejiqing
+pub const GATEWAY_TABLES_AND_RELS_MD_REL: &str = "home/tables_and_rels.md";
+/// Terminology library from `mcp_datasource_terminologies`. Author: kejiqing
+pub const GATEWAY_TERMINOLOGIES_MD_REL: &str = "home/terminologies.md";
+/// Few-shot SQL examples from `mcp_datasource_examples`. Author: kejiqing
+pub const GATEWAY_SQL_EXAMPLES_MD_REL: &str = "home/sql_examples.md";
+
+/// Legacy catalog path (mount fallback only). Author: kejiqing
 pub const GATEWAY_DATA_CATALOG_REL: &str = "home/DATA_CATALOG.md";
 
-/// Marker streamed into `assistant-stream-spill-{turnId}.txt`; gateway `GET /v1/tasks` sets `hasReport`. Author: kejiqing
+/// Marker in model output; worker emits `report.delta` on stdout; gateway `GET /v1/tasks` sets `hasReport`. Author: kejiqing
 pub const GATEWAY_LIVE_REPORT_START_MARKER: &str = "__CLAW_REPORT_START__";
 
 /// `SQLBot` MCP start tool (gateway ds workspaces). Author: kejiqing
 pub const GATEWAY_SQLBOT_MCP_START_TOOL: &str = "mcp__sqlbot-streamable__mcp_start";
 
-/// `SQLBot` MCP datasource catalog tools (gateway preflight). Author: kejiqing
+/// `SQLBot` MCP datasource tools (gateway solve preflight). Author: kejiqing
 pub const GATEWAY_SQLBOT_MCP_DATASOURCE_LIST_TOOL: &str =
     "mcp__sqlbot-streamable__mcp_datasource_list";
 pub const GATEWAY_SQLBOT_MCP_DATASOURCE_TABLES_TOOL: &str =
     "mcp__sqlbot-streamable__mcp_datasource_tables";
+pub const GATEWAY_SQLBOT_MCP_DATASOURCE_TERMINOLOGIES_TOOL: &str =
+    "mcp__sqlbot-streamable__mcp_datasource_terminologies";
+pub const GATEWAY_SQLBOT_MCP_DATASOURCE_EXAMPLES_TOOL: &str =
+    "mcp__sqlbot-streamable__mcp_datasource_examples";
 
-/// Load `home/DATA_CATALOG.md` walking up from session cwd (e.g. `ds_1/sessions/<id>` → `ds_1/home/...`).
-#[must_use]
-pub fn load_gateway_data_catalog(cwd: &Path) -> Option<String> {
+fn gateway_ds_home_file_exists(cwd: &Path, rel_under_ds: &str) -> Option<PathBuf> {
     let mut cursor = Some(cwd);
     while let Some(dir) = cursor {
-        let path = dir.join(GATEWAY_DATA_CATALOG_REL);
-        if let Ok(text) = fs::read_to_string(&path) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(text);
+        if dir.join("home").is_dir() {
+            let path = dir.join(rel_under_ds);
+            if path.is_file() {
+                return Some(path);
             }
         }
         cursor = dir.parent();
     }
     None
+}
+
+/// Short system-prompt reminder when `SQLBot` preflight materialized any `home/*.md` context files.
+#[must_use]
+pub fn gateway_schema_prompt_section(cwd: &Path) -> Option<String> {
+    gateway_sqlbot_preflight_prompt_section(cwd)
+}
+
+/// Lists session-local `SQLBot` preflight markdown files present under `home/`. Author: kejiqing
+#[must_use]
+pub fn gateway_sqlbot_preflight_prompt_section(cwd: &Path) -> Option<String> {
+    const ENTRIES: [(&str, &str); 4] = [
+        (GATEWAY_SCHEMA_MD_REL, "table DDL and column definitions"),
+        (
+            GATEWAY_TABLES_AND_RELS_MD_REL,
+            "table inventory and relation graph from datasource list",
+        ),
+        (GATEWAY_TERMINOLOGIES_MD_REL, "business terminology"),
+        (GATEWAY_SQL_EXAMPLES_MD_REL, "few-shot SQL examples"),
+    ];
+    let mut lines = vec![
+        "# SQLBot context (preflight, session-local)".to_string(),
+        "Read these files via Read/bash before NL/SQL queries; do not guess schema or terms."
+            .to_string(),
+    ];
+    let mut any = false;
+    for (rel, desc) in ENTRIES {
+        if let Some(path) = gateway_ds_home_file_exists(cwd, rel) {
+            any = true;
+            lines.push(format!("- `{rel}` ({desc}) at `{}`", path.display()));
+        }
+    }
+    if !any {
+        return None;
+    }
+    lines.push(
+        "Use the latest `mcp_start` tool_result in the transcript for `access_token` and `chat_id`."
+            .to_string(),
+    );
+    Some(lines.join("\n"))
+}
+
+/// Load `home/schema.md` walking up from session cwd (e.g. `ds_1/sessions/<id>` → `ds_1/home/schema.md`).
+#[must_use]
+pub fn load_gateway_schema_md(cwd: &Path) -> Option<String> {
+    let path = gateway_ds_home_file_exists(cwd, GATEWAY_SCHEMA_MD_REL)?;
+    let text = fs::read_to_string(&path).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// Load legacy `home/DATA_CATALOG.md` if present. Author: kejiqing
+#[must_use]
+pub fn load_gateway_data_catalog(cwd: &Path) -> Option<String> {
+    let path = gateway_ds_home_file_exists(cwd, GATEWAY_DATA_CATALOG_REL)?;
+    let text = fs::read_to_string(&path).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 fn get_actions_section() -> String {
@@ -609,10 +863,10 @@ fn get_actions_section() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        collapse_blank_lines, display_context_path, max_instruction_file_chars,
-        normalize_instruction_content, render_instruction_content, render_instruction_files,
-        truncate_instruction_content, ContextFile, ProjectContext, SystemPromptBuilder,
-        DEFAULT_MAX_INSTRUCTION_FILE_CHARS, INSTRUCTION_FILE_MAX_CHARS_ENV,
+        auto_hidden_system_prompt_enabled, collapse_blank_lines, display_context_path,
+        max_instruction_file_chars, normalize_instruction_content, render_instruction_content,
+        render_instruction_files, truncate_instruction_content, ContextFile, ProjectContext,
+        SystemPromptBuilder, DEFAULT_MAX_INSTRUCTION_FILE_CHARS, INSTRUCTION_FILE_MAX_CHARS_ENV,
         SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     };
     use crate::config::ConfigLoader;
@@ -938,13 +1192,115 @@ mod tests {
     }
 
     #[test]
+    fn auto_hidden_system_prompt_omits_builtin_when_claude_md_present() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("temp dir");
+        fs::write(root.join("CLAUDE.md"), "Project rules").expect("write claude");
+        let ctx = ProjectContext::discover(&root, "2026-03-31").expect("discover");
+        let rendered = SystemPromptBuilder::new()
+            .with_project_context(ctx)
+            .render();
+        assert!(rendered.contains("# Claude instructions"));
+        assert!(!rendered.contains("# System"));
+        assert!(!rendered.contains("You are an interactive agent"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn auto_hidden_system_prompt_disabled_keeps_builtin_with_claude_md() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::write(root.join("CLAUDE.md"), "Project rules").expect("write claude");
+        fs::write(
+            root.join(".claw/settings.json"),
+            r#"{"auto_hidden_system_prompt": false}"#,
+        )
+        .expect("write settings");
+        let ctx = ProjectContext::discover(&root, "2026-03-31").expect("discover");
+        let config = ConfigLoader::default_for(&root)
+            .load()
+            .expect("load config");
+        let rendered = SystemPromptBuilder::new()
+            .with_project_context(ctx)
+            .with_runtime_config(config)
+            .render();
+        assert!(rendered.contains("# Claude instructions"));
+        assert!(rendered.contains("# System"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn auto_hidden_system_prompt_parses_numeric_zero_as_disabled() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::write(
+            root.join(".claw/settings.json"),
+            r#"{"auto_hidden_system_prompt": 0}"#,
+        )
+        .expect("write settings");
+        let config = ConfigLoader::default_for(&root)
+            .load()
+            .expect("load config");
+        assert!(!auto_hidden_system_prompt_enabled(Some(&config)));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn system_prompt_orders_instructions_before_environment_context() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("temp dir");
+        fs::write(root.join("CLAUDE.md"), "CLAUDE body").expect("write claude");
+        let ctx = ProjectContext::discover(&root, "2026-03-31").expect("discover");
+        let rendered = SystemPromptBuilder::new()
+            .with_os("linux", "6.8")
+            .with_project_context(ctx)
+            .render();
+        let claude_idx = rendered
+            .find("# Claude instructions")
+            .expect("claude instructions section");
+        let env_idx = rendered
+            .find("# Environment context")
+            .expect("environment context section");
+        assert!(
+            claude_idx < env_idx,
+            "Claude instructions must precede environment context"
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn system_prompt_orders_rules_after_claude_instructions() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join("home/.cursor/rules")).expect("rules dir");
+        fs::write(root.join("home/CLAUDE.md"), "CLAUDE body").expect("write claude");
+        fs::write(root.join("home/.cursor/rules/safety.mdc"), "rule body").expect("write rule");
+        let ctx = ProjectContext::discover(&root, "2026-03-31").expect("discover");
+        let rendered = SystemPromptBuilder::new()
+            .with_project_context(ctx)
+            .render();
+        let claude_idx = rendered
+            .find("# Claude instructions")
+            .expect("claude instructions section");
+        let rules_idx = rendered
+            .find("# Project rules")
+            .expect("project rules section");
+        assert!(
+            claude_idx < rules_idx,
+            "rules must follow CLAUDE instructions"
+        );
+        assert!(rendered.contains("CLAUDE body"));
+        assert!(rendered.contains("rule body"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn renders_claude_code_style_sections_with_project_context() {
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
         fs::write(root.join("CLAUDE.md"), "Project rules").expect("write CLAUDE.md");
         fs::write(
             root.join(".claw").join("settings.json"),
-            r#"{"permissionMode":"acceptEdits"}"#,
+            r#"{"permissionMode":"acceptEdits","auto_hidden_system_prompt":false}"#,
         )
         .expect("write settings");
 

@@ -1,84 +1,76 @@
-# Claw Gateway persistence model
+# Gateway persistence model (solve / turns / tasks)
 
 Author: kejiqing
 
-## Write contract（团队口径）
+This document aligns runtime behavior with the **Claw persistence design** plan (`.cursor/plans/claw_persistence_design_*.plan.md`) while keeping a **KISS split** between disk and PostgreSQL.
 
-| 阶段 | 权威写入 | 说明 |
-|------|----------|------|
-| **Solve 运行中** | 会话目录本地（`.claw/gateway-solve-session.jsonl` 等） | Worker / `ConversationRuntime` 主写本地；**不要求**每条 `push_message` 同步 PG |
-| **Solve 正常结束** | **Flush → PostgreSQL** | `persist_turn_after_solve`：`cc_messages`、`gateway_turns` 结果列、用量/容器等 |
-| **跨请求 / 多机 / 网关重启后的续聊** | **PostgreSQL** | `ensure_jsonl_from_db` 用 DB 重建 jsonl 给 worker；BFF/API 读报告、transcript 以 PG 为准 |
-| **运行中崩溃 / 取消** | 允许丢失当轮未 flush 片段 | 交接时从 **上一段已 flush 的 turn** 继续，等价于从 checkpoint **replay** |
+## Principles
 
-**不是**「运行时每条消息双写 PG + jsonl」。PG 是 **交接与续聊** 的唯一真相源；本地 jsonl 是 **单轮热路径**，结束后再提交。
+1. **Runtime source of truth: local files** — Continuation and model/tool loops use `.claw/gateway-solve-session.jsonl` under the session home (same process / same volume as today). Intermediate iterations do not need a separate DB authority.
+2. **Handoff / restart source of truth: PostgreSQL** — When a user turn ends, the gateway writes a **terminal snapshot** on `gateway_turns` (`report_message`, `output_json`, `claw_exit_code`, `user_prompt`, status timestamps). After a gateway restart, **`GET /v1/tasks/{task_id}`** and formal report resolution use this row before relying on in-memory `TaskRecord`.
+3. **Retry / idempotency boundary: `turn_id` (`T_<32 hex>`)** — A failed or abandoned turn is retried by issuing a **new** `turn_id` on the next solve; there is no requirement to resume half-finished model iterations from DB.
 
-```mermaid
-flowchart LR
-  subgraph running [Solve 运行中]
-    RT[ConversationRuntime] --> L[session_home jsonl]
-  end
-  subgraph commit [Solve 结束 flush]
-    L -->|persist_turn_after_solve| PG[(PostgreSQL)]
-  end
-  subgraph handoff [续聊 / 另一节点]
-    PG -->|ensure_jsonl_from_db| L2[worker jsonl 缓存]
-    L2 --> RT2[下一轮 solve]
-  end
-```
+## `gateway_turns` (extended)
 
-**性能**：相对 LLM/MCP 延迟，结束时的批量 flush 与按 session 加载通常不是瓶颈；大 `blocks` 更需控制行体积（报告走 `report_message`）。
+| Column | Role |
+| --- | --- |
+| `turn_id` | Primary key; one row per user solve submission. |
+| `session_id`, `ds_id` | Session scope; matches `gateway_sessions`. |
+| `status` | `queued` / `running` / `succeeded` / `failed` / `cancelled`. |
+| `created_at_ms`, `finished_at_ms` | Ordering within a session (used with `turn_id` for stable **turn index** when slicing jsonl). |
+| `user_prompt` | Optional copy of the user prompt for auditing. |
+| `report_message` | Formal report body for this turn (same basis as `outputJson.message` / `report_body_from_solve_output`). |
+| `output_json` | Optional full solve JSON payload for handoff. |
+| `claw_exit_code` | Exit code from the worker when succeeded. |
 
-## ID glossary
+Schema is applied at gateway startup via `GatewaySessionDb::migrate` (`ALTER TABLE ... IF NOT EXISTS` for new columns). Per-`ds_id` agent bundle storage lives in **`project_config`** (see `docs/project-config-model.md`).
 
-| Concept | ID | Table |
-|---------|-----|--------|
-| Project | `ds_id` | `gateway_projects` |
-| Session | `session_id` | `gateway_sessions` |
-| User turn | `turn_id` (`T_{32hex}`) | `gateway_turns` |
-| Runtime iteration | `iteration_id` (UUID) | `gateway_runtime_iterations` |
-| Message | `message_id` (BIGSERIAL) | `cc_messages` |
-| Async task | `task_id` (= `session_id`) | `gateway_async_tasks` |
+## Gateway process restart
 
-`task_id` for async solve equals `session_id`. Trace labels `turn-1`, `turn-2` are **runtime iterations** (`iteration_index`), not gateway `turn_id`.
+On **each** gateway binary startup, `reconcile_interrupted_turns_on_startup` sets every `gateway_turns` row still in **`queued`** or **`running`** to **`failed`**, with `output_json` explaining `restartReconciled` (process-local: no in-memory worker or pool lease survives restart). **Succeeded / failed / cancelled** rows are untouched.
 
-## Tables (Phase 1)
+This matches the rule: after restart, an “in-flight” DB row is not trustworthy as live work; clients should treat it as **interrupted / failed**, not as still runnable without a new solve.
 
-- **`gateway_projects`** — workspace metadata per `ds_id`
-- **`gateway_sessions`** — session index + `session_home_rel` (worker 挂载路径)
-- **`gateway_turns`** — user turns: `user_prompt`, `report_message`, `output_json`, status
-- **`cc_messages`** — `blocks` JSONB aligned with `runtime::ContentBlock`（flush 后可见）
-- **`gateway_runtime_iterations`** — iteration 元数据（flush 时写入基础行）
-- **`gateway_async_tasks`** — 异步任务状态；重启后可读 PG
-- **`gateway_model_usage`**, **`gateway_turn_container_runs`**, **`gateway_turn_runtime_config`** — 每轮快照（solve 结束时写入，config 表待补全）
-- **`gateway_session_artifacts`** — spill/trace 等（Phase 2）
-- **`gateway_feedback`** — unchanged
+**Multi-gateway caveat:** this `UPDATE` is global to the database. If several gateway instances share one PostgreSQL and you rely on cross-host `queued`/`running` semantics, do not use this as-is; scope reconciliation by instance id or drop the startup sweep.
 
-Migrations: `rust/crates/http-gateway-rs/migrations/`，`GatewaySessionDb::connect` 时执行。
+## `POST /v1/tasks/{task_id}/cancel`
 
-## Transcript
+- **Memory hit** (async worker still tracked): same as before — abort host task, `docker_slots` / `force_kill_slot` when present, then `gateway_turns` → `cancelled` for that `turnId`.
+- **Memory miss** (“cold cancel”): read **latest** `gateway_turns` for `session_id = task_id`. If that row is already **`succeeded` / `failed` / `cancelled`**, return **200** with the same **idempotent** `error` payload as the in-memory path (no DB status change). If the row is **`queued` / `running`**, write **`cancelled`** in PG only (no pool kill — there is no local handle). If there is **no** turn row for that session id, **404**.
 
-只读投影，数据来自 **`cc_messages`**（已 flush 的 turn），非运行中半成品。
+## Formal report resolution
 
-- **Session / Turn 作用域**：`GET /v1/sessions/{sessionId}/transcript?dsId=&turnId=&format=json|jsonl`
-- **可选**：`CLAW_SESSION_EXPORT_JSONL=1` 在 flush 后额外镜像 jsonl（非 SoT）
+| 场景 | 路径 | 正文来源 |
+| --- | --- | --- |
+| **运行中 live** | `GET /v1/biz_advice_report?stream=true`（`queued`/`running`） | stdout hub SSE（见 [`docs/live-report-contract.md`](live-report-contract.md)） |
+| **终态 JSON（默认）** | `GET /v1/tasks/{task_id}` → `result.outputJson.message` | Worker `solve.done` 落盘 |
+| **终态非流式 API** | `GET /v1/biz_advice_report?stream=false`（`succeeded`） | `report_body_from_solve_output` → 内存 `TaskRecord` 或 **`gateway_turns.report_message`** |
+| **重启后冷读** | `try_load_task_record` + PG | **`gateway_turns`** 行；缺省时 turn-scoped jsonl（`session_report.rs`） |
+| **紧急 LLM 润色（备用）** | `GET /v1/biz_advice_report_bak` | DeepSeek polish；默认不用，代码保留 |
 
-工具调用仍在 `blocks`（`tool_use` / `tool_result`）；Phase 2 可选 `cc_tool_invocations` 派生表。
+## Related code
 
-## Report per turn
+- `rust/crates/http-gateway-rs/src/session_db.rs` — DDL + repositories.
+- `rust/crates/http-gateway-rs/src/main.rs` — `finalize_solve_turn_*`, `try_load_task_record`, solve/async/cancel wiring.
+- `rust/crates/http-gateway-rs/src/turn_stdout_hub.rs` — in-memory live report buffer.
+- `rust/crates/http-gateway-rs/src/turn_stdout_live_sse.rs` — `GET /v1/biz_advice_report?stream=true` while `running`.
+- `rust/crates/gateway-solve-turn/src/gateway_stdout.rs` — worker stdout `__CLAW_GATEWAY_STDOUT__` lines.
+- `rust/crates/gateway-solve-turn/src/session_report.rs` — jsonl helpers including per–user-turn index.
 
-`GET /v1/biz_advice_report`：
+## Live report contract (stdout-v1; Author: kejiqing)
 
-1. `gateway_turns.report_message`（该 `turn_id`，须已 flush）
-2. 内存中同 `turn_id` 的活跃任务
-3. 该轮 `cc_messages` 提炼
+**唯一权威文档：** [`docs/live-report-contract.md`](live-report-contract.md)（端到端流、顺序保证、2026-05-23 四条已修缺陷、部署验收、排障树）。
 
-**禁止**整 session jsonl 拼接作为旧轮报告回退。
+摘要：
 
-## Environment
+| # | Rule |
+| --- | --- |
+| 1 | **Worker:** `TextDelta` → stdout `__CLAW_GATEWAY_STDOUT__` `report.delta`（`gateway_stdout.rs`）。 |
+| 2 | **Pool daemon:** 按行解析 → FIFO 单消费者 HTTP 转发 → `POST …/stdout-event`（见契约 §7.2–§7.3）。 |
+| 3 | **Gateway:** `TurnStdoutHub` → live SSE；结束哨兵 `HubMsg::SolveDone`（§7.4，防尾段截断）。 |
+| 4 | **`hasReport`:** `running` \| `succeeded`。正式正文：`GET /v1/tasks` → **`result.outputJson.message`**（非顶层 `outputJson`）。 |
+| 5 | **`succeeded` 后** 同 URL `stream=true` 可走 polish（`biz_advice_report_bak`）；live 与落盘对照见契约 §8。 |
 
-| Variable | Purpose |
-|----------|---------|
-| `CLAW_GATEWAY_DATABASE_URL` | PostgreSQL（交接 SoT） |
-| `CLAW_GATEWAY_TEST_DATABASE_URL` | 集成测试 |
-| `CLAW_SESSION_EXPORT_JSONL` | `1` = flush 后额外写盘镜像 |
+## Future (not in this KISS slice)
+
+- Versioned SQL migrations directory, `cc_messages`, dedicated `gateway_async_tasks` table, transcript HTTP API — see the design plan Phase 1–2 items; implement when multi-node SoT for every message is required.

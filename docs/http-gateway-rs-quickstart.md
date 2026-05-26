@@ -78,6 +78,8 @@ cp .env.example .env   # 编辑：OPENAI_*、GATEWAY_HOST_PORT、CLAW_POOL_DAEMO
 
 ```bash
 curl -sS "http://127.0.0.1:18088/healthz"
+# claude-tap Live（与网关同 Host、端口见 CLAUDE_TAP_LIVE_PORT）：
+# curl -sS "http://127.0.0.1:18088/healthz" | jq '.claudeTap.publicLiveBaseUrl, .claudeTap.liveSessionUrlTemplate'
 ```
 
 ### 同步调用
@@ -154,6 +156,9 @@ curl -sS "http://127.0.0.1:18088/v1/mcp/injected/1"
 - **18088 打不开**
   - 检查 `podman ps` 是否有 `0.0.0.0:18088->8080/tcp`
   - 用 `curl http://127.0.0.1:18088/healthz` 测
+- **`clawExitCode=125`**（`detail` 常为 `gateway-solve-once failed`）
+  - 多为 **worker 容器未在跑**：`podman logs claw-worker-*` 若见 `sleep: invalid time interval 'sleep'`，是镜像 `ENTRYPOINT sleep infinity` 与池 `run` 重复传参（已修）；处理：`gateway.sh build` 后 `gateway.sh up` 或 `./deploy/stack/lib/nuclear-pool-reset.sh`
+  - 或 `podman ps -a` 中 worker 为 `Exited`，需重建池
 - **`clawExitCode=1`**
   - 多数是模型凭证没配（如 `ANTHROPIC_API_KEY`）
 - **MCP 没加载**

@@ -1,0 +1,1490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claw Gateway — 项目管理</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --radius: 8px;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+    a { color: var(--accent); }
+    header {
+      padding: 12px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+    .header-spacer { flex: 1; min-width: 8px; }
+    .header-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    #tab-project.panel-section.active {
+      display: flex;
+      flex-direction: column;
+      min-height: calc(100vh - 56px);
+    }
+    #tab-project .project-body { flex: 1; min-height: 0; }
+    #tab-project .project-footer {
+      flex-shrink: 0;
+      display: flex;
+      justify-content: flex-end;
+      padding-top: 20px;
+      margin-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+    header label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+    header input, header select, button {
+      font: inherit; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--text); padding: 8px 10px;
+    }
+    button { cursor: pointer; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    button.secondary { background: transparent; color: var(--muted); border-color: var(--border); }
+    button.danger { background: var(--err); border-color: var(--err); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .layout { flex: 1; display: flex; min-height: 0; }
+    nav.tabs {
+      width: 200px;
+      flex-shrink: 0;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      padding: 12px 0;
+    }
+    nav.tabs button {
+      display: block; width: 100%; text-align: left;
+      background: transparent; border: none; color: var(--muted);
+      padding: 10px 16px; border-radius: 0; font-weight: 500;
+    }
+    nav.tabs button.active { background: rgba(59,130,246,0.15); color: var(--text); border-left: 3px solid var(--accent); }
+    main.panel { flex: 1; overflow: auto; padding: 16px 20px; }
+    .panel-section { display: none; }
+    .panel-section.active { display: block; }
+    h2 { margin: 0 0 8px; font-size: 18px; }
+    .hint { font-size: 12px; color: var(--muted); margin-bottom: 14px; line-height: 1.5; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+    th { color: var(--muted); font-weight: 600; }
+    tr.selected { background: rgba(59,130,246,0.12); }
+    tr { cursor: pointer; }
+    tr:hover { background: rgba(255,255,255,0.03); }
+    td.row-actions { cursor: default; white-space: nowrap; }
+    td.row-actions button {
+      font-size: 11px;
+      padding: 4px 8px;
+      margin-right: 6px;
+      font-weight: 500;
+    }
+    .badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; }
+    .badge.ok { background: rgba(34,197,94,0.2); color: var(--ok); }
+    .badge.no { background: rgba(239,68,68,0.15); color: var(--err); }
+    textarea, pre.json-view {
+      width: 100%; min-height: 280px; font-family: ui-monospace, Menlo, monospace;
+      font-size: 12px; line-height: 1.45; padding: 10px 12px;
+      border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--panel); color: var(--text); resize: vertical;
+    }
+    pre.json-view { min-height: 120px; overflow: auto; white-space: pre-wrap; }
+    details.json-details { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+    details.json-details summary {
+      padding: 8px 12px; font-size: 13px; font-weight: 600; color: var(--muted);
+      cursor: pointer; list-style: none; user-select: none;
+    }
+    details.json-details summary::-webkit-details-marker { display: none; }
+    details.json-details summary::before { content: "▸ "; }
+    details.json-details[open] summary::before { content: "▾ "; }
+    details.json-details .json-view { border: none; border-radius: 0; min-height: 80px; margin: 0; }
+    .split { display: grid; grid-template-columns: 220px 1fr; gap: 12px; min-height: 320px; }
+    .skill-list { border: 1px solid var(--border); border-radius: var(--radius); overflow: auto; max-height: 400px; }
+    .skill-list button {
+      display: block; width: 100%; text-align: left; background: transparent;
+      border: none; border-bottom: 1px solid var(--border); color: var(--text);
+      padding: 8px 10px; font-weight: 400;
+    }
+    .skill-list button.active { background: rgba(59,130,246,0.15); }
+    #toast {
+      position: fixed; bottom: 16px; right: 16px; max-width: 360px;
+      padding: 10px 14px; border-radius: var(--radius); background: var(--panel);
+      border: 1px solid var(--border); font-size: 13px; display: none; z-index: 9;
+    }
+    #toast.err { border-color: var(--err); color: #fca5a5; }
+    #toast.ok { border-color: var(--ok); }
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 8px;
+      max-height: 420px;
+      overflow-y: auto;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: rgba(0,0,0,0.12);
+    }
+    .tool-item {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .tool-item:hover { background: rgba(255,255,255,0.04); }
+    .tool-item.disabled { opacity: 0.45; pointer-events: none; }
+    .tool-item label { cursor: pointer; flex: 1; }
+    .tool-item .name { font-weight: 600; font-family: ui-monospace, Menlo, monospace; }
+    .tool-item .desc { color: var(--muted); margin-top: 2px; line-height: 1.35; }
+    .tool-item .src { font-size: 10px; color: var(--muted); margin-top: 4px; }
+    input.inline-rev {
+      width: 100%; max-width: 320px; margin: 6px 0 10px; padding: 8px;
+      border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <label>网关
+      <select id="gateway-base"></select>
+    </label>
+    <label>ds_id（来自 /healthz）
+      <select id="ds-id" style="min-width:160px"></select>
+    </label>
+    <span class="header-spacer" aria-hidden="true"></span>
+    <div class="header-actions">
+      <button type="button" id="btn-header-create">新建项目</button>
+      <button type="button" class="secondary" id="btn-logout">退出登录</button>
+      <a href="/" style="font-size:13px;white-space:nowrap">← solve_async 调试</a>
+    </div>
+  </header>
+  <div class="layout">
+    <nav class="tabs">
+      <button type="button" data-tab="project" class="active">1. 项目</button>
+      <button type="button" data-tab="skills">2. Skills</button>
+      <button type="button" data-tab="mcp">3. MCP</button>
+      <button type="button" data-tab="claude">4. CLAUDE.md</button>
+      <button type="button" data-tab="rules">5. Rules</button>
+      <button type="button" data-tab="prompt">6. 系统提示词</button>
+      <button type="button" data-tab="tools">7. Tools</button>
+    </nav>
+    <main class="panel">
+      <section id="tab-project" class="panel-section active">
+        <div class="project-body">
+        <h2>项目管理 · ds_<span id="project-ds-label">1</span></h2>
+        <p class="hint">
+          在顶部 <strong>ds_id</strong> 下拉框切换项目；本页每 <span id="project-poll-secs">15</span>s 静默同步当前项目配置（数据未变不重绘）。
+          <span id="project-last-sync" style="display:block;margin-top:6px"></span>
+        </p>
+        <div class="toolbar" style="margin-bottom:14px">
+          <button type="button" class="secondary" id="btn-project-init">初始化工作区</button>
+          <span id="project-summary" style="font-size:12px;color:var(--muted);align-self:center"></span>
+        </div>
+        <h3 style="margin:16px 0 8px;font-size:14px;font-weight:600">Git 单向同步（DB → home/ → 远程）</h3>
+        <p class="hint" style="margin-top:0">
+          每项目独立仓库（GitHub / GitLab HTTPS + PAT）。<code>POST …/git/push</code> 只推 <code>home/</code> 中<strong>非 project_config 物化</strong>的文件（CLAUDE / skills / rules 等仍以 DB 为准，不进 Git）。
+        </p>
+        <div class="toolbar" style="align-items:end">
+          <label style="font-size:12px;color:var(--muted)">
+            <input type="checkbox" id="git-enabled" /> 启用同步
+          </label>
+          <label style="font-size:12px;color:var(--muted)">仓库 URL
+            <input id="git-url" type="text" placeholder="https://gitlab.com/org/repo.git" style="min-width:280px" />
+          </label>
+          <label style="font-size:12px;color:var(--muted)">分支
+            <input id="git-ref" type="text" value="main" style="width:100px" />
+          </label>
+          <label style="font-size:12px;color:var(--muted)">PAT（留空不改）
+            <input id="git-token" type="password" placeholder="ghp_… / glpat-…" style="min-width:160px" autocomplete="off" />
+          </label>
+          <button type="button" class="secondary" id="btn-git-save">保存 Git 配置</button>
+          <button type="button" id="btn-git-push">推送到 Git</button>
+        </div>
+        <p id="git-status" style="font-size:12px;color:var(--muted);margin:0 0 12px"></p>
+        <h3 style="margin:16px 0 8px;font-size:14px;font-weight:600">配置版本</h3>
+        <p class="hint" style="margin-top:0">
+          <strong>状态机</strong>：① 全局至多 <strong>1 个临时版</strong>（各 Tab 保存只改它）② <strong>生效</strong>只能是下表某一正式版（solve 用）③「保存为正式版」把临时版入库，<strong>不改生效</strong> ④「设为生效」在正式版间切换 ⑤「废弃」删非生效正式版。
+        </p>
+        <div id="version-state-bar" style="font-size:13px;margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:rgba(0,0,0,0.15)"></div>
+        <div class="toolbar" style="align-items:end;margin-bottom:10px;justify-content:flex-end">
+          <button type="button" class="secondary" id="btn-versions-reload">刷新版本列表</button>
+        </div>
+        <p id="draft-status" style="font-size:12px;color:var(--muted);margin:0 0 10px"></p>
+        <table id="versions-table" style="margin-bottom:10px">
+          <thead>
+            <tr>
+              <th>版本号</th>
+              <th>备注</th>
+              <th>状态</th>
+              <th>skills</th>
+              <th>CLAUDE</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="versions-tbody"></tbody>
+        </table>
+        <div class="toolbar" style="align-items:end">
+          <label style="font-size:12px;color:var(--muted)">比对 from
+            <select id="version-compare-from" style="min-width:140px"></select>
+          </label>
+          <label style="font-size:12px;color:var(--muted)">to
+            <select id="version-compare-to" style="min-width:140px"></select>
+          </label>
+          <button type="button" class="secondary" id="btn-versions-compare">比对</button>
+        </div>
+        <pre class="json-view" id="version-compare-result" style="min-height:80px;margin-bottom:12px"></pre>
+        <details class="json-details" id="project-detail-wrap">
+          <summary>project_config 原始 JSON（调试，默认收起）</summary>
+          <pre class="json-view" id="project-detail"></pre>
+        </details>
+        </div>
+        <div class="project-footer">
+          <button type="button" class="danger" id="btn-project-delete">删除当前项目</button>
+        </div>
+      </section>
+
+      <section id="tab-skills" class="panel-section">
+        <h2>Project Skills</h2>
+        <p class="hint">
+          仅存 <code>project_config.skills_json</code>，物化到 <code>home/skills/&lt;name&gt;/SKILL.md</code>。
+          <code>POST /v1/project/skills/{ds_id}</code> 写库；列表 <code>GET /v1/skills/{ds_id}</code>。
+        </p>
+        <label style="font-size:12px;color:var(--muted)">选择 Skill
+          <select id="skill-pick" style="width:100%;max-width:420px;margin:6px 0 10px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)"></select>
+        </label>
+        <label style="font-size:12px;color:var(--muted)">skillName（新建可改）</label>
+        <input id="skill-name" type="text" placeholder="a-zA-Z0-9._-" style="width:100%;max-width:420px;margin:6px 0 8px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)" />
+        <textarea id="skill-content" placeholder="SKILL.md 正文"></textarea>
+        <div class="toolbar" style="margin-top:8px">
+          <button type="button" id="btn-skill-save">保存 Skill</button>
+          <button type="button" class="secondary" id="btn-skill-reload">重新加载</button>
+        </div>
+      </section>
+
+      <section id="tab-mcp" class="panel-section">
+        <h2>Project MCP</h2>
+        <p class="hint">
+          MCP 仅存 PostgreSQL <code>project_config.mcp_servers_json</code>（无行则 solve 无 MCP）。
+          下方「追加 / 全量替换 / 清空」即写库；也可用 <code>PUT /v1/project/config/{ds_id}</code>。
+          <code>GET /v1/mcp/injected/{ds_id}</code> 仅探针，不返回 Bearer。
+        </p>
+        <pre class="json-view" id="mcp-status"></pre>
+        <label style="font-size:12px;color:var(--muted)">mcpServers（JSON 对象）</label>
+        <textarea id="mcp-servers" placeholder='{"sqlbot-streamable": {"type":"http","url":"..."}}'></textarea>
+        <div class="toolbar">
+          <button type="button" id="btn-mcp-merge">追加注入</button>
+          <button type="button" id="btn-mcp-replace">全量替换</button>
+          <button type="button" class="secondary" id="btn-mcp-reload">刷新状态</button>
+          <button type="button" class="danger" id="btn-mcp-clear">清空注入</button>
+        </div>
+      </section>
+
+      <section id="tab-claude" class="panel-section">
+        <h2>CLAUDE.md</h2>
+        <p class="hint">
+          <code>GET/POST /v1/project/claude/{ds_id}</code> 写入临时版；物化到 <code>home/CLAUDE.md</code> 在「固化并生效」之后（solve 用生效版）。
+        </p>
+        <textarea id="claude-content" placeholder="CLAUDE.md 内容"></textarea>
+        <div class="toolbar">
+          <button type="button" id="btn-claude-save">保存 CLAUDE.md</button>
+          <button type="button" class="secondary" id="btn-claude-reload">重新加载</button>
+        </div>
+      </section>
+
+      <section id="tab-rules" class="panel-section">
+        <h2>Rules</h2>
+        <p class="hint" style="margin-top:0">
+          保存写入<strong>临时版本</strong>；生效需到 <strong>1. 项目</strong> Tab「固化临时版」。
+        </p>
+        <p class="hint">
+          存 <code>project_config.rulesJson</code>，物化到 <code>home/.cursor/rules/*.mdc</code>（<code>rule_scope</code> 暂固定 ALWAYS）。
+        </p>
+        <label style="font-size:12px;color:var(--muted)">选择规则
+          <select id="rule-pick" style="width:100%;max-width:420px;margin:6px 0 10px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)"></select>
+        </label>
+        <label style="font-size:12px;color:var(--muted)">rule_title</label>
+        <input id="rule-title" type="text" placeholder="规则标题 / ruleId 来源" style="width:100%;max-width:420px;margin:6px 0 8px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)" />
+        <label style="font-size:12px;color:var(--muted)">rule_scope（暂只支持 ALWAYS）</label>
+        <input id="rule-scope" type="text" value="ALWAYS" readonly style="width:100%;max-width:420px;margin:6px 0 8px;padding:8px;border-radius:6px;border:1px solid var(--border);background:rgba(0,0,0,0.2);color:var(--muted)" />
+        <label style="font-size:12px;color:var(--muted)">rule_content</label>
+        <textarea id="rule-content" placeholder="规则正文（Markdown）"></textarea>
+        <div class="toolbar" style="margin-top:8px">
+          <button type="button" class="secondary" id="btn-rule-add">新增</button>
+          <button type="button" class="danger" id="btn-rule-delete">删除当前</button>
+          <button type="button" id="btn-rules-save">保存到 project_config</button>
+          <button type="button" class="secondary" id="btn-rules-reload">重新加载</button>
+        </div>
+      </section>
+
+      <section id="tab-prompt" class="panel-section">
+        <h2>系统提示词（Effective Prompt）</h2>
+        <p class="hint">
+          <code>GET /v1/project/prompt/{ds_id}/effective</code> — 与 solve 同源组装；<code>POST</code> 重新加载。
+          顺序：固定段落 → <code># Claude instructions</code>（<code>home/CLAUDE.md</code>）→ <code># Project rules</code>（<code>rulesJson</code> 物化的 <code>home/.cursor/rules/*.mdc</code>）。
+        </p>
+        <div class="toolbar">
+          <button type="button" id="btn-prompt-load">加载</button>
+          <button type="button" class="secondary" id="btn-prompt-reload">重新加载 (POST)</button>
+        </div>
+        <pre class="json-view" id="prompt-sections"></pre>
+        <textarea id="prompt-message" readonly placeholder="message 全文"></textarea>
+      </section>
+
+      <section id="tab-tools" class="panel-section">
+        <h2>Tools 配置</h2>
+        <p class="hint">
+          存 <code>project_config.allowed_tools_json</code>（<code>PUT /v1/project/config/{ds_id}</code>，写入临时版）。
+          勾选为空表示不额外限制，沿用网关全局 <code>CLAW_ALLOWED_TOOLS</code>。
+        </p>
+        <pre class="json-view" id="tools-gateway-policy" style="min-height:48px;margin-bottom:10px"></pre>
+        <div class="toolbar">
+          <button type="button" class="secondary" id="btn-tools-select-all">全选可选</button>
+          <button type="button" class="secondary" id="btn-tools-clear">清空勾选</button>
+          <button type="button" id="btn-tools-reload">重新加载</button>
+          <button type="button" id="btn-tools-save">保存到 project_config</button>
+        </div>
+        <div class="tool-grid" id="tools-catalog"></div>
+      </section>
+    </main>
+  </div>
+  <div id="toast"></div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let adminUser = "";
+
+    async function requireAdminSession() {
+      const res = await fetch("/__admin_me__", { credentials: "same-origin" });
+      if (!res.ok) {
+        location.href = "/admin/login?next=" + encodeURIComponent(location.pathname);
+        return false;
+      }
+      const data = await res.json();
+      adminUser = data.user || "";
+      return true;
+    }
+
+    $("btn-logout").addEventListener("click", async () => {
+      await fetch("/__admin_logout__", { method: "POST", credentials: "same-origin" });
+      location.href = "/admin/login";
+    });
+
+    let projects = [];
+    let projectsListSnapshot = "";
+    let versionsListSnapshot = "";
+    let projectDetailSnapshot = "";
+    let gitFormSnapshot = "";
+    let projectPollTimer = null;
+    const PROJECT_POLL_MS = 15000;
+    let projectConfigCache = null;
+    let toolsCatalog = null;
+    /** @type {{ ruleId: string, ruleTitle: string, ruleScope: string, ruleContent: string }[]} */
+    let projectRulesList = [];
+    let selectedRuleIndex = -1;
+    /** @type {{ skill_name: string, skill_content?: string }[]} */
+    let skillsCache = [];
+
+    function normalizePutConfigResponse(r) {
+      return r && r.activeConfig ? r.activeConfig : r;
+    }
+
+    function updateVersionStateBar(cfg, versionsResp) {
+      const bar = $("version-state-bar");
+      const hint = $("draft-status");
+      const effective =
+        (versionsResp && versionsResp.activeContentRev) ||
+        (cfg && cfg.stableContentRev) ||
+        "—";
+      const draftOpen =
+        (versionsResp && versionsResp.draftOpen) ||
+        (cfg && cfg.draftOpen);
+      if (bar) {
+        bar.innerHTML =
+          '<span><strong>生效（solve 用）</strong> <code>' + effective +
+          "</code></span> · <span><strong>临时版</strong> " +
+          (draftOpen
+            ? '<span class="badge no">编辑中</span> <code>__draft__</code>'
+            : '<span class="badge ok">无</span>') +
+          "</span>";
+      }
+      if (hint) {
+        hint.textContent = draftOpen
+          ? "临时版未入库；保存为正式版后仍保持当前生效，需再点「设为生效」才会给 solve 用新版本。"
+          : "";
+      }
+    }
+
+    async function putProjectConfigDraft(patch) {
+      await loadProjectConfig();
+      const cfg = projectConfigCache || {};
+      const body = {
+        rulesJson: patch.rulesJson != null ? patch.rulesJson : (cfg.rulesJson || []),
+        mcpServersJson: patch.mcpServersJson != null ? patch.mcpServersJson : (cfg.mcpServersJson || {}),
+        skillsJson: patch.skillsJson != null ? patch.skillsJson : (cfg.skillsJson || []),
+        allowedToolsJson: patch.allowedToolsJson != null ? patch.allowedToolsJson : (cfg.allowedToolsJson || []),
+      };
+      if (patch.claudeMd !== undefined) body.claudeMd = patch.claudeMd;
+      if (patch.gitSyncJson !== undefined) body.gitSyncJson = patch.gitSyncJson;
+      const r = await proxyHttp("PUT", "/v1/project/config/" + dsId(), body);
+      projectConfigCache = normalizePutConfigResponse(r);
+      updateVersionStateBar(projectConfigCache, null);
+      return projectConfigCache;
+    }
+
+    function gatewayBase() {
+      return $("gateway-base").value.trim().replace(/\/$/, "");
+    }
+    function dsId() {
+      const n = parseInt($("ds-id").value, 10);
+      return Number.isFinite(n) && n >= 1 ? n : 1;
+    }
+
+    function projectEntrySnapshot(p) {
+      if (!p) return "";
+      return JSON.stringify({
+        dsId: p.dsId,
+        contentRev: p.contentRev || "",
+        draftOpen: !!p.draftOpen,
+        updatedAtMs: p.updatedAtMs,
+        skillsCountDb: p.skillsCountDb,
+        claudeInDb: p.claudeInDb,
+        workDirPresent: p.workDirPresent,
+        environmentPrepared: p.environmentPrepared,
+        claudeOnDisk: p.claudeOnDisk,
+        skillsCountDisk: p.skillsCountDisk,
+        appliedRev: p.appliedRev,
+        dbSyncedToDisk: p.dbSyncedToDisk,
+        gitSync: p.gitSync || null,
+      });
+    }
+
+    function projectsListSnapshotKey(list) {
+      return JSON.stringify(list.map(projectEntrySnapshot));
+    }
+
+    function populateDsSelect(list) {
+      const sel = $("ds-id");
+      const prev = parseInt(sel.value, 10);
+      let saved = NaN;
+      try {
+        saved = parseInt(localStorage.getItem("claw-playground-ds-id") || "", 10);
+      } catch (_) {}
+      sel.innerHTML = "";
+      if (!list.length) {
+        const opt = document.createElement("option");
+        opt.value = "1";
+        opt.textContent = "（无 ds，默认 1）";
+        sel.appendChild(opt);
+        return;
+      }
+      for (const w of list) {
+        const opt = document.createElement("option");
+        opt.value = String(w.dsId);
+        const ready = w.environmentPrepared ? "就绪" : "未就绪";
+        const sk = w.skillsCount != null ? " · skills " + w.skillsCount : "";
+        const cl = w.claudeHomePresent
+          ? " · CLAUDE " + (w.claudeHomeBytes != null ? w.claudeHomeBytes + "B" : "有")
+          : "";
+        opt.textContent = "ds " + w.dsId + " — " + ready + sk + cl;
+        sel.appendChild(opt);
+      }
+      const pick =
+        list.find((p) => p.dsId === saved) ||
+        list.find((p) => p.dsId === prev) ||
+        list.find((p) => p.environmentPrepared) ||
+        list[0];
+      sel.value = String(pick.dsId);
+    }
+
+    function toast(msg, ok) {
+      const el = $("toast");
+      el.textContent = msg;
+      el.className = ok ? "ok" : "err";
+      el.style.display = "block";
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => { el.style.display = "none"; }, 4000);
+    }
+
+    async function proxyHttp(method, path, body) {
+      const res = await fetch("/__proxy__", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: gatewayBase(),
+          method,
+          path,
+          body: body === undefined ? null : body,
+          headers: {},
+        }),
+      });
+      const wrap = await res.json().catch(() => ({}));
+      if (!wrap.ok) {
+        let msg = wrap.bodyText || wrap.error || "请求失败";
+        try {
+          const j = JSON.parse(wrap.bodyText);
+          if (j && j.detail) msg = j.detail;
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      try {
+        return JSON.parse(wrap.bodyText);
+      } catch (_) {
+        return wrap.bodyText;
+      }
+    }
+
+    function gitSyncBadge(gs) {
+      if (!gs || !gs.enabled) return '<span class="badge no">关</span>';
+      if (!gs.configured) return '<span class="badge no">未配</span>';
+      if (gs.lastPushError) return '<span class="badge no" title="' + String(gs.lastPushError).replace(/"/g, "&quot;") + '">失败</span>';
+      if (gs.lastPushOk) return '<span class="badge ok">已推</span>';
+      return '<span class="badge no">待推</span>';
+    }
+
+    function fillGitForm(gs, force) {
+      gs = gs || {};
+      const snap = JSON.stringify(gs);
+      if (!force && snap === gitFormSnapshot) return;
+      gitFormSnapshot = snap;
+      $("git-enabled").checked = !!gs.enabled;
+      $("git-url").value = gs.gitUrl || "";
+      $("git-ref").value = gs.gitRef || "main";
+      $("git-token").value = "";
+      const parts = [];
+      if (gs.gitTokenSet) parts.push("PAT 已存");
+      if (gs.lastPushAtMs) parts.push("上次推送 " + new Date(gs.lastPushAtMs).toLocaleString());
+      if (gs.lastPushCommitId) parts.push(String(gs.lastPushCommitId).slice(0, 8));
+      if (gs.lastPushError) parts.push("错误: " + gs.lastPushError);
+      $("git-status").textContent = parts.length ? parts.join(" · ") : "（未配置或未推送）";
+    }
+
+    async function saveProjectGit() {
+      const gitSyncJson = {
+        enabled: $("git-enabled").checked,
+        gitUrl: $("git-url").value.trim(),
+        gitRef: ($("git-ref").value.trim() || "main"),
+      };
+      const tok = $("git-token").value.trim();
+      if (tok) gitSyncJson.gitToken = tok;
+      await putProjectConfigDraft({ gitSyncJson });
+      fillGitForm(projectConfigCache.gitSyncJson, true);
+      $("git-token").value = "";
+      toast("Git 配置已保存", true);
+      await loadProjects(true);
+      await loadProjectVersions(false);
+      loadProjectDetail(dsId()).catch(() => {});
+    }
+
+    async function pushProjectGit() {
+      const id = dsId();
+      const r = await proxyHttp("POST", "/v1/projects/" + id + "/git/push");
+      if (r.gitSyncJson) {
+        fillGitForm(r.gitSyncJson);
+        if (projectConfigCache) projectConfigCache.gitSyncJson = r.gitSyncJson;
+      }
+      const o = r.outcome || {};
+      toast(
+        (o.pushed ? "已推送" : "无变更") +
+          (o.commitId ? " · " + String(o.commitId).slice(0, 8) : ""),
+        true
+      );
+      await loadProjects(true);
+      loadProjectDetail(id).catch(() => {});
+    }
+
+    function skillNamesFromConfig(cfg) {
+      const arr = cfg && cfg.skillsJson;
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .map((x) => (x && x.skillName) || "")
+        .filter((n) => n);
+    }
+
+    function versionsSnapshotKey(r) {
+      return JSON.stringify({
+        activeContentRev: r.activeContentRev,
+        appliedContentRev: r.appliedContentRev,
+        versions: (r.versions || []).map((v) => ({
+          contentRev: v.contentRev,
+          isDraft: v.isDraft,
+          note: v.note,
+          isActive: v.isActive,
+          skillsCountDb: v.skillsCountDb,
+          claudeInDb: v.claudeInDb,
+        })),
+      });
+    }
+
+    async function loadProjectVersions(silent) {
+      const id = dsId();
+      let r;
+      try {
+        r = await proxyHttp("GET", "/v1/project/config/" + id + "/versions");
+      } catch (e) {
+        if (!silent) throw e;
+        return;
+      }
+      const key = versionsSnapshotKey(r);
+      if (silent && key === versionsListSnapshot) return;
+      versionsListSnapshot = key;
+      const tbody = $("versions-tbody");
+      tbody.innerHTML = "";
+      const fromSel = $("version-compare-from");
+      const toSel = $("version-compare-to");
+      fromSel.innerHTML = "";
+      toSel.innerHTML = "";
+      (r.versions || []).forEach((v) => {
+        const tr = document.createElement("tr");
+        let status = v.isDraft
+          ? '<span class="badge no">临时</span>'
+          : v.isActive
+            ? '<span class="badge ok">生效</span>'
+            : '<span class="badge no">已发布</span>';
+        if (!v.isDraft && r.appliedContentRev && v.contentRev === r.appliedContentRev) {
+          status += ' <span class="badge ok" title="已物化到磁盘">已落盘</span>';
+        } else if (!v.isDraft && v.isActive) {
+          status += ' <span class="badge no" title="DB 生效但未物化">待物化</span>';
+        }
+        const revLabel = v.isDraft ? "__draft__" : v.contentRev;
+        const timeHint = v.createdAtMs
+          ? " · " + new Date(v.createdAtMs).toLocaleString()
+          : "";
+        tr.innerHTML =
+          "<td title=\"" + revLabel + timeHint + "\"><code>" + revLabel + "</code>" +
+          (v.isDraft ? "" : "<br><span style=\"font-size:11px;color:var(--muted)\">" +
+            new Date(v.createdAtMs).toLocaleString() + "</span>") +
+          "</td><td>" + (v.note ? escapeHtml(v.note) : "—") + "</td><td>" + status +
+          "</td><td>" + v.skillsCountDb + "</td><td>" +
+          (v.claudeInDb ? "有" : "无") + "</td>";
+        const td = document.createElement("td");
+        td.className = "row-actions";
+        if (v.isDraft) {
+          const noteIn = document.createElement("input");
+          noteIn.type = "text";
+          noteIn.id = "version-commit-note";
+          noteIn.placeholder = "备注（可选）";
+          noteIn.style.cssText =
+            "display:block;width:100%;max-width:220px;margin-bottom:6px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)";
+          const btnCommit = document.createElement("button");
+          btnCommit.type = "button";
+          btnCommit.textContent = "保存为正式版";
+          btnCommit.addEventListener("click", () => {
+            commitProjectVersion().catch((e) => toast(e.message, false));
+          });
+          td.appendChild(noteIn);
+          td.appendChild(btnCommit);
+        } else if (!v.isActive) {
+          const btnAct = document.createElement("button");
+          btnAct.type = "button";
+          btnAct.className = "secondary";
+          btnAct.textContent = "设为生效";
+          btnAct.addEventListener("click", () => {
+            activateProjectVersion(v.contentRev).catch((e) => toast(e.message, false));
+          });
+          const btnDel = document.createElement("button");
+          btnDel.type = "button";
+          btnDel.className = "danger";
+          btnDel.textContent = "废弃";
+          btnDel.addEventListener("click", () => {
+            discardProjectVersion(v.contentRev).catch((e) => toast(e.message, false));
+          });
+          td.appendChild(btnAct);
+          td.appendChild(btnDel);
+        }
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        [fromSel, toSel].forEach((sel) => {
+          const opt = document.createElement("option");
+          opt.value = v.contentRev;
+          const label = (v.isDraft ? "临时 __draft__" : v.contentRev) +
+            (v.note ? " — " + v.note : "") +
+            (v.isActive ? " (生效)" : "");
+          opt.textContent = label;
+          sel.appendChild(opt);
+        });
+      });
+      const formalN = (r.versions || []).filter((v) => !v.isDraft).length;
+      $("version-compare-result").textContent =
+        "正式版 " + formalN + " 个" +
+        (r.draftOpen ? " · 含临时版" : "") +
+        " · 落盘 " + (r.appliedContentRev || "—");
+      updateVersionStateBar(projectConfigCache, r);
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    async function commitProjectVersion() {
+      const note = $("version-commit-note").value.trim();
+      const body = note ? { note } : {};
+      const r = await proxyHttp(
+        "POST",
+        "/v1/project/config/" + dsId() + "/versions/commit",
+        body
+      );
+      projectConfigCache = r.activeConfig;
+      updateVersionStateBar(projectConfigCache, null);
+      toast(
+        "已保存正式版 " + r.savedContentRev +
+          "（当前生效仍为 " + (r.stableContentRev || "—") + "，可在列表中「设为生效」）",
+        true
+      );
+      await loadProjects(true);
+      await loadProjectVersions(false);
+      loadProjectDetail(dsId(), { force: true }).catch(() => {});
+    }
+
+    async function compareProjectVersions() {
+      const from = $("version-compare-from").value;
+      const to = $("version-compare-to").value;
+      if (!from || !to) throw new Error("请选择 from / to");
+      const q =
+        "?from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to);
+      const r = await proxyHttp(
+        "GET",
+        "/v1/project/config/" + dsId() + "/versions/compare" + q
+      );
+      $("version-compare-result").textContent = JSON.stringify(r, null, 2);
+    }
+
+    async function activateProjectVersion(contentRev) {
+      const r = await proxyHttp(
+        "POST",
+        "/v1/project/config/" + dsId() + "/versions/" + encodeURIComponent(contentRev) + "/activate"
+      );
+      toast(
+        "已切换生效版本为 " + r.activeContentRev +
+          (r.materialized ? "（已物化）" : "（待物化）"),
+        true
+      );
+      projectDetailSnapshot = "";
+      projectConfigCache = null;
+      await loadProjects(true);
+      await loadProjectVersions(false);
+      loadProjectDetail(dsId(), { force: true }).catch(() => {});
+    }
+
+    async function discardProjectVersion(contentRev) {
+      if (!confirm("确定废弃正式版「" + contentRev + "」？删除后不可恢复。")) {
+        return;
+      }
+      await proxyHttp(
+        "DELETE",
+        "/v1/project/config/" + dsId() + "/versions/" + encodeURIComponent(contentRev)
+      );
+      toast("已废弃 " + contentRev, true);
+      await loadProjectVersions(false);
+    }
+
+    async function loadProjectDetail(id, opts) {
+      const silent = opts && opts.silent;
+      const force = opts && opts.force;
+      const el = $("project-detail");
+      const row = projects.find((p) => p.dsId === id);
+      if (!silent) {
+        el.textContent = "加载 ds_" + id + " 的 project_config…";
+      }
+      try {
+        const cfg = await proxyHttp("GET", "/v1/project/config/" + id);
+        projectConfigCache = cfg;
+        updateVersionStateBar(cfg, null);
+        fillGitForm(cfg.gitSyncJson || (row && row.gitSync), force);
+        const claudeLen = (cfg.claudeMd && cfg.claudeMd.length) || 0;
+        const detail = {
+          dsId: id,
+          listSummary: row || null,
+          projectConfig: {
+            contentRev: cfg.contentRev,
+            updatedAtMs: cfg.updatedAtMs,
+            skillsCountDb: (cfg.skillsJson && cfg.skillsJson.length) || 0,
+            skillNames: skillNamesFromConfig(cfg),
+            claudeInDb: !!(cfg.claudeMd && String(cfg.claudeMd).trim()),
+            claudeMdChars: claudeLen,
+            rulesCountDb: (cfg.rulesJson && cfg.rulesJson.length) || 0,
+            mcpServersCountDb: cfg.mcpServersJson
+              ? Object.keys(cfg.mcpServersJson).length
+              : 0,
+            mcpServerNames: cfg.mcpServersJson
+              ? Object.keys(cfg.mcpServersJson)
+              : [],
+            allowedToolsJson: cfg.allowedToolsJson,
+            skillsJson: cfg.skillsJson,
+            rulesJson: cfg.rulesJson,
+            mcpServersJson: cfg.mcpServersJson,
+            claudeMd: cfg.claudeMd,
+            gitSyncJson: cfg.gitSyncJson,
+          },
+        };
+        const text = JSON.stringify(detail, null, 2);
+        if (!force && silent && text === projectDetailSnapshot) return;
+        projectDetailSnapshot = text;
+        el.textContent = text;
+      } catch (e) {
+        const msg = String(e.message || e);
+        projectConfigCache = null;
+        let text;
+        if (msg.indexOf("no project_config") >= 0 || msg.indexOf("404") >= 0) {
+          text = JSON.stringify(
+            {
+              dsId: id,
+              listSummary: row || null,
+              projectConfig: null,
+              hint: "无 PG 行；可「新建项目」或 PUT /v1/project/config/" + id,
+            },
+            null,
+            2
+          );
+        } else {
+          text = JSON.stringify(
+            { dsId: id, listSummary: row || null, error: msg },
+            null,
+            2
+          );
+        }
+        if (!force && silent && text === projectDetailSnapshot) return;
+        projectDetailSnapshot = text;
+        el.textContent = text;
+      }
+    }
+
+    function updateProjectChrome() {
+      const id = dsId();
+      const label = $("project-ds-label");
+      if (label) label.textContent = String(id);
+      const delBtn = $("btn-project-delete");
+      if (delBtn) delBtn.disabled = projects.length === 0;
+      const p = projects.find((x) => x.dsId === id);
+      const sum = $("project-summary");
+      if (!sum) return;
+      if (!p) {
+        sum.textContent = "（未在 /v1/projects 列表中，可先初始化或新建）";
+        return;
+      }
+      const parts = [];
+      parts.push(p.environmentPrepared ? "环境就绪" : "环境未就绪");
+      if (p.dbSyncedToDisk === false) parts.push("待物化");
+      if (p.draftOpen) parts.push("有草稿");
+      if (p.contentRev) parts.push("生效 " + p.contentRev);
+      sum.textContent = parts.join(" · ");
+    }
+
+    function selectDs(id) {
+      $("ds-id").value = String(id);
+      try { localStorage.setItem("claw-playground-ds-id", String(id)); } catch (_) {}
+      projectConfigCache = null;
+      projectDetailSnapshot = "";
+      versionsListSnapshot = "";
+      gitFormSnapshot = "";
+      projectRulesList = [];
+      selectedRuleIndex = -1;
+      $("version-commit-note").value = "";
+      updateVersionStateBar(null, null);
+      updateProjectChrome();
+      loadProjectDetail(id, { force: true }).catch((err) => toast(err.message, false));
+      loadProjectVersions(false).catch(() => {});
+      loadTabData();
+    }
+
+    async function loadProjects(silent) {
+      const prevById = {};
+      projects.forEach((p) => {
+        prevById[p.dsId] = projectEntrySnapshot(p);
+      });
+      let list = [];
+      try {
+        const r = await proxyHttp("GET", "/v1/projects");
+        list = r.projects || [];
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (!silent) {
+          toast("GET /v1/projects 失败，回退 healthz: " + msg, false);
+        }
+        const h = await proxyHttp("GET", "/healthz");
+        list = (h.projectsGitMirror && h.projectsGitMirror.dsWorkspaces) || [];
+      }
+      list.sort((a, b) => a.dsId - b.dsId);
+      const newKey = projectsListSnapshotKey(list);
+      const listUnchanged = newKey === projectsListSnapshot;
+      projects = list;
+
+      if (listUnchanged && silent) {
+        if (document.getElementById("tab-project").classList.contains("active")) {
+          loadProjectVersions(true).catch(() => {});
+        }
+        return;
+      }
+
+      projectsListSnapshot = newKey;
+      populateDsSelect(projects);
+      const cur = dsId();
+      if (projects.length && !projects.some((p) => p.dsId === cur)) {
+        $("ds-id").value = String(projects[0].dsId);
+      }
+      updateProjectChrome();
+      const curId = dsId();
+      const rowChanged = prevById[curId] !== projectEntrySnapshot(
+        projects.find((p) => p.dsId === curId)
+      );
+      if (!silent || rowChanged) {
+        loadProjectDetail(curId, { silent: !!silent }).catch(() => {});
+      }
+      if (!silent || !listUnchanged) {
+        const t = new Date();
+        $("project-last-sync").textContent =
+          "上次同步 " + t.toLocaleTimeString() + "（" + projects.length + " 项）";
+      }
+      if (!silent) toast("已加载 " + projects.length + " 个项目", true);
+      if (document.getElementById("tab-project").classList.contains("active")) {
+        loadProjectVersions(!!silent).catch(() => {});
+      }
+    }
+
+    function startProjectPoll() {
+      stopProjectPoll();
+      $("project-poll-secs").textContent = String(Math.round(PROJECT_POLL_MS / 1000));
+      projectPollTimer = setInterval(() => {
+        if (!document.getElementById("tab-project").classList.contains("active")) return;
+        loadProjects(true).catch(() => {});
+      }, PROJECT_POLL_MS);
+    }
+
+    function stopProjectPoll() {
+      if (projectPollTimer) {
+        clearInterval(projectPollTimer);
+        projectPollTimer = null;
+      }
+    }
+
+    async function createProject() {
+      const raw = prompt("ds_id（留空则自动分配下一个可用 id）", "");
+      const body = {};
+      if (raw != null && String(raw).trim() !== "") {
+        const n = parseInt(String(raw).trim(), 10);
+        if (!Number.isFinite(n) || n < 1) throw new Error("ds_id 须为 >= 1 的整数");
+        body.dsId = n;
+      }
+      const r = await proxyHttp("POST", "/v1/projects", body);
+      toast("已创建 ds_" + r.dsId, true);
+      await loadProjects();
+      selectDs(r.dsId);
+    }
+
+    async function deleteProjectFor(id) {
+      if (!confirm("确定删除 ds_" + id + "？\n将删除本地工作区、project_config 行，并清理该 ds 的会话记录。")) {
+        return;
+      }
+      const r = await proxyHttp("DELETE", "/v1/projects/" + id + "?purgeSessions=true");
+      toast("已删除 ds_" + id + "（会话 " + (r.sessionsRemoved || 0) + " 条）", true);
+      $("project-detail").textContent = JSON.stringify(r, null, 2);
+      await loadProjects();
+      if (projects.length) {
+        selectDs(projects[0].dsId);
+      } else {
+        $("project-detail").textContent = "（暂无项目）";
+        updateProjectChrome();
+      }
+    }
+
+    async function initDsFor(id) {
+      const r = await proxyHttp("POST", "/v1/init", { dsId: id });
+      toast("ds_" + id + " 初始化完成", true);
+      $("project-detail").textContent = JSON.stringify(r, null, 2);
+      await loadProjects();
+      loadProjectDetail(id).catch(() => {});
+    }
+
+    function fillSkillForm(name) {
+      const s = skillsCache.find((x) => x.skill_name === name);
+      $("skill-name").value = name || "";
+      $("skill-content").value = (s && s.skill_content) || "";
+    }
+
+    async function loadSkills() {
+      const id = dsId();
+      const data = await proxyHttp("GET", "/v1/skills/" + id);
+      const sel = $("skill-pick");
+      sel.innerHTML = "";
+      skillsCache = data.skills || [];
+      if (!skillsCache.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "（无 Skill）";
+        sel.appendChild(opt);
+        $("skill-name").value = "";
+        $("skill-content").value = "";
+        return;
+      }
+      skillsCache.forEach((s) => {
+        const opt = document.createElement("option");
+        opt.value = s.skill_name;
+        opt.textContent = s.skill_name;
+        sel.appendChild(opt);
+      });
+      fillSkillForm(skillsCache[0].skill_name);
+    }
+
+    async function saveSkill() {
+      const name = $("skill-name").value.trim();
+      const content = $("skill-content").value;
+      if (!name) throw new Error("skillName 不能为空");
+      const r = await proxyHttp("POST", "/v1/project/skills/" + dsId(), {
+        skillName: name,
+        skillContent: content,
+      });
+      toast("Skill 已写入临时版（" + (r.bytesWritten || 0) + " 字节）", true);
+      await loadProjectConfig().catch(() => {});
+      await loadSkills();
+    }
+
+    async function loadMcp() {
+      const data = await proxyHttp("GET", "/v1/mcp/injected/" + dsId());
+      $("mcp-status").textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function injectMcp(replace) {
+      let servers;
+      try {
+        servers = JSON.parse($("mcp-servers").value || "{}");
+      } catch (e) {
+        throw new Error("mcpServers JSON 无效");
+      }
+      if (typeof servers !== "object" || Array.isArray(servers)) {
+        throw new Error("mcpServers 必须是 JSON 对象");
+      }
+      const r = await proxyHttp("POST", "/v1/mcp/inject", {
+        dsId: dsId(),
+        mcpServers: servers,
+        replace,
+      });
+      $("mcp-status").textContent = JSON.stringify(r, null, 2);
+      toast(replace ? "MCP 已写入临时版（全量）" : "MCP 已写入临时版（合并）", true);
+      await loadProjectConfig().catch(() => {});
+    }
+
+    async function clearMcp() {
+      const r = await proxyHttp("DELETE", "/v1/mcp/injected/" + dsId());
+      $("mcp-servers").value = "{}";
+      $("mcp-status").textContent = JSON.stringify(r, null, 2);
+      toast("已清空临时版 MCP", true);
+      await loadProjectConfig().catch(() => {});
+    }
+
+    async function loadClaude() {
+      const r = await proxyHttp("GET", "/v1/project/claude/" + dsId());
+      $("claude-content").value = r.content || "";
+      toast(r.exists ? "CLAUDE.md 已加载" : "文件不存在（空）", true);
+    }
+
+    async function saveClaude() {
+      const r = await proxyHttp("POST", "/v1/project/claude/" + dsId(), {
+        content: $("claude-content").value,
+      });
+      toast("CLAUDE.md 已写入临时版", true);
+      await loadProjectConfig().catch(() => {});
+    }
+
+    function slugRuleTitle(title) {
+      return title
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "rule";
+    }
+
+    function stripRuleFrontmatter(content) {
+      const m = String(content || "").match(/^---\r?\n[\s\S]*?\r?\n---\r?\n+([\s\S]*)$/);
+      return m ? m[1].trim() : String(content || "").trim();
+    }
+
+    function buildRuleFileContent(title, body, scope) {
+      const desc = title.trim() || "rule";
+      const always = scope === "ALWAYS";
+      const header = always
+        ? "---\ndescription: " + desc + "\nalwaysApply: true\n---\n\n"
+        : "---\ndescription: " + desc + "\n---\n\n";
+      return header + String(body || "").trim() + "\n";
+    }
+
+    function parseRuleJsonItem(obj) {
+      const ruleId = String(obj.ruleId || "").trim();
+      const ruleTitle =
+        String(obj.ruleTitle || "").trim() ||
+        ruleId ||
+        (obj.relativePath || "").replace(/^.*\//, "").replace(/\.mdc?$/, "");
+      const ruleScope = String(obj.ruleScope || "ALWAYS").trim() || "ALWAYS";
+      const ruleContent = stripRuleFrontmatter(obj.content);
+      return {
+        ruleId: ruleId || slugRuleTitle(ruleTitle),
+        ruleTitle,
+        ruleScope,
+        ruleContent,
+      };
+    }
+
+    function rulesJsonFromList() {
+      return projectRulesList.map((r) => {
+        const title = r.ruleTitle.trim() || r.ruleId;
+        const id = slugRuleTitle(r.ruleId || title);
+        return {
+          ruleId: id,
+          ruleTitle: title,
+          ruleScope: r.ruleScope || "ALWAYS",
+          relativePath: ".cursor/rules/" + id + ".mdc",
+          content: buildRuleFileContent(title, r.ruleContent, r.ruleScope || "ALWAYS"),
+        };
+      });
+    }
+
+    function syncRuleFormToList() {
+      if (selectedRuleIndex < 0 || selectedRuleIndex >= projectRulesList.length) return;
+      projectRulesList[selectedRuleIndex] = {
+        ruleId: slugRuleTitle($("rule-title").value || "rule"),
+        ruleTitle: $("rule-title").value.trim(),
+        ruleScope: "ALWAYS",
+        ruleContent: $("rule-content").value,
+      };
+    }
+
+    function fillRuleForm(idx) {
+      selectedRuleIndex = idx;
+      if (idx < 0 || idx >= projectRulesList.length) {
+        $("rule-title").value = "";
+        $("rule-scope").value = "ALWAYS";
+        $("rule-content").value = "";
+        return;
+      }
+      const r = projectRulesList[idx];
+      $("rule-title").value = r.ruleTitle || r.ruleId;
+      $("rule-scope").value = r.ruleScope || "ALWAYS";
+      $("rule-content").value = r.ruleContent || "";
+    }
+
+    function renderRuleList() {
+      const sel = $("rule-pick");
+      sel.innerHTML = "";
+      if (!projectRulesList.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "（无规则，点「新增」）";
+        sel.appendChild(opt);
+        fillRuleForm(-1);
+        return;
+      }
+      projectRulesList.forEach((r, i) => {
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = (r.ruleTitle || r.ruleId || "未命名") + " · ALWAYS";
+        sel.appendChild(opt);
+      });
+      if (selectedRuleIndex < 0 || selectedRuleIndex >= projectRulesList.length) {
+        selectedRuleIndex = 0;
+      }
+      sel.value = String(selectedRuleIndex);
+      fillRuleForm(selectedRuleIndex);
+    }
+
+    async function loadProjectRules() {
+      await loadProjectConfig();
+      const arr = Array.isArray(projectConfigCache && projectConfigCache.rulesJson)
+        ? projectConfigCache.rulesJson
+        : [];
+      projectRulesList = arr.map(parseRuleJsonItem);
+      selectedRuleIndex = projectRulesList.length ? 0 : -1;
+      updateVersionStateBar(projectConfigCache, null);
+      renderRuleList();
+      toast("Rules 已加载（" + projectRulesList.length + " 条）", true);
+    }
+
+    async function saveProjectRules() {
+      syncRuleFormToList();
+      const cfgOut = await putProjectConfigDraft({ rulesJson: rulesJsonFromList() });
+      projectRulesList = (cfgOut.rulesJson || []).map(parseRuleJsonItem);
+      selectedRuleIndex = projectRulesList.length ? 0 : -1;
+      renderRuleList();
+      toast("Rules 已写入临时版（" + projectRulesList.length + " 条）", true);
+      await loadProjects(true);
+      await loadProjectVersions(false);
+    }
+
+    function addRule() {
+      syncRuleFormToList();
+      projectRulesList.push({
+        ruleId: "new-rule-" + Date.now(),
+        ruleTitle: "",
+        ruleScope: "ALWAYS",
+        ruleContent: "",
+      });
+      selectedRuleIndex = projectRulesList.length - 1;
+      renderRuleList();
+      fillRuleForm(selectedRuleIndex);
+    }
+
+    function deleteRule() {
+      if (selectedRuleIndex < 0) return;
+      syncRuleFormToList();
+      projectRulesList.splice(selectedRuleIndex, 1);
+      selectedRuleIndex = Math.min(selectedRuleIndex, projectRulesList.length - 1);
+      renderRuleList();
+      toast("已删除当前条（需点保存写入库）", true);
+    }
+
+    async function loadPrompt(reload) {
+      const method = reload ? "POST" : "GET";
+      const r = await proxyHttp(method, "/v1/project/prompt/" + dsId() + "/effective");
+      $("prompt-sections").textContent = "sections:\n" + JSON.stringify(r.sections || [], null, 2);
+      $("prompt-message").value = r.message || "";
+      toast(reload ? "系统提示词已重新加载" : "系统提示词已加载", true);
+    }
+
+    function matchToolPattern(pattern, name) {
+      if (pattern === name) return true;
+      if (!pattern.includes("*")) return false;
+      if (pattern.endsWith("*")) {
+        return name.startsWith(pattern.slice(0, -1));
+      }
+      return false;
+    }
+
+    function toolSelectableByGateway(name, gatewayAllowed) {
+      if (!gatewayAllowed || gatewayAllowed.length === 0) return true;
+      return gatewayAllowed.some((p) => matchToolPattern(p, name));
+    }
+
+    async function loadProjectConfig() {
+      const id = dsId();
+      try {
+        projectConfigCache = await proxyHttp("GET", "/v1/project/config/" + id);
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (msg.indexOf("no project_config") >= 0 || msg.indexOf("404") >= 0) {
+          projectConfigCache = {
+            dsId: id,
+            contentRev: "",
+            rulesJson: [],
+            mcpServersJson: {},
+            skillsJson: [],
+            allowedToolsJson: [],
+            claudeMd: null,
+          };
+        } else {
+          throw e;
+        }
+      }
+      updateVersionStateBar(projectConfigCache, null);
+      return projectConfigCache;
+    }
+
+    function renderToolsCatalog() {
+      const grid = $("tools-catalog");
+      grid.innerHTML = "";
+      if (!toolsCatalog || !toolsCatalog.tools) {
+        grid.textContent = "（无 catalog 数据，请先重新加载）";
+        return;
+      }
+      const gatewayAllowed = toolsCatalog.gatewayAllowedTools || [];
+      $("tools-gateway-policy").textContent =
+        "gatewayAllowedTools: " +
+        (gatewayAllowed.length ? JSON.stringify(gatewayAllowed) : "（空 = 不限制内置工具名）");
+
+      const selected = new Set(
+        Array.isArray(projectConfigCache && projectConfigCache.allowedToolsJson)
+          ? projectConfigCache.allowedToolsJson
+          : []
+      );
+      const emptyMeansAll = selected.size === 0;
+
+      toolsCatalog.tools.forEach((t) => {
+        const ok = toolSelectableByGateway(t.name, gatewayAllowed);
+        const row = document.createElement("div");
+        row.className = "tool-item" + (ok ? "" : " disabled");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.dataset.toolName = t.name;
+        if (!emptyMeansAll && selected.has(t.name)) cb.checked = true;
+        const lbl = document.createElement("label");
+        const nameEl = document.createElement("div");
+        nameEl.className = "name";
+        nameEl.textContent = t.name;
+        const descEl = document.createElement("div");
+        descEl.className = "desc";
+        descEl.textContent = t.description || "";
+        const srcEl = document.createElement("div");
+        srcEl.className = "src";
+        srcEl.textContent = t.source || "";
+        lbl.appendChild(nameEl);
+        lbl.appendChild(descEl);
+        lbl.appendChild(srcEl);
+        lbl.prepend(cb);
+        row.appendChild(lbl);
+        grid.appendChild(row);
+      });
+    }
+
+    async function loadTools() {
+      toolsCatalog = await proxyHttp("GET", "/v1/project/tools/catalog");
+      await loadProjectConfig();
+      renderToolsCatalog();
+      toast("Tools 配置已加载", true);
+    }
+
+    function collectSelectedTools() {
+      const names = [];
+      $("tools-catalog").querySelectorAll('input[type="checkbox"]:checked').forEach((cb) => {
+        if (cb.dataset.toolName) names.push(cb.dataset.toolName);
+      });
+      return names;
+    }
+
+    async function saveTools() {
+      const allowedToolsJson = collectSelectedTools();
+      await putProjectConfigDraft({ allowedToolsJson });
+      renderToolsCatalog();
+      toast(
+        "已写入临时版 allowedToolsJson（" + allowedToolsJson.length + " 项" +
+          (allowedToolsJson.length === 0 ? "，空=仅用全局策略" : "") + "）",
+        true
+      );
+      await loadProjects(true);
+      await loadProjectVersions(false);
+    }
+
+    function loadTabData() {
+      const tab = document.querySelector("nav.tabs button.active").dataset.tab;
+      if (tab === "skills") loadSkills().catch((e) => toast(e.message, false));
+      if (tab === "mcp") loadMcp().catch((e) => toast(e.message, false));
+      if (tab === "claude") loadClaude().catch((e) => toast(e.message, false));
+      if (tab === "rules") loadProjectRules().catch((e) => toast(e.message, false));
+      if (tab === "prompt") loadPrompt(false).catch((e) => toast(e.message, false));
+      if (tab === "tools") loadTools().catch((e) => toast(e.message, false));
+    }
+
+    document.querySelectorAll("nav.tabs button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".panel-section").forEach((s) => s.classList.remove("active"));
+        btn.classList.add("active");
+        $("tab-" + btn.dataset.tab).classList.add("active");
+        if (btn.dataset.tab === "project") {
+          startProjectPoll();
+          loadProjects(true).catch((e) => toast(e.message, false));
+        } else {
+          stopProjectPoll();
+        }
+        loadTabData();
+      });
+    });
+
+    $("btn-header-create").addEventListener("click", () => createProject().catch((e) => toast(e.message, false)));
+    $("btn-project-init").addEventListener("click", () => initDsFor(dsId()).catch((e) => toast(e.message, false)));
+    $("btn-project-delete").addEventListener("click", () => deleteProjectFor(dsId()).catch((e) => toast(e.message, false)));
+    $("btn-git-save").addEventListener("click", () => saveProjectGit().catch((e) => toast(e.message, false)));
+    $("btn-git-push").addEventListener("click", () => pushProjectGit().catch((e) => toast(e.message, false)));
+    $("btn-versions-reload").addEventListener("click", () => loadProjectVersions().catch((e) => toast(e.message, false)));
+    $("btn-versions-compare").addEventListener("click", () => compareProjectVersions().catch((e) => toast(e.message, false)));
+    $("skill-pick").addEventListener("change", () => fillSkillForm($("skill-pick").value));
+    $("rule-pick").addEventListener("change", () => {
+      syncRuleFormToList();
+      const idx = parseInt($("rule-pick").value, 10);
+      selectedRuleIndex = Number.isFinite(idx) ? idx : -1;
+      fillRuleForm(selectedRuleIndex);
+    });
+    $("btn-skill-save").addEventListener("click", () => saveSkill().catch((e) => toast(e.message, false)));
+    $("btn-skill-reload").addEventListener("click", () => loadSkills().catch((e) => toast(e.message, false)));
+    $("btn-mcp-merge").addEventListener("click", () => injectMcp(false).catch((e) => toast(e.message, false)));
+    $("btn-mcp-replace").addEventListener("click", () => injectMcp(true).catch((e) => toast(e.message, false)));
+    $("btn-mcp-reload").addEventListener("click", () => loadMcp().catch((e) => toast(e.message, false)));
+    $("btn-mcp-clear").addEventListener("click", () => clearMcp().catch((e) => toast(e.message, false)));
+    $("btn-claude-save").addEventListener("click", () => saveClaude().catch((e) => toast(e.message, false)));
+    $("btn-claude-reload").addEventListener("click", () => loadClaude().catch((e) => toast(e.message, false)));
+    $("btn-rules-save").addEventListener("click", () => saveProjectRules().catch((e) => toast(e.message, false)));
+    $("btn-rules-reload").addEventListener("click", () => loadProjectRules().catch((e) => toast(e.message, false)));
+    $("btn-rule-add").addEventListener("click", addRule);
+    $("btn-rule-delete").addEventListener("click", deleteRule);
+    $("btn-prompt-load").addEventListener("click", () => loadPrompt(false).catch((e) => toast(e.message, false)));
+    $("btn-prompt-reload").addEventListener("click", () => loadPrompt(true).catch((e) => toast(e.message, false)));
+    $("btn-tools-reload").addEventListener("click", () => loadTools().catch((e) => toast(e.message, false)));
+    $("btn-tools-save").addEventListener("click", () => saveTools().catch((e) => toast(e.message, false)));
+    $("btn-tools-select-all").addEventListener("click", () => {
+      $("tools-catalog").querySelectorAll(".tool-item:not(.disabled) input[type=checkbox]").forEach((cb) => {
+        cb.checked = true;
+      });
+    });
+    $("btn-tools-clear").addEventListener("click", () => {
+      $("tools-catalog").querySelectorAll("input[type=checkbox]").forEach((cb) => {
+        cb.checked = false;
+      });
+    });
+    $("gateway-base").addEventListener("change", () => {
+      try {
+        localStorage.setItem("claw-playground-gateway-base", $("gateway-base").value);
+      } catch (_) {}
+      loadProjects().catch((e) => toast(e.message, false));
+    });
+    $("ds-id").addEventListener("change", () => {
+      const id = parseInt($("ds-id").value, 10);
+      if (Number.isFinite(id)) selectDs(id);
+    });
+
+    function fillGatewaySelect(cfg) {
+      const sel = $("gateway-base");
+      sel.innerHTML = "";
+      const def = cfg.defaultGatewayBase;
+      if (def) {
+        const opt = document.createElement("option");
+        opt.value = def;
+        opt.textContent = cfg.defaultGatewayLabel || def;
+        sel.appendChild(opt);
+      }
+      for (const p of cfg.gatewayPresets || []) {
+        if (!p.value || p.value === def) continue;
+        const opt = document.createElement("option");
+        opt.value = p.value;
+        opt.textContent = p.label || p.value;
+        sel.appendChild(opt);
+      }
+      let saved = "";
+      try {
+        saved = localStorage.getItem("claw-playground-gateway-base") || "";
+      } catch (_) {}
+      const values = [...sel.options].map((o) => o.value);
+      if (saved && values.includes(saved)) {
+        sel.value = saved;
+      } else if (def) {
+        sel.value = def;
+      }
+    }
+
+    async function applyPlaygroundConfig() {
+      try {
+        const r = await fetch("/__config__");
+        if (!r.ok) return;
+        fillGatewaySelect(await r.json());
+      } catch (_) {}
+    }
+
+    requireAdminSession()
+      .then((ok) => {
+        if (!ok) return;
+        return applyPlaygroundConfig().then(() => {
+          startProjectPoll();
+          return loadProjects(false);
+        });
+      })
+      .catch((e) => toast(e.message, false));
+  </script>
+</body>
+</html>

@@ -30,6 +30,7 @@ print(json.dumps({
     "userPrompt": os.environ["QUESTION"],
     "extraSession": {
         "store_id": os.environ["STORE_ID"],
+        "org_id": os.environ.get("ORG_ID", ""),
         "tenant_code": "GPOS",
         "solution_code": "restaurant",
         "biz_type": "BOSS_REPORT",

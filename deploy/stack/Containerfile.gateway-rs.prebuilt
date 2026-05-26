@@ -1,0 +1,25 @@
+# Package pre-built Linux binaries (see deploy/stack/lib/linux-compile.sh). No cargo in image build.
+# Author: kejiqing
+ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
+
+FROM ${DEBIAN_BASE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    podman \
+    docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY deploy/stack/.linux-artifacts/release/claw /usr/local/bin/claw
+COPY deploy/stack/.linux-artifacts/release/http-gateway-rs /usr/local/bin/http-gateway-rs
+COPY deploy/stack/.linux-artifacts/release/claw-pool-daemon /usr/local/bin/claw-pool-daemon
+
+ENV CLAW_HTTP_ADDR=0.0.0.0:8080
+ENV CLAW_WORK_ROOT=/var/lib/claw/workspace
+
+RUN mkdir -p /var/lib/claw/workspace /var/log/claw/traces
+
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/http-gateway-rs"]

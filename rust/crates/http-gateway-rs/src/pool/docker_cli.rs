@@ -1,8 +1,9 @@
 //! Invoke `docker` / `podman` CLI. Author: kejiqing
 
 use std::process::Stdio;
+use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 /// Short-lived CLI calls (`run`, `rm`, `kill`). `kill_on_drop` tears down the client if the
@@ -16,9 +17,6 @@ pub async fn runtime_exec(bin: &str, args: &[&str]) -> std::io::Result<std::proc
         .await
 }
 
-/// `docker exec` (long-running): stream stderr lines to tracing while collecting stdout/stderr.
-/// Without this, progress and errors inside the worker only appear after the process exits
-/// because `output()` buffers until EOF.
 fn argv_summary(args: &[&str], max_bytes: usize) -> String {
     let s = args.join(" ");
     if s.len() <= max_bytes {
@@ -31,10 +29,12 @@ fn argv_summary(args: &[&str], max_bytes: usize) -> String {
     format!("…{}", &s[start..])
 }
 
-pub async fn runtime_exec_with_live_stderr(
+/// `docker exec` (long-running): stream stderr to tracing; stream stdout lines to `on_stdout_line`.
+pub async fn runtime_exec_with_live_streams(
     bin: &str,
     args: &[&str],
     request_id: Option<&str>,
+    on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
 ) -> std::io::Result<std::process::Output> {
     tracing::debug!(
         target: "claw_gateway_pool",
@@ -43,7 +43,7 @@ pub async fn runtime_exec_with_live_stderr(
         %bin,
         argv_summary = %argv_summary(args, 1800),
         request_id = request_id.unwrap_or(""),
-        "spawning docker/podman exec (stderr streamed to target claw_gateway_solve)"
+        "spawning docker/podman exec (stdout/stderr streamed)"
     );
     let mut child = Command::new(bin)
         .args(args)
@@ -105,18 +105,32 @@ pub async fn runtime_exec_with_live_stderr(
         acc
     });
 
-    let mut stdout_buf = Vec::new();
-    {
+    let stdout_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
-        reader.read_to_end(&mut stdout_buf).await?;
-    }
+        let mut line = String::new();
+        let mut acc = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    acc.push_str(&line);
+                    if let Some(ref hook) = on_stdout_line {
+                        hook(line.clone());
+                    }
+                }
+            }
+        }
+        acc
+    });
 
     let status = child.wait().await?;
     let stderr_acc = stderr_task.await.unwrap_or_default();
+    let stdout_acc = stdout_task.await.unwrap_or_default();
 
     Ok(std::process::Output {
         status,
-        stdout: stdout_buf,
+        stdout: stdout_acc.into_bytes(),
         stderr: stderr_acc.into_bytes(),
     })
 }

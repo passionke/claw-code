@@ -3,7 +3,7 @@
 set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
-REPO_ROOT="$2"
+REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/nuclear-pool-reset.sh"
 # Always refresh worker env snapshot from repo-root .env before (re)starting the daemon so pool
@@ -40,6 +40,17 @@ claw_kill_tcp_listeners "${PORT}"
 
 claw_remove_all_gateway_workers
 
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${REPO_ROOT}/.env"
+  set +a
+fi
+
+# shellcheck source=claw-pool-registry-env.sh
+source "${LIB_DIR}/claw-pool-registry-env.sh"
+claw_export_pool_registry_env "${RPC_DIR}"
+
 if [[ ! -x "${BIN}" ]]; then
   echo "error: claw-pool-daemon missing or not executable: ${BIN}" >&2
   echo "hint: ./deploy/stack/gateway.sh build then ./deploy/stack/gateway.sh up (installs from GATEWAY_IMAGE), or:" >&2
@@ -59,6 +70,17 @@ if [[ -n "${CLAW_DOCKER_IMAGE:-}" ]]; then
 fi
 if [[ -n "${CLAW_PODMAN_IMAGE:-}" ]]; then
   daemon_env+=(CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE}")
+fi
+if [[ -n "${CLAW_PODMAN_NETWORK:-}" ]]; then
+  daemon_env+=(CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK}")
+fi
+daemon_env+=(
+  CLAW_POOL_HTTP_BIND="0.0.0.0:${CLAW_POOL_HTTP_PORT:-9944}"
+  CLAW_POOL_ADVERTISE_HOST="${CLAW_POOL_ADVERTISE_HOST}"
+  CLAW_POOL_ID="${CLAW_POOL_ID}"
+)
+if pool_db_url="$(claw_pool_daemon_database_url)"; then
+  daemon_env+=(CLAW_GATEWAY_DATABASE_URL="${pool_db_url}")
 fi
 nohup env "${daemon_env[@]}" "${BIN}" >>"${RPC_DIR}/daemon.log" 2>&1 &
 dpid=$!
@@ -84,7 +106,24 @@ fi
 
 for _ in $(seq 1 100); do
   if python3 -c "import socket; s=socket.socket(); s.settimeout(0.2); s.connect(('127.0.0.1', int('${PORT}'))); s.close()" 2>/dev/null; then
-    echo "claw-pool-daemon listening on 127.0.0.1:${PORT} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
+    echo "claw-pool-daemon listening on 127.0.0.1:${PORT} pool_id=${CLAW_POOL_ID} advertise=${CLAW_POOL_ADVERTISE_HOST} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
+    if pool_db_url="$(claw_pool_daemon_database_url 2>/dev/null || true)" && [[ -n "${pool_db_url}" ]]; then
+      for _w in $(seq 1 80); do
+        if grep -q "claw_pool registered" "${RPC_DIR}/daemon.log" 2>/dev/null; then
+          echo "claw-pool-daemon: claw_pool registered in PostgreSQL" >&2
+          exit 0
+        fi
+        if tail -5 "${RPC_DIR}/daemon.log" 2>/dev/null | grep -q "claw_pool registry disabled"; then
+          echo "error: claw-pool-daemon started but pool registry disabled (check CLAW_GATEWAY_DATABASE_URL / host port ${CLAW_GATEWAY_PG_HOST_PORT:-5433})" >&2
+          tail -20 "${RPC_DIR}/daemon.log" >&2 || true
+          exit 1
+        fi
+        sleep 0.1
+      done
+      echo "error: pool listens on TCP but claw_pool not registered within 8s — stale binary or DB unreachable" >&2
+      tail -30 "${RPC_DIR}/daemon.log" >&2 || true
+      exit 1
+    fi
     exit 0
   fi
   sleep 0.05

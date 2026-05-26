@@ -68,15 +68,15 @@ pub trait ToolExecutor {
     }
 }
 
-/// Thread-safe tool execution surface used for background `SQLBot` analysis calls. Author: kejiqing
+/// Thread-safe tool execution surface used for concurrent MCP `tools/call`. Author: kejiqing
 pub trait SharedToolExecutor: Send + Sync {
     fn execute_shared(&self, tool_name: &str, input: &str) -> Result<String, ToolError>;
-}
 
-/// `SQLBot` analysis MCP tools may run concurrently within one assistant turn. Author: kejiqing
-#[must_use]
-pub fn is_background_sqlbot_analysis_tool(tool_name: &str) -> bool {
-    tool_name.ends_with("mcp_question_then_analysis")
+    /// MCP `tools/list` annotations: tool may run on a background thread within one turn.
+    fn allows_concurrent_mcp_call(&self, tool_name: &str) -> bool {
+        let _ = tool_name;
+        false
+    }
 }
 
 struct ToolExecuteRawOutcome {
@@ -175,8 +175,6 @@ pub struct ConversationRuntime<C, T> {
     hook_abort_signal: HookAbortSignal,
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
-    /// Invoked after an assistant message is appended to the session (and jsonl when configured).
-    on_assistant_persisted: Option<Box<dyn FnMut() + Send>>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -226,15 +224,7 @@ where
             hook_abort_signal: HookAbortSignal::default(),
             hook_progress_reporter: None,
             session_tracer: None,
-            on_assistant_persisted: None,
         }
-    }
-
-    /// Hook for gateway assistant stream spill cleanup (after each assistant jsonl line). Author: kejiqing
-    #[must_use]
-    pub fn with_on_assistant_persisted(mut self, hook: impl FnMut() + Send + 'static) -> Self {
-        self.on_assistant_persisted = Some(Box::new(hook));
-        self
     }
 
     #[must_use]
@@ -391,6 +381,19 @@ where
         self.run_turn_inner("", None, prompter)
     }
 
+    /// Like [`Self::run_turn_after_user_message`], but streams each model `TextDelta` to `on_text_delta`. Author: kejiqing
+    pub fn run_turn_after_user_message_streaming<F>(
+        &mut self,
+        mut on_text_delta: F,
+        prompter: Option<&mut dyn PermissionPrompter>,
+    ) -> Result<TurnSummary, RuntimeError>
+    where
+        F: FnMut(&str),
+    {
+        let mut cb: &mut dyn FnMut(&str) = &mut on_text_delta;
+        self.run_turn_inner("", Some(&mut cb), prompter)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn run_turn_inner(
         &mut self,
@@ -484,9 +487,6 @@ where
             self.session
                 .push_message(assistant_message.clone())
                 .map_err(|error| RuntimeError::new(error.to_string()))?;
-            if let Some(hook) = self.on_assistant_persisted.as_mut() {
-                hook();
-            }
             assistant_messages.push(assistant_message);
 
             if pending_tool_uses.is_empty() {
@@ -570,7 +570,7 @@ where
 
         if let Some(shared) = shared_executor {
             for (tool_use_id, tool_name, input) in &pending_tool_uses {
-                if !is_background_sqlbot_analysis_tool(tool_name) {
+                if !shared.allows_concurrent_mcp_call(tool_name) {
                     continue;
                 }
                 let pre_hook_result = self.run_pre_tool_use_hook(tool_name, input);
@@ -1238,11 +1238,11 @@ impl ToolExecutor for StaticToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_assistant_message, is_background_sqlbot_analysis_tool,
-        join_remaining_background_jobs, parse_auto_compaction_threshold, ApiClient, ApiRequest,
-        AssistantEvent, AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
-        PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
-        ToolExecuteRawOutcome, ToolExecutor, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+        build_assistant_message, join_remaining_background_jobs, parse_auto_compaction_threshold,
+        ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent, BackgroundToolJob,
+        ConversationRuntime, HookRunResult, PromptCacheEvent, RuntimeError, SharedToolExecutor,
+        StaticToolExecutor, ToolExecuteRawOutcome, ToolExecutor,
+        DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
     use crate::compact::CompactionConfig;
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
@@ -1349,6 +1349,7 @@ mod tests {
                 git_diff: None,
                 git_context: None,
                 instruction_files: Vec::new(),
+                rule_files: Vec::new(),
                 extra_session: None,
             })
             .with_os("linux", "6.8")
@@ -2258,20 +2259,6 @@ mod tests {
         assert!(finished.load(Ordering::SeqCst));
     }
 
-    #[test]
-    fn background_sqlbot_analysis_tool_suffix_match() {
-        assert!(is_background_sqlbot_analysis_tool(
-            "mcp__sqlbot-streamable__mcp_question_then_analysis"
-        ));
-        assert!(!is_background_sqlbot_analysis_tool(
-            "mcp__sqlbot-streamable__mcp_question"
-        ));
-        assert!(!is_background_sqlbot_analysis_tool("read_file"));
-        assert!(is_background_sqlbot_analysis_tool(
-            "prefix__mcp_question_then_analysis"
-        ));
-    }
-
     mod background_tool_dispatch {
         use super::*;
         use std::collections::BTreeMap;
@@ -2367,6 +2354,7 @@ mod tests {
             active: AtomicUsize,
             max_active: AtomicUsize,
             max_concurrent: Option<usize>,
+            concurrent_tools: std::collections::HashSet<String>,
             calls: Mutex<Vec<(String, String)>>,
             outcomes: Mutex<BTreeMap<String, Result<String, ToolError>>>,
         }
@@ -2384,6 +2372,7 @@ mod tests {
                     active: AtomicUsize::new(0),
                     max_active: AtomicUsize::new(0),
                     max_concurrent,
+                    concurrent_tools: std::collections::HashSet::from([ANALYSIS.to_string()]),
                     calls: Mutex::new(Vec::new()),
                     outcomes: Mutex::new(outcomes),
                 })
@@ -2446,6 +2435,10 @@ mod tests {
                     .unwrap_or(Ok(format!("ok:{tool_use_id}")));
                 self.release_permit();
                 outcome
+            }
+
+            fn allows_concurrent_mcp_call(&self, tool_name: &str) -> bool {
+                self.concurrent_tools.contains(tool_name)
             }
         }
 
@@ -2581,8 +2574,9 @@ mod tests {
             );
             let shared_calls = inner.calls.lock().expect("calls lock");
             assert_eq!(shared_calls.len(), 2);
-            assert_eq!(shared_calls[0].0, "a1");
-            assert_eq!(shared_calls[1].0, "a2");
+            let mut ids: Vec<&str> = shared_calls.iter().map(|(id, _)| id.as_str()).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec!["a1", "a2"]);
         }
 
         #[test]
@@ -2860,6 +2854,10 @@ mod tests {
                     std::panic::panic_any("shared executor panic");
                 }
                 Ok(format!("ok:{}", input.trim()))
+            }
+
+            fn allows_concurrent_mcp_call(&self, tool_name: &str) -> bool {
+                tool_name == ANALYSIS
             }
         }
 

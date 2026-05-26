@@ -104,7 +104,8 @@ sequenceDiagram
 | `CLAW_DOCKER_POOL_CPUS` / `CLAW_PODMAN_POOL_CPUS` | 可选：每个 worker `run` 追加 `--cpus …` |
 | `CLAW_DOCKER_POOL_MEMORY` / `CLAW_PODMAN_POOL_MEMORY` | 可选：每个 worker `run` 追加 `--memory …`（如 `512m`、`1g`） |
 | `CLAW_DOCKER_IMAGE` / `CLAW_PODMAN_IMAGE` | Worker 镜像名 |
-| `CLAW_DOCKER_NETWORK` / `CLAW_PODMAN_NETWORK` | 可选，接入与 MCP 相同 network |
+| `CLAW_DOCKER_NETWORK` / `CLAW_PODMAN_NETWORK` | 可选，接入与 MCP / gateway 相同 network |
+| `CLAW_GATEWAY_INTERNAL_BASE_URL` / `CLAW_GATEWAY_INTERNAL_TOKEN` | 宿主机 **pool daemon** 将 worker stdout `report.delta` 转发到网关 `POST /v1/internal/turns/{turnId}/stdout-event`（`pool-daemon-up.sh` 默认 `http://127.0.0.1:${GATEWAY_HOST_PORT}`） |
 | `CLAW_WORKER_ENV_FILE` | 宿主机上仓库根 `.env` 路径（`pool-daemon-up.sh` 默认设为 `<repo>/.env`）。池 `podman/docker run` 只读挂载到容器内 `/run/claw/worker.env`；`claw gateway-solve-once` 启动时按 **`gateway-solve-turn/src/worker_env.rs`** 声明的 key 按需注入进程环境（**不再**生成 `deploy/stack/worker-openai.env`）。 |
 | `CLAW_DOCKER_EXTRA_ARGS` / `CLAW_PODMAN_EXTRA_ARGS` | 透传额外 `docker run` / `podman run` 参数（**空格分词**；改后须 **重启** daemon）。默认仅 `--add-host host.docker.internal:host-gateway`（见 `sync-worker-openai-env.sh`）。**勿**用 `--env-file` 拷贝子集 `.env`；LLM/MCP 变量走挂载 + `apply_worker_env`。**勿**在 compose `environment:` 写 `${VAR:-}` 覆盖 `env_file`。 |
 | `CLAW_DOCKER_POOL_ON_RELEASE` / `CLAW_PODMAN_POOL_ON_RELEASE` | 可选：槽位从 `leased` 正常归还为 `idle` 时，在容器内执行 `sh -lc` 的**整段脚本**；空则跳过（`force_kill` 不走此钩子） |
@@ -187,4 +188,4 @@ Rust 里容易把池、Docker CLI、租约、结果解析全写进 `main.rs`。*
 
 单机 Docker **v1 自写 CLI 调池**（不强制 `bollard`）；见仓库内计划 `.cursor/plans/gateway_container_pool_k8s_4340e53b.plan.md` 中「Rust 三方库」与「关键文件与目录」表。
 
-**Worker 镜像**：[`deploy/stack/Containerfile.gateway-worker`](deploy/stack/Containerfile.gateway-worker) + [`scripts/claw-gateway-worker.sh`](scripts/claw-gateway-worker.sh)；与网关镜像由 [`deploy/stack/lib/build.sh`](deploy/stack/lib/build.sh) **同一次**构建（见 [`deploy/stack/README.md`](deploy/stack/README.md) §1.2）。
+**Worker 镜像**：[`deploy/stack/Containerfile.gateway-worker`](deploy/stack/Containerfile.gateway-worker)（入口 `sleep infinity`；历史脚本见 [`deploy/stack/lib/claw-gateway-worker.sh`](deploy/stack/lib/claw-gateway-worker.sh)）；与网关镜像由 [`deploy/stack/lib/build.sh`](deploy/stack/lib/build.sh) **同一次**构建（见 [`deploy/stack/README.md`](deploy/stack/README.md) §1.2）。

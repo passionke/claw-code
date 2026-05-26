@@ -48,6 +48,8 @@ def fmt_line(k: str, v: str) -> str:
 
 with open(path, encoding="utf-8") as f:
     lines = f.readlines()
+if lines and not lines[-1].endswith("\n"):
+    lines[-1] = lines[-1] + "\n"
 out, seen = [], False
 for line in lines:
     if line.startswith(f"{key}="):
@@ -72,6 +74,10 @@ set +a
 POOL_WORKER_RUN_EXTRA="${CLAW_POOL_WORKER_RUN_EXTRA:---add-host host.docker.internal:host-gateway}"
 upsert_env_kv "CLAW_DOCKER_EXTRA_ARGS" "${POOL_WORKER_RUN_EXTRA}"
 upsert_env_kv "CLAW_PODMAN_EXTRA_ARGS" "${POOL_WORKER_RUN_EXTRA}"
+
+if [[ -z "${CLAW_PODMAN_NETWORK:-}${CLAW_DOCKER_NETWORK:-}" ]]; then
+  upsert_env_kv "CLAW_PODMAN_NETWORK" "stack_default"
+fi
 
 echo "OK: pool worker run extras updated (no worker-openai.env snapshot). Set CLAW_WORKER_ENV_FILE in pool daemon to repo .env."
 
