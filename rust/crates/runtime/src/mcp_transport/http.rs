@@ -14,9 +14,10 @@ use tokio::time::timeout;
 
 use crate::mcp_client::{McpClientTransport, McpRemoteTransport};
 use crate::mcp_stdio::{
-    JsonRpcId, JsonRpcRequest, JsonRpcResponse, McpInitializeParams, McpInitializeResult,
-    McpListResourcesParams, McpListResourcesResult, McpListToolsParams, McpListToolsResult,
-    McpReadResourceParams, McpReadResourceResult, McpToolCallParams, McpToolCallResult,
+    JsonRpcId, JsonRpcRequest, JsonRpcResponse, McpInitializeClientInfo, McpInitializeParams,
+    McpInitializeResult, McpListResourcesParams, McpListResourcesResult, McpListToolsParams,
+    McpListToolsResult, McpReadResourceParams, McpReadResourceResult, McpToolCallParams,
+    McpToolCallResult,
 };
 use crate::sse::IncrementalSseParser;
 
@@ -380,6 +381,18 @@ impl McpRemoteProcess {
         Ok(())
     }
 
+    pub(crate) fn http_tool_call_snapshot(&self) -> Option<HttpToolCallSnapshot> {
+        let McpClientTransport::Http(remote) = &self.transport else {
+            return None;
+        };
+        Some(HttpToolCallSnapshot {
+            client: self.client.clone(),
+            headers: self.headers.clone(),
+            session_id: self.session_id.clone(),
+            remote: remote.clone(),
+        })
+    }
+
     pub(crate) fn shutdown(&mut self) {
         self.session_id = None;
         self.sse_message_url = None;
@@ -387,6 +400,154 @@ impl McpRemoteProcess {
             task.abort();
         }
     }
+}
+/// Snapshot for concurrent streamable-HTTP MCP `tools/call`. Author: kejiqing
+#[derive(Clone, Debug)]
+pub(crate) struct HttpToolCallSnapshot {
+    client: reqwest::Client,
+    headers: HeaderMap,
+    session_id: Option<String>,
+    remote: McpRemoteTransport,
+}
+
+pub(crate) async fn execute_http_tool_call<TParams, TResult>(
+    snapshot: HttpToolCallSnapshot,
+    request: &JsonRpcRequest<TParams>,
+) -> io::Result<(JsonRpcResponse<TResult>, Option<String>)>
+where
+    TParams: Serialize,
+    TResult: DeserializeOwned,
+{
+    let mut call = snapshot.client.post(&snapshot.remote.url);
+    let mut has_accept = false;
+    let mut has_protocol_version = false;
+    for (name, value) in &snapshot.headers {
+        if name.as_str().eq_ignore_ascii_case("accept") {
+            has_accept = true;
+        }
+        if name.as_str().eq_ignore_ascii_case("mcp-protocol-version") {
+            has_protocol_version = true;
+        }
+        call = call.header(name, value);
+    }
+    if !has_accept {
+        call = call.header("Accept", "application/json, text/event-stream");
+    }
+    if !has_protocol_version {
+        call = call.header("MCP-Protocol-Version", "2025-06-18");
+    }
+    if let Some(session_id) = &snapshot.session_id {
+        call = call.header("Mcp-Session-Id", session_id);
+    }
+    let response = call
+        .json(request)
+        .send()
+        .await
+        .map_err(reqwest_error_to_io)?;
+    let mut new_session_id = None;
+    if let Some(value) = response.headers().get("Mcp-Session-Id") {
+        if let Ok(session_id) = value.to_str() {
+            new_session_id = Some(session_id.to_string());
+        }
+    }
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(io::Error::other(format!(
+            "MCP remote server returned HTTP {status}: {body}"
+        )));
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if content_type.contains("text/event-stream") {
+        let body = response.text().await.map_err(reqwest_error_to_io)?;
+        let mut parser = IncrementalSseParser::new();
+        for event in parser.push_chunk(&body) {
+            if let Ok(parsed) = serde_json::from_str::<JsonRpcResponse<TResult>>(&event.data) {
+                return Ok((parsed, new_session_id));
+            }
+        }
+        for event in parser.finish() {
+            if let Ok(parsed) = serde_json::from_str::<JsonRpcResponse<TResult>>(&event.data) {
+                return Ok((parsed, new_session_id));
+            }
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "MCP streamable HTTP returned SSE without JSON-RPC response event",
+        ));
+    }
+    let parsed: JsonRpcResponse<TResult> = response.json().await.map_err(reqwest_error_to_io)?;
+    Ok((parsed, new_session_id))
+}
+
+fn default_http_initialize_params() -> McpInitializeParams {
+    McpInitializeParams {
+        protocol_version: "2025-03-26".to_string(),
+        capabilities: JsonValue::Object(serde_json::Map::new()),
+        client_info: McpInitializeClientInfo {
+            name: "runtime".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+    }
+}
+
+fn isolated_initialize_request_id() -> JsonRpcId {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    JsonRpcId::String(format!("claw-isolated-init-{nanos}"))
+}
+
+/// Per-call `initialize` without reusing the manager's shared `Mcp-Session-Id`.
+/// Returns `Some(id)` when the server sends the header; `None` for stateless streamable (e.g. `SQLBot`).
+/// Author: kejiqing
+pub(crate) async fn establish_isolated_http_mcp_session(
+    snapshot: &HttpToolCallSnapshot,
+) -> io::Result<Option<String>> {
+    let mut init_snapshot = snapshot.clone();
+    init_snapshot.session_id = None;
+    let init_request = JsonRpcRequest::new(
+        isolated_initialize_request_id(),
+        "initialize",
+        Some(default_http_initialize_params()),
+    );
+    let (response, session_id) =
+        execute_http_tool_call::<McpInitializeParams, McpInitializeResult>(
+            init_snapshot,
+            &init_request,
+        )
+        .await?;
+    if let Some(error) = response.error {
+        return Err(io::Error::other(format!(
+            "MCP initialize failed: {} ({})",
+            error.message, error.code
+        )));
+    }
+    if response.result.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "MCP initialize returned no result",
+        ));
+    }
+    Ok(session_id)
+}
+
+/// Concurrent `tools/call`: per-call `initialize` then `tools/call` (session header optional). Author: kejiqing
+pub(crate) async fn execute_http_tool_call_isolated<TResult: DeserializeOwned>(
+    snapshot: HttpToolCallSnapshot,
+    request: &JsonRpcRequest<McpToolCallParams>,
+) -> io::Result<(JsonRpcResponse<TResult>, Option<String>)> {
+    let session_id = establish_isolated_http_mcp_session(&snapshot).await?;
+    let mut call_snapshot = snapshot;
+    call_snapshot.session_id = session_id;
+    let (response, _) = execute_http_tool_call(call_snapshot, request).await?;
+    Ok((response, None))
 }
 
 fn default_headers_for_transport(transport: &McpClientTransport) -> io::Result<HeaderMap> {
@@ -477,4 +638,246 @@ fn json_value_id_key(value: &JsonValue) -> String {
         return text.to_string();
     }
     "null".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp_client::{McpClientAuth, McpRemoteTransport};
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    fn test_snapshot(url: &str, stale_session: Option<&str>) -> HttpToolCallSnapshot {
+        HttpToolCallSnapshot {
+            client: reqwest::Client::new(),
+            headers: HeaderMap::new(),
+            session_id: stale_session.map(str::to_string),
+            remote: McpRemoteTransport {
+                url: url.to_string(),
+                headers: BTreeMap::new(),
+                headers_helper: None,
+                auth: McpClientAuth::None,
+            },
+        }
+    }
+
+    fn jsonrpc_method(request: &str) -> Option<String> {
+        let body = request.split("\r\n\r\n").nth(1)?.trim();
+        let value: JsonValue = serde_json::from_str(body).ok()?;
+        value
+            .get("method")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string)
+    }
+
+    fn request_mcp_session_id(request: &str) -> Option<String> {
+        for line in request.lines() {
+            let lower = line.to_ascii_lowercase();
+            if lower.starts_with("mcp-session-id:") {
+                return line.split(':').nth(1).map(str::trim).map(str::to_string);
+            }
+        }
+        None
+    }
+
+    fn http_json_response(status_line: &str, extra_headers: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\n{extra_headers}Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn mock_initialize_result_body() -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "result": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "serverInfo": { "name": "mock-mcp", "version": "0.1.0" }
+            }
+        })
+        .to_string()
+    }
+
+    fn mock_tool_call_result_body() -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "2",
+            "result": { "content": [{ "type": "text", "text": "ok" }] }
+        })
+        .to_string()
+    }
+
+    async fn spawn_isolated_mock_server() -> (String, Arc<Mutex<Vec<String>>>) {
+        let tool_session_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock mcp");
+        let base_url = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("addr").port()
+        );
+        let log = Arc::clone(&tool_session_ids);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let log = Arc::clone(&log);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 64 * 1024];
+                    let Ok(n) = socket.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let method = jsonrpc_method(&request).unwrap_or_default();
+                    let response = match method.as_str() {
+                        "initialize" => {
+                            assert_eq!(
+                                request_mcp_session_id(&request),
+                                None,
+                                "initialize must not reuse stale Mcp-Session-Id"
+                            );
+                            http_json_response(
+                                "200 OK",
+                                "Mcp-Session-Id: isolated-sess-fresh\r\n",
+                                &mock_initialize_result_body(),
+                            )
+                        }
+                        "tools/call" => {
+                            let sid = request_mcp_session_id(&request)
+                                .expect("tools/call must send Mcp-Session-Id");
+                            log.lock().expect("log lock").push(sid);
+                            http_json_response("200 OK", "", &mock_tool_call_result_body())
+                        }
+                        _ => http_json_response("404 Not Found", "", "{}"),
+                    };
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (base_url, tool_session_ids)
+    }
+
+    async fn spawn_stateless_isolated_mock_server() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let base_url = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("addr").port()
+        );
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 64 * 1024];
+                    let Ok(n) = socket.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let method = jsonrpc_method(&request).unwrap_or_default();
+                    let response = match method.as_str() {
+                        "initialize" => {
+                            assert_eq!(
+                                request_mcp_session_id(&request),
+                                None,
+                                "stateless initialize must not send Mcp-Session-Id"
+                            );
+                            http_json_response("200 OK", "", &mock_initialize_result_body())
+                        }
+                        "tools/call" => {
+                            assert_eq!(
+                                request_mcp_session_id(&request),
+                                None,
+                                "stateless tools/call must not require Mcp-Session-Id"
+                            );
+                            http_json_response("200 OK", "", &mock_tool_call_result_body())
+                        }
+                        _ => http_json_response("404 Not Found", "", "{}"),
+                    };
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        base_url
+    }
+
+    #[tokio::test]
+    async fn establish_isolated_http_mcp_session_ignores_stale_snapshot_id() {
+        let (url, _) = spawn_isolated_mock_server().await;
+        let snapshot = test_snapshot(&url, Some("stale-planner-session"));
+        let session_id = establish_isolated_http_mcp_session(&snapshot)
+            .await
+            .expect("isolated initialize");
+        assert_eq!(session_id.as_deref(), Some("isolated-sess-fresh"));
+    }
+
+    #[tokio::test]
+    async fn establish_isolated_ok_when_response_has_no_session_header() {
+        let url = spawn_stateless_isolated_mock_server().await;
+        let snapshot = test_snapshot(&url, None);
+        let session_id = establish_isolated_http_mcp_session(&snapshot)
+            .await
+            .expect("stateless initialize");
+        assert_eq!(session_id, None);
+    }
+
+    #[tokio::test]
+    async fn execute_http_tool_call_isolated_stateless_without_session_header() {
+        let url = spawn_stateless_isolated_mock_server().await;
+        let snapshot = test_snapshot(&url, Some("stale-planner-session"));
+        let request = JsonRpcRequest::new(
+            JsonRpcId::Number(99),
+            "tools/call",
+            Some(McpToolCallParams {
+                name: "mcp_isolated_question_analysis".to_string(),
+                arguments: Some(JsonValue::Object(serde_json::Map::new())),
+                meta: None,
+            }),
+        );
+        let (response, shared_session) =
+            execute_http_tool_call_isolated::<McpToolCallResult>(snapshot, &request)
+                .await
+                .expect("stateless isolated tools/call");
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+        assert_eq!(shared_session, None);
+    }
+
+    #[tokio::test]
+    async fn execute_http_tool_call_isolated_uses_fresh_session_not_snapshot_stale() {
+        let (url, tool_sessions) = spawn_isolated_mock_server().await;
+        let snapshot = test_snapshot(&url, Some("stale-planner-session"));
+        let request = JsonRpcRequest::new(
+            JsonRpcId::Number(99),
+            "tools/call",
+            Some(McpToolCallParams {
+                name: "mcp_isolated_question_analysis".to_string(),
+                arguments: Some(JsonValue::Object(serde_json::Map::new())),
+                meta: None,
+            }),
+        );
+        let (response, shared_session) =
+            execute_http_tool_call_isolated::<McpToolCallResult>(snapshot, &request)
+                .await
+                .expect("isolated tools/call");
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+        assert_eq!(
+            shared_session, None,
+            "isolated call must not return shared session id"
+        );
+        let used = tool_sessions.lock().expect("log lock");
+        assert_eq!(used.len(), 1);
+        assert_eq!(used[0], "isolated-sess-fresh");
+    }
 }

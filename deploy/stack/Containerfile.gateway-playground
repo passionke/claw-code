@@ -1,0 +1,21 @@
+# Gateway async playground (stdlib Python + static UI). Author: kejiqing
+# CI: PYTHON_BASE_IMAGE from CONTAINER_BASE_REGISTRY (default docker.io). Local CN: docker.1ms.run default below.
+ARG PYTHON_BASE_IMAGE=docker.1ms.run/library/python:3.12-alpine
+FROM ${PYTHON_BASE_IMAGE}
+
+WORKDIR /app
+COPY web/gateway-async-playground/server.py \
+     web/gateway-async-playground/index.html \
+     ./
+COPY web/gateway-admin/dist/ ./admin-dist/
+
+ENV PLAYGROUND_ADMIN_DIST=/app/admin-dist \
+    PLAYGROUND_LISTEN_HOST=0.0.0.0 \
+    PLAYGROUND_LISTEN_PORT=18765 \
+    PLAYGROUND_GATEWAY_BASE=http://gateway-rs:8080 \
+    PLAYGROUND_PUBLIC_GATEWAY_BASE=http://127.0.0.1:8088 \
+    PLAYGROUND_ALLOWED_HOSTS=127.0.0.1,localhost,gateway-rs \
+    PLAYGROUND_ALLOWED_PORTS=8080,8088,18088
+
+EXPOSE 18765
+CMD ["python3", "server.py"]

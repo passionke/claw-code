@@ -8,7 +8,7 @@
   - 面向使用者：启动、验证、排障
 - `docs/http-gateway-rs-api.md`
   - 面向集成方：接口路径和用途
-- `deploy/podman/README.md`
+- `deploy/stack/README.md`
   - 面向部署：镜像构建和编排
 
 ## 2. 变更即更新（强约束）
@@ -23,7 +23,7 @@
 
 - `docs/http-gateway-rs-api.md`
 - `docs/http-gateway-rs-quickstart.md`（若影响使用方式）
-- `deploy/podman/.env.example`（若影响部署变量）
+- `deploy/stack/.env.example`（若影响部署变量）
 
 ## 3. PR 检查清单（建议复制到描述）
 

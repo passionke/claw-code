@@ -2,6 +2,7 @@
 # HTTP smoke: concurrent reads during solve_async; workDir is canonical ds_home.
 # - Read paths stay fast while an async solve runs (no ds_lock starvation on GET CLAUDE.md).
 # - Successful solve: workDir should be .../ds_{id} (not a separate sessions/ tree).
+# - `CLAW_SOLVE_ISOLATION` defaults to podman_pool (needs podman + CLAW_PODMAN_IMAGE, or set docker_pool + CLAW_DOCKER_*).
 #
 # Author: kejiqing
 set -euo pipefail
@@ -10,7 +11,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_DIR="$REPO_ROOT/rust"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/claw-gateway-plan.XXXXXX")"
-REGISTRY="$REPO_ROOT/deploy/config/datasources.example.yaml"
+REGISTRY="$REPO_ROOT/rust/crates/http-gateway-rs/datasources.example.yaml"
 BIN="$RUST_DIR/target/debug/http-gateway-rs"
 CLAW_BIN="${CLAW_BIN:-$RUST_DIR/target/debug/claw}"
 
@@ -19,87 +20,26 @@ cleanup() {
     kill "$GATEWAY_PID" 2>/dev/null || true
     wait "$GATEWAY_PID" 2>/dev/null || true
   fi
-  if [[ -n "${DAEMON_PID:-}" ]] && kill -0 "$DAEMON_PID" 2>/dev/null; then
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
-  fi
   rm -rf "$WORK_ROOT"
 }
 trap cleanup EXIT
 
 cd "$RUST_DIR"
 if [[ "${SKIP_GATEWAY_BUILD:-}" != "1" ]]; then
-  echo "[plan] cargo build -p http-gateway-rs -p rusty-claude-cli --bin claw-pool-daemon (set SKIP_GATEWAY_BUILD=1 to skip)..."
-  cargo build -p http-gateway-rs -p rusty-claude-cli --bin claw-pool-daemon
-fi
-
-FAKE_RT="$WORK_ROOT/fake-runtime"
-DSTATE="$WORK_ROOT/docker_state"
-mkdir -p "$FAKE_RT" "$DSTATE"
-cat >"$FAKE_RT/podman" <<EOS
-#!/bin/sh
-set -eu
-d='$DSTATE'
-mkdir -p "\$d"
-log() { printf '%s\n' "\$*" >>"\$d/log.txt"; }
-case "\${1:-}" in
-run)
-  log "run:\$*"
-  exit 0
-  ;;
-exec)
-  log "exec:\$*"
-  printf '%s\n' '{"clawExitCode":0,"outputText":"ok","outputJson":null}'
-  exit 0
-  ;;
-kill)
-  log "kill:\$*"
-  exit 0
-  ;;
-rm)
-  log "rm:\$*"
-  exit 0
-  ;;
-*)
-  log "unknown:\$*"
-  exit 1
-  ;;
-esac
-EOS
-chmod +x "$FAKE_RT/podman"
-
-DAEMON_SOCK="$WORK_ROOT/pool.sock"
-rm -f "$DAEMON_SOCK"
-export PATH="$FAKE_RT:$PATH"
-export CLAW_PODMAN_IMAGE="fake:latest"
-export CLAW_PODMAN_POOL_SIZE=1
-export CLAW_PODMAN_POOL_MIN_IDLE=0
-unset CLAW_POOL_DAEMON_TCP_BIND
-
-export CLAW_WORK_ROOT="$WORK_ROOT"
-export CLAW_SOLVE_ISOLATION=podman_pool
-export CLAW_POOL_DAEMON_LISTEN="$DAEMON_SOCK"
-"$RUST_DIR/target/debug/claw-pool-daemon" >>"$WORK_ROOT/daemon.log" 2>&1 &
-DAEMON_PID=$!
-
-for _ in $(seq 1 100); do
-  if [[ -S "$DAEMON_SOCK" ]]; then
-    break
-  fi
-  sleep 0.05
-done
-if [[ ! -S "$DAEMON_SOCK" ]]; then
-  echo "pool daemon did not create $DAEMON_SOCK (see $WORK_ROOT/daemon.log)" >&2
-  exit 1
+  echo "[plan] cargo build -p http-gateway-rs -p rusty-claude-cli (set SKIP_GATEWAY_BUILD=1 to skip)..."
+  cargo build -p http-gateway-rs -p rusty-claude-cli
 fi
 
 export CLAW_HTTP_ADDR="127.0.0.1:$PORT"
 export CLAW_WORK_ROOT="$WORK_ROOT"
 export CLAW_DS_REGISTRY="$REGISTRY"
 export CLAW_BIN
-export CLAW_SOLVE_ISOLATION=podman_pool
-export CLAW_POOL_DAEMON_SOCKET="$DAEMON_SOCK"
-export CLAW_POOL_RPC_HOST_WORK_ROOT="$WORK_ROOT"
+# Match product default: container pool (see .env.example). Use docker_pool + CLAW_DOCKER_* if you run Docker workers.
+export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
+export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
+export CLAW_PROJECTS_GIT_URL="${CLAW_PROJECTS_GIT_URL:-git@github.com:passionke/claw-code-projects.git}"
+export CLAW_PROJECTS_GIT_BRANCH="${CLAW_PROJECTS_GIT_BRANCH:-main}"
+export CLAW_PROJECTS_GIT_AUTHOR="${CLAW_PROJECTS_GIT_AUTHOR:-kejiqing <kejiqing@local>}"
 
 GW_LOG="$WORK_ROOT/gateway.log"
 "$BIN" >>"$GW_LOG" 2>&1 &
@@ -177,6 +117,23 @@ if [[ "$ST" == "succeeded" ]]; then
   echo "[plan] workDir is ds_home: $WD"
 else
   echo "[plan] solve did not succeed (often missing model API keys); skipping workDir shape assert"
+fi
+
+echo "[plan] GET /v1/skills/10 list + GET /v1/skills/10/plan_skill..."
+mkdir -p "$WORK_ROOT/ds_10/home/skills/plan_skill"
+printf '%s\n' '---' 'name: plan_skill' '---' 'skill body line' >"$WORK_ROOT/ds_10/home/skills/plan_skill/SKILL.md"
+SK_JSON="$(curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10")"
+python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ds_id")==10; assert isinstance(d.get("skills"),list); assert any(x.get("skill_name")=="plan_skill" for x in d["skills"])' <<<"$SK_JSON"
+ONE_JSON="$(curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10/plan_skill")"
+python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("skill_name")=="plan_skill"; assert "skill body line" in d.get("skill_content","")' <<<"$ONE_JSON"
+if curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10/missing_skill_xyz" >/dev/null 2>&1; then
+  echo "FAIL: expected 404 for missing skill" >&2
+  exit 1
+fi
+HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time "$CURL_MAX" "$BASE/v1/skills/10/missing_skill_xyz")"
+if [[ "$HTTP_CODE" != "404" ]]; then
+  echo "FAIL: missing skill should return 404, got $HTTP_CODE" >&2
+  exit 1
 fi
 
 sleep 0.3

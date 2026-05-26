@@ -1,0 +1,36 @@
+# Full in-image compile (CI / Linux). Local macOS: Containerfile.gateway-worker.prebuilt. Author: kejiqing
+ARG RUST_VERSION=1.88.0
+ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
+ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
+
+FROM ${RUST_BASE_IMAGE} AS builder
+
+ARG CLAW_USE_CN_CRATES_MIRROR=0
+
+WORKDIR /build
+COPY rust/Cargo.toml /build/Cargo.toml
+COPY rust/Cargo.lock /build/Cargo.lock
+COPY rust/rust-toolchain.toml /build/rust-toolchain.toml
+COPY rust/crates/ /build/crates/
+COPY rust/.cargo/config.toml.example /tmp/cargo-mirror.toml
+RUN if [ "${CLAW_USE_CN_CRATES_MIRROR}" = "1" ]; then \
+      mkdir -p /build/.cargo && cp /tmp/cargo-mirror.toml /build/.cargo/config.toml; \
+    fi
+RUN rustc --version | grep -q "${RUST_VERSION}" && \
+    echo "rustc: $(rustc --version)" && \
+    cargo build -p rusty-claude-cli --bin claw --release
+
+FROM ${DEBIAN_BASE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 claw \
+    && useradd -m -u 1000 -g 1000 -s /bin/sh claw
+
+WORKDIR /app
+COPY --from=builder /build/target/release/claw /usr/local/bin/claw
+RUN chmod +x /usr/local/bin/claw
+
+USER claw
+# Pool runs: docker run … --entrypoint sleep <image> infinity (avoids duplicate ENTRYPOINT+CMD).
+ENTRYPOINT ["sleep", "infinity"]

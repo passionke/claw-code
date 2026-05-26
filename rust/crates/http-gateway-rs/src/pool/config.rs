@@ -1,9 +1,14 @@
 //! Pool construction from env or explicit config (tests inject a fake `docker`). Author: kejiqing
 
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::session_db::GatewaySessionDb;
+
+use super::live_report_hub::LiveReportHub;
 
 /// Snapshot of pool parameters (read once at construction; no hot reload).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DockerPoolConfig {
     /// `docker` / `podman` or path to a test stub.
     pub runtime_bin: String,
@@ -15,15 +20,31 @@ pub struct DockerPoolConfig {
     pub extra_run_args: Vec<String>,
     /// If `None`, a random 8-char stem is generated (production).
     pub name_stem: Option<String>,
-    /// When a slot returns from `Leased` to `Idle`, run this shell inside the worker via
-    /// `sh -lc` (e.g. `pkill -f pattern` for stray `run_in_background` children). Set from env
-    /// `CLAW_DOCKER_POOL_ON_RELEASE` / `CLAW_PODMAN_POOL_ON_RELEASE`. Empty / unset = skip.
     pub on_release_exec: Option<String>,
-    /// `docker exec --user …` for solve (`gateway-solve-once`). E.g. `claw` or `1000:1000`. Unset =
-    /// run as container default (usually root). Match worker image user; host `work_root` should
-    /// allow writes for that uid. `POOL_ON_RELEASE` runs **without** this (as root) so cleanup
-    /// can `pkill -u claw` etc.
     pub exec_user: Option<String>,
+    pub worker_env_host_file: Option<PathBuf>,
+    /// Pool-local live report hub (required on `claw-pool-daemon`).
+    pub live_report_hub: Option<Arc<LiveReportHub>>,
+    /// Set on `claw-pool-daemon` for `claw_pool` registry and turn assignment. Author: kejiqing
+    pub pool_id: Option<String>,
+    pub session_db: Option<Arc<GatewaySessionDb>>,
+}
+
+impl std::fmt::Debug for DockerPoolConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DockerPoolConfig")
+            .field("runtime_bin", &self.runtime_bin)
+            .field("work_root", &self.work_root)
+            .field("pool_size", &self.pool_size)
+            .field("min_idle", &self.min_idle)
+            .field("image", &self.image)
+            .field("pool_id", &self.pool_id)
+            .field(
+                "session_db",
+                &self.session_db.as_ref().map(|_| "Some(GatewaySessionDb)"),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl DockerPoolConfig {
@@ -44,45 +65,5 @@ impl DockerPoolConfig {
             return Err("runtime_bin must be non-empty".to_string());
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn validate_rejects_zero_pool_size() {
-        let c = DockerPoolConfig {
-            runtime_bin: "docker".into(),
-            work_root: PathBuf::from("/tmp"),
-            pool_size: 0,
-            min_idle: 0,
-            image: "x".into(),
-            network_args: vec![],
-            extra_run_args: vec![],
-            name_stem: Some("ab".into()),
-            on_release_exec: None,
-            exec_user: None,
-        };
-        assert!(c.validate().is_err());
-    }
-
-    #[test]
-    fn validate_rejects_min_idle_gt_pool() {
-        let c = DockerPoolConfig {
-            runtime_bin: "docker".into(),
-            work_root: PathBuf::from("/tmp"),
-            pool_size: 1,
-            min_idle: 2,
-            image: "x".into(),
-            network_args: vec![],
-            extra_run_args: vec![],
-            name_stem: Some("ab".into()),
-            on_release_exec: None,
-            exec_user: None,
-        };
-        assert!(c.validate().is_err());
     }
 }

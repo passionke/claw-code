@@ -512,6 +512,22 @@ pub fn apply_dotenv_search_paths(paths: &[std::path::PathBuf]) {
     }
 }
 
+/// Like [`apply_dotenv_search_paths`] but only applies keys listed in `keys` (worker allowlist in code).
+/// Author: kejiqing
+pub fn apply_dotenv_keys_from_paths(paths: &[std::path::PathBuf], keys: &[&str]) {
+    let allow: std::collections::HashSet<&str> = keys.iter().copied().collect();
+    for path in paths {
+        let Some(map) = load_dotenv_file(path) else {
+            continue;
+        };
+        for (k, v) in map {
+            if allow.contains(k.as_str()) && std::env::var_os(&k).is_none() && !v.is_empty() {
+                std::env::set_var(k, v);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;

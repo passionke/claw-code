@@ -7,10 +7,13 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use gateway_solve_turn::GatewaySolveTaskFile;
 use tokio::fs;
+use tokio::time::{timeout, Duration as TokioDuration};
 use tracing::{info, warn};
 
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
-use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease};
+use http_gateway_rs::pool::{
+    parse_gateway_solve_exec_stdout, PoolOps, PoolSessionHostMounts, SlotLease,
+};
 
 /// When the gateway uses [`PoolRpcClient`](http_gateway_rs::pool::PoolRpcClient) (TCP or Unix), session dirs
 /// live under the container `CLAW_WORK_ROOT` but the host daemon must bind-mount the host path. Author: kejiqing
@@ -32,6 +35,23 @@ pub(crate) fn session_mount_for_pool_acquire(
 
 /// Fixed name inside the per-session bind mount (no `..`, not client-controlled).
 const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
+
+/// Path to `claw` inside worker images. Host `CLAW_BIN` may be a macOS absolute path unusable in `podman exec`. kejiqing
+const POOL_WORKER_CLAW_BIN: &str = "/usr/local/bin/claw";
+
+fn claw_bin_for_pool_exec(cfg: &crate::GatewayConfig) -> &str {
+    let bin = cfg.claw_bin.trim();
+    if bin == "claw" || bin.starts_with("/usr/local/") {
+        return bin;
+    }
+    POOL_WORKER_CLAW_BIN
+}
+
+/// Resolved session directory on disk plus path relative to `CLAW_WORK_ROOT` (same string as DB `session_home`).
+pub(crate) struct SolveSessionPaths {
+    pub session_home: PathBuf,
+    pub session_home_rel: String,
+}
 
 /// If the async worker is aborted (e.g. `tokio::spawn` cancel), release the slot and drop the
 /// cancel map entry so the pool does not leak `Leased` rows and `force_kill` can still run.
@@ -83,11 +103,17 @@ pub async fn run_solve_request_docker(
     pool: Arc<dyn PoolOps + Send + Sync>,
     started: Instant,
     effective_allowed_tools: Vec<String>,
-    session_home: PathBuf,
+    paths: SolveSessionPaths,
 ) -> Result<SolveResponse, ApiError> {
+    let SolveSessionPaths {
+        session_home,
+        session_home_rel,
+    } = paths;
     let RunSolveContext {
         request_id,
         task_id,
+        turn_id,
+        skip_session_db: _,
     } = ctx;
     let timeout_seconds = req
         .timeout_seconds
@@ -95,6 +121,11 @@ pub async fn run_solve_request_docker(
 
     let task_path = session_home.join(GATEWAY_SOLVE_TASK_FILE);
 
+    let session_id = req
+        .session_id
+        .clone()
+        .or_else(|| task_id.clone())
+        .unwrap_or_else(|| request_id.clone());
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
@@ -103,6 +134,10 @@ pub async fn run_solve_request_docker(
         extra_session: req.extra_session.clone(),
         allowed_tools: Some(effective_allowed_tools),
         max_iterations: Some(state.cfg.default_max_iterations),
+        turn_id: turn_id.clone(),
+        session_id: Some(session_id),
+        pool_id: None,
+        worker_name: None,
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(
@@ -118,6 +153,76 @@ pub async fn run_solve_request_docker(
     })?;
 
     let session_for_pool = session_mount_for_pool_acquire(&session_home, &state.cfg);
+    let ds_base = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
+    let ds_skills_host = ds_base.join("home/skills");
+    let skills_for_pool = if fs::metadata(&ds_skills_host)
+        .await
+        .is_ok_and(|m| m.is_dir())
+    {
+        Some(session_mount_for_pool_acquire(&ds_skills_host, &state.cfg))
+    } else {
+        None
+    };
+    let ds_claude_host = ds_base.join("CLAUDE.md");
+    let claude_for_pool = if fs::metadata(&ds_claude_host)
+        .await
+        .is_ok_and(|m| m.is_file())
+    {
+        Some(session_mount_for_pool_acquire(&ds_claude_host, &state.cfg))
+    } else {
+        None
+    };
+    let ds_schema_host = ds_base.join("home/schema.md");
+    let ds_catalog_legacy = ds_base.join("home/DATA_CATALOG.md");
+    let schema_host = if fs::metadata(&ds_schema_host)
+        .await
+        .is_ok_and(|m| m.is_file())
+    {
+        ds_schema_host
+    } else if fs::metadata(&ds_catalog_legacy)
+        .await
+        .is_ok_and(|m| m.is_file())
+    {
+        ds_catalog_legacy
+    } else {
+        PathBuf::new()
+    };
+    let schema_for_pool = if !schema_host.as_os_str().is_empty() {
+        Some(session_mount_for_pool_acquire(&schema_host, &state.cfg))
+    } else {
+        None
+    };
+    let ds_preflight_host = ds_base.join("home/.claw/solve-preflight.json");
+    let preflight_for_pool = if fs::metadata(&ds_preflight_host)
+        .await
+        .is_ok_and(|m| m.is_file())
+    {
+        Some(session_mount_for_pool_acquire(
+            &ds_preflight_host,
+            &state.cfg,
+        ))
+    } else {
+        None
+    };
+    let ds_orchestration_host = ds_base.join("home/.claw/solve-orchestration.json");
+    let orchestration_for_pool = if fs::metadata(&ds_orchestration_host)
+        .await
+        .is_ok_and(|m| m.is_file())
+    {
+        Some(session_mount_for_pool_acquire(
+            &ds_orchestration_host,
+            &state.cfg,
+        ))
+    } else {
+        None
+    };
+    let host_mounts = PoolSessionHostMounts {
+        skills_dir: skills_for_pool.clone(),
+        claude_md_file: claude_for_pool.clone(),
+        data_catalog_file: schema_for_pool.clone(),
+        solve_preflight_file: preflight_for_pool.clone(),
+        solve_orchestration_file: orchestration_for_pool.clone(),
+    };
 
     info!(
         target: "claw_gateway_solve_pool",
@@ -129,13 +234,25 @@ pub async fn run_solve_request_docker(
         task_path = %task_path.display(),
         session_home = %session_home.display(),
         pool_acquire_path = %session_for_pool.display(),
+        skills_pool_path = %skills_for_pool
+            .as_ref()
+            .map_or_else(|| "-".into(), |p| p.display().to_string()),
+        claude_pool_path = %claude_for_pool
+            .as_ref()
+            .map_or_else(|| "-".into(), |p| p.display().to_string()),
+        schema_pool_path = %schema_for_pool
+            .as_ref()
+            .map_or_else(|| "-".into(), |p| p.display().to_string()),
+        preflight_pool_path = %preflight_for_pool
+            .as_ref()
+            .map_or_else(|| "-".into(), |p| p.display().to_string()),
         task_bytes = task_bytes.len(),
         "pool solve: gateway-solve task JSON written under session dir"
     );
 
     let acquire_wait = Duration::from_secs(timeout_seconds.saturating_add(30));
     let lease = pool
-        .acquire_slot(acquire_wait, session_for_pool.clone())
+        .acquire_slot(acquire_wait, session_for_pool.clone(), host_mounts)
         .await
         .map_err(|e| {
             warn!(
@@ -182,19 +299,51 @@ pub async fn run_solve_request_docker(
             .insert(tid.clone(), (Arc::clone(&pool), slot_index));
     }
 
-    let exec_result = pool
-        .exec_solve(
-            lease_cleanup.lease.as_ref().expect("lease set for exec"),
-            GATEWAY_SOLVE_TASK_FILE,
-            state.cfg.claw_bin.as_str(),
-            Some(request_id.as_str()),
-        )
-        .await;
+    let slot_index = lease_cleanup
+        .lease
+        .as_ref()
+        .expect("lease set for exec")
+        .slot_index;
+    let exec_fut = pool.exec_solve(
+        lease_cleanup.lease.as_ref().expect("lease set for exec"),
+        GATEWAY_SOLVE_TASK_FILE,
+        claw_bin_for_pool_exec(&state.cfg),
+        Some(request_id.as_str()),
+        &turn_id,
+        None,
+    );
+    let exec_result =
+        if let Ok(outcome) = timeout(TokioDuration::from_secs(timeout_seconds), exec_fut).await {
+            outcome
+        } else {
+            warn!(
+                target: "claw_gateway_solve_pool",
+                component = "docker_solve",
+                phase = "exec_solve_timeout",
+                ds_id = req.ds_id,
+                request_id = %request_id,
+                slot_index,
+                timeout_seconds,
+                "docker exec gateway-solve-once exceeded timeout; force-killing worker"
+            );
+            if let Err(e) = pool.force_kill_slot(slot_index).await {
+                warn!(
+                    target: "claw_gateway_solve_pool",
+                    component = "docker_solve",
+                    phase = "exec_solve_timeout_force_kill_failed",
+                    error = %e,
+                    slot_index,
+                    "force_kill after solve timeout failed"
+                );
+            }
+            Err(format!(
+                "gateway-solve-once timed out after {timeout_seconds}s"
+            ))
+        };
 
     if let Some(ref tid) = task_id {
         state.docker_slots.lock().await.remove(tid);
     }
-
     let lease = lease_cleanup
         .lease
         .take()
@@ -258,7 +407,14 @@ pub async fn run_solve_request_docker(
 
     let _ = fs::remove_file(&task_path).await;
 
-    exec_result.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    exec_result.map_err(|e| {
+        let status = if e.contains("timed out") {
+            StatusCode::GATEWAY_TIMEOUT
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        ApiError::new(status, e)
+    })?;
     let Some(parsed) = parsed else {
         return Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -269,6 +425,18 @@ pub async fn run_solve_request_docker(
     let claw_exit_code = parsed.claw_exit_code;
     let output_text = parsed.output_text;
     let output_json = parsed.output_json;
+    if claw_exit_code != 0 {
+        let detail = output_text
+            .lines()
+            .map(str::trim)
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("gateway-solve-once failed");
+        return Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            format!("gateway-solve-once failed with clawExitCode={claw_exit_code}: {detail}"),
+        ));
+    }
 
     let duration_ms = started.elapsed().as_millis() as i64;
     info!(
@@ -287,12 +455,14 @@ pub async fn run_solve_request_docker(
     Ok(SolveResponse {
         session_id: request_id.clone(),
         request_id,
+        session_home_rel,
         ds_id: req.ds_id,
         work_dir: session_home.display().to_string(),
         duration_ms,
         claw_exit_code,
         output_text,
         output_json,
+        turn_id,
     })
 }
 
@@ -300,7 +470,10 @@ fn tail_for_log(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s.to_string();
     }
-    let start = s.floor_char_boundary(s.len().saturating_sub(max_bytes));
+    let mut start = s.len().saturating_sub(max_bytes);
+    while start > 0 && !s.is_char_boundary(start) {
+        start -= 1;
+    }
     format!("…{}", &s[start..])
 }
 
@@ -321,6 +494,8 @@ mod session_path_tests {
             pool_rpc_tcp: Some("host.containers.internal:9943".into()),
             pool_rpc_unix_socket: None,
             pool_rpc_remote: true,
+            pool_http_base: "http://claw-pool-daemon:9944".into(),
+            co_located_pool_id: Some("pool-test".into()),
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
             default_max_iterations: 1,
@@ -328,7 +503,14 @@ mod session_path_tests {
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),
             config_mcp_servers: HashMap::default(),
-            allowed_tools: vec![],
+            projects_git_url: "git@github.com:passionke/claw-code-projects.git".into(),
+            projects_git_branch: "main".into(),
+            projects_git_author: "kejiqing <kejiqing@local>".into(),
+            projects_git_token: None,
+            projects_git_ds_home_poll_interval_secs: None,
+            gateway_llm_config_poll_interval_secs: None,
+            report_polish_deepseek: None,
+            live_biz_report_spill_enabled: false,
         };
         let got = session_mount_for_pool_acquire(
             Path::new("/var/lib/claw/workspace/ds_1/sessions/abc"),
@@ -347,6 +529,8 @@ mod session_path_tests {
             pool_rpc_tcp: None,
             pool_rpc_unix_socket: None,
             pool_rpc_remote: false,
+            pool_http_base: String::new(),
+            co_located_pool_id: None,
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
             default_max_iterations: 1,
@@ -354,7 +538,14 @@ mod session_path_tests {
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),
             config_mcp_servers: HashMap::default(),
-            allowed_tools: vec![],
+            projects_git_url: "git@github.com:passionke/claw-code-projects.git".into(),
+            projects_git_branch: "main".into(),
+            projects_git_author: "kejiqing <kejiqing@local>".into(),
+            projects_git_token: None,
+            projects_git_ds_home_poll_interval_secs: None,
+            gateway_llm_config_poll_interval_secs: None,
+            report_polish_deepseek: None,
+            live_biz_report_spill_enabled: false,
         };
         let p = PathBuf::from("/tmp/sess");
         let got = session_mount_for_pool_acquire(&p, &cfg);
