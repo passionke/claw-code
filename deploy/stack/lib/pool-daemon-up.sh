@@ -9,11 +9,18 @@ source "${LIB_DIR}/nuclear-pool-reset.sh"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/compose-include.sh"
 
+# gateway.sh up already sourced .env and set CLAW_POOL_DAEMON_BIN (release install under
+# deploy/stack/.linux-artifacts/). Re-sourcing .env here would resurrect a stale
+# CLAW_POOL_DAEMON_BIN=~/.local/bin/... and break worker --entrypoint sleep. kejiqing
+_pool_bin_from_up="${CLAW_POOL_DAEMON_BIN:-}"
 if [[ -f "${REPO_ROOT}/.env" ]]; then
   set -a
   # shellcheck disable=SC1090
   source "${REPO_ROOT}/.env"
   set +a
+fi
+if [[ -n "${_pool_bin_from_up}" ]]; then
+  export CLAW_POOL_DAEMON_BIN="${_pool_bin_from_up}"
 fi
 
 claw_ensure_worker_llm_wiring "${PODMAN_DIR}"

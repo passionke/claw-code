@@ -67,7 +67,7 @@ if [[ -f "${OUT}" ]] && file "${OUT}" 2>/dev/null | grep -q "Mach-O"; then
 fi
 echo "pull ${IMG} (if needed) …" >&2
 if ! "${CLI}" image exists "${IMG}" 2>/dev/null; then
-  "${CLI}" pull "${IMG}"
+  "${CLI}" pull "${IMG}" >&2
 else
   echo "image ${IMG} already present locally, skip pull" >&2
 fi

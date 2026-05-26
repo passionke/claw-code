@@ -40,7 +40,8 @@ claw_ensure_pool_daemon_binary() {
     fi
   fi
 
-  if [[ -n "${CLAW_POOL_DAEMON_BIN:-}" && -x "${CLAW_POOL_DAEMON_BIN}" ]]; then
+  # Ignore .env CLAW_POOL_DAEMON_BIN when release deploy installs under .linux-artifacts/. kejiqing
+  if [[ -z "${CLAW_IMAGE_RELEASE_TAG:-}" && -n "${CLAW_POOL_DAEMON_BIN:-}" && -x "${CLAW_POOL_DAEMON_BIN}" ]]; then
     printf '%s\n' "${CLAW_POOL_DAEMON_BIN}"
     return 0
   fi
