@@ -198,6 +198,8 @@ pub(crate) struct GatewayConfig {
     gateway_llm_config_poll_interval_secs: Option<u64>,
     /// When set (`REPORT_LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY`), `/v1/biz_advice_report` polish calls `DeepSeek` official API. kejiqing
     report_polish_deepseek: Option<ReportPolishDeepseek>,
+    /// `CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`: legacy BOSS report — `hasReport` only when `succeeded`; report SSE = LLM polish (no pool live proxy). Author: kejiqing
+    live_biz_report_spill_enabled: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1306,7 +1308,17 @@ async fn main() {
         .or(Some(30))
         .filter(|&s| s > 0),
         report_polish_deepseek,
+        live_biz_report_spill_enabled: gateway_env_enabled("CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL"),
     };
+    if cfg.live_biz_report_spill_enabled {
+        info!(
+            target: "claw_live_report",
+            component = "startup",
+            phase = "report_mode",
+            mode = "legacy_spill_polish",
+            "CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1 — hasReport on succeeded only; biz_advice_report uses LLM polish (no pool live SSE)"
+        );
+    }
     let session_db = session_db::GatewaySessionDb::open()
         .await
         .unwrap_or_else(|e| {
@@ -3591,12 +3603,21 @@ async fn healthz(State(state): State<AppState>, headers: HeaderMap) -> Json<Valu
         "projectsGitMirror": ds_workspaces,
         "reportPolishUsesDeepseek": state.cfg.report_polish_deepseek.is_some(),
         "reportDeepseekModel": state.cfg.report_polish_deepseek.as_ref().map(|d| d.model.clone()),
+        "liveBizReportSpillEnabled": state.cfg.live_biz_report_spill_enabled,
         "liveReport": {
-            "contract": http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT,
+            "contract": if state.cfg.live_biz_report_spill_enabled {
+                "legacy-spill-polish"
+            } else {
+                http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT
+            },
             "producer": "worker:claw gateway-solve-once stdout __CLAW_GATEWAY_STDOUT__ report.delta",
             "ingest": "pool-local (claw-pool-daemon LiveReportHub)",
             "terminalSnapshot": "gateway-db (GET biz_advice_report stream when succeeded)",
-            "live": "gateway-proxy → pool HTTP /v1/biz_advice_report/live",
+            "live": if state.cfg.live_biz_report_spill_enabled {
+                "LLM polish SSE (biz_advice_report after succeeded; no pool proxy)"
+            } else {
+                "gateway-proxy → pool HTTP /v1/biz_advice_report/live"
+            },
             "poolHttpBase": state.cfg.pool_http_base,
         },
         "claudeTap": http_gateway_rs::claude_tap_health::claude_tap_health_json(request_host),
@@ -6271,9 +6292,16 @@ async fn get_task(
     Ok(Json(task))
 }
 
-/// `hasReport`: true while `running` (Admin opens live report SSE) or `succeeded`. Author: kejiqing
-async fn task_has_report(_state: &AppState, task: &TaskRecord) -> bool {
-    matches!(task.status.as_str(), "running" | "succeeded")
+/// `hasReport`: pool-sse mode → `running`|`succeeded`; legacy spill mode → `succeeded` only. Author: kejiqing
+fn task_has_report_for_status(status: &str, live_biz_report_spill_enabled: bool) -> bool {
+    if live_biz_report_spill_enabled {
+        return status == "succeeded";
+    }
+    matches!(status, "running" | "succeeded")
+}
+
+async fn task_has_report(state: &AppState, task: &TaskRecord) -> bool {
+    task_has_report_for_status(&task.status, state.cfg.live_biz_report_spill_enabled)
 }
 
 /// When [`task_has_report`] is true: `startedAtMs` / `finishedAtMs`. Author: kejiqing
@@ -6785,12 +6813,100 @@ fn biz_report_json_response(
     .into_response()
 }
 
+/// Legacy (`CLAW_GATEWAY_LIVE_BIZ_REPORT_SPILL=1`): LLM polish from persisted solve output; no pool live SSE. Author: kejiqing
+async fn biz_advice_report_legacy_polish_mode(
+    state: &AppState,
+    query: &BizAdviceReportQuery,
+    ctx: &BizReportDbCtx,
+) -> Result<Response, ApiError> {
+    if ctx.status != "succeeded" {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "turn not finished yet (status: {}); legacy spill mode serves report after succeeded only",
+                ctx.status
+            ),
+        ));
+    }
+    let report_body = load_turn_report_body_from_db(state, query).await?;
+    let skill_work_dir = ds_work_dir(&state.cfg.work_root, BOSS_REPORT_SKILL_DS_ID);
+    ensure_workspace_initialized(&state.cfg.claw_bin, &skill_work_dir).await?;
+    let instructions = load_boss_report_writer_instructions(&skill_work_dir).await;
+    let prompt = build_biz_advice_polish_prompt(&instructions, &report_body);
+    let request_id = Uuid::new_v4().simple().to_string();
+    let timeout_seconds = state.cfg.default_timeout_seconds;
+    tracing::info!(
+        target: "claw_live_report",
+        component = "biz_advice_report",
+        phase = "route",
+        route = "legacy_spill_polish_llm",
+        turn_id = %ctx.turn_id,
+        session_id = %query.session_id,
+        ds_id = query.ds_id,
+        stream = query.stream,
+        "biz_advice_report — legacy spill mode LLM polish"
+    );
+    if query.stream {
+        let meta = BizAdviceReportPayload {
+            task_id: ctx.task_id.clone(),
+            source_request_id: ctx.task_id.clone(),
+            source_ds_id: query.ds_id,
+            source_status: ctx.status.clone(),
+            report_text: None,
+            report_json: None,
+        };
+        let task_id = meta.task_id.clone();
+        let polish_ds = state.cfg.report_polish_deepseek.clone();
+        return Ok(biz_report_llm_stream_response(
+            &task_id,
+            meta,
+            prompt,
+            request_id,
+            timeout_seconds,
+            polish_ds,
+        ));
+    }
+    let polish_ds = state.cfg.report_polish_deepseek.clone();
+    let (report_text, report_json) = tokio::task::spawn_blocking(move || {
+        run_gateway_biz_polish_llm(
+            &prompt,
+            None,
+            timeout_seconds,
+            &request_id,
+            None::<fn(&str)>,
+            polish_ds.as_ref(),
+        )
+    })
+    .await
+    .map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("polish task join failed: {e}"),
+        )
+    })?
+    .map_err(map_gateway_solve_turn_err)?;
+    let (report_text, report_json) = sanitize_biz_report_parts(&report_text, report_json);
+    Ok(Json(BizAdviceReportResponse {
+        task_id: ctx.task_id.clone(),
+        source_request_id: ctx.task_id.clone(),
+        source_ds_id: query.ds_id,
+        source_status: ctx.status.clone(),
+        report_text,
+        report_json,
+    })
+    .into_response())
+}
+
 /// Live report: DB snapshot when terminal; pool SSE proxy when running. Author: kejiqing
 async fn get_biz_advice_report(
     State(state): State<AppState>,
     Query(query): Query<BizAdviceReportQuery>,
 ) -> Result<Response, ApiError> {
     let ctx = resolve_biz_report_from_db(&state, &query).await?;
+
+    if state.cfg.live_biz_report_spill_enabled {
+        return biz_advice_report_legacy_polish_mode(&state, &query, &ctx).await;
+    }
 
     if matches!(ctx.status.as_str(), "succeeded" | "failed" | "cancelled") {
         if let Ok(body) = load_turn_report_body_from_db(&state, &query).await {
@@ -8068,14 +8184,27 @@ mod tests {
     }
 
     #[test]
-    fn task_has_report_contract() {
+    fn task_has_report_contract_pool_sse_mode() {
         for (status, want) in [
             ("queued", false),
             ("running", true),
             ("succeeded", true),
             ("failed", false),
         ] {
-            let got = matches!(status, "running" | "succeeded");
+            let got = task_has_report_for_status(status, false);
+            assert_eq!(got, want, "status={status}");
+        }
+    }
+
+    #[test]
+    fn task_has_report_contract_legacy_spill_mode() {
+        for (status, want) in [
+            ("queued", false),
+            ("running", false),
+            ("succeeded", true),
+            ("failed", false),
+        ] {
+            let got = task_has_report_for_status(status, true);
             assert_eq!(got, want, "status={status}");
         }
     }
