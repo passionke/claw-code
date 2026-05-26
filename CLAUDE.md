@@ -33,4 +33,5 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Claw stack boundaries (claw-code)
 - **Canonical table** (Claw / gateway / Doris / SQLBot / adapter / three channels): `docs/boundaries-claw-stack.md` — update it when adding MCPs or env; avoid ad-hoc explanations that contradict it.
+- **Deploy env:** human-maintained **repo root `.env` only**; `deploy/stack/*.env` (except `.env.example`) is **generated** by `gateway.sh` / `deploy/stack/lib/*.sh` — see `docs/env-files.md`. Do not create `deploy/stack/.env` (Compose quirk); `gateway.sh up` exits with an error if it exists.
 - Author: kejiqing

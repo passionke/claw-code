@@ -16,6 +16,13 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
+# Compose auto-loads `.env` next to the compose file; that overrides repo-root `--env-file` / release pins.
+if [[ -f "${PODMAN_DIR}/.env" ]]; then
+  echo "error: ${PODMAN_DIR}/.env must not exist (Compose implicit env_file). Move keys to ${ENV_FILE} and rm ${PODMAN_DIR}/.env" >&2
+  echo "see docs/env-files.md" >&2
+  exit 1
+fi
+
 # Compose bind-mounts repo-root `.claw.json`. Never overwrite an existing file — only create `{}` if missing. kejiqing
 CLAW_JSON="${REPO_ROOT}/.claw.json"
 if [[ ! -f "${CLAW_JSON}" ]]; then

@@ -49,8 +49,15 @@ Author: kejiqing
 | Doris SQL guard / `doris_query` | `doris-mcp/src/` |
 | Claw tool naming / per-ds allowlist | `rust/crates/tools/` + `project_config.allowed_tools_json` |
 
+## Environment files (no hand-maintained “component .env”)
+
+- **Single human-maintained deploy env:** repo root `.env` (see `.env.example`).
+- **All `deploy/stack/*.env` except `.env.example`:** generated or overridden by **`./deploy/stack/gateway.sh`** / `deploy/stack/lib/*.sh` — do not edit by hand; re-run `gateway.sh up` after changing root `.env`.
+- **Never create `deploy/stack/.env`** — Compose loads it implicitly and fights root `.env` / release pins (`docs/env-files.md`).
+
 ## See also
 
+- `docs/env-files.md` — 人手 vs 生成物路径表、禁止项
 - `rust/crates/http-gateway-rs/datasources.example.yaml` — 数据源 registry 模板（勿提交真实凭据）
 - `third_party/doris-mcp/README.md` — Doris-only build
 - `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 用 **Docker/Podman 容器池**隔离 solve：**PoolManager** 启动读 env 管池大小与预热；网关只租借与编排

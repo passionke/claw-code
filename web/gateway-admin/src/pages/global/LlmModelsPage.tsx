@@ -226,8 +226,9 @@ export default function LlmModelsPage() {
           message="列表管理多条上游；「设为当前」后同步 worker / claude-tap"
           description={
             <>
-              保存写入 PostgreSQL；切换当前模型会更新 <code>.env</code> 与{" "}
-              <code>.claw/claw-tap-upstream.json</code>。小米等需带{" "}
+              保存写入 PostgreSQL；切换当前模型会同步<strong>仓库根</strong>{" "}
+              <code>.env</code> 与 <code>.claw/claw-tap-upstream.json</code>（由网关写入，勿在子目录手建
+              独立 <code>.env</code>）。小米等需带{" "}
               <code>/v1</code>，例如{" "}
               <code>https://token-plan-cn.xiaomimimo.com/v1</code>。
               {activeLlmAppliedAtMs ? (
