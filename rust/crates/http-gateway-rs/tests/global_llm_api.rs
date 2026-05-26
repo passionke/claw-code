@@ -37,17 +37,21 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
     ensure_test_env(tmp.path());
 
     // In CI the postgres service may not be ready yet; retry to avoid flaky `PoolTimedOut`.
-    let db_deadline = Instant::now() + Duration::from_secs(25);
+    // Remote GH actions can take longer to start Postgres than local runs.
+    let db_deadline = Instant::now() + Duration::from_secs(90);
     let db = loop {
         match GatewaySessionDb::open().await {
             Ok(db) => break db,
             Err(e) => {
                 if Instant::now() >= db_deadline {
+                    eprintln!(
+                        "[global_llm_api] connect retry exhausted: {e}"
+                    );
                     break Err(e).expect(
                         "connect CLAW_GATEWAY_DATABASE_URL (need PG on 5433) after retries",
                     );
                 }
-                sleep(Duration::from_millis(500)).await;
+                sleep(Duration::from_millis(1000)).await;
             }
         }
     };
