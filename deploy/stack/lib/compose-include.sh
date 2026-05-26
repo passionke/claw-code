@@ -122,7 +122,7 @@ claw_podman_write_pool_daemon_sidecar_env() {
     printf '%s\n' '# GENERATED — do not edit. Overwritten by compose-include (pool sidecar). kejiqing'
     printf '%s\n' "CLAW_WORK_ROOT=${ws}"
     printf '%s\n' "CLAW_POOL_WORK_ROOT_HOST=${ws}"
-    printf '%s\n' "CLAW_WORKER_ENV_FILE=${repo_root}/.env"
+    printf '%s\n' "CLAW_WORKER_ENV_FILE=${script_dir}/.claw-worker-llm.env:${repo_root}/.env"
     if [[ -n "${CLAW_PODMAN_NETWORK:-}" ]]; then
       printf '%s\n' "CLAW_PODMAN_NETWORK=${CLAW_PODMAN_NETWORK}"
     fi
@@ -553,3 +553,5 @@ claw_compose_pg_down() {
 _claw_podman_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${_claw_podman_dir}/release-images.sh"
+# shellcheck disable=SC1091
+source "${_claw_podman_dir}/worker-llm-wiring.sh"

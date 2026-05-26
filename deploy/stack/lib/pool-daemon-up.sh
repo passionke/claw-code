@@ -6,21 +6,21 @@ PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/nuclear-pool-reset.sh"
-# Always refresh worker env snapshot from repo-root .env before (re)starting the daemon so pool
-# workers never inherit stale keys (e.g. CLAW_MCP_TOOL_CALL_TIMEOUT_MS). Author: kejiqing
-"${PODMAN_DIR}/lib/sync-worker-openai-env.sh"
-# sync-worker sources repo .env and overwrites image vars in this shell; re-apply release pin + worker derived from gateway. kejiqing
 # shellcheck disable=SC1091
-source "${PODMAN_DIR}/lib/compose-include.sh"
-if [[ -f "${PODMAN_DIR}/.claw-image-release.env" ]]; then
+source "${LIB_DIR}/compose-include.sh"
+
+if [[ -f "${REPO_ROOT}/.env" ]]; then
   set -a
   # shellcheck disable=SC1090
-  source "${PODMAN_DIR}/.claw-image-release.env"
+  source "${REPO_ROOT}/.env"
   set +a
 fi
-claw_export_pool_worker_image_matched_to_gateway
 
-WORK_ROOT="${CLAW_POOL_WORK_ROOT_BIND_SRC:?missing CLAW_POOL_WORK_ROOT_BIND_SRC}"
+claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
+# Release/sticky pin overrides CLAW_DOCKER_IMAGE from repo .env (e.g. claw-gateway-worker:local). kejiqing
+claw_reapply_pool_image_pins "${PODMAN_DIR}"
+
+WORK_ROOT="${CLAW_POOL_WORK_ROOT_BIND_SRC:?missing CLAW_POOL_WORK_ROOT_BIND_SRC; run gateway.sh up first}"
 RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"
 BIN="${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}"
 PORT="${CLAW_POOL_DAEMON_PORT:-9943}"
@@ -40,13 +40,6 @@ claw_kill_tcp_listeners "${PORT}"
 
 claw_remove_all_gateway_workers
 
-if [[ -f "${REPO_ROOT}/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${REPO_ROOT}/.env"
-  set +a
-fi
-
 # shellcheck source=claw-pool-registry-env.sh
 source "${LIB_DIR}/claw-pool-registry-env.sh"
 claw_export_pool_registry_env "${RPC_DIR}"
@@ -63,7 +56,7 @@ daemon_env=(
   CLAW_POOL_WORK_ROOT_HOST="${WORK_ROOT}"
   CLAW_POOL_DAEMON_TCP_BIND="${BIND}"
   CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
-  CLAW_WORKER_ENV_FILE="${REPO_ROOT}/.env"
+  CLAW_WORKER_ENV_FILE="${CLAW_WORKER_ENV_FILE:-${REPO_ROOT}/.env}"
 )
 if [[ -n "${CLAW_DOCKER_IMAGE:-}" ]]; then
   daemon_env+=(CLAW_DOCKER_IMAGE="${CLAW_DOCKER_IMAGE}")
@@ -73,6 +66,12 @@ if [[ -n "${CLAW_PODMAN_IMAGE:-}" ]]; then
 fi
 if [[ -n "${CLAW_PODMAN_NETWORK:-}" ]]; then
   daemon_env+=(CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK}")
+fi
+if [[ -n "${CLAW_DOCKER_EXTRA_ARGS:-}" ]]; then
+  daemon_env+=(CLAW_DOCKER_EXTRA_ARGS="${CLAW_DOCKER_EXTRA_ARGS}")
+fi
+if [[ -n "${CLAW_PODMAN_EXTRA_ARGS:-}" ]]; then
+  daemon_env+=(CLAW_PODMAN_EXTRA_ARGS="${CLAW_PODMAN_EXTRA_ARGS}")
 fi
 daemon_env+=(
   CLAW_POOL_HTTP_BIND="0.0.0.0:${CLAW_POOL_HTTP_PORT:-9944}"

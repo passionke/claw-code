@@ -73,7 +73,8 @@ cp .env.example .env
 | 变量 | 作用 |
 | --- | --- |
 | `CLAW_CONTAINER_RUNTIME` | `auto`（默认）或 `podman` / `docker`；与线上/本地无关，按需覆盖 |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 模型 |
+| `OPENAI_API_KEY` / `UPSTREAM_OPENAI_BASE_URL` | 模型；`OPENAI_BASE_URL` 由 `gateway.sh up` 写入 `.claw-worker-llm.env`（指向 claude-tap） |
+| `gateway.sh up --release <tag>` | `GATEWAY_IMAGE` 与 **`CLAW_DOCKER_IMAGE`** 同 tag（`claw-code`→`claw-gateway-worker`）；勿在根 `.env` 写死 `:local` worker |
 | `GATEWAY_HOST_PORT` | 宿主机端口，默认 `8088` |
 | `GATEWAY_PLAYGROUND_HOST_PORT` | solve_async / 项目管理 UI，默认 `18765`（compose 服务 `gateway-playground`） |
 | `PLAYGROUND_PUBLIC_GATEWAY_BASE` | 浏览器里 playground 默认网关，应与 `GATEWAY_HOST_PORT` 一致，如 `http://127.0.0.1:8088` |
@@ -127,7 +128,7 @@ podman ps   # 或  docker ps
 ### 1.5 claude-tap（与 gateway 分开）
 
 ```bash
-./deploy/stack/gateway.sh tap-up    # 只起 tap，并刷新 .env 里 OPENAI_BASE_URL
+./deploy/stack/gateway.sh tap-up    # 只起 tap，并写入 deploy/stack/.claw-worker-llm.env（勿手跑 sync-worker-openai-env.sh）
 ./deploy/stack/gateway.sh tap-down  # 只停 tap
 
 ./deploy/stack/gateway.sh up        # gateway 另起（生产 release 同上）

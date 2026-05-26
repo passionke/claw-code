@@ -177,6 +177,32 @@ pub async fn apply_llm_model_to_env(
         tap_chain_refreshed = true;
     }
 
+    let stack_dir = repo_root.join("deploy/stack");
+    let compose_include = stack_dir.join("lib/compose-include.sh");
+    if compose_include.is_file() {
+        let ensure = format!(
+            "set -euo pipefail; source '{}'; set -a; source '{}/.env'; set +a; claw_ensure_worker_llm_wiring '{}'",
+            compose_include.display(),
+            repo_root.display(),
+            stack_dir.display()
+        );
+        let status = Command::new("bash")
+            .arg("-c")
+            .arg(&ensure)
+            .current_dir(&repo_root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .status()
+            .await
+            .map_err(|e| format!("run claw_ensure_worker_llm_wiring: {e}"))?;
+        if !status.success() {
+            return Err(format!(
+                "claw_ensure_worker_llm_wiring exited with {}",
+                status.code().unwrap_or(-1)
+            ));
+        }
+    }
+
     // Upstream is hot-reloaded via claude-tap `--tap-upstream-config` file; restart only when requested.
     let enable_restart = matches!(
         std::env::var("CLAW_GATEWAY_LLM_APPLY_RESTART_TAP")
@@ -202,7 +228,7 @@ pub async fn apply_llm_model_to_env(
             tap_restarted = output.status.success();
             if !tap_restarted {
                 message = Some(format!(
-                    "sync-worker-openai-env.sh --restart failed (code {:?}); .env was updated",
+                    "gateway stack restart after LLM apply failed (code {:?}); .env was updated",
                     output.status.code()
                 ));
             }

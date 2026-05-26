@@ -43,6 +43,7 @@ source "${LIB_DIR}/claw-pool-registry-env.sh"
 claw_export_pool_registry_env "${PODMAN_DIR}/.claw-pool-rpc"
 
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
+claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
 claw_export_llm_runtime_layout "${PODMAN_DIR}"
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
 # shellcheck disable=SC1091
@@ -51,8 +52,7 @@ claw_deploy_preflight "${PODMAN_DIR}"
 
 # load_compose_args re-sources .env and resets GATEWAY_IMAGE to :local; re-pin after. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
-  claw_apply_release_image_tag "${CLAW_IMAGE_RELEASE_TAG}"
-  claw_write_release_pin_env "${PODMAN_DIR}"
+  claw_reapply_pool_image_pins "${PODMAN_DIR}"
 fi
 
 # Release up: compose down + kill pool + delete every worker, then pull fresh images. kejiqing
@@ -80,21 +80,10 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   esac
 fi
 
-# Pin images for pool daemon (never re-source repo .env — it has :local and overwrites release). kejiqing
-if [[ -f "${PODMAN_DIR}/.claw-image-release.env" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${PODMAN_DIR}/.claw-image-release.env"
-  set +a
-elif [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
-  claw_apply_release_image_tag "${CLAW_IMAGE_RELEASE_TAG}"
-fi
-claw_export_pool_worker_image_matched_to_gateway
-if [[ -f "${PODMAN_DIR}/.claw-image-release.env" ]]; then
-  claw_write_release_pin_env "${PODMAN_DIR}"
-fi
-claw_write_pool_worker_env_override "${PODMAN_DIR}"
+# Pool + compose must not use repo .env :local worker tags when --release or sticky pin is set. kejiqing
+claw_reapply_pool_image_pins "${PODMAN_DIR}"
 echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
+export CLAW_IMAGE_RELEASE_TAG
 
 claw_remove_all_gateway_workers
 

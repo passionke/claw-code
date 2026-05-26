@@ -43,6 +43,7 @@ deploy/stack/claw-postgres-data/
 deploy/stack/claude-tap-data/
 deploy/stack/deploy/
 deploy/stack/.claw-pool-rpc/
+deploy/stack/.claw-worker-llm.env
 deploy/stack/.linux-artifacts/
 deploy/stack/.claw-postgres-network.override.yml
 rust/.cargo/config.toml

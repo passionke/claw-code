@@ -8,6 +8,7 @@ services:
     entrypoint: ["/usr/local/bin/claw-pool-daemon"]
     env_file:
       - ../../.env
+      - ./.claw-worker-llm.env
       - ./.claw-pool-daemon.env
       - ./.claw-pool-worker.env
     environment:

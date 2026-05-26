@@ -125,6 +125,32 @@ claw_write_release_pin_env() {
   } >"${f}"
 }
 
+# After sourcing repo .env (may contain :local image tags). Prefer --release tag, then sticky pin file.
+# Writes deploy/stack/.claw-image-release.env + .claw-pool-worker.env when a release tag is active.
+claw_reapply_pool_image_pins() {
+  local podman_dir="${1:?}"
+  if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
+    claw_apply_release_image_tag "${CLAW_IMAGE_RELEASE_TAG}"
+    claw_write_release_pin_env "${podman_dir}"
+  elif [[ -f "${podman_dir}/.claw-image-release.env" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${podman_dir}/.claw-image-release.env"
+    set +a
+    claw_export_pool_worker_image_matched_to_gateway
+    claw_write_release_pin_env "${podman_dir}"
+  else
+    claw_export_pool_worker_image_matched_to_gateway
+  fi
+  claw_write_pool_worker_env_override "${podman_dir}"
+  if [[ -f "${podman_dir}/.claw-pool-worker.env" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${podman_dir}/.claw-pool-worker.env"
+    set +a
+  fi
+}
+
 claw_parse_up_release_args() {
   CLAW_IMAGE_RELEASE_TAG=""
   while [[ $# -gt 0 ]]; do
@@ -143,8 +169,8 @@ claw_parse_up_release_args() {
         ;;
       -h | --help)
         echo "usage: $0 [--release <tag>|release-v*]" >&2
-        echo "  --release <tag>   pin gateway + worker images for this run; writes deploy/stack/.claw-image-release.env" >&2
-        echo "                    (merged after .env). Uses CLAW_IMAGE_PREFIX if set; else CLAW_IMAGE_REGISTRY=acr (default ACR) or ghcr." >&2
+        echo "  --release <tag>   pin gateway + worker to same tag (CLAW_DOCKER_IMAGE follows; writes .claw-image-release.env)" >&2
+        echo "                    Uses CLAW_IMAGE_PREFIX if set; else CLAW_IMAGE_REGISTRY=acr (default ACR) or ghcr." >&2
         echo "  release-v*        same as --release release-v*" >&2
         echo "  Subsequent runs without --release still use .claw-image-release.env if present; remove that file to follow .env only." >&2
         return 2

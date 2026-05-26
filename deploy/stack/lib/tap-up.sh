@@ -26,8 +26,7 @@ claw_export_llm_runtime_layout "${PODMAN_DIR}"
 source "${LIB_DIR}/claude-tap-local.sh"
 claw_claude_tap_start "${PODMAN_DIR}" "${ROOT_DIR}"
 
-"${PODMAN_DIR}/lib/sync-worker-openai-env.sh"
+claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
 
 echo "claude-tap: proxy http://127.0.0.1:${CLAUDE_TAP_PORT:-8080} live http://127.0.0.1:${CLAUDE_TAP_LIVE_PORT:-3000}"
-echo "note: .env OPENAI_BASE_URL refreshed for tap; recreate gateway/workers if already running:"
-echo "  ./deploy/stack/gateway.sh up"
+echo "worker LLM wiring: ${PODMAN_DIR}/.claw-worker-llm.env (apply with: ./deploy/stack/gateway.sh up)"
