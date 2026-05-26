@@ -61,6 +61,11 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   echo "    gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
   claw_compose_gateway_down "${PODMAN_DIR}" "${ENV_FILE}" 2>/dev/null || true
   claw_nuclear_pool_reset "${PODMAN_DIR}"
+  # Align bind-mount trees once per release (legacy root-owned sessions/logs). kejiqing
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/fix-session-ownership.sh"
+  claw_prepare_bind_mount_ownership "${PODMAN_DIR}"
+  claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_DIR}/claw-workspace}"
   rt="$(claw_container_runtime_cli)"
   echo "pull ${GATEWAY_IMAGE} …" >&2
   "${rt}" pull "${GATEWAY_IMAGE}"
@@ -98,9 +103,6 @@ fi
 
 # Recreate gateway container; pool is fresh with pinned worker image. kejiqing
 claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
-# shellcheck disable=SC1091
-source "${LIB_DIR}/fix-session-ownership.sh"
-claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-}"
 _gw_tag="${GATEWAY_IMAGE##*:}"
 if [[ -z "${_gw_tag}" || "${_gw_tag}" == "${GATEWAY_IMAGE}" ]]; then
   _gw_tag="unknown"

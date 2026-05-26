@@ -27,9 +27,9 @@ claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
 # Release/sticky pin overrides CLAW_DOCKER_IMAGE from repo .env (e.g. claw-gateway-worker:local). kejiqing
 claw_reapply_pool_image_pins "${PODMAN_DIR}"
 
-# shellcheck disable=SC1091
-source "${LIB_DIR}/fix-session-ownership.sh"
-claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-}"
+if [[ -z "${CLAW_POOL_WORK_ROOT_BIND_SRC:-}" ]]; then
+  claw_podman_export_pool_workspace "${PODMAN_DIR}"
+fi
 
 WORK_ROOT="${CLAW_POOL_WORK_ROOT_BIND_SRC:?missing CLAW_POOL_WORK_ROOT_BIND_SRC; run gateway.sh up first}"
 RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"
