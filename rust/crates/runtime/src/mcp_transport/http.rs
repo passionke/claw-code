@@ -504,10 +504,12 @@ fn isolated_initialize_request_id() -> JsonRpcId {
     JsonRpcId::String(format!("claw-isolated-init-{nanos}"))
 }
 
-/// Fresh MCP streamable-HTTP transport session (no shared `Mcp-Session-Id`). Author: kejiqing
+/// Per-call `initialize` without reusing the manager's shared `Mcp-Session-Id`.
+/// Returns `Some(id)` when the server sends the header; `None` for stateless streamable (e.g. `SQLBot`).
+/// Author: kejiqing
 pub(crate) async fn establish_isolated_http_mcp_session(
     snapshot: &HttpToolCallSnapshot,
-) -> io::Result<String> {
+) -> io::Result<Option<String>> {
     let mut init_snapshot = snapshot.clone();
     init_snapshot.session_id = None;
     let init_request = JsonRpcRequest::new(
@@ -533,22 +535,17 @@ pub(crate) async fn establish_isolated_http_mcp_session(
             "MCP initialize returned no result",
         ));
     }
-    session_id.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "MCP initialize response missing Mcp-Session-Id header",
-        )
-    })
+    Ok(session_id)
 }
 
-/// Concurrent `tools/call`: per-call `initialize` then `tools/call` on that session only. Author: kejiqing
+/// Concurrent `tools/call`: per-call `initialize` then `tools/call` (session header optional). Author: kejiqing
 pub(crate) async fn execute_http_tool_call_isolated<TResult: DeserializeOwned>(
     snapshot: HttpToolCallSnapshot,
     request: &JsonRpcRequest<McpToolCallParams>,
 ) -> io::Result<(JsonRpcResponse<TResult>, Option<String>)> {
     let session_id = establish_isolated_http_mcp_session(&snapshot).await?;
     let mut call_snapshot = snapshot;
-    call_snapshot.session_id = Some(session_id);
+    call_snapshot.session_id = session_id;
     let (response, _) = execute_http_tool_call(call_snapshot, request).await?;
     Ok((response, None))
 }
@@ -767,20 +764,9 @@ mod tests {
         (base_url, tool_session_ids)
     }
 
-    #[tokio::test]
-    async fn establish_isolated_http_mcp_session_ignores_stale_snapshot_id() {
-        let (url, _) = spawn_isolated_mock_server().await;
-        let snapshot = test_snapshot(&url, Some("stale-planner-session"));
-        let session_id = establish_isolated_http_mcp_session(&snapshot)
-            .await
-            .expect("isolated initialize");
-        assert_eq!(session_id, "isolated-sess-fresh");
-    }
-
-    #[tokio::test]
-    async fn establish_isolated_fails_when_response_has_no_session_header() {
+    async fn spawn_stateless_isolated_mock_server() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let url = format!(
+        let base_url = format!(
             "http://127.0.0.1:{}",
             listener.local_addr().expect("addr").port()
         );
@@ -790,24 +776,81 @@ mod tests {
                     break;
                 };
                 tokio::spawn(async move {
-                    let mut buf = vec![0u8; 4096];
-                    let Ok(_n) = socket.read(&mut buf).await else {
+                    let mut buf = vec![0u8; 64 * 1024];
+                    let Ok(n) = socket.read(&mut buf).await else {
                         return;
                     };
-                    let body = mock_initialize_result_body();
-                    let response = http_json_response("200 OK", "", &body);
+                    if n == 0 {
+                        return;
+                    }
+                    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let method = jsonrpc_method(&request).unwrap_or_default();
+                    let response = match method.as_str() {
+                        "initialize" => {
+                            assert_eq!(
+                                request_mcp_session_id(&request),
+                                None,
+                                "stateless initialize must not send Mcp-Session-Id"
+                            );
+                            http_json_response("200 OK", "", &mock_initialize_result_body())
+                        }
+                        "tools/call" => {
+                            assert_eq!(
+                                request_mcp_session_id(&request),
+                                None,
+                                "stateless tools/call must not require Mcp-Session-Id"
+                            );
+                            http_json_response("200 OK", "", &mock_tool_call_result_body())
+                        }
+                        _ => http_json_response("404 Not Found", "", "{}"),
+                    };
                     let _ = socket.write_all(response.as_bytes()).await;
                 });
             }
         });
-        let snapshot = test_snapshot(&url, None);
-        let err = establish_isolated_http_mcp_session(&snapshot)
+        base_url
+    }
+
+    #[tokio::test]
+    async fn establish_isolated_http_mcp_session_ignores_stale_snapshot_id() {
+        let (url, _) = spawn_isolated_mock_server().await;
+        let snapshot = test_snapshot(&url, Some("stale-planner-session"));
+        let session_id = establish_isolated_http_mcp_session(&snapshot)
             .await
-            .expect_err("missing session header");
-        assert!(
-            err.to_string().contains("missing Mcp-Session-Id"),
-            "unexpected error: {err}"
+            .expect("isolated initialize");
+        assert_eq!(session_id.as_deref(), Some("isolated-sess-fresh"));
+    }
+
+    #[tokio::test]
+    async fn establish_isolated_ok_when_response_has_no_session_header() {
+        let url = spawn_stateless_isolated_mock_server().await;
+        let snapshot = test_snapshot(&url, None);
+        let session_id = establish_isolated_http_mcp_session(&snapshot)
+            .await
+            .expect("stateless initialize");
+        assert_eq!(session_id, None);
+    }
+
+    #[tokio::test]
+    async fn execute_http_tool_call_isolated_stateless_without_session_header() {
+        let url = spawn_stateless_isolated_mock_server().await;
+        let snapshot = test_snapshot(&url, Some("stale-planner-session"));
+        let request = JsonRpcRequest::new(
+            JsonRpcId::Number(99),
+            "tools/call",
+            Some(McpToolCallParams {
+                name: "mcp_isolated_question_analysis".to_string(),
+                arguments: Some(JsonValue::Object(serde_json::Map::new())),
+                meta: None,
+            }),
         );
+        let (response, shared_session) =
+            execute_http_tool_call_isolated::<McpToolCallResult>(snapshot, &request)
+                .await
+                .expect("stateless isolated tools/call");
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+        assert_eq!(shared_session, None);
     }
 
     #[tokio::test]
