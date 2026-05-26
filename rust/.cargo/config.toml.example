@@ -1,16 +1,22 @@
-# Optional: copy to `config.toml` for faster `cargo` in China when your DNS can reach the mirror.
+# Optional: copy to `config.toml` for faster `cargo` in China.
 #   cp rust/.cargo/config.toml.example rust/.cargo/config.toml
 #
-# If downloads fail with "Could not resolve host: crates-io.proxy.ustclug.org" (or TLS errors on
-# other mirrors), delete `config.toml` and use the default crates.io index.
+# Do NOT use USTC sparse alone: its index config.json sets
+#   dl = https://crates-io.proxy.ustclug.org/api/v1/crates
+# which often times out; index is mirrored but .crate downloads are not.
+# RsProxy mirrors both index and dl (see https://rsproxy.cn/).
 #
 # Author: kejiqing
 
 [source.crates-io]
-replace-with = "ustc-sparse"
+replace-with = "rsproxy-sparse"
 
-[source.ustc-sparse]
-registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[http]
+timeout = 120
+multiplexing = false
 
 [net]
 git-fetch-with-cli = true

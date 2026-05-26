@@ -11,7 +11,6 @@
     clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::uninlined_format_args,
-    clippy::unnecessary_trailing_comma,
     clippy::unneeded_struct_pattern,
     clippy::unnecessary_wraps,
     clippy::unused_self
@@ -348,6 +347,7 @@ fn merge_prompt_with_stdin(prompt: &str, stdin_content: Option<&str>) -> String 
 /// `claw gateway-solve-once --task-file <json>` — used from `docker exec` by the gateway pool.
 /// Author: kejiqing
 fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    gateway_solve_turn::apply_worker_env();
     let raw = fs::read_to_string(task_file)?;
     let task: gateway_solve_turn::GatewaySolveTaskFile = serde_json::from_str(&raw)?;
     let work_dir = env::current_dir()?;
@@ -356,7 +356,8 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
         .unwrap_or_else(|_| work_dir.clone());
     let timeout_seconds = task.timeout_seconds.unwrap_or(120);
     let max_iterations = task.max_iterations.unwrap_or(64);
-    let allowed_tools = task.allowed_tools.unwrap_or_default();
+    let allowed_tools = task.allowed_tools.clone().unwrap_or_default();
+    let mcp = gateway_solve_turn::gateway_mcp_call_context_from_task(&task);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -368,29 +369,22 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
             &task.user_prompt,
             task.model.as_deref(),
             timeout_seconds,
-            &task.request_id,
-            task.extra_session.clone(),
+            mcp,
             allowed_tools,
             max_iterations,
         )
     };
     match result {
         Ok((claw_exit_code, output_text, output_json)) => {
-            let payload = json!({
-                "clawExitCode": claw_exit_code,
-                "outputText": output_text,
-                "outputJson": output_json,
-            });
-            println!("{}", serde_json::to_string(&payload)?);
+            gateway_solve_turn::emit_solve_done(
+                claw_exit_code,
+                &output_text,
+                output_json.as_ref(),
+            )?;
             Ok(())
         }
         Err(e) => {
-            let payload = json!({
-                "clawExitCode": 1,
-                "error": e.message,
-                "httpStatusHint": e.status,
-            });
-            println!("{}", serde_json::to_string(&payload)?);
+            gateway_solve_turn::emit_solve_error(&e.message, e.status)?;
             Err(format!("gateway-solve-once failed: {e}").into())
         }
     }
@@ -1370,7 +1364,7 @@ fn omc_compatibility_note_for_unknown_slash_command(name: &str) -> Option<&'stat
 }
 
 fn render_suggestion_line(label: &str, suggestions: &[String]) -> Option<String> {
-    (!suggestions.is_empty()).then(|| format!("  {label:<16} {}", suggestions.join(", "),))
+    (!suggestions.is_empty()).then(|| format!("  {label:<16} {}", suggestions.join(", ")))
 }
 
 fn suggest_slash_commands(input: &str) -> Vec<String> {
@@ -6493,7 +6487,7 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
             } else {
                 preview
             };
-            lines.push(format!("  {}. {}", index + 1, file.path.display(),));
+            lines.push(format!("  {}. {}", index + 1, file.path.display()));
             lines.push(format!(
                 "     lines={} preview={}",
                 file.content.lines().count(),
@@ -6893,7 +6887,8 @@ fn format_history_timestamp(timestamp_ms: u64) -> String {
 #[allow(
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation
+    clippy::cast_possible_truncation,
+    clippy::similar_names
 )]
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let z = days + 719_468;
@@ -10994,7 +10989,7 @@ mod tests {
         ];
         for (subcommand, expected_topic) in cases {
             for flag in ["--help", "-h"] {
-                let parsed = parse_args(&[subcommand.to_string(), flag.to_string()])
+                let parsed = parse_args(&[(*subcommand).to_string(), flag.to_string()])
                     .unwrap_or_else(|error| {
                         panic!("`{subcommand} {flag}` should parse as help but errored: {error}")
                     });
@@ -11656,6 +11651,8 @@ mod tests {
 
     #[test]
     fn parses_direct_agents_mcp_and_skills_slash_commands() {
+        let _guard = env_lock();
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
         assert_eq!(
             parse_args(&["/agents".to_string()]).expect("/agents should parse"),
             CliAction::Agents {

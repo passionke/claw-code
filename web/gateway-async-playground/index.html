@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claw Gateway — solve_async  playground</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --user: #2563eb;
+      --sys: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --radius: 10px;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+    }
+    header.toolbar {
+      padding: 12px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px 14px;
+      align-items: end;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    input, select, button {
+      font: inherit;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      padding: 8px 10px;
+    }
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: transparent;
+      color: var(--muted);
+      border-color: var(--border);
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      max-width: 920px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 12px 16px 20px;
+      min-height: 0;
+    }
+    #chat-log {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 8px 0;
+    }
+    .bubble {
+      max-width: 92%;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      line-height: 1.5;
+      font-size: 14px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .bubble.user {
+      align-self: flex-end;
+      background: rgba(37, 99, 235, 0.25);
+      border: 1px solid rgba(37, 99, 235, 0.45);
+    }
+    .bubble.sys {
+      align-self: flex-start;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+    }
+    .bubble.sys .tag {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+      color: var(--sys);
+    }
+    .bubble.sys.warn .tag { color: var(--warn); }
+    .bubble.sys.err .tag { color: var(--err); }
+    .composer {
+      display: flex;
+      gap: 8px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .composer textarea {
+      flex: 1;
+      min-height: 52px;
+      max-height: 160px;
+      resize: vertical;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      padding: 10px 12px;
+      font: inherit;
+    }
+    /* 每轮 assistant 回复：顶部 meta + 呼吸灯 + 正文 */
+    .turn-card {
+      align-self: flex-start;
+      max-width: 92%;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .turn-top {
+      border-bottom: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.18);
+    }
+    .turn-ids {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      padding: 8px 12px 4px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .turn-ids span { display: inline-flex; align-items: center; gap: 5px; }
+    .turn-ids code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.06);
+      padding: 1px 5px;
+      border-radius: 4px;
+      word-break: break-all;
+    }
+    .turn-ids a.session-link {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .turn-ids a.session-link:hover code {
+      background: rgba(59, 130, 246, 0.2);
+      text-decoration: underline;
+    }
+    .turn-ids a.session-link code { cursor: pointer; }
+    .turn-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px 8px;
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .turn-status .status-badge {
+      flex-shrink: 0;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: rgba(139, 156, 179, 0.2);
+      color: var(--muted);
+    }
+    .turn-status .status-badge.queued { background: rgba(245, 158, 11, 0.2); color: var(--warn); }
+    .turn-status .status-badge.running { background: rgba(59, 130, 246, 0.2); color: var(--accent); }
+    .turn-status .status-badge.succeeded { background: rgba(34, 197, 94, 0.2); color: var(--sys); }
+    .turn-status .status-badge.failed,
+    .turn-status .status-badge.cancelled { background: rgba(239, 68, 68, 0.2); color: var(--err); }
+    .turn-status .dot {
+      flex-shrink: 0;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .turn-status .dot.pulse {
+      animation: breathe 1.6s ease-in-out infinite;
+    }
+    .turn-status .dot.queued { background: var(--warn); }
+    .turn-status .dot.running { background: var(--accent); }
+    .turn-status .dot.report { background: #a855f7; }
+    .turn-status .dot.ok { background: var(--sys); animation: none; }
+    .turn-status .dot.err { background: var(--err); animation: none; }
+    .turn-status .label { color: var(--muted); flex-shrink: 0; }
+    .turn-status .text { color: var(--text); min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .progress-feed {
+      border-bottom: 1px solid var(--border);
+      max-height: 140px;
+      overflow-y: auto;
+      padding: 4px 12px 6px;
+      font-size: 12px;
+    }
+    .progress-feed:empty { display: none; padding: 0; border-bottom: none; }
+    .progress-item {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 2px 0;
+      line-height: 1.4;
+    }
+    .progress-item .kind {
+      flex-shrink: 0;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(59, 130, 246, 0.15);
+      color: var(--accent);
+    }
+    .progress-item .kind.report_progress { background: rgba(34, 197, 94, 0.15); color: var(--sys); }
+    .progress-item .kind.mcp_tool_started { background: rgba(245, 158, 11, 0.15); color: var(--warn); }
+    .progress-item .msg { color: var(--text); min-width: 0; word-break: break-word; }
+    .turn-body {
+      padding: 10px 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .turn-body .section { margin-top: 8px; }
+    .turn-body .section:first-child { margin-top: 0; }
+    .turn-body .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .turn-body pre {
+      margin: 0;
+      white-space: pre-wrap;
+      max-height: 320px;
+      overflow: auto;
+    }
+    .report-live {
+      padding: 10px 12px;
+      line-height: 1.65;
+      font-size: 14px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(59, 130, 246, 0.08);
+      border: 1px solid rgba(59, 130, 246, 0.2);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: inherit;
+      min-height: 1.6em;
+    }
+    .report-live.streaming::after {
+      content: "▍";
+      animation: blink 0.9s step-end infinite;
+      color: var(--accent);
+    }
+    .report-live.err {
+      background: rgba(239, 68, 68, 0.08);
+      border-color: rgba(239, 68, 68, 0.25);
+      color: #fca5a5;
+    }
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+    @keyframes breathe {
+      0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.55); }
+      50% { opacity: 0.55; transform: scale(0.88); box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+    }
+    .tap-live-row { display: flex; flex-direction: column; gap: 2px; min-width: 200px; }
+    .tap-live-url {
+      font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--accent);
+      word-break: break-all;
+    }
+    .tap-live-hint { font-size: 11px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header class="toolbar">
+    <label>网关
+      <select id="gateway-base"></select>
+    </label>
+    <label>ds_id（来自 /healthz）
+      <select id="ds-id" style="min-width:160px"></select>
+    </label>
+    <label>store_id（可选，写入 extraSession）
+      <input id="store-id" type="text" placeholder="例 S20241007172800004204" autocomplete="off" />
+    </label>
+    <label>org_id（可选，写入 extraSession）
+      <input id="org-id" type="text" placeholder="与 store_id 二选一或同时填" autocomplete="off" />
+    </label>
+    <div class="tap-live-row">
+      <span style="font-size:12px;color:var(--muted)">claude-tap Live（session 跳转，自动）</span>
+      <a id="tap-live-url" class="tap-live-url" href="#" target="_blank" rel="noopener noreferrer">加载中…</a>
+      <span id="tap-live-hint" class="tap-live-hint">来自网关 /healthz · claudeTap.publicLiveBaseUrl</span>
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+      <button type="button" class="secondary" id="btn-new-session">新会话</button>
+      <button type="button" class="secondary" id="btn-health">健康检查</button>
+      <a href="/admin" style="font-size:13px;margin-left:4px">项目管理 →</a>
+    </div>
+  </header>
+  <main>
+    <div id="chat-log" aria-live="polite"></div>
+    <div class="composer">
+      <textarea id="prompt" placeholder="输入任务描述（自然语言），Enter 发送；Shift+Enter 换行"></textarea>
+      <button type="button" id="btn-send" style="align-self:flex-end;">发送</button>
+    </div>
+  </main>
+  <script>
+    /** @type {{ sessionId: string | null, activeEs: EventSource | null, tapLiveBase: string, tapLiveTemplate: string }} */
+    const state = { sessionId: null, activeEs: null, tapLiveBase: "", tapLiveTemplate: "" };
+
+    function $(id) { return document.getElementById(id); }
+
+    function gatewayBase() {
+      return $("gateway-base").value.trim().replace(/\/$/, "");
+    }
+
+    function dsId() {
+      const n = parseInt($("ds-id").value, 10);
+      return Number.isFinite(n) && n >= 1 ? n : 1;
+    }
+
+    function claudeTapSessionUrl(sessionId) {
+      if (!sessionId) return "#";
+      const tpl = state.tapLiveTemplate;
+      if (tpl) {
+        return tpl.replace("{sessionId}", encodeURIComponent(sessionId));
+      }
+      const base = state.tapLiveBase;
+      if (!base) return "#";
+      try {
+        const u = new URL(base);
+        u.searchParams.set("session", sessionId);
+        return u.href;
+      } catch (_) {
+        return base + "?session=" + encodeURIComponent(sessionId);
+      }
+    }
+
+    function bindSessionLink(container, sessionId) {
+      const href = claudeTapSessionUrl(sessionId);
+      const a = document.createElement("a");
+      a.className = "session-link";
+      a.href = href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.title = "在 claude-tap Live 中打开 ?session=" + sessionId;
+      const code = document.createElement("code");
+      code.textContent = sessionId;
+      a.appendChild(code);
+      container.appendChild(a);
+    }
+
+    function appendBubble(kind, tag, text, variant) {
+      const wrap = document.createElement("div");
+      wrap.className = "bubble sys" + (variant ? " " + variant : "");
+      const t = document.createElement("div");
+      t.className = "tag";
+      t.textContent = tag;
+      const body = document.createElement("div");
+      body.textContent = text;
+      wrap.appendChild(t);
+      wrap.appendChild(body);
+      if (kind === "user") {
+        wrap.className = "bubble user";
+        wrap.innerHTML = "";
+        wrap.textContent = text;
+      }
+      $("chat-log").appendChild(wrap);
+      wrap.scrollIntoView({ behavior: "smooth", block: "end" });
+      return wrap;
+    }
+
+    /** 每轮 assistant 卡片：顶部 meta + 呼吸灯 + 可追加正文 */
+    function createTurnCard(meta) {
+      const card = document.createElement("div");
+      card.className = "turn-card";
+
+      const top = document.createElement("div");
+      top.className = "turn-top";
+
+      const ids = document.createElement("div");
+      ids.className = "turn-ids";
+      const sessionSpan = document.createElement("span");
+      sessionSpan.appendChild(document.createTextNode("session "));
+      bindSessionLink(sessionSpan, meta.sessionId);
+      const turnSpan = document.createElement("span");
+      const turnCode = document.createElement("code");
+      turnCode.textContent = meta.turnId;
+      turnSpan.appendChild(document.createTextNode("turn "));
+      turnSpan.appendChild(turnCode);
+      ids.appendChild(sessionSpan);
+      ids.appendChild(turnSpan);
+
+      const statusBar = document.createElement("div");
+      statusBar.className = "turn-status";
+      statusBar.innerHTML =
+        '<span class="dot pulse queued"></span>' +
+        '<span class="status-badge queued">queued</span>' +
+        '<span class="text">hasReport=false · 已提交</span>';
+
+      top.appendChild(ids);
+      top.appendChild(statusBar);
+
+      const progressFeed = document.createElement("div");
+      progressFeed.className = "progress-feed";
+
+      const body = document.createElement("div");
+      body.className = "turn-body";
+
+      card.appendChild(top);
+      card.appendChild(progressFeed);
+      card.appendChild(body);
+      $("chat-log").appendChild(card);
+      card.scrollIntoView({ behavior: "smooth", block: "end" });
+
+      let progressShown = 0;
+
+      return {
+        card,
+        statusBar,
+        progressFeed,
+        body,
+        updatePoll(task) {
+          const dot = statusBar.querySelector(".dot");
+          const badge = statusBar.querySelector(".status-badge");
+          const text = statusBar.querySelector(".text");
+          const st = task.status || "unknown";
+          const desc = task.currentTaskDesc || "";
+          const hr = !!task.hasReport;
+
+          dot.className = "dot";
+          badge.className = "status-badge " + st;
+          badge.textContent = st;
+
+          if (st === "queued") {
+            dot.classList.add("pulse", "queued");
+          } else if (st === "running") {
+            dot.classList.add("pulse", hr ? "report" : "running");
+          } else if (st === "succeeded") {
+            dot.classList.add("ok");
+          } else {
+            dot.classList.add("err");
+          }
+
+          text.textContent =
+            "hasReport=" + hr + (desc ? " · " + desc : "");
+
+          const history = Array.isArray(task.progressHistory) ? task.progressHistory : [];
+          while (progressShown < history.length) {
+            const ev = history[progressShown];
+            progressShown += 1;
+            const row = document.createElement("div");
+            row.className = "progress-item";
+            const kind = document.createElement("span");
+            kind.className = "kind" + (ev.kind ? " " + ev.kind : "");
+            kind.textContent = ev.kind || "event";
+            const msg = document.createElement("span");
+            msg.className = "msg";
+            msg.textContent = ev.message || "";
+            row.appendChild(kind);
+            row.appendChild(msg);
+            progressFeed.appendChild(row);
+          }
+          if (progressFeed.childElementCount > 0) {
+            progressFeed.scrollTop = progressFeed.scrollHeight;
+          }
+
+          card.scrollIntoView({ behavior: "smooth", block: "end" });
+        },
+        addSection(label, contentEl) {
+          const sec = document.createElement("div");
+          sec.className = "section";
+          const lbl = document.createElement("div");
+          lbl.className = "section-label";
+          lbl.textContent = label;
+          sec.appendChild(lbl);
+          sec.appendChild(contentEl);
+          body.appendChild(sec);
+          card.scrollIntoView({ behavior: "smooth", block: "end" });
+          return sec;
+        },
+        addText(label, text) {
+          const el = document.createElement("div");
+          el.textContent = text;
+          return this.addSection(label, el);
+        },
+        addPre(label) {
+          const pre = document.createElement("pre");
+          this.addSection(label, pre);
+          return pre;
+        },
+        addReportLive(label) {
+          const el = document.createElement("div");
+          el.className = "report-live streaming";
+          this.addSection(label, el);
+          return el;
+        },
+      };
+    }
+
+    function parseSseJson(raw) {
+      try {
+        return JSON.parse(raw);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function reportMessageFromDone(data) {
+      if (!data || typeof data !== "object") return "";
+      if (data.reportJson && data.reportJson.message) {
+        return String(data.reportJson.message);
+      }
+      if (data.reportText) {
+        const rt = parseSseJson(data.reportText);
+        if (rt && rt.message) return String(rt.message);
+        return String(data.reportText);
+      }
+      return "";
+    }
+
+    function closeActiveSse() {
+      if (state.activeEs) {
+        try { state.activeEs.close(); } catch (_) {}
+        state.activeEs = null;
+      }
+    }
+
+    async function proxyHttp(method, path, bodyObj, extraHeaders) {
+      const res = await fetch("/__proxy__", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: gatewayBase(),
+          method,
+          path,
+          body: bodyObj === undefined ? null : bodyObj,
+          headers: extraHeaders || {},
+        }),
+      });
+      const wrap = await res.json().catch(() => ({}));
+      if (!wrap.ok) {
+        let msg = wrap.bodyText || wrap.error || JSON.stringify(wrap);
+        try {
+          const j = JSON.parse(wrap.bodyText);
+          if (j && (j.detail || j.message)) msg = j.detail || j.message;
+        } catch (_) {}
+        const err = new Error(msg || "proxy error");
+        err.status = wrap.status;
+        throw err;
+      }
+      let json = null;
+      try {
+        json = JSON.parse(wrap.bodyText);
+      } catch (_) {}
+      return { status: wrap.status, json, raw: wrap.bodyText, headers: wrap.headers };
+    }
+
+    function sleep(ms) {
+      return new Promise((r) => setTimeout(r, ms));
+    }
+
+    $("btn-new-session").addEventListener("click", () => {
+      closeActiveSse();
+      state.sessionId = null;
+      appendBubble("sys", "session", "已清空本地 sessionId，下一轮将走新会话。", "warn");
+    });
+
+    $("btn-health").addEventListener("click", async () => {
+      try {
+        const { json, raw } = await proxyHttp("GET", "/healthz", undefined, {});
+        appendBubble("sys", "healthz", json ? JSON.stringify(json, null, 2) : raw);
+        await refreshFromHealthz();
+      } catch (e) {
+        appendBubble("sys", "error", String(e.message || e), "err");
+      }
+    });
+
+    async function runSend(userText) {
+      const storeId = $("store-id").value.trim();
+      const orgRaw = $("org-id").value;
+      const extra = {
+        tenant_code: "GPOS",
+        solution_code: "restaurant",
+        biz_type: "BOSS_REPORT",
+      };
+      if (storeId) extra.store_id = storeId;
+      extra.org_id = orgRaw;
+
+      const payload = {
+        dsId: dsId(),
+        userPrompt: userText,
+        extraSession: extra,
+      };
+      if (state.sessionId) payload.sessionId = state.sessionId;
+
+      appendBubble("user", "", userText);
+
+      let asyncRes;
+      try {
+        asyncRes = await proxyHttp("POST", "/v1/solve_async", payload, {});
+      } catch (e) {
+        appendBubble("sys", "solve_async 失败", String(e.message || e), "err");
+        return;
+      }
+      const a = asyncRes.json;
+      if (!a || !a.taskId) {
+        appendBubble("sys", "意外响应", asyncRes.raw.slice(0, 2000), "err");
+        return;
+      }
+      const taskId = a.taskId;
+      const sessionId = a.sessionId;
+      const turnId = a.turnId;
+      state.sessionId = sessionId;
+
+      const turn = createTurnCard({ sessionId, turnId });
+      turn.updatePoll({ status: a.status || "queued", hasReport: false, currentTaskDesc: "已提交", progressHistory: [] });
+
+      let lastReportOpened = false;
+
+      const pollOnce = async () => {
+        const t = await proxyHttp("GET", "/v1/tasks/" + encodeURIComponent(taskId), undefined, {});
+        const task = t.json;
+        if (!task) {
+          turn.addText("error", "tasks 非 JSON: " + t.raw.slice(0, 800));
+          return null;
+        }
+        turn.updatePoll(task);
+
+        if (task.hasReport && !lastReportOpened) {
+          lastReportOpened = true;
+          openReportSse(sessionId, turnId, dsId(), turn);
+        }
+        return task;
+      };
+
+      while (true) {
+        const task = await pollOnce();
+        if (!task) break;
+        if (["succeeded", "failed", "cancelled"].includes(task.status)) {
+          if (task.status === "succeeded" && task.hasReport && !lastReportOpened) {
+            lastReportOpened = true;
+            openReportSse(sessionId, turnId, dsId(), turn);
+          }
+          turn.updatePoll(task);
+          if (task.result && task.result.outputText) {
+            const txt = task.result.outputText;
+            turn.addText(
+              "outputText",
+              txt.slice(0, 4000) + (txt.length > 4000 ? "\n…(截断)" : "")
+            );
+          }
+          if (task.error) {
+            turn.addText("error", JSON.stringify(task.error, null, 2));
+          }
+          break;
+        }
+        await sleep(1500);
+      }
+    }
+
+    function openReportSse(sessionId, turnId, ds, turn) {
+      closeActiveSse();
+      const u =
+        gatewayBase() +
+        "/v1/biz_advice_report?sessionId=" +
+        encodeURIComponent(sessionId) +
+        "&turnId=" +
+        encodeURIComponent(turnId) +
+        "&dsId=" +
+        encodeURIComponent(String(ds)) +
+        "&stream=true";
+      const proxied = "/__proxy_sse__?target=" + encodeURIComponent(u);
+
+      const box = turn.addReportLive("报告");
+      let streamed = "";
+
+      const scrollReport = () => {
+        turn.card.scrollIntoView({ behavior: "smooth", block: "end" });
+      };
+
+      const appendDelta = (chunk) => {
+        if (!chunk) return;
+        streamed += chunk;
+        box.textContent = streamed;
+        scrollReport();
+      };
+
+      const finishReport = (finalText) => {
+        box.classList.remove("streaming");
+        if (finalText) {
+          streamed = finalText;
+          box.textContent = finalText;
+        } else if (!streamed) {
+          box.textContent = "（无报告正文）";
+        }
+        scrollReport();
+      };
+
+      const es = new EventSource(proxied);
+      state.activeEs = es;
+
+      es.addEventListener("biz.report.start", () => {
+        box.textContent = "";
+        streamed = "";
+      });
+
+      es.addEventListener("biz.report.delta", (ev) => {
+        const data = parseSseJson(ev.data);
+        if (data && data.text) appendDelta(String(data.text));
+      });
+
+      es.addEventListener("biz.report.done", (ev) => {
+        const data = parseSseJson(ev.data);
+        const finalText = reportMessageFromDone(data) || streamed;
+        finishReport(finalText);
+        closeActiveSse();
+      });
+
+      es.addEventListener("biz.report.error", (ev) => {
+        box.classList.remove("streaming");
+        box.classList.add("err");
+        const data = parseSseJson(ev.data);
+        const detail =
+          (data && (data.detail || data.message || data.error)) ||
+          ev.data ||
+          "报告流错误";
+        box.textContent = String(detail);
+        closeActiveSse();
+        scrollReport();
+      });
+
+      es.onerror = () => {
+        if (box.classList.contains("streaming")) {
+          box.classList.remove("streaming");
+          if (!streamed) box.textContent = "（报告连接中断）";
+        }
+        closeActiveSse();
+        scrollReport();
+      };
+
+      return box;
+    }
+
+    $("btn-send").addEventListener("click", async () => {
+      const text = $("prompt").value.trim();
+      if (!text) return;
+      $("prompt").value = "";
+      $("btn-send").disabled = true;
+      try {
+        await runSend(text);
+      } finally {
+        $("btn-send").disabled = false;
+      }
+    });
+
+    $("prompt").addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        $("btn-send").click();
+      }
+    });
+
+    function fillGatewaySelect(cfg) {
+      const sel = $("gateway-base");
+      sel.innerHTML = "";
+      const def = cfg.defaultGatewayBase;
+      if (def) {
+        const opt = document.createElement("option");
+        opt.value = def;
+        opt.textContent = cfg.defaultGatewayLabel || def;
+        sel.appendChild(opt);
+      }
+      for (const p of cfg.gatewayPresets || []) {
+        if (!p.value || p.value === def) continue;
+        const opt = document.createElement("option");
+        opt.value = p.value;
+        opt.textContent = p.label || p.value;
+        sel.appendChild(opt);
+      }
+      let saved = "";
+      try {
+        saved = localStorage.getItem("claw-playground-gateway-base") || "";
+      } catch (_) {}
+      const values = [...sel.options].map((o) => o.value);
+      if (saved && values.includes(saved)) {
+        sel.value = saved;
+      } else if (def) {
+        sel.value = def;
+      }
+    }
+
+    async function applyPlaygroundConfig() {
+      try {
+        const r = await fetch("/__config__");
+        if (!r.ok) return;
+        fillGatewaySelect(await r.json());
+      } catch (_) {}
+    }
+
+    function populateDsSelect(workspaces) {
+      const sel = $("ds-id");
+      const prev = parseInt(sel.value, 10);
+      let saved = NaN;
+      try {
+        saved = parseInt(localStorage.getItem("claw-playground-ds-id") || "", 10);
+      } catch (_) {}
+      sel.innerHTML = "";
+      const list = Array.isArray(workspaces)
+        ? [...workspaces].sort((a, b) => a.dsId - b.dsId)
+        : [];
+      if (!list.length) {
+        const opt = document.createElement("option");
+        opt.value = "1";
+        opt.textContent = "（无 ds 列表，默认 1）";
+        sel.appendChild(opt);
+        return;
+      }
+      for (const w of list) {
+        const opt = document.createElement("option");
+        opt.value = String(w.dsId);
+        const ready = w.environmentPrepared ? "就绪" : "未就绪";
+        const sk = w.skillsCount != null ? " · skills " + w.skillsCount : "";
+        opt.textContent = "ds " + w.dsId + " — " + ready + sk;
+        sel.appendChild(opt);
+      }
+      const pick =
+        list.find((p) => p.dsId === saved) ||
+        list.find((p) => p.dsId === prev) ||
+        list.find((p) => p.environmentPrepared) ||
+        list[0];
+      sel.value = String(pick.dsId);
+    }
+
+    function renderTapLiveUi() {
+      const link = $("tap-live-url");
+      const hint = $("tap-live-hint");
+      if (state.tapLiveBase) {
+        link.textContent = state.tapLiveBase;
+        link.href = state.tapLiveBase;
+        hint.textContent = "来自 " + gatewayBase() + "/healthz · 切换网关会自动刷新";
+      } else {
+        link.textContent = "—";
+        link.href = "#";
+        hint.textContent = "无法从 /healthz 读取 claudeTap（请升级网关或检查代理）";
+      }
+    }
+
+    async function refreshFromHealthz() {
+      try {
+        const { json } = await proxyHttp("GET", "/healthz", undefined, {});
+        const tap = json && json.claudeTap;
+        if (tap && tap.publicLiveBaseUrl) {
+          state.tapLiveBase = String(tap.publicLiveBaseUrl).replace(/\/$/, "");
+          state.tapLiveTemplate = tap.liveSessionUrlTemplate
+            ? String(tap.liveSessionUrlTemplate)
+            : state.tapLiveBase + "/?session={sessionId}";
+        } else {
+          state.tapLiveBase = "";
+          state.tapLiveTemplate = "";
+        }
+        const workspaces =
+          (json && json.projectsGitMirror && json.projectsGitMirror.dsWorkspaces) || [];
+        populateDsSelect(workspaces);
+      } catch (_) {
+        state.tapLiveBase = "";
+        state.tapLiveTemplate = "";
+        populateDsSelect([]);
+      }
+      renderTapLiveUi();
+    }
+
+    (function restorePrefs() {
+      $("gateway-base").addEventListener("change", () => {
+        try { localStorage.setItem("claw-playground-gateway-base", $("gateway-base").value); } catch (_) {}
+        refreshFromHealthz();
+      });
+      $("ds-id").addEventListener("change", () => {
+        try { localStorage.setItem("claw-playground-ds-id", $("ds-id").value); } catch (_) {}
+      });
+      applyPlaygroundConfig().then(async () => {
+        try {
+          const gw = localStorage.getItem("claw-playground-gateway-base");
+          if (gw) $("gateway-base").value = gw;
+        } catch (_) {}
+        await refreshFromHealthz();
+      });
+    })();
+
+  </script>
+</body>
+</html>

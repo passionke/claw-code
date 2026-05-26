@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
 
 use super::docker_pool::DockerPoolManager;
-use super::traits::{PoolOps, SlotLease, TaskOutcome};
+use super::traits::{PoolOps, PoolSessionHostMounts, SlotLease, TaskOutcome};
 
 #[derive(Debug, Clone)]
 enum PoolRpcTransport {
@@ -24,12 +24,27 @@ pub enum PoolRpcReq {
     Acquire {
         timeout_ms: u64,
         session_host_mount: String,
+        #[serde(default)]
+        skills_host_mount: Option<String>,
+        /// Host path to `ds_*/CLAUDE.md` for optional ro file bind (gateway ≥ pool daemon that understands this field).
+        #[serde(default)]
+        claude_md_host_mount: Option<String>,
+        /// Host path to `ds_*/home/schema.md` (or legacy catalog) for optional ro file bind.
+        #[serde(default)]
+        data_catalog_host_mount: Option<String>,
+        /// Host path to `ds_*/home/.claw/solve-preflight.json` for optional ro file bind.
+        #[serde(default)]
+        solve_preflight_host_mount: Option<String>,
+        /// Host path to `ds_*/home/.claw/solve-orchestration.json` for optional ro file bind.
+        #[serde(default)]
+        solve_orchestration_host_mount: Option<String>,
     },
     Exec {
         slot_index: usize,
         task_rel: String,
         claw_bin: String,
         request_id: Option<String>,
+        turn_id: String,
     },
     Release {
         slot_index: usize,
@@ -119,11 +134,32 @@ impl PoolOps for PoolRpcClient {
         &self,
         wait: Duration,
         session_host_mount: PathBuf,
+        host_mounts: PoolSessionHostMounts,
     ) -> Result<SlotLease, String> {
         let r = self
             .call(PoolRpcReq::Acquire {
                 timeout_ms: u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
                 session_host_mount: session_host_mount.to_string_lossy().into_owned(),
+                skills_host_mount: host_mounts
+                    .skills_dir
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                claude_md_host_mount: host_mounts
+                    .claude_md_file
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                data_catalog_host_mount: host_mounts
+                    .data_catalog_file
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                solve_preflight_host_mount: host_mounts
+                    .solve_preflight_file
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                solve_orchestration_host_mount: host_mounts
+                    .solve_orchestration_file
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
             })
             .await?;
         if !r.ok {
@@ -138,6 +174,8 @@ impl PoolOps for PoolRpcClient {
         task_rel_under_root: &str,
         claw_bin: &str,
         request_id: Option<&str>,
+        turn_id: &str,
+        _on_stdout_line: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
         let r = self
             .call(PoolRpcReq::Exec {
@@ -145,6 +183,7 @@ impl PoolOps for PoolRpcClient {
                 task_rel: task_rel_under_root.to_string(),
                 claw_bin: claw_bin.to_string(),
                 request_id: request_id.map(str::to_string),
+                turn_id: turn_id.to_string(),
             })
             .await?;
         if !r.ok {
@@ -174,6 +213,7 @@ impl PoolOps for PoolRpcClient {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn dispatch_pool_rpc(
     pool: &std::sync::Arc<DockerPoolManager>,
     req: PoolRpcReq,
@@ -182,10 +222,22 @@ async fn dispatch_pool_rpc(
         PoolRpcReq::Acquire {
             timeout_ms,
             session_host_mount,
+            skills_host_mount,
+            claude_md_host_mount,
+            data_catalog_host_mount,
+            solve_preflight_host_mount,
+            solve_orchestration_host_mount,
         } => match pool
             .acquire_slot(
                 Duration::from_millis(timeout_ms),
                 PathBuf::from(session_host_mount),
+                PoolSessionHostMounts {
+                    skills_dir: skills_host_mount.map(PathBuf::from),
+                    claude_md_file: claude_md_host_mount.map(PathBuf::from),
+                    data_catalog_file: data_catalog_host_mount.map(PathBuf::from),
+                    solve_preflight_file: solve_preflight_host_mount.map(PathBuf::from),
+                    solve_orchestration_file: solve_orchestration_host_mount.map(PathBuf::from),
+                },
             )
             .await
         {
@@ -207,10 +259,20 @@ async fn dispatch_pool_rpc(
             task_rel,
             claw_bin,
             request_id,
+            turn_id,
         } => {
             let lease = SlotLease { slot_index };
+            // Daemon path: do NOT pre-wrap with merge_stdout_hooks here. exec_solve
+            // already runs merge_stdout_hooks internally (pool-local LiveReportHub).
             match pool
-                .exec_solve(&lease, &task_rel, &claw_bin, request_id.as_deref())
+                .exec_solve(
+                    &lease,
+                    &task_rel,
+                    &claw_bin,
+                    request_id.as_deref(),
+                    &turn_id,
+                    None,
+                )
                 .await
             {
                 Ok(outcome) => PoolRpcResp {

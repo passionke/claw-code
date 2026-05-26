@@ -27,7 +27,7 @@ jobs:
       - name: Build images
         env:
           GITHUB_ACTIONS: "true"
-        run: ./deploy/podman/build.sh "ci-${{ github.sha }}"
+        run: ./deploy/stack/lib/build.sh "ci-${{ github.sha }}"
 
       - name: Show images
         run: podman images | head -20

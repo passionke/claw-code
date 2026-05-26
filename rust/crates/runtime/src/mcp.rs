@@ -277,10 +277,12 @@ mod tests {
         let user = ScopedMcpServerConfig {
             scope: ConfigSource::User,
             config: base_config.clone(),
+            tool_annotations: BTreeMap::new(),
         };
         let local = ScopedMcpServerConfig {
             scope: ConfigSource::Local,
             config: base_config,
+            tool_annotations: BTreeMap::new(),
         };
         assert_eq!(
             scoped_mcp_config_hash(&user),
@@ -295,6 +297,7 @@ mod tests {
                 headers_helper: None,
                 oauth: None,
             }),
+            tool_annotations: BTreeMap::new(),
         };
         assert_ne!(
             scoped_mcp_config_hash(&user),

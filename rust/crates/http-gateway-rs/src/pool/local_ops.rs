@@ -7,7 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use super::docker_pool::DockerPoolManager;
-use super::traits::{PoolOps, SlotLease, TaskOutcome};
+use super::traits::{PoolOps, PoolSessionHostMounts, SlotLease, TaskOutcome};
 
 /// Adapter so [`Arc<dyn PoolOps>`] can wrap the local [`DockerPoolManager`]. Author: kejiqing
 pub struct LocalPoolOps(pub Arc<DockerPoolManager>);
@@ -18,8 +18,11 @@ impl PoolOps for LocalPoolOps {
         &self,
         wait: Duration,
         session_host_mount: PathBuf,
+        host_mounts: PoolSessionHostMounts,
     ) -> Result<SlotLease, String> {
-        self.0.acquire_slot(wait, session_host_mount).await
+        self.0
+            .acquire_slot(wait, session_host_mount, host_mounts)
+            .await
     }
 
     async fn exec_solve(
@@ -28,9 +31,18 @@ impl PoolOps for LocalPoolOps {
         task_rel_under_root: &str,
         claw_bin: &str,
         request_id: Option<&str>,
+        turn_id: &str,
+        on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
         self.0
-            .exec_solve(slot, task_rel_under_root, claw_bin, request_id)
+            .exec_solve(
+                slot,
+                task_rel_under_root,
+                claw_bin,
+                request_id,
+                turn_id,
+                on_stdout_line,
+            )
             .await
     }
 

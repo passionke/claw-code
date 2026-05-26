@@ -2,13 +2,17 @@
 pub mod config;
 mod docker_cli;
 mod docker_pool;
+mod http_server;
+mod live_report_hub;
+mod live_report_sse;
 mod local_ops;
 #[allow(dead_code)]
 mod result;
 pub mod rpc;
 mod traits;
-
-pub use docker_pool::DockerPoolManager;
+pub use docker_pool::{merge_stdout_hooks, DockerPoolManager};
+pub use http_server::serve_pool_http;
+pub use live_report_hub::{HubMsg, LiveReportHub};
 pub use local_ops::LocalPoolOps;
 // Used by the `http-gateway-rs` binary (`solve_pool`); not referenced from the library target alone.
 #[allow(unused_imports)]
@@ -20,4 +24,4 @@ pub use rpc::{
     PoolRpcClient,
 };
 #[allow(unused_imports)]
-pub use traits::{PoolOps, SlotLease, TaskOutcome};
+pub use traits::{PoolOps, PoolSessionHostMounts, SlotLease, TaskOutcome};

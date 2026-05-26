@@ -12,10 +12,15 @@
 
 ```bash
 cd rust
+CLAW_PROJECTS_GIT_URL=git@github.com:passionke/claw-code-projects.git \
+CLAW_PROJECTS_GIT_BRANCH=main \
+CLAW_PROJECTS_GIT_AUTHOR='kejiqing <kejiqing@local>' \
 cargo run -p http-gateway-rs
 ```
 
 默认监听：`0.0.0.0:8080`
+
+**必填（未设置或空串时进程启动即退出）**：`CLAW_PROJECTS_GIT_URL`、`CLAW_PROJECTS_GIT_BRANCH`、`CLAW_PROJECTS_GIT_AUTHOR`。若 `CLAW_PROJECTS_GIT_URL` 为不带凭据的 `https://...`（URL 中无 `@` 前用户段），还须设置 **`CLAW_PROJECTS_GIT_TOKEN`**。详见仓库根 `.env.example`。
 
 可选环境变量：
 
@@ -42,6 +47,9 @@ cargo run -p http-gateway-rs
 cd rust
 CLAW_HTTP_ADDR=127.0.0.1:8088 \
 CLAW_BIN=/Users/$USER/work/claw-code/rust/target/debug/claw \
+CLAW_PROJECTS_GIT_URL=git@github.com:passionke/claw-code-projects.git \
+CLAW_PROJECTS_GIT_BRANCH=main \
+CLAW_PROJECTS_GIT_AUTHOR='kejiqing <kejiqing@local>' \
 CLAW_DEFAULT_HTTP_MCP_NAME=claude-tap \
 CLAW_DEFAULT_HTTP_MCP_URL=http://127.0.0.1:9091/mcp \
 CLAW_DEFAULT_HTTP_MCP_TRANSPORT=http \
@@ -50,19 +58,19 @@ cargo run -p http-gateway-rs
 
 ## 二、Podman 镜像运行（推荐）
 
-**以 `deploy/podman/README.md` 为准**：根目录 `.env`、`./deploy/podman/build.sh`、worker 镜像、`./deploy/podman/up.sh` 一条链；不要自己拼 `podman compose` 参数。
+**以 `deploy/stack/README.md` 为准**：根目录 `.env`、**`./deploy/stack/gateway.sh build`**、worker 镜像、**`./deploy/stack/gateway.sh up`** 一条链；不要自己拼 `podman compose` 参数。
 
 摘要：
 
 ```bash
-cp .env.example .env   # 编辑：PODMAN_HOST_SOCK、OPENAI_*、GATEWAY_HOST_PORT 等
-./deploy/podman/build.sh
+cp .env.example .env   # 编辑：OPENAI_*、GATEWAY_HOST_PORT、CLAW_POOL_DAEMON_TCP_HOST（Docker 时常见 host.docker.internal）等
+./deploy/stack/gateway.sh build
 # 按 README 构建 claw-gateway-worker:local
-./deploy/podman/up.sh
-./deploy/podman/check-connectivity.sh
+./deploy/stack/gateway.sh up
+./deploy/stack/gateway.sh check
 ```
 
-需要 claude-tap 时用 `./deploy/podman/start-with-tap.sh` / `stop-with-tap.sh`。停止 compose 栈：`./deploy/podman/down.sh`。
+需要 claude-tap 时用 **`./deploy/stack/gateway.sh tap-up`** / **`tap-down`**。停止 compose 栈：**`./deploy/stack/gateway.sh down`**。
 
 ## 三、接口怎么调
 
@@ -70,6 +78,8 @@ cp .env.example .env   # 编辑：PODMAN_HOST_SOCK、OPENAI_*、GATEWAY_HOST_POR
 
 ```bash
 curl -sS "http://127.0.0.1:18088/healthz"
+# claude-tap Live（与网关同 Host、端口见 CLAUDE_TAP_LIVE_PORT）：
+# curl -sS "http://127.0.0.1:18088/healthz" | jq '.claudeTap.publicLiveBaseUrl, .claudeTap.liveSessionUrlTemplate'
 ```
 
 ### 同步调用
@@ -146,6 +156,9 @@ curl -sS "http://127.0.0.1:18088/v1/mcp/injected/1"
 - **18088 打不开**
   - 检查 `podman ps` 是否有 `0.0.0.0:18088->8080/tcp`
   - 用 `curl http://127.0.0.1:18088/healthz` 测
+- **`clawExitCode=125`**（`detail` 常为 `gateway-solve-once failed`）
+  - 多为 **worker 容器未在跑**：`podman logs claw-worker-*` 若见 `sleep: invalid time interval 'sleep'`，是镜像 `ENTRYPOINT sleep infinity` 与池 `run` 重复传参（已修）；处理：`gateway.sh build` 后 `gateway.sh up` 或 `./deploy/stack/lib/nuclear-pool-reset.sh`
+  - 或 `podman ps -a` 中 worker 为 `Exited`，需重建池
 - **`clawExitCode=1`**
   - 多数是模型凭证没配（如 `ANTHROPIC_API_KEY`）
 - **MCP 没加载**

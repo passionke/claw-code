@@ -1,0 +1,54 @@
+# Full in-image compile (CI / Linux hosts). Local macOS: use linux-compile.sh + Containerfile.gateway-rs.prebuilt.
+# Author: kejiqing
+ARG RUST_VERSION=1.88.0
+ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
+ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
+
+FROM ${RUST_BASE_IMAGE} AS builder
+
+ARG RUSTUP_DIST_SERVER=https://static.rust-lang.org
+ARG RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
+    RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT}
+
+ARG CLAW_USE_CN_CRATES_MIRROR=0
+
+WORKDIR /build
+COPY rust/Cargo.toml /build/Cargo.toml
+COPY rust/Cargo.lock /build/Cargo.lock
+COPY rust/rust-toolchain.toml /build/rust-toolchain.toml
+COPY rust/crates/ /build/crates/
+COPY rust/.cargo/config.toml.example /tmp/cargo-mirror.toml
+RUN if [ "${CLAW_USE_CN_CRATES_MIRROR}" = "1" ]; then \
+      mkdir -p /build/.cargo && cp /tmp/cargo-mirror.toml /build/.cargo/config.toml && \
+      echo "cargo: USTC sparse index"; \
+    else \
+      echo "cargo: crates.io index"; \
+    fi
+RUN rustc --version | grep -q "${RUST_VERSION}" && \
+    echo "rustc: $(rustc --version)" && \
+    cargo build -p rusty-claude-cli --bin claw --release && \
+    cargo build -p http-gateway-rs --release && \
+    cargo build -p http-gateway-rs --bin claw-pool-daemon --release
+
+FROM ${DEBIAN_BASE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    podman \
+    docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /build/target/release/claw /usr/local/bin/claw
+COPY --from=builder /build/target/release/http-gateway-rs /usr/local/bin/http-gateway-rs
+COPY --from=builder /build/target/release/claw-pool-daemon /usr/local/bin/claw-pool-daemon
+
+ENV CLAW_HTTP_ADDR=0.0.0.0:8080
+ENV CLAW_WORK_ROOT=/var/lib/claw/workspace
+
+RUN mkdir -p /var/lib/claw/workspace /var/log/claw/traces
+
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/http-gateway-rs"]
