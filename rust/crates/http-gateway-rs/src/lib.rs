@@ -41,3 +41,4 @@ pub mod task_status;
 pub mod turn_id;
 pub mod turn_timeline_api;
 pub mod turn_tools_api;
+pub mod workspace_perm;

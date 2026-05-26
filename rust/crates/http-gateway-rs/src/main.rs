@@ -7212,6 +7212,13 @@ async fn prepare_gateway_session(
         }
     }
 
+    http_gateway_rs::workspace_perm::chown_session_tree_for_worker(&session_home).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("session workspace ownership for pool worker failed: {e}"),
+        )
+    })?;
+
     if need_insert_row {
         state
             .session_db
