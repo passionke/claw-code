@@ -6,6 +6,7 @@ use http_gateway_rs::gateway_global_settings::{self, PutActiveLlmConfigInput, Pu
 use http_gateway_rs::gateway_llm_config_sync;
 use http_gateway_rs::session_db::GatewaySessionDb;
 use tokio::sync::RwLock;
+use tokio::time::{sleep, Duration, Instant};
 
 fn ensure_test_env(tmp: &std::path::Path) {
     let _ = std::env::set_var(
@@ -35,9 +36,21 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
     let tmp = tempfile::tempdir().expect("tempdir");
     ensure_test_env(tmp.path());
 
-    let db = GatewaySessionDb::open()
-        .await
-        .expect("connect CLAW_GATEWAY_DATABASE_URL (need PG on 5433)");
+    // In CI the postgres service may not be ready yet; retry to avoid flaky `PoolTimedOut`.
+    let db_deadline = Instant::now() + Duration::from_secs(25);
+    let db = loop {
+        match GatewaySessionDb::open().await {
+            Ok(db) => break db,
+            Err(e) => {
+                if Instant::now() >= db_deadline {
+                    break Err(e).expect(
+                        "connect CLAW_GATEWAY_DATABASE_URL (need PG on 5433) after retries",
+                    );
+                }
+                sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
 
     let saved = gateway_global_settings::put_active_llm_config(
         &db,
