@@ -35,7 +35,7 @@ pub async fn serve(
         master_key,
     };
 
-    let api = Router::new()
+    let api_router = Router::new()
         .route("/api/register", post(auth::register))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
@@ -58,7 +58,7 @@ pub async fn serve(
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers(Any);
 
-    let mut app = Router::new().merge(api).layer(cors);
+    let mut app = Router::new().merge(api_router).layer(cors);
 
     if let Some(dir) = static_dir {
         if dir.is_dir() {

@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::ServerError;
 
-const SCHEMA: &str = r#"
+const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY NOT NULL,
     email TEXT NOT NULL UNIQUE,
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS provider_profiles (
 CREATE INDEX IF NOT EXISTS idx_workspaces_user ON workspaces(user_id);
 CREATE INDEX IF NOT EXISTS idx_profiles_user ON provider_profiles(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_expires ON auth_sessions(expires_at_ms);
-"#;
+";
 
 pub async fn connect(database_url: &str) -> Result<SqlitePool, ServerError> {
     let opts = SqliteConnectOptions::from_str(database_url)
@@ -65,6 +65,7 @@ async fn migrate(pool: &SqlitePool) -> Result<(), ServerError> {
     Ok(())
 }
 
+#[must_use]
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

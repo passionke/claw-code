@@ -45,15 +45,21 @@ pub async fn list_profiles(
     let mut out = Vec::new();
     for row in rows {
         out.push(ProviderProfileDto {
-            id: row.try_get("id").map_err(|e| ServerError::Internal(e.to_string()))?,
-            name: row.try_get("name").map_err(|e| ServerError::Internal(e.to_string()))?,
+            id: row
+                .try_get("id")
+                .map_err(|e| ServerError::Internal(e.to_string()))?,
+            name: row
+                .try_get("name")
+                .map_err(|e| ServerError::Internal(e.to_string()))?,
             provider_kind: row
                 .try_get("provider_kind")
                 .map_err(|e| ServerError::Internal(e.to_string()))?,
             base_url: row
-                .try_get::<Option<String>>("base_url")
+                .try_get::<Option<String>, _>("base_url")
                 .map_err(|e| ServerError::Internal(e.to_string()))?,
-            model: row.try_get("model").map_err(|e| ServerError::Internal(e.to_string()))?,
+            model: row
+                .try_get("model")
+                .map_err(|e| ServerError::Internal(e.to_string()))?,
             created_at_ms: row
                 .try_get("created_at_ms")
                 .map_err(|e| ServerError::Internal(e.to_string()))?,
@@ -83,18 +89,12 @@ pub async fn create_profile(
             "provider_kind must be anthropic, openai_compat, dashscope, or xai".into(),
         ));
     }
-    if kind != "anthropic"
-        && body
-            .base_url
-            .as_ref()
-            .map_or(true, |s| s.trim().is_empty())
-    {
+    if kind != "anthropic" && body.base_url.as_ref().is_none_or(|s| s.trim().is_empty()) {
         return Err(ServerError::BadRequest(
             "base_url required for non-anthropic providers".into(),
         ));
     }
-    let ciphertext =
-        crypto::encrypt_secret(&state.master_key, body.api_key.trim()).map_err(|e| e)?;
+    let ciphertext = crypto::encrypt_secret(&state.master_key, body.api_key.trim())?;
     let id = Uuid::new_v4().to_string();
     let now = db::now_ms();
     sqlx::query(
@@ -131,7 +131,7 @@ pub async fn delete_profile(
         .bind(&id)
         .bind(&user.id)
         .execute(&state.pool)
-    .await?;
+        .await?;
     if res.rows_affected() == 0 {
         return Err(ServerError::NotFound);
     }
@@ -164,12 +164,16 @@ pub async fn load_profile(
         return Err(ServerError::NotFound);
     };
     Ok(ProviderProfileRow {
-        id: row.try_get("id").map_err(|e| ServerError::Internal(e.to_string()))?,
+        id: row
+            .try_get("id")
+            .map_err(|e| ServerError::Internal(e.to_string()))?,
         provider_kind: row
             .try_get("provider_kind")
             .map_err(|e| ServerError::Internal(e.to_string()))?,
         base_url: row.try_get("base_url").ok(),
-        model: row.try_get("model").map_err(|e| ServerError::Internal(e.to_string()))?,
+        model: row
+            .try_get("model")
+            .map_err(|e| ServerError::Internal(e.to_string()))?,
         api_key_ciphertext: row
             .try_get("api_key_ciphertext")
             .map_err(|e| ServerError::Internal(e.to_string()))?,

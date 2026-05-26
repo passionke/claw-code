@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use std::io;
 
 use api::{
-    InputContentBlock, InputMessage, MessageRequest, OutputContentBlock, ProviderClient,
-    ToolChoice, ToolDefinition, ToolResultContentBlock,
+    InputContentBlock, InputMessage, MessageRequest, ProviderClient, ToolChoice, ToolDefinition,
+    ToolResultContentBlock,
 };
 use runtime::{
     ApiClient, ApiRequest, AssistantEvent, ContentBlock, ConversationMessage, MessageRole,
@@ -14,13 +14,13 @@ use runtime::{
 };
 use serde_json::json;
 
-use crate::render_minimal::{push_output_block, response_to_events};
+use self::render_minimal::response_to_events;
 
 /// Minimal render module (no terminal colors) to reuse response parsing.
 mod render_minimal {
     use std::io::Write;
 
-    use api::{MessageResponse, OutputContentBlock, ToolResultContentBlock};
+    use api::{MessageResponse, OutputContentBlock};
     use runtime::AssistantEvent;
 
     pub fn push_output_block(
@@ -30,7 +30,7 @@ mod render_minimal {
         pending_tool: &mut Option<(String, String, String)>,
         streaming_tool_input: bool,
         block_has_thinking_summary: &mut bool,
-    ) -> Result<(), RuntimeError> {
+    ) {
         match block {
             OutputContentBlock::Text { text } => {
                 if !text.is_empty() {
@@ -54,13 +54,12 @@ mod render_minimal {
                 *block_has_thinking_summary = true;
             }
         }
-        Ok(())
     }
 
     pub fn response_to_events(
         response: MessageResponse,
         out: &mut (dyn Write + Send),
-    ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+    ) -> Vec<AssistantEvent> {
         let mut events = Vec::new();
         let mut pending_tool = None;
 
@@ -73,7 +72,7 @@ mod render_minimal {
                 &mut pending_tool,
                 false,
                 &mut block_has_thinking_summary,
-            )?;
+            );
             if let Some((id, name, input)) = pending_tool.take() {
                 events.push(AssistantEvent::ToolUse { id, name, input });
             }
@@ -81,7 +80,7 @@ mod render_minimal {
 
         events.push(AssistantEvent::Usage(response.usage.token_usage()));
         events.push(AssistantEvent::MessageStop);
-        Ok(events)
+        events
     }
 }
 
@@ -98,6 +97,9 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
                 .iter()
                 .map(|block| match block {
                     ContentBlock::Text { text } => InputContentBlock::Text { text: text.clone() },
+                    ContentBlock::ReasoningContent { text } => {
+                        InputContentBlock::ReasoningContent { text: text.clone() }
+                    }
                     ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
@@ -198,7 +200,7 @@ impl ApiClient for BlockingRoundTripClient {
             .map_err(|e| RuntimeError::new(format!("{}: {e}", self.session_id)))?;
 
         let mut sink = io::sink();
-        let mut events = response_to_events(response, &mut sink)?;
+        let mut events = response_to_events(response, &mut sink);
 
         if let Some(record) = self.client.take_last_prompt_cache_record() {
             if let Some(cache_break) = record.cache_break {

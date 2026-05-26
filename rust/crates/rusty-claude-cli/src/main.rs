@@ -481,12 +481,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         CliAction::Acp { output_format } => print_acp_status(output_format)?,
         CliAction::State { output_format } => run_worker_state(output_format)?,
         CliAction::ServeWeb => {
-            let bind = std::env::var("CLAW_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
+            let bind =
+                std::env::var("CLAW_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
             let database_url = std::env::var("CLAW_SERVER_DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite:claw-server.db".into());
             let data_dir = std::env::var("CLAW_SERVER_DATA_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("./claw-server-data"));
+                .map_or_else(|_| PathBuf::from("./claw-server-data"), PathBuf::from);
             let master_key = std::env::var("CLAW_MASTER_KEY").map_err(|_| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -501,7 +501,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 data_dir,
                 master_key,
                 static_dir,
-            ))?;
+            ))
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         }
         CliAction::Init { output_format } => run_init(output_format)?,
         // #146: dispatch pure-local introspection. Text mode uses existing

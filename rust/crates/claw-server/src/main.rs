@@ -10,11 +10,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .init();
 
     let bind = std::env::var("CLAW_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
-    let database_url =
-        std::env::var("CLAW_SERVER_DATABASE_URL").unwrap_or_else(|_| "sqlite:claw-server.db".into());
+    let database_url = std::env::var("CLAW_SERVER_DATABASE_URL")
+        .unwrap_or_else(|_| "sqlite:claw-server.db".into());
     let data_dir = std::env::var("CLAW_SERVER_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./claw-server-data"));
+        .map_or_else(|_| PathBuf::from("./claw-server-data"), PathBuf::from);
     let master_key = std::env::var("CLAW_MASTER_KEY").map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

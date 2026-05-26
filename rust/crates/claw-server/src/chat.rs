@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::convert::Infallible;
 
 use api::{
-    max_tokens_for_model, metadata_for_model, resolve_model_alias, OpenAiCompatConfig,
-    PromptCache, ProviderClient,
+    max_tokens_for_model, metadata_for_model, resolve_model_alias, OpenAiCompatConfig, PromptCache,
+    ProviderClient,
 };
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -15,10 +15,11 @@ use serde_json::json;
 use tools::GlobalToolRegistry;
 
 use runtime::{
-    ConfigLoader, ConversationRuntime, PermissionEnforcer, PermissionMode, PermissionPolicy,
-    RuntimeFeatureConfig, Session, SessionStore, ToolError, ToolExecutor, ToolWorkspaceRootGuard,
-    TurnSummary,
+    ConfigLoader, ConversationRuntime, PermissionMode, PermissionPolicy, RuntimeFeatureConfig,
+    Session, SessionStore, ToolError, ToolExecutor, ToolWorkspaceRootGuard, TurnSummary,
 };
+
+use runtime::permission_enforcer::PermissionEnforcer;
 
 use crate::auth::require_user;
 use crate::blocking_client::BlockingRoundTripClient;
@@ -75,7 +76,7 @@ fn build_permission_policy(
 ) -> Result<PermissionPolicy, ServerError> {
     let specs = registry
         .permission_specs(None)
-        .map_err(|e| ServerError::Internal(e))?;
+        .map_err(ServerError::Internal)?;
     Ok(specs.into_iter().fold(
         PermissionPolicy::new(mode).with_permission_rules(feature_config.permission_rules()),
         |policy, (name, required_permission)| {
@@ -94,9 +95,10 @@ fn build_provider_client(
         "anthropic" => ProviderClient::from_explicit_anthropic(key, row.base_url.clone())
             .with_prompt_cache(PromptCache::new(session_id)),
         "openai_compat" | "dashscope" | "xai" => {
-            let base = row.base_url.clone().ok_or_else(|| {
-                ServerError::BadRequest("profile missing base_url".into())
-            })?;
+            let base = row
+                .base_url
+                .clone()
+                .ok_or_else(|| ServerError::BadRequest("profile missing base_url".into()))?;
             match row.provider_kind.as_str() {
                 "xai" => ProviderClient::from_explicit_xai(key, base),
                 "dashscope" => ProviderClient::from_explicit_openai_compat(
@@ -143,6 +145,7 @@ fn final_assistant_text(summary: &TurnSummary) -> String {
         .unwrap_or_default()
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn chat_json(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -211,11 +214,7 @@ pub async fn chat_json(
 
     let model = profile.model.clone();
     let max_tokens = max_tokens_for_model(&resolve_model_alias(&model));
-    let provider_client = build_provider_client(
-        &state.master_key,
-        &profile,
-        &session.session_id,
-    )?;
+    let provider_client = build_provider_client(&state.master_key, &profile, &session.session_id)?;
 
     let tool_definitions = tool_registry.definitions(None);
     let api_client = BlockingRoundTripClient::new(
@@ -227,7 +226,7 @@ pub async fn chat_json(
         None,
         tool_definitions,
     )
-    .map_err(|e| ServerError::Internal(e))?;
+    .map_err(ServerError::Internal)?;
 
     let tool_executor = WebToolExecutor {
         registry: tool_registry,
@@ -239,6 +238,7 @@ pub async fn chat_json(
         chrono::Utc::now().format("%Y-%m-%d").to_string(),
         std::env::consts::OS,
         "web",
+        None,
     )
     .map_err(|e| ServerError::Internal(e.to_string()))?;
 
@@ -278,6 +278,7 @@ pub struct ChatSseQuery {
     pub session_id: Option<String>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn chat_sse(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -285,9 +286,7 @@ pub async fn chat_sse(
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ServerError> {
     let workspace_id = q.workspace_id.clone();
     if workspace_id.trim().is_empty() {
-        return Err(ServerError::BadRequest(
-            "workspace_id is required".into(),
-        ));
+        return Err(ServerError::BadRequest("workspace_id is required".into()));
     }
     let user = require_user(&state, &headers).await?;
     let (_ws, root) = load_workspace_for_user(&state, &user, &workspace_id).await?;
@@ -350,13 +349,14 @@ pub async fn chat_sse(
                 true,
                 None,
                 tool_definitions,
-            ).map_err(|e| ServerError::Internal(e))?;
+            ).map_err(ServerError::Internal)?;
             let tool_executor = WebToolExecutor { registry: tool_registry, allowed_tools: None };
             let system_prompt = runtime::load_system_prompt(
                 &root,
                 chrono::Utc::now().format("%Y-%m-%d").to_string(),
                 std::env::consts::OS,
                 "web",
+                None,
             ).map_err(|e| ServerError::Internal(e.to_string()))?;
 
             let mut runtime = ConversationRuntime::new_with_features(
@@ -384,7 +384,7 @@ pub async fn chat_sse(
             Ok(text) => {
                 for chunk in text.as_bytes().chunks(64) {
                     let piece = String::from_utf8_lossy(chunk);
-                    yield Ok(Event::default().data(piece.to_string()));
+                    yield Ok(Event::default().data(piece.as_ref()));
                 }
                 yield Ok(Event::default().event("done").data("[DONE]"));
             }

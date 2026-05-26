@@ -50,23 +50,21 @@ pub async fn register(
         .map_err(|e| ServerError::Internal(e.to_string()))?
         .to_string();
     let now = db::now_ms();
-    sqlx::query(
-        "INSERT INTO users (id, email, password_hash, created_at_ms) VALUES (?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&email)
-    .bind(&hash)
-    .bind(now)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(d) = &e {
-            if d.is_unique_violation() {
-                return ServerError::BadRequest("email already registered".into());
+    sqlx::query("INSERT INTO users (id, email, password_hash, created_at_ms) VALUES (?, ?, ?, ?)")
+        .bind(&id)
+        .bind(&email)
+        .bind(&hash)
+        .bind(now)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| {
+            if let sqlx::Error::Database(d) = &e {
+                if d.is_unique_violation() {
+                    return ServerError::BadRequest("email already registered".into());
+                }
             }
-        }
-        ServerError::Db(e)
-    })?;
+            ServerError::Db(e)
+        })?;
     Ok((StatusCode::CREATED, Json(UserDto { id, email })))
 }
 
@@ -82,7 +80,9 @@ pub async fn login(
     let Some(row) = row else {
         return Err(ServerError::Unauthorized);
     };
-    let user_id: String = row.try_get("id").map_err(|e| ServerError::Internal(e.to_string()))?;
+    let user_id: String = row
+        .try_get("id")
+        .map_err(|e| ServerError::Internal(e.to_string()))?;
     let db_email: String = row
         .try_get("email")
         .map_err(|e| ServerError::Internal(e.to_string()))?;
@@ -104,8 +104,7 @@ pub async fn login(
         .await?;
 
     let cookie = format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; Path=/; Max-Age={}; SameSite=Lax",
-        SESSION_TTL_SECS
+        "{SESSION_COOKIE}={token}; HttpOnly; Path=/; Max-Age={SESSION_TTL_SECS}; SameSite=Lax"
     );
     Ok((
         StatusCode::OK,
@@ -153,7 +152,10 @@ pub fn session_token_from_headers(headers: &axum::http::HeaderMap) -> Option<&st
     None
 }
 
-pub async fn require_user(state: &AppState, headers: &axum::http::HeaderMap) -> Result<UserDto, ServerError> {
+pub async fn require_user(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<UserDto, ServerError> {
     let Some(token) = session_token_from_headers(headers) else {
         return Err(ServerError::Unauthorized);
     };
@@ -171,7 +173,9 @@ pub async fn require_user(state: &AppState, headers: &axum::http::HeaderMap) -> 
         return Err(ServerError::Unauthorized);
     };
     Ok(UserDto {
-        id: row.try_get("id").map_err(|e| ServerError::Internal(e.to_string()))?,
+        id: row
+            .try_get("id")
+            .map_err(|e| ServerError::Internal(e.to_string()))?,
         email: row
             .try_get("email")
             .map_err(|e| ServerError::Internal(e.to_string()))?,

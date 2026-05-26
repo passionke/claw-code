@@ -30,7 +30,11 @@ fn user_workspace_cap(user_id: &str) -> PathBuf {
 }
 
 /// Ensures `path` is under `state.data_dir/users/<user_id>/`.
-pub fn validate_user_path(state: &AppState, user_id: &str, path: &Path) -> Result<PathBuf, ServerError> {
+pub fn validate_user_path(
+    state: &AppState,
+    user_id: &str,
+    path: &Path,
+) -> Result<PathBuf, ServerError> {
     let base = state.data_dir.join(user_workspace_cap(user_id));
     let base = std::fs::canonicalize(&base).unwrap_or(base);
     let resolved = path.canonicalize().map_err(|_| {
@@ -56,8 +60,12 @@ pub async fn list_workspaces(
     let mut out = Vec::new();
     for row in rows {
         out.push(WorkspaceDto {
-            id: row.try_get("id").map_err(|e| ServerError::Internal(e.to_string()))?,
-            name: row.try_get("name").map_err(|e| ServerError::Internal(e.to_string()))?,
+            id: row
+                .try_get("id")
+                .map_err(|e| ServerError::Internal(e.to_string()))?,
+            name: row
+                .try_get("name")
+                .map_err(|e| ServerError::Internal(e.to_string()))?,
             root_path: row
                 .try_get("root_path")
                 .map_err(|e| ServerError::Internal(e.to_string()))?,
@@ -121,12 +129,7 @@ pub async fn delete_workspace(
     if res.rows_affected() == 0 {
         return Err(ServerError::NotFound);
     }
-    let _ = std::fs::remove_dir_all(
-        state
-            .data_dir
-            .join(user_workspace_cap(&user.id))
-            .join(&id),
-    );
+    let _ = std::fs::remove_dir_all(state.data_dir.join(user_workspace_cap(&user.id)).join(&id));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -147,8 +150,12 @@ pub async fn load_workspace_for_user(
         return Err(ServerError::NotFound);
     };
     let dto = WorkspaceDto {
-        id: row.try_get("id").map_err(|e| ServerError::Internal(e.to_string()))?,
-        name: row.try_get("name").map_err(|e| ServerError::Internal(e.to_string()))?,
+        id: row
+            .try_get("id")
+            .map_err(|e| ServerError::Internal(e.to_string()))?,
+        name: row
+            .try_get("name")
+            .map_err(|e| ServerError::Internal(e.to_string()))?,
         root_path: row
             .try_get("root_path")
             .map_err(|e| ServerError::Internal(e.to_string()))?,

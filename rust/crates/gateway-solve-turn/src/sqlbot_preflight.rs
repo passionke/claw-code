@@ -815,17 +815,7 @@ mod sqlbot_query_context_tests {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
-    use std::sync::{Mutex, OnceLock};
-
     use super::*;
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
 
     #[test]
     fn sole_datasource_requires_exactly_one_row() {
