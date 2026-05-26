@@ -1,9 +1,36 @@
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use crate::config::{McpOAuthConfig, McpServerConfig, ScopedMcpServerConfig};
 use crate::mcp::{mcp_server_signature, mcp_tool_prefix, normalize_name_for_mcp};
 
 pub const DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS: u64 = 60_000;
+static MCP_TOOL_CALL_TIMEOUT_MS: OnceLock<u64> = OnceLock::new();
+
+/// Fallback when `CLAW_MCP_MAX_CONCURRENT` is unset; tune concurrency via env only. Author: kejiqing
+pub const DEFAULT_MCP_MAX_CONCURRENT: usize = 4;
+
+#[must_use]
+pub fn default_mcp_tool_call_timeout_ms() -> u64 {
+    *MCP_TOOL_CALL_TIMEOUT_MS.get_or_init(|| {
+        std::env::var("CLAW_MCP_TOOL_CALL_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS)
+    })
+}
+
+fn parse_mcp_max_concurrent(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .map_or(DEFAULT_MCP_MAX_CONCURRENT, |value| value.max(1))
+}
+
+/// Max in-flight MCP `tools/call` per process (gateway solve). Author: kejiqing
+#[must_use]
+pub fn default_mcp_max_concurrent() -> usize {
+    parse_mcp_max_concurrent(std::env::var("CLAW_MCP_MAX_CONCURRENT").ok().as_deref())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpClientTransport {
@@ -113,7 +140,7 @@ impl McpStdioTransport {
     #[must_use]
     pub fn resolved_tool_call_timeout_ms(&self) -> u64 {
         self.tool_call_timeout_ms
-            .unwrap_or(DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS)
+            .unwrap_or(default_mcp_tool_call_timeout_ms())
     }
 }
 
@@ -150,6 +177,7 @@ mod tests {
                 env: BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
                 tool_call_timeout_ms: Some(15_000),
             }),
+            tool_annotations: BTreeMap::new(),
         };
 
         let bootstrap = McpClientBootstrap::from_scoped_config("stdio-server", &config);
@@ -190,6 +218,7 @@ mod tests {
                     xaa: Some(true),
                 }),
             }),
+            tool_annotations: BTreeMap::new(),
         };
 
         let bootstrap = McpClientBootstrap::from_scoped_config("remote server", &config);
@@ -219,12 +248,14 @@ mod tests {
                 headers: BTreeMap::new(),
                 headers_helper: None,
             }),
+            tool_annotations: BTreeMap::new(),
         };
         let sdk = ScopedMcpServerConfig {
             scope: ConfigSource::Local,
             config: McpServerConfig::Sdk(McpSdkServerConfig {
                 name: "sdk-server".to_string(),
             }),
+            tool_annotations: BTreeMap::new(),
         };
 
         let ws_bootstrap = McpClientBootstrap::from_scoped_config("ws server", &ws);
@@ -244,5 +275,18 @@ mod tests {
             }
             other => panic!("expected sdk transport, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn default_mcp_max_concurrent_default_is_four() {
+        assert_eq!(super::DEFAULT_MCP_MAX_CONCURRENT, 4);
+    }
+
+    #[test]
+    fn mcp_max_concurrent_parse_normalizes_zero_to_one() {
+        assert_eq!(super::parse_mcp_max_concurrent(Some("0")), 1);
+        assert_eq!(super::parse_mcp_max_concurrent(Some("8")), 8);
+        assert_eq!(super::parse_mcp_max_concurrent(None), 4);
+        assert_eq!(super::parse_mcp_max_concurrent(Some("")), 4);
     }
 }

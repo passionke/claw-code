@@ -90,6 +90,8 @@ impl ValidationResult {
 enum FieldType {
     String,
     Bool,
+    /// Boolean or `0`/`1` number or `"true"`/`"false"`/`"0"`/`"1"` string.
+    BoolLike,
     Object,
     StringArray,
     Number,
@@ -100,6 +102,7 @@ impl FieldType {
         match self {
             Self::String => "a string",
             Self::Bool => "a boolean",
+            Self::BoolLike => "a boolean or 0/1",
             Self::Object => "an object",
             Self::StringArray => "an array of strings",
             Self::Number => "a number",
@@ -110,6 +113,13 @@ impl FieldType {
         match self {
             Self::String => value.as_str().is_some(),
             Self::Bool => value.as_bool().is_some(),
+            Self::BoolLike => {
+                value.as_bool().is_some()
+                    || value.as_i64().is_some()
+                    || value
+                        .as_str()
+                        .is_some_and(|s| matches!(s.trim(), "0" | "1" | "true" | "false"))
+            }
             Self::Object => value.as_object().is_some(),
             Self::StringArray => value
                 .as_array()
@@ -196,6 +206,14 @@ const TOP_LEVEL_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         name: "trustedRoots",
         expected: FieldType::StringArray,
+    },
+    FieldSpec {
+        name: "thinkingEnabled",
+        expected: FieldType::Bool,
+    },
+    FieldSpec {
+        name: "auto_hidden_system_prompt",
+        expected: FieldType::BoolLike,
     },
 ];
 

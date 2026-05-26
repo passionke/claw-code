@@ -1,0 +1,17 @@
+# Worker image from pre-built Linux `claw` (see linux-compile.sh). Author: kejiqing
+ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
+
+FROM ${DEBIAN_BASE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 claw \
+    && useradd -m -u 1000 -g 1000 -s /bin/sh claw
+
+WORKDIR /app
+COPY deploy/stack/.linux-artifacts/release/claw /usr/local/bin/claw
+RUN chmod +x /usr/local/bin/claw
+
+USER claw
+# Pool runs: docker run … --entrypoint sleep <image> infinity (avoids duplicate ENTRYPOINT+CMD).
+ENTRYPOINT ["sleep", "infinity"]

@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+if [[ ! -d "${repo_root}/rust" ]]; then
+  echo "[pre-push] skip: rust workspace not found"
+  exit 0
+fi
+
+# Read pushed refs from stdin (`<local-ref> <local-sha> <remote-ref> <remote-sha>` per line).
+# If this push only updates tags, skip Rust checks entirely.
+only_tags=1
+while IFS=' ' read -r _local_ref _local_sha remote_ref _remote_sha; do
+  [[ -z "${remote_ref}" ]] && continue
+  if [[ "${remote_ref}" != refs/tags/* ]]; then
+    only_tags=0
+    break
+  fi
+done
+if [[ "${only_tags}" -eq 1 ]]; then
+  echo "[pre-push] skip: tag-only push"
+  exit 0
+fi
+
+base_ref=""
+current_branch="$(git branch --show-current 2>/dev/null || true)"
+if upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "@{upstream}" 2>/dev/null)"; then
+  base_ref="${upstream}"
+elif [[ -n "${current_branch}" ]] && git rev-parse --verify "origin/${current_branch}" >/dev/null 2>&1; then
+  base_ref="origin/${current_branch}"
+elif git rev-parse --verify origin/persist--on-pg >/dev/null 2>&1; then
+  base_ref="origin/persist--on-pg"
+elif git rev-parse --verify origin/main >/dev/null 2>&1; then
+  base_ref="origin/main"
+fi
+
+diff_range="HEAD"
+if [[ -n "${base_ref}" ]]; then
+  diff_range="${base_ref}...HEAD"
+fi
+
+rust_pkgs=()
+while IFS= read -r path; do
+  [[ "${path}" == rust/crates/* ]] || continue
+  pkg="${path#rust/crates/}"
+  pkg="${pkg%%/*}"
+  [[ -n "${pkg}" ]] || continue
+  found=0
+  for existing in "${rust_pkgs[@]:-}"; do
+    if [[ "${existing}" == "${pkg}" ]]; then
+      found=1
+      break
+    fi
+  done
+  if [[ "${found}" -eq 0 ]]; then
+    rust_pkgs+=("${pkg}")
+  fi
+done < <(git diff --name-only --diff-filter=ACMR "${diff_range}" 2>/dev/null || true)
+
+if [[ "${#rust_pkgs[@]}" -eq 0 ]]; then
+  rust_changed=0
+  while IFS= read -r path; do
+    if [[ "${path}" == rust/* ]]; then
+      rust_changed=1
+      break
+    fi
+  done < <(git diff --name-only --diff-filter=ACMR "${diff_range}" 2>/dev/null || true)
+  if [[ "${rust_changed}" -eq 0 ]]; then
+    echo "[pre-push] skip: no rust/** changes in ${diff_range}"
+    exit 0
+  fi
+  echo "[pre-push] warn: rust changed but no rust/crates/* paths; checking full workspace"
+  scope_mode="workspace"
+else
+  scope_mode="packages"
+fi
+
+rust_toolchain_channel() {
+  sed -n 's/^channel = "\([^"]*\)".*/\1/p' "${repo_root}/rust/rust-toolchain.toml"
+}
+
+rust_cargo() {
+  local channel
+  channel="$(rust_toolchain_channel)"
+  if [[ -z "${channel}" ]]; then
+    echo "[pre-push] error: rust/rust-toolchain.toml channel missing" >&2
+    exit 1
+  fi
+  (
+    cd "${repo_root}/rust"
+    rustup run "${channel}" cargo "$@"
+  )
+}
+
+# Build -p flags (bash 3.2 compatible; no mapfile).
+pkg_flags=()
+for pkg in "${rust_pkgs[@]}"; do
+  pkg_flags+=(-p "${pkg}")
+done
+
+channel="$(rust_toolchain_channel)"
+echo "[pre-push] using rust toolchain ${channel} (from rust/rust-toolchain.toml)"
+
+if [[ "${scope_mode}" == "workspace" ]]; then
+  echo "[pre-push] running cargo fmt --all --check (workspace)"
+  rust_cargo fmt --all --check
+  echo "[pre-push] running cargo clippy --workspace --all-targets -- -D warnings"
+  rust_cargo clippy --workspace --all-targets -- -D warnings
+  echo "[pre-push] running cargo test --workspace"
+  rust_cargo test --workspace
+else
+  echo "[pre-push] scope: ${rust_pkgs[*]} (${diff_range})"
+  echo "[pre-push] running cargo fmt --check for changed packages"
+  for pkg in "${rust_pkgs[@]}"; do
+    rust_cargo fmt -p "${pkg}" -- --check
+  done
+  echo "[pre-push] rustfmt check passed"
+  echo "[pre-push] running cargo clippy --lib for changed packages"
+  rust_cargo clippy "${pkg_flags[@]}" --lib -- -D warnings
+  echo "[pre-push] clippy check passed"
+  echo "[pre-push] running cargo test for changed packages"
+  rust_cargo test "${pkg_flags[@]}"
+fi
+
+echo "[pre-push] all checks passed"

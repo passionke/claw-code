@@ -1,22 +1,24 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::io;
-use std::process::Stdio;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use tokio::time::timeout;
+use tracing::{info, warn};
 
 use crate::config::{McpTransport, RuntimeConfig, ScopedMcpServerConfig};
 use crate::mcp::mcp_tool_name;
-use crate::mcp_client::{McpClientBootstrap, McpClientTransport, McpStdioTransport};
+use crate::mcp_client::{default_mcp_tool_call_timeout_ms, McpClientBootstrap, McpClientTransport};
 use crate::mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase,
 };
+use crate::mcp_transport::http::{execute_http_tool_call_isolated, HttpToolCallSnapshot};
+use crate::mcp_transport::process::{spawn_mcp_process, McpProcess};
+use crate::mcp_transport::stdio::JsonRpcStdioFraming;
+pub use crate::mcp_transport::stdio::{spawn_mcp_stdio_process, McpStdioProcess};
 
 #[cfg(test)]
 const MCP_INITIALIZE_TIMEOUT_MS: u64 = 200;
@@ -123,6 +125,113 @@ pub struct McpTool {
     pub annotations: Option<JsonValue>,
     #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<JsonValue>,
+}
+
+fn mcp_json_bool(object: &JsonValue, key: &str) -> bool {
+    object
+        .get(key)
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+}
+
+/// MCP `tools/list` annotation flag on `annotations` or `_meta` (camelCase + `snake_case`). Author: kejiqing
+#[must_use]
+pub fn mcp_annotation_bool(annotations: Option<&JsonValue>, key: &str) -> bool {
+    let Some(value) = annotations else {
+        return false;
+    };
+    if mcp_json_bool(value, key) {
+        return true;
+    }
+    match key {
+        "readOnlyHint" => mcp_json_bool(value, "read_only_hint"),
+        "destructiveHint" => mcp_json_bool(value, "destructive_hint"),
+        "openWorldHint" => mcp_json_bool(value, "open_world_hint"),
+        _ => false,
+    }
+}
+
+fn mcp_tool_annotation_object(tool: &McpTool) -> Option<&JsonValue> {
+    tool.annotations.as_ref().or(tool.meta.as_ref())
+}
+
+/// Whether MCP metadata allows concurrent in-flight `tools/call` within one turn. Author: kejiqing
+#[must_use]
+pub fn mcp_tool_allows_concurrent_calls(tool: &McpTool) -> bool {
+    let ann = mcp_tool_annotation_object(tool);
+    let read_only = mcp_annotation_bool(ann, "readOnlyHint");
+    let destructive = mcp_annotation_bool(ann, "destructiveHint");
+    let open_world = mcp_annotation_bool(ann, "openWorldHint");
+    read_only && !destructive && !open_world
+}
+
+/// `SQLBot` and others may mark parallel-safe tools in `description` (e.g. `parallel-friendly`). Author: kejiqing
+#[must_use]
+pub fn mcp_description_parallel_friendly(tool: &McpTool) -> bool {
+    tool.description
+        .as_deref()
+        .is_some_and(|d| d.to_ascii_lowercase().contains("parallel-friendly"))
+}
+
+/// Eligible for gateway multi-agent `query_fanout` or in-turn MCP concurrency. Author: kejiqing
+#[must_use]
+pub fn mcp_tool_parallel_fanout_eligible(tool: &McpTool) -> bool {
+    mcp_tool_allows_concurrent_calls(tool) || mcp_description_parallel_friendly(tool)
+}
+
+fn config_json_to_serde(value: &crate::json::JsonValue) -> JsonValue {
+    match value {
+        crate::json::JsonValue::Null => JsonValue::Null,
+        crate::json::JsonValue::Bool(b) => JsonValue::Bool(*b),
+        crate::json::JsonValue::Number(n) => JsonValue::Number((*n).into()),
+        crate::json::JsonValue::String(s) => JsonValue::String(s.clone()),
+        crate::json::JsonValue::Array(items) => {
+            JsonValue::Array(items.iter().map(config_json_to_serde).collect())
+        }
+        crate::json::JsonValue::Object(map) => JsonValue::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), config_json_to_serde(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// Merge `mcpServers.<server>.toolAnnotations` into discovered tools before concurrency classification.
+pub fn apply_mcp_tool_annotations_from_config(
+    tools: &mut [ManagedMcpTool],
+    servers: &BTreeMap<String, crate::config::ScopedMcpServerConfig>,
+) {
+    for entry in tools.iter_mut() {
+        let Some(scoped) = servers.get(&entry.server_name) else {
+            continue;
+        };
+        let Some(override_ann) = scoped.tool_annotations.get(&entry.raw_name) else {
+            continue;
+        };
+        let override_ann = config_json_to_serde(override_ann);
+        let mut base = entry
+            .tool
+            .annotations
+            .take()
+            .unwrap_or_else(|| JsonValue::Object(JsonMap::new()));
+        if let (Some(b), Some(o)) = (base.as_object_mut(), override_ann.as_object()) {
+            for (k, v) in o {
+                b.insert(k.clone(), v.clone());
+            }
+        } else {
+            base = override_ann.clone();
+        }
+        entry.tool.annotations = Some(base);
+    }
+}
+
+#[must_use]
+pub fn concurrent_mcp_tool_names(tools: &[ManagedMcpTool]) -> HashSet<String> {
+    tools
+        .iter()
+        .filter(|entry| mcp_tool_parallel_fanout_eligible(&entry.tool))
+        .map(|entry| entry.qualified_name.clone())
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -459,11 +568,33 @@ struct ToolRoute {
     raw_name: String,
 }
 
+struct ConcurrentHttpPrep {
+    snapshot: HttpToolCallSnapshot,
+    request_id: JsonRpcId,
+    tool_name: String,
+    qualified_tool_name: String,
+    server_name: String,
+    timeout_ms: u64,
+    arguments_chars: usize,
+    has_meta: bool,
+    has_meta_extra: bool,
+    meta_extra: JsonValue,
+}
+
+fn manager_lock_poisoned() -> McpServerManagerError {
+    McpServerManagerError::InvalidResponse {
+        server_name: String::new(),
+        method: "tools/call",
+        details: "MCP manager lock poisoned".to_string(),
+    }
+}
+
 #[derive(Debug)]
 struct ManagedMcpServer {
     bootstrap: McpClientBootstrap,
-    process: Option<McpStdioProcess>,
+    process: Option<McpProcess>,
     initialized: bool,
+    preferred_framing: JsonRpcStdioFraming,
 }
 
 impl ManagedMcpServer {
@@ -472,6 +603,7 @@ impl ManagedMcpServer {
             bootstrap,
             process: None,
             initialized: false,
+            preferred_framing: JsonRpcStdioFraming::ContentLength,
         }
     }
 }
@@ -496,7 +628,10 @@ impl McpServerManager {
         let mut unsupported_servers = Vec::new();
 
         for (server_name, server_config) in servers {
-            if server_config.transport() == McpTransport::Stdio {
+            if matches!(
+                server_config.transport(),
+                McpTransport::Stdio | McpTransport::Sse | McpTransport::Http
+            ) {
                 let bootstrap = McpClientBootstrap::from_scoped_config(server_name, server_config);
                 managed_servers.insert(server_name.clone(), ManagedMcpServer::new(bootstrap));
             } else {
@@ -527,6 +662,19 @@ impl McpServerManager {
     #[must_use]
     pub fn server_names(&self) -> Vec<String> {
         self.servers.keys().cloned().collect()
+    }
+
+    pub fn prime_tool_routes(&mut self, discovered_tools: &[ManagedMcpTool]) {
+        self.tool_index.clear();
+        for tool in discovered_tools {
+            self.tool_index.insert(
+                tool.qualified_name.clone(),
+                ToolRoute {
+                    server_name: tool.server_name.clone(),
+                    raw_name: tool.raw_name.clone(),
+                },
+            );
+        }
     }
 
     pub async fn discover_tools(&mut self) -> Result<Vec<ManagedMcpTool>, McpServerManagerError> {
@@ -621,10 +769,12 @@ impl McpServerManager {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn call_tool(
         &mut self,
         qualified_tool_name: &str,
         arguments: Option<JsonValue>,
+        meta: Option<JsonValue>,
     ) -> Result<JsonRpcResponse<McpToolCallResult>, McpServerManagerError> {
         let route = self
             .tool_index
@@ -635,9 +785,36 @@ impl McpServerManager {
             })?;
 
         let timeout_ms = self.tool_call_timeout_ms(&route.server_name)?;
+        let tool_name = route.raw_name.clone();
+        let server_name = route.server_name.clone();
+        let arguments_chars = arguments
+            .as_ref()
+            .map_or(0usize, |value| value.to_string().chars().count());
+        let has_meta = meta.is_some();
+        let has_meta_extra = meta
+            .as_ref()
+            .and_then(|value| value.get("extra_session"))
+            .is_some();
+        let meta_extra = meta
+            .as_ref()
+            .and_then(|value| value.get("extra_session"))
+            .cloned()
+            .unwrap_or(JsonValue::Null);
 
         self.ensure_server_ready(&route.server_name).await?;
         let request_id = self.take_request_id();
+        info!(
+            target: "claw.mcp.boundary",
+            server_name = %server_name,
+            tool_name = %tool_name,
+            qualified_tool_name = %qualified_tool_name,
+            timeout_ms,
+            arguments_chars,
+            has_meta,
+            has_meta_extra,
+            meta_extra = %meta_extra,
+            "mcp_tools_call_start"
+        );
         let response =
             {
                 let server = self.server_mut(&route.server_name)?;
@@ -655,9 +832,9 @@ impl McpServerManager {
                     process.call_tool(
                         request_id,
                         McpToolCallParams {
-                            name: route.raw_name,
+                            name: tool_name.clone(),
                             arguments,
-                            meta: None,
+                            meta,
                         },
                     ),
                 )
@@ -665,12 +842,206 @@ impl McpServerManager {
             };
 
         if let Err(error) = &response {
+            warn!(
+                target: "claw.mcp.boundary",
+                server_name = %server_name,
+                tool_name = %tool_name,
+                qualified_tool_name = %qualified_tool_name,
+                error = %error,
+                "mcp_tools_call_error"
+            );
             if Self::should_reset_server(error) {
                 self.reset_server(&route.server_name).await?;
             }
+        } else if let Ok(payload) = &response {
+            let result_chars = payload.result.as_ref().map_or(0usize, |result| {
+                serde_json::to_string(result).map_or(0usize, |s| s.chars().count())
+            });
+            // For boundary debugging: when the model calls `mcp_start`, print the full returned payload.
+            // This is intentionally verbose to make it provable what session token fields are returned.
+            let mcp_start_full_result = tool_name
+                .contains("mcp_start")
+                .then(|| {
+                    payload
+                        .result
+                        .as_ref()
+                        .and_then(|r| serde_json::to_string(r).ok())
+                })
+                .flatten();
+            info!(
+                target: "claw.mcp.boundary",
+                server_name = %server_name,
+                tool_name = %tool_name,
+                qualified_tool_name = %qualified_tool_name,
+                has_jsonrpc_error = payload.error.is_some(),
+                result_chars,
+                mcp_start_full_result = mcp_start_full_result.as_deref().unwrap_or(""),
+                "mcp_tools_call_finish"
+            );
         }
 
         response
+    }
+
+    /// Concurrent MCP `tools/call` for HTTP streamable servers: brief manager lock only.
+    #[allow(clippy::await_holding_lock)]
+    pub async fn call_tool_concurrent(
+        manager: Arc<StdMutex<Self>>,
+        qualified_tool_name: &str,
+        arguments: Option<JsonValue>,
+        meta: Option<JsonValue>,
+    ) -> Result<JsonRpcResponse<McpToolCallResult>, McpServerManagerError> {
+        let prep = {
+            let mut guard = manager.lock().map_err(|_| manager_lock_poisoned())?;
+            guard
+                .prepare_concurrent_http_call(
+                    qualified_tool_name,
+                    arguments.as_ref(),
+                    meta.as_ref(),
+                )
+                .await?
+        };
+
+        let Some(prep) = prep else {
+            let mut guard = manager.lock().map_err(|_| manager_lock_poisoned())?;
+            return guard.call_tool(qualified_tool_name, arguments, meta).await;
+        };
+
+        let ConcurrentHttpPrep {
+            snapshot,
+            request_id,
+            tool_name,
+            qualified_tool_name,
+            server_name,
+            timeout_ms,
+            arguments_chars,
+            has_meta,
+            has_meta_extra,
+            meta_extra,
+        } = prep;
+
+        info!(
+            target: "claw.mcp.boundary",
+            server_name = %server_name,
+            tool_name = %tool_name,
+            qualified_tool_name = %qualified_tool_name,
+            timeout_ms,
+            arguments_chars,
+            has_meta,
+            has_meta_extra,
+            meta_extra = %meta_extra,
+            "mcp_tools_call_start"
+        );
+
+        let request = JsonRpcRequest::new(
+            request_id.clone(),
+            "tools/call",
+            Some(McpToolCallParams {
+                name: tool_name.clone(),
+                arguments,
+                meta,
+            }),
+        );
+
+        let http_result = Self::run_process_request(
+            &server_name,
+            "tools/call",
+            timeout_ms,
+            execute_http_tool_call_isolated(snapshot, &request),
+        )
+        .await;
+
+        let (response, _isolated_session_not_shared) = match http_result {
+            Ok(pair) => pair,
+            Err(error) => {
+                warn!(
+                    target: "claw.mcp.boundary",
+                    server_name = %server_name,
+                    tool_name = %tool_name,
+                    qualified_tool_name = %qualified_tool_name,
+                    error = %error,
+                    "mcp_tools_call_error"
+                );
+                let mut guard = manager.lock().map_err(|_| manager_lock_poisoned())?;
+                if Self::should_reset_server(&error) {
+                    guard.reset_server(&server_name).await?;
+                }
+                return Err(error);
+            }
+        };
+
+        if let Some(payload) = &response.result {
+            let result_chars = serde_json::to_string(payload).map_or(0, |s| s.chars().count());
+            let mcp_start_full_result = tool_name
+                .contains("mcp_start")
+                .then(|| serde_json::to_string(payload).ok())
+                .flatten();
+            info!(
+                target: "claw.mcp.boundary",
+                server_name = %server_name,
+                tool_name = %tool_name,
+                qualified_tool_name = %qualified_tool_name,
+                has_jsonrpc_error = response.error.is_some(),
+                result_chars,
+                mcp_start_full_result = mcp_start_full_result.as_deref().unwrap_or(""),
+                "mcp_tools_call_finish"
+            );
+        }
+
+        Ok(response)
+    }
+
+    async fn prepare_concurrent_http_call(
+        &mut self,
+        qualified_tool_name: &str,
+        arguments: Option<&JsonValue>,
+        meta: Option<&JsonValue>,
+    ) -> Result<Option<ConcurrentHttpPrep>, McpServerManagerError> {
+        let route = self
+            .tool_index
+            .get(qualified_tool_name)
+            .cloned()
+            .ok_or_else(|| McpServerManagerError::UnknownTool {
+                qualified_name: qualified_tool_name.to_string(),
+            })?;
+
+        self.ensure_server_ready(&route.server_name).await?;
+
+        let server = self.servers.get(&route.server_name).ok_or_else(|| {
+            McpServerManagerError::UnknownServer {
+                server_name: route.server_name.clone(),
+            }
+        })?;
+        let Some(process) = server.process.as_ref() else {
+            return Ok(None);
+        };
+        let McpProcess::Remote(remote) = process else {
+            return Ok(None);
+        };
+        let Some(snapshot) = remote.http_tool_call_snapshot() else {
+            return Ok(None);
+        };
+
+        let timeout_ms = self.tool_call_timeout_ms(&route.server_name)?;
+        let arguments_chars = arguments.map_or(0usize, |value| value.to_string().chars().count());
+        let has_meta = meta.is_some();
+        let has_meta_extra = meta.and_then(|value| value.get("extra_session")).is_some();
+        let meta_extra = meta
+            .and_then(|value| value.get("extra_session"))
+            .cloned()
+            .unwrap_or(JsonValue::Null);
+        Ok(Some(ConcurrentHttpPrep {
+            snapshot,
+            request_id: self.take_request_id(),
+            tool_name: route.raw_name.clone(),
+            qualified_tool_name: qualified_tool_name.to_string(),
+            server_name: route.server_name.clone(),
+            timeout_ms,
+            arguments_chars,
+            has_meta,
+            has_meta_extra,
+            meta_extra,
+        }))
     }
 
     pub async fn list_resources(
@@ -764,10 +1135,13 @@ impl McpServerManager {
                 })?;
         match &server.bootstrap.transport {
             McpClientTransport::Stdio(transport) => Ok(transport.resolved_tool_call_timeout_ms()),
+            McpClientTransport::Http(_) | McpClientTransport::Sse(_) => {
+                Ok(default_mcp_tool_call_timeout_ms())
+            }
             other => Err(McpServerManagerError::InvalidResponse {
                 server_name: server_name.to_string(),
                 method: "tools/call",
-                details: format!("unsupported MCP transport for stdio manager: {other:?}"),
+                details: format!("unsupported MCP transport for manager: {other:?}"),
             }),
         }
     }
@@ -1013,6 +1387,20 @@ impl McpServerManager {
         )
     }
 
+    fn should_enable_newline_json_fallback(
+        error: &McpServerManagerError,
+        current_framing: JsonRpcStdioFraming,
+    ) -> bool {
+        if current_framing != JsonRpcStdioFraming::ContentLength {
+            return false;
+        }
+        match error {
+            McpServerManagerError::Timeout { method, .. }
+            | McpServerManagerError::Transport { method, .. } => *method == "initialize",
+            _ => false,
+        }
+    }
+
     async fn run_process_request<T, F>(
         server_name: &str,
         method: &'static str,
@@ -1064,7 +1452,9 @@ impl McpServerManager {
 
             if needs_spawn {
                 let server = self.server_mut(server_name)?;
-                server.process = Some(spawn_mcp_stdio_process(&server.bootstrap)?);
+                let mut process = spawn_mcp_process(&server.bootstrap)?;
+                process.set_framing_mode(server.preferred_framing);
+                server.process = Some(process);
                 server.initialized = false;
             }
 
@@ -1101,7 +1491,18 @@ impl McpServerManager {
 
             let response = match response {
                 Ok(response) => response,
-                Err(error) if attempts == 0 && Self::is_retryable_error(&error) => {
+                Err(error) if attempts < 2 && Self::is_retryable_error(&error) => {
+                    let should_try_newline = self.servers.get(server_name).is_some_and(|server| {
+                        attempts > 0
+                            && Self::should_enable_newline_json_fallback(
+                                &error,
+                                server.preferred_framing,
+                            )
+                    });
+                    if should_try_newline {
+                        let server = self.server_mut(server_name)?;
+                        server.preferred_framing = JsonRpcStdioFraming::NewlineDelimited;
+                    }
                     self.reset_server(server_name).await?;
                     attempts += 1;
                     continue;
@@ -1139,261 +1540,6 @@ impl McpServerManager {
     }
 }
 
-#[derive(Debug)]
-pub struct McpStdioProcess {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-}
-
-impl McpStdioProcess {
-    pub fn spawn(transport: &McpStdioTransport) -> io::Result<Self> {
-        let mut command = Command::new(&transport.command);
-        command
-            .args(&transport.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        apply_env(&mut command, &transport.env);
-
-        let mut child = command.spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("stdio MCP process missing stdin pipe"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("stdio MCP process missing stdout pipe"))?;
-
-        Ok(Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
-        })
-    }
-
-    pub async fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.stdin.write_all(bytes).await
-    }
-
-    pub async fn flush(&mut self) -> io::Result<()> {
-        self.stdin.flush().await
-    }
-
-    pub async fn write_line(&mut self, line: &str) -> io::Result<()> {
-        self.write_all(line.as_bytes()).await?;
-        self.write_all(b"\n").await?;
-        self.flush().await
-    }
-
-    pub async fn read_line(&mut self) -> io::Result<String> {
-        let mut line = String::new();
-        let bytes_read = self.stdout.read_line(&mut line).await?;
-        if bytes_read == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "MCP stdio stream closed while reading line",
-            ));
-        }
-        Ok(line)
-    }
-
-    pub async fn read_available(&mut self) -> io::Result<Vec<u8>> {
-        let mut buffer = vec![0_u8; 4096];
-        let read = self.stdout.read(&mut buffer).await?;
-        buffer.truncate(read);
-        Ok(buffer)
-    }
-
-    pub async fn write_frame(&mut self, payload: &[u8]) -> io::Result<()> {
-        let encoded = encode_frame(payload);
-        self.write_all(&encoded).await?;
-        self.flush().await
-    }
-
-    pub async fn read_frame(&mut self) -> io::Result<Vec<u8>> {
-        let mut content_length = None;
-        loop {
-            let mut line = String::new();
-            let bytes_read = self.stdout.read_line(&mut line).await?;
-            if bytes_read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "MCP stdio stream closed while reading headers",
-                ));
-            }
-            if line == "\r\n" {
-                break;
-            }
-            let header = line.trim_end_matches(['\r', '\n']);
-            if let Some((name, value)) = header.split_once(':') {
-                if name.trim().eq_ignore_ascii_case("Content-Length") {
-                    let parsed = value
-                        .trim()
-                        .parse::<usize>()
-                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-                    content_length = Some(parsed);
-                }
-            }
-        }
-
-        let content_length = content_length.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length header")
-        })?;
-        let mut payload = vec![0_u8; content_length];
-        self.stdout.read_exact(&mut payload).await?;
-        Ok(payload)
-    }
-
-    pub async fn write_jsonrpc_message<T: Serialize>(&mut self, message: &T) -> io::Result<()> {
-        let body = serde_json::to_vec(message)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        self.write_frame(&body).await
-    }
-
-    pub async fn read_jsonrpc_message<T: DeserializeOwned>(&mut self) -> io::Result<T> {
-        let payload = self.read_frame().await?;
-        serde_json::from_slice(&payload)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-    }
-
-    pub async fn send_request<T: Serialize>(
-        &mut self,
-        request: &JsonRpcRequest<T>,
-    ) -> io::Result<()> {
-        self.write_jsonrpc_message(request).await
-    }
-
-    pub async fn read_response<T: DeserializeOwned>(&mut self) -> io::Result<JsonRpcResponse<T>> {
-        self.read_jsonrpc_message().await
-    }
-
-    pub async fn request<TParams: Serialize, TResult: DeserializeOwned>(
-        &mut self,
-        id: JsonRpcId,
-        method: impl Into<String>,
-        params: Option<TParams>,
-    ) -> io::Result<JsonRpcResponse<TResult>> {
-        let method = method.into();
-        let request = JsonRpcRequest::new(id.clone(), method.clone(), params);
-        self.send_request(&request).await?;
-        let response = self.read_response().await?;
-
-        if response.jsonrpc != "2.0" {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "MCP response for {method} used unsupported jsonrpc version `{}`",
-                    response.jsonrpc
-                ),
-            ));
-        }
-
-        if response.id != id {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "MCP response for {method} used mismatched id: expected {id:?}, got {:?}",
-                    response.id
-                ),
-            ));
-        }
-
-        Ok(response)
-    }
-
-    pub async fn initialize(
-        &mut self,
-        id: JsonRpcId,
-        params: McpInitializeParams,
-    ) -> io::Result<JsonRpcResponse<McpInitializeResult>> {
-        self.request(id, "initialize", Some(params)).await
-    }
-
-    pub async fn list_tools(
-        &mut self,
-        id: JsonRpcId,
-        params: Option<McpListToolsParams>,
-    ) -> io::Result<JsonRpcResponse<McpListToolsResult>> {
-        self.request(id, "tools/list", params).await
-    }
-
-    pub async fn call_tool(
-        &mut self,
-        id: JsonRpcId,
-        params: McpToolCallParams,
-    ) -> io::Result<JsonRpcResponse<McpToolCallResult>> {
-        self.request(id, "tools/call", Some(params)).await
-    }
-
-    pub async fn list_resources(
-        &mut self,
-        id: JsonRpcId,
-        params: Option<McpListResourcesParams>,
-    ) -> io::Result<JsonRpcResponse<McpListResourcesResult>> {
-        self.request(id, "resources/list", params).await
-    }
-
-    pub async fn read_resource(
-        &mut self,
-        id: JsonRpcId,
-        params: McpReadResourceParams,
-    ) -> io::Result<JsonRpcResponse<McpReadResourceResult>> {
-        self.request(id, "resources/read", Some(params)).await
-    }
-
-    pub async fn terminate(&mut self) -> io::Result<()> {
-        self.child.kill().await
-    }
-
-    pub async fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
-        self.child.wait().await
-    }
-
-    pub fn has_exited(&mut self) -> io::Result<bool> {
-        Ok(self.child.try_wait()?.is_some())
-    }
-
-    async fn shutdown(&mut self) -> io::Result<()> {
-        if self.child.try_wait()?.is_none() {
-            match self.child.kill().await {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
-                Err(error) => return Err(error),
-            }
-        }
-        let _ = self.child.wait().await?;
-        Ok(())
-    }
-}
-
-pub fn spawn_mcp_stdio_process(bootstrap: &McpClientBootstrap) -> io::Result<McpStdioProcess> {
-    match &bootstrap.transport {
-        McpClientTransport::Stdio(transport) => McpStdioProcess::spawn(transport),
-        other => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "MCP bootstrap transport for {} is not stdio: {other:?}",
-                bootstrap.server_name
-            ),
-        )),
-    }
-}
-
-fn apply_env(command: &mut Command, env: &BTreeMap<String, String>) {
-    for (key, value) in env {
-        command.env(key, value);
-    }
-}
-
-fn encode_frame(payload: &[u8]) -> Vec<u8> {
-    let header = format!("Content-Length: {}\r\n\r\n", payload.len());
-    let mut framed = header.into_bytes();
-    framed.extend_from_slice(payload);
-    framed
-}
-
 fn default_initialize_params() -> McpInitializeParams {
     McpInitializeParams {
         protocol_version: "2025-03-26".to_string(),
@@ -1424,6 +1570,7 @@ mod tests {
     };
     use crate::mcp::mcp_tool_name;
     use crate::mcp_client::McpClientBootstrap;
+    use crate::mcp_transport::http::extract_sse_message_url;
 
     use super::{
         spawn_mcp_stdio_process, unsupported_server_failed_server, JsonRpcId, JsonRpcRequest,
@@ -1494,6 +1641,89 @@ mod tests {
             r"}).encode()",
             r"sys.stdout.buffer.write(f'{header_name}: {len(response)}\r\n\r\n'.encode() + response)",
             "sys.stdout.buffer.flush()",
+            "",
+        ]
+        .join("\n");
+        fs::write(&script_path, script).expect("write script");
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod");
+        script_path
+    }
+
+    fn write_newline_jsonrpc_server_script() -> PathBuf {
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("temp dir");
+        let script_path = root.join("newline-jsonrpc-mcp.py");
+        let script = [
+            "#!/usr/bin/env python3",
+            "import json, sys",
+            "",
+            "def read_message():",
+            "    while True:",
+            "        line = sys.stdin.readline()",
+            "        if not line:",
+            "            return None",
+            "        try:",
+            "            return json.loads(line)",
+            "        except json.JSONDecodeError:",
+            "            continue",
+            "",
+            "def send_message(message):",
+            "    sys.stdout.write(json.dumps(message) + '\\n')",
+            "    sys.stdout.flush()",
+            "",
+            "while True:",
+            "    request = read_message()",
+            "    if request is None:",
+            "        break",
+            "    method = request.get('method')",
+            "    if method == 'initialize':",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'result': {",
+            "                'protocolVersion': request['params']['protocolVersion'],",
+            "                'capabilities': {'tools': {}},",
+            "                'serverInfo': {'name': 'newline-mcp', 'version': '1.0.0'}",
+            "            }",
+            "        })",
+            "    elif method == 'tools/list':",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'result': {",
+            "                'tools': [",
+            "                    {",
+            "                        'name': 'echo',",
+            "                        'description': 'Echo tool',",
+            "                        'inputSchema': {",
+            "                            'type': 'object',",
+            "                            'properties': {'text': {'type': 'string'}},",
+            "                            'required': ['text']",
+            "                        }",
+            "                    }",
+            "                ]",
+            "            }",
+            "        })",
+            "    elif method == 'tools/call':",
+            "        args = (request.get('params') or {}).get('arguments') or {}",
+            "        text = args.get('text', '')",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'result': {",
+            "                'content': [{'type': 'text', 'text': f'echo:{text}'}],",
+            "                'structuredContent': {'echoed': text},",
+            "                'isError': False",
+            "            }",
+            "        })",
+            "    else:",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'error': {'code': -32601, 'message': f'unknown method: {method}'}",
+            "        })",
             "",
         ]
         .join("\n");
@@ -1772,6 +2002,7 @@ mod tests {
                 env: BTreeMap::from([("MCP_TEST_TOKEN".to_string(), "secret-value".to_string())]),
                 tool_call_timeout_ms: None,
             }),
+            tool_annotations: BTreeMap::new(),
         };
         McpClientBootstrap::from_scoped_config("stdio server", &config)
     }
@@ -1839,6 +2070,7 @@ mod tests {
                 env,
                 tool_call_timeout_ms: None,
             }),
+            tool_annotations: BTreeMap::new(),
         }
     }
 
@@ -1878,6 +2110,7 @@ mod tests {
             config: McpServerConfig::Sdk(crate::config::McpSdkServerConfig {
                 name: "sdk-server".to_string(),
             }),
+            tool_annotations: BTreeMap::new(),
         };
         let bootstrap = McpClientBootstrap::from_scoped_config("sdk server", &config);
         let error = spawn_mcp_stdio_process(&bootstrap).expect_err("non-stdio should fail");
@@ -2236,6 +2469,49 @@ mod tests {
     }
 
     #[test]
+    fn manager_falls_back_to_newline_json_stdio_protocol() {
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let script_path = write_newline_jsonrpc_server_script();
+            let root = script_path.parent().expect("script parent");
+            let log_path = root.join("newline.log");
+            let servers = BTreeMap::from([(
+                "newline".to_string(),
+                manager_server_config(&script_path, "newline", &log_path),
+            )]);
+            let mut manager = McpServerManager::from_servers(&servers);
+
+            let tools = manager.discover_tools().await.expect("discover tools");
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].qualified_name, mcp_tool_name("newline", "echo"));
+
+            let response = manager
+                .call_tool(
+                    &mcp_tool_name("newline", "echo"),
+                    Some(json!({"text": "fallback"})),
+                    None,
+                )
+                .await
+                .expect("call newline tool");
+            assert_eq!(
+                response
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.structured_content.as_ref())
+                    .and_then(|value| value.get("echoed")),
+                Some(&json!("fallback"))
+            );
+
+            manager.shutdown().await.expect("shutdown");
+            cleanup_script(&script_path);
+            let _ = fs::remove_file(log_path);
+        });
+    }
+
+    #[test]
     fn manager_routes_tool_calls_to_correct_server() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2265,6 +2541,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "hello"})),
+                    None,
                 )
                 .await
                 .expect("call alpha tool");
@@ -2272,6 +2549,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("beta", "echo"),
                     Some(json!({"text": "world"})),
+                    None,
                 )
                 .await
                 .expect("call beta tool");
@@ -2320,6 +2598,7 @@ mod tests {
                         )]),
                         tool_call_timeout_ms: Some(25),
                     }),
+                    tool_annotations: BTreeMap::new(),
                 },
             )]);
             let mut manager = McpServerManager::from_servers(&servers);
@@ -2329,6 +2608,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("slow", "echo"),
                     Some(json!({"text": "slow"})),
+                    None,
                 )
                 .await
                 .expect_err("slow tool call should time out");
@@ -2373,6 +2653,7 @@ mod tests {
                         )]),
                         tool_call_timeout_ms: Some(1_000),
                     }),
+                    tool_annotations: BTreeMap::new(),
                 },
             )]);
             let mut manager = McpServerManager::from_servers(&servers);
@@ -2382,6 +2663,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("broken", "echo"),
                     Some(json!({"text": "invalid-json"})),
+                    None,
                 )
                 .await
                 .expect_err("invalid json should fail");
@@ -2433,6 +2715,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "reconnect"})),
+                    None,
                 )
                 .await
                 .expect_err("first call should fail after transport drops");
@@ -2454,6 +2737,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "reconnect"})),
+                    None,
                 )
                 .await
                 .expect("second tool call should succeed after reset");
@@ -2563,6 +2847,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "first"})),
+                    None,
                 )
                 .await
                 .expect_err("first tool call should fail when transport drops");
@@ -2584,6 +2869,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "second"})),
+                    None,
                 )
                 .await
                 .expect("second tool call should succeed after reset");
@@ -2708,6 +2994,7 @@ mod tests {
                             env: BTreeMap::new(),
                             tool_call_timeout_ms: None,
                         }),
+                        tool_annotations: BTreeMap::new(),
                     },
                 ),
             ]);
@@ -2753,7 +3040,11 @@ mod tests {
             assert!(degraded.missing_tools.is_empty());
 
             let response = manager
-                .call_tool(&mcp_tool_name("alpha", "echo"), Some(json!({"text": "ok"})))
+                .call_tool(
+                    &mcp_tool_name("alpha", "echo"),
+                    Some(json!({"text": "ok"})),
+                    None,
+                )
                 .await
                 .expect("healthy server should remain callable");
             assert_eq!(
@@ -2784,6 +3075,7 @@ mod tests {
                         headers_helper: None,
                         oauth: None,
                     }),
+                    tool_annotations: BTreeMap::new(),
                 },
             ),
             (
@@ -2793,6 +3085,7 @@ mod tests {
                     config: McpServerConfig::Sdk(McpSdkServerConfig {
                         name: "sdk-server".to_string(),
                     }),
+                    tool_annotations: BTreeMap::new(),
                 },
             ),
             (
@@ -2804,6 +3097,7 @@ mod tests {
                         headers: BTreeMap::new(),
                         headers_helper: None,
                     }),
+                    tool_annotations: BTreeMap::new(),
                 },
             ),
         ]);
@@ -2811,10 +3105,9 @@ mod tests {
         let manager = McpServerManager::from_servers(&servers);
         let unsupported = manager.unsupported_servers();
 
-        assert_eq!(unsupported.len(), 3);
-        assert_eq!(unsupported[0].server_name, "http");
-        assert_eq!(unsupported[1].server_name, "sdk");
-        assert_eq!(unsupported[2].server_name, "ws");
+        assert_eq!(unsupported.len(), 2);
+        assert_eq!(unsupported[0].server_name, "sdk");
+        assert_eq!(unsupported[1].server_name, "ws");
         assert_eq!(
             unsupported_server_failed_server(&unsupported[0]).phase,
             McpLifecyclePhase::ServerRegistration
@@ -2866,6 +3159,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "echo"),
                     Some(json!({"text": "reuse"})),
+                    None,
                 )
                 .await
                 .expect("call tool");
@@ -2911,6 +3205,7 @@ mod tests {
                 .call_tool(
                     &mcp_tool_name("alpha", "missing"),
                     Some(json!({"text": "nope"})),
+                    None,
                 )
                 .await
                 .expect_err("unknown qualified tool should fail");
@@ -2924,5 +3219,88 @@ mod tests {
 
             cleanup_script(&script_path);
         });
+    }
+
+    #[test]
+    fn resolves_relative_and_absolute_sse_endpoint_urls() {
+        assert_eq!(
+            extract_sse_message_url("https://example.test/mcp", "/mcp/messages/?session_id=abc",)
+                .expect("should resolve")
+                .as_deref(),
+            Some("https://example.test/mcp/messages/?session_id=abc")
+        );
+        assert_eq!(
+            extract_sse_message_url(
+                "https://example.test/mcp",
+                "https://remote.test/mcp/messages/?session_id=xyz",
+            )
+            .expect("should resolve")
+            .as_deref(),
+            Some("https://remote.test/mcp/messages/?session_id=xyz")
+        );
+    }
+
+    #[test]
+    fn mcp_tool_concurrent_calls_follows_read_only_annotations() {
+        let concurrent = McpTool {
+            name: "analysis".to_string(),
+            description: None,
+            input_schema: None,
+            annotations: Some(json!({"readOnlyHint": true})),
+            meta: None,
+        };
+        let serial = McpTool {
+            name: "write".to_string(),
+            description: None,
+            input_schema: None,
+            annotations: Some(json!({"destructiveHint": true})),
+            meta: None,
+        };
+        assert!(super::mcp_tool_allows_concurrent_calls(&concurrent));
+        assert!(!super::mcp_tool_allows_concurrent_calls(&serial));
+    }
+
+    #[test]
+    fn concurrent_mcp_tool_names_honors_config_tool_annotations() {
+        use super::ManagedMcpTool;
+        use crate::config::{
+            ConfigSource, McpRemoteServerConfig, McpServerConfig, ScopedMcpServerConfig,
+        };
+        use crate::json::JsonValue as ConfigJson;
+
+        let tools = vec![ManagedMcpTool {
+            qualified_name: "mcp__srv__analysis".to_string(),
+            server_name: "srv".to_string(),
+            raw_name: "analysis".to_string(),
+            tool: McpTool {
+                name: "analysis".to_string(),
+                description: None,
+                input_schema: None,
+                annotations: None,
+                meta: None,
+            },
+        }];
+        let mut servers = BTreeMap::new();
+        let mut ann = BTreeMap::new();
+        ann.insert("readOnlyHint".to_string(), ConfigJson::Bool(true));
+        let mut tool_annotations = BTreeMap::new();
+        tool_annotations.insert("analysis".to_string(), ConfigJson::Object(ann));
+        servers.insert(
+            "srv".to_string(),
+            ScopedMcpServerConfig {
+                scope: ConfigSource::Local,
+                config: McpServerConfig::Http(McpRemoteServerConfig {
+                    url: "http://127.0.0.1:1/mcp".to_string(),
+                    headers: BTreeMap::new(),
+                    headers_helper: None,
+                    oauth: None,
+                }),
+                tool_annotations,
+            },
+        );
+        let mut tools = tools;
+        super::apply_mcp_tool_annotations_from_config(&mut tools, &servers);
+        let names = super::concurrent_mcp_tool_names(&tools);
+        assert!(names.contains("mcp__srv__analysis"));
     }
 }

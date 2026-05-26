@@ -65,6 +65,9 @@ pub struct RuntimeFeatureConfig {
     sandbox: SandboxConfig,
     provider_fallbacks: ProviderFallbackConfig,
     trusted_roots: Vec<String>,
+    /// `DeepSeek` OpenAI-compat thinking switch (`thinkingEnabled` in `.claw.json`).
+    /// `None` omits the request field so the provider default applies.
+    thinking_enabled: Option<bool>,
 }
 
 /// Ordered chain of fallback model identifiers used when the primary
@@ -103,6 +106,8 @@ pub struct McpConfigCollection {
 pub struct ScopedMcpServerConfig {
     pub scope: ConfigSource,
     pub config: McpServerConfig,
+    /// Per raw tool name: merge into MCP `tools/list` `annotations` after discovery (`mcpServers.*.toolAnnotations`).
+    pub tool_annotations: BTreeMap<String, JsonValue>,
 }
 
 /// Transport families supported by configured MCP servers.
@@ -315,6 +320,7 @@ impl ConfigLoader {
             sandbox: parse_optional_sandbox_config(&merged_value)?,
             provider_fallbacks: parse_optional_provider_fallbacks(&merged_value)?,
             trusted_roots: parse_optional_trusted_roots(&merged_value)?,
+            thinking_enabled: parse_optional_thinking_enabled(&merged_value),
         };
 
         Ok(RuntimeConfig {
@@ -414,6 +420,35 @@ impl RuntimeConfig {
     pub fn trusted_roots(&self) -> &[String] {
         &self.feature_config.trusted_roots
     }
+
+    #[must_use]
+    pub fn thinking_enabled(&self) -> Option<bool> {
+        self.feature_config.thinking_enabled
+    }
+}
+
+/// Apply top-level `env` from merged runtime config to the process environment.
+///
+/// Only sets a variable when it is **not** already present, so a shell
+/// `export OPENAI_BASE_URL=...` (or any parent process) still wins. This makes
+/// project `.claw.json` `env` act as defaults for local OpenAI-compatible
+/// servers (`OPENAI_BASE_URL`, optional `OPENAI_API_KEY` placeholders) without
+/// requiring a separate export every session.
+pub fn apply_config_env_if_unset(config: &RuntimeConfig) {
+    let Some(value) = config.get("env") else {
+        return;
+    };
+    let Some(map) = value.as_object() else {
+        return;
+    };
+    for (key, entry) in map {
+        if std::env::var_os(key).is_some() {
+            continue;
+        }
+        if let Some(string) = entry.as_str() {
+            std::env::set_var(key, string);
+        }
+    }
 }
 
 impl RuntimeFeatureConfig {
@@ -482,6 +517,11 @@ impl RuntimeFeatureConfig {
     #[must_use]
     pub fn trusted_roots(&self) -> &[String] {
         &self.trusted_roots
+    }
+
+    #[must_use]
+    pub fn thinking_enabled(&self) -> Option<bool> {
+        self.thinking_enabled
     }
 }
 
@@ -646,6 +686,15 @@ impl McpConfigCollection {
 
 impl ScopedMcpServerConfig {
     #[must_use]
+    pub fn new(scope: ConfigSource, config: McpServerConfig) -> Self {
+        Self {
+            scope,
+            config,
+            tool_annotations: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
     pub fn transport(&self) -> McpTransport {
         self.config.transport()
     }
@@ -717,16 +766,16 @@ fn merge_mcp_servers(
     };
     let servers = expect_object(mcp_servers, &format!("{}: mcpServers", path.display()))?;
     for (name, value) in servers {
-        let parsed = parse_mcp_server_config(
-            name,
-            value,
-            &format!("{}: mcpServers.{name}", path.display()),
-        )?;
+        let ctx = format!("{}: mcpServers.{name}", path.display());
+        let object = expect_object(value, &ctx)?;
+        let tool_annotations = parse_optional_tool_annotations(object, &ctx)?;
+        let parsed = parse_mcp_server_config(name, value, &ctx)?;
         target.insert(
             name.clone(),
             ScopedMcpServerConfig {
                 scope: source,
                 config: parsed,
+                tool_annotations,
             },
         );
     }
@@ -738,6 +787,12 @@ fn parse_optional_model(root: &JsonValue) -> Option<String> {
         .and_then(|object| object.get("model"))
         .and_then(JsonValue::as_str)
         .map(ToOwned::to_owned)
+}
+
+fn parse_optional_thinking_enabled(root: &JsonValue) -> Option<bool> {
+    root.as_object()
+        .and_then(|object| object.get("thinkingEnabled"))
+        .and_then(JsonValue::as_bool)
 }
 
 fn parse_optional_aliases(root: &JsonValue) -> Result<BTreeMap<String, String>, ConfigError> {
@@ -950,6 +1005,22 @@ fn parse_optional_oauth_config(
     }))
 }
 
+fn parse_optional_tool_annotations(
+    object: &BTreeMap<String, JsonValue>,
+    context: &str,
+) -> Result<BTreeMap<String, JsonValue>, ConfigError> {
+    let Some(value) = object.get("toolAnnotations") else {
+        return Ok(BTreeMap::new());
+    };
+    let map = expect_object(value, &format!("{context}.toolAnnotations"))?;
+    let mut out = BTreeMap::new();
+    for (tool_name, ann) in map {
+        let ann_obj = expect_object(ann, &format!("{context}.toolAnnotations.{tool_name}"))?;
+        out.insert(tool_name.clone(), JsonValue::Object(ann_obj.clone()));
+    }
+    Ok(out)
+}
+
 fn parse_mcp_server_config(
     server_name: &str,
     value: &JsonValue,
@@ -968,9 +1039,11 @@ fn parse_mcp_server_config(
         "sse" => Ok(McpServerConfig::Sse(parse_mcp_remote_server_config(
             object, context,
         )?)),
-        "http" => Ok(McpServerConfig::Http(parse_mcp_remote_server_config(
-            object, context,
-        )?)),
+        // `streamable-http` is the MCP spec label for HTTP transports that use the streamable
+        // HTTP RPC mapping (same config surface as `http`: url + headers + oauth).
+        "http" | "streamable-http" | "streamable_http" => Ok(McpServerConfig::Http(
+            parse_mcp_remote_server_config(object, context)?,
+        )),
         "ws" => Ok(McpServerConfig::Ws(McpWebSocketServerConfig {
             url: expect_string(object, "url", context)?.to_string(),
             headers: optional_string_map(object, "headers", context)?.unwrap_or_default(),
@@ -1244,8 +1317,8 @@ fn push_unique(target: &mut Vec<String>, value: String) {
 #[cfg(test)]
 mod tests {
     use super::{
-        deep_merge_objects, parse_permission_mode_label, ConfigLoader, ConfigSource,
-        McpServerConfig, McpTransport, ResolvedPermissionMode, RuntimeHookConfig,
+        apply_config_env_if_unset, deep_merge_objects, parse_permission_mode_label, ConfigLoader,
+        ConfigSource, McpServerConfig, McpTransport, ResolvedPermissionMode, RuntimeHookConfig,
         RuntimePluginConfig, CLAW_SETTINGS_SCHEMA_NAME,
     };
     use crate::json::JsonValue;
@@ -1254,11 +1327,21 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir() -> std::path::PathBuf {
+        // #149: previously used `runtime-config-{nanos}` which collided
+        // under parallel `cargo test --workspace` when multiple tests
+        // started within the same nanosecond bucket on fast machines.
+        // Add process id + a monotonically-incrementing atomic counter
+        // so every callsite gets a provably-unique directory regardless
+        // of clock resolution or scheduling.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("runtime-config-{nanos}"))
+        let pid = std::process::id();
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("runtime-config-{pid}-{nanos}-{seq}"))
     }
 
     #[test]
@@ -1636,6 +1719,40 @@ mod tests {
             McpServerConfig::Http(config) => {
                 assert_eq!(config.url, "https://example.test/mcp");
             }
+            other => panic!("expected http config, got {other:?}"),
+        }
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn parses_streamable_http_mcp_server_as_http_config() {
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let home = root.join("home").join(".claw");
+        fs::create_dir_all(&home).expect("home config dir");
+        fs::create_dir_all(&cwd).expect("project dir");
+        fs::write(
+            home.join("settings.json"),
+            r#"{
+              "mcpServers": {
+                "streamable": {
+                  "type": "streamable-http",
+                  "url": "https://gw.example/mcp"
+                }
+              }
+            }"#,
+        )
+        .expect("write mcp settings");
+
+        let loaded = ConfigLoader::new(&cwd, &home)
+            .load()
+            .expect("config should load");
+
+        let server = loaded.mcp().get("streamable").expect("server should exist");
+        assert_eq!(server.transport(), McpTransport::Http);
+        match &server.config {
+            McpServerConfig::Http(cfg) => assert_eq!(cfg.url, "https://gw.example/mcp"),
             other => panic!("expected http config, got {other:?}"),
         }
 
@@ -2106,6 +2223,31 @@ mod tests {
             "error should suggest the closest known key, got: {rendered}"
         );
 
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn apply_config_env_if_unset_fills_missing_and_respects_shell() {
+        const KEY: &str = "CLAW_TEST_CONFIG_ENV_APPLY_URL";
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let home = root.join("home").join(".claw");
+        fs::create_dir_all(&home).expect("home config dir");
+        fs::create_dir_all(&cwd).expect("project dir");
+        fs::write(
+            cwd.join(".claw.json"),
+            format!(r#"{{"env":{{"{KEY}":"http://local.test/v1"}}}}"#),
+        )
+        .expect("write project config");
+
+        let config = ConfigLoader::new(&cwd, &home).load().expect("load config");
+        std::env::remove_var(KEY);
+        apply_config_env_if_unset(&config);
+        assert_eq!(std::env::var(KEY).as_deref(), Ok("http://local.test/v1"));
+        std::env::set_var(KEY, "http://shell");
+        apply_config_env_if_unset(&config);
+        assert_eq!(std::env::var(KEY).as_deref(), Ok("http://shell"));
+        std::env::remove_var(KEY);
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 }

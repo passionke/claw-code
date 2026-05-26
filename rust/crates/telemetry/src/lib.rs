@@ -166,6 +166,32 @@ pub struct SessionTraceRecord {
     pub attributes: Map<String, Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTraceEventKind {
+    Decision,
+    ToolCall,
+    Data,
+    Assertion,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentTraceRecord {
+    pub event_version: u32,
+    pub trace_id: String,
+    pub sequence: u64,
+    pub kind: AgentTraceEventKind,
+    pub timestamp_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub attributes: Map<String, Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TelemetryEvent {
@@ -200,6 +226,7 @@ pub enum TelemetryEvent {
     },
     Analytics(AnalyticsEvent),
     SessionTrace(SessionTraceRecord),
+    AgentTrace(AgentTraceRecord),
 }
 
 pub trait TelemetrySink: Send + Sync {
@@ -292,6 +319,8 @@ impl Debug for SessionTracer {
 }
 
 impl SessionTracer {
+    pub const AGENT_TRACE_EVENT_VERSION: u32 = 1;
+
     #[must_use]
     pub fn new(session_id: impl Into<String>, sink: Arc<dyn TelemetrySink>) -> Self {
         Self {
@@ -315,6 +344,28 @@ impl SessionTracer {
             attributes,
         };
         self.sink.record(TelemetryEvent::SessionTrace(record));
+    }
+
+    pub fn record_agent_trace(
+        &self,
+        kind: AgentTraceEventKind,
+        turn_id: Option<String>,
+        tool_call_id: Option<String>,
+        data_node_id: Option<String>,
+        attributes: Map<String, Value>,
+    ) {
+        let record = AgentTraceRecord {
+            event_version: Self::AGENT_TRACE_EVENT_VERSION,
+            trace_id: self.session_id.clone(),
+            sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
+            kind,
+            timestamp_ms: current_timestamp_ms(),
+            turn_id,
+            tool_call_id,
+            data_node_id,
+            attributes,
+        };
+        self.sink.record(TelemetryEvent::AgentTrace(record));
     }
 
     pub fn record_http_request_started(
@@ -522,5 +573,34 @@ mod tests {
         assert!(contents.contains("\"action\":\"turn_completed\""));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn session_tracer_records_agent_trace_events() {
+        let sink = Arc::new(MemoryTelemetrySink::default());
+        let tracer = SessionTracer::new("trace-abc", sink.clone());
+
+        tracer.record_agent_trace(
+            AgentTraceEventKind::Decision,
+            Some("turn-1".to_string()),
+            None,
+            None,
+            Map::from_iter([(
+                "reason_source".to_string(),
+                Value::String("assistant".to_string()),
+            )]),
+        );
+
+        let events = sink.events();
+        assert!(matches!(
+            &events[0],
+            TelemetryEvent::AgentTrace(AgentTraceRecord {
+                event_version: 1,
+                trace_id,
+                kind: AgentTraceEventKind::Decision,
+                turn_id: Some(turn_id),
+                ..
+            }) if trace_id == "trace-abc" && turn_id == "turn-1"
+        ));
     }
 }

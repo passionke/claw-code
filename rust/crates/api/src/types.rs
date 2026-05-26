@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use runtime::{pricing_for_model, TokenUsage, UsageCostEstimate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,6 +33,14 @@ pub struct MessageRequest {
     /// Silently ignored by backends that do not support it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// `DeepSeek` OpenAI-compat thinking switch (`thinking.type` = enabled/disabled).
+    /// `None` omits the field so the provider applies its default (`DeepSeek`: enabled).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_enabled: Option<bool>,
+    /// Additional HTTP headers that providers should forward upstream.
+    /// Not serialized into request JSON payloads.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub extra_headers: BTreeMap<String, String>,
 }
 
 impl MessageRequest {
@@ -38,6 +48,20 @@ impl MessageRequest {
     pub fn with_streaming(mut self) -> Self {
         self.stream = true;
         self
+    }
+
+    /// Returns a copy suitable for APIs that do not accept [`InputContentBlock::ReasoningContent`]
+    /// (Anthropic Messages); those blocks exist only for `DeepSeek` `reasoning_content` replay on the
+    /// OpenAI-compat path.
+    #[must_use]
+    pub fn without_reasoning_replay_blocks(&self) -> Self {
+        let mut next = self.clone();
+        for message in &mut next.messages {
+            message
+                .content
+                .retain(|block| !matches!(block, InputContentBlock::ReasoningContent { .. }));
+        }
+        next
     }
 }
 
@@ -79,6 +103,10 @@ impl InputMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputContentBlock {
     Text {
+        text: String,
+    },
+    /// DeepSeek-style chain-of-thought replay (`reasoning_content` on assistant messages).
+    ReasoningContent {
         text: String,
     },
     ToolUse {

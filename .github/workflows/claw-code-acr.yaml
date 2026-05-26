@@ -1,0 +1,129 @@
+# Publishes gateway + worker images to a Docker registry (Azure ACR, Aliyun ACR, etc.).
+# Trigger: push tag release-vx.y.z (same pattern as claw-code-image.yaml). Author: kejiqing
+#
+# GitHub Environment (recommended for secrets):
+#   The job uses environment name: vars.ACR_GITHUB_ENVIRONMENT or defaults to `claw-acr`.
+#   Example: create environment `dockerhub`, put ACR_REGISTRY + secrets there, and set
+#   **repository** variable ACR_GITHUB_ENVIRONMENT=dockerhub (repo → Settings → Variables).
+#   Without ACR_GITHUB_ENVIRONMENT, only environment `claw-acr` is used — put vars/secrets there.
+# You can instead set ACR_REGISTRY at **repository** level only and omit a dedicated environment.
+#
+# Variables:
+#   ACR_REGISTRY — image name prefix (no tag), no https://
+#     • Azure ACR: myregistry.azurecr.io
+#     • Aliyun personal: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/<namespace>
+#       (login uses hostname only; namespace stays in the image path)
+# Optional: CONTAINER_BASE_REGISTRY (default docker.io) for rust/debian base images in the Dockerfile.
+#
+# Secrets: ACR_USERNAME, ACR_PASSWORD (registry login; Aliyun: use RAM fixed account or temp token per console).
+#
+# Images pushed: ${ACR_REGISTRY}/claw-code, claw-gateway-worker, claw-gateway-playground (<tags> each)
+# (<tags> = release tag, sha-12, latest).
+name: claw-code-acr
+
+on:
+  push:
+    tags:
+      - "release-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push-acr:
+    if: startsWith(github.ref, 'refs/tags/release-v')
+    runs-on: ubuntu-latest
+    # Repo var ACR_GITHUB_ENVIRONMENT selects which GitHub Environment supplies vars/secrets (default claw-acr).
+    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: claw-code
+            dockerfile: deploy/stack/Containerfile.gateway-rs
+          - package: claw-gateway-worker
+            dockerfile: deploy/stack/Containerfile.gateway-worker
+          - package: claw-gateway-playground
+            dockerfile: deploy/stack/Containerfile.gateway-playground
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Verify ACR_REGISTRY and derive login host
+        id: reg
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ACR_REGISTRY}" ]; then
+            echo "::error::ACR_REGISTRY is empty. Put it on the GitHub Environment you use (default name: claw-acr), or set repository variable ACR_GITHUB_ENVIRONMENT to that environment's name (e.g. dockerhub). You can also set ACR_REGISTRY as a repository variable. Examples: myregistry.azurecr.io OR crpi-xxx.cn-hangzhou.personal.cr.aliyuncs.com/<namespace> — no https://." >&2
+            exit 1
+          fi
+          LOGIN_HOST="${ACR_REGISTRY%%/*}"
+          echo "login_host=${LOGIN_HOST}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.reg.outputs.login_host }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Resolve build base images
+        id: base_images
+        env:
+          CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
+        run: |
+          set -euo pipefail
+          REG="${CONTAINER_BASE_REGISTRY:-}"
+          if [ -z "${REG}" ]; then
+            REG="docker.io"
+          fi
+          RUST_IMAGE="${REG}/library/rust:1.88-bookworm"
+          DEBIAN_IMAGE="${REG}/library/debian:bookworm-slim"
+          PYTHON_IMAGE="${REG}/library/python:3.12-alpine"
+          echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
+          echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "python_image=${PYTHON_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Image tags
+        id: meta
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
+        run: |
+          set -euo pipefail
+          IMAGE="${PREFIX}/${{ matrix.package }}"
+          SHA12="${GITHUB_SHA:0:12}"
+          RELEASE_TAG="${GITHUB_REF_NAME}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "sha12=${SHA12}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${RELEASE_TAG}"
+            echo "${IMAGE}:sha-${SHA12}"
+            echo "${IMAGE}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.package }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./${{ matrix.dockerfile }}
+          push: ${{ startsWith(github.ref, 'refs/tags/release-v') }}
+          build-args: |
+            RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
+            DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
+            PYTHON_BASE_IMAGE=${{ steps.base_images.outputs.python_image }}
+            RUSTUP_DIST_SERVER=https://static.rust-lang.org
+            RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
+          tags: ${{ steps.meta.outputs.tags }}

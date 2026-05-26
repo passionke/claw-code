@@ -1,0 +1,62 @@
+{
+  "current": {
+    "total_stores": 31810,
+    "active_stores": 12861,
+    "active_rate": 40.4,
+    "monthly_orders": 1741869,
+    "monthly_amount": 803210323,
+    "avg_order_per_store": 31.88,
+    "avg_amount_per_store": 14700
+  },
+  "new_store_expansion": {
+    "phase1_探索期": {
+      "period": "2023.05-2024.04",
+      "total": 658,
+      "monthly_avg": 55
+    },
+    "phase2_快速增长期": {
+      "period": "2024.05-2024.12",
+      "total": 7528,
+      "monthly_avg": 941
+    },
+    "phase3_稳定扩张期": {
+      "period": "2025.01-2026.04",
+      "total": 23540,
+      "monthly_avg": 1471
+    }
+  },
+  "forecast": {
+    "2026-12": {
+      "upper_active": 16596,
+      "mid_active": 15407,
+      "lower_active": 14295,
+      "upper_amount_yi": 2.44,
+      "mid_amount_yi": 2.26,
+      "lower_amount_yi": 2.1
+    },
+    "2027-12": {
+      "upper_active": 22401,
+      "mid_active": 18867,
+      "lower_active": 15888,
+      "upper_amount_yi": 3.29,
+      "mid_amount_yi": 2.77,
+      "lower_amount_yi": 2.34
+    },
+    "2028-12": {
+      "upper_active": 28522,
+      "mid_active": 22001,
+      "lower_active": 16992,
+      "upper_amount_yi": 4.19,
+      "mid_amount_yi": 3.23,
+      "lower_amount_yi": 2.5
+    },
+    "2029-04": {
+      "upper_active": 30647,
+      "mid_active": 22990,
+      "lower_active": 17280,
+      "upper_amount_yi": 4.51,
+      "mid_amount_yi": 3.38,
+      "lower_amount_yi": 2.54
+    }
+  }
+}

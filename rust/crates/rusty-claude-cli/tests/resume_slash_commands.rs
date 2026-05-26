@@ -180,6 +180,8 @@ fn resume_latest_restores_the_most_recent_managed_session() {
     // given
     let temp_dir = unique_temp_dir("resume-latest");
     let project_dir = temp_dir.join("project");
+    fs::create_dir_all(&project_dir).expect("project dir should exist");
+    let project_dir = fs::canonicalize(&project_dir).unwrap_or(project_dir);
     let store = runtime::SessionStore::from_cwd(&project_dir).expect("session store should build");
     let older_path = store.create_handle("session-older").path;
     let newer_path = store.create_handle("session-newer").path;
@@ -225,6 +227,8 @@ fn resumed_status_command_emits_structured_json_when_requested() {
     // given
     let temp_dir = unique_temp_dir("resume-status-json");
     fs::create_dir_all(&temp_dir).expect("temp dir should exist");
+    let isolated_config_home = temp_dir.join("isolated-claw-config");
+    fs::create_dir_all(&isolated_config_home).expect("isolated config home should exist");
     let session_path = temp_dir.join("session.jsonl");
 
     let mut session = workspace_session(&temp_dir);
@@ -235,8 +239,8 @@ fn resumed_status_command_emits_structured_json_when_requested() {
         .save_to_path(&session_path)
         .expect("session should persist");
 
-    // when
-    let output = run_claw(
+    // when — isolate user config so loaded_config_files is deterministic across machines
+    let output = run_claw_with_env(
         &temp_dir,
         &[
             "--output-format",
@@ -245,6 +249,12 @@ fn resumed_status_command_emits_structured_json_when_requested() {
             session_path.to_str().expect("utf8 path"),
             "/status",
         ],
+        &[(
+            "CLAW_CONFIG_HOME",
+            isolated_config_home
+                .to_str()
+                .expect("isolated config home path should be utf8"),
+        )],
     );
 
     // then

@@ -7,6 +7,7 @@ use tokio::process::Command as TokioCommand;
 use tokio::runtime::Builder;
 use tokio::time::timeout;
 
+use crate::lane_events::{LaneEvent, ShipMergeMethod, ShipProvenance};
 use crate::sandbox::{
     build_linux_sandbox_command, resolve_sandbox_status_for_request, FilesystemIsolationMode,
     SandboxConfig, SandboxStatus,
@@ -97,8 +98,101 @@ pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
         });
     }
 
-    let runtime = Builder::new_current_thread().enable_all().build()?;
-    runtime.block_on(execute_bash_async(input, sandbox_status, cwd))
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // We may be called from an async host (e.g. HTTP gateway). Reuse the
+        // active runtime to avoid creating a nested Tokio runtime and panicking.
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(execute_bash_async(
+                input,
+                sandbox_status,
+                cwd,
+            ))
+        })
+    } else {
+        // CLI/tests can invoke this from a plain sync context; create a local runtime.
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(execute_bash_async(input, sandbox_status, cwd))
+    }
+}
+
+/// Detect git push to main and emit ship provenance event
+fn detect_and_emit_ship_prepared(command: &str) {
+    let trimmed = command.trim();
+    // Simple detection: git push with main/master
+    if trimmed.contains("git push") && (trimmed.contains("main") || trimmed.contains("master")) {
+        // Emit ship.prepared event
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let provenance = ShipProvenance {
+            source_branch: get_current_branch().unwrap_or_else(|| "unknown".to_string()),
+            base_commit: get_head_commit().unwrap_or_default(),
+            commit_count: 0, // Would need to calculate from range
+            commit_range: "unknown..HEAD".to_string(),
+            merge_method: ShipMergeMethod::DirectPush,
+            actor: get_git_actor().unwrap_or_else(|| "unknown".to_string()),
+            pr_number: None,
+        };
+        let _event = LaneEvent::ship_prepared(format!("{now}"), &provenance);
+        // Log to stderr as interim routing before event stream integration
+        eprintln!(
+            "[ship.prepared] branch={} -> main, commits={}, actor={}",
+            provenance.source_branch, provenance.commit_count, provenance.actor
+        );
+    }
+}
+
+fn get_current_branch() -> Option<String> {
+    let output = Command::new("git")
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn get_head_commit() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn get_git_actor() -> Option<String> {
+    let name = Command::new("git")
+        .args(["config", "user.name"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+    Some(name)
+}
+
+/// When the model omits `timeout` on the bash tool, apply this ceiling (milliseconds) if set.
+/// Example: `CLAW_BASH_DEFAULT_TIMEOUT_MS=120000` caps wall time without changing tool JSON.
+/// Author: kejiqing
+fn default_bash_timeout_ms_from_env() -> Option<u64> {
+    std::env::var("CLAW_BASH_DEFAULT_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+}
+
+fn coalesce_bash_timeout(explicit: Option<u64>, default_ms: Option<u64>) -> Option<u64> {
+    explicit.or(default_ms)
+}
+
+fn effective_bash_timeout_ms(input: &BashCommandInput) -> Option<u64> {
+    coalesce_bash_timeout(input.timeout, default_bash_timeout_ms_from_env())
 }
 
 async fn execute_bash_async(
@@ -106,9 +200,13 @@ async fn execute_bash_async(
     sandbox_status: SandboxStatus,
     cwd: std::path::PathBuf,
 ) -> io::Result<BashCommandOutput> {
+    // Detect and emit ship provenance for git push operations
+    detect_and_emit_ship_prepared(&input.command);
+
     let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
 
-    let output_result = if let Some(timeout_ms) = input.timeout {
+    let timeout_ms = effective_bash_timeout_ms(&input);
+    let output_result = if let Some(timeout_ms) = timeout_ms {
         match timeout(Duration::from_millis(timeout_ms), command.output()).await {
             Ok(result) => (result?, false),
             Err(_) => {
@@ -242,8 +340,29 @@ fn prepare_sandbox_dirs(cwd: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{execute_bash, BashCommandInput};
+    use super::{coalesce_bash_timeout, execute_bash, BashCommandInput};
     use crate::sandbox::FilesystemIsolationMode;
+
+    fn bash_input(command: &str, timeout: Option<u64>) -> BashCommandInput {
+        BashCommandInput {
+            command: command.to_string(),
+            timeout,
+            description: None,
+            run_in_background: Some(false),
+            dangerously_disable_sandbox: Some(false),
+            namespace_restrictions: Some(false),
+            isolate_network: Some(false),
+            filesystem_mode: Some(FilesystemIsolationMode::WorkspaceOnly),
+            allowed_mounts: None,
+        }
+    }
+
+    #[test]
+    fn coalesce_bash_timeout_prefers_explicit() {
+        assert_eq!(coalesce_bash_timeout(Some(5), Some(99)), Some(5));
+        assert_eq!(coalesce_bash_timeout(None, Some(99)), Some(99));
+        assert_eq!(coalesce_bash_timeout(None, None), None);
+    }
 
     #[test]
     fn executes_simple_command() {
@@ -281,6 +400,76 @@ mod tests {
         .expect("bash command should execute");
 
         assert!(!output.sandbox_status.expect("sandbox status").enabled);
+    }
+
+    /// `CLAW_BASH_DEFAULT_TIMEOUT_MS` only applies when the tool omits `timeout`; must not break
+    /// normal short commands or override an explicit ceiling.
+    #[cfg(unix)]
+    #[test]
+    fn bash_default_timeout_env_interrupts_long_sleep_without_explicit() {
+        let _guard = crate::test_env_lock();
+        std::env::set_var("CLAW_BASH_DEFAULT_TIMEOUT_MS", "280");
+        let out = execute_bash(bash_input("sleep 30", None)).expect("execute");
+        std::env::remove_var("CLAW_BASH_DEFAULT_TIMEOUT_MS");
+        assert!(out.interrupted, "expected wall timeout");
+        assert!(
+            out.stderr.contains("280"),
+            "stderr should mention ms cap: {}",
+            out.stderr
+        );
+        assert_eq!(out.return_code_interpretation.as_deref(), Some("timeout"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_default_timeout_env_allows_quick_command() {
+        let _guard = crate::test_env_lock();
+        std::env::set_var("CLAW_BASH_DEFAULT_TIMEOUT_MS", "200");
+        let out = execute_bash(bash_input("printf 'ok'", None)).expect("execute");
+        std::env::remove_var("CLAW_BASH_DEFAULT_TIMEOUT_MS");
+        assert!(!out.interrupted);
+        assert_eq!(out.stdout, "ok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_explicit_timeout_overrides_tiny_default_env() {
+        let _guard = crate::test_env_lock();
+        std::env::set_var("CLAW_BASH_DEFAULT_TIMEOUT_MS", "80");
+        let out = execute_bash(bash_input("sleep 0.35", Some(10_000))).expect("execute");
+        std::env::remove_var("CLAW_BASH_DEFAULT_TIMEOUT_MS");
+        assert!(
+            !out.interrupted,
+            "explicit timeout must win; stderr={}",
+            out.stderr
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_default_timeout_env_whitespace_trimmed() {
+        let _guard = crate::test_env_lock();
+        std::env::set_var("CLAW_BASH_DEFAULT_TIMEOUT_MS", "  260  ");
+        let out = execute_bash(bash_input("sleep 30", None)).expect("execute");
+        std::env::remove_var("CLAW_BASH_DEFAULT_TIMEOUT_MS");
+        assert!(out.interrupted);
+        assert!(out.stderr.contains("260"), "stderr={}", out.stderr);
+    }
+
+    #[test]
+    fn bash_invalid_or_zero_default_timeout_env_is_ignored() {
+        let _guard = crate::test_env_lock();
+        for v in ["0", "", "  ", "not-a-number"] {
+            std::env::set_var("CLAW_BASH_DEFAULT_TIMEOUT_MS", v);
+            let out = execute_bash(bash_input("printf 'z'", None)).expect("execute");
+            assert!(
+                !out.interrupted,
+                "invalid/zero env should not cap; v={v:?} stderr={}",
+                out.stderr
+            );
+            assert_eq!(out.stdout, "z");
+        }
+        std::env::remove_var("CLAW_BASH_DEFAULT_TIMEOUT_MS");
     }
 }
 

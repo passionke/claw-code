@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use api::{
@@ -11,22 +12,23 @@ use api::{
 use plugins::PluginTool;
 use reqwest::blocking::Client;
 use runtime::{
-    check_freshness, dedupe_superseded_commit_events, edit_file, execute_bash, glob_search,
-    grep_search, load_system_prompt,
+    check_freshness, current_mcp_call_context, dedupe_superseded_commit_events, edit_file,
+    execute_bash, glob_search, grep_search, inject_mcp_call_meta, load_system_prompt,
     lsp_client::LspRegistry,
-    mcp_tool_bridge::McpToolRegistry,
+    mcp_tool_bridge::{McpConnectionStatus, McpResourceInfo, McpToolInfo, McpToolRegistry},
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
     read_file,
     summary_compression::compress_summary_text,
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
+    with_mcp_call_context,
     worker_boot::{WorkerReadySnapshot, WorkerRegistry, WorkerTaskReceipt},
     write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput, BashCommandOutput,
     BranchFreshness, ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime,
     GrepSearchInput, LaneCommitProvenance, LaneEvent, LaneEventBlocker, LaneEventName,
-    LaneEventStatus, LaneFailureClass, McpDegradedReport, MessageRole, PermissionMode,
-    PermissionPolicy, PromptCacheEvent, ProviderFallbackConfig, RuntimeError, Session, TaskPacket,
-    ToolError, ToolExecutor,
+    LaneEventStatus, LaneFailureClass, McpCallContext, McpDegradedReport, MessageRole,
+    PermissionMode, PermissionPolicy, PromptCacheEvent, ProviderFallbackConfig, RuntimeError,
+    Session, TaskPacket, ToolError, ToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -42,6 +44,60 @@ fn global_mcp_registry() -> &'static McpToolRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<McpToolRegistry> = OnceLock::new();
     REGISTRY.get_or_init(McpToolRegistry::new)
+}
+
+/// Initialize and refresh the global MCP bridge used by MCP wrapper tools.
+///
+/// This wires the MCP manager into the global registry and synchronizes
+/// discovered tool metadata so `MCP` / `ListMcpResources` style tools can work.
+pub fn initialize_mcp_bridge(
+    manager: std::sync::Arc<std::sync::Mutex<runtime::McpServerManager>>,
+    report: &runtime::McpToolDiscoveryReport,
+) {
+    let registry = global_mcp_registry();
+    let _ = registry.set_manager(manager);
+
+    let mut per_server_tools: BTreeMap<String, Vec<McpToolInfo>> = BTreeMap::new();
+    for discovered in &report.tools {
+        per_server_tools
+            .entry(discovered.server_name.clone())
+            .or_default()
+            .push(McpToolInfo {
+                name: discovered.raw_name.clone(),
+                description: discovered.tool.description.clone(),
+                input_schema: discovered.tool.input_schema.clone(),
+            });
+    }
+
+    for (server_name, tools) in per_server_tools {
+        registry.register_server(
+            &server_name,
+            McpConnectionStatus::Connected,
+            tools,
+            Vec::<McpResourceInfo>::new(),
+            None,
+        );
+    }
+
+    for failed in &report.failed_servers {
+        registry.register_server(
+            &failed.server_name,
+            McpConnectionStatus::Error,
+            Vec::new(),
+            Vec::new(),
+            Some(failed.error.clone()),
+        );
+    }
+
+    for unsupported in &report.unsupported_servers {
+        registry.register_server(
+            &unsupported.server_name,
+            McpConnectionStatus::Error,
+            Vec::new(),
+            Vec::new(),
+            Some(unsupported.reason.clone()),
+        );
+    }
 }
 
 fn global_team_registry() -> &'static TeamRegistry {
@@ -230,6 +286,22 @@ impl GlobalToolRegistry {
                 .filter(|token| !token.is_empty())
             {
                 let normalized = normalize_tool_name(token);
+                if normalized.contains('*') || normalized.contains('?') {
+                    let matches = name_map
+                        .iter()
+                        .filter_map(|(candidate, canonical)| {
+                            wildcard_matches(&normalized, candidate).then_some(canonical.clone())
+                        })
+                        .collect::<Vec<_>>();
+                    if matches.is_empty() {
+                        return Err(format!(
+                            "unsupported tool pattern in --allowedTools: {token} (no matches in: {})",
+                            canonical_names.join(", ")
+                        ));
+                    }
+                    allowed.extend(matches);
+                    continue;
+                }
                 let canonical = name_map.get(&normalized).ok_or_else(|| {
                     format!(
                         "unsupported tool in --allowedTools: {token} (expected one of: {})",
@@ -371,6 +443,48 @@ fn normalize_tool_name(value: &str) -> String {
     value.trim().replace('-', "_").to_ascii_lowercase()
 }
 
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    let pattern_bytes = pattern.as_bytes();
+    let value_bytes = value.as_bytes();
+    let mut pattern_idx = 0usize;
+    let mut value_idx = 0usize;
+    let mut star_idx: Option<usize> = None;
+    let mut next_match_idx = 0usize;
+
+    while value_idx < value_bytes.len() {
+        if pattern_idx < pattern_bytes.len()
+            && (pattern_bytes[pattern_idx] == b'?'
+                || pattern_bytes[pattern_idx] == value_bytes[value_idx])
+        {
+            pattern_idx += 1;
+            value_idx += 1;
+            continue;
+        }
+
+        if pattern_idx < pattern_bytes.len() && pattern_bytes[pattern_idx] == b'*' {
+            star_idx = Some(pattern_idx);
+            pattern_idx += 1;
+            next_match_idx = value_idx;
+            continue;
+        }
+
+        if let Some(star) = star_idx {
+            pattern_idx = star + 1;
+            next_match_idx += 1;
+            value_idx = next_match_idx;
+            continue;
+        }
+
+        return false;
+    }
+
+    while pattern_idx < pattern_bytes.len() && pattern_bytes[pattern_idx] == b'*' {
+        pattern_idx += 1;
+    }
+
+    pattern_idx == pattern_bytes.len()
+}
+
 fn permission_mode_from_plugin(value: &str) -> Result<PermissionMode, String> {
     match value {
         "read-only" => Ok(PermissionMode::ReadOnly),
@@ -386,7 +500,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "bash",
-            description: "Execute a shell command in the current workspace.",
+            description: "Execute a shell command in the current workspace. `timeout` is optional per-call wall time in ms; if omitted, set env `CLAW_BASH_DEFAULT_TIMEOUT_MS` to apply a global cap.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -422,7 +536,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "write_file",
-            description: "Write a text file in the workspace.",
+            description: "Write a text file in the workspace. Single-call body size cap: env CLAW_WRITE_FILE_MAX_BYTES (bytes, default 10 MiB).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -541,7 +655,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                                 "activeForm": { "type": "string" },
                                 "status": {
                                     "type": "string",
-                                    "enum": ["pending", "in_progress", "completed"]
+                                    "enum": ["pending", "completed"]
                                 }
                             },
                             "required": ["content", "activeForm", "status"],
@@ -1810,7 +1924,8 @@ fn run_remote_trigger(input: RemoteTriggerInput) -> Result<String, String> {
 fn run_mcp_tool(input: McpToolInput) -> Result<String, String> {
     let registry = global_mcp_registry();
     let args = input.arguments.unwrap_or(serde_json::json!({}));
-    match registry.call_tool(&input.server, &input.tool, &args) {
+    let meta = current_mcp_call_context().map(|ctx| inject_mcp_call_meta(&ctx));
+    match registry.call_tool_with_meta(&input.server, &input.tool, &args, meta) {
         Ok(result) => to_pretty_json(json!({
             "server": input.server,
             "tool": input.tool,
@@ -1820,6 +1935,48 @@ fn run_mcp_tool(input: McpToolInput) -> Result<String, String> {
         Err(e) => to_pretty_json(json!({
             "server": input.server,
             "tool": input.tool,
+            "error": e,
+            "status": "error"
+        })),
+    }
+}
+
+/// Generic [`MCP`] tool with optional `tools/call` `_meta` (e.g. `{ "extra_session": { …, "_claw_session_id", "_claw_turn_id" } }`).
+///
+/// Only MCP server / raw tool *names* are normalized when building the qualified tool id (`mcp__...__...`).
+/// Author: kejiqing
+pub fn execute_mcp_tool_with_meta(
+    input_json: &str,
+    meta: Option<&Value>,
+) -> Result<String, String> {
+    let root: Value =
+        serde_json::from_str(input_json).map_err(|e| format!("invalid MCP tool JSON: {e}"))?;
+    let server = root
+        .get("server")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "MCP tool input missing `server`".to_string())?
+        .to_string();
+    let tool = root
+        .get("tool")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "MCP tool input missing `tool`".to_string())?
+        .to_string();
+    let args = root
+        .get("arguments")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(|| json!({}));
+    let registry = global_mcp_registry();
+    match registry.call_tool_with_meta(&server, &tool, &args, meta.cloned()) {
+        Ok(result) => to_pretty_json(json!({
+            "server": server,
+            "tool": tool,
+            "result": result,
+            "status": "success"
+        })),
+        Err(e) => to_pretty_json(json!({
+            "server": server,
+            "tool": tool,
             "error": e,
             "status": "error"
         })),
@@ -1988,8 +2145,7 @@ fn git_ref_exists(reference: &str) -> bool {
     Command::new("git")
         .args(["rev-parse", "--verify", "--quiet", reference])
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|output| output.status.success())
 }
 
 fn git_stdout(args: &[&str]) -> Option<String> {
@@ -2292,7 +2448,6 @@ struct TodoItem {
 #[serde(rename_all = "snake_case")]
 enum TodoStatus {
     Pending,
-    InProgress,
     Completed,
 }
 
@@ -2303,7 +2458,7 @@ struct SkillInput {
 }
 
 #[derive(Debug, Deserialize)]
-struct AgentInput {
+pub struct AgentInput {
     description: String,
     prompt: String,
     subagent_type: Option<String>,
@@ -2580,11 +2735,11 @@ struct SkillOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct AgentOutput {
+pub struct AgentOutput {
     #[serde(rename = "agentId")]
-    agent_id: String,
+    pub agent_id: String,
     name: String,
-    description: String,
+    pub description: String,
     #[serde(rename = "subagentType")]
     subagent_type: Option<String>,
     model: Option<String>,
@@ -2609,12 +2764,31 @@ struct AgentOutput {
     error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-struct AgentJob {
-    manifest: AgentOutput,
+/// Optional hook for gateway orchestration timeline (`agent_done` / `agent_failed`). Author: kejiqing
+pub type AgentTerminalHook = Arc<dyn Fn(&'static str, Option<String>) + Send + Sync>;
+
+#[derive(Clone)]
+pub struct AgentJob {
+    pub manifest: AgentOutput,
     prompt: String,
     system_prompt: Vec<String>,
     allowed_tools: BTreeSet<String>,
+    mcp_call_context: Option<McpCallContext>,
+    terminal_hook: Option<AgentTerminalHook>,
+}
+
+impl AgentJob {
+    #[must_use]
+    pub fn with_terminal_hook(mut self, hook: AgentTerminalHook) -> Self {
+        self.terminal_hook = Some(hook);
+        self
+    }
+
+    fn invoke_terminal_hook(&self, status: &'static str, error: Option<String>) {
+        if let Some(hook) = &self.terminal_hook {
+            hook(status, error);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -3191,7 +3365,6 @@ fn validate_todos(todos: &[TodoItem]) -> Result<(), String> {
     if todos.is_empty() {
         return Err(String::from("todos must not be empty"));
     }
-    // Allow multiple in_progress items for parallel workflows
     if todos.iter().any(|todo| todo.content.trim().is_empty()) {
         return Err(String::from("todo content must not be empty"));
     }
@@ -3299,6 +3472,12 @@ fn push_project_skill_lookup_roots(roots: &mut Vec<SkillLookupRoot>, cwd: &std::
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".claw"));
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".codex"));
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".claude"));
+        // `http-gateway-rs` project skills: `ds_<id>/home/skills/<name>/SKILL.md` (same layout as git mirror).
+        push_skill_lookup_root(
+            roots,
+            ancestor.join("home").join("skills"),
+            SkillLookupOrigin::SkillsDir,
+        );
     }
 }
 
@@ -3355,13 +3534,20 @@ fn resolve_skill_path_in_root(
     }
 }
 
+fn skill_instruction_markdown_path(skill_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let p = skill_dir.join("SKILL.md");
+    if p.is_file() {
+        return Some(p);
+    }
+    None
+}
+
 fn resolve_skill_path_in_skills_dir(
     root: &std::path::Path,
     requested: &str,
 ) -> Option<std::path::PathBuf> {
-    let direct = root.join(requested).join("SKILL.md");
-    if direct.is_file() {
-        return Some(direct);
+    if let Some(p) = skill_instruction_markdown_path(&root.join(requested)) {
+        return Some(p);
     }
 
     let entries = std::fs::read_dir(root).ok()?;
@@ -3369,10 +3555,9 @@ fn resolve_skill_path_in_skills_dir(
         if !entry.path().is_dir() {
             continue;
         }
-        let skill_path = entry.path().join("SKILL.md");
-        if !skill_path.is_file() {
+        let Some(skill_path) = skill_instruction_markdown_path(&entry.path()) else {
             continue;
-        }
+        };
         if entry
             .file_name()
             .to_string_lossy()
@@ -3390,9 +3575,8 @@ fn resolve_skill_path_in_legacy_commands_dir(
     root: &std::path::Path,
     requested: &str,
 ) -> Option<std::path::PathBuf> {
-    let direct_dir = root.join(requested).join("SKILL.md");
-    if direct_dir.is_file() {
-        return Some(direct_dir);
+    if let Some(p) = skill_instruction_markdown_path(&root.join(requested)) {
+        return Some(p);
     }
 
     let direct_markdown = root.join(format!("{requested}.md"));
@@ -3404,10 +3588,9 @@ fn resolve_skill_path_in_legacy_commands_dir(
     for entry in entries.flatten() {
         let path = entry.path();
         let candidate_path = if path.is_dir() {
-            let skill_path = path.join("SKILL.md");
-            if !skill_path.is_file() {
+            let Some(skill_path) = skill_instruction_markdown_path(&path) else {
                 continue;
-            }
+            };
             skill_path
         } else if path
             .extension()
@@ -3475,10 +3658,50 @@ const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
-    execute_agent_with_spawn(input, spawn_agent_job)
+    execute_agent_with_mcp_context(input, None, None)
 }
 
-fn execute_agent_with_spawn<F>(input: AgentInput, spawn_fn: F) -> Result<AgentOutput, String>
+/// Spawn a sub-agent with optional MCP `_meta.extra_session` and parent turn model inheritance. Author: kejiqing
+pub(crate) fn execute_agent_with_mcp_context(
+    input: AgentInput,
+    mcp_call_context: Option<McpCallContext>,
+    parent_turn_model: Option<&str>,
+) -> Result<AgentOutput, String> {
+    execute_agent_with_spawn(input, mcp_call_context, parent_turn_model, spawn_agent_job)
+}
+
+/// Like [`execute_agent_with_mcp_context`], returning pretty-printed JSON for tool executors. Author: kejiqing
+pub fn execute_agent_with_mcp_context_json(
+    input: AgentInput,
+    mcp_call_context: Option<McpCallContext>,
+    parent_turn_model: Option<&str>,
+) -> Result<String, String> {
+    to_pretty_json(execute_agent_with_mcp_context(
+        input,
+        mcp_call_context,
+        parent_turn_model,
+    )?)
+}
+
+/// Gateway solve: custom spawn (e.g. orchestration `agent_started` before background thread). Author: kejiqing
+pub fn execute_agent_with_mcp_context_and_spawn<F>(
+    input: AgentInput,
+    mcp_call_context: Option<McpCallContext>,
+    parent_turn_model: Option<&str>,
+    spawn_fn: F,
+) -> Result<AgentOutput, String>
+where
+    F: FnOnce(AgentJob) -> Result<(), String>,
+{
+    execute_agent_with_spawn(input, mcp_call_context, parent_turn_model, spawn_fn)
+}
+
+fn execute_agent_with_spawn<F>(
+    input: AgentInput,
+    mcp_call_context: Option<McpCallContext>,
+    parent_turn_model: Option<&str>,
+    spawn_fn: F,
+) -> Result<AgentOutput, String>
 where
     F: FnOnce(AgentJob) -> Result<(), String>,
 {
@@ -3495,7 +3718,7 @@ where
     let output_file = output_dir.join(format!("{agent_id}.md"));
     let manifest_file = output_dir.join(format!("{agent_id}.json"));
     let normalized_subagent_type = normalize_subagent_type(input.subagent_type.as_deref());
-    let model = resolve_agent_model(input.model.as_deref());
+    let model = resolve_agent_model(input.model.as_deref(), parent_turn_model);
     let agent_name = input
         .name
         .as_deref()
@@ -3504,7 +3727,11 @@ where
         .unwrap_or_else(|| slugify_agent_name(&input.description));
     let created_at = iso8601_now();
     let system_prompt = build_agent_system_prompt(&normalized_subagent_type)?;
-    let allowed_tools = allowed_tools_for_subagent(&normalized_subagent_type);
+    let mut allowed_tools = allowed_tools_for_subagent(&normalized_subagent_type);
+    // Gateway solve passes `mcp_call_context`; allow generic MCP tool on sub-agents. Author: kejiqing
+    if mcp_call_context.is_some() {
+        allowed_tools.insert(String::from("MCP"));
+    }
 
     let output_contents = format!(
         "# Agent Task
@@ -3548,6 +3775,8 @@ where
         prompt: input.prompt,
         system_prompt,
         allowed_tools,
+        mcp_call_context,
+        terminal_hook: None,
     };
     if let Err(error) = spawn_fn(job) {
         let error = format!("failed to spawn sub-agent: {error}");
@@ -3558,26 +3787,43 @@ where
     Ok(manifest)
 }
 
-fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
+/// Run sub-agent on a background thread (manifest already written). Author: kejiqing
+pub fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
     let thread_name = format!("clawd-agent-{}", job.manifest.agent_id);
+    let mcp_ctx = job.mcp_call_context.clone();
     std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_agent_job(&job)));
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    let _ =
-                        persist_agent_terminal_state(&job.manifest, "failed", None, Some(error));
+            let run = || run_agent_job(&job);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(ctx) = mcp_ctx {
+                    with_mcp_call_context(ctx, run)
+                } else {
+                    run()
                 }
-                Err(_) => {
+            }));
+            match result {
+                Ok(Ok(())) => {
+                    job.invoke_terminal_hook("completed", None);
+                }
+                Ok(Err(error)) => {
                     let _ = persist_agent_terminal_state(
                         &job.manifest,
                         "failed",
                         None,
-                        Some(String::from("sub-agent thread panicked")),
+                        Some(error.clone()),
                     );
+                    job.invoke_terminal_hook("failed", Some(error));
+                }
+                Err(_) => {
+                    let panic_msg = String::from("sub-agent thread panicked");
+                    let _ = persist_agent_terminal_state(
+                        &job.manifest,
+                        "failed",
+                        None,
+                        Some(panic_msg.clone()),
+                    );
+                    job.invoke_terminal_hook("failed", Some(panic_msg));
                 }
             }
         })
@@ -3606,6 +3852,7 @@ fn build_agent_runtime(
     let api_client = ProviderRuntimeClient::new(model, allowed_tools.clone())?;
     let permission_policy = agent_permission_policy();
     let tool_executor = SubagentToolExecutor::new(allowed_tools)
+        .with_mcp_call_context(job.mcp_call_context.clone())
         .with_enforcer(PermissionEnforcer::new(permission_policy.clone()));
     Ok(ConversationRuntime::new(
         Session::new(),
@@ -3623,6 +3870,7 @@ fn build_agent_system_prompt(subagent_type: &str) -> Result<Vec<String>, String>
         DEFAULT_AGENT_SYSTEM_DATE.to_string(),
         std::env::consts::OS,
         "unknown",
+        None,
     )
     .map_err(|error| error.to_string())?;
     prompt.push(format!(
@@ -3631,12 +3879,19 @@ fn build_agent_system_prompt(subagent_type: &str) -> Result<Vec<String>, String>
     Ok(prompt)
 }
 
-fn resolve_agent_model(model: Option<&str>) -> String {
-    model
+/// Agent tool `model` wins; else gateway parent turn model; else [`DEFAULT_AGENT_MODEL`]. Author: kejiqing
+fn resolve_agent_model(explicit: Option<&str>, parent_turn_model: Option<&str>) -> String {
+    explicit
         .map(str::trim)
         .filter(|model| !model.is_empty())
-        .unwrap_or(DEFAULT_AGENT_MODEL)
-        .to_string()
+        .map(str::to_string)
+        .or_else(|| {
+            parent_turn_model
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| DEFAULT_AGENT_MODEL.to_string())
 }
 
 fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
@@ -4459,6 +4714,7 @@ fn classify_lane_blocker(error: &str) -> LaneEventBlocker {
     LaneEventBlocker {
         failure_class: classify_lane_failure(error),
         detail,
+        subphase: None,
     }
 }
 
@@ -4651,8 +4907,12 @@ async fn stream_with_provider(
                         input.push_str(&partial_json);
                     }
                 }
-                ContentBlockDelta::ThinkingDelta { .. }
-                | ContentBlockDelta::SignatureDelta { .. } => {}
+                ContentBlockDelta::ThinkingDelta { thinking } => {
+                    if !thinking.is_empty() {
+                        events.push(AssistantEvent::ThinkingDelta(thinking));
+                    }
+                }
+                ContentBlockDelta::SignatureDelta { .. } => {}
             },
             ApiStreamEvent::ContentBlockStop(stop) => {
                 if let Some((id, name, input)) = pending_tools.remove(&stop.index) {
@@ -4674,6 +4934,7 @@ async fn stream_with_provider(
     if !saw_stop
         && events.iter().any(|event| {
             matches!(event, AssistantEvent::TextDelta(text) if !text.is_empty())
+                || matches!(event, AssistantEvent::ThinkingDelta(text) if !text.is_empty())
                 || matches!(event, AssistantEvent::ToolUse { .. })
         })
     {
@@ -4701,6 +4962,7 @@ async fn stream_with_provider(
 struct SubagentToolExecutor {
     allowed_tools: BTreeSet<String>,
     enforcer: Option<PermissionEnforcer>,
+    mcp_call_context: Option<McpCallContext>,
 }
 
 impl SubagentToolExecutor {
@@ -4708,12 +4970,26 @@ impl SubagentToolExecutor {
         Self {
             allowed_tools,
             enforcer: None,
+            mcp_call_context: None,
         }
+    }
+
+    fn with_mcp_call_context(mut self, mcp_call_context: Option<McpCallContext>) -> Self {
+        self.mcp_call_context = mcp_call_context;
+        self
     }
 
     fn with_enforcer(mut self, enforcer: PermissionEnforcer) -> Self {
         self.enforcer = Some(enforcer);
         self
+    }
+
+    fn mcp_meta_for_call(&self) -> Option<Value> {
+        let ctx = self
+            .mcp_call_context
+            .clone()
+            .or_else(current_mcp_call_context)?;
+        Some(inject_mcp_call_meta(&ctx))
     }
 }
 
@@ -4723,6 +4999,10 @@ impl ToolExecutor for SubagentToolExecutor {
             return Err(ToolError::new(format!(
                 "tool `{tool_name}` is not enabled for this sub-agent"
             )));
+        }
+        if tool_name == "MCP" {
+            let meta = self.mcp_meta_for_call();
+            return execute_mcp_tool_with_meta(input, meta.as_ref()).map_err(ToolError::new);
         }
         let value = serde_json::from_str(input)
             .map_err(|error| ToolError::new(format!("invalid tool input JSON: {error}")))?;
@@ -4751,6 +5031,9 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
                 .iter()
                 .map(|block| match block {
                     ContentBlock::Text { text } => InputContentBlock::Text { text: text.clone() },
+                    ContentBlock::ReasoningContent { text } => {
+                        InputContentBlock::ReasoningContent { text: text.clone() }
+                    }
                     ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
@@ -4803,7 +5086,12 @@ fn push_output_block(
             };
             pending_tools.insert(block_index, (id, name, initial_input));
         }
-        OutputContentBlock::Thinking { .. } | OutputContentBlock::RedactedThinking { .. } => {}
+        OutputContentBlock::Thinking { thinking, .. } => {
+            if !thinking.is_empty() {
+                events.push(AssistantEvent::ThinkingDelta(thinking));
+            }
+        }
+        OutputContentBlock::RedactedThinking { .. } => {}
     }
 }
 
@@ -5916,8 +6204,7 @@ fn command_exists(command: &str) -> bool {
         .arg("-lc")
         .arg(format!("command -v {command} >/dev/null 2>&1"))
         .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .is_ok_and(|status| status.success())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -6130,11 +6417,13 @@ mod tests {
         derive_agent_state, execute_agent_with_spawn, execute_tool, extract_recovery_outcome,
         final_assistant_text, global_cron_registry, maybe_commit_provenance, mvp_tool_specs,
         permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
-        run_task_packet, AgentInput, AgentJob, GlobalToolRegistry, LaneEventName, LaneFailureClass,
-        ProviderRuntimeClient, SubagentToolExecutor,
+        resolve_agent_model, run_task_packet, AgentInput, AgentJob, GlobalToolRegistry,
+        LaneEventName, LaneFailureClass, ProviderRuntimeClient, SubagentToolExecutor,
+        DEFAULT_AGENT_MODEL,
     };
     use api::OutputContentBlock;
     use runtime::ProviderFallbackConfig;
+    use runtime::{inject_mcp_call_meta, McpCallContext, CLAW_EXTRA_SESSION_TURN_ID};
     use runtime::{
         permission_enforcer::PermissionEnforcer, ApiRequest, AssistantEvent, ConversationRuntime,
         PermissionMode, PermissionPolicy, RuntimeError, Session, TaskPacket, ToolExecutor,
@@ -6949,6 +7238,75 @@ mod tests {
     }
 
     #[test]
+    fn normalize_allowed_tools_supports_wildcard_patterns() {
+        let registry = GlobalToolRegistry::builtin()
+            .with_runtime_tools(vec![
+                super::RuntimeToolDefinition {
+                    name: "mcp__demo__echo".to_string(),
+                    description: Some("Echo text from the demo MCP server".to_string()),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": { "text": { "type": "string" } },
+                        "additionalProperties": false
+                    }),
+                    required_permission: runtime::PermissionMode::ReadOnly,
+                },
+                super::RuntimeToolDefinition {
+                    name: "mcp__demo__sum".to_string(),
+                    description: Some("Add two numbers".to_string()),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "left": { "type": "number" },
+                            "right": { "type": "number" }
+                        },
+                        "additionalProperties": false
+                    }),
+                    required_permission: runtime::PermissionMode::ReadOnly,
+                },
+            ])
+            .expect("runtime tools should register");
+
+        let allowed = registry
+            .normalize_allowed_tools(&["mcp__demo__*".to_string()])
+            .expect("runtime wildcard allow-list should parse")
+            .expect("allow-list should be populated");
+
+        assert!(allowed.contains("mcp__demo__echo"));
+        assert!(allowed.contains("mcp__demo__sum"));
+
+        let definitions = registry.definitions(Some(&allowed));
+        let definition_names = definitions
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            definition_names,
+            BTreeSet::from(["mcp__demo__echo", "mcp__demo__sum"])
+        );
+    }
+
+    #[test]
+    fn normalize_allowed_tools_wildcard_allows_all_tools() {
+        let registry = GlobalToolRegistry::builtin();
+        let allowed = registry
+            .normalize_allowed_tools(&["*".to_string()])
+            .expect("global wildcard allow-list should parse")
+            .expect("allow-list should be populated");
+        assert!(allowed.contains("read_file"));
+        assert!(allowed.contains("MCP"));
+    }
+
+    #[test]
+    fn normalize_allowed_tools_wildcard_without_match_fails() {
+        let registry = GlobalToolRegistry::builtin();
+        let error = registry
+            .normalize_allowed_tools(&["mcp__no_such_server__*".to_string()])
+            .expect_err("wildcard without any matches must fail");
+        assert!(error.contains("unsupported tool pattern in --allowedTools"));
+    }
+
+    #[test]
     fn web_fetch_returns_prompt_aware_summary() {
         let server = TestServer::spawn(Arc::new(|request_line: &str| {
             assert!(request_line.starts_with("GET /page "));
@@ -7194,7 +7552,7 @@ mod tests {
             "TodoWrite",
             &json!({
                 "todos": [
-                    {"content": "Add tool", "activeForm": "Adding tool", "status": "in_progress"},
+                    {"content": "Add tool", "activeForm": "Adding tool", "status": "pending"},
                     {"content": "Run tests", "activeForm": "Running tests", "status": "pending"}
                 ]
             }),
@@ -7241,17 +7599,16 @@ mod tests {
             .expect_err("empty todos should fail");
         assert!(empty.contains("todos must not be empty"));
 
-        // Multiple in_progress items are now allowed for parallel workflows
-        let _multi_active = execute_tool(
+        let _multi_pending = execute_tool(
             "TodoWrite",
             &json!({
                 "todos": [
-                    {"content": "One", "activeForm": "Doing one", "status": "in_progress"},
-                    {"content": "Two", "activeForm": "Doing two", "status": "in_progress"}
+                    {"content": "One", "activeForm": "Doing one", "status": "pending"},
+                    {"content": "Two", "activeForm": "Doing two", "status": "pending"}
                 ]
             }),
         )
-        .expect("multiple in-progress todos should succeed");
+        .expect("multiple pending todos should succeed");
 
         let blank_content = execute_tool(
             "TodoWrite",
@@ -7733,6 +8090,8 @@ mod tests {
                 name: Some("ship-audit".to_string()),
                 model: None,
             },
+            None,
+            None,
             move |job| {
                 *captured_for_spawn
                     .lock()
@@ -7769,6 +8128,7 @@ mod tests {
         assert_eq!(captured_job.prompt, "Check tests and outstanding work.");
         assert!(captured_job.allowed_tools.contains("read_file"));
         assert!(!captured_job.allowed_tools.contains("Agent"));
+        assert!(captured_job.mcp_call_context.is_none());
 
         let normalized = execute_tool(
             "Agent",
@@ -7814,6 +8174,8 @@ mod tests {
                 name: Some("complete-task".to_string()),
                 model: Some("claude-sonnet-4-6".to_string()),
             },
+            None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -7871,6 +8233,8 @@ mod tests {
                 name: Some("fail-task".to_string()),
                 model: None,
             },
+            None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -7918,6 +8282,8 @@ mod tests {
                 name: Some("summary-floor".to_string()),
                 model: None,
             },
+            None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -7963,6 +8329,8 @@ mod tests {
                 name: Some("recovery-lane".to_string()),
                 model: None,
             },
+            None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8011,6 +8379,8 @@ mod tests {
                 name: Some("review-lane".to_string()),
                 model: None,
             },
+            None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8051,6 +8421,8 @@ mod tests {
                 name: Some("backlog-scan".to_string()),
                 model: None,
             },
+            None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8097,6 +8469,8 @@ mod tests {
                 name: Some("artifact-lane".to_string()),
                 model: None,
             },
+            None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8167,6 +8541,8 @@ mod tests {
                 name: Some("cron-closeout".to_string()),
                 model: None,
             },
+            None,
+            None,
             |job| {
                 persist_agent_terminal_state(
                     &job.manifest,
@@ -8208,6 +8584,8 @@ mod tests {
                 name: Some("spawn-error".to_string()),
                 model: None,
             },
+            None,
+            None,
             |_| Err(String::from("thread creation failed")),
         )
         .expect_err("spawn errors should surface");
@@ -8417,6 +8795,124 @@ mod tests {
                 _ => unreachable!("extra mock stream call"),
             }
         }
+    }
+
+    #[test]
+    fn resolve_agent_model_prefers_explicit_over_parent() {
+        assert_eq!(
+            resolve_agent_model(Some("openai/child"), Some("openai/parent")),
+            "openai/child"
+        );
+        assert_eq!(
+            resolve_agent_model(None, Some("openai/parent")),
+            "openai/parent"
+        );
+        assert_eq!(resolve_agent_model(None, None), DEFAULT_AGENT_MODEL);
+    }
+
+    #[test]
+    fn agent_spawn_inherits_parent_turn_model_when_input_omits_model() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_path("agent-parent-model");
+        std::env::set_var("CLAWD_AGENT_STORE", &dir);
+        let captured = Arc::new(Mutex::new(None::<AgentJob>));
+        let captured_for_spawn = Arc::clone(&captured);
+
+        let manifest = execute_agent_with_spawn(
+            AgentInput {
+                description: "inherit model".to_string(),
+                prompt: "work".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: None,
+                model: None,
+            },
+            None,
+            Some("openai/deepseek-v4-pro"),
+            move |job| {
+                *captured_for_spawn
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
+                Ok(())
+            },
+        )
+        .expect("Agent should succeed");
+        std::env::remove_var("CLAWD_AGENT_STORE");
+
+        assert_eq!(manifest.model.as_deref(), Some("openai/deepseek-v4-pro"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_spawn_propagates_mcp_call_context_to_job() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_path("agent-mcp-ctx");
+        std::env::set_var("CLAWD_AGENT_STORE", &dir);
+        let captured = Arc::new(Mutex::new(None::<AgentJob>));
+        let captured_for_spawn = Arc::clone(&captured);
+        let ctx = McpCallContext::new(
+            "sess-parent",
+            "T_parent",
+            "req-77",
+            Some(json!({"store_id": "S9", "org_id": ""})),
+        );
+
+        execute_agent_with_spawn(
+            AgentInput {
+                description: "MCP context probe".to_string(),
+                prompt: "Run checks.".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: None,
+                model: None,
+            },
+            Some(ctx.clone()),
+            None,
+            move |job| {
+                *captured_for_spawn
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
+                Ok(())
+            },
+        )
+        .expect("Agent should succeed");
+        std::env::remove_var("CLAWD_AGENT_STORE");
+
+        let job = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .expect("job captured");
+        let stored = job.mcp_call_context.expect("mcp context on job");
+        assert_eq!(stored.session_id, "sess-parent");
+        assert_eq!(stored.turn_id, "T_parent");
+        let meta = inject_mcp_call_meta(&stored);
+        assert_eq!(meta["extra_session"]["store_id"], "S9");
+        assert_eq!(
+            meta["extra_session"][CLAW_EXTRA_SESSION_TURN_ID],
+            "T_parent"
+        );
+    }
+
+    #[test]
+    fn subagent_tool_executor_injects_mcp_meta_for_mcp_tool() {
+        let ctx = McpCallContext::new("sess", "T_1", "req", Some(json!({"org_id": ""})));
+        let mut executor = SubagentToolExecutor::new(BTreeSet::from([String::from("MCP")]))
+            .with_mcp_call_context(Some(ctx));
+        let input = json!({
+            "server": "noop",
+            "tool": "ping",
+            "arguments": {}
+        })
+        .to_string();
+        let out = executor
+            .execute("MCP", &input)
+            .expect("MCP tool returns JSON envelope");
+        let envelope: serde_json::Value = serde_json::from_str(&out).expect("valid MCP tool JSON");
+        assert_eq!(envelope["status"], "error");
+        assert_eq!(envelope["server"], "noop");
     }
 
     #[test]

@@ -20,11 +20,13 @@ mod json;
 mod lane_events;
 pub mod lsp_client;
 mod mcp;
+mod mcp_call_context;
 mod mcp_client;
 pub mod mcp_lifecycle_hardened;
 pub mod mcp_server;
 mod mcp_stdio;
 pub mod mcp_tool_bridge;
+mod mcp_transport;
 mod oauth;
 pub mod permission_enforcer;
 mod permissions;
@@ -58,12 +60,12 @@ pub use compact::{
     get_compact_continuation_message, should_compact, CompactionConfig, CompactionResult,
 };
 pub use config::{
-    ConfigEntry, ConfigError, ConfigLoader, ConfigSource, McpConfigCollection,
-    McpManagedProxyServerConfig, McpOAuthConfig, McpRemoteServerConfig, McpSdkServerConfig,
-    McpServerConfig, McpStdioServerConfig, McpTransport, McpWebSocketServerConfig, OAuthConfig,
-    ProviderFallbackConfig, ResolvedPermissionMode, RuntimeConfig, RuntimeFeatureConfig,
-    RuntimeHookConfig, RuntimePermissionRuleConfig, RuntimePluginConfig, ScopedMcpServerConfig,
-    CLAW_SETTINGS_SCHEMA_NAME,
+    apply_config_env_if_unset, ConfigEntry, ConfigError, ConfigLoader, ConfigSource,
+    McpConfigCollection, McpManagedProxyServerConfig, McpOAuthConfig, McpRemoteServerConfig,
+    McpSdkServerConfig, McpServerConfig, McpStdioServerConfig, McpTransport,
+    McpWebSocketServerConfig, OAuthConfig, ProviderFallbackConfig, ResolvedPermissionMode,
+    RuntimeConfig, RuntimeFeatureConfig, RuntimeHookConfig, RuntimePermissionRuleConfig,
+    RuntimePluginConfig, ScopedMcpServerConfig, CLAW_SETTINGS_SCHEMA_NAME,
 };
 pub use config_validate::{
     check_unsupported_format, format_diagnostics, validate_config_file, ConfigDiagnostic,
@@ -71,13 +73,13 @@ pub use config_validate::{
 };
 pub use conversation::{
     auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
-    ConversationRuntime, PromptCacheEvent, RuntimeError, StaticToolExecutor, ToolError,
-    ToolExecutor, TurnSummary,
+    ConversationRuntime, PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
+    ToolError, ToolExecutor, TurnSummary,
 };
 pub use file_ops::{
-    edit_file, glob_search, grep_search, read_file, write_file, EditFileOutput, GlobSearchOutput,
-    GrepSearchInput, GrepSearchOutput, ReadFileOutput, StructuredPatchHunk, TextFilePayload,
-    WriteFileOutput,
+    edit_file, glob_search, grep_search, read_file, write_file, write_file_max_bytes,
+    EditFileOutput, GlobSearchOutput, GrepSearchInput, GrepSearchOutput, ReadFileOutput,
+    StructuredPatchHunk, TextFilePayload, WriteFileOutput,
 };
 pub use git_context::{GitCommitEntry, GitContext};
 pub use hooks::{
@@ -85,17 +87,24 @@ pub use hooks::{
 };
 pub use lane_events::{
     compute_event_fingerprint, dedupe_superseded_commit_events, dedupe_terminal_events,
-    is_terminal_event, EventProvenance, LaneCommitProvenance, LaneEvent, LaneEventBlocker,
-    LaneEventBuilder, LaneEventMetadata, LaneEventName, LaneEventStatus, LaneFailureClass,
-    LaneOwnership, SessionIdentity, WatcherAction,
+    is_terminal_event, BlockedSubphase, EventProvenance, LaneCommitProvenance, LaneEvent,
+    LaneEventBlocker, LaneEventBuilder, LaneEventMetadata, LaneEventName, LaneEventStatus,
+    LaneFailureClass, LaneOwnership, SessionIdentity, ShipMergeMethod, ShipProvenance,
+    WatcherAction,
 };
 pub use mcp::{
     mcp_server_signature, mcp_tool_name, mcp_tool_prefix, normalize_name_for_mcp,
     scoped_mcp_config_hash, unwrap_ccr_proxy_url,
 };
+pub use mcp_call_context::{
+    build_mcp_call_meta, current_mcp_call_context, inject_mcp_call_meta, resolve_gateway_trace_id,
+    with_mcp_call_context, McpCallContext, CLAW_EXTRA_SESSION_SESSION_ID,
+    CLAW_EXTRA_SESSION_TURN_ID,
+};
 pub use mcp_client::{
-    McpClientAuth, McpClientBootstrap, McpClientTransport, McpManagedProxyTransport,
-    McpRemoteTransport, McpSdkTransport, McpStdioTransport,
+    default_mcp_max_concurrent, McpClientAuth, McpClientBootstrap, McpClientTransport,
+    McpManagedProxyTransport, McpRemoteTransport, McpSdkTransport, McpStdioTransport,
+    DEFAULT_MCP_MAX_CONCURRENT,
 };
 pub use mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase, McpLifecycleState,
@@ -103,13 +112,15 @@ pub use mcp_lifecycle_hardened::{
 };
 pub use mcp_server::{McpServer, McpServerSpec, ToolCallHandler, MCP_SERVER_PROTOCOL_VERSION};
 pub use mcp_stdio::{
-    spawn_mcp_stdio_process, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse,
-    ManagedMcpTool, McpDiscoveryFailure, McpInitializeClientInfo, McpInitializeParams,
-    McpInitializeResult, McpInitializeServerInfo, McpListResourcesParams, McpListResourcesResult,
-    McpListToolsParams, McpListToolsResult, McpReadResourceParams, McpReadResourceResult,
-    McpResource, McpResourceContents, McpServerManager, McpServerManagerError, McpStdioProcess,
-    McpTool, McpToolCallContent, McpToolCallParams, McpToolCallResult, McpToolDiscoveryReport,
-    UnsupportedMcpServer,
+    apply_mcp_tool_annotations_from_config, concurrent_mcp_tool_names, mcp_annotation_bool,
+    mcp_description_parallel_friendly, mcp_tool_allows_concurrent_calls,
+    mcp_tool_parallel_fanout_eligible, spawn_mcp_stdio_process, JsonRpcError, JsonRpcId,
+    JsonRpcRequest, JsonRpcResponse, ManagedMcpTool, McpDiscoveryFailure, McpInitializeClientInfo,
+    McpInitializeParams, McpInitializeResult, McpInitializeServerInfo, McpListResourcesParams,
+    McpListResourcesResult, McpListToolsParams, McpListToolsResult, McpReadResourceParams,
+    McpReadResourceResult, McpResource, McpResourceContents, McpServerManager,
+    McpServerManagerError, McpStdioProcess, McpTool, McpToolCallContent, McpToolCallParams,
+    McpToolCallResult, McpToolDiscoveryReport, UnsupportedMcpServer,
 };
 pub use oauth::{
     clear_oauth_credentials, code_challenge_s256, credentials_path, generate_pkce_pair,
@@ -131,8 +142,19 @@ pub use policy_engine::{
     PolicyEngine, PolicyRule, ReconcileReason, ReviewStatus,
 };
 pub use prompt::{
-    load_system_prompt, prepend_bullets, ContextFile, ProjectContext, PromptBuildError,
-    SystemPromptBuilder, FRONTIER_MODEL_NAME, SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    auto_hidden_system_prompt_enabled, builtin_system_prompt_scaffold_default,
+    gateway_schema_prompt_section, gateway_sqlbot_preflight_prompt_section,
+    load_gateway_data_catalog, load_gateway_schema_md, load_system_prompt,
+    max_instruction_file_chars, max_total_instruction_chars, prepend_bullets, ContextFile,
+    ProjectContext, PromptBuildError, SystemPromptBuilder, AUTO_HIDDEN_SYSTEM_PROMPT_KEY,
+    DEFAULT_MAX_INSTRUCTION_FILE_CHARS, DEFAULT_MAX_TOTAL_INSTRUCTION_CHARS, FRONTIER_MODEL_NAME,
+    GATEWAY_DATA_CATALOG_REL, GATEWAY_LIVE_REPORT_START_MARKER, GATEWAY_SCHEMA_MD_REL,
+    GATEWAY_SQLBOT_MCP_DATASOURCE_EXAMPLES_TOOL, GATEWAY_SQLBOT_MCP_DATASOURCE_LIST_TOOL,
+    GATEWAY_SQLBOT_MCP_DATASOURCE_TABLES_TOOL, GATEWAY_SQLBOT_MCP_DATASOURCE_TERMINOLOGIES_TOOL,
+    GATEWAY_SQLBOT_MCP_START_TOOL, GATEWAY_SQL_EXAMPLES_MD_REL, GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL,
+    GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL, GATEWAY_TABLES_AND_RELS_MD_REL,
+    GATEWAY_TERMINOLOGIES_MD_REL, INSTRUCTION_FILE_MAX_CHARS_ENV, INSTRUCTION_TOTAL_MAX_CHARS_ENV,
+    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 };
 pub use recovery_recipes::{
     attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,

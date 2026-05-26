@@ -1,0 +1,119 @@
+services:
+  postgres:
+    image: ${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}
+    container_name: claw-gateway-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${CLAW_GATEWAY_PG_USER:-claw_gateway}
+      POSTGRES_PASSWORD: ${CLAW_GATEWAY_PG_PASSWORD:-clawGw9Dev_Pg}
+      POSTGRES_DB: ${CLAW_GATEWAY_PG_DATABASE:-claw_gateway}
+    # Host port 5433 by default (5432 is often sqlbot-pg-dev on dev machines). Container still listens on 5432.
+    ports:
+      - "${CLAW_GATEWAY_PG_HOST_PORT:-5433}:5432"
+    volumes:
+      - ./claw-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${CLAW_GATEWAY_PG_USER:-claw_gateway} -d ${CLAW_GATEWAY_PG_DATABASE:-claw_gateway}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  gateway-rs:
+    image: ${GATEWAY_IMAGE}
+    container_name: claw-gateway-rs
+    restart: unless-stopped
+    # Match pool worker (USER claw, uid 1000): session dirs on bind-mounted claw-workspace must be worker-writable. kejiqing
+    user: "${CLAW_WORKER_UID:-1000}:${CLAW_WORKER_GID:-1000}"
+    # Postgres: `gateway.sh pg-up` / `pg_ensure` before `up` (no depends_on — avoids podman pod/name conflicts).
+    env_file:
+      # Human-maintained env: repo root `.env` only. Tool allowlist is per-ds in PG, not env. Do not add deploy/stack/.env.
+      # Paths relative to this file's directory: `deploy/stack/` → `../..` is repo root.
+      - ../../.env
+      # tap proxy URL + pool worker run extras (gateway.sh up / tap-up). Overrides stale OPENAI_BASE_URL in .env.
+      - ./.claw-worker-llm.env
+      # Written by compose-include (up.sh / start-with-tap.sh / down.sh). Do not set
+      # CLAW_POOL_WORK_ROOT_HOST in `environment:` with empty ${…} — it overrides env_file and breaks worker bind mounts.
+      - ./.claw-pool-workspace.env
+      # Pool RPC target (host daemon on macOS; compose sidecar on Linux). kejiqing
+      - ./.claw-pool-rpc/gateway.env
+      # LLM sync: writable mounts → repo `.env` + `.claw/claw-tap-upstream.json` (see compose-include). kejiqing
+      - ./.claw-llm-runtime.env
+    environment:
+      # /healthz deployImageTag ← same as `gateway.sh up` GATEWAY_IMAGE (.env or --release pin).
+      CLAW_GATEWAY_IMAGE_REF: ${GATEWAY_IMAGE:-claw-gateway-rs:local}
+      CLAW_HTTP_ADDR: 0.0.0.0:8080
+      CLAW_BIN: /usr/local/bin/claw
+      CLAW_WORK_ROOT: /var/lib/claw/workspace
+      # Gateway session / turn / feedback tables (PostgreSQL). Override for external managed PG.
+      CLAW_GATEWAY_DATABASE_URL: ${CLAW_GATEWAY_DATABASE_URL:-postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway}
+      CLAW_GATEWAY_INTERNAL_TOKEN: ${CLAW_GATEWAY_INTERNAL_TOKEN:-claw-internal-dev-token}
+      CLAW_SOLVE_ISOLATION: ${CLAW_SOLVE_ISOLATION:-podman_pool}
+      # Pool sizing / image: explicit defaults so a bare `podman compose` still gets worker settings when
+      # project-dir `.env` is missing (always prefer `./deploy/stack/gateway.sh up` from repo root with `.env`).
+      CLAW_POOL_SIZE_CAP: ${CLAW_POOL_SIZE_CAP:-4}
+      CLAW_PODMAN_POOL_SIZE: ${CLAW_PODMAN_POOL_SIZE:-4}
+      CLAW_PODMAN_POOL_MIN_IDLE: ${CLAW_PODMAN_POOL_MIN_IDLE:-1}
+      CLAW_PODMAN_IMAGE: ${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}
+      # Do not list CLAW_PODMAN_EXTRA_ARGS / CLAW_DOCKER_EXTRA_ARGS / CLAW_MCP_TOOL_CALL_TIMEOUT_MS
+      # here with "${VAR:-}" — compose interpolation does not read ../../.env, so empty defaults override env_file.
+      CLAW_CONFIG_FILE: /app/.claw.json
+      # Browser-facing tap Live/proxy URLs (playground / healthz); avoid Host=gateway-rs:8080 in links.
+      # Literal default only — nested ${GATEWAY_HOST_PORT} is not expanded inside the container and breaks /healthz claudeTap URLs.
+      CLAW_GATEWAY_PUBLIC_BASE_URL: ${CLAW_GATEWAY_PUBLIC_BASE_URL:-http://127.0.0.1:18088}
+      CLAW_TIMEOUT_SECONDS: ${CLAW_TIMEOUT_SECONDS}
+      CLAW_LOG_FORMAT: json
+      CLAW_LOG_LEVEL: ${CLAW_LOG_LEVEL:-info}
+      CLAW_TRACE_ENABLED: ${CLAW_TRACE_ENABLED:-1}
+      CLAW_TRACE_DIR: /var/log/claw/traces
+      CLAW_SSE_LOG_FILE: /var/log/claw/sse-debug.log
+    ports:
+      - "${GATEWAY_HOST_PORT}:8080"
+    volumes:
+      # Bind mount so podman_pool on the host can use the same path as CLAW_POOL_WORK_ROOT_HOST.
+      - ./claw-workspace:/var/lib/claw/workspace
+      - ${CLAW_HOST_LOG_DIR:-./claw-logs}:/var/log/claw
+      - ../../.claw.json:/app/.claw.json:ro
+      # Same host files as claude-tap `--tap-upstream-config` + pool worker `.env` (gateway LLM apply/poll writes). kejiqing
+      - ../../.env:/run/claw/worker.env:rw
+      - ../../.claw:/run/claw/claw:rw
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz | grep -q '\"ok\":true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # solve_async / project admin UI; proxies browser to gateway-rs (CORS bypass). Author: kejiqing
+  gateway-playground:
+    image: ${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}
+    container_name: claw-gateway-playground
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PLAYGROUND_HOST_PORT:-18765}:18765"
+    volumes:
+      # Host dist overrides image admin-dist after `gateway.sh admin-build` (no image rebuild).
+      - ../../web/gateway-admin/dist:/app/admin-dist:ro
+    environment:
+      PLAYGROUND_LISTEN_HOST: 0.0.0.0
+      PLAYGROUND_LISTEN_PORT: "18765"
+      PLAYGROUND_GATEWAY_BASE: ${PLAYGROUND_GATEWAY_BASE:-http://gateway-rs:8080}
+      # Set in repo root .env (e.g. http://127.0.0.1:18088); avoid nested ${} — playground resolves GATEWAY_HOST_PORT if needed.
+      PLAYGROUND_PUBLIC_GATEWAY_BASE: ${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://127.0.0.1:18088}
+      GATEWAY_HOST_PORT: ${GATEWAY_HOST_PORT:-18088}
+      PLAYGROUND_ALLOWED_HOSTS: ${PLAYGROUND_ALLOWED_HOSTS:-127.0.0.1,localhost,gateway-rs,192.168.9.252,10.200.2.171}
+      PLAYGROUND_ALLOWED_PORTS: ${PLAYGROUND_ALLOWED_PORTS:-8080,8088,18088}
+      PLAYGROUND_ADMIN_USER: ${PLAYGROUND_ADMIN_USER:-admin}
+      PLAYGROUND_ADMIN_PASSWORD: ${PLAYGROUND_ADMIN_PASSWORD:-sunmi123}
+      PLAYGROUND_ADMIN_SESSION_SECRET: ${PLAYGROUND_ADMIN_SESSION_SECRET:-}
+      PLAYGROUND_ADMIN_SESSION_TTL_SEC: ${PLAYGROUND_ADMIN_SESSION_TTL_SEC:-604800}
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18765/')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 5s

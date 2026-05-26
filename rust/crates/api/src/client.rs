@@ -78,6 +78,13 @@ impl ProviderClient {
             OpenAiCompatClient::new(api_key.into(), OpenAiCompatConfig::xai())
                 .with_base_url(base_url.into()),
         )
+    /// Official `DeepSeek` OpenAI-compatible API (`OpenAiCompatConfig::deepseek()` / `DEEPSEEK_BASE_URL`). kejiqing
+    #[must_use]
+    pub fn from_deepseek_official(api_key: impl Into<String>) -> Self {
+        Self::OpenAi(OpenAiCompatClient::new(
+            api_key.into(),
+            OpenAiCompatConfig::deepseek(),
+        ))
     }
 
     #[must_use]
