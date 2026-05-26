@@ -27,9 +27,30 @@ pub struct LlmModelApplyOutcome {
 #[must_use]
 pub fn resolve_repo_env_file() -> Option<PathBuf> {
     if let Ok(raw) = std::env::var("CLAW_WORKER_ENV_FILE") {
-        let p = PathBuf::from(raw.trim());
-        if p.is_file() {
-            return Some(p);
+        let trimmed = raw.trim();
+        if !trimmed.contains(':') {
+            let p = PathBuf::from(trimmed);
+            if p.is_file() {
+                return Some(p);
+            }
+        } else {
+            for part in trimmed.split(':').map(str::trim).filter(|s| !s.is_empty()) {
+                let p = PathBuf::from(part);
+                if p.is_file()
+                    && Path::new(part)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("env"))
+                    && !part.contains("claw-worker-llm")
+                {
+                    return Some(p);
+                }
+            }
+            for part in trimmed.split(':').map(str::trim).filter(|s| !s.is_empty()) {
+                let p = PathBuf::from(part);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
         }
     }
     if let Ok(root) = std::env::var("CLAW_REPO_ROOT") {

@@ -17,6 +17,38 @@ use super::traits::{PoolSessionHostMounts, SlotLease, TaskOutcome};
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
 
+/// Host path bind-mounted to [`WORKER_ENV_MOUNT_PATH`] (single file; colon lists are invalid paths).
+fn resolve_worker_env_host_file() -> Option<PathBuf> {
+    let raw = std::env::var("CLAW_WORKER_ENV_FILE").ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed.contains(':') {
+        let p = PathBuf::from(trimmed);
+        return p.is_file().then_some(p);
+    }
+    for part in trimmed.split(':').map(str::trim).filter(|s| !s.is_empty()) {
+        let p = PathBuf::from(part);
+        if p.is_file()
+            && (part.ends_with("claw-worker-runtime.env")
+                || (Path::new(part)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("env"))
+                    && !part.contains("claw-worker-llm")))
+        {
+            return Some(p);
+        }
+    }
+    for part in trimmed.split(':').map(str::trim).filter(|s| !s.is_empty()) {
+        let p = PathBuf::from(part);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// Serial FIFO forwarder for one turn's stdout lines.
 ///
 /// Each stdout line from `docker exec` arrives via the synchronous Fn callback below.
@@ -207,12 +239,7 @@ impl DockerPoolManager {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        let worker_env_host_file = std::env::var("CLAW_WORKER_ENV_FILE")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .filter(|p| p.is_file());
+        let worker_env_host_file = resolve_worker_env_host_file();
         Self::from_config(DockerPoolConfig {
             runtime_bin: default_bin.to_string(),
             work_root: work_root.to_path_buf(),

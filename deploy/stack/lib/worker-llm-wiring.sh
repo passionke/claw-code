@@ -27,7 +27,18 @@ claw_ensure_worker_llm_wiring() {
     printf '%s\n' "CLAW_PODMAN_NETWORK=${net}"
   } >"${gen}"
 
-  export CLAW_WORKER_ENV_FILE="${gen}:${host_env}"
+  # Pool daemon bind-mounts a single host file to /run/claw/worker.env (no colon paths).
+  # Repo .env holds DB-synced OPENAI_API_KEY; generated block sets tap OPENAI_BASE_URL. kejiqing
+  local runtime="${script_dir}/.claw-worker-runtime.env"
+  {
+    printf '%s\n' '# GENERATED — pool worker mount (repo .env + tap wiring). kejiqing'
+    if [[ -f "${host_env}" ]]; then
+      cat "${host_env}"
+    fi
+    cat "${gen}"
+  } >"${runtime}"
+
+  export CLAW_WORKER_ENV_FILE="${runtime}"
   export OPENAI_BASE_URL="${openai_tap}"
   export INTERNAL_CLAUDE_TAP_HOST="${openai_tap}"
   export CLAW_DOCKER_EXTRA_ARGS="${pool_extra}"
