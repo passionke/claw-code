@@ -24,7 +24,7 @@ name: claw-code-acr
 on:
   push:
     tags:
-      - "release-v*.*.*"
+      - "release-v*"
 
 permissions:
   contents: read

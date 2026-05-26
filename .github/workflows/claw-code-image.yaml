@@ -13,7 +13,7 @@ name: claw-code-image
 on:
   push:
     tags:
-      - "release-v*.*.*"
+      - "release-v*"
 
 permissions:
   contents: read
