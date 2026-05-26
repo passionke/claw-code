@@ -44,9 +44,7 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
             Ok(db) => break db,
             Err(e) => {
                 if Instant::now() >= db_deadline {
-                    eprintln!(
-                        "[global_llm_api] connect retry exhausted: {e}"
-                    );
+                    eprintln!("[global_llm_api] connect retry exhausted: {e}");
                     break Err(e).expect(
                         "connect CLAW_GATEWAY_DATABASE_URL (need PG on 5433) after retries",
                     );
