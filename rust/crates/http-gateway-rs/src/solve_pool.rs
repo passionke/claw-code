@@ -452,34 +452,6 @@ pub async fn run_solve_request_docker(
         session_home = %session_home.display(),
         "docker pool gateway_solve completed and response built"
     );
-    if !skip_session_db {
-        let session_id = task_id.clone().unwrap_or_else(|| request_id.clone());
-        if let Err(e) = http_gateway_rs::persistence::persist_turn_after_solve(
-            state.session_db.pg_pool(),
-            state.session_db.as_ref(),
-            &session_id,
-            req.ds_id,
-            &turn_id,
-            &req.user_prompt,
-            &session_home,
-            claw_exit_code,
-            &output_text,
-            output_json.as_ref(),
-            duration_ms,
-            req.model.as_deref(),
-        )
-        .await
-        {
-            tracing::warn!(
-                target: "claw_gateway_orchestration",
-                component = "persistence",
-                turn_id = %turn_id,
-                error = %e,
-                "persist turn to database failed"
-            );
-        }
-    }
-
     Ok(SolveResponse {
         session_id: request_id.clone(),
         request_id,
