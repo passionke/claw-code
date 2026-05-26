@@ -9,6 +9,7 @@ services:
     env_file:
       - ../../.env
       - ./.claw-pool-daemon.env
+      - ./.claw-pool-worker.env
     environment:
       CLAW_POOL_DAEMON_TCP_BIND: "0.0.0.0:${CLAW_POOL_DAEMON_PORT:-9943}"
       CLAW_POOL_HTTP_BIND: "0.0.0.0:${CLAW_POOL_HTTP_PORT:-9944}"

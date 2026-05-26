@@ -4,6 +4,8 @@ archive/
 .clawd-agents/
 # Cursor IDE (machine-local rules, state)
 .cursor/
+# OpenClaw local / machine state
+.openclaw/
 
 # Claude Code local artifacts
 .claude/settings.local.json
@@ -31,7 +33,8 @@ rust/crates/rusty-claude-cli/.claw/
 status-help.txt
 claw-server-data/
 rust/claw-server.db
-deploy/stack/claude-tap.log
+deploy/stack/*.log
+deploy/stack/.test-*.json
 deploy/stack/claude-tap.pid
 deploy/stack/claw-logs/
 deploy/stack/claw-workspace/
@@ -41,7 +44,6 @@ deploy/stack/claude-tap-data/
 deploy/stack/deploy/
 deploy/stack/.claw-pool-rpc/
 deploy/stack/.linux-artifacts/
-deploy/stack/.build.log
 deploy/stack/.claw-postgres-network.override.yml
 rust/.cargo/config.toml
 # Compose auto-loads this filename next to podman-compose.yml — do not create; use repo root `.env` only.
