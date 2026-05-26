@@ -26,6 +26,7 @@ pub mod gateway_llm_model_apply;
 pub mod gateway_llm_model_revision;
 pub mod live_report_audit;
 pub mod mcp_probe;
+pub mod persistence;
 pub mod pool;
 pub mod pool_registry;
 pub mod project_config_apply;

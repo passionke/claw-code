@@ -455,7 +455,7 @@ pub async fn run_solve_request_docker(
     if !skip_session_db {
         let session_id = task_id.clone().unwrap_or_else(|| request_id.clone());
         if let Err(e) = http_gateway_rs::persistence::persist_turn_after_solve(
-            state.session_db.pool(),
+            state.session_db.pg_pool(),
             state.session_db.as_ref(),
             &session_id,
             req.ds_id,
