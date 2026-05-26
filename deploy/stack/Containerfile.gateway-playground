@@ -1,5 +1,7 @@
 # Gateway async playground (stdlib Python + static UI). Author: kejiqing
-FROM docker.1ms.run/library/python:3.12-alpine
+# CI: PYTHON_BASE_IMAGE from CONTAINER_BASE_REGISTRY (default docker.io). Local CN: docker.1ms.run default below.
+ARG PYTHON_BASE_IMAGE=docker.1ms.run/library/python:3.12-alpine
+FROM ${PYTHON_BASE_IMAGE}
 
 WORKDIR /app
 COPY web/gateway-async-playground/server.py \

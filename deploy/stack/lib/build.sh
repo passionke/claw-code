@@ -111,6 +111,7 @@ source "${ROOT_DIR}/deploy/stack/rust-version.env"
 export CLAW_RUST_VERSION CLAW_RUST_IMAGE_TAG
 RUST_BASE_IMAGE="${REG}/library/rust:${CLAW_RUST_IMAGE_TAG}"
 DEBIAN_BASE_IMAGE="${REG}/library/debian:bookworm-slim"
+PYTHON_BASE_IMAGE="${REG}/library/python:3.12-alpine"
 echo "==> Rust locked: ${CLAW_RUST_VERSION} (image ${RUST_BASE_IMAGE})"
 
 cn_mirror_enabled() {
@@ -151,6 +152,7 @@ if use_prebuilt_linux_path; then
   step "4/4 gateway-admin dist + image ${PLAYGROUND_IMAGE_NAME}"
   "${ROOT_DIR}/deploy/stack/lib/build-gateway-admin.sh"
   "${CONTAINER_CLI}" build \
+    --build-arg "PYTHON_BASE_IMAGE=${PYTHON_BASE_IMAGE}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground" \
     -t "${PLAYGROUND_IMAGE_NAME}" \
     "${ROOT_DIR}"
@@ -200,6 +202,7 @@ else
   step "3/4 gateway-admin dist + image ${PLAYGROUND_IMAGE_NAME}"
   "${ROOT_DIR}/deploy/stack/lib/build-gateway-admin.sh"
   "${CONTAINER_CLI}" build \
+    --build-arg "PYTHON_BASE_IMAGE=${PYTHON_BASE_IMAGE}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground" \
     -t "${PLAYGROUND_IMAGE_NAME}" \
     "${ROOT_DIR}"

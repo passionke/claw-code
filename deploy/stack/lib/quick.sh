@@ -25,7 +25,15 @@ echo "==> [2/5] gateway-admin dist + playground image"
 "${LIB_DIR}/build-gateway-admin.sh"
 rt="$(command -v podman 2>/dev/null || command -v docker)"
 pg_img="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
-"${rt}" build -q -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground" \
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  py_reg="docker.io"
+else
+  py_reg="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
+  py_reg="${py_reg%/}"
+fi
+"${rt}" build -q \
+  --build-arg "PYTHON_BASE_IMAGE=${py_reg}/library/python:3.12-alpine" \
+  -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground" \
   -t "${pg_img}" "${ROOT_DIR}" >/dev/null
 
 echo "==> [3/5] pool-reset"

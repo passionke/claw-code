@@ -88,9 +88,11 @@ jobs:
           fi
           RUST_IMAGE="${REG}/library/rust:1.88-bookworm"
           DEBIAN_IMAGE="${REG}/library/debian:bookworm-slim"
+          PYTHON_IMAGE="${REG}/library/python:3.12-alpine"
           echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
           echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "python_image=${PYTHON_IMAGE}" >> "$GITHUB_OUTPUT"
 
       - name: Image tags
         id: meta
@@ -121,6 +123,7 @@ jobs:
           build-args: |
             RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
             DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
+            PYTHON_BASE_IMAGE=${{ steps.base_images.outputs.python_image }}
             RUSTUP_DIST_SERVER=https://static.rust-lang.org
             RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
           tags: ${{ steps.meta.outputs.tags }}
