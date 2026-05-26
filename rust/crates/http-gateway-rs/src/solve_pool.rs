@@ -510,6 +510,7 @@ mod session_path_tests {
             projects_git_ds_home_poll_interval_secs: None,
             gateway_llm_config_poll_interval_secs: None,
             report_polish_deepseek: None,
+            live_biz_report_spill_enabled: false,
         };
         let got = session_mount_for_pool_acquire(
             Path::new("/var/lib/claw/workspace/ds_1/sessions/abc"),
@@ -544,6 +545,7 @@ mod session_path_tests {
             projects_git_ds_home_poll_interval_secs: None,
             gateway_llm_config_poll_interval_secs: None,
             report_polish_deepseek: None,
+            live_biz_report_spill_enabled: false,
         };
         let p = PathBuf::from("/tmp/sess");
         let got = session_mount_for_pool_acquire(&p, &cfg);
