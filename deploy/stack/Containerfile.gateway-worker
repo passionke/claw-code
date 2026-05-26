@@ -32,4 +32,5 @@ COPY --from=builder /build/target/release/claw /usr/local/bin/claw
 RUN chmod +x /usr/local/bin/claw
 
 USER claw
+# Pool runs: docker run … --entrypoint sleep <image> infinity (avoids duplicate ENTRYPOINT+CMD).
 ENTRYPOINT ["sleep", "infinity"]
