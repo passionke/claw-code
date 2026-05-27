@@ -59,6 +59,13 @@ pub trait PoolOps: Send + Sync {
 
     async fn force_kill_slot(&self, slot_index: usize) -> Result<(), String>;
 
+    /// Ensure `session_host_mount` (host path under pool `work_root`) is uid/gid-aligned for workers.
+    /// With [`super::PoolRpcClient`], runs on `claw-pool-daemon` so the gateway container need not mount the engine socket. Author: kejiqing
+    async fn chown_session_tree_for_pool_worker(
+        &self,
+        session_host_mount: PathBuf,
+    ) -> Result<(), String>;
+
     /// Whether this turn has observed at least one stdout `report.delta`.
     async fn has_report_for_turn(&self, _turn_id: &str) -> bool {
         false

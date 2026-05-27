@@ -55,6 +55,10 @@ pub enum PoolRpcReq {
     ReportState {
         turn_id: String,
     },
+    /// Host path under pool `work_root` (same as [`PoolRpcReq::Acquire::session_host_mount`]); runs privileged chown on daemon.
+    ChownSessionHost {
+        session_host_mount: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -219,6 +223,23 @@ impl PoolOps for PoolRpcClient {
         Ok(())
     }
 
+    async fn chown_session_tree_for_pool_worker(
+        &self,
+        session_host_mount: PathBuf,
+    ) -> Result<(), String> {
+        let r = self
+            .call(PoolRpcReq::ChownSessionHost {
+                session_host_mount: session_host_mount.to_string_lossy().into_owned(),
+            })
+            .await?;
+        if !r.ok {
+            return Err(r
+                .error
+                .unwrap_or_else(|| "pool chown_session_host failed".into()));
+        }
+        Ok(())
+    }
+
     async fn has_report_for_turn(&self, turn_id: &str) -> bool {
         self.call(PoolRpcReq::ReportState {
             turn_id: turn_id.to_string(),
@@ -344,6 +365,27 @@ async fn dispatch_pool_rpc(
             }
         }
         PoolRpcReq::ForceKill { slot_index } => match pool.force_kill_slot(slot_index).await {
+            Ok(()) => PoolRpcResp {
+                ok: true,
+                error: None,
+                lease: None,
+                outcome: None,
+                has_report: None,
+                first_report_at_ms: None,
+            },
+            Err(e) => PoolRpcResp {
+                ok: false,
+                error: Some(e),
+                lease: None,
+                outcome: None,
+                has_report: None,
+                first_report_at_ms: None,
+            },
+        },
+        PoolRpcReq::ChownSessionHost { session_host_mount } => match pool
+            .chown_session_host_under_work_root(PathBuf::from(session_host_mount))
+            .await
+        {
             Ok(()) => PoolRpcResp {
                 ok: true,
                 error: None,

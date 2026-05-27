@@ -54,6 +54,15 @@ impl PoolOps for LocalPoolOps {
         self.0.force_kill_slot(slot_index).await
     }
 
+    async fn chown_session_tree_for_pool_worker(
+        &self,
+        session_host_mount: PathBuf,
+    ) -> Result<(), String> {
+        self.0
+            .chown_session_host_under_work_root(session_host_mount)
+            .await
+    }
+
     async fn has_report_for_turn(&self, turn_id: &str) -> bool {
         self.0.has_report_for_turn(turn_id)
     }

@@ -1,10 +1,8 @@
 //! Session bind-mount uid alignment for pool workers (`claw` / `CLAW_WORKER_*`). Author: kejiqing
 //!
-//! Gateway `prepare_gateway_session` and pool `docker run` both need the session tree writable by
-//! the worker uid. When the gateway runs as non-root (e.g. `1000:1000`) but the tree contains
-//! `root`-owned paths (common after ro file binds / first solve), in-process `chown(2)` fails; we
-//! then run the same short-lived privileged container as [`super::docker_pool::DockerPoolManager`]
-//! used historically.
+//! Gateway `prepare_gateway_session` delegates to [`super::PoolOps::chown_session_tree_for_pool_worker`]
+//! when `CLAW_POOL_RPC_HOST_WORK_ROOT` is set (RPC → `claw-pool-daemon`). In-process pool and daemon
+//! `run_worker_container` use this helper with the local engine CLI.
 
 use std::path::Path;
 

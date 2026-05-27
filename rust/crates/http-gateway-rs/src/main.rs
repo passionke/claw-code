@@ -7416,15 +7416,30 @@ async fn prepare_gateway_session(
         }
     }
 
-    let pool_bin = pool_runtime_cli_bin(state.cfg.solve_isolation);
-    pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(pool_bin, &session_home)
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("session workspace ownership for pool worker failed: {e}"),
-            )
-        })?;
+    // Privileged uid alignment: host pool daemon owns docker/podman + socket; avoid gateway container engine access. kejiqing
+    if state.cfg.pool_rpc_host_work_root.is_some() {
+        let host_session = solve_pool::session_mount_for_pool_acquire(&session_home, &state.cfg);
+        state
+            .docker_pool
+            .chown_session_tree_for_pool_worker(host_session)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("session workspace ownership for pool worker failed: {e}"),
+                )
+            })?;
+    } else {
+        let pool_bin = pool_runtime_cli_bin(state.cfg.solve_isolation);
+        pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(pool_bin, &session_home)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("session workspace ownership for pool worker failed: {e}"),
+                )
+            })?;
+    }
 
     if need_insert_row {
         state

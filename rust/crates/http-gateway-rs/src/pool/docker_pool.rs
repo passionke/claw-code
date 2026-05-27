@@ -388,6 +388,29 @@ impl DockerPoolManager {
         .await
     }
 
+    /// RPC / host pool: canonicalize `session_host_mount` under [`Self::work_root_host`], then uid-align. Author: kejiqing
+    pub async fn chown_session_host_under_work_root(
+        &self,
+        session_host_mount: PathBuf,
+    ) -> Result<(), String> {
+        let session_abs = std::fs::canonicalize(&session_host_mount).map_err(|e| {
+            format!(
+                "canonicalize session chown path {}: {e}",
+                session_host_mount.display()
+            )
+        })?;
+        let root = &self.work_root_host;
+        if !session_abs.starts_with(root) {
+            return Err(format!(
+                "session chown path {} escapes pool work_root {}",
+                session_abs.display(),
+                root.display()
+            ));
+        }
+        self.ensure_session_mount_owned_by_worker(&session_abs)
+            .await
+    }
+
     #[allow(clippy::too_many_lines)] // podman run argv + bind mounts. Author: kejiqing
     async fn run_worker_container(
         &self,
