@@ -1,13 +1,25 @@
-# Gateway async playground (stdlib Python + static UI). Author: kejiqing
+# Gateway async playground (stdlib Python + Vite admin SPA). Author: kejiqing
 # CI: PYTHON_BASE_IMAGE from CONTAINER_BASE_REGISTRY (default docker.io). Local CN: docker.1ms.run default below.
 ARG PYTHON_BASE_IMAGE=docker.1ms.run/library/python:3.12-alpine
+ARG NODE_BASE_IMAGE=docker.1ms.run/library/node:20-alpine
+
+FROM ${NODE_BASE_IMAGE} AS admin-build
+WORKDIR /build
+COPY web/gateway-admin/package.json web/gateway-admin/package-lock.json ./
+RUN npm config set registry https://registry.npmmirror.com \
+  && npm ci
+COPY web/gateway-admin/ ./
+RUN npm run build \
+  && test -f dist/index.html \
+  && sh -c 'test -n "$(ls dist/assets/*.js 2>/dev/null)"'
+
 FROM ${PYTHON_BASE_IMAGE}
 
 WORKDIR /app
 COPY web/gateway-async-playground/server.py \
      web/gateway-async-playground/index.html \
      ./
-COPY web/gateway-admin/dist/ ./admin-dist/
+COPY --from=admin-build /build/dist/ ./admin-dist/
 
 ENV PLAYGROUND_ADMIN_DIST=/app/admin-dist \
     PLAYGROUND_LISTEN_HOST=0.0.0.0 \

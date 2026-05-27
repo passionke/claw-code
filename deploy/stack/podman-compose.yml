@@ -95,9 +95,8 @@ services:
     restart: unless-stopped
     ports:
       - "${GATEWAY_PLAYGROUND_HOST_PORT:-18765}:18765"
-    volumes:
-      # Host dist overrides image admin-dist after `gateway.sh admin-build` (no image rebuild).
-      - ../../web/gateway-admin/dist:/app/admin-dist:ro
+    # Admin static files come from the image (Containerfile builds gateway-admin in CI/local build).
+    # Local hot-reload: `gateway.sh admin-reload` or add deploy/stack/podman-compose.admin-dist-bind.yml.
     environment:
       PLAYGROUND_LISTEN_HOST: 0.0.0.0
       PLAYGROUND_LISTEN_PORT: "18765"

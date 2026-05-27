@@ -33,6 +33,7 @@ else
 fi
 "${rt}" build -q \
   --build-arg "PYTHON_BASE_IMAGE=${py_reg}/library/python:3.12-alpine" \
+  --build-arg "NODE_BASE_IMAGE=${py_reg}/library/node:20-alpine" \
   -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground" \
   -t "${pg_img}" "${ROOT_DIR}" >/dev/null
 

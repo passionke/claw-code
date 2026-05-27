@@ -1,0 +1,6 @@
+# Optional: bind-mount host `web/gateway-admin/dist` (requires `gateway.sh admin-build` first).
+# quick/local only — do not use with `up --release` or incomplete dist causes /admin white screen. kejiqing
+services:
+  gateway-playground:
+    volumes:
+      - ../../web/gateway-admin/dist:/app/admin-dist:ro
