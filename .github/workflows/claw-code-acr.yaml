@@ -89,10 +89,12 @@ jobs:
           RUST_IMAGE="${REG}/library/rust:1.88-bookworm"
           DEBIAN_IMAGE="${REG}/library/debian:bookworm-slim"
           PYTHON_IMAGE="${REG}/library/python:3.12-alpine"
+          NODE_IMAGE="${REG}/library/node:20-alpine"
           echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
           echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "python_image=${PYTHON_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "node_image=${NODE_IMAGE}" >> "$GITHUB_OUTPUT"
 
       - name: Image tags
         id: meta
@@ -124,6 +126,15 @@ jobs:
             RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
             DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
             PYTHON_BASE_IMAGE=${{ steps.base_images.outputs.python_image }}
+            NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}
             RUSTUP_DIST_SERVER=https://static.rust-lang.org
             RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
           tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Verify playground admin assets in image
+        if: matrix.package == 'claw-gateway-playground'
+        run: |
+          set -euo pipefail
+          IMG="${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.release_tag }}"
+          docker run --rm "${IMG}" sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
+          echo "playground admin-dist ok in ${IMG}"

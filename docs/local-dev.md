@@ -45,7 +45,7 @@
 |------|------|
 | `./deploy/stack/gateway.sh playground` | 仅起 host 调试页（会先 `admin-build`） |
 | `./deploy/stack/gateway.sh admin-build` | 只构建 React Admin `dist/`（改 `web/gateway-admin/src` 时用） |
-| `./deploy/stack/gateway.sh admin-reload` | `admin-build` 后 `podman cp` 进 playground 容器；可选 compose 文件 `podman-compose.admin-dist-bind.yml` 做 bind 挂载（须先 `admin-build`，否则 `/admin` 白屏） |
+| `./deploy/stack/gateway.sh admin-reload` | **仅本地**：`CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1` + Node≥18；线上用 CI `claw-gateway-playground` 镜像，勿在服务器编译 |
 | `./deploy/stack/gateway.sh down` | 停 gateway + pool |
 | `./deploy/stack/gateway.sh ps` | 看容器 |
 | `./deploy/stack/gateway.sh help` | 帮助 |

@@ -70,7 +70,7 @@ if [[ -z "${js_path}" ]]; then
 fi
 curl -fsS "http://127.0.0.1:${PLAYGROUND_PORT}${js_path}" -o /tmp/claw_playground_main.js
 if head -c 20 /tmp/claw_playground_main.js | grep -q '<!DOCTYPE'; then
-  echo "error: ${js_path} returned HTML (admin dist incomplete — run admin-build or use image with baked assets)" >&2
+  echo "error: ${js_path} returned HTML (playground image missing admin assets — pull CI claw-gateway-playground and recreate container)" >&2
   exit 1
 fi
 echo "playground admin assets ok (${js_path})"

@@ -21,8 +21,7 @@ set +a
 echo "==> [1/5] build host claw-pool-daemon (release)"
 (cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
 
-echo "==> [2/5] gateway-admin dist + playground image"
-"${LIB_DIR}/build-gateway-admin.sh"
+echo "==> [2/5] playground image (gateway-admin built inside Containerfile)"
 rt="$(command -v podman 2>/dev/null || command -v docker)"
 pg_img="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then

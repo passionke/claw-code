@@ -150,8 +150,7 @@ if use_prebuilt_linux_path; then
     -t "${WORKER_IMAGE_NAME}" \
     "${ROOT_DIR}"
 
-  step "4/4 gateway-admin dist + image ${PLAYGROUND_IMAGE_NAME}"
-  "${ROOT_DIR}/deploy/stack/lib/build-gateway-admin.sh"
+  step "4/4 image ${PLAYGROUND_IMAGE_NAME} (admin SPA built inside Containerfile / CI)"
   "${CONTAINER_CLI}" build \
     --build-arg "PYTHON_BASE_IMAGE=${PYTHON_BASE_IMAGE}" \
     --build-arg "NODE_BASE_IMAGE=${NODE_BASE_IMAGE}" \
@@ -201,8 +200,7 @@ else
     -t "${WORKER_IMAGE_NAME}" \
     "${ROOT_DIR}"
 
-  step "3/4 gateway-admin dist + image ${PLAYGROUND_IMAGE_NAME}"
-  "${ROOT_DIR}/deploy/stack/lib/build-gateway-admin.sh"
+  step "3/4 image ${PLAYGROUND_IMAGE_NAME} (admin SPA built inside Containerfile / CI)"
   "${CONTAINER_CLI}" build \
     --build-arg "PYTHON_BASE_IMAGE=${PYTHON_BASE_IMAGE}" \
     --build-arg "NODE_BASE_IMAGE=${NODE_BASE_IMAGE}" \

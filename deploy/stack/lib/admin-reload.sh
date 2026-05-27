@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild gateway-admin dist; sync into playground when not bind-mounted. Author: kejiqing
+# Local dev only: rebuild admin dist and copy into running playground. Production: use CI image. Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -7,6 +7,7 @@ ROOT_DIR="$(cd "${LIB_DIR}/../../.." && pwd)"
 DIST="$(cd "${ROOT_DIR}/web/gateway-admin/dist" && pwd)"
 CONTAINER="${CLAW_GATEWAY_PLAYGROUND_CONTAINER:-claw-gateway-playground}"
 
+export CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1
 "${LIB_DIR}/build-gateway-admin.sh"
 
 rt="$(command -v podman 2>/dev/null || command -v docker 2>/dev/null || true)"

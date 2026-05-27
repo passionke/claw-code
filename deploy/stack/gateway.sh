@@ -17,8 +17,8 @@ Commands:
   build         clean (default) + build images (Darwin: podman run compile; log: .build.log)
   pack-deploy   Build gateway images + restart stack (slow; after Rust/image changes; log: .build.log)
   playground    Run host playground UI (solve_async + /admin; builds admin dist first)
-  admin-build   Build web/gateway-admin dist only (npm ci && vite build)
-  admin-reload  admin-build + copy dist into running playground container
+  admin-build   Local only: gateway-admin dist (needs Node>=18; set CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1)
+  admin-reload  Local only: admin-build + copy dist into playground container (not for --release servers)
   solve-once-local  Host-side one-turn gateway-solve-once (no worker container)
   up            Start/recreate gateway + pool only (does not stop/start postgres)
   down          Stop gateway + pool only (postgres keeps running)
