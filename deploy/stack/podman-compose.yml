@@ -41,6 +41,7 @@ services:
       - ./.claw-pool-workspace.env
       # Pool RPC target (host daemon on macOS; compose sidecar on Linux). kejiqing
       - ./.claw-pool-rpc/gateway.env
+      - ./.claw-pool-rpc/pool-registry.env
       # LLM sync: writable mounts → repo `.env` + `.claw/claw-tap-upstream.json` (see compose-include). kejiqing
       - ./.claw-llm-runtime.env
     environment:

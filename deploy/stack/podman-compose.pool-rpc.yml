@@ -11,6 +11,8 @@ services:
       - ./.claw-worker-llm.env
       - ./.claw-pool-daemon.env
       - ./.claw-pool-worker.env
+      # Same CLAW_POOL_ID / CLAW_POOL_ADVERTISE_HOST as gateway (written by gateway.sh up). kejiqing
+      - ./.claw-pool-rpc/pool-registry.env
     environment:
       CLAW_POOL_DAEMON_TCP_BIND: "0.0.0.0:${CLAW_POOL_DAEMON_PORT:-9943}"
       CLAW_POOL_HTTP_BIND: "0.0.0.0:${CLAW_POOL_HTTP_PORT:-9944}"
