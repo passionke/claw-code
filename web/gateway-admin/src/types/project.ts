@@ -2,7 +2,10 @@
 
 /** First-turn solve preflight (`project_config.solve_preflight_json`). Author: kejiqing */
 export interface SolvePreflightJson {
-  kind: "none" | "sqlbot_mcp_start" | string;
+  /** legacy single kind, still accepted by backend */
+  kind?: "none" | "sqlbot_mcp_start" | string;
+  /** ordered preflight pipeline kinds */
+  kinds?: string[];
 }
 
 /** Solve orchestration pipeline (`project_config.solve_orchestration_json`). Author: kejiqing */

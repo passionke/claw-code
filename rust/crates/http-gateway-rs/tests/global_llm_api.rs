@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration, Instant};
 
 fn ensure_test_env(tmp: &std::path::Path) {
-    let _ = std::env::set_var(
+    std::env::set_var(
         "CLAW_GATEWAY_DATABASE_URL",
         std::env::var("CLAW_GATEWAY_DATABASE_URL").unwrap_or_else(|_| {
             "postgres://claw_gateway:clawGw9Dev_Pg@127.0.0.1:5433/claw_gateway".into()
@@ -32,6 +32,7 @@ fn ensure_test_env(tmp: &std::path::Path) {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn global_llm_put_active_roundtrip_and_file_sync() {
     let tmp = tempfile::tempdir().expect("tempdir");
     ensure_test_env(tmp.path());

@@ -381,58 +381,11 @@ impl DockerPoolManager {
 
     /// Gateway-rs often creates session dirs as root; workers need uid 1000 writable `.claw/`. Author: kejiqing
     async fn ensure_session_mount_owned_by_worker(&self, session_abs: &Path) -> Result<(), String> {
-        if crate::workspace_perm::session_tree_owned_by_worker(session_abs) {
-            return Ok(());
-        }
-        if crate::workspace_perm::chown_session_tree_for_worker(session_abs).is_ok() {
-            return Ok(());
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let root_owned = std::fs::metadata(session_abs)
-                .map(|m| m.uid() == 0)
-                .unwrap_or(false);
-            if !root_owned {
-                return Ok(());
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            return Ok(());
-        }
-        #[cfg(unix)]
-        {
-            let (uid, gid) = crate::workspace_perm::worker_uid_gid();
-            let image = std::env::var("CLAW_CHOWN_RUNNER_IMAGE")
-                .unwrap_or_else(|_| "docker.1ms.run/library/alpine:3.20".to_string());
-            let mount = format!("{}:/mnt:rw", session_abs.display());
-            let owner = format!("{uid}:{gid}");
-            let out = runtime_exec(
-                &self.bin,
-                &[
-                    "run", "--rm", "-v", &mount, "--user", "root", &image, "chown", "-R", &owner,
-                    "/mnt",
-                ],
-            )
-            .await
-            .map_err(|e| format!("{} chown session mount: {e}", self.bin))?;
-            if !out.status.success() {
-                return Err(format!(
-                    "{} chown session mount failed (code {:?}): {}",
-                    self.bin,
-                    out.status.code(),
-                    String::from_utf8_lossy(&out.stderr)
-                ));
-            }
-            if !crate::workspace_perm::session_tree_owned_by_worker(session_abs) {
-                return Err(format!(
-                    "session mount still not owned by worker uid {uid}: {}",
-                    session_abs.display()
-                ));
-            }
-            Ok(())
-        }
+        super::session_mount_ownership::ensure_session_tree_owned_for_worker_with_runtime_fallback(
+            &self.bin,
+            session_abs,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_lines)] // podman run argv + bind mounts. Author: kejiqing

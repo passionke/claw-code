@@ -49,7 +49,7 @@ Base URL 示例：`http://127.0.0.1:18088`
       - `claw-session-id: <sessionId>`
     - 在访问下游 MCP 服务（包括 SQLBot）时，`tools/call` 的 `_meta` 仅含 `extra_session` 对象（详见 [`gateway-mcp-call-meta.md`](gateway-mcp-call-meta.md)）：业务字段来自请求体 `extraSession`，并注入 `_claw_session_id`、`_claw_turn_id` 供串联。非 MCP HTTP 出站 header。
   - 对话状态：同一会话目录下使用 `.claw/gateway-solve-session.jsonl` 持久化消息；若文件损坏导致无法加载，返回 `500`（不会静默丢弃历史）。
-  - **Solve preflight（按项目、可选）**：在 `ds_<id>/home/.claw/solve-preflight.json` 声明，例如 `{"kind":"sqlbot_mcp_start"}`。仅**该 `sessionId` 第一次**（尚无 `gateway-solve-session.jsonl`）时：先写入用户问题，再执行 preflight 并注入 transcript（当前仅 `sqlbot_mcp_start`：一次 `mcp_start`，暴露 `access_token` / `chat_id`）。续聊 turn 不跑 preflight。环境变量 **`CLAW_GATEWAY_SQLBOT_PREFLIGHT`**=`0`/`false`/`off`/`no` 可关闭 SQLBot 这一类。表结构不在 transcript 注入：由外部 job 维护 `ds_<id>/home/schema.md`（`CREATE TABLE` DDL），worker ro mount 到 `home/schema.md`，系统提示词引导模型读取该文件。
+  - **Solve preflight（按项目、可选）**：在 `ds_<id>/home/.claw/solve-preflight.json` 声明，例如 `{"kinds":["sqlbot_mcp_start"]}`（兼容历史 `{"kind":"sqlbot_mcp_start"}`）。仅**该 `sessionId` 第一次**（尚无 `gateway-solve-session.jsonl`）时：先写入用户问题，再按 `kinds` 顺序执行 preflight 并注入 transcript（当前仅 `sqlbot_mcp_start`：一次 `mcp_start`，暴露 `access_token` / `chat_id`）。续聊 turn 不跑 preflight。表结构不在 transcript 注入：由外部 job 维护 `ds_<id>/home/schema.md`（`CREATE TABLE` DDL），worker ro mount 到 `home/schema.md`，系统提示词引导模型读取该文件。
 
 - `POST /v1/start`
   - 用途：异步提交 solve（与 `solve_async` 相同入队逻辑），**立即**返回 `sessionId` / `requestId`（二者同值，且等于 `taskId`）；供 BFF「agent/start」等会话引导场景使用，**不要**再同步调用 `/v1/solve` 阻塞等待。

@@ -18,23 +18,27 @@ Author: kejiqing
 `GET` / `PUT /v1/project/config/{ds_id}` 字段 **`solvePreflightJson`**（camelCase）：
 
 ```json
+{ "kinds": ["sqlbot_mcp_start"] }
+```
+
+兼容历史格式（仍可读）：
+
+```json
 { "kind": "sqlbot_mcp_start" }
 ```
 
 | `kind` | 行为 |
 | --- | --- |
-| `none` | 不跑 preflight；物化时删除 `solve-preflight.json`（若存在） |
 | `sqlbot_mcp_start` | 首轮在**用户问题之后**：`mcp_start` → list/tables/terminologies/examples → 会话内 `home/*.md`（见下表）；transcript 仅摘要 + 路径说明；任一步 MCP/解析失败则 `warn` 跳过 |
 
 `PUT` 省略 `solvePreflightJson` 时保留库内已有值（同 `gitSyncJson`）。
+`kinds` 为空数组时表示关闭 preflight；有多个时按顺序依次执行。
 
 ## 何时执行
 
 - 仅该 `sessionId` **第一次** solve（无 `gateway-solve-session.jsonl`）
 - 顺序：用户消息 → preflight → LLM
 - **续聊**不跑
-
-全局关闭 SQLBot 注入：`CLAW_GATEWAY_SQLBOT_PREFLIGHT=0`（worker env）。
 
 ## 会话内 Markdown（Worker preflight 生成）
 

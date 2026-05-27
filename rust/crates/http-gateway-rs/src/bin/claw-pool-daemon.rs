@@ -11,6 +11,7 @@ use http_gateway_rs::session_db::GatewaySessionDb;
 use tracing::warn;
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() {
     let work_root = PathBuf::from(
         std::env::var("CLAW_WORK_ROOT").unwrap_or_else(|_| "/tmp/claw-workspace".into()),

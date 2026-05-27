@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use serde_json::{json, Value};
 
 use crate::{DirectToolExecutor, GatewaySolveTurnError};
 use runtime::Session;
@@ -15,20 +16,74 @@ pub const SOLVE_PREFLIGHT_CONFIG_REL: &str = "home/.claw/solve-preflight.json";
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct SolvePreflightConfig {
-    /// Registered handler id, e.g. `sqlbot_mcp_start`, `none`.
+    /// Registered handler ids in execution order.
+    #[serde(default)]
+    pub kinds: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+struct LegacySolvePreflightConfig {
     pub kind: String,
+}
+
+fn normalize_kinds(raw: &[String]) -> Vec<String> {
+    raw.iter()
+        .map(|k| k.trim())
+        .filter(|k| !k.is_empty() && *k != "none")
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn parse_solve_preflight_value(value: &Value) -> Result<SolvePreflightConfig, String> {
+    if value.get("kinds").is_some() {
+        let cfg: SolvePreflightConfig = serde_json::from_value(value.clone())
+            .map_err(|e| format!("solvePreflightJson: {e}"))?;
+        return Ok(SolvePreflightConfig {
+            kinds: normalize_kinds(&cfg.kinds),
+        });
+    }
+    let legacy: LegacySolvePreflightConfig =
+        serde_json::from_value(value.clone()).map_err(|e| format!("solvePreflightJson: {e}"))?;
+    let kind = legacy.kind.trim();
+    if kind.is_empty() || kind == "none" {
+        return Ok(SolvePreflightConfig { kinds: vec![] });
+    }
+    Ok(SolvePreflightConfig {
+        kinds: vec![kind.to_string()],
+    })
 }
 
 /// Validate `project_config.solve_preflight_json` before DB write.
 pub fn validate_solve_preflight_json(value: &serde_json::Value) -> Result<(), String> {
-    let cfg: SolvePreflightConfig =
-        serde_json::from_value(value.clone()).map_err(|e| format!("solvePreflightJson: {e}"))?;
-    match cfg.kind.as_str() {
-        "none" | "sqlbot_mcp_start" => Ok(()),
-        other => Err(format!(
-            "solvePreflightJson.kind must be none or sqlbot_mcp_start, got {other:?}"
-        )),
+    let cfg = parse_solve_preflight_value(value)?;
+    for kind in &cfg.kinds {
+        match kind.as_str() {
+            "sqlbot_mcp_start" => {}
+            other => {
+                return Err(format!(
+                    "solvePreflightJson kinds must be sqlbot_mcp_start (or legacy kind=none), got {other:?}"
+                ))
+            }
+        }
     }
+    Ok(())
+}
+
+/// Persisted format under `home/.claw/solve-preflight.json`.
+#[must_use]
+pub fn materialize_solve_preflight_json(value: &Value) -> Value {
+    let Ok(cfg) = parse_solve_preflight_value(value) else {
+        return json!({ "kinds": [] });
+    };
+    json!({ "kinds": cfg.kinds })
+}
+
+#[must_use]
+pub fn has_enabled_solve_preflight(value: &Value) -> bool {
+    parse_solve_preflight_value(value)
+        .map(|cfg| !cfg.kinds.is_empty())
+        .unwrap_or(false)
 }
 
 fn ds_root_from_session_home(session_home: &Path) -> Option<PathBuf> {
@@ -41,8 +96,9 @@ fn ds_root_from_session_home(session_home: &Path) -> Option<PathBuf> {
 
 fn parse_solve_preflight_file(path: &Path) -> Option<SolvePreflightConfig> {
     let raw = std::fs::read_to_string(path).ok()?;
-    let cfg: SolvePreflightConfig = serde_json::from_str(&raw).ok()?;
-    if cfg.kind.trim().is_empty() || cfg.kind == "none" {
+    let value: Value = serde_json::from_str(&raw).ok()?;
+    let cfg = parse_solve_preflight_value(&value).ok()?;
+    if cfg.kinds.is_empty() {
         return None;
     }
     Some(cfg)
@@ -67,17 +123,22 @@ pub(crate) fn run_first_turn_preflight(
     let Some(cfg) = resolve_solve_preflight_config(session_home) else {
         return Ok(());
     };
-    match cfg.kind.as_str() {
-        "sqlbot_mcp_start" => {
-            crate::sqlbot_preflight::run_sqlbot_preflight(session_home, session, executor)
+    for kind in cfg.kinds {
+        match kind.as_str() {
+            "sqlbot_mcp_start" => {
+                crate::sqlbot_preflight::run_sqlbot_preflight(session_home, session, executor)?;
+            }
+            other => {
+                return Err(crate::err(
+                    crate::HTTP_INTERNAL,
+                    format!(
+                        "unknown solve-preflight kind {other:?} in {SOLVE_PREFLIGHT_CONFIG_REL} (registered: sqlbot_mcp_start)"
+                    ),
+                ))
+            }
         }
-        other => Err(crate::err(
-            crate::HTTP_INTERNAL,
-            format!(
-                "unknown solve-preflight kind {other:?} in {SOLVE_PREFLIGHT_CONFIG_REL} (registered: sqlbot_mcp_start, none)"
-            ),
-        )),
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -97,7 +158,7 @@ mod tests {
         )
         .unwrap();
         let cfg = resolve_solve_preflight_config(&session_home).expect("pool mount path");
-        assert_eq!(cfg.kind, "sqlbot_mcp_start");
+        assert_eq!(cfg.kinds, vec!["sqlbot_mcp_start".to_string()]);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -111,7 +172,27 @@ mod tests {
         fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
         fs::write(&cfg_path, r#"{"kind":"sqlbot_mcp_start"}"#).unwrap();
         let cfg = resolve_solve_preflight_config(&session_home).expect("config");
-        assert_eq!(cfg.kind, "sqlbot_mcp_start");
+        assert_eq!(cfg.kinds, vec!["sqlbot_mcp_start".to_string()]);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn validate_and_materialize_multi_kinds() {
+        let raw = json!({
+            "kinds": ["sqlbot_mcp_start", "none", "sqlbot_mcp_start"]
+        });
+        validate_solve_preflight_json(&raw).expect("valid");
+        assert_eq!(
+            materialize_solve_preflight_json(&raw),
+            json!({"kinds": ["sqlbot_mcp_start", "sqlbot_mcp_start"]})
+        );
+    }
+
+    #[test]
+    fn has_enabled_preflight_works_for_legacy_kind() {
+        assert!(has_enabled_solve_preflight(
+            &json!({"kind":"sqlbot_mcp_start"})
+        ));
+        assert!(!has_enabled_solve_preflight(&json!({"kind":"none"})));
     }
 }

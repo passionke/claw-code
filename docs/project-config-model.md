@@ -22,7 +22,7 @@ Author: kejiqing
 | `claude_md` | `TEXT` | 物化为 `home/CLAUDE.md`（非空才满足 `ds_project_tree_ready`）。 |
 | `allowed_tools_json` | `JSONB NOT NULL` | 本项目工具勾选。 |
 | `git_sync_json` | `JSONB NOT NULL` | 每项目 **单向** Git 推送配置（见下）；默认 `{}`。 |
-| `solve_preflight_json` | `JSONB NOT NULL` | 首轮 solve 代码 preflight，如 `{"kind":"sqlbot_mcp_start"}`；物化到 `home/.claw/solve-preflight.json`；默认 `{"kind":"none"}`。见 `docs/gateway-solve-preflight.md`。 |
+| `solve_preflight_json` | `JSONB NOT NULL` | 首轮 solve 代码 preflight，如 `{"kinds":["sqlbot_mcp_start"]}`（兼容历史 `{"kind":"sqlbot_mcp_start"}`）；物化到 `home/.claw/solve-preflight.json`；默认 `{"kind":"none"}`。见 `docs/gateway-solve-preflight.md`。 |
 | `solve_orchestration_json` | `JSONB NOT NULL` | solve 编排管道，如 `{"kind":"multi_agent_analysis","queryConcurrency":6}`；物化到 `home/.claw/solve-orchestration.json`；默认 `{"kind":"single_turn"}`。见 `docs/multi-agent-analysis.md`。 |
 
 ### `git_sync_json`（每项目单向 Git）

@@ -30,6 +30,7 @@ const TAB_ITEMS: MenuProps["items"] = [
   { key: "/mcp", icon: <ApiOutlined />, label: "MCP" },
   { key: "/claude", icon: <FileTextOutlined />, label: "CLAUDE.md" },
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
+  { key: "/preflight", icon: <SettingOutlined />, label: "Preflight" },
   { key: "/prompt", icon: <FileTextOutlined />, label: "系统提示词" },
   { key: "/tools", icon: <ToolOutlined />, label: "Tools" },
   {

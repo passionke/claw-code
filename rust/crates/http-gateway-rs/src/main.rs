@@ -1381,7 +1381,7 @@ async fn main() {
         let poll_db = state.session_db.clone();
         let poll_handle = state.llm_runtime.clone();
         tokio::spawn(async move {
-            gateway_llm_config_sync::llm_config_poll_loop(poll_db, poll_handle, secs).await
+            gateway_llm_config_sync::llm_config_poll_loop(poll_db, poll_handle, secs).await;
         });
         info!(
             target: "claw_gateway_orchestration",
@@ -2415,7 +2415,7 @@ async fn try_push_project_git(
         Ok(outcome) => {
             let mut updated = sync;
             updated.last_push_at_ms = Some(now_ms());
-            updated.last_push_commit_id = outcome.commit_id.clone();
+            updated.last_push_commit_id.clone_from(&outcome.commit_id);
             updated.last_push_error = None;
             let git_sync_json = git_sync_to_json(&updated);
             persist_git_sync_status(state, &row, &git_sync_json)
@@ -6883,14 +6883,14 @@ async fn load_turn_report_body_from_db(
 fn biz_report_json_response(
     ctx: &BizReportDbCtx,
     query: &BizAdviceReportQuery,
-    body: String,
+    body: &str,
 ) -> Response {
     Json(BizAdviceReportResponse {
         task_id: ctx.task_id.clone(),
         source_request_id: ctx.task_id.clone(),
         source_ds_id: query.ds_id,
         source_status: ctx.status.clone(),
-        report_text: body.clone(),
+        report_text: body.to_string(),
         report_json: Some(json!({ "message": body })),
     })
     .into_response()
@@ -7020,7 +7020,7 @@ async fn get_biz_advice_report(
                         &body,
                     ));
                 }
-                return Ok(biz_report_json_response(&ctx, &query, body));
+                return Ok(biz_report_json_response(&ctx, &query, &body));
             }
         }
         if !query.stream {
@@ -7034,68 +7034,66 @@ async fn get_biz_advice_report(
         }
     }
 
-    if query.stream {
-        if matches!(ctx.status.as_str(), "running" | "queued") {
-            let pool_http_from_db = state
+    if query.stream && matches!(ctx.status.as_str(), "running" | "queued") {
+        let pool_http_from_db = state
+            .session_db
+            .resolve_pool_http_base_for_turn(&ctx.turn_id, &query.session_id, query.ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?;
+        let Some(pool_http_base) = pool_http_from_db.filter(|b| !b.trim().is_empty()) else {
+            let pool_id = state
                 .session_db
-                .resolve_pool_http_base_for_turn(&ctx.turn_id, &query.session_id, query.ds_id)
+                .get_turn_pool_id(&ctx.turn_id, &query.session_id, query.ds_id)
                 .await
                 .map_err(|e| session_db_err(&e))?;
-            let Some(pool_http_base) = pool_http_from_db.filter(|b| !b.trim().is_empty()) else {
-                let pool_id = state
-                    .session_db
-                    .get_turn_pool_id(&ctx.turn_id, &query.session_id, query.ds_id)
-                    .await
-                    .map_err(|e| session_db_err(&e))?;
-                let detail = match pool_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                    None => format!(
-                        "live report routing failed: gateway_turns.pool_id unset for turn {} (status={}). \
+            let detail = match pool_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                None => format!(
+                    "live report routing failed: gateway_turns.pool_id unset for turn {} (status={}). \
                          Gateway must prebind CLAW_POOL_ID at solve enqueue; run pack-deploy and retry.",
-                        ctx.turn_id, ctx.status
-                    ),
-                    Some(pid) => format!(
-                        "live report routing failed: claw_pool has no row for pool_id={pid} (turn {}, status={}). \
+                    ctx.turn_id, ctx.status
+                ),
+                Some(pid) => format!(
+                    "live report routing failed: claw_pool has no row for pool_id={pid} (turn {}, status={}). \
                          Start pool daemon with PG registry or run gateway.sh verify.",
-                        ctx.turn_id, ctx.status
-                    ),
-                };
-                tracing::error!(
-                    target: "claw_live_report",
-                    component = "biz_advice_report",
-                    phase = "route",
-                    route = "pool_proxy_sse_denied",
-                    turn_id = %ctx.turn_id,
-                    session_id = %query.session_id,
-                    ds_id = query.ds_id,
-                    status = %ctx.status,
-                    pool_id = ?pool_id,
-                    co_located_pool_id = ?state.cfg.co_located_pool_id,
-                    "biz_advice_report stream — refused (CLAW_POOL_HTTP_BASE env fallback disabled)"
-                );
-                return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, detail));
+                    ctx.turn_id, ctx.status
+                ),
             };
-            tracing::info!(
+            tracing::error!(
                 target: "claw_live_report",
                 component = "biz_advice_report",
                 phase = "route",
-                route = "pool_proxy_sse",
-                pool_http_source = "claw_pool_join",
+                route = "pool_proxy_sse_denied",
                 turn_id = %ctx.turn_id,
                 session_id = %query.session_id,
                 ds_id = query.ds_id,
                 status = %ctx.status,
-                pool_http_base = %pool_http_base,
-                "biz_advice_report stream — proxy to pool HTTP /v1/biz_advice_report/live"
+                pool_id = ?pool_id,
+                co_located_pool_id = ?state.cfg.co_located_pool_id,
+                "biz_advice_report stream — refused (CLAW_POOL_HTTP_BASE env fallback disabled)"
             );
-            return http_gateway_rs::biz_report_pool_proxy::proxy_pool_live_report_sse(
-                &pool_http_base,
-                &ctx.turn_id,
-                &ctx.task_id,
-                query.ds_id,
-            )
-            .await
-            .map_err(|(status, detail)| ApiError::new(status, detail));
-        }
+            return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, detail));
+        };
+        tracing::info!(
+            target: "claw_live_report",
+            component = "biz_advice_report",
+            phase = "route",
+            route = "pool_proxy_sse",
+            pool_http_source = "claw_pool_join",
+            turn_id = %ctx.turn_id,
+            session_id = %query.session_id,
+            ds_id = query.ds_id,
+            status = %ctx.status,
+            pool_http_base = %pool_http_base,
+            "biz_advice_report stream — proxy to pool HTTP /v1/biz_advice_report/live"
+        );
+        return http_gateway_rs::biz_report_pool_proxy::proxy_pool_live_report_sse(
+            &pool_http_base,
+            &ctx.turn_id,
+            &ctx.task_id,
+            query.ds_id,
+        )
+        .await
+        .map_err(|(status, detail)| ApiError::new(status, detail));
     }
 
     get_biz_advice_report_bak(
@@ -7303,6 +7301,13 @@ fn validate_solve_request_fields(req: &SolveRequest) -> Result<(), ApiError> {
     validate_extra_session(req.extra_session.as_ref())
 }
 
+fn pool_runtime_cli_bin(isolation: SolveIsolation) -> &'static str {
+    match isolation {
+        SolveIsolation::DockerPool => "docker",
+        SolveIsolation::PodmanPool => "podman",
+    }
+}
+
 /// Ensures `(sessionId, dsId)` exists in `SQLite` and session `.claw/settings.json` on disk. kejiqing
 async fn prepare_gateway_session(
     state: &AppState,
@@ -7411,12 +7416,15 @@ async fn prepare_gateway_session(
         }
     }
 
-    http_gateway_rs::workspace_perm::chown_session_tree_for_worker(&session_home).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("session workspace ownership for pool worker failed: {e}"),
-        )
-    })?;
+    let pool_bin = pool_runtime_cli_bin(state.cfg.solve_isolation);
+    pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(pool_bin, &session_home)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("session workspace ownership for pool worker failed: {e}"),
+            )
+        })?;
 
     if need_insert_row {
         state

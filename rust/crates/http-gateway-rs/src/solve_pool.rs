@@ -187,10 +187,10 @@ pub async fn run_solve_request_docker(
     } else {
         PathBuf::new()
     };
-    let schema_for_pool = if !schema_host.as_os_str().is_empty() {
-        Some(session_mount_for_pool_acquire(&schema_host, &state.cfg))
-    } else {
+    let schema_for_pool = if schema_host.as_os_str().is_empty() {
         None
+    } else {
+        Some(session_mount_for_pool_acquire(&schema_host, &state.cfg))
     };
     let ds_preflight_host = ds_base.join("home/.claw/solve-preflight.json");
     let preflight_for_pool = if fs::metadata(&ds_preflight_host)
