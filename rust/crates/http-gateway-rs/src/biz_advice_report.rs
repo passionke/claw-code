@@ -1,6 +1,6 @@
 //! Boss 报表清洗：网关固定从 `ds_1` 工作区读取 `GPOS_BOSS_REPORT_WRITER` skill 作为润色指令，支持 SSE 流式输出。Author: kejiqing
 //!
-//! Live solve text is forwarded as-is; polish path may still strip legacy `__CLAW_REPORT_START__` on egress.
+//! Live solve text is forwarded as-is.
 
 #![allow(
     clippy::must_use_candidate,
@@ -15,7 +15,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::biz_report_sse_log::{log_sse_delta, log_sse_done, SseDensityAcc};
 use axum::response::sse::Event;
 use futures_util::stream::{self, Stream, StreamExt as _};
-use runtime::GATEWAY_LIVE_REPORT_START_MARKER;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::fs;
@@ -47,15 +46,13 @@ pub fn skill_instructions_for_prompt(skill_content: &str) -> String {
         .to_string()
 }
 
-/// Strip legacy internal marker on polish/export egress (live stdout path does not use this).
+/// Pass-through report text sanitization on external egress.
 #[must_use]
 pub fn sanitize_external_report_text(text: &str) -> String {
-    text.replace(GATEWAY_LIVE_REPORT_START_MARKER, "")
-        .trim_start()
-        .to_string()
+    text.to_string()
 }
 
-/// LLM polish stream sanitizer (legacy marker only).
+/// LLM polish stream sanitizer.
 #[derive(Debug, Clone, Default)]
 pub struct ReportExportSanitizer;
 
@@ -444,12 +441,9 @@ mod tests {
     }
 
     #[test]
-    fn polish_egress_strips_legacy_marker() {
-        let marker = GATEWAY_LIVE_REPORT_START_MARKER;
-        let (text, json) = sanitize_biz_report_parts(
-            &format!("{marker}\n# 标题"),
-            Some(serde_json::json!({ "message": format!("{marker}\n正文") })),
-        );
+    fn sanitize_parts_passes_through_text() {
+        let (text, json) =
+            sanitize_biz_report_parts("# 标题", Some(serde_json::json!({ "message": "正文" })));
         assert_eq!(text, "# 标题");
         assert_eq!(json.unwrap()["message"].as_str().unwrap(), "正文");
         let mut payload = BizAdviceReportPayload {
@@ -457,7 +451,7 @@ mod tests {
             source_request_id: "t".into(),
             source_ds_id: 1,
             source_status: "succeeded".into(),
-            report_text: Some(format!("{marker}\ndelta")),
+            report_text: Some("delta".into()),
             report_json: None,
         };
         sanitize_report_payload(&mut payload);
@@ -465,9 +459,9 @@ mod tests {
     }
 
     #[test]
-    fn report_body_strips_internal_start_marker() {
+    fn report_body_reads_plain_message() {
         let json = serde_json::json!({
-            "message": "__CLAW_REPORT_START__\n# 报告\n正文"
+            "message": "# 报告\n正文"
         });
         assert_eq!(
             report_body_from_solve_output("", Some(&json)).unwrap(),

@@ -52,6 +52,9 @@ pub enum PoolRpcReq {
     ForceKill {
         slot_index: usize,
     },
+    ReportState {
+        turn_id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -63,6 +66,10 @@ pub struct PoolRpcResp {
     pub lease: Option<SlotLease>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<TaskOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_report: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_report_at_ms: Option<i64>,
 }
 
 /// Client for host `claw-pool-daemon` (TCP or Unix). Author: kejiqing
@@ -211,6 +218,25 @@ impl PoolOps for PoolRpcClient {
         }
         Ok(())
     }
+
+    async fn has_report_for_turn(&self, turn_id: &str) -> bool {
+        self.call(PoolRpcReq::ReportState {
+            turn_id: turn_id.to_string(),
+        })
+        .await
+        .ok()
+        .and_then(|r| r.has_report)
+        .unwrap_or(false)
+    }
+
+    async fn first_report_at_ms_for_turn(&self, turn_id: &str) -> Option<i64> {
+        self.call(PoolRpcReq::ReportState {
+            turn_id: turn_id.to_string(),
+        })
+        .await
+        .ok()
+        .and_then(|r| r.first_report_at_ms)
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -246,12 +272,16 @@ async fn dispatch_pool_rpc(
                 error: None,
                 lease: Some(lease),
                 outcome: None,
+                has_report: None,
+                first_report_at_ms: None,
             },
             Err(e) => PoolRpcResp {
                 ok: false,
                 error: Some(e),
                 lease: None,
                 outcome: None,
+                has_report: None,
+                first_report_at_ms: None,
             },
         },
         PoolRpcReq::Exec {
@@ -280,12 +310,16 @@ async fn dispatch_pool_rpc(
                     error: None,
                     lease: None,
                     outcome: Some(outcome),
+                    has_report: None,
+                    first_report_at_ms: None,
                 },
                 Err(e) => PoolRpcResp {
                     ok: false,
                     error: Some(e),
                     lease: None,
                     outcome: None,
+                    has_report: None,
+                    first_report_at_ms: None,
                 },
             }
         }
@@ -296,12 +330,16 @@ async fn dispatch_pool_rpc(
                     error: None,
                     lease: None,
                     outcome: None,
+                    has_report: None,
+                    first_report_at_ms: None,
                 },
                 Err(e) => PoolRpcResp {
                     ok: false,
                     error: Some(e),
                     lease: None,
                     outcome: None,
+                    has_report: None,
+                    first_report_at_ms: None,
                 },
             }
         }
@@ -311,13 +349,25 @@ async fn dispatch_pool_rpc(
                 error: None,
                 lease: None,
                 outcome: None,
+                has_report: None,
+                first_report_at_ms: None,
             },
             Err(e) => PoolRpcResp {
                 ok: false,
                 error: Some(e),
                 lease: None,
                 outcome: None,
+                has_report: None,
+                first_report_at_ms: None,
             },
+        },
+        PoolRpcReq::ReportState { turn_id } => PoolRpcResp {
+            ok: true,
+            error: None,
+            lease: None,
+            outcome: None,
+            has_report: Some(pool.has_report_for_turn(&turn_id)),
+            first_report_at_ms: pool.first_report_at_ms_for_turn(&turn_id),
         },
     }
 }

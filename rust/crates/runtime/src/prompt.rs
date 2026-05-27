@@ -756,9 +756,6 @@ pub const GATEWAY_SQL_EXAMPLES_MD_REL: &str = "home/sql_examples.md";
 /// Legacy catalog path (mount fallback only). Author: kejiqing
 pub const GATEWAY_DATA_CATALOG_REL: &str = "home/DATA_CATALOG.md";
 
-/// Marker in model output; worker emits `report.delta` on stdout; gateway `GET /v1/tasks` sets `hasReport`. Author: kejiqing
-pub const GATEWAY_LIVE_REPORT_START_MARKER: &str = "__CLAW_REPORT_START__";
-
 /// `SQLBot` MCP start tool (gateway ds workspaces). Author: kejiqing
 pub const GATEWAY_SQLBOT_MCP_START_TOOL: &str = "mcp__sqlbot-streamable__mcp_start";
 

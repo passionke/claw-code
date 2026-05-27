@@ -58,4 +58,14 @@ pub trait PoolOps: Send + Sync {
     async fn release_slot(&self, slot: SlotLease) -> Result<(), String>;
 
     async fn force_kill_slot(&self, slot_index: usize) -> Result<(), String>;
+
+    /// Whether this turn has observed at least one stdout `report.delta`.
+    async fn has_report_for_turn(&self, _turn_id: &str) -> bool {
+        false
+    }
+
+    /// First observed stdout `report.delta` timestamp for the turn.
+    async fn first_report_at_ms_for_turn(&self, _turn_id: &str) -> Option<i64> {
+        None
+    }
 }

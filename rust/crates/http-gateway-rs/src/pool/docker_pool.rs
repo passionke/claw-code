@@ -164,6 +164,20 @@ impl DockerPoolManager {
     }
 
     #[must_use]
+    pub fn has_report_for_turn(&self, turn_id: &str) -> bool {
+        self.live_report_hub
+            .as_ref()
+            .is_some_and(|hub| hub.has_report_for_turn(turn_id))
+    }
+
+    #[must_use]
+    pub fn first_report_at_ms_for_turn(&self, turn_id: &str) -> Option<i64> {
+        self.live_report_hub
+            .as_ref()
+            .and_then(|hub| hub.first_report_at_ms_for_turn(turn_id))
+    }
+
+    #[must_use]
     pub fn slot_capacity(&self) -> (usize, usize) {
         (self.pool_size, self.min_idle)
     }

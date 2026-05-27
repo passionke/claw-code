@@ -53,6 +53,11 @@ deploy/stack/.claw-pool-rpc/
 deploy/stack/.claw-worker-llm.env
 deploy/stack/.linux-artifacts/
 deploy/stack/.claw-postgres-network.override.yml
+# Admin UI hashed bundles (local build; do not commit)
+web/gateway-admin/dist/assets/
+
+# Local qemu/rust crash dumps (large; never commit)
+rust/*.core
 rust/.cargo/config.toml
 # Compose auto-loads this filename next to podman-compose.yml — do not create; use repo root `.env` only.
 deploy/stack/.env

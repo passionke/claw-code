@@ -337,6 +337,9 @@ struct ProjectListEntry {
     applied_rev: Option<String>,
     #[serde(rename = "dbSyncedToDisk")]
     db_synced_to_disk: bool,
+    /// `false` when `ds_*` exists on disk but has no `project_config` row yet. Author: kejiqing
+    #[serde(rename = "projectConfigRegistered")]
+    project_config_registered: bool,
     /// Per-project one-way git (no PAT in list). Author: kejiqing
     #[serde(rename = "gitSync")]
     git_sync: Value,
@@ -634,7 +637,7 @@ struct TaskRecord {
         skip_serializing_if = "Vec::is_empty"
     )]
     progress_history: Vec<gateway_solve_turn::ProgressEvent>,
-    /// `true` when `running` or `succeeded` (Admin opens live SSE; does not imply deltas yet). Author: kejiqing
+    /// `true` after first `report.delta` is observed (or terminal persisted report). Author: kejiqing
     #[serde(rename = "hasReport")]
     has_report: bool,
     /// First report material time (ms): stdout hub first delta, else `startedAtMs` / `finishedAtMs`.
@@ -3725,6 +3728,105 @@ async fn ds_exists_on_stack(state: &AppState, ds_id: i64) -> Result<bool, ApiErr
         .is_some())
 }
 
+async fn project_config_exists(state: &AppState, ds_id: i64) -> Result<bool, ApiError> {
+    Ok(state
+        .session_db
+        .get_project_config(ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .is_some())
+}
+
+async fn read_project_claude_from_disk(work_dir: &Path, ds_id: i64) -> String {
+    let (home_claude, root_claude) = project_claude_paths(work_dir);
+    for path in [home_claude, root_claude] {
+        if claude_instructions_usable(&path).await {
+            if let Ok(text) = fs::read_to_string(&path).await {
+                return text;
+            }
+        }
+    }
+    default_project_claude_md(ds_id)
+}
+
+async fn write_file_if_missing(path: &Path, content: &str) -> Result<(), ApiError> {
+    if fs::metadata(path).await.is_ok() {
+        return Ok(());
+    }
+    fs::write(path, content).await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write {} failed: {e}", path.display()),
+        )
+    })
+}
+
+async fn build_project_list_entry(
+    state: &AppState,
+    summary: Option<&session_db::ProjectConfigSummary>,
+    ds_id: i64,
+) -> ProjectListEntry {
+    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let work_dir_present = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
+    let environment_prepared = work_dir_present && ds_project_tree_ready(&work_dir).await;
+    let (home_claude, _) = project_claude_paths(&work_dir);
+    let claude_on_disk = claude_instructions_usable(&home_claude).await;
+    let skills_root = work_dir.join("home/skills");
+    let skills_count_disk = if fs::metadata(&skills_root).await.is_ok_and(|m| m.is_dir()) {
+        count_skill_dirs(&skills_root).await
+    } else {
+        0
+    };
+    let applied_rev = project_config_apply::read_applied_content_rev(&work_dir).await;
+    if let Some(s) = summary {
+        let stable_rev = s
+            .stable_content_rev
+            .as_deref()
+            .filter(|r| !project_config_draft::is_draft_content_rev(r))
+            .unwrap_or(s.content_rev.as_str());
+        let db_synced_to_disk = applied_rev.as_deref() == Some(stable_rev);
+        ProjectListEntry {
+            ds_id: s.ds_id,
+            content_rev: stable_rev.to_string(),
+            draft_open: s.draft_open,
+            updated_at_ms: s.updated_at_ms,
+            skills_count_db: s.skills_count_db,
+            claude_in_db: s.claude_in_db,
+            rules_count_db: s.rules_count_db,
+            mcp_servers_count_db: s.mcp_servers_count_db,
+            work_dir_present,
+            environment_prepared,
+            claude_on_disk,
+            skills_count_disk,
+            applied_rev,
+            db_synced_to_disk,
+            project_config_registered: true,
+            git_sync: git_sync_list_summary(&s.git_sync_json),
+        }
+    } else {
+        ProjectListEntry {
+            ds_id,
+            content_rev: applied_rev
+                .clone()
+                .unwrap_or_else(|| "disk-only".to_string()),
+            draft_open: false,
+            updated_at_ms: 0,
+            skills_count_db: 0,
+            claude_in_db: false,
+            rules_count_db: 0,
+            mcp_servers_count_db: 0,
+            work_dir_present,
+            environment_prepared,
+            claude_on_disk,
+            skills_count_disk,
+            applied_rev,
+            db_synced_to_disk: false,
+            project_config_registered: false,
+            git_sync: json!({}),
+        }
+    }
+}
+
 async fn scaffold_ds_workspace(work_dir: &Path, ds_id: i64) -> Result<(), ApiError> {
     let claude = default_project_claude_md(ds_id);
     fs::create_dir_all(work_dir.join(".claw"))
@@ -3743,22 +3845,8 @@ async fn scaffold_ds_workspace(work_dir: &Path, ds_id: i64) -> Result<(), ApiErr
                 format!("create home/skills failed: {e}"),
             )
         })?;
-    fs::write(work_dir.join("home/CLAUDE.md"), &claude)
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write home/CLAUDE.md failed: {e}"),
-            )
-        })?;
-    fs::write(work_dir.join("CLAUDE.md"), &claude)
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write CLAUDE.md failed: {e}"),
-            )
-        })?;
+    write_file_if_missing(&work_dir.join("home/CLAUDE.md"), &claude).await?;
+    write_file_if_missing(&work_dir.join("CLAUDE.md"), &claude).await?;
     Ok(())
 }
 
@@ -3888,44 +3976,20 @@ async fn list_projects(
         .list_project_config_summaries()
         .await
         .map_err(|e| session_db_err(&e))?;
-    let mut projects = Vec::with_capacity(summaries.len());
-    for s in summaries {
-        let work_dir = ds_work_dir(&state.cfg.work_root, s.ds_id);
-        let work_dir_present = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
-        let environment_prepared = work_dir_present && ds_project_tree_ready(&work_dir).await;
-        let (home_claude, _) = project_claude_paths(&work_dir);
-        let claude_on_disk = claude_instructions_usable(&home_claude).await;
-        let skills_root = work_dir.join("home/skills");
-        let skills_count_disk = if fs::metadata(&skills_root).await.is_ok_and(|m| m.is_dir()) {
-            count_skill_dirs(&skills_root).await
-        } else {
-            0
-        };
-        let applied_rev = project_config_apply::read_applied_content_rev(&work_dir).await;
-        let stable_rev = s
-            .stable_content_rev
-            .as_deref()
-            .filter(|r| !project_config_draft::is_draft_content_rev(r))
-            .unwrap_or(s.content_rev.as_str());
-        let db_synced_to_disk = applied_rev.as_deref() == Some(stable_rev);
-        projects.push(ProjectListEntry {
-            ds_id: s.ds_id,
-            content_rev: stable_rev.to_string(),
-            draft_open: s.draft_open,
-            updated_at_ms: s.updated_at_ms,
-            skills_count_db: s.skills_count_db,
-            claude_in_db: s.claude_in_db,
-            rules_count_db: s.rules_count_db,
-            mcp_servers_count_db: s.mcp_servers_count_db,
-            work_dir_present,
-            environment_prepared,
-            claude_on_disk,
-            skills_count_disk,
-            applied_rev,
-            db_synced_to_disk,
-            git_sync: git_sync_list_summary(&s.git_sync_json),
-        });
+    let on_disk = list_ds_ids_under_work_root(&state.cfg.work_root).await?;
+    let mut projects = Vec::with_capacity(summaries.len().saturating_add(on_disk.len()));
+    let mut registered = std::collections::HashSet::new();
+    for s in &summaries {
+        registered.insert(s.ds_id);
+        projects.push(build_project_list_entry(&state, Some(s), s.ds_id).await);
     }
+    for ds_id in on_disk {
+        if registered.contains(&ds_id) {
+            continue;
+        }
+        projects.push(build_project_list_entry(&state, None, ds_id).await);
+    }
+    projects.sort_by_key(|p| p.ds_id);
     Ok(Json(ProjectListResponse {
         projects,
         listed_at_ms: now_ms(),
@@ -3963,19 +4027,24 @@ async fn create_project(
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<Json<InitResponse>, ApiError> {
     let ds_id = resolve_create_ds_id(&state, req.ds_id).await?;
-    if ds_exists_on_stack(&state, ds_id).await? {
+    if project_config_exists(&state, ds_id).await? {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
-            format!("ds {ds_id} already exists (work_root or project_config)"),
+            format!("ds {ds_id} already registered in project_config"),
         ));
     }
     let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
     let lock = get_ds_lock(&state, ds_id).await;
     let _guard = lock.lock().await;
+    let work_dir_existed = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
     scaffold_ds_workspace(&work_dir, ds_id).await?;
     let now = now_ms();
     let content_rev = project_config_draft::format_formal_content_rev_local_ms(now);
-    let claude_md = default_project_claude_md(ds_id);
+    let claude_md = if work_dir_existed {
+        read_project_claude_from_disk(&work_dir, ds_id).await
+    } else {
+        default_project_claude_md(ds_id)
+    };
     let empty_obj = json!({});
     let empty_arr = json!([]);
     state
@@ -6292,22 +6361,36 @@ async fn get_task(
     Ok(Json(task))
 }
 
-/// `hasReport`: pool-sse mode → `running`|`succeeded`; legacy spill mode → `succeeded` only. Author: kejiqing
+/// Legacy spill mode contract: `hasReport` only when `succeeded`. Author: kejiqing
 fn task_has_report_for_status(status: &str, live_biz_report_spill_enabled: bool) -> bool {
     if live_biz_report_spill_enabled {
         return status == "succeeded";
     }
-    matches!(status, "running" | "succeeded")
+    status == "succeeded"
 }
 
 async fn task_has_report(state: &AppState, task: &TaskRecord) -> bool {
-    task_has_report_for_status(&task.status, state.cfg.live_biz_report_spill_enabled)
+    if task_has_report_for_status(&task.status, state.cfg.live_biz_report_spill_enabled) {
+        return true;
+    }
+    matches!(task.status.as_str(), "running" | "queued")
+        && !task.turn_id.is_empty()
+        && state.docker_pool.has_report_for_turn(&task.turn_id).await
 }
 
 /// When [`task_has_report`] is true: `startedAtMs` / `finishedAtMs`. Author: kejiqing
-async fn task_report_time_ms(_state: &AppState, task: &TaskRecord) -> Option<i64> {
-    if !task_has_report(_state, task).await {
+async fn task_report_time_ms(state: &AppState, task: &TaskRecord) -> Option<i64> {
+    if !task_has_report(state, task).await {
         return None;
+    }
+    if !task.turn_id.is_empty() {
+        if let Some(ts) = state
+            .docker_pool
+            .first_report_at_ms_for_turn(&task.turn_id)
+            .await
+        {
+            return Some(ts);
+        }
     }
     task.started_at_ms.or(task.finished_at_ms)
 }
@@ -8187,7 +8270,7 @@ mod tests {
     fn task_has_report_contract_pool_sse_mode() {
         for (status, want) in [
             ("queued", false),
-            ("running", true),
+            ("running", false),
             ("succeeded", true),
             ("failed", false),
         ] {

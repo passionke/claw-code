@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # One-click deploy: GHCR claw-code + claw-gateway-worker at a release tag; claude-tap @ latest.
+# 华山一条道：新服务器更推荐在写好根 `.env` 后直接
+#   ./deploy/stack/gateway.sh up --release release-vX.Y.Z
+# 本脚本保留「改镜像行 + refresh/sync + 起栈」的自动化，路径一律走 deploy/stack/。
 # Preserves business keys in repo-root `.env` / `.claw.json` — only GATEWAY_IMAGE / CLAW_DOCKER_IMAGE
 # (and optional CLAW_PODMAN_IMAGE if present) are rewritten to match the tag.
 #
@@ -15,7 +18,8 @@ export LANG="${LANG:-C.UTF-8}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-PODMAN_DIR="${REPO_ROOT}/deploy/podman"
+STACK_DIR="${REPO_ROOT}/deploy/stack"
+STACK_LIB="${STACK_DIR}/lib"
 ENV_FILE="${REPO_ROOT}/.env"
 
 die() {
@@ -102,7 +106,7 @@ defaults = [
     ("CLAW_CONTAINER_RUNTIME", "docker"),
     ("CLAW_DOCKER_POOL_SIZE", "4"),
     ("CLAW_DOCKER_POOL_MIN_IDLE", "1"),
-    ("CLAW_HOST_LOG_DIR", "./deploy/podman/claw-logs"),
+    ("CLAW_HOST_LOG_DIR", "./deploy/stack/claw-logs"),
     ("CLAUDE_TAP_MODE", "docker"),
     ("CLAUDE_TAP_IMAGE", "ghcr.io/passionke/claude-tap:latest"),
     # Published host port for claude-tap (compose left side); same port in OPENAI_BASE_URL for claw-code.
@@ -122,13 +126,13 @@ if missing:
 PY
 
 echo "==> linking claw-code OPENAI_* to claude-tap ports (refresh-tap-llm-chain-in-env.py)"
-python3 "${PODMAN_DIR}/refresh-tap-llm-chain-in-env.py" "${ENV_FILE}"
+python3 "${STACK_DIR}/refresh-tap-llm-chain-in-env.py" "${ENV_FILE}"
 
-echo "==> syncing deploy/podman/worker-openai.env (run same script alone on server: deploy/podman/sync-worker-openai-env.sh)"
-"${PODMAN_DIR}/sync-worker-openai-env.sh"
+echo "==> syncing worker LLM env (same as: ${STACK_LIB}/sync-worker-openai-env.sh)"
+"${STACK_LIB}/sync-worker-openai-env.sh"
 
 # shellcheck source=/dev/null
-source "${PODMAN_DIR}/compose-include.sh"
+source "${STACK_LIB}/compose-include.sh"
 RT="$(claw_container_runtime_cli)" || die "need docker or podman in PATH"
 
 echo "==> pulling images (${RT})"
@@ -144,8 +148,8 @@ if [[ "${CLAUDE_TAP_MODE:-docker}" != "host" ]]; then
   "${RT}" pull "${TAP_IMG}"
 fi
 
-echo "==> stopping prior gateway, pool daemon, claude-tap (deploy/podman/stop-with-tap.sh)"
-"${PODMAN_DIR}/stop-with-tap.sh" || true
+echo "==> stopping prior gateway, pool daemon, claude-tap (${STACK_LIB}/stop-with-tap.sh)"
+"${STACK_LIB}/stop-with-tap.sh" || true
 if [[ "${CLAUDE_TAP_MODE:-docker}" == "host" ]]; then
   pkill -f 'claude-tap.*--tap-no-launch' 2>/dev/null || true
 fi
@@ -171,7 +175,7 @@ else
   POOL_OUT="${CLAW_POOL_DAEMON_BIN:-${HOME}/.local/bin/claw-pool-daemon}"
 fi
 mkdir -p "$(dirname "${POOL_OUT}")"
-"${PODMAN_DIR}/install-pool-daemon-from-image.sh" "${POOL_OUT}"
+"${STACK_LIB}/install-pool-daemon-from-image.sh" "${POOL_OUT}"
 if [[ "$(id -u)" -ne 0 ]]; then
   upsert_env_kv "CLAW_POOL_DAEMON_BIN" "${POOL_OUT}"
   upsert_env_kv "CLAW_POOL_DAEMON_SKIP_BUILD" "1"
@@ -193,7 +197,7 @@ else
 fi
 
 echo "==> starting claude-tap + gateway (pooled host daemon)"
-"${PODMAN_DIR}/start-with-tap.sh"
+"${STACK_LIB}/start-with-tap.sh"
 
 set -a
 # shellcheck source=/dev/null

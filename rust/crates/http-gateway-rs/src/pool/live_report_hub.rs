@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use tokio::sync::broadcast;
 
-const HUB_CHANNEL_CAP: usize = 256;
+const HUB_CHANNEL_CAP: usize = 4096;
 
 /// Broadcast message: `Delta` for streaming chunks, `SolveDone` as an in-band terminal sentinel.
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ pub enum HubMsg {
 #[derive(Debug)]
 struct TurnStdoutState {
     text: String,
+    chunks: Vec<String>,
     has_report: bool,
     solve_done: bool,
     first_report_at_ms: Option<i64>,
@@ -44,6 +45,7 @@ impl LiveReportHub {
             .entry(turn_id.to_string())
             .or_insert_with(|| TurnStdoutState {
                 text: String::new(),
+                chunks: Vec::new(),
                 has_report: false,
                 solve_done: false,
                 first_report_at_ms: None,
@@ -68,6 +70,7 @@ impl LiveReportHub {
                 }
                 let chunk_len = chunk.len();
                 state.text.push_str(chunk);
+                state.chunks.push(chunk.to_string());
                 let _ = state.tx.send(HubMsg::Delta(chunk.to_string()));
                 crate::biz_report_sse_log::log_stdout_ingest(turn_id, chunk_len);
             }
@@ -107,21 +110,43 @@ impl LiveReportHub {
             .unwrap_or_default()
     }
 
-    /// Atomic (subscribe, snapshot): no overlap between catch-up and broadcast tail.
     #[must_use]
-    pub fn subscribe_with_snapshot(&self, turn_id: &str) -> (broadcast::Receiver<HubMsg>, String) {
+    pub fn has_report_for_turn(&self, turn_id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("live_report_hub lock")
+            .get(turn_id)
+            .is_some_and(|s| s.has_report)
+    }
+
+    #[must_use]
+    pub fn first_report_at_ms_for_turn(&self, turn_id: &str) -> Option<i64> {
+        self.inner
+            .lock()
+            .expect("live_report_hub lock")
+            .get(turn_id)
+            .and_then(|s| s.first_report_at_ms)
+    }
+
+    /// Atomic (subscribe, snapshot-chunks): no overlap between replay and broadcast tail.
+    #[must_use]
+    pub fn subscribe_with_snapshot(
+        &self,
+        turn_id: &str,
+    ) -> (broadcast::Receiver<HubMsg>, Vec<String>) {
         let mut guard = self.inner.lock().expect("live_report_hub lock");
         let state = guard
             .entry(turn_id.to_string())
             .or_insert_with(|| TurnStdoutState {
                 text: String::new(),
+                chunks: Vec::new(),
                 has_report: false,
                 solve_done: false,
                 first_report_at_ms: None,
                 tx: broadcast::channel(HUB_CHANNEL_CAP).0,
             });
         let rx = state.tx.subscribe();
-        let snapshot = state.text.clone();
+        let snapshot = state.chunks.clone();
         (rx, snapshot)
     }
 

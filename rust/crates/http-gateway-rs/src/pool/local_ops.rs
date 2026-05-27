@@ -53,4 +53,12 @@ impl PoolOps for LocalPoolOps {
     async fn force_kill_slot(&self, slot_index: usize) -> Result<(), String> {
         self.0.force_kill_slot(slot_index).await
     }
+
+    async fn has_report_for_turn(&self, turn_id: &str) -> bool {
+        self.0.has_report_for_turn(turn_id)
+    }
+
+    async fn first_report_at_ms_for_turn(&self, turn_id: &str) -> Option<i64> {
+        self.0.first_report_at_ms_for_turn(turn_id)
+    }
 }

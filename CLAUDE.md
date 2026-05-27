@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Local gateway (macOS / podman_pool)
 
+- **Policy:** local dev = **Podman** + `gateway.sh quick` / `pack-deploy` (compile on host or via stack build); production = **Docker** + **CI images** + `gateway.sh up --release …` only. One script tree: `deploy/stack/`; do not maintain a second compose story under `deploy/podman/` (wrappers there only forward to `deploy/stack/lib/`).
 - One-shot: `./deploy/stack/gateway.sh quick` from repo root (see `docs/local-dev.md`); includes `web/gateway-admin` → `dist/`.
 - Admin UI only: `./deploy/stack/gateway.sh admin-build` (Ant Design; do not hand-run npm unless debugging frontend).
 - Full image rebuild: `./deploy/stack/gateway.sh pack-deploy` (after Rust gateway changes).
