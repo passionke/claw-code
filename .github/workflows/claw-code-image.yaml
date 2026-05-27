@@ -2,8 +2,7 @@
 #
 # Chain:
 # - Push tag refs/tags/release-v*.*.* → build + push claw-code, claw-gateway-worker, claw-gateway-playground (same tag).
-# - Packaging is tag-only; no PR/manual trigger.
-# - Podman parity build (build.sh): gateway-image-ci on same release tag family.
+# - Packaging is tag-only; no PR/manual trigger. ACR: claw-code-acr.yaml on the same release tags.
 #
 # Optional repo/org Actions variable CONTAINER_BASE_REGISTRY (hostname only, no path):
 # - unset → docker.io (recommended on github-hosted runners; mirrors may serve incomplete blobs).
