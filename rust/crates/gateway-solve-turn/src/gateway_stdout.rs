@@ -36,6 +36,7 @@ pub fn emit_report_delta(text: &str) -> io::Result<()> {
     if text.is_empty() {
         return Ok(());
     }
+    api::sse_burst_trace::log_worker_emit(text.len());
     emit_line(&StdoutEnvelope {
         ev: "report.delta",
         text: Some(text),

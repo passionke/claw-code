@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use crate::boundary_log::boundary_log_enabled;
 use crate::error::ApiError;
 use crate::http_client::build_http_client_or_default;
+use crate::sse_burst_trace::{burst_trace_enabled, BurstStreamCtx};
 use crate::types::{
     ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent,
     InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent, MessageRequest,
@@ -301,6 +302,7 @@ impl OpenAiCompatClient {
             saw_first_chunk: false,
             raw_chunk_count: 0,
             parsed_chunk_count: 0,
+            burst_ctx: BurstStreamCtx::default(),
         })
     }
 
@@ -470,6 +472,7 @@ pub struct MessageStream {
     saw_first_chunk: bool,
     raw_chunk_count: u64,
     parsed_chunk_count: u64,
+    burst_ctx: BurstStreamCtx,
 }
 
 impl MessageStream {
@@ -496,6 +499,9 @@ impl MessageStream {
             match self.response.chunk().await? {
                 Some(chunk) => {
                     self.raw_chunk_count = self.raw_chunk_count.saturating_add(1);
+                    if burst_trace_enabled() {
+                        self.burst_ctx.on_http_chunk(chunk.len());
+                    }
                     let elapsed_ms = self.request_started_at.elapsed().as_millis();
                     let mut first_chunk_just_seen = false;
                     if !self.saw_first_chunk {
@@ -549,6 +555,15 @@ impl MessageStream {
                             .filter_map(|choice| choice.finish_reason.clone())
                             .collect();
                         let emitted_events = self.state.ingest_chunk(parsed)?;
+                        if burst_trace_enabled() {
+                            for event in &emitted_events {
+                                if let StreamEvent::ContentBlockDelta(delta_ev) = event {
+                                    if let ContentBlockDelta::TextDelta { text } = &delta_ev.delta {
+                                        self.burst_ctx.on_text_delta(text.len());
+                                    }
+                                }
+                            }
+                        }
                         if self.debug_enabled {
                             sse_debug(
                                 &self.parser.provider,

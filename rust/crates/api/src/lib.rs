@@ -5,6 +5,7 @@ mod http_client;
 mod prompt_cache;
 mod providers;
 mod sse;
+pub mod sse_burst_trace;
 mod types;
 
 pub use boundary_log::{boundary_log_enabled, BOUNDARY_LOG_ENV};
@@ -32,6 +33,7 @@ pub use providers::{
     resolve_model_alias, ProviderKind,
 };
 pub use sse::{parse_frame, SseParser};
+pub use sse_burst_trace::{burst_trace_enabled, BurstStreamCtx};
 pub use types::{
     ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent,
     InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent, MessageRequest,

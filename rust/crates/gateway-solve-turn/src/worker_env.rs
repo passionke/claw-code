@@ -37,6 +37,8 @@ pub const WORKER_ENV_KEYS: &[&str] = &[
     "CLAW_SESSION_ID",
     "CLAW_TURN_ID",
     "CLAW_WORKER_NAME",
+    "CLAW_SSE_BURST_TRACE",
+    "CLAW_SSE_BURST_LOG_FILE",
 ];
 
 fn worker_env_search_paths() -> Vec<PathBuf> {
