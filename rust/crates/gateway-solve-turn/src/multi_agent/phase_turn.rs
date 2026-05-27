@@ -1,8 +1,10 @@
 //! Short-lived ConversationRuntime for a single multi-agent phase. Author: kejiqing
-use runtime::{ContentBlock, ConversationRuntime, PermissionMode, PermissionPolicy, Session};
+use runtime::{ConversationRuntime, PermissionMode, PermissionPolicy, Session};
 
 use crate::gateway_stdout::emit_report_delta;
-use crate::{DirectApiClient, DirectToolExecutor, GatewaySolveTurnError};
+use crate::{
+    assistant_report_text_from_turn, DirectApiClient, DirectToolExecutor, GatewaySolveTurnError,
+};
 
 fn err(status: u16, msg: impl Into<String>) -> GatewaySolveTurnError {
     GatewaySolveTurnError {
@@ -47,16 +49,7 @@ pub fn run_phase_turn(
             .map_err(|e| err(HTTP_INTERNAL, format!("phase runtime failed: {e}")))?
     };
 
-    let message = result
-        .assistant_messages
-        .iter()
-        .flat_map(|m| m.blocks.iter())
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let message = assistant_report_text_from_turn(&result.assistant_messages);
 
     Ok((message, result.iterations))
 }

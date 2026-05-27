@@ -1079,6 +1079,14 @@ pub fn is_deepseek_wire_model(model: &str) -> bool {
     canonical.starts_with("deepseek")
 }
 
+/// Wire-model id for Alibaba `DashScope` Qwen endpoints (`qwen-max`, `qwen3.7-max`, …).
+#[must_use]
+pub fn is_qwen_wire_model(model: &str) -> bool {
+    let lowered = model.to_ascii_lowercase();
+    let canonical = lowered.rsplit('/').next().unwrap_or(lowered.as_str());
+    canonical.starts_with("qwen")
+}
+
 fn deepseek_thinking_active(request: &MessageRequest, wire_model: &str) -> bool {
     is_deepseek_wire_model(wire_model) && request.thinking_enabled != Some(false)
 }
@@ -1202,6 +1210,15 @@ pub fn build_chat_completion_request(
                 "type": if enabled { "enabled" } else { "disabled" }
             });
         }
+    }
+
+    // DashScope Qwen3+ defaults thinking on; tokens land in `reasoning_content` with empty
+    // `content`, which breaks boss-report live SSE and `outputJson.message` extraction.
+    if is_qwen_wire_model(wire_model)
+        && !is_reasoning_model(&request.model)
+        && request.thinking_enabled != Some(true)
+    {
+        payload["enable_thinking"] = json!(false);
     }
 
     payload
@@ -2312,6 +2329,34 @@ mod tests {
             payload.get("thinking").is_none(),
             "omit thinking key so the provider default applies"
         );
+    }
+
+    #[test]
+    fn qwen_non_reasoning_models_disable_enable_thinking_by_default() {
+        let request = MessageRequest {
+            model: "qwen3.7-max".to_string(),
+            max_tokens: 64,
+            messages: vec![],
+            stream: false,
+            thinking_enabled: None,
+            ..Default::default()
+        };
+        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        assert_eq!(payload["enable_thinking"], json!(false));
+    }
+
+    #[test]
+    fn qwen_qwq_reasoning_models_do_not_force_disable_thinking() {
+        let request = MessageRequest {
+            model: "qwen-qwq-32b".to_string(),
+            max_tokens: 64,
+            messages: vec![],
+            stream: false,
+            thinking_enabled: None,
+            ..Default::default()
+        };
+        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        assert!(payload.get("enable_thinking").is_none());
     }
 
     #[test]

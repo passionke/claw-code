@@ -445,6 +445,8 @@ impl RuntimeApiClient for DirectApiClient {
                     self.clawcode_session_id.clone(),
                 ),
             ]),
+            // Boss report needs visible `content` text (live SSE + outputJson.message).
+            thinking_enabled: Some(false),
             ..Default::default()
         };
         let mut on_delta = |text: &str| {
@@ -942,6 +944,46 @@ fn resolve_polish_model(model: Option<&str>) -> String {
         .unwrap_or_else(|| "openai/deepseek-v4-pro".to_string())
 }
 
+/// Concatenate assistant `Text` blocks; when empty, fall back to the final message's
+/// `ReasoningContent` (Qwen3 thinking-only streams before `enable_thinking=false` fix).
+pub(crate) fn assistant_report_text_from_turn(
+    assistant_messages: &[ConversationMessage],
+) -> String {
+    let text = assistant_messages
+        .iter()
+        .flat_map(|m| m.blocks.iter())
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !text.trim().is_empty() {
+        return text;
+    }
+    let reasoning = assistant_messages
+        .last()
+        .map(|m| {
+            m.blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ReasoningContent { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    if !reasoning.trim().is_empty() {
+        tracing::warn!(
+            target: "claw_gateway_orchestration",
+            component = "gateway_solve_turn",
+            "assistant turn had no Text blocks; using ReasoningContent fallback"
+        );
+    }
+    reasoning
+}
+
 fn polish_output_from_events(
     events: &[AssistantEvent],
     model: &str,
@@ -1234,16 +1276,7 @@ pub fn run_gateway_solve_turn(
     let turn_result = runtime.run_turn_after_user_message(None);
     let result =
         turn_result.map_err(|e| err(HTTP_INTERNAL, format!("runtime prompt failed: {e}")))?;
-    let message = result
-        .assistant_messages
-        .iter()
-        .flat_map(|m| m.blocks.iter())
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let message = assistant_report_text_from_turn(&result.assistant_messages);
     let out_json = json!({
         "model": effective_model,
         "iterations": result.iterations,
@@ -1260,6 +1293,40 @@ pub fn run_gateway_solve_turn(
         serde_json::to_string(&out_json).unwrap_or_default(),
         Some(out_json),
     ))
+}
+
+#[cfg(test)]
+mod assistant_report_text_tests {
+    use runtime::{ContentBlock, ConversationMessage, MessageRole};
+
+    use super::assistant_report_text_from_turn;
+
+    #[test]
+    fn prefers_text_blocks() {
+        let messages = vec![ConversationMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![
+                ContentBlock::Text {
+                    text: "report".into(),
+                },
+                ContentBlock::ReasoningContent { text: "cot".into() },
+            ],
+            usage: None,
+        }];
+        assert_eq!(assistant_report_text_from_turn(&messages), "report");
+    }
+
+    #[test]
+    fn falls_back_to_final_reasoning_when_text_empty() {
+        let messages = vec![ConversationMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![ContentBlock::ReasoningContent {
+                text: "thinking-only".into(),
+            }],
+            usage: None,
+        }];
+        assert_eq!(assistant_report_text_from_turn(&messages), "thinking-only");
+    }
 }
 
 #[cfg(test)]
