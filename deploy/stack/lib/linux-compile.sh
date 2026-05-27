@@ -24,13 +24,25 @@ claw_linux_compile_release() {
   echo "  source: ${rust_dir}"
   echo "  target: ${out_dir}"
 
+  local linux_arch
+  linux_arch="$(uname -m)"
+  case "${linux_arch}" in
+    arm64 | aarch64) linux_arch=arm64 ;;
+    x86_64 | amd64) linux_arch=amd64 ;;
+    *)
+      echo "linux compile: unsupported host arch ${linux_arch}" >&2
+      exit 1
+      ;;
+  esac
+  echo "  platform: linux/${linux_arch}"
+
   # shellcheck disable=SC2086
   # shellcheck source=/dev/null
   source "${root_dir}/deploy/stack/rust-version.env"
   export CLAW_RUST_VERSION
 
   # shellcheck disable=SC2086
-  "${container_cli}" run --rm \
+  "${container_cli}" run --rm --platform "linux/${linux_arch}" \
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
     -v "${rust_dir}:/build:Z" \
     -v claw-cargo-registry:/usr/local/cargo/registry \

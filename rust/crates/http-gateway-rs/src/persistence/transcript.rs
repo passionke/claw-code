@@ -3,10 +3,7 @@
 
 use std::path::Path;
 
-use gateway_solve_turn::{
-    gateway_solve_session_persistence_path, strip_report_start_marker,
-    ASSISTANT_STREAM_REPORT_START_MARKER,
-};
+use gateway_solve_turn::gateway_solve_session_persistence_path;
 use serde_json::Value;
 use sqlx::PgPool;
 
@@ -85,7 +82,7 @@ pub struct JsonlTurnSegment {
 #[must_use]
 pub fn report_body_from_segment(segment: &JsonlTurnSegment) -> String {
     let text = segment.assistant_parts.join("\n");
-    strip_report_start_marker(&text)
+    text
 }
 
 /// Formal report body from last turn messages in jsonl.
@@ -105,7 +102,7 @@ pub fn report_body_from_turn_messages(messages: &[JsonlMessage]) -> String {
             }
         }
     }
-    strip_report_start_marker(&parts.join("\n"))
+    parts.join("\n")
 }
 
 pub async fn import_turn_messages_to_db(
@@ -239,12 +236,7 @@ pub async fn persist_turn_after_solve(
     let has_report = report_message
         .as_ref()
         .is_some_and(|m| !m.trim().is_empty())
-        || !body_from_jsonl.trim().is_empty()
-        || messages.iter().any(|m| {
-            m.blocks
-                .to_string()
-                .contains(ASSISTANT_STREAM_REPORT_START_MARKER)
-        });
+        || !body_from_jsonl.trim().is_empty();
 
     db.finish_turn(
         turn_id,

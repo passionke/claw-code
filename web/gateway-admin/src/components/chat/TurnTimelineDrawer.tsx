@@ -38,56 +38,25 @@ function phaseWindowForSegments(segments: TimelineSegment[]): PhaseWindow | null
   return { originMs, totalMs };
 }
 
-/** 问数阶段内多路几乎同时发起时，条带左端在像素上叠在一起；用展示用错位，tooltip 仍为真实时间。 */
-function parallelQueryBarLayout(
-  seg: TimelineSegment,
-  segments: TimelineSegment[],
-  pw: PhaseWindow,
-): { leftPct: number; widthPct: number; displayStagger: boolean } {
-  const naturalLeft = ((seg.startMs - pw.originMs) / pw.totalMs) * 100;
-  const naturalWidth = ((seg.endMs - seg.startMs) / pw.totalMs) * 100;
-  const widthPct = Math.max(naturalWidth, 0.4);
-  const sorted = [...segments].sort((a, b) => a.startMs - b.startMs);
-  const startSpread = (sorted[sorted.length - 1]?.startMs ?? 0) - (sorted[0]?.startMs ?? 0);
-  const STAGGER_BUDGET_PCT = 6;
-  if (
-    segments.length > 1 &&
-    startSpread > 0 &&
-    startSpread < pw.totalMs * 0.02
-  ) {
-    const idx = sorted.findIndex((s) => s.id === seg.id);
-    const denom = Math.max(sorted.length - 1, 1);
-    return {
-      leftPct: (idx / denom) * STAGGER_BUDGET_PCT,
-      widthPct,
-      displayStagger: true,
-    };
-  }
-  return { leftPct: naturalLeft, widthPct, displayStagger: false };
-}
-
 function SegmentBar({
   seg,
   originMs,
   totalMs,
   showDuration = false,
   envelope = false,
-  parallelLayout,
 }: {
   seg: TimelineSegment;
   originMs: number;
   totalMs: number;
   showDuration?: boolean;
   envelope?: boolean;
-  parallelLayout?: { leftPct: number; widthPct: number; displayStagger: boolean };
 }) {
-  const left = parallelLayout?.leftPct ?? ((seg.startMs - originMs) / totalMs) * 100;
-  const width = parallelLayout?.widthPct ?? ((seg.endMs - seg.startMs) / totalMs) * 100;
+  const left = ((seg.startMs - originMs) / totalMs) * 100;
+  const width = ((seg.endMs - seg.startMs) / totalMs) * 100;
   const title = [
     seg.label,
     `${relOffset(seg.startMs, originMs)} → ${relOffset(seg.endMs, originMs)}`,
     formatDurationMs(seg.durationMs),
-    parallelLayout?.displayStagger ? "（条带左端为展示错位，悬停时间为真实值）" : "",
     seg.detail || "",
   ]
     .filter(Boolean)
@@ -160,9 +129,11 @@ function LaneTracks({
 
   if (lane.parallel && phaseWindow) {
     const pw = phaseWindow;
+    const envelopeLabel =
+      lane.id === "agent_fanout" ? "并行子代理窗口" : "并行问数窗口";
     const envelope: TimelineSegment = {
-      id: "query-envelope",
-      label: "问数阶段墙钟",
+      id: `${lane.id}-envelope`,
+      label: envelopeLabel,
       startMs: pw.originMs,
       endMs: pw.originMs + pw.totalMs,
       durationMs: pw.totalMs,
@@ -174,17 +145,11 @@ function LaneTracks({
     return (
       <div className={styles.laneGroup}>
         <div className={styles.laneTrack}>
-          <SegmentBar seg={envelope} originMs={pw.originMs} totalMs={pw.totalMs} envelope showDuration />
+          <SegmentBar seg={envelope} originMs={originMs} totalMs={totalMs} envelope showDuration />
         </div>
         {sorted.map((seg) => (
           <div key={seg.id} className={`${styles.laneTrack} ${styles.laneTrackParallel}`}>
-            <SegmentBar
-              seg={seg}
-              originMs={pw.originMs}
-              totalMs={pw.totalMs}
-              showDuration
-              parallelLayout={parallelQueryBarLayout(seg, sorted, pw)}
-            />
+            <SegmentBar seg={seg} originMs={originMs} totalMs={totalMs} showDuration />
           </div>
         ))}
       </div>
@@ -260,7 +225,7 @@ function parallelFanoutPhaseLabel(laneId: string): string {
 }
 
 function ParallelFanoutNote({
-  phaseWindow,
+  phaseWindow: _pw,
   segments,
   phaseLabel,
 }: {
@@ -275,36 +240,29 @@ function ParallelFanoutNote({
   const endSpread = ends.length > 0 ? Math.max(...ends) - Math.min(...ends) : 0;
   return (
     <p className={styles.phaseNote}>
-      并行子甬道已<strong>放大到{phaseLabel}</strong>（墙钟 {formatDurationMs(phaseWindow.totalMs)}）：
-      记录显示 {segments.length} 路在 <strong>{formatDurationMs(startSpread)}</strong> 内先后发起、在{" "}
-      <strong>{formatDurationMs(endSpread)}</strong> 内先后结束（非串行）。
-      {startSpread > 0 && startSpread < phaseWindow.totalMs * 0.02 ? (
-        <>
-          {" "}
-          因发起时间差仅占阶段 {((startSpread / phaseWindow.totalMs) * 100).toFixed(2)}%，条带左端做了<strong>展示错位</strong>；精确毫秒见下表或悬停 tooltip。
-        </>
-      ) : null}
+      {phaseLabel} · {segments.length} 路并行；发起跨度 <strong>{formatDurationMs(startSpread)}</strong>、结束跨度{" "}
+      <strong>{formatDurationMs(endSpread)}</strong>。泳道条与<strong>顶部时间轴</strong>同一比例（整轮）。
     </p>
   );
 }
 
 function FanoutDetailTable({
   segments,
-  phaseOriginMs,
+  chartOriginMs,
   sectionTitle,
 }: {
   segments: TimelineSegment[];
-  phaseOriginMs: number;
+  chartOriginMs: number;
   sectionTitle: string;
 }) {
   const rows = [...segments]
-    .sort((a, b) => a.startMs - b.startMs || a.id.localeCompare(b.id))
+    .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs || a.id.localeCompare(b.id))
     .map((seg) => ({
       key: seg.id,
       id: seg.id,
       label: seg.label,
-      startDelta: formatOffsetMs(seg.startMs - phaseOriginMs),
-      endDelta: formatOffsetMs(seg.endMs - phaseOriginMs),
+      startDelta: formatOffsetMs(seg.startMs - chartOriginMs),
+      endDelta: formatOffsetMs(seg.endMs - chartOriginMs),
       duration: formatDurationMs(seg.durationMs),
       status: seg.status,
       detail: seg.detail || "—",
@@ -320,8 +278,8 @@ function FanoutDetailTable({
         columns={[
           { title: "#", dataIndex: "id", key: "id", width: 44 },
           { title: "子题", dataIndex: "label", key: "label", ellipsis: true },
-          { title: "发起", dataIndex: "startDelta", key: "startDelta", width: 88 },
-          { title: "结束", dataIndex: "endDelta", key: "endDelta", width: 88 },
+          { title: "发起（整轮）", dataIndex: "startDelta", key: "startDelta", width: 96 },
+          { title: "结束（整轮）", dataIndex: "endDelta", key: "endDelta", width: 96 },
           { title: "耗时", dataIndex: "duration", key: "duration", width: 72 },
           { title: "状态", dataIndex: "status", key: "status", width: 64 },
         ]}
@@ -341,7 +299,7 @@ function SwimlaneChart({ timeline }: { timeline: SolveTurnTimeline }) {
   return (
     <div className={styles.scrollWrap}>
       <div className={styles.chartInner}>
-        <TimeRuler originMs={originMs} totalMs={totalMs} />
+        <TimeRuler originMs={originMs} totalMs={totalMs} label="时间轴（整轮，全泳道共用）" />
         {lanes.map((lane) => {
           const isParallelFanout =
             lane.parallel && PARALLEL_FANOUT_LANE_IDS.has(lane.id);
@@ -351,18 +309,11 @@ function SwimlaneChart({ timeline }: { timeline: SolveTurnTimeline }) {
           return (
             <div key={lane.id}>
               {isParallelFanout && phaseWindow ? (
-                <>
-                  <ParallelFanoutNote
-                    phaseWindow={phaseWindow}
-                    segments={lane.segments}
-                    phaseLabel={parallelFanoutPhaseLabel(lane.id)}
-                  />
-                  <TimeRuler
-                    originMs={phaseWindow.originMs}
-                    totalMs={phaseWindow.totalMs}
-                    label={parallelFanoutPhaseLabel(lane.id)}
-                  />
-                </>
+                <ParallelFanoutNote
+                  phaseWindow={phaseWindow}
+                  segments={lane.segments}
+                  phaseLabel={parallelFanoutPhaseLabel(lane.id)}
+                />
               ) : null}
               <div className={styles.laneRow}>
                 <div className={styles.laneLabel}>
@@ -502,13 +453,13 @@ export default function TurnTimelineDrawer({
                 if (!pw) return null;
                 const title =
                   lane.id === "agent_fanout"
-                    ? "子代理各路起止（相对子代理阶段起点）"
-                    : "问数各路起止（相对问数阶段起点）";
+                    ? "子代理各路起止（相对整轮编排起点）"
+                    : "问数各路起止（相对整轮编排起点）";
                 return (
                   <FanoutDetailTable
                     key={lane.id}
                     segments={lane.segments}
-                    phaseOriginMs={pw.originMs}
+                    chartOriginMs={timeline.originMs}
                     sectionTitle={title}
                   />
                 );

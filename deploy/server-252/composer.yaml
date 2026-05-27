@@ -1,12 +1,12 @@
 # Production-style bundle: gateway + host pool RPC overlay (same merge as compose-include.sh). Author: kejiqing
 #
-# Prefer one-click: ./deploy/server-252/deploy-one-click.sh release-x.y.z
-# Manual (after generated files exist — run deploy-one-click once, or ./deploy/podman/up.sh):
+# Prefer: ./deploy/stack/gateway.sh up --release release-vX.Y.Z（华山一条道；与 CI 镜像一致）
+# 或 one-click: ./deploy/server-252/deploy-one-click.sh release-vX.Y.Z
+# Manual compose（仅当你明确要手写 compose 时）:
 #   docker compose -f deploy/server-252/composer.yaml --env-file .env up -d --force-recreate
 name: claw-code
 
 include:
-  - path: ../podman/podman-compose.yml
-  - path: ../podman/podman-compose.pool-rpc.yml
-# claude-tap (docker) is merged by compose-include when CLAUDE_TAP_MODE!=host — use
-# ./deploy/podman/start-with-tap.sh or ./deploy/podman/up.sh so mode is respected.
+  - path: ../stack/podman-compose.yml
+  - path: ../stack/podman-compose.pool-rpc.yml
+# claude-tap：用 ./deploy/stack/gateway.sh tap-up / tap-down；带网关一体用 gateway.sh quick / pack-deploy。

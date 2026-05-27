@@ -63,14 +63,15 @@ pub struct ProgressEvent {
 }
 
 /// NL query / analysis MCP tools only (excludes gateway `SQLBot` preflight: start, datasource list, tables).
+/// Includes SQLBot isolated ask (`mcp_isolated_question_*`, e.g. qualified `mcp__...__mcp_isolated_question_analysis`).
 /// Author: kejiqing
 #[must_use]
 pub fn is_mcp_query_progress_tool(tool_name: &str) -> bool {
-    tool_name.contains("mcp_question")
+    tool_name.contains("mcp_question") || tool_name.contains("mcp_isolated_question")
 }
 
 /// Whether tool execution should append to `.claw/progress-events.ndjson`.
-/// Whitelist: `mcp_question*` runtime tools and legacy `MCP` wrapper when `tool` is query-class. Author: kejiqing
+/// Whitelist: `mcp_question*` / `mcp_isolated_question*` runtime tools and legacy `MCP` wrapper when `tool` is query-class. Author: kejiqing
 #[must_use]
 pub fn should_emit_tool_progress_event(
     tool_name: &str,
@@ -565,6 +566,21 @@ mod tests {
             "mcp__sqlbot-streamable__mcp_datasource_tables",
             true,
             None,
+        ));
+        assert!(should_emit_tool_progress_event(
+            "mcp__sqlbot-streamable__mcp_isolated_question_analysis",
+            true,
+            None,
+        ));
+        let isolated_wrapper = json!({
+            "server": "sqlbot-streamable",
+            "tool": "mcp_isolated_question_analysis",
+            "arguments": {}
+        });
+        assert!(should_emit_tool_progress_event(
+            "MCP",
+            false,
+            Some(&isolated_wrapper)
         ));
         assert!(!should_emit_tool_progress_event("Bash", false, None));
         assert!(!should_emit_tool_progress_event("Read", false, None));

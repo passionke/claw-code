@@ -502,7 +502,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 master_key,
                 static_dir,
             ))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         }
         CliAction::Init { output_format } => run_init(output_format)?,
         // #146: dispatch pure-local introspection. Text mode uses existing

@@ -2,9 +2,18 @@
 
 Author: kejiqing
 
-**稳定做法只有一条**：在仓库根目录准备好 `.env`，打好镜像，用 **`./deploy/stack/gateway.sh up`** 起服务。不要用「手写一长串 compose / 只挂单个 compose 文件 / 在容器里配 macOS 的 `/Users/...` 路径」这类容易翻车的玩法。
+**稳定做法只有一条**：在仓库根目录准备好 `.env`，用 **`./deploy/stack/gateway.sh`** 起栈；不要用「手写一长串 compose / 只挂单个 compose 文件 / 在容器里配 macOS 的 `/Users/...` 路径」这类容易翻车的玩法。
 
-**约定（两套并存，用 `.env` 选一套，脚本共用 `gateway.sh`）**：
+**路线方针（维护优先，不搞多套叙事）**：
+
+| 场景 | 容器引擎 | 镜像从哪来 | 入口命令 |
+| --- | --- | --- | --- |
+| **本地开发**（笔记本 / 研发机） | **Podman**（`auto` 时 PATH 里优先 podman） | **本机编译打包**：`gateway.sh quick`（日常）或 **`pack-deploy`**（改 Rust/网关镜像后；慢但可预期） | `./deploy/stack/gateway.sh quick` / `pack-deploy` |
+| **线上** | **Docker**（`env.production.docker.example`） | **只拉 CI 打的 tag**（GHCR/ACR），服务器 **不跑 cargo 编网关** | `./deploy/stack/gateway.sh up --release release-v…` |
+
+两套环境用 **同一份脚本树** `deploy/stack/lib/`；差别只在根 `.env`（模板见下表）。`deploy/podman/*.sh` 仅为旧路径 **exec 转发** 到 `deploy/stack/lib/`，新文档不再展开。
+
+**`.env` 模板（与上表对应）**：
 
 | 环境 | 模板 | 关键变量 |
 | --- | --- | --- |

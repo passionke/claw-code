@@ -25,8 +25,11 @@ pub fn live_report_sse_response(
     let turn_id_worker = turn_id.to_string();
     let hub_done = Arc::clone(&hub);
     tokio::spawn(async move {
-        // Live tail only: no catch-up replay. Admin opens SSE when turn is running; `done` carries full text.
-        let (mut sub, _) = hub.subscribe_with_snapshot(&turn_id_worker);
+        // Replay buffered chunks first, then continue with live tail.
+        let (mut sub, snapshot_chunks) = hub.subscribe_with_snapshot(&turn_id_worker);
+        for chunk in snapshot_chunks {
+            let _ = tx.send(BizReportStreamMsg::Delta(chunk));
+        }
         loop {
             match sub.recv().await {
                 Ok(HubMsg::Delta(chunk)) => {

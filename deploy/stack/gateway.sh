@@ -78,7 +78,8 @@ case "${cmd}" in
     ;;
   bench) "${LIB}/bench-pool-30s.sh" "$@" ;;
   logs)
-    podman logs -f claw-gateway-rs
+    rt="$(command -v podman >/dev/null 2>&1 && echo podman || echo docker)"
+    "${rt}" logs -f claw-gateway-rs
     ;;
   ps)
     rt="$(command -v docker >/dev/null 2>&1 && echo docker || echo podman)"

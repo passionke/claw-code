@@ -11,7 +11,10 @@ export default function ChatLayout() {
 
   const dsOptions = projects.map((p) => ({
     value: p.dsId,
-    label: `ds ${p.dsId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
+    label:
+      p.projectConfigRegistered === false
+        ? `ds ${p.dsId} — 未注册`
+        : `ds ${p.dsId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
   }));
 
   return (

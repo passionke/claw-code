@@ -1,5 +1,15 @@
 # 本地开发（懒人版）
 
+## 路线方针（与线上一致脚本、不同 `.env`）
+
+| | 本地（本文） | 线上 |
+| --- | --- | --- |
+| 引擎 | **Podman**（`CLAW_CONTAINER_RUNTIME=podman` 或 `auto`） | **Docker**（见 `deploy/stack/env.production.docker.example`） |
+| 镜像 | **本机编译**：`gateway.sh quick` / `pack-deploy` | **仅 CI 镜像**：`gateway.sh up --release …`，服务器不 cargo 编网关 |
+| 入口 | 只认 `./deploy/stack/gateway.sh` | 同上 |
+
+不要怕 `pack-deploy` / `quick` 慢；**怕的是**再维护一套 `deploy/podman` 手写 compose。兼容脚本已 **转发** 到 `deploy/stack/lib/`。
+
 ## 一条命令
 
 在**仓库根目录**：
