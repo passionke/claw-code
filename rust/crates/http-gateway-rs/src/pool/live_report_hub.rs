@@ -72,6 +72,7 @@ impl LiveReportHub {
                 state.text.push_str(chunk);
                 state.chunks.push(chunk.to_string());
                 let _ = state.tx.send(HubMsg::Delta(chunk.to_string()));
+                api::sse_burst_trace::log_pool_ingest(turn_id, chunk_len);
                 crate::biz_report_sse_log::log_stdout_ingest(turn_id, chunk_len);
             }
             "solve.done" => {
