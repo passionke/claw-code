@@ -23,7 +23,27 @@ pub struct LlmModelApplyOutcome {
     pub message: Option<String>,
 }
 
-/// Resolve repo-root `.env` from `CLAW_WORKER_ENV_FILE` or `CLAW_REPO_ROOT`. Author: kejiqing
+/// PG-synced LLM keys (`OPENAI_API_KEY`, upstream, model). Never the human repo-root `.env`. Author: kejiqing
+#[must_use]
+pub fn resolve_llm_runtime_env_file() -> PathBuf {
+    if let Ok(raw) = std::env::var("CLAW_LLM_RUNTIME_ENV_FILE") {
+        let p = raw.trim();
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    if let Ok(root) = std::env::var("CLAW_REPO_ROOT") {
+        return PathBuf::from(root.trim()).join(".claw/claw-llm-runtime.env");
+    }
+    if let Some(human) = resolve_repo_env_file() {
+        if let Some(parent) = human.parent() {
+            return parent.join(".claw/claw-llm-runtime.env");
+        }
+    }
+    PathBuf::from(".claw/claw-llm-runtime.env")
+}
+
+/// Human deploy surface: repo-root `.env` from `CLAW_WORKER_ENV_FILE` or `CLAW_REPO_ROOT`. Author: kejiqing
 #[must_use]
 pub fn resolve_repo_env_file() -> Option<PathBuf> {
     if let Ok(raw) = std::env::var("CLAW_WORKER_ENV_FILE") {
@@ -163,6 +183,16 @@ pub async fn apply_llm_model_to_env(
     model_name: &str,
     api_key: &str,
 ) -> Result<LlmModelApplyOutcome, String> {
+    if let Some(parent) = env_file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    if !env_file.is_file() {
+        std::fs::write(
+            env_file,
+            "# GENERATED — LLM from PostgreSQL (Admin). Do not edit; human deploy vars stay in repo .env.\n",
+        )
+        .map_err(|e| format!("create {}: {e}", env_file.display()))?;
+    }
     let upstream = normalize_upstream_base_url(upstream_base_url)
         .ok_or_else(|| "invalid baseModelUrl (expect http(s):// host; use …/v1 when provider needs /v1/chat/completions)".to_string())?;
     let model = normalize_model_name_for_upstream(model_name, upstream_base_url)

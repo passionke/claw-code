@@ -33,7 +33,12 @@ EOF
 claw_dir_size() {
   local p="$1"
   if [[ -e "${p}" ]]; then
-    du -sh "${p}" 2>/dev/null | awk '{print $1}'
+    local out=""
+    if out="$(du -sh "${p}" 2>/dev/null)"; then
+      awk '{print $1}' <<<"${out}"
+    else
+      printf '%s' "n/a"
+    fi
   else
     printf '%s' "0"
   fi
@@ -147,7 +152,10 @@ if [[ "${CLAW_PRUNE_CLAW_IMAGES}" == "1" ]]; then
   fi
 fi
 
-after_total="$(du -sh "${ROOT_DIR}" 2>/dev/null | awk '{print $1}')"
+after_total="n/a"
+if _repo_size="$(du -sh "${ROOT_DIR}" 2>/dev/null)"; then
+  after_total="$(awk '{print $1}' <<<"${_repo_size}")"
+fi
 echo "==> freed (was): rust/target=${before_target} .linux-artifacts=${before_linux} workspace=${before_ws}"
 echo "==> repo total now: ${after_total}"
 if [[ "${CLAW_CLEAN_PODMAN_CACHE}" != "1" && "${CLAW_PRUNE_CLAW_IMAGES}" != "1" ]]; then

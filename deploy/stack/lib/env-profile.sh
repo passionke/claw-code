@@ -1,0 +1,131 @@
+# shellcheck shell=bash
+# Apply defaults from CLAW_DEPLOY_PROFILE (local | production). Author: kejiqing
+
+# Infer profile when unset: macOS → local, else production.
+claw_deploy_profile_name() {
+  local p
+  p="$(printf '%s' "${CLAW_DEPLOY_PROFILE:-}" | tr '[:upper:]' '[:lower:]')"
+  case "${p}" in
+    local | production) printf '%s' "${p}" ;;
+    "")
+      if [[ "$(uname -s)" == Darwin ]]; then
+        printf '%s' local
+      else
+        printf '%s' production
+      fi
+      ;;
+    *)
+      echo "error: CLAW_DEPLOY_PROFILE must be local or production (got ${CLAW_DEPLOY_PROFILE})" >&2
+      return 1
+      ;;
+  esac
+}
+
+# Set runtime/solve/tap defaults only when not already set in .env (explicit wins).
+claw_apply_deploy_profile() {
+  local profile
+  profile="$(claw_deploy_profile_name)" || return 1
+  export CLAW_DEPLOY_PROFILE="${profile}"
+
+  case "${profile}" in
+    local)
+      export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-podman}"
+      export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
+      export GATEWAY_IMAGE="${GATEWAY_IMAGE:-claw-gateway-rs:local}"
+      export GATEWAY_PLAYGROUND_IMAGE="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
+      export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
+      export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-native}"
+      export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18088}"
+      export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
+      export PLAYGROUND_PUBLIC_GATEWAY_BASE="${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://127.0.0.1:${GATEWAY_HOST_PORT}}"
+      export CLAW_GATEWAY_PUBLIC_BASE_URL="${CLAW_GATEWAY_PUBLIC_BASE_URL:-http://127.0.0.1:${GATEWAY_HOST_PORT}}"
+      export CONTAINER_BASE_REGISTRY="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
+      export CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK:-stack_default}"
+      ;;
+    production)
+      export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-docker}"
+      export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-docker_pool}"
+      export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-docker}"
+      export CLAW_IMAGE_REGISTRY="${CLAW_IMAGE_REGISTRY:-acr}"
+      export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8088}"
+      export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
+      export CLAW_GATEWAY_PG_IMAGE="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
+      # Images: use `gateway.sh up --release release-vX.Y.Z` (writes .claw-image-release.env).
+      ;;
+  esac
+
+  # Legacy alias (do not set both in .env).
+  if [[ "${CLAW_USE_DOCKER:-0}" == "1" && "${CLAW_CONTAINER_RUNTIME:-}" == "auto" ]]; then
+    export CLAW_CONTAINER_RUNTIME=docker
+  fi
+
+  claw_sync_solve_worker_image_prefix || return 1
+  return 0
+}
+
+# When solve mode is docker_pool, drop stale CLAW_PODMAN_IMAGE from human .env unless explicit opt-out.
+claw_sync_solve_worker_image_prefix() {
+  case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
+    docker_pool)
+      if [[ "${CLAW_POOL_WORKER_IMAGE_EXPLICIT:-0}" != "1" && -n "${CLAW_PODMAN_IMAGE:-}" && -z "${CLAW_DOCKER_IMAGE:-}" ]]; then
+        export CLAW_DOCKER_IMAGE="${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE}}"
+        unset CLAW_PODMAN_IMAGE
+      fi
+      ;;
+    podman_pool)
+      if [[ "${CLAW_POOL_WORKER_IMAGE_EXPLICIT:-0}" != "1" && -n "${CLAW_DOCKER_IMAGE:-}" && -z "${CLAW_PODMAN_IMAGE:-}" ]]; then
+        export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-${CLAW_DOCKER_IMAGE}}"
+        unset CLAW_DOCKER_IMAGE
+      fi
+      ;;
+  esac
+  return 0
+}
+
+# Fail fast on common 1.4.x deploy mistakes (socket / pool TCP / mixed runtimes).
+claw_validate_deploy_profile() {
+  local profile rt iso
+  profile="$(claw_deploy_profile_name)" || return 1
+  rt="$(claw_container_runtime_cli 2>/dev/null || true)"
+  iso="${CLAW_SOLVE_ISOLATION:-podman_pool}"
+
+  if [[ -n "${PODMAN_HOST_SOCK:-}" ]]; then
+    echo "error: PODMAN_HOST_SOCK is removed; delete it from .env" >&2
+    return 1
+  fi
+
+  case "${profile}" in
+    local)
+      if [[ "${iso}" == docker_pool && "${rt}" == podman ]]; then
+        echo "error: CLAW_DEPLOY_PROFILE=local expects podman_pool, not docker_pool" >&2
+        echo "hint: remove CLAW_SOLVE_ISOLATION=docker_pool from .env or set CLAW_DEPLOY_PROFILE=production" >&2
+        return 1
+      fi
+      ;;
+    production)
+      if [[ "${iso}" == podman_pool ]]; then
+        echo "error: CLAW_DEPLOY_PROFILE=production expects docker_pool (got podman_pool)" >&2
+        return 1
+      fi
+      if [[ "${rt}" == podman ]]; then
+        echo "error: CLAW_DEPLOY_PROFILE=production expects CLAW_CONTAINER_RUNTIME=docker" >&2
+        return 1
+      fi
+      if [[ -z "${GATEWAY_IMAGE:-}" ]]; then
+        echo "error: production needs GATEWAY_IMAGE or ./deploy/stack/gateway.sh up --release release-vX.Y.Z" >&2
+        return 1
+      fi
+      ;;
+  esac
+
+  if [[ "${iso}" == docker_pool && -z "${CLAW_DOCKER_IMAGE:-}" ]]; then
+    echo "error: CLAW_DOCKER_IMAGE unset for docker_pool (set GATEWAY_IMAGE + --release, or CLAW_IMAGE_PREFIX)" >&2
+    return 1
+  fi
+  if [[ "${iso}" == podman_pool && -z "${CLAW_PODMAN_IMAGE:-}" ]]; then
+    echo "error: CLAW_PODMAN_IMAGE unset for podman_pool" >&2
+    return 1
+  fi
+
+  return 0
+}

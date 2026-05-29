@@ -15,13 +15,11 @@ fn ensure_test_env(tmp: &std::path::Path) {
             "postgres://claw_gateway:clawGw9Dev_Pg@127.0.0.1:5433/claw_gateway".into()
         }),
     );
-    let env_file = tmp.join("worker.env");
-    if !env_file.is_file() {
-        std::fs::write(&env_file, "# test worker env\n").expect("write worker.env");
-    }
-    std::env::set_var("CLAW_WORKER_ENV_FILE", env_file.display().to_string());
     let claw_dir = tmp.join(".claw");
     std::fs::create_dir_all(&claw_dir).expect("mkdir .claw");
+    let llm_env = claw_dir.join("claw-llm-runtime.env");
+    std::env::set_var("CLAW_REPO_ROOT", tmp.display().to_string());
+    std::env::set_var("CLAW_LLM_RUNTIME_ENV_FILE", llm_env.display().to_string());
     std::env::set_var(
         "CLAW_TAP_UPSTREAM_CONFIG_FILE",
         claw_dir
@@ -98,8 +96,8 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
         "upstream file: {upstream_text}"
     );
 
-    let env_path = std::env::var("CLAW_WORKER_ENV_FILE").expect("env path");
-    let env_text = std::fs::read_to_string(&env_path).expect("read worker env");
+    let env_path = std::env::var("CLAW_LLM_RUNTIME_ENV_FILE").expect("llm runtime env path");
+    let env_text = std::fs::read_to_string(&env_path).expect("read claw-llm-runtime.env");
     assert!(env_text.contains("UPSTREAM_OPENAI_BASE_URL=https://api.example.com/v1"));
     assert!(env_text.contains("CLAW_DEFAULT_MODEL=mock-model-v1"));
     assert!(env_text.contains("ANTHROPIC_MODEL=mock-model-v1"));

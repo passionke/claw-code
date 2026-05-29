@@ -41,23 +41,44 @@ Implementation scripts: deploy/stack/lib/ (do not run directly unless you know w
 EOF
 }
 
+print_deploy_manual_hint() {
+  cat >&2 <<'EOF'
+manual: deployment troubleshooting
+  - deploy/stack/README.md
+  - 重点先看: "1. 稳定路径（按顺序做）", "1.3 启动与检查", "3. 常见问题（短）"
+  - 若是权限门禁报错，再按报错里的 hint 执行 chown 修复
+EOF
+}
+
+run_with_manual_hint() {
+  local runner="${1:?}"
+  shift || true
+  if ! "${runner}" "$@"; then
+    print_deploy_manual_hint
+    return 1
+  fi
+}
+
 cmd="${1:-help}"
 shift || true
 
 case "${cmd}" in
-  quick) "${LIB}/quick.sh" "$@" ;;
+  quick) run_with_manual_hint "${LIB}/quick.sh" "$@" ;;
   clean) "${LIB}/clean.sh" "$@" ;;
-  build) "${LIB}/build.sh" "$@" ;;
-  pack-deploy) "${LIB}/pack-deploy.sh" "$@" ;;
+  build) run_with_manual_hint "${LIB}/build.sh" "$@" ;;
+  pack-deploy) run_with_manual_hint "${LIB}/pack-deploy.sh" "$@" ;;
   playground) "${LIB}/playground.sh" "$@" ;;
   admin-build) "${LIB}/build-gateway-admin.sh" "$@" ;;
   admin-reload) "${LIB}/admin-reload.sh" "$@" ;;
   solve-once-local) "${LIB}/solve-once-local.sh" "$@" ;;
-  up) "${LIB}/up.sh" "$@" ;;
+  up) run_with_manual_hint "${LIB}/up.sh" "$@" ;;
   down) "${LIB}/down.sh" "$@" ;;
   pg-up) "${LIB}/pg-up.sh" "$@" ;;
   pg-down) "${LIB}/pg-down.sh" "$@" ;;
-  restart) "${LIB}/down.sh" && "${LIB}/up.sh" "$@" ;;
+  restart)
+    run_with_manual_hint "${LIB}/down.sh"
+    run_with_manual_hint "${LIB}/up.sh" "$@"
+    ;;
   pool-reset) "${LIB}/pool-reset.sh" "$@" ;;
   check) "${LIB}/check-connectivity.sh" "$@" ;;
   verify) "${LIB}/claw-stack-verify.sh" "$@" ;;

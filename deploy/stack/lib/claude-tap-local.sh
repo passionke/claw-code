@@ -347,9 +347,16 @@ claw_claude_tap_start() {
   local ctx
   ctx="$(claw_claude_tap_resolve_context "${root_dir}")"
   local upstream="${UPSTREAM_OPENAI_BASE_URL:-${OPENAI_BASE_URL:-}}"
-
   if [[ -z "${upstream}" ]]; then
-    echo "UPSTREAM_OPENAI_BASE_URL is empty (set real LLM URL for --tap-target)" >&2
+    local cfg
+    cfg="$(claw_claude_tap_upstream_config_path "${root_dir}")"
+    if [[ -f "${cfg}" ]]; then
+      upstream="$(python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); print((d.get("target") or "").strip())' "${cfg}" 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "${upstream}" ]]; then
+    echo "UPSTREAM_OPENAI_BASE_URL is empty and ${root_dir}/.claw/claw-tap-upstream.json has no target" >&2
+    echo "hint: configure active LLM in Admin (PG), start gateway once to sync, or set UPSTREAM_OPENAI_BASE_URL in .env" >&2
     exit 1
   fi
 

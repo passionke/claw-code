@@ -11,7 +11,7 @@ use tracing::{info, warn};
 use crate::gateway_global_settings::{self, ActiveLlmRuntime};
 use crate::gateway_llm_model_apply::{
     apply_llm_model_to_env, normalize_model_name_for_upstream, normalize_upstream_base_url,
-    resolve_repo_env_file, LlmModelApplyOutcome,
+    resolve_llm_runtime_env_file, resolve_repo_env_file, LlmModelApplyOutcome,
 };
 use crate::session_db::GatewaySessionDb;
 
@@ -146,23 +146,16 @@ pub async fn sync_llm_runtime_from_db(
     };
 
     if env_changed {
-        if let Some(env_file) = resolve_repo_env_file() {
-            env_apply = Some(
-                apply_llm_model_to_env(
-                    &env_file,
-                    &next.upstream_base_url,
-                    &next.model_name,
-                    &next.api_key,
-                )
-                .await?,
-            );
-        } else {
-            warn!(
-                target: "claw_gateway_orchestration",
-                component = "llm_config_sync",
-                "repo .env not found; skipped worker env sync (set CLAW_WORKER_ENV_FILE or CLAW_REPO_ROOT)"
-            );
-        }
+        let env_file = resolve_llm_runtime_env_file();
+        env_apply = Some(
+            apply_llm_model_to_env(
+                &env_file,
+                &next.upstream_base_url,
+                &next.model_name,
+                &next.api_key,
+            )
+            .await?,
+        );
     }
 
     let changed = env_changed || upstream_written;
