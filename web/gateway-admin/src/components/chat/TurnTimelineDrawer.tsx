@@ -84,7 +84,7 @@ function SegmentBar({
   );
 }
 
-function ToolRowTrack({
+function SegmentRowTrack({
   index,
   seg,
   originMs,
@@ -103,6 +103,68 @@ function ToolRowTrack({
       <div className={`${styles.laneTrack} ${styles.laneTrackParallel}`}>
         <SegmentBar seg={seg} originMs={originMs} totalMs={totalMs} showDuration />
       </div>
+    </div>
+  );
+}
+
+function SegmentEnvelopeLane({
+  envelopeLabel,
+  segments,
+  originMs,
+  totalMs,
+  expanded,
+  onToggle,
+}: {
+  envelopeLabel: string;
+  segments: TimelineSegment[];
+  originMs: number;
+  totalMs: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const sorted = sortTimelineSegments(segments);
+  const pw = phaseWindowForSegments(sorted);
+  const envelope: TimelineSegment | null = pw
+    ? {
+        id: "segment-envelope",
+        label: envelopeLabel,
+        startMs: pw.originMs,
+        endMs: pw.originMs + pw.totalMs,
+        durationMs: pw.totalMs,
+        status: "ok",
+      }
+    : null;
+
+  return (
+    <div className={styles.laneGroup}>
+      {envelope ? (
+        <div
+          className={`${styles.laneTrack} ${styles.laneTrackClickable}`}
+          role="button"
+          tabIndex={0}
+          onClick={onToggle}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onToggle();
+            }
+          }}
+          aria-expanded={expanded}
+        >
+          <SegmentBar seg={envelope} originMs={originMs} totalMs={totalMs} envelope showDuration />
+        </div>
+      ) : null}
+      {expanded
+        ? sorted.map((seg, i) => (
+            <SegmentRowTrack
+              key={`${seg.id}-${i}`}
+              index={i}
+              seg={seg}
+              originMs={originMs}
+              totalMs={totalMs}
+            />
+          ))
+        : null}
     </div>
   );
 }
@@ -148,11 +210,15 @@ function LaneTracks({
   originMs,
   totalMs,
   phaseWindow,
+  expanded,
+  onToggleExpand,
 }: {
   lane: TimelineLane;
   originMs: number;
   totalMs: number;
   phaseWindow?: PhaseWindow | null;
+  expanded?: boolean;
+  onToggleExpand?: () => void;
 }) {
   if (lane.id === "progress") {
     return <ProgressMarkerTrack segments={lane.segments} originMs={originMs} totalMs={totalMs} />;
@@ -187,6 +253,19 @@ function LaneTracks({
     );
   }
 
+  if (lane.id === "bootstrap") {
+    return (
+      <SegmentEnvelopeLane
+        envelopeLabel={lane.label}
+        segments={lane.segments}
+        originMs={originMs}
+        totalMs={totalMs}
+        expanded={expanded ?? false}
+        onToggle={onToggleExpand ?? (() => undefined)}
+      />
+    );
+  }
+
   if (lane.id === "tools") {
     const sorted = sortTimelineSegments(lane.segments);
     const pw = phaseWindowForSegments(sorted);
@@ -208,7 +287,7 @@ function LaneTracks({
           </div>
         ) : null}
         {sorted.map((seg, i) => (
-          <ToolRowTrack
+          <SegmentRowTrack
             key={`${seg.id}-${i}`}
             index={i}
             seg={seg}
@@ -358,6 +437,20 @@ function FanoutDetailTable({
 
 function SwimlaneChart({ timeline }: { timeline: SolveTurnTimeline }) {
   const { originMs, totalMs, lanes } = timeline;
+  const [expandedLanes, setExpandedLanes] = useState<Set<string>>(() => new Set());
+
+  const toggleLane = useCallback((laneId: string) => {
+    setExpandedLanes((prev) => {
+      const next = new Set(prev);
+      if (next.has(laneId)) {
+        next.delete(laneId);
+      } else {
+        next.add(laneId);
+      }
+      return next;
+    });
+  }, []);
+
   if (totalMs <= 0 || lanes.length === 0) {
     return <Empty description="暂无可视化阶段" />;
   }
@@ -382,10 +475,32 @@ function SwimlaneChart({ timeline }: { timeline: SolveTurnTimeline }) {
                 />
               ) : null}
               <div className={styles.laneRow}>
-                <div className={styles.laneLabel}>
+                <div
+                  className={
+                    lane.id === "bootstrap" ? `${styles.laneLabel} ${styles.laneLabelClickable}` : styles.laneLabel
+                  }
+                  role={lane.id === "bootstrap" ? "button" : undefined}
+                  tabIndex={lane.id === "bootstrap" ? 0 : undefined}
+                  onClick={lane.id === "bootstrap" ? () => toggleLane(lane.id) : undefined}
+                  onKeyDown={
+                    lane.id === "bootstrap"
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            toggleLane(lane.id);
+                          }
+                        }
+                      : undefined
+                  }
+                  aria-expanded={lane.id === "bootstrap" ? expandedLanes.has(lane.id) : undefined}
+                >
                   {lane.label}
                   {lane.id === "progress" ? (
                     <span className={styles.laneLabelHint}>悬停标记点查看原文</span>
+                  ) : lane.id === "bootstrap" ? (
+                    <span className={styles.laneLabelHint}>
+                      {lane.segments.length} 段 · {expandedLanes.has(lane.id) ? "点击收起" : "点击展开"}
+                    </span>
                   ) : lane.id === "tools" ? (
                     <span className={styles.laneLabelHint}>{lane.segments.length} 次调用 · 每行一条</span>
                   ) : lane.parallel ? (
@@ -397,6 +512,8 @@ function SwimlaneChart({ timeline }: { timeline: SolveTurnTimeline }) {
                   originMs={originMs}
                   totalMs={totalMs}
                   phaseWindow={isParallelFanout ? phaseWindow : null}
+                  expanded={lane.id === "bootstrap" ? expandedLanes.has(lane.id) : undefined}
+                  onToggleExpand={lane.id === "bootstrap" ? () => toggleLane(lane.id) : undefined}
                 />
               </div>
             </div>

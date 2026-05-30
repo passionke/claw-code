@@ -51,6 +51,37 @@
   gap: 4px;
 }
 
+.laneLabelClickable {
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+  padding: 8px 6px 6px;
+  margin: -8px -6px -6px;
+  transition: background 0.12s ease;
+}
+
+.laneLabelClickable:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.laneTrackClickable {
+  cursor: pointer;
+}
+
+.laneTrackClickable:hover {
+  border-color: #60a5fa;
+}
+
+.laneTrackClickable:focus-visible {
+  outline: 2px solid #69b1ff;
+  outline-offset: 2px;
+}
+
+.laneLabelClickable:focus-visible {
+  outline: 2px solid #69b1ff;
+  outline-offset: 2px;
+}
+
 .toolRow {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr);

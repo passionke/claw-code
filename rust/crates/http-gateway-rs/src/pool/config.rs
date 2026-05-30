@@ -6,6 +6,19 @@ use std::sync::Arc;
 use crate::session_db::GatewaySessionDb;
 
 use super::live_report_hub::LiveReportHub;
+use super::worker_identity::PoolWorkerIdentity;
+
+/// `CLAW_SECURITY_BOOST` — default on. Author: kejiqing
+#[must_use]
+pub fn security_boost_from_env() -> bool {
+    match std::env::var("CLAW_SECURITY_BOOST") {
+        Ok(v) => {
+            let t = v.trim().to_ascii_lowercase();
+            !(t == "0" || t == "false" || t == "no" || t == "off")
+        }
+        Err(_) => true,
+    }
+}
 
 /// Snapshot of pool parameters (read once at construction; no hot reload).
 #[derive(Clone)]
@@ -21,7 +34,12 @@ pub struct DockerPoolConfig {
     /// If `None`, a random 8-char stem is generated (production).
     pub name_stem: Option<String>,
     pub on_release_exec: Option<String>,
+    /// Overrides login name; when `None`, exec uses `worker_identity.exec_user_arg()` (`uid:gid`).
     pub exec_user: Option<String>,
+    pub worker_identity: PoolWorkerIdentity,
+    pub security_boost: bool,
+    /// Symlink guest inject (fake-docker unit tests only; production uses bind → guest).
+    pub symlink_inject: bool,
     pub worker_env_host_file: Option<PathBuf>,
     /// Pool-local live report hub (required on `claw-pool-daemon`).
     pub live_report_hub: Option<Arc<LiveReportHub>>,

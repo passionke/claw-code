@@ -196,6 +196,7 @@ podman ps   # 或  docker ps
 | 改 `.env` 不生效 | 必须用 **`./deploy/stack/gateway.sh up`**（带 `--force-recreate`），不要指望无重建的 `up` |
 | 改了 `rust/` 里 worker（`claw`）或网关逻辑，solve 仍像旧的 | **`./deploy/stack/gateway.sh build`** 会**同时**重建 **`claw-gateway-rs`** 与 **`claw-gateway-worker`**；只 `up` 不 `build` 会继续用旧镜像 |
 | `http://localhost:3000/?session=…` 没有预期内容 | 见上文 **Live Viewer**：stock tap **不解析** `session` query；且须有经 **tap 代理端口**（`CLAUDE_TAP_PORT`，默认 8080）的 **OpenAI 兼容 API** 流量写入当前 `trace_*.jsonl` 后 Live 才有数据；仅打网关 **`/healthz`** 不会进 tap trace |
+| solve 成功但泳道无 worker 段 / claw-tap session 错位 | Phase 2 须 **`bind-propagation=rslave`** + `guest/` **rshared**（见 `docs/http-gateway-container-pool.md` §2.2.1）；`podman inspect claw-worker-*` 应见 `prop=rslave`；acquire 后 `podman exec … cat /claw_host_root/gateway-solve-task.json` 的 `sessionId` 须与当前 task 一致 |
 
 联通性脚本：`./deploy/stack/gateway.sh check`。
 
