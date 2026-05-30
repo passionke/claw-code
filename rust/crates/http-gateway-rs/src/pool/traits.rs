@@ -1,5 +1,6 @@
 //! Types shared by pool backends. Author: kejiqing
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,12 +53,20 @@ pub trait PoolOps: Send + Sync {
         claw_bin: &str,
         request_id: Option<&str>,
         turn_id: &str,
+        worker_llm_env: Option<BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String>;
 
     async fn release_slot(&self, slot: SlotLease) -> Result<(), String>;
 
     async fn force_kill_slot(&self, slot_index: usize) -> Result<(), String>;
+
+    /// Ensure `session_host_mount` (host path under pool `work_root`) is uid/gid-aligned for workers.
+    /// With [`super::PoolRpcClient`], runs on `claw-pool-daemon` so the gateway container need not mount the engine socket. Author: kejiqing
+    async fn chown_session_tree_for_pool_worker(
+        &self,
+        session_host_mount: PathBuf,
+    ) -> Result<(), String>;
 
     /// Whether this turn has observed at least one stdout `report.delta`.
     async fn has_report_for_turn(&self, _turn_id: &str) -> bool {

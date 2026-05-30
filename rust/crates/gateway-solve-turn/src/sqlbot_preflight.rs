@@ -17,23 +17,11 @@ use runtime::{
 use serde_json::{json, Value};
 use tracing::warn;
 
-pub(crate) const PREFLIGHT_ENV: &str = "CLAW_GATEWAY_SQLBOT_PREFLIGHT";
-
 const PREFLIGHT_LOG_TARGET: &str = "claw_sqlbot_preflight";
 
 #[derive(Debug, Clone)]
 struct SqlbotCredentials {
     token: String,
-}
-
-pub(crate) fn sqlbot_preflight_enabled() -> bool {
-    match std::env::var(PREFLIGHT_ENV) {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !matches!(v.as_str(), "0" | "false" | "off" | "no")
-        }
-        Err(_) => true,
-    }
 }
 
 fn warn_skip(step: &str, reason: &str) {
@@ -555,9 +543,6 @@ pub(crate) fn run_sqlbot_preflight(
     session: &mut Session,
     executor: &mut DirectToolExecutor,
 ) -> Result<(), GatewaySolveTurnError> {
-    if !sqlbot_preflight_enabled() {
-        return Ok(());
-    }
     let start_output = run_preflight_mcp_required(
         session,
         executor,

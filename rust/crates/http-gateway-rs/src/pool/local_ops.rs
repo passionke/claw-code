@@ -32,6 +32,7 @@ impl PoolOps for LocalPoolOps {
         claw_bin: &str,
         request_id: Option<&str>,
         turn_id: &str,
+        worker_llm_env: Option<std::collections::BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
         self.0
@@ -41,6 +42,7 @@ impl PoolOps for LocalPoolOps {
                 claw_bin,
                 request_id,
                 turn_id,
+                worker_llm_env,
                 on_stdout_line,
             )
             .await
@@ -52,6 +54,15 @@ impl PoolOps for LocalPoolOps {
 
     async fn force_kill_slot(&self, slot_index: usize) -> Result<(), String> {
         self.0.force_kill_slot(slot_index).await
+    }
+
+    async fn chown_session_tree_for_pool_worker(
+        &self,
+        session_host_mount: PathBuf,
+    ) -> Result<(), String> {
+        self.0
+            .chown_session_host_under_work_root(session_host_mount)
+            .await
     }
 
     async fn has_report_for_turn(&self, turn_id: &str) -> bool {

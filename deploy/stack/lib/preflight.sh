@@ -44,12 +44,78 @@ claw_deploy_preflight() {
     "${rt}" pull "${pg}"
   fi
 
-  for v in CLAW_PROJECTS_GIT_URL CLAW_PROJECTS_GIT_BRANCH CLAW_PROJECTS_GIT_AUTHOR; do
-    if [[ -z "${!v:-}" ]]; then
-      echo "error: ${v} is required in .env (gateway will exit without it)" >&2
-      return 1
-    fi
-  done
+  claw_workspace_ownership_preflight "${podman_dir}" || return 1
 
   echo "==> preflight ok (compose project=${COMPOSE_PROJECT_NAME})" >&2
+}
+
+claw_workspace_ownership_preflight() {
+  local podman_dir="${1:?}"
+  local root="${CLAW_POOL_WORK_ROOT_BIND_SRC:-${podman_dir}/claw-workspace}"
+  local uid="${CLAW_WORKER_UID:-1000}"
+  local gid="${CLAW_WORKER_GID:-1000}"
+  local out
+
+  if [[ ! -d "${root}" ]]; then
+    echo "error: workspace root missing: ${root}" >&2
+    echo "hint: mkdir -p \"${root}\" && sudo chown -R ${uid}:${gid} \"${root}\"" >&2
+    echo "manual: deploy/stack/README.md -> 1.3 启动与检查 / 3. 常见问题（短）" >&2
+    return 1
+  fi
+
+  out="$(
+    python3 - "${root}" "${uid}" "${gid}" <<'PY'
+import os
+import stat
+import sys
+
+root = sys.argv[1]
+want_uid = int(sys.argv[2])
+want_gid = int(sys.argv[3])
+errors = []
+checked = 0
+
+def check_path(path):
+    global checked
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    checked += 1
+    if st.st_uid != want_uid or st.st_gid != want_gid:
+        mode = stat.filemode(st.st_mode)
+        errors.append(f"{path}|uid={st.st_uid}|gid={st.st_gid}|mode={mode}")
+
+check_path(root)
+for dirpath, dirnames, filenames in os.walk(root):
+    for name in dirnames:
+        check_path(os.path.join(dirpath, name))
+    for name in filenames:
+        check_path(os.path.join(dirpath, name))
+
+if errors:
+    print(f"MISMATCH {len(errors)} {checked}")
+    for line in errors[:20]:
+        print(line)
+    sys.exit(2)
+
+print(f"OK {checked}")
+PY
+  )" || true
+
+  if [[ "${out}" == MISMATCH* ]]; then
+    echo "error: workspace ownership preflight failed: root=${root} expected=${uid}:${gid}" >&2
+    printf '%s\n' "${out}" >&2
+    echo "hint: sudo chown -R ${uid}:${gid} \"${root}\"" >&2
+    echo "manual: deploy/stack/README.md -> 1.3 启动与检查 / 3. 常见问题（短）" >&2
+    return 1
+  fi
+
+  if [[ "${out}" != OK* ]]; then
+    echo "error: workspace ownership preflight failed unexpectedly: ${out}" >&2
+    echo "manual: deploy/stack/README.md -> 1.3 启动与检查 / 3. 常见问题（短）" >&2
+    return 1
+  fi
+
+  echo "    workspace ownership ok: root=${root} owner=${uid}:${gid}" >&2
 }

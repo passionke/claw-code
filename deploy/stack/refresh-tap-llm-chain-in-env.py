@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Bootstrap UPSTREAM_OPENAI_BASE_URL in repo-root .env when missing.
+"""Bootstrap UPSTREAM_OPENAI_BASE_URL in `.claw/claw-llm-runtime.env` when missing.
 
-OPENAI_BASE_URL / INTERNAL_CLAUDE_TAP_HOST / pool run extras are written to
-deploy/stack/.claw-worker-llm.env by gateway.sh up (see worker-llm-wiring.sh).
+Human repo `.env` is deploy-only. OPENAI_BASE_URL for workers is in deploy/stack/.claw-worker-llm.env.
 
 Author: kejiqing
 """

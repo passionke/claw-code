@@ -141,9 +141,10 @@ pub struct ProjectEntityRevisionSummary {
     pub note: Option<String>,
 }
 
-/// One immutable global LLM model revision (`gateway_llm_model_revision`). Author: kejiqing
+/// One immutable global LLM model revision (`gateway_llm_cluster_revision`). Author: kejiqing
 #[derive(Debug, Clone)]
 pub struct GatewayLlmModelRevisionRow {
+    pub cluster_id: String,
     pub model_id: String,
     pub model_rev: String,
     pub created_at_ms: i64,
@@ -151,6 +152,38 @@ pub struct GatewayLlmModelRevisionRow {
     pub base_model_url: String,
     pub model_name: String,
     pub note: Option<String>,
+}
+
+impl GatewayLlmModelRevisionRow {
+    #[must_use]
+    pub fn with_cluster_id(mut self, cluster_id: &str) -> Self {
+        self.cluster_id = cluster_id.to_string();
+        self
+    }
+}
+
+/// Per-cluster LLM model row (`gateway_llm_cluster_model`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct GatewayLlmClusterModelRow {
+    pub cluster_id: String,
+    pub model_id: String,
+    pub name: String,
+    pub base_model_url: String,
+    pub model_name: String,
+    pub current_rev: String,
+    pub api_key_ciphertext: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// Active LLM pointer for one cluster (`gateway_llm_cluster_state`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct GatewayLlmClusterStateRow {
+    pub cluster_id: String,
+    pub active_model_id: String,
+    pub active_model_rev: String,
+    pub active_applied_at_ms: Option<i64>,
+    pub updated_at_ms: i64,
 }
 
 /// Summary row for version list API. Author: kejiqing
@@ -601,6 +634,54 @@ impl GatewaySessionDb {
         )
         .execute(pool)
         .await?;
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS gateway_llm_cluster_model (
+                cluster_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                base_model_url TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                current_rev TEXT NOT NULL DEFAULT '',
+                api_key_ciphertext TEXT NOT NULL DEFAULT '',
+                created_at_ms BIGINT NOT NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (cluster_id, model_id)
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS gateway_llm_cluster_state (
+                cluster_id TEXT PRIMARY KEY,
+                active_model_id TEXT NOT NULL DEFAULT '',
+                active_model_rev TEXT NOT NULL DEFAULT '',
+                active_applied_at_ms BIGINT,
+                updated_at_ms BIGINT NOT NULL DEFAULT 0
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS gateway_llm_cluster_revision (
+                cluster_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                model_rev TEXT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                name TEXT NOT NULL,
+                base_model_url TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                note TEXT,
+                PRIMARY KEY (cluster_id, model_id, model_rev)
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"CREATE INDEX IF NOT EXISTS idx_gateway_llm_cluster_revision_list
+             ON gateway_llm_cluster_revision (cluster_id, model_id, created_at_ms DESC)",
+        )
+        .execute(pool)
+        .await?;
 
         // Legacy live-spill table (stdout-v1); safe no-op if already dropped. Author: kejiqing
         sqlx::query("DROP TABLE IF EXISTS gateway_turn_live_chunks")
@@ -718,6 +799,7 @@ impl GatewaySessionDb {
             return Ok(None);
         };
         Ok(Some(GatewayLlmModelRevisionRow {
+            cluster_id: String::new(),
             model_id: row.try_get("model_id")?,
             model_rev: row.try_get("model_rev")?,
             created_at_ms: row.try_get("created_at_ms")?,
@@ -744,6 +826,7 @@ impl GatewaySessionDb {
         rows.into_iter()
             .map(|row| {
                 Ok(GatewayLlmModelRevisionRow {
+                    cluster_id: String::new(),
                     model_id: row.try_get("model_id")?,
                     model_rev: row.try_get("model_rev")?,
                     created_at_ms: row.try_get("created_at_ms")?,
@@ -809,6 +892,228 @@ impl GatewaySessionDb {
     pub async fn delete_llm_model_revisions(&self, model_id: &str) -> Result<(), SqlxError> {
         sqlx::query("DELETE FROM gateway_llm_model_revision WHERE model_id = $1")
             .bind(model_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn count_llm_cluster_models(&self, cluster_id: &str) -> Result<i64, SqlxError> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM gateway_llm_cluster_model WHERE cluster_id = $1",
+        )
+        .bind(cluster_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count)
+    }
+
+    pub async fn list_llm_cluster_models(
+        &self,
+        cluster_id: &str,
+    ) -> Result<Vec<GatewayLlmClusterModelRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT cluster_id, model_id, name, base_model_url, model_name, current_rev,
+                      api_key_ciphertext, created_at_ms, updated_at_ms
+               FROM gateway_llm_cluster_model
+               WHERE cluster_id = $1
+               ORDER BY created_at_ms ASC",
+        )
+        .bind(cluster_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(GatewayLlmClusterModelRow {
+                    cluster_id: row.try_get("cluster_id")?,
+                    model_id: row.try_get("model_id")?,
+                    name: row.try_get("name")?,
+                    base_model_url: row.try_get("base_model_url")?,
+                    model_name: row.try_get("model_name")?,
+                    current_rev: row.try_get("current_rev")?,
+                    api_key_ciphertext: row.try_get("api_key_ciphertext")?,
+                    created_at_ms: row.try_get("created_at_ms")?,
+                    updated_at_ms: row.try_get("updated_at_ms")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn upsert_llm_cluster_model(
+        &self,
+        row: &GatewayLlmClusterModelRow,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_llm_cluster_model (
+                 cluster_id, model_id, name, base_model_url, model_name, current_rev,
+                 api_key_ciphertext, created_at_ms, updated_at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               ON CONFLICT (cluster_id, model_id) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 base_model_url = EXCLUDED.base_model_url,
+                 model_name = EXCLUDED.model_name,
+                 current_rev = EXCLUDED.current_rev,
+                 api_key_ciphertext = EXCLUDED.api_key_ciphertext,
+                 updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(&row.cluster_id)
+        .bind(&row.model_id)
+        .bind(&row.name)
+        .bind(&row.base_model_url)
+        .bind(&row.model_name)
+        .bind(&row.current_rev)
+        .bind(&row.api_key_ciphertext)
+        .bind(row.created_at_ms)
+        .bind(row.updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_llm_cluster_model(
+        &self,
+        cluster_id: &str,
+        model_id: &str,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "DELETE FROM gateway_llm_cluster_model WHERE cluster_id = $1 AND model_id = $2",
+        )
+        .bind(cluster_id)
+        .bind(model_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_llm_cluster_state(
+        &self,
+        cluster_id: &str,
+    ) -> Result<Option<GatewayLlmClusterStateRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT cluster_id, active_model_id, active_model_rev, active_applied_at_ms, updated_at_ms
+               FROM gateway_llm_cluster_state WHERE cluster_id = $1",
+        )
+        .bind(cluster_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| GatewayLlmClusterStateRow {
+            cluster_id: row.try_get("cluster_id").unwrap_or_default(),
+            active_model_id: row.try_get("active_model_id").unwrap_or_default(),
+            active_model_rev: row.try_get("active_model_rev").unwrap_or_default(),
+            active_applied_at_ms: row.try_get("active_applied_at_ms").ok(),
+            updated_at_ms: row.try_get("updated_at_ms").unwrap_or(0),
+        }))
+    }
+
+    pub async fn save_llm_cluster_state(
+        &self,
+        cluster_id: &str,
+        active_model_id: &str,
+        active_model_rev: &str,
+        active_applied_at_ms: Option<i64>,
+        updated_at_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_llm_cluster_state (
+                 cluster_id, active_model_id, active_model_rev, active_applied_at_ms, updated_at_ms
+               ) VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (cluster_id) DO UPDATE SET
+                 active_model_id = EXCLUDED.active_model_id,
+                 active_model_rev = EXCLUDED.active_model_rev,
+                 active_applied_at_ms = EXCLUDED.active_applied_at_ms,
+                 updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(cluster_id)
+        .bind(active_model_id)
+        .bind(active_model_rev)
+        .bind(active_applied_at_ms)
+        .bind(updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_llm_cluster_revision(
+        &self,
+        cluster_id: &str,
+        model_id: &str,
+        model_rev: &str,
+    ) -> Result<Option<GatewayLlmModelRevisionRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name, note
+               FROM gateway_llm_cluster_revision
+               WHERE cluster_id = $1 AND model_id = $2 AND model_rev = $3",
+        )
+        .bind(cluster_id)
+        .bind(model_id)
+        .bind(model_rev)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| GatewayLlmModelRevisionRow {
+            cluster_id: row.try_get("cluster_id").unwrap_or_default(),
+            model_id: row.try_get("model_id").unwrap_or_default(),
+            model_rev: row.try_get("model_rev").unwrap_or_default(),
+            created_at_ms: row.try_get("created_at_ms").unwrap_or(0),
+            name: row.try_get("name").unwrap_or_default(),
+            base_model_url: row.try_get("base_model_url").unwrap_or_default(),
+            model_name: row.try_get("model_name").unwrap_or_default(),
+            note: row.try_get("note").ok(),
+        }))
+    }
+
+    pub async fn upsert_llm_cluster_revision(
+        &self,
+        row: &GatewayLlmModelRevisionRow,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_llm_cluster_revision (
+                 cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name, note
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (cluster_id, model_id, model_rev) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 base_model_url = EXCLUDED.base_model_url,
+                 model_name = EXCLUDED.model_name,
+                 note = EXCLUDED.note,
+                 created_at_ms = EXCLUDED.created_at_ms",
+        )
+        .bind(&row.cluster_id)
+        .bind(&row.model_id)
+        .bind(&row.model_rev)
+        .bind(row.created_at_ms)
+        .bind(&row.name)
+        .bind(&row.base_model_url)
+        .bind(&row.model_name)
+        .bind(&row.note)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_llm_cluster_revisions(
+        &self,
+        cluster_id: &str,
+        model_id: &str,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "DELETE FROM gateway_llm_cluster_revision WHERE cluster_id = $1 AND model_id = $2",
+        )
+        .bind(cluster_id)
+        .bind(model_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_llm_cluster_all(&self, cluster_id: &str) -> Result<(), SqlxError> {
+        sqlx::query("DELETE FROM gateway_llm_cluster_revision WHERE cluster_id = $1")
+            .bind(cluster_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM gateway_llm_cluster_model WHERE cluster_id = $1")
+            .bind(cluster_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM gateway_llm_cluster_state WHERE cluster_id = $1")
+            .bind(cluster_id)
             .execute(&self.pool)
             .await?;
         Ok(())

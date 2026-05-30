@@ -5,14 +5,15 @@ set -euo pipefail
 # prebuilt Containerfiles (no cargo during `podman build`). CI/Linux: full Containerfile.*.
 # Author: kejiqing
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "${ROOT_DIR}/deploy/stack/lib/compose-include.sh"
 if [[ -f "${ROOT_DIR}/.env" ]]; then
   set -a
   # shellcheck source=/dev/null
   source "${ROOT_DIR}/.env"
   set +a
+  claw_apply_deploy_profile || exit 1
 fi
-# shellcheck source=/dev/null
-source "${ROOT_DIR}/deploy/stack/lib/compose-include.sh"
 
 CLAW_BUILD_NO_LOG="${CLAW_BUILD_NO_LOG:-}"
 BUILD_LOG="${CLAW_BUILD_LOG:-${ROOT_DIR}/deploy/stack/.build.log}"

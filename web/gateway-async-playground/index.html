@@ -559,6 +559,22 @@
       }
     }
 
+    function upstreamBodyFromEnvelope(wrap) {
+      if (wrap.body !== undefined) return wrap.body;
+      const t = wrap.bodyText;
+      if (t == null || t === "") return null;
+      try { return JSON.parse(t); } catch (_) { return t; }
+    }
+
+    function upstreamErrorMessage(wrap) {
+      const b = upstreamBodyFromEnvelope(wrap);
+      if (b && typeof b === "object") {
+        if (b.detail != null) return String(b.detail);
+        if (b.message != null) return String(b.message);
+      }
+      return wrap.bodyText || wrap.error || "proxy error";
+    }
+
     async function proxyHttp(method, path, bodyObj, extraHeaders) {
       const res = await fetch("/__proxy__", {
         method: "POST",
@@ -573,20 +589,15 @@
       });
       const wrap = await res.json().catch(() => ({}));
       if (!wrap.ok) {
-        let msg = wrap.bodyText || wrap.error || JSON.stringify(wrap);
-        try {
-          const j = JSON.parse(wrap.bodyText);
-          if (j && (j.detail || j.message)) msg = j.detail || j.message;
-        } catch (_) {}
-        const err = new Error(msg || "proxy error");
+        const err = new Error(upstreamErrorMessage(wrap));
         err.status = wrap.status;
         throw err;
       }
-      let json = null;
-      try {
-        json = JSON.parse(wrap.bodyText);
-      } catch (_) {}
-      return { status: wrap.status, json, raw: wrap.bodyText, headers: wrap.headers };
+      const json = upstreamBodyFromEnvelope(wrap);
+      const raw = wrap.bodyText != null
+        ? wrap.bodyText
+        : (json != null ? JSON.stringify(json) : "");
+      return { status: wrap.status, json, raw, headers: wrap.headers };
     }
 
     function sleep(ms) {

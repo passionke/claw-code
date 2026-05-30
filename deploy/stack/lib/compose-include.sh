@@ -149,16 +149,20 @@ claw_export_llm_runtime_layout() {
     mv "${legacy}" "${host_upstream}"
     rmdir "${repo_root}/.openclaw" 2>/dev/null || true
   fi
+  local llm_runtime="${repo_root}/.claw/claw-llm-runtime.env"
   export CLAW_REPO_ROOT="${repo_root}"
-  export CLAW_WORKER_ENV_FILE="${host_env}"
+  export CLAW_LLM_RUNTIME_ENV_FILE="${llm_runtime}"
   export CLAW_TAP_UPSTREAM_CONFIG_FILE="${host_upstream}"
   {
     printf '%s\n' '# GENERATED — do not edit. Overwritten by up.sh / tap-up.sh. kejiqing'
-    printf '%s\n' '# Host paths (tap native + pool worker mount):'
+    printf '%s\n' '# Human deploy only (ro in gateway container):'
     printf '%s\n' "#   ${host_env}"
+    printf '%s\n' '# PG-synced LLM keys (gateway writes; pool workers merge via worker-llm-wiring):'
+    printf '%s\n' "#   ${llm_runtime}"
     printf '%s\n' "#   ${host_upstream}"
-    printf '%s\n' '# Gateway container bind-mounts (Admin LLM sync writes here):'
-    printf '%s\n' 'CLAW_WORKER_ENV_FILE=/run/claw/worker.env'
+    printf '%s\n' '# Inside gateway container (bind-mount under /run/claw/claw):'
+    printf '%s\n' 'CLAW_REPO_ROOT=/run/claw/claw'
+    printf '%s\n' 'CLAW_LLM_RUNTIME_ENV_FILE=/run/claw/claw/claw-llm-runtime.env'
     printf '%s\n' 'CLAW_TAP_UPSTREAM_CONFIG_FILE=/run/claw/claw/claw-tap-upstream.json'
   } >"${script_dir}/.claw-llm-runtime.env"
 }
@@ -551,6 +555,8 @@ claw_compose_pg_down() {
 
 # Optional `up.sh --release …` image pin (.claw-image-release.env). Author: kejiqing
 _claw_podman_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${_claw_podman_dir}/env-profile.sh"
 # shellcheck disable=SC1091
 source "${_claw_podman_dir}/release-images.sh"
 # shellcheck disable=SC1091

@@ -45,6 +45,8 @@ set -a
 source "${ENV_FILE}"
 set +a
 
+claw_apply_deploy_profile || exit 1
+
 # shellcheck source=claw-pool-registry-env.sh
 source "${LIB_DIR}/claw-pool-registry-env.sh"
 claw_export_pool_registry_env "${PODMAN_DIR}/.claw-pool-rpc"
@@ -56,6 +58,7 @@ claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/preflight.sh"
 claw_deploy_preflight "${PODMAN_DIR}"
+claw_validate_deploy_profile || exit 1
 
 # load_compose_args re-sources .env and resets GATEWAY_IMAGE to :local; re-pin after. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then

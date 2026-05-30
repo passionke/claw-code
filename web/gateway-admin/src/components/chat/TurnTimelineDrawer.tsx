@@ -38,18 +38,26 @@ function phaseWindowForSegments(segments: TimelineSegment[]): PhaseWindow | null
   return { originMs, totalMs };
 }
 
+function sortTimelineSegments(segments: TimelineSegment[]): TimelineSegment[] {
+  return [...segments].sort(
+    (a, b) => a.startMs - b.startMs || a.endMs - b.endMs || a.id.localeCompare(b.id)
+  );
+}
+
 function SegmentBar({
   seg,
   originMs,
   totalMs,
   showDuration = false,
   envelope = false,
+  minWidthPct = 0.4,
 }: {
   seg: TimelineSegment;
   originMs: number;
   totalMs: number;
   showDuration?: boolean;
   envelope?: boolean;
+  minWidthPct?: number;
 }) {
   const left = ((seg.startMs - originMs) / totalMs) * 100;
   const width = ((seg.endMs - seg.startMs) / totalMs) * 100;
@@ -65,13 +73,36 @@ function SegmentBar({
   return (
     <div
       className={`${styles.bar} ${barClass(seg.status, envelope)}`}
-      style={{ left: `${left}%`, width: `${Math.max(width, 0.4)}%` }}
+      style={{ left: `${left}%`, width: `${Math.max(width, minWidthPct)}%` }}
       title={title}
     >
       <span className={styles.barLabel}>{seg.label}</span>
       {showDuration ? (
         <span className={styles.barDuration}>{formatDurationMs(seg.durationMs)}</span>
       ) : null}
+    </div>
+  );
+}
+
+function ToolRowTrack({
+  index,
+  seg,
+  originMs,
+  totalMs,
+}: {
+  index: number;
+  seg: TimelineSegment;
+  originMs: number;
+  totalMs: number;
+}) {
+  return (
+    <div className={styles.toolRow}>
+      <div className={styles.toolRowIndex} title={seg.label}>
+        #{index + 1}
+      </div>
+      <div className={`${styles.laneTrack} ${styles.laneTrackParallel}`}>
+        <SegmentBar seg={seg} originMs={originMs} totalMs={totalMs} showDuration />
+      </div>
     </div>
   );
 }
@@ -151,6 +182,39 @@ function LaneTracks({
           <div key={seg.id} className={`${styles.laneTrack} ${styles.laneTrackParallel}`}>
             <SegmentBar seg={seg} originMs={originMs} totalMs={totalMs} showDuration />
           </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (lane.id === "tools") {
+    const sorted = sortTimelineSegments(lane.segments);
+    const pw = phaseWindowForSegments(sorted);
+    const envelope: TimelineSegment | null = pw
+      ? {
+          id: "tools-envelope",
+          label: "Tool 执行窗口",
+          startMs: pw.originMs,
+          endMs: pw.originMs + pw.totalMs,
+          durationMs: pw.totalMs,
+          status: "ok",
+        }
+      : null;
+    return (
+      <div className={styles.laneGroup}>
+        {envelope ? (
+          <div className={styles.laneTrack}>
+            <SegmentBar seg={envelope} originMs={originMs} totalMs={totalMs} envelope showDuration />
+          </div>
+        ) : null}
+        {sorted.map((seg, i) => (
+          <ToolRowTrack
+            key={`${seg.id}-${i}`}
+            index={i}
+            seg={seg}
+            originMs={originMs}
+            totalMs={totalMs}
+          />
         ))}
       </div>
     );
@@ -250,10 +314,12 @@ function FanoutDetailTable({
   segments,
   chartOriginMs,
   sectionTitle,
+  labelColumnTitle = "子题",
 }: {
   segments: TimelineSegment[];
   chartOriginMs: number;
   sectionTitle: string;
+  labelColumnTitle?: string;
 }) {
   const rows = [...segments]
     .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs || a.id.localeCompare(b.id))
@@ -276,8 +342,8 @@ function FanoutDetailTable({
         pagination={false}
         style={{ marginTop: 8 }}
         columns={[
-          { title: "#", dataIndex: "id", key: "id", width: 44 },
-          { title: "子题", dataIndex: "label", key: "label", ellipsis: true },
+          { title: "#", dataIndex: "id", key: "id", width: 44, ellipsis: true },
+          { title: labelColumnTitle, dataIndex: "label", key: "label", ellipsis: true },
           { title: "发起（整轮）", dataIndex: "startDelta", key: "startDelta", width: 96 },
           { title: "结束（整轮）", dataIndex: "endDelta", key: "endDelta", width: 96 },
           { title: "耗时", dataIndex: "duration", key: "duration", width: 72 },
@@ -320,6 +386,8 @@ function SwimlaneChart({ timeline }: { timeline: SolveTurnTimeline }) {
                   {lane.label}
                   {lane.id === "progress" ? (
                     <span className={styles.laneLabelHint}>悬停标记点查看原文</span>
+                  ) : lane.id === "tools" ? (
+                    <span className={styles.laneLabelHint}>{lane.segments.length} 次调用 · 每行一条</span>
                   ) : lane.parallel ? (
                     <span className={styles.laneLabelHint}>{lane.segments.length} 路并行</span>
                   ) : null}

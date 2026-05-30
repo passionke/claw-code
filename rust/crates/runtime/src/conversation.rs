@@ -7,6 +7,8 @@ use std::time::Instant;
 use serde_json::{Map, Value};
 use telemetry::SessionTracer;
 
+use crate::turn_timing::{set_conversation_tool_timing_from_loop, TurnTimingSink};
+
 use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
 };
@@ -175,6 +177,7 @@ pub struct ConversationRuntime<C, T> {
     hook_abort_signal: HookAbortSignal,
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
+    turn_timing: Option<Arc<dyn TurnTimingSink>>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -224,6 +227,7 @@ where
             hook_abort_signal: HookAbortSignal::default(),
             hook_progress_reporter: None,
             session_tracer: None,
+            turn_timing: None,
         }
     }
 
@@ -258,6 +262,18 @@ where
     pub fn with_session_tracer(mut self, session_tracer: SessionTracer) -> Self {
         self.session_tracer = Some(session_tracer);
         self
+    }
+
+    #[must_use]
+    pub fn with_turn_timing(mut self, turn_timing: Arc<dyn TurnTimingSink>) -> Self {
+        self.turn_timing = Some(turn_timing);
+        self
+    }
+
+    fn emit_turn_timing(&self, kind: &str, attributes: Map<String, Value>) {
+        if let Some(sink) = &self.turn_timing {
+            sink.emit(kind, attributes);
+        }
     }
 
     fn run_pre_tool_use_hook(&mut self, tool_name: &str, input: &str) -> HookRunResult {
@@ -421,6 +437,7 @@ where
                 .map_err(|error| RuntimeError::new(error.to_string()))?;
         }
 
+        let turn_wall_started = Instant::now();
         let mut assistant_messages = Vec::new();
         let mut tool_results = Vec::new();
         let mut prompt_cache_events = Vec::new();
@@ -440,13 +457,43 @@ where
                 system_prompt: self.system_prompt.clone(),
                 messages: self.session.messages.clone(),
             };
+            let turn_id = format!("turn-{iterations}");
+            let mut llm_attrs = Map::new();
+            llm_attrs.insert("iteration".to_string(), Value::from(iterations as u64));
+            llm_attrs.insert("turn_id".to_string(), Value::String(turn_id.clone()));
+            llm_attrs.insert(
+                "messages_count".to_string(),
+                Value::from(request.messages.len() as u64),
+            );
+            self.emit_turn_timing("llm_stream_started", llm_attrs);
+
+            let llm_started = Instant::now();
             let events = match self.api_client.stream(request) {
                 Ok(events) => events,
                 Err(error) => {
+                    let mut fail_attrs = Map::new();
+                    fail_attrs.insert("iteration".to_string(), Value::from(iterations as u64));
+                    fail_attrs.insert("turn_id".to_string(), Value::String(turn_id.clone()));
+                    fail_attrs.insert(
+                        "duration_ms".to_string(),
+                        Value::from(
+                            u64::try_from(llm_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        ),
+                    );
+                    fail_attrs.insert("error".to_string(), Value::String(error.to_string()));
+                    self.emit_turn_timing("llm_stream_failed", fail_attrs);
                     self.record_turn_failed(iterations, &error);
                     return Err(error);
                 }
             };
+            let mut llm_done_attrs = Map::new();
+            llm_done_attrs.insert("iteration".to_string(), Value::from(iterations as u64));
+            llm_done_attrs.insert("turn_id".to_string(), Value::String(turn_id.clone()));
+            llm_done_attrs.insert(
+                "duration_ms".to_string(),
+                Value::from(u64::try_from(llm_started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+            );
+            self.emit_turn_timing("llm_stream_finished", llm_done_attrs);
             if let Some(cb) = on_text_delta.as_deref_mut() {
                 for event in &events {
                     if let AssistantEvent::TextDelta(delta) = event {
@@ -476,7 +523,6 @@ where
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            let turn_id = format!("turn-{iterations}");
             self.record_assistant_iteration(
                 iterations,
                 &turn_id,
@@ -493,13 +539,16 @@ where
                 break;
             }
 
-            self.execute_pending_tool_uses(
+            set_conversation_tool_timing_from_loop(true);
+            let tool_dispatch = self.execute_pending_tool_uses(
                 iterations,
                 &turn_id,
                 pending_tool_uses,
                 &mut prompter,
                 &mut tool_results,
-            )?;
+            );
+            set_conversation_tool_timing_from_loop(false);
+            tool_dispatch?;
         }
 
         let auto_compaction = self.maybe_auto_compact();
@@ -512,7 +561,7 @@ where
             usage: self.usage_tracker.cumulative_usage(),
             auto_compaction,
         };
-        self.record_turn_completed(&summary);
+        self.record_turn_completed(&summary, turn_wall_started.elapsed().as_millis());
 
         Ok(summary)
     }
@@ -857,15 +906,17 @@ where
     }
 
     fn record_turn_started(&self, user_input: &str) {
-        let Some(session_tracer) = &self.session_tracer else {
-            return;
-        };
-
         let mut attributes = Map::new();
         attributes.insert(
             "user_input".to_string(),
             Value::String(user_input.to_string()),
         );
+        self.emit_turn_timing("turn_started", attributes.clone());
+
+        let Some(session_tracer) = &self.session_tracer else {
+            return;
+        };
+
         session_tracer.record("turn_started", attributes);
     }
 
@@ -876,10 +927,6 @@ where
         assistant_message: &ConversationMessage,
         pending_tool_use_count: usize,
     ) {
-        let Some(session_tracer) = &self.session_tracer else {
-            return;
-        };
-
         let mut attributes = Map::new();
         attributes.insert("iteration".to_string(), Value::from(iteration as u64));
         attributes.insert("turn_id".to_string(), Value::String(turn_id.to_string()));
@@ -891,6 +938,12 @@ where
             "pending_tool_use_count".to_string(),
             Value::from(pending_tool_use_count as u64),
         );
+        self.emit_turn_timing("assistant_iteration_completed", attributes.clone());
+
+        let Some(session_tracer) = &self.session_tracer else {
+            return;
+        };
+
         session_tracer.record("assistant_iteration_completed", attributes);
         let mut decision_attributes = Map::new();
         decision_attributes.insert("iteration".to_string(), Value::from(iteration as u64));
@@ -932,10 +985,6 @@ where
         tool_name: &str,
         input_size: usize,
     ) {
-        let Some(session_tracer) = &self.session_tracer else {
-            return;
-        };
-
         let mut attributes = Map::new();
         attributes.insert("iteration".to_string(), Value::from(iteration as u64));
         attributes.insert("turn_id".to_string(), Value::String(turn_id.to_string()));
@@ -948,6 +997,12 @@ where
             Value::String(tool_name.to_string()),
         );
         attributes.insert("input_size".to_string(), Value::from(input_size as u64));
+        self.emit_turn_timing("tool_execution_started", attributes.clone());
+
+        let Some(session_tracer) = &self.session_tracer else {
+            return;
+        };
+
         session_tracer.record("tool_execution_started", attributes);
         let mut trace_attributes = Map::new();
         trace_attributes.insert("iteration".to_string(), Value::from(iteration as u64));
@@ -974,10 +1029,6 @@ where
         result_message: &ConversationMessage,
         duration_ms: u128,
     ) {
-        let Some(session_tracer) = &self.session_tracer else {
-            return;
-        };
-
         let Some(ContentBlock::ToolResult {
             tool_name,
             is_error,
@@ -1017,6 +1068,12 @@ where
                 Value::Bool(output_char_count > 400),
             );
         }
+        self.emit_turn_timing("tool_execution_finished", attributes.clone());
+
+        let Some(session_tracer) = &self.session_tracer else {
+            return;
+        };
+
         session_tracer.record("tool_execution_finished", attributes);
         let mut trace_attributes = Map::new();
         trace_attributes.insert("iteration".to_string(), Value::from(iteration as u64));
@@ -1049,11 +1106,7 @@ where
         );
     }
 
-    fn record_turn_completed(&self, summary: &TurnSummary) {
-        let Some(session_tracer) = &self.session_tracer else {
-            return;
-        };
-
+    fn record_turn_completed(&self, summary: &TurnSummary, turn_wall_ms: u128) {
         let mut attributes = Map::new();
         attributes.insert(
             "iterations".to_string(),
@@ -1071,17 +1124,37 @@ where
             "prompt_cache_events".to_string(),
             Value::from(summary.prompt_cache_events.len() as u64),
         );
-        session_tracer.record("turn_completed", attributes);
-    }
+        attributes.insert(
+            "duration_ms".to_string(),
+            Value::from(u64::try_from(turn_wall_ms).unwrap_or(u64::MAX)),
+        );
+        attributes.insert(
+            "input_tokens".to_string(),
+            Value::from(u64::from(summary.usage.input_tokens)),
+        );
+        attributes.insert(
+            "output_tokens".to_string(),
+            Value::from(u64::from(summary.usage.output_tokens)),
+        );
+        self.emit_turn_timing("turn_completed", attributes.clone());
 
-    fn record_turn_failed(&self, iteration: usize, error: &RuntimeError) {
         let Some(session_tracer) = &self.session_tracer else {
             return;
         };
 
+        session_tracer.record("turn_completed", attributes);
+    }
+
+    fn record_turn_failed(&self, iteration: usize, error: &RuntimeError) {
         let mut attributes = Map::new();
         attributes.insert("iteration".to_string(), Value::from(iteration as u64));
         attributes.insert("error".to_string(), Value::String(error.to_string()));
+        self.emit_turn_timing("turn_failed", attributes.clone());
+
+        let Some(session_tracer) = &self.session_tracer else {
+            return;
+        };
+
         session_tracer.record("turn_failed", attributes);
     }
 }

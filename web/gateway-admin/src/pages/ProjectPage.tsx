@@ -42,19 +42,10 @@ export default function ProjectPage() {
   const [editingNoteValue, setEditingNoteValue] = useState("");
   const [detailJson, setDetailJson] = useState("");
   const [gitForm] = Form.useForm();
-  const [preflightForm] = Form.useForm();
   const [orchestrationForm] = Form.useForm();
   const [gitPatOptions, setGitPatOptions] = useState<{ value: string; label: string }[]>(
     []
   );
-
-  const SOLVE_PREFLIGHT_KIND_OPTIONS = [
-    { value: "none", label: "无（不注入）" },
-    {
-      value: "sqlbot_mcp_start",
-      label: "SQLBot mcp_start（首轮 session 在用户问题后注入 token/chat_id）",
-    },
-  ] as const;
 
   const SOLVE_ORCHESTRATION_KIND_OPTIONS = [
     { value: "single_turn", label: "单 turn（默认，现有 gateway-solve-turn）" },
@@ -118,12 +109,6 @@ export default function ProjectPage() {
       gitRef: projectConfig.gitSyncJson?.gitRef || "main",
       gitPatId: projectConfig.gitSyncJson?.gitPatId || undefined,
     });
-    const kind = projectConfig.solvePreflightJson?.kind || "none";
-    preflightForm.setFieldsValue({
-      kind: SOLVE_PREFLIGHT_KIND_OPTIONS.some((o) => o.value === kind)
-        ? kind
-        : "none",
-    });
     const orchKind = projectConfig.solveOrchestrationJson?.kind || "single_turn";
     orchestrationForm.setFieldsValue({
       kind: SOLVE_ORCHESTRATION_KIND_OPTIONS.some((o) => o.value === orchKind)
@@ -133,7 +118,7 @@ export default function ProjectPage() {
       writerMaxIter: projectConfig.solveOrchestrationJson?.writerMaxIter ?? 4,
       narratorThrottleMs: projectConfig.solveOrchestrationJson?.narratorThrottleMs ?? 3000,
     });
-  }, [projectConfig, dsId, row, gitForm, preflightForm, orchestrationForm]);
+  }, [projectConfig, dsId, row, gitForm, orchestrationForm]);
 
   const activate = async (contentRev: string) => {
     const r = await proxyHttp<{
@@ -396,50 +381,6 @@ export default function ProjectPage() {
           >
             推送到 Git
           </Button>
-        </Space>
-      </Card>
-
-      <Card title="Solve 首轮 Preflight" size="small" style={{ marginBottom: 16 }}>
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          存于 <Typography.Text code>project_config.solve_preflight_json</Typography.Text>
-          ，物化到 <Typography.Text code>home/.claw/solve-preflight.json</Typography.Text>
-          。仅该 sessionId 第一次 solve 执行；续聊不重复。表结构请维护{" "}
-          <Typography.Text code>home/schema.md</Typography.Text>（外部 job），不在此配置。
-        </Typography.Paragraph>
-        <Form form={preflightForm} layout="inline">
-          <Form.Item
-            name="kind"
-            label="类型"
-            rules={[{ required: true, message: "请选择 preflight 类型" }]}
-          >
-            <Select
-              style={{ minWidth: 360 }}
-              options={[...SOLVE_PREFLIGHT_KIND_OPTIONS]}
-            />
-          </Form.Item>
-        </Form>
-        <Space style={{ marginTop: 8 }}>
-          <Button
-            type="primary"
-            onClick={async () => {
-              if (!projectConfig) return;
-              const v = await preflightForm.validateFields();
-              const kind = String(v.kind || "none").trim() || "none";
-              await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
-                solvePreflightJson: { kind },
-              });
-              message.success("Preflight 已保存到临时版；设为生效后物化到工作区");
-              await refreshProjectConfig();
-            }}
-          >
-            保存 Preflight 配置
-          </Button>
-          {projectConfig?.solvePreflightJson?.kind &&
-          projectConfig.solvePreflightJson.kind !== "none" ? (
-            <Tag color="blue">{projectConfig.solvePreflightJson.kind}</Tag>
-          ) : (
-            <Tag>未启用</Tag>
-          )}
         </Space>
       </Card>
 

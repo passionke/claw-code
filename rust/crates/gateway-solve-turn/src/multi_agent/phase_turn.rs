@@ -1,8 +1,13 @@
 //! Short-lived ConversationRuntime for a single multi-agent phase. Author: kejiqing
-use runtime::{ContentBlock, ConversationRuntime, PermissionMode, PermissionPolicy, Session};
+use std::sync::Arc;
+
+use runtime::{ConversationRuntime, PermissionMode, PermissionPolicy, Session};
 
 use crate::gateway_stdout::emit_report_delta;
-use crate::{DirectApiClient, DirectToolExecutor, GatewaySolveTurnError};
+use crate::{
+    assistant_report_text_from_turn, DirectApiClient, DirectToolExecutor, GatewaySolveTurnError,
+    SolveTimingRecorder,
+};
 
 fn err(status: u16, msg: impl Into<String>) -> GatewaySolveTurnError {
     GatewaySolveTurnError {
@@ -21,6 +26,7 @@ pub fn run_phase_turn(
     system_prompt: Vec<String>,
     max_iterations: usize,
     stream_text_to_report: bool,
+    turn_timing: Option<Arc<SolveTimingRecorder>>,
 ) -> Result<(String, usize), GatewaySolveTurnError> {
     let mut session = Session::new();
     session
@@ -31,6 +37,9 @@ pub fn run_phase_turn(
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
     runtime = runtime.with_max_iterations(max_iterations);
+    if let Some(timing) = turn_timing {
+        runtime = runtime.with_turn_timing(timing);
+    }
 
     let result = if stream_text_to_report {
         runtime
@@ -47,16 +56,7 @@ pub fn run_phase_turn(
             .map_err(|e| err(HTTP_INTERNAL, format!("phase runtime failed: {e}")))?
     };
 
-    let message = result
-        .assistant_messages
-        .iter()
-        .flat_map(|m| m.blocks.iter())
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let message = assistant_report_text_from_turn(&result.assistant_messages);
 
     Ok((message, result.iterations))
 }

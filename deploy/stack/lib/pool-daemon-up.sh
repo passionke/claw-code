@@ -8,6 +8,8 @@ REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 source "${LIB_DIR}/nuclear-pool-reset.sh"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/compose-include.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/preflight.sh"
 
 # gateway.sh up already sourced .env and set CLAW_POOL_DAEMON_BIN (release install under
 # deploy/stack/.linux-artifacts/). Re-sourcing .env here would resurrect a stale
@@ -23,13 +25,16 @@ if [[ -n "${_pool_bin_from_up}" ]]; then
   export CLAW_POOL_DAEMON_BIN="${_pool_bin_from_up}"
 fi
 
+claw_apply_deploy_profile || exit 1
 claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
 # Release/sticky pin overrides CLAW_DOCKER_IMAGE from repo .env (e.g. claw-gateway-worker:local). kejiqing
 claw_reapply_pool_image_pins "${PODMAN_DIR}"
+claw_validate_deploy_profile || exit 1
 
 if [[ -z "${CLAW_POOL_WORK_ROOT_BIND_SRC:-}" ]]; then
   claw_podman_export_pool_workspace "${PODMAN_DIR}"
 fi
+claw_workspace_ownership_preflight "${PODMAN_DIR}"
 
 WORK_ROOT="${CLAW_POOL_WORK_ROOT_BIND_SRC:?missing CLAW_POOL_WORK_ROOT_BIND_SRC; run gateway.sh up first}"
 RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"
@@ -63,6 +68,7 @@ if [[ ! -x "${BIN}" ]]; then
 fi
 
 daemon_env=(
+  CLAW_REPO_ROOT="${REPO_ROOT}"
   CLAW_WORK_ROOT="${WORK_ROOT}"
   CLAW_POOL_WORK_ROOT_HOST="${WORK_ROOT}"
   CLAW_POOL_DAEMON_TCP_BIND="${BIND}"

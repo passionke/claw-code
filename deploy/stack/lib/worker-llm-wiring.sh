@@ -1,47 +1,31 @@
 #!/usr/bin/env bash
-# Generated worker↔claude-tap wiring (OPENAI_BASE_URL, pool run extras). Called from gateway.sh up/tap-up only.
-# Author: kejiqing
+# Pool worker deploy-only env (non-LLM). LLM keys injected per-solve via pool Exec -e. Author: kejiqing
 
-# Write deploy/stack/.claw-worker-llm.env and export CLAW_WORKER_ENV_FILE for pool + workers.
-# Requires repo-root .env already sourced (UPSTREAM_OPENAI_BASE_URL, CLAUDE_TAP_*).
 claw_ensure_worker_llm_wiring() {
   local script_dir="${1:?}"
-  local repo_root host_env gen bind port openai_tap pool_extra net
+  local repo_root runtime net key val
   repo_root="$(cd "${script_dir}/../.." && pwd)"
-  host_env="${repo_root}/.env"
-  gen="${script_dir}/.claw-worker-llm.env"
-
-  bind="${CLAUDE_TAP_BIND_HOST:-host.docker.internal}"
-  port="${CLAUDE_TAP_HOST_PORT:-${CLAUDE_TAP_PORT:-8080}}"
-  openai_tap="http://${bind}:${port}"
-  pool_extra="${CLAW_POOL_WORKER_RUN_EXTRA:---add-host host.docker.internal:host-gateway}"
+  runtime="${script_dir}/.claw-worker-runtime.env"
   net="${CLAW_PODMAN_NETWORK:-${CLAW_DOCKER_NETWORK:-stack_default}}"
-
+  local -a deploy_worker_keys=(
+    CLAW_MCP_MAX_CONCURRENT
+    CLAW_MCP_TOOL_CALL_TIMEOUT_MS
+    CLAW_INSTRUCTION_FILE_MAX_CHARS
+    CLAW_INSTRUCTION_TOTAL_MAX_CHARS
+    CLAW_PROGRESS_MESSAGE_MAX_CHARS
+    CLAW_GATEWAY_INTERNAL_BASE_URL
+    CLAW_GATEWAY_INTERNAL_TOKEN
+  )
   {
-    printf '%s\n' '# GENERATED — do not edit. Overwritten by gateway.sh up / tap-up / pool-daemon-up. kejiqing'
-    printf '%s\n' '# Worker LLM hits claude-tap; tap forwards to UPSTREAM_OPENAI_BASE_URL in repo .env.'
-    printf '%s\n' "OPENAI_BASE_URL=${openai_tap}"
-    printf '%s\n' "INTERNAL_CLAUDE_TAP_HOST=${openai_tap}"
-    printf '%s\n' "CLAW_DOCKER_EXTRA_ARGS=${pool_extra}"
-    printf '%s\n' "CLAW_PODMAN_EXTRA_ARGS=${pool_extra}"
+    printf '%s\n' '# GENERATED — pool worker mount (deploy keys only). LLM via gateway Exec -e. kejiqing'
+    for key in "${deploy_worker_keys[@]}"; do
+      val="${!key:-}"
+      if [[ -n "${val}" ]]; then
+        printf '%s\n' "${key}=${val}"
+      fi
+    done
     printf '%s\n' "CLAW_PODMAN_NETWORK=${net}"
-  } >"${gen}"
-
-  # Pool daemon bind-mounts a single host file to /run/claw/worker.env (no colon paths).
-  # Repo .env holds DB-synced OPENAI_API_KEY; generated block sets tap OPENAI_BASE_URL. kejiqing
-  local runtime="${script_dir}/.claw-worker-runtime.env"
-  {
-    printf '%s\n' '# GENERATED — pool worker mount (repo .env + tap wiring). kejiqing'
-    if [[ -f "${host_env}" ]]; then
-      cat "${host_env}"
-    fi
-    cat "${gen}"
   } >"${runtime}"
-
   export CLAW_WORKER_ENV_FILE="${runtime}"
-  export OPENAI_BASE_URL="${openai_tap}"
-  export INTERNAL_CLAUDE_TAP_HOST="${openai_tap}"
-  export CLAW_DOCKER_EXTRA_ARGS="${pool_extra}"
-  export CLAW_PODMAN_EXTRA_ARGS="${pool_extra}"
   export CLAW_PODMAN_NETWORK="${net}"
 }

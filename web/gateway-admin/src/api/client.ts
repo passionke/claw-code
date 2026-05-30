@@ -1,5 +1,11 @@
 /** Playground proxy → gateway JSON API. Author: kejiqing */
 
+import {
+  type ProxyEnvelope,
+  upstreamBodyFromEnvelope,
+  upstreamErrorMessage,
+} from "./proxyEnvelope";
+
 export class ApiError extends Error {
   constructor(message: string) {
     super(message);
@@ -25,26 +31,11 @@ export async function proxyHttp<T = unknown>(
       headers: {},
     }),
   });
-  const wrap = (await res.json().catch(() => ({}))) as {
-    ok?: boolean;
-    bodyText?: string;
-    error?: string;
-  };
+  const wrap = (await res.json().catch(() => ({}))) as ProxyEnvelope;
   if (!wrap.ok) {
-    let msg = wrap.bodyText || wrap.error || "请求失败";
-    try {
-      const j = JSON.parse(wrap.bodyText || "") as { detail?: string };
-      if (j?.detail) msg = j.detail;
-    } catch {
-      /* ignore */
-    }
-    throw new ApiError(msg);
+    throw new ApiError(upstreamErrorMessage(wrap));
   }
-  try {
-    return JSON.parse(wrap.bodyText || "null") as T;
-  } catch {
-    return wrap.bodyText as T;
-  }
+  return upstreamBodyFromEnvelope(wrap) as T;
 }
 
 export async function fetchPlaygroundConfig(): Promise<PlaygroundConfig> {

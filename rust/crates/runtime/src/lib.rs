@@ -38,6 +38,7 @@ mod remote;
 pub mod sandbox;
 mod session;
 pub mod session_control;
+mod turn_timing;
 pub use session_control::SessionStore;
 mod sse;
 pub mod stale_base;
@@ -187,6 +188,7 @@ pub use stale_branch::{
 pub use task_packet::{validate_packet, TaskPacket, TaskPacketValidationError, ValidatedPacket};
 #[cfg(test)]
 pub use trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
+pub use turn_timing::{conversation_tool_timing_from_loop, TurnTimingSink};
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
 };

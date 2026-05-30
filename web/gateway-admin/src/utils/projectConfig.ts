@@ -10,7 +10,7 @@ export function emptyProjectConfig(dsId: number): ProjectConfig {
     skillsJson: [],
     allowedToolsJson: [],
     claudeMd: null,
-    solvePreflightJson: { kind: "none" },
+    solvePreflightJson: { kinds: [] },
     solveOrchestrationJson: { kind: "single_turn" },
   };
 }

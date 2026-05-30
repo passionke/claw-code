@@ -12,9 +12,10 @@ import ClaudePage from "./pages/ClaudePage";
 import RulesPage from "./pages/RulesPage";
 import PromptPage from "./pages/PromptPage";
 import ToolsPage from "./pages/ToolsPage";
+import PreflightPage from "./pages/PreflightPage";
 import GlobalSettingsRedirect from "./pages/GlobalSettingsRedirect";
 import GitPatsPage from "./pages/global/GitPatsPage";
-import LlmModelsPage from "./pages/global/LlmModelsPage";
+import GlobalInferencePage from "./pages/global/GlobalInferencePage";
 import ChatPage from "./pages/ChatPage";
 
 export default function App() {
@@ -49,8 +50,11 @@ export default function App() {
             <Route path="rules" element={<RulesPage />} />
             <Route path="prompt" element={<PromptPage />} />
             <Route path="tools" element={<ToolsPage />} />
+            <Route path="preflight" element={<PreflightPage />} />
             <Route path="global" element={<GlobalSettingsRedirect />} />
-            <Route path="global/models" element={<LlmModelsPage />} />
+            <Route path="global/inference" element={<GlobalInferencePage />} />
+            <Route path="global/models" element={<Navigate to="/global/inference" replace />} />
+            <Route path="global/claw-tap" element={<Navigate to="/global/inference" replace />} />
             <Route path="global/pats" element={<GitPatsPage />} />
           </Route>
         </Route>

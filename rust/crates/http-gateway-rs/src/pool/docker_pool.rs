@@ -381,58 +381,34 @@ impl DockerPoolManager {
 
     /// Gateway-rs often creates session dirs as root; workers need uid 1000 writable `.claw/`. Author: kejiqing
     async fn ensure_session_mount_owned_by_worker(&self, session_abs: &Path) -> Result<(), String> {
-        if crate::workspace_perm::session_tree_owned_by_worker(session_abs) {
-            return Ok(());
-        }
-        if crate::workspace_perm::chown_session_tree_for_worker(session_abs).is_ok() {
-            return Ok(());
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let root_owned = std::fs::metadata(session_abs)
-                .map(|m| m.uid() == 0)
-                .unwrap_or(false);
-            if !root_owned {
-                return Ok(());
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            return Ok(());
-        }
-        #[cfg(unix)]
-        {
-            let (uid, gid) = crate::workspace_perm::worker_uid_gid();
-            let image = std::env::var("CLAW_CHOWN_RUNNER_IMAGE")
-                .unwrap_or_else(|_| "docker.1ms.run/library/alpine:3.20".to_string());
-            let mount = format!("{}:/mnt:rw", session_abs.display());
-            let owner = format!("{uid}:{gid}");
-            let out = runtime_exec(
-                &self.bin,
-                &[
-                    "run", "--rm", "-v", &mount, "--user", "root", &image, "chown", "-R", &owner,
-                    "/mnt",
-                ],
+        super::session_mount_ownership::ensure_session_tree_owned_for_worker_with_runtime_fallback(
+            &self.bin,
+            session_abs,
+        )
+        .await
+    }
+
+    /// RPC / host pool: canonicalize `session_host_mount` under [`Self::work_root_host`], then uid-align. Author: kejiqing
+    pub async fn chown_session_host_under_work_root(
+        &self,
+        session_host_mount: PathBuf,
+    ) -> Result<(), String> {
+        let session_abs = std::fs::canonicalize(&session_host_mount).map_err(|e| {
+            format!(
+                "canonicalize session chown path {}: {e}",
+                session_host_mount.display()
             )
-            .await
-            .map_err(|e| format!("{} chown session mount: {e}", self.bin))?;
-            if !out.status.success() {
-                return Err(format!(
-                    "{} chown session mount failed (code {:?}): {}",
-                    self.bin,
-                    out.status.code(),
-                    String::from_utf8_lossy(&out.stderr)
-                ));
-            }
-            if !crate::workspace_perm::session_tree_owned_by_worker(session_abs) {
-                return Err(format!(
-                    "session mount still not owned by worker uid {uid}: {}",
-                    session_abs.display()
-                ));
-            }
-            Ok(())
+        })?;
+        let root = &self.work_root_host;
+        if !session_abs.starts_with(root) {
+            return Err(format!(
+                "session chown path {} escapes pool work_root {}",
+                session_abs.display(),
+                root.display()
+            ));
         }
+        self.ensure_session_mount_owned_by_worker(&session_abs)
+            .await
     }
 
     #[allow(clippy::too_many_lines)] // podman run argv + bind mounts. Author: kejiqing
@@ -755,6 +731,7 @@ impl DockerPoolManager {
         claw_bin: &str,
         request_id: Option<&str>,
         turn_id: &str,
+        worker_llm_env: Option<std::collections::BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
         let name = {
@@ -825,6 +802,14 @@ impl DockerPoolManager {
         if let Some(ref db) = self.session_db {
             if let Ok(Some(session_id)) = db.get_session_id_for_turn(turn_id).await {
                 argv.extend(["-e".into(), format!("CLAW_SESSION_ID={session_id}")]);
+            }
+        }
+        if let Some(env_map) = worker_llm_env {
+            for (k, v) in env_map {
+                if v.is_empty() {
+                    continue;
+                }
+                argv.extend(["-e".into(), format!("{k}={v}")]);
             }
         }
         argv.extend([
@@ -1127,6 +1112,7 @@ esac
                 None,
                 "turn-test",
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1272,6 +1258,7 @@ esac
                 None,
                 "turn-test",
                 None,
+                None,
             )
             .await
             .expect_err("exec on released lease must fail");
@@ -1350,6 +1337,7 @@ esac
             None,
             "turn-test",
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1402,6 +1390,7 @@ esac
             "claw",
             None,
             "turn-test",
+            None,
             None,
         )
         .await

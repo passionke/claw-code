@@ -43,9 +43,10 @@ use http_gateway_rs::biz_advice_report::{
     sanitize_report_payload, BizAdviceReportPayload, BizReportStreamMsg, ReportExportSanitizer,
 };
 use http_gateway_rs::{
-    gateway_global_settings, gateway_llm_config_sync, mcp_probe, pool, project_config_apply,
-    project_config_version, project_entity_revision, project_git_sync, project_tools, session_db,
-    session_merge, turn_id, turn_timeline_api, turn_tools_api,
+    claw_tap_cluster_state, gateway_claw_tap_settings, gateway_global_settings,
+    gateway_llm_config_sync, mcp_probe, pool, project_config_apply, project_config_version,
+    project_entity_revision, project_git_sync, project_tools, session_db, session_merge, turn_id,
+    turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
@@ -122,6 +123,8 @@ pub(crate) struct AppState {
     projects_git_mirror_lock: Arc<Mutex<()>>,
     /// Active LLM model/api key from DB (refreshed on apply + poll). Author: kejiqing
     llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle,
+    /// clawTap cluster consistency (strict only; mismatch blocks solve). Author: kejiqing
+    claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1371,17 +1374,35 @@ async fn main() {
         docker_pool,
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
         llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
+        claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
     };
 
     run_startup_project_config_apply(&state).await;
     gateway_llm_config_sync::run_startup_llm_config_sync(&state.session_db, &state.llm_runtime)
         .await;
+    if let Ok(Some(cluster)) = claw_tap_cluster_state::refresh_claw_tap_cluster_state(
+        &state.session_db,
+        &state.llm_runtime,
+    )
+    .await
+    {
+        *state.claw_tap_cluster.write().await = Some(cluster);
+    }
+
+    {
+        let poll_db = state.session_db.clone();
+        let poll_llm = state.llm_runtime.clone();
+        let poll_cluster = state.claw_tap_cluster.clone();
+        tokio::spawn(async move {
+            claw_tap_cluster_state::cluster_poll_loop(poll_db, poll_llm, poll_cluster).await;
+        });
+    }
 
     if let Some(secs) = state.cfg.gateway_llm_config_poll_interval_secs {
         let poll_db = state.session_db.clone();
         let poll_handle = state.llm_runtime.clone();
         tokio::spawn(async move {
-            gateway_llm_config_sync::llm_config_poll_loop(poll_db, poll_handle, secs).await
+            gateway_llm_config_sync::llm_config_poll_loop(poll_db, poll_handle, secs).await;
         });
         info!(
             target: "claw_gateway_orchestration",
@@ -1410,6 +1431,7 @@ async fn main() {
         .route("/dos", get(docs))
         .route("/openapi.json", get(openapi))
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/v1/projects", get(list_projects).post(create_project))
         .route("/v1/projects/{ds_id}/sessions", get(list_project_sessions))
         .route("/v1/projects/{ds_id}", delete(delete_project))
@@ -1524,6 +1546,14 @@ async fn main() {
         .route(
             "/v1/gateway/global-settings/llm-models/{model_id}/versions/{model_rev}/apply",
             post(apply_gateway_llm_model_revision_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/claw-tap",
+            put(put_gateway_claw_tap_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/claw-tap/probe",
+            post(probe_gateway_claw_tap_handler),
         )
         .route("/v1/skills/{ds_id}/{skill_name}", get(get_ds_skill))
         .route("/v1/skills/{ds_id}", get(list_ds_skills))
@@ -2415,7 +2445,7 @@ async fn try_push_project_git(
         Ok(outcome) => {
             let mut updated = sync;
             updated.last_push_at_ms = Some(now_ms());
-            updated.last_push_commit_id = outcome.commit_id.clone();
+            updated.last_push_commit_id.clone_from(&outcome.commit_id);
             updated.last_push_error = None;
             let git_sync_json = git_sync_to_json(&updated);
             persist_git_sync_status(state, &row, &git_sync_json)
@@ -3580,6 +3610,7 @@ async fn healthz(State(state): State<AppState>, headers: HeaderMap) -> Json<Valu
     let request_host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
     let deploy_image_ref = http_gateway_rs::deploy_image::image_ref_from_env();
     let deploy_image_tag = http_gateway_rs::deploy_image::deploy_image_tag(&deploy_image_ref);
+    let cluster_snap = claw_tap_cluster_state::snapshot_from_handle(&state.claw_tap_cluster).await;
     Json(json!({
         "ok": true,
         "deployImageRef": deploy_image_ref,
@@ -3624,7 +3655,23 @@ async fn healthz(State(state): State<AppState>, headers: HeaderMap) -> Json<Valu
             "poolHttpBase": state.cfg.pool_http_base,
         },
         "claudeTap": http_gateway_rs::claude_tap_health::claude_tap_health_json(request_host),
+        "clawTapCluster": cluster_snap,
     }))
+}
+
+async fn readyz(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+    let snap = claw_tap_cluster_state::snapshot_from_handle(&state.claw_tap_cluster).await;
+    if claw_tap_cluster_state::is_ready(&snap) {
+        return Ok((
+            StatusCode::OK,
+            Json(json!({ "ok": true, "clawTapCluster": snap })),
+        ));
+    }
+    Err(ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        snap.reason
+            .unwrap_or_else(|| "CLAW_CLUSTER_ID and clawTap must be configured".into()),
+    ))
 }
 
 async fn solve(
@@ -4714,6 +4761,35 @@ async fn get_gateway_global_settings_handler(
         .await
         .map_err(|e| session_db_err(&e))?;
     Ok(Json(body))
+}
+
+async fn put_gateway_claw_tap_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_claw_tap_settings::PutClawTapSettingsInput>,
+) -> Result<Json<gateway_claw_tap_settings::ClawTapSettingsPublic>, ApiError> {
+    let body = gateway_claw_tap_settings::put_claw_tap_settings(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let _ =
+        gateway_llm_config_sync::sync_llm_runtime_from_db(&state.session_db, &state.llm_runtime)
+            .await;
+    if let Ok(Some(cluster)) = claw_tap_cluster_state::refresh_claw_tap_cluster_state(
+        &state.session_db,
+        &state.llm_runtime,
+    )
+    .await
+    {
+        *state.claw_tap_cluster.write().await = Some(cluster);
+    }
+    Ok(Json(body))
+}
+
+async fn probe_gateway_claw_tap_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_claw_tap_settings::ProbeClawTapInput>,
+) -> Result<Json<gateway_claw_tap_settings::ProbeClawTapResponse>, ApiError> {
+    let resp = gateway_claw_tap_settings::probe_claw_tap_endpoint(&state.session_db, req).await;
+    Ok(Json(resp))
 }
 
 async fn upsert_gateway_git_pat_handler(
@@ -5901,7 +5977,8 @@ async fn get_turn_timeline(
     session_merge::validate_session_home_rel(&ctx.session_home_rel)
         .map_err(session_routing_error)?;
     let session_home = join_session_home(&state.cfg.work_root, &ctx.session_home_rel);
-    let timeline = turn_timeline_api::load_turn_timeline(&session_home);
+    let timeline =
+        turn_timeline_api::load_turn_timeline(&session_home, ctx.created_at_ms, ctx.finished_at_ms);
 
     Ok(Json(turn_timeline_api::TurnTimelineResponse {
         session_id,
@@ -6883,14 +6960,14 @@ async fn load_turn_report_body_from_db(
 fn biz_report_json_response(
     ctx: &BizReportDbCtx,
     query: &BizAdviceReportQuery,
-    body: String,
+    body: &str,
 ) -> Response {
     Json(BizAdviceReportResponse {
         task_id: ctx.task_id.clone(),
         source_request_id: ctx.task_id.clone(),
         source_ds_id: query.ds_id,
         source_status: ctx.status.clone(),
-        report_text: body.clone(),
+        report_text: body.to_string(),
         report_json: Some(json!({ "message": body })),
     })
     .into_response()
@@ -7020,7 +7097,7 @@ async fn get_biz_advice_report(
                         &body,
                     ));
                 }
-                return Ok(biz_report_json_response(&ctx, &query, body));
+                return Ok(biz_report_json_response(&ctx, &query, &body));
             }
         }
         if !query.stream {
@@ -7034,68 +7111,66 @@ async fn get_biz_advice_report(
         }
     }
 
-    if query.stream {
-        if matches!(ctx.status.as_str(), "running" | "queued") {
-            let pool_http_from_db = state
+    if query.stream && matches!(ctx.status.as_str(), "running" | "queued") {
+        let pool_http_from_db = state
+            .session_db
+            .resolve_pool_http_base_for_turn(&ctx.turn_id, &query.session_id, query.ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?;
+        let Some(pool_http_base) = pool_http_from_db.filter(|b| !b.trim().is_empty()) else {
+            let pool_id = state
                 .session_db
-                .resolve_pool_http_base_for_turn(&ctx.turn_id, &query.session_id, query.ds_id)
+                .get_turn_pool_id(&ctx.turn_id, &query.session_id, query.ds_id)
                 .await
                 .map_err(|e| session_db_err(&e))?;
-            let Some(pool_http_base) = pool_http_from_db.filter(|b| !b.trim().is_empty()) else {
-                let pool_id = state
-                    .session_db
-                    .get_turn_pool_id(&ctx.turn_id, &query.session_id, query.ds_id)
-                    .await
-                    .map_err(|e| session_db_err(&e))?;
-                let detail = match pool_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                    None => format!(
-                        "live report routing failed: gateway_turns.pool_id unset for turn {} (status={}). \
+            let detail = match pool_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                None => format!(
+                    "live report routing failed: gateway_turns.pool_id unset for turn {} (status={}). \
                          Gateway must prebind CLAW_POOL_ID at solve enqueue; run pack-deploy and retry.",
-                        ctx.turn_id, ctx.status
-                    ),
-                    Some(pid) => format!(
-                        "live report routing failed: claw_pool has no row for pool_id={pid} (turn {}, status={}). \
+                    ctx.turn_id, ctx.status
+                ),
+                Some(pid) => format!(
+                    "live report routing failed: claw_pool has no row for pool_id={pid} (turn {}, status={}). \
                          Start pool daemon with PG registry or run gateway.sh verify.",
-                        ctx.turn_id, ctx.status
-                    ),
-                };
-                tracing::error!(
-                    target: "claw_live_report",
-                    component = "biz_advice_report",
-                    phase = "route",
-                    route = "pool_proxy_sse_denied",
-                    turn_id = %ctx.turn_id,
-                    session_id = %query.session_id,
-                    ds_id = query.ds_id,
-                    status = %ctx.status,
-                    pool_id = ?pool_id,
-                    co_located_pool_id = ?state.cfg.co_located_pool_id,
-                    "biz_advice_report stream — refused (CLAW_POOL_HTTP_BASE env fallback disabled)"
-                );
-                return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, detail));
+                    ctx.turn_id, ctx.status
+                ),
             };
-            tracing::info!(
+            tracing::error!(
                 target: "claw_live_report",
                 component = "biz_advice_report",
                 phase = "route",
-                route = "pool_proxy_sse",
-                pool_http_source = "claw_pool_join",
+                route = "pool_proxy_sse_denied",
                 turn_id = %ctx.turn_id,
                 session_id = %query.session_id,
                 ds_id = query.ds_id,
                 status = %ctx.status,
-                pool_http_base = %pool_http_base,
-                "biz_advice_report stream — proxy to pool HTTP /v1/biz_advice_report/live"
+                pool_id = ?pool_id,
+                co_located_pool_id = ?state.cfg.co_located_pool_id,
+                "biz_advice_report stream — refused (CLAW_POOL_HTTP_BASE env fallback disabled)"
             );
-            return http_gateway_rs::biz_report_pool_proxy::proxy_pool_live_report_sse(
-                &pool_http_base,
-                &ctx.turn_id,
-                &ctx.task_id,
-                query.ds_id,
-            )
-            .await
-            .map_err(|(status, detail)| ApiError::new(status, detail));
-        }
+            return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, detail));
+        };
+        tracing::info!(
+            target: "claw_live_report",
+            component = "biz_advice_report",
+            phase = "route",
+            route = "pool_proxy_sse",
+            pool_http_source = "claw_pool_join",
+            turn_id = %ctx.turn_id,
+            session_id = %query.session_id,
+            ds_id = query.ds_id,
+            status = %ctx.status,
+            pool_http_base = %pool_http_base,
+            "biz_advice_report stream — proxy to pool HTTP /v1/biz_advice_report/live"
+        );
+        return http_gateway_rs::biz_report_pool_proxy::proxy_pool_live_report_sse(
+            &pool_http_base,
+            &ctx.turn_id,
+            &ctx.task_id,
+            query.ds_id,
+        )
+        .await
+        .map_err(|(status, detail)| ApiError::new(status, detail));
     }
 
     get_biz_advice_report_bak(
@@ -7303,6 +7378,13 @@ fn validate_solve_request_fields(req: &SolveRequest) -> Result<(), ApiError> {
     validate_extra_session(req.extra_session.as_ref())
 }
 
+fn pool_runtime_cli_bin(isolation: SolveIsolation) -> &'static str {
+    match isolation {
+        SolveIsolation::DockerPool => "docker",
+        SolveIsolation::PodmanPool => "podman",
+    }
+}
+
 /// Ensures `(sessionId, dsId)` exists in `SQLite` and session `.claw/settings.json` on disk. kejiqing
 async fn prepare_gateway_session(
     state: &AppState,
@@ -7411,12 +7493,30 @@ async fn prepare_gateway_session(
         }
     }
 
-    http_gateway_rs::workspace_perm::chown_session_tree_for_worker(&session_home).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("session workspace ownership for pool worker failed: {e}"),
-        )
-    })?;
+    // Privileged uid alignment: host pool daemon owns docker/podman + socket; avoid gateway container engine access. kejiqing
+    if state.cfg.pool_rpc_host_work_root.is_some() {
+        let host_session = solve_pool::session_mount_for_pool_acquire(&session_home, &state.cfg);
+        state
+            .docker_pool
+            .chown_session_tree_for_pool_worker(host_session)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("session workspace ownership for pool worker failed: {e}"),
+                )
+            })?;
+    } else {
+        let pool_bin = pool_runtime_cli_bin(state.cfg.solve_isolation);
+        pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(pool_bin, &session_home)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("session workspace ownership for pool worker failed: {e}"),
+                )
+            })?;
+    }
 
     if need_insert_row {
         state

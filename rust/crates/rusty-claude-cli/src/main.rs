@@ -372,6 +372,7 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
             mcp,
             allowed_tools,
             max_iterations,
+            task.llm_route.clone(),
         )
     };
     match result {

@@ -20,7 +20,7 @@ import { useApp } from "../context/AppContext";
 const { Header, Sider, Content } = Layout;
 
 const GLOBAL_MENU_CHILDREN = [
-  { key: "/global/models", label: "模型配置" },
+  { key: "/global/inference", label: "全局推理" },
   { key: "/global/pats", label: "PAT 配置" },
 ];
 
@@ -30,6 +30,7 @@ const TAB_ITEMS: MenuProps["items"] = [
   { key: "/mcp", icon: <ApiOutlined />, label: "MCP" },
   { key: "/claude", icon: <FileTextOutlined />, label: "CLAUDE.md" },
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
+  { key: "/preflight", icon: <SettingOutlined />, label: "Preflight" },
   { key: "/prompt", icon: <FileTextOutlined />, label: "系统提示词" },
   { key: "/tools", icon: <ToolOutlined />, label: "Tools" },
   {
@@ -59,7 +60,7 @@ export default function AdminLayout() {
     if (loc.pathname.startsWith("/global")) {
       return (
         GLOBAL_MENU_CHILDREN.find((c) => loc.pathname.startsWith(c.key))?.key ??
-        "/global/models"
+        "/global/inference"
       );
     }
     for (const t of TAB_ITEMS ?? []) {

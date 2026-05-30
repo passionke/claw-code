@@ -18,7 +18,9 @@ set -a
 source "${ROOT_DIR}/.env"
 set +a
 
-export PLAYGROUND_PUBLIC_GATEWAY_BASE="${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://127.0.0.1:${GATEWAY_HOST_PORT:-8088}}"
+export PLAYGROUND_PUBLIC_GATEWAY_BASE="${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://127.0.0.1:${GATEWAY_HOST_PORT:-18088}}"
+# Host-side playground dials the same URL as the browser (no container remap).
+unset PLAYGROUND_GATEWAY_BASE
 export CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1
 "${LIB_DIR}/build-gateway-admin.sh"
 port="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"

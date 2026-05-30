@@ -221,11 +221,7 @@ pub fn git_excluded_home_relpaths(row: &ProjectConfigRow) -> Vec<PathBuf> {
             }
         }
     }
-    if row
-        .solve_preflight_json
-        .get("kind")
-        .and_then(Value::as_str)
-        .is_some_and(|k| k != "none")
+    if gateway_solve_turn::project_preflight::has_enabled_solve_preflight(&row.solve_preflight_json)
     {
         out.push(PathBuf::from(SOLVE_PREFLIGHT_MARKER));
     }
@@ -359,12 +355,9 @@ async fn write_solve_preflight_marker(work_dir: &Path, row: &ProjectConfigRow) -
     gateway_solve_turn::project_preflight::validate_solve_preflight_json(&row.solve_preflight_json)
         .map_err(ProjectConfigApplyError::new)?;
     let path = work_dir.join(SOLVE_PREFLIGHT_MARKER);
-    let kind = row
-        .solve_preflight_json
-        .get("kind")
-        .and_then(Value::as_str)
-        .unwrap_or("none");
-    if kind == "none" {
+    if !gateway_solve_turn::project_preflight::has_enabled_solve_preflight(
+        &row.solve_preflight_json,
+    ) {
         let _ = fs::remove_file(&path).await;
         return Ok(());
     }
@@ -373,8 +366,12 @@ async fn write_solve_preflight_marker(work_dir: &Path, row: &ProjectConfigRow) -
             ProjectConfigApplyError::new(format!("create {} parent: {e}", path.display()))
         })?;
     }
-    let bytes = serde_json::to_vec_pretty(&row.solve_preflight_json)
-        .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-preflight: {e}")))?;
+    let bytes = serde_json::to_vec_pretty(
+        &gateway_solve_turn::project_preflight::materialize_solve_preflight_json(
+            &row.solve_preflight_json,
+        ),
+    )
+    .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-preflight: {e}")))?;
     fs::write(&path, bytes)
         .await
         .map_err(|e| ProjectConfigApplyError::new(format!("write {}: {e}", path.display())))?;

@@ -101,6 +101,52 @@ claw_claude_tap_upstream_args() {
   printf '%s\n' "${cfg}"
 }
 
+# Host-run tap must use published PG port; hash uses scheme/user/dbname only (matches gateway).
+# Optional override: CLAW_TAP_DATABASE_URL. Author: kejiqing
+claw_claude_tap_host_database_url() {
+  if [[ -n "${CLAW_TAP_DATABASE_URL:-}" ]]; then
+    printf '%s\n' "${CLAW_TAP_DATABASE_URL}"
+    return 0
+  fi
+  local url="${CLAW_GATEWAY_DATABASE_URL:-}"
+  if [[ -z "${url}" ]]; then
+    echo "CLAW_GATEWAY_DATABASE_URL is not set" >&2
+    return 1
+  fi
+  if [[ "${url}" == *"@postgres:"* ]] || [[ "${url}" == *"@postgres/"* ]]; then
+    local user="${CLAW_GATEWAY_PG_USER:-claw_gateway}"
+    local pass="${CLAW_GATEWAY_PG_PASSWORD:-clawGw9Dev_Pg}"
+    local db="${CLAW_GATEWAY_PG_DATABASE:-claw_gateway}"
+    local port="${CLAW_GATEWAY_PG_HOST_PORT:-5433}"
+    printf 'postgres://%s:%s@127.0.0.1:%s/%s\n' "${user}" "${pass}" "${port}" "${db}"
+    return 0
+  fi
+  printf '%s\n' "${url}"
+}
+
+claw_claude_tap_tap_database_url() {
+  local for_container="${1:-0}"
+  local url
+  url="$(claw_claude_tap_host_database_url)" || return 1
+  if [[ "${for_container}" == "1" ]]; then
+    local pg_host="${CLAUDE_TAP_PG_HOST:-host.containers.internal}"
+    url="${url//@127.0.0.1:/@${pg_host}:}"
+  fi
+  printf '%s\n' "${url}"
+}
+
+claw_claude_tap_export_cluster_env() {
+  local for_container="${1:-0}"
+  local tap_db
+  tap_db="$(claw_claude_tap_tap_database_url "${for_container}")" || return 1
+  if [[ -z "${CLAW_CLUSTER_ID:-}" ]]; then
+    echo "CLAW_CLUSTER_ID is required in .env for claude-tap /healthz clusterHash" >&2
+    return 1
+  fi
+  export CLAW_CLUSTER_ID
+  export CLAW_GATEWAY_DATABASE_URL="${tap_db}"
+}
+
 claw_claude_tap_ensure_image() {
   local rt="$1"
   local ctx="$2"
@@ -148,8 +194,12 @@ claw_claude_tap_start_docker() {
 
   "${rt}" rm -f "${container_name}" 2>/dev/null || true
 
+  claw_claude_tap_export_cluster_env 1
+
   # shellcheck disable=SC2086
   "${rt}" run -d --name "${container_name}" \
+    -e "CLAW_CLUSTER_ID=${CLAW_CLUSTER_ID}" \
+    -e "CLAW_GATEWAY_DATABASE_URL=${CLAW_GATEWAY_DATABASE_URL}" \
     -p "${port}:8080" \
     -p "${live_port}:3000" \
     -v "${traces_dir}:/data/traces" \
@@ -215,7 +265,9 @@ claw_claude_tap_start_source() {
   }
 
   mkdir -p "${traces_dir}"
-  nohup "${bin}" \
+  claw_claude_tap_export_cluster_env 0
+  nohup env CLAW_CLUSTER_ID="${CLAW_CLUSTER_ID}" CLAW_GATEWAY_DATABASE_URL="${CLAW_GATEWAY_DATABASE_URL}" \
+    "${bin}" \
     --tap-no-launch \
     --tap-live \
     --tap-host 0.0.0.0 \
@@ -285,8 +337,10 @@ claw_claude_tap_start_native() {
   pypi_ver="$(claw_claude_tap_pypi_version)"
   bin="$(claw_claude_tap_ensure_pypi_bin "${pypi_ver}")"
   mkdir -p "${traces_dir}"
+  claw_claude_tap_export_cluster_env 0
 
-  nohup "${bin}" \
+  nohup env CLAW_CLUSTER_ID="${CLAW_CLUSTER_ID}" CLAW_GATEWAY_DATABASE_URL="${CLAW_GATEWAY_DATABASE_URL}" \
+    "${bin}" \
     --tap-no-launch \
     --tap-live \
     --tap-host 0.0.0.0 \
@@ -347,9 +401,16 @@ claw_claude_tap_start() {
   local ctx
   ctx="$(claw_claude_tap_resolve_context "${root_dir}")"
   local upstream="${UPSTREAM_OPENAI_BASE_URL:-${OPENAI_BASE_URL:-}}"
-
   if [[ -z "${upstream}" ]]; then
-    echo "UPSTREAM_OPENAI_BASE_URL is empty (set real LLM URL for --tap-target)" >&2
+    local cfg
+    cfg="$(claw_claude_tap_upstream_config_path "${root_dir}")"
+    if [[ -f "${cfg}" ]]; then
+      upstream="$(python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); print((d.get("target") or "").strip())' "${cfg}" 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "${upstream}" ]]; then
+    echo "UPSTREAM_OPENAI_BASE_URL is empty and ${root_dir}/.claw/claw-tap-upstream.json has no target" >&2
+    echo "hint: configure active LLM in Admin (PG); claude-tap polls PG for upstream (see docs/claw-tap-integration-requirements.md)" >&2
     exit 1
   fi
 

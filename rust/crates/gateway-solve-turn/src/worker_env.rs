@@ -9,7 +9,8 @@ use api::apply_dotenv_keys_from_paths;
 pub const WORKER_ENV_MOUNT_PATH: &str = "/run/claw/worker.env";
 
 /// Keys the solve worker reads during `gateway-solve-once` (provider, MCP, prompts, progress).
-/// Add new worker-facing vars here — not in deploy shell ALLOW lists. Author: kejiqing
+/// Add new worker-facing vars here — not in deploy shell ALLOW lists.
+/// Never add `CLAW_GATEWAY_DATABASE_URL` / `POSTGRES_*` — workers do not connect to PostgreSQL. Author: kejiqing
 pub const WORKER_ENV_KEYS: &[&str] = &[
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
@@ -30,7 +31,6 @@ pub const WORKER_ENV_KEYS: &[&str] = &[
     "CLAW_INSTRUCTION_FILE_MAX_CHARS",
     "CLAW_INSTRUCTION_TOTAL_MAX_CHARS",
     "CLAW_PROGRESS_MESSAGE_MAX_CHARS",
-    "CLAW_GATEWAY_SQLBOT_PREFLIGHT",
     "CLAW_GATEWAY_INTERNAL_BASE_URL",
     "CLAW_GATEWAY_INTERNAL_TOKEN",
     "CLAW_POOL_ID",

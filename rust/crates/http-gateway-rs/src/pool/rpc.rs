@@ -1,5 +1,6 @@
 //! Line-delimited JSON pool RPC: TCP (`host:port`) or Unix path. Default deploy uses TCP from gateway container to host daemon. Author: kejiqing
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -45,6 +46,8 @@ pub enum PoolRpcReq {
         claw_bin: String,
         request_id: Option<String>,
         turn_id: String,
+        #[serde(default)]
+        worker_llm_env: Option<BTreeMap<String, String>>,
     },
     Release {
         slot_index: usize,
@@ -54,6 +57,10 @@ pub enum PoolRpcReq {
     },
     ReportState {
         turn_id: String,
+    },
+    /// Host path under pool `work_root` (same as [`PoolRpcReq::Acquire::session_host_mount`]); runs privileged chown on daemon.
+    ChownSessionHost {
+        session_host_mount: String,
     },
 }
 
@@ -182,6 +189,7 @@ impl PoolOps for PoolRpcClient {
         claw_bin: &str,
         request_id: Option<&str>,
         turn_id: &str,
+        worker_llm_env: Option<BTreeMap<String, String>>,
         _on_stdout_line: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
         let r = self
@@ -191,6 +199,7 @@ impl PoolOps for PoolRpcClient {
                 claw_bin: claw_bin.to_string(),
                 request_id: request_id.map(str::to_string),
                 turn_id: turn_id.to_string(),
+                worker_llm_env,
             })
             .await?;
         if !r.ok {
@@ -215,6 +224,23 @@ impl PoolOps for PoolRpcClient {
         let r = self.call(PoolRpcReq::ForceKill { slot_index }).await?;
         if !r.ok {
             return Err(r.error.unwrap_or_else(|| "pool force_kill failed".into()));
+        }
+        Ok(())
+    }
+
+    async fn chown_session_tree_for_pool_worker(
+        &self,
+        session_host_mount: PathBuf,
+    ) -> Result<(), String> {
+        let r = self
+            .call(PoolRpcReq::ChownSessionHost {
+                session_host_mount: session_host_mount.to_string_lossy().into_owned(),
+            })
+            .await?;
+        if !r.ok {
+            return Err(r
+                .error
+                .unwrap_or_else(|| "pool chown_session_host failed".into()));
         }
         Ok(())
     }
@@ -290,6 +316,7 @@ async fn dispatch_pool_rpc(
             claw_bin,
             request_id,
             turn_id,
+            worker_llm_env,
         } => {
             let lease = SlotLease { slot_index };
             // Daemon path: do NOT pre-wrap with merge_stdout_hooks here. exec_solve
@@ -301,6 +328,7 @@ async fn dispatch_pool_rpc(
                     &claw_bin,
                     request_id.as_deref(),
                     &turn_id,
+                    worker_llm_env,
                     None,
                 )
                 .await
@@ -344,6 +372,27 @@ async fn dispatch_pool_rpc(
             }
         }
         PoolRpcReq::ForceKill { slot_index } => match pool.force_kill_slot(slot_index).await {
+            Ok(()) => PoolRpcResp {
+                ok: true,
+                error: None,
+                lease: None,
+                outcome: None,
+                has_report: None,
+                first_report_at_ms: None,
+            },
+            Err(e) => PoolRpcResp {
+                ok: false,
+                error: Some(e),
+                lease: None,
+                outcome: None,
+                has_report: None,
+                first_report_at_ms: None,
+            },
+        },
+        PoolRpcReq::ChownSessionHost { session_host_mount } => match pool
+            .chown_session_host_under_work_root(PathBuf::from(session_host_mount))
+            .await
+        {
             Ok(()) => PoolRpcResp {
                 ok: true,
                 error: None,

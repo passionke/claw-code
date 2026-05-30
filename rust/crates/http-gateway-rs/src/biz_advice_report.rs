@@ -118,6 +118,7 @@ pub fn report_body_from_solve_output(
                 if !msg.trim().is_empty() {
                     return Ok(sanitize_external_report_text(msg));
                 }
+                return Err("solve output has no report message (outputJson.message)".to_string());
             }
         }
     }
@@ -431,6 +432,13 @@ mod tests {
             report_body_from_persisted(Some(raw), None).as_deref(),
             Some("## 标题\n正文")
         );
+    }
+
+    #[test]
+    fn report_body_rejects_solve_envelope_with_empty_message() {
+        let raw = r#"{"iterations":2,"message":"","model":"qwen3.7-max"}"#;
+        assert!(report_body_from_solve_output(raw, None).is_err());
+        assert!(report_body_from_persisted(Some(raw), None).is_none());
     }
 
     #[test]
