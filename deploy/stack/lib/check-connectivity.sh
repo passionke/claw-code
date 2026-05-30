@@ -62,7 +62,7 @@ done
 curl -fsS "http://127.0.0.1:${PLAYGROUND_PORT}/__config__" >/tmp/claw_playground_config.json
 python3 -c 'import json; c=json.load(open("/tmp/claw_playground_config.json")); assert c.get("defaultGatewayBase"); print("playground ok, defaultGatewayBase=", c["defaultGatewayBase"])'
 # SPA white screen when hashed bundles 404 → index.html (text/html served as application/javascript).
-curl -fsS "http://127.0.0.1:${PLAYGROUND_PORT}/admin/" -o /tmp/claw_playground_html.txt
+curl -fsSL "http://127.0.0.1:${PLAYGROUND_PORT}/admin/" -o /tmp/claw_playground_html.txt
 js_path="$(grep -oE '/admin/assets/index-[^"]+\.js' /tmp/claw_playground_html.txt | head -1)"
 if [[ -z "${js_path}" ]]; then
   echo "error: playground /admin/ missing script src in index.html" >&2

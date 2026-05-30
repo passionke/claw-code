@@ -1,4 +1,4 @@
-//! Integration: global LLM save → DB → file sync (no version history). Author: kejiqing
+//! Integration: per-cluster LLM save → DB → runtime sync (no version history). Author: kejiqing
 
 use std::sync::Arc;
 
@@ -15,6 +15,8 @@ fn ensure_test_env(tmp: &std::path::Path) {
             "postgres://claw_gateway:clawGw9Dev_Pg@127.0.0.1:5433/claw_gateway".into()
         }),
     );
+    let test_cluster = format!("test-llm-{}", std::process::id());
+    std::env::set_var("CLAW_CLUSTER_ID", &test_cluster);
     let claw_dir = tmp.join(".claw");
     std::fs::create_dir_all(&claw_dir).expect("mkdir .claw");
     let llm_env = claw_dir.join("claw-llm-runtime.env");
@@ -34,6 +36,7 @@ fn ensure_test_env(tmp: &std::path::Path) {
 async fn global_llm_put_active_roundtrip_and_file_sync() {
     let tmp = tempfile::tempdir().expect("tempdir");
     ensure_test_env(tmp.path());
+    let test_cluster = std::env::var("CLAW_CLUSTER_ID").expect("CLAW_CLUSTER_ID");
 
     // In CI the postgres service may not be ready yet; retry to avoid flaky `PoolTimedOut`.
     // Remote GH actions can take longer to start Postgres than local runs.
@@ -53,6 +56,8 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
             }
         }
     };
+
+    let _ = db.delete_llm_cluster_all(&test_cluster).await;
 
     let saved = gateway_global_settings::put_active_llm_config(
         &db,
@@ -83,24 +88,18 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
     let handle: gateway_llm_config_sync::LlmRuntimeHandle = Arc::new(RwLock::new(None));
     let sync = gateway_llm_config_sync::sync_llm_runtime_from_db(&db, &handle)
         .await
-        .expect("sync files");
+        .expect("sync runtime");
     assert!(
-        sync.upstream_file_written || sync.env_apply.is_some() || sync.changed,
-        "sync should update upstream and/or env: {sync:?}"
+        sync.changed,
+        "sync should update in-memory runtime: {sync:?}"
     );
 
-    let upstream_path = std::env::var("CLAW_TAP_UPSTREAM_CONFIG_FILE").expect("upstream path");
-    let upstream_text = std::fs::read_to_string(&upstream_path).expect("read upstream json");
-    assert!(
-        upstream_text.contains("https://api.example.com/v1"),
-        "upstream file: {upstream_text}"
-    );
-
-    let env_path = std::env::var("CLAW_LLM_RUNTIME_ENV_FILE").expect("llm runtime env path");
-    let env_text = std::fs::read_to_string(&env_path).expect("read claw-llm-runtime.env");
-    assert!(env_text.contains("UPSTREAM_OPENAI_BASE_URL=https://api.example.com/v1"));
-    assert!(env_text.contains("CLAW_DEFAULT_MODEL=mock-model-v1"));
-    assert!(env_text.contains("ANTHROPIC_MODEL=mock-model-v1"));
+    let guard = handle.read().await;
+    let runtime = guard.as_ref().expect("runtime in memory");
+    assert_eq!(runtime.upstream_base_url, "https://api.example.com/v1");
+    assert_eq!(runtime.model_name, "mock-model-v1");
+    assert_eq!(runtime.api_key, "sk-mock-global-llm-test");
+    drop(guard);
 
     let loaded = gateway_global_settings::load_active_llm_config_public(&db)
         .await
@@ -149,6 +148,5 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
     assert_eq!(active.model_id, second.id);
     assert_eq!(active.model_name, "mock-model-alt");
 
-    let _ = gateway_global_settings::delete_llm_model(&db, &second.id).await;
-    let _ = gateway_global_settings::delete_llm_model(&db, &first_id).await;
+    let _ = db.delete_llm_cluster_all(&test_cluster).await;
 }

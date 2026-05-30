@@ -7,7 +7,9 @@ use http_gateway_rs::pool::{
     serve_pool_http, serve_pool_rpc, serve_pool_rpc_tcp, DockerPoolManager, LiveReportHub,
 };
 use http_gateway_rs::pool_registry;
+use http_gateway_rs::pool_worker_runtime_sync;
 use http_gateway_rs::session_db::GatewaySessionDb;
+use tokio::sync::RwLock;
 use tracing::warn;
 
 #[tokio::main]
@@ -80,6 +82,20 @@ async fn main() {
     let advertise_ip = pool_registry::resolve_advertise_host();
 
     if let Some(db) = registry_db {
+        let llm_runtime = std::sync::Arc::new(RwLock::new(None));
+        if pool_worker_runtime_sync::resolve_repo_root().is_some() {
+            let db_poll = Arc::clone(&db);
+            let llm_poll = std::sync::Arc::clone(&llm_runtime);
+            tokio::task::spawn_blocking(move || {
+                pool_worker_runtime_sync::pool_worker_runtime_poll_loop(db_poll, llm_poll);
+            });
+        } else {
+            warn!(
+                target: "claw_gateway_pool",
+                component = "pool_daemon_main",
+                "CLAW_REPO_ROOT unset; pool worker runtime DB poll disabled"
+            );
+        }
         let (slots_max, slots_min) = pool.slot_capacity();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         tokio::spawn(pool_registry::run_pool_registry(

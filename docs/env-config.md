@@ -51,7 +51,10 @@ Prerequisite: configure at least one **active LLM** in Admin before solve.
 | `GATEWAY_IMAGE` | `claw-gateway-rs:local` | *(unset — use `--release`)* |
 | `CLAW_PODMAN_IMAGE` / `CLAW_DOCKER_IMAGE` | worker `:local` / from release pin | from release pin |
 | `GATEWAY_HOST_PORT` | `18088` | `8088` |
-| `CLAUDE_TAP_MODE` | `native` | `docker` |
+| `CLAW_LLM_PROXY` | `local` (optional sidecar `tap-up`) | `remote` + `CLAW_TAP_PROXY_URL` (shared tap) |
+| `CLAW_TAP_PROXY_URL` | — | Shared claude-tap base when `CLAW_LLM_PROXY=remote` |
+| `CLAW_CLUSTER_ID` | **Required** in repo root `.env` |
+| Admin `clawTap` + LLM | **Required** before solve; worker `OPENAI_BASE_URL` = clawTap only |
 | `CLAW_IMAGE_REGISTRY` | — | `acr` (or `ghcr`) |
 | `CONTAINER_BASE_REGISTRY` | `docker.1ms.run` | — |
 

@@ -1,5 +1,4 @@
-//! Poll PostgreSQL active LLM model → in-memory runtime + claude-tap upstream file + worker `.env`.
-//! Author: kejiqing
+//! Poll PostgreSQL active LLM model → in-memory runtime (per-solve Exec injects worker env). Author: kejiqing
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,8 +9,8 @@ use tracing::{info, warn};
 
 use crate::gateway_global_settings::{self, ActiveLlmRuntime};
 use crate::gateway_llm_model_apply::{
-    apply_llm_model_to_env, normalize_model_name_for_upstream, normalize_upstream_base_url,
-    resolve_llm_runtime_env_file, resolve_repo_env_file, LlmModelApplyOutcome,
+    normalize_model_name_for_upstream, normalize_upstream_base_url, resolve_repo_env_file,
+    LlmModelApplyOutcome,
 };
 use crate::session_db::GatewaySessionDb;
 
@@ -109,7 +108,7 @@ fn same_runtime(a: &LlmRuntimeConfig, b: &LlmRuntimeConfig) -> bool {
         && a.api_key == b.api_key
 }
 
-/// Read active LLM from DB; update memory, upstream JSON, and worker `.env` when changed. Author: kejiqing
+/// Read active LLM from DB; update in-memory runtime only (per-solve env via pool Exec). Author: kejiqing
 pub async fn sync_llm_runtime_from_db(
     db: &GatewaySessionDb,
     handle: &LlmRuntimeHandle,
@@ -132,11 +131,6 @@ pub async fn sync_llm_runtime_from_db(
         return Err("active LLM revision is incomplete (base URL, model name, or api key)".into());
     };
 
-    let upstream_path = resolve_claude_tap_upstream_config_path();
-    let upstream_written =
-        write_claude_tap_upstream_config(&upstream_path, &next.upstream_base_url)?;
-
-    let mut env_apply = None;
     let env_changed = {
         let guard = handle.read().await;
         guard
@@ -146,29 +140,15 @@ pub async fn sync_llm_runtime_from_db(
     };
 
     if env_changed {
-        let env_file = resolve_llm_runtime_env_file();
-        env_apply = Some(
-            apply_llm_model_to_env(
-                &env_file,
-                &next.upstream_base_url,
-                &next.model_name,
-                &next.api_key,
-            )
-            .await?,
-        );
-    }
-
-    let changed = env_changed || upstream_written;
-    {
         let mut guard = handle.write().await;
         *guard = Some(next);
     }
 
     Ok(LlmConfigSyncOutcome {
-        changed,
-        upstream_config_file: Some(upstream_path.display().to_string()),
-        upstream_file_written: upstream_written,
-        env_apply,
+        changed: env_changed,
+        upstream_config_file: None,
+        upstream_file_written: false,
+        env_apply: None,
     })
 }
 

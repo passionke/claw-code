@@ -1,15 +1,18 @@
 //! Gateway-wide settings (not per `ds_id`): PAT vault for Git push, LLM model, etc. Author: kejiqing
 //!
-//! **全局大模型（多模型列表 + 当前生效，无版本历史）**
-//! 1. Admin 保存 → `llm_models_json` 按 `id` upsert；revision 表存当前快照。
-//! 2. `active_llm_model_id/rev` 指向当前生效条目 → handler 调 `sync_llm_runtime_from_db`。
-//! 3. 落盘：`.env` + `.claw/claw-tap-upstream.json`（worker / claude-tap 读文件，非 Admin 缓存）。
+//! **全局大模型（按 `CLAW_CLUSTER_ID` 隔离，独立 PG 表 + 密钥加密）**
+//! 1. Admin 保存 → `gateway_llm_cluster_model`（API Key 以 clusterId 派生 AES 密钥加密）。
+//! 2. `gateway_llm_cluster_state` 指向当前生效条目 → handler 调 `sync_llm_runtime_from_db`。
+//! 3. claude-tap 从 PG 轮询 upstream；gateway 求解时经 pool Exec 注入 worker LLM env（不写 `.claw/*` 文件）。
 
 use runtime::builtin_system_prompt_scaffold_default;
 use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
 
+use crate::cluster_identity::gateway_cluster_id_optional;
+use crate::gateway_claw_tap_settings::{ClawTapSettings, ClawTapSettingsPublic};
+use crate::gateway_llm_cluster_store::{self, resolve_llm_cluster_id};
 use crate::gateway_llm_model_apply::{self, LlmModelApplyOutcome};
 use crate::gateway_llm_model_revision::{
     format_model_rev_local_ms, llm_api_key_slot, GLOBAL_LLM_MODEL_ID,
@@ -98,7 +101,7 @@ pub struct LlmModelVersionsResponse {
 
 /// Active LLM revision loaded from PostgreSQL (source of truth). Author: kejiqing
 #[derive(Debug, Clone)]
-pub(crate) struct ActiveLlmRuntime {
+pub struct ActiveLlmRuntime {
     pub model_id: String,
     pub model_rev: String,
     pub base_model_url: String,
@@ -139,6 +142,20 @@ pub struct GatewayGlobalSettingsPublic {
         skip_serializing_if = "Option::is_none"
     )]
     pub active_llm_config: Option<ActiveLlmConfigPublic>,
+    #[serde(
+        rename = "clawTap",
+        default,
+        skip_deserializing,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub claw_tap: Option<ClawTapSettingsPublic>,
+    #[serde(
+        rename = "clusterId",
+        default,
+        skip_deserializing,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cluster_id: Option<String>,
 }
 
 /// 当前全局生效的 LLM（`active_llm_model_*` + revision 行）。Author: kejiqing
@@ -187,6 +204,10 @@ pub struct GitPatPublic {
 pub struct GatewayGlobalSettingsStore {
     #[serde(rename = "gitPats", default)]
     git_pats: Vec<GitPatEntry>,
+    #[serde(rename = "clusterId", default)]
+    pub(crate) cluster_id: String,
+    #[serde(rename = "clawTap", default)]
+    pub(crate) claw_tap: ClawTapSettings,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -240,6 +261,14 @@ pub struct GatewayGlobalSettingsResponse {
     pub active_llm_applied_at_ms: Option<i64>,
     #[serde(rename = "activeLlmConfig", skip_serializing_if = "Option::is_none")]
     pub active_llm_config: Option<ActiveLlmConfigPublic>,
+    #[serde(rename = "clawTap", skip_serializing_if = "Option::is_none")]
+    pub claw_tap: Option<ClawTapSettingsPublic>,
+    #[serde(rename = "clusterId", skip_serializing_if = "Option::is_none")]
+    pub cluster_id: Option<String>,
+}
+
+fn cluster_id_public() -> Option<String> {
+    gateway_cluster_id_optional()
 }
 
 #[derive(Debug, Serialize)]
@@ -305,25 +334,6 @@ fn prune_llm_api_keys_for_model(store: &mut LlmModelsStore, model_id: &str) {
         .retain(|k, _| k != model_id && !k.starts_with(&prefix));
 }
 
-fn parse_llm_models_store(
-    models_v: &serde_json::Value,
-    keys_v: &serde_json::Value,
-    active_id: &str,
-    active_rev: &str,
-    applied_at_ms: Option<i64>,
-) -> LlmModelsStore {
-    let models: Vec<LlmModelEntry> = serde_json::from_value(models_v.clone()).unwrap_or_default();
-    let api_keys: BTreeMap<String, String> =
-        serde_json::from_value(keys_v.clone()).unwrap_or_default();
-    LlmModelsStore {
-        models,
-        api_keys,
-        active_id: active_id.trim().to_string(),
-        active_rev: active_rev.trim().to_string(),
-        active_applied_at_ms: applied_at_ms,
-    }
-}
-
 fn llm_api_key_for(store: &LlmModelsStore, model_id: &str, model_rev: &str) -> Option<String> {
     let slot = llm_api_key_slot(model_id, model_rev);
     store
@@ -342,6 +352,7 @@ fn llm_api_key_for(store: &LlmModelsStore, model_id: &str, model_rev: &str) -> O
 
 async fn ensure_llm_model_versions_backfilled(
     db: &GatewaySessionDb,
+    cluster_id: &str,
     store: &mut LlmModelsStore,
 ) -> Result<bool, sqlx::Error> {
     let mut changed = false;
@@ -351,6 +362,7 @@ async fn ensure_llm_model_versions_backfilled(
         }
         let rev = format_model_rev_local_ms(entry.updated_at_ms);
         let row = GatewayLlmModelRevisionRow {
+            cluster_id: cluster_id.to_string(),
             model_id: entry.id.clone(),
             model_rev: rev.clone(),
             created_at_ms: entry.updated_at_ms,
@@ -359,7 +371,7 @@ async fn ensure_llm_model_versions_backfilled(
             model_name: entry.model_name.clone(),
             note: None,
         };
-        db.insert_llm_model_revision(&row).await?;
+        db.upsert_llm_cluster_revision(&row).await?;
         if let Some(k) = store.api_keys.remove(&entry.id) {
             store.api_keys.insert(llm_api_key_slot(&entry.id, &rev), k);
         }
@@ -427,6 +439,8 @@ pub async fn upsert_llm_model(
         gateway_llm_model_apply::normalize_model_name_for_upstream(&input.model_name, &base)
             .ok_or_else(|| "invalid modelName".to_string())?;
 
+    let cluster_id =
+        resolve_llm_cluster_id().ok_or_else(|| "CLAW_CLUSTER_ID is not set".to_string())?;
     let mut store = load_llm_models_store(db).await.map_err(|e| e.to_string())?;
     let id = if let Some(raw) = input.id.as_deref() {
         normalize_llm_id(raw).ok_or_else(|| "invalid llm model id".to_string())?
@@ -447,6 +461,7 @@ pub async fn upsert_llm_model(
     let now = now_ms();
     let rev = format_model_rev_local_ms(now);
     let row = GatewayLlmModelRevisionRow {
+        cluster_id: cluster_id.clone(),
         model_id: id.clone(),
         model_rev: rev.clone(),
         created_at_ms: now,
@@ -455,7 +470,7 @@ pub async fn upsert_llm_model(
         model_name: model.clone(),
         note: normalize_revision_note(input.note),
     };
-    db.upsert_llm_model_revision(&row)
+    db.upsert_llm_cluster_revision(&row)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -554,12 +569,15 @@ pub async fn put_active_llm_config(
 pub(crate) async fn load_active_llm_runtime(
     db: &GatewaySessionDb,
 ) -> Result<Option<ActiveLlmRuntime>, sqlx::Error> {
+    let Some(cluster_id) = resolve_llm_cluster_id() else {
+        return Ok(None);
+    };
     let store = load_llm_models_store(db).await?;
     if store.active_id.is_empty() || store.active_rev.is_empty() {
         return Ok(None);
     }
     let Some(row) = db
-        .get_llm_model_revision(&store.active_id, &store.active_rev)
+        .get_llm_cluster_revision(&cluster_id, &store.active_id, &store.active_rev)
         .await?
     else {
         return Ok(None);
@@ -578,10 +596,11 @@ pub(crate) async fn load_active_llm_runtime(
 }
 
 async fn load_llm_models_store(db: &GatewaySessionDb) -> Result<LlmModelsStore, sqlx::Error> {
-    let (models_v, keys_v, active_id, active_rev, applied) =
-        db.get_gateway_llm_models_raw().await?;
-    let mut store = parse_llm_models_store(&models_v, &keys_v, &active_id, &active_rev, applied);
-    let changed = ensure_llm_model_versions_backfilled(db, &mut store).await?;
+    let Some(cluster_id) = resolve_llm_cluster_id() else {
+        return Ok(LlmModelsStore::default());
+    };
+    let mut store = gateway_llm_cluster_store::load_cluster_llm_store(db, &cluster_id).await?;
+    let changed = ensure_llm_model_versions_backfilled(db, &cluster_id, &mut store).await?;
     if changed {
         save_llm_models_store(db, &store, now_ms()).await?;
     }
@@ -593,17 +612,9 @@ async fn save_llm_models_store(
     store: &LlmModelsStore,
     updated_at_ms: i64,
 ) -> Result<(), sqlx::Error> {
-    let models_v = serde_json::to_value(&store.models).unwrap_or_else(|_| serde_json::json!([]));
-    let keys_v = serde_json::to_value(&store.api_keys).unwrap_or_else(|_| serde_json::json!({}));
-    db.save_gateway_llm_models_raw(
-        &models_v,
-        &keys_v,
-        &store.active_id,
-        &store.active_rev,
-        store.active_applied_at_ms,
-        updated_at_ms,
-    )
-    .await
+    let cluster_id = resolve_llm_cluster_id()
+        .ok_or_else(|| sqlx::Error::Configuration("CLAW_CLUSTER_ID is not set".into()))?;
+    gateway_llm_cluster_store::save_cluster_llm_store(db, &cluster_id, store, updated_at_ms).await
 }
 
 async fn llm_entry_to_public(
@@ -616,15 +627,25 @@ async fn llm_entry_to_public(
     } else {
         entry.current_rev.clone()
     };
-    let (name, base_model_url, model_name) =
-        match db.get_llm_model_revision(&entry.id, &current_rev).await? {
+    let (name, base_model_url, model_name) = if let Some(cluster_id) = resolve_llm_cluster_id() {
+        match db
+            .get_llm_cluster_revision(&cluster_id, &entry.id, &current_rev)
+            .await?
+        {
             Some(row) => (row.name, row.base_model_url, row.model_name),
             None => (
                 entry.name.clone(),
                 entry.base_model_url.clone(),
                 entry.model_name.clone(),
             ),
-        };
+        }
+    } else {
+        (
+            entry.name.clone(),
+            entry.base_model_url.clone(),
+            entry.model_name.clone(),
+        )
+    };
     let is_active_model = !store.active_id.is_empty() && store.active_id == entry.id;
     let api_key_set = llm_api_key_for(store, &entry.id, &current_rev).is_some();
     Ok(LlmModelPublic {
@@ -705,8 +726,10 @@ pub async fn save_gateway_global_settings(
     tokens: &GitPatTokensStore,
     updated_at_ms: i64,
 ) -> Result<(), sqlx::Error> {
+    let mut settings = settings.clone();
+    settings.cluster_id.clear();
     let settings_v =
-        serde_json::to_value(settings).unwrap_or_else(|_| serde_json::json!({"gitPats":[]}));
+        serde_json::to_value(&settings).unwrap_or_else(|_| serde_json::json!({"gitPats":[]}));
     db.save_gateway_global_settings_raw(&settings_v, &tokens_to_json(tokens), updated_at_ms)
         .await
 }
@@ -723,6 +746,8 @@ pub async fn load_public(
         active_llm_model_rev: active_llm_model_rev_public(&llm),
         active_llm_applied_at_ms: llm.active_applied_at_ms,
         active_llm_config: load_active_llm_config_public(db).await?,
+        claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
+        cluster_id: cluster_id_public(),
     })
 }
 
@@ -739,6 +764,8 @@ pub async fn load_response(
         active_llm_model_rev: active_llm_model_rev_public(&llm),
         active_llm_applied_at_ms: llm.active_applied_at_ms,
         active_llm_config: load_active_llm_config_public(db).await?,
+        claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
+        cluster_id: cluster_id_public(),
     })
 }
 
@@ -763,11 +790,13 @@ pub async fn list_llm_model_versions(
 
 pub async fn delete_llm_model(db: &GatewaySessionDb, model_id: &str) -> Result<bool, String> {
     let id = normalize_llm_id(model_id).ok_or_else(|| "invalid llm model id".to_string())?;
+    let cluster_id =
+        resolve_llm_cluster_id().ok_or_else(|| "CLAW_CLUSTER_ID is not set".to_string())?;
     let mut store = load_llm_models_store(db).await.map_err(|e| e.to_string())?;
     if !store.models.iter().any(|m| m.id == id) {
         return Ok(false);
     }
-    db.delete_llm_model_revisions(&id)
+    db.delete_llm_cluster_revisions(&cluster_id, &id)
         .await
         .map_err(|e| e.to_string())?;
     store.models.retain(|m| m.id != id);
@@ -830,7 +859,7 @@ pub async fn apply_llm_model_by_id(
             applied_at_ms,
             tap_chain_refreshed: false,
             tap_restarted: false,
-            message: Some("active LLM updated; gateway sync refreshes files".into()),
+            message: Some("active LLM updated; claude-tap polls PG for upstream".into()),
         },
     })
 }
@@ -971,6 +1000,8 @@ pub fn to_public(
         active_llm_model_rev: None,
         active_llm_applied_at_ms: None,
         active_llm_config: None,
+        claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
+        cluster_id: cluster_id_public(),
     }
 }
 

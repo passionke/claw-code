@@ -514,6 +514,19 @@
       toast._t = setTimeout(() => { el.style.display = "none"; }, 4000);
     }
 
+    function upstreamBodyFromEnvelope(wrap) {
+      if (wrap.body !== undefined) return wrap.body;
+      const t = wrap.bodyText;
+      if (t == null || t === "") return null;
+      try { return JSON.parse(t); } catch (_) { return t; }
+    }
+
+    function upstreamErrorMessage(wrap) {
+      const b = upstreamBodyFromEnvelope(wrap);
+      if (b && typeof b === "object" && b.detail != null) return String(b.detail);
+      return wrap.bodyText || wrap.error || "请求失败";
+    }
+
     async function proxyHttp(method, path, body) {
       const res = await fetch("/__proxy__", {
         method: "POST",
@@ -527,19 +540,8 @@
         }),
       });
       const wrap = await res.json().catch(() => ({}));
-      if (!wrap.ok) {
-        let msg = wrap.bodyText || wrap.error || "请求失败";
-        try {
-          const j = JSON.parse(wrap.bodyText);
-          if (j && j.detail) msg = j.detail;
-        } catch (_) {}
-        throw new Error(msg);
-      }
-      try {
-        return JSON.parse(wrap.bodyText);
-      } catch (_) {
-        return wrap.bodyText;
-      }
+      if (!wrap.ok) throw new Error(upstreamErrorMessage(wrap));
+      return upstreamBodyFromEnvelope(wrap);
     }
 
     function gitSyncBadge(gs) {

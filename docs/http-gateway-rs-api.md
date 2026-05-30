@@ -199,7 +199,11 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - `POST .../restore` body `{ "entityRev": "…" }` — 写回 `__draft__` 聚合字段，不切换 L1 生效版、不物化
 
 - **全局配置（与 ds_id 无关）**
-  - `GET /v1/gateway/global-settings` — `{ updatedAtMs, gitPats, llmModels[], activeLlmModelId?, activeLlmConfig?, activeLlmAppliedAtMs? }`（多模型列表 + 当前生效；不返回 apiKey 明文）
+  - `GET /v1/gateway/global-settings` — `{ …, clawTap?, clusterId? }`（`clusterId` 只读，来自 `CLAW_CLUSTER_ID`；无修改接口）
+  - `PUT /v1/gateway/global-settings/claw-tap` — `{ host, proxyPort }`（必选；保存前须 probe 通过 clusterId+hash）
+  - `POST /v1/gateway/global-settings/claw-tap/probe` — `{ host, proxyPort }` → `{ ok, clusterId?, dbHost?, clusterHash?, localClusterHash?, clusterMatch?, hashMatch?, message }`
+  - `GET /readyz` — 503 直至 `clawTapCluster.consistency=strict`；`GET /healthz` 含 `clawTapCluster`（`strict` | `cluster_mismatch` | `unconfigured`）
+  - 求解 `output_json.llmRoute` — `{ mode, clusterId, clusterHash, clawTapBaseUrl?, upstreamBaseUrl, model, reason? }`
   - `POST /v1/gateway/global-settings/llm-models` — 新建/更新一条模型：`{ id?, name, baseModelUrl, modelName, apiKey? }`（新建须 `apiKey`）
   - `POST /v1/gateway/global-settings/llm-models/{model_id}/apply` — 设为当前并同步 `.env` + `.claw/claw-tap-upstream.json`
   - `DELETE /v1/gateway/global-settings/llm-models/{model_id}` — 删除一条模型

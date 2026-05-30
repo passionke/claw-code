@@ -731,6 +731,7 @@ impl DockerPoolManager {
         claw_bin: &str,
         request_id: Option<&str>,
         turn_id: &str,
+        worker_llm_env: Option<std::collections::BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
         let name = {
@@ -801,6 +802,14 @@ impl DockerPoolManager {
         if let Some(ref db) = self.session_db {
             if let Ok(Some(session_id)) = db.get_session_id_for_turn(turn_id).await {
                 argv.extend(["-e".into(), format!("CLAW_SESSION_ID={session_id}")]);
+            }
+        }
+        if let Some(env_map) = worker_llm_env {
+            for (k, v) in env_map {
+                if v.is_empty() {
+                    continue;
+                }
+                argv.extend(["-e".into(), format!("{k}={v}")]);
             }
         }
         argv.extend([
@@ -1103,6 +1112,7 @@ esac
                 None,
                 "turn-test",
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1248,6 +1258,7 @@ esac
                 None,
                 "turn-test",
                 None,
+                None,
             )
             .await
             .expect_err("exec on released lease must fail");
@@ -1326,6 +1337,7 @@ esac
             None,
             "turn-test",
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1378,6 +1390,7 @@ esac
             "claw",
             None,
             "turn-test",
+            None,
             None,
         )
         .await

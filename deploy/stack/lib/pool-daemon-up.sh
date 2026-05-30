@@ -68,6 +68,7 @@ if [[ ! -x "${BIN}" ]]; then
 fi
 
 daemon_env=(
+  CLAW_REPO_ROOT="${REPO_ROOT}"
   CLAW_WORK_ROOT="${WORK_ROOT}"
   CLAW_POOL_WORK_ROOT_HOST="${WORK_ROOT}"
   CLAW_POOL_DAEMON_TCP_BIND="${BIND}"

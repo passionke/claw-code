@@ -92,8 +92,11 @@ cp deploy/stack/env.production.example .env
 | 变量 | 作用 |
 | --- | --- |
 | `CLAW_DEPLOY_PROFILE` | `local` 或 `production`（可按 OS 自动推断） |
-| Admin → LLM（PG） | 模型与 API Key 的真源；各网关副本连同一 PG，轮询后写入本机挂载的 `.env` + `.claw/claw-tap-upstream.json` |
-| `OPENAI_BASE_URL` | 由 `gateway.sh up` 生成 `.claw-worker-llm.env`（worker → claude-tap），勿手写 |
+| `CLAW_CLUSTER_ID` | 仓库根 `.env` **必填**；集群标识（Admin 只读展示） |
+| `CLAW_GATEWAY_DATABASE_URL` | 网关 PG；与 `CLAW_CLUSTER_ID` 一起参与 `clusterHash` 校验（见 `docs/claw-tap-cluster-identity.md`） |
+| `CLAUDE_TAP_MODE` | 本地建议 **`source`**（`../claude-tap` 可编辑安装）；**`native`/PyPI 0.0.7** 的 hash 算法与网关不一致会报 `clusterHash mismatch` |
+| Admin → 全局推理（PG） | **clawTap** 端点、活跃 LLM 模型/API Key；solve 时 gateway 经 pool `Exec -e` 注入 worker（`OPENAI_BASE_URL` = clawTap） |
+| `CLAW_LLM_PROXY` / `CLAW_TAP_PROXY_URL` | 仅影响本机 **tap 侧车** 或 compose 里 tap 容器地址；**不**再决定 worker 是否绕过 clawTap |
 | `gateway.sh up --release <tag>` | `GATEWAY_IMAGE` 与 **`CLAW_DOCKER_IMAGE`** 同 tag（`claw-code`→`claw-gateway-worker`）；勿在根 `.env` 写死 `:local` worker |
 | `GATEWAY_HOST_PORT` | 宿主机端口，默认 `8088` |
 | `GATEWAY_PLAYGROUND_HOST_PORT` | solve_async / 项目管理 UI，默认 `18765`（compose 服务 `gateway-playground`） |
@@ -145,18 +148,24 @@ podman ps   # 或  docker ps
 ./deploy/stack/gateway.sh down
 ```
 
-### 1.5 claude-tap（与 gateway 分开）
+### 1.5 LLM 路由（clawTap 必选）
+
+- Admin 配置 **clawTap**（探测 `/healthz` 的 `clusterHash` 须与 gateway 同一 PG 推导结果一致）。
+- **每次 solve**：gateway 将 `OPENAI_BASE_URL` 设为 clawTap 基址（`Exec -e` 注入）；**无** cluster 不一致时直连 upstream 的降级路径。
+- `GET /readyz` 在 `clawTapCluster.consistency=strict` 前返回 503；不一致为 `cluster_mismatch`，solve 被拒绝。
+
+| `CLAW_LLM_PROXY` | 场景（tap **进程** 部署，与 solve 注入分离） |
+| --- | --- |
+| `local`（macOS 默认） | 本机 `gateway.sh tap-up` 起侧车；Admin clawTap 指向该地址 |
+| `remote` | `CLAW_TAP_PROXY_URL` 指向集群共享 claude-tap；Admin clawTap 与之对齐 |
 
 ```bash
-./deploy/stack/gateway.sh tap-up    # 只起 tap，并写入 deploy/stack/.claw-worker-llm.env（勿手跑 sync-worker-openai-env.sh）
-./deploy/stack/gateway.sh tap-down  # 只停 tap
-
-./deploy/stack/gateway.sh up        # gateway 另起（生产 release 同上）
+# local 开发：侧车 tap（若 Admin 指向本机 tap）
+./deploy/stack/gateway.sh tap-up
+./deploy/stack/gateway.sh tap-down
 ```
 
-旧的一体脚本仍可用：`lib/start-with-tap.sh` = `tap-up` + `up`。
-
-`claude-tap` 在宿主机跑，只做 API 代理/抓包，不是 MCP。
+详见 `docs/claw-tap-cluster-identity.md`。`claude-tap` 为 OpenAI 兼容代理，不是 MCP。
 
 **Live Viewer（`CLAUDE_TAP_LIVE_PORT`，默认 3000）与 `?session=`**（已对照上游 **`claude-tap` 0.1.52** 安装树：`claude_tap/live.py` 的 `GET /` 不读取 query；`viewer.html` 内也无对 `location.search` / `URLSearchParams` 的解析）：
 

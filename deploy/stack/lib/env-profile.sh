@@ -34,6 +34,7 @@ claw_apply_deploy_profile() {
       export GATEWAY_IMAGE="${GATEWAY_IMAGE:-claw-gateway-rs:local}"
       export GATEWAY_PLAYGROUND_IMAGE="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
       export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
+      export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-local}"
       export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-native}"
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
@@ -45,7 +46,8 @@ claw_apply_deploy_profile() {
     production)
       export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-docker}"
       export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-docker_pool}"
-      export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-docker}"
+      # Cluster: no per-node claude-tap image; workers use PG upstream (direct) or shared CLAW_TAP_PROXY_URL (remote).
+      export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-direct}"
       export CLAW_IMAGE_REGISTRY="${CLAW_IMAGE_REGISTRY:-acr}"
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
@@ -103,6 +105,24 @@ claw_validate_deploy_profile() {
       fi
       ;;
     production)
+      case "${CLAW_LLM_PROXY:-direct}" in
+        local)
+          echo "error: CLAW_DEPLOY_PROFILE=production does not use CLAW_LLM_PROXY=local (sidecar tap)" >&2
+          echo "hint: use direct (default) or remote + CLAW_TAP_PROXY_URL for a shared tap service" >&2
+          return 1
+          ;;
+        remote)
+          if [[ -z "${CLAW_TAP_PROXY_URL:-}" ]]; then
+            echo "error: CLAW_LLM_PROXY=remote requires CLAW_TAP_PROXY_URL (shared claude-tap base URL)" >&2
+            return 1
+          fi
+          ;;
+        direct) ;;
+        *)
+          echo "error: CLAW_LLM_PROXY must be direct, remote, or local (got ${CLAW_LLM_PROXY})" >&2
+          return 1
+          ;;
+      esac
       if [[ "${iso}" == podman_pool ]]; then
         echo "error: CLAW_DEPLOY_PROFILE=production expects docker_pool (got podman_pool)" >&2
         return 1

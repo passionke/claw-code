@@ -1,6 +1,5 @@
 import { CloudOutlined, PlusOutlined } from "@ant-design/icons";
 import {
-  Alert,
   Button,
   Card,
   Form,
@@ -24,7 +23,7 @@ function formatMs(ms?: number): string {
   return new Date(ms).toLocaleString();
 }
 
-export default function LlmModelsPage() {
+export default function LlmModelsPage({ embedded = false }: { embedded?: boolean }) {
   const { gatewayBase } = useApp();
   const [models, setModels] = useState<LlmModelRow[]>([]);
   const [activeLlmModelId, setActiveLlmModelId] = useState<string | undefined>();
@@ -195,12 +194,17 @@ export default function LlmModelsPage() {
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>
-        模型配置
-      </Typography.Title>
+      {!embedded ? (
+        <Typography.Title level={4} style={{ marginTop: 0 }}>
+          模型配置
+        </Typography.Title>
+      ) : (
+        <Typography.Title level={5}>大模型列表</Typography.Title>
+      )}
 
       <Card
         title={
+          embedded ? undefined : (
           <Space>
             <CloudOutlined />
             <span>大模型列表</span>
@@ -210,6 +214,7 @@ export default function LlmModelsPage() {
               <Tag>未设当前</Tag>
             )}
           </Space>
+          )
         }
         size="small"
         extra={
@@ -219,24 +224,11 @@ export default function LlmModelsPage() {
         }
         loading={loading}
       >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="列表管理多条上游；「设为当前」后同步 worker / claude-tap"
-          description={
-            <>
-              保存写入 PostgreSQL；切换当前模型会同步<strong>仓库根</strong>{" "}
-              <code>.env</code> 与 <code>.claw/claw-tap-upstream.json</code>（由网关写入，勿在子目录手建
-              独立 <code>.env</code>）。小米等需带{" "}
-              <code>/v1</code>，例如{" "}
-              <code>https://token-plan-cn.xiaomimimo.com/v1</code>。
-              {activeLlmAppliedAtMs ? (
-                <> 最近切换：{formatMs(activeLlmAppliedAtMs)}。</>
-              ) : null}
-            </>
-          }
-        />
+        {activeLlmAppliedAtMs ? (
+          <Typography.Text type="secondary" style={{ display: "block", marginBottom: 12 }}>
+            最近切换：{formatMs(activeLlmAppliedAtMs)}
+          </Typography.Text>
+        ) : null}
         <Table
           rowKey="id"
           size="small"
@@ -268,17 +260,15 @@ export default function LlmModelsPage() {
             name="baseModelUrl"
             label="Base URL"
             rules={[{ required: true, message: "请填写 Base URL" }]}
-            extra="上游根地址；若厂商要求 /v1/chat/completions，请填写 https://host/v1"
           >
-            <Input placeholder="https://api.deepseek.com/v1" />
+            <Input placeholder="https://api.example.com/v1" />
           </Form.Item>
           <Form.Item
             name="modelName"
-            label="模型 ID（发给厂商 API 的 model 字段）"
+            label="模型 ID"
             rules={[{ required: true, message: "请填写模型 ID" }]}
-            extra="小米：mimo-v2.5-pro"
           >
-            <Input placeholder="mimo-v2.5-pro" />
+            <Input placeholder="model-name" />
           </Form.Item>
           <Form.Item
             name="apiKey"

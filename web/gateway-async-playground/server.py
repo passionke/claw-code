@@ -135,14 +135,29 @@ UPSTREAM_GATEWAY_BASE = _resolve_gateway_base_url(
 )
 
 
+def _loopback_gateway_key(url: str) -> tuple[str, int] | None:
+    """(scheme, port) for loopback browser gateway URLs; None if not loopback."""
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return None
+    host = _norm_host(p.hostname)
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        return None
+    port = p.port or (443 if p.scheme == "https" else 80)
+    return (p.scheme, port)
+
+
 def _effective_proxy_base(browser_base: str) -> str:
     """Map UI `baseUrl` to an address reachable from this process (container vs host). Author: kejiqing"""
     b = _resolve_gateway_base_url(browser_base) or browser_base.strip().rstrip("/")
-    if (
-        UPSTREAM_GATEWAY_BASE
-        and UPSTREAM_GATEWAY_BASE != b
-        and b == PUBLIC_GATEWAY_BASE
-    ):
+    if not UPSTREAM_GATEWAY_BASE or UPSTREAM_GATEWAY_BASE == b:
+        return b
+    pub = _loopback_gateway_key(PUBLIC_GATEWAY_BASE)
+    br = _loopback_gateway_key(b)
+    if pub is not None and br is not None and pub == br:
+        return UPSTREAM_GATEWAY_BASE
+    if b == PUBLIC_GATEWAY_BASE:
         return UPSTREAM_GATEWAY_BASE
     return b
 
@@ -236,6 +251,33 @@ def send_json(handler: BaseHTTPRequestHandler, status: int, obj: dict) -> None:
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _looks_json_content_type(content_type: str) -> bool:
+    ct = content_type.lower()
+    return "application/json" in ct or ct.endswith("+json")
+
+
+def _proxy_upstream_envelope(
+    *,
+    ok: bool,
+    status: int,
+    headers: dict[str, str],
+    raw: bytes,
+    content_type: str = "",
+) -> dict:
+    """Wrap upstream HTTP for /__proxy__; JSON bodies use ``body`` object for DevTools."""
+    text = raw.decode("utf-8", errors="replace")
+    ct = content_type or headers.get("Content-Type") or headers.get("content-type") or ""
+    out: dict = {"ok": ok, "status": status, "headers": headers, "contentType": ct}
+    if _looks_json_content_type(ct) and text.strip():
+        try:
+            out["body"] = json.loads(text)
+            return out
+        except json.JSONDecodeError:
+            pass
+    out["bodyText"] = text
+    return out
 
 
 def send_html_bytes(handler: BaseHTTPRequestHandler, status: int, data: bytes) -> None:
@@ -557,21 +599,37 @@ class Handler(BaseHTTPRequestHandler):
             resp = urllib.request.urlopen(req, timeout=600)
         except urllib.error.HTTPError as e:
             raw = e.read()
-            text = raw.decode("utf-8", errors="replace")
+            rh = dict(e.headers.items()) if e.headers else {}
+            ct = e.headers.get("Content-Type", "") if e.headers else ""
             send_json(
                 self,
                 e.code,
-                {
-                    "ok": False,
-                    "status": e.code,
-                    "headers": dict(e.headers.items()) if e.headers else {},
-                    "bodyText": text,
-                },
+                _proxy_upstream_envelope(
+                    ok=False,
+                    status=e.code,
+                    headers=rh,
+                    raw=raw,
+                    content_type=ct,
+                ),
             )
             return
         except urllib.error.URLError as e:
             reason = getattr(e, "reason", e)
-            send_json(self, 502, {"ok": False, "error": str(reason)})
+            hint = (
+                "playground 进程连不上该地址：容器内请用 compose 的 PLAYGROUND_GATEWAY_BASE；"
+                "宿主机请 gateway.sh up 并 curl 同端口 /healthz"
+            )
+            send_json(
+                self,
+                502,
+                {
+                    "ok": False,
+                    "error": str(reason),
+                    "upstream": url,
+                    "browserBase": base,
+                    "hint": hint,
+                },
+            )
             return
 
         try:
@@ -589,17 +647,16 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     rh[k] = v
             ct = resp.headers.get("Content-Type", "") if resp.headers else ""
-            text = out.decode("utf-8", errors="replace")
             send_json(
                 self,
                 resp.status,
-                {
-                    "ok": 200 <= resp.status < 300,
-                    "status": resp.status,
-                    "headers": rh,
-                    "bodyText": text,
-                    "contentType": ct,
-                },
+                _proxy_upstream_envelope(
+                    ok=200 <= resp.status < 300,
+                    status=resp.status,
+                    headers=rh,
+                    raw=out,
+                    content_type=ct,
+                ),
             )
         finally:
             resp.close()

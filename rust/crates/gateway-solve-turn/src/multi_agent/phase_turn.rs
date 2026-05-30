@@ -1,9 +1,12 @@
 //! Short-lived ConversationRuntime for a single multi-agent phase. Author: kejiqing
+use std::sync::Arc;
+
 use runtime::{ConversationRuntime, PermissionMode, PermissionPolicy, Session};
 
 use crate::gateway_stdout::emit_report_delta;
 use crate::{
     assistant_report_text_from_turn, DirectApiClient, DirectToolExecutor, GatewaySolveTurnError,
+    SolveTimingRecorder,
 };
 
 fn err(status: u16, msg: impl Into<String>) -> GatewaySolveTurnError {
@@ -23,6 +26,7 @@ pub fn run_phase_turn(
     system_prompt: Vec<String>,
     max_iterations: usize,
     stream_text_to_report: bool,
+    turn_timing: Option<Arc<SolveTimingRecorder>>,
 ) -> Result<(String, usize), GatewaySolveTurnError> {
     let mut session = Session::new();
     session
@@ -33,6 +37,9 @@ pub fn run_phase_turn(
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
     runtime = runtime.with_max_iterations(max_iterations);
+    if let Some(timing) = turn_timing {
+        runtime = runtime.with_turn_timing(timing);
+    }
 
     let result = if stream_text_to_report {
         runtime

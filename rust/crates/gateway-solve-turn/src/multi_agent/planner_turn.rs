@@ -55,6 +55,7 @@ pub fn run_planner_turn(
         system_prompt,
         orch.planner_max_iter,
         false,
+        executor.turn_timing(),
     )?;
     let plan = parse_plan_from_text(&text).map_err(|e| crate::GatewaySolveTurnError {
         status: 500,

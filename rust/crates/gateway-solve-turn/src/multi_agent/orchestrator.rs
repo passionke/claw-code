@@ -22,7 +22,7 @@ use crate::sqlbot_preflight::sqlbot_query_context_from_session;
 use crate::{
     default_system_date, err, gateway_solve_session_persistence_path, initialize_mcp_runtime,
     reset_task_progress, truncate_progress_history, DirectToolExecutor, GatewayMcpCallContext,
-    GatewaySolveTurnError, HTTP_INTERNAL,
+    GatewaySolveTurnError, SolveTimingRecorder, HTTP_INTERNAL,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -80,6 +80,7 @@ pub fn run_multi_agent_solve_turn(
     reset_task_progress(work_dir, clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
     let _ = truncate_progress_history(work_dir);
+    let turn_timing = Arc::new(SolveTimingRecorder::new(work_dir));
 
     let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
     let session_is_continuation = gateway_jsonl.exists();
@@ -113,6 +114,7 @@ pub fn run_multi_agent_solve_turn(
         concurrent_mcp_tool_names,
         parallel_friendly_mcp_tool_names,
         session_tracer,
+        Some(Arc::clone(&turn_timing)),
         async_runtime,
     );
 

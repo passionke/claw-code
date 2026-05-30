@@ -1208,6 +1208,7 @@ dependencies = [
 name = "http-gateway-rs"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "api",
  "async-trait",
  "axum 0.8.9",
@@ -1215,12 +1216,15 @@ dependencies = [
  "chrono",
  "futures-util",
  "gateway-solve-turn",
+ "getrandom 0.2.17",
+ "hex",
  "http",
  "reqwest",
  "runtime",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "sqlx",
  "telemetry",
  "tempfile",

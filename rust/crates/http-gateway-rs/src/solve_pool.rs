@@ -11,6 +11,7 @@ use tokio::time::{timeout, Duration as TokioDuration};
 use tracing::{info, warn};
 
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
+use http_gateway_rs::claw_tap_cluster_state::resolve_solve_llm_route;
 use http_gateway_rs::pool::{
     parse_gateway_solve_exec_stdout, PoolOps, PoolSessionHostMounts, SlotLease,
 };
@@ -119,6 +120,21 @@ pub async fn run_solve_request_docker(
         .timeout_seconds
         .unwrap_or(state.cfg.default_timeout_seconds);
 
+    let (llm_route, worker_llm_env) = resolve_solve_llm_route(
+        &state.session_db,
+        &state.claw_tap_cluster,
+        &state.llm_runtime,
+        req.model.as_deref(),
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+
+    let _ = gateway_solve_turn::append_solve_timing_point(
+        &session_home,
+        "bootstrap_solve_pool_start",
+        Some(&turn_id),
+    );
+
     let task_path = session_home.join(GATEWAY_SOLVE_TASK_FILE);
 
     let session_id = req
@@ -138,6 +154,7 @@ pub async fn run_solve_request_docker(
         session_id: Some(session_id),
         pool_id: None,
         worker_name: None,
+        llm_route: Some(serde_json::to_value(&llm_route).unwrap_or_default()),
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(
@@ -278,6 +295,11 @@ pub async fn run_solve_request_docker(
         session_home = %session_home.display(),
         "pool slot leased; running docker exec gateway-solve-once"
     );
+    let _ = gateway_solve_turn::append_solve_timing_point(
+        &session_home,
+        "bootstrap_pool_acquired",
+        Some(&turn_id),
+    );
 
     let mut lease_cleanup = DockerLeaseCleanup {
         pool: Arc::clone(&pool),
@@ -304,12 +326,18 @@ pub async fn run_solve_request_docker(
         .as_ref()
         .expect("lease set for exec")
         .slot_index;
+    let _ = gateway_solve_turn::append_solve_timing_point(
+        &session_home,
+        "bootstrap_exec_started",
+        Some(&turn_id),
+    );
     let exec_fut = pool.exec_solve(
         lease_cleanup.lease.as_ref().expect("lease set for exec"),
         GATEWAY_SOLVE_TASK_FILE,
         claw_bin_for_pool_exec(&state.cfg),
         Some(request_id.as_str()),
         &turn_id,
+        Some(worker_llm_env),
         None,
     );
     let exec_result =

@@ -61,6 +61,7 @@ pub fn run_writer_turn(
         vec![system],
         orch.writer_max_iter,
         false,
+        executor.turn_timing(),
     )?;
     timings.push("writer", started, now_ms(), None);
     Ok(text)

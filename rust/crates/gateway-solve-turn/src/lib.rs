@@ -27,7 +27,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use api::{
     ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, OutputContentBlock,
@@ -35,8 +35,8 @@ use api::{
 };
 use runtime::{
     apply_config_env_if_unset, apply_mcp_tool_annotations_from_config, concurrent_mcp_tool_names,
-    default_mcp_max_concurrent, gateway_schema_prompt_section, load_system_prompt,
-    mcp_description_parallel_friendly, mcp_tool_parallel_fanout_eligible,
+    conversation_tool_timing_from_loop, default_mcp_max_concurrent, gateway_schema_prompt_section,
+    load_system_prompt, mcp_description_parallel_friendly, mcp_tool_parallel_fanout_eligible,
     ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
     ConversationMessage, ConversationRuntime, McpServerManager, McpTool, MessageRole,
     PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError, Session, SharedToolExecutor,
@@ -59,6 +59,7 @@ pub mod multi_agent;
 pub mod project_orchestration;
 pub mod project_preflight;
 pub mod session_report;
+pub mod solve_timing;
 pub mod sqlbot_preflight;
 pub mod task_progress;
 pub mod turn_tools;
@@ -76,6 +77,10 @@ pub use runtime::McpCallContext;
 pub use session_report::{
     final_assistant_report_text_from_jsonl,
     final_assistant_report_text_from_jsonl_for_user_turn_index,
+};
+pub use solve_timing::{
+    append_solve_timing_point, read_solve_timing_events, truncate_solve_timing_events,
+    SolveTimingEvent, SolveTimingRecorder, SOLVE_TIMING_EVENTS_REL,
 };
 pub use task_progress::{
     progress_events_path, progress_message_from_mcp_input, read_progress_events,
@@ -185,6 +190,9 @@ pub struct GatewaySolveTaskFile {
     pub pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
     pub worker_name: Option<String>,
+    /// Per-solve LLM routing snapshot (gateway-injected). Author: kejiqing
+    #[serde(rename = "llmRoute", skip_serializing_if = "Option::is_none")]
+    pub llm_route: Option<Value>,
 }
 
 pub(crate) fn default_system_date() -> String {
@@ -486,6 +494,7 @@ struct DirectToolExecutorInner {
     concurrent_mcp_tools: HashSet<String>,
     parallel_friendly_mcp_tools: HashSet<String>,
     session_tracer: Option<SessionTracer>,
+    timing: Option<Arc<SolveTimingRecorder>>,
     mcp_semaphore: Arc<Semaphore>,
     /// `gateway-solve-once` enters this runtime on the main thread; background analysis
     /// tools call MCP via `Handle::block_on` from worker threads. Author: kejiqing
@@ -504,6 +513,7 @@ impl DirectToolExecutorInner {
         concurrent_mcp_tools: HashSet<String>,
         parallel_friendly_mcp_tools: HashSet<String>,
         session_tracer: Option<SessionTracer>,
+        timing: Option<Arc<SolveTimingRecorder>>,
         async_runtime: tokio::runtime::Handle,
     ) -> Self {
         Self {
@@ -516,12 +526,28 @@ impl DirectToolExecutorInner {
             concurrent_mcp_tools,
             parallel_friendly_mcp_tools,
             session_tracer,
+            timing,
             mcp_semaphore: Arc::new(Semaphore::new(default_mcp_max_concurrent().max(1))),
             async_runtime,
         }
     }
 
     fn execute_impl(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+        let started = Instant::now();
+        let result = self.execute_impl_inner(tool_name, input);
+        if !conversation_tool_timing_from_loop() {
+            if let Some(timing) = &self.timing {
+                let _ = timing.record_direct_tool(
+                    tool_name,
+                    started.elapsed().as_millis(),
+                    result.is_err(),
+                );
+            }
+        }
+        result
+    }
+
+    fn execute_impl_inner(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
         if !is_tool_allowed(tool_name, &self.allowed_tools) {
             return Err(ToolError::new(format!("tool not allowed: {tool_name}")));
         }
@@ -688,6 +714,7 @@ impl DirectToolExecutor {
         concurrent_mcp_tools: HashSet<String>,
         parallel_friendly_mcp_tools: HashSet<String>,
         session_tracer: Option<SessionTracer>,
+        timing: Option<Arc<SolveTimingRecorder>>,
         async_runtime: tokio::runtime::Handle,
     ) -> Self {
         Self {
@@ -701,9 +728,15 @@ impl DirectToolExecutor {
                 concurrent_mcp_tools,
                 parallel_friendly_mcp_tools,
                 session_tracer,
+                timing,
                 async_runtime,
             )),
         }
+    }
+
+    #[must_use]
+    pub fn turn_timing(&self) -> Option<Arc<SolveTimingRecorder>> {
+        self.inner.timing.clone()
     }
 
     /// First registered MCP tool whose `tools/list` annotations allow concurrent calls.
@@ -753,6 +786,7 @@ impl DirectToolExecutor {
                 concurrent_mcp_tools: self.inner.concurrent_mcp_tools.clone(),
                 parallel_friendly_mcp_tools: self.inner.parallel_friendly_mcp_tools.clone(),
                 session_tracer: self.inner.session_tracer.clone(),
+                timing: self.inner.timing.clone(),
                 mcp_semaphore: Arc::clone(&self.inner.mcp_semaphore),
                 async_runtime: self.inner.async_runtime.clone(),
             }),
@@ -1148,11 +1182,18 @@ pub fn run_gateway_solve_turn(
     mcp: GatewayMcpCallContext,
     allowed_tools: Vec<String>,
     max_iterations: usize,
+    llm_route: Option<Value>,
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
 
     let clawcode_session_id = mcp.clawcode_session_id().to_string();
+    let turn_id_attr = std::env::var("CLAW_TURN_ID").ok();
+    let _ = append_solve_timing_point(
+        work_dir,
+        "bootstrap_worker_entered",
+        turn_id_attr.as_deref(),
+    );
 
     let orch_cfg = project_orchestration::resolve_solve_orchestration_config(work_dir);
     if orch_cfg.is_multi_agent_analysis() {
@@ -1199,6 +1240,7 @@ pub fn run_gateway_solve_turn(
         parallel_friendly_mcp_tool_names,
         runtime_mcp_manager,
     ) = initialize_mcp_runtime(work_dir)?;
+    let _ = append_solve_timing_point(work_dir, "bootstrap_mcp_ready", turn_id_attr.as_deref());
     let api_client = DirectApiClient::new(
         effective_model.clone(),
         &allowed_tools,
@@ -1208,6 +1250,7 @@ pub fn run_gateway_solve_turn(
     reset_task_progress(work_dir, &clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
     let _ = truncate_progress_history(work_dir);
+    let turn_timing = Arc::new(SolveTimingRecorder::new(work_dir));
 
     let orchestration_bus = crate::multi_agent::EventBus::new(work_dir);
     let _ = orchestration_bus.session_started();
@@ -1243,6 +1286,7 @@ pub fn run_gateway_solve_turn(
         concurrent_mcp_tool_names,
         parallel_friendly_mcp_tool_names,
         session_tracer.clone(),
+        Some(Arc::clone(&turn_timing)),
         async_runtime,
     );
     let mut policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
@@ -1269,6 +1313,7 @@ pub fn run_gateway_solve_turn(
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
     runtime = runtime.with_max_iterations(max_iterations);
+    runtime = runtime.with_turn_timing(turn_timing);
     if let Some(tracer) = session_tracer {
         runtime = runtime.with_session_tracer(tracer);
     }
@@ -1277,7 +1322,7 @@ pub fn run_gateway_solve_turn(
     let result =
         turn_result.map_err(|e| err(HTTP_INTERNAL, format!("runtime prompt failed: {e}")))?;
     let message = assistant_report_text_from_turn(&result.assistant_messages);
-    let out_json = json!({
+    let mut out_json = json!({
         "model": effective_model,
         "iterations": result.iterations,
         "message": message,
@@ -1288,6 +1333,11 @@ pub fn run_gateway_solve_turn(
             "cache_read_input_tokens": result.usage.cache_read_input_tokens
         }
     });
+    if let Some(route) = llm_route {
+        if !route.is_null() {
+            out_json["llmRoute"] = route;
+        }
+    }
     Ok((
         0,
         serde_json::to_string(&out_json).unwrap_or_default(),
@@ -1526,6 +1576,7 @@ mod gateway_solve_task_file_tests {
             session_id: Some("sess-1".into()),
             pool_id: None,
             worker_name: None,
+            llm_route: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();

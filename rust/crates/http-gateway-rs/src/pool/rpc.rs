@@ -1,5 +1,6 @@
 //! Line-delimited JSON pool RPC: TCP (`host:port`) or Unix path. Default deploy uses TCP from gateway container to host daemon. Author: kejiqing
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -45,6 +46,8 @@ pub enum PoolRpcReq {
         claw_bin: String,
         request_id: Option<String>,
         turn_id: String,
+        #[serde(default)]
+        worker_llm_env: Option<BTreeMap<String, String>>,
     },
     Release {
         slot_index: usize,
@@ -186,6 +189,7 @@ impl PoolOps for PoolRpcClient {
         claw_bin: &str,
         request_id: Option<&str>,
         turn_id: &str,
+        worker_llm_env: Option<BTreeMap<String, String>>,
         _on_stdout_line: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
         let r = self
@@ -195,6 +199,7 @@ impl PoolOps for PoolRpcClient {
                 claw_bin: claw_bin.to_string(),
                 request_id: request_id.map(str::to_string),
                 turn_id: turn_id.to_string(),
+                worker_llm_env,
             })
             .await?;
         if !r.ok {
@@ -311,6 +316,7 @@ async fn dispatch_pool_rpc(
             claw_bin,
             request_id,
             turn_id,
+            worker_llm_env,
         } => {
             let lease = SlotLease { slot_index };
             // Daemon path: do NOT pre-wrap with merge_stdout_hooks here. exec_solve
@@ -322,6 +328,7 @@ async fn dispatch_pool_rpc(
                     &claw_bin,
                     request_id.as_deref(),
                     &turn_id,
+                    worker_llm_env,
                     None,
                 )
                 .await

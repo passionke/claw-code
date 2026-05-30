@@ -73,6 +73,7 @@ mod tests {
             session_id: Some("sess-stable".into()),
             pool_id: None,
             worker_name: None,
+            llm_route: None,
         };
         let ctx = gateway_mcp_call_context_from_task(&task);
         assert_eq!(ctx.session_id, "sess-stable");
@@ -94,6 +95,7 @@ mod tests {
             session_id: Some("sess".into()),
             pool_id: None,
             worker_name: None,
+            llm_route: None,
         };
         let from_task = gateway_mcp_call_context_from_task(&task);
         let resolved = resolve_gateway_mcp_call_context(

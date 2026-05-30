@@ -143,6 +143,14 @@ fn run_narrator_batch(
         })?;
     let phase_executor = executor.clone_with_allowed_tools(allowed);
     let user = format_events_for_narrator(batch);
-    let _ = run_phase_turn(user, api, phase_executor, vec![system], 2, false);
+    let _ = run_phase_turn(
+        user,
+        api,
+        phase_executor,
+        vec![system],
+        2,
+        false,
+        executor.turn_timing(),
+    );
     Ok(())
 }

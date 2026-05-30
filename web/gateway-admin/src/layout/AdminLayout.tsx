@@ -20,7 +20,7 @@ import { useApp } from "../context/AppContext";
 const { Header, Sider, Content } = Layout;
 
 const GLOBAL_MENU_CHILDREN = [
-  { key: "/global/models", label: "模型配置" },
+  { key: "/global/inference", label: "全局推理" },
   { key: "/global/pats", label: "PAT 配置" },
 ];
 
@@ -60,7 +60,7 @@ export default function AdminLayout() {
     if (loc.pathname.startsWith("/global")) {
       return (
         GLOBAL_MENU_CHILDREN.find((c) => loc.pathname.startsWith(c.key))?.key ??
-        "/global/models"
+        "/global/inference"
       );
     }
     for (const t of TAB_ITEMS ?? []) {

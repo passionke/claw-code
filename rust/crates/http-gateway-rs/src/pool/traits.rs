@@ -1,5 +1,6 @@
 //! Types shared by pool backends. Author: kejiqing
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,6 +53,7 @@ pub trait PoolOps: Send + Sync {
         claw_bin: &str,
         request_id: Option<&str>,
         turn_id: &str,
+        worker_llm_env: Option<BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String>;
 

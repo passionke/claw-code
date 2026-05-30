@@ -51,6 +51,25 @@
   gap: 4px;
 }
 
+.toolRow {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 6px;
+  align-items: stretch;
+}
+
+.toolRowIndex {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: #8b9cb3;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #2d3a4d;
+}
+
 .bar {
   position: absolute;
   top: 4px;

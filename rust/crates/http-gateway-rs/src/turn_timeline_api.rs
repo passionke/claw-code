@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use gateway_solve_turn::multi_agent::{build_solve_turn_timeline, SolveTurnTimeline};
+use gateway_solve_turn::multi_agent::{build_solve_turn_timeline_for_turn, SolveTurnTimeline};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -19,6 +19,10 @@ pub struct TurnTimelineResponse {
     pub timeline: Option<SolveTurnTimeline>,
 }
 
-pub fn load_turn_timeline(session_home: &Path) -> Option<SolveTurnTimeline> {
-    build_solve_turn_timeline(session_home)
+pub fn load_turn_timeline(
+    session_home: &Path,
+    created_at_ms: i64,
+    finished_at_ms: Option<i64>,
+) -> Option<SolveTurnTimeline> {
+    build_solve_turn_timeline_for_turn(session_home, created_at_ms, finished_at_ms)
 }
