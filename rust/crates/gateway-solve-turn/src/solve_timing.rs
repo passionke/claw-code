@@ -1,4 +1,9 @@
-//! Append-only solve timing events (`.claw/solve-timing-events.ndjson`). Author: kejiqing
+//! Append-only solve timing events (`.claw/solve-timing-events.ndjson`).
+//!
+//! - **Conversation loop**: `tool_execution_started` / `finished` with `toolUseId` (runtime `ConversationRuntime`).
+//! - **Loop-outside** (preflight, query fanout): `record_out_of_loop_tool` at explicit call sites only.
+//!
+//! Author: kejiqing
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -103,11 +108,13 @@ impl SolveTimingRecorder {
         Ok(())
     }
 
-    pub fn record_direct_tool(
+    /// Loop-outside tool timing (`preflight`, `fanout`, …). Conversation loop uses `tool_execution_*` + `toolUseId`.
+    pub fn record_out_of_loop_tool(
         &self,
         tool_name: &str,
         duration_ms: u128,
         is_error: bool,
+        source: &str,
     ) -> Result<(), String> {
         self.append(SolveTimingEvent {
             kind: "tool_execution_finished".to_string(),
@@ -123,7 +130,7 @@ impl SolveTimingRecorder {
             pending_tool_use_count: None,
             input_tokens: None,
             output_tokens: None,
-            source: Some("direct".to_string()),
+            source: Some(source.to_string()),
             error: None,
         })
     }
@@ -296,11 +303,13 @@ mod tests {
                 error: None,
             })
             .unwrap();
-        recorder.record_direct_tool("bash", 12, false).unwrap();
+        recorder
+            .record_out_of_loop_tool("bash", 12, false, "preflight")
+            .unwrap();
         let events = read_solve_timing_events(dir.path(), 10).unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].kind, "turn_started");
-        assert_eq!(events[1].source.as_deref(), Some("direct"));
+        assert_eq!(events[1].source.as_deref(), Some("preflight"));
     }
 
     #[test]

@@ -29,7 +29,7 @@ Author: kejiqing
 
 | `kind` | 行为 |
 | --- | --- |
-| `sqlbot_mcp_start` | 首轮在**用户问题之后**：`mcp_start` → list/tables/terminologies/examples → 会话内 `home/*.md`（见下表）；transcript 仅摘要 + 路径说明；任一步 MCP/解析失败则 `warn` 跳过 |
+| `sqlbot_mcp_start` | 首轮在**用户问题之后**：`mcp_start`（`arguments` = 任务 `extraSession` 业务字段，见 [`gateway-mcp-call-meta.md`](gateway-mcp-call-meta.md) § SQLBot）→ list/tables/terminologies/examples → 会话内 `home/*.md`（见下表）；transcript 仅摘要 + 路径说明；任一步 MCP/解析失败则 `warn` 跳过 |
 
 `PUT` 省略 `solvePreflightJson` 时保留库内已有值（同 `gitSyncJson`）。
 `kinds` 为空数组时表示关闭 preflight；有多个时按顺序依次执行。

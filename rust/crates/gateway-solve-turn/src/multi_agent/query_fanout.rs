@@ -135,25 +135,11 @@ async fn run_one_query(
     let out = tokio::task::spawn_blocking(move || ex.call_tool(&tn, &input))
         .await
         .map_err(|e| ToolError::new(format!("query join: {e}")));
-    let out = match out {
-        Ok(r) => r,
-        Err(e) => {
-            let message = e.to_string();
-            let _ = event_bus.query_failed(&todo.id, &message);
-            let _ = on_query_finished(session_home, session_id, &todo.id, &todo.title, false);
-            return QueryResult {
-                todo_id: todo.id.clone(),
-                ok: false,
-                summary: message.clone(),
-                raw_truncated: message,
-            };
-        }
-    };
-    let elapsed = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-    match out {
-        Ok(raw) => {
+    let result = match out {
+        Ok(Ok(raw)) => {
             let payload_error = sqlbot_mcp_payload_is_error(&raw);
             let (summary, raw_truncated) = compress_mcp_result(&raw, 2048);
+            let elapsed = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
             if payload_error {
                 let _ = event_bus.query_failed(&todo.id, &summary);
             } else {
@@ -173,7 +159,7 @@ async fn run_one_query(
                 raw_truncated,
             }
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             let message = e.to_string();
             let _ = event_bus.query_failed(&todo.id, &message);
             let _ = on_query_finished(session_home, session_id, &todo.id, &todo.title, false);
@@ -184,7 +170,20 @@ async fn run_one_query(
                 raw_truncated: message,
             }
         }
-    }
+        Err(e) => {
+            let message = e.to_string();
+            let _ = event_bus.query_failed(&todo.id, &message);
+            let _ = on_query_finished(session_home, session_id, &todo.id, &todo.title, false);
+            QueryResult {
+                todo_id: todo.id.clone(),
+                ok: false,
+                summary: message.clone(),
+                raw_truncated: message,
+            }
+        }
+    };
+    executor.record_out_of_loop_tool_timing(&tool_name, started, !result.ok, "fanout");
+    result
 }
 
 /// Fan out plan todos to MCP analysis tools (`CLAW_MCP_MAX_CONCURRENT` limits in-flight calls).

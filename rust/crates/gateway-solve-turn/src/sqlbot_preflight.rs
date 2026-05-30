@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{DirectToolExecutor, GatewaySolveTurnError};
+use crate::{build_sqlbot_mcp_start_arguments, DirectToolExecutor, GatewaySolveTurnError};
 use runtime::{
     ContentBlock, ConversationMessage, MessageRole, Session, ToolExecutor, GATEWAY_SCHEMA_MD_REL,
     GATEWAY_SQLBOT_MCP_DATASOURCE_EXAMPLES_TOOL, GATEWAY_SQLBOT_MCP_DATASOURCE_LIST_TOOL,
@@ -119,9 +119,12 @@ fn execute_preflight_mcp(
     if !executor.allows_tool(tool_name) {
         return Err(format!("tool not allowed: {tool_name}"));
     }
-    executor
+    let started = std::time::Instant::now();
+    let result = executor
         .execute(tool_name, input)
-        .map_err(|e| format!("mcp execute: {e}"))
+        .map_err(|e| format!("mcp execute: {e}"));
+    executor.record_out_of_loop_tool_timing(tool_name, started, result.is_err(), "preflight");
+    result
 }
 
 fn inject_preflight_summary(
@@ -524,6 +527,18 @@ fn try_materialize_list_tables_and_rels(
     }
 }
 
+fn encode_sqlbot_mcp_start_input(
+    executor: &DirectToolExecutor,
+) -> Result<String, GatewaySolveTurnError> {
+    let args = build_sqlbot_mcp_start_arguments(executor.mcp_extra_session().cloned());
+    serde_json::to_string(&args).map_err(|e| {
+        crate::err(
+            crate::HTTP_INTERNAL,
+            format!("preflight: encode mcp_start input: {e}"),
+        )
+    })
+}
+
 fn datasource_tool_input(token: &str, datasource_id: i64) -> Result<String, GatewaySolveTurnError> {
     serde_json::to_string(&json!({
         "token": token,
@@ -543,12 +558,13 @@ pub(crate) fn run_sqlbot_preflight(
     session: &mut Session,
     executor: &mut DirectToolExecutor,
 ) -> Result<(), GatewaySolveTurnError> {
+    let start_input = encode_sqlbot_mcp_start_input(executor)?;
     let start_output = run_preflight_mcp_required(
         session,
         executor,
         "mcp_start",
         GATEWAY_SQLBOT_MCP_START_TOOL,
-        "{}",
+        &start_input,
     )?;
     let start_inner = parse_sqlbot_inner_json(&start_output).map_err(|e| {
         crate::err(

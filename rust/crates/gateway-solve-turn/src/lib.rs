@@ -35,8 +35,8 @@ use api::{
 };
 use runtime::{
     apply_config_env_if_unset, apply_mcp_tool_annotations_from_config, concurrent_mcp_tool_names,
-    conversation_tool_timing_from_loop, default_mcp_max_concurrent, gateway_schema_prompt_section,
-    load_system_prompt, mcp_description_parallel_friendly, mcp_tool_parallel_fanout_eligible,
+    default_mcp_max_concurrent, gateway_schema_prompt_section, load_system_prompt,
+    mcp_description_parallel_friendly, mcp_tool_parallel_fanout_eligible,
     ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
     ConversationMessage, ConversationRuntime, McpServerManager, McpTool, MessageRole,
     PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError, Session, SharedToolExecutor,
@@ -69,9 +69,9 @@ pub use gateway_stdout::{
     GATEWAY_STDOUT_LINE_PREFIX,
 };
 pub use mcp_call_context::{
-    build_mcp_call_meta, gateway_mcp_call_context_from_task, inject_mcp_call_meta,
-    resolve_gateway_mcp_call_context, resolve_gateway_trace_id, GatewayMcpCallContext,
-    CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
+    build_mcp_call_meta, build_sqlbot_mcp_start_arguments, gateway_mcp_call_context_from_task,
+    inject_mcp_call_meta, resolve_gateway_mcp_call_context, resolve_gateway_trace_id,
+    GatewayMcpCallContext, CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
 };
 pub use runtime::McpCallContext;
 pub use session_report::{
@@ -533,18 +533,7 @@ impl DirectToolExecutorInner {
     }
 
     fn execute_impl(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
-        let started = Instant::now();
-        let result = self.execute_impl_inner(tool_name, input);
-        if !conversation_tool_timing_from_loop() {
-            if let Some(timing) = &self.timing {
-                let _ = timing.record_direct_tool(
-                    tool_name,
-                    started.elapsed().as_millis(),
-                    result.is_err(),
-                );
-            }
-        }
-        result
+        self.execute_impl_inner(tool_name, input)
     }
 
     fn execute_impl_inner(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
@@ -737,6 +726,30 @@ impl DirectToolExecutor {
     #[must_use]
     pub fn turn_timing(&self) -> Option<Arc<SolveTimingRecorder>> {
         self.inner.timing.clone()
+    }
+
+    /// Normalized `extraSession` for this solve turn (`resolve_gateway_mcp_call_context`). Author: kejiqing
+    #[must_use]
+    pub fn mcp_extra_session(&self) -> Option<&Value> {
+        self.inner.mcp_context.extra_session.as_ref()
+    }
+
+    /// Explicit timing for loop-outside tool calls (`preflight`, `query_fanout`, …).
+    pub fn record_out_of_loop_tool_timing(
+        &self,
+        tool_name: &str,
+        started: Instant,
+        is_error: bool,
+        source: &str,
+    ) {
+        if let Some(timing) = self.turn_timing() {
+            let _ = timing.record_out_of_loop_tool(
+                tool_name,
+                started.elapsed().as_millis(),
+                is_error,
+                source,
+            );
+        }
     }
 
     /// First registered MCP tool whose `tools/list` annotations allow concurrent calls.

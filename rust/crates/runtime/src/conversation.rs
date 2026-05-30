@@ -7,7 +7,7 @@ use std::time::Instant;
 use serde_json::{Map, Value};
 use telemetry::SessionTracer;
 
-use crate::turn_timing::{set_conversation_tool_timing_from_loop, TurnTimingSink};
+use crate::turn_timing::TurnTimingSink;
 
 use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
@@ -539,7 +539,6 @@ where
                 break;
             }
 
-            set_conversation_tool_timing_from_loop(true);
             let tool_dispatch = self.execute_pending_tool_uses(
                 iterations,
                 &turn_id,
@@ -547,7 +546,6 @@ where
                 &mut prompter,
                 &mut tool_results,
             );
-            set_conversation_tool_timing_from_loop(false);
             tool_dispatch?;
         }
 
