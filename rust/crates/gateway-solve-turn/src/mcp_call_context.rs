@@ -1,7 +1,7 @@
 //! Gateway solve MCP call context: resolve entry + re-exports from `runtime`. Author: kejiqing
 
 use runtime::McpCallContext;
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 
 use crate::{normalize_extra_session, GatewaySolveTaskFile};
 
@@ -52,6 +52,26 @@ pub fn gateway_mcp_call_context_from_task(task: &GatewaySolveTaskFile) -> McpCal
         task.request_id.as_str(),
         task.extra_session.clone(),
     )
+}
+
+/// SQLBot `mcp_start` **arguments**: business fields from normalized `extraSession`.
+///
+/// Strips `_claw_*` keys (those belong in `_meta` via `inject_mcp_call_meta` only).
+/// SQLBot binds store/org on start; later MCP tools keep `token` only in arguments.
+/// Author: kejiqing
+#[must_use]
+pub fn build_sqlbot_mcp_start_arguments(extra_session: Option<Value>) -> Value {
+    let Some(Value::Object(map)) = extra_session else {
+        return json!({});
+    };
+    let mut out = Map::new();
+    for (key, value) in map {
+        if key.starts_with("_claw_") {
+            continue;
+        }
+        out.insert(key, value);
+    }
+    Value::Object(out)
 }
 
 #[cfg(test)]
@@ -109,5 +129,30 @@ mod tests {
         let meta = build_mcp_call_meta(&resolved);
         assert_eq!(meta["extra_session"]["store_id"], "S1");
         assert_eq!(meta["extra_session"][CLAW_EXTRA_SESSION_TURN_ID], "T_1");
+    }
+
+    #[test]
+    fn mcp_start_arguments_copy_business_keys_only() {
+        let extra = normalize_extra_session(Some(json!({
+            "store_id": "S1",
+            "tenant_code": "GPOS",
+            "org_id": ""
+        })));
+        let args = build_sqlbot_mcp_start_arguments(extra);
+        assert_eq!(args["store_id"], "S1");
+        assert_eq!(args["tenant_code"], "GPOS");
+        assert_eq!(args["org_id"], "");
+        assert!(args.get("_claw_session_id").is_none());
+    }
+
+    #[test]
+    fn mcp_start_arguments_empty_when_no_extra_session() {
+        assert_eq!(build_sqlbot_mcp_start_arguments(None), json!({}));
+    }
+
+    #[test]
+    fn mcp_start_arguments_from_normalize_none_has_org_id() {
+        let args = build_sqlbot_mcp_start_arguments(normalize_extra_session(None));
+        assert_eq!(args, json!({"org_id": ""}));
     }
 }

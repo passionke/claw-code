@@ -30,6 +30,17 @@ Author: kejiqing
 
 从 MCP `tools/call` 的 `params._meta.extra_session` 读取即可；**不要**再解析顶层 `session_id` / `claw` 信封（已移除）。
 
+## SQLBot：仅 `mcp_start` 绑门店/组织
+
+SQLBot 在 **`mcp_start` 时**把 `store_id` / `org_id` 等写入 MCP 业务会话；后续 `mcp_question`、`mcp_datasource_*` 等**不再**根据 `_meta.extra_session` 换店（避免一轮 N 个门店 id）。
+
+| 调用 | `arguments` | `_meta.extra_session` |
+|------|-------------|------------------------|
+| 首轮 preflight `mcp_start` | `build_sqlbot_mcp_start_arguments(extraSession)`（业务键，无 `_claw_*`） | 仍注入（与 resolve 一致，含 `_claw_session_id` / `_claw_turn_id`） |
+| 同轮后续 SQLBot 工具 | 仅 `token`（及 `datasource_id` 等既有字段） | 网关仍可带（日志/串联）；SQLBot 侧忽略换店 |
+
+实现：`gateway-solve-turn` 的 `sqlbot_preflight`；对话环内若模型再调 `mcp_start` 不由网关改写 arguments。
+
 ## Resolve 入口（统一解析）
 
 从 HTTP / 任务文件字段解析并规范化上下文，使用：

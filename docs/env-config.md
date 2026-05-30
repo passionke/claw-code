@@ -68,7 +68,9 @@ Prerequisite: configure at least one **active LLM** in Admin before solve.
 | `CLAW_GATEWAY_PG_*` | Compose postgres image/credentials/host port |
 | `CLAW_IMAGE_PREFIX` / `CLAW_IMAGE_REGISTRY` | Release image namespace (`gateway.sh up --release`) |
 | `CLAW_POOL_ID` / `CLAW_POOL_ADVERTISE_HOST` | Pool registry override (else auto hostname/LAN IP) |
-| `CLAW_WORKER_UID` / `CLAW_WORKER_GID` | Workspace ownership (default `1000:1000`) |
+| `CLAW_WORKER_UID` / `CLAW_WORKER_GID` | Workspace ownership (default `1000:1000`); pool exec defaults to `uid:gid` when `CLAW_*_POOL_EXEC_USER` unset |
+| `CLAW_SECURITY_BOOST` | Worker `run` hardening (default on); set `false` only for debug |
+| `CLAW_DOCKER_POOL_EXEC_USER` / `CLAW_PODMAN_POOL_EXEC_USER` | Optional named exec/pkill user (must match passwd in image) |
 | `CLAW_MCP_MAX_CONCURRENT` | Worker MCP parallelism |
 | `CLAW_DEFAULT_MODEL` | Override model |
 | `CLAUDE_TAP_IMAGE` | Production tap container |

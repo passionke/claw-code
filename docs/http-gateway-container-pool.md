@@ -23,13 +23,8 @@ Author: kejiqing
 
 1. **网关进程（`http-gateway-rs`）**  
    - 仍负责 HTTP、任务队列、`dsId` 锁、写 **`ds_home/.claw/settings.json`**（与现在一致）。  
-<<<<<<< HEAD
    - **不再**在网关进程里跑 `claw` solve；**只管租借与编排**：经 **`PoolRpcClient`** 调宿主机 **`claw-pool-daemon`** 完成 `acquire` → `dispatch`（`docker exec` / `podman exec`）→ 读结果 → `release`；取消时 **`force_kill`**。  
    - **不**决定池大小、**不**调 `ensure_warm`（这些在 **池守护进程** 内）。
-=======
-   - **不再**在网关进程里调用 `run_runtime_prompt`；solve 一律经容器池 `dispatch`。
-   - **只管租借与编排**：`acquire` → `dispatch`（`docker exec` 等）→ 读结果 → `release`；取消时 **`force_kill`**。**不**决定池大小、**不**调 `ensure_warm`（这些属池化管理）。
->>>>>>> origin/main
 
 2. **池守护进程（`claw-pool-daemon`，宿主机）**  
    - **进程启动时一次性**从环境变量读取 **`CLAW_DOCKER_POOL_SIZE` / `CLAW_DOCKER_POOL_MIN_IDLE`**（Podman 对应 `CLAW_PODMAN_POOL_*`）等并固定；**不做热更新**（改参须重启进程）。  
@@ -64,9 +59,30 @@ sequenceDiagram
 要点：
 
 - **谁在写工作区**：仍在 **网关 + 短时 ds_lock**；每次 solve 使用 **`ds_{id}/sessions/{uuid}/`**（与数据源级 `ds_{id}/` 下的 `CLAUDE.md` 等分离）。  
-- **容器里看到的树**：**`acquire` 时**对该槽 `docker rm` 后以 **`--volume <会话目录绝对路径>:/claw_host_root:rw`** 重建 worker，容器内 **仅本会话目录**；idle 预热用 **`.claw-gateway-pool-warm/slot-{i}/`** 占位挂载。  
+- **容器里看到的树（Phase 2）**：每槽 **一次** `run -d`，固定 **`work_root/.claw-pool-slot/slot-{i}/guest` → `/claw_host_root`**（**`--mount type=bind,…,bind-propagation=rslave`**，禁止 plain `-v` 默认 `rprivate`）；**`acquire`** 在宿主机 **inject**（bind）当前 **`ds_{id}/sessions/{uuid}/`** 与 ds 级只读引用；**`release`** teardown + `pkill`，**不** `rm` 容器。仅 **`Dead` / `force_kill`** 走同步 **`rm+run`**。  
 - **`.claw.json`**：仅由网关经 **`CLAW_PROJECT_CONFIG_ROOT` / `CLAW_CONFIG_FILE`** 加载；应放在 **`CLAW_WORK_ROOT` 树外**，且 compose **不要**把该文件挂进 worker 可写卷。  
 - **执行命令**：例如 `claw gateway-solve-once ...`（需后续在 CLI 增加 **非交互、单次 prompt、打印结构化结果** 的子命令；或临时用 env + 现有入口，以最小可行优先）。
+
+#### 2.2.1 Phase 2：`guest/` inject 与容器 mount propagation（必读）
+
+设计目标：**worker 容器内 `/claw_host_root` = 当前 lease 的 session 工作区**（`gateway-solve-task.json`、`.claw/solve-timing-events.ndjson`、续聊 jsonl 等与宿主机 `sessions/{uuid}/` 同一棵树）。
+
+| 步骤 | 宿主机 / VM | worker 容器 |
+| --- | --- | --- |
+| **`run`（每槽一次）** | `prepare_guest_for_mount_propagation(guest/)`（self-bind + **`mount --make-rshared`**) | `--mount type=bind,source=…/guest,target=/claw_host_root,**bind-propagation=rslave**` |
+| **`acquire` inject** | `ensure_session_ds_bind_targets(session/)` → **`mount --bind session/ → guest/`** | 经 rslave 传播，**同一时刻** `podman exec … cat /claw_host_root/gateway-solve-task.json` 可见 |
+| **`release` teardown** | umount ds 子挂载 + umount `guest/` | 容器仍挂固定 guest 挂载点；下次 acquire 再 inject 新 session |
+
+**禁止**误以为「宿主机 `guest/` 已 bind session，容器一定看得见」：plain **`-v guest:/claw_host_root`** 为 **`rprivate`**，acquire 在宿主机叠 bind **不会**传进已运行容器（表现为 worker 读**旧 task**、timing 写进 slot 快照、claw-tap sessionId 错位）。
+
+**实现与验收**（`slot_mount.rs` / `docker_pool.rs`）：
+
+1. 槽位 `run` 前：`prepare_guest_for_mount_propagation`  
+2. 槽位 `run`：`guest_container_bind_mount_spec(…, rslave)`  
+3. inject 前：在 **session 树内**创建 ds ro 挂载点（`home/skills` 等），再 bind session → guest  
+4. acquire 后：`verify_worker_container_sees_guest_file(…, gateway-solve-task.json)`，失败则槽位 **Dead** 并重建  
+
+macOS 开发：pool daemon 在 Darwin，bind/umount 经 **`podman machine ssh -- sudo mount`**；路径与容器内 virtiofs 一致。`apply` / `run` 对 **`guest/` 必须使用 [`canonicalize`](https://doc.rust-lang.org/std/fs/fn.canonicalize.html) 后的绝对路径（`/var/folders/…` 与 `/private/var/folders/…` 在 VM 内是**不同**挂载点，inject 与容器 `--mount source=` 不一致会导致 propagation 验收失败）。
 
 ### 2.3 池什么时候「创建」容器
 
@@ -101,11 +117,8 @@ sequenceDiagram
 
 | 环境变量 | 含义 |
 | --- | --- |
-<<<<<<< HEAD
 | `CLAW_SOLVE_ISOLATION` | `podman_pool`（本仓库 Podman compose 默认） / `docker_pool`（远程 Docker 宿主机或挂载 `docker.sock` 的部署）。`inprocess` 与网关内嵌池已移除；网关 **必须** 配置 `CLAW_POOL_DAEMON_TCP` 或 `CLAW_POOL_DAEMON_SOCKET` 指向宿主机 `claw-pool-daemon`。 |
-=======
-| `CLAW_SOLVE_ISOLATION` | `podman_pool`（本仓库 Podman compose 默认） / `docker_pool`（远程 Docker 宿主机或挂载 `docker.sock` 的部署）；其它值（含已移除的 `inprocess`）网关启动即退出 |
->>>>>>> origin/main
+| `CLAW_SECURITY_BOOST` | 默认 **开**（`false`/`0`/`off` 关闭）。worker `run` 追加 `--security-opt no-new-privileges`、`--cap-drop=ALL`、`--read-only`、`--tmpfs /tmp:rw,noexec,nosuid,size=64m`；**唯一业务 rw** 为 `/claw_host_root`（inject 的 session）。 |
 | `CLAW_DOCKER_POOL_SIZE` / `CLAW_PODMAN_POOL_SIZE` | 池 **总量上限** N（worker 容器个数上限） |
 | `CLAW_DOCKER_POOL_MIN_IDLE` / `CLAW_PODMAN_POOL_MIN_IDLE` | **最低保活** idle 槽位数（`0..=POOL_SIZE`）；**池管理内部**在 `release` 后或定时 tick 调用 `ensure_warm`，使 idle ≥ 该值 |
 | `CLAW_POOL_SIZE_CAP` | 可选：全局上限，将 `POOL_SIZE` **裁剪**到不超过该值（例如本地 `4`）；不设置则不额外裁剪 |
@@ -118,7 +131,7 @@ sequenceDiagram
 | `CLAW_WORKER_ENV_FILE` | 宿主机上仓库根 `.env` 路径（`pool-daemon-up.sh` 默认设为 `<repo>/.env`）。池 `podman/docker run` 只读挂载到容器内 `/run/claw/worker.env`；`claw gateway-solve-once` 启动时按 **`gateway-solve-turn/src/worker_env.rs`** 声明的 key 按需注入进程环境（**不再**生成 `deploy/stack/worker-openai.env`）。 |
 | `CLAW_DOCKER_EXTRA_ARGS` / `CLAW_PODMAN_EXTRA_ARGS` | 透传额外 `docker run` / `podman run` 参数（**空格分词**；改后须 **重启** daemon）。默认由 `gateway.sh up` 写入 `deploy/stack/.claw-worker-llm.env`（`--add-host host.docker.internal:host-gateway`）。**勿**用 `--env-file` 拷贝子集 `.env`；LLM/MCP 变量走挂载 + `apply_worker_env`。**勿**在 compose `environment:` 写 `${VAR:-}` 覆盖 `env_file`。 |
 | `CLAW_DOCKER_POOL_ON_RELEASE` / `CLAW_PODMAN_POOL_ON_RELEASE` | 可选：槽位从 `leased` 正常归还为 `idle` 时，在容器内执行 `sh -lc` 的**整段脚本**；空则跳过（`force_kill` 不走此钩子） |
-| `CLAW_DOCKER_POOL_EXEC_USER` / `CLAW_PODMAN_POOL_EXEC_USER` | 可选：`docker exec --user …`（如 `claw` 或 `1000:1000`），仅作用于 **`gateway-solve-once` 那次 exec**；与 worker 镜像内用户一致；宿主 `work_root` 需对该 uid 可写。归还钩子不带 `--user`（默认 root），便于执行 `pkill -u claw` 等 |
+| `CLAW_DOCKER_POOL_EXEC_USER` / `CLAW_PODMAN_POOL_EXEC_USER` | 可选：命名用户（如 `claw`）用于 **`docker exec --user`** 与 **`pkill -u`**；未设则 **`--user {CLAW_WORKER_UID}:{CLAW_WORKER_GID}`**（默认 `1000:1000`），**不再**落到容器 root。`HOME`/`XDG_*` 指向 `/claw_host_root` 子目录。 |
 
 **池管理内部行为**（网关不调）：`start()` 时首次 `ensure_warm`；之后 **`release` 后或定时 tick** 再调用，使 **idle ≥ min_idle** 且 **总数 ≤ pool_size**；缩容只删 **多余 idle** 容器，不中断已 lease。
 
@@ -141,7 +154,7 @@ sequenceDiagram
 | --- | --- |
 | `CLAW_WORK_ROOT/ds_{id}/` | 数据源级：如 **`/v1/init`** 写的 `CLAUDE.md`、网关探针用的共享上下文；**不**作为 worker 的整盘 bind 根。 |
 | `CLAW_WORK_ROOT/ds_{id}/sessions/{uuid}/` | **单次 solve** 的可写工作区；`.claw/settings.json`、pool 的 `gateway-solve-task.json` 在此；**不**再拷贝 `ds_{id}/CLAUDE.md` / `home/skills`（池内以只读 bind 暴露）。 |
-| `CLAW_WORK_ROOT/.claw-gateway-pool-warm/slot-*` | 仅池 **idle 预热** 用的空目录 bind（真实 solve 前会被 `rm`+`run` 换成会话目录）。 |
+| `CLAW_WORK_ROOT/.claw-pool-slot/slot-{i}/guest` | 槽位固定 guest 目录；**inject** 组装会话视图，**teardown** 清空；容器 `run` 时 bind 到 `/claw_host_root`。 |
 | `CLAW_PROJECT_CONFIG_ROOT` / `CLAW_CONFIG_FILE` | **项目 `.claw.json` 树**；由 **`gateway-solve-turn`** 在网关侧加载；**不应**落在可被子进程或 worker 横向遍历的 `CLAW_WORK_ROOT` 会话卷上。 |
 
 - **Docker / Podman 权限**：池守护进程负责 **worker `docker run`** 与（经 RPC）**session 目录特权 `chown`**；需能访问 **`docker.sock`** 或 Podman API socket。`CLAW_POOL_RPC_HOST_WORK_ROOT` 配置正确时，**`gateway-rs` 不必挂载引擎 socket**。生产上慎防 **容器内挂载 sock 逃逸**。  
