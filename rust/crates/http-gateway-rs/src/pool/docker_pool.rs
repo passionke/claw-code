@@ -452,7 +452,10 @@ impl DockerPoolManager {
         let _ = crate::workspace_perm::chown_session_tree_for_worker(&guest);
         let guest_abs = std::fs::canonicalize(&guest)
             .map_err(|e| format!("canonicalize guest {}: {e}", guest.display()))?;
-        slot_mount::prepare_guest_for_mount_propagation(&guest_abs)?;
+        // fake-docker / symlink_inject tests have no host mount(8); skip rshared prep.
+        if !self.symlink_inject {
+            slot_mount::prepare_guest_for_mount_propagation(&guest_abs)?;
+        }
         let mut args: Vec<String> = vec![
             "run".into(),
             "-d".into(),

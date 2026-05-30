@@ -646,6 +646,34 @@ mod tests {
         }
     }
 
+    /// Real bind-mount inject tests need host `mount(8)` (macOS: podman machine; Linux: CAP_SYS_ADMIN).
+    #[cfg(unix)]
+    fn host_bind_mount_available() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            return podman_machine_mount_available();
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let root = std::env::temp_dir().join(format!(
+                "slot-mount-cap-probe-{}",
+                uuid::Uuid::new_v4().simple()
+            ));
+            if std::fs::create_dir_all(&root).is_err() {
+                return false;
+            }
+            let root_s = root.display().to_string();
+            let ok = mount_command(&["--bind", &root_s, &root_s])
+                .ok()
+                .is_some_and(|o| o.status.success());
+            if ok {
+                let _ = umount_path(&root);
+            }
+            let _ = std::fs::remove_dir_all(&root);
+            ok
+        }
+    }
+
     /// Typical ds_* ro references for a continued-chat session (minimal session tree).
     fn production_like_ds_mounts(work_root: &Path, ds_id: u32) -> PoolSessionHostMounts {
         let ds = work_root.join(format!("ds_{ds_id}"));
@@ -843,6 +871,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ds_skills_bind_fails_without_session_mount_point() {
+        if !host_bind_mount_available() {
+            eprintln!("skip ds_skills_bind_fails_without_session_mount_point: no host mount");
+            return;
+        }
         let root = temp_work_root("skills-fail");
         let session = minimal_continued_chat_session(&root, 1, "no-stubs");
         let skills = root.join("ds_1/home/skills");
@@ -1021,6 +1053,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn mount_inject_guest_is_session_workspace() {
+        if !host_bind_mount_available() {
+            eprintln!("skip mount_inject_guest_is_session_workspace: no host mount");
+            return;
+        }
         let root = temp_work_root("mount-inject");
         let session = session_dir(&root, 1, "mount-sess");
         fs::write(
@@ -1066,6 +1102,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn mount_inject_ds_skills_when_session_has_no_home() {
+        if !host_bind_mount_available() {
+            eprintln!("skip mount_inject_ds_skills_when_session_has_no_home: no host mount");
+            return;
+        }
         let root = temp_work_root("skills-bind");
         let session = minimal_continued_chat_session(&root, 1, "no-home");
         let skills = root.join("ds_1/home/skills");
@@ -1102,6 +1142,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn mount_inject_full_ds_ro_bundle_for_continued_chat_session() {
+        if !host_bind_mount_available() {
+            eprintln!(
+                "skip mount_inject_full_ds_ro_bundle_for_continued_chat_session: no host mount"
+            );
+            return;
+        }
         let root = temp_work_root("continued-chat-full");
         let session = minimal_continued_chat_session(&root, 1, "continued");
         let mounts = production_like_ds_mounts(&root, 1);
@@ -1145,6 +1191,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn mount_inject_claw_timing_write_through_session_not_guest_copy() {
+        if !host_bind_mount_available() {
+            eprintln!(
+                "skip mount_inject_claw_timing_write_through_session_not_guest_copy: no host mount"
+            );
+            return;
+        }
         let root = temp_work_root("timing-write-through");
         let session = minimal_continued_chat_session(&root, 1, "timing");
         let guest = slot_guest_dir_canonical(&root, 0).expect("guest");
