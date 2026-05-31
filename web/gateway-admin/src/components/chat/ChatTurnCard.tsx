@@ -8,10 +8,13 @@ import type {
   ProgressEvent,
   SolveTask,
   TurnCancelResponse,
+  TurnFeedbackValue,
 } from "../../types/chat";
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import { extractSolveReportMessage } from "../../utils/solveReportBody";
+import { isAdminOrigin } from "../../utils/clientOrigin";
 import ReportMarkdown from "./ReportMarkdown";
+import TurnFeedbackButtons from "./TurnFeedbackButtons";
 import TurnToolsDrawer from "./TurnToolsDrawer";
 import TurnTimelineDrawer from "./TurnTimelineDrawer";
 import styles from "./chat.module.css";
@@ -32,6 +35,10 @@ export interface ChatTurnCardProps {
   historicalReport?: string;
   /** failed 时列表已带 `output_json.detail`。Author: kejiqing */
   failureDetail?: string;
+  turnFeedback?: TurnFeedbackValue;
+  feedbackSubmitting?: boolean;
+  onTurnFeedback?: (feedback: TurnFeedbackValue) => void;
+  clientOrigin?: string | null;
 }
 
 function todoStatusMark(status: string): string {
@@ -92,6 +99,10 @@ export default function ChatTurnCard({
   hasReport = false,
   historicalReport: initialHistoricalReport,
   failureDetail: initialFailureDetail,
+  turnFeedback,
+  feedbackSubmitting,
+  onTurnFeedback,
+  clientOrigin,
 }: ChatTurnCardProps) {
   const historyMode = viewMode === "history";
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
@@ -262,6 +273,12 @@ export default function ChatTurnCard({
 
   const st = task.status || "unknown";
   const canCancel = !historyMode && (st === "queued" || st === "running");
+  const canFeedback =
+    Boolean(onTurnFeedback) &&
+    (historyMode || TERMINAL.has(st)) &&
+    (reportVisible || Boolean(fallbackOutput) || Boolean(errorText) || historyMode);
+  const feedbackEditable = isAdminOrigin(clientOrigin);
+  const showFeedback = canFeedback && (feedbackEditable || Boolean(turnFeedback));
 
   const onCancelTurn = useCallback(async () => {
     setCancelLoading(true);
@@ -347,6 +364,14 @@ export default function ChatTurnCard({
           <span className={`${styles.statusBadge} ${styles[`badge_${st}`] || ""}`}>{st}</span>
           <span className={styles.statusText}>{statusLabel(task)}</span>
           <Space size={8} style={{ marginLeft: "auto" }}>
+            {showFeedback ? (
+              <TurnFeedbackButtons
+                value={turnFeedback}
+                loading={feedbackSubmitting}
+                readOnly={!feedbackEditable}
+                onSubmit={(fb) => onTurnFeedback?.(fb)}
+              />
+            ) : null}
             {canCancel ? (
               <Popconfirm
                 title="取消该轮次？"

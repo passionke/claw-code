@@ -24,6 +24,8 @@ pub struct GatewaySessionSummary {
     pub updated_at_ms: i64,
     pub turn_count: i64,
     pub preview_prompt: Option<String>,
+    /// Who created the session (`gateway-admin`, external app, …). Author: kejiqing
+    pub client_origin: Option<String>,
 }
 
 /// One row for [`GatewaySessionDb::list_turns_for_session`]. Author: kejiqing
@@ -39,6 +41,10 @@ pub struct GatewayTurnSummary {
     pub report_body: Option<String>,
     /// `output_json.detail` when status is `failed` (admin error display). Author: kejiqing
     pub failure_detail: Option<String>,
+    /// Request origin at turn enqueue (`gateway-admin`, …). Author: kejiqing
+    pub client_origin: Option<String>,
+    /// `good` / `bad` from `gateway_feedback` when present. Author: kejiqing
+    pub feedback: Option<String>,
 }
 
 /// Row for tools API: session path + turn times + 1-based user turn index (single query). Author: kejiqing
@@ -357,6 +363,8 @@ impl GatewaySessionDb {
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS claw_exit_code INT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS pool_id TEXT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS worker_name TEXT",
+            "ALTER TABLE gateway_sessions ADD COLUMN IF NOT EXISTS client_origin TEXT",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS client_origin TEXT",
         ] {
             sqlx::query(ddl).execute(pool).await?;
         }
@@ -1570,16 +1578,18 @@ impl GatewaySessionDb {
         ds_id: i64,
         session_home_rel: &str,
         now_ms: i64,
+        client_origin: Option<&str>,
     ) -> Result<(), SqlxError> {
         sqlx::query(
-            r"INSERT INTO gateway_sessions (session_id, ds_id, session_home, created_at_ms, updated_at_ms)
-              VALUES ($1, $2, $3, $4, $5)",
+            r"INSERT INTO gateway_sessions (session_id, ds_id, session_home, created_at_ms, updated_at_ms, client_origin)
+              VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(session_id)
         .bind(ds_id)
         .bind(session_home_rel)
         .bind(now_ms)
         .bind(now_ms)
+        .bind(client_origin)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1621,10 +1631,11 @@ impl GatewaySessionDb {
         status: &str,
         created_at_ms: i64,
         user_prompt: Option<&str>,
+        client_origin: Option<&str>,
     ) -> Result<(), SqlxError> {
         sqlx::query(
-            r"INSERT INTO gateway_turns (turn_id, session_id, ds_id, status, created_at_ms, finished_at_ms, user_prompt)
-              VALUES ($1, $2, $3, $4, $5, NULL, $6)",
+            r"INSERT INTO gateway_turns (turn_id, session_id, ds_id, status, created_at_ms, finished_at_ms, user_prompt, client_origin)
+              VALUES ($1, $2, $3, $4, $5, NULL, $6, $7)",
         )
         .bind(turn_id)
         .bind(session_id)
@@ -1632,9 +1643,27 @@ impl GatewaySessionDb {
         .bind(status)
         .bind(created_at_ms)
         .bind(user_prompt)
+        .bind(client_origin)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn get_turn_client_origin(
+        &self,
+        turn_id: &str,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<Option<String>, SqlxError> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT client_origin FROM gateway_turns WHERE turn_id = $1 AND session_id = $2 AND ds_id = $3 LIMIT 1",
+        )
+        .bind(turn_id)
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.and_then(|(o,)| o))
     }
 
     /// Register or refresh a pool node (`claw-pool-daemon` startup). Author: kejiqing
@@ -1979,7 +2008,7 @@ impl GatewaySessionDb {
             .map(|q| format!("%{}%", Self::escape_like_pattern(q)));
 
         let rows = sqlx::query(
-            r"SELECT s.session_id, s.created_at_ms, s.updated_at_ms,
+            r"SELECT s.session_id, s.created_at_ms, s.updated_at_ms, s.client_origin,
                      (SELECT COUNT(*)::bigint FROM gateway_turns t
                         WHERE t.session_id = s.session_id AND t.ds_id = s.ds_id) AS turn_count,
                      (SELECT t.user_prompt FROM gateway_turns t
@@ -2024,6 +2053,7 @@ impl GatewaySessionDb {
                 updated_at_ms: r.try_get("updated_at_ms")?,
                 turn_count: r.try_get("turn_count")?,
                 preview_prompt: r.try_get("preview_prompt")?,
+                client_origin: r.try_get("client_origin")?,
             });
         }
         Ok(out)
@@ -2036,15 +2066,17 @@ impl GatewaySessionDb {
         ds_id: i64,
     ) -> Result<Vec<GatewayTurnSummary>, SqlxError> {
         let rows = sqlx::query(
-            r"SELECT turn_id, user_prompt, status, created_at_ms, finished_at_ms,
-                     report_message, output_json,
+            r"SELECT t.turn_id, t.user_prompt, t.status, t.created_at_ms, t.finished_at_ms,
+                     t.report_message, t.output_json, t.client_origin, f.feedback,
                      (
-                       (report_message IS NOT NULL AND btrim(report_message) <> '')
-                       OR output_json IS NOT NULL
+                       (t.report_message IS NOT NULL AND btrim(t.report_message) <> '')
+                       OR t.output_json IS NOT NULL
                      ) AS has_report
-              FROM gateway_turns
-              WHERE session_id = $1 AND ds_id = $2
-              ORDER BY created_at_ms ASC, turn_id ASC",
+              FROM gateway_turns t
+              LEFT JOIN gateway_feedback f
+                ON f.turn_id = t.turn_id AND f.session_id = t.session_id AND f.ds_id = t.ds_id
+              WHERE t.session_id = $1 AND t.ds_id = $2
+              ORDER BY t.created_at_ms ASC, t.turn_id ASC",
         )
         .bind(session_id)
         .bind(ds_id)
@@ -2075,6 +2107,8 @@ impl GatewaySessionDb {
                 has_report: r.try_get("has_report")?,
                 report_body,
                 failure_detail,
+                client_origin: r.try_get("client_origin")?,
+                feedback: r.try_get("feedback")?,
             });
         }
         Ok(out)
@@ -2261,7 +2295,7 @@ mod tests {
 
         assert!(db.get_session_home_rel("s1", 7).await.unwrap().is_none());
 
-        db.insert_session("s1", 7, "ds_7/sessions/u1", now_ms())
+        db.insert_session("s1", 7, "ds_7/sessions/u1", now_ms(), None)
             .await
             .unwrap();
         assert_eq!(
@@ -2285,13 +2319,13 @@ mod tests {
         };
         let t = now_ms();
         let sid = format!("same_sid_{}", uuid::Uuid::new_v4().simple());
-        db.insert_session(&sid, 1, "a", t).await.unwrap();
-        db.insert_session(&sid, 2, "b", t).await.unwrap();
+        db.insert_session(&sid, 1, "a", t, None).await.unwrap();
+        db.insert_session(&sid, 2, "b", t, None).await.unwrap();
         assert_eq!(
             db.get_session_home_rel(&sid, 1).await.unwrap().as_deref(),
             Some("a")
         );
-        assert!(db.insert_session(&sid, 1, "c", t).await.is_err());
+        assert!(db.insert_session(&sid, 1, "c", t, None).await.is_err());
     }
 
     #[tokio::test]
@@ -2302,7 +2336,7 @@ mod tests {
         };
         let t = now_ms();
         let sid = format!("s1_{}", uuid::Uuid::new_v4().simple());
-        db.insert_session(&sid, 1, "ds_1/sessions/u1", t)
+        db.insert_session(&sid, 1, "ds_1/sessions/u1", t, None)
             .await
             .unwrap();
         db.insert_turn(
@@ -2312,6 +2346,7 @@ mod tests {
             "queued",
             t,
             Some("hello"),
+            Some("gateway-admin"),
         )
         .await
         .unwrap();
@@ -2344,15 +2379,15 @@ mod tests {
         };
         let t = now_ms();
         let sid = format!("sfin_{}", uuid::Uuid::new_v4().simple());
-        db.insert_session(&sid, 1, "ds_1/sessions/x", t)
+        db.insert_session(&sid, 1, "ds_1/sessions/x", t, None)
             .await
             .unwrap();
         let tid1 = "T_10000000000000000000000000000001";
         let tid2 = "T_20000000000000000000000000000002";
-        db.insert_turn(tid1, &sid, 1, "queued", t, Some("a"))
+        db.insert_turn(tid1, &sid, 1, "queued", t, Some("a"), None)
             .await
             .unwrap();
-        db.insert_turn(tid2, &sid, 1, "queued", t + 100, Some("b"))
+        db.insert_turn(tid2, &sid, 1, "queued", t + 100, Some("b"), None)
             .await
             .unwrap();
         db.finalize_turn_terminal(
@@ -2432,10 +2467,10 @@ mod tests {
         let sid = format!("spool_{}", uuid::Uuid::new_v4().simple());
         let tid = "T_30000000000000000000000000000003";
         let pool_id = format!("pool-test-{}", uuid::Uuid::new_v4().simple());
-        db.insert_session(&sid, 1, "ds_1/sessions/pool", t)
+        db.insert_session(&sid, 1, "ds_1/sessions/pool", t, None)
             .await
             .unwrap();
-        db.insert_turn(tid, &sid, 1, "queued", t, Some("q"))
+        db.insert_turn(tid, &sid, 1, "queued", t, Some("q"), None)
             .await
             .unwrap();
         db.upsert_claw_pool(&ClawPoolUpsert {

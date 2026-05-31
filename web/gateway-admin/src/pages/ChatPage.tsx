@@ -3,13 +3,18 @@ import { useCallback, useRef, useState } from "react";
 import ChatHistorySidebar from "../components/chat/ChatHistorySidebar";
 import ChatTurnCard from "../components/chat/ChatTurnCard";
 import ChatToolbar from "../components/chat/ChatToolbar";
+import ConversationTranslateModal from "../components/chat/ConversationTranslateModal";
 import styles from "../components/chat/chat.module.css";
 import { proxyHttp } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { useChatSession } from "../context/ChatSessionContext";
+import { useSessionTurnFeedback } from "../hooks/useSessionTurnFeedback";
 import type { ListSessionTurnsResponse, SolveAsyncResponse } from "../types/chat";
+import type { ConversationTurnInput } from "../utils/collectConversationForTranslate";
 import { buildExtraSession } from "../utils/extraSession";
+import { CLIENT_ORIGIN_GATEWAY_ADMIN } from "../utils/clientOrigin";
 import { extractSolveReportMessage } from "../utils/solveReportBody";
+import type { TurnFeedbackValue } from "../types/chat";
 
 interface TurnEntry {
   id: string;
@@ -22,6 +27,8 @@ interface TurnEntry {
   hasReport?: boolean;
   historicalReport?: string;
   failureDetail?: string;
+  clientOrigin?: string | null;
+  feedback?: TurnFeedbackValue;
 }
 
 interface SysEntry {
@@ -58,8 +65,15 @@ export default function ChatPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [translateOpen, setTranslateOpen] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  const {
+    feedbackByTurn,
+    submittingTurnId,
+    submitFeedback,
+  } = useSessionTurnFeedback(gatewayBase, dsId, activeSessionId, historyRefreshKey);
 
   const scrollLog = (smooth = true) => {
     requestAnimationFrame(() =>
@@ -121,6 +135,8 @@ export default function ChatPage() {
               ? extractSolveReportMessage(t.reportBody)
               : undefined,
             failureDetail: t.failureDetail?.trim() || undefined,
+            clientOrigin: t.clientOrigin ?? undefined,
+            feedback: t.feedback ?? undefined,
           }))
         );
       } catch (e) {
@@ -180,6 +196,7 @@ export default function ChatPage() {
         turnId: asyncRes.turnId,
         initialStatus: asyncRes.status || "queued",
         viewMode: "live",
+        clientOrigin: CLIENT_ORIGIN_GATEWAY_ADMIN,
       },
     ]);
     scrollLog();
@@ -207,6 +224,20 @@ export default function ChatPage() {
     }
   };
 
+  const threadTurns: ConversationTurnInput[] = thread
+    .filter((item): item is TurnEntry => !isSys(item))
+    .map((item) => ({
+      turnId: item.turnId,
+      sessionId: item.sessionId,
+      taskId: item.taskId,
+      userText: item.userText,
+      viewMode: item.viewMode,
+      historicalReport: item.historicalReport,
+      failureDetail: item.failureDetail,
+    }));
+
+  const canTranslate = Boolean(activeSessionId || threadTurns.length > 0);
+
   return (
     <div className={styles.chatPage}>
       <ChatHistorySidebar
@@ -224,6 +255,8 @@ export default function ChatPage() {
             onNewSession={onNewSession}
             onHealth={(t) => appendSys({ tag: "healthz", text: t })}
             onError={(t) => appendSys({ tag: "error", text: t, variant: "err" })}
+            onTranslateConversation={() => setTranslateOpen(true)}
+            translateDisabled={!canTranslate || loadingHistory}
           />
         </div>
         <div className={styles.chatMain}>
@@ -283,6 +316,14 @@ export default function ChatPage() {
                   hasReport={item.hasReport}
                   historicalReport={item.historicalReport}
                   failureDetail={item.failureDetail}
+                  clientOrigin={item.clientOrigin}
+                  turnFeedback={feedbackByTurn[item.turnId] ?? item.feedback}
+                  feedbackSubmitting={submittingTurnId === item.turnId}
+                  onTurnFeedback={(fb) =>
+                    void submitFeedback(item.turnId, fb).catch((e) =>
+                      message.error(String((e as Error).message || e))
+                    )
+                  }
                 />
               </div>
             );
@@ -325,6 +366,14 @@ export default function ChatPage() {
         </div>
         </div>
       </div>
+      <ConversationTranslateModal
+        open={translateOpen}
+        onClose={() => setTranslateOpen(false)}
+        gatewayBase={gatewayBase}
+        dsId={dsId}
+        sessionId={activeSessionId}
+        threadTurns={threadTurns}
+      />
     </div>
   );
 }

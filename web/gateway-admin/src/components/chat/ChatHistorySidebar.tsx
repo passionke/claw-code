@@ -8,6 +8,7 @@ import type { Dayjs } from "dayjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import type { GatewaySessionSummary, ListProjectSessionsResponse } from "../../types/chat";
+import { isAdminOrigin } from "../../utils/clientOrigin";
 import styles from "./chat.module.css";
 
 const PAGE_SIZE = 20;
@@ -285,7 +286,12 @@ export default function ChatHistorySidebar({
               }`}
               onClick={() => onSelectSession(s.sessionId)}
             >
-              <span className={styles.historyItemTitle}>{sessionTitle(s)}</span>
+              <span className={styles.historyItemTitle}>
+                {sessionTitle(s)}
+                {s.clientOrigin && !isAdminOrigin(s.clientOrigin) ? (
+                  <span className={styles.historyOriginTag}>外部</span>
+                ) : null}
+              </span>
               <span className={styles.historyItemTime}>{formatWhen(s.updatedAtMs)}</span>
             </button>
           </li>

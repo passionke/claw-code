@@ -14,8 +14,20 @@ claw_ensure_pool_daemon_binary() {
   out="$(claw_default_pool_daemon_bin "${podman_dir}")"
   mkdir -p "$(dirname "${out}")"
 
-  if [[ "$(uname -s)" == Darwin ]] || [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" == 1 ]]; then
-    echo "==> building host claw-pool-daemon (macOS or CLAW_POOL_REBUILD_DAEMON=1)" >&2
+  if [[ "$(uname -s)" == Darwin ]]; then
+    local mac_bin="${repo_root}/rust/target/release/claw-pool-daemon"
+    if [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" == 1 ]] || [[ ! -x "${mac_bin}" ]]; then
+      echo "==> building host claw-pool-daemon (macOS)" >&2
+      (cd "${repo_root}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
+    else
+      echo "==> reusing host claw-pool-daemon: ${mac_bin}" >&2
+    fi
+    printf '%s\n' "${mac_bin}"
+    return 0
+  fi
+
+  if [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" == 1 ]]; then
+    echo "==> building host claw-pool-daemon (CLAW_POOL_REBUILD_DAEMON=1)" >&2
     (cd "${repo_root}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
     printf '%s\n' "${repo_root}/rust/target/release/claw-pool-daemon"
     return 0

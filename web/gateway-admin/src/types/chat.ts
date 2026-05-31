@@ -58,6 +58,7 @@ export interface GatewaySessionSummary {
   updatedAtMs: number;
   turnCount: number;
   previewPrompt?: string | null;
+  clientOrigin?: string | null;
 }
 
 export interface ListProjectSessionsResponse {
@@ -77,12 +78,33 @@ export interface GatewayTurnSummary {
   reportBody?: string | null;
   /** failed 时 `output_json.detail`（solve 真因）。Author: kejiqing */
   failureDetail?: string | null;
+  /** 发起方标记（`gateway-admin` 等）。Author: kejiqing */
+  clientOrigin?: string | null;
+  /** `good` / `bad`，来自 gateway_feedback。Author: kejiqing */
+  feedback?: TurnFeedbackValue | null;
 }
 
 export interface ListSessionTurnsResponse {
   sessionId: string;
   dsId: number;
   turns: GatewayTurnSummary[];
+}
+
+/** `POST /v1/agent/feedback` · `GET /v1/agent/feedback`. Author: kejiqing */
+export type TurnFeedbackValue = "good" | "bad";
+
+export interface AgentFeedbackPostResponse {
+  sessionId: string;
+  dsId: number;
+  turnId: string;
+  feedback: TurnFeedbackValue;
+  updatedAtMs: number;
+}
+
+export interface AgentFeedbackGetResponse {
+  sessionId: string;
+  dsId: number;
+  items: Record<string, TurnFeedbackValue>;
 }
 
 /** `GET /v1/biz_advice_report?stream=false` per turn. Author: kejiqing */

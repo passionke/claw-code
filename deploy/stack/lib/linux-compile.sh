@@ -64,13 +64,13 @@ claw_linux_compile_release() {
         exit 1
       fi
       echo "rustc $got (locked)"
+      # Darwin local: pool-daemon runs as host Mach-O binary, not from gateway image. kejiqing
       cargo build --release -p rusty-claude-cli --bin claw \
-        -p http-gateway-rs --bin http-gateway-rs \
-        -p http-gateway-rs --bin claw-pool-daemon
-      ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw /artifacts/release/claw-pool-daemon
+        -p http-gateway-rs --bin http-gateway-rs
+      ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw
     '
 
-  for bin in http-gateway-rs claw claw-pool-daemon; do
+  for bin in http-gateway-rs claw; do
     if [[ ! -f "${out_dir}/${bin}" ]]; then
       echo "error: missing ${out_dir}/${bin} after linux compile" >&2
       exit 1
