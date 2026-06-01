@@ -1,7 +1,11 @@
-/** 浏览器侧整段翻译为简体中文（无后端）。Author: kejiqing */
+/** 浏览器侧整段翻译为简体中文；失败走网关 LLM。Author: kejiqing */
 
-const MYMEMORY_CHUNK = 450;
-const MYMEMORY_URL = "https://api.mymemory.translated.net/get";
+import { proxyHttp } from "../api/client";
+
+const TRANSLATE_CHUNK = 3000;
+const BROWSER_TRANSLATOR_TIMEOUT_MS = 4_000;
+const GATEWAY_TRANSLATE_TIMEOUT_MS = 120_000;
+const GATEWAY_CHUNK_DELAY_MS = 200;
 
 function cjkRatio(text: string): number {
   const chars = text.replace(/\s/g, "");
@@ -34,63 +38,109 @@ function splitForTranslation(text: string, maxLen: number): string[] {
   return chunks.filter(Boolean);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} 超时（${ms / 1000}s）`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function translateWithBrowserApi(text: string): Promise<string | null> {
   const Tr = (globalThis as { Translator?: { create: (o: { sourceLanguage: string; targetLanguage: string }) => Promise<{ translate: (t: string) => Promise<string> }> } }).Translator;
   if (!Tr) return null;
   try {
-    const translator = await Tr.create({ sourceLanguage: "en", targetLanguage: "zh" });
-    return await translator.translate(text);
+    const translator = await withTimeout(
+      Tr.create({ sourceLanguage: "en", targetLanguage: "zh" }),
+      BROWSER_TRANSLATOR_TIMEOUT_MS,
+      "浏览器翻译模型加载"
+    );
+    const out = await withTimeout(translator.translate(text), BROWSER_TRANSLATOR_TIMEOUT_MS, "浏览器翻译");
+    return out?.trim() || null;
   } catch {
-    try {
-      const translator = await Tr.create({ sourceLanguage: "es", targetLanguage: "zh" });
-      return await translator.translate(text);
-    } catch {
-      return null;
-    }
+    return null;
   }
 }
 
-async function translateWithMyMemory(text: string): Promise<string> {
-  const q = encodeURIComponent(text);
-  const res = await fetch(`${MYMEMORY_URL}?q=${q}&langpair=en|zh-CN`, {
-    method: "GET",
-  });
-  if (!res.ok) throw new Error(`翻译服务 HTTP ${res.status}`);
-  const json = (await res.json()) as {
-    responseStatus?: number;
-    responseDetails?: string;
-    responseData?: { translatedText?: string };
-  };
-  if (json.responseStatus && json.responseStatus !== 200) {
-    throw new Error(json.responseDetails || "翻译服务返回错误");
-  }
-  const out = json.responseData?.translatedText?.trim();
-  if (!out) throw new Error("翻译结果为空");
+async function translateWithGateway(gatewayBase: string, text: string): Promise<string> {
+  const res = await withTimeout(
+    proxyHttp<{ translatedText?: string }>(gatewayBase, "POST", "/v1/gateway/translate", {
+      text,
+      targetLanguage: "zh-CN",
+    }),
+    GATEWAY_TRANSLATE_TIMEOUT_MS,
+    "网关 LLM 翻译"
+  );
+  const out = res.translatedText?.trim();
+  if (!out) throw new Error("网关翻译结果为空");
   return out;
 }
 
-async function translateChunk(text: string): Promise<string> {
+async function translateChunk(text: string, gatewayBase: string): Promise<string> {
   const browser = await translateWithBrowserApi(text);
-  if (browser?.trim()) return browser.trim();
-  return translateWithMyMemory(text);
+  if (browser) return browser;
+  return translateWithGateway(gatewayBase, text);
 }
 
 /** 将非中文正文译为简体中文；已是中文则原样返回。 */
-export async function translateTextToZh(text: string): Promise<string> {
+export async function translateTextToZh(
+  text: string,
+  gatewayBase: string,
+  onUnitDone?: () => void
+): Promise<string> {
   const src = text.trim();
   if (!src) return "";
-  if (mostlyChinese(src)) return src;
+  if (mostlyChinese(src)) {
+    onUnitDone?.();
+    return src;
+  }
 
-  const chunks = splitForTranslation(src, MYMEMORY_CHUNK);
+  const chunks = splitForTranslation(src, TRANSLATE_CHUNK);
   const out: string[] = [];
-  for (const chunk of chunks) {
+  for (let i = 0; i < chunks.length; i += 1) {
+    const chunk = chunks[i];
     if (mostlyChinese(chunk)) {
       out.push(chunk);
     } else {
-      out.push(await translateChunk(chunk));
+      if (i > 0) await sleep(GATEWAY_CHUNK_DELAY_MS);
+      out.push(await translateChunk(chunk, gatewayBase));
     }
+    onUnitDone?.();
   }
   return out.join("\n\n");
+}
+
+export function countTranslateUnits(turns: Array<{ userText: string; assistantText: string }>): number {
+  let units = 0;
+  for (const t of turns) {
+    const user = t.userText.trim();
+    if (user) {
+      if (mostlyChinese(user)) units += 1;
+      else units += splitForTranslation(user, TRANSLATE_CHUNK).length || 1;
+    }
+    const assistant = t.assistantText.trim();
+    if (assistant) {
+      if (mostlyChinese(assistant)) units += 1;
+      else units += splitForTranslation(assistant, TRANSLATE_CHUNK).length || 1;
+    }
+  }
+  return Math.max(units, 1);
+}
+
+export interface TranslateProgress {
+  doneUnits: number;
+  totalUnits: number;
+  detail?: string;
 }
 
 export interface TranslatedTurn {
@@ -103,29 +153,35 @@ export interface TranslatedTurn {
 }
 
 export async function translateConversationTurns(
+  gatewayBase: string,
   turns: Array<{
     index: number;
     turnId: string;
     userText: string;
     assistantText: string;
   }>,
-  onProgress?: (done: number, total: number) => void
+  onProgress?: (progress: TranslateProgress) => void
 ): Promise<TranslatedTurn[]> {
-  const total = turns.length * 2;
-  let done = 0;
-  const bump = () => {
-    done += 1;
-    onProgress?.(done, total);
+  const totalUnits = countTranslateUnits(turns);
+  let doneUnits = 0;
+  const bump = (detail: string) => {
+    doneUnits += 1;
+    onProgress?.({ doneUnits, totalUnits, detail });
   };
 
   const result: TranslatedTurn[] = [];
   for (const t of turns) {
-    const userTextZh = await translateTextToZh(t.userText);
-    bump();
-    const assistantTextZh = t.assistantText.trim()
-      ? await translateTextToZh(t.assistantText)
-      : "（无助手回复）";
-    bump();
+    const userTextZh = await translateTextToZh(t.userText, gatewayBase, () =>
+      bump(`轮次 ${t.index} · 用户`)
+    );
+    let assistantTextZh = "（无助手回复）";
+    if (t.assistantText.trim()) {
+      assistantTextZh = await translateTextToZh(t.assistantText, gatewayBase, () =>
+        bump(`轮次 ${t.index} · 助手`)
+      );
+    } else {
+      bump(`轮次 ${t.index} · 助手（空）`);
+    }
     result.push({
       ...t,
       userTextZh,

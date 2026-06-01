@@ -90,7 +90,7 @@ Base URL 示例：`http://127.0.0.1:18088`
 - `POST /v1/sessions/{session_id}/turns/{turn_id}/cancel?ds_id=<int>`
   - 用途：按 **`sessionId` + `turnId` + `dsId`** 取消指定轮次（推荐 Admin / BFF 使用）
   - 若该轮次对应当前内存中的 async worker（`record.turnId` 一致）：`abort` worker、`force_kill_slot`（有租约时）、`gateway_turns` → `cancelled`
-  - 若内存中无任务或活跃任务属于**另一** `turnId`：仅对 PG 中该 `turn_id` 行做 cold cancel（`queued`/`running` → `cancelled`）
+  - 若内存中无任务或活跃任务属于**另一** `turnId`：先对 PG 中该 `turn_id` 行做 cold cancel（`queued`/`running` → `cancelled`）；若 cold 成功且内存里仍有同 session 的 `queued`/`running`（更新的 turn），网关会**一并释放**该内存任务（abort worker、`force_kill_slot`、移除 `tasks` 表项），避免产品侧已收到 `cancelApplied: true` 仍 `409`。
   - 终态幂等：返回 `200`，`cancelApplied: false`，`error` 说明未再取消
   - 未知 `(session_id, turn_id, ds_id)`：**404**
 

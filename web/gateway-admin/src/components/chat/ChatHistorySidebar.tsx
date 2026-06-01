@@ -44,6 +44,7 @@ function buildSessionsPath(
     updatedFromMs?: number;
     updatedToMs?: number;
     q?: string;
+    sessionId?: string;
   }
 ): string {
   const sp = new URLSearchParams();
@@ -55,6 +56,7 @@ function buildSessionsPath(
   if (opts.updatedFromMs != null) sp.set("updatedFromMs", String(opts.updatedFromMs));
   if (opts.updatedToMs != null) sp.set("updatedToMs", String(opts.updatedToMs));
   if (opts.q?.trim()) sp.set("q", opts.q.trim());
+  if (opts.sessionId?.trim()) sp.set("sessionId", opts.sessionId.trim());
   return `/v1/projects/${dsId}/sessions?${sp.toString()}`;
 }
 
@@ -90,6 +92,8 @@ export default function ChatHistorySidebar({
   const [error, setError] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [searchQ, setSearchQ] = useState("");
+  const [sessionIdInput, setSessionIdInput] = useState("");
+  const [sessionIdQ, setSessionIdQ] = useState("");
   const [filterDate, setFilterDate] = useState<Dayjs | null>(null);
 
   const listRef = useRef<HTMLUListElement>(null);
@@ -118,6 +122,7 @@ export default function ChatHistorySidebar({
         updatedFromMs: from,
         updatedToMs: to,
         q: searchQ,
+        sessionId: sessionIdQ,
       });
       if (append) {
         if (loadingMoreRef.current) return;
@@ -142,7 +147,7 @@ export default function ChatHistorySidebar({
         loadingMoreRef.current = false;
       }
     },
-    [gatewayBase, dsId, dateRangeMs, searchQ]
+    [gatewayBase, dsId, dateRangeMs, searchQ, sessionIdQ]
   );
 
   const reload = useCallback(() => {
@@ -162,6 +167,11 @@ export default function ChatHistorySidebar({
     const t = window.setTimeout(() => setSearchQ(searchInput.trim()), SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(t);
   }, [searchInput]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setSessionIdQ(sessionIdInput.trim()), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+  }, [sessionIdInput]);
 
   useEffect(() => {
     void fetchPage(false);
@@ -235,6 +245,13 @@ export default function ChatHistorySidebar({
         <Input
           allowClear
           size="small"
+          placeholder="sessionId / turnId（T_… 精确，否则片段）"
+          value={sessionIdInput}
+          onChange={(e) => setSessionIdInput(e.target.value)}
+        />
+        <Input
+          allowClear
+          size="small"
           placeholder="搜索首问"
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
@@ -273,7 +290,9 @@ export default function ChatHistorySidebar({
         {!loading && !error && sessions.length === 0 ? (
           <li>
             <Typography.Text type="secondary" className={styles.historyEmpty}>
-              暂无已保存的对话
+              {sessionIdQ || searchQ || filterDate
+                ? "无匹配的对话"
+                : "暂无已保存的对话"}
             </Typography.Text>
           </li>
         ) : null}

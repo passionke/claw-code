@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::biz_advice_report::{report_body_from_persisted, solve_failure_detail_from_output_json};
+use crate::turn_id::{self, TURN_ID_PREFIX};
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::Json;
@@ -1990,6 +1991,23 @@ impl GatewaySessionDb {
         out
     }
 
+    /// `session_id_q`: full `T_<32 hex>` → exact turn match; otherwise session_id ILIKE substring.
+    fn parse_session_list_id_filter(raw: Option<&str>) -> (Option<String>, Option<String>) {
+        let Some(q) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+            return (None, None);
+        };
+        if let Some(rest) = q
+            .strip_prefix(TURN_ID_PREFIX)
+            .or_else(|| q.strip_prefix("t_"))
+        {
+            let candidate = format!("{TURN_ID_PREFIX}{}", rest.to_ascii_lowercase());
+            if turn_id::validate_turn_id(&candidate) {
+                return (None, Some(candidate));
+            }
+        }
+        (Some(format!("%{}%", Self::escape_like_pattern(q))), None)
+    }
+
     /// Recent sessions for admin chat history (keyset page + optional filters). Author: kejiqing
     pub async fn list_sessions_for_ds(
         &self,
@@ -2000,12 +2018,14 @@ impl GatewaySessionDb {
         updated_from_ms: Option<i64>,
         updated_to_ms: Option<i64>,
         title_q: Option<&str>,
+        session_id_q: Option<&str>,
     ) -> Result<Vec<GatewaySessionSummary>, SqlxError> {
         let limit = limit.clamp(1, 100);
         let like_pat = title_q
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|q| format!("%{}%", Self::escape_like_pattern(q)));
+        let (session_id_pat, turn_id_exact) = Self::parse_session_list_id_filter(session_id_q);
 
         let rows = sqlx::query(
             r"SELECT s.session_id, s.created_at_ms, s.updated_at_ms, s.client_origin,
@@ -2033,6 +2053,19 @@ impl GatewaySessionDb {
                   OR s.updated_at_ms < $5
                   OR (s.updated_at_ms = $5 AND s.session_id < COALESCE($6, ''))
                 )
+                AND (
+                  ($8::text IS NULL AND $9::text IS NULL)
+                  OR ($8::text IS NOT NULL AND s.session_id ILIKE $8 ESCAPE '\')
+                  OR (
+                    $9::text IS NOT NULL
+                    AND EXISTS (
+                      SELECT 1 FROM gateway_turns t
+                      WHERE t.ds_id = s.ds_id
+                        AND t.session_id = s.session_id
+                        AND t.turn_id = $9
+                    )
+                  )
+                )
               ORDER BY s.updated_at_ms DESC, s.session_id DESC
               LIMIT $7",
         )
@@ -2043,6 +2076,8 @@ impl GatewaySessionDb {
         .bind(before_updated_at_ms)
         .bind(before_session_id)
         .bind(limit)
+        .bind(session_id_pat.as_deref())
+        .bind(turn_id_exact.as_deref())
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
@@ -2423,10 +2458,27 @@ mod tests {
         assert_eq!(tools_ctx.created_at_ms, t2);
 
         let sessions = db
-            .list_sessions_for_ds(1, 50, None, None, None, None, None)
+            .list_sessions_for_ds(1, 50, None, None, None, None, None, None)
             .await
             .unwrap();
         assert!(sessions.iter().any(|s| s.session_id == sid));
+        let by_id = db
+            .list_sessions_for_ds(1, 50, None, None, None, None, None, Some(&sid))
+            .await
+            .unwrap();
+        assert_eq!(by_id.len(), 1);
+        assert_eq!(by_id[0].session_id, sid);
+        let by_turn = db
+            .list_sessions_for_ds(1, 50, None, None, None, None, None, Some(tid1))
+            .await
+            .unwrap();
+        assert_eq!(by_turn.len(), 1);
+        assert_eq!(by_turn[0].session_id, sid);
+        assert!(db
+            .list_sessions_for_ds(1, 50, None, None, None, None, None, Some("no-such-session"))
+            .await
+            .unwrap()
+            .is_empty());
         let listed = db.list_turns_for_session(&sid, 1).await.unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].user_prompt.as_deref(), Some("a"));

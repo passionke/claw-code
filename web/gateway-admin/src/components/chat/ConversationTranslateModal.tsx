@@ -79,9 +79,9 @@ export default function ConversationTranslateModal({
 
       setPhase("translate");
       setStatusText("正在翻译为中文…");
-      const translated = await translateConversationTurns(blocks, (done, total) => {
-        setProgressPct(45 + Math.round((done / total) * 55));
-        setStatusText(`翻译中 ${done}/${total}…`);
+      const translated = await translateConversationTurns(gatewayBase, blocks, ({ doneUnits, totalUnits, detail }) => {
+        setProgressPct(45 + Math.round((doneUnits / totalUnits) * 55));
+        setStatusText(detail ? `翻译中 ${doneUnits}/${totalUnits} · ${detail}` : `翻译中 ${doneUnits}/${totalUnits}…`);
       });
 
       const md = formatTranslatedConversation(translated);

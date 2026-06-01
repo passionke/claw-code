@@ -44,9 +44,9 @@ use http_gateway_rs::biz_advice_report::{
 };
 use http_gateway_rs::{
     claw_tap_cluster_state, client_origin, gateway_claw_tap_settings, gateway_global_settings,
-    gateway_llm_config_sync, mcp_probe, pool, project_config_apply, project_config_version,
-    project_entity_revision, project_git_sync, project_tools, session_db, session_merge, turn_id,
-    turn_timeline_api, turn_tools_api,
+    gateway_llm_config_sync, gateway_translate, mcp_probe, pool, project_config_apply,
+    project_config_version, project_entity_revision, project_git_sync, project_tools, session_db,
+    session_merge, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
@@ -1589,6 +1589,7 @@ async fn main() {
             "/v1/agent/feedback",
             post(post_agent_feedback).get(get_agent_feedback),
         )
+        .route("/v1/gateway/translate", post(post_gateway_translate))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &http::Request<axum::body::Body>| {
@@ -5679,6 +5680,9 @@ struct ListProjectSessionsQuery {
     updated_to_ms: Option<i64>,
     /// Fuzzy match on first-turn `user_prompt` (ILIKE).
     q: Option<String>,
+    /// `T_<32 hex>` → session owning that turn; otherwise `session_id` ILIKE substring.
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
 }
 
 fn default_session_list_limit() -> i64 {
@@ -5767,6 +5771,7 @@ async fn list_project_sessions(
             query.updated_from_ms,
             query.updated_to_ms,
             query.q.as_deref(),
+            query.session_id.as_deref(),
         )
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -6068,6 +6073,17 @@ async fn enqueue_solve_async(
     }
     let task_id = effective.clone();
     let ds_id = req.ds_id;
+    {
+        let tasks = state.tasks.lock().await;
+        if let Some(inner) = tasks.get(&task_id) {
+            if inner.record.status == "queued" || inner.record.status == "running" {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "session has active async task",
+                ));
+            }
+        }
+    }
     let new_turn_id = turn_id::mint_turn_id();
     register_solve_turn(
         &state.session_db,
@@ -6101,14 +6117,6 @@ async fn enqueue_solve_async(
     );
     {
         let mut tasks = state.tasks.lock().await;
-        if let Some(inner) = tasks.get(&task_id) {
-            if inner.record.status == "queued" || inner.record.status == "running" {
-                return Err(ApiError::new(
-                    StatusCode::CONFLICT,
-                    "session has active async task",
-                ));
-            }
-        }
         let queue = gateway_queue_snapshot(&tasks);
         let initial_desc = resolve_current_task_desc("queued", None, &queue, false);
         tasks.insert(
@@ -6149,6 +6157,9 @@ async fn enqueue_solve_async(
         {
             let mut tasks = state_clone.tasks.lock().await;
             if let Some(inner) = tasks.get_mut(&task_id_for_worker) {
+                if inner.record.turn_id != turn_id_for_worker {
+                    return;
+                }
                 if inner.record.status == "cancelled" {
                     inner.cancel = None;
                     finalize_solve_turn_cancelled(&state_clone.session_db, &turn_id_for_worker)
@@ -6190,6 +6201,9 @@ async fn enqueue_solve_async(
             let Some(inner) = tasks.get_mut(&task_id_for_worker) else {
                 return;
             };
+            if inner.record.turn_id != turn_id_for_worker {
+                return;
+            }
             inner.cancel = None;
             if inner.record.status == "cancelled" {
                 finalize_solve_turn_cancelled(&state_clone.session_db, &turn_id_for_worker).await;
@@ -6630,6 +6644,38 @@ enum TurnMemoryCancel {
     Applied(Option<AbortHandle>),
 }
 
+/// After a cold turn cancel, memory may still hold a newer `queued`/`running` task for the same session.
+async fn abort_memory_session_task_if_active(state: &AppState, session_id: &str, ds_id: i64) {
+    let (cancel_handle, turn_id) = {
+        let mut tasks = state.tasks.lock().await;
+        let Some(inner) = tasks.get_mut(session_id) else {
+            return;
+        };
+        if inner.ds_id != ds_id || task_status_is_terminal_for_cancel(&inner.record.status) {
+            return;
+        }
+        let turn_id = inner.record.turn_id.clone();
+        let h = inner.cancel.take();
+        inner.record.status = "cancelled".to_string();
+        inner.record.finished_at_ms = Some(now_ms());
+        inner.record.result = None;
+        inner.record.error = Some(json!({
+            "detail": "cancelled by client (session slot released after turn cancel)",
+            "outcome": "cancelled",
+            "cancelApplied": true,
+        }));
+        tasks.remove(session_id);
+        (h, turn_id)
+    };
+    if let Some((pool, idx)) = state.docker_slots.lock().await.remove(session_id) {
+        let _ = pool.force_kill_slot(idx).await;
+    }
+    if let Some(h) = cancel_handle {
+        h.abort();
+    }
+    finalize_solve_turn_cancelled(&state.session_db, &turn_id).await;
+}
+
 async fn try_memory_cancel_turn(
     state: &AppState,
     session_id: &str,
@@ -6709,6 +6755,10 @@ async fn cancel_session_turn(
             if let Some(h) = cancel_handle {
                 h.abort();
             }
+            {
+                let mut tasks = state.tasks.lock().await;
+                tasks.remove(&session_id);
+            }
             finalize_solve_turn_cancelled(&state.session_db, &turn_id).await;
             info!(
                 request_id = %http_request_id.0,
@@ -6735,6 +6785,9 @@ async fn cancel_session_turn(
     }
 
     let out = cancel_session_turn_cold(&state, &session_id, &turn_id, query.ds_id).await?;
+    if out.cancel_applied {
+        abort_memory_session_task_if_active(&state, &session_id, query.ds_id).await;
+    }
     info!(
         request_id = %http_request_id.0,
         session_id = %out.session_id,
@@ -6842,6 +6895,16 @@ async fn cancel_task(
     if let Some(h) = cancel_handle {
         h.abort();
     }
+    let record = {
+        let mut tasks = state.tasks.lock().await;
+        let Some(inner) = tasks.remove(&task_id) else {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("task not found: {task_id}"),
+            ));
+        };
+        inner.record
+    };
     info!(
         request_id = %http_request_id.0,
         task_id = %task_id,
@@ -6849,13 +6912,6 @@ async fn cancel_task(
         phase = "cancel",
         "gateway_task"
     );
-    let tasks = state.tasks.lock().await;
-    let record = tasks
-        .get(&task_id)
-        .map(|inner| inner.record.clone())
-        .ok_or_else(|| {
-            ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
-        })?;
     finalize_solve_turn_cancelled(&state.session_db, &record.turn_id).await;
     Ok(Json(record))
 }
@@ -7675,6 +7731,15 @@ async fn post_agent_feedback(
         feedback: feedback.to_string(),
         updated_at_ms,
     }))
+}
+
+async fn post_gateway_translate(
+    State(state): State<AppState>,
+    Json(body): Json<gateway_translate::GatewayTranslateRequest>,
+) -> Result<Json<gateway_translate::GatewayTranslateResponse>, ApiError> {
+    gateway_translate::post_gateway_translate_handler(&state.session_db, body)
+        .await
+        .map_err(|e| ApiError::new(e.status, e.message))
 }
 
 async fn get_agent_feedback(
