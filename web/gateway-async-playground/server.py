@@ -176,9 +176,30 @@ def _session_secret() -> bytes:
 
 
 def _safe_admin_next(path: str | None) -> str:
-    if path and path.startswith("/admin") and "://" not in path:
-        return path
-    return "/admin"
+    """Normalize post-login redirect for React Router (basename /admin)."""
+    if not path or "://" in path:
+        return "/"
+    p = path if path.startswith("/") else f"/{path}"
+    if p.startswith("/admin/"):
+        p = p[len("/admin") :] or "/"
+    elif p == "/admin":
+        p = "/"
+    if p.startswith("/login"):
+        return "/"
+    return p
+
+
+def _admin_requires_login(path: str) -> bool:
+    """Chat SPA is public; project management and other /admin routes need login."""
+    if path in ("/admin/login",):
+        return False
+    if path.startswith("/admin/assets/"):
+        return False
+    if path == "/admin/chat" or path.startswith("/admin/chat/"):
+        return False
+    if path == "/admin" or path.startswith("/admin/"):
+        return True
+    return False
 
 
 def make_session_token(user: str) -> str:
@@ -389,6 +410,7 @@ def playground_config() -> dict:
         "defaultGatewayLabel": _gateway_preset_label(PUBLIC_GATEWAY_BASE),
         "gatewayPresets": presets,
         "adminLoginRequired": True,
+        "adminChatPublic": True,
     }
 
 
@@ -424,12 +446,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path in ("/admin", "/admin/login") or path.startswith("/admin/"):
-            # Vite assets must not redirect to login (otherwise SPA never boots). Author: kejiqing
-            if (
-                path not in ("/admin/login",)
-                and not path.startswith("/admin/assets/")
-                and not read_session_user(self)
-            ):
+            if _admin_requires_login(path) and not read_session_user(self):
                 nxt = urllib.parse.quote(path, safe="")
                 send_redirect(self, f"/admin/login?next={nxt}")
                 return

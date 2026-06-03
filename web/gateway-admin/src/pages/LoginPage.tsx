@@ -1,14 +1,36 @@
 import { Button, Card, Form, Input, Typography } from "antd";
-import { useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { adminLogin } from "../api/client";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { adminLogin, fetchAdminMe } from "../api/client";
+
+/** Post-login path for React Router (basename /admin). Author: kejiqing */
+function normalizeAdminNext(raw?: string | null): string {
+  let p = (raw ?? "").trim() || "/";
+  if (p.startsWith("/admin/")) {
+    p = p.slice("/admin".length) || "/";
+  } else if (p === "/admin") {
+    p = "/";
+  }
+  if (p.startsWith("/login")) {
+    return "/";
+  }
+  return p.startsWith("/") ? p : `/${p}`;
+}
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const nav = useNavigate();
   const [params] = useSearchParams();
-  const next = params.get("next") || "/";
+  const next = normalizeAdminNext(params.get("next"));
+
+  useEffect(() => {
+    fetchAdminMe().then((d) => {
+      if (d.ok) {
+        nav(next, { replace: true });
+      }
+    });
+  }, [nav, next]);
 
   const onFinish = async (v: { user: string; password: string }) => {
     setErr("");
@@ -19,7 +41,7 @@ export default function LoginPage() {
         setErr(r.error || "登录失败");
         return;
       }
-      nav(r.next || "/", { replace: true });
+      nav(normalizeAdminNext(r.next), { replace: true });
     } catch (e) {
       setErr(String((e as Error).message));
     } finally {
@@ -39,7 +61,7 @@ export default function LoginPage() {
     >
       <Card style={{ width: 380 }} title="项目管理登录">
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-          账号密码由服务端 <code>PLAYGROUND_ADMIN_*</code> 配置
+          对话页（/admin/chat）无需登录；项目管理需账号密码（服务端 <code>PLAYGROUND_ADMIN_*</code>）
         </Typography.Paragraph>
         <Form layout="vertical" onFinish={onFinish} autoComplete="on">
           <Form.Item name="user" label="账号" rules={[{ required: true }]}>
@@ -57,7 +79,7 @@ export default function LoginPage() {
             </Button>
           </Form.Item>
         </Form>
-        <Typography.Link href="/">← 返回 solve_async 调试</Typography.Link>
+        <Link to="/chat">← 返回对话（无需登录）</Link>
       </Card>
     </div>
   );

@@ -25,11 +25,9 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route
           element={
-            <RequireAuth>
-              <AppProvider>
-                <Outlet />
-              </AppProvider>
-            </RequireAuth>
+            <AppProvider>
+              <Outlet />
+            </AppProvider>
           }
         >
           <Route
@@ -42,20 +40,28 @@ export default function App() {
           >
             <Route index element={<ChatPage />} />
           </Route>
-          <Route element={<AdminLayout />}>
-            <Route index element={<ProjectPage />} />
-            <Route path="skills" element={<SkillsPage />} />
-            <Route path="mcp" element={<McpPage />} />
-            <Route path="claude" element={<ClaudePage />} />
-            <Route path="rules" element={<RulesPage />} />
-            <Route path="prompt" element={<PromptPage />} />
-            <Route path="tools" element={<ToolsPage />} />
-            <Route path="preflight" element={<PreflightPage />} />
-            <Route path="global" element={<GlobalSettingsRedirect />} />
-            <Route path="global/inference" element={<GlobalInferencePage />} />
-            <Route path="global/models" element={<Navigate to="/global/inference" replace />} />
-            <Route path="global/claw-tap" element={<Navigate to="/global/inference" replace />} />
-            <Route path="global/pats" element={<GitPatsPage />} />
+          <Route
+            element={
+              <RequireAuth>
+                <Outlet />
+              </RequireAuth>
+            }
+          >
+            <Route element={<AdminLayout />}>
+              <Route index element={<ProjectPage />} />
+              <Route path="skills" element={<SkillsPage />} />
+              <Route path="mcp" element={<McpPage />} />
+              <Route path="claude" element={<ClaudePage />} />
+              <Route path="rules" element={<RulesPage />} />
+              <Route path="prompt" element={<PromptPage />} />
+              <Route path="tools" element={<ToolsPage />} />
+              <Route path="preflight" element={<PreflightPage />} />
+              <Route path="global" element={<GlobalSettingsRedirect />} />
+              <Route path="global/inference" element={<GlobalInferencePage />} />
+              <Route path="global/models" element={<Navigate to="/global/inference" replace />} />
+              <Route path="global/claw-tap" element={<Navigate to="/global/inference" replace />} />
+              <Route path="global/pats" element={<GitPatsPage />} />
+            </Route>
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/chat" replace />} />

@@ -665,8 +665,16 @@ pub fn load_system_prompt(
     extra_session: Option<Value>,
 ) -> Result<Vec<String>, PromptBuildError> {
     let cwd = cwd.into();
+    // Gateway `claude_md` replaces builtin scaffold via override file, but project rules
+    // from `rules_json` must still apply. Author: kejiqing
     if let Some(override_text) = read_gateway_user_prompt_override(&cwd) {
-        return Ok(vec![override_text]);
+        let mut project_context = ProjectContext::discover_with_git(&cwd, current_date.into())?;
+        project_context.extra_session = extra_session;
+        let mut sections = vec![override_text];
+        if !project_context.rule_files.is_empty() {
+            sections.push(render_project_rules(&project_context.rule_files));
+        }
+        return Ok(sections);
     }
     let scaffold_override = read_gateway_scaffold_override(&cwd);
     let mut project_context = ProjectContext::discover_with_git(&cwd, current_date.into())?;
@@ -1262,6 +1270,35 @@ mod tests {
             claude_idx < env_idx,
             "Claude instructions must precede environment context"
         );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn load_system_prompt_includes_rules_when_gateway_user_override_present() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::create_dir_all(root.join("home/.cursor/rules")).expect("rules dir");
+        fs::write(
+            root.join(".claw").join("system_prompt_user_override.md"),
+            "custom user scaffold",
+        )
+        .expect("write override");
+        fs::write(
+            root.join("home/.cursor/rules/lang.mdc"),
+            "use user language",
+        )
+        .expect("write rule");
+
+        let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None)
+            .expect("load prompt")
+            .join("\n\n");
+        let override_idx = prompt.find("custom user scaffold").expect("override text");
+        let rules_idx = prompt.find("# Project rules").expect("project rules");
+        assert!(
+            override_idx < rules_idx,
+            "rules must follow gateway user override"
+        );
+        assert!(prompt.contains("use user language"));
         fs::remove_dir_all(root).expect("cleanup");
     }
 

@@ -5336,32 +5336,6 @@ async fn build_effective_prompt_response(
         .get_project_config(ds_id)
         .await
         .map_err(|e| session_db_err(&e))?;
-    if let Some(text) = row
-        .as_ref()
-        .and_then(|r| r.claude_md.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let message = text.to_string();
-        if force_apply {
-            let scaffold = gateway_global_settings::load_system_prompt_default(&state.session_db)
-                .await
-                .map_err(|e| session_db_err(&e))?;
-            if let Some(ref r) = row {
-                project_config_apply::apply_if_needed(&work_dir, r, true, &scaffold)
-                    .await
-                    .map_err(|e| map_project_config_apply_err(&e))?;
-            }
-        }
-        return Ok(EffectivePromptResponse {
-            ds_id,
-            work_dir: work_dir.display().to_string(),
-            sections: vec![message.clone()],
-            message,
-            prompt_source: "user".to_string(),
-        });
-    }
-
     apply_project_config_for_ds(state, ds_id, force_apply).await?;
     let sections = load_system_prompt(
         work_dir.to_path_buf(),
@@ -5377,12 +5351,22 @@ async fn build_effective_prompt_response(
         )
     })?;
     let message = sections.join("\n\n");
+    let prompt_source = if row
+        .as_ref()
+        .and_then(|r| r.claude_md.as_deref())
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        "user"
+    } else {
+        "system"
+    }
+    .to_string();
     Ok(EffectivePromptResponse {
         ds_id,
         work_dir: work_dir.display().to_string(),
         sections,
         message,
-        prompt_source: "system".to_string(),
+        prompt_source,
     })
 }
 
