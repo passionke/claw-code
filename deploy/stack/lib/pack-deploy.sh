@@ -9,26 +9,49 @@ ROOT_DIR="$(cd "${STACK_DIR}/../.." && pwd)"
 
 cd "${ROOT_DIR}"
 
+# shellcheck source=/dev/null
+source "${LIB_DIR}/claw-step-timing.sh"
+
 if [[ ! -f .env ]]; then
   echo "缺少 .env：cp .env.example .env 并填写" >&2
   exit 1
 fi
 
-TAG="${1:-local}"
-shift || true
+TAG="local"
+BUILD_FLAGS=(--no-clean --skip-playground)
+UP_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --clean)
+      BUILD_FLAGS=(--skip-playground)
+      shift
+      ;;
+    local | release-*)
+      TAG="$1"
+      shift
+      ;;
+    *)
+      UP_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
 
-echo "==> 1/2 打包镜像 (tag=${TAG})，日志: deploy/stack/.build.log"
-echo "    另开终端: tail -f deploy/stack/.build.log"
-"${LIB_DIR}/build.sh" "${TAG}"
+CLAW_TIMING_LABEL="pack-deploy timing"
+claw_timing_init
 
-echo "==> 2/2 重启部署"
-export CLAW_POOL_REBUILD_DAEMON=1
-"${LIB_DIR}/down.sh" && "${LIB_DIR}/up.sh" "$@"
+claw_step_begin "1/4 build images (tag=${TAG})"
+echo "    日志: deploy/stack/.build.log（另开终端: tail -f deploy/stack/.build.log）"
+"${LIB_DIR}/build.sh" "${BUILD_FLAGS[@]}" "${TAG}"
 
-echo "==> 3/3 栈真实性验收 (失败即非 0 退出)"
+claw_step_begin "2/4 restart stack (down + up)"
+"${LIB_DIR}/down.sh" && "${LIB_DIR}/up.sh" ${UP_ARGS+"${UP_ARGS[@]}"}
+
+claw_step_begin "3/4 stack verify"
 "${LIB_DIR}/claw-stack-verify.sh"
 
-echo "==> 4/4 连通性冒烟"
+claw_step_begin "4/4 connectivity check"
 "${LIB_DIR}/check-connectivity.sh"
 
+claw_timing_summary
 echo "==> pack-deploy 完成（verify + connectivity 均已通过）"

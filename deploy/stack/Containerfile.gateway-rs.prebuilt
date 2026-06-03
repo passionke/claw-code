@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY deploy/stack/.linux-artifacts/release/claw /usr/local/bin/claw
 COPY deploy/stack/.linux-artifacts/release/http-gateway-rs /usr/local/bin/http-gateway-rs
-COPY deploy/stack/.linux-artifacts/release/claw-pool-daemon /usr/local/bin/claw-pool-daemon
+# pool-daemon: macOS host sidecar only (Linux release uses Containerfile.gateway-rs). kejiqing
 
 ENV CLAW_HTTP_ADDR=0.0.0.0:8080
 ENV CLAW_WORK_ROOT=/var/lib/claw/workspace

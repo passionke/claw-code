@@ -651,7 +651,7 @@ mod tests {
     fn host_bind_mount_available() -> bool {
         #[cfg(target_os = "macos")]
         {
-            return podman_machine_mount_available();
+            podman_machine_mount_available()
         }
         #[cfg(not(target_os = "macos"))]
         {

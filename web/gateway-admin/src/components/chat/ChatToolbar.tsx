@@ -1,3 +1,4 @@
+import { TranslationOutlined } from "@ant-design/icons";
 import { Button, Input, Space, Typography } from "antd";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
@@ -8,10 +9,18 @@ export interface ChatToolbarProps {
   onNewSession: () => void;
   onHealth: (text: string) => void;
   onError: (text: string) => void;
+  onTranslateConversation?: () => void;
+  translateDisabled?: boolean;
 }
 
 /** store_id / org_id / claude-tap Live。Author: kejiqing */
-export default function ChatToolbar({ onNewSession, onHealth, onError }: ChatToolbarProps) {
+export default function ChatToolbar({
+  onNewSession,
+  onHealth,
+  onError,
+  onTranslateConversation,
+  translateDisabled,
+}: ChatToolbarProps) {
   const { gatewayBase } = useApp();
   const {
     storeId,
@@ -82,6 +91,13 @@ export default function ChatToolbar({ onNewSession, onHealth, onError }: ChatToo
       </Space>
       <Space>
         <Button onClick={onNewSession}>新会话</Button>
+        <Button
+          icon={<TranslationOutlined />}
+          disabled={translateDisabled}
+          onClick={onTranslateConversation}
+        >
+          翻译中文
+        </Button>
         <Button onClick={() => void runHealth()}>健康检查</Button>
       </Space>
     </>

@@ -115,6 +115,7 @@ pub async fn run_solve_request_docker(
         task_id,
         turn_id,
         skip_session_db: _,
+        client_origin: _,
     } = ctx;
     let timeout_seconds = req
         .timeout_seconds

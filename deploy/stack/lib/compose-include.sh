@@ -182,6 +182,28 @@ claw_podman_export_pool_workspace() {
   } >"${script_dir}/.claw-pool-workspace.env"
 }
 
+
+# Local dev: bind-mount gateway-admin dist when present (skip npm in pack-deploy). Author: kejiqing
+claw_podman_append_admin_dist_bind() {
+  local script_dir="$1"
+  local rel="${2:-}"
+  local repo_root="${CLAW_COMPOSE_WORKING_DIRECTORY:-}"
+  local dist=""
+  if [[ -n "${repo_root}" ]]; then
+    dist="${repo_root}/web/gateway-admin/dist/index.html"
+  else
+    dist="$(cd "${script_dir}/../.." && pwd)/web/gateway-admin/dist/index.html"
+  fi
+  if [[ ! -f "${dist}" ]]; then
+    return 0
+  fi
+  if [[ -n "${rel}" ]]; then
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.admin-dist-bind.yml" )
+  else
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.admin-dist-bind.yml" )
+  fi
+}
+
 claw_podman_load_compose_args() {
   local script_dir="$1"
   local env_file="$2"
@@ -246,6 +268,7 @@ claw_podman_load_compose_args() {
         printf '%s\n' "# pool registry advertise (claw_pool.advertise_ip): ${CLAW_POOL_ADVERTISE_HOST}"
       fi
     } >"${script_dir}/.claw-pool-rpc/gateway.env"
+    claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
     return 0
   fi
   # Linux (etc.): compose `claw-pool-daemon` + engine socket mount.
@@ -262,6 +285,7 @@ claw_podman_load_compose_args() {
   else
     CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.pool-rpc.yml" )
   fi
+  claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
   return 0
 }
 

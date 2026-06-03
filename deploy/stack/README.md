@@ -33,15 +33,18 @@ Author: kejiqing
 # 只改 React 管理台（web/gateway-admin/src）：
 ./deploy/stack/gateway.sh admin-build   # 然后 quick 或 playground，并提交 dist/
 
-# 改 rust 网关 / worker 镜像后：全量 build + 重启（日志 deploy/stack/.build.log，可 tail -f）
+# 改 rust 网关 / worker 镜像后：build + 重启（默认保留编译缓存，日志 deploy/stack/.build.log）
 ./deploy/stack/gateway.sh pack-deploy
+
+# 怀疑缓存脏了：先 clean 或 pack-deploy --clean
 
 # 仅清编译缓存（rust/target、.linux-artifacts；默认不删 claw-workspace）
 ./deploy/stack/gateway.sh clean
 
 # 或拆开：
 ./deploy/stack/gateway.sh build          # 默认先 clean，再 podman run 编译 + 打镜像
-./deploy/stack/gateway.sh build --no-clean local   # 增量编译、省时间
+./deploy/stack/gateway.sh build --no-clean local   # 增量编译
+./deploy/stack/gateway.sh pack-deploy      # 默认 --no-clean + 跳过 playground npm
 ./deploy/stack/gateway.sh restart
 
 # 只重启、不重新编译（镜像已是新的才有效）

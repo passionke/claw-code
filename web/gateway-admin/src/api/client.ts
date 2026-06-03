@@ -17,8 +17,10 @@ export async function proxyHttp<T = unknown>(
   gatewayBase: string,
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  headers?: Record<string, string>
 ): Promise<T> {
+  const reqHeaders: Record<string, string> = { ...(headers ?? {}) };
   const res = await fetch("/__proxy__", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -28,7 +30,7 @@ export async function proxyHttp<T = unknown>(
       method,
       path,
       body: body === undefined ? null : body,
-      headers: {},
+      headers: reqHeaders,
     }),
   });
   const wrap = (await res.json().catch(() => ({}))) as ProxyEnvelope;

@@ -43,10 +43,10 @@ use http_gateway_rs::biz_advice_report::{
     sanitize_report_payload, BizAdviceReportPayload, BizReportStreamMsg, ReportExportSanitizer,
 };
 use http_gateway_rs::{
-    claw_tap_cluster_state, gateway_claw_tap_settings, gateway_global_settings,
-    gateway_llm_config_sync, mcp_probe, pool, project_config_apply, project_config_version,
-    project_entity_revision, project_git_sync, project_tools, session_db, session_merge, turn_id,
-    turn_timeline_api, turn_tools_api,
+    claw_tap_cluster_state, client_origin, gateway_claw_tap_settings, gateway_global_settings,
+    gateway_llm_config_sync, gateway_translate, mcp_probe, pool, project_config_apply,
+    project_config_version, project_entity_revision, project_git_sync, project_tools, session_db,
+    session_merge, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
@@ -97,6 +97,8 @@ struct RunSolveContext {
     turn_id: String,
     /// When true, do not read/write the gateway session `SQLite` (e.g. internal biz report solve).
     skip_session_db: bool,
+    /// Who enqueued this turn (`gateway-admin`, external app, …). Author: kejiqing
+    client_origin: Option<String>,
 }
 
 /// Session workspace paths after sync registry prepare (before docker solve). kejiqing
@@ -897,6 +899,19 @@ async fn get_session_solve_lock(state: &AppState, ds_id: i64, session_id: &str) 
         .clone()
 }
 
+fn client_origin_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(client_origin::HEADER_CLIENT_ORIGIN)
+        .and_then(|v| v.to_str().ok())
+}
+
+fn resolve_request_client_origin(
+    extra_session: Option<&Value>,
+    headers: &HeaderMap,
+) -> Option<String> {
+    client_origin::resolve_client_origin(extra_session, client_origin_from_headers(headers))
+}
+
 async fn register_solve_turn(
     db: &session_db::GatewaySessionDb,
     turn_id: &str,
@@ -904,12 +919,21 @@ async fn register_solve_turn(
     ds_id: i64,
     user_prompt: &str,
     co_located_pool_id: Option<&str>,
+    client_origin: Option<&str>,
 ) -> Result<(), ApiError> {
     let prompt = user_prompt.trim();
     let user_prompt = (!prompt.is_empty()).then_some(prompt);
-    db.insert_turn(turn_id, session_id, ds_id, "queued", now_ms(), user_prompt)
-        .await
-        .map_err(|e| session_db_err(&e))?;
+    db.insert_turn(
+        turn_id,
+        session_id,
+        ds_id,
+        "queued",
+        now_ms(),
+        user_prompt,
+        client_origin,
+    )
+    .await
+    .map_err(|e| session_db_err(&e))?;
     if let Some(pool_id) = co_located_pool_id.map(str::trim).filter(|s| !s.is_empty()) {
         match db.assign_turn_pool_id(turn_id, pool_id).await {
             Ok(()) => info!(
@@ -1565,6 +1589,7 @@ async fn main() {
             "/v1/agent/feedback",
             post(post_agent_feedback).get(get_agent_feedback),
         )
+        .route("/v1/gateway/translate", post(post_gateway_translate))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &http::Request<axum::body::Body>| {
@@ -3676,6 +3701,7 @@ async fn readyz(State(state): State<AppState>) -> Result<impl IntoResponse, ApiE
 
 async fn solve(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Extension(http_request_id): Extension<HttpRequestId>,
     Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
     Json(req): Json<SolveRequest>,
@@ -3691,6 +3717,7 @@ async fn solve(
         phase = "accepted",
         "gateway_solve"
     );
+    let client_origin = resolve_request_client_origin(req.extra_session.as_ref(), &headers);
     let new_turn_id = turn_id::mint_turn_id();
     register_solve_turn(
         &state.session_db,
@@ -3699,6 +3726,7 @@ async fn solve(
         req.ds_id,
         &req.user_prompt,
         state.cfg.co_located_pool_id.as_deref(),
+        client_origin.as_deref(),
     )
     .await?;
     let result = run_solve_request(
@@ -3709,6 +3737,7 @@ async fn solve(
             task_id: None,
             turn_id: new_turn_id.clone(),
             skip_session_db: false,
+            client_origin,
         },
     )
     .await;
@@ -5307,32 +5336,6 @@ async fn build_effective_prompt_response(
         .get_project_config(ds_id)
         .await
         .map_err(|e| session_db_err(&e))?;
-    if let Some(text) = row
-        .as_ref()
-        .and_then(|r| r.claude_md.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let message = text.to_string();
-        if force_apply {
-            let scaffold = gateway_global_settings::load_system_prompt_default(&state.session_db)
-                .await
-                .map_err(|e| session_db_err(&e))?;
-            if let Some(ref r) = row {
-                project_config_apply::apply_if_needed(&work_dir, r, true, &scaffold)
-                    .await
-                    .map_err(|e| map_project_config_apply_err(&e))?;
-            }
-        }
-        return Ok(EffectivePromptResponse {
-            ds_id,
-            work_dir: work_dir.display().to_string(),
-            sections: vec![message.clone()],
-            message,
-            prompt_source: "user".to_string(),
-        });
-    }
-
     apply_project_config_for_ds(state, ds_id, force_apply).await?;
     let sections = load_system_prompt(
         work_dir.to_path_buf(),
@@ -5348,12 +5351,22 @@ async fn build_effective_prompt_response(
         )
     })?;
     let message = sections.join("\n\n");
+    let prompt_source = if row
+        .as_ref()
+        .and_then(|r| r.claude_md.as_deref())
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        "user"
+    } else {
+        "system"
+    }
+    .to_string();
     Ok(EffectivePromptResponse {
         ds_id,
         work_dir: work_dir.display().to_string(),
         sections,
         message,
-        prompt_source: "system".to_string(),
+        prompt_source,
     })
 }
 
@@ -5651,6 +5664,9 @@ struct ListProjectSessionsQuery {
     updated_to_ms: Option<i64>,
     /// Fuzzy match on first-turn `user_prompt` (ILIKE).
     q: Option<String>,
+    /// `T_<32 hex>` → session owning that turn; otherwise `session_id` ILIKE substring.
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
 }
 
 fn default_session_list_limit() -> i64 {
@@ -5669,6 +5685,8 @@ struct GatewaySessionSummaryJson {
     turn_count: i64,
     #[serde(rename = "previewPrompt")]
     preview_prompt: Option<String>,
+    #[serde(rename = "clientOrigin", skip_serializing_if = "Option::is_none")]
+    client_origin: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -5703,6 +5721,10 @@ struct GatewayTurnSummaryJson {
     report_body: Option<String>,
     #[serde(rename = "failureDetail", skip_serializing_if = "Option::is_none")]
     failure_detail: Option<String>,
+    #[serde(rename = "clientOrigin", skip_serializing_if = "Option::is_none")]
+    client_origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feedback: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -5733,6 +5755,7 @@ async fn list_project_sessions(
             query.updated_from_ms,
             query.updated_to_ms,
             query.q.as_deref(),
+            query.session_id.as_deref(),
         )
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -5747,6 +5770,7 @@ async fn list_project_sessions(
                 updated_at_ms: r.updated_at_ms,
                 turn_count: r.turn_count,
                 preview_prompt: r.preview_prompt,
+                client_origin: r.client_origin,
             })
             .collect(),
         has_more,
@@ -5791,6 +5815,8 @@ async fn list_session_turns(
                 has_report: r.has_report,
                 report_body: r.report_body,
                 failure_detail: r.failure_detail,
+                client_origin: r.client_origin,
+                feedback: r.feedback,
             })
             .collect(),
     }))
@@ -6010,6 +6036,7 @@ async fn enqueue_solve_async(
     id_kind: session_merge::HttpRequestIdKind,
     req: SolveRequest,
     endpoint: &'static str,
+    client_origin: Option<String>,
 ) -> Result<SolveAsyncResponse, ApiError> {
     let body_sid = session_merge::trim_session_id(req.session_id.as_deref());
     let effective =
@@ -6030,6 +6057,17 @@ async fn enqueue_solve_async(
     }
     let task_id = effective.clone();
     let ds_id = req.ds_id;
+    {
+        let tasks = state.tasks.lock().await;
+        if let Some(inner) = tasks.get(&task_id) {
+            if inner.record.status == "queued" || inner.record.status == "running" {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "session has active async task",
+                ));
+            }
+        }
+    }
     let new_turn_id = turn_id::mint_turn_id();
     register_solve_turn(
         &state.session_db,
@@ -6038,6 +6076,7 @@ async fn enqueue_solve_async(
         ds_id,
         &req.user_prompt,
         state.cfg.co_located_pool_id.as_deref(),
+        client_origin.as_deref(),
     )
     .await?;
     if let Some(rel) = state
@@ -6062,14 +6101,6 @@ async fn enqueue_solve_async(
     );
     {
         let mut tasks = state.tasks.lock().await;
-        if let Some(inner) = tasks.get(&task_id) {
-            if inner.record.status == "queued" || inner.record.status == "running" {
-                return Err(ApiError::new(
-                    StatusCode::CONFLICT,
-                    "session has active async task",
-                ));
-            }
-        }
         let queue = gateway_queue_snapshot(&tasks);
         let initial_desc = resolve_current_task_desc("queued", None, &queue, false);
         tasks.insert(
@@ -6105,10 +6136,14 @@ async fn enqueue_solve_async(
     let task_id_for_worker = task_id.clone();
     let rid = effective.clone();
     let turn_id_for_worker = new_turn_id.clone();
+    let client_origin_for_worker = client_origin.clone();
     let join = tokio::spawn(async move {
         {
             let mut tasks = state_clone.tasks.lock().await;
             if let Some(inner) = tasks.get_mut(&task_id_for_worker) {
+                if inner.record.turn_id != turn_id_for_worker {
+                    return;
+                }
                 if inner.record.status == "cancelled" {
                     inner.cancel = None;
                     finalize_solve_turn_cancelled(&state_clone.session_db, &turn_id_for_worker)
@@ -6141,6 +6176,7 @@ async fn enqueue_solve_async(
                 task_id: Some(task_id_for_worker.clone()),
                 turn_id: turn_id_for_worker.clone(),
                 skip_session_db: false,
+                client_origin: client_origin_for_worker,
             },
         )
         .await;
@@ -6149,6 +6185,9 @@ async fn enqueue_solve_async(
             let Some(inner) = tasks.get_mut(&task_id_for_worker) else {
                 return;
             };
+            if inner.record.turn_id != turn_id_for_worker {
+                return;
+            }
             inner.cancel = None;
             if inner.record.status == "cancelled" {
                 finalize_solve_turn_cancelled(&state_clone.session_db, &turn_id_for_worker).await;
@@ -6216,6 +6255,7 @@ async fn enqueue_solve_async(
 
 async fn solve_start(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Extension(http_request_id): Extension<HttpRequestId>,
     Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
     Json(req): Json<StartRequest>,
@@ -6237,6 +6277,10 @@ async fn solve_start(
             ));
         }
     }
+    let client_origin = client_origin::resolve_client_origin(
+        req.extra_session.as_ref(),
+        client_origin_from_headers(&headers),
+    );
     prepare_gateway_session(
         &state,
         req.ds_id,
@@ -6244,6 +6288,7 @@ async fn solve_start(
         req.extra_session.as_ref(),
         &effective,
         false,
+        client_origin.as_deref(),
     )
     .await?;
     info!(
@@ -6265,11 +6310,21 @@ async fn solve_start(
 
 async fn solve_async(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Extension(http_request_id): Extension<HttpRequestId>,
     Extension(id_kind): Extension<session_merge::HttpRequestIdKind>,
     Json(req): Json<SolveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let out = enqueue_solve_async(state, http_request_id, id_kind, req, "/v1/solve_async").await?;
+    let client_origin = resolve_request_client_origin(req.extra_session.as_ref(), &headers);
+    let out = enqueue_solve_async(
+        state,
+        http_request_id,
+        id_kind,
+        req,
+        "/v1/solve_async",
+        client_origin,
+    )
+    .await?;
     let headers = solve_async_response_headers(&out.session_id)?;
     Ok((headers, Json(out)))
 }
@@ -6573,6 +6628,38 @@ enum TurnMemoryCancel {
     Applied(Option<AbortHandle>),
 }
 
+/// After a cold turn cancel, memory may still hold a newer `queued`/`running` task for the same session.
+async fn abort_memory_session_task_if_active(state: &AppState, session_id: &str, ds_id: i64) {
+    let (cancel_handle, turn_id) = {
+        let mut tasks = state.tasks.lock().await;
+        let Some(inner) = tasks.get_mut(session_id) else {
+            return;
+        };
+        if inner.ds_id != ds_id || task_status_is_terminal_for_cancel(&inner.record.status) {
+            return;
+        }
+        let turn_id = inner.record.turn_id.clone();
+        let h = inner.cancel.take();
+        inner.record.status = "cancelled".to_string();
+        inner.record.finished_at_ms = Some(now_ms());
+        inner.record.result = None;
+        inner.record.error = Some(json!({
+            "detail": "cancelled by client (session slot released after turn cancel)",
+            "outcome": "cancelled",
+            "cancelApplied": true,
+        }));
+        tasks.remove(session_id);
+        (h, turn_id)
+    };
+    if let Some((pool, idx)) = state.docker_slots.lock().await.remove(session_id) {
+        let _ = pool.force_kill_slot(idx).await;
+    }
+    if let Some(h) = cancel_handle {
+        h.abort();
+    }
+    finalize_solve_turn_cancelled(&state.session_db, &turn_id).await;
+}
+
 async fn try_memory_cancel_turn(
     state: &AppState,
     session_id: &str,
@@ -6652,6 +6739,10 @@ async fn cancel_session_turn(
             if let Some(h) = cancel_handle {
                 h.abort();
             }
+            {
+                let mut tasks = state.tasks.lock().await;
+                tasks.remove(&session_id);
+            }
             finalize_solve_turn_cancelled(&state.session_db, &turn_id).await;
             info!(
                 request_id = %http_request_id.0,
@@ -6678,6 +6769,9 @@ async fn cancel_session_turn(
     }
 
     let out = cancel_session_turn_cold(&state, &session_id, &turn_id, query.ds_id).await?;
+    if out.cancel_applied {
+        abort_memory_session_task_if_active(&state, &session_id, query.ds_id).await;
+    }
     info!(
         request_id = %http_request_id.0,
         session_id = %out.session_id,
@@ -6785,6 +6879,16 @@ async fn cancel_task(
     if let Some(h) = cancel_handle {
         h.abort();
     }
+    let record = {
+        let mut tasks = state.tasks.lock().await;
+        let Some(inner) = tasks.remove(&task_id) else {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("task not found: {task_id}"),
+            ));
+        };
+        inner.record
+    };
     info!(
         request_id = %http_request_id.0,
         task_id = %task_id,
@@ -6792,13 +6896,6 @@ async fn cancel_task(
         phase = "cancel",
         "gateway_task"
     );
-    let tasks = state.tasks.lock().await;
-    let record = tasks
-        .get(&task_id)
-        .map(|inner| inner.record.clone())
-        .ok_or_else(|| {
-            ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
-        })?;
     finalize_solve_turn_cancelled(&state.session_db, &record.turn_id).await;
     Ok(Json(record))
 }
@@ -7393,6 +7490,7 @@ async fn prepare_gateway_session(
     extra_session: Option<&Value>,
     request_id: &str,
     skip_session_db: bool,
+    client_origin: Option<&str>,
 ) -> Result<PreparedGatewaySession, ApiError> {
     if ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
@@ -7521,7 +7619,13 @@ async fn prepare_gateway_session(
     if need_insert_row {
         state
             .session_db
-            .insert_session(request_id, ds_id, &session_home_rel, now_ms())
+            .insert_session(
+                request_id,
+                ds_id,
+                &session_home_rel,
+                now_ms(),
+                client_origin,
+            )
             .await
             .map_err(|e| session_db_err(&e))?;
     } else if !skip_session_db {
@@ -7541,6 +7645,7 @@ async fn prepare_gateway_session(
 
 async fn post_agent_feedback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<AgentFeedbackPostRequest>,
 ) -> Result<Json<AgentFeedbackPostResponse>, ApiError> {
     if body.ds_id < 1 {
@@ -7584,6 +7689,19 @@ async fn post_agent_feedback(
             "unknown turnId for session",
         ));
     }
+    if client_origin_from_headers(&headers) == Some(client_origin::CLIENT_ORIGIN_GATEWAY_ADMIN) {
+        let turn_origin = state
+            .session_db
+            .get_turn_client_origin(turn, session_id, body.ds_id)
+            .await
+            .map_err(|e| session_db_err(&e))?;
+        if turn_origin.as_deref() != Some(client_origin::CLIENT_ORIGIN_GATEWAY_ADMIN) {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "admin UI may only submit feedback for admin-origin turns",
+            ));
+        }
+    }
     let updated_at_ms = now_ms();
     state
         .session_db
@@ -7597,6 +7715,15 @@ async fn post_agent_feedback(
         feedback: feedback.to_string(),
         updated_at_ms,
     }))
+}
+
+async fn post_gateway_translate(
+    State(state): State<AppState>,
+    Json(body): Json<gateway_translate::GatewayTranslateRequest>,
+) -> Result<Json<gateway_translate::GatewayTranslateResponse>, ApiError> {
+    gateway_translate::post_gateway_translate_handler(&state.session_db, body)
+        .await
+        .map_err(|e| ApiError::new(e.status, e.message))
 }
 
 async fn get_agent_feedback(
@@ -7679,6 +7806,7 @@ async fn run_solve_request(
         req.extra_session.as_ref(),
         &ctx.request_id,
         ctx.skip_session_db,
+        ctx.client_origin.as_deref(),
     )
     .await?;
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# 日常本地起栈：host pool-daemon + 轻量 playground 镜像 + pool-reset + up + check
+# 日常本地起栈：host pool-daemon + playground（slim 或已有镜像）+ pool-reset + up + check
 # Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${LIB_DIR}/../../.." && pwd)"
+STACK_DIR="${ROOT_DIR}/deploy/stack"
 
 cd "${ROOT_DIR}"
 
@@ -18,10 +19,12 @@ set -a
 source "${ROOT_DIR}/.env"
 set +a
 
-echo "==> [1/5] build host claw-pool-daemon (release)"
-(cd "${ROOT_DIR}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
+echo "==> [1/5] host claw-pool-daemon"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/pool-daemon-binary.sh"
+CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
 
-echo "==> [2/5] playground image (gateway-admin built inside Containerfile)"
+echo "==> [2/5] playground image (slim if missing; admin via bind mount when dist/ exists)"
 rt="$(command -v podman 2>/dev/null || command -v docker)"
 pg_img="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
@@ -30,11 +33,11 @@ else
   py_reg="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
   py_reg="${py_reg%/}"
 fi
-"${rt}" build -q \
-  --build-arg "PYTHON_BASE_IMAGE=${py_reg}/library/python:3.12-alpine" \
-  --build-arg "NODE_BASE_IMAGE=${py_reg}/library/node:20-alpine" \
-  -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground" \
-  -t "${pg_img}" "${ROOT_DIR}" >/dev/null
+if ! "${rt}" image exists "${pg_img}" 2>/dev/null; then
+  "${rt}" build -q     --build-arg "PYTHON_BASE_IMAGE=${py_reg}/library/python:3.12-alpine"     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground.slim"     -t "${pg_img}" "${ROOT_DIR}" >/dev/null
+else
+  echo "    reusing ${pg_img}"
+fi
 
 echo "==> [3/5] pool-reset"
 "${LIB_DIR}/pool-reset.sh"
