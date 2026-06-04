@@ -61,6 +61,8 @@ claw_workspace_ownership_preflight() {
   local uid="${CLAW_WORKER_UID:-1000}"
   local gid="${CLAW_WORKER_GID:-1000}"
   local out
+  local lib_dir
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
   if [[ ! -d "${root}" ]]; then
     echo "error: workspace root missing: ${root}" >&2
@@ -68,6 +70,12 @@ claw_workspace_ownership_preflight() {
     echo "manual: deploy/stack/README.md -> 1.3 启动与检查 / 3. 常见问题（短）" >&2
     return 1
   fi
+
+  # Sidecar/privileged pool leaves root-owned ds_*; slots are recreated on up. kejiqing
+  # shellcheck disable=SC1091
+  source "${lib_dir}/fix-session-ownership.sh"
+  rm -rf "${root}/.claw-pool-slot" 2>/dev/null || true
+  claw_fix_session_workspace_ownership "${root}"
 
   out="$(
     python3 - "${root}" "${uid}" "${gid}" <<'PY'
@@ -78,13 +86,13 @@ import sys
 root = sys.argv[1]
 want_uid = int(sys.argv[2])
 want_gid = int(sys.argv[3])
-# Pool daemon (often privileged root in compose) owns slot mounts; not session uid 1000. kejiqing
-POOL_SLOT_BASENAME = ".claw-pool-slot"
 errors = []
 checked = 0
 
 def check_path(path):
     global checked
+    if "/.claw-pool-slot/" in path or path.rstrip("/").endswith("/.claw-pool-slot"):
+        return
     try:
         st = os.lstat(path)
     except FileNotFoundError:
@@ -94,14 +102,20 @@ def check_path(path):
         mode = stat.filemode(st.st_mode)
         errors.append(f"{path}|uid={st.st_uid}|gid={st.st_gid}|mode={mode}")
 
-check_path(root)
-for dirpath, dirnames, filenames in os.walk(root):
-    if POOL_SLOT_BASENAME in dirnames:
-        dirnames.remove(POOL_SLOT_BASENAME)
-    for name in dirnames:
-        check_path(os.path.join(dirpath, name))
-    for name in filenames:
-        check_path(os.path.join(dirpath, name))
+try:
+    names = os.listdir(root)
+except FileNotFoundError:
+    names = []
+for name in names:
+    if not name.startswith("ds_"):
+        continue
+    base = os.path.join(root, name)
+    check_path(base)
+    for dirpath, dirnames, filenames in os.walk(base):
+        for fn in filenames:
+            check_path(os.path.join(dirpath, fn))
+        for dn in dirnames:
+            check_path(os.path.join(dirpath, dn))
 
 if errors:
     print(f"MISMATCH {len(errors)} {checked}")
@@ -116,7 +130,7 @@ PY
   if [[ "${out}" == MISMATCH* ]]; then
     echo "error: workspace ownership preflight failed: root=${root} expected=${uid}:${gid}" >&2
     printf '%s\n' "${out}" >&2
-    echo "hint: sudo chown -R ${uid}:${gid} \"${root}\"" >&2
+    echo "hint: ./deploy/stack/gateway.sh fix-workspace  OR  sudo chown -R ${uid}:${gid} \"${root}/ds_\"*" >&2
     echo "manual: deploy/stack/README.md -> 1.3 启动与检查 / 3. 常见问题（短）" >&2
     return 1
   fi

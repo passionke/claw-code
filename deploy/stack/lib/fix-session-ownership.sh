@@ -30,6 +30,8 @@ claw_fix_session_workspace_ownership() {
     return 0
   fi
 
+  rm -rf "${root}/.claw-pool-slot" 2>/dev/null || sudo -n rm -rf "${root}/.claw-pool-slot" 2>/dev/null || true
+
   rt="$(claw_container_runtime_cli)"
   image="${CLAW_CHOWN_RUNNER_IMAGE:-docker.1ms.run/library/alpine:3.20}"
 
@@ -46,8 +48,14 @@ claw_fix_session_workspace_ownership() {
     if chown -R "${uid}:${gid}" "${ds}" 2>/dev/null; then
       continue
     fi
+    if sudo chown -R "${uid}:${gid}" "${ds}" 2>/dev/null; then
+      continue
+    fi
     "${rt}" run --rm -v "${ds}:/mnt:rw" --user root "${image}" \
-      chown -R "${uid}:${gid}" /mnt
+      chown -R "${uid}:${gid}" /mnt || {
+      echo "error: cannot chown ${ds} to ${uid}:${gid} (need sudo or docker)" >&2
+      return 1
+    }
   done
 
   # Slot guests are recreated by pool; chown so a later preflight on ds_* paths stays clean. kejiqing
