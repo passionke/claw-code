@@ -190,11 +190,19 @@ claw_podman_export_pool_workspace() {
 }
 
 
-# Local dev: bind-mount gateway-admin dist when present (skip npm in pack-deploy). Author: kejiqing
+# Local dev only: bind-mount gateway-admin dist. Production/release always use image SPA. Author: kejiqing
 claw_podman_append_admin_dist_bind() {
   local script_dir="$1"
   local rel="${2:-}"
   local repo_root="${CLAW_COMPOSE_WORKING_DIRECTORY:-}"
+  local profile
+  profile="$(printf '%s' "${CLAW_DEPLOY_PROFILE:-}" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "${profile}" && "$(uname -s)" != Darwin ]]; then
+    profile=production
+  fi
+  if [[ "${profile}" == production ]] || [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
+    return 0
+  fi
   local dist=""
   if [[ -n "${repo_root}" ]]; then
     dist="${repo_root}/web/gateway-admin/dist/index.html"

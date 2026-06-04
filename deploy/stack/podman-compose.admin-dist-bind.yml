@@ -1,5 +1,5 @@
-# Optional: bind-mount host `web/gateway-admin/dist` (requires `gateway.sh admin-build` first).
-# quick/local only — do not use with `up --release` or incomplete dist causes /admin white screen. kejiqing
+# Local dev only (`CLAW_DEPLOY_PROFILE=local`). Production/release never merge this file.
+# Requires full `gateway.sh admin-build` (dist/assets/*.js). kejiqing
 services:
   gateway-playground:
     volumes:
