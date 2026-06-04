@@ -31,6 +31,33 @@ claw_pool_daemon_on_host() {
   [[ "${profile}" == production ]]
 }
 
+# Gateway container -> host pool RPC: Linux Docker uses bridge gateway IP (no host.docker.internal). kejiqing
+claw_pool_gateway_to_host_rpc_ip() {
+  if [[ -n "${CLAW_POOL_DAEMON_TCP_HOST:-}" ]]; then
+    printf '%s' "${CLAW_POOL_DAEMON_TCP_HOST}"
+    return 0
+  fi
+  if [[ "$(uname -s)" == Darwin ]]; then
+    if [[ "$(claw_container_runtime_cli 2>/dev/null || true)" == docker ]]; then
+      printf '%s' '127.0.0.1'
+    else
+      printf '%s' 'host.containers.internal'
+    fi
+    return 0
+  fi
+  local rt ip
+  rt="$(claw_container_runtime_cli 2>/dev/null || true)"
+  if [[ "${rt}" == docker || "${rt}" == podman ]]; then
+    ip="$("${rt}" network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+    ip="${ip//$'\n'/}"
+    if [[ -n "${ip}" ]]; then
+      printf '%s' "${ip}"
+      return 0
+    fi
+  fi
+  printf '%s' '172.17.0.1'
+}
+
 claw_podman_machine_host_socket() {
   command -v podman >/dev/null 2>&1 || return 1
   local p=""
@@ -277,10 +304,7 @@ claw_podman_load_compose_args() {
   local pool_http_port="${CLAW_POOL_HTTP_PORT:-9944}"
   local tcp_host
   if claw_pool_daemon_on_host; then
-    tcp_host="${CLAW_POOL_DAEMON_TCP_HOST:-host.containers.internal}"
-    if [[ "$(claw_container_runtime_cli 2>/dev/null || true)" == docker ]]; then
-      tcp_host="${CLAW_POOL_DAEMON_TCP_HOST:-host.docker.internal}"
-    fi
+    tcp_host="$(claw_pool_gateway_to_host_rpc_ip)"
     {
       printf '%s\n' '# GENERATED — host claw-pool-daemon (no compose sidecar). kejiqing'
       printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"
@@ -293,11 +317,6 @@ claw_podman_load_compose_args() {
         printf '%s\n' "# pool registry advertise (claw_pool.advertise_ip): ${CLAW_POOL_ADVERTISE_HOST}"
       fi
     } >"${script_dir}/.claw-pool-rpc/gateway.env"
-    if [[ -n "${rel}" ]]; then
-      CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.pool-host-gateway.yml" )
-    else
-      CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.pool-host-gateway.yml" )
-    fi
     claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
     return 0
   fi
