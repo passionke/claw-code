@@ -12,6 +12,7 @@ import ClaudePage from "./pages/ClaudePage";
 import RulesPage from "./pages/RulesPage";
 import PromptPage from "./pages/PromptPage";
 import ToolsPage from "./pages/ToolsPage";
+import ExtraSessionPage from "./pages/ExtraSessionPage";
 import PreflightPage from "./pages/PreflightPage";
 import GlobalSettingsRedirect from "./pages/GlobalSettingsRedirect";
 import GitPatsPage from "./pages/global/GitPatsPage";
@@ -55,6 +56,7 @@ export default function App() {
               <Route path="rules" element={<RulesPage />} />
               <Route path="prompt" element={<PromptPage />} />
               <Route path="tools" element={<ToolsPage />} />
+              <Route path="extra-session" element={<ExtraSessionPage />} />
               <Route path="preflight" element={<PreflightPage />} />
               <Route path="global" element={<GlobalSettingsRedirect />} />
               <Route path="global/inference" element={<GlobalInferencePage />} />

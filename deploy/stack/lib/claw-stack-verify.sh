@@ -30,6 +30,8 @@ set +a
 source "${PODMAN_DIR}/lib/compose-include.sh"
 # shellcheck source=claw-pool-registry-env.sh
 source "${LIB_DIR}/claw-pool-registry-env.sh"
+# shellcheck source=pool-health.sh
+source "${LIB_DIR}/pool-health.sh"
 
 PG_USER="${CLAW_GATEWAY_PG_USER:-claw_gateway}"
 PG_DB="${CLAW_GATEWAY_PG_DATABASE:-claw_gateway}"
@@ -120,6 +122,11 @@ ok "claw_pool row ${CLAW_POOL_ID} heartbeat fresh"
 if [[ -f "${STAMP_FILE}" ]]; then
   echo "--- build stamp ---"
   cat "${STAMP_FILE}"
+fi
+
+if claw_pool_daemon_on_host; then
+  claw_assert_host_pool_rpc_ready "${RPC_DIR}" || fail "host pool RPC died during verify — run gateway.sh up"
+  ok "host pool RPC still ready after verify"
 fi
 
 echo "==> claw-stack-verify: all checks passed"

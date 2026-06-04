@@ -15,7 +15,7 @@ use crate::turn_id::{self, TURN_ID_PREFIX};
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::Json;
-use sqlx::{Error as SqlxError, PgPool, Row};
+use sqlx::{Error as SqlxError, PgPool, QueryBuilder, Row};
 
 /// One row for [`GatewaySessionDb::list_sessions_for_ds`]. Author: kejiqing
 #[derive(Debug, Clone)]
@@ -27,6 +27,10 @@ pub struct GatewaySessionSummary {
     pub preview_prompt: Option<String>,
     /// Who created the session (`gateway-admin`, external app, …). Author: kejiqing
     pub client_origin: Option<String>,
+    /// Any turn in session has `gateway_feedback.feedback = 'bad'`. Author: kejiqing
+    pub has_bad_feedback: bool,
+    /// Any turn in session has `gateway_feedback.feedback = 'good'`. Author: kejiqing
+    pub has_good_feedback: bool,
 }
 
 /// One row for [`GatewaySessionDb::list_turns_for_session`]. Author: kejiqing
@@ -46,6 +50,8 @@ pub struct GatewayTurnSummary {
     pub client_origin: Option<String>,
     /// `good` / `bad` from `gateway_feedback` when present. Author: kejiqing
     pub feedback: Option<String>,
+    /// Snapshot `extraSession` from enqueue `entry_params_json`. Author: kejiqing
+    pub extra_session: Option<Value>,
 }
 
 /// Row for tools API: session path + turn times + 1-based user turn index (single query). Author: kejiqing
@@ -96,6 +102,8 @@ pub struct ProjectConfigRow {
     pub solve_preflight_json: Value,
     /// Solve orchestration pipeline: `{ "kind": "single_turn" | "multi_agent_analysis", ... }`. Author: kejiqing
     pub solve_orchestration_json: Value,
+    /// Allowed `extraSession` business keys for this ds (`string[]`). Author: kejiqing
+    pub extra_session_fields_json: Value,
 }
 
 /// Row summary for [`GatewaySessionDb::list_project_config_summaries`]. Author: kejiqing
@@ -243,6 +251,7 @@ pub struct ProjectConfigUpsert<'a> {
     pub git_sync_json: &'a Value,
     pub solve_preflight_json: &'a Value,
     pub solve_orchestration_json: &'a Value,
+    pub extra_session_fields_json: &'a Value,
 }
 
 /// Gateway session index: one row per `(session_id, ds_id)` with a workspace-relative `session_home`.
@@ -366,6 +375,8 @@ impl GatewaySessionDb {
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS worker_name TEXT",
             "ALTER TABLE gateway_sessions ADD COLUMN IF NOT EXISTS client_origin TEXT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS client_origin TEXT",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS entry_params_json JSONB",
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS extra_session_fields_json JSONB NOT NULL DEFAULT '[]'::jsonb",
         ] {
             sqlx::query(ddl).execute(pool).await?;
         }
@@ -1215,7 +1226,7 @@ impl GatewaySessionDb {
             r"SELECT ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                       rules_json, mcp_servers_json, skills_sources_json, skills_json,
                       allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
-                      solve_orchestration_json
+                      solve_orchestration_json, extra_session_fields_json
                FROM project_config WHERE ds_id = $1",
         )
         .bind(ds_id)
@@ -1239,6 +1250,9 @@ impl GatewaySessionDb {
         let solve_preflight_json: Value = row.try_get::<Json<Value>, _>("solve_preflight_json")?.0;
         let solve_orchestration_json: Value =
             row.try_get::<Json<Value>, _>("solve_orchestration_json")?.0;
+        let extra_session_fields_json: Value = row
+            .try_get::<Json<Value>, _>("extra_session_fields_json")?
+            .0;
 
         let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
         let draft_open: bool = row.try_get("draft_open")?;
@@ -1258,6 +1272,7 @@ impl GatewaySessionDb {
             git_sync_json,
             solve_preflight_json,
             solve_orchestration_json,
+            extra_session_fields_json,
         }))
     }
 
@@ -1270,8 +1285,8 @@ impl GatewaySessionDb {
                 ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                 rules_json, mcp_servers_json, skills_sources_json, skills_json,
                 allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
-                solve_orchestration_json
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                solve_orchestration_json, extra_session_fields_json
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (ds_id) DO UPDATE SET
                 content_rev = EXCLUDED.content_rev,
                 stable_content_rev = EXCLUDED.stable_content_rev,
@@ -1285,7 +1300,8 @@ impl GatewaySessionDb {
                 claude_md = EXCLUDED.claude_md,
                 git_sync_json = EXCLUDED.git_sync_json,
                 solve_preflight_json = EXCLUDED.solve_preflight_json,
-                solve_orchestration_json = EXCLUDED.solve_orchestration_json",
+                solve_orchestration_json = EXCLUDED.solve_orchestration_json,
+                extra_session_fields_json = EXCLUDED.extra_session_fields_json",
         )
         .bind(row.ds_id)
         .bind(row.content_rev)
@@ -1301,6 +1317,7 @@ impl GatewaySessionDb {
         .bind(Json(row.git_sync_json))
         .bind(Json(row.solve_preflight_json))
         .bind(Json(row.solve_orchestration_json))
+        .bind(Json(row.extra_session_fields_json))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1633,10 +1650,11 @@ impl GatewaySessionDb {
         created_at_ms: i64,
         user_prompt: Option<&str>,
         client_origin: Option<&str>,
+        entry_params_json: Option<&Value>,
     ) -> Result<(), SqlxError> {
         sqlx::query(
-            r"INSERT INTO gateway_turns (turn_id, session_id, ds_id, status, created_at_ms, finished_at_ms, user_prompt, client_origin)
-              VALUES ($1, $2, $3, $4, $5, NULL, $6, $7)",
+            r"INSERT INTO gateway_turns (turn_id, session_id, ds_id, status, created_at_ms, finished_at_ms, user_prompt, client_origin, entry_params_json)
+              VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8)",
         )
         .bind(turn_id)
         .bind(session_id)
@@ -1645,6 +1663,7 @@ impl GatewaySessionDb {
         .bind(created_at_ms)
         .bind(user_prompt)
         .bind(client_origin)
+        .bind(entry_params_json.map(Json))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -2019,6 +2038,7 @@ impl GatewaySessionDb {
         updated_to_ms: Option<i64>,
         title_q: Option<&str>,
         session_id_q: Option<&str>,
+        extra_session_filter: Option<&BTreeMap<String, String>>,
     ) -> Result<Vec<GatewaySessionSummary>, SqlxError> {
         let limit = limit.clamp(1, 100);
         let like_pat = title_q
@@ -2027,59 +2047,97 @@ impl GatewaySessionDb {
             .map(|q| format!("%{}%", Self::escape_like_pattern(q)));
         let (session_id_pat, turn_id_exact) = Self::parse_session_list_id_filter(session_id_q);
 
-        let rows = sqlx::query(
+        let mut qb = QueryBuilder::new(
             r"SELECT s.session_id, s.created_at_ms, s.updated_at_ms, s.client_origin,
                      (SELECT COUNT(*)::bigint FROM gateway_turns t
                         WHERE t.session_id = s.session_id AND t.ds_id = s.ds_id) AS turn_count,
                      (SELECT t.user_prompt FROM gateway_turns t
                         WHERE t.session_id = s.session_id AND t.ds_id = s.ds_id
                         ORDER BY t.created_at_ms ASC, t.turn_id ASC
-                        LIMIT 1) AS preview_prompt
+                        LIMIT 1) AS preview_prompt,
+                     EXISTS (
+                       SELECT 1 FROM gateway_feedback f
+                       WHERE f.session_id = s.session_id AND f.ds_id = s.ds_id
+                         AND f.feedback = 'bad'
+                     ) AS has_bad_feedback,
+                     EXISTS (
+                       SELECT 1 FROM gateway_feedback f
+                       WHERE f.session_id = s.session_id AND f.ds_id = s.ds_id
+                         AND f.feedback = 'good'
+                     ) AS has_good_feedback
               FROM gateway_sessions s
-              WHERE s.ds_id = $1
-                AND ($2::bigint IS NULL OR s.updated_at_ms >= $2)
-                AND ($3::bigint IS NULL OR s.updated_at_ms <= $3)
-                AND (
-                  $4::text IS NULL
-                  OR (
+              WHERE s.ds_id = ",
+        );
+        qb.push_bind(ds_id);
+        if let Some(from) = updated_from_ms {
+            qb.push(" AND s.updated_at_ms >= ");
+            qb.push_bind(from);
+        }
+        if let Some(to) = updated_to_ms {
+            qb.push(" AND s.updated_at_ms <= ");
+            qb.push_bind(to);
+        }
+        if let Some(ref pat) = like_pat {
+            qb.push(
+                " AND (
                     SELECT t.user_prompt FROM gateway_turns t
                       WHERE t.session_id = s.session_id AND t.ds_id = s.ds_id
                       ORDER BY t.created_at_ms ASC, t.turn_id ASC
                       LIMIT 1
-                  ) ILIKE $4 ESCAPE '\'
-                )
-                AND (
-                  $5::bigint IS NULL
-                  OR s.updated_at_ms < $5
-                  OR (s.updated_at_ms = $5 AND s.session_id < COALESCE($6, ''))
-                )
-                AND (
-                  ($8::text IS NULL AND $9::text IS NULL)
-                  OR ($8::text IS NOT NULL AND s.session_id ILIKE $8 ESCAPE '\')
-                  OR (
-                    $9::text IS NOT NULL
-                    AND EXISTS (
+                  ) ILIKE ",
+            );
+            qb.push_bind(pat);
+            qb.push(" ESCAPE '\\'");
+        }
+        if let Some(before_ms) = before_updated_at_ms {
+            qb.push(" AND (s.updated_at_ms < ");
+            qb.push_bind(before_ms);
+            qb.push(" OR (s.updated_at_ms = ");
+            qb.push_bind(before_ms);
+            qb.push(" AND s.session_id < ");
+            qb.push_bind(before_session_id.unwrap_or(""));
+            qb.push("))");
+        }
+        if session_id_pat.is_some() || turn_id_exact.is_some() {
+            qb.push(" AND (");
+            let mut id_sep = qb.separated(" OR ");
+            if let Some(ref pat) = session_id_pat {
+                id_sep.push("s.session_id ILIKE ");
+                id_sep.push_bind(pat);
+                id_sep.push_unseparated(" ESCAPE '\\'");
+            }
+            if let Some(ref tid) = turn_id_exact {
+                id_sep.push(
+                    "EXISTS (
                       SELECT 1 FROM gateway_turns t
                       WHERE t.ds_id = s.ds_id
                         AND t.session_id = s.session_id
-                        AND t.turn_id = $9
-                    )
-                  )
-                )
-              ORDER BY s.updated_at_ms DESC, s.session_id DESC
-              LIMIT $7",
-        )
-        .bind(ds_id)
-        .bind(updated_from_ms)
-        .bind(updated_to_ms)
-        .bind(like_pat.as_deref())
-        .bind(before_updated_at_ms)
-        .bind(before_session_id)
-        .bind(limit)
-        .bind(session_id_pat.as_deref())
-        .bind(turn_id_exact.as_deref())
-        .fetch_all(&self.pool)
-        .await?;
+                        AND t.turn_id = ",
+                );
+                id_sep.push_bind(tid);
+                id_sep.push_unseparated(")");
+            }
+            qb.push(")");
+        }
+        if let Some(filters) = extra_session_filter {
+            for (key, val) in filters {
+                let pat = format!("%{}%", Self::escape_like_pattern(val));
+                qb.push(
+                    " AND EXISTS (
+                      SELECT 1 FROM gateway_turns t
+                      WHERE t.session_id = s.session_id AND t.ds_id = s.ds_id
+                        AND COALESCE(t.entry_params_json->'extraSession'->>",
+                );
+                qb.push_bind(key);
+                qb.push(", '') ILIKE ");
+                qb.push_bind(pat);
+                qb.push(" ESCAPE '\\')");
+            }
+        }
+        qb.push(" ORDER BY s.updated_at_ms DESC, s.session_id DESC LIMIT ");
+        qb.push_bind(limit);
+
+        let rows = qb.build().fetch_all(&self.pool).await?;
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
             out.push(GatewaySessionSummary {
@@ -2089,6 +2147,8 @@ impl GatewaySessionDb {
                 turn_count: r.try_get("turn_count")?,
                 preview_prompt: r.try_get("preview_prompt")?,
                 client_origin: r.try_get("client_origin")?,
+                has_bad_feedback: r.try_get("has_bad_feedback")?,
+                has_good_feedback: r.try_get("has_good_feedback")?,
             });
         }
         Ok(out)
@@ -2102,7 +2162,7 @@ impl GatewaySessionDb {
     ) -> Result<Vec<GatewayTurnSummary>, SqlxError> {
         let rows = sqlx::query(
             r"SELECT t.turn_id, t.user_prompt, t.status, t.created_at_ms, t.finished_at_ms,
-                     t.report_message, t.output_json, t.client_origin, f.feedback,
+                     t.report_message, t.output_json, t.client_origin, t.entry_params_json, f.feedback,
                      (
                        (t.report_message IS NOT NULL AND btrim(t.report_message) <> '')
                        OR t.output_json IS NOT NULL
@@ -2133,6 +2193,10 @@ impl GatewaySessionDb {
             } else {
                 report_body_from_persisted(report_message.as_deref(), output_value.as_ref())
             };
+            let entry_params_json: Option<Json<Value>> = r.try_get("entry_params_json")?;
+            let extra_session = entry_params_json
+                .map(|Json(v)| v)
+                .and_then(|v| v.get("extraSession").cloned());
             out.push(GatewayTurnSummary {
                 turn_id: r.try_get("turn_id")?,
                 user_prompt: r.try_get("user_prompt")?,
@@ -2144,6 +2208,7 @@ impl GatewaySessionDb {
                 failure_detail,
                 client_origin: r.try_get("client_origin")?,
                 feedback: r.try_get("feedback")?,
+                extra_session,
             });
         }
         Ok(out)
@@ -2382,6 +2447,7 @@ mod tests {
             t,
             Some("hello"),
             Some("gateway-admin"),
+            None,
         )
         .await
         .unwrap();
@@ -2402,6 +2468,13 @@ mod tests {
                 .map(String::as_str),
             Some("bad")
         );
+        let listed = db
+            .list_sessions_for_ds(1, 100, None, None, None, None, None, None, None)
+            .await
+            .unwrap();
+        let summary = listed.iter().find(|s| s.session_id == sid).unwrap();
+        assert!(summary.has_bad_feedback);
+        assert!(!summary.has_good_feedback);
     }
 
     #[tokio::test]
@@ -2419,10 +2492,10 @@ mod tests {
             .unwrap();
         let tid1 = "T_10000000000000000000000000000001";
         let tid2 = "T_20000000000000000000000000000002";
-        db.insert_turn(tid1, &sid, 1, "queued", t, Some("a"), None)
+        db.insert_turn(tid1, &sid, 1, "queued", t, Some("a"), None, None)
             .await
             .unwrap();
-        db.insert_turn(tid2, &sid, 1, "queued", t + 100, Some("b"), None)
+        db.insert_turn(tid2, &sid, 1, "queued", t + 100, Some("b"), None, None)
             .await
             .unwrap();
         db.finalize_turn_terminal(
@@ -2458,24 +2531,34 @@ mod tests {
         assert_eq!(tools_ctx.created_at_ms, t2);
 
         let sessions = db
-            .list_sessions_for_ds(1, 50, None, None, None, None, None, None)
+            .list_sessions_for_ds(1, 50, None, None, None, None, None, None, None)
             .await
             .unwrap();
         assert!(sessions.iter().any(|s| s.session_id == sid));
         let by_id = db
-            .list_sessions_for_ds(1, 50, None, None, None, None, None, Some(&sid))
+            .list_sessions_for_ds(1, 50, None, None, None, None, None, Some(&sid), None)
             .await
             .unwrap();
         assert_eq!(by_id.len(), 1);
         assert_eq!(by_id[0].session_id, sid);
         let by_turn = db
-            .list_sessions_for_ds(1, 50, None, None, None, None, None, Some(tid1))
+            .list_sessions_for_ds(1, 50, None, None, None, None, None, Some(tid1), None)
             .await
             .unwrap();
         assert_eq!(by_turn.len(), 1);
         assert_eq!(by_turn[0].session_id, sid);
         assert!(db
-            .list_sessions_for_ds(1, 50, None, None, None, None, None, Some("no-such-session"))
+            .list_sessions_for_ds(
+                1,
+                50,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("no-such-session"),
+                None,
+            )
             .await
             .unwrap()
             .is_empty());
@@ -2522,7 +2605,7 @@ mod tests {
         db.insert_session(&sid, 1, "ds_1/sessions/pool", t, None)
             .await
             .unwrap();
-        db.insert_turn(tid, &sid, 1, "queued", t, Some("q"), None)
+        db.insert_turn(tid, &sid, 1, "queued", t, Some("q"), None, None)
             .await
             .unwrap();
         db.upsert_claw_pool(&ClawPoolUpsert {
@@ -2595,6 +2678,7 @@ mod tests {
             git_sync_json: &json!({}),
             solve_preflight_json: &json!({"kind": "sqlbot_mcp_start"}),
             solve_orchestration_json: &json!({"kind": "single_turn"}),
+            extra_session_fields_json: &json!([]),
         })
         .await
         .unwrap();
@@ -2622,11 +2706,65 @@ mod tests {
             git_sync_json: &json!({}),
             solve_preflight_json: &json!({"kind": "none"}),
             solve_orchestration_json: &json!({"kind": "single_turn"}),
+            extra_session_fields_json: &json!([]),
         })
         .await
         .unwrap();
         let row2 = db.get_project_config(ds_id).await.unwrap().unwrap();
         assert_eq!(row2.content_rev, "rev-2");
         assert!(row2.claude_md.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_sessions_filters_by_extra_session() {
+        let Some(db) = test_db().await else {
+            eprintln!(
+                "skip list_sessions_filters_by_extra_session: set CLAW_GATEWAY_TEST_DATABASE_URL"
+            );
+            return;
+        };
+        let t = now_ms();
+        let sid_match = format!("es_match_{}", uuid::Uuid::new_v4().simple());
+        let sid_other = format!("es_other_{}", uuid::Uuid::new_v4().simple());
+        db.insert_session(&sid_match, 1, "ds_1/sessions/es_m", t, None)
+            .await
+            .unwrap();
+        db.insert_session(&sid_other, 1, "ds_1/sessions/es_o", t, None)
+            .await
+            .unwrap();
+        let entry_match = json!({"extraSession": {"store_id": "SH001"}, "dsId": 1});
+        let entry_other = json!({"extraSession": {"store_id": "SH999"}, "dsId": 1});
+        db.insert_turn(
+            "T_a0000000000000000000000000000001",
+            &sid_match,
+            1,
+            "queued",
+            t,
+            Some("q1"),
+            None,
+            Some(&entry_match),
+        )
+        .await
+        .unwrap();
+        db.insert_turn(
+            "T_b0000000000000000000000000000001",
+            &sid_other,
+            1,
+            "queued",
+            t,
+            Some("q2"),
+            None,
+            Some(&entry_other),
+        )
+        .await
+        .unwrap();
+        let mut filt = BTreeMap::new();
+        filt.insert("store_id".to_string(), "SH001".to_string());
+        let hits = db
+            .list_sessions_for_ds(1, 50, None, None, None, None, None, None, Some(&filt))
+            .await
+            .unwrap();
+        assert!(hits.iter().any(|s| s.session_id == sid_match));
+        assert!(!hits.iter().any(|s| s.session_id == sid_other));
     }
 }

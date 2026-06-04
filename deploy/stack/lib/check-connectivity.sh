@@ -13,11 +13,18 @@ fi
 
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/compose-include.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/pool-health.sh"
 
 PLAYGROUND_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
+GATEWAY_PORT="${GATEWAY_HOST_PORT:-18088}"
+POOL_HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
+GW_CTN="${CLAW_GATEWAY_CONTAINER:-claw-gateway-rs}"
 
-echo "[1/4] gateway healthz"
-curl -fsS "http://127.0.0.1:${GATEWAY_HOST_PORT}/healthz" >/tmp/claw_gateway_healthz.json
+echo "[1/5] gateway healthz"
+curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/healthz" >/tmp/claw_gateway_healthz.json
 python3 -c '
 import json, sys
 d = json.load(open("/tmp/claw_gateway_healthz.json"))
@@ -31,15 +38,49 @@ else:
 cat /tmp/claw_gateway_healthz.json
 echo
 
-echo "[2/4] solve_async smoke"
-TASK_JSON="$(curl -fsS -X POST "http://127.0.0.1:${GATEWAY_HOST_PORT}/v1/solve_async" \
+echo "[2/5] pool HTTP from gateway-rs container (host.containers.internal:${POOL_HTTP_PORT})"
+podman exec "${GW_CTN}" curl -fsS --max-time 5 \
+  "http://host.containers.internal:${POOL_HTTP_PORT}/healthz/live-report" \
+  >/tmp/claw_pool_health.json
+python3 -c 'import json; d=json.load(open("/tmp/claw_pool_health.json")); print("pool live-report ok", d.get("ok", d))' 2>/dev/null || cat /tmp/claw_pool_health.json
+echo
+
+if claw_pool_daemon_on_host; then
+  echo "[2b/5] host pool RPC (127.0.0.1:${CLAW_POOL_DAEMON_PORT:-9943}) — required for solve_async"
+  claw_assert_host_pool_rpc_ready "${PODMAN_DIR}/.claw-pool-rpc" || exit 1
+  echo "host pool RPC ok"
+  echo
+fi
+
+echo "[3/5] solve_async smoke (extraSession from ds 1 project config when defined)"
+if claw_pool_daemon_on_host; then
+  claw_assert_host_pool_rpc_ready "${PODMAN_DIR}/.claw-pool-rpc" || {
+    echo "error: refuse solve_async smoke — host pool RPC not ready" >&2
+    exit 1
+  }
+fi
+SOLVE_BODY="$(python3 <<PY
+import json
+import urllib.request
+
+port = ${GATEWAY_PORT}
+cfg = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/project/config/1", timeout=10))
+fields = [f for f in (cfg.get("extraSessionFieldsJson") or []) if isinstance(f, str) and f.strip()]
+body = {"dsId": 1, "userPrompt": "connectivity check"}
+if fields:
+    body["extraSession"] = {f: "" for f in fields}
+print(json.dumps(body, ensure_ascii=False))
+PY
+)"
+echo "POST body: ${SOLVE_BODY}"
+TASK_JSON="$(curl -fsS -X POST "http://127.0.0.1:${GATEWAY_PORT}/v1/solve_async" \
   -H "Content-Type: application/json" \
-  -d '{"dsId":1,"userPrompt":"connectivity check"}')"
+  -d "${SOLVE_BODY}")"
 echo "${TASK_JSON}"
 TASK_ID="$(printf "%s" "${TASK_JSON}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["taskId"])')"
 
-echo "[3/4] verify MCP list is available"
-MCP_JSON="$(curl -fsS "http://127.0.0.1:${GATEWAY_HOST_PORT}/v1/mcp/injected/1")"
+echo "[4/5] verify MCP list is available"
+MCP_JSON="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/mcp/injected/1")"
 echo "${MCP_JSON}"
 MCP_JSON="${MCP_JSON}" python3 -c '
 import json
@@ -52,7 +93,7 @@ if not isinstance(servers, list):
 print(f"mcp servers visible: {len(servers)}")
 '
 
-echo "[4/4] gateway-playground UI"
+echo "[5/5] gateway-playground UI"
 for _ in $(seq 1 20); do
   if curl -fsS "http://127.0.0.1:${PLAYGROUND_PORT}/__config__" >/tmp/claw_playground_config.json 2>/dev/null; then
     break

@@ -1,5 +1,5 @@
 import { TranslationOutlined } from "@ant-design/icons";
-import { Button, Input, Space, Typography } from "antd";
+import { Button, Space, Typography } from "antd";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import { useChatSession } from "../../context/ChatSessionContext";
@@ -13,7 +13,7 @@ export interface ChatToolbarProps {
   translateDisabled?: boolean;
 }
 
-/** store_id / org_id / claude-tap Live。Author: kejiqing */
+/** claude-tap Live + session actions. Author: kejiqing */
 export default function ChatToolbar({
   onNewSession,
   onHealth,
@@ -22,14 +22,7 @@ export default function ChatToolbar({
   translateDisabled,
 }: ChatToolbarProps) {
   const { gatewayBase } = useApp();
-  const {
-    storeId,
-    setStoreId,
-    orgId,
-    setOrgId,
-    tapLiveBase,
-    refreshTapLive,
-  } = useChatSession();
+  const { tapLiveBase, refreshTapLive } = useChatSession();
 
   const runHealth = async () => {
     if (!gatewayBase) {
@@ -47,30 +40,6 @@ export default function ChatToolbar({
 
   return (
     <>
-      <Space direction="vertical" size={4}>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          store_id（可选）
-        </Typography.Text>
-        <Input
-          value={storeId}
-          onChange={(e) => setStoreId(e.target.value)}
-          placeholder="例 S20241007172800004204"
-          autoComplete="off"
-          style={{ width: 200 }}
-        />
-      </Space>
-      <Space direction="vertical" size={4}>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          org_id（可选，保留空格）
-        </Typography.Text>
-        <Input
-          value={orgId}
-          onChange={(e) => setOrgId(e.target.value)}
-          placeholder="与 store_id 二选一或同时填"
-          autoComplete="off"
-          style={{ width: 200 }}
-        />
-      </Space>
       <Space direction="vertical" size={4} style={{ minWidth: 200 }}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           claude-tap Live

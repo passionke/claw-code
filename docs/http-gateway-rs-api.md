@@ -35,6 +35,8 @@ Base URL 示例：`http://127.0.0.1:18088`
     - `extraSession`：可选，**JSON 对象**，业务会话级上下文（例如用户、租户、workspace 等标识）
       - 若存在但不是 object，将返回 `400`（`extraSession must be a JSON object when present`）
       - 序列化后大小上限约为 `8KB`，超出将返回 `400`（`extraSession is too large (max 8KB)`）
+      - 若 `project_config.extra_session_fields_json` 非空：请求体须为 object，且**每个定义字段**均存在且值为 **string**（可为 `""`）；允许额外系统 key（`tenant_code`、`solution_code`、`biz_type`、`_claw_*`）。否则 `400`（`extraSession 不符合要求：…`）
+      - enqueue 时将完整入口参数写入 `gateway_turns.entry_params_json`（含 `extraSession`）；`GET /v1/sessions/{sessionId}/turns` 每项返回 `extraSession` 快照
     - `allowedTools`：可选，字符串数组，指定**本次 solve**允许暴露给模型并执行的工具名（与异步 `/v1/solve_async` 相同）。
       - **未传 `allowedTools`**：沿用网关进程环境变量 `CLAW_ALLOWED_TOOLS`（逗号分隔，与 `GET /healthz` 中 `allowedTools` 字段一致）。若该环境变量也未配置（空），则下游 `gateway-solve-turn` 将空列表视为「不额外收紧」，**内置 MVP 工具（含 `bash` 等）会全部挂上**。
       - **已配置全局 `CLAW_ALLOWED_TOOLS`（非空）**：请求里的 `allowedTools` 若出现，则其中**每一项**都必须被全局策略放行（支持前缀通配：全局项若以 `*` 结尾，则匹配该前缀开头的工具名；请求侧若以 `*` 结尾，则该项须与全局列表中的某一项字面完全一致）。否则返回 `400`，提示 `requested tool pattern is not allowed by gateway policy`。因此若部署里把全局白名单写得很窄（例如仅 `read_file,glob_search`），仅靠请求体无法「偷偷」加上 `bash`，需要先把 **`CLAW_ALLOWED_TOOLS` 扩大到包含 `bash`（或 `bash*`）等**。
@@ -168,7 +170,7 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
 
 - `PUT /v1/project/config/{ds_id}`
   - 用途：写入**临时版**（`__draft__`）；不新增固化行、不切换生效、不物化（须已有 `project_config` 行）
-  - 请求体（camelCase）：`rulesJson`、`mcpServersJson`、`skillsJson`、`allowedToolsJson`、`claudeMd`、`gitSyncJson`（省略则保留 Git 配置）；`skillsSourcesJson` 须为 `[]`
+  - 请求体（camelCase）：`rulesJson`、`mcpServersJson`、`skillsJson`、`allowedToolsJson`、`extraSessionFieldsJson`（`string[]`，省略则保留库内已有）、`claudeMd`、`gitSyncJson`（省略则保留 Git 配置）；`skillsSourcesJson` 须为 `[]`
   - 响应：`{ "draftOpen": true, "stableContentRev", "activeConfig": { ... } }`（`activeConfig` 为临时版内容）
 
 - `POST /v1/project/config/{ds_id}/versions/commit`
@@ -237,6 +239,11 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - 用途：删除 `work_root/ds_<id>`、`project_config` 行
   - Query：`purgeSessions`（默认 `true`）是否删除该 ds 的 `gateway_sessions` / `gateway_turns`
   - 无此 ds：**404**
+
+- `GET /v1/projects/{ds_id}/sessions`
+  - 用途：Admin 对话记录列表（keyset 分页 + 筛选）
+  - Query：`limit`（默认 20）、`beforeUpdatedAtMs` + `beforeSessionId`（翻页）、`updatedFromMs` / `updatedToMs`（按 `gateway_sessions.updated_at_ms`）、`q`（首问 `user_prompt` ILIKE）、`sessionId`（`T_<32hex>` 精确到 turn，否则 `session_id` 片段）、`extraSession`（URL 编码 JSON 对象，**仅允许** `project_config.extra_session_fields_json` 中的 key；对每个 key 在**任一轮** `gateway_turns.entry_params_json.extraSession` 上 ILIKE 子串匹配，多 key 为 AND）
+  - 响应：`{ "dsId", "sessions": [ { "sessionId", "createdAtMs", "updatedAtMs", "turnCount", "previewPrompt", "clientOrigin"?, "hasBadFeedback", "hasGoodFeedback" } ], "hasMore" }`（反馈标记：该会话任一轮在 `gateway_feedback` 中出现过 `bad` / `good`）
 
 ## Project workspace
 

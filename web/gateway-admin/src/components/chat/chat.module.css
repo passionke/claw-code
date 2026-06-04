@@ -384,7 +384,16 @@
   padding-left: 9px;
 }
 
+.historyItemTitleRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
 .historyItemTitle {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   line-height: 1.4;
   word-break: break-word;
@@ -392,6 +401,32 @@
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.historyTurnCount {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #8b9cb3;
+  white-space: nowrap;
+}
+
+.historyFeedbackMarks {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 1;
+  margin-top: 2px;
+}
+
+.historyFeedbackBad {
+  color: #ef4444;
+}
+
+.historyFeedbackGood {
+  color: #22c55e;
 }
 
 .historyOriginTag {
@@ -471,6 +506,15 @@
   border-top: 1px solid #2d3a4d;
   flex-shrink: 0;
   box-sizing: border-box;
+}
+
+.extraSessionRow {
+  padding-bottom: 4px;
+}
+
+.composerDisabledHint {
+  font-size: 12px;
+  color: #f59e0b;
 }
 
 .composerRow {

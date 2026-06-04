@@ -174,6 +174,7 @@ pub fn config_row_from_revision(
     git_sync_json: Value,
     solve_preflight_json: Value,
     solve_orchestration_json: Value,
+    extra_session_fields_json: Value,
     stable_content_rev: &str,
 ) -> ProjectConfigRow {
     ProjectConfigRow {
@@ -191,6 +192,7 @@ pub fn config_row_from_revision(
         git_sync_json,
         solve_preflight_json,
         solve_orchestration_json,
+        extra_session_fields_json,
     }
 }
 
@@ -217,6 +219,7 @@ pub fn upsert_from_row<'a>(
         git_sync_json: &row.git_sync_json,
         solve_preflight_json: &row.solve_preflight_json,
         solve_orchestration_json: &row.solve_orchestration_json,
+        extra_session_fields_json: &row.extra_session_fields_json,
     }
 }
 
@@ -242,6 +245,7 @@ pub async fn row_for_editing(
             row.git_sync_json.clone(),
             row.solve_preflight_json.clone(),
             row.solve_orchestration_json.clone(),
+            row.extra_session_fields_json.clone(),
             &effective,
         )));
     }
@@ -270,6 +274,7 @@ pub async fn row_for_materialize(
             row.git_sync_json.clone(),
             row.solve_preflight_json.clone(),
             row.solve_orchestration_json.clone(),
+            row.extra_session_fields_json.clone(),
             &effective,
         )));
     }
@@ -314,6 +319,7 @@ pub async fn ensure_draft(
         git_sync_json: &row.git_sync_json,
         solve_preflight_json: &row.solve_preflight_json,
         solve_orchestration_json: &row.solve_orchestration_json,
+        extra_session_fields_json: &row.extra_session_fields_json,
     };
     db.upsert_project_config(upsert).await?;
     db.get_project_config(ds_id).await?.ok_or_else(|| {
@@ -332,6 +338,7 @@ pub async fn close_draft_to_stable(
     git_sync_json: &Value,
     solve_preflight_json: &Value,
     solve_orchestration_json: &Value,
+    extra_session_fields_json: &Value,
 ) -> Result<ProjectConfigRow, DraftError> {
     if is_draft_content_rev(stable_content_rev) {
         return Err(DraftError::new(
@@ -346,6 +353,7 @@ pub async fn close_draft_to_stable(
         git_sync_json.clone(),
         solve_preflight_json.clone(),
         solve_orchestration_json.clone(),
+        extra_session_fields_json.clone(),
         stable_content_rev,
     );
     db.upsert_project_config(upsert_from_row(

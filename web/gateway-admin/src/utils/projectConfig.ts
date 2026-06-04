@@ -12,6 +12,7 @@ export function emptyProjectConfig(dsId: number): ProjectConfig {
     claudeMd: null,
     solvePreflightJson: { kinds: [] },
     solveOrchestrationJson: { kind: "single_turn" },
+    extraSessionFieldsJson: [],
   };
 }
 
@@ -56,6 +57,10 @@ export async function putProjectConfigDraft(
       patch.solveOrchestrationJson !== undefined
         ? patch.solveOrchestrationJson
         : cfg.solveOrchestrationJson,
+    extraSessionFieldsJson:
+      patch.extraSessionFieldsJson !== undefined
+        ? patch.extraSessionFieldsJson
+        : cfg.extraSessionFieldsJson ?? [],
   };
   const r = await proxyHttp<{ activeConfig?: ProjectConfig } & ProjectConfig>(
     gatewayBase,

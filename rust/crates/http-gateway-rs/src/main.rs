@@ -17,7 +17,7 @@
 
 mod project_config_draft;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -45,8 +45,8 @@ use http_gateway_rs::biz_advice_report::{
 use http_gateway_rs::{
     claw_tap_cluster_state, client_origin, gateway_claw_tap_settings, gateway_global_settings,
     gateway_llm_config_sync, gateway_translate, mcp_probe, pool, project_config_apply,
-    project_config_version, project_entity_revision, project_git_sync, project_tools, session_db,
-    session_merge, turn_id, turn_timeline_api, turn_tools_api,
+    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
+    project_tools, session_db, session_merge, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
@@ -420,6 +420,9 @@ struct UpsertProjectConfigRequest {
     /// Omit on PUT to keep existing `solve_orchestration_json`. Author: kejiqing
     #[serde(rename = "solveOrchestrationJson", default)]
     solve_orchestration_json: Option<Value>,
+    /// Omit on PUT to keep existing `extra_session_fields_json`. Author: kejiqing
+    #[serde(rename = "extraSessionFieldsJson", default)]
+    extra_session_fields_json: Option<Value>,
 }
 
 /// Body for `POST /v1/project/config/{ds_id}/versions/commit` — save draft as immutable formal revision (does not change effective). Author: kejiqing
@@ -465,6 +468,8 @@ struct ProjectConfigResponse {
     solve_preflight_json: Value,
     #[serde(rename = "solveOrchestrationJson")]
     solve_orchestration_json: Value,
+    #[serde(rename = "extraSessionFieldsJson")]
+    extra_session_fields_json: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -912,25 +917,45 @@ fn resolve_request_client_origin(
     client_origin::resolve_client_origin(extra_session, client_origin_from_headers(headers))
 }
 
+fn build_turn_entry_params_json(
+    req: &SolveRequest,
+    session_id: &str,
+    turn_id: &str,
+    client_origin: Option<&str>,
+) -> Value {
+    json!({
+        "dsId": req.ds_id,
+        "userPrompt": req.user_prompt,
+        "sessionId": session_id,
+        "turnId": turn_id,
+        "model": req.model,
+        "timeoutSeconds": req.timeout_seconds,
+        "extraSession": req.extra_session,
+        "allowedTools": req.allowed_tools,
+        "clientOrigin": client_origin,
+    })
+}
+
 async fn register_solve_turn(
     db: &session_db::GatewaySessionDb,
     turn_id: &str,
     session_id: &str,
-    ds_id: i64,
-    user_prompt: &str,
+    req: &SolveRequest,
     co_located_pool_id: Option<&str>,
     client_origin: Option<&str>,
 ) -> Result<(), ApiError> {
-    let prompt = user_prompt.trim();
+    let prompt = req.user_prompt.trim();
     let user_prompt = (!prompt.is_empty()).then_some(prompt);
+    let entry_params = build_turn_entry_params_json(req, session_id, turn_id, client_origin);
     db.insert_turn(
         turn_id,
         session_id,
-        ds_id,
+        req.ds_id,
         "queued",
         now_ms(),
         user_prompt,
         client_origin,
+        Some(&entry_params),
     )
     .await
     .map_err(|e| session_db_err(&e))?;
@@ -2668,6 +2693,7 @@ fn default_project_config_row(ds_id: i64) -> session_db::ProjectConfigRow {
         git_sync_json: json!({}),
         solve_preflight_json: json!({"kind": "none"}),
         solve_orchestration_json: json!({"kind": "single_turn"}),
+        extra_session_fields_json: json!([]),
     }
 }
 
@@ -2806,6 +2832,7 @@ async fn activate_project_config_revision_row(
     git_sync_json: Value,
     solve_preflight_json: Value,
     solve_orchestration_json: Value,
+    extra_session_fields_json: Value,
 ) -> Result<bool, ApiError> {
     let now = now_ms();
     state
@@ -2825,6 +2852,7 @@ async fn activate_project_config_revision_row(
             git_sync_json: &git_sync_json,
             solve_preflight_json: &solve_preflight_json,
             solve_orchestration_json: &solve_orchestration_json,
+            extra_session_fields_json: &extra_session_fields_json,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -3718,13 +3746,13 @@ async fn solve(
         "gateway_solve"
     );
     let client_origin = resolve_request_client_origin(req.extra_session.as_ref(), &headers);
+    validate_solve_request(&state.session_db, &req).await?;
     let new_turn_id = turn_id::mint_turn_id();
     register_solve_turn(
         &state.session_db,
         &new_turn_id,
         &effective,
-        req.ds_id,
-        &req.user_prompt,
+        &req,
         state.cfg.co_located_pool_id.as_deref(),
         client_origin.as_deref(),
     )
@@ -4140,6 +4168,7 @@ async fn create_project(
             git_sync_json: &json!({}),
             solve_preflight_json: &json!({"kind": "none"}),
             solve_orchestration_json: &json!({"kind": "single_turn"}),
+            extra_session_fields_json: &empty_arr,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -4297,6 +4326,7 @@ async fn project_config_row_to_response(
             gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
                 &row.solve_orchestration_json,
             ),
+        extra_session_fields_json: row.extra_session_fields_json,
     }
 }
 
@@ -4439,6 +4469,10 @@ fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(
     }
     if let Some(ref so) = req.solve_orchestration_json {
         gateway_solve_turn::project_orchestration::validate_solve_orchestration_json(so)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
+    if let Some(ref esf) = req.extra_session_fields_json {
+        project_extra_session::validate_project_extra_session_fields_json(esf)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
     Ok(())
@@ -4610,6 +4644,7 @@ async fn activate_project_config_version(
         active_row.git_sync_json.clone(),
         active_row.solve_preflight_json.clone(),
         active_row.solve_orchestration_json.clone(),
+        active_row.extra_session_fields_json.clone(),
     )
     .await?;
     Ok(Json(ActivateProjectConfigVersionResponse {
@@ -4652,6 +4687,10 @@ async fn put_project_config(
         Some(incoming) => incoming.clone(),
         None => existing.solve_orchestration_json.clone(),
     };
+    let extra_session_fields_json = match &req.extra_session_fields_json {
+        Some(incoming) => incoming.clone(),
+        None => existing.extra_session_fields_json.clone(),
+    };
     let req_for_validate = UpsertProjectConfigRequest {
         content_rev: String::new(),
         rules_json: req.rules_json.clone(),
@@ -4663,6 +4702,7 @@ async fn put_project_config(
         git_sync_json: Some(git_sync_json.clone()),
         solve_preflight_json: Some(solve_preflight_json.clone()),
         solve_orchestration_json: Some(solve_orchestration_json.clone()),
+        extra_session_fields_json: Some(extra_session_fields_json.clone()),
     };
     validate_project_config_payload(&req_for_validate)?;
     gateway_global_settings::validate_git_sync_json_with_global(&state.session_db, &git_sync_json)
@@ -4690,6 +4730,7 @@ async fn put_project_config(
         git_sync_json: &git_sync_json,
         solve_preflight_json: &solve_preflight_json,
         solve_orchestration_json: &solve_orchestration_json,
+        extra_session_fields_json: &extra_session_fields_json,
     };
     state
         .session_db
@@ -4771,6 +4812,7 @@ async fn commit_project_config_draft(
         &git_sync_json,
         &row.solve_preflight_json,
         &row.solve_orchestration_json,
+        &row.extra_session_fields_json,
     )
     .await
     .map_err(draft_err)?;
@@ -5667,10 +5709,42 @@ struct ListProjectSessionsQuery {
     /// `T_<32 hex>` → session owning that turn; otherwise `session_id` ILIKE substring.
     #[serde(rename = "sessionId")]
     session_id: Option<String>,
+    /// URL-encoded JSON object: only keys in `project_config.extra_session_fields_json`; ILIKE per field on any turn's `entry_params_json.extraSession`.
+    #[serde(rename = "extraSession")]
+    extra_session: Option<String>,
 }
 
 fn default_session_list_limit() -> i64 {
     20
+}
+
+async fn parse_list_sessions_extra_session_filter(
+    state: &AppState,
+    ds_id: i64,
+    raw: Option<String>,
+) -> Result<Option<BTreeMap<String, String>>, ApiError> {
+    let Some(raw) = raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let value: Value = serde_json::from_str(&raw).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "extraSession query must be a JSON object",
+        )
+    })?;
+    let fields_json = match state.session_db.get_project_config(ds_id).await {
+        Ok(Some(row)) => row.extra_session_fields_json,
+        Ok(None) => json!([]),
+        Err(e) => return Err(session_db_err(&e)),
+    };
+    let allowed = project_extra_session::parse_extra_session_fields_json(&fields_json)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let map = project_extra_session::parse_extra_session_search_filter(Some(&value), &allowed)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if map.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(map))
 }
 
 #[derive(Debug, Serialize)]
@@ -5687,6 +5761,10 @@ struct GatewaySessionSummaryJson {
     preview_prompt: Option<String>,
     #[serde(rename = "clientOrigin", skip_serializing_if = "Option::is_none")]
     client_origin: Option<String>,
+    #[serde(rename = "hasBadFeedback")]
+    has_bad_feedback: bool,
+    #[serde(rename = "hasGoodFeedback")]
+    has_good_feedback: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -5725,6 +5803,8 @@ struct GatewayTurnSummaryJson {
     client_origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     feedback: Option<String>,
+    #[serde(rename = "extraSession", skip_serializing_if = "Option::is_none")]
+    extra_session: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -5744,6 +5824,8 @@ async fn list_project_sessions(
     if ds_id < 1 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
     }
+    let extra_filter =
+        parse_list_sessions_extra_session_filter(&state, ds_id, query.extra_session).await?;
     let limit = query.limit;
     let rows = state
         .session_db
@@ -5756,6 +5838,7 @@ async fn list_project_sessions(
             query.updated_to_ms,
             query.q.as_deref(),
             query.session_id.as_deref(),
+            extra_filter.as_ref(),
         )
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -5771,6 +5854,8 @@ async fn list_project_sessions(
                 turn_count: r.turn_count,
                 preview_prompt: r.preview_prompt,
                 client_origin: r.client_origin,
+                has_bad_feedback: r.has_bad_feedback,
+                has_good_feedback: r.has_good_feedback,
             })
             .collect(),
         has_more,
@@ -5817,6 +5902,7 @@ async fn list_session_turns(
                 failure_detail: r.failure_detail,
                 client_origin: r.client_origin,
                 feedback: r.feedback,
+                extra_session: r.extra_session,
             })
             .collect(),
     }))
@@ -6068,13 +6154,13 @@ async fn enqueue_solve_async(
             }
         }
     }
+    validate_solve_request(&state.session_db, &req).await?;
     let new_turn_id = turn_id::mint_turn_id();
     register_solve_turn(
         &state.session_db,
         &new_turn_id,
         &effective,
-        ds_id,
-        &req.user_prompt,
+        &req,
         state.cfg.co_located_pool_id.as_deref(),
         client_origin.as_deref(),
     )
@@ -7442,6 +7528,40 @@ fn biz_report_llm_stream_response(
         .into_response()
 }
 
+async fn validate_solve_extra_session_for_ds(
+    db: &session_db::GatewaySessionDb,
+    ds_id: i64,
+    extra_session: Option<&Value>,
+) -> Result<(), ApiError> {
+    validate_extra_session(extra_session)?;
+    let fields_json = match db.get_project_config(ds_id).await {
+        Ok(Some(row)) => row.extra_session_fields_json,
+        Ok(None) => json!([]),
+        Err(e) => return Err(session_db_err(&e)),
+    };
+    let fields = project_extra_session::parse_extra_session_fields_json(&fields_json)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    project_extra_session::validate_extra_session_against_fields(extra_session, &fields)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(())
+}
+
+async fn validate_solve_request(
+    db: &session_db::GatewaySessionDb,
+    req: &SolveRequest,
+) -> Result<(), ApiError> {
+    if req.ds_id < 1 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    }
+    if req.user_prompt.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "userPrompt cannot be empty",
+        ));
+    }
+    validate_solve_extra_session_for_ds(db, req.ds_id, req.extra_session.as_ref()).await
+}
+
 fn validate_extra_session(extra_session: Option<&Value>) -> Result<(), ApiError> {
     if let Some(extra_session) = extra_session {
         if !extra_session.is_object() {
@@ -7460,19 +7580,6 @@ fn validate_extra_session(extra_session: Option<&Value>) -> Result<(), ApiError>
         }
     }
     Ok(())
-}
-
-fn validate_solve_request_fields(req: &SolveRequest) -> Result<(), ApiError> {
-    if req.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
-    }
-    if req.user_prompt.trim().is_empty() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "userPrompt cannot be empty",
-        ));
-    }
-    validate_extra_session(req.extra_session.as_ref())
 }
 
 fn pool_runtime_cli_bin(isolation: SolveIsolation) -> &'static str {
@@ -7774,7 +7881,6 @@ async fn run_solve_request(
     req: SolveRequest,
     ctx: RunSolveContext,
 ) -> Result<SolveResponse, ApiError> {
-    validate_solve_request_fields(&req)?;
     if !ctx.skip_session_db {
         set_solve_turn_status(&state.session_db, &ctx.turn_id, "running", false).await;
     }
