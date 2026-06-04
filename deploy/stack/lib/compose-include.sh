@@ -204,6 +204,16 @@ claw_podman_append_admin_dist_bind() {
   if [[ ! -f "${dist}" ]]; then
     return 0
   fi
+  local assets_glob
+  if [[ -n "${repo_root}" ]]; then
+    assets_glob="${repo_root}/web/gateway-admin/dist/assets/*.js"
+  else
+    assets_glob="$(cd "${script_dir}/../.." && pwd)/web/gateway-admin/dist/assets/*.js"
+  fi
+  if ! compgen -G "${assets_glob}" >/dev/null 2>&1; then
+    echo "note: skip admin-dist bind (no dist/assets/*.js); playground uses image-built admin SPA" >&2
+    return 0
+  fi
   if [[ -n "${rel}" ]]; then
     CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.admin-dist-bind.yml" )
   else
