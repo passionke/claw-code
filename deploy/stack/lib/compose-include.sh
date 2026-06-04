@@ -31,10 +31,14 @@ claw_pool_daemon_on_host() {
   [[ "${profile}" == production ]]
 }
 
-# Gateway container -> host pool RPC: Linux Docker uses bridge gateway IP (no host.docker.internal). kejiqing
+# Gateway container -> host pool RPC: production uses LAN IP (e.g. 192.168.9.252), not host.docker.internal. kejiqing
 claw_pool_gateway_to_host_rpc_ip() {
   if [[ -n "${CLAW_POOL_DAEMON_TCP_HOST:-}" ]]; then
     printf '%s' "${CLAW_POOL_DAEMON_TCP_HOST}"
+    return 0
+  fi
+  if [[ -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
+    printf '%s' "${CLAW_POOL_ADVERTISE_HOST}"
     return 0
   fi
   if [[ "$(uname -s)" == Darwin ]]; then
@@ -45,17 +49,8 @@ claw_pool_gateway_to_host_rpc_ip() {
     fi
     return 0
   fi
-  local rt ip
-  rt="$(claw_container_runtime_cli 2>/dev/null || true)"
-  if [[ "${rt}" == docker || "${rt}" == podman ]]; then
-    ip="$("${rt}" network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
-    ip="${ip//$'\n'/}"
-    if [[ -n "${ip}" ]]; then
-      printf '%s' "${ip}"
-      return 0
-    fi
-  fi
-  printf '%s' '172.17.0.1'
+  echo "error: set CLAW_POOL_DAEMON_TCP_HOST or CLAW_POOL_ADVERTISE_HOST to this machine LAN IP (e.g. 192.168.9.252)" >&2
+  return 1
 }
 
 claw_podman_machine_host_socket() {
@@ -304,7 +299,7 @@ claw_podman_load_compose_args() {
   local pool_http_port="${CLAW_POOL_HTTP_PORT:-9944}"
   local tcp_host
   if claw_pool_daemon_on_host; then
-    tcp_host="$(claw_pool_gateway_to_host_rpc_ip)"
+    tcp_host="$(claw_pool_gateway_to_host_rpc_ip)" || return 1
     {
       printf '%s\n' '# GENERATED — host claw-pool-daemon (no compose sidecar). kejiqing'
       printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"
