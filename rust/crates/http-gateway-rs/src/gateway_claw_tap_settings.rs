@@ -10,6 +10,8 @@ use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_g
 use crate::session_db::GatewaySessionDb;
 
 pub const DEFAULT_CLAW_TAP_PROXY_PORT: u16 = 8080;
+pub const DEFAULT_CLAW_TAP_LIVE_PORT: u16 = 3000;
+const LIVE_SESSION_QUERY_PARAM: &str = "session";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClawTapSettings {
@@ -17,6 +19,8 @@ pub struct ClawTapSettings {
     pub host: String,
     #[serde(rename = "proxyPort", default = "default_proxy_port")]
     pub proxy_port: u16,
+    #[serde(rename = "livePort", default = "default_live_port")]
+    pub live_port: u16,
     #[serde(rename = "updatedAtMs", default)]
     pub updated_at_ms: i64,
 }
@@ -25,28 +29,56 @@ fn default_proxy_port() -> u16 {
     DEFAULT_CLAW_TAP_PROXY_PORT
 }
 
+fn default_live_port() -> u16 {
+    DEFAULT_CLAW_TAP_LIVE_PORT
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ClawTapSettingsPublic {
     pub host: String,
     #[serde(rename = "proxyPort")]
     pub proxy_port: u16,
+    #[serde(rename = "livePort")]
+    pub live_port: u16,
     #[serde(rename = "updatedAtMs")]
     pub updated_at_ms: i64,
     #[serde(rename = "configured")]
     pub configured: bool,
+    #[serde(rename = "proxyBaseUrl", skip_serializing_if = "Option::is_none")]
+    pub proxy_base_url: Option<String>,
+    #[serde(rename = "liveBaseUrl", skip_serializing_if = "Option::is_none")]
+    pub live_base_url: Option<String>,
+    #[serde(
+        rename = "liveSessionUrlTemplate",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub live_session_url_template: Option<String>,
 }
 
 impl From<&ClawTapSettings> for ClawTapSettingsPublic {
     fn from(s: &ClawTapSettings) -> Self {
+        let configured = s.updated_at_ms > 0 && !s.host.trim().is_empty();
+        let proxy_port = normalize_proxy_port(s.proxy_port);
+        let live_port = normalize_live_port(s.live_port);
+        let (proxy_base_url, live_base_url, live_session_url_template) = if configured {
+            let proxy = claw_tap_proxy_base_url(&s.host, proxy_port);
+            let live = claw_tap_live_base_url(&s.host, live_port);
+            let template = live
+                .as_ref()
+                .map(|b| format!("{b}/?{LIVE_SESSION_QUERY_PARAM}={{sessionId}}"));
+            (proxy, live, template)
+        } else {
+            (None, None, None)
+        };
         Self {
             host: s.host.clone(),
-            proxy_port: if s.proxy_port == 0 {
-                DEFAULT_CLAW_TAP_PROXY_PORT
-            } else {
-                s.proxy_port
-            },
+            proxy_port,
+            live_port,
             updated_at_ms: s.updated_at_ms,
-            configured: s.updated_at_ms > 0 && !s.host.trim().is_empty(),
+            configured,
+            proxy_base_url,
+            live_base_url,
+            live_session_url_template,
         }
     }
 }
@@ -56,6 +88,8 @@ pub struct PutClawTapSettingsInput {
     pub host: String,
     #[serde(rename = "proxyPort", default = "default_proxy_port")]
     pub proxy_port: u16,
+    #[serde(rename = "livePort", default = "default_live_port")]
+    pub live_port: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,9 +156,23 @@ pub fn normalize_proxy_port(port: u16) -> u16 {
     }
 }
 
+pub fn normalize_live_port(port: u16) -> u16 {
+    if port == 0 {
+        DEFAULT_CLAW_TAP_LIVE_PORT
+    } else {
+        port
+    }
+}
+
 pub fn claw_tap_proxy_base_url(host: &str, proxy_port: u16) -> Option<String> {
     let h = normalize_claw_tap_host(host)?;
     let port = normalize_proxy_port(proxy_port);
+    Some(format!("http://{h}:{port}"))
+}
+
+pub fn claw_tap_live_base_url(host: &str, live_port: u16) -> Option<String> {
+    let h = normalize_claw_tap_host(host)?;
+    let port = normalize_live_port(live_port);
     Some(format!("http://{h}:{port}"))
 }
 
@@ -244,8 +292,11 @@ pub async fn put_claw_tap_settings(
     let host = normalize_claw_tap_host(&input.host)
         .ok_or_else(|| "clawTap host is required".to_string())?;
     let proxy_port = normalize_proxy_port(input.proxy_port);
+    let live_port = normalize_live_port(input.live_port);
     claw_tap_proxy_base_url(&host, proxy_port)
         .ok_or_else(|| "invalid clawTap host/port".to_string())?;
+    claw_tap_live_base_url(&host, live_port)
+        .ok_or_else(|| "invalid clawTap live port".to_string())?;
     let probe = probe_claw_tap_endpoint(
         db,
         ProbeClawTapInput {
@@ -263,6 +314,7 @@ pub async fn put_claw_tap_settings(
     settings.claw_tap = ClawTapSettings {
         host,
         proxy_port,
+        live_port,
         updated_at_ms: now_ms(),
     };
     save_gateway_global_settings(db, &settings, &tokens, now_ms())
@@ -284,10 +336,34 @@ mod tests {
     }
 
     #[test]
-    fn proxy_base_url() {
+    fn proxy_and_live_base_urls() {
         assert_eq!(
             claw_tap_proxy_base_url("192.168.1.10", 8080).as_deref(),
             Some("http://192.168.1.10:8080")
+        );
+        assert_eq!(
+            claw_tap_live_base_url("192.168.9.252", 3000).as_deref(),
+            Some("http://192.168.9.252:3000")
+        );
+    }
+
+    #[test]
+    fn public_includes_live_template_when_configured() {
+        let s = ClawTapSettings {
+            host: "192.168.9.252".into(),
+            proxy_port: 8080,
+            live_port: 3000,
+            updated_at_ms: 1,
+        };
+        let pub_ = ClawTapSettingsPublic::from(&s);
+        assert!(pub_.configured);
+        assert_eq!(
+            pub_.live_base_url.as_deref(),
+            Some("http://192.168.9.252:3000")
+        );
+        assert_eq!(
+            pub_.live_session_url_template.as_deref(),
+            Some("http://192.168.9.252:3000/?session={sessionId}")
         );
     }
 }

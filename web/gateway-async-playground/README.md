@@ -41,7 +41,7 @@ python3 server.py
 
 ## 页面说明
 
-- **index**：网关下拉（含 compose 注入的 default preset）；**ds_id** 与 **claude-tap Live** 均从当前网关 `GET /healthz` 自动填充（`projectsGitMirror.dsWorkspaces`、`claudeTap`）；`store_id` / `org_id` 仍可选手填；多轮对话、呼吸灯 poll、`progressHistory`、报告 SSE；session 链接用 `liveSessionUrlTemplate`
+- **index**：网关下拉（含 compose 注入的 default preset）；**ds_id** 从 `GET /healthz` 的 `projectsGitMirror.dsWorkspaces`；**claude-tap Live** 从 `GET /v1/gateway/global-settings` 的 `clawTap`；`store_id` / `org_id` 仍可选手填；多轮对话、呼吸灯 poll、`progressHistory`、报告 SSE；session 链接用 `clawTap.liveSessionUrlTemplate`
 - **admin**（`web/gateway-admin`，Ant Design）：顶栏 **ds_id** 与 solve 页同源；`GET/POST` 项目、Skills、MCP、CLAUDE.md、Rules、prompt、tools catalog
 - 修改 admin UI：`cd web/gateway-admin && npm run build`，提交 `dist/`；旧单页备份 `admin.legacy.html`
 

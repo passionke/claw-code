@@ -23,8 +23,12 @@ export interface LlmModelRow {
 export interface ClawTapSettings {
   host: string;
   proxyPort: number;
+  livePort: number;
   updatedAtMs: number;
   configured: boolean;
+  proxyBaseUrl?: string;
+  liveBaseUrl?: string;
+  liveSessionUrlTemplate?: string;
 }
 
 export interface ClawTapProbeResponse {

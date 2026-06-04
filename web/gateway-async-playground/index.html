@@ -322,7 +322,7 @@
     <div class="tap-live-row">
       <span style="font-size:12px;color:var(--muted)">claude-tap Live（session 跳转，自动）</span>
       <a id="tap-live-url" class="tap-live-url" href="#" target="_blank" rel="noopener noreferrer">加载中…</a>
-      <span id="tap-live-hint" class="tap-live-hint">来自网关 /healthz · claudeTap.publicLiveBaseUrl</span>
+      <span id="tap-live-hint" class="tap-live-hint">来自网关 global-settings · clawTap.liveBaseUrl</span>
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
       <button type="button" class="secondary" id="btn-new-session">新会话</button>
@@ -882,20 +882,25 @@
       if (state.tapLiveBase) {
         link.textContent = state.tapLiveBase;
         link.href = state.tapLiveBase;
-        hint.textContent = "来自 " + gatewayBase() + "/healthz · 切换网关会自动刷新";
+        hint.textContent = "来自 " + gatewayBase() + " global-settings · 切换网关会自动刷新";
       } else {
         link.textContent = "—";
         link.href = "#";
-        hint.textContent = "无法从 /healthz 读取 claudeTap（请升级网关或检查代理）";
+        hint.textContent = "未配置 clawTap（请在网关 Admin「全局推理」保存主机与 Live 端口）";
       }
     }
 
-    async function refreshFromHealthz() {
+    async function refreshTapLiveFromSettings() {
       try {
-        const { json } = await proxyHttp("GET", "/healthz", undefined, {});
-        const tap = json && json.claudeTap;
-        if (tap && tap.publicLiveBaseUrl) {
-          state.tapLiveBase = String(tap.publicLiveBaseUrl).replace(/\/$/, "");
+        const { json } = await proxyHttp(
+          "GET",
+          "/v1/gateway/global-settings",
+          undefined,
+          {}
+        );
+        const tap = json && json.clawTap;
+        if (tap && tap.configured && tap.liveBaseUrl) {
+          state.tapLiveBase = String(tap.liveBaseUrl).replace(/\/$/, "");
           state.tapLiveTemplate = tap.liveSessionUrlTemplate
             ? String(tap.liveSessionUrlTemplate)
             : state.tapLiveBase + "/?session={sessionId}";
@@ -903,15 +908,23 @@
           state.tapLiveBase = "";
           state.tapLiveTemplate = "";
         }
+      } catch (_) {
+        state.tapLiveBase = "";
+        state.tapLiveTemplate = "";
+      }
+      renderTapLiveUi();
+    }
+
+    async function refreshFromHealthz() {
+      try {
+        const { json } = await proxyHttp("GET", "/healthz", undefined, {});
         const workspaces =
           (json && json.projectsGitMirror && json.projectsGitMirror.dsWorkspaces) || [];
         populateDsSelect(workspaces);
       } catch (_) {
-        state.tapLiveBase = "";
-        state.tapLiveTemplate = "";
         populateDsSelect([]);
       }
-      renderTapLiveUi();
+      await refreshTapLiveFromSettings();
     }
 
     (function restorePrefs() {

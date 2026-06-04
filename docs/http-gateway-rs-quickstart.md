@@ -79,7 +79,7 @@ cp .env.example .env   # 编辑：OPENAI_*、GATEWAY_HOST_PORT、CLAW_POOL_DAEMO
 ```bash
 curl -sS "http://127.0.0.1:18088/healthz"
 # claude-tap Live（与网关同 Host、端口见 CLAUDE_TAP_LIVE_PORT）：
-# curl -sS "http://127.0.0.1:18088/healthz" | jq '.claudeTap.publicLiveBaseUrl, .claudeTap.liveSessionUrlTemplate'
+# curl -sS "http://127.0.0.1:18088/v1/gateway/global-settings" | jq '.clawTap.liveBaseUrl, .clawTap.liveSessionUrlTemplate'
 ```
 
 ### 同步调用

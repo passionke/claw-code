@@ -49,6 +49,7 @@ export default function GlobalInferencePage() {
       const tap = r.clawTap ?? {
         host: "",
         proxyPort: 8080,
+        livePort: 3000,
         updatedAtMs: 0,
         configured: false,
       };
@@ -56,6 +57,7 @@ export default function GlobalInferencePage() {
       tapForm.setFieldsValue({
         host: tap.host,
         proxyPort: tap.proxyPort ?? 8080,
+        livePort: tap.livePort ?? 3000,
       });
       setProbeOk(false);
       setProbeDetail(null);
@@ -108,6 +110,7 @@ export default function GlobalInferencePage() {
         {
           host: String(v.host || "").trim(),
           proxyPort: v.proxyPort ?? 8080,
+          livePort: v.livePort ?? 3000,
         }
       );
       setTapSettings(saved);
@@ -135,10 +138,10 @@ export default function GlobalInferencePage() {
       </Form>
 
       <Card title="clawTap 端点（必选）" loading={loading} style={{ marginBottom: 16 }}>
-        <Form form={tapForm} layout="vertical" initialValues={{ proxyPort: 8080 }}>
+        <Form form={tapForm} layout="vertical" initialValues={{ proxyPort: 8080, livePort: 3000 }}>
           <Form.Item label="主机" name="host" rules={[{ required: true }]}>
             <Input
-              placeholder="192.168.1.10"
+              placeholder="192.168.9.252"
               onChange={() => {
                 setProbeOk(false);
                 setProbeDetail(null);
@@ -146,6 +149,9 @@ export default function GlobalInferencePage() {
             />
           </Form.Item>
           <Form.Item label="代理端口" name="proxyPort" rules={[{ required: true }]}>
+            <InputNumber min={1} max={65535} style={{ width: 160 }} />
+          </Form.Item>
+          <Form.Item label="Live 端口" name="livePort" rules={[{ required: true }]}>
             <InputNumber min={1} max={65535} style={{ width: 160 }} />
           </Form.Item>
           {probeDetail ? (
@@ -173,6 +179,12 @@ export default function GlobalInferencePage() {
         {tapSettings?.configured ? (
           <Typography.Paragraph type="secondary" style={{ marginTop: 16 }}>
             上次保存：{formatMs(tapSettings.updatedAtMs)}
+            {tapSettings.liveBaseUrl ? (
+              <>
+                <br />
+                Live：{tapSettings.liveBaseUrl}
+              </>
+            ) : null}
           </Typography.Paragraph>
         ) : null}
       </Card>

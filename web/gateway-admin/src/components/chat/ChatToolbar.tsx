@@ -50,7 +50,7 @@ export default function ChatToolbar({
           </a>
         ) : tapLiveBase ? (
           <Typography.Text type="warning" style={{ fontSize: 12 }}>
-            {tapLiveBase}（无效，需重建 gateway 或修正 CLAW_GATEWAY_PUBLIC_BASE_URL）
+            {tapLiveBase}（无效，请在「全局推理」保存 clawTap 主机与 Live 端口）
           </Typography.Text>
         ) : (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>

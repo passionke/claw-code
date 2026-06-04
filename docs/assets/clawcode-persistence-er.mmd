@@ -1,0 +1,122 @@
+%% claw-code Gateway PostgreSQL ER. Author: kejiqing
+
+erDiagram
+    gateway_projects ||--o| gateway_project_git : ds_id
+    gateway_projects ||--|| project_config : ds_id
+    project_config ||--o{ project_config_revision : versions
+    gateway_projects ||--o{ gateway_sessions : ds_id
+    gateway_sessions ||--o{ gateway_turns : session
+    gateway_sessions ||--o{ gateway_async_tasks : session
+    gateway_sessions ||--o{ gateway_feedback : session
+    gateway_turns ||--o| gateway_turn_runtime_config : turn
+    gateway_turns ||--o| gateway_turn_container_runs : turn
+    gateway_turns ||--o{ gateway_model_usage : turn
+    gateway_turns ||--o{ gateway_runtime_iterations : turn
+    gateway_turns ||--o{ cc_messages : turn
+    gateway_runtime_iterations ||--o{ cc_messages : iteration
+
+    gateway_projects {
+        bigint ds_id PK
+        string project_name
+        string workspace_rel
+        bigint updated_at_ms
+    }
+
+    gateway_project_git {
+        bigint ds_id PK
+        string remote_url
+        string branch
+        string last_synced_commit
+    }
+
+    project_config {
+        bigint ds_id PK
+        string content_rev
+        string stable_content_rev
+        bool draft_open
+        string rules_json
+        string mcp_servers_json
+        string skills_json
+        string allowed_tools_json
+        string claude_md
+        string solve_preflight_json
+        string solve_orchestration_json
+    }
+
+    project_config_revision {
+        bigint ds_id PK
+        string content_rev PK
+        bigint created_at_ms
+        string note
+    }
+
+    gateway_sessions {
+        string session_id PK
+        bigint ds_id PK
+        string session_home
+        string title
+        string status
+        string client_origin
+        bigint updated_at_ms
+    }
+
+    gateway_turns {
+        string turn_id PK
+        string session_id
+        bigint ds_id
+        string status
+        string user_prompt
+        string report_message
+        string output_json
+        bool has_report
+        bigint finished_at_ms
+    }
+
+    gateway_async_tasks {
+        string task_id PK
+        string session_id
+        string active_turn_id
+        string status
+        bool has_report
+    }
+
+    gateway_feedback {
+        string session_id PK
+        bigint ds_id PK
+        string turn_id PK
+        string feedback
+    }
+
+    gateway_turn_runtime_config {
+        string turn_id PK
+        string extra_session
+        string mcp_servers_snapshot
+    }
+
+    gateway_turn_container_runs {
+        string turn_id PK
+        string worker_container_id
+        bigint duration_ms
+    }
+
+    gateway_model_usage {
+        bigint usage_id PK
+        string turn_id FK
+        string model
+        int input_tokens
+        int output_tokens
+    }
+
+    gateway_runtime_iterations {
+        uuid iteration_id PK
+        string turn_id FK
+        int iteration_index
+    }
+
+    cc_messages {
+        bigint message_id PK
+        string turn_id FK
+        int seq
+        string role
+        string blocks
+    }

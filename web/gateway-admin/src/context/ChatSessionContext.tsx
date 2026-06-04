@@ -8,7 +8,8 @@ import {
   type ReactNode,
 } from "react";
 import { proxyHttp } from "../api/client";
-import { normalizeClaudeTapFromHealthz } from "../utils/claudeTap";
+import { tapLiveFromClawTapSettings } from "../utils/claudeTap";
+import type { GlobalSettingsResponse } from "../types/globalSettings";
 import { useApp } from "./AppContext";
 
 interface ChatSessionContextValue {
@@ -31,21 +32,15 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       return;
     }
     try {
-      const json = await proxyHttp<{
-        claudeTap?: { publicLiveBaseUrl?: string; liveSessionUrlTemplate?: string };
-      }>(gatewayBase, "GET", "/healthz");
-      const tap = json.claudeTap;
-      if (tap?.publicLiveBaseUrl) {
-        const { tapLiveBase, tapLiveTemplate } = normalizeClaudeTapFromHealthz(
-          tap,
-          gatewayBase
-        );
-        setTapLiveBase(tapLiveBase);
-        setTapLiveTemplate(tapLiveTemplate);
-      } else {
-        setTapLiveBase("");
-        setTapLiveTemplate("");
-      }
+      const json = await proxyHttp<GlobalSettingsResponse>(
+        gatewayBase,
+        "GET",
+        "/v1/gateway/global-settings"
+      );
+      const { tapLiveBase: base, tapLiveTemplate: template } =
+        tapLiveFromClawTapSettings(json.clawTap);
+      setTapLiveBase(base);
+      setTapLiveTemplate(template);
     } catch {
       setTapLiveBase("");
       setTapLiveTemplate("");

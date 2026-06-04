@@ -18,7 +18,6 @@
 pub mod biz_advice_report;
 pub mod biz_report_pool_proxy;
 pub mod biz_report_sse_log;
-pub mod claude_tap_health;
 pub mod claw_tap_cluster_state;
 pub mod client_origin;
 pub mod cluster_identity;

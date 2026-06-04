@@ -3657,10 +3657,9 @@ async fn list_ds_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiEr
     Ok(out)
 }
 
-async fn healthz(State(state): State<AppState>, headers: HeaderMap) -> Json<Value> {
+async fn healthz(State(state): State<AppState>) -> Json<Value> {
     let isolation = state.cfg.solve_isolation.as_str();
     let ds_workspaces = build_ds_workspaces_health(&state.cfg.work_root).await;
-    let request_host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
     let deploy_image_ref = http_gateway_rs::deploy_image::image_ref_from_env();
     let deploy_image_tag = http_gateway_rs::deploy_image::deploy_image_tag(&deploy_image_ref);
     let cluster_snap = claw_tap_cluster_state::snapshot_from_handle(&state.claw_tap_cluster).await;
@@ -3707,7 +3706,6 @@ async fn healthz(State(state): State<AppState>, headers: HeaderMap) -> Json<Valu
             },
             "poolHttpBase": state.cfg.pool_http_base,
         },
-        "claudeTap": http_gateway_rs::claude_tap_health::claude_tap_health_json(request_host),
         "clawTapCluster": cluster_snap,
     }))
 }
