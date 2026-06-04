@@ -9,7 +9,7 @@ Author: kejiqing
 | 场景 | 容器引擎 | 镜像从哪来 | 入口命令 |
 | --- | --- | --- | --- |
 | **本地开发**（笔记本 / 研发机） | **Podman**（`auto` 时 PATH 里优先 podman） | **本机编译打包**：`gateway.sh quick`（日常）或 **`pack-deploy`**（改 Rust/网关镜像后；慢但可预期） | `./deploy/stack/gateway.sh quick` / `pack-deploy` |
-| **线上** | **Docker**（`env.production.docker.example`） | **只拉 CI 打的 tag**（GHCR/ACR），服务器 **不跑 cargo 编网关** | `./deploy/stack/gateway.sh up --release release-v…` |
+| **线上 Linux** | **Docker** + **宿主机 `claw-pool-daemon`**（租还 worker，无 compose sidecar） | **只拉 CI tag**（GHCR/ACR），服务器 **不 cargo** | `./deploy/stack/gateway.sh up --release release-v…` |
 
 两套环境用 **同一份脚本树** `deploy/stack/lib/`；差别只在根 `.env`（模板见下表）。`deploy/podman/*.sh` 仅为旧路径 **exec 转发** 到 `deploy/stack/lib/`，新文档不再展开。
 
@@ -17,7 +17,7 @@ Author: kejiqing
 
 | 环境 | 模板 | 关键变量 |
 | --- | --- | --- |
-| 生产 Linux | `env.production.docker.example` | `CLAW_CONTAINER_RUNTIME=docker`，`CLAW_SOLVE_ISOLATION=docker_pool`，**不要** `CLAW_CONTAINER_SOCKET` |
+| 生产 Linux | `env.production.example` | `CLAW_DEPLOY_PROFILE=production`（脚本默认 `CLAW_POOL_HOST_DAEMON=1`），`up --release` 拉镜像 |
 | 本地 / rootless podman | `env.production.rootless.example` | `CLAW_CONTAINER_RUNTIME=podman`；Linux 可选手写 socket；**macOS** 一般留空（自动用 `podman machine` API sock） |
 
 `compose-include.sh` 按 `CLAW_CONTAINER_RUNTIME` 解析 socket：**docker 只认** `/var/run/docker.sock`；**podman 不会在 macOS 上误回落到 docker.sock**。装真 Docker 的生产机可 `sudo touch /etc/containers/nodocker`，避免 podman 冒充 `docker` 命令。

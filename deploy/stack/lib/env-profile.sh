@@ -46,6 +46,8 @@ claw_apply_deploy_profile() {
     production)
       export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-docker}"
       export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-docker_pool}"
+      export CLAW_POOL_HOST_DAEMON="${CLAW_POOL_HOST_DAEMON:-1}"
+      export CLAW_POOL_DAEMON_SKIP_BUILD="${CLAW_POOL_DAEMON_SKIP_BUILD:-1}"
       # Cluster: no per-node claude-tap image; workers use PG upstream (direct) or shared CLAW_TAP_PROXY_URL (remote).
       export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-direct}"
       export CLAW_IMAGE_REGISTRY="${CLAW_IMAGE_REGISTRY:-acr}"
@@ -133,6 +135,10 @@ claw_validate_deploy_profile() {
       fi
       if [[ -z "${GATEWAY_IMAGE:-}" ]]; then
         echo "error: production needs GATEWAY_IMAGE or ./deploy/stack/gateway.sh up --release release-vX.Y.Z" >&2
+        return 1
+      fi
+      if ! claw_pool_daemon_on_host; then
+        echo "error: Linux production uses host claw-pool-daemon (unset CLAW_POOL_HOST_DAEMON=0)" >&2
         return 1
       fi
       ;;

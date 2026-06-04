@@ -9,9 +9,8 @@ claw_socket_usable() {
   [[ -n "${s}" && -S "${s}" && -r "${s}" && -w "${s}" ]]
 }
 
-# macOS: pool daemon must run on the host (machine API sock cannot bind-mount into compose).
-# Linux: default compose sidecar; set CLAW_POOL_HOST_DAEMON=1 to force host daemon.
-# Author: kejiqing
+# macOS: host pool only. Linux production: host pool (Acquire/Release on host docker).
+# Sidecar is opt-in only: CLAW_POOL_HOST_DAEMON=0 on Linux. Author: kejiqing
 claw_pool_daemon_on_host() {
   case "${CLAW_POOL_HOST_DAEMON:-}" in
     1 | true | yes)
@@ -21,7 +20,15 @@ claw_pool_daemon_on_host() {
       return 1
       ;;
   esac
-  [[ "$(uname -s)" == Darwin ]]
+  if [[ "$(uname -s)" == Darwin ]]; then
+    return 0
+  fi
+  local profile
+  profile="$(printf '%s' "${CLAW_DEPLOY_PROFILE:-}" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "${profile}" && "$(uname -s)" != Darwin ]]; then
+    profile=production
+  fi
+  [[ "${profile}" == production ]]
 }
 
 claw_podman_machine_host_socket() {
