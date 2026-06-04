@@ -129,6 +129,14 @@ if claw_pool_daemon_on_host; then
     exit 1
   }
   echo "host pool RPC ready (127.0.0.1:$(claw_host_pool_rpc_port) pid=$(cat "${RPC_DIR}/daemon.pid"))" >&2
+else
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/pool-sidecar-health.sh"
+  claw_assert_pool_sidecar_ready "${PODMAN_DIR}" || {
+    echo "error: compose pool sidecar not ready (RPC / docker CLI / warm worker)" >&2
+    exit 1
+  }
+  echo "compose pool sidecar ready (RPC=$(claw_pool_sidecar_rpc_host):$(claw_host_pool_rpc_port), warm worker ok)" >&2
 fi
 
 _gw_tag="${GATEWAY_IMAGE##*:}"

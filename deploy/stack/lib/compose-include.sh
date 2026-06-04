@@ -273,7 +273,10 @@ claw_podman_load_compose_args() {
   fi
   # Linux (etc.): compose `claw-pool-daemon` + engine socket mount.
   claw_podman_write_pool_daemon_sidecar_env "${script_dir}" || return 1
-  tcp_host="${CLAW_POOL_DAEMON_TCP_HOST:-claw-pool-daemon}"
+  # shellcheck disable=SC1091
+  source "${script_dir}/lib/pool-sidecar-health.sh"
+  claw_warn_ignored_pool_tcp_host_override "$(claw_pool_sidecar_rpc_host)"
+  tcp_host="$(claw_pool_sidecar_rpc_host)"
   {
     printf '%s\n' '# GENERATED — compose claw-pool-daemon sidecar. kejiqing'
     printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"

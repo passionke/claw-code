@@ -96,13 +96,14 @@ with open(path, encoding="utf-8") as f:
 def has_key(k: str) -> bool:
     return re.search(rf"^{re.escape(k)}=", text, re.M) is not None
 
+import platform
+
+is_darwin = platform.system() == "Darwin"
 defaults = [
     ("GATEWAY_HOST_PORT", "18088"),
     ("CLAW_TIMEOUT_SECONDS", "120"),
     ("CLAW_SOLVE_ISOLATION", "docker_pool"),
-    ("CLAW_POOL_HOST_DAEMON", "1"),
     ("CLAW_POOL_DAEMON_SKIP_BUILD", "1"),
-    ("CLAW_POOL_DAEMON_TCP_HOST", "host.docker.internal"),
     ("CLAW_CONTAINER_RUNTIME", "docker"),
     ("CLAW_DOCKER_POOL_SIZE", "4"),
     ("CLAW_DOCKER_POOL_MIN_IDLE", "1"),
@@ -115,6 +116,12 @@ defaults = [
     # Gateway/worker reach tap via this host (Linux Docker: host.docker.internal).
     ("CLAUDE_TAP_BIND_HOST", "host.docker.internal"),
 ]
+# macOS: host pool daemon + host.docker.internal RPC. Linux: compose sidecar (gateway.sh forces claw-pool-daemon). kejiqing
+if is_darwin:
+    defaults.extend([
+        ("CLAW_POOL_HOST_DAEMON", "1"),
+        ("CLAW_POOL_DAEMON_TCP_HOST", "host.docker.internal"),
+    ])
 missing = [(k, v) for k, v in defaults if not has_key(k)]
 if missing:
     with open(path, "a", encoding="utf-8") as f:

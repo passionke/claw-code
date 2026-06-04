@@ -20,7 +20,14 @@ services:
       CLAW_POOL_HTTP_BIND: "0.0.0.0:${CLAW_POOL_HTTP_PORT:-9944}"
     volumes:
       - "${CLAW_CONTAINER_SOCKET}:${CLAW_CONTAINER_SOCKET}"
-      - "${CLAW_POOL_WORK_ROOT_BIND_SRC}:${CLAW_POOL_WORK_ROOT_BIND_SRC}:rw"
+      # Image docker.io is API 1.41; Docker Engine ≥29 requires client ≥1.44 — use host CLI. Author: kejiqing
+      - /usr/bin/docker:/usr/bin/docker:ro
+      # rshared: pool daemon mount(8) on work_root must reach host + worker rslave guest bind. Author: kejiqing
+      - type: bind
+        source: ${CLAW_POOL_WORK_ROOT_BIND_SRC}
+        target: ${CLAW_POOL_WORK_ROOT_BIND_SRC}
+        bind:
+          propagation: shared
       - "${CLAW_REPO_ROOT}/.env:${CLAW_REPO_ROOT}/.env:ro"
     ports:
       - "127.0.0.1:${CLAW_POOL_DAEMON_PORT:-9943}:${CLAW_POOL_DAEMON_PORT:-9943}"

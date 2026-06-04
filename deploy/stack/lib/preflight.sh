@@ -46,6 +46,12 @@ claw_deploy_preflight() {
 
   claw_workspace_ownership_preflight "${podman_dir}" || return 1
 
+  if ! claw_pool_daemon_on_host; then
+    # shellcheck disable=SC1091
+    source "${podman_dir}/lib/pool-sidecar-health.sh"
+    claw_assert_pool_sidecar_compose_contract "${podman_dir}" || return 1
+  fi
+
   echo "==> preflight ok (compose project=${COMPOSE_PROJECT_NAME})" >&2
 }
 

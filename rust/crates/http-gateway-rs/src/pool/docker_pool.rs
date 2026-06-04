@@ -12,7 +12,9 @@ use uuid::Uuid;
 use gateway_solve_turn::WORKER_ENV_MOUNT_PATH;
 
 use super::config::{security_boost_from_env, DockerPoolConfig};
-use super::docker_cli::{runtime_exec, runtime_exec_with_live_streams};
+use super::docker_cli::{
+    probe_container_runtime_cli, runtime_exec, runtime_exec_with_live_streams,
+};
 use super::slot_mount::{self, SlotMountContext, SlotMountState};
 use super::traits::{PoolSessionHostMounts, SlotLease, TaskOutcome};
 use super::worker_identity::PoolWorkerIdentity;
@@ -269,6 +271,9 @@ impl DockerPoolManager {
             .filter(|s| !s.is_empty());
         let worker_env_host_file = resolve_worker_env_host_file();
         let runtime_bin = default_bin.to_string();
+        if !podman {
+            probe_container_runtime_cli(&runtime_bin)?;
+        }
         let worker_identity = PoolWorkerIdentity::from_env(exec_user.clone());
         Self::from_config(DockerPoolConfig {
             runtime_bin: runtime_bin.clone(),
@@ -605,22 +610,16 @@ impl DockerPoolManager {
                     ) {
                         Ok(ms) => {
                             if let Err(e) = self.verify_inject_visible_in_container(&cname) {
-                                warn!(
-                                    target: "claw_gateway_pool",
-                                    component = "docker_pool",
-                                    phase = "inject_propagation_check_failed",
-                                    slot_index = i,
-                                    container = %cname,
-                                    error = %e,
-                                    "session bind not visible in worker container"
-                                );
                                 let mut slots = self.slots.lock().await;
                                 if let Some(s) = slots.get_mut(i) {
                                     s.state = SlotState::Dead;
                                 }
                                 drop(slots);
-                                sleep(Duration::from_millis(200)).await;
-                                continue;
+                                return Err(format!(
+                                    "session bind not visible in worker {cname} after inject ({e}). \
+                                     compose claw-pool-daemon needs work_root bind propagation:shared \
+                                     (podman-compose.pool-rpc.yml) or CLAW_POOL_HOST_DAEMON=1 on Linux docker_pool"
+                                ));
                             }
                             let mut slots = self.slots.lock().await;
                             if let Some(s) = slots.get_mut(i) {
@@ -677,15 +676,6 @@ impl DockerPoolManager {
                         ) {
                             Ok(ms) => {
                                 if let Err(e) = self.verify_inject_visible_in_container(&name) {
-                                    warn!(
-                                        target: "claw_gateway_pool",
-                                        component = "docker_pool",
-                                        phase = "inject_propagation_check_failed",
-                                        slot_index = idx,
-                                        container = %name,
-                                        error = %e,
-                                        "session bind not visible in worker container after run+inject"
-                                    );
                                     let _ = self.rm_container(&name).await;
                                     let mut slots = self.slots.lock().await;
                                     if slots.len() == idx + 1 && slots[idx].container_name == name {
@@ -694,8 +684,11 @@ impl DockerPoolManager {
                                         s.state = SlotState::Dead;
                                     }
                                     drop(slots);
-                                    sleep(Duration::from_millis(200)).await;
-                                    continue;
+                                    return Err(format!(
+                                        "session bind not visible in worker {name} after run+inject ({e}). \
+                                         compose claw-pool-daemon needs work_root bind propagation:shared \
+                                         (podman-compose.pool-rpc.yml) or CLAW_POOL_HOST_DAEMON=1 on Linux docker_pool"
+                                    ));
                                 }
                                 let mut slots = self.slots.lock().await;
                                 if let Some(s) = slots.get_mut(idx) {

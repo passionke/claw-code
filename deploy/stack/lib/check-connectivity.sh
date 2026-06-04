@@ -50,6 +50,13 @@ if claw_pool_daemon_on_host; then
   claw_assert_host_pool_rpc_ready "${PODMAN_DIR}/.claw-pool-rpc" || exit 1
   echo "host pool RPC ok"
   echo
+else
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/pool-sidecar-health.sh"
+  echo "[2b/5] compose pool sidecar (gateway → claw-pool-daemon:${CLAW_POOL_DAEMON_PORT:-9943})"
+  claw_assert_gateway_pool_rpc_reachable || exit 1
+  echo "compose pool RPC ok"
+  echo
 fi
 
 echo "[3/5] solve_async smoke (extraSession from ds 1 project config when defined)"

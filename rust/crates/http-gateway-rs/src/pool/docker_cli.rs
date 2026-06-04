@@ -1,10 +1,31 @@
 //! Invoke `docker` / `podman` CLI. Author: kejiqing
 
-use std::process::Stdio;
+use std::process::{Command as StdCommand, Stdio};
 use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+
+/// Fail fast when the bundled `docker.io` client (API 1.41) cannot talk to a modern Engine (≥1.44).
+pub fn probe_container_runtime_cli(bin: &str) -> Result<(), String> {
+    let output = StdCommand::new(bin)
+        .args(["version", "--format", "{{.Client.APIVersion}}"])
+        .output()
+        .map_err(|e| format!("{bin} version probe failed: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
+    if combined.contains("too old") || combined.contains("Minimum supported API version") {
+        return Err(format!(
+            "{bin} client API is too old for this container engine ({combined}); \
+             bind-mount the host {bin} binary into claw-pool-daemon (see deploy/stack/podman-compose.pool-rpc.yml)"
+        ));
+    }
+    Err(format!("{bin} version probe failed: {combined}"))
+}
 
 /// Short-lived CLI calls (`run`, `rm`, `kill`). `kill_on_drop` tears down the client if the
 /// awaiting task is cancelled (e.g. async solve abort), so the runtime does not leave a stuck
@@ -133,4 +154,15 @@ pub async fn runtime_exec_with_live_streams(
         stdout: stdout_acc.into_bytes(),
         stderr: stderr_acc.into_bytes(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::probe_container_runtime_cli;
+
+    #[test]
+    fn probe_reports_actionable_error_for_old_client() {
+        let err = probe_container_runtime_cli("/nonexistent-docker-xyz").unwrap_err();
+        assert!(err.contains("version probe") || err.contains("too old"));
+    }
 }
