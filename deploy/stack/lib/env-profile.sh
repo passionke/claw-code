@@ -133,8 +133,8 @@ claw_validate_deploy_profile() {
         echo "error: CLAW_DEPLOY_PROFILE=production expects CLAW_CONTAINER_RUNTIME=docker" >&2
         return 1
       fi
-      if [[ -z "${GATEWAY_IMAGE:-}" ]]; then
-        echo "error: production needs GATEWAY_IMAGE or ./deploy/stack/gateway.sh up --release release-vX.Y.Z" >&2
+      if [[ -z "${GATEWAY_IMAGE:-}" && -z "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
+        echo "error: production needs GATEWAY_IMAGE, --release release-vX.Y.Z, or deploy/stack/.claw-image-release.env" >&2
         return 1
       fi
       if ! claw_pool_daemon_on_host; then

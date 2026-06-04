@@ -62,6 +62,10 @@ claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_D
 claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
 claw_export_llm_runtime_layout "${PODMAN_DIR}"
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
+# --release sets CLAW_IMAGE_RELEASE_TAG before .env; apply pins before validate. kejiqing
+# shellcheck disable=SC1091
+source "${LIB_DIR}/release-images.sh"
+claw_reapply_pool_image_pins "${PODMAN_DIR}"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/preflight.sh"
 claw_deploy_preflight "${PODMAN_DIR}"
