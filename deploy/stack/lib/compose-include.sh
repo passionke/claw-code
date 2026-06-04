@@ -293,6 +293,11 @@ claw_podman_load_compose_args() {
         printf '%s\n' "# pool registry advertise (claw_pool.advertise_ip): ${CLAW_POOL_ADVERTISE_HOST}"
       fi
     } >"${script_dir}/.claw-pool-rpc/gateway.env"
+    if [[ -n "${rel}" ]]; then
+      CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.pool-host-gateway.yml" )
+    else
+      CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.pool-host-gateway.yml" )
+    fi
     claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
     return 0
   fi

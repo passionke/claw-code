@@ -1,0 +1,6 @@
+# Host claw-pool-daemon: gateway-rs dials host.docker.internal:9943 (Linux Docker needs host-gateway).
+# Merged only when CLAW_POOL_HOST_DAEMON=1 / production host pool. Author: kejiqing
+services:
+  gateway-rs:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
