@@ -54,6 +54,11 @@ source "${LIB_DIR}/claw-pool-registry-env.sh"
 claw_export_pool_registry_env "${PODMAN_DIR}/.claw-pool-rpc"
 
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
+# Legacy root-owned ds_* / slots (privileged sidecar) must be fixed before ownership preflight. kejiqing
+# shellcheck disable=SC1091
+source "${LIB_DIR}/fix-session-ownership.sh"
+claw_prepare_bind_mount_ownership "${PODMAN_DIR}"
+claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_DIR}/claw-workspace}"
 claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
 claw_export_llm_runtime_layout "${PODMAN_DIR}"
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
@@ -76,10 +81,6 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   echo "    gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
   claw_compose_gateway_down "${PODMAN_DIR}" "${ENV_FILE}" 2>/dev/null || true
   claw_nuclear_pool_reset "${PODMAN_DIR}"
-  # Align bind-mount trees once per release (legacy root-owned sessions/logs). kejiqing
-  # shellcheck disable=SC1091
-  source "${LIB_DIR}/fix-session-ownership.sh"
-  claw_prepare_bind_mount_ownership "${PODMAN_DIR}"
   claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_DIR}/claw-workspace}"
   rt="$(claw_container_runtime_cli)"
   echo "pull ${GATEWAY_IMAGE} …" >&2

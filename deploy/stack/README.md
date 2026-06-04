@@ -131,7 +131,7 @@ cp deploy/stack/env.production.example .env
 - 合并 **`podman-compose.pool-rpc.yml`**：compose 内 **`claw-pool-daemon`（TCP）**，网关只连 RPC；**不再支持**在网关容器内挂 Podman API socket 起 worker。
 - **`claw_compose`**：按 **`CLAW_CONTAINER_RUNTIME`** 调用 **`docker compose`** 或 **`podman compose`**（`podman` 时若装了 **`podman-compose`** 会用作后端，减轻 macOS 混用问题）。
 - 使用 **`up -d --force-recreate`**，避免只改 env 文件却沿用旧容器环境。
-- **启动硬门禁（必过）**：preflight 会递归校验 `CLAW_POOL_WORK_ROOT_BIND_SRC`（默认 `deploy/stack/claw-workspace`）下 **`ds_*` 等业务目录** 的 owner 是否为 `CLAW_WORKER_UID:CLAW_WORKER_GID`（默认 `1000:1000`）。**跳过** `.claw-pool-slot/`（pool 做 `mount --make-rshared` 时可能短暂为 root，与 session 目录不是同一类）。维护：`sudo chown -R 1000:1000 ./deploy/stack/claw-workspace/ds_*`；`up --release` 会删旧 `.claw-pool-slot`。
+- **启动硬门禁（必过）**：preflight 会递归校验 `CLAW_POOL_WORK_ROOT_BIND_SRC`（默认 `deploy/stack/claw-workspace`）下 **`ds_*` 等业务目录** 的 owner 是否为 `CLAW_WORKER_UID:CLAW_WORKER_GID`（默认 `1000:1000`）。**跳过** `.claw-pool-slot/`。`gateway.sh up` / `up --release` 会在 preflight **之前** 自动 `fix-workspace`（修历史 sidecar root 写的 session）；仍失败时：`./deploy/stack/gateway.sh fix-workspace` 或 `sudo chown -R 1000:1000 ./deploy/stack/claw-workspace/ds_*`。
 
 检查：
 

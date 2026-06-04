@@ -34,6 +34,9 @@ claw_validate_deploy_profile || exit 1
 if [[ -z "${CLAW_POOL_WORK_ROOT_BIND_SRC:-}" ]]; then
   claw_podman_export_pool_workspace "${PODMAN_DIR}"
 fi
+# shellcheck disable=SC1091
+source "${LIB_DIR}/fix-session-ownership.sh"
+claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-}"
 claw_workspace_ownership_preflight "${PODMAN_DIR}"
 
 WORK_ROOT="${CLAW_POOL_WORK_ROOT_BIND_SRC:?missing CLAW_POOL_WORK_ROOT_BIND_SRC; run gateway.sh up first}"

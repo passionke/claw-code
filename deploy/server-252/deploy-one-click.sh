@@ -115,13 +115,9 @@ defaults = [
     ("CLAUDE_TAP_LIVE_PORT", "3000"),
     # Gateway/worker reach tap via this host (Linux Docker: host.docker.internal).
     ("CLAUDE_TAP_BIND_HOST", "host.docker.internal"),
+    # Linux + macOS: host pool (avoid compose sidecar bind-propagation trap). kejiqing
+    ("CLAW_POOL_HOST_DAEMON", "1"),
 ]
-# macOS: host pool daemon + host.docker.internal RPC. Linux: compose sidecar (gateway.sh forces claw-pool-daemon). kejiqing
-if is_darwin:
-    defaults.extend([
-        ("CLAW_POOL_HOST_DAEMON", "1"),
-        ("CLAW_POOL_DAEMON_TCP_HOST", "host.docker.internal"),
-    ])
 missing = [(k, v) for k, v in defaults if not has_key(k)]
 if missing:
     with open(path, "a", encoding="utf-8") as f:
