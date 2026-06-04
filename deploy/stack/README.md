@@ -131,7 +131,7 @@ cp deploy/stack/env.production.example .env
 - 合并 **`podman-compose.pool-rpc.yml`**：compose 内 **`claw-pool-daemon`（TCP）**，网关只连 RPC；**不再支持**在网关容器内挂 Podman API socket 起 worker。
 - **`claw_compose`**：按 **`CLAW_CONTAINER_RUNTIME`** 调用 **`docker compose`** 或 **`podman compose`**（`podman` 时若装了 **`podman-compose`** 会用作后端，减轻 macOS 混用问题）。
 - 使用 **`up -d --force-recreate`**，避免只改 env 文件却沿用旧容器环境。
-- **启动硬门禁（必过）**：preflight 会递归校验 `CLAW_POOL_WORK_ROOT_BIND_SRC`（默认 `deploy/stack/claw-workspace`）下所有目录/文件的 owner 是否等于 `CLAW_WORKER_UID:CLAW_WORKER_GID`（默认 `1000:1000`）。不满足会直接报错并拒绝启动。维护方式：`sudo chown -R ${CLAW_WORKER_UID:-1000}:${CLAW_WORKER_GID:-1000} ./deploy/stack/claw-workspace`。
+- **启动硬门禁（必过）**：preflight 会递归校验 `CLAW_POOL_WORK_ROOT_BIND_SRC`（默认 `deploy/stack/claw-workspace`）下 **`ds_*` 等业务目录** 的 owner 是否为 `CLAW_WORKER_UID:CLAW_WORKER_GID`（默认 `1000:1000`）。**跳过** `.claw-pool-slot/`（pool 做 `mount --make-rshared` 时可能短暂为 root，与 session 目录不是同一类）。维护：`sudo chown -R 1000:1000 ./deploy/stack/claw-workspace/ds_*`；`up --release` 会删旧 `.claw-pool-slot`。
 
 检查：
 
@@ -194,6 +194,8 @@ podman ps   # 或  docker ps
 | --- | --- |
 | `podman ps` 看不到网关 | 可能已退出：`podman ps -a \| grep claw-gateway-rs`，看 `podman logs claw-gateway-rs` |
 | 只有 `claw-gateway-rs` 没有 `claw-worker-*` | 是否打了 **worker 镜像**；**`claw-pool-daemon` 日志**是否 `spawn docker: No such file or directory`（`docker_pool` 要求 **gateway 镜像内带 `docker.io`**，见 `Containerfile.gateway-rs`；`release-v1.2.3` 及更早无此包须换新 tag）；`docker logs claw-pool-daemon`；`CLAW_POOL_DAEMON_TCP_HOST=claw-pool-daemon`（勿用 `host.docker.internal` 指 pool） |
+| `ensure_warm_failed` / `mount --make-rshared … permission denied`（或 `must be superuser`） | **`docker_pool` 须在能改宿主机 mount 的进程里跑 `mount(8)`**：Linux 默认 **compose `claw-pool-daemon` 需 `privileged: true`**（见 `podman-compose.pool-rpc.yml`）；宿主机 daemon 须 **root**。非 privileged 容器内即使用 root 也会 `permission denied`。勿仅靠 `CLAW_POOL_HOST_DAEMON=1` + 普通用户 |
+| preflight 让 `chown 1000:1000` 全树，pool 仍报 mount 权限 | **两件事**：session/`ds_*` 要 1000；**mount 要 privileged pool**（见上条）。**不要**指望把整个 workspace chown 后 pool 就能 mount；`.claw-pool-slot` 已从 preflight 排除，`release up` 会 `rm -rf` 旧 slot 树 |
 | solve 报 `session workspace ownership…` / 容器内 `Cannot connect to the Docker daemon …` | **已改为**：配置了 **`CLAW_POOL_RPC_HOST_WORK_ROOT`** 时，`prepare_gateway_session` 通过 **pool RPC** 让 **`claw-pool-daemon`** 做 session `chown`（网关容器**不必**挂 `docker.sock`）。请 **网关 + pool daemon 同版本升级**（含 RPC `chown_session_host`）。若未配 `CLAW_POOL_RPC_HOST_WORK_ROOT` 仍走网关内 `docker`/`podman` 兜底，则需引擎 sock |
 | 启动报 canonicalize `/Users/...` | 容器内不能拿 macOS 路径当 `CLAW_POOL_WORK_ROOT_HOST`；用 **`./deploy/stack/gateway.sh up`** 生成 env（`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`） |
 | 改 `.env` 不生效 | 必须用 **`./deploy/stack/gateway.sh up`**（带 `--force-recreate`），不要指望无重建的 `up` |

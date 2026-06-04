@@ -72,6 +72,8 @@ import sys
 root = sys.argv[1]
 want_uid = int(sys.argv[2])
 want_gid = int(sys.argv[3])
+# Pool daemon (often privileged root in compose) owns slot mounts; not session uid 1000. kejiqing
+POOL_SLOT_BASENAME = ".claw-pool-slot"
 errors = []
 checked = 0
 
@@ -88,6 +90,8 @@ def check_path(path):
 
 check_path(root)
 for dirpath, dirnames, filenames in os.walk(root):
+    if POOL_SLOT_BASENAME in dirnames:
+        dirnames.remove(POOL_SLOT_BASENAME)
     for name in dirnames:
         check_path(os.path.join(dirpath, name))
     for name in filenames:

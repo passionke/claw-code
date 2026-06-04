@@ -47,4 +47,9 @@ claw_nuclear_pool_reset() {
   "${podman_dir}/lib/pool-daemon-down.sh" 2>/dev/null || true
   claw_kill_tcp_listeners "${port}"
   claw_remove_all_gateway_workers
+  local work_root="${CLAW_POOL_WORK_ROOT_BIND_SRC:-${podman_dir}/claw-workspace}"
+  if [[ -d "${work_root}/${CLAW_POOL_SLOT_DIR:-.claw-pool-slot}" ]]; then
+    echo "==> remove pool slot mount tree ${work_root}/.claw-pool-slot (avoid stale root-owned guests)" >&2
+    rm -rf "${work_root}/.claw-pool-slot"
+  fi
 }

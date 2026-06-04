@@ -49,6 +49,16 @@ claw_fix_session_workspace_ownership() {
     "${rt}" run --rm -v "${ds}:/mnt:rw" --user root "${image}" \
       chown -R "${uid}:${gid}" /mnt
   done
+
+  # Slot guests are recreated by pool; chown so a later preflight on ds_* paths stays clean. kejiqing
+  local slot_root="${root}/.claw-pool-slot"
+  if [[ -d "${slot_root}" ]]; then
+    echo "==> fix pool slot ownership ${slot_root} -> ${uid}:${gid}" >&2
+    chown -R "${uid}:${gid}" "${slot_root}" 2>/dev/null \
+      || sudo -n chown -R "${uid}:${gid}" "${slot_root}" 2>/dev/null \
+      || "${rt}" run --rm -v "${slot_root}:/mnt:rw" --user root "${image}" \
+        chown -R "${uid}:${gid}" /mnt
+  fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

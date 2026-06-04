@@ -5,6 +5,8 @@ services:
     image: ${GATEWAY_IMAGE}
     container_name: claw-pool-daemon
     restart: unless-stopped
+    # docker_pool: prepare_guest_for_mount_propagation needs host mount(2) on bind-mounted work_root (rshared → worker rslave). Author: kejiqing
+    privileged: true
     entrypoint: ["/usr/local/bin/claw-pool-daemon"]
     env_file:
       - ../../.env
