@@ -61,6 +61,8 @@ export interface ProjectConfig {
   gitSyncJson?: GitSyncJson;
   solvePreflightJson?: SolvePreflightJson;
   solveOrchestrationJson?: SolveOrchestrationJson;
+  /** Allowed extraSession business keys for this ds. Author: kejiqing */
+  extraSessionFieldsJson?: string[];
 }
 
 export interface SkillJsonItem {

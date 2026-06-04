@@ -1,8 +1,9 @@
-import { Button, Input, Spin, message } from "antd";
-import { useCallback, useRef, useState } from "react";
+import { Button, Input, Spin, Tooltip, message } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChatHistorySidebar from "../components/chat/ChatHistorySidebar";
 import ChatTurnCard from "../components/chat/ChatTurnCard";
 import ChatToolbar from "../components/chat/ChatToolbar";
+import ExtraSessionComposer from "../components/chat/ExtraSessionComposer";
 import ConversationTranslateModal from "../components/chat/ConversationTranslateModal";
 import styles from "../components/chat/chat.module.css";
 import { proxyHttp } from "../api/client";
@@ -12,7 +13,15 @@ import { useSessionTurnFeedback } from "../hooks/useSessionTurnFeedback";
 import type { ListSessionTurnsResponse, SolveAsyncResponse } from "../types/chat";
 import type { ConversationTurnInput } from "../utils/collectConversationForTranslate";
 import { buildExtraSession } from "../utils/extraSession";
-import { CLIENT_ORIGIN_GATEWAY_ADMIN } from "../utils/clientOrigin";
+import {
+  emptyFieldsRecord,
+  loadExtraSessionKvForDs,
+  kvFromExtraSession,
+  mergeFieldsWithKv,
+  saveExtraSessionKvForDs,
+  type ExtraSessionKv,
+} from "../utils/extraSessionStorage";
+import { CLIENT_ORIGIN_GATEWAY_ADMIN, isAdminOrigin } from "../utils/clientOrigin";
 import { extractSolveReportMessage } from "../utils/solveReportBody";
 import type { TurnFeedbackValue } from "../types/chat";
 
@@ -29,6 +38,9 @@ interface TurnEntry {
   failureDetail?: string;
   clientOrigin?: string | null;
   feedback?: TurnFeedbackValue;
+  extraSession?: Record<string, unknown> | null;
+  createdAtMs?: number;
+  finishedAtMs?: number | null;
 }
 
 interface SysEntry {
@@ -57,17 +69,30 @@ function isSys(item: ThreadItem): item is SysEntry {
 
 /** solve_async 对话：按时间线 user → assistant 卡片交错展示。Author: kejiqing */
 export default function ChatPage() {
-  const { gatewayBase, dsId } = useApp();
-  const { storeId, orgId, tapLiveBase, tapLiveTemplate } = useChatSession();
+  const { gatewayBase, dsId, projectConfig } = useApp();
+  const { tapLiveBase, tapLiveTemplate } = useChatSession();
   const [thread, setThread] = useState<ThreadItem[]>([]);
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessionClientOrigin, setSessionClientOrigin] = useState<string | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [translateOpen, setTranslateOpen] = useState(false);
+  const [extraKv, setExtraKv] = useState<ExtraSessionKv>({});
   const sessionIdRef = useRef<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  const fieldDefs = useMemo(
+    () =>
+      Array.isArray(projectConfig?.extraSessionFieldsJson)
+        ? projectConfig.extraSessionFieldsJson.filter((f) => typeof f === "string" && f.trim())
+        : [],
+    [projectConfig?.extraSessionFieldsJson]
+  );
+
+  const composerDisabled =
+    sessionClientOrigin != null && !isAdminOrigin(sessionClientOrigin);
 
   const {
     feedbackByTurn,
@@ -86,20 +111,36 @@ export default function ChatPage() {
     scrollLog();
   }, []);
 
+  const prefillExtraFromStorage = useCallback(() => {
+    const stored = loadExtraSessionKvForDs(dsId);
+    setExtraKv(mergeFieldsWithKv(fieldDefs, stored));
+  }, [dsId, fieldDefs]);
+
   const onNewSession = () => {
     sessionIdRef.current = null;
     setActiveSessionId(null);
+    setSessionClientOrigin(null);
     setThread([]);
+    prefillExtraFromStorage();
   };
 
+  // New session (no active session): prefill composer from per-ds localStorage. Author: kejiqing
+  useEffect(() => {
+    if (sessionClientOrigin != null) return;
+    if (activeSessionId != null) return;
+    const stored = loadExtraSessionKvForDs(dsId);
+    setExtraKv(mergeFieldsWithKv(fieldDefs, stored));
+  }, [fieldDefs, activeSessionId, sessionClientOrigin, dsId]);
+
   const loadSessionHistory = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string, clientOrigin?: string | null) => {
       if (!gatewayBase) {
         message.error("未选择网关");
         return;
       }
       setLoadingHistory(true);
       setThread([]);
+      setSessionClientOrigin(clientOrigin ?? null);
       try {
         const res = await proxyHttp<ListSessionTurnsResponse>(
           gatewayBase,
@@ -119,6 +160,7 @@ export default function ChatPage() {
               variant: "warn",
             },
           ]);
+          setExtraKv(emptyFieldsRecord(fieldDefs));
           return;
         }
         setThread(
@@ -137,15 +179,24 @@ export default function ChatPage() {
             failureDetail: t.failureDetail?.trim() || undefined,
             clientOrigin: t.clientOrigin ?? undefined,
             feedback: t.feedback ?? undefined,
+            extraSession: t.extraSession ?? undefined,
+            createdAtMs: t.createdAtMs,
+            finishedAtMs: t.finishedAtMs,
           }))
         );
+        const lastTurn = turns[turns.length - 1];
+        const lastExtra =
+          lastTurn?.extraSession && typeof lastTurn.extraSession === "object"
+            ? (lastTurn.extraSession as Record<string, unknown>)
+            : undefined;
+        setExtraKv(kvFromExtraSession(fieldDefs, lastExtra));
       } catch (e) {
         message.error(String((e as Error).message || e));
       } finally {
         setLoadingHistory(false);
       }
     },
-    [gatewayBase, dsId]
+    [gatewayBase, dsId, fieldDefs]
   );
 
   const runSend = async (userText: string) => {
@@ -153,7 +204,12 @@ export default function ChatPage() {
       message.error("未选择网关");
       return;
     }
-    const extra = buildExtraSession({ storeId, orgId });
+    if (composerDisabled) {
+      message.warning("外部会话，仅可查看");
+      return;
+    }
+    saveExtraSessionKvForDs(dsId, extraKv);
+    const extra = buildExtraSession(extraKv);
     const payload: Record<string, unknown> = {
       dsId,
       userPrompt: userText,
@@ -185,6 +241,7 @@ export default function ChatPage() {
 
     sessionIdRef.current = asyncRes.sessionId;
     setActiveSessionId(asyncRes.sessionId);
+    setSessionClientOrigin(CLIENT_ORIGIN_GATEWAY_ADMIN);
     setHistoryRefreshKey((k) => k + 1);
     setThread((prev) => [
       ...prev,
@@ -197,6 +254,8 @@ export default function ChatPage() {
         initialStatus: asyncRes.status || "queued",
         viewMode: "live",
         clientOrigin: CLIENT_ORIGIN_GATEWAY_ADMIN,
+        extraSession: extra,
+        createdAtMs: Date.now(),
       },
     ]);
     scrollLog();
@@ -215,7 +274,7 @@ export default function ChatPage() {
   };
 
   const onQuickPrompt = async (text: string) => {
-    if (sending) return;
+    if (sending || composerDisabled) return;
     setSending(true);
     try {
       await runSend(text);
@@ -243,9 +302,10 @@ export default function ChatPage() {
       <ChatHistorySidebar
         gatewayBase={gatewayBase}
         dsId={dsId}
+        extraSessionFieldDefs={fieldDefs}
         activeSessionId={activeSessionId}
         refreshKey={historyRefreshKey}
-        onSelectSession={(id) => void loadSessionHistory(id)}
+        onSelectSession={(id, origin) => void loadSessionHistory(id, origin)}
         onNewSession={onNewSession}
       />
       <div className={styles.chatPageMain}>
@@ -317,12 +377,15 @@ export default function ChatPage() {
                   historicalReport={item.historicalReport}
                   failureDetail={item.failureDetail}
                   clientOrigin={item.clientOrigin}
+                  extraSession={item.extraSession}
+                  createdAtMs={item.createdAtMs}
+                  finishedAtMs={item.finishedAtMs}
                   turnFeedback={feedbackByTurn[item.turnId] ?? item.feedback}
                   feedbackSubmitting={submittingTurnId === item.turnId}
                   onTurnFeedback={(fb) =>
-                    void submitFeedback(item.turnId, fb).catch((e) =>
-                      message.error(String((e as Error).message || e))
-                    )
+                    void submitFeedback(item.turnId, fb)
+                      .then(() => setHistoryRefreshKey((k) => k + 1))
+                      .catch((e) => message.error(String((e as Error).message || e)))
                   }
                 />
               </div>
@@ -332,13 +395,26 @@ export default function ChatPage() {
             </div>
         </div>
         <div className={styles.composer}>
+          <div className={styles.extraSessionRow}>
+            <ExtraSessionComposer
+              fields={fieldDefs}
+              values={extraKv}
+              onChange={setExtraKv}
+              disabled={composerDisabled}
+            />
+          </div>
+          {composerDisabled ? (
+            <Tooltip title="外部会话，仅可查看">
+              <span className={styles.composerDisabledHint}>外部会话，不可追问</span>
+            </Tooltip>
+          ) : null}
           <div className={styles.quickPrompts}>
             {QUICK_PROMPTS.map((q) => (
               <button
                 key={q}
                 type="button"
                 className={styles.quickPromptBtn}
-                disabled={sending}
+                disabled={sending || composerDisabled}
                 onClick={() => void onQuickPrompt(q)}
               >
                 {q}
@@ -349,7 +425,12 @@ export default function ChatPage() {
             <Input.TextArea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="输入任务描述（自然语言），Enter 发送；Shift+Enter 换行"
+              placeholder={
+                composerDisabled
+                  ? "外部会话，仅可查看历史"
+                  : "输入任务描述（自然语言），Enter 发送；Shift+Enter 换行"
+              }
+              disabled={composerDisabled}
               autoSize={{ minRows: 2, maxRows: 6 }}
               onKeyDown={(ev) => {
                 if (ev.key === "Enter" && !ev.shiftKey) {
@@ -358,7 +439,12 @@ export default function ChatPage() {
                 }
               }}
             />
-            <Button type="primary" loading={sending} onClick={() => void onSend()}>
+            <Button
+              type="primary"
+              loading={sending}
+              disabled={composerDisabled}
+              onClick={() => void onSend()}
+            >
               发送
             </Button>
           </div>

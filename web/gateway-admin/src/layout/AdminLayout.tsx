@@ -9,6 +9,7 @@ import {
   SettingOutlined,
   ToolOutlined,
   UserOutlined,
+  FormOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
 import { Avatar, Button, Dropdown, Layout, Menu, Select, Space, Tag, Typography } from "antd";
@@ -33,6 +34,7 @@ const TAB_ITEMS: MenuProps["items"] = [
   { key: "/preflight", icon: <SettingOutlined />, label: "Preflight" },
   { key: "/prompt", icon: <FileTextOutlined />, label: "系统提示词" },
   { key: "/tools", icon: <ToolOutlined />, label: "Tools" },
+  { key: "/extra-session", icon: <FormOutlined />, label: "extraSession" },
   {
     key: "global",
     icon: <GlobalOutlined />,

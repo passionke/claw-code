@@ -59,6 +59,10 @@ export interface GatewaySessionSummary {
   turnCount: number;
   previewPrompt?: string | null;
   clientOrigin?: string | null;
+  /** 任一轮有点踩。Author: kejiqing */
+  hasBadFeedback?: boolean;
+  /** 任一轮有点赞。Author: kejiqing */
+  hasGoodFeedback?: boolean;
 }
 
 export interface ListProjectSessionsResponse {
@@ -82,6 +86,8 @@ export interface GatewayTurnSummary {
   clientOrigin?: string | null;
   /** `good` / `bad`，来自 gateway_feedback。Author: kejiqing */
   feedback?: TurnFeedbackValue | null;
+  /** Enqueue snapshot from `entry_params_json`. Author: kejiqing */
+  extraSession?: Record<string, unknown> | null;
 }
 
 export interface ListSessionTurnsResponse {

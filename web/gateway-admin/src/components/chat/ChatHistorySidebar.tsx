@@ -1,4 +1,6 @@
 import {
+  DislikeFilled,
+  LikeFilled,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ReloadOutlined,
@@ -9,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import type { GatewaySessionSummary, ListProjectSessionsResponse } from "../../types/chat";
 import { isAdminOrigin } from "../../utils/clientOrigin";
+import type { ExtraSessionKv } from "../../utils/extraSessionStorage";
 import styles from "./chat.module.css";
 
 const PAGE_SIZE = 20;
@@ -45,6 +48,7 @@ function buildSessionsPath(
     updatedToMs?: number;
     q?: string;
     sessionId?: string;
+    extraSession?: Record<string, string>;
   }
 ): string {
   const sp = new URLSearchParams();
@@ -57,15 +61,32 @@ function buildSessionsPath(
   if (opts.updatedToMs != null) sp.set("updatedToMs", String(opts.updatedToMs));
   if (opts.q?.trim()) sp.set("q", opts.q.trim());
   if (opts.sessionId?.trim()) sp.set("sessionId", opts.sessionId.trim());
+  if (opts.extraSession && Object.keys(opts.extraSession).length > 0) {
+    sp.set("extraSession", JSON.stringify(opts.extraSession));
+  }
   return `/v1/projects/${dsId}/sessions?${sp.toString()}`;
+}
+
+function extraSessionFilterObject(
+  fieldDefs: string[],
+  kv: ExtraSessionKv
+): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const f of fieldDefs) {
+    const v = kv[f]?.trim();
+    if (v) out[f] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export interface ChatHistorySidebarProps {
   gatewayBase: string;
   dsId: number;
+  /** Predefined extraSession field names from project config. Author: kejiqing */
+  extraSessionFieldDefs: string[];
   activeSessionId: string | null;
   refreshKey: number;
-  onSelectSession: (sessionId: string) => void;
+  onSelectSession: (sessionId: string, clientOrigin?: string | null) => void;
   onNewSession: () => void;
 }
 
@@ -73,6 +94,7 @@ export interface ChatHistorySidebarProps {
 export default function ChatHistorySidebar({
   gatewayBase,
   dsId,
+  extraSessionFieldDefs,
   activeSessionId,
   refreshKey,
   onSelectSession,
@@ -94,6 +116,8 @@ export default function ChatHistorySidebar({
   const [searchQ, setSearchQ] = useState("");
   const [sessionIdInput, setSessionIdInput] = useState("");
   const [sessionIdQ, setSessionIdQ] = useState("");
+  const [extraFilterInput, setExtraFilterInput] = useState<ExtraSessionKv>({});
+  const [extraFilterQ, setExtraFilterQ] = useState<ExtraSessionKv>({});
   const [filterDate, setFilterDate] = useState<Dayjs | null>(null);
 
   const listRef = useRef<HTMLUListElement>(null);
@@ -123,6 +147,7 @@ export default function ChatHistorySidebar({
         updatedToMs: to,
         q: searchQ,
         sessionId: sessionIdQ,
+        extraSession: extraSessionFilterObject(extraSessionFieldDefs, extraFilterQ),
       });
       if (append) {
         if (loadingMoreRef.current) return;
@@ -147,8 +172,13 @@ export default function ChatHistorySidebar({
         loadingMoreRef.current = false;
       }
     },
-    [gatewayBase, dsId, dateRangeMs, searchQ, sessionIdQ]
+    [gatewayBase, dsId, dateRangeMs, searchQ, sessionIdQ, extraSessionFieldDefs, extraFilterQ]
   );
+
+  useEffect(() => {
+    setExtraFilterInput({});
+    setExtraFilterQ({});
+  }, [dsId, extraSessionFieldDefs.join(",")]);
 
   const reload = useCallback(() => {
     void fetchPage(false);
@@ -172,6 +202,18 @@ export default function ChatHistorySidebar({
     const t = window.setTimeout(() => setSessionIdQ(sessionIdInput.trim()), SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(t);
   }, [sessionIdInput]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      const next: ExtraSessionKv = {};
+      for (const f of extraSessionFieldDefs) {
+        const v = extraFilterInput[f]?.trim();
+        if (v) next[f] = v;
+      }
+      setExtraFilterQ(next);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+  }, [extraFilterInput, extraSessionFieldDefs]);
 
   useEffect(() => {
     void fetchPage(false);
@@ -256,6 +298,18 @@ export default function ChatHistorySidebar({
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
         />
+        {extraSessionFieldDefs.map((field) => (
+          <Input
+            key={field}
+            allowClear
+            size="small"
+            placeholder={`extraSession · ${field}`}
+            value={extraFilterInput[field] ?? ""}
+            onChange={(e) =>
+              setExtraFilterInput((prev) => ({ ...prev, [field]: e.target.value }))
+            }
+          />
+        ))}
         <DatePicker
           allowClear
           size="small"
@@ -290,7 +344,10 @@ export default function ChatHistorySidebar({
         {!loading && !error && sessions.length === 0 ? (
           <li>
             <Typography.Text type="secondary" className={styles.historyEmpty}>
-              {sessionIdQ || searchQ || filterDate
+              {sessionIdQ ||
+              searchQ ||
+              filterDate ||
+              Object.keys(extraFilterQ).length > 0
                 ? "无匹配的对话"
                 : "暂无已保存的对话"}
             </Typography.Text>
@@ -303,14 +360,29 @@ export default function ChatHistorySidebar({
               className={`${styles.historyItem} ${
                 activeSessionId === s.sessionId ? styles.historyItemActive : ""
               }`}
-              onClick={() => onSelectSession(s.sessionId)}
+              onClick={() => onSelectSession(s.sessionId, s.clientOrigin)}
             >
-              <span className={styles.historyItemTitle}>
-                {sessionTitle(s)}
-                {s.clientOrigin && !isAdminOrigin(s.clientOrigin) ? (
-                  <span className={styles.historyOriginTag}>外部</span>
+              <div className={styles.historyItemTitleRow}>
+                {s.hasBadFeedback || s.hasGoodFeedback ? (
+                  <span className={styles.historyFeedbackMarks} aria-label="会话反馈">
+                    {s.hasBadFeedback ? (
+                      <DislikeFilled className={styles.historyFeedbackBad} title="有过点踩" />
+                    ) : null}
+                    {s.hasGoodFeedback ? (
+                      <LikeFilled className={styles.historyFeedbackGood} title="有过点赞" />
+                    ) : null}
+                  </span>
                 ) : null}
-              </span>
+                <span className={styles.historyItemTitle}>
+                  {sessionTitle(s)}
+                  {s.clientOrigin && !isAdminOrigin(s.clientOrigin) ? (
+                    <span className={styles.historyOriginTag}>外部</span>
+                  ) : null}
+                </span>
+                <span className={styles.historyTurnCount} title="对话轮数">
+                  {s.turnCount} 轮
+                </span>
+              </div>
               <span className={styles.historyItemTime}>{formatWhen(s.updatedAtMs)}</span>
             </button>
           </li>

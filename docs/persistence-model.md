@@ -22,6 +22,7 @@ This document aligns runtime behavior with the **Claw persistence design** plan 
 | `report_message` | Formal report body for this turn (same basis as `outputJson.message` / `report_body_from_solve_output`). |
 | `output_json` | Optional full solve JSON payload for handoff. |
 | `claw_exit_code` | Exit code from the worker when succeeded. |
+| `entry_params_json` | Immutable enqueue snapshot per turn (`dsId`, `userPrompt`, `extraSession`, `model`, `allowedTools`, `clientOrigin`, …). Admin `GET /v1/sessions/{sessionId}/turns` exposes `extraSession` from this column. |
 
 Schema is applied at gateway startup via `GatewaySessionDb::migrate` (`ALTER TABLE ... IF NOT EXISTS` for new columns). Per-`ds_id` agent bundle storage lives in **`project_config`** (see `docs/project-config-model.md`).
 

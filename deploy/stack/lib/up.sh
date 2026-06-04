@@ -9,6 +9,8 @@ ENV_FILE="${REPO_ROOT}/.env"
 
 # shellcheck disable=SC1091
 source "${LIB_DIR}/nuclear-pool-reset.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/pool-health.sh"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "missing ${ENV_FILE}" >&2
@@ -60,6 +62,9 @@ source "${LIB_DIR}/preflight.sh"
 claw_deploy_preflight "${PODMAN_DIR}"
 claw_validate_deploy_profile || exit 1
 
+# Postgres must be up before pool-daemon registry and gateway migrate. Author: kejiqing
+"${LIB_DIR}/pg-up.sh"
+
 # load_compose_args re-sources .env and resets GATEWAY_IMAGE to :local; re-pin after. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   claw_reapply_pool_image_pins "${PODMAN_DIR}"
@@ -102,20 +107,32 @@ export CLAW_IMAGE_RELEASE_TAG
 
 claw_remove_all_gateway_workers
 
+RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"
 if claw_pool_daemon_on_host; then
+  # Stop pool before compose recreate; start pool last so `up` success ⇒ RPC ready. kejiqing
+  "${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
+  claw_kill_tcp_listeners "$(claw_host_pool_rpc_port)"
   POOL_BIN="$(claw_ensure_pool_daemon_binary "${PODMAN_DIR}" "${REPO_ROOT}" | tail -n1)"
   export CLAW_POOL_DAEMON_BIN="${POOL_BIN}"
   echo "pool daemon binary: ${POOL_BIN}" >&2
-  "${PODMAN_DIR}/lib/pool-daemon-up.sh"
 else
   "${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
 fi
 
-# Recreate gateway container; pool is fresh with pinned worker image. kejiqing
+# Recreate gateway container; host pool starts after compose (see below). kejiqing
 claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
+
+if claw_pool_daemon_on_host; then
+  "${PODMAN_DIR}/lib/pool-daemon-up.sh"
+  claw_assert_host_pool_rpc_ready "${RPC_DIR}" || {
+    echo "error: gateway compose up finished but host pool RPC is unavailable" >&2
+    exit 1
+  }
+  echo "host pool RPC ready (127.0.0.1:$(claw_host_pool_rpc_port) pid=$(cat "${RPC_DIR}/daemon.pid"))" >&2
+fi
+
 _gw_tag="${GATEWAY_IMAGE##*:}"
 if [[ -z "${_gw_tag}" || "${_gw_tag}" == "${GATEWAY_IMAGE}" ]]; then
   _gw_tag="unknown"
 fi
 echo "Gateway stack started (gateway=${GATEWAY_IMAGE} deployImageTag=${_gw_tag} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}})."
-echo "Postgres: use ./deploy/stack/gateway.sh pg-up if not already running."

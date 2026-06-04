@@ -423,6 +423,7 @@ mod tests {
             git_sync_json: json!({}),
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
+            extra_session_fields_json: json!([]),
         };
         let ex = git_excluded_home_relpaths(&row);
         assert!(ex.contains(&PathBuf::from("CLAUDE.md")));

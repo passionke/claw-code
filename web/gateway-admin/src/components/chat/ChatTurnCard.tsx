@@ -17,6 +17,8 @@ import ReportMarkdown from "./ReportMarkdown";
 import TurnFeedbackButtons from "./TurnFeedbackButtons";
 import TurnToolsDrawer from "./TurnToolsDrawer";
 import TurnTimelineDrawer from "./TurnTimelineDrawer";
+import TurnExtraSessionDrawer from "./TurnExtraSessionDrawer";
+import { formatDurationMs } from "../../utils/formatDuration";
 import styles from "./chat.module.css";
 
 export interface ChatTurnCardProps {
@@ -39,6 +41,9 @@ export interface ChatTurnCardProps {
   feedbackSubmitting?: boolean;
   onTurnFeedback?: (feedback: TurnFeedbackValue) => void;
   clientOrigin?: string | null;
+  extraSession?: Record<string, unknown> | null;
+  createdAtMs?: number;
+  finishedAtMs?: number | null;
 }
 
 function todoStatusMark(status: string): string {
@@ -103,8 +108,15 @@ export default function ChatTurnCard({
   feedbackSubmitting,
   onTurnFeedback,
   clientOrigin,
+  extraSession,
+  createdAtMs,
+  finishedAtMs,
 }: ChatTurnCardProps) {
   const historyMode = viewMode === "history";
+  const wallMs =
+    createdAtMs != null && finishedAtMs != null && finishedAtMs >= createdAtMs
+      ? finishedAtMs - createdAtMs
+      : null;
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
   const [task, setTask] = useState<SolveTask>({
@@ -391,6 +403,12 @@ export default function ChatTurnCard({
                 </Button>
               </Popconfirm>
             ) : null}
+            {wallMs != null ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {formatDurationMs(wallMs)}
+              </Typography.Text>
+            ) : null}
+            <TurnExtraSessionDrawer extraSession={extraSession} />
             <TurnTimelineDrawer
               sessionId={sessionId}
               turnId={turnId}
