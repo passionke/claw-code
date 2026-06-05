@@ -518,7 +518,7 @@ fn build_solve_turn_timeline_core(
     progress: &[ProgressEvent],
     created_at_ms: i64,
     finished_at_ms: Option<i64>,
-) -> Option<SolveTurnTimeline> {
+) -> SolveTurnTimeline {
     let from_ms = created_at_ms;
     let mut to_ms = finished_at_ms.unwrap_or(created_at_ms.saturating_add(1));
     if to_ms < from_ms {
@@ -555,32 +555,32 @@ fn build_solve_turn_timeline_core(
                     )
                 })
                 .collect();
-            return Some(SolveTurnTimeline {
+            return SolveTurnTimeline {
                 origin_ms: origin,
                 end_ms: end,
                 total_ms: end.saturating_sub(origin),
                 lanes: vec![lane("progress", "执行进度", false, segments)],
                 phases: Vec::new(),
-            });
+            };
         }
-        return Some(SolveTurnTimeline {
+        return SolveTurnTimeline {
             origin_ms: from_ms,
             end_ms: to_ms,
             total_ms: to_ms.saturating_sub(from_ms),
             lanes: Vec::new(),
             phases: Vec::new(),
-        });
+        };
     }
 
     to_ms = to_ms.max(max_segment_end(&lanes, from_ms));
 
-    Some(SolveTurnTimeline {
+    SolveTurnTimeline {
         origin_ms: from_ms,
         end_ms: to_ms,
         total_ms: to_ms.saturating_sub(from_ms),
         lanes,
         phases: Vec::new(),
-    })
+    }
 }
 
 /// Build timeline from `gateway_turns.solve_timing_jsonb` (pool v1). Author: kejiqing
@@ -610,7 +610,13 @@ pub fn build_solve_turn_timeline_from_timing_json(
     let window = TurnTimelineWindow { from_ms, to_ms };
     let orch = filter_orchestration_events(&orch, window);
     let timing = filter_solve_timing_events_for_window(&timing, from_ms, to_ms);
-    build_solve_turn_timeline_core(&orch, &timing, &progress, created_at_ms, finished_at_ms)
+    Some(build_solve_turn_timeline_core(
+        &orch,
+        &timing,
+        &progress,
+        created_at_ms,
+        finished_at_ms,
+    ))
 }
 
 /// Build timeline for one turn using DB wall-clock bounds and `.claw` artifacts in that window.
@@ -634,7 +640,13 @@ pub fn build_solve_turn_timeline_for_turn(
     let timing = filter_solve_timing_events_for_window(&timing_all, from_ms, to_ms);
     let progress = read_progress_events(session_home, 500).unwrap_or_default();
 
-    build_solve_turn_timeline_core(&orch, &timing, &progress, created_at_ms, finished_at_ms)
+    Some(build_solve_turn_timeline_core(
+        &orch,
+        &timing,
+        &progress,
+        created_at_ms,
+        finished_at_ms,
+    ))
 }
 
 /// Build timeline lanes from session `.claw` artifacts (legacy: whole session, no turn window).
@@ -672,44 +684,6 @@ pub fn build_solve_turn_timeline(session_home: &Path) -> Option<SolveTurnTimelin
         total_ms: end.saturating_sub(origin),
         lanes,
         phases,
-    })
-}
-
-fn build_progress_only_timeline_in_window(
-    session_home: &Path,
-    window: TurnTimelineWindow,
-) -> Option<SolveTurnTimeline> {
-    let progress = read_progress_events(session_home, 500).ok()?;
-    let progress = filter_progress_events(&progress, window);
-    if progress.is_empty() {
-        return None;
-    }
-    let origin = window.from_ms;
-    let end = progress
-        .last()
-        .map(|e| e.ts_ms.max(window.to_ms))
-        .unwrap_or(window.to_ms);
-    let segments: Vec<TimelineSegment> = progress
-        .iter()
-        .enumerate()
-        .map(|(i, ev)| {
-            let next = progress.get(i + 1).map(|n| n.ts_ms).unwrap_or(end);
-            seg(
-                format!("p-{i}"),
-                ev.message.clone(),
-                ev.ts_ms,
-                next.max(ev.ts_ms + 1),
-                ev.kind.clone(),
-                None,
-            )
-        })
-        .collect();
-    Some(SolveTurnTimeline {
-        origin_ms: origin,
-        end_ms: end,
-        total_ms: end.saturating_sub(origin),
-        lanes: vec![lane("progress", "执行进度", false, segments)],
-        phases: Vec::new(),
     })
 }
 
