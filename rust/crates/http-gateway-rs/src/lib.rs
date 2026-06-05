@@ -30,6 +30,7 @@ pub mod gateway_llm_model_apply;
 pub mod gateway_llm_model_revision;
 pub mod gateway_translate;
 pub mod live_report_audit;
+pub mod llm_probe;
 pub mod mcp_probe;
 pub mod persistence;
 pub mod pool;

@@ -44,7 +44,7 @@ use http_gateway_rs::biz_advice_report::{
 };
 use http_gateway_rs::{
     claw_tap_cluster_state, client_origin, gateway_claw_tap_settings, gateway_global_settings,
-    gateway_llm_config_sync, gateway_translate, mcp_probe, pool, project_config_apply,
+    gateway_llm_config_sync, gateway_translate, llm_probe, mcp_probe, pool, project_config_apply,
     project_config_version, project_entity_revision, project_extra_session, project_git_sync,
     project_tools, session_db, session_merge, turn_id, turn_timeline_api, turn_tools_api,
 };
@@ -1611,6 +1611,10 @@ async fn main() {
         .route(
             "/v1/gateway/global-settings/llm-models",
             post(upsert_gateway_llm_model_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/test",
+            post(test_gateway_llm_model_handler),
         )
         .route(
             "/v1/gateway/global-settings/llm-models/{model_id}",
@@ -4938,6 +4942,16 @@ async fn put_gateway_active_llm_config_handler(
         .await
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(cfg))
+}
+
+async fn test_gateway_llm_model_handler(
+    State(state): State<AppState>,
+    Json(req): Json<llm_probe::LlmTestRequest>,
+) -> Result<Json<llm_probe::LlmTestResponse>, ApiError> {
+    let resp = llm_probe::probe_llm_model(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(resp))
 }
 
 async fn upsert_gateway_llm_model_handler(

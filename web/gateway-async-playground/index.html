@@ -297,12 +297,6 @@
       0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.55); }
       50% { opacity: 0.55; transform: scale(0.88); box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
     }
-    .tap-live-row { display: flex; flex-direction: column; gap: 2px; min-width: 200px; }
-    .tap-live-url {
-      font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--accent);
-      word-break: break-all;
-    }
-    .tap-live-hint { font-size: 11px; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -319,11 +313,6 @@
     <label>org_id（可选，写入 extraSession）
       <input id="org-id" type="text" placeholder="与 store_id 二选一或同时填" autocomplete="off" />
     </label>
-    <div class="tap-live-row">
-      <span style="font-size:12px;color:var(--muted)">claude-tap Live（session 跳转，自动）</span>
-      <a id="tap-live-url" class="tap-live-url" href="#" target="_blank" rel="noopener noreferrer">加载中…</a>
-      <span id="tap-live-hint" class="tap-live-hint">来自网关 global-settings · clawTap.liveBaseUrl</span>
-    </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
       <button type="button" class="secondary" id="btn-new-session">新会话</button>
       <button type="button" class="secondary" id="btn-health">健康检查</button>
@@ -876,20 +865,6 @@
       sel.value = String(pick.dsId);
     }
 
-    function renderTapLiveUi() {
-      const link = $("tap-live-url");
-      const hint = $("tap-live-hint");
-      if (state.tapLiveBase) {
-        link.textContent = state.tapLiveBase;
-        link.href = state.tapLiveBase;
-        hint.textContent = "来自 " + gatewayBase() + " global-settings · 切换网关会自动刷新";
-      } else {
-        link.textContent = "—";
-        link.href = "#";
-        hint.textContent = "未配置 clawTap（请在网关 Admin「全局推理」保存主机与 Live 端口）";
-      }
-    }
-
     async function refreshTapLiveFromSettings() {
       try {
         const { json } = await proxyHttp(
@@ -912,7 +887,6 @@
         state.tapLiveBase = "";
         state.tapLiveTemplate = "";
       }
-      renderTapLiveUi();
     }
 
     async function refreshFromHealthz() {

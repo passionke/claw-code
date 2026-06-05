@@ -566,6 +566,44 @@ pub async fn put_active_llm_config(
         .ok_or_else(|| "active LLM missing after save".into())
 }
 
+/// Load one model's current revision + API key for admin probe (does not require active). Author: kejiqing
+pub async fn load_llm_runtime_for_model_id(
+    db: &GatewaySessionDb,
+    model_id: &str,
+) -> Result<ActiveLlmRuntime, String> {
+    let id = normalize_llm_id(model_id).ok_or_else(|| "invalid llm model id".to_string())?;
+    let cluster_id =
+        resolve_llm_cluster_id().ok_or_else(|| "CLAW_CLUSTER_ID is not set".to_string())?;
+    let store = load_llm_models_store(db).await.map_err(|e| e.to_string())?;
+    let entry = store
+        .models
+        .iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| format!("llm model {id} not found"))?;
+    let rev = if entry.current_rev.is_empty() {
+        format_model_rev_local_ms(entry.updated_at_ms)
+    } else {
+        entry.current_rev.clone()
+    };
+    let Some(row) = db
+        .get_llm_cluster_revision(&cluster_id, &id, &rev)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Err(format!("llm model {id} revision {rev} not found"));
+    };
+    let api_key =
+        llm_api_key_for(&store, &id, &rev).ok_or_else(|| "apiKey is not configured".to_string())?;
+    Ok(ActiveLlmRuntime {
+        model_id: id,
+        model_rev: rev,
+        base_model_url: row.base_model_url,
+        model_name: row.model_name,
+        api_key,
+        applied_at_ms: None,
+    })
+}
+
 pub(crate) async fn load_active_llm_runtime(
     db: &GatewaySessionDb,
 ) -> Result<Option<ActiveLlmRuntime>, sqlx::Error> {

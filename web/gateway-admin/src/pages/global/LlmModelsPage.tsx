@@ -1,12 +1,17 @@
-import { CloudOutlined, PlusOutlined } from "@ant-design/icons";
+import { CloudOutlined, PlusOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import {
+  Alert,
   Button,
   Card,
+  Collapse,
   Form,
   Input,
+  InputNumber,
   Modal,
   Popconfirm,
+  Select,
   Space,
+  Spin,
   Table,
   Tag,
   Typography,
@@ -17,6 +22,10 @@ import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import type { GlobalSettingsResponse, LlmModelRow } from "../../types/globalSettings";
+import type { LlmTestResponse, ThinkingMode } from "../../types/llmTest";
+import { testLlmModel, thinkingModeToApi } from "../../utils/llmTest";
+
+const DEFAULT_TEST_PROMPT = "Reply with exactly: pong";
 
 function formatMs(ms?: number): string {
   if (!ms) return "—";
@@ -33,6 +42,20 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<LlmModelRow | null>(null);
   const [form] = Form.useForm();
+  const [testModalOpen, setTestModalOpen] = useState(false);
+  const [testingRow, setTestingRow] = useState<LlmModelRow | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<LlmTestResponse | null>(null);
+  const [testForm] = Form.useForm<{
+    prompt: string;
+    thinkingMode: ThinkingMode;
+    temperature?: number;
+    topP?: number;
+    maxTokens?: number;
+    frequencyPenalty?: number;
+    presencePenalty?: number;
+    reasoningEffort?: string;
+  }>();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -125,6 +148,60 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
     await load();
   };
 
+  const openTest = (row: LlmModelRow) => {
+    setTestingRow(row);
+    setTestResult(null);
+    testForm.setFieldsValue({
+      prompt: DEFAULT_TEST_PROMPT,
+      thinkingMode: "default",
+      temperature: undefined,
+      topP: undefined,
+      maxTokens: 256,
+      frequencyPenalty: undefined,
+      presencePenalty: undefined,
+      reasoningEffort: undefined,
+    });
+    setTestModalOpen(true);
+  };
+
+  const runTest = async () => {
+    if (!testingRow) return;
+    if (!testingRow.apiKeySet) {
+      message.warning("请先配置 API Key 后再测试");
+      return;
+    }
+    const v = await testForm.validateFields();
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const thinkingEnabled = thinkingModeToApi(v.thinkingMode);
+      const req: Parameters<typeof testLlmModel>[1] = {
+        modelId: testingRow.id,
+        prompt: (v.prompt || "").trim() || DEFAULT_TEST_PROMPT,
+      };
+      if (thinkingEnabled !== undefined) req.thinkingEnabled = thinkingEnabled;
+      if (typeof v.temperature === "number") req.temperature = v.temperature;
+      if (typeof v.topP === "number") req.topP = v.topP;
+      if (typeof v.maxTokens === "number") req.maxTokens = v.maxTokens;
+      if (typeof v.frequencyPenalty === "number") req.frequencyPenalty = v.frequencyPenalty;
+      if (typeof v.presencePenalty === "number") req.presencePenalty = v.presencePenalty;
+      const effort = (v.reasoningEffort || "").trim();
+      if (effort) req.reasoningEffort = effort;
+
+      const r = await testLlmModel(gatewayBase, req);
+      setTestResult(r);
+      if (r.ok) {
+        message.success(`模型「${testingRow.name}」测试通过（${r.durationMs}ms）`);
+      } else {
+        message.error(`模型「${testingRow.name}」测试未通过`);
+      }
+    } catch (e) {
+      message.error(String(e));
+    } finally {
+      setTesting(false);
+    }
+  };
+
   const deleteModel = async (row: LlmModelRow) => {
     await proxyHttp(
       gatewayBase,
@@ -161,11 +238,19 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
     },
     {
       title: "操作",
-      width: 220,
+      width: 280,
       render: (_, row) => {
         const isActive = row.active || row.id === activeLlmModelId;
         return (
           <Space wrap>
+            <Button
+              size="small"
+              icon={<ThunderboltOutlined />}
+              disabled={!row.apiKeySet}
+              onClick={() => openTest(row)}
+            >
+              测试
+            </Button>
             <Button size="small" onClick={() => openEdit(row)}>
               编辑
             </Button>
@@ -278,6 +363,184 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
             <Input.Password placeholder="sk-..." autoComplete="new-password" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={testingRow ? `测试模型 · ${testingRow.name}` : "测试模型"}
+        open={testModalOpen}
+        onCancel={() => setTestModalOpen(false)}
+        footer={
+          <Space>
+            <Button onClick={() => setTestModalOpen(false)}>关闭</Button>
+            <Button
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              loading={testing}
+              onClick={() => runTest().catch(() => {})}
+            >
+              发送测试
+            </Button>
+          </Space>
+        }
+        destroyOnClose
+        width={640}
+      >
+        {testingRow ? (
+          <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+            模型 ID：<Typography.Text code>{testingRow.modelName}</Typography.Text>
+            <br />
+            Base URL：<Typography.Text code>{testingRow.baseModelUrl}</Typography.Text>
+          </Typography.Paragraph>
+        ) : null}
+        <Form
+          form={testForm}
+          layout="vertical"
+          initialValues={{
+            prompt: DEFAULT_TEST_PROMPT,
+            thinkingMode: "default",
+            maxTokens: 256,
+          }}
+        >
+          <Form.Item name="prompt" label="测试提示词">
+            <Input.TextArea rows={3} placeholder={DEFAULT_TEST_PROMPT} />
+          </Form.Item>
+          <Form.Item
+            name="thinkingMode"
+            label="Thinking"
+            tooltip="默认=不传参由上游决定；开启/关闭对应通用 thinking 开关（DeepSeek / Qwen 等）"
+          >
+            <Select
+              options={[
+                { value: "default", label: "默认（上游决定）" },
+                { value: "on", label: "开启" },
+                { value: "off", label: "关闭" },
+              ]}
+            />
+          </Form.Item>
+          <Collapse
+            ghost
+            items={[
+              {
+                key: "advanced",
+                label: "扩展参数（可选）",
+                children: (
+                  <>
+                    <Form.Item name="temperature" label="Temperature (0–2)">
+                      <InputNumber min={0} max={2} step={0.1} style={{ width: "100%" }} />
+                    </Form.Item>
+                    <Form.Item name="topP" label="Top P (0–1)">
+                      <InputNumber min={0} max={1} step={0.05} style={{ width: "100%" }} />
+                    </Form.Item>
+                    <Form.Item name="maxTokens" label="Max tokens">
+                      <InputNumber min={1} max={32768} step={1} style={{ width: "100%" }} />
+                    </Form.Item>
+                    <Form.Item name="frequencyPenalty" label="Frequency penalty (-2–2)">
+                      <InputNumber min={-2} max={2} step={0.1} style={{ width: "100%" }} />
+                    </Form.Item>
+                    <Form.Item name="presencePenalty" label="Presence penalty (-2–2)">
+                      <InputNumber min={-2} max={2} step={0.1} style={{ width: "100%" }} />
+                    </Form.Item>
+                    <Form.Item
+                      name="reasoningEffort"
+                      label="Reasoning effort"
+                      tooltip="OpenAI 推理模型：low / medium / high"
+                    >
+                      <Select
+                        allowClear
+                        placeholder="不指定"
+                        options={[
+                          { value: "low", label: "low" },
+                          { value: "medium", label: "medium" },
+                          { value: "high", label: "high" },
+                        ]}
+                      />
+                    </Form.Item>
+                  </>
+                ),
+              },
+            ]}
+          />
+        </Form>
+        {testing ? (
+          <div style={{ marginTop: 12 }}>
+            <Spin tip="正在请求上游大模型…" />
+          </div>
+        ) : null}
+        {testResult && !testing ? (
+          <Alert
+            style={{ marginTop: 12 }}
+            type={testResult.ok ? "success" : "error"}
+            showIcon
+            message={
+              testResult.ok
+                ? `通过 · ${testResult.durationMs}ms`
+                : `未通过 · ${testResult.status} · ${testResult.durationMs}ms`
+            }
+            description={
+              <div>
+                <div>
+                  <Typography.Text type="secondary">上游：</Typography.Text>{" "}
+                  <Typography.Text code>{testResult.upstreamUrl}</Typography.Text>
+                </div>
+                {testResult.thinkingEnabled !== undefined ? (
+                  <div>
+                    <Typography.Text type="secondary">Thinking：</Typography.Text>{" "}
+                    {testResult.thinkingEnabled ? "开启" : "关闭"}
+                  </div>
+                ) : (
+                  <div>
+                    <Typography.Text type="secondary">Thinking：</Typography.Text> 默认
+                  </div>
+                )}
+                {testResult.usage ? (
+                  <div>
+                    <Typography.Text type="secondary">Token：</Typography.Text>{" "}
+                    in {testResult.usage.inputTokens} / out {testResult.usage.outputTokens} / total{" "}
+                    {testResult.usage.totalTokens}
+                  </div>
+                ) : null}
+                {testResult.thinkingText ? (
+                  <div style={{ marginTop: 8 }}>
+                    <Typography.Text type="secondary">Thinking 输出：</Typography.Text>
+                    <Typography.Paragraph
+                      code
+                      style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}
+                    >
+                      {testResult.thinkingText}
+                    </Typography.Paragraph>
+                  </div>
+                ) : null}
+                {testResult.responseText ? (
+                  <div style={{ marginTop: 8 }}>
+                    <Typography.Text type="secondary">回复：</Typography.Text>
+                    <Typography.Paragraph
+                      code
+                      style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}
+                    >
+                      {testResult.responseText}
+                    </Typography.Paragraph>
+                  </div>
+                ) : null}
+                {testResult.warnings.map((w) => (
+                  <div key={w} style={{ marginTop: 4 }}>
+                    <Typography.Text type="warning">{w}</Typography.Text>
+                  </div>
+                ))}
+                {testResult.errors.map((e) => (
+                  <div key={e} style={{ marginTop: 4 }}>
+                    <Typography.Text type="danger">{e}</Typography.Text>
+                  </div>
+                ))}
+                <Typography.Paragraph
+                  type="secondary"
+                  style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
+                >
+                  {testResult.hint}
+                </Typography.Paragraph>
+              </div>
+            }
+          />
+        ) : null}
       </Modal>
     </div>
   );
