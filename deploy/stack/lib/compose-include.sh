@@ -180,7 +180,7 @@ claw_podman_write_pool_daemon_sidecar_env() {
     printf '%s\n' '# GENERATED — do not edit. Overwritten by compose-include (host pool). kejiqing'
     printf '%s\n' "CLAW_WORK_ROOT=${ws}"
     printf '%s\n' "CLAW_POOL_WORK_ROOT_HOST=${ws}"
-    printf '%s\n' "CLAW_WORKER_ENV_FILE=${script_dir}/.claw-worker-llm.env:${repo_root}/.env"
+    printf '%s\n' "CLAW_WORKER_ENV_FILE=${script_dir}/.claw-worker-runtime.env:${repo_root}/.env"
     if [[ -n "${CLAW_PODMAN_NETWORK:-}" ]]; then
       printf '%s\n' "CLAW_PODMAN_NETWORK=${CLAW_PODMAN_NETWORK}"
     fi

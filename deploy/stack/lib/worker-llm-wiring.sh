@@ -26,6 +26,8 @@ claw_ensure_worker_llm_wiring() {
     done
     printf '%s\n' "CLAW_PODMAN_NETWORK=${net}"
   } >"${runtime}"
+  # Back-compat: compose on older deploy trees still env_file ./.claw-worker-llm.env. kejiqing
+  ln -sf .claw-worker-runtime.env "${script_dir}/.claw-worker-llm.env"
   export CLAW_WORKER_ENV_FILE="${runtime}"
   export CLAW_PODMAN_NETWORK="${net}"
 }

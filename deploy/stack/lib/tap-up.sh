@@ -29,4 +29,4 @@ claw_claude_tap_start "${PODMAN_DIR}" "${ROOT_DIR}"
 claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
 
 echo "claude-tap: proxy http://127.0.0.1:${CLAUDE_TAP_PORT:-8080} live http://127.0.0.1:${CLAUDE_TAP_LIVE_PORT:-3000}"
-echo "worker LLM wiring: ${PODMAN_DIR}/.claw-worker-llm.env (apply with: ./deploy/stack/gateway.sh up)"
+echo "worker runtime env: ${PODMAN_DIR}/.claw-worker-runtime.env (apply with: ./deploy/stack/gateway.sh up)"

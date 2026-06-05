@@ -34,8 +34,8 @@ services:
       # Human-maintained env: repo root `.env` only. Tool allowlist is per-ds in PG, not env. Do not add deploy/stack/.env.
       # Paths relative to this file's directory: `deploy/stack/` → `../..` is repo root.
       - ../../.env
-      # tap proxy URL + pool worker run extras (gateway.sh up / tap-up). Overrides stale OPENAI_BASE_URL in .env.
-      - ./.claw-worker-llm.env
+      # Pool worker deploy keys (gateway.sh up). LLM injected per-solve via pool Exec -e.
+      - ./.claw-worker-runtime.env
       # Written by compose-include (up.sh / start-with-tap.sh / down.sh). Do not set
       # CLAW_POOL_WORK_ROOT_HOST in `environment:` with empty ${…} — it overrides env_file and breaks worker bind mounts.
       - ./.claw-pool-workspace.env

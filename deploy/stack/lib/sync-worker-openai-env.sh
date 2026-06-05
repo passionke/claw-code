@@ -20,7 +20,7 @@ source "${REPO_ROOT}/.env"
 set +a
 
 claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
-echo "OK: wrote ${PODMAN_DIR}/.claw-worker-llm.env (no repo-root .env mutation). Run: ./deploy/stack/gateway.sh up"
+echo "OK: wrote ${PODMAN_DIR}/.claw-worker-runtime.env (no repo-root .env mutation). Run: ./deploy/stack/gateway.sh up"
 
 if [[ "${1:-}" == "--restart" ]]; then
   "${PODMAN_DIR}/lib/tap-down.sh" || true

@@ -51,6 +51,7 @@ deploy/stack/claude-tap-data/
 deploy/stack/deploy/
 deploy/stack/.claw-pool-rpc/
 deploy/stack/.claw-worker-llm.env
+deploy/stack/.claw-worker-runtime.env
 deploy/stack/.linux-artifacts/
 deploy/stack/.claw-postgres-network.override.yml
 # Admin UI hashed bundles (local build; do not commit)
