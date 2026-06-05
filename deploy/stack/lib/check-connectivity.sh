@@ -18,6 +18,11 @@ source "${LIB_DIR}/compose-include.sh"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/pool-health.sh"
 
+if ! claw_ensure_host_pool_running "${PODMAN_DIR}"; then
+  echo "error: host pool not running — Admin solve_async will 503" >&2
+  exit 1
+fi
+
 PLAYGROUND_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
 GATEWAY_PORT="${GATEWAY_HOST_PORT:-18088}"
 POOL_HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
@@ -39,24 +44,28 @@ cat /tmp/claw_gateway_healthz.json
 echo
 
 echo "[2/5] pool HTTP from gateway-rs container (host.containers.internal:${POOL_HTTP_PORT})"
-podman exec "${GW_CTN}" curl -fsS --max-time 5 \
+if ! podman exec "${GW_CTN}" curl -fsS --max-time 5 \
   "http://host.containers.internal:${POOL_HTTP_PORT}/healthz/live-report" \
-  >/tmp/claw_pool_health.json
+  >/tmp/claw_pool_health.json; then
+  echo "error: gateway cannot reach pool HTTP — same failure as Admin 503" >&2
+  echo "hint: ./deploy/stack/gateway.sh pool-up" >&2
+  exit 1
+fi
 python3 -c 'import json; d=json.load(open("/tmp/claw_pool_health.json")); print("pool live-report ok", d.get("ok", d))' 2>/dev/null || cat /tmp/claw_pool_health.json
 echo
 
 if claw_pool_daemon_on_host; then
-  echo "[2b/5] host pool RPC (127.0.0.1:${CLAW_POOL_DAEMON_PORT:-9943}) — required for solve_async"
-  claw_assert_host_pool_rpc_ready "${PODMAN_DIR}/.claw-pool-rpc" || exit 1
-  echo "host pool RPC ok"
+  base="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
+  echo "[2b/5] host pool HTTP (127.0.0.1:${CLAW_POOL_HTTP_PORT:-9944})"
+  claw_assert_host_pool_http_ready "${PODMAN_DIR}/.claw-pool-rpc" || exit 1
+  echo "host pool HTTP ok"
+  echo "[2c/5] pool HTTP from gateway-rs container (${base})"
+  claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" || exit 1
+  echo "gateway → pool HTTP ok"
   echo
 else
-  # shellcheck disable=SC1091
-  source "${LIB_DIR}/pool-sidecar-health.sh"
-  echo "[2b/5] compose pool sidecar (gateway → claw-pool-daemon:${CLAW_POOL_DAEMON_PORT:-9943})"
-  claw_assert_gateway_pool_rpc_reachable || exit 1
-  echo "compose pool RPC ok"
-  echo
+  echo "error: compose pool sidecar removed in pool v1; set CLAW_POOL_HOST_DAEMON=1 or run ./deploy/stack/gateway.sh pool-up" >&2
+  exit 1
 fi
 
 echo "[3/5] solve_async smoke (extraSession from ds 1 project config when defined)"
@@ -65,6 +74,7 @@ if claw_pool_daemon_on_host; then
     echo "error: refuse solve_async smoke — host pool RPC not ready" >&2
     exit 1
   }
+  claw_wait_gateway_pool_rpc_ready "${PODMAN_DIR}" || exit 1
 fi
 SOLVE_BODY="$(python3 <<PY
 import json
@@ -85,6 +95,28 @@ TASK_JSON="$(curl -fsS -X POST "http://127.0.0.1:${GATEWAY_PORT}/v1/solve_async"
   -d "${SOLVE_BODY}")"
 echo "${TASK_JSON}"
 TASK_ID="$(printf "%s" "${TASK_JSON}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["taskId"])')"
+TURN_ID="$(printf "%s" "${TASK_JSON}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["turnId"])')"
+
+echo "[3b/5] poll solve_async until succeeded (same bar as Admin)"
+for _ in $(seq 1 120); do
+  sleep 2
+  TASK_POLL="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/tasks/${TASK_ID}")"
+  TASK_ST="$(printf '%s' "${TASK_POLL}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])')"
+  echo "poll status=${TASK_ST}"
+  if [[ "${TASK_ST}" == "succeeded" || "${TASK_ST}" == "failed" ]]; then
+    if [[ "${TASK_ST}" != "succeeded" ]]; then
+      printf '%s\n' "${TASK_POLL}" | python3 -m json.tool >&2
+      echo "error: connectivity solve_async failed taskId=${TASK_ID} turnId=${TURN_ID}" >&2
+      exit 1
+    fi
+    printf '%s\n' "${TASK_POLL}" | python3 -m json.tool
+    break
+  fi
+done
+if [[ "${TASK_ST:-}" != "succeeded" ]]; then
+  echo "error: timeout waiting solve_async taskId=${TASK_ID} turnId=${TURN_ID}" >&2
+  exit 1
+fi
 
 echo "[4/5] verify MCP list is available"
 MCP_JSON="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/mcp/injected/1")"

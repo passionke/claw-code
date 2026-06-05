@@ -115,24 +115,35 @@ async fn main() {
     }
 
     let pool_http = Arc::clone(&pool);
-    let http_bind_spawn = http_bind.clone();
-    tokio::spawn(async move {
-        if let Err(e) = serve_pool_http(&http_bind_spawn, pool_http).await {
-            tracing::error!(
-                target: "claw_gateway_pool",
-                component = "pool_daemon_main",
-                error = %e,
-                "claw-pool-daemon http server exited"
-            );
-        }
-    });
 
     let tcp_bind = std::env::var("CLAW_POOL_DAEMON_TCP_BIND")
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
 
+    let listen = std::env::var("CLAW_POOL_DAEMON_LISTEN")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
     if let Some(ref addr) = tcp_bind {
+        let http_bind_spawn = http_bind.clone();
+        tokio::spawn(async move {
+            if let Err(e) = serve_pool_http(
+                &http_bind_spawn,
+                Arc::clone(&pool_http),
+                std::future::pending::<()>(),
+            )
+            .await
+            {
+                tracing::error!(
+                    target: "claw_gateway_pool",
+                    component = "pool_daemon_main",
+                    error = %e,
+                    "claw-pool-daemon http server exited"
+                );
+            }
+        });
         tracing::info!(
             target: "claw_gateway_pool",
             component = "pool_daemon_main",
@@ -145,7 +156,7 @@ async fn main() {
             work_root = %work_root.display(),
             pool_bind_root = %pool_binding_root.display(),
             podman,
-            "claw-pool-daemon (tcp + http)"
+            "claw-pool-daemon (legacy tcp + http)"
         );
         if let Err(e) = serve_pool_rpc_tcp(addr, pool).await {
             eprintln!("claw-pool-daemon: {e}");
@@ -154,26 +165,100 @@ async fn main() {
         return;
     }
 
-    let listen = std::env::var("CLAW_POOL_DAEMON_LISTEN")
-        .unwrap_or_else(|_| "/tmp/claw-pool-daemon.sock".into());
-    let path = PathBuf::from(listen);
+    if let Some(ref path) = listen {
+        let http_bind_spawn = http_bind.clone();
+        tokio::spawn(async move {
+            if let Err(e) = serve_pool_http(
+                &http_bind_spawn,
+                Arc::clone(&pool_http),
+                std::future::pending::<()>(),
+            )
+            .await
+            {
+                tracing::error!(
+                    target: "claw_gateway_pool",
+                    component = "pool_daemon_main",
+                    error = %e,
+                    "claw-pool-daemon http server exited"
+                );
+            }
+        });
+        let path = PathBuf::from(path);
+        tracing::info!(
+            target: "claw_gateway_pool",
+            component = "pool_daemon_main",
+            phase = "start",
+            pool_id = %pool_id,
+            listen = %path.display(),
+            http_bind = %http_bind,
+            advertise_ip = %advertise_ip,
+            sse_port,
+            work_root = %work_root.display(),
+            pool_bind_root = %pool_binding_root.display(),
+            podman,
+            "claw-pool-daemon (legacy unix + http)"
+        );
+        if let Err(e) = serve_pool_rpc(&path, pool).await {
+            eprintln!("claw-pool-daemon: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     tracing::info!(
         target: "claw_gateway_pool",
         component = "pool_daemon_main",
         phase = "start",
         pool_id = %pool_id,
-        listen = %path.display(),
         http_bind = %http_bind,
         advertise_ip = %advertise_ip,
         sse_port,
         work_root = %work_root.display(),
         pool_bind_root = %pool_binding_root.display(),
         podman,
-        "claw-pool-daemon (unix + http)"
+        "claw-pool-daemon http-only (RPC POST /v1/pool/rpc + live SSE)"
     );
-    if let Err(e) = serve_pool_rpc(&path, pool).await {
-        eprintln!("claw-pool-daemon: {e}");
+    // HTTP is the main loop; SIGTERM/SIGINT only triggers graceful shutdown (no select race). kejiqing
+    let shutdown = async {
+        let reason = pool_daemon_shutdown_signal().await;
+        tracing::info!(
+            target: "claw_gateway_pool",
+            component = "pool_daemon_main",
+            reason = %reason,
+            "claw-pool-daemon shutting down"
+        );
+    };
+    if let Err(e) = serve_pool_http(&http_bind, pool_http, shutdown).await {
+        tracing::error!(
+            target: "claw_gateway_pool",
+            component = "pool_daemon_main",
+            error = %e,
+            "claw-pool-daemon http server exited"
+        );
         std::process::exit(1);
+    }
+}
+
+async fn pool_daemon_shutdown_signal() -> String {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                res = tokio::signal::ctrl_c() => {
+                    if res.is_ok() {
+                        return "SIGINT".to_string();
+                    }
+                    return "ctrl_c_error".to_string();
+                }
+                _ = sigterm.recv() => return "SIGTERM".to_string(),
+            }
+        }
+    }
+    if tokio::signal::ctrl_c().await.is_ok() {
+        "SIGINT".to_string()
+    } else {
+        "ctrl_c_error".to_string()
     }
 }
 

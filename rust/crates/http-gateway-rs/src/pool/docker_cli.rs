@@ -21,7 +21,7 @@ pub fn probe_container_runtime_cli(bin: &str) -> Result<(), String> {
     if combined.contains("too old") || combined.contains("Minimum supported API version") {
         return Err(format!(
             "{bin} client API is too old for this container engine ({combined}); \
-             bind-mount the host {bin} binary into claw-pool-daemon (see deploy/stack/podman-compose.pool-rpc.yml)"
+             upgrade the host claw-pool-daemon binary (deploy/stack/.linux-artifacts/release/claw-pool-daemon)"
         ));
     }
     Err(format!("{bin} version probe failed: {combined}"))
@@ -36,6 +36,27 @@ pub async fn runtime_exec(bin: &str, args: &[&str]) -> std::io::Result<std::proc
         .kill_on_drop(true)
         .output()
         .await
+}
+
+/// `docker exec -i` with stdin bytes (materialize session files as worker uid). Author: kejiqing
+pub async fn runtime_exec_stdin(
+    bin: &str,
+    args: &[&str],
+    stdin_bytes: &[u8],
+) -> std::io::Result<std::process::Output> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut child = Command::new(bin)
+        .args(args)
+        .kill_on_drop(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(stdin_bytes).await?;
+    }
+    child.wait_with_output().await
 }
 
 fn argv_summary(args: &[&str], max_bytes: usize) -> String {

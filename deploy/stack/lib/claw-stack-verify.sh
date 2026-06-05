@@ -32,8 +32,6 @@ source "${PODMAN_DIR}/lib/compose-include.sh"
 source "${LIB_DIR}/claw-pool-registry-env.sh"
 # shellcheck source=pool-health.sh
 source "${LIB_DIR}/pool-health.sh"
-# shellcheck source=pool-sidecar-health.sh
-source "${LIB_DIR}/pool-sidecar-health.sh"
 
 RT="$(claw_container_runtime_cli 2>/dev/null || true)"
 [[ -n "${RT}" ]] || fail "need docker or podman in PATH for verify"
@@ -64,36 +62,24 @@ has_worker_name="$(psql_q "SELECT EXISTS (
 [[ "${has_worker_name}" == "t" ]] || fail "gateway_turns.worker_name missing"
 ok "claw_pool + gateway_turns.pool_id/worker_name present"
 
-echo "==> [2/6] Pool daemon (host or compose sidecar)"
-if ! claw_pool_daemon_on_host; then
-  claw_assert_pool_sidecar_compose_contract "${PODMAN_DIR}" || fail "pool sidecar compose contract"
-  ok "pool sidecar compose contract (privileged + host docker CLI)"
-  claw_assert_gateway_pool_rpc_env "${PODMAN_DIR}" || fail "gateway.env pool RPC host"
-  ok "gateway.env CLAW_POOL_DAEMON_TCP=claw-pool-daemon:port"
-  claw_assert_pool_container_docker_cli || fail "pool sidecar docker CLI API"
-  ok "pool sidecar docker CLI meets engine minimum API"
-  claw_assert_gateway_pool_rpc_reachable || fail "gateway→pool RPC"
-  ok "gateway container reaches claw-pool-daemon RPC"
-  claw_assert_pool_warm_worker || fail "pool warm worker"
-  ok "claw-worker warm container present"
-  claw_assert_pool_bind_propagation_e2e "${PODMAN_DIR}" || fail "pool bind propagation e2e"
-  ok "pool inject → worker /claw_host_root propagation ok"
-else
-  BIN="${CLAW_POOL_DAEMON_BIN:-${REPO_ROOT}/rust/target/release/claw-pool-daemon}"
-  [[ -x "${BIN}" ]] || fail "host claw-pool-daemon not executable: ${BIN}"
+echo "==> [2/6] Host pool daemon (v1: no compose sidecar)"
+claw_pool_daemon_on_host || fail "host pool required (compose sidecar removed)"
+BIN="${CLAW_POOL_DAEMON_BIN:-$(claw_default_pool_daemon_bin "${PODMAN_DIR}")}"
+# shellcheck source=pool-daemon-binary.sh
+source "${LIB_DIR}/pool-daemon-binary.sh"
+[[ -x "${BIN}" ]] || fail "host claw-pool-daemon not executable: ${BIN}"
 
-  if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if b'claw_pool registered' in b else 1)" "${BIN}" 2>/dev/null; then
-    fail "host ${BIN} lacks 'claw_pool registered' — stale binary; run: cargo build --release -p http-gateway-rs --bin claw-pool-daemon"
-  fi
-  if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if b'assign_turn_pool_worker_ok' in b else 1)" "${BIN}" 2>/dev/null; then
-    fail "host ${BIN} lacks assign_turn_pool_worker_ok — stale binary"
-  fi
-  ok "pool daemon binary contains registry + turn-assignment strings"
-
-  [[ -f "${RPC_DIR}/daemon.pid" ]] || fail "missing ${RPC_DIR}/daemon.pid — pool-daemon-up did not run"
-  dpid="$(cat "${RPC_DIR}/daemon.pid")"
-  kill -0 "${dpid}" 2>/dev/null || fail "claw-pool-daemon pid ${dpid} not running"
+if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if b'claw_pool registered' in b else 1)" "${BIN}" 2>/dev/null; then
+  fail "host ${BIN} lacks 'claw_pool registered' — run pack-deploy or cargo build -p http-gateway-rs --bin claw-pool-daemon"
 fi
+if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if b'assign_turn_pool_worker_ok' in b else 1)" "${BIN}" 2>/dev/null; then
+  fail "host ${BIN} lacks assign_turn_pool_worker_ok — stale binary"
+fi
+ok "pool daemon binary contains registry + turn-assignment strings"
+
+claw_assert_host_pool_http_ready "${RPC_DIR}" || fail "host pool HTTP not ready on 127.0.0.1"
+claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" \
+  || fail "gateway container cannot reach pool HTTP — run gateway.sh up; see .claw-pool-rpc/daemon.log"
 
 echo "==> [3/6] pool-registry.env"
 [[ -f "${RPC_DIR}/pool-registry.env" ]] || fail "missing pool-registry.env — up.sh must run claw_export_pool_registry_env"
@@ -103,48 +89,27 @@ source "${RPC_DIR}/pool-registry.env"
 [[ -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]] || fail "CLAW_POOL_ADVERTISE_HOST empty"
 ok "pool-registry.env pool_id=${CLAW_POOL_ID} advertise=${CLAW_POOL_ADVERTISE_HOST}"
 
-if claw_pool_daemon_on_host; then
-  echo "==> [4/6] pool daemon DB URL (host must not use compose hostname postgres)"
-  pool_db_url="$(claw_pool_daemon_database_url)" || fail "CLAW_GATEWAY_DATABASE_URL unset"
-  case "${pool_db_url}" in
-    *@postgres:*)
-      fail "host pool would use @postgres: — use 127.0.0.1:${PG_PORT} (claw_pool_daemon_database_url)"
-      ;;
-  esac
-  ok "host pool DB URL uses reachable host (${pool_db_url%%@*}@…)"
-else
-  echo "==> [4/6] pool sidecar DB URL (compose postgres hostname ok)"
-  case "${CLAW_GATEWAY_DATABASE_URL:-}" in
-    *@postgres:*|*@claw-gateway-postgres:*)
-      ok "pool sidecar uses compose PG hostname"
-      ;;
-    *)
-      fail "CLAW_GATEWAY_DATABASE_URL should use @postgres: for compose pool sidecar"
-      ;;
-  esac
-fi
+echo "==> [4/6] pool daemon DB URL (host must not use compose hostname postgres)"
+pool_db_url="$(claw_pool_daemon_database_url)" || fail "CLAW_GATEWAY_DATABASE_URL unset"
+case "${pool_db_url}" in
+  *@postgres:*)
+    fail "host pool would use @postgres: — use 127.0.0.1:${PG_PORT} (claw_pool_daemon_database_url)"
+    ;;
+esac
+ok "host pool DB URL uses reachable host (${pool_db_url%%@*}@…)"
 
 echo "==> [5/6] pool registry log — claw_pool registered"
-if claw_pool_daemon_on_host; then
-  LOG="${RPC_DIR}/daemon.log"
-  [[ -f "${LOG}" ]] || fail "missing ${LOG}"
-  if tail -200 "${LOG}" | grep -q "claw_pool registry disabled"; then
-    tail -30 "${LOG}" >&2
-    fail "pool registry disabled in daemon.log (often postgres hostname from host)"
-  fi
-  if ! tail -200 "${LOG}" | grep -q "claw_pool registered"; then
-    tail -30 "${LOG}" >&2
-    fail "no 'claw_pool registered' in recent daemon.log"
-  fi
-  ok "host daemon.log shows claw_pool registered"
-else
-  POOL_CTN="$(claw_pool_sidecar_container)"
-  if ! "${RT}" logs "${POOL_CTN}" 2>&1 | tail -200 | grep -q "claw_pool registered"; then
-    "${RT}" logs "${POOL_CTN}" 2>&1 | tail -30 >&2
-    fail "no 'claw_pool registered' in claw-pool-daemon container logs"
-  fi
-  ok "compose claw-pool-daemon logs show claw_pool registered"
+LOG="${RPC_DIR}/daemon.log"
+[[ -f "${LOG}" ]] || fail "missing ${LOG}"
+if tail -200 "${LOG}" | grep -q "claw_pool registry disabled"; then
+  tail -30 "${LOG}" >&2
+  fail "pool registry disabled in daemon.log (often postgres hostname from host)"
 fi
+if ! tail -200 "${LOG}" | grep -q "claw_pool registered"; then
+  tail -30 "${LOG}" >&2
+  fail "no 'claw_pool registered' in recent daemon.log"
+fi
+ok "host daemon.log shows claw_pool registered"
 
 echo "==> [6/6] claw_pool row + heartbeat"
 pool_rows="$(psql_q "SELECT count(*)::text FROM claw_pool;")"
@@ -160,9 +125,7 @@ if [[ -f "${STAMP_FILE}" ]]; then
   cat "${STAMP_FILE}"
 fi
 
-if claw_pool_daemon_on_host; then
-  claw_assert_host_pool_rpc_ready "${RPC_DIR}" || fail "host pool RPC died during verify — run gateway.sh up"
-    ok "host pool RPC still ready after verify"
-fi
+claw_assert_host_pool_rpc_ready "${RPC_DIR}" || fail "host pool RPC died during verify — run gateway.sh up"
+ok "host pool RPC still ready after verify"
 
 echo "==> claw-stack-verify: all checks passed"

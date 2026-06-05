@@ -26,8 +26,10 @@ Commands:
   pg-down       Stop postgres only (data volume kept)
   restart       Recreate gateway stack (down + up)
   pool-reset    Stop host pool daemon + remove all claw-worker containers
+  pool-up       Start host claw-pool-daemon if HTTP down (skips if already listening; --restart to replace)
   fix-workspace chown ds_* sessions + pool slots to CLAW_WORKER_UID (before up if preflight failed)
-  check         Connectivity smoke check
+  check         Connectivity smoke check (auto pool-up if HTTP down)
+  solve-e2e     Admin-equivalent solve_async + poll to succeeded/failed (real gate, not healthz)
   verify        Stack truth checks (schema, pool registry, binary); fails loud
   tap-up        Start claude-tap only (CLAUDE_TAP_MODE: native/pypi=PyPI claw-tap, docker=image)
   tap-down      Stop claude-tap only
@@ -81,8 +83,10 @@ case "${cmd}" in
     run_with_manual_hint "${LIB}/up.sh" "$@"
     ;;
   pool-reset) "${LIB}/pool-reset.sh" "$@" ;;
+  pool-up) "${LIB}/pool-daemon-up.sh" "$@" ;;
   fix-workspace) "${LIB}/fix-session-ownership.sh" "$@" ;;
   check) "${LIB}/check-connectivity.sh" "$@" ;;
+  solve-e2e) "${LIB}/admin-solve-e2e.sh" "$@" ;;
   verify) "${LIB}/claw-stack-verify.sh" "$@" ;;
   tap-up) bash "${LIB}/tap-up.sh" "$@" ;;
   tap-down) bash "${LIB}/tap-down.sh" "$@" ;;

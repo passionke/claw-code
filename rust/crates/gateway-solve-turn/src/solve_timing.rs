@@ -215,15 +215,9 @@ pub fn append_solve_timing_point(
     })
 }
 
-pub fn read_solve_timing_events(
-    session_home: &Path,
-    limit: usize,
-) -> Result<Vec<SolveTimingEvent>, String> {
-    let path = solve_timing_events_path(session_home);
-    if !path.is_file() {
-        return Ok(Vec::new());
-    }
-    let contents = fs::read_to_string(&path).map_err(|e| format!("read timing events: {e}"))?;
+/// Parse NDJSON timing lines (pool readback / DB store). Author: kejiqing
+#[must_use]
+pub fn parse_solve_timing_events_ndjson(contents: &str, limit: usize) -> Vec<SolveTimingEvent> {
     let mut out = Vec::new();
     for line in contents.lines() {
         let line = line.trim();
@@ -237,7 +231,19 @@ pub fn read_solve_timing_events(
     if out.len() > limit {
         out = out.split_off(out.len() - limit);
     }
-    Ok(out)
+    out
+}
+
+pub fn read_solve_timing_events(
+    session_home: &Path,
+    limit: usize,
+) -> Result<Vec<SolveTimingEvent>, String> {
+    let path = solve_timing_events_path(session_home);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let contents = fs::read_to_string(&path).map_err(|e| format!("read timing events: {e}"))?;
+    Ok(parse_solve_timing_events_ndjson(&contents, limit))
 }
 
 fn now_ms() -> i64 {

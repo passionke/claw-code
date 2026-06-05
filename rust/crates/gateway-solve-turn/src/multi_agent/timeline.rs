@@ -69,14 +69,9 @@ pub struct PhaseSummary {
     pub detail: Option<String>,
 }
 
-fn read_orchestration_events(session_home: &Path) -> Vec<OrchestrationEvent> {
-    let path = session_home.join(ORCHESTRATION_EVENTS_REL);
-    if !path.is_file() {
-        return Vec::new();
-    }
-    let Ok(raw) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
+/// Parse NDJSON orchestration lines (pool readback / DB store). Author: kejiqing
+#[must_use]
+pub fn parse_orchestration_events_ndjson(raw: &str) -> Vec<OrchestrationEvent> {
     let mut out = Vec::new();
     for line in raw.lines() {
         let line = line.trim();
@@ -88,6 +83,17 @@ fn read_orchestration_events(session_home: &Path) -> Vec<OrchestrationEvent> {
         }
     }
     out
+}
+
+fn read_orchestration_events(session_home: &Path) -> Vec<OrchestrationEvent> {
+    let path = session_home.join(ORCHESTRATION_EVENTS_REL);
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    parse_orchestration_events_ndjson(&raw)
 }
 
 fn seg(
@@ -382,7 +388,7 @@ fn max_segment_end(lanes: &[TimelineLane], fallback: i64) -> i64 {
 
 fn build_orchestration_lanes(
     events: &[OrchestrationEvent],
-    session_home: &Path,
+    progress_events: &[ProgressEvent],
     origin: i64,
     end: &mut i64,
 ) -> Vec<TimelineLane> {
@@ -468,8 +474,8 @@ fn build_orchestration_lanes(
         *end = (*end).max(w1);
     }
 
-    if let Ok(progress) = read_progress_events(session_home, 500) {
-        let report_events: Vec<&ProgressEvent> = progress
+    {
+        let report_events: Vec<&ProgressEvent> = progress_events
             .iter()
             .filter(|e| {
                 e.kind == REPORT_PROGRESS_EVENT_KIND && e.ts_ms >= origin && e.ts_ms <= *end
@@ -506,6 +512,107 @@ fn build_orchestration_lanes(
     lanes
 }
 
+fn build_solve_turn_timeline_core(
+    orch: &[OrchestrationEvent],
+    timing: &[SolveTimingEvent],
+    progress: &[ProgressEvent],
+    created_at_ms: i64,
+    finished_at_ms: Option<i64>,
+) -> Option<SolveTurnTimeline> {
+    let from_ms = created_at_ms;
+    let mut to_ms = finished_at_ms.unwrap_or(created_at_ms.saturating_add(1));
+    if to_ms < from_ms {
+        to_ms = from_ms;
+    }
+    let window = TurnTimelineWindow { from_ms, to_ms };
+    let progress = filter_progress_events(progress, window);
+
+    let mut lanes = build_orchestration_lanes(orch, &progress, from_ms, &mut to_ms);
+    if let Some(bootstrap) = build_bootstrap_lane(from_ms, timing, orch) {
+        lanes.insert(0, bootstrap);
+    }
+    lanes.extend(build_timing_lanes(timing));
+
+    if lanes.is_empty() {
+        if !progress.is_empty() {
+            let origin = from_ms;
+            let end = progress
+                .last()
+                .map(|e| e.ts_ms.max(window.to_ms))
+                .unwrap_or(window.to_ms);
+            let segments: Vec<TimelineSegment> = progress
+                .iter()
+                .enumerate()
+                .map(|(i, ev)| {
+                    let next = progress.get(i + 1).map(|n| n.ts_ms).unwrap_or(end);
+                    seg(
+                        format!("p-{i}"),
+                        ev.message.clone(),
+                        ev.ts_ms,
+                        next.max(ev.ts_ms + 1),
+                        ev.kind.clone(),
+                        None,
+                    )
+                })
+                .collect();
+            return Some(SolveTurnTimeline {
+                origin_ms: origin,
+                end_ms: end,
+                total_ms: end.saturating_sub(origin),
+                lanes: vec![lane("progress", "执行进度", false, segments)],
+                phases: Vec::new(),
+            });
+        }
+        return Some(SolveTurnTimeline {
+            origin_ms: from_ms,
+            end_ms: to_ms,
+            total_ms: to_ms.saturating_sub(from_ms),
+            lanes: Vec::new(),
+            phases: Vec::new(),
+        });
+    }
+
+    to_ms = to_ms.max(max_segment_end(&lanes, from_ms));
+
+    Some(SolveTurnTimeline {
+        origin_ms: from_ms,
+        end_ms: to_ms,
+        total_ms: to_ms.saturating_sub(from_ms),
+        lanes,
+        phases: Vec::new(),
+    })
+}
+
+/// Build timeline from `gateway_turns.solve_timing_jsonb` (pool v1). Author: kejiqing
+#[must_use]
+pub fn build_solve_turn_timeline_from_timing_json(
+    store: &serde_json::Value,
+    created_at_ms: i64,
+    finished_at_ms: Option<i64>,
+) -> Option<SolveTurnTimeline> {
+    let timing: Vec<SolveTimingEvent> = store
+        .get("solveTimingEvents")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let orch: Vec<OrchestrationEvent> = store
+        .get("orchestrationEvents")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let progress: Vec<ProgressEvent> = store
+        .get("progressEvents")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let from_ms = created_at_ms;
+    let mut to_ms = finished_at_ms.unwrap_or(created_at_ms.saturating_add(1));
+    if to_ms < from_ms {
+        to_ms = from_ms;
+    }
+    let window = TurnTimelineWindow { from_ms, to_ms };
+    let orch = filter_orchestration_events(&orch, window);
+    let timing = filter_solve_timing_events_for_window(&timing, from_ms, to_ms);
+    build_solve_turn_timeline_core(&orch, &timing, &progress, created_at_ms, finished_at_ms)
+}
+
 /// Build timeline for one turn using DB wall-clock bounds and `.claw` artifacts in that window.
 #[must_use]
 pub fn build_solve_turn_timeline_for_turn(
@@ -525,47 +632,9 @@ pub fn build_solve_turn_timeline_for_turn(
 
     let timing_all = read_solve_timing_events(session_home, 500).unwrap_or_default();
     let timing = filter_solve_timing_events_for_window(&timing_all, from_ms, to_ms);
+    let progress = read_progress_events(session_home, 500).unwrap_or_default();
 
-    let mut lanes = build_orchestration_lanes(&orch, session_home, from_ms, &mut to_ms);
-    if let Some(bootstrap) = build_bootstrap_lane(from_ms, &timing, &orch) {
-        lanes.insert(0, bootstrap);
-    }
-    lanes.extend(build_timing_lanes(&timing));
-
-    if lanes.is_empty() {
-        if let Some(p) = build_progress_only_timeline_in_window(session_home, window) {
-            return Some(p);
-        }
-        return Some(SolveTurnTimeline {
-            origin_ms: from_ms,
-            end_ms: to_ms,
-            total_ms: to_ms.saturating_sub(from_ms),
-            lanes: Vec::new(),
-            phases: Vec::new(),
-        });
-    }
-
-    to_ms = to_ms.max(max_segment_end(&lanes, from_ms));
-
-    let timings = MultiAgentTimings::load(session_home);
-    let phases: Vec<PhaseSummary> = timings
-        .phases
-        .iter()
-        .filter(|p| p.started_at_ms <= to_ms && p.ended_at_ms >= from_ms)
-        .map(|p| PhaseSummary {
-            phase: p.phase.clone(),
-            duration_ms: p.ended_at_ms.saturating_sub(p.started_at_ms),
-            detail: p.detail.clone(),
-        })
-        .collect();
-
-    Some(SolveTurnTimeline {
-        origin_ms: from_ms,
-        end_ms: to_ms,
-        total_ms: to_ms.saturating_sub(from_ms),
-        lanes,
-        phases,
-    })
+    build_solve_turn_timeline_core(&orch, &timing, &progress, created_at_ms, finished_at_ms)
 }
 
 /// Build timeline lanes from session `.claw` artifacts (legacy: whole session, no turn window).
@@ -579,7 +648,8 @@ pub fn build_solve_turn_timeline(session_home: &Path) -> Option<SolveTurnTimelin
     let origin = events.first().map(|e| e.ts_ms)?;
     let mut end = events.last().map(|e| e.ts_ms).unwrap_or(origin);
 
-    let mut lanes = build_orchestration_lanes(&events, session_home, origin, &mut end);
+    let progress = read_progress_events(session_home, 500).unwrap_or_default();
+    let mut lanes = build_orchestration_lanes(&events, &progress, origin, &mut end);
 
     let timing_all = read_solve_timing_events(session_home, 500).unwrap_or_default();
     lanes.extend(build_timing_lanes(&timing_all));

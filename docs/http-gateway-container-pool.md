@@ -35,54 +35,35 @@ Author: kejiqing
    - 镜像：与现网一致的 **Debian slim + `claw`（+ 可选 `ca-certificates`/`curl`）**（见 `deploy/stack/Containerfile.gateway-rs` 的 runtime 层思路）。  
    - 容器 **长期存活**（池内 idle 时也跑着），里面可以是 **sleep infinity** 或 **最小 init**，实际干活靠 **`docker exec` / `podman exec`**。
 
-### 2.2 一次 solve 的推荐路径（v1）
+### 2.2 一次 solve 的路径（pool bind v1）
 
 ```mermaid
 sequenceDiagram
     participant GW as http-gateway-rs
-    participant Pool as PoolManager
-    participant C as Worker容器
-    participant FS as 宿主机 ds_*/sessions/*
+    participant PG as PostgreSQL
+    participant PD as claw-pool-daemon
+    participant W as worker
 
-    GW->>FS: ds_lock 内写 sessions/{uuid}/.claw/settings.json
-    GW->>Pool: acquire(timeout)
-    Pool-->>GW: slot(container_id)
-    GW->>Pool: dispatch(slot, TaskSpec)
-    Pool->>C: docker exec / podman exec（挂载与命令由池组装）
-    Note over Pool,C: 工作区: bind-mount 只读模板 + 可写 overlay 或 每请求 rw bind
-    C->>C: claw 单次非交互 run（或专用子命令）
-    C-->>Pool: exit code + stdout(JSON 或文本)
-    Pool-->>GW: TaskOutcome
-    GW->>Pool: release(slot)
+    GW->>PG: INSERT turn + solve_task_json（入队前 PG 闸门）
+    GW->>PD: acquire(session_id, ds_id, turn_id)
+    PD->>PG: SELECT 续聊制品 + cc_messages
+    PD->>W: run 仅 ds_home→/claw_ds + tmpfs /claw_host_root
+    PD->>W: materialize_in（tar/jsonl/task）
+    PD->>W: exec gateway-solve-once
+    PD->>W: readback_out → UPSERT PG
+    PD->>PG: artifacts_ready=true + status=succeeded（同事务）
+    PD-->>GW: TaskOutcome
+    GW->>PD: release（pkill）
 ```
 
 要点：
 
-- **谁在写工作区**：仍在 **网关 + 短时 ds_lock**；每次 solve 使用 **`ds_{id}/sessions/{uuid}/`**（与数据源级 `ds_{id}/` 下的 `CLAUDE.md` 等分离）。  
-- **容器里看到的树（Phase 2）**：每槽 **一次** `run -d`，固定 **`work_root/.claw-pool-slot/slot-{i}/guest` → `/claw_host_root`**（**`--mount type=bind,…,bind-propagation=rslave`**，禁止 plain `-v` 默认 `rprivate`）；**`acquire`** 在宿主机 **inject**（bind）当前 **`ds_{id}/sessions/{uuid}/`** 与 ds 级只读引用；**`release`** teardown + `pkill`，**不** `rm` 容器。仅 **`Dead` / `force_kill`** 走同步 **`rm+run`**。  
-- **`.claw.json`**：仅由网关经 **`CLAW_PROJECT_CONFIG_ROOT` / `CLAW_CONFIG_FILE`** 加载；应放在 **`CLAW_WORK_ROOT` 树外**，且 compose **不要**把该文件挂进 worker 可写卷。  
-- **执行命令**：例如 `claw gateway-solve-once ...`（需后续在 CLI 增加 **非交互、单次 prompt、打印结构化结果** 的子命令；或临时用 env + 现有入口，以最小可行优先）。
-
-#### 2.2.1 Phase 2：`guest/` inject 与容器 mount propagation（必读）
-
-设计目标：**worker 容器内 `/claw_host_root` = 当前 lease 的 session 工作区**（`gateway-solve-task.json`、`.claw/solve-timing-events.ndjson`、续聊 jsonl 等与宿主机 `sessions/{uuid}/` 同一棵树）。
-
-| 步骤 | 宿主机 / VM | worker 容器 |
-| --- | --- | --- |
-| **`run`（每槽一次）** | `prepare_guest_for_mount_propagation(guest/)`（self-bind + **`mount --make-rshared`**) | `--mount type=bind,source=…/guest,target=/claw_host_root,**bind-propagation=rslave**` |
-| **`acquire` inject** | `ensure_session_ds_bind_targets(session/)` → **`mount --bind session/ → guest/`** | 经 rslave 传播，**同一时刻** `podman exec … cat /claw_host_root/gateway-solve-task.json` 可见 |
-| **`release` teardown** | umount ds 子挂载 + umount `guest/` | 容器仍挂固定 guest 挂载点；下次 acquire 再 inject 新 session |
-
-**禁止**误以为「宿主机 `guest/` 已 bind session，容器一定看得见」：plain **`-v guest:/claw_host_root`** 为 **`rprivate`**，acquire 在宿主机叠 bind **不会**传进已运行容器（表现为 worker 读**旧 task**、timing 写进 slot 快照、claw-tap sessionId 错位）。
-
-**实现与验收**（`slot_mount.rs` / `docker_pool.rs`）：
-
-1. 槽位 `run` 前：`prepare_guest_for_mount_propagation`  
-2. 槽位 `run`：`guest_container_bind_mount_spec(…, rslave)`  
-3. inject 前：在 **session 树内**创建 ds ro 挂载点（`home/skills` 等），再 bind session → guest  
-4. acquire 后：`verify_worker_container_sees_guest_file(…, gateway-solve-task.json)`，失败则槽位 **Dead** 并重建  
-
-macOS 开发：pool daemon 在 Darwin，bind/umount 经 **`podman machine ssh -- sudo mount`**；路径与容器内 virtiofs 一致。`apply` / `run` 对 **`guest/` 必须使用 [`canonicalize`](https://doc.rust-lang.org/std/fs/fn.canonicalize.html) 后的绝对路径（`/var/folders/…` 与 `/private/var/folders/…` 在 VM 内是**不同**挂载点，inject 与容器 `--mount source=` 不一致会导致 propagation 验收失败）。
+- **唯一 bind**：`work_root/ds_{id}` → 容器 **`/claw_ds:ro`**（换 ds 才 `rm+run`）；worker **不得**写入 ds_home，会话制品仅 **`/claw_host_root`**（tmpfs）。  
+- **session 工作区**：worker 内 **`/claw_host_root`** 为 **tmpfs**；每轮 **`materialize_in`** 从 PG 写出，`readback_out` 读回；**不** bind 宿主机 `sessions/{uuid}/`。  
+- **② Gateway cache**（`CLAW_WORK_ROOT/ds_*/sessions/…`）：可选，方便 `prepare` 写 settings；跨机/续聊以 **① PostgreSQL** 为准。  
+- **workspace 续聊**：PG 存 **`workspace_tar_gz`**（单轮 cap **16MB**）；`materialize_in` 解压到 tmpfs（macOS podman 须 staging+`cp`，避免 tar utime/chmod）。  
+- **终态**：pool **`finalize_turn_with_artifacts_ready`** 后 gateway **不再**用 `finalize_turn_terminal` 覆盖；客户端见 `succeeded` 即表示制品已入库。  
+- **已删除**：guest、`slot_mount.rs`、compose sidecar、`PoolSessionHostMounts`、rshared propagation。
 
 ### 2.3 池什么时候「创建」容器
 
@@ -99,7 +80,7 @@ macOS 开发：pool daemon 在 Darwin，bind/umount 经 **`podman machine ssh --
 | --- | --- | --- |
 | 后台起 worker | `docker run -d --name claw-worker-0 … IMAGE sleep infinity` | `podman run -d …` |
 | 执行任务 | `docker exec claw-worker-0 …` | `podman exec …` |
-| 挂 `ds_home` | **创建时** `-v /abs/path/ds_1:/workspace:rw`（卷一般在 `run` 时固定；换 ds 可每槽位固定 ds、或用多个池槽对应不同挂载策略） | 同左 |
+| 挂 `ds_home` | **创建时** `-v /abs/path/ds_1:/claw_ds:ro`（卷在 `run` 时固定；换 ds 才 `rm+run`） | 同左 |
 | 访问宿主机服务 | **`host.docker.internal`**（Docker Desktop / 新版 Engine 常见）或 **宿主机局域网 IP** | **`host.containers.internal`**（Podman） |
 | API | **`DOCKER_HOST`** + Unix socket（默认 `/var/run/docker.sock`）或远程 daemon | Podman socket / 直接 CLI |
 

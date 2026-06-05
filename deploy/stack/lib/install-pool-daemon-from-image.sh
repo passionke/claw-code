@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Legacy: install host `claw-pool-daemon` binary (normal deploy uses compose sidecar; see podman-compose.pool-rpc.yml). Author: kejiqing
+# Install host `claw-pool-daemon` binary from gateway image (v1: host pool on 9944). Author: kejiqing
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=/dev/null

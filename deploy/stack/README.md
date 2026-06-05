@@ -128,15 +128,18 @@ cp deploy/stack/env.production.example .env
 `gateway.sh up`（`lib/up.sh`）会：
 
 - 生成 `deploy/stack/.claw-pool-workspace.env`（其中 **`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`**，与容器内工作目录一致；不要在容器场景下写 macOS `/Users/...`）。
-- 合并 **`podman-compose.pool-rpc.yml`**：compose 内 **`claw-pool-daemon`（TCP）**，网关只连 RPC；**不再支持**在网关容器内挂 Podman API socket 起 worker。
+- **v1**：仅 **宿主机 `claw-pool-daemon`（TCP RPC）**；已删除 compose **`claw-pool-daemon` sidecar**（`podman-compose.pool-rpc.yml`）。网关只连 host RPC，worker 仅 bind `ds_{id}` → `/claw_ds`，session 制品在 PostgreSQL。
 - **`claw_compose`**：按 **`CLAW_CONTAINER_RUNTIME`** 调用 **`docker compose`** 或 **`podman compose`**（`podman` 时若装了 **`podman-compose`** 会用作后端，减轻 macOS 混用问题）。
 - 使用 **`up -d --force-recreate`**，避免只改 env 文件却沿用旧容器环境。
 - **启动硬门禁（必过）**：preflight 会递归校验 `CLAW_POOL_WORK_ROOT_BIND_SRC`（默认 `deploy/stack/claw-workspace`）下 **`ds_*` 等业务目录** 的 owner 是否为 `CLAW_WORKER_UID:CLAW_WORKER_GID`（默认 `1000:1000`）。**跳过** `.claw-pool-slot/`。`gateway.sh up` / `up --release` 会在 preflight **之前** 自动 `fix-workspace`（修历史 sidecar root 写的 session）；仍失败时：`./deploy/stack/gateway.sh fix-workspace` 或 `sudo chown -R 1000:1000 ./deploy/stack/claw-workspace/ds_*`。
+
+**宿主机 pool（Admin solve 必看）**：gateway 在 compose 里；**`claw-pool-daemon` 在宿主机 9944**。macOS 上 **`pool-up` 走 launchd**（agent shell 用 `nohup` 起的 pool 会在命令结束被干掉 → Admin 503）。运维与排查禁令见 **`deploy/stack/docs/host-pool-daemon.md`**。
 
 检查：
 
 ```bash
 curl -sS "http://127.0.0.1:${GATEWAY_HOST_PORT:-8088}/healthz"
+curl -sS "http://127.0.0.1:${CLAW_POOL_HTTP_PORT:-9944}/healthz/live-report"
 # 可选：async 调试页 + /admin（与 gateway 同 up/down）
 curl -sS "http://127.0.0.1:${GATEWAY_PLAYGROUND_HOST_PORT:-18765}/"
 # 与当前 CLAW_CONTAINER_RUNTIME 一致（auto 时与 build/up 相同）：
@@ -163,9 +166,9 @@ podman ps   # 或  docker ps
 | `remote` | `CLAW_TAP_PROXY_URL` 指向集群共享 claude-tap；Admin clawTap 与之对齐 |
 
 ```bash
-# local 开发：侧车 tap（若 Admin 指向本机 tap）
-./deploy/stack/gateway.sh tap-up
-./deploy/stack/gateway.sh tap-down
+# local 开发：gateway.sh up / pack-deploy 在 CLAW_LLM_PROXY=local 时自动 tap-up
+./deploy/stack/gateway.sh tap-down   # 仅停 tap（网关不动）
+./deploy/stack/gateway.sh tap-up     # 仅起 tap（网关已 up 时补启）
 ```
 
 详见 `docs/claw-tap-cluster-identity.md`。`claude-tap` 为 OpenAI 兼容代理，不是 MCP。
@@ -192,17 +195,18 @@ podman ps   # 或  docker ps
 
 | 现象 | 处理 |
 | --- | --- |
+| Admin `solve_async` **503**，gateway `/healthz` 仍 OK | **pool 不在 9944**（常见：macOS pool 未走 launchd 被 agent/终端杀掉）。`./deploy/stack/gateway.sh pool-up` 或 `up`；详见 **`deploy/stack/docs/host-pool-daemon.md`** |
 | `podman ps` 看不到网关 | 可能已退出：`podman ps -a \| grep claw-gateway-rs`，看 `podman logs claw-gateway-rs` |
 | 只有 `claw-gateway-rs` 没有 `claw-worker-*` | 是否打了 **worker 镜像**；**`claw-pool-daemon` 日志**是否 `spawn docker: No such file or directory`（`docker_pool` 要求 **gateway 镜像内带 `docker.io`**，见 `Containerfile.gateway-rs`；`release-v1.2.3` 及更早无此包须换新 tag）；`docker logs claw-pool-daemon`；`CLAW_POOL_DAEMON_TCP_HOST=claw-pool-daemon`（勿用 `host.docker.internal` 指 pool） |
-| `ensure_warm_failed` / `mount --make-rshared … permission denied`（或 `must be superuser`） | **`docker_pool` 须在能改宿主机 mount 的进程里跑 `mount(8)`**：Linux 默认 **compose `claw-pool-daemon` 需 `privileged: true`**（见 `podman-compose.pool-rpc.yml`）；宿主机 daemon 须 **root**。非 privileged 容器内即使用 root 也会 `permission denied`。勿仅靠 `CLAW_POOL_HOST_DAEMON=1` + 普通用户 |
-| preflight 让 `chown 1000:1000` 全树，pool 仍报 mount 权限 | **两件事**：session/`ds_*` 要 1000；**mount 要 privileged pool**（见上条）。**不要**指望把整个 workspace chown 后 pool 就能 mount；`.claw-pool-slot` 已从 preflight 排除，`release up` 会 `rm -rf` 旧 slot 树 |
-| solve 报 `session workspace ownership…` / 容器内 `Cannot connect to the Docker daemon …` | **已改为**：配置了 **`CLAW_POOL_RPC_HOST_WORK_ROOT`** 时，`prepare_gateway_session` 通过 **pool RPC** 让 **`claw-pool-daemon`** 做 session `chown`（网关容器**不必**挂 `docker.sock`）。请 **网关 + pool daemon 同版本升级**（含 RPC `chown_session_host`）。若未配 `CLAW_POOL_RPC_HOST_WORK_ROOT` 仍走网关内 `docker`/`podman` 兜底，则需引擎 sock |
+| `ensure_warm_failed` / worker 起不来 | v1 **无 guest/rshared bind**；worker 仅 `ds_{id}`→`/claw_ds` + tmpfs `/claw_host_root`。查 **`claw-pool-daemon` 日志**、`podman ps`、preflight 的 `ds_*` **1000:1000** owner |
+| preflight 让 `chown 1000:1000` | 仅 **`ds_*` 业务目录**（跳过 `.claw-pool-slot/`）；`gateway.sh up` 会先 `fix-workspace` |
+| solve 报 `session workspace ownership…` | **② Gateway cache**（`claw-workspace/ds_*/sessions/…`）uid 对齐；pool v1 **不 bind** session 进 worker，制品在 **PostgreSQL** |
 | 启动报 canonicalize `/Users/...` | 容器内不能拿 macOS 路径当 `CLAW_POOL_WORK_ROOT_HOST`；用 **`./deploy/stack/gateway.sh up`** 生成 env（`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`） |
 | 改 `.env` 不生效 | 必须用 **`./deploy/stack/gateway.sh up`**（带 `--force-recreate`），不要指望无重建的 `up` |
 | 改了 `rust/` 里 worker（`claw`）或网关逻辑，solve 仍像旧的 | **`./deploy/stack/gateway.sh build`** 会**同时**重建 **`claw-gateway-rs`** 与 **`claw-gateway-worker`**；只 `up` 不 `build` 会继续用旧镜像 |
 | `http://localhost:3000/?session=…` 没有预期内容 | 见上文 **Live Viewer**：stock tap **不解析** `session` query；且须有经 **tap 代理端口**（`CLAUDE_TAP_PORT`，默认 8080）的 **OpenAI 兼容 API** 流量写入当前 `trace_*.jsonl` 后 Live 才有数据；仅打网关 **`/healthz`** 不会进 tap trace |
-| solve 成功但泳道无 worker 段 / claw-tap session 错位 | Phase 2 须 **`bind-propagation=rslave`** + `guest/` **rshared**（见 `docs/http-gateway-container-pool.md` §2.2.1）；`podman inspect claw-worker-*` 应见 `prop=rslave`；acquire 后 `podman exec … cat /claw_host_root/gateway-solve-task.json` 的 `sessionId` 须与当前 task 一致 |
-| turn 长期 **处理中** / `inject_propagation_check_failed` 刷屏 | compose **`claw-pool-daemon`** 的 work_root 卷须 **`propagation: shared`**（`podman-compose.pool-rpc.yml`）；`gateway.sh verify` 含 bind 传播 e2e；失败时 turn 应快速 **failed** 而非空转（新网关二进制） |
+| 续聊第 2 轮长期 **处理中** / pool `acquire_prepare_failed` | 多为 **PG workspace tar 解压**失败（macOS podman tmpfs utime/chmod）；查 `deploy/stack/.claw-pool-rpc/daemon.log`；续聊冒烟：`./tests/http-gateway-session-workspace-rebuild-e2e.sh` |
+| turn1 `running` 时 turn2 应 **409** | PG `inflight` 闸门；冒烟：`./tests/http-gateway-session-inflight-e2e.sh` |
 
 联通性脚本：`./deploy/stack/gateway.sh check`。
 
@@ -221,11 +225,11 @@ podman ps   # 或  docker ps
 
 | 场景 | `CLAW_SOLVE_ISOLATION` | 运行时 CLI | 环境前缀 | 与网关的衔接 |
 | --- | --- | --- | --- | --- |
-| 本仓库 compose（默认） | `podman_pool` | `podman`（宿主机 `claw-pool-daemon`） | `CLAW_PODMAN_*` | 合并 **`podman-compose.pool-rpc.yml`**；默认 `CLAW_POOL_DAEMON_TCP_HOST=host.containers.internal`；session **特权 chown** 由 **pool RPC** 在 daemon 执行 |
-| 线上 Docker（推荐与默认脚本对齐） | `docker_pool` | `docker`（宿主机或旁路容器里的 daemon） | `CLAW_DOCKER_*` | 同上，但 `.env` 改 `CLAW_POOL_DAEMON_TCP_HOST=host.docker.internal`（Linux 已用 `podman-compose.pool-rpc.yml` 的 `extra_hosts`） |
+| 本仓库 compose（默认） | `podman_pool` | `podman`（宿主机 `claw-pool-daemon`） | `CLAW_PODMAN_*` | **v1 host pool** `CLAW_POOL_HTTP_BASE=http://host.containers.internal:9944`；session 制品在 **PostgreSQL**（不 bind session 进 worker） |
+| 线上 Docker（推荐与默认脚本对齐） | `docker_pool` | `docker`（宿主机 daemon） | `CLAW_DOCKER_*` | 同上；`.env` 可用 `host.docker.internal:9944` |
 | 网关内嵌池（备选） | `docker_pool` / `podman_pool` | `docker` / `podman` 在**网关容器**内 | 同上 | **不设** `CLAW_POOL_DAEMON_TCP`：走进程内 `DockerPoolManager`；需 sock 挂载 + 镜像带对应 CLI（`Containerfile.gateway-rs`：`podman` + `docker.io`） |
 
-**会话与磁盘**：每次 solve 仍绑定 **一个 worker 容器 + 会话工作区**（目录名由网关分配并记入 PostgreSQL）；**续聊**靠 body `sessionId` + 会话库，见 `docs/http-gateway-rs-api.md`。池化细节仍见 `docs/http-gateway-container-pool.md` §2。本仓库 **`gateway.sh up` compose 栈**只使用 **宿主机 `claw-pool-daemon` + TCP RPC**；若运行时不存在 `CLAW_POOL_DAEMON_TCP`，网关会退回 **进程内 `PoolManager`**（下表「网关内嵌池」一行）。
+**会话与磁盘**：每次 solve 租 **一个 worker 槽**；续聊制品在 **PostgreSQL**（workspace tar + cc_messages），worker tmpfs 每轮重建。见 `docs/http-gateway-container-pool.md` §2.2。本仓库 **`gateway.sh up`** 使用 **宿主机 `claw-pool-daemon`（9944）**。
 
 线上只有 Docker 时 **`CLAW_CONTAINER_RUNTIME` 可不写**（`auto` 会选 docker）；仍用同一套 `deploy/stack/podman-compose*.yml`（文件名历史原因）。
 

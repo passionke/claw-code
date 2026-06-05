@@ -3,13 +3,17 @@
 
 claw_kill_tcp_listeners() {
   local port="$1"
-  if command -v fuser >/dev/null 2>&1; then
-    fuser -k "${port}/tcp" 2>/dev/null || true
+  [[ -n "${port}" ]] || return 0
+  local pid
+  if command -v lsof >/dev/null 2>&1; then
+    while read -r pid; do
+      [[ -n "${pid}" ]] || continue
+      kill "${pid}" 2>/dev/null || true
+    done < <(lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null || true)
     sleep 0.3
     return 0
   fi
   if command -v ss >/dev/null 2>&1; then
-    local pid
     while read -r pid; do
       [[ -n "${pid}" ]] || continue
       kill "${pid}" 2>/dev/null || true

@@ -377,9 +377,69 @@ impl GatewaySessionDb {
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS client_origin TEXT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS entry_params_json JSONB",
             "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS extra_session_fields_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS artifacts_ready BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS solve_task_json JSONB",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS solve_timing_jsonb JSONB",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS spill_json JSONB",
         ] {
             sqlx::query(ddl).execute(pool).await?;
         }
+
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS cc_messages (
+                message_id BIGSERIAL PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                ds_id BIGINT NOT NULL,
+                turn_id TEXT NOT NULL REFERENCES gateway_turns(turn_id) ON DELETE CASCADE,
+                iteration_id UUID,
+                seq INT NOT NULL,
+                role TEXT NOT NULL,
+                blocks JSONB NOT NULL,
+                usage JSONB,
+                created_at_ms BIGINT NOT NULL,
+                UNIQUE (turn_id, seq)
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_cc_messages_session ON cc_messages(session_id, ds_id, created_at_ms)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS gateway_runtime_iterations (
+                iteration_id UUID PRIMARY KEY,
+                turn_id TEXT NOT NULL REFERENCES gateway_turns(turn_id) ON DELETE CASCADE,
+                iteration_index INT NOT NULL,
+                started_at_ms BIGINT NOT NULL,
+                finished_at_ms BIGINT,
+                UNIQUE (turn_id, iteration_index)
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS gateway_session_artifacts (
+                artifact_id UUID PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                ds_id BIGINT NOT NULL,
+                turn_id TEXT,
+                kind TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                storage_uri TEXT,
+                sha256 TEXT,
+                size_bytes BIGINT,
+                content TEXT,
+                content_json JSONB,
+                created_at_ms BIGINT NOT NULL,
+                UNIQUE (session_id, ds_id, turn_id, relative_path)
+            )",
+        )
+        .execute(pool)
+        .await?;
 
         sqlx::query(
             r"CREATE TABLE IF NOT EXISTS claw_pool (
@@ -1641,6 +1701,438 @@ impl GatewaySessionDb {
         Ok(row.is_some())
     }
 
+    /// Reject **new** turn enqueue when another turn is inflight or prior succeeded lacks artifacts.
+    /// Author: kejiqing
+    /// Whether this turn already has pool readback committed (`artifacts_ready`). Author: kejiqing
+    pub async fn turn_artifacts_ready(&self, turn_id: &str) -> Result<bool, SqlxError> {
+        let row: Option<(bool,)> =
+            sqlx::query_as("SELECT artifacts_ready FROM gateway_turns WHERE turn_id = $1")
+                .bind(turn_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(v,)| v).unwrap_or(false))
+    }
+
+    pub async fn assert_session_can_enqueue(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<(), String> {
+        self.assert_session_enqueue_gate(session_id, ds_id, None)
+            .await
+    }
+
+    /// Pool `acquire` for an **already-enqueued** turn: same gate but ignore this `turn_id`
+    /// (it is already `queued`/`running` on this worker). Author: kejiqing
+    pub async fn assert_session_can_acquire_for_turn(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+        active_turn_id: &str,
+    ) -> Result<(), String> {
+        self.assert_session_enqueue_gate(session_id, ds_id, Some(active_turn_id))
+            .await
+    }
+
+    async fn assert_session_enqueue_gate(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+        exclude_turn_id: Option<&str>,
+    ) -> Result<(), String> {
+        let inflight: bool = if let Some(tid) = exclude_turn_id {
+            sqlx::query_scalar(
+                r"SELECT EXISTS(
+                    SELECT 1 FROM gateway_turns
+                    WHERE session_id = $1 AND ds_id = $2
+                      AND status IN ('queued', 'running')
+                      AND turn_id <> $3
+                  )",
+            )
+            .bind(session_id)
+            .bind(ds_id)
+            .bind(tid)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?
+        } else {
+            sqlx::query_scalar(
+                r"SELECT EXISTS(
+                    SELECT 1 FROM gateway_turns
+                    WHERE session_id = $1 AND ds_id = $2 AND status IN ('queued', 'running')
+                  )",
+            )
+            .bind(session_id)
+            .bind(ds_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?
+        };
+        if inflight {
+            return Err("inflight".into());
+        }
+        let blocked: bool = sqlx::query_scalar(
+            r"SELECT EXISTS(
+                SELECT 1 FROM gateway_turns
+                WHERE session_id = $1 AND ds_id = $2
+                  AND status = 'succeeded' AND artifacts_ready = FALSE
+              )",
+        )
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        if blocked {
+            return Err("artifacts_not_ready".into());
+        }
+        Ok(())
+    }
+
+    pub async fn upsert_solve_task_json(
+        &self,
+        turn_id: &str,
+        task: &Value,
+    ) -> Result<(), SqlxError> {
+        sqlx::query("UPDATE gateway_turns SET solve_task_json = $2 WHERE turn_id = $1")
+            .bind(turn_id)
+            .bind(Json(task))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_solve_task_json(&self, turn_id: &str) -> Result<Option<Value>, SqlxError> {
+        let row: Option<(Option<Json<Value>>,)> =
+            sqlx::query_as("SELECT solve_task_json FROM gateway_turns WHERE turn_id = $1")
+                .bind(turn_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(j,)| j.map(|v| v.0)))
+    }
+
+    pub fn get_turn_runtime_settings_json(
+        &self,
+        _turn_id: &str,
+    ) -> Result<Option<Value>, SqlxError> {
+        Ok(None)
+    }
+
+    pub async fn get_turn_solve_timing_json(
+        &self,
+        turn_id: &str,
+    ) -> Result<Option<Value>, SqlxError> {
+        let row: Option<(Option<Value>,)> =
+            sqlx::query_as("SELECT solve_timing_jsonb FROM gateway_turns WHERE turn_id = $1")
+                .bind(turn_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(v,)| v))
+    }
+
+    fn empty_turn_timing_store() -> Value {
+        serde_json::json!({
+            "solveTimingEvents": [],
+            "orchestrationEvents": [],
+            "progressEvents": []
+        })
+    }
+
+    /// Append one bootstrap milestone to `solve_timing_jsonb`. Author: kejiqing
+    pub async fn append_turn_solve_timing_bootstrap(
+        &self,
+        turn_id: &str,
+        kind: &str,
+    ) -> Result<(), SqlxError> {
+        let mut store = self
+            .get_turn_solve_timing_json(turn_id)
+            .await?
+            .unwrap_or_else(Self::empty_turn_timing_store);
+        let event = serde_json::json!({
+            "kind": kind,
+            "tsMs": crate::persistence::transcript::now_ms(),
+            "turnId": turn_id,
+            "source": "bootstrap"
+        });
+        if let Some(arr) = store
+            .get_mut("solveTimingEvents")
+            .and_then(Value::as_array_mut)
+        {
+            arr.push(event);
+        }
+        self.upsert_turn_timing_json(turn_id, &store).await
+    }
+
+    fn append_ndjson_events(store: &mut Value, key: &str, ndjson: &str, limit: usize) {
+        let Some(arr) = store.get_mut(key).and_then(Value::as_array_mut) else {
+            return;
+        };
+        for line in ndjson.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                arr.push(v);
+            }
+        }
+        if arr.len() > limit {
+            let drop_n = arr.len() - limit;
+            arr.drain(0..drop_n);
+        }
+    }
+
+    /// Merge worker `.claw` NDJSON readback into `solve_timing_jsonb`. Author: kejiqing
+    pub async fn merge_turn_timing_worker_readback(
+        &self,
+        turn_id: &str,
+        solve_timing_ndjson: &str,
+        orchestration_ndjson: &str,
+        progress_ndjson: &str,
+    ) -> Result<(), SqlxError> {
+        const LIMIT: usize = 500;
+        let mut store = self
+            .get_turn_solve_timing_json(turn_id)
+            .await?
+            .unwrap_or_else(Self::empty_turn_timing_store);
+        Self::append_ndjson_events(&mut store, "solveTimingEvents", solve_timing_ndjson, LIMIT);
+        Self::append_ndjson_events(
+            &mut store,
+            "orchestrationEvents",
+            orchestration_ndjson,
+            LIMIT,
+        );
+        Self::append_ndjson_events(&mut store, "progressEvents", progress_ndjson, LIMIT);
+        self.upsert_turn_timing_json(turn_id, &store).await
+    }
+
+    pub async fn upsert_turn_timing_json(
+        &self,
+        turn_id: &str,
+        timing: &Value,
+    ) -> Result<(), SqlxError> {
+        sqlx::query("UPDATE gateway_turns SET solve_timing_jsonb = $2 WHERE turn_id = $1")
+            .bind(turn_id)
+            .bind(Json(timing))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn render_session_jsonl(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<String, SqlxError> {
+        let rows: Vec<(String, Json<Value>, Option<Json<Value>>)> = sqlx::query_as(
+            r"SELECT m.role, m.blocks, m.usage
+              FROM cc_messages m
+              JOIN gateway_turns t ON m.turn_id = t.turn_id
+              WHERE m.session_id = $1 AND m.ds_id = $2
+              ORDER BY t.created_at_ms ASC, m.seq ASC",
+        )
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut lines = vec![serde_json::json!({
+            "type": "session_meta",
+            "session_id": format!("session-{session_id}"),
+            "version": 1,
+            "created_at_ms": now,
+            "updated_at_ms": now,
+        })
+        .to_string()];
+        for (role, blocks, usage) in rows {
+            let mut message = serde_json::json!({
+                "role": role,
+                "blocks": blocks.0,
+            });
+            if let Some(u) = usage {
+                message["usage"] = u.0;
+            }
+            lines.push(
+                serde_json::json!({
+                    "type": "message",
+                    "message": message,
+                })
+                .to_string(),
+            );
+        }
+        let body = lines.join("\n");
+        Ok(if body.is_empty() {
+            body
+        } else {
+            format!("{body}\n")
+        })
+    }
+
+    /// Store gzip-tar snapshot of `/claw_host_root` (base64) for pool readback. Author: kejiqing
+    pub async fn upsert_workspace_tar_b64(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+        turn_id: &str,
+        tar_path: &str,
+        tar_kind: &str,
+        tar_b64: &str,
+        raw_tar_bytes: usize,
+        created_at_ms: i64,
+    ) -> Result<(), SqlxError> {
+        let size_bytes = i64::try_from(raw_tar_bytes).unwrap_or(i64::MAX);
+        let artifact_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            r"INSERT INTO gateway_session_artifacts
+                (artifact_id, session_id, ds_id, turn_id, kind, relative_path, content, size_bytes, created_at_ms)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+              ON CONFLICT (session_id, ds_id, turn_id, relative_path) DO UPDATE SET
+                kind = EXCLUDED.kind,
+                content = EXCLUDED.content,
+                size_bytes = EXCLUDED.size_bytes,
+                created_at_ms = EXCLUDED.created_at_ms",
+        )
+        .bind(artifact_id)
+        .bind(session_id)
+        .bind(ds_id)
+        .bind(turn_id)
+        .bind(tar_kind)
+        .bind(tar_path)
+        .bind(tar_b64)
+        .bind(size_bytes)
+        .bind(created_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Latest ready workspace tar (base64) for `materialize_in`. Author: kejiqing
+    pub async fn get_latest_workspace_tar_b64(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+        tar_path: &str,
+        tar_kind: &str,
+    ) -> Result<Option<String>, SqlxError> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            r"SELECT a.content
+              FROM gateway_session_artifacts a
+              INNER JOIN gateway_turns t ON t.turn_id = a.turn_id
+              WHERE a.session_id = $1 AND a.ds_id = $2
+                AND a.kind = $3 AND a.relative_path = $4
+                AND a.content IS NOT NULL AND t.artifacts_ready = TRUE
+              ORDER BY COALESCE(t.finished_at_ms, t.created_at_ms) DESC, t.turn_id DESC
+              LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(ds_id)
+        .bind(tar_kind)
+        .bind(tar_path)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.and_then(|(c,)| c))
+    }
+
+    pub async fn delete_messages_for_turn(&self, turn_id: &str) -> Result<(), SqlxError> {
+        sqlx::query("DELETE FROM cc_messages WHERE turn_id = $1")
+            .bind(turn_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn ensure_runtime_iteration(
+        &self,
+        turn_id: &str,
+        iteration_index: i32,
+        started_at_ms: i64,
+    ) -> Result<uuid::Uuid, SqlxError> {
+        let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT iteration_id FROM gateway_runtime_iterations WHERE turn_id = $1 AND iteration_index = $2",
+        )
+        .bind(turn_id)
+        .bind(iteration_index)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some((id,)) = existing {
+            return Ok(id);
+        }
+        let id = uuid::Uuid::new_v4();
+        sqlx::query(
+            r"INSERT INTO gateway_runtime_iterations (iteration_id, turn_id, iteration_index, started_at_ms)
+              VALUES ($1, $2, $3, $4)",
+        )
+        .bind(id)
+        .bind(turn_id)
+        .bind(iteration_index)
+        .bind(started_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn insert_message(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+        turn_id: &str,
+        iteration_id: Option<uuid::Uuid>,
+        seq: i32,
+        role: &str,
+        blocks: &Value,
+        usage: Option<&Value>,
+        created_at_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO cc_messages (session_id, ds_id, turn_id, iteration_id, seq, role, blocks, usage, created_at_ms)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(session_id)
+        .bind(ds_id)
+        .bind(turn_id)
+        .bind(iteration_id)
+        .bind(seq)
+        .bind(role)
+        .bind(Json(blocks))
+        .bind(usage.map(Json))
+        .bind(created_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn finalize_turn_with_artifacts_ready(
+        &self,
+        turn_id: &str,
+        status: &str,
+        finished_at_ms: Option<i64>,
+        claw_exit_code: i32,
+        report_message: Option<&str>,
+        output_json: Option<&Value>,
+        artifacts_ready: bool,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"UPDATE gateway_turns SET
+                status = $1,
+                finished_at_ms = $2,
+                report_message = $3,
+                output_json = $4,
+                claw_exit_code = $5,
+                artifacts_ready = $6
+              WHERE turn_id = $7",
+        )
+        .bind(status)
+        .bind(finished_at_ms)
+        .bind(report_message)
+        .bind(output_json.map(Json))
+        .bind(claw_exit_code)
+        .bind(artifacts_ready)
+        .bind(turn_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn insert_turn(
         &self,
         turn_id: &str,
@@ -1749,6 +2241,78 @@ impl GatewaySessionDb {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn update_turn_user_prompt(
+        &self,
+        turn_id: &str,
+        user_prompt: &str,
+    ) -> Result<(), SqlxError> {
+        sqlx::query("UPDATE gateway_turns SET user_prompt = $2 WHERE turn_id = $1")
+            .bind(turn_id)
+            .bind(user_prompt)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn upsert_project(
+        &self,
+        ds_id: i64,
+        project_name: &str,
+        workspace_rel: &str,
+    ) -> Result<(), SqlxError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            r"INSERT INTO gateway_projects (ds_id, project_name, workspace_rel, created_at_ms, updated_at_ms)
+              VALUES ($1, $2, $3, $4, $4)
+              ON CONFLICT (ds_id) DO UPDATE SET
+                project_name = EXCLUDED.project_name,
+                workspace_rel = EXCLUDED.workspace_rel,
+                updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(ds_id)
+        .bind(project_name)
+        .bind(workspace_rel)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn finish_turn(
+        &self,
+        turn_id: &str,
+        claw_exit_code: i32,
+        report_message: Option<&str>,
+        output_json: Option<&Value>,
+        has_report: bool,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"UPDATE gateway_turns SET
+                claw_exit_code = $2,
+                report_message = $3,
+                output_json = $4,
+                has_report = $5
+              WHERE turn_id = $1",
+        )
+        .bind(turn_id)
+        .bind(claw_exit_code)
+        .bind(report_message)
+        .bind(output_json.map(Json))
+        .bind(has_report)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_turn_user_prompt(&self, turn_id: &str) -> Result<Option<String>, SqlxError> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT user_prompt FROM gateway_turns WHERE turn_id = $1")
+                .bind(turn_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(p,)| p))
     }
 
     pub async fn get_session_id_for_turn(
@@ -2766,5 +3330,127 @@ mod tests {
             .unwrap();
         assert!(hits.iter().any(|s| s.session_id == sid_match));
         assert!(!hits.iter().any(|s| s.session_id == sid_other));
+    }
+
+    #[tokio::test]
+    async fn session_enqueue_gate_blocks_inflight() {
+        let Some(db) = test_db().await else {
+            eprintln!(
+                "skip session_enqueue_gate_blocks_inflight: set CLAW_GATEWAY_TEST_DATABASE_URL"
+            );
+            return;
+        };
+        let t = now_ms();
+        let sid = format!("gate_inflight_{}", uuid::Uuid::new_v4().simple());
+        db.insert_session(&sid, 1, "ds_1/sessions/gate_inflight", t, None)
+            .await
+            .unwrap();
+        let tid_running = "T_c1000000000000000000000000000001";
+        db.insert_turn(tid_running, &sid, 1, "running", t, Some("q1"), None, None)
+            .await
+            .unwrap();
+        let err = db.assert_session_can_enqueue(&sid, 1).await.unwrap_err();
+        assert_eq!(err, "inflight");
+        db.assert_session_can_acquire_for_turn(&sid, 1, tid_running)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_enqueue_gate_blocks_artifacts_not_ready() {
+        let Some(db) = test_db().await else {
+            eprintln!(
+                "skip session_enqueue_gate_blocks_artifacts_not_ready: set CLAW_GATEWAY_TEST_DATABASE_URL"
+            );
+            return;
+        };
+        let t = now_ms();
+        let sid = format!("gate_art_{}", uuid::Uuid::new_v4().simple());
+        db.insert_session(&sid, 1, "ds_1/sessions/gate_art", t, None)
+            .await
+            .unwrap();
+        let tid = "T_d2000000000000000000000000000002";
+        db.insert_turn(tid, &sid, 1, "succeeded", t, Some("q1"), None, None)
+            .await
+            .unwrap();
+        let err = db.assert_session_can_enqueue(&sid, 1).await.unwrap_err();
+        assert_eq!(err, "artifacts_not_ready");
+        db.finalize_turn_with_artifacts_ready(tid, "succeeded", Some(t + 1), 0, None, None, true)
+            .await
+            .unwrap();
+        db.assert_session_can_enqueue(&sid, 1).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_tar_materialize_latest_turn() {
+        use crate::pool::{WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH};
+
+        let Some(db) = test_db().await else {
+            eprintln!(
+                "skip workspace_tar_materialize_latest_turn: set CLAW_GATEWAY_TEST_DATABASE_URL"
+            );
+            return;
+        };
+        let t = now_ms();
+        let sid = format!("art_{}", uuid::Uuid::new_v4().simple());
+        db.insert_session(&sid, 1, "ds_1/sessions/art", t, None)
+            .await
+            .unwrap();
+        let tid1 = "T_a1000000000000000000000000000001";
+        let tid2 = "T_b2000000000000000000000000000002";
+        db.insert_turn(tid1, &sid, 1, "succeeded", t, Some("q1"), None, None)
+            .await
+            .unwrap();
+        db.insert_turn(tid2, &sid, 1, "queued", t + 100, Some("q2"), None, None)
+            .await
+            .unwrap();
+        db.finalize_turn_with_artifacts_ready(tid1, "succeeded", Some(t + 10), 0, None, None, true)
+            .await
+            .unwrap();
+        db.upsert_workspace_tar_b64(
+            &sid,
+            1,
+            tid1,
+            WORKSPACE_TAR_ARTIFACT_PATH,
+            WORKSPACE_TAR_ARTIFACT_KIND,
+            "b2xkMQ==",
+            4,
+            t,
+        )
+        .await
+        .unwrap();
+        db.upsert_workspace_tar_b64(
+            &sid,
+            1,
+            tid2,
+            WORKSPACE_TAR_ARTIFACT_PATH,
+            WORKSPACE_TAR_ARTIFACT_KIND,
+            "b2xkMg==",
+            4,
+            t + 100,
+        )
+        .await
+        .unwrap();
+        db.finalize_turn_with_artifacts_ready(
+            tid2,
+            "succeeded",
+            Some(t + 110),
+            0,
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let latest = db
+            .get_latest_workspace_tar_b64(
+                &sid,
+                1,
+                WORKSPACE_TAR_ARTIFACT_PATH,
+                WORKSPACE_TAR_ARTIFACT_KIND,
+            )
+            .await
+            .unwrap();
+        assert_eq!(latest.as_deref(), Some("b2xkMg=="));
     }
 }

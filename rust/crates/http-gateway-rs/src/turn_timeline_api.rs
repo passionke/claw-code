@@ -1,9 +1,10 @@
 //! `GET /v1/sessions/{session_id}/turns/{turn_id}/timeline`. Author: kejiqing
 
-use std::path::Path;
-
-use gateway_solve_turn::multi_agent::{build_solve_turn_timeline_for_turn, SolveTurnTimeline};
+use gateway_solve_turn::multi_agent::{
+    build_solve_turn_timeline_from_timing_json, SolveTurnTimeline,
+};
 use serde::Serialize;
+use serde_json::Value;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,10 +20,10 @@ pub struct TurnTimelineResponse {
     pub timeline: Option<SolveTurnTimeline>,
 }
 
-pub fn load_turn_timeline(
-    session_home: &Path,
+pub fn load_turn_timeline_from_db(
+    timing_json: &Value,
     created_at_ms: i64,
     finished_at_ms: Option<i64>,
 ) -> Option<SolveTurnTimeline> {
-    build_solve_turn_timeline_for_turn(session_home, created_at_ms, finished_at_ms)
+    build_solve_turn_timeline_from_timing_json(timing_json, created_at_ms, finished_at_ms)
 }

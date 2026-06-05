@@ -54,6 +54,7 @@ source "${LIB_DIR}/claw-pool-registry-env.sh"
 claw_export_pool_registry_env "${PODMAN_DIR}/.claw-pool-rpc"
 
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
+claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
 # Legacy root-owned ds_* / slots (privileged sidecar) must be fixed before ownership preflight. kejiqing
 # shellcheck disable=SC1091
 source "${LIB_DIR}/fix-session-ownership.sh"
@@ -73,6 +74,14 @@ claw_validate_deploy_profile || exit 1
 
 # Postgres must be up before pool-daemon registry and gateway migrate. Author: kejiqing
 "${LIB_DIR}/pg-up.sh"
+
+# Local profile: sidecar claude-tap (CLAW_LLM_PROXY=local). production uses direct/remote — no host tap. kejiqing
+case "${CLAW_LLM_PROXY:-local}" in
+  local)
+    echo "==> claude-tap (CLAW_LLM_PROXY=local)" >&2
+    "${LIB_DIR}/tap-up.sh"
+    ;;
+esac
 
 # load_compose_args re-sources .env and resets GATEWAY_IMAGE to :local; re-pin after. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
@@ -110,21 +119,14 @@ claw_reapply_pool_image_pins "${PODMAN_DIR}"
 echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
 export CLAW_IMAGE_RELEASE_TAG
 
-claw_remove_all_gateway_workers
-
 RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"
 if claw_pool_daemon_on_host; then
-  # Stop pool before compose recreate; start pool last so `up` success ⇒ RPC ready. kejiqing
-  "${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
-  claw_kill_tcp_listeners "$(claw_host_pool_rpc_port)"
   POOL_BIN="$(claw_ensure_pool_daemon_binary "${PODMAN_DIR}" "${REPO_ROOT}" | tail -n1)"
   export CLAW_POOL_DAEMON_BIN="${POOL_BIN}"
   echo "pool daemon binary: ${POOL_BIN}" >&2
-else
-  "${PODMAN_DIR}/lib/pool-daemon-down.sh" 2>/dev/null || true
 fi
 
-# Recreate gateway container; host pool starts after compose (see below). kejiqing
+# Recreate gateway only; host pool is independent — do not SIGTERM it on every up. kejiqing
 claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
 
 if claw_pool_daemon_on_host; then
@@ -133,15 +135,10 @@ if claw_pool_daemon_on_host; then
     echo "error: gateway compose up finished but host pool RPC is unavailable" >&2
     exit 1
   }
-  echo "host pool RPC ready (127.0.0.1:$(claw_host_pool_rpc_port) pid=$(cat "${RPC_DIR}/daemon.pid"))" >&2
+  echo "host pool HTTP ready (127.0.0.1:$(claw_pool_http_port))" >&2
 else
-  # shellcheck disable=SC1091
-  source "${LIB_DIR}/pool-sidecar-health.sh"
-  claw_assert_pool_sidecar_ready "${PODMAN_DIR}" || {
-    echo "error: compose pool sidecar not ready (RPC / docker CLI / warm worker)" >&2
-    exit 1
-  }
-  echo "compose pool sidecar ready (RPC=$(claw_pool_sidecar_rpc_host):$(claw_host_pool_rpc_port), warm worker ok)" >&2
+  echo "error: compose pool sidecar removed; use host claw-pool-daemon (unset CLAW_POOL_HOST_DAEMON=0)" >&2
+  exit 1
 fi
 
 _gw_tag="${GATEWAY_IMAGE##*:}"

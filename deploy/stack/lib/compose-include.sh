@@ -9,26 +9,55 @@ claw_socket_usable() {
   [[ -n "${s}" && -S "${s}" && -r "${s}" && -w "${s}" ]]
 }
 
-# macOS: host pool only. Linux production: host pool (Acquire/Release on host docker).
-# Sidecar is opt-in only: CLAW_POOL_HOST_DAEMON=0 on Linux. Author: kejiqing
-claw_pool_daemon_on_host() {
-  case "${CLAW_POOL_HOST_DAEMON:-}" in
-    1 | true | yes)
+# RPC transport: local default Unix socket (bind-mount, no host.containers.internal:9943).
+# Production: set CLAW_POOL_DAEMON_TCP_HOST (or CLAW_POOL_RPC_TRANSPORT=tcp). Author: kejiqing
+claw_pool_rpc_transport() {
+  case "${CLAW_POOL_RPC_TRANSPORT:-}" in
+    tcp | unix)
+      printf '%s' "${CLAW_POOL_RPC_TRANSPORT}"
       return 0
       ;;
+  esac
+  if [[ -n "${CLAW_POOL_DAEMON_TCP_HOST:-}" ]]; then
+    case "${CLAW_POOL_DAEMON_TCP_HOST}" in
+      host.containers.internal | host.docker.internal)
+        if [[ "$(uname -s)" == Darwin ]]; then
+          printf '%s' tcp
+        else
+          printf '%s' unix
+        fi
+        ;;
+      *)
+        printf '%s' tcp
+        ;;
+    esac
+    return 0
+  fi
+  if [[ "$(uname -s)" == Darwin ]]; then
+    printf '%s' tcp
+  else
+    printf '%s' unix
+  fi
+}
+
+claw_pool_host_socket_path() {
+  local script_dir="${1:?script_dir}"
+  printf '%s' "${script_dir}/.claw-pool-rpc/pool.sock"
+}
+
+claw_pool_container_socket_path() {
+  printf '%s' '/run/claw-pool-rpc/pool.sock'
+}
+
+# v1: host `claw-pool-daemon` only (no compose pool sidecar). Set CLAW_POOL_HOST_DAEMON=0 to fail fast. Author: kejiqing
+claw_pool_daemon_on_host() {
+  case "${CLAW_POOL_HOST_DAEMON:-}" in
     0 | false | no)
+      echo "error: compose pool sidecar removed; use host claw-pool-daemon (unset CLAW_POOL_HOST_DAEMON or =1)" >&2
       return 1
       ;;
   esac
-  if [[ "$(uname -s)" == Darwin ]]; then
-    return 0
-  fi
-  local profile
-  profile="$(printf '%s' "${CLAW_DEPLOY_PROFILE:-}" | tr '[:upper:]' '[:lower:]')"
-  if [[ -z "${profile}" && "$(uname -s)" != Darwin ]]; then
-    profile=production
-  fi
-  [[ "${profile}" == production ]]
+  return 0
 }
 
 # Gateway container -> host pool RPC: production uses LAN IP (e.g. 192.168.9.252), not host.docker.internal. kejiqing
@@ -138,7 +167,7 @@ claw_compose_prepare_socket() {
   fi
 }
 
-# Absolute paths + container socket for compose `claw-pool-daemon` (no host binary install). Author: kejiqing
+# Host pool daemon env (legacy name; v1 no compose sidecar). Author: kejiqing
 claw_podman_write_pool_daemon_sidecar_env() {
   local script_dir="$1"
   local repo_root ws sock
@@ -148,7 +177,7 @@ claw_podman_write_pool_daemon_sidecar_env() {
   export CLAW_REPO_ROOT="${repo_root}"
   export CLAW_CONTAINER_SOCKET="${sock}"
   {
-    printf '%s\n' '# GENERATED — do not edit. Overwritten by compose-include (pool sidecar). kejiqing'
+    printf '%s\n' '# GENERATED — do not edit. Overwritten by compose-include (host pool). kejiqing'
     printf '%s\n' "CLAW_WORK_ROOT=${ws}"
     printf '%s\n' "CLAW_POOL_WORK_ROOT_HOST=${ws}"
     printf '%s\n' "CLAW_WORKER_ENV_FILE=${script_dir}/.claw-worker-llm.env:${repo_root}/.env"
@@ -285,6 +314,12 @@ claw_podman_load_compose_args() {
     return 1
   fi
   mkdir -p "${script_dir}/.claw-pool-rpc"
+  # Local profile clears legacy TCP keys from human .env before generating gateway.env. kejiqing
+  if [[ -f "${script_dir}/lib/env-profile.sh" ]]; then
+    # shellcheck source=env-profile.sh
+    source "${script_dir}/lib/env-profile.sh"
+    claw_apply_deploy_profile 2>/dev/null || true
+  fi
   if [[ -f "${script_dir}/.claw-pool-rpc/pool-registry.env" ]]; then
     set -a
     # shellcheck disable=SC1090
@@ -295,16 +330,21 @@ claw_podman_load_compose_args() {
     source "${script_dir}/lib/claw-pool-registry-env.sh"
     claw_export_pool_registry_env "${script_dir}/.claw-pool-rpc"
   fi
-  local pool_port="${CLAW_POOL_DAEMON_PORT:-9943}"
   local pool_http_port="${CLAW_POOL_HTTP_PORT:-9944}"
-  local tcp_host
+  local http_host profile_name
   if claw_pool_daemon_on_host; then
-    tcp_host="$(claw_pool_gateway_to_host_rpc_ip)" || return 1
+    profile_name="$(claw_deploy_profile_name 2>/dev/null || true)"
+    if [[ "${profile_name}" == local && "$(uname -s)" == Darwin ]]; then
+      http_host="host.containers.internal"
+    else
+      http_host="$(claw_pool_gateway_to_host_rpc_ip)" || return 1
+    fi
     {
-      printf '%s\n' '# GENERATED — host claw-pool-daemon (no compose sidecar). kejiqing'
-      printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"
-      printf '%s\n' "CLAW_POOL_HTTP_BASE=http://${tcp_host}:${pool_http_port}"
+      printf '%s\n' '# GENERATED — host claw-pool-daemon HTTP (live SSE + POST /v1/pool/rpc). kejiqing'
+      printf '%s\n' "CLAW_POOL_HTTP_BASE=http://${http_host}:${pool_http_port}"
       printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
+      printf '%s\n' "CLAW_POOL_DAEMON_TCP="
+      printf '%s\n' "CLAW_POOL_DAEMON_SOCKET="
       if [[ -n "${CLAW_POOL_ID:-}" ]]; then
         printf '%s\n' "CLAW_POOL_ID=${CLAW_POOL_ID}"
       fi
@@ -315,25 +355,8 @@ claw_podman_load_compose_args() {
     claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
     return 0
   fi
-  # Linux (etc.): compose `claw-pool-daemon` + engine socket mount.
-  claw_podman_write_pool_daemon_sidecar_env "${script_dir}" || return 1
-  # shellcheck disable=SC1091
-  source "${script_dir}/lib/pool-sidecar-health.sh"
-  claw_warn_ignored_pool_tcp_host_override "$(claw_pool_sidecar_rpc_host)"
-  tcp_host="$(claw_pool_sidecar_rpc_host)"
-  {
-    printf '%s\n' '# GENERATED — compose claw-pool-daemon sidecar. kejiqing'
-    printf '%s\n' "CLAW_POOL_DAEMON_TCP=${tcp_host}:${pool_port}"
-    printf '%s\n' "CLAW_POOL_HTTP_BASE=http://${tcp_host}:${pool_http_port}"
-    printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
-  } >"${script_dir}/.claw-pool-rpc/gateway.env"
-  if [[ -n "${rel}" ]]; then
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.pool-rpc.yml" )
-  else
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.pool-rpc.yml" )
-  fi
-  claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
-  return 0
+  echo "error: compose pool sidecar removed; start host claw-pool-daemon (gateway.sh up does this on macOS/Linux)" >&2
+  return 1
 }
 
 # 同一套脚本本地/线上共用：自动选 `podman` 或 `docker`（无需按环境改两套变量）。

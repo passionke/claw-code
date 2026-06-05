@@ -5,13 +5,15 @@ use std::sync::Arc;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
+use axum::Json;
 use axum::Router;
 use serde::Deserialize;
 use tracing::info;
 
 use super::docker_pool::DockerPoolManager;
 use super::live_report_sse::live_report_sse_response;
+use super::rpc::{dispatch_pool_rpc, PoolRpcReq, PoolRpcResp};
 
 #[derive(Clone)]
 pub struct PoolHttpState {
@@ -73,14 +75,30 @@ async fn healthz_live() -> impl IntoResponse {
         "ok": true,
         "contract": crate::live_report_audit::LIVE_REPORT_CONTRACT,
         "ingest": "pool-local",
+        "rpc": "POST /v1/pool/rpc",
     }))
 }
 
-/// Serve live report HTTP until the listener stops.
-pub async fn serve_pool_http(bind: &str, pool: Arc<DockerPoolManager>) -> Result<(), String> {
+async fn post_pool_rpc(
+    State(st): State<PoolHttpState>,
+    Json(req): Json<PoolRpcReq>,
+) -> Json<PoolRpcResp> {
+    Json(dispatch_pool_rpc(&st.pool, req).await)
+}
+
+/// Serve pool HTTP (live SSE + JSON RPC) until error or graceful `shutdown` completes. Author: kejiqing
+pub async fn serve_pool_http<F>(
+    bind: &str,
+    pool: Arc<DockerPoolManager>,
+    shutdown: F,
+) -> Result<(), String>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
     let state = PoolHttpState { pool };
     let app = Router::new()
         .route("/healthz/live-report", get(healthz_live))
+        .route("/v1/pool/rpc", post(post_pool_rpc))
         .route(
             "/v1/biz_advice_report/live",
             get(get_biz_advice_report_live),
@@ -97,6 +115,7 @@ pub async fn serve_pool_http(bind: &str, pool: Arc<DockerPoolManager>) -> Result
         "claw-pool-daemon http listening"
     );
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(|e| format!("pool http serve: {e}"))
 }

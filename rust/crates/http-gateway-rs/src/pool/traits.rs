@@ -1,26 +1,10 @@
 //! Types shared by pool backends. Author: kejiqing
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-
-/// Optional read-only host paths rebinding into the session guest root (`/claw_host_root`). kejiqing
-#[derive(Clone, Debug, Default)]
-pub struct PoolSessionHostMounts {
-    /// Host `ds_*/home/skills` directory → guest `.../home/skills:ro`.
-    pub skills_dir: Option<PathBuf>,
-    /// Host `ds_*/CLAUDE.md` file → guest `.../CLAUDE.md:ro`.
-    pub claude_md_file: Option<PathBuf>,
-    /// Host `ds_*/home/schema.md` (or legacy catalog) → guest `.../home/schema.md:ro`. kejiqing
-    pub data_catalog_file: Option<PathBuf>,
-    /// Host `ds_*/home/.claw/solve-preflight.json` → guest `.../home/.claw/solve-preflight.json:ro`. kejiqing
-    pub solve_preflight_file: Option<PathBuf>,
-    /// Host `ds_*/home/.claw/solve-orchestration.json` → guest `.../home/.claw/solve-orchestration.json:ro`. kejiqing
-    pub solve_orchestration_file: Option<PathBuf>,
-}
 
 /// Lease for one worker slot (index into the pool).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -42,8 +26,9 @@ pub trait PoolOps: Send + Sync {
     async fn acquire_slot(
         &self,
         wait: Duration,
-        session_host_mount: PathBuf,
-        host_mounts: PoolSessionHostMounts,
+        session_id: String,
+        ds_id: i64,
+        turn_id: String,
     ) -> Result<SlotLease, String>;
 
     async fn exec_solve(
@@ -60,13 +45,6 @@ pub trait PoolOps: Send + Sync {
     async fn release_slot(&self, slot: SlotLease) -> Result<(), String>;
 
     async fn force_kill_slot(&self, slot_index: usize) -> Result<(), String>;
-
-    /// Ensure `session_host_mount` (host path under pool `work_root`) is uid/gid-aligned for workers.
-    /// With [`super::PoolRpcClient`], runs on `claw-pool-daemon` so the gateway container need not mount the engine socket. Author: kejiqing
-    async fn chown_session_tree_for_pool_worker(
-        &self,
-        session_host_mount: PathBuf,
-    ) -> Result<(), String>;
 
     /// Whether this turn has observed at least one stdout `report.delta`.
     async fn has_report_for_turn(&self, _turn_id: &str) -> bool {

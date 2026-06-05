@@ -1,15 +1,14 @@
-//! In-process pool as [`PoolOps`] (wraps [`super::DockerPoolManager`]). Author: kejiqing
+//! In-process pool backend (tests). Author: kejiqing
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
 use super::docker_pool::DockerPoolManager;
-use super::traits::{PoolOps, PoolSessionHostMounts, SlotLease, TaskOutcome};
+use super::traits::{PoolOps, SlotLease, TaskOutcome};
 
-/// Adapter so [`Arc<dyn PoolOps>`] can wrap the local [`DockerPoolManager`]. Author: kejiqing
+/// [`PoolOps`] backed by an in-process [`DockerPoolManager`]. Author: kejiqing
 pub struct LocalPoolOps(pub Arc<DockerPoolManager>);
 
 #[async_trait]
@@ -17,12 +16,11 @@ impl PoolOps for LocalPoolOps {
     async fn acquire_slot(
         &self,
         wait: Duration,
-        session_host_mount: PathBuf,
-        host_mounts: PoolSessionHostMounts,
+        session_id: String,
+        ds_id: i64,
+        turn_id: String,
     ) -> Result<SlotLease, String> {
-        self.0
-            .acquire_slot(wait, session_host_mount, host_mounts)
-            .await
+        self.0.acquire_slot(wait, session_id, ds_id, turn_id).await
     }
 
     async fn exec_solve(
@@ -54,15 +52,6 @@ impl PoolOps for LocalPoolOps {
 
     async fn force_kill_slot(&self, slot_index: usize) -> Result<(), String> {
         self.0.force_kill_slot(slot_index).await
-    }
-
-    async fn chown_session_tree_for_pool_worker(
-        &self,
-        session_host_mount: PathBuf,
-    ) -> Result<(), String> {
-        self.0
-            .chown_session_host_under_work_root(session_host_mount)
-            .await
     }
 
     async fn has_report_for_turn(&self, turn_id: &str) -> bool {

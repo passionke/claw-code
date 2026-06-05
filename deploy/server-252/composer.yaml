@@ -8,5 +8,4 @@ name: claw-code
 
 include:
   - path: ../stack/podman-compose.yml
-  - path: ../stack/podman-compose.pool-rpc.yml
 # claude-tap：用 ./deploy/stack/gateway.sh tap-up / tap-down；带网关一体用 gateway.sh quick / pack-deploy。

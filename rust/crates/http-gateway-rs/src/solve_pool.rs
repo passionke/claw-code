@@ -12,9 +12,7 @@ use tracing::{info, warn};
 
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
 use http_gateway_rs::claw_tap_cluster_state::resolve_solve_llm_route;
-use http_gateway_rs::pool::{
-    parse_gateway_solve_exec_stdout, PoolOps, PoolSessionHostMounts, SlotLease,
-};
+use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease};
 
 /// When the gateway uses [`PoolRpcClient`](http_gateway_rs::pool::PoolRpcClient) (TCP or Unix), session dirs
 /// live under the container `CLAW_WORK_ROOT` but the host daemon must bind-mount the host path. Author: kejiqing
@@ -130,11 +128,16 @@ pub async fn run_solve_request_docker(
     .await
     .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
 
-    let _ = gateway_solve_turn::append_solve_timing_point(
-        &session_home,
-        "bootstrap_solve_pool_start",
-        Some(&turn_id),
-    );
+    state
+        .session_db
+        .append_turn_solve_timing_bootstrap(&turn_id, "bootstrap_solve_pool_start")
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persist bootstrap timing failed: {e}"),
+            )
+        })?;
 
     let task_path = session_home.join(GATEWAY_SOLVE_TASK_FILE);
 
@@ -152,7 +155,7 @@ pub async fn run_solve_request_docker(
         allowed_tools: Some(effective_allowed_tools),
         max_iterations: Some(state.cfg.default_max_iterations),
         turn_id: turn_id.clone(),
-        session_id: Some(session_id),
+        session_id: Some(session_id.clone()),
         pool_id: None,
         worker_name: None,
         llm_route: Some(serde_json::to_value(&llm_route).unwrap_or_default()),
@@ -170,77 +173,22 @@ pub async fn run_solve_request_docker(
         )
     })?;
 
-    let session_for_pool = session_mount_for_pool_acquire(&session_home, &state.cfg);
-    let ds_base = state.cfg.work_root.join(format!("ds_{}", req.ds_id));
-    let ds_skills_host = ds_base.join("home/skills");
-    let skills_for_pool = if fs::metadata(&ds_skills_host)
+    let task_json = serde_json::to_value(&task).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("serialize task json failed: {e}"),
+        )
+    })?;
+    state
+        .session_db
+        .upsert_solve_task_json(&turn_id, &task_json)
         .await
-        .is_ok_and(|m| m.is_dir())
-    {
-        Some(session_mount_for_pool_acquire(&ds_skills_host, &state.cfg))
-    } else {
-        None
-    };
-    let ds_claude_host = ds_base.join("CLAUDE.md");
-    let claude_for_pool = if fs::metadata(&ds_claude_host)
-        .await
-        .is_ok_and(|m| m.is_file())
-    {
-        Some(session_mount_for_pool_acquire(&ds_claude_host, &state.cfg))
-    } else {
-        None
-    };
-    let ds_schema_host = ds_base.join("home/schema.md");
-    let ds_catalog_legacy = ds_base.join("home/DATA_CATALOG.md");
-    let schema_host = if fs::metadata(&ds_schema_host)
-        .await
-        .is_ok_and(|m| m.is_file())
-    {
-        ds_schema_host
-    } else if fs::metadata(&ds_catalog_legacy)
-        .await
-        .is_ok_and(|m| m.is_file())
-    {
-        ds_catalog_legacy
-    } else {
-        PathBuf::new()
-    };
-    let schema_for_pool = if schema_host.as_os_str().is_empty() {
-        None
-    } else {
-        Some(session_mount_for_pool_acquire(&schema_host, &state.cfg))
-    };
-    let ds_preflight_host = ds_base.join("home/.claw/solve-preflight.json");
-    let preflight_for_pool = if fs::metadata(&ds_preflight_host)
-        .await
-        .is_ok_and(|m| m.is_file())
-    {
-        Some(session_mount_for_pool_acquire(
-            &ds_preflight_host,
-            &state.cfg,
-        ))
-    } else {
-        None
-    };
-    let ds_orchestration_host = ds_base.join("home/.claw/solve-orchestration.json");
-    let orchestration_for_pool = if fs::metadata(&ds_orchestration_host)
-        .await
-        .is_ok_and(|m| m.is_file())
-    {
-        Some(session_mount_for_pool_acquire(
-            &ds_orchestration_host,
-            &state.cfg,
-        ))
-    } else {
-        None
-    };
-    let host_mounts = PoolSessionHostMounts {
-        skills_dir: skills_for_pool.clone(),
-        claude_md_file: claude_for_pool.clone(),
-        data_catalog_file: schema_for_pool.clone(),
-        solve_preflight_file: preflight_for_pool.clone(),
-        solve_orchestration_file: orchestration_for_pool.clone(),
-    };
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persist solve_task_json failed: {e}"),
+            )
+        })?;
 
     info!(
         target: "claw_gateway_solve_pool",
@@ -251,26 +199,18 @@ pub async fn run_solve_request_docker(
         task_id = task_id.as_deref(),
         task_path = %task_path.display(),
         session_home = %session_home.display(),
-        pool_acquire_path = %session_for_pool.display(),
-        skills_pool_path = %skills_for_pool
-            .as_ref()
-            .map_or_else(|| "-".into(), |p| p.display().to_string()),
-        claude_pool_path = %claude_for_pool
-            .as_ref()
-            .map_or_else(|| "-".into(), |p| p.display().to_string()),
-        schema_pool_path = %schema_for_pool
-            .as_ref()
-            .map_or_else(|| "-".into(), |p| p.display().to_string()),
-        preflight_pool_path = %preflight_for_pool
-            .as_ref()
-            .map_or_else(|| "-".into(), |p| p.display().to_string()),
         task_bytes = task_bytes.len(),
-        "pool solve: gateway-solve task JSON written under session dir"
+        "pool solve: task in PG + optional gateway cache"
     );
 
     let acquire_wait = Duration::from_secs(timeout_seconds.saturating_add(30));
     let lease = pool
-        .acquire_slot(acquire_wait, session_for_pool.clone(), host_mounts)
+        .acquire_slot(
+            acquire_wait,
+            session_id.clone(),
+            i64::from(req.ds_id),
+            turn_id.clone(),
+        )
         .await
         .map_err(|e| {
             warn!(
@@ -296,11 +236,16 @@ pub async fn run_solve_request_docker(
         session_home = %session_home.display(),
         "pool slot leased; running docker exec gateway-solve-once"
     );
-    let _ = gateway_solve_turn::append_solve_timing_point(
-        &session_home,
-        "bootstrap_pool_acquired",
-        Some(&turn_id),
-    );
+    state
+        .session_db
+        .append_turn_solve_timing_bootstrap(&turn_id, "bootstrap_pool_acquired")
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persist bootstrap timing failed: {e}"),
+            )
+        })?;
 
     let mut lease_cleanup = DockerLeaseCleanup {
         pool: Arc::clone(&pool),
@@ -327,11 +272,16 @@ pub async fn run_solve_request_docker(
         .as_ref()
         .expect("lease set for exec")
         .slot_index;
-    let _ = gateway_solve_turn::append_solve_timing_point(
-        &session_home,
-        "bootstrap_exec_started",
-        Some(&turn_id),
-    );
+    state
+        .session_db
+        .append_turn_solve_timing_bootstrap(&turn_id, "bootstrap_exec_started")
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persist bootstrap timing failed: {e}"),
+            )
+        })?;
     let exec_fut = pool.exec_solve(
         lease_cleanup.lease.as_ref().expect("lease set for exec"),
         GATEWAY_SOLVE_TASK_FILE,

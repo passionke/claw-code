@@ -1001,17 +1001,31 @@ async fn finalize_solve_turn_success(
     turn_id: &str,
     result: &SolveResponse,
 ) {
+    // Pool v1: `claw-pool-daemon` commits `status=succeeded` + `artifacts_ready=true` after readback.
+    // Gateway must not overwrite that with `finalize_turn_terminal` (which omits `artifacts_ready`).
+    match db.turn_artifacts_ready(turn_id).await {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(e) => {
+            warn!(
+                turn_id = %turn_id,
+                error = %e,
+                "turn_artifacts_ready lookup failed; falling back to gateway finalize"
+            );
+        }
+    }
     let finished_at = Some(now_ms());
     let report =
         report_body_from_solve_output(&result.output_text, result.output_json.as_ref()).ok();
     if let Err(e) = db
-        .finalize_turn_terminal(
+        .finalize_turn_with_artifacts_ready(
             turn_id,
             "succeeded",
             finished_at,
+            result.claw_exit_code,
             report.as_deref(),
             result.output_json.as_ref(),
-            Some(result.claw_exit_code),
+            true,
         )
         .await
     {
@@ -1020,9 +1034,7 @@ async fn finalize_solve_turn_success(
             error = %e,
             "finalize gateway_turns succeeded snapshot failed"
         );
-        return;
     }
-    let _ = report;
 }
 
 async fn finalize_solve_turn_failed(
@@ -1185,13 +1197,15 @@ async fn main() {
     let pool_rpc_tcp_cfg = pool_daemon_tcp.clone();
     let pool_rpc_unix_cfg = pool_daemon_socket.clone();
 
-    let pool_rpc_remote = pool_daemon_tcp.is_some() || pool_daemon_socket.is_some();
-    let co_located_pool_id = pool_rpc_remote.then(http_gateway_rs::pool_registry::resolve_pool_id);
     let pool_http_base = std::env::var("CLAW_POOL_HTTP_BASE")
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_default();
+    let pool_http_for_rpc = !pool_http_base.is_empty();
+    let pool_rpc_remote =
+        pool_http_for_rpc || pool_daemon_tcp.is_some() || pool_daemon_socket.is_some();
+    let co_located_pool_id = pool_rpc_remote.then(http_gateway_rs::pool_registry::resolve_pool_id);
     tracing::info!(
         target: "claw_live_report",
         component = "gateway_startup",
@@ -1202,10 +1216,28 @@ async fn main() {
         "live_report.gateway — terminal snapshot from DB; live stream proxies via claw_pool JOIN only (no CLAW_POOL_HTTP_BASE fallback)"
     );
 
-    // Pool RPC: single co-located daemon only (no DB pool_id routing). Author: kejiqing
-    let docker_pool: Arc<dyn pool::PoolOps + Send + Sync> = if let Some(ref tcp_addr) =
-        pool_daemon_tcp
-    {
+    // Pool RPC: prefer HTTP on CLAW_POOL_HTTP_BASE (same port as live-report). Author: kejiqing
+    let docker_pool: Arc<dyn pool::PoolOps + Send + Sync> = if pool_http_for_rpc {
+        let base = pool_http_base.clone();
+        if pool_rpc_host_work_root.is_none() {
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "startup",
+                phase = "pool_rpc_missing_host_root",
+                "CLAW_POOL_HTTP_BASE is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
+            );
+        }
+        if pool_daemon_tcp.is_some() || pool_daemon_socket.is_some() {
+            warn!(
+                target: "claw_gateway_orchestration",
+                component = "startup",
+                phase = "pool_rpc_http_preferred",
+                "CLAW_POOL_HTTP_BASE drives pool RPC; CLAW_POOL_DAEMON_TCP/SOCKET are ignored"
+            );
+        }
+        let client = pool::PoolRpcClient::new_http(&base);
+        Arc::new(client)
+    } else if let Some(ref tcp_addr) = pool_daemon_tcp {
         if pool_rpc_host_work_root.is_none() {
             warn!(
                 target: "claw_gateway_orchestration",
@@ -1229,7 +1261,7 @@ async fn main() {
         Arc::new(client)
     } else {
         eprintln!(
-            "http-gateway-rs: CLAW_POOL_DAEMON_TCP or CLAW_POOL_DAEMON_SOCKET is required (live report uses claw-pool-daemon)"
+            "http-gateway-rs: set CLAW_POOL_HTTP_BASE (recommended) or CLAW_POOL_DAEMON_TCP / CLAW_POOL_DAEMON_SOCKET"
         );
         std::process::exit(1);
     };
@@ -3745,6 +3777,16 @@ async fn solve(
     );
     let client_origin = resolve_request_client_origin(req.extra_session.as_ref(), &headers);
     validate_solve_request(&state.session_db, &req).await?;
+    state
+        .session_db
+        .assert_session_can_enqueue(&effective, i64::from(req.ds_id))
+        .await
+        .map_err(|reason| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                format!("session enqueue blocked: {reason}"),
+            )
+        })?;
     let new_turn_id = turn_id::mint_turn_id();
     register_solve_turn(
         &state.session_db,
@@ -6084,11 +6126,14 @@ async fn get_turn_timeline(
                 ),
             )
         })?;
-    session_merge::validate_session_home_rel(&ctx.session_home_rel)
-        .map_err(session_routing_error)?;
-    let session_home = join_session_home(&state.cfg.work_root, &ctx.session_home_rel);
-    let timeline =
-        turn_timeline_api::load_turn_timeline(&session_home, ctx.created_at_ms, ctx.finished_at_ms);
+    let timing_json = state
+        .session_db
+        .get_turn_solve_timing_json(&turn_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let timeline = timing_json.as_ref().and_then(|j| {
+        turn_timeline_api::load_turn_timeline_from_db(j, ctx.created_at_ms, ctx.finished_at_ms)
+    });
 
     Ok(Json(turn_timeline_api::TurnTimelineResponse {
         session_id,
@@ -6153,6 +6198,16 @@ async fn enqueue_solve_async(
         }
     }
     validate_solve_request(&state.session_db, &req).await?;
+    state
+        .session_db
+        .assert_session_can_enqueue(&effective, i64::from(ds_id))
+        .await
+        .map_err(|reason| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                format!("session enqueue blocked: {reason}"),
+            )
+        })?;
     let new_turn_id = turn_id::mint_turn_id();
     register_solve_turn(
         &state.session_db,
@@ -7634,12 +7689,11 @@ async fn prepare_gateway_session(
                 session_merge::join_session_home_from_rel(&state.cfg.work_root, &rel);
             let exists = fs::metadata(&session_home).await.is_ok_and(|m| m.is_dir());
             if !exists {
-                return Err(ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "session workspace is missing on disk (database path is stale)",
-                ));
+                // ② Gateway cache is optional; PG is SoT — recreate local session tree. Author: kejiqing
+                (session_home, false, true, rel)
+            } else {
+                (session_home, false, false, rel)
             }
-            (session_home, false, false, rel)
         } else if explicit_continuation {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -7696,30 +7750,16 @@ async fn prepare_gateway_session(
         }
     }
 
-    // Privileged uid alignment: host pool daemon owns docker/podman + socket; avoid gateway container engine access. kejiqing
-    if state.cfg.pool_rpc_host_work_root.is_some() {
-        let host_session = solve_pool::session_mount_for_pool_acquire(&session_home, &state.cfg);
-        state
-            .docker_pool
-            .chown_session_tree_for_pool_worker(host_session)
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("session workspace ownership for pool worker failed: {e}"),
-                )
-            })?;
-    } else {
-        let pool_bin = pool_runtime_cli_bin(state.cfg.solve_isolation);
-        pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(pool_bin, &session_home)
-            .await
-            .map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("session workspace ownership for pool worker failed: {e}"),
-                )
-            })?;
-    }
+    // Optional gateway-local cache (②): uid-align session dir; pool v1 does not bind it. kejiqing
+    let pool_bin = pool_runtime_cli_bin(state.cfg.solve_isolation);
+    pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(pool_bin, &session_home)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("session workspace ownership for pool worker failed: {e}"),
+            )
+        })?;
 
     if need_insert_row {
         state
