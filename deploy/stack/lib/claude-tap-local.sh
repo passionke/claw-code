@@ -124,9 +124,52 @@ claw_claude_tap_host_database_url() {
   printf '%s\n' "${url}"
 }
 
+claw_claude_tap_compose_network_name() {
+  printf '%s' "${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME:-claw}_default}"
+}
+
+# -p args for proxy/live: unset = publish to 0.0.0.0; 0|none = skip; else full spec (e.g. 127.0.0.1:8080:8080).
+claw_claude_tap_docker_publish_args() {
+  local kind="$1"
+  local host_port="$2"
+  local container_port="$3"
+  local spec=""
+  case "${kind}" in
+    proxy) spec="${CLAUDE_TAP_PUBLISH_PROXY-}" ;;
+    live) spec="${CLAUDE_TAP_PUBLISH_LIVE-}" ;;
+    *) echo "unknown publish kind: ${kind}" >&2; return 1 ;;
+  esac
+  if [[ -z "${spec}" ]]; then
+    printf '%s\n' "-p" "${host_port}:${container_port}"
+    return 0
+  fi
+  case "${spec}" in
+    0 | none | false | off)
+      return 0
+      ;;
+    *)
+      printf '%s\n' "-p" "${spec}"
+      ;;
+  esac
+}
+
 claw_claude_tap_tap_database_url() {
   local for_container="${1:-0}"
   local url
+  if [[ -n "${CLAUDE_TAP_DATABASE_URL:-}" ]]; then
+    printf '%s\n' "${CLAUDE_TAP_DATABASE_URL}"
+    return 0
+  fi
+  if [[ "${for_container}" == "1" && -n "${CLAUDE_TAP_DOCKER_NETWORK:-}" ]]; then
+    url="${CLAW_GATEWAY_DATABASE_URL:-}"
+    if [[ "${url}" == *"@postgres:"* ]] || [[ "${url}" == *"@postgres/"* ]]; then
+      local user="${CLAW_GATEWAY_PG_USER:-claw_gateway}"
+      local pass="${CLAW_GATEWAY_PG_PASSWORD:-clawGw9Dev_Pg}"
+      local db="${CLAW_GATEWAY_PG_DATABASE:-claw_gateway}"
+      printf 'postgres://%s:%s@postgres:5432/%s\n' "${user}" "${pass}" "${db}"
+      return 0
+    fi
+  fi
   url="$(claw_claude_tap_host_database_url)" || return 1
   if [[ "${for_container}" == "1" ]]; then
     local pg_host="${CLAUDE_TAP_PG_HOST:-host.containers.internal}"
@@ -196,12 +239,24 @@ claw_claude_tap_start_docker() {
 
   claw_claude_tap_export_cluster_env 1
 
+  local -a run_args=(run -d --name "${container_name}")
+  if [[ -n "${CLAUDE_TAP_DOCKER_NETWORK:-}" ]]; then
+    local net
+    net="$(claw_claude_tap_compose_network_name)"
+    "${rt}" network inspect "${net}" >/dev/null 2>&1 || {
+      echo "error: docker network ${net} missing; run ./deploy/stack/gateway.sh up first (compose creates it)" >&2
+      exit 1
+    }
+    run_args+=(--network "${net}")
+  fi
+  mapfile -t proxy_publish < <(claw_claude_tap_docker_publish_args proxy "${port}" 8080)
+  mapfile -t live_publish < <(claw_claude_tap_docker_publish_args live "${live_port}" 3000)
+  run_args+=("${proxy_publish[@]}" "${live_publish[@]}")
+
   # shellcheck disable=SC2086
-  "${rt}" run -d --name "${container_name}" \
+  "${rt}" "${run_args[@]}" \
     -e "CLAW_CLUSTER_ID=${CLAW_CLUSTER_ID}" \
     -e "CLAW_GATEWAY_DATABASE_URL=${CLAW_GATEWAY_DATABASE_URL}" \
-    -p "${port}:8080" \
-    -p "${live_port}:3000" \
     -v "${traces_dir}:/data/traces" \
     -v "${upstream_cfg}:${upstream_cfg}:ro" \
     "${image}" \
@@ -226,7 +281,11 @@ claw_claude_tap_start_docker() {
     exit 1
   }
   echo "container:${container_name}" >"${podman_dir}/claude-tap.pid"
-  echo "claude-tap container ${container_name} (${image}) port=${port} live=${live_port} traces=${traces_dir}"
+  local net_hint=""
+  if [[ -n "${CLAUDE_TAP_DOCKER_NETWORK:-}" ]]; then
+    net_hint=" network=$(claw_claude_tap_compose_network_name) adminHost=${container_name}"
+  fi
+  echo "claude-tap container ${container_name} (${image}) port=${port} live=${live_port}${net_hint} traces=${traces_dir}"
 }
 
 claw_claude_tap_start_source() {

@@ -35,6 +35,16 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source "${LIB_DIR}/pool-daemon-launchd.sh"
   claw_pool_launchd_bootout
+elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/pool-daemon-systemd.sh"
+  if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_installed; then
+    echo "==> stopping claw-pool-daemon (systemd)" >&2
+    claw_pool_systemd_stop
+    claw_pool_wait_http_down 2>/dev/null || true
+    rm -f "${RPC_DIR}/daemon.pid"
+    exit 0
+  fi
 fi
 
 if [[ -f "${RPC_DIR}/daemon.pid" ]]; then

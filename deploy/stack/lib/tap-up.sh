@@ -28,5 +28,10 @@ claw_claude_tap_start "${PODMAN_DIR}" "${ROOT_DIR}"
 
 claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
 
-echo "claude-tap: proxy http://127.0.0.1:${CLAUDE_TAP_PORT:-8080} live http://127.0.0.1:${CLAUDE_TAP_LIVE_PORT:-3000}"
+if [[ -n "${CLAUDE_TAP_DOCKER_NETWORK:-}" ]]; then
+  _tap_admin_host="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
+  echo "claude-tap: docker network $(claw_claude_tap_compose_network_name) — Admin clawTap host=${_tap_admin_host} proxyPort=${CLAUDE_TAP_PORT:-8080} livePort=${CLAUDE_TAP_LIVE_PORT:-3000}"
+else
+  echo "claude-tap: proxy http://127.0.0.1:${CLAUDE_TAP_PORT:-8080} live http://127.0.0.1:${CLAUDE_TAP_LIVE_PORT:-3000}"
+fi
 echo "worker runtime env: ${PODMAN_DIR}/.claw-worker-runtime.env (apply with: ./deploy/stack/gateway.sh up)"

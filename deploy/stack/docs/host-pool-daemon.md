@@ -44,7 +44,14 @@ launchctl print "gui/$(id -u)/com.claw.pool-daemon" | head -12
 lsof -nP -iTCP:9944 -sTCP:LISTEN
 ```
 
-Linux 仍用 `nohup`（无 Cursor agent 进程树问题时可接受；生产建议 systemd，与本文 launchd 对称）。
+Linux **`CLAW_DEPLOY_PROFILE=production`**：`pool-daemon-up` 写 `pool-daemon.env` 后走 **systemd**（`User=root`，unit：`claw-pool-daemon.service`），与 macOS launchd 对称。本地 profile 仍 `nohup`。
+
+```bash
+# 生产：刷新 env 并 systemd 重启（= gateway.sh pool-up --restart）
+sudo systemctl restart claw-pool-daemon
+systemctl status claw-pool-daemon
+curl -fsS http://127.0.0.1:9944/healthz/live-report
+```
 
 ---
 
