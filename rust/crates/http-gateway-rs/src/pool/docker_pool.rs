@@ -388,8 +388,10 @@ impl DockerPoolManager {
             }
             let old = slots[i].container_name.clone();
             drop(slots);
-            let _ = self.rm_container(&old).await;
             let name = self.container_name(i);
+            if old != name {
+                let _ = self.rm_container(&old).await;
+            }
             self.run_worker_slot_container(i, &name, 1, None).await?;
             slots = self.slots.lock().await;
             slots[i] = Slot {
@@ -615,7 +617,6 @@ impl DockerPoolManager {
             (s.container_name.clone(), need_run)
         };
         if need_run {
-            let _ = self.rm_container(&cname).await;
             self.run_worker_slot_container(slot_index, &cname, ds_id, test_host)
                 .await?;
             let mut slots = self.slots.lock().await;
