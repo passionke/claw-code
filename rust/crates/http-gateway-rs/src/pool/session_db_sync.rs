@@ -5,7 +5,6 @@ use std::path::Path;
 use crate::persistence::transcript::{import_turn_messages_to_db, now_ms, JsonlMessage};
 use crate::pool::docker_cli::{runtime_exec, runtime_exec_stdin};
 use crate::session_db::GatewaySessionDb;
-use gateway_solve_turn::gateway_solve_session_persistence_path;
 use serde_json::Value;
 use sqlx::PgPool;
 
@@ -451,9 +450,4 @@ pub fn session_home_under_work_root(
         .join(format!("ds_{ds_id}"))
         .join("sessions")
         .join(seg)
-}
-
-/// Host path used only by integration tests (`symlink_inject`). Author: kejiqing
-pub fn gateway_jsonl_host_path(session_home: &Path) -> std::path::PathBuf {
-    gateway_solve_session_persistence_path(session_home)
 }

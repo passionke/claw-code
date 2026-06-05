@@ -133,12 +133,6 @@ fn use_symlink_inject(runtime_bin: &str) -> bool {
     runtime_bin.contains("fake-docker")
 }
 
-fn parent_dir(path: &Path) -> PathBuf {
-    path.parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| path.to_path_buf())
-}
-
 /// Pool of long-lived worker containers (Phase 2).
 ///
 /// Each slot `run`s with `ds_{id}` → `/claw_ds` and ephemeral [`GUEST_WORK_ROOT`] (tmpfs).

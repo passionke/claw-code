@@ -81,8 +81,7 @@ pub struct JsonlTurnSegment {
 
 #[must_use]
 pub fn report_body_from_segment(segment: &JsonlTurnSegment) -> String {
-    let text = segment.assistant_parts.join("\n");
-    text
+    segment.assistant_parts.join("\n")
 }
 
 /// Formal report body from last turn messages in jsonl.
@@ -141,12 +140,12 @@ pub async fn import_turn_messages_to_db(
 }
 
 fn insert_model_usage_from_solve_json(
-    db: &GatewaySessionDb,
+    _db: &GatewaySessionDb,
     turn_id: &str,
     output_json: &Value,
     model: Option<&str>,
     duration_ms: i64,
-) -> Result<(), sqlx::Error> {
+) {
     let model_name = output_json
         .get("model")
         .and_then(Value::as_str)
@@ -190,7 +189,6 @@ fn insert_model_usage_from_solve_json(
         cache_read,
         duration_ms,
     );
-    Ok(())
 }
 
 /// After solve: sync latest jsonl turn and persist turn result columns.
@@ -246,7 +244,7 @@ pub async fn persist_turn_after_solve(
     .await?;
 
     if let Some(json) = output_json {
-        insert_model_usage_from_solve_json(db, turn_id, json, model, duration_ms)?;
+        insert_model_usage_from_solve_json(db, turn_id, json, model, duration_ms);
     }
 
     let _ = pool;
