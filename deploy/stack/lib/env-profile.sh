@@ -29,6 +29,10 @@ claw_apply_deploy_profile() {
 
   case "${profile}" in
     local)
+      # One pool URL: HTTP on 9944 (live SSE + POST /v1/pool/rpc). No 9943 TCP / unix. kejiqing
+      export CLAW_POOL_HTTP_BASE="${CLAW_POOL_HTTP_BASE:-http://host.containers.internal:9944}"
+      unset CLAW_POOL_DAEMON_TCP CLAW_POOL_DAEMON_SOCKET CLAW_POOL_DAEMON_TCP_HOST 2>/dev/null || true
+      unset CLAW_POOL_RPC_TRANSPORT 2>/dev/null || true
       export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-podman}"
       export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
       export GATEWAY_IMAGE="${GATEWAY_IMAGE:-claw-gateway-rs:local}"
@@ -47,17 +51,18 @@ claw_apply_deploy_profile() {
       export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-docker_pool}"
       export CLAW_POOL_HOST_DAEMON="${CLAW_POOL_HOST_DAEMON:-1}"
       export CLAW_POOL_DAEMON_SKIP_BUILD="${CLAW_POOL_DAEMON_SKIP_BUILD:-1}"
-      # Cluster: no per-node claude-tap image; workers use PG upstream (direct) or shared CLAW_TAP_PROXY_URL (remote).
+      # Same port for live + RPC unless overridden in .env. kejiqing
+      if [[ -z "${CLAW_POOL_HTTP_BASE:-}" && -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
+        export CLAW_POOL_HTTP_BASE="http://${CLAW_POOL_ADVERTISE_HOST}:${CLAW_POOL_HTTP_PORT:-9944}"
+      fi
       export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-direct}"
       export CLAW_IMAGE_REGISTRY="${CLAW_IMAGE_REGISTRY:-acr}"
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
       export CLAW_GATEWAY_PG_IMAGE="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
-      # Images: use `gateway.sh up --release release-vX.Y.Z` (writes .claw-image-release.env).
       ;;
   esac
 
-  # Legacy alias (do not set both in .env).
   if [[ "${CLAW_USE_DOCKER:-0}" == "1" && "${CLAW_CONTAINER_RUNTIME:-}" == "auto" ]]; then
     export CLAW_CONTAINER_RUNTIME=docker
   fi

@@ -10,13 +10,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
 
 use super::docker_pool::DockerPoolManager;
-use super::traits::{PoolOps, PoolSessionHostMounts, SlotLease, TaskOutcome};
+use super::traits::{PoolOps, SlotLease, TaskOutcome};
 
 #[derive(Debug, Clone)]
 enum PoolRpcTransport {
     Unix(PathBuf),
     /// `host:port`, e.g. `host.containers.internal:9943`.
     Tcp(String),
+    /// `http://host:9944` — same server as pool live-report HTTP. Author: kejiqing
+    Http(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,21 +26,9 @@ enum PoolRpcTransport {
 pub enum PoolRpcReq {
     Acquire {
         timeout_ms: u64,
-        session_host_mount: String,
-        #[serde(default)]
-        skills_host_mount: Option<String>,
-        /// Host path to `ds_*/CLAUDE.md` for optional ro file bind (gateway ≥ pool daemon that understands this field).
-        #[serde(default)]
-        claude_md_host_mount: Option<String>,
-        /// Host path to `ds_*/home/schema.md` (or legacy catalog) for optional ro file bind.
-        #[serde(default)]
-        data_catalog_host_mount: Option<String>,
-        /// Host path to `ds_*/home/.claw/solve-preflight.json` for optional ro file bind.
-        #[serde(default)]
-        solve_preflight_host_mount: Option<String>,
-        /// Host path to `ds_*/home/.claw/solve-orchestration.json` for optional ro file bind.
-        #[serde(default)]
-        solve_orchestration_host_mount: Option<String>,
+        session_id: String,
+        ds_id: i64,
+        turn_id: String,
     },
     Exec {
         slot_index: usize,
@@ -57,10 +47,6 @@ pub enum PoolRpcReq {
     },
     ReportState {
         turn_id: String,
-    },
-    /// Host path under pool `work_root` (same as [`PoolRpcReq::Acquire::session_host_mount`]); runs privileged chown on daemon.
-    ChownSessionHost {
-        session_host_mount: String,
     },
 }
 
@@ -101,6 +87,14 @@ impl PoolRpcClient {
         }
     }
 
+    /// Pool daemon HTTP base, e.g. `http://host.containers.internal:9944`. Author: kejiqing
+    #[must_use]
+    pub fn new_http(base_url: &str) -> Self {
+        Self {
+            transport: PoolRpcTransport::Http(base_url.trim().trim_end_matches('/').to_string()),
+        }
+    }
+
     async fn call(&self, req: PoolRpcReq) -> Result<PoolRpcResp, String> {
         let payload = serde_json::to_string(&req).map_err(|e| e.to_string())?;
         let line = match &self.transport {
@@ -136,6 +130,31 @@ impl PoolRpcClient {
                     .map_err(|e| format!("pool rpc read: {e}"))?;
                 line
             }
+            PoolRpcTransport::Http(base) => {
+                let url = format!("{base}/v1/pool/rpc");
+                let client = reqwest::Client::builder()
+                    .connect_timeout(Duration::from_secs(15))
+                    .build()
+                    .map_err(|e| format!("pool rpc http client: {e}"))?;
+                let resp = client
+                    .post(&url)
+                    .json(&req)
+                    .send()
+                    .await
+                    .map_err(|e| format!("pool rpc http POST {url}: {e}"))?;
+                let status = resp.status();
+                let body = resp
+                    .text()
+                    .await
+                    .map_err(|e| format!("pool rpc http read body: {e}"))?;
+                if !status.is_success() {
+                    return Err(format!(
+                        "pool rpc http {url} status {status}: {}",
+                        body.chars().take(500).collect::<String>()
+                    ));
+                }
+                body
+            }
         };
         serde_json::from_str::<PoolRpcResp>(line.trim())
             .map_err(|e| format!("pool rpc decode: {e}: {line}"))
@@ -147,33 +166,16 @@ impl PoolOps for PoolRpcClient {
     async fn acquire_slot(
         &self,
         wait: Duration,
-        session_host_mount: PathBuf,
-        host_mounts: PoolSessionHostMounts,
+        session_id: String,
+        ds_id: i64,
+        turn_id: String,
     ) -> Result<SlotLease, String> {
         let r = self
             .call(PoolRpcReq::Acquire {
                 timeout_ms: u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
-                session_host_mount: session_host_mount.to_string_lossy().into_owned(),
-                skills_host_mount: host_mounts
-                    .skills_dir
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned()),
-                claude_md_host_mount: host_mounts
-                    .claude_md_file
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned()),
-                data_catalog_host_mount: host_mounts
-                    .data_catalog_file
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned()),
-                solve_preflight_host_mount: host_mounts
-                    .solve_preflight_file
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned()),
-                solve_orchestration_host_mount: host_mounts
-                    .solve_orchestration_file
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned()),
+                session_id,
+                ds_id,
+                turn_id,
             })
             .await?;
         if !r.ok {
@@ -228,23 +230,6 @@ impl PoolOps for PoolRpcClient {
         Ok(())
     }
 
-    async fn chown_session_tree_for_pool_worker(
-        &self,
-        session_host_mount: PathBuf,
-    ) -> Result<(), String> {
-        let r = self
-            .call(PoolRpcReq::ChownSessionHost {
-                session_host_mount: session_host_mount.to_string_lossy().into_owned(),
-            })
-            .await?;
-        if !r.ok {
-            return Err(r
-                .error
-                .unwrap_or_else(|| "pool chown_session_host failed".into()));
-        }
-        Ok(())
-    }
-
     async fn has_report_for_turn(&self, turn_id: &str) -> bool {
         self.call(PoolRpcReq::ReportState {
             turn_id: turn_id.to_string(),
@@ -265,31 +250,24 @@ impl PoolOps for PoolRpcClient {
     }
 }
 
+/// Shared by line-RPC handlers and HTTP `POST /v1/pool/rpc`. Author: kejiqing
 #[allow(clippy::too_many_lines)]
-async fn dispatch_pool_rpc(
+pub async fn dispatch_pool_rpc(
     pool: &std::sync::Arc<DockerPoolManager>,
     req: PoolRpcReq,
 ) -> PoolRpcResp {
     match req {
         PoolRpcReq::Acquire {
             timeout_ms,
-            session_host_mount,
-            skills_host_mount,
-            claude_md_host_mount,
-            data_catalog_host_mount,
-            solve_preflight_host_mount,
-            solve_orchestration_host_mount,
+            session_id,
+            ds_id,
+            turn_id,
         } => match pool
             .acquire_slot(
                 Duration::from_millis(timeout_ms),
-                PathBuf::from(session_host_mount),
-                PoolSessionHostMounts {
-                    skills_dir: skills_host_mount.map(PathBuf::from),
-                    claude_md_file: claude_md_host_mount.map(PathBuf::from),
-                    data_catalog_file: data_catalog_host_mount.map(PathBuf::from),
-                    solve_preflight_file: solve_preflight_host_mount.map(PathBuf::from),
-                    solve_orchestration_file: solve_orchestration_host_mount.map(PathBuf::from),
-                },
+                session_id,
+                ds_id,
+                turn_id,
             )
             .await
         {
@@ -372,27 +350,6 @@ async fn dispatch_pool_rpc(
             }
         }
         PoolRpcReq::ForceKill { slot_index } => match pool.force_kill_slot(slot_index).await {
-            Ok(()) => PoolRpcResp {
-                ok: true,
-                error: None,
-                lease: None,
-                outcome: None,
-                has_report: None,
-                first_report_at_ms: None,
-            },
-            Err(e) => PoolRpcResp {
-                ok: false,
-                error: Some(e),
-                lease: None,
-                outcome: None,
-                has_report: None,
-                first_report_at_ms: None,
-            },
-        },
-        PoolRpcReq::ChownSessionHost { session_host_mount } => match pool
-            .chown_session_host_under_work_root(PathBuf::from(session_host_mount))
-            .await
-        {
             Ok(()) => PoolRpcResp {
                 ok: true,
                 error: None,

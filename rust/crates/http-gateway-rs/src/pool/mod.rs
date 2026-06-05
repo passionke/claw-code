@@ -9,16 +9,19 @@ mod local_ops;
 #[allow(dead_code)]
 mod result;
 pub mod rpc;
+mod session_db_sync;
 mod session_mount_ownership;
-mod slot_mount;
 mod traits;
 mod worker_identity;
 pub use docker_pool::{merge_stdout_hooks, DockerPoolManager};
 pub use http_server::serve_pool_http;
 pub use live_report_hub::{HubMsg, LiveReportHub};
 pub use local_ops::LocalPoolOps;
+pub use session_db_sync::{
+    MaterializeInput, DS_MOUNT_TARGET, GUEST_WORK_ROOT, WORKSPACE_TAR_ARTIFACT_KIND,
+    WORKSPACE_TAR_ARTIFACT_PATH,
+};
 pub use session_mount_ownership::ensure_session_tree_owned_for_worker_with_runtime_fallback;
-pub use slot_mount::{slot_guest_dir, SlotMountContext, SlotMountState};
 pub use worker_identity::PoolWorkerIdentity;
 // Used by the `http-gateway-rs` binary (`solve_pool`); not referenced from the library target alone.
 #[allow(unused_imports)]
@@ -30,4 +33,4 @@ pub use rpc::{
     PoolRpcClient,
 };
 #[allow(unused_imports)]
-pub use traits::{PoolOps, PoolSessionHostMounts, SlotLease, TaskOutcome};
+pub use traits::{PoolOps, SlotLease, TaskOutcome};

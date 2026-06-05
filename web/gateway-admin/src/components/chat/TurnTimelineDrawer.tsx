@@ -617,7 +617,7 @@ export default function TurnTimelineDrawer({
           {!loading && error && <Alert type="error" message={error} showIcon />}
 
           {!loading && !error && !timeline && (
-            <Empty description="暂无编排耗时数据（需存在 .claw/orchestration-events.ndjson，由关键节点 emit）" />
+            <Empty description="暂无耗时数据（solve 结束后由 pool readback 写入 gateway_turns.solve_timing_jsonb）" />
           )}
 
           {!loading && !error && timeline && (

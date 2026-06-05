@@ -25,6 +25,10 @@ export interface TurnCancelResponse {
 export interface SolveTask {
   status?: string;
   hasReport?: boolean;
+  /** Wall-clock start from `GET /v1/tasks`. Author: kejiqing */
+  createdAtMs?: number;
+  /** Wall-clock end when terminal. Author: kejiqing */
+  finishedAtMs?: number | null;
   /** Report time (ms); set when `hasReport` is true (`running` / `succeeded`). */
   reportTime?: number;
   currentTaskDesc?: string;

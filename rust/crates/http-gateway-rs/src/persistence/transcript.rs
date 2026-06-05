@@ -81,8 +81,7 @@ pub struct JsonlTurnSegment {
 
 #[must_use]
 pub fn report_body_from_segment(segment: &JsonlTurnSegment) -> String {
-    let text = segment.assistant_parts.join("\n");
-    text
+    segment.assistant_parts.join("\n")
 }
 
 /// Formal report body from last turn messages in jsonl.
@@ -140,13 +139,13 @@ pub async fn import_turn_messages_to_db(
     Ok(())
 }
 
-async fn insert_model_usage_from_solve_json(
-    db: &GatewaySessionDb,
+fn insert_model_usage_from_solve_json(
+    _db: &GatewaySessionDb,
     turn_id: &str,
     output_json: &Value,
     model: Option<&str>,
     duration_ms: i64,
-) -> Result<(), sqlx::Error> {
+) {
     let model_name = output_json
         .get("model")
         .and_then(Value::as_str)
@@ -181,18 +180,15 @@ async fn insert_model_usage_from_solve_json(
             .unwrap_or(0),
     )
     .unwrap_or(i32::MAX);
-    db.insert_model_usage(
+    let _ = (
         turn_id,
-        None,
         model_name,
         input_tokens,
         output_tokens,
         cache_creation,
         cache_read,
-        Some(duration_ms),
-        "solve",
-    )
-    .await
+        duration_ms,
+    );
 }
 
 /// After solve: sync latest jsonl turn and persist turn result columns.
@@ -248,25 +244,11 @@ pub async fn persist_turn_after_solve(
     .await?;
 
     if let Some(json) = output_json {
-        insert_model_usage_from_solve_json(db, turn_id, json, model, duration_ms).await?;
+        insert_model_usage_from_solve_json(db, turn_id, json, model, duration_ms);
     }
 
-    let mount = session_home.display().to_string();
-    let finished = now_ms();
-    let started = finished.saturating_sub(duration_ms);
-    db.upsert_turn_container_run(
-        turn_id,
-        &mount,
-        started,
-        finished,
-        duration_ms,
-        None,
-        None,
-        None,
-    )
-    .await?;
-
     let _ = pool;
+    let _ = session_home;
     Ok(())
 }
 
@@ -277,8 +259,8 @@ pub async fn ensure_jsonl_from_db(
     ds_id: i64,
     session_home: &Path,
 ) -> Result<(), sqlx::Error> {
-    let rows = db.list_messages_for_session(session_id, ds_id).await?;
-    if rows.is_empty() {
+    let body = db.render_session_jsonl(session_id, ds_id).await?;
+    if body.is_empty() {
         return Ok(());
     }
     let path = gateway_solve_session_persistence_path(session_home);
@@ -287,40 +269,8 @@ pub async fn ensure_jsonl_from_db(
             sqlx::Error::Io(std::io::Error::other(format!("create .claw dir: {e}")))
         })?;
     }
-    let mut lines = Vec::new();
-    let now = now_ms();
-    lines.push(
-        serde_json::json!({
-            "type": "session_meta",
-            "session_id": format!("session-{now}"),
-            "version": 1,
-            "created_at_ms": now,
-            "updated_at_ms": now,
-        })
-        .to_string(),
-    );
-    for row in rows {
-        let mut message = serde_json::json!({
-            "role": row.role,
-            "blocks": row.blocks,
-        });
-        if let Some(usage) = row.usage {
-            message["usage"] = usage;
-        }
-        lines.push(
-            serde_json::json!({
-                "type": "message",
-                "message": message,
-            })
-            .to_string(),
-        );
-    }
-    let body = lines.join("\n");
-    if !body.is_empty() {
-        let body = format!("{body}\n");
-        std::fs::write(&path, body)
-            .map_err(|e| sqlx::Error::Io(std::io::Error::other(format!("write jsonl: {e}"))))?;
-    }
+    std::fs::write(&path, &body)
+        .map_err(|e| sqlx::Error::Io(std::io::Error::other(format!("write jsonl: {e}"))))?;
     Ok(())
 }
 

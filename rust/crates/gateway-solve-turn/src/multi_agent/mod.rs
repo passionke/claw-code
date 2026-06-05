@@ -14,11 +14,12 @@ mod writer_turn;
 
 pub mod orchestrator;
 
-pub use event_bus::EventBus;
+pub use event_bus::{EventBus, ORCHESTRATION_EVENTS_REL};
 pub use orchestrator::run_multi_agent_solve_turn;
 pub use plan::{AnalysisPlan, AnalysisPlanTodo};
 pub use timeline::{
-    build_solve_turn_timeline, build_solve_turn_timeline_for_turn, SolveTurnTimeline, TimelineLane,
-    TimelineSegment, TurnTimelineWindow,
+    build_solve_turn_timeline, build_solve_turn_timeline_for_turn,
+    build_solve_turn_timeline_from_timing_json, SolveTurnTimeline, TimelineLane, TimelineSegment,
+    TurnTimelineWindow,
 };
 pub use timings::now_ms;

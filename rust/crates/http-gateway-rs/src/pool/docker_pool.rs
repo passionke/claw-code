@@ -15,11 +15,29 @@ use super::config::{security_boost_from_env, DockerPoolConfig};
 use super::docker_cli::{
     probe_container_runtime_cli, runtime_exec, runtime_exec_with_live_streams,
 };
-use super::slot_mount::{self, SlotMountContext, SlotMountState};
-use super::traits::{PoolSessionHostMounts, SlotLease, TaskOutcome};
+use super::session_db_sync::{self, MaterializeInput};
+use super::traits::{SlotLease, TaskOutcome};
 use super::worker_identity::PoolWorkerIdentity;
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
+
+/// Stable `claw-worker-{stem}-{n}` prefix from `CLAW_POOL_ID` (avoid orphan containers per restart). Author: kejiqing
+fn default_worker_name_stem() -> String {
+    if let Ok(raw) = std::env::var("CLAW_POOL_ID") {
+        let id = raw.trim();
+        let suffix = id.strip_prefix("pool-").unwrap_or(id);
+        let stem: String = suffix
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .take(16)
+            .collect();
+        if !stem.is_empty() {
+            return stem;
+        }
+    }
+    let u = Uuid::new_v4().simple().to_string();
+    u[..8].to_string()
+}
 
 /// Host path bind-mounted to [`WORKER_ENV_MOUNT_PATH`] (single file; colon lists are invalid paths).
 fn resolve_worker_env_host_file() -> Option<PathBuf> {
@@ -103,26 +121,22 @@ enum SlotState {
 struct Slot {
     container_name: String,
     state: SlotState,
-    mount_state: SlotMountState,
+    /// `ds_id` bound at last `run` (revive when changed). Author: kejiqing
+    bound_ds_id: Option<i64>,
+    /// Integration tests: host session tree bind-mounted to [`GUEST_WORK_ROOT`].
+    test_host_root: Option<PathBuf>,
 }
 
-/// Symlink inject only for the in-process fake-docker test shim (no host `mount(8)`).
-/// Production: session `bind` → slot `guest/` → container `/claw_host_root` (same workspace).
+/// Symlink inject only for the in-process `fake-docker` unit-test shim (no host `mount(8)`).
+/// Production v1: tmpfs `/claw_host_root` + PG `materialize_in` / `readback_out` (no session bind).
 fn use_symlink_inject(runtime_bin: &str) -> bool {
     runtime_bin.contains("fake-docker")
 }
 
-fn parent_dir(path: &Path) -> PathBuf {
-    path.parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| path.to_path_buf())
-}
-
 /// Pool of long-lived worker containers (Phase 2).
 ///
-/// Each slot `run`s once with a fixed `guest/` → [`GUEST_WORK_ROOT`]. **Acquire** injects the
-/// session + ds ro view via host [`slot_mount::apply`]; **release** runs [`slot_mount::teardown`].
-/// `rm+run` only revives `Dead` slots or creates a new slot index. Author: kejiqing
+/// Each slot `run`s with `ds_{id}` → `/claw_ds` and ephemeral [`GUEST_WORK_ROOT`] (tmpfs).
+/// **Acquire** materializes session files from PG via `docker exec`; **release** only pkill. Author: kejiqing
 pub struct DockerPoolManager {
     name_stem: String,
     bin: String,
@@ -149,10 +163,7 @@ impl DockerPoolManager {
         cfg.validate()?;
         let work_root_host = std::fs::canonicalize(&cfg.work_root)
             .map_err(|e| format!("canonicalize work_root {}: {e}", cfg.work_root.display()))?;
-        let name_stem = cfg.name_stem.unwrap_or_else(|| {
-            let u = Uuid::new_v4().simple().to_string();
-            u[..8].to_string()
-        });
+        let name_stem = cfg.name_stem.unwrap_or_else(default_worker_name_stem);
         Ok(Arc::new(Self {
             name_stem,
             bin: cfg.runtime_bin.clone(),
@@ -321,14 +332,23 @@ impl DockerPoolManager {
         ]
     }
 
-    fn slot_mount_ctx(&self, slot_index: usize) -> SlotMountContext {
-        SlotMountContext {
-            work_root_host: self.work_root_host.clone(),
-            slot_index,
-            worker_uid: self.worker_identity.uid,
-            worker_gid: self.worker_identity.gid,
-            symlink_inject: self.symlink_inject,
-        }
+    fn ds_host_dir(&self, ds_id: i64) -> PathBuf {
+        self.work_root_host.join(format!("ds_{ds_id}"))
+    }
+
+    /// ds_{id} host bind at [`session_db_sync::DS_MOUNT_TARGET`]; read-only in worker (gateway writes on host).
+    #[must_use]
+    fn ds_home_bind_volume_arg(ds_host_abs: &Path) -> String {
+        format!(
+            "{}:{}:ro",
+            ds_host_abs.display(),
+            session_db_sync::DS_MOUNT_TARGET
+        )
+    }
+
+    #[must_use]
+    fn guest_work_root_tmpfs_arg() -> String {
+        format!("{GUEST_WORK_ROOT}:rw,size=512m,mode=1777")
     }
 
     fn append_security_boost_run_args(&self, args: &mut Vec<String>) {
@@ -342,10 +362,6 @@ impl DockerPoolManager {
         args.push("--read-only".into());
         args.push("--tmpfs".into());
         args.push("/tmp:rw,noexec,nosuid,size=64m".into());
-    }
-
-    fn slot_guest_host_dir(&self, idx: usize) -> PathBuf {
-        slot_mount::slot_guest_dir(&self.work_root_host, idx)
     }
 
     pub fn schedule_warm(self: &Arc<Self>) {
@@ -372,14 +388,17 @@ impl DockerPoolManager {
             }
             let old = slots[i].container_name.clone();
             drop(slots);
-            let _ = self.rm_container(&old).await;
             let name = self.container_name(i);
-            self.run_worker_slot_container(i, &name).await?;
+            if old != name {
+                let _ = self.rm_container(&old).await;
+            }
+            self.run_worker_slot_container(i, &name, 1, None).await?;
             slots = self.slots.lock().await;
             slots[i] = Slot {
                 container_name: name,
                 state: SlotState::Idle,
-                mount_state: SlotMountState::default(),
+                bound_ds_id: Some(1),
+                test_host_root: None,
             };
         }
         let mut idle = slots.iter().filter(|s| s.state == SlotState::Idle).count();
@@ -390,10 +409,11 @@ impl DockerPoolManager {
             slots.push(Slot {
                 container_name: name.clone(),
                 state: SlotState::Idle,
-                mount_state: SlotMountState::default(),
+                bound_ds_id: None,
+                test_host_root: None,
             });
             drop(slots);
-            self.run_worker_slot_container(idx, &name).await?;
+            self.run_worker_slot_container(idx, &name, 1, None).await?;
             slots = self.slots.lock().await;
             idle += 1;
             total += 1;
@@ -413,54 +433,35 @@ impl DockerPoolManager {
         Ok(())
     }
 
-    /// Gateway-rs often creates session dirs as root; workers need uid 1000 writable `.claw/`. Author: kejiqing
-    async fn ensure_session_mount_owned_by_worker(&self, session_abs: &Path) -> Result<(), String> {
-        super::session_mount_ownership::ensure_session_tree_owned_for_worker_with_runtime_fallback(
-            &self.bin,
-            session_abs,
-        )
-        .await
-    }
-
-    /// RPC / host pool: canonicalize `session_host_mount` under [`Self::work_root_host`], then uid-align. Author: kejiqing
-    pub async fn chown_session_host_under_work_root(
+    /// Create or revive a slot: `ds_{id}` → `/claw_ds`, ephemeral [`GUEST_WORK_ROOT`]. Author: kejiqing
+    async fn run_worker_slot_container(
         &self,
-        session_host_mount: PathBuf,
+        slot_index: usize,
+        name: &str,
+        ds_id: i64,
+        test_host_root: Option<PathBuf>,
     ) -> Result<(), String> {
-        let session_abs = std::fs::canonicalize(&session_host_mount).map_err(|e| {
-            format!(
-                "canonicalize session chown path {}: {e}",
-                session_host_mount.display()
-            )
-        })?;
-        let root = &self.work_root_host;
-        if !session_abs.starts_with(root) {
-            return Err(format!(
-                "session chown path {} escapes pool work_root {}",
-                session_abs.display(),
-                root.display()
-            ));
+        if self.worker_container_running(name).await {
+            info!(
+                target: "claw_gateway_pool",
+                component = "docker_pool",
+                phase = "worker_reuse",
+                container = %name,
+                slot_index,
+                "reusing existing worker container (stable name)"
+            );
+            // Pool restart or missed release must not leave gateway-solve-once running in the worker.
+            self.kill_worker_solve_processes(name).await;
+            return Ok(());
         }
-        self.ensure_session_mount_owned_by_worker(&session_abs)
-            .await
-    }
+        self.rm_container(name).await?;
 
-    /// Create or revive a slot container: fixed `guest/` → [`GUEST_WORK_ROOT`] only.
-    async fn run_worker_slot_container(&self, slot_index: usize, name: &str) -> Result<(), String> {
-        let guest = self.slot_guest_host_dir(slot_index);
-        tokio::fs::create_dir_all(parent_dir(&guest))
+        let ds_host = self.ds_host_dir(ds_id);
+        tokio::fs::create_dir_all(&ds_host)
             .await
-            .map_err(|e| format!("mkdir slot guest parents: {e}"))?;
-        tokio::fs::create_dir_all(&guest)
-            .await
-            .map_err(|e| format!("mkdir guest {}: {e}", guest.display()))?;
-        let _ = crate::workspace_perm::chown_session_tree_for_worker(&guest);
-        let guest_abs = std::fs::canonicalize(&guest)
-            .map_err(|e| format!("canonicalize guest {}: {e}", guest.display()))?;
-        // fake-docker / symlink_inject tests have no host mount(8); skip rshared prep.
-        if !self.symlink_inject {
-            slot_mount::prepare_guest_for_mount_propagation(&guest_abs)?;
-        }
+            .map_err(|e| format!("mkdir ds home {}: {e}", ds_host.display()))?;
+        let ds_abs = std::fs::canonicalize(&ds_host)
+            .map_err(|e| format!("canonicalize ds home {}: {e}", ds_host.display()))?;
         let mut args: Vec<String> = vec![
             "run".into(),
             "-d".into(),
@@ -472,11 +473,21 @@ impl DockerPoolManager {
         args.extend(self.network_args.iter().cloned());
         args.extend(self.extra_run_args.iter().cloned());
         self.append_security_boost_run_args(&mut args);
-        args.push("--mount".into());
-        args.push(slot_mount::guest_container_bind_mount_spec(
-            &guest_abs,
-            slot_mount::GUEST_CONTAINER_MOUNT_TARGET,
-        ));
+        args.push("-v".into());
+        args.push(Self::ds_home_bind_volume_arg(&ds_abs));
+        if let Some(host_root) = test_host_root.as_ref() {
+            let root_abs = std::fs::canonicalize(host_root).map_err(|e| {
+                format!(
+                    "canonicalize test session root {}: {e}",
+                    host_root.display()
+                )
+            })?;
+            args.push("-v".into());
+            args.push(format!("{}:{}:rw", root_abs.display(), GUEST_WORK_ROOT));
+        } else {
+            args.push("--tmpfs".into());
+            args.push(Self::guest_work_root_tmpfs_arg());
+        }
         if let Some(ref host_env) = self.worker_env_host_file {
             let env_abs = std::fs::canonicalize(host_env).map_err(|e| {
                 format!(
@@ -498,16 +509,29 @@ impl DockerPoolManager {
         args.push(self.image.clone());
         args.push("infinity".into());
         let exec_argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        let out = runtime_exec(&self.bin, &exec_argv)
+        let mut out = runtime_exec(&self.bin, &exec_argv)
             .await
             .map_err(|e| format!("spawn {}: {e}", self.bin))?;
+        if !out.status.success() && Self::stderr_name_already_in_use(&out.stderr) {
+            info!(
+                target: "claw_gateway_pool",
+                component = "docker_pool",
+                phase = "worker_run_retry",
+                container = %name,
+                "worker name in use; rm and retry once"
+            );
+            self.rm_container(name).await?;
+            out = runtime_exec(&self.bin, &exec_argv)
+                .await
+                .map_err(|e| format!("spawn {} retry: {e}", self.bin))?;
+        }
         if !out.status.success() {
             warn!(
                 target: "claw_gateway_pool",
                 component = "docker_pool",
                 phase = "worker_run_failed",
                 container = %name,
-                guest_bind = %guest_abs.display(),
+                ds_bind = %ds_abs.display(),
                 code = ?out.status.code(),
                 stderr = %String::from_utf8_lossy(&out.stderr).chars().take(2000).collect::<String>(),
                 "{} run worker failed",
@@ -524,35 +548,13 @@ impl DockerPoolManager {
             component = "docker_pool",
             phase = "worker_run_ok",
             container = %name,
-            guest_bind = %guest_abs.display(),
+            ds_bind = %ds_abs.display(),
             slot_index,
             image = %self.image,
             "{} run worker slot container ok",
             self.bin
         );
         Ok(())
-    }
-
-    fn verify_inject_visible_in_container(&self, container_name: &str) -> Result<(), String> {
-        if self.symlink_inject {
-            return Ok(());
-        }
-        slot_mount::verify_worker_container_sees_guest_file(
-            &self.bin,
-            container_name,
-            "gateway-solve-task.json",
-        )
-    }
-
-    fn inject_session_into_slot(
-        &self,
-        slot_index: usize,
-        session_abs: &Path,
-        host_mounts: &PoolSessionHostMounts,
-        prior: Option<&SlotMountState>,
-    ) -> Result<SlotMountState, String> {
-        let ctx = self.slot_mount_ctx(slot_index);
-        slot_mount::apply(&ctx, session_abs, host_mounts, prior)
     }
 
     async fn kill_worker_solve_processes(&self, container_name: &str) {
@@ -566,30 +568,93 @@ impl DockerPoolManager {
         Ok(())
     }
 
-    /// `session_host_mount` must be `…/ds_{id}/sessions/{uuid}/` under [`Self::work_root_host`].
+    /// `true` if named container exists and is running (stable stem reuse after pool restart). Author: kejiqing
+    async fn worker_container_running(&self, name: &str) -> bool {
+        match runtime_exec(&self.bin, &["inspect", "-f", "{{.State.Running}}", name]).await {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout).trim() == "true"
+            }
+            _ => false,
+        }
+    }
+
+    fn stderr_name_already_in_use(stderr: &[u8]) -> bool {
+        let s = String::from_utf8_lossy(stderr);
+        s.contains("already in use") || s.contains("is already in use")
+    }
+
+    async fn prepare_slot_for_lease(
+        self: &Arc<Self>,
+        slot_index: usize,
+        ds_id: i64,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<String, String> {
+        let test_host = if self.symlink_inject {
+            let home = session_db_sync::session_home_under_work_root(
+                &self.work_root_host,
+                ds_id,
+                session_id,
+            );
+            tokio::fs::create_dir_all(home.join(".claw"))
+                .await
+                .map_err(|e| format!("mkdir test session .claw: {e}"))?;
+            Some(home)
+        } else {
+            None
+        };
+        let (cname, need_run) = {
+            let mut slots = self.slots.lock().await;
+            let s = slots
+                .get_mut(slot_index)
+                .ok_or_else(|| "bad slot index".to_string())?;
+            let host_changed =
+                self.symlink_inject && s.test_host_root.as_ref() != test_host.as_ref();
+            let need_run =
+                s.bound_ds_id != Some(ds_id) || s.state == SlotState::Dead || host_changed;
+            s.state = SlotState::Leased;
+            s.test_host_root = test_host.clone();
+            (s.container_name.clone(), need_run)
+        };
+        if need_run {
+            self.run_worker_slot_container(slot_index, &cname, ds_id, test_host)
+                .await?;
+            let mut slots = self.slots.lock().await;
+            if let Some(s) = slots.get_mut(slot_index) {
+                s.bound_ds_id = Some(ds_id);
+            }
+        }
+        if let Some(ref db) = self.session_db {
+            session_db_sync::materialize_in(
+                &self.bin,
+                &self.work_root_host,
+                &cname,
+                db,
+                &MaterializeInput {
+                    session_id: session_id.to_string(),
+                    ds_id,
+                    turn_id: turn_id.to_string(),
+                },
+                &self.worker_identity.exec_user_arg(),
+            )
+            .await?;
+        }
+        Ok(cname)
+    }
+
     #[allow(clippy::too_many_lines)]
     pub async fn acquire_slot(
         self: &Arc<Self>,
         wait: Duration,
-        session_host_mount: PathBuf,
-        host_mounts: PoolSessionHostMounts,
+        session_id: String,
+        ds_id: i64,
+        turn_id: String,
     ) -> Result<SlotLease, String> {
-        let session_abs = std::fs::canonicalize(&session_host_mount).map_err(|e| {
-            format!(
-                "canonicalize session bind {}: {e}",
-                session_host_mount.display()
-            )
-        })?;
-        if !session_abs.starts_with(&self.work_root_host) {
-            return Err(format!(
-                "session mount {} escapes pool work_root {}",
-                session_abs.display(),
-                self.work_root_host.display()
-            ));
+        if let Some(ref db) = self.session_db {
+            db.assert_session_can_acquire_for_turn(&session_id, ds_id, &turn_id)
+                .await
+                .map_err(|reason| format!("session acquire blocked: {reason}"))?;
         }
-        self.ensure_session_mount_owned_by_worker(&session_abs)
-            .await?;
-        let host_mounts = host_mounts.clone();
         timeout(wait, async move {
             loop {
                 let mut slots = self.slots.lock().await;
@@ -598,42 +663,21 @@ impl DockerPoolManager {
                     .enumerate()
                     .find(|(_, s)| s.state == SlotState::Idle)
                 {
-                    let cname = slots[i].container_name.clone();
-                    let prior_mount = slots[i].mount_state.clone();
-                    slots[i].state = SlotState::Leased;
                     drop(slots);
-                    match self.inject_session_into_slot(
-                        i,
-                        &session_abs,
-                        &host_mounts,
-                        Some(&prior_mount),
-                    ) {
-                        Ok(ms) => {
-                            if let Err(e) = self.verify_inject_visible_in_container(&cname) {
-                                let mut slots = self.slots.lock().await;
-                                if let Some(s) = slots.get_mut(i) {
-                                    s.state = SlotState::Dead;
-                                }
-                                drop(slots);
-                                return Err(format!(
-                                    "session bind not visible in worker {cname} after inject ({e}). \
-                                     compose claw-pool-daemon needs work_root bind propagation:shared \
-                                     (podman-compose.pool-rpc.yml) or CLAW_POOL_HOST_DAEMON=1 on Linux docker_pool"
-                                ));
-                            }
-                            let mut slots = self.slots.lock().await;
-                            if let Some(s) = slots.get_mut(i) {
-                                s.mount_state = ms;
-                            }
-                            drop(slots);
+                    match self
+                        .prepare_slot_for_lease(i, ds_id, &session_id, &turn_id)
+                        .await
+                    {
+                        Ok(cname) => {
                             info!(
                                 target: "claw_gateway_pool",
                                 component = "docker_pool",
                                 phase = "acquire_slot_ok",
                                 slot_index = i,
-                                session_bind = %session_abs.display(),
+                                session_id = %session_id,
+                                ds_id,
                                 container = %cname,
-                                "idle slot injected (no rm+run)"
+                                "slot leased with ds bind + PG materialize"
                             );
                             let slots = self.slots.lock().await;
                             return Self::lease_from_slot(&slots, i);
@@ -642,10 +686,10 @@ impl DockerPoolManager {
                             warn!(
                                 target: "claw_gateway_pool",
                                 component = "docker_pool",
-                                phase = "inject_worker_failed",
+                                phase = "acquire_prepare_failed",
                                 slot_index = i,
                                 error = %e,
-                                "pool inject session into slot failed"
+                                "pool prepare slot failed"
                             );
                             let mut slots = self.slots.lock().await;
                             if let Some(s) = slots.get_mut(i) {
@@ -663,80 +707,43 @@ impl DockerPoolManager {
                     let name = self.container_name(idx);
                     slots.push(Slot {
                         container_name: name.clone(),
-                        state: SlotState::Leased,
-                        mount_state: SlotMountState::default(),
+                        state: SlotState::Idle,
+                        bound_ds_id: None,
+                        test_host_root: None,
                     });
                     drop(slots);
-                    match self.run_worker_slot_container(idx, &name).await {
-                        Ok(()) => match self.inject_session_into_slot(
-                            idx,
-                            &session_abs,
-                            &host_mounts,
-                            None,
-                        ) {
-                            Ok(ms) => {
-                                if let Err(e) = self.verify_inject_visible_in_container(&name) {
-                                    let _ = self.rm_container(&name).await;
-                                    let mut slots = self.slots.lock().await;
-                                    if slots.len() == idx + 1 && slots[idx].container_name == name {
-                                        slots.pop();
-                                    } else if let Some(s) = slots.get_mut(idx) {
-                                        s.state = SlotState::Dead;
-                                    }
-                                    drop(slots);
-                                    return Err(format!(
-                                        "session bind not visible in worker {name} after run+inject ({e}). \
-                                         compose claw-pool-daemon needs work_root bind propagation:shared \
-                                         (podman-compose.pool-rpc.yml) or CLAW_POOL_HOST_DAEMON=1 on Linux docker_pool"
-                                    ));
-                                }
-                                let mut slots = self.slots.lock().await;
-                                if let Some(s) = slots.get_mut(idx) {
-                                    s.mount_state = ms;
-                                }
-                                drop(slots);
-                                info!(
-                                    target: "claw_gateway_pool",
-                                    component = "docker_pool",
-                                    phase = "acquire_slot_ok",
-                                    slot_index = idx,
-                                    session_bind = %session_abs.display(),
-                                    container = %name,
-                                    "new pool slot run+inject"
-                                );
-                                let slots = self.slots.lock().await;
-                                return Self::lease_from_slot(&slots, idx);
-                            }
-                            Err(e) => {
-                                warn!(
-                                    target: "claw_gateway_pool",
-                                    component = "docker_pool",
-                                    phase = "inject_after_run_failed",
-                                    slot_index = idx,
-                                    error = %e,
-                                    "pool inject after slot run failed"
-                                );
-                                let _ = self.rm_container(&name).await;
-                                let mut slots = self.slots.lock().await;
-                                if slots.len() == idx + 1 && slots[idx].container_name == name {
-                                    slots.pop();
-                                } else if let Some(s) = slots.get_mut(idx) {
-                                    s.state = SlotState::Dead;
-                                }
-                                drop(slots);
-                                sleep(Duration::from_millis(200)).await;
-                                continue;
-                            }
-                        },
+                    let mut slots = self.slots.lock().await;
+                    if let Some(s) = slots.get_mut(idx) {
+                        s.state = SlotState::Leased;
+                    }
+                    drop(slots);
+                    match self
+                        .prepare_slot_for_lease(idx, ds_id, &session_id, &turn_id)
+                        .await
+                    {
+                        Ok(cname) => {
+                            info!(
+                                target: "claw_gateway_pool",
+                                component = "docker_pool",
+                                phase = "acquire_slot_ok",
+                                slot_index = idx,
+                                session_id = %session_id,
+                                container = %cname,
+                                "new pool slot run+materialize"
+                            );
+                            let slots = self.slots.lock().await;
+                            return Self::lease_from_slot(&slots, idx);
+                        }
                         Err(e) => {
                             warn!(
                                 target: "claw_gateway_pool",
                                 component = "docker_pool",
-                                phase = "on_demand_worker_create_failed",
+                                phase = "acquire_new_slot_failed",
                                 slot_index = idx,
                                 error = %e,
-                                "pool on-demand worker create failed"
+                                "pool new slot failed"
                             );
+                            let _ = self.rm_container(&name).await;
                             let mut slots = self.slots.lock().await;
                             if slots.len() == idx + 1 && slots[idx].container_name == name {
                                 slots.pop();
@@ -885,15 +892,58 @@ impl DockerPoolManager {
             stderr_len = out.stderr.len(),
             "docker exec gateway-solve-once finished"
         );
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        if let Some(ref db) = self.session_db {
+            if let Ok(Some((session_id, ds_id))) = db.turn_session_scope(turn_id).await {
+                let user_prompt = db
+                    .get_turn_user_prompt(turn_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                if exit_code == 0 {
+                    session_db_sync::readback_out(
+                        &self.bin,
+                        &container_log,
+                        db,
+                        db.pg_pool(),
+                        &session_id,
+                        ds_id,
+                        turn_id,
+                        &user_prompt,
+                    )
+                    .await
+                    .map_err(|e| format!("readback_out failed: {e}"))?;
+                    let parsed = super::result::parse_gateway_solve_exec_stdout(&stdout, exit_code);
+                    let report = parsed.output_json.as_ref().and_then(|j| {
+                        crate::biz_advice_report::report_body_from_solve_output(
+                            &parsed.output_text,
+                            Some(j),
+                        )
+                        .ok()
+                    });
+                    session_db_sync::finalize_turn_after_readback(
+                        db,
+                        turn_id,
+                        parsed.claw_exit_code,
+                        report.as_deref(),
+                        parsed.output_json.as_ref(),
+                    )
+                    .await
+                    .map_err(|e| format!("finalize_turn_after_readback failed: {e}"))?;
+                }
+            }
+        }
         Ok(TaskOutcome {
             exit_code,
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            stdout,
+            stderr,
         })
     }
 
     pub async fn release_slot(self: &Arc<Self>, slot: SlotLease) -> Result<(), String> {
-        let (was_leased, container_name, slot_index) = {
+        let (was_leased, container_name, _slot_index) = {
             let mut slots = self.slots.lock().await;
             let s = slots
                 .get_mut(slot.slot_index)
@@ -913,27 +963,14 @@ impl DockerPoolManager {
                 }
             }
             self.kill_worker_solve_processes(&container_name).await;
-            let ctx = self.slot_mount_ctx(slot_index);
-            if let Err(e) = slot_mount::teardown(&ctx) {
-                warn!(
-                    target: "claw_gateway_pool",
-                    component = "docker_pool",
-                    phase = "slot_teardown_failed",
-                    slot_index,
-                    error = %e,
-                    "pool slot teardown failed; marking Dead"
-                );
-                let mut slots = self.slots.lock().await;
-                if let Some(s) = slots.get_mut(slot_index) {
-                    s.state = SlotState::Dead;
-                    s.mount_state = SlotMountState::default();
-                }
-            } else {
-                let mut slots = self.slots.lock().await;
-                if let Some(s) = slots.get_mut(slot_index) {
-                    s.mount_state = SlotMountState::default();
-                }
-            }
+            info!(
+                target: "claw_gateway_pool",
+                component = "docker_pool",
+                phase = "release_slot_ok",
+                slot_index = slot.slot_index,
+                container = %container_name,
+                "slot released to Idle"
+            );
         }
         Self::schedule_warm(self);
         Ok(())
@@ -1012,6 +1049,14 @@ impl DockerPoolManager {
     pub(crate) fn test_exec_solve_argv_prefix(&self) -> Vec<String> {
         self.exec_solve_argv_prefix()
     }
+
+    pub(crate) async fn test_leased_container_name(
+        &self,
+        lease: &crate::pool::SlotLease,
+    ) -> String {
+        let slots = self.slots.lock().await;
+        slots[lease.slot_index].container_name.clone()
+    }
 }
 
 #[cfg(test)]
@@ -1080,6 +1125,34 @@ mod exec_solve_argv_prefix_tests {
     }
 }
 
+#[cfg(test)]
+mod worker_volume_mount_tests {
+    use std::path::Path;
+
+    use super::DockerPoolManager;
+    use crate::pool::{DS_MOUNT_TARGET, GUEST_WORK_ROOT};
+
+    #[test]
+    fn ds_home_bind_volume_arg_is_read_only() {
+        let arg = DockerPoolManager::ds_home_bind_volume_arg(Path::new("/data/ds_7"));
+        assert_eq!(arg, "/data/ds_7:/claw_ds:ro");
+        assert!(
+            !arg.contains(&format!("{DS_MOUNT_TARGET}:rw")),
+            "ds_home must never be rw in worker: {arg}"
+        );
+    }
+
+    #[test]
+    fn guest_work_root_tmpfs_is_read_write() {
+        let arg = DockerPoolManager::guest_work_root_tmpfs_arg();
+        assert!(arg.starts_with(&format!("{GUEST_WORK_ROOT}:")));
+        assert!(
+            arg.contains(":rw,"),
+            "session workspace tmpfs must be rw: {arg}"
+        );
+    }
+}
+
 #[cfg(all(test, unix))]
 mod docker_pool_integration_tests {
     use std::fs;
@@ -1090,8 +1163,10 @@ mod docker_pool_integration_tests {
 
     use super::DockerPoolManager;
     use crate::pool::config::DockerPoolConfig;
-    use crate::pool::traits::PoolSessionHostMounts;
+    use crate::pool::docker_cli::runtime_exec;
+    use crate::pool::session_db_sync;
     use crate::pool::worker_identity::PoolWorkerIdentity;
+    use crate::pool::{DS_MOUNT_TARGET, GUEST_WORK_ROOT};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1137,13 +1212,38 @@ set -eu
 d='{d}'
 mkdir -p "$d"
 log() {{ printf '%s\n' "$*" >>"$d/log.txt"; }}
+record_run_mounts() {{
+  : > "$d/mounts.txt"
+  prev=""
+  for token in "$@"; do
+    if [ "$prev" = "-v" ] || [ "$prev" = "--tmpfs" ]; then
+      printf '%s\n' "$token" >>"$d/mounts.txt"
+    fi
+    prev="$token"
+  done
+}}
+exec_targets_readonly_claw_ds() {{
+  for arg in "$@"; do
+    case "$arg" in
+      /claw_ds/*|/claw_ds)
+        if grep -Fq ":/claw_ds:ro" "$d/mounts.txt" 2>/dev/null; then
+          echo "sh: cannot create $arg: Read-only file system" >&2
+          return 2
+        fi
+        ;;
+    esac
+  done
+  return 0
+}}
 case "${{1:-}}" in
 run)
   log "run:$*"
+  record_run_mounts "$@"
   exit 0
   ;;
 exec)
   log "exec:$*"
+  exec_targets_readonly_claw_ds "$@" || exit 2
   printf '%s\n' '{{"clawExitCode":0,"outputText":"ok","outputJson":null}}'
   exit 0
   ;;
@@ -1153,6 +1253,14 @@ kill)
   ;;
 rm)
   log "rm:$*"
+  exit 0
+  ;;
+cp)
+  log "cp:$*"
+  dest="${{3#*:}}"
+  dest="${{dest#*/}}"
+  mkdir -p "$(dirname "$d/$dest")"
+  cp "$2" "$d/$dest" 2>/dev/null || cp "$2" "$dest" 2>/dev/null || true
   exit 0
   ;;
 *)
@@ -1175,6 +1283,26 @@ esac
         fs::read_to_string(state.join("log.txt")).unwrap_or_default()
     }
 
+    fn worker_run_line(log: &str) -> &str {
+        log.lines().find(|l| l.starts_with("run:")).unwrap_or("")
+    }
+
+    fn assert_worker_mount_permissions(run_line: &str) {
+        assert!(
+            run_line.contains(&format!(":{DS_MOUNT_TARGET}:ro")),
+            "ds_home bind must be :ro, run line:\n{run_line}"
+        );
+        assert!(
+            !run_line.contains(&format!(":{DS_MOUNT_TARGET}:rw")),
+            "ds_home must not be :rw, run line:\n{run_line}"
+        );
+        assert!(
+            run_line.contains(&format!("{GUEST_WORK_ROOT}:rw,"))
+                || run_line.contains(&format!(":{GUEST_WORK_ROOT}:rw")),
+            "guest session root must stay rw, run line:\n{run_line}"
+        );
+    }
+
     fn test_layout() -> (PathBuf, PathBuf, PathBuf) {
         let base = std::env::temp_dir().join(format!("http-gw-pool-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&base).unwrap();
@@ -1187,18 +1315,37 @@ esac
         (base, work, bin_path)
     }
 
-    fn session_bind(work: &Path) -> PathBuf {
-        session_bind_named(work, &format!("sess-{}", Uuid::new_v4().simple()))
+    fn write_test_task(home: &Path) {
+        fs::create_dir_all(home.join(".claw")).unwrap();
+        fs::write(
+            home.join("gateway-solve-task.json"),
+            br#"{"userPrompt":"test","turnId":"turn-test"}"#,
+        )
+        .unwrap();
     }
 
-    fn session_bind_named(work: &Path, seg: &str) -> PathBuf {
-        let d = work.join("ds_1").join("sessions").join(seg);
-        fs::create_dir_all(&d).unwrap();
-        fs::canonicalize(&d).unwrap()
+    fn test_session_id() -> String {
+        format!("sess-{}", Uuid::new_v4().simple())
     }
 
-    fn guest_dir(work: &Path, slot_index: usize) -> PathBuf {
-        super::slot_mount::slot_guest_dir(work, slot_index)
+    async fn acquire_test(
+        pool: &Arc<DockerPoolManager>,
+        work: &Path,
+    ) -> (String, crate::pool::SlotLease) {
+        let sid = test_session_id();
+        let home = session_db_sync::session_home_under_work_root(work, 1, &sid);
+        fs::create_dir_all(&home).unwrap();
+        write_test_task(&home);
+        let lease = pool
+            .acquire_slot(
+                Duration::from_secs(5),
+                sid.clone(),
+                1,
+                "turn-test".to_string(),
+            )
+            .await
+            .unwrap();
+        (sid, lease)
     }
 
     #[tokio::test]
@@ -1208,15 +1355,7 @@ esac
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "tstem"))
                 .unwrap();
-        let bind = session_bind(&work);
-        let lease = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind.clone(),
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
         let out = pool
             .exec_solve(
                 &lease,
@@ -1231,12 +1370,14 @@ esac
             .unwrap();
         assert_eq!(out.exit_code, 0);
         DockerPoolManager::release_slot(&pool, lease).await.unwrap();
-        let bind2 = session_bind(&work);
+        let home2 = session_db_sync::session_home_under_work_root(&work, 1, &_sid);
+        write_test_task(&home2);
         let lease2 = pool
             .acquire_slot(
                 Duration::from_secs(5),
-                bind2,
-                PoolSessionHostMounts::default(),
+                _sid.clone(),
+                1,
+                "turn-test".to_string(),
             )
             .await
             .unwrap();
@@ -1254,9 +1395,10 @@ esac
             "expected single worker slot run (not chown helper), log:\n{log}"
         );
         assert!(log.contains("exec:"), "expected exec solve, log:\n{log}");
+        let rm_count = log.matches("rm:").count();
         assert!(
-            !log.contains("rm:"),
-            "release must not destroy the worker (no rm), log:\n{log}"
+            rm_count <= 1,
+            "release must not rm worker (at most one rm before first run), got {rm_count}, log:\n{log}"
         );
     }
 
@@ -1267,15 +1409,7 @@ esac
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "killme"))
                 .unwrap();
-        let bind = session_bind(&work);
-        let lease = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
         let idx = lease.slot_index;
         pool.force_kill_slot(idx).await.unwrap();
         pool.test_ensure_warm_now().await.unwrap();
@@ -1303,11 +1437,17 @@ esac
                 .unwrap();
         let p1 = Arc::clone(&pool);
         let p2 = Arc::clone(&pool);
-        let b1 = session_bind(&work);
-        let b2 = session_bind(&work);
+        let sid1 = test_session_id();
+        let sid2 = test_session_id();
+        let home1 = session_db_sync::session_home_under_work_root(&work, 1, &sid1);
+        let home2 = session_db_sync::session_home_under_work_root(&work, 1, &sid2);
+        fs::create_dir_all(&home1).unwrap();
+        fs::create_dir_all(&home2).unwrap();
+        write_test_task(&home1);
+        write_test_task(&home2);
         let (a, b) = tokio::join!(
-            p1.acquire_slot(Duration::from_secs(5), b1, PoolSessionHostMounts::default()),
-            p2.acquire_slot(Duration::from_secs(5), b2, PoolSessionHostMounts::default()),
+            p1.acquire_slot(Duration::from_secs(5), sid1, 1, "turn-test".to_string()),
+            p2.acquire_slot(Duration::from_secs(5), sid2, 1, "turn-test".to_string()),
         );
         let a = a.unwrap();
         let b = b.unwrap();
@@ -1329,15 +1469,7 @@ esac
             |c| c.pool_size = 1,
         ))
         .unwrap();
-        let bind = session_bind(&work);
-        let lease = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
         DockerPoolManager::release_slot(&pool, lease.clone())
             .await
             .unwrap();
@@ -1366,15 +1498,7 @@ esac
             |c| c.pool_size = 1,
         ))
         .unwrap();
-        let bind = session_bind(&work);
-        let lease = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
         DockerPoolManager::release_slot(&pool, lease.clone())
             .await
             .unwrap();
@@ -1395,15 +1519,7 @@ esac
             },
         ))
         .unwrap();
-        let bind = session_bind(&work);
-        let lease = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
         pool.exec_solve(
             &lease,
             "gateway-solve-task.json",
@@ -1429,129 +1545,6 @@ esac
     }
 
     #[tokio::test]
-    async fn acquire_rejects_session_outside_work_root() {
-        let (_base, work, bin_path) = test_layout();
-        let pool = DockerPoolManager::from_config(test_pool_config_mut(
-            work.clone(),
-            &bin_path,
-            "bound",
-            |c| c.pool_size = 1,
-        ))
-        .unwrap();
-        let outside =
-            std::env::temp_dir().join(format!("pool-outside-{}", Uuid::new_v4().simple()));
-        fs::create_dir_all(&outside).unwrap();
-        let err = pool
-            .acquire_slot(
-                Duration::from_secs(2),
-                outside,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            err.contains("escapes pool work_root") || err.contains("canonicalize session"),
-            "unexpected err: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn same_session_reacquire_sees_updated_host_file() {
-        let (_base, work, bin_path) = test_layout();
-        let pool = DockerPoolManager::from_config(test_pool_config_mut(
-            work.clone(),
-            &bin_path,
-            "cont",
-            |c| c.pool_size = 1,
-        ))
-        .unwrap();
-        let bind = session_bind_named(&work, "continuity-session");
-        fs::write(bind.join("state.txt"), b"v1").unwrap();
-        let lease1 = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind.clone(),
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
-        let guest = guest_dir(&work, lease1.slot_index);
-        assert_eq!(fs::read_to_string(guest.join("state.txt")).unwrap(), "v1");
-        DockerPoolManager::release_slot(&pool, lease1)
-            .await
-            .unwrap();
-        assert!(!guest.join("state.txt").exists());
-
-        fs::write(bind.join("state.txt"), b"v2").unwrap();
-        let lease2 = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            fs::read_to_string(guest.join("state.txt")).unwrap(),
-            "v2",
-            "续聊同 session 目录应看到宿主侧更新"
-        );
-        DockerPoolManager::release_slot(&pool, lease2)
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn switch_session_does_not_leak_prior_guest_files() {
-        let (_base, work, bin_path) = test_layout();
-        let pool = DockerPoolManager::from_config(test_pool_config_mut(
-            work.clone(),
-            &bin_path,
-            "isol",
-            |c| c.pool_size = 1,
-        ))
-        .unwrap();
-        let bind_a = session_bind_named(&work, "session-a");
-        let bind_b = session_bind_named(&work, "session-b");
-        fs::write(bind_a.join("secret-a"), b"a").unwrap();
-        fs::write(bind_b.join("note-b"), b"b").unwrap();
-
-        let lease_a = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind_a,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
-        let slot_index = lease_a.slot_index;
-        let guest = guest_dir(&work, slot_index);
-        assert!(guest.join("secret-a").exists());
-        DockerPoolManager::release_slot(&pool, lease_a)
-            .await
-            .unwrap();
-        assert!(!guest.join("secret-a").exists());
-
-        let lease_b = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind_b,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(lease_b.slot_index, slot_index);
-        assert!(
-            !guest.join("secret-a").exists(),
-            "切换会话后 guest 不得残留上一 session 文件"
-        );
-        assert!(guest.join("note-b").exists());
-        DockerPoolManager::release_slot(&pool, lease_b)
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
     async fn release_invokes_pkill_for_solve_processes() {
         let (base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
@@ -1562,15 +1555,7 @@ esac
             |c| c.pool_size = 1,
         ))
         .unwrap();
-        let bind = session_bind(&work);
-        let lease = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
         pool.exec_solve(
             &lease,
             "gateway-solve-task.json",
@@ -1604,15 +1589,7 @@ esac
             },
         ))
         .unwrap();
-        let bind = session_bind(&work);
-        let lease = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
         DockerPoolManager::release_slot(&pool, lease).await.unwrap();
         let log = read_log(&state_dir);
         assert!(
@@ -1633,15 +1610,7 @@ esac
         ))
         .unwrap();
         let id = PoolWorkerIdentity::from_env(None);
-        let bind = session_bind(&work);
-        let lease = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
         pool.exec_solve(
             &lease,
             "gateway-solve-task.json",
@@ -1666,6 +1635,98 @@ esac
     }
 
     #[tokio::test]
+    async fn ds_home_bind_mount_is_read_only() {
+        let (base, work, bin_path) = test_layout();
+        let state_dir = base.join("docker_state");
+        let pool =
+            DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "dsro"))
+                .unwrap();
+        let (_sid, _lease) = acquire_test(&pool, &work).await;
+        let log = read_log(&state_dir);
+        assert_worker_mount_permissions(worker_run_line(&log));
+    }
+
+    #[tokio::test]
+    async fn ds_home_bind_stays_read_only_with_security_boost() {
+        let (base, work, bin_path) = test_layout();
+        let state_dir = base.join("docker_state");
+        let pool = DockerPoolManager::from_config(test_pool_config_mut(
+            work.clone(),
+            &bin_path,
+            "dsroboost",
+            |c| {
+                c.pool_size = 1;
+                c.security_boost = true;
+            },
+        ))
+        .unwrap();
+        let (_sid, _lease) = acquire_test(&pool, &work).await;
+        let log = read_log(&state_dir);
+        assert_worker_mount_permissions(worker_run_line(&log));
+        assert!(
+            worker_run_line(&log).contains("--read-only"),
+            "security boost expected with ds ro mount, log:\n{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_cannot_write_under_claw_ds() {
+        let (_base, work, bin_path) = test_layout();
+        let pool =
+            DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "dswrite"))
+                .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
+        let cname = pool.test_leased_container_name(&lease).await;
+        let argv = [
+            "exec",
+            "--user",
+            "1000:1000",
+            cname.as_str(),
+            "tee",
+            "/claw_ds/forbidden.txt",
+        ];
+        let bin = bin_path.to_string_lossy();
+        let out = runtime_exec(bin.as_ref(), &argv).await.unwrap();
+        assert!(
+            !out.status.success(),
+            "tee under /claw_ds must fail on ro bind, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("Read-only file system"),
+            "expected EROFS-like message, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_can_write_under_claw_host_root() {
+        let (base, work, bin_path) = test_layout();
+        let pool =
+            DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "gwrite"))
+                .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
+        let cname = pool.test_leased_container_name(&lease).await;
+        let dest = format!("{GUEST_WORK_ROOT}/allowed.txt");
+        let argv = [
+            "exec",
+            "--user",
+            "1000:1000",
+            cname.as_str(),
+            "tee",
+            dest.as_str(),
+        ];
+        let bin = bin_path.to_string_lossy();
+        let out = runtime_exec(bin.as_ref(), &argv).await.unwrap();
+        assert!(
+            out.status.success(),
+            "tee under guest work root must succeed, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = base;
+    }
+
+    #[tokio::test]
     async fn security_boost_appends_hardening_run_flags() {
         let (base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
@@ -1679,15 +1740,7 @@ esac
             },
         ))
         .unwrap();
-        let bind = session_bind(&work);
-        let _lease = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
+        let (_sid, _lease) = acquire_test(&pool, &work).await;
         let log = read_log(&state_dir);
         assert!(
             log.contains("no-new-privileges")
@@ -1713,15 +1766,7 @@ esac
             },
         ))
         .unwrap();
-        let bind = session_bind(&work);
-        let lease = pool
-            .acquire_slot(
-                Duration::from_secs(5),
-                bind,
-                PoolSessionHostMounts::default(),
-            )
-            .await
-            .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
         pool.exec_solve(
             &lease,
             "gateway-solve-task.json",

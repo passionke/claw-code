@@ -113,10 +113,6 @@ export default function ChatTurnCard({
   finishedAtMs,
 }: ChatTurnCardProps) {
   const historyMode = viewMode === "history";
-  const wallMs =
-    createdAtMs != null && finishedAtMs != null && finishedAtMs >= createdAtMs
-      ? finishedAtMs - createdAtMs
-      : null;
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
   const [task, setTask] = useState<SolveTask>({
@@ -125,6 +121,14 @@ export default function ChatTurnCard({
     currentTaskDesc: historyMode ? "历史记录" : "已提交",
     progressHistory: [],
   });
+  const effectiveCreatedAtMs = task.createdAtMs ?? createdAtMs;
+  const effectiveFinishedAtMs = task.finishedAtMs ?? finishedAtMs;
+  const wallMs =
+    effectiveCreatedAtMs != null &&
+    effectiveFinishedAtMs != null &&
+    effectiveFinishedAtMs >= effectiveCreatedAtMs
+      ? effectiveFinishedAtMs - effectiveCreatedAtMs
+      : null;
   const [visibleProgressCount, setVisibleProgressCount] = useState(0);
   const [errorText, setErrorText] = useState(prefilledFailure);
   const [fallbackOutput, setFallbackOutput] = useState("");

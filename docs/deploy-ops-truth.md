@@ -38,7 +38,7 @@ Author: kejiqing
 1. PG：`claw_pool` 表、`gateway_turns.pool_id` / `worker_name` 列  
 2. **Pool 模式**  
    - **macOS / `CLAW_POOL_HOST_DAEMON=1`**：宿主机二进制、`daemon.pid`、`daemon.log`、DB URL 不含 `@postgres:`  
-   - **Linux compose sidecar（默认）**：`podman-compose.pool-rpc.yml` 含 `privileged: true` + 宿主机 `/usr/bin/docker` 挂载；`gateway.env` 中 `CLAW_POOL_DAEMON_TCP=claw-pool-daemon:9943`；网关容器能拨 pool RPC；存在 `claw-worker-*` 温池容器；容器日志含 `claw_pool registered`  
+   - **v1 host pool（默认）**：宿主机 `claw-pool-daemon` 监听 **9944**；`gateway.env` 中 `CLAW_POOL_HTTP_BASE=http://host.containers.internal:9944`（或 `host.docker.internal`）；存在 `claw-worker-*` 温池容器；`curl http://127.0.0.1:9944/healthz/live-report` 返回 ok  
 3. `pool-registry.env` 存在  
 4. `claw_pool` 有本机 `CLAW_POOL_ID` 行且心跳 &lt; 120s  
 
