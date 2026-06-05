@@ -376,7 +376,6 @@ impl GatewaySessionDb {
             "ALTER TABLE gateway_sessions ADD COLUMN IF NOT EXISTS client_origin TEXT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS client_origin TEXT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS entry_params_json JSONB",
-            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS extra_session_fields_json JSONB NOT NULL DEFAULT '[]'::jsonb",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS artifacts_ready BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS solve_task_json JSONB",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS solve_timing_jsonb JSONB",
@@ -505,6 +504,11 @@ impl GatewaySessionDb {
         .await?;
         sqlx::query(
             "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS solve_orchestration_json JSONB NOT NULL DEFAULT '{\"kind\":\"single_turn\"}'::jsonb",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS extra_session_fields_json JSONB NOT NULL DEFAULT '[]'::jsonb",
         )
         .execute(pool)
         .await?;
