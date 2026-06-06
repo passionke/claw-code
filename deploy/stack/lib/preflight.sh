@@ -39,10 +39,14 @@ claw_deploy_preflight() {
     claw_network_ensure "${rt}" "stack_default"
   fi
 
-  local pg="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
-  if ! "${rt}" image exists "${pg}" >/dev/null 2>&1; then
-    echo "    pull ${pg} …" >&2
-    "${rt}" pull "${pg}"
+  if claw_compose_uses_local_postgres; then
+    local pg="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
+    if ! "${rt}" image exists "${pg}" >/dev/null 2>&1; then
+      echo "    pull ${pg} …" >&2
+      "${rt}" pull "${pg}"
+    fi
+  else
+    echo "    postgres: external (${CLAW_GATEWAY_DATABASE_URL%%@*}@…); skip local image pull" >&2
   fi
 
   claw_workspace_ownership_preflight "${podman_dir}" || return 1

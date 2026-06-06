@@ -62,7 +62,19 @@ export default function GlobalPoolsPage() {
       ),
     },
     {
-      title: "advertise",
+      title: "gateway",
+      key: "gateway",
+      render: (_, row) =>
+        row.gatewayBase ? (
+          <Typography.Text copyable={{ text: row.gatewayBase }}>
+            {row.gatewayBase}
+          </Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        ),
+    },
+    {
+      title: "pool HTTP",
       key: "advertise",
       render: (_, row) => (
         <Typography.Text copyable={{ text: row.httpBase }}>

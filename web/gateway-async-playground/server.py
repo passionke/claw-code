@@ -234,6 +234,26 @@ def check_admin_credentials(user: str, password: str) -> bool:
     return secrets.compare_digest(password, ADMIN_PASSWORD)
 
 
+def _is_private_lan_host(host: str | None) -> bool:
+    """RFC1918 + link-local — cluster pool/gateway peers on LAN. Author: kejiqing"""
+    if not host:
+        return False
+    parts = host.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        octets = [int(x) for x in parts]
+    except ValueError:
+        return False
+    if octets[0] == 10:
+        return True
+    if octets[0] == 172 and 16 <= octets[1] <= 31:
+        return True
+    if octets[0] == 192 and octets[1] == 168:
+        return True
+    return False
+
+
 def is_allowed_upstream(url: str) -> bool:
     try:
         p = urlparse(url)
@@ -242,10 +262,12 @@ def is_allowed_upstream(url: str) -> bool:
     if p.scheme not in ("http", "https"):
         return False
     host = _norm_host(p.hostname)
-    if host not in ALLOWED_HOSTNAMES:
-        return False
     port = p.port or (443 if p.scheme == "https" else 80)
-    return port in ALLOWED_PORTS
+    if port not in ALLOWED_PORTS:
+        return False
+    if host in ALLOWED_HOSTNAMES:
+        return True
+    return _is_private_lan_host(host)
 
 
 def read_allowed_json_body(handler: BaseHTTPRequestHandler, max_bytes: int = 2_000_000) -> dict | None:

@@ -82,11 +82,25 @@ claw_default_pool_id() {
   printf 'pool-%s' "${host}"
 }
 
+# Per-host gateway URL for claw_pool.gateway_base + playground default. Author: kejiqing
+claw_sync_host_gateway_urls() {
+  local host="${CLAW_POOL_ADVERTISE_HOST:-}"
+  [[ -n "${host}" ]] || return 0
+  local gw_port="${GATEWAY_HOST_PORT:-18088}"
+  export CLAW_POOL_GATEWAY_BASE="http://${host}:${gw_port}"
+  case "$(printf '%s' "${CLAW_DEPLOY_PROFILE:-}" | tr '[:upper:]' '[:lower:]')" in
+    production)
+      export PLAYGROUND_PUBLIC_GATEWAY_BASE="${CLAW_POOL_GATEWAY_BASE}"
+      ;;
+  esac
+}
+
 # Export registry env for pool-daemon and optional gateway.env snippet. Idempotent.
 claw_export_pool_registry_env() {
   local script_dir="${1:-}"
   export CLAW_POOL_ADVERTISE_HOST="$(claw_detect_pool_advertise_host)"
   export CLAW_POOL_ID="$(claw_default_pool_id)"
+  claw_sync_host_gateway_urls
   if [[ -n "${script_dir}" ]]; then
     mkdir -p "${script_dir}"
     {

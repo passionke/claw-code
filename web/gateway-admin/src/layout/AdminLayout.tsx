@@ -49,6 +49,7 @@ export default function AdminLayout() {
     gatewayBase,
     setGatewayBase,
     gatewayOptions,
+    showGatewayPicker,
     dsId,
     setDsId,
     projects,
@@ -130,13 +131,17 @@ export default function AdminLayout() {
           background: "#1a2332",
         }}
       >
-        <Typography.Text type="secondary">网关</Typography.Text>
-        <Select
-          style={{ minWidth: 220 }}
-          value={gatewayBase || undefined}
-          options={gatewayOptions}
-          onChange={setGatewayBase}
-        />
+        {showGatewayPicker ? (
+          <>
+            <Typography.Text type="secondary">Pool</Typography.Text>
+            <Select
+              style={{ minWidth: 300 }}
+              value={gatewayBase || undefined}
+              options={gatewayOptions}
+              onChange={setGatewayBase}
+            />
+          </>
+        ) : null}
         {gatewayImageTag ? (
           <Tag color={gatewayImageTag === "local" ? "blue" : "gold"} title="GET /healthz deployImageTag">
             {gatewayImageTag}

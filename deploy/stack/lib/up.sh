@@ -75,11 +75,13 @@ claw_validate_deploy_profile || exit 1
 # shellcheck disable=SC1091
 source "${LIB_DIR}/claude-tap-local.sh"
 
-# Postgres: ensure running (start if stopped; do not recreate on routine up). kejiqing
-pg="$(claw_compose_pg_service)"
-claw_compose_pg_ensure "${PODMAN_DIR}" "${ENV_FILE}"
-claw_compose_pg_wait_healthy
-echo "Postgres ready (${pg}, host port ${CLAW_GATEWAY_PG_HOST_PORT:-5433})" >&2
+# Postgres: ensure running when URL uses compose service / loopback; skip for external PG. kejiqing
+if claw_compose_uses_local_postgres; then
+  pg="$(claw_compose_pg_service)"
+  claw_compose_pg_ensure "${PODMAN_DIR}" "${ENV_FILE}"
+  claw_compose_pg_wait_healthy
+  echo "Postgres ready (${pg}, host port ${CLAW_GATEWAY_PG_HOST_PORT:-5433})" >&2
+fi
 
 # load_compose_args re-sources .env and resets GATEWAY_IMAGE to :local; re-pin after. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then

@@ -18,7 +18,7 @@ cd web/gateway-async-playground
 python3 server.py
 ```
 
-默认 `http://127.0.0.1:18765/`；`GET /__config__` 返回 `defaultGatewayBase`（本机一条）与可选 `gatewayPresets`（仅 `PLAYGROUND_EXTRA_GATEWAY_BASES`）。
+默认 `http://127.0.0.1:18765/`；`GET /__config__` 返回 `defaultGatewayBase`（本机一条）。Admin 顶栏网关下拉会从默认网关的 **`GET /v1/pools`** 自动列出同 cluster 其它 pool 主机（共享 PG 时无需再配 `PLAYGROUND_EXTRA_GATEWAY_BASES`）；该变量仅作遗留/手工补充。
 
 ## 与 gateway 一并 compose 部署
 
@@ -45,6 +45,6 @@ python3 server.py
 - **admin**（`web/gateway-admin`，Ant Design）：顶栏 **ds_id** 与 solve 页同源；`GET/POST` 项目、Skills、MCP、CLAUDE.md、Rules、prompt、tools catalog
 - 修改 admin UI：`cd web/gateway-admin && npm run build`，提交 `dist/`；旧单页备份 `admin.legacy.html`
 
-远程网关：在根 `.env` 设 `PLAYGROUND_EXTRA_GATEWAY_BASES`（逗号分隔 URL），不要在下拉里堆 localhost/default/compose 重复项。
+多机共享 PG：只需各机 `PLAYGROUND_PUBLIC_GATEWAY_BASE` 指向本机网关；Admin 从 `claw_pool` 自动拼出其它 `poolId · host:port` 选项。仅当某台未注册进 `claw_pool` 时，才在 `.env` 用 `PLAYGROUND_EXTRA_GATEWAY_BASES` 手工补一条。
 
 Author: kejiqing

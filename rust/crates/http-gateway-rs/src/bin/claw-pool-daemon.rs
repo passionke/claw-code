@@ -80,6 +80,7 @@ async fn main() {
         .unwrap_or_else(|| "0.0.0.0:9944".to_string());
     let sse_port = pool_registry::port_from_bind(&http_bind);
     let advertise_ip = pool_registry::resolve_advertise_host();
+    let gateway_base = pool_registry::resolve_gateway_base(&advertise_ip);
 
     if let Some(db) = registry_db {
         let llm_runtime = std::sync::Arc::new(RwLock::new(None));
@@ -102,6 +103,7 @@ async fn main() {
             db,
             pool_id.clone(),
             advertise_ip.clone(),
+            gateway_base.clone(),
             sse_port,
             slots_max,
             slots_min,

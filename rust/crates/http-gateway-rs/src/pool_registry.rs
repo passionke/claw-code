@@ -36,6 +36,24 @@ pub fn resolve_advertise_host() -> String {
         .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
+/// Browser-reachable gateway base URL reported with pool registration. Author: kejiqing
+#[must_use]
+pub fn resolve_gateway_base(advertise_ip: &str) -> String {
+    for key in ["CLAW_POOL_GATEWAY_BASE", "PLAYGROUND_PUBLIC_GATEWAY_BASE"] {
+        if let Ok(v) = std::env::var(key) {
+            let t = v.trim().trim_end_matches('/');
+            if !t.is_empty() {
+                return t.to_string();
+            }
+        }
+    }
+    let port = std::env::var("GATEWAY_HOST_PORT")
+        .ok()
+        .and_then(|p| p.trim().parse::<u16>().ok())
+        .unwrap_or(18088);
+    format!("http://{advertise_ip}:{port}")
+}
+
 /// Stable pool identity per machine (`CLAW_POOL_ID` or `pool-{hostname}`). Author: kejiqing
 #[must_use]
 pub fn resolve_pool_id() -> String {
@@ -70,6 +88,7 @@ pub async fn run_pool_registry(
     db: Arc<GatewaySessionDb>,
     pool_id: String,
     advertise_ip: String,
+    gateway_base: String,
     sse_port: u16,
     slots_max: usize,
     slots_min: usize,
@@ -83,6 +102,7 @@ pub async fn run_pool_registry(
         slots_min: i32::try_from(slots_min).unwrap_or(0),
         advertise_ip: &advertise_ip,
         sse_port: i32::from(sse_port),
+        gateway_base: &gateway_base,
         last_heartbeat_ms: now,
     };
     match db.upsert_claw_pool(&row).await {
@@ -91,6 +111,7 @@ pub async fn run_pool_registry(
             component = "pool_registry",
             pool_id = %pool_id,
             advertise_ip = %advertise_ip,
+            gateway_base = %gateway_base,
             sse_port,
             slots_max,
             slots_min,
@@ -134,10 +155,15 @@ pub async fn run_pool_registry(
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_pool_id_segment;
+    use super::{resolve_gateway_base, sanitize_pool_id_segment};
 
     #[test]
     fn sanitize_pool_id_replaces_spaces() {
         assert_eq!(sanitize_pool_id_segment("my host"), "my-host");
+    }
+
+    #[test]
+    fn resolve_gateway_base_fallback_uses_advertise_ip_and_port() {
+        assert_eq!(resolve_gateway_base("10.1.2.3"), "http://10.1.2.3:18088");
     }
 }

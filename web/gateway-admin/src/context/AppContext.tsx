@@ -14,6 +14,14 @@ import {
   type PlaygroundConfig,
 } from "../api/client";
 import type { ProjectConfig, ProjectListItem } from "../types/project";
+import type { ListClawPoolsResponse } from "../types/pools";
+import {
+  allGatewayOptionValues,
+  buildGatewayOptions,
+  defaultGatewayFromPools,
+  normalizeGatewayBase,
+  shouldShowGatewayPicker,
+} from "../utils/gatewayClusterOptions";
 import { loadProjectConfig } from "../utils/projectConfig";
 
 const DS_KEY = "claw-playground-ds-id";
@@ -32,6 +40,8 @@ interface AppContextValue {
   /** Apply PUT /v1/project/config response without an extra GET. */
   applyProjectConfig: (cfg: ProjectConfig) => void;
   gatewayOptions: { label: string; value: string }[];
+  /** Multiple claw_pool rows with gatewayBase — else hide meaningless picker. Author: kejiqing */
+  showGatewayPicker: boolean;
   /** From GET /healthz deployImageTag (local | release-vX.Y.Z | …). Author: kejiqing */
   gatewayImageTag: string;
 }
@@ -45,51 +55,66 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [projectConfig, setProjectConfig] = useState<ProjectConfig | null>(null);
   const [gatewayImageTag, setGatewayImageTag] = useState("");
+  const [clusterPools, setClusterPools] = useState<ListClawPoolsResponse | null>(
+    null
+  );
 
   const gatewayOptions = useMemo(() => {
     if (!playground) return [];
-    const tagSuffix =
-      gatewayImageTag && gatewayBase
-        ? ` · ${gatewayImageTag}`
-        : "";
-    const labelFor = (baseLabel: string, value: string) =>
-      value.replace(/\/$/, "") === gatewayBase.replace(/\/$/, "")
-        ? baseLabel + tagSuffix
-        : baseLabel;
-    const out: { label: string; value: string }[] = [];
-    const def = playground.defaultGatewayBase;
-    if (def) {
-      out.push({
-        label: labelFor(playground.defaultGatewayLabel || def, def),
-        value: def,
-      });
-    }
-    for (const p of playground.gatewayPresets || []) {
-      if (p.value && p.value !== def) {
-        out.push({ label: labelFor(p.label, p.value), value: p.value });
-      }
-    }
-    return out;
-  }, [playground, gatewayBase, gatewayImageTag]);
+    return buildGatewayOptions({
+      playground,
+      clusterPools,
+      gatewayBase,
+      gatewayImageTag,
+    });
+  }, [playground, clusterPools, gatewayBase, gatewayImageTag]);
+
+  const showGatewayPicker = useMemo(() => {
+    if (!playground) return false;
+    return shouldShowGatewayPicker(playground, clusterPools);
+  }, [playground, clusterPools]);
 
   useEffect(() => {
-    fetchPlaygroundConfig()
-      .then((cfg) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await fetchPlaygroundConfig();
+        if (cancelled) return;
         setPlayground(cfg);
+
+        let pools: ListClawPoolsResponse | null = null;
+        const seed = cfg.defaultGatewayBase?.trim();
+        if (seed) {
+          try {
+            pools = await proxyHttp<ListClawPoolsResponse>(seed, "GET", "/v1/pools");
+          } catch {
+            pools = null;
+          }
+        }
+        if (cancelled) return;
+        setClusterPools(pools);
+
         let saved = "";
         try {
           saved = localStorage.getItem(GW_KEY) || "";
         } catch {
           /* ignore */
         }
-        const values = [
-          cfg.defaultGatewayBase,
-          ...(cfg.gatewayPresets || []).map((p) => p.value),
-        ].filter(Boolean);
-        if (saved && values.includes(saved)) setGatewayBaseState(saved);
-        else if (cfg.defaultGatewayBase) setGatewayBaseState(cfg.defaultGatewayBase);
-      })
-      .catch((e) => message.error(String((e as Error).message)));
+        const values = allGatewayOptionValues(cfg, pools);
+        const savedNorm = normalizeGatewayBase(saved);
+        const fallback = defaultGatewayFromPools(cfg, pools);
+        if (savedNorm && values.some((v) => normalizeGatewayBase(v) === savedNorm)) {
+          setGatewayBaseState(savedNorm);
+        } else if (fallback) {
+          setGatewayBaseState(fallback);
+        }
+      } catch (e) {
+        if (!cancelled) message.error(String((e as Error).message));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const setGatewayBase = useCallback((v: string) => {
@@ -191,6 +216,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshProjectConfig,
     applyProjectConfig,
     gatewayOptions,
+    showGatewayPicker,
     gatewayImageTag,
   };
 
