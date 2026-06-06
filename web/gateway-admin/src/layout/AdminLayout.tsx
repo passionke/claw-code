@@ -23,6 +23,7 @@ const { Header, Sider, Content } = Layout;
 const GLOBAL_MENU_CHILDREN = [
   { key: "/global/inference", label: "全局推理" },
   { key: "/global/pats", label: "PAT 配置" },
+  { key: "/global/pools", label: "Pool 集群" },
 ];
 
 const TAB_ITEMS: MenuProps["items"] = [

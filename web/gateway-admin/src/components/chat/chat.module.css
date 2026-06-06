@@ -39,6 +39,40 @@
   text-decoration: none;
 }
 
+.turnPoolWrap {
+  display: inline-flex;
+  align-items: center;
+}
+
+.turnRoute {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 6px;
+  border-bottom: 1px solid rgba(45, 58, 77, 0.6);
+  background: rgba(34, 211, 238, 0.04);
+}
+
+.turnRouteTag,
+.turnPoolTag {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: ui-monospace, Menlo, monospace;
+}
+
+.turnPoolTag {
+  border-left: 3px solid #22d3ee;
+  padding-left: 6px;
+}
+
+.turnRouteTagMuted {
+  color: #8b9cb3 !important;
+  border-color: #4b5563 !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
 .turnStatus {
   display: flex;
   align-items: center;

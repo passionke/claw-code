@@ -39,6 +39,10 @@ export interface SolveTask {
   progressHistory?: ProgressEvent[];
   result?: { outputText?: string };
   error?: unknown;
+  /** Resolved pool from `gateway_turns.pool_id`. Author: kejiqing */
+  poolId?: string | null;
+  /** Worker container after pool exec. Author: kejiqing */
+  workerName?: string | null;
 }
 
 export interface SolveAsyncResponse {
@@ -46,6 +50,8 @@ export interface SolveAsyncResponse {
   sessionId: string;
   turnId: string;
   status?: string;
+  poolId?: string | null;
+  workerName?: string | null;
 }
 
 export interface ChatBubble {
@@ -92,6 +98,8 @@ export interface GatewayTurnSummary {
   feedback?: TurnFeedbackValue | null;
   /** Enqueue snapshot from `entry_params_json`. Author: kejiqing */
   extraSession?: Record<string, unknown> | null;
+  poolId?: string | null;
+  workerName?: string | null;
 }
 
 export interface ListSessionTurnsResponse {

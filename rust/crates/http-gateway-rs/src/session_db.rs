@@ -52,6 +52,10 @@ pub struct GatewayTurnSummary {
     pub feedback: Option<String>,
     /// Snapshot `extraSession` from enqueue `entry_params_json`. Author: kejiqing
     pub extra_session: Option<Value>,
+    /// Pool assigned at enqueue or exec (`gateway_turns.pool_id`). Author: kejiqing
+    pub pool_id: Option<String>,
+    /// Worker container name after pool exec starts. Author: kejiqing
+    pub worker_name: Option<String>,
 }
 
 /// Row for tools API: session path + turn times + 1-based user turn index (single query). Author: kejiqing
@@ -76,6 +80,8 @@ pub struct LatestTurnRow {
     pub output_json: Option<Value>,
     pub claw_exit_code: Option<i32>,
     pub user_prompt: Option<String>,
+    pub pool_id: Option<String>,
+    pub worker_name: Option<String>,
 }
 
 /// One row per `ds_id`: rules, MCP map, inline skills, optional `CLAUDE.md` body. Author: kejiqing
@@ -225,6 +231,24 @@ pub struct ClawPoolUpsert<'a> {
     pub advertise_ip: &'a str,
     pub sse_port: i32,
     pub last_heartbeat_ms: i64,
+}
+
+/// One row from [`GatewaySessionDb::list_claw_pools`]. Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct ClawPoolRow {
+    pub pool_id: String,
+    pub registration_time_ms: i64,
+    pub slots_max: i32,
+    pub slots_min: i32,
+    pub advertise_ip: String,
+    pub sse_port: i32,
+    pub last_heartbeat_ms: i64,
+}
+
+/// Pool heartbeat fresh if within 120s (matches `claw-stack-verify.sh`). Author: kejiqing
+#[must_use]
+pub fn is_claw_pool_online(last_heartbeat_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(last_heartbeat_ms) < 120_000
 }
 
 /// Millisecond timestamp for pool registry (shared with daemon). Author: kejiqing
@@ -2307,6 +2331,31 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// All registered pool nodes (multi-host observability). Author: kejiqing
+    pub async fn list_claw_pools(&self) -> Result<Vec<ClawPoolRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT pool_id, registration_time_ms, slots_max, slots_min,
+                     advertise_ip, sse_port, last_heartbeat_ms
+              FROM claw_pool
+              ORDER BY last_heartbeat_ms DESC, pool_id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(ClawPoolRow {
+                pool_id: r.try_get("pool_id")?,
+                registration_time_ms: r.try_get("registration_time_ms")?,
+                slots_max: r.try_get("slots_max")?,
+                slots_min: r.try_get("slots_min")?,
+                advertise_ip: r.try_get("advertise_ip")?,
+                sse_port: r.try_get("sse_port")?,
+                last_heartbeat_ms: r.try_get("last_heartbeat_ms")?,
+            });
+        }
+        Ok(out)
+    }
+
     /// Pre-bind co-located pool at turn enqueue (before worker slot). Live SSE can JOIN `claw_pool`. Author: kejiqing
     pub async fn assign_turn_pool_id(&self, turn_id: &str, pool_id: &str) -> Result<(), SqlxError> {
         sqlx::query("UPDATE gateway_turns SET pool_id = $2 WHERE turn_id = $1")
@@ -2817,6 +2866,7 @@ impl GatewaySessionDb {
         let rows = sqlx::query(
             r"SELECT t.turn_id, t.user_prompt, t.status, t.created_at_ms, t.finished_at_ms,
                      t.report_message, t.output_json, t.client_origin, t.entry_params_json, f.feedback,
+                     t.pool_id, t.worker_name,
                      (
                        (t.report_message IS NOT NULL AND btrim(t.report_message) <> '')
                        OR t.output_json IS NOT NULL
@@ -2863,6 +2913,8 @@ impl GatewaySessionDb {
                 client_origin: r.try_get("client_origin")?,
                 feedback: r.try_get("feedback")?,
                 extra_session,
+                pool_id: r.try_get("pool_id")?,
+                worker_name: r.try_get("worker_name")?,
             });
         }
         Ok(out)
@@ -2874,7 +2926,7 @@ impl GatewaySessionDb {
     ) -> Result<Option<LatestTurnRow>, SqlxError> {
         let row = sqlx::query(
             r"SELECT turn_id, session_id, ds_id, status, created_at_ms, finished_at_ms,
-                     report_message, output_json, claw_exit_code, user_prompt
+                     report_message, output_json, claw_exit_code, user_prompt, pool_id, worker_name
               FROM gateway_turns
               WHERE session_id = $1
               ORDER BY created_at_ms DESC, turn_id DESC
@@ -2897,6 +2949,8 @@ impl GatewaySessionDb {
             output_json: r.try_get("output_json")?,
             claw_exit_code: r.try_get("claw_exit_code")?,
             user_prompt: r.try_get("user_prompt")?,
+            pool_id: r.try_get("pool_id")?,
+            worker_name: r.try_get("worker_name")?,
         }))
     }
 

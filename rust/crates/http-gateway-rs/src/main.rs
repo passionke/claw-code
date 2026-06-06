@@ -264,6 +264,10 @@ struct SolveAsyncResponse {
     status: String,
     #[serde(rename = "pollUrl")]
     poll_url: String,
+    #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
+    pool_id: Option<String>,
+    #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
+    worker_name: Option<String>,
 }
 
 /// Session bootstrap (`POST /v1/start`): sync `SQLite` + workspace only (no solve). kejiqing
@@ -661,6 +665,10 @@ struct TaskRecord {
     plan_title: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     todos: Vec<gateway_solve_turn::TaskProgressTodo>,
+    #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
+    pool_id: Option<String>,
+    #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
+    worker_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -938,6 +946,27 @@ fn build_turn_entry_params_json(
         "allowedTools": req.allowed_tools,
         "clientOrigin": client_origin,
     })
+}
+
+async fn apply_turn_pool_fields_from_db(
+    db: &session_db::GatewaySessionDb,
+    turn_id: &str,
+    session_id: &str,
+    ds_id: i64,
+    record: &mut TaskRecord,
+) {
+    if let Ok(Some(pid)) = db.get_turn_pool_id(turn_id, session_id, ds_id).await {
+        let t = pid.trim();
+        if !t.is_empty() {
+            record.pool_id = Some(t.to_string());
+        }
+    }
+    if let Ok(Some(wn)) = db.get_turn_worker_name(turn_id).await {
+        let t = wn.trim();
+        if !t.is_empty() {
+            record.worker_name = Some(t.to_string());
+        }
+    }
 }
 
 async fn register_solve_turn(
@@ -1532,6 +1561,7 @@ async fn main() {
             get(get_session_execution),
         )
         .route("/v1/sessions/{session_id}/turns", get(list_session_turns))
+        .route("/v1/pools", get(list_claw_pools_handler))
         .route(
             "/v1/sessions/{session_id}/turns/{turn_id}/tools",
             get(get_turn_tools),
@@ -5900,6 +5930,38 @@ struct GatewayTurnSummaryJson {
     feedback: Option<String>,
     #[serde(rename = "extraSession", skip_serializing_if = "Option::is_none")]
     extra_session: Option<Value>,
+    #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
+    pool_id: Option<String>,
+    #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
+    worker_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListClawPoolsResponse {
+    pools: Vec<ClawPoolJson>,
+    #[serde(rename = "coLocatedPoolId", skip_serializing_if = "Option::is_none")]
+    co_located_pool_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClawPoolJson {
+    #[serde(rename = "poolId")]
+    pool_id: String,
+    #[serde(rename = "advertiseIp")]
+    advertise_ip: String,
+    #[serde(rename = "ssePort")]
+    sse_port: i32,
+    #[serde(rename = "slotsMax")]
+    slots_max: i32,
+    #[serde(rename = "slotsMin")]
+    slots_min: i32,
+    #[serde(rename = "registrationTimeMs")]
+    registration_time_ms: i64,
+    #[serde(rename = "lastHeartbeatMs")]
+    last_heartbeat_ms: i64,
+    online: bool,
+    #[serde(rename = "httpBase")]
+    http_base: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -5998,8 +6060,42 @@ async fn list_session_turns(
                 client_origin: r.client_origin,
                 feedback: r.feedback,
                 extra_session: r.extra_session,
+                pool_id: r.pool_id,
+                worker_name: r.worker_name,
             })
             .collect(),
+    }))
+}
+
+async fn list_claw_pools_handler(
+    State(state): State<AppState>,
+) -> Result<Json<ListClawPoolsResponse>, ApiError> {
+    let rows = state
+        .session_db
+        .list_claw_pools()
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let now = session_db::now_ms_for_registry();
+    let pools = rows
+        .into_iter()
+        .map(|r| {
+            let online = session_db::is_claw_pool_online(r.last_heartbeat_ms, now);
+            ClawPoolJson {
+                pool_id: r.pool_id.clone(),
+                advertise_ip: r.advertise_ip.clone(),
+                sse_port: r.sse_port,
+                slots_max: r.slots_max,
+                slots_min: r.slots_min,
+                registration_time_ms: r.registration_time_ms,
+                last_heartbeat_ms: r.last_heartbeat_ms,
+                online,
+                http_base: format!("http://{}:{}", r.advertise_ip, r.sse_port),
+            }
+        })
+        .collect();
+    Ok(Json(ListClawPoolsResponse {
+        pools,
+        co_located_pool_id: state.cfg.co_located_pool_id.clone(),
     }))
 }
 
@@ -6360,6 +6456,8 @@ async fn enqueue_solve_async(
                     report_time_ms: None,
                     plan_title: None,
                     todos: Vec::new(),
+                    pool_id: state.cfg.co_located_pool_id.clone(),
+                    worker_name: None,
                 },
                 cancel: None,
                 ds_id,
@@ -6482,9 +6580,17 @@ async fn enqueue_solve_async(
         task_id: task_id.clone(),
         session_id: effective.clone(),
         request_id: effective.clone(),
-        turn_id: new_turn_id,
+        turn_id: new_turn_id.clone(),
         status: "queued".to_string(),
         poll_url: format!("/v1/tasks/{task_id}"),
+        pool_id: state
+            .session_db
+            .get_turn_pool_id(&new_turn_id, &effective, ds_id)
+            .await
+            .ok()
+            .flatten()
+            .or_else(|| state.cfg.co_located_pool_id.clone()),
+        worker_name: None,
     })
 }
 
@@ -6685,6 +6791,8 @@ async fn task_record_from_latest_turn_row(
         report_time_ms: None,
         plan_title: None,
         todos: Vec::new(),
+        pool_id: row.pool_id.clone(),
+        worker_name: row.worker_name.clone(),
     };
     let (plan_title, todos) = pool_consumer_resolve::plan_fields_from_snapshot(&progress_snap);
     record.progress_history = progress_snap.events;
@@ -6743,6 +6851,10 @@ async fn get_task(
             .as_ref()
             .map(|p| p.updated_at_ms);
     }
+    let turn_id = task.turn_id.clone();
+    let session_id = task.session_id.clone();
+    apply_turn_pool_fields_from_db(&state.session_db, &turn_id, &session_id, ds_id, &mut task)
+        .await;
     task.has_report = task_has_report(&state, &task).await;
     task.report_time_ms = task_report_time_ms(&state, &task).await;
     info!(
@@ -7227,6 +7339,8 @@ async fn dev_seed_biz_report_task(
         report_time_ms: None,
         plan_title: None,
         todos: Vec::new(),
+        pool_id: None,
+        worker_name: None,
     };
     {
         let mut tasks = state.tasks.lock().await;
