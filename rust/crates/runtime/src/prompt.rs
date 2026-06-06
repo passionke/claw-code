@@ -148,7 +148,7 @@ impl ProjectContext {
 /// Pool worker read-only `ds_home` bind inside the solve container (`http-gateway-rs` pool v1).
 pub const GATEWAY_POOL_DS_CONFIG_ROOT: &str = "/claw_ds";
 
-/// Gateway-written full system prompt override (non-empty → skip scaffold + project sections).
+/// Gateway `claude_md` materialized here; replaces builtin English scaffold only (see [`SystemPromptBuilder`]).
 pub const GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL: &str = ".claw/system_prompt_user_override.md";
 /// Gateway-written builtin scaffold from DB (`gateway_global_settings.system_prompt_default`).
 pub const GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL: &str = ".claw/system_prompt_scaffold.md";
@@ -165,6 +165,8 @@ pub struct SystemPromptBuilder {
     config: Option<RuntimeConfig>,
     /// When set, replaces hardcoded intro/system/doing-tasks/actions blocks.
     builtin_scaffold_override: Option<String>,
+    /// Gateway `claude_md` is also materialized as `home/CLAUDE.md`; skip duplicate `# Claude instructions`.
+    suppress_instruction_files: bool,
 }
 
 impl SystemPromptBuilder {
@@ -212,6 +214,12 @@ impl SystemPromptBuilder {
     }
 
     #[must_use]
+    pub fn with_suppress_instruction_files(mut self, suppress: bool) -> Self {
+        self.suppress_instruction_files = suppress;
+        self
+    }
+
+    #[must_use]
     pub fn build(&self) -> Vec<String> {
         let mut sections = Vec::new();
         if let Some(scaffold) = self.builtin_scaffold_override.as_ref() {
@@ -232,7 +240,7 @@ impl SystemPromptBuilder {
         }
         sections.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY.to_string());
         if let Some(project_context) = &self.project_context {
-            if !project_context.instruction_files.is_empty() {
+            if !self.suppress_instruction_files && !project_context.instruction_files.is_empty() {
                 sections.push(render_instruction_files(&project_context.instruction_files));
             }
             if !project_context.rule_files.is_empty() {
@@ -703,28 +711,22 @@ pub fn load_system_prompt(
 ) -> Result<Vec<String>, PromptBuildError> {
     let session_work_dir = cwd.into();
     let config_root = gateway_project_config_root(&session_work_dir);
-    // Gateway `claude_md` replaces builtin scaffold via override file, but project rules
-    // from `rules_json` must still apply. Author: kejiqing
-    if let Some(override_text) = read_gateway_user_prompt_override(&config_root) {
-        let mut project_context =
-            discover_project_context_for_prompt(&config_root, &session_work_dir, current_date)?;
-        project_context.extra_session = extra_session;
-        let mut sections = vec![override_text];
-        if !project_context.rule_files.is_empty() {
-            sections.push(render_project_rules(&project_context.rule_files));
-        }
-        return Ok(sections);
-    }
-    let scaffold_override = read_gateway_scaffold_override(&config_root);
     let mut project_context =
         discover_project_context_for_prompt(&config_root, &session_work_dir, current_date)?;
     project_context.extra_session = extra_session;
     let config = ConfigLoader::default_for(&config_root).load()?;
+    // Gateway `claude_md` replaces only the builtin English scaffold; rules, extraSession,
+    // environment, and config still flow through the builder (no early-return fork). Author: kejiqing
+    let user_scaffold = read_gateway_user_prompt_override(&config_root);
+    let scaffold_override = user_scaffold
+        .clone()
+        .or_else(|| read_gateway_scaffold_override(&config_root));
     Ok(SystemPromptBuilder::new()
         .with_os(os_name, os_version)
         .with_project_context(project_context)
         .with_runtime_config(config)
         .with_builtin_scaffold_override(scaffold_override)
+        .with_suppress_instruction_files(user_scaffold.is_some())
         .build())
 }
 
@@ -1372,6 +1374,61 @@ mod tests {
             "rules must follow gateway user override"
         );
         assert!(prompt.contains("use user language"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn load_system_prompt_includes_extra_session_when_gateway_user_override_present() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::write(
+            root.join(".claw").join("system_prompt_user_override.md"),
+            "custom user scaffold",
+        )
+        .expect("write override");
+
+        let prompt = super::load_system_prompt(
+            &root,
+            "2026-06-02",
+            "linux",
+            "6.8",
+            Some(json!({ "store_id": "S9", "org_id": "" })),
+        )
+        .expect("load prompt")
+        .join("\n\n");
+        let override_idx = prompt.find("custom user scaffold").expect("override text");
+        let extra_idx = prompt
+            .find("HTTP gateway extraSession")
+            .expect("extraSession section");
+        assert!(
+            override_idx < extra_idx,
+            "extraSession must follow gateway user override"
+        );
+        assert!(prompt.contains("\"store_id\""));
+        assert!(prompt.contains("\"S9\""));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn load_system_prompt_skips_claude_instructions_dup_when_user_override_present() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::create_dir_all(root.join("home")).expect("home dir");
+        fs::write(root.join("home/CLAUDE.md"), "same claude body").expect("write claude");
+        fs::write(
+            root.join(".claw").join("system_prompt_user_override.md"),
+            "same claude body",
+        )
+        .expect("write override");
+
+        let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None)
+            .expect("load prompt")
+            .join("\n\n");
+        assert!(prompt.contains("same claude body"));
+        assert!(
+            !prompt.contains("# Claude instructions"),
+            "claude_md scaffold must not duplicate home/CLAUDE.md instruction section"
+        );
         fs::remove_dir_all(root).expect("cleanup");
     }
 

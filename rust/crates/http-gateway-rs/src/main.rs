@@ -3782,7 +3782,7 @@ async fn solve(
     validate_solve_request(&state.session_db, &req).await?;
     state
         .session_db
-        .assert_session_can_enqueue(&effective, i64::from(req.ds_id))
+        .assert_session_can_enqueue(&effective, req.ds_id)
         .await
         .map_err(|reason| {
             ApiError::new(
@@ -6024,8 +6024,7 @@ async fn get_session_execution(
         .unwrap_or_default();
     let task_status_for_progress = record_opt
         .as_ref()
-        .map(|r| r.status.clone())
-        .unwrap_or_else(|| "unknown".to_string());
+        .map_or_else(|| "unknown".to_string(), |r| r.status.clone());
     let task_snapshot = if let Some(ref record) = record_opt {
         let has_report = task_has_report(&state, record).await;
         let report_time_ms = task_report_time_ms(&state, record).await;
@@ -6281,7 +6280,7 @@ async fn enqueue_solve_async(
     validate_solve_request(&state.session_db, &req).await?;
     state
         .session_db
-        .assert_session_can_enqueue(&effective, i64::from(ds_id))
+        .assert_session_can_enqueue(&effective, ds_id)
         .await
         .map_err(|reason| {
             ApiError::new(
@@ -7801,11 +7800,11 @@ async fn prepare_gateway_session(
             let session_home =
                 session_merge::join_session_home_from_rel(&state.cfg.work_root, &rel);
             let exists = fs::metadata(&session_home).await.is_ok_and(|m| m.is_dir());
-            if !exists {
+            if exists {
+                (session_home, false, false, rel)
+            } else {
                 // ② Gateway cache is optional; PG is SoT — recreate local session tree. Author: kejiqing
                 (session_home, false, true, rel)
-            } else {
-                (session_home, false, false, rel)
             }
         } else if explicit_continuation {
             return Err(ApiError::new(

@@ -205,12 +205,7 @@ pub async fn run_solve_request_docker(
 
     let acquire_wait = Duration::from_secs(timeout_seconds.saturating_add(30));
     let lease = pool
-        .acquire_slot(
-            acquire_wait,
-            session_id.clone(),
-            i64::from(req.ds_id),
-            turn_id.clone(),
-        )
+        .acquire_slot(acquire_wait, session_id.clone(), req.ds_id, turn_id.clone())
         .await
         .map_err(|e| {
             warn!(

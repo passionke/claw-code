@@ -1423,7 +1423,7 @@ esac
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "tstem"))
                 .unwrap();
-        let (_sid, lease) = acquire_test(&pool, &work).await;
+        let (sid, lease) = acquire_test(&pool, &work).await;
         let out = pool
             .exec_solve(
                 &lease,
@@ -1438,12 +1438,12 @@ esac
             .unwrap();
         assert_eq!(out.exit_code, 0);
         DockerPoolManager::release_slot(&pool, lease).await.unwrap();
-        let home2 = session_db_sync::session_home_under_work_root(&work, 1, &_sid);
+        let home2 = session_db_sync::session_home_under_work_root(&work, 1, &sid);
         write_test_task(&home2);
         let lease2 = pool
             .acquire_slot(
                 Duration::from_secs(5),
-                _sid.clone(),
+                sid.clone(),
                 1,
                 "turn-test".to_string(),
             )
