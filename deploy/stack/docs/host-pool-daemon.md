@@ -125,8 +125,9 @@ launchctl print "gui/$(id -u)/com.claw.pool-daemon" 2>&1 | head -12 || echo no-l
 4. **不要**只验 `healthz` 就宣称 Admin resolve 通过。
 5. **不要**改 `down.sh` 为不杀 pool（用户要求 down 必须停 pool）。
 6. **不要**在 e2e 里静默 `pool-up` 掩盖 503；应 fail loud 并指向本文。
+7. **不要**让 gateway 容器直接 `podman exec` worker 同步 `report_progress`；running 中间进度只走 **§8 `sync_turn_progress` RPC**（宿主机 daemon）。
 
-Rust pool 逻辑变更后仍须：`cargo test` + `pack-deploy local` + **本节 §4 验收**。
+Rust pool 逻辑变更后仍须：`cargo test` + `pack-deploy local` + **本节 §4 验收**；涉及 running progress 时另验 **§8 自检**。
 
 ---
 
@@ -143,3 +144,42 @@ Rust pool 逻辑变更后仍须：`cargo test` + `pack-deploy local` + **本节 
 | `.claw-pool-rpc/INVESTIGATE.md` | 假设登记 + 流水 |
 
 设计细节：`docs/http-gateway-container-pool.md`、`docs/pool-registry.md`。
+
+**pool v1 消费端**：`tools` / `progressHistory` / `timeline` 均只读 PG。矩阵：`docs/pool-v1-consumer-matrix.md`；验收 `./deploy/stack/lib/check-connectivity.sh` [3c]。
+
+---
+
+## 8. Running progress：`sync_turn_progress` RPC（必读）
+
+### 根因（2026-06-06 已确认）
+
+`report_progress` 写在 **worker 容器** tmpfs（`.claw/task-progress.json` / `progress-events.ndjson`）。HTTP API **只读 PG** `gateway_turns.solve_timing_jsonb`。
+
+曾错误地在 **gateway 容器**里直接 `podman exec` 读 worker → **失败**（worker 由**本机** pool daemon 起在宿主机 Podman 上，gateway compose 容器够不着）。故 **`running` 时 PG 一直空**，`GET /v1/tasks` 只能返回「处理中」；终态 `readback_out` 进库后才有 `progressHistory`。
+
+### 修法
+
+| 步骤 | 组件 |
+|------|------|
+| 1 | `GET /v1/tasks` poll（`status=running`）→ gateway `PoolRpcClient` |
+| 2 | `POST http://host:9944/v1/pool/rpc` op **`sync_turn_progress`** |
+| 3 | **本机** `claw-pool-daemon`：`podman exec $worker_name` 读 `.claw/progress*` |
+| 4 | `replace_turn_progress_snapshot` → PG；gateway 再读 PG 填 `progressHistory` / `currentTaskDesc` / `todos` |
+
+**禁止**再让 gateway 容器直接 exec worker 同步 progress。
+
+### 升级
+
+Rust 变更后 **`pack-deploy` 必须同时重启 gateway 与 pool daemon**（`gateway.sh up` / `pool-up`）。只升 gateway、daemon 旧版 → RPC 无 `sync_turn_progress`，running 中间进度仍空。
+
+### 自检（running 期间）
+
+```bash
+# 长任务 solve 进行中，另开终端：
+TASK_ID=<sessionId>
+curl -fsS "http://127.0.0.1:${GATEWAY_HOST_PORT:-18088}/v1/tasks/${TASK_ID}" \
+  | python3 -c 'import json,sys; b=json.load(sys.stdin); print(b.get("status"), len(b.get("progressHistory") or []), b.get("currentTaskDesc"))'
+# 期望：running 且 progressHistory 条数随 report_progress 增加（非一直 0 + 「处理中」）
+```
+
+详见 [`docs/pool-v1-consumer-matrix.md`](../../pool-v1-consumer-matrix.md) § Running `report_progress`。

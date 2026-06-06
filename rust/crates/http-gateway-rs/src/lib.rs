@@ -34,6 +34,7 @@ pub mod llm_probe;
 pub mod mcp_probe;
 pub mod persistence;
 pub mod pool;
+pub mod pool_consumer_resolve;
 pub mod pool_registry;
 pub mod pool_worker_runtime_sync;
 pub mod project_config_apply;

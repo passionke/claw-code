@@ -18,8 +18,8 @@ pub use http_server::serve_pool_http;
 pub use live_report_hub::{HubMsg, LiveReportHub};
 pub use local_ops::LocalPoolOps;
 pub use session_db_sync::{
-    MaterializeInput, DS_MOUNT_TARGET, GUEST_WORK_ROOT, WORKSPACE_TAR_ARTIFACT_KIND,
-    WORKSPACE_TAR_ARTIFACT_PATH,
+    read_worker_progress_artifacts, MaterializeInput, DS_MOUNT_TARGET, GUEST_WORK_ROOT,
+    WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH,
 };
 pub use session_mount_ownership::ensure_session_tree_owned_for_worker_with_runtime_fallback;
 pub use worker_identity::PoolWorkerIdentity;

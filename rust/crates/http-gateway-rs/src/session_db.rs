@@ -1838,8 +1838,84 @@ impl GatewaySessionDb {
         serde_json::json!({
             "solveTimingEvents": [],
             "orchestrationEvents": [],
-            "progressEvents": []
+            "progressEvents": [],
+            "taskProgress": null
         })
+    }
+
+    /// Worker container name while a pool turn is executing. Author: kejiqing
+    pub async fn get_turn_worker_name(&self, turn_id: &str) -> Result<Option<String>, SqlxError> {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT worker_name FROM gateway_turns WHERE turn_id = $1",
+        )
+        .bind(turn_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|opt| opt.flatten())
+    }
+
+    #[must_use]
+    pub fn progress_events_from_timing_store(
+        store: &serde_json::Value,
+        limit: usize,
+    ) -> Vec<gateway_solve_turn::ProgressEvent> {
+        let Some(arr) = store
+            .get("progressEvents")
+            .and_then(serde_json::Value::as_array)
+        else {
+            return Vec::new();
+        };
+        let mut out: Vec<gateway_solve_turn::ProgressEvent> = arr
+            .iter()
+            .filter_map(|v| serde_json::from_value(v.clone()).ok())
+            .collect();
+        if out.len() > limit {
+            out = out.split_off(out.len() - limit);
+        }
+        out
+    }
+
+    #[must_use]
+    pub fn task_progress_from_timing_store(
+        store: &serde_json::Value,
+    ) -> Option<gateway_solve_turn::TaskProgressFile> {
+        store
+            .get("taskProgress")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    /// Replace worker progress snapshot in `solve_timing_jsonb` (pool tmpfs → PG). Author: kejiqing
+    pub async fn replace_turn_progress_snapshot(
+        &self,
+        turn_id: &str,
+        progress_ndjson: &str,
+        task_progress_json: &str,
+    ) -> Result<(), SqlxError> {
+        const LIMIT: usize = 500;
+        let mut store = self
+            .get_turn_solve_timing_json(turn_id)
+            .await?
+            .unwrap_or_else(Self::empty_turn_timing_store);
+        let mut events = Vec::new();
+        for line in progress_ndjson.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<gateway_solve_turn::ProgressEvent>(line) {
+                events.push(v);
+            }
+        }
+        if events.len() > LIMIT {
+            events = events.split_off(events.len() - LIMIT);
+        }
+        store["progressEvents"] = serde_json::json!(events);
+        if task_progress_json.trim().is_empty() {
+            store["taskProgress"] = serde_json::Value::Null;
+        } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(task_progress_json) {
+            store["taskProgress"] = v;
+        }
+        self.upsert_turn_timing_json(turn_id, &store).await
     }
 
     /// Append one bootstrap milestone to `solve_timing_jsonb`. Author: kejiqing
@@ -1886,13 +1962,12 @@ impl GatewaySessionDb {
         }
     }
 
-    /// Merge worker `.claw` NDJSON readback into `solve_timing_jsonb`. Author: kejiqing
+    /// Merge worker solve/orchestration NDJSON into `solve_timing_jsonb`. Progress uses [`Self::replace_turn_progress_snapshot`]. Author: kejiqing
     pub async fn merge_turn_timing_worker_readback(
         &self,
         turn_id: &str,
         solve_timing_ndjson: &str,
         orchestration_ndjson: &str,
-        progress_ndjson: &str,
     ) -> Result<(), SqlxError> {
         const LIMIT: usize = 500;
         let mut store = self
@@ -1906,7 +1981,6 @@ impl GatewaySessionDb {
             orchestration_ndjson,
             LIMIT,
         );
-        Self::append_ndjson_events(&mut store, "progressEvents", progress_ndjson, LIMIT);
         self.upsert_turn_timing_json(turn_id, &store).await
     }
 

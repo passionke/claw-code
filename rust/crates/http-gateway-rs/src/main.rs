@@ -30,11 +30,9 @@ use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use gateway_solve_turn::read_progress_events;
 use gateway_solve_turn::{
-    read_task_progress, reset_task_progress, run_gateway_biz_polish_llm,
-    run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
-    BOSS_REPORT_SKILL_DS_ID,
+    reset_task_progress, run_gateway_biz_polish_llm, run_gateway_biz_polish_llm_async,
+    truncate_progress_history, ReportPolishDeepseek, BOSS_REPORT_SKILL_DS_ID,
 };
 use http_gateway_rs::biz_advice_report::{
     biz_report_sse_event_stream, build_biz_advice_polish_prompt, db_snapshot_report_sse_response,
@@ -44,9 +42,10 @@ use http_gateway_rs::biz_advice_report::{
 };
 use http_gateway_rs::{
     claw_tap_cluster_state, client_origin, gateway_claw_tap_settings, gateway_global_settings,
-    gateway_llm_config_sync, gateway_translate, llm_probe, mcp_probe, pool, project_config_apply,
-    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
-    project_tools, session_db, session_merge, turn_id, turn_timeline_api, turn_tools_api,
+    gateway_llm_config_sync, gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve,
+    project_config_apply, project_config_version, project_entity_revision, project_extra_session,
+    project_git_sync, project_tools, session_db, session_merge, turn_id, turn_timeline_api,
+    turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
@@ -60,7 +59,7 @@ use session_execution::{
 };
 use task_status::{
     count_gateway_tasks, ensure_report_progress_in_allowed_tools, resolve_current_task_desc,
-    task_progress_plan_fields, TaskStatusRow,
+    TaskStatusRow,
 };
 use tokio::fs;
 use tokio::process::Command;
@@ -5680,9 +5679,26 @@ async fn resolve_session_home_path(
     Some(join_session_home(&state.cfg.work_root, &rel))
 }
 
+async fn load_turn_progress_snapshot(
+    state: &AppState,
+    turn_id: &str,
+    status: &str,
+    limit: usize,
+) -> Result<pool_consumer_resolve::TurnProgressSnapshot, ApiError> {
+    pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
+        &state.docker_pool,
+        turn_id,
+        status,
+    )
+    .await;
+    pool_consumer_resolve::resolve_turn_progress(&state.session_db, turn_id, limit)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
 async fn refresh_task_progress(state: &AppState, task_id: &str) {
     let snapshot = {
-        let (status, ds_id, session_id) = {
+        let (status, ds_id, session_id, turn_id) = {
             let tasks = state.tasks.lock().await;
             let Some(inner) = tasks.get(task_id) else {
                 return;
@@ -5691,6 +5707,7 @@ async fn refresh_task_progress(state: &AppState, task_id: &str) {
                 inner.record.status.clone(),
                 inner.ds_id,
                 inner.record.session_id.clone(),
+                inner.record.turn_id.clone(),
             )
         };
         let session_home = resolve_session_home_path(state, ds_id, &session_id).await;
@@ -5703,17 +5720,25 @@ async fn refresh_task_progress(state: &AppState, task_id: &str) {
             .map(|home| discover_trace_paths(home, &state.cfg.work_root, &session_id))
             .unwrap_or_default();
         let tool = trace_tail_suggests_tool_call(&trace_paths);
-        let desc = resolve_current_task_desc(&status, session_home.as_deref(), &queue, tool);
-        let updated_ms = session_home
+        let progress_snap = load_turn_progress_snapshot(state, &turn_id, &status, 50)
+            .await
+            .unwrap_or_default();
+        let desc =
+            resolve_current_task_desc(&status, &queue, tool, progress_snap.task_progress.as_ref());
+        let updated_ms = progress_snap
+            .task_progress
             .as_ref()
-            .and_then(|home| read_task_progress(home))
             .map(|p| p.updated_at_ms);
-        (desc, updated_ms)
+        let (plan_title, todos) = pool_consumer_resolve::plan_fields_from_snapshot(&progress_snap);
+        (desc, updated_ms, progress_snap.events, plan_title, todos)
     };
     let mut tasks = state.tasks.lock().await;
     if let Some(inner) = tasks.get_mut(task_id) {
         inner.record.current_task_desc = snapshot.0;
         inner.record.progress_updated_at_ms = snapshot.1;
+        inner.record.progress_history = snapshot.2;
+        inner.record.plan_title = snapshot.3;
+        inner.record.todos = snapshot.4;
     }
 }
 
@@ -5993,9 +6018,17 @@ async fn get_session_execution(
         let record = tasks.get(&session_id).map(|inner| inner.record.clone());
         (record, queue)
     };
-    let task_snapshot = if let Some(record) = record_opt {
-        let has_report = task_has_report(&state, &record).await;
-        let report_time_ms = task_report_time_ms(&state, &record).await;
+    let turn_id = record_opt
+        .as_ref()
+        .map(|r| r.turn_id.clone())
+        .unwrap_or_default();
+    let task_status_for_progress = record_opt
+        .as_ref()
+        .map(|r| r.status.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let task_snapshot = if let Some(ref record) = record_opt {
+        let has_report = task_has_report(&state, record).await;
+        let report_time_ms = task_report_time_ms(&state, record).await;
         Some(SessionExecutionTask {
             task_id: record.task_id.clone(),
             status: record.status.clone(),
@@ -6021,9 +6054,10 @@ async fn get_session_execution(
         current_task_desc: None,
     });
 
-    let progress = read_task_progress(&session_home);
-    let progress_history = read_progress_events(&session_home, 50)
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let progress_snap =
+        load_turn_progress_snapshot(&state, &turn_id, &task_status_for_progress, 50).await?;
+    let progress = progress_snap.task_progress.clone();
+    let progress_history = progress_snap.events;
     let trace_paths = discover_trace_paths(&session_home, &state.cfg.work_root, &session_id);
     let trace_tail = if query.include_trace {
         read_trace_tail(&trace_paths, 50, true)
@@ -6094,9 +6128,30 @@ async fn get_turn_tools(
             "invalid user_turn_index",
         ));
     }
-    let session_home = join_session_home(&state.cfg.work_root, &ctx.session_home_rel);
-    let tools = turn_tools_api::list_turn_tools_from_session_home(
-        &session_home,
+    let turn_status = state
+        .session_db
+        .get_turn_status(&turn_id, &session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .unwrap_or_else(|| "unknown".to_string());
+    pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
+        &state.docker_pool,
+        &turn_id,
+        &turn_status,
+    )
+    .await;
+    let progress_snap =
+        pool_consumer_resolve::resolve_turn_progress(&state.session_db, &turn_id, 500)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let session_jsonl = state
+        .session_db
+        .render_session_jsonl(&session_id, query.ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    let tools = turn_tools_api::list_turn_tools_for_session(
+        &session_jsonl,
+        &progress_snap.events,
         usize::try_from(user_turn_index).unwrap_or(usize::MAX),
         Some(ctx.created_at_ms),
         ctx.finished_at_ms,
@@ -6140,14 +6195,26 @@ async fn get_turn_timeline(
                 ),
             )
         })?;
-    let timing_json = state
+    let turn_status = state
         .session_db
-        .get_turn_solve_timing_json(&turn_id)
+        .get_turn_status(&turn_id, &session_id, query.ds_id)
         .await
-        .map_err(|e| session_db_err(&e))?;
-    let timeline = timing_json.as_ref().and_then(|j| {
-        turn_timeline_api::load_turn_timeline_from_db(j, ctx.created_at_ms, ctx.finished_at_ms)
-    });
+        .map_err(|e| session_db_err(&e))?
+        .unwrap_or_else(|| "unknown".to_string());
+    pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
+        &state.docker_pool,
+        &turn_id,
+        &turn_status,
+    )
+    .await;
+    let timeline = pool_consumer_resolve::resolve_turn_timeline(
+        &state.session_db,
+        &turn_id,
+        ctx.created_at_ms,
+        ctx.finished_at_ms,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(turn_timeline_api::TurnTimelineResponse {
         session_id,
@@ -6255,7 +6322,7 @@ async fn enqueue_solve_async(
     {
         let mut tasks = state.tasks.lock().await;
         let queue = gateway_queue_snapshot(&tasks);
-        let initial_desc = resolve_current_task_desc("queued", None, &queue, false);
+        let initial_desc = resolve_current_task_desc("queued", &queue, false, None);
         tasks.insert(
             task_id.clone(),
             TaskInner {
@@ -6571,11 +6638,18 @@ async fn task_record_from_latest_turn_row(
         .map(|home| discover_trace_paths(home, &state.cfg.work_root, task_id))
         .unwrap_or_default();
     let tool = trace_tail_suggests_tool_call(&trace_paths);
-    let current_task_desc =
-        resolve_current_task_desc(&row.status, session_home.as_deref(), &queue, tool);
-    let progress_updated_at_ms = session_home
+    let progress_snap = load_turn_progress_snapshot(state, &row.turn_id, &row.status, 50)
+        .await
+        .unwrap_or_default();
+    let current_task_desc = resolve_current_task_desc(
+        &row.status,
+        &queue,
+        tool,
+        progress_snap.task_progress.as_ref(),
+    );
+    let progress_updated_at_ms = progress_snap
+        .task_progress
         .as_ref()
-        .and_then(|home| read_task_progress(home))
         .map(|p| p.updated_at_ms);
     let mut record = TaskRecord {
         task_id: task_id.to_string(),
@@ -6597,14 +6671,11 @@ async fn task_record_from_latest_turn_row(
         plan_title: None,
         todos: Vec::new(),
     };
-    if let Some(ref home) = session_home {
-        record.progress_history = read_progress_events(home, 50)
-            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        let (plan_title, todos) = task_progress_plan_fields(Some(home));
-        record.plan_title = plan_title;
-        record.todos = todos;
-        let _ = home;
-    }
+    let (plan_title, todos) = pool_consumer_resolve::plan_fields_from_snapshot(&progress_snap);
+    record.progress_history = progress_snap.events;
+    record.plan_title = plan_title;
+    record.todos = todos;
+    let _ = session_home;
     record.has_report = task_has_report(state, &record).await;
     record.report_time_ms = task_report_time_ms(state, &record).await;
     let ds_id = record.ds_id;
@@ -6622,12 +6693,40 @@ async fn get_task(
         .ok_or_else(|| {
             ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
         })?;
-    if let Some(home) = resolve_session_home_path(&state, ds_id, &task.session_id).await {
-        task.progress_history = read_progress_events(&home, 50)
-            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        let (plan_title, todos) = task_progress_plan_fields(Some(&home));
-        task.plan_title = plan_title;
-        task.todos = todos;
+    let session_home = resolve_session_home_path(&state, ds_id, &task.session_id).await;
+    let progress_snap =
+        load_turn_progress_snapshot(&state, &task.turn_id, &task.status, 50).await?;
+    let (plan_title, todos) = pool_consumer_resolve::plan_fields_from_snapshot(&progress_snap);
+    task.progress_history = progress_snap.events;
+    task.plan_title = plan_title;
+    task.todos = todos;
+    let queue = {
+        let tasks = state.tasks.lock().await;
+        gateway_queue_snapshot(&tasks)
+    };
+    let trace_paths = session_home
+        .as_ref()
+        .map(|home| discover_trace_paths(home, &state.cfg.work_root, &task.session_id))
+        .unwrap_or_default();
+    let tool = trace_tail_suggests_tool_call(&trace_paths);
+    let desc = resolve_current_task_desc(
+        &task.status,
+        &queue,
+        tool,
+        progress_snap.task_progress.as_ref(),
+    );
+    if matches!(task.status.as_str(), "queued" | "running") {
+        task.current_task_desc = desc;
+        task.progress_updated_at_ms = progress_snap
+            .task_progress
+            .as_ref()
+            .map(|p| p.updated_at_ms);
+    } else if task.current_task_desc.is_none() {
+        task.current_task_desc = desc;
+        task.progress_updated_at_ms = progress_snap
+            .task_progress
+            .as_ref()
+            .map(|p| p.updated_at_ms);
     }
     task.has_report = task_has_report(&state, &task).await;
     task.report_time_ms = task_report_time_ms(&state, &task).await;

@@ -66,6 +66,8 @@ sequenceDiagram
 - **workspace 续聊**：PG 存 **`workspace_tar_gz`**（单轮 cap **16MB**）；`materialize_in` 解压到 tmpfs（macOS podman 须 staging+`cp`，避免 tar utime/chmod）。  
 - **终态**：pool **`finalize_turn_with_artifacts_ready`** 后 gateway **不再**用 `finalize_turn_terminal` 覆盖；客户端见 `succeeded` 即表示制品已入库。  
 - **已删除**：guest、`slot_mount.rs`、compose sidecar、`PoolSessionHostMounts`、rshared propagation。
+- **HTTP 消费端**：`readback_out` 后 transcript / progress / timing 在 PG；`GET .../tools`、`GET /v1/tasks`、`GET .../timeline` 等 **只读 PG**，不读宿主机 `sessions/` 目录。矩阵见 [`docs/pool-v1-consumer-matrix.md`](pool-v1-consumer-matrix.md)。
+- **Running progress**：`report_progress` 先写 worker tmpfs；**running 期间** gateway 经 pool RPC **`sync_turn_progress`** 由**宿主机 daemon** `podman exec` 进 worker 并 upsert PG（gateway 容器内直接 exec worker **无效**）。见矩阵文档 § Running `report_progress`。
 
 ### 2.3 池什么时候「创建」容器
 

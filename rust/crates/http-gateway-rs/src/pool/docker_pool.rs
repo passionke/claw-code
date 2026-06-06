@@ -209,6 +209,33 @@ impl DockerPoolManager {
         (self.pool_size, self.min_idle)
     }
 
+    /// Running turn: worker tmpfs `.claw` → `gateway_turns.solve_timing_jsonb` (host podman only). Author: kejiqing
+    pub async fn sync_turn_progress_to_db(&self, turn_id: &str) -> Result<(), String> {
+        let db = self
+            .session_db
+            .as_ref()
+            .ok_or_else(|| "pool session_db unavailable".to_string())?;
+        let Some(worker) = db
+            .get_turn_worker_name(turn_id)
+            .await
+            .map_err(|e| format!("get worker_name: {e}"))?
+        else {
+            return Ok(());
+        };
+        if worker.trim().is_empty() {
+            return Ok(());
+        }
+        let (progress_ndjson, task_progress_json) =
+            session_db_sync::read_worker_progress_artifacts(&self.bin, &worker).await;
+        if progress_ndjson.is_empty() && task_progress_json.is_empty() {
+            return Ok(());
+        }
+        db.replace_turn_progress_snapshot(turn_id, &progress_ndjson, &task_progress_json)
+            .await
+            .map_err(|e| format!("replace turn progress: {e}"))?;
+        Ok(())
+    }
+
     /// Read `CLAW_DOCKER_POOL_*` or `CLAW_PODMAN_POOL_*` once at construction.
     #[allow(clippy::too_many_lines)]
     pub fn try_from_env(

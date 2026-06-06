@@ -118,6 +118,71 @@ if [[ "${TASK_ST:-}" != "succeeded" ]]; then
   exit 1
 fi
 
+echo "[3c/5] turn tools API ↔ PG transcript (when solve used tools)"
+SESSION_ID="$(printf '%s' "${TASK_POLL}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["sessionId"])')"
+TOOLS_CHAIN_JSON="$(mktemp)"
+TIMELINE_JSON="$(mktemp)"
+curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/turns/${TURN_ID}/timeline?ds_id=1" \
+  -o "${TIMELINE_JSON}" || true
+curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/turns/${TURN_ID}/tools?ds_id=1" \
+  -o "${TOOLS_CHAIN_JSON}"
+python3 - "${TIMELINE_JSON}" "${TOOLS_CHAIN_JSON}" <<'PY'
+import json, sys
+
+timeline_path, tools_path = sys.argv[1], sys.argv[2]
+tool_segments = 0
+try:
+    tl = json.load(open(timeline_path))
+    for lane in (tl.get("timeline") or {}).get("lanes") or []:
+        lid = (lane.get("id") or "").lower()
+        if "tool" in lid:
+            tool_segments += len(lane.get("segments") or [])
+except (OSError, json.JSONDecodeError, TypeError):
+    tool_segments = 0
+
+tools_body = json.load(open(tools_path))
+tools = tools_body.get("tools") or []
+print(f"timeline_tool_segments={tool_segments} tools_api_count={len(tools)}")
+if tool_segments > 0 and len(tools) == 0:
+    raise SystemExit(
+        "regression: timeline shows tool calls but GET .../tools returned empty "
+        "(PG transcript not wired to tools API)"
+    )
+if tool_segments > 0:
+    print("turn tools chain ok (timeline + tools API agree)")
+else:
+    print("skip tools chain assert (solve had no tool lane — ping-style smoke)")
+PY
+
+TASK_POLL_JSON="$(mktemp)"
+curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/tasks/${TASK_ID}" -o "${TASK_POLL_JSON}"
+python3 - "${TIMELINE_JSON}" "${TASK_POLL_JSON}" <<'PY'
+import json, sys
+timeline_path, task_path = sys.argv[1], sys.argv[2]
+progress_segments = 0
+try:
+    tl = json.load(open(timeline_path))
+    for lane in (tl.get("timeline") or {}).get("lanes") or []:
+        lid = (lane.get("id") or "").lower()
+        if "progress" in lid or "report" in lid:
+            progress_segments += len(lane.get("segments") or [])
+except (OSError, json.JSONDecodeError, TypeError):
+    progress_segments = 0
+task = json.load(open(task_path))
+hist = task.get("progressHistory") or []
+todos = task.get("todos") or []
+print(f"timeline_progress_segments={progress_segments} progressHistory={len(hist)} todos={len(todos)}")
+if progress_segments > 0 and len(hist) == 0:
+    raise SystemExit(
+        "regression: timeline shows progress but GET /v1/tasks progressHistory empty "
+        "(PG progress not wired to task status API)"
+    )
+if progress_segments > 0:
+    print("task progress chain ok (timeline + progressHistory agree)")
+else:
+    print("skip progressHistory assert (solve had no progress lane)")
+PY
+
 echo "[4/5] verify MCP list is available"
 MCP_JSON="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/mcp/injected/1")"
 echo "${MCP_JSON}"

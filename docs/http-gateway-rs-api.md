@@ -45,7 +45,7 @@ Base URL 示例：`http://127.0.0.1:18088`
       - `clawcode-session-id: <sessionId>`
       - `claw-session-id: <sessionId>`
     - 在访问下游 MCP 服务（包括 SQLBot）时，`tools/call` 的 `_meta` 仅含 `extra_session` 对象（详见 [`gateway-mcp-call-meta.md`](gateway-mcp-call-meta.md)）：业务字段来自请求体 `extraSession`，并注入 `_claw_session_id`、`_claw_turn_id` 供串联。非 MCP HTTP 出站 header。
-  - 对话状态：同一会话目录下使用 `.claw/gateway-solve-session.jsonl` 持久化消息；若文件损坏导致无法加载，返回 `500`（不会静默丢弃历史）。
+  - 对话状态：worker 容器内用 `.claw/gateway-solve-session.jsonl` 续聊；读回后 HTTP 消费端只读 PG `cc_messages`（`render_session_jsonl`）。见 [`docs/pool-v1-consumer-matrix.md`](pool-v1-consumer-matrix.md)。
   - **Solve preflight（按项目、可选）**：在 `ds_<id>/home/.claw/solve-preflight.json` 声明，例如 `{"kinds":["sqlbot_mcp_start"]}`（兼容历史 `{"kind":"sqlbot_mcp_start"}`）。仅**该 `sessionId` 第一次**（尚无 `gateway-solve-session.jsonl`）时：先写入用户问题，再按 `kinds` 顺序执行 preflight 并注入 transcript（当前仅 `sqlbot_mcp_start`：一次 `mcp_start`，暴露 `access_token` / `chat_id`）。续聊 turn 不跑 preflight。表结构不在 transcript 注入：由外部 job 维护 `ds_<id>/home/schema.md`（`CREATE TABLE` DDL），worker ro mount 到 `home/schema.md`，系统提示词引导模型读取该文件。
 
 - `POST /v1/start`
@@ -70,18 +70,23 @@ Base URL 示例：`http://127.0.0.1:18088`
 - `GET /v1/tasks/{task_id}`
   - 用途：查询异步任务状态与结果
   - 响应含 **`turnId`**（与本次 async 入队时返回的值一致）
-  - **网关重启后**：若进程内已无该 `taskId` 的内存任务，网关会按 `session_id = task_id` 从 PostgreSQL 读取 **`gateway_turns` 最新一行** 重建 `TaskRecord`（含 `status`、`result`/`error`、`turnId` 等），以便 BFF 继续轮询；`currentTaskDesc` 仍尽量从会话目录 `.claw/task-progress.json` 恢复。
-  - 响应除 `status` 外含 **`currentTaskDesc`**（用户可见进度一句，camelCase JSON）：主要来自 agent 调用的内部工具 `report_progress` 写入会话目录 `.claw/task-progress.json`；`queued` 时网关可返回「排队中（x 个等待，y 个执行中）」；`running` 且无上报时兜底「处理中」或「工具调用中」（不暴露具体工具名）。**不**从 `gateway-solve-session.jsonl` 最后一条 assistant 推导。
+  - **网关重启后**：若进程内已无该 `taskId` 的内存任务，网关会按 `session_id = task_id` 从 PostgreSQL 读取 **`gateway_turns` 最新一行** 重建 `TaskRecord`（含 `status`、`result`/`error`、`turnId` 等），以便 BFF 继续轮询。
+  - 响应除 `status` 外含 **`currentTaskDesc`**、`progressHistory`、`todos`：来自 `gateway_turns.solve_timing_jsonb`（`taskProgress` / `progressEvents`）。
+  - **`running` 中间进度**：每次 poll 先经 **宿主机 pool daemon** RPC `sync_turn_progress`（`podman exec` worker → upsert PG），再读 PG 返回；gateway 容器内直接 exec worker **无效**（根因与修法见 [`docs/pool-v1-consumer-matrix.md`](pool-v1-consumer-matrix.md) § Running `report_progress`）。`queued` 时返回「排队中（x 个等待，y 个执行中）」；`running` 且尚无 PG 上报时返回「处理中」或「工具调用中」。**不**从 jsonl 最后一条 assistant 推导。
+  - **升级**：gateway 与 pool daemon 须同版本，否则 running 中间 progress 仍空。
   - 另含 `dsId`、`progressUpdatedAtMs`、**`hasReport`**、**`reportTime`**：见 [`docs/live-report-contract.md`](live-report-contract.md) §6.4。成功后的报告正文在 **`result.outputJson.message`**（非响应顶层 `outputJson`）。
 
 - `GET /v1/sessions/{session_id}/turns/{turn_id}/tools?ds_id=<int>`
-  - 用途：查看该 **gateway `turnId`** 对应用户轮次在 `.claw/gateway-solve-session.jsonl` 中的全部 **tool 调用**（`tool_use` 入参 + `tool_result` 返回）
+  - 用途：查看该 **gateway `turnId`** 对应用户轮次的全部 **tool 调用**（`tool_use` 入参 + `tool_result` 返回）。从 PG `render_session_jsonl` 解析；时间戳来自同 turn 的 `solve_timing_jsonb.progressEvents`。
   - 响应：`tools[]` 含 `toolUseId`、`toolName`、`input`（JSON）、`output`、`isError`；超大字段按 `CLAW_TURN_TOOLS_MAX_FIELD_CHARS`（默认 120000）截断并标 `*Truncated`
   - 未知 session / turn：404
 
 - `GET /v1/sessions/{session_id}/execution?ds_id=<int>`
-  - 用途：按 `(sessionId, dsId)` 查看当前进度快照、`progressHistory`（`.claw/progress-events.ndjson` 尾部）、网关队列统计、脱敏 trace 尾（`include_trace=true` 时含更多字段）
+  - 用途：按 `(sessionId, dsId)` 查看当前进度快照、`progressHistory`、网关队列统计、脱敏 trace 尾（`include_trace=true` 时含更多字段）。`progressHistory` 来自 PG `solve_timing_jsonb.progressEvents`（当前 turn）。
   - `progressHistory` 每条 `message` 默认最多 **80** 个 Unicode 字符，超出截断并追加 `...`；环境变量 **`CLAW_PROGRESS_MESSAGE_MAX_CHARS`**（正整数）可覆盖。事件 `kind`：`report_progress`（模型 `report_progress` 工具上报）、`mcp_tool_started`（NL 查询类 MCP 发起时一条；不追加 `mcp_tool_completed` / `mcp_tool_failed`，避免重复或失败文案刷屏）
+
+- `GET /v1/sessions/{session_id}/turns/{turn_id}/timeline?ds_id=<int>`
+  - 用途：单轮 swimlane（progress / tool / LLM 等 lane）。来自 PG `solve_timing_jsonb`。
   - 无该会话行：404
 
 - `POST /v1/sessions/{session_id}/turns/{turn_id}/cancel?ds_id=<int>`

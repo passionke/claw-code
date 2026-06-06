@@ -2,11 +2,9 @@
 //! Author: kejiqing
 
 use crate::gateway_solve_session_persistence_path;
-use crate::task_progress::progress_events_path;
+use crate::task_progress::{progress_events_path, ProgressEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 /// One tool invocation for a user turn (jsonl order + optional progress timestamps).
@@ -45,23 +43,17 @@ pub fn list_tool_executions_for_user_turn(
     list_tool_executions_for_user_turn_with_time_window(session_home, user_turn_index, None, None)
 }
 
-/// Same as [`list_tool_executions_for_user_turn`] but attaches timestamps from progress events.
-pub fn list_tool_executions_for_user_turn_with_time_window(
-    session_home: &Path,
+/// Parse tool_use / tool_result pairs from jsonl text (PG `render_session_jsonl` or on-disk file).
+pub fn list_tool_executions_for_user_turn_from_jsonl_contents(
+    jsonl_contents: &str,
     user_turn_index: usize,
-    turn_created_at_ms: Option<i64>,
-    turn_finished_at_ms: Option<i64>,
 ) -> Result<Vec<TurnToolRecord>, String> {
     if user_turn_index == 0 {
         return Err("user_turn_index must be >= 1".to_string());
     }
-    let jsonl_path = gateway_solve_session_persistence_path(session_home);
-    if !jsonl_path.is_file() {
+    if jsonl_contents.trim().is_empty() {
         return Ok(Vec::new());
     }
-
-    let file = File::open(&jsonl_path).map_err(|e| format!("open jsonl failed: {e}"))?;
-    let reader = BufReader::new(file);
 
     let mut prompt_seen = 0usize;
     let mut in_turn = false;
@@ -69,8 +61,7 @@ pub fn list_tool_executions_for_user_turn_with_time_window(
     let mut out: Vec<TurnToolRecord> = Vec::new();
     let mut sequence: u32 = 0;
 
-    for line in reader.lines() {
-        let line = line.map_err(|e| format!("read jsonl failed: {e}"))?;
+    for line in jsonl_contents.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -107,6 +98,24 @@ pub fn list_tool_executions_for_user_turn_with_time_window(
     }
 
     flush_pending(&mut pending, &mut out, &mut sequence);
+    Ok(out)
+}
+
+/// Same as [`list_tool_executions_for_user_turn`] but attaches timestamps from progress events.
+pub fn list_tool_executions_for_user_turn_with_time_window(
+    session_home: &Path,
+    user_turn_index: usize,
+    turn_created_at_ms: Option<i64>,
+    turn_finished_at_ms: Option<i64>,
+) -> Result<Vec<TurnToolRecord>, String> {
+    let jsonl_path = gateway_solve_session_persistence_path(session_home);
+    let contents = if jsonl_path.is_file() {
+        std::fs::read_to_string(&jsonl_path).map_err(|e| format!("read jsonl failed: {e}"))?
+    } else {
+        String::new()
+    };
+    let mut out =
+        list_tool_executions_for_user_turn_from_jsonl_contents(&contents, user_turn_index)?;
 
     if turn_created_at_ms.is_some() || turn_finished_at_ms.is_some() {
         enrich_tool_timestamps_from_progress(
@@ -118,6 +127,47 @@ pub fn list_tool_executions_for_user_turn_with_time_window(
     }
 
     Ok(out)
+}
+
+/// Parse tools from PG `render_session_jsonl`; timestamps from `solve_timing_jsonb.progressEvents`.
+pub fn list_tool_executions_for_user_turn_from_jsonl_with_time_window(
+    jsonl_contents: &str,
+    progress_events: &[ProgressEvent],
+    user_turn_index: usize,
+    turn_created_at_ms: Option<i64>,
+    turn_finished_at_ms: Option<i64>,
+) -> Result<Vec<TurnToolRecord>, String> {
+    let mut out =
+        list_tool_executions_for_user_turn_from_jsonl_contents(jsonl_contents, user_turn_index)?;
+    if turn_created_at_ms.is_some() || turn_finished_at_ms.is_some() {
+        enrich_tool_timestamps_from_progress_events(
+            progress_events,
+            turn_created_at_ms,
+            turn_finished_at_ms,
+            &mut out,
+        );
+    }
+    Ok(out)
+}
+
+/// Attach `started_at_ms` / `finished_at_ms` from PG progress events (`mcp_tool_started`).
+pub fn enrich_tool_timestamps_from_progress_events(
+    progress_events: &[ProgressEvent],
+    turn_created_at_ms: Option<i64>,
+    turn_finished_at_ms: Option<i64>,
+    tools: &mut [TurnToolRecord],
+) {
+    if tools.is_empty() {
+        return;
+    }
+    let from = turn_created_at_ms.unwrap_or(0);
+    let to = turn_finished_at_ms.unwrap_or(i64::MAX);
+    let started_ts: Vec<i64> = progress_events
+        .iter()
+        .filter(|ev| ev.kind == "mcp_tool_started" && ev.ts_ms >= from && ev.ts_ms <= to)
+        .map(|ev| ev.ts_ms)
+        .collect();
+    apply_tool_timestamp_windows(started_ts, turn_created_at_ms, turn_finished_at_ms, tools);
 }
 
 fn flush_pending(
@@ -327,6 +377,16 @@ fn enrich_tool_timestamps_from_progress(
         started_ts.push(ev.ts_ms);
     }
 
+    apply_tool_timestamp_windows(started_ts, turn_created_at_ms, turn_finished_at_ms, tools);
+    Ok(())
+}
+
+fn apply_tool_timestamp_windows(
+    started_ts: Vec<i64>,
+    turn_created_at_ms: Option<i64>,
+    turn_finished_at_ms: Option<i64>,
+    tools: &mut [TurnToolRecord],
+) {
     for (i, tool) in tools.iter_mut().enumerate() {
         if let Some(&ts) = started_ts.get(i) {
             tool.started_at_ms = Some(ts);
@@ -343,12 +403,12 @@ fn enrich_tool_timestamps_from_progress(
             }
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::Write;
 
     fn write_jsonl(dir: &Path, lines: &[&str]) {

@@ -1,11 +1,8 @@
 //! Task `currentTaskDesc` resolution and gateway queue stats. Author: kejiqing
 
 use std::collections::HashMap;
-use std::path::Path;
 
-use gateway_solve_turn::{
-    read_task_progress, sanitize_current_task_desc, TaskProgressTodo, REPORT_PROGRESS_TOOL_NAME,
-};
+use gateway_solve_turn::{sanitize_current_task_desc, REPORT_PROGRESS_TOOL_NAME};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -66,34 +63,18 @@ pub fn terminal_fallback_desc(status: &str) -> Option<String> {
     }
 }
 
-/// Plan outline fields from `.claw/task-progress.json` for task API. Author: kejiqing
-#[must_use]
-pub fn task_progress_plan_fields(
-    session_home: Option<&Path>,
-) -> (Option<String>, Vec<TaskProgressTodo>) {
-    let Some(home) = session_home else {
-        return (None, Vec::new());
-    };
-    let Some(p) = read_task_progress(home) else {
-        return (None, Vec::new());
-    };
-    (p.plan_title, p.todos)
-}
-
-/// Resolve user-visible progress for a task from on-disk progress file and task status.
+/// Resolve user-visible progress from PG `taskProgress` and task status.
 #[must_use]
 pub fn resolve_current_task_desc(
     status: &str,
-    session_home: Option<&Path>,
     queue: &GatewayQueueSnapshot,
     trace_suggests_tool: bool,
+    progress_override: Option<&gateway_solve_turn::TaskProgressFile>,
 ) -> Option<String> {
-    if let Some(home) = session_home {
-        if let Some(progress) = read_task_progress(home) {
-            let desc = sanitize_current_task_desc(&progress.current_task_desc);
-            if !desc.is_empty() {
-                return Some(desc);
-            }
+    if let Some(progress) = progress_override {
+        let desc = sanitize_current_task_desc(&progress.current_task_desc);
+        if !desc.is_empty() {
+            return Some(desc);
         }
     }
 
@@ -102,14 +83,6 @@ pub fn resolve_current_task_desc(
     }
 
     if matches!(status, "succeeded" | "failed" | "cancelled") {
-        if let Some(home) = session_home {
-            if let Some(progress) = read_task_progress(home) {
-                let desc = sanitize_current_task_desc(&progress.current_task_desc);
-                if !desc.is_empty() {
-                    return Some(desc);
-                }
-            }
-        }
         return terminal_fallback_desc(status);
     }
 
@@ -144,7 +117,7 @@ mod tests {
             gateway_tasks_running: 1,
             ..Default::default()
         };
-        let desc = resolve_current_task_desc("queued", None, &q, false).unwrap();
+        let desc = resolve_current_task_desc("queued", &q, false, None).unwrap();
         assert!(desc.contains('2'));
         assert!(desc.contains("排队"));
     }
@@ -152,7 +125,7 @@ mod tests {
     #[test]
     fn running_fallback_processing() {
         let q = GatewayQueueSnapshot::default();
-        let desc = resolve_current_task_desc("running", None, &q, false).unwrap();
+        let desc = resolve_current_task_desc("running", &q, false, None).unwrap();
         assert_eq!(desc, "处理中");
     }
 }

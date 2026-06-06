@@ -48,6 +48,10 @@ pub enum PoolRpcReq {
     ReportState {
         turn_id: String,
     },
+    /// Host pool reads live worker `.claw` progress into `gateway_turns.solve_timing_jsonb`. Author: kejiqing
+    SyncTurnProgress {
+        turn_id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -248,6 +252,20 @@ impl PoolOps for PoolRpcClient {
         .ok()
         .and_then(|r| r.first_report_at_ms)
     }
+
+    async fn sync_turn_progress_to_db(&self, turn_id: &str) -> Result<(), String> {
+        let r = self
+            .call(PoolRpcReq::SyncTurnProgress {
+                turn_id: turn_id.to_string(),
+            })
+            .await?;
+        if !r.ok {
+            return Err(r
+                .error
+                .unwrap_or_else(|| "pool sync_turn_progress failed".into()));
+        }
+        Ok(())
+    }
 }
 
 /// Shared by line-RPC handlers and HTTP `POST /v1/pool/rpc`. Author: kejiqing
@@ -375,6 +393,26 @@ pub async fn dispatch_pool_rpc(
             has_report: Some(pool.has_report_for_turn(&turn_id)),
             first_report_at_ms: pool.first_report_at_ms_for_turn(&turn_id),
         },
+        PoolRpcReq::SyncTurnProgress { turn_id } => {
+            match pool.sync_turn_progress_to_db(&turn_id).await {
+                Ok(()) => PoolRpcResp {
+                    ok: true,
+                    error: None,
+                    lease: None,
+                    outcome: None,
+                    has_report: None,
+                    first_report_at_ms: None,
+                },
+                Err(e) => PoolRpcResp {
+                    ok: false,
+                    error: Some(e),
+                    lease: None,
+                    outcome: None,
+                    has_report: None,
+                    first_report_at_ms: None,
+                },
+            }
+        }
     }
 }
 

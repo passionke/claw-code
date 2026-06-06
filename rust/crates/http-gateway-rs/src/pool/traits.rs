@@ -55,4 +55,9 @@ pub trait PoolOps: Send + Sync {
     async fn first_report_at_ms_for_turn(&self, _turn_id: &str) -> Option<i64> {
         None
     }
+
+    /// Running turn: read worker `.claw` progress on the pool host and upsert PG. Author: kejiqing
+    async fn sync_turn_progress_to_db(&self, _turn_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 }

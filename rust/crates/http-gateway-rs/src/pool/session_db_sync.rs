@@ -209,6 +209,27 @@ async fn readback_timing_to_db(
     )
     .await
     .unwrap_or_default();
+    let (progress, task_progress) =
+        read_worker_progress_artifacts(runtime_bin, container_name).await;
+    let total = timing.len() + orchestration.len() + progress.len() + task_progress.len();
+    if total > SESSION_MANIFEST_MAX_BYTES {
+        return Err(format!(
+            "timing artifacts exceed cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+        ));
+    }
+    db.replace_turn_progress_snapshot(turn_id, &progress, &task_progress)
+        .await
+        .map_err(|e| format!("replace turn progress: {e}"))?;
+    db.merge_turn_timing_worker_readback(turn_id, &timing, &orchestration)
+        .await
+        .map_err(|e| format!("merge turn timing: {e}"))
+}
+
+/// Read `.claw/progress-events.ndjson` + `task-progress.json` from a live worker. Author: kejiqing
+pub async fn read_worker_progress_artifacts(
+    runtime_bin: &str,
+    container_name: &str,
+) -> (String, String) {
     let progress = read_file_from_container(
         runtime_bin,
         container_name,
@@ -216,15 +237,14 @@ async fn readback_timing_to_db(
     )
     .await
     .unwrap_or_default();
-    let total = timing.len() + orchestration.len() + progress.len();
-    if total > SESSION_MANIFEST_MAX_BYTES {
-        return Err(format!(
-            "timing artifacts exceed cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-        ));
-    }
-    db.merge_turn_timing_worker_readback(turn_id, &timing, &orchestration, &progress)
-        .await
-        .map_err(|e| format!("merge turn timing: {e}"))
+    let task_progress = read_file_from_container(
+        runtime_bin,
+        container_name,
+        &format!("{GUEST_WORK_ROOT}/.claw/task-progress.json"),
+    )
+    .await
+    .unwrap_or_default();
+    (progress, task_progress)
 }
 
 async fn readback_workspace_tar(
