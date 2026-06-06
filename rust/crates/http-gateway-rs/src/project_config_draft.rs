@@ -24,6 +24,30 @@ use crate::session_db::{
 /// The single in-progress temp revision id (never effective, never in formal list).
 pub const DRAFT_CONTENT_REV: &str = "__draft__";
 
+/// Live `project_config` columns not snapshotted in `project_config_revision`. Author: kejiqing
+#[derive(Debug, Clone)]
+#[allow(clippy::struct_field_names)]
+pub struct ProjectConfigSidecars {
+    pub git_sync_json: Value,
+    pub solve_preflight_json: Value,
+    pub solve_orchestration_json: Value,
+    pub extra_session_fields_json: Value,
+    pub prompt_limits_json: Value,
+}
+
+impl ProjectConfigSidecars {
+    #[must_use]
+    pub fn from_row(row: &ProjectConfigRow) -> Self {
+        Self {
+            git_sync_json: row.git_sync_json.clone(),
+            solve_preflight_json: row.solve_preflight_json.clone(),
+            solve_orchestration_json: row.solve_orchestration_json.clone(),
+            extra_session_fields_json: row.extra_session_fields_json.clone(),
+            prompt_limits_json: row.prompt_limits_json.clone(),
+        }
+    }
+}
+
 #[must_use]
 pub fn is_draft_content_rev(rev: &str) -> bool {
     rev.trim() == DRAFT_CONTENT_REV
@@ -171,10 +195,7 @@ pub fn revision_row_from_config_row(
 pub fn config_row_from_revision(
     ds_id: i64,
     rev: &ProjectConfigRevisionRow,
-    git_sync_json: Value,
-    solve_preflight_json: Value,
-    solve_orchestration_json: Value,
-    extra_session_fields_json: Value,
+    sidecars: ProjectConfigSidecars,
     stable_content_rev: &str,
 ) -> ProjectConfigRow {
     ProjectConfigRow {
@@ -189,10 +210,11 @@ pub fn config_row_from_revision(
         skills_json: rev.skills_json.clone(),
         allowed_tools_json: rev.allowed_tools_json.clone(),
         claude_md: rev.claude_md.clone(),
-        git_sync_json,
-        solve_preflight_json,
-        solve_orchestration_json,
-        extra_session_fields_json,
+        git_sync_json: sidecars.git_sync_json,
+        solve_preflight_json: sidecars.solve_preflight_json,
+        solve_orchestration_json: sidecars.solve_orchestration_json,
+        extra_session_fields_json: sidecars.extra_session_fields_json,
+        prompt_limits_json: sidecars.prompt_limits_json,
     }
 }
 
@@ -220,6 +242,7 @@ pub fn upsert_from_row<'a>(
         solve_preflight_json: &row.solve_preflight_json,
         solve_orchestration_json: &row.solve_orchestration_json,
         extra_session_fields_json: &row.extra_session_fields_json,
+        prompt_limits_json: &row.prompt_limits_json,
     }
 }
 
@@ -242,10 +265,7 @@ pub async fn row_for_editing(
         return Ok(Some(config_row_from_revision(
             ds_id,
             &rev,
-            row.git_sync_json.clone(),
-            row.solve_preflight_json.clone(),
-            row.solve_orchestration_json.clone(),
-            row.extra_session_fields_json.clone(),
+            ProjectConfigSidecars::from_row(&row),
             &effective,
         )));
     }
@@ -271,10 +291,7 @@ pub async fn row_for_materialize(
         return Ok(Some(config_row_from_revision(
             ds_id,
             &rev,
-            row.git_sync_json.clone(),
-            row.solve_preflight_json.clone(),
-            row.solve_orchestration_json.clone(),
-            row.extra_session_fields_json.clone(),
+            ProjectConfigSidecars::from_row(&row),
             &effective,
         )));
     }
@@ -320,6 +337,7 @@ pub async fn ensure_draft(
         solve_preflight_json: &row.solve_preflight_json,
         solve_orchestration_json: &row.solve_orchestration_json,
         extra_session_fields_json: &row.extra_session_fields_json,
+        prompt_limits_json: &row.prompt_limits_json,
     };
     db.upsert_project_config(upsert).await?;
     db.get_project_config(ds_id).await?.ok_or_else(|| {
@@ -335,10 +353,7 @@ pub async fn close_draft_to_stable(
     db: &GatewaySessionDb,
     ds_id: i64,
     stable_content_rev: &str,
-    git_sync_json: &Value,
-    solve_preflight_json: &Value,
-    solve_orchestration_json: &Value,
-    extra_session_fields_json: &Value,
+    sidecars: ProjectConfigSidecars,
 ) -> Result<ProjectConfigRow, DraftError> {
     if is_draft_content_rev(stable_content_rev) {
         return Err(DraftError::new(
@@ -347,15 +362,7 @@ pub async fn close_draft_to_stable(
         ));
     }
     let formal = require_formal_revision(db, ds_id, stable_content_rev).await?;
-    let row = config_row_from_revision(
-        ds_id,
-        &formal,
-        git_sync_json.clone(),
-        solve_preflight_json.clone(),
-        solve_orchestration_json.clone(),
-        extra_session_fields_json.clone(),
-        stable_content_rev,
-    );
+    let row = config_row_from_revision(ds_id, &formal, sidecars, stable_content_rev);
     db.upsert_project_config(upsert_from_row(
         &row,
         stable_content_rev,
