@@ -2,8 +2,11 @@
 
 use std::path::Path;
 
+use crate::gateway_global_settings;
 use crate::persistence::transcript::{import_turn_messages_to_db, now_ms, JsonlMessage};
 use crate::pool::docker_cli::{runtime_exec, runtime_exec_stdin};
+use crate::project_config_apply::{self, GuestMaterializeWrite};
+use crate::project_config_draft;
 use crate::session_db::GatewaySessionDb;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -76,10 +79,6 @@ pub async fn materialize_in(
             "session transcript exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
         ));
     }
-    let settings = db
-        .get_turn_runtime_settings_json(&input.turn_id)
-        .map_err(|e| format!("load turn settings: {e}"))?;
-
     let mut writes: Vec<(String, Vec<u8>)> = vec![(
         format!("{GUEST_WORK_ROOT}/gateway-solve-task.json"),
         task_bytes,
@@ -90,20 +89,49 @@ pub async fn materialize_in(
             jsonl_body.into_bytes(),
         ));
     }
-    if let Some(settings) = settings {
-        let settings_bytes =
-            serde_json::to_vec_pretty(&settings).map_err(|e| format!("serialize settings: {e}"))?;
-        if settings_bytes.len() > SESSION_MANIFEST_MAX_BYTES {
-            return Err("settings snapshot exceeds cap".into());
-        }
-        writes.push((
-            format!("{GUEST_WORK_ROOT}/.claw/settings.json"),
-            settings_bytes,
-        ));
-    }
+    append_project_config_guest_writes(db, input.ds_id, &mut writes).await?;
     for (path, bytes) in writes {
+        if bytes.len() > SESSION_MANIFEST_MAX_BYTES {
+            return Err(format!(
+                "guest file {path} exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+            ));
+        }
         write_file_via_exec_user(runtime_bin, container_name, worker_exec_user, &path, &bytes)
             .await?;
+    }
+    exec_sh_lc_as_user(
+        runtime_bin,
+        container_name,
+        worker_exec_user,
+        project_config_apply::guest_claw_compat_symlink_shell(),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Admin `project_config` (effective formal rev) → `/claw_host_root` every solve. Author: kejiqing
+async fn append_project_config_guest_writes(
+    db: &GatewaySessionDb,
+    ds_id: i64,
+    writes: &mut Vec<(String, Vec<u8>)>,
+) -> Result<(), String> {
+    let Some(row) = project_config_draft::row_for_materialize(db, ds_id)
+        .await
+        .map_err(|e| format!("load project_config for materialize: {e}"))?
+    else {
+        return Ok(());
+    };
+    let scaffold = gateway_global_settings::load_system_prompt_default(db)
+        .await
+        .map_err(|e| format!("load system_prompt_default: {e}"))?;
+    let guest_writes = project_config_apply::build_guest_materialize_writes(&row, &scaffold)
+        .map_err(|e| format!("build guest project_config writes: {e}"))?;
+    for GuestMaterializeWrite { rel_path, bytes } in guest_writes {
+        let dest = format!(
+            "{GUEST_WORK_ROOT}/{}",
+            rel_path.to_string_lossy().replace('\\', "/")
+        );
+        writes.push((dest, bytes));
     }
     Ok(())
 }

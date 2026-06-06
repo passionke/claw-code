@@ -48,7 +48,7 @@ sequenceDiagram
     GW->>PD: acquire(session_id, ds_id, turn_id)
     PD->>PG: SELECT 续聊制品 + cc_messages
     PD->>W: run 仅 ds_home→/claw_ds + tmpfs /claw_host_root
-    PD->>W: materialize_in（tar/jsonl/task）
+    PD->>W: materialize_in（PG project_config + tar/jsonl/task + claw 路径软链）
     PD->>W: exec gateway-solve-once
     PD->>W: readback_out → UPSERT PG
     PD->>PG: artifacts_ready=true + status=succeeded（同事务）
@@ -59,7 +59,9 @@ sequenceDiagram
 要点：
 
 - **唯一 bind**：`work_root/ds_{id}` → 容器 **`/claw_ds:ro`**（换 ds 才 `rm+run`）；worker **不得**写入 ds_home，会话制品仅 **`/claw_host_root`**（tmpfs）。  
-- **session 工作区**：worker 内 **`/claw_host_root`** 为 **tmpfs**；每轮 **`materialize_in`** 从 PG 写出，`readback_out` 读回；**不** bind 宿主机 `sessions/{uuid}/`。  
+- **session 工作区**：worker 内 **`/claw_host_root`** 为 **tmpfs**；每轮 **`materialize_in`** 从 PG 写出 **effective formal `project_config`**（`claude_md`、skills、rules、`.claw/settings.json` 等）+ 续聊 tar/jsonl/task，并在 guest 建 **`.claw/skills` → `home/skills`、`.cursor/rules` → `home/.cursor/rules` 软链**（见 `docs/project-config-model.md`）；`readback_out` 读回；**不** bind 宿主机 `sessions/{uuid}/`。  
+- **配置根**：`exec` 注入 **`CLAW_PROJECT_CONFIG_ROOT=/claw_host_root`**（与 `cwd` 一致）；**不**再依赖仅只读 bind `/claw_ds` 读 Admin 配置。  
+- **worker 镜像**：槽位复用前比对 **镜像 ID**；`pack-deploy` 后镜像变则 **重建** 容器，避免旧二进制。  
 - **② Gateway cache**（`CLAW_WORK_ROOT/ds_*/sessions/…`）：可选，方便 `prepare` 写 settings；跨机/续聊以 **① PostgreSQL** 为准。  
 - **workspace 续聊**：PG 存 **`workspace_tar_gz`**（单轮 cap **16MB**）；`materialize_in` 解压到 tmpfs（macOS podman 须 staging+`cp`，避免 tar utime/chmod）。  
 - **终态**：pool **`finalize_turn_with_artifacts_ready`** 后 gateway **不再**用 `finalize_turn_terminal` 覆盖；客户端见 `succeeded` 即表示制品已入库。  
@@ -134,12 +136,14 @@ sequenceDiagram
 | 路径 | 角色 |
 | --- | --- |
 | `CLAW_WORK_ROOT/ds_{id}/` | 数据源级：如 **`/v1/init`** 写的 `CLAUDE.md`、网关探针用的共享上下文；**不**作为 worker 的整盘 bind 根。 |
-| `CLAW_WORK_ROOT/ds_{id}/sessions/{uuid}/` | **单次 solve** 的可写工作区；`.claw/settings.json`、pool 的 `gateway-solve-task.json` 在此；**不**再拷贝 `ds_{id}/CLAUDE.md` / `home/skills`（池内以只读 bind 暴露）。 |
-| `CLAW_WORK_ROOT/.claw-pool-slot/slot-{i}/guest` | 槽位固定 guest 目录；**inject** 组装会话视图，**teardown** 清空；容器 `run` 时 bind 到 `/claw_host_root`。 |
-| `CLAW_PROJECT_CONFIG_ROOT` / `CLAW_CONFIG_FILE` | **项目 `.claw.json` 树**；由 **`gateway-solve-turn`** 在网关侧加载；**不应**落在可被子进程或 worker 横向遍历的 `CLAW_WORK_ROOT` 会话卷上。 |
+| `CLAW_WORK_ROOT/ds_{id}/` | 数据源级磁盘镜像；`apply_project_config` 物化 + **`link_claw_compat_symlinks`**；可选只读 bind 为 **`/claw_ds`**（legacy 探针；solve 配置以 guest 物化为准）。 |
+| worker **`/claw_host_root`**（tmpfs） | 每轮 solve 的 **唯一可写工作区**；`materialize_in` 从 PG 写入项目配置与会话制品；`gateway-solve-task.json`、`.claw/settings.json`、`home/skills`、`home/.cursor/rules` 等在此。 |
+| worker **`/claw_host_root/.claw/skills`** | **软链** → `../home/skills`（claw `Skill` / `glob` 与 Admin 真源对齐）。 |
+| worker **`/claw_host_root/.cursor/rules`** | **软链** → `../home/.cursor/rules`。 |
+| `CLAW_PROJECT_CONFIG_ROOT`（pool `exec`） | 固定 **`/claw_host_root`**；`load_system_prompt` / `ConfigLoader` / MCP 初始化均读此树。 |
 
 - **Docker / Podman 权限**：池守护进程负责 **worker `docker run`** 与（经 RPC）**session 目录特权 `chown`**；需能访问 **`docker.sock`** 或 Podman API socket。`CLAW_POOL_RPC_HOST_WORK_ROOT` 配置正确时，**`gateway-rs` 不必挂载引擎 socket**。生产上慎防 **容器内挂载 sock 逃逸**。  
-- **并发与同数据源**：多 solve 共享 **`ds_{id}/` 下只读文件**（`CLAUDE.md`、`home/skills`）时由网关 **只读 bind** 挂进会话视图，**不**每会话整文件拷贝；会话间文件工具隔离依赖 **每会话 bind 根**（池化）。  
+- **并发与同数据源**：每轮 solve 的 Admin 配置来自 **PG 物化到该轮 tmpfs**，不依赖其它会话或宿主机 `ds_*` 是否刚刷新；会话间隔离靠 **每 lease 独立 `/claw_host_root` wipe**。  
 - **Windows/macOS 开发机**：池化仍以 Linux 为一级目标；本地 compose 栈与 **`docker_pool`** / **`podman_pool`** 对齐。
 
 ## 6.1 结果回传（stdout + 挂载文件，v1）

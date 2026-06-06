@@ -442,17 +442,30 @@ impl DockerPoolManager {
         test_host_root: Option<PathBuf>,
     ) -> Result<(), String> {
         if self.worker_container_running(name).await {
-            info!(
-                target: "claw_gateway_pool",
-                component = "docker_pool",
-                phase = "worker_reuse",
-                container = %name,
-                slot_index,
-                "reusing existing worker container (stable name)"
-            );
-            // Pool restart or missed release must not leave gateway-solve-once running in the worker.
-            self.kill_worker_solve_processes(name).await;
-            return Ok(());
+            if self.worker_container_image_stale(name).await {
+                info!(
+                    target: "claw_gateway_pool",
+                    component = "docker_pool",
+                    phase = "worker_image_stale",
+                    container = %name,
+                    slot_index,
+                    image = %self.image,
+                    "worker image stale — recreating container"
+                );
+                self.rm_container(name).await?;
+            } else {
+                info!(
+                    target: "claw_gateway_pool",
+                    component = "docker_pool",
+                    phase = "worker_reuse",
+                    container = %name,
+                    slot_index,
+                    "reusing existing worker container (stable name)"
+                );
+                // Pool restart or missed release must not leave gateway-solve-once running in the worker.
+                self.kill_worker_solve_processes(name).await;
+                return Ok(());
+            }
         }
         self.rm_container(name).await?;
 
@@ -576,6 +589,32 @@ impl DockerPoolManager {
             }
             _ => false,
         }
+    }
+
+    async fn container_runtime_image_id(&self, inspect_target: &str) -> Option<String> {
+        let out = runtime_exec(&self.bin, &["inspect", "-f", "{{.Image}}", inspect_target])
+            .await
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if id.is_empty() {
+            None
+        } else {
+            Some(id)
+        }
+    }
+
+    /// Recreate worker when pool image tag was rebuilt (`pack-deploy`) but container name was reused. Author: kejiqing
+    async fn worker_container_image_stale(&self, name: &str) -> bool {
+        let Some(running_id) = self.container_runtime_image_id(name).await else {
+            return false;
+        };
+        let Some(desired_id) = self.container_runtime_image_id(&self.image).await else {
+            return false;
+        };
+        running_id != desired_id
     }
 
     fn stderr_name_already_in_use(stderr: &[u8]) -> bool {
@@ -803,6 +842,8 @@ impl DockerPoolManager {
         argv.extend([
             "-e".into(),
             "CLAW_GATEWAY_WORK_ROOT=/claw_host_root".into(),
+            "-e".into(),
+            format!("CLAW_PROJECT_CONFIG_ROOT={GUEST_WORK_ROOT}"),
             "-e".into(),
             format!("HOME={GUEST_WORK_ROOT}"),
             "-e".into(),

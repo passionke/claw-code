@@ -313,6 +313,99 @@ async fn apply_full(
     write_allowed_tools_marker(work_dir, row).await?;
     write_solve_preflight_marker(work_dir, row).await?;
     write_solve_orchestration_marker(work_dir, row).await?;
+    link_claw_compat_symlinks(work_dir).await?;
+    Ok(())
+}
+
+/// Gateway canonical tree is under `home/`; claw discovery also checks `.claw/skills` and `.cursor/rules`. Author: kejiqing
+pub async fn link_claw_compat_symlinks(work_dir: &Path) -> ApplyResult<()> {
+    link_dir_symlink(
+        work_dir,
+        &work_dir.join("home/skills"),
+        &work_dir.join(".claw/skills"),
+        "../home/skills",
+    )
+    .await?;
+    link_dir_symlink(
+        work_dir,
+        &work_dir.join("home/.cursor/rules"),
+        &work_dir.join(".cursor/rules"),
+        "../home/.cursor/rules",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Shell run in pool guest after file materialize (same layout as [`link_claw_compat_symlinks`]). Author: kejiqing
+#[must_use]
+pub fn guest_claw_compat_symlink_shell() -> &'static str {
+    r#"set -eu
+root='/claw_host_root'
+if [ -d "$root/home/skills" ]; then
+  mkdir -p "$root/.claw"
+  rm -rf "$root/.claw/skills"
+  ln -sfn ../home/skills "$root/.claw/skills"
+fi
+if [ -d "$root/home/.cursor/rules" ]; then
+  mkdir -p "$root/.cursor"
+  rm -rf "$root/.cursor/rules"
+  ln -sfn ../home/.cursor/rules "$root/.cursor/rules"
+fi
+"#
+}
+
+async fn link_dir_symlink(
+    work_dir: &Path,
+    src_dir: &Path,
+    link_path: &Path,
+    relative_target: &str,
+) -> ApplyResult<()> {
+    if !fs::metadata(src_dir).await.is_ok_and(|m| m.is_dir()) {
+        return Ok(());
+    }
+    if let Some(parent) = link_path.parent() {
+        fs::create_dir_all(parent).await.map_err(|e| {
+            ProjectConfigApplyError::new(format!("mkdir {}: {e}", parent.display()))
+        })?;
+    }
+    remove_path_for_symlink(link_path).await?;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(relative_target, link_path).map_err(|e| {
+            ProjectConfigApplyError::new(format!(
+                "symlink {} -> {relative_target} (cwd {}): {e}",
+                link_path.display(),
+                work_dir.display()
+            ))
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (work_dir, src_dir, link_path, relative_target);
+    }
+    Ok(())
+}
+
+async fn remove_path_for_symlink(path: &Path) -> ApplyResult<()> {
+    let meta = match fs::symlink_metadata(path).await {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(ProjectConfigApplyError::new(format!(
+                "stat {} before symlink: {e}",
+                path.display()
+            )));
+        }
+    };
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+            .await
+            .map_err(|e| ProjectConfigApplyError::new(format!("rm dir {}: {e}", path.display())))?;
+    } else {
+        fs::remove_file(path)
+            .await
+            .map_err(|e| ProjectConfigApplyError::new(format!("rm {}: {e}", path.display())))?;
+    }
     Ok(())
 }
 
@@ -378,6 +471,210 @@ async fn write_solve_preflight_marker(work_dir: &Path, row: &ProjectConfigRow) -
     Ok(())
 }
 
+/// One file under pool guest work root (`/claw_host_root/<rel_path>`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct GuestMaterializeWrite {
+    pub rel_path: PathBuf,
+    pub bytes: Vec<u8>,
+}
+
+/// Runtime `settings.json` from Admin `mcp_servers_json` (same as gateway `build_settings`). Author: kejiqing
+#[must_use]
+pub fn build_settings_json_from_row(row: &ProjectConfigRow) -> Value {
+    let mut servers = serde_json::Map::new();
+    if let Some(extra) = row.mcp_servers_json.as_object() {
+        for (k, v) in extra {
+            servers.insert(k.clone(), v.clone());
+        }
+    }
+    json!({
+        "mcpServers": servers,
+        "auto_hidden_system_prompt": 1
+    })
+}
+
+/// PG `project_config` → bytes for `materialize_in` (every solve; not host `ds_*` / worker age). Author: kejiqing
+pub fn build_guest_materialize_writes(
+    row: &ProjectConfigRow,
+    system_prompt_scaffold: &str,
+) -> ApplyResult<Vec<GuestMaterializeWrite>> {
+    let mut out = Vec::new();
+    push_system_prompt_sidecars(&mut out, row, system_prompt_scaffold);
+    push_rules_writes(&mut out, &row.rules_json)?;
+    if let Some(text) = row.claude_md.as_deref().filter(|s| !s.trim().is_empty()) {
+        push_claude_writes(&mut out, text);
+    }
+    push_skills_writes(&mut out, &row.skills_json)?;
+    push_allowed_tools_write(&mut out, row)?;
+    push_solve_preflight_write(&mut out, row)?;
+    push_solve_orchestration_write(&mut out, row)?;
+    out.push(GuestMaterializeWrite {
+        rel_path: PathBuf::from(APPLIED_REV_MARKER),
+        bytes: row.content_rev.as_bytes().to_vec(),
+    });
+    let settings = build_settings_json_from_row(row);
+    let settings_bytes = serde_json::to_vec_pretty(&settings)
+        .map_err(|e| ProjectConfigApplyError::new(format!("serialize guest settings.json: {e}")))?;
+    out.push(GuestMaterializeWrite {
+        rel_path: PathBuf::from(".claw/settings.json"),
+        bytes: settings_bytes,
+    });
+    Ok(out)
+}
+
+fn push_write(out: &mut Vec<GuestMaterializeWrite>, rel_path: PathBuf, bytes: Vec<u8>) {
+    out.push(GuestMaterializeWrite { rel_path, bytes });
+}
+
+fn push_system_prompt_sidecars(
+    out: &mut Vec<GuestMaterializeWrite>,
+    row: &ProjectConfigRow,
+    system_prompt_scaffold: &str,
+) {
+    if let Some(text) = row.claude_md.as_deref().filter(|s| !s.trim().is_empty()) {
+        push_write(
+            out,
+            PathBuf::from(GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL),
+            text.as_bytes().to_vec(),
+        );
+    }
+    push_write(
+        out,
+        PathBuf::from(GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL),
+        system_prompt_scaffold.as_bytes().to_vec(),
+    );
+}
+
+fn push_rules_writes(out: &mut Vec<GuestMaterializeWrite>, rules: &Value) -> ApplyResult<()> {
+    let Some(items) = rules.as_array() else {
+        return Ok(());
+    };
+    for (i, item) in items.iter().enumerate() {
+        let obj = item.as_object().ok_or_else(|| {
+            ProjectConfigApplyError::new(format!("rulesJson[{i}] must be an object"))
+        })?;
+        let rel = obj
+            .get("relativePath")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ProjectConfigApplyError::new(format!("rulesJson[{i}] missing relativePath"))
+            })?;
+        let content = obj.get("content").and_then(Value::as_str).ok_or_else(|| {
+            ProjectConfigApplyError::new(format!("rulesJson[{i}] missing content"))
+        })?;
+        let rel_path = safe_rel_under_home(rel)?;
+        push_write(
+            out,
+            PathBuf::from("home").join(rel_path),
+            content.as_bytes().to_vec(),
+        );
+    }
+    Ok(())
+}
+
+fn push_claude_writes(out: &mut Vec<GuestMaterializeWrite>, text: &str) {
+    let bytes = text.as_bytes().to_vec();
+    push_write(out, PathBuf::from("home/CLAUDE.md"), bytes.clone());
+    push_write(out, PathBuf::from("CLAUDE.md"), bytes);
+}
+
+fn push_skills_writes(out: &mut Vec<GuestMaterializeWrite>, skills: &Value) -> ApplyResult<()> {
+    let Some(arr) = skills.as_array() else {
+        return Ok(());
+    };
+    for (i, item) in arr.iter().enumerate() {
+        let obj = item.as_object().ok_or_else(|| {
+            ProjectConfigApplyError::new(format!("skillsJson[{i}] must be an object"))
+        })?;
+        let skill_name = obj
+            .get("skillName")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ProjectConfigApplyError::new(format!("skillsJson[{i}] missing skillName"))
+            })?;
+        let content = obj
+            .get("skillContent")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ProjectConfigApplyError::new(format!("skillsJson[{i}] missing skillContent"))
+            })?;
+        push_write(
+            out,
+            PathBuf::from("home/skills")
+                .join(skill_name)
+                .join("SKILL.md"),
+            content.as_bytes().to_vec(),
+        );
+    }
+    Ok(())
+}
+
+fn push_allowed_tools_write(
+    out: &mut Vec<GuestMaterializeWrite>,
+    row: &ProjectConfigRow,
+) -> ApplyResult<()> {
+    let selected = parse_allowed_tools_json(&row.allowed_tools_json)
+        .map_err(|e| ProjectConfigApplyError::new(format!("allowed_tools_json invalid: {e}")))?;
+    let body = json!({
+        "contentRev": row.content_rev,
+        "allowedTools": selected,
+    });
+    let bytes = serde_json::to_vec_pretty(&body).map_err(|e| {
+        ProjectConfigApplyError::new(format!("serialize project_allowed_tools: {e}"))
+    })?;
+    push_write(out, PathBuf::from(ALLOWED_TOOLS_MARKER), bytes);
+    Ok(())
+}
+
+fn push_solve_preflight_write(
+    out: &mut Vec<GuestMaterializeWrite>,
+    row: &ProjectConfigRow,
+) -> ApplyResult<()> {
+    gateway_solve_turn::project_preflight::validate_solve_preflight_json(&row.solve_preflight_json)
+        .map_err(ProjectConfigApplyError::new)?;
+    if !gateway_solve_turn::project_preflight::has_enabled_solve_preflight(
+        &row.solve_preflight_json,
+    ) {
+        return Ok(());
+    }
+    let bytes = serde_json::to_vec_pretty(
+        &gateway_solve_turn::project_preflight::materialize_solve_preflight_json(
+            &row.solve_preflight_json,
+        ),
+    )
+    .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-preflight: {e}")))?;
+    push_write(out, PathBuf::from(SOLVE_PREFLIGHT_MARKER), bytes);
+    Ok(())
+}
+
+fn push_solve_orchestration_write(
+    out: &mut Vec<GuestMaterializeWrite>,
+    row: &ProjectConfigRow,
+) -> ApplyResult<()> {
+    gateway_solve_turn::project_orchestration::validate_solve_orchestration_json(
+        &row.solve_orchestration_json,
+    )
+    .map_err(ProjectConfigApplyError::new)?;
+    let kind = row
+        .solve_orchestration_json
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("single_turn");
+    if kind == "single_turn" {
+        return Ok(());
+    }
+    let bytes = serde_json::to_vec_pretty(
+        &gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
+            &row.solve_orchestration_json,
+        ),
+    )
+    .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-orchestration: {e}")))?;
+    push_write(out, PathBuf::from(SOLVE_ORCHESTRATION_MARKER), bytes);
+    Ok(())
+}
+
 async fn write_allowed_tools_marker(work_dir: &Path, row: &ProjectConfigRow) -> ApplyResult<()> {
     let claw_dir = work_dir.join(".claw");
     fs::create_dir_all(&claw_dir)
@@ -429,6 +726,79 @@ mod tests {
         assert!(ex.contains(&PathBuf::from("CLAUDE.md")));
         assert!(ex.contains(&PathBuf::from("skills")));
         assert!(ex.contains(&PathBuf::from(".cursor/rules/safety.mdc")));
+    }
+
+    #[tokio::test]
+    async fn link_claw_compat_symlinks_maps_home_tree_to_claw_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "claw-compat-link-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("home/skills/desc"))
+            .await
+            .expect("skills");
+        fs::write(root.join("home/skills/desc/SKILL.md"), "body")
+            .await
+            .expect("skill md");
+        fs::create_dir_all(root.join("home/.cursor/rules"))
+            .await
+            .expect("rules");
+        fs::write(root.join("home/.cursor/rules/safety.mdc"), "rule")
+            .await
+            .expect("rule mdc");
+        link_claw_compat_symlinks(&root).await.expect("link");
+        let claw_skill = fs::read_link(root.join(".claw/skills"))
+            .await
+            .expect("claw skills link");
+        assert_eq!(claw_skill.to_string_lossy(), "../home/skills");
+        let cursor_rules = fs::read_link(root.join(".cursor/rules"))
+            .await
+            .expect("cursor rules link");
+        assert_eq!(cursor_rules.to_string_lossy(), "../home/.cursor/rules");
+        let via_claw = fs::read_to_string(root.join(".claw/skills/desc/SKILL.md"))
+            .await
+            .expect("read via symlink");
+        assert_eq!(via_claw, "body");
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[test]
+    fn build_guest_materialize_writes_includes_claude_and_settings() {
+        let row = ProjectConfigRow {
+            ds_id: 1,
+            content_rev: "rev-1".into(),
+            stable_content_rev: Some("rev-1".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({"sqlbot": {"url": "http://example"}}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: Some("BOSS body".into()),
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            extra_session_fields_json: json!([]),
+        };
+        let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
+        let paths: Vec<_> = writes
+            .iter()
+            .map(|w| w.rel_path.to_string_lossy().to_string())
+            .collect();
+        assert!(paths
+            .iter()
+            .any(|p| p.contains("system_prompt_user_override")));
+        assert!(paths.iter().any(|p| p.ends_with("home/CLAUDE.md")));
+        let settings = writes
+            .iter()
+            .find(|w| w.rel_path == PathBuf::from(".claw/settings.json"))
+            .expect("settings");
+        let v: Value = serde_json::from_slice(&settings.bytes).expect("settings json");
+        assert!(v.get("mcpServers").and_then(|m| m.get("sqlbot")).is_some());
     }
 
     #[test]

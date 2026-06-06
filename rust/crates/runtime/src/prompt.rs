@@ -145,6 +145,9 @@ impl ProjectContext {
     }
 }
 
+/// Pool worker read-only `ds_home` bind inside the solve container (`http-gateway-rs` pool v1).
+pub const GATEWAY_POOL_DS_CONFIG_ROOT: &str = "/claw_ds";
+
 /// Gateway-written full system prompt override (non-empty → skip scaffold + project sections).
 pub const GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL: &str = ".claw/system_prompt_user_override.md";
 /// Gateway-written builtin scaffold from DB (`gateway_global_settings.system_prompt_default`).
@@ -656,6 +659,40 @@ fn read_gateway_scaffold_override(cwd: &Path) -> Option<String> {
     }
 }
 
+fn gateway_ds_root_from_session_work_dir(session_work_dir: &Path) -> Option<PathBuf> {
+    let sessions = session_work_dir.parent()?;
+    if sessions.file_name().and_then(|n| n.to_str()) != Some("sessions") {
+        return None;
+    }
+    sessions.parent().map(Path::to_path_buf)
+}
+
+/// Project/ds config root for solve: pool worker uses [`GATEWAY_POOL_DS_CONFIG_ROOT`] via
+/// `CLAW_PROJECT_CONFIG_ROOT`; host solve walks `ds_*/sessions/<id>` → `ds_*`. Author: kejiqing
+#[must_use]
+pub fn gateway_project_config_root(session_work_dir: &Path) -> PathBuf {
+    if let Ok(raw) = std::env::var("CLAW_PROJECT_CONFIG_ROOT") {
+        let root = PathBuf::from(raw.trim());
+        if !root.as_os_str().is_empty() {
+            return root;
+        }
+    }
+    gateway_ds_root_from_session_work_dir(session_work_dir)
+        .unwrap_or_else(|| session_work_dir.to_path_buf())
+}
+
+fn discover_project_context_for_prompt(
+    config_root: &Path,
+    session_work_dir: &Path,
+    current_date: impl Into<String>,
+) -> Result<ProjectContext, PromptBuildError> {
+    let mut project_context = ProjectContext::discover_with_git(config_root, current_date.into())?;
+    if config_root != session_work_dir {
+        project_context.cwd = session_work_dir.to_path_buf();
+    }
+    Ok(project_context)
+}
+
 /// Loads config and project context, then renders the system prompt text.
 pub fn load_system_prompt(
     cwd: impl Into<PathBuf>,
@@ -664,11 +701,13 @@ pub fn load_system_prompt(
     os_version: impl Into<String>,
     extra_session: Option<Value>,
 ) -> Result<Vec<String>, PromptBuildError> {
-    let cwd = cwd.into();
+    let session_work_dir = cwd.into();
+    let config_root = gateway_project_config_root(&session_work_dir);
     // Gateway `claude_md` replaces builtin scaffold via override file, but project rules
     // from `rules_json` must still apply. Author: kejiqing
-    if let Some(override_text) = read_gateway_user_prompt_override(&cwd) {
-        let mut project_context = ProjectContext::discover_with_git(&cwd, current_date.into())?;
+    if let Some(override_text) = read_gateway_user_prompt_override(&config_root) {
+        let mut project_context =
+            discover_project_context_for_prompt(&config_root, &session_work_dir, current_date)?;
         project_context.extra_session = extra_session;
         let mut sections = vec![override_text];
         if !project_context.rule_files.is_empty() {
@@ -676,10 +715,11 @@ pub fn load_system_prompt(
         }
         return Ok(sections);
     }
-    let scaffold_override = read_gateway_scaffold_override(&cwd);
-    let mut project_context = ProjectContext::discover_with_git(&cwd, current_date.into())?;
+    let scaffold_override = read_gateway_scaffold_override(&config_root);
+    let mut project_context =
+        discover_project_context_for_prompt(&config_root, &session_work_dir, current_date)?;
     project_context.extra_session = extra_session;
-    let config = ConfigLoader::default_for(&cwd).load()?;
+    let config = ConfigLoader::default_for(&config_root).load()?;
     Ok(SystemPromptBuilder::new()
         .with_os(os_name, os_version)
         .with_project_context(project_context)
@@ -778,6 +818,11 @@ pub const GATEWAY_SQLBOT_MCP_DATASOURCE_EXAMPLES_TOOL: &str =
     "mcp__sqlbot-streamable__mcp_datasource_examples";
 
 fn gateway_ds_home_file_exists(cwd: &Path, rel_under_ds: &str) -> Option<PathBuf> {
+    let config_root = gateway_project_config_root(cwd);
+    let direct = config_root.join(rel_under_ds);
+    if direct.is_file() {
+        return Some(direct);
+    }
     let mut cursor = Some(cwd);
     while let Some(dir) = cursor {
         if dir.join("home").is_dir() {
@@ -1271,6 +1316,34 @@ mod tests {
             "Claude instructions must precede environment context"
         );
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn load_system_prompt_reads_config_from_claw_project_config_root() {
+        let _guard = env_lock();
+        let ds_root = temp_dir();
+        let work_root = temp_dir();
+        let session_home = work_root.join("sessions").join("sess-pool");
+        fs::create_dir_all(ds_root.join(".claw")).expect("ds claw");
+        fs::create_dir_all(session_home.join(".claw")).expect("session claw");
+        fs::write(
+            ds_root.join(".claw").join("system_prompt_user_override.md"),
+            "pool ds override",
+        )
+        .expect("override");
+        let prev = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
+        std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", &ds_root);
+        let prompt = super::load_system_prompt(&session_home, "2026-06-06", "linux", "6.8", None)
+            .expect("load prompt")
+            .join("\n\n");
+        if let Some(p) = prev {
+            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
+        } else {
+            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        }
+        assert!(prompt.contains("pool ds override"));
+        fs::remove_dir_all(ds_root).expect("cleanup ds");
+        fs::remove_dir_all(work_root).expect("cleanup work");
     }
 
     #[test]

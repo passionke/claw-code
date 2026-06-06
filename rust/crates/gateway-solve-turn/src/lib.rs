@@ -329,7 +329,8 @@ pub(crate) fn initialize_mcp_runtime(
     ),
     GatewaySolveTurnError,
 > {
-    let runtime_cfg = ConfigLoader::default_for(work_dir)
+    let config_root = runtime::gateway_project_config_root(work_dir);
+    let runtime_cfg = ConfigLoader::default_for(&config_root)
         .load()
         .map_err(|e| err(HTTP_INTERNAL, format!("load runtime config failed: {e}")))?;
     let mut manager = McpServerManager::from_runtime_config(&runtime_cfg);

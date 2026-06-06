@@ -2,7 +2,7 @@
 //! in PostgreSQL; gateway materializes to `home/.claw/solve-preflight.json` on `ds_*` apply.
 //! Author: kejiqing
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -86,14 +86,6 @@ pub fn has_enabled_solve_preflight(value: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn ds_root_from_session_home(session_home: &Path) -> Option<PathBuf> {
-    let sessions = session_home.parent()?;
-    if sessions.file_name().and_then(|n| n.to_str()) != Some("sessions") {
-        return None;
-    }
-    sessions.parent().map(Path::to_path_buf)
-}
-
 fn parse_solve_preflight_file(path: &Path) -> Option<SolvePreflightConfig> {
     let raw = std::fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&raw).ok()?;
@@ -105,13 +97,12 @@ fn parse_solve_preflight_file(path: &Path) -> Option<SolvePreflightConfig> {
 }
 
 fn resolve_solve_preflight_config(session_home: &Path) -> Option<SolvePreflightConfig> {
-    // Pool worker: only the session dir is rw-mounted; preflight JSON is ro-mounted under guest home.
-    let pool_mounted = session_home.join(SOLVE_PREFLIGHT_CONFIG_REL);
-    if let Some(cfg) = parse_solve_preflight_file(&pool_mounted) {
+    let session_mounted = session_home.join(SOLVE_PREFLIGHT_CONFIG_REL);
+    if let Some(cfg) = parse_solve_preflight_file(&session_mounted) {
         return Some(cfg);
     }
-    let ds_root = ds_root_from_session_home(session_home)?;
-    parse_solve_preflight_file(&ds_root.join(SOLVE_PREFLIGHT_CONFIG_REL))
+    let config_root = runtime::gateway_project_config_root(session_home);
+    parse_solve_preflight_file(&config_root.join(SOLVE_PREFLIGHT_CONFIG_REL))
 }
 
 /// First turn of a `sessionId` only (caller gates on missing jsonl). Runs project-defined preflight.
@@ -160,6 +151,33 @@ mod tests {
         let cfg = resolve_solve_preflight_config(&session_home).expect("pool mount path");
         assert_eq!(cfg.kinds, vec!["sqlbot_mcp_start".to_string()]);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_config_from_claw_project_config_root_env() {
+        let ds_root =
+            std::env::temp_dir().join(format!("claw-preflight-env-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&ds_root);
+        let session_home = ds_root
+            .parent()
+            .unwrap()
+            .join(format!("sess-env-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&session_home);
+        fs::create_dir_all(session_home.join(".claw")).unwrap();
+        let cfg_path = ds_root.join(SOLVE_PREFLIGHT_CONFIG_REL);
+        fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        fs::write(&cfg_path, r#"{"kind":"sqlbot_mcp_start"}"#).unwrap();
+        let prev = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
+        std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", &ds_root);
+        let cfg = resolve_solve_preflight_config(&session_home).expect("env config root");
+        if let Some(p) = prev {
+            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
+        } else {
+            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        }
+        assert_eq!(cfg.kinds, vec!["sqlbot_mcp_start".to_string()]);
+        let _ = fs::remove_dir_all(&ds_root);
+        let _ = fs::remove_dir_all(&session_home);
     }
 
     #[test]

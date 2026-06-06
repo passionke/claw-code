@@ -1,7 +1,7 @@
 //! Per-project solve orchestration (`project_config.solve_orchestration_json` → `home/.claw/solve-orchestration.json`).
 //! MCP concurrency: `CLAW_MCP_MAX_CONCURRENT` only (`runtime::default_mcp_max_concurrent`). Author: kejiqing
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -88,14 +88,6 @@ pub fn validate_solve_orchestration_json(value: &serde_json::Value) -> Result<()
     }
 }
 
-fn ds_root_from_session_home(session_home: &Path) -> Option<PathBuf> {
-    let sessions = session_home.parent()?;
-    if sessions.file_name().and_then(|n| n.to_str()) != Some("sessions") {
-        return None;
-    }
-    sessions.parent().map(Path::to_path_buf)
-}
-
 fn parse_orchestration_file(path: &Path) -> Option<SolveOrchestrationConfig> {
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
@@ -108,11 +100,8 @@ pub fn resolve_solve_orchestration_config(session_home: &Path) -> SolveOrchestra
     if let Some(cfg) = parse_orchestration_file(&mounted) {
         return cfg;
     }
-    if let Some(ds_root) = ds_root_from_session_home(session_home) {
-        parse_orchestration_file(&ds_root.join(SOLVE_ORCHESTRATION_CONFIG_REL)).unwrap_or_default()
-    } else {
-        SolveOrchestrationConfig::default()
-    }
+    let config_root = runtime::gateway_project_config_root(session_home);
+    parse_orchestration_file(&config_root.join(SOLVE_ORCHESTRATION_CONFIG_REL)).unwrap_or_default()
 }
 
 #[cfg(test)]
