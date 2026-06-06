@@ -1,7 +1,7 @@
 use std::cmp::Reverse;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use glob::Pattern;
@@ -239,8 +239,133 @@ pub fn read_file(
     })
 }
 
+const POOL_DS_HOME_RO_ROOT: &str = "/claw_ds";
+
+fn pool_work_root() -> Option<PathBuf> {
+    std::env::var("CLAW_GATEWAY_WORK_ROOT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Pool worker: external `ds_home` is read-only (`/claw_ds/**`, `{work_root}/home/**`); session writes use `.claw/`. Author: kejiqing
+#[must_use]
+pub fn is_pool_logical_ds_home_write_path(path: &str) -> bool {
+    if pool_work_root().is_none() {
+        return false;
+    }
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let relative_home = Path::new(trimmed);
+    if relative_home
+        .components()
+        .next()
+        .is_some_and(|c| matches!(c, Component::Normal(name) if name == "home"))
+    {
+        return true;
+    }
+    let Ok(abs) = normalize_path_allow_missing(trimmed) else {
+        return false;
+    };
+    let display = abs.to_string_lossy();
+    if display == POOL_DS_HOME_RO_ROOT || display.starts_with(&format!("{POOL_DS_HOME_RO_ROOT}/")) {
+        return true;
+    }
+    if let Some(root) = pool_work_root() {
+        let home = root.join("home");
+        if abs.starts_with(&home) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Reject writes to logical `ds_home` paths in pool workers. Author: kejiqing
+pub fn reject_pool_logical_ds_home_write(path: &str) -> io::Result<()> {
+    if is_pool_logical_ds_home_write_path(path) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("ds_home is read-only in pool worker: {path}"),
+        ));
+    }
+    Ok(())
+}
+
+/// Admin `project_config` paths materialized each solve — not session-writable (avoid cross-session drift). Author: kejiqing
+#[must_use]
+pub fn is_pool_project_config_write_path(path: &str) -> bool {
+    if pool_work_root().is_none() {
+        return false;
+    }
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let relative = Path::new(trimmed);
+    if !relative.is_absolute() && relpath_is_pool_project_config(relative) {
+        return true;
+    }
+    let Ok(abs) = normalize_path_allow_missing(trimmed) else {
+        return false;
+    };
+    let Some(root) = pool_work_root() else {
+        return false;
+    };
+    match abs.strip_prefix(&root) {
+        Ok(rel) => relpath_is_pool_project_config(rel),
+        Err(_) => false,
+    }
+}
+
+fn relpath_is_pool_project_config(rel: &Path) -> bool {
+    if rel.as_os_str().is_empty() {
+        return false;
+    }
+    if rel == Path::new("CLAUDE.md") {
+        return true;
+    }
+    if rel.starts_with(".cursor/rules") {
+        return true;
+    }
+    if rel.starts_with(".claw/skills") {
+        return true;
+    }
+    matches!(
+        rel.to_str(),
+        Some(
+            ".claw/settings.json"
+                | ".claw/system_prompt_user_override.md"
+                | ".claw/system_prompt_scaffold.md"
+                | ".claw/project_allowed_tools.json"
+                | ".claw/project_config_applied_rev"
+                | "home/.claw/solve-preflight.json"
+                | "home/.claw/solve-orchestration.json"
+        )
+    )
+}
+
+/// Reject writes to Admin-managed project config in pool workers. Author: kejiqing
+pub fn reject_pool_project_config_write(path: &str) -> io::Result<()> {
+    if is_pool_project_config_write_path(path) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("project skills/rules/config are Admin-managed and read-only in solve: {path}"),
+        ));
+    }
+    Ok(())
+}
+
+pub fn reject_pool_protected_write(path: &str) -> io::Result<()> {
+    reject_pool_logical_ds_home_write(path)?;
+    reject_pool_project_config_write(path)
+}
+
 /// Replaces a file's contents and returns patch metadata.
 pub fn write_file(path: &str, content: &str) -> io::Result<WriteFileOutput> {
+    reject_pool_protected_write(path)?;
     let max_bytes = write_file_max_bytes();
     if content.len() > max_bytes {
         return Err(io::Error::new(
@@ -281,6 +406,7 @@ pub fn edit_file(
     new_string: &str,
     replace_all: bool,
 ) -> io::Result<EditFileOutput> {
+    reject_pool_protected_write(path)?;
     let absolute_path = normalize_path(path)?;
     let original_file = fs::read_to_string(&absolute_path)?;
     if old_string == new_string {
@@ -674,8 +800,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        edit_file, expand_braces, glob_search, grep_search, is_symlink_escape, read_file,
-        read_file_in_workspace, write_file, write_file_max_bytes, GrepSearchInput,
+        edit_file, expand_braces, glob_search, grep_search, is_pool_logical_ds_home_write_path,
+        is_pool_project_config_write_path, is_symlink_escape, read_file, read_file_in_workspace,
+        write_file, write_file_max_bytes, GrepSearchInput,
     };
 
     fn temp_path(name: &str) -> std::path::PathBuf {
@@ -801,6 +928,46 @@ mod tests {
         let error = result.unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("escapes workspace"));
+    }
+
+    #[test]
+    fn pool_worker_rejects_logical_ds_home_writes() {
+        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", "/claw_host_root");
+        assert!(is_pool_logical_ds_home_write_path(
+            "/claw_ds/home/schema.md"
+        ));
+        assert!(is_pool_logical_ds_home_write_path(
+            "/claw_host_root/home/skills/x/SKILL.md"
+        ));
+        assert!(is_pool_logical_ds_home_write_path("home/skills/x/SKILL.md"));
+        let err = write_file("/claw_host_root/home/forbidden.md", "x").expect_err("ds_home write");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
+    }
+
+    #[test]
+    fn pool_worker_rejects_project_config_writes() {
+        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", "/claw_host_root");
+        assert!(is_pool_project_config_write_path(
+            "/claw_host_root/.claw/skills/plan/SKILL.md"
+        ));
+        assert!(is_pool_project_config_write_path(
+            "/claw_host_root/.cursor/rules/safety.mdc"
+        ));
+        assert!(is_pool_project_config_write_path(
+            "/claw_host_root/CLAUDE.md"
+        ));
+        assert!(!is_pool_project_config_write_path(
+            "/claw_host_root/.claw/gateway-solve-session.jsonl"
+        ));
+        assert!(!is_pool_project_config_write_path(
+            "/claw_host_root/report.md"
+        ));
+        let err = write_file("/claw_host_root/.claw/skills/plan/SKILL.md", "x")
+            .expect_err("project skill write");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(err.to_string().contains("Admin-managed"));
+        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
     }
 
     #[test]

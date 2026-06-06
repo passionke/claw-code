@@ -107,7 +107,7 @@ pub struct ProjectContext {
     pub git_diff: Option<String>,
     pub git_context: Option<GitContext>,
     pub instruction_files: Vec<ContextFile>,
-    /// `home/.cursor/rules/*.mdc` from `project_config.rulesJson` (after CLAUDE.md in prompt). kejiqing
+    /// `.cursor/rules/*.mdc` from `project_config.rulesJson` (after CLAUDE.md in prompt). kejiqing
     pub rule_files: Vec<ContextFile>,
     /// HTTP gateway `extraSession` payload merged into `# Project context`. Author: kejiqing.
     pub extra_session: Option<Value>,
@@ -348,7 +348,6 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
         for candidate in [
             dir.join("CLAUDE.md"),
             dir.join("CLAUDE.local.md"),
-            dir.join("home/CLAUDE.md"),
             dir.join(".claw").join("CLAUDE.md"),
             dir.join(".claw").join("instructions.md"),
         ] {
@@ -358,11 +357,11 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
     Ok(dedupe_instruction_files(files))
 }
 
-/// Materialized `project_config` rules under `home/.cursor/rules/` (nearest ancestor from `cwd`). kejiqing
+/// Worker discovers rules via `.cursor/rules` at project root (`ds_home` on host disk stays under `home/`). kejiqing
 fn discover_project_rules_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
     let mut cursor = Some(cwd);
     while let Some(dir) = cursor {
-        let rules_root = dir.join("home").join(".cursor").join("rules");
+        let rules_root = dir.join(".cursor").join("rules");
         if fs::metadata(&rules_root).is_ok_and(|m| m.is_dir()) {
             let mut files = Vec::new();
             collect_rule_mdc_files(&rules_root, &mut files)?;
@@ -530,8 +529,7 @@ fn render_instruction_files(files: &[ContextFile]) -> String {
 fn render_project_rules(files: &[ContextFile]) -> String {
     let mut sections = vec![
         "# Project rules".to_string(),
-        "Rules from `project_config.rulesJson` (materialized under `home/.cursor/rules/`)."
-            .to_string(),
+        "Rules from `project_config.rulesJson` (worker path `.cursor/rules/`).".to_string(),
     ];
     let mut remaining_chars = max_total_instruction_chars();
     for file in files {
@@ -824,6 +822,16 @@ fn gateway_ds_home_file_exists(cwd: &Path, rel_under_ds: &str) -> Option<PathBuf
     let direct = config_root.join(rel_under_ds);
     if direct.is_file() {
         return Some(direct);
+    }
+    // Pool worker: logical ds_home is read-only at `/claw_ds`, not under tmpfs `home/`. Author: kejiqing
+    if std::env::var("CLAW_GATEWAY_WORK_ROOT")
+        .ok()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        let ro = Path::new(GATEWAY_POOL_DS_CONFIG_ROOT).join(rel_under_ds);
+        if ro.is_file() {
+            return Some(ro);
+        }
     }
     let mut cursor = Some(cwd);
     while let Some(dir) = cursor {
@@ -1352,17 +1360,13 @@ mod tests {
     fn load_system_prompt_includes_rules_when_gateway_user_override_present() {
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
-        fs::create_dir_all(root.join("home/.cursor/rules")).expect("rules dir");
+        fs::create_dir_all(root.join(".cursor/rules")).expect("rules dir");
         fs::write(
             root.join(".claw").join("system_prompt_user_override.md"),
             "custom user scaffold",
         )
         .expect("write override");
-        fs::write(
-            root.join("home/.cursor/rules/lang.mdc"),
-            "use user language",
-        )
-        .expect("write rule");
+        fs::write(root.join(".cursor/rules/lang.mdc"), "use user language").expect("write rule");
 
         let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None)
             .expect("load prompt")
@@ -1435,9 +1439,9 @@ mod tests {
     #[test]
     fn system_prompt_orders_rules_after_claude_instructions() {
         let root = temp_dir();
-        fs::create_dir_all(root.join("home/.cursor/rules")).expect("rules dir");
-        fs::write(root.join("home/CLAUDE.md"), "CLAUDE body").expect("write claude");
-        fs::write(root.join("home/.cursor/rules/safety.mdc"), "rule body").expect("write rule");
+        fs::create_dir_all(root.join(".cursor/rules")).expect("rules dir");
+        fs::write(root.join("CLAUDE.md"), "CLAUDE body").expect("write claude");
+        fs::write(root.join(".cursor/rules/safety.mdc"), "rule body").expect("write rule");
         let ctx = ProjectContext::discover(&root, "2026-03-31").expect("discover");
         let rendered = SystemPromptBuilder::new()
             .with_project_context(ctx)

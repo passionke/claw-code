@@ -317,7 +317,7 @@ async fn apply_full(
     Ok(())
 }
 
-/// Gateway canonical tree is under `home/`; claw discovery also checks `.claw/skills` and `.cursor/rules`. Author: kejiqing
+/// Host `ds_<id>/` only: `home/` is `ds_home` canonical; `.claw/skills` / `.cursor/rules` symlinks for local claw discovery. Guest pool uses `.claw` directly (no `home/`). Author: kejiqing
 pub async fn link_claw_compat_symlinks(work_dir: &Path) -> ApplyResult<()> {
     link_dir_symlink(
         work_dir,
@@ -336,20 +336,40 @@ pub async fn link_claw_compat_symlinks(work_dir: &Path) -> ApplyResult<()> {
     Ok(())
 }
 
-/// Shell run in pool guest after file materialize (same layout as [`link_claw_compat_symlinks`]). Author: kejiqing
+/// Remove legacy guest `home/` mirror and host-style `.claw/skills` symlink before project_config writes. Author: kejiqing
 #[must_use]
-pub fn guest_claw_compat_symlink_shell() -> &'static str {
+pub fn guest_prepare_worker_native_paths_shell() -> &'static str {
     r#"set -eu
 root='/claw_host_root'
-if [ -d "$root/home/skills" ]; then
-  mkdir -p "$root/.claw"
-  rm -rf "$root/.claw/skills"
-  ln -sfn ../home/skills "$root/.claw/skills"
+rm -rf "$root/home"
+if [ -L "$root/.claw/skills" ]; then
+  rm -f "$root/.claw/skills"
 fi
-if [ -d "$root/home/.cursor/rules" ]; then
-  mkdir -p "$root/.cursor"
-  rm -rf "$root/.cursor/rules"
-  ln -sfn ../home/.cursor/rules "$root/.cursor/rules"
+"#
+}
+
+/// After PG materialize: project skills/rules/config are read-only for the solve uid (Admin owns writes). Author: kejiqing
+#[must_use]
+pub fn guest_lock_project_config_shell() -> &'static str {
+    r#"set -eu
+root='/claw_host_root'
+for rel in \
+  CLAUDE.md \
+  .claw/settings.json \
+  .claw/system_prompt_user_override.md \
+  .claw/system_prompt_scaffold.md \
+  .claw/project_allowed_tools.json \
+  .claw/project_config_applied_rev \
+  home/.claw/solve-preflight.json \
+  home/.claw/solve-orchestration.json
+do
+  if [ -e "$root/$rel" ]; then chmod a-w "$root/$rel" 2>/dev/null || true; fi
+done
+if [ -d "$root/.claw/skills" ]; then
+  find "$root/.claw/skills" -exec chmod a-w {} + 2>/dev/null || true
+fi
+if [ -d "$root/.cursor/rules" ]; then
+  find "$root/.cursor/rules" -exec chmod a-w {} + 2>/dev/null || true
 fi
 "#
 }
@@ -563,19 +583,13 @@ fn push_rules_writes(out: &mut Vec<GuestMaterializeWrite>, rules: &Value) -> App
             ProjectConfigApplyError::new(format!("rulesJson[{i}] missing content"))
         })?;
         let rel_path = safe_rel_under_home(rel)?;
-        push_write(
-            out,
-            PathBuf::from("home").join(rel_path),
-            content.as_bytes().to_vec(),
-        );
+        push_write(out, rel_path, content.as_bytes().to_vec());
     }
     Ok(())
 }
 
 fn push_claude_writes(out: &mut Vec<GuestMaterializeWrite>, text: &str) {
-    let bytes = text.as_bytes().to_vec();
-    push_write(out, PathBuf::from("home/CLAUDE.md"), bytes.clone());
-    push_write(out, PathBuf::from("CLAUDE.md"), bytes);
+    push_write(out, PathBuf::from("CLAUDE.md"), text.as_bytes().to_vec());
 }
 
 fn push_skills_writes(out: &mut Vec<GuestMaterializeWrite>, skills: &Value) -> ApplyResult<()> {
@@ -602,7 +616,7 @@ fn push_skills_writes(out: &mut Vec<GuestMaterializeWrite>, skills: &Value) -> A
             })?;
         push_write(
             out,
-            PathBuf::from("home/skills")
+            PathBuf::from(".claw/skills")
                 .join(skill_name)
                 .join("SKILL.md"),
             content.as_bytes().to_vec(),
@@ -766,6 +780,74 @@ mod tests {
     }
 
     #[test]
+    fn build_guest_materialize_writes_uses_worker_native_paths() {
+        let row = ProjectConfigRow {
+            ds_id: 1,
+            content_rev: "rev-2".into(),
+            stable_content_rev: Some("rev-2".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([{
+                "relativePath": ".cursor/rules/safety.mdc",
+                "content": "rule body"
+            }]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([{"skillName": "plan", "skillContent": "skill body"}]),
+            allowed_tools_json: json!([]),
+            claude_md: Some("claude body".into()),
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            extra_session_fields_json: json!([]),
+        };
+        let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
+        let paths: Vec<_> = writes.iter().map(|w| w.rel_path.clone()).collect();
+        assert!(paths.contains(&PathBuf::from(".claw/skills/plan/SKILL.md")));
+        assert!(!paths.iter().any(|p| p.starts_with("home/skills")));
+        assert!(paths.contains(&PathBuf::from(".cursor/rules/safety.mdc")));
+        assert!(!paths.iter().any(|p| p.starts_with("home/.cursor")));
+        assert!(paths.contains(&PathBuf::from("CLAUDE.md")));
+    }
+
+    #[tokio::test]
+    async fn guest_prepare_shell_drops_home_and_claw_skills_symlink() {
+        let root = std::env::temp_dir().join(format!(
+            "claw-guest-prepare-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join(".claw"))
+            .await
+            .expect("claw dir");
+        fs::create_dir_all(root.join("home/skills/plan"))
+            .await
+            .expect("home skills");
+        fs::write(root.join("home/skills/plan/SKILL.md"), "old")
+            .await
+            .expect("old skill");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("../home/skills", root.join(".claw/skills"))
+                .expect("loop symlink");
+        }
+        let script = guest_prepare_worker_native_paths_shell()
+            .replace("/claw_host_root", &root.display().to_string());
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .status()
+            .await
+            .expect("run prepare shell");
+        assert!(status.success(), "guest prepare shell failed");
+        assert!(!root.join("home").exists());
+        assert!(!root.join(".claw/skills").exists());
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[test]
     fn build_guest_materialize_writes_includes_claude_and_settings() {
         let row = ProjectConfigRow {
             ds_id: 1,
@@ -792,7 +874,8 @@ mod tests {
         assert!(paths
             .iter()
             .any(|p| p.contains("system_prompt_user_override")));
-        assert!(paths.iter().any(|p| p.ends_with("home/CLAUDE.md")));
+        assert!(paths.iter().any(|p| p.ends_with("CLAUDE.md")));
+        assert!(!paths.iter().any(|p| p.contains("home/CLAUDE.md")));
         let settings = writes
             .iter()
             .find(|w| w.rel_path == PathBuf::from(".claw/settings.json"))

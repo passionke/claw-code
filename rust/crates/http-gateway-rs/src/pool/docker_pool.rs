@@ -1303,6 +1303,17 @@ exec_targets_readonly_claw_ds() {{
   done
   return 0
 }}
+exec_targets_readonly_project_config() {{
+  for arg in "$@"; do
+    case "$arg" in
+      */.claw/skills/*|*/.claw/skills|*/.cursor/rules/*|*/.cursor/rules|*/CLAUDE.md)
+        echo "tee: $arg: Permission denied" >&2
+        return 1
+        ;;
+    esac
+  done
+  return 0
+}}
 case "${{1:-}}" in
 run)
   log "run:$*"
@@ -1312,6 +1323,7 @@ run)
 exec)
   log "exec:$*"
   exec_targets_readonly_claw_ds "$@" || exit 2
+  exec_targets_readonly_project_config "$@" || exit 1
   printf '%s\n' '{{"clawExitCode":0,"outputText":"ok","outputJson":null}}'
   exit 0
   ;;
@@ -1768,7 +1780,58 @@ esac
     }
 
     #[tokio::test]
-    async fn worker_can_write_under_claw_host_root() {
+    async fn worker_cannot_write_under_claw_ds_home() {
+        let (_base, work, bin_path) = test_layout();
+        let pool =
+            DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "dshomewr"))
+                .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
+        let cname = pool.test_leased_container_name(&lease).await;
+        let argv = [
+            "exec",
+            "--user",
+            "1000:1000",
+            cname.as_str(),
+            "tee",
+            "/claw_ds/home/forbidden.txt",
+        ];
+        let bin = bin_path.to_string_lossy();
+        let out = runtime_exec(bin.as_ref(), &argv).await.unwrap();
+        assert!(
+            !out.status.success(),
+            "tee under /claw_ds/home must fail on ro bind, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_cannot_write_project_skills() {
+        let (_base, work, bin_path) = test_layout();
+        let pool =
+            DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "skillwr"))
+                .unwrap();
+        let (_sid, lease) = acquire_test(&pool, &work).await;
+        let cname = pool.test_leased_container_name(&lease).await;
+        let dest = format!("{GUEST_WORK_ROOT}/.claw/skills/existing/SKILL.md");
+        let argv = [
+            "exec",
+            "--user",
+            "1000:1000",
+            cname.as_str(),
+            "tee",
+            dest.as_str(),
+        ];
+        let bin = bin_path.to_string_lossy();
+        let out = runtime_exec(bin.as_ref(), &argv).await.unwrap();
+        assert!(
+            !out.status.success(),
+            "tee under project .claw/skills must fail (Admin-managed), stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_can_write_session_file_at_work_root() {
         let (base, work, bin_path) = test_layout();
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "gwrite"))

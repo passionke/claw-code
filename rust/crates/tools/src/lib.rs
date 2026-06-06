@@ -3472,12 +3472,7 @@ fn push_project_skill_lookup_roots(roots: &mut Vec<SkillLookupRoot>, cwd: &std::
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".claw"));
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".codex"));
         push_prefixed_skill_lookup_roots(roots, &ancestor.join(".claude"));
-        // `http-gateway-rs` project skills: `ds_<id>/home/skills/<name>/SKILL.md` (same layout as git mirror).
-        push_skill_lookup_root(
-            roots,
-            ancestor.join("home").join("skills"),
-            SkillLookupOrigin::SkillsDir,
-        );
+        // Pool guest materializes skills under `.claw/skills/`; host ds_home uses `home/skills/` on disk.
     }
 }
 

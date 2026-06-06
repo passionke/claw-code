@@ -58,6 +58,13 @@ pub async fn materialize_in(
             extract_workspace_tar_b64(runtime_bin, container_name, worker_exec_user, b64).await?;
         }
     }
+    exec_sh_lc_as_user(
+        runtime_bin,
+        container_name,
+        worker_exec_user,
+        project_config_apply::guest_prepare_worker_native_paths_shell(),
+    )
+    .await?;
 
     let task = db
         .get_solve_task_json(&input.turn_id)
@@ -103,7 +110,7 @@ pub async fn materialize_in(
         runtime_bin,
         container_name,
         worker_exec_user,
-        project_config_apply::guest_claw_compat_symlink_shell(),
+        project_config_apply::guest_lock_project_config_shell(),
     )
     .await?;
     Ok(())
@@ -264,7 +271,9 @@ list=$(mktemp)
 trap 'rm -f "$tmp" "$list"' EXIT
 find {GUEST_WORK_ROOT} -type f \
   ! -path '{GUEST_WORK_ROOT}/gateway-solve-task.json' \
-  ! -path '{GUEST_WORK_ROOT}/.claw/*' 2>/dev/null \
+  ! -path '{GUEST_WORK_ROOT}/.claw/*' \
+  ! -path '{GUEST_WORK_ROOT}/.cursor/rules/*' \
+  ! -path '{GUEST_WORK_ROOT}/CLAUDE.md' 2>/dev/null \
   | sed "s|^{GUEST_WORK_ROOT}/||" > "$list" || true
 if [ ! -s "$list" ]; then
   printf '0\n'

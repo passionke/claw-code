@@ -116,6 +116,14 @@ impl PermissionEnforcer {
                 reason: format!("file writes are not allowed in '{}' mode", mode.as_str()),
             },
             PermissionMode::WorkspaceWrite => {
+                if let Err(error) = crate::file_ops::reject_pool_protected_write(path) {
+                    return EnforcementResult::Denied {
+                        tool: "write_file".to_owned(),
+                        active_mode: mode.as_str().to_owned(),
+                        required_mode: PermissionMode::WorkspaceWrite.as_str().to_owned(),
+                        reason: error.to_string(),
+                    };
+                }
                 if is_within_workspace(path, workspace_root) {
                     EnforcementResult::Allowed
                 } else {
@@ -581,5 +589,34 @@ mod tests {
             }
             other => panic!("expected denied result, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn workspace_write_denies_logical_ds_home_in_pool() {
+        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", "/claw_host_root");
+        let enforcer = make_enforcer(PermissionMode::WorkspaceWrite);
+        let result = enforcer.check_file_write("/claw_host_root/home/x.md", "/claw_host_root");
+        match result {
+            EnforcementResult::Denied { reason, .. } => {
+                assert!(reason.contains("ds_home is read-only"));
+            }
+            other => panic!("expected denied result, got {other:?}"),
+        }
+        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
+    }
+
+    #[test]
+    fn workspace_write_denies_project_config_in_pool() {
+        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", "/claw_host_root");
+        let enforcer = make_enforcer(PermissionMode::WorkspaceWrite);
+        let result =
+            enforcer.check_file_write("/claw_host_root/.claw/skills/x/SKILL.md", "/claw_host_root");
+        match result {
+            EnforcementResult::Denied { reason, .. } => {
+                assert!(reason.contains("Admin-managed"));
+            }
+            other => panic!("expected denied result, got {other:?}"),
+        }
+        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
     }
 }
