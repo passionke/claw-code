@@ -42,6 +42,8 @@ interface AppContextValue {
   gatewayOptions: { label: string; value: string }[];
   /** Multiple claw_pool rows with gatewayBase — else hide meaningless picker. Author: kejiqing */
   showGatewayPicker: boolean;
+  /** GET /v1/pools from default gateway — turn route labels. Author: kejiqing */
+  clusterPools: ListClawPoolsResponse | null;
   /** From GET /healthz deployImageTag (local | release-vX.Y.Z | …). Author: kejiqing */
   gatewayImageTag: string;
 }
@@ -217,6 +219,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     applyProjectConfig,
     gatewayOptions,
     showGatewayPicker,
+    clusterPools,
     gatewayImageTag,
   };
 
