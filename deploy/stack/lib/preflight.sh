@@ -23,7 +23,8 @@ claw_deploy_preflight() {
   if [[ ! -S "${sock}" ]] || [[ ! -r "${sock}" || ! -w "${sock}" ]]; then
     echo "error: cannot use container socket: ${sock}" >&2
     if [[ "${rt}" == docker ]]; then
-      echo "hint: start Docker; production uses CLAW_CONTAINER_RUNTIME=docker (no CLAW_CONTAINER_SOCKET)" >&2
+      echo "hint: sudo systemctl start docker  OR  ./deploy/stack/gateway.sh install-docker" >&2
+      echo "      production uses CLAW_CONTAINER_RUNTIME=docker (no CLAW_CONTAINER_SOCKET)" >&2
     else
       echo "hint: podman machine start (macOS) or set CLAW_CONTAINER_SOCKET (Linux rootless)" >&2
     fi

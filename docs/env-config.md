@@ -9,7 +9,7 @@ Set **one** knob in repo root `.env`:
 | `CLAW_DEPLOY_PROFILE` | OS / runtime | Solve pool | Images | Start |
 | --- | --- | --- | --- | --- |
 | **`local`** (default on macOS) | Podman + macOS | `podman_pool` | `pack-deploy local` → `:local` tags | `./deploy/stack/gateway.sh pack-deploy local` then `up` |
-| **`production`** (default on Linux) | Docker + Linux | `docker_pool` | CI only: `up --release release-vX.Y.Z` | `./deploy/stack/gateway.sh up --release release-v1.4.5` |
+| **`production`** (default on Linux) | Docker + Linux | `docker_pool` | CI only: `up --release release-vX.Y.Z` | `./deploy/stack/gateway.sh install-docker` then `up --release release-v1.4.5` |
 
 Scripts apply defaults via `deploy/stack/lib/env-profile.sh` after sourcing `.env`. **Do not** mix `podman_pool` with `CLAW_DEPLOY_PROFILE=production`, or `docker_pool` with `local`.
 
