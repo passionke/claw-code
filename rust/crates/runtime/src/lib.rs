@@ -206,3 +206,85 @@ pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+
+/// RAII guard for one env var under [`test_env_lock`]; restores the prior value on drop.
+///
+/// Use when parallel tests must set or clear process env without leaking state to siblings.
+/// Do not nest two guards in the same thread (the lock is not reentrant).
+#[cfg(test)]
+pub(crate) struct ScopedEnvVar {
+    #[allow(dead_code)]
+    lock: std::sync::MutexGuard<'static, ()>,
+    key: String,
+    previous: Option<String>,
+}
+
+#[cfg(test)]
+impl ScopedEnvVar {
+    pub fn set(key: impl Into<String>, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let key = key.into();
+        let lock = test_env_lock();
+        let previous = std::env::var(&key).ok();
+        std::env::set_var(&key, value);
+        Self {
+            lock,
+            key,
+            previous,
+        }
+    }
+
+    pub fn unset(key: impl Into<String>) -> Self {
+        let key = key.into();
+        let lock = test_env_lock();
+        let previous = std::env::var(&key).ok();
+        std::env::remove_var(&key);
+        Self {
+            lock,
+            key,
+            previous,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        if let Some(value) = self.previous.take() {
+            std::env::set_var(&self.key, value);
+        } else {
+            std::env::remove_var(&self.key);
+        }
+    }
+}
+
+/// Convenience wrapper around [`ScopedEnvVar`]: `None` clears the variable for the scope.
+#[cfg(test)]
+pub(crate) fn scoped_env_var(key: impl Into<String>, value: Option<&str>) -> ScopedEnvVar {
+    match value {
+        Some(v) => ScopedEnvVar::set(key, v),
+        None => ScopedEnvVar::unset(key),
+    }
+}
+
+#[cfg(test)]
+mod scoped_env_var_tests {
+    use super::{scoped_env_var, ScopedEnvVar};
+
+    #[test]
+    fn scoped_env_var_set_and_unset_restore() {
+        let key = concat!("RUNTIME_SCOPED_ENV_", line!());
+        {
+            let _scoped = ScopedEnvVar::set(key, "scoped");
+            assert_eq!(std::env::var(key).ok().as_deref(), Some("scoped"));
+        }
+        assert!(std::env::var(key).is_err());
+
+        std::env::set_var(key, "keep");
+        {
+            let _scoped = scoped_env_var(key, Some("inner"));
+            assert_eq!(std::env::var(key).ok().as_deref(), Some("inner"));
+        }
+        assert_eq!(std::env::var(key).ok().as_deref(), Some("keep"));
+        std::env::remove_var(key);
+    }
+}
