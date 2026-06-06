@@ -17,6 +17,7 @@ import PreflightPage from "./pages/PreflightPage";
 import GlobalSettingsRedirect from "./pages/GlobalSettingsRedirect";
 import GitPatsPage from "./pages/global/GitPatsPage";
 import GlobalInferencePage from "./pages/global/GlobalInferencePage";
+import GlobalPoolsPage from "./pages/global/GlobalPoolsPage";
 import ChatPage from "./pages/ChatPage";
 
 export default function App() {
@@ -63,6 +64,7 @@ export default function App() {
               <Route path="global/models" element={<Navigate to="/global/inference" replace />} />
               <Route path="global/claw-tap" element={<Navigate to="/global/inference" replace />} />
               <Route path="global/pats" element={<GitPatsPage />} />
+              <Route path="global/pools" element={<GlobalPoolsPage />} />
             </Route>
           </Route>
         </Route>

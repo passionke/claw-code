@@ -4,9 +4,11 @@ Author: kejiqing
 
 Each **`claw-pool-daemon`** registers in PostgreSQL; each running turn records which pool and worker ran it.
 
-**Deployment locality (KISS):** solve/cancel **RPC** is **same-host only**. Gateway always dials **`CLAW_POOL_DAEMON_TCP`** / **`CLAW_POOL_DAEMON_SOCKET`** (one co-located daemon). It does **not** look up `pool_id` in DB to pick an RPC target. Multi-machine = multiple **(gateway + pool)** pairs; each gateway only commands its own pool.
+**Deployment locality (KISS):** solve/cancel **RPC** is **same-host only**. Each machine runs **gateway + pool daemon** together. Gateway dials co-located pool via **`CLAW_POOL_HTTP_BASE`** / `CLAW_POOL_DAEMON_*`. It does **not** look up `pool_id` in DB to pick an RPC target for new solves.
 
-**Cross-host** use of `claw_pool` today is mainly **observability** and **live SSE HTTP proxy** (read path), not remote exec.
+**Multi-machine:** share one PostgreSQL; each host runs its own `(gateway + pool)` pair. **`claw_pool`** lists all registered pools; **`GET /v1/pools`** and Admin **Pool 集群** expose the registry. Playground chat turn cards show **`poolId`** / **`workerName`** per turn.
+
+**Cross-host** use of `claw_pool` is **observability**, **live SSE HTTP proxy** (read path), and **turn metadata in API/UI** — not remote exec.
 
 ## `claw_pool` table
 
@@ -23,8 +25,8 @@ Each **`claw-pool-daemon`** registers in PostgreSQL; each running turn records w
 
 | Column | Set when |
 |--------|----------|
-| `pool_id` | Pool `exec_solve` starts (before `docker exec`) |
-| `worker_name` | Container name (`docker ps` / `podman ps`) |
+| `pool_id` | Gateway **enqueue prebind** (`CLAW_POOL_ID` / co-located); confirmed on pool exec |
+| `worker_name` | Pool `exec_solve` starts (container name) |
 
 ## Worker / task file
 
@@ -40,6 +42,35 @@ On exec, pool passes env: `CLAW_POOL_ID`, `CLAW_SESSION_ID`, `CLAW_TURN_ID`, `CL
 | **Live SSE** (`GET …?stream=true`, running) | **必须** DB join `gateway_turns.pool_id` → `claw_pool` → `http://{advertise_ip}:{sse_port}` | 无 join → Gateway **503**（已禁用 `CLAW_POOL_HTTP_BASE` fallback） |
 
 For `running` / `queued` stream: join `gateway_turns.pool_id` → `claw_pool`, proxy to `http://{advertise_ip}:{sse_port}/v1/biz_advice_report/live`. **禁止**静默 fallback；`pool_id` 未预绑或 `claw_pool` 无行时客户端收到明确错误。
+
+## Admin / API observability
+
+| Surface | Purpose |
+|---------|---------|
+| **`GET /v1/pools`** | All `claw_pool` rows + `coLocatedPoolId` for this gateway |
+| **Admin → 全局配置 → Pool 集群** | Table view; 30s refresh |
+| **Playground chat turn card** | Cyan **`pool {poolId}`** tag per turn; tooltip **`workerName`** when set |
+| **`GET /v1/sessions/…/turns`**, **`GET /v1/tasks/…`**, **`POST /v1/solve_async`** | JSON fields `poolId`, `workerName` |
+
+Playground **solve and poll should use the same `gatewayBase`** (same host). Cross-gateway status poll has known gaps for running progress/cancel; see [`deploy-ops-truth.md`](deploy-ops-truth.md).
+
+## Multi-host deploy (shared PG)
+
+Each pool host `.env` (or `pool-daemon.env`):
+
+| Variable | Value |
+|----------|--------|
+| `CLAW_POOL_DAEMON_DATABASE_URL` or host-rewritten `CLAW_GATEWAY_DATABASE_URL` | Central PostgreSQL (host must **not** use `@postgres:` — see `claw-pool-registry-env.sh`) |
+| `CLAW_POOL_ID` | Globally unique (e.g. `pool-prod-02`) |
+| `CLAW_POOL_ADVERTISE_HOST` | LAN IP reachable by gateways for live SSE proxy |
+
+**Acceptance on each host** (from repo root):
+
+```bash
+./deploy/stack/gateway.sh pack-deploy local
+./deploy/stack/lib/admin-solve-e2e.sh 1 ping
+./deploy/stack/gateway.sh verify
+```
 
 ## Env (pool daemon)
 

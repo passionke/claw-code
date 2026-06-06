@@ -1,5 +1,5 @@
 import { StopOutlined } from "@ant-design/icons";
-import { Button, Collapse, Popconfirm, Space, Typography, message } from "antd";
+import { Button, Collapse, Popconfirm, Space, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useBizReportStream } from "../../hooks/useBizReportStream";
@@ -44,6 +44,9 @@ export interface ChatTurnCardProps {
   extraSession?: Record<string, unknown> | null;
   createdAtMs?: number;
   finishedAtMs?: number | null;
+  /** Prebound pool at enqueue (history or solve_async). Author: kejiqing */
+  initialPoolId?: string | null;
+  initialWorkerName?: string | null;
 }
 
 function todoStatusMark(status: string): string {
@@ -68,6 +71,16 @@ function statusLabel(task: SolveTask): string {
 }
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+
+function gatewayHostLabel(base: string): string {
+  const t = base.trim();
+  if (!t) return "—";
+  try {
+    return new URL(t).host;
+  } catch {
+    return t.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") || t;
+  }
+}
 
 /** 历史回放：按 turn 从 DB 拉 JSON 报告。Author: kejiqing */
 async function fetchHistoryReport(
@@ -111,6 +124,8 @@ export default function ChatTurnCard({
   extraSession,
   createdAtMs,
   finishedAtMs,
+  initialPoolId,
+  initialWorkerName,
 }: ChatTurnCardProps) {
   const historyMode = viewMode === "history";
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
@@ -357,6 +372,32 @@ export default function ChatTurnCard({
     showArrow: false,
   }));
 
+  const poolId = (task.poolId ?? initialPoolId ?? "").trim();
+  const workerName = (task.workerName ?? initialWorkerName ?? "").trim();
+  const gwLabel = gatewayHostLabel(gatewayBase);
+
+  const poolTag = !poolId ? (
+    <Tag color="warning" className={styles.turnRouteTag}>
+      pool —
+    </Tag>
+  ) : (
+    <Tag color="cyan" className={styles.turnRouteTag}>
+      pool {poolId}
+    </Tag>
+  );
+
+  const workerTag = workerName ? (
+    <Tooltip title="exec 当时的 worker 容器名；池回收后容器可能已销毁，仅作历史记录">
+      <Tag color="purple" className={styles.turnRouteTag}>
+        worker {workerName}
+      </Tag>
+    </Tooltip>
+  ) : (
+    <Tooltip title="queued 阶段尚无 worker；running 后由 pool 写入 workerName">
+      <Tag className={`${styles.turnRouteTag} ${styles.turnRouteTagMuted}`}>worker …</Tag>
+    </Tooltip>
+  );
+
   return (
     <div className={styles.turnCard}>
       <div className={styles.turnTop}>
@@ -374,6 +415,15 @@ export default function ChatTurnCard({
           <span>
             turn <code>{turnId}</code>
           </span>
+        </div>
+        <div className={styles.turnRoute}>
+          <Tooltip title={gatewayBase || "未选择网关"}>
+            <Tag color="geekblue" className={styles.turnRouteTag}>
+              gateway {gwLabel}
+            </Tag>
+          </Tooltip>
+          {poolTag}
+          {workerTag}
         </div>
         <div className={styles.turnStatus}>
           <span className={dotClass} />
