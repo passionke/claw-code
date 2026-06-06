@@ -381,6 +381,7 @@ claw_container_runtime_cli() {
     docker)
       if ! command -v docker >/dev/null 2>&1; then
         echo "error: CLAW_CONTAINER_RUNTIME=docker but docker is not in PATH" >&2
+        echo "hint: ./deploy/stack/gateway.sh install-docker   (Linux production)" >&2
         return 1
       fi
       printf '%s\n' docker
@@ -392,6 +393,9 @@ claw_container_runtime_cli() {
         printf '%s\n' docker
       else
         echo "error: neither podman nor docker in PATH; install one or set CLAW_CONTAINER_RUNTIME" >&2
+        if [[ "$(uname -s)" == "Linux" ]]; then
+          echo "hint: ./deploy/stack/gateway.sh install-docker   (production docker_pool)" >&2
+        fi
         return 1
       fi
       ;;

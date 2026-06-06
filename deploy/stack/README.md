@@ -76,6 +76,14 @@ Author: kejiqing
 
 ### 1.1 环境
 
+**Linux 线上首次**：宿主机须装 **Docker**（`docker_pool` + compose）。标准化一条命令（与网关镜像内 `docker.io` 包一致；默认配置 `docker.1ms.run` 拉取镜像；`CLAW_USE_DOCKER_IO=1` 跳过镜像加速）：
+
+```bash
+./deploy/stack/gateway.sh install-docker
+```
+
+装完后当前用户若还不能访问 `/var/run/docker.sock`，执行 `newgrp docker` 或重新登录。
+
 ```bash
 # macOS 本地
 cp deploy/stack/env.local.example .env

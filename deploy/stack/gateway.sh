@@ -28,6 +28,7 @@ Commands:
   pool-reset    Stop host pool daemon + remove all claw-worker containers
   pool-up       Start host claw-pool-daemon if HTTP down (skips if already listening; --restart to replace)
   fix-workspace chown ds_* sessions + pool slots to CLAW_WORKER_UID (before up if preflight failed)
+  install-docker  Linux production: apt/dnf install docker.io + compose + registry mirror (idempotent)
   check         Connectivity smoke check (auto pool-up if HTTP down)
   solve-e2e     Admin-equivalent solve_async + poll to succeeded/failed (real gate, not healthz)
   verify        Stack truth checks (schema, pool registry, binary); fails loud
@@ -85,6 +86,7 @@ case "${cmd}" in
   pool-reset) "${LIB}/pool-reset.sh" "$@" ;;
   pool-up) "${LIB}/pool-daemon-up.sh" "$@" ;;
   fix-workspace) "${LIB}/fix-session-ownership.sh" "$@" ;;
+  install-docker) "${LIB}/install-docker.sh" "$@" ;;
   check) "${LIB}/check-connectivity.sh" "$@" ;;
   solve-e2e) "${LIB}/admin-solve-e2e.sh" "$@" ;;
   verify) "${LIB}/claw-stack-verify.sh" "$@" ;;
