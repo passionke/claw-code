@@ -55,10 +55,7 @@ fn mock_router(state: Arc<MockGateway>) -> Router {
                         } else {
                             "hello from mock gateway"
                         };
-                        state.push_event(
-                            &tid,
-                            json!({"type":"text.delta","text": reply}),
-                        );
+                        state.push_event(&tid, json!({"type":"text.delta","text": reply}));
                         state.tasks.lock().expect("lock").insert(
                             tid.clone(),
                             json!({
@@ -166,15 +163,15 @@ async fn bridge_agent_run_against_mock_gateway() {
     let resp = client
         .post(format!("http://127.0.0.1:{bridge_port}/v1/agent/run"))
         .json(&json!({
-            "threadId": "mock-thread",
-            "runId": "mock-run",
-            "messages": [{"role": "user", "content": "ping"}],
-            "tools": [],
-                "forwardedProps": {"dsId": 1, "sessionId": "mock-thread"}
-            }))
-            .send()
-            .await
-            .expect("post");
+        "threadId": "mock-thread",
+        "runId": "mock-run",
+        "messages": [{"role": "user", "content": "ping"}],
+        "tools": [],
+            "forwardedProps": {"dsId": 1, "sessionId": "mock-thread"}
+        }))
+        .send()
+        .await
+        .expect("post");
     assert!(resp.status().is_success());
     let body = resp.text().await.expect("body");
     assert!(body.contains("RUN_STARTED"), "body: {body}");
@@ -218,12 +215,7 @@ async fn bridge_second_turn_does_not_replay_first_reply() {
     let client = reqwest::Client::new();
     let thread_id = "session-two-turn";
     for (run_id, prompt, must_contain, must_not) in [
-        (
-            "run-1",
-            "你好",
-            "hello from mock gateway",
-            "mock joke",
-        ),
+        ("run-1", "你好", "hello from mock gateway", "mock joke"),
         ("run-2", "说个笑话", "mock joke", "hello from mock gateway"),
     ] {
         let resp = client

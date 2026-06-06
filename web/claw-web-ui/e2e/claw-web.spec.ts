@@ -38,6 +38,30 @@ test.describe("Claw Web UI", () => {
     await expect(page.locator("body")).toContainText(/\bok\b/i, { timeout: 90_000 });
   });
 
+  test("W4: conversation list new + switch", async ({ page }) => {
+    await page.goto("/");
+    const list = page.getByTestId("claw-conversation-list");
+    await expect(list).toBeVisible({ timeout: 30_000 });
+
+    await list.getByRole("button", { name: "新建对话" }).click();
+    const sessionEl = page.getByTestId("claw-session-id");
+    await expect(sessionEl).toBeVisible();
+    const sessionA = (await sessionEl.locator(".claw-session-id-value").textContent())?.trim();
+    expect(sessionA).toBeTruthy();
+
+    await list.getByRole("button", { name: "新建对话" }).click();
+    const sessionB = (await sessionEl.locator(".claw-session-id-value").textContent())?.trim();
+    expect(sessionB).toBeTruthy();
+    expect(sessionB).not.toBe(sessionA);
+
+    const itemA = list.locator(`button.claw-conv-item[title="${sessionA}"]`);
+    await itemA.click();
+    await expect(sessionEl.locator(".claw-session-id-value")).toHaveText(sessionA!, {
+      timeout: 10_000,
+    });
+    await expect(itemA).toHaveClass(/active/);
+  });
+
   test("W6: continuation on same thread", async ({ page }) => {
     await page.goto("/");
     const input = page.locator(

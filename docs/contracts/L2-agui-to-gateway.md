@@ -1,6 +1,6 @@
 # L2 — ag-ui-claw-bridge → http-gateway-rs
 
-Version: **v1**  
+Version: **v1.1** (additive: tool stream)  
 Author: kejiqing
 
 ## Purpose
@@ -47,17 +47,46 @@ Headers:
 ```json
 {"type":"solve.queued","taskId":"...","tsMs":0}
 {"type":"text.delta","text":"hello"}
-{"type":"tool.start","toolName":"bash","toolCallId":"..."}
-{"type":"tool.end","toolCallId":"...","ok":true}
+{"type":"tool.start","toolName":"write_file","toolCallId":"tc-1"}
+{"type":"tool.result","toolCallId":"tc-1","toolName":"write_file","ok":true,"summary":"创建 pi_power.py（4 行）","payloadKind":"file_write","payload":{"type":"create","filePath":"/claw_host_root/pi_power.py","structuredPatch":[...]}}
+{"type":"tool.end","toolCallId":"tc-1","ok":true}
 {"type":"solve.finished","status":"succeeded"}
 ```
 
+### `tool.result` envelope (v1.1)
+
+Gateway **MUST** emit `tool.start` → `tool.result` → `tool.end` for each tool invocation (when tap is enabled).  
+`text.delta` **MUST** contain only user-visible natural language — **never** raw tool JSON.
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `toolCallId` | yes | Stable id for this invocation |
+| `toolName` | yes | e.g. `write_file`, `bash`, `mcp__doris__query` |
+| `ok` | yes | Tool succeeded |
+| `summary` | yes | One-line human text for diagnostics + history |
+| `payloadKind` | yes | UI router key (see table below) |
+| `payload` | yes | Tool-native JSON (opaque to bridge) |
+| `error` | when `ok=false` | Short error string |
+
+**`payloadKind` (v1.1 minimum):**
+
+| `payloadKind` | Tool(s) | `payload` shape |
+|---------------|---------|-----------------|
+| `file_write` | `write_file` | `WriteFileOutput` (`type`: `create`, `filePath`, `structuredPatch`, …) |
+| `file_edit` | `edit_file` | `EditFileOutput` |
+| `file_read` | `read_file` | `ReadFileOutput` |
+| `bash` | `bash` | `{ "command", "stdout", "stderr", "exitCode" }` |
+| `generic` | other | any JSON |
+
+Rust reference: `runtime/src/file_ops.rs` (`WriteFileOutput`, `StructuredPatchHunk`).
+
 Bridge maps:
 
-| Tap `type` | AG-UI event |
-|------------|-------------|
-| `text.delta` | `TEXT_MESSAGE_CONTENT` |
-| `tool.start` | `TOOL_CALL_START` |
+| Tap `type` | AG-UI / client (L1 Option A) |
+|------------|------------------------------|
+| `text.delta` | `TEXT_MESSAGE_CONTENT` (natural language only) |
+| `tool.start` | `TOOL_CALL_START` (`toolCallId`, **`toolCallName`** — bridge reads tap `toolName` and maps to AG-UI field name) |
+| `tool.result` | `TEXT_MESSAGE_CONTENT` append: fenced `` ```claw-tool `` block (full envelope JSON) |
 | `tool.end` | `TOOL_CALL_END` |
 | `solve.finished` | `RUN_FINISHED` |
 | `solve.failed` | `RUN_ERROR` |

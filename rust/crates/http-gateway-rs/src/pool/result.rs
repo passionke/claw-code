@@ -47,7 +47,10 @@ pub fn parse_gateway_solve_exec_stdout(
 }
 
 /// Legacy workers put the full solve JSON bundle in `outputText`; prefer `message` / `outputJson.message`.
-pub fn normalize_user_visible_output_text(output_text: &str, output_json: &Option<Value>) -> String {
+pub fn normalize_user_visible_output_text(
+    output_text: &str,
+    output_json: &Option<Value>,
+) -> String {
     if let Some(msg) = output_json
         .as_ref()
         .and_then(|j| j.get("message"))

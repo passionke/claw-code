@@ -108,6 +108,7 @@ struct AppState {
     /// Serialize git and working-tree reads/writes on the shared `.claw-code-projects` clone. kejiqing
     projects_git_mirror_lock: Arc<Mutex<()>>,
     event_tap: http_gateway_rs::agui::EventTapHub,
+    tool_tap: http_gateway_rs::tool_tap::ToolTapHub,
     interrupt_hub: http_gateway_rs::agui::InterruptHub,
     auth_audit: http_gateway_rs::auth_audit::AuthAuditState,
 }
@@ -872,6 +873,7 @@ async fn main() {
         docker_pool,
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
         event_tap: http_gateway_rs::agui::EventTapHub::default(),
+        tool_tap: http_gateway_rs::tool_tap::ToolTapHub::default(),
         interrupt_hub: http_gateway_rs::agui::InterruptHub::default(),
         auth_audit: http_gateway_rs::auth_audit::AuthAuditState::from_env(),
     };
@@ -2933,6 +2935,11 @@ async fn refresh_task_progress(state: &AppState, task_id: &str) {
             .as_ref()
             .and_then(|home| read_task_progress(home))
             .map(|p| p.updated_at_ms);
+        if let Some(home) = session_home.as_ref() {
+            state
+                .tool_tap
+                .sync_session_jsonl(task_id, home, &state.event_tap);
+        }
         (desc, updated_ms)
     };
     let mut tasks = state.tasks.lock().await;
@@ -3143,12 +3150,8 @@ async fn enqueue_solve_async(
         );
     }
     state.event_tap.clear(&task_id);
-    push_agui_event(
-        &state,
-        &task_id,
-        "solve.queued",
-        json!({"dsId": ds_id}),
-    );
+    state.tool_tap.clear(&task_id);
+    push_agui_event(&state, &task_id, "solve.queued", json!({"dsId": ds_id}));
     spawn_task_progress_poller(state.clone(), task_id.clone());
     let state_clone = state.clone();
     let task_id_for_worker = task_id.clone();
@@ -3195,13 +3198,17 @@ async fn enqueue_solve_async(
                 Ok(v) => {
                     let duration_ms = v.duration_ms;
                     inner.record.status = "succeeded".to_string();
-                    let visible = pool::normalize_user_visible_output_text(
-                        &v.output_text,
-                        &v.output_json,
-                    );
+                    let visible =
+                        pool::normalize_user_visible_output_text(&v.output_text, &v.output_json);
                     let mut stored = v.clone();
                     stored.output_text = visible.clone();
                     inner.record.result = Some(stored);
+                    // Flush tool cards from transcript before assistant text / solve.finished (L2 v1.1).
+                    state_clone.tool_tap.sync_session_jsonl(
+                        &task_id_for_worker,
+                        std::path::Path::new(&v.work_dir),
+                        &state_clone.event_tap,
+                    );
                     // L2 tap order: assistant text before solve.finished (bridge closes text on finished).
                     if !visible.is_empty() {
                         push_agui_event(
@@ -3601,12 +3608,7 @@ async fn dev_seed_agui_task(
     } else {
         body.output_text.clone()
     };
-    push_agui_event(
-        &state,
-        &tid,
-        "solve.queued",
-        json!({"dsId": body.ds_id}),
-    );
+    push_agui_event(&state, &tid, "solve.queued", json!({"dsId": body.ds_id}));
     push_agui_event(
         &state,
         &tid,
@@ -3671,9 +3673,7 @@ async fn dev_seed_agui_interrupt(
         return Err(ApiError::new(StatusCode::NOT_FOUND, "not found"));
     }
     let interrupt_id = Uuid::new_v4().simple().to_string();
-    let reason = body
-        .reason
-        .unwrap_or_else(|| "permission".to_string());
+    let reason = body.reason.unwrap_or_else(|| "permission".to_string());
     let payload = body.payload.unwrap_or_else(|| {
         json!({
             "toolName": "bash",
@@ -4580,10 +4580,7 @@ struct AuditQuery {
     tenant_id: Option<String>,
 }
 
-async fn get_audit(
-    State(state): State<AppState>,
-    Query(query): Query<AuditQuery>,
-) -> Json<Value> {
+async fn get_audit(State(state): State<AppState>, Query(query): Query<AuditQuery>) -> Json<Value> {
     let rows = state.auth_audit.list_audit(query.tenant_id.as_deref());
     Json(json!({"rows": rows}))
 }

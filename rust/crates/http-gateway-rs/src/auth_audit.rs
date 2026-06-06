@@ -34,9 +34,8 @@ pub struct AuditRow {
 
 impl AuthAuditState {
     pub fn from_env() -> Self {
-        let enabled = std::env::var("CLAW_GATEWAY_AUTH").is_ok_and(|v| {
-            v == "1" || v.eq_ignore_ascii_case("true")
-        });
+        let enabled = std::env::var("CLAW_GATEWAY_AUTH")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         let mut ds_tenant = HashMap::new();
         if let Ok(raw) = std::env::var("CLAW_AUTH_DS_TENANT_MAP") {
             for part in raw.split(',') {
@@ -73,7 +72,10 @@ impl AuthAuditState {
             let mut parts = rest.splitn(2, ':');
             let sub = parts.next().unwrap_or("user").to_string();
             let tenant = parts.next().map(String::from);
-            return Ok(AuthContext { sub, tenant_id: tenant });
+            return Ok(AuthContext {
+                sub,
+                tenant_id: tenant,
+            });
         }
         Err(StatusCode::UNAUTHORIZED)
     }
@@ -105,10 +107,7 @@ impl AuthAuditState {
         }
         let row = AuditRow {
             ts_ms: now_ms(),
-            tenant_id: ctx
-                .tenant_id
-                .clone()
-                .unwrap_or_else(|| "default".into()),
+            tenant_id: ctx.tenant_id.clone().unwrap_or_else(|| "default".into()),
             user_sub: ctx.sub.clone(),
             session_id: session_id.to_string(),
             ds_id,

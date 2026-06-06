@@ -102,17 +102,18 @@ export function ClawTaskBar() {
     };
   }, [threadId, dsId, clearFast, clearSlow]);
 
-  if (!task) return null;
-
-  const status = task.status ?? "unknown";
-  const desc = task.currentTaskDesc?.trim();
-  const show = ACTIVE.has(status) || Boolean(desc);
-  if (!show) return null;
+  const status = task?.status ?? "unknown";
+  const desc = task?.currentTaskDesc?.trim();
+  const show = task != null && (ACTIVE.has(status) || Boolean(desc));
 
   return (
-    <div className="claw-task-bar" data-testid="claw-task-bar" role="status" aria-live="polite">
-      <span className={`claw-task-status claw-task-status--${status}`}>{status}</span>
-      {desc ? <span className="claw-task-desc">{desc}</span> : null}
+    <div className="claw-task-bar-slot" aria-hidden={!show}>
+      {show ? (
+        <div className="claw-task-bar" data-testid="claw-task-bar" role="status" aria-live="polite">
+          <span className={`claw-task-status claw-task-status--${status}`}>{status}</span>
+          {desc ? <span className="claw-task-desc">{desc}</span> : null}
+        </div>
+      ) : null}
     </div>
   );
 }

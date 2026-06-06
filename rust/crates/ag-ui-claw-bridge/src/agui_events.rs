@@ -49,8 +49,9 @@ pub enum AgUiEvent {
     ToolCallStart {
         #[serde(rename = "toolCallId")]
         tool_call_id: String,
-        #[serde(rename = "toolName")]
-        tool_name: String,
+        /// AG-UI / @ag-ui/core `ToolCallStartEventSchema` uses `toolCallName` (not `toolName`). kejiqing
+        #[serde(rename = "toolCallName")]
+        tool_call_name: String,
     },
     ToolCallEnd {
         #[serde(rename = "toolCallId")]
@@ -112,5 +113,25 @@ mod tests {
             forwarded_props: Some(serde_json::json!({"dsId": 42})),
         };
         assert_eq!(ds_id_from_input(&input), Some(42));
+    }
+
+    #[test]
+    fn tool_call_start_uses_ag_ui_tool_call_name_field() {
+        let e = AgUiEvent::ToolCallStart {
+            tool_call_id: "tc-1".into(),
+            tool_call_name: "write_file".into(),
+        };
+        let s = e.sse_data();
+        let v: serde_json::Value = serde_json::from_str(&s).expect("json");
+        assert_eq!(v.get("type"), Some(&serde_json::json!("TOOL_CALL_START")));
+        assert_eq!(v.get("toolCallId"), Some(&serde_json::json!("tc-1")));
+        assert_eq!(
+            v.get("toolCallName"),
+            Some(&serde_json::json!("write_file"))
+        );
+        assert!(
+            v.get("toolName").is_none(),
+            "AG-UI expects toolCallName, not toolName"
+        );
     }
 }

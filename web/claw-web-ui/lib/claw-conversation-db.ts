@@ -7,6 +7,7 @@ import type {
   ClawTunnelRecord,
 } from "@/lib/claw-conversation-types";
 import { deriveTitle } from "@/lib/claw-conversation-types";
+import { generateSessionTitle } from "@/lib/claw-session-title-llm";
 import { withPg } from "@/lib/claw-pg";
 
 type RowMsg = {
@@ -111,10 +112,11 @@ export async function listSessionSummaries(
       title: string;
       created_at_ms: string;
       updated_at_ms: string;
+      archived_at_ms: string | null;
     }>(
-      `SELECT session_id, title, created_at_ms, updated_at_ms
+      `SELECT session_id, title, created_at_ms, updated_at_ms, archived_at_ms
        FROM claw_sessions
-       WHERE user_id = $1 AND project_id = $2
+       WHERE user_id = $1 AND project_id = $2 AND archived_at_ms IS NULL
        ORDER BY updated_at_ms DESC`,
       [userId, projectId],
     );
@@ -126,6 +128,7 @@ export async function listSessionSummaries(
         title: r.title,
         createdAtMs: Number(r.created_at_ms),
         updatedAtMs: Number(r.updated_at_ms),
+        archivedAtMs: r.archived_at_ms != null ? Number(r.archived_at_ms) : null,
       })),
     };
   });
@@ -182,7 +185,7 @@ export async function createSessionRecord(
 ): Promise<ClawSessionRecord> {
   return withPg(async (client) => {
     const now = Date.now();
-    const title = deriveTitle(messages);
+    const title = messages.length > 0 ? deriveTitle(messages) : "新对话";
     await client.query("BEGIN");
     try {
       await client.query(
@@ -268,14 +271,26 @@ export async function saveSessionMessages(
 ): Promise<ClawSessionRecord> {
   return withPg(async (client) => {
     const now = Date.now();
-    const title = deriveTitle(messages);
+    const hasUser = messages.some((m) => m.role === "user" && m.content.trim());
+    const hasAssistant = messages.some((m) => m.role === "assistant");
     await client.query("BEGIN");
     try {
-      const exists = await client.query(
-        `SELECT 1 FROM claw_sessions
+      const exists = await client.query<{ title: string }>(
+        `SELECT title FROM claw_sessions
          WHERE user_id = $1 AND project_id = $2 AND session_id = $3`,
         [userId, projectId, sessionId],
       );
+      const prevTitle = exists.rows[0]?.title ?? "新对话";
+      let title = prevTitle;
+      if (hasUser) {
+        if (hasAssistant) {
+          title = await generateSessionTitle(messages);
+        } else {
+          title = deriveTitle(messages);
+        }
+      } else if (exists.rowCount === 0) {
+        title = "新对话";
+      }
       if (exists.rowCount === 0) {
         await client.query(
           `INSERT INTO claw_sessions (user_id, project_id, session_id, title, created_at_ms, updated_at_ms)
@@ -302,6 +317,73 @@ export async function saveSessionMessages(
       throw e;
     }
     return (await getSessionRecord(userId, projectId, sessionId))!;
+  });
+}
+
+export async function archiveSessionRecord(
+  userId: string,
+  projectId: string,
+  sessionId: string,
+): Promise<void> {
+  await withPg(async (client) => {
+    const now = Date.now();
+    const res = await client.query(
+      `UPDATE claw_sessions SET archived_at_ms = $4, updated_at_ms = $4
+       WHERE user_id = $1 AND project_id = $2 AND session_id = $3`,
+      [userId, projectId, sessionId, now],
+    );
+    if (res.rowCount === 0) {
+      throw new Error("session not found");
+    }
+    const state = await client.query<{ active_session_id: string | null }>(
+      `SELECT active_session_id FROM claw_project_state
+       WHERE user_id = $1 AND project_id = $2`,
+      [userId, projectId],
+    );
+    if (state.rows[0]?.active_session_id === sessionId) {
+      await client.query(
+        `UPDATE claw_project_state SET active_session_id = NULL, updated_at_ms = $3
+         WHERE user_id = $1 AND project_id = $2`,
+        [userId, projectId, now],
+      );
+    }
+  });
+}
+
+export async function deleteSessionRecord(
+  userId: string,
+  projectId: string,
+  sessionId: string,
+): Promise<void> {
+  await withPg(async (client) => {
+    const now = Date.now();
+    await client.query("BEGIN");
+    try {
+      const state = await client.query<{ active_session_id: string | null }>(
+        `SELECT active_session_id FROM claw_project_state
+         WHERE user_id = $1 AND project_id = $2`,
+        [userId, projectId],
+      );
+      if (state.rows[0]?.active_session_id === sessionId) {
+        await client.query(
+          `UPDATE claw_project_state SET active_session_id = NULL, updated_at_ms = $3
+           WHERE user_id = $1 AND project_id = $2`,
+          [userId, projectId, now],
+        );
+      }
+      const del = await client.query(
+        `DELETE FROM claw_sessions
+         WHERE user_id = $1 AND project_id = $2 AND session_id = $3`,
+        [userId, projectId, sessionId],
+      );
+      if (del.rowCount === 0) {
+        throw new Error("session not found");
+      }
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    }
   });
 }
 

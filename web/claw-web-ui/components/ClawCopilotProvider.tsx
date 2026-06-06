@@ -1,10 +1,7 @@
 "use client";
 
-import { CopilotKit } from "@copilotkit/react-core";
-import "@copilotkit/react-ui/styles.css";
-import "@/app/claw-copilot.css";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { CLAW_AGENT_ID, STORAGE_DS_ID, defaultDsId, readStoredDsId } from "@/lib/claw-config";
+import { STORAGE_DS_ID, defaultDsId, readStoredDsId } from "@/lib/claw-config";
 import { bootstrapProject, randomSessionId } from "@/lib/claw-conversation-bootstrap";
 import {
   createSessionApi,
@@ -13,12 +10,13 @@ import {
 } from "@/lib/claw-conversation-client";
 import { projectIdFromDsId } from "@/lib/claw-conversation-types";
 
-type ClawUiContextValue = {
+export type ClawUiContextValue = {
   dsId: number;
-  threadId: string | null;
+  threadId: string;
   setDsId: (n: number) => void;
-  newSession: () => void;
-  selectSession: (sessionId: string) => void;
+  newSession: () => Promise<void>;
+  selectSession: (sessionId: string) => Promise<void>;
+  switching: boolean;
 };
 
 const ClawUiContext = createContext<ClawUiContextValue | null>(null);
@@ -46,15 +44,18 @@ export function ClawCopilotProvider({ children }: Props) {
   const [bootError, setBootError] = useState<string | null>(null);
   const [dsId, setDsIdState] = useState(() => defaultDsId());
   const [threadId, setThreadId] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   const activateForProject = useCallback(async (resolvedDs: number) => {
     const id = await bootstrapProject(resolvedDs);
+    const projectId = projectIdFromDsId(resolvedDs);
+    await setActiveSessionApi(projectId, id);
     setThreadId(id);
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
         const resolvedDs = readStoredDsId();
         if (cancelled) return;
@@ -84,6 +85,7 @@ export function ClawCopilotProvider({ children }: Props) {
         localStorage.setItem(STORAGE_DS_ID, String(n));
         document.cookie = `claw_ds_id=${n}; path=/; SameSite=Lax`;
         setReady(false);
+        setSwitching(true);
         try {
           await activateForProject(n);
           setBootError(null);
@@ -91,31 +93,41 @@ export function ClawCopilotProvider({ children }: Props) {
           notifyStoreUpdated();
         } catch (e) {
           setBootError(e instanceof Error ? e.message : String(e));
+        } finally {
+          setSwitching(false);
         }
       })();
     },
     [activateForProject],
   );
 
-  const newSession = useCallback(() => {
-    void (async () => {
-      const projectId = projectIdFromDsId(dsId);
-      const record = await createSessionApi(projectId, randomSessionId());
-      setThreadId(record.sessionId);
+  const newSession = useCallback(async () => {
+    const projectId = projectIdFromDsId(dsId);
+    const id = randomSessionId();
+    setSwitching(true);
+    try {
+      await createSessionApi(projectId, id);
+      await setActiveSessionApi(projectId, id);
+      setThreadId(id);
       notifyStoreUpdated();
-    })();
+    } finally {
+      setSwitching(false);
+    }
   }, [dsId]);
 
   const selectSession = useCallback(
-    (sessionId: string) => {
-      void (async () => {
-        const projectId = projectIdFromDsId(dsId);
-        await setActiveSessionApi(projectId, sessionId);
+    async (sessionId: string) => {
+      if (sessionId === threadId) return;
+      const projectId = projectIdFromDsId(dsId);
+      setSwitching(true);
+      try {
         setThreadId(sessionId);
-        notifyStoreUpdated();
-      })();
+        await setActiveSessionApi(projectId, sessionId);
+      } finally {
+        setSwitching(false);
+      }
     },
-    [dsId],
+    [dsId, threadId],
   );
 
   if (bootError) {
@@ -131,22 +143,10 @@ export function ClawCopilotProvider({ children }: Props) {
   }
 
   return (
-    <ClawUiContext.Provider value={{ dsId, threadId, setDsId, newSession, selectSession }}>
-      <CopilotKit
-        key={threadId}
-        threadId={threadId}
-        runtimeUrl="/api/copilotkit"
-        agent={CLAW_AGENT_ID}
-        headers={{
-          "x-claw-ds-id": String(dsId),
-          "x-claw-thread-id": threadId,
-        }}
-        properties={{
-          forwardedProps: { dsId },
-        }}
-      >
-        {children}
-      </CopilotKit>
+    <ClawUiContext.Provider
+      value={{ dsId, threadId, setDsId, newSession, selectSession, switching }}
+    >
+      {children}
     </ClawUiContext.Provider>
   );
 }

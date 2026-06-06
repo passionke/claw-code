@@ -1,6 +1,6 @@
 # L1 — Web client → ag-ui-claw-bridge
 
-Version: **v1**  
+Version: **v1.1** (additive: tool cards in chat)  
 Author: kejiqing
 
 ## Purpose
@@ -57,10 +57,28 @@ Starts an agent run. Response: **SSE** (`text/event-stream`).
 | `TEXT_MESSAGE_START` | Assistant message begins |
 | `TEXT_MESSAGE_CONTENT` | Token delta (`delta` field) |
 | `TEXT_MESSAGE_END` | Message complete |
-| `TOOL_CALL_START` | Tool invocation (optional v1) |
-| `TOOL_CALL_END` | Tool result (optional v1) |
+| `TOOL_CALL_START` | Tool invocation started |
+| `TOOL_CALL_END` | Tool invocation finished (`ok`) |
 | `RUN_FINISHED` | Success |
 | `RUN_ERROR` | Failure (`message`) |
+
+### Tool cards in sidebar (Option A, v1.1)
+
+Claw Web uses CopilotKit **`RenderMessage`** (not a second SSE channel).
+
+When the bridge receives tap `tool.result`, it appends to the **same assistant message** stream a fenced block:
+
+````markdown
+```claw-tool
+{"type":"tool.result","toolCallId":"…","toolName":"write_file","ok":true,"summary":"…","payloadKind":"file_write","payload":{…}}
+```
+````
+
+The Web UI **`ClawRenderMessage`** parses `` ```claw-tool `` JSON lines and renders **granular cards** (e.g. diff hunks for `file_write`); remaining assistant text uses normal Markdown.
+
+Envelope fields: [L2 `tool.result`](L2-agui-to-gateway.md#toolresult-envelope-v11).
+
+**Persistence (v1):** PostgreSQL stores user/assistant **text only**; tool blocks may be stripped or summarized in a later v1.2 (`toolSteps` on tunnel).
 
 Interrupt events: see [L4-interrupts.md](L4-interrupts.md).
 

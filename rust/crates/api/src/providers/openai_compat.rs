@@ -1064,6 +1064,21 @@ pub fn is_deepseek_wire_model(model: &str) -> bool {
     canonical.starts_with("deepseek")
 }
 
+/// Xiaomi MiMo (`mimo-v2.5`, `mimo-v2.5-pro`, …) via OpenAI-compatible API.
+#[must_use]
+pub fn is_mimo_wire_model(model: &str) -> bool {
+    let lowered = model.to_ascii_lowercase();
+    let canonical = lowered.rsplit('/').next().unwrap_or(lowered.as_str());
+    canonical.starts_with("mimo")
+}
+
+/// Providers that require `reasoning_content` on assistant messages with `tool_calls`
+/// (multi-turn tool replay). Missing field → 400 Param Incorrect on MiMo / some DeepSeek.
+#[must_use]
+pub fn requires_assistant_reasoning_content_field(model: &str) -> bool {
+    is_deepseek_wire_model(model) || is_mimo_wire_model(model)
+}
+
 fn deepseek_thinking_active(request: &MessageRequest, wire_model: &str) -> bool {
     is_deepseek_wire_model(wire_model) && request.thinking_enabled != Some(false)
 }
@@ -1251,9 +1266,9 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                 if !tool_calls.is_empty() {
                     msg["tool_calls"] = json!(tool_calls);
                 }
-                if is_deepseek_wire_model(model) && !tool_calls.is_empty() {
-                    // DeepSeek requires `reasoning_content` on tool-call turns when thinking is on.
-                    msg["reasoning_content"] = json!(reasoning);
+                if requires_assistant_reasoning_content_field(model) && !tool_calls.is_empty() {
+                    // MiMo + DeepSeek: `reasoning_content` required on tool-call turns (may be "").
+                    msg["reasoning_content"] = json!(reasoning.as_str());
                 } else if is_deepseek_wire_model(model) && !reasoning.is_empty() {
                     msg["reasoning_content"] = json!(reasoning);
                 }
@@ -1893,8 +1908,8 @@ impl StringExt for String {
 mod tests {
     use super::{
         build_chat_completion_request, chat_completions_endpoint, is_deepseek_wire_model,
-        is_reasoning_model, normalize_finish_reason, openai_tool_choice, parse_tool_arguments,
-        translate_message, OpenAiCompatClient, OpenAiCompatConfig,
+        is_mimo_wire_model, is_reasoning_model, normalize_finish_reason, openai_tool_choice,
+        parse_tool_arguments, translate_message, OpenAiCompatClient, OpenAiCompatConfig,
     };
     use crate::error::ApiError;
     use crate::types::{
@@ -2263,6 +2278,34 @@ mod tests {
             }],
         };
         let out = translate_message(&msg, "deepseek-v4-pro");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["reasoning_content"], json!(""));
+        assert!(out[0].get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn mimo_wire_models_are_detected() {
+        assert!(is_mimo_wire_model("mimo-v2.5"));
+        assert!(is_mimo_wire_model("openai/mimo-v2.5-pro"));
+        assert!(!is_mimo_wire_model("gpt-4o"));
+    }
+
+    #[test]
+    fn mimo_translate_tool_calls_emit_empty_reasoning_content_when_absent() {
+        let msg = InputMessage {
+            role: "assistant".to_string(),
+            content: vec![
+                InputContentBlock::Text {
+                    text: "好的，这是一段计算 π^π 的 Python 代码：".to_string(),
+                },
+                InputContentBlock::ToolUse {
+                    id: "call_9e084b03cafc42b89b6bdb92".to_string(),
+                    name: "write_file".to_string(),
+                    input: json!({"filePath": "pi_power.py"}),
+                },
+            ],
+        };
+        let out = translate_message(&msg, "mimo-v2.5");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["reasoning_content"], json!(""));
         assert!(out[0].get("tool_calls").is_some());

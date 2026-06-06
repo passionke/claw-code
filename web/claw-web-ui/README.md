@@ -23,7 +23,11 @@ Copy `.env.local.example` to `.env.local` or set via `gateway.sh web-ui`:
 | `CLAW_AGUI_BRIDGE_URL` | `http://127.0.0.1:8090` |
 | `CLAW_GATEWAY_BASE_URL` | `http://127.0.0.1:8088` |
 | `CLAW_WEB_UI_PORT` | `4100` |
+| `CLAW_WEB_DATABASE_URL` | `postgresql://claw:claw@127.0.0.1:5433/claw_web` (needs `gateway.sh pg-up`) |
+| `CLAW_WEB_DEV_USER_ID` | `dev-local` |
 | `NEXT_PUBLIC_CLAW_CODE_SERVER_ENABLED` | `0` (set `1` with code-server on `4101`) |
+
+`npm run dev` loads `.env.development` (committed defaults). Override with `.env.local` from `.env.local.example`.
 
 ## Verify
 

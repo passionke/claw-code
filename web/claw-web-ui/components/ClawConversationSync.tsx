@@ -16,7 +16,7 @@ import { useClawUi } from "./ClawCopilotProvider";
 
 /** Persist CopilotKit chat ↔ PostgreSQL (via BFF). Author: kejiqing */
 export function ClawConversationSync() {
-  const { threadId, dsId } = useClawUi();
+  const { threadId, dsId, switching } = useClawUi();
   const projectId = projectIdFromDsId(dsId);
   const { messages, setMessages } = useCopilotMessagesContext();
   const hydratedFor = useRef<string | null>(null);
@@ -24,40 +24,60 @@ export function ClawConversationSync() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!threadId) return;
+    if (!threadId || switching) return;
+
     if (hydratedFor.current === threadId) return;
 
+    let cancelled = false;
     skipSave.current = true;
+    setMessages([]);
+
     void (async () => {
-      const session = await fetchSession(projectId, threadId);
-      const stored = session?.messages ?? [];
-      if (stored.length > 0) {
-        setMessages(storedToCopilotMessages(stored) as never);
-      } else {
-        setMessages([]);
+      try {
+        const session = await fetchSession(projectId, threadId);
+        if (cancelled) return;
+        const stored = session?.messages ?? [];
+        setMessages(
+          stored.length > 0 ? (storedToCopilotMessages(stored) as never) : [],
+        );
+        hydratedFor.current = threadId;
+        skipSave.current = false;
+      } catch (e) {
+        console.error("[ClawConversationSync] hydrate failed:", e);
+        if (!cancelled) {
+          hydratedFor.current = threadId;
+          skipSave.current = false;
+        }
       }
-      hydratedFor.current = threadId;
-      skipSave.current = false;
     })();
-  }, [threadId, projectId, setMessages]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId, projectId, setMessages, switching]);
 
   useEffect(() => {
-    if (!threadId || skipSave.current) return;
+    if (!threadId || skipSave.current || switching) return;
     if (hydratedFor.current !== threadId) return;
 
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       void (async () => {
         const stored = copilotMessagesToStored(messages);
-        await saveSessionMessagesApi(projectId, threadId, stored);
-        notifyStoreUpdated();
+        if (stored.length === 0) return;
+        try {
+          await saveSessionMessagesApi(projectId, threadId, stored);
+          notifyStoreUpdated();
+        } catch (e) {
+          console.error("[ClawConversationSync] save failed:", e);
+        }
       })();
     }, 400);
 
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [messages, threadId, projectId]);
+  }, [messages, threadId, projectId, switching]);
 
   return null;
 }

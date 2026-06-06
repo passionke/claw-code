@@ -8,14 +8,14 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
-use tower_http::cors::{Any, CorsLayer};
 use futures_util::stream::{self, Stream};
 use futures_util::StreamExt;
+use serde::Deserialize;
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -84,8 +84,10 @@ async fn agent_run(
     if state.mock {
         return Ok(mock_run_sse(input).into_response());
     }
-    let ds_id = crate::agui_events::ds_id_from_input(&input)
-        .ok_or((StatusCode::BAD_REQUEST, "forwardedProps.dsId required".into()))?;
+    let ds_id = crate::agui_events::ds_id_from_input(&input).ok_or((
+        StatusCode::BAD_REQUEST,
+        "forwardedProps.dsId required".into(),
+    ))?;
     let prompt = crate::agui_events::last_user_text(&input.messages)
         .ok_or((StatusCode::BAD_REQUEST, "user message required".into()))?;
     // Map threadId → claw-session-id header only. Body sessionId means explicit continuation
@@ -285,6 +287,29 @@ fn close_text_if_open(
     }
 }
 
+fn append_text_delta(
+    tx: &mpsc::UnboundedSender<AgUiEvent>,
+    message_id: &str,
+    text_open: &mut bool,
+    streamed_text: &mut String,
+    delta: &str,
+) {
+    if delta.is_empty() {
+        return;
+    }
+    streamed_text.push_str(delta);
+    if !*text_open {
+        let _ = tx.send(AgUiEvent::TextMessageStart {
+            message_id: message_id.to_string(),
+        });
+        *text_open = true;
+    }
+    let _ = tx.send(AgUiEvent::TextMessageContent {
+        message_id: message_id.to_string(),
+        delta: delta.to_string(),
+    });
+}
+
 fn map_tap_line(
     line: &serde_json::Value,
     tx: &mpsc::UnboundedSender<AgUiEvent>,
@@ -331,6 +356,14 @@ fn map_tap_line(
                 });
             }
         }
+        "tool.result" => {
+            // Tool cards may arrive in a final progress sync after solve.finished; still render them.
+            // L1 Option A: fenced envelope for ClawRenderMessage (CopilotKit).
+            if let Ok(envelope) = serde_json::to_string(line) {
+                let fence = format!("\n\n```claw-tool\n{envelope}\n```\n\n");
+                append_text_delta(tx, message_id, text_open, streamed_text, &fence);
+            }
+        }
         "tool.start" => {
             let _ = tx.send(AgUiEvent::ToolCallStart {
                 tool_call_id: line
@@ -338,7 +371,7 @@ fn map_tap_line(
                     .and_then(|v| v.as_str())
                     .unwrap_or("tool")
                     .to_string(),
-                tool_name: line
+                tool_call_name: line
                     .get("toolName")
                     .and_then(|v| v.as_str())
                     .unwrap_or("tool")
@@ -352,7 +385,10 @@ fn map_tap_line(
                     .and_then(|v| v.as_str())
                     .unwrap_or("tool")
                     .to_string(),
-                ok: line.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(true),
+                ok: line
+                    .get("ok")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true),
             });
         }
         "interrupt.required" => {
@@ -367,7 +403,10 @@ fn map_tap_line(
                     .and_then(|v| v.as_str())
                     .unwrap_or("permission")
                     .to_string(),
-                payload: line.get("payload").cloned().unwrap_or(serde_json::json!({})),
+                payload: line
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({})),
             });
         }
         "solve.finished" => {
@@ -425,18 +464,19 @@ fn mock_run_sse(input: RunAgentInput) -> Sse<impl Stream<Item = Result<Event, In
         },
         AgUiEvent::RunFinished { thread_id, run_id },
     ];
-    let stream = stream::iter(events.into_iter().map(|ev| {
-        Ok(Event::default().event("message").data(ev.sse_data()))
-    }));
+    let stream = stream::iter(
+        events
+            .into_iter()
+            .map(|ev| Ok(Event::default().event("message").data(ev.sse_data()))),
+    );
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 fn sse_from_events(
     rx: mpsc::UnboundedReceiver<AgUiEvent>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>> + Send> {
-    let stream = UnboundedReceiverStream::new(rx).map(|ev: AgUiEvent| {
-        Ok(Event::default().event("message").data(ev.sse_data()))
-    });
+    let stream = UnboundedReceiverStream::new(rx)
+        .map(|ev: AgUiEvent| Ok(Event::default().event("message").data(ev.sse_data())));
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
@@ -605,7 +645,11 @@ mod tests {
         );
         let ev = rx.try_recv().expect("event");
         match ev {
-            AgUiEvent::Interrupt { interrupt_id, reason, .. } => {
+            AgUiEvent::Interrupt {
+                interrupt_id,
+                reason,
+                ..
+            } => {
                 assert_eq!(interrupt_id, "int-1");
                 assert_eq!(reason, "permission");
             }

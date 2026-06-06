@@ -27,6 +27,8 @@ export type ClawSessionSummary = {
   title: string;
   createdAtMs: number;
   updatedAtMs: number;
+  /** Set when archived; omitted from default list. */
+  archivedAtMs?: number | null;
 };
 
 export type ClawSessionRecord = ClawSessionSummary & {

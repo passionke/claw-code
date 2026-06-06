@@ -1,5 +1,6 @@
 /** Map CopilotKit messages ↔ Claw tunnel storage. Author: kejiqing */
 
+import { stripClawToolFences } from "@/lib/claw-tool-envelope";
 import type { ClawTunnelMessage } from "@/lib/claw-conversation-store";
 
 type LooseMessage = Record<string, unknown>;
@@ -42,8 +43,11 @@ export function copilotMessagesToStored(messages: unknown[]): ClawTunnelMessage[
 
   for (const m of messages) {
     const role = messageRole(m);
-    const content = messageContent(m).trim();
-    if (!role || !content) continue;
+    let content = stripClawToolFences(messageContent(m)).trim();
+    if (!role) continue;
+    if (role === "user" && !content) continue;
+    // Keep assistant rows for title refresh even when only tool cards rendered.
+    if (role === "assistant" && !content) content = " ";
     if (role === "user") {
       tunnelId =
         typeof crypto !== "undefined" && crypto.randomUUID

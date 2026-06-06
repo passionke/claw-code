@@ -34,10 +34,7 @@ impl EventTapHub {
 
     /// Drop tap lines for a new async solve on the same session (taskId). Author: kejiqing
     pub fn clear(&self, task_id: &str) {
-        self.lines
-            .lock()
-            .expect("event tap lock")
-            .remove(task_id);
+        self.lines.lock().expect("event tap lock").remove(task_id);
     }
 }
 
@@ -61,7 +58,10 @@ pub struct InterruptResolveBody {
 }
 
 impl InterruptHub {
-    pub async fn register(&self, interrupt_id: String) -> tokio::sync::oneshot::Receiver<InterruptDecision> {
+    pub async fn register(
+        &self,
+        interrupt_id: String,
+    ) -> tokio::sync::oneshot::Receiver<InterruptDecision> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.write().await.insert(interrupt_id, tx);
         rx

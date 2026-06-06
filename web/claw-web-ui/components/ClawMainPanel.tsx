@@ -11,8 +11,7 @@ export function ClawMainPanel({ tapUrl, codeServerUrl }: Props) {
       <section className="claw-hero">
         <h1>Workspace</h1>
         <p className="claw-hero-lead">
-          Agent chat lives in the <strong>right sidebar</strong>. This area is for tasks, links, and
-          (later) code-server.
+          右侧为 Agent 面板：左侧聊天，右侧选对话。此区域用于工作区链接与 code-server。
         </p>
       </section>
 

@@ -60,6 +60,32 @@ export async function saveSessionMessagesApi(
   return parseJson(res);
 }
 
+export async function archiveSessionApi(
+  projectId: string,
+  sessionId: string,
+): Promise<void> {
+  const res = await fetch(
+    `/api/claw/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(sessionId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archive: true }),
+    },
+  );
+  await parseJson(res);
+}
+
+export async function deleteSessionApi(
+  projectId: string,
+  sessionId: string,
+): Promise<void> {
+  const res = await fetch(
+    `/api/claw/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
+  await parseJson(res);
+}
+
 export async function setActiveSessionApi(
   projectId: string,
   sessionId: string,

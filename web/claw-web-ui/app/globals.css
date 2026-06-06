@@ -54,9 +54,10 @@ a {
 }
 
 .claw-hero h1 {
-  font-size: 1.5rem;
+  font-size: 1.65rem;
   font-weight: 600;
   margin: 0 0 0.5rem;
+  letter-spacing: -0.02em;
 }
 
 .claw-hero .claw-session-id {
@@ -143,14 +144,18 @@ a.claw-card:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.65rem 1rem;
-  background: var(--claw-panel);
+  padding: 0.55rem 1.25rem;
+  background: linear-gradient(180deg, #1a2332 0%, #151c28 100%);
   border-bottom: 1px solid var(--claw-border);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
 }
 
 .claw-brand {
   font-weight: 600;
-  margin-right: 0.5rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  margin-right: 0.25rem;
+  color: #fff;
 }
 
 .claw-health-pill {
