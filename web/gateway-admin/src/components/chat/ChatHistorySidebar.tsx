@@ -10,7 +10,7 @@ import type { Dayjs } from "dayjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import type { GatewaySessionSummary, ListProjectSessionsResponse } from "../../types/chat";
-import { isAdminOrigin } from "../../utils/clientOrigin";
+import { isExternalOrigin } from "../../utils/clientOrigin";
 import type { ExtraSessionKv } from "../../utils/extraSessionStorage";
 import styles from "./chat.module.css";
 
@@ -375,7 +375,7 @@ export default function ChatHistorySidebar({
                 ) : null}
                 <span className={styles.historyItemTitle}>
                   {sessionTitle(s)}
-                  {s.clientOrigin && !isAdminOrigin(s.clientOrigin) ? (
+                  {isExternalOrigin(s.clientOrigin) ? (
                     <span className={styles.historyOriginTag}>外部</span>
                   ) : null}
                 </span>

@@ -119,6 +119,20 @@ export function allGatewayOptionValues(
   }).map((o) => o.value);
 }
 
+/** Turn route: `claw_pool.gateway_base` for `pool_id`, else UI fallback. Author: kejiqing */
+export function gatewayBaseForPoolId(
+  poolId: string | null | undefined,
+  clusterPools: ListClawPoolsResponse | null,
+  fallbackGatewayBase: string
+): string {
+  const pid = (poolId || "").trim();
+  if (!pid) return normalizeGatewayBase(fallbackGatewayBase);
+  const pool = (clusterPools?.pools ?? []).find((p) => p.poolId === pid);
+  const gw = pool?.gatewayBase?.trim();
+  if (gw) return normalizeGatewayBase(gw);
+  return normalizeGatewayBase(fallbackGatewayBase);
+}
+
 /** Show picker only when multiple registered pools expose distinct gateway URLs. */
 export function shouldShowGatewayPicker(
   playground: PlaygroundConfig,

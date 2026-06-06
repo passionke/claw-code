@@ -2,6 +2,7 @@ import { StopOutlined } from "@ant-design/icons";
 import { Button, Collapse, Popconfirm, Space, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { proxyHttp } from "../../api/client";
+import { useApp } from "../../context/AppContext";
 import { useBizReportStream } from "../../hooks/useBizReportStream";
 import type {
   BizAdviceReportResponse,
@@ -13,6 +14,7 @@ import type {
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import { isAdminOrigin } from "../../utils/clientOrigin";
+import { gatewayBaseForPoolId } from "../../utils/gatewayClusterOptions";
 import ReportMarkdown from "./ReportMarkdown";
 import TurnFeedbackButtons from "./TurnFeedbackButtons";
 import TurnToolsDrawer from "./TurnToolsDrawer";
@@ -127,6 +129,7 @@ export default function ChatTurnCard({
   initialPoolId,
   initialWorkerName,
 }: ChatTurnCardProps) {
+  const { clusterPools } = useApp();
   const historyMode = viewMode === "history";
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
@@ -374,7 +377,8 @@ export default function ChatTurnCard({
 
   const poolId = (task.poolId ?? initialPoolId ?? "").trim();
   const workerName = (task.workerName ?? initialWorkerName ?? "").trim();
-  const gwLabel = gatewayHostLabel(gatewayBase);
+  const turnGatewayBase = gatewayBaseForPoolId(poolId, clusterPools, gatewayBase);
+  const gwLabel = gatewayHostLabel(turnGatewayBase);
 
   const poolTag = !poolId ? (
     <Tag color="warning" className={styles.turnRouteTag}>
@@ -417,7 +421,13 @@ export default function ChatTurnCard({
           </span>
         </div>
         <div className={styles.turnRoute}>
-          <Tooltip title={gatewayBase || "未选择网关"}>
+          <Tooltip
+            title={
+              turnGatewayBase !== gatewayBase && gatewayBase
+                ? `${turnGatewayBase}（本机 UI 网关 ${gatewayHostLabel(gatewayBase)}）`
+                : turnGatewayBase || "未选择网关"
+            }
+          >
             <Tag color="geekblue" className={styles.turnRouteTag}>
               gateway {gwLabel}
             </Tag>

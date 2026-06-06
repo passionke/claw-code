@@ -21,7 +21,10 @@ import {
   saveExtraSessionKvForDs,
   type ExtraSessionKv,
 } from "../utils/extraSessionStorage";
-import { CLIENT_ORIGIN_GATEWAY_ADMIN, isAdminOrigin } from "../utils/clientOrigin";
+import {
+  CLIENT_ORIGIN_GATEWAY_ADMIN,
+  isExternalOrigin,
+} from "../utils/clientOrigin";
 import { extractSolveReportMessage } from "../utils/solveReportBody";
 import type { TurnFeedbackValue } from "../types/chat";
 
@@ -94,7 +97,7 @@ export default function ChatPage() {
   );
 
   const composerDisabled =
-    sessionClientOrigin != null && !isAdminOrigin(sessionClientOrigin);
+    activeSessionId != null && isExternalOrigin(sessionClientOrigin);
 
   const {
     feedbackByTurn,
