@@ -230,6 +230,8 @@ pub struct ClawPoolUpsert<'a> {
     pub slots_min: i32,
     pub advertise_ip: &'a str,
     pub sse_port: i32,
+    /// Browser-reachable gateway base (`http://host:port`) for Admin pool picker. Author: kejiqing
+    pub gateway_base: &'a str,
     pub last_heartbeat_ms: i64,
 }
 
@@ -242,6 +244,7 @@ pub struct ClawPoolRow {
     pub slots_min: i32,
     pub advertise_ip: String,
     pub sse_port: i32,
+    pub gateway_base: String,
     pub last_heartbeat_ms: i64,
 }
 
@@ -475,8 +478,15 @@ impl GatewaySessionDb {
                 slots_min INT NOT NULL,
                 advertise_ip TEXT NOT NULL,
                 sse_port INT NOT NULL,
+                gateway_base TEXT NOT NULL DEFAULT '',
                 last_heartbeat_ms BIGINT NOT NULL
             )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "ALTER TABLE claw_pool ADD COLUMN IF NOT EXISTS gateway_base TEXT NOT NULL DEFAULT ''",
         )
         .execute(pool)
         .await?;
@@ -2297,13 +2307,14 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO claw_pool (
                 pool_id, registration_time_ms, slots_max, slots_min,
-                advertise_ip, sse_port, last_heartbeat_ms
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                advertise_ip, sse_port, gateway_base, last_heartbeat_ms
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
               ON CONFLICT (pool_id) DO UPDATE SET
                 slots_max = EXCLUDED.slots_max,
                 slots_min = EXCLUDED.slots_min,
                 advertise_ip = EXCLUDED.advertise_ip,
                 sse_port = EXCLUDED.sse_port,
+                gateway_base = EXCLUDED.gateway_base,
                 last_heartbeat_ms = EXCLUDED.last_heartbeat_ms",
         )
         .bind(row.pool_id)
@@ -2312,6 +2323,7 @@ impl GatewaySessionDb {
         .bind(row.slots_min)
         .bind(row.advertise_ip)
         .bind(row.sse_port)
+        .bind(row.gateway_base)
         .bind(row.last_heartbeat_ms)
         .execute(&self.pool)
         .await?;
@@ -2335,7 +2347,7 @@ impl GatewaySessionDb {
     pub async fn list_claw_pools(&self) -> Result<Vec<ClawPoolRow>, SqlxError> {
         let rows = sqlx::query(
             r"SELECT pool_id, registration_time_ms, slots_max, slots_min,
-                     advertise_ip, sse_port, last_heartbeat_ms
+                     advertise_ip, sse_port, gateway_base, last_heartbeat_ms
               FROM claw_pool
               ORDER BY last_heartbeat_ms DESC, pool_id ASC",
         )
@@ -2350,6 +2362,7 @@ impl GatewaySessionDb {
                 slots_min: r.try_get("slots_min")?,
                 advertise_ip: r.try_get("advertise_ip")?,
                 sse_port: r.try_get("sse_port")?,
+                gateway_base: r.try_get("gateway_base")?,
                 last_heartbeat_ms: r.try_get("last_heartbeat_ms")?,
             });
         }
@@ -3323,6 +3336,7 @@ mod tests {
             slots_min: 1,
             advertise_ip: "10.0.0.8",
             sse_port: 9944,
+            gateway_base: "http://10.0.0.8:18088",
             last_heartbeat_ms: t,
         })
         .await

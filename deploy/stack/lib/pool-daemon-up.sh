@@ -142,6 +142,8 @@ claw_pool_env_kv() {
   claw_pool_env_kv CLAW_POOL_HTTP_BIND "0.0.0.0:${CLAW_POOL_HTTP_PORT:-9944}"
   claw_pool_env_kv CLAW_POOL_ADVERTISE_HOST "${CLAW_POOL_ADVERTISE_HOST}"
   claw_pool_env_kv CLAW_POOL_ID "${CLAW_POOL_ID}"
+  [[ -n "${CLAW_POOL_GATEWAY_BASE:-}" ]] && claw_pool_env_kv CLAW_POOL_GATEWAY_BASE "${CLAW_POOL_GATEWAY_BASE}"
+  [[ -n "${GATEWAY_HOST_PORT:-}" ]] && claw_pool_env_kv GATEWAY_HOST_PORT "${GATEWAY_HOST_PORT}"
   [[ -n "${CLAW_DOCKER_IMAGE:-}" ]] && claw_pool_env_kv CLAW_DOCKER_IMAGE "${CLAW_DOCKER_IMAGE}"
   [[ -n "${CLAW_PODMAN_IMAGE:-}" ]] && claw_pool_env_kv CLAW_PODMAN_IMAGE "${CLAW_PODMAN_IMAGE}"
   [[ -n "${CLAW_DOCKER_NETWORK:-}" ]] && claw_pool_env_kv CLAW_DOCKER_NETWORK "${CLAW_DOCKER_NETWORK}"

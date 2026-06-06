@@ -19,6 +19,7 @@ Each **`claw-pool-daemon`** registers in PostgreSQL; each running turn records w
 | `slots_max` / `slots_min` | From `CLAW_*_POOL_SIZE` / `CLAW_*_POOL_MIN_IDLE` |
 | `advertise_ip` | Externally reachable host (`CLAW_POOL_ADVERTISE_HOST`) |
 | `sse_port` | From `CLAW_POOL_HTTP_BIND` (default 9944) |
+| `gateway_base` | Browser-reachable gateway URL (`CLAW_POOL_GATEWAY_BASE` or `http://{advertise_ip}:{GATEWAY_HOST_PORT}`) |
 | `last_heartbeat_ms` | Updated every **60s** while daemon runs |
 
 ## `gateway_turns` extensions
@@ -53,6 +54,8 @@ For `running` / `queued` stream: join `gateway_turns.pool_id` → `claw_pool`, p
 | **`GET /v1/sessions/…/turns`**, **`GET /v1/tasks/…`**, **`POST /v1/solve_async`** | JSON fields `poolId`, `workerName` |
 
 Playground **solve and poll should use the same `gatewayBase`** (same host). Cross-gateway status poll has known gaps for running progress/cancel; see [`deploy-ops-truth.md`](deploy-ops-truth.md).
+
+Admin **Pool dropdown** (shared PG): only when **≥2** `claw_pool` rows have non-empty **`gateway_base`**. Each option is **`{poolId} · {gateway host}`**; default = **`coLocatedPoolId`** on the playground host. Pool-daemon registers `gateway_base` at startup; production `gateway.sh up` sets **`CLAW_POOL_GATEWAY_BASE`** / **`PLAYGROUND_PUBLIC_GATEWAY_BASE`** from **`CLAW_POOL_ADVERTISE_HOST`** (per machine — do not copy another host's IP into `.env`).
 
 ## Multi-host deploy (shared PG)
 

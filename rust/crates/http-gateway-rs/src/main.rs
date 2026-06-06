@@ -5962,6 +5962,8 @@ struct ClawPoolJson {
     online: bool,
     #[serde(rename = "httpBase")]
     http_base: String,
+    #[serde(rename = "gatewayBase", skip_serializing_if = "String::is_empty")]
+    gateway_base: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -6090,6 +6092,7 @@ async fn list_claw_pools_handler(
                 last_heartbeat_ms: r.last_heartbeat_ms,
                 online,
                 http_base: format!("http://{}:{}", r.advertise_ip, r.sse_port),
+                gateway_base: r.gateway_base.clone(),
             }
         })
         .collect();

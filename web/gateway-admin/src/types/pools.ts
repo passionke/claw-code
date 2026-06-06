@@ -10,6 +10,8 @@ export interface ClawPoolEntry {
   lastHeartbeatMs: number;
   online: boolean;
   httpBase: string;
+  /** Registered with pool (`claw_pool.gateway_base`). Author: kejiqing */
+  gatewayBase?: string;
 }
 
 export interface ListClawPoolsResponse {
