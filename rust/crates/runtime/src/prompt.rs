@@ -1,3 +1,9 @@
+//! System prompt assembly for CLI and gateway solve.
+//!
+//! **Gateway contract** (section order, `claude_md` vs scaffold, MCP in `# Runtime config` only):
+//! `docs/gateway-system-prompt-assembly.md`. Regression: `gateway_system_prompt_assembly_contract`.
+//! Author: kejiqing
+
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -51,30 +57,76 @@ pub const FRONTIER_MODEL_NAME: &str = "Claude Opus 4.6";
 pub const INSTRUCTION_FILE_MAX_CHARS_ENV: &str = "CLAW_INSTRUCTION_FILE_MAX_CHARS";
 /// Env: max characters for **all** instruction files combined in `# Claude instructions`.
 pub const INSTRUCTION_TOTAL_MAX_CHARS_ENV: &str = "CLAW_INSTRUCTION_TOTAL_MAX_CHARS";
+/// `.claw/settings.json` / `project_config.prompt_limits_json` per-file key. Author: kejiqing
+pub const INSTRUCTION_FILE_MAX_CHARS_SETTINGS_KEY: &str = "instructionFileMaxChars";
+/// `.claw/settings.json` / `project_config.prompt_limits_json` combined key. Author: kejiqing
+pub const INSTRUCTION_TOTAL_MAX_CHARS_SETTINGS_KEY: &str = "instructionTotalMaxChars";
 
-/// Default per-file cap when [`INSTRUCTION_FILE_MAX_CHARS_ENV`] is unset or invalid.
+/// Default per-file cap when unset in project config / env.
 pub const DEFAULT_MAX_INSTRUCTION_FILE_CHARS: usize = 8_000;
-/// Default combined cap when [`INSTRUCTION_TOTAL_MAX_CHARS_ENV`] is unset or invalid.
+/// Default combined cap when unset in project config / env.
 pub const DEFAULT_MAX_TOTAL_INSTRUCTION_CHARS: usize = 24_000;
 
-/// Per-file instruction budget. Override with [`INSTRUCTION_FILE_MAX_CHARS_ENV`]; read each call.
-/// Author: kejiqing
+/// Per-file instruction budget (CLI / no project settings). Author: kejiqing
 #[must_use]
 pub fn max_instruction_file_chars() -> usize {
-    instruction_char_limit_from_env(
+    max_instruction_file_chars_for(None)
+}
+
+/// Combined instruction budget (CLI / no project settings). Author: kejiqing
+#[must_use]
+pub fn max_total_instruction_chars() -> usize {
+    max_total_instruction_chars_for(None)
+}
+
+/// Per-file cap: project `.claw/settings.json` → env → default. Author: kejiqing
+#[must_use]
+pub fn max_instruction_file_chars_for(config: Option<&RuntimeConfig>) -> usize {
+    resolve_instruction_char_limit(
+        config,
+        INSTRUCTION_FILE_MAX_CHARS_SETTINGS_KEY,
         INSTRUCTION_FILE_MAX_CHARS_ENV,
         DEFAULT_MAX_INSTRUCTION_FILE_CHARS,
     )
 }
 
-/// Combined instruction budget across all discovered files. Override with
-/// [`INSTRUCTION_TOTAL_MAX_CHARS_ENV`]; read each call. Author: kejiqing
+/// Combined cap for `# Claude instructions` or `# Project rules` section. Author: kejiqing
 #[must_use]
-pub fn max_total_instruction_chars() -> usize {
-    instruction_char_limit_from_env(
+pub fn max_total_instruction_chars_for(config: Option<&RuntimeConfig>) -> usize {
+    resolve_instruction_char_limit(
+        config,
+        INSTRUCTION_TOTAL_MAX_CHARS_SETTINGS_KEY,
         INSTRUCTION_TOTAL_MAX_CHARS_ENV,
         DEFAULT_MAX_TOTAL_INSTRUCTION_CHARS,
     )
+}
+
+#[must_use]
+fn resolve_instruction_char_limit(
+    config: Option<&RuntimeConfig>,
+    settings_key: &str,
+    env_var: &str,
+    default: usize,
+) -> usize {
+    if let Some(config) = config {
+        if let Some(value) = config.get(settings_key) {
+            if let Some(n) = parse_positive_usize_json_value(value) {
+                return n;
+            }
+        }
+    }
+    instruction_char_limit_from_env(env_var, default)
+}
+
+#[must_use]
+fn parse_positive_usize_json_value(value: &JsonValue) -> Option<usize> {
+    if let Some(n) = value.as_i64() {
+        return usize::try_from(n).ok().filter(|&x| x > 0);
+    }
+    value
+        .as_str()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
 }
 
 #[must_use]
@@ -148,7 +200,7 @@ impl ProjectContext {
 /// Pool worker read-only `ds_home` bind inside the solve container (`http-gateway-rs` pool v1).
 pub const GATEWAY_POOL_DS_CONFIG_ROOT: &str = "/claw_ds";
 
-/// Gateway `claude_md` materialized here; replaces builtin English scaffold only (see [`SystemPromptBuilder`]).
+/// Legacy path (no longer written from `claude_md`); kept for guest lock / read-only allowlist. Author: kejiqing
 pub const GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL: &str = ".claw/system_prompt_user_override.md";
 /// Gateway-written builtin scaffold from DB (`gateway_global_settings.system_prompt_default`).
 pub const GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL: &str = ".claw/system_prompt_scaffold.md";
@@ -165,8 +217,6 @@ pub struct SystemPromptBuilder {
     config: Option<RuntimeConfig>,
     /// When set, replaces hardcoded intro/system/doing-tasks/actions blocks.
     builtin_scaffold_override: Option<String>,
-    /// Gateway `claude_md` is also materialized as `home/CLAUDE.md`; skip duplicate `# Claude instructions`.
-    suppress_instruction_files: bool,
 }
 
 impl SystemPromptBuilder {
@@ -214,12 +264,6 @@ impl SystemPromptBuilder {
     }
 
     #[must_use]
-    pub fn with_suppress_instruction_files(mut self, suppress: bool) -> Self {
-        self.suppress_instruction_files = suppress;
-        self
-    }
-
-    #[must_use]
     pub fn build(&self) -> Vec<String> {
         let mut sections = Vec::new();
         if let Some(scaffold) = self.builtin_scaffold_override.as_ref() {
@@ -240,11 +284,17 @@ impl SystemPromptBuilder {
         }
         sections.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY.to_string());
         if let Some(project_context) = &self.project_context {
-            if !self.suppress_instruction_files && !project_context.instruction_files.is_empty() {
-                sections.push(render_instruction_files(&project_context.instruction_files));
+            if !project_context.instruction_files.is_empty() {
+                sections.push(render_instruction_files(
+                    &project_context.instruction_files,
+                    self.config.as_ref(),
+                ));
             }
             if !project_context.rule_files.is_empty() {
-                sections.push(render_project_rules(&project_context.rule_files));
+                sections.push(render_project_rules(
+                    &project_context.rule_files,
+                    self.config.as_ref(),
+                ));
             }
         }
         sections.push(self.environment_section());
@@ -502,9 +552,9 @@ fn render_project_context(project_context: &ProjectContext) -> String {
     lines.join("\n")
 }
 
-fn render_instruction_files(files: &[ContextFile]) -> String {
+fn render_instruction_files(files: &[ContextFile], config: Option<&RuntimeConfig>) -> String {
     let mut sections = vec!["# Claude instructions".to_string()];
-    let mut remaining_chars = max_total_instruction_chars();
+    let mut remaining_chars = max_total_instruction_chars_for(config);
     for file in files {
         if remaining_chars == 0 {
             sections.push(
@@ -514,8 +564,8 @@ fn render_instruction_files(files: &[ContextFile]) -> String {
             break;
         }
 
-        let raw_content = truncate_instruction_content(&file.content, remaining_chars);
-        let rendered_content = render_instruction_content(&raw_content);
+        let raw_content = truncate_instruction_content(&file.content, remaining_chars, config);
+        let rendered_content = render_instruction_content(&raw_content, config);
         let consumed = rendered_content.chars().count().min(remaining_chars);
         remaining_chars = remaining_chars.saturating_sub(consumed);
 
@@ -526,12 +576,12 @@ fn render_instruction_files(files: &[ContextFile]) -> String {
 }
 
 /// Project rules section — always after `# Claude instructions` (CLAUDE.md). Author: kejiqing
-fn render_project_rules(files: &[ContextFile]) -> String {
+fn render_project_rules(files: &[ContextFile], config: Option<&RuntimeConfig>) -> String {
     let mut sections = vec![
         "# Project rules".to_string(),
         "Rules from `project_config.rulesJson` (worker path `.cursor/rules/`).".to_string(),
     ];
-    let mut remaining_chars = max_total_instruction_chars();
+    let mut remaining_chars = max_total_instruction_chars_for(config);
     for file in files {
         if remaining_chars == 0 {
             sections.push(
@@ -543,8 +593,8 @@ fn render_project_rules(files: &[ContextFile]) -> String {
             || file.path.display().to_string(),
             |n| n.to_string_lossy().to_string(),
         );
-        let raw_content = truncate_instruction_content(&file.content, remaining_chars);
-        let rendered_content = render_instruction_content(&raw_content);
+        let raw_content = truncate_instruction_content(&file.content, remaining_chars, config);
+        let rendered_content = render_instruction_content(&raw_content, config);
         let consumed = rendered_content.chars().count().min(remaining_chars);
         remaining_chars = remaining_chars.saturating_sub(consumed);
         sections.push(format!("## {label}"));
@@ -593,8 +643,12 @@ fn describe_instruction_file(file: &ContextFile, files: &[ContextFile]) -> Strin
     format!("{path} (scope: {scope})")
 }
 
-fn truncate_instruction_content(content: &str, remaining_chars: usize) -> String {
-    let hard_limit = max_instruction_file_chars().min(remaining_chars);
+fn truncate_instruction_content(
+    content: &str,
+    remaining_chars: usize,
+    config: Option<&RuntimeConfig>,
+) -> String {
+    let hard_limit = max_instruction_file_chars_for(config).min(remaining_chars);
     let trimmed = content.trim();
     if trimmed.chars().count() <= hard_limit {
         return trimmed.to_string();
@@ -605,8 +659,8 @@ fn truncate_instruction_content(content: &str, remaining_chars: usize) -> String
     output
 }
 
-fn render_instruction_content(content: &str) -> String {
-    truncate_instruction_content(content, max_instruction_file_chars())
+fn render_instruction_content(content: &str, config: Option<&RuntimeConfig>) -> String {
+    truncate_instruction_content(content, max_instruction_file_chars_for(config), config)
 }
 
 fn display_context_path(path: &Path) -> String {
@@ -641,17 +695,6 @@ pub fn builtin_system_prompt_scaffold_default() -> String {
         get_actions_section(),
     ]
     .join("\n\n")
-}
-
-fn read_gateway_user_prompt_override(cwd: &Path) -> Option<String> {
-    let path = cwd.join(GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL);
-    let text = fs::read_to_string(path).ok()?;
-    let trimmed = text.trim().to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
 }
 
 fn read_gateway_scaffold_override(cwd: &Path) -> Option<String> {
@@ -713,18 +756,14 @@ pub fn load_system_prompt(
         discover_project_context_for_prompt(&config_root, &session_work_dir, current_date)?;
     project_context.extra_session = extra_session;
     let config = ConfigLoader::default_for(&config_root).load()?;
-    // Gateway `claude_md` replaces only the builtin English scaffold; rules, extraSession,
-    // environment, and config still flow through the builder (no early-return fork). Author: kejiqing
-    let user_scaffold = read_gateway_user_prompt_override(&config_root);
-    let scaffold_override = user_scaffold
-        .clone()
-        .or_else(|| read_gateway_scaffold_override(&config_root));
+    // Contract: docs/gateway-system-prompt-assembly.md §2 — `claude_md` → `# Claude instructions`
+    // only; scaffold from `.claw/system_prompt_scaffold.md`; never read legacy user_override.
+    let scaffold_override = read_gateway_scaffold_override(&config_root);
     Ok(SystemPromptBuilder::new()
         .with_os(os_name, os_version)
         .with_project_context(project_context)
         .with_runtime_config(config)
         .with_builtin_scaffold_override(scaffold_override)
-        .with_suppress_instruction_files(user_scaffold.is_some())
         .build())
 }
 
@@ -936,11 +975,15 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("runtime-prompt-{nanos}"))
+        let pid = std::process::id();
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("runtime-prompt-{pid}-{nanos}-{seq}"))
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -1021,7 +1064,7 @@ mod tests {
     fn truncates_large_instruction_content_for_rendering() {
         let _guard = env_lock();
         std::env::remove_var(INSTRUCTION_FILE_MAX_CHARS_ENV);
-        let rendered = render_instruction_content(&"x".repeat(8500));
+        let rendered = render_instruction_content(&"x".repeat(8500), None);
         assert!(rendered.contains("[truncated]"));
         assert!(
             rendered.chars().count()
@@ -1329,62 +1372,57 @@ mod tests {
     }
 
     #[test]
-    fn load_system_prompt_reads_config_from_claw_project_config_root() {
+    fn load_system_prompt_reads_scaffold_from_claw_project_config_root() {
         let ds_root = temp_dir();
         let work_root = temp_dir();
         let session_home = work_root.join("sessions").join("sess-pool");
         fs::create_dir_all(ds_root.join(".claw")).expect("ds claw");
         fs::create_dir_all(session_home.join(".claw")).expect("session claw");
         fs::write(
-            ds_root.join(".claw").join("system_prompt_user_override.md"),
-            "pool ds override",
+            ds_root.join(".claw").join("system_prompt_scaffold.md"),
+            "pool ds scaffold",
         )
-        .expect("override");
+        .expect("scaffold");
         let _pcr = crate::ScopedEnvVar::set("CLAW_PROJECT_CONFIG_ROOT", &ds_root);
         let prompt = super::load_system_prompt(&session_home, "2026-06-06", "linux", "6.8", None)
             .expect("load prompt")
             .join("\n\n");
-        assert!(prompt.contains("pool ds override"));
+        assert!(prompt.contains("pool ds scaffold"));
         fs::remove_dir_all(ds_root).expect("cleanup ds");
         fs::remove_dir_all(work_root).expect("cleanup work");
     }
 
     #[test]
-    fn load_system_prompt_includes_rules_when_gateway_user_override_present() {
+    fn load_system_prompt_includes_rules_when_claude_md_present() {
         let _pcr = crate::ScopedEnvVar::unset("CLAW_PROJECT_CONFIG_ROOT");
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
         fs::create_dir_all(root.join(".cursor/rules")).expect("rules dir");
-        fs::write(
-            root.join(".claw").join("system_prompt_user_override.md"),
-            "custom user scaffold",
-        )
-        .expect("write override");
+        fs::write(root.join("CLAUDE.md"), "project claude body").expect("write claude");
         fs::write(root.join(".cursor/rules/lang.mdc"), "use user language").expect("write rule");
 
         let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None)
             .expect("load prompt")
             .join("\n\n");
-        let override_idx = prompt.find("custom user scaffold").expect("override text");
+        let claude_idx = prompt
+            .find("# Claude instructions")
+            .expect("claude section");
         let rules_idx = prompt.find("# Project rules").expect("project rules");
         assert!(
-            override_idx < rules_idx,
-            "rules must follow gateway user override"
+            claude_idx < rules_idx,
+            "rules must follow CLAUDE instructions"
         );
+        assert!(prompt.contains("project claude body"));
         assert!(prompt.contains("use user language"));
         fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
-    fn load_system_prompt_includes_extra_session_when_gateway_user_override_present() {
+    fn load_system_prompt_includes_extra_session_when_claude_md_present() {
         let _pcr = crate::ScopedEnvVar::unset("CLAW_PROJECT_CONFIG_ROOT");
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
-        fs::write(
-            root.join(".claw").join("system_prompt_user_override.md"),
-            "custom user scaffold",
-        )
-        .expect("write override");
+        fs::write(root.join("CLAUDE.md"), "project claude body").expect("write claude");
 
         let prompt = super::load_system_prompt(
             &root,
@@ -1395,40 +1433,142 @@ mod tests {
         )
         .expect("load prompt")
         .join("\n\n");
-        let override_idx = prompt.find("custom user scaffold").expect("override text");
+        let claude_idx = prompt
+            .find("# Claude instructions")
+            .expect("claude section");
         let extra_idx = prompt
             .find("HTTP gateway extraSession")
             .expect("extraSession section");
         assert!(
-            override_idx < extra_idx,
-            "extraSession must follow gateway user override"
+            claude_idx < extra_idx,
+            "extraSession must follow CLAUDE instructions"
         );
         assert!(prompt.contains("\"store_id\""));
         assert!(prompt.contains("\"S9\""));
         fs::remove_dir_all(root).expect("cleanup");
     }
 
+    fn section_index(prompt: &str, marker: &str) -> usize {
+        prompt
+            .find(marker)
+            .unwrap_or_else(|| panic!("prompt must contain {marker:?}"))
+    }
+
+    /// Full gateway assembly contract — see `docs/gateway-system-prompt-assembly.md` §2–§6.
     #[test]
-    fn load_system_prompt_skips_claude_instructions_dup_when_user_override_present() {
+    fn gateway_system_prompt_assembly_contract() {
+        let ds_root = temp_dir();
+        let session_home = ds_root.join("sessions").join("sess-contract");
+        fs::create_dir_all(ds_root.join(".claw")).expect("ds claw");
+        fs::create_dir_all(ds_root.join(".cursor/rules")).expect("rules dir");
+        fs::create_dir_all(session_home.join(".claw")).expect("session claw");
+        fs::write(
+            ds_root.join(".claw").join("system_prompt_scaffold.md"),
+            "GATEWAY_SCAFFOLD_MARKER",
+        )
+        .expect("scaffold");
+        fs::write(
+            ds_root.join(".claw").join("system_prompt_user_override.md"),
+            "LEGACY_OVERRIDE_MUST_NOT_APPEAR",
+        )
+        .expect("legacy override");
+        fs::write(
+            ds_root.join(".claw").join("settings.json"),
+            r#"{"mcpServers":{"sqlbot-streamable":{"url":"http://example.test/mcp"}},"auto_hidden_system_prompt":1}"#,
+        )
+        .expect("settings");
+        fs::write(ds_root.join("CLAUDE.md"), "CLAUDE_MD_MARKER").expect("claude");
+        fs::write(ds_root.join(".cursor/rules/query.mdc"), "RULE_MARKER").expect("rule");
+
+        let _pcr = crate::ScopedEnvVar::set("CLAW_PROJECT_CONFIG_ROOT", &ds_root);
+        let prompt = super::load_system_prompt(
+            &session_home,
+            "2026-06-06",
+            "linux",
+            "6.8",
+            Some(json!({ "store_id": "S1", "org_id": "" })),
+        )
+        .expect("load prompt")
+        .join("\n\n");
+
+        assert!(prompt.contains("GATEWAY_SCAFFOLD_MARKER"));
+        assert!(prompt.contains("CLAUDE_MD_MARKER"));
+        assert!(prompt.contains("RULE_MARKER"));
+        assert!(prompt.contains("# Runtime config"));
+        assert!(prompt.contains("mcpServers"));
+        assert!(prompt.contains("sqlbot-streamable"));
+        assert!(prompt.contains("HTTP gateway extraSession"));
+        assert!(
+            !prompt.contains("LEGACY_OVERRIDE_MUST_NOT_APPEAR"),
+            "legacy system_prompt_user_override.md must not affect assembly"
+        );
+        assert!(
+            !prompt.contains("# SQLBot context"),
+            "SQLBot section is solve-time only, not static load_system_prompt"
+        );
+
+        let scaffold = section_index(&prompt, "GATEWAY_SCAFFOLD_MARKER");
+        let boundary = section_index(&prompt, SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+        let claude = section_index(&prompt, "# Claude instructions");
+        let rules = section_index(&prompt, "# Project rules");
+        let env = section_index(&prompt, "# Environment context");
+        let runtime = section_index(&prompt, "# Runtime config");
+        assert!(scaffold < boundary, "scaffold before dynamic boundary");
+        assert!(boundary < claude, "boundary before claude instructions");
+        assert!(claude < rules, "claude before rules");
+        assert!(rules < env, "rules before environment");
+        assert!(env < runtime, "environment before runtime config");
+
+        fs::remove_dir_all(ds_root).expect("cleanup");
+    }
+
+    #[test]
+    fn legacy_user_override_file_is_ignored() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::write(
+            root.join(".claw").join("system_prompt_user_override.md"),
+            "stale override body",
+        )
+        .expect("legacy file");
+        fs::write(root.join("CLAUDE.md"), "from claude md file").expect("claude");
+
+        let prompt = super::load_system_prompt(&root, "2026-06-06", "linux", "6.8", None)
+            .expect("load prompt")
+            .join("\n\n");
+        assert!(prompt.contains("# Claude instructions"));
+        assert!(prompt.contains("from claude md file"));
+        assert!(
+            !prompt.contains("stale override body"),
+            "load_system_prompt must not read system_prompt_user_override.md"
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn load_system_prompt_keeps_scaffold_and_claude_instructions_separate() {
         let _pcr = crate::ScopedEnvVar::unset("CLAW_PROJECT_CONFIG_ROOT");
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
-        fs::create_dir_all(root.join("home")).expect("home dir");
-        fs::write(root.join("home/CLAUDE.md"), "same claude body").expect("write claude");
         fs::write(
-            root.join(".claw").join("system_prompt_user_override.md"),
-            "same claude body",
+            root.join(".claw").join("system_prompt_scaffold.md"),
+            "db builtin scaffold",
         )
-        .expect("write override");
+        .expect("write scaffold");
+        fs::write(root.join("CLAUDE.md"), "project claude body").expect("write claude");
 
         let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None)
             .expect("load prompt")
             .join("\n\n");
-        assert!(prompt.contains("same claude body"));
+        let scaffold_idx = prompt.find("db builtin scaffold").expect("scaffold text");
+        let claude_idx = prompt
+            .find("# Claude instructions")
+            .expect("claude section");
         assert!(
-            !prompt.contains("# Claude instructions"),
-            "claude_md scaffold must not duplicate home/CLAUDE.md instruction section"
+            scaffold_idx < claude_idx,
+            "builtin scaffold must precede CLAUDE instructions"
         );
+        assert!(prompt.contains("project claude body"));
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -1493,9 +1633,31 @@ mod tests {
     #[test]
     fn truncates_instruction_content_to_budget() {
         let content = "x".repeat(5_000);
-        let rendered = truncate_instruction_content(&content, 4_000);
+        let rendered = truncate_instruction_content(&content, 4_000, None);
         assert!(rendered.contains("[truncated]"));
         assert!(rendered.chars().count() <= 4_000 + "\n\n[truncated]".chars().count());
+    }
+
+    #[test]
+    fn instruction_limits_from_settings_json_override_env() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::write(
+            root.join(".claw/settings.json"),
+            r#"{"instructionFileMaxChars":500,"instructionTotalMaxChars":900}"#,
+        )
+        .expect("settings");
+        std::env::set_var(INSTRUCTION_FILE_MAX_CHARS_ENV, "9999");
+        std::env::set_var(super::INSTRUCTION_TOTAL_MAX_CHARS_ENV, "8888");
+        let config = ConfigLoader::default_for(&root)
+            .load()
+            .expect("load config");
+        assert_eq!(super::max_instruction_file_chars_for(Some(&config)), 500);
+        assert_eq!(super::max_total_instruction_chars_for(Some(&config)), 900);
+        std::env::remove_var(INSTRUCTION_FILE_MAX_CHARS_ENV);
+        std::env::remove_var(super::INSTRUCTION_TOTAL_MAX_CHARS_ENV);
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -1514,19 +1676,21 @@ mod tests {
             .instruction_files
             .iter()
             .any(|file| file.path.ends_with(".claw/instructions.md")));
-        assert!(
-            render_instruction_files(&context.instruction_files).contains("instruction markdown")
-        );
+        assert!(render_instruction_files(&context.instruction_files, None)
+            .contains("instruction markdown"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 
     #[test]
     fn renders_instruction_file_metadata() {
-        let rendered = render_instruction_files(&[ContextFile {
-            path: PathBuf::from("/tmp/project/CLAUDE.md"),
-            content: "Project rules".to_string(),
-        }]);
+        let rendered = render_instruction_files(
+            &[ContextFile {
+                path: PathBuf::from("/tmp/project/CLAUDE.md"),
+                content: "Project rules".to_string(),
+            }],
+            None,
+        );
         assert!(rendered.contains("# Claude instructions"));
         assert!(rendered.contains("scope: /tmp/project"));
         assert!(rendered.contains("Project rules"));

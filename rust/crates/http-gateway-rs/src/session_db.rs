@@ -104,6 +104,8 @@ pub struct ProjectConfigRow {
     pub solve_orchestration_json: Value,
     /// Allowed `extraSession` business keys for this ds (`string[]`). Author: kejiqing
     pub extra_session_fields_json: Value,
+    /// Per-ds instruction budgets → `.claw/settings.json`. Author: kejiqing
+    pub prompt_limits_json: Value,
 }
 
 /// Row summary for [`GatewaySessionDb::list_project_config_summaries`]. Author: kejiqing
@@ -252,6 +254,7 @@ pub struct ProjectConfigUpsert<'a> {
     pub solve_preflight_json: &'a Value,
     pub solve_orchestration_json: &'a Value,
     pub extra_session_fields_json: &'a Value,
+    pub prompt_limits_json: &'a Value,
 }
 
 /// Gateway session index: one row per `(session_id, ds_id)` with a workspace-relative `session_home`.
@@ -509,6 +512,11 @@ impl GatewaySessionDb {
         .await?;
         sqlx::query(
             "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS extra_session_fields_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS prompt_limits_json JSONB NOT NULL DEFAULT '{}'::jsonb",
         )
         .execute(pool)
         .await?;
@@ -1290,7 +1298,7 @@ impl GatewaySessionDb {
             r"SELECT ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                       rules_json, mcp_servers_json, skills_sources_json, skills_json,
                       allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
-                      solve_orchestration_json, extra_session_fields_json
+                      solve_orchestration_json, extra_session_fields_json, prompt_limits_json
                FROM project_config WHERE ds_id = $1",
         )
         .bind(ds_id)
@@ -1317,6 +1325,7 @@ impl GatewaySessionDb {
         let extra_session_fields_json: Value = row
             .try_get::<Json<Value>, _>("extra_session_fields_json")?
             .0;
+        let prompt_limits_json: Value = row.try_get::<Json<Value>, _>("prompt_limits_json")?.0;
 
         let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
         let draft_open: bool = row.try_get("draft_open")?;
@@ -1337,6 +1346,7 @@ impl GatewaySessionDb {
             solve_preflight_json,
             solve_orchestration_json,
             extra_session_fields_json,
+            prompt_limits_json,
         }))
     }
 
@@ -1349,8 +1359,8 @@ impl GatewaySessionDb {
                 ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                 rules_json, mcp_servers_json, skills_sources_json, skills_json,
                 allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
-                solve_orchestration_json, extra_session_fields_json
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                solve_orchestration_json, extra_session_fields_json, prompt_limits_json
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (ds_id) DO UPDATE SET
                 content_rev = EXCLUDED.content_rev,
                 stable_content_rev = EXCLUDED.stable_content_rev,
@@ -1365,7 +1375,8 @@ impl GatewaySessionDb {
                 git_sync_json = EXCLUDED.git_sync_json,
                 solve_preflight_json = EXCLUDED.solve_preflight_json,
                 solve_orchestration_json = EXCLUDED.solve_orchestration_json,
-                extra_session_fields_json = EXCLUDED.extra_session_fields_json",
+                extra_session_fields_json = EXCLUDED.extra_session_fields_json,
+                prompt_limits_json = EXCLUDED.prompt_limits_json",
         )
         .bind(row.ds_id)
         .bind(row.content_rev)
@@ -1382,6 +1393,7 @@ impl GatewaySessionDb {
         .bind(Json(row.solve_preflight_json))
         .bind(Json(row.solve_orchestration_json))
         .bind(Json(row.extra_session_fields_json))
+        .bind(Json(row.prompt_limits_json))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -3321,6 +3333,7 @@ mod tests {
             solve_preflight_json: &json!({"kind": "sqlbot_mcp_start"}),
             solve_orchestration_json: &json!({"kind": "single_turn"}),
             extra_session_fields_json: &json!([]),
+            prompt_limits_json: &json!({}),
         })
         .await
         .unwrap();
@@ -3349,6 +3362,7 @@ mod tests {
             solve_preflight_json: &json!({"kind": "none"}),
             solve_orchestration_json: &json!({"kind": "single_turn"}),
             extra_session_fields_json: &json!([]),
+            prompt_limits_json: &json!({}),
         })
         .await
         .unwrap();

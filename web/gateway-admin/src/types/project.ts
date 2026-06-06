@@ -47,6 +47,13 @@ export interface ProjectListItem {
   gitSync?: GitSyncJson;
 }
 
+export interface PromptLimitsJson {
+  /** Per `CLAUDE.md` / rule file cap in system prompt (Unicode chars). Author: kejiqing */
+  instructionFileMaxChars?: number;
+  /** Combined cap per `# Claude instructions` or `# Project rules` section. Author: kejiqing */
+  instructionTotalMaxChars?: number;
+}
+
 export interface ProjectConfig {
   dsId: number;
   contentRev: string;
@@ -63,6 +70,8 @@ export interface ProjectConfig {
   solveOrchestrationJson?: SolveOrchestrationJson;
   /** Allowed extraSession business keys for this ds. Author: kejiqing */
   extraSessionFieldsJson?: string[];
+  /** Instruction truncation budgets → `.claw/settings.json`. Author: kejiqing */
+  promptLimitsJson?: PromptLimitsJson;
 }
 
 export interface SkillJsonItem {

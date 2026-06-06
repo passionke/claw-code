@@ -13,6 +13,7 @@ export function emptyProjectConfig(dsId: number): ProjectConfig {
     solvePreflightJson: { kinds: [] },
     solveOrchestrationJson: { kind: "single_turn" },
     extraSessionFieldsJson: [],
+    promptLimitsJson: {},
   };
 }
 
@@ -61,6 +62,10 @@ export async function putProjectConfigDraft(
       patch.extraSessionFieldsJson !== undefined
         ? patch.extraSessionFieldsJson
         : cfg.extraSessionFieldsJson ?? [],
+    promptLimitsJson:
+      patch.promptLimitsJson !== undefined
+        ? patch.promptLimitsJson
+        : cfg.promptLimitsJson ?? {},
   };
   const r = await proxyHttp<{ activeConfig?: ProjectConfig } & ProjectConfig>(
     gatewayBase,

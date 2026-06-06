@@ -1,4 +1,7 @@
 //! Materialize `project_config` rows onto `ds_<id>/home` (rules, CLAUDE.md, inline skills from DB).
+//!
+//! System prompt paths (`claude_md` vs scaffold, no `system_prompt_user_override`):
+//! `docs/gateway-system-prompt-assembly.md` §4–§6.
 //! Author: kejiqing
 
 use std::path::{Component, Path, PathBuf};
@@ -13,6 +16,79 @@ pub const APPLIED_REV_MARKER: &str = ".claw/project_config_applied_rev";
 pub const ALLOWED_TOOLS_MARKER: &str = ".claw/project_allowed_tools.json";
 /// Materialized from `project_config.solve_preflight_json` (DB truth). Author: kejiqing
 pub const SOLVE_PREFLIGHT_MARKER: &str = "home/.claw/solve-preflight.json";
+
+/// `.claw/settings.json` / `project_config.prompt_limits_json` per-file key. Author: kejiqing
+pub const PROMPT_LIMIT_INSTRUCTION_FILE_MAX_KEY: &str = "instructionFileMaxChars";
+/// `.claw/settings.json` / `project_config.prompt_limits_json` combined key. Author: kejiqing
+pub const PROMPT_LIMIT_INSTRUCTION_TOTAL_MAX_KEY: &str = "instructionTotalMaxChars";
+
+const PROMPT_LIMIT_ABS_MAX: usize = 1_000_000;
+
+#[must_use]
+pub fn default_prompt_limits_json() -> Value {
+    json!({})
+}
+
+pub fn validate_prompt_limits_json(value: &Value) -> Result<(), String> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let Some(obj) = value.as_object() else {
+        return Err("promptLimitsJson must be a JSON object".into());
+    };
+    if obj.is_empty() {
+        return Ok(());
+    }
+    for (key, val) in obj {
+        match key.as_str() {
+            PROMPT_LIMIT_INSTRUCTION_FILE_MAX_KEY | PROMPT_LIMIT_INSTRUCTION_TOTAL_MAX_KEY => {
+                parse_prompt_limit_entry(key, val)?;
+            }
+            other => return Err(format!("promptLimitsJson: unknown key {other}")),
+        }
+    }
+    Ok(())
+}
+
+fn parse_prompt_limit_entry(key: &str, value: &Value) -> Result<(), String> {
+    let n = parse_prompt_limit_usize(value)
+        .ok_or_else(|| format!("promptLimitsJson.{key} must be a positive integer"))?;
+    if n > PROMPT_LIMIT_ABS_MAX {
+        return Err(format!(
+            "promptLimitsJson.{key} must be <= {PROMPT_LIMIT_ABS_MAX}"
+        ));
+    }
+    Ok(())
+}
+
+#[must_use]
+pub fn parse_prompt_limit_usize(value: &Value) -> Option<usize> {
+    if let Some(n) = value.as_i64() {
+        return usize::try_from(n).ok().filter(|&x| x > 0);
+    }
+    value
+        .as_str()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+}
+
+pub fn append_prompt_limits_to_settings(settings: &mut Value, limits: &Value) {
+    let Some(obj) = settings.as_object_mut() else {
+        return;
+    };
+    if let Some(n) = limits
+        .get(PROMPT_LIMIT_INSTRUCTION_FILE_MAX_KEY)
+        .and_then(parse_prompt_limit_usize)
+    {
+        obj.insert(PROMPT_LIMIT_INSTRUCTION_FILE_MAX_KEY.to_string(), json!(n));
+    }
+    if let Some(n) = limits
+        .get(PROMPT_LIMIT_INSTRUCTION_TOTAL_MAX_KEY)
+        .and_then(parse_prompt_limit_usize)
+    {
+        obj.insert(PROMPT_LIMIT_INSTRUCTION_TOTAL_MAX_KEY.to_string(), json!(n));
+    }
+}
 /// Materialized from `project_config.solve_orchestration_json` (DB truth). Author: kejiqing
 pub const SOLVE_ORCHESTRATION_MARKER: &str = "home/.claw/solve-orchestration.json";
 
@@ -322,25 +398,20 @@ pub async fn apply_if_needed(
 
 async fn write_system_prompt_sidecars(
     work_dir: &Path,
-    row: &ProjectConfigRow,
+    _row: &ProjectConfigRow,
     system_prompt_scaffold: &str,
 ) -> ApplyResult<()> {
     let claw_dir = work_dir.join(".claw");
     fs::create_dir_all(&claw_dir)
         .await
         .map_err(|e| ProjectConfigApplyError::new(format!("create .claw: {e}")))?;
-    let override_path = work_dir.join(GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL);
     let scaffold_path = work_dir.join(GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL);
-    if let Some(text) = row.claude_md.as_deref().filter(|s| !s.trim().is_empty()) {
-        fs::write(&override_path, text.as_bytes())
-            .await
-            .map_err(|e| ProjectConfigApplyError::new(format!("write user override: {e}")))?;
-    } else {
-        let _ = fs::remove_file(&override_path).await;
-    }
     fs::write(scaffold_path, system_prompt_scaffold.as_bytes())
         .await
         .map_err(|e| ProjectConfigApplyError::new(format!("write system scaffold: {e}")))?;
+    // Legacy: stop materializing `claude_md` here; instructions live in `CLAUDE.md` only. Author: kejiqing
+    let legacy_override = work_dir.join(GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL);
+    let _ = fs::remove_file(&legacy_override).await;
     Ok(())
 }
 
@@ -550,10 +621,12 @@ pub struct GuestMaterializeWrite {
 /// Runtime `settings.json` from Admin `mcp_servers_json` (same as gateway `build_settings`). Author: kejiqing
 #[must_use]
 pub fn build_settings_json_from_row(row: &ProjectConfigRow) -> Value {
-    json!({
+    let mut settings = json!({
         "mcpServers": enabled_mcp_servers(&row.mcp_servers_json),
         "auto_hidden_system_prompt": 1
-    })
+    });
+    append_prompt_limits_to_settings(&mut settings, &row.prompt_limits_json);
+    settings
 }
 
 /// PG `project_config` → bytes for `materialize_in` (every solve; not host `ds_*` / worker age). Author: kejiqing
@@ -591,16 +664,9 @@ fn push_write(out: &mut Vec<GuestMaterializeWrite>, rel_path: PathBuf, bytes: Ve
 
 fn push_system_prompt_sidecars(
     out: &mut Vec<GuestMaterializeWrite>,
-    row: &ProjectConfigRow,
+    _row: &ProjectConfigRow,
     system_prompt_scaffold: &str,
 ) {
-    if let Some(text) = row.claude_md.as_deref().filter(|s| !s.trim().is_empty()) {
-        push_write(
-            out,
-            PathBuf::from(GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL),
-            text.as_bytes().to_vec(),
-        );
-    }
     push_write(
         out,
         PathBuf::from(GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL),
@@ -784,6 +850,7 @@ mod tests {
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
             extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
         };
         let ex = git_excluded_home_relpaths(&row);
         assert!(ex.contains(&PathBuf::from("CLAUDE.md")));
@@ -849,6 +916,7 @@ mod tests {
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
             extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes.iter().map(|w| w.rel_path.clone()).collect();
@@ -914,16 +982,17 @@ mod tests {
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
             extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes
             .iter()
             .map(|w| w.rel_path.to_string_lossy().to_string())
             .collect();
-        assert!(paths
+        assert!(paths.iter().any(|p| p.ends_with("CLAUDE.md")));
+        assert!(!paths
             .iter()
             .any(|p| p.contains("system_prompt_user_override")));
-        assert!(paths.iter().any(|p| p.ends_with("CLAUDE.md")));
         assert!(!paths.iter().any(|p| p.contains("home/CLAUDE.md")));
         let settings = writes
             .iter()
@@ -964,6 +1033,7 @@ mod tests {
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
             extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes
@@ -986,6 +1056,129 @@ mod tests {
             .and_then(|m| m.get("on"))
             .and_then(|c| c.get("enabled"))
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_full_materializes_claude_scaffold_removes_legacy_override() {
+        let root = std::env::temp_dir().join(format!(
+            "claw-apply-prompt-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join(".claw"))
+            .await
+            .expect("claw dir");
+        fs::write(
+            root.join(GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL),
+            "stale claude as override",
+        )
+        .await
+        .expect("seed legacy override");
+
+        let row = ProjectConfigRow {
+            ds_id: 1,
+            content_rev: "rev-apply-prompt".into(),
+            stable_content_rev: Some("rev-apply-prompt".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([{
+                "relativePath": ".cursor/rules/safety.mdc",
+                "content": "rule body"
+            }]),
+            mcp_servers_json: json!({"sqlbot": {"url": "http://example"}}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: Some("claude from db".into()),
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+        };
+        apply_full(&root, &row, "pg scaffold body")
+            .await
+            .expect("apply_full");
+
+        let root_claude = fs::read_to_string(root.join("CLAUDE.md"))
+            .await
+            .expect("root claude");
+        assert_eq!(root_claude, "claude from db");
+        let home_claude = fs::read_to_string(root.join("home/CLAUDE.md"))
+            .await
+            .expect("home claude");
+        assert_eq!(home_claude, "claude from db");
+        let scaffold = fs::read_to_string(root.join(GATEWAY_SYSTEM_PROMPT_SCAFFOLD_REL))
+            .await
+            .expect("scaffold");
+        assert_eq!(scaffold, "pg scaffold body");
+        assert!(
+            fs::metadata(root.join(GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL))
+                .await
+                .is_err(),
+            "apply must remove legacy system_prompt_user_override.md"
+        );
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[test]
+    fn build_settings_json_from_row_includes_mcp_and_auto_hidden() {
+        let row = ProjectConfigRow {
+            ds_id: 1,
+            content_rev: "r".into(),
+            stable_content_rev: Some("r".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({"my-mcp": {"url": "http://mcp.test"}}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+        };
+        let v = build_settings_json_from_row(&row);
+        assert_eq!(v.get("auto_hidden_system_prompt"), Some(&json!(1)));
+        assert!(v.get("mcpServers").and_then(|m| m.get("my-mcp")).is_some());
+    }
+
+    #[test]
+    fn build_settings_json_from_row_materializes_prompt_limits() {
+        let row = ProjectConfigRow {
+            ds_id: 1,
+            content_rev: "r".into(),
+            stable_content_rev: Some("r".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({
+                "instructionFileMaxChars": 12000,
+                "instructionTotalMaxChars": 36000
+            }),
+        };
+        let v = build_settings_json_from_row(&row);
+        assert_eq!(v.get("instructionFileMaxChars"), Some(&json!(12000)));
+        assert_eq!(v.get("instructionTotalMaxChars"), Some(&json!(36000)));
+    }
+
+    #[test]
+    fn validate_prompt_limits_rejects_unknown_keys() {
+        assert!(validate_prompt_limits_json(&json!({"bad": 1})).is_err());
     }
 
     #[test]

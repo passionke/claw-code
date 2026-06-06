@@ -215,6 +215,14 @@ const TOP_LEVEL_FIELDS: &[FieldSpec] = &[
         name: "auto_hidden_system_prompt",
         expected: FieldType::BoolLike,
     },
+    FieldSpec {
+        name: "instructionFileMaxChars",
+        expected: FieldType::Number,
+    },
+    FieldSpec {
+        name: "instructionTotalMaxChars",
+        expected: FieldType::Number,
+    },
 ];
 
 const HOOKS_FIELDS: &[FieldSpec] = &[

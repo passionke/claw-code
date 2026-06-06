@@ -422,6 +422,9 @@ struct UpsertProjectConfigRequest {
     /// Omit on PUT to keep existing `extra_session_fields_json`. Author: kejiqing
     #[serde(rename = "extraSessionFieldsJson", default)]
     extra_session_fields_json: Option<Value>,
+    /// Omit on PUT to keep existing `prompt_limits_json`. Author: kejiqing
+    #[serde(rename = "promptLimitsJson", default)]
+    prompt_limits_json: Option<Value>,
 }
 
 /// Body for `POST /v1/project/config/{ds_id}/versions/commit` — save draft as immutable formal revision (does not change effective). Author: kejiqing
@@ -469,6 +472,8 @@ struct ProjectConfigResponse {
     solve_orchestration_json: Value,
     #[serde(rename = "extraSessionFieldsJson")]
     extra_session_fields_json: Value,
+    #[serde(rename = "promptLimitsJson")]
+    prompt_limits_json: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -2729,6 +2734,7 @@ fn default_project_config_row(ds_id: i64) -> session_db::ProjectConfigRow {
         solve_preflight_json: json!({"kind": "none"}),
         solve_orchestration_json: json!({"kind": "single_turn"}),
         extra_session_fields_json: json!([]),
+        prompt_limits_json: project_config_apply::default_prompt_limits_json(),
     }
 }
 
@@ -2864,10 +2870,7 @@ async fn activate_project_config_revision_row(
     state: &AppState,
     ds_id: i64,
     rev: session_db::ProjectConfigRevisionRow,
-    git_sync_json: Value,
-    solve_preflight_json: Value,
-    solve_orchestration_json: Value,
-    extra_session_fields_json: Value,
+    sidecars: project_config_draft::ProjectConfigSidecars,
 ) -> Result<bool, ApiError> {
     let now = now_ms();
     state
@@ -2884,10 +2887,11 @@ async fn activate_project_config_revision_row(
             skills_json: &rev.skills_json,
             allowed_tools_json: &rev.allowed_tools_json,
             claude_md: rev.claude_md.as_deref(),
-            git_sync_json: &git_sync_json,
-            solve_preflight_json: &solve_preflight_json,
-            solve_orchestration_json: &solve_orchestration_json,
-            extra_session_fields_json: &extra_session_fields_json,
+            git_sync_json: &sidecars.git_sync_json,
+            solve_preflight_json: &sidecars.solve_preflight_json,
+            solve_orchestration_json: &sidecars.solve_orchestration_json,
+            extra_session_fields_json: &sidecars.extra_session_fields_json,
+            prompt_limits_json: &sidecars.prompt_limits_json,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -4212,6 +4216,7 @@ async fn create_project(
             solve_preflight_json: &json!({"kind": "none"}),
             solve_orchestration_json: &json!({"kind": "single_turn"}),
             extra_session_fields_json: &empty_arr,
+            prompt_limits_json: &empty_obj,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -4370,6 +4375,7 @@ async fn project_config_row_to_response(
                 &row.solve_orchestration_json,
             ),
         extra_session_fields_json: row.extra_session_fields_json,
+        prompt_limits_json: row.prompt_limits_json,
     }
 }
 
@@ -4516,6 +4522,10 @@ fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(
     }
     if let Some(ref esf) = req.extra_session_fields_json {
         project_extra_session::validate_project_extra_session_fields_json(esf)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
+    if let Some(ref pl) = req.prompt_limits_json {
+        project_config_apply::validate_prompt_limits_json(pl)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
     Ok(())
@@ -4684,10 +4694,7 @@ async fn activate_project_config_version(
         &state,
         ds_id,
         rev,
-        active_row.git_sync_json.clone(),
-        active_row.solve_preflight_json.clone(),
-        active_row.solve_orchestration_json.clone(),
-        active_row.extra_session_fields_json.clone(),
+        project_config_draft::ProjectConfigSidecars::from_row(&active_row),
     )
     .await?;
     Ok(Json(ActivateProjectConfigVersionResponse {
@@ -4734,6 +4741,10 @@ async fn put_project_config(
         Some(incoming) => incoming.clone(),
         None => existing.extra_session_fields_json.clone(),
     };
+    let prompt_limits_json = match &req.prompt_limits_json {
+        Some(incoming) => incoming.clone(),
+        None => existing.prompt_limits_json.clone(),
+    };
     let req_for_validate = UpsertProjectConfigRequest {
         content_rev: String::new(),
         rules_json: req.rules_json.clone(),
@@ -4746,6 +4757,7 @@ async fn put_project_config(
         solve_preflight_json: Some(solve_preflight_json.clone()),
         solve_orchestration_json: Some(solve_orchestration_json.clone()),
         extra_session_fields_json: Some(extra_session_fields_json.clone()),
+        prompt_limits_json: Some(prompt_limits_json.clone()),
     };
     validate_project_config_payload(&req_for_validate)?;
     gateway_global_settings::validate_git_sync_json_with_global(&state.session_db, &git_sync_json)
@@ -4774,6 +4786,7 @@ async fn put_project_config(
         solve_preflight_json: &solve_preflight_json,
         solve_orchestration_json: &solve_orchestration_json,
         extra_session_fields_json: &extra_session_fields_json,
+        prompt_limits_json: &prompt_limits_json,
     };
     state
         .session_db
@@ -4852,10 +4865,13 @@ async fn commit_project_config_draft(
         &state.session_db,
         ds_id,
         &prev_stable,
-        &git_sync_json,
-        &row.solve_preflight_json,
-        &row.solve_orchestration_json,
-        &row.extra_session_fields_json,
+        project_config_draft::ProjectConfigSidecars {
+            git_sync_json,
+            solve_preflight_json: row.solve_preflight_json.clone(),
+            solve_orchestration_json: row.solve_orchestration_json.clone(),
+            extra_session_fields_json: row.extra_session_fields_json.clone(),
+            prompt_limits_json: row.prompt_limits_json.clone(),
+        },
     )
     .await
     .map_err(draft_err)?;
@@ -8379,15 +8395,14 @@ async fn apply_settings_and_probe(
 
 /// Solve/runtime MCP: **`project_config.mcp_servers_json` only** — no `.claw.json` / env / memory fallback.
 async fn build_settings(state: &AppState, ds_id: i64) -> Value {
-    let servers = if let Ok(Some(row)) = state.session_db.get_project_config(ds_id).await {
-        project_config_apply::enabled_mcp_servers(&row.mcp_servers_json)
+    if let Ok(Some(row)) = state.session_db.get_project_config(ds_id).await {
+        project_config_apply::build_settings_json_from_row(&row)
     } else {
-        serde_json::Map::new()
-    };
-    json!({
-        "mcpServers": servers,
-        "auto_hidden_system_prompt": 1
-    })
+        json!({
+            "mcpServers": serde_json::Map::new(),
+            "auto_hidden_system_prompt": 1
+        })
+    }
 }
 
 async fn ensure_workspace_initialized(_claw_bin: &str, work_dir: &Path) -> Result<(), ApiError> {
