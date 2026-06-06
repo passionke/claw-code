@@ -1330,7 +1330,6 @@ mod tests {
 
     #[test]
     fn load_system_prompt_reads_config_from_claw_project_config_root() {
-        let _guard = env_lock();
         let ds_root = temp_dir();
         let work_root = temp_dir();
         let session_home = work_root.join("sessions").join("sess-pool");
@@ -1341,16 +1340,10 @@ mod tests {
             "pool ds override",
         )
         .expect("override");
-        let prev = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
-        std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", &ds_root);
+        let _pcr = crate::ScopedEnvVar::set("CLAW_PROJECT_CONFIG_ROOT", &ds_root);
         let prompt = super::load_system_prompt(&session_home, "2026-06-06", "linux", "6.8", None)
             .expect("load prompt")
             .join("\n\n");
-        if let Some(p) = prev {
-            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
-        } else {
-            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
-        }
         assert!(prompt.contains("pool ds override"));
         fs::remove_dir_all(ds_root).expect("cleanup ds");
         fs::remove_dir_all(work_root).expect("cleanup work");
@@ -1358,9 +1351,7 @@ mod tests {
 
     #[test]
     fn load_system_prompt_includes_rules_when_gateway_user_override_present() {
-        let _guard = env_lock();
-        let prev_pcr = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
-        std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        let _pcr = crate::ScopedEnvVar::unset("CLAW_PROJECT_CONFIG_ROOT");
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
         fs::create_dir_all(root.join(".cursor/rules")).expect("rules dir");
@@ -1382,18 +1373,11 @@ mod tests {
         );
         assert!(prompt.contains("use user language"));
         fs::remove_dir_all(root).expect("cleanup");
-        if let Some(p) = prev_pcr {
-            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
-        } else {
-            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
-        }
     }
 
     #[test]
     fn load_system_prompt_includes_extra_session_when_gateway_user_override_present() {
-        let _guard = env_lock();
-        let prev_pcr = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
-        std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        let _pcr = crate::ScopedEnvVar::unset("CLAW_PROJECT_CONFIG_ROOT");
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
         fs::write(
@@ -1422,18 +1406,11 @@ mod tests {
         assert!(prompt.contains("\"store_id\""));
         assert!(prompt.contains("\"S9\""));
         fs::remove_dir_all(root).expect("cleanup");
-        if let Some(p) = prev_pcr {
-            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
-        } else {
-            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
-        }
     }
 
     #[test]
     fn load_system_prompt_skips_claude_instructions_dup_when_user_override_present() {
-        let _guard = env_lock();
-        let prev_pcr = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
-        std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        let _pcr = crate::ScopedEnvVar::unset("CLAW_PROJECT_CONFIG_ROOT");
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
         fs::create_dir_all(root.join("home")).expect("home dir");
@@ -1453,11 +1430,6 @@ mod tests {
             "claude_md scaffold must not duplicate home/CLAUDE.md instruction section"
         );
         fs::remove_dir_all(root).expect("cleanup");
-        if let Some(p) = prev_pcr {
-            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
-        } else {
-            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
-        }
     }
 
     #[test]
