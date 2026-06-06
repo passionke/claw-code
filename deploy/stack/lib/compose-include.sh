@@ -482,6 +482,20 @@ claw_compose_pg_service() {
   printf '%s' "${CLAW_COMPOSE_PG_SERVICE:-postgres}"
 }
 
+# Bundled compose postgres when URL uses service name or host-published loopback. kejiqing
+claw_compose_uses_local_postgres() {
+  local url="${CLAW_GATEWAY_DATABASE_URL:-postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway}"
+  case "${url}" in
+    *@postgres:* | *@postgres/*)
+      return 0
+      ;;
+    *@127.0.0.1:* | *@127.0.0.1/* | *@localhost:* | *@localhost/*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 claw_compose_pg_network() {
   local rt cname
   rt="$(claw_container_runtime_cli)" || return 1
@@ -540,6 +554,9 @@ claw_compose_prune_stale_claw_pod() {
 }
 
 claw_compose_pg_wait_healthy() {
+  if ! claw_compose_uses_local_postgres; then
+    return 0
+  fi
   local rt cname i
   rt="$(claw_container_runtime_cli)" || return 1
   cname="$(claw_compose_pg_container_name)"
@@ -626,6 +643,10 @@ claw_compose_pg_up() {
 
 # Start existing postgres container or create via compose (avoids name-already-in-use on retry). kejiqing
 claw_compose_pg_ensure() {
+  if ! claw_compose_uses_local_postgres; then
+    echo "Postgres: external (${CLAW_GATEWAY_DATABASE_URL%%@*}@…); skipping compose postgres" >&2
+    return 0
+  fi
   local podman_dir="$1"
   local repo_env="$2"
   local rt pg cname

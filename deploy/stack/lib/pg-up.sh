@@ -17,6 +17,10 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 fi
 
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
+if ! claw_compose_uses_local_postgres; then
+  echo "Postgres: external (${CLAW_GATEWAY_DATABASE_URL%%@*}@…); compose postgres not used (pg-up skipped)." >&2
+  exit 0
+fi
 claw_compose_pg_ensure "${PODMAN_DIR}" "${ENV_FILE}"
 claw_compose_pg_wait_healthy
 pg="$(claw_compose_pg_service)"

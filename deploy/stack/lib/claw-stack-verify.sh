@@ -42,11 +42,22 @@ PG_CTN="${CLAW_GATEWAY_PG_CONTAINER:-claw-gateway-postgres}"
 PG_PORT="${CLAW_GATEWAY_PG_HOST_PORT:-5433}"
 
 psql_q() {
-  "${RT}" exec "${PG_CTN}" psql -U "${PG_USER}" -d "${PG_DB}" -t -A -c "$1"
+  if claw_compose_uses_local_postgres; then
+    "${RT}" exec "${PG_CTN}" psql -U "${PG_USER}" -d "${PG_DB}" -t -A -c "$1"
+    return 0
+  fi
+  local url pg_img
+  url="$(claw_pool_daemon_database_url)" || fail "CLAW_GATEWAY_DATABASE_URL unset"
+  pg_img="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
+  "${RT}" run --rm "${pg_img}" psql "${url}" -t -A -c "$1"
 }
 
 echo "==> [1/6] PostgreSQL schema (gateway + pool registry)"
-"${RT}" ps --format '{{.Names}}' | grep -qx "${PG_CTN}" || fail "postgres container ${PG_CTN} not running (gateway.sh pg-up)"
+if claw_compose_uses_local_postgres; then
+  "${RT}" ps --format '{{.Names}}' | grep -qx "${PG_CTN}" || fail "postgres container ${PG_CTN} not running (gateway.sh pg-up)"
+else
+  ok "external postgres (${CLAW_GATEWAY_DATABASE_URL%%@*}@…)"
+fi
 
 has_claw_pool="$(psql_q "SELECT to_regclass('public.claw_pool') IS NOT NULL;")"
 [[ "${has_claw_pool}" == "t" ]] || fail "table claw_pool missing — gateway image too old or migrate did not run; run pack-deploy"
