@@ -1358,6 +1358,9 @@ mod tests {
 
     #[test]
     fn load_system_prompt_includes_rules_when_gateway_user_override_present() {
+        let _guard = env_lock();
+        let prev_pcr = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
+        std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
         fs::create_dir_all(root.join(".cursor/rules")).expect("rules dir");
@@ -1379,10 +1382,18 @@ mod tests {
         );
         assert!(prompt.contains("use user language"));
         fs::remove_dir_all(root).expect("cleanup");
+        if let Some(p) = prev_pcr {
+            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
+        } else {
+            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        }
     }
 
     #[test]
     fn load_system_prompt_includes_extra_session_when_gateway_user_override_present() {
+        let _guard = env_lock();
+        let prev_pcr = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
+        std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
         fs::write(
@@ -1411,10 +1422,18 @@ mod tests {
         assert!(prompt.contains("\"store_id\""));
         assert!(prompt.contains("\"S9\""));
         fs::remove_dir_all(root).expect("cleanup");
+        if let Some(p) = prev_pcr {
+            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
+        } else {
+            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        }
     }
 
     #[test]
     fn load_system_prompt_skips_claude_instructions_dup_when_user_override_present() {
+        let _guard = env_lock();
+        let prev_pcr = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
+        std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
         fs::create_dir_all(root.join("home")).expect("home dir");
@@ -1434,6 +1453,11 @@ mod tests {
             "claude_md scaffold must not duplicate home/CLAUDE.md instruction section"
         );
         fs::remove_dir_all(root).expect("cleanup");
+        if let Some(p) = prev_pcr {
+            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
+        } else {
+            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        }
     }
 
     #[test]
