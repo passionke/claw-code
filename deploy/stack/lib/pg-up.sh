@@ -17,6 +17,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 fi
 
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
+claw_compose_pg_ensure "${PODMAN_DIR}" "${ENV_FILE}"
+claw_compose_pg_wait_healthy
 pg="$(claw_compose_pg_service)"
-claw_compose_pg_up "${PODMAN_DIR}" "${ENV_FILE}"
-echo "Postgres started (${pg}, port ${CLAW_GATEWAY_PG_HOST_PORT:-5433} on host)."
+echo "Postgres ready (${pg}, port ${CLAW_GATEWAY_PG_HOST_PORT:-5433} on host)."

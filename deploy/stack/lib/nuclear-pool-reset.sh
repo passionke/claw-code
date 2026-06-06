@@ -43,17 +43,60 @@ claw_remove_all_gateway_workers() {
   "${rt}" rm -f ${ids} 2>/dev/null || true
 }
 
+claw_lazy_umount() {
+  local target="$1"
+  [[ -n "${target}" ]] || return 0
+  umount -l "${target}" 2>/dev/null \
+    || sudo -n umount -l "${target}" 2>/dev/null \
+    || sudo umount -l "${target}" 2>/dev/null \
+    || true
+}
+
+# v1.4.7 bind-mount slots leave guest/ mounts after worker rm; v1.4.9 uses tmpfs — tear down legacy mounts first. kejiqing
+claw_teardown_pool_slot_mounts() {
+  local slot_root="$1"
+  local guest target
+  [[ -d "${slot_root}" ]] || return 0
+
+  for guest in "${slot_root}"/slot-*/guest; do
+    [[ -e "${guest}" ]] || continue
+    claw_lazy_umount "${guest}"
+  done
+
+  if command -v findmnt >/dev/null 2>&1; then
+    while read -r target; do
+      [[ -n "${target}" && "${target}" != "${slot_root}" ]] || continue
+      claw_lazy_umount "${target}"
+    done < <(findmnt -R -n -o TARGET "${slot_root}" 2>/dev/null | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
+  fi
+}
+
+claw_remove_pool_slot_tree() {
+  local slot_root="$1"
+  [[ -d "${slot_root}" ]] || return 0
+  claw_teardown_pool_slot_mounts "${slot_root}"
+  rm -rf "${slot_root}" 2>/dev/null \
+    || sudo -n rm -rf "${slot_root}" 2>/dev/null \
+    || sudo rm -rf "${slot_root}" || {
+      echo "error: cannot remove ${slot_root} (mount still busy). Check: findmnt | grep claw-pool-slot" >&2
+      return 1
+    }
+}
+
 # Full pool teardown before a release `up` (daemon + workers; does not remove gateway compose). kejiqing
 claw_nuclear_pool_reset() {
   local podman_dir="$1"
   local port="${CLAW_POOL_DAEMON_PORT:-9943}"
-  echo "==> nuclear pool reset (release up): stop daemon, free :${port}, remove all workers" >&2
+  local http_port="${CLAW_POOL_HTTP_PORT:-9944}"
+  echo "==> nuclear pool reset (release up): stop daemon, free :${port}/:${http_port}, remove all workers" >&2
   "${podman_dir}/lib/pool-daemon-down.sh" 2>/dev/null || true
   claw_kill_tcp_listeners "${port}"
+  claw_kill_tcp_listeners "${http_port}"
   claw_remove_all_gateway_workers
   local work_root="${CLAW_POOL_WORK_ROOT_BIND_SRC:-${podman_dir}/claw-workspace}"
-  if [[ -d "${work_root}/${CLAW_POOL_SLOT_DIR:-.claw-pool-slot}" ]]; then
-    echo "==> remove pool slot mount tree ${work_root}/.claw-pool-slot (avoid stale root-owned guests)" >&2
-    rm -rf "${work_root}/.claw-pool-slot"
+  local slot_root="${work_root}/${CLAW_POOL_SLOT_DIR:-.claw-pool-slot}"
+  if [[ -d "${slot_root}" ]]; then
+    echo "==> remove pool slot mount tree ${slot_root} (avoid stale root-owned guests)" >&2
+    claw_remove_pool_slot_tree "${slot_root}"
   fi
 }

@@ -48,6 +48,17 @@ claw_claude_tap_stop() {
   pkill -f 'claude-tap.*--tap-no-launch' 2>/dev/null || true
 }
 
+# True when this host runs claude-tap (production docker tap or local sidecar). Author: kejiqing
+claw_stack_manages_local_claude_tap() {
+  case "${CLAW_LLM_PROXY:-direct}" in
+    remote) return 1 ;;
+  esac
+  case "${CLAUDE_TAP_MODE:-docker}" in
+    off | none | disabled | false | '0') return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 claw_claude_tap_build_image() {
   local rt="$1"
   local ctx="$2"

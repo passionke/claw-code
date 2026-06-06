@@ -72,26 +72,28 @@ source "${LIB_DIR}/preflight.sh"
 claw_deploy_preflight "${PODMAN_DIR}"
 claw_validate_deploy_profile || exit 1
 
-# Postgres must be up before pool-daemon registry and gateway migrate. Author: kejiqing
-"${LIB_DIR}/pg-up.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/claude-tap-local.sh"
 
-# Local profile: sidecar claude-tap (CLAW_LLM_PROXY=local). production uses direct/remote — no host tap. kejiqing
-case "${CLAW_LLM_PROXY:-local}" in
-  local)
-    echo "==> claude-tap (CLAW_LLM_PROXY=local)" >&2
-    "${LIB_DIR}/tap-up.sh"
-    ;;
-esac
+# Postgres: ensure running (start if stopped; do not recreate on routine up). kejiqing
+pg="$(claw_compose_pg_service)"
+claw_compose_pg_ensure "${PODMAN_DIR}" "${ENV_FILE}"
+claw_compose_pg_wait_healthy
+echo "Postgres ready (${pg}, host port ${CLAW_GATEWAY_PG_HOST_PORT:-5433})" >&2
 
 # load_compose_args re-sources .env and resets GATEWAY_IMAGE to :local; re-pin after. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   claw_reapply_pool_image_pins "${PODMAN_DIR}"
 fi
 
-# Release up: compose down + kill pool + delete every worker, then pull fresh images. kejiqing
+# Release up: tap down + compose down + kill pool + delete every worker, then pull fresh images. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   echo "==> release ${CLAW_IMAGE_RELEASE_TAG}: compose down + nuclear pool reset" >&2
   echo "    gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
+  if claw_stack_manages_local_claude_tap; then
+    echo "==> release: claude-tap down" >&2
+    claw_claude_tap_stop "${PODMAN_DIR}"
+  fi
   claw_compose_gateway_down "${PODMAN_DIR}" "${ENV_FILE}" 2>/dev/null || true
   claw_nuclear_pool_reset "${PODMAN_DIR}"
   claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_DIR}/claw-workspace}"
@@ -112,6 +114,11 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
       "${rt}" pull "${CLAW_PODMAN_IMAGE}"
       ;;
   esac
+  if claw_stack_manages_local_claude_tap; then
+    tap_img="${CLAUDE_TAP_IMAGE:-claude-tap:local}"
+    echo "pull ${tap_img} …" >&2
+    "${rt}" pull "${tap_img}"
+  fi
 fi
 
 # Pool + compose must not use repo .env :local worker tags when --release or sticky pin is set. kejiqing
@@ -139,6 +146,12 @@ if claw_pool_daemon_on_host; then
 else
   echo "error: compose pool sidecar removed; use host claw-pool-daemon (unset CLAW_POOL_HOST_DAEMON=0)" >&2
   exit 1
+fi
+
+# claude-tap after gateway (docker mode needs compose network). release already tap-down'd above. kejiqing
+if claw_stack_manages_local_claude_tap; then
+  echo "==> claude-tap up (CLAUDE_TAP_MODE=${CLAUDE_TAP_MODE:-docker})" >&2
+  "${LIB_DIR}/tap-up.sh"
 fi
 
 _gw_tag="${GATEWAY_IMAGE##*:}"
