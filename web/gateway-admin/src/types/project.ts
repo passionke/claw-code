@@ -68,6 +68,8 @@ export interface ProjectConfig {
 export interface SkillJsonItem {
   skillName: string;
   skillContent: string;
+  /** false = saved in DB but not materialized to solve. Author: kejiqing */
+  enabled?: boolean;
 }
 
 export interface RuleJsonItem {
@@ -76,6 +78,7 @@ export interface RuleJsonItem {
   ruleScope?: string;
   relativePath?: string;
   content?: string;
+  enabled?: boolean;
 }
 
 export interface VersionEntry {
@@ -109,9 +112,11 @@ export interface RuleEditorItem {
   ruleTitle: string;
   ruleScope: string;
   ruleContent: string;
+  enabled?: boolean;
 }
 
 export interface SkillRow {
   skill_name: string;
   skill_content?: string;
+  enabled?: boolean;
 }

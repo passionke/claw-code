@@ -8379,14 +8379,11 @@ async fn apply_settings_and_probe(
 
 /// Solve/runtime MCP: **`project_config.mcp_servers_json` only** — no `.claw.json` / env / memory fallback.
 async fn build_settings(state: &AppState, ds_id: i64) -> Value {
-    let mut servers = HashMap::<String, Value>::new();
-    if let Ok(Some(row)) = state.session_db.get_project_config(ds_id).await {
-        if let Some(extra) = row.mcp_servers_json.as_object() {
-            for (k, v) in extra {
-                servers.insert(k.clone(), v.clone());
-            }
-        }
-    }
+    let servers = if let Ok(Some(row)) = state.session_db.get_project_config(ds_id).await {
+        project_config_apply::enabled_mcp_servers(&row.mcp_servers_json)
+    } else {
+        serde_json::Map::new()
+    };
     json!({
         "mcpServers": servers,
         "auto_hidden_system_prompt": 1

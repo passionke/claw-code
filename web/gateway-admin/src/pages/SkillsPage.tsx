@@ -1,4 +1,4 @@
-import { Button, Input, Select, Space, Typography, message } from "antd";
+import { Button, Input, Select, Space, Tag, Typography, message } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
 import DraftEditingBanner from "../components/DraftEditingBanner";
@@ -6,6 +6,7 @@ import EditorLengthHint from "../components/EditorLengthHint";
 import EntityVersionPanel from "../components/EntityVersionPanel";
 import { useProjectConfigEditor } from "../hooks/useProjectConfigEditor";
 import type { SkillRow } from "../types/project";
+import { entityEnabled, entitySelectLabel } from "../utils/entityEnabled";
 import { skillContentFromRevisionBody } from "../utils/entityRevision";
 import { mergeSkillIntoJson, skillRowsFromConfig } from "../utils/projectConfigEditor";
 
@@ -18,6 +19,7 @@ export default function SkillsPage() {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [content, setContent] = useState("");
+  const [enabled, setEnabled] = useState(true);
   const [l2Refresh, setL2Refresh] = useState(0);
 
   const activeName = creating ? newName.trim() : pick;
@@ -32,9 +34,11 @@ export default function SkillsPage() {
         setPick(keep);
         const s = list.find((x) => x.skill_name === keep);
         setContent(s?.skill_content || "");
+        setEnabled(entityEnabled(s?.enabled));
       } else {
         setPick("");
         setContent("");
+        setEnabled(true);
       }
     },
     [pick, creating]
@@ -60,6 +64,7 @@ export default function SkillsPage() {
     setPick(n);
     const s = skills.find((x) => x.skill_name === n);
     setContent(s?.skill_content || "");
+    setEnabled(entityEnabled(s?.enabled));
   };
 
   const startCreate = () => {
@@ -67,6 +72,7 @@ export default function SkillsPage() {
     setPick("");
     setNewName("");
     setContent("");
+    setEnabled(true);
   };
 
   const save = async () => {
@@ -79,7 +85,8 @@ export default function SkillsPage() {
     const skillsJson = mergeSkillIntoJson(
       Array.isArray(base.skillsJson) ? base.skillsJson : [],
       skillName,
-      content
+      content,
+      enabled
     );
     const cfg = await saveDraftPatch({ skillsJson });
     message.success(creating ? `已新增 Skill「${skillName}」` : `已保存 Skill「${skillName}」到草稿`);
@@ -87,6 +94,26 @@ export default function SkillsPage() {
     setPick(skillName);
     setNewName("");
     applySkillsList(skillRowsFromConfig(cfg), { keepPick: skillName });
+    setL2Refresh((n) => n + 1);
+  };
+
+  const toggleEnabled = async () => {
+    if (creating || !pick) {
+      message.warning("请选择 Skill");
+      return;
+    }
+    const next = !enabled;
+    const base = projectConfig ?? (await reloadEditingConfig());
+    const skillsJson = mergeSkillIntoJson(
+      Array.isArray(base.skillsJson) ? base.skillsJson : [],
+      pick,
+      content,
+      next
+    );
+    const cfg = await saveDraftPatch({ skillsJson });
+    setEnabled(next);
+    message.success(next ? `已启用 Skill「${pick}」` : `已禁用 Skill「${pick}」（数据保留，solve 不生效）`);
+    applySkillsList(skillRowsFromConfig(cfg), { keepPick: pick });
     setL2Refresh((n) => n + 1);
   };
 
@@ -116,7 +143,10 @@ export default function SkillsPage() {
           value={creating ? undefined : pick || undefined}
           placeholder={skills.length ? "选择 Skill" : "（尚无 Skill，请新增）"}
           disabled={creating}
-          options={skills.map((s) => ({ value: s.skill_name, label: s.skill_name }))}
+          options={skills.map((s) => ({
+            value: s.skill_name,
+            label: entitySelectLabel(s.skill_name, s.enabled),
+          }))}
           onChange={onPick}
         />
         <Button icon={<PlusOutlined />} onClick={startCreate}>
@@ -153,6 +183,11 @@ export default function SkillsPage() {
       {!creating && pick && (
         <Typography.Paragraph style={{ marginBottom: 8 }}>
           正在编辑：<Typography.Text code>{pick}</Typography.Text>
+          {!entityEnabled(enabled) && (
+            <Tag color="default" style={{ marginLeft: 8 }}>
+              已禁用
+            </Tag>
+          )}
         </Typography.Paragraph>
       )}
 
@@ -166,6 +201,12 @@ export default function SkillsPage() {
       <Space style={{ marginTop: 8 }}>
         <Button type="primary" onClick={() => save().catch((e) => message.error(String(e)))}>
           {creating ? "保存新 Skill" : "保存 Skill"}
+        </Button>
+        <Button
+          disabled={creating || !pick}
+          onClick={() => toggleEnabled().catch((e) => message.error(String(e)))}
+        >
+          {entityEnabled(enabled) ? "禁用" : "启用"}
         </Button>
         <Button
           danger

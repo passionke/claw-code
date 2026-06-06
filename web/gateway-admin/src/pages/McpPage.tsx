@@ -1,4 +1,4 @@
-import { Alert, Button, Input, Select, Space, Spin, Typography, message } from "antd";
+import { Alert, Button, Input, Select, Space, Spin, Tag, Typography, message } from "antd";
 import { PlusOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
 import type { McpTestResponse } from "../types/mcpTest";
@@ -9,6 +9,7 @@ import DraftEditingBanner from "../components/DraftEditingBanner";
 import EditorLengthHint from "../components/EditorLengthHint";
 import EntityVersionPanel from "../components/EntityVersionPanel";
 import { useProjectConfigEditor } from "../hooks/useProjectConfigEditor";
+import { entityEnabled, entitySelectLabel } from "../utils/entityEnabled";
 import { mcpConfigJsonFromRevisionBody } from "../utils/entityRevision";
 
 const { TextArea } = Input;
@@ -21,6 +22,7 @@ export default function McpPage() {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [configJson, setConfigJson] = useState("{\n}\n");
+  const [enabled, setEnabled] = useState(true);
   const [l2Refresh, setL2Refresh] = useState(0);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<McpTestResponse | null>(null);
@@ -38,9 +40,11 @@ export default function McpPage() {
         setPick(keep);
         const cur = items.find((x) => x.serverName === keep);
         setConfigJson(cur?.configJson || "{\n}\n");
+        setEnabled(entityEnabled(cur?.enabled));
       } else {
         setPick("");
         setConfigJson("{\n}\n");
+        setEnabled(true);
       }
     },
     [pick, creating]
@@ -75,6 +79,7 @@ export default function McpPage() {
     setPick(name);
     const cur = list.find((x) => x.serverName === name);
     setConfigJson(cur?.configJson || "{\n}\n");
+    setEnabled(entityEnabled(cur?.enabled));
   };
 
   const startCreate = () => {
@@ -82,15 +87,17 @@ export default function McpPage() {
     setPick("");
     setNewName("");
     setConfigJson('{\n  "type": "http",\n  "url": ""\n}\n');
+    setEnabled(true);
   };
 
-  const buildListForSave = (): McpEditorItem[] => {
+  const buildListForSave = (opts?: { enabledOverride?: boolean }): McpEditorItem[] => {
     const name = activeName;
     if (!name) throw new Error("请填写或选择 MCP server 名称");
     JSON.parse(configJson || "{}");
+    const effectiveEnabled = opts?.enabledOverride ?? enabled;
     const others = list.filter((x) => x.serverName !== name);
-    return [...others, { serverName: name, configJson }].sort((a, b) =>
-      a.serverName.localeCompare(b.serverName)
+    return [...others, { serverName: name, configJson, enabled: effectiveEnabled ? undefined : false }].sort(
+      (a, b) => a.serverName.localeCompare(b.serverName)
     );
   };
 
@@ -143,6 +150,23 @@ export default function McpPage() {
     }
   };
 
+  const toggleEnabled = async () => {
+    if (!projectConfig || creating || !pick) {
+      message.warning("请选择 MCP server");
+      return;
+    }
+    const next = !enabled;
+    const cfg = await saveDraftPatch({
+      mcpServersJson: mcpRecordFromList(buildListForSave({ enabledOverride: next })),
+    });
+    setEnabled(next);
+    message.success(
+      next ? `已启用 MCP「${pick}」` : `已禁用 MCP「${pick}」（数据保留，solve 不生效）`
+    );
+    applyMcpList(mcpListFromRecord(cfg.mcpServersJson), { keepPick: pick });
+    setL2Refresh((n) => n + 1);
+  };
+
   const remove = async () => {
     if (!projectConfig || creating || !pick) {
       message.warning("请选择要删除的 MCP server");
@@ -167,7 +191,10 @@ export default function McpPage() {
           value={creating ? undefined : pick || undefined}
           placeholder={list.length ? "选择 MCP server" : "（尚无 MCP，请新增）"}
           disabled={creating}
-          options={list.map((x) => ({ value: x.serverName, label: x.serverName }))}
+          options={list.map((x) => ({
+            value: x.serverName,
+            label: entitySelectLabel(x.serverName, x.enabled),
+          }))}
           onChange={onPick}
         />
         <Button icon={<PlusOutlined />} onClick={startCreate}>
@@ -204,6 +231,11 @@ export default function McpPage() {
       {!creating && pick && (
         <Typography.Paragraph style={{ marginBottom: 8 }}>
           正在编辑：<Typography.Text code>{pick}</Typography.Text>
+          {!entityEnabled(enabled) && (
+            <Tag color="default" style={{ marginLeft: 8 }}>
+              已禁用
+            </Tag>
+          )}
         </Typography.Paragraph>
       )}
 
@@ -232,6 +264,13 @@ export default function McpPage() {
           }}
         >
           测试连通
+        </Button>
+        <Button
+          htmlType="button"
+          disabled={creating || !pick}
+          onClick={() => toggleEnabled().catch((e) => message.error(String(e)))}
+        >
+          {entityEnabled(enabled) ? "禁用" : "启用"}
         </Button>
         <Button
           htmlType="button"

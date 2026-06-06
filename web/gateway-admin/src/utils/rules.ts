@@ -41,6 +41,7 @@ export function parseRuleJsonItem(obj: RuleJsonItem): RuleEditorItem {
     ruleTitle,
     ruleScope,
     ruleContent,
+    enabled: obj.enabled,
   };
 }
 
@@ -48,12 +49,14 @@ export function rulesJsonFromList(list: RuleEditorItem[]): RuleJsonItem[] {
   return list.map((r) => {
     const title = r.ruleTitle.trim() || r.ruleId;
     const id = slugRuleTitle(r.ruleId || title);
-    return {
+    const item: RuleJsonItem = {
       ruleId: id,
       ruleTitle: title,
       ruleScope: r.ruleScope || "ALWAYS",
       relativePath: `.cursor/rules/${id}.mdc`,
       content: buildRuleFileContent(title, r.ruleContent, r.ruleScope || "ALWAYS"),
     };
+    if (r.enabled === false) item.enabled = false;
+    return item;
   });
 }

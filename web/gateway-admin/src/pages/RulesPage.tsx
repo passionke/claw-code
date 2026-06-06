@@ -1,4 +1,4 @@
-import { Button, Input, Select, Space, Typography, message } from "antd";
+import { Button, Input, Select, Space, Tag, Typography, message } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
 import type { RuleEditorItem } from "../types/project";
@@ -6,6 +6,7 @@ import DraftEditingBanner from "../components/DraftEditingBanner";
 import EditorLengthHint from "../components/EditorLengthHint";
 import EntityVersionPanel from "../components/EntityVersionPanel";
 import { useProjectConfigEditor } from "../hooks/useProjectConfigEditor";
+import { entityEnabled, entitySelectLabel } from "../utils/entityEnabled";
 import { ruleFieldsFromRevisionBody } from "../utils/entityRevision";
 import { parseRuleJsonItem, rulesJsonFromList, slugRuleTitle } from "../utils/rules";
 
@@ -14,8 +15,9 @@ const { TextArea } = Input;
 function ruleLabel(r: RuleEditorItem): string {
   const title = (r.ruleTitle || "").trim();
   const id = (r.ruleId || "").trim();
-  if (title && id && title !== id) return `${title} · ${id}`;
-  return title || id || "（未命名）";
+  const base =
+    title && id && title !== id ? `${title} · ${id}` : title || id || "（未命名）";
+  return entitySelectLabel(base, r.enabled);
 }
 
 export default function RulesPage() {
@@ -27,6 +29,7 @@ export default function RulesPage() {
   const [newTitle, setNewTitle] = useState("");
   const [ruleTitle, setRuleTitle] = useState("");
   const [ruleContent, setRuleContent] = useState("");
+  const [enabled, setEnabled] = useState(true);
   const [l2Refresh, setL2Refresh] = useState(0);
 
   const activeId = creating
@@ -45,10 +48,12 @@ export default function RulesPage() {
         const cur = parsed.find((r) => r.ruleId === keep);
         setRuleTitle(cur?.ruleTitle || "");
         setRuleContent(cur?.ruleContent || "");
+        setEnabled(entityEnabled(cur?.enabled));
       } else {
         setPick("");
         setRuleTitle("");
         setRuleContent("");
+        setEnabled(true);
       }
     },
     [pick, creating]
@@ -80,6 +85,7 @@ export default function RulesPage() {
     const cur = list.find((r) => r.ruleId === ruleId);
     setRuleTitle(cur?.ruleTitle || "");
     setRuleContent(cur?.ruleContent || "");
+    setEnabled(entityEnabled(cur?.enabled));
   };
 
   const startCreate = () => {
@@ -88,6 +94,7 @@ export default function RulesPage() {
     setNewTitle("");
     setRuleTitle("");
     setRuleContent("");
+    setEnabled(true);
   };
 
   const buildListForSave = (): RuleEditorItem[] => {
@@ -99,6 +106,7 @@ export default function RulesPage() {
       ruleTitle: title,
       ruleScope: "ALWAYS",
       ruleContent,
+      enabled: enabled ? undefined : false,
     };
     const others = list.filter((r) => r.ruleId !== id);
     return [...others, item].sort((a, b) => ruleLabel(a).localeCompare(ruleLabel(b)));
@@ -121,6 +129,28 @@ export default function RulesPage() {
     setPick(activeId);
     setNewTitle("");
     applyRulesList(rulesFromConfig(cfg), { keepPick: activeId });
+    setL2Refresh((n) => n + 1);
+  };
+
+  const toggleEnabled = async () => {
+    if (!projectConfig || creating || !pick) {
+      message.warning("请选择 Rule");
+      return;
+    }
+    const next = !enabled;
+    const cur = list.find((r) => r.ruleId === pick);
+    if (!cur) return;
+    const item: RuleEditorItem = { ...cur, enabled: next ? undefined : false };
+    const others = list.filter((r) => r.ruleId !== pick);
+    const nextList = [...others, item].sort((a, b) =>
+      ruleLabel(a).localeCompare(ruleLabel(b))
+    );
+    const cfg = await saveDraftPatch({ rulesJson: rulesJsonFromList(nextList) });
+    setEnabled(next);
+    message.success(
+      next ? `已启用 Rule「${pick}」` : `已禁用 Rule「${pick}」（数据保留，solve 不生效）`
+    );
+    applyRulesList(rulesFromConfig(cfg), { keepPick: pick });
     setL2Refresh((n) => n + 1);
   };
 
@@ -193,6 +223,11 @@ export default function RulesPage() {
           {ruleTitle.trim() && ruleTitle.trim() !== pick ? (
             <Typography.Text type="secondary">（{ruleTitle.trim()}）</Typography.Text>
           ) : null}
+          {!entityEnabled(enabled) && (
+            <Tag color="default" style={{ marginLeft: 8 }}>
+              已禁用
+            </Tag>
+          )}
         </Typography.Paragraph>
       )}
 
@@ -215,6 +250,12 @@ export default function RulesPage() {
       <Space style={{ marginTop: 8 }}>
         <Button type="primary" onClick={() => save().catch((e) => message.error(String(e)))}>
           {creating ? "保存新 Rule" : "保存 Rule"}
+        </Button>
+        <Button
+          disabled={creating || !pick}
+          onClick={() => toggleEnabled().catch((e) => message.error(String(e)))}
+        >
+          {entityEnabled(enabled) ? "禁用" : "启用"}
         </Button>
         <Button
           danger

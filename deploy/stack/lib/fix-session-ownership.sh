@@ -6,6 +6,23 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/compose-include.sh"
 
+# Linux: stat -c; macOS/BSD: stat -f. Author: kejiqing
+claw_path_uid() {
+  local path="${1:?}"
+  local u
+  u="$(stat -c '%u' "${path}" 2>/dev/null)" && {
+    printf '%s' "${u}"
+    return 0
+  }
+  stat -f '%u' "${path}" 2>/dev/null || echo x
+}
+
+claw_path_owned_by() {
+  local path="${1:?}"
+  local uid="${2:?}"
+  [[ "$(claw_path_uid "${path}")" == "${uid}" ]]
+}
+
 # Logs + workspace roots must be uid 1000 before gateway-rs runs as non-root. kejiqing
 claw_prepare_bind_mount_ownership() {
   local podman_dir="${1:?}"
@@ -40,7 +57,7 @@ claw_fix_session_workspace_ownership() {
   shopt -s nullglob
   for ds in "${root}"/ds_*/sessions/*; do
     [[ -d "${ds}" ]] || continue
-    if [[ "$(stat -c '%u' "${ds}" 2>/dev/null || echo x)" == "${uid}" ]]; then
+    if claw_path_owned_by "${ds}" "${uid}"; then
       continue
     fi
     echo "==> fix session ownership ${ds} -> ${uid}:${gid}" >&2
@@ -62,7 +79,7 @@ claw_fix_session_workspace_ownership() {
 
   # Slot guests are recreated by pool; chown so a later preflight on ds_* paths stays clean. kejiqing
   local slot_root="${root}/.claw-pool-slot"
-  if [[ -d "${slot_root}" ]]; then
+  if [[ -d "${slot_root}" ]] && ! claw_path_owned_by "${slot_root}" "${uid}"; then
     echo "==> fix pool slot ownership ${slot_root} -> ${uid}:${gid}" >&2
     chown -R "${uid}:${gid}" "${slot_root}" 2>/dev/null \
       || sudo -n chown -R "${uid}:${gid}" "${slot_root}" 2>/dev/null \

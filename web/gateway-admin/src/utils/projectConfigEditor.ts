@@ -11,6 +11,7 @@ export function skillRowsFromConfig(cfg: ProjectConfig): SkillRow[] {
     .map((s) => ({
       skill_name: s.skillName,
       skill_content: s.skillContent ?? "",
+      enabled: s.enabled,
     }))
     .sort((a, b) => a.skill_name.localeCompare(b.skill_name));
 }
@@ -18,12 +19,15 @@ export function skillRowsFromConfig(cfg: ProjectConfig): SkillRow[] {
 export function mergeSkillIntoJson(
   skillsJson: SkillJsonItem[],
   skillName: string,
-  skillContent: string
+  skillContent: string,
+  enabled?: boolean
 ): SkillJsonItem[] {
+  const prev = skillsJson.find((s) => s.skillName === skillName);
+  const effectiveEnabled = enabled ?? prev?.enabled;
   const others = skillsJson.filter((s) => s.skillName !== skillName);
-  return [...others, { skillName, skillContent }].sort((a, b) =>
-    a.skillName.localeCompare(b.skillName)
-  );
+  const item: SkillJsonItem = { skillName, skillContent };
+  if (effectiveEnabled === false) item.enabled = false;
+  return [...others, item].sort((a, b) => a.skillName.localeCompare(b.skillName));
 }
 
 /** CLAUDE.md body for editors: draft or DB override from config row; no disk. */

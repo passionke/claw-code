@@ -39,6 +39,41 @@ impl std::error::Error for ProjectConfigApplyError {}
 
 type ApplyResult<T> = Result<T, ProjectConfigApplyError>;
 
+/// Skill/rule/MCP server entry is active when `enabled` is absent or `true` (Author: kejiqing).
+pub fn project_entity_enabled(value: &Value) -> bool {
+    value
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// Remove gateway-only `enabled` before writing runtime MCP server config.
+pub fn mcp_config_for_runtime(config: &Value) -> Value {
+    match config {
+        Value::Object(map) => {
+            if !map.contains_key("enabled") {
+                return config.clone();
+            }
+            let mut out = map.clone();
+            out.remove("enabled");
+            Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
+pub fn enabled_mcp_servers(mcp_servers_json: &Value) -> serde_json::Map<String, Value> {
+    let mut servers = serde_json::Map::new();
+    if let Some(extra) = mcp_servers_json.as_object() {
+        for (k, v) in extra {
+            if project_entity_enabled(v) {
+                servers.insert(k.clone(), mcp_config_for_runtime(v));
+            }
+        }
+    }
+    servers
+}
+
 /// Same injection rules as gateway `projects_git_effective_clone_url`; token value from `token_env` only.
 pub fn git_effective_clone_url(url: &str, token_env: Option<&str>) -> ApplyResult<String> {
     let token = match token_env {
@@ -111,6 +146,10 @@ async fn write_rules(home: &Path, rules: &Value) -> ApplyResult<()> {
         })?;
         let rel_path = safe_rel_under_home(rel)?;
         let dest = home.join(&rel_path);
+        if !project_entity_enabled(item) {
+            let _ = fs::remove_file(&dest).await;
+            continue;
+        }
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).await.map_err(|e| {
                 ProjectConfigApplyError::new(format!("create rule parent dir: {e}"))
@@ -161,6 +200,9 @@ async fn write_skills_json(work_dir: &Path, skills: &Value) -> ApplyResult<()> {
         .map_err(|e| ProjectConfigApplyError::new(format!("create home/skills: {e}")))?;
 
     for (i, item) in arr.iter().enumerate() {
+        if !project_entity_enabled(item) {
+            continue;
+        }
         let obj = item.as_object().ok_or_else(|| {
             ProjectConfigApplyError::new(format!("skillsJson[{i}] must be an object"))
         })?;
@@ -203,11 +245,18 @@ pub fn git_excluded_home_relpaths(row: &ProjectConfigRow) -> Vec<PathBuf> {
     {
         out.push(PathBuf::from("CLAUDE.md"));
     }
-    if row.skills_json.as_array().is_some_and(|a| !a.is_empty()) {
+    if row
+        .skills_json
+        .as_array()
+        .is_some_and(|a| a.iter().any(project_entity_enabled))
+    {
         out.push(PathBuf::from("skills"));
     }
     if let Some(items) = row.rules_json.as_array() {
         for item in items {
+            if !project_entity_enabled(item) {
+                continue;
+            }
             let rel = item
                 .get("relativePath")
                 .and_then(Value::as_str)
@@ -501,14 +550,8 @@ pub struct GuestMaterializeWrite {
 /// Runtime `settings.json` from Admin `mcp_servers_json` (same as gateway `build_settings`). Author: kejiqing
 #[must_use]
 pub fn build_settings_json_from_row(row: &ProjectConfigRow) -> Value {
-    let mut servers = serde_json::Map::new();
-    if let Some(extra) = row.mcp_servers_json.as_object() {
-        for (k, v) in extra {
-            servers.insert(k.clone(), v.clone());
-        }
-    }
     json!({
-        "mcpServers": servers,
+        "mcpServers": enabled_mcp_servers(&row.mcp_servers_json),
         "auto_hidden_system_prompt": 1
     })
 }
@@ -570,6 +613,9 @@ fn push_rules_writes(out: &mut Vec<GuestMaterializeWrite>, rules: &Value) -> App
         return Ok(());
     };
     for (i, item) in items.iter().enumerate() {
+        if !project_entity_enabled(item) {
+            continue;
+        }
         let obj = item.as_object().ok_or_else(|| {
             ProjectConfigApplyError::new(format!("rulesJson[{i}] must be an object"))
         })?;
@@ -597,6 +643,9 @@ fn push_skills_writes(out: &mut Vec<GuestMaterializeWrite>, skills: &Value) -> A
         return Ok(());
     };
     for (i, item) in arr.iter().enumerate() {
+        if !project_entity_enabled(item) {
+            continue;
+        }
         let obj = item.as_object().ok_or_else(|| {
             ProjectConfigApplyError::new(format!("skillsJson[{i}] must be an object"))
         })?;
@@ -882,6 +931,61 @@ mod tests {
             .expect("settings");
         let v: Value = serde_json::from_slice(&settings.bytes).expect("settings json");
         assert!(v.get("mcpServers").and_then(|m| m.get("sqlbot")).is_some());
+    }
+
+    #[test]
+    fn disabled_entities_are_not_materialized() {
+        let row = ProjectConfigRow {
+            ds_id: 1,
+            content_rev: "rev-disabled".into(),
+            stable_content_rev: Some("rev-disabled".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([{
+                "relativePath": ".cursor/rules/off.mdc",
+                "content": "off",
+                "enabled": false
+            }, {
+                "relativePath": ".cursor/rules/on.mdc",
+                "content": "on"
+            }]),
+            mcp_servers_json: json!({
+                "off": {"url": "http://off", "enabled": false},
+                "on": {"url": "http://on"}
+            }),
+            skills_sources_json: json!([]),
+            skills_json: json!([
+                {"skillName": "off", "skillContent": "x", "enabled": false},
+                {"skillName": "on", "skillContent": "y"}
+            ]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            extra_session_fields_json: json!([]),
+        };
+        let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
+        let paths: Vec<_> = writes
+            .iter()
+            .map(|w| w.rel_path.to_string_lossy().to_string())
+            .collect();
+        assert!(paths.iter().any(|p| p.contains(".claw/skills/on/SKILL.md")));
+        assert!(!paths.iter().any(|p| p.contains(".claw/skills/off/")));
+        assert!(paths.iter().any(|p| p.ends_with(".cursor/rules/on.mdc")));
+        assert!(!paths.iter().any(|p| p.ends_with(".cursor/rules/off.mdc")));
+        let settings = writes
+            .iter()
+            .find(|w| w.rel_path == PathBuf::from(".claw/settings.json"))
+            .expect("settings");
+        let v: Value = serde_json::from_slice(&settings.bytes).expect("settings json");
+        assert!(v.get("mcpServers").and_then(|m| m.get("on")).is_some());
+        assert!(v.get("mcpServers").and_then(|m| m.get("off")).is_none());
+        assert!(v
+            .get("mcpServers")
+            .and_then(|m| m.get("on"))
+            .and_then(|c| c.get("enabled"))
+            .is_none());
     }
 
     #[test]

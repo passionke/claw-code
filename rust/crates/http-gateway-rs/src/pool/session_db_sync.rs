@@ -28,9 +28,18 @@ pub struct MaterializeInput {
 }
 
 /// Wipe ephemeral worker workspace before PG materialize (no tmpfs residue). Author: kejiqing
-async fn wipe_guest_work_root(runtime_bin: &str, container_name: &str) -> Result<(), String> {
-    let script = format!("find {GUEST_WORK_ROOT} -mindepth 1 -delete 2>/dev/null || true");
-    exec_sh_lc(runtime_bin, container_name, &script).await
+///
+/// `/claw_host_root` tmpfs is mounted with `uid=CLAW_WORKER_UID`; root in the container cannot
+/// delete claw-owned files locked by `guest_lock_project_config_shell`. Wipe as worker + chmod first.
+async fn wipe_guest_work_root(
+    runtime_bin: &str,
+    container_name: &str,
+    worker_exec_user: &str,
+) -> Result<(), String> {
+    let script = format!(
+        "chmod -R u+w {GUEST_WORK_ROOT} 2>/dev/null || true; find {GUEST_WORK_ROOT} -mindepth 1 -delete 2>/dev/null || true"
+    );
+    exec_sh_lc_as_user(runtime_bin, container_name, worker_exec_user, &script).await
 }
 
 /// Write task/settings/jsonl + workspace tar from PG before `gateway-solve-once`. Author: kejiqing
@@ -42,7 +51,7 @@ pub async fn materialize_in(
     input: &MaterializeInput,
     worker_exec_user: &str,
 ) -> Result<(), String> {
-    wipe_guest_work_root(runtime_bin, container_name).await?;
+    wipe_guest_work_root(runtime_bin, container_name, worker_exec_user).await?;
 
     let workspace_tar_b64 = db
         .get_latest_workspace_tar_b64(
@@ -424,10 +433,6 @@ async fn read_file_from_container(
     let script = format!("cat '{path}' 2>/dev/null || true");
     let out = exec_sh_lc_capture(runtime_bin, container, &script).await?;
     Ok(out)
-}
-
-async fn exec_sh_lc(runtime_bin: &str, container: &str, script: &str) -> Result<(), String> {
-    exec_sh_lc_as_user(runtime_bin, container, "root", script).await
 }
 
 async fn exec_sh_lc_as_user(
