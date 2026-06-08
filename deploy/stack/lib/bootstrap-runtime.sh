@@ -44,18 +44,25 @@ claw_bootstrap_llm_from_env() {
   if [[ -z "${key}" || -z "${base}" ]]; then
     return 1
   fi
-  body="$(python3 -c 'import json,os; print(json.dumps({
-    "name": os.environ["NAME"],
-    "baseModelUrl": os.environ["BASE"],
-    "modelName": os.environ["MODEL"],
-    "apiKey": os.environ["KEY"],
-  }, ensure_ascii=False))' \
-    NAME="${name}" BASE="${base}" MODEL="${model}" KEY="${key}")"
+  body="$(python3 -c 'import json,sys; print(json.dumps({
+    "name": sys.argv[1],
+    "baseModelUrl": sys.argv[2],
+    "modelName": sys.argv[3],
+    "apiKey": sys.argv[4],
+  }, ensure_ascii=False))' "${name}" "${base}" "${model}" "${key}")"
   echo "==> bootstrap PUT /v1/gateway/global-settings/active-llm-config (${name})" >&2
-  curl -fsS --connect-timeout 15 -X PUT \
+  local resp http_code
+  resp="$(mktemp)"
+  http_code="$(curl -sS --connect-timeout 15 -o "${resp}" -w '%{http_code}' -X PUT \
     "http://127.0.0.1:${port}/v1/gateway/global-settings/active-llm-config" \
     -H 'Content-Type: application/json' \
-    -d "${body}" >/dev/null
+    -d "${body}")" || http_code="000"
+  if [[ "${http_code}" != "200" ]]; then
+    echo "error: bootstrap LLM PUT HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 500)" >&2
+    rm -f "${resp}"
+    return 1
+  fi
+  rm -f "${resp}"
   if ! claw_gateway_has_active_llm; then
     echo "error: bootstrap LLM apply did not set activeLlmConfig" >&2
     return 1
