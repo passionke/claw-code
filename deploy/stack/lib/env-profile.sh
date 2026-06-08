@@ -89,7 +89,10 @@ claw_apply_deploy_profile() {
     export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
     export CLAUDE_TAP_DOCKER_NETWORK="${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
     export CLAW_DOCKER_NETWORK="${CLAW_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
-    export CLAUDE_TAP_PUBLISH_PROXY="${CLAUDE_TAP_PUBLISH_PROXY:-0}"
+    # Local dev: publish Live (3000) + proxy (8080) on host for trace viewer / curl debug.
+    # Admin clawTap host stays claw-claude-tap (gateway probes inside compose network).
+    export CLAUDE_TAP_PUBLISH_PROXY="${CLAUDE_TAP_PUBLISH_PROXY:-127.0.0.1:8080:8080}"
+    export CLAUDE_TAP_PUBLISH_LIVE="${CLAUDE_TAP_PUBLISH_LIVE:-0.0.0.0:3000:3000}"
   fi
 
   export CLAW_GATEWAY_DATABASE_URL="${CLAW_GATEWAY_DATABASE_URL:-$(claw_default_gateway_database_url)}"
