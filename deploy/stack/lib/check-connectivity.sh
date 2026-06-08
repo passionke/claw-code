@@ -76,6 +76,7 @@ if claw_pool_daemon_on_host; then
   }
   claw_wait_gateway_pool_rpc_ready "${PODMAN_DIR}" || exit 1
 fi
+claw_wait_gateway_claw_tap_ready || exit 1
 SOLVE_BODY="$(python3 <<PY
 import json
 import urllib.request

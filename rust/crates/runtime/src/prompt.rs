@@ -266,21 +266,19 @@ impl SystemPromptBuilder {
     #[must_use]
     pub fn build(&self) -> Vec<String> {
         let mut sections = Vec::new();
-        if let Some(scaffold) = self.builtin_scaffold_override.as_ref() {
-            sections.push(scaffold.trim().to_string());
+        if self.should_include_builtin_scaffold() {
+            if let Some(scaffold) = self.builtin_scaffold_override.as_ref() {
+                sections.push(scaffold.trim().to_string());
+            } else {
+                sections.push(get_simple_intro_section(self.output_style_name.is_some()));
+                sections.push(get_simple_system_section());
+                sections.push(get_simple_doing_tasks_section());
+                sections.push(get_actions_section());
+            }
             if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt)
             {
                 sections.push(format!("# Output Style: {name}\n{prompt}"));
             }
-        } else if self.should_include_hardcoded_builtin_scaffold() {
-            sections.push(get_simple_intro_section(self.output_style_name.is_some()));
-            if let (Some(name), Some(prompt)) = (&self.output_style_name, &self.output_style_prompt)
-            {
-                sections.push(format!("# Output Style: {name}\n{prompt}"));
-            }
-            sections.push(get_simple_system_section());
-            sections.push(get_simple_doing_tasks_section());
-            sections.push(get_actions_section());
         }
         sections.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY.to_string());
         if let Some(project_context) = &self.project_context {
@@ -313,7 +311,7 @@ impl SystemPromptBuilder {
         self.build().join("\n\n")
     }
 
-    fn should_include_hardcoded_builtin_scaffold(&self) -> bool {
+    fn should_include_builtin_scaffold(&self) -> bool {
         if !auto_hidden_system_prompt_enabled(self.config.as_ref()) {
             return true;
         }
@@ -1491,7 +1489,10 @@ mod tests {
         .expect("load prompt")
         .join("\n\n");
 
-        assert!(prompt.contains("GATEWAY_SCAFFOLD_MARKER"));
+        assert!(
+            !prompt.contains("GATEWAY_SCAFFOLD_MARKER"),
+            "auto_hidden_system_prompt must omit PG scaffold when CLAUDE.md is present"
+        );
         assert!(prompt.contains("CLAUDE_MD_MARKER"));
         assert!(prompt.contains("RULE_MARKER"));
         assert!(prompt.contains("# Runtime config"));
@@ -1507,13 +1508,11 @@ mod tests {
             "SQLBot section is solve-time only, not static load_system_prompt"
         );
 
-        let scaffold = section_index(&prompt, "GATEWAY_SCAFFOLD_MARKER");
         let boundary = section_index(&prompt, SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
         let claude = section_index(&prompt, "# Claude instructions");
         let rules = section_index(&prompt, "# Project rules");
         let env = section_index(&prompt, "# Environment context");
         let runtime = section_index(&prompt, "# Runtime config");
-        assert!(scaffold < boundary, "scaffold before dynamic boundary");
         assert!(boundary < claude, "boundary before claude instructions");
         assert!(claude < rules, "claude before rules");
         assert!(rules < env, "rules before environment");
@@ -1546,7 +1545,7 @@ mod tests {
     }
 
     #[test]
-    fn load_system_prompt_keeps_scaffold_and_claude_instructions_separate() {
+    fn auto_hidden_system_prompt_omits_pg_scaffold_when_claude_md_present() {
         let _pcr = crate::ScopedEnvVar::unset("CLAW_PROJECT_CONFIG_ROOT");
         let root = temp_dir();
         fs::create_dir_all(root.join(".claw")).expect("claw dir");
@@ -1555,6 +1554,39 @@ mod tests {
             "db builtin scaffold",
         )
         .expect("write scaffold");
+        fs::write(
+            root.join(".claw").join("settings.json"),
+            r#"{"auto_hidden_system_prompt": 1}"#,
+        )
+        .expect("write settings");
+        fs::write(root.join("CLAUDE.md"), "project claude body").expect("write claude");
+
+        let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None)
+            .expect("load prompt")
+            .join("\n\n");
+        assert!(
+            !prompt.contains("db builtin scaffold"),
+            "PG scaffold must be omitted when auto_hidden and CLAUDE.md present"
+        );
+        assert!(prompt.contains("project claude body"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn load_system_prompt_keeps_scaffold_and_claude_instructions_separate_when_auto_hidden_off() {
+        let _pcr = crate::ScopedEnvVar::unset("CLAW_PROJECT_CONFIG_ROOT");
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::write(
+            root.join(".claw").join("system_prompt_scaffold.md"),
+            "db builtin scaffold",
+        )
+        .expect("write scaffold");
+        fs::write(
+            root.join(".claw").join("settings.json"),
+            r#"{"auto_hidden_system_prompt": false}"#,
+        )
+        .expect("write settings");
         fs::write(root.join("CLAUDE.md"), "project claude body").expect("write claude");
 
         let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None)

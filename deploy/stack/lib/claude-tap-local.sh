@@ -506,4 +506,20 @@ claw_claude_tap_start() {
       exit 1
       ;;
   esac
+  claw_claude_tap_wait_healthy || exit 1
+}
+
+claw_claude_tap_wait_healthy() {
+  local port="${CLAUDE_TAP_PORT:-8080}"
+  local max_attempts="${1:-30}"
+  local i
+  for i in $(seq 1 "${max_attempts}"); do
+    if curl -fsS --connect-timeout 2 "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
+      echo "claude-tap /healthz ok (attempt ${i}/${max_attempts})"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "error: claude-tap not healthy on 127.0.0.1:${port} after ${max_attempts}s" >&2
+  return 1
 }

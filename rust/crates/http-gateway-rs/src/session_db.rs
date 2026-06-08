@@ -470,6 +470,21 @@ impl GatewaySessionDb {
         .execute(pool)
         .await?;
 
+        // After CREATE TABLE: upgrade legacy rows missing pool-v1 artifact columns (004).
+        for ddl in [
+            "ALTER TABLE gateway_session_artifacts ADD COLUMN IF NOT EXISTS content TEXT",
+            "ALTER TABLE gateway_session_artifacts ADD COLUMN IF NOT EXISTS content_json JSONB",
+        ] {
+            sqlx::query(ddl).execute(pool).await?;
+        }
+        // Legacy 002 tables lack UNIQUE for upsert_workspace_tar_b64 ON CONFLICT. Author: kejiqing
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS gateway_session_artifacts_session_ds_turn_path_key \
+             ON gateway_session_artifacts (session_id, ds_id, turn_id, relative_path)",
+        )
+        .execute(pool)
+        .await?;
+
         sqlx::query(
             r"CREATE TABLE IF NOT EXISTS claw_pool (
                 pool_id TEXT PRIMARY KEY,
@@ -2816,22 +2831,26 @@ impl GatewaySessionDb {
         }
         if session_id_pat.is_some() || turn_id_exact.is_some() {
             qb.push(" AND (");
-            let mut id_sep = qb.separated(" OR ");
+            let mut id_or = false;
             if let Some(ref pat) = session_id_pat {
-                id_sep.push("s.session_id ILIKE ");
-                id_sep.push_bind(pat);
-                id_sep.push_unseparated(" ESCAPE '\\'");
+                qb.push("s.session_id ILIKE ");
+                qb.push_bind(pat);
+                qb.push(" ESCAPE '\\'");
+                id_or = true;
             }
             if let Some(ref tid) = turn_id_exact {
-                id_sep.push(
+                if id_or {
+                    qb.push(" OR ");
+                }
+                qb.push(
                     "EXISTS (
                       SELECT 1 FROM gateway_turns t
                       WHERE t.ds_id = s.ds_id
                         AND t.session_id = s.session_id
                         AND t.turn_id = ",
                 );
-                id_sep.push_bind(tid);
-                id_sep.push_unseparated(")");
+                qb.push_bind(tid);
+                qb.push(")");
             }
             qb.push(")");
         }

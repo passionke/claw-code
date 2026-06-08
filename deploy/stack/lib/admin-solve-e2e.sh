@@ -12,6 +12,7 @@ DS_ID="${1:-1}"
 PROMPT="${2:-connectivity check}"
 
 claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}"
+claw_wait_gateway_claw_tap_ready || exit 1
 
 BODY="$(GATEWAY_PORT="${GATEWAY_PORT}" DS_ID="${DS_ID}" USER_PROMPT="${PROMPT}" python3 <<'PY'
 import json, os, urllib.request
