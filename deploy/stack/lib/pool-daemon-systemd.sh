@@ -13,17 +13,19 @@ claw_pool_systemd_unit_path() {
 # production Linux host pool (docker_pool needs mount --make-rshared → root).
 claw_pool_use_systemd() {
   [[ "$(uname -s)" == "Linux" ]] || return 1
+  case "${CLAW_POOL_DAEMON_USE_SYSTEMD:-}" in
+    0 | false | no | off) return 1 ;;
+    1 | true | yes | on) ;;
+  esac
   # shellcheck disable=SC1091
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-profile.sh"
-  [[ "$(claw_deploy_profile_name)" == "production" ]]
+  [[ "$(claw_deploy_profile_name)" == "production" ]] || return 1
+  # Never prompt for password (CI runners / gitlab-runner). kejiqing
+  sudo -n true 2>/dev/null
 }
 
 claw_pool_sudo() {
-  if sudo -n true 2>/dev/null; then
-    sudo -n "$@"
-  else
-    sudo "$@"
-  fi
+  sudo -n "$@" 2>/dev/null
 }
 
 claw_pool_systemd_installed() {
@@ -69,6 +71,29 @@ claw_pool_systemd_stop() {
   if claw_pool_systemd_installed; then
     claw_pool_sudo systemctl stop "$(claw_pool_systemd_unit)" 2>/dev/null || true
   fi
+}
+
+# gitlab-runner has docker but not passwordless sudo; stop host systemd before SIGKILL (Restart=on-failure). kejiqing
+claw_pool_systemd_stop_via_docker() {
+  local unit rt image lib_dir
+  unit="$(claw_pool_systemd_unit)"
+  [[ -f "$(claw_pool_systemd_unit_path)" ]] || return 1
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck disable=SC1091
+  source "${lib_dir}/compose-include.sh"
+  rt="$(claw_container_runtime_cli)" || return 1
+  image="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}/library/alpine:3.20"
+  echo "==> systemctl stop+disable ${unit} via ${rt} chroot /host" >&2
+  "${rt}" run --rm --privileged --pid=host \
+    -v /:/host \
+    -v /run/systemd:/run/systemd \
+    -v /run/systemd/system:/run/systemd/system \
+    "${image}" sh -c "
+      apk add --no-cache util-linux >/dev/null 2>&1 || true
+      chroot /host systemctl stop '${unit}' 2>/dev/null || true
+      chroot /host systemctl disable '${unit}' 2>/dev/null || true
+      nsenter -t 1 -m -u -i -n -p systemctl stop '${unit}' 2>/dev/null || true
+    "
 }
 
 claw_pool_systemd_main_pid() {

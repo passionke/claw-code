@@ -21,7 +21,12 @@ RUN rustc --version | grep -q "${RUST_VERSION}" && \
     cargo build -p rusty-claude-cli --bin claw --release
 
 FROM ${DEBIAN_BASE_IMAGE}
-RUN apt-get update && apt-get install -y --no-install-recommends \
+COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
+ARG CLAW_USE_CN_APT_MIRROR=0
+RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1000 claw \

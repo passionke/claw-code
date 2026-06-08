@@ -6,6 +6,14 @@ claw_default_pool_daemon_bin() {
   printf '%s\n' "${podman_dir}/.linux-artifacts/release/claw-pool-daemon"
 }
 
+# Local pack-deploy uses claw-gateway-rs:local; release uses */claw-code:<tag>. kejiqing
+claw_gateway_image_carries_pool_daemon() {
+  case "${1:-}" in
+    *claw-code* | *claw-gateway-rs*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Resolve executable for host claw-pool-daemon. On Linux release deploy, always refresh from GATEWAY_IMAGE.
 claw_ensure_pool_daemon_binary() {
   local podman_dir="${1:?}"
@@ -34,7 +42,7 @@ claw_ensure_pool_daemon_binary() {
   fi
 
   local gw="${GATEWAY_IMAGE:-}"
-  if [[ "${gw}" == *claw-code* ]]; then
+  if claw_gateway_image_carries_pool_daemon "${gw}"; then
     local refresh=0
     if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
       refresh=1
@@ -63,6 +71,6 @@ claw_ensure_pool_daemon_binary() {
     return 0
   fi
 
-  echo "error: no claw-pool-daemon (set GATEWAY_IMAGE to claw-code:release-* or build on host)" >&2
+  echo "error: no claw-pool-daemon (set GATEWAY_IMAGE to claw-gateway-rs:local or claw-code:release-* or build on host)" >&2
   return 1
 }

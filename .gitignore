@@ -25,6 +25,7 @@ rust/.claw.json
 !.env.example
 !**/.env.example
 *.env
+!deploy/stack/rust-version.env
 !**/*.example.env
 rust/.sandbox-home/
 .sandbox-home/

@@ -77,16 +77,23 @@ claw_pool_http_alive() {
 }
 
 if [[ "${RESTART}" == 0 ]] && claw_pool_http_alive; then
-  pid="$(claw_pool_refresh_pid_file "${RPC_DIR}" 2>/dev/null || true)"
-  if [[ -z "${pid}" ]] && [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
-    # shellcheck disable=SC1091
-    source "${LIB_DIR}/pool-daemon-systemd.sh"
-    if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_active; then
-      pid="$(claw_pool_systemd_main_pid)"
+  # shellcheck source=claw-pool-registry-env.sh
+  source "${LIB_DIR}/claw-pool-registry-env.sh"
+  claw_export_pool_registry_env "${RPC_DIR}"
+  if claw_pool_registry_row_fresh "${PODMAN_DIR}"; then
+    pid="$(claw_pool_refresh_pid_file "${RPC_DIR}" 2>/dev/null || true)"
+    if [[ -z "${pid}" ]] && [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
+      # shellcheck disable=SC1091
+      source "${LIB_DIR}/pool-daemon-systemd.sh"
+      if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_active; then
+        pid="$(claw_pool_systemd_main_pid)"
+      fi
     fi
+    echo "claw-pool-daemon already on 127.0.0.1:${HTTP_PORT} (pid=${pid:-unknown}, claw_pool ok, skipped)" >&2
+    exit 0
   fi
-  echo "claw-pool-daemon already on 127.0.0.1:${HTTP_PORT} (pid=${pid:-unknown}, skipped)" >&2
-  exit 0
+  echo "==> pool-daemon-up: HTTP up but claw_pool registry missing/stale for ${CLAW_POOL_ID}; restarting…" >&2
+  RESTART=1
 fi
 
 if [[ "${RESTART}" == 1 ]]; then

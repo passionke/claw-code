@@ -280,11 +280,28 @@ claw_podman_append_admin_dist_bind() {
   fi
 }
 
+claw_ensure_compose_env_stubs() {
+  local script_dir="$1"
+  mkdir -p "${script_dir}/claw-workspace" "${script_dir}/.claw-pool-rpc"
+  if [[ ! -f "${script_dir}/.claw-worker-runtime.env" ]]; then
+    printf '%s\n' '# GENERATED stub — overwritten by up.sh (worker-llm-wiring). kejiqing' \
+      >"${script_dir}/.claw-worker-runtime.env"
+  fi
+  if [[ ! -f "${script_dir}/.claw-llm-runtime.env" ]]; then
+    printf '%s\n' '# GENERATED stub — overwritten by up.sh (llm-runtime-layout). kejiqing' \
+      >"${script_dir}/.claw-llm-runtime.env"
+  fi
+  if [[ ! -f "${script_dir}/.claw-pool-workspace.env" ]]; then
+    claw_podman_export_pool_workspace "${script_dir}"
+  fi
+}
+
 claw_podman_load_compose_args() {
   local script_dir="$1"
   local env_file="$2"
   unset CLAW_COMPOSE_WORKING_DIRECTORY
   script_dir="$(cd "${script_dir}" && pwd)"
+  claw_ensure_compose_env_stubs "${script_dir}"
   # Absolute `-f /.../deploy/stack/*.yml` makes Compose use `deploy/stack/` as project dir and auto-load
   # `deploy/stack/.env`, which can override `--env-file` image pins. Use `-f` relative to repo root and
   # run compose from that directory. kejiqing
@@ -318,7 +335,7 @@ claw_podman_load_compose_args() {
   if [[ -f "${script_dir}/lib/env-profile.sh" ]]; then
     # shellcheck source=env-profile.sh
     source "${script_dir}/lib/env-profile.sh"
-    claw_apply_deploy_profile 2>/dev/null || true
+    claw_apply_deploy_profile || return 1
   fi
   if [[ -f "${script_dir}/.claw-pool-rpc/pool-registry.env" ]]; then
     set -a
@@ -334,8 +351,13 @@ claw_podman_load_compose_args() {
   local http_host profile_name
   if claw_pool_daemon_on_host; then
     profile_name="$(claw_deploy_profile_name 2>/dev/null || true)"
-    if [[ "${profile_name}" == local && "$(uname -s)" == Darwin ]]; then
-      http_host="host.containers.internal"
+    # v1 host pool: gateway container → host pool HTTP (not LAN IP). kejiqing
+    if [[ "${profile_name}" == local ]]; then
+      if [[ "$(claw_container_runtime_cli 2>/dev/null || true)" == docker ]]; then
+        http_host="host.docker.internal"
+      else
+        http_host="host.containers.internal"
+      fi
     else
       http_host="$(claw_pool_gateway_to_host_rpc_ip)" || return 1
     fi
@@ -578,16 +600,26 @@ claw_compose_pg_wait_healthy() {
 claw_compose_gateway_service_list() {
   local podman_dir="$1"
   local repo_env="$2"
-  local pg
+  local pg errf rc
   pg="$(claw_compose_pg_service)"
+  errf="$(mktemp)"
   local svc
+  rc=0
   while IFS= read -r svc; do
     [[ -z "${svc}" ]] && continue
     [[ "${svc}" == "${pg}" ]] && continue
     printf '%s ' "${svc}"
   done < <(
-    claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" config --services 2>/dev/null
+    claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" config --services 2>"${errf}" \
+      || rc=$?
   )
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "error: docker compose config failed (check .env / GATEWAY_IMAGE / docker access):" >&2
+    sed -n '1,20p' "${errf}" >&2 || true
+    rm -f "${errf}"
+    return 1
+  fi
+  rm -f "${errf}"
 }
 
 claw_compose_gateway_down() {

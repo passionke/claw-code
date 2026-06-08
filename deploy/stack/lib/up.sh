@@ -100,26 +100,21 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   claw_nuclear_pool_reset "${PODMAN_DIR}"
   claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_DIR}/claw-workspace}"
   rt="$(claw_container_runtime_cli)"
-  echo "pull ${GATEWAY_IMAGE} …" >&2
-  "${rt}" pull "${GATEWAY_IMAGE}"
+  claw_release_pull_image_if_needed "${rt}" "${GATEWAY_IMAGE}"
   if [[ -n "${GATEWAY_PLAYGROUND_IMAGE:-}" ]]; then
-    echo "pull ${GATEWAY_PLAYGROUND_IMAGE} …" >&2
-    "${rt}" pull "${GATEWAY_PLAYGROUND_IMAGE}"
+    claw_release_pull_image_if_needed "${rt}" "${GATEWAY_PLAYGROUND_IMAGE}"
   fi
   case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
     docker_pool)
-      echo "pull ${CLAW_DOCKER_IMAGE} …" >&2
-      "${rt}" pull "${CLAW_DOCKER_IMAGE}"
+      claw_release_pull_image_if_needed "${rt}" "${CLAW_DOCKER_IMAGE}"
       ;;
     *)
-      echo "pull ${CLAW_PODMAN_IMAGE} …" >&2
-      "${rt}" pull "${CLAW_PODMAN_IMAGE}"
+      claw_release_pull_image_if_needed "${rt}" "${CLAW_PODMAN_IMAGE}"
       ;;
   esac
   if claw_stack_manages_local_claude_tap; then
-    tap_img="${CLAUDE_TAP_IMAGE:-claude-tap:local}"
-    echo "pull ${tap_img} …" >&2
-    "${rt}" pull "${tap_img}"
+    tap_img="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
+    claw_release_pull_image_if_needed "${rt}" "${tap_img}"
   fi
 fi
 
@@ -150,14 +145,25 @@ else
   exit 1
 fi
 
-# claude-tap after gateway (docker mode needs compose network). release already tap-down'd above. kejiqing
+# Default project ds_1 (project_config + workspace init) on every up. kejiqing
+# Re-chown after compose up: legacy root-owned ds_* breaks POST /v1/projects on CI runners. kejiqing
+claw_prepare_bind_mount_ownership "${PODMAN_DIR}"
+claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_DIR}/claw-workspace}" || {
+  echo "error: workspace ownership fix failed before ds bootstrap (try gateway.sh fix-workspace)" >&2
+  exit 1
+}
+# shellcheck disable=SC1091
+source "${LIB_DIR}/bootstrap-runtime.sh"
+claw_wait_gateway_http_ready 45
+claw_ensure_default_project_ds "${CLAW_BOOTSTRAP_DS_ID:-1}" || {
+  echo "error: default project ds bootstrap failed (POST /v1/projects + /v1/init)" >&2
+  exit 1
+}
+
+# claude-tap: bootstrap LLM from .env, tap-up + Admin clawTap register. kejiqing
 if claw_stack_manages_local_claude_tap; then
-  echo "==> claude-tap up (CLAUDE_TAP_MODE=${CLAUDE_TAP_MODE:-docker})" >&2
-  "${LIB_DIR}/tap-up.sh"
-  # shellcheck disable=SC1091
-  source "${LIB_DIR}/pool-health.sh"
-  claw_wait_gateway_claw_tap_ready 30 || {
-    echo "error: gateway /readyz not strict after tap-up (clawTap poll lag)" >&2
+  claw_bootstrap_gateway_runtime "${PODMAN_DIR}" "${REPO_ROOT}" || {
+    echo "error: gateway runtime bootstrap failed (LLM / clawTap register)" >&2
     exit 1
   }
 fi

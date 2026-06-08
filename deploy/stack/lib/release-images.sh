@@ -10,6 +10,10 @@ claw_default_ghcr_image_prefix() {
   printf '%s' "${CLAW_GHCR_DEFAULT_PREFIX:-ghcr.io/passionke}"
 }
 
+claw_default_claude_tap_image() {
+  printf '%s/claw-tap:latest' "$(claw_default_acr_image_prefix)"
+}
+
 claw_image_registry_prefix_from_env() {
   # CLAW_IMAGE_PREFIX wins (registry-agnostic name); CLAW_GHCR_PREFIX kept for back-compat.
   local prefix="${CLAW_IMAGE_PREFIX:-${CLAW_GHCR_PREFIX:-}}"
@@ -125,6 +129,18 @@ claw_write_release_pin_env() {
   } >"${f}"
 }
 
+# Skip remote pull when CI built images on this host (CLAW_RELEASE_SKIP_PULL=1 + image exists). kejiqing
+claw_release_pull_image_if_needed() {
+  local rt="$1"
+  local image="$2"
+  if [[ "${CLAW_RELEASE_SKIP_PULL:-0}" == "1" ]] && "${rt}" image inspect "${image}" >/dev/null 2>&1; then
+    echo "skip pull ${image} (CLAW_RELEASE_SKIP_PULL=1, local image present)" >&2
+    return 0
+  fi
+  echo "pull ${image} …" >&2
+  "${rt}" pull "${image}"
+}
+
 # After sourcing repo .env (may contain :local image tags). Prefer --release tag, then sticky pin file.
 # Writes deploy/stack/.claw-image-release.env + .claw-pool-worker.env when a release tag is active.
 claw_reapply_pool_image_pins() {
@@ -192,6 +208,7 @@ claw_compose_with_root_env() {
   local repo_env="$2"
   shift 2
   local sticky="${podman_dir}/.claw-image-release.env"
+  local profile_sh="${podman_dir}/lib/env-profile.sh"
   # Legacy `docker-compose` v1 (common behind podman on Aliyun) accepts only one `--env-file`;
   # a second `--env-file` prints usage and exits. Source env in a subshell instead. Author: kejiqing
   (
@@ -202,6 +219,12 @@ claw_compose_with_root_env() {
     if [[ -f "${sticky}" ]]; then
       # shellcheck disable=SC1090
       source "${sticky}"
+    fi
+    # Apply profile defaults (GATEWAY_IMAGE=claw-gateway-rs:local, etc.) for compose interpolation.
+    if [[ -f "${profile_sh}" ]]; then
+      # shellcheck disable=SC1090
+      source "${profile_sh}"
+      claw_apply_deploy_profile
     fi
     set +a
     claw_compose "$@"

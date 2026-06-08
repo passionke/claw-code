@@ -109,7 +109,7 @@ defaults = [
     ("CLAW_DOCKER_POOL_MIN_IDLE", "1"),
     ("CLAW_HOST_LOG_DIR", "./deploy/stack/claw-logs"),
     ("CLAUDE_TAP_MODE", "docker"),
-    ("CLAUDE_TAP_IMAGE", "ghcr.io/passionke/claude-tap:latest"),
+    ("CLAUDE_TAP_IMAGE", "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-tap:latest"),
     # Published host port for claude-tap (compose left side); same port in OPENAI_BASE_URL for claw-code.
     ("CLAUDE_TAP_HOST_PORT", "8080"),
     ("CLAUDE_TAP_LIVE_PORT", "3000"),
@@ -146,7 +146,7 @@ set -a
 source "${ENV_FILE}"
 set +a
 if [[ "${CLAUDE_TAP_MODE:-docker}" != "host" ]]; then
-  TAP_IMG="${CLAUDE_TAP_IMAGE:-ghcr.io/passionke/claude-tap:latest}"
+  TAP_IMG="${CLAUDE_TAP_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-tap:latest}"
   echo "==> pulling claude-tap image (${TAP_IMG})"
   "${RT}" pull "${TAP_IMG}"
 fi

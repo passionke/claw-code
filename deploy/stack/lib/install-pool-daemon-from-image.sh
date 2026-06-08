@@ -42,9 +42,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# shellcheck source=/dev/null
+source "${ROOT}/deploy/stack/lib/pool-daemon-binary.sh"
+
 # gateway.sh up may already export a release-pinned GATEWAY_IMAGE; do not let .env :local override it.
 _pinned_gw=""
-if [[ "${GATEWAY_IMAGE:-}" == *claw-code* ]]; then
+if claw_gateway_image_carries_pool_daemon "${GATEWAY_IMAGE:-}"; then
   _pinned_gw="${GATEWAY_IMAGE}"
 fi
 if [[ -f "${ROOT}/.env" ]]; then
@@ -61,16 +64,54 @@ fi
 
 IMG="${GATEWAY_IMAGE:?set GATEWAY_IMAGE in .env or run gateway.sh up --release <tag>}"
 CLI="$(claw_container_runtime_cli)"
+
+is_local_tag() {
+  # pack-deploy local builds claw-gateway-rs:local / claw-gateway-worker:local locally.
+  # When local tag image isn't found in the current runtime, pulling from remote may fail
+  # (and isn't logically correct for :local). kejiqing
+  [[ "${IMG}" == *":local" ]]
+}
+
 if [[ -f "${OUT}" ]] && file "${OUT}" 2>/dev/null | grep -q "Mach-O"; then
   echo "skip pool-daemon install: ${OUT} is a macOS binary (gateway image carries Linux); keep host build" >&2
   exit 0
 fi
-echo "pull ${IMG} (if needed) …" >&2
-if ! "${CLI}" image exists "${IMG}" 2>/dev/null; then
-  "${CLI}" pull "${IMG}" >&2
+
+echo "resolve host pool-daemon binary from ${IMG} …" >&2
+
+try_cli() {
+  local c="$1"
+  if command -v "${c}" >/dev/null 2>&1; then
+    if [[ "${c}" == docker ]]; then
+      "${c}" image inspect "${IMG}" >/dev/null 2>&1 && return 0
+    else
+      "${c}" image exists "${IMG}" >/dev/null 2>&1 && return 0
+    fi
+  fi
+  return 1
+}
+
+ALT_CLI=""
+case "${CLI}" in
+  docker) ALT_CLI="podman" ;;
+  podman) ALT_CLI="docker" ;;
+esac
+
+if try_cli "${CLI}"; then
+  :
+elif [[ -n "${ALT_CLI}" ]] && try_cli "${ALT_CLI}"; then
+  CLI="${ALT_CLI}"
 else
-  echo "image ${IMG} already present locally, skip pull" >&2
+  if is_local_tag; then
+    echo "error: ${IMG} not found in local ${CLI} (and ${ALT_CLI:-none}) image store; refusing remote pull for :local" >&2
+    echo "hint: ensure CLAW_CONTAINER_RUNTIME matches the runtime used during pack-deploy build (docker vs podman)" >&2
+    return 1
+  fi
+  echo "pull ${IMG} (if needed) …" >&2
+  "${CLI}" pull "${IMG}" >&2
 fi
+
+echo "using ${CLI} to extract ${IMG}" >&2
 TMP="$(mktemp)"
 trap 'rm -f "${TMP}"' EXIT
 mkdir -p "$(dirname "${OUT}")"

@@ -188,7 +188,7 @@ def main() -> None:
         "CLAW_POOL_ADVERTISE_HOST": kept.get("CLAW_POOL_ADVERTISE_HOST", "192.168.9.252"),
         "CLAW_HOST_LOG_DIR": "./deploy/stack/claw-logs",
         "CLAUDE_TAP_MODE": "docker",
-        "CLAUDE_TAP_IMAGE": "ghcr.io/passionke/claude-tap:latest",
+        "CLAUDE_TAP_IMAGE": "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-tap:latest",
         "CLAUDE_TAP_HOST_PORT": "8080",
         "INTERNAL_CLAUDE_TAP_HOST": "http://host.docker.internal:8080",
         "CLAW_IMAGE_REGISTRY": "acr",

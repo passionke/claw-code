@@ -21,16 +21,29 @@ claw_deploy_profile_name() {
   esac
 }
 
+# Bundled compose postgres URL when human .env omits it (same as podman-compose.yml). kejiqing
+claw_default_gateway_database_url() {
+  printf '%s' 'postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway'
+}
+
 # Set runtime/solve/tap defaults only when not already set in .env (explicit wins).
 claw_apply_deploy_profile() {
   local profile
+  local _profile_lib
+  _profile_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=release-images.sh
+  source "${_profile_lib}/release-images.sh"
   profile="$(claw_deploy_profile_name)" || return 1
   export CLAW_DEPLOY_PROFILE="${profile}"
 
   case "${profile}" in
     local)
       # One pool URL: HTTP on 9944 (live SSE + POST /v1/pool/rpc). No 9943 TCP / unix. kejiqing
-      export CLAW_POOL_HTTP_BASE="${CLAW_POOL_HTTP_BASE:-http://host.containers.internal:9944}"
+      if [[ "${CLAW_CONTAINER_RUNTIME:-podman}" == docker || "${CLAW_USE_DOCKER:-0}" == "1" ]]; then
+        export CLAW_POOL_HTTP_BASE="${CLAW_POOL_HTTP_BASE:-http://host.docker.internal:9944}"
+      else
+        export CLAW_POOL_HTTP_BASE="${CLAW_POOL_HTTP_BASE:-http://host.containers.internal:9944}"
+      fi
       unset CLAW_POOL_DAEMON_TCP CLAW_POOL_DAEMON_SOCKET CLAW_POOL_DAEMON_TCP_HOST 2>/dev/null || true
       unset CLAW_POOL_RPC_TRANSPORT 2>/dev/null || true
       export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-podman}"
@@ -60,11 +73,32 @@ claw_apply_deploy_profile() {
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
       export CLAW_GATEWAY_PG_IMAGE="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
+      export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
       ;;
   esac
 
   if [[ "${CLAW_USE_DOCKER:-0}" == "1" && "${CLAW_CONTAINER_RUNTIME:-}" == "auto" ]]; then
     export CLAW_CONTAINER_RUNTIME=docker
+  fi
+
+  # Linux docker + local pack-deploy: tap/solve defaults live in profile, not human .env. kejiqing
+  if [[ "${profile}" == local && "${CLAW_CONTAINER_RUNTIME:-}" == docker ]]; then
+    export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-docker_pool}"
+    export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-docker}"
+    export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
+    export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
+    export CLAUDE_TAP_DOCKER_NETWORK="${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
+    export CLAW_DOCKER_NETWORK="${CLAW_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
+    # Local dev: publish Live (3000) + proxy (8080) on host for trace viewer / curl debug.
+    # Local docker: publish tap on loopback; Admin host defaults to 127.0.0.1 unless CLAW_POOL_ADVERTISE_HOST set.
+    export CLAUDE_TAP_PUBLISH_PROXY="${CLAUDE_TAP_PUBLISH_PROXY:-127.0.0.1:8080:8080}"
+    export CLAUDE_TAP_PUBLISH_LIVE="${CLAUDE_TAP_PUBLISH_LIVE:-0.0.0.0:3000:3000}"
+  fi
+
+  export CLAW_GATEWAY_DATABASE_URL="${CLAW_GATEWAY_DATABASE_URL:-$(claw_default_gateway_database_url)}"
+  export CLAW_GATEWAY_PG_HOST_PORT="${CLAW_GATEWAY_PG_HOST_PORT:-5433}"
+  if [[ "${profile}" == local ]]; then
+    export CLAW_CLUSTER_ID="${CLAW_CLUSTER_ID:-local-dev}"
   fi
 
   claw_sync_solve_worker_image_prefix || return 1

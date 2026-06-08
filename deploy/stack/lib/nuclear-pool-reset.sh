@@ -1,24 +1,81 @@
 # shellcheck shell=bash
 # Stop pool daemon, free TCP port, remove every claw worker container (any name/tag). Author: kejiqing
 
-claw_kill_tcp_listeners() {
+claw_pool_http_health_alive() {
+  local port="${1:?port}"
+  curl -fsS --connect-timeout 2 "http://127.0.0.1:${port}/healthz/live-report" >/dev/null 2>&1
+}
+
+claw_tcp_port_listening() {
   local port="$1"
-  [[ -n "${port}" ]] || return 0
+  [[ -n "${port}" ]] || return 1
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t >/dev/null 2>&1
+    return $?
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn "sport = :${port}" 2>/dev/null | grep -q LISTEN
+    return $?
+  fi
+  return 1
+}
+
+claw_kill_pids_on_tcp_port() {
+  local port="$1" signal="${2:-TERM}"
   local pid
   if command -v lsof >/dev/null 2>&1; then
     while read -r pid; do
       [[ -n "${pid}" ]] || continue
-      kill "${pid}" 2>/dev/null || true
+      kill "-${signal}" "${pid}" 2>/dev/null \
+        || sudo -n kill "-${signal}" "${pid}" 2>/dev/null \
+        || true
     done < <(lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null || true)
-    sleep 0.3
     return 0
   fi
   if command -v ss >/dev/null 2>&1; then
     while read -r pid; do
       [[ -n "${pid}" ]] || continue
-      kill "${pid}" 2>/dev/null || true
+      kill "-${signal}" "${pid}" 2>/dev/null \
+        || sudo -n kill "-${signal}" "${pid}" 2>/dev/null \
+        || true
     done < <(ss -ltnp "sport = :${port}" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | sort -u)
-    sleep 0.3
+  fi
+}
+
+# Kill listeners on :port; docker --pid=host fallback when root-owned (systemd pool on CI). kejiqing
+claw_kill_tcp_listeners_privileged() {
+  local port="$1" rt image lib_dir
+  [[ -n "${port}" ]] || return 0
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck disable=SC1091
+  source "${lib_dir}/compose-include.sh"
+  rt="$(claw_container_runtime_cli)" || return 1
+  image="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}/library/alpine:3.20"
+  echo "==> kill TCP :${port} via ${rt} (privileged pid=host)" >&2
+  "${rt}" run --rm --pid=host --privileged "${image}" sh -c "
+    apk add --no-cache lsof >/dev/null 2>&1 || true
+    for pid in \$(lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null); do
+      kill -9 \"\$pid\" 2>/dev/null || true
+    done
+  " 2>/dev/null || true
+}
+
+claw_kill_tcp_listeners() {
+  local port="$1"
+  [[ -n "${port}" ]] || return 0
+  claw_kill_pids_on_tcp_port "${port}" TERM
+  sleep 0.3
+  if claw_tcp_port_listening "${port}"; then
+    claw_kill_pids_on_tcp_port "${port}" 9
+    sleep 0.2
+  fi
+  if claw_tcp_port_listening "${port}" || claw_pool_http_health_alive "${port}"; then
+    claw_kill_tcp_listeners_privileged "${port}"
+    sleep 0.5
+  fi
+  if claw_pool_http_health_alive "${port}"; then
+    claw_kill_tcp_listeners_privileged "${port}"
+    sleep 0.5
   fi
 }
 
