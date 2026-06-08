@@ -11,6 +11,8 @@ deploy:pack-local:
   when: manual
   script:
     - cd /home/gitlab-runner/claw-code
-    - git pull
+    - git fetch origin
+    - git checkout main
+    - git pull --ff-only origin main
     - ./deploy/stack/gateway.sh pack-deploy local
   timeout: 2h
