@@ -112,6 +112,8 @@ pub struct ProjectConfigRow {
     pub extra_session_fields_json: Value,
     /// Per-ds instruction budgets → `.claw/settings.json`. Author: kejiqing
     pub prompt_limits_json: Value,
+    /// Pool worker profile: `{"mode":"strict"|"relaxed"}` (sidecar; not in revision snapshots). Author: kejiqing
+    pub worker_isolation_json: Value,
 }
 
 /// Row summary for [`GatewaySessionDb::list_project_config_summaries`]. Author: kejiqing
@@ -183,6 +185,20 @@ impl GatewayLlmModelRevisionRow {
         self.cluster_id = cluster_id.to_string();
         self
     }
+}
+
+/// Cached zh translation snapshot for one session (`gateway_conversation_translate`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct ConversationTranslateSnapshotRow {
+    pub session_id: String,
+    pub ds_id: i64,
+    pub source_fingerprint: String,
+    pub turns_json: Value,
+    pub markdown: String,
+    pub target_language: String,
+    pub model_id: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 /// Per-cluster LLM model row (`gateway_llm_cluster_model`). Author: kejiqing
@@ -282,6 +298,7 @@ pub struct ProjectConfigUpsert<'a> {
     pub solve_orchestration_json: &'a Value,
     pub extra_session_fields_json: &'a Value,
     pub prompt_limits_json: &'a Value,
+    pub worker_isolation_json: &'a Value,
 }
 
 /// Gateway session index: one row per `(session_id, ds_id)` with a workspace-relative `session_home`.
@@ -391,6 +408,23 @@ impl GatewaySessionDb {
                 feedback TEXT NOT NULL,
                 updated_at_ms BIGINT NOT NULL,
                 PRIMARY KEY (session_id, ds_id, turn_id)
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS gateway_conversation_translate (
+                session_id TEXT NOT NULL,
+                ds_id BIGINT NOT NULL,
+                source_fingerprint TEXT NOT NULL,
+                turns_json JSONB NOT NULL,
+                markdown TEXT NOT NULL,
+                target_language TEXT NOT NULL DEFAULT 'zh-CN',
+                model_id TEXT,
+                created_at_ms BIGINT NOT NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (session_id, ds_id)
             )",
         )
         .execute(pool)
@@ -566,6 +600,11 @@ impl GatewaySessionDb {
         .await?;
         sqlx::query(
             "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS prompt_limits_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS worker_isolation_json JSONB NOT NULL DEFAULT '{\"mode\":\"strict\"}'::jsonb",
         )
         .execute(pool)
         .await?;
@@ -1347,7 +1386,8 @@ impl GatewaySessionDb {
             r"SELECT ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                       rules_json, mcp_servers_json, skills_sources_json, skills_json,
                       allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
-                      solve_orchestration_json, extra_session_fields_json, prompt_limits_json
+                      solve_orchestration_json, extra_session_fields_json, prompt_limits_json,
+                      worker_isolation_json
                FROM project_config WHERE ds_id = $1",
         )
         .bind(ds_id)
@@ -1375,6 +1415,8 @@ impl GatewaySessionDb {
             .try_get::<Json<Value>, _>("extra_session_fields_json")?
             .0;
         let prompt_limits_json: Value = row.try_get::<Json<Value>, _>("prompt_limits_json")?.0;
+        let worker_isolation_json: Value =
+            row.try_get::<Json<Value>, _>("worker_isolation_json")?.0;
 
         let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
         let draft_open: bool = row.try_get("draft_open")?;
@@ -1396,7 +1438,20 @@ impl GatewaySessionDb {
             solve_orchestration_json,
             extra_session_fields_json,
             prompt_limits_json,
+            worker_isolation_json,
         }))
+    }
+
+    /// Sidecar for pool acquire: per-ds worker strict/relaxed profile. Author: kejiqing
+    pub async fn get_worker_isolation_json(&self, ds_id: i64) -> Result<Value, SqlxError> {
+        let row: Option<Json<Value>> =
+            sqlx::query_scalar("SELECT worker_isolation_json FROM project_config WHERE ds_id = $1")
+                .bind(ds_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row
+            .map(|j| j.0)
+            .unwrap_or_else(crate::pool::default_worker_isolation_json))
     }
 
     pub async fn upsert_project_config(
@@ -1408,8 +1463,9 @@ impl GatewaySessionDb {
                 ds_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                 rules_json, mcp_servers_json, skills_sources_json, skills_json,
                 allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
-                solve_orchestration_json, extra_session_fields_json, prompt_limits_json
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                solve_orchestration_json, extra_session_fields_json, prompt_limits_json,
+                worker_isolation_json
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (ds_id) DO UPDATE SET
                 content_rev = EXCLUDED.content_rev,
                 stable_content_rev = EXCLUDED.stable_content_rev,
@@ -1425,7 +1481,8 @@ impl GatewaySessionDb {
                 solve_preflight_json = EXCLUDED.solve_preflight_json,
                 solve_orchestration_json = EXCLUDED.solve_orchestration_json,
                 extra_session_fields_json = EXCLUDED.extra_session_fields_json,
-                prompt_limits_json = EXCLUDED.prompt_limits_json",
+                prompt_limits_json = EXCLUDED.prompt_limits_json,
+                worker_isolation_json = EXCLUDED.worker_isolation_json",
         )
         .bind(row.ds_id)
         .bind(row.content_rev)
@@ -1443,6 +1500,7 @@ impl GatewaySessionDb {
         .bind(Json(row.solve_orchestration_json))
         .bind(Json(row.extra_session_fields_json))
         .bind(Json(row.prompt_limits_json))
+        .bind(Json(row.worker_isolation_json))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -3060,6 +3118,74 @@ impl GatewaySessionDb {
         Ok(rows.into_iter().collect())
     }
 
+    pub async fn get_conversation_translate_snapshot(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+    ) -> Result<Option<ConversationTranslateSnapshotRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT session_id, ds_id, source_fingerprint, turns_json, markdown,
+                     target_language, model_id, created_at_ms, updated_at_ms
+              FROM gateway_conversation_translate
+              WHERE session_id = $1 AND ds_id = $2",
+        )
+        .bind(session_id)
+        .bind(ds_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(r) = row else {
+            return Ok(None);
+        };
+        Ok(Some(ConversationTranslateSnapshotRow {
+            session_id: r.try_get("session_id")?,
+            ds_id: r.try_get("ds_id")?,
+            source_fingerprint: r.try_get("source_fingerprint")?,
+            turns_json: r.try_get("turns_json")?,
+            markdown: r.try_get("markdown")?,
+            target_language: r.try_get("target_language")?,
+            model_id: r.try_get("model_id")?,
+            created_at_ms: r.try_get("created_at_ms")?,
+            updated_at_ms: r.try_get("updated_at_ms")?,
+        }))
+    }
+
+    pub async fn upsert_conversation_translate_snapshot(
+        &self,
+        session_id: &str,
+        ds_id: i64,
+        source_fingerprint: &str,
+        turns_json: &Value,
+        markdown: &str,
+        target_language: &str,
+        model_id: Option<&str>,
+        now_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_conversation_translate (
+                session_id, ds_id, source_fingerprint, turns_json, markdown,
+                target_language, model_id, created_at_ms, updated_at_ms
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+              ON CONFLICT (session_id, ds_id) DO UPDATE SET
+                source_fingerprint = EXCLUDED.source_fingerprint,
+                turns_json = EXCLUDED.turns_json,
+                markdown = EXCLUDED.markdown,
+                target_language = EXCLUDED.target_language,
+                model_id = EXCLUDED.model_id,
+                updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(session_id)
+        .bind(ds_id)
+        .bind(source_fingerprint)
+        .bind(Json(turns_json))
+        .bind(markdown)
+        .bind(target_language)
+        .bind(model_id)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn fetch_updated_at_ms_for_test(
         &self,
@@ -3421,6 +3547,7 @@ mod tests {
             solve_orchestration_json: &json!({"kind": "single_turn"}),
             extra_session_fields_json: &json!([]),
             prompt_limits_json: &json!({}),
+            worker_isolation_json: &json!({"mode": "strict"}),
         })
         .await
         .unwrap();
@@ -3450,6 +3577,7 @@ mod tests {
             solve_orchestration_json: &json!({"kind": "single_turn"}),
             extra_session_fields_json: &json!([]),
             prompt_limits_json: &json!({}),
+            worker_isolation_json: &json!({"mode": "strict"}),
         })
         .await
         .unwrap();

@@ -1,9 +1,8 @@
-/** 浏览器侧整段翻译为简体中文；失败走网关 LLM。Author: kejiqing */
+/** 整段翻译为简体中文（网关 LLM）；译文快照存 PG。Author: kejiqing */
 
 import { proxyHttp } from "../api/client";
 
 const TRANSLATE_CHUNK = 3000;
-const BROWSER_TRANSLATOR_TIMEOUT_MS = 4_000;
 const GATEWAY_TRANSLATE_TIMEOUT_MS = 120_000;
 const GATEWAY_CHUNK_DELAY_MS = 200;
 
@@ -56,22 +55,6 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
   }
 }
 
-async function translateWithBrowserApi(text: string): Promise<string | null> {
-  const Tr = (globalThis as { Translator?: { create: (o: { sourceLanguage: string; targetLanguage: string }) => Promise<{ translate: (t: string) => Promise<string> }> } }).Translator;
-  if (!Tr) return null;
-  try {
-    const translator = await withTimeout(
-      Tr.create({ sourceLanguage: "en", targetLanguage: "zh" }),
-      BROWSER_TRANSLATOR_TIMEOUT_MS,
-      "浏览器翻译模型加载"
-    );
-    const out = await withTimeout(translator.translate(text), BROWSER_TRANSLATOR_TIMEOUT_MS, "浏览器翻译");
-    return out?.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
 async function translateWithGateway(gatewayBase: string, text: string): Promise<string> {
   const res = await withTimeout(
     proxyHttp<{ translatedText?: string }>(gatewayBase, "POST", "/v1/gateway/translate", {
@@ -84,12 +67,6 @@ async function translateWithGateway(gatewayBase: string, text: string): Promise<
   const out = res.translatedText?.trim();
   if (!out) throw new Error("网关翻译结果为空");
   return out;
-}
-
-async function translateChunk(text: string, gatewayBase: string): Promise<string> {
-  const browser = await translateWithBrowserApi(text);
-  if (browser) return browser;
-  return translateWithGateway(gatewayBase, text);
 }
 
 /** 将非中文正文译为简体中文；已是中文则原样返回。 */
@@ -113,7 +90,7 @@ export async function translateTextToZh(
       out.push(chunk);
     } else {
       if (i > 0) await sleep(GATEWAY_CHUNK_DELAY_MS);
-      out.push(await translateChunk(chunk, gatewayBase));
+      out.push(await translateWithGateway(gatewayBase, chunk));
     }
     onUnitDone?.();
   }
@@ -198,4 +175,77 @@ export function formatTranslatedConversation(turns: TranslatedTurn[]): string {
         `## 轮次 ${t.index}\n\n**用户**\n\n${t.userTextZh}\n\n**助手**\n\n${t.assistantTextZh}`
     )
     .join("\n\n---\n\n");
+}
+
+export interface ConversationSourceBlock {
+  turnId: string;
+  userText: string;
+  assistantText: string;
+}
+
+/** 源正文指纹：对话更新后用于判断快照是否过期。 */
+export async function computeConversationSourceFingerprint(
+  turns: ConversationSourceBlock[]
+): Promise<string> {
+  const canonical = JSON.stringify(
+    turns.map((t) => ({
+      turnId: t.turnId,
+      userText: t.userText.trim(),
+      assistantText: t.assistantText.trim(),
+    }))
+  );
+  const data = new TextEncoder().encode(canonical);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export interface ConversationTranslateSnapshot {
+  sourceFingerprint: string;
+  turns: TranslatedTurn[];
+  markdown: string;
+  targetLanguage: string;
+  modelId?: string;
+  updatedAtMs: number;
+}
+
+export async function loadConversationTranslateSnapshot(
+  gatewayBase: string,
+  sessionId: string,
+  dsId: number
+): Promise<ConversationTranslateSnapshot | null> {
+  const res = await proxyHttp<{ snapshot?: ConversationTranslateSnapshot | null }>(
+    gatewayBase,
+    "GET",
+    `/v1/sessions/${encodeURIComponent(sessionId)}/conversation_translate?dsId=${encodeURIComponent(String(dsId))}`
+  );
+  return res.snapshot ?? null;
+}
+
+export async function saveConversationTranslateSnapshot(
+  gatewayBase: string,
+  sessionId: string,
+  dsId: number,
+  snapshot: {
+    sourceFingerprint: string;
+    turns: TranslatedTurn[];
+    markdown: string;
+    targetLanguage?: string;
+    modelId?: string;
+  }
+): Promise<number> {
+  const res = await proxyHttp<{ updatedAtMs?: number }>(
+    gatewayBase,
+    "PUT",
+    `/v1/sessions/${encodeURIComponent(sessionId)}/conversation_translate?dsId=${encodeURIComponent(String(dsId))}`,
+    {
+      sourceFingerprint: snapshot.sourceFingerprint,
+      turns: snapshot.turns,
+      markdown: snapshot.markdown,
+      targetLanguage: snapshot.targetLanguage ?? "zh-CN",
+      modelId: snapshot.modelId,
+    }
+  );
+  return res.updatedAtMs ?? Date.now();
 }

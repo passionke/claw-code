@@ -1,5 +1,5 @@
 import { CopyOutlined, TranslationOutlined } from "@ant-design/icons";
-import { Button, Modal, Progress, Typography, message } from "antd";
+import { Alert, Button, Modal, Progress, Typography, message } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import {
   collectConversationTurns,
@@ -7,7 +7,10 @@ import {
   type ConversationTurnInput,
 } from "../../utils/collectConversationForTranslate";
 import {
+  computeConversationSourceFingerprint,
   formatTranslatedConversation,
+  loadConversationTranslateSnapshot,
+  saveConversationTranslateSnapshot,
   translateConversationTurns,
   type TranslatedTurn,
 } from "../../utils/translateToZh";
@@ -25,7 +28,7 @@ export interface ConversationTranslateModalProps {
 
 type Phase = "idle" | "collect" | "translate" | "done" | "error";
 
-/** 整通对话译中文（纯前端）。Author: kejiqing */
+/** 整通对话译中文（网关 LLM + PG 快照）。Author: kejiqing */
 export default function ConversationTranslateModal({
   open,
   onClose,
@@ -40,6 +43,8 @@ export default function ConversationTranslateModal({
   const [turns, setTurns] = useState<TranslatedTurn[]>([]);
   const [markdown, setMarkdown] = useState("");
   const [errorText, setErrorText] = useState("");
+  const [snapshotStale, setSnapshotStale] = useState(false);
+  const [snapshotUpdatedAtMs, setSnapshotUpdatedAtMs] = useState<number | null>(null);
 
   const reset = useCallback(() => {
     setPhase("idle");
@@ -48,56 +53,89 @@ export default function ConversationTranslateModal({
     setTurns([]);
     setMarkdown("");
     setErrorText("");
+    setSnapshotStale(false);
+    setSnapshotUpdatedAtMs(null);
   }, []);
 
-  const run = useCallback(async () => {
-    if (!gatewayBase) {
-      setErrorText("未选择网关");
-      setPhase("error");
-      return;
-    }
-
-    reset();
-    setPhase("collect");
-    setStatusText("正在收集对话正文…");
-
-    try {
-      let inputs = threadTurns;
-      if (!inputs.length && sessionId) {
-        inputs = await loadSessionTurnsForTranslate(gatewayBase, dsId, sessionId);
-      }
-      if (!inputs.length) {
-        setErrorText("当前会话没有可翻译的对话轮次");
+  const run = useCallback(
+    async (forceRetranslate = false) => {
+      if (!gatewayBase) {
+        setErrorText("未选择网关");
         setPhase("error");
         return;
       }
 
-      const blocks = await collectConversationTurns(gatewayBase, dsId, inputs, (done, total) => {
-        setProgressPct(Math.round((done / total) * 45));
-        setStatusText(`收集正文 ${done}/${total}…`);
-      });
+      reset();
+      setPhase("collect");
+      setStatusText("正在收集对话正文…");
 
-      setPhase("translate");
-      setStatusText("正在翻译为中文…");
-      const translated = await translateConversationTurns(gatewayBase, blocks, ({ doneUnits, totalUnits, detail }) => {
-        setProgressPct(45 + Math.round((doneUnits / totalUnits) * 55));
-        setStatusText(detail ? `翻译中 ${doneUnits}/${totalUnits} · ${detail}` : `翻译中 ${doneUnits}/${totalUnits}…`);
-      });
+      try {
+        let inputs = threadTurns;
+        if (!inputs.length && sessionId) {
+          inputs = await loadSessionTurnsForTranslate(gatewayBase, dsId, sessionId);
+        }
+        if (!inputs.length) {
+          setErrorText("当前会话没有可翻译的对话轮次");
+          setPhase("error");
+          return;
+        }
 
-      const md = formatTranslatedConversation(translated);
-      setTurns(translated);
-      setMarkdown(md);
-      setProgressPct(100);
-      setStatusText("完成");
-      setPhase("done");
-    } catch (e) {
-      setErrorText(String((e as Error).message || e));
-      setPhase("error");
-    }
-  }, [gatewayBase, dsId, sessionId, threadTurns, reset]);
+        const blocks = await collectConversationTurns(gatewayBase, dsId, inputs, (done, total) => {
+          setProgressPct(Math.round((done / total) * 35));
+          setStatusText(`收集正文 ${done}/${total}…`);
+        });
+
+        const sourceFingerprint = await computeConversationSourceFingerprint(blocks);
+
+        if (sessionId && !forceRetranslate) {
+          setStatusText("正在加载已存译文…");
+          const cached = await loadConversationTranslateSnapshot(gatewayBase, sessionId, dsId);
+          if (cached?.turns?.length) {
+            setTurns(cached.turns);
+            setMarkdown(cached.markdown);
+            setSnapshotStale(cached.sourceFingerprint !== sourceFingerprint);
+            setSnapshotUpdatedAtMs(cached.updatedAtMs);
+            setProgressPct(100);
+            setStatusText("已加载快照");
+            setPhase("done");
+            return;
+          }
+        }
+
+        setPhase("translate");
+        setStatusText("正在用网关大模型翻译…");
+        const translated = await translateConversationTurns(gatewayBase, blocks, ({ doneUnits, totalUnits, detail }) => {
+          setProgressPct(35 + Math.round((doneUnits / totalUnits) * 65));
+          setStatusText(detail ? `翻译中 ${doneUnits}/${totalUnits} · ${detail}` : `翻译中 ${doneUnits}/${totalUnits}…`);
+        });
+
+        const md = formatTranslatedConversation(translated);
+        setTurns(translated);
+        setMarkdown(md);
+        setSnapshotStale(false);
+
+        if (sessionId) {
+          const updatedAtMs = await saveConversationTranslateSnapshot(gatewayBase, sessionId, dsId, {
+            sourceFingerprint,
+            turns: translated,
+            markdown: md,
+          });
+          setSnapshotUpdatedAtMs(updatedAtMs);
+        }
+
+        setProgressPct(100);
+        setStatusText("完成");
+        setPhase("done");
+      } catch (e) {
+        setErrorText(String((e as Error).message || e));
+        setPhase("error");
+      }
+    },
+    [gatewayBase, dsId, sessionId, threadTurns, reset]
+  );
 
   useEffect(() => {
-    if (open) void run();
+    if (open) void run(false);
     else reset();
   }, [open, run, reset]);
 
@@ -112,6 +150,10 @@ export default function ConversationTranslateModal({
   };
 
   const busy = phase === "collect" || phase === "translate";
+  const snapshotTimeLabel =
+    snapshotUpdatedAtMs != null
+      ? new Date(snapshotUpdatedAtMs).toLocaleString("zh-CN", { hour12: false })
+      : null;
 
   return (
     <Modal
@@ -128,7 +170,7 @@ export default function ConversationTranslateModal({
       footer={
         <div className={styles.translateModalFooter}>
           <Button onClick={onClose}>关闭</Button>
-          <Button onClick={() => void run()} loading={busy} disabled={busy}>
+          <Button onClick={() => void run(true)} loading={busy} disabled={busy}>
             重新翻译
           </Button>
           <Button
@@ -153,6 +195,23 @@ export default function ConversationTranslateModal({
         <Typography.Paragraph type="danger" style={{ marginBottom: 0 }}>
           {errorText}
         </Typography.Paragraph>
+      ) : null}
+
+      {phase === "done" && snapshotStale ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="对话正文已更新，当前译文可能已过期"
+          description="可点击「重新翻译」生成最新中文版并覆盖快照。"
+        />
+      ) : null}
+
+      {phase === "done" && snapshotTimeLabel ? (
+        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 12 }}>
+          快照时间：{snapshotTimeLabel}
+          {snapshotStale ? "（已过期）" : ""}
+        </Typography.Text>
       ) : null}
 
       {phase === "done" && turns.length > 0 ? (
