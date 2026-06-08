@@ -108,7 +108,16 @@ claw_gateway_has_active_llm() {
     | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("activeLlmConfig") else 1)' 2>/dev/null
 }
 
+# Admin clawTap host: LAN IP for browser + worker; override with CLAUDE_TAP_ADMIN_HOST. kejiqing
 claw_claude_tap_admin_host() {
+  if [[ -n "${CLAUDE_TAP_ADMIN_HOST:-}" ]]; then
+    printf '%s' "${CLAUDE_TAP_ADMIN_HOST}"
+    return 0
+  fi
+  if [[ -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
+    printf '%s' "${CLAW_POOL_ADVERTISE_HOST}"
+    return 0
+  fi
   if [[ -n "${CLAUDE_TAP_DOCKER_NETWORK:-}" ]]; then
     printf '%s' "${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
     return 0
@@ -116,7 +125,7 @@ claw_claude_tap_admin_host() {
   printf '%s' "127.0.0.1"
 }
 
-# Probe + save clawTap in Admin (docker network: host=container name). Author: kejiqing
+# Probe + save clawTap in Admin (host must be reachable; publish proxy to host when using IP). kejiqing
 claw_claude_tap_register_in_admin() {
   local port="${GATEWAY_HOST_PORT:-18088}"
   local host proxy live probe_msg
@@ -128,8 +137,7 @@ claw_claude_tap_register_in_admin() {
     -H 'Content-Type: application/json' \
     -d "{\"host\":\"${host}\",\"proxyPort\":${proxy}}" 2>&1)" || {
     echo "error: clawTap probe failed (host=${host} proxyPort=${proxy}): ${probe_msg}" >&2
-    [[ -n "${CLAUDE_TAP_DOCKER_NETWORK:-}" ]] && \
-      echo "hint: use container name claw-claude-tap, not LAN IP (tap proxy is not on host :8080)" >&2
+    echo "hint: set CLAUDE_TAP_PUBLISH_PROXY=0.0.0.0:${proxy}:${proxy} (or CLAUDE_TAP_ADMIN_HOST + published ports)" >&2
     return 1
   }
   if ! python3 -c 'import json,sys; d=json.loads(sys.argv[1]); sys.exit(0 if d.get("ok") else 1)' "${probe_msg}" 2>/dev/null; then
