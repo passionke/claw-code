@@ -73,6 +73,14 @@ pub fn cluster_poll_interval_secs() -> u64 {
         .unwrap_or(30)
 }
 
+/// Faster poll while tap unreachable or cluster mismatch (post-deploy tap-up race). Author: kejiqing
+pub fn cluster_mismatch_poll_interval_secs() -> u64 {
+    std::env::var("CLAW_TAP_CLUSTER_MISMATCH_POLL_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(5)
+}
+
 pub async fn load_cluster_settings(
     db: &GatewaySessionDb,
 ) -> Result<(String, ClawTapSettings), String> {
@@ -162,27 +170,22 @@ pub async fn cluster_poll_loop(
     llm_handle: LlmRuntimeHandle,
     handle: ClawTapClusterHandle,
 ) {
-    let interval = cluster_poll_interval_secs();
-    if interval == 0 {
+    let strict_interval = cluster_poll_interval_secs();
+    if strict_interval == 0 {
         return;
     }
-    if let Ok(Some(state)) = refresh_claw_tap_cluster_state(db.as_ref(), &llm_handle).await {
-        *handle.write().await = Some(state);
-    }
-    let start = tokio::time::Instant::now() + std::time::Duration::from_secs(interval);
-    let mut ticker = tokio::time::interval_at(start, std::time::Duration::from_secs(interval));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mismatch_interval = cluster_mismatch_poll_interval_secs();
     loop {
-        ticker.tick().await;
-        match refresh_claw_tap_cluster_state(db.as_ref(), &llm_handle).await {
+        let wait_secs = match refresh_claw_tap_cluster_state(db.as_ref(), &llm_handle).await {
             Ok(Some(state)) => {
-                if state.consistency == TapConsistency::Strict {
+                let wait = if state.consistency == TapConsistency::Strict {
                     info!(
                         target: "claw_gateway_orchestration",
                         component = "claw_tap_cluster",
                         tap = %state.tap_base_url,
                         "clawTap cluster strict"
                     );
+                    strict_interval
                 } else {
                     warn!(
                         target: "claw_gateway_orchestration",
@@ -191,11 +194,14 @@ pub async fn cluster_poll_loop(
                         reason = ?state.mismatch_reason,
                         "clawTap cluster mismatch; solve blocked until tap matches PG clusterId+hash"
                     );
-                }
+                    mismatch_interval
+                };
                 *handle.write().await = Some(state);
+                wait
             }
             Ok(None) => {
                 *handle.write().await = None;
+                mismatch_interval
             }
             Err(e) => {
                 warn!(
@@ -204,8 +210,10 @@ pub async fn cluster_poll_loop(
                     error = %e,
                     "clawTap cluster refresh failed"
                 );
+                mismatch_interval
             }
-        }
+        };
+        tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
     }
 }
 

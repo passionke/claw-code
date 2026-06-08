@@ -154,6 +154,12 @@ fi
 if claw_stack_manages_local_claude_tap; then
   echo "==> claude-tap up (CLAUDE_TAP_MODE=${CLAUDE_TAP_MODE:-docker})" >&2
   "${LIB_DIR}/tap-up.sh"
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/pool-health.sh"
+  claw_wait_gateway_claw_tap_ready 30 || {
+    echo "error: gateway /readyz not strict after tap-up (clawTap poll lag)" >&2
+    exit 1
+  }
 fi
 
 _gw_tag="${GATEWAY_IMAGE##*:}"

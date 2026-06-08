@@ -27,7 +27,7 @@ Author: kejiqing
 
 固定顺序（中间以 `\n\n` 拼接；`__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` 为分界）：
 
-1. **Builtin scaffold** — `.claw/system_prompt_scaffold.md`（有则用之；无则 hardcoded 段，受 `auto_hidden_system_prompt` 与是否存在 instruction 文件影响）
+1. **Builtin scaffold** — `.claw/system_prompt_scaffold.md`（有则用之；无则 hardcoded 段）。**两者**均受 `auto_hidden_system_prompt`（默认 `1`）与是否存在非空 instruction 文件（如 `CLAUDE.md`）影响：有 instruction 且 auto_hidden 开启时**整段省略**
 2. `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`
 3. **`# Claude instructions`** — 自 `CLAUDE.md` / 祖先链发现（**不是** `system_prompt_user_override.md`）
 4. **`# Project rules`** — `.cursor/rules/*.mdc`
@@ -71,10 +71,9 @@ Admin「系统提示词」页与 clawTap 看到的 **不含** tool schema；缺 
 
 写在 `.claw/settings.json`。当存在非空 instruction 文件（如 `CLAUDE.md`）时：
 
-- **无** `system_prompt_scaffold.md`：省略 **hardcoded** intro / `# System` / `# Doing tasks` / actions
-- **有** `system_prompt_scaffold.md`：**仍使用** PG scaffold 文件（与 instruction 文件并存）
+- **省略** PG `.claw/system_prompt_scaffold.md` **与** hardcoded intro / `# System` / `# Doing tasks` / actions（二者择一有则跳过，无 scaffold 时跳过 hardcoded）
 
-设为 `0` / `false` 可恢复 hardcoded 段与 `CLAUDE.md` 同时出现（一般不推荐与 PG scaffold 叠两套）。
+设为 `0` / `false` 可恢复 scaffold（或 hardcoded）与 `CLAUDE.md` 同时出现。
 
 ---
 

@@ -71,7 +71,16 @@ has_worker_name="$(psql_q "SELECT EXISTS (
   SELECT 1 FROM information_schema.columns
   WHERE table_name='gateway_turns' AND column_name='worker_name');")"
 [[ "${has_worker_name}" == "t" ]] || fail "gateway_turns.worker_name missing"
-ok "claw_pool + gateway_turns.pool_id/worker_name present"
+
+has_artifact_content="$(psql_q "SELECT EXISTS (
+  SELECT 1 FROM information_schema.columns
+  WHERE table_name='gateway_session_artifacts' AND column_name='content');")"
+[[ "${has_artifact_content}" == "t" ]] || fail "gateway_session_artifacts.content missing — pool v1 materialize/readback needs migrate() 004 columns"
+
+has_artifact_upsert_key="$(psql_q "SELECT to_regclass('public.gateway_session_artifacts_session_ds_turn_path_key') IS NOT NULL;")"
+[[ "${has_artifact_upsert_key}" == "t" ]] || fail "gateway_session_artifacts unique (session_id,ds_id,turn_id,relative_path) missing — upsert_workspace_tar_b64 ON CONFLICT will fail"
+
+ok "claw_pool + gateway_turns.pool_id/worker_name + session_artifacts pool-v1 schema present"
 
 echo "==> [2/6] Host pool daemon (v1: no compose sidecar)"
 claw_pool_daemon_on_host || fail "host pool required (compose sidecar removed)"

@@ -117,3 +117,26 @@ claw_ensure_host_pool_running() {
   "${podman_dir}/lib/pool-daemon-up.sh"
   claw_assert_host_pool_http_ready "${rpc_dir}"
 }
+
+# Poll GET /readyz until clawTapCluster.consistency=strict (post-deploy tap-up race). Author: kejiqing
+claw_wait_gateway_claw_tap_ready() {
+  local max_attempts="${1:-45}"
+  local port="${GATEWAY_HOST_PORT:-18088}"
+  local i reason
+  for i in $(seq 1 "${max_attempts}"); do
+    if curl -fsS --connect-timeout 2 "http://127.0.0.1:${port}/readyz" >/dev/null 2>&1; then
+      echo "gateway clawTap ready (/readyz attempt ${i}/${max_attempts})"
+      return 0
+    fi
+    reason="$(curl -sS --connect-timeout 2 "http://127.0.0.1:${port}/readyz" 2>/dev/null \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error") or d.get("message") or d)' 2>/dev/null \
+      || echo "503")"
+    echo "waiting gateway /readyz (${i}/${max_attempts}): ${reason}…" >&2
+    sleep 2
+  done
+  echo "error: gateway /readyz not strict after ${max_attempts} attempts (clawTap poll or tap-up lag)" >&2
+  curl -sS "http://127.0.0.1:${port}/healthz" \
+    | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("clawTapCluster"), indent=2))' >&2 \
+    || true
+  return 1
+}
