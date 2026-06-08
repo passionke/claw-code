@@ -1,0 +1,15 @@
+# Sunmi env deploy: gitlab-runner @ /home/gitlab-runner/claw-code → pack-deploy local
+# Author: kejiqing
+stages:
+  - deploy
+
+deploy:pack-local:
+  stage: deploy
+  tags:
+    - claw-dev
+  when: manual
+  script:
+    - cd /home/gitlab-runner/claw-code
+    - git pull
+    - ./deploy/stack/gateway.sh pack-deploy local
+  timeout: 2h
