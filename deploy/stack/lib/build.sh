@@ -122,7 +122,6 @@ source "${ROOT_DIR}/deploy/stack/rust-version.env"
 export CLAW_RUST_VERSION CLAW_RUST_IMAGE_TAG
 RUST_BASE_IMAGE="${REG}/library/rust:${CLAW_RUST_IMAGE_TAG}"
 DEBIAN_BASE_IMAGE="${REG}/library/debian:bookworm-slim"
-PYTHON_BASE_IMAGE="${REG}/library/python:3.12-alpine"
 NODE_BASE_IMAGE="${REG}/library/node:20-alpine"
 echo "==> Rust locked: ${CLAW_RUST_VERSION} (image ${RUST_BASE_IMAGE})"
 
@@ -135,9 +134,10 @@ cn_mirror_enabled() {
 claw_build_playground_image() {
   local container_cli="$1"
   local image_name="$2"
-  local python_base="$3"
+  local debian_base="$3"
   local node_base="$4"
   local root_dir="$5"
+  shift 5
 
   if [[ "${CLAW_BUILD_SKIP_PLAYGROUND}" == "1" ]]; then
     if "${container_cli}" image exists "${image_name}" 2>/dev/null; then
@@ -145,8 +145,10 @@ claw_build_playground_image() {
       return 0
     fi
     step "playground slim image ${image_name} (admin via bind mount when dist/ present)"
+    # shellcheck disable=SC2086
     "${container_cli}" build \
-      --build-arg "PYTHON_BASE_IMAGE=${python_base}" \
+      --build-arg "DEBIAN_BASE_IMAGE=${debian_base}" \
+      "$@" \
       -f "${root_dir}/deploy/stack/Containerfile.gateway-playground.slim" \
       -t "${image_name}" \
       "${root_dir}"
@@ -154,9 +156,11 @@ claw_build_playground_image() {
   fi
 
   step "image ${image_name} (admin SPA built inside Containerfile / CI)"
+  # shellcheck disable=SC2086
   "${container_cli}" build \
-    --build-arg "PYTHON_BASE_IMAGE=${python_base}" \
+    --build-arg "DEBIAN_BASE_IMAGE=${debian_base}" \
     --build-arg "NODE_BASE_IMAGE=${node_base}" \
+    "$@" \
     -f "${root_dir}/deploy/stack/Containerfile.gateway-playground" \
     -t "${image_name}" \
     "${root_dir}"
@@ -200,7 +204,7 @@ if use_prebuilt_linux_path; then
     -t "${WORKER_IMAGE_NAME}" \
     "${ROOT_DIR}"
 
-  claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${PYTHON_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}"
+  claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
 
   if command -v cargo >/dev/null 2>&1; then
     # shellcheck source=/dev/null
@@ -248,7 +252,7 @@ else
     -t "${WORKER_IMAGE_NAME}" \
     "${ROOT_DIR}"
 
-  claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${PYTHON_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}"
+  claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
 
   STACK_DIR="${ROOT_DIR}/deploy/stack"
   # shellcheck source=/dev/null

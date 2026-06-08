@@ -4015,7 +4015,13 @@ async fn scaffold_ds_workspace(work_dir: &Path, ds_id: i64) -> Result<(), ApiErr
         .map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create .claw failed: {e}"),
+                format!(
+                    "create {}/.claw failed: {e}. \
+                     Gateway must write under CLAW_WORK_ROOT on the host bind mount \
+                     (pool worker mounts the same tree read-only inside the container only). \
+                     Check owner matches CLAW_WORKER_UID; try: ./deploy/stack/gateway.sh fix-workspace",
+                    work_dir.display()
+                ),
             )
         })?;
     fs::create_dir_all(work_dir.join("home/skills"))

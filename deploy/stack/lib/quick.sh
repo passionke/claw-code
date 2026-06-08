@@ -27,14 +27,17 @@ CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT
 echo "==> [2/5] playground image (slim if missing; admin via bind mount when dist/ exists)"
 rt="$(command -v podman 2>/dev/null || command -v docker)"
 pg_img="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
-if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-  py_reg="docker.io"
-else
-  py_reg="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
-  py_reg="${py_reg%/}"
-fi
+debian_reg="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
+debian_reg="${debian_reg%/}"
+apt_mirror_arg=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
+[[ "${CLAW_USE_CN_CRATES_MIRROR:-0}" == "1" || "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && apt_mirror_arg=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
 if ! "${rt}" image exists "${pg_img}" 2>/dev/null; then
-  "${rt}" build -q     --build-arg "PYTHON_BASE_IMAGE=${py_reg}/library/python:3.12-alpine"     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground.slim"     -t "${pg_img}" "${ROOT_DIR}" >/dev/null
+  # shellcheck disable=SC2086
+  "${rt}" build -q \
+    --build-arg "DEBIAN_BASE_IMAGE=${debian_reg}/library/debian:bookworm-slim" \
+    "${apt_mirror_arg[@]}" \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground.slim" \
+    -t "${pg_img}" "${ROOT_DIR}" >/dev/null
 else
   echo "    reusing ${pg_img}"
 fi

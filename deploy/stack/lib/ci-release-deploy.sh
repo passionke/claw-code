@@ -4,7 +4,7 @@
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${LIB_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${LIB_DIR}/../../.." && pwd)"
 
 TAG="${CLAW_RELEASE_TAG:-release-${CI_COMMIT_SHORT_SHA:-local}}"
 export CLAW_RELEASE_SKIP_PULL="${CLAW_RELEASE_SKIP_PULL:-1}"

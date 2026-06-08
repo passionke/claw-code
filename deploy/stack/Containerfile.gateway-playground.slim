@@ -1,7 +1,16 @@
 # Playground shell only (Python server); admin SPA via bind-mount (podman-compose.admin-dist-bind.yml). Author: kejiqing
-ARG PYTHON_BASE_IMAGE=docker.1ms.run/library/python:3.12-alpine
+ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
+ARG CLAW_USE_CN_APT_MIRROR=0
 
-FROM ${PYTHON_BASE_IMAGE}
+FROM ${DEBIAN_BASE_IMAGE}
+COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
+RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY web/gateway-async-playground/server.py \

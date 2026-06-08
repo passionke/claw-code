@@ -1,7 +1,8 @@
 # Gateway async playground (stdlib Python + Vite admin SPA). Author: kejiqing
-# CI: PYTHON_BASE_IMAGE from CONTAINER_BASE_REGISTRY (default docker.io). Local CN: docker.1ms.run default below.
-ARG PYTHON_BASE_IMAGE=docker.1ms.run/library/python:3.12-alpine
+# Runtime: debian:bookworm-slim + python3 (official python:* tags often missing on docker.1ms.run).
+ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
 ARG NODE_BASE_IMAGE=docker.1ms.run/library/node:20-alpine
+ARG CLAW_USE_CN_APT_MIRROR=0
 
 FROM ${NODE_BASE_IMAGE} AS admin-build
 WORKDIR /build
@@ -13,7 +14,15 @@ RUN npm run build \
   && test -f dist/index.html \
   && sh -c 'test -n "$(ls dist/assets/*.js 2>/dev/null)"'
 
-FROM ${PYTHON_BASE_IMAGE}
+FROM ${DEBIAN_BASE_IMAGE}
+COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
+RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY web/gateway-async-playground/server.py \

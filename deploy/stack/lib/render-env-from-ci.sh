@@ -5,7 +5,7 @@
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${LIB_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${LIB_DIR}/../../.." && pwd)"
 ENV_FILE="${REPO_ROOT}/.env"
 
 claw_ci_require() {
