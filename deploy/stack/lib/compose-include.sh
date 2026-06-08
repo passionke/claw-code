@@ -334,7 +334,9 @@ claw_podman_load_compose_args() {
   local http_host profile_name
   if claw_pool_daemon_on_host; then
     profile_name="$(claw_deploy_profile_name 2>/dev/null || true)"
-    if [[ "${profile_name}" == local && "$(uname -s)" == Darwin ]]; then
+    # v1 host pool on macOS/Linux: gateway container must reach host pool HTTP via
+    # Docker-provided host.containers.internal mapping (not LAN IP). kejiqing
+    if [[ "${profile_name}" == local ]]; then
       http_host="host.containers.internal"
     else
       http_host="$(claw_pool_gateway_to_host_rpc_ip)" || return 1
