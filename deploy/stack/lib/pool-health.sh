@@ -63,6 +63,34 @@ claw_pool_refresh_pid_file() {
   return 1
 }
 
+# True when claw_pool has a row for CLAW_POOL_ID with heartbeat < 120s (pool-daemon registry). kejiqing
+claw_pool_registry_row_fresh() {
+  local podman_dir="${1:?podman_dir}"
+  local pool_id="${CLAW_POOL_ID:-}"
+  local rt pg_ctn pg_user pg_db hb_sql hb_ok
+
+  [[ -n "${pool_id}" ]] || return 1
+  # shellcheck disable=SC1091
+  source "${podman_dir}/lib/compose-include.sh"
+  # shellcheck disable=SC1091
+  source "${podman_dir}/lib/claw-pool-registry-env.sh"
+  rt="$(claw_container_runtime_cli)" || return 1
+  pg_user="${CLAW_GATEWAY_PG_USER:-claw_gateway}"
+  pg_db="${CLAW_GATEWAY_PG_DATABASE:-claw_gateway}"
+  pg_ctn="${CLAW_GATEWAY_PG_CONTAINER:-claw-gateway-postgres}"
+  hb_sql="SELECT (EXTRACT(EPOCH FROM NOW())*1000 - last_heartbeat_ms) < 120000 FROM claw_pool WHERE pool_id='${pool_id}' LIMIT 1;"
+
+  if claw_compose_uses_local_postgres; then
+    hb_ok="$("${rt}" exec "${pg_ctn}" psql -U "${pg_user}" -d "${pg_db}" -t -A -c "${hb_sql}" 2>/dev/null | tr -d '[:space:]')"
+  else
+    local url pg_img
+    url="$(claw_pool_daemon_database_url 2>/dev/null)" || return 1
+    pg_img="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
+    hb_ok="$("${rt}" run --rm "${pg_img}" psql "${url}" -t -A -c "${hb_sql}" 2>/dev/null | tr -d '[:space:]')"
+  fi
+  [[ "${hb_ok}" == "t" ]]
+}
+
 claw_gateway_container_exec() {
   local gw_ctn="${1:?container}"
   shift
