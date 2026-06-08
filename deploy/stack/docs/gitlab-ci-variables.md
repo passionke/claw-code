@@ -1,0 +1,72 @@
+# GitLab CI 环境变量（code.sunmi.com）
+
+在仓库 **Settings → CI/CD → Variables** 配置；job 跑 `./deploy/stack/lib/render-env-from-ci.sh` 生成仓库根 `.env`，**不要在 runner 上手写 `.env`**。
+
+Author: kejiqing
+
+## 1. 必须在 GitLab UI 配置的变量（Masked）
+
+| Key | Masked | Protected | 说明 | 示例 |
+|-----|--------|-----------|------|------|
+| `CLAW_BOOTSTRAP_LLM_API_KEY` | **是** | 建议 | LLM API Key；`up` 时写入 PG active LLM | `sk-...` |
+| `CLAW_BOOTSTRAP_LLM_BASE_URL` | 否 | 建议 | OpenAI 兼容 base URL，**须含 `/v1` 后缀** | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+
+`deploy:release` 设了 `CLAW_CI_REQUIRE_LLM_BOOTSTRAP=1`，缺上述两项时 `render-env-from-ci.sh` 直接失败并提示本页。
+
+## 2. 建议在 GitLab UI 配置（可选）
+
+| Key | 说明 | 默认（未设时） |
+|-----|------|----------------|
+| `CLAW_BOOTSTRAP_LLM_MODEL_NAME` | 模型 id | `gpt-4o-mini` |
+| `CLAW_BOOTSTRAP_LLM_NAME` | Admin 里显示名 | `ci-bootstrap` |
+| `CLAUDE_TAP_IMAGE` | claw-tap 镜像 | ACR `passionke/claw-tap:latest`（见 `env.production.example`） |
+
+也可用通用名（二选一，bootstrap 优先读 `CLAW_BOOTSTRAP_*`）：
+
+| Key | 等价于 |
+|-----|--------|
+| `OPENAI_API_KEY` | `CLAW_BOOTSTRAP_LLM_API_KEY` |
+| `UPSTREAM_OPENAI_BASE_URL` / `OPENAI_BASE_URL` | `CLAW_BOOTSTRAP_LLM_BASE_URL` |
+| `OPENAI_MODEL` | `CLAW_BOOTSTRAP_LLM_MODEL_NAME` |
+
+## 3. 已在 `.gitlab-ci.yml` 写死（一般不用改 UI）
+
+| Key | sunmax-i5 当前值 |
+|-----|------------------|
+| `CLAW_DEPLOY_PROFILE` | `production` |
+| `CLAW_CONTAINER_RUNTIME` | `docker` |
+| `CLAW_IMAGE_PREFIX` | `local` |
+| `CLAW_RELEASE_SKIP_PULL` | `1` |
+| `CLAW_USE_CN_CRATES_MIRROR` | `1` |
+| `CLAW_POOL_ADVERTISE_HOST` | `10.22.28.94` |
+| `CLAW_CLUSTER_ID` | `sunmi-ci-01` |
+| `CLAW_POOL_ID` | `pool-sunmi-ci-01` |
+| `CLAW_AUTO_BOOTSTRAP` | `1` |
+
+换机器时：在 UI 覆盖 `CLAW_POOL_ADVERTISE_HOST` / `CLAW_CLUSTER_ID` / `CLAW_POOL_ID`，或改 `.gitlab-ci.yml` 里 `ci_production_docker` 块。
+
+## 4. GitLab 添加步骤
+
+1. 打开 `http://code.sunmi.com/minidata/claw-code` → **Settings** → **CI/CD** → **Variables** → **Add variable**
+2. 添加 `CLAW_BOOTSTRAP_LLM_API_KEY`：Type **Variable**，Flags 勾选 **Mask variable**（建议 **Protect** 若仅 main 部署）
+3. 添加 `CLAW_BOOTSTRAP_LLM_BASE_URL`：同上，可不 Mask
+4. （可选）`CLAW_BOOTSTRAP_LLM_MODEL_NAME`
+5. Pipeline：**build:release-images**（自动）→ **deploy:release**（手动）
+
+## 5. 验收
+
+`deploy:release` 日志应出现：
+
+```
+==> bootstrap PUT /v1/gateway/global-settings/active-llm-config
+clawTap registered in Admin: host=claw-claude-tap ...
+gateway clawTap ready (/readyz attempt …)
+```
+
+随后 `admin-solve-e2e.sh` → `poll status=succeeded`。
+
+## 6. 参考
+
+- 变量模板：`deploy/stack/env.ci.example`
+- 生成脚本：`deploy/stack/lib/render-env-from-ci.sh`
+- 启动 bootstrap：`deploy/stack/lib/bootstrap-runtime.sh`

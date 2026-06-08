@@ -16,9 +16,8 @@ stages:
   CLAW_CLUSTER_ID: sunmi-ci-01
   CLAW_POOL_ID: pool-sunmi-ci-01
   CLAW_AUTO_BOOTSTRAP: "1"
-  # Masked in GitLab CI/CD Variables (required for deploy:release + admin-solve-e2e):
-  # CLAW_BOOTSTRAP_LLM_API_KEY, CLAW_BOOTSTRAP_LLM_BASE_URL
-  # Optional: CLAW_BOOTSTRAP_LLM_MODEL_NAME (default gpt-4o-mini)
+  # LLM: set in GitLab Settings → CI/CD → Variables (see deploy/stack/docs/gitlab-ci-variables.md)
+  #   CLAW_BOOTSTRAP_LLM_API_KEY (masked), CLAW_BOOTSTRAP_LLM_BASE_URL
 
 build:release-images:
   stage: build
@@ -53,6 +52,7 @@ deploy:release:
   variables:
     <<: *ci_production_docker
     CLAW_RELEASE_TAG: "release-${CI_COMMIT_SHORT_SHA}"
+    CLAW_CI_REQUIRE_LLM_BOOTSTRAP: "1"
   script:
     - cd "${CI_PROJECT_DIR:-/home/gitlab-runner/claw-code}"
     - git fetch origin && git checkout main && git pull --ff-only origin main

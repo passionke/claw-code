@@ -19,7 +19,27 @@ claw_ci_require() {
 claw_ci_require CLAW_POOL_ADVERTISE_HOST
 claw_ci_require CLAW_CLUSTER_ID
 
+claw_ci_require_llm_bootstrap_vars() {
+  local key base
+  key="${CLAW_BOOTSTRAP_LLM_API_KEY:-${OPENAI_API_KEY:-}}"
+  base="${CLAW_BOOTSTRAP_LLM_BASE_URL:-${UPSTREAM_OPENAI_BASE_URL:-${OPENAI_BASE_URL:-}}}"
+  if [[ -n "${key}" && -n "${base}" ]]; then
+    return 0
+  fi
+  echo "error: deploy requires LLM bootstrap variables in GitLab CI/CD → Variables" >&2
+  echo "  required: CLAW_BOOTSTRAP_LLM_API_KEY (masked)" >&2
+  echo "  required: CLAW_BOOTSTRAP_LLM_BASE_URL (OpenAI-compatible, include /v1)" >&2
+  echo "  optional: CLAW_BOOTSTRAP_LLM_MODEL_NAME (default gpt-4o-mini)" >&2
+  echo "  doc: deploy/stack/docs/gitlab-ci-variables.md" >&2
+  exit 1
+}
+
+if [[ "${CLAW_CI_REQUIRE_LLM_BOOTSTRAP:-0}" == "1" ]]; then
+  claw_ci_require_llm_bootstrap_vars
+fi
+
 pool_id="${CLAW_POOL_ID:-pool-${CLAW_POOL_ADVERTISE_HOST//./-}}"
+tap_image="${CLAUDE_TAP_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-tap:latest}"
 gw_port="${GATEWAY_HOST_PORT:-18088}"
 pg_port="${CLAW_GATEWAY_PG_HOST_PORT:-5433}"
 profile="${CLAW_DEPLOY_PROFILE:-production}"
@@ -54,6 +74,7 @@ CLAW_GATEWAY_PG_HOST_PORT=${pg_port}
 
 COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-claw}
 CLAUDE_TAP_MODE=${CLAUDE_TAP_MODE:-docker}
+CLAUDE_TAP_IMAGE=${tap_image}
 CLAUDE_TAP_DOCKER_NETWORK=${CLAUDE_TAP_DOCKER_NETWORK:-claw_default}
 CLAW_DOCKER_NETWORK=${CLAW_DOCKER_NETWORK:-claw_default}
 CLAUDE_TAP_PUBLISH_PROXY=${CLAUDE_TAP_PUBLISH_PROXY:-0}
@@ -72,4 +93,8 @@ for _k in CLAW_BOOTSTRAP_LLM_API_KEY CLAW_BOOTSTRAP_LLM_BASE_URL CLAW_BOOTSTRAP_
 done
 
 chmod 600 "${ENV_FILE}" 2>/dev/null || true
-echo "==> wrote ${ENV_FILE} (profile=${profile} cluster=${CLAW_CLUSTER_ID} pool=${pool_id} host=${CLAW_POOL_ADVERTISE_HOST})"
+_llm_hint=""
+if [[ -n "${CLAW_BOOTSTRAP_LLM_API_KEY:-${OPENAI_API_KEY:-}}" ]]; then
+  _llm_hint=" llm=bootstrap"
+fi
+echo "==> wrote ${ENV_FILE} (profile=${profile} cluster=${CLAW_CLUSTER_ID} pool=${pool_id} host=${CLAW_POOL_ADVERTISE_HOST}${_llm_hint})"
