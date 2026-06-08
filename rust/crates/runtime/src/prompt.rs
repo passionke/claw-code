@@ -217,6 +217,8 @@ pub struct SystemPromptBuilder {
     config: Option<RuntimeConfig>,
     /// When set, replaces hardcoded intro/system/doing-tasks/actions blocks.
     builtin_scaffold_override: Option<String>,
+    /// Display name for `# Environment context` → `Model family` (gateway active LLM / solve model).
+    model_family: Option<String>,
 }
 
 impl SystemPromptBuilder {
@@ -260,6 +262,12 @@ impl SystemPromptBuilder {
     #[must_use]
     pub fn with_builtin_scaffold_override(mut self, text: Option<String>) -> Self {
         self.builtin_scaffold_override = text.filter(|s| !s.trim().is_empty());
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_family(mut self, model_family: Option<String>) -> Self {
+        self.model_family = model_family.filter(|s| !s.trim().is_empty());
         self
     }
 
@@ -330,9 +338,11 @@ impl SystemPromptBuilder {
             || "unknown".to_string(),
             |context| context.current_date.clone(),
         );
+        let model_family =
+            resolve_model_family_for_prompt(self.model_family.as_deref(), self.config.as_ref());
         let mut lines = vec!["# Environment context".to_string()];
         lines.extend(prepend_bullets(vec![
-            format!("Model family: {FRONTIER_MODEL_NAME}"),
+            format!("Model family: {model_family}"),
             format!("Working directory: {cwd}"),
             format!("Date: {date}"),
             format!(
@@ -740,12 +750,36 @@ fn discover_project_context_for_prompt(
     Ok(project_context)
 }
 
+/// Resolve `Model family` for `# Environment context` (explicit → `CLAW_DEFAULT_MODEL` → project model → default).
+#[must_use]
+pub fn resolve_model_family_for_prompt(
+    explicit: Option<&str>,
+    config: Option<&RuntimeConfig>,
+) -> String {
+    if let Some(model) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
+        return model.to_string();
+    }
+    if let Ok(raw) = std::env::var("CLAW_DEFAULT_MODEL") {
+        let model = raw.trim();
+        if !model.is_empty() {
+            return model.to_string();
+        }
+    }
+    if let Some(config) = config {
+        if let Some(model) = config.model().map(str::trim).filter(|s| !s.is_empty()) {
+            return model.to_string();
+        }
+    }
+    FRONTIER_MODEL_NAME.to_string()
+}
+
 /// Loads config and project context, then renders the system prompt text.
 pub fn load_system_prompt(
     cwd: impl Into<PathBuf>,
     current_date: impl Into<String>,
     os_name: impl Into<String>,
     os_version: impl Into<String>,
+    model_family: Option<String>,
     extra_session: Option<Value>,
 ) -> Result<Vec<String>, PromptBuildError> {
     let session_work_dir = cwd.into();
@@ -762,6 +796,7 @@ pub fn load_system_prompt(
         .with_project_context(project_context)
         .with_runtime_config(config)
         .with_builtin_scaffold_override(scaffold_override)
+        .with_model_family(model_family)
         .build())
 }
 
@@ -1268,7 +1303,7 @@ mod tests {
         std::env::set_var("HOME", &root);
         std::env::set_var("CLAW_CONFIG_HOME", root.join("missing-home"));
         std::env::set_current_dir(&root).expect("change cwd");
-        let prompt = super::load_system_prompt(&root, "2026-03-31", "linux", "6.8", None)
+        let prompt = super::load_system_prompt(&root, "2026-03-31", "linux", "6.8", None, None)
             .expect("system prompt should load")
             .join(
                 "
@@ -1382,9 +1417,10 @@ mod tests {
         )
         .expect("scaffold");
         let _pcr = crate::ScopedEnvVar::set("CLAW_PROJECT_CONFIG_ROOT", &ds_root);
-        let prompt = super::load_system_prompt(&session_home, "2026-06-06", "linux", "6.8", None)
-            .expect("load prompt")
-            .join("\n\n");
+        let prompt =
+            super::load_system_prompt(&session_home, "2026-06-06", "linux", "6.8", None, None)
+                .expect("load prompt")
+                .join("\n\n");
         assert!(prompt.contains("pool ds scaffold"));
         fs::remove_dir_all(ds_root).expect("cleanup ds");
         fs::remove_dir_all(work_root).expect("cleanup work");
@@ -1399,7 +1435,7 @@ mod tests {
         fs::write(root.join("CLAUDE.md"), "project claude body").expect("write claude");
         fs::write(root.join(".cursor/rules/lang.mdc"), "use user language").expect("write rule");
 
-        let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None)
+        let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None, None)
             .expect("load prompt")
             .join("\n\n");
         let claude_idx = prompt
@@ -1427,6 +1463,7 @@ mod tests {
             "2026-06-02",
             "linux",
             "6.8",
+            None,
             Some(json!({ "store_id": "S9", "org_id": "" })),
         )
         .expect("load prompt")
@@ -1484,6 +1521,7 @@ mod tests {
             "2026-06-06",
             "linux",
             "6.8",
+            None,
             Some(json!({ "store_id": "S1", "org_id": "" })),
         )
         .expect("load prompt")
@@ -1532,7 +1570,7 @@ mod tests {
         .expect("legacy file");
         fs::write(root.join("CLAUDE.md"), "from claude md file").expect("claude");
 
-        let prompt = super::load_system_prompt(&root, "2026-06-06", "linux", "6.8", None)
+        let prompt = super::load_system_prompt(&root, "2026-06-06", "linux", "6.8", None, None)
             .expect("load prompt")
             .join("\n\n");
         assert!(prompt.contains("# Claude instructions"));
@@ -1561,7 +1599,7 @@ mod tests {
         .expect("write settings");
         fs::write(root.join("CLAUDE.md"), "project claude body").expect("write claude");
 
-        let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None)
+        let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None, None)
             .expect("load prompt")
             .join("\n\n");
         assert!(
@@ -1589,7 +1627,7 @@ mod tests {
         .expect("write settings");
         fs::write(root.join("CLAUDE.md"), "project claude body").expect("write claude");
 
-        let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None)
+        let prompt = super::load_system_prompt(&root, "2026-06-02", "linux", "6.8", None, None)
             .expect("load prompt")
             .join("\n\n");
         let scaffold_idx = prompt.find("db builtin scaffold").expect("scaffold text");
@@ -1726,6 +1764,46 @@ mod tests {
         assert!(rendered.contains("# Claude instructions"));
         assert!(rendered.contains("scope: /tmp/project"));
         assert!(rendered.contains("Project rules"));
+    }
+
+    #[test]
+    fn environment_context_model_family_defaults_to_frontier_name() {
+        let rendered = SystemPromptBuilder::new().render();
+        assert!(rendered.contains(&format!("Model family: {}", super::FRONTIER_MODEL_NAME)));
+    }
+
+    #[test]
+    fn environment_context_model_family_honors_explicit_override() {
+        let rendered = SystemPromptBuilder::new()
+            .with_model_family(Some("openai/qwen3-max".to_string()))
+            .render();
+        assert!(rendered.contains("Model family: openai/qwen3-max"));
+        assert!(!rendered.contains(&format!("Model family: {}", super::FRONTIER_MODEL_NAME)));
+    }
+
+    #[test]
+    fn resolve_model_family_prefers_explicit_over_env() {
+        let _guard = env_lock();
+        std::env::set_var("CLAW_DEFAULT_MODEL", "from-env");
+        assert_eq!(
+            super::resolve_model_family_for_prompt(Some("from-explicit"), None),
+            "from-explicit"
+        );
+        std::env::remove_var("CLAW_DEFAULT_MODEL");
+    }
+
+    #[test]
+    fn load_system_prompt_model_family_from_env_when_unset() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        std::env::set_var("CLAW_DEFAULT_MODEL", "pg-active-model-v1");
+        let prompt = super::load_system_prompt(&root, "2026-06-08", "linux", "6.8", None, None)
+            .expect("load prompt")
+            .join("\n\n");
+        assert!(prompt.contains("Model family: pg-active-model-v1"));
+        std::env::remove_var("CLAW_DEFAULT_MODEL");
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

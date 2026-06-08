@@ -7,6 +7,8 @@ PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 ENV_FILE="${REPO_ROOT}/.env"
 RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"
+STRICT_RPC_DIR="${RPC_DIR}/strict"
+RELAXED_RPC_DIR="${RPC_DIR}/relaxed"
 STAMP_FILE="${PODMAN_DIR}/.claw-build-stamp.env"
 
 fail() {
@@ -97,17 +99,51 @@ if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); s
 fi
 ok "pool daemon binary contains registry + turn-assignment strings"
 
-claw_assert_host_pool_http_ready "${RPC_DIR}" || fail "host pool HTTP not ready on 127.0.0.1"
-claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" \
-  || fail "gateway container cannot reach pool HTTP — run gateway.sh up; see .claw-pool-rpc/daemon.log"
+claw_verify_pool_profile() {
+  local profile="$1" rpc_dir="$2" pool_id="$3" http_port="$4"
+  export CLAW_POOL_HTTP_PORT="${http_port}"
+  export CLAW_POOL_ID="${pool_id}"
+  echo "==> pool verify [${profile}] pool_id=${pool_id} HTTP :${http_port}"
+  [[ -d "${rpc_dir}" ]] || fail "missing ${rpc_dir} — run gateway.sh pool-up"
+  claw_assert_host_pool_http_ready "${rpc_dir}" || fail "host ${profile} pool HTTP not ready on 127.0.0.1:${http_port}"
+  [[ -f "${rpc_dir}/pool-registry.env" ]] || fail "missing ${rpc_dir}/pool-registry.env"
+  LOG="${rpc_dir}/daemon.log"
+  [[ -f "${LOG}" ]] || fail "missing ${LOG}"
+  if tail -200 "${LOG}" | grep -q "claw_pool registry disabled"; then
+    tail -30 "${LOG}" >&2
+    fail "${profile} pool registry disabled in daemon.log"
+  fi
+  if ! tail -200 "${LOG}" | grep -q "claw_pool registered"; then
+    tail -30 "${LOG}" >&2
+    fail "no claw_pool registered in ${profile} daemon.log"
+  fi
+  ok "${profile} daemon.log shows claw_pool registered"
+  row_pool_id="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${pool_id}' LIMIT 1;")"
+  [[ "${row_pool_id}" == "${pool_id}" ]] || fail "claw_pool has no row for ${profile} pool_id=${pool_id}"
+  hb="$(psql_q "SELECT (EXTRACT(EPOCH FROM NOW())*1000 - last_heartbeat_ms) < 120000 FROM claw_pool WHERE pool_id='${pool_id}';")"
+  [[ "${hb}" == "t" ]] || fail "claw_pool heartbeat stale (>120s) for ${pool_id}"
+  ok "claw_pool row ${pool_id} heartbeat fresh"
+  claw_assert_host_pool_rpc_ready "${rpc_dir}" || fail "${profile} pool RPC died during verify"
+}
 
-echo "==> [3/6] pool-registry.env"
-[[ -f "${RPC_DIR}/pool-registry.env" ]] || fail "missing pool-registry.env — up.sh must run claw_export_pool_registry_env"
-# shellcheck disable=SC1090
-source "${RPC_DIR}/pool-registry.env"
-[[ -n "${CLAW_POOL_ID:-}" ]] || fail "CLAW_POOL_ID empty in pool-registry.env"
-[[ -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]] || fail "CLAW_POOL_ADVERTISE_HOST empty"
-ok "pool-registry.env pool_id=${CLAW_POOL_ID} advertise=${CLAW_POOL_ADVERTISE_HOST}"
+if [[ -f "${RPC_DIR}/gateway.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${RPC_DIR}/gateway.env"
+  set +a
+fi
+_base_pool_id="$(claw_default_pool_id)"
+STRICT_POOL_ID="${CLAW_STRICT_POOL_ID:-${_base_pool_id}-strict}"
+RELAXED_POOL_ID="${CLAW_RELAXED_POOL_ID:-${_base_pool_id}-relaxed}"
+STRICT_HTTP_PORT="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
+RELAXED_HTTP_PORT="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
+
+claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" \
+  || fail "gateway container cannot reach strict pool HTTP — run gateway.sh up"
+
+echo "==> [3/6] dual pool registry (strict + relaxed)"
+claw_verify_pool_profile strict "${STRICT_RPC_DIR}" "${STRICT_POOL_ID}" "${STRICT_HTTP_PORT}"
+claw_verify_pool_profile relaxed "${RELAXED_RPC_DIR}" "${RELAXED_POOL_ID}" "${RELAXED_HTTP_PORT}"
 
 echo "==> [4/6] pool daemon DB URL (host must not use compose hostname postgres)"
 pool_db_url="$(claw_pool_daemon_database_url)" || fail "CLAW_GATEWAY_DATABASE_URL unset"
@@ -118,34 +154,24 @@ case "${pool_db_url}" in
 esac
 ok "host pool DB URL uses reachable host (${pool_db_url%%@*}@…)"
 
-echo "==> [5/6] pool registry log — claw_pool registered"
-LOG="${RPC_DIR}/daemon.log"
-[[ -f "${LOG}" ]] || fail "missing ${LOG}"
-if tail -200 "${LOG}" | grep -q "claw_pool registry disabled"; then
-  tail -30 "${LOG}" >&2
-  fail "pool registry disabled in daemon.log (often postgres hostname from host)"
-fi
-if ! tail -200 "${LOG}" | grep -q "claw_pool registered"; then
-  tail -30 "${LOG}" >&2
-  fail "no 'claw_pool registered' in recent daemon.log"
-fi
-ok "host daemon.log shows claw_pool registered"
+echo "==> [5/6] claw_pool table has both profiles"
+pool_rows="$(psql_q "SELECT count(*)::text FROM claw_pool WHERE pool_id IN ('${STRICT_POOL_ID}','${RELAXED_POOL_ID}');")"
+[[ "${pool_rows}" -ge 2 ]] || fail "claw_pool expected 2 rows (strict+relaxed), got ${pool_rows}"
+ok "claw_pool has strict + relaxed rows"
 
-echo "==> [6/6] claw_pool row + heartbeat"
-pool_rows="$(psql_q "SELECT count(*)::text FROM claw_pool;")"
-[[ "${pool_rows}" -ge 1 ]] || fail "claw_pool empty — registry did not persist"
-row_pool_id="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${CLAW_POOL_ID}' LIMIT 1;")"
-[[ "${row_pool_id}" == "${CLAW_POOL_ID}" ]] || fail "claw_pool has no row for CLAW_POOL_ID=${CLAW_POOL_ID}"
-hb="$(psql_q "SELECT (EXTRACT(EPOCH FROM NOW())*1000 - last_heartbeat_ms) < 120000 FROM claw_pool WHERE pool_id='${CLAW_POOL_ID}';")"
-[[ "${hb}" == "t" ]] || fail "claw_pool heartbeat stale (>120s) for ${CLAW_POOL_ID}"
-ok "claw_pool row ${CLAW_POOL_ID} heartbeat fresh"
+echo "==> [6/6] gateway.env dual pool RPC bases"
+[[ -f "${RPC_DIR}/gateway.env" ]] || fail "missing gateway.env"
+grep -q '^CLAW_STRICT_POOL_HTTP_BASE=' "${RPC_DIR}/gateway.env" \
+  || fail "gateway.env missing CLAW_STRICT_POOL_HTTP_BASE"
+grep -q '^CLAW_RELAXED_POOL_HTTP_BASE=' "${RPC_DIR}/gateway.env" \
+  || fail "gateway.env missing CLAW_RELAXED_POOL_HTTP_BASE"
+ok "gateway.env lists strict + relaxed pool HTTP bases"
 
 if [[ -f "${STAMP_FILE}" ]]; then
   echo "--- build stamp ---"
   cat "${STAMP_FILE}"
 fi
 
-claw_assert_host_pool_rpc_ready "${RPC_DIR}" || fail "host pool RPC died during verify — run gateway.sh up"
-ok "host pool RPC still ready after verify"
+ok "dual pool verify complete"
 
 echo "==> claw-stack-verify: all checks passed"

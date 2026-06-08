@@ -56,9 +56,9 @@ Author: kejiqing
 
 实现脚本在 **`deploy/stack/lib/`**（`pack-deploy.sh`、`build.sh`、`solve-once-local.sh` 等）。**不要**用 `build --in-container`（镜像内 cargo，慢且易超时）。`scripts/local-pack-deploy.sh` 等仅为兼容，转调 `gateway.sh`。
 
-其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh` 一次串联**：先 **`Containerfile.gateway-rs`**（`http-gateway-rs` + 宿主机用的 **`claw-pool-daemon`**），再 **`Containerfile.gateway-worker`**（池内 **`claw`**），共用同一套 **`rust/`** 与 base / rustup build-arg，避免「网关新、worker 旧」。
+其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh` 一次串联**：先 **`Containerfile.gateway-rs`**（`http-gateway-rs` + 宿主机用的 **`claw-pool-daemon`**），再 **`Containerfile.gateway-worker`**（strict 池 **`claw`**）与 **`Containerfile.gateway-worker-relaxed`**（relaxed 池 + `curl`/`python3`），共用同一套 **`rust/`** 与 base / rustup build-arg，避免「网关新、worker 旧」。
 
-**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，镜像推到 **`ghcr.io/<owner>/claw-code`**、**`claw-gateway-worker`**、**`claw-gateway-playground`**（**同一 tag**；playground 镜像内 **CI 多阶段构建** `gateway-admin`，含 `dist/assets/*.js`）。服务器 **`./deploy/stack/gateway.sh up --release release-vX.Y.Z`** 会写 **`deploy/stack/.claw-image-release.env`**（含 **`GATEWAY_PLAYGROUND_IMAGE`**），**不要**在服务器跑 **`build`** / **`admin-build`** / **`admin-reload`**（无需 Node/npm）。**`/admin` 白屏**多为旧 playground 镜像缺 JS：拉 **含本修复之后** 的 release tag 并 `up --release` 重建 `gateway-playground`。**`./deploy/stack/gateway.sh up`** 用同一 **`GATEWAY_IMAGE`** 起 compose 服务 **`claw-pool-daemon`**（挂容器引擎 socket + 工作区宿主机路径），**不再**向宿主机 `install` 二进制。横向扩容：每台机器 **`up --release <tag>` + 根目录 `.env`** 即可。校验/发布镜像见 [`claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)（GHCR）与 [`claw-code-acr.yaml`](../../.github/workflows/claw-code-acr.yaml)（ACR）。
+**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，镜像推到 **`ghcr.io/<owner>/claw-code`**、**`claw-gateway-worker`**、**`claw-gateway-worker-relaxed`**、**`claw-gateway-playground`**（**同一 tag**；relaxed 在 strict worker 构建完成后 **FROM strict 镜像** 追加工具层；playground 镜像内 **CI 多阶段构建** `gateway-admin`，含 `dist/assets/*.js`）。服务器 **`./deploy/stack/gateway.sh up --release release-vX.Y.Z`** 会写 **`deploy/stack/.claw-image-release.env`**（含 **`GATEWAY_PLAYGROUND_IMAGE`**、**`CLAW_RELAXED_PODMAN_IMAGE`**），**不要**在服务器跑 **`build`** / **`admin-build`** / **`admin-reload`**（无需 Node/npm）。**`/admin` 白屏**多为旧 playground 镜像缺 JS：拉 **含本修复之后** 的 release tag 并 `up --release` 重建 `gateway-playground`。**`./deploy/stack/gateway.sh up`** 用同一 **`GATEWAY_IMAGE`** 起 compose 服务 **`claw-pool-daemon`**（挂容器引擎 socket + 工作区宿主机路径），**不再**向宿主机 `install` 二进制。横向扩容：每台机器 **`up --release <tag>` + 根目录 `.env`** 即可。校验/发布镜像见 [`claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)（GHCR）与 [`claw-code-acr.yaml`](../../.github/workflows/claw-code-acr.yaml)（ACR）。
 
 **镜像仓库默认（国内）**：未设置 **`CLAW_IMAGE_PREFIX`** / **`CLAW_GHCR_PREFIX`** 且 **`GATEWAY_IMAGE`** 不含 `…/claw-code` 时，`./deploy/stack/gateway.sh up --release …` 默认从 **阿里云个人版 ACR**（`crpi-….personal.cr.aliyuncs.com/passionke`，可由 **`CLAW_ACR_IMAGE_PREFIX`** 覆盖）拼接镜像名；若要改用 GHCR，在根目录 **`.env`** 设 **`CLAW_IMAGE_REGISTRY=ghcr`**（默认前缀 **`ghcr.io/passionke`**，可由 **`CLAW_GHCR_DEFAULT_PREFIX`** 覆盖）。仍可直接设 **`CLAW_IMAGE_PREFIX=…`**（不要 `https://`），优先级最高。
 
@@ -108,7 +108,7 @@ cp deploy/stack/env.production.example .env
 | `CLAUDE_TAP_MODE` | 本地建议 **`source`**（`../claude-tap` 可编辑安装）；**`native`/PyPI 0.0.7** 的 hash 算法与网关不一致会报 `clusterHash mismatch` |
 | Admin → 全局推理（PG） | **clawTap** 端点、活跃 LLM 模型/API Key；solve 时 gateway 经 pool `Exec -e` 注入 worker（`OPENAI_BASE_URL` = clawTap） |
 | `CLAW_LLM_PROXY` / `CLAW_TAP_PROXY_URL` | 仅影响本机 **tap 侧车** 或 compose 里 tap 容器地址；**不**再决定 worker 是否绕过 clawTap |
-| `gateway.sh up --release <tag>` | `GATEWAY_IMAGE` 与 **`CLAW_DOCKER_IMAGE`** 同 tag（`claw-code`→`claw-gateway-worker`）；勿在根 `.env` 写死 `:local` worker |
+| `gateway.sh up --release <tag>` | `GATEWAY_IMAGE` 与 **`CLAW_DOCKER_IMAGE`** 同 tag（`claw-code`→`claw-gateway-worker`）；**`CLAW_RELAXED_PODMAN_IMAGE`** 同 tag（`→claw-gateway-worker-relaxed`）；勿在根 `.env` 写死 `:local` worker |
 | `GATEWAY_HOST_PORT` | 宿主机端口，默认 `8088` |
 | `GATEWAY_PLAYGROUND_HOST_PORT` | solve_async / 项目管理 UI，默认 `18765`（compose 服务 `gateway-playground`） |
 | `PLAYGROUND_PUBLIC_GATEWAY_BASE` | 浏览器里 playground 默认网关，应与 `GATEWAY_HOST_PORT` 一致，如 `http://127.0.0.1:8088` |
@@ -211,7 +211,7 @@ podman ps   # 或  docker ps
 | solve 报 `session workspace ownership…` | **② Gateway cache**（`claw-workspace/ds_*/sessions/…`）uid 对齐；pool v1 **不 bind** session 进 worker，制品在 **PostgreSQL** |
 | 启动报 canonicalize `/Users/...` | 容器内不能拿 macOS 路径当 `CLAW_POOL_WORK_ROOT_HOST`；用 **`./deploy/stack/gateway.sh up`** 生成 env（`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`） |
 | 改 `.env` 不生效 | 必须用 **`./deploy/stack/gateway.sh up`**（带 `--force-recreate`），不要指望无重建的 `up` |
-| 改了 `rust/` 里 worker（`claw`）或网关逻辑，solve 仍像旧的 | **`./deploy/stack/gateway.sh build`** 会**同时**重建 **`claw-gateway-rs`** 与 **`claw-gateway-worker`**；只 `up` 不 `build` 会继续用旧镜像 |
+| 改了 `rust/` 里 worker（`claw`）或网关逻辑，solve 仍像旧的 | **`./deploy/stack/gateway.sh build`** 会**同时**重建 **`claw-gateway-rs`**、**`claw-gateway-worker`**（strict）与 **`claw-gateway-worker-relaxed`**；只 `up` 不 `build` 会继续用旧镜像 |
 | `http://localhost:3000/?session=…` 没有预期内容 | 见上文 **Live Viewer**：stock tap **不解析** `session` query；且须有经 **tap 代理端口**（`CLAUDE_TAP_PORT`，默认 8080）的 **OpenAI 兼容 API** 流量写入当前 `trace_*.jsonl` 后 Live 才有数据；仅打网关 **`/healthz`** 不会进 tap trace |
 | 续聊第 2 轮长期 **处理中** / pool `acquire_prepare_failed` | 多为 **PG workspace tar 解压**失败（macOS podman tmpfs utime/chmod）；查 `deploy/stack/.claw-pool-rpc/daemon.log`；续聊冒烟：`./tests/http-gateway-session-workspace-rebuild-e2e.sh` |
 | turn1 `running` 时 turn2 应 **409** | PG `inflight` 闸门；冒烟：`./tests/http-gateway-session-inflight-e2e.sh` |

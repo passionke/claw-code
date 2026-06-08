@@ -1,4 +1,4 @@
-//! Admin chat translation via active gateway LLM. Author: kejiqing
+//! Admin chat translation via active gateway LLM + PG snapshot cache. Author: kejiqing
 
 use api::{
     max_tokens_for_model, InputContentBlock, InputMessage, MessageRequest, OpenAiCompatConfig,
@@ -6,6 +6,7 @@ use api::{
 };
 use axum::http::StatusCode;
 use axum::Json;
+use serde_json::Value;
 
 use crate::claw_tap_cluster_state::active_llm_upstream;
 use crate::gateway_global_settings;
@@ -151,6 +152,178 @@ pub async fn post_gateway_translate_handler(
     let translated = translate_text_with_active_llm(db, &body.text, &body.target_language).await?;
     Ok(Json(GatewayTranslateResponse {
         translated_text: translated,
+    }))
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ConversationTranslateTurnJson {
+    pub index: i32,
+    #[serde(rename = "turnId")]
+    pub turn_id: String,
+    #[serde(rename = "userText")]
+    pub user_text: String,
+    #[serde(rename = "assistantText")]
+    pub assistant_text: String,
+    #[serde(rename = "userTextZh")]
+    pub user_text_zh: String,
+    #[serde(rename = "assistantTextZh")]
+    pub assistant_text_zh: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ConversationTranslateSnapshotJson {
+    #[serde(rename = "sourceFingerprint")]
+    pub source_fingerprint: String,
+    pub turns: Vec<ConversationTranslateTurnJson>,
+    pub markdown: String,
+    #[serde(rename = "targetLanguage")]
+    pub target_language: String,
+    #[serde(rename = "modelId", skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(rename = "updatedAtMs")]
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct GetConversationTranslateResponse {
+    pub snapshot: Option<ConversationTranslateSnapshotJson>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PutConversationTranslateRequest {
+    #[serde(rename = "sourceFingerprint")]
+    pub source_fingerprint: String,
+    pub turns: Vec<ConversationTranslateTurnJson>,
+    pub markdown: String,
+    #[serde(default = "default_target_language")]
+    #[serde(rename = "targetLanguage")]
+    pub target_language: String,
+    #[serde(rename = "modelId")]
+    pub model_id: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct PutConversationTranslateResponse {
+    pub ok: bool,
+    #[serde(rename = "updatedAtMs")]
+    pub updated_at_ms: i64,
+}
+
+fn snapshot_turns_from_json(value: &Value) -> Result<Vec<ConversationTranslateTurnJson>, String> {
+    let turns: Vec<ConversationTranslateTurnJson> =
+        serde_json::from_value(value.clone()).map_err(|e| format!("invalid turns_json: {e}"))?;
+    Ok(turns)
+}
+
+pub async fn get_conversation_translate_handler(
+    db: &GatewaySessionDb,
+    session_id: &str,
+    ds_id: i64,
+) -> Result<Json<GetConversationTranslateResponse>, GatewayTranslateApiError> {
+    if ds_id < 1 {
+        return Err(GatewayTranslateApiError::new(
+            StatusCode::BAD_REQUEST,
+            "dsId must be >= 1",
+        ));
+    }
+    let exists = db.session_exists(session_id, ds_id).await.map_err(|e| {
+        GatewayTranslateApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+    if !exists {
+        return Err(GatewayTranslateApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("session not found: {session_id} dsId={ds_id}"),
+        ));
+    }
+    let row = db
+        .get_conversation_translate_snapshot(session_id, ds_id)
+        .await
+        .map_err(|e| {
+            GatewayTranslateApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })?;
+    let Some(row) = row else {
+        return Ok(Json(GetConversationTranslateResponse { snapshot: None }));
+    };
+    let turns = snapshot_turns_from_json(&row.turns_json)
+        .map_err(|e| GatewayTranslateApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(GetConversationTranslateResponse {
+        snapshot: Some(ConversationTranslateSnapshotJson {
+            source_fingerprint: row.source_fingerprint,
+            turns,
+            markdown: row.markdown,
+            target_language: row.target_language,
+            model_id: row.model_id,
+            updated_at_ms: row.updated_at_ms,
+        }),
+    }))
+}
+
+pub async fn put_conversation_translate_handler(
+    db: &GatewaySessionDb,
+    session_id: &str,
+    ds_id: i64,
+    body: PutConversationTranslateRequest,
+) -> Result<Json<PutConversationTranslateResponse>, GatewayTranslateApiError> {
+    if ds_id < 1 {
+        return Err(GatewayTranslateApiError::new(
+            StatusCode::BAD_REQUEST,
+            "dsId must be >= 1",
+        ));
+    }
+    let fingerprint = body.source_fingerprint.trim();
+    if fingerprint.is_empty() {
+        return Err(GatewayTranslateApiError::new(
+            StatusCode::BAD_REQUEST,
+            "sourceFingerprint must be non-empty",
+        ));
+    }
+    if body.turns.is_empty() {
+        return Err(GatewayTranslateApiError::new(
+            StatusCode::BAD_REQUEST,
+            "turns must be non-empty",
+        ));
+    }
+    let markdown = body.markdown.trim();
+    if markdown.is_empty() {
+        return Err(GatewayTranslateApiError::new(
+            StatusCode::BAD_REQUEST,
+            "markdown must be non-empty",
+        ));
+    }
+    let exists = db.session_exists(session_id, ds_id).await.map_err(|e| {
+        GatewayTranslateApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+    if !exists {
+        return Err(GatewayTranslateApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("session not found: {session_id} dsId={ds_id}"),
+        ));
+    }
+    let turns_json = serde_json::to_value(&body.turns).map_err(|e| {
+        GatewayTranslateApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("turns serialization failed: {e}"),
+        )
+    })?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    db.upsert_conversation_translate_snapshot(
+        session_id,
+        ds_id,
+        fingerprint,
+        &turns_json,
+        markdown,
+        body.target_language.trim(),
+        body.model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+        now_ms,
+    )
+    .await
+    .map_err(|e| GatewayTranslateApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(PutConversationTranslateResponse {
+        ok: true,
+        updated_at_ms: now_ms,
     }))
 }
 

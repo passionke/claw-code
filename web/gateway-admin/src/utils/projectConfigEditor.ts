@@ -30,13 +30,12 @@ export function mergeSkillIntoJson(
   return [...others, item].sort((a, b) => a.skillName.localeCompare(b.skillName));
 }
 
-/** CLAUDE.md body for editors: draft or DB override from config row; no disk. */
+/** CLAUDE.md body for Admin editor: always from project_config (draft or formal), never disk. */
 export function claudeMdFromConfig(cfg: ProjectConfig): string {
-  if (cfg.draftOpen) return cfg.claudeMd ?? "";
-  if (cfg.claudeMd != null && cfg.claudeMd.trim() !== "") return cfg.claudeMd;
-  return "";
+  return cfg.claudeMd ?? "";
 }
 
-export function shouldFetchClaudeFromDisk(cfg: ProjectConfig): boolean {
-  return !cfg.draftOpen && claudeMdFromConfig(cfg) === "";
+/** Normalize editor text for draft PUT: empty / whitespace-only clears the DB override. */
+export function normalizeClaudeMdForSave(text: string): string | null {
+  return text.trim() === "" ? null : text;
 }

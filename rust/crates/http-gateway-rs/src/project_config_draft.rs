@@ -33,6 +33,7 @@ pub struct ProjectConfigSidecars {
     pub solve_orchestration_json: Value,
     pub extra_session_fields_json: Value,
     pub prompt_limits_json: Value,
+    pub worker_isolation_json: Value,
 }
 
 impl ProjectConfigSidecars {
@@ -44,6 +45,7 @@ impl ProjectConfigSidecars {
             solve_orchestration_json: row.solve_orchestration_json.clone(),
             extra_session_fields_json: row.extra_session_fields_json.clone(),
             prompt_limits_json: row.prompt_limits_json.clone(),
+            worker_isolation_json: row.worker_isolation_json.clone(),
         }
     }
 }
@@ -215,6 +217,7 @@ pub fn config_row_from_revision(
         solve_orchestration_json: sidecars.solve_orchestration_json,
         extra_session_fields_json: sidecars.extra_session_fields_json,
         prompt_limits_json: sidecars.prompt_limits_json,
+        worker_isolation_json: sidecars.worker_isolation_json,
     }
 }
 
@@ -243,6 +246,7 @@ pub fn upsert_from_row<'a>(
         solve_orchestration_json: &row.solve_orchestration_json,
         extra_session_fields_json: &row.extra_session_fields_json,
         prompt_limits_json: &row.prompt_limits_json,
+        worker_isolation_json: &row.worker_isolation_json,
     }
 }
 
@@ -338,6 +342,7 @@ pub async fn ensure_draft(
         solve_orchestration_json: &row.solve_orchestration_json,
         extra_session_fields_json: &row.extra_session_fields_json,
         prompt_limits_json: &row.prompt_limits_json,
+        worker_isolation_json: &row.worker_isolation_json,
     };
     db.upsert_project_config(upsert).await?;
     db.get_project_config(ds_id).await?.ok_or_else(|| {

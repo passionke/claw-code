@@ -3,7 +3,12 @@
 set -euo pipefail
 
 claw_pool_launchd_label() {
-  printf '%s' "com.claw.pool-daemon"
+  local profile="${1:-}"
+  if [[ -n "${profile}" ]]; then
+    printf '%s' "com.claw.pool-daemon.${profile}"
+  else
+    printf '%s' "com.claw.pool-daemon"
+  fi
 }
 
 claw_pool_launchd_domain() {
@@ -12,14 +17,20 @@ claw_pool_launchd_domain() {
 
 claw_pool_launchd_plist_path() {
   local rpc_dir="$1"
-  printf '%s/com.claw.pool-daemon.plist' "${rpc_dir}"
+  local profile="${2:-}"
+  if [[ -n "${profile}" ]]; then
+    printf '%s/com.claw.pool-daemon.%s.plist' "${rpc_dir}" "${profile}"
+  else
+    printf '%s/com.claw.pool-daemon.plist' "${rpc_dir}"
+  fi
 }
 
 # Write LaunchAgent plist; pool-daemon-run.sh loads pool-daemon.env. kejiqing
 claw_pool_write_launchd_plist() {
-  local rpc_dir="$1" run_sh="$2" log="$3"
-  local plist path_val
-  plist="$(claw_pool_launchd_plist_path "${rpc_dir}")"
+  local rpc_dir="$1" run_sh="$2" log="$3" profile="${4:-}"
+  local plist path_val label
+  plist="$(claw_pool_launchd_plist_path "${rpc_dir}" "${profile}")"
+  label="$(claw_pool_launchd_label "${profile}")"
   # launchd does not inherit shell PATH; podman lives under Homebrew on macOS arm64. kejiqing
   path_val="${PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin}"
   cat >"${plist}" <<EOF
@@ -28,7 +39,7 @@ claw_pool_write_launchd_plist() {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>$(claw_pool_launchd_label)</string>
+  <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
     <string>${run_sh}</string>
@@ -58,19 +69,24 @@ EOF
 }
 
 claw_pool_launchd_bootout() {
+  local profile="${1:-}"
   local domain label
   domain="$(claw_pool_launchd_domain)"
-  label="$(claw_pool_launchd_label)"
+  label="$(claw_pool_launchd_label "${profile}")"
   launchctl bootout "${domain}/${label}" 2>/dev/null || true
+  if [[ -z "${profile}" ]]; then
+    claw_pool_launchd_bootout strict
+    claw_pool_launchd_bootout relaxed
+  fi
 }
 
 claw_pool_launchd_bootstrap() {
-  local rpc_dir="$1" run_sh="$2" log="$3"
+  local rpc_dir="$1" run_sh="$2" log="$3" profile="${4:-}"
   local plist domain
-  plist="$(claw_pool_launchd_plist_path "${rpc_dir}")"
+  plist="$(claw_pool_launchd_plist_path "${rpc_dir}" "${profile}")"
   domain="$(claw_pool_launchd_domain)"
-  claw_pool_write_launchd_plist "${rpc_dir}" "${run_sh}" "${log}"
-  claw_pool_launchd_bootout
+  claw_pool_write_launchd_plist "${rpc_dir}" "${run_sh}" "${log}" "${profile}"
+  claw_pool_launchd_bootout "${profile}"
   sleep 0.5
   launchctl bootstrap "${domain}" "${plist}"
 }

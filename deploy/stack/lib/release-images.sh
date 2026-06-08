@@ -54,8 +54,14 @@ claw_apply_release_image_tag() {
   export GATEWAY_IMAGE="${prefix}/claw-code:${tag}"
   export GATEWAY_PLAYGROUND_IMAGE="${prefix}/claw-gateway-playground:${tag}"
   case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
-    docker_pool) export CLAW_DOCKER_IMAGE="${prefix}/claw-gateway-worker:${tag}" ;;
-    *) export CLAW_PODMAN_IMAGE="${prefix}/claw-gateway-worker:${tag}" ;;
+    docker_pool)
+      export CLAW_DOCKER_IMAGE="${prefix}/claw-gateway-worker:${tag}"
+      export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-gateway-worker-relaxed:${tag}"
+      ;;
+    *)
+      export CLAW_PODMAN_IMAGE="${prefix}/claw-gateway-worker:${tag}"
+      export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-gateway-worker-relaxed:${tag}"
+      ;;
   esac
 }
 
@@ -68,10 +74,12 @@ claw_export_pool_worker_image_matched_to_gateway() {
     return 0
   fi
   local derived="${gw/claw-code/claw-gateway-worker}"
+  local derived_relaxed="${gw/claw-code/claw-gateway-worker-relaxed}"
   case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
     docker_pool) export CLAW_DOCKER_IMAGE="$derived" ;;
     podman_pool) export CLAW_PODMAN_IMAGE="$derived" ;;
   esac
+  export CLAW_RELAXED_PODMAN_IMAGE="$derived_relaxed"
 }
 
 # Compose pool sidecar reads env files from disk — last file wins; override stale CLAW_*_IMAGE in repo .env.
@@ -108,6 +116,7 @@ claw_write_pool_worker_env_override() {
       {
         printf '%s\n' '# GENERATED — do not edit. CLAW_PODMAN_IMAGE synced from GATEWAY_IMAGE. kejiqing'
         printf '%s\n' "CLAW_PODMAN_IMAGE=${CLAW_PODMAN_IMAGE}"
+        [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]] && printf '%s\n' "CLAW_RELAXED_PODMAN_IMAGE=${CLAW_RELAXED_PODMAN_IMAGE}"
       } >"${f}"
       ;;
   esac
@@ -126,6 +135,7 @@ claw_write_release_pin_env() {
       docker_pool) printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}" ;;
       *) printf '%s\n' "CLAW_PODMAN_IMAGE=${CLAW_PODMAN_IMAGE}" ;;
     esac
+    [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]] && printf '%s\n' "CLAW_RELAXED_PODMAN_IMAGE=${CLAW_RELAXED_PODMAN_IMAGE}"
   } >"${f}"
 }
 

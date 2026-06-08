@@ -1,6 +1,5 @@
 import { Button, Input, Space, Typography, message } from "antd";
 import { useCallback, useEffect, useState } from "react";
-import { proxyHttp } from "../api/client";
 import DraftEditingBanner from "../components/DraftEditingBanner";
 import EditorLengthHint from "../components/EditorLengthHint";
 import EntityVersionPanel from "../components/EntityVersionPanel";
@@ -11,14 +10,13 @@ import {
 } from "../utils/entityRevision";
 import {
   claudeMdFromConfig,
-  shouldFetchClaudeFromDisk,
+  normalizeClaudeMdForSave,
 } from "../utils/projectConfigEditor";
 
 const { TextArea } = Input;
 
 export default function ClaudePage() {
-  const { gatewayBase, dsId, projectConfig, reloadEditingConfig, saveDraftPatch } =
-    useProjectConfigEditor();
+  const { projectConfig, reloadEditingConfig, saveDraftPatch } = useProjectConfigEditor();
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -26,18 +24,8 @@ export default function ClaudePage() {
 
   const load = useCallback(async () => {
     const cfg = await reloadEditingConfig();
-    const fromConfig = claudeMdFromConfig(cfg);
-    if (!shouldFetchClaudeFromDisk(cfg)) {
-      setContent(fromConfig);
-      return;
-    }
-    const r = await proxyHttp<{ content?: string }>(
-      gatewayBase,
-      "GET",
-      `/v1/project/claude/${dsId}`
-    );
-    setContent(r.content || "");
-  }, [gatewayBase, dsId, reloadEditingConfig]);
+    setContent(claudeMdFromConfig(cfg));
+  }, [reloadEditingConfig]);
 
   useEffect(() => {
     load().catch((e) => message.error(String((e as Error).message)));
@@ -45,20 +33,13 @@ export default function ClaudePage() {
 
   useEffect(() => {
     if (!projectConfig) return;
-    if (projectConfig.draftOpen) {
-      setContent(projectConfig.claudeMd ?? "");
-      return;
-    }
-    const fromConfig = claudeMdFromConfig(projectConfig);
-    if (fromConfig !== "" || projectConfig.claudeMd != null) {
-      setContent(fromConfig);
-    }
+    setContent(claudeMdFromConfig(projectConfig));
   }, [projectConfig, projectConfig?.contentRev, projectConfig?.claudeMd, projectConfig?.draftOpen]);
 
   const save = async () => {
     setSaving(true);
     try {
-      await saveDraftPatch({ claudeMd: content });
+      await saveDraftPatch({ claudeMd: normalizeClaudeMdForSave(content) });
       message.success("CLAUDE.md 已写入项目草稿");
       setL2Refresh((n) => n + 1);
     } finally {

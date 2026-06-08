@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::gateway_global_settings;
 use crate::persistence::transcript::{import_turn_messages_to_db, now_ms, JsonlMessage};
 use crate::pool::docker_cli::{runtime_exec, runtime_exec_stdin};
+use crate::pool::worker_isolation::WorkerIsolationMode;
 use crate::project_config_apply::{self, GuestMaterializeWrite};
 use crate::project_config_draft;
 use crate::session_db::GatewaySessionDb;
@@ -49,6 +50,7 @@ pub async fn materialize_in(
     container_name: &str,
     db: &GatewaySessionDb,
     input: &MaterializeInput,
+    isolation: WorkerIsolationMode,
     worker_exec_user: &str,
 ) -> Result<(), String> {
     wipe_guest_work_root(runtime_bin, container_name, worker_exec_user).await?;
@@ -115,13 +117,15 @@ pub async fn materialize_in(
         write_file_via_exec_user(runtime_bin, container_name, worker_exec_user, &path, &bytes)
             .await?;
     }
-    exec_sh_lc_as_user(
-        runtime_bin,
-        container_name,
-        worker_exec_user,
-        project_config_apply::guest_lock_project_config_shell(),
-    )
-    .await?;
+    if isolation == WorkerIsolationMode::Strict {
+        exec_sh_lc_as_user(
+            runtime_bin,
+            container_name,
+            worker_exec_user,
+            project_config_apply::guest_lock_project_config_shell(),
+        )
+        .await?;
+    }
     Ok(())
 }
 

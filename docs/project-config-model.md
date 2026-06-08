@@ -25,6 +25,7 @@ Author: kejiqing
 | `solve_preflight_json` | `JSONB NOT NULL` | 首轮 solve 代码 preflight，如 `{"kinds":["sqlbot_mcp_start"]}`（兼容历史 `{"kind":"sqlbot_mcp_start"}`）；物化到 `home/.claw/solve-preflight.json`；默认 `{"kind":"none"}`。见 `docs/gateway-solve-preflight.md`。 |
 | `solve_orchestration_json` | `JSONB NOT NULL` | solve 编排管道，如 `{"kind":"multi_agent_analysis","queryConcurrency":6}`；物化到 `home/.claw/solve-orchestration.json`；默认 `{"kind":"single_turn"}`。见 `docs/multi-agent-analysis.md`。 |
 | `extra_session_fields_json` | `JSONB NOT NULL` | 本 ds 允许的 `extraSession` 业务字段名列表（`string[]`，如 `["store_id","org_id"]`）；solve 时要求请求体 `extraSession` 含这些 key 且值为 string（可为 `""`）；系统 key（`tenant_code`、`solution_code`、`biz_type`、`_claw_*`）可额外存在。默认 `[]` 表示不校验业务字段。 |
+| `worker_isolation_json` | `JSONB NOT NULL` | Pool worker 隔离：`{"mode":"strict"}`（默认）或 `{"mode":"relaxed"}`。sidecar，不进 `project_config_revision`；pool-daemon 在 acquire 时读，决定容器 `run` / `exec` profile（relaxed：跳过 `CLAW_SECURITY_BOOST`、root exec、无 guest_lock）。Admin：`workerIsolationJson`。 |
 
 ### `git_sync_json`（每项目单向 Git）
 

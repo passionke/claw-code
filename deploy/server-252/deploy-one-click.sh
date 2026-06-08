@@ -41,6 +41,7 @@ fi
 GHCR_OWNER="${2:-${GHCR_OWNER:-passionke}}"
 GATEWAY_IMAGE="ghcr.io/${GHCR_OWNER}/claw-code:${RELEASE_TAG}"
 WORKER_IMAGE="ghcr.io/${GHCR_OWNER}/claw-gateway-worker:${RELEASE_TAG}"
+RELAXED_WORKER_IMAGE="ghcr.io/${GHCR_OWNER}/claw-gateway-worker-relaxed:${RELEASE_TAG}"
 
 upsert_env_kv() {
   local key="$1"
@@ -80,6 +81,7 @@ PY
 echo "==> updating image lines in .env (other keys untouched)"
 upsert_env_kv "GATEWAY_IMAGE" "${GATEWAY_IMAGE}"
 upsert_env_kv "CLAW_DOCKER_IMAGE" "${WORKER_IMAGE}"
+upsert_env_kv "CLAW_RELAXED_PODMAN_IMAGE" "${RELAXED_WORKER_IMAGE}"
 if grep -q '^CLAW_PODMAN_IMAGE=' "${ENV_FILE}" 2>/dev/null; then
   upsert_env_kv "CLAW_PODMAN_IMAGE" "${WORKER_IMAGE}"
 fi
@@ -141,6 +143,7 @@ RT="$(claw_container_runtime_cli)" || die "need docker or podman in PATH"
 echo "==> pulling images (${RT})"
 "${RT}" pull "${GATEWAY_IMAGE}"
 "${RT}" pull "${WORKER_IMAGE}"
+"${RT}" pull "${RELAXED_WORKER_IMAGE}"
 set -a
 # shellcheck source=/dev/null
 source "${ENV_FILE}"

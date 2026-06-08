@@ -17,7 +17,8 @@
 #
 # Secrets: ACR_USERNAME, ACR_PASSWORD (registry login; Aliyun: use RAM fixed account or temp token per console).
 #
-# Images pushed: ${ACR_REGISTRY}/claw-code, claw-gateway-worker, claw-gateway-playground (<tags> each)
+# Images pushed: ${ACR_REGISTRY}/claw-code, claw-gateway-worker, claw-gateway-worker-relaxed,
+# claw-gateway-playground (<tags> each)
 # (<tags> = release tag, sha-12, latest).
 name: claw-code-acr
 
@@ -135,3 +136,82 @@ jobs:
           IMG="${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.release_tag }}"
           docker run --rm "${IMG}" sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
           echo "playground admin-dist ok in ${IMG}"
+
+  build-and-push-relaxed-worker-acr:
+    if: startsWith(github.ref, 'refs/tags/release-v')
+    needs: build-and-push-acr
+    runs-on: ubuntu-latest
+    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Verify ACR_REGISTRY and derive login host
+        id: reg
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ACR_REGISTRY}" ]; then
+            echo "::error::ACR_REGISTRY is empty." >&2
+            exit 1
+          fi
+          LOGIN_HOST="${ACR_REGISTRY%%/*}"
+          echo "login_host=${LOGIN_HOST}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.reg.outputs.login_host }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Image tags
+        id: meta
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
+        run: |
+          set -euo pipefail
+          STRICT_IMAGE="${PREFIX}/claw-gateway-worker"
+          RELAXED_IMAGE="${PREFIX}/claw-gateway-worker-relaxed"
+          SHA12="${GITHUB_SHA:0:12}"
+          RELEASE_TAG="${GITHUB_REF_NAME}"
+          echo "strict_image=${STRICT_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "relaxed_image=${RELAXED_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            echo "${RELAXED_IMAGE}:${RELEASE_TAG}"
+            echo "${RELAXED_IMAGE}:sha-${SHA12}"
+            echo "${RELAXED_IMAGE}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Pull strict worker base
+        run: |
+          set -euo pipefail
+          docker pull "${{ steps.meta.outputs.strict_image }}:${{ steps.meta.outputs.release_tag }}"
+
+      - name: Build and push claw-gateway-worker-relaxed
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/stack/Containerfile.gateway-worker-relaxed
+          push: true
+          build-args: |
+            WORKER_BASE_IMAGE=${{ steps.meta.outputs.strict_image }}:${{ steps.meta.outputs.release_tag }}
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Verify relaxed worker tools in image
+        run: |
+          set -euo pipefail
+          IMG="${{ steps.meta.outputs.relaxed_image }}:${{ steps.meta.outputs.release_tag }}"
+          docker run --rm --entrypoint sh "${IMG}" -c 'command -v curl && command -v python3'
+          echo "relaxed worker curl/python3 ok in ${IMG}"

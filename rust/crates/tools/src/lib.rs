@@ -3866,6 +3866,7 @@ fn build_agent_system_prompt(subagent_type: &str) -> Result<Vec<String>, String>
         std::env::consts::OS,
         "unknown",
         None,
+        None,
     )
     .map_err(|error| error.to_string())?;
     prompt.push(format!(

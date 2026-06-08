@@ -112,6 +112,9 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
       claw_release_pull_image_if_needed "${rt}" "${CLAW_PODMAN_IMAGE}"
       ;;
   esac
+  if [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]]; then
+    claw_release_pull_image_if_needed "${rt}" "${CLAW_RELAXED_PODMAN_IMAGE}"
+  fi
   if claw_stack_manages_local_claude_tap; then
     tap_img="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
     claw_release_pull_image_if_needed "${rt}" "${tap_img}"
@@ -120,7 +123,7 @@ fi
 
 # Pool + compose must not use repo .env :local worker tags when --release or sticky pin is set. kejiqing
 claw_reapply_pool_image_pins "${PODMAN_DIR}"
-echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
+echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}} (relaxed=${CLAW_RELAXED_PODMAN_IMAGE:-unset})" >&2
 export CLAW_IMAGE_RELEASE_TAG
 
 RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"

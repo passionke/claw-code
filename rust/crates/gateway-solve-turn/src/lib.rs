@@ -1244,6 +1244,7 @@ pub fn run_gateway_solve_turn(
         default_system_date(),
         std::env::consts::OS,
         "unknown",
+        Some(effective_model.clone()),
         mcp.extra_session.clone(),
     )
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;

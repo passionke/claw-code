@@ -1,0 +1,17 @@
+# Relaxed pool worker: strict base + curl/python3. Author: kejiqing
+ARG WORKER_BASE_IMAGE=claw-gateway-worker:local
+
+FROM ${WORKER_BASE_IMAGE}
+
+USER root
+COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
+ARG CLAW_USE_CN_APT_MIRROR=0
+RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+USER claw

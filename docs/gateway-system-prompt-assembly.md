@@ -31,7 +31,7 @@ Author: kejiqing
 2. `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`
 3. **`# Claude instructions`** — 自 `CLAUDE.md` / 祖先链发现（**不是** `system_prompt_user_override.md`）
 4. **`# Project rules`** — `.cursor/rules/*.mdc`
-5. **`# Environment context`**
+5. **`# Environment context`** — `Model family` 来自 PG 集群生效 LLM（`model_name`）/ solve 入参 `model` / `CLAW_DEFAULT_MODEL` / 项目 `model` 配置；均无则 `Claude Opus 4.6`
 6. **`# Project context`** — 含 `extraSession`（solve 传入时）
 7. **`# Runtime config`** — 含 `mcpServers`（来自 `.claw/settings.json`）
 
@@ -57,7 +57,7 @@ Admin「系统提示词」页与 clawTap 看到的 **不含** tool schema；缺 
 
 | 字段 | 宿主机 `ds_*` | Pool guest `/claw_host_root` |
 | --- | --- | --- |
-| `claude_md` | `home/CLAUDE.md` + 根 `CLAUDE.md` | 根 `CLAUDE.md` |
+| `claude_md` | `home/CLAUDE.md` + 根 `CLAUDE.md`；**空 / null 时 apply 删除**上述路径（避免 prompt 仍扫到旧文件） | 根 `CLAUDE.md`（空则不写入） |
 | scaffold（PG 默认） | `.claw/system_prompt_scaffold.md` | 同左 |
 | `mcp_servers_json` | `.claw/settings.json`（`apply` 后 `write_ds_settings_json`） | `materialize_in` 写入 |
 | `prompt_limits_json` | `.claw/settings.json` → `instructionFileMaxChars` / `instructionTotalMaxChars` | 同左；`{}` 时用默认 8000 / 24000 |

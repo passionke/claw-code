@@ -7,6 +7,32 @@ use crate::session_db::GatewaySessionDb;
 
 use super::live_report_hub::LiveReportHub;
 use super::worker_identity::PoolWorkerIdentity;
+use super::worker_isolation::WorkerIsolationMode;
+
+/// `CLAW_POOL_WORKER_ISOLATION` — fixed profile for this pool daemon (`strict` / `relaxed`). Author: kejiqing
+#[must_use]
+pub fn fixed_isolation_from_env() -> Option<WorkerIsolationMode> {
+    match std::env::var("CLAW_POOL_WORKER_ISOLATION") {
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "strict" => Some(WorkerIsolationMode::Strict),
+            "relaxed" => Some(WorkerIsolationMode::Relaxed),
+            _ => None,
+        },
+        Err(_) => None,
+    }
+}
+
+/// `CLAW_ALLOW_RELAXED_WORKER` — when false, all ds use strict profile. Author: kejiqing
+#[must_use]
+pub fn relaxed_worker_allowed_from_env() -> bool {
+    match std::env::var("CLAW_ALLOW_RELAXED_WORKER") {
+        Ok(v) => {
+            let t = v.trim().to_ascii_lowercase();
+            !(t == "0" || t == "false" || t == "no" || t == "off")
+        }
+        Err(_) => true,
+    }
+}
 
 /// `CLAW_SECURITY_BOOST` — default on. Author: kejiqing
 #[must_use]
@@ -38,6 +64,8 @@ pub struct DockerPoolConfig {
     pub exec_user: Option<String>,
     pub worker_identity: PoolWorkerIdentity,
     pub security_boost: bool,
+    /// When set, this daemon only runs one worker profile (dual-pool deploy). Author: kejiqing
+    pub fixed_isolation: Option<WorkerIsolationMode>,
     /// Symlink guest inject (fake-docker unit tests only; production uses bind → guest).
     pub symlink_inject: bool,
     pub worker_env_host_file: Option<PathBuf>,

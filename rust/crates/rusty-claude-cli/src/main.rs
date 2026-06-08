@@ -2754,7 +2754,7 @@ fn print_system_prompt(
     date: String,
     output_format: CliOutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let sections = load_system_prompt(cwd, date, env::consts::OS, "unknown", None)?;
+    let sections = load_system_prompt(cwd, date, env::consts::OS, "unknown", None, None)?;
     let message = sections.join(
         "
 
@@ -7347,6 +7347,7 @@ fn build_system_prompt() -> Result<Vec<String>, Box<dyn std::error::Error>> {
         default_system_date(),
         env::consts::OS,
         "unknown",
+        None,
         None,
     )?)
 }

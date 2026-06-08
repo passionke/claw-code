@@ -45,8 +45,9 @@ build:release-images:
       TAG="${CLAW_RELEASE_TAG}"
       docker tag claw-gateway-rs:local "${PREFIX}/claw-code:${TAG}"
       docker tag claw-gateway-worker:local "${PREFIX}/claw-gateway-worker:${TAG}"
+      docker tag claw-gateway-worker-relaxed:local "${PREFIX}/claw-gateway-worker-relaxed:${TAG}"
       docker tag claw-gateway-playground:local "${PREFIX}/claw-gateway-playground:${TAG}"
-      echo "built ${PREFIX}/claw-code:${TAG}"
+      echo "built ${PREFIX}/claw-code:${TAG} (+ strict/relaxed worker, playground)"
   timeout: 2h
 
 deploy:release:

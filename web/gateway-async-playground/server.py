@@ -148,6 +148,17 @@ def _loopback_gateway_key(url: str) -> tuple[str, int] | None:
     return (p.scheme, port)
 
 
+def _gateway_port_key(url: str) -> tuple[str, int] | None:
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return None
+    if not p.scheme:
+        return None
+    port = p.port or (443 if p.scheme == "https" else 80)
+    return (p.scheme, port)
+
+
 def _effective_proxy_base(browser_base: str) -> str:
     """Map UI `baseUrl` to an address reachable from this process (container vs host). Author: kejiqing"""
     b = _resolve_gateway_base_url(browser_base) or browser_base.strip().rstrip("/")
@@ -159,6 +170,18 @@ def _effective_proxy_base(browser_base: str) -> str:
         return UPSTREAM_GATEWAY_BASE
     if b == PUBLIC_GATEWAY_BASE:
         return UPSTREAM_GATEWAY_BASE
+    # Pool registry LAN URL (e.g. 10.x:18088) while PUBLIC is 127.0.0.1:18088 — dial compose gateway-rs. kejiqing
+    if (
+        UPSTREAM_GATEWAY_BASE
+        and _gateway_port_key(b) == _gateway_port_key(PUBLIC_GATEWAY_BASE)
+        and pub is not None
+    ):
+        try:
+            br_host = _norm_host(urlparse(b).hostname)
+        except ValueError:
+            br_host = None
+        if br_host and _is_private_lan_host(br_host):
+            return UPSTREAM_GATEWAY_BASE
     return b
 
 

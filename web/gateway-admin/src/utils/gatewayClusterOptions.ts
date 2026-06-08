@@ -45,6 +45,11 @@ export function defaultGatewayFromPools(
   if (co) {
     const self = registered.find((p) => p.poolId === co);
     if (self?.gatewayBase) {
+      // Co-located Admin/playground: browser must use loopback (pool registry LAN IP may be stale). kejiqing
+      const def = playground.defaultGatewayBase?.trim();
+      if (def) {
+        return normalizeGatewayBase(def);
+      }
       return normalizeGatewayBase(self.gatewayBase);
     }
   }

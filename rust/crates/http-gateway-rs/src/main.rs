@@ -119,7 +119,7 @@ pub(crate) struct AppState {
     cfg: Arc<GatewayConfig>,
     /// When using `docker_pool` / `podman_pool`, active async task id → pool + slot for cancel.
     docker_slots: Arc<Mutex<HashMap<String, (Arc<dyn pool::PoolOps + Send + Sync>, usize)>>>,
-    docker_pool: Arc<dyn pool::PoolOps + Send + Sync>,
+    pool_clients: pool::PoolClients,
     /// Serialize git and working-tree reads/writes on the shared `.claw-code-projects` clone. kejiqing
     projects_git_mirror_lock: Arc<Mutex<()>>,
     /// Active LLM model/api key from DB (refreshed on apply + poll). Author: kejiqing
@@ -429,6 +429,9 @@ struct UpsertProjectConfigRequest {
     /// Omit on PUT to keep existing `prompt_limits_json`. Author: kejiqing
     #[serde(rename = "promptLimitsJson", default)]
     prompt_limits_json: Option<Value>,
+    /// Omit on PUT to keep existing `worker_isolation_json`. Author: kejiqing
+    #[serde(rename = "workerIsolationJson", default)]
+    worker_isolation_json: Option<Value>,
 }
 
 /// Body for `POST /v1/project/config/{ds_id}/versions/commit` — save draft as immutable formal revision (does not change effective). Author: kejiqing
@@ -478,6 +481,8 @@ struct ProjectConfigResponse {
     extra_session_fields_json: Value,
     #[serde(rename = "promptLimitsJson")]
     prompt_limits_json: Value,
+    #[serde(rename = "workerIsolationJson")]
+    worker_isolation_json: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -1230,74 +1235,39 @@ async fn main() {
     let pool_rpc_tcp_cfg = pool_daemon_tcp.clone();
     let pool_rpc_unix_cfg = pool_daemon_socket.clone();
 
-    let pool_http_base = std::env::var("CLAW_POOL_HTTP_BASE")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_default();
-    let pool_http_for_rpc = !pool_http_base.is_empty();
-    let pool_rpc_remote =
-        pool_http_for_rpc || pool_daemon_tcp.is_some() || pool_daemon_socket.is_some();
-    let co_located_pool_id = pool_rpc_remote.then(http_gateway_rs::pool_registry::resolve_pool_id);
+    if pool_rpc_host_work_root.is_none() {
+        warn!(
+            target: "claw_gateway_orchestration",
+            component = "startup",
+            phase = "pool_rpc_missing_host_root",
+            "CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
+        );
+    }
+    // Pool RPC: strict + optional relaxed HTTP clients. Author: kejiqing
+    let pool_clients = pool::PoolClients::from_env();
+    if pool_clients.dual_pool() {
+        info!(
+            target: "claw_gateway_orchestration",
+            component = "startup",
+            phase = "dual_pool_routing",
+            strict_pool_id = %pool_clients.strict_pool_id(),
+            relaxed_pool_id = %pool_clients.relaxed_pool_id(),
+            "gateway routes acquire by ds worker_isolation_json → strict or relaxed pool"
+        );
+    }
+    let pool_rpc_remote = true;
+    let co_located_pool_id = Some(pool_clients.strict_pool_id().to_string());
     tracing::info!(
         target: "claw_live_report",
         component = "gateway_startup",
         contract = http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT,
         pool_rpc_remote,
-        pool_http_base = %pool_http_base,
+        strict_pool_id = %pool_clients.strict_pool_id(),
+        relaxed_pool_id = %pool_clients.relaxed_pool_id(),
+        dual_pool = pool_clients.dual_pool(),
         co_located_pool_id = ?co_located_pool_id,
-        "live_report.gateway — terminal snapshot from DB; live stream proxies via claw_pool JOIN only (no CLAW_POOL_HTTP_BASE fallback)"
+        "live_report.gateway — terminal snapshot from DB; live stream proxies via claw_pool JOIN only"
     );
-
-    // Pool RPC: prefer HTTP on CLAW_POOL_HTTP_BASE (same port as live-report). Author: kejiqing
-    let docker_pool: Arc<dyn pool::PoolOps + Send + Sync> = if pool_http_for_rpc {
-        let base = pool_http_base.clone();
-        if pool_rpc_host_work_root.is_none() {
-            warn!(
-                target: "claw_gateway_orchestration",
-                component = "startup",
-                phase = "pool_rpc_missing_host_root",
-                "CLAW_POOL_HTTP_BASE is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
-            );
-        }
-        if pool_daemon_tcp.is_some() || pool_daemon_socket.is_some() {
-            warn!(
-                target: "claw_gateway_orchestration",
-                component = "startup",
-                phase = "pool_rpc_http_preferred",
-                "CLAW_POOL_HTTP_BASE drives pool RPC; CLAW_POOL_DAEMON_TCP/SOCKET are ignored"
-            );
-        }
-        let client = pool::PoolRpcClient::new_http(&base);
-        Arc::new(client)
-    } else if let Some(ref tcp_addr) = pool_daemon_tcp {
-        if pool_rpc_host_work_root.is_none() {
-            warn!(
-                target: "claw_gateway_orchestration",
-                component = "startup",
-                phase = "pool_rpc_missing_host_root",
-                "CLAW_POOL_DAEMON_TCP is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
-            );
-        }
-        let client = pool::PoolRpcClient::new_tcp(tcp_addr.clone());
-        Arc::new(client)
-    } else if let Some(ref sock_path) = pool_daemon_socket {
-        if pool_rpc_host_work_root.is_none() {
-            warn!(
-                target: "claw_gateway_orchestration",
-                component = "startup",
-                phase = "pool_rpc_missing_host_root",
-                "CLAW_POOL_DAEMON_SOCKET is set but CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
-            );
-        }
-        let client = pool::PoolRpcClient::new(PathBuf::from(sock_path));
-        Arc::new(client)
-    } else {
-        eprintln!(
-            "http-gateway-rs: set CLAW_POOL_HTTP_BASE (recommended) or CLAW_POOL_DAEMON_TCP / CLAW_POOL_DAEMON_SOCKET"
-        );
-        std::process::exit(1);
-    };
 
     let projects_git_url = std::env::var("CLAW_PROJECTS_GIT_URL")
         .ok()
@@ -1371,6 +1341,13 @@ async fn main() {
             }
         }
     };
+
+    let pool_http_base = std::env::var("CLAW_STRICT_POOL_HTTP_BASE")
+        .ok()
+        .or_else(|| std::env::var("CLAW_POOL_HTTP_BASE").ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_default();
 
     let cfg = GatewayConfig {
         solve_isolation,
@@ -1485,7 +1462,7 @@ async fn main() {
         session_db,
         cfg: Arc::new(cfg),
         docker_slots: Arc::new(Mutex::new(HashMap::new())),
-        docker_pool,
+        pool_clients,
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
         llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
@@ -1561,6 +1538,10 @@ async fn main() {
             get(get_session_execution),
         )
         .route("/v1/sessions/{session_id}/turns", get(list_session_turns))
+        .route(
+            "/v1/sessions/{session_id}/conversation_translate",
+            get(get_conversation_translate).put(put_conversation_translate),
+        )
         .route("/v1/pools", get(list_claw_pools_handler))
         .route(
             "/v1/sessions/{session_id}/turns/{turn_id}/tools",
@@ -2405,10 +2386,26 @@ async fn claude_instructions_usable(path: &Path) -> bool {
     }
 }
 
-/// Project tree is ready for solve when CLAUDE instructions exist and are non-empty (pool bind-mount contract). kejiqing
-async fn ds_project_tree_ready(work_dir: &Path) -> bool {
+/// Ready for solve: legacy / non-empty `claude_md` needs usable CLAUDE on disk; empty override needs apply rev match and no stale CLAUDE files. kejiqing
+async fn ds_project_tree_ready(
+    work_dir: &Path,
+    materialize_row: Option<&session_db::ProjectConfigRow>,
+) -> bool {
     let (home_claude, root_claude) = project_claude_paths(work_dir);
-    claude_instructions_usable(&home_claude).await || claude_instructions_usable(&root_claude).await
+    let disk_claude = claude_instructions_usable(&home_claude).await
+        || claude_instructions_usable(&root_claude).await;
+    let Some(row) = materialize_row else {
+        return disk_claude;
+    };
+    if row
+        .claude_md
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        return disk_claude;
+    }
+    let applied = project_config_apply::read_applied_content_rev(work_dir).await;
+    applied.as_deref() == Some(row.content_rev.as_str()) && !disk_claude
 }
 
 fn ds_environment_not_prepared_error(ds_id: i64, has_project_config: bool) -> ApiError {
@@ -2481,7 +2478,7 @@ async fn apply_project_config_for_ds_inner(
                 format!("create ds work dir failed: {e}"),
             )
         })?;
-    let tree_ready = ds_project_tree_ready(&work_dir).await;
+    let tree_ready = ds_project_tree_ready(&work_dir, Some(&row)).await;
     let force_apply = force || !tree_ready;
     let scaffold = gateway_global_settings::load_system_prompt_default(&state.session_db)
         .await
@@ -2630,7 +2627,10 @@ async fn ensure_ds_project_ready(state: &AppState, ds_id: i64) -> Result<(), Api
         .map_err(|e| session_db_err(&e))?
         .is_some();
     apply_project_config_for_ds(state, ds_id, false).await?;
-    if ds_project_tree_ready(&work_dir).await {
+    let materialize_row = project_config_draft::row_for_materialize(&state.session_db, ds_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if ds_project_tree_ready(&work_dir, materialize_row.as_ref()).await {
         return Ok(());
     }
     Err(ds_environment_not_prepared_error(ds_id, has_project_config))
@@ -2765,6 +2765,7 @@ fn default_project_config_row(ds_id: i64) -> session_db::ProjectConfigRow {
         solve_orchestration_json: json!({"kind": "single_turn"}),
         extra_session_fields_json: json!([]),
         prompt_limits_json: project_config_apply::default_prompt_limits_json(),
+        worker_isolation_json: pool::worker_isolation::default_worker_isolation_json(),
     }
 }
 
@@ -2922,6 +2923,7 @@ async fn activate_project_config_revision_row(
             solve_orchestration_json: &sidecars.solve_orchestration_json,
             extra_session_fields_json: &sidecars.extra_session_fields_json,
             prompt_limits_json: &sidecars.prompt_limits_json,
+            worker_isolation_json: &sidecars.worker_isolation_json,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -3192,7 +3194,8 @@ async fn count_skill_dirs(skills_root: &Path) -> u64 {
 }
 
 /// Read-only snapshot of per-`ds_*` workspace readiness (for `/healthz`). Author: kejiqing
-async fn build_ds_workspaces_health(work_root: &Path) -> Value {
+async fn build_ds_workspaces_health(state: &AppState) -> Value {
+    let work_root = &state.cfg.work_root;
     let on_disk = list_ds_ids_under_work_root(work_root)
         .await
         .unwrap_or_default();
@@ -3203,7 +3206,12 @@ async fn build_ds_workspaces_health(work_root: &Path) -> Value {
     for ds_id in ids {
         let work_dir = ds_work_dir(work_root, ds_id);
         let work_dir_present = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
-        let environment_prepared = work_dir_present && ds_project_tree_ready(&work_dir).await;
+        let materialize_row = project_config_draft::row_for_materialize(&state.session_db, ds_id)
+            .await
+            .ok()
+            .flatten();
+        let environment_prepared =
+            work_dir_present && ds_project_tree_ready(&work_dir, materialize_row.as_ref()).await;
         if environment_prepared {
             prepared_count += 1;
         }
@@ -3728,7 +3736,7 @@ async fn list_ds_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiEr
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     let isolation = state.cfg.solve_isolation.as_str();
-    let ds_workspaces = build_ds_workspaces_health(&state.cfg.work_root).await;
+    let ds_workspaces = build_ds_workspaces_health(&state).await;
     let deploy_image_ref = http_gateway_rs::deploy_image::image_ref_from_env();
     let deploy_image_tag = http_gateway_rs::deploy_image::deploy_image_tag(&deploy_image_ref);
     let cluster_snap = claw_tap_cluster_state::snapshot_from_handle(&state.claw_tap_cluster).await;
@@ -3825,12 +3833,16 @@ async fn solve(
             )
         })?;
     let new_turn_id = turn_id::mint_turn_id();
+    let (_, prebind_pool_id) = state
+        .pool_clients
+        .pool_and_id_for_ds(&state.session_db, req.ds_id)
+        .await;
     register_solve_turn(
         &state.session_db,
         &new_turn_id,
         &effective,
         &req,
-        state.cfg.co_located_pool_id.as_deref(),
+        Some(prebind_pool_id.as_str()),
         client_origin.as_deref(),
     )
     .await?;
@@ -3949,7 +3961,12 @@ async fn build_project_list_entry(
 ) -> ProjectListEntry {
     let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
     let work_dir_present = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
-    let environment_prepared = work_dir_present && ds_project_tree_ready(&work_dir).await;
+    let materialize_row = project_config_draft::row_for_materialize(&state.session_db, ds_id)
+        .await
+        .ok()
+        .flatten();
+    let environment_prepared =
+        work_dir_present && ds_project_tree_ready(&work_dir, materialize_row.as_ref()).await;
     let (home_claude, _) = project_claude_paths(&work_dir);
     let claude_on_disk = claude_instructions_usable(&home_claude).await;
     let skills_root = work_dir.join("home/skills");
@@ -4253,6 +4270,7 @@ async fn create_project(
             solve_orchestration_json: &json!({"kind": "single_turn"}),
             extra_session_fields_json: &empty_arr,
             prompt_limits_json: &empty_obj,
+            worker_isolation_json: &pool::worker_isolation::default_worker_isolation_json(),
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -4357,29 +4375,15 @@ async fn init_workspace(
             ));
         }
         apply_project_config_for_ds(&state, req.ds_id, true).await?;
-        if !ds_project_tree_ready(&work_dir).await {
+        let materialize_row =
+            project_config_draft::row_for_materialize(&state.session_db, req.ds_id)
+                .await
+                .map_err(|e| session_db_err(&e))?;
+        if !ds_project_tree_ready(&work_dir, materialize_row.as_ref()).await {
             return Err(ds_environment_not_prepared_error(req.ds_id, true));
         }
         ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
         write_ds_settings_json(&state, req.ds_id).await?;
-        let claude_md_path = work_dir.join("CLAUDE.md");
-        match fs::metadata(&claude_md_path).await {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::write(&claude_md_path, "").await.map_err(|e| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("write CLAUDE.md failed: {e}"),
-                    )
-                })?;
-            }
-            Err(error) => {
-                return Err(ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("stat CLAUDE.md failed: {error}"),
-                ));
-            }
-        }
     }
     Ok(Json(InitResponse {
         ds_id: req.ds_id,
@@ -4412,6 +4416,7 @@ async fn project_config_row_to_response(
             ),
         extra_session_fields_json: row.extra_session_fields_json,
         prompt_limits_json: row.prompt_limits_json,
+        worker_isolation_json: row.worker_isolation_json,
     }
 }
 
@@ -4562,6 +4567,10 @@ fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(
     }
     if let Some(ref pl) = req.prompt_limits_json {
         project_config_apply::validate_prompt_limits_json(pl)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
+    if let Some(ref wi) = req.worker_isolation_json {
+        pool::worker_isolation::validate_worker_isolation_json(wi)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
     Ok(())
@@ -4781,6 +4790,10 @@ async fn put_project_config(
         Some(incoming) => incoming.clone(),
         None => existing.prompt_limits_json.clone(),
     };
+    let worker_isolation_json = match &req.worker_isolation_json {
+        Some(incoming) => incoming.clone(),
+        None => existing.worker_isolation_json.clone(),
+    };
     let req_for_validate = UpsertProjectConfigRequest {
         content_rev: String::new(),
         rules_json: req.rules_json.clone(),
@@ -4794,6 +4807,7 @@ async fn put_project_config(
         solve_orchestration_json: Some(solve_orchestration_json.clone()),
         extra_session_fields_json: Some(extra_session_fields_json.clone()),
         prompt_limits_json: Some(prompt_limits_json.clone()),
+        worker_isolation_json: Some(worker_isolation_json.clone()),
     };
     validate_project_config_payload(&req_for_validate)?;
     gateway_global_settings::validate_git_sync_json_with_global(&state.session_db, &git_sync_json)
@@ -4823,6 +4837,7 @@ async fn put_project_config(
         solve_orchestration_json: &solve_orchestration_json,
         extra_session_fields_json: &extra_session_fields_json,
         prompt_limits_json: &prompt_limits_json,
+        worker_isolation_json: &worker_isolation_json,
     };
     state
         .session_db
@@ -4907,6 +4922,7 @@ async fn commit_project_config_draft(
             solve_orchestration_json: row.solve_orchestration_json.clone(),
             extra_session_fields_json: row.extra_session_fields_json.clone(),
             prompt_limits_json: row.prompt_limits_json.clone(),
+            worker_isolation_json: row.worker_isolation_json.clone(),
         },
     )
     .await
@@ -5215,25 +5231,14 @@ async fn get_project_claude_md(
         .await
         .map_err(|e| session_db_err(&e))?
     {
-        if row.draft_open {
-            let text = row.claude_md.unwrap_or_default();
-            return Ok(Json(ProjectClaudeResponse {
-                ds_id,
-                work_dir: work_dir.display().to_string(),
-                path: home_claude_md_path.display().to_string(),
-                exists: !text.trim().is_empty(),
-                content: text,
-            }));
-        }
-        if let Some(text) = row.claude_md.filter(|s| !s.trim().is_empty()) {
-            return Ok(Json(ProjectClaudeResponse {
-                ds_id,
-                work_dir: work_dir.display().to_string(),
-                path: home_claude_md_path.display().to_string(),
-                exists: true,
-                content: text,
-            }));
-        }
+        let text = row.claude_md.unwrap_or_default();
+        return Ok(Json(ProjectClaudeResponse {
+            ds_id,
+            work_dir: work_dir.display().to_string(),
+            path: home_claude_md_path.display().to_string(),
+            exists: !text.trim().is_empty(),
+            content: text,
+        }));
     }
     let content = fs::read_to_string(&home_claude_md_path).await;
     let (exists, content) = match content {
@@ -5484,11 +5489,18 @@ async fn build_effective_prompt_response(
         .await
         .map_err(|e| session_db_err(&e))?;
     apply_project_config_for_ds(state, ds_id, force_apply).await?;
+    let model_family = gateway_global_settings::load_active_llm_config_public(&state.session_db)
+        .await
+        .ok()
+        .flatten()
+        .map(|active| active.model_name)
+        .filter(|name| !name.trim().is_empty());
     let sections = load_system_prompt(
         work_dir.to_path_buf(),
         default_system_date(),
         std::env::consts::OS,
         "unknown",
+        model_family,
         None,
     )
     .map_err(|e| {
@@ -5734,11 +5746,16 @@ async fn resolve_session_home_path(
 async fn load_turn_progress_snapshot(
     state: &AppState,
     turn_id: &str,
+    session_id: &str,
+    ds_id: i64,
     status: &str,
     limit: usize,
 ) -> Result<pool_consumer_resolve::TurnProgressSnapshot, ApiError> {
     pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
-        &state.docker_pool,
+        &state
+            .pool_clients
+            .pool_for_turn(&state.session_db, turn_id, session_id, ds_id)
+            .await,
         turn_id,
         status,
     )
@@ -5772,9 +5789,10 @@ async fn refresh_task_progress(state: &AppState, task_id: &str) {
             .map(|home| discover_trace_paths(home, &state.cfg.work_root, &session_id))
             .unwrap_or_default();
         let tool = trace_tail_suggests_tool_call(&trace_paths);
-        let progress_snap = load_turn_progress_snapshot(state, &turn_id, &status, 50)
-            .await
-            .unwrap_or_default();
+        let progress_snap =
+            load_turn_progress_snapshot(state, &turn_id, &session_id, ds_id, &status, 50)
+                .await
+                .unwrap_or_default();
         let desc =
             resolve_current_task_desc(&status, &queue, tool, progress_snap.task_progress.as_ref());
         let updated_ms = progress_snap
@@ -6104,7 +6122,7 @@ async fn list_claw_pools_handler(
         .collect();
     Ok(Json(ListClawPoolsResponse {
         pools,
-        co_located_pool_id: state.cfg.co_located_pool_id.clone(),
+        co_located_pool_id: Some(state.pool_clients.strict_pool_id().to_string()),
     }))
 }
 
@@ -6174,8 +6192,15 @@ async fn get_session_execution(
         current_task_desc: None,
     });
 
-    let progress_snap =
-        load_turn_progress_snapshot(&state, &turn_id, &task_status_for_progress, 50).await?;
+    let progress_snap = load_turn_progress_snapshot(
+        &state,
+        &turn_id,
+        &session_id,
+        query.ds_id,
+        &task_status_for_progress,
+        50,
+    )
+    .await?;
     let progress = progress_snap.task_progress.clone();
     let progress_history = progress_snap.events;
     let trace_paths = discover_trace_paths(&session_home, &state.cfg.work_root, &session_id);
@@ -6255,7 +6280,10 @@ async fn get_turn_tools(
         .map_err(|e| session_db_err(&e))?
         .unwrap_or_else(|| "unknown".to_string());
     pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
-        &state.docker_pool,
+        &state
+            .pool_clients
+            .pool_for_turn(&state.session_db, &turn_id, &session_id, query.ds_id)
+            .await,
         &turn_id,
         &turn_status,
     )
@@ -6322,7 +6350,10 @@ async fn get_turn_timeline(
         .map_err(|e| session_db_err(&e))?
         .unwrap_or_else(|| "unknown".to_string());
     pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
-        &state.docker_pool,
+        &state
+            .pool_clients
+            .pool_for_turn(&state.session_db, &turn_id, &session_id, query.ds_id)
+            .await,
         &turn_id,
         &turn_status,
     )
@@ -6410,12 +6441,16 @@ async fn enqueue_solve_async(
             )
         })?;
     let new_turn_id = turn_id::mint_turn_id();
+    let (_, prebind_pool_id) = state
+        .pool_clients
+        .pool_and_id_for_ds(&state.session_db, ds_id)
+        .await;
     register_solve_turn(
         &state.session_db,
         &new_turn_id,
         &effective,
         &req,
-        state.cfg.co_located_pool_id.as_deref(),
+        Some(prebind_pool_id.as_str()),
         client_origin.as_deref(),
     )
     .await?;
@@ -6465,7 +6500,7 @@ async fn enqueue_solve_async(
                     report_time_ms: None,
                     plan_title: None,
                     todos: Vec::new(),
-                    pool_id: state.cfg.co_located_pool_id.clone(),
+                    pool_id: Some(prebind_pool_id.clone()),
                     worker_name: None,
                 },
                 cancel: None,
@@ -6768,9 +6803,10 @@ async fn task_record_from_latest_turn_row(
         .map(|home| discover_trace_paths(home, &state.cfg.work_root, task_id))
         .unwrap_or_default();
     let tool = trace_tail_suggests_tool_call(&trace_paths);
-    let progress_snap = load_turn_progress_snapshot(state, &row.turn_id, &row.status, 50)
-        .await
-        .unwrap_or_default();
+    let progress_snap =
+        load_turn_progress_snapshot(state, &row.turn_id, task_id, row.ds_id, &row.status, 50)
+            .await
+            .unwrap_or_default();
     let current_task_desc = resolve_current_task_desc(
         &row.status,
         &queue,
@@ -6826,8 +6862,15 @@ async fn get_task(
             ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
         })?;
     let session_home = resolve_session_home_path(&state, ds_id, &task.session_id).await;
-    let progress_snap =
-        load_turn_progress_snapshot(&state, &task.turn_id, &task.status, 50).await?;
+    let progress_snap = load_turn_progress_snapshot(
+        &state,
+        &task.turn_id,
+        &task.session_id,
+        ds_id,
+        &task.status,
+        50,
+    )
+    .await?;
     let (plan_title, todos) = pool_consumer_resolve::plan_fields_from_snapshot(&progress_snap);
     task.progress_history = progress_snap.events;
     task.plan_title = plan_title;
@@ -6895,7 +6938,10 @@ async fn task_has_report(state: &AppState, task: &TaskRecord) -> bool {
     }
     matches!(task.status.as_str(), "running" | "queued")
         && !task.turn_id.is_empty()
-        && state.docker_pool.has_report_for_turn(&task.turn_id).await
+        && state
+            .pool_clients
+            .has_report_for_turn(&state.session_db, &task.turn_id)
+            .await
 }
 
 /// When [`task_has_report`] is true: `startedAtMs` / `finishedAtMs`. Author: kejiqing
@@ -6905,8 +6951,8 @@ async fn task_report_time_ms(state: &AppState, task: &TaskRecord) -> Option<i64>
     }
     if !task.turn_id.is_empty() {
         if let Some(ts) = state
-            .docker_pool
-            .first_report_at_ms_for_turn(&task.turn_id)
+            .pool_clients
+            .first_report_at_ms_for_turn(&state.session_db, &task.turn_id)
             .await
         {
             return Some(ts);
@@ -8122,6 +8168,36 @@ async fn post_gateway_translate(
         .map_err(|e| ApiError::new(e.status, e.message))
 }
 
+async fn get_conversation_translate(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(query): Query<ListSessionTurnsQuery>,
+) -> Result<Json<gateway_translate::GetConversationTranslateResponse>, ApiError> {
+    gateway_translate::get_conversation_translate_handler(
+        &state.session_db,
+        &session_id,
+        query.ds_id,
+    )
+    .await
+    .map_err(|e| ApiError::new(e.status, e.message))
+}
+
+async fn put_conversation_translate(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(query): Query<ListSessionTurnsQuery>,
+    Json(body): Json<gateway_translate::PutConversationTranslateRequest>,
+) -> Result<Json<gateway_translate::PutConversationTranslateResponse>, ApiError> {
+    gateway_translate::put_conversation_translate_handler(
+        &state.session_db,
+        &session_id,
+        query.ds_id,
+        body,
+    )
+    .await
+    .map_err(|e| ApiError::new(e.status, e.message))
+}
+
 async fn get_agent_feedback(
     State(state): State<AppState>,
     Query(query): Query<AgentFeedbackGetQuery>,
@@ -8219,7 +8295,10 @@ async fn run_solve_request(
         "session .claw/settings.json written; starting solve (container pool)"
     );
 
-    let pool = state.docker_pool.clone();
+    let (pool, _) = state
+        .pool_clients
+        .pool_and_id_for_ds(&state.session_db, req.ds_id)
+        .await;
     solve_pool::run_solve_request_docker(
         state,
         req,
@@ -8790,17 +8869,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ds_project_tree_ready_requires_claude_md() {
+    async fn ds_project_tree_ready_requires_claude_md_or_applied_empty_override() {
         let tmp = std::env::temp_dir().join(format!("claw-gw-ds-ready-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        assert!(!ds_project_tree_ready(&tmp).await);
+        assert!(!ds_project_tree_ready(&tmp, None).await);
         let (home_claude, _) = project_claude_paths(&tmp);
         std::fs::create_dir_all(home_claude.parent().unwrap()).unwrap();
         std::fs::write(&home_claude, "# test").unwrap();
-        assert!(ds_project_tree_ready(&tmp).await);
+        assert!(ds_project_tree_ready(&tmp, None).await);
         std::fs::write(&home_claude, "   \n").unwrap();
-        assert!(!ds_project_tree_ready(&tmp).await);
+        assert!(!ds_project_tree_ready(&tmp, None).await);
+
+        let row = session_db::ProjectConfigRow {
+            ds_id: 1,
+            content_rev: "rev-ready".into(),
+            stable_content_rev: Some("rev-ready".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
+        };
+        std::fs::create_dir_all(tmp.join(".claw")).unwrap();
+        std::fs::write(
+            tmp.join(project_config_apply::APPLIED_REV_MARKER),
+            "rev-ready",
+        )
+        .unwrap();
+        assert!(ds_project_tree_ready(&tmp, Some(&row)).await);
+        std::fs::write(&home_claude, "stale after clear").unwrap();
+        assert!(
+            !ds_project_tree_ready(&tmp, Some(&row)).await,
+            "stale CLAUDE on disk must block ready when claude_md is empty"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

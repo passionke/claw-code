@@ -239,6 +239,7 @@ pub async fn chat_json(
         std::env::consts::OS,
         "web",
         None,
+        None,
     )
     .map_err(|e| ServerError::Internal(e.to_string()))?;
 
@@ -356,6 +357,7 @@ pub async fn chat_sse(
                 chrono::Utc::now().format("%Y-%m-%d").to_string(),
                 std::env::consts::OS,
                 "web",
+                None,
                 None,
             ).map_err(|e| ServerError::Internal(e.to_string()))?;
 

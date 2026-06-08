@@ -14,6 +14,7 @@ export function emptyProjectConfig(dsId: number): ProjectConfig {
     solveOrchestrationJson: { kind: "single_turn" },
     extraSessionFieldsJson: [],
     promptLimitsJson: {},
+    workerIsolationJson: { mode: "strict" },
   };
 }
 
@@ -66,6 +67,10 @@ export async function putProjectConfigDraft(
       patch.promptLimitsJson !== undefined
         ? patch.promptLimitsJson
         : cfg.promptLimitsJson ?? {},
+    workerIsolationJson:
+      patch.workerIsolationJson !== undefined
+        ? patch.workerIsolationJson
+        : cfg.workerIsolationJson ?? { mode: "strict" },
   };
   const r = await proxyHttp<{ activeConfig?: ProjectConfig } & ProjectConfig>(
     gatewayBase,

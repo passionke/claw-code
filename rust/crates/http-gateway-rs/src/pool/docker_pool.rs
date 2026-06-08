@@ -11,13 +11,17 @@ use uuid::Uuid;
 
 use gateway_solve_turn::WORKER_ENV_MOUNT_PATH;
 
-use super::config::{security_boost_from_env, DockerPoolConfig};
+use super::config::{
+    fixed_isolation_from_env, relaxed_worker_allowed_from_env, security_boost_from_env,
+    DockerPoolConfig,
+};
 use super::docker_cli::{
     probe_container_runtime_cli, runtime_exec, runtime_exec_with_live_streams,
 };
 use super::session_db_sync::{self, MaterializeInput};
 use super::traits::{SlotLease, TaskOutcome};
 use super::worker_identity::PoolWorkerIdentity;
+use super::worker_isolation::{effective_mode, exec_user_arg_for_mode, WorkerIsolationMode};
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
 
@@ -123,6 +127,8 @@ struct Slot {
     state: SlotState,
     /// `ds_id` bound at last `run` (revive when changed). Author: kejiqing
     bound_ds_id: Option<i64>,
+    /// Worker strict/relaxed profile bound at last `run`. Author: kejiqing
+    bound_isolation: WorkerIsolationMode,
     /// Integration tests: host session tree bind-mounted to [`GUEST_WORK_ROOT`].
     test_host_root: Option<PathBuf>,
 }
@@ -150,6 +156,7 @@ pub struct DockerPoolManager {
     on_release_exec: Option<String>,
     worker_identity: PoolWorkerIdentity,
     security_boost: bool,
+    fixed_isolation: Option<WorkerIsolationMode>,
     symlink_inject: bool,
     worker_env_host_file: Option<PathBuf>,
     live_report_hub: Option<Arc<super::live_report_hub::LiveReportHub>>,
@@ -177,6 +184,7 @@ impl DockerPoolManager {
             on_release_exec: cfg.on_release_exec,
             worker_identity: cfg.worker_identity,
             security_boost: cfg.security_boost,
+            fixed_isolation: cfg.fixed_isolation,
             symlink_inject: cfg.symlink_inject,
             worker_env_host_file: cfg.worker_env_host_file,
             live_report_hub: cfg.live_report_hub,
@@ -326,6 +334,7 @@ impl DockerPoolManager {
             exec_user,
             worker_identity,
             security_boost: security_boost_from_env(),
+            fixed_isolation: fixed_isolation_from_env(),
             symlink_inject: use_symlink_inject(&runtime_bin),
             worker_env_host_file,
             live_report_hub,
@@ -351,12 +360,26 @@ impl DockerPoolManager {
         format!("claw-worker-{}-{idx}", self.name_stem)
     }
 
-    fn exec_solve_argv_prefix(&self) -> Vec<String> {
+    fn exec_solve_argv_prefix_for(&self, isolation: WorkerIsolationMode) -> Vec<String> {
         vec![
             "exec".to_string(),
             "--user".to_string(),
-            self.worker_identity.exec_user_arg(),
+            exec_user_arg_for_mode(isolation, &self.worker_identity.exec_user_arg()),
         ]
+    }
+
+    async fn resolve_isolation_for_ds(&self, ds_id: i64) -> WorkerIsolationMode {
+        if let Some(fixed) = self.fixed_isolation {
+            return fixed;
+        }
+        let json = if let Some(ref db) = self.session_db {
+            db.get_worker_isolation_json(ds_id)
+                .await
+                .unwrap_or_else(|_| super::worker_isolation::default_worker_isolation_json())
+        } else {
+            super::worker_isolation::default_worker_isolation_json()
+        };
+        effective_mode(relaxed_worker_allowed_from_env(), &json)
     }
 
     fn ds_host_dir(&self, ds_id: i64) -> PathBuf {
@@ -406,6 +429,10 @@ impl DockerPoolManager {
         });
     }
 
+    fn warm_isolation(&self) -> WorkerIsolationMode {
+        self.fixed_isolation.unwrap_or(WorkerIsolationMode::Strict)
+    }
+
     async fn ensure_warm(self: &Arc<Self>) -> Result<(), String> {
         let _ = tokio::fs::create_dir_all(self.work_root_host.join(".claw-pool-slot")).await;
         let mut slots = self.slots.lock().await;
@@ -419,12 +446,14 @@ impl DockerPoolManager {
             if old != name {
                 let _ = self.rm_container(&old).await;
             }
-            self.run_worker_slot_container(i, &name, 1, None).await?;
+            self.run_worker_slot_container(i, &name, 1, self.warm_isolation(), None)
+                .await?;
             slots = self.slots.lock().await;
             slots[i] = Slot {
                 container_name: name,
                 state: SlotState::Idle,
                 bound_ds_id: Some(1),
+                bound_isolation: self.warm_isolation(),
                 test_host_root: None,
             };
         }
@@ -437,10 +466,12 @@ impl DockerPoolManager {
                 container_name: name.clone(),
                 state: SlotState::Idle,
                 bound_ds_id: None,
+                bound_isolation: WorkerIsolationMode::Strict,
                 test_host_root: None,
             });
             drop(slots);
-            self.run_worker_slot_container(idx, &name, 1, None).await?;
+            self.run_worker_slot_container(idx, &name, 1, self.warm_isolation(), None)
+                .await?;
             slots = self.slots.lock().await;
             idle += 1;
             total += 1;
@@ -466,6 +497,7 @@ impl DockerPoolManager {
         slot_index: usize,
         name: &str,
         ds_id: i64,
+        isolation: WorkerIsolationMode,
         test_host_root: Option<PathBuf>,
     ) -> Result<(), String> {
         if self.worker_container_running(name).await {
@@ -490,7 +522,7 @@ impl DockerPoolManager {
                     "reusing existing worker container (stable name)"
                 );
                 // Pool restart or missed release must not leave gateway-solve-once running in the worker.
-                self.kill_worker_solve_processes(name).await;
+                self.kill_worker_solve_processes(name, isolation).await;
                 return Ok(());
             }
         }
@@ -512,7 +544,9 @@ impl DockerPoolManager {
         ];
         args.extend(self.network_args.iter().cloned());
         args.extend(self.extra_run_args.iter().cloned());
-        self.append_security_boost_run_args(&mut args);
+        if isolation == WorkerIsolationMode::Strict && self.security_boost {
+            self.append_security_boost_run_args(&mut args);
+        }
         args.push("-v".into());
         args.push(Self::ds_home_bind_volume_arg(&ds_abs));
         if let Some(host_root) = test_host_root.as_ref() {
@@ -588,6 +622,8 @@ impl DockerPoolManager {
             component = "docker_pool",
             phase = "worker_run_ok",
             container = %name,
+            ds_id,
+            worker_isolation = ?isolation,
             ds_bind = %ds_abs.display(),
             slot_index,
             image = %self.image,
@@ -597,9 +633,20 @@ impl DockerPoolManager {
         Ok(())
     }
 
-    async fn kill_worker_solve_processes(&self, container_name: &str) {
-        let user = self.worker_identity.pkill_user();
-        let script = format!("pkill -u {user} -f gateway-solve-once 2>/dev/null || true");
+    async fn kill_worker_solve_processes(
+        &self,
+        container_name: &str,
+        isolation: WorkerIsolationMode,
+    ) {
+        let script = match isolation {
+            WorkerIsolationMode::Relaxed => {
+                "pkill -f gateway-solve-once 2>/dev/null || true".to_string()
+            }
+            WorkerIsolationMode::Strict => {
+                let user = self.worker_identity.pkill_user();
+                format!("pkill -u {user} -f gateway-solve-once 2>/dev/null || true")
+            }
+        };
         self.run_on_release_hook(container_name, &script).await;
     }
 
@@ -656,6 +703,7 @@ impl DockerPoolManager {
         session_id: &str,
         turn_id: &str,
     ) -> Result<String, String> {
+        let isolation = self.resolve_isolation_for_ds(ds_id).await;
         let test_host = if self.symlink_inject {
             let home = session_db_sync::session_home_under_work_root(
                 &self.work_root_host,
@@ -669,6 +717,7 @@ impl DockerPoolManager {
         } else {
             None
         };
+        let exec_user = exec_user_arg_for_mode(isolation, &self.worker_identity.exec_user_arg());
         let (cname, need_run) = {
             let mut slots = self.slots.lock().await;
             let s = slots
@@ -676,18 +725,21 @@ impl DockerPoolManager {
                 .ok_or_else(|| "bad slot index".to_string())?;
             let host_changed =
                 self.symlink_inject && s.test_host_root.as_ref() != test_host.as_ref();
-            let need_run =
-                s.bound_ds_id != Some(ds_id) || s.state == SlotState::Dead || host_changed;
+            let need_run = s.bound_ds_id != Some(ds_id)
+                || s.bound_isolation != isolation
+                || s.state == SlotState::Dead
+                || host_changed;
             s.state = SlotState::Leased;
             s.test_host_root = test_host.clone();
             (s.container_name.clone(), need_run)
         };
         if need_run {
-            self.run_worker_slot_container(slot_index, &cname, ds_id, test_host)
+            self.run_worker_slot_container(slot_index, &cname, ds_id, isolation, test_host)
                 .await?;
             let mut slots = self.slots.lock().await;
             if let Some(s) = slots.get_mut(slot_index) {
                 s.bound_ds_id = Some(ds_id);
+                s.bound_isolation = isolation;
             }
         }
         if let Some(ref db) = self.session_db {
@@ -701,7 +753,8 @@ impl DockerPoolManager {
                     ds_id,
                     turn_id: turn_id.to_string(),
                 },
-                &self.worker_identity.exec_user_arg(),
+                isolation,
+                &exec_user,
             )
             .await?;
         }
@@ -722,12 +775,23 @@ impl DockerPoolManager {
                 .map_err(|reason| format!("session acquire blocked: {reason}"))?;
         }
         timeout(wait, async move {
+            let isolation = self.resolve_isolation_for_ds(ds_id).await;
             loop {
                 let mut slots = self.slots.lock().await;
                 if let Some((i, _)) = slots
                     .iter()
                     .enumerate()
-                    .find(|(_, s)| s.state == SlotState::Idle)
+                    .find(|(_, s)| {
+                        s.state == SlotState::Idle
+                            && s.bound_ds_id == Some(ds_id)
+                            && s.bound_isolation == isolation
+                    })
+                    .or_else(|| {
+                        slots
+                            .iter()
+                            .enumerate()
+                            .find(|(_, s)| s.state == SlotState::Idle)
+                    })
                 {
                     drop(slots);
                     match self
@@ -775,6 +839,7 @@ impl DockerPoolManager {
                         container_name: name.clone(),
                         state: SlotState::Idle,
                         bound_ds_id: None,
+                        bound_isolation: WorkerIsolationMode::Strict,
                         test_host_root: None,
                     });
                     drop(slots);
@@ -843,13 +908,13 @@ impl DockerPoolManager {
         worker_llm_env: Option<std::collections::BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
-        let name = {
+        let (name, isolation) = {
             let slots = self.slots.lock().await;
-            slots
+            let s = slots
                 .get(slot.slot_index)
                 .filter(|s| s.state == SlotState::Leased)
-                .map(|s| s.container_name.clone())
-                .ok_or_else(|| "invalid or released slot".to_string())?
+                .ok_or_else(|| "invalid or released slot".to_string())?;
+            (s.container_name.clone(), s.bound_isolation)
         };
         let container_log = name.clone();
         let workdir = GUEST_WORK_ROOT.to_string();
@@ -865,7 +930,7 @@ impl DockerPoolManager {
             claw_bin = %claw_bin,
             "docker exec gateway-solve-once starting"
         );
-        let mut argv = self.exec_solve_argv_prefix();
+        let mut argv = self.exec_solve_argv_prefix_for(isolation);
         argv.extend([
             "-e".into(),
             "CLAW_GATEWAY_WORK_ROOT=/claw_host_root".into(),
@@ -1011,7 +1076,7 @@ impl DockerPoolManager {
     }
 
     pub async fn release_slot(self: &Arc<Self>, slot: SlotLease) -> Result<(), String> {
-        let (was_leased, container_name, _slot_index) = {
+        let (was_leased, container_name, _slot_index, isolation) = {
             let mut slots = self.slots.lock().await;
             let s = slots
                 .get_mut(slot.slot_index)
@@ -1019,10 +1084,11 @@ impl DockerPoolManager {
             let was_leased = s.state == SlotState::Leased;
             let name = s.container_name.clone();
             let idx = slot.slot_index;
+            let isolation = s.bound_isolation;
             if was_leased {
                 s.state = SlotState::Idle;
             }
-            (was_leased, name, idx)
+            (was_leased, name, idx, isolation)
         };
         if was_leased {
             if let Some(ref script) = self.on_release_exec {
@@ -1030,7 +1096,8 @@ impl DockerPoolManager {
                     self.run_on_release_hook(&container_name, script).await;
                 }
             }
-            self.kill_worker_solve_processes(&container_name).await;
+            self.kill_worker_solve_processes(&container_name, isolation)
+                .await;
             info!(
                 target: "claw_gateway_pool",
                 component = "docker_pool",
@@ -1115,7 +1182,14 @@ impl DockerPoolManager {
 #[cfg(test)]
 impl DockerPoolManager {
     pub(crate) fn test_exec_solve_argv_prefix(&self) -> Vec<String> {
-        self.exec_solve_argv_prefix()
+        self.exec_solve_argv_prefix_for(WorkerIsolationMode::Strict)
+    }
+
+    pub(crate) fn test_exec_solve_argv_prefix_for(
+        &self,
+        isolation: WorkerIsolationMode,
+    ) -> Vec<String> {
+        self.exec_solve_argv_prefix_for(isolation)
     }
 
     pub(crate) async fn test_leased_container_name(
@@ -1134,6 +1208,7 @@ mod exec_solve_argv_prefix_tests {
     use super::DockerPoolManager;
     use crate::pool::config::DockerPoolConfig;
     use crate::pool::worker_identity::PoolWorkerIdentity;
+    use crate::pool::WorkerIsolationMode;
 
     fn pool(exec_user: Option<&str>) -> Arc<DockerPoolManager> {
         let base =
@@ -1154,6 +1229,7 @@ mod exec_solve_argv_prefix_tests {
             exec_user,
             worker_identity,
             security_boost: false,
+            fixed_isolation: None,
             symlink_inject: true,
             worker_env_host_file: None,
             live_report_hub: None,
@@ -1179,6 +1255,15 @@ mod exec_solve_argv_prefix_tests {
         assert_eq!(
             p.test_exec_solve_argv_prefix(),
             vec!["exec".to_string(), "--user".to_string(), "claw".to_string()]
+        );
+    }
+
+    #[test]
+    fn exec_prefix_relaxed_uses_root() {
+        let p = pool(None);
+        assert_eq!(
+            p.test_exec_solve_argv_prefix_for(WorkerIsolationMode::Relaxed),
+            vec!["exec".to_string(), "--user".to_string(), "0:0".to_string()]
         );
     }
 
@@ -1261,6 +1346,7 @@ mod docker_pool_integration_tests {
             exec_user: None,
             worker_identity: PoolWorkerIdentity::from_env(None),
             security_boost: false,
+            fixed_isolation: None,
             symlink_inject: true,
             worker_env_host_file: None,
             live_report_hub: None,
