@@ -37,7 +37,8 @@ Author: kejiqing
 | `CLAW_CONTAINER_RUNTIME` | `docker` |
 | `CLAW_IMAGE_PREFIX` | `local` |
 | `CLAW_RELEASE_SKIP_PULL` | `1` |
-| `CLAW_USE_CN_CRATES_MIRROR` | `1` |
+| `CLAW_USE_CN_CRATES_MIRROR` | `1`（cargo → rsproxy.cn sparse index） |
+| `CLAW_USE_CN_RUST_MIRROR` | `1`（rustup/clippy/std → USTC rust-static） |
 | `CLAW_POOL_ADVERTISE_HOST` | `10.22.28.94` |
 | `CLAW_CLUSTER_ID` | `sunmi-ci-01` |
 | `CLAW_POOL_ID` | `pool-sunmi-ci-01` |
