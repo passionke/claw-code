@@ -37,7 +37,7 @@ claw_ci_require_llm_bootstrap_vars() {
   echo "  present in this job (yes/no):" >&2
   echo "    CLAW_BOOTSTRAP_LLM_API_KEY=$(claw_ci_var_set CLAW_BOOTSTRAP_LLM_API_KEY) OPENAI_API_KEY=$(claw_ci_var_set OPENAI_API_KEY)" >&2
   echo "    CLAW_BOOTSTRAP_LLM_BASE_URL=$(claw_ci_var_set CLAW_BOOTSTRAP_LLM_BASE_URL) UPSTREAM_OPENAI_BASE_URL=$(claw_ci_var_set UPSTREAM_OPENAI_BASE_URL) OPENAI_BASE_URL=$(claw_ci_var_set OPENAI_BASE_URL)" >&2
-  echo "  if all no: add Variables on this project; uncheck Protected unless main is protected; Environment scope *" >&2
+  echo "  if all no: add Variables; uncheck Protected; scope *; only API_KEY should be Masked (not BASE_URL)" >&2
   echo "  doc: deploy/stack/docs/gitlab-ci-variables.md" >&2
   exit 1
 }

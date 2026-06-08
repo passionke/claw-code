@@ -8,8 +8,8 @@ Author: kejiqing
 
 | Key | Masked | Protected | 说明 | 示例 |
 |-----|--------|-----------|------|------|
-| `CLAW_BOOTSTRAP_LLM_API_KEY` | **是** | 建议 | LLM API Key；`up` 时写入 PG active LLM | `sk-...` |
-| `CLAW_BOOTSTRAP_LLM_BASE_URL` | 否 | 建议 | OpenAI 兼容 base URL，**须含 `/v1` 后缀** | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| `CLAW_BOOTSTRAP_LLM_API_KEY` | **是** | 否（除非 main protected） | LLM API Key；`up` 时写入 PG active LLM | `sk-...` |
+| `CLAW_BOOTSTRAP_LLM_BASE_URL` | **否** | 否 | OpenAI 兼容 base URL，**须含 `/v1`**；URL 含 `://` `/` **不能 Mask**，否则 job 可能读不到 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 
 `deploy:release` 设了 `CLAW_CI_REQUIRE_LLM_BOOTSTRAP=1`，缺上述两项时 `render-env-from-ci.sh` 直接失败并提示本页。
 
@@ -17,7 +17,7 @@ Author: kejiqing
 
 | Key | 说明 | 默认（未设时） |
 |-----|------|----------------|
-| `CLAW_BOOTSTRAP_LLM_MODEL_NAME` | 模型 id | `gpt-4o-mini` |
+| `CLAW_BOOTSTRAP_LLM_MODEL_NAME` | 模型 id；**不要 Mask** | `gpt-4o-mini` / `qwen-plus` |
 | `CLAW_BOOTSTRAP_LLM_NAME` | Admin 里显示名 | `ci-bootstrap` |
 | `CLAUDE_TAP_IMAGE` | claw-tap 镜像 | ACR `passionke/claw-tap:latest`（见 `env.production.example`） |
 
@@ -48,9 +48,9 @@ Author: kejiqing
 ## 4. GitLab 添加步骤
 
 1. 打开 `http://code.sunmi.com/minidata/claw-code` → **Settings** → **CI/CD** → **Variables** → **Add variable**
-2. 添加 `CLAW_BOOTSTRAP_LLM_API_KEY`：Type **Variable**，勾选 **Mask variable**
-3. 添加 `CLAW_BOOTSTRAP_LLM_BASE_URL`：例如 `https://dashscope.aliyuncs.com/compatible-mode/v1`
-4. （可选）`CLAW_BOOTSTRAP_LLM_MODEL_NAME`
+2. 添加 `CLAW_BOOTSTRAP_LLM_API_KEY`：勾选 **Mask variable**（仅此一项建议 Mask）
+3. 添加 `CLAW_BOOTSTRAP_LLM_BASE_URL`：**不要 Mask**（URL 含 `:` `/` 时 Mask 会导致变量无法注入 job）
+4. （可选）`CLAW_BOOTSTRAP_LLM_MODEL_NAME`：**不要 Mask**
 5. **不要**勾选 **Protected**，除非已在 **Settings → Repository → Protected branches** 把 `main` 设为 protected；否则 deploy job 读不到变量（日志里会显示 `present … all no`）
 6. **Environment scope** 保持 `*`（All）
 7. **push `main`** 自动触发：**build:release-images** → **deploy:release** → `admin-solve-e2e.sh`
