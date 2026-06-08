@@ -82,8 +82,10 @@ echo "resolve host pool-daemon binary from ${IMG} …" >&2
 try_cli() {
   local c="$1"
   if command -v "${c}" >/dev/null 2>&1; then
-    if "${c}" image exists "${IMG}" 2>/dev/null; then
-      return 0
+    if [[ "${c}" == docker ]]; then
+      "${c}" image inspect "${IMG}" >/dev/null 2>&1 && return 0
+    else
+      "${c}" image exists "${IMG}" >/dev/null 2>&1 && return 0
     fi
   fi
   return 1
