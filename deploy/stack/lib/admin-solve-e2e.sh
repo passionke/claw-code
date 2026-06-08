@@ -6,6 +6,8 @@ PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/pool-health.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/bootstrap-runtime.sh"
 
 GATEWAY_PORT="${GATEWAY_HOST_PORT:-18088}"
 DS_ID="${1:-1}"
@@ -13,6 +15,7 @@ PROMPT="${2:-connectivity check}"
 
 claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}"
 claw_wait_gateway_claw_tap_ready || exit 1
+claw_ensure_default_project_ds "${DS_ID}" || exit 1
 
 BODY="$(GATEWAY_PORT="${GATEWAY_PORT}" DS_ID="${DS_ID}" USER_PROMPT="${PROMPT}" python3 <<'PY'
 import json, os, urllib.request

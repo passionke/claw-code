@@ -71,22 +71,56 @@ claw_bootstrap_llm_from_env() {
   return 0
 }
 
-claw_bootstrap_project_if_missing() {
-  local ds_id="${1:-1}"
+# Default ds (dsId=1): POST /v1/projects + /v1/init; verify GET config 200. Author: kejiqing
+claw_ensure_default_project_ds() {
+  local ds_id="${1:-${CLAW_BOOTSTRAP_DS_ID:-1}}"
   local port="${GATEWAY_HOST_PORT:-18088}"
-  local code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 \
+  local code resp http_code
+
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 \
     "http://127.0.0.1:${port}/v1/project/config/${ds_id}" 2>/dev/null || echo 000)"
-  if [[ "${code}" == "200" ]]; then
-    echo "bootstrap: project_config ds=${ds_id} exists"
-    return 0
+  if [[ "${code}" != "200" ]]; then
+    echo "==> bootstrap POST /v1/projects dsId=${ds_id} (config was HTTP ${code})" >&2
+    resp="$(mktemp)"
+    http_code="$(curl -sS --connect-timeout 120 -o "${resp}" -w '%{http_code}' -X POST \
+      "http://127.0.0.1:${port}/v1/projects" \
+      -H 'Content-Type: application/json' \
+      -d "{\"dsId\":${ds_id}}" 2>/dev/null || echo 000)"
+    if [[ "${http_code}" != "200" && "${http_code}" != "409" ]]; then
+      echo "error: POST /v1/projects ds=${ds_id} HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 500)" >&2
+      rm -f "${resp}"
+      return 1
+    fi
+    rm -f "${resp}"
+    echo "bootstrap: POST /v1/projects ds=${ds_id} HTTP ${http_code}"
+  else
+    echo "bootstrap: project_config ds=${ds_id} exists (GET 200)"
   fi
-  echo "==> bootstrap POST /v1/projects dsId=${ds_id}" >&2
-  curl -fsS --connect-timeout 60 -X POST "http://127.0.0.1:${port}/v1/projects" \
+
+  echo "==> bootstrap POST /v1/init dsId=${ds_id}" >&2
+  resp="$(mktemp)"
+  http_code="$(curl -sS --connect-timeout 120 -o "${resp}" -w '%{http_code}' -X POST \
+    "http://127.0.0.1:${port}/v1/init" \
     -H 'Content-Type: application/json' \
-    -d "{\"dsId\":${ds_id}}"
-  echo
-  echo "bootstrap: project ds=${ds_id} created"
+    -d "{\"dsId\":${ds_id}}" 2>/dev/null || echo 000)"
+  if [[ "${http_code}" != "200" ]]; then
+    echo "error: POST /v1/init ds=${ds_id} HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 500)" >&2
+    rm -f "${resp}"
+    return 1
+  fi
+  rm -f "${resp}"
+
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 \
+    "http://127.0.0.1:${port}/v1/project/config/${ds_id}" 2>/dev/null || echo 000)"
+  if [[ "${code}" != "200" ]]; then
+    echo "error: ds=${ds_id} still missing after bootstrap (GET config HTTP ${code})" >&2
+    return 1
+  fi
+  echo "bootstrap: ds=${ds_id} registered (project + init, GET config 200)"
+}
+
+claw_bootstrap_project_if_missing() {
+  claw_ensure_default_project_ds "$@"
 }
 
 claw_claude_tap_up_and_register() {
@@ -125,11 +159,6 @@ claw_bootstrap_gateway_runtime() {
       return 0
     fi
   fi
-
-  claw_bootstrap_project_if_missing "${CLAW_BOOTSTRAP_DS_ID:-1}" || {
-    [[ "${auto}" == "1" ]] && return 1
-    echo "note: project bootstrap skipped or failed (non-fatal)" >&2
-  }
 
   echo "==> claude-tap up + Admin register (CLAUDE_TAP_MODE=${CLAUDE_TAP_MODE:-docker})" >&2
   claw_claude_tap_up_and_register "${podman_dir}" "${root_dir}"

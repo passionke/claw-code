@@ -145,12 +145,19 @@ else
   exit 1
 fi
 
-# claude-tap after gateway: bootstrap LLM/project from .env, tap-up + Admin clawTap register. kejiqing
+# Default project ds_1 (project_config + workspace init) on every up. kejiqing
+# shellcheck disable=SC1091
+source "${LIB_DIR}/bootstrap-runtime.sh"
+claw_wait_gateway_http_ready 45
+claw_ensure_default_project_ds "${CLAW_BOOTSTRAP_DS_ID:-1}" || {
+  echo "error: default project ds bootstrap failed (POST /v1/projects + /v1/init)" >&2
+  exit 1
+}
+
+# claude-tap: bootstrap LLM from .env, tap-up + Admin clawTap register. kejiqing
 if claw_stack_manages_local_claude_tap; then
-  # shellcheck disable=SC1091
-  source "${LIB_DIR}/bootstrap-runtime.sh"
   claw_bootstrap_gateway_runtime "${PODMAN_DIR}" "${REPO_ROOT}" || {
-    echo "error: gateway runtime bootstrap failed (LLM / project / clawTap register)" >&2
+    echo "error: gateway runtime bootstrap failed (LLM / clawTap register)" >&2
     exit 1
   }
 fi
