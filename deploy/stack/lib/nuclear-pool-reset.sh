@@ -1,6 +1,11 @@
 # shellcheck shell=bash
 # Stop pool daemon, free TCP port, remove every claw worker container (any name/tag). Author: kejiqing
 
+claw_pool_http_health_alive() {
+  local port="${1:?port}"
+  curl -fsS --connect-timeout 2 "http://127.0.0.1:${port}/healthz/live-report" >/dev/null 2>&1
+}
+
 claw_tcp_port_listening() {
   local port="$1"
   [[ -n "${port}" ]] || return 1
@@ -64,9 +69,13 @@ claw_kill_tcp_listeners() {
     claw_kill_pids_on_tcp_port "${port}" 9
     sleep 0.2
   fi
-  if claw_tcp_port_listening "${port}"; then
+  if claw_tcp_port_listening "${port}" || claw_pool_http_health_alive "${port}"; then
     claw_kill_tcp_listeners_privileged "${port}"
-    sleep 0.2
+    sleep 0.5
+  fi
+  if claw_pool_http_health_alive "${port}"; then
+    claw_kill_tcp_listeners_privileged "${port}"
+    sleep 0.5
   fi
 }
 

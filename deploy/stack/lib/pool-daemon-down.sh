@@ -42,7 +42,9 @@ elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
     echo "==> stopping claw-pool-daemon (systemd)" >&2
     claw_pool_systemd_stop || true
   elif claw_pool_systemd_installed 2>/dev/null; then
-    echo "==> pool systemd unit present but no passwordless sudo; using kill fallback" >&2
+    echo "==> pool systemd unit present but no passwordless sudo; stop via docker chroot" >&2
+    claw_pool_systemd_stop_via_docker || true
+    claw_pool_wait_http_down 2>/dev/null && exit 0
   fi
 fi
 
@@ -75,5 +77,5 @@ if claw_pool_wait_http_down 2>/dev/null; then
   exit 0
 fi
 echo "error: claw-pool-daemon still listening on 127.0.0.1:${HTTP_PORT} after stop" >&2
-echo "hint: on CI set CLAW_POOL_DAEMON_USE_SYSTEMD=0; on prod grant NOPASSWD systemctl for claw-pool-daemon" >&2
+echo "hint: CLAW_POOL_DAEMON_USE_SYSTEMD=0 on CI; or NOPASSWD systemctl; check deploy/stack/.claw-pool-rpc/daemon-down.audit.log" >&2
 exit 1
