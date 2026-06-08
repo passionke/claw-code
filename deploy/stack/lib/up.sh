@@ -100,26 +100,21 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   claw_nuclear_pool_reset "${PODMAN_DIR}"
   claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_DIR}/claw-workspace}"
   rt="$(claw_container_runtime_cli)"
-  echo "pull ${GATEWAY_IMAGE} …" >&2
-  "${rt}" pull "${GATEWAY_IMAGE}"
+  claw_release_pull_image_if_needed "${rt}" "${GATEWAY_IMAGE}"
   if [[ -n "${GATEWAY_PLAYGROUND_IMAGE:-}" ]]; then
-    echo "pull ${GATEWAY_PLAYGROUND_IMAGE} …" >&2
-    "${rt}" pull "${GATEWAY_PLAYGROUND_IMAGE}"
+    claw_release_pull_image_if_needed "${rt}" "${GATEWAY_PLAYGROUND_IMAGE}"
   fi
   case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
     docker_pool)
-      echo "pull ${CLAW_DOCKER_IMAGE} …" >&2
-      "${rt}" pull "${CLAW_DOCKER_IMAGE}"
+      claw_release_pull_image_if_needed "${rt}" "${CLAW_DOCKER_IMAGE}"
       ;;
     *)
-      echo "pull ${CLAW_PODMAN_IMAGE} …" >&2
-      "${rt}" pull "${CLAW_PODMAN_IMAGE}"
+      claw_release_pull_image_if_needed "${rt}" "${CLAW_PODMAN_IMAGE}"
       ;;
   esac
   if claw_stack_manages_local_claude_tap; then
     tap_img="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
-    echo "pull ${tap_img} …" >&2
-    "${rt}" pull "${tap_img}"
+    claw_release_pull_image_if_needed "${rt}" "${tap_img}"
   fi
 fi
 

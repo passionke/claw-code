@@ -129,6 +129,18 @@ claw_write_release_pin_env() {
   } >"${f}"
 }
 
+# Skip remote pull when CI built images on this host (CLAW_RELEASE_SKIP_PULL=1 + image exists). kejiqing
+claw_release_pull_image_if_needed() {
+  local rt="$1"
+  local image="$2"
+  if [[ "${CLAW_RELEASE_SKIP_PULL:-0}" == "1" ]] && "${rt}" image inspect "${image}" >/dev/null 2>&1; then
+    echo "skip pull ${image} (CLAW_RELEASE_SKIP_PULL=1, local image present)" >&2
+    return 0
+  fi
+  echo "pull ${image} …" >&2
+  "${rt}" pull "${image}"
+}
+
 # After sourcing repo .env (may contain :local image tags). Prefer --release tag, then sticky pin file.
 # Writes deploy/stack/.claw-image-release.env + .claw-pool-worker.env when a release tag is active.
 claw_reapply_pool_image_pins() {
