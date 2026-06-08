@@ -65,7 +65,11 @@ gateway clawTap ready (/readyz attempt …)
 
 随后 `admin-solve-e2e.sh` → `poll status=succeeded`。
 
-## 6. 参考
+## 6. Runner 工作区
+
+CI 使用 `GIT_CLEAN_FLAGS=-ffd`（不用 `-x`），避免 `git clean` 删除 root 拥有的 `deploy/stack/claw-postgres-data/` 导致 checkout 失败。PG 数据在 runner 上跨 pipeline 保留。
+
+## 7. 参考
 
 - 变量模板：`deploy/stack/env.ci.example`
 - 生成脚本：`deploy/stack/lib/render-env-from-ci.sh`

@@ -6,6 +6,10 @@ workflow:
     - if: $CI_COMMIT_BRANCH == "main"
     - when: never
 
+# Default -ffdx removes ignored deploy/stack/claw-postgres-data (root-owned) → checkout fails.
+variables:
+  GIT_CLEAN_FLAGS: "-ffd"
+
 stages:
   - build
   - deploy
