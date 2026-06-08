@@ -335,7 +335,7 @@ claw_podman_load_compose_args() {
   if [[ -f "${script_dir}/lib/env-profile.sh" ]]; then
     # shellcheck source=env-profile.sh
     source "${script_dir}/lib/env-profile.sh"
-    claw_apply_deploy_profile 2>/dev/null || true
+    claw_apply_deploy_profile || return 1
   fi
   if [[ -f "${script_dir}/.claw-pool-rpc/pool-registry.env" ]]; then
     set -a
@@ -600,16 +600,26 @@ claw_compose_pg_wait_healthy() {
 claw_compose_gateway_service_list() {
   local podman_dir="$1"
   local repo_env="$2"
-  local pg
+  local pg errf rc
   pg="$(claw_compose_pg_service)"
+  errf="$(mktemp)"
   local svc
+  rc=0
   while IFS= read -r svc; do
     [[ -z "${svc}" ]] && continue
     [[ "${svc}" == "${pg}" ]] && continue
     printf '%s ' "${svc}"
   done < <(
-    claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" config --services 2>/dev/null
+    claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" config --services 2>"${errf}" \
+      || rc=$?
   )
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "error: docker compose config failed (check .env / GATEWAY_IMAGE / docker access):" >&2
+    sed -n '1,20p' "${errf}" >&2 || true
+    rm -f "${errf}"
+    return 1
+  fi
+  rm -f "${errf}"
 }
 
 claw_compose_gateway_down() {

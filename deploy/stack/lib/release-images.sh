@@ -192,6 +192,7 @@ claw_compose_with_root_env() {
   local repo_env="$2"
   shift 2
   local sticky="${podman_dir}/.claw-image-release.env"
+  local profile_sh="${podman_dir}/lib/env-profile.sh"
   # Legacy `docker-compose` v1 (common behind podman on Aliyun) accepts only one `--env-file`;
   # a second `--env-file` prints usage and exits. Source env in a subshell instead. Author: kejiqing
   (
@@ -202,6 +203,12 @@ claw_compose_with_root_env() {
     if [[ -f "${sticky}" ]]; then
       # shellcheck disable=SC1090
       source "${sticky}"
+    fi
+    # Apply profile defaults (GATEWAY_IMAGE=claw-gateway-rs:local, etc.) for compose interpolation.
+    if [[ -f "${profile_sh}" ]]; then
+      # shellcheck disable=SC1090
+      source "${profile_sh}"
+      claw_apply_deploy_profile
     fi
     set +a
     claw_compose "$@"
