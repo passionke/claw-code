@@ -42,9 +42,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# shellcheck source=/dev/null
+source "${ROOT}/deploy/stack/lib/pool-daemon-binary.sh"
+
 # gateway.sh up may already export a release-pinned GATEWAY_IMAGE; do not let .env :local override it.
 _pinned_gw=""
-if [[ "${GATEWAY_IMAGE:-}" == *claw-code* ]]; then
+if claw_gateway_image_carries_pool_daemon "${GATEWAY_IMAGE:-}"; then
   _pinned_gw="${GATEWAY_IMAGE}"
 fi
 if [[ -f "${ROOT}/.env" ]]; then

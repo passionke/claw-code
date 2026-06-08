@@ -250,12 +250,15 @@ else
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${PYTHON_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}"
 
+  STACK_DIR="${ROOT_DIR}/deploy/stack"
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/deploy/stack/lib/pool-daemon-binary.sh"
   if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
-    STACK_DIR="${ROOT_DIR}/deploy/stack"
-    # shellcheck source=/dev/null
-    source "${ROOT_DIR}/deploy/stack/lib/pool-daemon-binary.sh"
-    step "host claw-pool-daemon"
+    step "host claw-pool-daemon (macOS cargo build)"
     CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
+  elif claw_gateway_image_carries_pool_daemon "${IMAGE_NAME}"; then
+    step "host claw-pool-daemon (from ${IMAGE_NAME})"
+    GATEWAY_IMAGE="${IMAGE_NAME}" claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
   fi
 fi
 
