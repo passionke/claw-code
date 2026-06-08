@@ -28,21 +28,19 @@ claw_export_llm_runtime_layout "${PODMAN_DIR}"
 
 # shellcheck source=/dev/null
 source "${LIB_DIR}/pool-health.sh"
-if ! claw_gateway_has_active_llm; then
-  echo "error: claude-tap requires active LLM in PostgreSQL (Admin → 全局推理 Apply first)" >&2
-  echo "hint: curl -fsS http://127.0.0.1:${GATEWAY_HOST_PORT:-18088}/v1/gateway/global-settings | python3 -m json.tool" >&2
-  exit 1
-fi
-
 # shellcheck source=/dev/null
-source "${LIB_DIR}/claude-tap-local.sh"
-claw_claude_tap_start "${PODMAN_DIR}" "${ROOT_DIR}"
+source "${LIB_DIR}/bootstrap-runtime.sh"
 
-claw_ensure_worker_llm_wiring "${PODMAN_DIR}"
-
-if claw_claude_tap_register_in_admin; then
-  claw_wait_gateway_claw_tap_ready 30 || true
+claw_wait_gateway_http_ready 30
+if ! claw_gateway_has_active_llm; then
+  if ! claw_bootstrap_llm_from_env; then
+    echo "error: claude-tap requires active LLM in PostgreSQL (Admin → 全局推理 Apply first)" >&2
+    echo "hint: curl -fsS http://127.0.0.1:${GATEWAY_HOST_PORT:-18088}/v1/gateway/global-settings | python3 -m json.tool" >&2
+    exit 1
+  fi
 fi
+
+claw_claude_tap_up_and_register "${PODMAN_DIR}" "${ROOT_DIR}"
 
 if [[ -n "${CLAUDE_TAP_DOCKER_NETWORK:-}" ]]; then
   _tap_admin_host="$(claw_claude_tap_admin_host)"

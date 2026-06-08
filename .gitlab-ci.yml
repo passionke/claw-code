@@ -15,6 +15,10 @@ stages:
   CLAW_POOL_ADVERTISE_HOST: "10.22.28.94"
   CLAW_CLUSTER_ID: sunmi-ci-01
   CLAW_POOL_ID: pool-sunmi-ci-01
+  CLAW_AUTO_BOOTSTRAP: "1"
+  # Masked in GitLab CI/CD Variables (required for deploy:release + admin-solve-e2e):
+  # CLAW_BOOTSTRAP_LLM_API_KEY, CLAW_BOOTSTRAP_LLM_BASE_URL
+  # Optional: CLAW_BOOTSTRAP_LLM_MODEL_NAME (default gpt-4o-mini)
 
 build:release-images:
   stage: build

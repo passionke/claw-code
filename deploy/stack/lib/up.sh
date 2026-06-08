@@ -145,22 +145,14 @@ else
   exit 1
 fi
 
-# claude-tap after gateway (docker mode needs compose network). release already tap-down'd above. kejiqing
+# claude-tap after gateway: bootstrap LLM/project from .env, tap-up + Admin clawTap register. kejiqing
 if claw_stack_manages_local_claude_tap; then
   # shellcheck disable=SC1091
-  source "${LIB_DIR}/pool-health.sh"
-  if claw_gateway_has_active_llm; then
-    echo "==> claude-tap up (CLAUDE_TAP_MODE=${CLAUDE_TAP_MODE:-docker})" >&2
-    "${LIB_DIR}/tap-up.sh"
-    claw_wait_gateway_claw_tap_ready 30 || {
-      echo "error: gateway /readyz not strict after tap-up (clawTap poll lag)" >&2
-      exit 1
-    }
-  else
-    echo "note: skip claude-tap — no active LLM in PG (cluster=${CLAW_CLUSTER_ID:-unset})" >&2
-    echo "      1) open Admin :${GATEWAY_PLAYGROUND_HOST_PORT:-18765}/admin → 全局推理 Apply" >&2
-    echo "      2) ./deploy/stack/gateway.sh tap-up  (registers claw-claude-tap in Admin)" >&2
-  fi
+  source "${LIB_DIR}/bootstrap-runtime.sh"
+  claw_bootstrap_gateway_runtime "${PODMAN_DIR}" "${REPO_ROOT}" || {
+    echo "error: gateway runtime bootstrap failed (LLM / project / clawTap register)" >&2
+    exit 1
+  }
 fi
 
 _gw_tag="${GATEWAY_IMAGE##*:}"
