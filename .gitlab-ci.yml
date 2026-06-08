@@ -1,23 +1,25 @@
-# Sunmi CI: env from job variables → render-env-from-ci.sh (no hand-maintained runner .env)
+# Sunmi CI: push main → build → deploy → admin-solve-e2e (no manual gate)
+# Env: GitLab Settings → CI/CD → Variables → deploy/stack/docs/gitlab-ci-variables.md
 # Author: kejiqing
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - when: never
+
 stages:
   - build
   - deploy
 
-# Per-runner overrides in GitLab: Settings → CI/CD → Variables, or fork this block per machine tag.
 .variables:production-docker: &ci_production_docker
   CLAW_DEPLOY_PROFILE: production
   CLAW_CONTAINER_RUNTIME: docker
   CLAW_IMAGE_PREFIX: local
   CLAW_RELEASE_SKIP_PULL: "1"
   CLAW_USE_CN_CRATES_MIRROR: "1"
-  # Required — set per runner / machine (or CI/CD Variables):
   CLAW_POOL_ADVERTISE_HOST: "10.22.28.94"
   CLAW_CLUSTER_ID: sunmi-ci-01
   CLAW_POOL_ID: pool-sunmi-ci-01
   CLAW_AUTO_BOOTSTRAP: "1"
-  # LLM: set in GitLab Settings → CI/CD → Variables (see deploy/stack/docs/gitlab-ci-variables.md)
-  #   CLAW_BOOTSTRAP_LLM_API_KEY (masked), CLAW_BOOTSTRAP_LLM_BASE_URL
 
 build:release-images:
   stage: build
@@ -46,7 +48,6 @@ deploy:release:
   resource_group: claw-deploy
   tags:
     - claw-dev
-  when: manual
   needs:
     - build:release-images
   variables:
@@ -60,13 +61,3 @@ deploy:release:
     - ./deploy/stack/gateway.sh up --release "${CLAW_RELEASE_TAG}"
     - ./deploy/stack/lib/admin-solve-e2e.sh 1 ping
   timeout: 2h
-
-# One-shot (build + deploy in single manual job):
-# deploy:ci-release:
-#   when: manual
-#   variables: *ci_production_docker
-#   script:
-#     - cd "${CI_PROJECT_DIR}"
-#     - git pull --ff-only origin main
-#     - export CLAW_RELEASE_TAG="release-${CI_COMMIT_SHORT_SHA}"
-#     - ./deploy/stack/lib/ci-release-deploy.sh

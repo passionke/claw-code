@@ -51,7 +51,7 @@ Author: kejiqing
 2. 添加 `CLAW_BOOTSTRAP_LLM_API_KEY`：Type **Variable**，Flags 勾选 **Mask variable**（建议 **Protect** 若仅 main 部署）
 3. 添加 `CLAW_BOOTSTRAP_LLM_BASE_URL`：同上，可不 Mask
 4. （可选）`CLAW_BOOTSTRAP_LLM_MODEL_NAME`
-5. Pipeline：**build:release-images**（自动）→ **deploy:release**（手动）
+5. **push `main`** 自动触发：**build:release-images** → **deploy:release** → `admin-solve-e2e.sh`
 
 ## 5. 验收
 
