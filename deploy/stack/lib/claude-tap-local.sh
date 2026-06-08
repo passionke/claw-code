@@ -479,9 +479,8 @@ claw_claude_tap_start() {
     fi
   fi
   if [[ -z "${upstream}" ]]; then
-    echo "UPSTREAM_OPENAI_BASE_URL is empty and ${root_dir}/.claw/claw-tap-upstream.json has no target" >&2
-    echo "hint: configure active LLM in Admin (PG); claude-tap polls PG for upstream (see docs/claw-tap-integration-requirements.md)" >&2
-    exit 1
+    upstream="https://bootstrap.invalid/v1"
+    echo "note: no UPSTREAM in .env or claw-tap-upstream.json; bootstrap placeholder until Admin LLM apply (PG hot-reloads tap)" >&2
   fi
 
   if claw_claude_tap_is_running "${podman_dir}"; then

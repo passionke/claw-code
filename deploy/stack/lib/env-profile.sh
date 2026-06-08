@@ -24,6 +24,10 @@ claw_deploy_profile_name() {
 # Set runtime/solve/tap defaults only when not already set in .env (explicit wins).
 claw_apply_deploy_profile() {
   local profile
+  local _profile_lib
+  _profile_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=release-images.sh
+  source "${_profile_lib}/release-images.sh"
   profile="$(claw_deploy_profile_name)" || return 1
   export CLAW_DEPLOY_PROFILE="${profile}"
 
@@ -64,11 +68,23 @@ claw_apply_deploy_profile() {
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
       export CLAW_GATEWAY_PG_IMAGE="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
+      export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
       ;;
   esac
 
   if [[ "${CLAW_USE_DOCKER:-0}" == "1" && "${CLAW_CONTAINER_RUNTIME:-}" == "auto" ]]; then
     export CLAW_CONTAINER_RUNTIME=docker
+  fi
+
+  # Linux docker + local pack-deploy: tap/solve defaults live in profile, not human .env. kejiqing
+  if [[ "${profile}" == local && "${CLAW_CONTAINER_RUNTIME:-}" == docker ]]; then
+    export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-docker_pool}"
+    export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-docker}"
+    export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
+    export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
+    export CLAUDE_TAP_DOCKER_NETWORK="${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
+    export CLAW_DOCKER_NETWORK="${CLAW_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
+    export CLAUDE_TAP_PUBLISH_PROXY="${CLAUDE_TAP_PUBLISH_PROXY:-0}"
   fi
 
   claw_sync_solve_worker_image_prefix || return 1

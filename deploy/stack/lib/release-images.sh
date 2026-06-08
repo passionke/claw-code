@@ -10,6 +10,10 @@ claw_default_ghcr_image_prefix() {
   printf '%s' "${CLAW_GHCR_DEFAULT_PREFIX:-ghcr.io/passionke}"
 }
 
+claw_default_claude_tap_image() {
+  printf '%s/claw-tap:latest' "$(claw_default_acr_image_prefix)"
+}
+
 claw_image_registry_prefix_from_env() {
   # CLAW_IMAGE_PREFIX wins (registry-agnostic name); CLAW_GHCR_PREFIX kept for back-compat.
   local prefix="${CLAW_IMAGE_PREFIX:-${CLAW_GHCR_PREFIX:-}}"

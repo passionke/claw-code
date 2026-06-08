@@ -19,6 +19,10 @@ source "${ROOT_ENV}"
 set +a
 
 # shellcheck source=/dev/null
+source "${LIB_DIR}/env-profile.sh"
+claw_apply_deploy_profile || exit 1
+
+# shellcheck source=/dev/null
 source "${LIB_DIR}/compose-include.sh"
 claw_export_llm_runtime_layout "${PODMAN_DIR}"
 

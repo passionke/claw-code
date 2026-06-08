@@ -117,7 +117,7 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
       ;;
   esac
   if claw_stack_manages_local_claude_tap; then
-    tap_img="${CLAUDE_TAP_IMAGE:-claude-tap:local}"
+    tap_img="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
     echo "pull ${tap_img} …" >&2
     "${rt}" pull "${tap_img}"
   fi
