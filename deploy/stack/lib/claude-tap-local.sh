@@ -505,20 +505,72 @@ claw_claude_tap_start() {
       exit 1
       ;;
   esac
-  claw_claude_tap_wait_healthy || exit 1
+  claw_claude_tap_wait_healthy 30 "${podman_dir}" || exit 1
+}
+
+claw_claude_tap_proxy_published_on_host() {
+  case "${CLAUDE_TAP_PUBLISH_PROXY-}" in
+    0 | none | false | off) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+claw_claude_tap_probe_healthz() {
+  local port="${1:-${CLAUDE_TAP_PORT:-8080}}"
+  if claw_claude_tap_proxy_published_on_host; then
+    curl -fsS --connect-timeout 2 "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1
+    return $?
+  fi
+  local rt container_name
+  rt="$(claw_claude_tap_runtime_cli)"
+  container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
+  if claw_claude_tap_container_running "${rt}" "${container_name}"; then
+    "${rt}" exec "${container_name}" curl -fsS --connect-timeout 2 "http://127.0.0.1:8080/healthz" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
+claw_claude_tap_print_startup_failure() {
+  local podman_dir="$1"
+  local log_file="${podman_dir}/claude-tap.log"
+  local rt container_name logs_blob=""
+  rt="$(claw_claude_tap_runtime_cli)"
+  container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
+  if [[ -f "${log_file}" ]]; then
+    tail -20 "${log_file}" >&2 || true
+    logs_blob="$(tail -50 "${log_file}" 2>/dev/null || true)"
+  fi
+  if "${rt}" container exists "${container_name}" >/dev/null 2>&1; then
+    logs_blob+=$'\n'"$("${rt}" logs "${container_name}" 2>&1 | tail -30 || true)"
+  fi
+  if grep -q "No active LLM for cluster" <<<"${logs_blob}"; then
+    echo "hint: claude-tap requires active LLM in PostgreSQL (cluster=${CLAW_CLUSTER_ID:-unset}); --tap-target / .env upstream are ignored" >&2
+    echo "      1) gateway + postgres must be up (./deploy/stack/gateway.sh up)" >&2
+    echo "      2) Admin → 全局推理 Apply, or PUT /v1/gateway/global-settings/active-llm-config" >&2
+    echo "      3) re-run: ./deploy/stack/gateway.sh tap-up" >&2
+  fi
 }
 
 claw_claude_tap_wait_healthy() {
   local port="${CLAUDE_TAP_PORT:-8080}"
   local max_attempts="${1:-30}"
+  local podman_dir="${2:-}"
   local i
+  local where="127.0.0.1:${port}"
+  if ! claw_claude_tap_proxy_published_on_host; then
+    where="docker exec ${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}:8080"
+  fi
   for i in $(seq 1 "${max_attempts}"); do
-    if curl -fsS --connect-timeout 2 "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
-      echo "claude-tap /healthz ok (attempt ${i}/${max_attempts})"
+    if claw_claude_tap_probe_healthz "${port}"; then
+      echo "claude-tap /healthz ok (attempt ${i}/${max_attempts}, via ${where})"
       return 0
     fi
     sleep 1
   done
-  echo "error: claude-tap not healthy on 127.0.0.1:${port} after ${max_attempts}s" >&2
+  echo "error: claude-tap not healthy on ${where} after ${max_attempts}s" >&2
+  if [[ -n "${podman_dir}" ]]; then
+    claw_claude_tap_print_startup_failure "${podman_dir}"
+  fi
   return 1
 }
