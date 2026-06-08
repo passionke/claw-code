@@ -146,6 +146,12 @@ else
 fi
 
 # Default project ds_1 (project_config + workspace init) on every up. kejiqing
+# Re-chown after compose up: legacy root-owned ds_* breaks POST /v1/projects on CI runners. kejiqing
+claw_prepare_bind_mount_ownership "${PODMAN_DIR}"
+claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_DIR}/claw-workspace}" || {
+  echo "error: workspace ownership fix failed before ds bootstrap (try gateway.sh fix-workspace)" >&2
+  exit 1
+}
 # shellcheck disable=SC1091
 source "${LIB_DIR}/bootstrap-runtime.sh"
 claw_wait_gateway_http_ready 45
