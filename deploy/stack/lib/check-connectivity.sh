@@ -43,9 +43,11 @@ else:
 cat /tmp/claw_gateway_healthz.json
 echo
 
-echo "[2/5] pool HTTP from gateway-rs container (host.containers.internal:${POOL_HTTP_PORT})"
-if ! podman exec "${GW_CTN}" curl -fsS --max-time 5 \
-  "http://host.containers.internal:${POOL_HTTP_PORT}/healthz/live-report" \
+echo "[2/5] pool HTTP from gateway-rs container"
+POOL_BASE="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
+echo "    ${POOL_BASE}/healthz/live-report"
+if ! claw_gateway_container_exec "${GW_CTN}" curl -fsS --max-time 5 \
+  "${POOL_BASE}/healthz/live-report" \
   >/tmp/claw_pool_health.json; then
   echo "error: gateway cannot reach pool HTTP — same failure as Admin 503" >&2
   echo "hint: ./deploy/stack/gateway.sh pool-up" >&2

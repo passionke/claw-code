@@ -45,6 +45,10 @@ echo "    日志: deploy/stack/.build.log（另开终端: tail -f deploy/stack/.
 "${LIB_DIR}/build.sh" "${BUILD_FLAGS[@]}" "${TAG}"
 
 claw_step_begin "2/4 restart stack (down + up)"
+if [[ "${TAG}" == local && -f "${STACK_DIR}/.claw-image-release.env" ]]; then
+  echo "==> pack-deploy local: drop sticky release pin ${STACK_DIR}/.claw-image-release.env" >&2
+  rm -f "${STACK_DIR}/.claw-image-release.env"
+fi
 "${LIB_DIR}/down.sh" && "${LIB_DIR}/up.sh" ${UP_ARGS+"${UP_ARGS[@]}"}
 
 claw_step_begin "3/4 stack verify"

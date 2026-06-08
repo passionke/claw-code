@@ -63,13 +63,23 @@ claw_pool_refresh_pid_file() {
   return 1
 }
 
+claw_gateway_container_exec() {
+  local gw_ctn="${1:?container}"
+  shift
+  local rt
+  # shellcheck disable=SC1091
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/compose-include.sh"
+  rt="$(claw_container_runtime_cli)" || return 1
+  "${rt}" exec "${gw_ctn}" "$@"
+}
+
 claw_assert_gateway_pool_http_reachable() {
   local podman_dir="${1:?podman_dir}"
   local gw_ctn="${CLAW_GATEWAY_CONTAINER:-claw-gateway-rs}"
   local base log
   base="$(claw_pool_http_base_url "${podman_dir}")" || return 1
   log="${podman_dir}/.claw-pool-rpc/daemon.log"
-  if ! podman exec "${gw_ctn}" curl -fsS --connect-timeout 3 \
+  if ! claw_gateway_container_exec "${gw_ctn}" curl -fsS --connect-timeout 3 \
     "${base}/healthz/live-report" >/dev/null 2>&1; then
     echo "error: gateway cannot reach pool HTTP ${base} (Admin solve_async → 503)" >&2
     echo "hint: ./deploy/stack/gateway.sh pool-up" >&2
@@ -92,7 +102,7 @@ claw_wait_gateway_pool_rpc_ready() {
   base="$(claw_pool_http_base_url "${podman_dir}")" || return 1
   body='{"op":"report_state","turn_id":"connectivity-probe"}'
   for i in $(seq 1 "${max_attempts}"); do
-    if podman exec "${gw_ctn}" curl -fsS --max-time 8 \
+    if claw_gateway_container_exec "${gw_ctn}" curl -fsS --max-time 8 \
       -X POST "${base}/v1/pool/rpc" \
       -H "Content-Type: application/json" \
       -d "${body}" >/dev/null 2>&1; then

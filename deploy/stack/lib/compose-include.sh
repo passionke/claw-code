@@ -280,11 +280,28 @@ claw_podman_append_admin_dist_bind() {
   fi
 }
 
+claw_ensure_compose_env_stubs() {
+  local script_dir="$1"
+  mkdir -p "${script_dir}/claw-workspace" "${script_dir}/.claw-pool-rpc"
+  if [[ ! -f "${script_dir}/.claw-worker-runtime.env" ]]; then
+    printf '%s\n' '# GENERATED stub — overwritten by up.sh (worker-llm-wiring). kejiqing' \
+      >"${script_dir}/.claw-worker-runtime.env"
+  fi
+  if [[ ! -f "${script_dir}/.claw-llm-runtime.env" ]]; then
+    printf '%s\n' '# GENERATED stub — overwritten by up.sh (llm-runtime-layout). kejiqing' \
+      >"${script_dir}/.claw-llm-runtime.env"
+  fi
+  if [[ ! -f "${script_dir}/.claw-pool-workspace.env" ]]; then
+    claw_podman_export_pool_workspace "${script_dir}"
+  fi
+}
+
 claw_podman_load_compose_args() {
   local script_dir="$1"
   local env_file="$2"
   unset CLAW_COMPOSE_WORKING_DIRECTORY
   script_dir="$(cd "${script_dir}" && pwd)"
+  claw_ensure_compose_env_stubs "${script_dir}"
   # Absolute `-f /.../deploy/stack/*.yml` makes Compose use `deploy/stack/` as project dir and auto-load
   # `deploy/stack/.env`, which can override `--env-file` image pins. Use `-f` relative to repo root and
   # run compose from that directory. kejiqing
@@ -334,10 +351,13 @@ claw_podman_load_compose_args() {
   local http_host profile_name
   if claw_pool_daemon_on_host; then
     profile_name="$(claw_deploy_profile_name 2>/dev/null || true)"
-    # v1 host pool on macOS/Linux: gateway container must reach host pool HTTP via
-    # Docker-provided host.containers.internal mapping (not LAN IP). kejiqing
+    # v1 host pool: gateway container → host pool HTTP (not LAN IP). kejiqing
     if [[ "${profile_name}" == local ]]; then
-      http_host="host.containers.internal"
+      if [[ "$(claw_container_runtime_cli 2>/dev/null || true)" == docker ]]; then
+        http_host="host.docker.internal"
+      else
+        http_host="host.containers.internal"
+      fi
     else
       http_host="$(claw_pool_gateway_to_host_rpc_ip)" || return 1
     fi

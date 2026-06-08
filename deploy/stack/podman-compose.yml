@@ -27,6 +27,9 @@ services:
     image: ${GATEWAY_IMAGE}
     container_name: claw-gateway-rs
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "host.containers.internal:host-gateway"
     # Match pool worker (USER claw, uid 1000): session dirs on bind-mounted claw-workspace must be worker-writable. kejiqing
     user: "${CLAW_WORKER_UID:-1000}:${CLAW_WORKER_GID:-1000}"
     # Postgres: `gateway.sh pg-up` / `pg_ensure` before `up` (no depends_on — avoids podman pod/name conflicts).
