@@ -21,6 +21,11 @@ claw_deploy_profile_name() {
   esac
 }
 
+# Bundled compose postgres URL when human .env omits it (same as podman-compose.yml). kejiqing
+claw_default_gateway_database_url() {
+  printf '%s' 'postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway'
+}
+
 # Set runtime/solve/tap defaults only when not already set in .env (explicit wins).
 claw_apply_deploy_profile() {
   local profile
@@ -85,6 +90,12 @@ claw_apply_deploy_profile() {
     export CLAUDE_TAP_DOCKER_NETWORK="${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
     export CLAW_DOCKER_NETWORK="${CLAW_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
     export CLAUDE_TAP_PUBLISH_PROXY="${CLAUDE_TAP_PUBLISH_PROXY:-0}"
+  fi
+
+  export CLAW_GATEWAY_DATABASE_URL="${CLAW_GATEWAY_DATABASE_URL:-$(claw_default_gateway_database_url)}"
+  export CLAW_GATEWAY_PG_HOST_PORT="${CLAW_GATEWAY_PG_HOST_PORT:-5433}"
+  if [[ "${profile}" == local ]]; then
+    export CLAW_CLUSTER_ID="${CLAW_CLUSTER_ID:-local-dev}"
   fi
 
   claw_sync_solve_worker_image_prefix || return 1

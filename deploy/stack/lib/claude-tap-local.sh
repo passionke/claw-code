@@ -119,7 +119,7 @@ claw_claude_tap_host_database_url() {
     printf '%s\n' "${CLAW_TAP_DATABASE_URL}"
     return 0
   fi
-  local url="${CLAW_GATEWAY_DATABASE_URL:-}"
+  local url="${CLAW_GATEWAY_DATABASE_URL:-postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway}"
   if [[ -z "${url}" ]]; then
     echo "CLAW_GATEWAY_DATABASE_URL is not set" >&2
     return 1
