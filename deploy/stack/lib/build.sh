@@ -179,16 +179,23 @@ if use_prebuilt_linux_path; then
   source "${ROOT_DIR}/deploy/stack/lib/linux-compile.sh"
   claw_linux_compile_release "${ROOT_DIR}" "${CONTAINER_CLI}" "${RUST_BASE_IMAGE}" "${CN_FLAG}"
 
+  APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
+  cn_mirror_enabled && APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
+
   step "2/3 image ${IMAGE_NAME} (Containerfile.gateway-rs.prebuilt)"
+  # shellcheck disable=SC2086
   "${CONTAINER_CLI}" build \
     --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+    "${APT_MIRROR_BUILD_ARGS[@]}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs.prebuilt" \
     -t "${IMAGE_NAME}" \
     "${ROOT_DIR}"
 
   step "3/3 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
+  # shellcheck disable=SC2086
   "${CONTAINER_CLI}" build \
     --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+    "${APT_MIRROR_BUILD_ARGS[@]}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker.prebuilt" \
     -t "${WORKER_IMAGE_NAME}" \
     "${ROOT_DIR}"
@@ -205,6 +212,7 @@ else
   step "config: in-image cargo build (Containerfile.gateway-rs)"
   RUSTUP_BUILD_ARGS=()
   CARGO_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_CRATES_MIRROR=0")
+  APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
   if [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
     RUSTUP_BUILD_ARGS=(
       --build-arg "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static"
@@ -213,6 +221,7 @@ else
   fi
   if cn_mirror_enabled; then
     CARGO_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_CRATES_MIRROR=1")
+    APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
   fi
 
   step "1/3 image ${IMAGE_NAME}"
@@ -222,6 +231,7 @@ else
     --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
     "${RUSTUP_BUILD_ARGS[@]}" \
     "${CARGO_MIRROR_BUILD_ARGS[@]}" \
+    "${APT_MIRROR_BUILD_ARGS[@]}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs" \
     -t "${IMAGE_NAME}" \
     "${ROOT_DIR}"
@@ -233,6 +243,7 @@ else
     --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
     "${RUSTUP_BUILD_ARGS[@]}" \
     "${CARGO_MIRROR_BUILD_ARGS[@]}" \
+    "${APT_MIRROR_BUILD_ARGS[@]}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker" \
     -t "${WORKER_IMAGE_NAME}" \
     "${ROOT_DIR}"
