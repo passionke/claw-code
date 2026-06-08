@@ -3,6 +3,7 @@ ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
 ARG CLAW_USE_CN_APT_MIRROR=0
 
 FROM ${DEBIAN_BASE_IMAGE}
+ARG CLAW_USE_CN_APT_MIRROR=0
 COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
 RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
       cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
