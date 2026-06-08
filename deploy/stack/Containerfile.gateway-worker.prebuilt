@@ -2,15 +2,10 @@
 ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
 
 FROM ${DEBIAN_BASE_IMAGE}
+COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
 ARG CLAW_USE_CN_APT_MIRROR=0
 RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
-      for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
-        [ -f "$$f" ] || continue; \
-        sed -i \
-          -e 's|deb.debian.org/debian|mirrors.ustc.edu.cn/debian|g' \
-          -e 's|security.debian.org/debian-security|mirrors.ustc.edu.cn/debian-security|g' \
-          "$$f"; \
-      done; \
+      cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
     fi; \
     apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
