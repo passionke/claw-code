@@ -40,10 +40,9 @@ elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
   source "${LIB_DIR}/pool-daemon-systemd.sh"
   if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_installed; then
     echo "==> stopping claw-pool-daemon (systemd)" >&2
-    claw_pool_systemd_stop
-    claw_pool_wait_http_down 2>/dev/null || true
-    rm -f "${RPC_DIR}/daemon.pid"
-    exit 0
+    claw_pool_systemd_stop || true
+  elif claw_pool_systemd_installed 2>/dev/null; then
+    echo "==> pool systemd unit present but no passwordless sudo; using kill fallback" >&2
   fi
 fi
 
@@ -71,3 +70,10 @@ source "${LIB_DIR}/nuclear-pool-reset.sh"
 claw_kill_tcp_listeners "${CLAW_POOL_DAEMON_PORT:-9943}" 2>/dev/null || true
 claw_kill_tcp_listeners "${HTTP_PORT}" 2>/dev/null || true
 rm -f "${RPC_DIR}/pool.sock"
+
+if claw_pool_wait_http_down 2>/dev/null; then
+  exit 0
+fi
+echo "error: claw-pool-daemon still listening on 127.0.0.1:${HTTP_PORT} after stop" >&2
+echo "hint: on CI set CLAW_POOL_DAEMON_USE_SYSTEMD=0; on prod grant NOPASSWD systemctl for claw-pool-daemon" >&2
+exit 1

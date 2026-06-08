@@ -23,6 +23,7 @@ stages:
   CLAW_POOL_ADVERTISE_HOST: "10.22.28.94"
   CLAW_CLUSTER_ID: sunmi-ci-01
   CLAW_POOL_ID: pool-sunmi-ci-01
+  CLAW_POOL_DAEMON_USE_SYSTEMD: "0"
   CLAW_AUTO_BOOTSTRAP: "1"
 
 build:release-images:

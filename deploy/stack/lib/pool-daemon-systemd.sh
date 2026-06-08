@@ -13,17 +13,19 @@ claw_pool_systemd_unit_path() {
 # production Linux host pool (docker_pool needs mount --make-rshared → root).
 claw_pool_use_systemd() {
   [[ "$(uname -s)" == "Linux" ]] || return 1
+  case "${CLAW_POOL_DAEMON_USE_SYSTEMD:-}" in
+    0 | false | no | off) return 1 ;;
+    1 | true | yes | on) ;;
+  esac
   # shellcheck disable=SC1091
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-profile.sh"
-  [[ "$(claw_deploy_profile_name)" == "production" ]]
+  [[ "$(claw_deploy_profile_name)" == "production" ]] || return 1
+  # Never prompt for password (CI runners / gitlab-runner). kejiqing
+  sudo -n true 2>/dev/null
 }
 
 claw_pool_sudo() {
-  if sudo -n true 2>/dev/null; then
-    sudo -n "$@"
-  else
-    sudo "$@"
-  fi
+  sudo -n "$@" 2>/dev/null
 }
 
 claw_pool_systemd_installed() {
