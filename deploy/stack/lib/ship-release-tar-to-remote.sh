@@ -38,6 +38,7 @@ PREFIX="${CLAW_SHIP_REGISTRY_PREFIX:-ghcr.io/passionke}"
 PREFIX="${PREFIX%/}"
 GATEWAY_IMG="${PREFIX}/claw-code:${TAG}"
 WORKER_IMG="${PREFIX}/claw-gateway-worker:${TAG}"
+RELAXED_WORKER_IMG="${PREFIX}/claw-gateway-worker-relaxed:${TAG}"
 PLAYGROUND_IMG="${PREFIX}/claw-gateway-playground:${TAG}"
 SAFE_TAG="${TAG//\//-}"
 TAR_NAME="claw-release-${SAFE_TAG}.tar"
@@ -49,13 +50,15 @@ if [[ "${CLAW_SHIP_SKIP_SAVE:-0}" != "1" ]]; then
     "${CLI}" pull "${GATEWAY_IMG}"
     echo "pull ${WORKER_IMG} …"
     "${CLI}" pull "${WORKER_IMG}"
+    echo "pull ${RELAXED_WORKER_IMG} …"
+    "${CLI}" pull "${RELAXED_WORKER_IMG}"
     echo "pull ${PLAYGROUND_IMG} …"
     "${CLI}" pull "${PLAYGROUND_IMG}"
   else
     echo "CLAW_SHIP_SKIP_PULL=1: assuming images already present locally"
   fi
   echo "save -> ${LOCAL_TAR}"
-  "${CLI}" save -o "${LOCAL_TAR}" "${GATEWAY_IMG}" "${WORKER_IMG}" "${PLAYGROUND_IMG}"
+  "${CLI}" save -o "${LOCAL_TAR}" "${GATEWAY_IMG}" "${WORKER_IMG}" "${RELAXED_WORKER_IMG}" "${PLAYGROUND_IMG}"
 else
   if [[ ! -f "${LOCAL_TAR}" ]]; then
     echo "error: CLAW_SHIP_SKIP_SAVE=1 but missing tar: ${LOCAL_TAR}" >&2

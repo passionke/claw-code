@@ -103,14 +103,16 @@ sequenceDiagram
 | 环境变量 | 含义 |
 | --- | --- |
 | `CLAW_SOLVE_ISOLATION` | `podman_pool`（本仓库 Podman compose 默认） / `docker_pool`（远程 Docker 宿主机或挂载 `docker.sock` 的部署）。`inprocess` 与网关内嵌池已移除；网关 **必须** 配置 `CLAW_POOL_DAEMON_TCP` 或 `CLAW_POOL_DAEMON_SOCKET` 指向宿主机 `claw-pool-daemon`。 |
-| `CLAW_SECURITY_BOOST` | 默认 **开**（`false`/`0`/`off` 关闭）。worker `run` 追加 `--security-opt no-new-privileges`、`--cap-drop=ALL`、`--read-only`、`--tmpfs /tmp:rw,noexec,nosuid,size=64m`；**唯一业务 rw** 为 `/claw_host_root`（inject 的 session）。 |
+| `CLAW_SECURITY_BOOST` | 默认 **开**（`false`/`0`/`off` 关闭）。**strict** ds 的 worker `run` 追加 `--security-opt no-new-privileges`、`--cap-drop=ALL`、`--read-only`、`--tmpfs /tmp:rw,noexec,nosuid,size=64m`；**不含网络隔离**。**relaxed** ds（`project_config.worker_isolation_json`）跳过上述 flags。 |
+| `CLAW_ALLOW_RELAXED_WORKER` | 默认开；`false` 时全局禁止 relaxed，即使 ds 配置了 `{"mode":"relaxed"}`。 |
 | `CLAW_DOCKER_POOL_SIZE` / `CLAW_PODMAN_POOL_SIZE` | 池 **总量上限** N（worker 容器个数上限） |
 | `CLAW_DOCKER_POOL_MIN_IDLE` / `CLAW_PODMAN_POOL_MIN_IDLE` | **最低保活** idle 槽位数（`0..=POOL_SIZE`）；**池管理内部**在 `release` 后或定时 tick 调用 `ensure_warm`，使 idle ≥ 该值 |
 | `CLAW_POOL_SIZE_CAP` | 可选：全局上限，将 `POOL_SIZE` **裁剪**到不超过该值（例如本地 `4`）；不设置则不额外裁剪 |
 | `CLAW_POOL_WORK_ROOT_HOST` | 网关跑在容器内时，填 **宿主机上** 与 `CLAW_WORK_ROOT` 绑定的目录绝对路径（与 `podman run -v` 一致）；未设置则用 `CLAW_WORK_ROOT`（适合网关进程直接跑在宿主机） |
 | `CLAW_DOCKER_POOL_CPUS` / `CLAW_PODMAN_POOL_CPUS` | 可选：每个 worker `run` 追加 `--cpus …` |
 | `CLAW_DOCKER_POOL_MEMORY` / `CLAW_PODMAN_POOL_MEMORY` | 可选：每个 worker `run` 追加 `--memory …`（如 `512m`、`1g`） |
-| `CLAW_DOCKER_IMAGE` / `CLAW_PODMAN_IMAGE` | Worker 镜像名 |
+| `CLAW_DOCKER_IMAGE` / `CLAW_PODMAN_IMAGE` | **Strict** 池 worker 镜像（`claw-gateway-worker`；最小：ca-certificates + `claw`） |
+| `CLAW_RELAXED_PODMAN_IMAGE` | **Relaxed** 池专用 worker 镜像（默认 `claw-gateway-worker-relaxed`；在 strict 镜像基础上预装 `curl`、`python3`，且可 `apt install`） |
 | `CLAW_DOCKER_NETWORK` / `CLAW_PODMAN_NETWORK` | 可选，接入与 MCP / gateway 相同 network |
 | `CLAW_GATEWAY_INTERNAL_BASE_URL` / `CLAW_GATEWAY_INTERNAL_TOKEN` | 宿主机 **pool daemon** 将 worker stdout `report.delta` 转发到网关 `POST /v1/internal/turns/{turnId}/stdout-event`（`pool-daemon-up.sh` 默认 `http://127.0.0.1:${GATEWAY_HOST_PORT}`） |
 | `CLAW_WORKER_ENV_FILE` | 宿主机上仓库根 `.env` 路径（`pool-daemon-up.sh` 默认设为 `<repo>/.env`）。池 `podman/docker run` 只读挂载到容器内 `/run/claw/worker.env`；`claw gateway-solve-once` 启动时按 **`gateway-solve-turn/src/worker_env.rs`** 声明的 key 按需注入进程环境（**不再**生成 `deploy/stack/worker-openai.env`）。 |
@@ -197,4 +199,4 @@ Rust 里容易把池、Docker CLI、租约、结果解析全写进 `main.rs`。*
 
 单机 Docker **v1 自写 CLI 调池**（不强制 `bollard`）；见仓库内计划 `.cursor/plans/gateway_container_pool_k8s_4340e53b.plan.md` 中「Rust 三方库」与「关键文件与目录」表。
 
-**Worker 镜像**：[`deploy/stack/Containerfile.gateway-worker`](deploy/stack/Containerfile.gateway-worker)（入口 `sleep infinity`；历史脚本见 [`deploy/stack/lib/claw-gateway-worker.sh`](deploy/stack/lib/claw-gateway-worker.sh)）；与网关镜像由 [`deploy/stack/lib/build.sh`](deploy/stack/lib/build.sh) **同一次**构建（见 [`deploy/stack/README.md`](deploy/stack/README.md) §1.2）。
+**Worker 镜像**：strict [`Containerfile.gateway-worker`](Containerfile.gateway-worker)；relaxed [`Containerfile.gateway-worker-relaxed`](Containerfile.gateway-worker-relaxed)（FROM strict + `curl`/`python3`）；与网关镜像由 [`deploy/stack/lib/build.sh`](lib/build.sh) **同一次**构建（见 [`deploy/stack/README.md`](README.md) §1.2）。

@@ -49,7 +49,8 @@ Prerequisite: configure at least one **active LLM** in Admin before solve.
 | `CLAW_CONTAINER_RUNTIME` | `podman` | `docker` |
 | `CLAW_SOLVE_ISOLATION` | `podman_pool` | `docker_pool` |
 | `GATEWAY_IMAGE` | `claw-gateway-rs:local` | *(unset — use `--release`)* |
-| `CLAW_PODMAN_IMAGE` / `CLAW_DOCKER_IMAGE` | worker `:local` / from release pin | from release pin |
+| `CLAW_PODMAN_IMAGE` / `CLAW_DOCKER_IMAGE` | **Strict** worker `:local` / from release pin | from release pin |
+| `CLAW_RELAXED_PODMAN_IMAGE` | **Relaxed** worker（`claw-gateway-worker-relaxed`；含 `curl`/`python3`） | from release pin |
 | `GATEWAY_HOST_PORT` | `18088` | `8088` |
 | `CLAW_LLM_PROXY` | `local` (optional sidecar `tap-up`) | `remote` + `CLAW_TAP_PROXY_URL` (shared tap) |
 | `CLAW_TAP_PROXY_URL` | — | Shared claude-tap base when `CLAW_LLM_PROXY=remote` |
@@ -69,7 +70,8 @@ Prerequisite: configure at least one **active LLM** in Admin before solve.
 | `CLAW_IMAGE_PREFIX` / `CLAW_IMAGE_REGISTRY` | Release image namespace (`gateway.sh up --release`) |
 | `CLAW_POOL_ID` / `CLAW_POOL_ADVERTISE_HOST` | Pool registry override (else auto hostname/LAN IP) |
 | `CLAW_WORKER_UID` / `CLAW_WORKER_GID` | Workspace ownership (default `1000:1000`); pool exec defaults to `uid:gid` when `CLAW_*_POOL_EXEC_USER` unset |
-| `CLAW_SECURITY_BOOST` | Worker `run` hardening (default on); set `false` only for debug |
+| `CLAW_SECURITY_BOOST` | Worker `run` hardening for **strict** ds (default on globally); **不含网络隔离** — only read-only rootfs, cap-drop, no-new-privileges, `/tmp` tmpfs. Relaxed ds skip per `worker_isolation_json`. **Pool-daemon only:** written to `deploy/stack/.claw-pool-rpc/pool-daemon.env` on `pool-up`; restart pool after `.env` change. |
+| `CLAW_ALLOW_RELAXED_WORKER` | When `false`/`0`/`off`, all ds forced strict even if `worker_isolation_json.mode=relaxed`. Default on (local); production may set `false`. **Pool-daemon only:** same as `CLAW_SECURITY_BOOST` — must flow via `pool-daemon.env` + `pool-up --restart`. |
 | `CLAW_DOCKER_POOL_EXEC_USER` / `CLAW_PODMAN_POOL_EXEC_USER` | Optional named exec/pkill user (must match passwd in image) |
 | `CLAW_MCP_MAX_CONCURRENT` | Worker MCP parallelism |
 | `CLAW_DEFAULT_MODEL` | Override model |

@@ -51,6 +51,7 @@ claw_apply_deploy_profile() {
       export GATEWAY_IMAGE="${GATEWAY_IMAGE:-claw-gateway-rs:local}"
       export GATEWAY_PLAYGROUND_IMAGE="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
       export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
+      export CLAW_RELAXED_PODMAN_IMAGE="${CLAW_RELAXED_PODMAN_IMAGE:-claw-gateway-worker-relaxed:local}"
       export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-local}"
       export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-native}"
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18088}"

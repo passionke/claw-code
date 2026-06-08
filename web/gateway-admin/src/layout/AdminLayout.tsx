@@ -33,6 +33,7 @@ const TAB_ITEMS: MenuProps["items"] = [
   { key: "/claude", icon: <FileTextOutlined />, label: "CLAUDE.md" },
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
   { key: "/preflight", icon: <SettingOutlined />, label: "Preflight" },
+  { key: "/worker-isolation", icon: <SettingOutlined />, label: "Worker 隔离" },
   { key: "/prompt", icon: <FileTextOutlined />, label: "系统提示词" },
   { key: "/tools", icon: <ToolOutlined />, label: "Tools" },
   { key: "/extra-session", icon: <FormOutlined />, label: "extraSession" },

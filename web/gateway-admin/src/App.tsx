@@ -14,6 +14,7 @@ import PromptPage from "./pages/PromptPage";
 import ToolsPage from "./pages/ToolsPage";
 import ExtraSessionPage from "./pages/ExtraSessionPage";
 import PreflightPage from "./pages/PreflightPage";
+import WorkerIsolationPage from "./pages/WorkerIsolationPage";
 import GlobalSettingsRedirect from "./pages/GlobalSettingsRedirect";
 import GitPatsPage from "./pages/global/GitPatsPage";
 import GlobalInferencePage from "./pages/global/GlobalInferencePage";
@@ -59,6 +60,7 @@ export default function App() {
               <Route path="tools" element={<ToolsPage />} />
               <Route path="extra-session" element={<ExtraSessionPage />} />
               <Route path="preflight" element={<PreflightPage />} />
+              <Route path="worker-isolation" element={<WorkerIsolationPage />} />
               <Route path="global" element={<GlobalSettingsRedirect />} />
               <Route path="global/inference" element={<GlobalInferencePage />} />
               <Route path="global/models" element={<Navigate to="/global/inference" replace />} />

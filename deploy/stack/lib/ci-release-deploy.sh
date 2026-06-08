@@ -17,9 +17,10 @@ cd "${REPO_ROOT}"
 echo "==> build images (tag=local)"
 "${LIB_DIR}/build.sh" --no-clean local
 
-echo "==> retag → ${PREFIX}/claw-code:${TAG} (+ worker, playground)"
+echo "==> retag → ${PREFIX}/claw-code:${TAG} (+ strict/relaxed worker, playground)"
 docker tag claw-gateway-rs:local "${PREFIX}/claw-code:${TAG}"
 docker tag claw-gateway-worker:local "${PREFIX}/claw-gateway-worker:${TAG}"
+docker tag claw-gateway-worker-relaxed:local "${PREFIX}/claw-gateway-worker-relaxed:${TAG}"
 docker tag claw-gateway-playground:local "${PREFIX}/claw-gateway-playground:${TAG}"
 
 echo "==> up --release ${TAG} (CLAW_RELEASE_SKIP_PULL=${CLAW_RELEASE_SKIP_PULL})"

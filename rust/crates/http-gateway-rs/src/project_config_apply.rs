@@ -254,6 +254,23 @@ async fn write_claude(work_dir: &Path, text: &str) -> ApplyResult<()> {
     Ok(())
 }
 
+/// Remove PG-materialized CLAUDE paths when `claude_md` is cleared so prompt discovery does not read stale files.
+async fn remove_claude_materialization(work_dir: &Path) -> ApplyResult<()> {
+    for rel in [
+        PathBuf::from("home/CLAUDE.md"),
+        PathBuf::from("CLAUDE.md"),
+        PathBuf::from(".claw/CLAUDE.md"),
+    ] {
+        let path = work_dir.join(&rel);
+        if fs::metadata(&path).await.is_ok() {
+            fs::remove_file(&path).await.map_err(|e| {
+                ProjectConfigApplyError::new(format!("remove {}: {e}", path.display()))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 async fn write_skills_json(work_dir: &Path, skills: &Value) -> ApplyResult<()> {
     let Some(arr) = skills.as_array() else {
         return Ok(());
@@ -428,6 +445,8 @@ async fn apply_full(
     write_rules(&home, &row.rules_json).await?;
     if let Some(text) = row.claude_md.as_deref().filter(|s| !s.trim().is_empty()) {
         write_claude(work_dir, text).await?;
+    } else {
+        remove_claude_materialization(work_dir).await?;
     }
     write_skills_json(work_dir, &row.skills_json).await?;
     write_allowed_tools_marker(work_dir, row).await?;
@@ -851,6 +870,7 @@ mod tests {
             solve_orchestration_json: json!({"kind": "single_turn"}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
         };
         let ex = git_excluded_home_relpaths(&row);
         assert!(ex.contains(&PathBuf::from("CLAUDE.md")));
@@ -917,6 +937,7 @@ mod tests {
             solve_orchestration_json: json!({"kind": "single_turn"}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes.iter().map(|w| w.rel_path.clone()).collect();
@@ -983,6 +1004,7 @@ mod tests {
             solve_orchestration_json: json!({"kind": "single_turn"}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes
@@ -1034,6 +1056,7 @@ mod tests {
             solve_orchestration_json: json!({"kind": "single_turn"}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes
@@ -1097,6 +1120,7 @@ mod tests {
             solve_orchestration_json: json!({"kind": "single_turn"}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
         };
         apply_full(&root, &row, "pg scaffold body")
             .await
@@ -1123,6 +1147,59 @@ mod tests {
         let _ = fs::remove_dir_all(root).await;
     }
 
+    #[tokio::test]
+    async fn apply_full_clears_stale_claude_when_db_override_empty() {
+        let root = std::env::temp_dir().join(format!(
+            "claw-apply-clear-claude-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("home"))
+            .await
+            .expect("home dir");
+        fs::write(root.join("home/CLAUDE.md"), "stale claude body")
+            .await
+            .expect("seed home claude");
+        fs::write(root.join("CLAUDE.md"), "stale claude body")
+            .await
+            .expect("seed root claude");
+
+        let row = ProjectConfigRow {
+            ds_id: 1,
+            content_rev: "rev-clear-claude".into(),
+            stable_content_rev: Some("rev-clear-claude".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
+        };
+        apply_full(&root, &row, "pg scaffold")
+            .await
+            .expect("apply_full");
+
+        assert!(
+            fs::metadata(root.join("home/CLAUDE.md")).await.is_err(),
+            "home/CLAUDE.md must be removed when claude_md is empty"
+        );
+        assert!(
+            fs::metadata(root.join("CLAUDE.md")).await.is_err(),
+            "root CLAUDE.md must be removed when claude_md is empty"
+        );
+        let _ = fs::remove_dir_all(root).await;
+    }
+
     #[test]
     fn build_settings_json_from_row_includes_mcp_and_auto_hidden() {
         let row = ProjectConfigRow {
@@ -1142,6 +1219,7 @@ mod tests {
             solve_orchestration_json: json!({"kind": "single_turn"}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
         };
         let v = build_settings_json_from_row(&row);
         assert_eq!(v.get("auto_hidden_system_prompt"), Some(&json!(1)));
@@ -1170,6 +1248,7 @@ mod tests {
                 "instructionFileMaxChars": 12000,
                 "instructionTotalMaxChars": 36000
             }),
+            worker_isolation_json: json!({"mode": "strict"}),
         };
         let v = build_settings_json_from_row(&row);
         assert_eq!(v.get("instructionFileMaxChars"), Some(&json!(12000)));

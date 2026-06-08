@@ -84,6 +84,7 @@ done
 IMAGE_TAG="${1:-local}"
 IMAGE_NAME="claw-gateway-rs:${IMAGE_TAG}"
 WORKER_IMAGE_NAME="claw-gateway-worker:${IMAGE_TAG}"
+RELAXED_WORKER_IMAGE_NAME="claw-gateway-worker-relaxed:${IMAGE_TAG}"
 PLAYGROUND_IMAGE_NAME="claw-gateway-playground:${IMAGE_TAG}"
 
 step() {
@@ -195,13 +196,22 @@ if use_prebuilt_linux_path; then
     -t "${IMAGE_NAME}" \
     "${ROOT_DIR}"
 
-  step "3/3 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
+  step "3/4 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
   # shellcheck disable=SC2086
   "${CONTAINER_CLI}" build \
     --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
     "${APT_MIRROR_BUILD_ARGS[@]}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker.prebuilt" \
     -t "${WORKER_IMAGE_NAME}" \
+    "${ROOT_DIR}"
+
+  step "4/4 image ${RELAXED_WORKER_IMAGE_NAME} (Containerfile.gateway-worker-relaxed.prebuilt)"
+  # shellcheck disable=SC2086
+  "${CONTAINER_CLI}" build \
+    --build-arg "WORKER_BASE_IMAGE=${WORKER_IMAGE_NAME}" \
+    "${APT_MIRROR_BUILD_ARGS[@]}" \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker-relaxed.prebuilt" \
+    -t "${RELAXED_WORKER_IMAGE_NAME}" \
     "${ROOT_DIR}"
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
@@ -240,7 +250,7 @@ else
     -t "${IMAGE_NAME}" \
     "${ROOT_DIR}"
 
-  step "2/4 image ${WORKER_IMAGE_NAME}"
+  step "2/5 image ${WORKER_IMAGE_NAME}"
   # shellcheck disable=SC2086
   "${CONTAINER_CLI}" build \
     --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
@@ -250,6 +260,15 @@ else
     "${APT_MIRROR_BUILD_ARGS[@]}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker" \
     -t "${WORKER_IMAGE_NAME}" \
+    "${ROOT_DIR}"
+
+  step "3/5 image ${RELAXED_WORKER_IMAGE_NAME} (Containerfile.gateway-worker-relaxed)"
+  # shellcheck disable=SC2086
+  "${CONTAINER_CLI}" build \
+    --build-arg "WORKER_BASE_IMAGE=${WORKER_IMAGE_NAME}" \
+    "${APT_MIRROR_BUILD_ARGS[@]}" \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker-relaxed" \
+    -t "${RELAXED_WORKER_IMAGE_NAME}" \
     "${ROOT_DIR}"
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
@@ -269,7 +288,7 @@ fi
 "${ROOT_DIR}/deploy/stack/lib/claw-write-build-stamp.sh"
 
 step "done"
-echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME} ${PLAYGROUND_IMAGE_NAME}"
+echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME} ${RELAXED_WORKER_IMAGE_NAME} ${PLAYGROUND_IMAGE_NAME}"
 claw_timing_summary
 if [[ "${CLAW_BUILD_NO_LOG}" != "1" ]]; then
   echo "log: ${BUILD_LOG}"
