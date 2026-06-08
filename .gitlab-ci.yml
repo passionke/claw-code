@@ -5,6 +5,7 @@ stages:
 
 deploy:pack-local:
   stage: deploy
+  resource_group: claw-deploy
   tags:
     - claw-dev
   when: manual
