@@ -48,10 +48,14 @@ Author: kejiqing
 ## 4. GitLab 添加步骤
 
 1. 打开 `http://code.sunmi.com/minidata/claw-code` → **Settings** → **CI/CD** → **Variables** → **Add variable**
-2. 添加 `CLAW_BOOTSTRAP_LLM_API_KEY`：Type **Variable**，Flags 勾选 **Mask variable**（建议 **Protect** 若仅 main 部署）
-3. 添加 `CLAW_BOOTSTRAP_LLM_BASE_URL`：同上，可不 Mask
+2. 添加 `CLAW_BOOTSTRAP_LLM_API_KEY`：Type **Variable**，勾选 **Mask variable**
+3. 添加 `CLAW_BOOTSTRAP_LLM_BASE_URL`：例如 `https://dashscope.aliyuncs.com/compatible-mode/v1`
 4. （可选）`CLAW_BOOTSTRAP_LLM_MODEL_NAME`
-5. **push `main`** 自动触发：**build:release-images** → **deploy:release** → `admin-solve-e2e.sh`
+5. **不要**勾选 **Protected**，除非已在 **Settings → Repository → Protected branches** 把 `main` 设为 protected；否则 deploy job 读不到变量（日志里会显示 `present … all no`）
+6. **Environment scope** 保持 `*`（All）
+7. **push `main`** 自动触发：**build:release-images** → **deploy:release** → `admin-solve-e2e.sh`
+
+变量名必须**完全一致**（区分大小写），不要用 `OPENAI_API_KEY` 代替除非你确认 job 日志里 `OPENAI_API_KEY=yes`。
 
 ## 5. 验收
 

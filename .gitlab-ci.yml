@@ -33,6 +33,7 @@ build:release-images:
   variables:
     <<: *ci_production_docker
     CLAW_RELEASE_TAG: "release-${CI_COMMIT_SHORT_SHA}"
+    CLAW_CI_REQUIRE_LLM_BOOTSTRAP: "0"
   script:
     - cd "${CI_PROJECT_DIR:-/home/gitlab-runner/claw-code}"
     - git fetch origin && git checkout main && git pull --ff-only origin main

@@ -19,6 +19,10 @@ claw_ci_require() {
 claw_ci_require CLAW_POOL_ADVERTISE_HOST
 claw_ci_require CLAW_CLUSTER_ID
 
+claw_ci_var_set() {
+  [[ -n "${!1:-}" ]] && printf yes || printf no
+}
+
 claw_ci_require_llm_bootstrap_vars() {
   local key base
   key="${CLAW_BOOTSTRAP_LLM_API_KEY:-${OPENAI_API_KEY:-}}"
@@ -30,6 +34,10 @@ claw_ci_require_llm_bootstrap_vars() {
   echo "  required: CLAW_BOOTSTRAP_LLM_API_KEY (masked)" >&2
   echo "  required: CLAW_BOOTSTRAP_LLM_BASE_URL (OpenAI-compatible, include /v1)" >&2
   echo "  optional: CLAW_BOOTSTRAP_LLM_MODEL_NAME (default gpt-4o-mini)" >&2
+  echo "  present in this job (yes/no):" >&2
+  echo "    CLAW_BOOTSTRAP_LLM_API_KEY=$(claw_ci_var_set CLAW_BOOTSTRAP_LLM_API_KEY) OPENAI_API_KEY=$(claw_ci_var_set OPENAI_API_KEY)" >&2
+  echo "    CLAW_BOOTSTRAP_LLM_BASE_URL=$(claw_ci_var_set CLAW_BOOTSTRAP_LLM_BASE_URL) UPSTREAM_OPENAI_BASE_URL=$(claw_ci_var_set UPSTREAM_OPENAI_BASE_URL) OPENAI_BASE_URL=$(claw_ci_var_set OPENAI_BASE_URL)" >&2
+  echo "  if all no: add Variables on this project; uncheck Protected unless main is protected; Environment scope *" >&2
   echo "  doc: deploy/stack/docs/gitlab-ci-variables.md" >&2
   exit 1
 }
