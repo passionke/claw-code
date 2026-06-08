@@ -73,6 +73,48 @@ claw_gateway_container_exec() {
   "${rt}" exec "${gw_ctn}" "$@"
 }
 
+# True when gateway global-settings reports activeLlmConfig (claude-tap requires PG LLM). Author: kejiqing
+claw_gateway_has_active_llm() {
+  local port="${GATEWAY_HOST_PORT:-18088}"
+  curl -fsS --connect-timeout 3 "http://127.0.0.1:${port}/v1/gateway/global-settings" 2>/dev/null \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("activeLlmConfig") else 1)' 2>/dev/null
+}
+
+claw_claude_tap_admin_host() {
+  if [[ -n "${CLAUDE_TAP_DOCKER_NETWORK:-}" ]]; then
+    printf '%s' "${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
+    return 0
+  fi
+  printf '%s' "127.0.0.1"
+}
+
+# Probe + save clawTap in Admin (docker network: host=container name). Author: kejiqing
+claw_claude_tap_register_in_admin() {
+  local port="${GATEWAY_HOST_PORT:-18088}"
+  local host proxy live probe_msg
+  host="$(claw_claude_tap_admin_host)"
+  proxy="${CLAUDE_TAP_PORT:-8080}"
+  live="${CLAUDE_TAP_LIVE_PORT:-3000}"
+  probe_msg="$(curl -fsS --connect-timeout 8 -X POST \
+    "http://127.0.0.1:${port}/v1/gateway/global-settings/claw-tap/probe" \
+    -H 'Content-Type: application/json' \
+    -d "{\"host\":\"${host}\",\"proxyPort\":${proxy}}" 2>&1)" || {
+    echo "error: clawTap probe failed (host=${host} proxyPort=${proxy}): ${probe_msg}" >&2
+    [[ -n "${CLAUDE_TAP_DOCKER_NETWORK:-}" ]] && \
+      echo "hint: use container name claw-claude-tap, not LAN IP (tap proxy is not on host :8080)" >&2
+    return 1
+  }
+  if ! python3 -c 'import json,sys; d=json.loads(sys.argv[1]); sys.exit(0 if d.get("ok") else 1)' "${probe_msg}" 2>/dev/null; then
+    echo "error: clawTap probe not ok: ${probe_msg}" >&2
+    return 1
+  fi
+  curl -fsS --connect-timeout 8 -X PUT \
+    "http://127.0.0.1:${port}/v1/gateway/global-settings/claw-tap" \
+    -H 'Content-Type: application/json' \
+    -d "{\"host\":\"${host}\",\"proxyPort\":${proxy},\"livePort\":${live}}" >/dev/null
+  echo "clawTap registered in Admin: host=${host} proxyPort=${proxy} livePort=${live}"
+}
+
 claw_assert_gateway_pool_http_reachable() {
   local podman_dir="${1:?podman_dir}"
   local gw_ctn="${CLAW_GATEWAY_CONTAINER:-claw-gateway-rs}"

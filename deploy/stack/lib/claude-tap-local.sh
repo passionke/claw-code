@@ -521,9 +521,17 @@ claw_claude_tap_probe_healthz() {
     curl -fsS --connect-timeout 2 "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1
     return $?
   fi
-  local rt container_name
+  local rt gw tap_host
   rt="$(claw_claude_tap_runtime_cli)"
-  container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
+  gw="${CLAW_GATEWAY_CONTAINER:-claw-gateway-rs}"
+  tap_host="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
+  if [[ -n "${CLAUDE_TAP_DOCKER_NETWORK:-}" ]]; then
+    if "${rt}" inspect -f '{{.State.Running}}' "${gw}" 2>/dev/null | grep -qx true; then
+      "${rt}" exec "${gw}" curl -fsS --connect-timeout 2 "http://${tap_host}:8080/healthz" >/dev/null 2>&1
+      return $?
+    fi
+  fi
+  local container_name="${tap_host}"
   if claw_claude_tap_container_running "${rt}" "${container_name}"; then
     "${rt}" exec "${container_name}" curl -fsS --connect-timeout 2 "http://127.0.0.1:8080/healthz" >/dev/null 2>&1
     return $?
