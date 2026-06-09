@@ -10,10 +10,10 @@ claw_print_gateway_deploy_failure() {
   if [[ -n "${rt}" ]]; then
     echo "--- ${rt} ps (name=${ctn}) ---" >&2
     "${rt}" ps -a --filter "name=^/${ctn}$" 2>&1 | tail -20 >&2 || true
-    if "${rt}" container exists "${ctn}" >/dev/null 2>&1; then
-      echo "--- ${rt} logs ${ctn} (last 100) ---" >&2
-      "${rt}" logs "${ctn}" 2>&1 | tail -100 >&2 || true
-    fi
+    echo "--- ${rt} logs ${ctn} (last 120) ---" >&2
+    "${rt}" logs --tail 120 "${ctn}" 2>&1 >&2 || true
+    echo "--- ${rt} inspect ${ctn} (state) ---" >&2
+    "${rt}" inspect "${ctn}" --format 'status={{.State.Status}} exit={{.State.ExitCode}} err={{.State.Error}} oom={{.State.OOMKilled}}' 2>&1 >&2 || true
   fi
 }
 

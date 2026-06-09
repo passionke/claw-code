@@ -365,7 +365,12 @@ claw_podman_load_compose_args() {
         http_host="host.containers.internal"
       fi
     else
-      http_host="$(claw_pool_gateway_to_host_rpc_ip)" || return 1
+      # Docker on Linux CI: container → host pool via host-gateway (hairpin to LAN IP often fails). kejiqing
+      if [[ "$(claw_container_runtime_cli 2>/dev/null || true)" == docker ]]; then
+        http_host="host.docker.internal"
+      else
+        http_host="$(claw_pool_gateway_to_host_rpc_ip)" || return 1
+      fi
     fi
     {
       printf '%s\n' '# GENERATED — host dual claw-pool-daemon HTTP (live SSE + POST /v1/pool/rpc). kejiqing'

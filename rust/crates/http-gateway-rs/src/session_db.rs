@@ -340,7 +340,12 @@ impl GatewaySessionDb {
             .max_connections(10)
             .connect(database_url)
             .await?;
-        Self::migrate(&pool).await?;
+        if let Err(e) = Self::migrate(&pool).await {
+            eprintln!(
+                "http-gateway-rs: GatewaySessionDb migrate failed (check PG / partial proj_id DDL): {e}"
+            );
+            return Err(e);
+        }
         Ok(Self {
             pool,
             database_url_redacted: redact_database_url(database_url),
@@ -924,7 +929,11 @@ impl GatewaySessionDb {
             if ddl.is_empty() || ddl.starts_with("--") {
                 continue;
             }
-            sqlx::query(ddl).execute(pool).await?;
+            if let Err(e) = sqlx::query(ddl).execute(pool).await {
+                eprintln!("http-gateway-rs: schema migration failed: {e}");
+                eprintln!("http-gateway-rs: failed SQL:\n{ddl}");
+                return Err(e);
+            }
         }
         Ok(())
     }

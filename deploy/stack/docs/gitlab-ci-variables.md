@@ -108,7 +108,13 @@ cd /path/to/claw-code
 ./deploy/stack/lib/ci-disk-prune.sh
 ```
 
-## 8. 参考
+## 8. 排查闭环（glab + runner）
+
+- Runner 宿主机：`http://10.22.28.94/`（`CLAW_POOL_ADVERTISE_HOST`）
+- 流程与 `glab` 命令：`deploy/stack/docs/gitlab-ci-troubleshoot.md`
+- 盯 pipeline：`./deploy/stack/lib/ci-watch-pipeline.sh proj_id`
+
+## 9. 参考
 
 - 变量模板：`deploy/stack/env.ci.example`
 - 生成脚本：`deploy/stack/lib/render-env-from-ci.sh`
