@@ -38,7 +38,7 @@ function formatJson(value: unknown): string {
 export interface TurnToolsDrawerProps {
   sessionId: string;
   turnId: string;
-  dsId: number;
+  projId: number;
   gatewayBase: string;
 }
 
@@ -46,7 +46,7 @@ export interface TurnToolsDrawerProps {
 export default function TurnToolsDrawer({
   sessionId,
   turnId,
-  dsId,
+  projId,
   gatewayBase,
 }: TurnToolsDrawerProps) {
   const [open, setOpen] = useState(false);
@@ -61,7 +61,7 @@ export default function TurnToolsDrawer({
     try {
       const path =
         `/v1/sessions/${encodeURIComponent(sessionId)}` +
-        `/turns/${encodeURIComponent(turnId)}/tools?ds_id=${encodeURIComponent(String(dsId))}`;
+        `/turns/${encodeURIComponent(turnId)}/tools?proj_id=${encodeURIComponent(String(projId))}`;
       const res = await proxyHttp<TurnToolsResponse>(gatewayBase, "GET", path);
       setData(res);
     } catch (e) {
@@ -70,7 +70,7 @@ export default function TurnToolsDrawer({
     } finally {
       setLoading(false);
     }
-  }, [gatewayBase, sessionId, turnId, dsId]);
+  }, [gatewayBase, sessionId, turnId, projId]);
 
   const onOpen = () => {
     setOpen(true);

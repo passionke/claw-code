@@ -168,11 +168,14 @@ def main() -> int:
     ap.add_argument("--gateway", default="http://127.0.0.1:18088")
     ap.add_argument("--session-id", required=True)
     ap.add_argument("--turn-id", required=True)
-    ap.add_argument("--ds-id", type=int, default=1)
+    ap.add_argument("--proj-id", type=int, default=1, dest="proj_id")
+    ap.add_argument("--ds-id", type=int, default=None, dest="ds_id", help="legacy alias for --proj-id")
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--bucket-ms", default="1,16", help="Comma-separated bucket widths")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
+    if args.ds_id is not None:
+        args.proj_id = args.ds_id
 
     buckets = [int(x.strip()) for x in args.bucket_ms.split(",") if x.strip().isdigit()]
     if not buckets:
@@ -182,7 +185,7 @@ def main() -> int:
         {
             "sessionId": args.session_id,
             "turnId": args.turn_id,
-            "dsId": str(args.ds_id),
+            "projId": str(args.proj_id),
             "stream": "true",
         }
     )

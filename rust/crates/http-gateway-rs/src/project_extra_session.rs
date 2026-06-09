@@ -1,4 +1,4 @@
-//! Per-`ds_id` extraSession field list and solve-time validation. Author: kejiqing
+//! Per-`proj_id` extraSession field list and solve-time validation. Author: kejiqing
 
 use std::collections::BTreeMap;
 

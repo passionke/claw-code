@@ -24,15 +24,15 @@ function writeMap(map: Record<string, ExtraSessionKv>): void {
   }
 }
 
-export function loadExtraSessionKvForDs(dsId: number): ExtraSessionKv {
+export function loadExtraSessionKvForDs(projId: number): ExtraSessionKv {
   const map = readMap();
-  const kv = map[String(dsId)];
+  const kv = map[String(projId)];
   return kv && typeof kv === "object" ? { ...kv } : {};
 }
 
-export function saveExtraSessionKvForDs(dsId: number, kv: ExtraSessionKv): void {
+export function saveExtraSessionKvForDs(projId: number, kv: ExtraSessionKv): void {
   const map = readMap();
-  map[String(dsId)] = { ...kv };
+  map[String(projId)] = { ...kv };
   writeMap(map);
 }
 

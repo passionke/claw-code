@@ -27,7 +27,7 @@ export interface ChatTurnCardProps {
   sessionId: string;
   turnId: string;
   taskId: string;
-  dsId: number;
+  projId: number;
   gatewayBase: string;
   tapLiveBase: string;
   tapLiveTemplate: string;
@@ -89,12 +89,12 @@ async function fetchHistoryReport(
   gatewayBase: string,
   sessionId: string,
   turnId: string,
-  dsId: number
+  projId: number
 ): Promise<string> {
   const q = new URLSearchParams({
     sessionId,
     turnId,
-    dsId: String(dsId),
+    proj_id: String(projId),
     stream: "false",
   });
   const res = await proxyHttp<BizAdviceReportResponse>(
@@ -110,7 +110,7 @@ export default function ChatTurnCard({
   sessionId,
   turnId,
   taskId,
-  dsId,
+  projId,
   gatewayBase,
   tapLiveBase,
   tapLiveTemplate,
@@ -156,7 +156,7 @@ export default function ChatTurnCard({
   );
   const [cancelLoading, setCancelLoading] = useState(false);
   const reportOpened = useRef(false);
-  const reportStream = useBizReportStream(gatewayBase, sessionId, turnId, dsId);
+  const reportStream = useBizReportStream(gatewayBase, sessionId, turnId, projId);
 
   useEffect(() => {
     const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
@@ -198,7 +198,7 @@ export default function ChatTurnCard({
     let cancelled = false;
     (async () => {
       try {
-        const body = await fetchHistoryReport(gatewayBase, sessionId, turnId, dsId);
+        const body = await fetchHistoryReport(gatewayBase, sessionId, turnId, projId);
         if (cancelled) return;
         if (body) {
           setHistoryReport(body);
@@ -222,7 +222,7 @@ export default function ChatTurnCard({
     gatewayBase,
     sessionId,
     turnId,
-    dsId,
+    projId,
     hasReport,
     initialHistoricalReport,
     prefilledFailure,
@@ -320,7 +320,7 @@ export default function ChatTurnCard({
       const res = await proxyHttp<TurnCancelResponse>(
         gatewayBase,
         "POST",
-        `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/cancel?ds_id=${encodeURIComponent(String(dsId))}`
+        `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/cancel?proj_id=${encodeURIComponent(String(projId))}`
       );
       setTask((prev) => ({
         ...prev,
@@ -338,7 +338,7 @@ export default function ChatTurnCard({
     } finally {
       setCancelLoading(false);
     }
-  }, [gatewayBase, sessionId, turnId, dsId, reportStream]);
+  }, [gatewayBase, sessionId, turnId, projId, reportStream]);
 
   const dotClass = [
     styles.dot,
@@ -476,14 +476,14 @@ export default function ChatTurnCard({
             <TurnTimelineDrawer
               sessionId={sessionId}
               turnId={turnId}
-              dsId={dsId}
+              projId={projId}
               gatewayBase={gatewayBase}
               taskStatus={st}
             />
             <TurnToolsDrawer
               sessionId={sessionId}
               turnId={turnId}
-              dsId={dsId}
+              projId={projId}
               gatewayBase={gatewayBase}
             />
           </Space>

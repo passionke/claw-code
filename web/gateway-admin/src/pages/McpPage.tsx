@@ -15,7 +15,7 @@ import { mcpConfigJsonFromRevisionBody } from "../utils/entityRevision";
 const { TextArea } = Input;
 
 export default function McpPage() {
-  const { gatewayBase, dsId, projectConfig, reloadEditingConfig, saveDraftPatch } =
+  const { gatewayBase, projId, projectConfig, reloadEditingConfig, saveDraftPatch } =
     useProjectConfigEditor();
   const [list, setList] = useState<McpEditorItem[]>([]);
   const [pick, setPick] = useState("");
@@ -56,7 +56,7 @@ export default function McpPage() {
   }, [reloadEditingConfig, applyMcpList]);
 
   const configRevKey = projectConfig
-    ? `${projectConfig.dsId}:${projectConfig.contentRev}:${projectConfig.draftOpen ? 1 : 0}`
+    ? `${projectConfig.projId}:${projectConfig.contentRev}:${projectConfig.draftOpen ? 1 : 0}`
     : "";
 
   useEffect(() => {
@@ -132,7 +132,7 @@ export default function McpPage() {
     setTestResult(null);
     try {
       const r = await testMcpServer(gatewayBase, {
-        dsId,
+        projId,
         serverName: name,
         config,
         probeMcpStart: true,

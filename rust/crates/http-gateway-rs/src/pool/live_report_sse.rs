@@ -19,7 +19,7 @@ pub fn live_report_sse_response(
     turn_id: &str,
     task_id: String,
     source_request_id: String,
-    source_ds_id: i64,
+    source_proj_id: i64,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<BizReportStreamMsg>();
     let turn_id_worker = turn_id.to_string();
@@ -43,7 +43,7 @@ pub fn live_report_sse_response(
         let done = BizAdviceReportPayload {
             task_id,
             source_request_id,
-            source_ds_id,
+            source_proj_id,
             source_status: "running".into(),
             report_text: Some(final_text.clone()),
             report_json: Some(json!({ "message": final_text })),

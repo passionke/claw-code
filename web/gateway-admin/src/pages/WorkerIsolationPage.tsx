@@ -7,7 +7,7 @@ import type { WorkerIsolationJson } from "../types/project";
 type Mode = WorkerIsolationJson["mode"];
 
 export default function WorkerIsolationPage() {
-  const { gatewayBase, dsId, projectConfig, refreshProjectConfig } = useApp();
+  const { gatewayBase, projId, projectConfig, refreshProjectConfig } = useApp();
   const [form] = Form.useForm<{ mode: Mode }>();
 
   useEffect(() => {
@@ -53,7 +53,7 @@ export default function WorkerIsolationPage() {
           onClick={async () => {
             if (!projectConfig) return;
             const v = await form.validateFields();
-            await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
+            await putProjectConfigDraft(gatewayBase, projId, projectConfig, {
               workerIsolationJson: { mode: v.mode },
             });
             message.success("Worker 隔离已保存；下次 solve acquire 时生效");

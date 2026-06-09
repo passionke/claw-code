@@ -41,9 +41,19 @@ claw_linux_compile_release() {
   source "${root_dir}/deploy/stack/rust-version.env"
   export CLAW_RUST_VERSION
 
+  local rustup_dist rustup_root
+  rustup_dist="https://static.rust-lang.org"
+  rustup_root="https://static.rust-lang.org/rustup"
+  if [[ "${use_cn_cargo}" == "1" ]]; then
+    rustup_dist="https://mirrors.ustc.edu.cn/rust-static"
+    rustup_root="https://mirrors.ustc.edu.cn/rust-static/rustup"
+  fi
+
   # shellcheck disable=SC2086
   "${container_cli}" run --rm --platform "linux/${linux_arch}" \
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
+    -e "RUSTUP_DIST_SERVER=${rustup_dist}" \
+    -e "RUSTUP_UPDATE_ROOT=${rustup_root}" \
     -v "${rust_dir}:/build:Z" \
     -v claw-cargo-registry:/usr/local/cargo/registry \
     -v claw-cargo-git:/usr/local/cargo/git \

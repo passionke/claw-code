@@ -37,7 +37,7 @@ def main():
         "POST",
         "/v1/solve_async",
         {
-            "dsId": DS_ID,
+            "projId": DS_ID,
             "userPrompt": QUESTION,
             "extraSession": {
                 "store_id": STORE_ID,

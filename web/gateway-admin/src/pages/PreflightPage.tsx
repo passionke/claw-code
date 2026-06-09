@@ -11,7 +11,7 @@ const PREFLIGHT_KIND_OPTIONS = [
 ] as const;
 
 export default function PreflightPage() {
-  const { gatewayBase, dsId, projectConfig, refreshProjectConfig } = useApp();
+  const { gatewayBase, projId, projectConfig, refreshProjectConfig } = useApp();
   const [form] = Form.useForm<{ kinds: string[] }>();
 
   useEffect(() => {
@@ -57,7 +57,7 @@ export default function PreflightPage() {
             if (!projectConfig) return;
             const v = await form.validateFields();
             const kinds = (v.kinds || []).map((k) => String(k).trim()).filter(Boolean);
-            await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
+            await putProjectConfigDraft(gatewayBase, projId, projectConfig, {
               solvePreflightJson: { kinds },
             });
             message.success("Preflight 已保存到临时版；设为生效后物化到工作区");

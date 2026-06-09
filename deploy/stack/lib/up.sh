@@ -136,6 +136,11 @@ fi
 # Recreate gateway only; host pool is independent — do not SIGTERM it on every up. kejiqing
 claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
 
+# Wait for gateway HTTP (and PG migrate) before pool-daemon: both used to call migrate() and deadlock on CI. kejiqing
+# shellcheck disable=SC1091
+source "${LIB_DIR}/bootstrap-runtime.sh"
+claw_wait_gateway_http_ready 60 || exit 1
+
 if claw_pool_daemon_on_host; then
   "${PODMAN_DIR}/lib/pool-daemon-up.sh"
   claw_assert_host_pool_rpc_ready "${RPC_DIR}" || {
@@ -155,9 +160,6 @@ claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_D
   echo "error: workspace ownership fix failed before ds bootstrap (try gateway.sh fix-workspace)" >&2
   exit 1
 }
-# shellcheck disable=SC1091
-source "${LIB_DIR}/bootstrap-runtime.sh"
-claw_wait_gateway_http_ready 45
 claw_ensure_default_project_ds "${CLAW_BOOTSTRAP_DS_ID:-1}" || {
   echo "error: default project ds bootstrap failed (POST /v1/projects + /v1/init)" >&2
   exit 1

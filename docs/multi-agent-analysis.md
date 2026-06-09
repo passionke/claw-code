@@ -13,7 +13,7 @@ Author: kejiqing
 | 层 | 位置 |
 | --- | --- |
 | **DB** | `project_config.solve_orchestration_json`（PostgreSQL） |
-| **物化** | `ds_<id>/home/.claw/solve-orchestration.json` |
+| **物化** | `proj_<id>/home/.claw/solve-orchestration.json` |
 | **运行时** | `gateway-solve-once` → `run_gateway_solve_turn` 读 kind 分支 |
 | **Pool 挂载** | `solve-orchestration.json` ro 挂入 worker（同 preflight） |
 
@@ -21,7 +21,7 @@ Author: kejiqing
 
 ## Admin API
 
-`GET` / `PUT /v1/project/config/{ds_id}` 字段 **`solveOrchestrationJson`**（camelCase）：
+`GET` / `PUT /v1/project/config/{proj_id}` 字段 **`solveOrchestrationJson`**（camelCase）：
 
 ```json
 {
@@ -148,7 +148,7 @@ Admin `ChatTurnCard` 展示分析大纲 checklist。
 # 需 gateway 已启动、ds 已配置 multi_agent_analysis + sqlbot preflight
 ./scripts/benchmark-multi-agent.sh \
   --gateway http://127.0.0.1:8080 \
-  --ds-id 1 \
+  --proj-id 1 \
   --prompt-file scripts/fixtures/multi-agent-benchmark-prompt.txt
 ```
 

@@ -5,7 +5,7 @@ import { useProjectConfigEditor } from "../hooks/useProjectConfigEditor";
 
 /** Per-ds extraSession field keys (sibling to Tools, not inside Tools page). Author: kejiqing */
 export default function ExtraSessionPage() {
-  const { dsId, projectConfig, reloadEditingConfig, saveDraftPatch } = useProjectConfigEditor();
+  const { projId, projectConfig, reloadEditingConfig, saveDraftPatch } = useProjectConfigEditor();
   const [extraFields, setExtraFields] = useState<string[]>([]);
   const [newFieldName, setNewFieldName] = useState("");
 
@@ -25,7 +25,7 @@ export default function ExtraSessionPage() {
 
   useEffect(() => {
     load(true).catch((e) => message.error(String((e as Error).message)));
-  }, [dsId, load]);
+  }, [projId, load]);
 
   useEffect(() => {
     if (projectConfig) syncFromConfig(projectConfig);

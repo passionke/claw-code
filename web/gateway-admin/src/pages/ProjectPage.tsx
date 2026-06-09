@@ -30,7 +30,7 @@ const CONFIG_VERSION_PAGE_SIZE = 20;
 export default function ProjectPage() {
   const {
     gatewayBase,
-    dsId,
+    projId,
     projects,
     refreshProjects,
     projectConfig,
@@ -55,17 +55,17 @@ export default function ProjectPage() {
     },
   ] as const;
 
-  const row = projects.find((p) => p.dsId === dsId);
+  const row = projects.find((p) => p.projId === projId);
 
   const loadVersions = useCallback(async () => {
     const r = await proxyHttp<VersionsResponse>(
       gatewayBase,
       "GET",
-      `/v1/project/config/${dsId}/versions`
+      `/v1/project/config/${projId}/versions`
     );
     setVersions(r);
     return r;
-  }, [gatewayBase, dsId]);
+  }, [gatewayBase, projId]);
 
   useEffect(() => {
     loadVersions().catch(() => setVersions(null));
@@ -95,7 +95,7 @@ export default function ProjectPage() {
     setDetailJson(
       JSON.stringify(
         {
-          dsId,
+          projId,
           listSummary: row || null,
           projectConfig,
         },
@@ -118,7 +118,7 @@ export default function ProjectPage() {
       writerMaxIter: projectConfig.solveOrchestrationJson?.writerMaxIter ?? 4,
       narratorThrottleMs: projectConfig.solveOrchestrationJson?.narratorThrottleMs ?? 3000,
     });
-  }, [projectConfig, dsId, row, gitForm, orchestrationForm]);
+  }, [projectConfig, projId, row, gitForm, orchestrationForm]);
 
   const activate = async (contentRev: string) => {
     const r = await proxyHttp<{
@@ -127,7 +127,7 @@ export default function ProjectPage() {
     }>(
       gatewayBase,
       "POST",
-      `/v1/project/config/${dsId}/versions/${encodeURIComponent(contentRev)}/activate`
+      `/v1/project/config/${projId}/versions/${encodeURIComponent(contentRev)}/activate`
     );
     message.success(
       `已切换生效为 ${r.activeContentRev}${r.materialized ? "（已物化）" : "（待物化）"}`
@@ -148,7 +148,7 @@ export default function ProjectPage() {
     await proxyHttp(
       gatewayBase,
       "PATCH",
-      `/v1/project/config/${dsId}/versions/${encodeURIComponent(v.contentRev)}`,
+      `/v1/project/config/${projId}/versions/${encodeURIComponent(v.contentRev)}`,
       { note: note || null }
     );
     setEditingNoteRev(null);
@@ -161,7 +161,7 @@ export default function ProjectPage() {
     const r = await proxyHttp<{
       savedContentRev: string;
       stableContentRev: string;
-    }>(gatewayBase, "POST", `/v1/project/config/${dsId}/versions/commit`, body);
+    }>(gatewayBase, "POST", `/v1/project/config/${projId}/versions/commit`, body);
     message.success(
       `已保存正式版 ${r.savedContentRev}（生效仍为 ${r.stableContentRev}）`
     );
@@ -179,7 +179,7 @@ export default function ProjectPage() {
         await proxyHttp(
           gatewayBase,
           "DELETE",
-          `/v1/project/config/${dsId}/versions/${encodeURIComponent(contentRev)}`
+          `/v1/project/config/${projId}/versions/${encodeURIComponent(contentRev)}`
         );
         message.success(`已废弃 ${contentRev}`);
         await loadVersions();
@@ -281,16 +281,16 @@ export default function ProjectPage() {
 
   return (
     <div>
-      <Typography.Title level={4}>项目管理 · ds_{dsId}</Typography.Title>
+      <Typography.Title level={4}>项目管理 · 项目 {projId}</Typography.Title>
       <Typography.Paragraph type="secondary">
-        顶栏切换 ds_id；本页每 15s 静默同步项目列表。状态机：至多 1 个临时版；生效只能从正式版切换；保存为正式版不改生效。
+        顶栏切换项目；本页每 15s 静默同步项目列表。状态机：至多 1 个临时版；生效只能从正式版切换；保存为正式版不改生效。
       </Typography.Paragraph>
 
       <Space style={{ marginBottom: 16 }}>
         <Button
           onClick={async () => {
-            await proxyHttp(gatewayBase, "POST", "/v1/init", { dsId });
-            message.success(`ds_${dsId} 初始化完成`);
+            await proxyHttp(gatewayBase, "POST", "/v1/init", { projId });
+            message.success(`项目 ${projId} 初始化完成`);
             await refreshProjects();
             await refreshProjectConfig();
           }}
@@ -299,13 +299,13 @@ export default function ProjectPage() {
         </Button>
         <Button danger onClick={() => {
           Modal.confirm({
-            title: `删除 ds_${dsId}？`,
+            title: `删除项目 ${projId}？`,
             okType: "danger",
             onOk: async () => {
               await proxyHttp(
                 gatewayBase,
                 "DELETE",
-                `/v1/projects/${dsId}?purgeSessions=true`
+                `/v1/projects/${projId}?purgeSessions=true`
               );
               message.success("已删除");
               await refreshProjects();
@@ -357,7 +357,7 @@ export default function ProjectPage() {
                 gitRef: (v.gitRef || "main").trim() || "main",
                 gitPatId: v.gitPatId || null,
               };
-              await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
+              await putProjectConfigDraft(gatewayBase, projId, projectConfig, {
                 gitSyncJson: gitSyncJson as ProjectConfig["gitSyncJson"],
               });
               message.success("Git 配置已保存到临时版");
@@ -371,7 +371,7 @@ export default function ProjectPage() {
             onClick={async () => {
               const r = await proxyHttp<{
                 outcome?: { pushed?: boolean; commitId?: string };
-              }>(gatewayBase, "POST", `/v1/projects/${dsId}/git/push`);
+              }>(gatewayBase, "POST", `/v1/projects/${projId}/git/push`);
               message.success(
                 (r.outcome?.pushed ? "已推送" : "无变更") +
                   (r.outcome?.commitId ? ` · ${r.outcome.commitId.slice(0, 8)}` : "")
@@ -426,7 +426,7 @@ export default function ProjectPage() {
               if (!projectConfig) return;
               const v = await orchestrationForm.validateFields();
               const kind = String(v.kind || "single_turn").trim() || "single_turn";
-              await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
+              await putProjectConfigDraft(gatewayBase, projId, projectConfig, {
                 solveOrchestrationJson: {
                   kind,
                   plannerMaxIter: Number(v.plannerMaxIter) || 6,
@@ -498,7 +498,7 @@ export default function ProjectPage() {
         />
         <VersionComparePanel
           gatewayBase={gatewayBase}
-          dsId={dsId}
+          projId={projId}
           versions={versions}
           projectConfig={projectConfig}
           onMerged={async () => {

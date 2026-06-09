@@ -43,7 +43,7 @@ async fn main() {
     let hub = Arc::new(LiveReportHub::default());
 
     let pool_id = pool_registry::resolve_pool_id();
-    let registry_db = match GatewaySessionDb::open().await {
+    let registry_db = match GatewaySessionDb::open_without_migrate().await {
         Ok(db) => Some(Arc::new(db)),
         Err(e) => {
             warn!(

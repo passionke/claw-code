@@ -15,14 +15,14 @@ interface EntityCompareResponse {
   toBody?: unknown;
 }
 
-function entityPath(dsId: number, domain: string, entityKey: string, suffix: string) {
-  return `/v1/project/config/${dsId}/entities/${domain}/${encodeURIComponent(entityKey)}${suffix}`;
+function entityPath(projId: number, domain: string, entityKey: string, suffix: string) {
+  return `/v1/project/config/${projId}/entities/${domain}/${encodeURIComponent(entityKey)}${suffix}`;
 }
 
 /** Fetch one immutable snapshot (compare same rev twice). Author: kejiqing */
 export async function fetchEntityRevisionBody(
   gatewayBase: string,
-  dsId: number,
+  projId: number,
   domain: EntityDomain,
   entityKey: string,
   entityRev: string
@@ -30,7 +30,7 @@ export async function fetchEntityRevisionBody(
   const r = await proxyHttp<EntityCompareResponse>(
     gatewayBase,
     "GET",
-    `${entityPath(dsId, domain, entityKey, "/versions/compare")}?from=${encodeURIComponent(entityRev)}&to=${encodeURIComponent(entityRev)}`
+    `${entityPath(projId, domain, entityKey, "/versions/compare")}?from=${encodeURIComponent(entityRev)}&to=${encodeURIComponent(entityRev)}`
   );
   const body = r.toBody ?? r.fromBody;
   if (body === undefined) {

@@ -1,10 +1,10 @@
 %% claw-code Gateway PostgreSQL ER. Author: kejiqing
 
 erDiagram
-    gateway_projects ||--o| gateway_project_git : ds_id
-    gateway_projects ||--|| project_config : ds_id
+    gateway_projects ||--o| gateway_project_git : proj_id
+    gateway_projects ||--|| project_config : proj_id
     project_config ||--o{ project_config_revision : versions
-    gateway_projects ||--o{ gateway_sessions : ds_id
+    gateway_projects ||--o{ gateway_sessions : proj_id
     gateway_sessions ||--o{ gateway_turns : session
     gateway_sessions ||--o{ gateway_async_tasks : session
     gateway_sessions ||--o{ gateway_feedback : session
@@ -12,11 +12,11 @@ erDiagram
     gateway_turns ||--o| gateway_turn_container_runs : turn
     gateway_turns ||--o{ gateway_model_usage : turn
     gateway_turns ||--o{ gateway_runtime_iterations : turn
-    gateway_turns ||--o{ cc_messages : turn
     gateway_runtime_iterations ||--o{ cc_messages : iteration
 
     gateway_projects {
         bigint ds_id PK
+        bigint proj_id
         string project_name
         string workspace_rel
         bigint updated_at_ms
@@ -24,6 +24,7 @@ erDiagram
 
     gateway_project_git {
         bigint ds_id PK
+        bigint proj_id
         string remote_url
         string branch
         string last_synced_commit
@@ -31,6 +32,7 @@ erDiagram
 
     project_config {
         bigint ds_id PK
+        bigint proj_id
         string content_rev
         string stable_content_rev
         bool draft_open
@@ -45,6 +47,7 @@ erDiagram
 
     project_config_revision {
         bigint ds_id PK
+        bigint proj_id
         string content_rev PK
         bigint created_at_ms
         string note
@@ -53,6 +56,7 @@ erDiagram
     gateway_sessions {
         string session_id PK
         bigint ds_id PK
+        bigint proj_id
         string session_home
         string title
         string status
@@ -64,6 +68,7 @@ erDiagram
         string turn_id PK
         string session_id
         bigint ds_id
+        bigint proj_id
         string status
         string user_prompt
         string report_message
@@ -75,6 +80,7 @@ erDiagram
     gateway_async_tasks {
         string task_id PK
         string session_id
+        bigint proj_id
         string active_turn_id
         string status
         bool has_report
@@ -83,6 +89,7 @@ erDiagram
     gateway_feedback {
         string session_id PK
         bigint ds_id PK
+        bigint proj_id
         string turn_id PK
         string feedback
     }
@@ -116,6 +123,7 @@ erDiagram
     cc_messages {
         bigint message_id PK
         string turn_id FK
+        bigint proj_id
         int seq
         string role
         string blocks

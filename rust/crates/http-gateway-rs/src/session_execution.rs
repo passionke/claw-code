@@ -13,8 +13,8 @@ use serde_json::Value;
 pub struct SessionExecutionResponse {
     #[serde(rename = "sessionId")]
     pub session_id: String,
-    #[serde(rename = "dsId")]
-    pub ds_id: i64,
+    #[serde(rename = "projId")]
+    pub proj_id: i64,
     #[serde(rename = "sessionHomeRel")]
     pub session_home_rel: String,
     pub task: SessionExecutionTask,

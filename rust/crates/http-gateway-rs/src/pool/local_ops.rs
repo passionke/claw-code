@@ -17,10 +17,12 @@ impl PoolOps for LocalPoolOps {
         &self,
         wait: Duration,
         session_id: String,
-        ds_id: i64,
+        proj_id: i64,
         turn_id: String,
     ) -> Result<SlotLease, String> {
-        self.0.acquire_slot(wait, session_id, ds_id, turn_id).await
+        self.0
+            .acquire_slot(wait, session_id, proj_id, turn_id)
+            .await
     }
 
     async fn exec_solve(

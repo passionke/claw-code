@@ -37,7 +37,8 @@ Author: kejiqing
 | `CLAW_CONTAINER_RUNTIME` | `docker` |
 | `CLAW_IMAGE_PREFIX` | `local` |
 | `CLAW_RELEASE_SKIP_PULL` | `1` |
-| `CLAW_USE_CN_CRATES_MIRROR` | `1` |
+| `CLAW_USE_CN_CRATES_MIRROR` | `1`（cargo → rsproxy.cn sparse index） |
+| `CLAW_USE_CN_RUST_MIRROR` | `1`（rustup/clippy/std → USTC rust-static） |
 | `CLAW_POOL_ADVERTISE_HOST` | `10.22.28.94` |
 | `CLAW_CLUSTER_ID` | `sunmi-ci-01` |
 | `CLAW_POOL_ID` | `pool-sunmi-ci-01` |
@@ -53,7 +54,7 @@ Author: kejiqing
 4. （可选）`CLAW_BOOTSTRAP_LLM_MODEL_NAME`：**不要 Mask**
 5. **不要**勾选 **Protected**，除非已在 **Settings → Repository → Protected branches** 把 `main` 设为 protected；否则 deploy job 读不到变量（日志里会显示 `present … all no`）
 6. **Environment scope** 保持 `*`（All）
-7. **push `main`** 自动触发：**build:release-images** → **deploy:release** → `admin-solve-e2e.sh`
+7. **push 任意分支**（含 `main`、`proj_id` 等）自动触发：**build:release-images** → **deploy:release** → `admin-solve-e2e.sh`；job 检出 **当前 pipeline 提交**（不再强制 `main`）。镜像 tag：`main` → `release-<short_sha>`；其它分支 → `release-<ref_slug>-<short_sha>`（见 `deploy/stack/lib/ci-sync-worktree.sh`）。
 
 变量名必须**完全一致**（区分大小写），不要用 `OPENAI_API_KEY` 代替除非你确认 job 日志里 `OPENAI_API_KEY=yes`。
 
@@ -73,8 +74,49 @@ gateway clawTap ready (/readyz attempt …)
 
 CI 使用 `GIT_CLEAN_FLAGS=-ffd`（不用 `-x`），避免 `git clean` 删除 root 拥有的 `deploy/stack/claw-postgres-data/` 导致 checkout 失败。PG 数据在 runner 上跨 pipeline 保留。
 
-## 7. 参考
+## 7. 每周磁盘清理（`maintenance:disk-prune`）
+
+Job 定义见 `.gitlab-ci.yml`；脚本：`deploy/stack/lib/ci-disk-prune.sh`。
+
+**清理范围**（不删 PG / workspace / 正在跑的 `:local` 镜像）：
+
+- `gateway.sh clean --debug-only`（`rust/target` debug + `.linux-artifacts`）
+- `docker image prune -f`（悬空层）
+- `docker builder prune`（默认保留 7 天内 cache，可用 `CLAW_CI_BUILDER_PRUNE_UNTIL_HOURS` 覆盖）
+- 各 `local/claw-*` 仓库只保留最新 **15** 个 `release-*` tag（`CLAW_CI_KEEP_RELEASE_TAGS` 可改）
+
+### 7.1 定时执行（推荐）
+
+1. GitLab → **Build** → **Pipeline schedules** → **New schedule**
+2. **Description**：`weekly-disk-prune`
+3. **Interval pattern**（cron）：`0 4 * * 0`（每周日 04:00，按 runner 时区）
+4. **Target branch**：`main`（或你希望跑清理脚本的分支）
+5. 保存后 GitLab 会按 cron 触发 pipeline；`CI_PIPELINE_SOURCE=schedule`，**只跑** `maintenance:disk-prune`，不跑 build/deploy。
+
+### 7.2 手动执行
+
+**Build** → **Pipelines** → **Run pipeline**：
+
+- **Branch**：`main`
+- **Variables**：`CLAW_DISK_PRUNE` = `1`
+- Run → 同样只执行 `maintenance:disk-prune`。
+
+本机 runner 上也可直接跑（不经过 GitLab）：
+
+```bash
+cd /path/to/claw-code
+./deploy/stack/lib/ci-disk-prune.sh
+```
+
+## 8. 排查闭环（glab + runner）
+
+- Runner 宿主机：`http://10.22.28.94/`（`CLAW_POOL_ADVERTISE_HOST`）
+- 流程与 `glab` 命令：`deploy/stack/docs/gitlab-ci-troubleshoot.md`
+- 盯 pipeline：`./deploy/stack/lib/ci-watch-pipeline.sh proj_id`
+
+## 9. 参考
 
 - 变量模板：`deploy/stack/env.ci.example`
 - 生成脚本：`deploy/stack/lib/render-env-from-ci.sh`
 - 启动 bootstrap：`deploy/stack/lib/bootstrap-runtime.sh`
+- 磁盘清理：`deploy/stack/lib/ci-disk-prune.sh`

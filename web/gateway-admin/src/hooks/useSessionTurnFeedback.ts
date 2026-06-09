@@ -6,7 +6,7 @@ import { CLIENT_ORIGIN_GATEWAY_ADMIN, HEADER_CLIENT_ORIGIN } from "../utils/clie
 /** 会话级 turn 反馈读写（gateway_feedback）。Author: kejiqing */
 export function useSessionTurnFeedback(
   gatewayBase: string,
-  dsId: number,
+  projId: number,
   sessionId: string | null,
   refreshKey = 0
 ) {
@@ -24,7 +24,7 @@ export function useSessionTurnFeedback(
       const res = await proxyHttp<AgentFeedbackGetResponse>(
         gatewayBase,
         "GET",
-        `/v1/agent/feedback?sessionId=${encodeURIComponent(sessionId)}&dsId=${encodeURIComponent(String(dsId))}`
+        `/v1/agent/feedback?sessionId=${encodeURIComponent(sessionId)}&proj_id=${encodeURIComponent(String(projId))}`
       );
       setFeedbackByTurn(res.items ?? {});
     } catch (e) {
@@ -36,7 +36,7 @@ export function useSessionTurnFeedback(
     } finally {
       setLoadingSession(false);
     }
-  }, [gatewayBase, dsId, sessionId]);
+  }, [gatewayBase, projId, sessionId]);
 
   useEffect(() => {
     loadFeedback().catch(() => {
@@ -53,7 +53,7 @@ export function useSessionTurnFeedback(
           gatewayBase,
           "POST",
           "/v1/agent/feedback",
-          { dsId, sessionId, turnId, feedback },
+          { projId, sessionId, turnId, feedback },
           { [HEADER_CLIENT_ORIGIN]: CLIENT_ORIGIN_GATEWAY_ADMIN }
         );
         setFeedbackByTurn((prev) => ({ ...prev, [turnId]: res.feedback }));
@@ -61,7 +61,7 @@ export function useSessionTurnFeedback(
         setSubmittingTurnId(null);
       }
     },
-    [gatewayBase, dsId, sessionId]
+    [gatewayBase, projId, sessionId]
   );
 
   return {

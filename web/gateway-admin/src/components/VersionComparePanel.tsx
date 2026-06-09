@@ -37,7 +37,7 @@ import { formatVersionTime, versionOptionLabel } from "../utils/versionDisplay";
 
 interface VersionComparePanelProps {
   gatewayBase: string;
-  dsId: number;
+  projId: number;
   versions: VersionsResponse | null;
   projectConfig: ProjectConfig | null;
   onMerged: () => Promise<void>;
@@ -59,7 +59,7 @@ function sideRadioOptions(
 
 export default function VersionComparePanel({
   gatewayBase,
-  dsId,
+  projId,
   versions,
   projectConfig,
   onMerged,
@@ -100,7 +100,7 @@ export default function VersionComparePanel({
     );
     setResult(null);
     setPicks(null);
-  }, [versions?.activeContentRev, versions?.draftOpen, versions?.versions, dsId]);
+  }, [versions?.activeContentRev, versions?.draftOpen, versions?.versions, projId]);
 
   const runCompare = useCallback(async () => {
     if (!compareFrom || !compareTo) {
@@ -112,7 +112,7 @@ export default function VersionComparePanel({
       const r = await proxyHttp<ProjectConfigCompareResponse>(
         gatewayBase,
         "GET",
-        `/v1/project/config/${dsId}/versions/compare?from=${encodeURIComponent(compareFrom)}&to=${encodeURIComponent(compareTo)}`
+        `/v1/project/config/${projId}/versions/compare?from=${encodeURIComponent(compareFrom)}&to=${encodeURIComponent(compareTo)}`
       );
       setResult(r);
       if (hasCompareDocuments(r)) {
@@ -131,7 +131,7 @@ export default function VersionComparePanel({
     } finally {
       setLoading(false);
     }
-  }, [gatewayBase, dsId, compareFrom, compareTo]);
+  }, [gatewayBase, projId, compareFrom, compareTo]);
 
   const documentsReady = hasCompareDocuments(result);
   const oldValue = documentsReady ? stableStringify(result!.fromDocument) : "";
@@ -213,7 +213,7 @@ export default function VersionComparePanel({
         result.toDocument,
         picks
       );
-      await putProjectConfigDraft(gatewayBase, dsId, projectConfig, patch);
+      await putProjectConfigDraft(gatewayBase, projId, projectConfig, patch);
       message.success("已按选择合并到临时版");
       await onMerged();
       await runCompare();

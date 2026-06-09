@@ -93,7 +93,7 @@ mod tests {
         let turn_id = format!("T_{uid}");
         let sid = format!("prog_{uid}");
         let t = crate::persistence::transcript::now_ms();
-        db.insert_session(&sid, 1, "ds_1/sessions/none", t, None)
+        db.insert_session(&sid, 1, "proj_1/sessions/none", t, None)
             .await
             .unwrap();
         db.insert_turn(&turn_id, &sid, 1, "running", t, Some("q"), None, None)
@@ -135,7 +135,7 @@ mod tests {
         let turn_id = format!("T_{uid}");
         let sid = format!("tl_{uid}");
         let t0 = 1_000_000_i64;
-        db.insert_session(&sid, 1, "ds_1/sessions/none", t0, None)
+        db.insert_session(&sid, 1, "proj_1/sessions/none", t0, None)
             .await
             .unwrap();
         db.insert_turn(&turn_id, &sid, 1, "succeeded", t0, Some("q"), None, None)

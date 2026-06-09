@@ -27,7 +27,7 @@ pub trait PoolOps: Send + Sync {
         &self,
         wait: Duration,
         session_id: String,
-        ds_id: i64,
+        proj_id: i64,
         turn_id: String,
     ) -> Result<SlotLease, String>;
 

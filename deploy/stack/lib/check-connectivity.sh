@@ -92,7 +92,7 @@ import urllib.request
 port = ${GATEWAY_PORT}
 cfg = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/project/config/1", timeout=10))
 fields = [f for f in (cfg.get("extraSessionFieldsJson") or []) if isinstance(f, str) and f.strip()]
-body = {"dsId": 1, "userPrompt": "connectivity check"}
+body = {"projId": 1, "userPrompt": "connectivity check"}
 if fields:
     body["extraSession"] = {f: "" for f in fields}
 print(json.dumps(body, ensure_ascii=False))
@@ -131,7 +131,7 @@ echo "[3c/5] turn tools API ↔ PG transcript (when solve used tools)"
 SESSION_ID="$(printf '%s' "${TASK_POLL}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["sessionId"])')"
 TOOLS_CHAIN_JSON="$(mktemp)"
 TIMELINE_JSON="$(mktemp)"
-curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/turns/${TURN_ID}/timeline?ds_id=1" \
+curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/turns/${TURN_ID}/timeline?proj_id=1" \
   -o "${TIMELINE_JSON}" || true
 curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/turns/${TURN_ID}/tools?ds_id=1" \
   -o "${TOOLS_CHAIN_JSON}"

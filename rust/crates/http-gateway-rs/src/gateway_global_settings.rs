@@ -1,4 +1,4 @@
-//! Gateway-wide settings (not per `ds_id`): PAT vault for Git push, LLM model, etc. Author: kejiqing
+//! Gateway-wide settings (not per `proj_id`): PAT vault for Git push, LLM model, etc. Author: kejiqing
 //!
 //! **全局大模型（按 `CLAW_CLUSTER_ID` 隔离，独立 PG 表 + 密钥加密）**
 //! 1. Admin 保存 → `gateway_llm_cluster_model`（API Key 以 clusterId 派生 AES 密钥加密）。

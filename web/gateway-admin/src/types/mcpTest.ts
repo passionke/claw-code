@@ -19,7 +19,7 @@ export interface McpTestResponse {
 }
 
 export interface McpTestRequest {
-  dsId: number;
+  projId: number;
   serverName: string;
   config: Record<string, unknown>;
   probeMcpStart?: boolean;

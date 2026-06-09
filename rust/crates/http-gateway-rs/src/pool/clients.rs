@@ -97,21 +97,24 @@ impl PoolClients {
     }
 
     /// Resolve effective isolation for a ds (global gate + project_config JSON).
-    pub async fn effective_mode_for_ds(db: &GatewaySessionDb, ds_id: i64) -> WorkerIsolationMode {
+    pub async fn effective_mode_for_proj(
+        db: &GatewaySessionDb,
+        proj_id: i64,
+    ) -> WorkerIsolationMode {
         let json = db
-            .get_worker_isolation_json(ds_id)
+            .get_worker_isolation_json(proj_id)
             .await
             .unwrap_or_else(|_| default_worker_isolation_json());
         effective_mode(relaxed_worker_allowed_from_env(), &json)
     }
 
     /// Pick pool RPC client + registry pool_id for a ds solve.
-    pub async fn pool_and_id_for_ds(
+    pub async fn pool_and_id_for_proj(
         &self,
         db: &GatewaySessionDb,
-        ds_id: i64,
+        proj_id: i64,
     ) -> (Arc<dyn PoolOps + Send + Sync>, String) {
-        let mode = Self::effective_mode_for_ds(db, ds_id).await;
+        let mode = Self::effective_mode_for_proj(db, proj_id).await;
         match mode {
             WorkerIsolationMode::Relaxed if self.dual_pool => {
                 (Arc::clone(&self.relaxed), self.relaxed_pool_id.clone())
@@ -128,9 +131,9 @@ impl PoolClients {
         db: &GatewaySessionDb,
         turn_id: &str,
         session_id: &str,
-        ds_id: i64,
+        proj_id: i64,
     ) -> Arc<dyn PoolOps + Send + Sync> {
-        if let Ok(Some(pool_id)) = db.get_turn_pool_id(turn_id, session_id, ds_id).await {
+        if let Ok(Some(pool_id)) = db.get_turn_pool_id(turn_id, session_id, proj_id).await {
             if self.dual_pool && pool_id == self.relaxed_pool_id {
                 return Arc::clone(&self.relaxed);
             }
@@ -138,7 +141,7 @@ impl PoolClients {
                 return Arc::clone(&self.strict);
             }
         }
-        self.pool_and_id_for_ds(db, ds_id).await.0
+        self.pool_and_id_for_proj(db, proj_id).await.0
     }
 
     pub async fn has_report_for_turn(&self, _db: &GatewaySessionDb, turn_id: &str) -> bool {

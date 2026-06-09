@@ -24,7 +24,7 @@ pub const WORKSPACE_TAR_ARTIFACT_KIND: &str = "workspace_tar_gz";
 #[derive(Debug, Clone)]
 pub struct MaterializeInput {
     pub session_id: String,
-    pub ds_id: i64,
+    pub proj_id: i64,
     pub turn_id: String,
 }
 
@@ -58,7 +58,7 @@ pub async fn materialize_in(
     let workspace_tar_b64 = db
         .get_latest_workspace_tar_b64(
             &input.session_id,
-            input.ds_id,
+            input.proj_id,
             WORKSPACE_TAR_ARTIFACT_PATH,
             WORKSPACE_TAR_ARTIFACT_KIND,
         )
@@ -89,7 +89,7 @@ pub async fn materialize_in(
         ));
     }
     let jsonl_body = db
-        .render_session_jsonl(&input.session_id, input.ds_id)
+        .render_session_jsonl(&input.session_id, input.proj_id)
         .await
         .map_err(|e| format!("render session jsonl: {e}"))?;
     if jsonl_body.len() > SESSION_MANIFEST_MAX_BYTES {
@@ -107,7 +107,7 @@ pub async fn materialize_in(
             jsonl_body.into_bytes(),
         ));
     }
-    append_project_config_guest_writes(db, input.ds_id, &mut writes).await?;
+    append_project_config_guest_writes(db, input.proj_id, &mut writes).await?;
     for (path, bytes) in writes {
         if bytes.len() > SESSION_MANIFEST_MAX_BYTES {
             return Err(format!(
@@ -132,10 +132,10 @@ pub async fn materialize_in(
 /// Admin `project_config` (effective formal rev) → `/claw_host_root` every solve. Author: kejiqing
 async fn append_project_config_guest_writes(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     writes: &mut Vec<(String, Vec<u8>)>,
 ) -> Result<(), String> {
-    let Some(row) = project_config_draft::row_for_materialize(db, ds_id)
+    let Some(row) = project_config_draft::row_for_materialize(db, proj_id)
         .await
         .map_err(|e| format!("load project_config for materialize: {e}"))?
     else {
@@ -163,7 +163,7 @@ pub async fn readback_out(
     db: &GatewaySessionDb,
     pool: &PgPool,
     session_id: &str,
-    ds_id: i64,
+    proj_id: i64,
     turn_id: &str,
     user_prompt: &str,
 ) -> Result<Vec<JsonlMessage>, String> {
@@ -183,7 +183,7 @@ pub async fn readback_out(
         }]
     });
     let now = now_ms();
-    import_turn_messages_to_db(db, session_id, ds_id, turn_id, &messages, now)
+    import_turn_messages_to_db(db, session_id, proj_id, turn_id, &messages, now)
         .await
         .map_err(|e| format!("import cc_messages: {e}"))?;
 
@@ -192,7 +192,7 @@ pub async fn readback_out(
         container_name,
         db,
         session_id,
-        ds_id,
+        proj_id,
         turn_id,
         now,
     )
@@ -272,7 +272,7 @@ async fn readback_workspace_tar(
     container_name: &str,
     db: &GatewaySessionDb,
     session_id: &str,
-    ds_id: i64,
+    proj_id: i64,
     turn_id: &str,
     created_at_ms: i64,
 ) -> Result<(), String> {
@@ -322,7 +322,7 @@ base64 < "$tmp" | tr -d '\n'
     }
     db.upsert_workspace_tar_b64(
         session_id,
-        ds_id,
+        proj_id,
         turn_id,
         WORKSPACE_TAR_ARTIFACT_PATH,
         WORKSPACE_TAR_ARTIFACT_KIND,
@@ -508,12 +508,12 @@ async fn exec_sh_lc_capture(
 #[must_use]
 pub fn session_home_under_work_root(
     work_root: &Path,
-    ds_id: i64,
+    proj_id: i64,
     session_id: &str,
 ) -> std::path::PathBuf {
     let seg = crate::session_merge::sessions_directory_segment(session_id);
     work_root
-        .join(format!("ds_{ds_id}"))
+        .join(format!("proj_{proj_id}"))
         .join("sessions")
         .join(seg)
 }

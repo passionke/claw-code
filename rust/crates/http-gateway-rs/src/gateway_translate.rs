@@ -218,25 +218,25 @@ fn snapshot_turns_from_json(value: &Value) -> Result<Vec<ConversationTranslateTu
 pub async fn get_conversation_translate_handler(
     db: &GatewaySessionDb,
     session_id: &str,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<Json<GetConversationTranslateResponse>, GatewayTranslateApiError> {
-    if ds_id < 1 {
+    if proj_id < 1 {
         return Err(GatewayTranslateApiError::new(
             StatusCode::BAD_REQUEST,
-            "dsId must be >= 1",
+            "projId must be >= 1",
         ));
     }
-    let exists = db.session_exists(session_id, ds_id).await.map_err(|e| {
+    let exists = db.session_exists(session_id, proj_id).await.map_err(|e| {
         GatewayTranslateApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     })?;
     if !exists {
         return Err(GatewayTranslateApiError::new(
             StatusCode::NOT_FOUND,
-            format!("session not found: {session_id} dsId={ds_id}"),
+            format!("session not found: {session_id} projId={proj_id}"),
         ));
     }
     let row = db
-        .get_conversation_translate_snapshot(session_id, ds_id)
+        .get_conversation_translate_snapshot(session_id, proj_id)
         .await
         .map_err(|e| {
             GatewayTranslateApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
@@ -261,13 +261,13 @@ pub async fn get_conversation_translate_handler(
 pub async fn put_conversation_translate_handler(
     db: &GatewaySessionDb,
     session_id: &str,
-    ds_id: i64,
+    proj_id: i64,
     body: PutConversationTranslateRequest,
 ) -> Result<Json<PutConversationTranslateResponse>, GatewayTranslateApiError> {
-    if ds_id < 1 {
+    if proj_id < 1 {
         return Err(GatewayTranslateApiError::new(
             StatusCode::BAD_REQUEST,
-            "dsId must be >= 1",
+            "projId must be >= 1",
         ));
     }
     let fingerprint = body.source_fingerprint.trim();
@@ -290,13 +290,13 @@ pub async fn put_conversation_translate_handler(
             "markdown must be non-empty",
         ));
     }
-    let exists = db.session_exists(session_id, ds_id).await.map_err(|e| {
+    let exists = db.session_exists(session_id, proj_id).await.map_err(|e| {
         GatewayTranslateApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     })?;
     if !exists {
         return Err(GatewayTranslateApiError::new(
             StatusCode::NOT_FOUND,
-            format!("session not found: {session_id} dsId={ds_id}"),
+            format!("session not found: {session_id} projId={proj_id}"),
         ));
     }
     let turns_json = serde_json::to_value(&body.turns).map_err(|e| {
@@ -308,7 +308,7 @@ pub async fn put_conversation_translate_handler(
     let now_ms = chrono::Utc::now().timestamp_millis();
     db.upsert_conversation_translate_snapshot(
         session_id,
-        ds_id,
+        proj_id,
         fingerprint,
         &turns_json,
         markdown,

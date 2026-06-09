@@ -304,8 +304,8 @@
     <label>网关
       <select id="gateway-base"></select>
     </label>
-    <label>ds_id（来自 /healthz）
-      <select id="ds-id" style="min-width:160px"></select>
+    <label>项目（来自 /healthz）
+      <select id="proj-id" style="min-width:160px"></select>
     </label>
     <label>store_id（可选，写入 extraSession）
       <input id="store-id" type="text" placeholder="例 S20241007172800004204" autocomplete="off" />
@@ -329,15 +329,27 @@
   <script>
     /** @type {{ sessionId: string | null, activeEs: EventSource | null, tapLiveBase: string, tapLiveTemplate: string }} */
     const state = { sessionId: null, activeEs: null, tapLiveBase: "", tapLiveTemplate: "" };
+    const PROJ_KEY = "claw-playground-proj-id";
+    const LEGACY_DS_KEY = "claw-playground-ds-id";
 
     function $(id) { return document.getElementById(id); }
+
+    function readSavedProjId() {
+      try {
+        const raw = localStorage.getItem(PROJ_KEY) || localStorage.getItem(LEGACY_DS_KEY) || "";
+        const n = parseInt(raw, 10);
+        return Number.isFinite(n) ? n : NaN;
+      } catch (_) {
+        return NaN;
+      }
+    }
 
     function gatewayBase() {
       return $("gateway-base").value.trim().replace(/\/$/, "");
     }
 
-    function dsId() {
-      const n = parseInt($("ds-id").value, 10);
+    function projId() {
+      const n = parseInt($("proj-id").value, 10);
       return Number.isFinite(n) && n >= 1 ? n : 1;
     }
 
@@ -621,7 +633,7 @@
       extra.org_id = orgRaw;
 
       const payload = {
-        dsId: dsId(),
+        projId: projId(),
         userPrompt: userText,
         extraSession: extra,
       };
@@ -662,7 +674,7 @@
 
         if (task.hasReport && !lastReportOpened) {
           lastReportOpened = true;
-          openReportSse(sessionId, turnId, dsId(), turn);
+          openReportSse(sessionId, turnId, projId(), turn);
         }
         return task;
       };
@@ -673,7 +685,7 @@
         if (["succeeded", "failed", "cancelled"].includes(task.status)) {
           if (task.status === "succeeded" && task.hasReport && !lastReportOpened) {
             lastReportOpened = true;
-            openReportSse(sessionId, turnId, dsId(), turn);
+            openReportSse(sessionId, turnId, projId(), turn);
           }
           turn.updatePoll(task);
           if (task.result && task.result.outputText) {
@@ -700,7 +712,7 @@
         encodeURIComponent(sessionId) +
         "&turnId=" +
         encodeURIComponent(turnId) +
-        "&dsId=" +
+        "&proj_id=" +
         encodeURIComponent(String(ds)) +
         "&stream=true";
       const proxied = "/__proxy_sse__?target=" + encodeURIComponent(u);
@@ -832,37 +844,34 @@
     }
 
     function populateDsSelect(workspaces) {
-      const sel = $("ds-id");
+      const sel = $("proj-id");
       const prev = parseInt(sel.value, 10);
-      let saved = NaN;
-      try {
-        saved = parseInt(localStorage.getItem("claw-playground-ds-id") || "", 10);
-      } catch (_) {}
+      const saved = readSavedProjId();
       sel.innerHTML = "";
       const list = Array.isArray(workspaces)
-        ? [...workspaces].sort((a, b) => a.dsId - b.dsId)
+        ? [...workspaces].sort((a, b) => a.projId - b.projId)
         : [];
       if (!list.length) {
         const opt = document.createElement("option");
         opt.value = "1";
-        opt.textContent = "（无 ds 列表，默认 1）";
+        opt.textContent = "（无项目列表，默认 1）";
         sel.appendChild(opt);
         return;
       }
       for (const w of list) {
         const opt = document.createElement("option");
-        opt.value = String(w.dsId);
+        opt.value = String(w.projId);
         const ready = w.environmentPrepared ? "就绪" : "未就绪";
         const sk = w.skillsCount != null ? " · skills " + w.skillsCount : "";
-        opt.textContent = "ds " + w.dsId + " — " + ready + sk;
+        opt.textContent = "项目 " + w.projId + " — " + ready + sk;
         sel.appendChild(opt);
       }
       const pick =
-        list.find((p) => p.dsId === saved) ||
-        list.find((p) => p.dsId === prev) ||
+        list.find((p) => p.projId === saved) ||
+        list.find((p) => p.projId === prev) ||
         list.find((p) => p.environmentPrepared) ||
         list[0];
-      sel.value = String(pick.dsId);
+      sel.value = String(pick.projId);
     }
 
     async function refreshTapLiveFromSettings() {
@@ -893,7 +902,9 @@
       try {
         const { json } = await proxyHttp("GET", "/healthz", undefined, {});
         const workspaces =
-          (json && json.projectsGitMirror && json.projectsGitMirror.dsWorkspaces) || [];
+          (json && json.projectsGitMirror &&
+            (json.projectsGitMirror.projWorkspaces || json.projectsGitMirror.dsWorkspaces)) ||
+          [];
         populateDsSelect(workspaces);
       } catch (_) {
         populateDsSelect([]);
@@ -906,8 +917,8 @@
         try { localStorage.setItem("claw-playground-gateway-base", $("gateway-base").value); } catch (_) {}
         refreshFromHealthz();
       });
-      $("ds-id").addEventListener("change", () => {
-        try { localStorage.setItem("claw-playground-ds-id", $("ds-id").value); } catch (_) {}
+      $("proj-id").addEventListener("change", () => {
+        try { localStorage.setItem(PROJ_KEY, $("proj-id").value); } catch (_) {}
       });
       applyPlaygroundConfig().then(async () => {
         try {

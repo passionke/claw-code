@@ -34,7 +34,7 @@ export interface SolveTurnTimeline {
 export interface TurnTimelineResponse {
   sessionId: string;
   turnId: string;
-  dsId: number;
+  projId: number;
   taskCreatedAtMs?: number;
   taskFinishedAtMs?: number;
   timeline?: SolveTurnTimeline | null;

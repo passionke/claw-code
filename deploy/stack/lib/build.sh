@@ -227,13 +227,11 @@ else
   RUSTUP_BUILD_ARGS=()
   CARGO_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_CRATES_MIRROR=0")
   APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
-  if [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+  if cn_mirror_enabled; then
     RUSTUP_BUILD_ARGS=(
       --build-arg "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static"
       --build-arg "RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup"
     )
-  fi
-  if cn_mirror_enabled; then
     CARGO_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_CRATES_MIRROR=1")
     APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
   fi

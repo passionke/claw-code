@@ -41,5 +41,5 @@ npm run build
 ## 目录
 
 - `src/api/client.ts` — `__proxy__` / `__config__` / 登录
-- `src/context/AppContext.tsx` — 网关、ds_id、项目列表
+- `src/context/AppContext.tsx` — 网关、proj_id、项目列表
 - `src/pages/*` — 各 Tab（对应原 admin.html）

@@ -27,7 +27,7 @@ pub enum PoolRpcReq {
     Acquire {
         timeout_ms: u64,
         session_id: String,
-        ds_id: i64,
+        proj_id: i64,
         turn_id: String,
     },
     Exec {
@@ -171,14 +171,14 @@ impl PoolOps for PoolRpcClient {
         &self,
         wait: Duration,
         session_id: String,
-        ds_id: i64,
+        proj_id: i64,
         turn_id: String,
     ) -> Result<SlotLease, String> {
         let r = self
             .call(PoolRpcReq::Acquire {
                 timeout_ms: u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
                 session_id,
-                ds_id,
+                proj_id,
                 turn_id,
             })
             .await?;
@@ -278,13 +278,13 @@ pub async fn dispatch_pool_rpc(
         PoolRpcReq::Acquire {
             timeout_ms,
             session_id,
-            ds_id,
+            proj_id,
             turn_id,
         } => match pool
             .acquire_slot(
                 Duration::from_millis(timeout_ms),
                 session_id,
-                ds_id,
+                proj_id,
                 turn_id,
             )
             .await

@@ -1,6 +1,6 @@
 //! L2 per-entity revision history (`project_entity_revision`). Author: kejiqing
 //!
-//! Append-only history per `(ds_id, domain, entity_key)`. Project-level publish (L1) unchanged.
+//! Append-only history per `(proj_id, domain, entity_key)`. Project-level publish (L1) unchanged.
 
 use axum::http::StatusCode;
 use serde::Serialize;
@@ -73,7 +73,7 @@ pub fn normalize_entity_key(domain: &str, raw: &str) -> Result<String, EntityRev
 
 async fn allocate_entity_rev(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     domain: &str,
     entity_key: &str,
     now_ms: i64,
@@ -82,7 +82,7 @@ async fn allocate_entity_rev(
     let mut rev = base.clone();
     let mut n = 2u32;
     while db
-        .get_project_entity_revision(ds_id, domain, entity_key, &rev)
+        .get_project_entity_revision(proj_id, domain, entity_key, &rev)
         .await?
         .is_some()
     {
@@ -95,7 +95,7 @@ async fn allocate_entity_rev(
 /// Append one immutable entity revision. Author: kejiqing
 pub async fn append_revision(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     domain: &str,
     entity_key: &str,
     body: Value,
@@ -104,11 +104,11 @@ pub async fn append_revision(
 ) -> Result<String, EntityRevisionError> {
     parse_domain(domain)?;
     let entity_key = normalize_entity_key(domain, entity_key)?;
-    let entity_rev = allocate_entity_rev(db, ds_id, domain, &entity_key, now_ms)
+    let entity_rev = allocate_entity_rev(db, proj_id, domain, &entity_key, now_ms)
         .await
         .map_err(|e| EntityRevisionError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let row = ProjectEntityRevisionRow {
-        ds_id,
+        proj_id,
         domain: domain.to_string(),
         entity_key,
         entity_rev: entity_rev.clone(),
@@ -124,25 +124,25 @@ pub async fn append_revision(
 
 pub async fn append_rule(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     rule: &Value,
     now_ms: i64,
 ) -> Result<(), EntityRevisionError> {
     let key = rule_entity_key(rule)?;
-    let _ = append_revision(db, ds_id, DOMAIN_RULE, &key, rule.clone(), None, now_ms).await?;
+    let _ = append_revision(db, proj_id, DOMAIN_RULE, &key, rule.clone(), None, now_ms).await?;
     Ok(())
 }
 
 pub async fn append_skill(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     skill_name: &str,
     skill_body: Value,
     now_ms: i64,
 ) -> Result<(), EntityRevisionError> {
     let _ = append_revision(
         db,
-        ds_id,
+        proj_id,
         DOMAIN_SKILL,
         skill_name,
         skill_body,
@@ -155,25 +155,25 @@ pub async fn append_skill(
 
 pub async fn append_mcp_server(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     server_name: &str,
     config: Value,
     now_ms: i64,
 ) -> Result<(), EntityRevisionError> {
-    let _ = append_revision(db, ds_id, DOMAIN_MCP, server_name, config, None, now_ms).await?;
+    let _ = append_revision(db, proj_id, DOMAIN_MCP, server_name, config, None, now_ms).await?;
     Ok(())
 }
 
 pub async fn append_claude(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     content: &str,
     now_ms: i64,
 ) -> Result<(), EntityRevisionError> {
     let body = json!({ "content": content });
     let _ = append_revision(
         db,
-        ds_id,
+        proj_id,
         DOMAIN_CLAUDE,
         CLAUDE_ENTITY_KEY,
         body,
@@ -186,13 +186,13 @@ pub async fn append_claude(
 
 pub async fn append_tools(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     tools: &Value,
     now_ms: i64,
 ) -> Result<(), EntityRevisionError> {
     let _ = append_revision(
         db,
-        ds_id,
+        proj_id,
         DOMAIN_TOOLS,
         TOOLS_ENTITY_KEY,
         json!({ "allowedTools": tools }),
@@ -245,7 +245,7 @@ fn rule_entity_key(rule: &Value) -> Result<String, EntityRevisionError> {
 #[allow(clippy::too_many_arguments)]
 pub async fn record_draft_put_sidecars(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     prev: &ProjectConfigRow,
     rules_json: &Value,
     skills_json: &Value,
@@ -257,7 +257,7 @@ pub async fn record_draft_put_sidecars(
     if rules_json != &prev.rules_json {
         if let Some(arr) = rules_json.as_array() {
             for rule in arr {
-                append_rule(db, ds_id, rule, now_ms).await?;
+                append_rule(db, proj_id, rule, now_ms).await?;
             }
         }
     }
@@ -272,32 +272,32 @@ pub async fn record_draft_put_sidecars(
                 let Some(name) = name else {
                     continue;
                 };
-                append_skill(db, ds_id, name, item.clone(), now_ms).await?;
+                append_skill(db, proj_id, name, item.clone(), now_ms).await?;
             }
         }
     }
     if mcp_servers_json != &prev.mcp_servers_json {
         if let Some(obj) = mcp_servers_json.as_object() {
             for (name, cfg) in obj {
-                append_mcp_server(db, ds_id, name, cfg.clone(), now_ms).await?;
+                append_mcp_server(db, proj_id, name, cfg.clone(), now_ms).await?;
             }
         }
     }
     let prev_claude = prev.claude_md.as_deref().unwrap_or("");
     let new_claude = claude_md.unwrap_or("");
     if new_claude != prev_claude {
-        append_claude(db, ds_id, new_claude, now_ms).await?;
+        append_claude(db, proj_id, new_claude, now_ms).await?;
     }
     if allowed_tools_json != &prev.allowed_tools_json {
-        append_tools(db, ds_id, allowed_tools_json, now_ms).await?;
+        append_tools(db, proj_id, allowed_tools_json, now_ms).await?;
     }
     Ok(())
 }
 
 #[derive(Debug, Serialize)]
 pub struct EntityVersionsListResponse {
-    #[serde(rename = "dsId")]
-    pub ds_id: i64,
+    #[serde(rename = "projId")]
+    pub proj_id: i64,
     pub domain: String,
     #[serde(rename = "entityKey")]
     pub entity_key: String,
@@ -316,8 +316,8 @@ pub struct EntityVersionEntry {
 
 #[derive(Debug, Serialize)]
 pub struct EntityCompareResponse {
-    #[serde(rename = "dsId")]
-    pub ds_id: i64,
+    #[serde(rename = "projId")]
+    pub proj_id: i64,
     pub domain: String,
     #[serde(rename = "entityKey")]
     pub entity_key: String,
@@ -332,18 +332,18 @@ pub struct EntityCompareResponse {
 
 pub async fn list_entity_versions(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     domain_raw: &str,
     entity_key_raw: &str,
 ) -> Result<EntityVersionsListResponse, EntityRevisionError> {
     let domain = parse_domain(domain_raw)?;
     let entity_key = normalize_entity_key(domain, entity_key_raw)?;
     let rows = db
-        .list_project_entity_revisions(ds_id, domain, &entity_key)
+        .list_project_entity_revisions(proj_id, domain, &entity_key)
         .await
         .map_err(|e| EntityRevisionError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(EntityVersionsListResponse {
-        ds_id,
+        proj_id,
         domain: domain.to_string(),
         entity_key,
         versions: rows
@@ -359,7 +359,7 @@ pub async fn list_entity_versions(
 
 pub async fn compare_entity_versions(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     domain_raw: &str,
     entity_key_raw: &str,
     from_rev: &str,
@@ -368,7 +368,7 @@ pub async fn compare_entity_versions(
     let domain = parse_domain(domain_raw)?;
     let entity_key = normalize_entity_key(domain, entity_key_raw)?;
     let from_row = db
-        .get_project_entity_revision(ds_id, domain, &entity_key, from_rev)
+        .get_project_entity_revision(proj_id, domain, &entity_key, from_rev)
         .await
         .map_err(|e| EntityRevisionError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| {
@@ -378,7 +378,7 @@ pub async fn compare_entity_versions(
             )
         })?;
     let to_row = db
-        .get_project_entity_revision(ds_id, domain, &entity_key, to_rev)
+        .get_project_entity_revision(proj_id, domain, &entity_key, to_rev)
         .await
         .map_err(|e| EntityRevisionError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| {
@@ -389,7 +389,7 @@ pub async fn compare_entity_versions(
         })?;
     let same = from_row.body == to_row.body;
     Ok(EntityCompareResponse {
-        ds_id,
+        proj_id,
         domain: domain.to_string(),
         entity_key,
         from: from_rev.to_string(),
@@ -408,8 +408,8 @@ pub struct RestoreEntityRevisionRequest {
 
 #[derive(Debug, Serialize)]
 pub struct RestoreEntityRevisionResponse {
-    #[serde(rename = "dsId")]
-    pub ds_id: i64,
+    #[serde(rename = "projId")]
+    pub proj_id: i64,
     pub domain: String,
     #[serde(rename = "entityKey")]
     pub entity_key: String,
@@ -421,7 +421,7 @@ pub struct RestoreEntityRevisionResponse {
 
 pub async fn restore_entity_revision_to_draft(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     domain_raw: &str,
     entity_key_raw: &str,
     entity_rev: &str,
@@ -429,7 +429,7 @@ pub async fn restore_entity_revision_to_draft(
     let domain = parse_domain(domain_raw)?;
     let entity_key = normalize_entity_key(domain, entity_key_raw)?;
     let rev_row = db
-        .get_project_entity_revision(ds_id, domain, &entity_key, entity_rev)
+        .get_project_entity_revision(proj_id, domain, &entity_key, entity_rev)
         .await
         .map_err(|e| EntityRevisionError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| {
@@ -438,17 +438,17 @@ pub async fn restore_entity_revision_to_draft(
                 format!("entity revision not found: {entity_rev}"),
             )
         })?;
-    project_config_draft::ensure_draft(db, ds_id)
+    project_config_draft::ensure_draft(db, proj_id)
         .await
         .map_err(draft_err)?;
     let mut row = db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| EntityRevisionError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| {
             EntityRevisionError::new(
                 StatusCode::NOT_FOUND,
-                format!("no project_config for ds {ds_id}"),
+                format!("no project_config for proj {proj_id}"),
             )
         })?;
     apply_entity_body_to_draft_row(&mut row, domain, &entity_key, &rev_row.body)?;
@@ -458,7 +458,7 @@ pub async fn restore_entity_revision_to_draft(
     row.updated_at_ms = now;
     let stable = project_config_draft::effective_formal_rev(&row).map_err(draft_err)?;
     db.upsert_project_config(ProjectConfigUpsert {
-        ds_id,
+        proj_id,
         content_rev: DRAFT_CONTENT_REV,
         stable_content_rev: Some(stable),
         draft_open: true,
@@ -479,7 +479,7 @@ pub async fn restore_entity_revision_to_draft(
     .await
     .map_err(|e| EntityRevisionError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(RestoreEntityRevisionResponse {
-        ds_id,
+        proj_id,
         domain: domain.to_string(),
         entity_key,
         entity_rev: entity_rev.to_string(),

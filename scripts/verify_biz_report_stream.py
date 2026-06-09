@@ -204,6 +204,8 @@ def _resolve_teardown_ports(args: argparse.Namespace) -> list[int]:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
+    if getattr(args, "ds_id", None) is not None:
+        args.proj_id = args.ds_id
     try:
         gw = args.gateway.rstrip("/")
         seed_url = f"{gw}/v1/dev/biz_report_seed_task"
@@ -211,7 +213,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             seed = _post_json(
                 seed_url,
                 {
-                    "dsId": args.ds_id,
+                    "projId": args.proj_id,
                     "outputText": args.output_text,
                     "outputJson": {"mock": True, "note": "seed for stream verify"},
                 },
@@ -584,7 +586,8 @@ def main() -> int:
 
     v = sub.add_parser("verify", help="POST dev seed + GET biz_advice_report stream=true")
     v.add_argument("--gateway", required=True, help="e.g. http://127.0.0.1:18088")
-    v.add_argument("--ds-id", type=int, default=1, dest="ds_id")
+    v.add_argument("--proj-id", type=int, default=1, dest="proj_id")
+    v.add_argument("--ds-id", type=int, default=None, dest="ds_id", help="legacy alias for --proj-id")
     v.add_argument("--output-text", default="mock raw boss output for polish", dest="output_text")
     v.add_argument("--timeout", type=float, default=300.0)
     v.add_argument(

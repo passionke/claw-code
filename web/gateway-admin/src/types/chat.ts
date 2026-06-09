@@ -16,7 +16,7 @@ export interface TaskProgressTodo {
 export interface TurnCancelResponse {
   sessionId: string;
   turnId: string;
-  dsId: number;
+  projId: number;
   status: string;
   cancelApplied: boolean;
   error?: unknown;
@@ -76,7 +76,7 @@ export interface GatewaySessionSummary {
 }
 
 export interface ListProjectSessionsResponse {
-  dsId: number;
+  projId: number;
   sessions: GatewaySessionSummary[];
   hasMore?: boolean;
 }
@@ -104,7 +104,7 @@ export interface GatewayTurnSummary {
 
 export interface ListSessionTurnsResponse {
   sessionId: string;
-  dsId: number;
+  projId: number;
   turns: GatewayTurnSummary[];
 }
 
@@ -113,7 +113,7 @@ export type TurnFeedbackValue = "good" | "bad";
 
 export interface AgentFeedbackPostResponse {
   sessionId: string;
-  dsId: number;
+  projId: number;
   turnId: string;
   feedback: TurnFeedbackValue;
   updatedAtMs: number;
@@ -121,7 +121,7 @@ export interface AgentFeedbackPostResponse {
 
 export interface AgentFeedbackGetResponse {
   sessionId: string;
-  dsId: number;
+  projId: number;
   items: Record<string, TurnFeedbackValue>;
 }
 

@@ -41,7 +41,7 @@ for ((s = 1; s <= DUR_SEC; s++)); do
     t0=$(python3 -c 'import time; print(time.time())')
     body=$(curl -sS -w '\n%{http_code}' -X POST "$URL/v1/solve_async" \
       -H 'Content-Type: application/json' \
-      -d "{\"dsId\":${ds},\"userPrompt\":\"${p}\"}" 2>&1) || true
+      -d "{\"projId\":${ds},\"userPrompt\":\"${p}\"}" 2>&1) || true
     t1=$(python3 -c 'import time; print(time.time())')
     code=$(echo "$body" | tail -n1)
     json=$(echo "$body" | sed '$d')

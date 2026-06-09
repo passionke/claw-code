@@ -6,7 +6,7 @@ import { useProjectConfigEditor } from "../hooks/useProjectConfigEditor";
 import type { ToolCatalogEntry } from "../types/project";
 
 export default function ToolsPage() {
-  const { gatewayBase, dsId, projectConfig, reloadEditingConfig, saveDraftPatch } =
+  const { gatewayBase, projId, projectConfig, reloadEditingConfig, saveDraftPatch } =
     useProjectConfigEditor();
   const [catalog, setCatalog] = useState<ToolCatalogEntry[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -33,7 +33,7 @@ export default function ToolsPage() {
 
   useEffect(() => {
     load(true).catch((e) => message.error(String((e as Error).message)));
-  }, [gatewayBase, dsId, load]);
+  }, [gatewayBase, projId, load]);
 
   useEffect(() => {
     if (projectConfig) syncToolsFromConfig(projectConfig);

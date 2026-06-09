@@ -81,7 +81,7 @@ import os
 from pathlib import Path
 
 work_root = Path(os.environ["WORK_ROOT"])
-ds_id = os.environ["DS_ID"]
+proj_id = os.environ["DS_ID"]
 session_home = Path(os.environ["SESSION_HOME"])
 local_mcp_url = os.environ["LOCAL_MCP_URL"]
 settings_source = os.environ.get("SETTINGS_SOURCE", "").strip()
@@ -92,7 +92,7 @@ def load_settings_template() -> dict:
         if not p.is_file():
             raise SystemExit(f"SETTINGS_SOURCE not found: {p}")
         return json.loads(p.read_text(encoding="utf-8"))
-    sessions = work_root / f"ds_{ds_id}" / "sessions"
+    sessions = work_root / f"proj_{proj_id}" / "sessions"
     candidates = sorted(
         sessions.glob("*/.claw/settings.json"),
         key=lambda p: p.stat().st_mtime,

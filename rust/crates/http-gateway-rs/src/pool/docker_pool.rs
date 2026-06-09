@@ -125,8 +125,8 @@ enum SlotState {
 struct Slot {
     container_name: String,
     state: SlotState,
-    /// `ds_id` bound at last `run` (revive when changed). Author: kejiqing
-    bound_ds_id: Option<i64>,
+    /// `proj_id` bound at last `run` (revive when changed). Author: kejiqing
+    bound_proj_id: Option<i64>,
     /// Worker strict/relaxed profile bound at last `run`. Author: kejiqing
     bound_isolation: WorkerIsolationMode,
     /// Integration tests: host session tree bind-mounted to [`GUEST_WORK_ROOT`].
@@ -141,7 +141,7 @@ fn use_symlink_inject(runtime_bin: &str) -> bool {
 
 /// Pool of long-lived worker containers (Phase 2).
 ///
-/// Each slot `run`s with `ds_{id}` → `/claw_ds` and ephemeral [`GUEST_WORK_ROOT`] (tmpfs).
+/// Each slot `run`s with `proj_{id}` → `/claw_ds` and ephemeral [`GUEST_WORK_ROOT`] (tmpfs).
 /// **Acquire** materializes session files from PG via `docker exec`; **release** only pkill. Author: kejiqing
 pub struct DockerPoolManager {
     name_stem: String,
@@ -368,12 +368,12 @@ impl DockerPoolManager {
         ]
     }
 
-    async fn resolve_isolation_for_ds(&self, ds_id: i64) -> WorkerIsolationMode {
+    async fn resolve_isolation_for_proj(&self, proj_id: i64) -> WorkerIsolationMode {
         if let Some(fixed) = self.fixed_isolation {
             return fixed;
         }
         let json = if let Some(ref db) = self.session_db {
-            db.get_worker_isolation_json(ds_id)
+            db.get_worker_isolation_json(proj_id)
                 .await
                 .unwrap_or_else(|_| super::worker_isolation::default_worker_isolation_json())
         } else {
@@ -382,13 +382,13 @@ impl DockerPoolManager {
         effective_mode(relaxed_worker_allowed_from_env(), &json)
     }
 
-    fn ds_host_dir(&self, ds_id: i64) -> PathBuf {
-        self.work_root_host.join(format!("ds_{ds_id}"))
+    fn proj_host_dir(&self, proj_id: i64) -> PathBuf {
+        self.work_root_host.join(format!("proj_{proj_id}"))
     }
 
-    /// ds_{id} host bind at [`session_db_sync::DS_MOUNT_TARGET`]; read-only in worker (gateway writes on host).
+    /// proj_{id} host bind at [`session_db_sync::DS_MOUNT_TARGET`]; read-only in worker (gateway writes on host).
     #[must_use]
-    fn ds_home_bind_volume_arg(ds_host_abs: &Path) -> String {
+    fn proj_home_bind_volume_arg(ds_host_abs: &Path) -> String {
         format!(
             "{}:{}:ro",
             ds_host_abs.display(),
@@ -452,7 +452,7 @@ impl DockerPoolManager {
             slots[i] = Slot {
                 container_name: name,
                 state: SlotState::Idle,
-                bound_ds_id: Some(1),
+                bound_proj_id: Some(1),
                 bound_isolation: self.warm_isolation(),
                 test_host_root: None,
             };
@@ -465,7 +465,7 @@ impl DockerPoolManager {
             slots.push(Slot {
                 container_name: name.clone(),
                 state: SlotState::Idle,
-                bound_ds_id: None,
+                bound_proj_id: None,
                 bound_isolation: WorkerIsolationMode::Strict,
                 test_host_root: None,
             });
@@ -491,12 +491,12 @@ impl DockerPoolManager {
         Ok(())
     }
 
-    /// Create or revive a slot: `ds_{id}` → `/claw_ds`, ephemeral [`GUEST_WORK_ROOT`]. Author: kejiqing
+    /// Create or revive a slot: `proj_{id}` → `/claw_ds`, ephemeral [`GUEST_WORK_ROOT`]. Author: kejiqing
     async fn run_worker_slot_container(
         &self,
         slot_index: usize,
         name: &str,
-        ds_id: i64,
+        proj_id: i64,
         isolation: WorkerIsolationMode,
         test_host_root: Option<PathBuf>,
     ) -> Result<(), String> {
@@ -528,7 +528,7 @@ impl DockerPoolManager {
         }
         self.rm_container(name).await?;
 
-        let ds_host = self.ds_host_dir(ds_id);
+        let ds_host = self.proj_host_dir(proj_id);
         tokio::fs::create_dir_all(&ds_host)
             .await
             .map_err(|e| format!("mkdir ds home {}: {e}", ds_host.display()))?;
@@ -548,7 +548,7 @@ impl DockerPoolManager {
             self.append_security_boost_run_args(&mut args);
         }
         args.push("-v".into());
-        args.push(Self::ds_home_bind_volume_arg(&ds_abs));
+        args.push(Self::proj_home_bind_volume_arg(&ds_abs));
         if let Some(host_root) = test_host_root.as_ref() {
             let root_abs = std::fs::canonicalize(host_root).map_err(|e| {
                 format!(
@@ -622,7 +622,7 @@ impl DockerPoolManager {
             component = "docker_pool",
             phase = "worker_run_ok",
             container = %name,
-            ds_id,
+            proj_id,
             worker_isolation = ?isolation,
             ds_bind = %ds_abs.display(),
             slot_index,
@@ -699,15 +699,15 @@ impl DockerPoolManager {
     async fn prepare_slot_for_lease(
         self: &Arc<Self>,
         slot_index: usize,
-        ds_id: i64,
+        proj_id: i64,
         session_id: &str,
         turn_id: &str,
     ) -> Result<String, String> {
-        let isolation = self.resolve_isolation_for_ds(ds_id).await;
+        let isolation = self.resolve_isolation_for_proj(proj_id).await;
         let test_host = if self.symlink_inject {
             let home = session_db_sync::session_home_under_work_root(
                 &self.work_root_host,
-                ds_id,
+                proj_id,
                 session_id,
             );
             tokio::fs::create_dir_all(home.join(".claw"))
@@ -725,7 +725,7 @@ impl DockerPoolManager {
                 .ok_or_else(|| "bad slot index".to_string())?;
             let host_changed =
                 self.symlink_inject && s.test_host_root.as_ref() != test_host.as_ref();
-            let need_run = s.bound_ds_id != Some(ds_id)
+            let need_run = s.bound_proj_id != Some(proj_id)
                 || s.bound_isolation != isolation
                 || s.state == SlotState::Dead
                 || host_changed;
@@ -734,11 +734,11 @@ impl DockerPoolManager {
             (s.container_name.clone(), need_run)
         };
         if need_run {
-            self.run_worker_slot_container(slot_index, &cname, ds_id, isolation, test_host)
+            self.run_worker_slot_container(slot_index, &cname, proj_id, isolation, test_host)
                 .await?;
             let mut slots = self.slots.lock().await;
             if let Some(s) = slots.get_mut(slot_index) {
-                s.bound_ds_id = Some(ds_id);
+                s.bound_proj_id = Some(proj_id);
                 s.bound_isolation = isolation;
             }
         }
@@ -750,7 +750,7 @@ impl DockerPoolManager {
                 db,
                 &MaterializeInput {
                     session_id: session_id.to_string(),
-                    ds_id,
+                    proj_id,
                     turn_id: turn_id.to_string(),
                 },
                 isolation,
@@ -766,16 +766,16 @@ impl DockerPoolManager {
         self: &Arc<Self>,
         wait: Duration,
         session_id: String,
-        ds_id: i64,
+        proj_id: i64,
         turn_id: String,
     ) -> Result<SlotLease, String> {
         if let Some(ref db) = self.session_db {
-            db.assert_session_can_acquire_for_turn(&session_id, ds_id, &turn_id)
+            db.assert_session_can_acquire_for_turn(&session_id, proj_id, &turn_id)
                 .await
                 .map_err(|reason| format!("session acquire blocked: {reason}"))?;
         }
         timeout(wait, async move {
-            let isolation = self.resolve_isolation_for_ds(ds_id).await;
+            let isolation = self.resolve_isolation_for_proj(proj_id).await;
             loop {
                 let mut slots = self.slots.lock().await;
                 if let Some((i, _)) = slots
@@ -783,7 +783,7 @@ impl DockerPoolManager {
                     .enumerate()
                     .find(|(_, s)| {
                         s.state == SlotState::Idle
-                            && s.bound_ds_id == Some(ds_id)
+                            && s.bound_proj_id == Some(proj_id)
                             && s.bound_isolation == isolation
                     })
                     .or_else(|| {
@@ -795,7 +795,7 @@ impl DockerPoolManager {
                 {
                     drop(slots);
                     match self
-                        .prepare_slot_for_lease(i, ds_id, &session_id, &turn_id)
+                        .prepare_slot_for_lease(i, proj_id, &session_id, &turn_id)
                         .await
                     {
                         Ok(cname) => {
@@ -805,7 +805,7 @@ impl DockerPoolManager {
                                 phase = "acquire_slot_ok",
                                 slot_index = i,
                                 session_id = %session_id,
-                                ds_id,
+                                proj_id,
                                 container = %cname,
                                 "slot leased with ds bind + PG materialize"
                             );
@@ -838,7 +838,7 @@ impl DockerPoolManager {
                     slots.push(Slot {
                         container_name: name.clone(),
                         state: SlotState::Idle,
-                        bound_ds_id: None,
+                        bound_proj_id: None,
                         bound_isolation: WorkerIsolationMode::Strict,
                         test_host_root: None,
                     });
@@ -849,7 +849,7 @@ impl DockerPoolManager {
                     }
                     drop(slots);
                     match self
-                        .prepare_slot_for_lease(idx, ds_id, &session_id, &turn_id)
+                        .prepare_slot_for_lease(idx, proj_id, &session_id, &turn_id)
                         .await
                     {
                         Ok(cname) => {
@@ -896,7 +896,7 @@ impl DockerPoolManager {
     }
 
     /// `task_rel_under_root` is a path relative to the session bind root (e.g.
-    /// `gateway-solve-task.json`), not under other `ds_*` trees.
+    /// `gateway-solve-task.json`), not under other `proj_*` trees.
     #[allow(clippy::too_many_lines)]
     pub async fn exec_solve(
         &self,
@@ -1028,7 +1028,7 @@ impl DockerPoolManager {
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         if let Some(ref db) = self.session_db {
-            if let Ok(Some((session_id, ds_id))) = db.turn_session_scope(turn_id).await {
+            if let Ok(Some((session_id, proj_id))) = db.turn_session_scope(turn_id).await {
                 let user_prompt = db
                     .get_turn_user_prompt(turn_id)
                     .await
@@ -1042,7 +1042,7 @@ impl DockerPoolManager {
                         db,
                         db.pg_pool(),
                         &session_id,
-                        ds_id,
+                        proj_id,
                         turn_id,
                         &user_prompt,
                     )
@@ -1286,12 +1286,12 @@ mod worker_volume_mount_tests {
     use crate::pool::{DS_MOUNT_TARGET, GUEST_WORK_ROOT};
 
     #[test]
-    fn ds_home_bind_volume_arg_is_read_only() {
-        let arg = DockerPoolManager::ds_home_bind_volume_arg(Path::new("/data/ds_7"));
-        assert_eq!(arg, "/data/ds_7:/claw_ds:ro");
+    fn proj_home_bind_volume_arg_is_read_only() {
+        let arg = DockerPoolManager::proj_home_bind_volume_arg(Path::new("/data/proj_7"));
+        assert_eq!(arg, "/data/proj_7:/claw_ds:ro");
         assert!(
             !arg.contains(&format!("{DS_MOUNT_TARGET}:rw")),
-            "ds_home must never be rw in worker: {arg}"
+            "proj_home must never be rw in worker: {arg}"
         );
     }
 
@@ -1456,11 +1456,11 @@ esac
     fn assert_worker_mount_permissions(run_line: &str) {
         assert!(
             run_line.contains(&format!(":{DS_MOUNT_TARGET}:ro")),
-            "ds_home bind must be :ro, run line:\n{run_line}"
+            "proj_home bind must be :ro, run line:\n{run_line}"
         );
         assert!(
             !run_line.contains(&format!(":{DS_MOUNT_TARGET}:rw")),
-            "ds_home must not be :rw, run line:\n{run_line}"
+            "proj_home must not be :rw, run line:\n{run_line}"
         );
         assert!(
             run_line.contains(&format!("{GUEST_WORK_ROOT}:rw,"))
@@ -1801,7 +1801,7 @@ esac
     }
 
     #[tokio::test]
-    async fn ds_home_bind_mount_is_read_only() {
+    async fn proj_home_bind_mount_is_read_only() {
         let (base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool =
@@ -1813,7 +1813,7 @@ esac
     }
 
     #[tokio::test]
-    async fn ds_home_bind_stays_read_only_with_security_boost() {
+    async fn proj_home_bind_stays_read_only_with_security_boost() {
         let (base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool = DockerPoolManager::from_config(test_pool_config_mut(
@@ -1866,7 +1866,7 @@ esac
     }
 
     #[tokio::test]
-    async fn worker_cannot_write_under_claw_ds_home() {
+    async fn worker_cannot_write_under_claw_proj_home() {
         let (_base, work, bin_path) = test_layout();
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "dshomewr"))

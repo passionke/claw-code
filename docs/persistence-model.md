@@ -18,18 +18,18 @@ This document aligns runtime behavior with the **Claw persistence design** plan 
 | Column | Role |
 | --- | --- |
 | `turn_id` | Primary key; one row per user solve submission. |
-| `session_id`, `ds_id` | Session scope; matches `gateway_sessions`. |
+| `session_id`, `proj_id` | Session scope; matches `gateway_sessions`（legacy `ds_id` 列仍保留并镜像 `proj_id`）。 |
 | `status` | `queued` / `running` / `succeeded` / `failed` / `cancelled`. |
 | `created_at_ms`, `finished_at_ms` | Ordering within a session (used with `turn_id` for stable **turn index** when slicing jsonl). |
 | `user_prompt` | Optional copy of the user prompt for auditing. |
 | `report_message` | Formal report body for this turn (same basis as `outputJson.message` / `report_body_from_solve_output`). |
 | `output_json` | Optional full solve JSON payload for handoff. |
 | `claw_exit_code` | Exit code from the worker when succeeded. |
-| `entry_params_json` | Immutable enqueue snapshot per turn (`dsId`, `userPrompt`, `extraSession`, `model`, `allowedTools`, `clientOrigin`, …). Admin `GET /v1/sessions/{sessionId}/turns` exposes `extraSession` from this column. |
+| `entry_params_json` | Immutable enqueue snapshot per turn (`projId`, `userPrompt`, `extraSession`, `model`, `allowedTools`, `clientOrigin`, …). Admin `GET /v1/sessions/{sessionId}/turns` exposes `extraSession` from this column. |
 | `worker_name` | Leased worker container name while `running`; used by pool daemon `sync_turn_progress` to read live `.claw/progress*`. |
 | `solve_timing_jsonb` | `progressEvents`, `taskProgress`, `solveTimingEvents`, … — HTTP `progressHistory` / timeline source; updated on running sync + `readback_out`. |
 
-Schema is applied at gateway startup via `GatewaySessionDb::migrate` (`ALTER TABLE ... IF NOT EXISTS` for new columns). Per-`ds_id` agent bundle storage lives in **`project_config`** (see `docs/project-config-model.md`).
+Schema is applied at gateway startup via `GatewaySessionDb::migrate` (`ALTER TABLE ... IF NOT EXISTS` for new columns). Per-`proj_id` agent bundle storage lives in **`project_config`** (see `docs/project-config-model.md`).
 
 ## Gateway process restart
 

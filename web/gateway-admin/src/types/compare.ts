@@ -35,7 +35,7 @@ export const MERGEABLE_FIELDS: MergeableField[] = [
 ];
 
 export interface ProjectConfigCompareResponse {
-  dsId: number;
+  projId: number;
   from: string;
   to: string;
   activeContentRev: string;

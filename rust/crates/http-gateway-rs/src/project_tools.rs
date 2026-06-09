@@ -1,4 +1,4 @@
-//! Gateway tool catalog and per-`ds_id` allowed-tools resolution (DB only). Author: kejiqing
+//! Gateway tool catalog and per-`proj_id` allowed-tools resolution (DB only). Author: kejiqing
 
 use serde_json::Value;
 use tools::mvp_tool_specs;

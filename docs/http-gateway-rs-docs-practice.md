@@ -31,7 +31,7 @@
 - [ ] 启动命令或环境变量变更是否已更新 quickstart / `.env.example`
 - [ ] 本地已验证 `GET /healthz`
 - [ ] 至少验证一次 `solve_async + tasks` 链路
-- [ ] MCP 默认联通（`/v1/mcp/injected/{dsId}`）可用
+- [ ] MCP 默认联通（`/v1/mcp/injected/{projId}`）可用
 
 ## 4. 最小验收命令
 
@@ -39,6 +39,6 @@
 curl -sS http://127.0.0.1:18088/healthz
 curl -sS -X POST http://127.0.0.1:18088/v1/solve_async \
   -H "Content-Type: application/json" \
-  -d '{"dsId":1,"userPrompt":"smoke"}'
+  -d '{"projId":1,"userPrompt":"smoke"}'
 curl -sS http://127.0.0.1:18088/v1/mcp/injected/1
 ```

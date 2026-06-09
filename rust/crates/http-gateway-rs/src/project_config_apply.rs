@@ -1,4 +1,4 @@
-//! Materialize `project_config` rows onto `ds_<id>/home` (rules, CLAUDE.md, inline skills from DB).
+//! Materialize `project_config` rows onto `proj_<id>/home` (rules, CLAUDE.md, inline skills from DB).
 //!
 //! System prompt paths (`claude_md` vs scaffold, no `system_prompt_user_override`):
 //! `docs/gateway-system-prompt-assembly.md` §4–§6.
@@ -456,7 +456,7 @@ async fn apply_full(
     Ok(())
 }
 
-/// Host `ds_<id>/` only: `home/` is `ds_home` canonical; `.claw/skills` / `.cursor/rules` symlinks for local claw discovery. Guest pool uses `.claw` directly (no `home/`). Author: kejiqing
+/// Host `proj_<id>/` only: `home/` is `proj_home` canonical; `.claw/skills` / `.cursor/rules` symlinks for local claw discovery. Guest pool uses `.claw` directly (no `home/`). Author: kejiqing
 pub async fn link_claw_compat_symlinks(work_dir: &Path) -> ApplyResult<()> {
     link_dir_symlink(
         work_dir,
@@ -648,7 +648,7 @@ pub fn build_settings_json_from_row(row: &ProjectConfigRow) -> Value {
     settings
 }
 
-/// PG `project_config` → bytes for `materialize_in` (every solve; not host `ds_*` / worker age). Author: kejiqing
+/// PG `project_config` → bytes for `materialize_in` (every solve; not host `proj_*` / worker age). Author: kejiqing
 pub fn build_guest_materialize_writes(
     row: &ProjectConfigRow,
     system_prompt_scaffold: &str,
@@ -851,7 +851,7 @@ mod tests {
     #[test]
     fn git_excluded_paths_follow_db_config() {
         let row = ProjectConfigRow {
-            ds_id: 1,
+            proj_id: 1,
             content_rev: "r".into(),
             stable_content_rev: Some("r".into()),
             draft_open: false,
@@ -918,7 +918,7 @@ mod tests {
     #[test]
     fn build_guest_materialize_writes_uses_worker_native_paths() {
         let row = ProjectConfigRow {
-            ds_id: 1,
+            proj_id: 1,
             content_rev: "rev-2".into(),
             stable_content_rev: Some("rev-2".into()),
             draft_open: false,
@@ -988,7 +988,7 @@ mod tests {
     #[test]
     fn build_guest_materialize_writes_includes_claude_and_settings() {
         let row = ProjectConfigRow {
-            ds_id: 1,
+            proj_id: 1,
             content_rev: "rev-1".into(),
             stable_content_rev: Some("rev-1".into()),
             draft_open: false,
@@ -1027,7 +1027,7 @@ mod tests {
     #[test]
     fn disabled_entities_are_not_materialized() {
         let row = ProjectConfigRow {
-            ds_id: 1,
+            proj_id: 1,
             content_rev: "rev-disabled".into(),
             stable_content_rev: Some("rev-disabled".into()),
             draft_open: false,
@@ -1101,7 +1101,7 @@ mod tests {
         .expect("seed legacy override");
 
         let row = ProjectConfigRow {
-            ds_id: 1,
+            proj_id: 1,
             content_rev: "rev-apply-prompt".into(),
             stable_content_rev: Some("rev-apply-prompt".into()),
             draft_open: false,
@@ -1167,7 +1167,7 @@ mod tests {
             .expect("seed root claude");
 
         let row = ProjectConfigRow {
-            ds_id: 1,
+            proj_id: 1,
             content_rev: "rev-clear-claude".into(),
             stable_content_rev: Some("rev-clear-claude".into()),
             draft_open: false,
@@ -1203,7 +1203,7 @@ mod tests {
     #[test]
     fn build_settings_json_from_row_includes_mcp_and_auto_hidden() {
         let row = ProjectConfigRow {
-            ds_id: 1,
+            proj_id: 1,
             content_rev: "r".into(),
             stable_content_rev: Some("r".into()),
             draft_open: false,
@@ -1229,7 +1229,7 @@ mod tests {
     #[test]
     fn build_settings_json_from_row_materializes_prompt_limits() {
         let row = ProjectConfigRow {
-            ds_id: 1,
+            proj_id: 1,
             content_rev: "r".into(),
             stable_content_rev: Some("r".into()),
             draft_open: false,
