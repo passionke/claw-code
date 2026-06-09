@@ -44,13 +44,23 @@ launchctl print "gui/$(id -u)/com.claw.pool-daemon" | head -12
 lsof -nP -iTCP:9944 -sTCP:LISTEN
 ```
 
-Linux **`CLAW_DEPLOY_PROFILE=production`**：`pool-daemon-up` 写 `pool-daemon.env` 后走 **systemd**（`User=root`，unit：`claw-pool-daemon.service`），与 macOS launchd 对称。本地 profile 仍 `nohup`。
+Linux **`CLAW_DEPLOY_PROFILE=production`**：`pool-daemon-up` 写 `pool-daemon.env` 后走 **systemd**（`User=root`）。**双 pool** 各一个 unit（与 macOS launchd 对称）：
+
+| Profile | systemd unit | HTTP |
+|---------|----------------|------|
+| strict | `claw-pool-daemon-strict.service` | 9944 |
+| relaxed | `claw-pool-daemon-relaxed.service` | 9954 |
+
+旧单 unit `claw-pool-daemon.service` 在首次 `--profile=strict|relaxed` 时自动 disable（避免 relaxed 覆盖 strict 导致 9944 503）。本地 profile 仍 `nohup`。
+
+GitLab CI（10.22.28.94）设 **`CLAW_POOL_DAEMON_USE_SYSTEMD=0`**，走 nohup 双 daemon，**测不到** production 默认 systemd 路径——生产升双 pool 后须跑 **`claw-stack-verify.sh`**（含 systemd 一致性检查）。
 
 ```bash
-# 生产：刷新 env 并 systemd 重启（= gateway.sh pool-up --restart）
-sudo systemctl restart claw-pool-daemon
-systemctl status claw-pool-daemon
+# 生产：刷新 env 并 systemd 重启双 pool
+./deploy/stack/gateway.sh pool-up --restart --profile=all
+sudo systemctl status claw-pool-daemon-strict claw-pool-daemon-relaxed
 curl -fsS http://127.0.0.1:9944/healthz/live-report
+curl -fsS http://127.0.0.1:9954/healthz/live-report
 ```
 
 ---

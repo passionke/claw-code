@@ -39,9 +39,9 @@ claw_pool_down_one() {
   elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
     # shellcheck disable=SC1091
     source "${LIB_DIR}/pool-daemon-systemd.sh"
-    if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_installed; then
+    if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_installed "${profile}"; then
       echo "==> stopping claw-pool-daemon (systemd) profile=${profile:-legacy}" >&2
-      claw_pool_systemd_stop || true
+      claw_pool_systemd_stop "${profile}" || true
     fi
   fi
 
