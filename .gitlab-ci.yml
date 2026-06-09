@@ -1,9 +1,9 @@
-# Sunmi CI: push main → build → deploy → admin-solve-e2e (no manual gate)
+# Sunmi CI: push any branch → build → deploy → admin-solve-e2e (no manual gate)
 # Env: GitLab Settings → CI/CD → Variables → deploy/stack/docs/gitlab-ci-variables.md
 # Author: kejiqing
 workflow:
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH
     - when: never
 
 # Default -ffdx removes ignored deploy/stack/claw-postgres-data (root-owned) → checkout fails.
@@ -34,11 +34,9 @@ build:release-images:
     - claw-dev
   variables:
     <<: *ci_production_docker
-    CLAW_RELEASE_TAG: "release-${CI_COMMIT_SHORT_SHA}"
     CLAW_CI_REQUIRE_LLM_BOOTSTRAP: "0"
   script:
-    - cd "${CI_PROJECT_DIR:-/home/gitlab-runner/claw-code}"
-    - git fetch origin && git checkout main && git pull --ff-only origin main
+    - source ./deploy/stack/lib/ci-sync-worktree.sh
     - ./deploy/stack/lib/render-env-from-ci.sh
     - ./deploy/stack/gateway.sh build --no-clean local
     - |
@@ -60,11 +58,9 @@ deploy:release:
     - build:release-images
   variables:
     <<: *ci_production_docker
-    CLAW_RELEASE_TAG: "release-${CI_COMMIT_SHORT_SHA}"
     CLAW_CI_REQUIRE_LLM_BOOTSTRAP: "1"
   script:
-    - cd "${CI_PROJECT_DIR:-/home/gitlab-runner/claw-code}"
-    - git fetch origin && git checkout main && git pull --ff-only origin main
+    - source ./deploy/stack/lib/ci-sync-worktree.sh
     - ./deploy/stack/lib/render-env-from-ci.sh
     - ./deploy/stack/gateway.sh up --release "${CLAW_RELEASE_TAG}"
     - ./deploy/stack/lib/admin-solve-e2e.sh 1 ping

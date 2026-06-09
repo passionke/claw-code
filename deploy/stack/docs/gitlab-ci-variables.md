@@ -54,7 +54,7 @@ Author: kejiqing
 4. （可选）`CLAW_BOOTSTRAP_LLM_MODEL_NAME`：**不要 Mask**
 5. **不要**勾选 **Protected**，除非已在 **Settings → Repository → Protected branches** 把 `main` 设为 protected；否则 deploy job 读不到变量（日志里会显示 `present … all no`）
 6. **Environment scope** 保持 `*`（All）
-7. **push `main`** 自动触发：**build:release-images** → **deploy:release** → `admin-solve-e2e.sh`
+7. **push 任意分支**（含 `main`、`proj_id` 等）自动触发：**build:release-images** → **deploy:release** → `admin-solve-e2e.sh`；job 检出 **当前 pipeline 提交**（不再强制 `main`）。镜像 tag：`main` → `release-<short_sha>`；其它分支 → `release-<ref_slug>-<short_sha>`（见 `deploy/stack/lib/ci-sync-worktree.sh`）。
 
 变量名必须**完全一致**（区分大小写），不要用 `OPENAI_API_KEY` 代替除非你确认 job 日志里 `OPENAI_API_KEY=yes`。
 
