@@ -3,6 +3,8 @@
 # Author: kejiqing
 workflow:
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web" && $CLAW_DISK_PRUNE == "1"
     - if: $CI_COMMIT_BRANCH
     - when: never
 
@@ -11,6 +13,7 @@ variables:
   GIT_CLEAN_FLAGS: "-ffd"
 
 stages:
+  - maintenance
   - build
   - deploy
 
@@ -27,11 +30,27 @@ stages:
   CLAW_POOL_DAEMON_USE_SYSTEMD: "0"
   CLAW_AUTO_BOOTSTRAP: "1"
 
+# Weekly: GitLab → CI/CD → Schedules (cron e.g. 0 4 * * 0, branch main). Manual: Run pipeline + CLAW_DISK_PRUNE=1.
+maintenance:disk-prune:
+  stage: maintenance
+  resource_group: claw-deploy
+  tags:
+    - claw-dev
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web" && $CLAW_DISK_PRUNE == "1"
+  script:
+    - source ./deploy/stack/lib/ci-sync-worktree.sh
+    - ./deploy/stack/lib/ci-disk-prune.sh
+  timeout: 30m
+
 build:release-images:
   stage: build
   resource_group: claw-deploy
   tags:
     - claw-dev
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH
   variables:
     <<: *ci_production_docker
     CLAW_CI_REQUIRE_LLM_BOOTSTRAP: "0"
@@ -54,6 +73,8 @@ deploy:release:
   resource_group: claw-deploy
   tags:
     - claw-dev
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH
   needs:
     - build:release-images
   variables:

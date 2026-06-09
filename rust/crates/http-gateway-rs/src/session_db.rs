@@ -321,6 +321,19 @@ impl GatewaySessionDb {
         Self::connect(url).await
     }
 
+    /// Connect without DDL (pool daemon; gateway-rs owns `migrate`). Author: kejiqing
+    pub async fn open_without_migrate() -> Result<Self, SqlxError> {
+        let url = std::env::var("CLAW_GATEWAY_DATABASE_URL")
+            .map_err(|_| SqlxError::Configuration("CLAW_GATEWAY_DATABASE_URL is not set".into()))?;
+        let url = url.trim();
+        if url.is_empty() {
+            return Err(SqlxError::Configuration(
+                "CLAW_GATEWAY_DATABASE_URL is empty".into(),
+            ));
+        }
+        Self::connect_without_migrate(url).await
+    }
+
     /// Connect and run schema migration (tests and explicit URLs).
     pub async fn connect(database_url: &str) -> Result<Self, SqlxError> {
         let pool = PgPoolOptions::new()
@@ -328,6 +341,18 @@ impl GatewaySessionDb {
             .connect(database_url)
             .await?;
         Self::migrate(&pool).await?;
+        Ok(Self {
+            pool,
+            database_url_redacted: redact_database_url(database_url),
+        })
+    }
+
+    /// Connect without schema migration (existing PG schema required). Author: kejiqing
+    pub async fn connect_without_migrate(database_url: &str) -> Result<Self, SqlxError> {
+        let pool = PgPoolOptions::new()
+            .max_connections(10)
+            .connect(database_url)
+            .await?;
         Ok(Self {
             pool,
             database_url_redacted: redact_database_url(database_url),
@@ -367,8 +392,23 @@ impl GatewaySessionDb {
         Ok(row)
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn migrate(pool: &PgPool) -> Result<(), SqlxError> {
+        // Serialize DDL when gateway-rs and pool-daemon start together (CI release up). Author: kejiqing
+        const MIGRATE_ADVISORY_LOCK: i64 = 0x434C_4157_4D49;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(MIGRATE_ADVISORY_LOCK)
+            .execute(pool)
+            .await?;
+        let result = Self::run_migrate(pool).await;
+        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(MIGRATE_ADVISORY_LOCK)
+            .execute(pool)
+            .await;
+        result
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn run_migrate(pool: &PgPool) -> Result<(), SqlxError> {
         sqlx::query(
             r"CREATE TABLE IF NOT EXISTS gateway_sessions (
                 session_id TEXT NOT NULL,

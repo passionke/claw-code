@@ -74,8 +74,43 @@ gateway clawTap ready (/readyz attempt …)
 
 CI 使用 `GIT_CLEAN_FLAGS=-ffd`（不用 `-x`），避免 `git clean` 删除 root 拥有的 `deploy/stack/claw-postgres-data/` 导致 checkout 失败。PG 数据在 runner 上跨 pipeline 保留。
 
-## 7. 参考
+## 7. 每周磁盘清理（`maintenance:disk-prune`）
+
+Job 定义见 `.gitlab-ci.yml`；脚本：`deploy/stack/lib/ci-disk-prune.sh`。
+
+**清理范围**（不删 PG / workspace / 正在跑的 `:local` 镜像）：
+
+- `gateway.sh clean --debug-only`（`rust/target` debug + `.linux-artifacts`）
+- `docker image prune -f`（悬空层）
+- `docker builder prune`（默认保留 7 天内 cache，可用 `CLAW_CI_BUILDER_PRUNE_UNTIL_HOURS` 覆盖）
+- 各 `local/claw-*` 仓库只保留最新 **15** 个 `release-*` tag（`CLAW_CI_KEEP_RELEASE_TAGS` 可改）
+
+### 7.1 定时执行（推荐）
+
+1. GitLab → **Build** → **Pipeline schedules** → **New schedule**
+2. **Description**：`weekly-disk-prune`
+3. **Interval pattern**（cron）：`0 4 * * 0`（每周日 04:00，按 runner 时区）
+4. **Target branch**：`main`（或你希望跑清理脚本的分支）
+5. 保存后 GitLab 会按 cron 触发 pipeline；`CI_PIPELINE_SOURCE=schedule`，**只跑** `maintenance:disk-prune`，不跑 build/deploy。
+
+### 7.2 手动执行
+
+**Build** → **Pipelines** → **Run pipeline**：
+
+- **Branch**：`main`
+- **Variables**：`CLAW_DISK_PRUNE` = `1`
+- Run → 同样只执行 `maintenance:disk-prune`。
+
+本机 runner 上也可直接跑（不经过 GitLab）：
+
+```bash
+cd /path/to/claw-code
+./deploy/stack/lib/ci-disk-prune.sh
+```
+
+## 8. 参考
 
 - 变量模板：`deploy/stack/env.ci.example`
 - 生成脚本：`deploy/stack/lib/render-env-from-ci.sh`
 - 启动 bootstrap：`deploy/stack/lib/bootstrap-runtime.sh`
+- 磁盘清理：`deploy/stack/lib/ci-disk-prune.sh`

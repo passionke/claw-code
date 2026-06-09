@@ -2,8 +2,23 @@
 # Gateway up: optional LLM + project + claude-tap auto-register from repo .env / CI variables.
 # Author: kejiqing
 
+claw_print_gateway_deploy_failure() {
+  local ctn="${CLAW_GATEWAY_CONTAINER:-claw-gateway-rs}"
+  local rt
+  rt="$(command -v docker 2>/dev/null || command -v podman 2>/dev/null || true)"
+  echo "==> gateway deploy failure diagnostics" >&2
+  if [[ -n "${rt}" ]]; then
+    echo "--- ${rt} ps (name=${ctn}) ---" >&2
+    "${rt}" ps -a --filter "name=^/${ctn}$" 2>&1 | tail -20 >&2 || true
+    if "${rt}" container exists "${ctn}" >/dev/null 2>&1; then
+      echo "--- ${rt} logs ${ctn} (last 100) ---" >&2
+      "${rt}" logs "${ctn}" 2>&1 | tail -100 >&2 || true
+    fi
+  fi
+}
+
 claw_wait_gateway_http_ready() {
-  local max_attempts="${1:-45}"
+  local max_attempts="${1:-60}"
   local port="${GATEWAY_HOST_PORT:-18088}"
   local i
   for i in $(seq 1 "${max_attempts}"); do
@@ -15,6 +30,7 @@ claw_wait_gateway_http_ready() {
     sleep 2
   done
   echo "error: gateway HTTP not ready on :${port}" >&2
+  claw_print_gateway_deploy_failure
   return 1
 }
 
