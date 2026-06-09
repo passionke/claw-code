@@ -47,7 +47,7 @@ for j in sorted(json.load(sys.stdin), key=lambda x: x.get("stage","")):
   esac
 done
 
-echo "==> final: pipeline #${pid} ${pstatus} sha=${psha}"
+printf '==> final: pipeline #%s %s sha=%s\n' "${pid}" "${pstatus}" "${psha}"
 if [[ "${pstatus}" != success ]]; then
   failed_id="$(glab api "projects/minidata%2Fclaw-code/pipelines/${pid}/jobs" \
     | python3 -c 'import json,sys

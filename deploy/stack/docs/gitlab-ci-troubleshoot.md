@@ -49,7 +49,11 @@ glab api "projects/minidata%2Fclaw-code/jobs/JOB_ID/trace" | tail -80
    curl -fsS "http://10.22.28.94:18088/healthz" | head -c 200
    curl -fsS "http://10.22.28.94:9944/healthz/live-report" | head -c 200
    ```
-5. **已知坑**（勿重查错方向）：
+5. **典型根因示例**（job 214206 / `f531fcc9`）：
+   - `docker logs`：`schema migration failed: column "proj_id" does not exist`
+   - `failed SQL: UPDATE project_config SET proj_id = ds_id ...`（前面的 `ALTER ADD COLUMN` 被跳过）
+   - 修复：`run_sql_migration_file` 须剥掉段首 `--` 注释行，不能整段 `starts_with("--")` 跳过。
+6. **已知坑**（勿重查错方向）：
    - gateway 与 pool-daemon **不要并发** `GatewaySessionDb::migrate()`（`up.sh` 先等 healthz，pool-daemon 用 `open_without_migrate`）。
    - macOS 本地 pool 用 launchd；**Linux CI runner 用 systemd/nohup**（见 `host-pool-daemon.md`）。
    - 只 curl healthz **不算** Admin solve 通过；验收必须 `admin-solve-e2e.sh` 多轮 `succeeded`。

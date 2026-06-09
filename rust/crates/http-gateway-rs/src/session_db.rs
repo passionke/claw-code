@@ -923,13 +923,24 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Drop leading `--` comment lines so `ALTER` after a file header is not skipped. Author: kejiqing
+    fn migration_stmt_ddl(stmt: &str) -> String {
+        stmt.lines()
+            .filter(|line| {
+                let t = line.trim();
+                !t.is_empty() && !t.starts_with("--")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     async fn run_sql_migration_file(pool: &PgPool, sql: &str) -> Result<(), SqlxError> {
         for stmt in sql.split(';') {
-            let ddl = stmt.trim();
-            if ddl.is_empty() || ddl.starts_with("--") {
+            let ddl = Self::migration_stmt_ddl(stmt);
+            if ddl.is_empty() {
                 continue;
             }
-            if let Err(e) = sqlx::query(ddl).execute(pool).await {
+            if let Err(e) = sqlx::query(&ddl).execute(pool).await {
                 eprintln!("http-gateway-rs: schema migration failed: {e}");
                 eprintln!("http-gateway-rs: failed SQL:\n{ddl}");
                 return Err(e);
@@ -3361,6 +3372,13 @@ mod tests {
             redact_database_url("postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway");
         assert!(r.contains("claw_gateway:***@postgres"));
         assert!(!r.contains("secret"));
+    }
+
+    #[test]
+    fn migration_stmt_ddl_keeps_alter_after_file_comment() {
+        let raw = "-- header comment\n\nALTER TABLE t ADD COLUMN c BIGINT;\n";
+        let ddl = GatewaySessionDb::migration_stmt_ddl(raw.split(';').next().unwrap_or(""));
+        assert!(ddl.starts_with("ALTER TABLE t ADD COLUMN c BIGINT"));
     }
 
     #[tokio::test]
