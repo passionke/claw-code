@@ -158,8 +158,8 @@
     <label>网关
       <select id="gateway-base"></select>
     </label>
-    <label>ds_id（来自 /healthz）
-      <select id="ds-id" style="min-width:160px"></select>
+    <label>项目（来自 /healthz）
+      <select id="proj-id" style="min-width:160px"></select>
     </label>
     <span class="header-spacer" aria-hidden="true"></span>
     <div class="header-actions">
@@ -181,9 +181,9 @@
     <main class="panel">
       <section id="tab-project" class="panel-section active">
         <div class="project-body">
-        <h2>项目管理 · ds_<span id="project-ds-label">1</span></h2>
+        <h2>项目管理 · 项目 <span id="project-ds-label">1</span></h2>
         <p class="hint">
-          在顶部 <strong>ds_id</strong> 下拉框切换项目；本页每 <span id="project-poll-secs">15</span>s 静默同步当前项目配置（数据未变不重绘）。
+          在顶部 <strong>项目</strong> 下拉框切换项目；本页每 <span id="project-poll-secs">15</span>s 静默同步当前项目配置（数据未变不重绘）。
           <span id="project-last-sync" style="display:block;margin-top:6px"></span>
         </p>
         <div class="toolbar" style="margin-bottom:14px">
@@ -257,7 +257,7 @@
         <h2>Project Skills</h2>
         <p class="hint">
           仅存 <code>project_config.skills_json</code>，物化到 <code>home/skills/&lt;name&gt;/SKILL.md</code>。
-          <code>POST /v1/project/skills/{ds_id}</code> 写库；列表 <code>GET /v1/skills/{ds_id}</code>。
+          <code>POST /v1/project/skills/{proj_id}</code> 写库；列表 <code>GET /v1/skills/{proj_id}</code>。
         </p>
         <label style="font-size:12px;color:var(--muted)">选择 Skill
           <select id="skill-pick" style="width:100%;max-width:420px;margin:6px 0 10px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)"></select>
@@ -275,8 +275,8 @@
         <h2>Project MCP</h2>
         <p class="hint">
           MCP 仅存 PostgreSQL <code>project_config.mcp_servers_json</code>（无行则 solve 无 MCP）。
-          下方「追加 / 全量替换 / 清空」即写库；也可用 <code>PUT /v1/project/config/{ds_id}</code>。
-          <code>GET /v1/mcp/injected/{ds_id}</code> 仅探针，不返回 Bearer。
+          下方「追加 / 全量替换 / 清空」即写库；也可用 <code>PUT /v1/project/config/{proj_id}</code>。
+          <code>GET /v1/mcp/injected/{proj_id}</code> 仅探针，不返回 Bearer。
         </p>
         <pre class="json-view" id="mcp-status"></pre>
         <label style="font-size:12px;color:var(--muted)">mcpServers（JSON 对象）</label>
@@ -292,7 +292,7 @@
       <section id="tab-claude" class="panel-section">
         <h2>CLAUDE.md</h2>
         <p class="hint">
-          <code>GET/POST /v1/project/claude/{ds_id}</code> 写入临时版；物化到 <code>home/CLAUDE.md</code> 在「固化并生效」之后（solve 用生效版）。
+          <code>GET/POST /v1/project/claude/{proj_id}</code> 写入临时版；物化到 <code>home/CLAUDE.md</code> 在「固化并生效」之后（solve 用生效版）。
         </p>
         <textarea id="claude-content" placeholder="CLAUDE.md 内容"></textarea>
         <div class="toolbar">
@@ -329,7 +329,7 @@
       <section id="tab-prompt" class="panel-section">
         <h2>系统提示词（Effective Prompt）</h2>
         <p class="hint">
-          <code>GET /v1/project/prompt/{ds_id}/effective</code> — 与 solve 同源组装；<code>POST</code> 重新加载。
+          <code>GET /v1/project/prompt/{proj_id}/effective</code> — 与 solve 同源组装；<code>POST</code> 重新加载。
           顺序：固定段落 → <code># Claude instructions</code>（<code>home/CLAUDE.md</code>）→ <code># Project rules</code>（<code>rulesJson</code> 物化的 <code>home/.cursor/rules/*.mdc</code>）。
         </p>
         <div class="toolbar">
@@ -343,7 +343,7 @@
       <section id="tab-tools" class="panel-section">
         <h2>Tools 配置</h2>
         <p class="hint">
-          存 <code>project_config.allowed_tools_json</code>（<code>PUT /v1/project/config/{ds_id}</code>，写入临时版）。
+          存 <code>project_config.allowed_tools_json</code>（<code>PUT /v1/project/config/{proj_id}</code>，写入临时版）。
           勾选为空表示不额外限制，沿用网关全局 <code>CLAW_ALLOWED_TOOLS</code>。
         </p>
         <pre class="json-view" id="tools-gateway-policy" style="min-height:48px;margin-bottom:10px"></pre>
@@ -360,7 +360,19 @@
   <div id="toast"></div>
   <script>
     const $ = (id) => document.getElementById(id);
+    const PROJ_KEY = "claw-playground-proj-id";
+    const LEGACY_DS_KEY = "claw-playground-ds-id";
     let adminUser = "";
+
+    function readSavedProjId() {
+      try {
+        const raw = localStorage.getItem(PROJ_KEY) || localStorage.getItem(LEGACY_DS_KEY) || "";
+        const n = parseInt(raw, 10);
+        return Number.isFinite(n) ? n : NaN;
+      } catch (_) {
+        return NaN;
+      }
+    }
 
     async function requireAdminSession() {
       const res = await fetch("/__admin_me__", { credentials: "same-origin" });
@@ -434,7 +446,7 @@
       };
       if (patch.claudeMd !== undefined) body.claudeMd = patch.claudeMd;
       if (patch.gitSyncJson !== undefined) body.gitSyncJson = patch.gitSyncJson;
-      const r = await proxyHttp("PUT", "/v1/project/config/" + dsId(), body);
+      const r = await proxyHttp("PUT", "/v1/project/config/" + projId(), body);
       projectConfigCache = normalizePutConfigResponse(r);
       updateVersionStateBar(projectConfigCache, null);
       return projectConfigCache;
@@ -443,15 +455,15 @@
     function gatewayBase() {
       return $("gateway-base").value.trim().replace(/\/$/, "");
     }
-    function dsId() {
-      const n = parseInt($("ds-id").value, 10);
+    function projId() {
+      const n = parseInt($("proj-id").value, 10);
       return Number.isFinite(n) && n >= 1 ? n : 1;
     }
 
     function projectEntrySnapshot(p) {
       if (!p) return "";
       return JSON.stringify({
-        dsId: p.dsId,
+        projId: p.projId,
         contentRev: p.contentRev || "",
         draftOpen: !!p.draftOpen,
         updatedAtMs: p.updatedAtMs,
@@ -472,12 +484,9 @@
     }
 
     function populateDsSelect(list) {
-      const sel = $("ds-id");
+      const sel = $("proj-id");
       const prev = parseInt(sel.value, 10);
-      let saved = NaN;
-      try {
-        saved = parseInt(localStorage.getItem("claw-playground-ds-id") || "", 10);
-      } catch (_) {}
+      const saved = readSavedProjId();
       sel.innerHTML = "";
       if (!list.length) {
         const opt = document.createElement("option");
@@ -488,21 +497,21 @@
       }
       for (const w of list) {
         const opt = document.createElement("option");
-        opt.value = String(w.dsId);
+        opt.value = String(w.projId);
         const ready = w.environmentPrepared ? "就绪" : "未就绪";
         const sk = w.skillsCount != null ? " · skills " + w.skillsCount : "";
         const cl = w.claudeHomePresent
           ? " · CLAUDE " + (w.claudeHomeBytes != null ? w.claudeHomeBytes + "B" : "有")
           : "";
-        opt.textContent = "ds " + w.dsId + " — " + ready + sk + cl;
+        opt.textContent = "项目 " + w.projId + " — " + ready + sk + cl;
         sel.appendChild(opt);
       }
       const pick =
-        list.find((p) => p.dsId === saved) ||
-        list.find((p) => p.dsId === prev) ||
+        list.find((p) => p.projId === saved) ||
+        list.find((p) => p.projId === prev) ||
         list.find((p) => p.environmentPrepared) ||
         list[0];
-      sel.value = String(pick.dsId);
+      sel.value = String(pick.projId);
     }
 
     function toast(msg, ok) {
@@ -583,11 +592,11 @@
       toast("Git 配置已保存", true);
       await loadProjects(true);
       await loadProjectVersions(false);
-      loadProjectDetail(dsId()).catch(() => {});
+      loadProjectDetail(projId()).catch(() => {});
     }
 
     async function pushProjectGit() {
-      const id = dsId();
+      const id = projId();
       const r = await proxyHttp("POST", "/v1/projects/" + id + "/git/push");
       if (r.gitSyncJson) {
         fillGitForm(r.gitSyncJson);
@@ -627,7 +636,7 @@
     }
 
     async function loadProjectVersions(silent) {
-      const id = dsId();
+      const id = projId();
       let r;
       try {
         r = await proxyHttp("GET", "/v1/project/config/" + id + "/versions");
@@ -735,7 +744,7 @@
       const body = note ? { note } : {};
       const r = await proxyHttp(
         "POST",
-        "/v1/project/config/" + dsId() + "/versions/commit",
+        "/v1/project/config/" + projId() + "/versions/commit",
         body
       );
       projectConfigCache = r.activeConfig;
@@ -747,7 +756,7 @@
       );
       await loadProjects(true);
       await loadProjectVersions(false);
-      loadProjectDetail(dsId(), { force: true }).catch(() => {});
+      loadProjectDetail(projId(), { force: true }).catch(() => {});
     }
 
     async function compareProjectVersions() {
@@ -758,7 +767,7 @@
         "?from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to);
       const r = await proxyHttp(
         "GET",
-        "/v1/project/config/" + dsId() + "/versions/compare" + q
+        "/v1/project/config/" + projId() + "/versions/compare" + q
       );
       $("version-compare-result").textContent = JSON.stringify(r, null, 2);
     }
@@ -766,7 +775,7 @@
     async function activateProjectVersion(contentRev) {
       const r = await proxyHttp(
         "POST",
-        "/v1/project/config/" + dsId() + "/versions/" + encodeURIComponent(contentRev) + "/activate"
+        "/v1/project/config/" + projId() + "/versions/" + encodeURIComponent(contentRev) + "/activate"
       );
       toast(
         "已切换生效版本为 " + r.activeContentRev +
@@ -777,7 +786,7 @@
       projectConfigCache = null;
       await loadProjects(true);
       await loadProjectVersions(false);
-      loadProjectDetail(dsId(), { force: true }).catch(() => {});
+      loadProjectDetail(projId(), { force: true }).catch(() => {});
     }
 
     async function discardProjectVersion(contentRev) {
@@ -786,7 +795,7 @@
       }
       await proxyHttp(
         "DELETE",
-        "/v1/project/config/" + dsId() + "/versions/" + encodeURIComponent(contentRev)
+        "/v1/project/config/" + projId() + "/versions/" + encodeURIComponent(contentRev)
       );
       toast("已废弃 " + contentRev, true);
       await loadProjectVersions(false);
@@ -796,9 +805,9 @@
       const silent = opts && opts.silent;
       const force = opts && opts.force;
       const el = $("project-detail");
-      const row = projects.find((p) => p.dsId === id);
+      const row = projects.find((p) => p.projId === id);
       if (!silent) {
-        el.textContent = "加载 ds_" + id + " 的 project_config…";
+        el.textContent = "加载项目 " + id + " 的 project_config…";
       }
       try {
         const cfg = await proxyHttp("GET", "/v1/project/config/" + id);
@@ -807,7 +816,7 @@
         fillGitForm(cfg.gitSyncJson || (row && row.gitSync), force);
         const claudeLen = (cfg.claudeMd && cfg.claudeMd.length) || 0;
         const detail = {
-          dsId: id,
+          projId: id,
           listSummary: row || null,
           projectConfig: {
             contentRev: cfg.contentRev,
@@ -842,7 +851,7 @@
         if (msg.indexOf("no project_config") >= 0 || msg.indexOf("404") >= 0) {
           text = JSON.stringify(
             {
-              dsId: id,
+              projId: id,
               listSummary: row || null,
               projectConfig: null,
               hint: "无 PG 行；可「新建项目」或 PUT /v1/project/config/" + id,
@@ -852,7 +861,7 @@
           );
         } else {
           text = JSON.stringify(
-            { dsId: id, listSummary: row || null, error: msg },
+            { projId: id, listSummary: row || null, error: msg },
             null,
             2
           );
@@ -864,12 +873,12 @@
     }
 
     function updateProjectChrome() {
-      const id = dsId();
+      const id = projId();
       const label = $("project-ds-label");
       if (label) label.textContent = String(id);
       const delBtn = $("btn-project-delete");
       if (delBtn) delBtn.disabled = projects.length === 0;
-      const p = projects.find((x) => x.dsId === id);
+      const p = projects.find((x) => x.projId === id);
       const sum = $("project-summary");
       if (!sum) return;
       if (!p) {
@@ -885,8 +894,8 @@
     }
 
     function selectDs(id) {
-      $("ds-id").value = String(id);
-      try { localStorage.setItem("claw-playground-ds-id", String(id)); } catch (_) {}
+      $("proj-id").value = String(id);
+      try { localStorage.setItem(PROJ_KEY, String(id)); } catch (_) {}
       projectConfigCache = null;
       projectDetailSnapshot = "";
       versionsListSnapshot = "";
@@ -904,7 +913,7 @@
     async function loadProjects(silent) {
       const prevById = {};
       projects.forEach((p) => {
-        prevById[p.dsId] = projectEntrySnapshot(p);
+        prevById[p.projId] = projectEntrySnapshot(p);
       });
       let list = [];
       try {
@@ -916,9 +925,12 @@
           toast("GET /v1/projects 失败，回退 healthz: " + msg, false);
         }
         const h = await proxyHttp("GET", "/healthz");
-        list = (h.projectsGitMirror && h.projectsGitMirror.dsWorkspaces) || [];
+        list =
+          (h.projectsGitMirror &&
+            (h.projectsGitMirror.projWorkspaces || h.projectsGitMirror.dsWorkspaces)) ||
+          [];
       }
-      list.sort((a, b) => a.dsId - b.dsId);
+      list.sort((a, b) => a.projId - b.projId);
       const newKey = projectsListSnapshotKey(list);
       const listUnchanged = newKey === projectsListSnapshot;
       projects = list;
@@ -932,14 +944,14 @@
 
       projectsListSnapshot = newKey;
       populateDsSelect(projects);
-      const cur = dsId();
-      if (projects.length && !projects.some((p) => p.dsId === cur)) {
-        $("ds-id").value = String(projects[0].dsId);
+      const cur = projId();
+      if (projects.length && !projects.some((p) => p.projId === cur)) {
+        $("proj-id").value = String(projects[0].projId);
       }
       updateProjectChrome();
-      const curId = dsId();
+      const curId = projId();
       const rowChanged = prevById[curId] !== projectEntrySnapshot(
-        projects.find((p) => p.dsId === curId)
+        projects.find((p) => p.projId === curId)
       );
       if (!silent || rowChanged) {
         loadProjectDetail(curId, { silent: !!silent }).catch(() => {});
@@ -972,29 +984,29 @@
     }
 
     async function createProject() {
-      const raw = prompt("ds_id（留空则自动分配下一个可用 id）", "");
+      const raw = prompt("项目 ID（留空则自动分配下一个可用 id）", "");
       const body = {};
       if (raw != null && String(raw).trim() !== "") {
         const n = parseInt(String(raw).trim(), 10);
-        if (!Number.isFinite(n) || n < 1) throw new Error("ds_id 须为 >= 1 的整数");
-        body.dsId = n;
+        if (!Number.isFinite(n) || n < 1) throw new Error("项目 ID 须为 >= 1 的整数");
+        body.projId = n;
       }
       const r = await proxyHttp("POST", "/v1/projects", body);
-      toast("已创建 ds_" + r.dsId, true);
+      toast("已创建项目 " + r.projId, true);
       await loadProjects();
-      selectDs(r.dsId);
+      selectDs(r.projId);
     }
 
     async function deleteProjectFor(id) {
-      if (!confirm("确定删除 ds_" + id + "？\n将删除本地工作区、project_config 行，并清理该 ds 的会话记录。")) {
+      if (!confirm("确定删除项目 " + id + "？\n将删除本地工作区、project_config 行，并清理该项目的会话记录。")) {
         return;
       }
       const r = await proxyHttp("DELETE", "/v1/projects/" + id + "?purgeSessions=true");
-      toast("已删除 ds_" + id + "（会话 " + (r.sessionsRemoved || 0) + " 条）", true);
+      toast("已删除项目 " + id + "（会话 " + (r.sessionsRemoved || 0) + " 条）", true);
       $("project-detail").textContent = JSON.stringify(r, null, 2);
       await loadProjects();
       if (projects.length) {
-        selectDs(projects[0].dsId);
+        selectDs(projects[0].projId);
       } else {
         $("project-detail").textContent = "（暂无项目）";
         updateProjectChrome();
@@ -1002,8 +1014,8 @@
     }
 
     async function initDsFor(id) {
-      const r = await proxyHttp("POST", "/v1/init", { dsId: id });
-      toast("ds_" + id + " 初始化完成", true);
+      const r = await proxyHttp("POST", "/v1/init", { projId: id });
+      toast("项目 " + id + " 初始化完成", true);
       $("project-detail").textContent = JSON.stringify(r, null, 2);
       await loadProjects();
       loadProjectDetail(id).catch(() => {});
@@ -1016,7 +1028,7 @@
     }
 
     async function loadSkills() {
-      const id = dsId();
+      const id = projId();
       const data = await proxyHttp("GET", "/v1/skills/" + id);
       const sel = $("skill-pick");
       sel.innerHTML = "";
@@ -1043,7 +1055,7 @@
       const name = $("skill-name").value.trim();
       const content = $("skill-content").value;
       if (!name) throw new Error("skillName 不能为空");
-      const r = await proxyHttp("POST", "/v1/project/skills/" + dsId(), {
+      const r = await proxyHttp("POST", "/v1/project/skills/" + projId(), {
         skillName: name,
         skillContent: content,
       });
@@ -1053,7 +1065,7 @@
     }
 
     async function loadMcp() {
-      const data = await proxyHttp("GET", "/v1/mcp/injected/" + dsId());
+      const data = await proxyHttp("GET", "/v1/mcp/injected/" + projId());
       $("mcp-status").textContent = JSON.stringify(data, null, 2);
     }
 
@@ -1068,7 +1080,7 @@
         throw new Error("mcpServers 必须是 JSON 对象");
       }
       const r = await proxyHttp("POST", "/v1/mcp/inject", {
-        dsId: dsId(),
+        projId: projId(),
         mcpServers: servers,
         replace,
       });
@@ -1078,7 +1090,7 @@
     }
 
     async function clearMcp() {
-      const r = await proxyHttp("DELETE", "/v1/mcp/injected/" + dsId());
+      const r = await proxyHttp("DELETE", "/v1/mcp/injected/" + projId());
       $("mcp-servers").value = "{}";
       $("mcp-status").textContent = JSON.stringify(r, null, 2);
       toast("已清空临时版 MCP", true);
@@ -1086,13 +1098,13 @@
     }
 
     async function loadClaude() {
-      const r = await proxyHttp("GET", "/v1/project/claude/" + dsId());
+      const r = await proxyHttp("GET", "/v1/project/claude/" + projId());
       $("claude-content").value = r.content || "";
       toast(r.exists ? "CLAUDE.md 已加载" : "文件不存在（空）", true);
     }
 
     async function saveClaude() {
-      const r = await proxyHttp("POST", "/v1/project/claude/" + dsId(), {
+      const r = await proxyHttp("POST", "/v1/project/claude/" + projId(), {
         content: $("claude-content").value,
       });
       toast("CLAUDE.md 已写入临时版", true);
@@ -1246,7 +1258,7 @@
 
     async function loadPrompt(reload) {
       const method = reload ? "POST" : "GET";
-      const r = await proxyHttp(method, "/v1/project/prompt/" + dsId() + "/effective");
+      const r = await proxyHttp(method, "/v1/project/prompt/" + projId() + "/effective");
       $("prompt-sections").textContent = "sections:\n" + JSON.stringify(r.sections || [], null, 2);
       $("prompt-message").value = r.message || "";
       toast(reload ? "系统提示词已重新加载" : "系统提示词已加载", true);
@@ -1267,14 +1279,14 @@
     }
 
     async function loadProjectConfig() {
-      const id = dsId();
+      const id = projId();
       try {
         projectConfigCache = await proxyHttp("GET", "/v1/project/config/" + id);
       } catch (e) {
         const msg = String(e.message || e);
         if (msg.indexOf("no project_config") >= 0 || msg.indexOf("404") >= 0) {
           projectConfigCache = {
-            dsId: id,
+            projId: id,
             contentRev: "",
             rulesJson: [],
             mcpServersJson: {},
@@ -1391,8 +1403,8 @@
     });
 
     $("btn-header-create").addEventListener("click", () => createProject().catch((e) => toast(e.message, false)));
-    $("btn-project-init").addEventListener("click", () => initDsFor(dsId()).catch((e) => toast(e.message, false)));
-    $("btn-project-delete").addEventListener("click", () => deleteProjectFor(dsId()).catch((e) => toast(e.message, false)));
+    $("btn-project-init").addEventListener("click", () => initDsFor(projId()).catch((e) => toast(e.message, false)));
+    $("btn-project-delete").addEventListener("click", () => deleteProjectFor(projId()).catch((e) => toast(e.message, false)));
     $("btn-git-save").addEventListener("click", () => saveProjectGit().catch((e) => toast(e.message, false)));
     $("btn-git-push").addEventListener("click", () => pushProjectGit().catch((e) => toast(e.message, false)));
     $("btn-versions-reload").addEventListener("click", () => loadProjectVersions().catch((e) => toast(e.message, false)));
@@ -1436,8 +1448,8 @@
       } catch (_) {}
       loadProjects().catch((e) => toast(e.message, false));
     });
-    $("ds-id").addEventListener("change", () => {
-      const id = parseInt($("ds-id").value, 10);
+    $("proj-id").addEventListener("change", () => {
+      const id = parseInt($("proj-id").value, 10);
       if (Number.isFinite(id)) selectDs(id);
     });
 

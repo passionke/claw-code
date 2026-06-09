@@ -12,17 +12,17 @@ export default function ChatLayout() {
     setGatewayBase,
     gatewayOptions,
     showGatewayPicker,
-    dsId,
-    setDsId,
+    projId,
+    setProjId,
     projects,
   } = useApp();
 
-  const dsOptions = projects.map((p) => ({
-    value: p.dsId,
+  const projOptions = projects.map((p) => ({
+    value: p.projId,
     label:
       p.projectConfigRegistered === false
-        ? `ds ${p.dsId} — 未注册`
-        : `ds ${p.dsId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
+        ? `项目 ${p.projId} — 未注册`
+        : `项目 ${p.projId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
   }));
 
   return (
@@ -62,13 +62,13 @@ export default function ChatLayout() {
         ) : null}
         <Space direction="vertical" size={4}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            ds_id
+            项目
           </Typography.Text>
           <Select
             style={{ minWidth: 160 }}
-            value={dsId}
-            options={dsOptions.length ? dsOptions : [{ value: 1, label: "ds 1" }]}
-            onChange={setDsId}
+            value={projId}
+            options={projOptions.length ? projOptions : [{ value: 1, label: "项目 1" }]}
+            onChange={setProjId}
           />
         </Space>
         <div style={{ flex: 1 }} />

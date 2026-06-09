@@ -7,15 +7,15 @@ Author: kejiqing
 | 层 | 位置 |
 | --- | --- |
 | **DB** | `project_config.solve_preflight_json`（PostgreSQL，`CLAW_GATEWAY_DATABASE_URL`） |
-| **物化** | `ds_<id>/home/.claw/solve-preflight.json`（`project_config_apply` 在设为生效 / 物化时写入） |
+| **物化** | `proj_<id>/home/.claw/solve-preflight.json`（`project_config_apply` 在设为生效 / 物化时写入） |
 | **运行时** | Worker 只读物化文件；`gateway-solve-turn` 按 `kind` 执行注册逻辑 |
-| **Pool 挂载** | `ds_*/home/.claw/solve-preflight.json` → worker 内 `/claw_host_root/home/.claw/solve-preflight.json:ro`（与 `schema.md` 同级，仅 session 目录 rw 时必需） |
+| **Pool 挂载** | `proj_*/home/.claw/solve-preflight.json` → worker 内 `/claw_host_root/home/.claw/solve-preflight.json:ro`（与 `schema.md` 同级，仅 session 目录 rw 时必需） |
 
 与 `allowed_tools_json` → `.claw/project_allowed_tools.json` 同模式：**DB 配置，文件由 gateway/daemon 构造，pool 再 ro 挂进 worker**。
 
 ## Admin API
 
-`GET` / `PUT /v1/project/config/{ds_id}` 字段 **`solvePreflightJson`**（camelCase）：
+`GET` / `PUT /v1/project/config/{proj_id}` 字段 **`solvePreflightJson`**（camelCase）：
 
 ```json
 { "kinds": ["sqlbot_mcp_start"] }
@@ -49,8 +49,8 @@ Author: kejiqing
 | `home/terminologies.md` | `mcp_datasource_terminologies` |
 | `home/sql_examples.md` | `mcp_datasource_examples` |
 
-- 写在**当前 session 工作区** `home/` 下；新 session 首轮重做；**不**写入 `ds_*` 宿主机目录持久化。
-- **Gateway `ds_id` 与 SQLBot `datasource_id` 无关**；数据源范围由 **MCP token** 决定。约定：一业务一 token，list 只返回 **一条** datasource。
+- 写在**当前 session 工作区** `home/` 下；新 session 首轮重做；**不**写入 `proj_*` 宿主机目录持久化。
+- **Gateway `proj_id` 与 SQLBot `datasource_id` 无关**；数据源范围由 **MCP token** 决定。约定：一业务一 token，list 只返回 **一条** datasource。
 - 任一步 MCP 失败或 JSON→MD 解析失败：`tracing::warn`（target `claw_sqlbot_preflight`）后跳过，不阻断整轮 solve（`mcp_start` + list 取 id 仍失败则整段 preflight 失败）。
 - System prompt 在 preflight 之后列出已生成的 `home/*.md` 路径。
 

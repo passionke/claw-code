@@ -194,7 +194,7 @@ pub async fn run_solve_request_docker(
         target: "claw_gateway_solve_pool",
         component = "docker_solve",
         phase = "task_file_written",
-        ds_id = req.ds_id,
+        proj_id = req.proj_id,
         request_id = %request_id,
         task_id = task_id.as_deref(),
         task_path = %task_path.display(),
@@ -205,14 +205,19 @@ pub async fn run_solve_request_docker(
 
     let acquire_wait = Duration::from_secs(timeout_seconds.saturating_add(30));
     let lease = pool
-        .acquire_slot(acquire_wait, session_id.clone(), req.ds_id, turn_id.clone())
+        .acquire_slot(
+            acquire_wait,
+            session_id.clone(),
+            req.proj_id,
+            turn_id.clone(),
+        )
         .await
         .map_err(|e| {
             warn!(
                 target: "claw_gateway_solve_pool",
                 component = "docker_solve",
                 phase = "acquire_slot_failed",
-                ds_id = req.ds_id,
+                proj_id = req.proj_id,
                 request_id = %request_id,
                 error = %e,
                 wait_secs = acquire_wait.as_secs(),
@@ -225,7 +230,7 @@ pub async fn run_solve_request_docker(
         target: "claw_gateway_solve_pool",
         component = "docker_solve",
         phase = "acquire_slot_ok",
-        ds_id = req.ds_id,
+        proj_id = req.proj_id,
         request_id = %request_id,
         slot_index = lease.slot_index,
         session_home = %session_home.display(),
@@ -294,7 +299,7 @@ pub async fn run_solve_request_docker(
                 target: "claw_gateway_solve_pool",
                 component = "docker_solve",
                 phase = "exec_solve_timeout",
-                ds_id = req.ds_id,
+                proj_id = req.proj_id,
                 request_id = %request_id,
                 slot_index,
                 timeout_seconds,
@@ -338,7 +343,7 @@ pub async fn run_solve_request_docker(
                 target: "claw_gateway_solve_pool",
                 component = "docker_solve",
                 phase = "exec_solve_ok",
-                ds_id = req.ds_id,
+                proj_id = req.proj_id,
                 request_id = %request_id,
                 slot_index = lease.slot_index,
                 exit_code = outcome.exit_code,
@@ -352,7 +357,7 @@ pub async fn run_solve_request_docker(
                 target: "claw_gateway_solve_pool",
                 component = "docker_solve",
                 phase = "exec_solve_failed",
-                ds_id = req.ds_id,
+                proj_id = req.proj_id,
                 request_id = %request_id,
                 slot_index = lease.slot_index,
                 error = %e,
@@ -374,7 +379,7 @@ pub async fn run_solve_request_docker(
             phase = "release_slot_failed",
             error = %e,
             request_id = %request_id,
-            ds_id = req.ds_id,
+            proj_id = req.proj_id,
             "docker pool release_slot failed after exec (slot may recover on ensure_warm)"
         );
     }
@@ -418,7 +423,7 @@ pub async fn run_solve_request_docker(
         component = "docker_solve",
         request_id = %request_id,
         task_id = task_id.as_deref().unwrap_or("-"),
-        ds_id = req.ds_id,
+        proj_id = req.proj_id,
         phase = "solve_run_ok",
         duration_ms,
         isolation = "docker_pool",
@@ -430,7 +435,7 @@ pub async fn run_solve_request_docker(
         session_id: request_id.clone(),
         request_id,
         session_home_rel,
-        ds_id: req.ds_id,
+        proj_id: req.proj_id,
         work_dir: session_home.display().to_string(),
         duration_ms,
         claw_exit_code,
@@ -481,16 +486,16 @@ mod session_path_tests {
             projects_git_branch: "main".into(),
             projects_git_author: "kejiqing <kejiqing@local>".into(),
             projects_git_token: None,
-            projects_git_ds_home_poll_interval_secs: None,
+            projects_git_proj_home_poll_interval_secs: None,
             gateway_llm_config_poll_interval_secs: None,
             report_polish_deepseek: None,
             live_biz_report_spill_enabled: false,
         };
         let got = session_mount_for_pool_acquire(
-            Path::new("/var/lib/claw/workspace/ds_1/sessions/abc"),
+            Path::new("/var/lib/claw/workspace/proj_1/sessions/abc"),
             &cfg,
         );
-        assert_eq!(got, PathBuf::from("/host/claw/ws/ds_1/sessions/abc"));
+        assert_eq!(got, PathBuf::from("/host/claw/ws/proj_1/sessions/abc"));
     }
 
     #[test]
@@ -516,7 +521,7 @@ mod session_path_tests {
             projects_git_branch: "main".into(),
             projects_git_author: "kejiqing <kejiqing@local>".into(),
             projects_git_token: None,
-            projects_git_ds_home_poll_interval_secs: None,
+            projects_git_proj_home_poll_interval_secs: None,
             gateway_llm_config_poll_interval_secs: None,
             report_polish_deepseek: None,
             live_biz_report_spill_enabled: false,

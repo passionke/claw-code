@@ -40,7 +40,7 @@ function sessionTitle(s: GatewaySessionSummary): string {
 }
 
 function buildSessionsPath(
-  dsId: number,
+  projId: number,
   opts: {
     beforeUpdatedAtMs?: number;
     beforeSessionId?: string;
@@ -64,7 +64,7 @@ function buildSessionsPath(
   if (opts.extraSession && Object.keys(opts.extraSession).length > 0) {
     sp.set("extraSession", JSON.stringify(opts.extraSession));
   }
-  return `/v1/projects/${dsId}/sessions?${sp.toString()}`;
+  return `/v1/projects/${projId}/sessions?${sp.toString()}`;
 }
 
 function extraSessionFilterObject(
@@ -81,7 +81,7 @@ function extraSessionFilterObject(
 
 export interface ChatHistorySidebarProps {
   gatewayBase: string;
-  dsId: number;
+  projId: number;
   /** Predefined extraSession field names from project config. Author: kejiqing */
   extraSessionFieldDefs: string[];
   activeSessionId: string | null;
@@ -93,7 +93,7 @@ export interface ChatHistorySidebarProps {
 /** 可收起、无限滚动、日期/标题筛选的对话记录侧栏。Author: kejiqing */
 export default function ChatHistorySidebar({
   gatewayBase,
-  dsId,
+  projId,
   extraSessionFieldDefs,
   activeSessionId,
   refreshKey,
@@ -140,7 +140,7 @@ export default function ChatHistorySidebar({
         return;
       }
       const { from, to } = dateRangeMs();
-      const path = buildSessionsPath(dsId, {
+      const path = buildSessionsPath(projId, {
         beforeUpdatedAtMs: cursor?.updatedAtMs,
         beforeSessionId: cursor?.sessionId,
         updatedFromMs: from,
@@ -172,13 +172,13 @@ export default function ChatHistorySidebar({
         loadingMoreRef.current = false;
       }
     },
-    [gatewayBase, dsId, dateRangeMs, searchQ, sessionIdQ, extraSessionFieldDefs, extraFilterQ]
+    [gatewayBase, projId, dateRangeMs, searchQ, sessionIdQ, extraSessionFieldDefs, extraFilterQ]
   );
 
   useEffect(() => {
     setExtraFilterInput({});
     setExtraFilterQ({});
-  }, [dsId, extraSessionFieldDefs.join(",")]);
+  }, [projId, extraSessionFieldDefs.join(",")]);
 
   const reload = useCallback(() => {
     void fetchPage(false);

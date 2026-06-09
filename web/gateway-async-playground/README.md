@@ -41,8 +41,8 @@ python3 server.py
 
 ## 页面说明
 
-- **index**：网关下拉（含 compose 注入的 default preset）；**ds_id** 从 `GET /healthz` 的 `projectsGitMirror.dsWorkspaces`；**claude-tap Live** 从 `GET /v1/gateway/global-settings` 的 `clawTap`；`store_id` / `org_id` 仍可选手填；多轮对话、呼吸灯 poll、`progressHistory`、报告 SSE；session 链接用 `clawTap.liveSessionUrlTemplate`
-- **admin**（`web/gateway-admin`，Ant Design）：顶栏 **ds_id** 与 solve 页同源；`GET/POST` 项目、Skills、MCP、CLAUDE.md、Rules、prompt、tools catalog
+- **index**：网关下拉（含 compose 注入的 default preset）；**proj_id** 从 `GET /healthz` 的 `projectsGitMirror.projWorkspaces`（兼容 legacy `dsWorkspaces`）；**claude-tap Live** 从 `GET /v1/gateway/global-settings` 的 `clawTap`；`store_id` / `org_id` 仍可选手填；多轮对话、呼吸灯 poll、`progressHistory`、报告 SSE；session 链接用 `clawTap.liveSessionUrlTemplate`
+- **admin**（`web/gateway-admin`，Ant Design）：顶栏 **proj_id** 与 solve 页同源；`GET/POST` 项目、Skills、MCP、CLAUDE.md、Rules、prompt、tools catalog
 - 修改 admin UI：`cd web/gateway-admin && npm run build`，提交 `dist/`；旧单页备份 `admin.legacy.html`
 
 多机共享 PG：只需各机 `PLAYGROUND_PUBLIC_GATEWAY_BASE` 指向本机网关；Admin 从 `claw_pool` 自动拼出其它 `poolId · host:port` 选项。仅当某台未注册进 `claw_pool` 时，才在 `.env` 用 `PLAYGROUND_EXTRA_GATEWAY_BASES` 手工补一条。

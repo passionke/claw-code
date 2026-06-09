@@ -18,7 +18,7 @@ export interface TurnToolRecord {
 export interface TurnToolsResponse {
   sessionId: string;
   turnId: string;
-  dsId: number;
+  projId: number;
   userTurnIndex: number;
   tools: TurnToolRecord[];
 }

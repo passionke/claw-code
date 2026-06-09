@@ -21,7 +21,7 @@ export interface ConversationTranslateModalProps {
   open: boolean;
   onClose: () => void;
   gatewayBase: string;
-  dsId: number;
+  projId: number;
   sessionId: string | null;
   threadTurns: ConversationTurnInput[];
 }
@@ -33,7 +33,7 @@ export default function ConversationTranslateModal({
   open,
   onClose,
   gatewayBase,
-  dsId,
+  projId,
   sessionId,
   threadTurns,
 }: ConversationTranslateModalProps) {
@@ -72,7 +72,7 @@ export default function ConversationTranslateModal({
       try {
         let inputs = threadTurns;
         if (!inputs.length && sessionId) {
-          inputs = await loadSessionTurnsForTranslate(gatewayBase, dsId, sessionId);
+          inputs = await loadSessionTurnsForTranslate(gatewayBase, projId, sessionId);
         }
         if (!inputs.length) {
           setErrorText("当前会话没有可翻译的对话轮次");
@@ -80,7 +80,7 @@ export default function ConversationTranslateModal({
           return;
         }
 
-        const blocks = await collectConversationTurns(gatewayBase, dsId, inputs, (done, total) => {
+        const blocks = await collectConversationTurns(gatewayBase, projId, inputs, (done, total) => {
           setProgressPct(Math.round((done / total) * 35));
           setStatusText(`收集正文 ${done}/${total}…`);
         });
@@ -89,7 +89,7 @@ export default function ConversationTranslateModal({
 
         if (sessionId && !forceRetranslate) {
           setStatusText("正在加载已存译文…");
-          const cached = await loadConversationTranslateSnapshot(gatewayBase, sessionId, dsId);
+          const cached = await loadConversationTranslateSnapshot(gatewayBase, sessionId, projId);
           if (cached?.turns?.length) {
             setTurns(cached.turns);
             setMarkdown(cached.markdown);
@@ -115,7 +115,7 @@ export default function ConversationTranslateModal({
         setSnapshotStale(false);
 
         if (sessionId) {
-          const updatedAtMs = await saveConversationTranslateSnapshot(gatewayBase, sessionId, dsId, {
+          const updatedAtMs = await saveConversationTranslateSnapshot(gatewayBase, sessionId, projId, {
             sourceFingerprint,
             turns: translated,
             markdown: md,
@@ -131,7 +131,7 @@ export default function ConversationTranslateModal({
         setPhase("error");
       }
     },
-    [gatewayBase, dsId, sessionId, threadTurns, reset]
+    [gatewayBase, projId, sessionId, threadTurns, reset]
   );
 
   useEffect(() => {

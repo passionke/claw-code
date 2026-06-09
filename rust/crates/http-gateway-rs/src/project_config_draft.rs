@@ -1,6 +1,6 @@
 //! Draft vs formal `project_config` versioning. Author: kejiqing
 //!
-//! State machine (per `ds_id`):
+//! State machine (per `proj_id`):
 //!
 //! ```text
 //! STEADY:  draft_open=false, effective E ∈ formal revisions (project_config_revision)
@@ -64,16 +64,20 @@ pub fn format_formal_content_rev_local_ms(ms: i64) -> String {
     dt.format("%Y-%m-%d_%H-%M-%S").to_string()
 }
 
-/// Pick unused formal `content_rev` for `ds_id` (suffix `-2` on collision). Author: kejiqing
+/// Pick unused formal `content_rev` for `proj_id` (suffix `-2` on collision). Author: kejiqing
 pub async fn allocate_formal_content_rev(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     now_ms: i64,
 ) -> Result<String, DraftError> {
     let base = format_formal_content_rev_local_ms(now_ms);
     let mut rev = base.clone();
     let mut n = 2u32;
-    while db.get_project_config_revision(ds_id, &rev).await?.is_some() {
+    while db
+        .get_project_config_revision(proj_id, &rev)
+        .await?
+        .is_some()
+    {
         rev = format!("{base}-{n}");
         n += 1;
     }
@@ -118,7 +122,7 @@ pub fn effective_formal_rev(row: &ProjectConfigRow) -> Result<&str, DraftError> 
 
 pub async fn require_formal_revision(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     content_rev: &str,
 ) -> Result<ProjectConfigRevisionRow, DraftError> {
     if is_draft_content_rev(content_rev) {
@@ -127,12 +131,12 @@ pub async fn require_formal_revision(
             "temporary draft is not a formal version",
         ));
     }
-    db.get_project_config_revision(ds_id, content_rev)
+    db.get_project_config_revision(proj_id, content_rev)
         .await?
         .ok_or_else(|| {
             DraftError::new(
                 StatusCode::NOT_FOUND,
-                format!("no formal revision {content_rev} for ds {ds_id}"),
+                format!("no formal revision {content_rev} for proj {proj_id}"),
             )
         })
 }
@@ -140,7 +144,7 @@ pub async fn require_formal_revision(
 /// Ensure effective formal revision exists in `project_config_revision` (repair legacy rows).
 pub async fn ensure_formal_revision_recorded(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     formal_rev: &str,
     snapshot: &ProjectConfigRow,
 ) -> Result<(), DraftError> {
@@ -151,14 +155,14 @@ pub async fn ensure_formal_revision_recorded(
         ));
     }
     if db
-        .get_project_config_revision(ds_id, formal_rev)
+        .get_project_config_revision(proj_id, formal_rev)
         .await?
         .is_some()
     {
         return Ok(());
     }
     let row = ProjectConfigRevisionRow {
-        ds_id,
+        proj_id,
         content_rev: formal_rev.to_string(),
         created_at_ms: snapshot.updated_at_ms,
         note: None,
@@ -180,7 +184,7 @@ pub fn revision_row_from_config_row(
     note: Option<String>,
 ) -> ProjectConfigRevisionRow {
     ProjectConfigRevisionRow {
-        ds_id: row.ds_id,
+        proj_id: row.proj_id,
         content_rev: content_rev.to_string(),
         created_at_ms: row.updated_at_ms,
         note,
@@ -195,13 +199,13 @@ pub fn revision_row_from_config_row(
 
 #[must_use]
 pub fn config_row_from_revision(
-    ds_id: i64,
+    proj_id: i64,
     rev: &ProjectConfigRevisionRow,
     sidecars: ProjectConfigSidecars,
     stable_content_rev: &str,
 ) -> ProjectConfigRow {
     ProjectConfigRow {
-        ds_id,
+        proj_id,
         content_rev: stable_content_rev.to_string(),
         stable_content_rev: Some(stable_content_rev.to_string()),
         draft_open: false,
@@ -230,7 +234,7 @@ pub fn upsert_from_row<'a>(
     stable_content_rev: Option<&'a str>,
 ) -> ProjectConfigUpsert<'a> {
     ProjectConfigUpsert {
-        ds_id: row.ds_id,
+        proj_id: row.proj_id,
         content_rev,
         stable_content_rev,
         draft_open: row.draft_open,
@@ -253,9 +257,9 @@ pub fn upsert_from_row<'a>(
 /// Row for Admin editing UIs: open **draft** when `draft_open`, else effective **formal** snapshot.
 pub async fn row_for_editing(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<Option<ProjectConfigRow>, sqlx::Error> {
-    let Some(row) = db.get_project_config(ds_id).await? else {
+    let Some(row) = db.get_project_config(proj_id).await? else {
         return Ok(None);
     };
     if row.draft_open && is_draft_content_rev(&row.content_rev) {
@@ -265,9 +269,9 @@ pub async fn row_for_editing(
         Ok(s) => s.to_string(),
         Err(_) => return Ok(Some(row)),
     };
-    if let Some(rev) = db.get_project_config_revision(ds_id, &effective).await? {
+    if let Some(rev) = db.get_project_config_revision(proj_id, &effective).await? {
         return Ok(Some(config_row_from_revision(
-            ds_id,
+            proj_id,
             &rev,
             ProjectConfigSidecars::from_row(&row),
             &effective,
@@ -282,18 +286,18 @@ pub async fn row_for_editing(
 /// Row used for `apply_if_needed` — always effective **formal** snapshot, never temp draft.
 pub async fn row_for_materialize(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<Option<ProjectConfigRow>, sqlx::Error> {
-    let Some(row) = db.get_project_config(ds_id).await? else {
+    let Some(row) = db.get_project_config(proj_id).await? else {
         return Ok(None);
     };
     let effective = match effective_formal_rev(&row) {
         Ok(s) => s.to_string(),
         Err(_) => return Ok(None),
     };
-    if let Some(rev) = db.get_project_config_revision(ds_id, &effective).await? {
+    if let Some(rev) = db.get_project_config_revision(proj_id, &effective).await? {
         return Ok(Some(config_row_from_revision(
-            ds_id,
+            proj_id,
             &rev,
             ProjectConfigSidecars::from_row(&row),
             &effective,
@@ -308,17 +312,17 @@ pub async fn row_for_materialize(
 /// Open or refresh the **only** temp draft from current effective formal revision.
 pub async fn ensure_draft(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<ProjectConfigRow, DraftError> {
-    let Some(row) = db.get_project_config(ds_id).await? else {
+    let Some(row) = db.get_project_config(proj_id).await? else {
         return Err(DraftError::new(
             StatusCode::NOT_FOUND,
-            format!("no project_config for ds {ds_id}"),
+            format!("no project_config for proj {proj_id}"),
         ));
     };
     let effective = effective_formal_rev(&row)?.to_string();
-    ensure_formal_revision_recorded(db, ds_id, &effective, &row).await?;
-    let formal = require_formal_revision(db, ds_id, &effective).await?;
+    ensure_formal_revision_recorded(db, proj_id, &effective, &row).await?;
+    let formal = require_formal_revision(db, proj_id, &effective).await?;
 
     if row.draft_open && is_draft_content_rev(&row.content_rev) {
         return Ok(row);
@@ -326,7 +330,7 @@ pub async fn ensure_draft(
 
     let now = now_ms();
     let upsert = ProjectConfigUpsert {
-        ds_id,
+        proj_id,
         content_rev: DRAFT_CONTENT_REV,
         stable_content_rev: Some(effective.as_str()),
         draft_open: true,
@@ -345,7 +349,7 @@ pub async fn ensure_draft(
         worker_isolation_json: &row.worker_isolation_json,
     };
     db.upsert_project_config(upsert).await?;
-    db.get_project_config(ds_id).await?.ok_or_else(|| {
+    db.get_project_config(proj_id).await?.ok_or_else(|| {
         DraftError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "draft row missing after upsert",
@@ -356,7 +360,7 @@ pub async fn ensure_draft(
 /// Close temp draft; `project_config` row becomes effective formal content (STEADY).
 pub async fn close_draft_to_stable(
     db: &GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     stable_content_rev: &str,
     sidecars: ProjectConfigSidecars,
 ) -> Result<ProjectConfigRow, DraftError> {
@@ -366,8 +370,8 @@ pub async fn close_draft_to_stable(
             "effective version cannot be the temp draft id",
         ));
     }
-    let formal = require_formal_revision(db, ds_id, stable_content_rev).await?;
-    let row = config_row_from_revision(ds_id, &formal, sidecars, stable_content_rev);
+    let formal = require_formal_revision(db, proj_id, stable_content_rev).await?;
+    let row = config_row_from_revision(proj_id, &formal, sidecars, stable_content_rev);
     db.upsert_project_config(upsert_from_row(
         &row,
         stable_content_rev,
@@ -376,7 +380,7 @@ pub async fn close_draft_to_stable(
         Some(stable_content_rev),
     ))
     .await?;
-    db.get_project_config(ds_id).await?.ok_or_else(|| {
+    db.get_project_config(proj_id).await?.ok_or_else(|| {
         DraftError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "row missing after close draft",

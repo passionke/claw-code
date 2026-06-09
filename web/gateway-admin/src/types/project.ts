@@ -33,7 +33,7 @@ export interface GitSyncJson {
 }
 
 export interface ProjectListItem {
-  dsId: number;
+  projId: number;
   contentRev?: string;
   draftOpen?: boolean;
   updatedAtMs?: number;
@@ -60,7 +60,7 @@ export interface WorkerIsolationJson {
 }
 
 export interface ProjectConfig {
-  dsId: number;
+  projId: number;
   contentRev: string;
   stableContentRev?: string;
   draftOpen?: boolean;
@@ -110,7 +110,7 @@ export interface VersionEntry {
 }
 
 export interface VersionsResponse {
-  dsId: number;
+  projId: number;
   activeContentRev: string;
   appliedContentRev?: string;
   draftOpen: boolean;

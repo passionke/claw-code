@@ -213,12 +213,12 @@ export interface ConversationTranslateSnapshot {
 export async function loadConversationTranslateSnapshot(
   gatewayBase: string,
   sessionId: string,
-  dsId: number
+  projId: number
 ): Promise<ConversationTranslateSnapshot | null> {
   const res = await proxyHttp<{ snapshot?: ConversationTranslateSnapshot | null }>(
     gatewayBase,
     "GET",
-    `/v1/sessions/${encodeURIComponent(sessionId)}/conversation_translate?dsId=${encodeURIComponent(String(dsId))}`
+    `/v1/sessions/${encodeURIComponent(sessionId)}/conversation_translate?proj_id=${encodeURIComponent(String(projId))}`
   );
   return res.snapshot ?? null;
 }
@@ -226,7 +226,7 @@ export async function loadConversationTranslateSnapshot(
 export async function saveConversationTranslateSnapshot(
   gatewayBase: string,
   sessionId: string,
-  dsId: number,
+  projId: number,
   snapshot: {
     sourceFingerprint: string;
     turns: TranslatedTurn[];
@@ -238,7 +238,7 @@ export async function saveConversationTranslateSnapshot(
   const res = await proxyHttp<{ updatedAtMs?: number }>(
     gatewayBase,
     "PUT",
-    `/v1/sessions/${encodeURIComponent(sessionId)}/conversation_translate?dsId=${encodeURIComponent(String(dsId))}`,
+    `/v1/sessions/${encodeURIComponent(sessionId)}/conversation_translate?proj_id=${encodeURIComponent(String(projId))}`,
     {
       sourceFingerprint: snapshot.sourceFingerprint,
       turns: snapshot.turns,

@@ -11,7 +11,7 @@ use serde::Serialize;
 pub struct TurnToolsResponse {
     pub session_id: String,
     pub turn_id: String,
-    pub ds_id: i64,
+    pub proj_id: i64,
     pub user_turn_index: i64,
     pub tools: Vec<TurnToolRecord>,
 }
@@ -78,7 +78,7 @@ mod tests {
         let uid = uuid::Uuid::new_v4().simple().to_string();
         let sid = format!("tools_chain_{uid}");
         let turn_id = format!("T_{uid}");
-        let session_home_rel = format!("ds_1/sessions/{sid}");
+        let session_home_rel = format!("proj_1/sessions/{sid}");
         db.insert_session(&sid, 1, &session_home_rel, t, None)
             .await
             .unwrap();

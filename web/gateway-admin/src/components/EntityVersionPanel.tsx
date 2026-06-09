@@ -46,9 +46,9 @@ interface EntityVersionPanelProps {
   onLoadIntoEditor: (body: unknown, entityRev: string) => void;
 }
 
-function entityPath(dsId: number, domain: string, entityKey: string, suffix: string) {
+function entityPath(projId: number, domain: string, entityKey: string, suffix: string) {
   const key = encodeURIComponent(entityKey);
-  return `/v1/project/config/${dsId}/entities/${domain}/${key}${suffix}`;
+  return `/v1/project/config/${projId}/entities/${domain}/${key}${suffix}`;
 }
 
 function bodiesReady(r: EntityCompareResponse | null): boolean {
@@ -64,7 +64,7 @@ export default function EntityVersionPanel({
   singleton = false,
   onLoadIntoEditor,
 }: EntityVersionPanelProps) {
-  const { gatewayBase, dsId } = useApp();
+  const { gatewayBase, projId } = useApp();
   const [versions, setVersions] = useState<EntityVersionEntry[]>([]);
   const [fromRev, setFromRev] = useState("");
   const [toRev, setToRev] = useState("");
@@ -81,7 +81,7 @@ export default function EntityVersionPanel({
     const r = await proxyHttp<EntityVersionsResponse>(
       gatewayBase,
       "GET",
-      entityPath(dsId, domain, entityKey, "/versions")
+      entityPath(projId, domain, entityKey, "/versions")
     );
     const list = r.versions || [];
     setVersions(list);
@@ -94,7 +94,7 @@ export default function EntityVersionPanel({
     }
     setCompare(null);
     setLoadRev(undefined);
-  }, [gatewayBase, dsId, domain, entityKey]);
+  }, [gatewayBase, projId, domain, entityKey]);
 
   useEffect(() => {
     load().catch((e) => message.error(String((e as Error).message)));
@@ -110,7 +110,7 @@ export default function EntityVersionPanel({
       const r = await proxyHttp<EntityCompareResponse>(
         gatewayBase,
         "GET",
-        `${entityPath(dsId, domain, entityKey, "/versions/compare")}?from=${encodeURIComponent(fromRev)}&to=${encodeURIComponent(toRev)}`
+        `${entityPath(projId, domain, entityKey, "/versions/compare")}?from=${encodeURIComponent(fromRev)}&to=${encodeURIComponent(toRev)}`
       );
       setCompare(r);
       if (r.fromBody === undefined || r.toBody === undefined) {
@@ -131,7 +131,7 @@ export default function EntityVersionPanel({
     try {
       const body = await fetchEntityRevisionBody(
         gatewayBase,
-        dsId,
+        projId,
         domain,
         entityKey,
         rev

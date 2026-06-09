@@ -29,8 +29,8 @@ pub struct LiveReportQuery {
     pub stream: Option<bool>,
     #[serde(rename = "requestId", default)]
     pub request_id: Option<String>,
-    #[serde(rename = "dsId", default)]
-    pub ds_id: Option<i64>,
+    #[serde(rename = "projId", default)]
+    pub proj_id: Option<i64>,
 }
 
 async fn get_biz_advice_report_live(
@@ -55,18 +55,18 @@ async fn get_biz_advice_report_live(
         .request_id
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| task_id.clone());
-    let ds_id = q.ds_id.unwrap_or(0);
+    let proj_id = q.proj_id.unwrap_or(0);
     info!(
         target: "claw_live_report",
         component = "pool_http",
         phase = "live_sse_subscribe",
         turn_id = %turn_id,
         task_id = %task_id,
-        ds_id,
+        proj_id,
         "pool /v1/biz_advice_report/live — hub subscribe (direct or via gateway proxy)"
     );
     Ok(live_report_sse_response(
-        hub, turn_id, task_id, request_id, ds_id,
+        hub, turn_id, task_id, request_id, proj_id,
     ))
 }
 

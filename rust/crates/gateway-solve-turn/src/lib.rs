@@ -120,8 +120,8 @@ pub struct ReportPolishDeepseek {
     pub model: String,
 }
 
-/// Fixed `ds_id` for boss-report skill content (`home/skills/GPOS_BOSS_REPORT_WRITER/SKILL.md`). kejiqing
-pub const BOSS_REPORT_SKILL_DS_ID: i64 = 1;
+/// Fixed `proj_id` for boss-report skill content (`home/skills/GPOS_BOSS_REPORT_WRITER/SKILL.md`). kejiqing
+pub const BOSS_REPORT_SKILL_PROJ_ID: i64 = 1;
 
 /// Fixed transcript path under a session workspace (gateway continues-by-sid). kejiqing
 #[must_use]

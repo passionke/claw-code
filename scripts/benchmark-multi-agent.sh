@@ -68,7 +68,7 @@ durations: list[int] = []
 for i in range(1, runs + 1):
     print(f"=== run {i}/{runs} ===")
     start_ms = int(time.time() * 1000)
-    created = http("POST", "/v1/solve_async", {"dsId": ds_id, "prompt": prompt})
+    created = http("POST", "/v1/solve_async", {"projId": ds_id, "prompt": prompt})
     task_id = created["taskId"]
     print(f"taskId={task_id}")
     while True:

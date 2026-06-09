@@ -51,8 +51,8 @@ export default function AdminLayout() {
     setGatewayBase,
     gatewayOptions,
     showGatewayPicker,
-    dsId,
-    setDsId,
+    projId,
+    setProjId,
     projects,
     refreshProjects,
     gatewayImageTag,
@@ -113,12 +113,12 @@ export default function AdminLayout() {
     },
   ];
 
-  const dsOptions = projects.map((p) => ({
-    value: p.dsId,
+  const projOptions = projects.map((p) => ({
+    value: p.projId,
     label:
       p.projectConfigRegistered === false
-        ? `ds ${p.dsId} — 未注册`
-        : `ds ${p.dsId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
+        ? `项目 ${p.projId} — 未注册`
+        : `项目 ${p.projId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
   }));
 
   return (
@@ -148,12 +148,12 @@ export default function AdminLayout() {
             {gatewayImageTag}
           </Tag>
         ) : null}
-        <Typography.Text type="secondary">ds_id</Typography.Text>
+        <Typography.Text type="secondary">项目</Typography.Text>
         <Select
           style={{ minWidth: 160 }}
-          value={dsId}
-          options={dsOptions.length ? dsOptions : [{ value: 1, label: "ds 1" }]}
-          onChange={setDsId}
+          value={projId}
+          options={projOptions.length ? projOptions : [{ value: 1, label: "项目 1" }]}
+          onChange={setProjId}
         />
         <div style={{ flex: 1 }} />
         <Space>
@@ -161,21 +161,21 @@ export default function AdminLayout() {
             type="primary"
             icon={<PlusOutlined />}
             onClick={async () => {
-              const raw = window.prompt("ds_id（留空自动分配）", "");
-              const body: { dsId?: number } = {};
+              const raw = window.prompt("项目 ID（留空自动分配）", "");
+              const body: { projId?: number } = {};
               if (raw != null && raw.trim() !== "") {
                 const n = parseInt(raw.trim(), 10);
                 if (!Number.isFinite(n) || n < 1) return;
-                body.dsId = n;
+                body.projId = n;
               }
-              const r = await proxyHttp<{ dsId: number }>(
+              const r = await proxyHttp<{ projId: number }>(
                 gatewayBase,
                 "POST",
                 "/v1/projects",
                 body
               );
               await refreshProjects();
-              setDsId(r.dsId);
+              setProjId(r.projId);
             }}
           >
             新建项目

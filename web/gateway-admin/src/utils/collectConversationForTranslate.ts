@@ -25,12 +25,12 @@ async function fetchTurnReport(
   gatewayBase: string,
   sessionId: string,
   turnId: string,
-  dsId: number
+  projId: number
 ): Promise<string> {
   const q = new URLSearchParams({
     sessionId,
     turnId,
-    dsId: String(dsId),
+    proj_id: String(projId),
     stream: "false",
   });
   const res = await proxyHttp<BizAdviceReportResponse>(
@@ -59,7 +59,7 @@ async function fetchTaskAssistantText(
 
 async function resolveAssistantText(
   gatewayBase: string,
-  dsId: number,
+  projId: number,
   turn: ConversationTurnInput
 ): Promise<string> {
   const failure = turn.failureDetail?.trim();
@@ -69,7 +69,7 @@ async function resolveAssistantText(
   if (prefilled) return prefilled;
 
   try {
-    const report = await fetchTurnReport(gatewayBase, turn.sessionId, turn.turnId, dsId);
+    const report = await fetchTurnReport(gatewayBase, turn.sessionId, turn.turnId, projId);
     if (report) return report;
   } catch {
     /* fall through */
@@ -90,7 +90,7 @@ async function resolveAssistantText(
 /** 按当前 thread 中的 turn 顺序拉齐助手正文。 */
 export async function collectConversationTurns(
   gatewayBase: string,
-  dsId: number,
+  projId: number,
   turns: ConversationTurnInput[],
   onProgress?: (done: number, total: number) => void
 ): Promise<ConversationTurnBlock[]> {
@@ -98,7 +98,7 @@ export async function collectConversationTurns(
   const blocks: ConversationTurnBlock[] = [];
   for (let i = 0; i < turns.length; i += 1) {
     const t = turns[i];
-    const assistantText = await resolveAssistantText(gatewayBase, dsId, t);
+    const assistantText = await resolveAssistantText(gatewayBase, projId, t);
     blocks.push({
       index: i + 1,
       turnId: t.turnId,
@@ -113,13 +113,13 @@ export async function collectConversationTurns(
 /** 从历史会话 API 一次性加载（侧边栏选中会话时 thread 可能尚未渲染完）。 */
 export async function loadSessionTurnsForTranslate(
   gatewayBase: string,
-  dsId: number,
+  projId: number,
   sessionId: string
 ): Promise<ConversationTurnInput[]> {
   const res = await proxyHttp<{ turns?: GatewayTurnSummary[] }>(
     gatewayBase,
     "GET",
-    `/v1/sessions/${encodeURIComponent(sessionId)}/turns?dsId=${encodeURIComponent(String(dsId))}`
+    `/v1/sessions/${encodeURIComponent(sessionId)}/turns?proj_id=${encodeURIComponent(String(projId))}`
   );
   return (res.turns ?? []).map((t) => ({
     turnId: t.turnId,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local smoke (ds_id=1):「最近生意怎样」+ progressHistory. 结果记入 deploy/stack/claw-workspace/ds_1/TUNING-LOG.md
+# Local smoke (proj_id=1):「最近生意怎样」+ progressHistory. 结果记入 deploy/stack/claw-workspace/proj_1/TUNING-LOG.md
 # Author: kejiqing
 set -euo pipefail
 
@@ -18,15 +18,15 @@ MAX_POLLS="${MAX_POLLS:-90}"
 echo "==> gateway ${BASE}"
 curl -sf "${BASE}/healthz" | python3 -c 'import json,sys; o=json.load(sys.stdin); assert o.get("ok"); print("healthz ok")'
 
-echo "==> init dsId=${DS_ID}"
+echo "==> init projId=${DS_ID}"
 curl -sf -X POST "${BASE}/v1/init" -H 'Content-Type: application/json' \
-  -d "{\"dsId\":${DS_ID}}" >/dev/null
+  -d "{\"projId\":${DS_ID}}" >/dev/null
 
 export DS_ID QUESTION STORE_ID
 BODY="$(python3 -c '
 import json, os
 print(json.dumps({
-    "dsId": int(os.environ["DS_ID"]),
+    "projId": int(os.environ["DS_ID"]),
     "userPrompt": os.environ["QUESTION"],
     "extraSession": {
         "store_id": os.environ["STORE_ID"],

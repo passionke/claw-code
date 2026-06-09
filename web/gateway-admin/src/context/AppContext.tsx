@@ -24,15 +24,27 @@ import {
 } from "../utils/gatewayClusterOptions";
 import { loadProjectConfig } from "../utils/projectConfig";
 
-const DS_KEY = "claw-playground-ds-id";
+const PROJ_KEY = "claw-playground-proj-id";
+const LEGACY_DS_KEY = "claw-playground-ds-id";
 const GW_KEY = "claw-playground-gateway-base";
+
+function readSavedProjId(): number | null {
+  try {
+    const raw =
+      localStorage.getItem(PROJ_KEY) || localStorage.getItem(LEGACY_DS_KEY) || "";
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
 
 interface AppContextValue {
   playground: PlaygroundConfig | null;
   gatewayBase: string;
   setGatewayBase: (v: string) => void;
-  dsId: number;
-  setDsId: (id: number) => void;
+  projId: number;
+  setProjId: (id: number) => void;
   projects: ProjectListItem[];
   refreshProjects: (silent?: boolean) => Promise<void>;
   projectConfig: ProjectConfig | null;
@@ -53,7 +65,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [playground, setPlayground] = useState<PlaygroundConfig | null>(null);
   const [gatewayBase, setGatewayBaseState] = useState("");
-  const [dsId, setDsIdState] = useState(1);
+  const [projId, setProjIdState] = useState(1);
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [projectConfig, setProjectConfig] = useState<ProjectConfig | null>(null);
   const [gatewayImageTag, setGatewayImageTag] = useState("");
@@ -128,10 +140,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const setDsId = useCallback((id: number) => {
-    setDsIdState(id);
+  const setProjId = useCallback((id: number) => {
+    setProjIdState(id);
     try {
-      localStorage.setItem(DS_KEY, String(id));
+      localStorage.setItem(PROJ_KEY, String(id));
     } catch {
       /* ignore */
     }
@@ -139,10 +151,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const refreshProjectConfig = useCallback(async () => {
     if (!gatewayBase) throw new Error("未选择网关");
-    const cfg = await loadProjectConfig(gatewayBase, dsId);
+    const cfg = await loadProjectConfig(gatewayBase, projId);
     setProjectConfig(cfg);
     return cfg;
-  }, [gatewayBase, dsId]);
+  }, [gatewayBase, projId]);
 
   const applyProjectConfig = useCallback((cfg: ProjectConfig) => {
     setProjectConfig(cfg);
@@ -174,26 +186,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
           );
         }
         const h = await proxyHttp<{
-          projectsGitMirror?: { dsWorkspaces?: ProjectListItem[] };
+          projectsGitMirror?: {
+            projWorkspaces?: ProjectListItem[];
+            dsWorkspaces?: ProjectListItem[];
+          };
         }>(gatewayBase, "GET", "/healthz");
-        list = h.projectsGitMirror?.dsWorkspaces || [];
+        list =
+          h.projectsGitMirror?.projWorkspaces ||
+          h.projectsGitMirror?.dsWorkspaces ||
+          [];
       }
-      list.sort((a, b) => a.dsId - b.dsId);
+      list.sort((a, b) => a.projId - b.projId);
       setProjects(list);
-      const saved = parseInt(localStorage.getItem(DS_KEY) || "", 10);
-      const cur = dsId;
-      if (list.length && !list.some((p) => p.dsId === cur)) {
+      const saved = readSavedProjId();
+      const cur = projId;
+      if (list.length && !list.some((p) => p.projId === cur)) {
         const pick =
-          list.find((p) => p.dsId === saved) ||
+          (saved != null ? list.find((p) => p.projId === saved) : undefined) ||
           list.find((p) => p.environmentPrepared) ||
           list[0];
-        setDsId(pick.dsId);
-      } else if (list.length && Number.isFinite(saved) && list.some((p) => p.dsId === saved)) {
-        setDsIdState(saved);
+        setProjId(pick.projId);
+      } else if (
+        list.length &&
+        saved != null &&
+        list.some((p) => p.projId === saved)
+      ) {
+        setProjIdState(saved);
       }
       if (!silent) message.success(`已加载 ${list.length} 个项目`);
     },
-    [gatewayBase, dsId, setDsId]
+    [gatewayBase, projId, setProjId]
   );
 
   useEffect(() => {
@@ -204,14 +226,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!gatewayBase) return;
     refreshProjectConfig().catch(() => setProjectConfig(null));
-  }, [gatewayBase, dsId, refreshProjectConfig]);
+  }, [gatewayBase, projId, refreshProjectConfig]);
 
   const value: AppContextValue = {
     playground,
     gatewayBase,
     setGatewayBase,
-    dsId,
-    setDsId,
+    projId,
+    setProjId,
     projects,
     refreshProjects,
     projectConfig,

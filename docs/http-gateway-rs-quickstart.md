@@ -88,7 +88,7 @@ curl -sS "http://127.0.0.1:18088/healthz"
 curl -sS -X POST "http://127.0.0.1:18088/v1/solve" \
   -H "Content-Type: application/json" \
   -d '{
-    "dsId": 1,
+    "projId": 1,
     "userPrompt": "给我一个简短总结"
   }'
 ```
@@ -99,7 +99,7 @@ curl -sS -X POST "http://127.0.0.1:18088/v1/solve" \
 curl -sS -X POST "http://127.0.0.1:18088/v1/solve" \
   -H "Content-Type: application/json" \
   -d '{
-    "dsId": 1,
+    "projId": 1,
     "userPrompt": "把任务说明里的内容整理成 .claw/skills/foo/SKILL.md 并自检",
     "allowedTools": [
       "read_file", "glob_search", "grep_search",
@@ -113,7 +113,7 @@ curl -sS -X POST "http://127.0.0.1:18088/v1/solve" \
 ```bash
 curl -sS -X POST "http://127.0.0.1:18088/v1/solve_async" \
   -H "Content-Type: application/json" \
-  -d '{"dsId":1,"userPrompt":"ping"}'
+  -d '{"projId":1,"userPrompt":"ping"}'
 ```
 
 返回里拿到 `taskId` 后：
@@ -140,7 +140,7 @@ curl -sS "http://127.0.0.1:18088/v1/biz_advice_report?task_id=<taskId>"
 
 - `taskId`：原异步任务 ID
 - `sourceRequestId`：原任务 requestId
-- `sourceDsId`：原任务 dsId
+- `sourceDsId`：原任务 projId（字段名仍为 legacy `sourceDsId`）
 - `sourceStatus`：原任务状态
 - `reportText`：清洗后的最终报告文本
 - `reportJson`：清洗后的结构化结果
@@ -151,7 +151,7 @@ curl -sS "http://127.0.0.1:18088/v1/biz_advice_report?task_id=<taskId>"
 curl -sS -X POST "http://127.0.0.1:18088/v1/mcp/inject" \
   -H "Content-Type: application/json" \
   -d '{
-    "dsId": 1,
+    "projId": 1,
     "mcpServers": {
       "demo": {
         "type": "http",
@@ -178,4 +178,4 @@ curl -sS "http://127.0.0.1:18088/v1/mcp/injected/1"
   - 多数是模型凭证没配（如 `ANTHROPIC_API_KEY`）
 - **MCP 没加载**
   - 先看 `/healthz` 里的 `defaultHttpMcpUrl`
-  - 再看 `/v1/mcp/injected/{dsId}` 的 `mcpReport.servers`
+  - 再看 `/v1/mcp/injected/{projId}` 的 `mcpReport.servers`

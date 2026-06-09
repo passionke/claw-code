@@ -32,7 +32,7 @@ extra = {
 for f in (cfg.get("extraSessionFieldsJson") or []):
     if isinstance(f, str) and f.strip():
         extra[f.strip()] = ""
-print(json.dumps({"dsId": ds, "userPrompt": prompt, "extraSession": extra}, ensure_ascii=False))
+print(json.dumps({"projId": ds, "userPrompt": prompt, "extraSession": extra}, ensure_ascii=False))
 PY
 )"
 

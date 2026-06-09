@@ -74,7 +74,7 @@ function isSys(item: ThreadItem): item is SysEntry {
 
 /** solve_async 对话：按时间线 user → assistant 卡片交错展示。Author: kejiqing */
 export default function ChatPage() {
-  const { gatewayBase, dsId, projectConfig } = useApp();
+  const { gatewayBase, projId, projectConfig } = useApp();
   const { tapLiveBase, tapLiveTemplate } = useChatSession();
   const [thread, setThread] = useState<ThreadItem[]>([]);
   const [prompt, setPrompt] = useState("");
@@ -103,7 +103,7 @@ export default function ChatPage() {
     feedbackByTurn,
     submittingTurnId,
     submitFeedback,
-  } = useSessionTurnFeedback(gatewayBase, dsId, activeSessionId, historyRefreshKey);
+  } = useSessionTurnFeedback(gatewayBase, projId, activeSessionId, historyRefreshKey);
 
   const scrollLog = (smooth = true) => {
     requestAnimationFrame(() =>
@@ -117,9 +117,9 @@ export default function ChatPage() {
   }, []);
 
   const prefillExtraFromStorage = useCallback(() => {
-    const stored = loadExtraSessionKvForDs(dsId);
+    const stored = loadExtraSessionKvForDs(projId);
     setExtraKv(mergeFieldsWithKv(fieldDefs, stored));
-  }, [dsId, fieldDefs]);
+  }, [projId, fieldDefs]);
 
   const onNewSession = () => {
     sessionIdRef.current = null;
@@ -133,9 +133,9 @@ export default function ChatPage() {
   useEffect(() => {
     if (sessionClientOrigin != null) return;
     if (activeSessionId != null) return;
-    const stored = loadExtraSessionKvForDs(dsId);
+    const stored = loadExtraSessionKvForDs(projId);
     setExtraKv(mergeFieldsWithKv(fieldDefs, stored));
-  }, [fieldDefs, activeSessionId, sessionClientOrigin, dsId]);
+  }, [fieldDefs, activeSessionId, sessionClientOrigin, projId]);
 
   const loadSessionHistory = useCallback(
     async (sessionId: string, clientOrigin?: string | null) => {
@@ -150,7 +150,7 @@ export default function ChatPage() {
         const res = await proxyHttp<ListSessionTurnsResponse>(
           gatewayBase,
           "GET",
-          `/v1/sessions/${encodeURIComponent(sessionId)}/turns?dsId=${encodeURIComponent(String(dsId))}`
+          `/v1/sessions/${encodeURIComponent(sessionId)}/turns?proj_id=${encodeURIComponent(String(projId))}`
         );
         sessionIdRef.current = sessionId;
         setActiveSessionId(sessionId);
@@ -203,7 +203,7 @@ export default function ChatPage() {
         setLoadingHistory(false);
       }
     },
-    [gatewayBase, dsId, fieldDefs]
+    [gatewayBase, projId, fieldDefs]
   );
 
   const runSend = async (userText: string) => {
@@ -215,10 +215,10 @@ export default function ChatPage() {
       message.warning("外部会话，仅可查看");
       return;
     }
-    saveExtraSessionKvForDs(dsId, extraKv);
+    saveExtraSessionKvForDs(projId, extraKv);
     const extra = buildExtraSession(extraKv);
     const payload: Record<string, unknown> = {
-      dsId,
+      projId,
       userPrompt: userText,
       extraSession: extra,
     };
@@ -310,7 +310,7 @@ export default function ChatPage() {
     <div className={styles.chatPage}>
       <ChatHistorySidebar
         gatewayBase={gatewayBase}
-        dsId={dsId}
+        projId={projId}
         extraSessionFieldDefs={fieldDefs}
         activeSessionId={activeSessionId}
         refreshKey={historyRefreshKey}
@@ -376,7 +376,7 @@ export default function ChatPage() {
                   taskId={item.taskId}
                   sessionId={item.sessionId}
                   turnId={item.turnId}
-                  dsId={dsId}
+                  projId={projId}
                   gatewayBase={gatewayBase}
                   tapLiveBase={tapLiveBase}
                   tapLiveTemplate={tapLiveTemplate}
@@ -467,7 +467,7 @@ export default function ChatPage() {
         open={translateOpen}
         onClose={() => setTranslateOpen(false)}
         gatewayBase={gatewayBase}
-        dsId={dsId}
+        projId={projId}
         sessionId={activeSessionId}
         threadTurns={threadTurns}
       />

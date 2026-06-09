@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-/// Single directory name under `ds_*/sessions/` aligned with the effective gateway `session_id`
+/// Single directory name under `proj_*/sessions/` aligned with the effective gateway `session_id`
 /// when that id is safe as one path segment; otherwise a deterministic 32-hex segment (UUID v5). kejiqing
 #[must_use]
 pub fn sessions_directory_segment(session_id: &str) -> String {
@@ -118,17 +118,17 @@ mod tests {
     struct SolveSessionIdBody {
         #[serde(rename = "sessionId")]
         session_id: Option<String>,
-        #[serde(rename = "dsId")]
-        ds_id: i64,
+        #[serde(rename = "projId")]
+        proj_id: i64,
     }
 
     #[test]
     fn solve_request_json_session_id_camel_case() {
-        let j = r#"{"dsId":1,"userPrompt":"hi","sessionId":"abc-123"}"#;
+        let j = r#"{"projId":1,"userPrompt":"hi","sessionId":"abc-123"}"#;
         let v: SolveSessionIdBody = serde_json::from_str(j).unwrap();
         assert_eq!(v.session_id.as_deref(), Some("abc-123"));
-        assert_eq!(v.ds_id, 1);
-        let j2 = r#"{"dsId":1,"userPrompt":"hi"}"#;
+        assert_eq!(v.proj_id, 1);
+        let j2 = r#"{"projId":1,"userPrompt":"hi"}"#;
         let v2: SolveSessionIdBody = serde_json::from_str(j2).unwrap();
         assert!(v2.session_id.is_none());
     }
@@ -182,26 +182,26 @@ mod tests {
     #[test]
     fn validate_rel_rejects_dotdot() {
         assert_eq!(
-            validate_session_home_rel("ds_1/sessions/../x"),
+            validate_session_home_rel("proj_1/sessions/../x"),
             Err(SessionRoutingError::RegistryRelInvalid)
         );
-        assert!(validate_session_home_rel("ds_1/sessions/u1").is_ok());
+        assert!(validate_session_home_rel("proj_1/sessions/u1").is_ok());
     }
 
     #[test]
     fn session_home_rel_under_work_root_ok() {
         let wr = Path::new("/var/lib/ws");
-        let abs = Path::new("/var/lib/ws/ds_1/sessions/u1");
+        let abs = Path::new("/var/lib/ws/proj_1/sessions/u1");
         assert_eq!(
             session_home_rel_under_work_root(wr, abs).unwrap(),
-            "ds_1/sessions/u1"
+            "proj_1/sessions/u1"
         );
     }
 
     #[test]
     fn session_home_rel_not_under_root() {
         let wr = Path::new("/var/lib/ws");
-        let abs = Path::new("/other/ds_1");
+        let abs = Path::new("/other/proj_1");
         assert_eq!(
             session_home_rel_under_work_root(wr, abs),
             Err(SessionRoutingError::AbsNotUnderWorkRoot)

@@ -21,7 +21,7 @@ use tokio::fs;
 use tokio::sync::mpsc;
 use tracing::warn;
 
-/// Skill 目录名（`home/skills/<name>/SKILL.md`），可通过 `POST /v1/project/skills/{ds_id}` 维护。
+/// Skill 目录名（`home/skills/<name>/SKILL.md`），可通过 `POST /v1/project/skills/{proj_id}` 维护。
 pub const GPOS_BOSS_REPORT_WRITER_SKILL_NAME: &str = "GPOS_BOSS_REPORT_WRITER";
 
 /// 默认润色说明（skill 未部署时的回退，与 crate `skills/gpos-boss-report-writer.SKILL.md` 一致）。Author: kejiqing
@@ -194,7 +194,7 @@ pub async fn load_boss_report_writer_instructions(work_dir: &Path) -> String {
 pub struct BizAdviceReportPayload {
     pub task_id: String,
     pub source_request_id: String,
-    pub source_ds_id: i64,
+    pub source_proj_id: i64,
     pub source_status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report_text: Option<String>,
@@ -457,7 +457,7 @@ mod tests {
         let mut payload = BizAdviceReportPayload {
             task_id: "t".into(),
             source_request_id: "t".into(),
-            source_ds_id: 1,
+            source_proj_id: 1,
             source_status: "succeeded".into(),
             report_text: Some("delta".into()),
             report_json: None,

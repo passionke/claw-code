@@ -527,7 +527,7 @@ function SwimlaneChart({ timeline }: { timeline: SolveTurnTimeline }) {
 export interface TurnTimelineDrawerProps {
   sessionId: string;
   turnId: string;
-  dsId: number;
+  projId: number;
   gatewayBase: string;
   taskStatus?: string;
 }
@@ -536,7 +536,7 @@ export interface TurnTimelineDrawerProps {
 export default function TurnTimelineDrawer({
   sessionId,
   turnId,
-  dsId,
+  projId,
   gatewayBase,
   taskStatus,
 }: TurnTimelineDrawerProps) {
@@ -551,7 +551,7 @@ export default function TurnTimelineDrawer({
     try {
       const path =
         `/v1/sessions/${encodeURIComponent(sessionId)}` +
-        `/turns/${encodeURIComponent(turnId)}/timeline?ds_id=${encodeURIComponent(String(dsId))}`;
+        `/turns/${encodeURIComponent(turnId)}/timeline?proj_id=${encodeURIComponent(String(projId))}`;
       const res = await proxyHttp<TurnTimelineResponse>(gatewayBase, "GET", path);
       setData(res);
     } catch (e) {
@@ -560,7 +560,7 @@ export default function TurnTimelineDrawer({
     } finally {
       setLoading(false);
     }
-  }, [gatewayBase, sessionId, turnId, dsId]);
+  }, [gatewayBase, sessionId, turnId, projId]);
 
   const openDrawer = () => {
     setOpen(true);

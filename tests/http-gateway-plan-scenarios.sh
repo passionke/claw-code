@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# HTTP smoke: concurrent reads during solve_async; workDir is canonical ds_home.
-# - Read paths stay fast while an async solve runs (no ds_lock starvation on GET CLAUDE.md).
-# - Successful solve: workDir should be .../ds_{id} (not a separate sessions/ tree).
+# HTTP smoke: concurrent reads during solve_async; workDir is canonical proj_home.
+# - Read paths stay fast while an async solve runs (no proj lock starvation on GET CLAUDE.md).
+# - Successful solve: workDir should be .../proj_{id} (not a separate sessions/ tree).
 # - `CLAW_SOLVE_ISOLATION` defaults to podman_pool (needs podman + CLAW_PODMAN_IMAGE, or set docker_pool + CLAW_DOCKER_*).
 #
 # Author: kejiqing
@@ -58,7 +58,7 @@ if ! curl -sf --max-time "$CURL_MAX" "$BASE/healthz" >/dev/null; then
   exit 1
 fi
 
-curl -sf --max-time "$CURL_MAX" -X POST "$BASE/v1/init" -H 'Content-Type: application/json' -d '{"dsId":10}' >/dev/null
+curl -sf --max-time "$CURL_MAX" -X POST "$BASE/v1/init" -H 'Content-Type: application/json' -d '{"projId":10}' >/dev/null
 
 echo "[plan] concurrent GET /v1/project/claude/10 while solve_async worker runs..."
 SECONDS=0
@@ -66,7 +66,7 @@ ASYNC_OUT="$WORK_ROOT/solve_async.json"
 rm -f "$ASYNC_OUT"
 curl -sf --max-time "$CURL_MAX" -X POST "$BASE/v1/solve_async" \
   -H 'Content-Type: application/json' \
-  -d '{"dsId":10,"userPrompt":"say hi in one word","timeoutSeconds":120}' \
+  -d '{"projId":10,"userPrompt":"say hi in one word","timeoutSeconds":120}' \
   -o "$ASYNC_OUT" &
 CURL_ASYNC_PID=$!
 
@@ -110,20 +110,20 @@ echo "[plan] async task status: $ST"
 
 if [[ "$ST" == "succeeded" ]]; then
   WD="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["workDir"])' <<<"$RECORD")"
-  if [[ "$WD" != *"/ds_10"* ]] && [[ "$WD" != *"\\ds_10"* ]]; then
-    echo "FAIL: expected workDir to contain ds_10 (canonical ds_home), got: $WD" >&2
+  if [[ "$WD" != *"/proj_10"* ]] && [[ "$WD" != *"\\proj_10"* ]]; then
+    echo "FAIL: expected workDir to contain proj_10 (canonical proj_home), got: $WD" >&2
     exit 1
   fi
-  echo "[plan] workDir is ds_home: $WD"
+  echo "[plan] workDir is proj_home: $WD"
 else
   echo "[plan] solve did not succeed (often missing model API keys); skipping workDir shape assert"
 fi
 
 echo "[plan] GET /v1/skills/10 list + GET /v1/skills/10/plan_skill..."
-mkdir -p "$WORK_ROOT/ds_10/home/skills/plan_skill"
-printf '%s\n' '---' 'name: plan_skill' '---' 'skill body line' >"$WORK_ROOT/ds_10/home/skills/plan_skill/SKILL.md"
+mkdir -p "$WORK_ROOT/proj_10/home/skills/plan_skill"
+printf '%s\n' '---' 'name: plan_skill' '---' 'skill body line' >"$WORK_ROOT/proj_10/home/skills/plan_skill/SKILL.md"
 SK_JSON="$(curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10")"
-python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ds_id")==10; assert isinstance(d.get("skills"),list); assert any(x.get("skill_name")=="plan_skill" for x in d["skills"])' <<<"$SK_JSON"
+python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("proj_id")==10; assert isinstance(d.get("skills"),list); assert any(x.get("skill_name")=="plan_skill" for x in d["skills"])' <<<"$SK_JSON"
 ONE_JSON="$(curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10/plan_skill")"
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("skill_name")=="plan_skill"; assert "skill body line" in d.get("skill_content","")' <<<"$ONE_JSON"
 if curl -sf --max-time "$CURL_MAX" "$BASE/v1/skills/10/missing_skill_xyz" >/dev/null 2>&1; then

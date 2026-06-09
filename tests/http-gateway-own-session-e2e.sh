@@ -91,7 +91,7 @@ extra = {
     "org_id": os.environ["ORG"],
 }
 print(json.dumps({
-    "dsId": int(os.environ.get("DS_ID", "1")),
+    "projId": int(os.environ.get("DS_ID", "1")),
     "userPrompt": os.environ["PROMPT"],
     "extraSession": extra,
 }, ensure_ascii=False))
@@ -161,7 +161,7 @@ CODE="$(http_code "${WORKDIR}/v_bad_type.json" -X POST "${BASE}/v1/solve_async" 
 assert_http "solve_async non-string org_id -> 400" "400" "$CODE" "${WORKDIR}/v_bad_type.json"
 
 CODE="$(http_code "${WORKDIR}/v_no_extra.json" -X POST "${BASE}/v1/solve_async" -H 'Content-Type: application/json' \
-  -d "{\"dsId\":${DS_ID},\"userPrompt\":\"no extra\"}")"
+  -d "{\"projId\":${DS_ID},\"userPrompt\":\"no extra\"}")"
 assert_http "solve_async no extraSession object -> 400" "400" "$CODE" "${WORKDIR}/v_no_extra.json"
 
 # sync /v1/solve shares validate_solve_request
@@ -181,7 +181,7 @@ if [[ "$POOL_OK" -eq 1 ]]; then
     pass "enqueued session=${SESSION_ID} turn=${TURN_ID}"
 
     curl -sf --max-time "$CURL_MAX" \
-      "${BASE}/v1/sessions/${SESSION_ID}/turns?dsId=${DS_ID}" -o "${WORKDIR}/turns.json"
+      "${BASE}/v1/sessions/${SESSION_ID}/turns?projId=${DS_ID}" -o "${WORKDIR}/turns.json"
     assert_py "turns list includes extraSession snapshot" \
       "import json,sys; d=json.load(open(sys.argv[1])); turns=d.get('turns') or []; assert turns, turns; t=next((x for x in turns if x.get('turnId')=='${TURN_ID}'), None); assert t, turns; es=t.get('extraSession') or {}; assert es.get('store_id')=='${UNIQUE_STORE}', es; assert es.get('org_id')=='', es" \
       "${WORKDIR}/turns.json"
@@ -209,7 +209,7 @@ if [[ "$POOL_OK" -eq 1 ]]; then
     EXT_TID="$(json_get "${WORKDIR}/ext_enqueue.json" turnId)"
 
     curl -sf --max-time "$CURL_MAX" \
-      "${BASE}/v1/sessions/${EXT_SID}/turns?dsId=${DS_ID}" -o "${WORKDIR}/ext_turns.json"
+      "${BASE}/v1/sessions/${EXT_SID}/turns?projId=${DS_ID}" -o "${WORKDIR}/ext_turns.json"
     assert_py "external turn clientOrigin persisted" \
       "import json,sys; d=json.load(open(sys.argv[1])); t=next(x for x in d['turns'] if x['turnId']=='${EXT_TID}'); assert t.get('clientOrigin')=='dingtalk-bot', t" \
       "${WORKDIR}/ext_turns.json"
@@ -217,14 +217,14 @@ if [[ "$POOL_OK" -eq 1 ]]; then
     CODE="$(http_code "${WORKDIR}/fb_forbidden.json" -X POST "${BASE}/v1/agent/feedback" \
       -H 'Content-Type: application/json' \
       -H 'X-Claw-Client-Origin: gateway-admin' \
-      -d "{\"dsId\":${DS_ID},\"sessionId\":\"${EXT_SID}\",\"turnId\":\"${EXT_TID}\",\"feedback\":\"good\"}")"
+      -d "{\"projId\":${DS_ID},\"sessionId\":\"${EXT_SID}\",\"turnId\":\"${EXT_TID}\",\"feedback\":\"good\"}")"
     assert_http "admin feedback on external turn -> 403" "403" "$CODE" "${WORKDIR}/fb_forbidden.json"
 
     # admin-origin turn feedback should succeed
     CODE="$(http_code "${WORKDIR}/fb_ok.json" -X POST "${BASE}/v1/agent/feedback" \
       -H 'Content-Type: application/json' \
       -H 'X-Claw-Client-Origin: gateway-admin' \
-      -d "{\"dsId\":${DS_ID},\"sessionId\":\"${SESSION_ID}\",\"turnId\":\"${TURN_ID}\",\"feedback\":\"good\"}")"
+      -d "{\"projId\":${DS_ID},\"sessionId\":\"${SESSION_ID}\",\"turnId\":\"${TURN_ID}\",\"feedback\":\"good\"}")"
     assert_http "admin feedback on admin turn -> 200" "200" "$CODE" "${WORKDIR}/fb_ok.json"
   else
     fail "external enqueue for feedback test (HTTP $CODE)"
@@ -238,7 +238,7 @@ build_put_from_get "$ORIG_CFG" "${WORKDIR}/put_clear_fields.json" '[]'
 curl -sf --max-time "$CURL_MAX" -X PUT "${BASE}/v1/project/config/${DS_ID}" \
   -H 'Content-Type: application/json' -d @"${WORKDIR}/put_clear_fields.json" >/dev/null
 CODE="$(http_code "${WORKDIR}/v_minimal.json" -X POST "${BASE}/v1/solve_async" -H 'Content-Type: application/json' \
-  -d "{\"dsId\":${DS_ID},\"userPrompt\":\"minimal extra\",\"extraSession\":{\"tenant_code\":\"GPOS\"}}")"
+  -d "{\"projId\":${DS_ID},\"userPrompt\":\"minimal extra\",\"extraSession\":{\"tenant_code\":\"GPOS\"}}")"
 if [[ "$POOL_OK" -eq 1 ]]; then
   assert_http "empty field defs: minimal extraSession enqueue" "200" "$CODE" "${WORKDIR}/v_minimal.json"
 else

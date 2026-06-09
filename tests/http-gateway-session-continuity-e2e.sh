@@ -64,7 +64,7 @@ HZ="$(curl -sf --max-time "$CURL_MAX" "$BASE/healthz")"
 python3 -c 'import json,sys; o=json.loads(sys.argv[1]); assert o.get("ok") is True, o; assert o.get("sessionDatabaseBackend")=="postgresql", o; assert "postgres" in o.get("gatewayDatabaseUrl",""), o' "$HZ"
 echo "[e2e] healthz ok; gateway PostgreSQL configured"
 
-curl -sf --max-time "$CURL_MAX" -X POST "$BASE/v1/init" -H 'Content-Type: application/json' -d '{"dsId":1}' >/dev/null
+curl -sf --max-time "$CURL_MAX" -X POST "$BASE/v1/init" -H 'Content-Type: application/json' -d '{"projId":1}' >/dev/null
 echo "[e2e] init ds 1 ok"
 
 HTTP_UNKNOWN="$(curl -sS -o "$WORK_ROOT/body400.json" -w '%{http_code}' --max-time "$CURL_MAX" -X POST "$BASE/v1/solve" \
@@ -85,14 +85,14 @@ fi
 
 R1="$(curl -sf --max-time 180 -X POST "$BASE/v1/solve" \
   -H 'Content-Type: application/json' \
-  -d '{"dsId":1,"userPrompt":"Reply with exactly one word: alpha","timeoutSeconds":120}')"
+  -d '{"projId":1,"userPrompt":"Reply with exactly one word: alpha","timeoutSeconds":120}')"
 SID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sessionId"])' "$R1")"
 WD1="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["workDir"])' "$R1")"
 echo "[e2e] round1 sessionId=$SID"
 
 R2="$(curl -sf --max-time 180 -X POST "$BASE/v1/solve" \
   -H 'Content-Type: application/json' \
-  -d "$(SID="$SID" python3 -c 'import json,os; print(json.dumps({"dsId":1,"userPrompt":"Reply with exactly one word: beta","sessionId":os.environ["SID"],"timeoutSeconds":120}))')")"
+  -d "$(SID="$SID" python3 -c 'import json,os; print(json.dumps({"projId":1,"userPrompt":"Reply with exactly one word: beta","sessionId":os.environ["SID"],"timeoutSeconds":120}))')")"
 WD2="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["workDir"])' "$R2")"
 if [[ "$WD1" != "$WD2" ]]; then
   echo "FAIL: continuation workDir mismatch:1=$WD1 2=$WD2" >&2

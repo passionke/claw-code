@@ -21,15 +21,15 @@ REPORT_POLL_AFTER_HAS="${REPORT_POLL_AFTER_HAS:-1}"
 echo "==> healthz ${BASE}"
 curl -sf "${BASE}/healthz" | python3 -c 'import json,sys; o=json.load(sys.stdin); assert o.get("ok"); print("ok", o.get("solveIsolation", "?"))'
 
-echo "==> init dsId=${DS_ID}"
+echo "==> init projId=${DS_ID}"
 curl -sf -X POST "${BASE}/v1/init" -H 'Content-Type: application/json' \
-  -d "{\"dsId\":${DS_ID}}" >/dev/null
+  -d "{\"projId\":${DS_ID}}" >/dev/null
 
 export DS_ID QUESTION STORE_ID
 BODY="$(python3 -c '
 import json, os
 print(json.dumps({
-    "dsId": int(os.environ["DS_ID"]),
+    "projId": int(os.environ["DS_ID"]),
     "userPrompt": os.environ["QUESTION"],
     "extraSession": {
         "store_id": os.environ["STORE_ID"],
@@ -65,7 +65,7 @@ print(t.get("status",""), "true" if t.get("hasReport") else "false")
     REPORT_STARTED=true
     echo "==> hasReport=true → sample report SSE (15s) …"
     timeout 15 curl -sN \
-      "${BASE}/v1/biz_advice_report?sessionId=${SESSION_ID}&turnId=${TURN_ID}&dsId=${DS_ID}&stream=true" \
+      "${BASE}/v1/biz_advice_report?sessionId=${SESSION_ID}&turnId=${TURN_ID}&projId=${DS_ID}&stream=true" \
       | head -n 40 || true
     echo "… (SSE sample truncated)"
   fi
@@ -77,7 +77,7 @@ print(t.get("status",""), "true" if t.get("hasReport") else "false")
       if [[ "$STATUS" == "succeeded" ]]; then
         echo "==> report JSON (stream=false)"
         curl -sf \
-          "${BASE}/v1/biz_advice_report?sessionId=${SESSION_ID}&turnId=${TURN_ID}&dsId=${DS_ID}&stream=false" \
+          "${BASE}/v1/biz_advice_report?sessionId=${SESSION_ID}&turnId=${TURN_ID}&projId=${DS_ID}&stream=false" \
           | python3 -m json.tool | head -n 30
       fi
       if [[ "$HAS_REPORT" != "true" && "$STATUS" == "succeeded" ]]; then

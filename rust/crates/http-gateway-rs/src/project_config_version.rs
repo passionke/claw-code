@@ -1,4 +1,4 @@
-//! Per-`ds_id` configuration revision history and diff (active rev may lag newest). Author: kejiqing
+//! Per-`proj_id` configuration revision history and diff (active rev may lag newest). Author: kejiqing
 
 use serde::Serialize;
 use serde_json::Value;
@@ -14,8 +14,8 @@ pub struct ConfigFieldChange {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectConfigCompareResponse {
-    #[serde(rename = "dsId")]
-    pub ds_id: i64,
+    #[serde(rename = "projId")]
+    pub proj_id: i64,
     pub from: String,
     pub to: String,
     #[serde(rename = "activeContentRev")]
@@ -149,7 +149,7 @@ fn push_set_change(
 /// Compare two stored revisions (`from` → `to`). Author: kejiqing
 #[must_use]
 pub fn compare_revision_rows(
-    ds_id: i64,
+    proj_id: i64,
     active_content_rev: &str,
     from: &ProjectConfigRevisionRow,
     to: &ProjectConfigRevisionRow,
@@ -197,7 +197,7 @@ pub fn compare_revision_rows(
     let to_document = revision_row_to_document(to);
     let same = from_document == to_document;
     ProjectConfigCompareResponse {
-        ds_id,
+        proj_id,
         from: from.content_rev.clone(),
         to: to.content_rev.clone(),
         active_content_rev: active_content_rev.to_string(),
@@ -215,7 +215,7 @@ mod tests {
 
     fn row(rev: &str, claude: Option<&str>, skills: Value) -> ProjectConfigRevisionRow {
         ProjectConfigRevisionRow {
-            ds_id: 1,
+            proj_id: 1,
             content_rev: rev.into(),
             created_at_ms: 0,
             note: None,

@@ -11,7 +11,7 @@ pub async fn proxy_pool_live_report_sse(
     pool_http_base: &str,
     turn_id: &str,
     task_id: &str,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<Response, (StatusCode, String)> {
     let base = pool_http_base.trim().trim_end_matches('/');
     if base.is_empty() {
@@ -21,7 +21,7 @@ pub async fn proxy_pool_live_report_sse(
         ));
     }
     let url = format!(
-        "{base}/v1/biz_advice_report/live?turnId={turn_id}&taskId={task_id}&dsId={ds_id}&stream=true"
+        "{base}/v1/biz_advice_report/live?turnId={turn_id}&taskId={task_id}&projId={proj_id}&stream=true"
     );
     info!(
         target: "claw_live_report",
@@ -29,7 +29,7 @@ pub async fn proxy_pool_live_report_sse(
         phase = "upstream_request",
         turn_id = %turn_id,
         task_id = %task_id,
-        ds_id,
+        proj_id,
         pool_http_base = %base,
         upstream_url = %url,
         "pool live SSE proxy — dialing pool HTTP"

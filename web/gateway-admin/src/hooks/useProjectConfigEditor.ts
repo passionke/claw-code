@@ -9,29 +9,29 @@ import type { ProjectConfig } from "../types/project";
 import { loadProjectConfig, putProjectConfigDraft } from "../utils/projectConfig";
 
 export function useProjectConfigEditor() {
-  const { gatewayBase, dsId, projectConfig, refreshProjectConfig, applyProjectConfig } =
+  const { gatewayBase, projId, projectConfig, refreshProjectConfig, applyProjectConfig } =
     useApp();
 
   const reloadEditingConfig = useCallback(async (): Promise<ProjectConfig> => {
     if (!gatewayBase) throw new Error("未选择网关");
-    const cfg = await loadProjectConfig(gatewayBase, dsId);
+    const cfg = await loadProjectConfig(gatewayBase, projId);
     applyProjectConfig(cfg);
     return cfg;
-  }, [gatewayBase, dsId, applyProjectConfig]);
+  }, [gatewayBase, projId, applyProjectConfig]);
 
   const saveDraftPatch = useCallback(
     async (patch: Partial<ProjectConfig>): Promise<ProjectConfig> => {
       const base = projectConfig ?? (await reloadEditingConfig());
-      const cfg = await putProjectConfigDraft(gatewayBase, dsId, base, patch);
+      const cfg = await putProjectConfigDraft(gatewayBase, projId, base, patch);
       applyProjectConfig(cfg);
       return cfg;
     },
-    [gatewayBase, dsId, projectConfig, reloadEditingConfig, applyProjectConfig]
+    [gatewayBase, projId, projectConfig, reloadEditingConfig, applyProjectConfig]
   );
 
   return {
     gatewayBase,
-    dsId,
+    projId,
     projectConfig,
     refreshProjectConfig,
     reloadEditingConfig,

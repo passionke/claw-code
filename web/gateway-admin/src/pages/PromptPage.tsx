@@ -27,7 +27,7 @@ function limitsFromConfig(
 }
 
 export default function PromptPage() {
-  const { gatewayBase, dsId, projectConfig, refreshProjectConfig, applyProjectConfig } =
+  const { gatewayBase, projId, projectConfig, refreshProjectConfig, applyProjectConfig } =
     useApp();
   const [messageText, setMessageText] = useState("");
   const [loading, setLoading] = useState(false);
@@ -48,13 +48,13 @@ export default function PromptPage() {
       const r = await proxyHttp<EffectivePromptResponse>(
         gatewayBase,
         "GET",
-        `/v1/project/prompt/${dsId}/effective`
+        `/v1/project/prompt/${projId}/effective`
       );
       setMessageText(r.message || "");
     } finally {
       setLoading(false);
     }
-  }, [gatewayBase, dsId]);
+  }, [gatewayBase, projId]);
 
   useEffect(() => {
     loadPreview().catch((e) => message.error(String(e)));
@@ -66,7 +66,7 @@ export default function PromptPage() {
       await proxyHttp<EffectivePromptResponse>(
         gatewayBase,
         "POST",
-        `/v1/project/prompt/${dsId}/effective`
+        `/v1/project/prompt/${projId}/effective`
       );
       message.success("已刷新到运行时");
       await loadPreview();
@@ -86,7 +86,7 @@ export default function PromptPage() {
     }
     setSavingLimits(true);
     try {
-      const next = await putProjectConfigDraft(gatewayBase, dsId, projectConfig, {
+      const next = await putProjectConfigDraft(gatewayBase, projId, projectConfig, {
         promptLimitsJson: {
           instructionFileMaxChars: fileMax,
           instructionTotalMaxChars: totalMax,

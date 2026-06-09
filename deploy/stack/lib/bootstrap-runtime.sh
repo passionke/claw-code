@@ -71,52 +71,52 @@ claw_bootstrap_llm_from_env() {
   return 0
 }
 
-# Default ds (dsId=1): POST /v1/projects + /v1/init; verify GET config 200. Author: kejiqing
+# Default project (projId=1): POST /v1/projects + /v1/init; verify GET config 200. Author: kejiqing
 claw_ensure_default_project_ds() {
-  local ds_id="${1:-${CLAW_BOOTSTRAP_DS_ID:-1}}"
+  local proj_id="${1:-${CLAW_BOOTSTRAP_PROJ_ID:-${CLAW_BOOTSTRAP_DS_ID:-1}}}"
   local port="${GATEWAY_HOST_PORT:-18088}"
   local code resp http_code
 
   code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 \
-    "http://127.0.0.1:${port}/v1/project/config/${ds_id}" 2>/dev/null || echo 000)"
+    "http://127.0.0.1:${port}/v1/project/config/${proj_id}" 2>/dev/null || echo 000)"
   if [[ "${code}" != "200" ]]; then
-    echo "==> bootstrap POST /v1/projects dsId=${ds_id} (config was HTTP ${code})" >&2
+    echo "==> bootstrap POST /v1/projects projId=${proj_id} (config was HTTP ${code})" >&2
     resp="$(mktemp)"
     http_code="$(curl -sS --connect-timeout 120 -o "${resp}" -w '%{http_code}' -X POST \
       "http://127.0.0.1:${port}/v1/projects" \
       -H 'Content-Type: application/json' \
-      -d "{\"dsId\":${ds_id}}" 2>/dev/null || echo 000)"
+      -d "{\"projId\":${proj_id}}" 2>/dev/null || echo 000)"
     if [[ "${http_code}" != "200" && "${http_code}" != "409" ]]; then
-      echo "error: POST /v1/projects ds=${ds_id} HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 500)" >&2
+      echo "error: POST /v1/projects proj=${proj_id} HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 500)" >&2
       rm -f "${resp}"
       return 1
     fi
     rm -f "${resp}"
-    echo "bootstrap: POST /v1/projects ds=${ds_id} HTTP ${http_code}"
+    echo "bootstrap: POST /v1/projects proj=${proj_id} HTTP ${http_code}"
   else
-    echo "bootstrap: project_config ds=${ds_id} exists (GET 200)"
+    echo "bootstrap: project_config proj=${proj_id} exists (GET 200)"
   fi
 
-  echo "==> bootstrap POST /v1/init dsId=${ds_id}" >&2
+  echo "==> bootstrap POST /v1/init projId=${proj_id}" >&2
   resp="$(mktemp)"
   http_code="$(curl -sS --connect-timeout 120 -o "${resp}" -w '%{http_code}' -X POST \
     "http://127.0.0.1:${port}/v1/init" \
     -H 'Content-Type: application/json' \
-    -d "{\"dsId\":${ds_id}}" 2>/dev/null || echo 000)"
+    -d "{\"projId\":${proj_id}}" 2>/dev/null || echo 000)"
   if [[ "${http_code}" != "200" ]]; then
-    echo "error: POST /v1/init ds=${ds_id} HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 500)" >&2
+    echo "error: POST /v1/init proj=${proj_id} HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 500)" >&2
     rm -f "${resp}"
     return 1
   fi
   rm -f "${resp}"
 
   code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 \
-    "http://127.0.0.1:${port}/v1/project/config/${ds_id}" 2>/dev/null || echo 000)"
+    "http://127.0.0.1:${port}/v1/project/config/${proj_id}" 2>/dev/null || echo 000)"
   if [[ "${code}" != "200" ]]; then
-    echo "error: ds=${ds_id} still missing after bootstrap (GET config HTTP ${code})" >&2
+    echo "error: proj=${proj_id} still missing after bootstrap (GET config HTTP ${code})" >&2
     return 1
   fi
-  echo "bootstrap: ds=${ds_id} registered (project + init, GET config 200)"
+  echo "bootstrap: proj=${proj_id} registered (project + init, GET config 200)"
 }
 
 claw_bootstrap_project_if_missing() {

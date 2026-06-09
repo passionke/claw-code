@@ -11,7 +11,7 @@ use serde_json::Value;
 pub struct TurnTimelineResponse {
     pub session_id: String,
     pub turn_id: String,
-    pub ds_id: i64,
+    pub proj_id: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_created_at_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]

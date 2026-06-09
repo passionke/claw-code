@@ -35,7 +35,7 @@ for f in (cfg.get("extraSessionFieldsJson") or []):
         extra[f.strip()] = ""
 
 def post(prompt, sid=None):
-    body = {"dsId": ds, "userPrompt": prompt, "extraSession": extra, "timeoutSeconds": 240}
+    body = {"projId": ds, "userPrompt": prompt, "extraSession": extra, "timeoutSeconds": 240}
     if sid:
         body["sessionId"] = sid
     req = urllib.request.Request(f"{base}/v1/solve_async", data=json.dumps(body).encode(), method="POST", headers={"Content-Type":"application/json"})

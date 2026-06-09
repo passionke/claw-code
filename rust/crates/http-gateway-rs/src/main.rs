@@ -32,7 +32,7 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use gateway_solve_turn::{
     reset_task_progress, run_gateway_biz_polish_llm, run_gateway_biz_polish_llm_async,
-    truncate_progress_history, ReportPolishDeepseek, BOSS_REPORT_SKILL_DS_ID,
+    truncate_progress_history, ReportPolishDeepseek, BOSS_REPORT_SKILL_PROJ_ID,
 };
 use http_gateway_rs::biz_advice_report::{
     biz_report_sse_event_stream, build_biz_advice_polish_prompt, db_snapshot_report_sse_response,
@@ -44,8 +44,8 @@ use http_gateway_rs::{
     claw_tap_cluster_state, client_origin, gateway_claw_tap_settings, gateway_global_settings,
     gateway_llm_config_sync, gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve,
     project_config_apply, project_config_version, project_entity_revision, project_extra_session,
-    project_git_sync, project_tools, session_db, session_merge, turn_id, turn_timeline_api,
-    turn_tools_api,
+    project_git_sync, project_id, project_tools, session_db, session_merge, turn_id,
+    turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
@@ -112,8 +112,8 @@ struct PreparedGatewaySession {
 pub(crate) struct AppState {
     tasks: Arc<Mutex<HashMap<String, TaskInner>>>,
     injected_mcp: Arc<Mutex<HashMap<i64, HashMap<String, Value>>>>,
-    ds_locks: Arc<Mutex<HashMap<i64, Arc<Mutex<()>>>>>,
-    /// Serialize solve per `(ds_id, session_id)` for transcript + workspace safety.
+    proj_locks: Arc<Mutex<HashMap<i64, Arc<Mutex<()>>>>>,
+    /// Serialize solve per `(proj_id, session_id)` for transcript + workspace safety.
     session_solve_locks: Arc<Mutex<HashMap<(i64, String), Arc<Mutex<()>>>>>,
     session_db: Arc<session_db::GatewaySessionDb>,
     cfg: Arc<GatewayConfig>,
@@ -197,7 +197,7 @@ pub(crate) struct GatewayConfig {
     /// When set with an `https://` or credential-less `http://` `projects_git_url`, used for clone/pull/push (injected as `x-access-token` user; GitHub-compatible; GitLab may need userinfo URL).
     projects_git_token: Option<String>,
     /// When set, periodically `git pull` the mirror and refresh each `ds_*/home` when that ds lock is idle (multi-node). kejiqing
-    projects_git_ds_home_poll_interval_secs: Option<u64>,
+    projects_git_proj_home_poll_interval_secs: Option<u64>,
     /// Poll DB active LLM → upstream JSON file + in-memory runtime (0 = disabled). Author: kejiqing
     gateway_llm_config_poll_interval_secs: Option<u64>,
     /// When set (`REPORT_LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY`), `/v1/biz_advice_report` polish calls `DeepSeek` official API. kejiqing
@@ -208,8 +208,8 @@ pub(crate) struct GatewayConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SolveRequest {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
     #[serde(rename = "userPrompt")]
     user_prompt: String,
     /// When set, continue an existing gateway session for this `dsId` (must exist in session DB).
@@ -234,8 +234,8 @@ struct SolveResponse {
     /// Relative to `CLAW_WORK_ROOT` (matches DB `gateway_sessions.session_home`). kejiqing
     #[serde(rename = "sessionHomeRel")]
     session_home_rel: String,
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
     #[serde(rename = "workDir")]
     work_dir: String,
     #[serde(rename = "durationMs")]
@@ -273,8 +273,8 @@ struct SolveAsyncResponse {
 /// Session bootstrap (`POST /v1/start`): sync `SQLite` + workspace only (no solve). kejiqing
 #[derive(Debug, Serialize, Deserialize)]
 struct StartRequest {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
     /// When set, continue an existing gateway session for this `dsId` (must exist in session DB).
     #[serde(default, rename = "sessionId")]
     session_id: Option<String>,
@@ -292,15 +292,21 @@ struct SolveStartResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct InitRequest {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
 }
 
-/// `POST /v1/projects` — create `ds_<id>` workspace (+ optional projects-git push). Author: kejiqing
+/// `POST /v1/projects` — create `proj_<id>` workspace (+ optional projects-git push). Author: kejiqing
 #[derive(Debug, Deserialize)]
 struct CreateProjectRequest {
-    #[serde(rename = "dsId")]
-    ds_id: Option<i64>,
+    #[serde(
+        rename = "projId",
+        alias = "proj_id",
+        alias = "dsId",
+        alias = "ds_id",
+        default
+    )]
+    proj_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -317,8 +323,8 @@ fn default_true() -> bool {
 #[derive(Debug, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 struct ProjectListEntry {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
     #[serde(rename = "contentRev")]
     content_rev: String,
     #[serde(rename = "draftOpen")]
@@ -345,7 +351,7 @@ struct ProjectListEntry {
     applied_rev: Option<String>,
     #[serde(rename = "dbSyncedToDisk")]
     db_synced_to_disk: bool,
-    /// `false` when `ds_*` exists on disk but has no `project_config` row yet. Author: kejiqing
+    /// `false` when `proj_*` exists on disk but has no `project_config` row yet. Author: kejiqing
     #[serde(rename = "projectConfigRegistered")]
     project_config_registered: bool,
     /// Per-project one-way git (no PAT in list). Author: kejiqing
@@ -362,8 +368,8 @@ struct ProjectListResponse {
 
 #[derive(Debug, Serialize)]
 struct DeleteProjectResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     deleted: bool,
     #[serde(rename = "purgeSessions")]
     purge_sessions: bool,
@@ -390,14 +396,14 @@ struct UpsertProjectSkillRequest {
 
 #[derive(Debug, Serialize)]
 struct InitResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     #[serde(rename = "workDir")]
     work_dir: String,
     initialized: bool,
 }
 
-/// Body for `PUT /v1/project/config/{ds_id}` — writes the open draft only. Author: kejiqing
+/// Body for `PUT /v1/project/config/{proj_id}` — writes the open draft only. Author: kejiqing
 #[derive(Debug, Deserialize)]
 struct UpsertProjectConfigRequest {
     #[serde(rename = "contentRev", default)]
@@ -434,7 +440,7 @@ struct UpsertProjectConfigRequest {
     worker_isolation_json: Option<Value>,
 }
 
-/// Body for `POST /v1/project/config/{ds_id}/versions/commit` — save draft as immutable formal revision (does not change effective). Author: kejiqing
+/// Body for `POST /v1/project/config/{proj_id}/versions/commit` — save draft as immutable formal revision (does not change effective). Author: kejiqing
 #[derive(Debug, Deserialize)]
 struct CommitProjectConfigDraftRequest {
     /// Optional label; version id is auto-generated (`YYYYMMDDHHmmss` local). Author: kejiqing
@@ -449,8 +455,8 @@ struct ProjectToolsCatalogResponse {
 
 #[derive(Debug, Serialize)]
 struct ProjectConfigResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     #[serde(rename = "contentRev")]
     content_rev: String,
     #[serde(rename = "stableContentRev", skip_serializing_if = "Option::is_none")]
@@ -487,8 +493,8 @@ struct ProjectConfigResponse {
 
 #[derive(Debug, Serialize)]
 struct ProjectConfigVersionsResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     /// Effective formal revision id (one of non-draft rows in `versions`).
     #[serde(rename = "activeContentRev")]
     active_content_rev: String,
@@ -530,8 +536,8 @@ struct CompareProjectConfigQuery {
 
 #[derive(Debug, Serialize)]
 struct ActivateProjectConfigVersionResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     #[serde(rename = "activeContentRev")]
     active_content_rev: String,
     activated: bool,
@@ -541,8 +547,8 @@ struct ActivateProjectConfigVersionResponse {
 
 #[derive(Debug, Serialize)]
 struct ProjectGitPushResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     outcome: GitPushOutcome,
     #[serde(rename = "gitSyncJson")]
     git_sync_json: Value,
@@ -550,8 +556,8 @@ struct ProjectGitPushResponse {
 
 #[derive(Debug, Serialize)]
 struct ProjectClaudeResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     #[serde(rename = "workDir")]
     work_dir: String,
     path: String,
@@ -570,8 +576,8 @@ struct GitSyncResponse {
 
 #[derive(Debug, Serialize)]
 struct ProjectSkillResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     #[serde(rename = "skillName")]
     skill_name: String,
     #[serde(rename = "skillPath")]
@@ -586,8 +592,8 @@ struct ProjectSkillResponse {
 
 #[derive(Debug, Serialize)]
 struct EffectivePromptResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     #[serde(rename = "workDir")]
     work_dir: String,
     sections: Vec<String>,
@@ -597,7 +603,7 @@ struct EffectivePromptResponse {
     prompt_source: String,
 }
 
-/// Per-datasource skill files under `<work_root>/ds_<id>/home/skills/<name>/SKILL.md` (same tree as `POST /v1/project/skills`). kejiqing
+/// Per-datasource skill files under `<work_root>/proj_<id>/home/skills/<name>/SKILL.md` (same tree as `POST /v1/project/skills`). kejiqing
 #[derive(Debug, Serialize)]
 struct DsSkillEntry {
     skill_name: String,
@@ -606,13 +612,13 @@ struct DsSkillEntry {
 
 #[derive(Debug, Serialize)]
 struct DsSkillsListResponse {
-    ds_id: i64,
+    proj_id: i64,
     skills: Vec<DsSkillEntry>,
 }
 
 #[derive(Debug, Serialize)]
 struct DsSkillGetResponse {
-    ds_id: i64,
+    proj_id: i64,
     skill_name: String,
     skill_content: String,
 }
@@ -622,7 +628,7 @@ struct TaskInner {
     record: TaskRecord,
     /// Present while `queued` / `running`; cleared when the worker finishes or after cancel.
     cancel: Option<AbortHandle>,
-    ds_id: i64,
+    proj_id: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -634,8 +640,8 @@ struct TaskRecord {
     // Backward-compat field; keep in sync with sessionId.
     #[serde(rename = "requestId")]
     request_id: String,
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
     status: String,
     #[serde(rename = "createdAtMs")]
     created_at_ms: i64,
@@ -678,8 +684,8 @@ struct TaskRecord {
 
 #[derive(Debug, Deserialize)]
 struct AgentFeedbackPostRequest {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
     #[serde(rename = "sessionId")]
     session_id: String,
     #[serde(rename = "turnId")]
@@ -691,15 +697,13 @@ struct AgentFeedbackPostRequest {
 struct AgentFeedbackGetQuery {
     #[serde(rename = "sessionId")]
     session_id: String,
-    #[serde(rename = "dsId")]
-    ds_id: Option<i64>,
-    #[serde(rename = "ds_id")]
-    ds_id_alt: Option<i64>,
+    #[serde(flatten)]
+    project_id_query: project_id::ProjectIdQuery,
 }
 
 impl AgentFeedbackGetQuery {
-    fn resolved_ds_id(&self) -> Option<i64> {
-        self.ds_id.or(self.ds_id_alt)
+    fn resolved_proj_id(&self) -> Option<i64> {
+        project_id::parse_project_id_query(&self.project_id_query)
     }
 }
 
@@ -707,8 +711,8 @@ impl AgentFeedbackGetQuery {
 struct AgentFeedbackPostResponse {
     #[serde(rename = "sessionId")]
     session_id: String,
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     #[serde(rename = "turnId")]
     turn_id: String,
     feedback: String,
@@ -720,8 +724,8 @@ struct AgentFeedbackPostResponse {
 struct AgentFeedbackGetResponse {
     #[serde(rename = "sessionId")]
     session_id: String,
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     items: std::collections::BTreeMap<String, String>,
 }
 
@@ -745,8 +749,8 @@ struct BizAdviceReportQuery {
     session_id: String,
     #[serde(rename = "turnId")]
     turn_id: String,
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
     /// `true` 时走与 `biz_advice_report_bak` 相同的 LLM 润色 SSE；默认 `false` 返回 JSON。
     #[serde(default)]
     stream: bool,
@@ -758,8 +762,8 @@ struct BizAdviceReportQuery {
 struct DevBizReportSeedRequest {
     #[serde(rename = "taskId")]
     task_id: Option<String>,
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
     #[serde(rename = "outputText", default)]
     output_text: String,
     #[serde(rename = "outputJson")]
@@ -773,7 +777,7 @@ struct BizAdviceReportResponse {
     #[serde(rename = "sourceRequestId")]
     source_request_id: String,
     #[serde(rename = "sourceDsId")]
-    source_ds_id: i64,
+    source_proj_id: i64,
     #[serde(rename = "sourceStatus")]
     source_status: String,
     #[serde(rename = "reportText")]
@@ -791,8 +795,8 @@ struct DeleteQuery {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct InjectMcpRequest {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
     #[serde(rename = "mcpServers")]
     mcp_servers: HashMap<String, Value>,
     replace: Option<bool>,
@@ -800,8 +804,14 @@ struct InjectMcpRequest {
 
 #[derive(Debug, Deserialize)]
 struct TestMcpRequest {
-    #[serde(rename = "dsId")]
-    ds_id: Option<i64>,
+    #[serde(
+        rename = "projId",
+        alias = "proj_id",
+        alias = "dsId",
+        alias = "ds_id",
+        default
+    )]
+    proj_id: Option<i64>,
     #[serde(rename = "serverName")]
     server_name: String,
     config: Value,
@@ -820,8 +830,8 @@ struct McpResponse {
     // Backward-compat field; keep in sync with sessionId.
     #[serde(rename = "requestId")]
     request_id: String,
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     #[serde(rename = "injectedServerNames")]
     injected_server_names: Vec<String>,
     loaded: bool,
@@ -913,10 +923,14 @@ async fn inject_http_request_id(mut req: Request, next: Next) -> Response {
     res
 }
 
-async fn get_session_solve_lock(state: &AppState, ds_id: i64, session_id: &str) -> Arc<Mutex<()>> {
+async fn get_session_solve_lock(
+    state: &AppState,
+    proj_id: i64,
+    session_id: &str,
+) -> Arc<Mutex<()>> {
     let mut locks = state.session_solve_locks.lock().await;
     locks
-        .entry((ds_id, session_id.to_string()))
+        .entry((proj_id, session_id.to_string()))
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
 }
@@ -941,7 +955,7 @@ fn build_turn_entry_params_json(
     client_origin: Option<&str>,
 ) -> Value {
     json!({
-        "dsId": req.ds_id,
+        "projId": req.proj_id,
         "userPrompt": req.user_prompt,
         "sessionId": session_id,
         "turnId": turn_id,
@@ -957,10 +971,10 @@ async fn apply_turn_pool_fields_from_db(
     db: &session_db::GatewaySessionDb,
     turn_id: &str,
     session_id: &str,
-    ds_id: i64,
+    proj_id: i64,
     record: &mut TaskRecord,
 ) {
-    if let Ok(Some(pid)) = db.get_turn_pool_id(turn_id, session_id, ds_id).await {
+    if let Ok(Some(pid)) = db.get_turn_pool_id(turn_id, session_id, proj_id).await {
         let t = pid.trim();
         if !t.is_empty() {
             record.pool_id = Some(t.to_string());
@@ -988,7 +1002,7 @@ async fn register_solve_turn(
     db.insert_turn(
         turn_id,
         session_id,
-        req.ds_id,
+        req.proj_id,
         "queued",
         now_ms(),
         user_prompt,
@@ -1390,7 +1404,7 @@ async fn main() {
         projects_git_branch,
         projects_git_author,
         projects_git_token,
-        projects_git_ds_home_poll_interval_secs: std::env::var(
+        projects_git_proj_home_poll_interval_secs: std::env::var(
             "CLAW_PROJECT_CONFIG_POLL_INTERVAL_SECS",
         )
         .or_else(|_| std::env::var("CLAW_PROJECTS_GIT_DS_HOME_POLL_INTERVAL_SECS"))
@@ -1457,7 +1471,7 @@ async fn main() {
     let state = AppState {
         tasks: Arc::new(Mutex::new(HashMap::new())),
         injected_mcp: Arc::new(Mutex::new(HashMap::new())),
-        ds_locks: Arc::new(Mutex::new(HashMap::new())),
+        proj_locks: Arc::new(Mutex::new(HashMap::new())),
         session_solve_locks: Arc::new(Mutex::new(HashMap::new())),
         session_db,
         cfg: Arc::new(cfg),
@@ -1504,7 +1518,7 @@ async fn main() {
         );
     }
 
-    if let Some(secs) = state.cfg.projects_git_ds_home_poll_interval_secs {
+    if let Some(secs) = state.cfg.projects_git_proj_home_poll_interval_secs {
         let poller_state = state.clone();
         tokio::spawn(async move { project_config_poll_loop(poller_state, secs).await });
         info!(
@@ -1524,9 +1538,12 @@ async fn main() {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/v1/projects", get(list_projects).post(create_project))
-        .route("/v1/projects/{ds_id}/sessions", get(list_project_sessions))
-        .route("/v1/projects/{ds_id}", delete(delete_project))
-        .route("/v1/projects/{ds_id}/git/push", post(push_project_git))
+        .route(
+            "/v1/projects/{proj_id}/sessions",
+            get(list_project_sessions),
+        )
+        .route("/v1/projects/{proj_id}", delete(delete_project))
+        .route("/v1/projects/{proj_id}/git/push", post(push_project_git))
         .route("/v1/init", post(init_workspace))
         .route("/v1/solve", post(solve))
         .route("/v1/start", post(solve_start))
@@ -1562,48 +1579,48 @@ async fn main() {
             post(dev_seed_biz_report_task),
         )
         .route(
-            "/v1/project/claude/{ds_id}",
+            "/v1/project/claude/{proj_id}",
             get(get_project_claude_md).post(update_project_claude_md),
         )
-        .route("/v1/project/skills/{ds_id}", post(upsert_project_skill))
+        .route("/v1/project/skills/{proj_id}", post(upsert_project_skill))
         .route(
-            "/v1/project/prompt/{ds_id}/effective",
+            "/v1/project/prompt/{proj_id}/effective",
             get(get_effective_prompt).post(post_effective_prompt),
         )
         .route(
-            "/v1/project/config/{ds_id}",
+            "/v1/project/config/{proj_id}",
             get(get_project_config).put(put_project_config),
         )
         .route(
-            "/v1/project/config/{ds_id}/versions",
+            "/v1/project/config/{proj_id}/versions",
             get(list_project_config_versions),
         )
         .route(
-            "/v1/project/config/{ds_id}/versions/compare",
+            "/v1/project/config/{proj_id}/versions/compare",
             get(compare_project_config_versions),
         )
         .route(
-            "/v1/project/config/{ds_id}/entities/{domain}/{entity_key}/versions/compare",
+            "/v1/project/config/{proj_id}/entities/{domain}/{entity_key}/versions/compare",
             get(compare_project_entity_versions),
         )
         .route(
-            "/v1/project/config/{ds_id}/entities/{domain}/{entity_key}/versions",
+            "/v1/project/config/{proj_id}/entities/{domain}/{entity_key}/versions",
             get(list_project_entity_versions),
         )
         .route(
-            "/v1/project/config/{ds_id}/entities/{domain}/{entity_key}/restore",
+            "/v1/project/config/{proj_id}/entities/{domain}/{entity_key}/restore",
             post(restore_project_entity_revision),
         )
         .route(
-            "/v1/project/config/{ds_id}/versions/commit",
+            "/v1/project/config/{proj_id}/versions/commit",
             post(commit_project_config_draft),
         )
         .route(
-            "/v1/project/config/{ds_id}/versions/{content_rev}",
+            "/v1/project/config/{proj_id}/versions/{content_rev}",
             delete(delete_project_config_version).patch(patch_project_config_version_note),
         )
         .route(
-            "/v1/project/config/{ds_id}/versions/{content_rev}/activate",
+            "/v1/project/config/{proj_id}/versions/{content_rev}/activate",
             post(activate_project_config_version),
         )
         .route("/v1/project/tools/catalog", get(get_project_tools_catalog))
@@ -1655,11 +1672,11 @@ async fn main() {
             "/v1/gateway/global-settings/claw-tap/probe",
             post(probe_gateway_claw_tap_handler),
         )
-        .route("/v1/skills/{ds_id}/{skill_name}", get(get_ds_skill))
-        .route("/v1/skills/{ds_id}", get(list_ds_skills))
+        .route("/v1/skills/{proj_id}/{skill_name}", get(get_proj_skill))
+        .route("/v1/skills/{proj_id}", get(list_proj_skills))
         .route("/v1/mcp/inject", post(inject_mcp))
-        .route("/v1/mcp/injected/{ds_id}", get(get_injected_mcp))
-        .route("/v1/mcp/injected/{ds_id}", delete(delete_injected_mcp))
+        .route("/v1/mcp/injected/{proj_id}", get(get_injected_mcp))
+        .route("/v1/mcp/injected/{proj_id}", delete(delete_injected_mcp))
         .route("/v1/mcp/test", post(test_mcp))
         .route(
             "/v1/agent/feedback",
@@ -1744,7 +1761,7 @@ async fn docs() -> Html<String> {
         ("GET", "/dos", "Alias of /docs"),
         ("GET", "/openapi.json", "OpenAPI-style JSON"),
         ("GET", "/healthz", "Health check"),
-        ("POST", "/v1/init", "Initialize workspace for dsId"),
+        ("POST", "/v1/init", "Initialize workspace for projId"),
         ("POST", "/v1/solve", "Run sync solve"),
         (
             "POST",
@@ -1761,11 +1778,11 @@ async fn docs() -> Html<String> {
         (
             "POST",
             "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
-            "Cancel a specific turn by sessionId + turnId + ds_id",
+            "Cancel a specific turn by sessionId + turnId + proj_id",
         ),
         (
             "GET",
-            "/v1/biz_advice_report?sessionId=…&turnId=…&dsId=…",
+            "/v1/biz_advice_report?sessionId=…&turnId=…&projId=…",
             "Report: live stdout SSE while running; LLM polish after succeeded (biz_advice_report_bak)",
         ),
         (
@@ -1775,38 +1792,38 @@ async fn docs() -> Html<String> {
         ),
         (
             "GET",
-            "/v1/project/claude/{ds_id}",
+            "/v1/project/claude/{proj_id}",
             "Get project CLAUDE.md for ds",
         ),
         (
             "POST",
-            "/v1/project/claude/{ds_id}",
+            "/v1/project/claude/{proj_id}",
             "Update project CLAUDE.md for ds",
         ),
         (
             "POST",
-            "/v1/project/skills/{ds_id}",
+            "/v1/project/skills/{proj_id}",
             "Create or update project skill for ds",
         ),
         (
             "GET",
-            "/v1/project/prompt/{ds_id}/effective",
+            "/v1/project/prompt/{proj_id}/effective",
             "Get effective system prompt for ds",
         ),
         (
             "POST",
-            "/v1/project/prompt/{ds_id}/effective",
+            "/v1/project/prompt/{proj_id}/effective",
             "Reload and get effective system prompt for ds",
         ),
         (
             "GET",
-            "/v1/project/config/{ds_id}",
-            "Get project_config row for ds (PostgreSQL)",
+            "/v1/project/config/{proj_id}",
+            "Get project_config row for proj (PostgreSQL)",
         ),
         (
             "PUT",
-            "/v1/project/config/{ds_id}",
-            "Upsert project_config for ds (rules / MCP / skills sources / tools / CLAUDE.md)",
+            "/v1/project/config/{proj_id}",
+            "Upsert project_config for proj (rules / MCP / skills sources / tools / CLAUDE.md)",
         ),
         (
             "GET",
@@ -1815,19 +1832,19 @@ async fn docs() -> Html<String> {
         ),
         (
             "GET",
-            "/v1/skills/{ds_id}",
+            "/v1/skills/{proj_id}",
             "List ds workspace skills (home/skills/*/SKILL.md)",
         ),
         (
             "GET",
-            "/v1/skills/{ds_id}/{skill_name}",
+            "/v1/skills/{proj_id}/{skill_name}",
             "Get one skill file content for ds",
         ),
         ("POST", "/v1/mcp/inject", "Inject MCP servers"),
-        ("GET", "/v1/mcp/injected/{ds_id}", "Get MCP servers for ds"),
+        ("GET", "/v1/mcp/injected/{proj_id}", "Get MCP servers for ds"),
         (
             "DELETE",
-            "/v1/mcp/injected/{ds_id}",
+            "/v1/mcp/injected/{proj_id}",
             "Delete MCP servers for ds",
         ),
     ];
@@ -1859,9 +1876,9 @@ async fn openapi() -> Json<Value> {
             "schemas": {
                 "SolveRequest": {
                     "type": "object",
-                    "required": ["dsId", "userPrompt"],
+                    "required": ["projId", "userPrompt"],
                     "properties": {
-                        "dsId": { "type": "integer", "format": "int64", "minimum": 1, "description": "Datasource ID" },
+                        "projId": { "type": "integer", "format": "int64", "minimum": 1, "description": "Datasource ID" },
                         "userPrompt": { "type": "string", "minLength": 1, "description": "User prompt text" },
                         "sessionId": { "type": "string", "nullable": true, "description": "Optional: continue an existing gateway session for this dsId (must exist in gateway session DB). When set, conflicts with an explicit claw-session-id / x-request-id header yield 400." },
                         "model": { "type": "string", "nullable": true, "description": "Optional model override" },
@@ -1876,16 +1893,16 @@ async fn openapi() -> Json<Value> {
                 },
                 "InitRequest": {
                     "type": "object",
-                    "required": ["dsId"],
+                    "required": ["projId"],
                     "properties": {
-                        "dsId": { "type": "integer", "format": "int64", "minimum": 1, "description": "Datasource ID" }
+                        "projId": { "type": "integer", "format": "int64", "minimum": 1, "description": "Datasource ID" }
                     }
                 },
                 "InitResponse": {
                     "type": "object",
-                    "required": ["dsId", "workDir", "initialized"],
+                    "required": ["projId", "workDir", "initialized"],
                     "properties": {
-                        "dsId": { "type": "integer", "format": "int64" },
+                        "projId": { "type": "integer", "format": "int64" },
                         "workDir": { "type": "string" },
                         "initialized": { "type": "boolean" }
                     }
@@ -1899,9 +1916,9 @@ async fn openapi() -> Json<Value> {
                 },
                 "ProjectClaudeResponse": {
                     "type": "object",
-                    "required": ["dsId", "workDir", "path", "exists", "content"],
+                    "required": ["projId", "workDir", "path", "exists", "content"],
                     "properties": {
-                        "dsId": { "type": "integer", "format": "int64" },
+                        "projId": { "type": "integer", "format": "int64" },
                         "workDir": { "type": "string" },
                         "path": { "type": "string" },
                         "exists": { "type": "boolean" },
@@ -1928,9 +1945,9 @@ async fn openapi() -> Json<Value> {
                 },
                 "ProjectSkillResponse": {
                     "type": "object",
-                    "required": ["dsId", "skillName", "skillPath", "created", "updated", "bytesWritten", "workDir", "gitSync"],
+                    "required": ["projId", "skillName", "skillPath", "created", "updated", "bytesWritten", "workDir", "gitSync"],
                     "properties": {
-                        "dsId": { "type": "integer", "format": "int64" },
+                        "projId": { "type": "integer", "format": "int64" },
                         "skillName": { "type": "string" },
                         "skillPath": { "type": "string" },
                         "created": { "type": "boolean" },
@@ -1942,9 +1959,9 @@ async fn openapi() -> Json<Value> {
                 },
                 "EffectivePromptResponse": {
                     "type": "object",
-                    "required": ["dsId", "workDir", "sections", "message"],
+                    "required": ["projId", "workDir", "sections", "message"],
                     "properties": {
-                        "dsId": { "type": "integer", "format": "int64" },
+                        "projId": { "type": "integer", "format": "int64" },
                         "workDir": { "type": "string" },
                         "sections": { "type": "array", "items": { "type": "string" } },
                         "message": { "type": "string" }
@@ -1960,29 +1977,29 @@ async fn openapi() -> Json<Value> {
                 },
                 "DsSkillsListResponse": {
                     "type": "object",
-                    "required": ["ds_id", "skills"],
+                    "required": ["proj_id", "skills"],
                     "properties": {
-                        "ds_id": { "type": "integer", "format": "int64" },
+                        "proj_id": { "type": "integer", "format": "int64" },
                         "skills": { "type": "array", "items": { "$ref": "#/components/schemas/DsSkillEntry" } }
                     }
                 },
                 "DsSkillGetResponse": {
                     "type": "object",
-                    "required": ["ds_id", "skill_name", "skill_content"],
+                    "required": ["proj_id", "skill_name", "skill_content"],
                     "properties": {
-                        "ds_id": { "type": "integer", "format": "int64" },
+                        "proj_id": { "type": "integer", "format": "int64" },
                         "skill_name": { "type": "string" },
                         "skill_content": { "type": "string" }
                     }
                 },
                 "SolveResponse": {
                     "type": "object",
-                    "required": ["sessionId", "requestId", "sessionHomeRel", "dsId", "workDir", "durationMs", "clawExitCode", "outputText"],
+                    "required": ["sessionId", "requestId", "sessionHomeRel", "projId", "workDir", "durationMs", "clawExitCode", "outputText"],
                     "properties": {
                         "sessionId": { "type": "string" },
                         "requestId": { "type": "string" },
                         "sessionHomeRel": { "type": "string", "description": "Under CLAW_WORK_ROOT; same as gateway_sessions.session_home. New sessions use ds_{id}/sessions/<segment> where <segment> equals sessionId when it is a safe single path component; otherwise a deterministic 32-hex segment." },
-                        "dsId": { "type": "integer", "format": "int64" },
+                        "projId": { "type": "integer", "format": "int64" },
                         "workDir": { "type": "string" },
                         "durationMs": { "type": "integer", "format": "int64" },
                         "clawExitCode": { "type": "integer", "format": "int32" },
@@ -2003,9 +2020,9 @@ async fn openapi() -> Json<Value> {
                 },
                 "StartRequest": {
                     "type": "object",
-                    "required": ["dsId"],
+                    "required": ["projId"],
                     "properties": {
-                        "dsId": { "type": "integer", "format": "int64", "minimum": 1, "description": "Datasource ID" },
+                        "projId": { "type": "integer", "format": "int64", "minimum": 1, "description": "Datasource ID" },
                         "sessionId": { "type": "string", "nullable": true, "description": "Optional: continue an existing gateway session for this dsId (must exist in gateway session DB)." },
                         "extraSession": { "type": "object", "nullable": true, "description": "Optional session-level context stored with the workspace (max 8KB serialized)" }
                     }
@@ -2020,20 +2037,20 @@ async fn openapi() -> Json<Value> {
                 },
                 "InjectMcpRequest": {
                     "type": "object",
-                    "required": ["dsId", "mcpServers"],
+                    "required": ["projId", "mcpServers"],
                     "properties": {
-                        "dsId": { "type": "integer", "format": "int64", "minimum": 1 },
+                        "projId": { "type": "integer", "format": "int64", "minimum": 1 },
                         "mcpServers": { "type": "object", "description": "MCP server config map" },
                         "replace": { "type": "boolean", "nullable": true }
                     }
                 },
                 "McpResponse": {
                     "type": "object",
-                    "required": ["sessionId", "requestId", "dsId", "injectedServerNames", "loaded", "missingServers", "configuredServers", "status", "mcpReport"],
+                    "required": ["sessionId", "requestId", "projId", "injectedServerNames", "loaded", "missingServers", "configuredServers", "status", "mcpReport"],
                     "properties": {
                         "sessionId": { "type": "string" },
                         "requestId": { "type": "string" },
-                        "dsId": { "type": "integer", "format": "int64" },
+                        "projId": { "type": "integer", "format": "int64" },
                         "injectedServerNames": { "type": "array", "items": { "type": "string" } },
                         "loaded": { "type": "boolean" },
                         "missingServers": { "type": "array", "items": { "type": "string" } },
@@ -2044,12 +2061,12 @@ async fn openapi() -> Json<Value> {
                 },
                 "TaskRecord": {
                     "type": "object",
-                    "required": ["taskId", "sessionId", "requestId", "dsId", "status", "createdAtMs"],
+                    "required": ["taskId", "sessionId", "requestId", "projId", "status", "createdAtMs"],
                     "properties": {
                         "taskId": { "type": "string" },
                         "sessionId": { "type": "string" },
                         "requestId": { "type": "string" },
-                        "dsId": { "type": "integer", "format": "int64" },
+                        "projId": { "type": "integer", "format": "int64" },
                         "status": { "type": "string" },
                         "createdAtMs": { "type": "integer", "format": "int64" },
                         "startedAtMs": { "type": "integer", "format": "int64", "nullable": true },
@@ -2105,7 +2122,7 @@ async fn openapi() -> Json<Value> {
             },
             "/v1/init": {
                 "post": {
-                    "summary": "Initialize workspace for dsId",
+                    "summary": "Initialize workspace for projId",
                     "requestBody": {
                         "required": true,
                         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InitRequest" } } }
@@ -2185,7 +2202,7 @@ async fn openapi() -> Json<Value> {
                     "parameters": [
                         { "name": "sessionId", "in": "query", "required": true, "schema": { "type": "string" } },
                         { "name": "turnId", "in": "query", "required": true, "schema": { "type": "string" } },
-                        { "name": "dsId", "in": "query", "required": true, "schema": { "type": "integer", "format": "int64" } },
+                        { "name": "projId", "in": "query", "required": true, "schema": { "type": "integer", "format": "int64" } },
                         { "name": "stream", "in": "query", "required": false, "schema": { "type": "boolean", "default": true }, "description": "When true (default): live stdout SSE while running/queued; else biz.report.* LLM polish from solve output" }
                     ],
                     "responses": {
@@ -2205,20 +2222,20 @@ async fn openapi() -> Json<Value> {
                     }
                 }
             },
-            "/v1/project/claude/{ds_id}": {
+            "/v1/project/claude/{proj_id}": {
                 "get": {
-                    "summary": "Get project CLAUDE.md for ds (from ds_home/home)",
+                    "summary": "Get project CLAUDE.md for proj (from proj_home/home)",
                     "parameters": [
-                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                        { "name": "proj_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
                     ],
                     "responses": {
                         "200": { "description": "Current CLAUDE.md", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectClaudeResponse" } } } }
                     }
                 },
                 "post": {
-                    "summary": "Update project CLAUDE.md for ds and sync to git",
+                    "summary": "Update project CLAUDE.md for proj and sync to git",
                     "parameters": [
-                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                        { "name": "proj_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
                     ],
                     "requestBody": {
                         "required": true,
@@ -2229,11 +2246,11 @@ async fn openapi() -> Json<Value> {
                     }
                 }
             },
-            "/v1/project/skills/{ds_id}": {
+            "/v1/project/skills/{proj_id}": {
                 "post": {
-                    "summary": "Create or update a skill for ds and sync to git",
+                    "summary": "Create or update a skill for proj and sync to git",
                     "parameters": [
-                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                        { "name": "proj_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
                     ],
                     "requestBody": {
                         "required": true,
@@ -2244,11 +2261,11 @@ async fn openapi() -> Json<Value> {
                     }
                 }
             },
-            "/v1/project/prompt/{ds_id}/effective": {
+            "/v1/project/prompt/{proj_id}/effective": {
                 "get": {
                     "summary": "Get effective system prompt for ds",
                     "parameters": [
-                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                        { "name": "proj_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
                     ],
                     "responses": {
                         "200": { "description": "Effective system prompt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EffectivePromptResponse" } } } }
@@ -2257,29 +2274,29 @@ async fn openapi() -> Json<Value> {
                 "post": {
                     "summary": "Reload and get effective system prompt for ds",
                     "parameters": [
-                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                        { "name": "proj_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
                     ],
                     "responses": {
                         "200": { "description": "Effective system prompt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EffectivePromptResponse" } } } }
                     }
                 }
             },
-            "/v1/skills/{ds_id}": {
+            "/v1/skills/{proj_id}": {
                 "get": {
                     "summary": "List skills under ds workspace (home/skills/*/SKILL.md)",
                     "parameters": [
-                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+                        { "name": "proj_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
                     ],
                     "responses": {
                         "200": { "description": "Skills list", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DsSkillsListResponse" } } } }
                     }
                 }
             },
-            "/v1/skills/{ds_id}/{skill_name}": {
+            "/v1/skills/{proj_id}/{skill_name}": {
                 "get": {
                     "summary": "Get one skill by name for ds",
                     "parameters": [
-                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } },
+                        { "name": "proj_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } },
                         { "name": "skill_name", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
                     "responses": {
@@ -2300,11 +2317,11 @@ async fn openapi() -> Json<Value> {
                     }
                 }
             },
-            "/v1/mcp/injected/{ds_id}": {
+            "/v1/mcp/injected/{proj_id}": {
                 "get": {
                     "summary": "Get MCP servers for ds",
                     "parameters": [
-                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } },
+                        { "name": "proj_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } },
                         { "name": "probe_timeout_seconds", "in": "query", "required": false, "schema": { "type": "integer", "format": "int64" } }
                     ],
                     "responses": {
@@ -2314,7 +2331,7 @@ async fn openapi() -> Json<Value> {
                 "delete": {
                     "summary": "Delete MCP servers for ds",
                     "parameters": [
-                        { "name": "ds_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } },
+                        { "name": "proj_id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } },
                         { "name": "server_names", "in": "query", "required": false, "schema": { "type": "string" } },
                         { "name": "probe_timeout_seconds", "in": "query", "required": false, "schema": { "type": "integer", "format": "int64" } }
                     ],
@@ -2359,8 +2376,8 @@ async fn sync_projects_git_remote(cfg: &GatewayConfig, repo_dir: &Path) -> Resul
         .map(|_| ())
 }
 
-fn ds_work_dir(work_root: &Path, ds_id: i64) -> PathBuf {
-    work_root.join(format!("ds_{ds_id}"))
+fn proj_work_dir(work_root: &Path, proj_id: i64) -> PathBuf {
+    work_root.join(format!("proj_{proj_id}"))
 }
 
 fn projects_repo_dir(work_root: &Path) -> PathBuf {
@@ -2387,7 +2404,7 @@ async fn claude_instructions_usable(path: &Path) -> bool {
 }
 
 /// Ready for solve: legacy / non-empty `claude_md` needs usable CLAUDE on disk; empty override needs apply rev match and no stale CLAUDE files. kejiqing
-async fn ds_project_tree_ready(
+async fn proj_tree_ready(
     work_dir: &Path,
     materialize_row: Option<&session_db::ProjectConfigRow>,
 ) -> bool {
@@ -2408,16 +2425,16 @@ async fn ds_project_tree_ready(
     applied.as_deref() == Some(row.content_rev.as_str()) && !disk_claude
 }
 
-fn ds_environment_not_prepared_error(ds_id: i64, has_project_config: bool) -> ApiError {
+fn proj_environment_not_prepared_error(proj_id: i64, has_project_config: bool) -> ApiError {
     let hint = if has_project_config {
         format!(
-            "ds {ds_id} environment not prepared: project_config exists but home/CLAUDE.md is missing or empty; \
-             set claudeMd in PUT /v1/project/config/{ds_id}, then POST /v1/init"
+            "ds {proj_id} environment not prepared: project_config exists but home/CLAUDE.md is missing or empty; \
+             set claudeMd in PUT /v1/project/config/{proj_id}, then POST /v1/init"
         )
     } else {
         format!(
-            "ds {ds_id} environment not prepared: no project_config row; \
-             POST /v1/projects or PUT /v1/project/config/{ds_id} with non-empty claudeMd, then POST /v1/init"
+            "ds {proj_id} environment not prepared: no project_config row; \
+             POST /v1/projects or PUT /v1/project/config/{proj_id} with non-empty claudeMd, then POST /v1/init"
         )
     };
     ApiError::new(StatusCode::PRECONDITION_FAILED, hint)
@@ -2427,10 +2444,10 @@ fn map_project_config_apply_err(e: &project_config_apply::ProjectConfigApplyErro
     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
-async fn write_ds_settings_json(state: &AppState, ds_id: i64) -> Result<(), ApiError> {
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+async fn write_proj_settings_json(state: &AppState, proj_id: i64) -> Result<(), ApiError> {
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    let settings = build_settings(state, ds_id).await;
+    let settings = build_settings(state, proj_id).await;
     let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2449,27 +2466,27 @@ async fn write_ds_settings_json(state: &AppState, ds_id: i64) -> Result<(), ApiE
 }
 
 /// Materialize `project_config` from `PostgreSQL` when present (`content_rev` or missing CLAUDE). Author: kejiqing
-async fn apply_project_config_for_ds(
+async fn apply_project_config_for_proj(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     force: bool,
 ) -> Result<(), ApiError> {
-    apply_project_config_for_ds_inner(state, ds_id, force, true).await
+    apply_project_config_for_proj_inner(state, proj_id, force, true).await
 }
 
-async fn apply_project_config_for_ds_inner(
+async fn apply_project_config_for_proj_inner(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     force: bool,
     auto_git_push: bool,
 ) -> Result<(), ApiError> {
-    let row = project_config_draft::row_for_materialize(&state.session_db, ds_id)
+    let row = project_config_draft::row_for_materialize(&state.session_db, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let Some(row) = row else {
         return Ok(());
     };
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -2478,7 +2495,7 @@ async fn apply_project_config_for_ds_inner(
                 format!("create ds work dir failed: {e}"),
             )
         })?;
-    let tree_ready = ds_project_tree_ready(&work_dir, Some(&row)).await;
+    let tree_ready = proj_tree_ready(&work_dir, Some(&row)).await;
     let force_apply = force || !tree_ready;
     let scaffold = gateway_global_settings::load_system_prompt_default(&state.session_db)
         .await
@@ -2486,15 +2503,15 @@ async fn apply_project_config_for_ds_inner(
     project_config_apply::apply_if_needed(&work_dir, &row, force_apply, &scaffold)
         .await
         .map_err(|e| map_project_config_apply_err(&e))?;
-    write_ds_settings_json(state, ds_id).await?;
+    write_proj_settings_json(state, proj_id).await?;
     if auto_git_push {
-        maybe_push_project_git(state, ds_id).await;
+        maybe_push_project_git(state, proj_id).await;
     }
     Ok(())
 }
 
-async fn maybe_push_project_git(state: &AppState, ds_id: i64) {
-    let Ok(row) = state.session_db.get_project_config(ds_id).await else {
+async fn maybe_push_project_git(state: &AppState, proj_id: i64) {
+    let Ok(row) = state.session_db.get_project_config(proj_id).await else {
         return;
     };
     let Some(row) = row else {
@@ -2503,10 +2520,10 @@ async fn maybe_push_project_git(state: &AppState, ds_id: i64) {
     if !parse_git_sync_json(&row.git_sync_json).enabled {
         return;
     }
-    if let Err(e) = try_push_project_git(state, ds_id).await {
+    if let Err(e) = try_push_project_git(state, proj_id).await {
         warn!(
             target: "claw_gateway_orchestration",
-            ds_id,
+            proj_id,
             error = %e.message,
             "per-project git push after apply failed (non-fatal)"
         );
@@ -2516,11 +2533,11 @@ async fn maybe_push_project_git(state: &AppState, ds_id: i64) {
 /// One-way push `home/` → per-project remote; updates `git_sync_json` lastPush* in DB. Author: kejiqing
 async fn try_push_project_git(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<GitPushOutcome, project_git_sync::ProjectGitSyncError> {
     let row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| project_git_sync::ProjectGitSyncError::new(format!("db: {e}")))?;
     let Some(row) = row else {
@@ -2541,7 +2558,7 @@ async fn try_push_project_git(
     if let Err(msg) = project_git_sync::validate_git_sync_resolved(&sync) {
         return Err(project_git_sync::ProjectGitSyncError::new(msg));
     }
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     let author = state.cfg.projects_git_author.trim();
     let author = if author.is_empty() {
         "claw-gateway <gateway@claw.local>"
@@ -2602,16 +2619,16 @@ async fn persist_git_sync_status(
         .await
 }
 
-async fn sync_ds_project_from_git_mirror(state: &AppState, ds_id: i64) -> Result<(), ApiError> {
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+async fn sync_proj_from_git_mirror(state: &AppState, proj_id: i64) -> Result<(), ApiError> {
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     let _mirror = state.projects_git_mirror_lock.lock().await;
     let repo_dir = projects_git_mirror_pull_impl(&state.cfg.work_root, state.cfg.as_ref()).await?;
-    sync_ds_home_from_repo(&repo_dir, &work_dir, ds_id).await
+    sync_proj_home_from_repo(&repo_dir, &work_dir, proj_id).await
 }
 
-/// Before pool acquire: local `ds_<id>` must already have non-empty CLAUDE (provision via `POST /v1/init` or poll). kejiqing
-async fn ensure_ds_project_ready(state: &AppState, ds_id: i64) -> Result<(), ApiError> {
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+/// Before pool acquire: local `proj_<id>` must already have non-empty CLAUDE (provision via `POST /v1/init` or poll). kejiqing
+async fn ensure_proj_ready(state: &AppState, proj_id: i64) -> Result<(), ApiError> {
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -2622,18 +2639,21 @@ async fn ensure_ds_project_ready(state: &AppState, ds_id: i64) -> Result<(), Api
         })?;
     let has_project_config = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .is_some();
-    apply_project_config_for_ds(state, ds_id, false).await?;
-    let materialize_row = project_config_draft::row_for_materialize(&state.session_db, ds_id)
+    apply_project_config_for_proj(state, proj_id, false).await?;
+    let materialize_row = project_config_draft::row_for_materialize(&state.session_db, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
-    if ds_project_tree_ready(&work_dir, materialize_row.as_ref()).await {
+    if proj_tree_ready(&work_dir, materialize_row.as_ref()).await {
         return Ok(());
     }
-    Err(ds_environment_not_prepared_error(ds_id, has_project_config))
+    Err(proj_environment_not_prepared_error(
+        proj_id,
+        has_project_config,
+    ))
 }
 
 fn normalize_rel_for_git(path: &Path) -> String {
@@ -2685,12 +2705,15 @@ fn entity_revision_err(e: project_entity_revision::EntityRevisionError) -> ApiEr
 
 async fn list_project_entity_versions(
     State(state): State<AppState>,
-    AxumPath((ds_id, domain, entity_key)): AxumPath<(i64, String, String)>,
+    AxumPath((proj_id, domain, entity_key)): AxumPath<(i64, String, String)>,
 ) -> Result<Json<project_entity_revision::EntityVersionsListResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
-    project_entity_revision::list_entity_versions(&state.session_db, ds_id, &domain, &entity_key)
+    project_entity_revision::list_entity_versions(&state.session_db, proj_id, &domain, &entity_key)
         .await
         .map(Json)
         .map_err(entity_revision_err)
@@ -2704,15 +2727,18 @@ struct EntityCompareQuery {
 
 async fn compare_project_entity_versions(
     State(state): State<AppState>,
-    AxumPath((ds_id, domain, entity_key)): AxumPath<(i64, String, String)>,
+    AxumPath((proj_id, domain, entity_key)): AxumPath<(i64, String, String)>,
     Query(q): Query<EntityCompareQuery>,
 ) -> Result<Json<project_entity_revision::EntityCompareResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     project_entity_revision::compare_entity_versions(
         &state.session_db,
-        ds_id,
+        proj_id,
         &domain,
         &entity_key,
         &q.from,
@@ -2725,15 +2751,18 @@ async fn compare_project_entity_versions(
 
 async fn restore_project_entity_revision(
     State(state): State<AppState>,
-    AxumPath((ds_id, domain, entity_key)): AxumPath<(i64, String, String)>,
+    AxumPath((proj_id, domain, entity_key)): AxumPath<(i64, String, String)>,
     Json(req): Json<project_entity_revision::RestoreEntityRevisionRequest>,
 ) -> Result<Json<project_entity_revision::RestoreEntityRevisionResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     project_entity_revision::restore_entity_revision_to_draft(
         &state.session_db,
-        ds_id,
+        proj_id,
         &domain,
         &entity_key,
         &req.entity_rev,
@@ -2747,9 +2776,9 @@ fn draft_err(e: project_config_draft::DraftError) -> ApiError {
     ApiError::new(e.status, e.message)
 }
 
-fn default_project_config_row(ds_id: i64) -> session_db::ProjectConfigRow {
+fn default_project_config_row(proj_id: i64) -> session_db::ProjectConfigRow {
     session_db::ProjectConfigRow {
-        ds_id,
+        proj_id,
         content_rev: String::new(),
         stable_content_rev: None,
         draft_open: false,
@@ -2770,13 +2799,13 @@ fn default_project_config_row(ds_id: i64) -> session_db::ProjectConfigRow {
 }
 
 fn revision_row_from_upsert<'a>(
-    ds_id: i64,
+    proj_id: i64,
     content_rev: &'a str,
     created_at_ms: i64,
     upsert: &session_db::ProjectConfigUpsert<'a>,
 ) -> session_db::ProjectConfigRevisionRow {
     session_db::ProjectConfigRevisionRow {
-        ds_id,
+        proj_id,
         content_rev: content_rev.to_string(),
         created_at_ms,
         note: None,
@@ -2834,7 +2863,7 @@ fn project_config_version_entry_from_draft(
 
 async fn load_revision_for_compare(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     content_rev: &str,
     active: &session_db::ProjectConfigRow,
 ) -> Result<session_db::ProjectConfigRevisionRow, ApiError> {
@@ -2842,7 +2871,7 @@ async fn load_revision_for_compare(
         if !active.draft_open {
             return Err(ApiError::new(
                 StatusCode::NOT_FOUND,
-                format!("no open draft for ds {ds_id}"),
+                format!("no open draft for proj {proj_id}"),
             ));
         }
         return Ok(project_config_draft::revision_row_from_config_row(
@@ -2851,7 +2880,7 @@ async fn load_revision_for_compare(
             None,
         ));
     }
-    project_config_draft::require_formal_revision(&state.session_db, ds_id, content_rev)
+    project_config_draft::require_formal_revision(&state.session_db, proj_id, content_rev)
         .await
         .map_err(draft_err)
 }
@@ -2860,7 +2889,7 @@ fn revision_row_from_active(
     row: &session_db::ProjectConfigRow,
 ) -> session_db::ProjectConfigRevisionRow {
     session_db::ProjectConfigRevisionRow {
-        ds_id: row.ds_id,
+        proj_id: row.proj_id,
         content_rev: row.content_rev.clone(),
         created_at_ms: row.updated_at_ms,
         note: None,
@@ -2899,7 +2928,7 @@ async fn archive_project_config_revision(
 
 async fn activate_project_config_revision_row(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     rev: session_db::ProjectConfigRevisionRow,
     sidecars: project_config_draft::ProjectConfigSidecars,
 ) -> Result<bool, ApiError> {
@@ -2907,7 +2936,7 @@ async fn activate_project_config_revision_row(
     state
         .session_db
         .upsert_project_config(session_db::ProjectConfigUpsert {
-            ds_id,
+            proj_id,
             content_rev: &rev.content_rev,
             stable_content_rev: Some(rev.content_rev.as_str()),
             draft_open: false,
@@ -2927,12 +2956,14 @@ async fn activate_project_config_revision_row(
         })
         .await
         .map_err(|e| session_db_err(&e))?;
-    let lock = get_ds_lock(state, ds_id).await;
+    let lock = get_proj_lock(state, proj_id).await;
     let _guard = lock.lock().await;
-    apply_project_config_for_ds_inner(state, ds_id, true, true).await?;
-    let applied =
-        project_config_apply::read_applied_content_rev(&ds_work_dir(&state.cfg.work_root, ds_id))
-            .await;
+    apply_project_config_for_proj_inner(state, proj_id, true, true).await?;
+    let applied = project_config_apply::read_applied_content_rev(&proj_work_dir(
+        &state.cfg.work_root,
+        proj_id,
+    ))
+    .await;
     Ok(applied.as_deref() == Some(rev.content_rev.as_str()))
 }
 
@@ -3005,14 +3036,14 @@ fn git_sync_token_set(
 
 async fn load_project_config_or_default(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<session_db::ProjectConfigRow, ApiError> {
     Ok(state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
-        .unwrap_or_else(|| default_project_config_row(ds_id)))
+        .unwrap_or_else(|| default_project_config_row(proj_id)))
 }
 
 fn merge_skill_into_skills_json(skills_json: &mut Value, skill_name: &str, skill_content: &str) {
@@ -3193,25 +3224,25 @@ async fn count_skill_dirs(skills_root: &Path) -> u64 {
     n
 }
 
-/// Read-only snapshot of per-`ds_*` workspace readiness (for `/healthz`). Author: kejiqing
-async fn build_ds_workspaces_health(state: &AppState) -> Value {
+/// Read-only snapshot of per-`proj_*` workspace readiness (for `/healthz`). Author: kejiqing
+async fn build_proj_workspaces_health(state: &AppState) -> Value {
     let work_root = &state.cfg.work_root;
-    let on_disk = list_ds_ids_under_work_root(work_root)
+    let on_disk = list_proj_ids_under_work_root(work_root)
         .await
         .unwrap_or_default();
     let ids = on_disk;
 
     let mut workspaces = Vec::new();
     let mut prepared_count = 0u64;
-    for ds_id in ids {
-        let work_dir = ds_work_dir(work_root, ds_id);
+    for proj_id in ids {
+        let work_dir = proj_work_dir(work_root, proj_id);
         let work_dir_present = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
-        let materialize_row = project_config_draft::row_for_materialize(&state.session_db, ds_id)
+        let materialize_row = project_config_draft::row_for_materialize(&state.session_db, proj_id)
             .await
             .ok()
             .flatten();
         let environment_prepared =
-            work_dir_present && ds_project_tree_ready(&work_dir, materialize_row.as_ref()).await;
+            work_dir_present && proj_tree_ready(&work_dir, materialize_row.as_ref()).await;
         if environment_prepared {
             prepared_count += 1;
         }
@@ -3231,7 +3262,7 @@ async fn build_ds_workspaces_health(state: &AppState) -> Value {
         };
 
         workspaces.push(json!({
-            "dsId": ds_id,
+            "projId": proj_id,
             "workDir": work_dir.display().to_string(),
             "workDirPresent": work_dir_present,
             "environmentPrepared": environment_prepared,
@@ -3244,9 +3275,9 @@ async fn build_ds_workspaces_health(state: &AppState) -> Value {
     }
 
     json!({
-        "dsWorkspaceCount": workspaces.len(),
+        "projWorkspaceCount": workspaces.len(),
         "environmentPreparedCount": prepared_count,
-        "dsWorkspaces": workspaces,
+        "projWorkspaces": workspaces,
     })
 }
 
@@ -3413,25 +3444,31 @@ async fn pull_projects_repo(repo_dir: &Path, cfg: &GatewayConfig) -> Result<(), 
     Ok(())
 }
 
-async fn sync_ds_home_from_repo(
+async fn sync_proj_home_from_repo(
     repo_dir: &Path,
     work_dir: &Path,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<(), ApiError> {
-    let ds_repo_home = repo_dir.join(format!("ds_{ds_id}/home"));
-    let ds_work_home = work_dir.join("home");
-    if fs::metadata(&ds_work_home).await.is_ok_and(|m| m.is_dir()) {
-        fs::remove_dir_all(&ds_work_home).await.map_err(|e| {
+    let proj_repo_home = repo_dir.join(format!("proj_{proj_id}/home"));
+    let proj_work_home = work_dir.join("home");
+    if fs::metadata(&proj_work_home)
+        .await
+        .is_ok_and(|m| m.is_dir())
+    {
+        fs::remove_dir_all(&proj_work_home).await.map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("cleanup stale ds home failed: {e}"),
             )
         })?;
     }
-    if fs::metadata(&ds_repo_home).await.is_ok_and(|m| m.is_dir()) {
-        copy_tree(&ds_repo_home, &ds_work_home).await?;
+    if fs::metadata(&proj_repo_home)
+        .await
+        .is_ok_and(|m| m.is_dir())
+    {
+        copy_tree(&proj_repo_home, &proj_work_home).await?;
     } else {
-        fs::create_dir_all(&ds_work_home).await.map_err(|e| {
+        fs::create_dir_all(&proj_work_home).await.map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("create empty ds home failed: {e}"),
@@ -3450,7 +3487,7 @@ async fn sync_ds_home_from_repo(
     Ok(())
 }
 
-/// Clone-or-open mirror repo and `git pull --ff-only` (no local `ds_*` writes). Caller must hold
+/// Clone-or-open mirror repo and `git pull --ff-only` (no local `proj_*` writes). Caller must hold
 /// [`AppState::projects_git_mirror_lock`] for the duration if other tasks may touch the mirror. kejiqing
 async fn projects_git_mirror_pull_impl(
     work_root: &Path,
@@ -3461,8 +3498,8 @@ async fn projects_git_mirror_pull_impl(
     Ok(repo_dir)
 }
 
-/// Copy one file from `ds_<id>/` workspace into the mirror, then commit + push. Caller must hold
-/// `projects_git_mirror_lock` (same critical section as pull) and `ds_lock` for `ds_id`.
+/// Copy one file from `proj_<id>/` workspace into the mirror, then commit + push. Caller must hold
+/// `projects_git_mirror_lock` (same critical section as pull) and `ds_lock` for `proj_id`.
 ///
 /// Other hosts may push the same branch: after commit we `pull --rebase` and retry `push` with
 /// backoff; if rebase stops only on this path, workspace content wins. kejiqing
@@ -3470,14 +3507,14 @@ async fn projects_git_mirror_copy_commit_push_impl(
     cfg: &GatewayConfig,
     work_root: &Path,
     repo_dir: &Path,
-    ds_id: i64,
-    rel_path_under_ds: &Path,
+    proj_id: i64,
+    rel_path_under_proj: &Path,
     commit_message: &str,
 ) -> Result<GitSyncResponse, ApiError> {
-    let work_dir = ds_work_dir(work_root, ds_id);
-    let src = work_dir.join(rel_path_under_ds);
-    let ds_root_in_repo = repo_dir.join(format!("ds_{ds_id}"));
-    let dst = ds_root_in_repo.join(rel_path_under_ds);
+    let work_dir = proj_work_dir(work_root, proj_id);
+    let src = work_dir.join(rel_path_under_proj);
+    let proj_root_in_repo = repo_dir.join(format!("proj_{proj_id}"));
+    let dst = proj_root_in_repo.join(rel_path_under_proj);
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).await.map_err(|e| {
             ApiError::new(
@@ -3492,7 +3529,10 @@ async fn projects_git_mirror_copy_commit_push_impl(
             format!("copy file into git repo failed: {e}"),
         )
     })?;
-    let rel_git_path = format!("ds_{ds_id}/{}", normalize_rel_for_git(rel_path_under_ds));
+    let rel_git_path = format!(
+        "proj_{proj_id}/{}",
+        normalize_rel_for_git(rel_path_under_proj)
+    );
     run_git(repo_dir, &["add", &rel_git_path]).await?;
     let dirty = run_git(repo_dir, &["status", "--porcelain", "--", &rel_git_path]).await?;
     let mut pushed = false;
@@ -3631,7 +3671,7 @@ async fn project_config_poll_loop(state: AppState, interval_secs: u64) {
     }
 }
 
-async fn list_ds_ids_in_projects_mirror(repo_dir: &Path) -> Result<Vec<i64>, ApiError> {
+async fn list_proj_ids_in_projects_mirror(repo_dir: &Path) -> Result<Vec<i64>, ApiError> {
     let mut out = Vec::new();
     let mut rd = fs::read_dir(repo_dir).await.map_err(|e| {
         ApiError::new(
@@ -3646,7 +3686,7 @@ async fn list_ds_ids_in_projects_mirror(repo_dir: &Path) -> Result<Vec<i64>, Api
         )
     })? {
         let name = ent.file_name().to_string_lossy().to_string();
-        let Some(rest) = name.strip_prefix("ds_") else {
+        let Some(rest) = name.strip_prefix("proj_") else {
             continue;
         };
         if let Ok(id) = rest.parse::<i64>() {
@@ -3660,7 +3700,7 @@ async fn list_ds_ids_in_projects_mirror(repo_dir: &Path) -> Result<Vec<i64>, Api
     Ok(out)
 }
 
-fn merge_sorted_ds_ids(mut a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+fn merge_sorted_proj_ids(mut a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
     a.extend(b);
     a.sort_unstable();
     a.dedup();
@@ -3668,27 +3708,27 @@ fn merge_sorted_ds_ids(mut a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
 }
 
 async fn tick_project_config_apply_poll(state: &AppState) -> Result<(), ApiError> {
-    let on_disk = list_ds_ids_under_work_root(&state.cfg.work_root).await?;
+    let on_disk = list_proj_ids_under_work_root(&state.cfg.work_root).await?;
     let in_config = state
         .session_db
-        .list_project_config_ds_ids()
+        .list_project_config_proj_ids()
         .await
         .map_err(|e| session_db_err(&e))?;
-    let ids = merge_sorted_ds_ids(on_disk, in_config);
-    for ds_id in ids {
-        let lock = get_ds_lock(state, ds_id).await;
+    let ids = merge_sorted_proj_ids(on_disk, in_config);
+    for proj_id in ids {
+        let lock = get_proj_lock(state, proj_id).await;
         let Ok(_guard) = lock.try_lock() else {
             continue;
         };
         let cfg_row = state
             .session_db
-            .get_project_config(ds_id)
+            .get_project_config(proj_id)
             .await
             .map_err(|e| session_db_err(&e))?;
         let Some(row) = cfg_row else {
             continue;
         };
-        let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+        let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
         fs::create_dir_all(work_dir.join(".claw"))
             .await
             .map_err(|e| {
@@ -3699,18 +3739,18 @@ async fn tick_project_config_apply_poll(state: &AppState) -> Result<(), ApiError
             })?;
         let applied = project_config_apply::read_applied_content_rev(&work_dir).await;
         if applied.as_deref() != Some(row.content_rev.as_str()) {
-            apply_project_config_for_ds(state, ds_id, false).await?;
+            apply_project_config_for_proj(state, proj_id, false).await?;
         }
     }
     Ok(())
 }
 
-async fn list_ds_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiError> {
+async fn list_proj_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiError> {
     let mut out = Vec::new();
     let mut rd = fs::read_dir(work_root).await.map_err(|e| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("list work_root for ds poll failed: {e}"),
+            format!("list work_root for proj poll failed: {e}"),
         )
     })?;
     while let Some(ent) = rd.next_entry().await.map_err(|e| {
@@ -3720,7 +3760,7 @@ async fn list_ds_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiEr
         )
     })? {
         let name = ent.file_name().to_string_lossy().to_string();
-        let Some(rest) = name.strip_prefix("ds_") else {
+        let Some(rest) = name.strip_prefix("proj_") else {
             continue;
         };
         if let Ok(id) = rest.parse::<i64>() {
@@ -3736,7 +3776,7 @@ async fn list_ds_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiEr
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     let isolation = state.cfg.solve_isolation.as_str();
-    let ds_workspaces = build_ds_workspaces_health(&state).await;
+    let proj_workspaces = build_proj_workspaces_health(&state).await;
     let deploy_image_ref = http_gateway_rs::deploy_image::image_ref_from_env();
     let deploy_image_tag = http_gateway_rs::deploy_image::deploy_image_tag(&deploy_image_ref);
     let cluster_snap = claw_tap_cluster_state::snapshot_from_handle(&state.claw_tap_cluster).await;
@@ -3762,8 +3802,8 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "gatewayDatabaseUrl": state.session_db.database_url_redacted(),
         "projectsGitUrl": state.cfg.projects_git_url.clone(),
         "projectsGitBranch": state.cfg.projects_git_branch.clone(),
-        "projectsGitDsHomePollIntervalSecs": state.cfg.projects_git_ds_home_poll_interval_secs,
-        "projectsGitMirror": ds_workspaces,
+        "projectsGitDsHomePollIntervalSecs": state.cfg.projects_git_proj_home_poll_interval_secs,
+        "projectsGitMirror": proj_workspaces,
         "reportPolishUsesDeepseek": state.cfg.report_polish_deepseek.is_some(),
         "reportDeepseekModel": state.cfg.report_polish_deepseek.as_ref().map(|d| d.model.clone()),
         "liveBizReportSpillEnabled": state.cfg.live_biz_report_spill_enabled,
@@ -3815,7 +3855,7 @@ async fn solve(
             .map_err(session_routing_error)?;
     info!(
         request_id = %effective,
-        ds_id = req.ds_id,
+        proj_id = req.proj_id,
         endpoint = "/v1/solve",
         phase = "accepted",
         "gateway_solve"
@@ -3824,7 +3864,7 @@ async fn solve(
     validate_solve_request(&state.session_db, &req).await?;
     state
         .session_db
-        .assert_session_can_enqueue(&effective, req.ds_id)
+        .assert_session_can_enqueue(&effective, req.proj_id)
         .await
         .map_err(|reason| {
             ApiError::new(
@@ -3835,7 +3875,7 @@ async fn solve(
     let new_turn_id = turn_id::mint_turn_id();
     let (_, prebind_pool_id) = state
         .pool_clients
-        .pool_and_id_for_ds(&state.session_db, req.ds_id)
+        .pool_and_id_for_proj(&state.session_db, req.proj_id)
         .await;
     register_solve_turn(
         &state.session_db,
@@ -3881,56 +3921,59 @@ async fn solve(
     ))
 }
 
-fn default_project_claude_md(ds_id: i64) -> String {
+fn default_project_claude_md(proj_id: i64) -> String {
     format!(
-        "# ds_{ds_id}\n\nAuthor: kejiqing\n\nEdit in admin **CLAUDE.md** or `PUT /v1/project/config/{ds_id}`.\n"
+        "# proj_{proj_id}\n\nAuthor: kejiqing\n\nEdit in admin **CLAUDE.md** or `PUT /v1/project/config/{proj_id}`.\n"
     )
 }
 
-async fn collect_known_ds_ids(state: &AppState) -> Result<Vec<i64>, ApiError> {
-    let on_disk = list_ds_ids_under_work_root(&state.cfg.work_root).await?;
+async fn collect_known_proj_ids(state: &AppState) -> Result<Vec<i64>, ApiError> {
+    let on_disk = list_proj_ids_under_work_root(&state.cfg.work_root).await?;
     let in_config = state
         .session_db
-        .list_project_config_ds_ids()
+        .list_project_config_proj_ids()
         .await
         .map_err(|e| session_db_err(&e))?;
-    Ok(merge_sorted_ds_ids(on_disk, in_config))
+    Ok(merge_sorted_proj_ids(on_disk, in_config))
 }
 
-async fn resolve_create_ds_id(state: &AppState, requested: Option<i64>) -> Result<i64, ApiError> {
+async fn resolve_create_proj_id(state: &AppState, requested: Option<i64>) -> Result<i64, ApiError> {
     if let Some(id) = requested {
         if id < 1 {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "projId must be >= 1",
+            ));
         }
         return Ok(id);
     }
-    let ids = collect_known_ds_ids(state).await?;
+    let ids = collect_known_proj_ids(state).await?;
     Ok(ids.last().copied().unwrap_or(0) + 1)
 }
 
-async fn ds_exists_on_stack(state: &AppState, ds_id: i64) -> Result<bool, ApiError> {
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+async fn proj_exists_on_stack(state: &AppState, proj_id: i64) -> Result<bool, ApiError> {
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     if fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir()) {
         return Ok(true);
     }
     Ok(state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .is_some())
 }
 
-async fn project_config_exists(state: &AppState, ds_id: i64) -> Result<bool, ApiError> {
+async fn project_config_exists(state: &AppState, proj_id: i64) -> Result<bool, ApiError> {
     Ok(state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .is_some())
 }
 
-async fn read_project_claude_from_disk(work_dir: &Path, ds_id: i64) -> String {
+async fn read_project_claude_from_disk(work_dir: &Path, proj_id: i64) -> String {
     let (home_claude, root_claude) = project_claude_paths(work_dir);
     for path in [home_claude, root_claude] {
         if claude_instructions_usable(&path).await {
@@ -3939,7 +3982,7 @@ async fn read_project_claude_from_disk(work_dir: &Path, ds_id: i64) -> String {
             }
         }
     }
-    default_project_claude_md(ds_id)
+    default_project_claude_md(proj_id)
 }
 
 async fn write_file_if_missing(path: &Path, content: &str) -> Result<(), ApiError> {
@@ -3957,16 +4000,16 @@ async fn write_file_if_missing(path: &Path, content: &str) -> Result<(), ApiErro
 async fn build_project_list_entry(
     state: &AppState,
     summary: Option<&session_db::ProjectConfigSummary>,
-    ds_id: i64,
+    proj_id: i64,
 ) -> ProjectListEntry {
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     let work_dir_present = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
-    let materialize_row = project_config_draft::row_for_materialize(&state.session_db, ds_id)
+    let materialize_row = project_config_draft::row_for_materialize(&state.session_db, proj_id)
         .await
         .ok()
         .flatten();
     let environment_prepared =
-        work_dir_present && ds_project_tree_ready(&work_dir, materialize_row.as_ref()).await;
+        work_dir_present && proj_tree_ready(&work_dir, materialize_row.as_ref()).await;
     let (home_claude, _) = project_claude_paths(&work_dir);
     let claude_on_disk = claude_instructions_usable(&home_claude).await;
     let skills_root = work_dir.join("home/skills");
@@ -3984,7 +4027,7 @@ async fn build_project_list_entry(
             .unwrap_or(s.content_rev.as_str());
         let db_synced_to_disk = applied_rev.as_deref() == Some(stable_rev);
         ProjectListEntry {
-            ds_id: s.ds_id,
+            proj_id: s.proj_id,
             content_rev: stable_rev.to_string(),
             draft_open: s.draft_open,
             updated_at_ms: s.updated_at_ms,
@@ -4003,7 +4046,7 @@ async fn build_project_list_entry(
         }
     } else {
         ProjectListEntry {
-            ds_id,
+            proj_id,
             content_rev: applied_rev
                 .clone()
                 .unwrap_or_else(|| "disk-only".to_string()),
@@ -4025,8 +4068,8 @@ async fn build_project_list_entry(
     }
 }
 
-async fn scaffold_ds_workspace(work_dir: &Path, ds_id: i64) -> Result<(), ApiError> {
-    let claude = default_project_claude_md(ds_id);
+async fn scaffold_proj_workspace(work_dir: &Path, proj_id: i64) -> Result<(), ApiError> {
+    let claude = default_project_claude_md(proj_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -4125,16 +4168,16 @@ async fn projects_git_commit_and_push(
     })
 }
 
-async fn projects_git_push_ds_home_from_workdir(
+async fn projects_git_push_proj_home_from_workdir(
     cfg: &GatewayConfig,
     work_root: &Path,
     repo_dir: &Path,
-    ds_id: i64,
+    proj_id: i64,
     commit_message: &str,
 ) -> Result<GitSyncResponse, ApiError> {
-    let work_dir = ds_work_dir(work_root, ds_id);
-    let ds_root_in_repo = repo_dir.join(format!("ds_{ds_id}"));
-    let dst_home = ds_root_in_repo.join("home");
+    let work_dir = proj_work_dir(work_root, proj_id);
+    let proj_root_in_repo = repo_dir.join(format!("proj_{proj_id}"));
+    let dst_home = proj_root_in_repo.join("home");
     if fs::metadata(&dst_home).await.is_ok_and(|m| m.is_dir()) {
         fs::remove_dir_all(&dst_home).await.map_err(|e| {
             ApiError::new(
@@ -4144,17 +4187,17 @@ async fn projects_git_push_ds_home_from_workdir(
         })?;
     }
     copy_tree(&work_dir.join("home"), &dst_home).await?;
-    let rel_prefix = format!("ds_{ds_id}/");
+    let rel_prefix = format!("proj_{proj_id}/");
     run_git(repo_dir, &["add", &rel_prefix]).await?;
     projects_git_commit_and_push(cfg, repo_dir, &rel_prefix, commit_message).await
 }
 
-async fn projects_git_remove_ds_tree(
+async fn projects_git_remove_proj_tree(
     cfg: &GatewayConfig,
     repo_dir: &Path,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<Option<GitSyncResponse>, ApiError> {
-    let rel = format!("ds_{ds_id}");
+    let rel = format!("proj_{proj_id}");
     if !fs::metadata(repo_dir.join(&rel))
         .await
         .is_ok_and(|m| m.is_dir())
@@ -4180,20 +4223,20 @@ async fn list_projects(
         .list_project_config_summaries()
         .await
         .map_err(|e| session_db_err(&e))?;
-    let on_disk = list_ds_ids_under_work_root(&state.cfg.work_root).await?;
+    let on_disk = list_proj_ids_under_work_root(&state.cfg.work_root).await?;
     let mut projects = Vec::with_capacity(summaries.len().saturating_add(on_disk.len()));
     let mut registered = std::collections::HashSet::new();
     for s in &summaries {
-        registered.insert(s.ds_id);
-        projects.push(build_project_list_entry(&state, Some(s), s.ds_id).await);
+        registered.insert(s.proj_id);
+        projects.push(build_project_list_entry(&state, Some(s), s.proj_id).await);
     }
-    for ds_id in on_disk {
-        if registered.contains(&ds_id) {
+    for proj_id in on_disk {
+        if registered.contains(&proj_id) {
             continue;
         }
-        projects.push(build_project_list_entry(&state, None, ds_id).await);
+        projects.push(build_project_list_entry(&state, None, proj_id).await);
     }
-    projects.sort_by_key(|p| p.ds_id);
+    projects.sort_by_key(|p| p.proj_id);
     Ok(Json(ProjectListResponse {
         projects,
         listed_at_ms: now_ms(),
@@ -4202,25 +4245,28 @@ async fn list_projects(
 
 async fn push_project_git(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<ProjectGitPushResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
-    let lock = get_ds_lock(&state, ds_id).await;
+    let lock = get_proj_lock(&state, proj_id).await;
     let _guard = lock.lock().await;
-    apply_project_config_for_ds_inner(&state, ds_id, false, false).await?;
-    let outcome = try_push_project_git(&state, ds_id)
+    apply_project_config_for_proj_inner(&state, proj_id, false, false).await?;
+    let outcome = try_push_project_git(&state, proj_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e.message))?;
     let row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .expect("row exists");
     Ok(Json(ProjectGitPushResponse {
-        ds_id,
+        proj_id,
         outcome,
         git_sync_json: git_sync_json_for_api(&state, &row.git_sync_json).await,
     }))
@@ -4230,31 +4276,31 @@ async fn create_project(
     State(state): State<AppState>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<Json<InitResponse>, ApiError> {
-    let ds_id = resolve_create_ds_id(&state, req.ds_id).await?;
-    if project_config_exists(&state, ds_id).await? {
+    let proj_id = resolve_create_proj_id(&state, req.proj_id).await?;
+    if project_config_exists(&state, proj_id).await? {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
-            format!("ds {ds_id} already registered in project_config"),
+            format!("ds {proj_id} already registered in project_config"),
         ));
     }
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
-    let lock = get_ds_lock(&state, ds_id).await;
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
+    let lock = get_proj_lock(&state, proj_id).await;
     let _guard = lock.lock().await;
     let work_dir_existed = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
-    scaffold_ds_workspace(&work_dir, ds_id).await?;
+    scaffold_proj_workspace(&work_dir, proj_id).await?;
     let now = now_ms();
     let content_rev = project_config_draft::format_formal_content_rev_local_ms(now);
     let claude_md = if work_dir_existed {
-        read_project_claude_from_disk(&work_dir, ds_id).await
+        read_project_claude_from_disk(&work_dir, proj_id).await
     } else {
-        default_project_claude_md(ds_id)
+        default_project_claude_md(proj_id)
     };
     let empty_obj = json!({});
     let empty_arr = json!([]);
     state
         .session_db
         .upsert_project_config(session_db::ProjectConfigUpsert {
-            ds_id,
+            proj_id,
             content_rev: &content_rev,
             stable_content_rev: Some(content_rev.as_str()),
             draft_open: false,
@@ -4274,14 +4320,14 @@ async fn create_project(
         })
         .await
         .map_err(|e| session_db_err(&e))?;
-    if let Ok(Some(row)) = state.session_db.get_project_config(ds_id).await {
+    if let Ok(Some(row)) = state.session_db.get_project_config(proj_id).await {
         archive_project_config_revision(&state, revision_row_from_active(&row)).await?;
     }
-    apply_project_config_for_ds(&state, ds_id, true).await?;
+    apply_project_config_for_proj(&state, proj_id, true).await?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    write_ds_settings_json(&state, ds_id).await?;
+    write_proj_settings_json(&state, proj_id).await?;
     Ok(Json(InitResponse {
-        ds_id,
+        proj_id,
         work_dir: work_dir.display().to_string(),
         initialized: true,
     }))
@@ -4289,21 +4335,24 @@ async fn create_project(
 
 async fn delete_project(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
     Query(query): Query<DeleteProjectQuery>,
 ) -> Result<Json<DeleteProjectResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
-    }
-    if !ds_exists_on_stack(&state, ds_id).await? {
+    if proj_id < 1 {
         return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            format!("ds {ds_id} not found"),
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
         ));
     }
-    let lock = get_ds_lock(&state, ds_id).await;
+    if !proj_exists_on_stack(&state, proj_id).await? {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("ds {proj_id} not found"),
+        ));
+    }
+    let lock = get_proj_lock(&state, proj_id).await;
     let _guard = lock.lock().await;
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     if fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir()) {
         fs::remove_dir_all(&work_dir).await.map_err(|e| {
             ApiError::new(
@@ -4314,13 +4363,13 @@ async fn delete_project(
     }
     let project_config_removed = state
         .session_db
-        .delete_project_config(ds_id)
+        .delete_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let sessions_removed = if query.purge_sessions {
         state
             .session_db
-            .delete_sessions_for_ds(ds_id)
+            .delete_sessions_for_proj(proj_id)
             .await
             .map_err(|e| session_db_err(&e))?
     } else {
@@ -4328,10 +4377,10 @@ async fn delete_project(
     };
     {
         let mut injected = state.injected_mcp.lock().await;
-        injected.remove(&ds_id);
+        injected.remove(&proj_id);
     }
     Ok(Json(DeleteProjectResponse {
-        ds_id,
+        proj_id,
         deleted: true,
         purge_sessions: query.purge_sessions,
         sessions_removed,
@@ -4344,10 +4393,13 @@ async fn init_workspace(
     State(state): State<AppState>,
     Json(req): Json<InitRequest>,
 ) -> Result<Json<InitResponse>, ApiError> {
-    if req.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if req.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
-    let work_dir = ds_work_dir(&state.cfg.work_root, req.ds_id);
+    let work_dir = proj_work_dir(&state.cfg.work_root, req.proj_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -4357,11 +4409,11 @@ async fn init_workspace(
             )
         })?;
     {
-        let lock = get_ds_lock(&state, req.ds_id).await;
+        let lock = get_proj_lock(&state, req.proj_id).await;
         let _guard = lock.lock().await;
         let has_project_config = state
             .session_db
-            .get_project_config(req.ds_id)
+            .get_project_config(req.proj_id)
             .await
             .map_err(|e| session_db_err(&e))?
             .is_some();
@@ -4369,24 +4421,24 @@ async fn init_workspace(
             return Err(ApiError::new(
                 StatusCode::NOT_FOUND,
                 format!(
-                    "no project_config for ds {}; POST /v1/projects or PUT /v1/project/config/{} first",
-                    req.ds_id, req.ds_id
+                    "no project_config for proj {}; POST /v1/projects or PUT /v1/project/config/{} first",
+                    req.proj_id, req.proj_id
                 ),
             ));
         }
-        apply_project_config_for_ds(&state, req.ds_id, true).await?;
+        apply_project_config_for_proj(&state, req.proj_id, true).await?;
         let materialize_row =
-            project_config_draft::row_for_materialize(&state.session_db, req.ds_id)
+            project_config_draft::row_for_materialize(&state.session_db, req.proj_id)
                 .await
                 .map_err(|e| session_db_err(&e))?;
-        if !ds_project_tree_ready(&work_dir, materialize_row.as_ref()).await {
-            return Err(ds_environment_not_prepared_error(req.ds_id, true));
+        if !proj_tree_ready(&work_dir, materialize_row.as_ref()).await {
+            return Err(proj_environment_not_prepared_error(req.proj_id, true));
         }
         ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-        write_ds_settings_json(&state, req.ds_id).await?;
+        write_proj_settings_json(&state, req.proj_id).await?;
     }
     Ok(Json(InitResponse {
-        ds_id: req.ds_id,
+        proj_id: req.proj_id,
         work_dir: work_dir.display().to_string(),
         initialized: true,
     }))
@@ -4397,7 +4449,7 @@ async fn project_config_row_to_response(
     row: session_db::ProjectConfigRow,
 ) -> ProjectConfigResponse {
     ProjectConfigResponse {
-        ds_id: row.ds_id,
+        proj_id: row.proj_id,
         content_rev: row.content_rev.clone(),
         stable_content_rev: row.stable_content_rev.clone(),
         draft_open: row.draft_open,
@@ -4422,11 +4474,11 @@ async fn project_config_row_to_response(
 
 async fn project_selected_allowed_tools(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<Option<Vec<String>>, ApiError> {
     let row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let Some(row) = row else {
@@ -4578,18 +4630,21 @@ fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(
 
 async fn get_project_config(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<ProjectConfigResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
-    let row = project_config_draft::row_for_editing(&state.session_db, ds_id)
+    let row = project_config_draft::row_for_editing(&state.session_db, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let Some(row) = row else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("no project_config for ds {ds_id}"),
+            format!("no project_config for proj {proj_id}"),
         ));
     };
     Ok(Json(project_config_row_to_response(&state, row).await))
@@ -4619,35 +4674,38 @@ struct CommitProjectConfigDraftResponse {
 
 async fn list_project_config_versions(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<ProjectConfigVersionsResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let active = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let Some(active) = active else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("no project_config for ds {ds_id}"),
+            format!("no project_config for proj {proj_id}"),
         ));
     };
     let revisions = state
         .session_db
-        .list_project_config_revisions(ds_id)
+        .list_project_config_revisions(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     let applied_content_rev = project_config_apply::read_applied_content_rev(&work_dir).await;
     let effective = project_config_draft::effective_formal_rev(&active)
         .map_err(draft_err)?
         .to_string();
     project_config_draft::ensure_formal_revision_recorded(
         &state.session_db,
-        ds_id,
+        proj_id,
         &effective,
         &active,
     )
@@ -4662,7 +4720,7 @@ async fn list_project_config_versions(
         versions.insert(0, project_config_version_entry_from_draft(&active));
     }
     Ok(Json(ProjectConfigVersionsResponse {
-        ds_id,
+        proj_id,
         active_content_rev: effective,
         applied_content_rev,
         draft_open: active.draft_open,
@@ -4672,11 +4730,14 @@ async fn list_project_config_versions(
 
 async fn compare_project_config_versions(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
     Query(query): Query<CompareProjectConfigQuery>,
 ) -> Result<Json<project_config_version::ProjectConfigCompareResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let from = query.from.trim();
     let to = query.to.trim();
@@ -4688,19 +4749,19 @@ async fn compare_project_config_versions(
     }
     let active = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let Some(active) = active else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("no project_config for ds {ds_id}"),
+            format!("no project_config for proj {proj_id}"),
         ));
     };
-    let from_row = load_revision_for_compare(&state, ds_id, from, &active).await?;
-    let to_row = load_revision_for_compare(&state, ds_id, to, &active).await?;
+    let from_row = load_revision_for_compare(&state, proj_id, from, &active).await?;
+    let to_row = load_revision_for_compare(&state, proj_id, to, &active).await?;
     Ok(Json(project_config_version::compare_revision_rows(
-        ds_id,
+        proj_id,
         project_config_draft::effective_formal_rev(&active).map_err(draft_err)?,
         &from_row,
         &to_row,
@@ -4709,10 +4770,13 @@ async fn compare_project_config_versions(
 
 async fn activate_project_config_version(
     State(state): State<AppState>,
-    AxumPath((ds_id, content_rev)): AxumPath<(i64, String)>,
+    AxumPath((proj_id, content_rev)): AxumPath<(i64, String)>,
 ) -> Result<Json<ActivateProjectConfigVersionResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let content_rev = content_rev.trim();
     if content_rev.is_empty() || project_config_draft::is_draft_content_rev(content_rev) {
@@ -4723,27 +4787,28 @@ async fn activate_project_config_version(
     }
     let active_row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let Some(active_row) = active_row else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("no project_config for ds {ds_id}"),
+            format!("no project_config for proj {proj_id}"),
         ));
     };
-    let rev = project_config_draft::require_formal_revision(&state.session_db, ds_id, content_rev)
-        .await
-        .map_err(draft_err)?;
+    let rev =
+        project_config_draft::require_formal_revision(&state.session_db, proj_id, content_rev)
+            .await
+            .map_err(draft_err)?;
     let materialized = activate_project_config_revision_row(
         &state,
-        ds_id,
+        proj_id,
         rev,
         project_config_draft::ProjectConfigSidecars::from_row(&active_row),
     )
     .await?;
     Ok(Json(ActivateProjectConfigVersionResponse {
-        ds_id,
+        proj_id,
         active_content_rev: content_rev.to_string(),
         activated: true,
         materialized,
@@ -4752,21 +4817,24 @@ async fn activate_project_config_version(
 
 async fn put_project_config(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
     Json(req): Json<UpsertProjectConfigRequest>,
 ) -> Result<Json<PutProjectConfigResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let existing = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let Some(existing) = existing else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("no project_config for ds {ds_id}; create project first"),
+            format!("no project_config for proj {proj_id}; create project first"),
         ));
     };
     let existing_git = existing.git_sync_json.clone();
@@ -4813,7 +4881,7 @@ async fn put_project_config(
     gateway_global_settings::validate_git_sync_json_with_global(&state.session_db, &git_sync_json)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
-    project_config_draft::ensure_draft(&state.session_db, ds_id)
+    project_config_draft::ensure_draft(&state.session_db, proj_id)
         .await
         .map_err(draft_err)?;
     let effective = project_config_draft::effective_formal_rev(&existing)
@@ -4821,7 +4889,7 @@ async fn put_project_config(
         .to_string();
     let now = now_ms();
     let upsert = session_db::ProjectConfigUpsert {
-        ds_id,
+        proj_id,
         content_rev: project_config_draft::DRAFT_CONTENT_REV,
         stable_content_rev: Some(effective.as_str()),
         draft_open: true,
@@ -4846,7 +4914,7 @@ async fn put_project_config(
         .map_err(|e| session_db_err(&e))?;
     project_entity_revision::record_draft_put_sidecars(
         &state.session_db,
-        ds_id,
+        proj_id,
         &existing,
         &req.rules_json,
         &req.skills_json,
@@ -4857,7 +4925,7 @@ async fn put_project_config(
     )
     .await
     .map_err(entity_revision_err)?;
-    let active = project_config_draft::row_for_editing(&state.session_db, ds_id)
+    let active = project_config_draft::row_for_editing(&state.session_db, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .expect("row exists after upsert");
@@ -4870,22 +4938,25 @@ async fn put_project_config(
 
 async fn commit_project_config_draft(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
     Json(req): Json<CommitProjectConfigDraftRequest>,
 ) -> Result<Json<CommitProjectConfigDraftResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let note = project_config_draft::normalize_revision_note(req.note);
     let row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_FOUND,
-                format!("no project_config for ds {ds_id}"),
+                format!("no project_config for proj {proj_id}"),
             )
         })?;
     if !row.draft_open {
@@ -4900,21 +4971,21 @@ async fn commit_project_config_draft(
         .to_string();
     project_config_draft::ensure_formal_revision_recorded(
         &state.session_db,
-        ds_id,
+        proj_id,
         &prev_stable,
         &row,
     )
     .await
     .map_err(draft_err)?;
     let now = now_ms();
-    let saved = project_config_draft::allocate_formal_content_rev(&state.session_db, ds_id, now)
+    let saved = project_config_draft::allocate_formal_content_rev(&state.session_db, proj_id, now)
         .await
         .map_err(draft_err)?;
     let rev = project_config_draft::revision_row_from_config_row(&row, &saved, note);
     archive_project_config_revision(&state, rev).await?;
     let active = project_config_draft::close_draft_to_stable(
         &state.session_db,
-        ds_id,
+        proj_id,
         &prev_stable,
         project_config_draft::ProjectConfigSidecars {
             git_sync_json,
@@ -5103,8 +5174,8 @@ struct PatchProjectConfigVersionNoteRequest {
 
 #[derive(Debug, Serialize)]
 struct PatchProjectConfigVersionNoteResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     #[serde(rename = "contentRev")]
     content_rev: String,
     #[serde(rename = "note", skip_serializing_if = "Option::is_none")]
@@ -5114,11 +5185,14 @@ struct PatchProjectConfigVersionNoteResponse {
 
 async fn patch_project_config_version_note(
     State(state): State<AppState>,
-    AxumPath((ds_id, content_rev)): AxumPath<(i64, String)>,
+    AxumPath((proj_id, content_rev)): AxumPath<(i64, String)>,
     Json(req): Json<PatchProjectConfigVersionNoteRequest>,
 ) -> Result<Json<PatchProjectConfigVersionNoteResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let content_rev = content_rev.trim();
     if content_rev.is_empty() || project_config_draft::is_draft_content_rev(content_rev) {
@@ -5127,23 +5201,23 @@ async fn patch_project_config_version_note(
             "cannot set note on draft revision",
         ));
     }
-    project_config_draft::require_formal_revision(&state.session_db, ds_id, content_rev)
+    project_config_draft::require_formal_revision(&state.session_db, proj_id, content_rev)
         .await
         .map_err(draft_err)?;
     let note = project_config_draft::normalize_revision_note(req.note);
     let saved = state
         .session_db
-        .update_project_config_revision_note(ds_id, content_rev, note.as_deref())
+        .update_project_config_revision_note(proj_id, content_rev, note.as_deref())
         .await
         .map_err(|e| session_db_err(&e))?;
     if !saved {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("no revision {content_rev} for ds {ds_id}"),
+            format!("no revision {content_rev} for proj {proj_id}"),
         ));
     }
     Ok(Json(PatchProjectConfigVersionNoteResponse {
-        ds_id,
+        proj_id,
         content_rev: content_rev.to_string(),
         note,
         saved: true,
@@ -5152,8 +5226,8 @@ async fn patch_project_config_version_note(
 
 #[derive(Debug, Serialize)]
 struct DeleteProjectConfigVersionResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     #[serde(rename = "contentRev")]
     content_rev: String,
     deleted: bool,
@@ -5161,10 +5235,13 @@ struct DeleteProjectConfigVersionResponse {
 
 async fn delete_project_config_version(
     State(state): State<AppState>,
-    AxumPath((ds_id, content_rev)): AxumPath<(i64, String)>,
+    AxumPath((proj_id, content_rev)): AxumPath<(i64, String)>,
 ) -> Result<Json<DeleteProjectConfigVersionResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let content_rev = content_rev.trim();
     if content_rev.is_empty() || project_config_draft::is_draft_content_rev(content_rev) {
@@ -5175,13 +5252,13 @@ async fn delete_project_config_version(
     }
     let row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let Some(row) = row else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("no project_config for ds {ds_id}"),
+            format!("no project_config for proj {proj_id}"),
         ));
     };
     let effective = project_config_draft::effective_formal_rev(&row).map_err(draft_err)?;
@@ -5193,17 +5270,17 @@ async fn delete_project_config_version(
     }
     let deleted = state
         .session_db
-        .delete_project_config_revision(ds_id, content_rev)
+        .delete_project_config_revision(proj_id, content_rev)
         .await
         .map_err(|e| session_db_err(&e))?;
     if !deleted {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("no revision {content_rev} for ds {ds_id}"),
+            format!("no revision {content_rev} for proj {proj_id}"),
         ));
     }
     Ok(Json(DeleteProjectConfigVersionResponse {
-        ds_id,
+        proj_id,
         content_rev: content_rev.to_string(),
         deleted: true,
     }))
@@ -5211,12 +5288,15 @@ async fn delete_project_config_version(
 
 async fn get_project_claude_md(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<ProjectClaudeResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -5227,13 +5307,13 @@ async fn get_project_claude_md(
         })?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
     let (home_claude_md_path, root_claude_md_path) = project_claude_paths(&work_dir);
-    if let Some(row) = project_config_draft::row_for_editing(&state.session_db, ds_id)
+    if let Some(row) = project_config_draft::row_for_editing(&state.session_db, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
     {
         let text = row.claude_md.unwrap_or_default();
         return Ok(Json(ProjectClaudeResponse {
-            ds_id,
+            proj_id,
             work_dir: work_dir.display().to_string(),
             path: home_claude_md_path.display().to_string(),
             exists: !text.trim().is_empty(),
@@ -5265,7 +5345,7 @@ async fn get_project_claude_md(
         }
     };
     Ok(Json(ProjectClaudeResponse {
-        ds_id,
+        proj_id,
         work_dir: work_dir.display().to_string(),
         path: home_claude_md_path.display().to_string(),
         exists,
@@ -5275,13 +5355,16 @@ async fn get_project_claude_md(
 
 async fn update_project_claude_md(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
     Json(req): Json<UpdateProjectClaudeRequest>,
 ) -> Result<Json<ProjectClaudeResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -5290,26 +5373,26 @@ async fn update_project_claude_md(
                 format!("create work dir failed: {e}"),
             )
         })?;
-    let lock = get_ds_lock(&state, ds_id).await;
+    let lock = get_proj_lock(&state, proj_id).await;
     let _guard = lock.lock().await;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
     let Some(_) = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
     else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("no project_config for ds {ds_id}; create project first"),
+            format!("no project_config for proj {proj_id}; create project first"),
         ));
     };
-    project_config_draft::ensure_draft(&state.session_db, ds_id)
+    project_config_draft::ensure_draft(&state.session_db, proj_id)
         .await
         .map_err(draft_err)?;
     let mut row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .expect("row exists");
@@ -5330,12 +5413,12 @@ async fn update_project_claude_md(
         .await
         .map_err(|e| session_db_err(&e))?;
     let now = row.updated_at_ms;
-    project_entity_revision::append_claude(&state.session_db, ds_id, &saved, now)
+    project_entity_revision::append_claude(&state.session_db, proj_id, &saved, now)
         .await
         .map_err(entity_revision_err)?;
     let claude_md_path = work_dir.join("home/CLAUDE.md");
     Ok(Json(ProjectClaudeResponse {
-        ds_id,
+        proj_id,
         work_dir: work_dir.display().to_string(),
         path: claude_md_path.display().to_string(),
         exists: true,
@@ -5345,15 +5428,18 @@ async fn update_project_claude_md(
 
 async fn upsert_project_skill(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
     Json(req): Json<UpsertProjectSkillRequest>,
 ) -> Result<Json<ProjectSkillResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let skill_name = req.skill_name.trim().to_string();
     validate_skill_name(&skill_name)?;
-    let work_dir = ds_work_dir(&state.cfg.work_root, ds_id);
+    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -5367,26 +5453,26 @@ async fn upsert_project_skill(
         .join(&skill_name)
         .join("SKILL.md");
     let skill_path = work_dir.join(&skill_rel);
-    let lock = get_ds_lock(&state, ds_id).await;
+    let lock = get_proj_lock(&state, proj_id).await;
     let _guard = lock.lock().await;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
     let Some(_) = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
     else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("no project_config for ds {ds_id}; create project first"),
+            format!("no project_config for proj {proj_id}; create project first"),
         ));
     };
-    project_config_draft::ensure_draft(&state.session_db, ds_id)
+    project_config_draft::ensure_draft(&state.session_db, proj_id)
         .await
         .map_err(draft_err)?;
     let mut row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .expect("row exists");
@@ -5427,7 +5513,7 @@ async fn upsert_project_skill(
         .map_err(|e| session_db_err(&e))?;
     project_entity_revision::append_skill(
         &state.session_db,
-        ds_id,
+        proj_id,
         &skill_name,
         skill_body,
         row.updated_at_ms,
@@ -5435,7 +5521,7 @@ async fn upsert_project_skill(
     .await
     .map_err(entity_revision_err)?;
     Ok(Json(ProjectSkillResponse {
-        ds_id,
+        proj_id,
         skill_name,
         skill_path: skill_path.display().to_string(),
         created: !existed,
@@ -5448,31 +5534,34 @@ async fn upsert_project_skill(
 /// Admin preview: always materialize latest `project_config` before assembling prompt.
 async fn get_effective_prompt(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<EffectivePromptResponse>, ApiError> {
-    build_effective_prompt_response(&state, ds_id, true)
+    build_effective_prompt_response(&state, proj_id, true)
         .await
         .map(Json)
 }
 
 async fn post_effective_prompt(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<EffectivePromptResponse>, ApiError> {
-    build_effective_prompt_response(&state, ds_id, true)
+    build_effective_prompt_response(&state, proj_id, true)
         .await
         .map(Json)
 }
 
 async fn build_effective_prompt_response(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     force_apply: bool,
 ) -> Result<EffectivePromptResponse, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
-    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    let work_dir = state.cfg.work_root.join(format!("proj_{proj_id}"));
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -5485,10 +5574,10 @@ async fn build_effective_prompt_response(
 
     let row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
-    apply_project_config_for_ds(state, ds_id, force_apply).await?;
+    apply_project_config_for_proj(state, proj_id, force_apply).await?;
     let model_family = gateway_global_settings::load_active_llm_config_public(&state.session_db)
         .await
         .ok()
@@ -5521,7 +5610,7 @@ async fn build_effective_prompt_response(
     }
     .to_string();
     Ok(EffectivePromptResponse {
-        ds_id,
+        proj_id,
         work_dir: work_dir.display().to_string(),
         sections,
         message,
@@ -5558,7 +5647,7 @@ fn skills_from_skills_json(skills_json: &Value) -> Vec<DsSkillEntry> {
     skills
 }
 
-async fn load_skills_from_ds_workdir(work_dir: &Path) -> std::io::Result<Vec<DsSkillEntry>> {
+async fn load_skills_from_proj_workdir(work_dir: &Path) -> std::io::Result<Vec<DsSkillEntry>> {
     let skills_root = work_dir.join("home").join("skills");
     let mut out = Vec::new();
     if !fs::metadata(&skills_root).await.is_ok_and(|m| m.is_dir()) {
@@ -5587,14 +5676,17 @@ async fn load_skills_from_ds_workdir(work_dir: &Path) -> std::io::Result<Vec<DsS
     Ok(out)
 }
 
-async fn list_ds_skills(
+async fn list_proj_skills(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<DsSkillsListResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
-    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    let work_dir = state.cfg.work_root.join(format!("proj_{proj_id}"));
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -5604,41 +5696,46 @@ async fn list_ds_skills(
             )
         })?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    if let Some(row) = project_config_draft::row_for_editing(&state.session_db, ds_id)
+    if let Some(row) = project_config_draft::row_for_editing(&state.session_db, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
     {
         if row.draft_open {
             let mut skills = skills_from_skills_json(&row.skills_json);
             skills.sort_by(|a, b| a.skill_name.cmp(&b.skill_name));
-            return Ok(Json(DsSkillsListResponse { ds_id, skills }));
+            return Ok(Json(DsSkillsListResponse { proj_id, skills }));
         }
         if row.skills_json.as_array().is_some_and(|a| !a.is_empty()) {
             let mut skills = skills_from_skills_json(&row.skills_json);
             skills.sort_by(|a, b| a.skill_name.cmp(&b.skill_name));
-            return Ok(Json(DsSkillsListResponse { ds_id, skills }));
+            return Ok(Json(DsSkillsListResponse { proj_id, skills }));
         }
     }
-    let skills = load_skills_from_ds_workdir(&work_dir).await.map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("list skills failed: {e}"),
-        )
-    })?;
-    Ok(Json(DsSkillsListResponse { ds_id, skills }))
+    let skills = load_skills_from_proj_workdir(&work_dir)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("list skills failed: {e}"),
+            )
+        })?;
+    Ok(Json(DsSkillsListResponse { proj_id, skills }))
 }
 
-async fn get_ds_skill(
+async fn get_proj_skill(
     State(state): State<AppState>,
-    AxumPath((ds_id, skill_name)): AxumPath<(i64, String)>,
+    AxumPath((proj_id, skill_name)): AxumPath<(i64, String)>,
 ) -> Result<Json<DsSkillGetResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     if !is_safe_skill_dir_name(&skill_name) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid skill_name"));
     }
-    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    let work_dir = state.cfg.work_root.join(format!("proj_{proj_id}"));
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -5648,7 +5745,7 @@ async fn get_ds_skill(
             )
         })?;
     ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-    if let Some(row) = project_config_draft::row_for_editing(&state.session_db, ds_id)
+    if let Some(row) = project_config_draft::row_for_editing(&state.session_db, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
     {
@@ -5656,7 +5753,7 @@ async fn get_ds_skill(
             for entry in skills_from_skills_json(&row.skills_json) {
                 if entry.skill_name == skill_name {
                     return Ok(Json(DsSkillGetResponse {
-                        ds_id,
+                        proj_id,
                         skill_name,
                         skill_content: entry.skill_content,
                     }));
@@ -5671,7 +5768,7 @@ async fn get_ds_skill(
             for entry in skills_from_skills_json(&row.skills_json) {
                 if entry.skill_name == skill_name {
                     return Ok(Json(DsSkillGetResponse {
-                        ds_id,
+                        proj_id,
                         skill_name,
                         skill_content: entry.skill_content,
                     }));
@@ -5700,7 +5797,7 @@ async fn get_ds_skill(
         }
     };
     Ok(Json(DsSkillGetResponse {
-        ds_id,
+        proj_id,
         skill_name,
         skill_content,
     }))
@@ -5731,12 +5828,12 @@ fn gateway_queue_snapshot(tasks: &HashMap<String, TaskInner>) -> task_status::Ga
 
 async fn resolve_session_home_path(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     session_id: &str,
 ) -> Option<PathBuf> {
     let rel = state
         .session_db
-        .get_session_home_rel(session_id, ds_id)
+        .get_session_home_rel(session_id, proj_id)
         .await
         .ok()??;
     session_merge::validate_session_home_rel(&rel).ok()?;
@@ -5747,14 +5844,14 @@ async fn load_turn_progress_snapshot(
     state: &AppState,
     turn_id: &str,
     session_id: &str,
-    ds_id: i64,
+    proj_id: i64,
     status: &str,
     limit: usize,
 ) -> Result<pool_consumer_resolve::TurnProgressSnapshot, ApiError> {
     pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
         &state
             .pool_clients
-            .pool_for_turn(&state.session_db, turn_id, session_id, ds_id)
+            .pool_for_turn(&state.session_db, turn_id, session_id, proj_id)
             .await,
         turn_id,
         status,
@@ -5767,19 +5864,19 @@ async fn load_turn_progress_snapshot(
 
 async fn refresh_task_progress(state: &AppState, task_id: &str) {
     let snapshot = {
-        let (status, ds_id, session_id, turn_id) = {
+        let (status, proj_id, session_id, turn_id) = {
             let tasks = state.tasks.lock().await;
             let Some(inner) = tasks.get(task_id) else {
                 return;
             };
             (
                 inner.record.status.clone(),
-                inner.ds_id,
+                inner.proj_id,
                 inner.record.session_id.clone(),
                 inner.record.turn_id.clone(),
             )
         };
-        let session_home = resolve_session_home_path(state, ds_id, &session_id).await;
+        let session_home = resolve_session_home_path(state, proj_id, &session_id).await;
         let queue = {
             let tasks = state.tasks.lock().await;
             gateway_queue_snapshot(&tasks)
@@ -5790,7 +5887,7 @@ async fn refresh_task_progress(state: &AppState, task_id: &str) {
             .unwrap_or_default();
         let tool = trace_tail_suggests_tool_call(&trace_paths);
         let progress_snap =
-            load_turn_progress_snapshot(state, &turn_id, &session_id, ds_id, &status, 50)
+            load_turn_progress_snapshot(state, &turn_id, &session_id, proj_id, &status, 50)
                 .await
                 .unwrap_or_default();
         let desc =
@@ -5834,8 +5931,8 @@ fn spawn_task_progress_poller(state: AppState, task_id: String) {
 
 #[derive(Debug, Deserialize)]
 struct SessionExecutionQuery {
-    #[serde(rename = "ds_id")]
-    ds_id: i64,
+    #[serde(rename = "proj_id")]
+    proj_id: i64,
     #[serde(default)]
     include_trace: bool,
 }
@@ -5869,7 +5966,7 @@ fn default_session_list_limit() -> i64 {
 
 async fn parse_list_sessions_extra_session_filter(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     raw: Option<String>,
 ) -> Result<Option<BTreeMap<String, String>>, ApiError> {
     let Some(raw) = raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
@@ -5881,7 +5978,7 @@ async fn parse_list_sessions_extra_session_filter(
             "extraSession query must be a JSON object",
         )
     })?;
-    let fields_json = match state.session_db.get_project_config(ds_id).await {
+    let fields_json = match state.session_db.get_project_config(proj_id).await {
         Ok(Some(row)) => row.extra_session_fields_json,
         Ok(None) => json!([]),
         Err(e) => return Err(session_db_err(&e)),
@@ -5918,8 +6015,8 @@ struct GatewaySessionSummaryJson {
 
 #[derive(Debug, Serialize)]
 struct ListProjectSessionsResponse {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     sessions: Vec<GatewaySessionSummaryJson>,
     #[serde(rename = "hasMore")]
     has_more: bool,
@@ -5927,8 +6024,8 @@ struct ListProjectSessionsResponse {
 
 #[derive(Debug, Deserialize)]
 struct ListSessionTurnsQuery {
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    proj_id: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -5994,26 +6091,29 @@ struct ClawPoolJson {
 struct ListSessionTurnsResponse {
     #[serde(rename = "sessionId")]
     session_id: String,
-    #[serde(rename = "dsId")]
-    ds_id: i64,
+    #[serde(rename = "projId")]
+    proj_id: i64,
     turns: Vec<GatewayTurnSummaryJson>,
 }
 
 async fn list_project_sessions(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
     Query(query): Query<ListProjectSessionsQuery>,
 ) -> Result<Json<ListProjectSessionsResponse>, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let extra_filter =
-        parse_list_sessions_extra_session_filter(&state, ds_id, query.extra_session).await?;
+        parse_list_sessions_extra_session_filter(&state, proj_id, query.extra_session).await?;
     let limit = query.limit;
     let rows = state
         .session_db
-        .list_sessions_for_ds(
-            ds_id,
+        .list_sessions_for_proj(
+            proj_id,
             limit,
             query.before_updated_at_ms,
             query.before_session_id.as_deref(),
@@ -6027,7 +6127,7 @@ async fn list_project_sessions(
         .map_err(|e| session_db_err(&e))?;
     let has_more = i64::try_from(rows.len()).unwrap_or(0) >= limit;
     Ok(Json(ListProjectSessionsResponse {
-        ds_id,
+        proj_id,
         sessions: rows
             .into_iter()
             .map(|r| GatewaySessionSummaryJson {
@@ -6050,28 +6150,31 @@ async fn list_session_turns(
     AxumPath(session_id): AxumPath<String>,
     Query(query): Query<ListSessionTurnsQuery>,
 ) -> Result<Json<ListSessionTurnsResponse>, ApiError> {
-    if query.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if query.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let exists = state
         .session_db
-        .session_exists(&session_id, query.ds_id)
+        .session_exists(&session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     if !exists {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("session not found: {session_id} dsId={}", query.ds_id),
+            format!("session not found: {session_id} projId={}", query.proj_id),
         ));
     }
     let rows = state
         .session_db
-        .list_turns_for_session(&session_id, query.ds_id)
+        .list_turns_for_session(&session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     Ok(Json(ListSessionTurnsResponse {
         session_id,
-        ds_id: query.ds_id,
+        proj_id: query.proj_id,
         turns: rows
             .into_iter()
             .map(|r| GatewayTurnSummaryJson {
@@ -6132,18 +6235,21 @@ async fn get_session_execution(
     Query(query): Query<SessionExecutionQuery>,
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<SessionExecutionResponse>, ApiError> {
-    if query.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "ds_id must be >= 1"));
+    if query.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "proj_id must be >= 1",
+        ));
     }
     let session_home_rel = state
         .session_db
-        .get_session_home_rel(&session_id, query.ds_id)
+        .get_session_home_rel(&session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_FOUND,
-                format!("session not found: {session_id} ds_id={}", query.ds_id),
+                format!("session not found: {session_id} proj_id={}", query.proj_id),
             )
         })?;
     session_merge::validate_session_home_rel(&session_home_rel).map_err(session_routing_error)?;
@@ -6196,7 +6302,7 @@ async fn get_session_execution(
         &state,
         &turn_id,
         &session_id,
-        query.ds_id,
+        query.proj_id,
         &task_status_for_progress,
         50,
     )
@@ -6213,14 +6319,14 @@ async fn get_session_execution(
     info!(
         request_id = %http_request_id.0,
         session_id = %session_id,
-        ds_id = query.ds_id,
+        proj_id = query.proj_id,
         endpoint = "/v1/sessions/{session_id}/execution",
         "gateway_session_execution"
     );
 
     Ok(Json(SessionExecutionResponse {
         session_id,
-        ds_id: query.ds_id,
+        proj_id: query.proj_id,
         session_home_rel,
         task,
         progress,
@@ -6232,8 +6338,8 @@ async fn get_session_execution(
 
 #[derive(Debug, Deserialize)]
 struct TurnToolsQuery {
-    #[serde(rename = "ds_id")]
-    ds_id: i64,
+    #[serde(rename = "proj_id")]
+    proj_id: i64,
 }
 
 async fn get_turn_tools(
@@ -6241,8 +6347,11 @@ async fn get_turn_tools(
     AxumPath((session_id, turn_id)): AxumPath<(String, String)>,
     Query(query): Query<TurnToolsQuery>,
 ) -> Result<Json<turn_tools_api::TurnToolsResponse>, ApiError> {
-    if query.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "ds_id must be >= 1"));
+    if query.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "proj_id must be >= 1",
+        ));
     }
     if !turn_id::validate_turn_id(&turn_id) {
         return Err(ApiError::new(
@@ -6252,15 +6361,15 @@ async fn get_turn_tools(
     }
     let ctx = state
         .session_db
-        .get_turn_tools_context(&turn_id, &session_id, query.ds_id)
+        .get_turn_tools_context(&turn_id, &session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_FOUND,
                 format!(
-                    "turn or session not found: {turn_id} session={session_id} ds_id={}",
-                    query.ds_id
+                    "turn or session not found: {turn_id} session={session_id} proj_id={}",
+                    query.proj_id
                 ),
             )
         })?;
@@ -6275,14 +6384,14 @@ async fn get_turn_tools(
     }
     let turn_status = state
         .session_db
-        .get_turn_status(&turn_id, &session_id, query.ds_id)
+        .get_turn_status(&turn_id, &session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .unwrap_or_else(|| "unknown".to_string());
     pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
         &state
             .pool_clients
-            .pool_for_turn(&state.session_db, &turn_id, &session_id, query.ds_id)
+            .pool_for_turn(&state.session_db, &turn_id, &session_id, query.proj_id)
             .await,
         &turn_id,
         &turn_status,
@@ -6294,7 +6403,7 @@ async fn get_turn_tools(
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let session_jsonl = state
         .session_db
-        .render_session_jsonl(&session_id, query.ds_id)
+        .render_session_jsonl(&session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let tools = turn_tools_api::list_turn_tools_for_session(
@@ -6309,7 +6418,7 @@ async fn get_turn_tools(
     Ok(Json(turn_tools_api::TurnToolsResponse {
         session_id,
         turn_id,
-        ds_id: query.ds_id,
+        proj_id: query.proj_id,
         user_turn_index,
         tools,
     }))
@@ -6320,8 +6429,11 @@ async fn get_turn_timeline(
     AxumPath((session_id, turn_id)): AxumPath<(String, String)>,
     Query(query): Query<TurnToolsQuery>,
 ) -> Result<Json<turn_timeline_api::TurnTimelineResponse>, ApiError> {
-    if query.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "ds_id must be >= 1"));
+    if query.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "proj_id must be >= 1",
+        ));
     }
     if !turn_id::validate_turn_id(&turn_id) {
         return Err(ApiError::new(
@@ -6331,28 +6443,28 @@ async fn get_turn_timeline(
     }
     let ctx = state
         .session_db
-        .get_turn_tools_context(&turn_id, &session_id, query.ds_id)
+        .get_turn_tools_context(&turn_id, &session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_FOUND,
                 format!(
-                    "turn or session not found: {turn_id} session={session_id} ds_id={}",
-                    query.ds_id
+                    "turn or session not found: {turn_id} session={session_id} proj_id={}",
+                    query.proj_id
                 ),
             )
         })?;
     let turn_status = state
         .session_db
-        .get_turn_status(&turn_id, &session_id, query.ds_id)
+        .get_turn_status(&turn_id, &session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .unwrap_or_else(|| "unknown".to_string());
     pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
         &state
             .pool_clients
-            .pool_for_turn(&state.session_db, &turn_id, &session_id, query.ds_id)
+            .pool_for_turn(&state.session_db, &turn_id, &session_id, query.proj_id)
             .await,
         &turn_id,
         &turn_status,
@@ -6370,7 +6482,7 @@ async fn get_turn_timeline(
     Ok(Json(turn_timeline_api::TurnTimelineResponse {
         session_id,
         turn_id,
-        ds_id: query.ds_id,
+        proj_id: query.proj_id,
         task_created_at_ms: Some(ctx.created_at_ms),
         task_finished_at_ms: ctx.finished_at_ms,
         timeline,
@@ -6406,18 +6518,18 @@ async fn enqueue_solve_async(
     if session_merge::trim_session_id(req.session_id.as_deref()).is_some() {
         let row = state
             .session_db
-            .get_session_home_rel(&effective, req.ds_id)
+            .get_session_home_rel(&effective, req.proj_id)
             .await
             .map_err(|e| session_db_err(&e))?;
         if row.is_none() {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
-                "unknown sessionId (no session history for this dsId)",
+                "unknown sessionId (no session history for this projId)",
             ));
         }
     }
     let task_id = effective.clone();
-    let ds_id = req.ds_id;
+    let proj_id = req.proj_id;
     {
         let tasks = state.tasks.lock().await;
         if let Some(inner) = tasks.get(&task_id) {
@@ -6432,7 +6544,7 @@ async fn enqueue_solve_async(
     validate_solve_request(&state.session_db, &req).await?;
     state
         .session_db
-        .assert_session_can_enqueue(&effective, ds_id)
+        .assert_session_can_enqueue(&effective, proj_id)
         .await
         .map_err(|reason| {
             ApiError::new(
@@ -6443,7 +6555,7 @@ async fn enqueue_solve_async(
     let new_turn_id = turn_id::mint_turn_id();
     let (_, prebind_pool_id) = state
         .pool_clients
-        .pool_and_id_for_ds(&state.session_db, ds_id)
+        .pool_and_id_for_proj(&state.session_db, proj_id)
         .await;
     register_solve_turn(
         &state.session_db,
@@ -6456,7 +6568,7 @@ async fn enqueue_solve_async(
     .await?;
     if let Some(rel) = state
         .session_db
-        .get_session_home_rel(&effective, ds_id)
+        .get_session_home_rel(&effective, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
     {
@@ -6469,7 +6581,7 @@ async fn enqueue_solve_async(
     info!(
         request_id = %effective,
         task_id = %task_id,
-        ds_id = req.ds_id,
+        proj_id = req.proj_id,
         endpoint,
         phase = "queued",
         "gateway_solve_async"
@@ -6485,7 +6597,7 @@ async fn enqueue_solve_async(
                     task_id: task_id.clone(),
                     session_id: effective.clone(),
                     request_id: effective.clone(),
-                    ds_id,
+                    proj_id,
                     status: "queued".to_string(),
                     created_at_ms: now_ms(),
                     started_at_ms: None,
@@ -6504,7 +6616,7 @@ async fn enqueue_solve_async(
                     worker_name: None,
                 },
                 cancel: None,
-                ds_id,
+                proj_id,
             },
         );
     }
@@ -6629,7 +6741,7 @@ async fn enqueue_solve_async(
         poll_url: format!("/v1/tasks/{task_id}"),
         pool_id: state
             .session_db
-            .get_turn_pool_id(&new_turn_id, &effective, ds_id)
+            .get_turn_pool_id(&new_turn_id, &effective, proj_id)
             .await
             .ok()
             .flatten()
@@ -6652,13 +6764,13 @@ async fn solve_start(
     if body_sid.is_some() {
         let row = state
             .session_db
-            .get_session_home_rel(&effective, req.ds_id)
+            .get_session_home_rel(&effective, req.proj_id)
             .await
             .map_err(|e| session_db_err(&e))?;
         if row.is_none() {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
-                "unknown sessionId (no session history for this dsId)",
+                "unknown sessionId (no session history for this projId)",
             ));
         }
     }
@@ -6668,7 +6780,7 @@ async fn solve_start(
     );
     prepare_gateway_session(
         &state,
-        req.ds_id,
+        req.proj_id,
         req.session_id.as_deref(),
         req.extra_session.as_ref(),
         &effective,
@@ -6678,7 +6790,7 @@ async fn solve_start(
     .await?;
     info!(
         request_id = %effective,
-        ds_id = req.ds_id,
+        proj_id = req.proj_id,
         endpoint = "/v1/start",
         phase = "session_ready",
         "gateway_start: session registered in SQLite before response"
@@ -6723,7 +6835,7 @@ async fn try_load_task_record(
     {
         let tasks = state.tasks.lock().await;
         if let Some(inner) = tasks.get(task_id) {
-            return Ok(Some((inner.record.clone(), inner.ds_id)));
+            return Ok(Some((inner.record.clone(), inner.proj_id)));
         }
     }
     let Some(row) = state
@@ -6746,7 +6858,7 @@ async fn task_record_from_latest_turn_row(
 ) -> Result<(TaskRecord, i64), ApiError> {
     let session_home_rel = state
         .session_db
-        .get_session_home_rel(task_id, row.ds_id)
+        .get_session_home_rel(task_id, row.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .unwrap_or_default();
@@ -6773,7 +6885,7 @@ async fn task_record_from_latest_turn_row(
             session_id: task_id.to_string(),
             request_id: task_id.to_string(),
             session_home_rel: session_home_rel.clone(),
-            ds_id: row.ds_id,
+            proj_id: row.proj_id,
             work_dir,
             duration_ms,
             claw_exit_code: row.claw_exit_code.unwrap_or(0),
@@ -6793,7 +6905,7 @@ async fn task_record_from_latest_turn_row(
     } else {
         None
     };
-    let session_home = resolve_session_home_path(state, row.ds_id, task_id).await;
+    let session_home = resolve_session_home_path(state, row.proj_id, task_id).await;
     let queue = {
         let tasks = state.tasks.lock().await;
         gateway_queue_snapshot(&tasks)
@@ -6804,7 +6916,7 @@ async fn task_record_from_latest_turn_row(
         .unwrap_or_default();
     let tool = trace_tail_suggests_tool_call(&trace_paths);
     let progress_snap =
-        load_turn_progress_snapshot(state, &row.turn_id, task_id, row.ds_id, &row.status, 50)
+        load_turn_progress_snapshot(state, &row.turn_id, task_id, row.proj_id, &row.status, 50)
             .await
             .unwrap_or_default();
     let current_task_desc = resolve_current_task_desc(
@@ -6821,7 +6933,7 @@ async fn task_record_from_latest_turn_row(
         task_id: task_id.to_string(),
         session_id: task_id.to_string(),
         request_id: task_id.to_string(),
-        ds_id: row.ds_id,
+        proj_id: row.proj_id,
         status: row.status.clone(),
         created_at_ms: row.created_at_ms,
         started_at_ms: Some(row.created_at_ms),
@@ -6846,8 +6958,8 @@ async fn task_record_from_latest_turn_row(
     let _ = session_home;
     record.has_report = task_has_report(state, &record).await;
     record.report_time_ms = task_report_time_ms(state, &record).await;
-    let ds_id = record.ds_id;
-    Ok((record, ds_id))
+    let proj_id = record.proj_id;
+    Ok((record, proj_id))
 }
 
 async fn get_task(
@@ -6856,17 +6968,17 @@ async fn get_task(
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TaskRecord>, ApiError> {
     refresh_task_progress(&state, &task_id).await;
-    let (mut task, ds_id) = try_load_task_record(&state, &task_id)
+    let (mut task, proj_id) = try_load_task_record(&state, &task_id)
         .await?
         .ok_or_else(|| {
             ApiError::new(StatusCode::NOT_FOUND, format!("task not found: {task_id}"))
         })?;
-    let session_home = resolve_session_home_path(&state, ds_id, &task.session_id).await;
+    let session_home = resolve_session_home_path(&state, proj_id, &task.session_id).await;
     let progress_snap = load_turn_progress_snapshot(
         &state,
         &task.turn_id,
         &task.session_id,
-        ds_id,
+        proj_id,
         &task.status,
         50,
     )
@@ -6905,7 +7017,7 @@ async fn get_task(
     }
     let turn_id = task.turn_id.clone();
     let session_id = task.session_id.clone();
-    apply_turn_pool_fields_from_db(&state.session_db, &turn_id, &session_id, ds_id, &mut task)
+    apply_turn_pool_fields_from_db(&state.session_db, &turn_id, &session_id, proj_id, &mut task)
         .await;
     task.has_report = task_has_report(&state, &task).await;
     task.report_time_ms = task_report_time_ms(&state, &task).await;
@@ -6991,7 +7103,7 @@ fn task_cancel_idempotent_response(record: TaskRecord) -> TaskRecord {
 struct TurnCancelResponse {
     session_id: String,
     turn_id: String,
-    ds_id: i64,
+    proj_id: i64,
     status: String,
     #[serde(rename = "cancelApplied")]
     cancel_applied: bool,
@@ -7018,17 +7130,17 @@ async fn cancel_session_turn_cold(
     state: &AppState,
     session_id: &str,
     turn_id: &str,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<TurnCancelResponse, ApiError> {
     let Some(status) = state
         .session_db
-        .get_turn_status(turn_id, session_id, ds_id)
+        .get_turn_status(turn_id, session_id, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
     else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("turn or session not found: {turn_id} session={session_id} ds_id={ds_id}"),
+            format!("turn or session not found: {turn_id} session={session_id} proj_id={proj_id}"),
         ));
     };
     if task_status_is_terminal_for_cancel(&status) {
@@ -7036,7 +7148,7 @@ async fn cancel_session_turn_cold(
         return Ok(TurnCancelResponse {
             session_id: session_id.to_string(),
             turn_id: turn_id.to_string(),
-            ds_id,
+            proj_id,
             status,
             cancel_applied: false,
             error: Some(turn_cancel_idempotent_error(&status_at_cancel)),
@@ -7046,7 +7158,7 @@ async fn cancel_session_turn_cold(
     Ok(TurnCancelResponse {
         session_id: session_id.to_string(),
         turn_id: turn_id.to_string(),
-        ds_id,
+        proj_id,
         status: "cancelled".to_string(),
         cancel_applied: true,
         error: Some(json!({
@@ -7063,13 +7175,13 @@ enum TurnMemoryCancel {
 }
 
 /// After a cold turn cancel, memory may still hold a newer `queued`/`running` task for the same session.
-async fn abort_memory_session_task_if_active(state: &AppState, session_id: &str, ds_id: i64) {
+async fn abort_memory_session_task_if_active(state: &AppState, session_id: &str, proj_id: i64) {
     let (cancel_handle, turn_id) = {
         let mut tasks = state.tasks.lock().await;
         let Some(inner) = tasks.get_mut(session_id) else {
             return;
         };
-        if inner.ds_id != ds_id || task_status_is_terminal_for_cancel(&inner.record.status) {
+        if inner.proj_id != proj_id || task_status_is_terminal_for_cancel(&inner.record.status) {
             return;
         }
         let turn_id = inner.record.turn_id.clone();
@@ -7098,7 +7210,7 @@ async fn try_memory_cancel_turn(
     state: &AppState,
     session_id: &str,
     turn_id: &str,
-    ds_id: i64,
+    proj_id: i64,
 ) -> Result<Option<TurnMemoryCancel>, ApiError> {
     let mut tasks = state.tasks.lock().await;
     let Some(inner) = tasks.get_mut(session_id) else {
@@ -7107,11 +7219,11 @@ async fn try_memory_cancel_turn(
     if inner.record.turn_id != turn_id {
         return Ok(None);
     }
-    if inner.ds_id != ds_id {
+    if inner.proj_id != proj_id {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
             format!(
-                "turn ds_id mismatch: turn={turn_id} session={session_id} expected ds_id={ds_id}"
+                "turn proj_id mismatch: turn={turn_id} session={session_id} expected proj_id={proj_id}"
             ),
         ));
     }
@@ -7120,7 +7232,7 @@ async fn try_memory_cancel_turn(
         return Ok(Some(TurnMemoryCancel::Idempotent(TurnCancelResponse {
             session_id: session_id.to_string(),
             turn_id: turn_id.to_string(),
-            ds_id,
+            proj_id,
             status,
             cancel_applied: false,
             error: Some(turn_cancel_idempotent_error(inner.record.status.as_str())),
@@ -7144,8 +7256,11 @@ async fn cancel_session_turn(
     Query(query): Query<TurnToolsQuery>,
     Extension(http_request_id): Extension<HttpRequestId>,
 ) -> Result<Json<TurnCancelResponse>, ApiError> {
-    if query.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "ds_id must be >= 1"));
+    if query.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "proj_id must be >= 1",
+        ));
     }
     if !turn_id::validate_turn_id(&turn_id) {
         return Err(ApiError::new(
@@ -7154,7 +7269,7 @@ async fn cancel_session_turn(
         ));
     }
 
-    match try_memory_cancel_turn(&state, &session_id, &turn_id, query.ds_id).await? {
+    match try_memory_cancel_turn(&state, &session_id, &turn_id, query.proj_id).await? {
         Some(TurnMemoryCancel::Idempotent(out)) => {
             info!(
                 request_id = %http_request_id.0,
@@ -7189,7 +7304,7 @@ async fn cancel_session_turn(
             return Ok(Json(TurnCancelResponse {
                 session_id,
                 turn_id,
-                ds_id: query.ds_id,
+                proj_id: query.proj_id,
                 status: "cancelled".to_string(),
                 cancel_applied: true,
                 error: Some(json!({
@@ -7202,9 +7317,9 @@ async fn cancel_session_turn(
         None => {}
     }
 
-    let out = cancel_session_turn_cold(&state, &session_id, &turn_id, query.ds_id).await?;
+    let out = cancel_session_turn_cold(&state, &session_id, &turn_id, query.proj_id).await?;
     if out.cancel_applied {
-        abort_memory_session_task_if_active(&state, &session_id, query.ds_id).await;
+        abort_memory_session_task_if_active(&state, &session_id, query.proj_id).await;
     }
     info!(
         request_id = %http_request_id.0,
@@ -7346,8 +7461,11 @@ async fn dev_seed_biz_report_task(
     {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "not found"));
     }
-    if body.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if body.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let tid = body
         .task_id
@@ -7355,7 +7473,7 @@ async fn dev_seed_biz_report_task(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map_or_else(|| Uuid::new_v4().simple().to_string(), ToString::to_string);
-    let work_dir = ds_work_dir(&state.cfg.work_root, body.ds_id);
+    let work_dir = proj_work_dir(&state.cfg.work_root, body.proj_id);
     let now = now_ms();
     let output_text = if body.output_text.trim().is_empty() {
         "mock raw boss output for polish".to_string()
@@ -7366,8 +7484,8 @@ async fn dev_seed_biz_report_task(
     let result = SolveResponse {
         session_id: tid.clone(),
         request_id: tid.clone(),
-        session_home_rel: format!("ds_{}/sessions/dev-seed", body.ds_id),
-        ds_id: body.ds_id,
+        session_home_rel: format!("proj_{}/sessions/dev-seed", body.proj_id),
+        proj_id: body.proj_id,
         work_dir: work_dir.to_string_lossy().to_string(),
         duration_ms: 0,
         claw_exit_code: 0,
@@ -7379,7 +7497,7 @@ async fn dev_seed_biz_report_task(
         task_id: tid.clone(),
         session_id: tid.clone(),
         request_id: tid.clone(),
-        ds_id: body.ds_id,
+        proj_id: body.proj_id,
         status: "succeeded".to_string(),
         created_at_ms: now,
         started_at_ms: Some(now),
@@ -7404,13 +7522,13 @@ async fn dev_seed_biz_report_task(
             TaskInner {
                 record,
                 cancel: None,
-                ds_id: body.ds_id,
+                proj_id: body.proj_id,
             },
         );
     }
     let stream_url = format!(
-        "/v1/biz_advice_report?sessionId={tid}&turnId={seed_turn_id}&dsId={}&stream=true",
-        body.ds_id
+        "/v1/biz_advice_report?sessionId={tid}&turnId={seed_turn_id}&projId={}&stream=true",
+        body.proj_id
     );
     Ok(Json(json!({
         "taskId": tid,
@@ -7431,21 +7549,21 @@ async fn resolve_biz_report_from_db(
 ) -> Result<BizReportDbCtx, ApiError> {
     let belongs = state
         .session_db
-        .turn_belongs_to_session(&query.turn_id, &query.session_id, query.ds_id)
+        .turn_belongs_to_session(&query.turn_id, &query.session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     if !belongs {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
             format!(
-                "no turn for sessionId={} turnId={} dsId={}",
-                query.session_id, query.turn_id, query.ds_id
+                "no turn for sessionId={} turnId={} projId={}",
+                query.session_id, query.turn_id, query.proj_id
             ),
         ));
     }
     let status = state
         .session_db
-        .get_turn_status(&query.turn_id, &query.session_id, query.ds_id)
+        .get_turn_status(&query.turn_id, &query.session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .ok_or_else(|| {
@@ -7470,12 +7588,12 @@ async fn load_turn_report_body_from_db(
 ) -> Result<String, ApiError> {
     let report_message = state
         .session_db
-        .get_turn_report_message(&query.turn_id, &query.session_id, query.ds_id)
+        .get_turn_report_message(&query.turn_id, &query.session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     let output_json = state
         .session_db
-        .get_turn_output_json(&query.turn_id, &query.session_id, query.ds_id)
+        .get_turn_output_json(&query.turn_id, &query.session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     report_body_from_persisted(report_message.as_deref(), output_json.as_ref()).ok_or_else(|| {
@@ -7498,7 +7616,7 @@ fn biz_report_json_response(
     Json(BizAdviceReportResponse {
         task_id: ctx.task_id.clone(),
         source_request_id: ctx.task_id.clone(),
-        source_ds_id: query.ds_id,
+        source_proj_id: query.proj_id,
         source_status: ctx.status.clone(),
         report_text: body.to_string(),
         report_json: Some(json!({ "message": body })),
@@ -7522,7 +7640,7 @@ async fn biz_advice_report_legacy_polish_mode(
         ));
     }
     let report_body = load_turn_report_body_from_db(state, query).await?;
-    let skill_work_dir = ds_work_dir(&state.cfg.work_root, BOSS_REPORT_SKILL_DS_ID);
+    let skill_work_dir = proj_work_dir(&state.cfg.work_root, BOSS_REPORT_SKILL_PROJ_ID);
     ensure_workspace_initialized(&state.cfg.claw_bin, &skill_work_dir).await?;
     let instructions = load_boss_report_writer_instructions(&skill_work_dir).await;
     let prompt = build_biz_advice_polish_prompt(&instructions, &report_body);
@@ -7535,7 +7653,7 @@ async fn biz_advice_report_legacy_polish_mode(
         route = "legacy_spill_polish_llm",
         turn_id = %ctx.turn_id,
         session_id = %query.session_id,
-        ds_id = query.ds_id,
+        proj_id = query.proj_id,
         stream = query.stream,
         "biz_advice_report — legacy spill mode LLM polish"
     );
@@ -7543,7 +7661,7 @@ async fn biz_advice_report_legacy_polish_mode(
         let meta = BizAdviceReportPayload {
             task_id: ctx.task_id.clone(),
             source_request_id: ctx.task_id.clone(),
-            source_ds_id: query.ds_id,
+            source_proj_id: query.proj_id,
             source_status: ctx.status.clone(),
             report_text: None,
             report_json: None,
@@ -7582,7 +7700,7 @@ async fn biz_advice_report_legacy_polish_mode(
     Ok(Json(BizAdviceReportResponse {
         task_id: ctx.task_id.clone(),
         source_request_id: ctx.task_id.clone(),
-        source_ds_id: query.ds_id,
+        source_proj_id: query.proj_id,
         source_status: ctx.status.clone(),
         report_text,
         report_json,
@@ -7612,14 +7730,14 @@ async fn get_biz_advice_report(
                         route = "db_snapshot_sse",
                         turn_id = %ctx.turn_id,
                         session_id = %query.session_id,
-                        ds_id = query.ds_id,
+                        proj_id = query.proj_id,
                         status = %ctx.status,
                         "biz_advice_report stream — terminal snapshot from gateway_turns (no pool HTTP)"
                     );
                     let payload = BizAdviceReportPayload {
                         task_id: ctx.task_id.clone(),
                         source_request_id: ctx.task_id.clone(),
-                        source_ds_id: query.ds_id,
+                        source_proj_id: query.proj_id,
                         source_status: ctx.status.clone(),
                         report_text: Some(body.clone()),
                         report_json: Some(json!({ "message": body })),
@@ -7647,13 +7765,13 @@ async fn get_biz_advice_report(
     if query.stream && matches!(ctx.status.as_str(), "running" | "queued") {
         let pool_http_from_db = state
             .session_db
-            .resolve_pool_http_base_for_turn(&ctx.turn_id, &query.session_id, query.ds_id)
+            .resolve_pool_http_base_for_turn(&ctx.turn_id, &query.session_id, query.proj_id)
             .await
             .map_err(|e| session_db_err(&e))?;
         let Some(pool_http_base) = pool_http_from_db.filter(|b| !b.trim().is_empty()) else {
             let pool_id = state
                 .session_db
-                .get_turn_pool_id(&ctx.turn_id, &query.session_id, query.ds_id)
+                .get_turn_pool_id(&ctx.turn_id, &query.session_id, query.proj_id)
                 .await
                 .map_err(|e| session_db_err(&e))?;
             let detail = match pool_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -7675,7 +7793,7 @@ async fn get_biz_advice_report(
                 route = "pool_proxy_sse_denied",
                 turn_id = %ctx.turn_id,
                 session_id = %query.session_id,
-                ds_id = query.ds_id,
+                proj_id = query.proj_id,
                 status = %ctx.status,
                 pool_id = ?pool_id,
                 co_located_pool_id = ?state.cfg.co_located_pool_id,
@@ -7691,7 +7809,7 @@ async fn get_biz_advice_report(
             pool_http_source = "claw_pool_join",
             turn_id = %ctx.turn_id,
             session_id = %query.session_id,
-            ds_id = query.ds_id,
+            proj_id = query.proj_id,
             status = %ctx.status,
             pool_http_base = %pool_http_base,
             "biz_advice_report stream — proxy to pool HTTP /v1/biz_advice_report/live"
@@ -7700,7 +7818,7 @@ async fn get_biz_advice_report(
             &pool_http_base,
             &ctx.turn_id,
             &ctx.task_id,
-            query.ds_id,
+            query.proj_id,
         )
         .await
         .map_err(|(status, detail)| ApiError::new(status, detail));
@@ -7766,8 +7884,8 @@ async fn get_biz_advice_report_bak(
             format!("task {} has empty report message: {detail}", query.task_id),
         )
     })?;
-    let ds_id = source_result.ds_id;
-    let skill_work_dir = ds_work_dir(&state.cfg.work_root, BOSS_REPORT_SKILL_DS_ID);
+    let proj_id = source_result.proj_id;
+    let skill_work_dir = proj_work_dir(&state.cfg.work_root, BOSS_REPORT_SKILL_PROJ_ID);
     ensure_workspace_initialized(&state.cfg.claw_bin, &skill_work_dir).await?;
     let instructions = load_boss_report_writer_instructions(&skill_work_dir).await;
     let prompt = build_biz_advice_polish_prompt(&instructions, &report_body);
@@ -7777,7 +7895,7 @@ async fn get_biz_advice_report_bak(
         let meta = BizAdviceReportPayload {
             task_id: query.task_id.clone(),
             source_request_id: task.request_id.clone(),
-            source_ds_id: ds_id,
+            source_proj_id: proj_id,
             source_status: source_status.clone(),
             report_text: None,
             report_json: None,
@@ -7816,7 +7934,7 @@ async fn get_biz_advice_report_bak(
     Ok(Json(BizAdviceReportResponse {
         task_id: query.task_id,
         source_request_id: task.request_id,
-        source_ds_id: ds_id,
+        source_proj_id: proj_id,
         source_status,
         report_text,
         report_json,
@@ -7856,7 +7974,7 @@ fn biz_report_llm_stream_response(
                 let mut done = BizAdviceReportPayload {
                     task_id: meta_done.task_id,
                     source_request_id: meta_done.source_request_id,
-                    source_ds_id: meta_done.source_ds_id,
+                    source_proj_id: meta_done.source_proj_id,
                     source_status: meta_done.source_status,
                     report_text: Some(sanitize_external_report_text(&output_text)),
                     report_json: output_json,
@@ -7880,11 +7998,11 @@ fn biz_report_llm_stream_response(
 
 async fn validate_solve_extra_session_for_ds(
     db: &session_db::GatewaySessionDb,
-    ds_id: i64,
+    proj_id: i64,
     extra_session: Option<&Value>,
 ) -> Result<(), ApiError> {
     validate_extra_session(extra_session)?;
-    let fields_json = match db.get_project_config(ds_id).await {
+    let fields_json = match db.get_project_config(proj_id).await {
         Ok(Some(row)) => row.extra_session_fields_json,
         Ok(None) => json!([]),
         Err(e) => return Err(session_db_err(&e)),
@@ -7900,8 +8018,11 @@ async fn validate_solve_request(
     db: &session_db::GatewaySessionDb,
     req: &SolveRequest,
 ) -> Result<(), ApiError> {
-    if req.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if req.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     if req.user_prompt.trim().is_empty() {
         return Err(ApiError::new(
@@ -7909,7 +8030,7 @@ async fn validate_solve_request(
             "userPrompt cannot be empty",
         ));
     }
-    validate_solve_extra_session_for_ds(db, req.ds_id, req.extra_session.as_ref()).await
+    validate_solve_extra_session_for_ds(db, req.proj_id, req.extra_session.as_ref()).await
 }
 
 fn validate_extra_session(extra_session: Option<&Value>) -> Result<(), ApiError> {
@@ -7942,42 +8063,45 @@ fn pool_runtime_cli_bin(isolation: SolveIsolation) -> &'static str {
 /// Ensures `(sessionId, dsId)` exists in `SQLite` and session `.claw/settings.json` on disk. kejiqing
 async fn prepare_gateway_session(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     body_session_id: Option<&str>,
     extra_session: Option<&Value>,
     request_id: &str,
     skip_session_db: bool,
     client_origin: Option<&str>,
 ) -> Result<PreparedGatewaySession, ApiError> {
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     validate_extra_session(extra_session)?;
-    validate_ds_exists(ds_id, &state.cfg.ds_registry_path).await?;
+    validate_proj_exists(proj_id, &state.cfg.ds_registry_path).await?;
 
     let _session_lock_guard: Option<OwnedMutexGuard<()>> = if skip_session_db {
         None
     } else {
         Some(
-            get_session_solve_lock(state, ds_id, request_id)
+            get_session_solve_lock(state, proj_id, request_id)
                 .await
                 .lock_owned()
                 .await,
         )
     };
 
-    let ds_base = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    let proj_base = state.cfg.work_root.join(format!("proj_{proj_id}"));
     let explicit_continuation = session_merge::trim_session_id(body_session_id).is_some();
 
     let (session_home, need_insert_row, purge_mcp_discovery, session_fs_label) = if skip_session_db
     {
         let session_fs_id = session_merge::sessions_directory_segment(request_id);
-        let session_home = ds_base.join("sessions").join(&session_fs_id);
+        let session_home = proj_base.join("sessions").join(&session_fs_id);
         (session_home, false, true, session_fs_id)
     } else {
         let row_opt = state
             .session_db
-            .get_session_home_rel(request_id, ds_id)
+            .get_session_home_rel(request_id, proj_id)
             .await
             .map_err(|e| session_db_err(&e))?;
         if let Some(rel) = row_opt {
@@ -7994,11 +8118,11 @@ async fn prepare_gateway_session(
         } else if explicit_continuation {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
-                "unknown sessionId (no session history for this dsId)",
+                "unknown sessionId (no session history for this projId)",
             ));
         } else {
             let session_fs_id = session_merge::sessions_directory_segment(request_id);
-            let session_home = ds_base.join("sessions").join(&session_fs_id);
+            let session_home = proj_base.join("sessions").join(&session_fs_id);
             (session_home, true, true, session_fs_id)
         }
     };
@@ -8017,17 +8141,17 @@ async fn prepare_gateway_session(
         })?;
 
     {
-        let ds_lock = get_ds_lock(state, ds_id).await;
-        let _guard = ds_lock.lock().await;
-        ensure_ds_project_ready(state, ds_id).await?;
-        fs::create_dir_all(&ds_base).await.map_err(|e| {
+        let proj_lock = get_proj_lock(state, proj_id).await;
+        let _guard = proj_lock.lock().await;
+        ensure_proj_ready(state, proj_id).await?;
+        fs::create_dir_all(&proj_base).await.map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("create ds dir failed: {e}"),
             )
         })?;
-        ensure_workspace_initialized(&state.cfg.claw_bin, &ds_base).await?;
-        let settings = build_settings(state, ds_id).await;
+        ensure_workspace_initialized(&state.cfg.claw_bin, &proj_base).await?;
+        let settings = build_settings(state, proj_id).await;
         let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -8063,7 +8187,7 @@ async fn prepare_gateway_session(
             .session_db
             .insert_session(
                 request_id,
-                ds_id,
+                proj_id,
                 &session_home_rel,
                 now_ms(),
                 client_origin,
@@ -8073,7 +8197,7 @@ async fn prepare_gateway_session(
     } else if !skip_session_db {
         state
             .session_db
-            .touch_updated(request_id, ds_id, now_ms())
+            .touch_updated(request_id, proj_id, now_ms())
             .await
             .map_err(|e| session_db_err(&e))?;
     }
@@ -8090,8 +8214,11 @@ async fn post_agent_feedback(
     headers: HeaderMap,
     Json(body): Json<AgentFeedbackPostRequest>,
 ) -> Result<Json<AgentFeedbackPostResponse>, ApiError> {
-    if body.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if body.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let session_id = body.session_id.trim();
     if session_id.is_empty() {
@@ -8111,18 +8238,18 @@ async fn post_agent_feedback(
     let feedback = body.feedback.trim();
     if !state
         .session_db
-        .session_exists(session_id, body.ds_id)
+        .session_exists(session_id, body.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
     {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            "unknown sessionId for dsId",
+            "unknown sessionId for projId",
         ));
     }
     if !state
         .session_db
-        .turn_belongs_to_session(turn, session_id, body.ds_id)
+        .turn_belongs_to_session(turn, session_id, body.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
     {
@@ -8134,7 +8261,7 @@ async fn post_agent_feedback(
     if client_origin_from_headers(&headers) == Some(client_origin::CLIENT_ORIGIN_GATEWAY_ADMIN) {
         let turn_origin = state
             .session_db
-            .get_turn_client_origin(turn, session_id, body.ds_id)
+            .get_turn_client_origin(turn, session_id, body.proj_id)
             .await
             .map_err(|e| session_db_err(&e))?;
         if turn_origin.as_deref() != Some(client_origin::CLIENT_ORIGIN_GATEWAY_ADMIN) {
@@ -8147,12 +8274,12 @@ async fn post_agent_feedback(
     let updated_at_ms = now_ms();
     state
         .session_db
-        .upsert_feedback(session_id, body.ds_id, turn, feedback, updated_at_ms)
+        .upsert_feedback(session_id, body.proj_id, turn, feedback, updated_at_ms)
         .await
         .map_err(|e| session_db_err(&e))?;
     Ok(Json(AgentFeedbackPostResponse {
         session_id: session_id.to_string(),
-        ds_id: body.ds_id,
+        proj_id: body.proj_id,
         turn_id: turn.to_string(),
         feedback: feedback.to_string(),
         updated_at_ms,
@@ -8176,7 +8303,7 @@ async fn get_conversation_translate(
     gateway_translate::get_conversation_translate_handler(
         &state.session_db,
         &session_id,
-        query.ds_id,
+        query.proj_id,
     )
     .await
     .map_err(|e| ApiError::new(e.status, e.message))
@@ -8191,7 +8318,7 @@ async fn put_conversation_translate(
     gateway_translate::put_conversation_translate_handler(
         &state.session_db,
         &session_id,
-        query.ds_id,
+        query.proj_id,
         body,
     )
     .await
@@ -8202,14 +8329,17 @@ async fn get_agent_feedback(
     State(state): State<AppState>,
     Query(query): Query<AgentFeedbackGetQuery>,
 ) -> Result<Json<AgentFeedbackGetResponse>, ApiError> {
-    let Some(ds_id) = query.resolved_ds_id() else {
+    let Some(proj_id) = query.resolved_proj_id() else {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            "dsId or ds_id query parameter is required",
+            "projId or proj_id query parameter is required",
         ));
     };
-    if ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let session_id = query.session_id.trim();
     if session_id.is_empty() {
@@ -8220,23 +8350,23 @@ async fn get_agent_feedback(
     }
     if !state
         .session_db
-        .session_exists(session_id, ds_id)
+        .session_exists(session_id, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
     {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            "unknown sessionId for dsId",
+            "unknown sessionId for projId",
         ));
     }
     let items = state
         .session_db
-        .list_feedback(session_id, ds_id)
+        .list_feedback(session_id, proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     Ok(Json(AgentFeedbackGetResponse {
         session_id: session_id.to_string(),
-        ds_id,
+        proj_id,
         items,
     }))
 }
@@ -8258,12 +8388,12 @@ async fn run_solve_request(
         component = "solve",
         request_id = %ctx.request_id,
         task_id = ctx.task_id.as_deref().unwrap_or("-"),
-        ds_id = req.ds_id,
+        proj_id = req.proj_id,
         phase = "solve_run_start",
         timeout_seconds,
         "gateway_solve accepted; validating and preparing workspace"
     );
-    let project_selected = project_selected_allowed_tools(&state, req.ds_id).await?;
+    let project_selected = project_selected_allowed_tools(&state, req.proj_id).await?;
     let mut effective_allowed_tools = resolve_effective_allowed_tools_for_ds(
         project_selected.as_deref(),
         req.allowed_tools.as_deref(),
@@ -8272,7 +8402,7 @@ async fn run_solve_request(
 
     let prepared = prepare_gateway_session(
         &state,
-        req.ds_id,
+        req.proj_id,
         req.session_id.as_deref(),
         req.extra_session.as_ref(),
         &ctx.request_id,
@@ -8285,7 +8415,7 @@ async fn run_solve_request(
         target: "claw_gateway_orchestration",
         component = "solve_prepare",
         phase = "workspace_ready",
-        ds_id = req.ds_id,
+        proj_id = req.proj_id,
         request_id = %ctx.request_id,
         task_id = ctx.task_id.as_deref(),
         session_fs_id = %prepared.session_fs_label,
@@ -8297,7 +8427,7 @@ async fn run_solve_request(
 
     let (pool, _) = state
         .pool_clients
-        .pool_and_id_for_ds(&state.session_db, req.ds_id)
+        .pool_and_id_for_proj(&state.session_db, req.proj_id)
         .await;
     solve_pool::run_solve_request_docker(
         state,
@@ -8329,26 +8459,26 @@ fn merge_mcp_servers_json(existing: &Value, patch: HashMap<String, Value>, repla
 /// Upsert `project_config` MCP for a ds (`POST/DELETE /v1/mcp/inject*` write DB, not process memory).
 async fn upsert_mcp_servers_for_ds(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     patch: HashMap<String, Value>,
     replace: bool,
 ) -> Result<(), ApiError> {
     let existing = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
     if existing.is_some() {
-        project_config_draft::ensure_draft(&state.session_db, ds_id)
+        project_config_draft::ensure_draft(&state.session_db, proj_id)
             .await
             .map_err(draft_err)?;
     }
     let mut row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
-        .unwrap_or_else(|| default_project_config_row(ds_id));
+        .unwrap_or_else(|| default_project_config_row(proj_id));
     row.mcp_servers_json = merge_mcp_servers_json(&row.mcp_servers_json, patch, replace);
     row.draft_open = true;
     row.content_rev = project_config_draft::DRAFT_CONTENT_REV.to_string();
@@ -8369,24 +8499,24 @@ async fn upsert_mcp_servers_for_ds(
 
 async fn clear_mcp_servers_for_ds(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     server_names: Option<Vec<String>>,
 ) -> Result<(), ApiError> {
     if state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .is_none()
     {
         return Ok(());
     }
-    project_config_draft::ensure_draft(&state.session_db, ds_id)
+    project_config_draft::ensure_draft(&state.session_db, proj_id)
         .await
         .map_err(draft_err)?;
     let mut row = state
         .session_db
-        .get_project_config(ds_id)
+        .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .expect("row exists");
@@ -8445,9 +8575,12 @@ async fn test_mcp(
             "config must be a JSON object",
         ));
     }
-    if let Some(ds_id) = req.ds_id {
-        if ds_id < 1 {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if let Some(proj_id) = req.proj_id {
+        if proj_id < 1 {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "projId must be >= 1",
+            ));
         }
     }
     let resp = mcp_probe::probe_mcp_server(server_name, &req.config, req.probe_mcp_start).await;
@@ -8460,13 +8593,16 @@ async fn inject_mcp(
     Json(req): Json<InjectMcpRequest>,
 ) -> Result<Json<McpResponse>, ApiError> {
     let request_id = http_request_id.0.clone();
-    if req.ds_id < 1 {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "dsId must be >= 1"));
+    if req.proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
     }
     let replace = req.replace.unwrap_or(false);
-    upsert_mcp_servers_for_ds(&state, req.ds_id, req.mcp_servers, replace).await?;
+    upsert_mcp_servers_for_ds(&state, req.proj_id, req.mcp_servers, replace).await?;
     let (report, loaded_names, configured_servers, status, names) =
-        apply_settings_and_probe(&state, req.ds_id, 15).await?;
+        apply_settings_and_probe(&state, req.proj_id, 15).await?;
     let loaded = names.iter().all(|name| loaded_names.contains(name)) && status == "ok";
     let missing_servers = names
         .iter()
@@ -8476,7 +8612,7 @@ async fn inject_mcp(
     Ok(Json(McpResponse {
         session_id: request_id.clone(),
         request_id,
-        ds_id: req.ds_id,
+        proj_id: req.proj_id,
         injected_server_names: names,
         loaded,
         missing_servers,
@@ -8488,14 +8624,14 @@ async fn inject_mcp(
 
 async fn get_injected_mcp(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
     Extension(http_request_id): Extension<HttpRequestId>,
     Query(query): Query<ProbeQuery>,
 ) -> Result<Json<McpResponse>, ApiError> {
     let request_id = http_request_id.0.clone();
     let timeout_seconds = query.probe_timeout_seconds.unwrap_or(15);
     let (report, loaded_names, configured_servers, status, names) =
-        apply_settings_and_probe(&state, ds_id, timeout_seconds).await?;
+        apply_settings_and_probe(&state, proj_id, timeout_seconds).await?;
     let loaded = names.iter().all(|name| loaded_names.contains(name)) && status == "ok";
     let missing_servers = names
         .iter()
@@ -8505,7 +8641,7 @@ async fn get_injected_mcp(
     Ok(Json(McpResponse {
         session_id: request_id.clone(),
         request_id,
-        ds_id,
+        proj_id,
         injected_server_names: names,
         loaded,
         missing_servers,
@@ -8517,7 +8653,7 @@ async fn get_injected_mcp(
 
 async fn delete_injected_mcp(
     State(state): State<AppState>,
-    AxumPath(ds_id): AxumPath<i64>,
+    AxumPath(proj_id): AxumPath<i64>,
     Extension(http_request_id): Extension<HttpRequestId>,
     Query(query): Query<DeleteQuery>,
 ) -> Result<Json<McpResponse>, ApiError> {
@@ -8530,10 +8666,10 @@ async fn delete_injected_mcp(
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>()
     });
-    clear_mcp_servers_for_ds(&state, ds_id, targets).await?;
+    clear_mcp_servers_for_ds(&state, proj_id, targets).await?;
     let timeout_seconds = query.probe_timeout_seconds.unwrap_or(15);
     let (report, loaded_names, configured_servers, status, names) =
-        apply_settings_and_probe(&state, ds_id, timeout_seconds).await?;
+        apply_settings_and_probe(&state, proj_id, timeout_seconds).await?;
     let loaded = names.iter().all(|name| loaded_names.contains(name)) && status == "ok";
     let missing_servers = names
         .iter()
@@ -8543,7 +8679,7 @@ async fn delete_injected_mcp(
     Ok(Json(McpResponse {
         session_id: request_id.clone(),
         request_id,
-        ds_id,
+        proj_id,
         injected_server_names: names,
         loaded,
         missing_servers,
@@ -8555,10 +8691,10 @@ async fn delete_injected_mcp(
 
 async fn apply_settings_and_probe(
     state: &AppState,
-    ds_id: i64,
+    proj_id: i64,
     probe_timeout_seconds: u64,
 ) -> Result<(Value, Vec<String>, i64, String, Vec<String>), ApiError> {
-    let work_dir = state.cfg.work_root.join(format!("ds_{ds_id}"));
+    let work_dir = state.cfg.work_root.join(format!("proj_{proj_id}"));
     fs::create_dir_all(work_dir.join(".claw"))
         .await
         .map_err(|e| {
@@ -8568,10 +8704,10 @@ async fn apply_settings_and_probe(
             )
         })?;
     let settings = {
-        let lock = get_ds_lock(state, ds_id).await;
+        let lock = get_proj_lock(state, proj_id).await;
         let _guard = lock.lock().await;
         ensure_workspace_initialized(&state.cfg.claw_bin, &work_dir).await?;
-        let settings = build_settings(state, ds_id).await;
+        let settings = build_settings(state, proj_id).await;
         let settings_content = serde_json::to_vec_pretty(&settings).map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -8596,8 +8732,8 @@ async fn apply_settings_and_probe(
 }
 
 /// Solve/runtime MCP: **`project_config.mcp_servers_json` only** — no `.claw.json` / env / memory fallback.
-async fn build_settings(state: &AppState, ds_id: i64) -> Value {
-    if let Ok(Some(row)) = state.session_db.get_project_config(ds_id).await {
+async fn build_settings(state: &AppState, proj_id: i64) -> Value {
+    if let Ok(Some(row)) = state.session_db.get_project_config(proj_id).await {
         project_config_apply::build_settings_json_from_row(&row)
     } else {
         json!({
@@ -8698,15 +8834,15 @@ async fn probe_mcp_load(
     Ok((parsed, loaded_names, configured_servers, status))
 }
 
-async fn get_ds_lock(state: &AppState, ds_id: i64) -> Arc<Mutex<()>> {
-    let mut locks = state.ds_locks.lock().await;
+async fn get_proj_lock(state: &AppState, proj_id: i64) -> Arc<Mutex<()>> {
+    let mut locks = state.proj_locks.lock().await;
     locks
-        .entry(ds_id)
+        .entry(proj_id)
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
 }
 
-async fn validate_ds_exists(ds_id: i64, path: &Path) -> Result<(), ApiError> {
+async fn validate_proj_exists(proj_id: i64, path: &Path) -> Result<(), ApiError> {
     if fs::metadata(path).await.is_err() {
         warn!("datasource registry not found: {}", path.display());
         return Ok(());
@@ -8721,7 +8857,7 @@ async fn validate_ds_exists(ds_id: i64, path: &Path) -> Result<(), ApiError> {
     if let Some(ds) = parsed
         .get("datasources")
         .and_then(Value::as_object)
-        .and_then(|m| m.get(&ds_id.to_string()))
+        .and_then(|m| m.get(&proj_id.to_string()))
     {
         if ds.is_object() {
             return Ok(());
@@ -8869,20 +9005,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ds_project_tree_ready_requires_claude_md_or_applied_empty_override() {
+    async fn proj_tree_ready_requires_claude_md_or_applied_empty_override() {
         let tmp = std::env::temp_dir().join(format!("claw-gw-ds-ready-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        assert!(!ds_project_tree_ready(&tmp, None).await);
+        assert!(!proj_tree_ready(&tmp, None).await);
         let (home_claude, _) = project_claude_paths(&tmp);
         std::fs::create_dir_all(home_claude.parent().unwrap()).unwrap();
         std::fs::write(&home_claude, "# test").unwrap();
-        assert!(ds_project_tree_ready(&tmp, None).await);
+        assert!(proj_tree_ready(&tmp, None).await);
         std::fs::write(&home_claude, "   \n").unwrap();
-        assert!(!ds_project_tree_ready(&tmp, None).await);
+        assert!(!proj_tree_ready(&tmp, None).await);
 
         let row = session_db::ProjectConfigRow {
-            ds_id: 1,
+            proj_id: 1,
             content_rev: "rev-ready".into(),
             stable_content_rev: Some("rev-ready".into()),
             draft_open: false,
@@ -8906,28 +9042,28 @@ mod tests {
             "rev-ready",
         )
         .unwrap();
-        assert!(ds_project_tree_ready(&tmp, Some(&row)).await);
+        assert!(proj_tree_ready(&tmp, Some(&row)).await);
         std::fs::write(&home_claude, "stale after clear").unwrap();
         assert!(
-            !ds_project_tree_ready(&tmp, Some(&row)).await,
+            !proj_tree_ready(&tmp, Some(&row)).await,
             "stale CLAUDE on disk must block ready when claude_md is empty"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
-    fn ds_work_dir_and_claude_paths_match_contract() {
+    fn proj_work_dir_and_claude_paths_match_contract() {
         let root = Path::new("/tmp/gateway-work");
-        let work_dir = ds_work_dir(root, 27);
-        assert_eq!(work_dir, PathBuf::from("/tmp/gateway-work/ds_27"));
+        let work_dir = proj_work_dir(root, 27);
+        assert_eq!(work_dir, PathBuf::from("/tmp/gateway-work/proj_27"));
         let (home_claude, root_claude) = project_claude_paths(&work_dir);
         assert_eq!(
             home_claude,
-            PathBuf::from("/tmp/gateway-work/ds_27/home/CLAUDE.md")
+            PathBuf::from("/tmp/gateway-work/proj_27/home/CLAUDE.md")
         );
         assert_eq!(
             root_claude,
-            PathBuf::from("/tmp/gateway-work/ds_27/CLAUDE.md")
+            PathBuf::from("/tmp/gateway-work/proj_27/CLAUDE.md")
         );
     }
 

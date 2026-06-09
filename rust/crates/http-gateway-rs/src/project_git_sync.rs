@@ -1,4 +1,4 @@
-//! Per-`ds_id` one-way git push: user work under `home/` → remote (GitHub/GitLab style URL + token).
+//! Per-`proj_id` one-way git push: user work under `home/` → remote (GitHub/GitLab style URL + token).
 //! Paths materialized from `project_config` (see `project_config_apply::git_excluded_home_relpaths`) are **not** pushed.
 //! Author: kejiqing
 

@@ -146,7 +146,7 @@ export function useBizReportStream(
   gatewayBase: string,
   sessionId: string,
   turnId: string,
-  dsId: number
+  projId: number
 ) {
   const [text, setText] = useState("");
   const [live, setLive] = useState(false);
@@ -215,7 +215,7 @@ export function useBizReportStream(
   }, []);
 
   const open = useCallback(() => {
-    if (!gatewayBase || !sessionId || !turnId || !dsId) return;
+    if (!gatewayBase || !sessionId || !turnId || !projId) return;
     if (esRef.current) {
       closedRef.current = true;
       try {
@@ -263,7 +263,7 @@ export function useBizReportStream(
     const q = new URLSearchParams({
       sessionId,
       turnId,
-      dsId: String(dsId),
+      proj_id: String(projId),
       stream: "true",
     });
     const es = new EventSource(
@@ -371,7 +371,7 @@ export function useBizReportStream(
     gatewayBase,
     sessionId,
     turnId,
-    dsId,
+    projId,
     close,
     flushPending,
     scheduleFlush,

@@ -107,7 +107,7 @@ pub fn report_body_from_turn_messages(messages: &[JsonlMessage]) -> String {
 pub async fn import_turn_messages_to_db(
     db: &GatewaySessionDb,
     session_id: &str,
-    ds_id: i64,
+    proj_id: i64,
     turn_id: &str,
     messages: &[JsonlMessage],
     created_at_ms: i64,
@@ -125,7 +125,7 @@ pub async fn import_turn_messages_to_db(
         };
         db.insert_message(
             session_id,
-            ds_id,
+            proj_id,
             turn_id,
             iter,
             seq_i32,
@@ -196,7 +196,7 @@ pub async fn persist_turn_after_solve(
     pool: &PgPool,
     db: &GatewaySessionDb,
     session_id: &str,
-    ds_id: i64,
+    proj_id: i64,
     turn_id: &str,
     user_prompt: &str,
     session_home: &Path,
@@ -206,8 +206,8 @@ pub async fn persist_turn_after_solve(
     duration_ms: i64,
     model: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    let workspace_rel = format!("ds_{ds_id}");
-    db.upsert_project(ds_id, &format!("ds_{ds_id}"), &workspace_rel)
+    let workspace_rel = format!("proj_{proj_id}");
+    db.upsert_project(proj_id, &format!("proj_{proj_id}"), &workspace_rel)
         .await?;
 
     db.update_turn_user_prompt(turn_id, user_prompt).await?;
@@ -221,7 +221,7 @@ pub async fn persist_turn_after_solve(
         }]
     });
     let now = now_ms();
-    import_turn_messages_to_db(db, session_id, ds_id, turn_id, &messages, now).await?;
+    import_turn_messages_to_db(db, session_id, proj_id, turn_id, &messages, now).await?;
 
     let report_message = if let Some(json) = output_json {
         report_body_from_solve_output(output_text, Some(json)).ok()
@@ -256,10 +256,10 @@ pub async fn persist_turn_after_solve(
 pub async fn ensure_jsonl_from_db(
     db: &GatewaySessionDb,
     session_id: &str,
-    ds_id: i64,
+    proj_id: i64,
     session_home: &Path,
 ) -> Result<(), sqlx::Error> {
-    let body = db.render_session_jsonl(session_id, ds_id).await?;
+    let body = db.render_session_jsonl(session_id, proj_id).await?;
     if body.is_empty() {
         return Ok(());
     }

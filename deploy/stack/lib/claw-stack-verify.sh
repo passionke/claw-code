@@ -80,7 +80,7 @@ has_artifact_content="$(psql_q "SELECT EXISTS (
 [[ "${has_artifact_content}" == "t" ]] || fail "gateway_session_artifacts.content missing — pool v1 materialize/readback needs migrate() 004 columns"
 
 has_artifact_upsert_key="$(psql_q "SELECT to_regclass('public.gateway_session_artifacts_session_ds_turn_path_key') IS NOT NULL;")"
-[[ "${has_artifact_upsert_key}" == "t" ]] || fail "gateway_session_artifacts unique (session_id,ds_id,turn_id,relative_path) missing — upsert_workspace_tar_b64 ON CONFLICT will fail"
+[[ "${has_artifact_upsert_key}" == "t" ]] || fail "gateway_session_artifacts unique (session_id,ds_id,turn_id,relative_path) missing — upsert_workspace_tar_b64 ON CONFLICT will fail (legacy ds_id PK; proj_id mirrored in 005_proj_id)"
 
 ok "claw_pool + gateway_turns.pool_id/worker_name + session_artifacts pool-v1 schema present"
 

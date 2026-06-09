@@ -78,14 +78,14 @@
 
 1. **首次分析**  
    客户端调用 `POST /api/v1/analysis/async` 时，可不传 `sessionId`（或由 BFF 不传体字段 `sessionId`）。  
-   - BFF 解析 `dsId` 后，将请求转发为网关 `POST /v1/solve_async`；若客户端也未带头，网关会生成新的会话 ID。  
+   - BFF 解析内部项目 ID 后，将请求转发为网关 `POST /v1/solve_async`（网关请求体可写 legacy **`dsId`**，响应为 **`projId`**）；若客户端也未带头，网关会生成新的会话 ID。  
    - 网关约定：**`taskId` 与 `sessionId` 为同一值**（见 `docs/http-gateway-rs-api.md`）。  
    - 客户端应以响应中的 **`taskId` / `sessionId` / 响应头 `claw-session-id`** 之一作为后续轮询与续聊的唯一键（三者一致时取其一即可）。
 
 2. **同店续聊 / 多轮**  
-   下一次 `async` 或报表请求须带上**上一次返回的 `sessionId`**，并保持与首聊相同的 **`store_id`**（及同一租户 / 解决方案 / 业务类型），以便 BFF **解析出与首聊相同的 `dsId`** 再调网关。  
-   - BFF 映射为网关请求体 `sessionId`：表示显式续聊，复用 SQLite 中 `(sessionId, dsId)` 对应工作区与对话历史。  
-   - 若传入的 `sessionId` 在库中不存在：网关返回 **400**（`unknown sessionId (no session history for this dsId)`）。
+   下一次 `async` 或报表请求须带上**上一次返回的 `sessionId`**，并保持与首聊相同的 **`store_id`**（及同一租户 / 解决方案 / 业务类型），以便 BFF **解析出与首聊相同的项目 ID** 再调网关。  
+   - BFF 映射为网关请求体 `sessionId`：表示显式续聊，复用 PG 中 `(sessionId, projId)` 对应工作区与对话历史。  
+   - 若传入的 `sessionId` 在库中不存在：网关返回 **400**（`unknown sessionId (no session history for this dsId)`，文案仍含历史 `dsId` 字样）。
 
 3. **与任务状态查询**  
    - 轮询 `GET /api/v1/analysis/status` 时，使用 **`task_id` = 上次 `async` 返回的 `taskId`**（即与 `sessionId` 同值）。  
@@ -104,16 +104,16 @@
 | 项目 | 说明 |
 |------|------|
 | **用途** | 异步提交 Boss 报表分析（自然语言问数 / 推理） |
-| **映射 claw 网关** | `POST /v1/solve_async`（文档亦称 resolve_async 语义）；网关请求体仍含 `dsId`，**由 BFF 根据租户与门店等解析或配置映射写入，不对外暴露**。 |
+| **映射 claw 网关** | `POST /v1/solve_async`（文档亦称 resolve_async 语义）；网关请求体含 **`projId`**（BFF 可写 legacy **`dsId`**），**由 BFF 根据租户与门店等解析或配置映射写入，不对外暴露**。响应字段为 **`projId`**。 |
 
 **建议请求体（JSON）——对外契约**
 
-调用方**不填 `dsId`**。除 QueryX 公共字段外，仅需业务可见字段；`dsId` 仅在 BFF → 网关链路中出现。
+调用方**不填 `projId` / `dsId`**。除 QueryX 公共字段外，仅需业务可见字段；项目 ID 仅在 BFF → 网关链路中出现。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `tenant_code` / `solution_code` / `biz_type` | string | 是 | 见上表固定值 |
-| `store_id` | string | 是 | 与 BFF 侧 **`dsId` 解析规则**绑定（同一门店须稳定映射到同一 `dsId`）；BFF 调网关时附带门店等上下文，**不在对外体中暴露** `extraSession` |
+| `store_id` | string | 是 | 与 BFF 侧 **项目 ID 解析规则**绑定（同一门店须稳定映射到同一 `projId`）；BFF 调网关时附带门店等上下文，**不在对外体中暴露** `extraSession` |
 | `sessionId` | string | 否 | 续聊必填；首聊省略则由网关生成 |
 | `question` | string | 是 | 用户自然语言问题，非空；BFF 映射为网关请求体字段 **`userPrompt`** |
 
@@ -123,10 +123,10 @@ Worker 将模型 `TextDelta` 写入 stdout 行 `__CLAW_GATEWAY_STDOUT__` `report
 
 **BFF 侧（设计约定，非对外字段）**  
 
-- 根据 `tenant_code`、`solution_code`、`biz_type`、`store_id`（及可选内部配置表）解析出整数 **`dsId`（≥ 1）**，再组装网关 `POST /v1/solve_async` 请求体。  
+- 根据 `tenant_code`、`solution_code`、`biz_type`、`store_id`（及可选内部配置表）解析出整数 **项目 ID（≥ 1）**，再组装网关 `POST /v1/solve_async` 请求体（可写 legacy `dsId`，读响应 **`projId`**）。  
 - 将 **`question` → `userPrompt`** 写入网关体。  
 - **`model` / `timeoutSeconds` / `extraSession`**：对外接口**不提供**；若网关或下游仍需要，由 BFF 使用部署侧默认模型、超时及内部组装的 `extraSession`（如含 `store_id`、租户标识等），**不**由前端传参控制。  
-- 若无法解析 `dsId`（未知门店、未绑定数据源等）：BFF 应对外返回 **4xx** 及明确 `detail`，**不**调用网关。
+- 若无法解析项目 ID（未知门店、未绑定数据源等）：BFF 应对外返回 **4xx** 及明确 `detail`，**不**调用网关。
 
 **成功响应（示意）**  
 
@@ -139,7 +139,7 @@ Worker 将模型 `TextDelta` 写入 stdout 行 `__CLAW_GATEWAY_STDOUT__` `report
 | 项目 | 说明 |
 |------|------|
 | **用途** | 在异步任务 **成功** 后，获取清洗后的业务报告（去除中间过程与工具轨迹） |
-| **映射 claw 网关** | `GET /v1/biz_advice_report?sessionId=<sessionId>&turnId=<turnId>&dsId=…&stream=…`（BFF 由 `task_id`/`sessionId` 与门店解析 `dsId`）；紧急备用润色：`GET /v1/biz_advice_report_bak?task_id=…`（默认不用） |
+| **映射 claw 网关** | `GET /v1/biz_advice_report?sessionId=<sessionId>&turnId=<turnId>&projId=…&stream=…`（BFF 由 `task_id`/`sessionId` 与门店解析项目 ID；query 可写 legacy `dsId`）；紧急备用润色：`GET /v1/biz_advice_report_bak?task_id=…`（默认不用） |
 
 **Query 参数（QueryX 风格）**
 
@@ -193,7 +193,7 @@ Worker 将模型 `TextDelta` 写入 stdout 行 `__CLAW_GATEWAY_STDOUT__` `report
 2. 轮询 `GET /api/v1/analysis/status`，直到 `has_report === true`（或任务终态）  
 3. 任务进入 `running`/`queued` 后建立报告 SSE（`stream=true`）；终态正文以 `GET /v1/tasks` → **`result.outputJson.message`** 为准
 
-> **实现说明**：权威来源为 `http-gateway-rs` 任务轮询；可选 `GET /v1/sessions/{sessionId}/execution?ds_id=` 获取 `progress` / `progressHistory` / `queue`。
+> **实现说明**：权威来源为 `http-gateway-rs` 任务轮询；可选 `GET /v1/sessions/{sessionId}/execution?proj_id=`（或 legacy `ds_id`）获取 `progress` / `progressHistory` / `queue`。
 
 ---
 
