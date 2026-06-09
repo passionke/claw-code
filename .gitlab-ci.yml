@@ -27,6 +27,7 @@ stages:
   CLAW_POOL_ADVERTISE_HOST: "10.22.28.94"
   CLAW_CLUSTER_ID: sunmi-ci-01
   CLAW_POOL_ID: pool-sunmi-ci-01
+  # nohup dual pool — production default is systemd (see pool-daemon-systemd.sh); CI does not exercise that path
   CLAW_POOL_DAEMON_USE_SYSTEMD: "0"
   CLAW_AUTO_BOOTSTRAP: "1"
 

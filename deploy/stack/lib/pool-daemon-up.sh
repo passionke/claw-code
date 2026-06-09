@@ -141,8 +141,8 @@ if [[ "${RESTART}" == 0 ]] && claw_pool_http_alive; then
     if [[ -z "${pid}" ]] && [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
       # shellcheck disable=SC1091
       source "${LIB_DIR}/pool-daemon-systemd.sh"
-      if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_active; then
-        pid="$(claw_pool_systemd_main_pid)"
+      if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_active "${CLAW_POOL_PROFILE}"; then
+        pid="$(claw_pool_systemd_main_pid "${CLAW_POOL_PROFILE}")"
       fi
     fi
     echo "claw-pool-daemon already on 127.0.0.1:${HTTP_PORT} (pid=${pid:-unknown}, claw_pool ok, skipped)" >&2
@@ -251,8 +251,8 @@ elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]] && {
   source "${LIB_DIR}/pool-daemon-systemd.sh"
   claw_pool_use_systemd
 }; then
-  claw_pool_systemd_install_and_restart "${RPC_DIR}" "${RUN_SH}" "${REPO_ROOT}"
-  pid="$(claw_pool_systemd_main_pid)"
+  claw_pool_systemd_install_and_restart "${RPC_DIR}" "${RUN_SH}" "${REPO_ROOT}" "${CLAW_POOL_PROFILE}"
+  pid="$(claw_pool_systemd_main_pid "${CLAW_POOL_PROFILE}")"
   [[ -n "${pid}" && "${pid}" != "0" ]] && printf '%s' "${pid}" >"${RPC_DIR}/daemon.pid"
 else
   # Linux local / fallback: nohup as current user.
