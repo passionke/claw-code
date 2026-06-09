@@ -2,12 +2,9 @@
 
 use std::path::Path;
 
-use crate::gateway_global_settings;
 use crate::persistence::transcript::{import_turn_messages_to_db, now_ms, JsonlMessage};
 use crate::pool::docker_cli::{runtime_exec, runtime_exec_stdin};
-use crate::pool::worker_isolation::WorkerIsolationMode;
-use crate::project_config_apply::{self, GuestMaterializeWrite};
-use crate::project_config_draft;
+use crate::project_config_apply;
 use crate::session_db::GatewaySessionDb;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -28,10 +25,9 @@ pub struct MaterializeInput {
     pub turn_id: String,
 }
 
-/// Wipe ephemeral worker workspace before PG materialize (no tmpfs residue). Author: kejiqing
+/// Wipe ephemeral session workspace before session artifacts materialize (no tmpfs residue). Author: kejiqing
 ///
-/// `/claw_host_root` tmpfs is mounted with `uid=CLAW_WORKER_UID`; root in the container cannot
-/// delete claw-owned files locked by `guest_lock_project_config_shell`. Wipe as worker + chmod first.
+/// `/claw_host_root` tmpfs is mounted with `uid=CLAW_WORKER_UID`; wipe as worker + chmod first.
 async fn wipe_guest_work_root(
     runtime_bin: &str,
     container_name: &str,
@@ -43,14 +39,14 @@ async fn wipe_guest_work_root(
     exec_sh_lc_as_user(runtime_bin, container_name, worker_exec_user, &script).await
 }
 
-/// Write task/settings/jsonl + workspace tar from PG before `gateway-solve-once`. Author: kejiqing
+/// Write session task/jsonl + workspace tar from PG before `gateway-solve-once`.
+/// Project config (skills/rules/CLAUDE) is read from `/claw_ds` bind, not copied here. Author: kejiqing
 pub async fn materialize_in(
     runtime_bin: &str,
     _work_root_host: &Path,
     container_name: &str,
     db: &GatewaySessionDb,
     input: &MaterializeInput,
-    isolation: WorkerIsolationMode,
     worker_exec_user: &str,
 ) -> Result<(), String> {
     wipe_guest_work_root(runtime_bin, container_name, worker_exec_user).await?;
@@ -107,7 +103,6 @@ pub async fn materialize_in(
             jsonl_body.into_bytes(),
         ));
     }
-    append_project_config_guest_writes(db, input.proj_id, &mut writes).await?;
     for (path, bytes) in writes {
         if bytes.len() > SESSION_MANIFEST_MAX_BYTES {
             return Err(format!(
@@ -116,42 +111,6 @@ pub async fn materialize_in(
         }
         write_file_via_exec_user(runtime_bin, container_name, worker_exec_user, &path, &bytes)
             .await?;
-    }
-    if isolation == WorkerIsolationMode::Strict {
-        exec_sh_lc_as_user(
-            runtime_bin,
-            container_name,
-            worker_exec_user,
-            project_config_apply::guest_lock_project_config_shell(),
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-/// Admin `project_config` (effective formal rev) → `/claw_host_root` every solve. Author: kejiqing
-async fn append_project_config_guest_writes(
-    db: &GatewaySessionDb,
-    proj_id: i64,
-    writes: &mut Vec<(String, Vec<u8>)>,
-) -> Result<(), String> {
-    let Some(row) = project_config_draft::row_for_materialize(db, proj_id)
-        .await
-        .map_err(|e| format!("load project_config for materialize: {e}"))?
-    else {
-        return Ok(());
-    };
-    let scaffold = gateway_global_settings::load_system_prompt_default(db)
-        .await
-        .map_err(|e| format!("load system_prompt_default: {e}"))?;
-    let guest_writes = project_config_apply::build_guest_materialize_writes(&row, &scaffold)
-        .map_err(|e| format!("build guest project_config writes: {e}"))?;
-    for GuestMaterializeWrite { rel_path, bytes } in guest_writes {
-        let dest = format!(
-            "{GUEST_WORK_ROOT}/{}",
-            rel_path.to_string_lossy().replace('\\', "/")
-        );
-        writes.push((dest, bytes));
     }
     Ok(())
 }

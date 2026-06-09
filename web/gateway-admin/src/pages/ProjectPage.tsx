@@ -325,7 +325,35 @@ export default function ProjectPage() {
         )}
       </Space>
 
-      <Card title="Git 单向同步" size="small" style={{ marginBottom: 16 }}>
+      <Card title="Git 导入" size="small" style={{ marginBottom: 16 }}>
+        {projectConfig?.gitSyncJson?.lastPullError ? (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 8 }}
+            message="上次拉取失败"
+            description={projectConfig.gitSyncJson.lastPullError}
+          />
+        ) : projectConfig?.gitSyncJson?.lastPullAtMs ? (
+          <Alert
+            type="success"
+            showIcon
+            style={{ marginBottom: 8 }}
+            message="上次拉取成功"
+            description={
+              formatVersionTime(undefined, projectConfig.gitSyncJson.lastPullAtMs) +
+              (projectConfig.gitSyncJson.lastPullCommitId
+                ? ` · ${projectConfig.gitSyncJson.lastPullCommitId.slice(0, 8)}`
+                : "")
+            }
+          />
+        ) : null}
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+          拉取后文件写入宿主机 <Typography.Text code>proj_{projId}/home/</Typography.Text>
+          ，pool worker 通过 <Typography.Text code>/claw_ds/home/</Typography.Text>{" "}
+          只读可见；<strong>新开一轮 solve</strong> 后 Agent 会在 system prompt 看到文件清单。skills / rules /
+          CLAUDE 仍以 DB 物化为准。
+        </Typography.Paragraph>
         <Form form={gitForm} layout="inline" style={{ gap: 8, flexWrap: "wrap" }}>
           <Form.Item name="enabled" valuePropName="checked" label="启用">
             <Switch />
@@ -370,16 +398,21 @@ export default function ProjectPage() {
             type="primary"
             onClick={async () => {
               const r = await proxyHttp<{
-                outcome?: { pushed?: boolean; commitId?: string };
-              }>(gatewayBase, "POST", `/v1/projects/${projId}/git/push`);
-              message.success(
-                (r.outcome?.pushed ? "已推送" : "无变更") +
-                  (r.outcome?.commitId ? ` · ${r.outcome.commitId.slice(0, 8)}` : "")
-              );
+                outcome?: { pulled?: boolean; commitId?: string };
+                gitSyncJson?: { lastPullError?: string };
+              }>(gatewayBase, "POST", `/v1/projects/${projId}/git/pull`);
+              if (r.gitSyncJson?.lastPullError) {
+                message.error(r.gitSyncJson.lastPullError);
+              } else {
+                message.success(
+                  (r.outcome?.pulled ? "已拉取" : "无变更") +
+                    (r.outcome?.commitId ? ` · ${r.outcome.commitId.slice(0, 8)}` : "")
+                );
+              }
               await refreshProjectConfig();
             }}
           >
-            推送到 Git
+            从 Git 拉取
           </Button>
         </Space>
       </Card>

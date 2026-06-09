@@ -958,6 +958,99 @@ pub fn gateway_sqlbot_preflight_prompt_section(cwd: &Path) -> Option<String> {
     Some(lines.join("\n"))
 }
 
+const GIT_IMPORT_MANIFEST_REL: &str = "home/.claw/git-import-manifest.txt";
+const GIT_IMPORT_PROMPT_MAX: usize = 50;
+
+fn git_import_path_excluded(rel: &str) -> bool {
+    let rel = rel.trim().trim_start_matches("./");
+    rel == "CLAUDE.md"
+        || rel.starts_with("skills/")
+        || rel.starts_with("skills\\")
+        || rel.starts_with(".cursor/")
+        || rel.starts_with(".cursor\\")
+}
+
+fn scan_git_import_paths_bounded(home: &Path, cap: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    if !home.is_dir() {
+        return out;
+    }
+    let mut stack = vec![home.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let Ok(rel) = path.strip_prefix(home) else {
+                continue;
+            };
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if git_import_path_excluded(&rel) {
+                continue;
+            }
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(path);
+            } else if entry.file_type().is_ok_and(|t| t.is_file()) {
+                out.push(rel);
+                if out.len() >= cap {
+                    return out;
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Pool worker: list Git-imported files under `/claw_ds/home/` for system prompt. Author: kejiqing
+#[must_use]
+pub fn gateway_git_import_prompt_section(_cwd: &Path) -> Option<String> {
+    if std::env::var("CLAW_GATEWAY_WORK_ROOT")
+        .ok()
+        .is_none_or(|s| s.trim().is_empty())
+    {
+        return None;
+    }
+    let ds_root = Path::new(GATEWAY_POOL_DS_CONFIG_ROOT);
+    let manifest = ds_root.join(GIT_IMPORT_MANIFEST_REL);
+    let mut paths: Vec<String> = Vec::new();
+    if manifest.is_file() {
+        if let Ok(body) = fs::read_to_string(&manifest) {
+            for line in body.lines() {
+                let t = line.trim();
+                if t.is_empty() || t.starts_with("... and ") {
+                    continue;
+                }
+                if !git_import_path_excluded(t) {
+                    paths.push(t.to_string());
+                }
+            }
+        }
+    }
+    if paths.is_empty() {
+        paths = scan_git_import_paths_bounded(&ds_root.join("home"), GIT_IMPORT_PROMPT_MAX);
+    }
+    if paths.is_empty() {
+        return None;
+    }
+    let session_root = std::env::var("CLAW_GATEWAY_WORK_ROOT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/claw_host_root".to_string());
+    let mut lines = vec![
+        "# Git-imported project files (read-only)".to_string(),
+        format!(
+            "Your writable session cwd is `{session_root}`. Imported repo files are read-only under `{GATEWAY_POOL_DS_CONFIG_ROOT}/home/`."
+        ),
+        "Use Read or bash cat on these absolute paths; do not write under /claw_ds.".to_string(),
+    ];
+    for rel in paths.iter().take(GIT_IMPORT_PROMPT_MAX) {
+        lines.push(format!("- `{GATEWAY_POOL_DS_CONFIG_ROOT}/home/{rel}`"));
+    }
+    Some(lines.join("\n"))
+}
+
 /// Load `home/schema.md` walking up from session cwd (e.g. `ds_1/sessions/<id>` → `ds_1/home/schema.md`).
 #[must_use]
 pub fn load_gateway_schema_md(cwd: &Path) -> Option<String> {

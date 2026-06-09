@@ -607,16 +607,15 @@ mod tests {
 
     #[test]
     fn workspace_write_denies_project_config_in_pool() {
-        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", "/claw_host_root");
+        let _gwr = crate::ScopedEnvVar::set("CLAW_GATEWAY_WORK_ROOT", "/claw_host_root");
         let enforcer = make_enforcer(PermissionMode::WorkspaceWrite);
         let result =
-            enforcer.check_file_write("/claw_host_root/.claw/skills/x/SKILL.md", "/claw_host_root");
+            enforcer.check_file_write("/claw_ds/home/.cursor/rules/safety.mdc", "/claw_host_root");
         match result {
             EnforcementResult::Denied { reason, .. } => {
-                assert!(reason.contains("Admin-managed"));
+                assert!(reason.contains("read-only") || reason.contains("Admin-managed"));
             }
             other => panic!("expected denied result, got {other:?}"),
         }
-        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
     }
 }

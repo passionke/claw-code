@@ -102,7 +102,7 @@ pub struct ProjectConfigRow {
     pub skills_json: Value,
     pub allowed_tools_json: Value,
     pub claude_md: Option<String>,
-    /// Per-project one-way git push: `{ gitUrl, gitRef, gitToken, enabled, lastPush* }`. Author: kejiqing
+    /// Per-project one-way git pull: `{ gitUrl, gitRef, gitToken, enabled, lastPull* }`. Author: kejiqing
     pub git_sync_json: Value,
     /// First-turn solve preflight: `{ "kind": "none" | "sqlbot_mcp_start" }`. Materialized to disk. Author: kejiqing
     pub solve_preflight_json: Value,
@@ -684,7 +684,7 @@ impl GatewaySessionDb {
                 ds_id, proj_id, content_rev, created_at_ms, rules_json, mcp_servers_json,
                 skills_sources_json, skills_json, allowed_tools_json, claude_md
             )
-            SELECT ds_id, ds_id, content_rev, updated_at_ms, rules_json, mcp_servers_json,
+            SELECT ds_id, COALESCE(proj_id, ds_id), content_rev, updated_at_ms, rules_json, mcp_servers_json,
                    skills_sources_json, skills_json, allowed_tools_json, claude_md
             FROM project_config
             ON CONFLICT (ds_id, content_rev) DO NOTHING",

@@ -512,6 +512,21 @@ impl DockerPoolManager {
                     "worker image stale — recreating container"
                 );
                 self.rm_container(name).await?;
+            } else if !self.worker_container_bind_matches_proj(name, proj_id).await {
+                let want = self.proj_host_dir(proj_id);
+                let got = self.worker_container_claw_ds_bind_source(name).await;
+                info!(
+                    target: "claw_gateway_pool",
+                    component = "docker_pool",
+                    phase = "worker_bind_stale",
+                    container = %name,
+                    slot_index,
+                    proj_id,
+                    want_bind = %want.display(),
+                    got_bind = ?got,
+                    "worker /claw_ds bind stale — recreating container"
+                );
+                self.rm_container(name).await?;
             } else {
                 info!(
                     target: "claw_gateway_pool",
@@ -691,6 +706,86 @@ impl DockerPoolManager {
         running_id != desired_id
     }
 
+    /// Host path currently bind-mounted at `/claw_ds` in a running worker. Author: kejiqing
+    async fn worker_container_claw_ds_bind_source(&self, name: &str) -> Option<String> {
+        let out = runtime_exec(
+            &self.bin,
+            &[
+                "inspect",
+                "-f",
+                "{{range .Mounts}}{{if eq .Destination \"/claw_ds\"}}{{.Source}}{{end}}{{end}}",
+                name,
+            ],
+        )
+        .await
+        .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let src = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if src.is_empty() {
+            None
+        } else {
+            Some(src)
+        }
+    }
+
+    fn canonicalize_host_path(path: &Path) -> Option<std::path::PathBuf> {
+        std::fs::canonicalize(path).ok()
+    }
+
+    /// `true` when worker `/claw_ds` bind matches [`Self::proj_host_dir`] for `proj_id`. Author: kejiqing
+    fn worker_bind_matches_proj_host(bind_source: &str, want_host: &Path) -> bool {
+        let want = Self::canonicalize_host_path(want_host);
+        let got = Self::canonicalize_host_path(Path::new(bind_source));
+        match (want, got) {
+            (Some(w), Some(g)) => w == g,
+            _ => bind_source == want_host.to_string_lossy().as_ref(),
+        }
+    }
+
+    async fn worker_container_bind_matches_proj(&self, name: &str, proj_id: i64) -> bool {
+        let Some(bind_source) = self.worker_container_claw_ds_bind_source(name).await else {
+            return false;
+        };
+        Self::worker_bind_matches_proj_host(&bind_source, &self.proj_host_dir(proj_id))
+    }
+
+    /// After external `podman rm` or crash, leased slots may never return to Idle. Author: kejiqing
+    async fn reconcile_stale_leased_slots(&self) -> usize {
+        let names: Vec<String> = {
+            let slots = self.slots.lock().await;
+            slots
+                .iter()
+                .filter(|s| s.state == SlotState::Leased)
+                .map(|s| s.container_name.clone())
+                .collect()
+        };
+        let mut freed = 0usize;
+        for name in names {
+            if self.worker_container_running(&name).await {
+                continue;
+            }
+            let mut slots = self.slots.lock().await;
+            let Some(s) = slots.iter_mut().find(|s| s.container_name == name) else {
+                continue;
+            };
+            if s.state != SlotState::Leased {
+                continue;
+            }
+            info!(
+                target: "claw_gateway_pool",
+                component = "docker_pool",
+                phase = "reconcile_stale_lease",
+                container = %name,
+                "worker gone while slot Leased — returning to Idle"
+            );
+            s.state = SlotState::Idle;
+            freed += 1;
+        }
+        freed
+    }
+
     fn stderr_name_already_in_use(stderr: &[u8]) -> bool {
         let s = String::from_utf8_lossy(stderr);
         s.contains("already in use") || s.contains("is already in use")
@@ -753,7 +848,6 @@ impl DockerPoolManager {
                     proj_id,
                     turn_id: turn_id.to_string(),
                 },
-                isolation,
                 &exec_user,
             )
             .await?;
@@ -888,6 +982,9 @@ impl DockerPoolManager {
                     }
                 }
                 drop(slots);
+                if self.reconcile_stale_leased_slots().await > 0 {
+                    continue;
+                }
                 sleep(Duration::from_millis(50)).await;
             }
         })
@@ -935,7 +1032,10 @@ impl DockerPoolManager {
             "-e".into(),
             "CLAW_GATEWAY_WORK_ROOT=/claw_host_root".into(),
             "-e".into(),
-            format!("CLAW_PROJECT_CONFIG_ROOT={GUEST_WORK_ROOT}"),
+            format!(
+                "CLAW_PROJECT_CONFIG_ROOT={}",
+                session_db_sync::DS_MOUNT_TARGET
+            ),
             "-e".into(),
             format!("HOME={GUEST_WORK_ROOT}"),
             "-e".into(),
@@ -1303,6 +1403,23 @@ mod worker_volume_mount_tests {
             arg.contains(":rw,"),
             "session workspace tmpfs must be rw: {arg}"
         );
+    }
+
+    #[test]
+    fn worker_bind_matches_proj_host_compares_paths() {
+        let dir = std::env::temp_dir().join("claw-bind-test-proj_1");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let canon = std::fs::canonicalize(&dir).unwrap();
+        assert!(DockerPoolManager::worker_bind_matches_proj_host(
+            canon.to_string_lossy().as_ref(),
+            &dir
+        ));
+        assert!(!DockerPoolManager::worker_bind_matches_proj_host(
+            "/tmp/ds_1",
+            &dir
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -1898,7 +2015,7 @@ esac
                 .unwrap();
         let (_sid, lease) = acquire_test(&pool, &work).await;
         let cname = pool.test_leased_container_name(&lease).await;
-        let dest = format!("{GUEST_WORK_ROOT}/.claw/skills/existing/SKILL.md");
+        let dest = format!("{DS_MOUNT_TARGET}/.claw/skills/existing/SKILL.md");
         let argv = [
             "exec",
             "--user",

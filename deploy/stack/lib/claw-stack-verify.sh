@@ -142,6 +142,12 @@ claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" \
   || fail "gateway container cannot reach strict pool HTTP — run gateway.sh up"
 
 echo "==> [3/6] dual pool registry (strict + relaxed)"
+if [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/pool-daemon-systemd.sh"
+  claw_pool_systemd_assert_dual_pool_coherent "${PODMAN_DIR}" \
+    || fail "systemd dual-pool incoherent (legacy single unit may have overwritten strict)"
+fi
 claw_verify_pool_profile strict "${STRICT_RPC_DIR}" "${STRICT_POOL_ID}" "${STRICT_HTTP_PORT}"
 claw_verify_pool_profile relaxed "${RELAXED_RPC_DIR}" "${RELAXED_POOL_ID}" "${RELAXED_HTTP_PORT}"
 

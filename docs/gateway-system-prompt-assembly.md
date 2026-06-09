@@ -39,6 +39,10 @@ Author: kejiqing
 
 8. **`# SQLBot context (preflight, session-local)`** — preflight 物化了 `home/*.md` 时
 
+**Pool solve 额外**（`gateway-solve-turn`）：
+
+9. **`# Git import (read-only)`** — `/claw_ds/home/` 下 Git 导入清单或 bounded scan（manifest：`home/.claw/git-import-manifest.txt`）
+
 ---
 
 ## 3. MCP 与 system prompt 的边界
@@ -53,14 +57,17 @@ Admin「系统提示词」页与 clawTap 看到的 **不含** tool schema；缺 
 
 ---
 
-## 4. 物化路径（`project_config_apply`）
+## 4. 物化路径（`project_config_apply`）与 pool 分层
 
-| 字段 | 宿主机 `ds_*` | Pool guest `/claw_host_root` |
+**Project / session 分层**（pool v1）：宿主机 `apply_project_config` 物化到 `proj_{id}/`；worker 通过 **`/claw_ds` 只读 bind** 读 project 配置（`CLAW_PROJECT_CONFIG_ROOT=/claw_ds`）。**`materialize_in` 不再**把 skills / rules / CLAUDE / MCP 写入 session tmpfs（`/claw_host_root`）。
+
+| 字段 | 宿主机 `proj_{id}/` | Pool guest 读路径 |
 | --- | --- | --- |
-| `claude_md` | `home/CLAUDE.md` + 根 `CLAUDE.md`；**空 / null 时 apply 删除**上述路径（避免 prompt 仍扫到旧文件） | 根 `CLAUDE.md`（空则不写入） |
-| scaffold（PG 默认） | `.claw/system_prompt_scaffold.md` | 同左 |
-| `mcp_servers_json` | `.claw/settings.json`（`apply` 后 `write_ds_settings_json`） | `materialize_in` 写入 |
+| `claude_md` | `home/CLAUDE.md` + 根 `CLAUDE.md`；**空 / null 时 apply 删除**上述路径 | `/claw_ds/CLAUDE.md` 或 `/claw_ds/home/CLAUDE.md` |
+| scaffold（PG 默认） | `.claw/system_prompt_scaffold.md` | `/claw_ds/.claw/system_prompt_scaffold.md` |
+| `mcp_servers_json` | `.claw/settings.json`（`apply` 后 `write_ds_settings_json`） | `/claw_ds/.claw/settings.json` |
 | `prompt_limits_json` | `.claw/settings.json` → `instructionFileMaxChars` / `instructionTotalMaxChars` | 同左；`{}` 时用默认 8000 / 24000 |
+| Git 导入业务文件 | `home/` 下非 PG 路径 | `/claw_ds/home/…`（只读）；可选 manifest `home/.claw/git-import-manifest.txt` |
 | **已废弃** | ~~`.claw/system_prompt_user_override.md`~~ | **不得**再从 `claude_md` 写入；apply 会 **删除** 遗留文件 |
 
 **`prompt_limits_json`**（Admin「系统提示词」页）：单文件默认 **8000** 字符；`# Claude instructions` 与 `# Project rules` 段各有一份合计默认 **24000**。优先级：项目 settings → `CLAW_INSTRUCTION_*` 环境变量 → 默认。

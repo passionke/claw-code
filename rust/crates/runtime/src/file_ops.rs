@@ -294,7 +294,15 @@ pub fn reject_pool_logical_ds_home_write(path: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Admin `project_config` paths materialized each solve — not session-writable (avoid cross-session drift). Author: kejiqing
+fn pool_config_root() -> PathBuf {
+    std::env::var("CLAW_PROJECT_CONFIG_ROOT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| PathBuf::from(POOL_DS_HOME_RO_ROOT), PathBuf::from)
+}
+
+/// Admin `project_config` on `/claw_ds` (pool bind) — not session-writable. Session tmpfs (`/claw_host_root`) is writable. Author: kejiqing
 #[must_use]
 pub fn is_pool_project_config_write_path(path: &str) -> bool {
     if pool_work_root().is_none() {
@@ -304,33 +312,26 @@ pub fn is_pool_project_config_write_path(path: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    let relative = Path::new(trimmed);
-    if !relative.is_absolute() && relpath_is_pool_project_config(relative) {
-        return true;
-    }
     let Ok(abs) = normalize_path_allow_missing(trimmed) else {
         return false;
     };
-    let Some(root) = pool_work_root() else {
-        return false;
-    };
-    match abs.strip_prefix(&root) {
-        Ok(rel) => relpath_is_pool_project_config(rel),
-        Err(_) => false,
-    }
+    let config_root = pool_config_root();
+    abs.strip_prefix(&config_root)
+        .ok()
+        .is_some_and(relpath_is_pool_project_config)
 }
 
 fn relpath_is_pool_project_config(rel: &Path) -> bool {
     if rel.as_os_str().is_empty() {
         return false;
     }
-    if rel == Path::new("CLAUDE.md") {
+    if rel == Path::new("CLAUDE.md") || rel == Path::new("home/CLAUDE.md") {
         return true;
     }
-    if rel.starts_with(".cursor/rules") {
+    if rel.starts_with(".cursor/rules") || rel.starts_with("home/.cursor/rules") {
         return true;
     }
-    if rel.starts_with(".claw/skills") {
+    if rel.starts_with(".claw/skills") || rel.starts_with("home/skills") {
         return true;
     }
     matches!(
@@ -932,7 +933,7 @@ mod tests {
 
     #[test]
     fn pool_worker_rejects_logical_ds_home_writes() {
-        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", "/claw_host_root");
+        let _gwr = crate::ScopedEnvVar::set("CLAW_GATEWAY_WORK_ROOT", "/claw_host_root");
         assert!(is_pool_logical_ds_home_write_path(
             "/claw_ds/home/schema.md"
         ));
@@ -942,20 +943,20 @@ mod tests {
         assert!(is_pool_logical_ds_home_write_path("home/skills/x/SKILL.md"));
         let err = write_file("/claw_host_root/home/forbidden.md", "x").expect_err("ds_home write");
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
-        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
     }
 
     #[test]
     fn pool_worker_rejects_project_config_writes() {
-        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", "/claw_host_root");
+        let _gwr = crate::ScopedEnvVar::set("CLAW_GATEWAY_WORK_ROOT", "/claw_host_root");
         assert!(is_pool_project_config_write_path(
+            "/claw_ds/.claw/skills/plan/SKILL.md"
+        ));
+        assert!(is_pool_project_config_write_path(
+            "/claw_ds/home/.cursor/rules/safety.mdc"
+        ));
+        assert!(is_pool_project_config_write_path("/claw_ds/CLAUDE.md"));
+        assert!(!is_pool_project_config_write_path(
             "/claw_host_root/.claw/skills/plan/SKILL.md"
-        ));
-        assert!(is_pool_project_config_write_path(
-            "/claw_host_root/.cursor/rules/safety.mdc"
-        ));
-        assert!(is_pool_project_config_write_path(
-            "/claw_host_root/CLAUDE.md"
         ));
         assert!(!is_pool_project_config_write_path(
             "/claw_host_root/.claw/gateway-solve-session.jsonl"
@@ -963,11 +964,9 @@ mod tests {
         assert!(!is_pool_project_config_write_path(
             "/claw_host_root/report.md"
         ));
-        let err = write_file("/claw_host_root/.claw/skills/plan/SKILL.md", "x")
-            .expect_err("project skill write");
+        let err = write_file("/claw_ds/CLAUDE.md", "x").expect_err("project config write");
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
-        assert!(err.to_string().contains("Admin-managed"));
-        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
+        assert!(err.to_string().contains("read-only"));
     }
 
     #[test]
