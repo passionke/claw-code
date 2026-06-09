@@ -3424,6 +3424,18 @@ fn skill_lookup_roots() -> Vec<SkillLookupRoot> {
         push_project_skill_lookup_roots(&mut roots, &cwd);
     }
 
+    if let Ok(raw) = std::env::var("CLAW_PROJECT_CONFIG_ROOT") {
+        let root = std::path::PathBuf::from(raw.trim());
+        if !root.as_os_str().is_empty() {
+            push_prefixed_skill_lookup_roots(&mut roots, &root.join(".claw"));
+            push_skill_lookup_root(
+                &mut roots,
+                root.join("home").join("skills"),
+                SkillLookupOrigin::SkillsDir,
+            );
+        }
+    }
+
     if let Ok(claw_config_home) = std::env::var("CLAW_CONFIG_HOME") {
         push_prefixed_skill_lookup_roots(&mut roots, std::path::Path::new(&claw_config_home));
     }

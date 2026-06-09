@@ -27,6 +27,7 @@ pub enum PoolRpcReq {
     Acquire {
         timeout_ms: u64,
         session_id: String,
+        #[serde(alias = "ds_id")]
         proj_id: i64,
         turn_id: String,
     },

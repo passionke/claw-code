@@ -25,10 +25,10 @@ export interface GitSyncJson {
   gitPatId?: string;
   gitToken?: string;
   gitTokenSet?: boolean;
-  lastPushAtMs?: number;
-  lastPushCommitId?: string;
-  lastPushError?: string;
-  lastPushOk?: boolean;
+  lastPullAtMs?: number;
+  lastPullCommitId?: string;
+  lastPullError?: string;
+  lastPullOk?: boolean;
   configured?: boolean;
 }
 

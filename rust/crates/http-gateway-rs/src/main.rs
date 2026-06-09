@@ -48,7 +48,7 @@ use http_gateway_rs::{
     turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
-    git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPushOutcome,
+    git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
 };
 use runtime::load_system_prompt;
 use serde::{Deserialize, Serialize};
@@ -546,10 +546,10 @@ struct ActivateProjectConfigVersionResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct ProjectGitPushResponse {
+struct ProjectGitPullResponse {
     #[serde(rename = "projId")]
     proj_id: i64,
-    outcome: GitPushOutcome,
+    outcome: GitPullOutcome,
     #[serde(rename = "gitSyncJson")]
     git_sync_json: Value,
 }
@@ -1543,7 +1543,7 @@ async fn main() {
             get(list_project_sessions),
         )
         .route("/v1/projects/{proj_id}", delete(delete_project))
-        .route("/v1/projects/{proj_id}/git/push", post(push_project_git))
+        .route("/v1/projects/{proj_id}/git/pull", post(pull_project_git))
         .route("/v1/init", post(init_workspace))
         .route("/v1/solve", post(solve))
         .route("/v1/start", post(solve_start))
@@ -2471,14 +2471,13 @@ async fn apply_project_config_for_proj(
     proj_id: i64,
     force: bool,
 ) -> Result<(), ApiError> {
-    apply_project_config_for_proj_inner(state, proj_id, force, true).await
+    apply_project_config_for_proj_inner(state, proj_id, force).await
 }
 
 async fn apply_project_config_for_proj_inner(
     state: &AppState,
     proj_id: i64,
     force: bool,
-    auto_git_push: bool,
 ) -> Result<(), ApiError> {
     let row = project_config_draft::row_for_materialize(&state.session_db, proj_id)
         .await
@@ -2504,37 +2503,14 @@ async fn apply_project_config_for_proj_inner(
         .await
         .map_err(|e| map_project_config_apply_err(&e))?;
     write_proj_settings_json(state, proj_id).await?;
-    if auto_git_push {
-        maybe_push_project_git(state, proj_id).await;
-    }
     Ok(())
 }
 
-async fn maybe_push_project_git(state: &AppState, proj_id: i64) {
-    let Ok(row) = state.session_db.get_project_config(proj_id).await else {
-        return;
-    };
-    let Some(row) = row else {
-        return;
-    };
-    if !parse_git_sync_json(&row.git_sync_json).enabled {
-        return;
-    }
-    if let Err(e) = try_push_project_git(state, proj_id).await {
-        warn!(
-            target: "claw_gateway_orchestration",
-            proj_id,
-            error = %e.message,
-            "per-project git push after apply failed (non-fatal)"
-        );
-    }
-}
-
-/// One-way push `home/` → per-project remote; updates `git_sync_json` lastPush* in DB. Author: kejiqing
-async fn try_push_project_git(
+/// One-way pull remote → `home/`; updates `git_sync_json` lastPull* in DB. Author: kejiqing
+async fn try_pull_project_git(
     state: &AppState,
     proj_id: i64,
-) -> Result<GitPushOutcome, project_git_sync::ProjectGitSyncError> {
+) -> Result<GitPullOutcome, project_git_sync::ProjectGitSyncError> {
     let row = state
         .session_db
         .get_project_config(proj_id)
@@ -2559,28 +2535,13 @@ async fn try_push_project_git(
         return Err(project_git_sync::ProjectGitSyncError::new(msg));
     }
     let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
-    let author = state.cfg.projects_git_author.trim();
-    let author = if author.is_empty() {
-        "claw-gateway <gateway@claw.local>"
-    } else {
-        author
-    };
-    let (author_name, author_email) = parse_projects_git_author(author);
     let excluded = project_config_apply::git_excluded_home_relpaths(&row);
-    match project_git_sync::push_home_oneway(
-        &work_dir,
-        &sync,
-        &excluded,
-        &author_name,
-        &author_email,
-    )
-    .await
-    {
+    match project_git_sync::pull_home_oneway(&work_dir, &sync, &excluded).await {
         Ok(outcome) => {
             let mut updated = sync;
-            updated.last_push_at_ms = Some(now_ms());
-            updated.last_push_commit_id.clone_from(&outcome.commit_id);
-            updated.last_push_error = None;
+            updated.last_pull_at_ms = Some(now_ms());
+            updated.last_pull_commit_id.clone_from(&outcome.commit_id);
+            updated.last_pull_error = None;
             let git_sync_json = git_sync_to_json(&updated);
             persist_git_sync_status(state, &row, &git_sync_json)
                 .await
@@ -2591,8 +2552,8 @@ async fn try_push_project_git(
         }
         Err(e) => {
             let mut updated = sync;
-            updated.last_push_at_ms = Some(now_ms());
-            updated.last_push_error = Some(e.message.clone());
+            updated.last_pull_at_ms = Some(now_ms());
+            updated.last_pull_error = Some(e.message.clone());
             let git_sync_json = git_sync_to_json(&updated);
             let _ = persist_git_sync_status(state, &row, &git_sync_json).await;
             Err(e)
@@ -2958,7 +2919,7 @@ async fn activate_project_config_revision_row(
         .map_err(|e| session_db_err(&e))?;
     let lock = get_proj_lock(state, proj_id).await;
     let _guard = lock.lock().await;
-    apply_project_config_for_proj_inner(state, proj_id, true, true).await?;
+    apply_project_config_for_proj_inner(state, proj_id, true).await?;
     let applied = project_config_apply::read_applied_content_rev(&proj_work_dir(
         &state.cfg.work_root,
         proj_id,
@@ -2994,6 +2955,11 @@ fn merge_git_sync_from_put(incoming: &Value, existing: &Value) -> Value {
         .is_none_or(|s| s.is_empty())
     {
         inc.git_token = ex.git_token;
+    }
+    if incoming.get("lastPullAtMs").is_none() {
+        inc.last_pull_at_ms = ex.last_pull_at_ms;
+        inc.last_pull_commit_id = ex.last_pull_commit_id;
+        inc.last_pull_error = ex.last_pull_error;
     }
     git_sync_to_json(&inc)
 }
@@ -4243,10 +4209,10 @@ async fn list_projects(
     }))
 }
 
-async fn push_project_git(
+async fn pull_project_git(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
-) -> Result<Json<ProjectGitPushResponse>, ApiError> {
+) -> Result<Json<ProjectGitPullResponse>, ApiError> {
     if proj_id < 1 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -4255,17 +4221,20 @@ async fn push_project_git(
     }
     let lock = get_proj_lock(&state, proj_id).await;
     let _guard = lock.lock().await;
-    apply_project_config_for_proj_inner(&state, proj_id, false, false).await?;
-    let outcome = try_push_project_git(&state, proj_id)
+    let outcome = try_pull_project_git(&state, proj_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e.message))?;
+    apply_project_config_for_proj_inner(&state, proj_id, true).await?;
+    project_config_apply::link_claw_compat_symlinks(&proj_work_dir(&state.cfg.work_root, proj_id))
+        .await
+        .map_err(|e| map_project_config_apply_err(&e))?;
     let row = state
         .session_db
         .get_project_config(proj_id)
         .await
         .map_err(|e| session_db_err(&e))?
         .expect("row exists");
-    Ok(Json(ProjectGitPushResponse {
+    Ok(Json(ProjectGitPullResponse {
         proj_id,
         outcome,
         git_sync_json: git_sync_json_for_api(&state, &row.git_sync_json).await,

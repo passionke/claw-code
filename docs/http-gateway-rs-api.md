@@ -218,19 +218,19 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - `DELETE /v1/gateway/global-settings/llm-models/{model_id}` — 删除模型及其全部 revision
   - `POST /v1/gateway/global-settings/git-pats` — 创建/更新 PAT；body `{ id?, name, note?, token? }`（新建须 `token`；更新可省略 `token` 保留原值）
   - `DELETE /v1/gateway/global-settings/git-pats/{pat_id}` — 删除 PAT
-  - 项目 `gitSyncJson` 使用 `gitPatId` 引用全局 PAT；推送时由网关解析 token，**不在** `project_config` 存 PAT 明文（兼容旧 `gitToken` 内联）
+  - 项目 `gitSyncJson` 使用 `gitPatId` 引用全局 PAT；拉取时由网关解析 token，**不在** `project_config` 存 PAT 明文（兼容旧 `gitToken` 内联）
 
-- `POST /v1/projects/{proj_id}/git/push`
-  - 用途：将 `home/` 下**非 DB 物化**文件单向推送到远程（排除路径由当前 `project_config` 行计算，与物化规则一致）
-  - 前置：`gitSyncJson.enabled=true` 且 URL/分支合法；会先按 DB 物化磁盘
-  - 成功：`{ "projId", "outcome": { "pushed", "commitId", "branch", "gitUrl" }, "gitSyncJson": { ... } }`（含 `lastPush*`）
-  - 失败：**502**，`gitSyncJson.lastPushError` 会写入 PG
+- `POST /v1/projects/{proj_id}/git/pull`
+  - 用途：从远程拉取到 `home/` 下**非 DB 物化**路径（排除列表由当前 `project_config` 行计算）；pull 后 `apply_project_config` 叠加 PG
+  - 前置：`gitSyncJson.enabled=true` 且 URL/分支合法
+  - 成功：`{ "projId", "outcome": { "pulled", "commitId", "branch", "gitUrl" }, "gitSyncJson": { ... } }`（含 `lastPull*`）
+  - 失败：**502**，`gitSyncJson.lastPullError` 会写入 PG
 
 ## Projects (proj workspace lifecycle)
 
 - `GET /v1/projects`
   - 用途：Admin 项目列表；**以 PostgreSQL `project_config` 为准**（`skillsCountDb`、`claudeInDb`、`contentRev` 等），并附带磁盘就绪（`environmentPrepared`、`skillsCountDisk`、`dbSyncedToDisk`）
-  - 响应：`{ "projects": [ ... ], "listedAtMs": <ms> }`；每项含 `gitSync` 摘要（`enabled`、`configured`、`gitTokenSet`、`lastPushOk`、`lastPushError` 等，无 PAT）
+  - 响应：`{ "projects": [ ... ], "listedAtMs": <ms> }`；每项含 `gitSync` 摘要（`enabled`、`configured`、`gitTokenSet`、`lastPullOk`、`lastPullError` 等，无 PAT）
 
 - `POST /v1/projects`
   - 用途：新建 `proj_<id>`（`work_root` + 空 `project_config` 行 + 占位 `CLAUDE.md`）；`projId` 可选（可写 legacy `dsId`），省略则自动 `max(已有)+1`

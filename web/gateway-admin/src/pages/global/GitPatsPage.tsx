@@ -110,7 +110,7 @@ export default function GitPatsPage() {
           </Button>
           <Popconfirm
             title="删除此 PAT？"
-            description="引用该 PAT 的项目 Git 同步将无法推送，直到重新选择。"
+            description="引用该 PAT 的项目 Git 拉取将无法认证，直到重新选择。"
             onConfirm={async () => {
               await proxyHttp(
                 gatewayBase,

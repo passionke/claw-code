@@ -1,15 +1,19 @@
-//! Per-`proj_id` one-way git push: user work under `home/` → remote (GitHub/GitLab style URL + token).
-//! Paths materialized from `project_config` (see `project_config_apply::git_excluded_home_relpaths`) are **not** pushed.
+//! Per-`proj_id` one-way git pull: remote → user work under `home/` (GitHub/GitLab style URL + token).
+//! Paths materialized from `project_config` (see `project_config_apply::git_excluded_home_relpaths`) are **not** imported.
 //! Author: kejiqing
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::fs;
 use tokio::process::Command;
+
+/// Relative to `proj_<id>/`: manifest of imported paths for pool prompt discovery. Author: kejiqing
+pub const GIT_IMPORT_MANIFEST_REL: &str = "home/.claw/git-import-manifest.txt";
+
+const MANIFEST_MAX_LINES: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectGitSync {
@@ -36,6 +40,25 @@ pub struct ProjectGitSync {
     )]
     pub author_email: Option<String>,
     #[serde(
+        rename = "lastPullAtMs",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_pull_at_ms: Option<i64>,
+    #[serde(
+        rename = "lastPullCommitId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_pull_commit_id: Option<String>,
+    #[serde(
+        rename = "lastPullError",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_pull_error: Option<String>,
+    /// Legacy push fields (deserialize only). Author: kejiqing
+    #[serde(
         rename = "lastPushAtMs",
         default,
         skip_serializing_if = "Option::is_none"
@@ -60,8 +83,8 @@ fn default_git_ref() -> String {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct GitPushOutcome {
-    pub pushed: bool,
+pub struct GitPullOutcome {
+    pub pulled: bool,
     #[serde(rename = "commitId", skip_serializing_if = "Option::is_none")]
     pub commit_id: Option<String>,
     pub branch: String,
@@ -105,6 +128,9 @@ pub fn parse_git_sync_json(v: &Value) -> ProjectGitSync {
             git_token: None,
             author_name: None,
             author_email: None,
+            last_pull_at_ms: None,
+            last_pull_commit_id: None,
+            last_pull_error: None,
             last_push_at_ms: None,
             last_push_commit_id: None,
             last_push_error: None,
@@ -118,6 +144,9 @@ pub fn parse_git_sync_json(v: &Value) -> ProjectGitSync {
         git_token: None,
         author_name: None,
         author_email: None,
+        last_pull_at_ms: None,
+        last_pull_commit_id: None,
+        last_pull_error: None,
         last_push_at_ms: None,
         last_push_commit_id: None,
         last_push_error: None,
@@ -137,7 +166,7 @@ pub fn git_sync_to_json(sync: &ProjectGitSync) -> Value {
     serde_json::to_value(&out).unwrap_or_else(|_| json!({}))
 }
 
-/// Resolve `gitPatId` → inline `git_token` for push/validate (does not mutate stored JSON). Author: kejiqing
+/// Resolve `gitPatId` → inline `git_token` for pull/validate (does not mutate stored JSON). Author: kejiqing
 pub fn resolve_git_sync_credentials(
     sync: &ProjectGitSync,
     pat_tokens: &std::collections::BTreeMap<String, String>,
@@ -181,7 +210,7 @@ pub fn validate_git_sync_resolved(sync: &ProjectGitSync) -> Result<(), String> {
             "gitSync.gitUrl must not embed credentials; use gitSync.gitToken for PAT".into(),
         );
     }
-    if is_http {
+    if is_http || is_ssh {
         let token = sync
             .git_token
             .as_deref()
@@ -194,7 +223,7 @@ pub fn validate_git_sync_resolved(sync: &ProjectGitSync) -> Result<(), String> {
             .filter(|s| !s.is_empty());
         if token.is_none() && pat_id.is_none() {
             return Err(
-                "gitSync.gitPatId or gitSync.gitToken is required for HTTP(S) gitUrl (use gateway global PAT or inline token)"
+                "gitSync.gitPatId or gitSync.gitToken is required for git pull (HTTP(S) or git@ with PAT)"
                     .into(),
             );
         }
@@ -226,8 +255,8 @@ pub fn git_sync_list_summary(v: &Value) -> Value {
             .is_some_and(|s| !s.is_empty());
     let configured = sync.enabled && !sync.git_url.trim().is_empty();
     let last_ok = configured
-        && sync.last_push_error.as_deref().unwrap_or("").is_empty()
-        && sync.last_push_at_ms.is_some();
+        && sync.last_pull_error.as_deref().unwrap_or("").is_empty()
+        && sync.last_pull_at_ms.is_some();
     json!({
         "enabled": sync.enabled,
         "configured": configured,
@@ -235,29 +264,75 @@ pub fn git_sync_list_summary(v: &Value) -> Value {
         "gitRef": sync.git_ref,
         "gitPatId": sync.git_pat_id,
         "gitTokenSet": token_set,
-        "lastPushAtMs": sync.last_push_at_ms,
-        "lastPushCommitId": sync.last_push_commit_id,
-        "lastPushOk": last_ok,
-        "lastPushError": sync.last_push_error,
+        "lastPullAtMs": sync.last_pull_at_ms,
+        "lastPullCommitId": sync.last_pull_commit_id,
+        "lastPullOk": last_ok,
+        "lastPullError": sync.last_pull_error,
     })
+}
+
+/// `git@host:org/repo.git` → `https://host/org/repo.git` (GitLab-style SSH). Author: kejiqing
+fn ssh_git_url_to_https(url: &str) -> Option<String> {
+    if let Some(rest) = url.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        if host.is_empty() || path.is_empty() {
+            return None;
+        }
+        return Some(format!("https://{host}/{path}"));
+    }
+    if let Some(rest) = url.strip_prefix("ssh://") {
+        let rest = rest.trim_start_matches("git@");
+        let (host, path) = rest.split_once('/')?;
+        if host.is_empty() || path.is_empty() {
+            return None;
+        }
+        return Some(format!("https://{host}/{path}"));
+    }
+    None
+}
+
+fn https_auth_user_for_host(host_and_path: &str) -> &'static str {
+    let host = host_and_path.split('/').next().unwrap_or(host_and_path);
+    if host.eq_ignore_ascii_case("github.com") || host.ends_with(".github.com") {
+        "x-access-token"
+    } else {
+        "oauth2"
+    }
 }
 
 pub fn effective_clone_url(url: &str, token: Option<&str>) -> SyncResult<String> {
     let token = token.map(str::trim).filter(|s| !s.is_empty());
-    let base = url.trim();
+    let trimmed = url.trim();
+    let is_ssh = trimmed.starts_with("git@") || trimmed.starts_with("ssh://");
+    let base = if is_ssh {
+        ssh_git_url_to_https(trimmed).ok_or_else(|| {
+            ProjectGitSyncError::new(
+                "gitSync.gitUrl: invalid git@ or ssh:// URL; use https:// with PAT or git@host:group/repo.git",
+            )
+        })?
+    } else {
+        trimmed.to_string()
+    };
+    if is_ssh && token.is_none() {
+        return Err(ProjectGitSyncError::new(
+            "gitSync.gitPatId is required for git@/ssh:// URLs (gateway converts to HTTPS with PAT; no ssh client in container)",
+        ));
+    }
     if let Some(t) = token {
         if let Some(rest) = base.strip_prefix("https://") {
             if !rest.contains('@') {
-                return Ok(format!("https://x-access-token:{t}@{rest}"));
+                let user = https_auth_user_for_host(rest);
+                return Ok(format!("https://{user}:{t}@{rest}"));
             }
         }
         if let Some(rest) = base.strip_prefix("http://") {
             if !rest.contains('@') {
-                return Ok(format!("http://x-access-token:{t}@{rest}"));
+                let user = https_auth_user_for_host(rest);
+                return Ok(format!("http://{user}:{t}@{rest}"));
             }
         }
     }
-    Ok(base.to_string())
+    Ok(base)
 }
 
 #[allow(clippy::similar_names)]
@@ -282,29 +357,6 @@ async fn git_run(cwd: &Path, args: &[&str]) -> SyncResult<String> {
         )));
     }
     Ok(stdout)
-}
-
-#[allow(clippy::similar_names)]
-async fn git_run_env(cwd: &Path, env_pairs: &[(&str, &str)], args: &[&str]) -> SyncResult<()> {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(cwd);
-    cmd.args(["-c", "http.version=HTTP/1.1"]);
-    for (k, v) in env_pairs {
-        cmd.env(k, v);
-    }
-    cmd.args(args);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| ProjectGitSyncError::new(format!("git failed to start: {e}")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(ProjectGitSyncError::new(format!(
-            "git {args:?} failed: {stderr}"
-        )));
-    }
-    Ok(())
 }
 
 async fn ensure_safe_directory(path: &Path) {
@@ -381,39 +433,14 @@ async fn copy_tree(
     Ok(())
 }
 
-async fn clear_worktree_except_git(repo_dir: &Path) -> SyncResult<()> {
-    let mut rd = fs::read_dir(repo_dir)
-        .await
-        .map_err(|e| ProjectGitSyncError::new(format!("read repo dir: {e}")))?;
-    while let Some(ent) = rd
-        .next_entry()
-        .await
-        .map_err(|e| ProjectGitSyncError::new(format!("read repo entry: {e}")))?
-    {
-        if ent.file_name() == ".git" {
-            continue;
-        }
-        let p = ent.path();
-        if ent.file_type().await.is_ok_and(|t| t.is_dir()) {
-            fs::remove_dir_all(&p)
-                .await
-                .map_err(|e| ProjectGitSyncError::new(format!("rm dir: {e}")))?;
-        } else {
-            fs::remove_file(&p)
-                .await
-                .map_err(|e| ProjectGitSyncError::new(format!("rm file: {e}")))?;
-        }
-    }
-    Ok(())
-}
-
 async fn ensure_git_repo(cache_dir: &Path, clone_url: &str, git_ref: &str) -> SyncResult<()> {
     ensure_safe_directory(cache_dir).await;
     let git_dir = cache_dir.join(".git");
     if fs::metadata(&git_dir).await.is_ok_and(|m| m.is_dir()) {
         git_run(cache_dir, &["remote", "set-url", "origin", clone_url]).await?;
         git_run(cache_dir, &["fetch", "--depth", "1", "origin", git_ref]).await?;
-        git_run(cache_dir, &["checkout", "-f", git_ref]).await?;
+        // Shallow cache: `checkout` local branch does not advance; FETCH_HEAD has the new tip. Author: kejiqing
+        git_run(cache_dir, &["reset", "--hard", "FETCH_HEAD"]).await?;
         return Ok(());
     }
     if cache_dir.exists() {
@@ -448,97 +475,117 @@ async fn ensure_git_repo(cache_dir: &Path, clone_url: &str, git_ref: &str) -> Sy
     Ok(())
 }
 
-const PUSH_MAX_ATTEMPTS: u32 = 8;
+/// Collect relative paths under `home/` that were imported (non-PG), for manifest + prompt. Author: kejiqing
+async fn collect_imported_home_relpaths(
+    home: &Path,
+    excluded: &[PathBuf],
+) -> SyncResult<Vec<String>> {
+    let mut out = Vec::new();
+    if !fs::metadata(home).await.is_ok_and(|m| m.is_dir()) {
+        return Ok(out);
+    }
+    let mut stack = vec![home.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let mut entries = fs::read_dir(&dir)
+            .await
+            .map_err(|e| ProjectGitSyncError::new(format!("read home dir: {e}")))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| ProjectGitSyncError::new(format!("read home entry: {e}")))?
+        {
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(home)
+                .map_err(|_| ProjectGitSyncError::new("strip home prefix failed"))?;
+            if is_home_rel_db_controlled(rel, excluded) {
+                continue;
+            }
+            let ft = entry
+                .file_type()
+                .await
+                .map_err(|e| ProjectGitSyncError::new(format!("file_type: {e}")))?;
+            if ft.is_dir() {
+                stack.push(path);
+            } else if ft.is_file() {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
 
-/// One-way: copy user work under `home/` into per-project remote (no pull into DB). Author: kejiqing
-pub async fn push_home_oneway(
+async fn write_git_import_manifest(
+    work_dir: &Path,
+    home: &Path,
+    excluded: &[PathBuf],
+) -> SyncResult<()> {
+    let paths = collect_imported_home_relpaths(home, excluded).await?;
+    let manifest_path = work_dir.join(GIT_IMPORT_MANIFEST_REL);
+    if paths.is_empty() {
+        let _ = fs::remove_file(&manifest_path).await;
+        return Ok(());
+    }
+    if let Some(parent) = manifest_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| ProjectGitSyncError::new(format!("mkdir manifest parent: {e}")))?;
+    }
+    let mut body = String::new();
+    let shown = paths.len().min(MANIFEST_MAX_LINES);
+    for rel in paths.iter().take(shown) {
+        body.push_str(rel);
+        body.push('\n');
+    }
+    if paths.len() > MANIFEST_MAX_LINES {
+        use std::fmt::Write as _;
+        let _ = writeln!(body, "... and {} more", paths.len() - MANIFEST_MAX_LINES);
+    }
+    fs::write(&manifest_path, body.as_bytes())
+        .await
+        .map_err(|e| ProjectGitSyncError::new(format!("write git import manifest: {e}")))?;
+    Ok(())
+}
+
+/// One-way: copy remote checkout into `home/` (no push). Author: kejiqing
+pub async fn pull_home_oneway(
     work_dir: &Path,
     sync: &ProjectGitSync,
     excluded_home_relpaths: &[PathBuf],
-    default_author_name: &str,
-    default_author_email: &str,
-) -> SyncResult<GitPushOutcome> {
+) -> SyncResult<GitPullOutcome> {
     if !sync.enabled {
         return Err(ProjectGitSyncError::new("git sync is disabled"));
-    }
-    let home = work_dir.join("home");
-    if !fs::metadata(&home).await.is_ok_and(|m| m.is_dir()) {
-        return Err(ProjectGitSyncError::new(
-            "home/ missing; run POST /v1/init or apply project_config first",
-        ));
     }
     let git_url = sync.git_url.trim();
     let git_ref = sync.git_ref.trim();
     let token = sync.git_token.as_deref().map(str::trim);
     let clone_url = effective_clone_url(git_url, token)?;
     let cache_dir = work_dir.join(".claw/project_git_remote");
+    let commit_before = if fs::metadata(cache_dir.join(".git"))
+        .await
+        .is_ok_and(|m| m.is_dir())
+    {
+        git_run(&cache_dir, &["rev-parse", "HEAD"]).await.ok()
+    } else {
+        None
+    };
     ensure_git_repo(&cache_dir, &clone_url, git_ref).await?;
-    clear_worktree_except_git(&cache_dir).await?;
-    copy_tree(&home, &cache_dir, excluded_home_relpaths).await?;
 
-    git_run(&cache_dir, &["add", "-A"]).await?;
-    let dirty = git_run(&cache_dir, &["status", "--porcelain"]).await?;
-    if dirty.trim().is_empty() {
-        let head = git_run(&cache_dir, &["rev-parse", "HEAD"]).await.ok();
-        return Ok(GitPushOutcome {
-            pushed: false,
-            commit_id: head,
-            branch: git_ref.to_string(),
-            git_url: git_url.to_string(),
-            error: None,
-        });
-    }
+    let home = work_dir.join("home");
+    fs::create_dir_all(&home)
+        .await
+        .map_err(|e| ProjectGitSyncError::new(format!("create home: {e}")))?;
 
-    let author_name = sync
-        .author_name
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(default_author_name);
-    let author_email = sync
-        .author_email
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(default_author_email);
-    let msg = format!("chore(project): sync user work under home ({git_ref})");
-    git_run_env(
-        &cache_dir,
-        &[
-            ("GIT_AUTHOR_NAME", author_name),
-            ("GIT_AUTHOR_EMAIL", author_email),
-            ("GIT_COMMITTER_NAME", author_name),
-            ("GIT_COMMITTER_EMAIL", author_email),
-        ],
-        &["commit", "-m", &msg],
-    )
-    .await?;
+    let before = collect_imported_home_relpaths(&home, excluded_home_relpaths).await?;
+    copy_tree(&cache_dir, &home, excluded_home_relpaths).await?;
+    let after = collect_imported_home_relpaths(&home, excluded_home_relpaths).await?;
+    write_git_import_manifest(work_dir, &home, excluded_home_relpaths).await?;
 
-    let mut pushed = false;
-    for attempt in 0..PUSH_MAX_ATTEMPTS {
-        match git_run(&cache_dir, &["pull", "--rebase", "origin", git_ref]).await {
-            Ok(_) => {}
-            Err(e) => {
-                let _ = git_run(&cache_dir, &["rebase", "--abort"]).await;
-                return Err(e);
-            }
-        }
-        match git_run(&cache_dir, &["push", "origin", git_ref]).await {
-            Ok(_) => {
-                pushed = true;
-                break;
-            }
-            Err(e) => {
-                if attempt + 1 < PUSH_MAX_ATTEMPTS {
-                    let ms = 40_u64.saturating_mul(1_u64 << attempt.min(6));
-                    tokio::time::sleep(Duration::from_millis(ms)).await;
-                    continue;
-                }
-                return Err(e);
-            }
-        }
-    }
     let commit_id = git_run(&cache_dir, &["rev-parse", "HEAD"]).await.ok();
-    Ok(GitPushOutcome {
-        pushed,
+    let pulled = commit_before != commit_id || before != after;
+    Ok(GitPullOutcome {
+        pulled,
         commit_id,
         branch: git_ref.to_string(),
         git_url: git_url.to_string(),
@@ -590,5 +637,37 @@ mod tests {
     fn effective_clone_url_injects_pat() {
         let u = effective_clone_url("https://github.com/o/r.git", Some("tok")).unwrap();
         assert!(u.contains("x-access-token:tok@"));
+    }
+
+    #[test]
+    fn effective_clone_url_ssh_to_https_with_pat() {
+        let u = effective_clone_url(
+            "git@code.sunmi.com:data/workspace_test.git",
+            Some("glpat_x"),
+        )
+        .unwrap();
+        assert_eq!(
+            u,
+            "https://oauth2:glpat_x@code.sunmi.com/data/workspace_test.git"
+        );
+    }
+
+    #[test]
+    fn effective_clone_url_ssh_requires_pat() {
+        assert!(effective_clone_url("git@gitlab.com:org/r.git", None).is_err());
+    }
+
+    #[test]
+    fn list_summary_uses_pull_fields() {
+        let v = json!({
+            "enabled": true,
+            "gitUrl": "https://github.com/o/r.git",
+            "gitRef": "main",
+            "lastPullAtMs": 1,
+            "lastPullCommitId": "abc"
+        });
+        let s = git_sync_list_summary(&v);
+        assert_eq!(s.get("lastPullOk").and_then(|x| x.as_bool()), Some(true));
+        assert!(s.get("lastPushAtMs").is_none());
     }
 }
