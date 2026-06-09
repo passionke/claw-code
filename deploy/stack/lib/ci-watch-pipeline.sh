@@ -38,9 +38,11 @@ while true; do
   fi
   echo "--- pipeline #${pid} ${pstatus} sha=${psha} ($(date -Is 2>/dev/null || date))"
   glab api "projects/minidata%2Fclaw-code/pipelines/${pid}/jobs" \
-    | python3 -c 'import json,sys
-for j in sorted(json.load(sys.stdin), key=lambda x: x.get("stage","")):
-    print(f"  {j[\"status\"]:12} {j[\"stage\"]:12} {j[\"name\"]:22} id={j[\"id\"]}")'
+    | python3 -c '
+import json, sys
+for j in sorted(json.load(sys.stdin), key=lambda x: x.get("stage", "")):
+    print("  {:12} {:12} {:22} id={}".format(j["status"], j["stage"], j["name"], j["id"]))
+'
   case "${pstatus}" in
     success | failed | canceled | skipped) break ;;
     *) sleep "${POLL_SEC}" ;;
