@@ -153,7 +153,7 @@ claw_pool_systemd_assert_dual_pool_coherent() {
 
   if claw_pool_systemd_active "" && ! claw_pool_systemd_active strict; then
     echo "VERIFY FAIL: dual-pool layout but legacy ${legacy_unit} is active without ${strict_unit}" >&2
-    echo "  fix: ./deploy/stack/gateway.sh pool-up --restart --profile=all" >&2
+    echo "  fix: ./deploy/stack/gateway.sh pool-up --restart" >&2
     echo "  or set CLAW_POOL_DAEMON_USE_SYSTEMD=0 in .env and pool-up again" >&2
     return 1
   fi

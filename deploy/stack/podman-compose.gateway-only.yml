@@ -1,0 +1,75 @@
+# Second gateway on same host (shared PostgreSQL). No postgres service — use claw_compose_pg_ensure. kejiqing
+services:
+  gateway-rs:
+    image: ${GATEWAY_IMAGE}
+    container_name: ${CLAW_GATEWAY_CONTAINER:-claw-gateway-rs}
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "host.containers.internal:host-gateway"
+    user: "${CLAW_WORKER_UID:-1000}:${CLAW_WORKER_GID:-1000}"
+    env_file:
+      - ../../.env
+      - ./.claw-worker-runtime.env
+      - ./.claw-pool-workspace.env
+      - ./.claw-pool-rpc/gateway.env
+      - ./.claw-pool-rpc/pool-registry.env
+      - ./.claw-llm-runtime.env
+    environment:
+      CLAW_GATEWAY_IMAGE_REF: ${GATEWAY_IMAGE:-claw-gateway-rs:local}
+      CLAW_HTTP_ADDR: 0.0.0.0:8080
+      CLAW_BIN: /usr/local/bin/claw
+      CLAW_WORK_ROOT: /var/lib/claw/workspace
+      CLAW_GATEWAY_DATABASE_URL: ${CLAW_GATEWAY_DATABASE_URL:-postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway}
+      CLAW_GATEWAY_INTERNAL_TOKEN: ${CLAW_GATEWAY_INTERNAL_TOKEN:-claw-internal-dev-token}
+      CLAW_SOLVE_ISOLATION: ${CLAW_SOLVE_ISOLATION:-podman_pool}
+      CLAW_POOL_SIZE_CAP: ${CLAW_POOL_SIZE_CAP:-4}
+      CLAW_PODMAN_POOL_SIZE: ${CLAW_PODMAN_POOL_SIZE:-4}
+      CLAW_PODMAN_POOL_MIN_IDLE: ${CLAW_PODMAN_POOL_MIN_IDLE:-1}
+      CLAW_PODMAN_IMAGE: ${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}
+      CLAW_CONFIG_FILE: /app/.claw.json
+      CLAW_TIMEOUT_SECONDS: ${CLAW_TIMEOUT_SECONDS}
+      CLAW_LOG_FORMAT: json
+      CLAW_LOG_LEVEL: ${CLAW_LOG_LEVEL:-info}
+      CLAW_TRACE_ENABLED: ${CLAW_TRACE_ENABLED:-1}
+      CLAW_TRACE_DIR: /var/log/claw/traces
+      CLAW_SSE_LOG_FILE: /var/log/claw/sse-debug.log
+    ports:
+      - "${GATEWAY_HOST_PORT}:8080"
+    volumes:
+      - ${CLAW_POOL_WORK_ROOT_BIND_SRC:-./claw-workspace}:/var/lib/claw/workspace
+      - ${CLAW_HOST_LOG_DIR:-./claw-logs}:/var/log/claw
+      - ../../.claw.json:/app/.claw.json:ro
+      - ../../.env:/run/claw/deploy.env:ro
+      - ../../.claw:/run/claw/claw:rw
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz | grep -q '\"ok\":true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  gateway-playground:
+    image: ${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}
+    container_name: ${CLAW_GATEWAY_PLAYGROUND_CONTAINER:-claw-gateway-playground}
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PLAYGROUND_HOST_PORT:-18765}:18765"
+    environment:
+      PLAYGROUND_LISTEN_HOST: 0.0.0.0
+      PLAYGROUND_LISTEN_PORT: "18765"
+      PLAYGROUND_GATEWAY_BASE: ${PLAYGROUND_GATEWAY_BASE:-http://gateway-rs:8080}
+      PLAYGROUND_PUBLIC_GATEWAY_BASE: ${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://127.0.0.1:18088}
+      GATEWAY_HOST_PORT: ${GATEWAY_HOST_PORT:-18088}
+      PLAYGROUND_ALLOWED_HOSTS: ${PLAYGROUND_ALLOWED_HOSTS:-127.0.0.1,localhost,gateway-rs}
+      PLAYGROUND_ALLOWED_PORTS: ${PLAYGROUND_ALLOWED_PORTS:-8080,8088,18088,18089}
+      PLAYGROUND_ADMIN_USER: ${PLAYGROUND_ADMIN_USER:-admin}
+      PLAYGROUND_ADMIN_PASSWORD: ${PLAYGROUND_ADMIN_PASSWORD:-sunmi123}
+      PLAYGROUND_ADMIN_SESSION_SECRET: ${PLAYGROUND_ADMIN_SESSION_SECRET:-}
+      PLAYGROUND_ADMIN_SESSION_TTL_SEC: ${PLAYGROUND_ADMIN_SESSION_TTL_SEC:-604800}
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18765/')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 5s

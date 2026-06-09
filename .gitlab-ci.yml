@@ -85,5 +85,8 @@ deploy:release:
     - source ./deploy/stack/lib/ci-sync-worktree.sh
     - ./deploy/stack/lib/render-env-from-ci.sh
     - ./deploy/stack/gateway.sh up --release "${CLAW_RELEASE_TAG}"
+    - ./deploy/stack/gateway.sh verify
     - ./deploy/stack/lib/admin-solve-e2e.sh 1 ping
+    - ./deploy/stack/lib/admin-solve-e2e.sh 1 ping
+    - ./deploy/stack/lib/ci-cluster-dual-deploy.sh
   timeout: 2h

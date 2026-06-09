@@ -53,15 +53,17 @@ Linux **`CLAW_DEPLOY_PROFILE=production`**：`pool-daemon-up` 写 `pool-daemon.e
 
 旧单 unit `claw-pool-daemon.service` 在首次 `--profile=strict|relaxed` 时自动 disable（避免 relaxed 覆盖 strict 导致 9944 503）。本地 profile 仍 `nohup`。
 
-GitLab CI（10.22.28.94）设 **`CLAW_POOL_DAEMON_USE_SYSTEMD=0`**，走 nohup 双 daemon，**测不到** production 默认 systemd 路径——生产升双 pool 后须跑 **`claw-stack-verify.sh`**（含 systemd 一致性检查）。
+GitLab CI（10.22.28.94）设 **`CLAW_POOL_DAEMON_USE_SYSTEMD=0`**，走 nohup 双 daemon，**测不到** production 默认 systemd 路径，也**测不到**多机共享 PG 集群——生产/预发须 **`gateway.sh verify`**（每台）+ **`gateway.sh cluster-verify`**（全集群一次），见 **`deploy/stack/docs/cluster-deploy-verify.md`**。
 
 ```bash
-# 生产：刷新 env 并 systemd 重启双 pool
-./deploy/stack/gateway.sh pool-up --restart --profile=all
+# 生产（双 pool）：刷新 env 并 systemd 重启
+./deploy/stack/gateway.sh pool-up --restart
 sudo systemctl status claw-pool-daemon-strict claw-pool-daemon-relaxed
 curl -fsS http://127.0.0.1:9944/healthz/live-report
 curl -fsS http://127.0.0.1:9954/healthz/live-report
 ```
+
+**`CLAW_ALLOW_RELAXED_WORKER=false`（常见生产）**：`.env` 设好后 **无需** `--profile=strict`。`pool-up` / `up` 默认只起 strict（9944），会停掉误起的 relaxed（9954）；`claw-stack-verify` / `check` 也不验 relaxed。Gateway 仍可从 `gateway.env` 读到 relaxed base，但 gateway 不会路由到 relaxed。
 
 ---
 

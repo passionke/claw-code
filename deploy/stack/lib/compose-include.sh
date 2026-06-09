@@ -1,6 +1,10 @@
 # shellcheck shell=bash
 # Sets CLAW_POOL_WORK_ROOT_HOST and CLAW_PODMAN_COMPOSE_ARGS. Default solve mode is podman_pool (second compose file). Author: kejiqing
 
+_COMPOSE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=stack-instance.sh
+source "${_COMPOSE_LIB_DIR}/stack-instance.sh"
+
 # Resolve a socket path that exists on the **host** (compose / pool-daemon talk to the API here).
 # Docker hosts: /var/run/docker.sock only. Podman: never guess docker.sock on macOS (VM socket ≠ host path).
 # Author: kejiqing
@@ -227,10 +231,12 @@ claw_export_llm_runtime_layout() {
 
 claw_podman_export_pool_workspace() {
   local script_dir="$1"
-  mkdir -p "${script_dir}/claw-workspace"
+  local ws
+  ws="$(claw_stack_workspace_bind_dir "${script_dir}")"
+  mkdir -p "${ws}"
   # Host directory for the compose bind mount (Mac/Linux laptop path). Not the same as CLAW_POOL_WORK_ROOT_HOST
   # inside the gateway container — see .claw-pool-workspace.env below. Author: kejiqing
-  export CLAW_POOL_WORK_ROOT_BIND_SRC="$(cd "${script_dir}" && pwd)/claw-workspace"
+  export CLAW_POOL_WORK_ROOT_BIND_SRC="${ws}"
   # Merged last in podman-compose.yml. MUST be a path that exists inside the gateway container: the gateway
   # runs Linux and calls canonicalize() before podman run. A macOS /Users/... path breaks startup with
   # "No such file or directory". For this stack, pool data lives under the same mount as CLAW_WORK_ROOT.
@@ -282,7 +288,10 @@ claw_podman_append_admin_dist_bind() {
 
 claw_ensure_compose_env_stubs() {
   local script_dir="$1"
-  mkdir -p "${script_dir}/claw-workspace" "${script_dir}/.claw-pool-rpc"
+  local rpc_root ws
+  rpc_root="$(claw_pool_rpc_root "${script_dir}")"
+  ws="$(claw_stack_workspace_bind_dir "${script_dir}")"
+  mkdir -p "${ws}" "${rpc_root}"
   if [[ ! -f "${script_dir}/.claw-worker-runtime.env" ]]; then
     printf '%s\n' '# GENERATED stub — overwritten by up.sh (worker-llm-wiring). kejiqing' \
       >"${script_dir}/.claw-worker-runtime.env"
@@ -314,7 +323,13 @@ claw_podman_load_compose_args() {
     fi
   fi
   export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
-  if [[ -n "${rel}" ]]; then
+  if [[ "${CLAW_COMPOSE_GATEWAY_ONLY:-0}" == "1" ]]; then
+    if [[ -n "${rel}" ]]; then
+      CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${rel}/podman-compose.gateway-only.yml" )
+    else
+      CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${script_dir}/podman-compose.gateway-only.yml" )
+    fi
+  elif [[ -n "${rel}" ]]; then
     CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${rel}/podman-compose.yml" )
   else
     CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${script_dir}/podman-compose.yml" )
@@ -330,22 +345,27 @@ claw_podman_load_compose_args() {
     echo "error: PODMAN_HOST_SOCK is no longer used; remove it from .env" >&2
     return 1
   fi
-  mkdir -p "${script_dir}/.claw-pool-rpc"
+  local rpc_root
+  rpc_root="$(claw_pool_rpc_root "${script_dir}")"
+  mkdir -p "${rpc_root}"
   # Local profile clears legacy TCP keys from human .env before generating gateway.env. kejiqing
   if [[ -f "${script_dir}/lib/env-profile.sh" ]]; then
     # shellcheck source=env-profile.sh
     source "${script_dir}/lib/env-profile.sh"
     claw_apply_deploy_profile || return 1
   fi
-  if [[ -f "${script_dir}/.claw-pool-rpc/pool-registry.env" ]]; then
+  if [[ -f "${rpc_root}/pool-registry.env" ]]; then
     set -a
     # shellcheck disable=SC1090
-    source "${script_dir}/.claw-pool-rpc/pool-registry.env"
+    source "${rpc_root}/pool-registry.env"
     set +a
   elif [[ -f "${script_dir}/lib/claw-pool-registry-env.sh" ]]; then
     # shellcheck source=lib/claw-pool-registry-env.sh
     source "${script_dir}/lib/claw-pool-registry-env.sh"
-    claw_export_pool_registry_env "${script_dir}/.claw-pool-rpc"
+    claw_export_pool_registry_env "${rpc_root}"
+  fi
+  if [[ -n "${CLAW_POOL_RPC_INSTANCE:-}" ]]; then
+    claw_compose_append_pool_rpc_envfile_override "${script_dir}" "${rel}"
   fi
   local pool_http_port="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
   local relaxed_pool_http_port="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
@@ -386,7 +406,7 @@ claw_podman_load_compose_args() {
       if [[ -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
         printf '%s\n' "# pool registry advertise (claw_pool.advertise_ip): ${CLAW_POOL_ADVERTISE_HOST}"
       fi
-    } >"${script_dir}/.claw-pool-rpc/gateway.env"
+    } >"${rpc_root}/gateway.env"
     claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
     return 0
   fi
@@ -506,6 +526,33 @@ claw_compose_in_pwd() {
     export PODMAN_COMPOSE_PROVIDER
   fi
   podman compose "$@"
+}
+
+# CI second gateway: env_file paths point at .claw-pool-rpc-{instance}/. kejiqing
+claw_compose_append_pool_rpc_envfile_override() {
+  local script_dir="$1"
+  local rel="${2:-}"
+  local rpc_root rpc_rel override
+  rpc_root="$(claw_pool_rpc_root "${script_dir}")"
+  rpc_rel="${rpc_root#"${script_dir}/"}"
+  override="${script_dir}/.claw-instance.envfile.override.yml"
+  {
+    printf '%s\n' '# GENERATED — pool RPC env_file paths for CLAW_POOL_RPC_INSTANCE. kejiqing'
+    printf '%s\n' 'services:'
+    printf '%s\n' '  gateway-rs:'
+    printf '%s\n' '    env_file:'
+    printf '%s\n' '      - ../../.env'
+    printf '%s\n' '      - ./.claw-worker-runtime.env'
+    printf '%s\n' '      - ./.claw-pool-workspace.env'
+    printf '%s\n' "      - ./${rpc_rel}/gateway.env"
+    printf '%s\n' "      - ./${rpc_rel}/pool-registry.env"
+    printf '%s\n' '      - ./.claw-llm-runtime.env'
+  } >"${override}"
+  if [[ -n "${rel}" ]]; then
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/.claw-instance.envfile.override.yml" )
+  else
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${override}" )
+  fi
 }
 
 # Postgres: `gateway.sh pg-up` / `pg-down`; `up` / `down` only gateway + pool. kejiqing

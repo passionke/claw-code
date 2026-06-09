@@ -1560,6 +1560,7 @@ async fn main() {
             get(get_conversation_translate).put(put_conversation_translate),
         )
         .route("/v1/pools", get(list_claw_pools_handler))
+        .route("/v1/pools/{pool_id}", delete(delete_claw_pool_handler))
         .route(
             "/v1/sessions/{session_id}/turns/{turn_id}/tools",
             get(get_turn_tools),
@@ -6162,6 +6163,41 @@ async fn list_session_turns(
                 worker_name: r.worker_name,
             })
             .collect(),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteClawPoolResponse {
+    #[serde(rename = "poolId")]
+    pool_id: String,
+    deleted: bool,
+}
+
+async fn delete_claw_pool_handler(
+    State(state): State<AppState>,
+    AxumPath(pool_id): AxumPath<String>,
+) -> Result<Json<DeleteClawPoolResponse>, ApiError> {
+    let pool_id = pool_id.trim();
+    if pool_id.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "poolId must not be empty",
+        ));
+    }
+    let deleted = state
+        .session_db
+        .delete_claw_pool(pool_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if !deleted {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("claw_pool row not found: {pool_id}"),
+        ));
+    }
+    Ok(Json(DeleteClawPoolResponse {
+        pool_id: pool_id.to_string(),
+        deleted: true,
     }))
 }
 

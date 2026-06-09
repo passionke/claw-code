@@ -25,18 +25,49 @@ use super::worker_isolation::{effective_mode, exec_user_arg_for_mode, WorkerIsol
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
 
+/// Base stem budget when no `-strict` / `-relaxed` profile suffix is present.
+const WORKER_NAME_STEM_BASE_MAX: usize = 16;
+
+/// Build `claw-worker-{stem}-{n}` stem from pool id suffix (after optional `pool-` strip).
+/// Reserves room for `-strict` / `-relaxed` so dual pool on one host never shares a stem. Author: kejiqing
+fn worker_name_stem_from_pool_suffix(suffix: &str) -> String {
+    let (base, profile) = if let Some(b) = suffix.strip_suffix("-strict") {
+        (b, Some("strict"))
+    } else if let Some(b) = suffix.strip_suffix("-relaxed") {
+        (b, Some("relaxed"))
+    } else {
+        (suffix, None)
+    };
+
+    let profile_chars = profile.map(|p| p.len() + 1).unwrap_or(0);
+    let base_max = WORKER_NAME_STEM_BASE_MAX
+        .saturating_sub(profile_chars)
+        .max(1);
+    let mut base_stem: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(base_max)
+        .collect();
+    while base_stem.ends_with('-') {
+        base_stem.pop();
+    }
+    if base_stem.is_empty() {
+        let u = Uuid::new_v4().simple().to_string();
+        base_stem = u[..8].to_string();
+    }
+    match profile {
+        Some(p) => format!("{base_stem}-{p}"),
+        None => base_stem,
+    }
+}
+
 /// Stable `claw-worker-{stem}-{n}` prefix from `CLAW_POOL_ID` (avoid orphan containers per restart). Author: kejiqing
 fn default_worker_name_stem() -> String {
     if let Ok(raw) = std::env::var("CLAW_POOL_ID") {
         let id = raw.trim();
-        let suffix = id.strip_prefix("pool-").unwrap_or(id);
-        let stem: String = suffix
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .take(16)
-            .collect();
-        if !stem.is_empty() {
-            return stem;
+        if !id.is_empty() {
+            let suffix = id.strip_prefix("pool-").unwrap_or(id);
+            return worker_name_stem_from_pool_suffix(suffix);
         }
     }
     let u = Uuid::new_v4().simple().to_string();
@@ -1298,6 +1329,32 @@ impl DockerPoolManager {
     ) -> String {
         let slots = self.slots.lock().await;
         slots[lease.slot_index].container_name.clone()
+    }
+}
+
+#[cfg(test)]
+mod worker_name_stem_tests {
+    use super::worker_name_stem_from_pool_suffix;
+
+    #[test]
+    fn dual_pool_long_hostname_stems_differ() {
+        let host = "ali-hz1-onl-max-ae-schedule-11";
+        let strict = worker_name_stem_from_pool_suffix(&format!("{host}-strict"));
+        let relaxed = worker_name_stem_from_pool_suffix(&format!("{host}-relaxed"));
+        assert_ne!(strict, relaxed);
+        assert!(strict.ends_with("-strict"));
+        assert!(relaxed.ends_with("-relaxed"));
+        assert_eq!(
+            strict,
+            worker_name_stem_from_pool_suffix("ali-hz1-onl-max-ae-schedule-11-strict")
+        );
+    }
+
+    #[test]
+    fn legacy_pool_id_without_profile_trims_trailing_dash() {
+        let stem = worker_name_stem_from_pool_suffix("ali-hz1-onl-max-ae-schedule-11");
+        assert_eq!(stem, "ali-hz1-onl-max");
+        assert!(!stem.ends_with('-'));
     }
 }
 

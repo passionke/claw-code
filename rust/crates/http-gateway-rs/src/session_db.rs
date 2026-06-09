@@ -2537,6 +2537,34 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Delete a pool row only when heartbeat is stale (offline). Author: kejiqing
+    pub async fn delete_claw_pool_if_offline(
+        &self,
+        pool_id: &str,
+        advertise_ip: &str,
+        now_ms: i64,
+    ) -> Result<bool, SqlxError> {
+        let stale_before = now_ms.saturating_sub(120_000);
+        let result = sqlx::query(
+            "DELETE FROM claw_pool WHERE pool_id = $1 AND advertise_ip = $2 AND last_heartbeat_ms < $3",
+        )
+        .bind(pool_id)
+        .bind(advertise_ip)
+        .bind(stale_before)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Admin: remove stale `claw_pool` row; pool-daemon re-registers on next start. Author: kejiqing
+    pub async fn delete_claw_pool(&self, pool_id: &str) -> Result<bool, SqlxError> {
+        let result = sqlx::query("DELETE FROM claw_pool WHERE pool_id = $1")
+            .bind(pool_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// All registered pool nodes (multi-host observability). Author: kejiqing
     pub async fn list_claw_pools(&self) -> Result<Vec<ClawPoolRow>, SqlxError> {
         let rows = sqlx::query(

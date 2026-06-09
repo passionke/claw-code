@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
-# Stop host claw-pool-daemon(s). --profile=strict|relaxed|all (default all). Author: kejiqing
+# Stop host claw-pool-daemon(s). --profile=strict|relaxed|all (default: all or strict-only per .env). Author: kejiqing
 set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/pool-daemon-launchd.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/compose-include.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/pool-health.sh"
 
-CLAW_POOL_PROFILE=all
+REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${REPO_ROOT}/.env"
+  set +a
+fi
+
+CLAW_POOL_PROFILE="$(claw_default_pool_up_profile)"
 for arg in "$@"; do
   case "${arg}" in
     --profile=strict) CLAW_POOL_PROFILE=strict ;;
@@ -65,15 +77,16 @@ claw_pool_down_one() {
   rm -f "${rpc_dir}/pool.sock"
 }
 
+_rpc_root="$(claw_pool_rpc_root "${PODMAN_DIR}")"
 # Legacy single-pool layout (pre dual-pool).
 if [[ "${CLAW_POOL_PROFILE}" == "all" ]]; then
-  claw_pool_down_one "${PODMAN_DIR}/.claw-pool-rpc" "${CLAW_POOL_HTTP_PORT:-9944}" ""
+  claw_pool_down_one "${_rpc_root}" "${CLAW_POOL_HTTP_PORT:-9944}" ""
 fi
 if [[ "${CLAW_POOL_PROFILE}" == "all" || "${CLAW_POOL_PROFILE}" == "strict" ]]; then
-  claw_pool_down_one "${PODMAN_DIR}/.claw-pool-rpc/strict" "${CLAW_STRICT_POOL_HTTP_PORT:-9944}" "strict"
+  claw_pool_down_one "$(claw_strict_pool_rpc_dir "${PODMAN_DIR}")" "${CLAW_STRICT_POOL_HTTP_PORT:-9944}" "strict"
 fi
 if [[ "${CLAW_POOL_PROFILE}" == "all" || "${CLAW_POOL_PROFILE}" == "relaxed" ]]; then
-  claw_pool_down_one "${PODMAN_DIR}/.claw-pool-rpc/relaxed" "${CLAW_RELAXED_POOL_HTTP_PORT:-9954}" "relaxed"
+  claw_pool_down_one "$(claw_relaxed_pool_rpc_dir "${PODMAN_DIR}")" "${CLAW_RELAXED_POOL_HTTP_PORT:-9954}" "relaxed"
 fi
 
 if [[ "${CLAW_POOL_PROFILE}" == "all" ]]; then

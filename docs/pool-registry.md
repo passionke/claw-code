@@ -49,13 +49,14 @@ For `running` / `queued` stream: join `gateway_turns.pool_id` → `claw_pool`, p
 | Surface | Purpose |
 |---------|---------|
 | **`GET /v1/pools`** | All `claw_pool` rows + `coLocatedPoolId` for this gateway |
-| **Admin → 全局配置 → Pool 集群** | Table view; 30s refresh |
+| **`DELETE /v1/pools/{poolId}`** | Remove stale registry row (daemon re-registers on next `pool-up`) |
+| **Admin → 全局配置 → Pool 集群** | Table view; 30s refresh; delete offline/zombie rows |
 | **Playground chat turn card** | Cyan **`pool {poolId}`** tag per turn; tooltip **`workerName`** when set |
 | **`GET /v1/sessions/…/turns`**, **`GET /v1/tasks/…`**, **`POST /v1/solve_async`** | JSON fields `poolId`, `workerName` |
 
 Playground **solve and poll should use the same `gatewayBase`** (same host). Cross-gateway status poll has known gaps for running progress/cancel; see [`deploy-ops-truth.md`](deploy-ops-truth.md).
 
-Admin **Pool dropdown** (shared PG): only when **≥2** `claw_pool` rows have non-empty **`gateway_base`**. Each option is **`{poolId} · {gateway host}`**; default = **`coLocatedPoolId`** on the playground host. Pool-daemon registers `gateway_base` at startup; production `gateway.sh up` sets **`CLAW_POOL_GATEWAY_BASE`** / **`PLAYGROUND_PUBLIC_GATEWAY_BASE`** from **`CLAW_POOL_ADVERTISE_HOST`** (per machine — do not copy another host's IP into `.env`).
+Admin **Pool dropdown** (shared PG): only when **≥2 online** `claw_pool` rows have non-empty **`gateway_base`** (offline / zombie rows stay in **Pool 集群** table only). Each option is **`{poolId} · {gateway host}`** or **`本机 · {poolId}`** for co-located; default = playground **`defaultGatewayBase`**. Pool-daemon registers `gateway_base` at startup; production `gateway.sh up` sets **`CLAW_POOL_GATEWAY_BASE`** / **`PLAYGROUND_PUBLIC_GATEWAY_BASE`** from **`CLAW_POOL_ADVERTISE_HOST`** (per machine — do not copy another host's IP into `.env`).
 
 ## Multi-host deploy (shared PG)
 
@@ -94,6 +95,15 @@ RPC stays co-located (`CLAW_POOL_DAEMON_TCP`); `advertise_ip` is for DB/SSE meta
 ## 跑的时候怎么论证链路
 
 ### 1. PostgreSQL（元数据是否写上）
+
+**Dual-pool 升级后仍见 offline 旧行：** 旧 `pool-{host}`（无 `-strict`）不再心跳，PG 里会长期 offline。`claw-pool-daemon` 以 `…-strict` 注册时会自动删除同 `advertise_ip` 上已 offline 的 legacy / 已停 relaxed 行。若仍残留，在 **2.172 上** `pool-up --restart` 一次，或手动：
+
+```sql
+DELETE FROM claw_pool
+WHERE pool_id = 'pool-ali-th-onl-max-agent-02'
+  AND advertise_ip = '192.168.9.172'
+  AND (EXTRACT(EPOCH FROM NOW())*1000 - last_heartbeat_ms) > 120000;
+```
 
 ```sql
 SELECT pool_id, advertise_ip, sse_port, last_heartbeat_ms FROM claw_pool ORDER BY last_heartbeat_ms DESC;

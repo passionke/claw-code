@@ -68,7 +68,9 @@ clawTap registered in Admin: host=claw-claude-tap ...
 gateway clawTap ready (/readyz attempt …)
 ```
 
-随后 `admin-solve-e2e.sh` → `poll status=succeeded`。
+随后 `gateway.sh verify` → `admin-solve-e2e.sh`（两轮）→ `poll status=succeeded`。
+
+**不覆盖集群：** CI 仅单机。预发/生产多机共享 PG 后须另跑 `gateway.sh cluster-verify`（见 `deploy/stack/docs/cluster-deploy-verify.md`）。
 
 ## 6. Runner 工作区
 

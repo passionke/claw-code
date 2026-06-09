@@ -28,26 +28,39 @@ for arg in "$@"; do
     *) ARGS+=("${arg}") ;;
   esac
 done
+
+_pool_bin_from_up="${CLAW_POOL_DAEMON_BIN:-}"
+_pool_env_file="${CLAW_POOL_UP_ENV_FILE:-${REPO_ROOT}/.env}"
+if [[ -f "${_pool_env_file}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${_pool_env_file}"
+  set +a
+fi
+
 if [[ -z "${CLAW_POOL_PROFILE}" ]]; then
-  CLAW_POOL_PROFILE=all
+  CLAW_POOL_PROFILE="$(claw_default_pool_up_profile)"
+fi
+if [[ "${CLAW_POOL_PROFILE}" == "relaxed" ]] && ! claw_relaxed_worker_allowed_from_env; then
+  echo "error: CLAW_ALLOW_RELAXED_WORKER=false — relaxed pool is disabled (use --profile=strict or omit profile)" >&2
+  exit 1
 fi
 if [[ "${CLAW_POOL_PROFILE}" == "all" ]]; then
-  _extra=()
-  [[ "${RESTART}" == 1 ]] && _extra+=(--restart)
-  [[ "${WITH_WORKERS}" == 1 ]] && _extra+=(--with-workers)
-  "${BASH_SOURCE[0]}" --profile=strict ${ARGS[@]+"${ARGS[@]}"} ${_extra[@]+"${_extra[@]}"}
-  "${BASH_SOURCE[0]}" --profile=relaxed ${ARGS[@]+"${ARGS[@]}"} ${_extra[@]+"${_extra[@]}"}
-  exit $?
+  if ! claw_relaxed_worker_allowed_from_env; then
+    echo "==> pool-daemon-up: CLAW_ALLOW_RELAXED_WORKER=false → strict only (not dual pool)" >&2
+    CLAW_POOL_PROFILE=strict
+  else
+    _extra=()
+    [[ "${RESTART}" == 1 ]] && _extra+=(--restart)
+    [[ "${WITH_WORKERS}" == 1 ]] && _extra+=(--with-workers)
+    "${BASH_SOURCE[0]}" --profile=strict ${ARGS[@]+"${ARGS[@]}"} ${_extra[@]+"${_extra[@]}"}
+    "${BASH_SOURCE[0]}" --profile=relaxed ${ARGS[@]+"${ARGS[@]}"} ${_extra[@]+"${_extra[@]}"}
+    exit $?
+  fi
 fi
 export CLAW_POOL_PROFILE
 
-_pool_bin_from_up="${CLAW_POOL_DAEMON_BIN:-}"
-if [[ -f "${REPO_ROOT}/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${REPO_ROOT}/.env"
-  set +a
-fi
+claw_stop_relaxed_pool_when_disabled "${PODMAN_DIR}"
 if [[ -n "${_pool_bin_from_up}" ]]; then
   export CLAW_POOL_DAEMON_BIN="${_pool_bin_from_up}"
 fi
@@ -68,7 +81,7 @@ source "${LIB_DIR}/claw-pool-registry-env.sh"
 _base_pool_id="$(claw_default_pool_id)"
 case "${CLAW_POOL_PROFILE}" in
   strict)
-    RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc/strict"
+    RPC_DIR="$(claw_strict_pool_rpc_dir "${PODMAN_DIR}")"
     HTTP_PORT="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
     _pool_daemon_tcp_port="${CLAW_STRICT_POOL_DAEMON_PORT:-9943}"
     export CLAW_POOL_ID="${CLAW_STRICT_POOL_ID:-${_base_pool_id}-strict}"
@@ -80,7 +93,7 @@ case "${CLAW_POOL_PROFILE}" in
     _pool_allow_relaxed=false
     ;;
   relaxed)
-    RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc/relaxed"
+    RPC_DIR="$(claw_relaxed_pool_rpc_dir "${PODMAN_DIR}")"
     HTTP_PORT="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
     _pool_daemon_tcp_port="${CLAW_RELAXED_POOL_DAEMON_PORT:-9945}"
     export CLAW_POOL_ID="${CLAW_RELAXED_POOL_ID:-${_base_pool_id}-relaxed}"

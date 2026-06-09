@@ -71,6 +71,61 @@ pub fn resolve_pool_id() -> String {
     format!("pool-{slug}")
 }
 
+fn relaxed_worker_allowed_from_env() -> bool {
+    match std::env::var("CLAW_ALLOW_RELAXED_WORKER") {
+        Ok(v) => {
+            let t = v.trim();
+            !matches!(t, "0" | "false" | "no" | "off" | "FALSE" | "NO" | "OFF")
+        }
+        Err(_) => true,
+    }
+}
+
+/// Drop offline pre-dual-pool rows (and disabled relaxed) after strict re-registers. kejiqing
+async fn prune_superseded_offline_pools(
+    db: &GatewaySessionDb,
+    pool_id: &str,
+    advertise_ip: &str,
+    now_ms: i64,
+) {
+    let Some(base) = pool_id.strip_suffix("-strict") else {
+        return;
+    };
+    if base.is_empty() {
+        return;
+    }
+    let mut legacy_ids = vec![base.to_string()];
+    legacy_ids.push(format!("{base}-relaxed"));
+    for legacy_id in legacy_ids {
+        if legacy_id == pool_id {
+            continue;
+        }
+        if legacy_id.ends_with("-relaxed") && relaxed_worker_allowed_from_env() {
+            continue;
+        }
+        match db
+            .delete_claw_pool_if_offline(&legacy_id, advertise_ip, now_ms)
+            .await
+        {
+            Ok(true) => info!(
+                target: "claw_gateway_pool",
+                component = "pool_registry",
+                pruned_pool_id = %legacy_id,
+                advertise_ip = %advertise_ip,
+                "pruned offline superseded claw_pool row"
+            ),
+            Ok(false) => {}
+            Err(e) => warn!(
+                target: "claw_gateway_pool",
+                component = "pool_registry",
+                pruned_pool_id = %legacy_id,
+                error = %e,
+                "claw_pool prune failed"
+            ),
+        }
+    }
+}
+
 fn sanitize_pool_id_segment(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
@@ -106,17 +161,20 @@ pub async fn run_pool_registry(
         last_heartbeat_ms: now,
     };
     match db.upsert_claw_pool(&row).await {
-        Ok(()) => info!(
-            target: "claw_gateway_pool",
-            component = "pool_registry",
-            pool_id = %pool_id,
-            advertise_ip = %advertise_ip,
-            gateway_base = %gateway_base,
-            sse_port,
-            slots_max,
-            slots_min,
-            "claw_pool registered"
-        ),
+        Ok(()) => {
+            info!(
+                target: "claw_gateway_pool",
+                component = "pool_registry",
+                pool_id = %pool_id,
+                advertise_ip = %advertise_ip,
+                gateway_base = %gateway_base,
+                sse_port,
+                slots_max,
+                slots_min,
+                "claw_pool registered"
+            );
+            prune_superseded_offline_pools(&db, &pool_id, &advertise_ip, now).await;
+        }
         Err(e) => {
             warn!(
                 target: "claw_gateway_pool",

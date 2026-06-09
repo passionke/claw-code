@@ -60,12 +60,16 @@ if claw_pool_daemon_on_host; then
   base="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
   echo "[2b/5] host strict pool HTTP (127.0.0.1:${CLAW_STRICT_POOL_HTTP_PORT:-9944})"
   CLAW_POOL_HTTP_PORT="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
-  claw_assert_host_pool_http_ready "${PODMAN_DIR}/.claw-pool-rpc/strict" || exit 1
+  claw_assert_host_pool_http_ready "$(claw_strict_pool_rpc_dir "${PODMAN_DIR}")" || exit 1
   echo "host strict pool HTTP ok"
-  echo "[2b2/5] host relaxed pool HTTP (127.0.0.1:${CLAW_RELAXED_POOL_HTTP_PORT:-9954})"
-  CLAW_POOL_HTTP_PORT="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
-  claw_assert_host_pool_http_ready "${PODMAN_DIR}/.claw-pool-rpc/relaxed" || exit 1
-  echo "host relaxed pool HTTP ok"
+  if claw_relaxed_worker_allowed_from_env; then
+    echo "[2b2/5] host relaxed pool HTTP (127.0.0.1:${CLAW_RELAXED_POOL_HTTP_PORT:-9954})"
+    CLAW_POOL_HTTP_PORT="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
+    claw_assert_host_pool_http_ready "$(claw_relaxed_pool_rpc_dir "${PODMAN_DIR}")" || exit 1
+    echo "host relaxed pool HTTP ok"
+  else
+    echo "[2b2/5] relaxed pool skipped (CLAW_ALLOW_RELAXED_WORKER=false)"
+  fi
   CLAW_POOL_HTTP_PORT="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
   echo "[2c/5] pool HTTP from gateway-rs container (${base})"
   claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" || exit 1
@@ -78,7 +82,7 @@ fi
 
 echo "[3/5] solve_async smoke (extraSession from ds 1 project config when defined)"
 if claw_pool_daemon_on_host; then
-  claw_assert_host_pool_rpc_ready "${PODMAN_DIR}/.claw-pool-rpc/strict" || {
+  claw_assert_host_pool_rpc_ready "$(claw_strict_pool_rpc_dir "${PODMAN_DIR}")" || {
     echo "error: refuse solve_async smoke — host pool RPC not ready" >&2
     exit 1
   }

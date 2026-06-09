@@ -32,6 +32,7 @@ Commands:
   check         Connectivity smoke check (auto pool-up if HTTP down)
   solve-e2e     Admin-equivalent solve_async + poll to succeeded/failed (real gate, not healthz)
   verify        Stack truth checks (schema, pool registry, binary); fails loud
+  cluster-verify  Shared-PG multi-host: claw_pool zombies + each gateway /v1/pools (pre-prod gate)
   tap-up        Start claude-tap only (CLAUDE_TAP_MODE: native/pypi=PyPI claw-tap, docker=image)
   tap-down      Stop claude-tap only
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
@@ -90,6 +91,7 @@ case "${cmd}" in
   check) "${LIB}/check-connectivity.sh" "$@" ;;
   solve-e2e) "${LIB}/admin-solve-e2e.sh" "$@" ;;
   verify) "${LIB}/claw-stack-verify.sh" "$@" ;;
+  cluster-verify) "${LIB}/claw-cluster-verify.sh" "$@" ;;
   tap-up) bash "${LIB}/tap-up.sh" "$@" ;;
   tap-down) bash "${LIB}/tap-down.sh" "$@" ;;
   build-tap)

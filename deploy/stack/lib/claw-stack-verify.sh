@@ -6,9 +6,11 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 ENV_FILE="${REPO_ROOT}/.env"
-RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"
-STRICT_RPC_DIR="${RPC_DIR}/strict"
-RELAXED_RPC_DIR="${RPC_DIR}/relaxed"
+# shellcheck source=stack-instance.sh
+source "${LIB_DIR}/stack-instance.sh"
+RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
+STRICT_RPC_DIR="$(claw_strict_pool_rpc_dir "${PODMAN_DIR}")"
+RELAXED_RPC_DIR="$(claw_relaxed_pool_rpc_dir "${PODMAN_DIR}")"
 STAMP_FILE="${PODMAN_DIR}/.claw-build-stamp.env"
 
 fail() {
@@ -141,15 +143,20 @@ RELAXED_HTTP_PORT="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
 claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" \
   || fail "gateway container cannot reach strict pool HTTP — run gateway.sh up"
 
-echo "==> [3/6] dual pool registry (strict + relaxed)"
-if [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
-  # shellcheck disable=SC1091
-  source "${LIB_DIR}/pool-daemon-systemd.sh"
-  claw_pool_systemd_assert_dual_pool_coherent "${PODMAN_DIR}" \
-    || fail "systemd dual-pool incoherent (legacy single unit may have overwritten strict)"
+if claw_relaxed_worker_allowed_from_env; then
+  echo "==> [3/6] dual pool registry (strict + relaxed)"
+  if [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "${LIB_DIR}/pool-daemon-systemd.sh"
+    claw_pool_systemd_assert_dual_pool_coherent "${PODMAN_DIR}" \
+      || fail "systemd dual-pool incoherent (legacy single unit may have overwritten strict)"
+  fi
+  claw_verify_pool_profile strict "${STRICT_RPC_DIR}" "${STRICT_POOL_ID}" "${STRICT_HTTP_PORT}"
+  claw_verify_pool_profile relaxed "${RELAXED_RPC_DIR}" "${RELAXED_POOL_ID}" "${RELAXED_HTTP_PORT}"
+else
+  echo "==> [3/6] strict pool only (CLAW_ALLOW_RELAXED_WORKER=false)"
+  claw_verify_pool_profile strict "${STRICT_RPC_DIR}" "${STRICT_POOL_ID}" "${STRICT_HTTP_PORT}"
 fi
-claw_verify_pool_profile strict "${STRICT_RPC_DIR}" "${STRICT_POOL_ID}" "${STRICT_HTTP_PORT}"
-claw_verify_pool_profile relaxed "${RELAXED_RPC_DIR}" "${RELAXED_POOL_ID}" "${RELAXED_HTTP_PORT}"
 
 echo "==> [4/6] pool daemon DB URL (host must not use compose hostname postgres)"
 pool_db_url="$(claw_pool_daemon_database_url)" || fail "CLAW_GATEWAY_DATABASE_URL unset"
@@ -160,24 +167,39 @@ case "${pool_db_url}" in
 esac
 ok "host pool DB URL uses reachable host (${pool_db_url%%@*}@…)"
 
-echo "==> [5/6] claw_pool table has both profiles"
-pool_rows="$(psql_q "SELECT count(*)::text FROM claw_pool WHERE pool_id IN ('${STRICT_POOL_ID}','${RELAXED_POOL_ID}');")"
-[[ "${pool_rows}" -ge 2 ]] || fail "claw_pool expected 2 rows (strict+relaxed), got ${pool_rows}"
-ok "claw_pool has strict + relaxed rows"
+if claw_relaxed_worker_allowed_from_env; then
+  echo "==> [5/6] claw_pool table has both profiles"
+  pool_rows="$(psql_q "SELECT count(*)::text FROM claw_pool WHERE pool_id IN ('${STRICT_POOL_ID}','${RELAXED_POOL_ID}');")"
+  [[ "${pool_rows}" -ge 2 ]] || fail "claw_pool expected 2 rows (strict+relaxed), got ${pool_rows}"
+  ok "claw_pool has strict + relaxed rows"
+else
+  echo "==> [5/6] claw_pool strict row (relaxed disabled)"
+  row_strict="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${STRICT_POOL_ID}' LIMIT 1;")"
+  [[ "${row_strict}" == "${STRICT_POOL_ID}" ]] || fail "claw_pool missing strict row ${STRICT_POOL_ID}"
+  ok "claw_pool has strict row ${STRICT_POOL_ID}"
+fi
 
-echo "==> [6/6] gateway.env dual pool RPC bases"
+echo "==> [6/6] gateway.env pool RPC bases"
 [[ -f "${RPC_DIR}/gateway.env" ]] || fail "missing gateway.env"
 grep -q '^CLAW_STRICT_POOL_HTTP_BASE=' "${RPC_DIR}/gateway.env" \
   || fail "gateway.env missing CLAW_STRICT_POOL_HTTP_BASE"
-grep -q '^CLAW_RELAXED_POOL_HTTP_BASE=' "${RPC_DIR}/gateway.env" \
-  || fail "gateway.env missing CLAW_RELAXED_POOL_HTTP_BASE"
-ok "gateway.env lists strict + relaxed pool HTTP bases"
+if claw_relaxed_worker_allowed_from_env; then
+  grep -q '^CLAW_RELAXED_POOL_HTTP_BASE=' "${RPC_DIR}/gateway.env" \
+    || fail "gateway.env missing CLAW_RELAXED_POOL_HTTP_BASE"
+  ok "gateway.env lists strict + relaxed pool HTTP bases"
+else
+  ok "gateway.env lists strict pool HTTP base (relaxed disabled in .env)"
+fi
 
 if [[ -f "${STAMP_FILE}" ]]; then
   echo "--- build stamp ---"
   cat "${STAMP_FILE}"
 fi
 
-ok "dual pool verify complete"
+if claw_relaxed_worker_allowed_from_env; then
+  ok "dual pool verify complete"
+else
+  ok "strict-only pool verify complete"
+fi
 
 echo "==> claw-stack-verify: all checks passed"

@@ -1,6 +1,47 @@
 # shellcheck shell=bash
 # Host pool HTTP readiness. Author: kejiqing
 
+_LIB_POOL_HEALTH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=stack-instance.sh
+source "${_LIB_POOL_HEALTH_DIR}/stack-instance.sh"
+
+# Mirrors gateway `CLAW_ALLOW_RELAXED_WORKER` (default on). Author: kejiqing
+claw_relaxed_worker_allowed_from_env() {
+  case "${CLAW_ALLOW_RELAXED_WORKER:-true}" in
+    0 | false | no | off | FALSE | NO | OFF) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# pool-daemon-up default: dual pool when relaxed allowed, else strict-only. Author: kejiqing
+claw_default_pool_up_profile() {
+  if claw_relaxed_worker_allowed_from_env; then
+    printf '%s' "all"
+  else
+    printf '%s' "strict"
+  fi
+}
+
+# Stop relaxed daemon when env disables it (avoid idle worker name clash on same host). kejiqing
+claw_stop_relaxed_pool_when_disabled() {
+  local podman_dir="${1:?podman_dir}"
+  local relaxed_port="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
+  claw_relaxed_worker_allowed_from_env && return 0
+  if ! curl -fsS --connect-timeout 1 "http://127.0.0.1:${relaxed_port}/healthz/live-report" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "==> CLAW_ALLOW_RELAXED_WORKER=false; stopping relaxed pool on :${relaxed_port}" >&2
+  "${podman_dir}/lib/pool-daemon-down.sh" --profile=relaxed
+  if [[ -f "${podman_dir}/lib/pool-daemon-systemd.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "${podman_dir}/lib/pool-daemon-systemd.sh"
+    if claw_pool_use_systemd 2>/dev/null; then
+      claw_pool_systemd_stop relaxed 2>/dev/null || true
+      claw_pool_sudo systemctl disable claw-pool-daemon-relaxed 2>/dev/null || true
+    fi
+  fi
+}
+
 claw_pool_http_port() {
   printf '%s' "${CLAW_POOL_HTTP_PORT:-9944}"
 }
@@ -11,9 +52,11 @@ claw_host_pool_rpc_port() {
 
 claw_pool_load_gateway_rpc_env() {
   local podman_dir="${1:?podman_dir}"
-  if [[ -f "${podman_dir}/.claw-pool-rpc/gateway.env" ]]; then
+  local rpc_root
+  rpc_root="$(claw_pool_rpc_root "${podman_dir}")"
+  if [[ -f "${rpc_root}/gateway.env" ]]; then
     # shellcheck disable=SC1090
-    source "${podman_dir}/.claw-pool-rpc/gateway.env"
+    source "${rpc_root}/gateway.env"
   fi
 }
 
@@ -197,7 +240,8 @@ claw_wait_gateway_pool_rpc_ready() {
 
 claw_ensure_host_pool_running() {
   local podman_dir="${1:?podman_dir}"
-  local rpc_dir="${podman_dir}/.claw-pool-rpc"
+  local rpc_dir
+  rpc_dir="$(claw_strict_pool_rpc_dir "${podman_dir}")"
   if claw_assert_host_pool_http_ready "${rpc_dir}" 2>/dev/null; then
     return 0
   fi
