@@ -34,10 +34,10 @@ echo "==> CI cluster node B: COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} GATEWA
 
 claw_export_pool_registry_env "$(claw_pool_rpc_root "${PODMAN_DIR}")"
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
+claw_prepare_bind_mount_ownership "${PODMAN_DIR}"
+claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC}" || true
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
 claw_reapply_pool_image_pins "${PODMAN_DIR}"
-
-claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC}" || true
 
 # gateway_up → pg_ensure + probe, then create/connect/start (no migrate on node B). kejiqing
 claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate

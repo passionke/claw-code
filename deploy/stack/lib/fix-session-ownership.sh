@@ -54,13 +54,19 @@ claw_prepare_bind_mount_ownership() {
   local podman_dir="${1:?}"
   local uid="${CLAW_WORKER_UID:-1000}"
   local gid="${CLAW_WORKER_GID:-1000}"
-  local dir
+  local dir ws log_dir base
 
-  mkdir -p "${podman_dir}/claw-logs" "${podman_dir}/claw-workspace"
-  for dir in "${podman_dir}/claw-logs" "${podman_dir}/claw-workspace"; do
-    [[ -d "${dir}" ]] || continue
-    claw_chown_tree_to_worker "${dir}" "${uid}" "${gid}"
-  done
+  ws="$(claw_stack_workspace_bind_dir "${podman_dir}")"
+  mkdir -p "${ws}"
+  claw_chown_tree_to_worker "${ws}" "${uid}" "${gid}"
+
+  log_dir="${CLAW_HOST_LOG_DIR:-${podman_dir}/claw-logs}"
+  if [[ "${log_dir}" != /* ]]; then
+    base="${CLAW_COMPOSE_WORKING_DIRECTORY:-${podman_dir}}"
+    log_dir="${base}/${log_dir}"
+  fi
+  mkdir -p "${log_dir}"
+  claw_chown_tree_to_worker "${log_dir}" "${uid}" "${gid}"
 }
 
 claw_fix_session_workspace_ownership() {
@@ -81,15 +87,15 @@ claw_fix_session_workspace_ownership() {
   image="${CLAW_CHOWN_RUNNER_IMAGE:-docker.1ms.run/library/alpine:3.20}"
 
   shopt -s nullglob
-  for ds in "${root}"/ds_*; do
+  for ds in "${root}"/ds_* "${root}"/proj_*; do
     [[ -d "${ds}" ]] || continue
     if ! claw_path_owned_by "${ds}" "${uid}"; then
-      echo "==> fix ds workspace ownership ${ds} -> ${uid}:${gid}" >&2
+      echo "==> fix project workspace ownership ${ds} -> ${uid}:${gid}" >&2
       claw_chown_tree_to_worker "${ds}" "${uid}" "${gid}" || return 1
     fi
   done
 
-  for ds in "${root}"/ds_*/sessions/*; do
+  for ds in "${root}"/ds_*/sessions/* "${root}"/proj_*/sessions/*; do
     [[ -d "${ds}" ]] || continue
     if claw_path_owned_by "${ds}" "${uid}"; then
       continue
