@@ -238,7 +238,10 @@ async fn exec_user_for_slot(
     ))
 }
 
-pub(crate) async fn slot_ref(pool: &DockerPoolManager, slot_index: usize) -> Result<SlotLease, String> {
+pub(crate) async fn slot_ref(
+    pool: &DockerPoolManager,
+    slot_index: usize,
+) -> Result<SlotLease, String> {
     let worker_profile = pool.worker_profile_for_slot(slot_index).await?;
     Ok(SlotLease {
         slot_index,
