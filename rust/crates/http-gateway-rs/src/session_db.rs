@@ -3861,7 +3861,7 @@ mod tests {
 
     #[tokio::test]
     async fn workspace_tar_materialize_latest_turn() {
-        use claw_sandbox_protocol::{WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH};
+        use crate::pool::{WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH};
 
         let Some(db) = test_db().await else {
             eprintln!(
