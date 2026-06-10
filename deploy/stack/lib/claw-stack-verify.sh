@@ -101,6 +101,13 @@ if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); s
 fi
 ok "pool daemon binary contains registry + turn-assignment strings"
 
+# Lines after the last pool-daemon-up start (ignore stale errors from prior runs). kejiqing
+claw_pool_daemon_log_current_run() {
+  local log="${1:?log}"
+  [[ -f "${log}" ]] || return 1
+  awk '/pool-daemon-up: starting/{buf=""; on=1; next} on{buf=buf $0 ORS} END{printf "%s", buf}' "${log}"
+}
+
 claw_verify_pool_profile() {
   local profile="$1" rpc_dir="$2" pool_id="$3" http_port="$4"
   export CLAW_POOL_HTTP_PORT="${http_port}"
@@ -111,13 +118,18 @@ claw_verify_pool_profile() {
   [[ -f "${rpc_dir}/pool-registry.env" ]] || fail "missing ${rpc_dir}/pool-registry.env"
   LOG="${rpc_dir}/daemon.log"
   [[ -f "${LOG}" ]] || fail "missing ${LOG}"
-  if tail -200 "${LOG}" | grep -q "claw_pool registry disabled"; then
+  run_log="$(claw_pool_daemon_log_current_run "${LOG}")"
+  if [[ -z "${run_log}" ]]; then
     tail -30 "${LOG}" >&2
-    fail "${profile} pool registry disabled in daemon.log"
+    fail "${profile} daemon.log has no lines after last pool-daemon-up start"
   fi
-  if ! tail -200 "${LOG}" | grep -q "claw_pool registered"; then
-    tail -30 "${LOG}" >&2
-    fail "no claw_pool registered in ${profile} daemon.log"
+  if printf '%s' "${run_log}" | grep -q "claw_pool registry disabled"; then
+    printf '%s\n' "${run_log}" | tail -30 >&2
+    fail "${profile} pool registry disabled in current daemon run"
+  fi
+  if ! printf '%s' "${run_log}" | grep -q "claw_pool registered"; then
+    printf '%s' "${run_log}" | tail -30 >&2
+    fail "no claw_pool registered in current ${profile} daemon run"
   fi
   ok "${profile} daemon.log shows claw_pool registered"
   row_pool_id="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${pool_id}' LIMIT 1;")"
