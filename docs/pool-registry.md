@@ -2,7 +2,7 @@
 
 Author: kejiqing
 
-Each **`claw-pool-daemon`** registers in PostgreSQL; each running turn records which pool and worker ran it.
+Each **`claw-sandbox`** (host pool on `:9944`) registers in PostgreSQL; each running turn records which pool and worker ran it.
 
 **Deployment locality (KISS):** solve/cancel **RPC** is **same-host only**. Each machine runs **gateway + pool daemon** together. Gateway dials co-located pool via **`CLAW_POOL_HTTP_BASE`** / `CLAW_POOL_DAEMON_*`. It does **not** look up `pool_id` in DB to pick an RPC target for new solves.
 
@@ -96,14 +96,7 @@ RPC stays co-located (`CLAW_POOL_DAEMON_TCP`); `advertise_ip` is for DB/SSE meta
 
 ### 1. PostgreSQL（元数据是否写上）
 
-**Dual-pool 升级后仍见 offline 旧行：** 旧 `pool-{host}`（无 `-strict`）不再心跳，PG 里会长期 offline。`claw-pool-daemon` 以 `…-strict` 注册时会自动删除同 `advertise_ip` 上已 offline 的 legacy / 已停 relaxed 行。若仍残留，在 **2.172 上** `pool-up --restart` 一次，或手动：
-
-```sql
-DELETE FROM claw_pool
-WHERE pool_id = 'pool-ali-th-onl-max-agent-02'
-  AND advertise_ip = '192.168.9.172'
-  AND (EXTRACT(EPOCH FROM NOW())*1000 - last_heartbeat_ms) > 120000;
-```
+**升级后仍见 offline 旧行：** 旧 dual-pool 时代的 `pool-{host}` / `…-strict` / `…-relaxed` 行可能长期 offline。统一 pool（`CLAW_POOL_ID`，无 profile 后缀）重新注册后，gateway 会 prune 同 `advertise_ip` 上已 offline 的 legacy 行。若仍残留：`pool-up --restart` 一次，或手动 `DELETE FROM claw_pool WHERE …`。
 
 ```sql
 SELECT pool_id, advertise_ip, sse_port, last_heartbeat_ms FROM claw_pool ORDER BY last_heartbeat_ms DESC;
@@ -124,7 +117,7 @@ SELECT turn_id, status, pool_id, worker_name FROM gateway_turns WHERE turn_id = 
 | `target` / 关键字 | 含义 |
 |-------------------|------|
 | `claw_gateway_pool` + `claw_pool registered` | pool 写入 DB |
-| `assign_turn_pool_worker_ok` + `pool_id` + `worker_name` | turn 绑 pool（**仅 pool daemon 进程**） |
+| Gateway `assign_turn_pool_worker` + `pool_id` + `worker_name` | turn 绑 pool + worker（**pool_outside**：gateway 在 acquire 后写 PG） |
 | `claw_live_report` + `route=db_snapshot_sse` | Gateway 路径 **A**：终态只读 DB |
 | `claw_live_report` + `route=pool_proxy_sse` + `pool_http_source=claw_pool_join` | Gateway 路径 **B**：用 DB 的 ip:port |
 | `claw_live_report` + `route=pool_proxy_sse_denied` | 路径 **B** 拒绝：无 `pool_id` 或 `claw_pool` 无行（不再 fallback env） |

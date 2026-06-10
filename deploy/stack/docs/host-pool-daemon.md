@@ -1,4 +1,4 @@
-# 宿主机 claw-pool-daemon（Admin solve 必读）
+# 宿主机 claw-sandbox（Admin solve 必读）
 
 Author: kejiqing
 
@@ -12,7 +12,7 @@ Admin `POST /v1/solve_async` 依赖 **gateway（compose）+ 宿主机 pool（994
 |------|------|------|
 | PostgreSQL | `claw-gateway-postgres` | `podman ps` |
 | Gateway | `claw-gateway-rs` | `${GATEWAY_HOST_PORT}/healthz` |
-| **Pool** | **宿主机 `claw-pool-daemon`** | `127.0.0.1:9944/healthz/live-report` |
+| **Pool** | **宿主机 `claw-sandbox`** | `127.0.0.1:9944/healthz/live-report` |
 | Playground | `claw-gateway-playground` | Admin UI |
 | Worker | `claw-worker-*` | pool 借出，非常驻 |
 

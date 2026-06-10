@@ -22,7 +22,7 @@ Each file is recreated when you run the matching flow (`gateway.sh up`, `tap-up`
 | `deploy/stack/.claw-worker-llm.env` | `lib/worker-llm-wiring.sh` (via `up.sh` / tap) |
 | `deploy/stack/.claw-worker-runtime.env` | `lib/worker-llm-wiring.sh` |
 | `deploy/stack/.claw-llm-runtime.env` | `lib/compose-include.sh` → `claw_export_llm_runtime_layout` |
-| `deploy/stack/.claw-pool-daemon.env` | `lib/compose-include.sh` → `claw_podman_write_pool_daemon_sidecar_env` |
+| `deploy/stack/.claw-pool-rpc/pool-daemon.env` | `lib/pool-daemon-up.sh` 生成（`claw-sandbox` 进程 env） |
 | `deploy/stack/.claw-pool-workspace.env` | `lib/compose-include.sh` → `claw_podman_export_pool_workspace` |
 | `deploy/stack/.claw-pool-rpc/gateway.env` | `lib/compose-include.sh` (pool TCP/HTTP for gateway) |
 | `deploy/stack/.claw-pool-rpc/pool-registry.env` | `lib/claw-pool-registry-env.sh` |

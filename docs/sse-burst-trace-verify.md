@@ -34,7 +34,7 @@ mkdir -p deploy/stack/claw-logs
 
 ```bash
 grep CLAW_SSE_BURST /home/admin/work/claw-code/.env
-tr '\0' '\n' < /proc/$(pgrep -f claw-pool-daemon | head -1)/environ | grep CLAW_SSE_BURST
+tr '\0' '\n' < /proc/$(pgrep -f claw-sandbox | head -1)/environ | grep CLAW_SSE_BURST
 docker exec $(docker ps -q -f name=claw-worker- | head -1) \
   touch /home/admin/work/claw-code/deploy/stack/claw-logs/.worker-ok && echo worker_write_OK
 curl -fsS http://127.0.0.1:18088/healthz >/dev/null && echo gateway_OK

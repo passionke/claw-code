@@ -24,7 +24,7 @@ Pool v1 runs solve in a worker with **tmpfs** `CLAW_PROJECT_CONFIG_ROOT=/claw_ho
 | 层 | 事实 |
 | --- | --- |
 | Worker | `report_progress` 写入槽位 tmpfs：`.claw/task-progress.json`、`progress-events.ndjson` |
-| 终态 | 仅 **宿主机** `claw-pool-daemon` 在 `readback_out` 时 `podman exec` worker → upsert PG |
+| 终态 | **pool_outside**：Gateway `readback` 经 sandbox RPC；legacy 路径为宿主机 pool `readback_out` |
 | 错误路径（已删除） | **gateway 容器内**直接 `podman exec` 读 worker → **失败**（gateway 与 worker 不在同一 runtime 命名空间；worker 由宿主机 pool 管理） |
 | 结果 | **`running` 期间 PG `solve_timing_jsonb` 为空**；HTTP 消费端只读 PG → poll 看不到中间进度 |
 

@@ -11,7 +11,7 @@ Author: kejiqing
 | 路径 | 条件 | 行为 |
 |------|------|------|
 | **A. DB 快照 SSE** | `GET /v1/biz_advice_report?stream=true` 且 `gateway_turns.status == succeeded` | Gateway 从 DB 读 `report_message` / `output_json.message`，只发 `biz.report.start` + `biz.report.done`（全文在 done，**无 delta**） |
-| **B. Live 代理** | 同上且 status 为 `running` / `queued` | Gateway **反向代理** → `claw-pool-daemon` HTTP `GET /v1/biz_advice_report/live`（catch-up delta + tail + done） |
+| **B. Live 代理** | 同上且 status 为 `running` / `queued` | Gateway **LiveReportHub** 消费 sandbox `ExecSolve` NDJSON（pool_outside）；legacy 为反向代理 pool HTTP live |
 | **C. 润色 / JSON** | `stream=false` 或 `_bak` | 现有 LLM 润色路径（与 live 正交） |
 
 **禁止**再使用：Gateway `TurnStdoutHub`、`POST /v1/internal/turns/{turnId}/stdout-event`、daemon → gateway HTTP 转发。
@@ -27,7 +27,7 @@ Author: kejiqing
 ```mermaid
 sequenceDiagram
   participant W as Worker
-  participant P as claw_pool_daemon
+  participant P as claw_sandbox
   participant G as Gateway
   participant A as Admin
 
@@ -59,12 +59,12 @@ sequenceDiagram
 
 | 变量 | 说明 |
 |------|------|
-| `CLAW_POOL_DAEMON_TCP` | Gateway → pool RPC（默认 `claw-pool-daemon:9943` 或 host `host.containers.internal:9943`） |
-| `CLAW_POOL_HTTP_BASE` | 仅 healthz/留档；**live 路由已禁用 env fallback**，JOIN 失败返回 **503** |
-| `CLAW_POOL_ID` | Gateway 与 pool daemon 须一致；入队时预绑 `gateway_turns.pool_id` |
-| `CLAW_POOL_HTTP_BIND` | pool daemon HTTP 监听（默认 `0.0.0.0:9944`） |
+| `CLAW_SANDBOX_URL` | Gateway → pool HTTP RPC（`POST /v1/sandbox/rpc`） |
+| `CLAW_POOL_HTTP_BASE` | 与 `CLAW_SANDBOX_URL` 同义后备；live JOIN 失败返回 **503** |
+| `CLAW_POOL_ID` | Gateway 与 `claw-sandbox` 须一致；入队时预绑 `gateway_turns.pool_id` |
+| `CLAW_POOL_HTTP_BIND` | `claw-sandbox` 监听（默认 `0.0.0.0:9944`） |
 
-**必须**运行 `claw-pool-daemon`（含 RPC + HTTP）。Gateway 不再内嵌 pool live hub。
+**必须**运行宿主机 **`claw-sandbox`**。Gateway 持本地 LiveReportHub（exec 流中继）。
 
 改 Rust 后：`./deploy/stack/gateway.sh pack-deploy`，并重启 pool daemon。
 

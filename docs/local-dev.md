@@ -20,7 +20,7 @@
 
 会做：
 
-1. `cargo build --release` **host** `claw-pool-daemon`（避免 worker `clawExitCode=125`）
+1. 构建 **host** `claw-sandbox`（`sandbox/` 或 `gateway.sh build` → `.linux-artifacts`）
 2. **`web/gateway-admin`**：`npm ci && vite build` → `dist/`（`lib/build-gateway-admin.sh`）
 3. 快速重建 `claw-gateway-playground` 镜像（含 admin dist + solve_async）
 4. `pool-reset` → `up` → `check`

@@ -104,7 +104,7 @@ See `docs/env-files.md`. Key paths:
 
 ## Rust / worker env (code-defined)
 
-Gateway reads many vars in `rust/crates/http-gateway-rs/src/main.rs`. Pool daemon: `src/bin/claw-pool-daemon.rs`. Docker/podman pool: `CLAW_PODMAN_*` / `CLAW_DOCKER_*` prefixes in `src/pool/docker_pool.rs`.
+Gateway reads many vars in `rust/crates/http-gateway-rs/src/main.rs`. Host pool: `sandbox/crates/claw-sandbox-server`（二进制 `claw-sandbox`）。Worker 池 env：`CLAW_PODMAN_*` / `CLAW_DOCKER_*` / `CLAW_*_RELAXED_*_POOL_SIZE`（单进程内 profile 槽位）。
 
 Worker container keys loaded from mounted `.env` (subset): `rust/crates/gateway-solve-turn/src/worker_env.rs` (`WORKER_ENV_KEYS`).
 

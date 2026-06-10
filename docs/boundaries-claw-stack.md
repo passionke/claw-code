@@ -19,7 +19,7 @@ Author: kejiqing
 | Component | Code / deploy | Owns | Does **not** own |
 | --- | --- | --- | --- |
 | **Claw** | `rust/` | Tool surface, `mcp__*` allowlist, session | HTTP, datasource encryption, SQLBot product |
-| **HTTP gateway** | `rust/crates/http-gateway-rs/` | Axum API, solve via **host `claw-pool-daemon` + worker 容器池**, `mcpServers` merge, `dsId` registry | Doris query implementation, SQLBot server code |
+| **HTTP gateway** | `rust/crates/http-gateway-rs/` | Axum API, solve via **host `claw-sandbox` + worker 容器池**, `mcpServers` merge, `dsId` registry | Doris query implementation, SQLBot server code |
 | **Doris MCP** | `third_party/doris-mcp/` | Read-only SQL + metadata **only** (`mcp__doris__*`) | Gateway, SQLBot, transport bridge |
 | **SQLBot (product)** | Your cluster (e.g. :8000 / :8001) | NL 问数、MCP 工具 `mcp_start` / `mcp_question`、业务库 | This repo (except optional PG/API **read** for config) |
 | **Transport adapter** | Out-of-repo or custom bridge | Remote MCP (SSE/HTTP) **wire** → one stdio-shaped child for the gateway | **Not** the name “SQLBot MCP” in front of Claw; Claw sees **`mcp__sqlbot__*`** from the **merged** server config |
@@ -64,5 +64,6 @@ Author: kejiqing
 - `deploy/config/datasources.example.yaml` — `CLAW_DS_REGISTRY` 模板
 - `rust/crates/http-gateway-rs/datasources.example.yaml` — 数据源 registry 模板（勿提交真实凭据）
 - `third_party/doris-mcp/README.md` — Doris-only build
-- `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 与 **宿主机 `claw-pool-daemon` / Docker·Podman 容器池**；网关只租借与编排
+- `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 与 **宿主机 `claw-sandbox` / Docker·Podman 容器池**
+- `sandbox/docs/system-design.md` — pool_outside 终态（单 pool、HTTP RPC）
 - `docs/persistence-model.md` — solve **磁盘 jsonl（运行时）** 与 **`gateway_turns` 终态（交接）** 的分工与 `turn_id` 边界
