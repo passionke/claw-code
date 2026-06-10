@@ -54,8 +54,9 @@ interface AppContextValue {
   gatewayOptions: { label: string; value: string }[];
   /** Multiple claw_pool rows with gatewayBase — else hide meaningless picker. Author: kejiqing */
   showGatewayPicker: boolean;
-  /** GET /v1/pools from default gateway — turn route labels. Author: kejiqing */
+  /** GET /v1/pools — shared PG registry; refreshed for gateway picker + Pool 集群. Author: kejiqing */
   clusterPools: ListClawPoolsResponse | null;
+  refreshClusterPools: () => Promise<void>;
   /** From GET /healthz deployImageTag (local | release-vX.Y.Z | …). Author: kejiqing */
   gatewayImageTag: string;
 }
@@ -87,6 +88,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!playground) return false;
     return shouldShowGatewayPicker(playground, clusterPools);
   }, [playground, clusterPools]);
+
+  const refreshClusterPools = useCallback(async () => {
+    const seed =
+      normalizeGatewayBase(gatewayBase) ||
+      normalizeGatewayBase(playground?.defaultGatewayBase || "");
+    if (!seed) return;
+    try {
+      const pools = await proxyHttp<ListClawPoolsResponse>(seed, "GET", "/v1/pools");
+      setClusterPools(pools);
+    } catch {
+      /* keep last snapshot — registry is best-effort for labels */
+    }
+  }, [gatewayBase, playground?.defaultGatewayBase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,6 +145,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!gatewayBase && !playground?.defaultGatewayBase) return;
+    void refreshClusterPools();
+    const id = window.setInterval(() => void refreshClusterPools(), 30_000);
+    return () => window.clearInterval(id);
+  }, [gatewayBase, playground?.defaultGatewayBase, refreshClusterPools]);
+
   const setGatewayBase = useCallback((v: string) => {
     setGatewayBaseState(v);
     try {
@@ -139,6 +160,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
   }, []);
+
+  // Drop selection when pool goes offline (picker is online-only). kejiqing
+  useEffect(() => {
+    if (!playground || !gatewayBase) return;
+    const values = allGatewayOptionValues(playground, clusterPools);
+    if (!values.length) return;
+    const norm = normalizeGatewayBase(gatewayBase);
+    if (values.some((v) => normalizeGatewayBase(v) === norm)) return;
+    const fallback = defaultGatewayFromPools(playground, clusterPools);
+    if (fallback) setGatewayBase(fallback);
+  }, [playground, clusterPools, gatewayBase, setGatewayBase]);
 
   const setProjId = useCallback((id: number) => {
     setProjIdState(id);
@@ -242,6 +274,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     gatewayOptions,
     showGatewayPicker,
     clusterPools,
+    refreshClusterPools,
     gatewayImageTag,
   };
 

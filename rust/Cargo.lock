@@ -467,6 +467,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "claw-sandbox-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "claw-sandbox-protocol",
+ "futures-util",
+ "gateway-solve-turn",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "claw-sandbox-protocol"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "claw-server"
 version = "0.1.0"
 dependencies = [
@@ -1214,6 +1239,8 @@ dependencies = [
  "axum 0.8.9",
  "bytes",
  "chrono",
+ "claw-sandbox-client",
+ "claw-sandbox-protocol",
  "futures-util",
  "gateway-solve-turn",
  "getrandom 0.2.17",

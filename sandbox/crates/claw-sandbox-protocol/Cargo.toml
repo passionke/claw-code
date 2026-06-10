@@ -1,0 +1,16 @@
+[package]
+name = "claw-sandbox-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+authors.workspace = true
+description = "Shared Gateway ↔ Sandbox contract types. Author: kejiqing"
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

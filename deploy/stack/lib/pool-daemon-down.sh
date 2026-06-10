@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
-# Stop host claw-pool-daemon(s). --profile=strict|relaxed|all (default all). Author: kejiqing
+# Stop host claw-sandbox. Author: kejiqing
 set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/pool-daemon-launchd.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/compose-include.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/pool-health.sh"
 
-CLAW_POOL_PROFILE=all
-for arg in "$@"; do
-  case "${arg}" in
-    --profile=strict) CLAW_POOL_PROFILE=strict ;;
-    --profile=relaxed) CLAW_POOL_PROFILE=relaxed ;;
-    --profile=all) CLAW_POOL_PROFILE=all ;;
-  esac
-done
+REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
+_pool_env_file="${CLAW_POOL_UP_ENV_FILE:-${REPO_ROOT}/.env}"
+if [[ -f "${_pool_env_file}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${_pool_env_file}"
+  set +a
+fi
 
 claw_pool_down_one() {
-  local rpc_dir="$1" http_port="$2" profile="${3:-}"
+  local rpc_dir="$1" http_port="$2"
   local AUDIT_LOG="${rpc_dir}/daemon-down.audit.log"
   mkdir -p "${rpc_dir}"
   {
-    printf '\n%s pool-daemon-down begin profile=%s ppid=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${profile:-legacy}" "$PPID"
+    printf '\n%s pool-daemon-down begin ppid=%s port=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PPID" "${http_port}"
   } >>"${AUDIT_LOG}" 2>/dev/null || true
 
   claw_pool_wait_http_down() {
@@ -35,13 +39,13 @@ claw_pool_down_one() {
   }
 
   if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
-    claw_pool_launchd_bootout "${profile}"
+    claw_pool_launchd_bootout
   elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
     # shellcheck disable=SC1091
     source "${LIB_DIR}/pool-daemon-systemd.sh"
-    if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_installed "${profile}"; then
-      echo "==> stopping claw-pool-daemon (systemd) profile=${profile:-legacy}" >&2
-      claw_pool_systemd_stop "${profile}" || true
+    if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_installed; then
+      echo "==> stopping claw-sandbox (systemd)" >&2
+      claw_pool_systemd_stop || true
     fi
   fi
 
@@ -49,7 +53,7 @@ claw_pool_down_one() {
     local pid
     pid="$(cat "${rpc_dir}/daemon.pid")"
     if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
-      echo "==> stopping claw-pool-daemon pid=${pid} profile=${profile:-legacy}" >&2
+      echo "==> stopping claw-sandbox pid=${pid}" >&2
       kill "${pid}" 2>/dev/null || true
       if ! claw_pool_wait_http_down; then
         kill -9 "${pid}" 2>/dev/null || true
@@ -65,21 +69,9 @@ claw_pool_down_one() {
   rm -f "${rpc_dir}/pool.sock"
 }
 
-# Legacy single-pool layout (pre dual-pool).
-if [[ "${CLAW_POOL_PROFILE}" == "all" ]]; then
-  claw_pool_down_one "${PODMAN_DIR}/.claw-pool-rpc" "${CLAW_POOL_HTTP_PORT:-9944}" ""
-fi
-if [[ "${CLAW_POOL_PROFILE}" == "all" || "${CLAW_POOL_PROFILE}" == "strict" ]]; then
-  claw_pool_down_one "${PODMAN_DIR}/.claw-pool-rpc/strict" "${CLAW_STRICT_POOL_HTTP_PORT:-9944}" "strict"
-fi
-if [[ "${CLAW_POOL_PROFILE}" == "all" || "${CLAW_POOL_PROFILE}" == "relaxed" ]]; then
-  claw_pool_down_one "${PODMAN_DIR}/.claw-pool-rpc/relaxed" "${CLAW_RELAXED_POOL_HTTP_PORT:-9954}" "relaxed"
-fi
-
-if [[ "${CLAW_POOL_PROFILE}" == "all" ]]; then
-  while read -r pid; do
-    [[ -n "${pid}" ]] || continue
-    kill "${pid}" 2>/dev/null || true
-  done < <(pgrep -f '[/]claw-pool-daemon' 2>/dev/null || true)
-  sleep 0.3
+HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
+RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
+claw_pool_down_one "${RPC_DIR}" "${HTTP_PORT}"
+if [[ -z "${CLAW_POOL_RPC_INSTANCE:-}" ]]; then
+  claw_cleanup_legacy_dual_pool "${PODMAN_DIR}"
 fi

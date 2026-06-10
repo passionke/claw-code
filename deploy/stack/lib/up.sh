@@ -51,7 +51,7 @@ claw_apply_deploy_profile || exit 1
 
 # shellcheck source=claw-pool-registry-env.sh
 source "${LIB_DIR}/claw-pool-registry-env.sh"
-claw_export_pool_registry_env "${PODMAN_DIR}/.claw-pool-rpc"
+claw_export_pool_registry_env "$(claw_pool_rpc_root "${PODMAN_DIR}")"
 
 claw_podman_export_pool_workspace "${PODMAN_DIR}"
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
@@ -126,7 +126,7 @@ claw_reapply_pool_image_pins "${PODMAN_DIR}"
 echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}} (relaxed=${CLAW_RELAXED_PODMAN_IMAGE:-unset})" >&2
 export CLAW_IMAGE_RELEASE_TAG
 
-RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc"
+POOL_RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
 if claw_pool_daemon_on_host; then
   POOL_BIN="$(claw_ensure_pool_daemon_binary "${PODMAN_DIR}" "${REPO_ROOT}" | tail -n1)"
   export CLAW_POOL_DAEMON_BIN="${POOL_BIN}"
@@ -143,7 +143,7 @@ claw_wait_gateway_http_ready 60 || exit 1
 
 if claw_pool_daemon_on_host; then
   "${PODMAN_DIR}/lib/pool-daemon-up.sh"
-  claw_assert_host_pool_rpc_ready "${RPC_DIR}" || {
+  claw_assert_host_pool_rpc_ready "${POOL_RPC_DIR}" || {
     echo "error: gateway compose up finished but host pool RPC is unavailable" >&2
     exit 1
   }

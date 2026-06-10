@@ -8,6 +8,8 @@ Author: kejiqing
 
 **本地怎么起栈（稳定步骤）**：只看 `deploy/stack/README.md` 即可；本文偏设计与配置项说明，不负责替代运维手册。
 
+**pool_outside（当前默认）**：宿主机 **`claw-sandbox`**（`sandbox/`）单进程 `:9944`；Gateway 经 **`CLAW_SANDBOX_URL`** HTTP RPC 租 worker，**materialize / readback 在 gateway**（见 `sandbox/docs/system-design.md`）。已无 dual pool（`:9954`）、无 `--profile`。
+
 ## 1. 要解决什么问题
 
 | 现状 | 问题 |
@@ -23,13 +25,13 @@ Author: kejiqing
 
 1. **网关进程（`http-gateway-rs`）**  
    - 仍负责 HTTP、任务队列、`projId` 锁、写 **`proj_home/.claw/settings.json`**（与现在一致）。  
-   - **不再**在网关进程里跑 `claw` solve；**只管租借与编排**：经 **`PoolRpcClient`** 调宿主机 **`claw-pool-daemon`** 完成 `acquire` → `dispatch`（`docker exec` / `podman exec`）→ 读结果 → `release`；取消时 **`force_kill`**。  
-   - **不**决定池大小、**不**调 `ensure_warm`（这些在 **池守护进程** 内）。
+   - **不再**在网关进程里跑 `claw` solve；**只管编排**：经 **`SandboxRpcClient`** 调宿主机 **`claw-sandbox`** 完成 `acquire` → `guest_*` / `exec` → `release`；取消时 **`force_kill`**。  
+   - **不**决定池大小、**不**调 `ensure_warm`（这些在 **claw-sandbox** 内）。
 
-2. **池守护进程（`claw-pool-daemon`，宿主机）**  
-   - **进程启动时一次性**从环境变量读取 **`CLAW_DOCKER_POOL_SIZE` / `CLAW_DOCKER_POOL_MIN_IDLE`**（Podman 对应 `CLAW_PODMAN_POOL_*`）等并固定；**不做热更新**（改参须重启进程）。  
-   - 内部负责 **`ensure_warm` / 缩 idle**、worker **创建与汰换**；维护 **上限 N** 与状态机 **idle → leased → idle**（lease 超时则强制回收）。  
-   - 通过 **TCP 或 Unix socket** 对网关暴露 JSON-RPC 式协议（`CLAW_POOL_DAEMON_TCP` / `CLAW_POOL_DAEMON_SOCKET`）。
+2. **池进程（`claw-sandbox`，宿主机）**  
+   - **单进程**；`CLAW_STRICT_*_POOL_SIZE` + `CLAW_RELAXED_*_POOL_SIZE` 为 **同一池内** strict/relaxed worker 槽位（非两个 daemon）。  
+   - 负责 **`ensure_warm` / 缩 idle**、worker **创建与汰换**；状态机 **idle → leased → idle**。  
+   - 对网关暴露 **HTTP** `POST /v1/sandbox/rpc`（`CLAW_SANDBOX_URL`）；legacy `POST /v1/pool/rpc` 仍可用。
 
 3. **Worker 容器**  
    - 镜像：与现网一致的 **Debian slim + `claw`（+ 可选 `ca-certificates`/`curl`）**（见 `deploy/stack/Containerfile.gateway-rs` 的 runtime 层思路）。  
@@ -41,7 +43,7 @@ Author: kejiqing
 sequenceDiagram
     participant GW as http-gateway-rs
     participant PG as PostgreSQL
-    participant PD as claw-pool-daemon
+    participant PD as claw-sandbox
     participant W as worker
 
     GW->>PG: INSERT turn + solve_task_json（入队前 PG 闸门）
@@ -102,7 +104,7 @@ sequenceDiagram
 
 | 环境变量 | 含义 |
 | --- | --- |
-| `CLAW_SOLVE_ISOLATION` | `podman_pool`（本仓库 Podman compose 默认） / `docker_pool`（远程 Docker 宿主机或挂载 `docker.sock` 的部署）。`inprocess` 与网关内嵌池已移除；网关 **必须** 配置 `CLAW_POOL_DAEMON_TCP` 或 `CLAW_POOL_DAEMON_SOCKET` 指向宿主机 `claw-pool-daemon`。 |
+| `CLAW_SOLVE_ISOLATION` | `podman_pool`（本仓库 Podman compose 默认） / `docker_pool`（远程 Docker 宿主机或挂载 `docker.sock` 的部署）。网关 **必须** 配置 **`CLAW_SANDBOX_URL`**（或 `CLAW_POOL_HTTP_BASE`）指向宿主机 `claw-sandbox` `:9944`。 |
 | `CLAW_SECURITY_BOOST` | 默认 **开**（`false`/`0`/`off` 关闭）。**strict** ds 的 worker `run` 追加 `--security-opt no-new-privileges`、`--cap-drop=ALL`、`--read-only`、`--tmpfs /tmp:rw,noexec,nosuid,size=64m`；**不含网络隔离**。**relaxed** ds（`project_config.worker_isolation_json`）跳过上述 flags。 |
 | `CLAW_ALLOW_RELAXED_WORKER` | 默认开；`false` 时全局禁止 relaxed，即使 ds 配置了 `{"mode":"relaxed"}`。 |
 | `CLAW_DOCKER_POOL_SIZE` / `CLAW_PODMAN_POOL_SIZE` | 池 **总量上限** N（worker 容器个数上限） |
@@ -111,8 +113,8 @@ sequenceDiagram
 | `CLAW_POOL_WORK_ROOT_HOST` | 网关跑在容器内时，填 **宿主机上** 与 `CLAW_WORK_ROOT` 绑定的目录绝对路径（与 `podman run -v` 一致）；未设置则用 `CLAW_WORK_ROOT`（适合网关进程直接跑在宿主机） |
 | `CLAW_DOCKER_POOL_CPUS` / `CLAW_PODMAN_POOL_CPUS` | 可选：每个 worker `run` 追加 `--cpus …` |
 | `CLAW_DOCKER_POOL_MEMORY` / `CLAW_PODMAN_POOL_MEMORY` | 可选：每个 worker `run` 追加 `--memory …`（如 `512m`、`1g`） |
-| `CLAW_DOCKER_IMAGE` / `CLAW_PODMAN_IMAGE` | **Strict** 池 worker 镜像（`claw-gateway-worker`；最小：ca-certificates + `claw`） |
-| `CLAW_RELAXED_PODMAN_IMAGE` | **Relaxed** 池专用 worker 镜像（默认 `claw-gateway-worker-relaxed`；在 strict 镜像基础上预装 `curl`、`python3`，且可 `apt install`） |
+| `CLAW_DOCKER_IMAGE` / `CLAW_PODMAN_IMAGE` | **Strict profile** worker 镜像（`claw-gateway-worker`） |
+| `CLAW_RELAXED_PODMAN_IMAGE` | **Relaxed profile** worker 镜像（`claw-gateway-worker-relaxed`；同一 `claw-sandbox` 进程管理） |
 | `CLAW_DOCKER_NETWORK` / `CLAW_PODMAN_NETWORK` | 可选，接入与 MCP / gateway 相同 network |
 | `CLAW_GATEWAY_INTERNAL_BASE_URL` / `CLAW_GATEWAY_INTERNAL_TOKEN` | 宿主机 **pool daemon** 将 worker stdout `report.delta` 转发到网关 `POST /v1/internal/turns/{turnId}/stdout-event`（`pool-daemon-up.sh` 默认 `http://127.0.0.1:${GATEWAY_HOST_PORT}`） |
 | `CLAW_WORKER_ENV_FILE` | 宿主机上仓库根 `.env` 路径（`pool-daemon-up.sh` 默认设为 `<repo>/.env`）。池 `podman/docker run` 只读挂载到容器内 `/run/claw/worker.env`；`claw gateway-solve-once` 启动时按 **`gateway-solve-turn/src/worker_env.rs`** 声明的 key 按需注入进程环境（**不再**生成 `deploy/stack/worker-openai.env`）。 |
@@ -127,7 +129,7 @@ sequenceDiagram
 1. **Phase A（本方案 + 无代码或脚本 PoC）**  
    - 手工：`docker run -d`（或 `podman run -d`）起一个 worker，`docker exec` 挂好 `proj_home`，跑 `claw`，确认 MCP/模型与路径。  
 2. **Phase B（宿主机池守护进程 + RPC）**  
-   - `http-gateway-rs` 的 `run_solve_request` 只做 **租借编排**（`acquire` / `dispatch` / `release`），通过 **`PoolRpcClient`** 与 **`claw-pool-daemon`** 通信；**不再**在网关进程内嵌 `DockerPoolManager`，也不提供 `inprocess` solve。  
+   - `http-gateway-rs` 只做 **租借编排**（`acquire` / sandbox RPC / `release`），通过 **`SandboxRpcClient`** 与 **`claw-sandbox`** 通信。  
 3. **Phase C（CLI 契约）**  
    - `rusty-claude-cli` 增加 **单次 solve 输出稳定 JSON** 的子命令，避免解析日志。  
 4. **Phase D（硬隔离）**  

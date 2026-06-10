@@ -71,7 +71,7 @@ Prerequisite: configure at least one **active LLM** in Admin before solve.
 | `CLAW_POOL_ID` / `CLAW_POOL_ADVERTISE_HOST` | Pool registry override (else auto hostname/LAN IP) |
 | `CLAW_WORKER_UID` / `CLAW_WORKER_GID` | Workspace ownership (default `1000:1000`); pool exec defaults to `uid:gid` when `CLAW_*_POOL_EXEC_USER` unset |
 | `CLAW_SECURITY_BOOST` | Worker `run` hardening for **strict** ds (default on globally); **不含网络隔离** — only read-only rootfs, cap-drop, no-new-privileges, `/tmp` tmpfs. Relaxed ds skip per `worker_isolation_json`. **Pool-daemon only:** written to `deploy/stack/.claw-pool-rpc/pool-daemon.env` on `pool-up`; restart pool after `.env` change. |
-| `CLAW_ALLOW_RELAXED_WORKER` | When `false`/`0`/`off`, all ds forced strict even if `worker_isolation_json.mode=relaxed`. Default on (local); production may set `false`. **Pool-daemon only:** same as `CLAW_SECURITY_BOOST` — must flow via `pool-daemon.env` + `pool-up --restart`. |
+| `CLAW_ALLOW_RELAXED_WORKER` | When `false`/`0`/`off`, all ds forced strict even if `worker_isolation_json.mode=relaxed`. Default on (local); production may set `false`. Deploy scripts then default `pool-up` to **strict-only** (stop relaxed daemon if up). **Pool-daemon:** same as `CLAW_SECURITY_BOOST` — must flow via `pool-daemon.env` + `pool-up --restart`. |
 | `CLAW_DOCKER_POOL_EXEC_USER` / `CLAW_PODMAN_POOL_EXEC_USER` | Optional named exec/pkill user (must match passwd in image) |
 | `CLAW_MCP_MAX_CONCURRENT` | Worker MCP parallelism |
 | `CLAW_DEFAULT_MODEL` | Override model |
@@ -104,7 +104,7 @@ See `docs/env-files.md`. Key paths:
 
 ## Rust / worker env (code-defined)
 
-Gateway reads many vars in `rust/crates/http-gateway-rs/src/main.rs`. Pool daemon: `src/bin/claw-pool-daemon.rs`. Docker/podman pool: `CLAW_PODMAN_*` / `CLAW_DOCKER_*` prefixes in `src/pool/docker_pool.rs`.
+Gateway reads many vars in `rust/crates/http-gateway-rs/src/main.rs`. Host pool: `sandbox/crates/claw-sandbox-server`（二进制 `claw-sandbox`）。Worker 池 env：`CLAW_PODMAN_*` / `CLAW_DOCKER_*` / `CLAW_*_RELAXED_*_POOL_SIZE`（单进程内 profile 槽位）。
 
 Worker container keys loaded from mounted `.env` (subset): `rust/crates/gateway-solve-turn/src/worker_env.rs` (`WORKER_ENV_KEYS`).
 

@@ -68,11 +68,21 @@ clawTap registered in Admin: host=claw-claude-tap ...
 gateway clawTap ready (/readyz attempt …)
 ```
 
-随后 `admin-solve-e2e.sh` → `poll status=succeeded`。
+随后 `gateway.sh verify` → `admin-solve-e2e.sh`（两轮）→ `poll status=succeeded`。
+
+**不覆盖集群：** CI 在 `deploy:release` 末尾跑 **`ci-cluster-dual-deploy.sh`**（同机双 gateway + 共享 PG + `cluster-verify`）。预发/生产多机另跑 `gateway.sh cluster-verify`（见 `deploy/stack/docs/cluster-deploy-verify.md`）。
+
+**CI 盯盘 / glab**：见 `deploy/stack/docs/gitlab-cli.md`。
 
 ## 6. Runner 工作区
 
-CI 使用 `GIT_CLEAN_FLAGS=-ffd`（不用 `-x`），避免 `git clean` 删除 root 拥有的 `deploy/stack/claw-postgres-data/` 导致 checkout 失败。PG 数据在 runner 上跨 pipeline 保留。
+CI 使用 `GIT_CLEAN_FLAGS=-ffd`（不用 `-x`），避免 `git clean` 删除 root/uid1000 拥有的运行时目录导致 checkout 失败。下列路径须在 **`.gitignore`**（被 ignore 后 clean 会跳过）：
+
+- `deploy/stack/claw-postgres-data/`
+- `deploy/stack/claw-workspace/`、`deploy/stack/claw-workspace-*/`（含 `claw-workspace-ci-b`）
+- `deploy/stack/claw-logs-*/`、`.claw-pool-rpc-*/`
+
+PG 数据在 runner 上跨 pipeline 保留。
 
 ## 7. 每周磁盘清理（`maintenance:disk-prune`）
 
@@ -110,9 +120,10 @@ cd /path/to/claw-code
 
 ## 8. 排查闭环（glab + runner）
 
-- Runner 宿主机：`http://10.22.28.94/`（`CLAW_POOL_ADVERTISE_HOST`）
-- 流程与 `glab` 命令：`deploy/stack/docs/gitlab-ci-troubleshoot.md`
-- 盯 pipeline：`./deploy/stack/lib/ci-watch-pipeline.sh proj_id`
+- **glab 安装、登录、job trace、盯 pipeline**：[`deploy/stack/docs/gitlab-cli.md`](gitlab-cli.md)
+- deploy 失败关键字：[`deploy/stack/docs/gitlab-ci-troubleshoot.md`](gitlab-ci-troubleshoot.md)
+- 盯 pipeline：`./deploy/stack/lib/ci-watch-pipeline.sh main`
+- push 触发 CI：`git push sunmi main`
 
 ## 9. 参考
 

@@ -1,41 +1,66 @@
-import { ReloadOutlined } from "@ant-design/icons";
-import { Alert, Button, Space, Table, Tag, Typography } from "antd";
+import { DeleteOutlined, ReloadOutlined } from "@ant-design/icons";
+import {
+  Alert,
+  Button,
+  Popconfirm,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+  message,
+} from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
-import type { ClawPoolEntry, ListClawPoolsResponse } from "../../types/pools";
+import type { ClawPoolEntry } from "../../types/pools";
 
 function formatMs(ms?: number): string {
   if (!ms) return "—";
-  return new Date(ms).toLocaleString();
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function EllipsisCell({
+  text,
+  maxWidth,
+}: {
+  text: string;
+  maxWidth: number;
+}) {
+  return (
+    <Tooltip title={text}>
+      <Typography.Text
+        copyable={text ? { text } : undefined}
+        ellipsis
+        style={{ maxWidth, display: "inline-block" }}
+      >
+        {text || "—"}
+      </Typography.Text>
+    </Tooltip>
+  );
 }
 
 /** Pool cluster registry from shared PostgreSQL. Author: kejiqing */
 export default function GlobalPoolsPage() {
-  const { gatewayBase } = useApp();
+  const { gatewayBase, clusterPools, refreshClusterPools } = useApp();
   const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<ListClawPoolsResponse | null>(null);
   const [error, setError] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!gatewayBase) return;
     setLoading(true);
     setError("");
     try {
-      const r = await proxyHttp<ListClawPoolsResponse>(
-        gatewayBase,
-        "GET",
-        "/v1/pools"
-      );
-      setData(r);
+      await refreshClusterPools();
     } catch (e) {
       setError(String((e as Error).message || e));
-      setData(null);
     } finally {
       setLoading(false);
     }
-  }, [gatewayBase]);
+  }, [refreshClusterPools]);
 
   useEffect(() => {
     void load();
@@ -43,20 +68,41 @@ export default function GlobalPoolsPage() {
     return () => window.clearInterval(id);
   }, [load]);
 
+  const deletePool = useCallback(
+    async (poolId: string) => {
+      if (!gatewayBase) return;
+      setDeletingId(poolId);
+      try {
+        await proxyHttp(gatewayBase, "DELETE", `/v1/pools/${encodeURIComponent(poolId)}`);
+        message.success(`已删除 ${poolId}`);
+        await refreshClusterPools();
+      } catch (e) {
+        message.error(String((e as Error).message || e));
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [gatewayBase, refreshClusterPools]
+  );
+
   const columns: ColumnsType<ClawPoolEntry> = [
     {
       title: "poolId",
       dataIndex: "poolId",
       key: "poolId",
-      render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
+      width: 280,
+      fixed: "left",
+      render: (v: string) => (
+        <EllipsisCell text={v} maxWidth={260} />
+      ),
     },
     {
       title: "状态",
       dataIndex: "online",
       key: "online",
-      width: 90,
+      width: 72,
       render: (online: boolean) => (
-        <Tag color={online ? "success" : "default"}>
+        <Tag color={online ? "success" : "default"} style={{ margin: 0 }}>
           {online ? "online" : "offline"}
         </Tag>
       ),
@@ -64,46 +110,81 @@ export default function GlobalPoolsPage() {
     {
       title: "gateway",
       key: "gateway",
-      render: (_, row) =>
-        row.gatewayBase ? (
-          <Typography.Text copyable={{ text: row.gatewayBase }}>
-            {row.gatewayBase}
-          </Typography.Text>
-        ) : (
-          <Typography.Text type="secondary">—</Typography.Text>
-        ),
+      width: 200,
+      render: (_, row) => (
+        <EllipsisCell text={row.gatewayBase || ""} maxWidth={180} />
+      ),
     },
     {
       title: "pool HTTP",
       key: "advertise",
+      width: 168,
       render: (_, row) => (
-        <Typography.Text copyable={{ text: row.httpBase }}>
-          {row.advertiseIp}:{row.ssePort}
-        </Typography.Text>
+        <EllipsisCell text={`${row.advertiseIp}:${row.ssePort}`} maxWidth={150} />
       ),
     },
     {
       title: "槽位",
       key: "slots",
-      width: 100,
+      width: 64,
       render: (_, row) => `${row.slotsMin}–${row.slotsMax}`,
     },
     {
       title: "心跳",
       dataIndex: "lastHeartbeatMs",
       key: "lastHeartbeatMs",
-      render: (ms: number) => formatMs(ms),
+      width: 158,
+      render: (ms: number) => (
+        <Typography.Text style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+          {formatMs(ms)}
+        </Typography.Text>
+      ),
     },
     {
       title: "注册",
       dataIndex: "registrationTimeMs",
       key: "registrationTimeMs",
-      render: (ms: number) => formatMs(ms),
+      width: 158,
+      render: (ms: number) => (
+        <Typography.Text style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+          {formatMs(ms)}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 72,
+      fixed: "right",
+      render: (_, row) => (
+        <Popconfirm
+          title={
+            row.online
+              ? "该 pool 仍在线；删除后需 pool-up --restart 才会重新注册。确认？"
+              : "删除 PG 中的注册行？pool-daemon 下次启动会重新注册。"
+          }
+          okText="删除"
+          cancelText="取消"
+          okButtonProps={{ danger: true }}
+          onConfirm={() => void deletePool(row.poolId)}
+        >
+          <Button
+            type="text"
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            loading={deletingId === row.poolId}
+            aria-label={`删除 ${row.poolId}`}
+          />
+        </Popconfirm>
+      ),
     },
   ];
 
+  const offlineCount = (clusterPools?.pools ?? []).filter((p) => !p.online).length;
+
   return (
-    <div style={{ padding: 24, maxWidth: 1100 }}>
+    <div style={{ padding: 24, width: "100%", boxSizing: "border-box" }}>
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
         <Space wrap>
           <Typography.Title level={4} style={{ margin: 0 }}>
@@ -113,9 +194,14 @@ export default function GlobalPoolsPage() {
             刷新
           </Button>
         </Space>
-        {data?.coLocatedPoolId ? (
+        {clusterPools?.coLocatedPoolId ? (
           <Typography.Text type="secondary">
-            本 Gateway 同机 pool：<Typography.Text code>{data.coLocatedPoolId}</Typography.Text>
+            本 Gateway 同机 pool：<Typography.Text code>{clusterPools.coLocatedPoolId}</Typography.Text>
+          </Typography.Text>
+        ) : null}
+        {offlineCount > 0 ? (
+          <Typography.Text type="secondary">
+            offline 行可删除（僵尸 poolId）；daemon 下次 pool-up 会重新写入。
           </Typography.Text>
         ) : null}
         {error ? <Alert type="error" showIcon message={error} /> : null}
@@ -124,8 +210,10 @@ export default function GlobalPoolsPage() {
           size="small"
           loading={loading}
           columns={columns}
-          dataSource={data?.pools ?? []}
+          dataSource={clusterPools?.pools ?? []}
           pagination={false}
+          scroll={{ x: 1080 }}
+          tableLayout="fixed"
           locale={{ emptyText: "claw_pool 表暂无注册（检查 pool-daemon 与 PG）" }}
         />
       </Space>

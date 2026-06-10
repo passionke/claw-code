@@ -1,6 +1,10 @@
 # shellcheck shell=bash
 # Sets CLAW_POOL_WORK_ROOT_HOST and CLAW_PODMAN_COMPOSE_ARGS. Default solve mode is podman_pool (second compose file). Author: kejiqing
 
+_COMPOSE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=stack-instance.sh
+source "${_COMPOSE_LIB_DIR}/stack-instance.sh"
+
 # Resolve a socket path that exists on the **host** (compose / pool-daemon talk to the API here).
 # Docker hosts: /var/run/docker.sock only. Podman: never guess docker.sock on macOS (VM socket ≠ host path).
 # Author: kejiqing
@@ -227,10 +231,19 @@ claw_export_llm_runtime_layout() {
 
 claw_podman_export_pool_workspace() {
   local script_dir="$1"
-  mkdir -p "${script_dir}/claw-workspace"
+  local ws log_dir
+  ws="$(claw_stack_workspace_bind_dir "${script_dir}")"
+  mkdir -p "${ws}"
+  log_dir="${CLAW_HOST_LOG_DIR:-}"
+  if [[ -n "${log_dir}" && "${log_dir}" != /* ]]; then
+    local base="${CLAW_COMPOSE_WORKING_DIRECTORY:-${script_dir}}"
+    mkdir -p "${base}/${log_dir}"
+  elif [[ -n "${log_dir}" ]]; then
+    mkdir -p "${log_dir}"
+  fi
   # Host directory for the compose bind mount (Mac/Linux laptop path). Not the same as CLAW_POOL_WORK_ROOT_HOST
   # inside the gateway container — see .claw-pool-workspace.env below. Author: kejiqing
-  export CLAW_POOL_WORK_ROOT_BIND_SRC="$(cd "${script_dir}" && pwd)/claw-workspace"
+  export CLAW_POOL_WORK_ROOT_BIND_SRC="${ws}"
   # Merged last in podman-compose.yml. MUST be a path that exists inside the gateway container: the gateway
   # runs Linux and calls canonicalize() before podman run. A macOS /Users/... path breaks startup with
   # "No such file or directory". For this stack, pool data lives under the same mount as CLAW_WORK_ROOT.
@@ -282,7 +295,10 @@ claw_podman_append_admin_dist_bind() {
 
 claw_ensure_compose_env_stubs() {
   local script_dir="$1"
-  mkdir -p "${script_dir}/claw-workspace" "${script_dir}/.claw-pool-rpc"
+  local rpc_root ws
+  rpc_root="$(claw_pool_rpc_root "${script_dir}")"
+  ws="$(claw_stack_workspace_bind_dir "${script_dir}")"
+  mkdir -p "${ws}" "${rpc_root}"
   if [[ ! -f "${script_dir}/.claw-worker-runtime.env" ]]; then
     printf '%s\n' '# GENERATED stub — overwritten by up.sh (worker-llm-wiring). kejiqing' \
       >"${script_dir}/.claw-worker-runtime.env"
@@ -314,7 +330,21 @@ claw_podman_load_compose_args() {
     fi
   fi
   export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
-  if [[ -n "${rel}" ]]; then
+  export CLAW_COMPOSE_ROOT_ENV_REL="../../.env"
+  if [[ -f "${env_file}" ]]; then
+    local env_bn
+    env_bn="$(basename "${env_file}")"
+    if [[ "${env_bn}" != ".env" ]]; then
+      export CLAW_COMPOSE_ROOT_ENV_REL="../../${env_bn}"
+    fi
+  fi
+  if [[ "${CLAW_COMPOSE_GATEWAY_ONLY:-0}" == "1" ]]; then
+    if [[ -n "${rel}" ]]; then
+      CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${rel}/podman-compose.gateway-only.yml" )
+    else
+      CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${script_dir}/podman-compose.gateway-only.yml" )
+    fi
+  elif [[ -n "${rel}" ]]; then
     CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${rel}/podman-compose.yml" )
   else
     CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${script_dir}/podman-compose.yml" )
@@ -330,31 +360,34 @@ claw_podman_load_compose_args() {
     echo "error: PODMAN_HOST_SOCK is no longer used; remove it from .env" >&2
     return 1
   fi
-  mkdir -p "${script_dir}/.claw-pool-rpc"
+  local rpc_root
+  rpc_root="$(claw_pool_rpc_root "${script_dir}")"
+  mkdir -p "${rpc_root}"
   # Local profile clears legacy TCP keys from human .env before generating gateway.env. kejiqing
   if [[ -f "${script_dir}/lib/env-profile.sh" ]]; then
     # shellcheck source=env-profile.sh
     source "${script_dir}/lib/env-profile.sh"
     claw_apply_deploy_profile || return 1
   fi
-  if [[ -f "${script_dir}/.claw-pool-rpc/pool-registry.env" ]]; then
+  if [[ -f "${rpc_root}/pool-registry.env" ]]; then
     set -a
     # shellcheck disable=SC1090
-    source "${script_dir}/.claw-pool-rpc/pool-registry.env"
+    source "${rpc_root}/pool-registry.env"
     set +a
   elif [[ -f "${script_dir}/lib/claw-pool-registry-env.sh" ]]; then
     # shellcheck source=lib/claw-pool-registry-env.sh
     source "${script_dir}/lib/claw-pool-registry-env.sh"
-    claw_export_pool_registry_env "${script_dir}/.claw-pool-rpc"
+    claw_export_pool_registry_env "${rpc_root}"
   fi
-  local pool_http_port="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
-  local relaxed_pool_http_port="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
-  local http_host profile_name base_pool_id strict_pool_id relaxed_pool_id
+  if [[ -n "${CLAW_POOL_RPC_INSTANCE:-}" ]]; then
+    claw_compose_append_pool_rpc_envfile_override "${script_dir}" "${rel}"
+  fi
+  local pool_http_port="${CLAW_POOL_HTTP_PORT:-9944}"
+  local http_host profile_name base_pool_id pool_id
   # shellcheck source=claw-pool-registry-env.sh
   source "${script_dir}/lib/claw-pool-registry-env.sh"
   base_pool_id="$(claw_default_pool_id)"
-  strict_pool_id="${CLAW_STRICT_POOL_ID:-${base_pool_id}-strict}"
-  relaxed_pool_id="${CLAW_RELAXED_POOL_ID:-${base_pool_id}-relaxed}"
+  pool_id="${CLAW_POOL_ID:-${base_pool_id}}"
   if claw_pool_daemon_on_host; then
     profile_name="$(claw_deploy_profile_name 2>/dev/null || true)"
     # v1 host pool: gateway container → host pool HTTP (not LAN IP). kejiqing
@@ -373,20 +406,24 @@ claw_podman_load_compose_args() {
       fi
     fi
     {
-      printf '%s\n' '# GENERATED — host dual claw-pool-daemon HTTP (live SSE + POST /v1/pool/rpc). kejiqing'
-      printf '%s\n' "CLAW_STRICT_POOL_HTTP_BASE=http://${http_host}:${pool_http_port}"
-      printf '%s\n' "CLAW_RELAXED_POOL_HTTP_BASE=http://${http_host}:${relaxed_pool_http_port}"
+      printf '%s\n' '# GENERATED — host claw-sandbox HTTP (POST /v1/sandbox/rpc). kejiqing'
+      printf '%s\n' "CLAW_SANDBOX_URL=http://${http_host}:${pool_http_port}"
       printf '%s\n' "CLAW_POOL_HTTP_BASE=http://${http_host}:${pool_http_port}"
-      printf '%s\n' "CLAW_STRICT_POOL_ID=${strict_pool_id}"
-      printf '%s\n' "CLAW_RELAXED_POOL_ID=${relaxed_pool_id}"
-      printf '%s\n' "CLAW_POOL_ID=${strict_pool_id}"
+      printf '%s\n' "CLAW_POOL_ID=${pool_id}"
       printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
       printf '%s\n' "CLAW_POOL_DAEMON_TCP="
       printf '%s\n' "CLAW_POOL_DAEMON_SOCKET="
+      # shellcheck source=pool-health.sh
+      source "${script_dir}/lib/pool-health.sh"
+      if claw_relaxed_worker_allowed_from_env; then
+        printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=true"
+      else
+        printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=false"
+      fi
       if [[ -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
         printf '%s\n' "# pool registry advertise (claw_pool.advertise_ip): ${CLAW_POOL_ADVERTISE_HOST}"
       fi
-    } >"${script_dir}/.claw-pool-rpc/gateway.env"
+    } >"${rpc_root}/gateway.env"
     claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
     return 0
   fi
@@ -508,6 +545,41 @@ claw_compose_in_pwd() {
   podman compose "$@"
 }
 
+# CI second gateway: env_file + deploy.env bind use CLAW_COMPOSE_ROOT_ENV_REL (not always ../../.env). kejiqing
+claw_compose_append_pool_rpc_envfile_override() {
+  local script_dir="$1"
+  local rel="${2:-}"
+  local rpc_root rpc_rel override root_env_rel
+  root_env_rel="${CLAW_COMPOSE_ROOT_ENV_REL:-../../.env}"
+  rpc_root="$(claw_pool_rpc_root "${script_dir}")"
+  rpc_rel="${rpc_root#"${script_dir}/"}"
+  override="${script_dir}/.claw-instance.envfile.override.yml"
+  {
+    printf '%s\n' '# GENERATED — pool RPC env_file paths for CLAW_POOL_RPC_INSTANCE. kejiqing'
+    printf '%s\n' 'services:'
+    printf '%s\n' '  gateway-rs:'
+    printf '%s\n' '    env_file:'
+    printf '%s\n' "      - ${root_env_rel}"
+    printf '%s\n' '      - ./.claw-worker-runtime.env'
+    printf '%s\n' '      - ./.claw-pool-workspace.env'
+    printf '%s\n' "      - ./${rpc_rel}/gateway.env"
+    printf '%s\n' "      - ./${rpc_rel}/pool-registry.env"
+    printf '%s\n' '      - ./.claw-llm-runtime.env'
+    if [[ -n "${CLAW_GATEWAY_DATABASE_URL:-}" ]]; then
+      printf '%s\n' '    environment:'
+      printf '%s\n' "      CLAW_GATEWAY_DATABASE_URL: \"${CLAW_GATEWAY_DATABASE_URL}\""
+      if [[ "${CLAW_GATEWAY_SKIP_DB_MIGRATE:-0}" == "1" ]]; then
+        printf '%s\n' '      CLAW_GATEWAY_SKIP_DB_MIGRATE: "1"'
+      fi
+    fi
+  } >"${override}"
+  if [[ -n "${rel}" ]]; then
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/.claw-instance.envfile.override.yml" )
+  else
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${override}" )
+  fi
+}
+
 # Postgres: `gateway.sh pg-up` / `pg-down`; `up` / `down` only gateway + pool. kejiqing
 claw_compose_pg_container_name() {
   printf '%s' "${CLAW_COMPOSE_PG_CONTAINER:-claw-gateway-postgres}"
@@ -524,6 +596,9 @@ claw_compose_uses_local_postgres() {
     *@postgres:* | *@postgres/*)
       return 0
       ;;
+    *@claw-gateway-postgres:* | *@claw-gateway-postgres/*)
+      return 0
+      ;;
     *@127.0.0.1:* | *@127.0.0.1/* | *@localhost:* | *@localhost/*)
       return 0
       ;;
@@ -531,14 +606,32 @@ claw_compose_uses_local_postgres() {
   return 1
 }
 
+# docker container exists (1.13+) or inspect fallback. kejiqing
+_claw_runtime_container_exists() {
+  local rt="$1" name="$2"
+  if "${rt}" container exists "${name}" >/dev/null 2>&1; then
+    return 0
+  fi
+  "${rt}" inspect -f '{{.Id}}' "${name}" >/dev/null 2>&1
+}
+
 claw_compose_pg_network() {
-  local rt cname
+  local rt cname nets net
   rt="$(claw_container_runtime_cli)" || return 1
   cname="$(claw_compose_pg_container_name)"
-  if ! "${rt}" container exists "${cname}" >/dev/null 2>&1; then
+  if ! _claw_runtime_container_exists "${rt}" "${cname}"; then
     return 1
   fi
-  "${rt}" inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' "${cname}" 2>/dev/null | head -1
+  nets="$("${rt}" inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' "${cname}" 2>/dev/null || true)"
+  while IFS= read -r net; do
+    [[ -z "${net}" ]] && continue
+    case "${net}" in
+      bridge | host | none) continue ;;
+    esac
+    printf '%s' "${net}"
+    return 0
+  done <<<"${nets}"
+  return 1
 }
 
 # Attach gateway-rs to the network where claw-gateway-postgres already runs (e.g. legacy stack_default). kejiqing
@@ -564,6 +657,71 @@ claw_compose_append_pg_network_override() {
   else
     CLAW_PODMAN_COMPOSE_ARGS+=( -f "${override}" )
   fi
+}
+
+# gateway-only: join node A PG network before gateway process starts (session_db blocks on PG). kejiqing
+claw_compose_ensure_gateway_pg_network() {
+  local gw_ctn="${1:?gateway_container_name}"
+  local net rt on_nets
+  net="$(claw_compose_pg_network)" || {
+    echo "error: gateway-only needs node A postgres ($(claw_compose_pg_container_name)); cannot resolve docker network" >&2
+    return 1
+  }
+  rt="$(claw_container_runtime_cli)" || return 1
+  _claw_runtime_container_exists "${rt}" "${gw_ctn}" || {
+    echo "error: gateway container ${gw_ctn} missing after compose create" >&2
+    return 1
+  }
+  on_nets="$("${rt}" inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' "${gw_ctn}" 2>/dev/null || true)"
+  if printf '%s\n' "${on_nets}" | grep -qxF "${net}"; then
+    return 0
+  fi
+  echo "connecting ${gw_ctn} to shared postgres network ${net} …" >&2
+  "${rt}" network connect "${net}" "${gw_ctn}"
+}
+
+claw_compose_start_gateway_containers() {
+  local rt="$1"
+  shift
+  local ctn
+  for ctn in "$@"; do
+    [[ -z "${ctn}" ]] && continue
+    echo "starting ${ctn} …" >&2
+    "${rt}" start "${ctn}"
+  done
+}
+
+# node B: probe before gateway start — host port + PG DNS on shared docker network. Author: kejiqing
+claw_compose_probe_shared_postgres() {
+  local rt cname net pg_port pg_user pg_db
+  rt="$(claw_container_runtime_cli)" || return 1
+  cname="$(claw_compose_pg_container_name)"
+  pg_port="${CLAW_GATEWAY_PG_HOST_PORT:-5433}"
+  pg_user="${CLAW_GATEWAY_PG_USER:-claw_gateway}"
+  pg_db="${CLAW_GATEWAY_PG_DATABASE:-claw_gateway}"
+  if ! _claw_runtime_container_exists "${rt}" "${cname}"; then
+    echo "error: shared postgres ${cname} missing (start node A first)" >&2
+    return 1
+  fi
+  if ! "${rt}" inspect -f '{{.State.Running}}' "${cname}" 2>/dev/null | grep -qx true; then
+    echo "error: shared postgres ${cname} not running" >&2
+    return 1
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 3 bash -c "echo >/dev/tcp/127.0.0.1/${pg_port}" 2>/dev/null \
+      || { echo "error: postgres host port 127.0.0.1:${pg_port} not reachable" >&2; return 1; }
+  fi
+  net="$(claw_compose_pg_network)" || {
+    echo "error: cannot resolve docker network for ${cname}" >&2
+    return 1
+  }
+  echo "==> probe shared PG: ${cname} on network ${net} (host :${pg_port})" >&2
+  if ! "${rt}" run --rm --network "${net}" docker.io/library/postgres:17-alpine \
+    pg_isready -h "${cname}" -p 5432 -U "${pg_user}" -d "${pg_db}" -t 5 >/dev/null; then
+    echo "error: pg_isready on ${net} → ${cname}:5432 failed" >&2
+    return 1
+  fi
+  echo "VERIFY OK: shared postgres reachable (${cname}:5432 on ${net})" >&2
 }
 
 claw_compose_prune_stale_claw_pod() {
@@ -613,25 +771,33 @@ claw_compose_pg_wait_healthy() {
 claw_compose_gateway_service_list() {
   local podman_dir="$1"
   local repo_env="$2"
-  local pg errf rc
+  # gateway-only.yml is fixed (no postgres); avoid compose config --services flake on CI multi-node. kejiqing
+  if [[ "${CLAW_COMPOSE_GATEWAY_ONLY:-0}" == "1" ]]; then
+    printf '%s %s' gateway-rs gateway-playground
+    return 0
+  fi
+  local pg errf rc out svc
   pg="$(claw_compose_pg_service)"
   errf="$(mktemp)"
-  local svc
   rc=0
+  out="$(claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" config --services 2>"${errf}")" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "error: docker compose config failed (check .env / GATEWAY_IMAGE / docker access):" >&2
+    sed -n '1,40p' "${errf}" >&2 || true
+    rm -f "${errf}"
+    return 1
+  fi
+  if [[ -z "${out//[$'\t ']/}" ]]; then
+    echo "error: docker compose config --services returned empty (args: ${CLAW_PODMAN_COMPOSE_ARGS[*]}):" >&2
+    sed -n '1,40p' "${errf}" >&2 || true
+    rm -f "${errf}"
+    return 1
+  fi
   while IFS= read -r svc; do
     [[ -z "${svc}" ]] && continue
     [[ "${svc}" == "${pg}" ]] && continue
     printf '%s ' "${svc}"
-  done < <(
-    claw_compose_with_root_env "${podman_dir}" "${repo_env}" "${CLAW_PODMAN_COMPOSE_ARGS[@]}" config --services 2>"${errf}" \
-      || rc=$?
-  )
-  if [[ "${rc}" -ne 0 ]]; then
-    echo "error: docker compose config failed (check .env / GATEWAY_IMAGE / docker access):" >&2
-    sed -n '1,20p' "${errf}" >&2 || true
-    rm -f "${errf}"
-    return 1
-  fi
+  done <<<"${out}"
   rm -f "${errf}"
 }
 
@@ -674,8 +840,21 @@ claw_compose_gateway_up() {
   claw_compose_pg_ensure "${podman_dir}" "${repo_env}"
   claw_compose_pg_wait_healthy
   claw_compose_append_pg_network_override "${podman_dir}" "${rel}"
-  claw_compose_with_root_env "${podman_dir}" "${repo_env}" \
-    "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --no-deps "${extra[@]}" "${svcs[@]}"
+  if [[ "${CLAW_COMPOSE_GATEWAY_ONLY:-0}" == "1" ]]; then
+    local rt gw_ctn pg_ctn
+    gw_ctn="${CLAW_GATEWAY_CONTAINER:-claw-gateway-rs}"
+    pg_ctn="${CLAW_GATEWAY_PLAYGROUND_CONTAINER:-claw-gateway-playground}"
+    rt="$(claw_container_runtime_cli)" || return 1
+    claw_compose_probe_shared_postgres
+    claw_compose_with_root_env "${podman_dir}" "${repo_env}" \
+      "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up --no-start --no-deps "${extra[@]}" "${svcs[@]}"
+    claw_compose_ensure_gateway_pg_network "${gw_ctn}"
+    claw_compose_probe_shared_postgres
+    claw_compose_start_gateway_containers "${rt}" "${gw_ctn}" "${pg_ctn}"
+  else
+    claw_compose_with_root_env "${podman_dir}" "${repo_env}" \
+      "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --no-deps "${extra[@]}" "${svcs[@]}"
+  fi
 }
 
 claw_compose_pg_up() {
@@ -698,7 +877,19 @@ claw_compose_pg_ensure() {
   rt="$(claw_container_runtime_cli)" || return 1
   pg="$(claw_compose_pg_service)"
   cname="$(claw_compose_pg_container_name)"
-  if "${rt}" container exists "${cname}" >/dev/null 2>&1; then
+  # CI node B: gateway-only compose has no postgres service — reuse node A container by name. kejiqing
+  if [[ "${CLAW_COMPOSE_GATEWAY_ONLY:-0}" == "1" ]]; then
+    if ! _claw_runtime_container_exists "${rt}" "${cname}"; then
+      echo "error: gateway-only stack needs node A postgres (${cname}); run primary gateway.sh up first" >&2
+      return 1
+    fi
+    if ! "${rt}" inspect -f '{{.State.Running}}' "${cname}" 2>/dev/null | grep -qx true; then
+      echo "starting shared postgres ${cname} (from node A) …" >&2
+      "${rt}" start "${cname}" >/dev/null
+    fi
+    return 0
+  fi
+  if _claw_runtime_container_exists "${rt}" "${cname}"; then
     if ! "${rt}" inspect -f '{{.State.Running}}' "${cname}" 2>/dev/null | grep -qx true; then
       echo "starting existing ${cname} …" >&2
       "${rt}" start "${cname}" >/dev/null

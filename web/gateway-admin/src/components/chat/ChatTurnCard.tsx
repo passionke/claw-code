@@ -49,6 +49,8 @@ export interface ChatTurnCardProps {
   /** Prebound pool at enqueue (history or solve_async). Author: kejiqing */
   initialPoolId?: string | null;
   initialWorkerName?: string | null;
+  initialWorkerIsolation?: string | null;
+  initialWorkerExecUser?: string | null;
 }
 
 function todoStatusMark(status: string): string {
@@ -128,6 +130,8 @@ export default function ChatTurnCard({
   finishedAtMs,
   initialPoolId,
   initialWorkerName,
+  initialWorkerIsolation,
+  initialWorkerExecUser,
 }: ChatTurnCardProps) {
   const { clusterPools } = useApp();
   const historyMode = viewMode === "history";
@@ -377,6 +381,8 @@ export default function ChatTurnCard({
 
   const poolId = (task.poolId ?? initialPoolId ?? "").trim();
   const workerName = (task.workerName ?? initialWorkerName ?? "").trim();
+  const workerIsolation = (task.workerIsolation ?? initialWorkerIsolation ?? "").trim();
+  const workerExecUser = (task.workerExecUser ?? initialWorkerExecUser ?? "").trim();
   const turnGatewayBase = gatewayBaseForPoolId(poolId, clusterPools, gatewayBase);
   const gwLabel = gatewayHostLabel(turnGatewayBase);
 
@@ -394,11 +400,18 @@ export default function ChatTurnCard({
     <Tooltip title="exec 当时的 worker 容器名；池回收后容器可能已销毁，仅作历史记录">
       <Tag color="purple" className={styles.turnRouteTag}>
         worker {workerName}
+        {workerIsolation || workerExecUser
+          ? ` (${[workerIsolation, workerExecUser].filter(Boolean).join(" / ")})`
+          : ""}
       </Tag>
     </Tooltip>
   ) : (
     <Tooltip title="queued 阶段尚无 worker；running 后由 pool 写入 workerName">
-      <Tag className={`${styles.turnRouteTag} ${styles.turnRouteTagMuted}`}>worker …</Tag>
+      <Tag className={`${styles.turnRouteTag} ${styles.turnRouteTagMuted}`}>
+        worker …{workerIsolation || workerExecUser
+          ? ` (${[workerIsolation, workerExecUser].filter(Boolean).join(" / ")})`
+          : ""}
+      </Tag>
     </Tooltip>
   );
 

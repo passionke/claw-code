@@ -2,6 +2,10 @@
 
 use std::path::Path;
 
+use claw_sandbox_client::SandboxRpcClient;
+use claw_sandbox_protocol::{GuestExecActor, GuestVolume, GUEST_WIPE_EPHEMERAL_MOUNTS_SH};
+use runtime::builtin_system_prompt_scaffold_default;
+
 use crate::persistence::transcript::{import_turn_messages_to_db, now_ms, JsonlMessage};
 use crate::pool::docker_cli::{runtime_exec, runtime_exec_stdin};
 use crate::project_config_apply;
@@ -25,18 +29,18 @@ pub struct MaterializeInput {
     pub turn_id: String,
 }
 
-/// Wipe ephemeral session workspace before session artifacts materialize (no tmpfs residue). Author: kejiqing
-///
-/// `/claw_host_root` tmpfs is mounted with `uid=CLAW_WORKER_UID`; wipe as worker + chmod first.
-async fn wipe_guest_work_root(
+/// Wipe ephemeral tmpfs (`/claw_ds` + session workspace) as root before materialize. Author: kejiqing
+async fn wipe_guest_ephemeral_mounts(
     runtime_bin: &str,
     container_name: &str,
-    worker_exec_user: &str,
 ) -> Result<(), String> {
-    let script = format!(
-        "chmod -R u+w {GUEST_WORK_ROOT} 2>/dev/null || true; find {GUEST_WORK_ROOT} -mindepth 1 -delete 2>/dev/null || true"
-    );
-    exec_sh_lc_as_user(runtime_bin, container_name, worker_exec_user, &script).await
+    exec_sh_lc_as_user(
+        runtime_bin,
+        container_name,
+        "0:0",
+        GUEST_WIPE_EPHEMERAL_MOUNTS_SH,
+    )
+    .await
 }
 
 /// Write session task/jsonl + workspace tar from PG before `gateway-solve-once`.
@@ -49,7 +53,7 @@ pub async fn materialize_in(
     input: &MaterializeInput,
     worker_exec_user: &str,
 ) -> Result<(), String> {
-    wipe_guest_work_root(runtime_bin, container_name, worker_exec_user).await?;
+    wipe_guest_ephemeral_mounts(runtime_bin, container_name).await?;
 
     let workspace_tar_b64 = db
         .get_latest_workspace_tar_b64(
@@ -113,6 +117,283 @@ pub async fn materialize_in(
             .await?;
     }
     Ok(())
+}
+
+/// PG → sandbox guest paths before `exec_solve` (end-state RPC). Author: kejiqing
+pub async fn materialize_turn_via_sandbox(
+    client: &SandboxRpcClient,
+    slot_index: usize,
+    db: &GatewaySessionDb,
+    input: &MaterializeInput,
+) -> Result<(), String> {
+    client.guest_wipe(slot_index).await?;
+
+    let workspace_tar_b64 = db
+        .get_latest_workspace_tar_b64(
+            &input.session_id,
+            input.proj_id,
+            WORKSPACE_TAR_ARTIFACT_PATH,
+            WORKSPACE_TAR_ARTIFACT_KIND,
+        )
+        .await
+        .map_err(|e| format!("load workspace tar: {e}"))?;
+    if let Some(ref b64) = workspace_tar_b64 {
+        if !b64.trim().is_empty() {
+            client
+                .guest_extract_tar_b64(slot_index, GuestVolume::SessionWorkspace, "", b64)
+                .await?;
+        }
+    }
+    client.guest_prepare_session_workspace(slot_index).await?;
+
+    if let Some(row) = db
+        .get_project_config(input.proj_id)
+        .await
+        .map_err(|e| format!("load project_config: {e}"))?
+    {
+        let scaffold = builtin_system_prompt_scaffold_default();
+        let writes = project_config_apply::build_guest_materialize_writes(&row, &scaffold)
+            .map_err(|e| format!("build_guest_materialize_writes proj {}: {e}", input.proj_id))?;
+        for write in writes {
+            let rel = write.rel_path.to_string_lossy();
+            if write.bytes.len() > SESSION_MANIFEST_MAX_BYTES {
+                return Err(format!(
+                    "project config file {rel} exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+                ));
+            }
+            client
+                .guest_write(slot_index, GuestVolume::ProjectConfig, &rel, &write.bytes)
+                .await?;
+        }
+    }
+
+    let task = db
+        .get_solve_task_json(&input.turn_id)
+        .await
+        .map_err(|e| format!("load solve_task_json: {e}"))?
+        .ok_or_else(|| format!("missing solve_task_json for turn {}", input.turn_id))?;
+    let task_bytes = serde_json::to_vec(&task).map_err(|e| format!("serialize task: {e}"))?;
+    if task_bytes.len() > SESSION_MANIFEST_MAX_BYTES {
+        return Err(format!(
+            "solve_task_json exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+        ));
+    }
+    let jsonl_body = db
+        .render_session_jsonl(&input.session_id, input.proj_id)
+        .await
+        .map_err(|e| format!("render session jsonl: {e}"))?;
+    if jsonl_body.len() > SESSION_MANIFEST_MAX_BYTES {
+        return Err(format!(
+            "session transcript exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+        ));
+    }
+    let mut writes: Vec<(&str, Vec<u8>)> = vec![("gateway-solve-task.json", task_bytes)];
+    if !jsonl_body.is_empty() {
+        writes.push((".claw/gateway-solve-session.jsonl", jsonl_body.into_bytes()));
+    }
+    for (rel, bytes) in writes {
+        if bytes.len() > SESSION_MANIFEST_MAX_BYTES {
+            return Err(format!(
+                "session file {rel} exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+            ));
+        }
+        client
+            .guest_write(slot_index, GuestVolume::SessionWorkspace, rel, &bytes)
+            .await?;
+    }
+    client.guest_lock_project_config(slot_index).await?;
+    Ok(())
+}
+
+/// Running turn: worker `.claw` progress via sandbox `guest_read`. Author: kejiqing
+pub async fn sync_progress_via_sandbox(
+    client: &SandboxRpcClient,
+    slot_index: usize,
+    db: &GatewaySessionDb,
+    turn_id: &str,
+) -> Result<(), String> {
+    let paths = vec![
+        format!("{GUEST_WORK_ROOT}/.claw/progress-events.ndjson"),
+        format!("{GUEST_WORK_ROOT}/.claw/task-progress.json"),
+    ];
+    let files = client.guest_read(slot_index, &paths).await?;
+    let progress = guest_read_text(&files, &paths[0]);
+    let task_progress = guest_read_text(&files, &paths[1]);
+    if progress.is_empty() && task_progress.is_empty() {
+        return Ok(());
+    }
+    db.replace_turn_progress_snapshot(turn_id, &progress, &task_progress)
+        .await
+        .map_err(|e| format!("replace turn progress: {e}"))?;
+    Ok(())
+}
+
+/// Import jsonl + workspace tar + timing after sandbox exec. Author: kejiqing
+pub async fn readback_turn_via_sandbox(
+    client: &SandboxRpcClient,
+    slot_index: usize,
+    db: &GatewaySessionDb,
+    pool: &PgPool,
+    session_id: &str,
+    proj_id: i64,
+    turn_id: &str,
+    user_prompt: &str,
+) -> Result<Vec<JsonlMessage>, String> {
+    let jsonl_path = format!("{GUEST_WORK_ROOT}/.claw/gateway-solve-session.jsonl");
+    let jsonl = guest_read_single_string(client, slot_index, &jsonl_path)
+        .await
+        .unwrap_or_default();
+    let groups = crate::persistence::transcript::turn_message_groups_from_jsonl_contents(&jsonl);
+    let messages = groups.last().cloned().unwrap_or_else(|| {
+        vec![JsonlMessage {
+            role: "user".to_string(),
+            blocks: serde_json::json!([{"type":"text","text":user_prompt}]),
+            usage: None,
+        }]
+    });
+    let now = now_ms();
+    import_turn_messages_to_db(db, session_id, proj_id, turn_id, &messages, now)
+        .await
+        .map_err(|e| format!("import cc_messages: {e}"))?;
+
+    readback_workspace_tar_via_sandbox(client, slot_index, db, session_id, proj_id, turn_id, now)
+        .await?;
+
+    readback_timing_via_sandbox(client, slot_index, db, turn_id).await?;
+    let _ = pool;
+    Ok(messages)
+}
+
+async fn readback_timing_via_sandbox(
+    client: &SandboxRpcClient,
+    slot_index: usize,
+    db: &GatewaySessionDb,
+    turn_id: &str,
+) -> Result<(), String> {
+    let timing_path = format!(
+        "{GUEST_WORK_ROOT}/{}",
+        gateway_solve_turn::SOLVE_TIMING_EVENTS_REL
+    );
+    let orchestration_path = format!(
+        "{GUEST_WORK_ROOT}/{}",
+        gateway_solve_turn::multi_agent::ORCHESTRATION_EVENTS_REL
+    );
+    let progress_path = format!("{GUEST_WORK_ROOT}/.claw/progress-events.ndjson");
+    let task_progress_path = format!("{GUEST_WORK_ROOT}/.claw/task-progress.json");
+    let paths = vec![
+        timing_path.clone(),
+        orchestration_path.clone(),
+        progress_path.clone(),
+        task_progress_path.clone(),
+    ];
+    let files = client.guest_read(slot_index, &paths).await?;
+    let timing = guest_read_text(&files, &timing_path);
+    let orchestration = guest_read_text(&files, &orchestration_path);
+    let progress = guest_read_text(&files, &progress_path);
+    let task_progress = guest_read_text(&files, &task_progress_path);
+    let total = timing.len() + orchestration.len() + progress.len() + task_progress.len();
+    if total > SESSION_MANIFEST_MAX_BYTES {
+        return Err(format!(
+            "timing artifacts exceed cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+        ));
+    }
+    db.replace_turn_progress_snapshot(turn_id, &progress, &task_progress)
+        .await
+        .map_err(|e| format!("replace turn progress: {e}"))?;
+    db.merge_turn_timing_worker_readback(turn_id, &timing, &orchestration)
+        .await
+        .map_err(|e| format!("merge turn timing: {e}"))
+}
+
+async fn readback_workspace_tar_via_sandbox(
+    client: &SandboxRpcClient,
+    slot_index: usize,
+    db: &GatewaySessionDb,
+    session_id: &str,
+    proj_id: i64,
+    turn_id: &str,
+    created_at_ms: i64,
+) -> Result<(), String> {
+    let meta_path = format!("{GUEST_WORK_ROOT}/.claw/__ws_tar_readback_meta.txt");
+    let cap = WORKSPACE_TAR_MAX_BYTES;
+    let script = format!(
+        r#"set -eu
+tmp=$(mktemp)
+list=$(mktemp)
+trap 'rm -f "$tmp" "$list"' EXIT
+find {GUEST_WORK_ROOT} -type f \
+  ! -path '{GUEST_WORK_ROOT}/gateway-solve-task.json' \
+  ! -path '{GUEST_WORK_ROOT}/.claw/*' \
+  ! -path '{GUEST_WORK_ROOT}/.cursor/rules/*' \
+  ! -path '{GUEST_WORK_ROOT}/CLAUDE.md' 2>/dev/null \
+  | sed "s|^{GUEST_WORK_ROOT}/||" > "$list" || true
+if [ ! -s "$list" ]; then
+  printf '0\n' > '{meta_path}'
+  exit 0
+fi
+tar -czf "$tmp" -C {GUEST_WORK_ROOT} -T "$list"
+sz=$(wc -c < "$tmp" | tr -d ' ')
+if [ "$sz" -gt {cap} ]; then exit 2; fi
+printf '%s\n' "$sz" > '{meta_path}'
+base64 < "$tmp" | tr -d '\n' >> '{meta_path}'
+"#
+    );
+    if let Err(e) = client
+        .guest_exec_sh(slot_index, &script, GuestExecActor::SlotWorker)
+        .await
+    {
+        if e.contains("exit") && e.contains('2') {
+            return Err(format!(
+                "workspace tar exceeds cap {WORKSPACE_TAR_MAX_BYTES} bytes"
+            ));
+        }
+        return Err(e);
+    }
+    let out = guest_read_single_string(client, slot_index, &meta_path)
+        .await
+        .unwrap_or_default();
+    let mut lines = out.splitn(2, '\n');
+    let size_line = lines.next().unwrap_or("0").trim();
+    let raw_size: usize = size_line
+        .parse()
+        .map_err(|_| format!("invalid workspace tar size line: {size_line}"))?;
+    if raw_size == 0 {
+        return Ok(());
+    }
+    let tar_b64 = lines.next().unwrap_or("").trim();
+    if tar_b64.is_empty() {
+        return Err("workspace tar base64 empty".into());
+    }
+    db.upsert_workspace_tar_b64(
+        session_id,
+        proj_id,
+        turn_id,
+        WORKSPACE_TAR_ARTIFACT_PATH,
+        WORKSPACE_TAR_ARTIFACT_KIND,
+        tar_b64,
+        raw_size,
+        created_at_ms,
+    )
+    .await
+    .map_err(|e| format!("upsert workspace tar: {e}"))?;
+    Ok(())
+}
+
+fn guest_read_text(files: &[(String, Vec<u8>)], path: &str) -> String {
+    files
+        .iter()
+        .find(|(p, _)| p == path)
+        .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_default()
+}
+
+async fn guest_read_single_string(
+    client: &SandboxRpcClient,
+    slot_index: usize,
+    path: &str,
+) -> Result<String, String> {
+    let files = client.guest_read(slot_index, &[path.to_string()]).await?;
+    Ok(guest_read_text(&files, path))
 }
 
 /// Import jsonl turn segment + workspace tar + timing after exec. Author: kejiqing

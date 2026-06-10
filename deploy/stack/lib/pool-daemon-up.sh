@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host pool: default ensure (skip if HTTP up). --restart = down then up. Author: kejiqing
+# Host claw-sandbox: ensure HTTP up (skip if healthy). --restart = down then up. Author: kejiqing
 set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
@@ -13,47 +13,34 @@ source "${LIB_DIR}/pool-health.sh"
 
 RESTART=0
 WITH_WORKERS=0
-CLAW_POOL_PROFILE=""
-ARGS=()
 for arg in "$@"; do
   case "${arg}" in
     --restart) RESTART=1 ;;
     --ensure) RESTART=0 ;;
     --with-workers) WITH_WORKERS=1 ;;
-    --profile=strict) CLAW_POOL_PROFILE=strict ;;
-    --profile=relaxed) CLAW_POOL_PROFILE=relaxed ;;
-    --profile=all) CLAW_POOL_PROFILE=all ;;
-    --profile) ;;
-    strict|relaxed|all) CLAW_POOL_PROFILE="${arg}" ;;
-    *) ARGS+=("${arg}") ;;
+    --profile=* | --profile | strict | relaxed | all)
+      echo "error: --profile removed (single claw-sandbox on CLAW_POOL_HTTP_PORT)" >&2
+      exit 1
+      ;;
   esac
 done
-if [[ -z "${CLAW_POOL_PROFILE}" ]]; then
-  CLAW_POOL_PROFILE=all
-fi
-if [[ "${CLAW_POOL_PROFILE}" == "all" ]]; then
-  _extra=()
-  [[ "${RESTART}" == 1 ]] && _extra+=(--restart)
-  [[ "${WITH_WORKERS}" == 1 ]] && _extra+=(--with-workers)
-  "${BASH_SOURCE[0]}" --profile=strict ${ARGS[@]+"${ARGS[@]}"} ${_extra[@]+"${_extra[@]}"}
-  "${BASH_SOURCE[0]}" --profile=relaxed ${ARGS[@]+"${ARGS[@]}"} ${_extra[@]+"${_extra[@]}"}
-  exit $?
-fi
-export CLAW_POOL_PROFILE
 
 _pool_bin_from_up="${CLAW_POOL_DAEMON_BIN:-}"
-if [[ -f "${REPO_ROOT}/.env" ]]; then
+_pool_env_file="${CLAW_POOL_UP_ENV_FILE:-${REPO_ROOT}/.env}"
+if [[ -f "${_pool_env_file}" ]]; then
   set -a
   # shellcheck disable=SC1090
-  source "${REPO_ROOT}/.env"
+  source "${_pool_env_file}"
   set +a
 fi
+
+claw_cleanup_legacy_dual_pool "${PODMAN_DIR}"
+
 if [[ -n "${_pool_bin_from_up}" ]]; then
   export CLAW_POOL_DAEMON_BIN="${_pool_bin_from_up}"
 fi
 
 claw_apply_deploy_profile 2>/dev/null || true
-# pool-up alone must see release pin + GATEWAY_IMAGE→CLAW_DOCKER_IMAGE (same as gateway.sh up). kejiqing
 # shellcheck source=release-images.sh
 source "${LIB_DIR}/release-images.sh"
 claw_reapply_pool_image_pins "${PODMAN_DIR}"
@@ -66,41 +53,31 @@ WORK_ROOT="${CLAW_POOL_WORK_ROOT_BIND_SRC:?missing CLAW_POOL_WORK_ROOT_BIND_SRC;
 # shellcheck source=claw-pool-registry-env.sh
 source "${LIB_DIR}/claw-pool-registry-env.sh"
 _base_pool_id="$(claw_default_pool_id)"
-case "${CLAW_POOL_PROFILE}" in
-  strict)
-    RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc/strict"
-    HTTP_PORT="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
-    _pool_daemon_tcp_port="${CLAW_STRICT_POOL_DAEMON_PORT:-9943}"
-    export CLAW_POOL_ID="${CLAW_STRICT_POOL_ID:-${_base_pool_id}-strict}"
-    export CLAW_PODMAN_POOL_SIZE="${CLAW_STRICT_PODMAN_POOL_SIZE:-${CLAW_PODMAN_POOL_SIZE:-3}}"
-    export CLAW_PODMAN_POOL_MIN_IDLE="${CLAW_STRICT_PODMAN_POOL_MIN_IDLE:-${CLAW_PODMAN_POOL_MIN_IDLE:-1}}"
-    export CLAW_DOCKER_POOL_SIZE="${CLAW_STRICT_DOCKER_POOL_SIZE:-${CLAW_STRICT_PODMAN_POOL_SIZE:-${CLAW_DOCKER_POOL_SIZE:-${CLAW_PODMAN_POOL_SIZE:-3}}}}"
-    export CLAW_DOCKER_POOL_MIN_IDLE="${CLAW_STRICT_DOCKER_POOL_MIN_IDLE:-${CLAW_STRICT_PODMAN_POOL_MIN_IDLE:-${CLAW_DOCKER_POOL_MIN_IDLE:-${CLAW_PODMAN_POOL_MIN_IDLE:-1}}}}"
-    _pool_worker_isolation=strict
-    _pool_allow_relaxed=false
-    ;;
-  relaxed)
-    RPC_DIR="${PODMAN_DIR}/.claw-pool-rpc/relaxed"
-    HTTP_PORT="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
-    _pool_daemon_tcp_port="${CLAW_RELAXED_POOL_DAEMON_PORT:-9945}"
-    export CLAW_POOL_ID="${CLAW_RELAXED_POOL_ID:-${_base_pool_id}-relaxed}"
-    export CLAW_PODMAN_POOL_SIZE="${CLAW_RELAXED_PODMAN_POOL_SIZE:-1}"
-    export CLAW_PODMAN_POOL_MIN_IDLE="${CLAW_RELAXED_PODMAN_POOL_MIN_IDLE:-0}"
-    export CLAW_DOCKER_POOL_SIZE="${CLAW_RELAXED_DOCKER_POOL_SIZE:-${CLAW_RELAXED_PODMAN_POOL_SIZE:-1}}"
-    export CLAW_DOCKER_POOL_MIN_IDLE="${CLAW_RELAXED_DOCKER_POOL_MIN_IDLE:-${CLAW_RELAXED_PODMAN_POOL_MIN_IDLE:-0}}"
-    _relaxed_worker_image="${CLAW_RELAXED_PODMAN_IMAGE:-claw-gateway-worker-relaxed:local}"
-    export CLAW_PODMAN_IMAGE="${_relaxed_worker_image}"
-    export CLAW_DOCKER_IMAGE="${_relaxed_worker_image}"
-    _pool_worker_isolation=relaxed
-    _pool_allow_relaxed=true
-    ;;
-  *)
-    echo "error: unknown CLAW_POOL_PROFILE=${CLAW_POOL_PROFILE} (strict|relaxed)" >&2
-    exit 1
-    ;;
-esac
+RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
+HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
+_pool_daemon_tcp_port="${CLAW_POOL_DAEMON_TCP_PORT:-9943}"
+
+export CLAW_POOL_ID="${CLAW_POOL_ID:-${_base_pool_id}}"
+export CLAW_PODMAN_POOL_SIZE="${CLAW_STRICT_PODMAN_POOL_SIZE:-${CLAW_PODMAN_POOL_SIZE:-3}}"
+export CLAW_PODMAN_POOL_MIN_IDLE="${CLAW_STRICT_PODMAN_POOL_MIN_IDLE:-${CLAW_PODMAN_POOL_MIN_IDLE:-1}}"
+export CLAW_DOCKER_POOL_SIZE="${CLAW_STRICT_DOCKER_POOL_SIZE:-${CLAW_STRICT_PODMAN_POOL_SIZE:-${CLAW_DOCKER_POOL_SIZE:-${CLAW_PODMAN_POOL_SIZE:-3}}}}"
+export CLAW_DOCKER_POOL_MIN_IDLE="${CLAW_STRICT_DOCKER_POOL_MIN_IDLE:-${CLAW_STRICT_PODMAN_POOL_MIN_IDLE:-${CLAW_DOCKER_POOL_MIN_IDLE:-${CLAW_PODMAN_POOL_MIN_IDLE:-1}}}}"
+
+if claw_relaxed_worker_allowed_from_env; then
+  _pool_allow_relaxed=true
+  _pool_emit_relaxed_image=1
+else
+  _pool_allow_relaxed=false
+  _pool_emit_relaxed_image=0
+fi
+
 export CLAW_POOL_HTTP_PORT="${HTTP_PORT}"
-BIN="${CLAW_POOL_DAEMON_BIN:-$(claw_default_pool_daemon_bin "${PODMAN_DIR}")}"
+if [[ -n "${CLAW_POOL_DAEMON_BIN:-}" ]]; then
+  BIN="${CLAW_POOL_DAEMON_BIN}"
+else
+  BIN="$(claw_ensure_pool_daemon_binary "${PODMAN_DIR}" "${REPO_ROOT}")" || exit 1
+fi
+
 case "${CLAW_POOL_RPC_TRANSPORT:-}" in
   tcp | unix | http) TRANSPORT="${CLAW_POOL_RPC_TRANSPORT}" ;;
   *)
@@ -141,11 +118,11 @@ if [[ "${RESTART}" == 0 ]] && claw_pool_http_alive; then
     if [[ -z "${pid}" ]] && [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
       # shellcheck disable=SC1091
       source "${LIB_DIR}/pool-daemon-systemd.sh"
-      if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_active "${CLAW_POOL_PROFILE}"; then
-        pid="$(claw_pool_systemd_main_pid "${CLAW_POOL_PROFILE}")"
+      if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_active; then
+        pid="$(claw_pool_systemd_main_pid)"
       fi
     fi
-    echo "claw-pool-daemon already on 127.0.0.1:${HTTP_PORT} (pid=${pid:-unknown}, claw_pool ok, skipped)" >&2
+    echo "claw-sandbox already on 127.0.0.1:${HTTP_PORT} (pid=${pid:-unknown}, claw_pool ok, skipped)" >&2
     exit 0
   fi
   echo "==> pool-daemon-up: HTTP up but claw_pool registry missing/stale for ${CLAW_POOL_ID}; restarting…" >&2
@@ -153,8 +130,9 @@ if [[ "${RESTART}" == 0 ]] && claw_pool_http_alive; then
 fi
 
 if [[ "${RESTART}" == 1 ]]; then
-  echo "==> pool-daemon-up: --restart profile=${CLAW_POOL_PROFILE}" >&2
-  "${PODMAN_DIR}/lib/pool-daemon-down.sh" --profile="${CLAW_POOL_PROFILE}"
+  echo "==> pool-daemon-up: --restart" >&2
+  export CLAW_POOL_UP_ENV_FILE="${_pool_env_file}"
+  "${PODMAN_DIR}/lib/pool-daemon-down.sh"
   if [[ "${WITH_WORKERS}" == 1 ]]; then
     # shellcheck disable=SC1091
     source "${LIB_DIR}/nuclear-pool-reset.sh"
@@ -171,22 +149,17 @@ source "${LIB_DIR}/claw-pool-registry-env.sh"
 claw_export_pool_registry_env "${RPC_DIR}"
 
 if [[ ! -x "${BIN}" ]]; then
-  echo "error: claw-pool-daemon missing: ${BIN}" >&2
+  echo "error: claw-sandbox missing: ${BIN}" >&2
   exit 1
 fi
 
 _iso="${CLAW_SOLVE_ISOLATION:-podman_pool}"
 if [[ "${_iso}" == docker_pool && -z "${CLAW_DOCKER_IMAGE:-}" ]]; then
   echo "error: CLAW_DOCKER_IMAGE unset (production docker_pool)" >&2
-  echo "  fix: add GATEWAY_IMAGE=ghcr.io/.../claw-code:release-vX.Y.Z to .env" >&2
-  echo "    or run once: ./deploy/stack/gateway.sh up --release release-vX.Y.Z" >&2
-  echo "    then pool-up (reads deploy/stack/.claw-image-release.env)" >&2
   exit 1
 fi
 if ! pool_db_url="$(claw_pool_daemon_database_url 2>/dev/null)"; then
   echo "error: CLAW_GATEWAY_DATABASE_URL unset in .env" >&2
-  echo "  fix: CLAW_GATEWAY_DATABASE_URL=postgres://claw_gateway:PASS@postgres:5432/claw_gateway" >&2
-  echo "  (host pool rewrites @postgres:5432 → 127.0.0.1:\${CLAW_GATEWAY_PG_HOST_PORT:-5433})" >&2
   exit 1
 fi
 
@@ -217,8 +190,21 @@ claw_pool_env_kv() {
   [[ -n "${CLAW_PODMAN_POOL_MIN_IDLE:-}" ]] && claw_pool_env_kv CLAW_PODMAN_POOL_MIN_IDLE "${CLAW_PODMAN_POOL_MIN_IDLE}"
   [[ -n "${CLAW_DOCKER_EXTRA_ARGS:-}" ]] && claw_pool_env_kv CLAW_DOCKER_EXTRA_ARGS "${CLAW_DOCKER_EXTRA_ARGS}"
   [[ -n "${CLAW_PODMAN_EXTRA_ARGS:-}" ]] && claw_pool_env_kv CLAW_PODMAN_EXTRA_ARGS "${CLAW_PODMAN_EXTRA_ARGS}"
-  # Pool-daemon process env (launchd child does NOT inherit shell-only exports). kejiqing
-  claw_pool_env_kv CLAW_POOL_WORKER_ISOLATION "${_pool_worker_isolation}"
+  if [[ "${_pool_emit_relaxed_image:-0}" == 1 ]]; then
+    _relaxed_img="${CLAW_RELAXED_PODMAN_IMAGE:-claw-gateway-worker-relaxed:local}"
+    claw_pool_env_kv CLAW_PODMAN_RELAXED_IMAGE "${_relaxed_img}"
+    claw_pool_env_kv CLAW_DOCKER_RELAXED_IMAGE "${_relaxed_img}"
+    claw_pool_env_kv CLAW_RELAXED_PODMAN_IMAGE "${_relaxed_img}"
+    _relaxed_pool_size="${CLAW_RELAXED_PODMAN_POOL_SIZE:-${CLAW_PODMAN_RELAXED_POOL_SIZE:-1}}"
+    _relaxed_pool_min_idle="${CLAW_RELAXED_PODMAN_POOL_MIN_IDLE:-${CLAW_PODMAN_RELAXED_POOL_MIN_IDLE:-0}}"
+    claw_pool_env_kv CLAW_PODMAN_RELAXED_POOL_SIZE "${_relaxed_pool_size}"
+    claw_pool_env_kv CLAW_DOCKER_RELAXED_POOL_SIZE "${_relaxed_pool_size}"
+    claw_pool_env_kv CLAW_PODMAN_RELAXED_POOL_MIN_IDLE "${_relaxed_pool_min_idle}"
+    claw_pool_env_kv CLAW_DOCKER_RELAXED_POOL_MIN_IDLE "${_relaxed_pool_min_idle}"
+  fi
+  _pool_exec_user="${CLAW_PODMAN_POOL_EXEC_USER:-claw}"
+  claw_pool_env_kv CLAW_PODMAN_POOL_EXEC_USER "${_pool_exec_user}"
+  claw_pool_env_kv CLAW_DOCKER_POOL_EXEC_USER "${CLAW_DOCKER_POOL_EXEC_USER:-${_pool_exec_user}}"
   claw_pool_env_kv CLAW_ALLOW_RELAXED_WORKER "${_pool_allow_relaxed}"
   claw_pool_env_kv CLAW_SECURITY_BOOST "${CLAW_SECURITY_BOOST:-true}"
   claw_pool_env_kv CLAW_GATEWAY_DATABASE_URL "${pool_db_url}"
@@ -229,7 +215,7 @@ claw_pool_env_kv() {
   fi
 } >"${RPC_DIR}/pool-daemon.env"
 
-for _pool_proc_key in CLAW_POOL_WORKER_ISOLATION CLAW_ALLOW_RELAXED_WORKER CLAW_SECURITY_BOOST; do
+for _pool_proc_key in CLAW_ALLOW_RELAXED_WORKER CLAW_SECURITY_BOOST; do
   if ! grep -q "^${_pool_proc_key}=" "${RPC_DIR}/pool-daemon.env"; then
     echo "error: pool-daemon.env missing required key ${_pool_proc_key}" >&2
     exit 1
@@ -241,21 +227,19 @@ chmod +x "${RUN_SH}"
 
 printf '\n%s pool-daemon-up: starting %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${BIN}" >>"${LOG}"
 
-# macOS: launchd owns the process (agent shell teardown must not SIGKILL pool). kejiqing
 if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source "${LIB_DIR}/pool-daemon-launchd.sh"
-  claw_pool_launchd_bootstrap "${RPC_DIR}" "${RUN_SH}" "${LOG}" "${CLAW_POOL_PROFILE}"
+  claw_pool_launchd_bootstrap "${RPC_DIR}" "${RUN_SH}" "${LOG}"
 elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]] && {
   # shellcheck disable=SC1091
   source "${LIB_DIR}/pool-daemon-systemd.sh"
   claw_pool_use_systemd
 }; then
-  claw_pool_systemd_install_and_restart "${RPC_DIR}" "${RUN_SH}" "${REPO_ROOT}" "${CLAW_POOL_PROFILE}"
-  pid="$(claw_pool_systemd_main_pid "${CLAW_POOL_PROFILE}")"
+  claw_pool_systemd_install_and_restart "${RPC_DIR}" "${RUN_SH}" "${REPO_ROOT}"
+  pid="$(claw_pool_systemd_main_pid)"
   [[ -n "${pid}" && "${pid}" != "0" ]] && printf '%s' "${pid}" >"${RPC_DIR}/daemon.pid"
 else
-  # Linux local / fallback: nohup as current user.
   set -a
   # shellcheck disable=SC1090
   source "${RPC_DIR}/pool-daemon.env"
@@ -269,12 +253,12 @@ fi
 for _i in $(seq 1 120); do
   if claw_pool_http_alive; then
     pid="$(claw_pool_refresh_pid_file "${RPC_DIR}" 2>/dev/null || echo "${pid}")"
-    echo "claw-pool-daemon HTTP 0.0.0.0:${HTTP_PORT} (pid=${pid}) profile=${CLAW_POOL_PROFILE}" >&2
+    echo "claw-sandbox HTTP 0.0.0.0:${HTTP_PORT} (pid=${pid})" >&2
     echo "  pool_id=${CLAW_POOL_ID} advertise=${CLAW_POOL_ADVERTISE_HOST}" >&2
     exit 0
   fi
   if [[ "${_i}" == 120 ]]; then
-    echo "error: claw-pool-daemon did not listen on :${HTTP_PORT}" >&2
+    echo "error: claw-sandbox did not listen on :${HTTP_PORT}" >&2
     tail -20 "${LOG}" >&2 || true
     exit 1
   fi

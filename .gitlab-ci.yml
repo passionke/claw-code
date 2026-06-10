@@ -27,7 +27,7 @@ stages:
   CLAW_POOL_ADVERTISE_HOST: "10.22.28.94"
   CLAW_CLUSTER_ID: sunmi-ci-01
   CLAW_POOL_ID: pool-sunmi-ci-01
-  # nohup dual pool — production default is systemd (see pool-daemon-systemd.sh); CI does not exercise that path
+  # CI: nohup claw-sandbox (production default is systemd claw-sandbox.service)
   CLAW_POOL_DAEMON_USE_SYSTEMD: "0"
   CLAW_AUTO_BOOTSTRAP: "1"
 
@@ -84,6 +84,10 @@ deploy:release:
   script:
     - source ./deploy/stack/lib/ci-sync-worktree.sh
     - ./deploy/stack/lib/render-env-from-ci.sh
+    - ./deploy/stack/lib/ci-cluster-cleanup.sh
     - ./deploy/stack/gateway.sh up --release "${CLAW_RELEASE_TAG}"
+    - ./deploy/stack/gateway.sh verify
     - ./deploy/stack/lib/admin-solve-e2e.sh 1 ping
+    - ./deploy/stack/lib/admin-solve-e2e.sh 1 ping
+    - ./deploy/stack/lib/ci-cluster-dual-deploy.sh
   timeout: 2h

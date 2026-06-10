@@ -25,18 +25,49 @@ use super::worker_isolation::{effective_mode, exec_user_arg_for_mode, WorkerIsol
 
 pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
 
+/// Base stem budget when no `-strict` / `-relaxed` profile suffix is present.
+const WORKER_NAME_STEM_BASE_MAX: usize = 16;
+
+/// Build `claw-worker-{stem}-{n}` stem from pool id suffix (after optional `pool-` strip).
+/// Reserves room for `-strict` / `-relaxed` profile suffixes on worker names. Author: kejiqing
+fn worker_name_stem_from_pool_suffix(suffix: &str) -> String {
+    let (base, profile) = if let Some(b) = suffix.strip_suffix("-strict") {
+        (b, Some("strict"))
+    } else if let Some(b) = suffix.strip_suffix("-relaxed") {
+        (b, Some("relaxed"))
+    } else {
+        (suffix, None)
+    };
+
+    let profile_chars = profile.map(|p| p.len() + 1).unwrap_or(0);
+    let base_max = WORKER_NAME_STEM_BASE_MAX
+        .saturating_sub(profile_chars)
+        .max(1);
+    let mut base_stem: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(base_max)
+        .collect();
+    while base_stem.ends_with('-') {
+        base_stem.pop();
+    }
+    if base_stem.is_empty() {
+        let u = Uuid::new_v4().simple().to_string();
+        base_stem = u[..8].to_string();
+    }
+    match profile {
+        Some(p) => format!("{base_stem}-{p}"),
+        None => base_stem,
+    }
+}
+
 /// Stable `claw-worker-{stem}-{n}` prefix from `CLAW_POOL_ID` (avoid orphan containers per restart). Author: kejiqing
 fn default_worker_name_stem() -> String {
     if let Ok(raw) = std::env::var("CLAW_POOL_ID") {
         let id = raw.trim();
-        let suffix = id.strip_prefix("pool-").unwrap_or(id);
-        let stem: String = suffix
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .take(16)
-            .collect();
-        if !stem.is_empty() {
-            return stem;
+        if !id.is_empty() {
+            let suffix = id.strip_prefix("pool-").unwrap_or(id);
+            return worker_name_stem_from_pool_suffix(suffix);
         }
     }
     let u = Uuid::new_v4().simple().to_string();
@@ -1058,8 +1089,15 @@ impl DockerPoolManager {
         }
         if let Some(ref pool_id) = self.pool_id {
             if let Some(ref db) = self.session_db {
+                let exec_user =
+                    exec_user_arg_for_mode(isolation, &self.worker_identity.exec_user_arg());
                 match db
-                    .assign_turn_pool_worker(turn_id, pool_id, &container_log)
+                    .assign_turn_pool_worker(
+                        turn_id,
+                        pool_id,
+                        &container_log,
+                        Some(exec_user.as_str()),
+                    )
                     .await
                 {
                     Ok(()) => info!(
@@ -1302,6 +1340,32 @@ impl DockerPoolManager {
 }
 
 #[cfg(test)]
+mod worker_name_stem_tests {
+    use super::worker_name_stem_from_pool_suffix;
+
+    #[test]
+    fn profile_worker_hostname_stems_differ() {
+        let host = "ali-hz1-onl-max-ae-schedule-11";
+        let strict = worker_name_stem_from_pool_suffix(&format!("{host}-strict"));
+        let relaxed = worker_name_stem_from_pool_suffix(&format!("{host}-relaxed"));
+        assert_ne!(strict, relaxed);
+        assert!(strict.ends_with("-strict"));
+        assert!(relaxed.ends_with("-relaxed"));
+        assert_eq!(
+            strict,
+            worker_name_stem_from_pool_suffix("ali-hz1-onl-max-ae-schedule-11-strict")
+        );
+    }
+
+    #[test]
+    fn legacy_pool_id_without_profile_trims_trailing_dash() {
+        let stem = worker_name_stem_from_pool_suffix("ali-hz1-onl-max-ae-schedule-11");
+        assert_eq!(stem, "ali-hz1-onl-max");
+        assert!(!stem.ends_with('-'));
+    }
+}
+
+#[cfg(test)]
 mod exec_solve_argv_prefix_tests {
     use std::sync::Arc;
 
@@ -1359,11 +1423,12 @@ mod exec_solve_argv_prefix_tests {
     }
 
     #[test]
-    fn exec_prefix_relaxed_uses_root() {
+    fn exec_prefix_relaxed_uses_pool_worker() {
         let p = pool(None);
+        let id = PoolWorkerIdentity::from_env(None);
         assert_eq!(
             p.test_exec_solve_argv_prefix_for(WorkerIsolationMode::Relaxed),
-            vec!["exec".to_string(), "--user".to_string(), "0:0".to_string()]
+            vec!["exec".to_string(), "--user".to_string(), id.exec_user_arg()]
         );
     }
 
@@ -1586,7 +1651,23 @@ esac
         );
     }
 
-    fn test_layout() -> (PathBuf, PathBuf, PathBuf) {
+    use std::sync::{Mutex, MutexGuard};
+
+    static DOCKER_POOL_IT_SERIAL: Mutex<()> = Mutex::new(());
+
+    /// Hold for whole test: fake-docker spawns race under default lib test parallelism. Author: kejiqing
+    struct DockerPoolItSerialGuard(#[allow(dead_code)] MutexGuard<'static, ()>);
+
+    fn docker_pool_it_serial() -> DockerPoolItSerialGuard {
+        DockerPoolItSerialGuard(
+            DOCKER_POOL_IT_SERIAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn test_layout() -> (DockerPoolItSerialGuard, PathBuf, PathBuf, PathBuf) {
+        let serial = docker_pool_it_serial();
         let base = std::env::temp_dir().join(format!("http-gw-pool-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&base).unwrap();
         let work = base.join("work");
@@ -1595,7 +1676,7 @@ esac
         fs::create_dir_all(&state).unwrap();
         let bin_path = base.join("fake-docker");
         write_executable(&bin_path, &fake_docker_script(&state));
-        (base, work, bin_path)
+        (serial, base, work, bin_path)
     }
 
     fn write_test_task(home: &Path) {
@@ -1633,7 +1714,7 @@ esac
 
     #[tokio::test]
     async fn acquire_exec_release_does_not_rm_worker() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "tstem"))
@@ -1687,7 +1768,7 @@ esac
 
     #[tokio::test]
     async fn force_kill_then_ensure_warm_runs_rm_and_new_run() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "killme"))
@@ -1714,7 +1795,7 @@ esac
 
     #[tokio::test]
     async fn two_concurrent_acquires_get_distinct_slot_indices() {
-        let (_base, work, bin_path) = test_layout();
+        let (_serial, _base, work, bin_path) = test_layout();
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "conc"))
                 .unwrap();
@@ -1744,7 +1825,7 @@ esac
 
     #[tokio::test]
     async fn exec_after_release_is_rejected() {
-        let (_base, work, bin_path) = test_layout();
+        let (_serial, _base, work, bin_path) = test_layout();
         let pool = DockerPoolManager::from_config(test_pool_config_mut(
             work.clone(),
             &bin_path,
@@ -1773,7 +1854,7 @@ esac
 
     #[tokio::test]
     async fn double_release_is_idempotent() {
-        let (_base, work, bin_path) = test_layout();
+        let (_serial, _base, work, bin_path) = test_layout();
         let pool = DockerPoolManager::from_config(test_pool_config_mut(
             work.clone(),
             &bin_path,
@@ -1790,7 +1871,7 @@ esac
 
     #[tokio::test]
     async fn release_runs_configured_on_release_hook() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool = DockerPoolManager::from_config(test_pool_config_mut(
             work.clone(),
@@ -1829,7 +1910,7 @@ esac
 
     #[tokio::test]
     async fn release_invokes_pkill_for_solve_processes() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool = DockerPoolManager::from_config(test_pool_config_mut(
             work.clone(),
@@ -1860,7 +1941,7 @@ esac
 
     #[tokio::test]
     async fn release_pkill_uses_named_exec_user_when_configured() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool = DockerPoolManager::from_config(test_pool_config_mut(
             work.clone(),
@@ -1883,7 +1964,7 @@ esac
 
     #[tokio::test]
     async fn exec_solve_uses_uid_gid_and_claw_host_home_by_default() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool = DockerPoolManager::from_config(test_pool_config_mut(
             work.clone(),
@@ -1919,7 +2000,7 @@ esac
 
     #[tokio::test]
     async fn proj_home_bind_mount_is_read_only() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "dsro"))
@@ -1931,7 +2012,7 @@ esac
 
     #[tokio::test]
     async fn proj_home_bind_stays_read_only_with_security_boost() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool = DockerPoolManager::from_config(test_pool_config_mut(
             work.clone(),
@@ -1954,7 +2035,7 @@ esac
 
     #[tokio::test]
     async fn worker_cannot_write_under_claw_ds() {
-        let (_base, work, bin_path) = test_layout();
+        let (_serial, _base, work, bin_path) = test_layout();
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "dswrite"))
                 .unwrap();
@@ -1984,7 +2065,7 @@ esac
 
     #[tokio::test]
     async fn worker_cannot_write_under_claw_proj_home() {
-        let (_base, work, bin_path) = test_layout();
+        let (_serial, _base, work, bin_path) = test_layout();
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "dshomewr"))
                 .unwrap();
@@ -2009,7 +2090,7 @@ esac
 
     #[tokio::test]
     async fn worker_cannot_write_project_skills() {
-        let (_base, work, bin_path) = test_layout();
+        let (_serial, _base, work, bin_path) = test_layout();
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "skillwr"))
                 .unwrap();
@@ -2035,7 +2116,7 @@ esac
 
     #[tokio::test]
     async fn worker_can_write_session_file_at_work_root() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let pool =
             DockerPoolManager::from_config(test_pool_config(work.clone(), &bin_path, "gwrite"))
                 .unwrap();
@@ -2062,7 +2143,7 @@ esac
 
     #[tokio::test]
     async fn security_boost_appends_hardening_run_flags() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool = DockerPoolManager::from_config(test_pool_config_mut(
             work.clone(),
@@ -2088,7 +2169,7 @@ esac
 
     #[tokio::test]
     async fn exec_solve_includes_user_when_configured() {
-        let (base, work, bin_path) = test_layout();
+        let (_serial, base, work, bin_path) = test_layout();
         let state_dir = base.join("docker_state");
         let pool = DockerPoolManager::from_config(test_pool_config_mut(
             work.clone(),

@@ -1,4 +1,4 @@
-# 宿主机 claw-pool-daemon（Admin solve 必读）
+# 宿主机 claw-sandbox（Admin solve 必读）
 
 Author: kejiqing
 
@@ -12,7 +12,7 @@ Admin `POST /v1/solve_async` 依赖 **gateway（compose）+ 宿主机 pool（994
 |------|------|------|
 | PostgreSQL | `claw-gateway-postgres` | `podman ps` |
 | Gateway | `claw-gateway-rs` | `${GATEWAY_HOST_PORT}/healthz` |
-| **Pool** | **宿主机 `claw-pool-daemon`** | `127.0.0.1:9944/healthz/live-report` |
+| **Pool** | **宿主机 `claw-sandbox`** | `127.0.0.1:9944/healthz/live-report` |
 | Playground | `claw-gateway-playground` | Admin UI |
 | Worker | `claw-worker-*` | pool 借出，非常驻 |
 
@@ -44,24 +44,17 @@ launchctl print "gui/$(id -u)/com.claw.pool-daemon" | head -12
 lsof -nP -iTCP:9944 -sTCP:LISTEN
 ```
 
-Linux **`CLAW_DEPLOY_PROFILE=production`**：`pool-daemon-up` 写 `pool-daemon.env` 后走 **systemd**（`User=root`）。**双 pool** 各一个 unit（与 macOS launchd 对称）：
+Linux **`CLAW_DEPLOY_PROFILE=production`**：`pool-daemon-up` 写 `pool-daemon.env` 后走 **systemd**（`User=root`，unit **`claw-sandbox.service`**）。**单进程** `:9944`；`acquire` 按 ds 的 strict/relaxed profile 选 worker（见 `sandbox/docs/system-design.md`）。首次 `pool-up` 会 disable 旧 `claw-pool-daemon*.service`。本地 profile 仍 `nohup`。
 
-| Profile | systemd unit | HTTP |
-|---------|----------------|------|
-| strict | `claw-pool-daemon-strict.service` | 9944 |
-| relaxed | `claw-pool-daemon-relaxed.service` | 9954 |
-
-旧单 unit `claw-pool-daemon.service` 在首次 `--profile=strict|relaxed` 时自动 disable（避免 relaxed 覆盖 strict 导致 9944 503）。本地 profile 仍 `nohup`。
-
-GitLab CI（10.22.28.94）设 **`CLAW_POOL_DAEMON_USE_SYSTEMD=0`**，走 nohup 双 daemon，**测不到** production 默认 systemd 路径——生产升双 pool 后须跑 **`claw-stack-verify.sh`**（含 systemd 一致性检查）。
+GitLab CI（10.22.28.94）设 **`CLAW_POOL_DAEMON_USE_SYSTEMD=0`**，走 nohup，**测不到** production 默认 systemd 路径——生产/预发须 **`gateway.sh verify`** + **`gateway.sh cluster-verify`**，见 **`deploy/stack/docs/cluster-deploy-verify.md`**。
 
 ```bash
-# 生产：刷新 env 并 systemd 重启双 pool
-./deploy/stack/gateway.sh pool-up --restart --profile=all
-sudo systemctl status claw-pool-daemon-strict claw-pool-daemon-relaxed
+./deploy/stack/gateway.sh pool-up --restart
+sudo systemctl status claw-sandbox
 curl -fsS http://127.0.0.1:9944/healthz/live-report
-curl -fsS http://127.0.0.1:9954/healthz/live-report
 ```
+
+**`CLAW_ALLOW_RELAXED_WORKER=false`（常见生产）**：pool 只 warm strict worker；`claw-stack-verify` 的 Capacity RPC 不期望 `relaxed` profile。
 
 ---
 

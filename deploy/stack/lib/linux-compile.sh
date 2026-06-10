@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compile Linux release binaries via `podman run` (Darwin local path). Artifacts land in
-# deploy/stack/.linux-artifacts/release/ — image build only COPY, no crates.io in `podman build`.
+# Compile Linux release binaries via container run (Darwin + CI). Artifacts land in
+# deploy/stack/.linux-artifacts/release/ — image build only COPY, no cargo in `podman build`.
 # Author: kejiqing
 set -euo pipefail
 
@@ -54,11 +54,11 @@ claw_linux_compile_release() {
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
     -e "RUSTUP_DIST_SERVER=${rustup_dist}" \
     -e "RUSTUP_UPDATE_ROOT=${rustup_root}" \
-    -v "${rust_dir}:/build:Z" \
+    -v "${root_dir}:/workspace:Z" \
     -v claw-cargo-registry:/usr/local/cargo/registry \
     -v claw-cargo-git:/usr/local/cargo/git \
     -v "${out_root}:/artifacts:Z" \
-    -w /build \
+    -w /workspace/rust \
     "${rust_image}" \
     bash -c '
       set -eu
@@ -74,13 +74,15 @@ claw_linux_compile_release() {
         exit 1
       fi
       echo "rustc $got (locked)"
-      # Darwin local: pool-daemon runs as host Mach-O binary, not from gateway image. kejiqing
       cargo build --release -p rusty-claude-cli --bin claw \
         -p http-gateway-rs --bin http-gateway-rs
-      ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw
+      cd /workspace/sandbox
+      export CARGO_TARGET_DIR=/artifacts
+      cargo build --release -p claw-sandbox-server
+      ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw /artifacts/release/claw-sandbox
     '
 
-  for bin in http-gateway-rs claw; do
+  for bin in http-gateway-rs claw claw-sandbox; do
     if [[ ! -f "${out_dir}/${bin}" ]]; then
       echo "error: missing ${out_dir}/${bin} after linux compile" >&2
       exit 1

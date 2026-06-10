@@ -9,7 +9,7 @@ Author: kejiqing
 | 场景 | 容器引擎 | 镜像从哪来 | 入口命令 |
 | --- | --- | --- | --- |
 | **本地开发**（笔记本 / 研发机） | **Podman**（`auto` 时 PATH 里优先 podman） | **本机编译打包**：`gateway.sh quick`（日常）或 **`pack-deploy`**（改 Rust/网关镜像后；慢但可预期） | `./deploy/stack/gateway.sh quick` / `pack-deploy` |
-| **线上 Linux** | **Docker** + **宿主机 `claw-pool-daemon`**（租还 worker，无 compose sidecar） | **只拉 CI tag**（GHCR/ACR），服务器 **不 cargo** | `./deploy/stack/gateway.sh up --release release-v…` |
+| **线上 Linux** | **Docker** + **宿主机 `claw-sandbox`**（租还 worker，无 compose sidecar） | **只拉 CI tag**（GHCR/ACR），服务器 **不 cargo** | `./deploy/stack/gateway.sh up --release release-v…` |
 
 两套环境用 **同一份脚本树** `deploy/stack/lib/`；差别只在根 `.env`（模板见下表）。`deploy/podman/*.sh` 仅为旧路径 **exec 转发** 到 `deploy/stack/lib/`，新文档不再展开。
 
@@ -56,9 +56,9 @@ Author: kejiqing
 
 实现脚本在 **`deploy/stack/lib/`**（`pack-deploy.sh`、`build.sh`、`solve-once-local.sh` 等）。**不要**用 `build --in-container`（镜像内 cargo，慢且易超时）。`scripts/local-pack-deploy.sh` 等仅为兼容，转调 `gateway.sh`。
 
-其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh` 一次串联**：先 **`Containerfile.gateway-rs`**（`http-gateway-rs` + 宿主机用的 **`claw-pool-daemon`**），再 **`Containerfile.gateway-worker`**（strict 池 **`claw`**）与 **`Containerfile.gateway-worker-relaxed`**（relaxed 池 + `curl`/`python3`），共用同一套 **`rust/`** 与 base / rustup build-arg，避免「网关新、worker 旧」。
+其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh`**：`linux-compile` 产出 **`http-gateway-rs` + `claw` + `claw-sandbox`**，再 **`Containerfile.gateway-rs.prebuilt`** / worker 镜像 **COPY** 预编译产物（镜像内不 cargo）。
 
-**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，镜像 **一次 build 推 GHCR**，同一 job 链 **`mirror-to-acr`** 再 **pull → retag → push ACR**（不再二次 Rust 编译）。包名：**`claw-code`**、**`claw-gateway-worker`**、**`claw-gateway-worker-relaxed`**、**`claw-gateway-playground`**（**同一 tag**；relaxed 在 strict worker 构建完成后 **FROM strict 镜像** 追加工具层；playground 镜像内 **CI 多阶段构建** `gateway-admin`，含 `dist/assets/*.js`）。服务器 **`./deploy/stack/gateway.sh up --release release-vX.Y.Z`** 会写 **`deploy/stack/.claw-image-release.env`**（含 **`GATEWAY_PLAYGROUND_IMAGE`**、**`CLAW_RELAXED_PODMAN_IMAGE`**），**不要**在服务器跑 **`build`** / **`admin-build`** / **`admin-reload`**（无需 Node/npm）。**`/admin` 白屏**多为旧 playground 镜像缺 JS：拉 **含本修复之后** 的 release tag 并 `up --release` 重建 `gateway-playground`。**`./deploy/stack/gateway.sh up`** 用同一 **`GATEWAY_IMAGE`** 起 compose 服务 **`claw-pool-daemon`**（挂容器引擎 socket + 工作区宿主机路径），**不再**向宿主机 `install` 二进制。横向扩容：每台机器 **`up --release <tag>` + 根目录 `.env`** 即可。校验/发布镜像见 [`claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)（GHCR build + ACR mirror）。
+**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，镜像 **一次 build 推 GHCR**，同一 job 链 **`mirror-to-acr`** 再 **pull → retag → push ACR**（不再二次 Rust 编译）。包名：**`claw-code`**、**`claw-gateway-worker`**、**`claw-gateway-worker-relaxed`**、**`claw-gateway-playground`**（**同一 tag**；relaxed 在 strict worker 构建完成后 **FROM strict 镜像** 追加工具层；playground 镜像内 **CI 多阶段构建** `gateway-admin`，含 `dist/assets/*.js`）。服务器 **`./deploy/stack/gateway.sh up --release release-vX.Y.Z`** 会写 **`deploy/stack/.claw-image-release.env`**（含 **`GATEWAY_PLAYGROUND_IMAGE`**、**`CLAW_RELAXED_PODMAN_IMAGE`**），**不要**在服务器跑 **`build`** / **`admin-build`** / **`admin-reload`**（无需 Node/npm）。**`/admin` 白屏**多为旧 playground 镜像缺 JS：拉 **含本修复之后** 的 release tag 并 `up --release` 重建 `gateway-playground`。**`./deploy/stack/gateway.sh up`** 起 **`claw-gateway-rs`** compose + 宿主机 **`claw-sandbox`**（`.linux-artifacts` 或本地 cargo，不在网关镜像内）。横向扩容：每台机器 **`up --release <tag>` + 根目录 `.env`** 即可。校验/发布镜像见 [`claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)（GHCR build + ACR mirror）。
 
 **镜像仓库默认（国内）**：未设置 **`CLAW_IMAGE_PREFIX`** / **`CLAW_GHCR_PREFIX`** 且 **`GATEWAY_IMAGE`** 不含 `…/claw-code` 时，`./deploy/stack/gateway.sh up --release …` 默认从 **阿里云个人版 ACR**（`crpi-….personal.cr.aliyuncs.com/passionke`，可由 **`CLAW_ACR_IMAGE_PREFIX`** 覆盖）拼接镜像名；若要改用 GHCR，在根目录 **`.env`** 设 **`CLAW_IMAGE_REGISTRY=ghcr`**（默认前缀 **`ghcr.io/passionke`**，可由 **`CLAW_GHCR_DEFAULT_PREFIX`** 覆盖）。仍可直接设 **`CLAW_IMAGE_PREFIX=…`**（不要 `https://`），优先级最高。
 
@@ -136,12 +136,12 @@ cp deploy/stack/env.production.example .env
 `gateway.sh up`（`lib/up.sh`）会：
 
 - 生成 `deploy/stack/.claw-pool-workspace.env`（其中 **`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`**，与容器内工作目录一致；不要在容器场景下写 macOS `/Users/...`）。
-- **v1**：仅 **宿主机 `claw-pool-daemon`（TCP RPC）**；已删除 compose **`claw-pool-daemon` sidecar**（`podman-compose.pool-rpc.yml`）。网关只连 host RPC，worker 仅 bind `ds_{id}` → `/claw_ds`，session 制品在 PostgreSQL。
+- **v1**：仅 **宿主机 `claw-sandbox`（HTTP `:9944`）**；已删除 compose pool sidecar。网关经 `CLAW_SANDBOX_URL` 连 host pool；session 制品在 PostgreSQL（见 `sandbox/docs/system-design.md`）。
 - **`claw_compose`**：按 **`CLAW_CONTAINER_RUNTIME`** 调用 **`docker compose`** 或 **`podman compose`**（`podman` 时若装了 **`podman-compose`** 会用作后端，减轻 macOS 混用问题）。
 - 使用 **`up -d --force-recreate`**，避免只改 env 文件却沿用旧容器环境。
 - **启动硬门禁（必过）**：preflight 会递归校验 `CLAW_POOL_WORK_ROOT_BIND_SRC`（默认 `deploy/stack/claw-workspace`）下 **`ds_*` 等业务目录** 的 owner 是否为 `CLAW_WORKER_UID:CLAW_WORKER_GID`（默认 `1000:1000`）。**跳过** `.claw-pool-slot/`。`gateway.sh up` / `up --release` 会在 preflight **之前** 自动 `fix-workspace`（修历史 sidecar root 写的 session）；仍失败时：`./deploy/stack/gateway.sh fix-workspace` 或 `sudo chown -R 1000:1000 ./deploy/stack/claw-workspace/ds_*`。
 
-**宿主机 pool（Admin solve 必看）**：gateway 在 compose 里；**`claw-pool-daemon` 在宿主机 9944**。macOS 上 **`pool-up` 走 launchd**（agent shell 用 `nohup` 起的 pool 会在命令结束被干掉 → Admin 503）。运维与排查禁令见 **`deploy/stack/docs/host-pool-daemon.md`**。
+**宿主机 pool（Admin solve 必看）**：gateway 在 compose 里；**`claw-sandbox` 在宿主机 `:9944`**（单进程，strict/relaxed 为 worker profile）。macOS 上 **`pool-up` 走 launchd**。运维见 **`deploy/stack/docs/host-pool-daemon.md`**。
 
 检查：
 
@@ -205,8 +205,8 @@ podman ps   # 或  docker ps
 | --- | --- |
 | Admin `solve_async` **503**，gateway `/healthz` 仍 OK | **pool 不在 9944**（常见：macOS pool 未走 launchd 被 agent/终端杀掉）。`./deploy/stack/gateway.sh pool-up` 或 `up`；详见 **`deploy/stack/docs/host-pool-daemon.md`** |
 | `podman ps` 看不到网关 | 可能已退出：`podman ps -a \| grep claw-gateway-rs`，看 `podman logs claw-gateway-rs` |
-| 只有 `claw-gateway-rs` 没有 `claw-worker-*` | 是否打了 **worker 镜像**；**`claw-pool-daemon` 日志**是否 `spawn docker: No such file or directory`（`docker_pool` 要求 **gateway 镜像内带 `docker.io`**，见 `Containerfile.gateway-rs`；`release-v1.2.3` 及更早无此包须换新 tag）；`docker logs claw-pool-daemon`；`CLAW_POOL_DAEMON_TCP_HOST=claw-pool-daemon`（勿用 `host.docker.internal` 指 pool） |
-| `ensure_warm_failed` / worker 起不来 | v1 **无 guest/rshared bind**；worker 仅 `ds_{id}`→`/claw_ds` + tmpfs `/claw_host_root`。查 **`claw-pool-daemon` 日志**、`podman ps`、preflight 的 `ds_*` **1000:1000** owner |
+| 只有 `claw-gateway-rs` 没有 `claw-worker-*` | 是否打了 **worker 镜像**；查 **`deploy/stack/.claw-pool-rpc/daemon.log`** 是否 `spawn docker: No such file or directory`（`docker_pool` 需宿主机 docker CLI） |
+| `ensure_warm_failed` / worker 起不来 | 查 **`daemon.log`**、`podman ps` / `docker ps`、preflight 的 `ds_*` **1000:1000** owner |
 | preflight 让 `chown 1000:1000` | 仅 **`ds_*` 业务目录**（跳过 `.claw-pool-slot/`）；`gateway.sh up` 会先 `fix-workspace` |
 | solve 报 `session workspace ownership…` | **② Gateway cache**（`claw-workspace/ds_*/sessions/…`）uid 对齐；pool v1 **不 bind** session 进 worker，制品在 **PostgreSQL** |
 | 启动报 canonicalize `/Users/...` | 容器内不能拿 macOS 路径当 `CLAW_POOL_WORK_ROOT_HOST`；用 **`./deploy/stack/gateway.sh up`** 生成 env（`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`） |
@@ -233,11 +233,11 @@ podman ps   # 或  docker ps
 
 | 场景 | `CLAW_SOLVE_ISOLATION` | 运行时 CLI | 环境前缀 | 与网关的衔接 |
 | --- | --- | --- | --- | --- |
-| 本仓库 compose（默认） | `podman_pool` | `podman`（宿主机 `claw-pool-daemon`） | `CLAW_PODMAN_*` | **v1 host pool** `CLAW_POOL_HTTP_BASE=http://host.containers.internal:9944`；session 制品在 **PostgreSQL**（不 bind session 进 worker） |
+| 本仓库 compose（默认） | `podman_pool` | `podman`（宿主机 `claw-sandbox`） | `CLAW_PODMAN_*` | **v1** `CLAW_SANDBOX_URL` / `CLAW_POOL_HTTP_BASE` → `host.containers.internal:9944` |
 | 线上 Docker（推荐与默认脚本对齐） | `docker_pool` | `docker`（宿主机 daemon） | `CLAW_DOCKER_*` | 同上；`.env` 可用 `host.docker.internal:9944` |
 | 网关内嵌池（备选） | `docker_pool` / `podman_pool` | `docker` / `podman` 在**网关容器**内 | 同上 | **不设** `CLAW_POOL_DAEMON_TCP`：走进程内 `DockerPoolManager`；需 sock 挂载 + 镜像带对应 CLI（`Containerfile.gateway-rs`：`podman` + `docker.io`） |
 
-**会话与磁盘**：每次 solve 租 **一个 worker 槽**；续聊制品在 **PostgreSQL**（workspace tar + cc_messages），worker tmpfs 每轮重建。见 `docs/http-gateway-container-pool.md` §2.2。本仓库 **`gateway.sh up`** 使用 **宿主机 `claw-pool-daemon`（9944）**。
+**会话与磁盘**：每次 solve 租 **一个 worker 槽**；续聊制品在 **PostgreSQL**。见 `sandbox/docs/system-design.md`。本仓库 **`gateway.sh up`** 使用 **宿主机 `claw-sandbox`（`:9944`）**。
 
 线上只有 Docker 时 **`CLAW_CONTAINER_RUNTIME` 可不写**（`auto` 会选 docker）；仍用同一套 `deploy/stack/podman-compose*.yml`（文件名历史原因）。
 

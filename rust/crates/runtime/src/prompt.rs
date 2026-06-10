@@ -1003,6 +1003,20 @@ fn scan_git_import_paths_bounded(home: &Path, cap: usize) -> Vec<String> {
     out
 }
 
+/// Pool worker: clarify `/claw_host_root` vs read-only `/claw_ds` (avoid listing `/` as two writable workspaces). Author: kejiqing
+#[must_use]
+pub fn gateway_pool_layout_prompt_section() -> Option<String> {
+    let session_root = std::env::var("CLAW_GATEWAY_WORK_ROOT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
+    Some(format!(
+        "# Worker filesystem\n\
+         - Writable session workspace: `{session_root}` (your cwd; create/edit files here)\n\
+         - Read-only Admin project config: `{GATEWAY_POOL_DS_CONFIG_ROOT}` (project skills/CLAUDE.md; do not write)\n\
+         You run as the pool worker user (`claw`); bash tools inherit that user (not container root)."
+    ))
+}
+
 /// Pool worker: list Git-imported files under `/claw_ds/home/` for system prompt. Author: kejiqing
 #[must_use]
 pub fn gateway_git_import_prompt_section(_cwd: &Path) -> Option<String> {

@@ -23,16 +23,17 @@ function poolOptionLabel(
   if (pool.poolId === coLocatedPoolId?.trim()) {
     return `本机 · ${pool.poolId}`;
   }
-  const offline = pool.online ? "" : " (offline)";
-  return `${pool.poolId} · ${host}${offline}`;
+  return `${pool.poolId} · ${host}`;
 }
 
 /** Pools with non-empty gatewayBase from claw_pool registration. */
 export function poolsWithGateway(
-  clusterPools: ListClawPoolsResponse | null
+  clusterPools: ListClawPoolsResponse | null,
+  onlineOnly = false
 ): ClawPoolEntry[] {
-  return (clusterPools?.pools ?? []).filter((p) =>
-    Boolean((p.gatewayBase || "").trim())
+  return (clusterPools?.pools ?? []).filter(
+    (p) =>
+      Boolean((p.gatewayBase || "").trim()) && (!onlineOnly || p.online)
   );
 }
 
@@ -40,7 +41,7 @@ export function defaultGatewayFromPools(
   playground: PlaygroundConfig,
   clusterPools: ListClawPoolsResponse | null
 ): string {
-  const registered = poolsWithGateway(clusterPools);
+  const registered = poolsWithGateway(clusterPools, true);
   const co = clusterPools?.coLocatedPoolId?.trim();
   if (co) {
     const self = registered.find((p) => p.poolId === co);
@@ -67,7 +68,7 @@ export function buildGatewayOptions(params: {
   gatewayImageTag: string;
 }): { label: string; value: string; poolId: string }[] {
   const { playground, clusterPools, gatewayBase, gatewayImageTag } = params;
-  const registered = poolsWithGateway(clusterPools);
+  const registered = poolsWithGateway(clusterPools, true);
   const tagSuffix =
     gatewayImageTag && gatewayBase ? ` · ${gatewayImageTag}` : "";
   const labelFor = (baseLabel: string, value: string) =>
@@ -138,7 +139,7 @@ export function gatewayBaseForPoolId(
   return normalizeGatewayBase(fallbackGatewayBase);
 }
 
-/** Show picker only when multiple registered pools expose distinct gateway URLs. */
+/** Show picker when multiple online pools expose distinct gateway URLs. */
 export function shouldShowGatewayPicker(
   playground: PlaygroundConfig,
   clusterPools: ListClawPoolsResponse | null

@@ -64,7 +64,7 @@ pub struct DockerPoolConfig {
     pub exec_user: Option<String>,
     pub worker_identity: PoolWorkerIdentity,
     pub security_boost: bool,
-    /// When set, this daemon only runs one worker profile (dual-pool deploy). Author: kejiqing
+    /// When set, sandbox only runs one worker profile (tests). Author: kejiqing
     pub fixed_isolation: Option<WorkerIsolationMode>,
     /// Symlink guest inject (fake-docker unit tests only; production uses bind → guest).
     pub symlink_inject: bool,

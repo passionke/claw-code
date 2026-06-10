@@ -108,7 +108,7 @@ try:
 except FileNotFoundError:
     names = []
 for name in names:
-    if not name.startswith("ds_"):
+    if not (name.startswith("ds_") or name.startswith("proj_")):
         continue
     base = os.path.join(root, name)
     check_path(base)

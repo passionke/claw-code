@@ -120,6 +120,8 @@ pub(crate) struct AppState {
     /// When using `docker_pool` / `podman_pool`, active async task id → pool + slot for cancel.
     docker_slots: Arc<Mutex<HashMap<String, (Arc<dyn pool::PoolOps + Send + Sync>, usize)>>>,
     pool_clients: pool::PoolClients,
+    /// Worker stdout `report.delta` ingest + live SSE for running turns. Author: kejiqing
+    live_report_hub: Arc<pool::LiveReportHub>,
     /// Serialize git and working-tree reads/writes on the shared `.claw-code-projects` clone. kejiqing
     projects_git_mirror_lock: Arc<Mutex<()>>,
     /// Active LLM model/api key from DB (refreshed on apply + poll). Author: kejiqing
@@ -268,6 +270,12 @@ struct SolveAsyncResponse {
     pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
     worker_name: Option<String>,
+    /// Requested ds isolation (`project_config.worker_isolation_json.mode`). Author: kejiqing
+    #[serde(rename = "workerIsolation", skip_serializing_if = "Option::is_none")]
+    worker_isolation: Option<String>,
+    /// Actual `podman exec --user` on the pool (`claw`, etc.). Author: kejiqing
+    #[serde(rename = "workerExecUser", skip_serializing_if = "Option::is_none")]
+    worker_exec_user: Option<String>,
 }
 
 /// Session bootstrap (`POST /v1/start`): sync `SQLite` + workspace only (no solve). kejiqing
@@ -680,6 +688,10 @@ struct TaskRecord {
     pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
     worker_name: Option<String>,
+    #[serde(rename = "workerIsolation", skip_serializing_if = "Option::is_none")]
+    worker_isolation: Option<String>,
+    #[serde(rename = "workerExecUser", skip_serializing_if = "Option::is_none")]
+    worker_exec_user: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -986,6 +998,12 @@ async fn apply_turn_pool_fields_from_db(
             record.worker_name = Some(t.to_string());
         }
     }
+    if let Ok(Some(eu)) = db.get_turn_worker_exec_user(turn_id).await {
+        let t = eu.trim();
+        if !t.is_empty() {
+            record.worker_exec_user = Some(t.to_string());
+        }
+    }
 }
 
 async fn register_solve_turn(
@@ -1257,30 +1275,19 @@ async fn main() {
             "CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
         );
     }
-    // Pool RPC: strict + optional relaxed HTTP clients. Author: kejiqing
-    let pool_clients = pool::PoolClients::from_env();
-    if pool_clients.dual_pool() {
-        info!(
-            target: "claw_gateway_orchestration",
-            component = "startup",
-            phase = "dual_pool_routing",
-            strict_pool_id = %pool_clients.strict_pool_id(),
-            relaxed_pool_id = %pool_clients.relaxed_pool_id(),
-            "gateway routes acquire by ds worker_isolation_json → strict or relaxed pool"
-        );
-    }
+    // Pool RPC: single claw-sandbox HTTP client. Author: kejiqing
+    let live_report_hub = Arc::new(pool::LiveReportHub::default());
+    let pool_clients = pool::PoolClients::from_env(Arc::clone(&live_report_hub));
     let pool_rpc_remote = true;
-    let co_located_pool_id = Some(pool_clients.strict_pool_id().to_string());
+    let co_located_pool_id = Some(pool_clients.pool_id().to_string());
     tracing::info!(
         target: "claw_live_report",
         component = "gateway_startup",
         contract = http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT,
         pool_rpc_remote,
-        strict_pool_id = %pool_clients.strict_pool_id(),
-        relaxed_pool_id = %pool_clients.relaxed_pool_id(),
-        dual_pool = pool_clients.dual_pool(),
+        pool_id = %pool_clients.pool_id(),
         co_located_pool_id = ?co_located_pool_id,
-        "live_report.gateway — terminal snapshot from DB; live stream proxies via claw_pool JOIN only"
+        "live_report.gateway — terminal snapshot from DB; running live SSE from gateway LiveReportHub (sandbox exec NDJSON relay)"
     );
 
     let projects_git_url = std::env::var("CLAW_PROJECTS_GIT_URL")
@@ -1356,7 +1363,7 @@ async fn main() {
         }
     };
 
-    let pool_http_base = std::env::var("CLAW_STRICT_POOL_HTTP_BASE")
+    let pool_http_base = std::env::var("CLAW_SANDBOX_URL")
         .ok()
         .or_else(|| std::env::var("CLAW_POOL_HTTP_BASE").ok())
         .map(|v| v.trim().to_string())
@@ -1461,6 +1468,7 @@ async fn main() {
         ),
     }
     let session_db = Arc::new(session_db);
+    pool_clients.bind_session_db(Arc::clone(&session_db)).await;
     info!(
         target: "claw_gateway_orchestration",
         component = "startup",
@@ -1477,6 +1485,7 @@ async fn main() {
         cfg: Arc::new(cfg),
         docker_slots: Arc::new(Mutex::new(HashMap::new())),
         pool_clients,
+        live_report_hub,
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
         llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
@@ -1560,6 +1569,7 @@ async fn main() {
             get(get_conversation_translate).put(put_conversation_translate),
         )
         .route("/v1/pools", get(list_claw_pools_handler))
+        .route("/v1/pools/{pool_id}", delete(delete_claw_pool_handler))
         .route(
             "/v1/sessions/{session_id}/turns/{turn_id}/tools",
             get(get_turn_tools),
@@ -3838,6 +3848,11 @@ async fn solve(
                 format!("session enqueue blocked: {reason}"),
             )
         })?;
+    state
+        .pool_clients
+        .assert_proj_worker_isolation_supported(&state.session_db, req.proj_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     let new_turn_id = turn_id::mint_turn_id();
     let (_, prebind_pool_id) = state
         .pool_clients
@@ -6024,6 +6039,10 @@ struct GatewayTurnSummaryJson {
     pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
     worker_name: Option<String>,
+    #[serde(rename = "workerIsolation", skip_serializing_if = "Option::is_none")]
+    worker_isolation: Option<String>,
+    #[serde(rename = "workerExecUser", skip_serializing_if = "Option::is_none")]
+    worker_exec_user: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -6141,6 +6160,12 @@ async fn list_session_turns(
         .list_turns_for_session(&session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
+    let worker_isolation = state
+        .session_db
+        .get_worker_isolation_json(query.proj_id)
+        .await
+        .ok()
+        .map(|j| pool::isolation_mode_label(&j).to_string());
     Ok(Json(ListSessionTurnsResponse {
         session_id,
         proj_id: query.proj_id,
@@ -6160,8 +6185,45 @@ async fn list_session_turns(
                 extra_session: r.extra_session,
                 pool_id: r.pool_id,
                 worker_name: r.worker_name,
+                worker_isolation: worker_isolation.clone(),
+                worker_exec_user: r.worker_exec_user,
             })
             .collect(),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteClawPoolResponse {
+    #[serde(rename = "poolId")]
+    pool_id: String,
+    deleted: bool,
+}
+
+async fn delete_claw_pool_handler(
+    State(state): State<AppState>,
+    AxumPath(pool_id): AxumPath<String>,
+) -> Result<Json<DeleteClawPoolResponse>, ApiError> {
+    let pool_id = pool_id.trim();
+    if pool_id.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "poolId must not be empty",
+        ));
+    }
+    let deleted = state
+        .session_db
+        .delete_claw_pool(pool_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if !deleted {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("claw_pool row not found: {pool_id}"),
+        ));
+    }
+    Ok(Json(DeleteClawPoolResponse {
+        pool_id: pool_id.to_string(),
+        deleted: true,
     }))
 }
 
@@ -6194,7 +6256,7 @@ async fn list_claw_pools_handler(
         .collect();
     Ok(Json(ListClawPoolsResponse {
         pools,
-        co_located_pool_id: Some(state.pool_clients.strict_pool_id().to_string()),
+        co_located_pool_id: Some(state.pool_clients.pool_id().to_string()),
     }))
 }
 
@@ -6521,6 +6583,11 @@ async fn enqueue_solve_async(
                 format!("session enqueue blocked: {reason}"),
             )
         })?;
+    state
+        .pool_clients
+        .assert_proj_worker_isolation_supported(&state.session_db, proj_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     let new_turn_id = turn_id::mint_turn_id();
     let (_, prebind_pool_id) = state
         .pool_clients
@@ -6583,6 +6650,13 @@ async fn enqueue_solve_async(
                     todos: Vec::new(),
                     pool_id: Some(prebind_pool_id.clone()),
                     worker_name: None,
+                    worker_isolation: state
+                        .session_db
+                        .get_worker_isolation_json(proj_id)
+                        .await
+                        .ok()
+                        .map(|j| pool::isolation_mode_label(&j).to_string()),
+                    worker_exec_user: None,
                 },
                 cancel: None,
                 proj_id,
@@ -6716,6 +6790,13 @@ async fn enqueue_solve_async(
             .flatten()
             .or_else(|| state.cfg.co_located_pool_id.clone()),
         worker_name: None,
+        worker_isolation: state
+            .session_db
+            .get_worker_isolation_json(proj_id)
+            .await
+            .ok()
+            .map(|j| pool::isolation_mode_label(&j).to_string()),
+        worker_exec_user: None,
     })
 }
 
@@ -6919,6 +7000,13 @@ async fn task_record_from_latest_turn_row(
         todos: Vec::new(),
         pool_id: row.pool_id.clone(),
         worker_name: row.worker_name.clone(),
+        worker_isolation: state
+            .session_db
+            .get_worker_isolation_json(row.proj_id)
+            .await
+            .ok()
+            .map(|j| pool::isolation_mode_label(&j).to_string()),
+        worker_exec_user: row.worker_exec_user.clone(),
     };
     let (plan_title, todos) = pool_consumer_resolve::plan_fields_from_snapshot(&progress_snap);
     record.progress_history = progress_snap.events;
@@ -7483,6 +7571,8 @@ async fn dev_seed_biz_report_task(
         todos: Vec::new(),
         pool_id: None,
         worker_name: None,
+        worker_isolation: None,
+        worker_exec_user: None,
     };
     {
         let mut tasks = state.tasks.lock().await;
@@ -7732,65 +7822,24 @@ async fn get_biz_advice_report(
     }
 
     if query.stream && matches!(ctx.status.as_str(), "running" | "queued") {
-        let pool_http_from_db = state
-            .session_db
-            .resolve_pool_http_base_for_turn(&ctx.turn_id, &query.session_id, query.proj_id)
-            .await
-            .map_err(|e| session_db_err(&e))?;
-        let Some(pool_http_base) = pool_http_from_db.filter(|b| !b.trim().is_empty()) else {
-            let pool_id = state
-                .session_db
-                .get_turn_pool_id(&ctx.turn_id, &query.session_id, query.proj_id)
-                .await
-                .map_err(|e| session_db_err(&e))?;
-            let detail = match pool_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                None => format!(
-                    "live report routing failed: gateway_turns.pool_id unset for turn {} (status={}). \
-                         Gateway must prebind CLAW_POOL_ID at solve enqueue; run pack-deploy and retry.",
-                    ctx.turn_id, ctx.status
-                ),
-                Some(pid) => format!(
-                    "live report routing failed: claw_pool has no row for pool_id={pid} (turn {}, status={}). \
-                         Start pool daemon with PG registry or run gateway.sh verify.",
-                    ctx.turn_id, ctx.status
-                ),
-            };
-            tracing::error!(
-                target: "claw_live_report",
-                component = "biz_advice_report",
-                phase = "route",
-                route = "pool_proxy_sse_denied",
-                turn_id = %ctx.turn_id,
-                session_id = %query.session_id,
-                proj_id = query.proj_id,
-                status = %ctx.status,
-                pool_id = ?pool_id,
-                co_located_pool_id = ?state.cfg.co_located_pool_id,
-                "biz_advice_report stream — refused (CLAW_POOL_HTTP_BASE env fallback disabled)"
-            );
-            return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, detail));
-        };
         tracing::info!(
             target: "claw_live_report",
             component = "biz_advice_report",
             phase = "route",
-            route = "pool_proxy_sse",
-            pool_http_source = "claw_pool_join",
+            route = "gateway_hub_sse",
             turn_id = %ctx.turn_id,
             session_id = %query.session_id,
             proj_id = query.proj_id,
             status = %ctx.status,
-            pool_http_base = %pool_http_base,
-            "biz_advice_report stream — proxy to pool HTTP /v1/biz_advice_report/live"
+            "biz_advice_report stream — gateway LiveReportHub (sandbox exec NDJSON relay)"
         );
-        return http_gateway_rs::biz_report_pool_proxy::proxy_pool_live_report_sse(
-            &pool_http_base,
+        return Ok(pool::live_report_sse_response(
+            Arc::clone(&state.live_report_hub),
             &ctx.turn_id,
-            &ctx.task_id,
+            ctx.task_id.clone(),
+            ctx.task_id.clone(),
             query.proj_id,
-        )
-        .await
-        .map_err(|(status, detail)| ApiError::new(status, detail));
+        ));
     }
 
     get_biz_advice_report_bak(

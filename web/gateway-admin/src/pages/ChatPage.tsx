@@ -46,6 +46,8 @@ interface TurnEntry {
   finishedAtMs?: number | null;
   poolId?: string | null;
   workerName?: string | null;
+  workerIsolation?: string | null;
+  workerExecUser?: string | null;
 }
 
 interface SysEntry {
@@ -189,6 +191,8 @@ export default function ChatPage() {
             finishedAtMs: t.finishedAtMs,
             poolId: t.poolId ?? undefined,
             workerName: t.workerName ?? undefined,
+            workerIsolation: t.workerIsolation ?? undefined,
+            workerExecUser: t.workerExecUser ?? undefined,
           }))
         );
         const lastTurn = turns[turns.length - 1];
@@ -265,6 +269,8 @@ export default function ChatPage() {
         createdAtMs: Date.now(),
         poolId: asyncRes.poolId ?? undefined,
         workerName: asyncRes.workerName ?? undefined,
+        workerIsolation: asyncRes.workerIsolation ?? undefined,
+        workerExecUser: asyncRes.workerExecUser ?? undefined,
       },
     ]);
     scrollLog();
@@ -391,6 +397,8 @@ export default function ChatPage() {
                   finishedAtMs={item.finishedAtMs}
                   initialPoolId={item.poolId}
                   initialWorkerName={item.workerName}
+                  initialWorkerIsolation={item.workerIsolation}
+                  initialWorkerExecUser={item.workerExecUser}
                   turnFeedback={feedbackByTurn[item.turnId] ?? item.feedback}
                   feedbackSubmitting={submittingTurnId === item.turnId}
                   onTurnFeedback={(fb) =>

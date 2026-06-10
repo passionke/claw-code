@@ -213,6 +213,12 @@ pub fn build_linux_sandbox_command(
     cwd: &Path,
     status: &SandboxStatus,
 ) -> Option<LinuxSandboxCommand> {
+    // Pool/podman workers are already containerized; nested `unshare --map-root-user` makes
+    // bash `id` report uid=0 even when `podman exec --user claw` started the solve. Author: kejiqing
+    if status.in_container {
+        return None;
+    }
+
     if !cfg!(target_os = "linux")
         || !status.enabled
         || (!status.namespace_active && !status.network_active)
@@ -360,9 +366,19 @@ mod tests {
     }
 
     #[test]
+    fn skips_unshare_when_already_in_container() {
+        let mut status = super::resolve_sandbox_status_for_request(
+            &SandboxConfig::default().resolve_request(Some(true), None, None, None, None),
+            Path::new("/claw_host_root"),
+        );
+        status.in_container = true;
+        assert!(build_linux_sandbox_command("id", Path::new("/claw_host_root"), &status).is_none());
+    }
+
+    #[test]
     fn builds_linux_launcher_with_network_flag_when_requested() {
         let config = SandboxConfig::default();
-        let status = super::resolve_sandbox_status_for_request(
+        let mut status = super::resolve_sandbox_status_for_request(
             &config.resolve_request(
                 Some(true),
                 Some(true),
@@ -372,6 +388,7 @@ mod tests {
             ),
             Path::new("/workspace"),
         );
+        status.in_container = false;
 
         if let Some(launcher) =
             build_linux_sandbox_command("printf hi", Path::new("/workspace"), &status)

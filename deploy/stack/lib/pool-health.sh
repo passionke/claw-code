@@ -1,6 +1,57 @@
 # shellcheck shell=bash
 # Host pool HTTP readiness. Author: kejiqing
 
+_LIB_POOL_HEALTH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=stack-instance.sh
+source "${_LIB_POOL_HEALTH_DIR}/stack-instance.sh"
+
+# Mirrors gateway `CLAW_ALLOW_RELAXED_WORKER` (default on). Author: kejiqing
+claw_relaxed_worker_allowed_from_env() {
+  case "${CLAW_ALLOW_RELAXED_WORKER:-true}" in
+    0 | false | no | off | FALSE | NO | OFF) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Tear down pre-pool_outside dual daemons (:9954, profile-specific launchd/systemd). kejiqing
+claw_cleanup_legacy_dual_pool() {
+  local podman_dir="${1:?podman_dir}"
+  local rpc_root legacy_port legacy_dir
+  rpc_root="$(claw_pool_rpc_root "${podman_dir}")"
+  legacy_port="${CLAW_LEGACY_RELAXED_POOL_HTTP_PORT:-9954}"
+
+  if curl -fsS --connect-timeout 1 "http://127.0.0.1:${legacy_port}/healthz/live-report" >/dev/null 2>&1; then
+    echo "==> cleaning legacy dual-pool listener on :${legacy_port}" >&2
+    # shellcheck source=nuclear-pool-reset.sh
+    source "${podman_dir}/lib/nuclear-pool-reset.sh"
+    claw_kill_tcp_listeners "${legacy_port}" 2>/dev/null || true
+  fi
+
+  for legacy_dir in "${rpc_root}/strict" "${rpc_root}/relaxed"; do
+    [[ -d "${legacy_dir}" ]] || continue
+    if [[ -f "${legacy_dir}/daemon.pid" ]]; then
+      local pid
+      pid="$(cat "${legacy_dir}/daemon.pid" 2>/dev/null || true)"
+      [[ -n "${pid}" ]] && kill "${pid}" 2>/dev/null || true
+      rm -f "${legacy_dir}/daemon.pid"
+    fi
+  done
+
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
+    # shellcheck disable=SC1091
+    source "${podman_dir}/lib/pool-daemon-launchd.sh"
+    claw_pool_launchd_bootout_legacy_profiles
+  fi
+
+  if [[ -f "${podman_dir}/lib/pool-daemon-systemd.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "${podman_dir}/lib/pool-daemon-systemd.sh"
+    if claw_pool_use_systemd 2>/dev/null; then
+      claw_pool_systemd_stop_legacy_profile_units || true
+    fi
+  fi
+}
+
 claw_pool_http_port() {
   printf '%s' "${CLAW_POOL_HTTP_PORT:-9944}"
 }
@@ -11,9 +62,11 @@ claw_host_pool_rpc_port() {
 
 claw_pool_load_gateway_rpc_env() {
   local podman_dir="${1:?podman_dir}"
-  if [[ -f "${podman_dir}/.claw-pool-rpc/gateway.env" ]]; then
+  local rpc_root
+  rpc_root="$(claw_pool_rpc_root "${podman_dir}")"
+  if [[ -f "${rpc_root}/gateway.env" ]]; then
     # shellcheck disable=SC1090
-    source "${podman_dir}/.claw-pool-rpc/gateway.env"
+    source "${rpc_root}/gateway.env"
   fi
 }
 
@@ -156,7 +209,7 @@ claw_assert_gateway_pool_http_reachable() {
   local gw_ctn="${CLAW_GATEWAY_CONTAINER:-claw-gateway-rs}"
   local base log
   base="$(claw_pool_http_base_url "${podman_dir}")" || return 1
-  log="${podman_dir}/.claw-pool-rpc/daemon.log"
+  log="$(claw_pool_rpc_root "${podman_dir}")/daemon.log"
   if ! claw_gateway_container_exec "${gw_ctn}" curl -fsS --connect-timeout 3 \
     "${base}/healthz/live-report" >/dev/null 2>&1; then
     echo "error: gateway cannot reach pool HTTP ${base} (Admin solve_async → 503)" >&2
@@ -191,13 +244,14 @@ claw_wait_gateway_pool_rpc_ready() {
     sleep 2
   done
   echo "error: gateway → pool RPC not ready after ${max_attempts} attempts (${base})" >&2
-  echo "hint: tail ${podman_dir}/.claw-pool-rpc/daemon.log" >&2
+  echo "hint: tail $(claw_pool_rpc_root "${podman_dir}")/daemon.log" >&2
   return 1
 }
 
 claw_ensure_host_pool_running() {
   local podman_dir="${1:?podman_dir}"
-  local rpc_dir="${podman_dir}/.claw-pool-rpc"
+  local rpc_dir
+  rpc_dir="$(claw_pool_rpc_root "${podman_dir}")"
   if claw_assert_host_pool_http_ready "${rpc_dir}" 2>/dev/null; then
     return 0
   fi

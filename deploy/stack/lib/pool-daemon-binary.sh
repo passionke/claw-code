@@ -1,20 +1,12 @@
 #!/usr/bin/env bash
-# Default host pool-daemon path + install from GATEWAY_IMAGE (gateway.sh up). Author: kejiqing
+# Default host pool binary path (claw-sandbox). Built by linux-compile or local cargo. Author: kejiqing
 
 claw_default_pool_daemon_bin() {
   local podman_dir="${1:?}"
-  printf '%s\n' "${podman_dir}/.linux-artifacts/release/claw-pool-daemon"
+  printf '%s\n' "${podman_dir}/.linux-artifacts/release/claw-sandbox"
 }
 
-# Local pack-deploy uses claw-gateway-rs:local; release uses */claw-code:<tag>. kejiqing
-claw_gateway_image_carries_pool_daemon() {
-  case "${1:-}" in
-    *claw-code* | *claw-gateway-rs*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# Resolve executable for host claw-pool-daemon. On Linux release deploy, always refresh from GATEWAY_IMAGE.
+# Resolve executable for host claw-sandbox (pool daemon). Author: kejiqing
 claw_ensure_pool_daemon_binary() {
   local podman_dir="${1:?}"
   local repo_root="${2:?}"
@@ -23,41 +15,33 @@ claw_ensure_pool_daemon_binary() {
   mkdir -p "$(dirname "${out}")"
 
   if [[ "$(uname -s)" == Darwin ]]; then
-    local mac_bin="${repo_root}/rust/target/release/claw-pool-daemon"
+    local mac_bin="${repo_root}/sandbox/target/release/claw-sandbox"
     if [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" == 1 ]] || [[ ! -x "${mac_bin}" ]]; then
-      echo "==> building host claw-pool-daemon (macOS)" >&2
-      (cd "${repo_root}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
+      echo "==> building host claw-sandbox (macOS)" >&2
+      (cd "${repo_root}/sandbox" && cargo build --release -p claw-sandbox-server)
     else
-      echo "==> reusing host claw-pool-daemon: ${mac_bin}" >&2
+      echo "==> reusing host claw-sandbox: ${mac_bin}" >&2
     fi
     printf '%s\n' "${mac_bin}"
     return 0
   fi
 
-  if [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" == 1 ]]; then
-    echo "==> building host claw-pool-daemon (CLAW_POOL_REBUILD_DAEMON=1)" >&2
-    (cd "${repo_root}/rust" && cargo build --release -p http-gateway-rs --bin claw-pool-daemon)
-    printf '%s\n' "${repo_root}/rust/target/release/claw-pool-daemon"
+  if [[ -x "${out}" ]] && [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" != 1 ]]; then
+    echo "==> reusing host claw-sandbox: ${out}" >&2
+    printf '%s\n' "${out}"
     return 0
   fi
 
-  local gw="${GATEWAY_IMAGE:-}"
-  if claw_gateway_image_carries_pool_daemon "${gw}"; then
-    local refresh=0
-    if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
-      refresh=1
-    elif [[ ! -x "${out}" ]]; then
-      refresh=1
-    fi
-    if [[ "${refresh}" == 1 ]]; then
-      echo "==> install claw-pool-daemon from ${gw}" >&2
-      echo "    -> ${out}" >&2
-      GATEWAY_IMAGE="${gw}" "${podman_dir}/lib/install-pool-daemon-from-image.sh" "${out}"
-    fi
+  if [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" == 1 ]] || [[ ! -x "${out}" ]]; then
     if [[ -x "${out}" ]]; then
-      printf '%s\n' "${out}"
-      return 0
+      echo "==> rebuilding host claw-sandbox (CLAW_POOL_REBUILD_DAEMON=1)" >&2
+    else
+      echo "==> building host claw-sandbox (missing ${out})" >&2
     fi
+    (cd "${repo_root}/sandbox" && cargo build --release -p claw-sandbox-server)
+    cp -f "${repo_root}/sandbox/target/release/claw-sandbox" "${out}"
+    printf '%s\n' "${out}"
+    return 0
   fi
 
   # Ignore .env CLAW_POOL_DAEMON_BIN when release deploy installs under .linux-artifacts/. kejiqing
@@ -66,11 +50,6 @@ claw_ensure_pool_daemon_binary() {
     return 0
   fi
 
-  if [[ -x "${out}" ]]; then
-    printf '%s\n' "${out}"
-    return 0
-  fi
-
-  echo "error: no claw-pool-daemon (set GATEWAY_IMAGE to claw-gateway-rs:local or claw-code:release-* or build on host)" >&2
+  echo "error: no claw-sandbox (run gateway.sh build or cargo build -p claw-sandbox-server in sandbox/)" >&2
   return 1
 }
