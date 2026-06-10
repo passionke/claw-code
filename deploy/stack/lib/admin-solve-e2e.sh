@@ -13,10 +13,6 @@ GATEWAY_PORT="${GATEWAY_HOST_PORT:-18088}"
 DS_ID="${1:-1}"
 PROMPT="${2:-connectivity check}"
 CAPTURE_SESSION="${CLAW_E2E_CAPTURE_SESSION_ID:-0}"
-if [[ "${CAPTURE_SESSION}" == "1" ]]; then
-  exec 3>&1
-  exec 1>&2
-fi
 
 _claw_e2e_log() {
   echo "$@"
@@ -97,8 +93,8 @@ for _ in $(seq 1 120); do
     fi
     if [[ "${ST}" == "succeeded" ]]; then
       claw_e2e_assert_solve_task "${R}" "task poll"
-      if [[ "${CAPTURE_SESSION}" == "1" ]]; then
-        printf '%s\n' "${SESSION_ID}" >&3
+      if [[ -n "${CLAW_E2E_SESSION_OUT_FILE:-}" ]]; then
+        printf '%s' "${SESSION_ID}" >"${CLAW_E2E_SESSION_OUT_FILE}"
       fi
       exit 0
     fi

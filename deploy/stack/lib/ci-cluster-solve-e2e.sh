@@ -82,17 +82,21 @@ claw_ci_cluster_solve_e2e_run() {
 }
 
 claw_ci_solve_capture_session() {
-  local env_file="$1" gw_port="$2"
+  local env_file="$1" gw_port="$2" out sid
+  out="$(mktemp)"
   (
     set -a
     # shellcheck disable=SC1090
     source "${env_file}"
     set +a
     export GATEWAY_HOST_PORT="${gw_port}"
-    export CLAW_E2E_CAPTURE_SESSION_ID=1
+    export CLAW_E2E_SESSION_OUT_FILE="${out}"
     unset CLAW_E2E_SESSION_ID CLAW_E2E_EXPECT_POOL_ID CLAW_E2E_EXPECT_WORKER_ISOLATION CLAW_E2E_WORKER_ISOLATION || true
     "${LIB_DIR}/admin-solve-e2e.sh" "${PROJ_ID}" ping
   )
+  sid="$(tr -d '\r\n' <"${out}" 2>/dev/null || true)"
+  rm -f "${out}"
+  printf '%s' "${sid}"
 }
 
 RT="$(claw_container_runtime_cli 2>/dev/null || true)"
@@ -115,8 +119,7 @@ claw_ci_cluster_solve_e2e_run "${ENV_B}" "${GW_B}" "${POOL_B}" "" strict
 
 echo "==> [5/7] cross-gateway session: created on A, first turn on B (local dir recreate)"
 SESSION_ID="$(claw_ci_solve_capture_session "${ENV_A}" "${GW_A}")"
-SESSION_ID="$(printf '%s' "${SESSION_ID}" | tr -d '\r' | rg -o '[0-9a-f]{32}' | tail -1 || true)"
-[[ -n "${SESSION_ID}" ]] || fail "empty sessionId from node A solve (capture stdout polluted?)"
+[[ "${SESSION_ID}" =~ ^[0-9a-f]{32}$ ]] || fail "invalid sessionId from node A solve: ${SESSION_ID:-<empty>}"
 echo "    sessionId=${SESSION_ID}"
 claw_ci_cluster_solve_e2e_run "${ENV_B}" "${GW_B}" "${POOL_B}" "" strict "${SESSION_ID}"
 
