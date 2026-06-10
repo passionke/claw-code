@@ -44,6 +44,7 @@ deploy/podman/.claw-pool-rpc/
 deploy/stack/*.log
 deploy/stack/.test-*.json
 deploy/stack/claude-tap.pid
+deploy/stack/com.claw.claude-tap.plist
 deploy/stack/claw-logs/
 deploy/stack/claw-workspace/
 deploy/stack/claw-gateway-sessions/
@@ -55,6 +56,7 @@ deploy/stack/.claw-worker-llm.env
 deploy/stack/.claw-worker-runtime.env
 deploy/stack/.linux-artifacts/
 deploy/stack/.claw-postgres-network.override.yml
+deploy/stack/.claw-instance.envfile.override.yml
 # Admin UI hashed bundles (local build; do not commit)
 web/gateway-admin/dist/assets/
 
