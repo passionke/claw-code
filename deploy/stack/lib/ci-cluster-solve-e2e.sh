@@ -93,7 +93,7 @@ claw_ci_solve_capture_session() {
     export CLAW_E2E_SESSION_OUT_FILE="${out}"
     unset CLAW_E2E_SESSION_ID CLAW_E2E_EXPECT_POOL_ID CLAW_E2E_EXPECT_WORKER_ISOLATION CLAW_E2E_WORKER_ISOLATION || true
     "${LIB_DIR}/admin-solve-e2e.sh" "${PROJ_ID}" ping
-  )
+  ) >&2
   sid="$(tr -d '\r\n' <"${out}" 2>/dev/null || true)"
   rm -f "${out}"
   printf '%s' "${sid}"
