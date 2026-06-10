@@ -13,13 +13,9 @@ claw_relaxed_worker_allowed_from_env() {
   esac
 }
 
-# pool-daemon-up default: dual pool when relaxed allowed, else strict-only. Author: kejiqing
+# pool-daemon-up default: single claw-sandbox (strict rpc dir); relaxed workers in same process. kejiqing
 claw_default_pool_up_profile() {
-  if claw_relaxed_worker_allowed_from_env; then
-    printf '%s' "all"
-  else
-    printf '%s' "strict"
-  fi
+  printf '%s' "strict"
 }
 
 # Stop relaxed daemon when env disables it (avoid idle worker name clash on same host). kejiqing

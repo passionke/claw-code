@@ -36,10 +36,8 @@ set +a
 
 HOST="${CLAW_POOL_ADVERTISE_HOST:?CLAW_POOL_ADVERTISE_HOST}"
 NODE_B_CLUSTER="${CLAW_CI_NODE_B_CLUSTER_ID:-sunmi-ci-02}"
-# Base pool id (pool-daemon strict profile appends `-strict`). Author: kejiqing
+# Single claw-sandbox per node (strict+relaxed workers in one process). Author: kejiqing
 POOL_B="${CLAW_CI_NODE_B_POOL_ID:-pool-${NODE_B_CLUSTER}}"
-POOL_B_STRICT="${CLAW_CI_NODE_B_STRICT_POOL_ID:-${POOL_B}-strict}"
-POOL_B_RELAXED="${CLAW_CI_NODE_B_RELAXED_POOL_ID:-${POOL_B}-relaxed}"
 GW_A="${GATEWAY_HOST_PORT:-18088}"
 GW_B="${CLAW_CI_NODE_B_GATEWAY_PORT:-18089}"
 PG_PORT_A="${CLAW_GATEWAY_PG_HOST_PORT:-5433}"
@@ -48,7 +46,6 @@ PG_CTN_A="${CLAW_COMPOSE_PG_CONTAINER:-claw-gateway-postgres}"
 DB_URL_B="postgres://claw_gateway:clawGw9Dev_Pg@${PG_CTN_A}:5432/claw_gateway"
 DB_URL_B_HOST="postgres://claw_gateway:clawGw9Dev_Pg@127.0.0.1:${PG_PORT_A}/claw_gateway"
 STRICT_B="${CLAW_CI_NODE_B_STRICT_PORT:-9964}"
-RELAXED_B="${CLAW_CI_NODE_B_RELAXED_PORT:-9965}"
 PLAY_B="${CLAW_CI_NODE_B_PLAYGROUND_PORT:-18766}"
 PODMAN_DIR="$(cd "${LIB_DIR}/.." && pwd)"
 
@@ -73,7 +70,7 @@ DOCKER_IMAGE="${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE}}"
 RELAXED_IMAGE="${CLAW_RELAXED_PODMAN_IMAGE:-}"
 
 echo "==> CI cluster dual deploy: node A :${GW_A} + node B :${GW_B} (shared PG :${PG_PORT_A} ${PG_CTN_A})" >&2
-echo "    node B cluster=${NODE_B_CLUSTER} pool=${POOL_B_STRICT}" >&2
+echo "    node B cluster=${NODE_B_CLUSTER} pool=${POOL_B}" >&2
 
 if [[ "${DRY_RUN}" == 0 ]]; then
   curl -fsS --connect-timeout 5 "http://127.0.0.1:${GW_A}/healthz" >/dev/null \
@@ -86,13 +83,11 @@ CLAW_DEPLOY_PROFILE=${CLAW_DEPLOY_PROFILE:-production}
 CLAW_CONTAINER_RUNTIME=${CLAW_CONTAINER_RUNTIME:-docker}
 CLAW_CLUSTER_ID=${NODE_B_CLUSTER}
 CLAW_POOL_ID=${POOL_B}
-CLAW_STRICT_POOL_ID=${POOL_B_STRICT}
-CLAW_RELAXED_POOL_ID=${POOL_B_RELAXED}
+CLAW_STRICT_POOL_ID=${POOL_B}
 CLAW_POOL_ADVERTISE_HOST=${HOST}
 CLAW_POOL_HTTP_BASE=http://${HOST}:${STRICT_B}
 CLAW_POOL_HTTP_PORT=${STRICT_B}
 CLAW_STRICT_POOL_HTTP_PORT=${STRICT_B}
-CLAW_RELAXED_POOL_HTTP_PORT=${RELAXED_B}
 CLAW_STRICT_PODMAN_POOL_SIZE=2
 CLAW_STRICT_PODMAN_POOL_MIN_IDLE=1
 CLAW_STRICT_DOCKER_POOL_SIZE=2

@@ -10,7 +10,6 @@ ENV_FILE="${REPO_ROOT}/.env"
 source "${LIB_DIR}/stack-instance.sh"
 RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
 STRICT_RPC_DIR="$(claw_strict_pool_rpc_dir "${PODMAN_DIR}")"
-RELAXED_RPC_DIR="$(claw_relaxed_pool_rpc_dir "${PODMAN_DIR}")"
 STAMP_FILE="${PODMAN_DIR}/.claw-build-stamp.env"
 
 fail() {
@@ -140,6 +139,35 @@ claw_verify_pool_profile() {
   claw_assert_host_pool_rpc_ready "${rpc_dir}" || fail "${profile} pool RPC died during verify"
 }
 
+# POST /v1/sandbox/rpc Capacity — unified pool must expose strict (+ relaxed when enabled). kejiqing
+claw_verify_sandbox_capacity_profiles() {
+  local http_port="$1"
+  local want_relaxed="$2"
+  local body resp
+  body='{"op":"capacity"}'
+  resp="$(curl -fsS --connect-timeout 5 -X POST \
+    "http://127.0.0.1:${http_port}/v1/sandbox/rpc" \
+    -H 'Content-Type: application/json' \
+    -d "${body}" 2>/dev/null)" \
+    || fail "sandbox Capacity RPC failed on :${http_port}"
+  if ! python3 -c '
+import json, sys
+want_relaxed = sys.argv[1] == "1"
+d = json.loads(sys.argv[2])
+if not d.get("ok"):
+    raise SystemExit("capacity not ok: " + str(d.get("error")))
+cap = d.get("capacity") or {}
+profiles = {p.get("profile") for p in (cap.get("profiles") or [])}
+if "strict" not in profiles:
+    raise SystemExit("missing strict profile in capacity.profiles: " + str(profiles))
+if want_relaxed and "relaxed" not in profiles:
+    raise SystemExit("missing relaxed profile in capacity.profiles: " + str(profiles))
+' "${want_relaxed}" "${resp}"; then
+    fail "sandbox capacity profiles check failed (port ${http_port})"
+  fi
+  ok "sandbox capacity lists required worker profiles"
+}
+
 if [[ -f "${RPC_DIR}/gateway.env" ]]; then
   set -a
   # shellcheck disable=SC1090
@@ -147,27 +175,18 @@ if [[ -f "${RPC_DIR}/gateway.env" ]]; then
   set +a
 fi
 _base_pool_id="$(claw_default_pool_id)"
-STRICT_POOL_ID="${CLAW_STRICT_POOL_ID:-${_base_pool_id}-strict}"
-RELAXED_POOL_ID="${CLAW_RELAXED_POOL_ID:-${_base_pool_id}-relaxed}"
-STRICT_HTTP_PORT="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
-RELAXED_HTTP_PORT="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
+POOL_ID="${CLAW_POOL_ID:-${CLAW_STRICT_POOL_ID:-${_base_pool_id}}}"
+POOL_HTTP_PORT="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
 
 claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" \
-  || fail "gateway container cannot reach strict pool HTTP — run gateway.sh up"
+  || fail "gateway container cannot reach pool HTTP — run gateway.sh up"
 
+echo "==> [3/6] single claw-sandbox registry"
+claw_verify_pool_profile sandbox "${STRICT_RPC_DIR}" "${POOL_ID}" "${POOL_HTTP_PORT}"
 if claw_relaxed_worker_allowed_from_env; then
-  echo "==> [3/6] dual pool registry (strict + relaxed)"
-  if [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
-    # shellcheck disable=SC1091
-    source "${LIB_DIR}/pool-daemon-systemd.sh"
-    claw_pool_systemd_assert_dual_pool_coherent "${PODMAN_DIR}" \
-      || fail "systemd dual-pool incoherent (legacy single unit may have overwritten strict)"
-  fi
-  claw_verify_pool_profile strict "${STRICT_RPC_DIR}" "${STRICT_POOL_ID}" "${STRICT_HTTP_PORT}"
-  claw_verify_pool_profile relaxed "${RELAXED_RPC_DIR}" "${RELAXED_POOL_ID}" "${RELAXED_HTTP_PORT}"
+  claw_verify_sandbox_capacity_profiles "${POOL_HTTP_PORT}" 1
 else
-  echo "==> [3/6] strict pool only (CLAW_ALLOW_RELAXED_WORKER=false)"
-  claw_verify_pool_profile strict "${STRICT_RPC_DIR}" "${STRICT_POOL_ID}" "${STRICT_HTTP_PORT}"
+  claw_verify_sandbox_capacity_profiles "${POOL_HTTP_PORT}" 0
 fi
 
 echo "==> [4/6] pool daemon DB URL (host must not use compose hostname postgres)"
@@ -179,39 +198,24 @@ case "${pool_db_url}" in
 esac
 ok "host pool DB URL uses reachable host (${pool_db_url%%@*}@…)"
 
-if claw_relaxed_worker_allowed_from_env; then
-  echo "==> [5/6] claw_pool table has both profiles"
-  pool_rows="$(psql_q "SELECT count(*)::text FROM claw_pool WHERE pool_id IN ('${STRICT_POOL_ID}','${RELAXED_POOL_ID}');")"
-  [[ "${pool_rows}" -ge 2 ]] || fail "claw_pool expected 2 rows (strict+relaxed), got ${pool_rows}"
-  ok "claw_pool has strict + relaxed rows"
-else
-  echo "==> [5/6] claw_pool strict row (relaxed disabled)"
-  row_strict="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${STRICT_POOL_ID}' LIMIT 1;")"
-  [[ "${row_strict}" == "${STRICT_POOL_ID}" ]] || fail "claw_pool missing strict row ${STRICT_POOL_ID}"
-  ok "claw_pool has strict row ${STRICT_POOL_ID}"
-fi
+echo "==> [5/6] claw_pool registry row"
+row_pool="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${POOL_ID}' LIMIT 1;")"
+[[ "${row_pool}" == "${POOL_ID}" ]] || fail "claw_pool missing row pool_id=${POOL_ID}"
+ok "claw_pool has row ${POOL_ID}"
 
-echo "==> [6/6] gateway.env pool RPC bases"
+echo "==> [6/6] gateway.env sandbox URL"
 [[ -f "${RPC_DIR}/gateway.env" ]] || fail "missing gateway.env"
-grep -q '^CLAW_STRICT_POOL_HTTP_BASE=' "${RPC_DIR}/gateway.env" \
-  || fail "gateway.env missing CLAW_STRICT_POOL_HTTP_BASE"
-if claw_relaxed_worker_allowed_from_env; then
-  grep -q '^CLAW_RELAXED_POOL_HTTP_BASE=' "${RPC_DIR}/gateway.env" \
-    || fail "gateway.env missing CLAW_RELAXED_POOL_HTTP_BASE"
-  ok "gateway.env lists strict + relaxed pool HTTP bases"
-else
-  ok "gateway.env lists strict pool HTTP base (relaxed disabled in .env)"
-fi
+grep -q '^CLAW_SANDBOX_URL=' "${RPC_DIR}/gateway.env" \
+  || fail "gateway.env missing CLAW_SANDBOX_URL"
+grep -q '^CLAW_POOL_HTTP_BASE=' "${RPC_DIR}/gateway.env" \
+  || fail "gateway.env missing CLAW_POOL_HTTP_BASE"
+ok "gateway.env lists CLAW_SANDBOX_URL + CLAW_POOL_HTTP_BASE"
 
 if [[ -f "${STAMP_FILE}" ]]; then
   echo "--- build stamp ---"
   cat "${STAMP_FILE}"
 fi
 
-if claw_relaxed_worker_allowed_from_env; then
-  ok "dual pool verify complete"
-else
-  ok "strict-only pool verify complete"
-fi
+ok "single-pool verify complete"
 
 echo "==> claw-stack-verify: all checks passed"

@@ -41,12 +41,13 @@ fi
 if [[ -z "${CLAW_POOL_PROFILE}" ]]; then
   CLAW_POOL_PROFILE="$(claw_default_pool_up_profile)"
 fi
-if [[ "${CLAW_POOL_PROFILE}" == "relaxed" ]] && ! claw_relaxed_worker_allowed_from_env; then
-  echo "error: CLAW_ALLOW_RELAXED_WORKER=false — relaxed pool is disabled (use --profile=strict or omit profile)" >&2
-  exit 1
-fi
 if [[ "${CLAW_POOL_PROFILE}" == "all" ]]; then
+  echo "note: --profile=all is legacy; single claw-sandbox serves strict+relaxed" >&2
   CLAW_POOL_PROFILE=strict
+fi
+if [[ "${CLAW_POOL_PROFILE}" == "relaxed" ]]; then
+  echo "error: dual-pool removed — one claw-sandbox on :9944 serves strict+relaxed workers" >&2
+  exit 1
 fi
 export CLAW_POOL_PROFILE
 
