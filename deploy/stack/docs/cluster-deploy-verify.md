@@ -2,10 +2,10 @@
 
 Author: kejiqing
 
-**问题根因：** GitLab CI（10.22.28.94）是 **单机 + nohup 双 pool**，不覆盖：
+**问题根因：** GitLab CI（10.22.28.94）是 **单机 + nohup**，不覆盖：
 
 - 多机共享 PostgreSQL、`claw_pool` 注册表
-- Linux **systemd** 双 pool（`claw-pool-daemon-strict` / `-relaxed`）
+- Linux **systemd** `claw-sandbox.service`
 - 升级后 **legacy poolId 僵尸行**、Admin Pool 下拉、跨机 `GET /v1/pools`
 
 预发若只验 `healthz` 或单机 solve，**集群问题会漏到生产**。
@@ -17,7 +17,7 @@ Author: kejiqing
 ```bash
 git pull
 ./deploy/stack/gateway.sh up --release release-vX.Y.Z
-./deploy/stack/gateway.sh pool-up --restart --profile=strict   # CLAW_ALLOW_RELAXED_WORKER=false
+./deploy/stack/gateway.sh pool-up --restart
 ./deploy/stack/gateway.sh verify
 ./deploy/stack/lib/admin-solve-e2e.sh 1 ping
 ./deploy/stack/lib/admin-solve-e2e.sh 1 ping   # 新 shell 再一轮（launchd/systemd 持久化）

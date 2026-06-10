@@ -81,7 +81,7 @@ fn relaxed_worker_allowed_from_env() -> bool {
     }
 }
 
-/// Drop offline pre-dual-pool rows (and disabled relaxed) after strict re-registers. kejiqing
+/// Drop offline legacy claw_pool rows (pre-unified pool_id) after re-register. kejiqing
 async fn prune_superseded_offline_pools(
     db: &GatewaySessionDb,
     pool_id: &str,

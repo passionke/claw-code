@@ -9,7 +9,7 @@ ENV_FILE="${REPO_ROOT}/.env"
 # shellcheck source=stack-instance.sh
 source "${LIB_DIR}/stack-instance.sh"
 RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
-STRICT_RPC_DIR="$(claw_strict_pool_rpc_dir "${PODMAN_DIR}")"
+POOL_RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
 STAMP_FILE="${PODMAN_DIR}/.claw-build-stamp.env"
 
 fail() {
@@ -175,14 +175,14 @@ if [[ -f "${RPC_DIR}/gateway.env" ]]; then
   set +a
 fi
 _base_pool_id="$(claw_default_pool_id)"
-POOL_ID="${CLAW_POOL_ID:-${CLAW_STRICT_POOL_ID:-${_base_pool_id}}}"
-POOL_HTTP_PORT="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
+POOL_ID="${CLAW_POOL_ID:-${_base_pool_id}}"
+POOL_HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
 
 claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" \
   || fail "gateway container cannot reach pool HTTP — run gateway.sh up"
 
 echo "==> [3/6] single claw-sandbox registry"
-claw_verify_pool_profile sandbox "${STRICT_RPC_DIR}" "${POOL_ID}" "${POOL_HTTP_PORT}"
+claw_verify_pool_profile sandbox "${POOL_RPC_DIR}" "${POOL_ID}" "${POOL_HTTP_PORT}"
 if claw_relaxed_worker_allowed_from_env; then
   claw_verify_sandbox_capacity_profiles "${POOL_HTTP_PORT}" 1
 else

@@ -12,14 +12,6 @@ claw_pool_rpc_root() {
   fi
 }
 
-claw_strict_pool_rpc_dir() {
-  printf '%s/strict' "$(claw_pool_rpc_root "${1:?podman_dir}")"
-}
-
-claw_relaxed_pool_rpc_dir() {
-  printf '%s/relaxed' "$(claw_pool_rpc_root "${1:?podman_dir}")"
-}
-
 claw_stack_workspace_bind_dir() {
   local podman_dir="${1:?podman_dir}"
   podman_dir="$(cd "${podman_dir}" && pwd)"

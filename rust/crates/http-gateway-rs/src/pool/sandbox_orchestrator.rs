@@ -12,15 +12,13 @@ use tokio::sync::{Mutex, RwLock};
 use crate::session_db::GatewaySessionDb;
 
 use super::merge_stdout_hooks;
-use super::LiveReportHub;
 use super::session_db_sync::{
     finalize_turn_after_readback, materialize_turn_via_sandbox, readback_turn_via_sandbox,
     sync_progress_via_sandbox, MaterializeInput,
 };
 use super::traits::{PoolOps, SlotLease, TaskOutcome};
-use super::worker_isolation::{
-    default_worker_isolation_json, mode_from_json, WorkerIsolationMode,
-};
+use super::worker_isolation::{default_worker_isolation_json, mode_from_json, WorkerIsolationMode};
+use super::LiveReportHub;
 
 /// Maps gateway worker isolation to sandbox acquire isolation. Author: kejiqing
 #[must_use]
@@ -126,10 +124,7 @@ impl PoolOps for SandboxOrchestratedPool {
         }
         let lease = self.client.acquire(wait, isolation).await?;
         if let Some(ref worker_name) = lease.worker_name {
-            let exec_user = lease
-                .exec_identity
-                .as_ref()
-                .map(|id| id.exec_user.as_str());
+            let exec_user = lease.exec_identity.as_ref().map(|id| id.exec_user.as_str());
             let _ = db
                 .assign_turn_pool_worker(&turn_id, &self.pool_id, worker_name, exec_user)
                 .await;

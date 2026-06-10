@@ -382,7 +382,7 @@ claw_podman_load_compose_args() {
   if [[ -n "${CLAW_POOL_RPC_INSTANCE:-}" ]]; then
     claw_compose_append_pool_rpc_envfile_override "${script_dir}" "${rel}"
   fi
-  local pool_http_port="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
+  local pool_http_port="${CLAW_POOL_HTTP_PORT:-9944}"
   local http_host profile_name base_pool_id pool_id
   # shellcheck source=claw-pool-registry-env.sh
   source "${script_dir}/lib/claw-pool-registry-env.sh"
@@ -408,10 +408,8 @@ claw_podman_load_compose_args() {
     {
       printf '%s\n' '# GENERATED — host claw-sandbox HTTP (POST /v1/sandbox/rpc). kejiqing'
       printf '%s\n' "CLAW_SANDBOX_URL=http://${http_host}:${pool_http_port}"
-      printf '%s\n' "CLAW_STRICT_POOL_HTTP_BASE=http://${http_host}:${pool_http_port}"
       printf '%s\n' "CLAW_POOL_HTTP_BASE=http://${http_host}:${pool_http_port}"
       printf '%s\n' "CLAW_POOL_ID=${pool_id}"
-      printf '%s\n' "CLAW_STRICT_POOL_ID=${pool_id}"
       printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
       printf '%s\n' "CLAW_POOL_DAEMON_TCP="
       printf '%s\n' "CLAW_POOL_DAEMON_SOCKET="

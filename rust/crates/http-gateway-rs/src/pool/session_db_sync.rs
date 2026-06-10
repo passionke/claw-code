@@ -34,7 +34,13 @@ async fn wipe_guest_ephemeral_mounts(
     runtime_bin: &str,
     container_name: &str,
 ) -> Result<(), String> {
-    exec_sh_lc_as_user(runtime_bin, container_name, "0:0", GUEST_WIPE_EPHEMERAL_MOUNTS_SH).await
+    exec_sh_lc_as_user(
+        runtime_bin,
+        container_name,
+        "0:0",
+        GUEST_WIPE_EPHEMERAL_MOUNTS_SH,
+    )
+    .await
 }
 
 /// Write session task/jsonl + workspace tar from PG before `gateway-solve-once`.
@@ -156,12 +162,7 @@ pub async fn materialize_turn_via_sandbox(
                 ));
             }
             client
-                .guest_write(
-                    slot_index,
-                    GuestVolume::ProjectConfig,
-                    &rel,
-                    &write.bytes,
-                )
+                .guest_write(slot_index, GuestVolume::ProjectConfig, &rel, &write.bytes)
                 .await?;
         }
     }
@@ -188,10 +189,7 @@ pub async fn materialize_turn_via_sandbox(
     }
     let mut writes: Vec<(&str, Vec<u8>)> = vec![("gateway-solve-task.json", task_bytes)];
     if !jsonl_body.is_empty() {
-        writes.push((
-            ".claw/gateway-solve-session.jsonl",
-            jsonl_body.into_bytes(),
-        ));
+        writes.push((".claw/gateway-solve-session.jsonl", jsonl_body.into_bytes()));
     }
     for (rel, bytes) in writes {
         if bytes.len() > SESSION_MANIFEST_MAX_BYTES {

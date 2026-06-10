@@ -1275,29 +1275,17 @@ async fn main() {
             "CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
         );
     }
-    // Pool RPC: strict + optional relaxed HTTP clients. Author: kejiqing
+    // Pool RPC: single claw-sandbox HTTP client. Author: kejiqing
     let live_report_hub = Arc::new(pool::LiveReportHub::default());
     let pool_clients = pool::PoolClients::from_env(Arc::clone(&live_report_hub));
-    if pool_clients.dual_pool() {
-        info!(
-            target: "claw_gateway_orchestration",
-            component = "startup",
-            phase = "dual_pool_routing",
-            strict_pool_id = %pool_clients.strict_pool_id(),
-            relaxed_pool_id = %pool_clients.relaxed_pool_id(),
-            "gateway routes acquire by ds worker_isolation_json → strict or relaxed pool"
-        );
-    }
     let pool_rpc_remote = true;
-    let co_located_pool_id = Some(pool_clients.strict_pool_id().to_string());
+    let co_located_pool_id = Some(pool_clients.pool_id().to_string());
     tracing::info!(
         target: "claw_live_report",
         component = "gateway_startup",
         contract = http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT,
         pool_rpc_remote,
-        strict_pool_id = %pool_clients.strict_pool_id(),
-        relaxed_pool_id = %pool_clients.relaxed_pool_id(),
-        dual_pool = pool_clients.dual_pool(),
+        pool_id = %pool_clients.pool_id(),
         co_located_pool_id = ?co_located_pool_id,
         "live_report.gateway — terminal snapshot from DB; running live SSE from gateway LiveReportHub (sandbox exec NDJSON relay)"
     );
@@ -1375,7 +1363,7 @@ async fn main() {
         }
     };
 
-    let pool_http_base = std::env::var("CLAW_STRICT_POOL_HTTP_BASE")
+    let pool_http_base = std::env::var("CLAW_SANDBOX_URL")
         .ok()
         .or_else(|| std::env::var("CLAW_POOL_HTTP_BASE").ok())
         .map(|v| v.trim().to_string())
@@ -6268,7 +6256,7 @@ async fn list_claw_pools_handler(
         .collect();
     Ok(Json(ListClawPoolsResponse {
         pools,
-        co_located_pool_id: Some(state.pool_clients.strict_pool_id().to_string()),
+        co_located_pool_id: Some(state.pool_clients.pool_id().to_string()),
     }))
 }
 

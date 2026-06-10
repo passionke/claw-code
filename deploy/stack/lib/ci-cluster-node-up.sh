@@ -54,10 +54,10 @@ if claw_pool_daemon_on_host; then
   source "${ENV_FILE}"
   set +a
   "${LIB_DIR}/pool-daemon-up.sh" --restart
-  claw_assert_host_pool_rpc_ready "$(claw_strict_pool_rpc_dir "${PODMAN_DIR}")" || {
+  claw_assert_host_pool_rpc_ready "$(claw_pool_rpc_root "${PODMAN_DIR}")" || {
     echo "error: node B strict pool RPC not ready" >&2
     exit 1
   }
 fi
 
-echo "==> CI cluster node B up ok (gateway :${GATEWAY_HOST_PORT}, strict pool :${CLAW_STRICT_POOL_HTTP_PORT:-9964})" >&2
+echo "==> CI cluster node B up ok (gateway :${GATEWAY_HOST_PORT}, pool :${CLAW_POOL_HTTP_PORT:-9964})" >&2

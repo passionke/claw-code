@@ -44,26 +44,17 @@ launchctl print "gui/$(id -u)/com.claw.pool-daemon" | head -12
 lsof -nP -iTCP:9944 -sTCP:LISTEN
 ```
 
-Linux **`CLAW_DEPLOY_PROFILE=production`**：`pool-daemon-up` 写 `pool-daemon.env` 后走 **systemd**（`User=root`）。**双 pool** 各一个 unit（与 macOS launchd 对称）：
+Linux **`CLAW_DEPLOY_PROFILE=production`**：`pool-daemon-up` 写 `pool-daemon.env` 后走 **systemd**（`User=root`，unit **`claw-sandbox.service`**）。**单进程** `:9944`；`acquire` 按 ds 的 strict/relaxed profile 选 worker（见 `sandbox/docs/system-design.md`）。首次 `pool-up` 会 disable 旧 `claw-pool-daemon*.service`。本地 profile 仍 `nohup`。
 
-| Profile | systemd unit | HTTP |
-|---------|----------------|------|
-| strict | `claw-pool-daemon-strict.service` | 9944 |
-| relaxed | `claw-pool-daemon-relaxed.service` | 9954 |
-
-旧单 unit `claw-pool-daemon.service` 在首次 `--profile=strict|relaxed` 时自动 disable（避免 relaxed 覆盖 strict 导致 9944 503）。本地 profile 仍 `nohup`。
-
-GitLab CI（10.22.28.94）设 **`CLAW_POOL_DAEMON_USE_SYSTEMD=0`**，走 nohup 双 daemon，**测不到** production 默认 systemd 路径，也**测不到**多机共享 PG 集群——生产/预发须 **`gateway.sh verify`**（每台）+ **`gateway.sh cluster-verify`**（全集群一次），见 **`deploy/stack/docs/cluster-deploy-verify.md`**。
+GitLab CI（10.22.28.94）设 **`CLAW_POOL_DAEMON_USE_SYSTEMD=0`**，走 nohup，**测不到** production 默认 systemd 路径——生产/预发须 **`gateway.sh verify`** + **`gateway.sh cluster-verify`**，见 **`deploy/stack/docs/cluster-deploy-verify.md`**。
 
 ```bash
-# 生产（双 pool）：刷新 env 并 systemd 重启
 ./deploy/stack/gateway.sh pool-up --restart
-sudo systemctl status claw-pool-daemon-strict claw-pool-daemon-relaxed
+sudo systemctl status claw-sandbox
 curl -fsS http://127.0.0.1:9944/healthz/live-report
-curl -fsS http://127.0.0.1:9954/healthz/live-report
 ```
 
-**`CLAW_ALLOW_RELAXED_WORKER=false`（常见生产）**：`.env` 设好后 **无需** `--profile=strict`。`pool-up` / `up` 默认只起 strict（9944），会停掉误起的 relaxed（9954）；`claw-stack-verify` / `check` 也不验 relaxed。Gateway 仍可从 `gateway.env` 读到 relaxed base，但 gateway 不会路由到 relaxed。
+**`CLAW_ALLOW_RELAXED_WORKER=false`（常见生产）**：pool 只 warm strict worker；`claw-stack-verify` 的 Capacity RPC 不期望 `relaxed` profile。
 
 ---
 

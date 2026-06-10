@@ -30,7 +30,7 @@ use claw_sandbox_protocol::{
 const WORKER_NAME_STEM_BASE_MAX: usize = 16;
 
 /// Build `claw-worker-{stem}-{n}` stem from pool id suffix (after optional `pool-` strip).
-/// Reserves room for `-strict` / `-relaxed` so dual pool on one host never shares a stem. Author: kejiqing
+/// Reserves room for `-strict` / `-relaxed` profile suffixes on worker names. Author: kejiqing
 fn worker_name_stem_from_pool_suffix(suffix: &str) -> String {
     let (base, profile) = if let Some(b) = suffix.strip_suffix("-strict") {
         (b, Some("strict"))
@@ -1437,7 +1437,7 @@ mod worker_name_stem_tests {
     use super::worker_name_stem_from_pool_suffix;
 
     #[test]
-    fn dual_pool_long_hostname_stems_differ() {
+    fn profile_worker_hostname_stems_differ() {
         let host = "ali-hz1-onl-max-ae-schedule-11";
         let strict = worker_name_stem_from_pool_suffix(&format!("{host}-strict"));
         let relaxed = worker_name_stem_from_pool_suffix(&format!("{host}-relaxed"));
