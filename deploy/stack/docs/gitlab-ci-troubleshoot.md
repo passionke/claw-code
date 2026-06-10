@@ -11,9 +11,9 @@ Push 任意分支 → `build:release-images` → `deploy:release`：
 1. `gateway.sh up --release`
 2. `gateway.sh verify`
 3. `admin-solve-e2e.sh` × 2
-4. **`ci-cluster-dual-deploy.sh`** — node B + **`cluster-verify`** + **`ci-cluster-solve-e2e`**（node B strict×2 + relaxed + node A 回归）
+4. **`ci-cluster-dual-deploy.sh`** — node B + **`cluster-verify`** + **`ci-cluster-solve-e2e`**（独立 workspace、跨 gateway session、node B relaxed）
 
-**验收**：`deploy:release` 全绿 = node A `admin-solve-e2e`×2 **且** node B `solve_async` strict/relaxed 均 `succeeded`；不是 healthz / pool 存活 N 秒。
+**验收**：`deploy:release` 全绿 = node A `admin-solve-e2e`×2 **且** node B solve + **A 建 session → B 续聊** 均 `succeeded`；Permission denied 说明 node B workspace 未 chown 1000（`ci-cluster-node-up` 应修）。
 
 ## 2. 端点
 

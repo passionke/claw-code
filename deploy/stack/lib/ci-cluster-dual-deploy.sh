@@ -109,7 +109,7 @@ CLAW_GATEWAY_SKIP_DB_MIGRATE=1
 
 COMPOSE_PROJECT_NAME=${CLAW_CI_NODE_B_COMPOSE_PROJECT:-claw-cib}
 CLAW_COMPOSE_GATEWAY_ONLY=1
-# Shared PG → same workspace bind as node A; only pool RPC / logs are per-instance. kejiqing
+CLAW_STACK_INSTANCE=ci-b
 CLAW_POOL_RPC_INSTANCE=ci-b
 CLAW_GATEWAY_CONTAINER=claw-gateway-rs-ci-b
 CLAW_GATEWAY_PLAYGROUND_CONTAINER=claw-gateway-playground-ci-b

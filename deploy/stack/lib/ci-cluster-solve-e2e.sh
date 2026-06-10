@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI cluster gate: node B solve (strict + relaxed) + shared workspace uid 1000. Author: kejiqing
+# CI cluster gate: per-gateway workspace + node B solve + cross-gateway session. Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +27,7 @@ set +a
 GW_A="${GATEWAY_HOST_PORT:-18088}"
 POOL_A="${CLAW_POOL_ID:-pool-sunmi-ci-01}"
 PROJ_ID="${CLAW_BOOTSTRAP_PROJ_ID:-${CLAW_BOOTSTRAP_DS_ID:-1}}"
+WS_A="${PODMAN_DIR}/claw-workspace"
 
 set -a
 # shellcheck disable=SC1090
@@ -35,14 +36,25 @@ set +a
 GW_B="${GATEWAY_HOST_PORT:-18089}"
 POOL_B="${CLAW_POOL_ID:-pool-sunmi-ci-02}"
 POOL_HTTP_B="${CLAW_POOL_HTTP_PORT:-9964}"
+WS_B="${PODMAN_DIR}/claw-workspace-ci-b"
 
 # shellcheck disable=SC1091
 source "${LIB_DIR}/compose-include.sh"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/e2e-project-isolation.sh"
 
+claw_ci_workspace_writable() {
+  local ws="$1" label="$2"
+  local rt="${3:?}" uid="${CLAW_WORKER_UID:-1000}" gid="${CLAW_WORKER_GID:-1000}"
+  local img="${CLAW_CHOWN_RUNNER_IMAGE:-docker.1ms.run/library/alpine:3.20}"
+  [[ -d "${ws}" ]] || fail "${label} workspace missing: ${ws}"
+  "${rt}" run --rm -u "${uid}:${gid}" -v "${ws}:/w:rw" "${img}" \
+    sh -c 'touch /w/.ci-cluster-write-probe && rm -f /w/.ci-cluster-write-probe' \
+    || fail "${label} workspace not writable as uid ${uid}: ${ws}"
+}
+
 claw_ci_cluster_solve_e2e_run() {
-  local env_file="$1" gw_port="$2" pool_id="$3" isolation="${4:-}" expect_iso="${5:-}"
+  local env_file="$1" gw_port="$2" pool_id="$3" isolation="${4:-}" expect_iso="${5:-}" session_id="${6:-}"
   (
     set -a
     # shellcheck disable=SC1090
@@ -60,39 +72,58 @@ claw_ci_cluster_solve_e2e_run() {
     else
       unset CLAW_E2E_WORKER_ISOLATION || true
     fi
+    if [[ -n "${session_id}" ]]; then
+      export CLAW_E2E_SESSION_ID="${session_id}"
+    else
+      unset CLAW_E2E_SESSION_ID || true
+    fi
     "${LIB_DIR}/admin-solve-e2e.sh" "${PROJ_ID}" ping
   )
 }
 
-claw_podman_export_pool_workspace "${PODMAN_DIR}"
-WS_A="$(claw_stack_workspace_bind_dir "${PODMAN_DIR}")"
-WS_B="${CLAW_POOL_WORK_ROOT_BIND_SRC:?}"
+claw_ci_solve_capture_session() {
+  local env_file="$1" gw_port="$2"
+  (
+    set -a
+    # shellcheck disable=SC1090
+    source "${env_file}"
+    set +a
+    export GATEWAY_HOST_PORT="${gw_port}"
+    export CLAW_E2E_CAPTURE_SESSION_ID=1
+    unset CLAW_E2E_SESSION_ID CLAW_E2E_EXPECT_POOL_ID CLAW_E2E_EXPECT_WORKER_ISOLATION CLAW_E2E_WORKER_ISOLATION || true
+    "${LIB_DIR}/admin-solve-e2e.sh" "${PROJ_ID}" ping
+  )
+}
 
 RT="$(claw_container_runtime_cli 2>/dev/null || true)"
 [[ -n "${RT}" ]] || fail "need docker or podman"
 
-echo "==> [1/6] shared workspace: node A/B bind same path (${WS_A})"
-[[ "${WS_A}" == "${WS_B}" ]] || fail "node B workspace ${WS_B} != node A ${WS_A} (shared PG requires one bind)"
+echo "==> [1/7] per-gateway workspace (A=${WS_A} B=${WS_B})"
+[[ "${WS_A}" != "${WS_B}" ]] || fail "node A/B must use separate workspace binds (got same ${WS_A})"
 
-echo "==> [2/6] workspace writable as gateway uid ${CLAW_WORKER_UID:-1000}"
-CHOWN_IMG="${CLAW_CHOWN_RUNNER_IMAGE:-docker.1ms.run/library/alpine:3.20}"
-"${RT}" run --rm -u "${CLAW_WORKER_UID:-1000}:${CLAW_WORKER_GID:-1000}" -v "${WS_A}:/w:rw" "${CHOWN_IMG}" \
-  sh -c 'touch /w/.ci-cluster-write-probe && rm -f /w/.ci-cluster-write-probe' \
-  || fail "uid ${CLAW_WORKER_UID:-1000} cannot write ${WS_A} (Permission denied repro)"
+echo "==> [2/7] each workspace writable as gateway uid ${CLAW_WORKER_UID:-1000}"
+claw_ci_workspace_writable "${WS_A}" "node A" "${RT}"
+claw_ci_workspace_writable "${WS_B}" "node B" "${RT}"
 
-echo "==> [3/6] node B pool HTTP :${POOL_HTTP_B}"
+echo "==> [3/7] node B pool HTTP :${POOL_HTTP_B}"
 curl -fsS --connect-timeout 5 "http://127.0.0.1:${POOL_HTTP_B}/healthz/live-report" >/dev/null \
   || fail "node B pool not reachable on :${POOL_HTTP_B}"
 
-echo "==> [4/6] node B gateway solve strict ×2 (:${GW_B} pool=${POOL_B})"
+echo "==> [4/7] node B gateway solve strict ×2 (:${GW_B} pool=${POOL_B})"
 claw_ci_cluster_solve_e2e_run "${ENV_B}" "${GW_B}" "${POOL_B}" "" strict
 claw_ci_cluster_solve_e2e_run "${ENV_B}" "${GW_B}" "${POOL_B}" "" strict
 
-echo "==> [5/6] node B gateway solve relaxed (:${GW_B} pool=${POOL_B})"
+echo "==> [5/7] cross-gateway session: created on A, first turn on B (local dir recreate)"
+SESSION_ID="$(claw_ci_solve_capture_session "${ENV_A}" "${GW_A}")"
+[[ -n "${SESSION_ID}" ]] || fail "empty sessionId from node A solve"
+echo "    sessionId=${SESSION_ID}"
+claw_ci_cluster_solve_e2e_run "${ENV_B}" "${GW_B}" "${POOL_B}" "" strict "${SESSION_ID}"
+
+echo "==> [6/7] node B gateway solve relaxed (:${GW_B} pool=${POOL_B})"
 claw_ci_cluster_solve_e2e_run "${ENV_B}" "${GW_B}" "${POOL_B}" relaxed relaxed
 
-echo "==> [6/6] node A still solves after cluster (:${GW_A} pool=${POOL_A})"
+echo "==> [7/7] node A still solves after cluster (:${GW_A} pool=${POOL_A})"
 claw_e2e_set_project_worker_isolation "${GW_A}" "${PROJ_ID}" strict
 claw_ci_cluster_solve_e2e_run "${ENV_A}" "${GW_A}" "${POOL_A}" "" strict
 
-ok "node B strict×2 + relaxed + node A regression passed"
+ok "per-gateway workspace + node B solve + cross-gateway session passed"

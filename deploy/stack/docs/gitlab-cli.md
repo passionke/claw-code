@@ -103,13 +103,13 @@ Push 任意分支 → **同一 `resource_group: claw-deploy`**（串行，避免
 1. `gateway.sh up --release ${CLAW_RELEASE_TAG}`
 2. `gateway.sh verify`
 3. `admin-solve-e2e.sh 1 ping` × **2 轮**（node A，:18088 / pool-sunmi-ci-01）
-4. **`ci-cluster-dual-deploy.sh`** — node B（:18089 / pool-sunmi-ci-02，**共享 node A PG + workspace**）→ **`cluster-verify`** → **`ci-cluster-solve-e2e`**（node B strict×2 + **relaxed** + node A 回归）
+4. **`ci-cluster-dual-deploy.sh`** — node B（独立 `claw-workspace-ci-b`）→ **`cluster-verify`** → **`ci-cluster-solve-e2e`**
 
-Node B 要点（见 `cluster-deploy-verify.md`）：
+Node B 要点：
 
-- **PG**：共用 `claw-gateway-postgres`；gateway B 用 **`claw-gateway-postgres:5432`**
-- **Workspace**：与 node A 同一 `deploy/stack/claw-workspace`（共享 PG session 行）
-- **Pool**：`pool-sunmi-ci-02`（:9964）；node A 为 `pool-sunmi-ci-01`（:9944）
+- **PG**：共用 `claw-gateway-postgres`
+- **Workspace**：**独立** `deploy/stack/claw-workspace-ci-b`（session 串台时 gateway 按 PG 路径本地重建目录）
+- **Pool**：`pool-sunmi-ci-02`（:9964）
 
 本地只验 node B env 生成（不起服务）：
 
