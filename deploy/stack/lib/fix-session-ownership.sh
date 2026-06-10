@@ -62,8 +62,7 @@ claw_prepare_bind_mount_ownership() {
 
   log_dir="${CLAW_HOST_LOG_DIR:-${podman_dir}/claw-logs}"
   if [[ "${log_dir}" != /* ]]; then
-    base="${CLAW_COMPOSE_WORKING_DIRECTORY:-${podman_dir}}"
-    log_dir="${base}/${log_dir}"
+    log_dir="${podman_dir}/${log_dir#./}"
   fi
   mkdir -p "${log_dir}"
   claw_chown_tree_to_worker "${log_dir}" "${uid}" "${gid}"
