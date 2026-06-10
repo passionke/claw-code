@@ -25,7 +25,7 @@ source "${LIB_DIR}/compose-include.sh"
 while read -r pid; do
   [[ -n "${pid}" ]] || continue
   kill "${pid}" 2>/dev/null || true
-done < <(pgrep -f '[/]claw-pool-daemon' 2>/dev/null || true)
+done < <(pgrep -f '[/](claw-sandbox|claw-pool-daemon)' 2>/dev/null || true)
 sleep 0.3
 claw_nuclear_pool_reset "${PODMAN_DIR}"
 echo "==> pool reset done (daemon stopped, workers removed)"

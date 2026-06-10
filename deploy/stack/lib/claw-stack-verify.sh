@@ -91,15 +91,15 @@ claw_pool_daemon_on_host || fail "host pool required (compose sidecar removed)"
 BIN="${CLAW_POOL_DAEMON_BIN:-$(claw_default_pool_daemon_bin "${PODMAN_DIR}")}"
 # shellcheck source=pool-daemon-binary.sh
 source "${LIB_DIR}/pool-daemon-binary.sh"
-[[ -x "${BIN}" ]] || fail "host claw-pool-daemon not executable: ${BIN}"
+[[ -x "${BIN}" ]] || fail "host claw-sandbox not executable: ${BIN}"
 
 if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if b'claw_pool registered' in b else 1)" "${BIN}" 2>/dev/null; then
-  fail "host ${BIN} lacks 'claw_pool registered' — run pack-deploy or cargo build -p http-gateway-rs --bin claw-pool-daemon"
+  fail "host ${BIN} lacks 'claw_pool registered' — run gateway.sh build or cargo build -p claw-sandbox-server in sandbox/"
 fi
-if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if b'assign_turn_pool_worker_ok' in b else 1)" "${BIN}" 2>/dev/null; then
-  fail "host ${BIN} lacks assign_turn_pool_worker_ok — stale binary"
+if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if (b'assign_turn_pool_worker_ok' in b or b'acquire_slot_ok' in b or b'claw-sandbox:' in b) else 1)" "${BIN}" 2>/dev/null; then
+  fail "host ${BIN} looks stale (expected claw-sandbox or legacy claw-pool-daemon markers)"
 fi
-ok "pool daemon binary contains registry + turn-assignment strings"
+ok "pool daemon binary contains registry + pool markers"
 
 # Lines after the last pool-daemon-up start (ignore stale errors from prior runs). kejiqing
 claw_pool_daemon_log_current_run() {

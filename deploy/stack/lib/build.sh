@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build gateway + worker images. Darwin default: linux-compile (podman run + cache volumes) then
-# prebuilt Containerfiles (no cargo during `podman build`). CI/Linux: full Containerfile.*.
+# Build gateway + worker images. Default: linux-compile + prebuilt Containerfiles (no cargo in image
+# build). Pass --in-container for legacy in-Dockerfile cargo (slow; not used in CI).
 # Author: kejiqing
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=/dev/null
@@ -33,7 +33,7 @@ Options:
   --skip-playground  Skip playground image npm build (pack-deploy default; uses slim + bind mount)
   -h, --help       Show this help
 
-Darwin default: podman run compile + prebuilt images (see deploy/stack/lib/linux-compile.sh).
+Default: container-run compile + prebuilt images (see deploy/stack/lib/linux-compile.sh).
 EOF
 }
 
@@ -168,8 +168,7 @@ claw_build_playground_image() {
 }
 
 use_prebuilt_linux_path() {
-  [[ "${CLAW_BUILD_IN_CONTAINER_IMAGE}" == "1" ]] && return 1
-  [[ "$(uname -s)" == "Darwin" ]]
+  [[ "${CLAW_BUILD_IN_CONTAINER_IMAGE}" != "1" ]]
 }
 
 CONTAINER_CLI="$(claw_container_runtime_cli)" || exit 1
@@ -177,7 +176,7 @@ CN_FLAG=0
 cn_mirror_enabled && CN_FLAG=1
 
 if use_prebuilt_linux_path; then
-  echo "==> config: Darwin → podman run compile + prebuilt images (no cargo in podman build)"
+  echo "==> config: linux-compile + prebuilt images (no cargo in image build)"
   STACK_DIR="${ROOT_DIR}/deploy/stack"
   step "1/3 linux compile (podman run; volumes claw-cargo-registry / claw-cargo-git persist)"
   # shellcheck source=/dev/null
@@ -216,11 +215,14 @@ if use_prebuilt_linux_path; then
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
 
-  if command -v cargo >/dev/null 2>&1; then
-    # shellcheck source=/dev/null
-    source "${ROOT_DIR}/deploy/stack/lib/pool-daemon-binary.sh"
-    step "host claw-pool-daemon (macOS sidecar)"
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/deploy/stack/lib/pool-daemon-binary.sh"
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
+    step "host claw-sandbox (macOS cargo)"
     CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
+  else
+    step "host claw-sandbox (.linux-artifacts)"
+    claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
   fi
 else
   step "config: in-image cargo build (Containerfile.gateway-rs)"
@@ -275,11 +277,11 @@ else
   # shellcheck source=/dev/null
   source "${ROOT_DIR}/deploy/stack/lib/pool-daemon-binary.sh"
   if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
-    step "host claw-pool-daemon (macOS cargo build)"
+    step "host claw-sandbox (macOS cargo build)"
     CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
-  elif claw_gateway_image_carries_pool_daemon "${IMAGE_NAME}"; then
-    step "host claw-pool-daemon (from ${IMAGE_NAME})"
-    GATEWAY_IMAGE="${IMAGE_NAME}" claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
+  else
+    step "host claw-sandbox (cargo build)"
+    CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
   fi
 fi
 
