@@ -12,8 +12,6 @@ source "${LIB_DIR}/bootstrap-runtime.sh"
 GATEWAY_PORT="${GATEWAY_HOST_PORT:-18088}"
 DS_ID="${1:-1}"
 PROMPT="${2:-connectivity check}"
-CAPTURE_SESSION="${CLAW_E2E_CAPTURE_SESSION_ID:-0}"
-
 _claw_e2e_log() {
   echo "$@"
 }
@@ -88,14 +86,9 @@ for _ in $(seq 1 120); do
   ST="$(printf '%s' "${R}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])')"
   echo "poll status=${ST}"
   if [[ "${ST}" == "succeeded" || "${ST}" == "failed" ]]; then
-    if [[ "${CAPTURE_SESSION}" != "1" ]]; then
-      printf '%s\n' "${R}" | python3 -m json.tool
-    fi
+    printf '%s\n' "${R}" | python3 -m json.tool
     if [[ "${ST}" == "succeeded" ]]; then
       claw_e2e_assert_solve_task "${R}" "task poll"
-      if [[ -n "${CLAW_E2E_SESSION_OUT_FILE:-}" ]]; then
-        printf '%s' "${SESSION_ID}" >"${CLAW_E2E_SESSION_OUT_FILE}"
-      fi
       exit 0
     fi
     exit 1
