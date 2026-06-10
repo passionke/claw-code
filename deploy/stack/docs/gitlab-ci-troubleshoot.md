@@ -11,9 +11,9 @@ Push 任意分支 → `build:release-images` → `deploy:release`：
 1. `gateway.sh up --release`
 2. `gateway.sh verify`
 3. `admin-solve-e2e.sh` × 2
-4. **`ci-cluster-dual-deploy.sh`**（node B + **`cluster-verify`**，共享 node A PG）
+4. **`ci-cluster-dual-deploy.sh`** — node B + **`cluster-verify`** + **`ci-cluster-solve-e2e`**（node B strict×2 + relaxed + node A 回归）
 
-**验收**：`deploy:release` 全绿；不是 healthz，不是 pool 进程存活 N 秒。详见 `gitlab-cli.md` §5。
+**验收**：`deploy:release` 全绿 = node A `admin-solve-e2e`×2 **且** node B `solve_async` strict/relaxed 均 `succeeded`；不是 healthz / pool 存活 N 秒。
 
 ## 2. 端点
 

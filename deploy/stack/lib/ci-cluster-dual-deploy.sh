@@ -13,7 +13,7 @@ for arg in "$@"; do
     --dry-run) DRY_RUN=1 ;;
     -h | --help)
       echo "usage: ci-cluster-dual-deploy.sh [--dry-run]" >&2
-      echo "  Writes ${ENV_B}, starts node B (gateway :18089 + pool :9964), runs cluster-verify." >&2
+      echo "  Writes ${ENV_B}, starts node B (gateway :18089 + pool :9964), cluster-verify + ci-cluster-solve-e2e." >&2
       echo "  --dry-run  validate + write ${ENV_B} only (no compose/pool/verify)." >&2
       exit 0
       ;;
@@ -156,7 +156,9 @@ fi
 
 "${LIB_DIR}/ci-cluster-node-up.sh" "${ENV_B}"
 
-# cluster-verify uses repo .env (node A); probes all online strict gateways from PG.
+# cluster-verify uses repo .env (node A); probes all online gateways from PG.
 "${LIB_DIR}/claw-cluster-verify.sh"
 
-echo "==> CI cluster dual deploy + cluster-verify passed" >&2
+"${LIB_DIR}/ci-cluster-solve-e2e.sh"
+
+echo "==> CI cluster dual deploy + cluster-verify + cluster-solve-e2e passed" >&2
