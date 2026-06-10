@@ -141,7 +141,13 @@ claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
 source "${LIB_DIR}/bootstrap-runtime.sh"
 claw_wait_gateway_http_ready 60 || exit 1
 
-if claw_pool_daemon_on_host; then
+if claw_pool_uses_remote; then
+  claw_assert_remote_pool_registry_ready "${PODMAN_DIR}" || {
+    echo "error: remote pool registry check failed (CLAW_POOL_REMOTE_BASE + CLAW_POOL_ID + shared PG)" >&2
+    exit 1
+  }
+  echo "remote pool ready (${CLAW_POOL_REMOTE_BASE})" >&2
+elif claw_pool_daemon_on_host; then
   "${PODMAN_DIR}/lib/pool-daemon-up.sh"
   claw_assert_host_pool_rpc_ready "${POOL_RPC_DIR}" || {
     echo "error: gateway compose up finished but host pool RPC is unavailable" >&2

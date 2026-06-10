@@ -85,21 +85,6 @@ has_artifact_upsert_key="$(psql_q "SELECT to_regclass('public.gateway_session_ar
 
 ok "claw_pool + gateway_turns.pool_id/worker_name + session_artifacts pool-v1 schema present"
 
-echo "==> [2/6] Host pool daemon (v1: no compose sidecar)"
-claw_pool_daemon_on_host || fail "host pool required (compose sidecar removed)"
-BIN="${CLAW_POOL_DAEMON_BIN:-$(claw_default_pool_daemon_bin "${PODMAN_DIR}")}"
-# shellcheck source=pool-daemon-binary.sh
-source "${LIB_DIR}/pool-daemon-binary.sh"
-[[ -x "${BIN}" ]] || fail "host claw-sandbox not executable: ${BIN}"
-
-if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if b'claw_pool registered' in b else 1)" "${BIN}" 2>/dev/null; then
-  fail "host ${BIN} lacks 'claw_pool registered' — run gateway.sh build or cargo build -p claw-sandbox-server in sandbox/"
-fi
-if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if (b'assign_turn_pool_worker_ok' in b or b'acquire_slot_ok' in b or b'claw-sandbox:' in b) else 1)" "${BIN}" 2>/dev/null; then
-  fail "host ${BIN} looks stale (expected claw-sandbox or legacy claw-pool-daemon markers)"
-fi
-ok "pool daemon binary contains registry + pool markers"
-
 # Lines after the last pool-daemon-up start (ignore stale errors from prior runs). kejiqing
 claw_pool_daemon_log_current_run() {
   local log="${1:?log}"
@@ -168,6 +153,28 @@ if want_relaxed and "relaxed" not in profiles:
   ok "sandbox capacity lists required worker profiles"
 }
 
+REMOTE_POOL=0
+echo "==> [2/6] Host pool daemon (v1: no compose sidecar)"
+if claw_pool_uses_remote; then
+  REMOTE_POOL=1
+  claw_assert_remote_pool_registry_ready "${PODMAN_DIR}" || fail "remote pool registry not ready"
+  ok "remote pool ${CLAW_POOL_REMOTE_BASE} + claw_pool row ${CLAW_POOL_ID}"
+elif claw_pool_daemon_on_host; then
+  BIN="${CLAW_POOL_DAEMON_BIN:-$(claw_default_pool_daemon_bin "${PODMAN_DIR}")}"
+  # shellcheck source=pool-daemon-binary.sh
+  source "${LIB_DIR}/pool-daemon-binary.sh"
+  [[ -x "${BIN}" ]] || fail "host claw-sandbox not executable: ${BIN}"
+  if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if b'claw_pool registered' in b else 1)" "${BIN}" 2>/dev/null; then
+    fail "host ${BIN} lacks 'claw_pool registered' — run gateway.sh build or cargo build -p claw-sandbox-server in sandbox/"
+  fi
+  if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if (b'assign_turn_pool_worker_ok' in b or b'acquire_slot_ok' in b or b'claw-sandbox:' in b) else 1)" "${BIN}" 2>/dev/null; then
+    fail "host ${BIN} looks stale (expected claw-sandbox or legacy claw-pool-daemon markers)"
+  fi
+  ok "pool daemon binary contains registry + pool markers"
+else
+  fail "host pool or CLAW_POOL_REMOTE_BASE required"
+fi
+
 if [[ -f "${RPC_DIR}/gateway.env" ]]; then
   set -a
   # shellcheck disable=SC1090
@@ -181,27 +188,59 @@ POOL_HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
 claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" \
   || fail "gateway container cannot reach pool HTTP — run gateway.sh up"
 
-echo "==> [3/6] single claw-sandbox registry"
-claw_verify_pool_profile sandbox "${POOL_RPC_DIR}" "${POOL_ID}" "${POOL_HTTP_PORT}"
-if claw_relaxed_worker_allowed_from_env; then
-  claw_verify_sandbox_capacity_profiles "${POOL_HTTP_PORT}" 1
+if [[ "${REMOTE_POOL}" == "1" ]]; then
+  echo "==> [3/6] remote sandbox capacity"
+  remote_base="$(claw_pool_remote_base)"
+  body='{"op":"capacity"}'
+  resp="$(curl -fsS --connect-timeout 5 -X POST \
+    "${remote_base}/v1/sandbox/rpc" \
+    -H 'Content-Type: application/json' \
+    -d "${body}" 2>/dev/null)" \
+    || fail "remote sandbox Capacity RPC failed (${remote_base})"
+  want_relaxed=0
+  claw_relaxed_worker_allowed_from_env && want_relaxed=1
+  python3 -c '
+import json, sys
+want_relaxed = sys.argv[1] == "1"
+d = json.loads(sys.argv[2])
+if not d.get("ok"):
+    raise SystemExit("capacity not ok: " + str(d.get("error")))
+cap = d.get("capacity") or {}
+profiles = {p.get("profile") for p in (cap.get("profiles") or [])}
+if "strict" not in profiles:
+    raise SystemExit("missing strict profile: " + str(profiles))
+if want_relaxed and "relaxed" not in profiles:
+    raise SystemExit("missing relaxed profile: " + str(profiles))
+' "${want_relaxed}" "${resp}" || fail "remote capacity profiles check failed"
+  ok "remote sandbox capacity ok"
+  echo "==> [4/6] shared PG registry (remote pool)"
+  echo "==> [5/6] claw_pool registry row"
+  row_pool="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${POOL_ID}' LIMIT 1;")"
+  [[ "${row_pool}" == "${POOL_ID}" ]] || fail "claw_pool missing row pool_id=${POOL_ID}"
+  ok "claw_pool has row ${POOL_ID}"
 else
-  claw_verify_sandbox_capacity_profiles "${POOL_HTTP_PORT}" 0
+  echo "==> [3/6] single claw-sandbox registry"
+  claw_verify_pool_profile sandbox "${POOL_RPC_DIR}" "${POOL_ID}" "${POOL_HTTP_PORT}"
+  if claw_relaxed_worker_allowed_from_env; then
+    claw_verify_sandbox_capacity_profiles "${POOL_HTTP_PORT}" 1
+  else
+    claw_verify_sandbox_capacity_profiles "${POOL_HTTP_PORT}" 0
+  fi
+
+  echo "==> [4/6] pool daemon DB URL (host must not use compose hostname postgres)"
+  pool_db_url="$(claw_pool_daemon_database_url)" || fail "CLAW_GATEWAY_DATABASE_URL unset"
+  case "${pool_db_url}" in
+    *@postgres:*)
+      fail "host pool would use @postgres: — use 127.0.0.1:${PG_PORT} (claw_pool_daemon_database_url)"
+      ;;
+  esac
+  ok "host pool DB URL uses reachable host (${pool_db_url%%@*}@…)"
+
+  echo "==> [5/6] claw_pool registry row"
+  row_pool="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${POOL_ID}' LIMIT 1;")"
+  [[ "${row_pool}" == "${POOL_ID}" ]] || fail "claw_pool missing row pool_id=${POOL_ID}"
+  ok "claw_pool has row ${POOL_ID}"
 fi
-
-echo "==> [4/6] pool daemon DB URL (host must not use compose hostname postgres)"
-pool_db_url="$(claw_pool_daemon_database_url)" || fail "CLAW_GATEWAY_DATABASE_URL unset"
-case "${pool_db_url}" in
-  *@postgres:*)
-    fail "host pool would use @postgres: — use 127.0.0.1:${PG_PORT} (claw_pool_daemon_database_url)"
-    ;;
-esac
-ok "host pool DB URL uses reachable host (${pool_db_url%%@*}@…)"
-
-echo "==> [5/6] claw_pool registry row"
-row_pool="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${POOL_ID}' LIMIT 1;")"
-[[ "${row_pool}" == "${POOL_ID}" ]] || fail "claw_pool missing row pool_id=${POOL_ID}"
-ok "claw_pool has row ${POOL_ID}"
 
 echo "==> [6/6] gateway.env sandbox URL"
 [[ -f "${RPC_DIR}/gateway.env" ]] || fail "missing gateway.env"

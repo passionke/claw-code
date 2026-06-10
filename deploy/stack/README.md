@@ -18,6 +18,9 @@ Author: kejiqing
 | 环境 | 模板 | 关键变量 |
 | --- | --- | --- |
 | 生产 Linux | `env.production.example` | `CLAW_DEPLOY_PROFILE=production`（脚本默认 `CLAW_POOL_HOST_DAEMON=1`），`up --release` 拉镜像 |
+| 本地全栈（macOS Podman） | `env.local.example` | `gateway.sh quick` / `pack-deploy local` |
+| **本地开发 · 远程后端** | `env.local-remote-backend.example` | 本机 gateway+playground；PG/pool/tap 在稳定主机（见 `docs/local-dev-remote-backend.md`） |
+| 稳定沙箱主机（如 10.22.28.94） | `env.stable-dev-host.example` | 仅维护 PG+pool+tap（见 `docs/stable-sandbox-host.md`） |
 | 本地 / rootless podman | `env.production.rootless.example` | `CLAW_CONTAINER_RUNTIME=podman`；Linux 可选手写 socket；**macOS** 一般留空（自动用 `podman machine` API sock） |
 
 `compose-include.sh` 按 `CLAW_CONTAINER_RUNTIME` 解析 socket：**docker 只认** `/var/run/docker.sock`；**podman 不会在 macOS 上误回落到 docker.sock**。装真 Docker 的生产机可 `sudo touch /etc/containers/nodocker`，避免 podman 冒充 `docker` 命令。

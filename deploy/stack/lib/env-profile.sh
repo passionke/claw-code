@@ -39,10 +39,14 @@ claw_apply_deploy_profile() {
   case "${profile}" in
     local)
       # One pool URL: HTTP on 9944 (live SSE + POST /v1/pool/rpc). No 9943 TCP / unix. kejiqing
-      if [[ "${CLAW_CONTAINER_RUNTIME:-podman}" == docker || "${CLAW_USE_DOCKER:-0}" == "1" ]]; then
-        export CLAW_POOL_HTTP_BASE="${CLAW_POOL_HTTP_BASE:-http://host.docker.internal:9944}"
-      else
-        export CLAW_POOL_HTTP_BASE="${CLAW_POOL_HTTP_BASE:-http://host.containers.internal:9944}"
+      if [[ -z "${CLAW_POOL_HTTP_BASE:-}" && -z "${CLAW_POOL_REMOTE_BASE:-}" ]]; then
+        if [[ "${CLAW_CONTAINER_RUNTIME:-podman}" == docker || "${CLAW_USE_DOCKER:-0}" == "1" ]]; then
+          export CLAW_POOL_HTTP_BASE="http://host.docker.internal:9944"
+        else
+          export CLAW_POOL_HTTP_BASE="http://host.containers.internal:9944"
+        fi
+      elif [[ -z "${CLAW_POOL_HTTP_BASE:-}" && -n "${CLAW_POOL_REMOTE_BASE:-}" ]]; then
+        export CLAW_POOL_HTTP_BASE="${CLAW_POOL_REMOTE_BASE%/}"
       fi
       unset CLAW_POOL_DAEMON_TCP CLAW_POOL_DAEMON_SOCKET CLAW_POOL_DAEMON_TCP_HOST 2>/dev/null || true
       unset CLAW_POOL_RPC_TRANSPORT 2>/dev/null || true

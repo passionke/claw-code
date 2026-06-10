@@ -49,9 +49,22 @@ claw_deploy_preflight() {
     echo "    postgres: external (${CLAW_GATEWAY_DATABASE_URL%%@*}@…); skip local image pull" >&2
   fi
 
-  claw_workspace_ownership_preflight "${podman_dir}" || return 1
+  if claw_pool_uses_remote; then
+    echo "    workspace: skip ownership preflight (remote pool; workers not on this host)" >&2
+    mkdir -p "$(claw_stack_workspace_bind_dir "${podman_dir}")" 2>/dev/null || true
+  else
+    claw_workspace_ownership_preflight "${podman_dir}" || return 1
+  fi
 
-  claw_pool_daemon_on_host || return 1
+  if claw_pool_uses_remote; then
+    [[ -n "${CLAW_POOL_ID:-}" ]] || {
+      echo "error: CLAW_POOL_ID required with CLAW_POOL_REMOTE_BASE" >&2
+      return 1
+    }
+    echo "    pool: remote ${CLAW_POOL_REMOTE_BASE} (pool_id=${CLAW_POOL_ID})" >&2
+  else
+    claw_pool_daemon_on_host || return 1
+  fi
 
   echo "==> preflight ok (compose project=${COMPOSE_PROJECT_NAME})" >&2
 }
@@ -107,6 +120,9 @@ try:
     names = os.listdir(root)
 except FileNotFoundError:
     names = []
+except PermissionError:
+    print(f"PERMISSION_DENIED {root}")
+    sys.exit(3)
 for name in names:
     if not (name.startswith("ds_") or name.startswith("proj_")):
         continue
@@ -133,6 +149,12 @@ PY
     printf '%s\n' "${out}" >&2
     echo "hint: ./deploy/stack/gateway.sh fix-workspace  OR  sudo chown -R ${uid}:${gid} \"${root}/ds_\"*" >&2
     echo "manual: deploy/stack/README.md -> 1.3 启动与检查 / 3. 常见问题（短）" >&2
+    return 1
+  fi
+
+  if [[ "${out}" == PERMISSION_DENIED* ]]; then
+    echo "error: cannot read workspace ${root} (permission denied — often root-owned from prior compose)" >&2
+    echo "hint: sudo chown -R \$(id -u):\$(id -g) \"${root}\"  OR  ./deploy/stack/gateway.sh fix-workspace" >&2
     return 1
   fi
 
