@@ -115,7 +115,8 @@ claw_ci_cluster_solve_e2e_run "${ENV_B}" "${GW_B}" "${POOL_B}" "" strict
 
 echo "==> [5/7] cross-gateway session: created on A, first turn on B (local dir recreate)"
 SESSION_ID="$(claw_ci_solve_capture_session "${ENV_A}" "${GW_A}")"
-[[ -n "${SESSION_ID}" ]] || fail "empty sessionId from node A solve"
+SESSION_ID="$(printf '%s' "${SESSION_ID}" | tr -d '\r' | rg -o '[0-9a-f]{32}' | tail -1 || true)"
+[[ -n "${SESSION_ID}" ]] || fail "empty sessionId from node A solve (capture stdout polluted?)"
 echo "    sessionId=${SESSION_ID}"
 claw_ci_cluster_solve_e2e_run "${ENV_B}" "${GW_B}" "${POOL_B}" "" strict "${SESSION_ID}"
 

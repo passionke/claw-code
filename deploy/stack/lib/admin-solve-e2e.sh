@@ -13,13 +13,13 @@ GATEWAY_PORT="${GATEWAY_HOST_PORT:-18088}"
 DS_ID="${1:-1}"
 PROMPT="${2:-connectivity check}"
 CAPTURE_SESSION="${CLAW_E2E_CAPTURE_SESSION_ID:-0}"
+if [[ "${CAPTURE_SESSION}" == "1" ]]; then
+  exec 3>&1
+  exec 1>&2
+fi
 
 _claw_e2e_log() {
-  if [[ "${CAPTURE_SESSION}" == "1" ]]; then
-    echo "$@" >&2
-  else
-    echo "$@"
-  fi
+  echo "$@"
 }
 
 # shellcheck disable=SC1091
@@ -90,11 +90,7 @@ for _ in $(seq 1 120); do
   sleep 2
   R="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/tasks/${TASK_ID}")"
   ST="$(printf '%s' "${R}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])')"
-  if [[ "${CAPTURE_SESSION}" == "1" ]]; then
-    echo "poll status=${ST}" >&2
-  else
-    echo "poll status=${ST}"
-  fi
+  echo "poll status=${ST}"
   if [[ "${ST}" == "succeeded" || "${ST}" == "failed" ]]; then
     if [[ "${CAPTURE_SESSION}" != "1" ]]; then
       printf '%s\n' "${R}" | python3 -m json.tool
@@ -102,7 +98,7 @@ for _ in $(seq 1 120); do
     if [[ "${ST}" == "succeeded" ]]; then
       claw_e2e_assert_solve_task "${R}" "task poll"
       if [[ "${CAPTURE_SESSION}" == "1" ]]; then
-        printf '%s\n' "${SESSION_ID}"
+        printf '%s\n' "${SESSION_ID}" >&3
       fi
       exit 0
     fi
