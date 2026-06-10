@@ -49,49 +49,42 @@ psql_q() {
   "${RT}" run --rm "${pg_img}" psql "${url}" -t -A -c "$1"
 }
 
-echo "==> [1/4] claw_pool: no legacy zombies (superseded by *-strict)"
+echo "==> [1/4] claw_pool: no legacy dual-pool rows (*-strict / *-relaxed)"
 
-zombies="$(psql_q "
-  SELECT p.pool_id
-  FROM claw_pool p
-  WHERE p.pool_id NOT LIKE '%-strict' AND p.pool_id NOT LIKE '%-relaxed'
-    AND EXISTS (
-      SELECT 1 FROM claw_pool s
-      WHERE s.gateway_base = p.gateway_base
-        AND s.pool_id LIKE '%-strict'
-        AND (EXTRACT(EPOCH FROM NOW())*1000 - s.last_heartbeat_ms) < 120000
-    )
-  ORDER BY p.pool_id;
+legacy="$(psql_q "
+  SELECT pool_id
+  FROM claw_pool
+  WHERE pool_id LIKE '%-strict' OR pool_id LIKE '%-relaxed'
+  ORDER BY pool_id;
 " | sed '/^$/d')"
 
-if [[ -n "${zombies}" ]]; then
-  echo "legacy rows to delete (Admin Pool 集群 or DELETE /v1/pools/{id}):" >&2
-  printf '%s\n' "${zombies}" >&2
-  fail "offline legacy pool_id rows remain while *-strict is online on same gateway"
+if [[ -n "${legacy}" ]]; then
+  echo "legacy dual-pool rows to delete (Admin Pool 集群 or DELETE /v1/pools/{id}):" >&2
+  printf '%s\n' "${legacy}" >&2
+  fail "remove *-strict / *-relaxed pool_id rows (single claw-sandbox per node)"
 fi
-ok "no legacy pool_id zombies"
+ok "no legacy dual-pool pool_id rows"
 
-echo "==> [2/4] each gateway_base has online *-strict"
+echo "==> [2/4] each gateway_base has online pool row"
 
 bad_gw="$(psql_q "
   SELECT DISTINCT gateway_base
   FROM claw_pool
   WHERE gateway_base <> ''
-    AND gateway_base IN (SELECT gateway_base FROM claw_pool WHERE pool_id LIKE '%-strict')
     AND gateway_base NOT IN (
       SELECT gateway_base FROM claw_pool
-      WHERE pool_id LIKE '%-strict'
+      WHERE gateway_base <> ''
         AND (EXTRACT(EPOCH FROM NOW())*1000 - last_heartbeat_ms) < 120000
     )
   ORDER BY 1;
 " | sed '/^$/d')"
 
 if [[ -n "${bad_gw}" ]]; then
-  echo "gateway_base without online strict pool:" >&2
+  echo "gateway_base without online pool row:" >&2
   printf '%s\n' "${bad_gw}" >&2
-  fail "every cluster gateway must have online *-strict row in claw_pool"
+  fail "every cluster gateway must have online pool row in claw_pool"
 fi
-ok "each registered gateway has online strict pool"
+ok "each registered gateway has online pool row"
 
 echo "==> [3/4] probe gateways (healthz + /v1/pools coLocatedPoolId)"
 
@@ -99,12 +92,11 @@ gateways="$(psql_q "
   SELECT DISTINCT gateway_base
   FROM claw_pool
   WHERE gateway_base <> ''
-    AND pool_id LIKE '%-strict'
     AND (EXTRACT(EPOCH FROM NOW())*1000 - last_heartbeat_ms) < 120000
   ORDER BY 1;
 " | sed '/^$/d')"
 
-[[ -n "${gateways}" ]] || fail "no online strict pools in claw_pool — cluster empty?"
+[[ -n "${gateways}" ]] || fail "no online pools in claw_pool — cluster empty?"
 
 while IFS= read -r gw; do
   [[ -n "${gw}" ]] || continue
@@ -118,17 +110,17 @@ import json, sys
 body, gw, tag = sys.argv[1], sys.argv[2], sys.argv[3]
 data = json.loads(body)
 co = (data.get("coLocatedPoolId") or "").strip()
-if not co.endswith("-strict"):
-    raise SystemExit(f"{gw}: coLocatedPoolId={co!r} (expected *-strict)")
+if not co:
+    raise SystemExit(f"{gw}: coLocatedPoolId empty")
 online = [p for p in data.get("pools") or [] if p.get("online")]
-strict_online = [p for p in online if str(p.get("poolId", "")).endswith("-strict")]
-if not strict_online:
-    raise SystemExit(f"{gw}: /v1/pools has no online *-strict row")
-print(f"      deployImageTag={tag or '?'} coLocated={co} online_strict={len(strict_online)}")
+co_online = [p for p in online if str(p.get("poolId", "")) == co]
+if not co_online:
+    raise SystemExit(f"{gw}: coLocatedPoolId={co!r} not online in /v1/pools")
+print(f"      deployImageTag={tag or '?'} coLocated={co} online_pools={len(online)}")
 PY
 done <<<"${gateways}"
 
-ok "all cluster gateways respond; coLocatedPoolId ends with -strict"
+ok "all cluster gateways respond; coLocatedPoolId online"
 
 echo "==> [4/4] offline row count (informational)"
 offline_n="$(psql_q "

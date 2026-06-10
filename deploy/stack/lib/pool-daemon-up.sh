@@ -131,6 +131,7 @@ fi
 
 if [[ "${RESTART}" == 1 ]]; then
   echo "==> pool-daemon-up: --restart" >&2
+  export CLAW_POOL_UP_ENV_FILE="${_pool_env_file}"
   "${PODMAN_DIR}/lib/pool-daemon-down.sh"
   if [[ "${WITH_WORKERS}" == 1 ]]; then
     # shellcheck disable=SC1091

@@ -54,8 +54,8 @@ ADMIN_PASSWORD = os.environ.get("PLAYGROUND_ADMIN_PASSWORD", "sunmi123")
 SESSION_COOKIE = "claw_pg_admin"
 SESSION_TTL_SEC = int(os.environ.get("PLAYGROUND_ADMIN_SESSION_TTL_SEC", str(7 * 86400)))
 
-_DEFAULT_HOSTS = "127.0.0.1,localhost,192.168.9.252,10.200.2.171,gateway-rs"
-_DEFAULT_PORTS = "18088,8080,8088"
+_DEFAULT_HOSTS = "127.0.0.1,localhost,192.168.9.252,10.200.2.171,10.22.28.94,gateway-rs"
+_DEFAULT_PORTS = "18088,18089,8080,8088"
 
 
 def _norm_host(hostname: str | None) -> str | None:

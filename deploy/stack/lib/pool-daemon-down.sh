@@ -11,10 +11,11 @@ source "${LIB_DIR}/compose-include.sh"
 source "${LIB_DIR}/pool-health.sh"
 
 REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
-if [[ -f "${REPO_ROOT}/.env" ]]; then
+_pool_env_file="${CLAW_POOL_UP_ENV_FILE:-${REPO_ROOT}/.env}"
+if [[ -f "${_pool_env_file}" ]]; then
   set -a
   # shellcheck disable=SC1090
-  source "${REPO_ROOT}/.env"
+  source "${_pool_env_file}"
   set +a
 fi
 
@@ -71,9 +72,6 @@ claw_pool_down_one() {
 HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
 RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
 claw_pool_down_one "${RPC_DIR}" "${HTTP_PORT}"
-claw_cleanup_legacy_dual_pool "${PODMAN_DIR}"
-
-while read -r pid; do
-  [[ -n "${pid}" ]] || continue
-  kill "${pid}" 2>/dev/null || true
-done < <(pgrep -f '[/](claw-sandbox|claw-pool-daemon)' 2>/dev/null || true)
+if [[ -z "${CLAW_POOL_RPC_INSTANCE:-}" ]]; then
+  claw_cleanup_legacy_dual_pool "${PODMAN_DIR}"
+fi

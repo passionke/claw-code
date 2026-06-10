@@ -25,15 +25,21 @@ stop_ctn() {
 stop_ctn "claw-gateway-rs-ci-b"
 stop_ctn "claw-gateway-playground-ci-b"
 
-# node B host pool (ci-b RPC dirs); do not call pool-daemon-down — it re-sources repo .env (node A). kejiqing
-for sub in strict relaxed; do
-  pidf="${PODMAN_DIR}/.claw-pool-rpc-ci-b/${sub}/daemon.pid"
+# node B host pool (ci-b RPC); do not call pool-daemon-down — it would use wrong env before fix. kejiqing
+# shellcheck disable=SC1091
+source "${LIB_DIR}/nuclear-pool-reset.sh"
+for rpc_dir in \
+  "${PODMAN_DIR}/.claw-pool-rpc-ci-b" \
+  "${PODMAN_DIR}/.claw-pool-rpc-ci-b/strict" \
+  "${PODMAN_DIR}/.claw-pool-rpc-ci-b/relaxed"; do
+  pidf="${rpc_dir}/daemon.pid"
   [[ -f "${pidf}" ]] || continue
   pid="$(tr -dc '0-9' <"${pidf}" 2>/dev/null || true)"
   if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
-    echo "ci-cluster-cleanup: stop pool-daemon pid=${pid} (${sub})" >&2
+    echo "ci-cluster-cleanup: stop pool-daemon pid=${pid} (${rpc_dir##*/})" >&2
     kill "${pid}" 2>/dev/null || true
   fi
 done
+claw_kill_tcp_listeners "${CLAW_CI_NODE_B_STRICT_PORT:-9964}" 2>/dev/null || true
 
 echo "ci-cluster-cleanup: ok" >&2

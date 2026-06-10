@@ -55,7 +55,7 @@ if claw_pool_daemon_on_host; then
   set +a
   "${LIB_DIR}/pool-daemon-up.sh" --restart
   claw_assert_host_pool_rpc_ready "$(claw_pool_rpc_root "${PODMAN_DIR}")" || {
-    echo "error: node B strict pool RPC not ready" >&2
+    echo "error: node B pool RPC not ready" >&2
     exit 1
   }
 fi
