@@ -45,7 +45,7 @@ git pull
 
 | 环境 | 覆盖 |
 |------|------|
-| GitLab CI | 单机 `verify` + 双轮 `admin-solve-e2e` + **`ci-cluster-dual-deploy.sh`**（同机第二套 gateway:18089 + pool:9964，共享 PG） |
+| GitLab CI | … node B 经 **`claw-gateway-postgres:5432`**（docker 网络）+ host pool **`127.0.0.1:5433`** → **`cluster-verify`** |
 | 预发多机 | **每台** `verify` + **一次** `cluster-verify` |
 | 生产多机 | 同上；禁止只 curl healthz |
 

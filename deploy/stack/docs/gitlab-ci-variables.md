@@ -70,7 +70,9 @@ gateway clawTap ready (/readyz attempt …)
 
 随后 `gateway.sh verify` → `admin-solve-e2e.sh`（两轮）→ `poll status=succeeded`。
 
-**不覆盖集群：** CI 仅单机。预发/生产多机共享 PG 后须另跑 `gateway.sh cluster-verify`（见 `deploy/stack/docs/cluster-deploy-verify.md`）。
+**不覆盖集群：** CI 在 `deploy:release` 末尾跑 **`ci-cluster-dual-deploy.sh`**（同机双 gateway + 共享 PG + `cluster-verify`）。预发/生产多机另跑 `gateway.sh cluster-verify`（见 `deploy/stack/docs/cluster-deploy-verify.md`）。
+
+**CI 盯盘 / glab**：见 `deploy/stack/docs/gitlab-cli.md`。
 
 ## 6. Runner 工作区
 
@@ -112,9 +114,10 @@ cd /path/to/claw-code
 
 ## 8. 排查闭环（glab + runner）
 
-- Runner 宿主机：`http://10.22.28.94/`（`CLAW_POOL_ADVERTISE_HOST`）
-- 流程与 `glab` 命令：`deploy/stack/docs/gitlab-ci-troubleshoot.md`
-- 盯 pipeline：`./deploy/stack/lib/ci-watch-pipeline.sh proj_id`
+- **glab 安装、登录、job trace、盯 pipeline**：[`deploy/stack/docs/gitlab-cli.md`](gitlab-cli.md)
+- deploy 失败关键字：[`deploy/stack/docs/gitlab-ci-troubleshoot.md`](gitlab-ci-troubleshoot.md)
+- 盯 pipeline：`./deploy/stack/lib/ci-watch-pipeline.sh main`
+- push 触发 CI：`git push sunmi main`
 
 ## 9. 参考
 

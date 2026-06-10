@@ -84,6 +84,7 @@ deploy:release:
   script:
     - source ./deploy/stack/lib/ci-sync-worktree.sh
     - ./deploy/stack/lib/render-env-from-ci.sh
+    - ./deploy/stack/lib/ci-cluster-cleanup.sh
     - ./deploy/stack/gateway.sh up --release "${CLAW_RELEASE_TAG}"
     - ./deploy/stack/gateway.sh verify
     - ./deploy/stack/lib/admin-solve-e2e.sh 1 ping

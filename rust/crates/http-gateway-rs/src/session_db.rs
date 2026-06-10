@@ -307,6 +307,17 @@ pub struct GatewaySessionDb {
     database_url_redacted: String,
 }
 
+// Second gateway on shared PG: node A already ran migrate (pg_advisory_lock). Author: kejiqing
+fn gateway_skip_db_migrate_from_env() -> bool {
+    matches!(
+        std::env::var("CLAW_GATEWAY_SKIP_DB_MIGRATE")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("1" | "true" | "yes" | "TRUE" | "YES")
+    )
+}
+
 impl GatewaySessionDb {
     /// Connects using `CLAW_GATEWAY_DATABASE_URL` (required).
     pub async fn open() -> Result<Self, SqlxError> {
@@ -317,6 +328,9 @@ impl GatewaySessionDb {
             return Err(SqlxError::Configuration(
                 "CLAW_GATEWAY_DATABASE_URL is empty".into(),
             ));
+        }
+        if gateway_skip_db_migrate_from_env() {
+            return Self::connect_without_migrate(url).await;
         }
         Self::connect(url).await
     }
@@ -3847,7 +3861,7 @@ mod tests {
 
     #[tokio::test]
     async fn workspace_tar_materialize_latest_turn() {
-        use crate::pool::{WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH};
+        use claw_sandbox_protocol::{WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH};
 
         let Some(db) = test_db().await else {
             eprintln!(

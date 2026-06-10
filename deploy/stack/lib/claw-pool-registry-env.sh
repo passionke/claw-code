@@ -14,6 +14,8 @@ claw_pool_daemon_database_url() {
   local port="${CLAW_GATEWAY_PG_HOST_PORT:-5433}"
   url="${url//@postgres:5432/@127.0.0.1:${port}}"
   url="${url//@postgres:/@127.0.0.1:${port}/}"
+  url="${url//@claw-gateway-postgres:5432/@127.0.0.1:${port}}"
+  url="${url//@claw-gateway-postgres:/@127.0.0.1:${port}/}"
   printf '%s' "${url}"
 }
 

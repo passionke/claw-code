@@ -39,10 +39,9 @@ claw_reapply_pool_image_pins "${PODMAN_DIR}"
 
 claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC}" || true
 
-claw_compose_pg_ensure "${PODMAN_DIR}" "${ENV_FILE}"
-claw_compose_pg_wait_healthy
-
+# gateway_up → pg_ensure + probe, then create/connect/start (no migrate on node B). kejiqing
 claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
+
 claw_wait_gateway_http_ready 90 || {
   echo "error: node B gateway HTTP not ready on :${GATEWAY_HOST_PORT}" >&2
   exit 1
