@@ -54,11 +54,11 @@ claw_linux_compile_release() {
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
     -e "RUSTUP_DIST_SERVER=${rustup_dist}" \
     -e "RUSTUP_UPDATE_ROOT=${rustup_root}" \
-    -v "${rust_dir}:/build:Z" \
+    -v "${root_dir}:/workspace:Z" \
     -v claw-cargo-registry:/usr/local/cargo/registry \
     -v claw-cargo-git:/usr/local/cargo/git \
     -v "${out_root}:/artifacts:Z" \
-    -w /build \
+    -w /workspace/rust \
     "${rust_image}" \
     bash -c '
       set -eu

@@ -35,8 +35,9 @@ use api::{
 };
 use runtime::{
     apply_config_env_if_unset, apply_mcp_tool_annotations_from_config, concurrent_mcp_tool_names,
-    default_mcp_max_concurrent, gateway_git_import_prompt_section, gateway_schema_prompt_section,
-    load_system_prompt, mcp_description_parallel_friendly, mcp_tool_parallel_fanout_eligible,
+    default_mcp_max_concurrent, gateway_git_import_prompt_section,
+    gateway_pool_layout_prompt_section, gateway_schema_prompt_section, load_system_prompt,
+    mcp_description_parallel_friendly, mcp_tool_parallel_fanout_eligible,
     ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
     ConversationMessage, ConversationRuntime, McpServerManager, McpTool, MessageRole,
     PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError, Session, SharedToolExecutor,
@@ -1323,6 +1324,9 @@ pub fn run_gateway_solve_turn(
         if let Some(section) = gateway_schema_prompt_section(work_dir) {
             system_prompt.push(section);
         }
+    }
+    if let Some(section) = gateway_pool_layout_prompt_section() {
+        system_prompt.push(section);
     }
     if let Some(section) = gateway_git_import_prompt_section(work_dir) {
         system_prompt.push(section);

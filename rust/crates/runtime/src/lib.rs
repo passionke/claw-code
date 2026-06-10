@@ -144,7 +144,8 @@ pub use policy_engine::{
 };
 pub use prompt::{
     auto_hidden_system_prompt_enabled, builtin_system_prompt_scaffold_default,
-    gateway_git_import_prompt_section, gateway_project_config_root, gateway_schema_prompt_section,
+    gateway_git_import_prompt_section, gateway_pool_layout_prompt_section,
+    gateway_project_config_root, gateway_schema_prompt_section,
     gateway_sqlbot_preflight_prompt_section, load_gateway_data_catalog, load_gateway_schema_md,
     load_system_prompt, max_instruction_file_chars, max_instruction_file_chars_for,
     max_total_instruction_chars, max_total_instruction_chars_for, prepend_bullets,

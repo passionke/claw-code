@@ -383,13 +383,11 @@ claw_podman_load_compose_args() {
     claw_compose_append_pool_rpc_envfile_override "${script_dir}" "${rel}"
   fi
   local pool_http_port="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
-  local relaxed_pool_http_port="${CLAW_RELAXED_POOL_HTTP_PORT:-9954}"
-  local http_host profile_name base_pool_id strict_pool_id relaxed_pool_id
+  local http_host profile_name base_pool_id pool_id
   # shellcheck source=claw-pool-registry-env.sh
   source "${script_dir}/lib/claw-pool-registry-env.sh"
   base_pool_id="$(claw_default_pool_id)"
-  strict_pool_id="${CLAW_STRICT_POOL_ID:-${base_pool_id}-strict}"
-  relaxed_pool_id="${CLAW_RELAXED_POOL_ID:-${base_pool_id}-relaxed}"
+  pool_id="${CLAW_POOL_ID:-${base_pool_id}}"
   if claw_pool_daemon_on_host; then
     profile_name="$(claw_deploy_profile_name 2>/dev/null || true)"
     # v1 host pool: gateway container → host pool HTTP (not LAN IP). kejiqing
@@ -408,16 +406,22 @@ claw_podman_load_compose_args() {
       fi
     fi
     {
-      printf '%s\n' '# GENERATED — host dual claw-pool-daemon HTTP (live SSE + POST /v1/pool/rpc). kejiqing'
+      printf '%s\n' '# GENERATED — host claw-sandbox HTTP (POST /v1/sandbox/rpc). kejiqing'
+      printf '%s\n' "CLAW_SANDBOX_URL=http://${http_host}:${pool_http_port}"
       printf '%s\n' "CLAW_STRICT_POOL_HTTP_BASE=http://${http_host}:${pool_http_port}"
-      printf '%s\n' "CLAW_RELAXED_POOL_HTTP_BASE=http://${http_host}:${relaxed_pool_http_port}"
       printf '%s\n' "CLAW_POOL_HTTP_BASE=http://${http_host}:${pool_http_port}"
-      printf '%s\n' "CLAW_STRICT_POOL_ID=${strict_pool_id}"
-      printf '%s\n' "CLAW_RELAXED_POOL_ID=${relaxed_pool_id}"
-      printf '%s\n' "CLAW_POOL_ID=${strict_pool_id}"
+      printf '%s\n' "CLAW_POOL_ID=${pool_id}"
+      printf '%s\n' "CLAW_STRICT_POOL_ID=${pool_id}"
       printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
       printf '%s\n' "CLAW_POOL_DAEMON_TCP="
       printf '%s\n' "CLAW_POOL_DAEMON_SOCKET="
+      # shellcheck source=pool-health.sh
+      source "${script_dir}/lib/pool-health.sh"
+      if claw_relaxed_worker_allowed_from_env; then
+        printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=true"
+      else
+        printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=false"
+      fi
       if [[ -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
         printf '%s\n' "# pool registry advertise (claw_pool.advertise_ip): ${CLAW_POOL_ADVERTISE_HOST}"
       fi

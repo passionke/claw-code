@@ -56,6 +56,8 @@ pub struct GatewayTurnSummary {
     pub pool_id: Option<String>,
     /// Worker container name after pool exec starts. Author: kejiqing
     pub worker_name: Option<String>,
+    /// `podman exec --user` for this turn (`claw`, etc.). Author: kejiqing
+    pub worker_exec_user: Option<String>,
 }
 
 /// Row for tools API: session path + turn times + 1-based user turn index (single query). Author: kejiqing
@@ -82,6 +84,7 @@ pub struct LatestTurnRow {
     pub user_prompt: Option<String>,
     pub pool_id: Option<String>,
     pub worker_name: Option<String>,
+    pub worker_exec_user: Option<String>,
 }
 
 /// One row per `proj_id`: rules, MCP map, inline skills, optional `CLAUDE.md` body. Author: kejiqing
@@ -496,6 +499,7 @@ impl GatewaySessionDb {
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS claw_exit_code INT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS pool_id TEXT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS worker_name TEXT",
+            "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS worker_exec_user TEXT",
             "ALTER TABLE gateway_sessions ADD COLUMN IF NOT EXISTS client_origin TEXT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS client_origin TEXT",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS entry_params_json JSONB",
@@ -2108,6 +2112,20 @@ impl GatewaySessionDb {
         .map(|opt| opt.flatten())
     }
 
+    /// `podman exec --user` recorded at pool acquire. Author: kejiqing
+    pub async fn get_turn_worker_exec_user(
+        &self,
+        turn_id: &str,
+    ) -> Result<Option<String>, SqlxError> {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT worker_exec_user FROM gateway_turns WHERE turn_id = $1",
+        )
+        .bind(turn_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|opt| opt.flatten())
+    }
+
     #[must_use]
     pub fn progress_events_from_timing_store(
         store: &serde_json::Value,
@@ -2621,13 +2639,17 @@ impl GatewaySessionDb {
         turn_id: &str,
         pool_id: &str,
         worker_name: &str,
+        worker_exec_user: Option<&str>,
     ) -> Result<(), SqlxError> {
-        sqlx::query("UPDATE gateway_turns SET pool_id = $2, worker_name = $3 WHERE turn_id = $1")
-            .bind(turn_id)
-            .bind(pool_id)
-            .bind(worker_name)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE gateway_turns SET pool_id = $2, worker_name = $3, worker_exec_user = $4 WHERE turn_id = $1",
+        )
+        .bind(turn_id)
+        .bind(pool_id)
+        .bind(worker_name)
+        .bind(worker_exec_user)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -3120,7 +3142,7 @@ impl GatewaySessionDb {
         let rows = sqlx::query(
             r"SELECT t.turn_id, t.user_prompt, t.status, t.created_at_ms, t.finished_at_ms,
                      t.report_message, t.output_json, t.client_origin, t.entry_params_json, f.feedback,
-                     t.pool_id, t.worker_name,
+                     t.pool_id, t.worker_name, t.worker_exec_user,
                      (
                        (t.report_message IS NOT NULL AND btrim(t.report_message) <> '')
                        OR t.output_json IS NOT NULL
@@ -3169,6 +3191,7 @@ impl GatewaySessionDb {
                 extra_session,
                 pool_id: r.try_get("pool_id")?,
                 worker_name: r.try_get("worker_name")?,
+                worker_exec_user: r.try_get("worker_exec_user")?,
             });
         }
         Ok(out)
@@ -3180,7 +3203,8 @@ impl GatewaySessionDb {
     ) -> Result<Option<LatestTurnRow>, SqlxError> {
         let row = sqlx::query(
             r"SELECT turn_id, session_id, proj_id, status, created_at_ms, finished_at_ms,
-                     report_message, output_json, claw_exit_code, user_prompt, pool_id, worker_name
+                     report_message, output_json, claw_exit_code, user_prompt, pool_id, worker_name,
+                     worker_exec_user
               FROM gateway_turns
               WHERE session_id = $1
               ORDER BY created_at_ms DESC, turn_id DESC
@@ -3205,6 +3229,7 @@ impl GatewaySessionDb {
             user_prompt: r.try_get("user_prompt")?,
             pool_id: r.try_get("pool_id")?,
             worker_name: r.try_get("worker_name")?,
+            worker_exec_user: r.try_get("worker_exec_user")?,
         }))
     }
 
@@ -3664,7 +3689,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(base, "http://10.0.0.8:9944");
-        db.assign_turn_pool_worker(tid, &pool_id, "claw-worker-test-0")
+        db.assign_turn_pool_worker(tid, &pool_id, "claw-worker-test-0", Some("claw"))
             .await
             .unwrap();
         let row: Option<(Option<String>, Option<String>)> =

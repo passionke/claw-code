@@ -43,6 +43,10 @@ export interface SolveTask {
   poolId?: string | null;
   /** Worker container after pool exec. Author: kejiqing */
   workerName?: string | null;
+  /** ds `workerIsolationJson.mode` (strict|relaxed). Author: kejiqing */
+  workerIsolation?: string | null;
+  /** Pool `podman exec --user` (e.g. claw). Author: kejiqing */
+  workerExecUser?: string | null;
 }
 
 export interface SolveAsyncResponse {
@@ -52,6 +56,9 @@ export interface SolveAsyncResponse {
   status?: string;
   poolId?: string | null;
   workerName?: string | null;
+  workerIsolation?: string | null;
+  /** Pool `podman exec --user` (e.g. claw). Author: kejiqing */
+  workerExecUser?: string | null;
 }
 
 export interface ChatBubble {
@@ -100,6 +107,9 @@ export interface GatewayTurnSummary {
   extraSession?: Record<string, unknown> | null;
   poolId?: string | null;
   workerName?: string | null;
+  workerIsolation?: string | null;
+  /** Pool `podman exec --user` (e.g. claw). Author: kejiqing */
+  workerExecUser?: string | null;
 }
 
 export interface ListSessionTurnsResponse {

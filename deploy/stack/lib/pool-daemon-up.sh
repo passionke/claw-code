@@ -46,17 +46,7 @@ if [[ "${CLAW_POOL_PROFILE}" == "relaxed" ]] && ! claw_relaxed_worker_allowed_fr
   exit 1
 fi
 if [[ "${CLAW_POOL_PROFILE}" == "all" ]]; then
-  if ! claw_relaxed_worker_allowed_from_env; then
-    echo "==> pool-daemon-up: CLAW_ALLOW_RELAXED_WORKER=false → strict only (not dual pool)" >&2
-    CLAW_POOL_PROFILE=strict
-  else
-    _extra=()
-    [[ "${RESTART}" == 1 ]] && _extra+=(--restart)
-    [[ "${WITH_WORKERS}" == 1 ]] && _extra+=(--with-workers)
-    "${BASH_SOURCE[0]}" --profile=strict ${ARGS[@]+"${ARGS[@]}"} ${_extra[@]+"${_extra[@]}"}
-    "${BASH_SOURCE[0]}" --profile=relaxed ${ARGS[@]+"${ARGS[@]}"} ${_extra[@]+"${_extra[@]}"}
-    exit $?
-  fi
+  CLAW_POOL_PROFILE=strict
 fi
 export CLAW_POOL_PROFILE
 
@@ -84,13 +74,22 @@ case "${CLAW_POOL_PROFILE}" in
     RPC_DIR="$(claw_strict_pool_rpc_dir "${PODMAN_DIR}")"
     HTTP_PORT="${CLAW_STRICT_POOL_HTTP_PORT:-9944}"
     _pool_daemon_tcp_port="${CLAW_STRICT_POOL_DAEMON_PORT:-9943}"
-    export CLAW_POOL_ID="${CLAW_STRICT_POOL_ID:-${_base_pool_id}-strict}"
     export CLAW_PODMAN_POOL_SIZE="${CLAW_STRICT_PODMAN_POOL_SIZE:-${CLAW_PODMAN_POOL_SIZE:-3}}"
     export CLAW_PODMAN_POOL_MIN_IDLE="${CLAW_STRICT_PODMAN_POOL_MIN_IDLE:-${CLAW_PODMAN_POOL_MIN_IDLE:-1}}"
     export CLAW_DOCKER_POOL_SIZE="${CLAW_STRICT_DOCKER_POOL_SIZE:-${CLAW_STRICT_PODMAN_POOL_SIZE:-${CLAW_DOCKER_POOL_SIZE:-${CLAW_PODMAN_POOL_SIZE:-3}}}}"
     export CLAW_DOCKER_POOL_MIN_IDLE="${CLAW_STRICT_DOCKER_POOL_MIN_IDLE:-${CLAW_STRICT_PODMAN_POOL_MIN_IDLE:-${CLAW_DOCKER_POOL_MIN_IDLE:-${CLAW_PODMAN_POOL_MIN_IDLE:-1}}}}"
-    _pool_worker_isolation=strict
-    _pool_allow_relaxed=false
+    if claw_relaxed_worker_allowed_from_env; then
+      # Single claw-sandbox: base pool id (no -strict suffix); acquire picks strict/relaxed per ds. kejiqing
+      export CLAW_POOL_ID="${CLAW_STRICT_POOL_ID:-${_base_pool_id}}"
+      _pool_allow_relaxed=true
+      _pool_worker_isolation=""
+      _pool_emit_relaxed_image=1
+    else
+      export CLAW_POOL_ID="${CLAW_STRICT_POOL_ID:-${_base_pool_id}-strict}"
+      _pool_allow_relaxed=false
+      _pool_worker_isolation=strict
+      _pool_emit_relaxed_image=0
+    fi
     ;;
   relaxed)
     RPC_DIR="$(claw_relaxed_pool_rpc_dir "${PODMAN_DIR}")"
@@ -113,7 +112,11 @@ case "${CLAW_POOL_PROFILE}" in
     ;;
 esac
 export CLAW_POOL_HTTP_PORT="${HTTP_PORT}"
-BIN="${CLAW_POOL_DAEMON_BIN:-$(claw_default_pool_daemon_bin "${PODMAN_DIR}")}"
+if [[ -n "${CLAW_POOL_DAEMON_BIN:-}" ]]; then
+  BIN="${CLAW_POOL_DAEMON_BIN}"
+else
+  BIN="$(claw_ensure_pool_daemon_binary "${PODMAN_DIR}" "${REPO_ROOT}")" || exit 1
+fi
 case "${CLAW_POOL_RPC_TRANSPORT:-}" in
   tcp | unix | http) TRANSPORT="${CLAW_POOL_RPC_TRANSPORT}" ;;
   *)
@@ -230,8 +233,24 @@ claw_pool_env_kv() {
   [[ -n "${CLAW_PODMAN_POOL_MIN_IDLE:-}" ]] && claw_pool_env_kv CLAW_PODMAN_POOL_MIN_IDLE "${CLAW_PODMAN_POOL_MIN_IDLE}"
   [[ -n "${CLAW_DOCKER_EXTRA_ARGS:-}" ]] && claw_pool_env_kv CLAW_DOCKER_EXTRA_ARGS "${CLAW_DOCKER_EXTRA_ARGS}"
   [[ -n "${CLAW_PODMAN_EXTRA_ARGS:-}" ]] && claw_pool_env_kv CLAW_PODMAN_EXTRA_ARGS "${CLAW_PODMAN_EXTRA_ARGS}"
+  if [[ "${_pool_emit_relaxed_image:-0}" == "1" ]]; then
+    _relaxed_img="${CLAW_RELAXED_PODMAN_IMAGE:-claw-gateway-worker-relaxed:local}"
+    claw_pool_env_kv CLAW_PODMAN_RELAXED_IMAGE "${_relaxed_img}"
+    claw_pool_env_kv CLAW_DOCKER_RELAXED_IMAGE "${_relaxed_img}"
+    claw_pool_env_kv CLAW_RELAXED_PODMAN_IMAGE "${_relaxed_img}"
+    _relaxed_pool_size="${CLAW_RELAXED_PODMAN_POOL_SIZE:-${CLAW_PODMAN_RELAXED_POOL_SIZE:-1}}"
+    _relaxed_pool_min_idle="${CLAW_RELAXED_PODMAN_POOL_MIN_IDLE:-${CLAW_PODMAN_RELAXED_POOL_MIN_IDLE:-0}}"
+    claw_pool_env_kv CLAW_PODMAN_RELAXED_POOL_SIZE "${_relaxed_pool_size}"
+    claw_pool_env_kv CLAW_DOCKER_RELAXED_POOL_SIZE "${_relaxed_pool_size}"
+    claw_pool_env_kv CLAW_PODMAN_RELAXED_POOL_MIN_IDLE "${_relaxed_pool_min_idle}"
+    claw_pool_env_kv CLAW_DOCKER_RELAXED_POOL_MIN_IDLE "${_relaxed_pool_min_idle}"
+  fi
+  # All solve/materialize work runs as `claw` inside the worker (strict + relaxed). kejiqing
+  _pool_exec_user="${CLAW_PODMAN_POOL_EXEC_USER:-claw}"
+  claw_pool_env_kv CLAW_PODMAN_POOL_EXEC_USER "${_pool_exec_user}"
+  claw_pool_env_kv CLAW_DOCKER_POOL_EXEC_USER "${CLAW_DOCKER_POOL_EXEC_USER:-${_pool_exec_user}}"
   # Pool-daemon process env (launchd child does NOT inherit shell-only exports). kejiqing
-  claw_pool_env_kv CLAW_POOL_WORKER_ISOLATION "${_pool_worker_isolation}"
+  [[ -n "${_pool_worker_isolation}" ]] && claw_pool_env_kv CLAW_POOL_WORKER_ISOLATION "${_pool_worker_isolation}"
   claw_pool_env_kv CLAW_ALLOW_RELAXED_WORKER "${_pool_allow_relaxed}"
   claw_pool_env_kv CLAW_SECURITY_BOOST "${CLAW_SECURITY_BOOST:-true}"
   claw_pool_env_kv CLAW_GATEWAY_DATABASE_URL "${pool_db_url}"
@@ -242,7 +261,7 @@ claw_pool_env_kv() {
   fi
 } >"${RPC_DIR}/pool-daemon.env"
 
-for _pool_proc_key in CLAW_POOL_WORKER_ISOLATION CLAW_ALLOW_RELAXED_WORKER CLAW_SECURITY_BOOST; do
+for _pool_proc_key in CLAW_ALLOW_RELAXED_WORKER CLAW_SECURITY_BOOST; do
   if ! grep -q "^${_pool_proc_key}=" "${RPC_DIR}/pool-daemon.env"; then
     echo "error: pool-daemon.env missing required key ${_pool_proc_key}" >&2
     exit 1

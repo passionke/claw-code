@@ -487,7 +487,18 @@ fi
 "#
 }
 
-/// After PG materialize: project skills/rules/config are read-only for the solve uid (Admin owns writes). Author: kejiqing
+/// After PG materialize into sandbox `/claw_ds` tmpfs: read-only for worker uid (strict). Author: kejiqing
+#[must_use]
+pub fn guest_lock_ds_project_config_shell() -> &'static str {
+    r#"set -eu
+ds='/claw_ds'
+if [ ! -d "$ds" ]; then exit 0; fi
+find "$ds" -type f -exec chmod a-w,a+r {} + 2>/dev/null || true
+find "$ds" -type d -exec chmod a-w,a+rx {} + 2>/dev/null || true
+"#
+}
+
+/// Legacy host-bind pool: lock under `/claw_host_root` mirror paths. Author: kejiqing
 #[must_use]
 pub fn guest_lock_project_config_shell() -> &'static str {
     r#"set -eu

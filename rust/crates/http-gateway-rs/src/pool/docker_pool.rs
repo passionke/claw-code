@@ -1089,8 +1089,15 @@ impl DockerPoolManager {
         }
         if let Some(ref pool_id) = self.pool_id {
             if let Some(ref db) = self.session_db {
+                let exec_user =
+                    exec_user_arg_for_mode(isolation, &self.worker_identity.exec_user_arg());
                 match db
-                    .assign_turn_pool_worker(turn_id, pool_id, &container_log)
+                    .assign_turn_pool_worker(
+                        turn_id,
+                        pool_id,
+                        &container_log,
+                        Some(exec_user.as_str()),
+                    )
                     .await
                 {
                     Ok(()) => info!(
@@ -1416,11 +1423,16 @@ mod exec_solve_argv_prefix_tests {
     }
 
     #[test]
-    fn exec_prefix_relaxed_uses_root() {
+    fn exec_prefix_relaxed_uses_pool_worker() {
         let p = pool(None);
+        let id = PoolWorkerIdentity::from_env(None);
         assert_eq!(
             p.test_exec_solve_argv_prefix_for(WorkerIsolationMode::Relaxed),
-            vec!["exec".to_string(), "--user".to_string(), "0:0".to_string()]
+            vec![
+                "exec".to_string(),
+                "--user".to_string(),
+                id.exec_user_arg()
+            ]
         );
     }
 

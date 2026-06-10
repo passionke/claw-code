@@ -29,6 +29,15 @@ pub fn mode_from_json(value: &Value) -> WorkerIsolationMode {
     }
 }
 
+/// API label for `workerIsolationJson.mode` (requested ds isolation).
+#[must_use]
+pub fn isolation_mode_label(json: &Value) -> &'static str {
+    match mode_from_json(json) {
+        WorkerIsolationMode::Relaxed => "relaxed",
+        WorkerIsolationMode::Strict => "strict",
+    }
+}
+
 /// Global `CLAW_ALLOW_RELAXED_WORKER` gate + per-ds JSON.
 #[must_use]
 pub fn effective_mode(relaxed_allowed: bool, worker_isolation_json: &Value) -> WorkerIsolationMode {
@@ -39,11 +48,9 @@ pub fn effective_mode(relaxed_allowed: bool, worker_isolation_json: &Value) -> W
 }
 
 #[must_use]
-pub fn exec_user_arg_for_mode(mode: WorkerIsolationMode, strict_exec_user: &str) -> String {
-    match mode {
-        WorkerIsolationMode::Relaxed => "0:0".to_string(),
-        WorkerIsolationMode::Strict => strict_exec_user.to_string(),
-    }
+pub fn exec_user_arg_for_mode(mode: WorkerIsolationMode, pool_exec_user: &str) -> String {
+    let _ = mode;
+    pool_exec_user.to_string()
 }
 
 pub fn validate_worker_isolation_json(value: &Value) -> Result<(), String> {
@@ -90,10 +97,10 @@ mod tests {
     }
 
     #[test]
-    fn exec_user_relaxed_is_root() {
+    fn exec_user_relaxed_uses_pool_worker() {
         assert_eq!(
-            exec_user_arg_for_mode(WorkerIsolationMode::Relaxed, "1000:1000"),
-            "0:0"
+            exec_user_arg_for_mode(WorkerIsolationMode::Relaxed, "claw"),
+            "claw"
         );
     }
 }
