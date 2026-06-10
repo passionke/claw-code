@@ -59,11 +59,25 @@ legacy="$(psql_q "
 " | sed '/^$/d')"
 
 if [[ -n "${legacy}" ]]; then
-  echo "legacy dual-pool rows to delete (Admin Pool 集群 or DELETE /v1/pools/{id}):" >&2
+  online_legacy="$(psql_q "
+    SELECT pool_id
+    FROM claw_pool
+    WHERE (pool_id LIKE '%-strict' OR pool_id LIKE '%-relaxed')
+      AND (EXTRACT(EPOCH FROM NOW())*1000 - last_heartbeat_ms) < 120000
+    ORDER BY pool_id;
+  " | sed '/^$/d')"
+  if [[ -n "${online_legacy}" ]]; then
+    echo "online legacy dual-pool rows (stop old daemons, then DELETE /v1/pools/{id}):" >&2
+    printf '%s\n' "${online_legacy}" >&2
+    fail "online *-strict / *-relaxed pool_id rows remain (dual-pool daemons still running?)"
+  fi
+  echo "pruning offline legacy dual-pool rows:" >&2
   printf '%s\n' "${legacy}" >&2
-  fail "remove *-strict / *-relaxed pool_id rows (single claw-sandbox per node)"
+  psql_q "DELETE FROM claw_pool WHERE pool_id LIKE '%-strict' OR pool_id LIKE '%-relaxed';" >/dev/null || true
+  ok "pruned offline legacy dual-pool pool_id rows"
+else
+  ok "no legacy dual-pool pool_id rows"
 fi
-ok "no legacy dual-pool pool_id rows"
 
 echo "==> [2/4] each gateway_base has online pool row"
 
