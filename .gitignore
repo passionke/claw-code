@@ -47,7 +47,10 @@ deploy/stack/claude-tap.pid
 deploy/stack/com.claw.claude-tap.plist
 deploy/stack/claw-logs/
 deploy/stack/claw-workspace/
-deploy/stack/claw-gateway-sessions/
+# CI / multi-instance stack (gateway uid 1000; git clean must not touch). kejiqing
+deploy/stack/claw-logs-*/
+deploy/stack/claw-workspace-*/
+deploy/stack/.claw-pool-rpc-*/
 deploy/stack/claw-postgres-data/
 deploy/stack/claude-tap-data/
 deploy/stack/deploy/

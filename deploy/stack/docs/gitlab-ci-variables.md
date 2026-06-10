@@ -76,7 +76,13 @@ gateway clawTap ready (/readyz attempt …)
 
 ## 6. Runner 工作区
 
-CI 使用 `GIT_CLEAN_FLAGS=-ffd`（不用 `-x`），避免 `git clean` 删除 root 拥有的 `deploy/stack/claw-postgres-data/` 导致 checkout 失败。PG 数据在 runner 上跨 pipeline 保留。
+CI 使用 `GIT_CLEAN_FLAGS=-ffd`（不用 `-x`），避免 `git clean` 删除 root/uid1000 拥有的运行时目录导致 checkout 失败。下列路径须在 **`.gitignore`**（被 ignore 后 clean 会跳过）：
+
+- `deploy/stack/claw-postgres-data/`
+- `deploy/stack/claw-workspace/`、`deploy/stack/claw-workspace-*/`（含 `claw-workspace-ci-b`）
+- `deploy/stack/claw-logs-*/`、`.claw-pool-rpc-*/`
+
+PG 数据在 runner 上跨 pipeline 保留。
 
 ## 7. 每周磁盘清理（`maintenance:disk-prune`）
 

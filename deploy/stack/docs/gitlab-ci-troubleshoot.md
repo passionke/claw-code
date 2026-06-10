@@ -50,7 +50,7 @@ Runner 工作目录：`/home/gitlab-runner/builds/.../minidata/claw-code`（`GIT
 | `no such service: postgres` | node B 误对 gateway-only compose 起 postgres → 应复用 A 的 `claw-gateway-postgres` |
 | `POOL_B: unbound variable` | `ci-cluster-dual-deploy.sh` 未定义 pool id（已修，见 `gitlab-cli.md` §7） |
 | `CLUSTER VERIFY FAIL` | `claw-cluster-verify.sh`；查 `claw_pool` 僵尸行 / 各 gateway `/v1/pools` |
-| `clawTap clusterId sunmi-ci-01 does not match configured sunmi-ci-02` | 同机 CI 只有一个 clawTap；node B 须与 node A **同一 `CLAW_CLUSTER_ID`**（pool/gateway 仍可不同） |
+| `failed to remove deploy/stack/claw-workspace-ci-b/... Permission denied` | checkout 阶段 `git clean`；目录须进 `.gitignore`（`claw-workspace-*/`），见 `gitlab-ci-variables.md` |
 
 ## 4. Agent 闭环
 
