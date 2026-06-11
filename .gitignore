@@ -1,4 +1,10 @@
 __pycache__/
+*.py[cod]
+.DS_Store
+**/.DS_Store
+*.swp
+*~
+
 archive/
 .omx/
 .clawd-agents/
@@ -42,7 +48,15 @@ deploy/podman/claw-workspace/
 deploy/podman/deploy/
 deploy/podman/.claw-pool-rpc/
 deploy/stack/*.log
+deploy/stack/.build.log
 deploy/stack/.test-*.json
+# Generated env / compose overrides (templates stay as *.example.env)
+deploy/stack/.claw-image-release.env
+deploy/stack/.claw-pool-worker.env
+deploy/stack/.claw-pool-workspace.env
+deploy/stack/.claw-pool-daemon.env
+deploy/stack/.compose.override.env
+deploy/stack/worker-openai.env
 deploy/stack/claude-tap.pid
 deploy/stack/com.claw.claude-tap.plist
 deploy/stack/claw-logs/
@@ -71,3 +85,10 @@ rust/*.core
 rust/.cargo/config.toml
 # Compose auto-loads this filename next to podman-compose.yml — do not create; use repo root `.env` only.
 deploy/stack/.env
+
+# Language / GPOS eval run output (harness under scripts/eval/ stays tracked)
+scripts/eval/**/cases/
+scripts/eval/**/scored/
+scripts/eval/**/results/
+scripts/eval/**/cases.bak-*/
+scripts/eval/**/*.log

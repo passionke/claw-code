@@ -1,0 +1,35 @@
+# Local gateway stack runtime — do not commit. Author: kejiqing
+# CI runner notes: deploy/stack/docs/gitlab-ci-variables.md §6
+
+*.log
+*.bin
+*.pid
+
+.build.log
+.tmp-bin-check/
+
+.claw-pool-rpc/
+.claw-image-release.env
+.claw-pool-worker.env
+.claw-pool-workspace.env
+.claw-pool-daemon.env
+.claw-worker-llm.env
+.claw-worker-runtime.env
+worker-openai.env
+.compose.override.env
+
+.claw-postgres-network.override.yml
+.claw-instance.envfile.override.yml
+.test-*.json
+
+.env
+
+claw-workspace/
+claw-workspace-*/
+claw-logs/
+claw-logs-*/
+claw-postgres-data/
+claw-gateway-sessions/
+claude-tap-data/
+claude-tap.pid
+deploy/
