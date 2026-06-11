@@ -80,8 +80,12 @@ claw_kill_tcp_listeners() {
 }
 
 claw_remove_all_gateway_workers() {
-  local rt
-  rt="$(claw_container_runtime_cli)" || return 0
+  local rt lib_dir
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # pack-deploy sources this file without compose-include.sh; load runtime CLI here. kejiqing
+  # shellcheck disable=SC1091
+  source "${lib_dir}/compose-include.sh"
+  rt="$(claw_container_runtime_cli)" || return 1
   local ids_w ids_g ids_by_image ids
   ids_w="$("${rt}" ps -aq --filter name='claw-worker-' 2>/dev/null || true)"
   ids_g="$("${rt}" ps -aq --filter name='claw-gw-' 2>/dev/null || true)"

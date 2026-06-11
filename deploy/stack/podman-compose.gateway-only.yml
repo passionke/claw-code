@@ -16,6 +16,8 @@ services:
       - ./.claw-pool-rpc/pool-registry.env
       - ./.claw-llm-runtime.env
     environment:
+      CLAW_WORKER_UID: ${CLAW_WORKER_UID:-1000}
+      CLAW_WORKER_GID: ${CLAW_WORKER_GID:-1000}
       CLAW_GATEWAY_IMAGE_REF: ${GATEWAY_IMAGE:-claw-gateway-rs:local}
       CLAW_HTTP_ADDR: 0.0.0.0:8080
       CLAW_BIN: /usr/local/bin/claw

@@ -2,6 +2,7 @@ mod boundary_log;
 mod client;
 mod error;
 mod http_client;
+mod otel_llm;
 mod prompt_cache;
 mod providers;
 mod sse;

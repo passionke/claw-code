@@ -298,7 +298,17 @@ impl AnthropicClient {
 
         self.preflight_message_request(&request).await?;
 
-        let http_response = self.send_with_retry(&wire_request).await?;
+        let prompt_preview = crate::otel_llm::message_request_prompt_preview(&wire_request);
+        let mut otel_llm = crate::otel_llm::LlmOtelGuard::start(&request.model, &prompt_preview);
+        let http_response = match self.send_with_retry(&wire_request).await {
+            Ok(response) => response,
+            Err(e) => {
+                if let Some(ref g) = otel_llm {
+                    g.finish_error(e.to_string());
+                }
+                return Err(e);
+            }
+        };
         let request_id = request_id_from_headers(http_response.headers());
         let body = http_response.text().await.map_err(ApiError::from)?;
         let mut response = serde_json::from_str::<MessageResponse>(&body).map_err(|error| {
@@ -334,6 +344,9 @@ impl AnthropicClient {
                     ),
             );
         }
+        if let Some(ref mut g) = otel_llm {
+            g.finish_with_response(&response);
+        }
         Ok(response)
     }
 
@@ -343,9 +356,20 @@ impl AnthropicClient {
     ) -> Result<MessageStream, ApiError> {
         self.preflight_message_request(request).await?;
         let wire_request = request.without_reasoning_replay_blocks();
-        let response = self
+        let prompt_preview = crate::otel_llm::message_request_prompt_preview(&wire_request);
+        let otel_llm = crate::otel_llm::LlmOtelGuard::start(&request.model, &prompt_preview);
+        let response = match self
             .send_with_retry(&wire_request.clone().with_streaming())
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                if let Some(ref g) = otel_llm {
+                    g.finish_error(e.to_string());
+                }
+                return Err(e);
+            }
+        };
         Ok(MessageStream {
             request_id: request_id_from_headers(response.headers()),
             response,
@@ -357,6 +381,7 @@ impl AnthropicClient {
             latest_usage: None,
             usage_recorded: false,
             last_prompt_cache_record: Arc::clone(&self.last_prompt_cache_record),
+            otel_llm,
         })
     }
 
@@ -818,6 +843,7 @@ pub struct MessageStream {
     latest_usage: Option<Usage>,
     usage_recorded: bool,
     last_prompt_cache_record: Arc<Mutex<Option<PromptCacheRecord>>>,
+    otel_llm: Option<crate::otel_llm::LlmOtelGuard>,
 }
 
 impl MessageStream {
@@ -858,6 +884,14 @@ impl MessageStream {
             StreamEvent::MessageDelta(MessageDeltaEvent { usage, .. }) => {
                 self.latest_usage = Some(usage.clone());
             }
+            StreamEvent::ContentBlockDelta(crate::types::ContentBlockDeltaEvent {
+                delta: crate::types::ContentBlockDelta::TextDelta { text },
+                ..
+            }) => {
+                if let Some(ref mut g) = self.otel_llm {
+                    g.push_completion_delta(text);
+                }
+            }
             StreamEvent::MessageStop(_) if !self.usage_recorded => {
                 if let (Some(prompt_cache), Some(usage)) =
                     (&self.prompt_cache, self.latest_usage.as_ref())
@@ -867,6 +901,11 @@ impl MessageStream {
                         .last_prompt_cache_record
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(record);
+                }
+                if let (Some(ref mut g), Some(usage)) =
+                    (&mut self.otel_llm, self.latest_usage.as_ref())
+                {
+                    g.finish_with_usage(usage, Some(self.request.model.as_str()));
                 }
                 self.usage_recorded = true;
             }

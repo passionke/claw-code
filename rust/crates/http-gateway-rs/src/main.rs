@@ -437,6 +437,9 @@ struct UpsertProjectConfigRequest {
     /// Omit on PUT to keep existing `solve_orchestration_json`. Author: kejiqing
     #[serde(rename = "solveOrchestrationJson", default)]
     solve_orchestration_json: Option<Value>,
+    /// Omit on PUT to keep existing `language_pipeline_json`. Author: kejiqing
+    #[serde(rename = "languagePipelineJson", default)]
+    language_pipeline_json: Option<Value>,
     /// Omit on PUT to keep existing `extra_session_fields_json`. Author: kejiqing
     #[serde(rename = "extraSessionFieldsJson", default)]
     extra_session_fields_json: Option<Value>,
@@ -491,6 +494,8 @@ struct ProjectConfigResponse {
     solve_preflight_json: Value,
     #[serde(rename = "solveOrchestrationJson")]
     solve_orchestration_json: Value,
+    #[serde(rename = "languagePipelineJson")]
+    language_pipeline_json: Value,
     #[serde(rename = "extraSessionFieldsJson")]
     extra_session_fields_json: Value,
     #[serde(rename = "promptLimitsJson")]
@@ -1226,6 +1231,13 @@ async fn main() {
         std::env::var("CLAW_WORK_ROOT").unwrap_or_else(|_| "/tmp/claw-workspace".to_string()),
     );
     gateway_logging::init(&work_root);
+    if std::env::var("OTEL_SERVICE_NAME")
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        std::env::set_var("OTEL_SERVICE_NAME", "claw-gateway-rs");
+    }
+    telemetry::init_otel_from_env();
     let file_log = gateway_logging::resolved_file_log_dir(&work_root);
     info!(
         target: "claw_gateway_orchestration",
@@ -1753,6 +1765,7 @@ async fn main() {
         if tokio::signal::ctrl_c().await.is_ok() {
             info!(phase = "shutdown", "http gateway received SIGINT");
         }
+        telemetry::shutdown_otel();
     };
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
@@ -2763,6 +2776,7 @@ fn default_project_config_row(proj_id: i64) -> session_db::ProjectConfigRow {
         git_sync_json: json!({}),
         solve_preflight_json: json!({"kind": "none"}),
         solve_orchestration_json: json!({"kind": "single_turn"}),
+        language_pipeline_json: json!({}),
         extra_session_fields_json: json!([]),
         prompt_limits_json: project_config_apply::default_prompt_limits_json(),
         worker_isolation_json: pool::worker_isolation::default_worker_isolation_json(),
@@ -2921,6 +2935,7 @@ async fn activate_project_config_revision_row(
             git_sync_json: &sidecars.git_sync_json,
             solve_preflight_json: &sidecars.solve_preflight_json,
             solve_orchestration_json: &sidecars.solve_orchestration_json,
+            language_pipeline_json: &sidecars.language_pipeline_json,
             extra_session_fields_json: &sidecars.extra_session_fields_json,
             prompt_limits_json: &sidecars.prompt_limits_json,
             worker_isolation_json: &sidecars.worker_isolation_json,
@@ -4298,6 +4313,7 @@ async fn create_project(
             git_sync_json: &json!({}),
             solve_preflight_json: &json!({"kind": "none"}),
             solve_orchestration_json: &json!({"kind": "single_turn"}),
+            language_pipeline_json: &json!({}),
             extra_session_fields_json: &empty_arr,
             prompt_limits_json: &empty_obj,
             worker_isolation_json: &pool::worker_isolation::default_worker_isolation_json(),
@@ -4450,6 +4466,10 @@ async fn project_config_row_to_response(
             gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
                 &row.solve_orchestration_json,
             ),
+        language_pipeline_json:
+            gateway_solve_turn::project_language_pipeline::materialize_language_pipeline_json(
+                &row.language_pipeline_json,
+            ),
         extra_session_fields_json: row.extra_session_fields_json,
         prompt_limits_json: row.prompt_limits_json,
         worker_isolation_json: row.worker_isolation_json,
@@ -4595,6 +4615,10 @@ fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(
     }
     if let Some(ref so) = req.solve_orchestration_json {
         gateway_solve_turn::project_orchestration::validate_solve_orchestration_json(so)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
+    if let Some(ref lp) = req.language_pipeline_json {
+        gateway_solve_turn::project_language_pipeline::validate_language_pipeline_json(lp)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
     if let Some(ref esf) = req.extra_session_fields_json {
@@ -4834,6 +4858,10 @@ async fn put_project_config(
         Some(incoming) => incoming.clone(),
         None => existing.solve_orchestration_json.clone(),
     };
+    let language_pipeline_json = match &req.language_pipeline_json {
+        Some(incoming) => incoming.clone(),
+        None => existing.language_pipeline_json.clone(),
+    };
     let extra_session_fields_json = match &req.extra_session_fields_json {
         Some(incoming) => incoming.clone(),
         None => existing.extra_session_fields_json.clone(),
@@ -4857,6 +4885,7 @@ async fn put_project_config(
         git_sync_json: Some(git_sync_json.clone()),
         solve_preflight_json: Some(solve_preflight_json.clone()),
         solve_orchestration_json: Some(solve_orchestration_json.clone()),
+        language_pipeline_json: Some(language_pipeline_json.clone()),
         extra_session_fields_json: Some(extra_session_fields_json.clone()),
         prompt_limits_json: Some(prompt_limits_json.clone()),
         worker_isolation_json: Some(worker_isolation_json.clone()),
@@ -4887,6 +4916,7 @@ async fn put_project_config(
         git_sync_json: &git_sync_json,
         solve_preflight_json: &solve_preflight_json,
         solve_orchestration_json: &solve_orchestration_json,
+        language_pipeline_json: &language_pipeline_json,
         extra_session_fields_json: &extra_session_fields_json,
         prompt_limits_json: &prompt_limits_json,
         worker_isolation_json: &worker_isolation_json,
@@ -4975,6 +5005,7 @@ async fn commit_project_config_draft(
             git_sync_json,
             solve_preflight_json: row.solve_preflight_json.clone(),
             solve_orchestration_json: row.solve_orchestration_json.clone(),
+            language_pipeline_json: row.language_pipeline_json.clone(),
             extra_session_fields_json: row.extra_session_fields_json.clone(),
             prompt_limits_json: row.prompt_limits_json.clone(),
             worker_isolation_json: row.worker_isolation_json.clone(),
@@ -9050,6 +9081,7 @@ mod tests {
             git_sync_json: json!({}),
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_isolation_json: json!({"mode": "strict"}),

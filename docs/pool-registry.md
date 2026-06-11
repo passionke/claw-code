@@ -21,6 +21,7 @@ Each **`claw-sandbox`** (host pool on `:9944`) registers in PostgreSQL; each run
 | `sse_port` | From `CLAW_POOL_HTTP_BIND` (default 9944) |
 | `gateway_base` | Browser-reachable gateway URL (`CLAW_POOL_GATEWAY_BASE` or `http://{advertise_ip}:{GATEWAY_HOST_PORT}`) |
 | `last_heartbeat_ms` | Updated every **60s** while daemon runs |
+| `advertise_ip` / `gateway_base` | Refreshed on each heartbeat (auto-detect LAN IP when `CLAW_POOL_ADVERTISE_HOST` not pinned in `.env`) |
 
 ## `gateway_turns` extensions
 
@@ -79,7 +80,7 @@ Each pool host `.env` (or `pool-daemon.env`):
 ## Env (pool daemon)
 
 - `CLAW_GATEWAY_DATABASE_URL` — required for registry (warn + skip if missing)
-- `CLAW_POOL_ADVERTISE_HOST` — routable IP/hostname (auto on `gateway.sh up` if unset)
+- `CLAW_POOL_ADVERTISE_HOST` — routable IP/hostname (auto on `gateway.sh up` if unset; **pinned** when set in `.env` — then restart `pool-up` after IP change)
 - `CLAW_POOL_ID` — optional override; default `pool-$(hostname -s)` from deploy script
 
 ### Deploy auto-detect (`gateway.sh up`)

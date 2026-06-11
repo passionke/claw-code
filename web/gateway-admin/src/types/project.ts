@@ -18,6 +18,13 @@ export interface SolveOrchestrationJson {
   narratorThrottleMs?: number;
 }
 
+/** Per-turn language inference (`project_config.language_pipeline_json`). Author: kejiqing */
+export interface LanguagePipelineJson {
+  languageInferencePrompt?: string;
+  languageInferencePriorTurns?: number;
+  languageInferencePriorMaxChars?: number;
+}
+
 export interface GitSyncJson {
   enabled?: boolean;
   gitUrl?: string;
@@ -73,6 +80,7 @@ export interface ProjectConfig {
   gitSyncJson?: GitSyncJson;
   solvePreflightJson?: SolvePreflightJson;
   solveOrchestrationJson?: SolveOrchestrationJson;
+  languagePipelineJson?: LanguagePipelineJson;
   /** Allowed extraSession business keys for this ds. Author: kejiqing */
   extraSessionFieldsJson?: string[];
   /** Instruction truncation budgets → `.claw/settings.json`. Author: kejiqing */

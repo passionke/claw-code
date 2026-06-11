@@ -1036,6 +1036,18 @@ impl DockerPoolManager {
         worker_llm_env: Option<std::collections::BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
+        let traceparent = worker_llm_env
+            .as_ref()
+            .and_then(|m| m.get("TRACEPARENT"))
+            .map(String::as_str);
+        let parent_ctx = traceparent
+            .map(telemetry::context_from_traceparent)
+            .unwrap_or_else(telemetry::Context::current);
+        let pool_otel = telemetry::OtelSpanGuard::start(
+            "claw-pool-daemon",
+            "pool.exec_solve",
+            Some(&parent_ctx),
+        );
         let (name, isolation) = {
             let slots = self.slots.lock().await;
             let s = slots
@@ -1044,6 +1056,14 @@ impl DockerPoolManager {
                 .ok_or_else(|| "invalid or released slot".to_string())?;
             (s.container_name.clone(), s.bound_isolation)
         };
+        if let Some(ref g) = pool_otel {
+            g.set_attribute("pool.slot_index", slot.slot_index.to_string());
+            g.set_attribute("pool.container", name.clone());
+            g.set_attribute("langfuse.trace.metadata.turn_id", turn_id.to_string());
+            if let Some(rid) = request_id {
+                g.set_attribute("langfuse.trace.metadata.request_id", rid.to_string());
+            }
+        }
         let container_log = name.clone();
         let workdir = GUEST_WORK_ROOT.to_string();
         let task_path = format!("{GUEST_WORK_ROOT}/{task_rel_under_root}");
@@ -1136,6 +1156,10 @@ impl DockerPoolManager {
                 }
                 argv.extend(["-e".into(), format!("{k}={v}")]);
             }
+        } else {
+            for (k, v) in gateway_solve_turn::otel_forward_env() {
+                argv.extend(["-e".into(), format!("{k}={v}")]);
+            }
         }
         argv.extend([
             "--workdir".into(),
@@ -1204,6 +1228,13 @@ impl DockerPoolManager {
                     .await
                     .map_err(|e| format!("finalize_turn_after_readback failed: {e}"))?;
                 }
+            }
+        }
+        if let Some(ref g) = pool_otel {
+            if exit_code == 0 {
+                g.set_ok();
+            } else {
+                g.set_error(format!("gateway-solve-once exit_code={exit_code}"));
             }
         }
         Ok(TaskOutcome {

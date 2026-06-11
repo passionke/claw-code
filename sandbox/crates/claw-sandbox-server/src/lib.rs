@@ -24,6 +24,14 @@ const SERVICE: &str = "claw-sandbox";
 
 /// Run the sandbox HTTP server until shutdown. Author: kejiqing
 pub async fn run() -> Result<(), String> {
+    if std::env::var("OTEL_SERVICE_NAME")
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        std::env::set_var("OTEL_SERVICE_NAME", "claw-pool-daemon");
+    }
+    telemetry::init_otel_from_env();
+
     let work_root = PathBuf::from(
         std::env::var("CLAW_WORK_ROOT").unwrap_or_else(|_| "/tmp/claw-workspace".into()),
     );
@@ -104,6 +112,7 @@ pub async fn run() -> Result<(), String> {
 
     let shutdown = async {
         let reason = sandbox_shutdown_signal().await;
+        telemetry::shutdown_otel();
         info!(
             target: "claw_sandbox",
             component = "sandbox_main",

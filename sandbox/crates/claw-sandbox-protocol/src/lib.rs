@@ -11,8 +11,8 @@ pub mod types;
 
 pub use guest::{
     resolve_guest_path, validate_guest_abs_path, GuestExecActor, GuestVolume, SlotExecIdentity,
-    GUEST_LOCK_PROJECT_CONFIG_SH, GUEST_PREPARE_SESSION_WORKSPACE_SH,
-    GUEST_WIPE_EPHEMERAL_MOUNTS_SH,
+    GUEST_LOCK_PROJECT_CONFIG_SH, GUEST_PREPARE_SESSION_WORKSPACE_SH, GUEST_WIPE_DS_SH,
+    GUEST_WIPE_EPHEMERAL_MOUNTS_SH, GUEST_WIPE_WORK_ROOT_SH,
 };
 pub use isolation::{default_isolation_json, effective_isolation, mode_from_json, IsolationMode};
 pub use legacy_rpc::{PoolRpcReq, PoolRpcResp};

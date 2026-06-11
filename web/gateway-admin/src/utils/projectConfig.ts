@@ -12,6 +12,7 @@ export function emptyProjectConfig(projId: number): ProjectConfig {
     claudeMd: null,
     solvePreflightJson: { kinds: [] },
     solveOrchestrationJson: { kind: "single_turn" },
+    languagePipelineJson: {},
     extraSessionFieldsJson: [],
     promptLimitsJson: {},
     workerIsolationJson: { mode: "strict" },
@@ -59,6 +60,10 @@ export async function putProjectConfigDraft(
       patch.solveOrchestrationJson !== undefined
         ? patch.solveOrchestrationJson
         : cfg.solveOrchestrationJson,
+    languagePipelineJson:
+      patch.languagePipelineJson !== undefined
+        ? patch.languagePipelineJson
+        : cfg.languagePipelineJson,
     extraSessionFieldsJson:
       patch.extraSessionFieldsJson !== undefined
         ? patch.extraSessionFieldsJson

@@ -59,6 +59,8 @@ deploy/stack/.claw-pool-rpc/
 deploy/stack/.claw-worker-llm.env
 deploy/stack/.claw-worker-runtime.env
 deploy/stack/.linux-artifacts/
+deploy/stack/*.bin
+deploy/stack/.tmp-bin-check/
 deploy/stack/.claw-postgres-network.override.yml
 deploy/stack/.claw-instance.envfile.override.yml
 # Admin UI hashed bundles (local build; do not commit)

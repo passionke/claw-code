@@ -9,8 +9,11 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+/// Default gateway file log dir (separate from sandbox `CLAW_WORK_ROOT`). Author: kejiqing
+const DEFAULT_GATEWAY_LOG_DIR: &str = "/var/log/claw";
+
 /// Directory for daily-rotated `http-gateway.*.log` JSON lines. `None` = file sink disabled.
-pub fn resolved_file_log_dir(work_root: &Path) -> Option<PathBuf> {
+pub fn resolved_file_log_dir(_work_root: &Path) -> Option<PathBuf> {
     let disable = matches!(
         std::env::var("CLAW_GATEWAY_FILE_LOG")
             .map(|v| v.trim().to_ascii_lowercase())
@@ -25,7 +28,7 @@ pub fn resolved_file_log_dir(work_root: &Path) -> Option<PathBuf> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| Some(work_root.join(".claw-gateway-logs")))
+        .or_else(|| Some(PathBuf::from(DEFAULT_GATEWAY_LOG_DIR)))
 }
 
 fn env_filter() -> EnvFilter {
@@ -57,27 +60,47 @@ pub fn init(work_root: &Path) {
             init_stdout_only(&filter);
             return;
         }
-        let appender = tracing_appender::rolling::daily(&dir, "http-gateway");
-        let (writer, guard) = tracing_appender::non_blocking(appender);
-        #[allow(clippy::mem_forget)]
+        let file_layer = match tracing_appender::rolling::RollingFileAppender::builder()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("http-gateway")
+            .build(&dir)
         {
-            std::mem::forget(guard);
+            Ok(appender) => {
+                let (writer, guard) = tracing_appender::non_blocking(appender);
+                #[allow(clippy::mem_forget)]
+                {
+                    std::mem::forget(guard);
+                }
+                Some(
+                    fmt::layer()
+                        .json()
+                        .with_writer(writer)
+                        .with_target(true)
+                        .with_current_span(true),
+                )
+            }
+            Err(e) => {
+                eprintln!(
+                    "http-gateway-rs: file log disabled (cannot open {}): {e}",
+                    dir.display()
+                );
+                None
+            }
+        };
+        if let Some(file_layer) = file_layer {
+            let stdout_layer = fmt::layer()
+                .json()
+                .with_writer(std::io::stdout)
+                .with_target(true)
+                .with_current_span(false);
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(stdout_layer)
+                .with(file_layer)
+                .init();
+            return;
         }
-        let file_layer = fmt::layer()
-            .json()
-            .with_writer(writer)
-            .with_target(true)
-            .with_current_span(true);
-        let stdout_layer = fmt::layer()
-            .json()
-            .with_writer(std::io::stdout)
-            .with_target(true)
-            .with_current_span(false);
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(stdout_layer)
-            .with(file_layer)
-            .init();
+        init_stdout_only(&filter);
         return;
     }
 

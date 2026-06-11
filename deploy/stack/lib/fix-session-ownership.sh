@@ -1,10 +1,27 @@
 #!/usr/bin/env bash
-# Session dirs created by gateway-rs (root) must be uid 1000 for pool workers. Author: kejiqing
+# Bind-mount ownership: Linux uid 1000 (pool worker); macOS Podman virtiofs uses **host uid**. Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/compose-include.sh"
+
+# Linux production: 1000:1000 matches worker USER claw. Darwin: host uid or virtiofs EACCES (gateway panic). kejiqing
+claw_bind_mount_owner_uid() {
+  if [[ "$(uname -s)" == Darwin ]]; then
+    id -u
+  else
+    printf '%s' "${CLAW_WORKER_UID:-1000}"
+  fi
+}
+
+claw_bind_mount_owner_gid() {
+  if [[ "$(uname -s)" == Darwin ]]; then
+    id -g
+  else
+    printf '%s' "${CLAW_WORKER_GID:-1000}"
+  fi
+}
 
 # Linux: stat -c; macOS/BSD: stat -f. Author: kejiqing
 claw_path_uid() {
@@ -23,21 +40,42 @@ claw_path_owned_by() {
   [[ "$(claw_path_uid "${path}")" == "${uid}" ]]
 }
 
-# chown tree to pool worker uid; docker-run fallback when runner cannot fix root-owned bind mounts. kejiqing
+# Pool workers (container uid 1000) still need write on Darwin; host uid dirs get a+rwX. kejiqing
+claw_chmod_tree_writable() {
+  local path="${1:?}"
+  local rt image parent base
+
+  [[ -e "${path}" ]] || return 0
+  if chmod -R a+rwX "${path}" 2>/dev/null; then
+    return 0
+  fi
+  rt="$(claw_container_runtime_cli)"
+  image="${CLAW_CHOWN_RUNNER_IMAGE:-docker.1ms.run/library/alpine:3.20}"
+  parent="$(cd "$(dirname "${path}")" && pwd)"
+  base="$(basename "${path}")"
+  echo "==> chmod via ${rt} ${image}: ${path} a+rwX (Darwin pool worker)" >&2
+  "${rt}" run --rm -v "${parent}:/mnt:rw" --user root "${image}" \
+    chmod -R a+rwX "/mnt/${base}" 2>/dev/null || true
+}
+
+# chown tree for bind mounts; docker-run fallback when host cannot fix orphan uid. kejiqing
 claw_chown_tree_to_worker() {
   local path="${1:?}"
-  local uid="${2:-${CLAW_WORKER_UID:-1000}}"
-  local gid="${3:-${CLAW_WORKER_GID:-1000}}"
+  local uid="${2:-$(claw_bind_mount_owner_uid)}"
+  local gid="${3:-$(claw_bind_mount_owner_gid)}"
   local rt image parent base
 
   [[ -e "${path}" ]] || return 0
   if chown -R "${uid}:${gid}" "${path}" 2>/dev/null; then
+    [[ "$(uname -s)" == Darwin ]] && claw_chmod_tree_writable "${path}" || true
     return 0
   fi
   if sudo -n chown -R "${uid}:${gid}" "${path}" 2>/dev/null; then
+    [[ "$(uname -s)" == Darwin ]] && claw_chmod_tree_writable "${path}" || true
     return 0
   fi
   if sudo chown -R "${uid}:${gid}" "${path}" 2>/dev/null; then
+    [[ "$(uname -s)" == Darwin ]] && claw_chmod_tree_writable "${path}" || true
     return 0
   fi
   rt="$(claw_container_runtime_cli)"
@@ -47,31 +85,62 @@ claw_chown_tree_to_worker() {
   echo "==> chown via ${rt} ${image}: ${path} -> ${uid}:${gid}" >&2
   "${rt}" run --rm -v "${parent}:/mnt:rw" --user root "${image}" \
     chown -R "${uid}:${gid}" "/mnt/${base}"
+  if [[ "$(uname -s)" == Darwin ]]; then
+    claw_chmod_tree_writable "${path}"
+  fi
 }
 
-# Logs + workspace roots must be uid 1000 before gateway-rs runs as non-root. kejiqing
+# Workspace + claw-logs before gateway-rs. Linux: chown 1000; Darwin: mkdir only (:U at compose up). kejiqing
 claw_prepare_bind_mount_ownership() {
   local podman_dir="${1:?}"
-  local uid="${CLAW_WORKER_UID:-1000}"
-  local gid="${CLAW_WORKER_GID:-1000}"
-  local dir ws log_dir base
+  local uid gid ws log_dir
 
   ws="$(claw_stack_workspace_bind_dir "${podman_dir}")"
   mkdir -p "${ws}"
-  claw_chown_tree_to_worker "${ws}" "${uid}" "${gid}"
 
   log_dir="${CLAW_HOST_LOG_DIR:-${podman_dir}/claw-logs}"
   if [[ "${log_dir}" != /* ]]; then
     log_dir="${podman_dir}/${log_dir#./}"
   fi
   mkdir -p "${log_dir}"
+
+  if [[ "$(uname -s)" == Darwin ]]; then
+    return 0
+  fi
+
+  uid="$(claw_bind_mount_owner_uid)"
+  gid="$(claw_bind_mount_owner_gid)"
+  claw_chown_tree_to_worker "${ws}" "${uid}" "${gid}"
   claw_chown_tree_to_worker "${log_dir}" "${uid}" "${gid}"
 }
 
 claw_fix_session_workspace_ownership() {
   local root="${1:-${CLAW_POOL_WORK_ROOT_BIND_SRC:-}}"
-  local uid="${CLAW_WORKER_UID:-1000}"
-  local gid="${CLAW_WORKER_GID:-1000}"
+  local uid gid rt image ds
+
+  if [[ -z "${root}" || ! -d "${root}" ]]; then
+    return 0
+  fi
+
+  if [[ "$(uname -s)" == Darwin ]]; then
+    # :U + gateway user=host uid; only strip root-owned paths (sidecar). kejiqing
+    uid="$(claw_bind_mount_owner_uid)"
+    # shellcheck disable=SC1091
+    source "${LIB_DIR}/nuclear-pool-reset.sh"
+    claw_remove_pool_slot_tree "${root}/.claw-pool-slot" 2>/dev/null || true
+    shopt -s nullglob
+    for ds in "${root}"/ds_* "${root}"/proj_*; do
+      [[ -d "${ds}" ]] || continue
+      if [[ "$(claw_path_uid "${ds}")" == "0" ]]; then
+        echo "==> fix root-owned ${ds} -> ${uid}" >&2
+        claw_chown_tree_to_worker "${ds}" "${uid}" "$(claw_bind_mount_owner_gid)" || return 1
+      fi
+    done
+    return 0
+  fi
+
+  uid="$(claw_bind_mount_owner_uid)"
+  gid="$(claw_bind_mount_owner_gid)"
   local rt image ds
 
   if [[ -z "${root}" || ! -d "${root}" ]]; then

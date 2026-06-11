@@ -4,6 +4,9 @@ Author: kejiqing
 
 与 GitLab CI **隔离**的 dev-stable：PG `5434` / pool `9954` / tap 代理 `8081` / tap Live `3001`。
 
+> **角色**：本机是 **PG + pool + tap 的托管方**（给模式 B 或直连 Admin 用）。  
+> **性能**：Mac 用模式 B 连本机时 **可以工作，但 solve 明显慢于 Mac 全本地栈**（跨网 materialize + pool RPC）。日常开发 Rust/solve 请用 [`env.local.example`](../env.local.example)；详见 [`local-dev-remote-backend.md`](local-dev-remote-backend.md#结论先看)。
+
 ## 正路（只在 94 上操作，不要从 Mac rsync 代码）
 
 ```bash
@@ -21,12 +24,14 @@ export CLAW_STABLE_DEV_ENV_FILE=$PWD/.env.dev-stable
 ./deploy/stack/gateway.sh stable-dev-up
 ```
 
-本机 Mac（模式 B）：
+本机 Mac（模式 B，**可选、非默认**）：
 
 ```bash
 cp deploy/stack/env.local-remote-backend.example .env
 ./deploy/stack/gateway.sh pack-deploy local && ./deploy/stack/gateway.sh up
 ```
+
+模式 B 仅 gateway 在 Mac；solve 走远端 pool，**性能差于全本地**。Mac 与 94 **须同版本** `rust/` 镜像。
 
 ## 端口
 

@@ -105,6 +105,24 @@ fn resolve_solve_preflight_config(session_home: &Path) -> Option<SolvePreflightC
     parse_solve_preflight_file(&config_root.join(SOLVE_PREFLIGHT_CONFIG_REL))
 }
 
+/// Whether configured preflight steps are already reflected in the session transcript.
+pub(crate) fn preflight_satisfied(session_home: &Path, session: &Session) -> bool {
+    let Some(cfg) = resolve_solve_preflight_config(session_home) else {
+        return true;
+    };
+    for kind in &cfg.kinds {
+        match kind.as_str() {
+            "sqlbot_mcp_start" => {
+                if crate::sqlbot_preflight::sqlbot_query_context_from_session(session).is_none() {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// First turn of a `sessionId` only (caller gates on missing jsonl). Runs project-defined preflight.
 pub(crate) fn run_first_turn_preflight(
     session_home: &Path,
@@ -212,5 +230,21 @@ mod tests {
             &json!({"kind":"sqlbot_mcp_start"})
         ));
         assert!(!has_enabled_solve_preflight(&json!({"kind":"none"})));
+    }
+
+    #[test]
+    fn preflight_satisfied_without_sqlbot_context() {
+        let root = std::env::temp_dir().join(format!("claw-preflight-sat-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let session_home = root.join("sessions").join("sess1");
+        fs::create_dir_all(session_home.join("home/.claw")).unwrap();
+        fs::write(
+            session_home.join(SOLVE_PREFLIGHT_CONFIG_REL),
+            r#"{"kinds":["sqlbot_mcp_start"]}"#,
+        )
+        .unwrap();
+        let session = Session::new();
+        assert!(!preflight_satisfied(&session_home, &session));
+        let _ = fs::remove_dir_all(&root);
     }
 }

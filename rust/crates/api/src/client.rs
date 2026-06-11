@@ -145,6 +145,7 @@ impl ProviderClient {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // provider stream state sizes differ; boxing would ripple through dispatch
 pub enum MessageStream {
     Anthropic(anthropic::MessageStream),
     OpenAiCompat(openai_compat::MessageStream),

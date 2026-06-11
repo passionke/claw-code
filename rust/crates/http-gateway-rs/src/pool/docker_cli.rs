@@ -31,11 +31,21 @@ pub fn probe_container_runtime_cli(bin: &str) -> Result<(), String> {
 /// awaiting task is cancelled (e.g. async solve abort), so the runtime does not leave a stuck
 /// `docker exec` child on the host.
 pub async fn runtime_exec(bin: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
-    Command::new(bin)
-        .args(args)
-        .kill_on_drop(true)
-        .output()
-        .await
+    runtime_exec_with_env(bin, args, &[]).await
+}
+
+/// Like [`runtime_exec`] but sets extra env (e.g. `HOME=/tmp` for podman inside gateway container). Author: kejiqing
+pub async fn runtime_exec_with_env(
+    bin: &str,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> std::io::Result<std::process::Output> {
+    let mut cmd = Command::new(bin);
+    cmd.args(args).kill_on_drop(true);
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    cmd.output().await
 }
 
 /// `docker exec -i` with stdin bytes (materialize session files as worker uid). Author: kejiqing

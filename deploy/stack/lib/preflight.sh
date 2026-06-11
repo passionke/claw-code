@@ -78,6 +78,22 @@ claw_workspace_ownership_preflight() {
   local lib_dir
   lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+  if [[ "$(uname -s)" == Darwin ]]; then
+    # shellcheck disable=SC1091
+    source "${lib_dir}/fix-session-ownership.sh"
+    local want_uid want_gid
+    want_uid="$(claw_bind_mount_owner_uid)"
+    want_gid="$(claw_bind_mount_owner_gid)"
+    if [[ -n "${CLAW_WORKER_UID:-}" && "${CLAW_WORKER_UID}" != "${want_uid}" ]]; then
+      echo "error: on macOS do not set CLAW_WORKER_UID=${CLAW_WORKER_UID} in .env — env-profile uses host uid ${want_uid} for bind mounts" >&2
+      return 1
+    fi
+    if [[ -n "${CLAW_WORKER_GID:-}" && "${CLAW_WORKER_GID}" != "${want_gid}" ]]; then
+      echo "error: on macOS do not set CLAW_WORKER_GID=${CLAW_WORKER_GID} in .env — env-profile uses host gid ${want_gid}" >&2
+      return 1
+    fi
+  fi
+
   if [[ ! -d "${root}" ]]; then
     echo "error: workspace root missing: ${root}" >&2
     echo "hint: mkdir -p \"${root}\" && sudo chown -R ${uid}:${gid} \"${root}\"" >&2
@@ -90,6 +106,46 @@ claw_workspace_ownership_preflight() {
   source "${lib_dir}/fix-session-ownership.sh"
   rm -rf "${root}/.claw-pool-slot" 2>/dev/null || true
   claw_fix_session_workspace_ownership "${root}"
+
+  # macOS bind mount: host stat uid != 1000 even when container worker (uid 1000) can write. kejiqing
+  if [[ "$(uname -s)" == Darwin ]]; then
+    out="$(
+    python3 - "${root}" <<'PY'
+import os, sys
+root = sys.argv[1]
+errors = []
+for name in os.listdir(root):
+    if not (name.startswith("ds_") or name.startswith("proj_")):
+        continue
+    base = os.path.join(root, name)
+    for dirpath, dirnames, filenames in os.walk(base):
+        for fn in filenames + dirnames:
+            path = os.path.join(dirpath, fn)
+            try:
+                st = os.lstat(path)
+            except (FileNotFoundError, PermissionError):
+                continue
+            if st.st_uid == 0:
+                errors.append(path)
+if errors:
+    print(f"ROOT_OWNED {len(errors)}")
+    for p in errors[:10]:
+        print(p)
+    sys.exit(2)
+print("OK macOS")
+PY
+  )" || true
+    if [[ "${out}" == OK* ]]; then
+      echo "    workspace ownership ok (macOS bind mount; container worker uid ${uid})" >&2
+      return 0
+    fi
+    if [[ "${out}" == ROOT_OWNED* ]]; then
+      echo "error: workspace has root-owned paths under ${root}" >&2
+      printf '%s\n' "${out}" >&2
+      echo "hint: ./deploy/stack/gateway.sh fix-workspace" >&2
+      return 1
+    fi
+  fi
 
   out="$(
     python3 - "${root}" "${uid}" "${gid}" <<'PY'

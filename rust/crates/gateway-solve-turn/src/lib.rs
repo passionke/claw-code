@@ -57,12 +57,15 @@ pub mod entity_labels;
 pub mod gateway_stdout;
 pub mod mcp_call_context;
 pub mod multi_agent;
+mod otel_solve_turn;
+pub mod project_language_pipeline;
 pub mod project_orchestration;
 pub mod project_preflight;
 pub mod session_report;
 pub mod solve_timing;
 pub mod sqlbot_preflight;
 pub mod task_progress;
+pub mod turn_language;
 pub mod turn_tools;
 pub mod worker_env;
 pub use gateway_stdout::{
@@ -92,7 +95,7 @@ pub use task_progress::{
     TaskProgressFile, TaskProgressTodo, REPORT_PROGRESS_TOOL_NAME,
 };
 pub use worker_env::{
-    apply_worker_env, worker_env_keys_set, WORKER_ENV_KEYS, WORKER_ENV_MOUNT_PATH,
+    apply_worker_env, otel_forward_env, worker_env_keys_set, WORKER_ENV_KEYS, WORKER_ENV_MOUNT_PATH,
 };
 
 pub(crate) const HTTP_INTERNAL: u16 = 500;
@@ -194,6 +197,9 @@ pub struct GatewaySolveTaskFile {
     /// Per-solve LLM routing snapshot (gateway-injected). Author: kejiqing
     #[serde(rename = "llmRoute", skip_serializing_if = "Option::is_none")]
     pub llm_route: Option<Value>,
+    /// W3C traceparent from gateway `gateway.solve` span for distributed tracing. Author: kejiqing
+    #[serde(rename = "otelTraceparent", skip_serializing_if = "Option::is_none")]
+    pub otel_traceparent: Option<String>,
 }
 
 pub(crate) fn default_system_date() -> String {
@@ -423,6 +429,7 @@ impl DirectApiClient {
         if is_tool_allowed(REPORT_PROGRESS_TOOL_NAME, allowed_tools) {
             tools.push(report_progress_tool_definition());
         }
+        let tools = dedupe_tool_definitions_by_name(tools);
         Ok(Self {
             model,
             provider,
@@ -430,6 +437,15 @@ impl DirectApiClient {
             clawcode_session_id,
         })
     }
+}
+
+/// Keep the first tool per name; upstream APIs reject duplicate tool names. Author: kejiqing
+fn dedupe_tool_definitions_by_name(tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    let mut seen = HashSet::new();
+    tools
+        .into_iter()
+        .filter(|tool| seen.insert(tool.name.clone()))
+        .collect()
 }
 
 impl RuntimeApiClient for DirectApiClient {
@@ -896,7 +912,7 @@ fn push_text_delta<F>(
     events.push(AssistantEvent::TextDelta(text));
 }
 
-async fn stream_events<F>(
+pub(crate) async fn stream_events<F>(
     provider: &ProviderClient,
     req: &MessageRequest,
     on_text_delta: Option<&mut F>,
@@ -1033,7 +1049,7 @@ pub(crate) fn assistant_report_text_from_turn(
     reasoning
 }
 
-fn polish_output_from_events(
+pub(crate) fn polish_output_from_events(
     events: &[AssistantEvent],
     model: &str,
 ) -> Result<(String, Value), GatewaySolveTurnError> {
@@ -1202,8 +1218,12 @@ pub fn run_gateway_solve_turn(
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
 
+    let mut otel_turn = otel_solve_turn::SolveTurnOtelGuard::start(&mcp, prompt);
+    let _otel_turn_scope = otel_turn.enter();
+
     let clawcode_session_id = mcp.clawcode_session_id().to_string();
     let turn_id_attr = std::env::var("CLAW_TURN_ID").ok();
+    let _ = truncate_solve_timing_events(work_dir);
     let _ = append_solve_timing_point(
         work_dir,
         "bootstrap_worker_entered",
@@ -1212,7 +1232,7 @@ pub fn run_gateway_solve_turn(
 
     let orch_cfg = project_orchestration::resolve_solve_orchestration_config(work_dir);
     if orch_cfg.is_multi_agent_analysis() {
-        return multi_agent::run_multi_agent_solve_turn(
+        let result = multi_agent::run_multi_agent_solve_turn(
             work_dir,
             work_root,
             prompt,
@@ -1223,6 +1243,16 @@ pub fn run_gateway_solve_turn(
             max_iterations,
             orch_cfg,
         );
+        return match &result {
+            Ok((_, output, _)) => {
+                otel_turn.mark_ok(output);
+                result
+            }
+            Err(e) => {
+                otel_turn.mark_error(&e.message);
+                result
+            }
+        };
     }
 
     let project_cfg = match project_config_loader_root() {
@@ -1249,6 +1279,25 @@ pub fn run_gateway_solve_turn(
         mcp.extra_session.clone(),
     )
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
+
+    let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
+    let session_is_continuation = gateway_jsonl.exists();
+    let pipeline_cfg = project_language_pipeline::resolve_language_pipeline_config(work_dir);
+    let turn_id_for_language = turn_id_attr
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("unknown");
+    let locked_language = turn_language::infer_and_persist_turn_language_blocking(
+        work_dir,
+        prompt,
+        turn_id_for_language,
+        &clawcode_session_id,
+        &effective_model,
+        &pipeline_cfg,
+    )?;
+    turn_language::inject_language_into_system_prompt(&mut system_prompt, &locked_language);
+    let _ = append_solve_timing_point(work_dir, "turn_language_inferred", turn_id_attr.as_deref());
+
     let (
         runtime_mcp_tools,
         runtime_mcp_tool_names,
@@ -1271,9 +1320,7 @@ pub fn run_gateway_solve_turn(
     let orchestration_bus = crate::multi_agent::EventBus::new(work_dir);
     let _ = orchestration_bus.session_started();
 
-    let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
     // `true` when this `sessionId` already has `.claw/gateway-solve-session.jsonl` (续聊 turn).
-    let session_is_continuation = gateway_jsonl.exists();
     let mut session = if session_is_continuation {
         Session::load_from_path(&gateway_jsonl).map_err(|e| {
             err(
@@ -1317,8 +1364,8 @@ pub fn run_gateway_solve_turn(
     session
         .push_user_text(prompt)
         .map_err(|e| err(HTTP_INTERNAL, format!("push user message failed: {e}")))?;
-    // Project preflight (e.g. SQLBot `mcp_start`) once per sessionId, after user text in transcript.
-    if !session_is_continuation {
+    // Project preflight (e.g. SQLBot `mcp_start`) once per sessionId when not yet in transcript.
+    if !project_preflight::preflight_satisfied(work_dir, &session) {
         project_preflight::run_first_turn_preflight(work_dir, &mut session, &mut tool_executor)?;
         let _ = orchestration_bus.preflight_done();
         if let Some(section) = gateway_schema_prompt_section(work_dir) {
@@ -1341,8 +1388,11 @@ pub fn run_gateway_solve_turn(
     }
     // Turn deadline is enforced by the gateway pool (`timeout` on `docker exec` + `force_kill_slot`).
     let turn_result = runtime.run_turn_after_user_message(None);
-    let result =
-        turn_result.map_err(|e| err(HTTP_INTERNAL, format!("runtime prompt failed: {e}")))?;
+    let result = turn_result.map_err(|e| {
+        let message = format!("runtime prompt failed: {e}");
+        otel_turn.mark_error(&message);
+        err(HTTP_INTERNAL, message)
+    })?;
     let message = assistant_report_text_from_turn(&result.assistant_messages);
     let mut out_json = json!({
         "model": effective_model,
@@ -1360,11 +1410,9 @@ pub fn run_gateway_solve_turn(
             out_json["llmRoute"] = route;
         }
     }
-    Ok((
-        0,
-        serde_json::to_string(&out_json).unwrap_or_default(),
-        Some(out_json),
-    ))
+    let output_text = serde_json::to_string(&out_json).unwrap_or_default();
+    otel_turn.mark_ok(&message);
+    Ok((0, output_text, Some(out_json)))
 }
 
 #[cfg(test)]
@@ -1599,6 +1647,7 @@ mod gateway_solve_task_file_tests {
             pool_id: None,
             worker_name: None,
             llm_route: None,
+            otel_traceparent: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
@@ -1607,5 +1656,62 @@ mod gateway_solve_task_file_tests {
         assert_eq!(t.model, back.model);
         assert_eq!(t.timeout_seconds, back.timeout_seconds);
         assert_eq!(t.max_iterations, back.max_iterations);
+    }
+}
+
+#[cfg(test)]
+mod direct_api_client_tool_tests {
+    use api::ToolDefinition;
+    use serde_json::json;
+
+    use super::{
+        dedupe_tool_definitions_by_name, is_tool_allowed, report_progress_tool_definition,
+        REPORT_PROGRESS_TOOL_NAME,
+    };
+
+    fn tool_named(name: &str, description: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: Some(description.to_string()),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    #[test]
+    fn dedupe_keeps_first_occurrence_per_name() {
+        let tools = vec![
+            tool_named("report_progress", "first"),
+            tool_named("read_file", "read"),
+            tool_named("report_progress", "second"),
+        ];
+        let out = dedupe_tool_definitions_by_name(tools);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "report_progress");
+        assert_eq!(out[0].description.as_deref(), Some("first"));
+        assert_eq!(out[1].name, "read_file");
+    }
+
+    #[test]
+    fn dedupe_preserves_order_when_no_duplicates() {
+        let tools = vec![
+            tool_named("read_file", "read"),
+            tool_named("StructuredOutput", "out"),
+        ];
+        let out = dedupe_tool_definitions_by_name(tools);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "read_file");
+        assert_eq!(out[1].name, "StructuredOutput");
+    }
+
+    #[test]
+    fn narrator_style_duplicate_report_progress_collapses_to_one() {
+        let allowed = vec![REPORT_PROGRESS_TOOL_NAME.to_string()];
+        let mut tools = vec![report_progress_tool_definition()];
+        if is_tool_allowed(REPORT_PROGRESS_TOOL_NAME, &allowed) {
+            tools.push(report_progress_tool_definition());
+        }
+        let out = dedupe_tool_definitions_by_name(tools);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, REPORT_PROGRESS_TOOL_NAME);
     }
 }

@@ -57,12 +57,27 @@ claw_apply_deploy_profile() {
       export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
       export CLAW_RELAXED_PODMAN_IMAGE="${CLAW_RELAXED_PODMAN_IMAGE:-claw-gateway-worker-relaxed:local}"
       export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-local}"
-      export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-native}"
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
       export PLAYGROUND_PUBLIC_GATEWAY_BASE="${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://127.0.0.1:${GATEWAY_HOST_PORT}}"
+      export CLAW_TIMEOUT_SECONDS="${CLAW_TIMEOUT_SECONDS:-900}"
       export CONTAINER_BASE_REGISTRY="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
-      export CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK:-stack_default}"
+      # macOS Podman: one network for gateway + docker tap + pool workers (claw-claude-tap DNS).
+      # Linux local keeps stack_default unless overridden. Human .env should not fork these. kejiqing
+      if [[ "$(uname -s)" == Darwin ]]; then
+        export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
+        export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-docker}"
+        export CLAUDE_TAP_DOCKER_NETWORK="${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
+        export CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
+        # virtiofs: gateway compose user + bind mounts must be host uid (not orphan 1000). kejiqing
+        export CLAW_WORKER_UID="$(id -u)"
+        export CLAW_WORKER_GID="$(id -g)"
+        # Podman chown on bind mounts is a no-op on virtiofs; :U at container start fixes ownership. kejiqing
+        export CLAW_PODMAN_BIND_MOUNT_SUFFIX=":U"
+      else
+        export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-native}"
+        export CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK:-stack_default}"
+      fi
       ;;
     production)
       export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-docker}"

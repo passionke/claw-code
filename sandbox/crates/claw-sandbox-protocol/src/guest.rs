@@ -108,12 +108,22 @@ if [ -L "$root/.claw/skills" ]; then
 fi
 "#;
 
-/// Pool root: wipe ephemeral tmpfs between turns. Author: kejiqing
-pub const GUEST_WIPE_EPHEMERAL_MOUNTS_SH: &str = r#"set -eu
-chmod -R 1777 /claw_ds /claw_host_root 2>/dev/null || true
+/// Wipe `/claw_ds` project-config tmpfs (pool root). Author: kejiqing
+pub const GUEST_WIPE_DS_SH: &str = r#"set -eu
 find /claw_ds -mindepth 1 -delete 2>/dev/null || true
-find /claw_host_root -mindepth 1 -delete 2>/dev/null || true
 "#;
+
+/// Wipe `/claw_host_root` session workspace (slot worker user — root cannot unlink claw-owned files in userns strict workers). Author: kejiqing
+pub const GUEST_WIPE_WORK_ROOT_SH: &str = r#"set -eu
+find /claw_host_root -mindepth 1 -exec rm -rf {} + 2>/dev/null || true
+"#;
+
+/// Legacy combined wipe; prefer [`GUEST_WIPE_DS_SH`] + [`GUEST_WIPE_WORK_ROOT_SH`] as separate exec users. Author: kejiqing
+pub const GUEST_WIPE_EPHEMERAL_MOUNTS_SH: &str = concat!(
+    "set -eu\n",
+    "find /claw_ds -mindepth 1 -delete 2>/dev/null || true\n",
+    "find /claw_host_root -mindepth 1 -exec rm -rf {} + 2>/dev/null || true\n",
+);
 
 /// Pool root after `/claw_ds` guest_write: chmod ro for worker user (`claw`). Author: kejiqing
 pub const GUEST_LOCK_PROJECT_CONFIG_SH: &str = r#"set -eu
