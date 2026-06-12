@@ -136,6 +136,14 @@ CLAUDE_TAP_IMAGE=${CLAUDE_TAP_IMAGE:-}
 CLAW_DOCKER_NETWORK=${CLAW_DOCKER_NETWORK:-claw_default}
 EOF
 
+# Node B shares host Langfuse with node A (OTEL keys from primary .env). Author: kejiqing
+for _otel_k in CLAW_OTEL_ENABLED CLAW_OTEL_LOG_PROMPTS LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_BASE_URL \
+  OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS; do
+  if [[ -n "${!_otel_k:-}" ]]; then
+    printf '%s=%s\n' "${_otel_k}" "${!_otel_k}" >>"${ENV_B}"
+  fi
+done
+
 chmod 600 "${ENV_B}" 2>/dev/null || true
 
 # Fail fast if heredoc left unset placeholders (set -u guard for maintainers). kejiqing

@@ -116,9 +116,30 @@ for _k in CLAW_BOOTSTRAP_LLM_API_KEY CLAW_BOOTSTRAP_LLM_BASE_URL CLAW_BOOTSTRAP_
   fi
 done
 
+# Langfuse OTEL (optional — set LANGFUSE_* in GitLab CI/CD Variables; see docs/langfuse-otel.md).
+for _k in CLAW_OTEL_ENABLED CLAW_OTEL_LOG_PROMPTS LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_BASE_URL \
+  OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS; do
+  if [[ -n "${!_k:-}" ]]; then
+    printf '%s=%s\n' "${_k}" "${!_k}" >>"${ENV_FILE}"
+  fi
+done
+if [[ -n "${LANGFUSE_PUBLIC_KEY:-}" && -n "${LANGFUSE_SECRET_KEY:-}" ]]; then
+  if ! grep -q '^CLAW_OTEL_ENABLED=' "${ENV_FILE}"; then
+    printf 'CLAW_OTEL_ENABLED=%s\n' "${CLAW_OTEL_ENABLED:-1}" >>"${ENV_FILE}"
+  fi
+  if ! grep -q '^LANGFUSE_BASE_URL=' "${ENV_FILE}"; then
+    printf 'LANGFUSE_BASE_URL=%s\n' "${LANGFUSE_BASE_URL:-http://${CLAW_POOL_ADVERTISE_HOST}:8090}" >>"${ENV_FILE}"
+  fi
+fi
+
 chmod 600 "${ENV_FILE}" 2>/dev/null || true
 _llm_hint=""
 if [[ -n "${CLAW_BOOTSTRAP_LLM_API_KEY:-${OPENAI_API_KEY:-}}" ]]; then
   _llm_hint=" llm=bootstrap"
 fi
-echo "==> wrote ${ENV_FILE} (profile=${profile} cluster=${CLAW_CLUSTER_ID} pool=${pool_id} host=${CLAW_POOL_ADVERTISE_HOST}${_llm_hint})"
+_otel_hint=""
+if grep -q '^CLAW_OTEL_ENABLED=1' "${ENV_FILE}" 2>/dev/null \
+  && grep -q '^LANGFUSE_PUBLIC_KEY=' "${ENV_FILE}" 2>/dev/null; then
+  _otel_hint=" langfuse=on"
+fi
+echo "==> wrote ${ENV_FILE} (profile=${profile} cluster=${CLAW_CLUSTER_ID} pool=${pool_id} host=${CLAW_POOL_ADVERTISE_HOST}${_llm_hint}${_otel_hint})"
