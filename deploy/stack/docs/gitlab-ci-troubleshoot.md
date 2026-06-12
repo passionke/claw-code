@@ -51,6 +51,7 @@ Runner 工作目录：`/home/gitlab-runner/builds/.../minidata/claw-code`（`GIT
 | `POOL_B: unbound variable` | `ci-cluster-dual-deploy.sh` 未定义 pool id（已修，见 `gitlab-cli.md` §7） |
 | `CLUSTER VERIFY FAIL` | `claw-cluster-verify.sh`；查 `claw_pool` 僵尸行 / 各 gateway `/v1/pools` |
 | `clawTap clusterId sunmi-ci-01 does not match configured sunmi-ci-02` | 同机 CI 只有一个 clawTap；node B 须与 node A **同一 `CLAW_CLUSTER_ID`** |
+| CI `pool-up` 卡在 `cleaning legacy dual-pool listener on :9954` 很久 | 94 上 **dev-stable** 占用 `:9954`（`claw-sandbox`）；旧逻辑误杀并 `docker pull alpine`。已修复：`pool-health.sh` 识别现代 sandbox 后跳过；升级 `langfuse` 分支后重跑 deploy |
 | `failed to remove deploy/stack/claw-workspace-ci-b/... Permission denied` | checkout 阶段 `git clean`；目录须进 `.gitignore`（`claw-workspace-*/`），见 `gitlab-ci-variables.md` |
 
 ## 4. Agent 闭环
