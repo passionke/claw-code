@@ -111,6 +111,8 @@ fi
 /// Wipe `/claw_ds` project-config tmpfs (pool root). Author: kejiqing
 pub const GUEST_WIPE_DS_SH: &str = r#"set -eu
 find /claw_ds -mindepth 1 -delete 2>/dev/null || true
+# guest_lock chmods the mount point ro; restore sticky tmpfs for next materialize.
+chmod 1777 /claw_ds 2>/dev/null || true
 "#;
 
 /// Wipe `/claw_host_root` session workspace (slot worker user — root cannot unlink claw-owned files in userns strict workers). Author: kejiqing
@@ -122,6 +124,7 @@ find /claw_host_root -mindepth 1 -exec rm -rf {} + 2>/dev/null || true
 pub const GUEST_WIPE_EPHEMERAL_MOUNTS_SH: &str = concat!(
     "set -eu\n",
     "find /claw_ds -mindepth 1 -delete 2>/dev/null || true\n",
+    "chmod 1777 /claw_ds 2>/dev/null || true\n",
     "find /claw_host_root -mindepth 1 -exec rm -rf {} + 2>/dev/null || true\n",
 );
 
@@ -129,8 +132,9 @@ pub const GUEST_WIPE_EPHEMERAL_MOUNTS_SH: &str = concat!(
 pub const GUEST_LOCK_PROJECT_CONFIG_SH: &str = r#"set -eu
 ds='/claw_ds'
 if [ ! -d "$ds" ]; then exit 0; fi
-find "$ds" -type f -exec chmod a-w,a+r {} + 2>/dev/null || true
-find "$ds" -type d -exec chmod a-w,a+rx {} + 2>/dev/null || true
+# mindepth 1: keep mount point writable so pool root can wipe + rematerialize next turn.
+find "$ds" -mindepth 1 -type f -exec chmod a-w,a+r {} + 2>/dev/null || true
+find "$ds" -mindepth 1 -type d -exec chmod a-w,a+rx {} + 2>/dev/null || true
 "#;
 
 #[cfg(test)]

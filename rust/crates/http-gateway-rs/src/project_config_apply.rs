@@ -518,8 +518,8 @@ pub fn guest_lock_ds_project_config_shell() -> &'static str {
     r#"set -eu
 ds='/claw_ds'
 if [ ! -d "$ds" ]; then exit 0; fi
-find "$ds" -type f -exec chmod a-w,a+r {} + 2>/dev/null || true
-find "$ds" -type d -exec chmod a-w,a+rx {} + 2>/dev/null || true
+find "$ds" -mindepth 1 -type f -exec chmod a-w,a+r {} + 2>/dev/null || true
+find "$ds" -mindepth 1 -type d -exec chmod a-w,a+rx {} + 2>/dev/null || true
 "#
 }
 
