@@ -14,6 +14,7 @@ use tokio::process::Command;
 pub const GIT_IMPORT_MANIFEST_REL: &str = "home/.claw/git-import-manifest.txt";
 
 const MANIFEST_MAX_LINES: usize = 200;
+const MANIFEST_TRUNCATION_PREFIX: &str = "... and ";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectGitSync {
@@ -548,6 +549,197 @@ async fn write_git_import_manifest(
     Ok(())
 }
 
+/// One guest file under `/claw_ds/<rel_path>` (sandbox tmpfs materialize). Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitImportGuestWrite {
+    pub rel_path: PathBuf,
+    pub bytes: Vec<u8>,
+}
+
+fn manifest_line_is_truncation_marker(line: &str) -> bool {
+    line.trim().starts_with(MANIFEST_TRUNCATION_PREFIX)
+}
+
+fn manifest_buf_is_truncated(buf: &str) -> bool {
+    buf.lines().any(manifest_line_is_truncation_marker)
+}
+
+/// `git_excluded_home_relpaths` may use `home/…` markers; scan paths are relative to `home/`. Author: kejiqing
+fn excluded_relpaths_under_home(excluded: &[PathBuf]) -> Vec<PathBuf> {
+    excluded
+        .iter()
+        .map(|p| match p.strip_prefix("home") {
+            Ok(tail) if !tail.as_os_str().is_empty() => tail.to_path_buf(),
+            _ => p.clone(),
+        })
+        .collect()
+}
+
+const GIT_IMPORT_MANIFEST_HOME_REL: &str = ".claw/git-import-manifest.txt";
+
+fn safe_home_relpath(rel: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    let trimmed = rel.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let p = Path::new(trimmed);
+    if p.is_absolute() {
+        return None;
+    }
+    for c in p.components() {
+        if matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        ) {
+            return None;
+        }
+    }
+    Some(p.to_path_buf())
+}
+
+fn read_file_under_home(home: &Path, rel: &Path) -> SyncResult<Vec<u8>> {
+    let full = home.join(rel);
+    let home_canon = home
+        .canonicalize()
+        .map_err(|e| ProjectGitSyncError::new(format!("canonicalize home: {e}")))?;
+    let file_canon = full
+        .canonicalize()
+        .map_err(|e| ProjectGitSyncError::new(format!("read git import {}: {e}", rel.display())))?;
+    if !file_canon.starts_with(&home_canon) {
+        return Err(ProjectGitSyncError::new(format!(
+            "git import path escapes home: {}",
+            rel.display()
+        )));
+    }
+    let meta = std::fs::metadata(&file_canon)
+        .map_err(|e| ProjectGitSyncError::new(format!("stat {}: {e}", rel.display())))?;
+    if !meta.is_file() {
+        return Err(ProjectGitSyncError::new(format!(
+            "git import path is not a file: {}",
+            rel.display()
+        )));
+    }
+    std::fs::read(&file_canon)
+        .map_err(|e| ProjectGitSyncError::new(format!("read git import {}: {e}", rel.display())))
+}
+
+/// Collect relative paths under `home/` imported from git (sync; for sandbox guest_write). Author: kejiqing
+pub fn collect_git_import_home_relpaths(
+    work_dir: &Path,
+    excluded_home_relpaths: &[PathBuf],
+) -> SyncResult<Vec<String>> {
+    let excluded = excluded_relpaths_under_home(excluded_home_relpaths);
+    let home = work_dir.join("home");
+    let manifest_path = work_dir.join(GIT_IMPORT_MANIFEST_REL);
+    if let Ok(buf) = std::fs::read_to_string(&manifest_path) {
+        if !manifest_buf_is_truncated(&buf) {
+            let mut from_manifest = Vec::new();
+            for line in buf.lines() {
+                let t = line.trim();
+                if t.is_empty() || manifest_line_is_truncation_marker(t) {
+                    continue;
+                }
+                let Some(rel) = safe_home_relpath(t) else {
+                    continue;
+                };
+                if is_home_rel_db_controlled(&rel, &excluded) {
+                    continue;
+                }
+                let path = home.join(&rel);
+                if path.is_file() {
+                    from_manifest.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+            if !from_manifest.is_empty() {
+                from_manifest.sort();
+                from_manifest.dedup();
+                return Ok(from_manifest);
+            }
+        }
+    }
+    collect_imported_home_relpaths_sync(&home, &excluded)
+}
+
+fn collect_imported_home_relpaths_sync(
+    home: &Path,
+    excluded: &[PathBuf],
+) -> SyncResult<Vec<String>> {
+    let mut out = Vec::new();
+    if !home.is_dir() {
+        return Ok(out);
+    }
+    let mut stack = vec![home.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| ProjectGitSyncError::new(format!("read home dir: {e}")))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| ProjectGitSyncError::new(format!("read home entry: {e}")))?;
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(home)
+                .map_err(|_| ProjectGitSyncError::new("strip home prefix failed"))?;
+            if is_home_rel_db_controlled(rel, excluded)
+                || rel == Path::new(GIT_IMPORT_MANIFEST_HOME_REL)
+            {
+                continue;
+            }
+            let ft = entry
+                .file_type()
+                .map_err(|e| ProjectGitSyncError::new(format!("file_type: {e}")))?;
+            if ft.is_dir() {
+                stack.push(path);
+            } else if ft.is_file() {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// Host `proj_<id>/` git-imported files → bytes for sandbox `/claw_ds` guest_write. Author: kejiqing
+pub fn build_guest_git_import_writes(
+    work_dir: &Path,
+    excluded_home_relpaths: &[PathBuf],
+    max_file_bytes: usize,
+) -> Result<Vec<GitImportGuestWrite>, String> {
+    let home = work_dir.join("home");
+    let relpaths = collect_git_import_home_relpaths(work_dir, excluded_home_relpaths)
+        .map_err(|e| e.message)?;
+    let mut out = Vec::with_capacity(relpaths.len().saturating_add(1));
+    for rel in relpaths {
+        let rel_path = PathBuf::from(&rel);
+        let bytes = read_file_under_home(&home, &rel_path).map_err(|e| e.message)?;
+        if bytes.len() > max_file_bytes {
+            return Err(format!(
+                "git import file {rel} exceeds cap {max_file_bytes} bytes"
+            ));
+        }
+        out.push(GitImportGuestWrite {
+            rel_path: PathBuf::from("home").join(&rel),
+            bytes,
+        });
+    }
+    let manifest_path = work_dir.join(GIT_IMPORT_MANIFEST_REL);
+    if manifest_path.is_file() && !out.is_empty() {
+        let bytes = std::fs::read(&manifest_path)
+            .map_err(|e| format!("read {GIT_IMPORT_MANIFEST_REL}: {e}"))?;
+        if bytes.len() > max_file_bytes {
+            return Err(format!(
+                "{GIT_IMPORT_MANIFEST_REL} exceeds cap {max_file_bytes} bytes"
+            ));
+        }
+        out.push(GitImportGuestWrite {
+            rel_path: PathBuf::from(GIT_IMPORT_MANIFEST_REL),
+            bytes,
+        });
+    }
+    Ok(out)
+}
+
 /// One-way: copy remote checkout into `home/` (no push). Author: kejiqing
 pub async fn pull_home_oneway(
     work_dir: &Path,
@@ -655,6 +847,91 @@ mod tests {
     #[test]
     fn effective_clone_url_ssh_requires_pat() {
         assert!(effective_clone_url("git@gitlab.com:org/r.git", None).is_err());
+    }
+
+    #[test]
+    fn excluded_relpaths_under_home_strips_prefix() {
+        let ex = vec![PathBuf::from("home/.claw/language-pipeline.json")];
+        let norm = excluded_relpaths_under_home(&ex);
+        assert_eq!(norm, vec![PathBuf::from(".claw/language-pipeline.json")]);
+    }
+
+    #[test]
+    fn collect_git_import_from_manifest_skips_db_controlled() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(home.join(".claw")).expect("mkdir");
+        std::fs::write(home.join("README.md"), "# repo").expect("readme");
+        std::fs::write(home.join(".claw/solve-orchestration.json"), "{}").expect("orch");
+        std::fs::write(
+            root.path().join(GIT_IMPORT_MANIFEST_REL),
+            "README.md\n.claw/solve-orchestration.json\n",
+        )
+        .expect("manifest");
+        let excluded = vec![PathBuf::from("home/.claw/solve-orchestration.json")];
+        let paths = collect_git_import_home_relpaths(root.path(), &excluded).expect("collect");
+        assert_eq!(paths, vec!["README.md".to_string()]);
+    }
+
+    #[test]
+    fn collect_git_import_falls_back_to_scan_when_manifest_truncated() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(home.join(".claw")).expect("mkdir");
+        std::fs::write(home.join("work.md"), "w").expect("work");
+        std::fs::write(home.join("extra.md"), "e").expect("extra");
+        std::fs::write(
+            root.path().join(GIT_IMPORT_MANIFEST_REL),
+            "work.md\n... and 1 more\n",
+        )
+        .expect("manifest");
+        let paths = collect_git_import_home_relpaths(root.path(), &[]).expect("collect");
+        assert!(paths.contains(&"work.md".to_string()));
+        assert!(paths.contains(&"extra.md".to_string()));
+    }
+
+    #[test]
+    fn build_guest_git_import_writes_maps_under_claw_ds_home() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(home.join(".claw")).expect("mkdir");
+        std::fs::write(home.join("README.md"), "body").expect("readme");
+        std::fs::write(root.path().join(GIT_IMPORT_MANIFEST_REL), "README.md\n").expect("manifest");
+        let writes = build_guest_git_import_writes(root.path(), &[], 1024).expect("writes");
+        let paths: Vec<_> = writes.iter().map(|w| w.rel_path.clone()).collect();
+        assert!(paths.contains(&PathBuf::from("home/README.md")));
+        assert!(paths.contains(&PathBuf::from(GIT_IMPORT_MANIFEST_REL)));
+        let readme = writes
+            .iter()
+            .find(|w| w.rel_path == PathBuf::from("home/README.md"))
+            .expect("readme write");
+        assert_eq!(readme.bytes, b"body");
+    }
+
+    #[test]
+    fn build_guest_git_import_writes_empty_when_no_imports() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("home/.claw")).expect("mkdir");
+        std::fs::write(root.path().join("home/.claw/language-pipeline.json"), "{}")
+            .expect("pg only");
+        let writes = build_guest_git_import_writes(
+            root.path(),
+            &[PathBuf::from(".claw/language-pipeline.json")],
+            1024,
+        )
+        .expect("writes");
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn build_guest_git_import_writes_enforces_size_cap() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(home.join(".claw")).expect("mkdir");
+        std::fs::write(home.join("big.md"), vec![b'x'; 8]).expect("big");
+        std::fs::write(root.path().join(GIT_IMPORT_MANIFEST_REL), "big.md\n").expect("manifest");
+        let err = build_guest_git_import_writes(root.path(), &[], 4).expect_err("cap");
+        assert!(err.contains("exceeds cap"));
     }
 
     #[test]

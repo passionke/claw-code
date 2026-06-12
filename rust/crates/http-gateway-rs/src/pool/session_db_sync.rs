@@ -11,6 +11,7 @@ use runtime::builtin_system_prompt_scaffold_default;
 use crate::persistence::transcript::{import_turn_messages_to_db, now_ms, JsonlMessage};
 use crate::pool::docker_cli::{runtime_exec, runtime_exec_stdin};
 use crate::project_config_apply;
+use crate::project_git_sync;
 use crate::session_db::GatewaySessionDb;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -147,11 +148,18 @@ pub async fn materialize_in(
     Ok(())
 }
 
+/// Host path `work_root/proj_<id>/` (gateway view; same tree as `git pull`). Author: kejiqing
+#[must_use]
+pub fn proj_work_dir(work_root: &Path, proj_id: i64) -> std::path::PathBuf {
+    work_root.join(format!("proj_{proj_id}"))
+}
+
 /// PG → sandbox guest paths before `exec_solve` (end-state RPC). Author: kejiqing
 pub async fn materialize_turn_via_sandbox(
     client: &SandboxRpcClient,
     slot_index: usize,
     db: &GatewaySessionDb,
+    proj_work_dir: &Path,
     input: &MaterializeInput,
 ) -> Result<(), String> {
     client.guest_wipe(slot_index).await?;
@@ -189,6 +197,19 @@ pub async fn materialize_turn_via_sandbox(
                     "project config file {rel} exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
                 ));
             }
+            client
+                .guest_write(slot_index, GuestVolume::ProjectConfig, &rel, &write.bytes)
+                .await?;
+        }
+        let excluded = project_config_apply::git_excluded_home_relpaths(&row);
+        let git_writes = project_git_sync::build_guest_git_import_writes(
+            proj_work_dir,
+            &excluded,
+            SESSION_MANIFEST_MAX_BYTES,
+        )
+        .map_err(|e| format!("build_guest_git_import_writes proj {}: {e}", input.proj_id))?;
+        for write in git_writes {
+            let rel = write.rel_path.to_string_lossy();
             client
                 .guest_write(slot_index, GuestVolume::ProjectConfig, &rel, &write.bytes)
                 .await?;

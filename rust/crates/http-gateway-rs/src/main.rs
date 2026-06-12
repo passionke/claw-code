@@ -1289,7 +1289,7 @@ async fn main() {
     }
     // Pool RPC: single claw-sandbox HTTP client. Author: kejiqing
     let live_report_hub = Arc::new(pool::LiveReportHub::default());
-    let pool_clients = pool::PoolClients::from_env(Arc::clone(&live_report_hub));
+    let pool_clients = pool::PoolClients::from_env(Arc::clone(&live_report_hub), work_root.clone());
     let pool_rpc_remote = true;
     let co_located_pool_id = Some(pool_clients.pool_id().to_string());
     tracing::info!(
