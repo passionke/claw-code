@@ -34,10 +34,41 @@ claw_pool_signal_pid() {
     || true
 }
 
+claw_pool_listener_pid() {
+  local http_port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"${http_port}" -sTCP:LISTEN -t 2>/dev/null | head -1
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :${http_port}" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1
+  fi
+}
+
+claw_pool_try_stop_systemd() {
+  local http_port="$1"
+  [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]] || return 0
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/pool-daemon-systemd.sh"
+  if ! claw_pool_systemd_installed; then
+    return 0
+  fi
+  if ! claw_pool_systemd_active && ! claw_pool_http_up "${http_port}"; then
+    return 0
+  fi
+  claw_log "stopping claw-sandbox systemd unit (:${http_port} active; runs even when CLAW_POOL_DAEMON_USE_SYSTEMD=0)"
+  claw_pool_systemd_stop || true
+  if claw_pool_http_up "${http_port}"; then
+    claw_log "systemctl stop incomplete; trying privileged systemctl via docker"
+    claw_pool_systemd_stop_via_docker || true
+  fi
+}
+
 claw_pool_down_one() {
   local rpc_dir="$1" http_port="$2"
   local AUDIT_LOG="${rpc_dir}/daemon-down.audit.log"
   local t0=$SECONDS wait_max="${CLAW_POOL_DOWN_WAIT_SEC:-8}"
+  local listener_pid file_pid target_pid
   claw_log "pool-daemon-down: rpc_dir=${rpc_dir} http_port=${http_port}"
   mkdir -p "${rpc_dir}"
   {
@@ -63,33 +94,34 @@ claw_pool_down_one() {
 
   if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
     claw_pool_launchd_bootout
-  elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]]; then
-    # shellcheck disable=SC1091
-    source "${LIB_DIR}/pool-daemon-systemd.sh"
-    if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_installed; then
-      claw_log "stopping claw-sandbox (systemd)"
-      claw_pool_systemd_stop || true
-    fi
   fi
 
+  claw_pool_try_stop_systemd "${http_port}"
+
+  listener_pid="$(claw_pool_listener_pid "${http_port}" || true)"
+  file_pid=""
   if [[ -f "${rpc_dir}/daemon.pid" ]]; then
-    local pid
-    pid="$(cat "${rpc_dir}/daemon.pid")"
-    if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
-      claw_log "stopping claw-sandbox pid=${pid} (SIGTERM)"
-      claw_pool_signal_pid "${pid}" TERM
-      if ! claw_pool_wait_http_down; then
-        claw_log "claw-sandbox pid=${pid} still on :${http_port}; SIGKILL"
-        claw_pool_signal_pid "${pid}" 9
-        claw_pool_wait_http_down || true
-      fi
-    else
-      claw_log "pool-daemon-down: stale or missing pid in ${rpc_dir}/daemon.pid (pid=${pid:-empty})"
-    fi
-    rm -f "${rpc_dir}/daemon.pid"
-  else
-    claw_log "pool-daemon-down: no ${rpc_dir}/daemon.pid"
+    file_pid="$(tr -dc '0-9' <"${rpc_dir}/daemon.pid" 2>/dev/null || true)"
   fi
+  if [[ -n "${listener_pid}" || -n "${file_pid}" ]]; then
+    claw_log "pool listener pid=${listener_pid:-none} daemon.pid=${file_pid:-none}"
+  fi
+  target_pid="${listener_pid:-${file_pid}}"
+
+  if [[ -n "${target_pid}" ]] && kill -0 "${target_pid}" 2>/dev/null; then
+    claw_log "stopping claw-sandbox pid=${target_pid} (SIGTERM)"
+    claw_pool_signal_pid "${target_pid}" TERM
+    if ! claw_pool_wait_http_down; then
+      claw_log "claw-sandbox pid=${target_pid} still on :${http_port}; SIGKILL"
+      claw_pool_signal_pid "${target_pid}" 9
+      claw_pool_wait_http_down || true
+    fi
+  elif [[ -n "${file_pid}" ]]; then
+    claw_log "pool-daemon-down: stale or missing pid in ${rpc_dir}/daemon.pid (pid=${file_pid})"
+  else
+    claw_log "pool-daemon-down: no listener on :${http_port} and no ${rpc_dir}/daemon.pid"
+  fi
+  rm -f "${rpc_dir}/daemon.pid"
 
   if [[ "${CLAW_POOL_DOWN_TCP_KILL:-1}" == "1" ]]; then
     # shellcheck source=nuclear-pool-reset.sh
