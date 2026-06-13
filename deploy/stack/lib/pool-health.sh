@@ -13,6 +13,20 @@ claw_relaxed_worker_allowed_from_env() {
   esac
 }
 
+# True when :port serves modern claw-sandbox (not pre-pool_outside claw-pool-daemon). kejiqing
+claw_pool_port_is_modern_sandbox() {
+  local port="${1:?port}"
+  if curl -fsS --connect-timeout 1 "http://127.0.0.1:${port}/healthz" 2>/dev/null \
+    | grep -q 'POST /v1/sandbox/rpc'; then
+    return 0
+  fi
+  local pid cmd
+  pid="$(lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  [[ -n "${pid}" ]] || return 1
+  cmd="$(ps -p "${pid}" -o args= 2>/dev/null | head -1 || true)"
+  [[ "${cmd}" == *claw-sandbox* ]]
+}
+
 # Tear down pre-pool_outside dual daemons (:9954, profile-specific launchd/systemd). kejiqing
 claw_cleanup_legacy_dual_pool() {
   local podman_dir="${1:?podman_dir}"
@@ -20,7 +34,9 @@ claw_cleanup_legacy_dual_pool() {
   rpc_root="$(claw_pool_rpc_root "${podman_dir}")"
   legacy_port="${CLAW_LEGACY_RELAXED_POOL_HTTP_PORT:-9954}"
 
-  if curl -fsS --connect-timeout 1 "http://127.0.0.1:${legacy_port}/healthz/live-report" >/dev/null 2>&1; then
+  if claw_pool_port_is_modern_sandbox "${legacy_port}"; then
+    echo "==> skip legacy dual-pool cleanup on :${legacy_port} (claw-sandbox listener; e.g. dev-stable on 94)" >&2
+  elif curl -fsS --connect-timeout 1 "http://127.0.0.1:${legacy_port}/healthz/live-report" >/dev/null 2>&1; then
     echo "==> cleaning legacy dual-pool listener on :${legacy_port}" >&2
     # shellcheck source=nuclear-pool-reset.sh
     source "${podman_dir}/lib/nuclear-pool-reset.sh"
@@ -101,6 +117,35 @@ claw_assert_host_pool_http_ready() {
 
 claw_assert_host_pool_rpc_ready() {
   claw_assert_host_pool_http_ready "$@"
+}
+
+# Local dev · remote backend: probe remote HTTP + claw_pool row in shared PG. Author: kejiqing
+claw_assert_remote_pool_registry_ready() {
+  local podman_dir="${1:?podman_dir}"
+  local remote_base pool_id
+  # shellcheck disable=SC1091
+  source "${podman_dir}/lib/compose-include.sh"
+  remote_base="$(claw_pool_remote_base)" || {
+    echo "error: CLAW_POOL_REMOTE_BASE unset" >&2
+    return 1
+  }
+  pool_id="${CLAW_POOL_ID:-}"
+  if [[ -z "${pool_id}" ]]; then
+    echo "error: CLAW_POOL_ID required with CLAW_POOL_REMOTE_BASE (must match remote pool registry)" >&2
+    return 1
+  fi
+  if ! curl -fsS --connect-timeout 5 "${remote_base}/healthz/live-report" >/dev/null 2>&1; then
+    echo "error: remote pool not reachable: ${remote_base}/healthz/live-report" >&2
+    return 1
+  fi
+  echo "remote pool HTTP ok (${remote_base})" >&2
+  if ! claw_pool_registry_row_fresh "${podman_dir}"; then
+    echo "error: claw_pool row stale or missing for pool_id=${pool_id} (shared PG must match remote pool)" >&2
+    echo "hint: on stable host run pool-up; set CLAW_GATEWAY_DATABASE_URL to same PG" >&2
+    return 1
+  fi
+  echo "claw_pool registry ok (pool_id=${pool_id})" >&2
+  return 0
 }
 
 claw_pool_refresh_pid_file() {

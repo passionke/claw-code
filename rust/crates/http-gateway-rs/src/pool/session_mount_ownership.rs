@@ -12,6 +12,9 @@ pub async fn ensure_session_tree_owned_for_worker_with_runtime_fallback(
     runtime_bin: &str,
     session_abs: &Path,
 ) -> Result<(), String> {
+    if crate::workspace_perm::session_tree_owned_by_worker(session_abs) {
+        return Ok(());
+    }
     if crate::workspace_perm::chown_session_tree_for_worker(session_abs).is_ok() {
         return Ok(());
     }
@@ -23,7 +26,7 @@ pub async fn ensure_session_tree_owned_for_worker_with_runtime_fallback(
             .unwrap_or_else(|_| "docker.1ms.run/library/alpine:3.20".to_string());
         let mount = format!("{}:/mnt:rw", session_abs.display());
         let owner = format!("{uid}:{gid}");
-        let out = super::docker_cli::runtime_exec(
+        let out = super::docker_cli::runtime_exec_with_env(
             runtime_bin,
             &[
                 "run",
@@ -38,6 +41,7 @@ pub async fn ensure_session_tree_owned_for_worker_with_runtime_fallback(
                 owner.as_str(),
                 "/mnt",
             ],
+            &[("HOME", "/tmp"), ("XDG_RUNTIME_DIR", "/tmp")],
         )
         .await
         .map_err(|e| format!("{runtime_bin} chown session mount: {e}"))?;

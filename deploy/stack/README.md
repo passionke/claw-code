@@ -18,6 +18,9 @@ Author: kejiqing
 | 环境 | 模板 | 关键变量 |
 | --- | --- | --- |
 | 生产 Linux | `env.production.example` | `CLAW_DEPLOY_PROFILE=production`（脚本默认 `CLAW_POOL_HOST_DAEMON=1`），`up --release` 拉镜像 |
+| 本地全栈（macOS Podman） | `env.local.example` | `gateway.sh quick` / `pack-deploy local` |
+| **本地开发 · 远程后端** | `env.local-remote-backend.example` | 本机 gateway+playground；PG/pool/tap 在稳定主机。**可用但性能差**，非日常默认（见 `docs/local-dev-remote-backend.md`） |
+| 稳定沙箱主机（如 10.22.28.94） | `env.stable-dev-host.example` | 仅维护 PG+pool+tap（见 `docs/stable-sandbox-host.md`） |
 | 本地 / rootless podman | `env.production.rootless.example` | `CLAW_CONTAINER_RUNTIME=podman`；Linux 可选手写 socket；**macOS** 一般留空（自动用 `podman machine` API sock） |
 
 `compose-include.sh` 按 `CLAW_CONTAINER_RUNTIME` 解析 socket：**docker 只认** `/var/run/docker.sock`；**podman 不会在 macOS 上误回落到 docker.sock**。装真 Docker 的生产机可 `sudo touch /etc/containers/nodocker`，避免 podman 冒充 `docker` 命令。
@@ -178,6 +181,8 @@ podman ps   # 或  docker ps
 ./deploy/stack/gateway.sh tap-down   # 仅停 tap（网关不动）
 ./deploy/stack/gateway.sh tap-up     # 仅起 tap（网关已 up 时补启）
 ```
+
+**Mac 常见报错** `clawTap health fetch failed … host.containers.internal:8080`：宿主机 **native/source** tap 已挂。**推荐** docker tap：`CLAUDE_TAP_MODE=docker` + `CLAUDE_TAP_DOCKER_NETWORK=claw_default` + **`CLAW_PODMAN_NETWORK=claw_default`**（worker / gateway / tap **必须同网**，否则 worker 里 `OPENAI_BASE_URL=http://claw-claude-tap:8080` 解析失败 → **120s timeout**）。`gateway.sh build-tap && gateway.sh pool-reset && gateway.sh up`。
 
 详见 `docs/claw-tap-cluster-identity.md`。`claude-tap` 为 OpenAI 兼容代理，不是 MCP。
 

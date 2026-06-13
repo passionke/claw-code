@@ -1,5 +1,6 @@
 //! Gateway → claw-sandbox RPC client. Author: kejiqing
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use claw_sandbox_client::SandboxRpcClient;
@@ -24,7 +25,7 @@ pub struct PoolClients {
 
 impl PoolClients {
     #[must_use]
-    pub fn from_env(live_report_hub: Arc<LiveReportHub>) -> Self {
+    pub fn from_env(live_report_hub: Arc<LiveReportHub>, work_root: PathBuf) -> Self {
         let sandbox_base = std::env::var("CLAW_SANDBOX_URL")
             .ok()
             .map(|v| v.trim().to_string())
@@ -47,7 +48,8 @@ impl PoolClients {
             .unwrap_or_else(crate::pool_registry::resolve_pool_id);
 
         let client = Arc::new(SandboxRpcClient::new(&sandbox_base));
-        let orch = SandboxOrchestratedPool::new(client, pool_id.clone(), live_report_hub);
+        let orch =
+            SandboxOrchestratedPool::new(client, work_root, pool_id.clone(), live_report_hub);
         let sandbox_pool = Some(Arc::clone(&orch));
         let pool: Arc<dyn PoolOps + Send + Sync> = orch;
 

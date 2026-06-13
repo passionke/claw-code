@@ -8,12 +8,39 @@ REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 source "${LIB_DIR}/pool-health.sh"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/bootstrap-runtime.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/log-ts.sh"
 
 GATEWAY_PORT="${GATEWAY_HOST_PORT:-18088}"
+GW_CTN="${CLAW_GATEWAY_CONTAINER:-claw-gateway-rs}"
 DS_ID="${1:-1}"
 PROMPT="${2:-connectivity check}"
 _claw_e2e_log() {
-  echo "$@"
+  claw_log "$*"
+}
+
+claw_e2e_dump_failure() {
+  local rt rpc_dir
+  rpc_dir="$(claw_pool_rpc_root "${PODMAN_DIR}")"
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/compose-include.sh"
+  rt="$(claw_container_runtime_cli 2>/dev/null || true)"
+  _claw_e2e_log "=== E2E FAIL DIAG: gateway container ${GW_CTN} ==="
+  if [[ -n "${rt}" ]]; then
+    "${rt}" ps -a --filter "name=^${GW_CTN}$" \
+      --format 'table {{.Names}}\t{{.Status}}\t{{.State}}' 2>&1 || true
+    "${rt}" inspect "${GW_CTN}" \
+      --format 'ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} Error={{.State.Error}} FinishedAt={{.State.FinishedAt}}' \
+      2>/dev/null || true
+    _claw_e2e_log "=== docker logs ${GW_CTN} (tail 120) ==="
+    "${rt}" logs --tail 120 "${GW_CTN}" 2>&1 || true
+  fi
+  _claw_e2e_log "=== pool daemon.log (tail 80) ==="
+  tail -80 "${rpc_dir}/daemon.log" 2>/dev/null || true
+}
+
+claw_e2e_curl_gateway() {
+  curl -fsS --connect-timeout 2 --max-time 15 "$@"
 }
 
 # shellcheck disable=SC1091
@@ -72,8 +99,11 @@ PY
 
 _claw_e2e_log "POST /v1/solve_async"
 _claw_e2e_log "${BODY}"
-TASK_JSON="$(curl -fsS -X POST "http://127.0.0.1:${GATEWAY_PORT}/v1/solve_async" \
-  -H "Content-Type: application/json" -d "${BODY}")"
+TASK_JSON="$(claw_e2e_curl_gateway -X POST "http://127.0.0.1:${GATEWAY_PORT}/v1/solve_async" \
+  -H "Content-Type: application/json" -d "${BODY}")" || {
+  claw_e2e_dump_failure
+  exit 1
+}
 _claw_e2e_log "${TASK_JSON}"
 claw_e2e_assert_solve_task "${TASK_JSON}" "solve_async"
 TASK_ID="$(printf '%s' "${TASK_JSON}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["taskId"])')"
@@ -82,7 +112,11 @@ TURN_ID="$(printf '%s' "${TASK_JSON}" | python3 -c 'import json,sys;print(json.l
 
 for _ in $(seq 1 120); do
   sleep 2
-  R="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/tasks/${TASK_ID}")"
+  if ! R="$(claw_e2e_curl_gateway "http://127.0.0.1:${GATEWAY_PORT}/v1/tasks/${TASK_ID}" 2>&1)"; then
+    _claw_e2e_log "poll curl failed: ${R}"
+    claw_e2e_dump_failure
+    exit 1
+  fi
   ST="$(printf '%s' "${R}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])')"
   echo "poll status=${ST}"
   if [[ "${ST}" == "succeeded" || "${ST}" == "failed" ]]; then

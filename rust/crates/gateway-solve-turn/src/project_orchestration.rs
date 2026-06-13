@@ -94,10 +94,13 @@ fn parse_orchestration_file(path: &Path) -> Option<SolveOrchestrationConfig> {
 }
 
 /// Resolve orchestration config for a worker session (pool ro mount or ds tree).
+///
+/// Pool workers: prefer `home/.claw/solve-orchestration.json` under the session tmpfs when
+/// materialized from PG each turn; fall back to read-only `/claw_ds` (or `ds_*`). Author: kejiqing
 #[must_use]
 pub fn resolve_solve_orchestration_config(session_home: &Path) -> SolveOrchestrationConfig {
-    let mounted = session_home.join(SOLVE_ORCHESTRATION_CONFIG_REL);
-    if let Some(cfg) = parse_orchestration_file(&mounted) {
+    if let Some(cfg) = parse_orchestration_file(&session_home.join(SOLVE_ORCHESTRATION_CONFIG_REL))
+    {
         return cfg;
     }
     let config_root = runtime::gateway_project_config_root(session_home);
@@ -125,5 +128,26 @@ mod tests {
         let v = serde_json::json!({"kind": "multi_agent_analysis", "queryConcurrency": 6});
         let cfg: SolveOrchestrationConfig = serde_json::from_value(v).unwrap();
         assert!(cfg.is_multi_agent_analysis());
+    }
+
+    #[test]
+    fn resolve_prefers_session_marker_over_project_bind() {
+        let root = tempfile::tempdir().unwrap();
+        let ds = root.path().join("ds_10");
+        let session = ds.join("sessions/s1");
+        std::fs::create_dir_all(session.join("home/.claw")).unwrap();
+        std::fs::create_dir_all(ds.join("home/.claw")).unwrap();
+        std::fs::write(
+            session.join(SOLVE_ORCHESTRATION_CONFIG_REL),
+            r#"{"kind":"single_turn"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            ds.join(SOLVE_ORCHESTRATION_CONFIG_REL),
+            r#"{"kind":"multi_agent_analysis"}"#,
+        )
+        .unwrap();
+        let cfg = resolve_solve_orchestration_config(&session);
+        assert!(!cfg.is_multi_agent_analysis());
     }
 }

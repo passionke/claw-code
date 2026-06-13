@@ -58,9 +58,9 @@ HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
 _pool_daemon_tcp_port="${CLAW_POOL_DAEMON_TCP_PORT:-9943}"
 
 export CLAW_POOL_ID="${CLAW_POOL_ID:-${_base_pool_id}}"
-export CLAW_PODMAN_POOL_SIZE="${CLAW_STRICT_PODMAN_POOL_SIZE:-${CLAW_PODMAN_POOL_SIZE:-3}}"
+export CLAW_PODMAN_POOL_SIZE="${CLAW_STRICT_PODMAN_POOL_SIZE:-${CLAW_PODMAN_POOL_SIZE:-5}}"
 export CLAW_PODMAN_POOL_MIN_IDLE="${CLAW_STRICT_PODMAN_POOL_MIN_IDLE:-${CLAW_PODMAN_POOL_MIN_IDLE:-1}}"
-export CLAW_DOCKER_POOL_SIZE="${CLAW_STRICT_DOCKER_POOL_SIZE:-${CLAW_STRICT_PODMAN_POOL_SIZE:-${CLAW_DOCKER_POOL_SIZE:-${CLAW_PODMAN_POOL_SIZE:-3}}}}"
+export CLAW_DOCKER_POOL_SIZE="${CLAW_STRICT_DOCKER_POOL_SIZE:-${CLAW_STRICT_PODMAN_POOL_SIZE:-${CLAW_DOCKER_POOL_SIZE:-${CLAW_PODMAN_POOL_SIZE:-5}}}}"
 export CLAW_DOCKER_POOL_MIN_IDLE="${CLAW_STRICT_DOCKER_POOL_MIN_IDLE:-${CLAW_STRICT_PODMAN_POOL_MIN_IDLE:-${CLAW_DOCKER_POOL_MIN_IDLE:-${CLAW_PODMAN_POOL_MIN_IDLE:-1}}}}"
 
 if claw_relaxed_worker_allowed_from_env; then
@@ -176,7 +176,10 @@ claw_pool_env_kv() {
   claw_pool_env_kv CLAW_SOLVE_ISOLATION "${CLAW_SOLVE_ISOLATION:-podman_pool}"
   claw_pool_env_kv CLAW_WORKER_ENV_FILE "${CLAW_WORKER_ENV_FILE:-${REPO_ROOT}/.env}"
   claw_pool_env_kv CLAW_POOL_HTTP_BIND "0.0.0.0:${HTTP_PORT}"
-  claw_pool_env_kv CLAW_POOL_ADVERTISE_HOST "${CLAW_POOL_ADVERTISE_HOST}"
+  if [[ "${CLAW_POOL_ADVERTISE_HOST_PINNED:-0}" == 1 ]]; then
+    claw_pool_env_kv CLAW_POOL_ADVERTISE_HOST "${CLAW_POOL_ADVERTISE_HOST}"
+  fi
+  claw_pool_env_kv CLAW_POOL_ADVERTISE_HOST_PINNED "${CLAW_POOL_ADVERTISE_HOST_PINNED:-0}"
   claw_pool_env_kv CLAW_POOL_ID "${CLAW_POOL_ID}"
   [[ -n "${CLAW_POOL_GATEWAY_BASE:-}" ]] && claw_pool_env_kv CLAW_POOL_GATEWAY_BASE "${CLAW_POOL_GATEWAY_BASE}"
   [[ -n "${GATEWAY_HOST_PORT:-}" ]] && claw_pool_env_kv GATEWAY_HOST_PORT "${GATEWAY_HOST_PORT}"
@@ -208,6 +211,11 @@ claw_pool_env_kv() {
   claw_pool_env_kv CLAW_ALLOW_RELAXED_WORKER "${_pool_allow_relaxed}"
   claw_pool_env_kv CLAW_SECURITY_BOOST "${CLAW_SECURITY_BOOST:-true}"
   claw_pool_env_kv CLAW_GATEWAY_DATABASE_URL "${pool_db_url}"
+  for _otel_k in CLAW_OTEL_ENABLED CLAW_OTEL_LOG_PROMPTS LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_BASE_URL OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS; do
+    if [[ -n "${!_otel_k:-}" ]]; then
+      claw_pool_env_kv "${_otel_k}" "${!_otel_k}"
+    fi
+  done
   if [[ "${TRANSPORT}" == tcp ]]; then
     claw_pool_env_kv CLAW_POOL_DAEMON_TCP_BIND "0.0.0.0:${_pool_daemon_tcp_port}"
   elif [[ "${TRANSPORT}" == unix ]]; then

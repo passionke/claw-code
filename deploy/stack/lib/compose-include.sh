@@ -53,8 +53,26 @@ claw_pool_container_socket_path() {
   printf '%s' '/run/claw-pool-rpc/pool.sock'
 }
 
+# Local dev: gateway uses a remote claw-sandbox (stable host e.g. 10.22.28.94). Author: kejiqing
+claw_pool_remote_base() {
+  local b="${CLAW_POOL_REMOTE_BASE:-}"
+  b="${b%/}"
+  if [[ -n "${b}" ]]; then
+    printf '%s' "${b}"
+    return 0
+  fi
+  return 1
+}
+
+claw_pool_uses_remote() {
+  claw_pool_remote_base >/dev/null 2>&1
+}
+
 # v1: host `claw-pool-daemon` only (no compose pool sidecar). Set CLAW_POOL_HOST_DAEMON=0 to fail fast. Author: kejiqing
 claw_pool_daemon_on_host() {
+  if claw_pool_uses_remote; then
+    return 1
+  fi
   case "${CLAW_POOL_HOST_DAEMON:-}" in
     0 | false | no)
       echo "error: compose pool sidecar removed; use host claw-pool-daemon (unset CLAW_POOL_HOST_DAEMON or =1)" >&2
@@ -388,6 +406,27 @@ claw_podman_load_compose_args() {
   source "${script_dir}/lib/claw-pool-registry-env.sh"
   base_pool_id="$(claw_default_pool_id)"
   pool_id="${CLAW_POOL_ID:-${base_pool_id}}"
+  if remote_base="$(claw_pool_remote_base 2>/dev/null)"; then
+    {
+      printf '%s\n' '# GENERATED — remote claw-sandbox (local dev · remote backend). kejiqing'
+      printf '%s\n' "CLAW_SANDBOX_URL=${remote_base}"
+      printf '%s\n' "CLAW_POOL_HTTP_BASE=${remote_base}"
+      printf '%s\n' "CLAW_POOL_ID=${pool_id}"
+      printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
+      printf '%s\n' "CLAW_POOL_DAEMON_TCP="
+      printf '%s\n' "CLAW_POOL_DAEMON_SOCKET="
+      # shellcheck source=pool-health.sh
+      source "${script_dir}/lib/pool-health.sh"
+      if claw_relaxed_worker_allowed_from_env; then
+        printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=true"
+      else
+        printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=false"
+      fi
+      printf '%s\n' "# CLAW_POOL_REMOTE_BASE=${remote_base}"
+    } >"${rpc_root}/gateway.env"
+    claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
+    return 0
+  fi
   if claw_pool_daemon_on_host; then
     profile_name="$(claw_deploy_profile_name 2>/dev/null || true)"
     # v1 host pool: gateway container → host pool HTTP (not LAN IP). kejiqing

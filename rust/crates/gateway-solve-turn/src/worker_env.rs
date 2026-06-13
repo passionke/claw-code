@@ -1,6 +1,6 @@
 //! Pool worker: declare consumed env keys and load from mounted repo `.env` at solve start. Author: kejiqing
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use api::apply_dotenv_keys_from_paths;
@@ -39,6 +39,11 @@ pub const WORKER_ENV_KEYS: &[&str] = &[
     "CLAW_WORKER_NAME",
     "CLAW_SSE_BURST_TRACE",
     "CLAW_SSE_BURST_LOG_FILE",
+    "CLAW_OTEL_ENABLED",
+    "CLAW_OTEL_LOG_PROMPTS",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_BASE_URL",
 ];
 
 fn worker_env_search_paths() -> Vec<PathBuf> {
@@ -59,6 +64,28 @@ fn worker_env_search_paths() -> Vec<PathBuf> {
 /// Existing process env wins (compose `env_file`, `docker exec -e`, exports). Author: kejiqing
 pub fn apply_worker_env() {
     apply_dotenv_keys_from_paths(&worker_env_search_paths(), WORKER_ENV_KEYS);
+}
+
+/// Langfuse / OTEL keys to forward into worker `docker exec -e` (pool host may not inherit compose env).
+#[must_use]
+pub fn otel_forward_env() -> BTreeMap<String, String> {
+    const KEYS: &[&str] = &[
+        "CLAW_OTEL_ENABLED",
+        "CLAW_OTEL_LOG_PROMPTS",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_BASE_URL",
+    ];
+    let mut out = BTreeMap::new();
+    for key in KEYS {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                out.insert((*key).to_string(), value);
+            }
+        }
+    }
+    out
 }
 
 #[must_use]

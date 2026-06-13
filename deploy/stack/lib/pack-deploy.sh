@@ -60,7 +60,10 @@ fi
 # Worker image is rebuilt in step 1; stale claw-worker-* keep the old /usr/local/bin/claw until removed. kejiqing
 # shellcheck disable=SC1091
 source "${LIB_DIR}/nuclear-pool-reset.sh"
-claw_remove_all_gateway_workers
+claw_remove_all_gateway_workers || {
+  echo "error: failed to remove stale claw-worker containers (pack-deploy would keep old /usr/local/bin/claw)" >&2
+  exit 1
+}
 "${LIB_DIR}/up.sh" ${UP_ARGS+"${UP_ARGS[@]}"}
 
 claw_step_begin "3/4 stack verify"

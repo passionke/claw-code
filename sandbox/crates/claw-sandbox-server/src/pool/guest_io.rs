@@ -2,23 +2,23 @@
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use claw_sandbox_protocol::{
-    GuestFileBytes, DS_MOUNT_TARGET, GUEST_WIPE_EPHEMERAL_MOUNTS_SH, GUEST_WORK_ROOT,
+    GuestFileBytes, DS_MOUNT_TARGET, GUEST_WIPE_DS_SH, GUEST_WIPE_WORK_ROOT_SH, GUEST_WORK_ROOT,
 };
 
 use crate::runtime::docker_cli::{runtime_exec, runtime_exec_stdin};
 
-/// Wipe ephemeral tmpfs (`/claw_ds` + session workspace) as root before materialize. Author: kejiqing
-///
-/// Strict vs relaxed use different exec users; leftover `.claw` ownership causes tee Permission denied.
+/// Wipe ephemeral tmpfs before materialize: `/claw_ds` as root, `/claw_host_root` as worker user. Author: kejiqing
 pub async fn wipe_guest_ephemeral_mounts(
     runtime_bin: &str,
     container_name: &str,
+    worker_exec_user: &str,
 ) -> Result<(), String> {
+    exec_sh_lc_as_user(runtime_bin, container_name, "0:0", GUEST_WIPE_DS_SH).await?;
     exec_sh_lc_as_user(
         runtime_bin,
         container_name,
-        "0:0",
-        GUEST_WIPE_EPHEMERAL_MOUNTS_SH,
+        worker_exec_user,
+        GUEST_WIPE_WORK_ROOT_SH,
     )
     .await
 }
@@ -27,9 +27,9 @@ pub async fn wipe_guest_ephemeral_mounts(
 pub async fn wipe_guest_work_root(
     runtime_bin: &str,
     container_name: &str,
-    _worker_exec_user: &str,
+    worker_exec_user: &str,
 ) -> Result<(), String> {
-    wipe_guest_ephemeral_mounts(runtime_bin, container_name).await
+    wipe_guest_ephemeral_mounts(runtime_bin, container_name, worker_exec_user).await
 }
 
 pub async fn write_file_via_exec_user(

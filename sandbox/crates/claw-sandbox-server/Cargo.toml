@@ -23,6 +23,7 @@ bytes = "1"
 claw-sandbox-protocol = { path = "../claw-sandbox-protocol" }
 futures-util = "0.3"
 gateway-solve-turn = { path = "../../../rust/crates/gateway-solve-turn" }
+telemetry = { path = "../../../rust/crates/telemetry" }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json", "uuid"] }

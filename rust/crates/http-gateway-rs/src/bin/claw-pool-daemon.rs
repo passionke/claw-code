@@ -24,6 +24,13 @@ async fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .try_init();
+    if std::env::var("OTEL_SERVICE_NAME")
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        std::env::set_var("OTEL_SERVICE_NAME", "claw-pool-daemon");
+    }
+    telemetry::init_otel_from_env();
 
     let solve_isolation = std::env::var("CLAW_SOLVE_ISOLATION")
         .map(|v| v.trim().to_ascii_lowercase())
@@ -229,6 +236,7 @@ async fn main() {
             reason = %reason,
             "claw-pool-daemon shutting down"
         );
+        telemetry::shutdown_otel();
     };
     if let Err(e) = serve_pool_http(&http_bind, pool_http, shutdown).await {
         tracing::error!(

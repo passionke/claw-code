@@ -3,12 +3,15 @@
 use std::path::Path;
 
 use claw_sandbox_client::SandboxRpcClient;
-use claw_sandbox_protocol::{GuestExecActor, GuestVolume, GUEST_WIPE_EPHEMERAL_MOUNTS_SH};
+use claw_sandbox_protocol::{
+    GuestExecActor, GuestVolume, GUEST_WIPE_DS_SH, GUEST_WIPE_WORK_ROOT_SH,
+};
 use runtime::builtin_system_prompt_scaffold_default;
 
 use crate::persistence::transcript::{import_turn_messages_to_db, now_ms, JsonlMessage};
 use crate::pool::docker_cli::{runtime_exec, runtime_exec_stdin};
 use crate::project_config_apply;
+use crate::project_git_sync;
 use crate::session_db::GatewaySessionDb;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -29,16 +32,18 @@ pub struct MaterializeInput {
     pub turn_id: String,
 }
 
-/// Wipe ephemeral tmpfs (`/claw_ds` + session workspace) as root before materialize. Author: kejiqing
+/// Wipe ephemeral tmpfs before materialize: `/claw_ds` as root, `/claw_host_root` as worker user. Author: kejiqing
 async fn wipe_guest_ephemeral_mounts(
     runtime_bin: &str,
     container_name: &str,
+    worker_exec_user: &str,
 ) -> Result<(), String> {
+    exec_sh_lc_as_user(runtime_bin, container_name, "0:0", GUEST_WIPE_DS_SH).await?;
     exec_sh_lc_as_user(
         runtime_bin,
         container_name,
-        "0:0",
-        GUEST_WIPE_EPHEMERAL_MOUNTS_SH,
+        worker_exec_user,
+        GUEST_WIPE_WORK_ROOT_SH,
     )
     .await
 }
@@ -53,7 +58,7 @@ pub async fn materialize_in(
     input: &MaterializeInput,
     worker_exec_user: &str,
 ) -> Result<(), String> {
-    wipe_guest_ephemeral_mounts(runtime_bin, container_name).await?;
+    wipe_guest_ephemeral_mounts(runtime_bin, container_name, worker_exec_user).await?;
 
     let workspace_tar_b64 = db
         .get_latest_workspace_tar_b64(
@@ -101,10 +106,34 @@ pub async fn materialize_in(
         format!("{GUEST_WORK_ROOT}/gateway-solve-task.json"),
         task_bytes,
     )];
-    if !jsonl_body.is_empty() {
+    if GatewaySessionDb::session_jsonl_has_messages(&jsonl_body) {
         writes.push((
             format!("{GUEST_WORK_ROOT}/.claw/gateway-solve-session.jsonl",),
             jsonl_body.into_bytes(),
+        ));
+    }
+    if let Some(row) = db
+        .get_project_config(input.proj_id)
+        .await
+        .map_err(|e| format!("load project_config: {e}"))?
+    {
+        let orch = project_config_apply::solve_orchestration_marker_bytes(&row)
+            .map_err(|e| format!("solve-orchestration bytes proj {}: {e}", input.proj_id))?;
+        writes.push((
+            format!(
+                "{GUEST_WORK_ROOT}/{}",
+                project_config_apply::SOLVE_ORCHESTRATION_MARKER
+            ),
+            orch,
+        ));
+        let lang = project_config_apply::language_pipeline_marker_bytes(&row)
+            .map_err(|e| format!("language-pipeline bytes proj {}: {e}", input.proj_id))?;
+        writes.push((
+            format!(
+                "{GUEST_WORK_ROOT}/{}",
+                project_config_apply::LANGUAGE_PIPELINE_MARKER
+            ),
+            lang,
         ));
     }
     for (path, bytes) in writes {
@@ -119,11 +148,18 @@ pub async fn materialize_in(
     Ok(())
 }
 
+/// Host path `work_root/proj_<id>/` (gateway view; same tree as `git pull`). Author: kejiqing
+#[must_use]
+pub fn proj_work_dir(work_root: &Path, proj_id: i64) -> std::path::PathBuf {
+    work_root.join(format!("proj_{proj_id}"))
+}
+
 /// PG → sandbox guest paths before `exec_solve` (end-state RPC). Author: kejiqing
 pub async fn materialize_turn_via_sandbox(
     client: &SandboxRpcClient,
     slot_index: usize,
     db: &GatewaySessionDb,
+    proj_work_dir: &Path,
     input: &MaterializeInput,
 ) -> Result<(), String> {
     client.guest_wipe(slot_index).await?;
@@ -165,6 +201,19 @@ pub async fn materialize_turn_via_sandbox(
                 .guest_write(slot_index, GuestVolume::ProjectConfig, &rel, &write.bytes)
                 .await?;
         }
+        let excluded = project_config_apply::git_excluded_home_relpaths(&row);
+        let git_writes = project_git_sync::build_guest_git_import_writes(
+            proj_work_dir,
+            &excluded,
+            SESSION_MANIFEST_MAX_BYTES,
+        )
+        .map_err(|e| format!("build_guest_git_import_writes proj {}: {e}", input.proj_id))?;
+        for write in git_writes {
+            let rel = write.rel_path.to_string_lossy();
+            client
+                .guest_write(slot_index, GuestVolume::ProjectConfig, &rel, &write.bytes)
+                .await?;
+        }
     }
 
     let task = db
@@ -188,7 +237,7 @@ pub async fn materialize_turn_via_sandbox(
         ));
     }
     let mut writes: Vec<(&str, Vec<u8>)> = vec![("gateway-solve-task.json", task_bytes)];
-    if !jsonl_body.is_empty() {
+    if GatewaySessionDb::session_jsonl_has_messages(&jsonl_body) {
         writes.push((".claw/gateway-solve-session.jsonl", jsonl_body.into_bytes()));
     }
     for (rel, bytes) in writes {

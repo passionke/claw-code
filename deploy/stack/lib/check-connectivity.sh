@@ -56,7 +56,15 @@ fi
 python3 -c 'import json; d=json.load(open("/tmp/claw_pool_health.json")); print("pool live-report ok", d.get("ok", d))' 2>/dev/null || cat /tmp/claw_pool_health.json
 echo
 
-if claw_pool_daemon_on_host; then
+if claw_pool_uses_remote; then
+  echo "[2b/5] remote claw-sandbox (${CLAW_POOL_REMOTE_BASE})"
+  claw_assert_remote_pool_registry_ready "${PODMAN_DIR}" || exit 1
+  base="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
+  echo "[2c/5] pool HTTP from gateway-rs container (${base})"
+  claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" || exit 1
+  echo "gateway → remote pool HTTP ok"
+  echo
+elif claw_pool_daemon_on_host; then
   base="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
   echo "[2b/5] host claw-sandbox HTTP (127.0.0.1:${CLAW_POOL_HTTP_PORT:-9944})"
   claw_assert_host_pool_http_ready "$(claw_pool_rpc_root "${PODMAN_DIR}")" || exit 1
@@ -76,7 +84,10 @@ else
 fi
 
 echo "[3/5] solve_async smoke (extraSession from ds 1 project config when defined)"
-if claw_pool_daemon_on_host; then
+if claw_pool_uses_remote; then
+  claw_assert_remote_pool_registry_ready "${PODMAN_DIR}" || exit 1
+  claw_wait_gateway_pool_rpc_ready "${PODMAN_DIR}" || exit 1
+elif claw_pool_daemon_on_host; then
   claw_assert_host_pool_rpc_ready "$(claw_pool_rpc_root "${PODMAN_DIR}")" || {
     echo "error: refuse solve_async smoke — host pool RPC not ready" >&2
     exit 1

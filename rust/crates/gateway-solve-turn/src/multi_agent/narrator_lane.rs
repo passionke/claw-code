@@ -6,8 +6,6 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use api::ToolDefinition;
-
 use crate::multi_agent::event_bus::EventBus;
 use crate::multi_agent::phase_turn::{format_events_for_narrator, run_phase_turn};
 use crate::multi_agent::phases::{load_phase_prompt, DEFAULT_NARRATOR_MD};
@@ -135,8 +133,7 @@ fn run_narrator_batch(
     }
     let system = load_phase_prompt(work_dir, "narrator.md", DEFAULT_NARRATOR_MD);
     let allowed = vec![REPORT_PROGRESS_TOOL_NAME.to_string()];
-    let tools: Vec<ToolDefinition> = vec![crate::report_progress_tool_definition()];
-    let api = DirectApiClient::new(model.to_string(), &allowed, tools, session_id.to_string())
+    let api = DirectApiClient::new(model.to_string(), &allowed, vec![], session_id.to_string())
         .map_err(|e| GatewaySolveTurnError {
             status: 500,
             message: e.message,

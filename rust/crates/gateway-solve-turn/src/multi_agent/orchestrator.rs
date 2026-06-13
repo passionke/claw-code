@@ -135,7 +135,7 @@ pub fn run_multi_agent_solve_turn(
         event_bus.clone(),
     )?;
 
-    if !session_is_continuation {
+    if !project_preflight::preflight_satisfied(work_dir, &session) {
         project_preflight::run_first_turn_preflight(work_dir, &mut session, &mut tool_executor)?;
         let _ = event_bus.preflight_done();
     }

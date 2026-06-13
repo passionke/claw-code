@@ -472,6 +472,7 @@ pub async fn restore_entity_revision_to_draft(
         git_sync_json: &row.git_sync_json,
         solve_preflight_json: &row.solve_preflight_json,
         solve_orchestration_json: &row.solve_orchestration_json,
+        language_pipeline_json: &row.language_pipeline_json,
         extra_session_fields_json: &row.extra_session_fields_json,
         prompt_limits_json: &row.prompt_limits_json,
         worker_isolation_json: &row.worker_isolation_json,

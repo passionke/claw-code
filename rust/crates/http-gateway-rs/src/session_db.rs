@@ -111,6 +111,8 @@ pub struct ProjectConfigRow {
     pub solve_preflight_json: Value,
     /// Solve orchestration pipeline: `{ "kind": "single_turn" | "multi_agent_analysis", ... }`. Author: kejiqing
     pub solve_orchestration_json: Value,
+    /// Per-turn language inference prompts (`languageInferencePrompt`, …). Author: kejiqing
+    pub language_pipeline_json: Value,
     /// Allowed `extraSession` business keys for this ds (`string[]`). Author: kejiqing
     pub extra_session_fields_json: Value,
     /// Per-ds instruction budgets → `.claw/settings.json`. Author: kejiqing
@@ -299,6 +301,7 @@ pub struct ProjectConfigUpsert<'a> {
     pub git_sync_json: &'a Value,
     pub solve_preflight_json: &'a Value,
     pub solve_orchestration_json: &'a Value,
+    pub language_pipeline_json: &'a Value,
     pub extra_session_fields_json: &'a Value,
     pub prompt_limits_json: &'a Value,
     pub worker_isolation_json: &'a Value,
@@ -653,6 +656,11 @@ impl GatewaySessionDb {
         .await?;
         sqlx::query(
             "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS solve_orchestration_json JSONB NOT NULL DEFAULT '{\"kind\":\"single_turn\"}'::jsonb",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS language_pipeline_json JSONB NOT NULL DEFAULT '{}'::jsonb",
         )
         .execute(pool)
         .await?;
@@ -1523,8 +1531,8 @@ impl GatewaySessionDb {
             r"SELECT proj_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                       rules_json, mcp_servers_json, skills_sources_json, skills_json,
                       allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
-                      solve_orchestration_json, extra_session_fields_json, prompt_limits_json,
-                      worker_isolation_json
+                      solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
+                      prompt_limits_json, worker_isolation_json
                FROM project_config WHERE proj_id = $1",
         )
         .bind(proj_id)
@@ -1548,6 +1556,8 @@ impl GatewaySessionDb {
         let solve_preflight_json: Value = row.try_get::<Json<Value>, _>("solve_preflight_json")?.0;
         let solve_orchestration_json: Value =
             row.try_get::<Json<Value>, _>("solve_orchestration_json")?.0;
+        let language_pipeline_json: Value =
+            row.try_get::<Json<Value>, _>("language_pipeline_json")?.0;
         let extra_session_fields_json: Value = row
             .try_get::<Json<Value>, _>("extra_session_fields_json")?
             .0;
@@ -1573,6 +1583,7 @@ impl GatewaySessionDb {
             git_sync_json,
             solve_preflight_json,
             solve_orchestration_json,
+            language_pipeline_json,
             extra_session_fields_json,
             prompt_limits_json,
             worker_isolation_json,
@@ -1601,9 +1612,9 @@ impl GatewaySessionDb {
                 ds_id, proj_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                 rules_json, mcp_servers_json, skills_sources_json, skills_json,
                 allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
-                solve_orchestration_json, extra_session_fields_json, prompt_limits_json,
-                worker_isolation_json
-            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
+                prompt_limits_json, worker_isolation_json
+            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             ON CONFLICT (ds_id) DO UPDATE SET
                 proj_id = EXCLUDED.proj_id,
                 content_rev = EXCLUDED.content_rev,
@@ -1619,6 +1630,7 @@ impl GatewaySessionDb {
                 git_sync_json = EXCLUDED.git_sync_json,
                 solve_preflight_json = EXCLUDED.solve_preflight_json,
                 solve_orchestration_json = EXCLUDED.solve_orchestration_json,
+                language_pipeline_json = EXCLUDED.language_pipeline_json,
                 extra_session_fields_json = EXCLUDED.extra_session_fields_json,
                 prompt_limits_json = EXCLUDED.prompt_limits_json,
                 worker_isolation_json = EXCLUDED.worker_isolation_json",
@@ -1637,6 +1649,7 @@ impl GatewaySessionDb {
         .bind(Json(row.git_sync_json))
         .bind(Json(row.solve_preflight_json))
         .bind(Json(row.solve_orchestration_json))
+        .bind(Json(row.language_pipeline_json))
         .bind(Json(row.extra_session_fields_json))
         .bind(Json(row.prompt_limits_json))
         .bind(Json(row.worker_isolation_json))
@@ -2315,6 +2328,17 @@ impl GatewaySessionDb {
             body
         } else {
             format!("{body}\n")
+        })
+    }
+
+    /// True when PG-rendered jsonl includes at least one `type: message` line (not just `session_meta`).
+    #[must_use]
+    pub fn session_jsonl_has_messages(body: &str) -> bool {
+        body.lines().filter(|l| !l.trim().is_empty()).any(|line| {
+            match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(v) => v.get("type").and_then(|t| t.as_str()) == Some("message"),
+                Err(_) => false,
+            }
         })
     }
 
@@ -3741,6 +3765,7 @@ mod tests {
             git_sync_json: &json!({}),
             solve_preflight_json: &json!({"kind": "sqlbot_mcp_start"}),
             solve_orchestration_json: &json!({"kind": "single_turn"}),
+            language_pipeline_json: &json!({}),
             extra_session_fields_json: &json!([]),
             prompt_limits_json: &json!({}),
             worker_isolation_json: &json!({"mode": "strict"}),
@@ -3771,6 +3796,7 @@ mod tests {
             git_sync_json: &json!({}),
             solve_preflight_json: &json!({"kind": "none"}),
             solve_orchestration_json: &json!({"kind": "single_turn"}),
+            language_pipeline_json: &json!({}),
             extra_session_fields_json: &json!([]),
             prompt_limits_json: &json!({}),
             worker_isolation_json: &json!({"mode": "strict"}),

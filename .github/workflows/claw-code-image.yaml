@@ -171,8 +171,8 @@ jobs:
         run: |
           set -euo pipefail
           IMG="${{ steps.meta.outputs.relaxed_image }}:${{ steps.meta.outputs.release_tag }}"
-          docker run --rm --entrypoint sh "${IMG}" -c 'command -v curl && command -v python3'
-          echo "relaxed worker curl/python3 ok in ${IMG}"
+          docker run --rm --entrypoint sh "${IMG}" -c 'command -v curl && command -v git && command -v python3'
+          echo "relaxed worker curl/git/python3 ok in ${IMG}"
 
   mirror-to-acr:
     if: startsWith(github.ref, 'refs/tags/release-v')

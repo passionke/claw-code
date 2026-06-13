@@ -1,0 +1,24 @@
+# Postgres only — dev-stable / auxiliary stacks (no gateway). Author: kejiqing
+services:
+  postgres:
+    image: ${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}
+    container_name: ${CLAW_COMPOSE_PG_CONTAINER:-claw-dev-stable-postgres}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${CLAW_GATEWAY_PG_USER:-claw_gateway}
+      POSTGRES_PASSWORD: ${CLAW_GATEWAY_PG_PASSWORD:-clawGw9Dev_Pg}
+      POSTGRES_DB: ${CLAW_GATEWAY_PG_DATABASE:-claw_gateway}
+    ports:
+      - "${CLAW_GATEWAY_PG_HOST_PORT:-5434}:5432"
+    volumes:
+      - ${CLAW_PG_DATA_DIR:-./claw-postgres-data-dev-stable}:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${CLAW_GATEWAY_PG_USER:-claw_gateway} -d ${CLAW_GATEWAY_PG_DATABASE:-claw_gateway}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s

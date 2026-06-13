@@ -91,6 +91,8 @@ pub fn append_prompt_limits_to_settings(settings: &mut Value, limits: &Value) {
 }
 /// Materialized from `project_config.solve_orchestration_json` (DB truth). Author: kejiqing
 pub const SOLVE_ORCHESTRATION_MARKER: &str = "home/.claw/solve-orchestration.json";
+/// Materialized from `project_config.language_pipeline_json`. Author: kejiqing
+pub const LANGUAGE_PIPELINE_MARKER: &str = "home/.claw/language-pipeline.json";
 
 #[derive(Debug)]
 pub struct ProjectConfigApplyError {
@@ -367,15 +369,37 @@ pub fn git_excluded_home_relpaths(row: &ProjectConfigRow) -> Vec<PathBuf> {
     {
         out.push(PathBuf::from(SOLVE_PREFLIGHT_MARKER));
     }
-    if row
-        .solve_orchestration_json
-        .get("kind")
-        .and_then(Value::as_str)
-        .is_some_and(|k| k != "single_turn")
-    {
-        out.push(PathBuf::from(SOLVE_ORCHESTRATION_MARKER));
-    }
+    out.push(PathBuf::from(SOLVE_ORCHESTRATION_MARKER));
+    out.push(PathBuf::from(LANGUAGE_PIPELINE_MARKER));
     out
+}
+
+/// Bytes for `home/.claw/solve-orchestration.json` from PG row. Author: kejiqing
+pub fn solve_orchestration_marker_bytes(row: &ProjectConfigRow) -> ApplyResult<Vec<u8>> {
+    gateway_solve_turn::project_orchestration::validate_solve_orchestration_json(
+        &row.solve_orchestration_json,
+    )
+    .map_err(ProjectConfigApplyError::new)?;
+    serde_json::to_vec_pretty(
+        &gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
+            &row.solve_orchestration_json,
+        ),
+    )
+    .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-orchestration: {e}")))
+}
+
+/// Bytes for `home/.claw/language-pipeline.json` from PG row. Author: kejiqing
+pub fn language_pipeline_marker_bytes(row: &ProjectConfigRow) -> ApplyResult<Vec<u8>> {
+    gateway_solve_turn::project_language_pipeline::validate_language_pipeline_json(
+        &row.language_pipeline_json,
+    )
+    .map_err(ProjectConfigApplyError::new)?;
+    serde_json::to_vec_pretty(
+        &gateway_solve_turn::project_language_pipeline::materialize_language_pipeline_json(
+            &row.language_pipeline_json,
+        ),
+    )
+    .map_err(|e| ProjectConfigApplyError::new(format!("serialize language-pipeline: {e}")))
 }
 
 pub async fn read_applied_content_rev(work_dir: &Path) -> Option<String> {
@@ -452,6 +476,7 @@ async fn apply_full(
     write_allowed_tools_marker(work_dir, row).await?;
     write_solve_preflight_marker(work_dir, row).await?;
     write_solve_orchestration_marker(work_dir, row).await?;
+    write_language_pipeline_marker(work_dir, row).await?;
     link_claw_compat_symlinks(work_dir).await?;
     Ok(())
 }
@@ -493,8 +518,8 @@ pub fn guest_lock_ds_project_config_shell() -> &'static str {
     r#"set -eu
 ds='/claw_ds'
 if [ ! -d "$ds" ]; then exit 0; fi
-find "$ds" -type f -exec chmod a-w,a+r {} + 2>/dev/null || true
-find "$ds" -type d -exec chmod a-w,a+rx {} + 2>/dev/null || true
+find "$ds" -mindepth 1 -type f -exec chmod a-w,a+r {} + 2>/dev/null || true
+find "$ds" -mindepth 1 -type d -exec chmod a-w,a+rx {} + 2>/dev/null || true
 "#
 }
 
@@ -579,35 +604,34 @@ async fn remove_path_for_symlink(path: &Path) -> ApplyResult<()> {
     Ok(())
 }
 
-async fn write_solve_orchestration_marker(
+async fn write_language_pipeline_marker(
     work_dir: &Path,
     row: &ProjectConfigRow,
 ) -> ApplyResult<()> {
-    gateway_solve_turn::project_orchestration::validate_solve_orchestration_json(
-        &row.solve_orchestration_json,
-    )
-    .map_err(ProjectConfigApplyError::new)?;
-    let path = work_dir.join(SOLVE_ORCHESTRATION_MARKER);
-    let kind = row
-        .solve_orchestration_json
-        .get("kind")
-        .and_then(Value::as_str)
-        .unwrap_or("single_turn");
-    if kind == "single_turn" {
-        let _ = fs::remove_file(&path).await;
-        return Ok(());
-    }
+    let path = work_dir.join(LANGUAGE_PIPELINE_MARKER);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await.map_err(|e| {
             ProjectConfigApplyError::new(format!("create {} parent: {e}", path.display()))
         })?;
     }
-    let bytes = serde_json::to_vec_pretty(
-        &gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
-            &row.solve_orchestration_json,
-        ),
-    )
-    .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-orchestration: {e}")))?;
+    let bytes = language_pipeline_marker_bytes(row)?;
+    fs::write(&path, bytes)
+        .await
+        .map_err(|e| ProjectConfigApplyError::new(format!("write {}: {e}", path.display())))?;
+    Ok(())
+}
+
+async fn write_solve_orchestration_marker(
+    work_dir: &Path,
+    row: &ProjectConfigRow,
+) -> ApplyResult<()> {
+    let path = work_dir.join(SOLVE_ORCHESTRATION_MARKER);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.map_err(|e| {
+            ProjectConfigApplyError::new(format!("create {} parent: {e}", path.display()))
+        })?;
+    }
+    let bytes = solve_orchestration_marker_bytes(row)?;
     fs::write(&path, bytes)
         .await
         .map_err(|e| ProjectConfigApplyError::new(format!("write {}: {e}", path.display())))?;
@@ -674,6 +698,7 @@ pub fn build_guest_materialize_writes(
     push_allowed_tools_write(&mut out, row)?;
     push_solve_preflight_write(&mut out, row)?;
     push_solve_orchestration_write(&mut out, row)?;
+    push_language_pipeline_write(&mut out, row)?;
     out.push(GuestMaterializeWrite {
         rel_path: PathBuf::from(APPLIED_REV_MARKER),
         bytes: row.content_rev.as_bytes().to_vec(),
@@ -812,25 +837,17 @@ fn push_solve_orchestration_write(
     out: &mut Vec<GuestMaterializeWrite>,
     row: &ProjectConfigRow,
 ) -> ApplyResult<()> {
-    gateway_solve_turn::project_orchestration::validate_solve_orchestration_json(
-        &row.solve_orchestration_json,
-    )
-    .map_err(ProjectConfigApplyError::new)?;
-    let kind = row
-        .solve_orchestration_json
-        .get("kind")
-        .and_then(Value::as_str)
-        .unwrap_or("single_turn");
-    if kind == "single_turn" {
-        return Ok(());
-    }
-    let bytes = serde_json::to_vec_pretty(
-        &gateway_solve_turn::project_orchestration::materialize_solve_orchestration_json(
-            &row.solve_orchestration_json,
-        ),
-    )
-    .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-orchestration: {e}")))?;
+    let bytes = solve_orchestration_marker_bytes(row)?;
     push_write(out, PathBuf::from(SOLVE_ORCHESTRATION_MARKER), bytes);
+    Ok(())
+}
+
+fn push_language_pipeline_write(
+    out: &mut Vec<GuestMaterializeWrite>,
+    row: &ProjectConfigRow,
+) -> ApplyResult<()> {
+    let bytes = language_pipeline_marker_bytes(row)?;
+    push_write(out, PathBuf::from(LANGUAGE_PIPELINE_MARKER), bytes);
     Ok(())
 }
 
@@ -879,6 +896,7 @@ mod tests {
             git_sync_json: json!({}),
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_isolation_json: json!({"mode": "strict"}),
@@ -946,6 +964,7 @@ mod tests {
             git_sync_json: json!({}),
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_isolation_json: json!({"mode": "strict"}),
@@ -957,6 +976,57 @@ mod tests {
         assert!(paths.contains(&PathBuf::from(".cursor/rules/safety.mdc")));
         assert!(!paths.iter().any(|p| p.starts_with("home/.cursor")));
         assert!(paths.contains(&PathBuf::from("CLAUDE.md")));
+    }
+
+    #[test]
+    fn build_guest_materialize_writes_includes_language_pipeline() {
+        let row = ProjectConfigRow {
+            proj_id: 1,
+            content_rev: "rev-lp".into(),
+            stable_content_rev: Some("rev-lp".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
+        };
+        let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
+        let paths: Vec<_> = writes.iter().map(|w| w.rel_path.clone()).collect();
+        assert!(paths.contains(&PathBuf::from(SOLVE_ORCHESTRATION_MARKER)));
+        let orch = writes
+            .iter()
+            .find(|w| w.rel_path == PathBuf::from(SOLVE_ORCHESTRATION_MARKER))
+            .expect("solve-orchestration write");
+        let orch_json: Value = serde_json::from_slice(&orch.bytes).expect("orch json");
+        assert_eq!(
+            orch_json.get("kind").and_then(Value::as_str),
+            Some("single_turn")
+        );
+        let lp = writes
+            .iter()
+            .find(|w| w.rel_path == PathBuf::from(LANGUAGE_PIPELINE_MARKER))
+            .expect("language-pipeline write");
+        let parsed: Value = serde_json::from_slice(&lp.bytes).expect("json");
+        assert!(parsed
+            .get("languageInferencePrompt")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.contains("{current_user_prompt}")));
+        assert_eq!(
+            parsed
+                .get("languageInferencePriorTurns")
+                .and_then(Value::as_u64),
+            Some(5)
+        );
     }
 
     #[tokio::test]
@@ -1013,6 +1083,7 @@ mod tests {
             git_sync_json: json!({}),
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_isolation_json: json!({"mode": "strict"}),
@@ -1065,6 +1136,7 @@ mod tests {
             git_sync_json: json!({}),
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_isolation_json: json!({"mode": "strict"}),
@@ -1129,6 +1201,7 @@ mod tests {
             git_sync_json: json!({}),
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_isolation_json: json!({"mode": "strict"}),
@@ -1192,6 +1265,7 @@ mod tests {
             git_sync_json: json!({}),
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_isolation_json: json!({"mode": "strict"}),
@@ -1228,6 +1302,7 @@ mod tests {
             git_sync_json: json!({}),
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_isolation_json: json!({"mode": "strict"}),
@@ -1254,6 +1329,7 @@ mod tests {
             git_sync_json: json!({}),
             solve_preflight_json: json!({"kind": "none"}),
             solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({
                 "instructionFileMaxChars": 12000,

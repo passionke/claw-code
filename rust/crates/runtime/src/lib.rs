@@ -28,6 +28,7 @@ mod mcp_stdio;
 pub mod mcp_tool_bridge;
 mod mcp_transport;
 mod oauth;
+mod otel_tool;
 pub mod permission_enforcer;
 mod permissions;
 pub mod plugin_lifecycle;

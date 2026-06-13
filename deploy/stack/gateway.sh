@@ -26,6 +26,7 @@ Commands:
   pg-down       Stop postgres only (data volume kept)
   restart       Recreate gateway stack (down + up)
   pool-reset    Stop host pool daemon + remove all claw-worker containers
+  stable-dev-up Start dev-stable PG+pool+tap on Linux host (.env.dev-stable; see env.stable-dev-host.example)
   pool-up       Start host claw-pool-daemon if HTTP down (skips if already listening; --restart to replace)
   fix-workspace chown ds_* sessions + pool slots to CLAW_WORKER_UID (before up if preflight failed)
   install-docker  Linux production: apt/dnf install docker.io + compose + registry mirror (idempotent)
@@ -85,6 +86,7 @@ case "${cmd}" in
     run_with_manual_hint "${LIB}/up.sh" "$@"
     ;;
   pool-reset) "${LIB}/pool-reset.sh" "$@" ;;
+  stable-dev-up) bash "${LIB}/stable-dev-host-up.sh" "$@" ;;
   pool-up) "${LIB}/pool-daemon-up.sh" "$@" ;;
   fix-workspace) "${LIB}/fix-session-ownership.sh" "$@" ;;
   install-docker) "${LIB}/install-docker.sh" "$@" ;;

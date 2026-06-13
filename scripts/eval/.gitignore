@@ -1,0 +1,6 @@
+# Eval run output — never commit (see repo root .gitignore). Author: kejiqing
+**/cases/
+**/scored/
+**/results/
+**/cases.bak-*/
+**/*.log

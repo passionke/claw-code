@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
-use gateway_solve_turn::GatewaySolveTaskFile;
+use gateway_solve_turn::{otel_forward_env, GatewaySolveTaskFile};
+use telemetry::{inject_traceparent, set_langfuse_trace_attrs_on_context, OtelSpanGuard};
 use tokio::fs;
 use tokio::time::{timeout, Duration as TokioDuration};
 use tracing::{info, warn};
@@ -146,6 +147,14 @@ pub async fn run_solve_request_docker(
         .clone()
         .or_else(|| task_id.clone())
         .unwrap_or_else(|| request_id.clone());
+    let otel_guard = OtelSpanGuard::start("claw-gateway-rs", "gateway.solve", None);
+    if let Some(ref g) = otel_guard {
+        set_langfuse_trace_attrs_on_context(g.context(), &session_id, &turn_id, &request_id);
+        g.set_attribute("langfuse.trace.name", "gateway.solve");
+    }
+    let otel_traceparent = otel_guard
+        .as_ref()
+        .and_then(|g| inject_traceparent(g.context()));
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
@@ -159,6 +168,7 @@ pub async fn run_solve_request_docker(
         pool_id: None,
         worker_name: None,
         llm_route: Some(serde_json::to_value(&llm_route).unwrap_or_default()),
+        otel_traceparent,
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(
@@ -282,13 +292,18 @@ pub async fn run_solve_request_docker(
                 format!("persist bootstrap timing failed: {e}"),
             )
         })?;
+    let mut exec_env = worker_llm_env;
+    exec_env.extend(otel_forward_env());
+    if let Some(tp) = task.otel_traceparent.as_deref() {
+        exec_env.insert("TRACEPARENT".to_string(), tp.to_string());
+    }
     let exec_fut = pool.exec_solve(
         lease_cleanup.lease.as_ref().expect("lease set for exec"),
         GATEWAY_SOLVE_TASK_FILE,
         claw_bin_for_pool_exec(&state.cfg),
         Some(request_id.as_str()),
         &turn_id,
-        Some(worker_llm_env),
+        Some(exec_env),
         None,
     );
     let exec_result =
@@ -411,6 +426,9 @@ pub async fn run_solve_request_docker(
             .next()
             .filter(|s| !s.is_empty())
             .unwrap_or("gateway-solve-once failed");
+        if let Some(ref g) = otel_guard {
+            g.set_error(detail);
+        }
         return Err(ApiError::new(
             StatusCode::BAD_GATEWAY,
             format!("gateway-solve-once failed with clawExitCode={claw_exit_code}: {detail}"),
@@ -431,6 +449,9 @@ pub async fn run_solve_request_docker(
         session_home = %session_home.display(),
         "docker pool gateway_solve completed and response built"
     );
+    if let Some(ref g) = otel_guard {
+        g.set_ok();
+    }
     Ok(SolveResponse {
         session_id: request_id.clone(),
         request_id,

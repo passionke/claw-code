@@ -260,7 +260,7 @@ pub async fn ensure_jsonl_from_db(
     session_home: &Path,
 ) -> Result<(), sqlx::Error> {
     let body = db.render_session_jsonl(session_id, proj_id).await?;
-    if body.is_empty() {
+    if !GatewaySessionDb::session_jsonl_has_messages(&body) {
         return Ok(());
     }
     let path = gateway_solve_session_persistence_path(session_home);

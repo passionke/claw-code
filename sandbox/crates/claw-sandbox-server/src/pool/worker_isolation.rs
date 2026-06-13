@@ -9,9 +9,10 @@ pub fn exec_user_for_isolation(
     mode: IsolationMode,
     worker_identity: &PoolWorkerIdentity,
 ) -> String {
-    // strict and relaxed both solve as pool worker user (`claw`); isolation differs by image/caps. Author: kejiqing
-    let _ = mode;
-    worker_identity.exec_user_arg()
+    match mode {
+        IsolationMode::Relaxed => "0:0".to_string(),
+        IsolationMode::Strict => worker_identity.exec_user_arg(),
+    }
 }
 
 #[must_use]
@@ -34,5 +35,28 @@ pub fn exec_user_for_actor(
     match actor {
         GuestExecActor::PoolRoot => "0:0".to_string(),
         GuestExecActor::SlotWorker => exec_user_for_isolation(isolation, worker_identity),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use claw_sandbox_protocol::IsolationMode;
+
+    use super::super::worker_identity::PoolWorkerIdentity;
+
+    #[test]
+    fn strict_exec_uses_pool_worker() {
+        let id = PoolWorkerIdentity::from_env(None);
+        assert_eq!(
+            exec_user_for_isolation(IsolationMode::Strict, &id),
+            id.exec_user_arg()
+        );
+    }
+
+    #[test]
+    fn relaxed_exec_is_root() {
+        let id = PoolWorkerIdentity::from_env(None);
+        assert_eq!(exec_user_for_isolation(IsolationMode::Relaxed, &id), "0:0");
     }
 }

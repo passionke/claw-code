@@ -79,7 +79,11 @@ claw_claude_tap_build_image() {
     build_args+=(--platform "${platform}")
   fi
   echo "==> building ${image} from ${ctx} (${rt})" >&2
-  "${rt}" build "${build_args[@]}" -f "${ctx}/Dockerfile" -t "${image}" "${ctx}"
+  if ((${#build_args[@]})); then
+    "${rt}" build "${build_args[@]}" -f "${ctx}/Dockerfile" -t "${image}" "${ctx}"
+  else
+    "${rt}" build -f "${ctx}/Dockerfile" -t "${image}" "${ctx}"
+  fi
 }
 
 # Local fork build, or `docker pull` when only CLAUDE_TAP_IMAGE is set (production). Author: kejiqing
@@ -260,9 +264,20 @@ claw_claude_tap_start_docker() {
     }
     run_args+=(--network "${net}")
   fi
-  mapfile -t proxy_publish < <(claw_claude_tap_docker_publish_args proxy "${port}" 8080)
-  mapfile -t live_publish < <(claw_claude_tap_docker_publish_args live "${live_port}" 3000)
-  run_args+=("${proxy_publish[@]}" "${live_publish[@]}")
+  # macOS /bin/bash 3.2 has no mapfile; read publish -p lines into arrays. kejiqing
+  local proxy_publish=() live_publish=() line
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] && proxy_publish+=("${line}")
+  done < <(claw_claude_tap_docker_publish_args proxy "${port}" 8080)
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] && live_publish+=("${line}")
+  done < <(claw_claude_tap_docker_publish_args live "${live_port}" 3000)
+  if ((${#proxy_publish[@]})); then
+    run_args+=("${proxy_publish[@]}")
+  fi
+  if ((${#live_publish[@]})); then
+    run_args+=("${live_publish[@]}")
+  fi
 
   # shellcheck disable=SC2086
   "${rt}" "${run_args[@]}" \

@@ -21,6 +21,20 @@ Author: kejiqing
 | `CLAW_BOOTSTRAP_LLM_NAME` | Admin 里显示名 | `ci-bootstrap` |
 | `CLAUDE_TAP_IMAGE` | claw-tap 镜像 | ACR `passionke/claw-tap:latest`（见 `env.production.example`） |
 
+### Langfuse OTEL（CI 宿主机已部署 Langfuse 时）
+
+在 **Settings → CI/CD → Variables** 配置；`render-env-from-ci.sh` 写入根 `.env`，`gateway.sh pool-up` 同步到 `pool-daemon.env`。详见 [`docs/langfuse-otel.md`](../../docs/langfuse-otel.md)。
+
+| Key | Masked | 说明 |
+|-----|--------|------|
+| `LANGFUSE_PUBLIC_KEY` | **是** | Langfuse Project → API Keys |
+| `LANGFUSE_SECRET_KEY` | **是** | 同上 |
+| `CLAW_OTEL_ENABLED` | 否 | 建议 `1`；仅设 key 时 render 默认 `1` |
+| `LANGFUSE_BASE_URL` | 否 | 94 CI：`http://10.22.28.94:8090`；未设时 render 用 `http://${CLAW_POOL_ADVERTISE_HOST}:8090` |
+| `CLAW_OTEL_LOG_PROMPTS` | 否 | `1` 记录 prompt（默认）；`0` 关闭 |
+
+双节点 `ci-cluster-dual-deploy.sh` 会把上述变量从 node A `.env` 转发到 `.env.ci-node-b`。
+
 也可用通用名（二选一，bootstrap 优先读 `CLAW_BOOTSTRAP_*`）：
 
 | Key | 等价于 |

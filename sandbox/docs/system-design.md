@@ -56,7 +56,7 @@ flowchart LR
 维护 **Worker 布局约定**（路径、tar 落点、exec 命令），例如：
 
 - 工作根 `/claw_host_root`
-- project 配置灌入 `/claw_ds`（经 RPC）；materialize 后 `guest_lock_project_config`（chmod ro）；**solve/materialize 均以 `claw` 用户 exec**；会话可写仅在 `/claw_host_root`
+- project 配置灌入 `/claw_ds`（经 RPC）；materialize 后 `guest_lock_project_config`（chmod ro）；**strict：`claw` exec；relaxed：`0:0` root exec**；会话可写仅在 `/claw_host_root`
 - solve 前：PG → `guest_wipe` / `guest_write` / `guest_extract_tar_b64`
 - solve：`exec` + env
 - solve 后：`guest_read` → Gateway 写 PG
@@ -81,8 +81,8 @@ Guest I/O **禁止**传裸绝对路径；用 `volume` + `rel_path`。`guest_read
 
 | actor | `podman exec --user` | 用途 |
 |-------|----------------------|------|
-| `slot_worker` | `CLAW_*_POOL_EXEC_USER`（默认 `claw`） | materialize 写、session 脚本、solve |
-| `pool_root` | `0:0` | `guest_wipe`、`guest_lock_project_config` |
+| `slot_worker` | strict：`CLAW_*_POOL_EXEC_USER`（默认 `claw`）；relaxed：`0:0` | materialize 写、session 脚本、solve |
+| `pool_root` | `0:0` | `guest_wipe`、`guest_lock_project_config`（strict） |
 
 `acquire` 响应 `lease.worker_profile` + `lease.exec_identity`：`{ isolation, exec_user }`（审计 / Admin）。
 

@@ -348,8 +348,22 @@ fn merge_prompt_with_stdin(prompt: &str, stdin_content: Option<&str>) -> String 
 /// Author: kejiqing
 fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
     gateway_solve_turn::apply_worker_env();
+    if std::env::var("OTEL_SERVICE_NAME")
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        std::env::set_var("OTEL_SERVICE_NAME", "claw-worker");
+    }
     let raw = fs::read_to_string(task_file)?;
     let task: gateway_solve_turn::GatewaySolveTaskFile = serde_json::from_str(&raw)?;
+    if let Some(tp) = task
+        .otel_traceparent
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        std::env::set_var("TRACEPARENT", tp);
+    }
     let work_dir = env::current_dir()?;
     let work_root = env::var("CLAW_GATEWAY_WORK_ROOT")
         .map(PathBuf::from)
@@ -363,6 +377,7 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
         .build()?;
     let result = {
         let _enter = rt.enter();
+        telemetry::init_otel_from_env();
         run_gateway_solve_turn(
             &work_dir,
             &work_root,
@@ -375,7 +390,7 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
             task.llm_route.clone(),
         )
     };
-    match result {
+    let run_result = match result {
         Ok((claw_exit_code, output_text, output_json)) => {
             gateway_solve_turn::emit_solve_done(
                 claw_exit_code,
@@ -388,7 +403,9 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
             gateway_solve_turn::emit_solve_error(&e.message, e.status)?;
             Err(format!("gateway-solve-once failed: {e}").into())
         }
-    }
+    };
+    telemetry::shutdown_otel();
+    run_result
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {

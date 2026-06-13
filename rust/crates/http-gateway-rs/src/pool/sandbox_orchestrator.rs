@@ -1,6 +1,7 @@
 //! Gateway-side sandbox pool orchestration (PG materialize/readback via RPC). Author: kejiqing
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,6 +34,7 @@ pub fn worker_isolation_to_sandbox(mode: WorkerIsolationMode) -> SandboxIsolatio
 pub struct SandboxOrchestratedPool {
     client: Arc<SandboxRpcClient>,
     db: Arc<RwLock<Option<Arc<GatewaySessionDb>>>>,
+    work_root: PathBuf,
     pool_id: String,
     live_report_hub: Arc<LiveReportHub>,
     turn_slots: Arc<Mutex<HashMap<String, usize>>>,
@@ -43,12 +45,14 @@ impl SandboxOrchestratedPool {
     #[must_use]
     pub fn new(
         client: Arc<SandboxRpcClient>,
+        work_root: PathBuf,
         pool_id: String,
         live_report_hub: Arc<LiveReportHub>,
     ) -> Arc<Self> {
         Arc::new(Self {
             client,
             db: Arc::new(RwLock::new(None)),
+            work_root,
             pool_id,
             live_report_hub,
             turn_slots: Arc::new(Mutex::new(HashMap::new())),
@@ -129,10 +133,12 @@ impl PoolOps for SandboxOrchestratedPool {
                 .assign_turn_pool_worker(&turn_id, &self.pool_id, worker_name, exec_user)
                 .await;
         }
+        let proj_work_dir = super::session_db_sync::proj_work_dir(&self.work_root, proj_id);
         materialize_turn_via_sandbox(
             &self.client,
             lease.slot_index,
             db.as_ref(),
+            &proj_work_dir,
             &MaterializeInput {
                 session_id: session_id.clone(),
                 proj_id,
