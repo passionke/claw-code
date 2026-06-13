@@ -21,6 +21,7 @@ import TurnToolsDrawer from "./TurnToolsDrawer";
 import TurnTimelineDrawer from "./TurnTimelineDrawer";
 import TurnExtraSessionDrawer from "./TurnExtraSessionDrawer";
 import { formatDurationMs } from "../../utils/formatDuration";
+import { isHistoryTurnView, isTerminalTurnStatus } from "../../utils/turnViewMode";
 import styles from "./chat.module.css";
 
 export interface ChatTurnCardProps {
@@ -32,7 +33,7 @@ export interface ChatTurnCardProps {
   tapLiveBase: string;
   tapLiveTemplate: string;
   initialStatus?: string;
-  /** `history`：只读回放，按 turn 拉报告，不 poll 最新 task。Author: kejiqing */
+  /** `history`：终态只读回放；`queued`/`running` 始终走 live（poll + report SSE，多终端各自订阅）。Author: kejiqing */
   viewMode?: "live" | "history";
   hasReport?: boolean;
   /** 列表接口已带正文时跳过二次请求。Author: kejiqing */
@@ -73,8 +74,6 @@ function statusLabel(task: SolveTask): string {
   if (st === "cancelled") return "已取消";
   return st;
 }
-
-const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 
 function gatewayHostLabel(base: string): string {
   const t = base.trim();
@@ -134,15 +133,17 @@ export default function ChatTurnCard({
   initialWorkerExecUser,
 }: ChatTurnCardProps) {
   const { clusterPools } = useApp();
-  const historyMode = viewMode === "history";
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
+  const initialHistoryMode = isHistoryTurnView(viewMode, initialStatus);
   const [task, setTask] = useState<SolveTask>({
     status: initialStatus,
-    hasReport: historyMode && (hasReport || Boolean(prefilledReport)),
-    currentTaskDesc: historyMode ? "历史记录" : "已提交",
+    hasReport: initialHistoryMode && (hasReport || Boolean(prefilledReport)),
+    currentTaskDesc: initialHistoryMode ? "历史记录" : "已提交",
     progressHistory: [],
   });
+  const turnStatus = task.status ?? initialStatus ?? "";
+  const historyMode = isHistoryTurnView(viewMode, turnStatus);
   const effectiveCreatedAtMs = task.createdAtMs ?? createdAtMs;
   const effectiveFinishedAtMs = task.finishedAtMs ?? finishedAtMs;
   const wallMs =
@@ -164,22 +165,23 @@ export default function ChatTurnCard({
 
   useEffect(() => {
     const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
+    const resetHistoryMode = isHistoryTurnView(viewMode, initialStatus);
     setTask({
       status: initialStatus,
-      hasReport: historyMode && (hasReport || Boolean(prefilled)),
-      currentTaskDesc: historyMode ? "历史记录" : "已提交",
+      hasReport: resetHistoryMode && (hasReport || Boolean(prefilled)),
+      currentTaskDesc: resetHistoryMode ? "历史记录" : "已提交",
       progressHistory: [],
     });
     setErrorText(prefilledFailure);
     setFallbackOutput("");
     setHistoryReport(prefilled);
-    setHistoryReportLoading(historyMode && !prefilled && !prefilledFailure);
+    setHistoryReportLoading(resetHistoryMode && !prefilled && !prefilledFailure);
     reportOpened.current = false;
   }, [
     sessionId,
     turnId,
     initialStatus,
-    historyMode,
+    viewMode,
     hasReport,
     initialHistoricalReport,
     initialFailureDetail,
@@ -257,7 +259,7 @@ export default function ChatTurnCard({
       while (!cancelled) {
         const t = await pollOnce();
         if (!t) break;
-        const terminal = TERMINAL.has(t.status || "");
+        const terminal = isTerminalTurnStatus(t.status);
         if (
           !reportOpened.current &&
           (t.status === "running" || t.status === "queued")
@@ -313,7 +315,7 @@ export default function ChatTurnCard({
   const canCancel = !historyMode && (st === "queued" || st === "running");
   const canFeedback =
     Boolean(onTurnFeedback) &&
-    (historyMode || TERMINAL.has(st)) &&
+    (historyMode || isTerminalTurnStatus(st)) &&
     (reportVisible || Boolean(fallbackOutput) || Boolean(errorText) || historyMode);
   const feedbackEditable = isAdminOrigin(clientOrigin);
   const showFeedback = canFeedback && (feedbackEditable || Boolean(turnFeedback));

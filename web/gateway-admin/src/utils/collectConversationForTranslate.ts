@@ -3,6 +3,7 @@
 import { proxyHttp } from "../api/client";
 import type { BizAdviceReportResponse, GatewayTurnSummary, SolveTask } from "../types/chat";
 import { extractSolveReportMessage } from "./solveReportBody";
+import { turnViewModeForStatus } from "./turnViewMode";
 
 export interface ConversationTurnInput {
   turnId: string;
@@ -126,7 +127,7 @@ export async function loadSessionTurnsForTranslate(
     sessionId,
     taskId: sessionId,
     userText: t.userPrompt?.trim() || "（无用户文案）",
-    viewMode: "history" as const,
+    viewMode: turnViewModeForStatus(t.status),
     historicalReport: t.reportBody ? extractSolveReportMessage(t.reportBody) : undefined,
     failureDetail: t.failureDetail?.trim() || undefined,
   }));

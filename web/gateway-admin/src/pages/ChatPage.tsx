@@ -26,6 +26,7 @@ import {
   isExternalOrigin,
 } from "../utils/clientOrigin";
 import { extractSolveReportMessage } from "../utils/solveReportBody";
+import { turnViewModeForStatus } from "../utils/turnViewMode";
 import type { TurnFeedbackValue } from "../types/chat";
 
 interface TurnEntry {
@@ -178,7 +179,7 @@ export default function ChatPage() {
             sessionId,
             turnId: t.turnId,
             initialStatus: t.status,
-            viewMode: "history" as const,
+            viewMode: turnViewModeForStatus(t.status),
             hasReport: t.hasReport,
             historicalReport: t.reportBody
               ? extractSolveReportMessage(t.reportBody)
