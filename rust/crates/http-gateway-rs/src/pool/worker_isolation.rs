@@ -49,8 +49,10 @@ pub fn effective_mode(relaxed_allowed: bool, worker_isolation_json: &Value) -> W
 
 #[must_use]
 pub fn exec_user_arg_for_mode(mode: WorkerIsolationMode, pool_exec_user: &str) -> String {
-    let _ = mode;
-    pool_exec_user.to_string()
+    match mode {
+        WorkerIsolationMode::Relaxed => "0:0".to_string(),
+        WorkerIsolationMode::Strict => pool_exec_user.to_string(),
+    }
 }
 
 pub fn validate_worker_isolation_json(value: &Value) -> Result<(), String> {
@@ -97,10 +99,10 @@ mod tests {
     }
 
     #[test]
-    fn exec_user_relaxed_uses_pool_worker() {
+    fn exec_user_relaxed_is_root() {
         assert_eq!(
             exec_user_arg_for_mode(WorkerIsolationMode::Relaxed, "claw"),
-            "claw"
+            "0:0"
         );
     }
 }

@@ -1454,12 +1454,11 @@ mod exec_solve_argv_prefix_tests {
     }
 
     #[test]
-    fn exec_prefix_relaxed_uses_pool_worker() {
+    fn exec_prefix_relaxed_uses_root() {
         let p = pool(None);
-        let id = PoolWorkerIdentity::from_env(None);
         assert_eq!(
             p.test_exec_solve_argv_prefix_for(WorkerIsolationMode::Relaxed),
-            vec!["exec".to_string(), "--user".to_string(), id.exec_user_arg()]
+            vec!["exec".to_string(), "--user".to_string(), "0:0".to_string()]
         );
     }
 

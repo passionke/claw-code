@@ -1,4 +1,4 @@
-# Relaxed pool worker: strict base + curl/python3. Author: kejiqing
+# Relaxed pool worker: strict base + dev tools (root exec at solve time). Author: kejiqing
 ARG WORKER_BASE_IMAGE=claw-gateway-worker:local
 
 FROM ${WORKER_BASE_IMAGE}
@@ -11,6 +11,7 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
     fi; \
     apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    git \
     python3 \
     && rm -rf /var/lib/apt/lists/*
 
