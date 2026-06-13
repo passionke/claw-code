@@ -22,6 +22,8 @@ fi
 claw_pool_down_one() {
   local rpc_dir="$1" http_port="$2"
   local AUDIT_LOG="${rpc_dir}/daemon-down.audit.log"
+  local t0=$SECONDS
+  echo "==> pool-daemon-down: rpc_dir=${rpc_dir} http_port=${http_port}" >&2
   mkdir -p "${rpc_dir}"
   {
     printf '\n%s pool-daemon-down begin ppid=%s port=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PPID" "${http_port}"
@@ -56,17 +58,23 @@ claw_pool_down_one() {
       echo "==> stopping claw-sandbox pid=${pid}" >&2
       kill "${pid}" 2>/dev/null || true
       if ! claw_pool_wait_http_down; then
+        echo "==> claw-sandbox pid=${pid} still on :${http_port}; SIGKILL" >&2
         kill -9 "${pid}" 2>/dev/null || true
         claw_pool_wait_http_down 2>/dev/null || true
       fi
+    else
+      echo "==> pool-daemon-down: stale or missing pid in ${rpc_dir}/daemon.pid (pid=${pid:-empty})" >&2
     fi
     rm -f "${rpc_dir}/daemon.pid"
+  else
+    echo "==> pool-daemon-down: no ${rpc_dir}/daemon.pid" >&2
   fi
 
   # shellcheck source=nuclear-pool-reset.sh
   source "${LIB_DIR}/nuclear-pool-reset.sh"
-  claw_kill_tcp_listeners "${http_port}" 2>/dev/null || true
+  claw_kill_tcp_listeners "${http_port}" "pool-daemon-down"
   rm -f "${rpc_dir}/pool.sock"
+  echo "==> pool-daemon-down done in $((SECONDS - t0))s" >&2
 }
 
 HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
