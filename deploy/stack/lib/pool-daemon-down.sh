@@ -9,6 +9,8 @@ source "${LIB_DIR}/pool-daemon-launchd.sh"
 source "${LIB_DIR}/compose-include.sh"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/pool-health.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/log-ts.sh"
 
 REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 _pool_env_file="${CLAW_POOL_UP_ENV_FILE:-${REPO_ROOT}/.env}"
@@ -19,24 +21,43 @@ if [[ -f "${_pool_env_file}" ]]; then
   set +a
 fi
 
+claw_pool_http_up() {
+  local http_port="$1"
+  curl -fsS --connect-timeout 1 --max-time 2 \
+    "http://127.0.0.1:${http_port}/healthz/live-report" >/dev/null 2>&1
+}
+
+claw_pool_signal_pid() {
+  local pid="$1" sig="$2"
+  kill "-${sig}" "${pid}" 2>/dev/null \
+    || sudo -n kill "-${sig}" "${pid}" 2>/dev/null \
+    || true
+}
+
 claw_pool_down_one() {
   local rpc_dir="$1" http_port="$2"
   local AUDIT_LOG="${rpc_dir}/daemon-down.audit.log"
-  local t0=$SECONDS
-  echo "==> pool-daemon-down: rpc_dir=${rpc_dir} http_port=${http_port}" >&2
+  local t0=$SECONDS wait_max="${CLAW_POOL_DOWN_WAIT_SEC:-8}"
+  claw_log "pool-daemon-down: rpc_dir=${rpc_dir} http_port=${http_port}"
   mkdir -p "${rpc_dir}"
   {
-    printf '\n%s pool-daemon-down begin ppid=%s port=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PPID" "${http_port}"
+    printf '\n%s pool-daemon-down begin ppid=%s port=%s\n' "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S %Z')" "$PPID" "${http_port}"
   } >>"${AUDIT_LOG}" 2>/dev/null || true
 
   claw_pool_wait_http_down() {
-    local i
-    for i in $(seq 1 30); do
-      if ! curl -fsS --connect-timeout 1 "http://127.0.0.1:${http_port}/healthz/live-report" >/dev/null 2>&1; then
+    local deadline=$((SECONDS + wait_max)) i=0
+    while ((SECONDS < deadline)); do
+      i=$((i + 1))
+      if ! claw_pool_http_up "${http_port}"; then
+        claw_log "pool-daemon-down: :${http_port} down after ${i} probe(s), $((SECONDS - t0))s"
         return 0
       fi
-      sleep 0.1
+      if ((i == 1 || i % 5 == 0)); then
+        claw_log "pool-daemon-down: waiting :${http_port} down probe=${i} elapsed=$((SECONDS - t0))s"
+      fi
+      sleep 0.2
     done
+    claw_log "pool-daemon-down: :${http_port} still up after ${wait_max}s wait"
     return 1
   }
 
@@ -46,7 +67,7 @@ claw_pool_down_one() {
     # shellcheck disable=SC1091
     source "${LIB_DIR}/pool-daemon-systemd.sh"
     if claw_pool_use_systemd 2>/dev/null && claw_pool_systemd_installed; then
-      echo "==> stopping claw-sandbox (systemd)" >&2
+      claw_log "stopping claw-sandbox (systemd)"
       claw_pool_systemd_stop || true
     fi
   fi
@@ -55,19 +76,19 @@ claw_pool_down_one() {
     local pid
     pid="$(cat "${rpc_dir}/daemon.pid")"
     if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
-      echo "==> stopping claw-sandbox pid=${pid}" >&2
-      kill "${pid}" 2>/dev/null || true
+      claw_log "stopping claw-sandbox pid=${pid} (SIGTERM)"
+      claw_pool_signal_pid "${pid}" TERM
       if ! claw_pool_wait_http_down; then
-        echo "==> claw-sandbox pid=${pid} still on :${http_port}; SIGKILL" >&2
-        kill -9 "${pid}" 2>/dev/null || true
-        claw_pool_wait_http_down 2>/dev/null || true
+        claw_log "claw-sandbox pid=${pid} still on :${http_port}; SIGKILL"
+        claw_pool_signal_pid "${pid}" 9
+        claw_pool_wait_http_down || true
       fi
     else
-      echo "==> pool-daemon-down: stale or missing pid in ${rpc_dir}/daemon.pid (pid=${pid:-empty})" >&2
+      claw_log "pool-daemon-down: stale or missing pid in ${rpc_dir}/daemon.pid (pid=${pid:-empty})"
     fi
     rm -f "${rpc_dir}/daemon.pid"
   else
-    echo "==> pool-daemon-down: no ${rpc_dir}/daemon.pid" >&2
+    claw_log "pool-daemon-down: no ${rpc_dir}/daemon.pid"
   fi
 
   if [[ "${CLAW_POOL_DOWN_TCP_KILL:-1}" == "1" ]]; then
@@ -75,10 +96,10 @@ claw_pool_down_one() {
     source "${LIB_DIR}/nuclear-pool-reset.sh"
     claw_kill_tcp_listeners "${http_port}" "pool-daemon-down"
   else
-    echo "==> pool-daemon-down: skip TCP kill (CLAW_POOL_DOWN_TCP_KILL=0)" >&2
+    claw_log "pool-daemon-down: skip TCP kill (CLAW_POOL_DOWN_TCP_KILL=0)"
   fi
   rm -f "${rpc_dir}/pool.sock"
-  echo "==> pool-daemon-down done in $((SECONDS - t0))s" >&2
+  claw_log "pool-daemon-down done in $((SECONDS - t0))s"
 }
 
 HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"

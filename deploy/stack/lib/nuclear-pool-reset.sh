@@ -1,6 +1,10 @@
 # shellcheck shell=bash
 # Stop pool daemon, free TCP port, remove every claw worker container (any name/tag). Author: kejiqing
 
+_LIB_NUCLEAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${_LIB_NUCLEAR_DIR}/log-ts.sh"
+
 claw_docker_op_timeout_sec() {
   printf '%s' "${CLAW_DOCKER_OP_TIMEOUT_SEC:-60}"
 }
@@ -18,7 +22,8 @@ claw_run_with_timeout() {
 
 claw_pool_http_health_alive() {
   local port="${1:?port}"
-  curl -fsS --connect-timeout 2 "http://127.0.0.1:${port}/healthz/live-report" >/dev/null 2>&1
+  curl -fsS --connect-timeout 1 --max-time 2 \
+    "http://127.0.0.1:${port}/healthz/live-report" >/dev/null 2>&1
 }
 
 claw_tcp_port_listening() {
@@ -56,9 +61,9 @@ claw_print_tcp_port_status() {
   pids="$(claw_tcp_listen_pids "${port}")"
   pids="${pids//[$'\t\r\n ']/}"
   if [[ -n "${label}" ]]; then
-    echo "==> TCP :${port} (${label}) listening=${listening} pool_health=${health} listen_pids=${pids:-none}" >&2
+    claw_log "TCP :${port} (${label}) listening=${listening} pool_health=${health} listen_pids=${pids:-none}"
   else
-    echo "==> TCP :${port} listening=${listening} pool_health=${health} listen_pids=${pids:-none}" >&2
+    claw_log "TCP :${port} listening=${listening} pool_health=${health} listen_pids=${pids:-none}"
   fi
 }
 
@@ -95,14 +100,14 @@ claw_kill_tcp_listeners_privileged() {
   image="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}/library/alpine:3.20"
   local secs
   secs="$(claw_docker_op_timeout_sec)"
-  echo "==> kill TCP :${port} via ${rt} (privileged pid=host, timeout=${secs}s)" >&2
+  claw_log "kill TCP :${port} via ${rt} (privileged pid=host, timeout=${secs}s)"
   if ! claw_run_with_timeout "${secs}" "${rt}" run --rm --pid=host --privileged "${image}" sh -c "
     apk add --no-cache lsof >/dev/null 2>&1 || true
     for pid in \$(lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null); do
       kill -9 \"\$pid\" 2>/dev/null || true
     done
   "; then
-    echo "warning: privileged ${rt} run timed out after ${secs}s (TCP :${port})" >&2
+    claw_log "warning: privileged ${rt} run timed out after ${secs}s (TCP :${port})"
   fi
 }
 
@@ -126,7 +131,7 @@ claw_kill_tcp_listeners() {
     sleep 0.5
   fi
   claw_print_tcp_port_status "${port}" "${label} after"
-  echo "==> TCP :${port} kill done in $((SECONDS - t0))s" >&2
+  claw_log "TCP :${port} kill done in $((SECONDS - t0))s"
 }
 
 claw_count_docker_ids() {
@@ -146,7 +151,7 @@ claw_remove_all_gateway_workers() {
   rt="$(claw_container_runtime_cli)" || return 1
   local ids_w ids_g ids_by_image ids n_w n_g n_img n_unique secs
   secs="$(claw_docker_op_timeout_sec)"
-  echo "==> worker inventory: ${rt} ps -a (claw-worker / claw-gw / claw-gateway-worker image, timeout=${secs}s) …" >&2
+  claw_log "worker inventory: ${rt} ps -a (claw-worker / claw-gw / claw-gateway-worker image, timeout=${secs}s) …"
   t0=$SECONDS
   t_ps=$SECONDS
   ids_w="$(claw_run_with_timeout "${secs}" "${rt}" ps -aq --filter name='claw-worker-' 2>/dev/null || true)"
@@ -157,24 +162,24 @@ claw_remove_all_gateway_workers() {
       | sort -u \
       | tr '\n' ' '
   )"
-  echo "==> worker inventory: ${rt} ps done in $((SECONDS - t_ps))s" >&2
+  claw_log "worker inventory: ${rt} ps done in $((SECONDS - t_ps))s"
   n_w="$(printf '%s\n' ${ids_w} | claw_count_docker_ids)"
   n_g="$(printf '%s\n' ${ids_g} | claw_count_docker_ids)"
   n_img="$(printf '%s\n' ${ids_by_image} | claw_count_docker_ids)"
   ids="$(printf '%s\n%s\n%s\n' ${ids_w} ${ids_g} ${ids_by_image} | claw_unique_docker_ids)"
   n_unique="$(printf '%s\n' ${ids} | claw_count_docker_ids)"
-  echo "==> worker inventory: claw-worker-*=${n_w} claw-gw-*=${n_g} image~claw-gateway-worker=${n_img} unique_rm=${n_unique}" >&2
+  claw_log "worker inventory: claw-worker-*=${n_w} claw-gw-*=${n_g} image~claw-gateway-worker=${n_img} unique_rm=${n_unique}"
   if [[ "${n_unique}" == "0" ]]; then
-    echo "==> worker inventory: nothing to remove (${rt} rm skipped)" >&2
+    claw_log "worker inventory: nothing to remove (${rt} rm skipped)"
     return 0
   fi
-  echo "==> ${rt} rm -f ${n_unique} worker container(s) (timeout=${secs}s) …" >&2
+  claw_log "${rt} rm -f ${n_unique} worker container(s) (timeout=${secs}s) …"
   t_rm=$SECONDS
   # shellcheck disable=SC2086
   if ! claw_run_with_timeout "${secs}" "${rt}" rm -f ${ids} 2>&1 | head -20 >&2; then
-    echo "warning: ${rt} rm -f timed out or failed after ${secs}s" >&2
+    claw_log "warning: ${rt} rm -f timed out or failed after ${secs}s"
   fi
-  echo "==> ${rt} rm -f done in $((SECONDS - t_rm))s (inventory total $((SECONDS - t0))s)" >&2
+  claw_log "${rt} rm -f done in $((SECONDS - t_rm))s (inventory total $((SECONDS - t0))s)"
 }
 
 claw_lazy_umount() {
@@ -223,33 +228,33 @@ claw_nuclear_pool_reset() {
   local port="${CLAW_POOL_DAEMON_PORT:-9943}"
   local http_port="${CLAW_POOL_HTTP_PORT:-9944}"
   local t0=$SECONDS t_step
-  echo "==> nuclear pool reset begin: daemon :${port}/:${http_port} + workers + slot tree" >&2
-  echo "==> [1/4] pool-daemon-down (skip tcp/legacy; nuclear owns teardown) …" >&2
+  claw_log "nuclear pool reset begin: daemon :${port}/:${http_port} + workers + slot tree"
+  claw_log "[1/4] pool-daemon-down (skip tcp/legacy; nuclear owns teardown) …"
   t_step=$SECONDS
   CLAW_POOL_DOWN_TCP_KILL=0 CLAW_POOL_DOWN_LEGACY_CLEANUP=0 \
     "${podman_dir}/lib/pool-daemon-down.sh" || true
-  echo "==> [1/4] pool-daemon-down done in $((SECONDS - t_step))s" >&2
-  echo "==> [2/4] free TCP :${port} …" >&2
+  claw_log "[1/4] pool-daemon-down done in $((SECONDS - t_step))s"
+  claw_log "[2/4] free TCP :${port} …"
   t_step=$SECONDS
   claw_kill_tcp_listeners "${port}" "pool-rpc"
-  echo "==> [2/4] free TCP :${port} done in $((SECONDS - t_step))s" >&2
-  echo "==> [3/4] free TCP :${http_port} …" >&2
+  claw_log "[2/4] free TCP :${port} done in $((SECONDS - t_step))s"
+  claw_log "[3/4] free TCP :${http_port} …"
   t_step=$SECONDS
   claw_kill_tcp_listeners "${http_port}" "pool-http"
-  echo "==> [3/4] free TCP :${http_port} done in $((SECONDS - t_step))s" >&2
-  echo "==> [4/4] remove workers …" >&2
+  claw_log "[3/4] free TCP :${http_port} done in $((SECONDS - t_step))s"
+  claw_log "[4/4] remove workers …"
   t_step=$SECONDS
   claw_remove_all_gateway_workers
-  echo "==> [4/4] remove workers done in $((SECONDS - t_step))s" >&2
+  claw_log "[4/4] remove workers done in $((SECONDS - t_step))s"
   local work_root="${CLAW_POOL_WORK_ROOT_BIND_SRC:-${podman_dir}/claw-workspace}"
   local slot_root="${work_root}/${CLAW_POOL_SLOT_DIR:-.claw-pool-slot}"
   if [[ -d "${slot_root}" ]]; then
-    echo "==> remove pool slot mount tree ${slot_root} …" >&2
+    claw_log "remove pool slot mount tree ${slot_root} …"
     t_step=$SECONDS
     claw_remove_pool_slot_tree "${slot_root}"
-    echo "==> remove pool slot mount tree done in $((SECONDS - t_step))s" >&2
+    claw_log "remove pool slot mount tree done in $((SECONDS - t_step))s"
   else
-    echo "==> pool slot tree absent (${slot_root}); skip" >&2
+    claw_log "pool slot tree absent (${slot_root}); skip"
   fi
-  echo "==> nuclear pool reset done in $((SECONDS - t0))s" >&2
+  claw_log "nuclear pool reset done in $((SECONDS - t0))s"
 }
