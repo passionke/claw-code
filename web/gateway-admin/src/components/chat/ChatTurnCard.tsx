@@ -1,6 +1,6 @@
 import { StopOutlined } from "@ant-design/icons";
 import { Button, Collapse, Popconfirm, Space, Tag, Tooltip, Typography, message } from "antd";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import { useBizReportStream } from "../../hooks/useBizReportStream";
@@ -160,8 +160,16 @@ export default function ChatTurnCard({
     historyMode && !prefilledReport
   );
   const [cancelLoading, setCancelLoading] = useState(false);
-  const reportOpened = useRef(false);
   const reportStream = useBizReportStream(gatewayBase, sessionId, turnId, projId);
+
+  // Live: connect report SSE on mount; do not wait for poll → running (user sees stream earlier).
+  useEffect(() => {
+    if (historyMode) return;
+    reportStream.open();
+    return () => {
+      reportStream.close();
+    };
+  }, [historyMode, gatewayBase, sessionId, turnId, projId, reportStream]);
 
   useEffect(() => {
     const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
@@ -176,7 +184,6 @@ export default function ChatTurnCard({
     setFallbackOutput("");
     setHistoryReport(prefilled);
     setHistoryReportLoading(resetHistoryMode && !prefilled && !prefilledFailure);
-    reportOpened.current = false;
   }, [
     sessionId,
     turnId,
@@ -260,13 +267,6 @@ export default function ChatTurnCard({
         const t = await pollOnce();
         if (!t) break;
         const terminal = isTerminalTurnStatus(t.status);
-        if (
-          !reportOpened.current &&
-          (t.status === "running" || t.status === "queued")
-        ) {
-          reportOpened.current = true;
-          reportStream.open();
-        }
         if (terminal) {
           // Let pool/gateway send `biz.report.done` (full text) before cutting SSE.
           await reportStream.waitForSettled(2500);
@@ -296,7 +296,6 @@ export default function ChatTurnCard({
 
     return () => {
       cancelled = true;
-      reportStream.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gatewayBase, taskId, historyMode]);
@@ -349,7 +348,11 @@ export default function ChatTurnCard({
   const dotClass = [
     styles.dot,
     st === "queued" ? styles.pulseQueued : "",
-    st === "running" ? (task.hasReport ? styles.pulseReport : styles.pulseRunning) : "",
+    st === "running"
+      ? reportStreaming || task.hasReport
+        ? styles.pulseReport
+        : styles.pulseRunning
+      : "",
     st === "succeeded" ? styles.dotOk : "",
     st === "failed" || st === "cancelled" ? styles.dotErr : "",
   ]
@@ -551,6 +554,9 @@ export default function ChatTurnCard({
       <div className={styles.turnBody}>
         {historyMode && historyReportLoading && !reportVisible && !errorText && (
           <div className={styles.turnBodyPlaceholder}>加载报告中…</div>
+        )}
+        {!historyMode && reportStreaming && !reportVisible && !errorText && (
+          <div className={styles.turnBodyPlaceholder}>报告流式生成中…</div>
         )}
         {reportVisible && (
           <div className={styles.section}>
