@@ -21,7 +21,7 @@ import TurnToolsDrawer from "./TurnToolsDrawer";
 import TurnTimelineDrawer from "./TurnTimelineDrawer";
 import TurnExtraSessionDrawer from "./TurnExtraSessionDrawer";
 import { formatDurationMs } from "../../utils/formatDuration";
-import { isHistoryTurnView, isTerminalTurnStatus } from "../../utils/turnViewMode";
+import { isEffectiveHistoryTurnView, isTerminalTurnStatus } from "../../utils/turnViewMode";
 import styles from "./chat.module.css";
 
 export interface ChatTurnCardProps {
@@ -135,7 +135,7 @@ export default function ChatTurnCard({
   const { clusterPools } = useApp();
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
-  const initialHistoryMode = isHistoryTurnView(viewMode, initialStatus);
+  const initialHistoryMode = isEffectiveHistoryTurnView(viewMode, initialStatus);
   const [task, setTask] = useState<SolveTask>({
     status: initialStatus,
     hasReport: initialHistoryMode && (hasReport || Boolean(prefilledReport)),
@@ -143,7 +143,7 @@ export default function ChatTurnCard({
     progressHistory: [],
   });
   const turnStatus = task.status ?? initialStatus ?? "";
-  const historyMode = isHistoryTurnView(viewMode, turnStatus);
+  const historyMode = isEffectiveHistoryTurnView(viewMode, turnStatus);
   const effectiveCreatedAtMs = task.createdAtMs ?? createdAtMs;
   const effectiveFinishedAtMs = task.finishedAtMs ?? finishedAtMs;
   const wallMs =
@@ -160,20 +160,27 @@ export default function ChatTurnCard({
     historyMode && !prefilledReport
   );
   const [cancelLoading, setCancelLoading] = useState(false);
-  const reportStream = useBizReportStream(gatewayBase, sessionId, turnId, projId);
+  const {
+    text: streamText,
+    live: streamLive,
+    open: openReportStream,
+    close: closeReportStream,
+    waitForSettled,
+    reconcileReport,
+  } = useBizReportStream(gatewayBase, sessionId, turnId, projId);
 
   // Live: connect report SSE on mount; do not wait for poll → running (user sees stream earlier).
   useEffect(() => {
     if (historyMode) return;
-    reportStream.open();
+    openReportStream();
     return () => {
-      reportStream.close();
+      closeReportStream();
     };
-  }, [historyMode, gatewayBase, sessionId, turnId, projId, reportStream]);
+  }, [historyMode, gatewayBase, sessionId, turnId, projId, openReportStream, closeReportStream]);
 
   useEffect(() => {
     const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
-    const resetHistoryMode = isHistoryTurnView(viewMode, initialStatus);
+    const resetHistoryMode = isEffectiveHistoryTurnView(viewMode, initialStatus);
     setTask({
       status: initialStatus,
       hasReport: resetHistoryMode && (hasReport || Boolean(prefilled)),
@@ -269,21 +276,26 @@ export default function ChatTurnCard({
         const terminal = isTerminalTurnStatus(t.status);
         if (terminal) {
           // Let pool/gateway send `biz.report.done` (full text) before cutting SSE.
-          await reportStream.waitForSettled(2500);
+          await waitForSettled(2500);
           if (t.result?.outputText) {
-            reportStream.reconcileReport(t.result.outputText);
+            reconcileReport(t.result.outputText);
+            const txt = extractSolveReportMessage(t.result.outputText);
+            if (txt) {
+              setHistoryReport(txt);
+              setHistoryReportLoading(false);
+            }
           }
-          reportStream.close();
+          closeReportStream();
           if (t.error) {
             setErrorText(JSON.stringify(t.error, null, 2));
           } else if (t.status === "succeeded" && t.result?.outputText) {
             const txt = extractSolveReportMessage(t.result.outputText);
-            if (!reportStream.text && txt) {
+            if (txt) {
               setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
             }
           } else if (!t.hasReport && t.result?.outputText) {
             const txt = extractSolveReportMessage(t.result.outputText);
-            if (!reportStream.text && txt) {
+            if (txt) {
               setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
             }
           }
@@ -297,14 +309,22 @@ export default function ChatTurnCard({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gatewayBase, taskId, historyMode]);
+  }, [gatewayBase, taskId, historyMode, waitForSettled, reconcileReport, closeReportStream]);
+
+  // Preserve streamed text when poll flips status to terminal before DB fetch completes.
+  useEffect(() => {
+    if (!historyMode || historyReport) return;
+    if (streamText) {
+      setHistoryReport(streamText);
+      setHistoryReportLoading(false);
+    }
+  }, [historyMode, historyReport, streamText]);
 
   const history = task.progressHistory || [];
-  const liveReportText = reportStream.text;
+  const liveReportText = streamText;
   const reportText = historyMode ? historyReport : liveReportText;
   const reportVisible = reportText.length > 0;
-  const reportStreaming = historyMode ? false : reportStream.live;
+  const reportStreaming = historyMode ? false : streamLive;
 
   useEffect(() => {
     setVisibleProgressCount((n) => (history.length > n ? history.length : n));
@@ -332,7 +352,7 @@ export default function ChatTurnCard({
         status: res.status || "cancelled",
         currentTaskDesc: res.cancelApplied ? "已取消" : prev.currentTaskDesc,
       }));
-      reportStream.close();
+      closeReportStream();
       if (res.cancelApplied) {
         message.success("已取消该轮次");
       } else {
@@ -343,7 +363,7 @@ export default function ChatTurnCard({
     } finally {
       setCancelLoading(false);
     }
-  }, [gatewayBase, sessionId, turnId, projId, reportStream]);
+  }, [gatewayBase, sessionId, turnId, projId, closeReportStream]);
 
   const dotClass = [
     styles.dot,
@@ -555,7 +575,7 @@ export default function ChatTurnCard({
         {historyMode && historyReportLoading && !reportVisible && !errorText && (
           <div className={styles.turnBodyPlaceholder}>加载报告中…</div>
         )}
-        {!historyMode && reportStreaming && !reportVisible && !errorText && (
+        {!historyMode && !isTerminalTurnStatus(st) && reportStreaming && !reportVisible && !errorText && (
           <div className={styles.turnBodyPlaceholder}>报告流式生成中…</div>
         )}
         {reportVisible && (

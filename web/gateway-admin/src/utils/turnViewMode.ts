@@ -17,3 +17,12 @@ export function isHistoryTurnView(
 ): boolean {
   return viewMode === "history" && isTerminalTurnStatus(status);
 }
+
+/** Active card stops live SSE once status is terminal (even if thread item still says `live`). Author: kejiqing */
+export function isEffectiveHistoryTurnView(
+  viewMode: "live" | "history" | undefined,
+  status?: string | null
+): boolean {
+  if (isTerminalTurnStatus(status)) return true;
+  return isHistoryTurnView(viewMode, status);
+}
