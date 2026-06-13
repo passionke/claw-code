@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use runtime::{ConversationRuntime, PermissionMode, PermissionPolicy, Session};
 
-use crate::gateway_stdout::emit_report_delta;
 use crate::{
     assistant_report_text_from_turn, DirectApiClient, DirectToolExecutor, GatewaySolveTurnError,
     SolveTimingRecorder,
@@ -28,6 +27,7 @@ pub fn run_phase_turn(
     stream_text_to_report: bool,
     turn_timing: Option<Arc<SolveTimingRecorder>>,
 ) -> Result<(String, usize), GatewaySolveTurnError> {
+    let api_client = api_client.with_stream_report_deltas(stream_text_to_report);
     let mut session = Session::new();
     session
         .push_user_text(user_text)
@@ -41,20 +41,9 @@ pub fn run_phase_turn(
         runtime = runtime.with_turn_timing(timing);
     }
 
-    let result = if stream_text_to_report {
-        runtime
-            .run_turn_after_user_message_streaming(
-                |delta| {
-                    let _ = emit_report_delta(delta);
-                },
-                None,
-            )
-            .map_err(|e| err(HTTP_INTERNAL, format!("phase runtime failed: {e}")))?
-    } else {
-        runtime
-            .run_turn_after_user_message(None)
-            .map_err(|e| err(HTTP_INTERNAL, format!("phase runtime failed: {e}")))?
-    };
+    let result = runtime
+        .run_turn_after_user_message(None)
+        .map_err(|e| err(HTTP_INTERNAL, format!("phase runtime failed: {e}")))?;
 
     let message = assistant_report_text_from_turn(&result.assistant_messages);
 

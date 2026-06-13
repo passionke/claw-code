@@ -414,7 +414,7 @@ where
     fn run_turn_inner(
         &mut self,
         user_input: impl Into<String>,
-        mut on_text_delta: Option<&mut dyn FnMut(&str)>,
+        _on_text_delta: Option<&mut dyn FnMut(&str)>,
         mut prompter: Option<&mut dyn PermissionPrompter>,
     ) -> Result<TurnSummary, RuntimeError> {
         let user_input = user_input.into();
@@ -494,13 +494,6 @@ where
                 Value::from(u64::try_from(llm_started.elapsed().as_millis()).unwrap_or(u64::MAX)),
             );
             self.emit_turn_timing("llm_stream_finished", llm_done_attrs);
-            if let Some(cb) = on_text_delta.as_deref_mut() {
-                for event in &events {
-                    if let AssistantEvent::TextDelta(delta) = event {
-                        cb(delta);
-                    }
-                }
-            }
             let (assistant_message, usage, turn_prompt_cache_events) =
                 match build_assistant_message(events) {
                     Ok(result) => result,
