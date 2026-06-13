@@ -70,9 +70,13 @@ claw_pool_down_one() {
     echo "==> pool-daemon-down: no ${rpc_dir}/daemon.pid" >&2
   fi
 
-  # shellcheck source=nuclear-pool-reset.sh
-  source "${LIB_DIR}/nuclear-pool-reset.sh"
-  claw_kill_tcp_listeners "${http_port}" "pool-daemon-down"
+  if [[ "${CLAW_POOL_DOWN_TCP_KILL:-1}" == "1" ]]; then
+    # shellcheck source=nuclear-pool-reset.sh
+    source "${LIB_DIR}/nuclear-pool-reset.sh"
+    claw_kill_tcp_listeners "${http_port}" "pool-daemon-down"
+  else
+    echo "==> pool-daemon-down: skip TCP kill (CLAW_POOL_DOWN_TCP_KILL=0)" >&2
+  fi
   rm -f "${rpc_dir}/pool.sock"
   echo "==> pool-daemon-down done in $((SECONDS - t0))s" >&2
 }
@@ -80,6 +84,6 @@ claw_pool_down_one() {
 HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
 RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
 claw_pool_down_one "${RPC_DIR}" "${HTTP_PORT}"
-if [[ -z "${CLAW_POOL_RPC_INSTANCE:-}" ]]; then
+if [[ "${CLAW_POOL_DOWN_LEGACY_CLEANUP:-1}" == "1" ]] && [[ -z "${CLAW_POOL_RPC_INSTANCE:-}" ]]; then
   claw_cleanup_legacy_dual_pool "${PODMAN_DIR}"
 fi

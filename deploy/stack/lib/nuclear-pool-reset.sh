@@ -1,6 +1,21 @@
 # shellcheck shell=bash
 # Stop pool daemon, free TCP port, remove every claw worker container (any name/tag). Author: kejiqing
 
+claw_docker_op_timeout_sec() {
+  printf '%s' "${CLAW_DOCKER_OP_TIMEOUT_SEC:-60}"
+}
+
+# GNU timeout on Linux CI; no-op when absent (macOS dev). kejiqing
+claw_run_with_timeout() {
+  local secs="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --kill-after=5 "${secs}" "$@"
+  else
+    "$@"
+  fi
+}
+
 claw_pool_http_health_alive() {
   local port="${1:?port}"
   curl -fsS --connect-timeout 2 "http://127.0.0.1:${port}/healthz/live-report" >/dev/null 2>&1
@@ -78,13 +93,17 @@ claw_kill_tcp_listeners_privileged() {
   source "${lib_dir}/compose-include.sh"
   rt="$(claw_container_runtime_cli)" || return 1
   image="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}/library/alpine:3.20"
-  echo "==> kill TCP :${port} via ${rt} (privileged pid=host)" >&2
-  "${rt}" run --rm --pid=host --privileged "${image}" sh -c "
+  local secs
+  secs="$(claw_docker_op_timeout_sec)"
+  echo "==> kill TCP :${port} via ${rt} (privileged pid=host, timeout=${secs}s)" >&2
+  if ! claw_run_with_timeout "${secs}" "${rt}" run --rm --pid=host --privileged "${image}" sh -c "
     apk add --no-cache lsof >/dev/null 2>&1 || true
     for pid in \$(lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null); do
       kill -9 \"\$pid\" 2>/dev/null || true
     done
-  " 2>/dev/null || true
+  "; then
+    echo "warning: privileged ${rt} run timed out after ${secs}s (TCP :${port})" >&2
+  fi
 }
 
 claw_kill_tcp_listeners() {
@@ -125,14 +144,15 @@ claw_remove_all_gateway_workers() {
   # shellcheck disable=SC1091
   source "${lib_dir}/compose-include.sh"
   rt="$(claw_container_runtime_cli)" || return 1
-  local ids_w ids_g ids_by_image ids n_w n_g n_img n_unique
-  echo "==> worker inventory: ${rt} ps -a (claw-worker / claw-gw / claw-gateway-worker image) …" >&2
+  local ids_w ids_g ids_by_image ids n_w n_g n_img n_unique secs
+  secs="$(claw_docker_op_timeout_sec)"
+  echo "==> worker inventory: ${rt} ps -a (claw-worker / claw-gw / claw-gateway-worker image, timeout=${secs}s) …" >&2
   t0=$SECONDS
   t_ps=$SECONDS
-  ids_w="$("${rt}" ps -aq --filter name='claw-worker-' 2>/dev/null || true)"
-  ids_g="$("${rt}" ps -aq --filter name='claw-gw-' 2>/dev/null || true)"
+  ids_w="$(claw_run_with_timeout "${secs}" "${rt}" ps -aq --filter name='claw-worker-' 2>/dev/null || true)"
+  ids_g="$(claw_run_with_timeout "${secs}" "${rt}" ps -aq --filter name='claw-gw-' 2>/dev/null || true)"
   ids_by_image="$(
-    "${rt}" ps -a --format '{{.ID}} {{.Image}}' 2>/dev/null \
+    claw_run_with_timeout "${secs}" "${rt}" ps -a --format '{{.ID}} {{.Image}}' 2>/dev/null \
       | awk '/claw-gateway-worker/ { print $1 }' \
       | sort -u \
       | tr '\n' ' '
@@ -148,10 +168,12 @@ claw_remove_all_gateway_workers() {
     echo "==> worker inventory: nothing to remove (${rt} rm skipped)" >&2
     return 0
   fi
-  echo "==> ${rt} rm -f ${n_unique} worker container(s) …" >&2
+  echo "==> ${rt} rm -f ${n_unique} worker container(s) (timeout=${secs}s) …" >&2
   t_rm=$SECONDS
   # shellcheck disable=SC2086
-  "${rt}" rm -f ${ids} 2>&1 | head -20 >&2 || true
+  if ! claw_run_with_timeout "${secs}" "${rt}" rm -f ${ids} 2>&1 | head -20 >&2; then
+    echo "warning: ${rt} rm -f timed out or failed after ${secs}s" >&2
+  fi
   echo "==> ${rt} rm -f done in $((SECONDS - t_rm))s (inventory total $((SECONDS - t0))s)" >&2
 }
 
@@ -202,9 +224,10 @@ claw_nuclear_pool_reset() {
   local http_port="${CLAW_POOL_HTTP_PORT:-9944}"
   local t0=$SECONDS t_step
   echo "==> nuclear pool reset begin: daemon :${port}/:${http_port} + workers + slot tree" >&2
-  echo "==> [1/4] pool-daemon-down …" >&2
+  echo "==> [1/4] pool-daemon-down (skip tcp/legacy; nuclear owns teardown) …" >&2
   t_step=$SECONDS
-  "${podman_dir}/lib/pool-daemon-down.sh" || true
+  CLAW_POOL_DOWN_TCP_KILL=0 CLAW_POOL_DOWN_LEGACY_CLEANUP=0 \
+    "${podman_dir}/lib/pool-daemon-down.sh" || true
   echo "==> [1/4] pool-daemon-down done in $((SECONDS - t_step))s" >&2
   echo "==> [2/4] free TCP :${port} …" >&2
   t_step=$SECONDS
