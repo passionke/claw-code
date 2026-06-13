@@ -5,41 +5,30 @@ import {
   type BizReportDeltaRecord,
   type BizReportDensity,
 } from "../utils/bizReportDensity";
+import {
+  bizReportNumField,
+  parseBizReportSseJson,
+  reportTextFromBizReportDone,
+  bizReportDeltaText,
+} from "../utils/bizReportSseParse";
 import { extractSolveReportMessage } from "../utils/solveReportBody";
 
 function parseSseJson(raw: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+  return parseBizReportSseJson(raw);
+}
+
+function numField(data: Record<string, unknown> | null, key: string): number | undefined {
+  return bizReportNumField(data, key);
+}
+
+/** Full report from `biz.report.done` (pool live or gateway snapshot). Author: kejiqing */
+function reportTextFromDonePayload(data: Record<string, unknown> | null): string {
+  return reportTextFromBizReportDone(data);
 }
 
 function proxySseTarget(gatewayBase: string, path: string): string {
   const u = `${gatewayBase.replace(/\/$/, "")}${path}`;
   return `/__proxy_sse__?target=${encodeURIComponent(u)}`;
-}
-
-function numField(data: Record<string, unknown> | null, key: string): number | undefined {
-  const v = data?.[key];
-  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
-}
-
-/** Full report from `biz.report.done` (pool live or gateway snapshot). Author: kejiqing */
-function reportTextFromDonePayload(data: Record<string, unknown> | null): string {
-  if (!data) return "";
-  const direct = data.reportText;
-  if (typeof direct === "string" && direct.trim()) {
-    return extractSolveReportMessage(direct);
-  }
-  const rj = data.reportJson ?? data.report_json;
-  if (rj && typeof rj === "object" && rj !== null) {
-    const msg = (rj as Record<string, unknown>).message;
-    if (typeof msg === "string" && msg.trim()) {
-      return extractSolveReportMessage(msg);
-    }
-  }
-  return "";
 }
 
 export type BizReportStreamObs = {
@@ -283,7 +272,7 @@ export function useBizReportStream(
 
     es.addEventListener("biz.report.delta", (ev) => {
       const data = parseSseJson(ev.data);
-      const chunk = data?.text != null ? String(data.text) : "";
+      const chunk = bizReportDeltaText(data);
       if (!chunk) return;
       const clientDeltaMs = Math.round(performance.now() - t0);
       logDeltaObs(chunk, data, clientDeltaMs, obs);

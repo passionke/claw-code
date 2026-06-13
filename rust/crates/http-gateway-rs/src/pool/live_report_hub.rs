@@ -185,3 +185,77 @@ fn now_ms() -> i64 {
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{HubMsg, LiveReportHub};
+    use serde_json::json;
+    use tokio::sync::broadcast;
+    use tokio::sync::broadcast::error::RecvError;
+
+    fn delta(turn_id: &str, text: &str, hub: &LiveReportHub) {
+        hub.ingest_json(turn_id, &json!({ "ev": "report.delta", "text": text }));
+    }
+
+    async fn recv_delta(rx: &mut broadcast::Receiver<HubMsg>) -> String {
+        loop {
+            match rx.recv().await {
+                Ok(HubMsg::Delta(chunk)) => return chunk,
+                Ok(HubMsg::SolveDone) => panic!("unexpected SolveDone"),
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => panic!("broadcast closed"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dual_subscribers_receive_same_live_deltas() {
+        let hub = LiveReportHub::default();
+        let turn_id = "T_dual_live";
+        let (mut rx_a, snap_a) = hub.subscribe_with_snapshot(turn_id);
+        assert!(snap_a.is_empty());
+
+        delta(turn_id, "chunk-1", &hub);
+        assert_eq!(recv_delta(&mut rx_a).await, "chunk-1");
+
+        let (mut rx_b, snap_b) = hub.subscribe_with_snapshot(turn_id);
+        assert_eq!(snap_b, vec!["chunk-1".to_string()]);
+
+        delta(turn_id, "chunk-2", &hub);
+        assert_eq!(recv_delta(&mut rx_a).await, "chunk-2");
+        assert_eq!(recv_delta(&mut rx_b).await, "chunk-2");
+        assert_eq!(hub.snapshot_text(turn_id), "chunk-1chunk-2");
+    }
+
+    #[tokio::test]
+    async fn late_subscriber_replays_snapshot_then_live_tail() {
+        let hub = LiveReportHub::default();
+        let turn_id = "T_late_join";
+        delta(turn_id, "a", &hub);
+        delta(turn_id, "b", &hub);
+
+        let (mut rx, snapshot) = hub.subscribe_with_snapshot(turn_id);
+        assert_eq!(snapshot, vec!["a", "b"]);
+        delta(turn_id, "c", &hub);
+        assert_eq!(recv_delta(&mut rx).await, "c");
+    }
+
+    #[tokio::test]
+    async fn solve_done_removes_turn_when_no_subscribers() {
+        let hub = LiveReportHub::default();
+        let turn_id = "T_cleanup";
+        delta(turn_id, "done-body", &hub);
+        hub.ingest_json(turn_id, &json!({ "ev": "solve.done" }));
+        assert!(!hub.has_report_for_turn(turn_id));
+    }
+
+    #[test]
+    fn ingest_stdout_line_parses_report_delta() {
+        let hub = LiveReportHub::default();
+        let turn_id = "T_stdout";
+        let line = r#"__CLAW_GATEWAY_STDOUT__{"ev":"report.delta","text":"▸ 进度\n"}"#;
+        hub.ingest_stdout_line(turn_id, line);
+        assert_eq!(hub.snapshot_text(turn_id), "▸ 进度\n");
+        assert!(hub.has_report_for_turn(turn_id));
+    }
+}

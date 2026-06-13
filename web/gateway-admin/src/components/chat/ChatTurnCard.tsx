@@ -22,6 +22,11 @@ import TurnTimelineDrawer from "./TurnTimelineDrawer";
 import TurnExtraSessionDrawer from "./TurnExtraSessionDrawer";
 import { formatDurationMs } from "../../utils/formatDuration";
 import { isEffectiveHistoryTurnView, isTerminalTurnStatus } from "../../utils/turnViewMode";
+import {
+  deriveTurnCardReportView,
+  mergeStreamedIntoHistory,
+  shouldConnectLiveReportSse,
+} from "../../utils/turnCardReportView";
 import styles from "./chat.module.css";
 
 export interface ChatTurnCardProps {
@@ -171,12 +176,12 @@ export default function ChatTurnCard({
 
   // Live: connect report SSE on mount; do not wait for poll → running (user sees stream earlier).
   useEffect(() => {
-    if (historyMode) return;
+    if (!shouldConnectLiveReportSse(viewMode, turnStatus)) return;
     openReportStream();
     return () => {
       closeReportStream();
     };
-  }, [historyMode, gatewayBase, sessionId, turnId, projId, openReportStream, closeReportStream]);
+  }, [viewMode, turnStatus, gatewayBase, sessionId, turnId, projId, openReportStream, closeReportStream]);
 
   useEffect(() => {
     const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
@@ -313,24 +318,31 @@ export default function ChatTurnCard({
 
   // Preserve streamed text when poll flips status to terminal before DB fetch completes.
   useEffect(() => {
-    if (!historyMode || historyReport) return;
-    if (streamText) {
-      setHistoryReport(streamText);
+    const merged = mergeStreamedIntoHistory(historyMode, historyReport, streamText);
+    if (merged) {
+      setHistoryReport(merged);
       setHistoryReportLoading(false);
     }
   }, [historyMode, historyReport, streamText]);
 
+  const st = task.status || "unknown";
   const history = task.progressHistory || [];
-  const liveReportText = streamText;
-  const reportText = historyMode ? historyReport : liveReportText;
-  const reportVisible = reportText.length > 0;
-  const reportStreaming = historyMode ? false : streamLive;
+  const reportView = deriveTurnCardReportView({
+    viewMode,
+    status: st,
+    historyReport,
+    streamText,
+    streamLive,
+    errorText,
+    historyReportLoading,
+  });
+  const { reportText, reportVisible, reportStreaming, showStreamingPlaceholder, showHistoryLoadingPlaceholder } =
+    reportView;
 
   useEffect(() => {
     setVisibleProgressCount((n) => (history.length > n ? history.length : n));
   }, [history.length]);
 
-  const st = task.status || "unknown";
   const canCancel = !historyMode && (st === "queued" || st === "running");
   const canFeedback =
     Boolean(onTurnFeedback) &&
@@ -572,10 +584,10 @@ export default function ChatTurnCard({
       )}
 
       <div className={styles.turnBody}>
-        {historyMode && historyReportLoading && !reportVisible && !errorText && (
+        {showHistoryLoadingPlaceholder && (
           <div className={styles.turnBodyPlaceholder}>加载报告中…</div>
         )}
-        {!historyMode && !isTerminalTurnStatus(st) && reportStreaming && !reportVisible && !errorText && (
+        {showStreamingPlaceholder && (
           <div className={styles.turnBodyPlaceholder}>报告流式生成中…</div>
         )}
         {reportVisible && (

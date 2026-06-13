@@ -124,3 +124,29 @@ else
 fi
 
 echo "[pre-push] all checks passed"
+
+# gateway-admin unit tests when Admin sources change. Author: kejiqing
+admin_changed=0
+while IFS= read -r path; do
+  if [[ "${path}" == web/gateway-admin/* ]]; then
+    admin_changed=1
+    break
+  fi
+done < <(git diff --name-only --diff-filter=ACMR "${diff_range}" 2>/dev/null || true)
+
+if [[ "${admin_changed}" -eq 1 ]]; then
+  admin_dir="${repo_root}/web/gateway-admin"
+  if command -v npm >/dev/null 2>&1; then
+    echo "[pre-push] running gateway-admin unit tests (${diff_range})"
+    (
+      cd "${admin_dir}"
+      if [[ ! -d node_modules/vitest ]]; then
+        npm ci --prefer-offline --no-audit --no-fund
+      fi
+      npm test
+    )
+    echo "[pre-push] gateway-admin tests passed"
+  else
+    echo "[pre-push] warn: npm missing; skip gateway-admin tests" >&2
+  fi
+fi
