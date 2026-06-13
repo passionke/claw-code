@@ -57,9 +57,6 @@ mod tests {
     #[test]
     fn relaxed_exec_is_root() {
         let id = PoolWorkerIdentity::from_env(None);
-        assert_eq!(
-            exec_user_for_isolation(IsolationMode::Relaxed, &id),
-            "0:0"
-        );
+        assert_eq!(exec_user_for_isolation(IsolationMode::Relaxed, &id), "0:0");
     }
 }
