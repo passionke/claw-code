@@ -235,10 +235,12 @@ chmod +x "${RUN_SH}"
 
 printf '\n%s pool-daemon-up: starting %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${BIN}" >>"${LOG}"
 
+_pool_supervisor=""
 if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source "${LIB_DIR}/pool-daemon-launchd.sh"
   claw_pool_launchd_bootstrap "${RPC_DIR}" "${RUN_SH}" "${LOG}"
+  _pool_supervisor=launchd
 elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]] && {
   # shellcheck disable=SC1091
   source "${LIB_DIR}/pool-daemon-systemd.sh"
@@ -247,7 +249,15 @@ elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]] && {
   claw_pool_systemd_install_and_restart "${RPC_DIR}" "${RUN_SH}" "${REPO_ROOT}"
   pid="$(claw_pool_systemd_main_pid)"
   [[ -n "${pid}" && "${pid}" != "0" ]] && printf '%s' "${pid}" >"${RPC_DIR}/daemon.pid"
+  _pool_supervisor=systemd
 else
+  case "${CLAW_POOL_DAEMON_USE_SYSTEMD:-}" in
+    1 | true | yes | on)
+      echo "error: CLAW_POOL_DAEMON_USE_SYSTEMD=1 but systemd install failed" >&2
+      echo "hint: GitHub/GitLab runner needs passwordless sudo for systemctl (see deploy/stack/docs/github-ci-variables.md)" >&2
+      exit 1
+      ;;
+  esac
   set -a
   # shellcheck disable=SC1090
   source "${RPC_DIR}/pool-daemon.env"
@@ -256,12 +266,13 @@ else
   pid=$!
   printf '%s' "${pid}" >"${RPC_DIR}/daemon.pid"
   disown "${pid}" 2>/dev/null || true
+  _pool_supervisor=nohup
 fi
 
 for _i in $(seq 1 120); do
   if claw_pool_http_alive; then
     pid="$(claw_pool_refresh_pid_file "${RPC_DIR}" 2>/dev/null || echo "${pid}")"
-    echo "claw-sandbox HTTP 0.0.0.0:${HTTP_PORT} (pid=${pid})" >&2
+    echo "claw-sandbox HTTP 0.0.0.0:${HTTP_PORT} (pid=${pid}, supervisor=${_pool_supervisor:-unknown})" >&2
     echo "  pool_id=${CLAW_POOL_ID} advertise=${CLAW_POOL_ADVERTISE_HOST}" >&2
     exit 0
   fi

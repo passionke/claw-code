@@ -40,7 +40,8 @@ env:
   CLAW_CLUSTER_ID: github-ci-01
   CLAW_POOL_ID: pool-github-ci-01
   CLAW_CI_NODE_B_POOL_ID: pool-github-ci-02
-  CLAW_POOL_DAEMON_USE_SYSTEMD: "0"
+  # nohup pool is killed as orphan when the job ends; systemd survives for public Admin.
+  CLAW_POOL_DAEMON_USE_SYSTEMD: "1"
   CLAW_AUTO_BOOTSTRAP: "1"
   CLAW_BOOTSTRAP_LLM_FORCE: "1"
   CONTAINER_BASE_REGISTRY: docker.1ms.run

@@ -46,7 +46,7 @@ lsof -nP -iTCP:9944 -sTCP:LISTEN
 
 Linux **`CLAW_DEPLOY_PROFILE=production`**：`pool-daemon-up` 写 `pool-daemon.env` 后走 **systemd**（`User=root`，unit **`claw-sandbox.service`**）。**单进程** `:9944`；`acquire` 按 ds 的 strict/relaxed profile 选 worker（见 `sandbox/docs/system-design.md`）。首次 `pool-up` 会 disable 旧 `claw-pool-daemon*.service`。本地 profile 仍 `nohup`。
 
-GitLab CI（10.22.28.94）设 **`CLAW_POOL_DAEMON_USE_SYSTEMD=0`**，走 nohup，**测不到** production 默认 systemd 路径——生产/预发须 **`gateway.sh verify`** + **`gateway.sh cluster-verify`**，见 **`deploy/stack/docs/cluster-deploy-verify.md`**。
+GitLab CI（10.22.28.94）设 **`CLAW_POOL_DAEMON_USE_SYSTEMD=0`**，走 nohup（job 内 e2e 够用）。**GitHub 公网 CI（62.72.45.75）必须 `CLAW_POOL_DAEMON_USE_SYSTEMD=1`**：Actions job 结束会 `Terminate orphan process … (claw-sandbox)`，否则部署后 Admin solve 报 `host.docker.internal:9944` 连不上。生产/预发须 **`gateway.sh verify`** + **`gateway.sh cluster-verify`**，见 **`deploy/stack/docs/cluster-deploy-verify.md`**。
 
 ```bash
 ./deploy/stack/gateway.sh pool-up --restart

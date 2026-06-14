@@ -60,6 +60,7 @@ Author: kejiqing
 | `CLAUDE_TAP_IMAGE` | `ghcr.io/passionke/claude-tap:latest`（SG；Sunmi 国内用 ACR） |
 | `GATEWAY_PLAYGROUND_HOST_PORT` | `18675` |
 | `PLAYGROUND_ADMIN_CHAT_PUBLIC` | `0`（全站需登录；本地 dev 默认 `1`） |
+| `CLAW_POOL_DAEMON_USE_SYSTEMD` | `1`（pool 用 systemd；**禁止** nohup，否则 job 结束杀 pool） |
 
 换机器时：改 `.github/workflows/claw-ci-deploy.yml` 里 `env:` 块，或用 repo Variables 覆盖。
 
@@ -89,6 +90,17 @@ tar xzf actions-runner.tar.gz
 ```
 
 验收：`./svc.sh status` 显示 active；GitHub Runners 页显示 **Idle**。
+
+**Pool 必须 systemd（公网 Admin solve）**：workflow 设 `CLAW_POOL_DAEMON_USE_SYSTEMD=1`。若用 nohup，job 结束时会看到 `Terminate orphan process … (claw-sandbox)`，之后 Admin solve 报 `host.docker.internal:9944` 连接失败。在宿主机为 `runner` 配置免密 sudo（一次性）：
+
+```bash
+# root@62.72.45.75
+echo 'runner ALL=(ALL) NOPASSWD: /bin/systemctl, /usr/bin/tee' | tee /etc/sudoers.d/claw-runner-pool
+chmod 440 /etc/sudoers.d/claw-runner-pool
+sudo -u runner sudo -n systemctl is-active docker
+```
+
+部署后验收：`sudo systemctl status claw-sandbox` 为 **active**；`curl -fsS http://127.0.0.1:9944/healthz/live-report`。
 
 ## 6. 手工触发 deploy
 
