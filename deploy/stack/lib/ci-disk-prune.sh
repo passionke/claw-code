@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Sunmi CI runner: weekly disk maintenance (Rust target, Docker cache, old release-* tags).
+# CI runner disk maintenance (GitLab / GitHub self-hosted): Rust target, Docker cache, old release-* tags.
 # Does NOT remove claw-postgres-data or claw-workspace (running stack / PG SoT).
 # Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${LIB_DIR}/../../.." && pwd)"
-cd "${CI_PROJECT_DIR:-${REPO_ROOT}}"
+cd "${CI_PROJECT_DIR:-${GITHUB_WORKSPACE:-${REPO_ROOT}}}"
 
 KEEP_RELEASE_TAGS="${CLAW_CI_KEEP_RELEASE_TAGS:-15}"
 BUILDER_PRUNE_UNTIL_HOURS="${CLAW_CI_BUILDER_PRUNE_UNTIL_HOURS:-168}"

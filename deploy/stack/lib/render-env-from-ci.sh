@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Write repo-root .env from CI-exported variables (GitLab variables / before_script).
-# No hand-edited .env on the runner host — set keys in .gitlab-ci.yml or CI/CD settings.
+# Write repo-root .env from CI-exported variables (GitLab / GitHub Actions secrets & vars).
+# No hand-edited .env on the runner host — set keys in CI settings or workflow env.
 # Author: kejiqing
 set -euo pipefail
 
@@ -11,7 +11,7 @@ ENV_FILE="${REPO_ROOT}/.env"
 claw_ci_require() {
   local name="$1"
   if [[ -z "${!name:-}" ]]; then
-    echo "error: set ${name} in GitLab CI variables or job script before render-env-from-ci.sh" >&2
+    echo "error: set ${name} in GitLab/GitHub CI variables or job env before render-env-from-ci.sh" >&2
     exit 1
   fi
 }
@@ -30,7 +30,7 @@ claw_ci_require_llm_bootstrap_vars() {
   if [[ -n "${key}" && -n "${base}" ]]; then
     return 0
   fi
-  echo "error: deploy requires LLM bootstrap variables in GitLab CI/CD → Variables" >&2
+  echo "error: deploy requires LLM bootstrap variables in GitLab/GitHub CI settings" >&2
   echo "  required: CLAW_BOOTSTRAP_LLM_API_KEY (masked)" >&2
   echo "  required: CLAW_BOOTSTRAP_LLM_BASE_URL (OpenAI-compatible, include /v1)" >&2
   echo "  optional: CLAW_BOOTSTRAP_LLM_MODEL_NAME (default gpt-4o-mini)" >&2
@@ -38,7 +38,7 @@ claw_ci_require_llm_bootstrap_vars() {
   echo "    CLAW_BOOTSTRAP_LLM_API_KEY=$(claw_ci_var_set CLAW_BOOTSTRAP_LLM_API_KEY) OPENAI_API_KEY=$(claw_ci_var_set OPENAI_API_KEY)" >&2
   echo "    CLAW_BOOTSTRAP_LLM_BASE_URL=$(claw_ci_var_set CLAW_BOOTSTRAP_LLM_BASE_URL) UPSTREAM_OPENAI_BASE_URL=$(claw_ci_var_set UPSTREAM_OPENAI_BASE_URL) OPENAI_BASE_URL=$(claw_ci_var_set OPENAI_BASE_URL)" >&2
   echo "  if all no: add Variables; uncheck Protected; scope *; only API_KEY should be Masked (not BASE_URL)" >&2
-  echo "  doc: deploy/stack/docs/gitlab-ci-variables.md" >&2
+  echo "  doc: deploy/stack/docs/gitlab-ci-variables.md or deploy/stack/docs/github-ci-variables.md" >&2
   exit 1
 }
 
