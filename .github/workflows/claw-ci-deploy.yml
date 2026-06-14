@@ -42,6 +42,7 @@ env:
   CLAW_CI_NODE_B_POOL_ID: pool-github-ci-02
   CLAW_POOL_DAEMON_USE_SYSTEMD: "0"
   CLAW_AUTO_BOOTSTRAP: "1"
+  CLAW_BOOTSTRAP_LLM_FORCE: "1"
   CONTAINER_BASE_REGISTRY: docker.1ms.run
   # SG runner: GHCR tap; Sunmi CN CI uses ACR (render-env-from-ci.sh default).
   CLAUDE_TAP_IMAGE: ghcr.io/passionke/claude-tap:latest
@@ -101,6 +102,7 @@ jobs:
           CLAW_BOOTSTRAP_LLM_BASE_URL: ${{ vars.CLAW_BOOTSTRAP_LLM_BASE_URL }}
           CLAW_BOOTSTRAP_LLM_MODEL_NAME: ${{ vars.CLAW_BOOTSTRAP_LLM_MODEL_NAME }}
           CLAW_BOOTSTRAP_LLM_NAME: ${{ vars.CLAW_BOOTSTRAP_LLM_NAME }}
+          CLAW_BOOTSTRAP_LLM_FORCE: "1"
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
           LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}

@@ -23,7 +23,7 @@ Author: kejiqing
 
 | Key | 说明 | 默认 |
 |-----|------|------|
-| `CLAW_BOOTSTRAP_LLM_MODEL_NAME` | 模型 id | `gpt-4o-mini` |
+| `CLAW_BOOTSTRAP_LLM_MODEL_NAME` | 模型 id | **`deepseek-v4-flash`**（DeepSeek base URL 时）；勿用默认 `gpt-4o-mini` |
 | `CLAW_BOOTSTRAP_LLM_NAME` | Admin 里显示名 | `github-ci-llm` |
 | `CLAUDE_TAP_IMAGE` | claw-tap 镜像 | ACR `passionke/claw-tap:latest` |
 
