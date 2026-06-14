@@ -281,6 +281,15 @@ else
 fi
 
 for _i in $(seq 1 120); do
+  if [[ "${_pool_supervisor}" == docker ]]; then
+    # shellcheck disable=SC1091
+    source "${LIB_DIR}/pool-daemon-docker.sh"
+    if ! claw_pool_docker_running 2>/dev/null; then
+      echo "error: claw-sandbox docker container exited before :${HTTP_PORT} was ready" >&2
+      claw_pool_docker_dump_logs
+      exit 1
+    fi
+  fi
   if claw_pool_http_alive; then
     if [[ "${_pool_supervisor}" == docker ]]; then
       # shellcheck disable=SC1091
@@ -295,7 +304,13 @@ for _i in $(seq 1 120); do
   fi
   if [[ "${_i}" == 120 ]]; then
     echo "error: claw-sandbox did not listen on :${HTTP_PORT}" >&2
-    tail -20 "${LOG}" >&2 || true
+    if [[ "${_pool_supervisor}" == docker ]]; then
+      # shellcheck disable=SC1091
+      source "${LIB_DIR}/pool-daemon-docker.sh"
+      claw_pool_docker_dump_logs
+    else
+      tail -20 "${LOG}" >&2 || true
+    fi
     exit 1
   fi
   sleep 0.1
