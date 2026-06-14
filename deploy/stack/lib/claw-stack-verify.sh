@@ -103,6 +103,13 @@ claw_verify_pool_profile() {
   LOG="${rpc_dir}/daemon.log"
   [[ -f "${LOG}" ]] || fail "missing ${LOG}"
   run_log="$(claw_pool_daemon_log_current_run "${LOG}")"
+  if [[ -z "${run_log}" && "${CLAW_POOL_SUPERVISOR:-}" == docker ]]; then
+    # shellcheck source=pool-daemon-docker.sh
+    source "${LIB_DIR}/pool-daemon-docker.sh"
+    if claw_pool_docker_running; then
+      run_log="$("$(claw_pool_docker_runtime)" logs --tail 200 "$(claw_pool_docker_container_name)" 2>&1 || true)"
+    fi
+  fi
   if [[ -z "${run_log}" ]]; then
     tail -30 "${LOG}" >&2
     fail "${profile} daemon.log has no lines after last pool-daemon-up start"
