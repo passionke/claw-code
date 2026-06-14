@@ -16,8 +16,9 @@ Author: kejiqing
 |-----|------|------|------|
 | `CLAW_BOOTSTRAP_LLM_API_KEY` | **Secret** | LLM API Key；`up` 时写入 PG active LLM | `sk-...` |
 | `CLAW_BOOTSTRAP_LLM_BASE_URL` | **Variable** | OpenAI 兼容 base URL，**须含 `/v1`**；URL **不要**放 Secret | `https://api.deepseek.com/v1` |
+| `PLAYGROUND_ADMIN_PASSWORD` | **Secret** | 公网 CI 机全站 `/admin` 登录密码；**禁止**默认 `sunmi123` | 强密码 |
 
-`release` job 在 deploy 阶段设 `CLAW_CI_REQUIRE_LLM_BOOTSTRAP=1`，缺上述两项时 `render-env-from-ci.sh` 直接失败。
+`release` job 在 deploy 阶段设 `CLAW_CI_REQUIRE_LLM_BOOTSTRAP=1` 与 `CLAW_CI_REQUIRE_ADMIN_AUTH=1`，缺 LLM 或 `PLAYGROUND_ADMIN_PASSWORD` 时 `render-env-from-ci.sh` 直接失败。
 
 **原则**：代码只进 GitHub；部署由 **Actions → claw-ci-deploy → Run workflow** 驱动 `contabo-sg` runner，**不要** rsync/手改服务器上的仓库。
 
@@ -27,6 +28,8 @@ Author: kejiqing
 |-----|------|------|
 | `CLAW_BOOTSTRAP_LLM_MODEL_NAME` | 模型 id | **`deepseek-v4-flash`**（DeepSeek base URL 时）；勿用默认 `gpt-4o-mini` |
 | `CLAW_BOOTSTRAP_LLM_NAME` | Admin 里显示名 | `github-ci-llm` |
+| `PLAYGROUND_ADMIN_USER` | Admin 登录用户名 | `admin` |
+| `PLAYGROUND_ADMIN_SESSION_SECRET` | Cookie 签名密钥（Secret） | 未设时用 user+password 派生 |
 | `CLAUDE_TAP_IMAGE` | claw-tap 镜像 | ACR `passionke/claw-tap:latest` |
 
 ### Langfuse OTEL（可选）
@@ -55,6 +58,8 @@ Author: kejiqing
 | `CLAW_USE_CN_RUST_MIRROR` | `0`（SG 机房；Sunmi 国内 CI 用 `1`） |
 | `CONTAINER_BASE_REGISTRY` | `docker.1ms.run` |
 | `CLAUDE_TAP_IMAGE` | `ghcr.io/passionke/claude-tap:latest`（SG；Sunmi 国内用 ACR） |
+| `GATEWAY_PLAYGROUND_HOST_PORT` | `18675` |
+| `PLAYGROUND_ADMIN_CHAT_PUBLIC` | `0`（全站需登录；本地 dev 默认 `1`） |
 
 换机器时：改 `.github/workflows/claw-ci-deploy.yml` 里 `env:` 块，或用 repo Variables 覆盖。
 
@@ -62,11 +67,11 @@ Author: kejiqing
 
 | 服务 | 端口 | 对外 |
 |------|------|------|
-| Admin `/admin` | `18765` | **已开** |
+| Admin `/admin` | `18675` | **已开**（`PLAYGROUND_ADMIN_CHAT_PUBLIC=0` 全站登录） |
 | clawTap Live | `3000` | **已开** |
 | Gateway API | `18088` | **暂不开**（仅本机 e2e / 内网） |
 
-`render-env-from-ci.sh` 默认：`GATEWAY_PLAYGROUND_HOST_PORT=18765`，`CLAUDE_TAP_PUBLISH_LIVE=0.0.0.0:3000:3000`。
+`render-env-from-ci.sh` 默认：`GATEWAY_PLAYGROUND_HOST_PORT=18675`（workflow），`PLAYGROUND_ADMIN_CHAT_PUBLIC=0`，`CLAUDE_TAP_PUBLISH_LIVE=0.0.0.0:3000:3000`。
 
 ## 5. 安装 self-hosted runner（首次）
 

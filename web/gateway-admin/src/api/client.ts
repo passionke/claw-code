@@ -76,4 +76,5 @@ export interface PlaygroundConfig {
   defaultGatewayBase: string;
   defaultGatewayLabel?: string;
   gatewayPresets?: { label: string; value: string }[];
+  adminChatPublic?: boolean;
 }

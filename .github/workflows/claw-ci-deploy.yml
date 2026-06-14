@@ -46,6 +46,9 @@ env:
   CONTAINER_BASE_REGISTRY: docker.1ms.run
   # SG runner: GHCR tap; Sunmi CN CI uses ACR (render-env-from-ci.sh default).
   CLAUDE_TAP_IMAGE: ghcr.io/passionke/claude-tap:latest
+  # Public CI host: admin on 18675, full-site login (not default local dev).
+  GATEWAY_PLAYGROUND_HOST_PORT: "18675"
+  PLAYGROUND_ADMIN_CHAT_PUBLIC: "0"
 
 jobs:
   maintenance:
@@ -98,11 +101,15 @@ jobs:
       - name: Render .env (deploy)
         env:
           CLAW_CI_REQUIRE_LLM_BOOTSTRAP: "1"
+          CLAW_CI_REQUIRE_ADMIN_AUTH: "1"
           CLAW_BOOTSTRAP_LLM_API_KEY: ${{ secrets.CLAW_BOOTSTRAP_LLM_API_KEY }}
           CLAW_BOOTSTRAP_LLM_BASE_URL: ${{ vars.CLAW_BOOTSTRAP_LLM_BASE_URL }}
           CLAW_BOOTSTRAP_LLM_MODEL_NAME: ${{ vars.CLAW_BOOTSTRAP_LLM_MODEL_NAME }}
           CLAW_BOOTSTRAP_LLM_NAME: ${{ vars.CLAW_BOOTSTRAP_LLM_NAME }}
           CLAW_BOOTSTRAP_LLM_FORCE: "1"
+          PLAYGROUND_ADMIN_USER: ${{ vars.PLAYGROUND_ADMIN_USER }}
+          PLAYGROUND_ADMIN_PASSWORD: ${{ secrets.PLAYGROUND_ADMIN_PASSWORD }}
+          PLAYGROUND_ADMIN_SESSION_SECRET: ${{ secrets.PLAYGROUND_ADMIN_SESSION_SECRET }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
           LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}

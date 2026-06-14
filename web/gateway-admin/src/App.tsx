@@ -4,6 +4,7 @@ import { ChatSessionProvider } from "./context/ChatSessionContext";
 import AdminLayout from "./layout/AdminLayout";
 import ChatLayout from "./layout/ChatLayout";
 import LoginPage from "./pages/LoginPage";
+import ChatAuthGate from "./auth/ChatAuthGate";
 import RequireAuth from "./auth/RequireAuth";
 import ProjectPage from "./pages/ProjectPage";
 import SkillsPage from "./pages/SkillsPage";
@@ -36,9 +37,11 @@ export default function App() {
           <Route
             path="chat"
             element={
-              <ChatSessionProvider>
-                <ChatLayout />
-              </ChatSessionProvider>
+              <ChatAuthGate>
+                <ChatSessionProvider>
+                  <ChatLayout />
+                </ChatSessionProvider>
+              </ChatAuthGate>
             }
           >
             <Route index element={<ChatPage />} />

@@ -46,6 +46,23 @@ if [[ "${CLAW_CI_REQUIRE_LLM_BOOTSTRAP:-0}" == "1" ]]; then
   claw_ci_require_llm_bootstrap_vars
 fi
 
+claw_ci_require_admin_auth_vars() {
+  if [[ -z "${PLAYGROUND_ADMIN_PASSWORD:-}" ]]; then
+    echo "error: public CI host requires PLAYGROUND_ADMIN_PASSWORD (GitHub/GitLab Secret)" >&2
+    echo "  also set PLAYGROUND_ADMIN_CHAT_PUBLIC=0 for full-site /admin login" >&2
+    echo "  doc: deploy/stack/docs/github-ci-variables.md" >&2
+    exit 1
+  fi
+  if [[ "${PLAYGROUND_ADMIN_PASSWORD}" == "sunmi123" ]]; then
+    echo "error: PLAYGROUND_ADMIN_PASSWORD must not be default sunmi123 on public CI hosts" >&2
+    exit 1
+  fi
+}
+
+if [[ "${CLAW_CI_REQUIRE_ADMIN_AUTH:-0}" == "1" ]]; then
+  claw_ci_require_admin_auth_vars
+fi
+
 pool_id="${CLAW_POOL_ID:-pool-${CLAW_POOL_ADVERTISE_HOST//./-}}"
 tap_image="${CLAUDE_TAP_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-tap:latest}"
 gw_port="${GATEWAY_HOST_PORT:-18088}"
@@ -90,6 +107,8 @@ GATEWAY_PLAYGROUND_HOST_PORT=${GATEWAY_PLAYGROUND_HOST_PORT:-18765}
 PLAYGROUND_PUBLIC_GATEWAY_BASE=http://${CLAW_POOL_ADVERTISE_HOST}:${gw_port}
 PLAYGROUND_ALLOWED_HOSTS=${CLAW_POOL_ADVERTISE_HOST},127.0.0.1,localhost,gateway-rs,192.168.9.252,10.200.2.171
 PLAYGROUND_ALLOWED_PORTS=18088,18089,8080,8088
+PLAYGROUND_ADMIN_USER=${PLAYGROUND_ADMIN_USER:-admin}
+PLAYGROUND_ADMIN_CHAT_PUBLIC=${PLAYGROUND_ADMIN_CHAT_PUBLIC:-1}
 CLAW_TIMEOUT_SECONDS=${CLAW_TIMEOUT_SECONDS:-1800}
 
 CLAW_GATEWAY_DATABASE_URL=${CLAW_GATEWAY_DATABASE_URL:-postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway}
@@ -110,7 +129,8 @@ EOF
 
 # Optional LLM bootstrap (set in GitLab CI/CD Variables, masked).
 for _k in CLAW_BOOTSTRAP_LLM_API_KEY CLAW_BOOTSTRAP_LLM_BASE_URL CLAW_BOOTSTRAP_LLM_MODEL_NAME CLAW_BOOTSTRAP_LLM_NAME CLAW_BOOTSTRAP_LLM_FORCE \
-  OPENAI_API_KEY UPSTREAM_OPENAI_BASE_URL OPENAI_BASE_URL OPENAI_MODEL; do
+  OPENAI_API_KEY UPSTREAM_OPENAI_BASE_URL OPENAI_BASE_URL OPENAI_MODEL \
+  PLAYGROUND_ADMIN_PASSWORD PLAYGROUND_ADMIN_SESSION_SECRET; do
   if [[ -n "${!_k:-}" ]]; then
     printf '%s=%s\n' "${_k}" "${!_k}" >>"${ENV_FILE}"
   fi

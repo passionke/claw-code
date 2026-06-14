@@ -1,7 +1,7 @@
 import { Button, Card, Form, Input, Typography } from "antd";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { adminLogin, fetchAdminMe } from "../api/client";
+import { adminLogin, fetchAdminMe, fetchPlaygroundConfig } from "../api/client";
 
 /** Post-login path for React Router (basename /admin). Author: kejiqing */
 function normalizeAdminNext(raw?: string | null): string {
@@ -20,9 +20,16 @@ function normalizeAdminNext(raw?: string | null): string {
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [chatPublic, setChatPublic] = useState(true);
   const nav = useNavigate();
   const [params] = useSearchParams();
   const next = normalizeAdminNext(params.get("next"));
+
+  useEffect(() => {
+    fetchPlaygroundConfig()
+      .then((c) => setChatPublic(c.adminChatPublic !== false))
+      .catch(() => setChatPublic(true));
+  }, []);
 
   useEffect(() => {
     fetchAdminMe().then((d) => {
@@ -59,9 +66,11 @@ export default function LoginPage() {
         padding: 24,
       }}
     >
-      <Card style={{ width: 380 }} title="项目管理登录">
+      <Card style={{ width: 380 }} title={chatPublic ? "项目管理登录" : "Claw Admin 登录"}>
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-          对话页（/admin/chat）无需登录；项目管理需账号密码（服务端 <code>PLAYGROUND_ADMIN_*</code>）
+          {chatPublic
+            ? "对话页（/admin/chat）无需登录；项目管理需账号密码（服务端 PLAYGROUND_ADMIN_*）"
+            : "全站需登录（PLAYGROUND_ADMIN_CHAT_PUBLIC=0）；账号密码见 GitHub Actions Secrets"}
         </Typography.Paragraph>
         <Form layout="vertical" onFinish={onFinish} autoComplete="on">
           <Form.Item name="user" label="账号" rules={[{ required: true }]}>
@@ -79,7 +88,7 @@ export default function LoginPage() {
             </Button>
           </Form.Item>
         </Form>
-        <Link to="/chat">← 返回对话（无需登录）</Link>
+        {chatPublic ? <Link to="/chat">← 返回对话（无需登录）</Link> : null}
       </Card>
     </div>
   );

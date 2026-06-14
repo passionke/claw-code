@@ -54,6 +54,15 @@ ADMIN_PASSWORD = os.environ.get("PLAYGROUND_ADMIN_PASSWORD", "sunmi123")
 SESSION_COOKIE = "claw_pg_admin"
 SESSION_TTL_SEC = int(os.environ.get("PLAYGROUND_ADMIN_SESSION_TTL_SEC", str(7 * 86400)))
 
+
+def _admin_chat_public() -> bool:
+    """When false, /admin/chat and API proxy require login (public CI hosts). Author: kejiqing"""
+    return os.environ.get("PLAYGROUND_ADMIN_CHAT_PUBLIC", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+
 _DEFAULT_HOSTS = "127.0.0.1,localhost,192.168.9.252,10.200.2.171,10.22.28.94,gateway-rs"
 _DEFAULT_PORTS = "18088,18089,8080,8088"
 
@@ -213,15 +222,29 @@ def _safe_admin_next(path: str | None) -> str:
 
 
 def _admin_requires_login(path: str) -> bool:
-    """Chat SPA is public; project management and other /admin routes need login."""
+    """Chat SPA is public by default; set PLAYGROUND_ADMIN_CHAT_PUBLIC=0 for full-site login."""
     if path in ("/admin/login",):
         return False
     if path.startswith("/admin/assets/"):
         return False
-    if path == "/admin/chat" or path.startswith("/admin/chat/"):
+    if _admin_chat_public() and (path == "/admin/chat" or path.startswith("/admin/chat/")):
         return False
     if path == "/admin" or path.startswith("/admin/"):
         return True
+    return False
+
+
+def _proxy_requires_admin_session() -> bool:
+    return not _admin_chat_public()
+
+
+def _reject_unless_admin_session(handler: BaseHTTPRequestHandler) -> bool:
+    """Return True when the request may proceed (proxy/SSE)."""
+    if not _proxy_requires_admin_session():
+        return True
+    if read_session_user(handler):
+        return True
+    send_json(handler, 401, {"ok": False, "error": "not logged in"})
     return False
 
 
@@ -455,7 +478,7 @@ def playground_config() -> dict:
         "defaultGatewayLabel": _gateway_preset_label(PUBLIC_GATEWAY_BASE),
         "gatewayPresets": presets,
         "adminLoginRequired": True,
-        "adminChatPublic": True,
+        "adminChatPublic": _admin_chat_public(),
     }
 
 
@@ -503,6 +526,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/__proxy_sse__":
+            if not _reject_unless_admin_session(self):
+                return
             target = (qs.get("target") or [""])[0]
             if target:
                 try:
@@ -610,6 +635,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path != "/__proxy__":
             self.send_error(404, "not found")
+            return
+
+        if not _reject_unless_admin_session(self):
             return
 
         payload = read_allowed_json_body(self)
