@@ -43,6 +43,8 @@ env:
   CLAW_POOL_DAEMON_USE_SYSTEMD: "0"
   CLAW_AUTO_BOOTSTRAP: "1"
   CONTAINER_BASE_REGISTRY: docker.1ms.run
+  # SG runner: GHCR tap; Sunmi CN CI uses ACR (render-env-from-ci.sh default).
+  CLAUDE_TAP_IMAGE: ghcr.io/passionke/claude-tap:latest
 
 jobs:
   maintenance:

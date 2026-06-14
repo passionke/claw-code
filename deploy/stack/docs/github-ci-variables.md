@@ -52,6 +52,7 @@ Author: kejiqing
 | `CLAW_USE_CN_CRATES_MIRROR` | `0`（SG 机房；Sunmi 国内 CI 用 `1`） |
 | `CLAW_USE_CN_RUST_MIRROR` | `0`（SG 机房；Sunmi 国内 CI 用 `1`） |
 | `CONTAINER_BASE_REGISTRY` | `docker.1ms.run` |
+| `CLAUDE_TAP_IMAGE` | `ghcr.io/passionke/claude-tap:latest`（SG；Sunmi 国内用 ACR） |
 
 换机器时：改 `.github/workflows/claw-ci-deploy.yml` 里 `env:` 块，或用 repo Variables 覆盖。
 
