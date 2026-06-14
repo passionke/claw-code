@@ -33,3 +33,8 @@ else
 fi
 
 echo "==> github ci worktree ${ref_name}@${short_sha} CLAW_RELEASE_TAG=${CLAW_RELEASE_TAG}"
+
+# GitHub Actions: each `run:` step is a new shell — persist tag for later steps.
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  echo "CLAW_RELEASE_TAG=${CLAW_RELEASE_TAG}" >>"${GITHUB_ENV}"
+fi
