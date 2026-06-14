@@ -88,11 +88,16 @@ claw_pool_docker_running() {
 # Start claw-sandbox in Docker (host network + docker.sock). Survives GHA job teardown.
 claw_pool_docker_up() {
   local rpc_dir="$1" bin="$2" repo_root="$3" work_root="$4"
-  local rt ctr image docker_env
+  local rt ctr image docker_env docker_bin
   rt="$(claw_pool_docker_runtime)"
   ctr="$(claw_pool_docker_container_name)"
   image="$(claw_pool_docker_pool_image)"
   docker_env="${rpc_dir}/pool-daemon.docker.env"
+  docker_bin="$(command -v docker 2>/dev/null || true)"
+  if [[ -z "${docker_bin}" || ! -x "${docker_bin}" ]]; then
+    echo "error: pool-daemon-docker: host docker CLI not found in PATH" >&2
+    return 1
+  fi
 
   claw_pool_docker_stop
   "${rt}" pull "${image}" >/dev/null 2>&1 || true
@@ -106,6 +111,7 @@ claw_pool_docker_up() {
     --user root \
     --entrypoint /usr/local/bin/claw-sandbox \
     -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "${docker_bin}:/usr/local/bin/docker:ro" \
     -v "${work_root}:${work_root}" \
     -v "${repo_root}:${repo_root}" \
     -v "${bin}:/usr/local/bin/claw-sandbox:ro" \
