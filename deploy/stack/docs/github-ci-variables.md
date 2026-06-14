@@ -4,6 +4,8 @@
 
 **触发方式**：**Actions → claw-ci-deploy → Run workflow**（手工，不随 push 自动跑）。
 
+**开发期分支**：CI 改动先 push 到 **`feat/github-ci-deploy`**，在 Actions 页**左上角选该分支**再 Run；`ref` 默认即此分支，**不必为试 CI 反复 merge `main`**。收拢后再合进 `main`。
+
 **Runner**：自托管，标签 `contabo-sg`（`vmi3350843`），宿主机 **62.72.45.75**。
 
 Author: kejiqing
@@ -86,9 +88,15 @@ tar xzf actions-runner.tar.gz
 ## 6. 手工触发 deploy
 
 1. 配好 Secrets（§1）
-2. **Actions → claw-ci-deploy → Run workflow**
-3. `ref`：默认 `main`；首次可勾 `skip_dual_deploy` 加快验收
-4. 日志应出现：`render-env-from-ci.sh` → `gateway.sh build` → `up --release` → `verify` → `admin-solve-e2e`
+2. **Actions → claw-ci-deploy**
+3. 页面上方 **Use workflow from** 选 **`feat/github-ci-deploy`**（开发期）或 `main`（收拢后）
+4. **Run workflow** → `ref` 与所选分支一致（默认 `feat/github-ci-deploy`）；可勾 `skip_dual_deploy`
+5. 日志应出现：`render-env-from-ci.sh` → `gateway.sh build` → `up --release` → `verify` → `admin-solve-e2e`
+
+```bash
+# CLI 等价（开发期 feat 分支）
+gh workflow run claw-ci-deploy.yml -R passionke/claw-code --ref feat/github-ci-deploy -f skip_dual_deploy=true
+```
 
 **Workflow inputs**：
 

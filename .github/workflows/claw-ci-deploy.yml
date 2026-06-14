@@ -1,5 +1,5 @@
-# GitHub self-hosted CI (manual): checkout → build → deploy → e2e on runner 62.72.45.75.
-# Code lives in GitHub only; this workflow drives the contabo-sg runner — no hand-rsync to host.
+# Dev: push workflow changes to feat/github-ci-deploy; Run workflow on that branch (no merge-to-main loop).
+# Promote to main only when CI contract is stable.
 # Env: Settings → Secrets and variables → Actions → deploy/stack/docs/github-ci-variables.md
 # Author: kejiqing
 name: claw-ci-deploy
@@ -10,7 +10,7 @@ on:
       ref:
         description: "Branch or tag to build/deploy"
         required: true
-        default: main
+        default: feat/github-ci-deploy
         type: string
       skip_dual_deploy:
         description: "Skip ci-cluster-dual-deploy (node B)"
