@@ -48,8 +48,9 @@ claw_bootstrap_llm_model_name() {
 
 claw_bootstrap_llm_from_env() {
   local port="${GATEWAY_HOST_PORT:-18088}"
-  local key base model name body
-  if claw_gateway_has_active_llm; then
+  local key base model name body force
+  force="${CLAW_BOOTSTRAP_LLM_FORCE:-0}"
+  if [[ "${force}" != "1" ]] && claw_gateway_has_active_llm; then
     echo "bootstrap: active LLM already in PG"
     return 0
   fi
@@ -162,7 +163,7 @@ claw_bootstrap_gateway_runtime() {
 
   claw_wait_gateway_http_ready 45
 
-  if ! claw_gateway_has_active_llm; then
+  if ! claw_gateway_has_active_llm || [[ "${CLAW_BOOTSTRAP_LLM_FORCE:-0}" == "1" ]]; then
     if claw_bootstrap_llm_from_env; then
       :
     elif [[ "${auto}" == "1" ]]; then
