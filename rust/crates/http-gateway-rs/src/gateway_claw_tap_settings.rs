@@ -62,7 +62,8 @@ impl From<&ClawTapSettings> for ClawTapSettingsPublic {
         let live_port = normalize_live_port(s.live_port);
         let (proxy_base_url, live_base_url, live_session_url_template) = if configured {
             let proxy = claw_tap_proxy_base_url(&s.host, proxy_port);
-            let live = claw_tap_live_base_url(&s.host, live_port);
+            let live_host = claw_tap_live_advertise_host(&s.host);
+            let live = claw_tap_live_base_url(&live_host, live_port);
             let template = live
                 .as_ref()
                 .map(|b| format!("{b}/?{LIVE_SESSION_QUERY_PARAM}={{sessionId}}"));
@@ -174,6 +175,31 @@ pub fn claw_tap_live_base_url(host: &str, live_port: u16) -> Option<String> {
     let h = normalize_claw_tap_host(host)?;
     let port = normalize_live_port(live_port);
     Some(format!("http://{h}:{port}"))
+}
+
+/// Browser-facing Live host when proxy host is compose DNS (GitHub CI docker tap). Author: kejiqing
+fn claw_tap_live_advertise_host(stored_host: &str) -> String {
+    let normalized = normalize_claw_tap_host(stored_host).unwrap_or_else(|| stored_host.trim().to_string());
+    let internal = matches!(
+        normalized.as_str(),
+        "claw-claude-tap" | "host.docker.internal" | "host.containers.internal"
+    );
+    if !internal {
+        return stored_host.to_string();
+    }
+    if let Ok(v) = std::env::var("CLAUDE_TAP_LIVE_ADVERTISE_HOST") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
+        }
+    }
+    if let Ok(v) = std::env::var("CLAW_POOL_ADVERTISE_HOST") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
+        }
+    }
+    stored_host.to_string()
 }
 
 pub async fn load_claw_tap_public(
@@ -365,5 +391,26 @@ mod tests {
             pub_.live_session_url_template.as_deref(),
             Some("http://192.168.9.252:3000/?session={sessionId}")
         );
+    }
+
+    #[test]
+    fn live_base_uses_pool_advertise_for_compose_tap_host() {
+        std::env::set_var("CLAW_POOL_ADVERTISE_HOST", "62.72.45.75");
+        let s = ClawTapSettings {
+            host: "claw-claude-tap".into(),
+            proxy_port: 8080,
+            live_port: 3000,
+            updated_at_ms: 1,
+        };
+        let public = ClawTapSettingsPublic::from(&s);
+        assert_eq!(
+            public.proxy_base_url.as_deref(),
+            Some("http://claw-claude-tap:8080")
+        );
+        assert_eq!(
+            public.live_base_url.as_deref(),
+            Some("http://62.72.45.75:3000")
+        );
+        std::env::remove_var("CLAW_POOL_ADVERTISE_HOST");
     }
 }

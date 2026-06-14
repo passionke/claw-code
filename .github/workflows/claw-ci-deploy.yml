@@ -51,6 +51,10 @@ env:
   # Public CI host: admin on 18675, full-site login (not default local dev).
   GATEWAY_PLAYGROUND_HOST_PORT: "18675"
   PLAYGROUND_ADMIN_CHAT_PUBLIC: "0"
+  # Gateway/worker probe tap on compose DNS; browser Live uses public host :3000.
+  CLAUDE_TAP_ADMIN_HOST: claw-claude-tap
+  CLAUDE_TAP_LIVE_ADVERTISE_HOST: "62.72.45.75"
+  CLAUDE_TAP_PUBLISH_PROXY: "127.0.0.1:8080:8080"
 
 jobs:
   maintenance:

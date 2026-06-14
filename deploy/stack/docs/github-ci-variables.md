@@ -61,6 +61,9 @@ Author: kejiqing
 | `GATEWAY_PLAYGROUND_HOST_PORT` | `18675` |
 | `PLAYGROUND_ADMIN_CHAT_PUBLIC` | `0`（全站需登录；本地 dev 默认 `1`） |
 | `CLAW_POOL_SUPERVISOR` | `docker`（pool 跑在 `claw-sandbox` 容器里，job 结束不被杀） |
+| `CLAUDE_TAP_ADMIN_HOST` | `claw-claude-tap`（gateway/worker 探测 proxy；**不**用公网 IP） |
+| `CLAUDE_TAP_LIVE_ADVERTISE_HOST` | `62.72.45.75`（浏览器 Live `:3000`） |
+| `CLAUDE_TAP_PUBLISH_PROXY` | `127.0.0.1:8080:8080`（proxy 不对外开防火墙） |
 | `CLAW_POOL_DAEMON_USE_SYSTEMD` | `0`（与 Sunmi GitLab CI 一致） |
 
 换机器时：改 `.github/workflows/claw-ci-deploy.yml` 里 `env:` 块，或用 repo Variables 覆盖。
