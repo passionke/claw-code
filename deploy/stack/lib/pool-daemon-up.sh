@@ -241,6 +241,17 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
   source "${LIB_DIR}/pool-daemon-launchd.sh"
   claw_pool_launchd_bootstrap "${RPC_DIR}" "${RUN_SH}" "${LOG}"
   _pool_supervisor=launchd
+elif [[ -f "${LIB_DIR}/pool-daemon-docker.sh" ]] && {
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/pool-daemon-docker.sh"
+  claw_pool_use_docker_supervisor
+}; then
+  claw_pool_docker_up "${RPC_DIR}" "${BIN}" "${REPO_ROOT}" "${WORK_ROOT}"
+  # shellcheck disable=SC1091
+  source "${LIB_DIR}/pool-daemon-docker.sh"
+  pid="$(docker inspect -f '{{.State.Pid}}' "$(claw_pool_docker_container_name)" 2>/dev/null || true)"
+  [[ -n "${pid}" && "${pid}" != "0" ]] && printf '%s' "${pid}" >"${RPC_DIR}/daemon.pid"
+  _pool_supervisor=docker
 elif [[ -f "${LIB_DIR}/pool-daemon-systemd.sh" ]] && {
   # shellcheck disable=SC1091
   source "${LIB_DIR}/pool-daemon-systemd.sh"
@@ -271,7 +282,13 @@ fi
 
 for _i in $(seq 1 120); do
   if claw_pool_http_alive; then
-    pid="$(claw_pool_refresh_pid_file "${RPC_DIR}" 2>/dev/null || echo "${pid}")"
+    if [[ "${_pool_supervisor}" == docker ]]; then
+      # shellcheck disable=SC1091
+      source "${LIB_DIR}/pool-daemon-docker.sh"
+      pid="$(docker inspect -f '{{.State.Pid}}' "$(claw_pool_docker_container_name)" 2>/dev/null || true)"
+    else
+      pid="$(claw_pool_refresh_pid_file "${RPC_DIR}" 2>/dev/null || echo "${pid:-}")"
+    fi
     echo "claw-sandbox HTTP 0.0.0.0:${HTTP_PORT} (pid=${pid}, supervisor=${_pool_supervisor:-unknown})" >&2
     echo "  pool_id=${CLAW_POOL_ID} advertise=${CLAW_POOL_ADVERTISE_HOST}" >&2
     exit 0

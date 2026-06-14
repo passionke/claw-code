@@ -96,6 +96,19 @@ claw_pool_down_one() {
     claw_pool_launchd_bootout
   fi
 
+  if [[ -f "${LIB_DIR}/pool-daemon-docker.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "${LIB_DIR}/pool-daemon-docker.sh"
+    if claw_pool_use_docker_supervisor 2>/dev/null || claw_pool_docker_running 2>/dev/null; then
+      claw_log "stopping claw-sandbox docker container (:${http_port})"
+      claw_pool_docker_stop || true
+      claw_pool_wait_http_down || true
+      rm -f "${rpc_dir}/daemon.pid"
+      claw_log "pool-daemon-down done in $((SECONDS - t0))s (docker)"
+      return 0
+    fi
+  fi
+
   claw_pool_try_stop_systemd "${http_port}"
 
   listener_pid="$(claw_pool_listener_pid "${http_port}" || true)"
