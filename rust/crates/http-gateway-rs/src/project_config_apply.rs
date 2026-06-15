@@ -1087,9 +1087,8 @@ mod tests {
 
     #[test]
     fn solve_preflight_marker_bytes_enabled_sqlbot() {
-        let bytes =
-            solve_preflight_marker_bytes(&test_row(json!({"kind": "sqlbot_mcp_start"})))
-                .expect("bytes");
+        let bytes = solve_preflight_marker_bytes(&test_row(json!({"kind": "sqlbot_mcp_start"})))
+            .expect("bytes");
         let parsed: Value = serde_json::from_slice(&bytes).expect("json");
         assert_eq!(
             parsed.get("kinds").and_then(Value::as_array),
@@ -1099,8 +1098,8 @@ mod tests {
 
     #[test]
     fn solve_preflight_marker_bytes_disabled_matches_pg_kind_none() {
-        let bytes = solve_preflight_marker_bytes(&test_row(json!({"kind": "none"})))
-            .expect("bytes");
+        let bytes =
+            solve_preflight_marker_bytes(&test_row(json!({"kind": "none"}))).expect("bytes");
         let parsed: Value = serde_json::from_slice(&bytes).expect("json");
         assert_eq!(parsed.get("kinds").and_then(Value::as_array), Some(&vec![]));
     }
@@ -1125,10 +1124,8 @@ mod tests {
 
     #[tokio::test]
     async fn apply_if_needed_removes_stale_preflight_marker_when_disabled() {
-        let root = std::env::temp_dir().join(format!(
-            "claw-apply-preflight-rm-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("claw-apply-preflight-rm-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root).await;
         fs::create_dir_all(root.join("home/.claw"))
             .await
@@ -1151,10 +1148,8 @@ mod tests {
 
     #[tokio::test]
     async fn apply_if_needed_writes_preflight_marker_when_enabled() {
-        let root = std::env::temp_dir().join(format!(
-            "claw-apply-preflight-wr-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("claw-apply-preflight-wr-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root).await;
         apply_if_needed(
             &root,
