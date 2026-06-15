@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-# Default host pool binary path (claw-sandbox). Built by linux-compile or local cargo. Author: kejiqing
+# Default host pool binary path (claw-sandbox). Release: pull image + extract; dev: linux-compile/cargo. Author: kejiqing
 
 claw_default_pool_daemon_bin() {
   local podman_dir="${1:?}"
   printf '%s\n' "${podman_dir}/.linux-artifacts/release/claw-sandbox"
+}
+
+claw_pool_daemon_release_deploy_active() {
+  [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]] && return 0
+  [[ -n "${CLAW_SANDBOX_IMAGE:-}" ]] && return 0
+  local gw="${GATEWAY_IMAGE:-}"
+  [[ "${gw}" == *"/claw-code:release-"* ]] && return 0
+  return 1
 }
 
 # Resolve executable for host claw-sandbox (pool daemon). Author: kejiqing
@@ -26,7 +34,16 @@ claw_ensure_pool_daemon_binary() {
     return 0
   fi
 
-  if [[ -x "${out}" ]] && [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" != 1 ]]; then
+  # Linux production / release: never host cargo when release pin active or SKIP_BUILD=1.
+  if claw_pool_daemon_release_deploy_active || [[ "${CLAW_POOL_DAEMON_SKIP_BUILD:-0}" == "1" ]]; then
+    # shellcheck source=install-claw-sandbox-from-release.sh
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install-claw-sandbox-from-release.sh"
+    claw_install_claw_sandbox_from_release "${podman_dir}" || return 1
+    printf '%s\n' "${out}"
+    return 0
+  fi
+
+  if [[ -x "${out}" ]] && [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" != "1" ]]; then
     echo "==> reusing host claw-sandbox: ${out}" >&2
     printf '%s\n' "${out}"
     return 0
@@ -44,12 +61,11 @@ claw_ensure_pool_daemon_binary() {
     return 0
   fi
 
-  # Ignore .env CLAW_POOL_DAEMON_BIN when release deploy installs under .linux-artifacts/. kejiqing
-  if [[ -z "${CLAW_IMAGE_RELEASE_TAG:-}" && -n "${CLAW_POOL_DAEMON_BIN:-}" && -x "${CLAW_POOL_DAEMON_BIN}" ]]; then
+  if [[ -n "${CLAW_POOL_DAEMON_BIN:-}" && -x "${CLAW_POOL_DAEMON_BIN}" ]]; then
     printf '%s\n' "${CLAW_POOL_DAEMON_BIN}"
     return 0
   fi
 
-  echo "error: no claw-sandbox (run gateway.sh build or cargo build -p claw-sandbox-server in sandbox/)" >&2
+  echo "error: no claw-sandbox (run gateway.sh up --release <tag> or gateway.sh build)" >&2
   return 1
 }

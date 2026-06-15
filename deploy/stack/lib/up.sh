@@ -91,7 +91,7 @@ fi
 # Release up: tap down + compose down + kill pool + delete every worker, then pull fresh images. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   echo "==> release ${CLAW_IMAGE_RELEASE_TAG}: compose down + nuclear pool reset" >&2
-  echo "    gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
+  echo "    gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}} sandbox=${CLAW_SANDBOX_IMAGE:-unset}" >&2
   if claw_stack_manages_local_claude_tap; then
     echo "==> release: claude-tap down" >&2
     claw_claude_tap_stop "${PODMAN_DIR}"
@@ -114,6 +114,9 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   esac
   if [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]]; then
     claw_release_pull_image_if_needed "${rt}" "${CLAW_RELAXED_PODMAN_IMAGE}"
+  fi
+  if [[ -n "${CLAW_SANDBOX_IMAGE:-}" ]]; then
+    claw_release_pull_image_if_needed "${rt}" "${CLAW_SANDBOX_IMAGE}"
   fi
   if claw_stack_manages_local_claude_tap; then
     tap_img="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"

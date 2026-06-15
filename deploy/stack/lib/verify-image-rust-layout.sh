@@ -12,6 +12,7 @@ cd "${ROOT}"
 FILES=(
   deploy/stack/Containerfile.gateway-rs
   deploy/stack/Containerfile.gateway-worker
+  deploy/stack/Containerfile.claw-sandbox
 )
 
 need_in_file() {

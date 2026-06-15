@@ -1,0 +1,44 @@
+# Host pool daemon binary packaged for release pull + extract (pool_outside). Author: kejiqing
+ARG RUST_VERSION=1.88.0
+ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
+ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
+
+FROM ${RUST_BASE_IMAGE} AS builder
+
+ARG RUSTUP_DIST_SERVER=https://static.rust-lang.org
+ARG RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
+    RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT}
+
+ARG CLAW_USE_CN_CRATES_MIRROR=0
+
+# Match repo layout: rust/ + sandbox/ siblings (path-deps use ../../../rust and ../../../sandbox).
+WORKDIR /rust
+COPY rust/Cargo.toml /rust/Cargo.toml
+COPY rust/Cargo.lock /rust/Cargo.lock
+COPY rust/rust-toolchain.toml /rust/rust-toolchain.toml
+COPY rust/crates/ /rust/crates/
+COPY rust/.cargo/config.toml.example /tmp/cargo-mirror.toml
+COPY sandbox/Cargo.toml sandbox/Cargo.lock /sandbox/
+COPY sandbox/crates/ /sandbox/crates/
+RUN if [ "${CLAW_USE_CN_CRATES_MIRROR}" = "1" ]; then \
+      mkdir -p /rust/.cargo && cp /tmp/cargo-mirror.toml /rust/.cargo/config.toml; \
+    fi
+RUN rustc --version | grep -q "${RUST_VERSION}" && \
+    echo "rustc: $(rustc --version)" && \
+    cd /sandbox && cargo build --release -p claw-sandbox-server
+
+FROM ${DEBIAN_BASE_IMAGE}
+COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
+ARG CLAW_USE_CN_APT_MIRROR=0
+RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /sandbox/target/release/claw-sandbox /usr/local/bin/claw-sandbox
+RUN chmod +x /usr/local/bin/claw-sandbox
+
+ENTRYPOINT ["/usr/local/bin/claw-sandbox"]
