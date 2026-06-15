@@ -40,6 +40,10 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
 
+      - name: Verify image rust/sandbox layout
+        if: matrix.package == 'claw-code' || matrix.package == 'claw-gateway-worker'
+        run: bash deploy/stack/lib/verify-image-rust-layout.sh
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
