@@ -12,12 +12,15 @@ ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
 
 ARG CLAW_USE_CN_CRATES_MIRROR=0
 
+# Match repo layout: rust/ + sandbox/ siblings (http-gateway-rs path-deps use ../../../sandbox).
 WORKDIR /build
 COPY rust/Cargo.toml /build/Cargo.toml
 COPY rust/Cargo.lock /build/Cargo.lock
 COPY rust/rust-toolchain.toml /build/rust-toolchain.toml
 COPY rust/crates/ /build/crates/
 COPY rust/.cargo/config.toml.example /tmp/cargo-mirror.toml
+COPY sandbox/Cargo.toml sandbox/Cargo.lock /sandbox/
+COPY sandbox/crates/ /sandbox/crates/
 RUN if [ "${CLAW_USE_CN_CRATES_MIRROR}" = "1" ]; then \
       mkdir -p /build/.cargo && cp /tmp/cargo-mirror.toml /build/.cargo/config.toml; \
     fi
