@@ -4,8 +4,8 @@ use std::path::Path;
 
 use crate::multi_agent::plan::AnalysisPlan;
 use crate::task_progress::{
-    read_task_progress, record_report_progress_event, write_task_progress, TaskProgressFile,
-    TaskProgressTodo,
+    emit_user_visible_progress_delta, read_task_progress, record_report_progress_event,
+    write_task_progress, TaskProgressFile, TaskProgressTodo,
 };
 
 fn now_ms() -> i64 {
@@ -33,6 +33,7 @@ fn write_progress(session_home: &Path, mut progress: TaskProgressFile) -> Result
     let ts = progress.updated_at_ms;
     write_task_progress(session_home, &progress)?;
     let _ = record_report_progress_event(session_home, &desc, ts);
+    emit_user_visible_progress_delta(&desc);
     Ok(())
 }
 

@@ -401,6 +401,8 @@ pub(crate) struct DirectApiClient {
     provider: ProviderClient,
     tools: Vec<ToolDefinition>,
     clawcode_session_id: String,
+    /// When true, LLM text chunks are mirrored to live report SSE. Author: kejiqing
+    stream_report_deltas: bool,
 }
 
 impl DirectApiClient {
@@ -435,7 +437,14 @@ impl DirectApiClient {
             provider,
             tools,
             clawcode_session_id,
+            stream_report_deltas: true,
         })
+    }
+
+    #[must_use]
+    pub(crate) fn with_stream_report_deltas(mut self, enabled: bool) -> Self {
+        self.stream_report_deltas = enabled;
+        self
     }
 }
 
@@ -475,8 +484,11 @@ impl RuntimeApiClient for DirectApiClient {
             thinking_enabled: Some(false),
             ..Default::default()
         };
-        let mut on_delta = |text: &str| {
-            let _ = emit_report_delta(text);
+        let stream_report_deltas = self.stream_report_deltas;
+        let mut on_delta = move |text: &str| {
+            if stream_report_deltas {
+                let _ = emit_report_delta(text);
+            }
         };
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(stream_events(

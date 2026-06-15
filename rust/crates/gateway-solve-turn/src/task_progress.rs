@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use crate::entity_labels::{
     entity_labels_for_progress, substitute_entity_ids_in_text, EntityLabelMap,
 };
+use crate::gateway_stdout::emit_report_delta;
 
 pub const REPORT_PROGRESS_TOOL_NAME: &str = "report_progress";
 /// `progressHistory` kind when the model calls [`REPORT_PROGRESS_TOOL_NAME`]. Author: kejiqing
@@ -21,6 +22,15 @@ const PROGRESS_VERSION: u32 = 1;
 pub const DEFAULT_PROGRESS_MESSAGE_MAX_CHARS: usize = 80;
 const PROGRESS_MESSAGE_TRUNCATE_SUFFIX: &str = "...";
 const MAX_EVENT_HISTORY_LINES: usize = 200;
+
+/// Mirror user-visible progress into live report SSE (`report.delta` on stdout). Author: kejiqing
+pub fn emit_user_visible_progress_delta(desc: &str) {
+    let trimmed = desc.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let _ = emit_report_delta(&format!("▸ {trimmed}\n"));
+}
 
 /// Max Unicode scalars per progress line (`progressHistory` / `currentTaskDesc`). Env: `CLAW_PROGRESS_MESSAGE_MAX_CHARS`. Author: kejiqing
 #[must_use]
@@ -437,6 +447,7 @@ pub fn run_report_progress(
         &progress.current_task_desc,
         progress.updated_at_ms,
     )?;
+    emit_user_visible_progress_delta(&progress.current_task_desc);
     Ok(json!({ "ok": true, "updatedAtMs": progress.updated_at_ms }).to_string())
 }
 

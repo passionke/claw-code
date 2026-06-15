@@ -1,6 +1,6 @@
 import { StopOutlined } from "@ant-design/icons";
 import { Button, Collapse, Popconfirm, Space, Tag, Tooltip, Typography, message } from "antd";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import { useBizReportStream } from "../../hooks/useBizReportStream";
@@ -21,6 +21,12 @@ import TurnToolsDrawer from "./TurnToolsDrawer";
 import TurnTimelineDrawer from "./TurnTimelineDrawer";
 import TurnExtraSessionDrawer from "./TurnExtraSessionDrawer";
 import { formatDurationMs } from "../../utils/formatDuration";
+import { isEffectiveHistoryTurnView, isTerminalTurnStatus } from "../../utils/turnViewMode";
+import {
+  deriveTurnCardReportView,
+  mergeStreamedIntoHistory,
+  shouldConnectLiveReportSse,
+} from "../../utils/turnCardReportView";
 import styles from "./chat.module.css";
 
 export interface ChatTurnCardProps {
@@ -32,7 +38,7 @@ export interface ChatTurnCardProps {
   tapLiveBase: string;
   tapLiveTemplate: string;
   initialStatus?: string;
-  /** `history`：只读回放，按 turn 拉报告，不 poll 最新 task。Author: kejiqing */
+  /** `history`：终态只读回放；`queued`/`running` 始终走 live（poll + report SSE，多终端各自订阅）。Author: kejiqing */
   viewMode?: "live" | "history";
   hasReport?: boolean;
   /** 列表接口已带正文时跳过二次请求。Author: kejiqing */
@@ -73,8 +79,6 @@ function statusLabel(task: SolveTask): string {
   if (st === "cancelled") return "已取消";
   return st;
 }
-
-const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 
 function gatewayHostLabel(base: string): string {
   const t = base.trim();
@@ -134,15 +138,17 @@ export default function ChatTurnCard({
   initialWorkerExecUser,
 }: ChatTurnCardProps) {
   const { clusterPools } = useApp();
-  const historyMode = viewMode === "history";
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
+  const initialHistoryMode = isEffectiveHistoryTurnView(viewMode, initialStatus);
   const [task, setTask] = useState<SolveTask>({
     status: initialStatus,
-    hasReport: historyMode && (hasReport || Boolean(prefilledReport)),
-    currentTaskDesc: historyMode ? "历史记录" : "已提交",
+    hasReport: initialHistoryMode && (hasReport || Boolean(prefilledReport)),
+    currentTaskDesc: initialHistoryMode ? "历史记录" : "已提交",
     progressHistory: [],
   });
+  const turnStatus = task.status ?? initialStatus ?? "";
+  const historyMode = isEffectiveHistoryTurnView(viewMode, turnStatus);
   const effectiveCreatedAtMs = task.createdAtMs ?? createdAtMs;
   const effectiveFinishedAtMs = task.finishedAtMs ?? finishedAtMs;
   const wallMs =
@@ -159,27 +165,42 @@ export default function ChatTurnCard({
     historyMode && !prefilledReport
   );
   const [cancelLoading, setCancelLoading] = useState(false);
-  const reportOpened = useRef(false);
-  const reportStream = useBizReportStream(gatewayBase, sessionId, turnId, projId);
+  const {
+    text: streamText,
+    live: streamLive,
+    open: openReportStream,
+    close: closeReportStream,
+    waitForSettled,
+    reconcileReport,
+  } = useBizReportStream(gatewayBase, sessionId, turnId, projId);
+
+  // Live: connect report SSE on mount; do not wait for poll → running (user sees stream earlier).
+  useEffect(() => {
+    if (!shouldConnectLiveReportSse(viewMode, turnStatus)) return;
+    openReportStream();
+    return () => {
+      closeReportStream();
+    };
+  }, [viewMode, turnStatus, gatewayBase, sessionId, turnId, projId, openReportStream, closeReportStream]);
 
   useEffect(() => {
     const prefilled = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
+    const resetHistoryMode = isEffectiveHistoryTurnView(viewMode, initialStatus);
     setTask({
       status: initialStatus,
-      hasReport: historyMode && (hasReport || Boolean(prefilled)),
-      currentTaskDesc: historyMode ? "历史记录" : "已提交",
+      hasReport: resetHistoryMode && (hasReport || Boolean(prefilled)),
+      currentTaskDesc: resetHistoryMode ? "历史记录" : "已提交",
       progressHistory: [],
     });
     setErrorText(prefilledFailure);
     setFallbackOutput("");
     setHistoryReport(prefilled);
-    setHistoryReportLoading(historyMode && !prefilled && !prefilledFailure);
-    reportOpened.current = false;
+    setHistoryReportLoading(resetHistoryMode && !prefilled && !prefilledFailure);
   }, [
     sessionId,
     turnId,
     initialStatus,
-    historyMode,
+    viewMode,
     hasReport,
     initialHistoricalReport,
     initialFailureDetail,
@@ -257,31 +278,29 @@ export default function ChatTurnCard({
       while (!cancelled) {
         const t = await pollOnce();
         if (!t) break;
-        const terminal = TERMINAL.has(t.status || "");
-        if (
-          !reportOpened.current &&
-          (t.status === "running" || t.status === "queued")
-        ) {
-          reportOpened.current = true;
-          reportStream.open();
-        }
+        const terminal = isTerminalTurnStatus(t.status);
         if (terminal) {
           // Let pool/gateway send `biz.report.done` (full text) before cutting SSE.
-          await reportStream.waitForSettled(2500);
+          await waitForSettled(2500);
           if (t.result?.outputText) {
-            reportStream.reconcileReport(t.result.outputText);
+            reconcileReport(t.result.outputText);
+            const txt = extractSolveReportMessage(t.result.outputText);
+            if (txt) {
+              setHistoryReport(txt);
+              setHistoryReportLoading(false);
+            }
           }
-          reportStream.close();
+          closeReportStream();
           if (t.error) {
             setErrorText(JSON.stringify(t.error, null, 2));
           } else if (t.status === "succeeded" && t.result?.outputText) {
             const txt = extractSolveReportMessage(t.result.outputText);
-            if (!reportStream.text && txt) {
+            if (txt) {
               setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
             }
           } else if (!t.hasReport && t.result?.outputText) {
             const txt = extractSolveReportMessage(t.result.outputText);
-            if (!reportStream.text && txt) {
+            if (txt) {
               setFallbackOutput(txt.slice(0, 8000) + (txt.length > 8000 ? "\n…(截断)" : ""));
             }
           }
@@ -294,26 +313,40 @@ export default function ChatTurnCard({
 
     return () => {
       cancelled = true;
-      reportStream.close();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gatewayBase, taskId, historyMode]);
+  }, [gatewayBase, taskId, historyMode, waitForSettled, reconcileReport, closeReportStream]);
 
+  // Preserve streamed text when poll flips status to terminal before DB fetch completes.
+  useEffect(() => {
+    const merged = mergeStreamedIntoHistory(historyMode, historyReport, streamText);
+    if (merged) {
+      setHistoryReport(merged);
+      setHistoryReportLoading(false);
+    }
+  }, [historyMode, historyReport, streamText]);
+
+  const st = task.status || "unknown";
   const history = task.progressHistory || [];
-  const liveReportText = reportStream.text;
-  const reportText = historyMode ? historyReport : liveReportText;
-  const reportVisible = reportText.length > 0;
-  const reportStreaming = historyMode ? false : reportStream.live;
+  const reportView = deriveTurnCardReportView({
+    viewMode,
+    status: st,
+    historyReport,
+    streamText,
+    streamLive,
+    errorText,
+    historyReportLoading,
+  });
+  const { reportText, reportVisible, reportStreaming, showStreamingPlaceholder, showHistoryLoadingPlaceholder } =
+    reportView;
 
   useEffect(() => {
     setVisibleProgressCount((n) => (history.length > n ? history.length : n));
   }, [history.length]);
 
-  const st = task.status || "unknown";
   const canCancel = !historyMode && (st === "queued" || st === "running");
   const canFeedback =
     Boolean(onTurnFeedback) &&
-    (historyMode || TERMINAL.has(st)) &&
+    (historyMode || isTerminalTurnStatus(st)) &&
     (reportVisible || Boolean(fallbackOutput) || Boolean(errorText) || historyMode);
   const feedbackEditable = isAdminOrigin(clientOrigin);
   const showFeedback = canFeedback && (feedbackEditable || Boolean(turnFeedback));
@@ -331,7 +364,7 @@ export default function ChatTurnCard({
         status: res.status || "cancelled",
         currentTaskDesc: res.cancelApplied ? "已取消" : prev.currentTaskDesc,
       }));
-      reportStream.close();
+      closeReportStream();
       if (res.cancelApplied) {
         message.success("已取消该轮次");
       } else {
@@ -342,12 +375,16 @@ export default function ChatTurnCard({
     } finally {
       setCancelLoading(false);
     }
-  }, [gatewayBase, sessionId, turnId, projId, reportStream]);
+  }, [gatewayBase, sessionId, turnId, projId, closeReportStream]);
 
   const dotClass = [
     styles.dot,
     st === "queued" ? styles.pulseQueued : "",
-    st === "running" ? (task.hasReport ? styles.pulseReport : styles.pulseRunning) : "",
+    st === "running"
+      ? reportStreaming || task.hasReport
+        ? styles.pulseReport
+        : styles.pulseRunning
+      : "",
     st === "succeeded" ? styles.dotOk : "",
     st === "failed" || st === "cancelled" ? styles.dotErr : "",
   ]
@@ -547,8 +584,11 @@ export default function ChatTurnCard({
       )}
 
       <div className={styles.turnBody}>
-        {historyMode && historyReportLoading && !reportVisible && !errorText && (
+        {showHistoryLoadingPlaceholder && (
           <div className={styles.turnBodyPlaceholder}>加载报告中…</div>
+        )}
+        {showStreamingPlaceholder && (
+          <div className={styles.turnBodyPlaceholder}>报告流式生成中…</div>
         )}
         {reportVisible && (
           <div className={styles.section}>
