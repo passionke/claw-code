@@ -3,7 +3,8 @@
 #
 # Chain:
 # - Push tag refs/tags/release-v* → build + push claw-code, claw-gateway-worker,
-#   claw-gateway-worker-relaxed (FROM strict worker), claw-gateway-playground (same tag).
+#   claw-sandbox (host pool binary), claw-gateway-worker-relaxed (FROM strict worker),
+#   claw-gateway-playground (same tag).
 # - mirror-to-acr: pull GHCR tags → retag → push ACR (no second Rust compile).
 #
 # Optional repo/org Actions variable CONTAINER_BASE_REGISTRY (hostname only, no path):
@@ -32,6 +33,8 @@ jobs:
             dockerfile: deploy/stack/Containerfile.gateway-rs
           - package: claw-gateway-worker
             dockerfile: deploy/stack/Containerfile.gateway-worker
+          - package: claw-sandbox
+            dockerfile: deploy/stack/Containerfile.claw-sandbox
           - package: claw-gateway-playground
             dockerfile: deploy/stack/Containerfile.gateway-playground
     steps:
@@ -41,7 +44,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
 
       - name: Verify image rust/sandbox layout
-        if: matrix.package == 'claw-code' || matrix.package == 'claw-gateway-worker'
+        if: matrix.package == 'claw-code' || matrix.package == 'claw-gateway-worker' || matrix.package == 'claw-sandbox'
         run: bash deploy/stack/lib/verify-image-rust-layout.sh
 
       - name: Set up QEMU
@@ -194,6 +197,7 @@ jobs:
         package:
           - claw-code
           - claw-gateway-worker
+          - claw-sandbox
           - claw-gateway-worker-relaxed
           - claw-gateway-playground
     steps:

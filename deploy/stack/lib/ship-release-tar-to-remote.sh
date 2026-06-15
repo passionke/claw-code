@@ -40,6 +40,7 @@ GATEWAY_IMG="${PREFIX}/claw-code:${TAG}"
 WORKER_IMG="${PREFIX}/claw-gateway-worker:${TAG}"
 RELAXED_WORKER_IMG="${PREFIX}/claw-gateway-worker-relaxed:${TAG}"
 PLAYGROUND_IMG="${PREFIX}/claw-gateway-playground:${TAG}"
+SANDBOX_IMG="${PREFIX}/claw-sandbox:${TAG}"
 SAFE_TAG="${TAG//\//-}"
 TAR_NAME="claw-release-${SAFE_TAG}.tar"
 LOCAL_TAR="${CLAW_SHIP_TAR:-${ROOT_DIR}/deploy/stack/${TAR_NAME}}"
@@ -54,11 +55,13 @@ if [[ "${CLAW_SHIP_SKIP_SAVE:-0}" != "1" ]]; then
     "${CLI}" pull "${RELAXED_WORKER_IMG}"
     echo "pull ${PLAYGROUND_IMG} …"
     "${CLI}" pull "${PLAYGROUND_IMG}"
+    echo "pull ${SANDBOX_IMG} …"
+    "${CLI}" pull "${SANDBOX_IMG}"
   else
     echo "CLAW_SHIP_SKIP_PULL=1: assuming images already present locally"
   fi
   echo "save -> ${LOCAL_TAR}"
-  "${CLI}" save -o "${LOCAL_TAR}" "${GATEWAY_IMG}" "${WORKER_IMG}" "${RELAXED_WORKER_IMG}" "${PLAYGROUND_IMG}"
+  "${CLI}" save -o "${LOCAL_TAR}" "${GATEWAY_IMG}" "${WORKER_IMG}" "${RELAXED_WORKER_IMG}" "${PLAYGROUND_IMG}" "${SANDBOX_IMG}"
 else
   if [[ ! -f "${LOCAL_TAR}" ]]; then
     echo "error: CLAW_SHIP_SKIP_SAVE=1 but missing tar: ${LOCAL_TAR}" >&2
