@@ -1,20 +1,17 @@
 //! Integration: per-cluster LLM save → DB → runtime sync (no version history). Author: kejiqing
+//!
+//! Optional PG: skipped when `CLAW_GATEWAY_DATABASE_URL` unset or host unreachable.
+//! `rust-ci.yml` `cargo test --workspace` has **no** postgres service — must not hang.
 
 use std::sync::Arc;
 
 use http_gateway_rs::gateway_global_settings::{self, PutActiveLlmConfigInput, PutLlmModelInput};
 use http_gateway_rs::gateway_llm_config_sync;
-use http_gateway_rs::session_db::GatewaySessionDb;
+use http_gateway_rs::session_db::try_open_integration_database;
 use tokio::sync::RwLock;
-use tokio::time::{sleep, Duration, Instant};
 
 fn ensure_test_env(tmp: &std::path::Path) {
-    std::env::set_var(
-        "CLAW_GATEWAY_DATABASE_URL",
-        std::env::var("CLAW_GATEWAY_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://claw_gateway:clawGw9Dev_Pg@127.0.0.1:5433/claw_gateway".into()
-        }),
-    );
+    // Do not invent a default DB URL — CI has no PG on 127.0.0.1:5433.
     let test_cluster = format!("test-llm-{}", std::process::id());
     std::env::set_var("CLAW_CLUSTER_ID", &test_cluster);
     let claw_dir = tmp.join(".claw");
@@ -38,23 +35,12 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
     ensure_test_env(tmp.path());
     let test_cluster = std::env::var("CLAW_CLUSTER_ID").expect("CLAW_CLUSTER_ID");
 
-    // In CI the postgres service may not be ready yet; retry to avoid flaky `PoolTimedOut`.
-    // Remote GH actions can take longer to start Postgres than local runs.
-    let db_deadline = Instant::now() + Duration::from_secs(90);
-    let db = loop {
-        match GatewaySessionDb::open().await {
-            Ok(db) => break db,
-            Err(e) => {
-                if Instant::now() >= db_deadline {
-                    eprintln!("[global_llm_api] connect retry exhausted: {e}");
-                    eprintln!(
-                        "[global_llm_api] skip: no reachable PostgreSQL for CLAW_GATEWAY_DATABASE_URL"
-                    );
-                    return;
-                }
-                sleep(Duration::from_millis(1000)).await;
-            }
-        }
+    let Some(db) = try_open_integration_database().await else {
+        eprintln!(
+            "[global_llm_api] skip: PostgreSQL not configured or not reachable \
+             (CI has no PG service; local: gateway.sh pg-up + CLAW_GATEWAY_DATABASE_URL)"
+        );
+        return;
     };
 
     let _ = db.delete_llm_cluster_all(&test_cluster).await;

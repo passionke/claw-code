@@ -3433,13 +3433,46 @@ pub fn redact_database_url(url: &str) -> String {
     format!("{scheme}://{after_scheme}")
 }
 
+/// Integration / optional PG tests: `postgres://` host:port must accept TCP within `timeout`.
+pub fn pg_tcp_reachable(database_url: &str, timeout: std::time::Duration) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::str::FromStr;
+
+    use sqlx::postgres::PgConnectOptions;
+
+    let Ok(opts) = PgConnectOptions::from_str(database_url.trim()) else {
+        return false;
+    };
+    let host = opts.get_host();
+    let port = opts.get_port();
+    let Ok(mut addrs) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    addrs.any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
+}
+
+fn gateway_integration_database_url() -> Option<String> {
+    std::env::var("CLAW_GATEWAY_TEST_DATABASE_URL")
+        .or_else(|_| std::env::var("CLAW_GATEWAY_DATABASE_URL"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Open PG when configured and TCP-reachable; `None` → integration test should skip.
+/// GitHub `rust-ci.yml` has no `services.postgres` — do not block on sqlx connect retries.
+pub async fn try_open_integration_database() -> Option<GatewaySessionDb> {
+    let url = gateway_integration_database_url()?;
+    if !pg_tcp_reachable(&url, std::time::Duration::from_secs(2)) {
+        return None;
+    }
+    GatewaySessionDb::connect(&url).await.ok()
+}
+
 /// Test DB from `CLAW_GATEWAY_TEST_DATABASE_URL` or `CLAW_GATEWAY_DATABASE_URL`. Author: kejiqing
 #[cfg(test)]
 pub async fn connect_gateway_test_db() -> Option<GatewaySessionDb> {
-    let url = std::env::var("CLAW_GATEWAY_TEST_DATABASE_URL")
-        .or_else(|_| std::env::var("CLAW_GATEWAY_DATABASE_URL"))
-        .ok()?;
-    GatewaySessionDb::connect(url.trim()).await.ok()
+    try_open_integration_database().await
 }
 
 #[cfg(test)]
