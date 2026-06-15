@@ -117,24 +117,11 @@ pub async fn materialize_in(
         .await
         .map_err(|e| format!("load project_config: {e}"))?
     {
-        let orch = project_config_apply::solve_orchestration_marker_bytes(&row)
-            .map_err(|e| format!("solve-orchestration bytes proj {}: {e}", input.proj_id))?;
-        writes.push((
-            format!(
-                "{GUEST_WORK_ROOT}/{}",
-                project_config_apply::SOLVE_ORCHESTRATION_MARKER
-            ),
-            orch,
-        ));
-        let lang = project_config_apply::language_pipeline_marker_bytes(&row)
-            .map_err(|e| format!("language-pipeline bytes proj {}: {e}", input.proj_id))?;
-        writes.push((
-            format!(
-                "{GUEST_WORK_ROOT}/{}",
-                project_config_apply::LANGUAGE_PIPELINE_MARKER
-            ),
-            lang,
-        ));
+        for (path, bytes) in guest_session_marker_writes(&row)
+            .map_err(|e| format!("guest session markers proj {}: {e}", input.proj_id))?
+        {
+            writes.push((path, bytes));
+        }
     }
     for (path, bytes) in writes {
         if bytes.len() > SESSION_MANIFEST_MAX_BYTES {
@@ -249,6 +236,31 @@ pub async fn materialize_turn_via_sandbox(
         client
             .guest_write(slot_index, GuestVolume::SessionWorkspace, rel, &bytes)
             .await?;
+    }
+    if let Some(row) = db
+        .get_project_config(input.proj_id)
+        .await
+        .map_err(|e| format!("load project_config for session markers: {e}"))?
+    {
+        for (path, bytes) in guest_session_marker_writes(&row).map_err(|e| {
+            format!(
+                "guest session markers proj {} (sandbox): {e}",
+                input.proj_id
+            )
+        })? {
+            let rel = path
+                .strip_prefix(&format!("{GUEST_WORK_ROOT}/"))
+                .map(std::string::ToString::to_string)
+                .unwrap_or(path);
+            if bytes.len() > SESSION_MANIFEST_MAX_BYTES {
+                return Err(format!(
+                    "session marker {rel} exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+                ));
+            }
+            client
+                .guest_write(slot_index, GuestVolume::SessionWorkspace, &rel, &bytes)
+                .await?;
+        }
     }
     client.guest_lock_project_config(slot_index).await?;
     Ok(())
@@ -805,4 +817,100 @@ pub fn session_home_under_work_root(
         .join(format!("proj_{proj_id}"))
         .join("sessions")
         .join(seg)
+}
+
+/// PG project_config markers written under `/claw_host_root` each solve (pool `materialize_in`). Author: kejiqing
+pub fn guest_session_marker_writes(
+    row: &crate::session_db::ProjectConfigRow,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let orch = project_config_apply::solve_orchestration_marker_bytes(row)
+        .map_err(|e| format!("solve-orchestration: {e}"))?;
+    let lang = project_config_apply::language_pipeline_marker_bytes(row)
+        .map_err(|e| format!("language-pipeline: {e}"))?;
+    let preflight = project_config_apply::solve_preflight_marker_bytes(row)
+        .map_err(|e| format!("solve-preflight: {e}"))?;
+    Ok(vec![
+        (
+            format!(
+                "{GUEST_WORK_ROOT}/{}",
+                project_config_apply::SOLVE_ORCHESTRATION_MARKER
+            ),
+            orch,
+        ),
+        (
+            format!(
+                "{GUEST_WORK_ROOT}/{}",
+                project_config_apply::LANGUAGE_PIPELINE_MARKER
+            ),
+            lang,
+        ),
+        (
+            format!(
+                "{GUEST_WORK_ROOT}/{}",
+                project_config_apply::SOLVE_PREFLIGHT_MARKER
+            ),
+            preflight,
+        ),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_db::ProjectConfigRow;
+    use serde_json::{json, Value};
+
+    fn test_row(solve_preflight_json: Value) -> ProjectConfigRow {
+        ProjectConfigRow {
+            proj_id: 27,
+            content_rev: "rev-sync".into(),
+            stable_content_rev: Some("rev-sync".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json,
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
+        }
+    }
+
+    #[test]
+    fn guest_session_marker_writes_include_preflight_tombstone_when_pg_none() {
+        let writes =
+            guest_session_marker_writes(&test_row(json!({"kind": "none"}))).expect("marker writes");
+        let preflight = writes
+            .iter()
+            .find(|(path, _)| path.ends_with("solve-preflight.json"))
+            .expect("preflight write");
+        assert_eq!(
+            preflight.0,
+            "/claw_host_root/home/.claw/solve-preflight.json"
+        );
+        let parsed: Value = serde_json::from_slice(&preflight.1).expect("json");
+        assert_eq!(parsed.get("kinds").and_then(Value::as_array), Some(&vec![]));
+    }
+
+    #[test]
+    fn guest_session_marker_writes_include_sqlbot_preflight_when_enabled() {
+        let writes = guest_session_marker_writes(&test_row(json!({"kind": "sqlbot_mcp_start"})))
+            .expect("marker writes");
+        let preflight = writes
+            .iter()
+            .find(|(path, _)| path.ends_with("solve-preflight.json"))
+            .expect("preflight write");
+        let parsed: Value = serde_json::from_slice(&preflight.1).expect("json");
+        assert_eq!(
+            parsed.get("kinds").and_then(Value::as_array),
+            Some(&vec![json!("sqlbot_mcp_start")])
+        );
+    }
 }

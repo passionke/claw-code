@@ -374,6 +374,18 @@ pub fn git_excluded_home_relpaths(row: &ProjectConfigRow) -> Vec<PathBuf> {
     out
 }
 
+/// Bytes for `home/.claw/solve-preflight.json` from PG row (`{"kinds":[]}` when disabled). Author: kejiqing
+pub fn solve_preflight_marker_bytes(row: &ProjectConfigRow) -> ApplyResult<Vec<u8>> {
+    gateway_solve_turn::project_preflight::validate_solve_preflight_json(&row.solve_preflight_json)
+        .map_err(ProjectConfigApplyError::new)?;
+    serde_json::to_vec_pretty(
+        &gateway_solve_turn::project_preflight::materialize_solve_preflight_json(
+            &row.solve_preflight_json,
+        ),
+    )
+    .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-preflight: {e}")))
+}
+
 /// Bytes for `home/.claw/solve-orchestration.json` from PG row. Author: kejiqing
 pub fn solve_orchestration_marker_bytes(row: &ProjectConfigRow) -> ApplyResult<Vec<u8>> {
     gateway_solve_turn::project_orchestration::validate_solve_orchestration_json(
@@ -816,19 +828,9 @@ fn push_solve_preflight_write(
     out: &mut Vec<GuestMaterializeWrite>,
     row: &ProjectConfigRow,
 ) -> ApplyResult<()> {
-    gateway_solve_turn::project_preflight::validate_solve_preflight_json(&row.solve_preflight_json)
-        .map_err(ProjectConfigApplyError::new)?;
-    if !gateway_solve_turn::project_preflight::has_enabled_solve_preflight(
-        &row.solve_preflight_json,
-    ) {
-        return Ok(());
-    }
-    let bytes = serde_json::to_vec_pretty(
-        &gateway_solve_turn::project_preflight::materialize_solve_preflight_json(
-            &row.solve_preflight_json,
-        ),
-    )
-    .map_err(|e| ProjectConfigApplyError::new(format!("serialize solve-preflight: {e}")))?;
+    let bytes = solve_preflight_marker_bytes(row)?;
+    // Always materialize (including `{"kinds":[]}`) so pool solve does not fall back to stale
+    // `proj_*/home/.claw/solve-preflight.json` on the read-only `/claw_ds` bind.
     push_write(out, PathBuf::from(SOLVE_PREFLIGHT_MARKER), bytes);
     Ok(())
 }
@@ -875,6 +877,29 @@ async fn write_allowed_tools_marker(work_dir: &Path, row: &ProjectConfigRow) -> 
 mod tests {
     use super::*;
     use crate::session_db::ProjectConfigRow;
+
+    fn test_row(solve_preflight_json: Value) -> ProjectConfigRow {
+        ProjectConfigRow {
+            proj_id: 27,
+            content_rev: "rev-test".into(),
+            stable_content_rev: Some("rev-test".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json,
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
+        }
+    }
 
     #[test]
     fn git_excluded_paths_follow_db_config() {
@@ -1027,6 +1052,122 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(5)
         );
+    }
+
+    #[test]
+    fn build_guest_materialize_writes_includes_disabled_solve_preflight_tombstone() {
+        let row = ProjectConfigRow {
+            proj_id: 27,
+            content_rev: "rev-pf".into(),
+            stable_content_rev: Some("rev-pf".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
+        };
+        let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
+        let preflight = writes
+            .iter()
+            .find(|w| w.rel_path == PathBuf::from(SOLVE_PREFLIGHT_MARKER))
+            .expect("disabled preflight must still materialize tombstone");
+        let parsed: Value = serde_json::from_slice(&preflight.bytes).expect("json");
+        assert_eq!(parsed.get("kinds").and_then(Value::as_array), Some(&vec![]));
+    }
+
+    #[test]
+    fn solve_preflight_marker_bytes_enabled_sqlbot() {
+        let bytes = solve_preflight_marker_bytes(&test_row(json!({"kind": "sqlbot_mcp_start"})))
+            .expect("bytes");
+        let parsed: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            parsed.get("kinds").and_then(Value::as_array),
+            Some(&vec![json!("sqlbot_mcp_start")])
+        );
+    }
+
+    #[test]
+    fn solve_preflight_marker_bytes_disabled_matches_pg_kind_none() {
+        let bytes =
+            solve_preflight_marker_bytes(&test_row(json!({"kind": "none"}))).expect("bytes");
+        let parsed: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(parsed.get("kinds").and_then(Value::as_array), Some(&vec![]));
+    }
+
+    #[test]
+    fn build_guest_materialize_writes_enabled_solve_preflight() {
+        let writes = build_guest_materialize_writes(
+            &test_row(json!({"kinds": ["sqlbot_mcp_start"]})),
+            "scaffold",
+        )
+        .expect("writes");
+        let preflight = writes
+            .iter()
+            .find(|w| w.rel_path == PathBuf::from(SOLVE_PREFLIGHT_MARKER))
+            .expect("enabled preflight marker");
+        let parsed: Value = serde_json::from_slice(&preflight.bytes).expect("json");
+        assert_eq!(
+            parsed.get("kinds").and_then(Value::as_array),
+            Some(&vec![json!("sqlbot_mcp_start")])
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_if_needed_removes_stale_preflight_marker_when_disabled() {
+        let root =
+            std::env::temp_dir().join(format!("claw-apply-preflight-rm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root).await;
+        fs::create_dir_all(root.join("home/.claw"))
+            .await
+            .expect("mkdir");
+        fs::write(
+            root.join(SOLVE_PREFLIGHT_MARKER),
+            r#"{"kind":"sqlbot_mcp_start"}"#,
+        )
+        .await
+        .expect("stale marker");
+        apply_if_needed(&root, &test_row(json!({"kind": "none"})), true, "scaffold")
+            .await
+            .expect("apply");
+        assert!(
+            !root.join(SOLVE_PREFLIGHT_MARKER).exists(),
+            "host apply must delete stale solve-preflight.json when PG kind is none"
+        );
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn apply_if_needed_writes_preflight_marker_when_enabled() {
+        let root =
+            std::env::temp_dir().join(format!("claw-apply-preflight-wr-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root).await;
+        apply_if_needed(
+            &root,
+            &test_row(json!({"kind": "sqlbot_mcp_start"})),
+            true,
+            "scaffold",
+        )
+        .await
+        .expect("apply");
+        let raw = fs::read_to_string(root.join(SOLVE_PREFLIGHT_MARKER))
+            .await
+            .expect("marker file");
+        let parsed: Value = serde_json::from_str(&raw).expect("json");
+        assert_eq!(
+            parsed.get("kinds").and_then(Value::as_array),
+            Some(&vec![json!("sqlbot_mcp_start")])
+        );
+        let _ = fs::remove_dir_all(root).await;
     }
 
     #[tokio::test]

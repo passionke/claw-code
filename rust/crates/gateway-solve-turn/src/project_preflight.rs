@@ -86,23 +86,45 @@ pub fn has_enabled_solve_preflight(value: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn parse_solve_preflight_file(path: &Path) -> Option<SolvePreflightConfig> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&raw).ok()?;
-    let cfg = parse_solve_preflight_value(&value).ok()?;
-    if cfg.kinds.is_empty() {
-        return None;
-    }
-    Some(cfg)
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SolvePreflightFileState {
+    /// Marker missing; caller may fall back to project config root.
+    Missing,
+    /// PG/materialize wrote `{"kinds":[]}` — preflight explicitly off for this solve.
+    Disabled,
+    Enabled(SolvePreflightConfig),
 }
 
+fn read_solve_preflight_file_state(path: &Path) -> SolvePreflightFileState {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return SolvePreflightFileState::Missing;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return SolvePreflightFileState::Missing;
+    };
+    let Ok(cfg) = parse_solve_preflight_value(&value) else {
+        return SolvePreflightFileState::Missing;
+    };
+    if cfg.kinds.is_empty() {
+        SolvePreflightFileState::Disabled
+    } else {
+        SolvePreflightFileState::Enabled(cfg)
+    }
+}
+
+/// Session-local marker wins; empty `kinds` blocks fallback to stale `/claw_ds` files. Author: kejiqing
 fn resolve_solve_preflight_config(session_home: &Path) -> Option<SolvePreflightConfig> {
     let session_mounted = session_home.join(SOLVE_PREFLIGHT_CONFIG_REL);
-    if let Some(cfg) = parse_solve_preflight_file(&session_mounted) {
-        return Some(cfg);
+    match read_solve_preflight_file_state(&session_mounted) {
+        SolvePreflightFileState::Disabled => return None,
+        SolvePreflightFileState::Enabled(cfg) => return Some(cfg),
+        SolvePreflightFileState::Missing => {}
     }
     let config_root = runtime::gateway_project_config_root(session_home);
-    parse_solve_preflight_file(&config_root.join(SOLVE_PREFLIGHT_CONFIG_REL))
+    match read_solve_preflight_file_state(&config_root.join(SOLVE_PREFLIGHT_CONFIG_REL)) {
+        SolvePreflightFileState::Enabled(cfg) => Some(cfg),
+        SolvePreflightFileState::Disabled | SolvePreflightFileState::Missing => None,
+    }
 }
 
 /// Whether configured preflight steps are already reflected in the session transcript.
@@ -207,7 +229,12 @@ mod tests {
         let cfg_path = root.join(SOLVE_PREFLIGHT_CONFIG_REL);
         fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
         fs::write(&cfg_path, r#"{"kind":"sqlbot_mcp_start"}"#).unwrap();
+        let prev = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
+        std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
         let cfg = resolve_solve_preflight_config(&session_home).expect("config");
+        if let Some(p) = prev {
+            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
+        }
         assert_eq!(cfg.kinds, vec!["sqlbot_mcp_start".to_string()]);
         let _ = fs::remove_dir_all(&root);
     }
@@ -230,6 +257,99 @@ mod tests {
             &json!({"kind":"sqlbot_mcp_start"})
         ));
         assert!(!has_enabled_solve_preflight(&json!({"kind":"none"})));
+        assert!(!has_enabled_solve_preflight(&json!({"kinds":[]})));
+    }
+
+    #[test]
+    fn materialize_kind_none_writes_empty_kinds_array() {
+        assert_eq!(
+            materialize_solve_preflight_json(&json!({"kind": "none"})),
+            json!({"kinds": []})
+        );
+        assert_eq!(
+            materialize_solve_preflight_json(&json!({"kinds": ["none"]})),
+            json!({"kinds": []})
+        );
+    }
+
+    #[test]
+    fn materialize_legacy_sqlbot_kind() {
+        assert_eq!(
+            materialize_solve_preflight_json(&json!({"kind": "sqlbot_mcp_start"})),
+            json!({"kinds": ["sqlbot_mcp_start"]})
+        );
+    }
+
+    #[test]
+    fn resolve_config_root_disabled_tombstone_returns_none() {
+        let root = std::env::temp_dir().join(format!("claw-preflight-off-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let session_home = root.join("sessions").join("sess-off");
+        fs::create_dir_all(session_home.join(".claw")).unwrap();
+        let cfg_path = root.join(SOLVE_PREFLIGHT_CONFIG_REL);
+        fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        fs::write(&cfg_path, r#"{"kinds":[]}"#).unwrap();
+        assert!(
+            resolve_solve_preflight_config(&session_home).is_none(),
+            "empty kinds on config root must not enable preflight"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_session_enabled_wins_over_config_root() {
+        let root = std::env::temp_dir().join(format!("claw-preflight-pri-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let session_home = root.join("sessions").join("sess-pri");
+        fs::create_dir_all(session_home.join("home/.claw")).unwrap();
+        fs::write(
+            session_home.join(SOLVE_PREFLIGHT_CONFIG_REL),
+            r#"{"kinds":["sqlbot_mcp_start"]}"#,
+        )
+        .unwrap();
+        let cfg_path = root.join(SOLVE_PREFLIGHT_CONFIG_REL);
+        fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        fs::write(&cfg_path, r#"{"kinds":[]}"#).unwrap();
+        let cfg = resolve_solve_preflight_config(&session_home).expect("session wins");
+        assert_eq!(cfg.kinds, vec!["sqlbot_mcp_start".to_string()]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// End-to-end pool fix: PG `kind:none` → materialized tombstone → no preflight despite stale `/claw_ds`.
+    #[test]
+    fn pool_pg_none_materialized_tombstone_skips_preflight() {
+        let ds_root =
+            std::env::temp_dir().join(format!("claw-preflight-pool-fix-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&ds_root);
+        let session_home = ds_root
+            .parent()
+            .unwrap()
+            .join(format!("sess-pool-fix-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&session_home);
+        fs::create_dir_all(ds_root.join("home/.claw")).unwrap();
+        fs::write(
+            ds_root.join(SOLVE_PREFLIGHT_CONFIG_REL),
+            r#"{"kind":"sqlbot_mcp_start"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(session_home.join("home/.claw")).unwrap();
+        let tombstone = materialize_solve_preflight_json(&json!({"kind": "none"}));
+        fs::write(
+            session_home.join(SOLVE_PREFLIGHT_CONFIG_REL),
+            serde_json::to_string(&tombstone).expect("tombstone json"),
+        )
+        .unwrap();
+        let prev = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
+        std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", &ds_root);
+        assert!(resolve_solve_preflight_config(&session_home).is_none());
+        assert!(preflight_satisfied(&session_home, &Session::new()));
+        if let Some(p) = prev {
+            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
+        } else {
+            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        }
+        let _ = fs::remove_dir_all(&ds_root);
+        let _ = fs::remove_dir_all(&session_home);
     }
 
     #[test]
@@ -246,5 +366,75 @@ mod tests {
         let session = Session::new();
         assert!(!preflight_satisfied(&session_home, &session));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Pool bug: PG `kind:none` but stale `/claw_ds` marker still enabled preflight when session
+    /// home was wiped each solve and `materialize_in` did not write a tombstone. Author: kejiqing
+    #[test]
+    fn stale_claw_ds_preflight_blocked_by_session_disabled_marker() {
+        let ds_root =
+            std::env::temp_dir().join(format!("claw-preflight-stale-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&ds_root);
+        let session_home = ds_root
+            .parent()
+            .unwrap()
+            .join(format!("sess-stale-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&session_home);
+        fs::create_dir_all(ds_root.join("home/.claw")).unwrap();
+        fs::write(
+            ds_root.join(SOLVE_PREFLIGHT_CONFIG_REL),
+            r#"{"kind":"sqlbot_mcp_start"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(session_home.join("home/.claw")).unwrap();
+        fs::write(
+            session_home.join(SOLVE_PREFLIGHT_CONFIG_REL),
+            r#"{"kinds":[]}"#,
+        )
+        .unwrap();
+        let prev = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
+        std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", &ds_root);
+        assert!(
+            resolve_solve_preflight_config(&session_home).is_none(),
+            "session tombstone must block stale /claw_ds preflight"
+        );
+        if let Some(p) = prev {
+            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
+        } else {
+            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        }
+        let _ = fs::remove_dir_all(&ds_root);
+        let _ = fs::remove_dir_all(&session_home);
+    }
+
+    #[test]
+    fn stale_claw_ds_preflight_used_when_session_marker_missing() {
+        let ds_root =
+            std::env::temp_dir().join(format!("claw-preflight-miss-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&ds_root);
+        let session_home = ds_root
+            .parent()
+            .unwrap()
+            .join(format!("sess-miss-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&session_home);
+        fs::create_dir_all(ds_root.join("home/.claw")).unwrap();
+        fs::write(
+            ds_root.join(SOLVE_PREFLIGHT_CONFIG_REL),
+            r#"{"kind":"sqlbot_mcp_start"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(session_home.join(".claw")).unwrap();
+        let prev = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
+        std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", &ds_root);
+        let cfg = resolve_solve_preflight_config(&session_home)
+            .expect("falls back to /claw_ds when session marker absent");
+        assert_eq!(cfg.kinds, vec!["sqlbot_mcp_start".to_string()]);
+        if let Some(p) = prev {
+            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
+        } else {
+            std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
+        }
+        let _ = fs::remove_dir_all(&ds_root);
+        let _ = fs::remove_dir_all(&session_home);
     }
 }
