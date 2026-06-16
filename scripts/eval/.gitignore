@@ -1,6 +1,10 @@
-# Eval run output — never commit (see repo root .gitignore). Author: kejiqing
+# Eval question banks + run artifacts — local only, never commit. Author: kejiqing
+**/questions.json
 **/cases/
-**/scored/
-**/results/
+**/cases-*/
 **/cases.bak-*/
+**/scored/
+**/scored-*/
+**/results/
+**/results-*/
 **/*.log

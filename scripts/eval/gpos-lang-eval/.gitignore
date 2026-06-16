@@ -1,7 +1,1 @@
-cases/
-cases.bak-*/
-cases-pre-*/
-scored/
-scored-pre-*/
-results/
-results-pre-*/
+# See scripts/eval/.gitignore — question bank and run JSON stay local.
