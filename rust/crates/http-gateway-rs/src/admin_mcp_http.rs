@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::gateway_admin_mcp_token::{extract_bearer_token, verify_admin_mcp_token};
 use crate::project_config_draft;
-use crate::session_db::{GatewaySessionDb, ProjectConfigUpsert};
+use crate::session_db::{GatewaySessionDb, ProjectConfigRow, ProjectConfigUpsert};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SERVER_NAME: &str = "claw-gateway-admin";
@@ -41,6 +41,38 @@ struct JsonRpcErrorObj {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<Value>,
+}
+
+/// CLAUDE.md field update for draft patch.
+enum ClaudeMdPatch<'a> {
+    Unchanged,
+    Clear,
+    Set(&'a str),
+}
+
+/// Fields to replace on the open `__draft__` row; omitted fields are copied from current draft/base.
+struct DraftPatch<'a> {
+    claude_md: ClaudeMdPatch<'a>,
+    rules_json: Option<&'a Value>,
+    mcp_servers_json: Option<&'a Value>,
+    skills_json: Option<&'a Value>,
+}
+
+impl Default for ClaudeMdPatch<'_> {
+    fn default() -> Self {
+        Self::Unchanged
+    }
+}
+
+impl Default for DraftPatch<'_> {
+    fn default() -> Self {
+        Self {
+            claude_md: ClaudeMdPatch::Unchanged,
+            rules_json: None,
+            mcp_servers_json: None,
+            skills_json: None,
+        }
+    }
 }
 
 pub async fn handle_admin_mcp_post(
@@ -117,45 +149,199 @@ fn handle_initialize(params: Option<&Value>) -> Value {
     })
 }
 
+fn tool_def(name: &str, description: &str, properties: &Value, required: &[&str]) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "properties": properties,
+            "required": required
+        }
+    })
+}
+
+fn proj_id_only_tool(name: &str, description: &str) -> Value {
+    tool_def(
+        name,
+        description,
+        &json!({ "projId": { "type": "integer", "description": "Project id" } }),
+        &["projId"],
+    )
+}
+
 fn tools_list_result() -> Value {
     json!({
         "tools": [
-            {
-                "name": "project_config_get",
-                "description": "Read project_config row for projId (draft when open, else active).",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "projId": { "type": "integer", "description": "Project id" }
-                    },
-                    "required": ["projId"]
-                }
-            },
-            {
-                "name": "project_claude_get",
-                "description": "Read CLAUDE.md content from project_config.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "projId": { "type": "integer" }
-                    },
-                    "required": ["projId"]
-                }
-            },
-            {
-                "name": "project_claude_put_draft",
-                "description": "Write claudeMd into open draft (__draft__); does not activate.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "projId": { "type": "integer" },
-                        "content": { "type": "string" }
-                    },
-                    "required": ["projId", "content"]
-                }
-            }
+            tool_def(
+                "project_config_get",
+                "Read project_config row for projId (draft when open, else effective formal).",
+                &json!({ "projId": { "type": "integer", "description": "Project id" } }),
+                &["projId"],
+            ),
+            proj_id_only_tool(
+                "project_claude_get",
+                "Read CLAUDE.md content from project_config.",
+            ),
+            tool_def(
+                "project_claude_put_draft",
+                "Write claudeMd into open draft (__draft__); does not activate.",
+                &json!({
+                    "projId": { "type": "integer" },
+                    "content": { "type": "string" }
+                }),
+                &["projId", "content"],
+            ),
+            proj_id_only_tool(
+                "project_rules_get",
+                "Read rulesJson array from project_config.",
+            ),
+            tool_def(
+                "project_rules_put_draft",
+                "Write rulesJson into open draft (__draft__); does not activate. Items: relativePath, content, optional enabled.",
+                &json!({
+                    "projId": { "type": "integer" },
+                    "rulesJson": { "type": "array" }
+                }),
+                &["projId", "rulesJson"],
+            ),
+            proj_id_only_tool(
+                "project_mcp_get",
+                "Read mcpServersJson object from project_config (solve MCP servers, not this admin MCP endpoint).",
+            ),
+            tool_def(
+                "project_mcp_put_draft",
+                "Write mcpServersJson into open draft (__draft__); does not activate.",
+                &json!({
+                    "projId": { "type": "integer" },
+                    "mcpServersJson": { "type": "object" }
+                }),
+                &["projId", "mcpServersJson"],
+            ),
+            proj_id_only_tool(
+                "project_skills_get",
+                "Read skillsJson array from project_config.",
+            ),
+            tool_def(
+                "project_skills_put_draft",
+                "Write skillsJson into open draft (__draft__); does not activate. Items: skillName, skillContent, optional enabled.",
+                &json!({
+                    "projId": { "type": "integer" },
+                    "skillsJson": { "type": "array" }
+                }),
+                &["projId", "skillsJson"],
+            ),
         ]
     })
+}
+
+async fn row_for_editing_or_err(
+    db: &GatewaySessionDb,
+    proj_id: i64,
+) -> Result<ProjectConfigRow, String> {
+    project_config_draft::row_for_editing(db, proj_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("project_config not found for projId={proj_id}"))
+}
+
+async fn upsert_project_draft(
+    db: &GatewaySessionDb,
+    proj_id: i64,
+    patch: DraftPatch<'_>,
+) -> Result<(), String> {
+    project_config_draft::ensure_draft(db, proj_id)
+        .await
+        .map_err(|e| e.message)?;
+    let existing = db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("project_config not found for projId={proj_id}"))?;
+    let effective = project_config_draft::effective_formal_rev(&existing)
+        .map_err(|e| e.message)?
+        .to_string();
+    let claude_md = match patch.claude_md {
+        ClaudeMdPatch::Unchanged => existing.claude_md.as_deref(),
+        ClaudeMdPatch::Clear => None,
+        ClaudeMdPatch::Set(s) => Some(s),
+    };
+    let rules_json = patch.rules_json.unwrap_or(&existing.rules_json);
+    let mcp_servers_json = patch.mcp_servers_json.unwrap_or(&existing.mcp_servers_json);
+    let skills_json = patch.skills_json.unwrap_or(&existing.skills_json);
+    let now = now_ms();
+    let upsert = ProjectConfigUpsert {
+        proj_id,
+        content_rev: project_config_draft::DRAFT_CONTENT_REV,
+        stable_content_rev: Some(effective.as_str()),
+        draft_open: true,
+        updated_at_ms: now,
+        rules_json,
+        mcp_servers_json,
+        skills_sources_json: &existing.skills_sources_json,
+        skills_json,
+        allowed_tools_json: &existing.allowed_tools_json,
+        claude_md,
+        git_sync_json: &existing.git_sync_json,
+        solve_preflight_json: &existing.solve_preflight_json,
+        solve_orchestration_json: &existing.solve_orchestration_json,
+        language_pipeline_json: &existing.language_pipeline_json,
+        extra_session_fields_json: &existing.extra_session_fields_json,
+        prompt_limits_json: &existing.prompt_limits_json,
+        worker_isolation_json: &existing.worker_isolation_json,
+    };
+    db.upsert_project_config(upsert)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn validate_rules_json(v: &Value) -> Result<(), String> {
+    if !v.is_array() {
+        return Err("rulesJson must be a JSON array".to_string());
+    }
+    Ok(())
+}
+
+fn validate_mcp_servers_json(v: &Value) -> Result<(), String> {
+    if !v.is_object() {
+        return Err("mcpServersJson must be a JSON object".to_string());
+    }
+    Ok(())
+}
+
+fn validate_skill_name(skill_name: &str) -> Result<(), String> {
+    if skill_name.trim().is_empty() {
+        return Err("skillName cannot be empty".to_string());
+    }
+    if skill_name
+        .chars()
+        .any(|ch| !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.'))
+    {
+        return Err("skillName only allows [a-zA-Z0-9._-]".to_string());
+    }
+    Ok(())
+}
+
+fn validate_skills_json(v: &Value) -> Result<(), String> {
+    let arr = v
+        .as_array()
+        .ok_or_else(|| "skillsJson must be a JSON array".to_string())?;
+    for (i, item) in arr.iter().enumerate() {
+        let obj = item
+            .as_object()
+            .ok_or_else(|| format!("skillsJson[{i}] must be a JSON object"))?;
+        let name = obj
+            .get("skillName")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("skillsJson[{i}] missing skillName"))?;
+        validate_skill_name(name)?;
+        if !obj.contains_key("skillContent") {
+            return Err(format!("skillsJson[{i}] missing skillContent"));
+        }
+    }
+    Ok(())
 }
 
 async fn handle_tools_call(db: &GatewaySessionDb, params: Option<Value>) -> Result<Value, String> {
@@ -175,11 +361,7 @@ async fn handle_tools_call(db: &GatewaySessionDb, params: Option<Value>) -> Resu
 
     match name {
         "project_config_get" => {
-            let row = db
-                .get_project_config(proj_id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("project_config not found for projId={proj_id}"))?;
+            let row = row_for_editing_or_err(db, proj_id).await?;
             let payload = json!({
                 "projId": row.proj_id,
                 "contentRev": row.content_rev,
@@ -194,14 +376,31 @@ async fn handle_tools_call(db: &GatewaySessionDb, params: Option<Value>) -> Resu
             Ok(tool_text_result(&payload))
         }
         "project_claude_get" => {
-            let row = db
-                .get_project_config(proj_id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("project_config not found for projId={proj_id}"))?;
+            let row = row_for_editing_or_err(db, proj_id).await?;
             Ok(tool_text_result(&json!({
                 "projId": proj_id,
                 "content": row.claude_md.unwrap_or_default()
+            })))
+        }
+        "project_rules_get" => {
+            let row = row_for_editing_or_err(db, proj_id).await?;
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "rulesJson": row.rules_json
+            })))
+        }
+        "project_mcp_get" => {
+            let row = row_for_editing_or_err(db, proj_id).await?;
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "mcpServersJson": row.mcp_servers_json
+            })))
+        }
+        "project_skills_get" => {
+            let row = row_for_editing_or_err(db, proj_id).await?;
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "skillsJson": row.skills_json
             })))
         }
         "project_claude_put_draft" => {
@@ -209,50 +408,87 @@ async fn handle_tools_call(db: &GatewaySessionDb, params: Option<Value>) -> Resu
                 .get("content")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "arguments.content required".to_string())?;
-            project_config_draft::ensure_draft(db, proj_id)
-                .await
-                .map_err(|e| e.message)?;
-            let existing = db
-                .get_project_config(proj_id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("project_config not found for projId={proj_id}"))?;
-            let effective = project_config_draft::effective_formal_rev(&existing)
-                .map_err(|e| e.message)?
-                .to_string();
-            let now = now_ms();
             let claude_md = if content.trim().is_empty() {
-                None
+                ClaudeMdPatch::Clear
             } else {
-                Some(content.to_string())
+                ClaudeMdPatch::Set(content)
             };
-            let upsert = ProjectConfigUpsert {
+            upsert_project_draft(
+                db,
                 proj_id,
-                content_rev: project_config_draft::DRAFT_CONTENT_REV,
-                stable_content_rev: Some(effective.as_str()),
-                draft_open: true,
-                updated_at_ms: now,
-                rules_json: &existing.rules_json,
-                mcp_servers_json: &existing.mcp_servers_json,
-                skills_sources_json: &existing.skills_sources_json,
-                skills_json: &existing.skills_json,
-                allowed_tools_json: &existing.allowed_tools_json,
-                claude_md: claude_md.as_deref(),
-                git_sync_json: &existing.git_sync_json,
-                solve_preflight_json: &existing.solve_preflight_json,
-                solve_orchestration_json: &existing.solve_orchestration_json,
-                language_pipeline_json: &existing.language_pipeline_json,
-                extra_session_fields_json: &existing.extra_session_fields_json,
-                prompt_limits_json: &existing.prompt_limits_json,
-                worker_isolation_json: &existing.worker_isolation_json,
-            };
-            db.upsert_project_config(upsert)
-                .await
-                .map_err(|e| e.to_string())?;
+                DraftPatch {
+                    claude_md,
+                    ..Default::default()
+                },
+            )
+            .await?;
             Ok(tool_text_result(&json!({
                 "projId": proj_id,
                 "updated": true,
                 "bytes": content.len()
+            })))
+        }
+        "project_rules_put_draft" => {
+            let rules_json = args
+                .get("rulesJson")
+                .ok_or_else(|| "arguments.rulesJson required".to_string())?;
+            validate_rules_json(rules_json)?;
+            upsert_project_draft(
+                db,
+                proj_id,
+                DraftPatch {
+                    rules_json: Some(rules_json),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let count = rules_json.as_array().map_or(0, |a| a.len());
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "updated": true,
+                "ruleCount": count
+            })))
+        }
+        "project_mcp_put_draft" => {
+            let mcp_servers_json = args
+                .get("mcpServersJson")
+                .ok_or_else(|| "arguments.mcpServersJson required".to_string())?;
+            validate_mcp_servers_json(mcp_servers_json)?;
+            upsert_project_draft(
+                db,
+                proj_id,
+                DraftPatch {
+                    mcp_servers_json: Some(mcp_servers_json),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let count = mcp_servers_json.as_object().map_or(0, |o| o.len());
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "updated": true,
+                "mcpServerCount": count
+            })))
+        }
+        "project_skills_put_draft" => {
+            let skills_json = args
+                .get("skillsJson")
+                .ok_or_else(|| "arguments.skillsJson required".to_string())?;
+            validate_skills_json(skills_json)?;
+            upsert_project_draft(
+                db,
+                proj_id,
+                DraftPatch {
+                    skills_json: Some(skills_json),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let count = skills_json.as_array().map_or(0, |a| a.len());
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "updated": true,
+                "skillCount": count
             })))
         }
         other => Err(format!("unknown tool: {other}")),
@@ -326,8 +562,20 @@ fn mcp_auth_error_response(message: &str) -> Response {
 mod tests {
     use super::*;
 
+    const REQUIRED_TOOLS: &[&str] = &[
+        "project_config_get",
+        "project_claude_get",
+        "project_claude_put_draft",
+        "project_rules_get",
+        "project_rules_put_draft",
+        "project_mcp_get",
+        "project_mcp_put_draft",
+        "project_skills_get",
+        "project_skills_put_draft",
+    ];
+
     #[test]
-    fn tools_list_has_project_config_get() {
+    fn tools_list_includes_required_project_config_tools() {
         let v = tools_list_result();
         let names: Vec<_> = v["tools"]
             .as_array()
@@ -335,6 +583,15 @@ mod tests {
             .iter()
             .filter_map(|t| t.get("name").and_then(Value::as_str))
             .collect();
-        assert!(names.contains(&"project_config_get"));
+        for expected in REQUIRED_TOOLS {
+            assert!(names.contains(expected), "missing tool {expected}");
+        }
+        assert_eq!(names.len(), REQUIRED_TOOLS.len());
+    }
+
+    #[test]
+    fn validate_skills_json_rejects_missing_skill_name() {
+        let err = validate_skills_json(&json!([{ "skillContent": "x" }])).unwrap_err();
+        assert!(err.contains("skillName"));
     }
 }
