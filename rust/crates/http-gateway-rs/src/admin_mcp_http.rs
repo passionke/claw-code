@@ -177,6 +177,10 @@ fn proj_id_only_tool(name: &str, description: &str) -> Value {
 fn tools_list_result() -> Value {
     json!({
         "tools": [
+            proj_id_only_tool(
+                "project_config_get",
+                "Read full project_config row for projId (draft when open, else effective formal).",
+            ),
             tool_def(
                 "project_config_put_draft",
                 "Write claudeMd / rulesJson / mcpServersJson / skillsJson into open draft; pass at least one field.",
@@ -456,6 +460,21 @@ async fn handle_tools_call(
         .ok_or_else(|| "arguments.projId required".to_string())?;
 
     match name {
+        "project_config_get" => {
+            let row = row_for_editing_or_err(db, proj_id).await?;
+            let payload = json!({
+                "projId": row.proj_id,
+                "contentRev": row.content_rev,
+                "stableContentRev": row.stable_content_rev,
+                "draftOpen": row.draft_open,
+                "claudeMd": row.claude_md,
+                "rulesJson": row.rules_json,
+                "skillsJson": row.skills_json,
+                "mcpServersJson": row.mcp_servers_json,
+                "allowedToolsJson": row.allowed_tools_json,
+            });
+            Ok(tool_text_result(&payload))
+        }
         "project_config_put_draft" => {
             let patch = parse_config_put_draft_patch(&args)?;
             upsert_project_draft(db, proj_id, patch).await?;
@@ -687,6 +706,7 @@ mod tests {
     use super::*;
 
     const REQUIRED_TOOLS: &[&str] = &[
+        "project_config_get",
         "project_config_put_draft",
         "project_config_commit_draft",
         "project_config_activate",
