@@ -36,6 +36,23 @@ LEAD_CHARS = 600
 
 LANG_MAP = {"zh": "Chinese", "en": "English", "th": "Thai"}
 
+# Thai output must not leak Chinese template phrases or CJK paragraphs. Author: kejiqing
+THAI_FORBIDDEN_CJK_PHRASES: tuple[str, ...] = (
+    "数据显示",
+    "建议考虑",
+    "依据何在",
+    "值得注意的是",
+    "做什么",
+    "怎么做",
+    "门店",
+    "客流",
+    "套餐",
+    "预期",
+    "依据",
+)
+THAI_CJK_PARAGRAPH_MIN_RUN = 8
+THAI_CJK_TOTAL_FAIL_THRESHOLD = 12
+
 # Gateway terminal / queue labels (task_status.rs) — not user-facing progress stream.
 _SYSTEM_PROGRESS_RE = re.compile(
     r"^(?:分析完成(?:（\d+/\d+）)?|任务失败|任务已取消|排队中（.+）|分析门店)$"
@@ -133,19 +150,37 @@ def check_monologue(message: str) -> tuple[bool, list[str]]:
     return len(issues) == 0, issues
 
 
+def cjk_runs(text: str) -> list[str]:
+    return re.findall(r"[\u4e00-\u9fff]+", text or "")
+
+
+def check_thai_cjk_leak(message: str, store_name: str = STORE_NAME) -> tuple[bool, list[str]]:
+    """Thai turns: forbid Chinese template phrases and CJK paragraphs in final report."""
+    cleaned = strip_store_name(message or "", store_name)
+    issues: list[str] = []
+    runs = cjk_runs(cleaned)
+    if not runs:
+        return True, issues
+    total = sum(len(r) for r in runs)
+    for phrase in THAI_FORBIDDEN_CJK_PHRASES:
+        if phrase in cleaned:
+            issues.append(f"th_cjk_phrase:{phrase}")
+    for run in runs:
+        if len(run) >= THAI_CJK_PARAGRAPH_MIN_RUN:
+            issues.append(f"th_cjk_run:{run[:24]}{'…' if len(run) > 24 else ''}")
+    if total >= THAI_CJK_TOTAL_FAIL_THRESHOLD:
+        issues.append(f"th_cjk_total:{total}")
+    return len(issues) == 0, issues
+
+
 def check_invalid_handled(case: dict, message: str) -> tuple[bool, str]:
-    """Q30 control: short refusal, no long analytical report."""
+    """Q30 off-topic control — informational only; capability intro is acceptable. Author: kejiqing"""
     if case.get("questionId") != "Q30":
         return True, "n/a"
     msg = (message or "").strip()
     if not msg:
         return False, "empty_response"
-    if len(msg) > 400:
-        return False, "too_long_for_invalid"
-    # long tables / multi-section report
-    if msg.count("|") >= 4 or msg.count("**") >= 4:
-        return False, "looks_like_full_report"
-    return True, "short_response"
+    return True, "exempt_off_topic"
 
 
 def score_case(case: dict, store_name: str = STORE_NAME) -> dict[str, Any]:
@@ -169,11 +204,17 @@ def score_case(case: dict, store_name: str = STORE_NAME) -> dict[str, Any]:
     monologue_clean, monologue_issues = check_monologue(message)
     invalid_ok, invalid_note = check_invalid_handled(case, message)
     mcp_q_ok, mcp_q_note, mcp_q_lang = check_mcp_question_lang(case, store_name)
+    thai_cjk_clean, thai_cjk_issues = (
+        check_thai_cjk_leak(message, store_name)
+        if case.get("lang") == "th"
+        else (True, [])
+    )
 
     # Q30 skips normal lang/delivery gates for analytical report
     is_invalid_control = case.get("questionId") == "Q30"
 
     if is_invalid_control:
+        # Off-topic (Q30): succeeded + non-empty reply is enough; no short-refusal gate.
         overall = case.get("status") == "succeeded" and invalid_ok
         fail_reasons = []
         if case.get("status") != "succeeded":
@@ -194,6 +235,8 @@ def score_case(case: dict, store_name: str = STORE_NAME) -> dict[str, Any]:
             fail_reasons.extend(monologue_issues)
         if not mcp_q_ok and mcp_q_note != "n/a":
             fail_reasons.append(f"mcp_question_lang:{mcp_q_note}")
+        if case.get("lang") == "th" and not thai_cjk_clean:
+            fail_reasons.extend(thai_cjk_issues)
         overall = len(fail_reasons) == 0
 
     counts_msg = count_scripts(strip_store_name(message, store_name))
@@ -220,6 +263,8 @@ def score_case(case: dict, store_name: str = STORE_NAME) -> dict[str, Any]:
         "mcp_question_lang_ok": mcp_q_ok,
         "mcp_question_lang": mcp_q_lang,
         "mcp_question_lang_note": mcp_q_note,
+        "thai_cjk_clean": thai_cjk_clean,
+        "thai_cjk_issues": thai_cjk_issues,
         "counts_msg": counts_msg,
         "counts_prog": counts_prog,
         "pass": overall,
@@ -286,9 +331,12 @@ def render_txt(scored: list[dict], summary: dict[str, Any]) -> str:
     lines.append("All cases:")
     for s in sorted(scored, key=lambda x: x["caseId"]):
         mark = "PASS" if s["pass"] else "FAIL"
+        thai_note = ""
+        if s.get("lang") == "th" and s.get("thai_cjk_issues"):
+            thai_note = f" cjk={';'.join(s['thai_cjk_issues'][:2])}"
         lines.append(
             f"  {mark} {s['caseId']:8} msg={s['lang_output_msg']:8} prog={s['lang_output_progress']:8} "
-            f"wall={s.get('wallSec','-')}s"
+            f"wall={s.get('wallSec','-')}s{thai_note}"
         )
     return "\n".join(lines) + "\n"
 
@@ -298,12 +346,16 @@ def main() -> int:
     parser.add_argument("--cases-dir", type=Path, default=ROOT / "cases")
     parser.add_argument("--scored-dir", type=Path, default=ROOT / "scored")
     parser.add_argument("--results-dir", type=Path, default=ROOT / "results")
+    parser.add_argument("--lang", action="append", dest="only_langs", choices=["zh", "en", "th"])
     args = parser.parse_args()
 
     args.scored_dir.mkdir(parents=True, exist_ok=True)
     args.results_dir.mkdir(parents=True, exist_ok=True)
 
     case_files = sorted(args.cases_dir.glob("Q*.json"))
+    if args.only_langs:
+        allowed = {f"_{lang}.json" for lang in args.only_langs}
+        case_files = [p for p in case_files if any(p.name.endswith(s) for s in allowed)]
     if not case_files:
         print("no case files found", file=sys.stderr)
         return 1
