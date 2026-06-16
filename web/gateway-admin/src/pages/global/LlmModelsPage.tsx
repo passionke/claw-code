@@ -36,6 +36,10 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
   const { gatewayBase } = useApp();
   const [models, setModels] = useState<LlmModelRow[]>([]);
   const [activeLlmModelId, setActiveLlmModelId] = useState<string | undefined>();
+  const [activeLlmModelRev, setActiveLlmModelRev] = useState<string | undefined>();
+  const [activeLlmConfig, setActiveLlmConfig] = useState<
+    GlobalSettingsResponse["activeLlmConfig"]
+  >();
   const [activeLlmAppliedAtMs, setActiveLlmAppliedAtMs] = useState<number | undefined>();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -67,6 +71,8 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
       );
       setModels(r.llmModels || []);
       setActiveLlmModelId(r.activeLlmModelId);
+      setActiveLlmModelRev(r.activeLlmModelRev);
+      setActiveLlmConfig(r.activeLlmConfig);
       setActiveLlmAppliedAtMs(r.activeLlmAppliedAtMs);
     } finally {
       setLoading(false);
@@ -77,6 +83,8 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
     load().catch(() => {
       setModels([]);
       setActiveLlmModelId(undefined);
+      setActiveLlmModelRev(undefined);
+      setActiveLlmConfig(undefined);
     });
   }, [load]);
 
@@ -212,17 +220,27 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
     await load();
   };
 
+  const runtimeActiveModelId = activeLlmConfig?.modelId;
+  const runtimeNeedsReapply = Boolean(
+    activeLlmModelId && runtimeActiveModelId !== activeLlmModelId
+  );
+
   const columns: ColumnsType<LlmModelRow> = [
     { title: "名称", dataIndex: "name", width: 140 },
     {
       title: "状态",
-      width: 90,
-      render: (_, row) =>
-        row.active || row.id === activeLlmModelId ? (
-          <Tag color="success">当前</Tag>
-        ) : (
-          <Tag>—</Tag>
-        ),
+      width: 120,
+      render: (_, row) => {
+        const markedActive = row.active || row.id === activeLlmModelId;
+        const runtimeActive = runtimeActiveModelId === row.id;
+        if (runtimeActive) {
+          return <Tag color="success">运行中</Tag>;
+        }
+        if (markedActive) {
+          return <Tag color="warning">待同步</Tag>;
+        }
+        return <Tag>—</Tag>;
+      },
     },
     {
       title: "Base URL",
@@ -240,7 +258,8 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
       title: "操作",
       width: 280,
       render: (_, row) => {
-        const isActive = row.active || row.id === activeLlmModelId;
+        const markedActive = row.active || row.id === activeLlmModelId;
+        const runtimeActive = runtimeActiveModelId === row.id;
         return (
           <Space wrap>
             <Button
@@ -257,14 +276,14 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
             <Button
               size="small"
               type="primary"
-              disabled={isActive}
+              disabled={runtimeActive}
               onClick={() => applyModel(row).catch((e) => message.error(String(e)))}
             >
               设为当前
             </Button>
             <Popconfirm
               title="删除此模型？"
-              description={isActive ? "当前生效模型删除后将无全局 LLM。" : undefined}
+              description={markedActive ? "当前生效模型删除后将无全局 LLM。" : undefined}
               onConfirm={() => deleteModel(row).catch((e) => message.error(String(e)))}
             >
               <Button size="small" danger>
@@ -293,8 +312,10 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
           <Space>
             <CloudOutlined />
             <span>大模型列表</span>
-            {activeLlmModelId ? (
-              <Tag color="success">已设当前</Tag>
+            {runtimeActiveModelId ? (
+              <Tag color="success">运行中</Tag>
+            ) : activeLlmModelId ? (
+              <Tag color="warning">待同步</Tag>
             ) : (
               <Tag>未设当前</Tag>
             )}
@@ -309,6 +330,26 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
         }
         loading={loading}
       >
+        {runtimeNeedsReapply ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="当前模型配置未同步到运行时"
+            description={
+              <>
+                列表中已标记为当前的模型（
+                <Typography.Text code>{activeLlmModelId}</Typography.Text>
+                {activeLlmModelRev ? (
+                  <>
+                    ，revision <Typography.Text code>{activeLlmModelRev}</Typography.Text>
+                  </>
+                ) : null}
+                ）无法被 solve 使用。请点击「设为当前」完成同步。
+              </>
+            }
+          />
+        ) : null}
         {activeLlmAppliedAtMs ? (
           <Typography.Text type="secondary" style={{ display: "block", marginBottom: 12 }}>
             最近切换：{formatMs(activeLlmAppliedAtMs)}

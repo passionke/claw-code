@@ -57,7 +57,7 @@ pub struct LlmModelPublic {
     pub base_model_url: String,
     #[serde(rename = "modelName")]
     pub model_name: String,
-    #[serde(rename = "currentRev", skip_serializing)]
+    #[serde(rename = "currentRev", skip_serializing_if = "String::is_empty")]
     pub current_rev: String,
     #[serde(rename = "apiKeySet")]
     pub api_key_set: bool,
@@ -502,7 +502,7 @@ pub async fn upsert_llm_model(
             name: name.to_string(),
             base_model_url: base,
             model_name: model,
-            current_rev: rev,
+            current_rev: rev.clone(),
             created_at_ms: now,
             updated_at_ms: now,
         });
@@ -510,12 +510,11 @@ pub async fn upsert_llm_model(
 
     if store.active_id.is_empty() {
         store.active_id = id.clone();
-        store.active_rev = store
-            .models
-            .iter()
-            .find(|m| m.id == id)
-            .map(|m| m.current_rev.clone())
-            .unwrap_or_default();
+        store.active_rev = rev.clone();
+        store.active_applied_at_ms = Some(now);
+    } else if store.active_id == id {
+        // Editing the active model creates a new revision; keep active pointer in sync.
+        store.active_rev = rev.clone();
         store.active_applied_at_ms = Some(now);
     }
 

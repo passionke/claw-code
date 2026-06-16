@@ -109,6 +109,13 @@ async fn global_llm_put_active_roundtrip_and_file_sync() {
     .await
     .expect("upsert without new api key");
 
+    let after_active_edit = gateway_global_settings::load_active_llm_config_public(&db)
+        .await
+        .expect("load after active edit")
+        .expect("active config still loadable after editing active model");
+    assert_eq!(after_active_edit.model_id, first_id);
+    assert_eq!(after_active_edit.model_name, "mock-model-v2");
+
     let second = gateway_global_settings::upsert_llm_model(
         &db,
         PutLlmModelInput {
