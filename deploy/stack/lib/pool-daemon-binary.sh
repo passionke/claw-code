@@ -34,6 +34,14 @@ claw_ensure_pool_daemon_binary() {
     return 0
   fi
 
+  # Reuse linux-compile artifact during gateway.sh build (production SKIP_BUILD=1 must not pull release image here).
+  if [[ -x "${out}" ]] && [[ "${CLAW_POOL_REBUILD_DAEMON:-0}" != "1" ]] \
+    && ! claw_pool_daemon_release_deploy_active; then
+    echo "==> reusing host claw-sandbox: ${out}" >&2
+    printf '%s\n' "${out}"
+    return 0
+  fi
+
   # Linux production / release: never host cargo when release pin active or SKIP_BUILD=1.
   if claw_pool_daemon_release_deploy_active || [[ "${CLAW_POOL_DAEMON_SKIP_BUILD:-0}" == "1" ]]; then
     # shellcheck source=install-claw-sandbox-from-release.sh

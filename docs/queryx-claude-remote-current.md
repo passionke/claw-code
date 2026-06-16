@@ -1,5 +1,7 @@
 # QueryX 智能体执行规范（CLAUDE 指令稿）
 
+> 拆分后正文：`docs/queryx-agent-prompt-content.md`
+
 > Remote snapshot from `http://192.168.9.252:18088/v1/project/claude/27`
 >
 > Source path: `/var/lib/claw/workspace/ds_27/CLAUDE.md`

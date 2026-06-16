@@ -41,11 +41,12 @@ use http_gateway_rs::biz_advice_report::{
     sanitize_report_payload, BizAdviceReportPayload, BizReportStreamMsg, ReportExportSanitizer,
 };
 use http_gateway_rs::{
-    claw_tap_cluster_state, client_origin, gateway_claw_tap_settings, gateway_global_settings,
-    gateway_llm_config_sync, gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve,
-    project_config_apply, project_config_version, project_entity_revision, project_extra_session,
-    project_git_sync, project_id, project_tools, session_db, session_merge, turn_id,
-    turn_timeline_api, turn_tools_api,
+    admin_mcp_http, claw_tap_cluster_state, client_origin, gateway_admin_mcp_token,
+    gateway_claw_tap_settings, gateway_global_settings, gateway_llm_config_sync, gateway_translate,
+    llm_probe, mcp_probe, pool, pool_consumer_resolve, project_config_apply,
+    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
+    project_id, project_tools, session_db, session_merge, turn_id, turn_timeline_api,
+    turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -1694,6 +1695,15 @@ async fn main() {
             "/v1/gateway/global-settings/claw-tap/probe",
             post(probe_gateway_claw_tap_handler),
         )
+        .route(
+            "/v1/gateway/global-settings/admin-mcp-tokens",
+            post(issue_gateway_admin_mcp_token_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/admin-mcp-tokens/{token_id}",
+            delete(revoke_gateway_admin_mcp_token_handler),
+        )
+        .route("/v1/admin/mcp", post(admin_mcp_http_handler))
         .route("/v1/skills/{proj_id}/{skill_name}", get(get_proj_skill))
         .route("/v1/skills/{proj_id}", get(list_proj_skills))
         .route("/v1/mcp/inject", post(inject_mcp))
@@ -5082,6 +5092,42 @@ async fn delete_gateway_git_pat_handler(
     } else {
         Err(ApiError::new(StatusCode::NOT_FOUND, "git PAT not found"))
     }
+}
+
+async fn issue_gateway_admin_mcp_token_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_admin_mcp_token::IssueAdminMcpTokenInput>,
+) -> Result<Json<gateway_admin_mcp_token::IssueAdminMcpTokenResponse>, ApiError> {
+    let body = gateway_admin_mcp_token::issue_admin_mcp_token(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(body))
+}
+
+async fn revoke_gateway_admin_mcp_token_handler(
+    State(state): State<AppState>,
+    AxumPath(token_id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    let revoked = gateway_admin_mcp_token::revoke_admin_mcp_token(&state.session_db, &token_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if revoked {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "admin MCP token not found",
+        ))
+    }
+}
+
+async fn admin_mcp_http_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    admin_mcp_http::handle_admin_mcp_post(&state.session_db, &state.cfg.work_root, &headers, body)
+        .await
 }
 
 async fn put_gateway_active_llm_config_handler(
