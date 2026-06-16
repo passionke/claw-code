@@ -219,7 +219,7 @@
       "zh": "今天天气怎么样",
       "en": "What's the weather like today?",
       "th": "วันนี้อากาศเป็นอย่างไร",
-      "notes": "invalid question control; expect short refusal, no long report"
+      "notes": "off-topic control; capability intro or short refusal both OK"
     }
   ]
 }

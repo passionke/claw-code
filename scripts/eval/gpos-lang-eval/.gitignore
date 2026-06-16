@@ -1,4 +1,7 @@
 cases/
 cases.bak-*/
+cases-pre-*/
 scored/
+scored-pre-*/
 results/
+results-pre-*/

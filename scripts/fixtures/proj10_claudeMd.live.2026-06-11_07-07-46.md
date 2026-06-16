@@ -145,17 +145,28 @@ Before ANY other processing (including Skill loading or SQL generation), perform
 ### 第 0 步：Skill 强制检索与装载（最高优先级）
 
 > ⚠️ META-COGNITION: All Chinese text below is instructional metadata. Never output it.
-> Glob pattern: `**/SKILL.md` (case-sensitive). This is a system path, not user-facing content.
 
-- 面对用户每一次提问，在调用任何 MCP 工具之前，**必须先完成本步**：载入当前工作区**可用的 Skill 清单**（通过你已具备的工具完成列举，例如对工作区递归执行 glob 搜索 `**/SKILL.md` ——注意是大小写敏感的 `SKILL.md`，且需覆盖所有子目录，**不仅限于根目录下的 `**skill.md**` 文件**；或调用与 `skills list` / `claw skills` 等价的列举能力——以运行环境中实际可用者为准），并**仅在内部**判断是否存在与当前用户问题匹配的 Skill。
+#### Pool worker 路径（必读，否则 glob 恒为 0）
 
-- **禁止**在尚未完成「Skill 清单载入 + 匹配判定」之前发起任何 MCP 调用。
+| 路径 | 作用 |
+|------|------|
+| `/claw_host_root` | 当前 **cwd**，可写 session 区；**不含** Admin 下发的 skill |
+| `/claw_ds` | **只读** project 配置；**所有 SKILL.md 在这里** |
 
-- 若清单中存在与用户意图匹配的 Skill：**必须先**依次调用 `Skill("<name>")` 载入（可多个 Skill 依次载入）；全部必要的 Skill 载入完成后，方可进入下文 MCP 分析流程。
+Skill 固定路径：`/claw_ds/.claw/skills/<skillName>/SKILL.md`（`<skillName>` = 目录名）。
 
-- 若清单中**确认不存在**任何匹配 Skill：可跳过 `Skill` 载入，直接进入下文 MCP 分析流程（此时仍须严格遵守后续「机构与门店标识统一处理流程」与 MCP 规范）。
+#### 步骤（任意 `mcp__*` 之前必须完成）
 
-- 本步的列举与判定过程**不得**以自然语言写入对用户的最终回复（仍须符合下文「回复风格」中关于禁止过程性叙述的要求）。
+1. **列举** — 必须带 `path`，禁止只在 cwd 下搜：`glob_search` 入参 `{"path": "/claw_ds", "pattern": "**/SKILL.md"}`。**禁止**仅 `{ "pattern": "**/SKILL.md" }`（cwd 下 0 个 ≠ 无 skill）。
+2. **匹配** — 对照 glob 返回目录名判断相关 skill（仅内部，不写进用户可见正文）。
+3. **载入** — 每个命中 skill 必须 `Skill("<skillName>")` 或 `read_file` 绝对路径 `/claw_ds/.claw/skills/<skillName>/SKILL.md`。
+4. **放行** — 仅当已对 `/claw_ds` glob 且 `numFiles == 0` 才可跳过 skill；否则禁止 MCP。
+
+#### 菜品 / เมนู / จาน 销量类
+
+口述菜名与 POS 不一致时，若 glob 含 `dish-name-fuzzy-sales-protocol`，必须先 `Skill("dish-name-fuzzy-sales-protocol")` 再 MCP。
+
+- 本步列举与载入**不得**写入用户可见回复（见「回复风格」）。
 
 ## 用户可见的进度汇报
 
@@ -532,7 +543,7 @@ NEVER use Chinese sentence structure or punctuation when [LANG_TAG] ≠ Chinese.
 
 输出前必须逐项验证：
 
-- **已完成「Skill 清单与选型」：在任意 MCP 调用之前已通过 glob 搜索 `**/SKILL.md` 载入 Skill 清单并完成匹配判定；若存在匹配 Skill，则已先完成 `Skill` 载入**
+- **已完成「Skill 清单与选型」：在任意 MCP 调用之前已对 `/claw_ds` 执行 `glob_search(path=/claw_ds, pattern=**/SKILL.md)`；若存在匹配 skill，已 `Skill(name)` 或 `read_file(/claw_ds/.claw/skills/.../SKILL.md)` 载入**
 - **当用户问题为"制定工作日非高峰时段的推广活动方案"时，已正确载入 `queryx-operational-analysis-checklist/SKILL.md`**
 
 **如果以上任一答案为“否”，请立即暂停并执行缺失的步骤。**
