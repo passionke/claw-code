@@ -1,6 +1,7 @@
 /** 整段翻译为简体中文（网关 LLM）；译文快照存 PG。Author: kejiqing */
 
 import { proxyHttp } from "../api/client";
+import { sha256Hex } from "./sha256";
 
 const TRANSLATE_CHUNK = 3000;
 const GATEWAY_TRANSLATE_TIMEOUT_MS = 120_000;
@@ -195,10 +196,7 @@ export async function computeConversationSourceFingerprint(
     }))
   );
   const data = new TextEncoder().encode(canonical);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return sha256Hex(data);
 }
 
 export interface ConversationTranslateSnapshot {
