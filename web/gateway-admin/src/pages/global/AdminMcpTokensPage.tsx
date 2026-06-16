@@ -23,6 +23,10 @@ import type {
   AdminMcpTokenRow,
   GlobalSettingsResponse,
 } from "../../types/globalSettings";
+import {
+  buildAdminMcpServersJson,
+  slugAdminMcpServerName,
+} from "../../utils/adminMcpConfig";
 
 function formatMs(ms?: number | null): string {
   if (!ms) return "—";
@@ -83,7 +87,13 @@ export default function AdminMcpTokensPage() {
     }
   };
 
-  const mcpUrl = `${gatewayBase.replace(/\/$/, "")}${issued?.mcpEndpointPath || "/v1/admin/mcp"}`;
+  const mcpConfigJson =
+    issued &&
+    buildAdminMcpServersJson(gatewayBase, issued.token, {
+      endpointPath: issued.mcpEndpointPath,
+      transport: issued.mcpTransport,
+      serverName: slugAdminMcpServerName(issued.entry.name),
+    });
 
   const columns: ColumnsType<AdminMcpTokenRow> = [
     { title: "ID", dataIndex: "id", width: 160 },
@@ -229,35 +239,24 @@ export default function AdminMcpTokensPage() {
           </Button>,
         ]}
       >
-        {issued && (
+        {issued && mcpConfigJson && (
           <Space direction="vertical" style={{ width: "100%" }} size="middle">
             <Alert type="warning" showIcon message="此 Token 不会再次显示，请立即复制保存。" />
             <div>
-              <Typography.Text type="secondary">Bearer Token</Typography.Text>
-              <Input.TextArea rows={3} readOnly value={issued.token} />
+              <Typography.Text type="secondary">
+                MCP 配置（粘贴到 Cursor <Typography.Text code>~/.cursor/mcp.json</Typography.Text>{" "}
+                或合并进现有 <Typography.Text code>mcpServers</Typography.Text>）
+              </Typography.Text>
+              <Input.TextArea rows={12} readOnly value={mcpConfigJson} />
               <Button
+                type="primary"
                 icon={<CopyOutlined />}
                 style={{ marginTop: 8 }}
-                onClick={() => copyText(issued.token, "Token")}
+                onClick={() => copyText(mcpConfigJson, "MCP 配置")}
               >
-                复制 Token
+                复制 MCP 配置
               </Button>
             </div>
-            <div>
-              <Typography.Text type="secondary">MCP URL</Typography.Text>
-              <Input readOnly value={mcpUrl} />
-              <Button
-                icon={<CopyOutlined />}
-                style={{ marginTop: 8 }}
-                onClick={() => copyText(mcpUrl, "MCP URL")}
-              >
-                复制 URL
-              </Button>
-            </div>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              Cursor 配置示例：type = streamable-http，URL = 上方地址，Headers 添加{" "}
-              <Typography.Text code>Authorization: Bearer &lt;token&gt;</Typography.Text>
-            </Typography.Paragraph>
           </Space>
         )}
       </Modal>
