@@ -9,8 +9,11 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::gateway_admin_mcp_token::{extract_bearer_token, verify_admin_mcp_token};
+use crate::gateway_global_settings;
+use crate::project_config_apply;
 use crate::project_config_draft;
 use crate::session_db::{GatewaySessionDb, ProjectConfigRow, ProjectConfigUpsert};
+use std::path::{Path, PathBuf};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SERVER_NAME: &str = "claw-gateway-admin";
@@ -77,6 +80,7 @@ impl Default for DraftPatch<'_> {
 
 pub async fn handle_admin_mcp_post(
     db: &GatewaySessionDb,
+    work_root: &Path,
     headers: &HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -113,7 +117,7 @@ pub async fn handle_admin_mcp_post(
         "initialize" => Ok(handle_initialize(request.params.as_ref())),
         "notifications/initialized" | "initialized" | "ping" => Ok(json!({})),
         "tools/list" => Ok(tools_list_result()),
-        "tools/call" => match handle_tools_call(db, request.params).await {
+        "tools/call" => match handle_tools_call(db, work_root, request.params).await {
             Ok(v) => Ok(v),
             Err(e) => {
                 return json_rpc_error_response(id, -32000, e, StatusCode::OK);
@@ -174,10 +178,34 @@ fn tools_list_result() -> Value {
     json!({
         "tools": [
             tool_def(
-                "project_config_get",
-                "Read project_config row for projId (draft when open, else effective formal).",
-                &json!({ "projId": { "type": "integer", "description": "Project id" } }),
+                "project_config_put_draft",
+                "Write claudeMd / rulesJson / mcpServersJson / skillsJson into open draft; pass at least one field.",
+                &json!({
+                    "projId": { "type": "integer" },
+                    "claudeMd": { "type": "string" },
+                    "rulesJson": { "type": "array" },
+                    "mcpServersJson": { "type": "object" },
+                    "skillsJson": { "type": "array" }
+                }),
                 &["projId"],
+            ),
+            tool_def(
+                "project_config_commit_draft",
+                "Save open draft as a new formal version (does not activate).",
+                &json!({
+                    "projId": { "type": "integer" },
+                    "note": { "type": "string" }
+                }),
+                &["projId"],
+            ),
+            tool_def(
+                "project_config_activate",
+                "Activate a saved formal contentRev and materialize to project work dir.",
+                &json!({
+                    "projId": { "type": "integer" },
+                    "contentRev": { "type": "string" }
+                }),
+                &["projId", "contentRev"],
             ),
             proj_id_only_tool(
                 "project_claude_get",
@@ -344,7 +372,75 @@ fn validate_skills_json(v: &Value) -> Result<(), String> {
     Ok(())
 }
 
-async fn handle_tools_call(db: &GatewaySessionDb, params: Option<Value>) -> Result<Value, String> {
+fn proj_work_dir(work_root: &Path, proj_id: i64) -> PathBuf {
+    work_root.join(format!("proj_{proj_id}"))
+}
+
+async fn materialize_effective_config(
+    db: &GatewaySessionDb,
+    work_root: &Path,
+    proj_id: i64,
+) -> Result<bool, String> {
+    let row = project_config_draft::row_for_materialize(db, proj_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no project_config for projId={proj_id}"))?;
+    let work_dir = proj_work_dir(work_root, proj_id);
+    tokio::fs::create_dir_all(work_dir.join(".claw"))
+        .await
+        .map_err(|e| format!("create work dir failed: {e}"))?;
+    let scaffold = gateway_global_settings::load_system_prompt_default(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    project_config_apply::apply_if_needed(&work_dir, &row, true, &scaffold)
+        .await
+        .map_err(|e| e.message)?;
+    let applied = project_config_apply::read_applied_content_rev(&work_dir).await;
+    Ok(applied.as_deref() == Some(row.content_rev.as_str()))
+}
+
+fn parse_config_put_draft_patch(args: &Value) -> Result<DraftPatch<'_>, String> {
+    let mut patch = DraftPatch::default();
+    let mut any = false;
+    if let Some(v) = args.get("claudeMd") {
+        any = true;
+        let content = v
+            .as_str()
+            .ok_or_else(|| "claudeMd must be a string".to_string())?;
+        patch.claude_md = if content.trim().is_empty() {
+            ClaudeMdPatch::Clear
+        } else {
+            ClaudeMdPatch::Set(content)
+        };
+    }
+    if let Some(v) = args.get("rulesJson") {
+        any = true;
+        validate_rules_json(v)?;
+        patch.rules_json = Some(v);
+    }
+    if let Some(v) = args.get("mcpServersJson") {
+        any = true;
+        validate_mcp_servers_json(v)?;
+        patch.mcp_servers_json = Some(v);
+    }
+    if let Some(v) = args.get("skillsJson") {
+        any = true;
+        validate_skills_json(v)?;
+        patch.skills_json = Some(v);
+    }
+    if !any {
+        return Err(
+            "at least one of claudeMd, rulesJson, mcpServersJson, skillsJson is required".into(),
+        );
+    }
+    Ok(patch)
+}
+
+async fn handle_tools_call(
+    db: &GatewaySessionDb,
+    work_root: &Path,
+    params: Option<Value>,
+) -> Result<Value, String> {
     let params = params.ok_or_else(|| "params required".to_string())?;
     let name = params
         .get("name")
@@ -360,20 +456,48 @@ async fn handle_tools_call(db: &GatewaySessionDb, params: Option<Value>) -> Resu
         .ok_or_else(|| "arguments.projId required".to_string())?;
 
     match name {
-        "project_config_get" => {
-            let row = row_for_editing_or_err(db, proj_id).await?;
-            let payload = json!({
-                "projId": row.proj_id,
-                "contentRev": row.content_rev,
-                "stableContentRev": row.stable_content_rev,
-                "draftOpen": row.draft_open,
-                "claudeMd": row.claude_md,
-                "rulesJson": row.rules_json,
-                "skillsJson": row.skills_json,
-                "mcpServersJson": row.mcp_servers_json,
-                "allowedToolsJson": row.allowed_tools_json,
-            });
-            Ok(tool_text_result(&payload))
+        "project_config_put_draft" => {
+            let patch = parse_config_put_draft_patch(&args)?;
+            upsert_project_draft(db, proj_id, patch).await?;
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "updated": true,
+                "draftOpen": true
+            })))
+        }
+        "project_config_commit_draft" => {
+            let note = args
+                .get("note")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let result = project_config_draft::commit_open_draft(db, proj_id, note)
+                .await
+                .map_err(|e| e.message)?;
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "savedContentRev": result.saved_content_rev,
+                "stableContentRev": result.stable_content_rev,
+                "activated": false,
+                "materialized": false
+            })))
+        }
+        "project_config_activate" => {
+            let content_rev = args
+                .get("contentRev")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "arguments.contentRev required".to_string())?;
+            project_config_draft::activate_formal_revision(db, proj_id, content_rev)
+                .await
+                .map_err(|e| e.message)?;
+            let materialized = materialize_effective_config(db, work_root, proj_id).await?;
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "activeContentRev": content_rev,
+                "activated": true,
+                "materialized": materialized
+            })))
         }
         "project_claude_get" => {
             let row = row_for_editing_or_err(db, proj_id).await?;
@@ -563,7 +687,9 @@ mod tests {
     use super::*;
 
     const REQUIRED_TOOLS: &[&str] = &[
-        "project_config_get",
+        "project_config_put_draft",
+        "project_config_commit_draft",
+        "project_config_activate",
         "project_claude_get",
         "project_claude_put_draft",
         "project_rules_get",

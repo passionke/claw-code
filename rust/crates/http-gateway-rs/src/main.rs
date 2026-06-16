@@ -5126,7 +5126,8 @@ async fn admin_mcp_http_handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    admin_mcp_http::handle_admin_mcp_post(&state.session_db, &headers, body).await
+    admin_mcp_http::handle_admin_mcp_post(&state.session_db, &state.cfg.work_root, &headers, body)
+        .await
 }
 
 async fn put_gateway_active_llm_config_handler(

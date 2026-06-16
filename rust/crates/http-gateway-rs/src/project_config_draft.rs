@@ -393,6 +393,102 @@ pub async fn close_draft_to_stable(
     })
 }
 
+/// Result of committing the open `__draft__` row to a new formal revision (does not activate).
+#[derive(Debug)]
+pub struct CommitDraftResult {
+    pub saved_content_rev: String,
+    pub stable_content_rev: String,
+    pub active_row: ProjectConfigRow,
+}
+
+/// Persist open draft as a new formal revision; effective formal stays on previous stable rev.
+pub async fn commit_open_draft(
+    db: &GatewaySessionDb,
+    proj_id: i64,
+    note: Option<String>,
+) -> Result<CommitDraftResult, DraftError> {
+    let note = normalize_revision_note(note);
+    let row = db.get_project_config(proj_id).await?.ok_or_else(|| {
+        DraftError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for proj {proj_id}"),
+        )
+    })?;
+    if !row.draft_open {
+        return Err(DraftError::new(
+            StatusCode::BAD_REQUEST,
+            "no open draft to commit; edit config first",
+        ));
+    }
+    let prev_stable = effective_formal_rev(&row)?.to_string();
+    ensure_formal_revision_recorded(db, proj_id, &prev_stable, &row).await?;
+    let now = now_ms();
+    let saved = allocate_formal_content_rev(db, proj_id, now).await?;
+    let rev = revision_row_from_config_row(&row, &saved, note);
+    let inserted = db.insert_project_config_revision_immutable(&rev).await?;
+    if !inserted {
+        return Err(DraftError::new(
+            StatusCode::CONFLICT,
+            format!("revision {saved} already exists and cannot be changed"),
+        ));
+    }
+    let active_row = close_draft_to_stable(
+        db,
+        proj_id,
+        &prev_stable,
+        ProjectConfigSidecars::from_row(&row),
+    )
+    .await?;
+    Ok(CommitDraftResult {
+        saved_content_rev: saved,
+        stable_content_rev: prev_stable,
+        active_row,
+    })
+}
+
+/// Point effective `project_config` at a saved formal revision (does not materialize to disk).
+pub async fn activate_formal_revision(
+    db: &GatewaySessionDb,
+    proj_id: i64,
+    content_rev: &str,
+) -> Result<ProjectConfigRow, DraftError> {
+    let content_rev = content_rev.trim();
+    if content_rev.is_empty() || is_draft_content_rev(content_rev) {
+        return Err(DraftError::new(
+            StatusCode::BAD_REQUEST,
+            "contentRev must be a saved (non-draft) version id",
+        ));
+    }
+    let active_row = db.get_project_config(proj_id).await?.ok_or_else(|| {
+        DraftError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for proj {proj_id}"),
+        )
+    })?;
+    let rev = require_formal_revision(db, proj_id, content_rev).await?;
+    let row = config_row_from_revision(
+        proj_id,
+        &rev,
+        ProjectConfigSidecars::from_row(&active_row),
+        content_rev,
+    );
+    let now = now_ms();
+    db.upsert_project_config(upsert_from_row(
+        &row,
+        content_rev,
+        now,
+        row.claude_md.as_deref(),
+        Some(content_rev),
+    ))
+    .await?;
+    db.get_project_config(proj_id).await?.ok_or_else(|| {
+        DraftError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "row missing after activate",
+        )
+    })
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
