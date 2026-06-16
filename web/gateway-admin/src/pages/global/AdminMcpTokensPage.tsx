@@ -27,6 +27,7 @@ import {
   buildAdminMcpServersJson,
   slugAdminMcpServerName,
 } from "../../utils/adminMcpConfig";
+import { copyToClipboard } from "../../utils/copyToClipboard";
 
 function formatMs(ms?: number | null): string {
   if (!ms) return "—";
@@ -78,9 +79,9 @@ export default function AdminMcpTokensPage() {
     await load();
   };
 
-  const copyText = async (text: string, label: string) => {
+  const copyLabel = async (text: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyToClipboard(text);
       message.success(`${label} 已复制`);
     } catch {
       message.error("复制失败");
@@ -255,7 +256,7 @@ export default function AdminMcpTokensPage() {
                 type="primary"
                 icon={<CopyOutlined />}
                 style={{ marginTop: 8 }}
-                onClick={() => copyText(mcpConfigJson, "MCP 配置")}
+                onClick={() => copyLabel(mcpConfigJson, "MCP 配置")}
               >
                 复制 MCP 配置
               </Button>
