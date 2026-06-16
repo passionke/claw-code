@@ -136,15 +136,18 @@ export default function AdminMcpTokensPage() {
           title="吊销此 Admin MCP Token？"
           description="吊销后 Cursor / Agent 将无法再用该 Bearer 连接。"
           disabled={!!row.revokedAtMs}
-          onConfirm={async () => {
-            await proxyHttp(
+          onConfirm={() =>
+            proxyHttp(
               gatewayBase,
               "DELETE",
               `/v1/gateway/global-settings/admin-mcp-tokens/${encodeURIComponent(row.id)}`
-            );
-            message.success("已吊销");
-            await load();
-          }}
+            )
+              .then(async () => {
+                message.success("已吊销");
+                await load();
+              })
+              .catch((e) => message.error(String(e)))
+          }
         >
           <Button size="small" danger disabled={!!row.revokedAtMs}>
             吊销
