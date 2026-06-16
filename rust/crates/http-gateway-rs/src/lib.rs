@@ -15,6 +15,7 @@
     clippy::must_use_candidate
 )]
 
+pub mod admin_mcp_http;
 pub mod biz_advice_report;
 pub mod biz_report_pool_proxy;
 pub mod biz_report_sse_log;
@@ -22,6 +23,7 @@ pub mod claw_tap_cluster_state;
 pub mod client_origin;
 pub mod cluster_identity;
 pub mod deploy_image;
+pub mod gateway_admin_mcp_token;
 pub mod gateway_claw_tap_settings;
 pub mod gateway_global_settings;
 pub mod gateway_llm_cluster_store;
