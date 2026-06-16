@@ -16,6 +16,7 @@
 )]
 
 pub mod admin_mcp_http;
+pub mod admin_mcp_solve;
 pub mod biz_advice_report;
 pub mod biz_report_pool_proxy;
 pub mod biz_report_sse_log;
