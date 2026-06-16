@@ -153,6 +153,17 @@ mod tests {
     }
 
     #[test]
+    fn mcp_start_arguments_include_bizdate() {
+        let extra = normalize_extra_session(Some(json!({
+            "store_id": "S1",
+            "bizdate": "20250301",
+            "org_id": ""
+        })));
+        let args = build_sqlbot_mcp_start_arguments(extra);
+        assert_eq!(args["bizdate"], "20250301");
+    }
+
+    #[test]
     fn mcp_start_arguments_from_normalize_none_has_org_id() {
         let args = build_sqlbot_mcp_start_arguments(normalize_extra_session(None));
         assert_eq!(args, json!({"org_id": ""}));

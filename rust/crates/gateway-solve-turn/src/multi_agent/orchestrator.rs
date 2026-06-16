@@ -3,9 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use runtime::{
-    apply_config_env_if_unset, gateway_schema_prompt_section, ConfigLoader, RuntimeConfig, Session,
-};
+use runtime::{gateway_schema_prompt_section, ConfigLoader, RuntimeConfig, Session};
 use serde_json::json;
 use tracing::info;
 
@@ -20,9 +18,10 @@ use crate::project_orchestration::SolveOrchestrationConfig;
 use crate::project_preflight;
 use crate::sqlbot_preflight::sqlbot_query_context_from_session;
 use crate::{
-    default_system_date, err, gateway_solve_session_persistence_path, initialize_mcp_runtime,
-    reset_task_progress, truncate_progress_history, DirectToolExecutor, GatewayMcpCallContext,
-    GatewaySolveTurnError, SolveTimingRecorder, HTTP_INTERNAL,
+    apply_solve_env_from_config_and_extra, default_system_date, err,
+    gateway_solve_session_persistence_path, initialize_mcp_runtime, reset_task_progress,
+    truncate_progress_history, DirectToolExecutor, GatewayMcpCallContext, GatewaySolveTurnError,
+    SolveTimingRecorder, HTTP_INTERNAL,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -58,7 +57,7 @@ pub fn run_multi_agent_solve_turn(
         })?,
         None => RuntimeConfig::empty(),
     };
-    apply_config_env_if_unset(&project_cfg);
+    apply_solve_env_from_config_and_extra(&project_cfg, mcp.extra_session.as_ref());
     let effective_model = model
         .map(str::to_string)
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())

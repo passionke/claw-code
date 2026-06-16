@@ -34,14 +34,13 @@ use api::{
     ProviderClient, StreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 use runtime::{
-    apply_config_env_if_unset, apply_mcp_tool_annotations_from_config, concurrent_mcp_tool_names,
-    default_mcp_max_concurrent, gateway_git_import_prompt_section,
-    gateway_pool_layout_prompt_section, gateway_schema_prompt_section, load_system_prompt,
-    mcp_description_parallel_friendly, mcp_tool_parallel_fanout_eligible,
-    ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
-    ConversationMessage, ConversationRuntime, McpServerManager, McpTool, MessageRole,
-    PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError, Session, SharedToolExecutor,
-    ToolError, ToolExecutor as RuntimeToolExecutor,
+    apply_mcp_tool_annotations_from_config, concurrent_mcp_tool_names, default_mcp_max_concurrent,
+    gateway_git_import_prompt_section, gateway_pool_layout_prompt_section,
+    gateway_schema_prompt_section, load_system_prompt, mcp_description_parallel_friendly,
+    mcp_tool_parallel_fanout_eligible, ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent,
+    ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime, McpServerManager,
+    McpTool, MessageRole, PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError, Session,
+    SharedToolExecutor, ToolError, ToolExecutor as RuntimeToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -54,6 +53,7 @@ use tools::{
 
 pub mod agent_orchestration;
 pub mod entity_labels;
+pub mod extra_session_bizdate;
 pub mod gateway_stdout;
 pub mod mcp_call_context;
 pub mod multi_agent;
@@ -68,6 +68,11 @@ pub mod task_progress;
 pub mod turn_language;
 pub mod turn_tools;
 pub mod worker_env;
+pub use extra_session_bizdate::{
+    apply_solve_env_from_config_and_extra, parse_extra_session_bizdate,
+    resolve_system_date_for_solve, BizDate, ENV_BIZDATE, ENV_CURRENT_DATE,
+    EXTRA_SESSION_BIZDATE_KEY,
+};
 pub use gateway_stdout::{
     emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
     GATEWAY_STDOUT_LINE_PREFIX,
@@ -1276,7 +1281,7 @@ pub fn run_gateway_solve_turn(
         })?,
         None => RuntimeConfig::empty(),
     };
-    apply_config_env_if_unset(&project_cfg);
+    apply_solve_env_from_config_and_extra(&project_cfg, mcp.extra_session.as_ref());
     let effective_model = model
         .map(str::to_string)
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
@@ -1284,7 +1289,7 @@ pub fn run_gateway_solve_turn(
         .unwrap_or_else(|| "openai/deepseek-v4-pro".to_string());
     let mut system_prompt = load_system_prompt(
         work_dir.to_path_buf(),
-        default_system_date(),
+        resolve_system_date_for_solve(mcp.extra_session.as_ref(), default_system_date),
         std::env::consts::OS,
         "unknown",
         Some(effective_model.clone()),
@@ -1636,6 +1641,18 @@ mod extra_session_tests {
     fn normalize_none_becomes_empty_org_id_only() {
         let out = normalize_extra_session(None).unwrap();
         assert_eq!(out, json!({"org_id": ""}));
+    }
+
+    #[test]
+    fn normalize_preserves_bizdate_for_downstream_env() {
+        let out = normalize_extra_session(Some(json!({
+            "store_id": "S1",
+            "bizdate": "20250615"
+        })))
+        .unwrap();
+        assert_eq!(out["bizdate"], "20250615");
+        let iso = crate::resolve_system_date_for_solve(Some(&out), || "2099-01-01".into());
+        assert_eq!(iso, "2025-06-15");
     }
 }
 
