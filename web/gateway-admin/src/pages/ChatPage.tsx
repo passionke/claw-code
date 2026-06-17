@@ -1,4 +1,4 @@
-import { Button, Input, Spin, Tooltip, message } from "antd";
+import { Alert, Button, Input, Spin, Tooltip, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChatHistorySidebar from "../components/chat/ChatHistorySidebar";
 import ChatTurnCard from "../components/chat/ChatTurnCard";
@@ -76,6 +76,8 @@ function isSys(item: ThreadItem): item is SysEntry {
 }
 
 /** solve_async 对话：按时间线 user → assistant 卡片交错展示。Author: kejiqing */
+const CHAT_AUDIT_ONLY = false;
+const CODING_TERMINAL_HREF = "/coding";
 export default function ChatPage() {
   const { gatewayBase, projId, projectConfig } = useApp();
   const { tapLiveBase, tapLiveTemplate } = useChatSession();
@@ -100,7 +102,8 @@ export default function ChatPage() {
   );
 
   const composerDisabled =
-    activeSessionId != null && isExternalOrigin(sessionClientOrigin);
+    CHAT_AUDIT_ONLY ||
+    (activeSessionId != null && isExternalOrigin(sessionClientOrigin));
 
   const {
     feedbackByTurn,
@@ -335,6 +338,23 @@ export default function ChatPage() {
             translateDisabled={!canTranslate || loadingHistory}
           />
         </div>
+        {CHAT_AUDIT_ONLY ? (
+          <Alert
+            type="info"
+            showIcon
+            message="对话页仅用于审计与历史查看"
+            description={
+              <>
+                交互式编码请使用{" "}
+                <a href={CODING_TERMINAL_HREF} target="_blank" rel="noreferrer">
+                  Coding 终端
+                </a>
+                （ttyd + claw REPL）。
+              </>
+            }
+            style={{ margin: "0 12px 8px" }}
+          />
+        ) : null}
         <div className={styles.chatMain}>
           <div className={styles.chatLog}>
             {loadingHistory ? (
@@ -424,8 +444,18 @@ export default function ChatPage() {
             />
           </div>
           {composerDisabled ? (
-            <Tooltip title="外部会话，仅可查看">
-              <span className={styles.composerDisabledHint}>外部会话，不可追问</span>
+            <Tooltip
+              title={
+                CHAT_AUDIT_ONLY
+                  ? "交互式编码请使用 Coding 终端"
+                  : "外部会话，仅可查看"
+              }
+            >
+              <span className={styles.composerDisabledHint}>
+                {CHAT_AUDIT_ONLY
+                  ? "只读审计模式，请打开 Coding 终端"
+                  : "外部会话，不可追问"}
+              </span>
             </Tooltip>
           ) : null}
           <div className={styles.quickPrompts}>
@@ -447,7 +477,9 @@ export default function ChatPage() {
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={
                 composerDisabled
-                  ? "外部会话，仅可查看历史"
+                  ? CHAT_AUDIT_ONLY
+                    ? "只读审计：请在 Coding 终端进行交互"
+                    : "外部会话，仅可查看历史"
                   : "输入任务描述（自然语言），Enter 发送；Shift+Enter 换行"
               }
               disabled={composerDisabled}

@@ -300,3 +300,43 @@ pub async fn resolve_solve_llm_route(
     env.insert("INTERNAL_CLAUDE_TAP_HOST".to_string(), openai_base);
     Ok((route, env))
 }
+
+/// Admin/tap wire model (e.g. `deepseek-v4-pro`) → `claw --model` for interactive REPL.
+/// REPL requires `provider/model`; clawTap is OpenAI-compat so prefix `openai/`.
+#[must_use]
+pub fn claw_repl_model_name(wire_model: &str) -> String {
+    let s = wire_model.trim();
+    if s.is_empty() {
+        return "openai/deepseek-v4-pro".to_string();
+    }
+    if s.contains('/') {
+        return s.to_string();
+    }
+    format!("openai/{s}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::claw_repl_model_name;
+
+    #[test]
+    fn claw_repl_model_name_prefixes_bare_upstream_id() {
+        assert_eq!(
+            claw_repl_model_name("deepseek-v4-pro"),
+            "openai/deepseek-v4-pro"
+        );
+        assert_eq!(claw_repl_model_name("mimo-v2.5"), "openai/mimo-v2.5");
+    }
+
+    #[test]
+    fn claw_repl_model_name_keeps_existing_provider_prefix() {
+        assert_eq!(
+            claw_repl_model_name("openai/deepseek-v4-pro"),
+            "openai/deepseek-v4-pro"
+        );
+        assert_eq!(
+            claw_repl_model_name("anthropic/claude-opus-4-6"),
+            "anthropic/claude-opus-4-6"
+        );
+    }
+}

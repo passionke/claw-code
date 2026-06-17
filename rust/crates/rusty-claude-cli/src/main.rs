@@ -164,9 +164,7 @@ fn max_tokens_for_model(model: &str) -> u32 {
     api::max_tokens_for_model(model)
 }
 fn boundary_log(stage: &str, message: impl AsRef<str>) {
-    if api::boundary_log_enabled() {
-        eprintln!("[runtime-boundary] stage={stage} {}", message.as_ref());
-    }
+    api::boundary_log_stage(stage, message);
 }
 // Build-time constants injected by build.rs (fall back to static values when
 // build.rs hasn't run, e.g. in doc-test or unusual toolchain environments).

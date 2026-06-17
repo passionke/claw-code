@@ -65,6 +65,7 @@ fn err_json(msg: &str) -> SandboxRpcResp {
         files: None,
         capacity: None,
         exec_chunk: None,
+        leased_slots: None,
     }
 }
 

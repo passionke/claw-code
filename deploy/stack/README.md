@@ -45,8 +45,8 @@ Author: kejiqing
 ./deploy/stack/gateway.sh clean
 
 # 或拆开：
-./deploy/stack/gateway.sh build          # 默认先 clean，再 podman run 编译 + 打镜像
-./deploy/stack/gateway.sh build --no-clean local   # 增量编译
+./deploy/stack/gateway.sh build          # 默认增量编译（--no-clean）
+./deploy/stack/gateway.sh build --clean local   # 全量重编
 ./deploy/stack/gateway.sh pack-deploy      # 默认 --no-clean + 跳过 playground npm
 ./deploy/stack/gateway.sh restart
 
@@ -61,7 +61,7 @@ Author: kejiqing
 
 其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh`**：`linux-compile` 产出 **`http-gateway-rs` + `claw` + `claw-sandbox`**，再 **`Containerfile.gateway-rs.prebuilt`** / worker 镜像 **COPY** 预编译产物（镜像内不 cargo）。
 
-**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，镜像 **一次 build 推 GHCR**，同一 job 链 **`mirror-to-acr`** 再 **pull → retag → push ACR**（不再二次 Rust 编译）。包名：**`claw-code`**、**`claw-gateway-worker`**、**`claw-gateway-worker-relaxed`**、**`claw-gateway-playground`**（**同一 tag**；relaxed 在 strict worker 构建完成后 **FROM strict 镜像** 追加工具层；playground 镜像内 **CI 多阶段构建** `gateway-admin`，含 `dist/assets/*.js`）。服务器 **`./deploy/stack/gateway.sh up --release release-vX.Y.Z`** 会写 **`deploy/stack/.claw-image-release.env`**（含 **`GATEWAY_PLAYGROUND_IMAGE`**、**`CLAW_RELAXED_PODMAN_IMAGE`**），**不要**在服务器跑 **`build`** / **`admin-build`** / **`admin-reload`**（无需 Node/npm）。**`/admin` 白屏**多为旧 playground 镜像缺 JS：拉 **含本修复之后** 的 release tag 并 `up --release` 重建 `gateway-playground`。**`./deploy/stack/gateway.sh up`** 起 **`claw-gateway-rs`** compose + 宿主机 **`claw-sandbox`**（`.linux-artifacts` 或本地 cargo，不在网关镜像内）。横向扩容：每台机器 **`up --release <tag>` + 根目录 `.env`** 即可。校验/发布镜像见 [`claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)（GHCR build + ACR mirror）。
+**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，**一次 `linux-compile`** 后 **prebuilt 镜像 COPY** 推 GHCR（与本地 `pack-deploy` 同路径），同一 job 链 **`mirror-to-acr`** 再 **pull → retag → push ACR**（不再二次 Rust 编译）。包名：**`claw-code`**、**`claw-gateway-worker`**、**`claw-gateway-worker-relaxed`**、**`claw-gateway-playground`**（**同一 tag**；relaxed 在 strict worker 构建完成后 **FROM strict 镜像** 追加工具层；playground 镜像内 **CI 多阶段构建** `gateway-admin`，含 `dist/assets/*.js`）。服务器 **`./deploy/stack/gateway.sh up --release release-vX.Y.Z`** 会写 **`deploy/stack/.claw-image-release.env`**（含 **`GATEWAY_PLAYGROUND_IMAGE`**、**`CLAW_RELAXED_PODMAN_IMAGE`**），**不要**在服务器跑 **`build`** / **`admin-build`** / **`admin-reload`**（无需 Node/npm）。**`/admin` 白屏**多为旧 playground 镜像缺 JS：拉 **含本修复之后** 的 release tag 并 `up --release` 重建 `gateway-playground`。**`./deploy/stack/gateway.sh up`** 起 **`claw-gateway-rs`** compose + 宿主机 **`claw-sandbox`**（`.linux-artifacts` 或本地 cargo，不在网关镜像内）。横向扩容：每台机器 **`up --release <tag>` + 根目录 `.env`** 即可。校验/发布镜像见 [`claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)（GHCR build + ACR mirror）。
 
 **镜像仓库默认（国内）**：未设置 **`CLAW_IMAGE_PREFIX`** / **`CLAW_GHCR_PREFIX`** 且 **`GATEWAY_IMAGE`** 不含 `…/claw-code` 时，`./deploy/stack/gateway.sh up --release …` 默认从 **阿里云个人版 ACR**（`crpi-….personal.cr.aliyuncs.com/passionke`，可由 **`CLAW_ACR_IMAGE_PREFIX`** 覆盖）拼接镜像名；若要改用 GHCR，在根目录 **`.env`** 设 **`CLAW_IMAGE_REGISTRY=ghcr`**（默认前缀 **`ghcr.io/passionke`**，可由 **`CLAW_GHCR_DEFAULT_PREFIX`** 覆盖）。仍可直接设 **`CLAW_IMAGE_PREFIX=…`**（不要 `https://`），优先级最高。
 

@@ -725,6 +725,31 @@ pub fn build_guest_materialize_writes(
     Ok(out)
 }
 
+/// Interactive terminal bind-mounts `proj_<id>/home` → `/claw_ds` (ro). Mirror solve guest layout there.
+pub async fn apply_interactive_ds_layout_under_home(
+    proj_dir: &Path,
+    row: &ProjectConfigRow,
+    system_prompt_scaffold: &str,
+) -> ApplyResult<()> {
+    let home = proj_dir.join("home");
+    fs::create_dir_all(&home)
+        .await
+        .map_err(|e| ProjectConfigApplyError::new(format!("create home: {e}")))?;
+    let writes = build_guest_materialize_writes(row, system_prompt_scaffold)?;
+    for write in writes {
+        let dest = home.join(&write.rel_path);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).await.map_err(|e| {
+                ProjectConfigApplyError::new(format!("mkdir {}: {e}", parent.display()))
+            })?;
+        }
+        fs::write(&dest, &write.bytes)
+            .await
+            .map_err(|e| ProjectConfigApplyError::new(format!("write {}: {e}", dest.display())))?;
+    }
+    Ok(())
+}
+
 fn push_write(out: &mut Vec<GuestMaterializeWrite>, rel_path: PathBuf, bytes: Vec<u8>) {
     out.push(GuestMaterializeWrite { rel_path, bytes });
 }
@@ -966,6 +991,52 @@ mod tests {
             .await
             .expect("read via symlink");
         assert_eq!(via_claw, "body");
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn apply_interactive_ds_layout_under_home_writes_settings_and_skills() {
+        let root = std::env::temp_dir().join(format!(
+            "claw-interactive-ds-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).await.expect("root");
+        let row = ProjectConfigRow {
+            proj_id: 1,
+            content_rev: "rev-i".into(),
+            stable_content_rev: Some("rev-i".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([{"skillName": "plan", "skillContent": "skill body"}]),
+            allowed_tools_json: json!([]),
+            claude_md: Some("claude body".into()),
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+            worker_isolation_json: json!({"mode": "strict"}),
+        };
+        apply_interactive_ds_layout_under_home(&root, &row, "scaffold")
+            .await
+            .expect("layout");
+        assert!(fs::metadata(root.join("home/.claw/settings.json"))
+            .await
+            .is_ok());
+        assert!(fs::metadata(root.join("home/.claw/skills/plan/SKILL.md"))
+            .await
+            .is_ok());
+        let claude = fs::read_to_string(root.join("home/CLAUDE.md"))
+            .await
+            .expect("claude");
+        assert_eq!(claude, "claude body");
         let _ = fs::remove_dir_all(root).await;
     }
 

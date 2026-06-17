@@ -24,10 +24,12 @@ pub use live_report_sse::live_report_sse_response;
 pub use local_ops::LocalPoolOps;
 pub use sandbox_orchestrator::{worker_isolation_to_sandbox, SandboxOrchestratedPool};
 pub use session_db_sync::{
-    read_worker_progress_artifacts, MaterializeInput, DS_MOUNT_TARGET, GUEST_WORK_ROOT,
-    WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH,
+    proj_work_dir, read_worker_progress_artifacts, session_home_under_work_root, MaterializeInput,
+    DS_MOUNT_TARGET, GUEST_WORK_ROOT, WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH,
 };
-pub use session_mount_ownership::ensure_session_tree_owned_for_worker_with_runtime_fallback;
+pub use session_mount_ownership::{
+    ensure_session_tree_owned_for_worker_with_runtime_fallback, path_for_pool_acquire,
+};
 pub use worker_identity::PoolWorkerIdentity;
 pub use worker_isolation::{
     default_worker_isolation_json, isolation_mode_label, validate_worker_isolation_json,

@@ -46,6 +46,9 @@ export default function ChatToolbar({
           翻译中文
         </Button>
         <Button onClick={() => void runHealth()}>健康检查</Button>
+        <Button href="/coding" target="_blank" rel="noreferrer">
+          Coding 终端
+        </Button>
       </Space>
     </>
   );

@@ -15,12 +15,57 @@ pub fn default_stream_true() -> bool {
     true
 }
 
+/// Who holds a leased worker slot (pool in-memory truth). Author: kejiqing
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SlotLeaseOwner {
+    Terminal { session_id: String, proj_id: i64 },
+    Solve { turn_id: String, proj_id: i64 },
+}
+
+impl SlotLeaseOwner {
+    #[must_use]
+    pub fn kind_label(&self) -> &'static str {
+        match self {
+            Self::Terminal { .. } => "terminal",
+            Self::Solve { .. } => "solve",
+        }
+    }
+}
+
+/// One leased slot reported by pool `list_leased`. Author: kejiqing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeasedSlotInfo {
+    pub slot_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_name: Option<String>,
+    pub worker_profile: IsolationMode,
+    /// `None` = orphan (legacy acquire or metadata lost).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<SlotLeaseOwner>,
+}
+
+/// Interactive `/coding` worker: bind host proj + session dirs; publish ttyd on loopback. Author: kejiqing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractiveSessionBind {
+    /// Host path `work_root/proj_{id}` (ro → `/claw_ds`).
+    pub proj_home_host: String,
+    /// Host path to session workspace (rw → `/claw_host_root`).
+    pub session_host_root: String,
+    /// Host loopback port published as `127.0.0.1:{port}:7681`.
+    pub ttyd_host_port: u16,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum SandboxRpcReq {
     Acquire {
         isolation: IsolationMode,
         timeout_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interactive: Option<InteractiveSessionBind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<SlotLeaseOwner>,
     },
     /// Pool root wipes both tmpfs mounts (`/claw_ds` + `/claw_host_root`).
     GuestWipe {
@@ -84,6 +129,7 @@ pub enum SandboxRpcReq {
         slot_index: usize,
     },
     Capacity,
+    ListLeased,
 }
 
 /// Per-profile worker counts (strict / relaxed / …). Author: kejiqing
@@ -129,4 +175,6 @@ pub struct SandboxRpcResp {
     pub capacity: Option<SandboxCapacity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_chunk: Option<SandboxExecChunk>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leased_slots: Option<Vec<LeasedSlotInfo>>,
 }

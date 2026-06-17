@@ -26,7 +26,8 @@ build_usage() {
 Usage: gateway.sh build [IMAGE_TAG] [options]
 
 Options:
-  --no-clean       Skip gateway.sh clean before build (default: clean first)
+  --clean          Run gateway.sh clean before build (full rebuild)
+  --no-clean       Skip clean (default; incremental compile)
   --log PATH       Tee full stdout/stderr to PATH (default: deploy/stack/.build.log)
   --no-log         Print only to terminal
   --in-container   Force in-image cargo build (slow on macOS; hits crates.io in build)
@@ -38,7 +39,7 @@ EOF
 }
 
 CLAW_BUILD_IN_CONTAINER_IMAGE=0
-CLAW_BUILD_NO_CLEAN=0
+CLAW_BUILD_CLEAN=0
 CLAW_BUILD_SKIP_PLAYGROUND=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,8 +47,12 @@ while [[ $# -gt 0 ]]; do
       build_usage
       exit 0
       ;;
+    --clean)
+      CLAW_BUILD_CLEAN=1
+      shift
+      ;;
     --no-clean)
-      CLAW_BUILD_NO_CLEAN=1
+      CLAW_BUILD_CLEAN=0
       shift
       ;;
     --log)
@@ -107,8 +112,8 @@ setup_build_log
 CLAW_TIMING_LABEL="build timing"
 claw_timing_init
 
-if [[ "${CLAW_BUILD_NO_CLEAN}" != "1" ]]; then
-  step "0/N clean (default before build; gateway.sh build --no-clean to skip)"
+if [[ "${CLAW_BUILD_CLEAN}" == "1" ]]; then
+  step "0/N clean (gateway.sh build --clean)"
   "${ROOT_DIR}/deploy/stack/lib/clean.sh"
 fi
 
@@ -178,10 +183,13 @@ cn_mirror_enabled && CN_FLAG=1
 if use_prebuilt_linux_path; then
   echo "==> config: linux-compile + prebuilt images (no cargo in image build)"
   STACK_DIR="${ROOT_DIR}/deploy/stack"
-  step "1/3 linux compile (podman run; volumes claw-cargo-registry / claw-cargo-git persist)"
+  step "1/3 linux compile (podman run; volumes claw-cargo-registry / claw-cargo-git / claw-sccache persist)"
   # shellcheck source=/dev/null
   source "${ROOT_DIR}/deploy/stack/lib/linux-compile.sh"
-  claw_linux_compile_release "${ROOT_DIR}" "${CONTAINER_CLI}" "${RUST_BASE_IMAGE}" "${CN_FLAG}"
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/deploy/stack/lib/rust-compile-image.sh"
+  COMPILE_IMAGE="$(claw_ensure_rust_compile_image "${ROOT_DIR}" "${CONTAINER_CLI}" "${REG}")"
+  claw_linux_compile_release "${ROOT_DIR}" "${CONTAINER_CLI}" "${COMPILE_IMAGE}" "${CN_FLAG}"
 
   APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
   cn_mirror_enabled && APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
@@ -219,7 +227,7 @@ if use_prebuilt_linux_path; then
   source "${ROOT_DIR}/deploy/stack/lib/pool-daemon-binary.sh"
   if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
     step "host claw-sandbox (macOS cargo)"
-    CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
+    claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
   else
     step "host claw-sandbox (.linux-artifacts)"
     claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
@@ -278,10 +286,10 @@ else
   source "${ROOT_DIR}/deploy/stack/lib/pool-daemon-binary.sh"
   if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
     step "host claw-sandbox (macOS cargo build)"
-    CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
+    claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
   else
     step "host claw-sandbox (cargo build)"
-    CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
+    claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
   fi
 fi
 

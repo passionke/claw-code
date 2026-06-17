@@ -60,6 +60,7 @@
 | `rust/target` 全部 | debug+release | `./deploy/stack/gateway.sh clean` |
 | `deploy/stack/.linux-artifacts` | 数百 MB～数 GB | 随 `clean` 一起删 |
 | Podman 卷 `claw-cargo-registry` / `claw-cargo-git` | 数 GB | `./deploy/stack/gateway.sh clean --podman-compile-cache` |
+| Podman 卷 `claw-sccache` | 数 GB | `./deploy/stack/gateway.sh clean --sccache-volume` |
 | Podman 镜像 `claw-gateway-*` | 可达数十 GB | `./deploy/stack/gateway.sh clean --prune-claw-images`（慎用） |
 
 ## 常见坑

@@ -16,6 +16,9 @@ pub struct SlotLease {
     /// `podman exec --user` for this lease (RPC boundary). Author: kejiqing
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_identity: Option<SlotExecIdentity>,
+    /// Host loopback port for ttyd when interactive acquire published `-p 127.0.0.1:port:7681`. Author: kejiqing
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttyd_host_port: Option<u16>,
 }
 
 /// Opaque bytes read from a guest path.

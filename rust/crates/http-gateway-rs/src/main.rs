@@ -44,8 +44,8 @@ use http_gateway_rs::{
     claw_tap_cluster_state, client_origin, gateway_claw_tap_settings, gateway_global_settings,
     gateway_llm_config_sync, gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve,
     project_config_apply, project_config_version, project_entity_revision, project_extra_session,
-    project_git_sync, project_id, project_tools, session_db, session_merge, turn_id,
-    turn_timeline_api, turn_tools_api,
+    project_git_sync, project_id, project_tools, session_db, session_merge, session_terminal_api,
+    session_workspace_api, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -128,6 +128,29 @@ pub(crate) struct AppState {
     llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle,
     /// clawTap cluster consistency (strict only; mismatch blocks solve). Author: kejiqing
     claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
+    /// Active interactive terminal sessions (`/coding`). Author: kejiqing
+    terminal_registry: session_terminal_api::TerminalSessionRegistry,
+}
+
+impl AppState {
+    #[must_use]
+    fn terminal_api_ctx(&self) -> session_terminal_api::TerminalApiContext {
+        session_terminal_api::terminal_api_context(
+            self.cfg.work_root.clone(),
+            self.cfg.pool_rpc_host_work_root.clone(),
+            self.pool_clients.clone(),
+            self.session_db.clone(),
+            self.terminal_registry.clone(),
+            pool_runtime_cli_bin(self.cfg.solve_isolation).to_string(),
+            self.claw_tap_cluster.clone(),
+            self.llm_runtime.clone(),
+        )
+    }
+
+    #[must_use]
+    fn workspace_api_ctx(&self) -> session_workspace_api::WorkspaceApiContext {
+        session_workspace_api::workspace_api_context(self.cfg.work_root.clone())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1501,6 +1524,7 @@ async fn main() {
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
         llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
+        terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
     };
 
     run_startup_project_config_apply(&state).await;
@@ -1593,6 +1617,39 @@ async fn main() {
         .route(
             "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
             post(cancel_session_turn),
+        )
+        .route("/v1/terminal/inventory", get(terminal_inventory_handler))
+        .route(
+            "/v1/terminal/pool-force-release",
+            post(terminal_pool_force_release_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/terminal/attach",
+            post(terminal_attach_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/terminal/start",
+            post(terminal_start_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/terminal/stop",
+            post(terminal_stop_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/terminal/reattach",
+            post(terminal_reattach_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/terminal/ws",
+            get(terminal_ws_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/workspace/tree",
+            get(workspace_tree_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/workspace/file",
+            get(workspace_file_handler),
         )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
@@ -3763,6 +3820,86 @@ async fn list_proj_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, Api
     out.sort_unstable();
     out.dedup();
     Ok(out)
+}
+
+async fn terminal_inventory_handler(
+    State(state): State<AppState>,
+    Query(q): Query<session_terminal_api::TerminalProjQuery>,
+) -> Result<
+    Json<session_terminal_api::TerminalInventoryResponse>,
+    session_terminal_api::TerminalApiError,
+> {
+    session_terminal_api::terminal_inventory(state.terminal_api_ctx(), q).await
+}
+
+async fn terminal_pool_force_release_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, session_terminal_api::TerminalApiError> {
+    session_terminal_api::terminal_pool_force_release(state.terminal_api_ctx()).await
+}
+
+async fn terminal_attach_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Json(req): Json<session_terminal_api::TerminalStartRequest>,
+) -> Result<Json<session_terminal_api::TerminalStartResponse>, session_terminal_api::TerminalApiError>
+{
+    session_terminal_api::terminal_attach(state.terminal_api_ctx(), session_id, Json(req)).await
+}
+
+async fn terminal_start_handler(
+    State(state): State<AppState>,
+    Json(req): Json<session_terminal_api::TerminalStartRequest>,
+) -> Result<Json<session_terminal_api::TerminalStartResponse>, session_terminal_api::TerminalApiError>
+{
+    session_terminal_api::terminal_start(state.terminal_api_ctx(), Json(req)).await
+}
+
+async fn terminal_stop_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_terminal_api::TerminalProjQuery>,
+) -> Result<Json<Value>, session_terminal_api::TerminalApiError> {
+    session_terminal_api::terminal_stop(state.terminal_api_ctx(), session_id, q).await
+}
+
+async fn terminal_reattach_handler(
+    State(state): State<AppState>,
+    Json(req): Json<session_terminal_api::TerminalStartRequest>,
+) -> Result<Json<session_terminal_api::TerminalStartResponse>, session_terminal_api::TerminalApiError>
+{
+    session_terminal_api::terminal_reattach(state.terminal_api_ctx(), Json(req)).await
+}
+
+async fn terminal_ws_handler(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_terminal_api::TerminalProjQuery>,
+) -> impl IntoResponse {
+    session_terminal_api::terminal_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
+}
+
+async fn workspace_tree_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_terminal_api::TerminalProjQuery>,
+) -> Result<
+    Json<session_workspace_api::WorkspaceTreeResponse>,
+    session_terminal_api::TerminalApiError,
+> {
+    session_workspace_api::workspace_tree(state.workspace_api_ctx(), session_id, q).await
+}
+
+async fn workspace_file_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_workspace_api::WorkspaceFileQuery>,
+) -> Result<
+    Json<session_workspace_api::WorkspaceFileResponse>,
+    session_terminal_api::TerminalApiError,
+> {
+    session_workspace_api::workspace_file(state.workspace_api_ctx(), session_id, q).await
 }
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {

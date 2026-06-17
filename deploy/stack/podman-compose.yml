@@ -78,6 +78,8 @@ services:
       CLAW_SSE_LOG_FILE: /var/log/claw/sse-debug.log
       # Gateway rolling logs (not under sandbox CLAW_WORK_ROOT). Author: kejiqing
       CLAW_GATEWAY_LOG_DIR: /var/log/claw
+      # Interactive coding terminal: ttyd published on host loopback; gateway container dials host. kejiqing
+      CLAW_TERMINAL_TTYD_CONNECT_HOST: ${CLAW_TERMINAL_TTYD_CONNECT_HOST:-host.containers.internal}
     ports:
       - "${GATEWAY_HOST_PORT}:8080"
     volumes:

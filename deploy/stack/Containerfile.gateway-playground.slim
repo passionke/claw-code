@@ -16,6 +16,7 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
 WORKDIR /app
 COPY web/gateway-async-playground/server.py \
      web/gateway-async-playground/index.html \
+     web/gateway-async-playground/coding.html \
      ./
 RUN mkdir -p /app/admin-dist
 

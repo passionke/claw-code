@@ -20,3 +20,8 @@ pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 missing_panics_doc = "allow"
 missing_errors_doc = "allow"
+
+# Faster release builds (compile speed; keep opt-level=3, lto=false). Author: kejiqing
+[profile.release]
+codegen-units = 256
+incremental = true

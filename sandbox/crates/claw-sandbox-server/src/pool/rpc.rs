@@ -22,7 +22,12 @@ pub async fn dispatch_pool_rpc(
             proj_id: _,
             turn_id: _,
         } => match pool
-            .acquire_slot(Duration::from_millis(timeout_ms), IsolationMode::Strict)
+            .acquire_slot(
+                Duration::from_millis(timeout_ms),
+                IsolationMode::Strict,
+                None,
+                None,
+            )
             .await
         {
             Ok(lease) => PoolRpcResp {
@@ -68,6 +73,7 @@ pub async fn dispatch_pool_rpc(
                 worker_profile,
                 worker_name: None,
                 exec_identity: None,
+                ttyd_host_port: None,
             };
             // Daemon path: do NOT pre-wrap with merge_stdout_hooks here. exec_solve
             // already runs merge_stdout_hooks internally (pool-local LiveReportHub).
@@ -121,6 +127,7 @@ pub async fn dispatch_pool_rpc(
                     worker_profile,
                     worker_name: None,
                     exec_identity: None,
+                    ttyd_host_port: None,
                 })
                 .await
             {

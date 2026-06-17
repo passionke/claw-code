@@ -22,7 +22,7 @@ set +a
 echo "==> [1/5] host claw-pool-daemon"
 # shellcheck source=/dev/null
 source "${LIB_DIR}/pool-daemon-binary.sh"
-CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
+claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
 
 echo "==> [2/5] playground image (slim if missing; admin via bind mount when dist/ exists)"
 rt="$(command -v podman 2>/dev/null || command -v docker)"

@@ -72,6 +72,11 @@ impl SandboxOrchestratedPool {
             .ok_or_else(|| "sandbox pool: session_db not bound".into())
     }
 
+    #[must_use]
+    pub fn rpc_client(&self) -> Arc<SandboxRpcClient> {
+        Arc::clone(&self.client)
+    }
+
     async fn resolve_isolation(&self, proj_id: i64) -> Result<SandboxIsolationMode, String> {
         let db = self.session_db().await?;
         let json = db
@@ -126,7 +131,18 @@ impl PoolOps for SandboxOrchestratedPool {
                     .into(),
             );
         }
-        let lease = self.client.acquire(wait, isolation).await?;
+        let lease = self
+            .client
+            .acquire(
+                wait,
+                isolation,
+                None,
+                Some(claw_sandbox_protocol::SlotLeaseOwner::Solve {
+                    turn_id: turn_id.clone(),
+                    proj_id,
+                }),
+            )
+            .await?;
         if let Some(ref worker_name) = lease.worker_name {
             let exec_user = lease.exec_identity.as_ref().map(|id| id.exec_user.as_str());
             let _ = db

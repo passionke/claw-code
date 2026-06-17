@@ -1,0 +1,17 @@
+# Host pool daemon binary from pre-built Linux artifact (see linux-compile.sh). Author: kejiqing
+ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
+
+FROM ${DEBIAN_BASE_IMAGE}
+COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
+ARG CLAW_USE_CN_APT_MIRROR=0
+RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY deploy/stack/.linux-artifacts/release/claw-sandbox /usr/local/bin/claw-sandbox
+RUN chmod +x /usr/local/bin/claw-sandbox
+
+ENTRYPOINT ["/usr/local/bin/claw-sandbox"]

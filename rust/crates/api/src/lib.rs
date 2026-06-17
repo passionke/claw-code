@@ -9,7 +9,7 @@ mod sse;
 pub mod sse_burst_trace;
 mod types;
 
-pub use boundary_log::{boundary_log_enabled, BOUNDARY_LOG_ENV};
+pub use boundary_log::{boundary_log_enabled, boundary_log_stage, BOUNDARY_LOG_ENV};
 pub use client::{
     oauth_token_is_expired, read_base_url, read_xai_base_url, resolve_saved_oauth_token,
     resolve_startup_auth_source, MessageStream, OAuthTokenSet, ProviderClient,

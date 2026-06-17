@@ -48,6 +48,8 @@ pub mod project_tools;
 pub mod session_db;
 pub mod session_execution;
 pub mod session_merge;
+pub mod session_terminal_api;
+pub mod session_workspace_api;
 pub mod solve_llm_route;
 pub mod task_status;
 pub mod turn_id;

@@ -19,6 +19,7 @@ Options:
   --debug-only          Only remove rust/target/debug (keeps release binaries; often frees most GB)
   --podman-compile-cache
                         Remove podman volumes claw-cargo-registry + claw-cargo-git (next build re-downloads crates)
+  --sccache-volume      Remove podman volume claw-sccache (compiler cache; next build recompiles from scratch)
   --prune-claw-images   Remove unused local images matching claw-gateway / claw-code (podman image prune)
   --workspace           Also remove deploy/stack/claw-workspace/ (ds sessions; destructive)
   -h, --help            Show this help
@@ -47,6 +48,7 @@ claw_dir_size() {
 CLAW_CLEAN_WORKSPACE=0
 CLAW_CLEAN_DEBUG_ONLY=0
 CLAW_CLEAN_PODMAN_CACHE=0
+CLAW_CLEAN_SCCACHE_VOLUME=0
 CLAW_PRUNE_CLAW_IMAGES=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -60,6 +62,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --podman-compile-cache)
       CLAW_CLEAN_PODMAN_CACHE=1
+      shift
+      ;;
+    --sccache-volume)
+      CLAW_CLEAN_SCCACHE_VOLUME=1
       shift
       ;;
     --prune-claw-images)
@@ -138,6 +144,20 @@ if [[ "${CLAW_CLEAN_PODMAN_CACHE}" == "1" ]]; then
   fi
 fi
 
+if [[ "${CLAW_CLEAN_SCCACHE_VOLUME}" == "1" ]]; then
+  rt="$(command -v podman 2>/dev/null || command -v docker 2>/dev/null || true)"
+  if [[ -n "${rt}" ]]; then
+    if "${rt}" volume exists claw-sccache 2>/dev/null; then
+      "${rt}" volume rm claw-sccache 2>/dev/null && echo "    removed volume claw-sccache" \
+        || echo "    volume claw-sccache: in use or rm failed" >&2
+    else
+      echo "    volume claw-sccache: absent"
+    fi
+  else
+    echo "    --sccache-volume: no podman/docker in PATH" >&2
+  fi
+fi
+
 if [[ "${CLAW_PRUNE_CLAW_IMAGES}" == "1" ]]; then
   rt="$(command -v podman 2>/dev/null || command -v docker 2>/dev/null || true)"
   if [[ -n "${rt}" ]]; then
@@ -158,6 +178,6 @@ if _repo_size="$(du -sh "${ROOT_DIR}" 2>/dev/null)"; then
 fi
 echo "==> freed (was): rust/target=${before_target} .linux-artifacts=${before_linux} workspace=${before_ws}"
 echo "==> repo total now: ${after_total}"
-if [[ "${CLAW_CLEAN_PODMAN_CACHE}" != "1" && "${CLAW_PRUNE_CLAW_IMAGES}" != "1" ]]; then
-  echo "    tip: --debug-only (keep release) | --podman-compile-cache | --prune-claw-images"
+if [[ "${CLAW_CLEAN_PODMAN_CACHE}" != "1" && "${CLAW_CLEAN_SCCACHE_VOLUME}" != "1" && "${CLAW_PRUNE_CLAW_IMAGES}" != "1" ]]; then
+  echo "    tip: --debug-only (keep release) | --podman-compile-cache | --sccache-volume | --prune-claw-images"
 fi

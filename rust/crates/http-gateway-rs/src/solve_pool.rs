@@ -21,16 +21,11 @@ pub(crate) fn session_mount_for_pool_acquire(
     session_home: &Path,
     cfg: &crate::GatewayConfig,
 ) -> PathBuf {
-    let Some(host_root) = cfg.pool_rpc_host_work_root.as_ref() else {
-        return session_home.to_path_buf();
-    };
-    let sh = session_home.to_string_lossy();
-    let wr = cfg.work_root.to_string_lossy();
-    if let Some(rest) = sh.strip_prefix(wr.as_ref()) {
-        let rel = rest.trim_start_matches('/');
-        return host_root.join(rel);
-    }
-    session_home.to_path_buf()
+    crate::pool::path_for_pool_acquire(
+        session_home,
+        &cfg.work_root,
+        cfg.pool_rpc_host_work_root.as_deref(),
+    )
 }
 
 /// Fixed name inside the per-session bind mount (no `..`, not client-controlled).

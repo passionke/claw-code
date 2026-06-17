@@ -153,6 +153,38 @@ enum SlotState {
     Dead,
 }
 
+/// How a worker slot mounts `/claw_ds` and `/claw_host_root`. Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SlotMountPlan {
+    session_host_root: Option<PathBuf>,
+    proj_home_host: Option<PathBuf>,
+    ttyd_host_port: Option<u16>,
+}
+
+impl SlotMountPlan {
+    #[must_use]
+    fn solve_default() -> Self {
+        Self {
+            session_host_root: None,
+            proj_home_host: None,
+            ttyd_host_port: None,
+        }
+    }
+
+    fn interactive(bind: &claw_sandbox_protocol::InteractiveSessionBind) -> Result<Self, String> {
+        Ok(Self {
+            proj_home_host: Some(PathBuf::from(bind.proj_home_host.trim())),
+            session_host_root: Some(PathBuf::from(bind.session_host_root.trim())),
+            ttyd_host_port: Some(bind.ttyd_host_port),
+        })
+    }
+
+    #[must_use]
+    fn is_interactive(&self) -> bool {
+        self.session_host_root.is_some() && self.proj_home_host.is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Slot {
     container_name: String,
@@ -161,8 +193,9 @@ struct Slot {
     worker_profile: IsolationMode,
     /// Set after `run_worker_slot_container` succeeds for this slot index. Author: kejiqing
     container_started: bool,
-    /// Integration tests: host session tree bind-mounted to [`GUEST_WORK_ROOT`].
-    test_host_root: Option<PathBuf>,
+    mount_plan: SlotMountPlan,
+    /// Lease owner metadata (pool in-memory truth). Author: kejiqing
+    owner: Option<claw_sandbox_protocol::SlotLeaseOwner>,
 }
 
 /// Symlink inject only for the in-process `fake-docker` unit-test shim (no host `mount(8)`).
@@ -455,6 +488,7 @@ impl DockerPoolManager {
                 slot.worker_profile,
                 worker_identity,
             )),
+            ttyd_host_port: slot.mount_plan.ttyd_host_port,
         })
     }
 
@@ -629,8 +663,14 @@ impl DockerPoolManager {
             if old != name {
                 let _ = self.rm_container(&old).await;
             }
-            self.run_worker_slot_container(i, &name, profile, None, false)
-                .await?;
+            self.run_worker_slot_container(
+                i,
+                &name,
+                profile,
+                SlotMountPlan::solve_default(),
+                false,
+            )
+            .await?;
             let mut slots = self.slots.lock().await;
             if let Some(s) = slots.get_mut(i) {
                 s.container_name = name;
@@ -684,11 +724,12 @@ impl DockerPoolManager {
                 },
                 worker_profile: profile,
                 container_started: false,
-                test_host_root: None,
+                mount_plan: SlotMountPlan::solve_default(),
+                owner: None,
             });
             (idx, name)
         };
-        self.run_worker_slot_container(idx, &name, profile, None, false)
+        self.run_worker_slot_container(idx, &name, profile, SlotMountPlan::solve_default(), false)
             .await?;
         let mut slots = self.slots.lock().await;
         if let Some(s) = slots.get_mut(idx) {
@@ -731,13 +772,13 @@ impl DockerPoolManager {
         Ok(())
     }
 
-    /// Create or revive a slot: empty `/claw_ds` + ephemeral [`GUEST_WORK_ROOT`] (tmpfs). Author: kejiqing
+    /// Create or revive a worker slot container for solve (tmpfs) or interactive (host bind). Author: kejiqing
     async fn run_worker_slot_container(
         &self,
         slot_index: usize,
         name: &str,
         isolation: IsolationMode,
-        test_host_root: Option<PathBuf>,
+        mount_plan: SlotMountPlan,
         force_recreate: bool,
     ) -> Result<(), String> {
         let image = self.image_for_isolation(isolation);
@@ -778,16 +819,28 @@ impl DockerPoolManager {
         ];
         args.extend(self.network_args.iter().cloned());
         args.extend(self.extra_run_args.iter().cloned());
-        if isolation == IsolationMode::Strict && self.security_boost {
+        if isolation == IsolationMode::Strict && self.security_boost && !mount_plan.is_interactive()
+        {
             self.append_security_boost_run_args(&mut args);
         }
-        args.push("--tmpfs".into());
-        args.push(Self::claw_ds_tmpfs_arg());
-        if let Some(host_root) = test_host_root.as_ref() {
-            let root_abs = std::fs::canonicalize(host_root).map_err(|e| {
+        if let Some(ref proj_home) = mount_plan.proj_home_host {
+            let proj_abs = std::fs::canonicalize(proj_home).map_err(|e| {
                 format!(
-                    "canonicalize test session root {}: {e}",
-                    host_root.display()
+                    "canonicalize interactive proj home {}: {e}",
+                    proj_home.display()
+                )
+            })?;
+            args.push("-v".into());
+            args.push(format!("{}:{}:ro", proj_abs.display(), DS_MOUNT_TARGET));
+        } else {
+            args.push("--tmpfs".into());
+            args.push(Self::claw_ds_tmpfs_arg());
+        }
+        if let Some(ref session_root) = mount_plan.session_host_root {
+            let root_abs = std::fs::canonicalize(session_root).map_err(|e| {
+                format!(
+                    "canonicalize interactive session root {}: {e}",
+                    session_root.display()
                 )
             })?;
             args.push("-v".into());
@@ -795,6 +848,10 @@ impl DockerPoolManager {
         } else {
             args.push("--tmpfs".into());
             args.push(Self::guest_work_root_tmpfs_arg());
+        }
+        if let Some(port) = mount_plan.ttyd_host_port {
+            args.push("-p".into());
+            args.push(format!("127.0.0.1:{port}:7681"));
         }
         if let Some(ref host_env) = self.worker_env_host_file {
             let env_abs = std::fs::canonicalize(host_env).map_err(|e| {
@@ -946,6 +1003,7 @@ impl DockerPoolManager {
                 "worker gone while slot Leased — returning to Idle"
             );
             s.state = SlotState::Idle;
+            s.owner = None;
             freed += 1;
         }
         freed
@@ -959,25 +1017,38 @@ impl DockerPoolManager {
     async fn prepare_slot_for_lease(
         self: &Arc<Self>,
         slot_index: usize,
-        test_host_root: Option<PathBuf>,
+        mount_plan: SlotMountPlan,
+        owner: Option<claw_sandbox_protocol::SlotLeaseOwner>,
     ) -> Result<String, String> {
-        let (cname, mut need_run, profile) = {
+        let (cname, mut need_run, profile, force_recreate) = {
             let mut slots = self.slots.lock().await;
             let s = slots
                 .get_mut(slot_index)
                 .ok_or_else(|| "bad slot index".to_string())?;
-            let host_changed =
-                self.symlink_inject && s.test_host_root.as_ref() != test_host_root.as_ref();
+            let host_changed = s.mount_plan != mount_plan;
             let need_run = s.state == SlotState::Dead || host_changed || !s.container_started;
             s.state = SlotState::Leased;
-            s.test_host_root = test_host_root.clone();
-            (s.container_name.clone(), need_run, s.worker_profile)
+            s.mount_plan = mount_plan;
+            s.owner = owner;
+            (
+                s.container_name.clone(),
+                need_run,
+                s.worker_profile,
+                host_changed,
+            )
         };
         if !need_run && !self.worker_container_running(&cname).await {
             need_run = true;
         }
         if need_run {
-            self.run_worker_slot_container(slot_index, &cname, profile, test_host_root, false)
+            let plan = {
+                let slots = self.slots.lock().await;
+                slots
+                    .get(slot_index)
+                    .map(|s| s.mount_plan.clone())
+                    .unwrap_or_else(SlotMountPlan::solve_default)
+            };
+            self.run_worker_slot_container(slot_index, &cname, profile, plan, force_recreate)
                 .await?;
             let mut slots = self.slots.lock().await;
             if let Some(s) = slots.get_mut(slot_index) {
@@ -992,7 +1063,14 @@ impl DockerPoolManager {
         self: &Arc<Self>,
         wait: Duration,
         isolation: IsolationMode,
+        interactive: Option<claw_sandbox_protocol::InteractiveSessionBind>,
+        owner: Option<claw_sandbox_protocol::SlotLeaseOwner>,
     ) -> Result<SlotLease, String> {
+        let mount_plan = if let Some(ref bind) = interactive {
+            SlotMountPlan::interactive(bind)?
+        } else {
+            SlotMountPlan::solve_default()
+        };
         let isolation = self.resolve_acquire_isolation(isolation)?;
         if self.max_slots_for(isolation) == 0 {
             return Err(format!(
@@ -1003,11 +1081,14 @@ impl DockerPoolManager {
             loop {
                 let slots = self.slots.lock().await;
                 if let Some((i, _)) = slots.iter().enumerate().find(|(_, s)| {
-                    s.state == SlotState::Idle && s.worker_profile == isolation
+                    (s.state == SlotState::Idle || s.state == SlotState::Dead)
+                        && s.worker_profile == isolation
                 }) {
                     drop(slots);
-                    let test_host = None;
-                    match self.prepare_slot_for_lease(i, test_host).await {
+                    match self
+                        .prepare_slot_for_lease(i, mount_plan.clone(), owner.clone())
+                        .await
+                    {
                         Ok(cname) => {
                             info!(
                                 target: "claw_gateway_pool",
@@ -1016,6 +1097,7 @@ impl DockerPoolManager {
                                 slot_index = i,
                                 container = %cname,
                                 ?isolation,
+                                owner_kind = ?owner.as_ref().map(claw_sandbox_protocol::SlotLeaseOwner::kind_label),
                                 "slot leased"
                             );
                             let slots = self.slots.lock().await;
@@ -1062,7 +1144,10 @@ impl DockerPoolManager {
                             continue;
                         }
                     };
-                    match self.prepare_slot_for_lease(idx, None).await {
+                    match self
+                        .prepare_slot_for_lease(idx, mount_plan.clone(), owner.clone())
+                        .await
+                    {
                         Ok(cname) => {
                             info!(
                                 target: "claw_gateway_pool",
@@ -1071,6 +1156,7 @@ impl DockerPoolManager {
                                 slot_index = idx,
                                 container = %cname,
                                 ?isolation,
+                                owner_kind = ?owner.as_ref().map(claw_sandbox_protocol::SlotLeaseOwner::kind_label),
                                 "new profile slot leased"
                             );
                             let slots = self.slots.lock().await;
@@ -1160,6 +1246,21 @@ impl DockerPoolManager {
     pub async fn capacity_async(&self) -> SandboxCapacity {
         let slots = self.slots.lock().await;
         Self::capacity_from_slots(self, &slots)
+    }
+
+    pub async fn list_leased_slots(&self) -> Vec<claw_sandbox_protocol::LeasedSlotInfo> {
+        let slots = self.slots.lock().await;
+        slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.state == SlotState::Leased)
+            .map(|(i, s)| claw_sandbox_protocol::LeasedSlotInfo {
+                slot_index: i,
+                worker_name: Some(s.container_name.clone()),
+                worker_profile: s.worker_profile,
+                owner: s.owner.clone(),
+            })
+            .collect()
     }
 
     pub fn capacity(&self) -> SandboxCapacity {
@@ -1352,6 +1453,7 @@ impl DockerPoolManager {
             let isolation = s.worker_profile;
             if was_leased {
                 s.state = SlotState::Idle;
+                s.owner = None;
             }
             (was_leased, name, idx, isolation)
         };
@@ -1432,6 +1534,7 @@ impl DockerPoolManager {
             let n = s.container_name.clone();
             s.state = SlotState::Dead;
             s.container_started = false;
+            s.owner = None;
             n
         };
         // Propagate a cooperative stop to the worker first; `sleep infinity` exits on SIGTERM,
@@ -1818,7 +1921,7 @@ esac
 
     async fn acquire_test(pool: &Arc<DockerPoolManager>) -> claw_sandbox_protocol::SlotLease {
         let lease = pool
-            .acquire_slot(Duration::from_secs(5), IsolationMode::Strict)
+            .acquire_slot(Duration::from_secs(5), IsolationMode::Strict, None, None)
             .await
             .unwrap();
         let exec_user = PoolWorkerIdentity::from_env(None).exec_user_arg();
@@ -1913,8 +2016,8 @@ esac
         let p1 = Arc::clone(&pool);
         let p2 = Arc::clone(&pool);
         let (a, b) = tokio::join!(
-            p1.acquire_slot(Duration::from_secs(5), IsolationMode::Strict),
-            p2.acquire_slot(Duration::from_secs(5), IsolationMode::Strict),
+            p1.acquire_slot(Duration::from_secs(5), IsolationMode::Strict, None, None),
+            p2.acquire_slot(Duration::from_secs(5), IsolationMode::Strict, None, None),
         );
         let a = a.unwrap();
         let b = b.unwrap();

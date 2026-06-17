@@ -141,13 +141,20 @@ pub async fn sync_llm_runtime_from_db(
 
     if env_changed {
         let mut guard = handle.write().await;
-        *guard = Some(next);
+        *guard = Some(next.clone());
     }
+
+    let upstream_path = resolve_claude_tap_upstream_config_path();
+    let upstream_file_written = if env_changed {
+        write_claude_tap_upstream_config(&upstream_path, &next.upstream_base_url).unwrap_or(false)
+    } else {
+        false
+    };
 
     Ok(LlmConfigSyncOutcome {
         changed: env_changed,
-        upstream_config_file: None,
-        upstream_file_written: false,
+        upstream_config_file: Some(upstream_path.display().to_string()),
+        upstream_file_written,
         env_apply: None,
     })
 }

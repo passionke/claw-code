@@ -134,11 +134,15 @@ impl SandboxRpcClient {
         &self,
         wait: Duration,
         isolation: IsolationMode,
+        interactive: Option<claw_sandbox_protocol::InteractiveSessionBind>,
+        owner: Option<claw_sandbox_protocol::SlotLeaseOwner>,
     ) -> Result<SlotLease, String> {
         let r = self
             .call(SandboxRpcReq::Acquire {
                 isolation,
                 timeout_ms: u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+                interactive,
+                owner,
             })
             .await?;
         if !r.ok {
@@ -315,5 +319,21 @@ impl SandboxRpcClient {
         } else {
             Err(r.error.unwrap_or_else(|| "force_kill failed".into()))
         }
+    }
+
+    pub async fn capacity(&self) -> Result<claw_sandbox_protocol::SandboxCapacity, String> {
+        let r = self.call(SandboxRpcReq::Capacity).await?;
+        if !r.ok {
+            return Err(r.error.unwrap_or_else(|| "capacity failed".into()));
+        }
+        r.capacity.ok_or_else(|| "capacity: missing body".into())
+    }
+
+    pub async fn list_leased(&self) -> Result<Vec<claw_sandbox_protocol::LeasedSlotInfo>, String> {
+        let r = self.call(SandboxRpcReq::ListLeased).await?;
+        if !r.ok {
+            return Err(r.error.unwrap_or_else(|| "list_leased failed".into()));
+        }
+        Ok(r.leased_slots.unwrap_or_default())
     }
 }

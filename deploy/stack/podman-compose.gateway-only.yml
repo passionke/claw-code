@@ -36,6 +36,7 @@ services:
       CLAW_TRACE_ENABLED: ${CLAW_TRACE_ENABLED:-1}
       CLAW_TRACE_DIR: /var/log/claw/traces
       CLAW_SSE_LOG_FILE: /var/log/claw/sse-debug.log
+      CLAW_TERMINAL_TTYD_CONNECT_HOST: ${CLAW_TERMINAL_TTYD_CONNECT_HOST:-host.containers.internal}
     ports:
       - "${GATEWAY_HOST_PORT}:8080"
     volumes:

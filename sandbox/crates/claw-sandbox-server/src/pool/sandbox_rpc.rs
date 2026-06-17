@@ -20,8 +20,15 @@ pub async fn dispatch_sandbox_rpc(
         SandboxRpcReq::Acquire {
             isolation,
             timeout_ms,
+            interactive,
+            owner,
         } => match pool
-            .acquire_slot(Duration::from_millis(timeout_ms), isolation)
+            .acquire_slot(
+                Duration::from_millis(timeout_ms),
+                isolation,
+                interactive,
+                owner,
+            )
             .await
         {
             Ok(lease) => ok_resp().lease(lease),
@@ -202,6 +209,7 @@ pub async fn dispatch_sandbox_rpc(
             Err(e) => err_resp(e),
         },
         SandboxRpcReq::Capacity => ok_resp().capacity(pool.capacity_async().await),
+        SandboxRpcReq::ListLeased => ok_resp().leased_slots(pool.list_leased_slots().await),
     }
 }
 
@@ -248,6 +256,7 @@ pub(crate) async fn slot_ref(
         worker_profile,
         worker_name: None,
         exec_identity: None,
+        ttyd_host_port: None,
     })
 }
 
@@ -269,6 +278,7 @@ pub(crate) fn ok_resp() -> RespBuilder {
         files: None,
         capacity: None,
         exec_chunk: None,
+        leased_slots: None,
     })
 }
 
@@ -281,6 +291,7 @@ pub(crate) fn err_resp(error: String) -> SandboxRpcResp {
         files: None,
         capacity: None,
         exec_chunk: None,
+        leased_slots: None,
     }
 }
 
@@ -302,6 +313,11 @@ impl RespBuilder {
 
     fn capacity(mut self, capacity: SandboxCapacity) -> SandboxRpcResp {
         self.0.capacity = Some(capacity);
+        self.0
+    }
+
+    fn leased_slots(mut self, slots: Vec<claw_sandbox_protocol::LeasedSlotInfo>) -> SandboxRpcResp {
+        self.0.leased_slots = Some(slots);
         self.0
     }
 
