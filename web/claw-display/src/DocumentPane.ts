@@ -1,6 +1,6 @@
 import { marked } from "marked";
 import { enhanceAssistantProse, type WorkspaceMediaUrl } from "./renderMarkdown";
-import type { CdpEvent } from "./types";
+import type { CdpEvent, MossBannerMetaRow } from "./types";
 
 marked.setOptions({
   gfm: true,
@@ -30,6 +30,14 @@ export class DocumentPane {
   private turns: TurnBlock[] = [];
   private activeIndex = -1;
   private proseGeneration = 0;
+  private mossBanner: {
+    mossArt: string[];
+    w550Art: string[];
+    tagline: string;
+    connected: string;
+    meta: MossBannerMetaRow[];
+    hint: string;
+  } | null = null;
 
   constructor(root: HTMLElement, workspaceMediaUrl?: WorkspaceMediaUrl) {
     this.root = root;
@@ -44,6 +52,7 @@ export class DocumentPane {
   clear(): void {
     this.turns = [];
     this.activeIndex = -1;
+    this.mossBanner = null;
     this.renderAll();
   }
 
@@ -62,6 +71,19 @@ export class DocumentPane {
   }
 
   handle(frame: CdpEvent): void {
+    if (frame.ev === "banner.moss") {
+      this.mossBanner = {
+        mossArt: frame.mossArt,
+        w550Art: frame.w550Art,
+        tagline: frame.tagline,
+        connected: frame.connected,
+        meta: frame.meta,
+        hint: frame.hint,
+      };
+      this.renderAll();
+      this.scrollToBottom();
+      return;
+    }
     if (frame.ev === "turn.begin") {
       this.beginTurn(frame.user ?? "");
       return;
@@ -136,11 +158,16 @@ export class DocumentPane {
   private renderAll(): void {
     this.proseGeneration += 1;
     this.list.innerHTML = "";
+    if (this.mossBanner) {
+      this.list.appendChild(this.renderMossBanner(this.mossBanner));
+    }
     if (!this.turns.length) {
-      const empty = document.createElement("div");
-      empty.className = "claw-transcript-empty";
-      empty.textContent = "连接后在此查看对话";
-      this.list.appendChild(empty);
+      if (!this.mossBanner) {
+        const empty = document.createElement("div");
+        empty.className = "claw-transcript-empty";
+        empty.textContent = "连接后在此查看对话";
+        this.list.appendChild(empty);
+      }
       return;
     }
     for (const turn of this.turns) {
@@ -184,6 +211,70 @@ export class DocumentPane {
 
       this.list.appendChild(el);
     }
+  }
+
+  private renderMossBanner(banner: {
+    mossArt: string[];
+    w550Art: string[];
+    tagline: string;
+    connected: string;
+    meta: MossBannerMetaRow[];
+    hint: string;
+  }): HTMLElement {
+    const el = document.createElement("section");
+    el.className = "moss-banner";
+
+    const art = document.createElement("div");
+    art.className = "moss-banner-art";
+
+    const mossPre = document.createElement("pre");
+    mossPre.className = "moss-ascii moss-ascii-moss";
+    mossPre.textContent = banner.mossArt.join("\n");
+    art.appendChild(mossPre);
+
+    const w550Row = document.createElement("div");
+    w550Row.className = "moss-ascii-row";
+    const w550Pre = document.createElement("pre");
+    w550Pre.className = "moss-ascii moss-ascii-550w";
+    w550Pre.textContent = banner.w550Art.join("\n");
+    w550Row.appendChild(w550Pre);
+    const eye = document.createElement("span");
+    eye.className = "moss-eye";
+    eye.setAttribute("aria-hidden", "true");
+    eye.textContent = "●";
+    w550Row.appendChild(eye);
+    art.appendChild(w550Row);
+
+    el.appendChild(art);
+
+    const tagline = document.createElement("div");
+    tagline.className = "moss-banner-tagline";
+    tagline.textContent = banner.tagline;
+    el.appendChild(tagline);
+
+    const meta = document.createElement("dl");
+    meta.className = "moss-banner-meta";
+    for (const row of banner.meta) {
+      const dt = document.createElement("dt");
+      dt.textContent = row.key;
+      const dd = document.createElement("dd");
+      dd.textContent = row.value;
+      meta.appendChild(dt);
+      meta.appendChild(dd);
+    }
+    el.appendChild(meta);
+
+    const connected = document.createElement("div");
+    connected.className = "moss-banner-connected";
+    connected.textContent = banner.connected;
+    el.appendChild(connected);
+
+    const hint = document.createElement("div");
+    hint.className = "moss-banner-hint";
+    hint.textContent = banner.hint;
+    el.appendChild(hint);
+
+    return el;
   }
 
   private renderToolGroup(notes: TurnNote[]): HTMLElement {

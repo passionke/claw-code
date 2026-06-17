@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use base64::Engine;
 use serde_json::json;
 
+use crate::brand::{MossBannerFields, MOSS_ASCII, MOSS_TAGLINE, W550_ASCII};
 use crate::render::{strip_ansi, MarkdownStreamState, Spinner, TerminalRenderer};
 
 const OSC_PREFIX: &str = "\x1b]1337;Claw;";
@@ -84,6 +85,33 @@ impl<'a, W: Write> DisplaySession<'a, W> {
             markdown_stream: MarkdownStreamState::default(),
             renderer: TerminalRenderer::new(),
             spinner: Spinner::new(),
+        }
+    }
+
+    /// MOSS · 550W startup banner — styled CDP card in web mode.
+    pub fn moss_banner(&mut self, fields: &MossBannerFields, connected: &str) -> io::Result<()> {
+        match self.mode {
+            DisplayMode::Ansi => Ok(()),
+            DisplayMode::Web => {
+                let meta: Vec<_> = fields
+                    .meta_pairs()
+                    .into_iter()
+                    .map(|(key, value)| json!({ "key": key, "value": value }))
+                    .collect();
+                emit_web_frame(
+                    self.out,
+                    &json!({
+                        "ev": "banner.moss",
+                        "mossArt": MOSS_ASCII,
+                        "w550Art": W550_ASCII,
+                        "tagline": MOSS_TAGLINE,
+                        "connected": connected,
+                        "meta": meta,
+                        "hint": MossBannerFields::plain_hints(),
+                    }),
+                )?;
+                self.out.flush()
+            }
         }
     }
 
@@ -379,6 +407,31 @@ mod tests {
         let text = super::web_display_system_appendix();
         assert!(text.contains("mermaid"));
         assert!(text.contains("workspace:"));
+    }
+
+    #[test]
+    fn web_moss_banner_emits_frame() {
+        use crate::brand::MossBannerFields;
+
+        with_display_env(Some("web"), || {
+            let fields = MossBannerFields {
+                model: "claude-sonnet-4-6".to_string(),
+                permissions: "default".to_string(),
+                branch: "main".to_string(),
+                workspace: "clean".to_string(),
+                directory: "/tmp".to_string(),
+                session_id: "sess-1".to_string(),
+                session_path: ".claude/sessions/sess-1.json".to_string(),
+            };
+            let mut buf = Vec::new();
+            let mut session = DisplaySession::new(&mut buf);
+            session
+                .moss_banner(&fields, "Connected: claude-sonnet-4-6 via Anthropic")
+                .expect("banner");
+            let raw = String::from_utf8_lossy(&buf);
+            assert!(raw.contains("\x1b]1337;Claw;"));
+            assert!(strip_claw_osc_frames(&raw).is_empty());
+        });
     }
 
     #[test]

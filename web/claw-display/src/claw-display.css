@@ -1,5 +1,98 @@
 /* Claw web document prose — aligned with gateway-admin reportProse. Author: kejiqing */
 
+/* MOSS · 550W startup banner (CDP banner.moss). Author: kejiqing */
+.moss-banner {
+  padding: 16px 18px;
+  margin-bottom: 4px;
+  border: 1px solid #4a2020;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #1a1012 0%, #0f1820 55%, #101820 100%);
+  box-shadow: 0 0 24px rgba(255, 68, 68, 0.08);
+}
+
+.moss-banner-art {
+  overflow-x: auto;
+}
+
+.moss-ascii {
+  margin: 0;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.12;
+  letter-spacing: 0;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.moss-ascii-moss {
+  color: #ff5555;
+  text-shadow: 0 0 14px rgba(255, 85, 85, 0.45);
+}
+
+.moss-ascii-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.moss-ascii-550w {
+  color: #33d6ff;
+  text-shadow: 0 0 14px rgba(51, 214, 255, 0.35);
+}
+
+.moss-eye {
+  flex-shrink: 0;
+  color: #ff4444;
+  font-size: 14px;
+  line-height: 1.12;
+  padding-top: 1px;
+  text-shadow: 0 0 10px rgba(255, 68, 68, 0.85);
+}
+
+.moss-banner-tagline {
+  margin-top: 10px;
+  padding-left: 2px;
+  font-size: 13px;
+  color: #9a9a9a;
+  font-style: italic;
+}
+
+.moss-banner-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 14px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.moss-banner-meta dt {
+  margin: 0;
+  color: #777;
+}
+
+.moss-banner-meta dd {
+  margin: 0;
+  color: #d4d4d4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+
+.moss-banner-connected {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #9cdcfe;
+}
+
+.moss-banner-hint {
+  margin-top: 10px;
+  font-size: 11px;
+  color: #666;
+  line-height: 1.5;
+}
+
 .claw-document-shell {
   flex: 1;
   min-height: 0;

@@ -15,6 +15,7 @@
     clippy::unnecessary_wraps,
     clippy::unused_self
 )]
+mod brand;
 mod display;
 mod init;
 mod input;
@@ -53,6 +54,7 @@ use compat_harness::{extract_manifest, UpstreamPaths};
 use gateway_solve_turn::run_gateway_solve_turn;
 use init::initialize_repo;
 use plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
+use brand::{MossBannerFields, MOSS_PRODUCT_NAME};
 use display::{
     display_mode, repl_eprintln, repl_finish_command_turn, repl_println, web_display_system_appendix,
     DisplayMode, DisplaySession, DisplaySink, StatusPhase,
@@ -3790,12 +3792,7 @@ fn run_repl(
     if display_mode() == DisplayMode::Web {
         let mut stdout = io::stdout();
         let mut display = DisplaySession::new(&mut stdout);
-        let banner = format!(
-            "{}\n{}",
-            cli.startup_banner(),
-            format_connected_line(&cli.model)
-        );
-        display.transcript_note("system", &banner)?;
+        display.moss_banner(&cli.moss_banner_fields(), &format_connected_line(&cli.model))?;
     } else {
         println!("{}", cli.startup_banner());
         println!("{}", format_connected_line(&cli.model));
@@ -4703,7 +4700,7 @@ impl LiveCli {
         }
     }
 
-    fn startup_banner(&self) -> String {
+    fn moss_banner_fields(&self) -> MossBannerFields {
         let cwd = env::current_dir().map_or_else(
             |_| "<unknown>".to_string(),
             |path| path.display().to_string(),
@@ -4721,30 +4718,19 @@ impl LiveCli {
             |_| self.session.path.display().to_string(),
             |path| path.display().to_string(),
         );
-        format!(
-            "\x1b[38;5;196m\
- ██████╗██╗      █████╗ ██╗    ██╗\n\
-██╔════╝██║     ██╔══██╗██║    ██║\n\
-██║     ██║     ███████║██║ █╗ ██║\n\
-██║     ██║     ██╔══██║██║███╗██║\n\
-╚██████╗███████╗██║  ██║╚███╔███╔╝\n\
- ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\
-  \x1b[2mModel\x1b[0m            {}\n\
-  \x1b[2mPermissions\x1b[0m      {}\n\
-  \x1b[2mBranch\x1b[0m           {}\n\
-  \x1b[2mWorkspace\x1b[0m        {}\n\
-  \x1b[2mDirectory\x1b[0m        {}\n\
-  \x1b[2mSession\x1b[0m          {}\n\
-  \x1b[2mAuto-save\x1b[0m        {}\n\n\
-  Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[2m/resume latest\x1b[0m jumps back to the newest session · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
-            self.model,
-            self.permission_mode.as_str(),
-            git_branch,
+        MossBannerFields {
+            model: self.model.clone(),
+            permissions: self.permission_mode.as_str().to_string(),
+            branch: git_branch.to_string(),
             workspace,
-            cwd,
-            self.session.id,
+            directory: cwd,
+            session_id: self.session.id.clone(),
             session_path,
-        )
+        }
+    }
+
+    fn startup_banner(&self) -> String {
+        self.moss_banner_fields().full_ansi()
     }
 
     fn repl_completion_candidates(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -7134,7 +7120,7 @@ fn render_version_report() -> String {
     let target = BUILD_TARGET.unwrap_or("unknown");
     let build_date = BUILD_DATE.unwrap_or("unknown");
     format!(
-        "Claw Code\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {build_date}"
+        "{MOSS_PRODUCT_NAME}\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {build_date}"
     )
 }
 
@@ -12360,6 +12346,7 @@ mod tests {
             .startup_banner()
         });
 
+        assert!(banner.contains('█'));
         assert!(banner.contains("Tab"));
         assert!(banner.contains("workflow completions"));
 

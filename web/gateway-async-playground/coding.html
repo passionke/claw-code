@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Claw Coding</title>
+  <title>MOSS · 550W Coding</title>
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -82,7 +82,7 @@
         <div id="display-status"></div>
         <div id="document-view"></div>
       </div>
-      <div id="composer-bar">Claw 对话 — 连接后在下方输入</div>
+      <div id="composer-bar">MOSS 对话 — 连接后在下方输入</div>
       <div id="composer-wrap">
         <textarea id="composer" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
         <button type="button" id="btnSend" disabled>发送</button>
@@ -288,7 +288,7 @@
       if (connectedSessionId === sessionId) {
         connectedSessionId = '';
         composerBusy = false;
-        setComposerBar('Claw 对话 — 点「连接」重新进入', false);
+        setComposerBar('MOSS 对话 — 点「连接」重新进入', false);
         syncComposerState();
       }
       $('status').textContent = `已释放 worker：${sessionId}`;
@@ -303,7 +303,7 @@
       connectedSessionId = '';
       $('btnStop').disabled = true;
       composerBusy = false;
-      setComposerBar('Claw 对话 — 点「连接」重新进入', false);
+      setComposerBar('MOSS 对话 — 点「连接」重新进入', false);
       syncComposerState();
       $('status').textContent = `池已清空（登记释放 ${out.releasedRegistry ?? 0}，强杀尝试 ${out.forceKillAttempts ?? 0}）`;
       await refreshInventory();
@@ -526,7 +526,7 @@
         connectedSessionId = '';
         composerBusy = false;
         $('status').textContent = '终端已断开';
-        setComposerBar('Claw 对话 — 点「连接」重新进入', false);
+        setComposerBar('MOSS 对话 — 点「连接」重新进入', false);
         syncComposerState();
         refreshInventory();
       };
