@@ -1651,6 +1651,10 @@ async fn main() {
             "/v1/sessions/{session_id}/workspace/file",
             get(workspace_file_handler),
         )
+        .route(
+            "/v1/sessions/{session_id}/workspace/media",
+            get(workspace_media_handler),
+        )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
         .route(
@@ -3900,6 +3904,14 @@ async fn workspace_file_handler(
     session_terminal_api::TerminalApiError,
 > {
     session_workspace_api::workspace_file(state.workspace_api_ctx(), session_id, q).await
+}
+
+async fn workspace_media_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_workspace_api::WorkspaceMediaQuery>,
+) -> Result<impl IntoResponse, session_terminal_api::TerminalApiError> {
+    session_workspace_api::workspace_media(state.workspace_api_ctx(), session_id, q).await
 }
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {

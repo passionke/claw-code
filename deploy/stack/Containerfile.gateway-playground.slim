@@ -18,6 +18,7 @@ COPY web/gateway-async-playground/server.py \
      web/gateway-async-playground/index.html \
      web/gateway-async-playground/coding.html \
      ./
+COPY web/gateway-async-playground/claw-display/ ./claw-display/
 RUN mkdir -p /app/admin-dist
 
 ENV PLAYGROUND_ADMIN_DIST=/app/admin-dist \

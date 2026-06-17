@@ -151,13 +151,69 @@ def proxy_terminal_stop(opener: urllib.request.OpenerDirector, session_id: str) 
     print(f"[ok] terminal/stop {inner}")
 
 
+def strip_claw_osc_frames(payload: str) -> str:
+    """Mirror web/claw-display parseOscFrames strip for E2E assertions."""
+    prefix = "\x1b]1337;Claw;"
+    suffix = "\x07"
+    out: list[str] = []
+    rest = payload
+    while True:
+        start = rest.find(prefix)
+        if start < 0:
+            out.append(rest)
+            break
+        out.append(rest[:start])
+        body_start = start + len(prefix)
+        end = rest.find(suffix, body_start)
+        if end < 0:
+            break
+        rest = rest[end + 1 :]
+    return "".join(out)
+
+
+def decode_cdp_frame(encoded: str) -> dict:
+    padded = encoded.replace("-", "+").replace("_", "/")
+    pad_len = (4 - (len(padded) % 4)) % 4
+    raw = base64.b64decode(padded + ("=" * pad_len))
+    return json.loads(raw.decode("utf-8"))
+
+
+def test_cdp_roundtrip() -> None:
+    poem_line = "荷风送晚凉。\n"
+    frame = {
+        "ev": "content.delta",
+        "mime": "text/markdown",
+        "text": poem_line,
+    }
+    blob = json.dumps(frame, ensure_ascii=False).encode("utf-8")
+    enc = base64.urlsafe_b64encode(blob).decode("ascii").rstrip("=")
+    payload = f"prompt>{chr(27)}]1337;Claw;{enc}{chr(7)}tail"
+    stripped = strip_claw_osc_frames(payload)
+    assert stripped == "prompt>tail", stripped
+    assert poem_line not in stripped
+    print("[ok] CDP OSC strip roundtrip")
+
+
 def coding_html_has_fix(opener: urllib.request.OpenerDirector) -> None:
     req = urllib.request.Request(f"{PLAYGROUND_BASE}/coding", method="GET")
     with opener.open(req, timeout=15) as resp:
         html = resp.read().decode("utf-8", errors="replace")
     if "proxyEnvelopeBody" not in html or "ttydSendInput" not in html:
         raise E2eError("coding.html missing ttyd wire protocol (stale playground image?)")
-    print("[ok] coding.html has ttyd wire protocol")
+    for needle in ("document-view", "ensureDisplayRouter", "/claw-display/claw-display.js", "id=\"composer\""):
+        if needle not in html:
+            raise E2eError(f"coding.html missing web display framework marker: {needle}")
+    print("[ok] coding.html has ttyd wire protocol + ClawWebShell")
+
+
+def claw_display_assets(opener: urllib.request.OpenerDirector) -> None:
+    for path in ("/claw-display/claw-display.js", "/claw-display/claw-display.css"):
+        req = urllib.request.Request(f"{PLAYGROUND_BASE}{path}", method="GET")
+        with opener.open(req, timeout=15) as resp:
+            body = resp.read()
+        if resp.status != 200 or len(body) < 100:
+            raise E2eError(f"missing claw-display asset: {path}")
+    print("[ok] claw-display static assets")
 
 
 def ws_path_to_playground(ws_path: str) -> str:
@@ -324,12 +380,14 @@ def ensure_pool_idle() -> None:
 
 def main() -> int:
     print(f"==> E2E coding terminal playground={PLAYGROUND_BASE} gateway={GATEWAY_BASE} session={SESSION_ID}")
+    test_cdp_roundtrip()
     ensure_pool_idle()
     jar = CookieJar()
     opener = _jar_opener(jar)
 
     login(opener)
     coding_html_has_fix(opener)
+    claw_display_assets(opener)
     start = proxy_terminal_start(opener, SESSION_ID)
     ws_path = start.get("wsPath") or start.get("ws_path")
     if not ws_path:

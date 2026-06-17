@@ -37,6 +37,7 @@ ADMIN_DIST = (
 )
 ADMIN_INDEX = ADMIN_DIST / "index.html"
 CODING_HTML = DIR / "coding.html"
+CLAW_DISPLAY_DIR = DIR / "claw-display"
 
 _ADMIN_MIME = {
     ".html": "text/html; charset=utf-8",
@@ -359,6 +360,54 @@ def _relay_ws(client: socket.socket, upstream: socket.socket) -> None:
     t2.join()
 
 
+def proxy_coding_workspace_media(
+    handler: BaseHTTPRequestHandler, session_id: str, proj_id: str, rel_path: str
+) -> None:
+    if not read_session_user(handler):
+        handler.send_error(401, "login required")
+        return
+    if not session_id.strip() or not str(proj_id).strip() or not rel_path.strip():
+        handler.send_error(400, "sessionId, projId and path required")
+        return
+    subpath = (
+        f"/v1/sessions/{urllib.parse.quote(session_id, safe='')}"
+        f"/workspace/media?projId={urllib.parse.quote(str(proj_id), safe='')}"
+        f"&path={urllib.parse.quote(rel_path, safe='')}"
+    )
+    url = _effective_proxy_url(PUBLIC_GATEWAY_BASE, subpath)
+    if not is_allowed_upstream(url):
+        handler.send_error(400, "upstream not allowed")
+        return
+    try:
+        req = urllib.request.Request(url, method="GET")
+        upstream = urllib.request.urlopen(req, timeout=60)
+    except urllib.error.HTTPError as e:
+        handler.send_response(e.code)
+        handler.send_header("Content-Type", e.headers.get("Content-Type", "text/plain"))
+        handler.end_headers()
+        handler.wfile.write(e.read())
+        return
+    except urllib.error.URLError as e:
+        handler.send_error(502, str(e.reason if hasattr(e, "reason") else e))
+        return
+    try:
+        handler.send_response(upstream.status)
+        ct = upstream.headers.get("Content-Type")
+        if ct:
+            handler.send_header("Content-Type", ct)
+        cc = upstream.headers.get("Cache-Control")
+        if cc:
+            handler.send_header("Cache-Control", cc)
+        handler.end_headers()
+        while True:
+            chunk = upstream.read(65536)
+            if not chunk:
+                break
+            handler.wfile.write(chunk)
+    finally:
+        upstream.close()
+
+
 def proxy_coding_terminal_ws(
     handler: BaseHTTPRequestHandler, session_id: str, proj_id: str
 ) -> None:
@@ -544,6 +593,29 @@ def send_static_bytes(
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
     handler.wfile.write(data)
+
+
+def _claw_display_safe_path(rel: str) -> Path | None:
+    rel = rel.lstrip("/")
+    if not rel:
+        return None
+    target = (CLAW_DISPLAY_DIR / rel).resolve()
+    root = CLAW_DISPLAY_DIR.resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return None
+    return target if target.is_file() else None
+
+
+def serve_claw_display(handler: BaseHTTPRequestHandler, subpath: str) -> bool:
+    hit = _claw_display_safe_path(subpath)
+    if hit is None:
+        handler.send_error(404, "not found")
+        return True
+    mime = _ADMIN_MIME.get(hit.suffix.lower(), "application/octet-stream")
+    send_static_bytes(handler, 200, hit.read_bytes(), mime)
+    return True
 
 
 def _admin_dist_safe_path(rel: str) -> Path | None:
@@ -753,6 +825,23 @@ class Handler(BaseHTTPRequestHandler):
                     f"bytes={upstream_bytes} delta_frames={delta_frames}\n"
                 )
                 sys.stderr.flush()
+            return
+
+        if path.startswith("/coding/workspace/") and path.endswith("/media"):
+            session_id = urllib.parse.unquote(
+                path[len("/coding/workspace/") : -len("/media")].strip("/")
+            )
+            proj_id = (qs.get("projId") or qs.get("proj_id") or [""])[0]
+            rel_path = (qs.get("path") or [""])[0]
+            proxy_coding_workspace_media(self, session_id, proj_id, rel_path)
+            return
+
+        if path.startswith("/claw-display/"):
+            if not read_session_user(self):
+                nxt = urllib.parse.quote("/coding", safe="")
+                send_redirect(self, f"/admin/login?next={nxt}")
+                return
+            serve_claw_display(self, path[len("/claw-display/") :])
             return
 
         if path in ("/coding", "/coding/"):

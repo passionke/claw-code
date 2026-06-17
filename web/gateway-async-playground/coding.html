@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Claw Coding</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -49,16 +48,15 @@
     }
     #activeWorkers li .meta { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #terminal-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #0d0d0d; }
-    #terminal-bar { flex-shrink: 0; padding: 6px 12px; background: #252526; border-bottom: 1px solid #333; font-size: 12px; color: #ccc; display: flex; align-items: center; gap: 8px; }
-    #terminal-bar.connected { border-bottom-color: #4ec9b0; color: #4ec9b0; }
-    #terminal-wrap { flex: 1; min-height: 200px; position: relative; padding: 0; cursor: text; }
-    #terminal { position: absolute; inset: 0; z-index: 2; }
-    #terminal .xterm { height: 100%; }
-    #terminal-placeholder { position: absolute; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; pointer-events: none; color: #666; font-size: 15px; text-align: center; line-height: 1.6; padding: 24px; }
-    #terminal-placeholder.hidden { display: none; }
+    #terminal-pane.im-shell { min-height: 0; }
+    .claw-document-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: #161616; }
+    #document-view { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; }
+    #display-status { flex-shrink: 0; padding: 6px 12px; font-size: 12px; color: #9cdcfe; border-bottom: 1px solid #2a2a2a; min-height: 28px; line-height: 1.4; }
+    #display-status.thinking { color: #4ec9b0; }
+    #display-status.done { color: #89d185; }
+    #display-status.failed { color: #f48771; }
     a.admin-link { color: #9cdcfe; font-size: 12px; }
     .hint { padding: 8px; color: #888; font-size: 12px; line-height: 1.4; list-style: none; }
-    #xterm-error { display: none; padding: 16px; color: #f48771; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -79,32 +77,88 @@
       <div class="panel-title">会话 <span id="sessionCount"></span></div>
       <ul id="sessionList"></ul>
     </aside>
-    <section id="terminal-pane">
-      <div id="terminal-bar">Claw 终端 — 连接后在下方黑色区域直接输入</div>
-      <div id="terminal-wrap" tabindex="0" title="点击此处输入">
-        <div id="terminal-placeholder">
-          ① 左侧选会话或点「新建会话」<br />
-          ② 点「连接」<br />
-          ③ 在本区域（黑色终端）直接打字，Enter 发送
-        </div>
-        <div id="xterm-error"></div>
-        <div id="terminal"></div>
+    <section id="terminal-pane" class="im-shell">
+      <div class="claw-document-shell">
+        <div id="display-status"></div>
+        <div id="document-view"></div>
+      </div>
+      <div id="composer-bar">Claw 对话 — 连接后在下方输入</div>
+      <div id="composer-wrap">
+        <textarea id="composer" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
+        <button type="button" id="btnSend" disabled>发送</button>
       </div>
     </section>
   </main>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <link rel="stylesheet" href="/claw-display/claw-display.css" />
+  <script src="/claw-display/claw-display.js"></script>
   <script>
     const $ = (id) => document.getElementById(id);
+    const PTY_COLS = 120;
+    const PTY_ROWS = 24;
     let gatewayBase = '';
-    let term = null;
-    let fitAddon = null;
     let ws = null;
     let refreshTimer = null;
     let selectedSessionId = '';
     let connectedSessionId = '';
     let activeWorkerKeys = new Set();
     let inventoryPool = null;
+    let displayRouter = null;
+    let composerBusy = false;
+
+    function ensureDisplayRouter() {
+      if (displayRouter) return displayRouter;
+      if (!window.ClawDisplay || !window.ClawDisplay.DisplayRouter) {
+        return null;
+      }
+      displayRouter = new window.ClawDisplay.DisplayRouter({
+        documentRoot: $('document-view'),
+        statusRoot: $('display-status'),
+        workspaceMediaUrl: (relPath) => {
+          if (!connectedSessionId || !relPath) return null;
+          const projId = Number($('projId').value);
+          const q = new URLSearchParams({ projId: String(projId), path: relPath });
+          return `/coding/workspace/${encodeURIComponent(connectedSessionId)}/media?${q}`;
+        },
+        onStatus: (phase) => {
+          composerBusy = phase === 'thinking';
+          syncComposerState();
+        },
+      });
+      return displayRouter;
+    }
+
+    function syncComposerState() {
+      const connected = ws && ws.readyState === WebSocket.OPEN;
+      const enabled = connected && !composerBusy;
+      $('composer').disabled = !enabled;
+      $('btnSend').disabled = !enabled;
+    }
+
+    function setComposerBar(text, connected) {
+      const bar = $('composer-bar');
+      bar.textContent = text;
+      bar.classList.toggle('connected', !!connected);
+    }
+
+    function focusComposer() {
+      const ta = $('composer');
+      if (ta && !ta.disabled) ta.focus();
+    }
+
+    function autoResizeComposer() {
+      const ta = $('composer');
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(160, Math.max(44, ta.scrollHeight)) + 'px';
+    }
+
+    function sendMessage() {
+      const raw = $('composer').value;
+      if (!raw.trim() || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const line = raw.endsWith('\n') ? raw : raw + '\n';
+      ttydSendInput(line);
+      $('composer').value = '';
+      autoResizeComposer();
+    }
 
     function workerKey(projId, sessionId) {
       return `${projId}:${sessionId}`;
@@ -165,30 +219,17 @@
       return 'web-' + Math.random().toString(36).slice(2, 10);
     }
 
-    function setTerminalBar(text, connected) {
-      const bar = $('terminal-bar');
-      bar.textContent = text;
-      bar.classList.toggle('connected', !!connected);
+    function resetTranscript() {
+      const router = ensureDisplayRouter();
+      if (router) router.reset();
     }
 
-    function showPlaceholder(show) {
-      $('terminal-placeholder').classList.toggle('hidden', !show);
-    }
-
-    function fitTerminal() {
-      if (term && fitAddon) {
-        requestAnimationFrame(() => {
-          try { fitAddon.fit(); } catch (_) {}
-        });
+    function ensureClawDisplay() {
+      if (!window.ClawDisplay?.DisplayRouter) {
+        throw new Error('ClawDisplay 未加载，请硬刷新 (Cmd+Shift+R)');
       }
-    }
-
-    function focusTerminal() {
-      if (!term) return;
-      term.focus();
-      const ta = $('terminal').querySelector('textarea');
-      if (ta) ta.focus();
-      fitTerminal();
+      ensureDisplayRouter();
+      return true;
     }
 
     const textEncoder = new TextEncoder();
@@ -222,14 +263,15 @@
       if (!payload || !payload.length) return;
       const kind = payload[0];
       const body = textDecoder.decode(payload.subarray(1));
-      if (kind === 0x30) term.write(body);
-      // 0x31 = window title, 0x32 = preferences — ignore for xterm display
+      if (kind === 0x30) {
+        ensureDisplayRouter()?.routePayload(body);
+      }
+      // 0x31 = window title, 0x32 = preferences — ignore
     }
 
     function syncTtydSize() {
-      if (!term || !fitAddon || !ws || ws.readyState !== WebSocket.OPEN) return;
-      try { fitAddon.fit(); } catch (_) {}
-      ttydSendResize(term.cols, term.rows);
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ttydSendResize(PTY_COLS, PTY_ROWS);
     }
 
     async function disconnectWorker(projId, sessionId, { closeWs } = { closeWs: true }) {
@@ -245,8 +287,9 @@
       );
       if (connectedSessionId === sessionId) {
         connectedSessionId = '';
-        setTerminalBar('Claw 终端 — 点「连接」重新进入', false);
-        showPlaceholder(true);
+        composerBusy = false;
+        setComposerBar('Claw 对话 — 点「连接」重新进入', false);
+        syncComposerState();
       }
       $('status').textContent = `已释放 worker：${sessionId}`;
       await refreshInventory();
@@ -259,8 +302,9 @@
       if (ws) { ws.close(); ws = null; }
       connectedSessionId = '';
       $('btnStop').disabled = true;
-      setTerminalBar('Claw 终端 — 点「连接」重新进入', false);
-      showPlaceholder(true);
+      composerBusy = false;
+      setComposerBar('Claw 对话 — 点「连接」重新进入', false);
+      syncComposerState();
       $('status').textContent = `池已清空（登记释放 ${out.releasedRegistry ?? 0}，强杀尝试 ${out.forceKillAttempts ?? 0}）`;
       await refreshInventory();
     }
@@ -403,38 +447,12 @@
       }
     }
 
-    function ensureTerm() {
-      if (term) return true;
-      if (typeof Terminal === 'undefined' || typeof FitAddon === 'undefined') {
-        $('xterm-error').style.display = 'block';
-        $('xterm-error').textContent = '终端组件加载失败（xterm.js CDN）。请刷新页面或检查网络。';
-        return false;
-      }
-      term = new Terminal({
-        cursorBlink: true,
-        cursorStyle: 'bar',
-        theme: { background: '#0d0d0d', foreground: '#cccccc', cursor: '#4ec9b0' },
-        fontSize: 14,
-        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      });
-      fitAddon = new FitAddon.FitAddon();
-      term.loadAddon(fitAddon);
-      term.open($('terminal'));
-      fitTerminal();
-      term.onData(ttydSendInput);
-      term.onResize(({ cols, rows }) => ttydSendResize(cols, rows));
-      window.addEventListener('resize', () => { fitTerminal(); syncTtydSize(); });
-      $('terminal-wrap').addEventListener('mousedown', (e) => { e.preventDefault(); focusTerminal(); });
-      $('terminal-wrap').addEventListener('click', focusTerminal);
-      return true;
-    }
-
     async function connectSession(sessionId) {
       const projId = Number($('projId').value);
       selectedSessionId = sessionId;
       $('btnConnect').disabled = true;
       $('status').textContent = '连接中… 0s';
-      setTerminalBar('正在连接 worker…', false);
+      setComposerBar('正在连接 worker…', false);
       const t0 = Date.now();
       const tick = setInterval(() => {
         $('status').textContent = `连接中… ${Math.floor((Date.now() - t0) / 1000)}s`;
@@ -475,25 +493,22 @@
       }
       const wsPath = start.wsPath || start.ws_path;
       if (!wsPath) throw new Error('attach 未返回 wsPath');
-      if (!ensureTerm()) throw new Error('终端组件未加载');
+      ensureClawDisplay();
 
       if (ws) { ws.close(); ws = null; }
-      if (term) term.clear();
+      resetTranscript();
       connectedSessionId = sessionId;
-      showPlaceholder(false);
+      composerBusy = false;
       const reused = start.reusedWorker ? '复用' : '新';
       ws = new WebSocket(pgWsUrl(wsPath), ['tty']);
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => {
         $('status').textContent = `已连接 ${sessionId}（${reused} worker）`;
-        setTerminalBar(`● 已连接 ${sessionId} — 点黑色区域输入，Enter 发送`, true);
+        setComposerBar(`● 已连接 ${sessionId} — 下方输入，Enter 发送`, true);
         $('btnStop').disabled = false;
-        showPlaceholder(false);
-        requestAnimationFrame(() => {
-          try { fitAddon.fit(); } catch (_) {}
-          ttydSpawn(term.cols, term.rows);
-          focusTerminal();
-        });
+        ttydSpawn(PTY_COLS, PTY_ROWS);
+        syncComposerState();
+        focusComposer();
         if (refreshTimer) clearInterval(refreshTimer);
         refreshTimer = setInterval(refreshInventory, 5000);
         refreshInventory();
@@ -504,20 +519,21 @@
         } else if (ev.data instanceof Blob) {
           ev.data.arrayBuffer().then((buf) => ttydWritePayload(new Uint8Array(buf)));
         } else if (typeof ev.data === 'string') {
-          term.write(ev.data);
+          ensureDisplayRouter()?.routePayload(ev.data);
         }
       };
       ws.onclose = () => {
         connectedSessionId = '';
+        composerBusy = false;
         $('status').textContent = '终端已断开';
-        setTerminalBar('Claw 终端 — 点「连接」重新进入', false);
-        showPlaceholder(true);
+        setComposerBar('Claw 对话 — 点「连接」重新进入', false);
+        syncComposerState();
         refreshInventory();
       };
       ws.onerror = () => {
         $('status').textContent = 'WebSocket 错误';
-        setTerminalBar('连接失败 — 请重试', false);
-        showPlaceholder(true);
+        setComposerBar('连接失败 — 请重试', false);
+        syncComposerState();
       };
     }
 
@@ -537,14 +553,23 @@
       const id = newSessionId();
       selectSession(id);
       await refreshInventory();
-      connectSession(id).catch((e) => { $('status').textContent = String(e); showPlaceholder(true); });
+      connectSession(id).catch((e) => { $('status').textContent = String(e); });
     };
     $('btnConnect').onclick = () => {
       if (!selectedSessionId) return;
-      connectSession(selectedSessionId).catch((e) => { $('status').textContent = String(e); showPlaceholder(true); });
+      connectSession(selectedSessionId).catch((e) => { $('status').textContent = String(e); });
     };
     $('btnStop').onclick = () => stopWorker().catch((e) => { $('status').textContent = String(e); });
     $('btnRefresh').onclick = () => refreshInventory().catch((e) => { $('status').textContent = String(e); });
+    $('btnSend').onclick = () => sendMessage();
+    $('composer').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+    $('composer').addEventListener('input', autoResizeComposer);
+    window.addEventListener('resize', syncTtydSize);
     $('projId').onchange = () => {
       selectedSessionId = '';
       if (!connectedSessionId) connectedSessionId = '';
@@ -553,8 +578,10 @@
 
     fetch('/__config__').then((r) => r.json()).then(async (c) => {
       gatewayBase = c.defaultGatewayBase || '';
-      if (!ensureTerm()) {
-        $('status').textContent = '终端组件加载失败，请硬刷新 (Cmd+Shift+R)';
+      try {
+        ensureClawDisplay();
+      } catch (e) {
+        $('status').textContent = String(e);
         return;
       }
       try {

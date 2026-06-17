@@ -58,6 +58,19 @@ Author: kejiqing
 - **All `deploy/stack/*.env` except `.env.example`:** generated or overridden by **`./deploy/stack/gateway.sh`** / `deploy/stack/lib/*.sh` — do not edit by hand; re-run `gateway.sh up` after changing root `.env`.
 - **Never create `deploy/stack/.env`** — Compose loads it implicitly and fights root `.env` / release pins (`docs/env-files.md`).
 
+## Interactive coding terminal (CDP)
+
+| Layer | Path | Role |
+| --- | --- | --- |
+| **Claw CLI display** | `rust/crates/rusty-claude-cli/src/display.rs` | `DisplaySession`: ANSI (local TTY) vs OSC **Claw Display Protocol** (`CLAW_DISPLAY_MODE=web`) |
+| **Worker env** | `session_terminal_api.rs` ttyd spawn | Sets `CLAW_DISPLAY_MODE=web` for browser workers |
+| **Web bundle** | `web/claw-display/` → `web/gateway-async-playground/claw-display/` | `DisplayRouter`: strip OSC → document pane (markdown) + status bar; clean bytes → xterm |
+| **Playground UI** | `web/gateway-async-playground/coding.html` | Hybrid shell: document view + xterm input pane |
+
+CDP v1 frame (embedded in ttyd stdout): `ESC ] 1337 ; Claw ; <base64url(json)> BEL` — events `content.delta`, `content.flush`, `status`, `thinking`, `turn.begin`. One WS (ttyd); no second SSE for interactive REPL.
+
+Build (local): `CLAW_DISPLAY_LOCAL_BUILD=1 ./deploy/stack/gateway.sh claw-display-build`
+
 ## See also
 
 - `docs/env-files.md` — 人手 vs 生成物路径表、禁止项

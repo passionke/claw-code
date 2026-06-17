@@ -138,8 +138,9 @@ impl LineEditor {
     }
 
     pub fn read_line(&mut self) -> io::Result<ReadOutcome> {
-        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-            return self.read_line_fallback();
+        // Web worker (ttyd): PTY is a TTY but must not run rustyline echo/redraw — CDP owns the UI.
+        if web_display_mode() || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return self.read_line_silent();
         }
 
         if let Some(helper) = self.editor.helper_mut() {
@@ -179,11 +180,7 @@ impl LineEditor {
         writeln!(stdout)
     }
 
-    fn read_line_fallback(&self) -> io::Result<ReadOutcome> {
-        let mut stdout = io::stdout();
-        write!(stdout, "{}", self.prompt)?;
-        stdout.flush()?;
-
+    fn read_line_silent(&self) -> io::Result<ReadOutcome> {
         let mut buffer = String::new();
         let bytes_read = io::stdin().read_line(&mut buffer)?;
         if bytes_read == 0 {
@@ -195,6 +192,27 @@ impl LineEditor {
         }
         Ok(ReadOutcome::Submit(buffer))
     }
+
+    fn read_line_fallback(&self) -> io::Result<ReadOutcome> {
+        if web_display_mode() {
+            return self.read_line_silent();
+        }
+        let mut stdout = io::stdout();
+        write!(stdout, "{}", self.prompt)?;
+        stdout.flush()?;
+        self.read_line_silent()
+    }
+}
+
+#[must_use]
+fn web_display_mode() -> bool {
+    matches!(
+        std::env::var("CLAW_DISPLAY_MODE")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("web")
+    )
 }
 
 fn slash_command_prefix(line: &str, pos: usize) -> Option<&str> {
@@ -304,6 +322,27 @@ mod tests {
         let _ = helper.highlight("draft", 5);
 
         assert_eq!(helper.current_line(), "draft");
+    }
+
+    #[test]
+    fn web_display_mode_from_env() {
+        assert!(web_display_mode_with(Some("web")));
+        assert!(!web_display_mode_with(Some("ansi")));
+        assert!(!web_display_mode_with(None));
+    }
+
+    fn web_display_mode_with(mode: Option<&str>) -> bool {
+        let prev = std::env::var("CLAW_DISPLAY_MODE").ok();
+        match mode {
+            Some(value) => std::env::set_var("CLAW_DISPLAY_MODE", value),
+            None => std::env::remove_var("CLAW_DISPLAY_MODE"),
+        }
+        let result = super::web_display_mode();
+        match prev {
+            Some(value) => std::env::set_var("CLAW_DISPLAY_MODE", value),
+            None => std::env::remove_var("CLAW_DISPLAY_MODE"),
+        }
+        result
     }
 
     #[test]

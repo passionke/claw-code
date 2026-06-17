@@ -265,6 +265,7 @@ fi
 export HOME=/claw_host_root
 export CLAW_PROJECT_CONFIG_ROOT=/claw_ds
 export CLAW_GATEWAY_WORK_ROOT=/claw_host_root
+export CLAW_DISPLAY_MODE=web
 export XDG_CONFIG_HOME=/claw_host_root/.config
 export XDG_CACHE_HOME=/claw_host_root/.cache
 export XDG_DATA_HOME=/claw_host_root/.local/share

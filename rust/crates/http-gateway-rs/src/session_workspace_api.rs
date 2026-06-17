@@ -2,7 +2,8 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
+use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +40,15 @@ pub struct WorkspaceFileQuery {
     pub proj_id: i64,
     pub path: String,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMediaQuery {
+    pub proj_id: i64,
+    pub path: String,
+}
+
+const MAX_MEDIA_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +188,69 @@ pub async fn workspace_file(
         content,
         truncated,
     }))
+}
+
+fn workspace_media_content_type(path: &Path) -> Option<&'static str> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("png") | Some("PNG") => Some("image/png"),
+        Some("jpg") | Some("jpeg") | Some("JPG") | Some("JPEG") => Some("image/jpeg"),
+        Some("gif") | Some("GIF") => Some("image/gif"),
+        Some("webp") | Some("WEBP") => Some("image/webp"),
+        Some("svg") | Some("SVG") => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
+pub async fn workspace_media(
+    ctx: WorkspaceApiContext,
+    session_id: String,
+    q: WorkspaceMediaQuery,
+) -> Result<impl IntoResponse, TerminalApiError> {
+    let rel = safe_rel_path(&q.path)?;
+    let root = session_home_under_work_root(&ctx.work_root, q.proj_id, &session_id);
+    let full = if rel.is_empty() {
+        return Err(TerminalApiError::new(
+            StatusCode::BAD_REQUEST,
+            "path required",
+        ));
+    } else {
+        root.join(&rel)
+    };
+    if !full.starts_with(&root) {
+        return Err(TerminalApiError::new(
+            StatusCode::BAD_REQUEST,
+            "path escapes session root",
+        ));
+    }
+    let content_type = workspace_media_content_type(&full).ok_or_else(|| {
+        TerminalApiError::new(
+            StatusCode::BAD_REQUEST,
+            "unsupported media type (png, jpg, gif, webp, svg only)",
+        )
+    })?;
+    let meta = std::fs::metadata(&full)
+        .map_err(|_| TerminalApiError::new(StatusCode::NOT_FOUND, "file not found"))?;
+    if meta.is_dir() {
+        return Err(TerminalApiError::new(
+            StatusCode::BAD_REQUEST,
+            "path is a directory",
+        ));
+    }
+    if meta.len() as usize > MAX_MEDIA_BYTES {
+        return Err(TerminalApiError::new(
+            StatusCode::BAD_REQUEST,
+            "media file too large",
+        ));
+    }
+    let bytes = std::fs::read(&full)
+        .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "private, max-age=60"),
+        ],
+        bytes,
+    ))
 }
 
 #[must_use]
