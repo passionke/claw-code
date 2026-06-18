@@ -36,11 +36,7 @@ pub trait DisplaySink {
 
 #[must_use]
 pub fn display_mode() -> DisplayMode {
-    match env::var("CLAW_DISPLAY_MODE")
-        .ok()
-        .as_deref()
-        .map(str::trim)
-    {
+    match env::var("CLAW_DISPLAY_MODE").ok().as_deref().map(str::trim) {
         Some("web") => DisplayMode::Web,
         _ => DisplayMode::Ansi,
     }
@@ -377,7 +373,9 @@ pub fn strip_claw_osc_frames(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_mode, strip_claw_osc_frames, DisplayMode, DisplaySession, DisplaySink, StatusPhase};
+    use super::{
+        display_mode, strip_claw_osc_frames, DisplayMode, DisplaySession, DisplaySink, StatusPhase,
+    };
     use std::io::{self, Write};
     use std::sync::{Mutex, MutexGuard};
 
@@ -455,10 +453,10 @@ mod tests {
             let mut buf = Vec::new();
             let mut session = DisplaySession::new(&mut buf);
             session.begin_turn("写一首诗").expect("begin");
+            session.content_delta("荷风送晚凉。\n").expect("delta");
             session
-                .content_delta("荷风送晚凉。\n")
-                .expect("delta");
-            session.status(StatusPhase::Done, "✨ Done").expect("status");
+                .status(StatusPhase::Done, "✨ Done")
+                .expect("status");
             let raw = String::from_utf8_lossy(&buf);
             assert!(raw.contains("\x1b]1337;Claw;"));
             assert!(raw.contains('\x07'));

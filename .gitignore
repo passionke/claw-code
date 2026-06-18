@@ -78,6 +78,9 @@ deploy/stack/.tmp-bin-check/
 deploy/stack/claw.claw-vscode-*.vsix
 deploy/stack/claw.ovs-chat-demo-*.vsix
 deploy/stack/claw-ovs-extensions/
+deploy/stack/.cargo-build-cache/
+deploy/stack/.claw-worker-check
+deploy/stack/claw-pg-data/
 deploy/stack/.claw-postgres-network.override.yml
 deploy/stack/.claw-instance.envfile.override.yml
 # Admin UI hashed bundles (local build; do not commit)
@@ -86,6 +89,7 @@ web/gateway-admin/dist/assets/
 # Local qemu/rust crash dumps (large; never commit)
 rust/*.core
 rust/.cargo/config.toml
+sandbox/.cargo/config.toml
 # Compose auto-loads this filename next to podman-compose.yml — do not create; use repo root `.env` only.
 deploy/stack/.env
 

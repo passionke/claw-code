@@ -43,6 +43,7 @@ use api::{
     ToolResultContentBlock,
 };
 
+use brand::{MossBannerFields, MOSS_PRODUCT_NAME};
 use commands::{
     classify_skills_slash_command, handle_agents_slash_command, handle_agents_slash_command_json,
     handle_mcp_slash_command, handle_mcp_slash_command_json, handle_plugins_slash_command,
@@ -51,14 +52,13 @@ use commands::{
     slash_command_specs, validate_slash_command_input, SkillSlashDispatch, SlashCommand,
 };
 use compat_harness::{extract_manifest, UpstreamPaths};
+use display::{
+    display_mode, repl_eprintln, repl_finish_command_turn, repl_println,
+    web_display_system_appendix, DisplayMode, DisplaySession, DisplaySink, StatusPhase,
+};
 use gateway_solve_turn::run_gateway_solve_turn;
 use init::initialize_repo;
 use plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
-use brand::{MossBannerFields, MOSS_PRODUCT_NAME};
-use display::{
-    display_mode, repl_eprintln, repl_finish_command_turn, repl_println, web_display_system_appendix,
-    DisplayMode, DisplaySession, DisplaySink, StatusPhase,
-};
 use render::{strip_ansi, TerminalRenderer};
 use runtime::{
     check_base_commit, format_stale_base_warning, format_usd, load_oauth_credentials,
@@ -3743,7 +3743,9 @@ fn run_stale_base_preflight(flag_value: Option<&str>) {
     }
 }
 
-fn emit_repl_turn_error(error: Box<dyn std::error::Error>) -> Result<(), Box<dyn std::error::Error>> {
+fn emit_repl_turn_error(
+    error: Box<dyn std::error::Error>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if display_mode() == DisplayMode::Web {
         let mut stdout = io::stdout();
         let mut display = DisplaySession::new(&mut stdout);
@@ -3792,7 +3794,10 @@ fn run_repl(
     if display_mode() == DisplayMode::Web {
         let mut stdout = io::stdout();
         let mut display = DisplaySession::new(&mut stdout);
-        display.moss_banner(&cli.moss_banner_fields(), &format_connected_line(&cli.model))?;
+        display.moss_banner(
+            &cli.moss_banner_fields(),
+            &format_connected_line(&cli.model),
+        )?;
     } else {
         println!("{}", cli.startup_banner());
         println!("{}", format_connected_line(&cli.model));
@@ -5239,9 +5244,7 @@ impl LiveCli {
         mode: Option<String>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let Some(mode) = mode else {
-            repl_println(&format_permissions_report(
-                self.permission_mode.as_str(),
-            ))?;
+            repl_println(&format_permissions_report(self.permission_mode.as_str()))?;
             return Ok(false);
         };
 
@@ -5272,10 +5275,7 @@ impl LiveCli {
             self.thinking_enabled_cli,
         )?;
         self.replace_runtime(runtime)?;
-        repl_println(&format_permissions_switch_report(
-            &previous,
-            normalized,
-        ))?;
+        repl_println(&format_permissions_switch_report(&previous, normalized))?;
         Ok(true)
     }
 
@@ -5722,10 +5722,7 @@ impl LiveCli {
             return Ok(());
         }
 
-        repl_println(&format_commit_preflight_report(
-            branch.as_deref(),
-            summary,
-        ))?;
+        repl_println(&format_commit_preflight_report(branch.as_deref(), summary))?;
         Ok(())
     }
 
@@ -6633,9 +6630,9 @@ fn run_init(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Er
     let message = report.render();
     match output_format {
         CliOutputFormat::Text => repl_println(&message)?,
-        CliOutputFormat::Json => repl_println(&serde_json::to_string_pretty(
-            &init_json_value(&report, &message),
-        )?)?,
+        CliOutputFormat::Json => repl_println(&serde_json::to_string_pretty(&init_json_value(
+            &report, &message,
+        ))?)?,
     }
     Ok(())
 }
@@ -7387,9 +7384,7 @@ fn short_tool_id(id: &str) -> String {
     format!("{prefix}…")
 }
 
-fn build_system_prompt(
-    interactive_repl: bool,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn build_system_prompt(interactive_repl: bool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut sections = load_system_prompt(
         env::current_dir()?,
         default_system_date(),
@@ -8409,11 +8404,21 @@ impl AnthropicRuntimeClient {
         let mut stdout = io::stdout();
         let mut sink = io::sink();
         if self.emit_output {
-            self.consume_stream_on_writer(&mut stdout, message_request, apply_stall_timeout, consume_started_at)
-                .await
+            self.consume_stream_on_writer(
+                &mut stdout,
+                message_request,
+                apply_stall_timeout,
+                consume_started_at,
+            )
+            .await
         } else {
-            self.consume_stream_on_writer(&mut sink, message_request, apply_stall_timeout, consume_started_at)
-                .await
+            self.consume_stream_on_writer(
+                &mut sink,
+                message_request,
+                apply_stall_timeout,
+                consume_started_at,
+            )
+            .await
         }
     }
 
@@ -8515,9 +8520,9 @@ impl AnthropicRuntimeClient {
                             if let Some(progress_reporter) = &self.progress_reporter {
                                 progress_reporter.mark_text_phase(&text);
                             }
-                            display.content_delta(&text).map_err(|error| {
-                                RuntimeError::new(error.to_string())
-                            })?;
+                            display
+                                .content_delta(&text)
+                                .map_err(|error| RuntimeError::new(error.to_string()))?;
                             events.push(AssistantEvent::TextDelta(text));
                         }
                     }
@@ -8529,9 +8534,9 @@ impl AnthropicRuntimeClient {
                     ContentBlockDelta::ThinkingDelta { thinking } => {
                         if !thinking.is_empty() {
                             if !block_has_thinking_summary {
-                                display.thinking_summary(None, false).map_err(|error| {
-                                    RuntimeError::new(error.to_string())
-                                })?;
+                                display
+                                    .thinking_summary(None, false)
+                                    .map_err(|error| RuntimeError::new(error.to_string()))?;
                                 block_has_thinking_summary = true;
                             }
                             events.push(AssistantEvent::ThinkingDelta(thinking));
@@ -8541,9 +8546,9 @@ impl AnthropicRuntimeClient {
                 },
                 ApiStreamEvent::ContentBlockStop(_) => {
                     block_has_thinking_summary = false;
-                    display.content_flush().map_err(|error| {
-                        RuntimeError::new(error.to_string())
-                    })?;
+                    display
+                        .content_flush()
+                        .map_err(|error| RuntimeError::new(error.to_string()))?;
                     if let Some((id, name, input)) = pending_tool.take() {
                         if let Some(progress_reporter) = &self.progress_reporter {
                             progress_reporter.mark_tool_phase(&name, &input);
@@ -8569,9 +8574,9 @@ impl AnthropicRuntimeClient {
                 }
                 ApiStreamEvent::MessageStop(_) => {
                     saw_stop = true;
-                    display.content_flush().map_err(|error| {
-                        RuntimeError::new(error.to_string())
-                    })?;
+                    display
+                        .content_flush()
+                        .map_err(|error| RuntimeError::new(error.to_string()))?;
                     events.push(AssistantEvent::MessageStop);
                 }
             }
@@ -9023,7 +9028,9 @@ fn normalize_worker_display_path(path: &str) -> String {
     } else if let Some(rest) = p.strip_prefix("/claw_host_root") {
         p = rest.trim_start_matches('/');
     }
-    p.trim_start_matches("./").trim_start_matches('/').to_string()
+    p.trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
 }
 
 fn format_tool_call_detail_plain(
@@ -9503,12 +9510,12 @@ fn push_output_block<W: Write>(
     match block {
         OutputContentBlock::Text { text } => {
             if !text.is_empty() {
-                display.content_delta(&text).map_err(|error| {
-                    RuntimeError::new(error.to_string())
-                })?;
-                display.content_flush().map_err(|error| {
-                    RuntimeError::new(error.to_string())
-                })?;
+                display
+                    .content_delta(&text)
+                    .map_err(|error| RuntimeError::new(error.to_string()))?;
+                display
+                    .content_flush()
+                    .map_err(|error| RuntimeError::new(error.to_string()))?;
                 events.push(AssistantEvent::TextDelta(text));
             }
         }
@@ -9961,7 +9968,7 @@ mod tests {
     use super::{
         build_runtime_plugin_state_with_loader, build_runtime_with_plugin_state,
         classify_error_kind, collect_session_prompt_history, create_managed_session_handle,
-        describe_tool_progress, DisplaySession, filter_tool_specs, format_bughunter_report,
+        describe_tool_progress, filter_tool_specs, format_bughunter_report,
         format_commit_preflight_report, format_commit_skipped_report, format_compact_report,
         format_connected_line, format_cost_report, format_history_timestamp,
         format_internal_prompt_progress_line, format_issue_report, format_model_report,
@@ -9979,10 +9986,10 @@ mod tests {
         resume_supported_slash_commands, run_resume_command, short_tool_id,
         slash_command_completion_candidates_with_sessions, split_error_hint, status_context,
         summarize_tool_payload_for_markdown, try_resolve_bare_skill_prompt, validate_no_args,
-        write_mcp_server_fixture, CliAction, CliOutputFormat, CliToolExecutor, GitWorkspaceSummary,
-        InternalPromptProgressEvent, InternalPromptProgressState, LiveCli, LocalHelpTopic,
-        PromptHistoryEntry, SlashCommand, StatusUsage, DEFAULT_MODEL, LATEST_SESSION_REFERENCE,
-        STUB_COMMANDS,
+        write_mcp_server_fixture, CliAction, CliOutputFormat, CliToolExecutor, DisplaySession,
+        GitWorkspaceSummary, InternalPromptProgressEvent, InternalPromptProgressState, LiveCli,
+        LocalHelpTopic, PromptHistoryEntry, SlashCommand, StatusUsage, DEFAULT_MODEL,
+        LATEST_SESSION_REFERENCE, STUB_COMMANDS,
     };
     use api::{ApiError, MessageResponse, OutputContentBlock, Usage};
     use plugins::{
