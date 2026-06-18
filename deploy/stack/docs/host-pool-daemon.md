@@ -148,6 +148,8 @@ Rust pool 逻辑变更后仍须：`cargo test` + `pack-deploy local` + **本节 
 
 设计细节：`docs/http-gateway-container-pool.md`、`docs/pool-registry.md`。
 
+**Gateway 怎么用沙箱 RPC**：[`sandbox/docs/gateway-integration.md`](../../sandbox/docs/gateway-integration.md)。
+
 **pool v1 消费端**：`tools` / `progressHistory` / `timeline` 均只读 PG。矩阵：`docs/pool-v1-consumer-matrix.md`；验收 `./deploy/stack/lib/check-connectivity.sh` [3c]。
 
 ---

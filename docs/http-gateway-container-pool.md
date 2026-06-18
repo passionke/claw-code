@@ -201,4 +201,4 @@ Rust 里容易把池、Docker CLI、租约、结果解析全写进 `main.rs`。*
 
 单机 Docker **v1 自写 CLI 调池**（不强制 `bollard`）；见仓库内计划 `.cursor/plans/gateway_container_pool_k8s_4340e53b.plan.md` 中「Rust 三方库」与「关键文件与目录」表。
 
-**Worker 镜像**：strict [`Containerfile.gateway-worker`](Containerfile.gateway-worker)；relaxed [`Containerfile.gateway-worker-relaxed`](Containerfile.gateway-worker-relaxed)（FROM strict + `curl`/`python3`）；与网关镜像由 [`deploy/stack/lib/build.sh`](lib/build.sh) **同一次**构建（见 [`deploy/stack/README.md`](README.md) §1.2）。
+**Worker 镜像**：strict [`Containerfile.gateway-worker`](../deploy/stack/Containerfile.gateway-worker)；relaxed [`Containerfile.gateway-worker-relaxed`](../deploy/stack/Containerfile.gateway-worker-relaxed)（FROM strict + `curl`/`python3`）；与网关镜像由 [`deploy/stack/lib/build.sh`](../deploy/stack/lib/build.sh) **同一次**构建（见 [`deploy/stack/README.md`](../deploy/stack/README.md) §1.2）。

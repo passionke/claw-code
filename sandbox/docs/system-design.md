@@ -122,6 +122,10 @@ Guest I/O **禁止**传裸绝对路径；用 `volume` + `rel_path`。`guest_read
 3. Pool acquire 零 materialize / ds bind
 4. macOS Pool launchd 存活
 
+**相关文档**
+
+- Gateway 消费本服务的 RPC 顺序与边界：[`gateway-integration.md`](gateway-integration.md)
+
 ---
 
 ## 性能优化（非本设计范围）

@@ -9,6 +9,7 @@ Author: kejiqing
 ## 文档
 
 - [系统详细设计（系分）](docs/system-design.md)
+- [**Gateway 怎么用沙箱（面向沙箱团队）**](docs/gateway-integration.md)
 - [索引（仓库根）](../docs/claw-sandbox-system-design.md)
 
 ## 快速开始
