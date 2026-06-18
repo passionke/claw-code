@@ -18,6 +18,7 @@ name = "claw-pool-daemon"
 path = "src/bin/claw-pool-daemon.rs"
 
 [dependencies]
+base64 = "0.22"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "ws"] }
 bytes = "1"

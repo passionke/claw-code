@@ -4,6 +4,7 @@ use serde_json::Value;
 
 pub const CLAW_EXTRA_CLIENT_ORIGIN: &str = "_claw_client_origin";
 pub const CLIENT_ORIGIN_GATEWAY_ADMIN: &str = "gateway-admin";
+pub const CLIENT_ORIGIN_OVS_CHAT: &str = "ovs-chat";
 pub const HEADER_CLIENT_ORIGIN: &str = "x-claw-client-origin";
 
 /// Resolve origin from HTTP header (preferred) or `extraSession._claw_client_origin`.

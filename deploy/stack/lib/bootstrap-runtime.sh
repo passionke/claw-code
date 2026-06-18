@@ -134,6 +134,15 @@ claw_ensure_default_project_ds() {
     return 1
   fi
   echo "bootstrap: proj=${proj_id} registered (project + init, GET config 200)"
+
+  echo "==> bootstrap GET /v1/projects/${proj_id}/ovs/workspace (claw.projId → proj_${proj_id}/home/.vscode)" >&2
+  resp="$(mktemp)"
+  http_code="$(curl -sS --connect-timeout 60 -o "${resp}" -w '%{http_code}' \
+    "http://127.0.0.1:${port}/v1/projects/${proj_id}/ovs/workspace" 2>/dev/null || echo 000)"
+  if [[ "${http_code}" != "200" ]]; then
+    echo "warning: GET /v1/projects/${proj_id}/ovs/workspace HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 300)" >&2
+  fi
+  rm -f "${resp}"
 }
 
 claw_bootstrap_project_if_missing() {

@@ -48,12 +48,19 @@ pub struct LeasedSlotInfo {
 /// Interactive `/coding` worker: bind host proj + session dirs; publish ttyd on loopback. Author: kejiqing
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InteractiveSessionBind {
-    /// Host path `work_root/proj_{id}` (ro → `/claw_ds`).
+    /// Host path `work_root/proj_{id}/home` (→ `/claw_ds`).
     pub proj_home_host: String,
     /// Host path to session workspace (rw → `/claw_host_root`).
     pub session_host_root: String,
     /// Host loopback port published as `127.0.0.1:{port}:7681`.
     pub ttyd_host_port: u16,
+    /// When `false`, project home bind is `:rw` (OVS `@claw` cwd=`/claw_ds`). Default `true` (`:ro`).
+    #[serde(default = "default_proj_home_readonly")]
+    pub proj_home_readonly: bool,
+}
+
+fn default_proj_home_readonly() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, Deserialize)]

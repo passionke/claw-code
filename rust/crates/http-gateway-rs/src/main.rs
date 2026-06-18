@@ -44,8 +44,9 @@ use http_gateway_rs::{
     claw_tap_cluster_state, client_origin, gateway_claw_tap_settings, gateway_global_settings,
     gateway_llm_config_sync, gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve,
     project_config_apply, project_config_version, project_entity_revision, project_extra_session,
-    project_git_sync, project_id, project_tools, session_db, session_merge, session_terminal_api,
-    session_workspace_api, turn_id, turn_timeline_api, turn_tools_api,
+    project_git_sync, project_id, project_tools, session_agent_api, session_db, session_merge,
+    session_ovs_api, session_terminal_api, session_workspace_api, turn_id, turn_timeline_api,
+    turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -150,6 +151,11 @@ impl AppState {
     #[must_use]
     fn workspace_api_ctx(&self) -> session_workspace_api::WorkspaceApiContext {
         session_workspace_api::workspace_api_context(self.cfg.work_root.clone())
+    }
+
+    #[must_use]
+    fn ovs_api_ctx(&self) -> session_ovs_api::OvsApiContext {
+        session_ovs_api::ovs_api_context(self.cfg.work_root.clone())
     }
 }
 
@@ -1642,6 +1648,11 @@ async fn main() {
         .route(
             "/v1/sessions/{session_id}/terminal/ws",
             get(terminal_ws_handler),
+        )
+        .route("/v1/sessions/{session_id}/agent/ws", get(agent_ws_handler))
+        .route(
+            "/v1/projects/{proj_id}/ovs/workspace",
+            get(ovs_workspace_handler),
         )
         .route(
             "/v1/sessions/{session_id}/workspace/tree",
@@ -3882,6 +3893,22 @@ async fn terminal_ws_handler(
     Query(q): Query<session_terminal_api::TerminalProjQuery>,
 ) -> impl IntoResponse {
     session_terminal_api::terminal_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
+}
+
+async fn agent_ws_handler(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_terminal_api::TerminalProjQuery>,
+) -> impl IntoResponse {
+    session_agent_api::agent_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
+}
+
+async fn ovs_workspace_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<session_ovs_api::OvsWorkspaceResponse>, session_ovs_api::OvsApiError> {
+    session_ovs_api::get_ovs_workspace(state.ovs_api_ctx(), &state.session_db, proj_id).await
 }
 
 async fn workspace_tree_handler(

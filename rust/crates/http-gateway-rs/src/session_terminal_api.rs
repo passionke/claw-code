@@ -22,6 +22,7 @@ use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
 use tracing::{info, warn};
 
 use crate::claw_tap_cluster_state::{self, ClawTapClusterHandle};
+use crate::client_origin;
 use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::sandbox_orchestrator::worker_isolation_to_sandbox;
@@ -253,7 +254,7 @@ fn ttyd_connect_host() -> String {
         .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
-const START_TTYD_SH: &str = r#"
+const START_TTYD_SH_TERMINAL: &str = r#"
 set -e
 if ! command -v ttyd >/dev/null 2>&1; then
   echo 'ttyd not installed in worker image' >&2
@@ -277,7 +278,7 @@ if [ -f /claw_host_root/.claw/terminal-llm.env ]; then
   set +a
 fi
 MODEL="${CLAW_DEFAULT_MODEL:-openai/mimo-v2.5}"
-# -d 1: suppress ttyd debug logs in the browser; -w session cwd for claw writes.
+# Non-OVS interactive terminal: cwd stays on session tmpfs (legacy /coding-style).
 nohup ttyd -d 1 -i 0.0.0.0 -p 7681 -W -w /claw_host_root \
   /usr/local/bin/claw --allow-broad-cwd --model "$MODEL" \
   >/claw_host_root/.claw/ttyd.log 2>&1 &
@@ -285,6 +286,48 @@ echo $! >/claw_host_root/.claw/ttyd.pid
 sleep 0.5
 kill -0 "$(cat /claw_host_root/.claw/ttyd.pid)" 2>/dev/null
 "#;
+
+/// OVS `@claw` interactive REPL: cwd = `/claw_ds` (same tree as OVS `proj_N/home`); session writes under `HOME=/claw_host_root`.
+const START_TTYD_SH_OVS: &str = r#"
+set -e
+if ! command -v ttyd >/dev/null 2>&1; then
+  echo 'ttyd not installed in worker image' >&2
+  exit 127
+fi
+if [ -f /claw_host_root/.claw/ttyd.pid ]; then
+  kill "$(cat /claw_host_root/.claw/ttyd.pid)" 2>/dev/null || true
+fi
+export HOME=/claw_host_root
+export CLAW_PROJECT_CONFIG_ROOT=/claw_ds
+export CLAW_GATEWAY_WORK_ROOT=/claw_host_root
+export CLAW_DISPLAY_MODE=web
+export XDG_CONFIG_HOME=/claw_host_root/.config
+export XDG_CACHE_HOME=/claw_host_root/.cache
+export XDG_DATA_HOME=/claw_host_root/.local/share
+mkdir -p /claw_host_root/.claw/sessions /claw_host_root/.config /claw_host_root/.cache /claw_host_root/.local/share
+if [ -f /claw_host_root/.claw/terminal-llm.env ]; then
+  set -a
+  # shellcheck source=/dev/null
+  . /claw_host_root/.claw/terminal-llm.env
+  set +a
+fi
+MODEL="${CLAW_DEFAULT_MODEL:-openai/mimo-v2.5}"
+# OVS alignment: project cwd matches openvscode-server workspace (`proj_N/home` → `/claw_ds`).
+nohup ttyd -d 1 -i 0.0.0.0 -p 7681 -W -w /claw_ds \
+  /usr/local/bin/claw --allow-broad-cwd --model "$MODEL" \
+  >/claw_host_root/.claw/ttyd.log 2>&1 &
+echo $! >/claw_host_root/.claw/ttyd.pid
+sleep 0.5
+kill -0 "$(cat /claw_host_root/.claw/ttyd.pid)" 2>/dev/null
+"#;
+
+fn start_ttyd_sh_for_session(session_id: &str) -> &'static str {
+    if session_id.starts_with("ovs-") {
+        START_TTYD_SH_OVS
+    } else {
+        START_TTYD_SH_TERMINAL
+    }
+}
 
 fn terminal_ws_path(session_id: &str, proj_id: i64) -> String {
     format!("/v1/sessions/{session_id}/terminal/ws?projId={proj_id}")
@@ -630,6 +673,55 @@ pub async fn terminal_start(
         )
     })?;
 
+    let session_home_rel = format!(
+        "proj_{}/sessions/{}",
+        req.proj_id,
+        crate::session_merge::sessions_directory_segment(session_id)
+    );
+    let client_origin = if session_id.starts_with("ovs-") {
+        Some(client_origin::CLIENT_ORIGIN_OVS_CHAT)
+    } else {
+        None
+    };
+    let now_ms = crate::persistence::transcript::now_ms();
+    if ctx
+        .session_db
+        .session_exists(session_id, req.proj_id)
+        .await
+        .map_err(|e| {
+            TerminalApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("session registry lookup: {e}"),
+            )
+        })?
+    {
+        ctx.session_db
+            .touch_updated(session_id, req.proj_id, now_ms)
+            .await
+            .map_err(|e| {
+                TerminalApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("session registry touch: {e}"),
+                )
+            })?;
+    } else {
+        ctx.session_db
+            .insert_session(
+                session_id,
+                req.proj_id,
+                &session_home_rel,
+                now_ms,
+                client_origin,
+            )
+            .await
+            .map_err(|e| {
+                TerminalApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("session registry insert: {e}"),
+                )
+            })?;
+    }
+
     let proj_dir = proj_work_dir(&ctx.work_root, req.proj_id);
     materialize_proj_home(&ctx.session_db, &proj_dir, req.proj_id)
         .await
@@ -698,6 +790,8 @@ pub async fn terminal_start(
         .to_string_lossy()
         .into_owned(),
         ttyd_host_port: ttyd_port,
+        // OVS `@claw`: cwd=`/claw_ds` must be writable; solve/other terminals stay `:ro`.
+        proj_home_readonly: !session_id.starts_with("ovs-"),
     };
 
     let lease = sandbox
@@ -717,7 +811,11 @@ pub async fn terminal_start(
     let ttyd_port = lease.ttyd_host_port.unwrap_or(ttyd_port);
 
     if let Err(e) = sandbox
-        .guest_exec_sh(slot_index, START_TTYD_SH, GuestExecActor::SlotWorker)
+        .guest_exec_sh(
+            slot_index,
+            start_ttyd_sh_for_session(session_id),
+            GuestExecActor::SlotWorker,
+        )
         .await
     {
         let _ = sandbox.release(slot_index).await;
@@ -778,6 +876,49 @@ pub async fn terminal_stop(
     Ok(Json(
         serde_json::json!({ "ok": true, "sessionId": session_id }),
     ))
+}
+
+/// Ensure an interactive worker + ttyd exist for agent/OVS chat (`ovs-{projId}` default).
+pub async fn ensure_terminal_active(
+    ctx: &TerminalApiContext,
+    proj_id: i64,
+    session_id: &str,
+) -> Result<ActiveTerminalSession, TerminalApiError> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err(TerminalApiError::new(
+            StatusCode::BAD_REQUEST,
+            "sessionId required",
+        ));
+    }
+    let key = TerminalSessionKey {
+        proj_id,
+        session_id: session_id.to_string(),
+    };
+    if let Some(active) = ctx.registry.get(&key).await {
+        materialize_proj_home(
+            &ctx.session_db,
+            &proj_work_dir(&ctx.work_root, proj_id),
+            proj_id,
+        )
+        .await
+        .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        return Ok(active);
+    }
+    let _ = terminal_start(
+        ctx.clone(),
+        Json(TerminalStartRequest {
+            proj_id,
+            session_id: session_id.to_string(),
+        }),
+    )
+    .await?;
+    ctx.registry.get(&key).await.ok_or_else(|| {
+        TerminalApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "terminal started but registry missing entry",
+        )
+    })
 }
 
 pub async fn terminal_reattach(
@@ -894,6 +1035,7 @@ async fn materialize_proj_home(
         tokio::fs::create_dir_all(proj_dir.join("home"))
             .await
             .map_err(|e| format!("mkdir proj home: {e}"))?;
+        write_proj_vscode_settings(proj_dir, proj_id).await?;
         return Ok(());
     };
     tokio::fs::create_dir_all(proj_dir.join(".claw"))
@@ -911,7 +1053,22 @@ async fn materialize_proj_home(
     project_config_apply::link_claw_compat_symlinks(proj_dir)
         .await
         .map_err(|e| format!("link claw compat symlinks: {e}"))?;
+    write_proj_vscode_settings(proj_dir, proj_id).await?;
     Ok(())
+}
+
+/// Full PG materialize for OVS workspace (`proj_N/home` + `CLAUDE.md` + interactive layout). OVS path only.
+pub async fn materialize_ovs_proj_workspace(
+    session_db: &GatewaySessionDb,
+    work_root: &Path,
+    proj_id: i64,
+) -> Result<(), String> {
+    let proj_dir = proj_work_dir(work_root, proj_id);
+    materialize_proj_home(session_db, &proj_dir, proj_id).await
+}
+
+async fn write_proj_vscode_settings(proj_dir: &Path, proj_id: i64) -> Result<(), String> {
+    crate::session_ovs_api::ensure_proj_claw_settings(proj_dir, proj_id).await
 }
 
 async fn resolve_terminal_llm_env(

@@ -1,0 +1,68 @@
+{
+  "name": "claw-vscode",
+  "displayName": "Claw",
+  "description": "Claw coding agent Chat participant for openvscode-server",
+  "version": "0.2.6",
+  "publisher": "claw",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onStartupFinished",
+    "onChatParticipant:claw.claw",
+    "onLanguageModelChatProvider:claw.lm"
+  ],
+  "extensionKind": ["workspace"],
+  "enabledApiProposals": ["defaultChatParticipant", "chatProvider"],
+  "main": "./extension.js",
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "claw.lm",
+        "displayName": "Claw Stub LM"
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "claw.claw",
+        "name": "claw",
+        "fullName": "Claw",
+        "description": "Claw coding agent — gateway-backed REPL",
+        "isDefault": true,
+        "isSticky": true,
+        "modes": ["ask", "agent", "edit"]
+      }
+    ],
+    "configuration": {
+      "title": "Claw",
+      "properties": {
+        "claw.projId": {
+          "type": "number",
+          "description": "Active project id (required for @claw). Authoritative value is written by Gateway into proj_N/home/.vscode/settings.json (see GET /v1/projects/{id}/ovs/workspace)."
+        },
+        "claw.agentWsBase": {
+          "type": "string",
+          "default": "",
+          "description": "WebSocket base for agent bridge (browser via Playground /ovs/agent/ws). Empty = auto (Remote EH uses gatewayHost)."
+        },
+        "claw.gatewayHost": {
+          "type": "string",
+          "default": "gateway-rs:8080",
+          "description": "Gateway host:port for Remote EH direct agent WS (no Playground cookie)"
+        },
+        "claw.gatewayPublicHost": {
+          "type": "string",
+          "default": "127.0.0.1:8088",
+          "description": "Gateway host:port reachable from the browser when OVS is opened on :13000 (agent WS)"
+        },
+        "claw.playgroundPort": {
+          "type": "string",
+          "default": "18765",
+          "description": "Playground listen port; when location.port matches, use /ovs/agent/ws proxy"
+        }
+      }
+    }
+  }
+}

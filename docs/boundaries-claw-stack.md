@@ -24,6 +24,7 @@ Author: kejiqing
 | **SQLBot (product)** | Your cluster (e.g. :8000 / :8001) | NL 问数、MCP 工具 `mcp_start` / `mcp_question`、业务库 | This repo (except optional PG/API **read** for config) |
 | **Transport adapter** | Out-of-repo or custom bridge | Remote MCP (SSE/HTTP) **wire** → one stdio-shaped child for the gateway | **Not** the name “SQLBot MCP” in front of Claw; Claw sees **`mcp__sqlbot__*`** from the **merged** server config |
 | **SQLBot Postgres (metadata)** | `SQLBOT_PG_*` | Encrypted datasource rows for **resolve** | Not the MCP port; not “running SQLBot” inside gateway |
+| **OVS Web IDE** | `deploy/stack` `openvscode-server` + `extensions/claw-vscode` | Project-scoped VS Code Web UI + `@claw` Chat | Worker pool, solve_async, `/coding` ttyd UI |
 
 ## Two SQLBot product channels (do not mix)
 
@@ -71,6 +72,23 @@ CDP v1 frame (embedded in ttyd stdout): `ESC ] 1337 ; Claw ; <base64url(json)> B
 
 Build (local): `CLAW_DISPLAY_LOCAL_BUILD=1 ./deploy/stack/gateway.sh claw-display-build`
 
+## Web IDE (openvscode-server) — primary interactive entry (OVS + plugin)
+
+| Layer | Path | Role |
+| --- | --- | --- |
+| **Product entry** | `/ovs?projId=N` (playground) or `:13000/ovs/` | VS Code Web IDE for `proj_N/home/`; **forward path** for `@claw` Chat (`/coding` shelved) |
+| **OVS service** | `deploy/stack/podman-compose.yml` → `openvscode-server` | Central **openvscode-server**; mounts `CLAW_WORK_ROOT` at `/home/workspace` |
+| **Extension** | `extensions/claw-vscode/`（`ovs-chat-demo` 仅 plumbing 参考） | `@claw` Chat + stub LM；agent WS via `/ovs/agent/ws` |
+| **Agent bridge** | `session_agent_api.rs` | `GET /v1/sessions/{id}/agent/ws` → ttyd CDP；每次 `prompt` 写 `gateway_turns`（`client_origin=ovs-chat`） |
+| **Project workspace** | `session_ovs_api.rs` | `GET /v1/projects/{id}/ovs/workspace` — folder contract |
+| **Session registry** | `session_terminal_api.rs` | `ovs-*` 首次 `terminal_start` → `gateway_sessions`（`client_origin=ovs-chat`） |
+
+Default OVS agent session id: `ovs-{projId}`（每 project 一个 REPL；后续 git 分支见 `docs/ovs-chat/PLAN.md`）。**OVS 交互** worker：`cwd=/claw_ds`（= `proj_N/home`）；**solve** worker：仍为 `/claw_host_root` session 工作区。
+
+Build (local): `./deploy/stack/gateway.sh build` builds `claw-openvscode-server:local` via `Containerfile.openvscode`.
+
+**OVS Chat 源码修复（另开工程）：** `docs/ovs-chat-source-handoff.md` — 调用链、证据、证伪清单、demo 成功标准。
+
 ## See also
 
 - `docs/env-files.md` — 人手 vs 生成物路径表、禁止项
@@ -80,3 +98,8 @@ Build (local): `CLAW_DISPLAY_LOCAL_BUILD=1 ./deploy/stack/gateway.sh claw-displa
 - `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 与 **宿主机 `claw-sandbox` / Docker·Podman 容器池**
 - `sandbox/docs/system-design.md` — pool_outside 终态（单 pool、HTTP RPC）
 - `docs/persistence-model.md` — solve **磁盘 jsonl（运行时）** 与 **`gateway_turns` 终态（交接）** 的分工与 `turn_id` 边界
+- `docs/ovs-chat-source-handoff.md` — OVS `@demo` / `@claw` Chat 阻塞与 fork 修源码交接
+- `docs/ovs-chat/EXTENSION-STABLE-DEPLOY.md` — **@claw 稳定部署契约（install/cache/settings）**
+- `docs/ovs-chat/INTEGRATION.md` — OVS + claw-vscode 集成手册
+- `docs/ovs-chat/PLAN.md` — OVS 路线图（git 分支 → REPL 等）
+- `docs/ovs-chat-debug-log.md` — claw-code 内简版时间线

@@ -159,6 +159,7 @@ struct SlotMountPlan {
     session_host_root: Option<PathBuf>,
     proj_home_host: Option<PathBuf>,
     ttyd_host_port: Option<u16>,
+    proj_home_readonly: bool,
 }
 
 impl SlotMountPlan {
@@ -168,6 +169,7 @@ impl SlotMountPlan {
             session_host_root: None,
             proj_home_host: None,
             ttyd_host_port: None,
+            proj_home_readonly: true,
         }
     }
 
@@ -176,6 +178,7 @@ impl SlotMountPlan {
             proj_home_host: Some(PathBuf::from(bind.proj_home_host.trim())),
             session_host_root: Some(PathBuf::from(bind.session_host_root.trim())),
             ttyd_host_port: Some(bind.ttyd_host_port),
+            proj_home_readonly: bind.proj_home_readonly,
         })
     }
 
@@ -831,7 +834,17 @@ impl DockerPoolManager {
                 )
             })?;
             args.push("-v".into());
-            args.push(format!("{}:{}:ro", proj_abs.display(), DS_MOUNT_TARGET));
+            let mount_mode = if mount_plan.proj_home_readonly {
+                "ro"
+            } else {
+                "rw"
+            };
+            args.push(format!(
+                "{}:{}:{}",
+                proj_abs.display(),
+                DS_MOUNT_TARGET,
+                mount_mode
+            ));
         } else {
             args.push("--tmpfs".into());
             args.push(Self::claw_ds_tmpfs_arg());
