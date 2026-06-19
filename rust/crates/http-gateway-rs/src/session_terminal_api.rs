@@ -24,8 +24,8 @@ use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::sandbox_orchestrator::worker_isolation_to_sandbox;
 use crate::pool::{
     self, proj_work_dir, session_home_under_work_root, terminal_ws_connect_url,
-    InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec,
-    PoolClients, TtydConnectTarget,
+    InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec, PoolClients,
+    TtydConnectTarget,
 };
 use crate::project_config_apply;
 use crate::project_config_draft;
