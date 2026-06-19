@@ -4,6 +4,24 @@
 # Author: kejiqing
 set -euo pipefail
 
+# CI: drop cargo target debris; keep only release binaries for artifact upload. Author: kejiqing
+claw_linux_compile_prune_ci_bins() {
+  local out_dir="$1"
+  local item base keep
+  shopt -s nullglob
+  for item in "${out_dir}"/*; do
+    base="$(basename "${item}")"
+    keep=0
+    case "${base}" in
+      claw | http-gateway-rs | claw-sandbox) keep=1 ;;
+    esac
+    if [[ "${keep}" -eq 0 ]]; then
+      rm -rf "${item}"
+    fi
+  done
+  shopt -u nullglob
+}
+
 claw_linux_compile_release() {
   local root_dir="$1"
   local container_cli="$2"
@@ -78,6 +96,11 @@ claw_linux_compile_release() {
     )
   fi
 
+  local -a uid_args=()
+  if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
+    uid_args=(-e "CLAW_HOST_UID=$(id -u)" -e "CLAW_HOST_GID=$(id -g)")
+  fi
+
   # shellcheck disable=SC2086
   "${container_cli}" run --rm --platform "linux/${linux_arch}" \
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
@@ -86,6 +109,7 @@ claw_linux_compile_release() {
     -e "RUSTC_WRAPPER=sccache" \
     -e "SCCACHE_DIR=/root/.cache/sccache" \
     -e "SCCACHE_CACHE_SIZE=${sccache_size}" \
+    "${uid_args[@]}" \
     -v "${root_dir}:/workspace:Z" \
     "${vol_args[@]}" \
     -v "${out_root}:/artifacts:Z" \
@@ -120,8 +144,14 @@ claw_linux_compile_release() {
         sccache --show-stats || true
       fi
       ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw /artifacts/release/claw-sandbox
+      if [ -n "${CLAW_HOST_UID:-}" ] && [ -n "${CLAW_HOST_GID:-}" ]; then
+        chown -R "${CLAW_HOST_UID}:${CLAW_HOST_GID}" /artifacts
+      fi
     '
 
+  if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
+    claw_linux_compile_prune_ci_bins "${out_dir}"
+  fi
   for bin in http-gateway-rs claw claw-sandbox; do
     if [[ ! -f "${out_dir}/${bin}" ]]; then
       echo "error: missing ${out_dir}/${bin} after linux compile" >&2
