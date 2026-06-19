@@ -61,9 +61,9 @@ export interface PromptLimitsJson {
   instructionTotalMaxChars?: number;
 }
 
-/** Per-ds pool worker profile (`project_config.worker_isolation_json`). Author: kejiqing */
+/** Per-ds worker backend (`project_config.worker_isolation_json`). Author: kejiqing */
 export interface WorkerIsolationJson {
-  mode: "strict" | "relaxed";
+  mode: "strict" | "relaxed" | "sandbox";
 }
 
 export interface ProjectConfig {

@@ -83,6 +83,12 @@ impl SandboxOrchestratedPool {
             .get_worker_isolation_json(proj_id)
             .await
             .unwrap_or_else(|_| default_worker_isolation_json());
+        if super::worker_isolation::is_fc_sandbox_mode(&json) {
+            return Err(
+                "internal: podman pool acquire for proj with worker_isolation_json.mode=sandbox"
+                    .into(),
+            );
+        }
         Ok(worker_isolation_to_sandbox(mode_from_json(&json)))
     }
 

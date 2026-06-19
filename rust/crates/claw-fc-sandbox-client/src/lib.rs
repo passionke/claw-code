@@ -6,4 +6,4 @@ mod types;
 
 pub use client::FcSandboxClient;
 pub use config::FcSandboxConfig;
-pub use types::{FcSandboxHandle, FcSandboxVolumeMount};
+pub use types::{FcExecOutcome, FcSandboxHandle, FcSandboxVolumeMount};

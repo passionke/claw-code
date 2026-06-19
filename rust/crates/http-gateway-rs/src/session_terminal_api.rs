@@ -24,7 +24,7 @@ use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::sandbox_orchestrator::worker_isolation_to_sandbox;
 use crate::pool::{
     self, proj_work_dir, session_home_under_work_root, terminal_ws_connect_url,
-    InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend, InteractiveSessionSpec,
+    InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec,
     PoolClients, TtydConnectTarget,
 };
 use crate::project_config_apply;
@@ -106,7 +106,6 @@ pub struct TerminalApiContext {
     pub session_db: Arc<GatewaySessionDb>,
     pub registry: TerminalSessionRegistry,
     pub ttyd_connect_host: String,
-    pub interactive_backend: Arc<dyn InteractiveSandboxBackend>,
     pub pool_runtime_bin: String,
     pub claw_tap_cluster: ClawTapClusterHandle,
     pub llm_runtime: LlmRuntimeHandle,
@@ -520,7 +519,7 @@ async fn release_active_terminal(
     active: &ActiveTerminalSession,
 ) {
     let lease = active_terminal_to_lease(active);
-    if let Err(e) = ctx.interactive_backend.stop_session(&lease).await {
+    if let Err(e) = ctx.pool_clients.stop_interactive_lease(&lease).await {
         warn!(
             target: "claw_gateway_terminal",
             error = %e,
@@ -765,6 +764,12 @@ pub async fn terminal_start(
         )
     })?;
 
+    let interactive_backend = ctx
+        .pool_clients
+        .interactive_backend_for_proj(&ctx.session_db, req.proj_id)
+        .await
+        .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+
     let spec = InteractiveSessionSpec {
         session_id: session_id.to_string(),
         proj_id: req.proj_id,
@@ -776,8 +781,7 @@ pub async fn terminal_start(
         start_ttyd_script: start_ttyd_sh_for_session(session_id),
     };
 
-    let lease = ctx
-        .interactive_backend
+    let lease = interactive_backend
         .start_session(spec)
         .await
         .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
@@ -1080,7 +1084,6 @@ pub fn terminal_api_context(
     pool_clients: PoolClients,
     session_db: Arc<GatewaySessionDb>,
     registry: TerminalSessionRegistry,
-    interactive_backend: Arc<dyn InteractiveSandboxBackend>,
     pool_runtime_bin: String,
     claw_tap_cluster: ClawTapClusterHandle,
     llm_runtime: LlmRuntimeHandle,
@@ -1092,7 +1095,6 @@ pub fn terminal_api_context(
         session_db,
         registry,
         ttyd_connect_host: ttyd_connect_host(),
-        interactive_backend,
         pool_runtime_bin,
         claw_tap_cluster,
         llm_runtime,

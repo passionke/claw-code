@@ -14,6 +14,14 @@ pub struct FcSandboxHandle {
     pub ttyd_use_tls: bool,
 }
 
+/// Result of `claw gateway-solve-once` inside FC sandbox.
+#[derive(Debug, Clone)]
+pub struct FcExecOutcome {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 /// Optional NAS bind via E2B `volumeMounts` (FC console-registered volume name).
 #[derive(Debug, Clone, Serialize)]
 pub struct FcSandboxVolumeMount {

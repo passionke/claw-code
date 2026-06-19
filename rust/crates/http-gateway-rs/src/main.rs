@@ -131,8 +131,6 @@ pub(crate) struct AppState {
     claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
     /// Active interactive terminal sessions (`/coding`). Author: kejiqing
     terminal_registry: session_terminal_api::TerminalSessionRegistry,
-    /// Interactive backend (`podman` pool or FC cloud sandbox). Author: kejiqing
-    interactive_backend: Arc<dyn pool::InteractiveSandboxBackend>,
 }
 
 impl AppState {
@@ -144,7 +142,6 @@ impl AppState {
             self.pool_clients.clone(),
             self.session_db.clone(),
             self.terminal_registry.clone(),
-            Arc::clone(&self.interactive_backend),
             pool_runtime_cli_bin(self.cfg.solve_isolation).to_string(),
             self.claw_tap_cluster.clone(),
             self.llm_runtime.clone(),
@@ -1321,15 +1318,13 @@ async fn main() {
     }
     // Pool RPC: single claw-sandbox HTTP client. Author: kejiqing
     let live_report_hub = Arc::new(pool::LiveReportHub::default());
-    let pool_clients = pool::PoolClients::from_env(Arc::clone(&live_report_hub), work_root.clone());
     let fc_client = claw_fc_sandbox_client::FcSandboxConfig::from_env()
         .map(|cfg| Arc::new(claw_fc_sandbox_client::FcSandboxClient::new(cfg)));
-    let interactive_backend = pool::interactive_backend_from_env(
-        pool_clients.clone(),
-        fc_client,
-        pool_clients.pool_id().to_string(),
-        pool_rpc_host_work_root.clone(),
+    let pool_clients = pool::PoolClients::from_env(
+        Arc::clone(&live_report_hub),
         work_root.clone(),
+        fc_client.clone(),
+        pool_rpc_host_work_root.clone(),
     );
     let pool_rpc_remote = true;
     let co_located_pool_id = Some(pool_clients.pool_id().to_string());
@@ -1543,7 +1538,6 @@ async fn main() {
         llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
         terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
-        interactive_backend,
     };
 
     run_startup_project_config_apply(&state).await;
@@ -4070,7 +4064,8 @@ async fn solve(
     let (_, prebind_pool_id) = state
         .pool_clients
         .pool_and_id_for_proj(&state.session_db, req.proj_id)
-        .await;
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     register_solve_turn(
         &state.session_db,
         &new_turn_id,
@@ -6107,15 +6102,14 @@ async fn load_turn_progress_snapshot(
     status: &str,
     limit: usize,
 ) -> Result<pool_consumer_resolve::TurnProgressSnapshot, ApiError> {
-    pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
-        &state
-            .pool_clients
-            .pool_for_turn(&state.session_db, turn_id, session_id, proj_id)
-            .await,
-        turn_id,
-        status,
-    )
-    .await;
+    if let Ok(pool) = state
+        .pool_clients
+        .pool_for_turn(&state.session_db, turn_id, session_id, proj_id)
+        .await
+    {
+        pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(&pool, turn_id, status)
+            .await;
+    }
     pool_consumer_resolve::resolve_turn_progress(&state.session_db, turn_id, limit)
         .await
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))
@@ -6694,15 +6688,18 @@ async fn get_turn_tools(
         .await
         .map_err(|e| session_db_err(&e))?
         .unwrap_or_else(|| "unknown".to_string());
-    pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
-        &state
-            .pool_clients
-            .pool_for_turn(&state.session_db, &turn_id, &session_id, query.proj_id)
-            .await,
-        &turn_id,
-        &turn_status,
-    )
-    .await;
+    if let Ok(pool) = state
+        .pool_clients
+        .pool_for_turn(&state.session_db, &turn_id, &session_id, query.proj_id)
+        .await
+    {
+        pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
+            &pool,
+            &turn_id,
+            &turn_status,
+        )
+        .await;
+    }
     let progress_snap =
         pool_consumer_resolve::resolve_turn_progress(&state.session_db, &turn_id, 500)
             .await
@@ -6767,15 +6764,18 @@ async fn get_turn_timeline(
         .await
         .map_err(|e| session_db_err(&e))?
         .unwrap_or_else(|| "unknown".to_string());
-    pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
-        &state
-            .pool_clients
-            .pool_for_turn(&state.session_db, &turn_id, &session_id, query.proj_id)
-            .await,
-        &turn_id,
-        &turn_status,
-    )
-    .await;
+    if let Ok(pool) = state
+        .pool_clients
+        .pool_for_turn(&state.session_db, &turn_id, &session_id, query.proj_id)
+        .await
+    {
+        pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
+            &pool,
+            &turn_id,
+            &turn_status,
+        )
+        .await;
+    }
     let timeline = pool_consumer_resolve::resolve_turn_timeline(
         &state.session_db,
         &turn_id,
@@ -6867,7 +6867,8 @@ async fn enqueue_solve_async(
     let (_, prebind_pool_id) = state
         .pool_clients
         .pool_and_id_for_proj(&state.session_db, proj_id)
-        .await;
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     register_solve_turn(
         &state.session_db,
         &new_turn_id,
@@ -8721,7 +8722,8 @@ async fn run_solve_request(
     let (pool, _) = state
         .pool_clients
         .pool_and_id_for_proj(&state.session_db, req.proj_id)
-        .await;
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     solve_pool::run_solve_request_docker(
         state,
         req,

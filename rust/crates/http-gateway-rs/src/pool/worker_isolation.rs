@@ -1,4 +1,4 @@
-//! Per-ds pool worker isolation (strict vs relaxed). Only pool-daemon reads mode. Author: kejiqing
+//! Per-project worker execution profile (podman pool strict/relaxed vs FC cloud sandbox). Author: kejiqing
 
 use serde_json::{json, Value};
 
@@ -7,6 +7,13 @@ pub enum WorkerIsolationMode {
     #[default]
     Strict,
     Relaxed,
+}
+
+/// Where the project runs workers (podman pool vs FC cloud sandbox).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerExecutionBackend {
+    PodmanPool { isolation: WorkerIsolationMode },
+    FcSandbox,
 }
 
 #[must_use]
@@ -25,22 +32,51 @@ pub fn mode_from_json(value: &Value) -> WorkerIsolationMode {
         .as_deref()
     {
         Some("relaxed") => WorkerIsolationMode::Relaxed,
+        Some("sandbox") => WorkerIsolationMode::Strict,
         _ => WorkerIsolationMode::Strict,
+    }
+}
+
+/// True when Admin selected FC cloud sandbox for this project.
+#[must_use]
+pub fn is_fc_sandbox_mode(value: &Value) -> bool {
+    value
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| s.eq_ignore_ascii_case("sandbox"))
+        .is_some()
+}
+
+/// Resolve podman profile vs FC sandbox from project JSON.
+#[must_use]
+pub fn execution_backend_from_json(value: &Value) -> WorkerExecutionBackend {
+    if is_fc_sandbox_mode(value) {
+        return WorkerExecutionBackend::FcSandbox;
+    }
+    WorkerExecutionBackend::PodmanPool {
+        isolation: mode_from_json(value),
     }
 }
 
 /// API label for `workerIsolationJson.mode` (requested ds isolation).
 #[must_use]
 pub fn isolation_mode_label(json: &Value) -> &'static str {
+    if is_fc_sandbox_mode(json) {
+        return "sandbox";
+    }
     match mode_from_json(json) {
         WorkerIsolationMode::Relaxed => "relaxed",
         WorkerIsolationMode::Strict => "strict",
     }
 }
 
-/// Global `CLAW_ALLOW_RELAXED_WORKER` gate + per-ds JSON.
+/// Global `CLAW_ALLOW_RELAXED_WORKER` gate + per-ds JSON (podman pool only).
 #[must_use]
 pub fn effective_mode(relaxed_allowed: bool, worker_isolation_json: &Value) -> WorkerIsolationMode {
+    if is_fc_sandbox_mode(worker_isolation_json) {
+        return WorkerIsolationMode::Strict;
+    }
     if !relaxed_allowed {
         return WorkerIsolationMode::Strict;
     }
@@ -63,9 +99,9 @@ pub fn validate_worker_isolation_json(value: &Value) -> Result<(), String> {
         return Err("workerIsolationJson.mode must be a string".into());
     };
     match s.trim().to_ascii_lowercase().as_str() {
-        "strict" | "relaxed" => Ok(()),
+        "strict" | "relaxed" | "sandbox" => Ok(()),
         other => Err(format!(
-            "workerIsolationJson.mode must be \"strict\" or \"relaxed\", got {other:?}"
+            "workerIsolationJson.mode must be \"strict\", \"relaxed\", or \"sandbox\", got {other:?}"
         )),
     }
 }
@@ -75,19 +111,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_json_is_strict() {
+    fn default_json_is_strict_podman() {
+        let json = default_worker_isolation_json();
+        assert_eq!(mode_from_json(&json), WorkerIsolationMode::Strict);
+        assert!(matches!(
+            execution_backend_from_json(&json),
+            WorkerExecutionBackend::PodmanPool {
+                isolation: WorkerIsolationMode::Strict
+            }
+        ));
+    }
+
+    #[test]
+    fn sandbox_mode_routes_fc() {
+        let json = json!({"mode": "sandbox"});
+        assert!(is_fc_sandbox_mode(&json));
+        assert_eq!(isolation_mode_label(&json), "sandbox");
         assert_eq!(
-            mode_from_json(&default_worker_isolation_json()),
-            WorkerIsolationMode::Strict
+            execution_backend_from_json(&json),
+            WorkerExecutionBackend::FcSandbox
         );
     }
 
     #[test]
-    fn relaxed_json_parses() {
-        assert_eq!(
-            mode_from_json(&json!({"mode": "relaxed"})),
-            WorkerIsolationMode::Relaxed
-        );
+    fn relaxed_json_parses_podman() {
+        assert!(matches!(
+            execution_backend_from_json(&json!({"mode": "relaxed"})),
+            WorkerExecutionBackend::PodmanPool {
+                isolation: WorkerIsolationMode::Relaxed
+            }
+        ));
     }
 
     #[test]

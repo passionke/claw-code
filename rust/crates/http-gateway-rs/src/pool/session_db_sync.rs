@@ -865,6 +865,105 @@ pub fn guest_session_marker_writes(
     ])
 }
 
+/// PG → host session paths for FC NAS-backed sandboxes (shared with gateway). Author: kejiqing
+pub async fn materialize_turn_via_sandbox_host_paths(
+    db: &GatewaySessionDb,
+    work_root: &Path,
+    _proj_work_dir: &Path,
+    input: &MaterializeInput,
+) -> Result<(), String> {
+    use tokio::fs;
+
+    let session_home = session_home_under_work_root(work_root, input.proj_id, &input.session_id);
+    fs::create_dir_all(session_home.join(".claw"))
+        .await
+        .map_err(|e| format!("mkdir session .claw: {e}"))?;
+
+    let task = db
+        .get_solve_task_json(&input.turn_id)
+        .await
+        .map_err(|e| format!("load solve_task_json: {e}"))?
+        .ok_or_else(|| format!("missing solve_task_json for turn {}", input.turn_id))?;
+    let task_bytes = serde_json::to_vec(&task).map_err(|e| format!("serialize task: {e}"))?;
+    if task_bytes.len() > SESSION_MANIFEST_MAX_BYTES {
+        return Err(format!(
+            "solve_task_json exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+        ));
+    }
+    fs::write(session_home.join("gateway-solve-task.json"), &task_bytes)
+        .await
+        .map_err(|e| format!("write gateway-solve-task.json: {e}"))?;
+
+    let jsonl_body = db
+        .render_session_jsonl(&input.session_id, input.proj_id)
+        .await
+        .map_err(|e| format!("render session jsonl: {e}"))?;
+    if jsonl_body.len() > SESSION_MANIFEST_MAX_BYTES {
+        return Err(format!(
+            "session transcript exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+        ));
+    }
+    if GatewaySessionDb::session_jsonl_has_messages(&jsonl_body) {
+        fs::write(
+            session_home.join(".claw/gateway-solve-session.jsonl"),
+            jsonl_body.as_bytes(),
+        )
+        .await
+        .map_err(|e| format!("write session jsonl: {e}"))?;
+    }
+
+    if let Ok(Some(row)) = db.get_project_config(input.proj_id).await {
+        for (path, bytes) in guest_session_marker_writes(&row)
+            .map_err(|e| format!("guest session markers proj {} (host): {e}", input.proj_id))?
+        {
+            let rel = path
+                .strip_prefix(&format!("{GUEST_WORK_ROOT}/"))
+                .unwrap_or(path.as_str());
+            let dest = session_home.join(rel);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| format!("mkdir marker parent: {e}"))?;
+            }
+            fs::write(&dest, bytes)
+                .await
+                .map_err(|e| format!("write marker {rel}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Import jsonl from host session home after FC exec (NAS shared with gateway). Author: kejiqing
+pub async fn readback_turn_from_session_home(
+    db: &GatewaySessionDb,
+    pool: &PgPool,
+    work_root: &Path,
+    session_id: &str,
+    proj_id: i64,
+    turn_id: &str,
+    user_prompt: &str,
+) -> Result<Vec<JsonlMessage>, String> {
+    use tokio::fs;
+
+    let session_home = session_home_under_work_root(work_root, proj_id, session_id);
+    let jsonl_path = session_home.join(".claw/gateway-solve-session.jsonl");
+    let jsonl = fs::read_to_string(&jsonl_path).await.unwrap_or_default();
+    let groups = crate::persistence::transcript::turn_message_groups_from_jsonl_contents(&jsonl);
+    let messages = groups.last().cloned().unwrap_or_else(|| {
+        vec![JsonlMessage {
+            role: "user".to_string(),
+            blocks: serde_json::json!([{"type":"text","text":user_prompt}]),
+            usage: None,
+        }]
+    });
+    let now = now_ms();
+    import_turn_messages_to_db(db, session_id, proj_id, turn_id, &messages, now)
+        .await
+        .map_err(|e| format!("import cc_messages: {e}"))?;
+    let _ = pool;
+    Ok(messages)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
