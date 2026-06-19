@@ -45,8 +45,8 @@ use http_gateway_rs::{
     gateway_claw_tap_settings, gateway_global_settings, gateway_llm_config_sync, gateway_translate,
     llm_probe, mcp_probe, pool, pool_consumer_resolve, project_config_apply,
     project_config_version, project_entity_revision, project_extra_session, project_git_sync,
-    project_id, project_tools, session_db, session_merge, turn_id, turn_timeline_api,
-    turn_tools_api,
+    project_id, project_tools, session_agent_api, session_db, session_merge, session_ovs_api,
+    session_terminal_api, session_workspace_api, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -129,6 +129,37 @@ pub(crate) struct AppState {
     llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle,
     /// clawTap cluster consistency (strict only; mismatch blocks solve). Author: kejiqing
     claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
+    /// Active interactive terminal sessions (`/coding`). Author: kejiqing
+    terminal_registry: session_terminal_api::TerminalSessionRegistry,
+    /// Interactive backend (`podman` pool or FC cloud sandbox). Author: kejiqing
+    interactive_backend: Arc<dyn pool::InteractiveSandboxBackend>,
+}
+
+impl AppState {
+    #[must_use]
+    fn terminal_api_ctx(&self) -> session_terminal_api::TerminalApiContext {
+        session_terminal_api::terminal_api_context(
+            self.cfg.work_root.clone(),
+            self.cfg.pool_rpc_host_work_root.clone(),
+            self.pool_clients.clone(),
+            self.session_db.clone(),
+            self.terminal_registry.clone(),
+            Arc::clone(&self.interactive_backend),
+            pool_runtime_cli_bin(self.cfg.solve_isolation).to_string(),
+            self.claw_tap_cluster.clone(),
+            self.llm_runtime.clone(),
+        )
+    }
+
+    #[must_use]
+    fn workspace_api_ctx(&self) -> session_workspace_api::WorkspaceApiContext {
+        session_workspace_api::workspace_api_context(self.cfg.work_root.clone())
+    }
+
+    #[must_use]
+    fn ovs_api_ctx(&self) -> session_ovs_api::OvsApiContext {
+        session_ovs_api::ovs_api_context(self.cfg.work_root.clone())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1291,6 +1322,15 @@ async fn main() {
     // Pool RPC: single claw-sandbox HTTP client. Author: kejiqing
     let live_report_hub = Arc::new(pool::LiveReportHub::default());
     let pool_clients = pool::PoolClients::from_env(Arc::clone(&live_report_hub), work_root.clone());
+    let fc_client = claw_fc_sandbox_client::FcSandboxConfig::from_env()
+        .map(|cfg| Arc::new(claw_fc_sandbox_client::FcSandboxClient::new(cfg)));
+    let interactive_backend = pool::interactive_backend_from_env(
+        pool_clients.clone(),
+        fc_client,
+        pool_clients.pool_id().to_string(),
+        pool_rpc_host_work_root.clone(),
+        work_root.clone(),
+    );
     let pool_rpc_remote = true;
     let co_located_pool_id = Some(pool_clients.pool_id().to_string());
     tracing::info!(
@@ -1502,6 +1542,8 @@ async fn main() {
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
         llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
+        terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
+        interactive_backend,
     };
 
     run_startup_project_config_apply(&state).await;
@@ -1594,6 +1636,48 @@ async fn main() {
         .route(
             "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
             post(cancel_session_turn),
+        )
+        .route("/v1/terminal/inventory", get(terminal_inventory_handler))
+        .route(
+            "/v1/terminal/pool-force-release",
+            post(terminal_pool_force_release_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/terminal/attach",
+            post(terminal_attach_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/terminal/start",
+            post(terminal_start_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/terminal/stop",
+            post(terminal_stop_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/terminal/reattach",
+            post(terminal_reattach_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/terminal/ws",
+            get(terminal_ws_handler),
+        )
+        .route("/v1/sessions/{session_id}/agent/ws", get(agent_ws_handler))
+        .route(
+            "/v1/projects/{proj_id}/ovs/workspace",
+            get(ovs_workspace_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/workspace/tree",
+            get(workspace_tree_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/workspace/file",
+            get(workspace_file_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/workspace/media",
+            get(workspace_media_handler),
         )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
@@ -3775,6 +3859,110 @@ async fn list_proj_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, Api
     Ok(out)
 }
 
+async fn terminal_inventory_handler(
+    State(state): State<AppState>,
+    Query(q): Query<session_terminal_api::TerminalProjQuery>,
+) -> Result<
+    Json<session_terminal_api::TerminalInventoryResponse>,
+    session_terminal_api::TerminalApiError,
+> {
+    session_terminal_api::terminal_inventory(state.terminal_api_ctx(), q).await
+}
+
+async fn terminal_pool_force_release_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, session_terminal_api::TerminalApiError> {
+    session_terminal_api::terminal_pool_force_release(state.terminal_api_ctx()).await
+}
+
+async fn terminal_attach_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Json(req): Json<session_terminal_api::TerminalStartRequest>,
+) -> Result<Json<session_terminal_api::TerminalStartResponse>, session_terminal_api::TerminalApiError>
+{
+    session_terminal_api::terminal_attach(state.terminal_api_ctx(), session_id, Json(req)).await
+}
+
+async fn terminal_start_handler(
+    State(state): State<AppState>,
+    Json(req): Json<session_terminal_api::TerminalStartRequest>,
+) -> Result<Json<session_terminal_api::TerminalStartResponse>, session_terminal_api::TerminalApiError>
+{
+    session_terminal_api::terminal_start(state.terminal_api_ctx(), Json(req)).await
+}
+
+async fn terminal_stop_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_terminal_api::TerminalProjQuery>,
+) -> Result<Json<Value>, session_terminal_api::TerminalApiError> {
+    session_terminal_api::terminal_stop(state.terminal_api_ctx(), session_id, q).await
+}
+
+async fn terminal_reattach_handler(
+    State(state): State<AppState>,
+    Json(req): Json<session_terminal_api::TerminalStartRequest>,
+) -> Result<Json<session_terminal_api::TerminalStartResponse>, session_terminal_api::TerminalApiError>
+{
+    session_terminal_api::terminal_reattach(state.terminal_api_ctx(), Json(req)).await
+}
+
+async fn terminal_ws_handler(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_terminal_api::TerminalProjQuery>,
+) -> impl IntoResponse {
+    session_terminal_api::terminal_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
+}
+
+async fn agent_ws_handler(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_agent_api::AgentProjQuery>,
+) -> impl IntoResponse {
+    session_agent_api::agent_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
+}
+
+async fn ovs_workspace_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<session_ovs_api::OvsWorkspaceResponse>, session_ovs_api::OvsApiError> {
+    session_ovs_api::get_ovs_workspace(state.ovs_api_ctx(), &state.session_db, proj_id).await
+}
+
+async fn workspace_tree_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_terminal_api::TerminalProjQuery>,
+) -> Result<
+    Json<session_workspace_api::WorkspaceTreeResponse>,
+    session_terminal_api::TerminalApiError,
+> {
+    session_workspace_api::workspace_tree(state.workspace_api_ctx(), session_id, q).await
+}
+
+async fn workspace_file_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_workspace_api::WorkspaceFileQuery>,
+) -> Result<
+    Json<session_workspace_api::WorkspaceFileResponse>,
+    session_terminal_api::TerminalApiError,
+> {
+    session_workspace_api::workspace_file(state.workspace_api_ctx(), session_id, q).await
+}
+
+async fn workspace_media_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_workspace_api::WorkspaceMediaQuery>,
+) -> Result<impl IntoResponse, session_terminal_api::TerminalApiError> {
+    session_workspace_api::workspace_media(state.workspace_api_ctx(), session_id, q).await
+}
+
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     let isolation = state.cfg.solve_isolation.as_str();
     let proj_workspaces = build_proj_workspaces_health(&state).await;
@@ -5044,7 +5232,7 @@ async fn get_gateway_global_settings_handler(
 async fn put_gateway_claw_tap_handler(
     State(state): State<AppState>,
     Json(req): Json<gateway_claw_tap_settings::PutClawTapSettingsInput>,
-) -> Result<Json<gateway_claw_tap_settings::ClawTapSettingsPublic>, ApiError> {
+) -> Result<Json<gateway_claw_tap_settings::PutClawTapSettingsResponse>, ApiError> {
     let body = gateway_claw_tap_settings::put_claw_tap_settings(&state.session_db, req)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
@@ -5223,6 +5411,16 @@ async fn apply_gateway_llm_model_with_sync(
         resp.outcome = outcome;
     } else if let Some(path) = sync.upstream_config_file {
         resp.outcome.env_file = path;
+    }
+    if let Some(restart) = sync.tap_restart {
+        resp.outcome.tap_restarted = restart.restarted;
+        if restart.restarted {
+            resp.outcome.message = restart
+                .message
+                .or_else(|| Some("local clawTap restarted after LLM apply".into()));
+        } else if let Some(msg) = restart.message {
+            resp.outcome.message = Some(msg);
+        }
     }
     Ok(resp)
 }

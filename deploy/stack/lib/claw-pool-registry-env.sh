@@ -7,7 +7,7 @@ claw_pool_daemon_database_url() {
     printf '%s' "${CLAW_POOL_DAEMON_DATABASE_URL}"
     return 0
   fi
-  local url="${CLAW_GATEWAY_DATABASE_URL:-}"
+  local url="${CLAW_GATEWAY_DATABASE_URL:-postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway}"
   if [[ -z "${url}" ]]; then
     return 1
   fi

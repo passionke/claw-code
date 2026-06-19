@@ -2,9 +2,9 @@
 # Author: kejiqing
 #
 # Chain:
-# - Push tag refs/tags/release-v* → build + push claw-code, claw-gateway-worker,
-#   claw-sandbox (host pool binary), claw-gateway-worker-relaxed (FROM strict worker),
-#   claw-gateway-playground (same tag).
+# - Push tag refs/tags/release-v* → linux-compile-once (single Rust build) → prebuilt images
+#   claw-code, claw-gateway-worker, claw-sandbox, claw-gateway-playground (same tag).
+# - build-and-push-relaxed-worker: FROM strict worker image.
 # - mirror-to-acr: pull GHCR tags → retag → push ACR (no second Rust compile).
 #
 # Optional repo/org Actions variable CONTAINER_BASE_REGISTRY (hostname only, no path):
@@ -22,19 +22,76 @@ permissions:
   packages: write
 
 jobs:
+  linux-compile-once:
+    if: startsWith(github.ref, 'refs/tags/release-v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify image rust/sandbox layout
+        run: bash deploy/stack/lib/verify-image-rust-layout.sh
+
+      - name: Resolve build base images
+        id: base_images
+        env:
+          CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
+        run: |
+          set -euo pipefail
+          REG="${CONTAINER_BASE_REGISTRY:-}"
+          if [ -z "${REG}" ]; then
+            REG="docker.io"
+          fi
+          RUST_IMAGE="${REG}/library/rust:1.88-bookworm"
+          DEBIAN_IMAGE="${REG}/library/debian:bookworm-slim"
+          NODE_IMAGE="${REG}/library/node:20-alpine"
+          echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
+          echo "rust_image=${RUST_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "debian_image=${DEBIAN_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "node_image=${NODE_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore linux-compile cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ci-cache/cargo-registry
+            .ci-cache/cargo-git
+            .ci-cache/sccache
+          key: linux-compile-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock', 'sandbox/Cargo.lock', 'deploy/stack/Containerfile.rust-compile') }}
+          restore-keys: |
+            linux-compile-${{ runner.os }}-
+
+      - name: Linux compile (once)
+        env:
+          CLAW_CONTAINER_RUNTIME: docker
+          CLAW_LINUX_COMPILE_CI: "1"
+          CLAW_USE_CN_CRATES_MIRROR: "0"
+          CLAW_USE_CN_RUST_MIRROR: "0"
+          CONTAINER_BASE_REGISTRY: ${{ steps.base_images.outputs.container_base_registry }}
+        run: bash deploy/stack/lib/linux-compile.sh
+
+      - name: Upload linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: deploy/stack/.linux-artifacts/release/
+          if-no-files-found: error
+          retention-days: 1
+
   build-and-push:
     if: startsWith(github.ref, 'refs/tags/release-v')
+    needs: linux-compile-once
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - package: claw-code
-            dockerfile: deploy/stack/Containerfile.gateway-rs
+            dockerfile: deploy/stack/Containerfile.gateway-rs.prebuilt
           - package: claw-gateway-worker
-            dockerfile: deploy/stack/Containerfile.gateway-worker
+            dockerfile: deploy/stack/Containerfile.gateway-worker.prebuilt
           - package: claw-sandbox
-            dockerfile: deploy/stack/Containerfile.claw-sandbox
+            dockerfile: deploy/stack/Containerfile.claw-sandbox.prebuilt
           - package: claw-gateway-playground
             dockerfile: deploy/stack/Containerfile.gateway-playground
     steps:
@@ -43,9 +100,12 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
 
-      - name: Verify image rust/sandbox layout
-        if: matrix.package == 'claw-code' || matrix.package == 'claw-gateway-worker' || matrix.package == 'claw-sandbox'
-        run: bash deploy/stack/lib/verify-image-rust-layout.sh
+      - name: Download linux artifacts
+        if: matrix.package != 'claw-gateway-playground'
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: deploy/stack/.linux-artifacts/release
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -104,11 +164,8 @@ jobs:
           file: ./${{ matrix.dockerfile }}
           push: ${{ startsWith(github.ref, 'refs/tags/release-v') }}
           build-args: |
-            RUST_BASE_IMAGE=${{ steps.base_images.outputs.rust_image }}
             DEBIAN_BASE_IMAGE=${{ steps.base_images.outputs.debian_image }}
             NODE_BASE_IMAGE=${{ steps.base_images.outputs.node_image }}
-            RUSTUP_DIST_SERVER=https://static.rust-lang.org
-            RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
           tags: ${{ steps.meta.outputs.tags }}
 
       - name: Verify playground admin assets in image
@@ -256,4 +313,3 @@ jobs:
           IMG="${PREFIX}/claw-gateway-playground:${RELEASE_TAG}"
           docker run --rm "${IMG}" sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
           echo "playground admin-dist ok in ${IMG}"
-

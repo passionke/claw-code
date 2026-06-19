@@ -18,7 +18,7 @@ if [[ ! -f .env ]]; then
 fi
 
 TAG="local"
-BUILD_FLAGS=(--no-clean)
+BUILD_FLAGS=()
 # macOS: slim playground + optional host dist bind-mount. Linux CI/runner: bake admin in image.
 if [[ "$(uname -s)" == Darwin ]]; then
   BUILD_FLAGS+=(--skip-playground)
@@ -27,7 +27,7 @@ UP_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --clean)
-      BUILD_FLAGS=()
+      BUILD_FLAGS=(--clean)
       if [[ "$(uname -s)" == Darwin ]]; then
         BUILD_FLAGS+=(--skip-playground)
       fi

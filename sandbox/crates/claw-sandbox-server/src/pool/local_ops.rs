@@ -12,7 +12,9 @@ pub struct LocalPoolOps(pub Arc<DockerPoolManager>);
 
 impl LocalPoolOps {
     pub async fn acquire_slot(&self, wait: Duration) -> Result<SlotLease, String> {
-        self.0.acquire_slot(wait, IsolationMode::Strict).await
+        self.0
+            .acquire_slot(wait, IsolationMode::Strict, None, None)
+            .await
     }
 
     pub async fn exec_solve(

@@ -1,0 +1,12 @@
+preset_id,provider_label,base_model_url,model_id,display_name
+deepseek-v4-pro,DeepSeek,https://api.deepseek.com/v1,deepseek-v4-pro,DeepSeek V4 Pro
+deepseek-v4-flash,DeepSeek,https://api.deepseek.com/v1,deepseek-v4-flash,DeepSeek V4 Flash
+dashscope-qwen-plus,阿里云 DashScope,https://dashscope.aliyuncs.com/compatible-mode/v1,qwen-plus,阿里云 Qwen Plus
+dashscope-qwen-max,阿里云 DashScope,https://dashscope.aliyuncs.com/compatible-mode/v1,qwen-max,阿里云 Qwen Max
+mimo-v2-flash,小米 MiMo,https://api.xiaomimimo.com/v1,mimo-v2-flash,小米 MiMo Flash
+mimo-v2-pro,小米 MiMo,https://api.xiaomimimo.com/v1,mimo-v2-pro,小米 MiMo Pro
+zhipu-glm4-flash,智谱 AI,https://open.bigmodel.cn/api/paas/v4,glm-4-flash,智谱 GLM-4 Flash
+zhipu-glm4-plus,智谱 AI,https://open.bigmodel.cn/api/paas/v4,glm-4-plus,智谱 GLM-4 Plus
+openrouter-gpt4o-mini,OpenRouter,https://openrouter.ai/api/v1,openai/gpt-4o-mini,OpenRouter GPT-4o mini
+openrouter-deepseek-v4-flash,OpenRouter,https://openrouter.ai/api/v1,deepseek/deepseek-v4-flash,OpenRouter DeepSeek V4 Flash
+openrouter-deepseek-v4-pro,OpenRouter,https://openrouter.ai/api/v1,deepseek/deepseek-v4-pro,OpenRouter DeepSeek V4 Pro

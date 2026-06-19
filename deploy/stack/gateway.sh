@@ -18,6 +18,7 @@ Commands:
   pack-deploy   Build gateway images + restart stack (slow; after Rust/image changes; log: .build.log)
   playground    Run host playground UI (solve_async + /admin; builds admin dist first)
   admin-build   Local only: gateway-admin dist (needs Node>=18; set CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1)
+  claw-display-build  Local only: claw-display bundle for /coding (set CLAW_DISPLAY_LOCAL_BUILD=1)
   admin-reload  Local only: admin-build + copy dist into playground container (not for --release servers)
   solve-once-local  Host-side one-turn gateway-solve-once (no worker container)
   up            Start/recreate gateway + pool only (does not stop/start postgres)
@@ -75,6 +76,7 @@ case "${cmd}" in
   pack-deploy) run_with_manual_hint "${LIB}/pack-deploy.sh" "$@" ;;
   playground) "${LIB}/playground.sh" "$@" ;;
   admin-build) "${LIB}/build-gateway-admin.sh" "$@" ;;
+  claw-display-build) "${LIB}/build-claw-display.sh" "$@" ;;
   admin-reload) "${LIB}/admin-reload.sh" "$@" ;;
   solve-once-local) "${LIB}/solve-once-local.sh" "$@" ;;
   up) run_with_manual_hint "${LIB}/up.sh" "$@" ;;

@@ -26,7 +26,8 @@ build_usage() {
 Usage: gateway.sh build [IMAGE_TAG] [options]
 
 Options:
-  --no-clean       Skip gateway.sh clean before build (default: clean first)
+  --clean          Run gateway.sh clean before build (full rebuild)
+  --no-clean       Skip clean (default; incremental compile)
   --log PATH       Tee full stdout/stderr to PATH (default: deploy/stack/.build.log)
   --no-log         Print only to terminal
   --in-container   Force in-image cargo build (slow on macOS; hits crates.io in build)
@@ -38,7 +39,7 @@ EOF
 }
 
 CLAW_BUILD_IN_CONTAINER_IMAGE=0
-CLAW_BUILD_NO_CLEAN=0
+CLAW_BUILD_CLEAN=0
 CLAW_BUILD_SKIP_PLAYGROUND=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,8 +47,12 @@ while [[ $# -gt 0 ]]; do
       build_usage
       exit 0
       ;;
+    --clean)
+      CLAW_BUILD_CLEAN=1
+      shift
+      ;;
     --no-clean)
-      CLAW_BUILD_NO_CLEAN=1
+      CLAW_BUILD_CLEAN=0
       shift
       ;;
     --log)
@@ -86,6 +91,7 @@ IMAGE_NAME="claw-gateway-rs:${IMAGE_TAG}"
 WORKER_IMAGE_NAME="claw-gateway-worker:${IMAGE_TAG}"
 RELAXED_WORKER_IMAGE_NAME="claw-gateway-worker-relaxed:${IMAGE_TAG}"
 PLAYGROUND_IMAGE_NAME="claw-gateway-playground:${IMAGE_TAG}"
+OVS_IMAGE_NAME="claw-openvscode-server:${IMAGE_TAG}"
 SANDBOX_IMAGE_NAME="claw-sandbox:${IMAGE_TAG}"
 
 step() {
@@ -108,8 +114,8 @@ setup_build_log
 CLAW_TIMING_LABEL="build timing"
 claw_timing_init
 
-if [[ "${CLAW_BUILD_NO_CLEAN}" != "1" ]]; then
-  step "0/N clean (default before build; gateway.sh build --no-clean to skip)"
+if [[ "${CLAW_BUILD_CLEAN}" == "1" ]]; then
+  step "0/N clean (gateway.sh build --clean)"
   "${ROOT_DIR}/deploy/stack/lib/clean.sh"
 fi
 
@@ -125,6 +131,7 @@ export CLAW_RUST_VERSION CLAW_RUST_IMAGE_TAG
 RUST_BASE_IMAGE="${REG}/library/rust:${CLAW_RUST_IMAGE_TAG}"
 DEBIAN_BASE_IMAGE="${REG}/library/debian:bookworm-slim"
 NODE_BASE_IMAGE="${REG}/library/node:20-alpine"
+OVS_BASE_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat}"
 echo "==> Rust locked: ${CLAW_RUST_VERSION} (image ${RUST_BASE_IMAGE})"
 
 cn_mirror_enabled() {
@@ -132,6 +139,35 @@ cn_mirror_enabled() {
   [[ "${CLAW_USE_CN_CRATES_MIRROR:-0}" == "1" ]] || [[ "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]]
 }
 
+
+claw_build_ovs_image() {
+  local container_cli="$1"
+  local image_name="$2"
+  local ovs_base="$3"
+  local root_dir="$4"
+  shift 4
+  if [[ "${CLAW_FORCE_REBUILD_OVS:-0}" != "1" ]] && [[ "${CLAW_OVS_IMAGE:-}" != "${image_name}" ]] && \
+    [[ "${CLAW_OVS_IMAGE:-}" != "claw-openvscode-server:"* ]]; then
+    step "skip ovs layer build (CLAW_OVS_IMAGE=${CLAW_OVS_IMAGE:-<upstream>}; set CLAW_OVS_IMAGE=${image_name} + CLAW_FORCE_REBUILD_OVS=1 to bake claw-vscode)"
+    return 0
+  fi
+  if [[ "${CLAW_FORCE_REBUILD_OVS:-0}" != "1" ]] && "${container_cli}" image exists "${image_name}" 2>/dev/null; then
+    step "skip ovs image (exists: ${image_name}; CLAW_FORCE_REBUILD_OVS=1 to rebuild)"
+    return 0
+  fi
+  step "image ${image_name} (Containerfile.openvscode)"
+  chmod +x "${root_dir}/deploy/stack/lib/package-ovs-extension-vsix.sh"
+  "${root_dir}/deploy/stack/lib/package-ovs-extension-vsix.sh" \
+    "${root_dir}/extensions/claw-vscode" \
+    "${root_dir}/deploy/stack/claw.claw-vscode-0.2.0.vsix"
+  # shellcheck disable=SC2086
+  "${container_cli}" build \
+    --build-arg "OVS_BASE_IMAGE=${ovs_base}" \
+    "$@" \
+    -f "${root_dir}/deploy/stack/Containerfile.openvscode" \
+    -t "${image_name}" \
+    "${root_dir}"
+}
 
 claw_build_playground_image() {
   local container_cli="$1"
@@ -179,10 +215,13 @@ cn_mirror_enabled && CN_FLAG=1
 if use_prebuilt_linux_path; then
   echo "==> config: linux-compile + prebuilt images (no cargo in image build)"
   STACK_DIR="${ROOT_DIR}/deploy/stack"
-  step "1/3 linux compile (podman run; volumes claw-cargo-registry / claw-cargo-git persist)"
+  step "1/3 linux compile (podman run; volumes claw-cargo-registry / claw-cargo-git / claw-sccache persist)"
   # shellcheck source=/dev/null
   source "${ROOT_DIR}/deploy/stack/lib/linux-compile.sh"
-  claw_linux_compile_release "${ROOT_DIR}" "${CONTAINER_CLI}" "${RUST_BASE_IMAGE}" "${CN_FLAG}"
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/deploy/stack/lib/rust-compile-image.sh"
+  COMPILE_IMAGE="$(claw_ensure_rust_compile_image "${ROOT_DIR}" "${CONTAINER_CLI}" "${REG}")"
+  claw_linux_compile_release "${ROOT_DIR}" "${CONTAINER_CLI}" "${COMPILE_IMAGE}" "${CN_FLAG}"
 
   APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
   cn_mirror_enabled && APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
@@ -215,6 +254,7 @@ if use_prebuilt_linux_path; then
     "${ROOT_DIR}"
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
+  claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
 
   step "5/5 image ${SANDBOX_IMAGE_NAME} (Containerfile.claw-sandbox.prebuilt)"
   # shellcheck disable=SC2086
@@ -229,7 +269,7 @@ if use_prebuilt_linux_path; then
   source "${ROOT_DIR}/deploy/stack/lib/pool-daemon-binary.sh"
   if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
     step "host claw-sandbox (macOS cargo)"
-    CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
+    claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
   else
     step "host claw-sandbox (.linux-artifacts)"
     claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
@@ -282,23 +322,24 @@ else
     "${ROOT_DIR}"
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
+  claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
 
   STACK_DIR="${ROOT_DIR}/deploy/stack"
   # shellcheck source=/dev/null
   source "${ROOT_DIR}/deploy/stack/lib/pool-daemon-binary.sh"
   if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
     step "host claw-sandbox (macOS cargo build)"
-    CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
+    claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
   else
     step "host claw-sandbox (cargo build)"
-    CLAW_POOL_REBUILD_DAEMON=1 claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
+    claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
   fi
 fi
 
 "${ROOT_DIR}/deploy/stack/lib/claw-write-build-stamp.sh"
 
 step "done"
-echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME} ${RELAXED_WORKER_IMAGE_NAME} ${PLAYGROUND_IMAGE_NAME} ${SANDBOX_IMAGE_NAME}"
+echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME} ${RELAXED_WORKER_IMAGE_NAME} ${PLAYGROUND_IMAGE_NAME} ${OVS_IMAGE_NAME} ${SANDBOX_IMAGE_NAME}"
 claw_timing_summary
 if [[ "${CLAW_BUILD_NO_LOG}" != "1" ]]; then
   echo "log: ${BUILD_LOG}"

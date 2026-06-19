@@ -233,7 +233,7 @@ claw_claude_tap_register_in_admin() {
   probe_msg="$(curl -fsS --connect-timeout 8 -X POST \
     "http://127.0.0.1:${port}/v1/gateway/global-settings/claw-tap/probe" \
     -H 'Content-Type: application/json' \
-    -d "{\"host\":\"${host}\",\"proxyPort\":${proxy}}" 2>&1)" || {
+    -d "{\"mode\":\"local\",\"proxyPort\":${proxy}}" 2>&1)" || {
     echo "error: clawTap probe failed (host=${host} proxyPort=${proxy}): ${probe_msg}" >&2
     echo "hint: set CLAUDE_TAP_PUBLISH_PROXY=0.0.0.0:${proxy}:${proxy} (or CLAUDE_TAP_ADMIN_HOST + published ports)" >&2
     return 1
@@ -245,8 +245,8 @@ claw_claude_tap_register_in_admin() {
   curl -fsS --connect-timeout 8 -X PUT \
     "http://127.0.0.1:${port}/v1/gateway/global-settings/claw-tap" \
     -H 'Content-Type: application/json' \
-    -d "{\"host\":\"${host}\",\"proxyPort\":${proxy},\"livePort\":${live}}" >/dev/null
-  echo "clawTap registered in Admin: host=${host} proxyPort=${proxy} livePort=${live}"
+    -d "{\"mode\":\"local\",\"livePort\":${live}}" >/dev/null
+  echo "clawTap registered in Admin: mode=local livePort=${live} (proxy internal :${proxy})"
 }
 
 claw_assert_gateway_pool_http_reachable() {

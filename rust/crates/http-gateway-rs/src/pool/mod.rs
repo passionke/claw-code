@@ -3,7 +3,9 @@ pub mod clients;
 mod config;
 mod docker_cli;
 mod docker_pool;
+mod guest_materialize_tar;
 mod http_server;
+pub mod interactive_backend;
 mod live_report_hub;
 mod live_report_sse;
 mod local_ops;
@@ -19,15 +21,21 @@ pub mod worker_isolation;
 pub use clients::PoolClients;
 pub use docker_pool::{merge_stdout_hooks, DockerPoolManager};
 pub use http_server::serve_pool_http;
+pub use interactive_backend::{
+    interactive_backend_from_env, terminal_ws_connect_url, InteractiveBackendKind,
+    InteractiveLease, InteractiveSandboxBackend, InteractiveSessionSpec, TtydConnectTarget,
+};
 pub use live_report_hub::{HubMsg, LiveReportHub};
 pub use live_report_sse::live_report_sse_response;
 pub use local_ops::LocalPoolOps;
 pub use sandbox_orchestrator::{worker_isolation_to_sandbox, SandboxOrchestratedPool};
 pub use session_db_sync::{
-    read_worker_progress_artifacts, MaterializeInput, DS_MOUNT_TARGET, GUEST_WORK_ROOT,
-    WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH,
+    proj_work_dir, read_worker_progress_artifacts, session_home_under_work_root, MaterializeInput,
+    DS_MOUNT_TARGET, GUEST_WORK_ROOT, WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH,
 };
-pub use session_mount_ownership::ensure_session_tree_owned_for_worker_with_runtime_fallback;
+pub use session_mount_ownership::{
+    ensure_session_tree_owned_for_worker_with_runtime_fallback, path_for_pool_acquire,
+};
 pub use worker_identity::PoolWorkerIdentity;
 pub use worker_isolation::{
     default_worker_isolation_json, isolation_mode_label, validate_worker_isolation_json,

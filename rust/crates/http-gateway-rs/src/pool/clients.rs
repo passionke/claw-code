@@ -145,6 +145,11 @@ impl PoolClients {
         self.pool.first_report_at_ms_for_turn(turn_id).await
     }
 
+    #[must_use]
+    pub fn sandbox_rpc_client(&self) -> Option<Arc<SandboxRpcClient>> {
+        self.sandbox_pool.as_ref().map(|p| p.rpc_client())
+    }
+
     pub async fn bind_session_db(&self, db: Arc<GatewaySessionDb>) {
         if let Some(pool) = self.sandbox_pool.as_ref() {
             pool.bind_session_db(Arc::clone(&db)).await;

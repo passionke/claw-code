@@ -54,6 +54,14 @@ claw_apply_deploy_profile() {
       export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
       export GATEWAY_IMAGE="${GATEWAY_IMAGE:-claw-gateway-rs:local}"
       export GATEWAY_PLAYGROUND_IMAGE="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
+      # shellcheck source=/dev/null
+      [[ -f "${CLAW_REPO_ROOT:-}/deploy/stack/ovs-image.env" ]] && source "${CLAW_REPO_ROOT}/deploy/stack/ovs-image.env"
+      if [[ -z "${CLAW_OVS_UPSTREAM_IMAGE:-}" && -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env" ]]; then
+        # shellcheck source=/dev/null
+        source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env"
+      fi
+      export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat}"
+      export CLAW_OVS_IMAGE="${CLAW_OVS_IMAGE:-${CLAW_OVS_UPSTREAM_IMAGE}}"
       export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
       export CLAW_RELAXED_PODMAN_IMAGE="${CLAW_RELAXED_PODMAN_IMAGE:-claw-gateway-worker-relaxed:local}"
       export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-local}"
@@ -94,6 +102,12 @@ claw_apply_deploy_profile() {
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
       export CLAW_GATEWAY_PG_IMAGE="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
       export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
+      if [[ -z "${CLAW_OVS_UPSTREAM_IMAGE:-}" && -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env" ]]; then
+        # shellcheck source=/dev/null
+        source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env"
+      fi
+      export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat}"
+      export CLAW_OVS_IMAGE="${CLAW_OVS_IMAGE:-${CLAW_OVS_UPSTREAM_IMAGE}}"
       ;;
   esac
 

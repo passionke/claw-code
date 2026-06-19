@@ -20,15 +20,27 @@ export interface LlmModelRow {
   updatedAtMs: number;
 }
 
+export type ClawTapMode = "local" | "remote";
+
 export interface ClawTapSettings {
+  mode: ClawTapMode;
   host: string;
   proxyPort: number;
-  livePort: number;
+  livePort?: number;
   updatedAtMs: number;
   configured: boolean;
   proxyBaseUrl?: string;
   liveBaseUrl?: string;
   liveSessionUrlTemplate?: string;
+}
+
+export interface PutClawTapSettingsResponse extends ClawTapSettings {
+  tapRestart?: {
+    attempted: boolean;
+    restarted: boolean;
+    message?: string;
+  };
+  message?: string;
 }
 
 export interface ClawTapProbeResponse {

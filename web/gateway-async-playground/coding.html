@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MOSS · 550W Coding</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { font-family: system-ui, sans-serif; background: #1e1e1e; color: #ddd; display: flex; flex-direction: column; overflow: hidden; }
+    header { flex-shrink: 0; padding: 8px 12px; background: #252526; border-bottom: 1px solid #333; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    header input { background: #3c3c3c; border: 1px solid #555; color: #eee; padding: 4px 8px; border-radius: 4px; }
+    header button { background: #0e639c; color: #fff; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+    header button.secondary { background: #3c3c3c; }
+    header button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status { font-size: 12px; color: #9cdcfe; flex: 1; min-width: 120px; }
+    main { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+    #sidebar { width: 260px; flex-shrink: 0; border-right: 1px solid #333; overflow: auto; background: #252526; font-size: 13px; display: flex; flex-direction: column; }
+    .panel-title { padding: 8px 10px 4px; font-size: 11px; text-transform: uppercase; color: #888; }
+    #sessionList { list-style: none; margin: 0; padding: 4px 8px 8px; flex: 1; overflow: auto; }
+    #sessionList li { padding: 6px 8px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 6px; }
+    #sessionList li:hover { background: #37373d; }
+    #sessionList li.selected { background: #094771; }
+    #sessionList li .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    #sessionList li .dot.active { background: #4ec9b0; }
+    #sessionList li .dot.idle { background: #666; }
+    #sessionList li .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    #sessionList li button.disconnect {
+      flex-shrink: 0; background: #5a1d1d; color: #f48771; border: none; padding: 2px 8px;
+      border-radius: 3px; font-size: 11px; cursor: pointer;
+    }
+    #sessionList li button.disconnect:hover { background: #7a2d2d; }
+    #poolBanner {
+      margin: 8px; padding: 8px 10px; border-radius: 4px; font-size: 12px; line-height: 1.45;
+      background: #2d2d30; border: 1px solid #444;
+    }
+    #poolBanner.warn { border-color: #ce9178; background: #3a2a22; color: #f0c674; }
+    #poolBanner.full { border-color: #f48771; background: #3a2222; color: #f48771; }
+    #poolBanner button {
+      margin-top: 6px; background: #5a1d1d; color: #f48771; border: 1px solid #7a3a3a;
+      padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+    }
+    #poolBanner button:hover { background: #7a2d2d; }
+    #activeWorkers { list-style: none; margin: 0; padding: 4px 8px 8px; }
+    #activeWorkers li {
+      padding: 6px 8px; border-radius: 4px; display: flex; align-items: center; gap: 6px;
+      background: #1e3a32; margin-bottom: 4px; font-size: 12px;
+    }
+    #activeWorkers li .meta { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #terminal-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #0d0d0d; }
+    #terminal-pane.im-shell { min-height: 0; }
+    .claw-document-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: #161616; }
+    #document-view { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; }
+    #display-status { flex-shrink: 0; padding: 6px 12px; font-size: 12px; color: #9cdcfe; border-bottom: 1px solid #2a2a2a; min-height: 28px; line-height: 1.4; }
+    #display-status.thinking { color: #4ec9b0; }
+    #display-status.done { color: #89d185; }
+    #display-status.failed { color: #f48771; }
+    a.admin-link { color: #9cdcfe; font-size: 12px; }
+    .hint { padding: 8px; color: #888; font-size: 12px; line-height: 1.4; list-style: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <label>projId <input id="projId" type="number" value="1" style="width:64px" /></label>
+    <button id="btnNew">＋ 新建会话</button>
+    <button id="btnConnect" disabled>连接</button>
+    <button id="btnStop" class="secondary" disabled>断开 worker</button>
+    <button id="btnRefresh" class="secondary">刷新列表</button>
+    <span id="status">加载中…</span>
+    <a class="admin-link" href="/admin">管理后台</a>
+  </header>
+  <main>
+    <aside id="sidebar">
+      <div id="poolBanner" style="display:none"></div>
+      <div class="panel-title" id="activeWorkersTitle">终端 worker</div>
+      <ul id="activeWorkers"></ul>
+      <div class="panel-title">会话 <span id="sessionCount"></span></div>
+      <ul id="sessionList"></ul>
+    </aside>
+    <section id="terminal-pane" class="im-shell">
+      <div class="claw-document-shell">
+        <div id="display-status"></div>
+        <div id="document-view"></div>
+      </div>
+      <div id="composer-bar">MOSS 对话 — 连接后在下方输入</div>
+      <div id="composer-wrap">
+        <textarea id="composer" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
+        <button type="button" id="btnSend" disabled>发送</button>
+      </div>
+    </section>
+  </main>
+  <link rel="stylesheet" href="/claw-display/claw-display.css" />
+  <script src="/claw-display/claw-display.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const PTY_COLS = 120;
+    const PTY_ROWS = 24;
+    let gatewayBase = '';
+    let ws = null;
+    let refreshTimer = null;
+    let selectedSessionId = '';
+    let connectedSessionId = '';
+    let activeWorkerKeys = new Set();
+    let inventoryPool = null;
+    let displayRouter = null;
+    let composerBusy = false;
+
+    function ensureDisplayRouter() {
+      if (displayRouter) return displayRouter;
+      if (!window.ClawDisplay || !window.ClawDisplay.DisplayRouter) {
+        return null;
+      }
+      displayRouter = new window.ClawDisplay.DisplayRouter({
+        documentRoot: $('document-view'),
+        statusRoot: $('display-status'),
+        workspaceMediaUrl: (relPath) => {
+          if (!connectedSessionId || !relPath) return null;
+          const projId = Number($('projId').value);
+          const q = new URLSearchParams({ projId: String(projId), path: relPath });
+          return `/coding/workspace/${encodeURIComponent(connectedSessionId)}/media?${q}`;
+        },
+        onStatus: (phase) => {
+          composerBusy = phase === 'thinking';
+          syncComposerState();
+        },
+      });
+      return displayRouter;
+    }
+
+    function syncComposerState() {
+      const connected = ws && ws.readyState === WebSocket.OPEN;
+      const enabled = connected && !composerBusy;
+      $('composer').disabled = !enabled;
+      $('btnSend').disabled = !enabled;
+    }
+
+    function setComposerBar(text, connected) {
+      const bar = $('composer-bar');
+      bar.textContent = text;
+      bar.classList.toggle('connected', !!connected);
+    }
+
+    function focusComposer() {
+      const ta = $('composer');
+      if (ta && !ta.disabled) ta.focus();
+    }
+
+    function autoResizeComposer() {
+      const ta = $('composer');
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(160, Math.max(44, ta.scrollHeight)) + 'px';
+    }
+
+    function sendMessage() {
+      const raw = $('composer').value;
+      if (!raw.trim() || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const line = raw.endsWith('\n') ? raw : raw + '\n';
+      ttydSendInput(line);
+      $('composer').value = '';
+      autoResizeComposer();
+    }
+
+    function workerKey(projId, sessionId) {
+      return `${projId}:${sessionId}`;
+    }
+
+    function syncStopButton() {
+      const projId = Number($('projId').value);
+      const key = workerKey(projId, selectedSessionId);
+      const canStop = !!selectedSessionId && (
+        connectedSessionId === selectedSessionId ||
+        activeWorkerKeys.has(key)
+      );
+      $('btnStop').disabled = !canStop;
+    }
+
+    function proxyEnvelopeBody(data) {
+      if (data.body != null && typeof data.body === 'object') return data.body;
+      if (data.bodyJson != null) return data.bodyJson;
+      if (data.bodyText) return JSON.parse(data.bodyText);
+      return {};
+    }
+
+    function proxyEnvelopeError(data, fallback) {
+      const inner = proxyEnvelopeBody(data);
+      return data.error || inner.error || data.bodyText || fallback;
+    }
+
+    async function proxyJson(method, path, body) {
+      const res = await fetch('/__proxy__', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl: gatewayBase, method, path, body }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(proxyEnvelopeError(data, res.status));
+      return proxyEnvelopeBody(data);
+    }
+
+    async function proxyPost(path, body, signal) {
+      const res = await fetch('/__proxy__', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl: gatewayBase, method: 'POST', path, body }),
+        signal,
+      });
+      const data = await res.json();
+      return { data, ok: data.ok, status: data.status };
+    }
+
+    function pgWsUrl(wsPath) {
+      const m = wsPath.match(/\/v1\/sessions\/([^/?]+)\/terminal\/ws\?projId=(\d+)/);
+      if (!m) throw new Error('无效 wsPath: ' + wsPath);
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${proto}//${location.host}/coding/terminal/${encodeURIComponent(m[1])}?projId=${m[2]}`;
+    }
+
+    function newSessionId() {
+      return 'web-' + Math.random().toString(36).slice(2, 10);
+    }
+
+    function resetTranscript() {
+      const router = ensureDisplayRouter();
+      if (router) router.reset();
+    }
+
+    function ensureClawDisplay() {
+      if (!window.ClawDisplay?.DisplayRouter) {
+        throw new Error('ClawDisplay 未加载，请硬刷新 (Cmd+Shift+R)');
+      }
+      ensureDisplayRouter();
+      return true;
+    }
+
+    const textEncoder = new TextEncoder();
+    const textDecoder = new TextDecoder('utf-8', { fatal: false });
+
+    // ttyd 1.7 wire protocol: first message is plain JSON (spawns claw); then 0+input, 1+resize.
+    function ttydSend(typeByte, text) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const body = textEncoder.encode(text);
+      const msg = new Uint8Array(1 + body.length);
+      msg[0] = typeByte;
+      msg.set(body, 1);
+      ws.send(msg);
+    }
+
+    function ttydSendInput(data) {
+      ttydSend(0x30, data);
+    }
+
+    function ttydSendResize(cols, rows) {
+      ttydSend(0x31, JSON.stringify({ columns: cols, rows: rows }));
+    }
+
+    function ttydSpawn(cols, rows) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const msg = JSON.stringify({ columns: cols, rows: rows });
+      ws.send(new TextEncoder().encode(msg));
+    }
+
+    function ttydWritePayload(payload) {
+      if (!payload || !payload.length) return;
+      const kind = payload[0];
+      const body = textDecoder.decode(payload.subarray(1));
+      if (kind === 0x30) {
+        ensureDisplayRouter()?.routePayload(body);
+      }
+      // 0x31 = window title, 0x32 = preferences — ignore
+    }
+
+    function syncTtydSize() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ttydSendResize(PTY_COLS, PTY_ROWS);
+    }
+
+    async function disconnectWorker(projId, sessionId, { closeWs } = { closeWs: true }) {
+      if (closeWs && connectedSessionId === sessionId && ws) {
+        ws.close();
+        ws = null;
+      }
+      if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+      await proxyJson(
+        'POST',
+        `/v1/sessions/${encodeURIComponent(sessionId)}/terminal/stop?projId=${projId}`,
+        null,
+      );
+      if (connectedSessionId === sessionId) {
+        connectedSessionId = '';
+        composerBusy = false;
+        setComposerBar('MOSS 对话 — 点「连接」重新进入', false);
+        syncComposerState();
+      }
+      $('status').textContent = `已释放 worker：${sessionId}`;
+      await refreshInventory();
+    }
+
+    async function forceReleasePool() {
+      if (!confirm('释放僵尸 worker 槽位？会杀掉网关未登记的 worker 容器（不影响已登记终端的 orderly 断开）。')) return;
+      $('status').textContent = '正在释放僵尸槽位…';
+      const out = await proxyJson('POST', '/v1/terminal/pool-force-release', null);
+      if (ws) { ws.close(); ws = null; }
+      connectedSessionId = '';
+      $('btnStop').disabled = true;
+      composerBusy = false;
+      setComposerBar('MOSS 对话 — 点「连接」重新进入', false);
+      syncComposerState();
+      $('status').textContent = `池已清空（登记释放 ${out.releasedRegistry ?? 0}，强杀尝试 ${out.forceKillAttempts ?? 0}）`;
+      await refreshInventory();
+    }
+
+    function renderPoolBanner(pool, activeWorkers) {
+      const el = $('poolBanner');
+      if (!pool) { el.style.display = 'none'; return; }
+      el.style.display = 'block';
+      const { slotsLeased, slotsMax, slotsIdle, terminalCount, solveCount, orphanCount } = pool;
+      const noIdle = slotsIdle === 0 && slotsLeased > 0;
+      el.className = noIdle ? 'full' : (orphanCount > 0 ? 'warn' : '');
+      let html = `Worker 池：<b>${slotsLeased}/${slotsMax}</b> 已租，<b>${slotsIdle}</b> 空闲`;
+      if (terminalCount > 0) {
+        html += `<br />终端：<b>${terminalCount}</b> 个`;
+      }
+      if (solveCount > 0) {
+        html += ` · solve：<b>${solveCount}</b> 个`;
+      }
+      if (activeWorkers.length) {
+        html += `<br />本 proj 终端 worker：<b>${activeWorkers.length}</b> 个（可点「断开」）`;
+      }
+      if (orphanCount > 0) {
+        html += `<br /><b>${orphanCount}</b> 个 orphan 槽位（无 owner 元数据，多为旧 lease / 崩溃遗留）`;
+        html += `<br /><button type="button" id="btnForcePool">释放 orphan 槽位</button>`;
+      } else if (noIdle && solveCount > 0 && terminalCount === 0) {
+        html += `<br />无空闲槽：solve 占用中，请等待结束`;
+      } else if (noIdle) {
+        html += `<br />无空闲槽：先断开上方终端，或等 solve 结束`;
+      }
+      el.innerHTML = html;
+      const btn = $('btnForcePool');
+      if (btn) btn.onclick = () => forceReleasePool().catch((e) => { $('status').textContent = String(e); });
+    }
+
+    function renderActiveWorkers(activeWorkers, pool) {
+      const ul = $('activeWorkers');
+      const title = $('activeWorkersTitle');
+      ul.innerHTML = '';
+      activeWorkerKeys = new Set();
+      const orphans = pool?.orphanCount ?? 0;
+      const solves = pool?.solveCount ?? 0;
+      if (activeWorkers.length) {
+        title.textContent = `终端 worker (${activeWorkers.length})`;
+        for (const w of activeWorkers) {
+          activeWorkerKeys.add(workerKey(w.projId, w.sessionId));
+          const li = document.createElement('li');
+          const meta = document.createElement('span');
+          meta.className = 'meta';
+          const slot = w.slotIndex != null ? ` #${w.slotIndex}` : '';
+          meta.textContent = `p${w.projId} · ${w.sessionId}${slot}`;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'disconnect';
+          btn.textContent = '断开';
+          btn.onclick = (ev) => {
+            ev.stopPropagation();
+            disconnectWorker(w.projId, w.sessionId).catch((e) => { $('status').textContent = String(e); });
+          };
+          li.appendChild(meta);
+          li.appendChild(btn);
+          li.onclick = () => {
+            $('projId').value = String(w.projId);
+            selectSession(w.sessionId);
+          };
+          ul.appendChild(li);
+        }
+        return;
+      }
+      title.textContent = '终端 worker';
+      const li = document.createElement('li');
+      li.className = 'hint';
+      if (orphans > 0) {
+        li.innerHTML = `无本 proj 终端，但有 <b>${orphans}</b> 个 orphan 槽位。<br />点上方「释放 orphan 槽位」。`;
+      } else if (solves > 0) {
+        li.textContent = `无终端 worker；${solves} 个槽位在跑 solve`;
+      } else {
+        li.textContent = '无终端 worker（未连接 / 已断开）';
+      }
+      ul.appendChild(li);
+    }
+
+    async function refreshInventory() {
+      const projId = Number($('projId').value);
+      const inv = await proxyJson('GET', `/v1/terminal/inventory?projId=${projId}`);
+      inventoryPool = inv.pool || null;
+      const activeWorkers = inv.activeWorkers || [];
+      renderPoolBanner(inventoryPool, activeWorkers);
+      renderActiveWorkers(activeWorkers, inventoryPool);
+      syncStopButton();
+      const ul = $('sessionList');
+      ul.innerHTML = '';
+      const entries = (inv.entries || []).filter((e) => !/^e2e-/.test(e.sessionId));
+      $('sessionCount').textContent = entries.length ? `(${entries.length})` : '';
+      if (!entries.length) {
+        const li = document.createElement('li');
+        li.className = 'hint';
+        li.textContent = '暂无会话，点「新建会话」';
+        ul.appendChild(li);
+        return;
+      }
+      for (const e of entries) {
+        const li = document.createElement('li');
+        li.dataset.sessionId = e.sessionId;
+        if (e.sessionId === selectedSessionId) li.classList.add('selected');
+        const dot = document.createElement('span');
+        dot.className = 'dot ' + (e.status === 'active' ? 'active' : 'idle');
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = e.sessionId + (e.status === 'active' ? ' · 运行中' : '');
+        li.appendChild(dot);
+        li.appendChild(label);
+        if (e.status === 'active') {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'disconnect';
+          btn.textContent = '断开';
+          btn.onclick = (ev) => {
+            ev.stopPropagation();
+            disconnectWorker(projId, e.sessionId).catch((err) => { $('status').textContent = String(err); });
+          };
+          li.appendChild(btn);
+        }
+        li.onclick = () => selectSession(e.sessionId);
+        ul.appendChild(li);
+      }
+      if (!selectedSessionId && entries.length) {
+        selectSession(entries[0].sessionId);
+      }
+    }
+
+    function selectSession(sessionId) {
+      selectedSessionId = sessionId;
+      $('btnConnect').disabled = false;
+      for (const li of $('sessionList').querySelectorAll('li[data-session-id]')) {
+        li.classList.toggle('selected', li.dataset.sessionId === sessionId);
+      }
+      syncStopButton();
+      if (connectedSessionId !== sessionId) {
+        $('status').textContent = `已选 ${sessionId}，点「连接」`;
+      }
+    }
+
+    async function connectSession(sessionId) {
+      const projId = Number($('projId').value);
+      selectedSessionId = sessionId;
+      $('btnConnect').disabled = true;
+      $('status').textContent = '连接中… 0s';
+      setComposerBar('正在连接 worker…', false);
+      const t0 = Date.now();
+      const tick = setInterval(() => {
+        $('status').textContent = `连接中… ${Math.floor((Date.now() - t0) / 1000)}s`;
+      }, 1000);
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 50000);
+      let start;
+      try {
+        const { data, ok, status } = await proxyPost(
+          `/v1/sessions/${encodeURIComponent(sessionId)}/terminal/attach`,
+          { projId, sessionId },
+          ac.signal,
+        );
+        if (!ok) {
+          const msg = proxyEnvelopeError(data, status);
+          await refreshInventory();
+          const p = inventoryPool;
+          if (/timeout waiting for idle|acquire_slot.*timeout/i.test(msg)) {
+            let hint = '';
+            if (p) {
+              if (p.orphanCount > 0) {
+                hint = `（${p.orphanCount} 个 orphan 槽位，左侧点「释放 orphan 槽位」）`;
+              } else if (p.slotsIdle === 0 && p.solveCount > 0) {
+                hint = `（${p.solveCount} 个槽位在跑 solve，请等待）`;
+              } else if (p.slotsIdle === 0) {
+                hint = `（池 ${p.slotsLeased}/${p.slotsMax} 无空闲）`;
+              }
+            }
+            throw new Error(`${msg}${hint}`);
+          }
+          throw new Error(msg);
+        }
+        start = proxyEnvelopeBody(data);
+      } finally {
+        clearTimeout(timer);
+        clearInterval(tick);
+        $('btnConnect').disabled = false;
+      }
+      const wsPath = start.wsPath || start.ws_path;
+      if (!wsPath) throw new Error('attach 未返回 wsPath');
+      ensureClawDisplay();
+
+      if (ws) { ws.close(); ws = null; }
+      resetTranscript();
+      connectedSessionId = sessionId;
+      composerBusy = false;
+      const reused = start.reusedWorker ? '复用' : '新';
+      ws = new WebSocket(pgWsUrl(wsPath), ['tty']);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        $('status').textContent = `已连接 ${sessionId}（${reused} worker）`;
+        setComposerBar(`● 已连接 ${sessionId} — 下方输入，Enter 发送`, true);
+        $('btnStop').disabled = false;
+        ttydSpawn(PTY_COLS, PTY_ROWS);
+        syncComposerState();
+        focusComposer();
+        if (refreshTimer) clearInterval(refreshTimer);
+        refreshTimer = setInterval(refreshInventory, 5000);
+        refreshInventory();
+      };
+      ws.onmessage = (ev) => {
+        if (ev.data instanceof ArrayBuffer) {
+          ttydWritePayload(new Uint8Array(ev.data));
+        } else if (ev.data instanceof Blob) {
+          ev.data.arrayBuffer().then((buf) => ttydWritePayload(new Uint8Array(buf)));
+        } else if (typeof ev.data === 'string') {
+          ensureDisplayRouter()?.routePayload(ev.data);
+        }
+      };
+      ws.onclose = () => {
+        connectedSessionId = '';
+        composerBusy = false;
+        $('status').textContent = '终端已断开';
+        setComposerBar('MOSS 对话 — 点「连接」重新进入', false);
+        syncComposerState();
+        refreshInventory();
+      };
+      ws.onerror = () => {
+        $('status').textContent = 'WebSocket 错误';
+        setComposerBar('连接失败 — 请重试', false);
+        syncComposerState();
+      };
+    }
+
+    async function stopWorker() {
+      const projId = Number($('projId').value);
+      const sessionId = connectedSessionId || selectedSessionId;
+      if (!sessionId) return;
+      try {
+        await disconnectWorker(projId, sessionId);
+      } catch (e) {
+        $('status').textContent = String(e);
+      }
+      $('btnStop').disabled = true;
+    }
+
+    $('btnNew').onclick = async () => {
+      const id = newSessionId();
+      selectSession(id);
+      await refreshInventory();
+      connectSession(id).catch((e) => { $('status').textContent = String(e); });
+    };
+    $('btnConnect').onclick = () => {
+      if (!selectedSessionId) return;
+      connectSession(selectedSessionId).catch((e) => { $('status').textContent = String(e); });
+    };
+    $('btnStop').onclick = () => stopWorker().catch((e) => { $('status').textContent = String(e); });
+    $('btnRefresh').onclick = () => refreshInventory().catch((e) => { $('status').textContent = String(e); });
+    $('btnSend').onclick = () => sendMessage();
+    $('composer').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+    $('composer').addEventListener('input', autoResizeComposer);
+    window.addEventListener('resize', syncTtydSize);
+    $('projId').onchange = () => {
+      selectedSessionId = '';
+      if (!connectedSessionId) connectedSessionId = '';
+      refreshInventory().catch((e) => { $('status').textContent = String(e); });
+    };
+
+    fetch('/__config__').then((r) => r.json()).then(async (c) => {
+      gatewayBase = c.defaultGatewayBase || '';
+      try {
+        ensureClawDisplay();
+      } catch (e) {
+        $('status').textContent = String(e);
+        return;
+      }
+      try {
+        await refreshInventory();
+        if (refreshTimer) clearInterval(refreshTimer);
+        refreshTimer = setInterval(() => refreshInventory().catch(() => {}), 5000);
+        $('status').textContent = '点「新建会话」或选会话后点「连接」';
+      } catch (e) {
+        $('status').textContent = String(e);
+      }
+    });
+  </script>
+</body>
+</html>

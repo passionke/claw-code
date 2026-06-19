@@ -1,0 +1,26 @@
+{
+  "files.watcherUsePolling": true,
+  "chat.disableAIFeatures": false,
+  "chat.agent.enabled": true,
+  "chat.experimental.serverlessWebEnabled": false,
+  "chat.experimental.disableCoreAgents": true,
+  "chat.newSession.defaultMode": "ask",
+  "claw.gatewayHost": "gateway-rs:8080",
+  "claw.gatewayPublicHost": "127.0.0.1:8088",
+  "claw.playgroundPort": "18765",
+  "extensions.autoUpdate": false,
+  "extensions.autoCheckUpdates": false,
+  "update.mode": "none",
+  "extensions.gallery.serviceUrl": "https://disabled.invalid",
+  "extensions.gallery.itemUrl": "https://disabled.invalid",
+  "extensions.gallery.controlUrl": "https://disabled.invalid",
+  "security.workspace.trust.enabled": false,
+  "security.workspace.trust.startupPrompt": "never",
+  "security.workspace.trust.banner": "never",
+  "security.workspace.trust.emptyWindow": true,
+  "security.workspace.trust.trustedFolders": [
+    "/home/workspace",
+    "/home/workspace/proj_1/home",
+    "/home/workspace/proj_2/home"
+  ]
+}

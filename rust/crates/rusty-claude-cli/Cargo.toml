@@ -10,6 +10,7 @@ name = "claw"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
 claw-server = { path = "../claw-server" }
 api = { path = "../api" }
 commands = { path = "../commands" }

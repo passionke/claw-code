@@ -1,0 +1,32 @@
+{
+  "name": "ovs-chat-demo",
+  "displayName": "OVS Chat Demo",
+  "description": "Minimal Chat participant for openvscode-server plumbing test (no network)",
+  "version": "0.2.0",
+  "publisher": "claw",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onStartupFinished",
+    "onChatParticipant:demo.chat"
+  ],
+  "extensionKind": ["workspace"],
+  "enabledApiProposals": ["defaultChatParticipant"],
+  "main": "./extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "demo.chat",
+        "name": "demo",
+        "fullName": "OVS Chat Demo",
+        "description": "Echo demo — proves @mention Chat works in OVS",
+        "isDefault": true,
+        "isSticky": true,
+        "modes": ["ask"]
+      }
+    ]
+  }
+}

@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   ApiOutlined,
+  CodeOutlined,
   CommentOutlined,
   FileTextOutlined,
   GlobalOutlined,
@@ -17,6 +18,7 @@ import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { adminLogout, fetchAdminMe, proxyHttp } from "../api/client";
 import { useApp } from "../context/AppContext";
+import { ovsIdeHref } from "../utils/ovsUrl";
 
 const { Header, Sider, Content } = Layout;
 
@@ -156,6 +158,9 @@ export default function AdminLayout() {
           options={projOptions.length ? projOptions : [{ value: 1, label: "项目 1" }]}
           onChange={setProjId}
         />
+        <Button href={ovsIdeHref(projId)} target="_blank" rel="noreferrer" icon={<CodeOutlined />}>
+          Web IDE
+        </Button>
         <div style={{ flex: 1 }} />
         <Space>
           <Button

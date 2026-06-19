@@ -18,7 +18,8 @@ pub use isolation::{default_isolation_json, effective_isolation, mode_from_json,
 pub use legacy_rpc::{PoolRpcReq, PoolRpcResp};
 pub use registry::{SandboxCapabilities, SandboxRegistration};
 pub use sandbox_rpc::{
-    ProfileCapacity, SandboxCapacity, SandboxExecChunk, SandboxRpcReq, SandboxRpcResp,
+    InteractiveSessionBind, LeasedSlotInfo, ProfileCapacity, SandboxCapacity, SandboxExecChunk,
+    SandboxRpcReq, SandboxRpcResp, SlotLeaseOwner,
 };
 pub use session::{
     DS_MOUNT_TARGET, GUEST_WORK_ROOT, WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH,

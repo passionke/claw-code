@@ -239,4 +239,11 @@ if head -c 20 /tmp/claw_playground_main.js | grep -q '<!DOCTYPE'; then
 fi
 echo "playground admin assets ok (${js_path})"
 
+echo "[6/6] coding terminal E2E (playground __proxy__ + WS)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PLAYGROUND_BASE="http://127.0.0.1:${PLAYGROUND_PORT}" \
+GATEWAY_BASE="http://127.0.0.1:${GATEWAY_PORT}" \
+E2E_POOL_RESET=1 \
+python3 "${ROOT_DIR}/web/gateway-async-playground/e2e_coding_terminal.py"
+
 echo "Connectivity check passed. taskId=${TASK_ID}"

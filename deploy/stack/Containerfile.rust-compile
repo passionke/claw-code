@@ -1,0 +1,23 @@
+# Rust compile toolchain image: mold linker + sccache (linux-compile only). Author: kejiqing
+ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
+FROM ${RUST_BASE_IMAGE}
+
+ARG SCCACHE_VERSION=v0.10.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    mold \
+    clang \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && ARCH="$(dpkg --print-architecture)" \
+    && case "${ARCH}" in \
+         amd64) SCCACHE_ARCH=x86_64-unknown-linux-musl ;; \
+         arm64) SCCACHE_ARCH=aarch64-unknown-linux-musl ;; \
+         *) echo "unsupported arch: ${ARCH}" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/sccache-${SCCACHE_VERSION}-${SCCACHE_ARCH}.tar.gz" \
+    | tar xz -C /usr/local/bin --strip-components=1 "sccache-${SCCACHE_VERSION}-${SCCACHE_ARCH}/sccache" \
+    && chmod +x /usr/local/bin/sccache \
+    && sccache --version \
+    && mold --version

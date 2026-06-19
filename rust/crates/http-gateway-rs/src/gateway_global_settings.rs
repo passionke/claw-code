@@ -742,7 +742,10 @@ fn active_llm_model_rev_public(store: &LlmModelsStore) -> Option<String> {
 }
 
 fn parse_settings_store(v: &serde_json::Value) -> GatewayGlobalSettingsStore {
-    serde_json::from_value(v.clone()).unwrap_or_default()
+    let mut store: GatewayGlobalSettingsStore =
+        serde_json::from_value(v.clone()).unwrap_or_default();
+    store.claw_tap.normalize_mode();
+    store
 }
 
 fn parse_tokens_store(v: &serde_json::Value) -> GitPatTokensStore {

@@ -16,6 +16,20 @@ pub fn boundary_log_enabled() -> bool {
     }
 }
 
+/// Runtime/provider boundary stage line (CLI + gateway). Emits to `tracing` target
+/// `claw.boundary` — not stderr — so interactive ttyd sessions stay clean.
+pub fn boundary_log_stage(stage: &str, message: impl AsRef<str>) {
+    if !boundary_log_enabled() {
+        return;
+    }
+    tracing::info!(
+        target: "claw.boundary",
+        event = "runtime_boundary",
+        stage,
+        detail = %message.as_ref(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;

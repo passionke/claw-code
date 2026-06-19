@@ -57,7 +57,12 @@ psql_q() {
 
 echo "==> [1/6] PostgreSQL schema (gateway + pool registry)"
 if claw_compose_uses_local_postgres; then
-  "${RT}" ps --format '{{.Names}}' | grep -qx "${PG_CTN}" || fail "postgres container ${PG_CTN} not running (gateway.sh pg-up)"
+  if ! _claw_runtime_container_exists "${RT}" "${PG_CTN}"; then
+    fail "postgres container ${PG_CTN} missing (gateway.sh pg-up)"
+  fi
+  if ! "${RT}" inspect -f '{{.State.Running}}' "${PG_CTN}" 2>/dev/null | grep -qx true; then
+    fail "postgres container ${PG_CTN} not running (gateway.sh pg-up)"
+  fi
 else
   ok "external postgres (${CLAW_GATEWAY_DATABASE_URL%%@*}@…)"
 fi

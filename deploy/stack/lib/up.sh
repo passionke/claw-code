@@ -173,6 +173,7 @@ claw_ensure_default_project_ds "${CLAW_BOOTSTRAP_DS_ID:-1}" || {
   echo "error: default project ds bootstrap failed (POST /v1/projects + /v1/init)" >&2
   exit 1
 }
+claw_materialize_ovs_workspace_projects || true
 
 # claude-tap: bootstrap LLM from .env, tap-up + Admin clawTap register. kejiqing
 if claw_stack_manages_local_claude_tap; then
