@@ -35,8 +35,8 @@ Commands:
   solve-e2e     Admin-equivalent solve_async + poll to succeeded/failed (real gate, not healthz)
   verify        Stack truth checks (schema, pool registry, binary); fails loud
   cluster-verify  Shared-PG multi-host: claw_pool zombies + each gateway /v1/pools (pre-prod gate)
-  tap-up        Start claude-tap only (CLAUDE_TAP_MODE: native/pypi=PyPI claw-tap, docker=image)
-  tap-down      Stop claude-tap only
+  tap-up        Start pool claude-tap only (same as pool-up ensure; CLAUDE_TAP_MODE: docker/native)
+  tap-down      Stop pool claude-tap only
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
   bench         Pool bench 30s
   logs          Follow gateway logs

@@ -6,7 +6,6 @@ use crate::cluster_identity::{
     fetch_tap_cluster_identity, gateway_cluster_id, gateway_database_url, local_cluster_identity,
     verify_tap_cluster, ClusterIdentity,
 };
-use crate::gateway_claw_tap_lifecycle::restart_local_claw_tap;
 use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_global_settings};
 use crate::session_db::GatewaySessionDb;
 
@@ -466,7 +465,6 @@ pub async fn put_claw_tap_settings(
     let (mut settings, tokens, _) = get_gateway_global_settings(db)
         .await
         .map_err(|e| e.to_string())?;
-    let prev_live = settings.claw_tap.live_port;
     settings.claw_tap = ClawTapSettings {
         mode: input.mode,
         host,
@@ -481,20 +479,14 @@ pub async fn put_claw_tap_settings(
     let mut message = None;
     if !probe.ok {
         message = Some(format!(
-            "clawTap saved; tap not reachable yet ({}) — run gateway.sh tap-up",
+            "clawTap saved; tap not reachable yet ({}) — ensure pool tap: gateway.sh pool-up or up",
             probe.message
         ));
     }
 
-    let tap_restart = if input.mode == ClawTapMode::Local && (prev_live != live_port || !probe.ok) {
-        Some(restart_local_claw_tap(live_port).await)
-    } else {
-        None
-    };
-
     Ok(PutClawTapSettingsResponse {
         settings: ClawTapSettingsPublic::from(&settings.claw_tap),
-        tap_restart,
+        tap_restart: None,
         message,
     })
 }

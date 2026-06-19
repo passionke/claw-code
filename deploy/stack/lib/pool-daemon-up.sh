@@ -123,6 +123,11 @@ if [[ "${RESTART}" == 0 ]] && claw_pool_http_alive; then
       fi
     fi
     echo "claw-sandbox already on 127.0.0.1:${HTTP_PORT} (pid=${pid:-unknown}, claw_pool ok, skipped)" >&2
+    # shellcheck source=pool-tap.sh
+    source "${LIB_DIR}/pool-tap.sh"
+    claw_ensure_pool_claude_tap "${PODMAN_DIR}" "${REPO_ROOT}" || {
+      echo "warning: pool claude-tap ensure failed (gateway.sh tap-up)" >&2
+    }
     exit 0
   fi
   echo "==> pool-daemon-up: HTTP up but claw_pool registry missing/stale for ${CLAW_POOL_ID}; restarting…" >&2
@@ -263,6 +268,11 @@ for _i in $(seq 1 120); do
     pid="$(claw_pool_refresh_pid_file "${RPC_DIR}" 2>/dev/null || echo "${pid}")"
     echo "claw-sandbox HTTP 0.0.0.0:${HTTP_PORT} (pid=${pid})" >&2
     echo "  pool_id=${CLAW_POOL_ID} advertise=${CLAW_POOL_ADVERTISE_HOST}" >&2
+    # shellcheck source=pool-tap.sh
+    source "${LIB_DIR}/pool-tap.sh"
+    if ! claw_ensure_pool_claude_tap "${PODMAN_DIR}" "${REPO_ROOT}"; then
+      echo "warning: pool claude-tap ensure failed (run gateway.sh up or tap-up after compose network is up)" >&2
+    fi
     exit 0
   fi
   if [[ "${_i}" == 120 ]]; then

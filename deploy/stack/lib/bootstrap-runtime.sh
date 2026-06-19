@@ -197,13 +197,11 @@ claw_claude_tap_up_and_register() {
   fi
 }
 
-# LLM (env) → default project → tap-up + Admin clawTap register. Called from gateway.sh up.
-claw_bootstrap_gateway_runtime() {
+# LLM (env) → pool claude-tap up + Admin clawTap register. Called from gateway.sh up (after pool-daemon). Author: kejiqing
+claw_bootstrap_pool_tap_runtime() {
   local podman_dir="$1"
   local root_dir="$2"
   local auto="${CLAW_AUTO_BOOTSTRAP:-0}"
-
-  claw_wait_gateway_http_ready 45
 
   if ! claw_gateway_has_active_llm || [[ "${CLAW_BOOTSTRAP_LLM_FORCE:-0}" == "1" ]]; then
     if claw_bootstrap_llm_from_env; then
@@ -219,6 +217,11 @@ claw_bootstrap_gateway_runtime() {
     fi
   fi
 
-  echo "==> claude-tap up + Admin register (CLAUDE_TAP_MODE=${CLAUDE_TAP_MODE:-docker})" >&2
+  echo "==> pool claude-tap up + Admin register (CLAUDE_TAP_MODE=${CLAUDE_TAP_MODE:-docker})" >&2
   claw_claude_tap_up_and_register "${podman_dir}" "${root_dir}"
+}
+
+# Back-compat alias (stable-dev-host-up and docs).
+claw_bootstrap_gateway_runtime() {
+  claw_bootstrap_pool_tap_runtime "$@"
 }

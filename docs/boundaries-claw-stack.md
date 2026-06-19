@@ -43,6 +43,7 @@ Author: kejiqing
 4. **Image** = convenience bundle (gateway + Doris dist + adapter script + `claw`); **repository** boundaries still split for understanding.
 5. **`CLAW_MCP_MAX_CONCURRENT`**: max in-flight MCP `tools/call` per worker; values `> 1` also enable same-turn parallel SQLBot fan-out (`[parallel-friendly]` tool hint + `shared_executor`). Set `1` for fully serial MCP (`rust/crates/runtime/src/mcp_client.rs`).
 6. **Solve preflight (per `ds_*`)**: `ds_<id>/home/.claw/solve-preflight.json` with ordered `kinds` (e.g. `["sqlbot_mcp_start"]`, compatible with legacy `kind`) → **first** `sessionId` turn only, after user text in jsonl, code-run preflight (`rust/crates/gateway-solve-turn/src/project_preflight.rs`). Table DDL: `ds_<id>/home/schema.md`, ro mount + system prompt (`GATEWAY_SCHEMA_MD_REL`).
+7. **claude-tap (LLM proxy)**: **one sidecar per pool** on the worker network (`claw-claude-tap:8080`); lifecycle in `deploy/stack/lib/pool-tap.sh` + `pool-daemon-up.sh` — **not** inside gateway. Gateway: PG clawTap settings, `/readyz` cluster probe, per-solve `OPENAI_BASE_URL` inject. Traces: `CLAW_TAP_TRACES_DIR` or `${CLAW_NAS_HOST_MOUNT}/tap-traces` on NAS.
 
 ## Where to change what
 
