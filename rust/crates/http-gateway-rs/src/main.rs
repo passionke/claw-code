@@ -131,6 +131,8 @@ pub(crate) struct AppState {
     claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
     /// Active interactive terminal sessions (`/coding`). Author: kejiqing
     terminal_registry: session_terminal_api::TerminalSessionRegistry,
+    /// Interactive backend (`podman` pool or FC cloud sandbox). Author: kejiqing
+    interactive_backend: Arc<dyn pool::InteractiveSandboxBackend>,
 }
 
 impl AppState {
@@ -142,6 +144,7 @@ impl AppState {
             self.pool_clients.clone(),
             self.session_db.clone(),
             self.terminal_registry.clone(),
+            Arc::clone(&self.interactive_backend),
             pool_runtime_cli_bin(self.cfg.solve_isolation).to_string(),
             self.claw_tap_cluster.clone(),
             self.llm_runtime.clone(),
@@ -1319,6 +1322,15 @@ async fn main() {
     // Pool RPC: single claw-sandbox HTTP client. Author: kejiqing
     let live_report_hub = Arc::new(pool::LiveReportHub::default());
     let pool_clients = pool::PoolClients::from_env(Arc::clone(&live_report_hub), work_root.clone());
+    let fc_client = claw_fc_sandbox_client::FcSandboxConfig::from_env()
+        .map(|cfg| Arc::new(claw_fc_sandbox_client::FcSandboxClient::new(cfg)));
+    let interactive_backend = pool::interactive_backend_from_env(
+        pool_clients.clone(),
+        fc_client,
+        pool_clients.pool_id().to_string(),
+        pool_rpc_host_work_root.clone(),
+        work_root.clone(),
+    );
     let pool_rpc_remote = true;
     let co_located_pool_id = Some(pool_clients.pool_id().to_string());
     tracing::info!(
@@ -1531,6 +1543,7 @@ async fn main() {
         llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
         terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
+        interactive_backend,
     };
 
     run_startup_project_config_apply(&state).await;
@@ -3899,7 +3912,7 @@ async fn agent_ws_handler(
     ws: axum::extract::ws::WebSocketUpgrade,
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,
-    Query(q): Query<session_terminal_api::TerminalProjQuery>,
+    Query(q): Query<session_agent_api::AgentProjQuery>,
 ) -> impl IntoResponse {
     session_agent_api::agent_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
 }
@@ -5210,7 +5223,7 @@ async fn get_gateway_global_settings_handler(
 async fn put_gateway_claw_tap_handler(
     State(state): State<AppState>,
     Json(req): Json<gateway_claw_tap_settings::PutClawTapSettingsInput>,
-) -> Result<Json<gateway_claw_tap_settings::ClawTapSettingsPublic>, ApiError> {
+) -> Result<Json<gateway_claw_tap_settings::PutClawTapSettingsResponse>, ApiError> {
     let body = gateway_claw_tap_settings::put_claw_tap_settings(&state.session_db, req)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
@@ -5353,6 +5366,16 @@ async fn apply_gateway_llm_model_with_sync(
         resp.outcome = outcome;
     } else if let Some(path) = sync.upstream_config_file {
         resp.outcome.env_file = path;
+    }
+    if let Some(restart) = sync.tap_restart {
+        resp.outcome.tap_restarted = restart.restarted;
+        if restart.restarted {
+            resp.outcome.message = restart
+                .message
+                .or_else(|| Some("local clawTap restarted after LLM apply".into()));
+        } else if let Some(msg) = restart.message {
+            resp.outcome.message = Some(msg);
+        }
     }
     Ok(resp)
 }

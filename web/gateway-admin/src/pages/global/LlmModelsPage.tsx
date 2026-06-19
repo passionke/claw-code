@@ -179,12 +179,22 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
   };
 
   const applyModel = async (row: LlmModelRow) => {
-    await proxyHttp(
+    const resp = await proxyHttp<{
+      outcome?: { tapRestarted?: boolean; message?: string };
+    }>(
       gatewayBase,
       "POST",
       `/v1/gateway/global-settings/llm-models/${encodeURIComponent(row.id)}/apply`
     );
-    message.success(`已切换为当前模型：${row.name}`);
+    const restarted = resp.outcome?.tapRestarted;
+    const detail = resp.outcome?.message;
+    if (restarted) {
+      message.success(`已切换为当前模型：${row.name}（tap 已重启）`);
+    } else if (detail) {
+      message.success(`已切换为当前模型：${row.name}（${detail}）`);
+    } else {
+      message.success(`已切换为当前模型：${row.name}`);
+    }
     await load();
   };
 

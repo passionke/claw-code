@@ -244,6 +244,7 @@ claw_export_llm_runtime_layout() {
     printf '%s\n' 'CLAW_REPO_ROOT=/run/claw/claw'
     printf '%s\n' 'CLAW_LLM_RUNTIME_ENV_FILE=/run/claw/claw/claw-llm-runtime.env'
     printf '%s\n' 'CLAW_TAP_UPSTREAM_CONFIG_FILE=/run/claw/claw/claw-tap-upstream.json'
+    printf '%s\n' "CLAW_STACK_DIR=${script_dir}"
   } >"${script_dir}/.claw-llm-runtime.env"
 }
 
@@ -259,9 +260,11 @@ claw_podman_export_pool_workspace() {
   elif [[ -n "${log_dir}" ]]; then
     mkdir -p "${log_dir}"
   fi
-  # Host directory for the compose bind mount (Mac/Linux laptop path). Not the same as CLAW_POOL_WORK_ROOT_HOST
-  # inside the gateway container — see .claw-pool-workspace.env below. Author: kejiqing
+  # Host directory for pool daemon worker `-v` binds (local fallback when compose uses NFS volume). kejiqing
   export CLAW_POOL_WORK_ROOT_BIND_SRC="${ws}"
+  if claw_compose_nas_volume_enabled; then
+    echo "note: pool daemon uses host ${ws} for solve workers; Gateway/OVS use NFS compose volume" >&2
+  fi
   # Merged last in podman-compose.yml. MUST be a path that exists inside the gateway container: the gateway
   # runs Linux and calls canonicalize() before podman run. A macOS /Users/... path breaks startup with
   # "No such file or directory". For this stack, pool data lives under the same mount as CLAW_WORK_ROOT.
@@ -269,6 +272,101 @@ claw_podman_export_pool_workspace() {
     printf '%s\n' '# GENERATED — do not edit. Overwritten by up.sh / down.sh / start-with-tap.sh. kejiqing'
     printf '%s\n' 'CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace'
   } >"${script_dir}/.claw-pool-workspace.env"
+}
+
+# Write `.claw-workspace-volume.yml` — bind (default) or NFS direct for Gateway/OVS. Author: kejiqing
+claw_compose_write_workspace_volume_yml() {
+  local script_dir="$1"
+  script_dir="$(cd "${script_dir}" && pwd)"
+  local out="${script_dir}/.claw-workspace-volume.yml"
+  local ws nas_server nas_export mount_opts nas_path
+
+  # Host NFS mount (Aliyun console) then direct compose bind — see CLAW_NAS_HOST_MOUNT. kejiqing
+  if [[ -n "${CLAW_NAS_HOST_MOUNT:-}" ]]; then
+    return 0
+  fi
+
+  if claw_compose_nas_volume_enabled; then
+    nas_server="${NAS_BASE_URL:-${CLAW_FC_NAS_SERVER:-}}"
+    if [[ -z "${nas_server}" ]]; then
+      echo "error: NAS_BASE_URL or CLAW_FC_NAS_SERVER required for CLAW_USE_NAS_VOLUME" >&2
+      return 1
+    fi
+    nas_export="${CLAW_FC_NAS_EXPORT:-/claw-workspace}"
+    nas_path="${nas_export#/}"
+    case "${CLAW_NAS_NFS_VERSION:-3}" in
+      4)
+        # Aliyun NAS NFSv4 mount point (multi-ECS safe). Author: kejiqing
+        mount_opts="rw,vers=4,minorversion=0,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport"
+        ;;
+      *)
+        mount_opts="rw,nfsvers=3"
+        if [[ "$(uname -s)" == Darwin ]]; then
+          mount_opts="${mount_opts},resvport"
+        else
+          mount_opts="${mount_opts},noresvport"
+        fi
+        ;;
+    esac
+    {
+      printf '%s\n' '# GENERATED — NFS workspace (Gateway/OVS mount NAS directly). Do not edit. kejiqing'
+      printf '%s\n' 'volumes:'
+      printf '%s\n' '  claw-workspace-data:'
+      printf '%s\n' '    driver: local'
+      printf '%s\n' '    driver_opts:'
+      printf '%s\n' '      type: nfs'
+      printf '%s\n' "      o: ${mount_opts}"
+      printf '%s\n' "      device: \"${nas_server}:/${nas_path}\""
+    } >"${out}"
+    echo "compose: claw-workspace-data = NFS ${nas_server}:/${nas_path} (no Mac host mount)" >&2
+  else
+    ws="$(claw_stack_workspace_bind_dir "${script_dir}")"
+    mkdir -p "${ws}"
+    {
+      printf '%s\n' '# GENERATED — bind workspace (host dir). Do not edit. kejiqing'
+      printf '%s\n' 'volumes:'
+      printf '%s\n' '  claw-workspace-data:'
+      printf '%s\n' '    driver: local'
+      printf '%s\n' '    driver_opts:'
+      printf '%s\n' '      type: none'
+      printf '%s\n' '      o: bind'
+      printf '%s\n' "      device: ${ws}"
+    } >"${out}"
+  fi
+}
+
+claw_compose_append_workspace_volume() {
+  local script_dir="$1"
+  local rel="${2:-}"
+  if [[ -n "${CLAW_NAS_HOST_MOUNT:-}" ]]; then
+    if ! mountpoint -q "${CLAW_NAS_HOST_MOUNT}" 2>/dev/null; then
+      echo "error: CLAW_NAS_HOST_MOUNT=${CLAW_NAS_HOST_MOUNT} is not a mountpoint (Aliyun: mount -t nfs … ${CLAW_NAS_HOST_MOUNT})" >&2
+      return 1
+    fi
+    export CLAW_GATEWAY_WORKSPACE_VOLUME="${CLAW_NAS_HOST_MOUNT}:/var/lib/claw/workspace"
+    export CLAW_OVS_WORKSPACE_VOLUME="${CLAW_NAS_HOST_MOUNT}:/home/workspace"
+    echo "compose: workspace direct bind ${CLAW_NAS_HOST_MOUNT} (host NAS mount)" >&2
+    return 0
+  fi
+  claw_compose_write_workspace_volume_yml "${script_dir}" || return 1
+  if [[ -n "${rel}" ]]; then
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/.claw-workspace-volume.yml" )
+  else
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/.claw-workspace-volume.yml" )
+  fi
+}
+
+
+claw_podman_append_ovs_public_bind() {
+  local script_dir="$1"
+  local rel="${2:-}"
+  case "${CLAW_OVS_PUBLIC_BIND:-}" in
+    1 | true | yes | on)
+      export CLAW_OVS_PUBLISH_HOST=0.0.0.0
+      echo "compose: OVS published on 0.0.0.0:${CLAW_OVS_HOST_PORT:-13000}" >&2
+      ;;
+    *) return 0 ;;
+  esac
 }
 
 
@@ -368,6 +466,7 @@ claw_podman_load_compose_args() {
     CLAW_PODMAN_COMPOSE_ARGS=( -p "${COMPOSE_PROJECT_NAME}" -f "${script_dir}/podman-compose.yml" )
   fi
   if [[ ! -f "${env_file}" ]]; then
+    claw_compose_append_workspace_volume "${script_dir}" "${rel}" || return 1
     return 0
   fi
   set -a
@@ -387,6 +486,8 @@ claw_podman_load_compose_args() {
     source "${script_dir}/lib/env-profile.sh"
     claw_apply_deploy_profile || return 1
   fi
+  claw_compose_append_workspace_volume "${script_dir}" "${rel}" || return 1
+  claw_podman_append_ovs_public_bind "${script_dir}" "${rel}"
   if [[ -f "${rpc_root}/pool-registry.env" ]]; then
     set -a
     # shellcheck disable=SC1090

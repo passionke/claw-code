@@ -16,11 +16,19 @@ use tracing::warn;
 
 use crate::client_origin::CLIENT_ORIGIN_OVS_CHAT;
 use crate::persistence::transcript;
+use crate::pool::terminal_ws_connect_url;
 use crate::session_db::GatewaySessionDb;
-use crate::session_terminal_api::{
-    ensure_terminal_active, TerminalApiContext, TerminalApiError, TerminalProjQuery,
-};
+use crate::session_ovs_api::{ovs_agent_session_id, ovs_chat_record_session_id};
+use crate::session_terminal_api::{ensure_terminal_active, TerminalApiContext, TerminalApiError};
 use crate::turn_id;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProjQuery {
+    pub proj_id: i64,
+    /// OVS Chat panel id for `gateway_turns` only; worker REPL stays `ovs-{projId}`.
+    pub chat_session_id: Option<String>,
+}
 
 const OSC_PREFIX: &str = "\x1b]1337;Claw;";
 const OSC_SUFFIX: char = '\x07';
@@ -109,19 +117,23 @@ async fn finalize_active_turn(
 async fn start_ovs_turn(
     db: &GatewaySessionDb,
     proj_id: i64,
-    session_id: &str,
+    record_session_id: &str,
+    worker_session_id: &str,
+    ovs_chat_key: Option<&str>,
     user_prompt: &str,
 ) -> Result<String, String> {
     let turn_id = turn_id::mint_turn_id();
     let now = transcript::now_ms();
     let entry = serde_json::json!({
         "projId": proj_id,
-        "sessionId": session_id,
+        "sessionId": record_session_id,
+        "workerSessionId": worker_session_id,
+        "ovsChatKey": ovs_chat_key,
         "source": "ovs-agent-ws",
     });
     db.insert_turn(
         &turn_id,
-        session_id,
+        record_session_id,
         proj_id,
         "running",
         now,
@@ -134,10 +146,81 @@ async fn start_ovs_turn(
     Ok(turn_id)
 }
 
+async fn ensure_ovs_chat_record_session(
+    ctx: &TerminalApiContext,
+    proj_id: i64,
+    record_session_id: &str,
+) -> Result<(), String> {
+    if ctx
+        .session_db
+        .session_exists(record_session_id, proj_id)
+        .await
+        .map_err(|e| format!("session registry lookup: {e}"))?
+    {
+        let now = transcript::now_ms();
+        ctx.session_db
+            .touch_updated(record_session_id, proj_id, now)
+            .await
+            .map_err(|e| format!("session registry touch: {e}"))?;
+        return Ok(());
+    }
+    let seg = crate::session_merge::sessions_directory_segment(record_session_id);
+    let session_home = ctx
+        .work_root
+        .join(format!("proj_{proj_id}"))
+        .join("sessions")
+        .join(&seg);
+    tokio::fs::create_dir_all(session_home.join(".claw"))
+        .await
+        .map_err(|e| format!("mkdir chat record session: {e}"))?;
+    let session_home_rel = format!("proj_{proj_id}/sessions/{seg}");
+    let now = transcript::now_ms();
+    ctx.session_db
+        .insert_session(
+            record_session_id,
+            proj_id,
+            &session_home_rel,
+            now,
+            Some(CLIENT_ORIGIN_OVS_CHAT),
+        )
+        .await
+        .map_err(|e| format!("session registry insert: {e}"))?;
+    Ok(())
+}
+
+/// Worker REPL is always `ovs-{projId}`; path `session_id` is legacy/compat only.
+fn ovs_worker_session_id(proj_id: i64, path_session_id: &str) -> String {
+    if path_session_id.starts_with("ovs-") {
+        ovs_agent_session_id(proj_id)
+    } else {
+        path_session_id.to_string()
+    }
+}
+
+fn ovs_record_session_id(
+    proj_id: i64,
+    path_session_id: &str,
+    chat_session_id: Option<&str>,
+) -> String {
+    if let Some(key) = chat_session_id.map(str::trim).filter(|s| !s.is_empty()) {
+        if key.starts_with("ovs-chat-") {
+            return key.to_string();
+        }
+        return ovs_chat_record_session_id(proj_id, key);
+    }
+    if path_session_id.starts_with("ovs-chat-") {
+        return path_session_id.to_string();
+    }
+    if path_session_id.starts_with("ovs-") {
+        return ovs_agent_session_id(proj_id);
+    }
+    path_session_id.to_string()
+}
+
 pub async fn agent_ws_upgrade(
     ctx: TerminalApiContext,
     session_id: String,
-    q: TerminalProjQuery,
+    q: AgentProjQuery,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     let session_id = session_id.trim().to_string();
@@ -150,7 +233,7 @@ pub async fn agent_ws_upgrade(
             .into_response();
     }
     ws.on_upgrade(move |socket| async move {
-        if let Err(e) = run_agent_ws_bridge(ctx, q.proj_id, session_id, socket).await {
+        if let Err(e) = run_agent_ws_bridge(ctx, q, session_id, socket).await {
             warn!(
                 target: "claw_gateway_agent",
                 error = %e,
@@ -175,15 +258,26 @@ async fn send_agent_error(
 
 async fn run_agent_ws_bridge(
     ctx: TerminalApiContext,
-    proj_id: i64,
-    session_id: String,
+    q: AgentProjQuery,
+    path_session_id: String,
     client: WebSocket,
 ) -> Result<(), String> {
+    let proj_id = q.proj_id;
+    let worker_session_id = ovs_worker_session_id(proj_id, &path_session_id);
+    let record_session_id =
+        ovs_record_session_id(proj_id, &path_session_id, q.chat_session_id.as_deref());
+    let ovs_chat_key = q
+        .chat_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.starts_with("ovs-chat-"))
+        .map(str::to_string);
+
     let (mut cli_tx, mut cli_rx) = client.split();
     let active_turn: Arc<Mutex<Option<ActiveOvsTurn>>> = Arc::new(Mutex::new(None));
     let session_db = Arc::clone(&ctx.session_db);
 
-    let active = match ensure_terminal_active(&ctx, proj_id, &session_id).await {
+    let active = match ensure_terminal_active(&ctx, proj_id, &worker_session_id).await {
         Ok(a) => a,
         Err(e) => {
             send_agent_error(&mut cli_tx, &e.message).await;
@@ -191,9 +285,8 @@ async fn run_agent_ws_bridge(
         }
     };
 
-    let host = ctx.ttyd_connect_host.clone();
-    let port = active.ttyd_host_port;
-    let url = format!("ws://{host}:{port}/ws");
+    let ttyd = active.ttyd.clone();
+    let url = terminal_ws_connect_url(&ttyd);
     let mut req = url
         .as_str()
         .into_client_request()
@@ -232,7 +325,10 @@ async fn run_agent_ws_bridge(
     let cli_tx_up = Arc::clone(&cli_tx);
     let active_turn_up = Arc::clone(&active_turn);
     let session_db_up = Arc::clone(&session_db);
-    let session_id_up = session_id.clone();
+    let record_session_id_up = record_session_id.clone();
+    let worker_session_id_up = worker_session_id.clone();
+    let ovs_chat_key_up = ovs_chat_key.clone();
+    let ctx_up = ctx.clone();
     let client_to_up = async move {
         while let Some(msg) = cli_rx.next().await {
             let msg = msg.map_err(|e| format!("client ws: {e}"))?;
@@ -260,9 +356,17 @@ async fn run_agent_ws_bridge(
                                 let mut guard = active_turn_up.lock().await;
                                 finalize_active_turn(&session_db_up, &mut guard, "failed").await;
                             }
-                            let turn_id =
-                                start_ovs_turn(&session_db_up, proj_id, &session_id_up, &text)
-                                    .await?;
+                            ensure_ovs_chat_record_session(&ctx_up, proj_id, &record_session_id_up)
+                                .await?;
+                            let turn_id = start_ovs_turn(
+                                &session_db_up,
+                                proj_id,
+                                &record_session_id_up,
+                                &worker_session_id_up,
+                                ovs_chat_key_up.as_deref(),
+                                &text,
+                            )
+                            .await?;
                             *active_turn_up.lock().await = Some(ActiveOvsTurn {
                                 turn_id,
                                 buffer: String::new(),
@@ -357,4 +461,29 @@ async fn run_agent_ws_bridge(
         finalize_active_turn(&session_db, &mut guard, status).await;
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ovs_worker_session_id_normalizes_ovs_paths() {
+        assert_eq!(ovs_worker_session_id(2, "ovs-2"), "ovs-2");
+        assert_eq!(ovs_worker_session_id(2, "ovs-2-chat-foo"), "ovs-2");
+        assert_eq!(ovs_worker_session_id(2, "coding-abc"), "coding-abc");
+    }
+
+    #[test]
+    fn ovs_record_session_id_prefers_chat_query() {
+        assert_eq!(
+            ovs_record_session_id(1, "ovs-1", Some("panel-a")),
+            "ovs-chat-1-panel-a"
+        );
+        assert_eq!(
+            ovs_record_session_id(1, "ovs-1", Some("ovs-chat-1-custom")),
+            "ovs-chat-1-custom"
+        );
+        assert_eq!(ovs_record_session_id(1, "ovs-1", None), "ovs-1");
+    }
 }

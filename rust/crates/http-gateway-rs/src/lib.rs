@@ -22,6 +22,7 @@ pub mod claw_tap_cluster_state;
 pub mod client_origin;
 pub mod cluster_identity;
 pub mod deploy_image;
+pub mod gateway_claw_tap_lifecycle;
 pub mod gateway_claw_tap_settings;
 pub mod gateway_global_settings;
 pub mod gateway_llm_cluster_store;

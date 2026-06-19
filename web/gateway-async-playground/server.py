@@ -622,7 +622,7 @@ def proxy_ovs_http(
 
 
 def proxy_ovs_agent_ws(
-    handler: BaseHTTPRequestHandler, proj_id: str, session_id: str
+    handler: BaseHTTPRequestHandler, proj_id: str, session_id: str, chat_session_id: str = ""
 ) -> None:
     if not read_session_user(handler):
         handler.send_error(401, "login required")
@@ -637,6 +637,9 @@ def proxy_ovs_agent_ws(
         f"/v1/sessions/{urllib.parse.quote(sid, safe='')}"
         f"/agent/ws?projId={urllib.parse.quote(pid, safe='')}"
     )
+    chat_sid = chat_session_id.strip()
+    if chat_sid:
+        subpath += f"&chatSessionId={urllib.parse.quote(chat_sid, safe='')}"
     upstream_url = _effective_proxy_url(PUBLIC_GATEWAY_BASE, subpath)
     if not is_allowed_upstream(upstream_url):
         handler.send_error(400, "upstream host/port not allowed")
@@ -984,7 +987,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/ovs/agent/ws":
                 proj_id = (qs.get("projId") or qs.get("proj_id") or ["1"])[0]
                 session_id = (qs.get("sessionId") or qs.get("session_id") or [""])[0]
-                proxy_ovs_agent_ws(self, proj_id, session_id)
+                chat_session_id = (qs.get("chatSessionId") or qs.get("chat_session_id") or [""])[0]
+                proxy_ovs_agent_ws(self, proj_id, session_id, chat_session_id)
                 return
             if path == "/ovs" or path.startswith("/ovs/"):
                 rel = path[len("/ovs") :] or "/"

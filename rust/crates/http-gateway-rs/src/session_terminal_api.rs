@@ -1,18 +1,14 @@
 //! Interactive coding terminal API (`/v1/sessions/.../terminal/*`). Author: kejiqing
 
 use std::collections::{BTreeMap, HashMap};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use claw_sandbox_protocol::{
-    GuestExecActor, InteractiveSessionBind, LeasedSlotInfo, SlotLeaseOwner,
-};
+use claw_sandbox_protocol::{LeasedSlotInfo, SlotLeaseOwner};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -27,7 +23,9 @@ use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::sandbox_orchestrator::worker_isolation_to_sandbox;
 use crate::pool::{
-    self, path_for_pool_acquire, proj_work_dir, session_home_under_work_root, PoolClients,
+    self, proj_work_dir, session_home_under_work_root, terminal_ws_connect_url,
+    InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend, InteractiveSessionSpec,
+    PoolClients, TtydConnectTarget,
 };
 use crate::project_config_apply;
 use crate::project_config_draft;
@@ -43,8 +41,12 @@ pub struct TerminalSessionKey {
 pub struct ActiveTerminalSession {
     pub slot_index: usize,
     pub worker_name: Option<String>,
+    /// Loopback port for podman; 443 placeholder when FC public host is used.
     pub ttyd_host_port: u16,
     pub pool_id: String,
+    pub backend: InteractiveBackendKind,
+    pub fc_sandbox_id: Option<String>,
+    pub ttyd: TtydConnectTarget,
 }
 
 #[derive(Clone, Default)]
@@ -104,6 +106,7 @@ pub struct TerminalApiContext {
     pub session_db: Arc<GatewaySessionDb>,
     pub registry: TerminalSessionRegistry,
     pub ttyd_connect_host: String,
+    pub interactive_backend: Arc<dyn InteractiveSandboxBackend>,
     pub pool_runtime_bin: String,
     pub claw_tap_cluster: ClawTapClusterHandle,
     pub llm_runtime: LlmRuntimeHandle,
@@ -228,22 +231,6 @@ impl IntoResponse for TerminalApiError {
         )
             .into_response()
     }
-}
-
-fn pick_ttyd_host_port(session_id: &str) -> Result<u16, String> {
-    let base: u16 = 37_681;
-    let span: u16 = 8_000;
-    let mut h: u32 = 0;
-    for b in session_id.as_bytes() {
-        h = h.wrapping_mul(31).wrapping_add(u32::from(*b));
-    }
-    for attempt in 0..64 {
-        let port = base.wrapping_add((h.wrapping_add(attempt)) as u16 % span);
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return Ok(port);
-        }
-    }
-    Err("no free ttyd host port in range".into())
 }
 
 fn ttyd_connect_host() -> String {
@@ -532,15 +519,42 @@ async fn release_active_terminal(
     _key: &TerminalSessionKey,
     active: &ActiveTerminalSession,
 ) {
-    if let Some(sandbox) = ctx.pool_clients.sandbox_rpc_client() {
-        let _ = sandbox
-            .guest_exec_sh(
-                active.slot_index,
-                "pkill -f 'ttyd.*7681' 2>/dev/null || true",
-                GuestExecActor::SlotWorker,
-            )
-            .await;
-        let _ = sandbox.release(active.slot_index).await;
+    let lease = active_terminal_to_lease(active);
+    if let Err(e) = ctx.interactive_backend.stop_session(&lease).await {
+        warn!(
+            target: "claw_gateway_terminal",
+            error = %e,
+            session_backend = ?active.backend,
+            "interactive stop_session failed"
+        );
+    }
+}
+
+fn active_terminal_to_lease(active: &ActiveTerminalSession) -> InteractiveLease {
+    InteractiveLease {
+        backend: active.backend,
+        slot_index: active.slot_index,
+        worker_name: active.worker_name.clone(),
+        pool_id: active.pool_id.clone(),
+        fc_sandbox_id: active.fc_sandbox_id.clone(),
+        ttyd: active.ttyd.clone(),
+    }
+}
+
+fn lease_to_active_terminal(lease: InteractiveLease) -> ActiveTerminalSession {
+    let ttyd_host_port = if lease.ttyd.use_tls {
+        lease.ttyd.port
+    } else {
+        lease.ttyd.port
+    };
+    ActiveTerminalSession {
+        slot_index: lease.slot_index,
+        worker_name: lease.worker_name,
+        ttyd_host_port,
+        pool_id: lease.pool_id,
+        backend: lease.backend,
+        fc_sandbox_id: lease.fc_sandbox_id,
+        ttyd: lease.ttyd,
     }
 }
 
@@ -727,13 +741,6 @@ pub async fn terminal_start(
         .await
         .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let sandbox = ctx.pool_clients.sandbox_rpc_client().ok_or_else(|| {
-        TerminalApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "sandbox RPC client unavailable",
-        )
-    })?;
-
     ctx.pool_clients
         .assert_proj_worker_isolation_supported(&ctx.session_db, req.proj_id)
         .await
@@ -741,31 +748,7 @@ pub async fn terminal_start(
 
     let mode = PoolClients::effective_mode_for_proj(&ctx.session_db, req.proj_id).await;
     let isolation = worker_isolation_to_sandbox(mode);
-    let ttyd_port = pick_ttyd_host_port(session_id)
-        .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
 
-    let proj_home = proj_dir.join("home");
-    tokio::fs::create_dir_all(&proj_home).await.map_err(|e| {
-        TerminalApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("mkdir proj home: {e}"),
-        )
-    })?;
-    let proj_abs = std::fs::canonicalize(&proj_home).map_err(|e| {
-        TerminalApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("canonicalize proj home: {e}"),
-        )
-    })?;
-    let session_abs = std::fs::canonicalize(&session_home).map_err(|e| {
-        TerminalApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("canonicalize session dir: {e}"),
-        )
-    })?;
-
-    // Resolve LLM + write env on the gateway host **before** pool acquire so clawTap /
-    // Admin misconfig fails fast without leaking a leased worker slot.
     let llm_env =
         resolve_terminal_llm_env(&ctx.session_db, &ctx.claw_tap_cluster, &ctx.llm_runtime)
             .await
@@ -774,69 +757,37 @@ pub async fn terminal_start(
         .await
         .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let bind = InteractiveSessionBind {
-        proj_home_host: path_for_pool_acquire(
-            &proj_abs,
-            &ctx.work_root,
-            ctx.pool_rpc_host_work_root.as_deref(),
+    let proj_home = proj_dir.join("home");
+    tokio::fs::create_dir_all(&proj_home).await.map_err(|e| {
+        TerminalApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("mkdir proj home: {e}"),
         )
-        .to_string_lossy()
-        .into_owned(),
-        session_host_root: path_for_pool_acquire(
-            &session_abs,
-            &ctx.work_root,
-            ctx.pool_rpc_host_work_root.as_deref(),
-        )
-        .to_string_lossy()
-        .into_owned(),
-        ttyd_host_port: ttyd_port,
-        // OVS `@claw`: cwd=`/claw_ds` must be writable; solve/other terminals stay `:ro`.
-        proj_home_readonly: !session_id.starts_with("ovs-"),
+    })?;
+
+    let spec = InteractiveSessionSpec {
+        session_id: session_id.to_string(),
+        proj_id: req.proj_id,
+        session_home: session_home.clone(),
+        proj_home,
+        llm_env,
+        ovs_mode: session_id.starts_with("ovs-"),
+        sandbox_isolation: isolation,
+        start_ttyd_script: start_ttyd_sh_for_session(session_id),
     };
 
-    let lease = sandbox
-        .acquire(
-            Duration::from_secs(45),
-            isolation,
-            Some(bind),
-            Some(SlotLeaseOwner::Terminal {
-                session_id: session_id.to_string(),
-                proj_id: req.proj_id,
-            }),
-        )
+    let lease = ctx
+        .interactive_backend
+        .start_session(spec)
         .await
         .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
 
-    let slot_index = lease.slot_index;
-    let ttyd_port = lease.ttyd_host_port.unwrap_or(ttyd_port);
+    let active = lease_to_active_terminal(lease);
+    let slot_index = active.slot_index;
+    let ttyd_port = active.ttyd_host_port;
 
-    if let Err(e) = sandbox
-        .guest_exec_sh(
-            slot_index,
-            start_ttyd_sh_for_session(session_id),
-            GuestExecActor::SlotWorker,
-        )
-        .await
-    {
-        let _ = sandbox.release(slot_index).await;
-        return Err(TerminalApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("start ttyd in worker: {e}"),
-        ));
-    }
-
-    let pool_id = ctx.pool_clients.pool_id().to_string();
-    ctx.registry
-        .insert(
-            key.clone(),
-            ActiveTerminalSession {
-                slot_index,
-                worker_name: lease.worker_name.clone(),
-                ttyd_host_port: ttyd_port,
-                pool_id: pool_id.clone(),
-            },
-        )
-        .await;
+    let worker_name = active.worker_name.clone();
+    ctx.registry.insert(key.clone(), active).await;
 
     info!(
         target: "claw_gateway_terminal",
@@ -853,7 +804,7 @@ pub async fn terminal_start(
         slot_index,
         ttyd_host_port: ttyd_port,
         ws_path: terminal_ws_path(session_id, req.proj_id),
-        worker_name: lease.worker_name,
+        worker_name,
         reused_worker: None,
     }))
 }
@@ -952,10 +903,9 @@ pub async fn terminal_ws_upgrade(
                 .into_response();
         }
     };
-    let host = ctx.ttyd_connect_host.clone();
-    let port = active.ttyd_host_port;
+    let ttyd = active.ttyd.clone();
     ws.on_upgrade(move |socket| async move {
-        if let Err(e) = proxy_terminal_ws(socket, &host, port).await {
+        if let Err(e) = proxy_terminal_ws(socket, &ttyd).await {
             warn!(
                 target: "claw_gateway_terminal",
                 session_id = %session_id,
@@ -966,8 +916,8 @@ pub async fn terminal_ws_upgrade(
     })
 }
 
-async fn proxy_terminal_ws(client: WebSocket, host: &str, port: u16) -> Result<(), String> {
-    let url = format!("ws://{host}:{port}/ws");
+async fn proxy_terminal_ws(client: WebSocket, ttyd: &TtydConnectTarget) -> Result<(), String> {
+    let url = terminal_ws_connect_url(ttyd);
     let mut req = url
         .as_str()
         .into_client_request()
@@ -1130,6 +1080,7 @@ pub fn terminal_api_context(
     pool_clients: PoolClients,
     session_db: Arc<GatewaySessionDb>,
     registry: TerminalSessionRegistry,
+    interactive_backend: Arc<dyn InteractiveSandboxBackend>,
     pool_runtime_bin: String,
     claw_tap_cluster: ClawTapClusterHandle,
     llm_runtime: LlmRuntimeHandle,
@@ -1141,6 +1092,7 @@ pub fn terminal_api_context(
         session_db,
         registry,
         ttyd_connect_host: ttyd_connect_host(),
+        interactive_backend,
         pool_runtime_bin,
         claw_tap_cluster,
         llm_runtime,

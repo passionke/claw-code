@@ -83,9 +83,9 @@ services:
     ports:
       - "${GATEWAY_HOST_PORT}:8080"
     volumes:
-      # Bind mount so podman_pool on the host can use the same path as CLAW_POOL_WORK_ROOT_HOST.
-      # Darwin: env-profile sets CLAW_PODMAN_BIND_MOUNT_SUFFIX=:U (Podman chown to container user). kejiqing
-      - ${CLAW_POOL_WORK_ROOT_BIND_SRC:-./claw-workspace}:/var/lib/claw/workspace${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}
+      # Workspace: bind or NFS — see generated `.claw-workspace-volume.yml` (CLAW_USE_NAS_VOLUME + NAS_BASE_URL).
+      # ECS host NAS: set CLAW_NAS_HOST_MOUNT=/mnt → direct bind (see env.fc-interactive.example). kejiqing
+      - ${CLAW_GATEWAY_WORKSPACE_VOLUME:-claw-workspace-data:/var/lib/claw/workspace}${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}
       - ${CLAW_HOST_LOG_DIR:-./claw-logs}:/var/log/claw${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}
       - ../../.claw.json:/app/.claw.json:ro
       # Human deploy .env (ro). PG-synced LLM + tap upstream live under .claw/ (rw). kejiqing
@@ -142,9 +142,9 @@ services:
       HOME: /opt/claw-ovs/home
       CLAW_GATEWAY_HOST: gateway-rs:8080
     ports:
-      - "127.0.0.1:${CLAW_OVS_HOST_PORT:-13000}:3000"
+      - "${CLAW_OVS_PUBLISH_HOST:-127.0.0.1}:${CLAW_OVS_HOST_PORT:-13000}:3000"
     volumes:
-      - ${CLAW_POOL_WORK_ROOT_BIND_SRC:-./claw-workspace}:/home/workspace${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}
+      - ${CLAW_OVS_WORKSPACE_VOLUME:-claw-workspace-data:/home/workspace}${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}
       - ./openvscode-settings.json:/opt/claw-ovs/server-data/Machine/settings.json:ro
       - ./claw-ovs-extensions:/opt/claw-extensions${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}
     command:

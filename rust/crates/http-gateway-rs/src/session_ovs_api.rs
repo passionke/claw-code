@@ -73,6 +73,22 @@ pub fn ovs_agent_session_id(proj_id: i64) -> String {
     format!("ovs-{proj_id}")
 }
 
+/// OVS Chat panel record key (`gateway_sessions` / `gateway_turns` only; no worker lease).
+#[must_use]
+pub fn ovs_chat_record_session_id(proj_id: i64, chat_key: &str) -> String {
+    let raw = chat_key.trim();
+    if raw.is_empty() {
+        return ovs_agent_session_id(proj_id);
+    }
+    let slug = crate::session_merge::sessions_directory_segment(raw);
+    let slug = if slug.len() > 48 {
+        slug[..16].to_string()
+    } else {
+        slug
+    };
+    format!("ovs-chat-{proj_id}-{slug}")
+}
+
 pub fn ovs_workspace_folder(ctx: &OvsApiContext, proj_id: i64) -> String {
     format!(
         "{}/proj_{proj_id}/home",
@@ -135,4 +151,21 @@ async fn merge_claw_proj_id_settings(settings_path: &Path, proj_id: i64) -> Resu
 pub async fn ensure_proj_claw_settings(proj_dir: &Path, proj_id: i64) -> Result<(), String> {
     let settings_path = proj_dir.join("home").join(".vscode").join("settings.json");
     merge_claw_proj_id_settings(&settings_path, proj_id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ovs_chat_record_session_id_stable_and_distinct() {
+        let a = ovs_chat_record_session_id(2, "chat-aaaa");
+        let b = ovs_chat_record_session_id(2, "chat-aaaa");
+        let c = ovs_chat_record_session_id(2, "chat-bbbb");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(a.starts_with("ovs-chat-2-"));
+        assert_eq!(ovs_agent_session_id(2), "ovs-2");
+        assert_ne!(a, ovs_agent_session_id(2));
+    }
 }

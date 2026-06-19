@@ -87,6 +87,20 @@ Default OVS agent session id: `ovs-{projId}`（每 project 一个 REPL；后续 
 
 Build (local): `./deploy/stack/gateway.sh build` builds `claw-openvscode-server:local` via `Containerfile.openvscode`.
 
+## FC cloud sandbox (interactive only)
+
+| Layer | Path | Role |
+| --- | --- | --- |
+| **Backend switch** | `CLAW_INTERACTIVE_BACKEND` (`podman` \| `fc`) | Interactive only; **solve_async** stays `claw-sandbox` pool |
+| **Rust FC client** | `rust/crates/claw-fc-sandbox-client/` | E2B-compatible REST (`cn-beijing`); ttyd via `deploy/fc-sandbox/fc_exec.py` |
+| **Backend trait** | `pool/interactive_backend/` | `PodmanInteractiveBackend` / `FcInteractiveBackend` |
+| **Terminal API** | `session_terminal_api.rs` | `terminal/start\|stop\|reattach` → `InteractiveSandboxBackend` |
+| **Agent bridge** | `session_agent_api.rs` | ttyd WS via `TtydConnectTarget` (loopback or `wss://7681-sbx…`) |
+| **Workspace truth** | NAS cn-beijing | `CLAW_USE_NAS_VOLUME=auto` + `NAS_BASE_URL` → compose NFS volume（Gateway/OVS 容器内直挂，无需 Mac host mount） |
+| **Deploy docs** | `deploy/fc-sandbox/README.md` | Phase 0 quickstart, template, NAS, ~¥876/yr @100GB |
+| **Env overlay** | `deploy/stack/env.fc-interactive.example` | FC + NAS vars for repo root `.env` |
+| **E2E** | `deploy/stack/lib/verify-fc-ovs-e2e.sh` | NAS probe + `terminal/start` + optional OVS agent WS |
+
 **OVS Chat 源码修复（另开工程）：** `docs/ovs-chat-source-handoff.md` — 调用链、证据、证伪清单、demo 成功标准。
 
 ## See also

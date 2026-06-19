@@ -6,6 +6,7 @@ __pycache__/
 *~
 
 archive/
+.cache/
 .omx/
 .clawd-agents/
 # Cursor IDE (machine-local rules, state)
@@ -83,6 +84,7 @@ deploy/stack/.claw-worker-check
 deploy/stack/claw-pg-data/
 deploy/stack/.claw-postgres-network.override.yml
 deploy/stack/.claw-instance.envfile.override.yml
+deploy/stack/.claw-workspace-volume.yml
 # Admin UI hashed bundles (local build; do not commit)
 web/gateway-admin/dist/assets/
 

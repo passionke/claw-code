@@ -241,7 +241,7 @@ fn short_tool_label(name: &str) -> String {
 fn bootstrap_label(kind: &str) -> &'static str {
     match kind {
         "bootstrap_solve_pool_start" => "网关 · 写 task / 解析 LLM",
-        "bootstrap_pool_acquired" => "Pool · 租 slot (podman rm+run)",
+        "bootstrap_pool_acquired" => "Pool · 租 slot + tar 灌入",
         "bootstrap_exec_started" => "Pool · docker exec 启动",
         "bootstrap_worker_entered" => "Worker · gateway-solve-once",
         "bootstrap_mcp_ready" => "Worker · MCP discover",

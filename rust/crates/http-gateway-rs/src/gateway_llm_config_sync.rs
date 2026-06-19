@@ -7,7 +7,8 @@ use serde::Serialize;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::gateway_global_settings::{self, ActiveLlmRuntime};
+use crate::gateway_claw_tap_lifecycle::{is_local_claw_tap, restart_local_claw_tap_if_configured};
+use crate::gateway_global_settings::{self, get_gateway_global_settings, ActiveLlmRuntime};
 use crate::gateway_llm_model_apply::{
     normalize_model_name_for_upstream, normalize_upstream_base_url, resolve_repo_env_file,
     LlmModelApplyOutcome,
@@ -36,6 +37,8 @@ pub struct LlmConfigSyncOutcome {
     pub upstream_file_written: bool,
     #[serde(rename = "envApply", skip_serializing_if = "Option::is_none")]
     pub env_apply: Option<LlmModelApplyOutcome>,
+    #[serde(rename = "tapRestart", skip_serializing_if = "Option::is_none")]
+    pub tap_restart: Option<crate::gateway_claw_tap_lifecycle::TapRestartOutcome>,
 }
 
 /// Path for claude-tap `--tap-upstream-config` (hot reload). Author: kejiqing
@@ -124,6 +127,7 @@ pub async fn sync_llm_runtime_from_db(
             upstream_config_file: None,
             upstream_file_written: false,
             env_apply: None,
+            tap_restart: None,
         });
     };
 
@@ -151,11 +155,26 @@ pub async fn sync_llm_runtime_from_db(
         false
     };
 
+    let tap_restart = if env_changed {
+        let local_mode = get_gateway_global_settings(db)
+            .await
+            .ok()
+            .is_some_and(|(s, _, _)| is_local_claw_tap(&s.claw_tap));
+        if local_mode {
+            Some(restart_local_claw_tap_if_configured(db).await)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     Ok(LlmConfigSyncOutcome {
         changed: env_changed,
         upstream_config_file: Some(upstream_path.display().to_string()),
         upstream_file_written,
         env_apply: None,
+        tap_restart,
     })
 }
 

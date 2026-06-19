@@ -156,6 +156,67 @@ async function resolveProjIdFromProjTree(root) {
   return null;
 }
 
+const DEFAULT_GATEWAY_HOST = "gateway-rs:8080";
+
+/** @returns {string} */
+function resolveGatewayHost(cfg) {
+  const fromEnv = typeof process !== "undefined" && process.env && process.env.CLAW_GATEWAY_HOST;
+  if (fromEnv && String(fromEnv).trim()) {
+    return String(fromEnv).trim();
+  }
+  const fromCfg = String(cfg.get("gatewayHost") ?? "").trim();
+  if (fromCfg) {
+    return fromCfg;
+  }
+  const inspected = cfg.inspect("gatewayHost");
+  const fromInspect = String(
+    inspected?.workspaceFolderValue ??
+      inspected?.workspaceValue ??
+      inspected?.machineValue ??
+      inspected?.globalValue ??
+      ""
+  ).trim();
+  return fromInspect || DEFAULT_GATEWAY_HOST;
+}
+
+/**
+ * OVS canonical workspace path `.../proj_N/home` — used only to call Gateway materialize,
+ * not as projId source of truth (settings.json remains authoritative after materialize).
+ * @param {vscode.WorkspaceFolder} folder
+ * @returns {number | null}
+ */
+function ovsWorkspaceProjHint(folder) {
+  const p = String(folder.uri.fsPath || folder.uri.path || "").replace(/\\/g, "/");
+  const m = p.match(/(?:^|\/)proj_(\d+)\/home\/?$/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return n > 0 ? n : null;
+}
+
+/** @param {number} projId */
+async function materializeOvsWorkspace(projId) {
+  const cfg = vscode.workspace.getConfiguration("claw");
+  const host = resolveGatewayHost(cfg);
+  const url = `http://${host}/v1/projects/${projId}/ovs/workspace`;
+  try {
+    if (typeof fetch === "function") {
+      const res = await fetch(url);
+      return res.ok;
+    }
+    const http = require("http");
+    return await new Promise((resolve) => {
+      http
+        .get(url, (res) => {
+          resolve(res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300);
+          res.resume();
+        })
+        .on("error", () => resolve(false));
+    });
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Project id for gateway WS — explicit config only (no folder-name guessing).
  * Source of truth: `proj_N/home/.vscode/settings.json` (`claw.projId`), written by Gateway
@@ -167,6 +228,14 @@ async function resolveProjId() {
   for (const folder of folders) {
     const id = await resolveProjIdInFolder(folder);
     if (id) return id;
+  }
+  for (const folder of folders) {
+    const hint = ovsWorkspaceProjHint(folder);
+    if (!hint) continue;
+    if (await materializeOvsWorkspace(hint)) {
+      const id = await resolveProjIdInFolder(folder);
+      if (id) return id;
+    }
   }
   if (folders.length === 1) {
     const fromTree = await resolveProjIdFromProjTree(folders[0]);
@@ -192,47 +261,82 @@ function defaultSessionId(projId) {
   return `ovs-${projId}`;
 }
 
-const DEFAULT_GATEWAY_HOST = "gateway-rs:8080";
-
-/** @returns {string} */
-function resolveGatewayHost(cfg) {
-  const fromEnv = typeof process !== "undefined" && process.env && process.env.CLAW_GATEWAY_HOST;
-  if (fromEnv && String(fromEnv).trim()) {
-    return String(fromEnv).trim();
+/**
+ * OVS Chat session key — stable for one Chat panel, new on "New Chat".
+ * @param {import("vscode").ChatRequest} request
+ * @returns {string}
+ */
+function resolveOvsChatSessionKey(request) {
+  const sid = request && request.sessionId;
+  if (typeof sid === "string" && sid.trim()) {
+    return sid.trim();
   }
-  const fromCfg = String(cfg.get("gatewayHost") ?? "").trim();
-  if (fromCfg) {
-    return fromCfg;
+  const res = request && request.sessionResource;
+  if (res) {
+    if (typeof res.toString === "function") {
+      const s = res.toString().trim();
+      if (s) return s;
+    }
+    if (res.fsPath) return String(res.fsPath).trim();
+    if (res.path) return String(res.path).trim();
   }
-  const inspected = cfg.inspect("gatewayHost");
-  const fromInspect = String(
-    inspected?.workspaceFolderValue ??
-      inspected?.workspaceValue ??
-      inspected?.machineValue ??
-      inspected?.globalValue ??
-      ""
-  ).trim();
-  return fromInspect || DEFAULT_GATEWAY_HOST;
+  return "";
 }
 
-/** @param {number} projId @param {string} sessionId */
-function gatewayAgentWsUrl(projId, sessionId) {
+/** @param {string} chatKey */
+function ovsChatSessionSlug(chatKey) {
+  const raw = String(chatKey || "").trim();
+  if (!raw) return "";
+  if (/^[a-zA-Z0-9._-]{1,64}$/.test(raw)) return raw;
+  try {
+    const crypto = require("crypto");
+    return crypto.createHash("sha256").update(raw, "utf8").digest("hex").slice(0, 16);
+  } catch {
+    return raw
+      .replace(/[^a-zA-Z0-9._-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48);
+  }
+}
+
+/**
+ * Map OVS Chat session → gateway **record** id (`ovs-chat-{projId}-{slug}`).
+ * Worker REPL stays `ovs-{projId}`; this id is only for `gateway_turns`.
+ * @param {number} projId @param {string} chatKey
+ */
+function ovsChatRecordSessionId(projId, chatKey) {
+  const slug = ovsChatSessionSlug(chatKey);
+  if (!slug) return defaultSessionId(projId);
+  return `ovs-chat-${projId}-${slug}`;
+}
+
+/** @param {number} projId @param {string} [chatSessionId] */
+function agentWsParts(projId, chatSessionId) {
+  const workerSid = defaultSessionId(projId);
+  const recordSid = chatSessionId || workerSid;
+  const query = `projId=${projId}&chatSessionId=${encodeURIComponent(recordSid)}`;
+  return { workerSid, recordSid, query };
+}
+
+/** @param {number} projId @param {string} [chatSessionId] */
+function gatewayAgentWsUrl(projId, chatSessionId) {
   const cfg = vscode.workspace.getConfiguration("claw");
   const host = resolveGatewayHost(cfg);
-  const sid = sessionId || defaultSessionId(projId);
-  return `ws://${host}/v1/sessions/${encodeURIComponent(sid)}/agent/ws?projId=${projId}`;
+  const { workerSid, query } = agentWsParts(projId, chatSessionId);
+  return `ws://${host}/v1/sessions/${encodeURIComponent(workerSid)}/agent/ws?${query}`;
 }
 
-/** @param {number} projId @param {string} sessionId */
-function browserGatewayAgentWsUrl(projId, sessionId) {
+/** @param {number} projId @param {string} [chatSessionId] */
+function browserGatewayAgentWsUrl(projId, chatSessionId) {
   const cfg = vscode.workspace.getConfiguration("claw");
   const host = String(cfg.get("gatewayPublicHost") ?? "").trim() || "127.0.0.1:8088";
-  const sid = sessionId || defaultSessionId(projId);
-  return `ws://${host}/v1/sessions/${encodeURIComponent(sid)}/agent/ws?projId=${projId}`;
+  const { workerSid, query } = agentWsParts(projId, chatSessionId);
+  return `ws://${host}/v1/sessions/${encodeURIComponent(workerSid)}/agent/ws?${query}`;
 }
 
-/** @param {number} projId */
-function agentWsUrl(projId) {
+/** @param {number} projId @param {string} [chatSessionId] */
+function agentWsUrl(projId, chatSessionId) {
   const cfg = vscode.workspace.getConfiguration("claw");
   let base = String(cfg.get("agentWsBase") ?? "").trim();
   if (!base) {
@@ -245,23 +349,23 @@ function agentWsUrl(projId) {
         ""
     ).trim();
   }
-  const sid = defaultSessionId(projId);
+  const { workerSid, recordSid, query } = agentWsParts(projId, chatSessionId);
   if (!base && typeof globalThis.location !== "undefined") {
     const loc = globalThis.location;
     const pgPort = String(cfg.get("playgroundPort") ?? "18765").trim();
     // Playground proxies /ovs/agent/ws; direct OVS (:13000) must hit gateway on host.
     if (loc.port === pgPort) {
       const proto = loc.protocol === "https:" ? "wss:" : "ws:";
-      return `${proto}//${loc.host}/ovs/agent/ws?projId=${projId}&sessionId=${encodeURIComponent(sid)}`;
+      return `${proto}//${loc.host}/ovs/agent/ws?${query}&sessionId=${encodeURIComponent(workerSid)}`;
     }
-    return browserGatewayAgentWsUrl(projId, sid);
+    return browserGatewayAgentWsUrl(projId, recordSid);
   }
   if (base) {
     const sep = base.includes("?") ? "&" : "?";
-    return `${base}${sep}projId=${projId}&sessionId=${encodeURIComponent(sid)}`;
+    return `${base}${sep}${query}&sessionId=${encodeURIComponent(workerSid)}`;
   }
   // Remote EH (Node): no browser cookies — bypass Playground auth, hit gateway directly.
-  return gatewayAgentWsUrl(projId, sid);
+  return gatewayAgentWsUrl(projId, recordSid);
 }
 
 /**
@@ -410,12 +514,14 @@ function activate(context) {
           "**Claw:** `claw.projId` not set.\n\n" +
             `- Opened: \`${opened}\`\n` +
             "- Gateway writes it via `GET /v1/projects/{id}/ovs/workspace` into `proj_N/home/.vscode/settings.json`.\n" +
-            "- **Use Playground entry** (injects folder + materialize): `http://127.0.0.1:18765/ovs?projId=1`\n" +
-            "- Or open the returned `workspaceFolder` under `proj_N/home` (not `/home/workspace` root)."
+            "- **Use Playground entry** (materialize + redirect): `http://127.0.0.1:18765/ovs?projId=N`\n" +
+            "- Or: `curl http://127.0.0.1:8088/v1/projects/N/ovs/workspace` then reopen `proj_N/home`."
         );
         return { metadata: { command: "" } };
       }
-      const url = agentWsUrl(projId);
+      const chatKey = resolveOvsChatSessionKey(request);
+      const recordSessionId = ovsChatRecordSessionId(projId, chatKey);
+      const url = agentWsUrl(projId, recordSessionId);
       if (!url) {
         stream.markdown("Claw agent WS URL not configured (`claw.agentWsBase`).");
         return { metadata: { command: "" } };
@@ -424,7 +530,9 @@ function activate(context) {
         stream.markdown("Empty prompt.");
         return { metadata: { command: "" } };
       }
-      log.appendLine(`agent ws url=${url}`);
+      log.appendLine(
+        `ovs chat key=${JSON.stringify(chatKey)} record=${recordSessionId} worker=ovs-${projId} url=${url}`
+      );
       stream.progress("Claw");
       try {
         await runAgentPrompt(url, text.endsWith("\n") ? text : `${text}\n`, token, stream);

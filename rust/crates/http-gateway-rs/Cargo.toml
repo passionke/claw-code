@@ -19,6 +19,8 @@ path = "src/bin/claw-pool-daemon.rs"
 
 [dependencies]
 base64 = "0.22"
+flate2 = "1"
+tar = "0.4"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "ws"] }
 bytes = "1"
@@ -40,6 +42,7 @@ telemetry = { path = "../telemetry" }
 gateway-solve-turn = { path = "../gateway-solve-turn" }
 claw-sandbox-protocol = { path = "../../../sandbox/crates/claw-sandbox-protocol" }
 claw-sandbox-client = { path = "../../../sandbox/crates/claw-sandbox-client" }
+claw-fc-sandbox-client = { path = "../claw-fc-sandbox-client" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json", "uuid"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

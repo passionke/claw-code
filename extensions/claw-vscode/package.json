@@ -2,7 +2,7 @@
   "name": "claw-vscode",
   "displayName": "Claw",
   "description": "Claw coding agent Chat participant for openvscode-server",
-  "version": "0.2.6",
+  "version": "0.2.9",
   "publisher": "claw",
   "license": "MIT",
   "engines": {

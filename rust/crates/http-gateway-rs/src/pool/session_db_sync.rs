@@ -10,6 +10,7 @@ use runtime::builtin_system_prompt_scaffold_default;
 
 use crate::persistence::transcript::{import_turn_messages_to_db, now_ms, JsonlMessage};
 use crate::pool::docker_cli::{runtime_exec, runtime_exec_stdin};
+use crate::pool::guest_materialize_tar;
 use crate::project_config_apply;
 use crate::project_git_sync;
 use crate::session_db::GatewaySessionDb;
@@ -141,6 +142,25 @@ pub fn proj_work_dir(work_root: &Path, proj_id: i64) -> std::path::PathBuf {
     work_root.join(format!("proj_{proj_id}"))
 }
 
+/// One `guest_extract_tar_b64` RPC for many files under a guest volume. Author: kejiqing
+async fn guest_extract_tar_batch(
+    client: &SandboxRpcClient,
+    slot_index: usize,
+    volume: GuestVolume,
+    entries: &[(String, Vec<u8>)],
+    label: &str,
+) -> Result<(), String> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let tar_b64 = guest_materialize_tar::build_tar_gz_b64(entries, SESSION_MANIFEST_MAX_BYTES)
+        .map_err(|e| format!("{label}: build tar: {e}"))?;
+    client
+        .guest_extract_tar_b64(slot_index, volume, "", &tar_b64)
+        .await
+        .map_err(|e| format!("{label}: extract tar: {e}"))
+}
+
 /// PG → sandbox guest paths before `exec_solve` (end-state RPC). Author: kejiqing
 pub async fn materialize_turn_via_sandbox(
     client: &SandboxRpcClient,
@@ -169,26 +189,20 @@ pub async fn materialize_turn_via_sandbox(
     }
     client.guest_prepare_session_workspace(slot_index).await?;
 
-    if let Some(row) = db
+    let project_config_row = db
         .get_project_config(input.proj_id)
         .await
-        .map_err(|e| format!("load project_config: {e}"))?
-    {
+        .map_err(|e| format!("load project_config: {e}"))?;
+
+    let mut project_entries: Vec<(String, Vec<u8>)> = Vec::new();
+    if let Some(ref row) = project_config_row {
         let scaffold = builtin_system_prompt_scaffold_default();
-        let writes = project_config_apply::build_guest_materialize_writes(&row, &scaffold)
+        let writes = project_config_apply::build_guest_materialize_writes(row, &scaffold)
             .map_err(|e| format!("build_guest_materialize_writes proj {}: {e}", input.proj_id))?;
         for write in writes {
-            let rel = write.rel_path.to_string_lossy();
-            if write.bytes.len() > SESSION_MANIFEST_MAX_BYTES {
-                return Err(format!(
-                    "project config file {rel} exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-                ));
-            }
-            client
-                .guest_write(slot_index, GuestVolume::ProjectConfig, &rel, &write.bytes)
-                .await?;
+            project_entries.push((write.rel_path.to_string_lossy().into_owned(), write.bytes));
         }
-        let excluded = project_config_apply::git_excluded_home_relpaths(&row);
+        let excluded = project_config_apply::git_excluded_home_relpaths(row);
         let git_writes = project_git_sync::build_guest_git_import_writes(
             proj_work_dir,
             &excluded,
@@ -196,12 +210,17 @@ pub async fn materialize_turn_via_sandbox(
         )
         .map_err(|e| format!("build_guest_git_import_writes proj {}: {e}", input.proj_id))?;
         for write in git_writes {
-            let rel = write.rel_path.to_string_lossy();
-            client
-                .guest_write(slot_index, GuestVolume::ProjectConfig, &rel, &write.bytes)
-                .await?;
+            project_entries.push((write.rel_path.to_string_lossy().into_owned(), write.bytes));
         }
     }
+    guest_extract_tar_batch(
+        client,
+        slot_index,
+        GuestVolume::ProjectConfig,
+        &project_entries,
+        "project config",
+    )
+    .await?;
 
     let task = db
         .get_solve_task_json(&input.turn_id)
@@ -223,26 +242,16 @@ pub async fn materialize_turn_via_sandbox(
             "session transcript exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
         ));
     }
-    let mut writes: Vec<(&str, Vec<u8>)> = vec![("gateway-solve-task.json", task_bytes)];
+    let mut session_entries: Vec<(String, Vec<u8>)> =
+        vec![("gateway-solve-task.json".to_string(), task_bytes)];
     if GatewaySessionDb::session_jsonl_has_messages(&jsonl_body) {
-        writes.push((".claw/gateway-solve-session.jsonl", jsonl_body.into_bytes()));
+        session_entries.push((
+            ".claw/gateway-solve-session.jsonl".to_string(),
+            jsonl_body.into_bytes(),
+        ));
     }
-    for (rel, bytes) in writes {
-        if bytes.len() > SESSION_MANIFEST_MAX_BYTES {
-            return Err(format!(
-                "session file {rel} exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-            ));
-        }
-        client
-            .guest_write(slot_index, GuestVolume::SessionWorkspace, rel, &bytes)
-            .await?;
-    }
-    if let Some(row) = db
-        .get_project_config(input.proj_id)
-        .await
-        .map_err(|e| format!("load project_config for session markers: {e}"))?
-    {
-        for (path, bytes) in guest_session_marker_writes(&row).map_err(|e| {
+    if let Some(ref row) = project_config_row {
+        for (path, bytes) in guest_session_marker_writes(row).map_err(|e| {
             format!(
                 "guest session markers proj {} (sandbox): {e}",
                 input.proj_id
@@ -252,16 +261,18 @@ pub async fn materialize_turn_via_sandbox(
                 .strip_prefix(&format!("{GUEST_WORK_ROOT}/"))
                 .map(std::string::ToString::to_string)
                 .unwrap_or(path);
-            if bytes.len() > SESSION_MANIFEST_MAX_BYTES {
-                return Err(format!(
-                    "session marker {rel} exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-                ));
-            }
-            client
-                .guest_write(slot_index, GuestVolume::SessionWorkspace, &rel, &bytes)
-                .await?;
+            session_entries.push((rel, bytes));
         }
     }
+    guest_extract_tar_batch(
+        client,
+        slot_index,
+        GuestVolume::SessionWorkspace,
+        &session_entries,
+        "session manifest",
+    )
+    .await?;
+
     client.guest_lock_project_config(slot_index).await?;
     Ok(())
 }

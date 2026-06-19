@@ -52,6 +52,9 @@ claw_deploy_preflight() {
   if claw_pool_uses_remote; then
     echo "    workspace: skip ownership preflight (remote pool; workers not on this host)" >&2
     mkdir -p "$(claw_stack_workspace_bind_dir "${podman_dir}")" 2>/dev/null || true
+  elif claw_compose_nas_volume_enabled; then
+    echo "    workspace: NFS compose volume (Gateway/OVS direct NAS; skip host bind preflight)" >&2
+    mkdir -p "$(claw_stack_workspace_bind_dir "${podman_dir}")" 2>/dev/null || true
   else
     claw_workspace_ownership_preflight "${podman_dir}" || return 1
   fi

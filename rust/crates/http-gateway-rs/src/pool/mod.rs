@@ -3,7 +3,9 @@ pub mod clients;
 mod config;
 mod docker_cli;
 mod docker_pool;
+mod guest_materialize_tar;
 mod http_server;
+pub mod interactive_backend;
 mod live_report_hub;
 mod live_report_sse;
 mod local_ops;
@@ -19,6 +21,10 @@ pub mod worker_isolation;
 pub use clients::PoolClients;
 pub use docker_pool::{merge_stdout_hooks, DockerPoolManager};
 pub use http_server::serve_pool_http;
+pub use interactive_backend::{
+    interactive_backend_from_env, terminal_ws_connect_url, InteractiveBackendKind,
+    InteractiveLease, InteractiveSandboxBackend, InteractiveSessionSpec, TtydConnectTarget,
+};
 pub use live_report_hub::{HubMsg, LiveReportHub};
 pub use live_report_sse::live_report_sse_response;
 pub use local_ops::LocalPoolOps;
