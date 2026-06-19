@@ -3,6 +3,7 @@ pub mod clients;
 mod config;
 mod docker_cli;
 mod docker_pool;
+mod fc_orchestrated_pool;
 mod guest_materialize_tar;
 mod http_server;
 pub mod interactive_backend;
@@ -20,6 +21,7 @@ mod worker_identity;
 pub mod worker_isolation;
 pub use clients::PoolClients;
 pub use docker_pool::{merge_stdout_hooks, DockerPoolManager};
+pub use fc_orchestrated_pool::{FcOrchestratedPool, FC_POOL_ID};
 pub use http_server::serve_pool_http;
 pub use interactive_backend::{
     interactive_backend_from_env, terminal_ws_connect_url, InteractiveBackendKind,
@@ -38,7 +40,8 @@ pub use session_mount_ownership::{
 };
 pub use worker_identity::PoolWorkerIdentity;
 pub use worker_isolation::{
-    default_worker_isolation_json, isolation_mode_label, validate_worker_isolation_json,
+    default_worker_isolation_json, execution_backend_from_json, is_fc_sandbox_mode,
+    isolation_mode_label, validate_worker_isolation_json, WorkerExecutionBackend,
     WorkerIsolationMode,
 };
 // Used by the `http-gateway-rs` binary (`solve_pool`); not referenced from the library target alone.

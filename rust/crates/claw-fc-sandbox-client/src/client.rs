@@ -9,7 +9,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 
 use crate::config::FcSandboxConfig;
-use crate::types::{CreateSandboxResponse, FcSandboxHandle, FcSandboxVolumeMount};
+use crate::types::{CreateSandboxResponse, FcExecOutcome, FcSandboxHandle, FcSandboxVolumeMount};
 
 /// HTTP client for FC sandbox lifecycle + delegated envd exec.
 #[derive(Debug, Clone)]
@@ -128,20 +128,35 @@ impl FcSandboxClient {
         Err(format!("fc kill sandbox HTTP {status}: {text}"))
     }
 
+    /// Run `claw gateway-solve-once` inside an FC sandbox.
+    pub async fn exec_gateway_solve_once(
+        &self,
+        sandbox_id: &str,
+        task_rel_under_root: &str,
+        claw_bin: &str,
+        env: BTreeMap<String, String>,
+    ) -> Result<FcExecOutcome, String> {
+        let task_file = format!("/claw_host_root/{task_rel_under_root}");
+        let payload = json!({
+            "op": "exec_solve",
+            "api_key": self.config.api_key,
+            "domain": self.config.domain,
+            "api_url": self.config.api_url,
+            "sandbox_id": sandbox_id,
+            "claw_bin": claw_bin,
+            "task_file": task_file,
+            "env": env,
+            "timeout": 600,
+        });
+        Self::run_exec_helper(&self.config.exec_helper, &payload).await
+    }
+
     /// Run a shell script inside the sandbox via `deploy/fc-sandbox/fc_exec.py` (envd gRPC).
     pub async fn exec_shell_script(
         &self,
         handle: &FcSandboxHandle,
         script: &str,
     ) -> Result<(), String> {
-        let helper = &self.config.exec_helper;
-        if !Path::new(helper).is_file() {
-            return Err(format!(
-                "fc exec helper not found at {} (set CLAW_FC_EXEC_HELPER)",
-                helper.display()
-            ));
-        }
-
         let payload = json!({
             "op": "run_sh",
             "api_key": self.config.api_key,
@@ -150,6 +165,18 @@ impl FcSandboxClient {
             "sandbox_id": handle.sandbox_id,
             "script": script,
         });
+        Self::run_exec_helper(&self.config.exec_helper, &payload)
+            .await
+            .map(|_| ())
+    }
+
+    async fn run_exec_helper(helper: &Path, payload: &Value) -> Result<FcExecOutcome, String> {
+        if !helper.is_file() {
+            return Err(format!(
+                "fc exec helper not found at {} (set CLAW_FC_EXEC_HELPER)",
+                helper.display()
+            ));
+        }
 
         let out = tokio::process::Command::new("python3")
             .arg(helper)
@@ -159,10 +186,9 @@ impl FcSandboxClient {
             .spawn()
             .map_err(|e| format!("spawn fc exec helper: {e}"))?;
 
-        // Write stdin and collect output
         let mut child = out;
         if let Some(mut stdin) = child.stdin.take() {
-            let bytes = serde_json::to_vec(&payload).map_err(|e| format!("exec payload: {e}"))?;
+            let bytes = serde_json::to_vec(payload).map_err(|e| format!("exec payload: {e}"))?;
             stdin
                 .write_all(&bytes)
                 .await
@@ -177,7 +203,6 @@ impl FcSandboxClient {
             let stdout = String::from_utf8_lossy(&result.stdout);
             warn!(
                 target: "claw_fc_sandbox",
-                sandbox_id = %handle.sandbox_id,
                 stderr = %stderr,
                 stdout = %stdout,
                 "fc exec helper failed"
@@ -189,14 +214,44 @@ impl FcSandboxClient {
         }
         let stdout = String::from_utf8_lossy(&result.stdout);
         if let Ok(v) = serde_json::from_str::<Value>(&stdout) {
-            if v.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
-                return Ok(());
+            if v.get("ok").and_then(Value::as_bool) == Some(true) {
+                if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
+                    return Err(err.to_string());
+                }
+                if let Some(exit_code) = v.get("exit_code").and_then(Value::as_i64) {
+                    return Ok(FcExecOutcome {
+                        exit_code: i32::try_from(exit_code).unwrap_or(-1),
+                        stdout: v
+                            .get("stdout")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        stderr: v
+                            .get("stderr")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    });
+                }
+                return Ok(FcExecOutcome {
+                    exit_code: 0,
+                    stdout: v
+                        .get("stdout")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    stderr: String::new(),
+                });
             }
             if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
                 return Err(err.to_string());
             }
         }
-        Ok(())
+        Ok(FcExecOutcome {
+            exit_code: 0,
+            stdout: stdout.into_owned(),
+            stderr: String::new(),
+        })
     }
 
     /// Build volume mounts for OVS session when `CLAW_FC_NAS_VOLUME_NAME` is set.

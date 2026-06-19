@@ -1,11 +1,13 @@
 //! Podman pool interactive backend (legacy `InteractiveSessionBind`). Author: kejiqing
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use claw_sandbox_client::SandboxRpcClient;
 use claw_sandbox_protocol::{GuestExecActor, InteractiveSessionBind, SlotLeaseOwner};
 
-use crate::pool::{path_for_pool_acquire, PoolClients};
+use crate::pool::path_for_pool_acquire;
 
 use super::{
     InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend, InteractiveSessionSpec,
@@ -13,7 +15,7 @@ use super::{
 };
 
 pub struct PodmanInteractiveBackend {
-    pool_clients: PoolClients,
+    sandbox: Arc<SandboxRpcClient>,
     pool_id: String,
     work_root: PathBuf,
     pool_rpc_host_work_root: Option<PathBuf>,
@@ -22,13 +24,13 @@ pub struct PodmanInteractiveBackend {
 impl PodmanInteractiveBackend {
     #[must_use]
     pub fn new(
-        pool_clients: PoolClients,
+        sandbox: Arc<SandboxRpcClient>,
         pool_id: String,
         work_root: PathBuf,
         pool_rpc_host_work_root: Option<PathBuf>,
     ) -> Self {
         Self {
-            pool_clients,
+            sandbox,
             pool_id,
             work_root,
             pool_rpc_host_work_root,
@@ -59,10 +61,7 @@ impl InteractiveSandboxBackend for PodmanInteractiveBackend {
         &self,
         spec: InteractiveSessionSpec,
     ) -> Result<InteractiveLease, String> {
-        let sandbox = self
-            .pool_clients
-            .sandbox_rpc_client()
-            .ok_or_else(|| "sandbox RPC client unavailable".to_string())?;
+        let sandbox = Arc::clone(&self.sandbox);
 
         let isolation = spec.sandbox_isolation;
 
@@ -136,10 +135,7 @@ impl InteractiveSandboxBackend for PodmanInteractiveBackend {
         if lease.backend != InteractiveBackendKind::Podman {
             return Err("podman stop called on non-podman lease".into());
         }
-        let sandbox = self
-            .pool_clients
-            .sandbox_rpc_client()
-            .ok_or_else(|| "sandbox RPC client unavailable".to_string())?;
+        let sandbox = Arc::clone(&self.sandbox);
         let _ = sandbox
             .guest_exec_sh(
                 lease.slot_index,

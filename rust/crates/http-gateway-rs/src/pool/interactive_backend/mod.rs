@@ -81,14 +81,14 @@ pub fn interactive_backend_from_env(
                 as Arc<dyn InteractiveSandboxBackend>
         }
         "podman" | "" => {
-            let _ = pool_clients.sandbox_rpc_client().unwrap_or_else(|| {
+            let sandbox = pool_clients.sandbox_rpc_client().unwrap_or_else(|| {
                 eprintln!(
                     "http-gateway-rs: CLAW_INTERACTIVE_BACKEND=podman requires claw-sandbox RPC"
                 );
                 std::process::exit(1);
             });
             Arc::new(PodmanInteractiveBackend::new(
-                pool_clients,
+                sandbox,
                 pool_id,
                 work_root,
                 pool_rpc_host_work_root,
