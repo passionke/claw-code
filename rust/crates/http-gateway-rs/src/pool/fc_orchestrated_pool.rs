@@ -93,10 +93,9 @@ impl PoolOps for FcOrchestratedPool {
             .await
             .map_err(|reason| format!("session acquire blocked: {reason}"))?;
 
-        let mounts = self.client.default_volume_mounts(true);
         let handle = self
             .client
-            .create_sandbox(&session_id, proj_id, &mounts)
+            .create_sandbox(&session_id, proj_id, true)
             .await?;
         let slot_index = self.alloc_slot_index();
         let worker_name = format!("fc:{}", handle.sandbox_id);

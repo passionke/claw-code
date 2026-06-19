@@ -157,6 +157,7 @@ claw_linux_compile_release() {
       echo "error: missing ${out_dir}/${bin} after linux compile" >&2
       exit 1
     fi
+    chmod +x "${out_dir}/${bin}"
   done
   echo "linux compile: ok → ${out_dir}"
 }

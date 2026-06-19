@@ -266,7 +266,7 @@ fi
 MODEL="${CLAW_DEFAULT_MODEL:-openai/mimo-v2.5}"
 # Non-OVS interactive terminal: cwd stays on session tmpfs (legacy /coding-style).
 nohup ttyd -d 1 -i 0.0.0.0 -p 7681 -W -w /claw_host_root \
-  /usr/local/bin/claw --allow-broad-cwd --model "$MODEL" \
+  claw --allow-broad-cwd --model "$MODEL" \
   >/claw_host_root/.claw/ttyd.log 2>&1 &
 echo $! >/claw_host_root/.claw/ttyd.pid
 sleep 0.5
@@ -300,7 +300,7 @@ fi
 MODEL="${CLAW_DEFAULT_MODEL:-openai/mimo-v2.5}"
 # OVS alignment: project cwd matches openvscode-server workspace (`proj_N/home` → `/claw_ds`).
 nohup ttyd -d 1 -i 0.0.0.0 -p 7681 -W -w /claw_ds \
-  /usr/local/bin/claw --allow-broad-cwd --model "$MODEL" \
+  claw --allow-broad-cwd --model "$MODEL" \
   >/claw_host_root/.claw/ttyd.log 2>&1 &
 echo $! >/claw_host_root/.claw/ttyd.pid
 sleep 0.5
@@ -928,6 +928,12 @@ async fn proxy_terminal_ws(client: WebSocket, ttyd: &TtydConnectTarget) -> Resul
         .map_err(|e| format!("ws request {url}: {e}"))?;
     req.headers_mut()
         .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("tty"));
+    if let Some(host_hdr) = ttyd.proxy_host_header.as_deref() {
+        req.headers_mut().insert(
+            "Host",
+            HeaderValue::from_str(host_hdr).map_err(|e| format!("Host: {e}"))?,
+        );
+    }
     let (upstream, _) = connect_async(req)
         .await
         .map_err(|e| format!("connect ttyd {url}: {e}"))?;

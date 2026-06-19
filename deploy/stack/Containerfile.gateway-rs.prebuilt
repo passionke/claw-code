@@ -19,6 +19,8 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
 WORKDIR /app
 COPY deploy/stack/.linux-artifacts/release/claw /usr/local/bin/claw
 COPY deploy/stack/.linux-artifacts/release/http-gateway-rs /usr/local/bin/http-gateway-rs
+# Artifact upload may drop +x; enforce before ENTRYPOINT. kejiqing
+RUN chmod +x /usr/local/bin/claw /usr/local/bin/http-gateway-rs
 # Host pool: claw-sandbox from linux-compile (.linux-artifacts/release/claw-sandbox), not in gateway image. kejiqing
 
 ENV CLAW_HTTP_ADDR=0.0.0.0:8080

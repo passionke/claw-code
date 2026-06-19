@@ -132,7 +132,7 @@ impl PoolClients {
             if self.fc_pool.is_none() || self.fc_interactive.is_none() {
                 return Err(
                     "proj worker_isolation_json.mode=sandbox but FC sandbox is not configured on gateway \
-                     (set CLAW_FC_* / CLAW_FC_NAS_VOLUME_NAME and restart gateway)"
+                     (set CLAW_FC_* / NAS_BASE_URL; FC template must have VPC for nasConfig)"
                         .into(),
                 );
             }

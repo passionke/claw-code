@@ -296,8 +296,13 @@ claw_compose_write_workspace_volume_yml() {
     nas_path="${nas_export#/}"
     case "${CLAW_NAS_NFS_VERSION:-3}" in
       4)
-        # Aliyun NAS NFSv4 mount point (multi-ECS safe). Author: kejiqing
-        mount_opts="rw,vers=4,minorversion=0,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport"
+        local minor="${CLAW_NAS_NFS_MINOR:-0}"
+        if [[ "${minor}" == "2" ]]; then
+          mount_opts="rw,vers=4.2,nfsvers=4.2,hard,timeo=600,retrans=2,noresvport,_netdev"
+        else
+          # Aliyun NAS NFSv4 mount point (multi-ECS safe). Author: kejiqing
+          mount_opts="rw,vers=4,minorversion=0,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport"
+        fi
         ;;
       *)
         mount_opts="rw,nfsvers=3"
@@ -340,7 +345,7 @@ claw_compose_append_workspace_volume() {
   local rel="${2:-}"
   if [[ -n "${CLAW_NAS_HOST_MOUNT:-}" ]]; then
     if ! mountpoint -q "${CLAW_NAS_HOST_MOUNT}" 2>/dev/null; then
-      echo "error: CLAW_NAS_HOST_MOUNT=${CLAW_NAS_HOST_MOUNT} is not a mountpoint (Aliyun: mount -t nfs … ${CLAW_NAS_HOST_MOUNT})" >&2
+      echo "error: CLAW_NAS_HOST_MOUNT=${CLAW_NAS_HOST_MOUNT} is not a mountpoint (mount -t nfs4 10.8.0.8:/mnt/NAS0/nfs-export …)" >&2
       return 1
     fi
     export CLAW_GATEWAY_WORKSPACE_VOLUME="${CLAW_NAS_HOST_MOUNT}:/var/lib/claw/workspace"

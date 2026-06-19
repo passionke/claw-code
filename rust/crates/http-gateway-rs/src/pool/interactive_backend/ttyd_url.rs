@@ -6,6 +6,8 @@ pub struct TtydConnectTarget {
     pub host: String,
     pub port: u16,
     pub use_tls: bool,
+    /// Self-hosted e2b: dial `host:port` but set HTTP Host to this subdomain.
+    pub proxy_host_header: Option<String>,
 }
 
 impl TtydConnectTarget {
@@ -15,6 +17,7 @@ impl TtydConnectTarget {
             host: default_host.to_string(),
             port,
             use_tls: false,
+            proxy_host_header: None,
         }
     }
 
@@ -24,6 +27,22 @@ impl TtydConnectTarget {
             host,
             port: 443,
             use_tls: true,
+            proxy_host_header: None,
+        }
+    }
+
+    /// Self-hosted e2bserver: connect to client proxy (`10.8.0.9:3002`) with Host `{port}-{id}.{domain}`.
+    #[must_use]
+    pub fn e2b_self_hosted_proxy(
+        proxy_host: String,
+        proxy_port: u16,
+        proxy_host_header: String,
+    ) -> Self {
+        Self {
+            host: proxy_host,
+            port: proxy_port,
+            use_tls: false,
+            proxy_host_header: Some(proxy_host_header),
         }
     }
 }
