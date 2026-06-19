@@ -7,9 +7,7 @@ pub const NAS_BOOTSTRAP_SH: &str =
 /// Prefix for FC envd exec scripts (`run_sh`, solve, ttyd start).
 #[must_use]
 pub fn fc_exec_with_nas_bootstrap(user_script: &str, tools_rel: &str) -> String {
-    format!(
-        "export CLAW_FC_NAS_TOOLS_REL={tools_rel:?}\n{NAS_BOOTSTRAP_SH}\n{user_script}",
-    )
+    format!("export CLAW_FC_NAS_TOOLS_REL={tools_rel:?}\n{NAS_BOOTSTRAP_SH}\n{user_script}",)
 }
 
 #[cfg(test)]
