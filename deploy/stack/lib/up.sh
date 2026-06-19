@@ -175,10 +175,10 @@ claw_ensure_default_project_ds "${CLAW_BOOTSTRAP_DS_ID:-1}" || {
 }
 claw_materialize_ovs_workspace_projects || true
 
-# claude-tap: bootstrap LLM from .env, tap-up + Admin clawTap register. kejiqing
+# Pool-scoped claude-tap (single sidecar; NAS traces) + Admin register. kejiqing
 if claw_stack_manages_local_claude_tap; then
-  claw_bootstrap_gateway_runtime "${PODMAN_DIR}" "${REPO_ROOT}" || {
-    echo "error: gateway runtime bootstrap failed (LLM / clawTap register)" >&2
+  claw_bootstrap_pool_tap_runtime "${PODMAN_DIR}" "${REPO_ROOT}" || {
+    echo "error: pool tap bootstrap failed (LLM / clawTap register)" >&2
     exit 1
   }
 fi

@@ -96,6 +96,20 @@ claw_claude_tap_upstream_config_path() {
   printf '%s\n' "${root_dir}/.claw/claw-tap-upstream.json"
 }
 
+# Shared trace dir for pool tap (NAS when mounted; mergeable across restarts). Author: kejiqing
+claw_claude_tap_resolve_traces_dir() {
+  local podman_dir="$1"
+  if [[ -n "${CLAW_TAP_TRACES_DIR:-}" ]]; then
+    printf '%s\n' "${CLAW_TAP_TRACES_DIR}"
+    return 0
+  fi
+  if [[ -n "${CLAW_NAS_HOST_MOUNT:-}" ]]; then
+    printf '%s\n' "${CLAW_NAS_HOST_MOUNT}/tap-traces"
+    return 0
+  fi
+  printf '%s\n' "${podman_dir}/claude-tap-data/traces"
+}
+
 claw_claude_tap_ensure_upstream_config_file() {
   local root_dir="$1"
   local upstream="$2"
@@ -234,10 +248,10 @@ claw_claude_tap_start_docker() {
   local container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
   local port="${CLAUDE_TAP_PORT:-8080}"
   local live_port="${CLAUDE_TAP_LIVE_PORT:-3000}"
-  local traces_dir="${CLAUDE_TAP_TRACES_DIR:-${podman_dir}/claude-tap-data/traces}"
-  local tap_target="$5"
-  local log_file="${podman_dir}/claude-tap.log"
-  local upstream_cfg
+  local traces_dir tap_target log_file upstream_cfg
+  traces_dir="$(claw_claude_tap_resolve_traces_dir "${podman_dir}")"
+  tap_target="$5"
+  log_file="${podman_dir}/claude-tap.log"
   upstream_cfg="$(claw_claude_tap_upstream_args "${root_dir}" "${tap_target}")"
 
   mkdir -p "${traces_dir}"
@@ -324,8 +338,9 @@ claw_claude_tap_start_source() {
   local log_file="${podman_dir}/claude-tap.log"
   local upstream_cfg
   upstream_cfg="$(claw_claude_tap_upstream_args "${root_dir}" "${tap_target}")"
-  local traces_dir="${CLAUDE_TAP_TRACES_DIR:-${podman_dir}/claude-tap-data/traces}"
-  local bin="${CLAUDE_TAP_SOURCE_BIN:-}"
+  local traces_dir bin
+  traces_dir="$(claw_claude_tap_resolve_traces_dir "${podman_dir}")"
+  bin="${CLAUDE_TAP_SOURCE_BIN:-}"
 
   [[ -d "${ctx}" ]] || {
     echo "CLAUDE_TAP_BUILD_CONTEXT not found: ${ctx}" >&2
@@ -418,7 +433,7 @@ claw_claude_tap_start_native() {
   local log_file="${podman_dir}/claude-tap.log"
   local upstream_cfg traces_dir bin pypi_ver
   upstream_cfg="$(claw_claude_tap_upstream_args "${root_dir}" "${tap_target}")"
-  traces_dir="${CLAUDE_TAP_TRACES_DIR:-${podman_dir}/claude-tap-data/traces}"
+  traces_dir="$(claw_claude_tap_resolve_traces_dir "${podman_dir}")"
   pypi_ver="$(claw_claude_tap_pypi_version)"
   bin="$(claw_claude_tap_ensure_pypi_bin "${pypi_ver}")"
   mkdir -p "${traces_dir}"

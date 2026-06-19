@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start claude-tap only (gateway: ./deploy/stack/gateway.sh up). Author: kejiqing
+# Start pool-scoped claude-tap (gateway.sh up / pool-up also ensure this). Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -3,7 +3,7 @@
 //! **全局大模型（按 `CLAW_CLUSTER_ID` 隔离，独立 PG 表 + 密钥加密）**
 //! 1. Admin 保存 → `gateway_llm_cluster_model`（API Key 以 clusterId 派生 AES 密钥加密）。
 //! 2. `gateway_llm_cluster_state` 指向当前生效条目 → handler 调 `sync_llm_runtime_from_db`。
-//! 3. claude-tap 从 PG 轮询 upstream；gateway 求解时经 pool Exec 注入 worker LLM env（不写 `.claw/*` 文件）。
+//! 3. claude-tap（pool 侧单实例）从 PG 轮询 upstream；gateway 求解时经 pool Exec 注入 worker LLM env。
 
 use runtime::builtin_system_prompt_scaffold_default;
 use serde::{Deserialize, Serialize};

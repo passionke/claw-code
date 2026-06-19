@@ -136,6 +136,9 @@ claw_pool_down_one() {
 
 HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
 RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
+# shellcheck source=pool-tap.sh
+source "${LIB_DIR}/pool-tap.sh"
+claw_stop_pool_claude_tap "${PODMAN_DIR}"
 claw_pool_down_one "${RPC_DIR}" "${HTTP_PORT}"
 if [[ "${CLAW_POOL_DOWN_LEGACY_CLEANUP:-1}" == "1" ]] && [[ -z "${CLAW_POOL_RPC_INSTANCE:-}" ]]; then
   claw_cleanup_legacy_dual_pool "${PODMAN_DIR}"
