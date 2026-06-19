@@ -6,13 +6,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
 NAS_SERVER="${NAS_BASE_URL:-10.8.0.8}"
-NAS_EXPORT="${CLAW_FC_NAS_EXPORT:-/mnt/NAS0/nfs-export}"
+NAS_EXPORT="${CLAW_FC_NAS_EXPORT:-/}"
 MOUNT_POINT="${CLAW_NAS_HOST_MOUNT:-/mnt/nas0}"
 
-echo "==> mount self-hosted NFS ${NAS_SERVER}:${NAS_EXPORT} -> ${MOUNT_POINT}"
+echo "==> mount self-hosted NFS ${NAS_SERVER}:/ -> ${MOUNT_POINT}"
 mkdir -p "${MOUNT_POINT}"
 if ! mountpoint -q "${MOUNT_POINT}" 2>/dev/null; then
-  mount -t nfs4 "${NAS_SERVER}:${NAS_EXPORT}" "${MOUNT_POINT}" -o vers=4.2,_netdev,nfsvers=4.2
+  mount -t nfs -o vers=4.2,_netdev "${NAS_SERVER}:/" "${MOUNT_POINT}"
 fi
 touch "${MOUNT_POINT}/.claw-probe" && rm -f "${MOUNT_POINT}/.claw-probe"
 

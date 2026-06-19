@@ -43,7 +43,7 @@ impl FcInteractiveBackend {
             spec.proj_id,
             spec.ovs_mode,
             cfg.nas_server.as_deref().unwrap_or("10.8.0.8"),
-            cfg.nas_export.as_deref().unwrap_or("/mnt/NAS0/nfs-export"),
+            cfg.nas_export.as_deref().unwrap_or("/"),
         );
         format!("{mount}\n{}", spec.start_ttyd_script)
     }
