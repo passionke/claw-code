@@ -63,6 +63,27 @@ export interface GlobalSettingsResponse {
   activeLlmModelId?: string;
   activeLlmAppliedAtMs?: number;
   clawTap?: ClawTapSettings;
+  adminMcpTokens?: AdminMcpTokenRow[];
   /** Derived from gateway PG URL; read-only. */
   clusterId?: string;
+}
+
+export interface AdminMcpTokenRow {
+  id: string;
+  name: string;
+  note?: string;
+  kind: "temporary" | "permanent";
+  createdAtMs: number;
+  expiresAtMs?: number;
+  revokedAtMs?: number;
+  lastUsedAtMs?: number;
+  active: boolean;
+  expired: boolean;
+}
+
+export interface AdminMcpTokenIssueResponse {
+  entry: AdminMcpTokenRow;
+  token: string;
+  mcpEndpointPath: string;
+  mcpTransport: string;
 }

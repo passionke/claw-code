@@ -1286,17 +1286,16 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     rh[k] = v
             ct = resp.headers.get("Content-Type", "") if resp.headers else ""
-            send_json(
-                self,
-                resp.status,
-                _proxy_upstream_envelope(
-                    ok=200 <= resp.status < 300,
-                    status=resp.status,
-                    headers=rh,
-                    raw=out,
-                    content_type=ct,
-                ),
+            envelope = _proxy_upstream_envelope(
+                ok=200 <= resp.status < 300,
+                status=resp.status,
+                headers=rh,
+                raw=out,
+                content_type=ct,
             )
+            # Browsers discard response bodies on HTTP 204; envelope always carries JSON.
+            proxy_status = 200 if 200 <= resp.status < 300 else resp.status
+            send_json(self, proxy_status, envelope)
         finally:
             resp.close()
 

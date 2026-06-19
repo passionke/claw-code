@@ -4,7 +4,7 @@ Author: kejiqing
 
 本文档是 **Admin `claude_md` / 物化 / runtime `load_system_prompt`** 的硬性契约。改 `prompt.rs`、`project_config_apply.rs` 或物化路径前**必须先读**，并跑对应单元测试（见文末）。
 
-相关：`docs/project-config-model.md`（PG 真源与路径表）、`GET /v1/project/prompt/{ds_id}/effective`（Admin 预览）。
+相关：`docs/project-config-model.md`（PG 真源与路径表）、`GET /v1/project/prompt/{ds_id}/effective`（Admin 预览）。QueryX 拆分后正文：`docs/queryx-agent-prompt-content.md`。
 
 ---
 

@@ -33,6 +33,10 @@ export async function proxyHttp<T = unknown>(
       headers: reqHeaders,
     }),
   });
+  // Legacy proxy may forward upstream 204; fetch drops the body on 204.
+  if (res.ok && res.status === 204) {
+    return null as T;
+  }
   const wrap = (await res.json().catch(() => ({}))) as ProxyEnvelope;
   if (!wrap.ok) {
     throw new ApiError(upstreamErrorMessage(wrap));

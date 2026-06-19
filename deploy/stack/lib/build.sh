@@ -92,6 +92,7 @@ WORKER_IMAGE_NAME="claw-gateway-worker:${IMAGE_TAG}"
 RELAXED_WORKER_IMAGE_NAME="claw-gateway-worker-relaxed:${IMAGE_TAG}"
 PLAYGROUND_IMAGE_NAME="claw-gateway-playground:${IMAGE_TAG}"
 OVS_IMAGE_NAME="claw-openvscode-server:${IMAGE_TAG}"
+SANDBOX_IMAGE_NAME="claw-sandbox:${IMAGE_TAG}"
 
 step() {
   claw_step_begin "$*"
@@ -255,6 +256,15 @@ if use_prebuilt_linux_path; then
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
   claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
 
+  step "5/5 image ${SANDBOX_IMAGE_NAME} (Containerfile.claw-sandbox.prebuilt)"
+  # shellcheck disable=SC2086
+  "${CONTAINER_CLI}" build \
+    --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+    "${APT_MIRROR_BUILD_ARGS[@]}" \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.claw-sandbox.prebuilt" \
+    -t "${SANDBOX_IMAGE_NAME}" \
+    "${ROOT_DIR}"
+
   # shellcheck source=/dev/null
   source "${ROOT_DIR}/deploy/stack/lib/pool-daemon-binary.sh"
   if [[ "$(uname -s)" == "Darwin" ]] && command -v cargo >/dev/null 2>&1; then
@@ -329,7 +339,7 @@ fi
 "${ROOT_DIR}/deploy/stack/lib/claw-write-build-stamp.sh"
 
 step "done"
-echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME} ${RELAXED_WORKER_IMAGE_NAME} ${PLAYGROUND_IMAGE_NAME} ${OVS_IMAGE_NAME}"
+echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME} ${RELAXED_WORKER_IMAGE_NAME} ${PLAYGROUND_IMAGE_NAME} ${OVS_IMAGE_NAME} ${SANDBOX_IMAGE_NAME}"
 claw_timing_summary
 if [[ "${CLAW_BUILD_NO_LOG}" != "1" ]]; then
   echo "log: ${BUILD_LOG}"
