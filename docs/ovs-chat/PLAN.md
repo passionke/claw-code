@@ -32,6 +32,14 @@ Author: kejiqing
 
 ---
 
+## FC OVS Singleton（设计中）
+
+**1 Gateway : 1 OVS : N Worker** — OVS 走 e2b 单例（`claw-ovs` template），不进 worker template；Mac compose 不跑 OVS。
+
+→ 完整设计：[FC-OVS-SINGLETON-DESIGN.md](./FC-OVS-SINGLETON-DESIGN.md)
+
+---
+
 ## 后续：Git 分支 → 独立 REPL（未实现）
 
 目标：一分支一 REPL，避免跨分支污染 claw 上下文。

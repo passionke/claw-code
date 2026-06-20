@@ -20,6 +20,9 @@ pub struct FcSandboxConfig {
     pub nas_group_id: u32,
     pub exec_helper: PathBuf,
     pub ttyd_port: u16,
+    /// OVS singleton template (`claw-ovs`); separate from worker template.
+    pub ovs_template: String,
+    pub ovs_port: u16,
 }
 
 impl FcSandboxConfig {
@@ -86,6 +89,14 @@ impl FcSandboxConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(7681);
+        let ovs_template = std::env::var("CLAW_FC_OVS_TEMPLATE")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "claw-ovs".into());
+        let ovs_port = std::env::var("CLAW_FC_OVS_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3000);
         Some(Self {
             api_key,
             api_url: api_url.trim_end_matches('/').to_string(),
@@ -101,6 +112,8 @@ impl FcSandboxConfig {
             nas_group_id,
             exec_helper,
             ttyd_port,
+            ovs_template,
+            ovs_port,
         })
     }
 

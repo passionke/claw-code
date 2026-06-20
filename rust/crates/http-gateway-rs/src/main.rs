@@ -1823,14 +1823,15 @@ async fn main() {
                 ),
         )
         .layer(middleware::from_fn(inject_http_request_id))
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr = std::env::var("CLAW_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("bind listener");
     info!("http gateway rs listening on {}", addr);
-    let shutdown = async {
+    let pool_clients_shutdown = state.pool_clients.clone();
+    let shutdown = async move {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
@@ -1853,6 +1854,7 @@ async fn main() {
         if tokio::signal::ctrl_c().await.is_ok() {
             info!(phase = "shutdown", "http gateway received SIGINT");
         }
+        pool_clients_shutdown.shutdown_fc_sandboxes().await;
         telemetry::shutdown_otel();
     };
     axum::serve(listener, app)
@@ -3924,7 +3926,14 @@ async fn ovs_workspace_handler(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<session_ovs_api::OvsWorkspaceResponse>, session_ovs_api::OvsApiError> {
-    session_ovs_api::get_ovs_workspace(state.ovs_api_ctx(), &state.session_db, proj_id).await
+    session_ovs_api::get_ovs_workspace(
+        state.ovs_api_ctx(),
+        &state.session_db,
+        state.pool_clients.fc_ovs_singleton(),
+        state.pool_clients.fc_warm_pool(),
+        proj_id,
+    )
+    .await
 }
 
 async fn workspace_tree_handler(

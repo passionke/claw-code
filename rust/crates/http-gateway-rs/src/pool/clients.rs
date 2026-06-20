@@ -11,8 +11,8 @@ use crate::session_db::GatewaySessionDb;
 use super::config::relaxed_worker_allowed_from_env;
 use super::fc_orchestrated_pool::{FcOrchestratedPool, FC_POOL_ID};
 use super::interactive_backend::{
-    FcInteractiveBackend, InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend,
-    PodmanInteractiveBackend,
+    interactive_backend_is_fc, ovs_backend_is_fc, FcInteractiveBackend, FcOvsSingleton,
+    InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend, PodmanInteractiveBackend,
 };
 use super::sandbox_orchestrator::SandboxOrchestratedPool;
 use super::traits::PoolOps;
@@ -31,6 +31,7 @@ pub struct PoolClients {
     sandbox_pool: Option<Arc<SandboxOrchestratedPool>>,
     podman_interactive: Arc<PodmanInteractiveBackend>,
     fc_interactive: Option<Arc<FcInteractiveBackend>>,
+    fc_ovs: Option<Arc<FcOvsSingleton>>,
 }
 
 impl PoolClients {
@@ -79,8 +80,16 @@ impl PoolClients {
                 live_report_hub,
             ))
         });
-        let fc_interactive =
-            fc_client.map(|fc| Arc::new(FcInteractiveBackend::new(fc, pool_id.clone())));
+        let fc_interactive = fc_client
+            .clone()
+            .map(|fc| Arc::new(FcInteractiveBackend::new(fc, pool_id.clone())));
+        if let Some(ref fc) = fc_client {
+            FcSandboxClient::spawn_lease_ticker(Arc::clone(fc));
+        }
+        let fc_ovs = match (fc_client.as_ref(), ovs_backend_is_fc()) {
+            (Some(fc), true) => Some(Arc::new(FcOvsSingleton::new(Arc::clone(fc)))),
+            _ => None,
+        };
         let podman_interactive = Arc::new(PodmanInteractiveBackend::new(
             client,
             pool_id.clone(),
@@ -95,6 +104,32 @@ impl PoolClients {
             sandbox_pool,
             podman_interactive,
             fc_interactive,
+            fc_ovs,
+        }
+    }
+
+    #[must_use]
+    pub fn fc_interactive(&self) -> Option<&FcInteractiveBackend> {
+        self.fc_interactive.as_deref()
+    }
+
+    #[must_use]
+    pub fn fc_ovs_singleton(&self) -> Option<&FcOvsSingleton> {
+        self.fc_ovs.as_deref()
+    }
+
+    #[must_use]
+    pub fn fc_warm_pool(&self) -> Option<&super::interactive_backend::FcProjWarmPool> {
+        self.fc_interactive.as_ref().map(|b| b.warm_pool())
+    }
+
+    /// Graceful shutdown: kill FC warm workers + OVS singleton (avoids e2b orphans on gateway restart).
+    pub async fn shutdown_fc_sandboxes(&self) {
+        if let Some(fc) = &self.fc_interactive {
+            fc.shutdown_all().await;
+        }
+        if let Some(ovs) = &self.fc_ovs {
+            ovs.shutdown().await;
         }
     }
 
@@ -207,6 +242,13 @@ impl PoolClients {
         db: &GatewaySessionDb,
         proj_id: i64,
     ) -> Result<Arc<dyn InteractiveSandboxBackend + Send + Sync>, String> {
+        if interactive_backend_is_fc() {
+            return self
+                .fc_interactive
+                .clone()
+                .ok_or_else(|| "FC interactive backend unavailable".into())
+                .map(|b| b as Arc<dyn InteractiveSandboxBackend + Send + Sync>);
+        }
         let json = Self::worker_json_for_proj(db, proj_id).await;
         match execution_backend_from_json(&json) {
             WorkerExecutionBackend::FcSandbox => self
@@ -268,6 +310,9 @@ impl PoolClients {
             pool.bind_session_db(Arc::clone(&db)).await;
         }
         if let Some(fc) = self.fc_pool.as_ref() {
+            fc.bind_session_db(Arc::clone(&db)).await;
+        }
+        if let Some(fc) = &self.fc_interactive {
             fc.bind_session_db(Arc::clone(&db)).await;
         }
     }

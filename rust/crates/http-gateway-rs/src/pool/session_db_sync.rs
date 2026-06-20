@@ -933,7 +933,67 @@ pub async fn materialize_turn_via_sandbox_host_paths(
     Ok(())
 }
 
-/// Import jsonl from host session home after FC exec (NAS shared with gateway). Author: kejiqing
+/// Build exec script to push solve session files into FC sandbox (self-hosted dev without shared NAS).
+pub async fn build_fc_solve_materialize_script(
+    db: &GatewaySessionDb,
+    work_root: &Path,
+    input: &MaterializeInput,
+) -> Result<String, String> {
+    use super::interactive_backend::build_fc_guest_writes_script;
+
+    let session_home = session_home_under_work_root(work_root, input.proj_id, &input.session_id);
+    let task = db
+        .get_solve_task_json(&input.turn_id)
+        .await
+        .map_err(|e| format!("load solve_task_json: {e}"))?
+        .ok_or_else(|| format!("missing solve_task_json for turn {}", input.turn_id))?;
+    let task_bytes = serde_json::to_vec(&task).map_err(|e| format!("serialize task: {e}"))?;
+    if task_bytes.len() > SESSION_MANIFEST_MAX_BYTES {
+        return Err(format!(
+            "solve_task_json exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+        ));
+    }
+    let mut files: Vec<(String, Vec<u8>)> =
+        vec![("gateway-solve-task.json".to_string(), task_bytes)];
+    let settings_path = session_home.join(".claw/settings.json");
+    if settings_path.is_file() {
+        let settings = tokio::fs::read(&settings_path)
+            .await
+            .map_err(|e| format!("read session settings.json: {e}"))?;
+        if settings.len() <= SESSION_MANIFEST_MAX_BYTES {
+            files.push((".claw/settings.json".to_string(), settings));
+        }
+    }
+    let jsonl_body = db
+        .render_session_jsonl(&input.session_id, input.proj_id)
+        .await
+        .map_err(|e| format!("render session jsonl: {e}"))?;
+    if jsonl_body.len() <= SESSION_MANIFEST_MAX_BYTES
+        && GatewaySessionDb::session_jsonl_has_messages(&jsonl_body)
+    {
+        files.push((
+            ".claw/gateway-solve-session.jsonl".to_string(),
+            jsonl_body.into_bytes(),
+        ));
+    }
+    if let Ok(Some(row)) = db.get_project_config(input.proj_id).await {
+        for (path, bytes) in guest_session_marker_writes(&row).map_err(|e| {
+            format!(
+                "guest session markers proj {} (fc exec): {e}",
+                input.proj_id
+            )
+        })? {
+            let rel = path
+                .strip_prefix(&format!("{GUEST_WORK_ROOT}/"))
+                .map(std::string::ToString::to_string)
+                .unwrap_or(path);
+            if bytes.len() <= SESSION_MANIFEST_MAX_BYTES {
+                files.push((rel, bytes));
+            }
+        }
+    }
+    Ok(build_fc_guest_writes_script(GUEST_WORK_ROOT, &files))
+}
 pub async fn readback_turn_from_session_home(
     db: &GatewaySessionDb,
     pool: &PgPool,

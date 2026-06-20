@@ -26,4 +26,19 @@ for name in claw ttyd; do
     chmod +x "$CLAW_BIN/$name"
   fi
 done
+if [ -d "$fc_tools_src/tap-runtime/bin" ] && [ -f "$fc_tools_src/tap-runtime/bin/claude-tap" ]; then
+  mkdir -p "$CLAW_BIN/tap-runtime/bin" "$CLAW_BIN/tap-runtime/lib"
+  cp "$fc_tools_src/tap-runtime/bin/"* "$CLAW_BIN/tap-runtime/bin/" 2>/dev/null || true
+  cp -a "$fc_tools_src/tap-runtime/lib/site-packages" "$CLAW_BIN/tap-runtime/lib/" 2>/dev/null \
+    || cp -a "$fc_tools_src/tap-runtime/lib/"* "$CLAW_BIN/tap-runtime/lib/" 2>/dev/null || true
+  chmod +x "$CLAW_BIN/tap-runtime/bin/"* 2>/dev/null || true
+  if [ ! -x "$CLAW_BIN/claude-tap" ]; then
+    cat > "$CLAW_BIN/claude-tap" <<'EOF'
+#!/bin/sh
+export PYTHONPATH="/tmp/claw-fc-bin/tap-runtime/lib/site-packages:${PYTHONPATH:-}"
+exec /tmp/claw-fc-bin/tap-runtime/bin/python3.12 /tmp/claw-fc-bin/tap-runtime/bin/claude-tap "$@"
+EOF
+    chmod +x "$CLAW_BIN/claude-tap"
+  fi
+fi
 export PATH="$CLAW_BIN:$PATH"

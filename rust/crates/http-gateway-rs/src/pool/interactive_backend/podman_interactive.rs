@@ -127,6 +127,8 @@ impl InteractiveSandboxBackend for PodmanInteractiveBackend {
             worker_name: lease.worker_name,
             pool_id: self.pool_id.clone(),
             fc_sandbox_id: None,
+            fc_warm_slot: None,
+            fc_warm_proj_id: None,
             ttyd: TtydConnectTarget::loopback(ttyd_port, &connect_host),
         })
     }

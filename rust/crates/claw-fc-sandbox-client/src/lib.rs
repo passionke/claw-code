@@ -5,7 +5,7 @@ mod config;
 mod nas_bootstrap;
 mod types;
 
-pub use client::FcSandboxClient;
+pub use client::{FcSandboxClient, SANDBOX_LEASE_RENEW_LEAD_SECS};
 pub use config::FcSandboxConfig;
 pub use nas_bootstrap::{fc_exec_with_nas_bootstrap, NAS_BOOTSTRAP_SH};
 pub use types::{FcExecOutcome, FcSandboxHandle, FcSandboxVolumeMount};

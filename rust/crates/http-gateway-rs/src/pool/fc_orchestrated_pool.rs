@@ -13,11 +13,16 @@ use tracing::warn;
 
 use crate::session_db::GatewaySessionDb;
 
+use super::interactive_backend::{
+    build_fc_worker_tap_start_script_from_db, build_proj_bake_script, fc_worker_llm_env,
+    self_hosted_proj_mount_sh, self_hosted_session_mount_sh,
+};
 use super::merge_stdout_hooks;
 use super::result::parse_gateway_solve_exec_stdout;
 use super::session_db_sync::{
-    finalize_turn_after_readback, materialize_turn_via_sandbox_host_paths, proj_work_dir,
-    readback_turn_from_session_home, MaterializeInput,
+    build_fc_solve_materialize_script, finalize_turn_after_readback,
+    materialize_turn_via_sandbox_host_paths, proj_work_dir, readback_turn_from_session_home,
+    MaterializeInput,
 };
 use super::traits::{PoolOps, SlotLease, TaskOutcome};
 use super::LiveReportHub;
@@ -116,6 +121,46 @@ impl PoolOps for FcOrchestratedPool {
         )
         .await?;
 
+        // Self-hosted e2b ignores create-time nasConfig mounts; interactive path runs exec mount
+        // scripts but solve did not — fc_exec exec_solve does `cd /claw_host_root` and fails.
+        // When gateway workspace is local (no CLAW_NAS_HOST_MOUNT), also push files via exec.
+        let cfg = self.client.config();
+        if cfg.is_self_hosted() {
+            let nas_server = cfg.nas_server.as_deref().unwrap_or("10.8.0.8");
+            let nas_export = cfg.nas_export.as_deref().unwrap_or("/");
+            let mut script = format!(
+                "set -e\n{}\n{}",
+                self_hosted_proj_mount_sh(proj_id, nas_server, nas_export),
+                self_hosted_session_mount_sh(&session_id, proj_id, nas_server, nas_export),
+            );
+            if let Ok(bake) = build_proj_bake_script(db.as_ref(), proj_id).await {
+                script.push('\n');
+                script.push_str(&bake);
+            }
+            let mat = build_fc_solve_materialize_script(
+                db.as_ref(),
+                &self.work_root,
+                &MaterializeInput {
+                    session_id: session_id.clone(),
+                    proj_id,
+                    turn_id: turn_id.clone(),
+                },
+            )
+            .await?;
+            script.push('\n');
+            script.push_str(&mat);
+            if let Err(e) = self.client.exec_shell_script(&handle, &script).await {
+                let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
+                return Err(format!("fc solve self-hosted attach: {e}"));
+            }
+        }
+
+        let tap_start = build_fc_worker_tap_start_script_from_db(db.as_ref()).await?;
+        if let Err(e) = self.client.exec_shell_script(&handle, &tap_start).await {
+            let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
+            return Err(format!("fc worker tap start: {e}"));
+        }
+
         self.slots.lock().await.insert(
             slot_index,
             FcSlot {
@@ -160,15 +205,10 @@ impl PoolOps for FcOrchestratedPool {
                 &sandbox_id,
                 task_rel_under_root,
                 claw_bin,
-                worker_llm_env.unwrap_or_default(),
+                fc_worker_llm_env(worker_llm_env.unwrap_or_default()),
+                stdout_hook,
             )
             .await?;
-
-        if let Some(ref hook) = stdout_hook {
-            for line in outcome.stdout.lines() {
-                hook(line.to_string());
-            }
-        }
 
         let task_outcome = TaskOutcome {
             exit_code: outcome.exit_code,

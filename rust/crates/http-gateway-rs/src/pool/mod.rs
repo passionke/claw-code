@@ -24,8 +24,10 @@ pub use docker_pool::{merge_stdout_hooks, DockerPoolManager};
 pub use fc_orchestrated_pool::{FcOrchestratedPool, FC_POOL_ID};
 pub use http_server::serve_pool_http;
 pub use interactive_backend::{
-    interactive_backend_from_env, terminal_ws_connect_url, InteractiveBackendKind,
-    InteractiveLease, InteractiveSandboxBackend, InteractiveSessionSpec, TtydConnectTarget,
+    build_fc_session_attach_with_tap, build_proj_bake_script, build_session_attach_script,
+    fc_worker_llm_env, interactive_backend_from_env, interactive_backend_is_fc,
+    terminal_ws_connect_url, InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend,
+    InteractiveSessionSpec, TtydConnectTarget,
 };
 pub use live_report_hub::{HubMsg, LiveReportHub};
 pub use live_report_sse::live_report_sse_response;

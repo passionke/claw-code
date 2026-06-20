@@ -32,11 +32,12 @@ pub struct FcSandboxVolumeMount {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateSandboxResponse {
+    #[serde(alias = "sandboxID")]
     pub sandbox_id: String,
     #[serde(default)]
     pub domain: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "envdAccessToken")]
     pub envd_access_token: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "trafficAccessToken")]
     pub traffic_access_token: Option<String>,
 }

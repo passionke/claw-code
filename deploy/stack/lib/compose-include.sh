@@ -340,6 +340,23 @@ claw_compose_write_workspace_volume_yml() {
   fi
 }
 
+
+# Merge fc OVS backend override (skip compose openvscode-server). Author: kejiqing
+claw_compose_append_fc_ovs_backend() {
+  local script_dir="$1"
+  local rel="${2:-}"
+  if ! claw_ovs_backend_is_fc; then
+    return 0
+  fi
+  if [[ -n "${rel}" ]]; then
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.fc-ovs-backend.yml" )
+  else
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.fc-ovs-backend.yml" )
+  fi
+  export PLAYGROUND_OVS_FROM_GATEWAY=1
+  echo "compose: CLAW_OVS_BACKEND=fc — OVS e2b singleton; openvscode-server not started" >&2
+}
+
 claw_compose_append_workspace_volume() {
   local script_dir="$1"
   local rel="${2:-}"
@@ -365,6 +382,9 @@ claw_compose_append_workspace_volume() {
 claw_podman_append_ovs_public_bind() {
   local script_dir="$1"
   local rel="${2:-}"
+  if claw_ovs_backend_is_fc; then
+    return 0
+  fi
   case "${CLAW_OVS_PUBLIC_BIND:-}" in
     1 | true | yes | on)
       export CLAW_OVS_PUBLISH_HOST=0.0.0.0
@@ -372,6 +392,23 @@ claw_podman_append_ovs_public_bind() {
       ;;
     *) return 0 ;;
   esac
+}
+
+
+# Merge fc OVS backend override (skip compose openvscode-server). Author: kejiqing
+claw_compose_append_fc_ovs_backend() {
+  local script_dir="$1"
+  local rel="${2:-}"
+  if ! claw_ovs_backend_is_fc; then
+    return 0
+  fi
+  if [[ -n "${rel}" ]]; then
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.fc-ovs-backend.yml" )
+  else
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.fc-ovs-backend.yml" )
+  fi
+  export PLAYGROUND_OVS_FROM_GATEWAY=1
+  echo "compose: CLAW_OVS_BACKEND=fc — OVS e2b singleton; openvscode-server not started" >&2
 }
 
 
@@ -493,6 +530,7 @@ claw_podman_load_compose_args() {
   fi
   claw_compose_append_workspace_volume "${script_dir}" "${rel}" || return 1
   claw_podman_append_ovs_public_bind "${script_dir}" "${rel}"
+  claw_compose_append_fc_ovs_backend "${script_dir}" "${rel}"
   if [[ -f "${rpc_root}/pool-registry.env" ]]; then
     set -a
     # shellcheck disable=SC1090
@@ -941,6 +979,9 @@ claw_compose_gateway_service_list() {
   while IFS= read -r svc; do
     [[ -z "${svc}" ]] && continue
     [[ "${svc}" == "${pg}" ]] && continue
+    if claw_ovs_backend_is_fc && [[ "${svc}" == "openvscode-server" ]]; then
+      continue
+    fi
     printf '%s ' "${svc}"
   done <<<"${out}"
   rm -f "${errf}"

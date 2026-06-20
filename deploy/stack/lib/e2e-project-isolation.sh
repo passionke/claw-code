@@ -7,9 +7,9 @@ claw_e2e_set_project_worker_isolation() {
   local proj_id="${2:?proj_id}"
   local mode="${3:?mode}"
   case "${mode}" in
-    strict | relaxed) ;;
+    strict | relaxed | sandbox) ;;
     *)
-      echo "error: worker isolation mode must be strict or relaxed (got ${mode})" >&2
+      echo "error: worker isolation mode must be strict, relaxed, or sandbox (got ${mode})" >&2
       return 1
       ;;
   esac

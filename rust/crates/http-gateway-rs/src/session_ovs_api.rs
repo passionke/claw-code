@@ -7,6 +7,7 @@ use axum::Json;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
+use crate::pool::interactive_backend::{ovs_backend_is_fc, FcOvsSingleton, FcProjWarmPool};
 use crate::pool::proj_work_dir;
 use crate::session_db::GatewaySessionDb;
 use crate::session_terminal_api;
@@ -15,12 +16,21 @@ use crate::session_terminal_api;
 #[serde(rename_all = "camelCase")]
 pub struct OvsWorkspaceResponse {
     pub proj_id: i64,
-    /// Path inside the OVS container (`CLAW_WORK_ROOT` mount).
+    /// Path inside the OVS container (`CLAW_OVS_MOUNT_ROOT` or fc `/claw_ws`).
     pub workspace_folder: String,
-    /// Path on the gateway host under `work_root`.
-    pub host_path: String,
+    /// Path on the gateway host under `work_root` (compose mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_path: Option<String>,
     /// Default agent session id for `@claw` in OVS (`ovs-{projId}`).
     pub agent_session_id: String,
+    /// FC singleton OVS base URL (`http://3000-{sandboxId}.{domain}/ovs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ovs_url: Option<String>,
+    /// Full browser URL including `?folder=…` (fc mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ovs_folder_url: Option<String>,
+    /// `compose` | `fc`.
+    pub ovs_backend: String,
 }
 
 #[derive(Debug)]
@@ -52,17 +62,25 @@ impl axum::response::IntoResponse for OvsApiError {
 #[derive(Clone)]
 pub struct OvsApiContext {
     pub work_root: PathBuf,
-    /// Container mount root for OVS (defaults to `/home/workspace`).
+    /// Container mount root for OVS (compose `/home/workspace`; fc `/claw_ws`).
     pub ovs_mount_root: String,
 }
 
 #[must_use]
 pub fn ovs_api_context(work_root: PathBuf) -> OvsApiContext {
-    let ovs_mount_root = std::env::var("CLAW_OVS_MOUNT_ROOT")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "/home/workspace".to_string());
+    let ovs_mount_root = if ovs_backend_is_fc() {
+        std::env::var("CLAW_OVS_MOUNT_ROOT")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "/claw_ws".to_string())
+    } else {
+        std::env::var("CLAW_OVS_MOUNT_ROOT")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "/home/workspace".to_string())
+    };
     OvsApiContext {
         work_root,
         ovs_mount_root,
@@ -99,6 +117,8 @@ pub fn ovs_workspace_folder(ctx: &OvsApiContext, proj_id: i64) -> String {
 pub async fn get_ovs_workspace(
     ctx: OvsApiContext,
     session_db: &GatewaySessionDb,
+    fc_ovs: Option<&FcOvsSingleton>,
+    fc_warm: Option<&FcProjWarmPool>,
     proj_id: i64,
 ) -> Result<Json<OvsWorkspaceResponse>, OvsApiError> {
     if proj_id < 1 {
@@ -107,6 +127,36 @@ pub async fn get_ovs_workspace(
             "projId must be >= 1",
         ));
     }
+
+    if ovs_backend_is_fc() {
+        let fc_ovs = fc_ovs.ok_or_else(|| {
+            OvsApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "CLAW_OVS_BACKEND=fc but OVS singleton is not configured",
+            )
+        })?;
+        if let Some(pool) = fc_warm {
+            pool.ensure_warm(proj_id)
+                .await
+                .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        }
+        let base_url = fc_ovs
+            .ensure()
+            .await
+            .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let workspace_folder = FcOvsSingleton::workspace_folder_path(proj_id);
+        let ovs_folder_url = FcOvsSingleton::workspace_folder_url(&base_url, proj_id);
+        return Ok(Json(OvsWorkspaceResponse {
+            proj_id,
+            workspace_folder,
+            host_path: None,
+            agent_session_id: ovs_agent_session_id(proj_id),
+            ovs_url: Some(base_url),
+            ovs_folder_url: Some(ovs_folder_url),
+            ovs_backend: "fc".into(),
+        }));
+    }
+
     session_terminal_api::materialize_ovs_proj_workspace(session_db, &ctx.work_root, proj_id)
         .await
         .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -114,8 +164,11 @@ pub async fn get_ovs_workspace(
     Ok(Json(OvsWorkspaceResponse {
         proj_id,
         workspace_folder: ovs_workspace_folder(&ctx, proj_id),
-        host_path: host_path.display().to_string(),
+        host_path: Some(host_path.display().to_string()),
         agent_session_id: ovs_agent_session_id(proj_id),
+        ovs_url: None,
+        ovs_folder_url: None,
+        ovs_backend: "compose".into(),
     }))
 }
 

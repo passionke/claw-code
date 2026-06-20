@@ -97,7 +97,7 @@ Build (local): `./deploy/stack/gateway.sh build` builds `claw-openvscode-server:
 | **Backend trait** | `pool/interactive_backend/` | `PodmanInteractiveBackend` / `FcInteractiveBackend` |
 | **Terminal API** | `session_terminal_api.rs` | `terminal/start\|stop\|reattach` → `InteractiveSandboxBackend` |
 | **Agent bridge** | `session_agent_api.rs` | ttyd WS via `TtydConnectTarget` (loopback or `wss://7681-sbx…`) |
-| **Workspace truth** | NAS cn-beijing | `CLAW_USE_NAS_VOLUME=auto` + `NAS_BASE_URL` → compose NFS volume（Gateway/OVS 容器内直挂，无需 Mac host mount） |
+| **Workspace truth** | NAS (e2b sandbox mount) | `CLAW_OVS_BACKEND=fc` → OVS singleton on e2b (`claw-ovs`); `CLAW_USE_NAS_VOLUME=0` on Mac; see `docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md` |
 | **Deploy docs** | `deploy/fc-sandbox/README.md` | Phase 0 quickstart, template, NAS, ~¥876/yr @100GB |
 | **Env overlay** | `deploy/stack/env.fc-interactive.example` | FC + NAS vars for repo root `.env` |
 | **E2E** | `deploy/stack/lib/verify-fc-ovs-e2e.sh` | NAS probe + `terminal/start` + optional OVS agent WS |

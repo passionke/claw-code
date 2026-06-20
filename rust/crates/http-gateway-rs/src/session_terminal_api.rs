@@ -23,9 +23,10 @@ use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::sandbox_orchestrator::worker_isolation_to_sandbox;
 use crate::pool::{
-    self, proj_work_dir, session_home_under_work_root, terminal_ws_connect_url,
-    InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec, PoolClients,
-    TtydConnectTarget,
+    self, build_fc_session_attach_with_tap, build_proj_bake_script, fc_worker_llm_env,
+    interactive_backend_is_fc, proj_work_dir, session_home_under_work_root,
+    terminal_ws_connect_url, InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec,
+    PoolClients, TtydConnectTarget,
 };
 use crate::project_config_apply;
 use crate::project_config_draft;
@@ -46,6 +47,8 @@ pub struct ActiveTerminalSession {
     pub pool_id: String,
     pub backend: InteractiveBackendKind,
     pub fc_sandbox_id: Option<String>,
+    pub fc_warm_slot: Option<usize>,
+    pub fc_warm_proj_id: Option<i64>,
     pub ttyd: TtydConnectTarget,
 }
 
@@ -536,6 +539,8 @@ fn active_terminal_to_lease(active: &ActiveTerminalSession) -> InteractiveLease 
         worker_name: active.worker_name.clone(),
         pool_id: active.pool_id.clone(),
         fc_sandbox_id: active.fc_sandbox_id.clone(),
+        fc_warm_slot: active.fc_warm_slot,
+        fc_warm_proj_id: active.fc_warm_proj_id,
         ttyd: active.ttyd.clone(),
     }
 }
@@ -553,6 +558,8 @@ fn lease_to_active_terminal(lease: InteractiveLease) -> ActiveTerminalSession {
         pool_id: lease.pool_id,
         backend: lease.backend,
         fc_sandbox_id: lease.fc_sandbox_id,
+        fc_warm_slot: lease.fc_warm_slot,
+        fc_warm_proj_id: lease.fc_warm_proj_id,
         ttyd: lease.ttyd,
     }
 }
@@ -610,13 +617,15 @@ pub async fn terminal_attach(
         session_id: session_id.to_string(),
     };
     if let Some(active) = ctx.registry.get(&key).await {
-        materialize_proj_home(
-            &ctx.session_db,
-            &proj_work_dir(&ctx.work_root, req.proj_id),
-            req.proj_id,
-        )
-        .await
-        .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        if !interactive_backend_is_fc() {
+            materialize_proj_home(
+                &ctx.session_db,
+                &proj_work_dir(&ctx.work_root, req.proj_id),
+                req.proj_id,
+            )
+            .await
+            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        }
         info!(
             target: "claw_gateway_terminal",
             session_id = %session_id,
@@ -665,26 +674,29 @@ pub async fn terminal_start(
         ));
     }
 
+    let fc_mode = interactive_backend_is_fc();
     let session_home = session_home_under_work_root(&ctx.work_root, req.proj_id, session_id);
-    tokio::fs::create_dir_all(&session_home.join(".claw"))
+    if !fc_mode {
+        tokio::fs::create_dir_all(&session_home.join(".claw"))
+            .await
+            .map_err(|e| {
+                TerminalApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("mkdir session workspace: {e}"),
+                )
+            })?;
+        pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(
+            &ctx.pool_runtime_bin,
+            &session_home,
+        )
         .await
         .map_err(|e| {
             TerminalApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("mkdir session workspace: {e}"),
+                format!("session ownership: {e}"),
             )
         })?;
-    pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(
-        &ctx.pool_runtime_bin,
-        &session_home,
-    )
-    .await
-    .map_err(|e| {
-        TerminalApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("session ownership: {e}"),
-        )
-    })?;
+    }
 
     let session_home_rel = format!(
         "proj_{}/sessions/{}",
@@ -736,9 +748,11 @@ pub async fn terminal_start(
     }
 
     let proj_dir = proj_work_dir(&ctx.work_root, req.proj_id);
-    materialize_proj_home(&ctx.session_db, &proj_dir, req.proj_id)
-        .await
-        .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if !fc_mode {
+        materialize_proj_home(&ctx.session_db, &proj_dir, req.proj_id)
+            .await
+            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    }
 
     ctx.pool_clients
         .assert_proj_worker_isolation_supported(&ctx.session_db, req.proj_id)
@@ -748,21 +762,47 @@ pub async fn terminal_start(
     let mode = PoolClients::effective_mode_for_proj(&ctx.session_db, req.proj_id).await;
     let isolation = worker_isolation_to_sandbox(mode);
 
-    let llm_env =
+    let mut llm_env =
         resolve_terminal_llm_env(&ctx.session_db, &ctx.claw_tap_cluster, &ctx.llm_runtime)
             .await
             .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
-    write_terminal_llm_env_file(&session_home.join(".claw/terminal-llm.env"), &llm_env)
-        .await
-        .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if fc_mode {
+        llm_env = fc_worker_llm_env(llm_env);
+    }
+    if !fc_mode {
+        write_terminal_llm_env_file(&session_home.join(".claw/terminal-llm.env"), &llm_env)
+            .await
+            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    }
 
     let proj_home = proj_dir.join("home");
-    tokio::fs::create_dir_all(&proj_home).await.map_err(|e| {
-        TerminalApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("mkdir proj home: {e}"),
+    if !fc_mode {
+        tokio::fs::create_dir_all(&proj_home).await.map_err(|e| {
+            TerminalApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("mkdir proj home: {e}"),
+            )
+        })?;
+    }
+
+    let fc_session_attach_script = if fc_mode {
+        Some(
+            build_fc_session_attach_with_tap(&ctx.session_db, &llm_env)
+                .await
+                .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?,
         )
-    })?;
+    } else {
+        None
+    };
+    let fc_proj_bake_script = if fc_mode {
+        Some(
+            build_proj_bake_script(&ctx.session_db, req.proj_id)
+                .await
+                .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?,
+        )
+    } else {
+        None
+    };
 
     let interactive_backend = ctx
         .pool_clients
@@ -779,6 +819,8 @@ pub async fn terminal_start(
         ovs_mode: session_id.starts_with("ovs-"),
         sandbox_isolation: isolation,
         start_ttyd_script: start_ttyd_sh_for_session(session_id),
+        fc_session_attach_script,
+        fc_proj_bake_script,
     };
 
     let lease = interactive_backend
@@ -851,13 +893,15 @@ pub async fn ensure_terminal_active(
         session_id: session_id.to_string(),
     };
     if let Some(active) = ctx.registry.get(&key).await {
-        materialize_proj_home(
-            &ctx.session_db,
-            &proj_work_dir(&ctx.work_root, proj_id),
-            proj_id,
-        )
-        .await
-        .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        if !interactive_backend_is_fc() {
+            materialize_proj_home(
+                &ctx.session_db,
+                &proj_work_dir(&ctx.work_root, proj_id),
+                proj_id,
+            )
+            .await
+            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        }
         return Ok(active);
     }
     let _ = terminal_start(
@@ -932,6 +976,12 @@ async fn proxy_terminal_ws(client: WebSocket, ttyd: &TtydConnectTarget) -> Resul
         req.headers_mut().insert(
             "Host",
             HeaderValue::from_str(host_hdr).map_err(|e| format!("Host: {e}"))?,
+        );
+    }
+    if let Some(token) = ttyd.traffic_access_token.as_deref() {
+        req.headers_mut().insert(
+            "X-Access-Token",
+            HeaderValue::from_str(token).map_err(|e| format!("X-Access-Token: {e}"))?,
         );
     }
     let (upstream, _) = connect_async(req)

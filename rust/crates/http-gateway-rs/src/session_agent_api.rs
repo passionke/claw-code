@@ -293,6 +293,18 @@ async fn run_agent_ws_bridge(
         .map_err(|e| format!("ws request {url}: {e}"))?;
     req.headers_mut()
         .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("tty"));
+    if let Some(host_hdr) = ttyd.proxy_host_header.as_deref() {
+        req.headers_mut().insert(
+            "Host",
+            HeaderValue::from_str(host_hdr).map_err(|e| format!("Host: {e}"))?,
+        );
+    }
+    if let Some(token) = ttyd.traffic_access_token.as_deref() {
+        req.headers_mut().insert(
+            "X-Access-Token",
+            HeaderValue::from_str(token).map_err(|e| format!("X-Access-Token: {e}"))?,
+        );
+    }
     let (upstream, _) = match connect_async(req).await {
         Ok(pair) => pair,
         Err(e) => {
