@@ -13,6 +13,14 @@ claw_compose_nas_volume_enabled() {
   esac
 }
 
+# OVS runs as e2b singleton (CLAW_OVS_BACKEND=fc); compose openvscode-server skipped. kejiqing
+claw_ovs_backend_is_fc() {
+  case "${CLAW_OVS_BACKEND:-}" in
+    fc | FC) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 claw_pool_rpc_root() {
   local podman_dir="${1:?podman_dir}"
   podman_dir="$(cd "${podman_dir}" && pwd)"

@@ -459,11 +459,11 @@ export default function ChatTurnCard({
           <span>
             session{" "}
             {sessionLinkValid ? (
-              <a href={sessionHref} target="_blank" rel="noopener noreferrer" title="claude-tap Live">
+              <a href={sessionHref} target="_blank" rel="noopener noreferrer" title="claude-tap session traces">
                 <code>{sessionId}</code>
               </a>
             ) : (
-              <code title="claude-tap Live 地址无效">{sessionId}</code>
+              <code title="claude-tap traces 地址无效">{sessionId}</code>
             )}
           </span>
           <span>

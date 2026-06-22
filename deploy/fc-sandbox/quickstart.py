@@ -17,15 +17,23 @@ def main() -> int:
         return 1
 
     domain = os.environ.get("E2B_DOMAIN", "cn-beijing.e2b.fc.aliyuncs.com")
+    api_url = os.environ.get("E2B_API_URL") or os.environ.get("CLAW_FC_API_URL")
+    sandbox_url = os.environ.get("E2B_SANDBOX_URL") or os.environ.get("CLAW_E2B_SANDBOX_URL")
     template = os.environ.get("CLAW_FC_TEMPLATE", "code-interpreter-v1")
 
     try:
-        from e2b_code_interpreter import Sandbox
+        from e2b import Sandbox
     except ImportError:
-        print("pip install e2b-code-interpreter", file=sys.stderr)
+        print("pip install e2b", file=sys.stderr)
         return 1
 
-    sandbox = Sandbox.create(template=template, api_key=api_key, domain=domain)
+    create_opts: dict[str, str] = {"api_key": api_key, "domain": domain}
+    if api_url:
+        create_opts["api_url"] = api_url.strip().rstrip("/")
+    if sandbox_url:
+        create_opts["sandbox_url"] = sandbox_url.strip().rstrip("/")
+
+    sandbox = Sandbox.create(template, timeout=300, **create_opts)
     try:
         result = sandbox.commands.run('python3 -c "print(\'hello from fc\')"')
         print("stdout:", (result.stdout or "").strip())

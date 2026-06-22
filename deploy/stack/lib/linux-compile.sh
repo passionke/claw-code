@@ -109,7 +109,7 @@ claw_linux_compile_release() {
     -e "RUSTC_WRAPPER=sccache" \
     -e "SCCACHE_DIR=/root/.cache/sccache" \
     -e "SCCACHE_CACHE_SIZE=${sccache_size}" \
-    "${uid_args[@]}" \
+    "${uid_args[@]+"${uid_args[@]}"}" \
     -v "${root_dir}:/workspace:Z" \
     "${vol_args[@]}" \
     -v "${out_root}:/artifacts:Z" \
@@ -157,6 +157,7 @@ claw_linux_compile_release() {
       echo "error: missing ${out_dir}/${bin} after linux compile" >&2
       exit 1
     fi
+    chmod +x "${out_dir}/${bin}"
   done
   echo "linux compile: ok → ${out_dir}"
 }

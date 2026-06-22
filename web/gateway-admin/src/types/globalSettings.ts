@@ -32,6 +32,7 @@ export interface ClawTapSettings {
   proxyBaseUrl?: string;
   liveBaseUrl?: string;
   liveSessionUrlTemplate?: string;
+  liveBrowserHostsLine?: string;
 }
 
 export interface PutClawTapSettingsResponse extends ClawTapSettings {
@@ -56,6 +57,19 @@ export interface ClawTapProbeResponse {
   latencyMs?: number;
 }
 
+export interface FcNasSettings {
+  readOnly: boolean;
+  nasHostMount: string;
+  fcNasServer: string;
+  fcNasExport: string;
+  configured: boolean;
+  gatewayWorkRoot: string;
+  nasRootResolved: string;
+  layoutActive: boolean;
+  pathExists: boolean;
+  hasProjTree?: boolean;
+}
+
 export interface GlobalSettingsResponse {
   updatedAtMs: number;
   gitPats: GitPatRow[];
@@ -63,6 +77,7 @@ export interface GlobalSettingsResponse {
   activeLlmModelId?: string;
   activeLlmAppliedAtMs?: number;
   clawTap?: ClawTapSettings;
+  fcNas?: FcNasSettings;
   adminMcpTokens?: AdminMcpTokenRow[];
   /** Derived from gateway PG URL; read-only. */
   clusterId?: string;

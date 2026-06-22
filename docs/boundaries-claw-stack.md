@@ -44,11 +44,13 @@ Author: kejiqing
 5. **`CLAW_MCP_MAX_CONCURRENT`**: max in-flight MCP `tools/call` per worker; values `> 1` also enable same-turn parallel SQLBot fan-out (`[parallel-friendly]` tool hint + `shared_executor`). Set `1` for fully serial MCP (`rust/crates/runtime/src/mcp_client.rs`).
 6. **Solve preflight (per `ds_*`)**: `ds_<id>/home/.claw/solve-preflight.json` with ordered `kinds` (e.g. `["sqlbot_mcp_start"]`, compatible with legacy `kind`) → **first** `sessionId` turn only, after user text in jsonl, code-run preflight (`rust/crates/gateway-solve-turn/src/project_preflight.rs`). Table DDL: `ds_<id>/home/schema.md`, ro mount + system prompt (`GATEWAY_SCHEMA_MD_REL`).
 7. **claude-tap (LLM proxy)**: **one sidecar per pool** on the worker network (`claw-claude-tap:8080`); lifecycle in `deploy/stack/lib/pool-tap.sh` + `pool-daemon-up.sh` — **not** inside gateway. Gateway: PG clawTap settings, `/readyz` cluster probe, per-solve `OPENAI_BASE_URL` inject. Traces: `CLAW_TAP_TRACES_DIR` or `${CLAW_NAS_HOST_MOUNT}/tap-traces` on NAS.
+8. **FC NAS workspace**: one logical NFS export root; Gateway mkdir/symlink on container `CLAW_WORK_ROOT`; e2b bind via `hostMountRoot` + relPath. **Do not** mix host path strings with container bind points — see **`docs/fc-nas-workspace.md`**.
 
 ## Where to change what
 
 | You want to… | Edit |
 | --- | --- |
+| FC NAS layout, env, Mac podman / e2b bind | **`docs/fc-nas-workspace.md`** + repo root `.env` (`CLAW_NAS_*`, `CLAW_FC_*`) |
 | HTTP routes, timeout, inject MCP, 容器池、`SQLBOT_MCP_*`、`CLAW_DEFAULT_HTTP_MCP_*`、根 `.claw.json` | `rust/crates/http-gateway-rs/`（`main.rs`、`solve_pool.rs`、`pool/` 等） |
 | Doris SQL guard / `doris_query` | `doris-mcp/src/` |
 | Remote→stdio wire | Your transport bridge（本仓库默认不内置） |
@@ -97,7 +99,7 @@ Build (local): `./deploy/stack/gateway.sh build` builds `claw-openvscode-server:
 | **Backend trait** | `pool/interactive_backend/` | `PodmanInteractiveBackend` / `FcInteractiveBackend` |
 | **Terminal API** | `session_terminal_api.rs` | `terminal/start\|stop\|reattach` → `InteractiveSandboxBackend` |
 | **Agent bridge** | `session_agent_api.rs` | ttyd WS via `TtydConnectTarget` (loopback or `wss://7681-sbx…`) |
-| **Workspace truth** | NAS cn-beijing | `CLAW_USE_NAS_VOLUME=auto` + `NAS_BASE_URL` → compose NFS volume（Gateway/OVS 容器内直挂，无需 Mac host mount） |
+| **Workspace truth** | NAS (e2b sandbox mount) | `CLAW_OVS_BACKEND=fc` → OVS singleton on e2b (`claw-ovs`); `CLAW_USE_NAS_VOLUME=0` on Mac; see `docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md` |
 | **Deploy docs** | `deploy/fc-sandbox/README.md` | Phase 0 quickstart, template, NAS, ~¥876/yr @100GB |
 | **Env overlay** | `deploy/stack/env.fc-interactive.example` | FC + NAS vars for repo root `.env` |
 | **E2E** | `deploy/stack/lib/verify-fc-ovs-e2e.sh` | NAS probe + `terminal/start` + optional OVS agent WS |

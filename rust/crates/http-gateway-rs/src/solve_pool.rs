@@ -13,7 +13,8 @@ use tracing::{info, warn};
 
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
 use http_gateway_rs::claw_tap_cluster_state::resolve_solve_llm_route;
-use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease};
+use http_gateway_rs::pool::interactive_backend::resolve_fc_worker_solve_llm_route;
+use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease, FC_POOL_ID};
 
 /// When the gateway uses [`PoolRpcClient`](http_gateway_rs::pool::PoolRpcClient) (TCP or Unix), session dirs
 /// live under the container `CLAW_WORK_ROOT` but the host daemon must bind-mount the host path. Author: kejiqing
@@ -96,6 +97,7 @@ pub async fn run_solve_request_docker(
     req: SolveRequest,
     ctx: RunSolveContext,
     pool: Arc<dyn PoolOps + Send + Sync>,
+    pool_id: &str,
     started: Instant,
     effective_allowed_tools: Vec<String>,
     paths: SolveSessionPaths,
@@ -115,14 +117,20 @@ pub async fn run_solve_request_docker(
         .timeout_seconds
         .unwrap_or(state.cfg.default_timeout_seconds);
 
-    let (llm_route, worker_llm_env) = resolve_solve_llm_route(
-        &state.session_db,
-        &state.claw_tap_cluster,
-        &state.llm_runtime,
-        req.model.as_deref(),
-    )
-    .await
-    .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+    let (llm_route, worker_llm_env) = if pool_id == FC_POOL_ID {
+        resolve_fc_worker_solve_llm_route(&state.session_db, req.model.as_deref())
+            .await
+            .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?
+    } else {
+        resolve_solve_llm_route(
+            &state.session_db,
+            &state.claw_tap_cluster,
+            &state.llm_runtime,
+            req.model.as_deref(),
+        )
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?
+    };
 
     state
         .session_db

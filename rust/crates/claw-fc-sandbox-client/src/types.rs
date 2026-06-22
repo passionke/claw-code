@@ -1,6 +1,6 @@
 //! FC sandbox handle types. Author: kejiqing
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 /// Created sandbox identity + ttyd reachability.
 #[derive(Debug, Clone)]
@@ -22,21 +22,15 @@ pub struct FcExecOutcome {
     pub stderr: String,
 }
 
-/// Optional NAS bind via E2B `volumeMounts` (FC console-registered volume name).
-#[derive(Debug, Clone, Serialize)]
-pub struct FcSandboxVolumeMount {
-    pub name: String,
-    pub path: String,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateSandboxResponse {
+    #[serde(alias = "sandboxID")]
     pub sandbox_id: String,
     #[serde(default)]
     pub domain: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "envdAccessToken")]
     pub envd_access_token: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "trafficAccessToken")]
     pub traffic_access_token: Option<String>,
 }

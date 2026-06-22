@@ -12,7 +12,7 @@ Usage:
   ./deploy/stack/gateway.sh <command>
 
 Commands:
-  quick         Daily local stack: host pool-daemon + fast playground image + pool-reset + up + check
+  quick         Daily local stack: host pool-daemon + fast playground image + up + check
   clean         Remove rust/target (or --debug-only) + .linux-artifacts; optional podman cache/images
   build         clean (default) + build images (Darwin: podman run compile; log: .build.log)
   pack-deploy   Build gateway images + restart stack (slow; after Rust/image changes; log: .build.log)
