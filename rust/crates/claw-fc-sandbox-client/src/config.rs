@@ -14,7 +14,6 @@ pub struct FcSandboxConfig {
     pub sandbox_timeout_secs: u64,
     pub nas_server: Option<String>,
     pub nas_export: Option<String>,
-    pub nas_volume_name: Option<String>,
     pub nas_tools_rel: String,
     pub nas_user_id: u32,
     pub nas_group_id: u32,
@@ -23,12 +22,16 @@ pub struct FcSandboxConfig {
     /// OVS singleton template (`claw-ovs`); separate from worker template.
     pub ovs_template: String,
     pub ovs_port: u16,
+    /// Session observe singleton template (`claw-observe`); Live viewer only, no LLM proxy.
+    pub observe_template: String,
+    pub observe_live_port: u16,
 }
 
 impl FcSandboxConfig {
     /// Load from process environment (repo root `.env` after gateway sources it).
     #[must_use]
     pub fn from_env() -> Option<Self> {
+        warn_if_legacy_nas_volume_name();
         let api_key = std::env::var("CLAW_FC_API_KEY")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -65,9 +68,6 @@ impl FcSandboxConfig {
         let nas_export = std::env::var("CLAW_FC_NAS_EXPORT")
             .ok()
             .filter(|v| !v.trim().is_empty());
-        let nas_volume_name = std::env::var("CLAW_FC_NAS_VOLUME_NAME")
-            .ok()
-            .filter(|v| !v.trim().is_empty());
         let nas_tools_rel = std::env::var("CLAW_FC_NAS_TOOLS_REL")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -97,6 +97,14 @@ impl FcSandboxConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3000);
+        let observe_template = std::env::var("CLAW_FC_OBSERVE_TEMPLATE")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "claw-observe".into());
+        let observe_live_port = std::env::var("CLAW_FC_OBSERVE_LIVE_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3000);
         Some(Self {
             api_key,
             api_url: api_url.trim_end_matches('/').to_string(),
@@ -106,7 +114,6 @@ impl FcSandboxConfig {
             sandbox_timeout_secs,
             nas_server,
             nas_export,
-            nas_volume_name,
             nas_tools_rel,
             nas_user_id,
             nas_group_id,
@@ -114,6 +121,8 @@ impl FcSandboxConfig {
             ttyd_port,
             ovs_template,
             ovs_port,
+            observe_template,
+            observe_live_port,
         })
     }
 
@@ -127,6 +136,16 @@ impl FcSandboxConfig {
 
 fn default_exec_helper_path() -> PathBuf {
     PathBuf::from("deploy/fc-sandbox/fc_exec.py")
+}
+
+fn warn_if_legacy_nas_volume_name() {
+    if std::env::var("CLAW_FC_NAS_VOLUME_NAME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_some()
+    {
+        eprintln!("claw-fc-sandbox-client: CLAW_FC_NAS_VOLUME_NAME is ignored; use nasConfig bind");
+    }
 }
 
 #[cfg(test)]

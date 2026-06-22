@@ -11,8 +11,9 @@ use tracing::{info, warn};
 
 use crate::session_db::GatewaySessionDb;
 
-use super::fc_interactive_materialize::{
-    build_proj_bake_script, self_hosted_proj_mount_sh, session_release_sh,
+use super::fc_interactive_materialize::session_release_sh;
+use crate::pool::fc_nas_layout::{
+    self, allocate_worker_id, prepare_fc_worker_bind_sources, unlink_session_symlink,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,12 +25,14 @@ enum SlotState {
 struct WarmSlot {
     handle: FcSandboxHandle,
     proj_id: i64,
+    worker_id: String,
     state: SlotState,
 }
 
 /// In-memory warm pool keyed by `proj_id` (e2b worker bound to project).
 pub struct FcProjWarmPool {
     client: Arc<FcSandboxClient>,
+    nas_root: std::path::PathBuf,
     min_idle: usize,
     per_proj_cap: usize,
     slots: Mutex<HashMap<usize, WarmSlot>>,
@@ -37,11 +40,12 @@ pub struct FcProjWarmPool {
     count_by_proj: Mutex<HashMap<i64, usize>>,
     next_slot: AtomicUsize,
     db: RwLock<Option<Arc<GatewaySessionDb>>>,
+    runtime_bin: String,
 }
 
 impl FcProjWarmPool {
     #[must_use]
-    pub fn from_env(client: Arc<FcSandboxClient>) -> Self {
+    pub fn from_env(client: Arc<FcSandboxClient>, nas_root: std::path::PathBuf) -> Self {
         let min_idle = std::env::var("CLAW_FC_POOL_MIN_IDLE")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -50,8 +54,11 @@ impl FcProjWarmPool {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(4);
+        let runtime_bin =
+            std::env::var("CLAW_CONTAINER_RUNTIME").unwrap_or_else(|_| "podman".into());
         Self {
             client,
+            nas_root,
             min_idle,
             per_proj_cap,
             slots: Mutex::new(HashMap::new()),
@@ -59,11 +66,21 @@ impl FcProjWarmPool {
             count_by_proj: Mutex::new(HashMap::new()),
             next_slot: AtomicUsize::new(1),
             db: RwLock::new(None),
+            runtime_bin,
         }
     }
 
     pub async fn bind_session_db(&self, db: Arc<GatewaySessionDb>) {
         *self.db.write().await = Some(db);
+    }
+
+    /// Leased warm worker handle (for per-prompt guest `fc exec`, e.g. staging `record_session_id`). Author: kejiqing
+    pub async fn leased_handle(&self, slot_index: usize) -> Option<FcSandboxHandle> {
+        self.slots
+            .lock()
+            .await
+            .get(&slot_index)
+            .map(|slot| slot.handle.clone())
     }
 
     async fn session_db(&self) -> Result<Arc<GatewaySessionDb>, String> {
@@ -132,28 +149,28 @@ impl FcProjWarmPool {
         if self.proj_count(proj_id).await >= self.per_proj_cap {
             return Err(format!("fc warm pool cap reached for proj_{proj_id}"));
         }
-        let handle = self.client.create_warm_proj_sandbox(proj_id).await?;
-        let slot_index = self.alloc_slot_index();
-        let bake = build_proj_bake_script(db, proj_id).await?;
-        let mut script = String::from("set -e\n");
-        let cfg = self.client.config();
-        if cfg.is_self_hosted() {
-            script.push_str(&self_hosted_proj_mount_sh(
+        let worker_id = allocate_worker_id();
+        let worker_id_log = worker_id.clone();
+        if fc_nas_layout::fc_nas_layout_active(&self.nas_root) {
+            prepare_fc_worker_bind_sources(
+                db,
+                &self.runtime_bin,
+                &self.nas_root,
                 proj_id,
-                cfg.nas_server.as_deref().unwrap_or("10.8.0.8"),
-                cfg.nas_export.as_deref().unwrap_or("/"),
-            ));
+                &worker_id,
+            )
+            .await?;
         }
-        script.push('\n');
-        script.push_str(&bake);
-        if let Err(e) = self.client.exec_shell_script(&handle, &script).await {
-            let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
-            return Err(format!("fc warm bake proj_{proj_id}: {e}"));
-        }
+        let handle = self
+            .client
+            .create_warm_proj_sandbox(proj_id, &worker_id)
+            .await?;
+        let slot_index = self.alloc_slot_index();
         let sandbox_id = handle.sandbox_id.clone();
         let slot = WarmSlot {
             handle,
             proj_id,
+            worker_id,
             state: SlotState::Idle,
         };
         {
@@ -169,30 +186,31 @@ impl FcProjWarmPool {
             target: "claw_fc_warm_pool",
             proj_id,
             slot_index,
+            worker_id = %worker_id_log,
             sandbox_id = %sandbox_id,
             "warm slot ready"
         );
         Ok(slot_index)
     }
 
-    /// Take a baked worker for `proj_id`; returns `(handle, slot_index, pooled)`.
-    pub async fn acquire(&self, proj_id: i64) -> Result<(FcSandboxHandle, usize, bool), String> {
+    /// Take a baked worker for `proj_id`; returns `(handle, slot_index, worker_id)`.
+    pub async fn acquire(&self, proj_id: i64) -> Result<(FcSandboxHandle, usize, String), String> {
         self.ensure_warm(proj_id).await?;
         if let Some(slot_index) = self.pop_idle(proj_id).await {
-            let handle = {
+            let (handle, worker_id) = {
                 let mut slots = self.slots.lock().await;
                 let slot = slots
                     .get_mut(&slot_index)
                     .ok_or_else(|| format!("fc warm slot {slot_index} missing"))?;
                 slot.state = SlotState::Leased;
-                slot.handle.clone()
+                (slot.handle.clone(), slot.worker_id.clone())
             };
-            return Ok((handle, slot_index, true));
+            return Ok((handle, slot_index, worker_id));
         }
         if self.proj_count(proj_id).await < self.per_proj_cap {
             let db = self.session_db().await?;
             let slot_index = self.warm_one(proj_id, db.as_ref()).await?;
-            let handle = {
+            let (handle, worker_id) = {
                 let mut slots = self.slots.lock().await;
                 let slot = slots
                     .get_mut(&slot_index)
@@ -204,9 +222,9 @@ impl FcProjWarmPool {
                     .entry(proj_id)
                     .or_default()
                     .retain(|&i| i != slot_index);
-                slot.handle.clone()
+                (slot.handle.clone(), slot.worker_id.clone())
             };
-            return Ok((handle, slot_index, true));
+            return Ok((handle, slot_index, worker_id));
         }
         Err(format!(
             "fc warm pool exhausted for proj_{proj_id} (cap={})",
@@ -215,7 +233,7 @@ impl FcProjWarmPool {
     }
 
     /// Return leased slot to idle pool (keeps sandbox alive; `/claw_ds` stays baked).
-    pub async fn release(&self, slot_index: usize) -> Result<(), String> {
+    pub async fn release(&self, slot_index: usize, session_segment: &str) -> Result<(), String> {
         let (proj_id, handle) = {
             let mut slots = self.slots.lock().await;
             let slot = slots
@@ -229,7 +247,7 @@ impl FcProjWarmPool {
         };
         if let Err(e) = self
             .client
-            .exec_shell_script(&handle, session_release_sh())
+            .exec_shell_script(&handle, &session_release_sh())
             .await
         {
             warn!(
@@ -241,6 +259,16 @@ impl FcProjWarmPool {
             let pid = proj_id;
             self.drop_slot(slot_index).await;
             return Err(format!("fc warm release cleanup: {e} (proj_id={pid})"));
+        }
+        if fc_nas_layout::fc_nas_layout_active(&self.nas_root) {
+            if let Err(e) = unlink_session_symlink(&self.nas_root, proj_id, session_segment).await {
+                warn!(
+                    target: "claw_fc_warm_pool",
+                    slot_index,
+                    error = %e,
+                    "unlink session symlink failed"
+                );
+            }
         }
         self.push_idle(proj_id, slot_index).await;
         info!(
@@ -295,26 +323,30 @@ mod tests {
 
     #[test]
     fn default_pool_limits_from_env_unset() {
-        let pool = FcProjWarmPool::from_env(Arc::new(FcSandboxClient::new(
-            claw_fc_sandbox_client::FcSandboxConfig {
-                api_key: "k".into(),
-                api_url: "http://10.8.0.9:3000".into(),
-                sandbox_url: None,
-                domain: "10.8.0.9".into(),
-                template: "claw-worker".into(),
-                sandbox_timeout_secs: 3600,
-                nas_server: None,
-                nas_export: None,
-                nas_volume_name: None,
-                nas_tools_rel: ".claw-fc-tools".into(),
-                nas_user_id: 1000,
-                nas_group_id: 1000,
-                exec_helper: "deploy/fc-sandbox/fc_exec.py".into(),
-                ttyd_port: 7681,
-                ovs_template: "claw-ovs".into(),
-                ovs_port: 3000,
-            },
-        )));
+        let pool = FcProjWarmPool::from_env(
+            Arc::new(FcSandboxClient::new(
+                claw_fc_sandbox_client::FcSandboxConfig {
+                    api_key: "k".into(),
+                    api_url: "http://10.8.0.9:3000".into(),
+                    sandbox_url: None,
+                    domain: "10.8.0.9".into(),
+                    template: "claw-worker".into(),
+                    sandbox_timeout_secs: 3600,
+                    nas_server: None,
+                    nas_export: None,
+                    nas_tools_rel: ".claw-fc-tools".into(),
+                    nas_user_id: 1000,
+                    nas_group_id: 1000,
+                    exec_helper: "deploy/fc-sandbox/fc_exec.py".into(),
+                    ttyd_port: 7681,
+                    ovs_template: "claw-ovs".into(),
+                    ovs_port: 3000,
+                    observe_template: "claw-observe".into(),
+                    observe_live_port: 3000,
+                },
+            )),
+            std::path::PathBuf::from("/tmp/nas-test"),
+        );
         assert_eq!(pool.min_idle, 1);
         assert_eq!(pool.per_proj_cap, 4);
     }

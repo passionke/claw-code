@@ -26,9 +26,12 @@ pub struct OvsWorkspaceResponse {
     /// FC singleton OVS base URL (`http://3000-{sandboxId}.{domain}/ovs`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ovs_url: Option<String>,
-    /// Full browser URL including `?folder=…` (fc mode).
+    /// Full browser URL including `?folder=…` (fc: direct e2b traffic, not gateway proxy).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ovs_folder_url: Option<String>,
+    /// Self-hosted: add this line to `/etc/hosts` once per OVS sandbox recreate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ovs_browser_hosts_line: Option<String>,
     /// `compose` | `fc`.
     pub ovs_backend: String,
 }
@@ -153,6 +156,7 @@ pub async fn get_ovs_workspace(
             agent_session_id: ovs_agent_session_id(proj_id),
             ovs_url: Some(base_url),
             ovs_folder_url: Some(ovs_folder_url),
+            ovs_browser_hosts_line: None,
             ovs_backend: "fc".into(),
         }));
     }
@@ -168,6 +172,7 @@ pub async fn get_ovs_workspace(
         agent_session_id: ovs_agent_session_id(proj_id),
         ovs_url: None,
         ovs_folder_url: None,
+        ovs_browser_hosts_line: None,
         ovs_backend: "compose".into(),
     }))
 }

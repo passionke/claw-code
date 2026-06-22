@@ -4,6 +4,8 @@ Author: kejiqing
 
 Interactive sessions (`terminal/start`, `agent/ws`, `ovs-*`) can run on **Alibaba Cloud FC sandbox** (E2B-compatible API, **cn-beijing only**) instead of the local podman worker pool. **solve_async** stays on `claw-sandbox` — unchanged.
 
+**Self-hosted e2b + NAS（10.8.0.x）：** 路径与 bind 契约见 **[`docs/fc-nas-workspace.md`](../../docs/fc-nas-workspace.md)**；env 模板 `deploy/stack/env.selfhosted-e2b.example`。
+
 ## Cost (NAS)
 
 | Item | Value |
@@ -87,7 +89,15 @@ CLAW_FC_NAS_TOOLS_REL=.claw-fc-tools
 # 不需要 CLAW_FC_NAS_VOLUME_NAME —— 官方 code-interpreter-v1 无法在控制台绑 NAS
 ```
 
-Gateway 创建沙箱时通过 API **`nasConfig`** 动态挂载（按 session 挂 `proj_N/sessions/…` → `/claw_host_root`，OVS 另挂 `proj_N/home` → `/claw_ds`）。**无需**在 template 控制台预先绑定 NAS。
+Gateway 创建沙箱时通过 API **`nasConfig`**（`hostMountRoot` + `relPath` → `mountDir`）：
+
+| 逻辑 relPath | guest |
+|--------------|-------|
+| `proj_N/home` | `/claw_ds` |
+| `proj_N/sessions/{segment}` | `/claw_host_root` |
+| ``（export 根） | `/claw_ws` |
+
+Gateway 在 **`CLAW_NAS_HOST_MOUNT`** 上 mkdir session 树；e2b 只做本机 bind。**不再** sandbox 内 `mount.nfs4`；**不再** `volumeMounts` / `CLAW_FC_NAS_VOLUME_NAME`。
 
 > **为何控制台绑不了？** `code-interpreter-v1` 是**官方只读模板**，没有「存储挂载 / NAS volume 名称」编辑项。这是预期行为。
 
@@ -187,15 +197,9 @@ export CLAW_FC_TEMPLATE_SKIP_CACHE=0
 
 成功时脚本会 create sandbox 并验证 `command -v ttyd`、`command -v claw`。
 
-### FC 控制台：NAS 动态挂载
+### FC 控制台 NAS（legacy，已移除）
 
-模板 **高级配置** 中绑定 NAS volume，名称与 `.env` 一致：
-
-```bash
-CLAW_FC_NAS_VOLUME_NAME=claw-workspace-vol
-```
-
-Gateway 创建沙箱时传入 `volumeMounts` → 容器内 `/claw_ds`、`/claw_host_root`。
+`CLAW_FC_NAS_VOLUME_NAME` / template `volumeMounts` 已硬切移除；统一 `nasConfig` bind。
 
 ### 已验证不可行 / 勿走的路径
 

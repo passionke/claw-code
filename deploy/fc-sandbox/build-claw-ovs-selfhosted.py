@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -48,6 +49,16 @@ def _stage_ovs_tree(staging: Path) -> None:
             ("/opt/claw-ovs", staging / "claw-ovs"),
         ):
             subprocess.check_call([rt, "cp", f"{cid}:{src}", str(dst)])
+        ext_ver = json.loads(
+            (ROOT / "extensions/claw-vscode/package.json").read_text(encoding="utf-8")
+        )["version"]
+        vsix = ROOT / f"deploy/stack/claw.claw-vscode-{ext_ver}.vsix"
+        if not vsix.is_file():
+            subprocess.check_call(
+                [str(ROOT / "deploy/stack/lib/package-claw-vscode-vsix.sh")],
+                cwd=ROOT,
+            )
+        shutil.copy2(vsix, staging / "claw-ovs" / "claw-vscode.vsix")
     finally:
         subprocess.call([rt, "rm", "-f", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

@@ -23,8 +23,8 @@ use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::sandbox_orchestrator::worker_isolation_to_sandbox;
 use crate::pool::{
-    self, build_fc_session_attach_with_tap, build_proj_bake_script, fc_worker_llm_env,
-    interactive_backend_is_fc, proj_work_dir, session_home_under_work_root,
+    self, build_fc_session_attach_with_tap, build_proj_bake_script, build_start_ttyd_script,
+    fc_worker_llm_env, interactive_backend_is_fc, proj_work_dir, session_home_under_work_root,
     terminal_ws_connect_url, InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec,
     PoolClients, TtydConnectTarget,
 };
@@ -49,6 +49,8 @@ pub struct ActiveTerminalSession {
     pub fc_sandbox_id: Option<String>,
     pub fc_warm_slot: Option<usize>,
     pub fc_warm_proj_id: Option<i64>,
+    pub fc_session_segment: Option<String>,
+    pub fc_worker_id: Option<String>,
     pub ttyd: TtydConnectTarget,
 }
 
@@ -541,6 +543,8 @@ fn active_terminal_to_lease(active: &ActiveTerminalSession) -> InteractiveLease 
         fc_sandbox_id: active.fc_sandbox_id.clone(),
         fc_warm_slot: active.fc_warm_slot,
         fc_warm_proj_id: active.fc_warm_proj_id,
+        fc_session_segment: active.fc_session_segment.clone(),
+        fc_worker_id: active.fc_worker_id.clone(),
         ttyd: active.ttyd.clone(),
     }
 }
@@ -560,6 +564,8 @@ fn lease_to_active_terminal(lease: InteractiveLease) -> ActiveTerminalSession {
         fc_sandbox_id: lease.fc_sandbox_id,
         fc_warm_slot: lease.fc_warm_slot,
         fc_warm_proj_id: lease.fc_warm_proj_id,
+        fc_session_segment: lease.fc_session_segment,
+        fc_worker_id: lease.fc_worker_id,
         ttyd: lease.ttyd,
     }
 }
@@ -675,8 +681,19 @@ pub async fn terminal_start(
     }
 
     let fc_mode = interactive_backend_is_fc();
+    let session_segment = crate::session_merge::sessions_directory_segment(session_id);
     let session_home = session_home_under_work_root(&ctx.work_root, req.proj_id, session_id);
-    if !fc_mode {
+    let nas_root = ctx.pool_clients.nas_host_root();
+    if fc_mode && ctx.pool_clients.fc_nas_layout_active() {
+        pool::ensure_fc_proj_nas_roots(&nas_root, req.proj_id)
+            .await
+            .map_err(|e| {
+                TerminalApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("NAS proj roots: {e}"),
+                )
+            })?;
+    } else if !fc_mode {
         tokio::fs::create_dir_all(&session_home.join(".claw"))
             .await
             .map_err(|e| {
@@ -698,11 +715,7 @@ pub async fn terminal_start(
         })?;
     }
 
-    let session_home_rel = format!(
-        "proj_{}/sessions/{}",
-        req.proj_id,
-        crate::session_merge::sessions_directory_segment(session_id)
-    );
+    let session_home_rel = format!("proj_{}/sessions/{}", req.proj_id, session_segment);
     let client_origin = if session_id.starts_with("ovs-") {
         Some(client_origin::CLIENT_ORIGIN_OVS_CHAT)
     } else {
@@ -812,13 +825,18 @@ pub async fn terminal_start(
 
     let spec = InteractiveSessionSpec {
         session_id: session_id.to_string(),
+        session_segment: session_segment.clone(),
         proj_id: req.proj_id,
         session_home: session_home.clone(),
         proj_home,
         llm_env,
         ovs_mode: session_id.starts_with("ovs-"),
         sandbox_isolation: isolation,
-        start_ttyd_script: start_ttyd_sh_for_session(session_id),
+        start_ttyd_script: if fc_mode {
+            build_start_ttyd_script(session_id)
+        } else {
+            start_ttyd_sh_for_session(session_id).to_string()
+        },
         fc_session_attach_script,
         fc_proj_bake_script,
     };

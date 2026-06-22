@@ -44,11 +44,13 @@ Author: kejiqing
 5. **`CLAW_MCP_MAX_CONCURRENT`**: max in-flight MCP `tools/call` per worker; values `> 1` also enable same-turn parallel SQLBot fan-out (`[parallel-friendly]` tool hint + `shared_executor`). Set `1` for fully serial MCP (`rust/crates/runtime/src/mcp_client.rs`).
 6. **Solve preflight (per `ds_*`)**: `ds_<id>/home/.claw/solve-preflight.json` with ordered `kinds` (e.g. `["sqlbot_mcp_start"]`, compatible with legacy `kind`) → **first** `sessionId` turn only, after user text in jsonl, code-run preflight (`rust/crates/gateway-solve-turn/src/project_preflight.rs`). Table DDL: `ds_<id>/home/schema.md`, ro mount + system prompt (`GATEWAY_SCHEMA_MD_REL`).
 7. **claude-tap (LLM proxy)**: **one sidecar per pool** on the worker network (`claw-claude-tap:8080`); lifecycle in `deploy/stack/lib/pool-tap.sh` + `pool-daemon-up.sh` — **not** inside gateway. Gateway: PG clawTap settings, `/readyz` cluster probe, per-solve `OPENAI_BASE_URL` inject. Traces: `CLAW_TAP_TRACES_DIR` or `${CLAW_NAS_HOST_MOUNT}/tap-traces` on NAS.
+8. **FC NAS workspace**: one logical NFS export root; Gateway mkdir/symlink on container `CLAW_WORK_ROOT`; e2b bind via `hostMountRoot` + relPath. **Do not** mix host path strings with container bind points — see **`docs/fc-nas-workspace.md`**.
 
 ## Where to change what
 
 | You want to… | Edit |
 | --- | --- |
+| FC NAS layout, env, Mac podman / e2b bind | **`docs/fc-nas-workspace.md`** + repo root `.env` (`CLAW_NAS_*`, `CLAW_FC_*`) |
 | HTTP routes, timeout, inject MCP, 容器池、`SQLBOT_MCP_*`、`CLAW_DEFAULT_HTTP_MCP_*`、根 `.claw.json` | `rust/crates/http-gateway-rs/`（`main.rs`、`solve_pool.rs`、`pool/` 等） |
 | Doris SQL guard / `doris_query` | `doris-mcp/src/` |
 | Remote→stdio wire | Your transport bridge（本仓库默认不内置） |

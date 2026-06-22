@@ -1,12 +1,15 @@
-//! FC sandbox worker-embedded claude-tap (`127.0.0.1:8080`). Author: kejiqing
+//! FC worker co-located claude-tap **proxy** (`127.0.0.1:8080`): LLM 代理 + session trace **写入**。
+//! **不是** Live 观察：`FcSessionObserveSingleton` 负责 Live 浏览；compose `claw-claude-tap` 不参与 FC solve。
+//! Author: kejiqing
 
 use std::collections::BTreeMap;
 
 use crate::claw_tap_cluster_state::{active_llm_upstream, SolveLlmRoute};
-use crate::cluster_identity::{gateway_cluster_id, gateway_database_url};
+use crate::cluster_identity::{gateway_cluster_id, gateway_database_url, local_cluster_identity};
 use crate::gateway_global_settings;
 use crate::session_db::GatewaySessionDb;
 use base64::Engine;
+use claw_fc_sandbox_client::GUEST_CLAW_TAP_TRACES;
 
 pub const FC_WORKER_TAP_PROXY_URL: &str = "http://127.0.0.1:8080";
 const FC_WORKER_TAP_PORT: u16 = 8080;
@@ -47,6 +50,7 @@ pub fn build_fc_worker_tap_start_script(
     let upstream_body = upstream_json.to_string();
     let upstream_b64 = base64::engine::general_purpose::STANDARD.encode(upstream_body.as_bytes());
     let tap_port = FC_WORKER_TAP_PORT;
+    let tap_traces_dir = GUEST_CLAW_TAP_TRACES;
     format!(
         r#"set -e
 TAP_BIN=""
@@ -57,28 +61,29 @@ if [ -z "$TAP_BIN" ]; then
   echo "fc worker tap: claude-tap not found (rebuild claw-worker template or install-nas-fc-tools)" >&2
   exit 127
 fi
-mkdir -p /claw_host_root/.claw/tap-traces
+mkdir -p {tap_traces_dir}
 printf '%s' '{upstream_b64}' | base64 -d > /claw_host_root/.claw/claw-tap-upstream.json
-if curl -fsS --connect-timeout 2 "http://127.0.0.1:{tap_port}/healthz" >/dev/null 2>&1; then
-  exit 0
-fi
-nohup env CLAW_CLUSTER_ID={cluster_id:?} CLAW_GATEWAY_DATABASE_URL={db_url:?} \
-  "$TAP_BIN" \
-  --tap-no-launch \
-  --tap-host 127.0.0.1 \
-  --tap-port {tap_port} \
-  --tap-target {upstream_target:?} \
-  --tap-upstream-config /claw_host_root/.claw/claw-tap-upstream.json \
-  --tap-output-dir /claw_host_root/.claw/tap-traces \
-  >/claw_host_root/.claw/tap.log 2>&1 &
-for _i in $(seq 1 45); do
-  if curl -fsS --connect-timeout 2 "http://127.0.0.1:{tap_port}/healthz" >/dev/null 2>&1; then
-    exit 0
+if ! curl -fsS --connect-timeout 2 "http://127.0.0.1:{tap_port}/healthz" >/dev/null 2>&1; then
+  nohup env CLAW_CLUSTER_ID={cluster_id:?} CLAW_GATEWAY_DATABASE_URL={db_url:?} \
+    "$TAP_BIN" \
+    --tap-no-launch \
+    --tap-host 127.0.0.1 \
+    --tap-port {tap_port} \
+    --tap-target {upstream_target:?} \
+    --tap-upstream-config /claw_host_root/.claw/claw-tap-upstream.json \
+    --tap-output-dir {tap_traces_dir} \
+    >/claw_host_root/.claw/tap.log 2>&1 &
+  for _i in $(seq 1 45); do
+    if curl -fsS --connect-timeout 2 "http://127.0.0.1:{tap_port}/healthz" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  if ! curl -fsS --connect-timeout 2 "http://127.0.0.1:{tap_port}/healthz" >/dev/null 2>&1; then
+    echo "fc worker tap: /healthz timeout (see /claw_host_root/.claw/tap.log)" >&2
+    exit 1
   fi
-  sleep 1
-done
-echo "fc worker tap: /healthz timeout (see /claw_host_root/.claw/tap.log)" >&2
-exit 1
+fi
 "#
     )
 }
@@ -109,11 +114,48 @@ pub async fn build_fc_session_attach_with_tap(
     Ok(format!("{tap}\n{attach}"))
 }
 
-/// Solve path: rewrite route metadata for worker-local tap (gateway still probes pool tap).
+/// Solve path: rewrite route metadata for worker-local tap (no compose `claw-claude-tap` probe).
 #[must_use]
 pub fn fc_worker_solve_route(mut route: SolveLlmRoute) -> SolveLlmRoute {
     route.claw_tap_base_url = Some(FC_WORKER_TAP_PROXY_URL.to_string());
     route
+}
+
+/// fc-cloud solve: PG active LLM + worker tap proxy (127.0.0.1:8080); skip compose clawTap /healthz.
+pub async fn resolve_fc_worker_solve_llm_route(
+    session_db: &GatewaySessionDb,
+    model_override: Option<&str>,
+) -> Result<(SolveLlmRoute, BTreeMap<String, String>), String> {
+    let cluster_id = gateway_cluster_id()?;
+    let db_url = gateway_database_url()?;
+    let local = local_cluster_identity(&cluster_id, &db_url)?;
+    let active = gateway_global_settings::load_active_llm_runtime(session_db)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no active LLM model configured in Admin".to_string())?;
+    let (upstream, default_model) = active_llm_upstream(&active)?;
+    let model = model_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or(default_model);
+    let api_key = active.api_key.trim();
+    if api_key.is_empty() {
+        return Err("active LLM apiKey missing".into());
+    }
+    let route = fc_worker_solve_route(SolveLlmRoute {
+        mode: "fcWorkerTap".to_string(),
+        cluster_id: cluster_id.clone(),
+        cluster_hash: local.cluster_hash.clone(),
+        claw_tap_base_url: Some(FC_WORKER_TAP_PROXY_URL.to_string()),
+        upstream_base_url: upstream,
+        model: model.clone(),
+        reason: None,
+    });
+    let mut env = BTreeMap::new();
+    env.insert("OPENAI_API_KEY".to_string(), api_key.to_string());
+    env.insert("CLAW_DEFAULT_MODEL".to_string(), model);
+    Ok((route, fc_worker_llm_env(env)))
 }
 
 #[cfg(test)]
@@ -144,5 +186,8 @@ mod tests {
         assert!(sh.contains("127.0.0.1:8080"));
         assert!(sh.contains("claude-tap"));
         assert!(sh.contains("claw-tap-upstream.json"));
+        assert!(sh.contains(GUEST_CLAW_TAP_TRACES));
+        // Must not exit early when tap is already up — attach script continues to ttyd.
+        assert!(!sh.contains("exit 0"));
     }
 }

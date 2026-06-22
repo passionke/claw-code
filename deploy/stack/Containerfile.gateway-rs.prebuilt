@@ -21,6 +21,8 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
 WORKDIR /app
 COPY deploy/stack/.linux-artifacts/release/claw /usr/local/bin/claw
 COPY deploy/stack/.linux-artifacts/release/http-gateway-rs /usr/local/bin/http-gateway-rs
+# claw-vscode VSIX for FC OVS bootstrap (package-claw-vscode-vsix.sh before image build). kejiqing
+COPY deploy/stack/claw.claw-vscode-*.vsix /app/deploy/stack/
 COPY deploy/fc-sandbox/fc_exec.py deploy/fc-sandbox/fc-nas-bootstrap.sh /app/deploy/fc-sandbox/
 # Self-hosted e2b exec helper (CLAW_FC_EXEC_HELPER default). Author: kejiqing
 RUN pip3 install --no-cache-dir --break-system-packages e2b e2b-code-interpreter \

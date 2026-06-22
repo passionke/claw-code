@@ -4,7 +4,7 @@ FROM ${OVS_BASE_IMAGE}
 
 USER root
 COPY deploy/stack/openvscode-settings.json /opt/claw-ovs/server-data/Machine/settings.json
-COPY deploy/stack/claw.claw-vscode-0.2.0.vsix /tmp/claw-vscode.vsix
+COPY deploy/stack/claw.claw-vscode-0.2.9.vsix /tmp/claw-vscode.vsix
 
 RUN set -eux; \
   mkdir -p /opt/claw-extensions /opt/claw-ovs/home /opt/claw-ovs/server-data/data/logs; \
@@ -22,4 +22,4 @@ RUN set -eux; \
 
 EXPOSE 3000
 ENTRYPOINT ["/home/.openvscode-server/bin/openvscode-server"]
-CMD ["--host=0.0.0.0", "--port=3000", "--without-connection-token", "--server-base-path=/ovs", "--default-folder=/home/workspace", "--extensions-dir=/opt/claw-extensions", "--server-data-dir=/opt/claw-ovs/server-data", "--enable-proposed-api=claw.claw-vscode,claw.ovs-chat-demo"]
+CMD ["--host=0.0.0.0", "--port=3000", "--without-connection-token", "--server-base-path=/ovs", "--extensions-dir=/opt/claw-extensions", "--server-data-dir=/opt/claw-ovs/server-data", "--enable-proposed-api=claw.claw-vscode"]

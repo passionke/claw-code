@@ -1,9 +1,20 @@
 //! Pool worker: declare consumed env keys and load from mounted repo `.env` at solve start. Author: kejiqing
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use api::apply_dotenv_keys_from_paths;
+use base64::Engine;
+
+/// Guest path relative to `CLAW_GATEWAY_WORK_ROOT` / `/claw_host_root`.
+/// Gateway writes **dialogue** `record_session_id` here before each OVS `@claw` prompt;
+/// `claw` REPL reads it on every LLM call (warm workers cannot rely on process env).
+/// Same id is sent as `claw-session-id` to co-located tap — **no new session model**.
+/// See `docs/ovs-chat/OVS-INTERACTIVE-SESSION-ID.md`. Author: kejiqing
+pub const GATEWAY_RECORD_SESSION_ID_REL: &str = ".claw/gateway-record-session-id";
+
+/// In-container absolute path (FC interactive + podman pool workers). Author: kejiqing
+pub const GATEWAY_RECORD_SESSION_ID_GUEST: &str = "/claw_host_root/.claw/gateway-record-session-id";
 
 /// In-container path when the pool bind-mounts host `CLAW_WORKER_ENV_FILE`. Author: kejiqing
 pub const WORKER_ENV_MOUNT_PATH: &str = "/run/claw/worker.env";
@@ -93,6 +104,58 @@ pub fn worker_env_keys_set() -> HashSet<&'static str> {
     WORKER_ENV_KEYS.iter().copied().collect()
 }
 
+/// Dialogue session id for tap / Admin traces (reuse solve header contract).
+/// Priority: `CLAW_SESSION_ID` (solve `docker exec -e`) then gateway record file.
+#[must_use]
+pub fn resolve_gateway_llm_session_id() -> Option<String> {
+    if let Ok(raw) = std::env::var("CLAW_SESSION_ID") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    let root = std::env::var("CLAW_GATEWAY_WORK_ROOT")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())?;
+    read_gateway_record_session_id_file(Path::new(&root))
+}
+
+fn read_gateway_record_session_id_file(work_root: &Path) -> Option<String> {
+    let path = work_root.join(GATEWAY_RECORD_SESSION_ID_REL);
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// LLM outbound headers — same keys as [`crate::DirectApiClient`] / `/v1/solve`. Author: kejiqing
+#[must_use]
+pub fn gateway_llm_session_extra_headers() -> BTreeMap<String, String> {
+    let Some(session_id) = resolve_gateway_llm_session_id() else {
+        return BTreeMap::new();
+    };
+    BTreeMap::from([
+        ("clawcode-session-id".to_string(), session_id.clone()),
+        ("claw-session-id".to_string(), session_id),
+    ])
+}
+
+/// Idempotent guest shell: stage dialogue `record_session_id` for the next `claw` LLM call. Author: kejiqing
+#[must_use]
+pub fn build_write_gateway_record_session_script(record_session_id: &str) -> String {
+    let trimmed = record_session_id.trim();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(trimmed.as_bytes());
+    format!(
+        r#"set -e
+mkdir -p /claw_host_root/.claw
+printf '%s' '{b64}' | base64 -d > {GATEWAY_RECORD_SESSION_ID_GUEST}"#
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +204,65 @@ mod tests {
         std::env::remove_var("CLAW_WORKER_ENV_FILE");
         std::env::remove_var("CLAW_PROGRESS_MESSAGE_MAX_CHARS");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_gateway_llm_session_id_prefers_claw_session_id_env() {
+        let _guard = env_lock();
+        let prev = std::env::var("CLAW_SESSION_ID").ok();
+        std::env::set_var("CLAW_SESSION_ID", "ovs-chat-1-abc");
+        assert_eq!(
+            resolve_gateway_llm_session_id().as_deref(),
+            Some("ovs-chat-1-abc")
+        );
+        match prev {
+            Some(v) => std::env::set_var("CLAW_SESSION_ID", v),
+            None => std::env::remove_var("CLAW_SESSION_ID"),
+        }
+    }
+
+    #[test]
+    fn resolve_gateway_llm_session_id_reads_record_file() {
+        let _guard = env_lock();
+        std::env::remove_var("CLAW_SESSION_ID");
+        let dir = std::env::temp_dir().join(format!("claw-record-sid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".claw")).unwrap();
+        std::fs::write(
+            dir.join(GATEWAY_RECORD_SESSION_ID_REL),
+            "ovs-chat-2-deadbeef\n",
+        )
+        .unwrap();
+        let prev_root = std::env::var("CLAW_GATEWAY_WORK_ROOT").ok();
+        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", dir.display().to_string());
+        assert_eq!(
+            resolve_gateway_llm_session_id().as_deref(),
+            Some("ovs-chat-2-deadbeef")
+        );
+        match prev_root {
+            Some(v) => std::env::set_var("CLAW_GATEWAY_WORK_ROOT", v),
+            None => std::env::remove_var("CLAW_GATEWAY_WORK_ROOT"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gateway_llm_session_extra_headers_match_solve_contract() {
+        let _guard = env_lock();
+        std::env::set_var("CLAW_SESSION_ID", "sess-x");
+        let h = gateway_llm_session_extra_headers();
+        assert_eq!(h.get("claw-session-id").map(String::as_str), Some("sess-x"));
+        assert_eq!(
+            h.get("clawcode-session-id").map(String::as_str),
+            Some("sess-x")
+        );
+        std::env::remove_var("CLAW_SESSION_ID");
+    }
+
+    #[test]
+    fn write_gateway_record_session_script_targets_guest_path() {
+        let sh = build_write_gateway_record_session_script("ovs-chat-3-afc29");
+        assert!(sh.contains(GATEWAY_RECORD_SESSION_ID_GUEST));
+        assert!(sh.contains("base64 -d"));
     }
 }

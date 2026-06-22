@@ -50,7 +50,10 @@ if "${RT}" pull --platform linux/amd64 "${TAP_IMAGE}" 2>/dev/null; then
   mkdir -p "${TAP_RT}/bin" "${TAP_RT}/lib"
   "${RT}" cp "${tap_cid}:/usr/local/bin/python3.12" "${TAP_RT}/bin/" 2>/dev/null || true
   "${RT}" cp "${tap_cid}:/usr/local/bin/claude-tap" "${TAP_RT}/bin/" 2>/dev/null || true
-  "${RT}" cp "${tap_cid}:/usr/local/lib/python3.12/site-packages" "${TAP_RT}/lib/" 2>/dev/null || true
+  "${RT}" cp "${tap_cid}:/usr/local/lib/libpython3.12.so.1.0" "${TAP_RT}/lib/" 2>/dev/null || true
+  "${RT}" cp "${tap_cid}:/usr/local/lib/libpython3.12.so" "${TAP_RT}/lib/" 2>/dev/null || true
+  rm -rf "${TAP_RT}/lib/python3.12"
+  "${RT}" cp "${tap_cid}:/usr/local/lib/python3.12" "${TAP_RT}/lib/python3.12" 2>/dev/null || true
   "${RT}" rm -f "${tap_cid}" 2>/dev/null || true
   chmod +x "${TAP_RT}/bin/"* 2>/dev/null || true
 fi
@@ -61,6 +64,14 @@ if [[ -d "${TAP_RT}/bin" ]] && [[ -f "${TAP_RT}/bin/claude-tap" ]]; then
   rm -rf "${DEST}/tap-runtime"
   cp -a "${TAP_RT}" "${DEST}/tap-runtime"
 fi
+# OVS singleton: install claw-vscode from NAS when template lacks it. kejiqing
+chmod +x "${ROOT_DIR}/deploy/stack/lib/package-claw-vscode-vsix.sh"
+"${ROOT_DIR}/deploy/stack/lib/package-claw-vscode-vsix.sh"
+EXT_VER="$(python3 -c "import json; print(json.load(open('${ROOT_DIR}/extensions/claw-vscode/package.json'))['version'])")"
+VSIX_SRC="${ROOT_DIR}/deploy/stack/claw.claw-vscode-${EXT_VER}.vsix"
+# macOS NFS: BSD `install` often fails with "Operation not permitted" (INS@ temp); use cp. kejiqing
+cp -f "${VSIX_SRC}" "${DEST}/claw-vscode.vsix"
+chmod 644 "${DEST}/claw-vscode.vsix" 2>/dev/null || true
 rm -rf "${TMP}"
 
 ls -la "${DEST}/"

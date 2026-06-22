@@ -247,10 +247,11 @@ async fn write_claude(work_dir: &Path, text: &str) -> ApplyResult<()> {
         .map_err(|e| ProjectConfigApplyError::new(format!("create home dir: {e}")))?;
     let home_claude = home.join("CLAUDE.md");
     let root_claude = work_dir.join("CLAUDE.md");
+    // NFS/macOS host mounts: fs::copy (copy_file_range) often returns EPERM; write same bytes twice. kejiqing
     fs::write(&home_claude, text)
         .await
         .map_err(|e| ProjectConfigApplyError::new(format!("write home/CLAUDE.md: {e}")))?;
-    fs::copy(&home_claude, &root_claude)
+    fs::write(&root_claude, text)
         .await
         .map_err(|e| ProjectConfigApplyError::new(format!("mirror CLAUDE.md to ds root: {e}")))?;
     Ok(())

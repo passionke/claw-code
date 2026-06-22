@@ -20,6 +20,7 @@ import GitPatsPage from "./pages/global/GitPatsPage";
 import AdminMcpTokensPage from "./pages/global/AdminMcpTokensPage";
 import GlobalInferencePage from "./pages/global/GlobalInferencePage";
 import GlobalPoolsPage from "./pages/global/GlobalPoolsPage";
+import FcNasPage from "./pages/global/FcNasPage";
 import ChatPage from "./pages/ChatPage";
 
 export default function App() {
@@ -64,6 +65,7 @@ export default function App() {
               <Route path="worker-isolation" element={<WorkerIsolationPage />} />
               <Route path="global" element={<GlobalSettingsRedirect />} />
               <Route path="global/inference" element={<GlobalInferencePage />} />
+              <Route path="global/fc-nas" element={<FcNasPage />} />
               <Route path="global/models" element={<Navigate to="/global/inference" replace />} />
               <Route path="global/claw-tap" element={<Navigate to="/global/inference" replace />} />
               <Route path="global/pats" element={<GitPatsPage />} />

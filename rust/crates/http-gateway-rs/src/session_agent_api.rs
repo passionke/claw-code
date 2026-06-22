@@ -16,11 +16,18 @@ use tracing::warn;
 
 use crate::client_origin::CLIENT_ORIGIN_OVS_CHAT;
 use crate::persistence::transcript;
+use crate::pool::interactive_backend::{
+    interactive_backend_is_fc, InteractiveBackendKind, FC_INTERACTIVE_POOL_ID,
+};
 use crate::pool::terminal_ws_connect_url;
 use crate::session_db::GatewaySessionDb;
 use crate::session_ovs_api::{ovs_agent_session_id, ovs_chat_record_session_id};
-use crate::session_terminal_api::{ensure_terminal_active, TerminalApiContext, TerminalApiError};
+use crate::session_terminal_api::{
+    ensure_terminal_active, ActiveTerminalSession, TerminalApiContext, TerminalApiError,
+};
 use crate::turn_id;
+use claw_fc_sandbox_client::FcSandboxHandle;
+use gateway_solve_turn::build_write_gateway_record_session_script;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -217,6 +224,115 @@ fn ovs_record_session_id(
     path_session_id.to_string()
 }
 
+fn ovs_turn_pool_id(active: &ActiveTerminalSession) -> &str {
+    if active.backend == InteractiveBackendKind::Fc {
+        FC_INTERACTIVE_POOL_ID
+    } else {
+        active.pool_id.as_str()
+    }
+}
+
+fn ovs_turn_exec_user(active: &ActiveTerminalSession) -> Option<&'static str> {
+    if active.backend == InteractiveBackendKind::Fc {
+        Some("0:0")
+    } else {
+        Some("claw")
+    }
+}
+
+/// Reconstruct [`FcSandboxHandle`] for cold-start workers (warm pool uses [`FcProjWarmPool::leased_handle`]). Author: kejiqing
+fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<FcSandboxHandle, String> {
+    let sandbox_id = active
+        .fc_sandbox_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "fc interactive: missing sandbox id".to_string())?;
+    let host = active
+        .ttyd
+        .proxy_host_header
+        .as_deref()
+        .filter(|h| !h.is_empty())
+        .or_else(|| {
+            if active.ttyd.use_tls && !active.ttyd.host.is_empty() {
+                Some(active.ttyd.host.as_str())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| "fc interactive: missing ttyd public host".to_string())?;
+    let rest = host
+        .split_once('-')
+        .map(|(_, after)| after)
+        .ok_or_else(|| format!("fc interactive: invalid ttyd host {host}"))?;
+    let domain = rest
+        .strip_prefix(sandbox_id)
+        .and_then(|tail| tail.strip_prefix('.'))
+        .ok_or_else(|| format!("fc interactive: sandbox {sandbox_id} not in ttyd host {host}"))?;
+    Ok(FcSandboxHandle {
+        sandbox_id: sandbox_id.to_string(),
+        sandbox_domain: domain.to_string(),
+        envd_access_token: None,
+        traffic_access_token: active.ttyd.traffic_access_token.clone(),
+        ttyd_public_host: host.to_string(),
+        ttyd_use_tls: active.ttyd.use_tls,
+    })
+}
+
+/// Stage dialogue `record_session_id` on worker before ttyd prompt (tap reads `claw-session-id` from LLM). Author: kejiqing
+async fn stage_gateway_record_session_id(
+    ctx: &TerminalApiContext,
+    active: &ActiveTerminalSession,
+    record_session_id: &str,
+) -> Result<(), String> {
+    if !interactive_backend_is_fc() {
+        return Ok(());
+    }
+    let script = build_write_gateway_record_session_script(record_session_id);
+    if let Some(slot) = active.fc_warm_slot {
+        if let Some(pool) = ctx.pool_clients.fc_warm_pool() {
+            if let Some(handle) = pool.leased_handle(slot).await {
+                if let Some(client) = ctx.pool_clients.fc_sandbox_client() {
+                    return client.exec_shell_script(&handle, &script).await;
+                }
+            }
+        }
+    }
+    let handle = fc_exec_handle_from_active(active)?;
+    let client = ctx
+        .pool_clients
+        .fc_sandbox_client()
+        .ok_or_else(|| "fc interactive: sandbox client not configured".to_string())?;
+    client.exec_shell_script(&handle, &script).await
+}
+
+async fn assign_ovs_turn_pool_worker(
+    db: &GatewaySessionDb,
+    turn_id: &str,
+    active: &ActiveTerminalSession,
+) {
+    let Some(worker_name) = active.worker_name.as_deref().filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if let Err(e) = db
+        .assign_turn_pool_worker(
+            turn_id,
+            ovs_turn_pool_id(active),
+            worker_name,
+            ovs_turn_exec_user(active),
+        )
+        .await
+    {
+        warn!(
+            target: "claw_gateway_agent",
+            turn_id = %turn_id,
+            pool_id = ovs_turn_pool_id(active),
+            worker_name = %worker_name,
+            error = %e,
+            "assign ovs-chat turn pool/worker failed"
+        );
+    }
+}
+
 pub async fn agent_ws_upgrade(
     ctx: TerminalApiContext,
     session_id: String,
@@ -333,6 +449,7 @@ async fn run_agent_ws_bridge(
     }
 
     let cli_tx = Arc::new(tokio::sync::Mutex::new(cli_tx));
+    let active_terminal = active.clone();
 
     let cli_tx_up = Arc::clone(&cli_tx);
     let active_turn_up = Arc::clone(&active_turn);
@@ -340,6 +457,7 @@ async fn run_agent_ws_bridge(
     let record_session_id_up = record_session_id.clone();
     let worker_session_id_up = worker_session_id.clone();
     let ovs_chat_key_up = ovs_chat_key.clone();
+    let active_terminal_up = active_terminal.clone();
     let ctx_up = ctx.clone();
     let client_to_up = async move {
         while let Some(msg) = cli_rx.next().await {
@@ -377,6 +495,18 @@ async fn run_agent_ws_bridge(
                                 &worker_session_id_up,
                                 ovs_chat_key_up.as_deref(),
                                 &text,
+                            )
+                            .await?;
+                            assign_ovs_turn_pool_worker(
+                                &session_db_up,
+                                &turn_id,
+                                &active_terminal_up,
+                            )
+                            .await;
+                            stage_gateway_record_session_id(
+                                &ctx_up,
+                                &active_terminal_up,
+                                &record_session_id_up,
                             )
                             .await?;
                             *active_turn_up.lock().await = Some(ActiveOvsTurn {
@@ -497,5 +627,32 @@ mod tests {
             "ovs-chat-1-custom"
         );
         assert_eq!(ovs_record_session_id(1, "ovs-1", None), "ovs-1");
+    }
+
+    #[test]
+    fn fc_exec_handle_from_ttyd_host_parses_domain() {
+        use crate::pool::interactive_backend::TtydConnectTarget;
+
+        let active = ActiveTerminalSession {
+            slot_index: 0,
+            worker_name: Some("fc:sbx_abc".into()),
+            ttyd_host_port: 80,
+            pool_id: FC_INTERACTIVE_POOL_ID.into(),
+            backend: InteractiveBackendKind::Fc,
+            fc_sandbox_id: Some("sbx_abc".into()),
+            fc_warm_slot: Some(1),
+            fc_warm_proj_id: Some(3),
+            fc_session_segment: None,
+            fc_worker_id: None,
+            ttyd: TtydConnectTarget::e2b_self_hosted_proxy(
+                "10.8.0.9".into(),
+                80,
+                "7681-sbx_abc.supone.top".into(),
+                None,
+            ),
+        };
+        let h = fc_exec_handle_from_active(&active).expect("handle");
+        assert_eq!(h.sandbox_id, "sbx_abc");
+        assert_eq!(h.sandbox_domain, "supone.top");
     }
 }

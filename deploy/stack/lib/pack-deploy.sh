@@ -48,7 +48,8 @@ CLAW_TIMING_LABEL="pack-deploy timing"
 claw_timing_init
 
 claw_step_begin "1/4 build images (tag=${TAG})"
-echo "    日志: deploy/stack/.build.log（另开终端: tail -f deploy/stack/.build.log）"
+echo "    日志: deploy/stack/.build.log（全程: tail -f deploy/stack/.build.log）"
+echo "    只改 gateway Rust: ./deploy/stack/gateway.sh build local && ./deploy/stack/gateway.sh up" >&2
 "${LIB_DIR}/build.sh" "${BUILD_FLAGS[@]}" "${TAG}"
 
 claw_step_begin "2/4 restart stack (down + up)"
@@ -57,14 +58,11 @@ if [[ "${TAG}" == local && -f "${STACK_DIR}/.claw-image-release.env" ]]; then
   rm -f "${STACK_DIR}/.claw-image-release.env"
 fi
 "${LIB_DIR}/down.sh"
-# Worker image is rebuilt in step 1; stale claw-worker-* keep the old /usr/local/bin/claw until removed. kejiqing
-# shellcheck disable=SC1091
-source "${LIB_DIR}/nuclear-pool-reset.sh"
-claw_remove_all_gateway_workers || {
-  echo "error: failed to remove stale claw-worker containers (pack-deploy would keep old /usr/local/bin/claw)" >&2
-  exit 1
-}
-"${LIB_DIR}/up.sh" ${UP_ARGS+"${UP_ARGS[@]}"}
+if ((${#UP_ARGS[@]} > 0)); then
+  "${LIB_DIR}/up.sh" "${UP_ARGS[@]}"
+else
+  "${LIB_DIR}/up.sh"
+fi
 
 claw_step_begin "3/4 stack verify"
 "${LIB_DIR}/claw-stack-verify.sh"

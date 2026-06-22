@@ -3,6 +3,8 @@
 Author: kejiqing  
 用途：避免重复踩坑；每条必须有**证据**才标为已修复/已验证。
 
+**NAS 路径 / bind 总览：** [`docs/fc-nas-workspace.md`](../fc-nas-workspace.md)
+
 ---
 
 ## 状态图例
@@ -20,7 +22,7 @@ Author: kejiqing
 | # | 现象 | 根因（证据） | 修复 | 状态 |
 |---|------|-------------|------|------|
 | F1 | `mount.nfs4: multiple version options not permitted` | mount 同时写 `vers=4.2` 与 `nfsvers=4.2` | `fc_interactive_materialize.rs` 只保留 `vers=4.2,_netdev` | FIXED |
-| F2 | `mount.nfs4: Operation not permitted`（sandbox 内 root mount） | `CapEff=0000000000000000`；Firecracker 无 `CAP_SYS_ADMIN` | exec mount 失败 → warn + 本地目录 fallback；`nasConfig` 在 create 时带上（e2b 侧是否生效待 V2） | FIXED（fallback）；NAS 真挂 **OPEN** |
+| F2 | `mount.nfs4: Operation not permitted`（sandbox 内 root mount） | `CapEff=0000000000000000`；Firecracker 无 `CAP_SYS_ADMIN` | **已移除** guest mount fallback；仅 `nasConfig` bind + Gateway NAS mkdir | **VERIFIED**（bind 路径） |
 | F3 | `mkdir: cannot create directory '/claw_ds/.claw': Permission denied` | mount 失败后 `sudo mkdir` 属 root，user 无法写 | mount 失败分支加 `sudo chown $(id -u):$(id -g)` | FIXED |
 | F4 | e2b 累积 **12** 个 orphan sandbox | gateway 重启丢内存池；`stop_session` 未杀沙箱；E2E 只 create 不 cleanup | `fc-sandbox-cleanup.sh`；`shutdown_all`/`FcOvsSingleton::shutdown`；gateway SIGTERM 钩子；E2E 前后计数 + `terminal/stop` | FIXED（cleanup 已验证 12/12 kill）；shutdown 钩子 **待 VERIFIED** |
 | F5 | `Could not resolve host: 3000-sbx_….10.8.0.9` | self-hosted domain=IP，子域不 DNS 解析 | `verify-fc-ovs-e2e.sh` 用 `curl --resolve host:80:10.8.0.9` | FIXED |
@@ -30,6 +32,7 @@ Author: kejiqing
 | F8 | `verify-ovs-claw-e2e.sh` `bad substitution` `${PROMPT@Q}` | macOS bash 3.2 无 `@Q` | heredoc 改 env 传参 + `<<'PY'` | FIXED |
 | F9 | agent WS `connect ttyd … HTTP 400/200` | 曾误判为缺 Host / 错端口；**根因 F14 + Mac podman `container_ip` 不可达** | agent 补 Host + token；e2b traffic 改 `127.0.0.1` 端口映射 | **VERIFIED** |
 | F14 | **e2b 流量入口未路由进 sandbox** | 修前：外网 → 君子慎独；修后：`401`（无 token）/ `200` openvscode（有路由） | e2bserver traffic :3001 + nginx `e2b-traffic.conf` + `sandbox_domain=10.8.0.9` + podman 发布 7681/3000 到 127.0.0.1 | **VERIFIED** |
+| F15 | Observe Live `/?session=` **空白**（path 方案） | viewer JS `fetch('/api/…')` 在 `/e2b/` 子路径打到 nginx 根 **404** | **Superseded**：Host 域名 `supone.top`（无 path）；见 [E2B-OBSERVE-LIVE-VIEWER-PATH.md](./E2B-OBSERVE-LIVE-VIEWER-PATH.md) | **SUPERSEDED** |
 | F13 | 同 proj 重复 warm worker（4 sandbox） | gateway 重启丢内存池，e2b 上旧 warm 仍在；`warm_one` 再 create | E2E 前 `fc-sandbox-cleanup.sh` + restart gateway；长期：启动时 reconcile 或 shutdown 杀光 | OPEN |
 | F10 | gateway build `uid_args[@]: unbound variable` | bash 空数组展开 | `linux-compile.sh` `${uid_args[@]+"${uid_args[@]}"}` | FIXED |
 | F11 | `main.rs` move `state` 编译失败 | shutdown 闭包需 `pool_clients` 但 `state` 已 move 进 axum | `.with_state(state.clone())` | FIXED |
@@ -65,7 +68,7 @@ CLAW_FC_E2E_CLEANUP=0 ./deploy/stack/lib/verify-fc-ovs-e2e.sh
 
 | ID | 假设 | 怎么证伪/证实 |
 |----|------|----------------|
-| V-NAS | e2b `nasConfig` 在 10.8.0.9 由**宿主机**挂 NAS，sandbox 内可见 `/claw_ds` | create 带 nasConfig 后 `mountpoint /claw_ds`；当前 API 接受但容器内无目录 → **未证实** |
+| V-NAS | e2b `GET /health` → `hostMountRoot` + `sandboxInject:bind`；Gateway `nas_paths` + `fc_nas_layout`；create/attach `nasConfig` | `curl http://10.8.0.9:3000/health`；create 后 `mountpoint /claw_ds`；attach 后 `mountpoint /claw_host_root` | **PARTIAL VERIFIED** 2026-06-20：`/claw_ds`、`/claw_ws` virtiofs OK；attach bind 依赖 `POST /sandboxes/{id}/mounts` |
 | V-SHUTDOWN | gateway `podman stop` 后 warm+OVS sandbox 被 kill | stop 前后 `GET /sandboxes` 计数 |
 
 ---
@@ -80,6 +83,7 @@ CLAW_FC_E2E_CLEANUP=0 ./deploy/stack/lib/verify-fc-ovs-e2e.sh
 | 2026-06-20 | 手工 curl title 对比 | **F14 确认** | 外网 Host/`--resolve` → 君子慎独；沙箱内 127.0.0.1 正常 |
 | 2026-06-20 | e2b 宣称 traffic proxy 已补（page-cf0c8633）后复验 | **FAIL F14** | 见下「F14 复验 2026-06-20」 |
 | 2026-06-20 | 部署 traffic + podman 端口映射 + gateway 重建 | **PASS** | `verify-fc-ovs-e2e: OK`（OVS 200 + agent WS + terminal/stop） |
+| 2026-06-20 | NAS 单路径收敛 + L3 bind 探针 | **PARTIAL** | `/claw_ds`、`/claw_ws` virtiofs OK；`terminal/start` 需 attach bind API |
 | _下次跑完填这里_ | | | |
 
 ### F14 复验 2026-06-20（e2b 文档称已修，Claw 侧实测 — 部署前）

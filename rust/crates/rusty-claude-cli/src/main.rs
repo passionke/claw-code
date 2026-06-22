@@ -8255,6 +8255,7 @@ impl ApiClient for AnthropicRuntimeClient {
             stream: true,
             reasoning_effort: self.reasoning_effort.clone(),
             thinking_enabled: self.thinking_enabled,
+            extra_headers: gateway_solve_turn::gateway_llm_session_extra_headers(),
             ..Default::default()
         };
         boundary_log(

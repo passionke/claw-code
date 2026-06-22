@@ -65,16 +65,16 @@ if [[ "${OVS_BACKEND}" == "fc" ]]; then
   ovs_url="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsUrl',''))" <<<"${ws}")"
   [[ -n "${ovs_url}" ]] || fail "empty ovsUrl"
   fc_domain="${CLAW_FC_DOMAIN:-10.8.0.9}"
-  ovs_host="$(python3 -c "from urllib.parse import urlparse; print(urlparse('${ovs_url}').hostname or '')")"
-  if [[ "${ovs_host}" == *-*.* ]]; then
-    # Self-hosted e2b uses IP as domain; {port}-{sandboxId}.{ip} does not resolve via DNS.
-    body="$(/usr/bin/curl -sS -m 15 --resolve "${ovs_host}:80:${fc_domain}" "${ovs_url}/" || true)"
-    code="$(/usr/bin/curl -sS -o /dev/null -w '%{http_code}' -m 15 --resolve "${ovs_host}:80:${fc_domain}" "${ovs_url}/" || true)"
-  else
-    body="$(/usr/bin/curl -sS -m 15 "${ovs_url}/" || true)"
-    code="$(/usr/bin/curl -sS -o /dev/null -w '%{http_code}' -m 15 "${ovs_url}/" || true)"
-  fi
-  [[ "${code}" == "200" ]] || fail "OVS singleton HTTP ${code} at ${ovs_url}/"
+  traffic_port="${CLAW_FC_TRAFFIC_PORT:-3001}"
+  folder_url="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsFolderUrl',''))" <<<"${ws}")"
+  hosts_line="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsBrowserHostsLine',''))" <<<"${ws}")"
+  [[ -n "${folder_url}" ]] || fail "empty ovsFolderUrl"
+  [[ "${folder_url}" != *"/v1/fc-ovs"* ]] || fail "ovsFolderUrl must not use gateway proxy: ${folder_url}"
+  [[ "${folder_url}" == *"-sbx_"* ]] || fail "ovsFolderUrl must use e2b Host traffic URL: ${folder_url}"
+  [[ "${folder_url}" != *"/e2b/"* ]] || fail "ovsFolderUrl must not use legacy /e2b/ path: ${folder_url}"
+  body="$(/usr/bin/curl -sS -m 15 "${folder_url}" || true)"
+  code="$(/usr/bin/curl -sS -o /dev/null -w '%{http_code}' -m 15 "${folder_url}" || true)"
+  [[ "${code}" == "200" ]] || fail "OVS browser URL HTTP ${code} at ${folder_url}"
   if echo "${body}" | grep -q '君子慎独'; then
     fail "OVS URL hit e2b default site (F14: nginx port-prefix routing missing on ${fc_domain})"
   fi
@@ -83,7 +83,17 @@ if [[ "${OVS_BACKEND}" == "fc" ]]; then
   fi
   echo "${body}" | grep -qiE 'openvscode|vscode|workbench' \
     || fail "OVS response does not look like openvscode-server (F14?)"
-  echo "==> fc OVS singleton reachable (${code})"
+  echo "==> fc OVS browser URL reachable (${code})"
+  echo "    ovsFolderUrl=${folder_url}"
+  echo "==> GET /v1/gateway/global-settings (fc observe Live URLs)"
+  gs="$(curl -sS "http://127.0.0.1:${GATEWAY_PORT}/v1/gateway/global-settings")"
+  live_base="$(python3 -c "import json,sys; print((json.load(sys.stdin).get('clawTap') or {}).get('liveBaseUrl',''))" <<<"${gs}")"
+  [[ -n "${live_base}" ]] || fail "missing clawTap.liveBaseUrl after observe ensure: ${gs}"
+  echo "${live_base}" | grep -qE 'https?://[0-9]+-sbx_[^./]+\\.' \
+    || fail "liveBaseUrl must be e2b Host traffic URL, not gateway proxy: ${live_base}"
+  echo "${live_base}" | grep -q '/e2b/' \
+    && fail "liveBaseUrl must not use legacy /e2b/ path: ${live_base}"
+  echo "==> fc observe Live base: ${live_base}"
 elif podman container exists claw-gateway-rs >/dev/null 2>&1; then
   podman exec claw-gateway-rs sh -c 'echo fc-e2e > /var/lib/claw/workspace/.fc_e2e_probe'
   podman exec claw-gateway-rs test -f /var/lib/claw/workspace/.fc_e2e_probe \

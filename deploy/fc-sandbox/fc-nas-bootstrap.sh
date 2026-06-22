@@ -7,6 +7,7 @@ CLAW_BIN="${CLAW_FC_BIN_DIR:-/tmp/claw-fc-bin}"
 mkdir -p "$CLAW_BIN"
 fc_tools_src=""
 for d in \
+  "/claw_ws/${TOOLS_REL}" \
   "/claw_host_root/${TOOLS_REL}" \
   "/claw_ds/${TOOLS_REL}" \
   "/claw_host_root/../../../${TOOLS_REL}" \
@@ -29,13 +30,15 @@ done
 if [ -d "$fc_tools_src/tap-runtime/bin" ] && [ -f "$fc_tools_src/tap-runtime/bin/claude-tap" ]; then
   mkdir -p "$CLAW_BIN/tap-runtime/bin" "$CLAW_BIN/tap-runtime/lib"
   cp "$fc_tools_src/tap-runtime/bin/"* "$CLAW_BIN/tap-runtime/bin/" 2>/dev/null || true
-  cp -a "$fc_tools_src/tap-runtime/lib/site-packages" "$CLAW_BIN/tap-runtime/lib/" 2>/dev/null \
+  cp -a "$fc_tools_src/tap-runtime/lib/python3.12" "$CLAW_BIN/tap-runtime/lib/" 2>/dev/null \
     || cp -a "$fc_tools_src/tap-runtime/lib/"* "$CLAW_BIN/tap-runtime/lib/" 2>/dev/null || true
   chmod +x "$CLAW_BIN/tap-runtime/bin/"* 2>/dev/null || true
   if [ ! -x "$CLAW_BIN/claude-tap" ]; then
     cat > "$CLAW_BIN/claude-tap" <<'EOF'
 #!/bin/sh
-export PYTHONPATH="/tmp/claw-fc-bin/tap-runtime/lib/site-packages:${PYTHONPATH:-}"
+export PYTHONHOME="/tmp/claw-fc-bin/tap-runtime"
+export LD_LIBRARY_PATH="/tmp/claw-fc-bin/tap-runtime/lib:${LD_LIBRARY_PATH:-}"
+export PYTHONPATH="/tmp/claw-fc-bin/tap-runtime/lib/python3.12/site-packages:${PYTHONPATH:-}"
 exec /tmp/claw-fc-bin/tap-runtime/bin/python3.12 /tmp/claw-fc-bin/tap-runtime/bin/claude-tap "$@"
 EOF
     chmod +x "$CLAW_BIN/claude-tap"

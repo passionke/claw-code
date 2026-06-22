@@ -357,20 +357,34 @@ claw_compose_append_fc_ovs_backend() {
   echo "compose: CLAW_OVS_BACKEND=fc — OVS e2b singleton; openvscode-server not started" >&2
 }
 
+claw_nas_mount_ok() {
+  local m="$1"
+  if mountpoint -q "${m}" 2>/dev/null; then
+    return 0
+  fi
+  # macOS NFS often fails mountpoint(1); accept nfs in mount(8) output.
+  if [[ "$(uname -s)" == "Darwin" ]] && mount | grep -Fq " on ${m} ("; then
+    return 0
+  fi
+  return 1
+}
+
 claw_compose_append_workspace_volume() {
   local script_dir="$1"
   local rel="${2:-}"
   if [[ -n "${CLAW_NAS_HOST_MOUNT:-}" ]]; then
-    if ! mountpoint -q "${CLAW_NAS_HOST_MOUNT}" 2>/dev/null; then
+    if ! claw_nas_mount_ok "${CLAW_NAS_HOST_MOUNT}"; then
       echo "error: CLAW_NAS_HOST_MOUNT=${CLAW_NAS_HOST_MOUNT} is not a mountpoint (mount -t nfs4 10.8.0.8:/mnt/NAS0/nfs-export …)" >&2
       return 1
     fi
-    export CLAW_GATEWAY_WORKSPACE_VOLUME="${CLAW_NAS_HOST_MOUNT}:/var/lib/claw/workspace"
-    export CLAW_OVS_WORKSPACE_VOLUME="${CLAW_NAS_HOST_MOUNT}:/home/workspace"
-    echo "compose: workspace direct bind ${CLAW_NAS_HOST_MOUNT} (host NAS mount)" >&2
+    export CLAW_GATEWAY_WORKSPACE_BIND="${CLAW_NAS_HOST_MOUNT}:/var/lib/claw/workspace"
+    export CLAW_OVS_WORKSPACE_BIND="${CLAW_NAS_HOST_MOUNT}:/home/workspace"
+    echo "compose: workspace direct bind ${CLAW_NAS_HOST_MOUNT} (host NAS mount; no :U on NFS root)" >&2
     return 0
   fi
   claw_compose_write_workspace_volume_yml "${script_dir}" || return 1
+  export CLAW_GATEWAY_WORKSPACE_BIND="claw-workspace-data:/var/lib/claw/workspace${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}"
+  export CLAW_OVS_WORKSPACE_BIND="claw-workspace-data:/home/workspace${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}"
   if [[ -n "${rel}" ]]; then
     CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/.claw-workspace-volume.yml" )
   else
