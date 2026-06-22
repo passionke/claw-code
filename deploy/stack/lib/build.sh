@@ -223,6 +223,9 @@ if use_prebuilt_linux_path; then
   COMPILE_IMAGE="$(claw_ensure_rust_compile_image "${ROOT_DIR}" "${CONTAINER_CLI}" "${REG}")"
   claw_linux_compile_release "${ROOT_DIR}" "${CONTAINER_CLI}" "${COMPILE_IMAGE}" "${CN_FLAG}"
 
+  step "package claw-vscode VSIX (gateway OVS bootstrap)"
+  "${ROOT_DIR}/deploy/stack/lib/package-claw-vscode-vsix.sh"
+
   APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
   cn_mirror_enabled && APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
 

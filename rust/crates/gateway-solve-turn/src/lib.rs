@@ -95,7 +95,10 @@ pub use task_progress::{
     TaskProgressFile, TaskProgressTodo, REPORT_PROGRESS_TOOL_NAME,
 };
 pub use worker_env::{
-    apply_worker_env, otel_forward_env, worker_env_keys_set, WORKER_ENV_KEYS, WORKER_ENV_MOUNT_PATH,
+    apply_worker_env, build_write_gateway_record_session_script, gateway_llm_session_extra_headers,
+    otel_forward_env, resolve_gateway_llm_session_id, worker_env_keys_set,
+    GATEWAY_RECORD_SESSION_ID_GUEST, GATEWAY_RECORD_SESSION_ID_REL, WORKER_ENV_KEYS,
+    WORKER_ENV_MOUNT_PATH,
 };
 
 pub(crate) const HTTP_INTERNAL: u16 = 500;

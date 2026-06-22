@@ -149,6 +149,12 @@ OVS_PUBLIC_BASE = (
     or f"http://127.0.0.1:{os.environ.get('CLAW_OVS_HOST_PORT', '13000').strip() or '13000'}"
 ).rstrip("/")
 
+OVS_FROM_GATEWAY = os.environ.get("PLAYGROUND_OVS_FROM_GATEWAY", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 OVS_WORKSPACE_ROOT = os.environ.get("PLAYGROUND_OVS_WORKSPACE_ROOT", "/home/workspace").rstrip("/")
 
 
@@ -505,6 +511,49 @@ def ovs_workspace_folder(proj_id: str) -> str:
     return f"{OVS_WORKSPACE_ROOT}/proj_{pid}/home"
 
 
+def fetch_ovs_workspace_from_gateway(proj_id: str) -> dict | None:
+    """Gateway OVS workspace contract (`ovsFolderUrl`, `ovsBackend`, …)."""
+    if not UPSTREAM_GATEWAY_BASE:
+        return None
+    url = (
+        f"{UPSTREAM_GATEWAY_BASE.rstrip('/')}/v1/projects/"
+        f"{urllib.parse.quote(str(proj_id).strip() or '1', safe='')}/ovs/workspace"
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def fetch_ovs_folder_url_from_gateway(proj_id: str) -> str | None:
+    """FC mode: Gateway returns direct e2b traffic ovsFolderUrl (WebSocket-native; no gateway proxy)."""
+    data = fetch_ovs_workspace_from_gateway(proj_id)
+    if not data:
+        return None
+    raw = data.get("ovsFolderUrl") or data.get("ovs_folder_url")
+    return str(raw).strip() if raw else None
+
+
+def send_ovs_wait_page(handler: BaseHTTPRequestHandler, proj_id: str, detail: str) -> None:
+    """FC OVS not ready — never redirect to dead :13000. Author: kejiqing"""
+    gw = PUBLIC_GATEWAY_BASE.rstrip("/")
+    retry = f"/ovs/?projId={urllib.parse.quote(str(proj_id).strip() or '1', safe='')}"
+    body = (
+        f"<!DOCTYPE html><html><head><meta charset=utf-8>"
+        f"<title>OVS 启动中</title>"
+        f'<meta http-equiv="refresh" content="5;url={retry}">'
+        f"</head><body>"
+        f"<h1>OVS 尚未就绪</h1><p>{detail}</p>"
+        f"<p>projId={proj_id} · 5 秒后自动重试，或 "
+        f'<a href="{retry}">点此重试</a>。</p>'
+        f"<p>Gateway: <a href=\"{gw}/healthz\">{gw}/healthz</a></p>"
+        f"</body></html>"
+    ).encode("utf-8")
+    send_html_bytes(handler, 503, body)
+
+
 _ovs_workspace_materialized: set[str] = set()
 _ovs_workspace_materialize_lock = threading.Lock()
 
@@ -565,6 +614,27 @@ def proxy_ovs_http(
     # Browser must load OVS directly with ?folder=proj_N/home (proxy HTML loses workspace root). kejiqing
     if rel_path in ("", "/"):
         materialize_ovs_workspace_via_gateway(proj_id)
+        data = fetch_ovs_workspace_from_gateway(proj_id) if UPSTREAM_GATEWAY_BASE else None
+        if data:
+            folder_url = data.get("ovsFolderUrl") or data.get("ovs_folder_url")
+            if folder_url:
+                send_redirect(handler, str(folder_url).strip())
+                return
+            backend = str(data.get("ovsBackend") or data.get("ovs_backend") or "").strip().lower()
+            if backend == "fc" or OVS_FROM_GATEWAY:
+                send_ovs_wait_page(
+                    handler,
+                    proj_id,
+                    "FC OVS singleton 仍在 warmup。就绪后请用 API 返回的 ovsFolderUrl + /etc/hosts 行打开。",
+                )
+                return
+        if OVS_FROM_GATEWAY:
+            send_ovs_wait_page(
+                handler,
+                proj_id,
+                "无法从 Gateway 读取 OVS 工作区（请确认 gateway-rs 已 up）。",
+            )
+            return
         folder = ovs_workspace_folder(proj_id)
         q = urllib.parse.urlencode({"folder": folder})
         send_redirect(handler, f"{OVS_PUBLIC_BASE}/ovs/?{q}")

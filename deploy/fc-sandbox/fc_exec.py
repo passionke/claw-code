@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# E2B sandbox envd exec helper (stdin JSON → stdout JSON). Author: kejiqing
+# E2B sandbox envd exec helper (stdin JSON → stdout JSON / NDJSON stream). Author: kejiqing
 """Run shell scripts inside a sandbox via e2b SDK (self-hosted or FC)."""
 
 from __future__ import annotations
@@ -25,18 +25,71 @@ def _nas_bootstrap_sh(tools_rel: str) -> str:
 
 def _connect_opts(payload: dict) -> dict:
     domain = payload.get("domain") or "10.8.0.9"
-    opts: dict = {}
+    out: dict = {
+        "api_key": payload.get("api_key") or "",
+        "domain": domain,
+    }
     api_url = payload.get("api_url")
     sandbox_url = payload.get("sandbox_url")
     if api_url:
-        opts["apiUrl"] = api_url
+        out["api_url"] = api_url
     if sandbox_url:
-        opts["sandboxUrl"] = sandbox_url
-    return {
-        "api_key": payload.get("api_key") or "",
-        "domain": domain,
-        **({"opts": opts} if opts else {}),
-    }
+        out["sandbox_url"] = sandbox_url
+    return out
+
+
+def _emit_stdout_line(line: str) -> None:
+    print(json.dumps({"ev": "stdout_line", "line": line}), flush=True)
+
+
+class _LineAssembler:
+    """Merge envd on_stdout chunks into complete lines (may split mid-line)."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+
+    def push(self, chunk: str) -> None:
+        if not chunk:
+            return
+        self._buf += chunk
+        while True:
+            pos = self._buf.find("\n")
+            if pos < 0:
+                break
+            line = self._buf[: pos + 1]
+            self._buf = self._buf[pos + 1 :]
+            _emit_stdout_line(line)
+
+    def flush_tail(self) -> None:
+        if self._buf:
+            _emit_stdout_line(self._buf)
+            self._buf = ""
+
+
+def _run_streaming(sandbox, script: str, timeout: int):
+    assembler = _LineAssembler()
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+
+    def on_stdout(data) -> None:
+        text = data if isinstance(data, str) else str(data)
+        stdout_parts.append(text)
+        assembler.push(text)
+
+    def on_stderr(data) -> None:
+        text = data if isinstance(data, str) else str(data)
+        stderr_parts.append(text)
+
+    result = sandbox.commands.run(
+        script,
+        timeout=timeout,
+        on_stdout=on_stdout,
+        on_stderr=on_stderr,
+    )
+    assembler.flush_tail()
+    stderr = result.stderr or "".join(stderr_parts)
+    stdout = result.stdout if result.stdout else "".join(stdout_parts)
+    return result, stdout, stderr
 
 
 def main() -> None:
@@ -88,22 +141,22 @@ def main() -> None:
                 f"{exports}\n"
                 f"{claw_bin} gateway-solve-once --task-file {task_file}\n"
             )
-        else:
-            script = f"{bootstrap}\n{script}" if bootstrap else script
-        result = sandbox.commands.run(script, timeout=timeout)
-        if op == "exec_solve":
+            result, stdout, stderr = _run_streaming(sandbox, script, timeout)
             print(
                 json.dumps(
                     {
                         "ok": True,
                         "exit_code": result.exit_code,
-                        "stdout": result.stdout or "",
-                        "stderr": result.stderr or "",
+                        "stdout": stdout,
+                        "stderr": stderr,
                     }
                 ),
                 flush=True,
             )
             return
+        else:
+            script = f"{bootstrap}\n{script}" if bootstrap else script
+        result = sandbox.commands.run(script, timeout=timeout)
         if result.exit_code != 0:
             stderr = (result.stderr or "").strip()
             stdout = (result.stdout or "").strip()

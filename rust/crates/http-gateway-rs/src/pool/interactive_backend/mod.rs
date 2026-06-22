@@ -1,8 +1,29 @@
 //! Interactive session backends (podman pool vs FC cloud sandbox). Author: kejiqing
 
 mod fc_interactive;
+mod fc_interactive_materialize;
+mod fc_ovs_claw_vscode;
+mod fc_ovs_singleton;
+mod fc_session_observe_singleton;
+mod fc_warm_pool;
+mod fc_worker_tap;
 mod podman_interactive;
 mod ttyd_url;
+
+pub use fc_interactive_materialize::{
+    build_fc_guest_writes_script, build_proj_bake_script, build_session_attach_script,
+    build_start_ttyd_script,
+};
+pub use fc_ovs_singleton::FcOvsSingleton;
+pub use fc_session_observe_singleton::FcSessionObserveSingleton;
+pub use fc_warm_pool::FcProjWarmPool;
+pub use fc_worker_tap::{
+    build_fc_session_attach_with_tap, build_fc_worker_tap_start_script_from_db, fc_worker_llm_env,
+    fc_worker_solve_route, resolve_fc_worker_solve_llm_route, FC_WORKER_TAP_PROXY_URL,
+};
+
+/// Admin `gateway_turns.pool_id` for OVS `@claw` interactive turns (distinct from solve `fc-cloud`). Author: kejiqing
+pub const FC_INTERACTIVE_POOL_ID: &str = "fc-interactive";
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,13 +50,50 @@ pub enum InteractiveBackendKind {
 #[derive(Debug, Clone)]
 pub struct InteractiveSessionSpec {
     pub session_id: String,
+    /// Directory segment under `proj_N/sessions/` (same as DB `session_home` tail).
+    pub session_segment: String,
     pub proj_id: i64,
     pub session_home: PathBuf,
     pub proj_home: PathBuf,
     pub llm_env: std::collections::BTreeMap<String, String>,
     pub ovs_mode: bool,
     pub sandbox_isolation: IsolationMode,
-    pub start_ttyd_script: &'static str,
+    pub start_ttyd_script: String,
+    /// FC: session attach (LLM env on `/claw_host_root`); project baked in warm pool.
+    pub fc_session_attach_script: Option<String>,
+    /// FC cold fallback: project bake when warm pool unavailable.
+    pub fc_proj_bake_script: Option<String>,
+}
+
+/// True when `CLAW_INTERACTIVE_BACKEND=fc` (gateway skips host project materialize).
+#[must_use]
+pub fn interactive_backend_is_fc() -> bool {
+    std::env::var("CLAW_INTERACTIVE_BACKEND")
+        .ok()
+        .map(|v| v.trim().eq_ignore_ascii_case("fc"))
+        .unwrap_or(false)
+}
+
+/// True when `CLAW_OVS_BACKEND=fc` (OVS runs as e2b singleton, not compose).
+#[must_use]
+pub fn ovs_backend_is_fc() -> bool {
+    std::env::var("CLAW_OVS_BACKEND")
+        .ok()
+        .map(|v| v.trim().eq_ignore_ascii_case("fc"))
+        .unwrap_or(false)
+}
+
+/// True when FC session-observe singleton should run (Admin Live on e2b).
+#[must_use]
+pub fn fc_observe_is_enabled() -> bool {
+    interactive_backend_is_fc()
+        && !matches!(
+            std::env::var("CLAW_FC_OBSERVE")
+                .ok()
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("0") | Some("false") | Some("no") | Some("off")
+        )
 }
 
 /// Active interactive worker lease (podman slot or FC sandbox).
@@ -46,6 +104,14 @@ pub struct InteractiveLease {
     pub worker_name: Option<String>,
     pub pool_id: String,
     pub fc_sandbox_id: Option<String>,
+    /// Warm-pool slot index when leased from [`FcProjWarmPool`]; `None` = cold sandbox.
+    pub fc_warm_slot: Option<usize>,
+    /// Project id for warm-pool release / top-up.
+    pub fc_warm_proj_id: Option<i64>,
+    /// Session directory segment under `proj_N/sessions` (symlink name).
+    pub fc_session_segment: Option<String>,
+    /// NAS worker root id (`proj_N/workers/{id}` bind target).
+    pub fc_worker_id: Option<String>,
     pub ttyd: TtydConnectTarget,
 }
 
@@ -77,8 +143,12 @@ pub fn interactive_backend_from_env(
                 );
                 std::process::exit(1);
             });
-            Arc::new(FcInteractiveBackend::new(client, pool_id))
-                as Arc<dyn InteractiveSandboxBackend>
+            Arc::new(FcInteractiveBackend::new(
+                client,
+                pool_id,
+                work_root,
+                pool_rpc_host_work_root,
+            )) as Arc<dyn InteractiveSandboxBackend>
         }
         "podman" | "" => {
             let sandbox = pool_clients.sandbox_rpc_client().unwrap_or_else(|| {

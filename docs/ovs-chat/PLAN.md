@@ -28,7 +28,31 @@ Author: kejiqing
 
 - OVS Chat UI：仍由 VS Code 本地保存多轮历史
 - Gateway：每次 `@claw` 发送一条 prompt 产生一行 `gateway_turns`（与 UI 不双向同步）
-- 同一 project 下多个 Chat 面板 **共用** 一个 `ovs-{projId}` terminal（共享 REPL 上下文）
+- 同一 project 下多个 Chat 面板共用 `ovs-{projId}` **交互 worker**；**多轮 AI 上下文**待 [OVS-INTERACTIVE-CONTEXT-PLAN.md](./OVS-INTERACTIVE-CONTEXT-PLAN.md) 落地（per `record_session_id` jsonl resume；**非** solve 的 PG `cc_messages`）
+
+---
+
+## 进行中：交互式多轮上下文（P0 计划）
+
+**问题：** agent 每轮新建 claw session → LLM 失忆（`gateway_turns` 有记录但 harness 无历史）。  
+**方案：** 交互模式统一 B1（exec + resume jsonl）；resolve/solve 保持 PG 续聊不变。  
+**文档：** [OVS-INTERACTIVE-CONTEXT-PLAN.md](./OVS-INTERACTIVE-CONTEXT-PLAN.md)
+
+---
+
+## FC OVS Singleton（已实现 P0–P2）
+
+**1 Gateway : 1 OVS : N Worker** — OVS 走 e2b 单例（`claw-ovs` template），不进 worker template；Mac compose 不跑 OVS。
+
+→ 完整设计：[FC-OVS-SINGLETON-DESIGN.md](./FC-OVS-SINGLETON-DESIGN.md)  
+→ **NAS 路径与各组件本地视图：** [fc-nas-workspace.md](../fc-nas-workspace.md)
+
+## FC Session 可观测单例（P1 代码已合入）
+
+**1 Gateway : 1 Observe : 1 OVS : N Worker** — e2b 只读 Live 看 sessionId 执行过程；**不做 LLM 代理**；worker 内嵌 tap 不变。
+
+→ 设计：[FC-TAP-SINGLETON-DESIGN.md](./FC-TAP-SINGLETON-DESIGN.md)  
+→ 模板：`python3 deploy/fc-sandbox/build-claw-observe-selfhosted.py`
 
 ---
 

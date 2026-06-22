@@ -106,7 +106,7 @@ impl InteractiveSandboxBackend for PodmanInteractiveBackend {
         if let Err(e) = sandbox
             .guest_exec_sh(
                 slot_index,
-                spec.start_ttyd_script,
+                &spec.start_ttyd_script,
                 GuestExecActor::SlotWorker,
             )
             .await
@@ -127,6 +127,10 @@ impl InteractiveSandboxBackend for PodmanInteractiveBackend {
             worker_name: lease.worker_name,
             pool_id: self.pool_id.clone(),
             fc_sandbox_id: None,
+            fc_warm_slot: None,
+            fc_warm_proj_id: None,
+            fc_session_segment: None,
+            fc_worker_id: None,
             ttyd: TtydConnectTarget::loopback(ttyd_port, &connect_host),
         })
     }

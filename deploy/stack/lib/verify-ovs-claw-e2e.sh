@@ -15,6 +15,75 @@ TIMEOUT_SEC="${CLAW_OVS_E2E_TIMEOUT_SEC:-90}"
 
 fail() { echo "verify-ovs-claw-e2e: $*" >&2; exit 1; }
 
+run_agent_ws_host() {
+  GATEWAY_PORT="${GATEWAY_PORT}" SESSION_ID="${SESSION_ID}" PROJ_ID="${PROJ_ID}" \
+    PROMPT="${PROMPT}" TIMEOUT_SEC="${TIMEOUT_SEC}" python3 - <<'PY'
+import json, os, sys, time
+try:
+    import websocket
+except ImportError:
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "websocket-client"])
+    import websocket
+
+port = os.environ["GATEWAY_PORT"]
+sid = os.environ["SESSION_ID"]
+pid = os.environ["PROJ_ID"]
+prompt = os.environ.get("PROMPT", "ping")
+timeout_sec = int(os.environ.get("TIMEOUT_SEC", "90"))
+url = f"ws://127.0.0.1:{port}/v1/sessions/{sid}/agent/ws?projId={pid}"
+got = False
+err = ""
+
+def on_message(ws, message):
+    global got, err
+    got = True
+    try:
+        m = json.loads(message)
+        if m.get("type") == "error":
+            err = m.get("message") or "agent error"
+            ws.close()
+        elif os.environ.get("CLAW_OVS_E2E_FAST", "0") in ("1", "true", "yes"):
+            ws.close()
+        elif m.get("type") == "cdp" and (m.get("event") or {}).get("phase") == "done":
+            ws.close()
+    except Exception:
+        if os.environ.get("CLAW_OVS_E2E_FAST", "0") in ("1", "true", "yes"):
+            ws.close()
+
+def on_error(ws, error):
+    global err
+    if not got:
+        err = str(error)
+
+def on_open(ws):
+    ws.send(json.dumps({"type": "spawn"}))
+    ws.send(json.dumps({"type": "prompt", "text": prompt + "\n"}))
+
+ws = websocket.WebSocketApp(url, on_open=on_open, on_message=on_message, on_error=on_error)
+deadline = time.time() + timeout_sec
+while time.time() < deadline and ws.sock is None:
+    time.sleep(0.05)
+ws.run_forever(ping_interval=20, ping_timeout=10)
+if err:
+    print("FAIL:" + err)
+    sys.exit(1)
+if not got:
+    print("FAIL:no response")
+    sys.exit(2)
+print(f"OK projId={pid} session={sid}")
+PY
+}
+
+if [[ "${CLAW_OVS_E2E_SKIP_CONTAINER:-0}" == "1" ]]; then
+  curl -sS "http://127.0.0.1:${GATEWAY_PORT}/healthz" | grep -q '"ok":true' || fail "gateway :${GATEWAY_PORT} not healthy"
+  echo "==> agent WS from host (projId=${PROJ_ID} session=${SESSION_ID} prompt=${PROMPT})"
+  out="$(run_agent_ws_host 2>&1)" || { echo "${out}"; exit 1; }
+  echo "${out}"
+  echo "verify-ovs-claw-e2e: OK"
+  exit 0
+fi
+
 podman container exists "${CONTAINER}" >/dev/null 2>&1 || fail "container ${CONTAINER} not running"
 curl -sS "http://127.0.0.1:${GATEWAY_PORT}/healthz" | grep -q '"ok":true' || fail "gateway :${GATEWAY_PORT} not healthy"
 

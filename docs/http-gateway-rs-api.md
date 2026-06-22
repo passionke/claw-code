@@ -12,7 +12,7 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 用途：健康检查与关键运行配置回显
   - 回显字段含 `sessionDatabaseBackend`（`postgresql`）、`gatewayDatabaseUrl`（脱敏连接串）。会话/轮次/反馈表在 **PostgreSQL**，由环境变量 **`CLAW_GATEWAY_DATABASE_URL`** 指定（compose 默认连栈内 `postgres` 服务；生产可指向独立 PG 集群）。
   - **`deployImageRef`** / **`deployImageTag`**：由 **`./deploy/stack/gateway.sh up`** 带入的 **`GATEWAY_IMAGE`**（根 `.env` 或 `up --release release-vX.Y.Z` 写入的 `deploy/stack/.claw-image-release.env`）经 compose 注入 **`CLAW_GATEWAY_IMAGE_REF`**，无需单独配置。Admin 顶栏展示 `deployImageTag`：`…:local` → `local`；`…:release-v1.2.3` → `release-v1.2.3`。
-  - **`clawTapCluster`**：内存态 clawTap 集群校验快照（`strict` / `mismatch` 等）；端点主机与 Live URL 在 Admin **`GET /v1/gateway/global-settings`** 的 **`clawTap`**（PG）中维护：`host`、`proxyPort`、`livePort`，以及派生字段 `proxyBaseUrl`、`liveBaseUrl`、`liveSessionUrlTemplate`（例 `http://192.168.9.252:3000/?session={sessionId}`）
+  - **`clawTapCluster`**：内存态 clawTap 集群校验快照（`strict` / `mismatch` 等）；端点主机与 Live URL 在 Admin **`GET /v1/gateway/global-settings`** 的 **`clawTap`**（PG）中维护：`host`、`proxyPort`、`livePort`，以及派生字段 `proxyBaseUrl`、`liveBaseUrl`、`liveSessionUrlTemplate`（统一为 `http://…:3000/api/sessions/traces?session={sessionId}`）
   - **`liveReport`**：求解过程 stdout 实时 SSE（经 pool 代理），与 claude-tap Live 查看器无关
 
 ## Solve

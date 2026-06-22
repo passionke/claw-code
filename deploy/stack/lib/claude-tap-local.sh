@@ -48,10 +48,13 @@ claw_claude_tap_stop() {
   pkill -f 'claude-tap.*--tap-no-launch' 2>/dev/null || true
 }
 
-# True when this host runs claude-tap (production docker tap or local sidecar). Author: kejiqing
+# True when this host runs compose/pool claude-tap sidecar (not FC e2b worker tap + observe singleton). Author: kejiqing
 claw_stack_manages_local_claude_tap() {
   case "${CLAW_LLM_PROXY:-direct}" in
     remote) return 1 ;;
+  esac
+  case "${CLAW_INTERACTIVE_BACKEND:-podman}" in
+    fc) return 1 ;;
   esac
   case "${CLAUDE_TAP_MODE:-docker}" in
     off | none | disabled | false | '0') return 1 ;;

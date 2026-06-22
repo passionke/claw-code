@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
@@ -42,11 +42,12 @@ use http_gateway_rs::biz_advice_report::{
 };
 use http_gateway_rs::{
     admin_mcp_http, claw_tap_cluster_state, client_origin, gateway_admin_mcp_token,
-    gateway_claw_tap_settings, gateway_global_settings, gateway_llm_config_sync, gateway_translate,
-    llm_probe, mcp_probe, pool, pool_consumer_resolve, project_config_apply,
-    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
-    project_id, project_tools, session_agent_api, session_db, session_merge, session_ovs_api,
-    session_terminal_api, session_workspace_api, turn_id, turn_timeline_api, turn_tools_api,
+    gateway_claw_tap_settings, gateway_fc_nas_settings, gateway_global_settings,
+    gateway_llm_config_sync, gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve,
+    project_config_apply, project_config_version, project_entity_revision, project_extra_session,
+    project_git_sync, project_id, project_tools, session_agent_api, session_db, session_merge,
+    session_ovs_api, session_terminal_api, session_workspace_api, turn_id, turn_timeline_api,
+    turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -1320,12 +1321,23 @@ async fn main() {
     let live_report_hub = Arc::new(pool::LiveReportHub::default());
     let fc_client = claw_fc_sandbox_client::FcSandboxConfig::from_env()
         .map(|cfg| Arc::new(claw_fc_sandbox_client::FcSandboxClient::new(cfg)));
+    if let Some(ref fc) = fc_client {
+        if let Err(e) = fc.refresh_e2b_platform_nas().await {
+            tracing::warn!(
+                target: "claw_fc_sandbox",
+                error = %e,
+                "startup e2b platform health fetch failed"
+            );
+        }
+    }
     let pool_clients = pool::PoolClients::from_env(
         Arc::clone(&live_report_hub),
         work_root.clone(),
         fc_client.clone(),
         pool_rpc_host_work_root.clone(),
     );
+    pool_clients.spawn_fc_observe_warmup();
+    pool_clients.spawn_fc_ovs_warmup();
     let pool_rpc_remote = true;
     let co_located_pool_id = Some(pool_clients.pool_id().to_string());
     tracing::info!(
@@ -1729,6 +1741,7 @@ async fn main() {
             "/v1/gateway/global-settings",
             get(get_gateway_global_settings_handler),
         )
+        // FC OVS / observe Live: browsers use direct e2b traffic URLs from API (no gateway proxy).
         .route(
             "/v1/gateway/global-settings/git-pats",
             post(upsert_gateway_git_pat_handler),
@@ -1823,14 +1836,15 @@ async fn main() {
                 ),
         )
         .layer(middleware::from_fn(inject_http_request_id))
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr = std::env::var("CLAW_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("bind listener");
     info!("http gateway rs listening on {}", addr);
-    let shutdown = async {
+    let pool_clients_shutdown = state.pool_clients.clone();
+    let shutdown = async move {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
@@ -1853,6 +1867,7 @@ async fn main() {
         if tokio::signal::ctrl_c().await.is_ok() {
             info!(phase = "shutdown", "http gateway received SIGINT");
         }
+        pool_clients_shutdown.shutdown_fc_sandboxes().await;
         telemetry::shutdown_otel();
     };
     axum::serve(listener, app)
@@ -3556,7 +3571,13 @@ async fn sync_proj_home_from_repo(
     }
     let (home_claude, root_claude) = project_claude_paths(work_dir);
     if fs::metadata(&home_claude).await.is_ok_and(|m| m.is_file()) {
-        fs::copy(&home_claude, &root_claude).await.map_err(|e| {
+        let text = fs::read_to_string(&home_claude).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read home CLAUDE.md for mirror failed: {e}"),
+            )
+        })?;
+        fs::write(&root_claude, &text).await.map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("mirror home CLAUDE.md to root failed: {e}"),
@@ -3924,7 +3945,14 @@ async fn ovs_workspace_handler(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<session_ovs_api::OvsWorkspaceResponse>, session_ovs_api::OvsApiError> {
-    session_ovs_api::get_ovs_workspace(state.ovs_api_ctx(), &state.session_db, proj_id).await
+    session_ovs_api::get_ovs_workspace(
+        state.ovs_api_ctx(),
+        &state.session_db,
+        state.pool_clients.fc_ovs_singleton(),
+        state.pool_clients.fc_warm_pool(),
+        proj_id,
+    )
+    .await
 }
 
 async fn workspace_tree_handler(
@@ -5218,9 +5246,58 @@ async fn commit_project_config_draft(
 async fn get_gateway_global_settings_handler(
     State(state): State<AppState>,
 ) -> Result<Json<gateway_global_settings::GatewayGlobalSettingsResponse>, ApiError> {
-    let body = gateway_global_settings::load_response(&state.session_db)
+    let mut body = gateway_global_settings::load_response(&state.session_db)
         .await
         .map_err(|e| session_db_err(&e))?;
+    if let Some(observe) = state.pool_clients.fc_observe_singleton() {
+        // Probe + reuse/recreate so liveBaseUrl always matches current sandbox id (Host domain).
+        let observe_result = match observe.ensure().await {
+            Ok(url) => Ok(url),
+            Err(e) => {
+                if let Some(cached) = observe.cached_live_base_url().await {
+                    tracing::info!(
+                        target: "claw_fc_observe",
+                        %cached,
+                        "fc observe ensure failed; using cached live base for Admin"
+                    );
+                    Ok(cached)
+                } else {
+                    tracing::warn!(
+                        target: "claw_fc_observe",
+                        error = %e,
+                        "fc observe ensure failed; Admin session traces URL withheld"
+                    );
+                    Err(e)
+                }
+            }
+        };
+        let fc_domain = std::env::var("CLAW_FC_DOMAIN")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "supone.top".into());
+        let tap = body.claw_tap.take().unwrap_or_else(|| {
+            gateway_claw_tap_settings::ClawTapSettingsPublic {
+                mode: gateway_claw_tap_settings::ClawTapMode::Local,
+                host: String::new(),
+                proxy_port: gateway_claw_tap_settings::DEFAULT_CLAW_TAP_PROXY_PORT,
+                live_port: None,
+                updated_at_ms: 0,
+                configured: false,
+                proxy_base_url: None,
+                live_base_url: None,
+                live_session_url_template: None,
+                live_browser_hosts_line: None,
+            }
+        });
+        body.claw_tap = Some(gateway_claw_tap_settings::apply_fc_observe_admin_claw_tap(
+            tap,
+            observe_result,
+            &fc_domain,
+        ));
+    }
+    body.fc_nas = Some(gateway_fc_nas_settings::fc_nas_settings_public(
+        &state.cfg.work_root,
+    ));
     Ok(Json(body))
 }
 
@@ -8719,7 +8796,7 @@ async fn run_solve_request(
         "session .claw/settings.json written; starting solve (container pool)"
     );
 
-    let (pool, _) = state
+    let (pool, pool_id) = state
         .pool_clients
         .pool_and_id_for_proj(&state.session_db, req.proj_id)
         .await
@@ -8729,6 +8806,7 @@ async fn run_solve_request(
         req,
         ctx,
         pool,
+        &pool_id,
         started,
         effective_allowed_tools,
         solve_pool::SolveSessionPaths {

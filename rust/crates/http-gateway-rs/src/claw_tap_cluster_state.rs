@@ -10,12 +10,16 @@ use crate::cluster_identity::{
     fetch_tap_cluster_identity, gateway_cluster_id, gateway_database_url, local_cluster_identity,
     verify_tap_cluster, ClusterIdentity, ClusterMismatchError,
 };
-use crate::gateway_claw_tap_settings::{claw_tap_proxy_base_url, ClawTapSettings};
+use crate::gateway_claw_tap_settings::{
+    claw_tap_proxy_base_url, ClawTapMode, ClawTapSettings, DEFAULT_CLAW_TAP_LIVE_PORT,
+    DEFAULT_CLAW_TAP_PROXY_PORT,
+};
 use crate::gateway_global_settings::{self, ActiveLlmRuntime};
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::gateway_llm_model_apply::{
     normalize_model_name_for_upstream, normalize_upstream_base_url,
 };
+use crate::pool::interactive_backend::{interactive_backend_is_fc, FC_WORKER_TAP_PROXY_URL};
 use crate::session_db::GatewaySessionDb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -97,10 +101,45 @@ pub async fn load_cluster_settings(
     Ok((cluster_id, settings.claw_tap))
 }
 
+async fn refresh_fc_claw_tap_cluster_state(
+    db: &GatewaySessionDb,
+    llm_handle: &LlmRuntimeHandle,
+) -> Result<Option<ClawTapClusterStateInner>, String> {
+    let cluster_id = gateway_cluster_id()?;
+    let db_url = gateway_database_url()?;
+    let local = local_cluster_identity(&cluster_id, &db_url)?;
+    let _ = crate::gateway_llm_config_sync::sync_llm_runtime_from_db(db, llm_handle).await;
+    let active = gateway_global_settings::load_active_llm_runtime(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    if active.is_none() {
+        return Err("no active LLM model configured in Admin".into());
+    }
+    Ok(Some(ClawTapClusterStateInner {
+        cluster_id,
+        tap: ClawTapSettings {
+            mode: ClawTapMode::Local,
+            host: String::new(),
+            proxy_port: DEFAULT_CLAW_TAP_PROXY_PORT,
+            live_port: DEFAULT_CLAW_TAP_LIVE_PORT,
+            updated_at_ms: now_ms(),
+        },
+        tap_base_url: FC_WORKER_TAP_PROXY_URL.to_string(),
+        local_identity: local,
+        consistency: TapConsistency::Strict,
+        mismatch_reason: None,
+        last_check_ms: now_ms(),
+        tap_identity: None,
+    }))
+}
+
 pub async fn refresh_claw_tap_cluster_state(
     db: &GatewaySessionDb,
     llm_handle: &LlmRuntimeHandle,
 ) -> Result<Option<ClawTapClusterStateInner>, String> {
+    if interactive_backend_is_fc() {
+        return refresh_fc_claw_tap_cluster_state(db, llm_handle).await;
+    }
     let (cluster_id, tap) = load_cluster_settings(db).await?;
     let tap_base = claw_tap_proxy_base_url(&tap.host, tap.proxy_port)
         .ok_or_else(|| "invalid clawTap host/port".to_string())?;
