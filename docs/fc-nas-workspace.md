@@ -19,7 +19,6 @@ Author: kejiqing
 ├── proj_{N}/home/                ← 项目 home（PG materialize、OVS folder）
 ├── proj_{N}/workers/{workerId}/  ← worker 工作区（e2b bind → /claw_host_root）
 ├── proj_{N}/sessions/{segment}/  ← 必须是 symlink → ../workers/{workerId}
-├── .claw-fc-tools/               ← claw / ttyd / claude-tap（FC bootstrap 拷贝源）
 ├── tap-traces/                   ← claude-tap traces（可选）
 └── .claw-pool-work/              ← 本机 podman_pool solve 用（与 FC worker 树分离）
 ```

@@ -28,15 +28,15 @@ Author: kejiqing
 
 - OVS Chat UI：仍由 VS Code 本地保存多轮历史
 - Gateway：每次 `@claw` 发送一条 prompt 产生一行 `gateway_turns`（与 UI 不双向同步）
-- 同一 project 下多个 Chat 面板共用 `ovs-{projId}` **交互 worker**；**多轮 AI 上下文**待 [OVS-INTERACTIVE-CONTEXT-PLAN.md](./OVS-INTERACTIVE-CONTEXT-PLAN.md) 落地（per `record_session_id` jsonl resume；**非** solve 的 PG `cc_messages`）
+- 同一 project 下多个 Chat 面板共用 `ovs-{projId}` **交互 worker**；**多轮 AI 上下文**按 `record_session_id` 写入 `proj_N/sessions/{segment}/interactive-session.jsonl`（B1 resume）；turn 后写回 PG `cc_messages`（**不**从 PG 灌入 prompt）
 
 ---
 
-## 进行中：交互式多轮上下文（P0 计划）
+## 已实现：交互式多轮上下文（P0）
 
-**问题：** agent 每轮新建 claw session → LLM 失忆（`gateway_turns` 有记录但 harness 无历史）。  
-**方案：** 交互模式统一 B1（exec + resume jsonl）；resolve/solve 保持 PG 续聊不变。  
-**文档：** [OVS-INTERACTIVE-CONTEXT-PLAN.md](./OVS-INTERACTIVE-CONTEXT-PLAN.md)
+**方案：** B1（exec + resume jsonl）；resolve/solve 保持 PG 续聊不变。  
+**文档：** [OVS-INTERACTIVE-CONTEXT-PLAN.md](./OVS-INTERACTIVE-CONTEXT-PLAN.md)  
+**验收：** `CLAW_OVS_E2E_MULTI_TURN=1 ./deploy/stack/lib/verify-ovs-claw-e2e.sh`（需 live LLM）
 
 ---
 

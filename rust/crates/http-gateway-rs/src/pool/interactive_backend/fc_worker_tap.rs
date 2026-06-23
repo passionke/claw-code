@@ -58,7 +58,7 @@ for cand in /usr/local/bin/claude-tap /tmp/claw-fc-bin/claude-tap /tmp/claw-fc-b
   if [ -x "$cand" ]; then TAP_BIN="$cand"; break; fi
 done
 if [ -z "$TAP_BIN" ]; then
-  echo "fc worker tap: claude-tap not found (rebuild claw-worker template or install-nas-fc-tools)" >&2
+  echo "fc worker tap: claude-tap not found (rebuild claw-worker template)" >&2
   exit 127
 fi
 mkdir -p {tap_traces_dir}

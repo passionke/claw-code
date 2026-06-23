@@ -72,7 +72,7 @@ pub fn fc_nas_settings_public(work_root: &Path) -> FcNasSettingsPublic {
     let resolved = nas_host_root(work_root, None);
     let path_exists = resolved.exists() && resolved.is_dir();
     let has_proj_tree = if path_exists {
-        Some(resolved.join("proj_1").exists() || resolved.join(".claw-fc-tools").exists())
+        Some(resolved.join("proj_1").exists())
     } else {
         None
     };

@@ -142,17 +142,6 @@ def _ext_version() -> str:
     return json.loads(pkg.read_text(encoding="utf-8"))["version"]
 
 
-def _nas_tools_dest() -> Path:
-    tools_rel = _env("CLAW_FC_NAS_TOOLS_REL", ".claw-fc-tools") or ".claw-fc-tools"
-    if _env("CLAW_NAS_HOST_MOUNT"):
-        nas_root = Path(_env("CLAW_NAS_HOST_MOUNT"))
-    elif _env("CLAW_POOL_WORK_ROOT_BIND_SRC"):
-        nas_root = Path(_env("CLAW_POOL_WORK_ROOT_BIND_SRC"))
-    else:
-        nas_root = ROOT / "deploy/stack/claw-workspace"
-    return nas_root / tools_rel
-
-
 def _package_vsix_host() -> Path:
     subprocess.run(
         [str(ROOT / "deploy/stack/lib/package-claw-vscode-vsix.sh")],
@@ -164,19 +153,6 @@ def _package_vsix_host() -> Path:
     if not vsix_host.is_file() or vsix_host.stat().st_size < 1024:
         raise RuntimeError(f"invalid VSIX: {vsix_host}")
     return vsix_host
-
-
-def _stage_vsix_on_nas_optional(vsix_host: Path) -> None:
-    """Best-effort NAS mirror for worker bootstrap; runtime install does not depend on it."""
-    dest_dir = _nas_tools_dest()
-    dest = dest_dir / "claw-vscode.vsix"
-    try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(vsix_host, dest)
-        dest.chmod(0o644)
-        print(f"==> NAS VSIX mirror: {dest} ({dest.stat().st_size} bytes)", file=sys.stderr)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        print(f"==> skip NAS VSIX mirror ({exc}); using in-sandbox base64 inject", file=sys.stderr)
 
 
 def _resolve_fc_ovs_gateway_host(gateway_port: int) -> str:
@@ -422,7 +398,6 @@ def main() -> int:
     print(f"==> FC OVS claw.gatewayHost={gateway_host} (Remote EH → gateway agent/ws)", file=sys.stderr)
 
     vsix_host = _package_vsix_host()
-    _stage_vsix_on_nas_optional(vsix_host)
     vsix_b64 = base64.b64encode(vsix_host.read_bytes()).decode("ascii")
     print(f"==> VSIX {vsix_host.name} ({vsix_host.stat().st_size} bytes) → sandbox base64 inject", file=sys.stderr)
 

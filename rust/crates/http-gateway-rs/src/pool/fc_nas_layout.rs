@@ -42,7 +42,7 @@ pub fn fc_nas_layout_active(nas_root: &Path) -> bool {
         }
     }
     // Workspace volume direct-bind without explicit host mount env.
-    nas_root.join("proj_1").exists() || nas_root.join(".claw-fc-tools").exists()
+    nas_root.join("proj_1").exists()
 }
 
 /// Resolved NAS host root for Gateway file operations (`mkdir`, symlink, chown).

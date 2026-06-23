@@ -824,8 +824,6 @@ impl FcSandboxClient {
             "task_file": task_file,
             "env": env,
             "timeout": 600,
-            "nas_tools_rel": self.config.nas_tools_rel,
-            "self_hosted": self.config.is_self_hosted(),
         });
         Self::run_exec_helper(&self.config.exec_helper, &payload, on_stdout_line).await
     }
@@ -839,6 +837,26 @@ impl FcSandboxClient {
         self.exec_shell_script_stdout(handle, script)
             .await
             .map(|_| ())
+    }
+
+    /// Like [`Self::exec_shell_script`] but streams stdout lines via NDJSON `stdout_line` events.
+    pub async fn exec_shell_script_streaming(
+        &self,
+        handle: &FcSandboxHandle,
+        script: &str,
+        on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    ) -> Result<FcExecOutcome, String> {
+        self.touch_sandbox_lease(&handle.sandbox_id).await?;
+        let payload = json!({
+            "op": "run_sh",
+            "api_key": self.config.api_key,
+            "domain": handle.sandbox_domain,
+            "api_url": self.config.api_url,
+            "sandbox_url": self.config.sandbox_url,
+            "sandbox_id": handle.sandbox_id,
+            "script": script,
+        });
+        Self::run_exec_helper(&self.config.exec_helper, &payload, on_stdout_line).await
     }
 
     /// Like [`Self::exec_shell_script`] but returns captured stdout (for small in-guest reads).
@@ -856,8 +874,6 @@ impl FcSandboxClient {
             "sandbox_url": self.config.sandbox_url,
             "sandbox_id": handle.sandbox_id,
             "script": script,
-            "nas_tools_rel": self.config.nas_tools_rel,
-            "self_hosted": self.config.is_self_hosted(),
         });
         let outcome = Self::run_exec_helper(&self.config.exec_helper, &payload, None).await?;
         Ok(outcome.stdout)
@@ -912,6 +928,7 @@ impl FcSandboxClient {
         let mut line = String::new();
         let mut outcome: Option<FcExecOutcome> = None;
         let mut helper_error: Option<String> = None;
+        let mut stdout_line_events = 0u32;
 
         loop {
             line.clear();
@@ -928,6 +945,9 @@ impl FcSandboxClient {
             }
             let parsed: Value = serde_json::from_str(trimmed)
                 .map_err(|e| format!("fc exec helper ndjson decode: {e}: {trimmed}"))?;
+            if parsed.get("ev").and_then(Value::as_str) == Some("stdout_line") {
+                stdout_line_events = stdout_line_events.saturating_add(1);
+            }
             match ingest_fc_exec_helper_line(&parsed, trimmed, on_stdout_line.as_ref()) {
                 FcExecHelperIngest::More => {}
                 FcExecHelperIngest::Outcome(done) => {
@@ -950,7 +970,14 @@ impl FcSandboxClient {
         if let Some(err) = helper_error {
             return Err(err);
         }
-        if let Some(out) = outcome {
+        if let Some(mut out) = outcome {
+            if stdout_line_events == 0 {
+                if let Some(hook) = on_stdout_line.as_ref() {
+                    if !out.stdout.is_empty() {
+                        hook(out.stdout.clone());
+                    }
+                }
+            }
             if !status.success() && out.exit_code == 0 {
                 warn!(
                     target: "claw_fc_sandbox",
@@ -1094,7 +1121,6 @@ mod client_tests {
             sandbox_timeout_secs: 300,
             nas_server: None,
             nas_export: None,
-            nas_tools_rel: ".claw-fc-tools".into(),
             nas_user_id: 1000,
             nas_group_id: 1000,
             exec_helper: "deploy/fc-sandbox/fc_exec.py".into(),

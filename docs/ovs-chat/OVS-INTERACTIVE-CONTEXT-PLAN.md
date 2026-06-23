@@ -2,7 +2,7 @@
 
 Author: kejiqing
 
-Status: **计划（未实施）** — 方案对齐后再动代码。
+Status: **已实施**（B1：exec + resume jsonl；交互 turn 后写回 `cc_messages`）。
 
 相关：
 
@@ -100,21 +100,23 @@ OVS Chat → agent/ws
   → finalize gateway_turns
 ```
 
-### 3.2 续聊 jsonl 路径（固定 per record）
+### 3.2 续聊 jsonl 路径（固定 per record，与 `gateway_sessions` 同目录）
 
 ```
-Guest:  /claw_ds/.claw/ovs-chat/{segment}/interactive-session.jsonl
-NAS:    proj_{N}/home/.claw/ovs-chat/{segment}/interactive-session.jsonl
+Guest:  /claw_ds/.claw/interactive/{segment}/interactive-session.jsonl
+        (symlink → ../../../sessions/{segment}/interactive-session.jsonl)
+NAS:    proj_{N}/sessions/{segment}/interactive-session.jsonl
 ```
+
+**一个 Admin session = 一个 `proj_N/sessions/{segment}/` 文件夹**；`interactive-session.jsonl` 在该文件夹内增长。不再使用 `proj_N/home/.claw/ovs-chat/`（遗留路径仅在 exec 脚本里做一次迁移拷贝）。
 
 **`segment` 是什么：** `sessions_directory_segment(record_session_id)`（`session_merge.rs`）— 把 `record_session_id` 变成安全单级目录名：
 
 - 安全字符 → 原样（例 `ovs-chat-3-be39fbcbcc1bb92a`）
 - 含 `/` 等 → UUID v5 确定性 32 hex
 
-**为何放 `/claw_ds`（proj home）：** 所有交互 worker 共享挂载；worker 换槽不丢。  
-**为何不放 `/claw_host_root`：** 按 workerId 隔离，换槽即丢。  
-**为何不放在 `proj_N/sessions/{seg}` symlink 树：** 该树用于 worker 路由，且未作为 claw 数据目录 bind。
+**为何放 `proj_N/sessions/{segment}/`：** 与 `gateway_sessions.session_home` 同一文件夹；Guest 经 `home/.claw/interactive/{segment}` symlink 写入。  
+**为何不放 `/claw_host_root`：** 按 workerId 隔离，换槽即丢。
 
 ### 3.3 首轮（jsonl 不存在）
 

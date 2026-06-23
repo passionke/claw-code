@@ -54,11 +54,11 @@ Chat → `@claw ping`；View → Output → **Claw** 应出现 `activate()`、`c
 
 1. `FcOvsSingleton::ensure()` → openvscode `/ovs/` 健康
 2. 紧接着 `ensure_claw_vscode_on_ovs`（`fc_ovs_claw_vscode.rs`）：
-   - 读 NAS `.claw-fc-tools/claw-vscode.vsix`（或 `CLAW_FC_OVS_VSIX`）
+   - 读 gateway 镜像内打包的 VSIX（或 `CLAW_FC_OVS_VSIX`）
    - `--install-extension` + Machine `chat.agent.enabled` + `claw.gatewayHost`
    - 按版本 marker 幂等；缺扩展时重启 OVS
 
-**前置：** `deploy/fc-sandbox/install-nas-fc-tools.sh` 把 VSIX 拷到 NAS（与 worker bootstrap 同源）。
+**前置：** `pack-deploy` 打包 VSIX 进 gateway 镜像（`deploy/stack/lib/package-claw-vscode-vsix.sh`）。
 
 **手工兜底（仅排障）：** `./deploy/stack/lib/install-claw-vscode-fc-ovs.sh`
 
