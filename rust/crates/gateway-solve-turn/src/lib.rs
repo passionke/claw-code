@@ -58,6 +58,7 @@ pub mod gateway_stdout;
 pub mod mcp_call_context;
 pub mod multi_agent;
 mod otel_solve_turn;
+pub mod ovs_interactive;
 pub mod project_language_pipeline;
 pub mod project_orchestration;
 pub mod project_preflight;
@@ -76,6 +77,14 @@ pub use mcp_call_context::{
     build_mcp_call_meta, build_sqlbot_mcp_start_arguments, gateway_mcp_call_context_from_task,
     inject_mcp_call_meta, resolve_gateway_mcp_call_context, resolve_gateway_trace_id,
     GatewayMcpCallContext, CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
+};
+pub use ovs_interactive::{
+    build_ensure_ovs_interactive_session_script, build_ovs_interactive_prompt_script,
+    ovs_interactive_guest_symlink_host, ovs_interactive_session_dir_host,
+    ovs_interactive_session_jsonl_guest, ovs_interactive_session_jsonl_host,
+    ovs_interactive_symlink_target, OVS_INTERACTIVE_GUEST_REL_PREFIX,
+    OVS_INTERACTIVE_LEGACY_GUEST_REL_PREFIX, OVS_INTERACTIVE_PROJ_HOME,
+    OVS_INTERACTIVE_SESSION_FILENAME, OVS_INTERACTIVE_WORK_ROOT,
 };
 pub use runtime::McpCallContext;
 pub use session_report::{
