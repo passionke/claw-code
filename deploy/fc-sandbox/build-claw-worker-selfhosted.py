@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from e2b_selfhosted_build import podman_platform_args
+from e2b_selfhosted_build import podman_platform_args, template_build_verified
 
 
 def _env(name: str, default: str = "") -> str:
@@ -122,7 +122,7 @@ def main() -> int:
         dockerfile_path.write_text(_dockerfile(), encoding="utf-8")
         print(f"==> e2b template build (copy ctx) alias={alias!r}")
         template = Template(file_context_path=str(staging)).from_dockerfile(str(dockerfile_path))
-        Template.build(template, alias=alias, on_build_logs=default_build_logger(), **opts)
+        template_build_verified(template, alias=alias, on_build_logs=default_build_logger(), **opts)
 
     print(f"OK: template {alias!r} ready on {opts['api_url']}")
     if verify:

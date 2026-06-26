@@ -20,7 +20,7 @@ python3 deploy/fc-sandbox/build-claw-worker-selfhosted.py   # rebuild claw-worke
 ./deploy/stack/gateway.sh up
 ```
 
-`build-claw-worker-selfhosted.py` extracts `claw` + `ttyd` from `CLAW_FC_WORKER_IMAGE`, uploads build context via e2b API (`COPY` in Dockerfile — no HTTP artifact server).
+`build-claw-worker-selfhosted.py` extracts `claw` + `ttyd` from `CLAW_FC_WORKER_IMAGE`, uploads build context via e2b API (`COPY` in Dockerfile — no HTTP artifact server). Uploads wait for Panel `present` before `trigger_build` (`e2b_selfhosted_build.template_build_verified`).
 
 ## Prerequisites
 
