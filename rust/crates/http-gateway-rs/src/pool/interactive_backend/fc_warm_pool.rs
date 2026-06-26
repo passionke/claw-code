@@ -334,7 +334,6 @@ mod tests {
                     sandbox_timeout_secs: 3600,
                     nas_server: None,
                     nas_export: None,
-                    nas_tools_rel: ".claw-fc-tools".into(),
                     nas_user_id: 1000,
                     nas_group_id: 1000,
                     exec_helper: "deploy/fc-sandbox/fc_exec.py".into(),

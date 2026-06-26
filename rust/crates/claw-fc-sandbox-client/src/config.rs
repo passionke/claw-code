@@ -14,7 +14,6 @@ pub struct FcSandboxConfig {
     pub sandbox_timeout_secs: u64,
     pub nas_server: Option<String>,
     pub nas_export: Option<String>,
-    pub nas_tools_rel: String,
     pub nas_user_id: u32,
     pub nas_group_id: u32,
     pub exec_helper: PathBuf,
@@ -68,10 +67,6 @@ impl FcSandboxConfig {
         let nas_export = std::env::var("CLAW_FC_NAS_EXPORT")
             .ok()
             .filter(|v| !v.trim().is_empty());
-        let nas_tools_rel = std::env::var("CLAW_FC_NAS_TOOLS_REL")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| ".claw-fc-tools".into());
         let nas_user_id = std::env::var("CLAW_WORKER_UID")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -114,7 +109,6 @@ impl FcSandboxConfig {
             sandbox_timeout_secs,
             nas_server,
             nas_export,
-            nas_tools_rel,
             nas_user_id,
             nas_group_id,
             exec_helper,

@@ -27,6 +27,9 @@ pub fn tap_traces_rel() -> &'static str {
 /// Worker / observe guest mount for shared NAS `tap-traces/` (proxy writes + Live reads).
 pub const GUEST_CLAW_TAP_TRACES: &str = "/claw_tap_traces";
 
+/// `proj_N/sessions` → `/claw_sessions` (OVS interactive jsonl; FC warm worker).
+pub const GUEST_CLAW_SESSIONS: &str = "/claw_sessions";
+
 /// `proj_N/home` → `/claw_ds`.
 #[must_use]
 pub fn proj_home_rel(proj_id: i64) -> String {
@@ -69,12 +72,13 @@ pub fn guest_worker_work_dir() -> &'static str {
     GUEST_CLAW_HOST_ROOT
 }
 
-/// Warm worker: project home + worker root + shared tap-traces (static bind at create).
+/// Warm worker: project home + worker root + sessions + shared tap-traces (static bind at create).
 #[must_use]
 pub fn warm_worker_mounts(proj_id: i64, worker_id: &str) -> Vec<(String, String)> {
     vec![
         (proj_home_rel(proj_id), GUEST_CLAW_DS.into()),
         (worker_rel(proj_id, worker_id), GUEST_CLAW_HOST_ROOT.into()),
+        (sessions_root_rel(proj_id), GUEST_CLAW_SESSIONS.into()),
         (tap_traces_rel().to_string(), GUEST_CLAW_TAP_TRACES.into()),
     ]
 }
@@ -119,10 +123,12 @@ mod tests {
     #[test]
     fn warm_mounts_worker_root() {
         let warm = warm_worker_mounts(1, "wrk_1");
-        assert_eq!(warm.len(), 3);
+        assert_eq!(warm.len(), 4);
         assert_eq!(warm[1].0, "proj_1/workers/wrk_1");
         assert_eq!(warm[1].1, GUEST_CLAW_HOST_ROOT);
-        assert_eq!(warm[2].0, "tap-traces");
-        assert_eq!(warm[2].1, GUEST_CLAW_TAP_TRACES);
+        assert_eq!(warm[2].0, "proj_1/sessions");
+        assert_eq!(warm[2].1, GUEST_CLAW_SESSIONS);
+        assert_eq!(warm[3].0, "tap-traces");
+        assert_eq!(warm[3].1, GUEST_CLAW_TAP_TRACES);
     }
 }

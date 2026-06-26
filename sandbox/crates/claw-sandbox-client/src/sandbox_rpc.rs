@@ -280,6 +280,26 @@ impl SandboxRpcClient {
         }
     }
 
+    /// Run `/bin/sh -c` inside a leased slot with streaming stdout relay.
+    pub async fn exec_sh_streaming(
+        &self,
+        slot_index: usize,
+        script: &str,
+        env: BTreeMap<String, String>,
+        on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    ) -> Result<TaskOutcome, String> {
+        self.call_exec_stream(
+            SandboxRpcReq::Exec {
+                slot_index,
+                argv: vec!["/bin/sh".into(), "-c".into(), script.to_string()],
+                env,
+                stream: true,
+            },
+            on_stdout_line,
+        )
+        .await
+    }
+
     pub async fn exec_solve(
         &self,
         slot_index: usize,

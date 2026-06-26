@@ -421,7 +421,6 @@ function runAgentPrompt(url, prompt, token, stream) {
     };
 
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "spawn" }));
       ws.send(JSON.stringify({ type: "prompt", text: prompt }));
     };
     ws.onmessage = (/** @type {{ data: string | ArrayBuffer }} */ evt) => {

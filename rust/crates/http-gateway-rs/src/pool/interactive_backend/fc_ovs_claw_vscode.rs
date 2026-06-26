@@ -130,8 +130,8 @@ pub fn fc_ovs_machine_settings(gateway_host: &str, gateway_public_host: &str) ->
 /// Bundled VSIX in gateway image (`build.sh` packages before image build). Author: kejiqing
 pub const BUNDLED_VSIX_DIR: &str = "/app/deploy/stack";
 
-/// Load VSIX bytes: `CLAW_FC_OVS_VSIX` → NAS → gateway image bundle.
-pub async fn load_claw_vscode_vsix(nas_root: &Path) -> Result<(Vec<u8>, String), String> {
+/// Load VSIX bytes: `CLAW_FC_OVS_VSIX` → gateway image bundle → repo package.
+pub async fn load_claw_vscode_vsix(_nas_root: &Path) -> Result<(Vec<u8>, String), String> {
     let ext_ver = claw_vscode_extension_version();
 
     if let Ok(raw) = std::env::var("CLAW_FC_OVS_VSIX") {
@@ -139,16 +139,6 @@ pub async fn load_claw_vscode_vsix(nas_root: &Path) -> Result<(Vec<u8>, String),
         if !path.is_empty() {
             return read_vsix_file(path, &ext_ver).await;
         }
-    }
-
-    let tools_rel = std::env::var("CLAW_FC_NAS_TOOLS_REL")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| ".claw-fc-tools".to_string());
-    let nas_vsix = nas_root.join(&tools_rel).join("claw-vscode.vsix");
-    if let Ok(out) = read_vsix_file(&nas_vsix, &ext_ver).await {
-        return Ok(out);
     }
 
     let bundled = Path::new(BUNDLED_VSIX_DIR).join(format!("claw.claw-vscode-{ext_ver}.vsix"));
@@ -165,8 +155,7 @@ pub async fn load_claw_vscode_vsix(nas_root: &Path) -> Result<(Vec<u8>, String),
     }
 
     Err(format!(
-        "claw-vscode VSIX not found (set CLAW_FC_OVS_VSIX, NAS {}, or rebuild gateway image with packaged VSIX)",
-        nas_vsix.display()
+        "claw-vscode VSIX not found (set CLAW_FC_OVS_VSIX or rebuild gateway image with packaged VSIX)"
     ))
 }
 

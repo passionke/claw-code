@@ -501,6 +501,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cli.set_reasoning_effort(reasoning_effort);
             cli.run_turn_with_output(&effective_prompt, output_format, compact)?;
         }
+        CliAction::ResumePrompt {
+            session_path,
+            prompt,
+            model,
+            output_format,
+            allowed_tools,
+            permission_mode,
+            reasoning_effort,
+            allow_broad_cwd,
+            thinking_enabled,
+        } => {
+            enforce_broad_cwd_policy(allow_broad_cwd, output_format)?;
+            if output_format != CliOutputFormat::Text {
+                return Err(
+                    "--resume … -p requires text output (omit --output-format json)".into(),
+                );
+            }
+            let stdin_context = if matches!(permission_mode, PermissionMode::DangerFullAccess) {
+                read_piped_stdin()
+            } else {
+                None
+            };
+            let effective_prompt = merge_prompt_with_stdin(&prompt, stdin_context.as_deref());
+            run_resume_prompt_turn(
+                &session_path,
+                &effective_prompt,
+                model,
+                allowed_tools,
+                permission_mode,
+                reasoning_effort,
+                thinking_enabled,
+            )?;
+        }
         CliAction::Doctor { output_format } => run_doctor(output_format)?,
         CliAction::Acp { output_format } => print_acp_status(output_format)?,
         CliAction::State { output_format } => run_worker_state(output_format)?,
@@ -649,6 +682,18 @@ enum CliAction {
         reasoning_effort: Option<String>,
         allow_broad_cwd: bool,
         /// Overrides `.claw.json` `thinkingEnabled` when set (`--thinking` / `--no-thinking`).
+        thinking_enabled: Option<bool>,
+    },
+    /// `claw --resume SESSION.jsonl -p "…"` — one-shot turn on an existing session file (OVS agent).
+    ResumePrompt {
+        session_path: PathBuf,
+        prompt: String,
+        model: String,
+        output_format: CliOutputFormat,
+        allowed_tools: Option<AllowedToolSet>,
+        permission_mode: PermissionMode,
+        reasoning_effort: Option<String>,
+        allow_broad_cwd: bool,
         thinking_enabled: Option<bool>,
     },
     Doctor {
@@ -893,13 +938,28 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 if prompt.trim().is_empty() {
                     return Err("-p requires a prompt string".to_string());
                 }
+                let permission_mode =
+                    permission_mode_override.unwrap_or_else(default_permission_mode);
+                let allowed_tools = normalize_allowed_tools(&allowed_tool_values)?;
+                if rest.len() >= 2 && rest[0] == "--resume" {
+                    return Ok(CliAction::ResumePrompt {
+                        session_path: PathBuf::from(&rest[1]),
+                        prompt,
+                        model: resolve_model_alias_with_config(&model),
+                        output_format,
+                        allowed_tools,
+                        permission_mode,
+                        reasoning_effort: reasoning_effort.clone(),
+                        allow_broad_cwd,
+                        thinking_enabled,
+                    });
+                }
                 return Ok(CliAction::Prompt {
                     prompt,
                     model: resolve_model_alias_with_config(&model),
                     output_format,
-                    allowed_tools: normalize_allowed_tools(&allowed_tool_values)?,
-                    permission_mode: permission_mode_override
-                        .unwrap_or_else(default_permission_mode),
+                    allowed_tools,
+                    permission_mode,
                     compact,
                     base_commit: base_commit.clone(),
                     reasoning_effort: reasoning_effort.clone(),
@@ -4657,6 +4717,71 @@ impl HookAbortMonitor {
         }
         if let Some(join_handle) = self.join_handle.take() {
             let _ = join_handle.join();
+        }
+    }
+}
+
+/// One-shot user turn on an existing session jsonl (`claw --resume PATH -p "…"`). Author: kejiqing
+fn run_resume_prompt_turn(
+    session_path: &Path,
+    input: &str,
+    model: String,
+    allowed_tools: Option<AllowedToolSet>,
+    permission_mode: PermissionMode,
+    reasoning_effort: Option<String>,
+    thinking_enabled: Option<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (handle, session) = load_session_reference(&session_path.display().to_string())?;
+    let resolved_model = resolve_repl_model(model);
+    let system_prompt = build_system_prompt(false)?;
+    let hook_abort_signal = runtime::HookAbortSignal::new();
+    let mut runtime = build_runtime(
+        session,
+        &handle.id,
+        resolved_model,
+        system_prompt,
+        true,
+        true,
+        allowed_tools,
+        permission_mode,
+        None,
+        thinking_enabled,
+    )?
+    .with_hook_abort_signal(hook_abort_signal.clone());
+    let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
+    if let Some(effort) = reasoning_effort {
+        runtime.api_client_mut().set_reasoning_effort(Some(effort));
+    }
+
+    let mut stdout = io::stdout();
+    let mut display = DisplaySession::new(&mut stdout);
+    display.begin_turn(input)?;
+    display.status(StatusPhase::Thinking, "🦀 Thinking...")?;
+    let mut permission_prompter = CliPermissionPrompter::new(permission_mode);
+    let result = runtime.run_turn(input, Some(&mut permission_prompter));
+    hook_abort_monitor.stop();
+    match result {
+        Ok(summary) => {
+            runtime.session().save_to_path(&handle.path)?;
+            if display_mode() == DisplayMode::Web {
+                if let Some(event) = summary.auto_compaction {
+                    display.transcript_note(
+                        "system",
+                        &format_auto_compaction_notice(event.removed_message_count),
+                    )?;
+                }
+            }
+            display.status(StatusPhase::Done, "✨ Done")?;
+            runtime.shutdown_plugins()?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = runtime.shutdown_plugins();
+            display.status(StatusPhase::Failed, "❌ Request failed")?;
+            if display_mode() == DisplayMode::Web {
+                display.transcript_note("error", &error.to_string())?;
+            }
+            Err(Box::new(error))
         }
     }
 }
@@ -12092,6 +12217,37 @@ mod tests {
         assert!(report.contains("plugin slash commands"));
         assert!(report.contains("statusline"));
         assert!(report.contains("session hooks"));
+    }
+
+    #[test]
+    fn parses_resume_with_dash_p_as_resume_prompt() {
+        let args = vec![
+            "--allow-broad-cwd".to_string(),
+            "--model".to_string(),
+            "openai/test".to_string(),
+            "--resume".to_string(),
+            "/claw_ds/.claw/interactive/seg/interactive-session.jsonl".to_string(),
+            "-p".to_string(),
+            "hi".to_string(),
+        ];
+        match parse_args(&args).expect("ovs agent argv should parse") {
+            CliAction::ResumePrompt {
+                session_path,
+                prompt,
+                model,
+                output_format,
+                ..
+            } => {
+                assert_eq!(
+                    session_path,
+                    PathBuf::from("/claw_ds/.claw/interactive/seg/interactive-session.jsonl")
+                );
+                assert_eq!(prompt, "hi");
+                assert_eq!(model, "openai/test");
+                assert_eq!(output_format, CliOutputFormat::Text);
+            }
+            other => panic!("expected ResumePrompt, got {other:?}"),
+        }
     }
 
     #[test]
