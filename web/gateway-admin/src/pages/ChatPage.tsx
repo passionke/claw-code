@@ -77,7 +77,6 @@ function isSys(item: ThreadItem): item is SysEntry {
 
 /** solve_async 对话：按时间线 user → assistant 卡片交错展示。Author: kejiqing */
 const CHAT_AUDIT_ONLY = false;
-const CODING_TERMINAL_HREF = "/coding";
 export default function ChatPage() {
   const { gatewayBase, projId, projectConfig } = useApp();
   const { tapLiveBase, tapLiveTemplate } = useChatSession();
@@ -343,15 +342,7 @@ export default function ChatPage() {
             type="info"
             showIcon
             message="对话页仅用于审计与历史查看"
-            description={
-              <>
-                交互式编码请使用{" "}
-                <a href={CODING_TERMINAL_HREF} target="_blank" rel="noreferrer">
-                  Coding 终端
-                </a>
-                （ttyd + claw REPL）。
-              </>
-            }
+            description="交互式编码请使用 OVS（/ovs?projId=）。"
             style={{ margin: "0 12px 8px" }}
           />
         ) : null}

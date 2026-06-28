@@ -65,6 +65,8 @@ claw_deploy_preflight() {
       return 1
     }
     echo "    pool: remote ${CLAW_POOL_REMOTE_BASE} (pool_id=${CLAW_POOL_ID})" >&2
+  elif claw_interactive_backend_is_fc; then
+    echo "    pool: FC backend (no host claw-pool-daemon)" >&2
   else
     claw_pool_daemon_on_host || return 1
   fi

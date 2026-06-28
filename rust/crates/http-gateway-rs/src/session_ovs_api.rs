@@ -7,7 +7,8 @@ use axum::Json;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
-use crate::pool::interactive_backend::{ovs_backend_is_fc, FcOvsSingleton, FcProjWarmPool};
+use crate::gateway_fc_ovs_settings::{self, workspace_folder_path, workspace_folder_url};
+use crate::pool::interactive_backend::{ovs_backend_is_fc, FcProjWarmPool};
 use crate::pool::proj_work_dir;
 use crate::session_db::GatewaySessionDb;
 use crate::session_terminal_api;
@@ -120,7 +121,6 @@ pub fn ovs_workspace_folder(ctx: &OvsApiContext, proj_id: i64) -> String {
 pub async fn get_ovs_workspace(
     ctx: OvsApiContext,
     session_db: &GatewaySessionDb,
-    fc_ovs: Option<&FcOvsSingleton>,
     fc_warm: Option<&FcProjWarmPool>,
     proj_id: i64,
 ) -> Result<Json<OvsWorkspaceResponse>, OvsApiError> {
@@ -132,23 +132,22 @@ pub async fn get_ovs_workspace(
     }
 
     if ovs_backend_is_fc() {
-        let fc_ovs = fc_ovs.ok_or_else(|| {
-            OvsApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "CLAW_OVS_BACKEND=fc but OVS singleton is not configured",
-            )
-        })?;
         if let Some(pool) = fc_warm {
             pool.ensure_warm(proj_id)
                 .await
                 .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         }
-        let base_url = fc_ovs
-            .ensure()
+        let base_url = gateway_fc_ovs_settings::load_fc_ovs_base_url(session_db)
             .await
-            .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        let workspace_folder = FcOvsSingleton::workspace_folder_path(proj_id);
-        let ovs_folder_url = FcOvsSingleton::workspace_folder_url(&base_url, proj_id);
+            .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or_else(|| {
+                OvsApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "OVS not configured — run deploy/stack/lib/fc-ovs-up.sh",
+                )
+            })?;
+        let workspace_folder = workspace_folder_path(proj_id);
+        let ovs_folder_url = workspace_folder_url(&base_url, proj_id);
         return Ok(Json(OvsWorkspaceResponse {
             proj_id,
             workspace_folder,

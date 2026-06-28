@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use crate::cluster_identity::gateway_cluster_id_optional;
 use crate::gateway_admin_mcp_token::{admin_mcp_tokens_public, AdminMcpTokenPublic};
 use crate::gateway_claw_tap_settings::{ClawTapSettings, ClawTapSettingsPublic};
+use crate::gateway_fc_ovs_settings::FcOvsSettings;
 use crate::gateway_fc_nas_settings::FcNasSettingsPublic;
 use crate::gateway_llm_cluster_store::{self, resolve_llm_cluster_id};
 use crate::gateway_llm_model_apply::{self, LlmModelApplyOutcome};
@@ -226,6 +227,8 @@ pub struct GatewayGlobalSettingsStore {
     pub(crate) cluster_id: String,
     #[serde(rename = "clawTap", default)]
     pub(crate) claw_tap: ClawTapSettings,
+    #[serde(rename = "fcOvs", default)]
+    pub(crate) fc_ovs: FcOvsSettings,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

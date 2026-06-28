@@ -36,8 +36,6 @@ ADMIN_DIST = (
     else DIR.parent / "gateway-admin" / "dist"
 )
 ADMIN_INDEX = ADMIN_DIST / "index.html"
-CODING_HTML = DIR / "coding.html"
-CLAW_DISPLAY_DIR = DIR / "claw-display"
 
 _ADMIN_MIME = {
     ".html": "text/html; charset=utf-8",
@@ -408,102 +406,6 @@ def _relay_ws(client: socket.socket, upstream: socket.socket) -> None:
     t2.start()
     t1.join()
     t2.join()
-
-
-def proxy_coding_workspace_media(
-    handler: BaseHTTPRequestHandler, session_id: str, proj_id: str, rel_path: str
-) -> None:
-    if not read_session_user(handler):
-        handler.send_error(401, "login required")
-        return
-    if not session_id.strip() or not str(proj_id).strip() or not rel_path.strip():
-        handler.send_error(400, "sessionId, projId and path required")
-        return
-    subpath = (
-        f"/v1/sessions/{urllib.parse.quote(session_id, safe='')}"
-        f"/workspace/media?projId={urllib.parse.quote(str(proj_id), safe='')}"
-        f"&path={urllib.parse.quote(rel_path, safe='')}"
-    )
-    url = _effective_proxy_url(PUBLIC_GATEWAY_BASE, subpath)
-    if not is_allowed_upstream(url):
-        handler.send_error(400, "upstream not allowed")
-        return
-    try:
-        req = urllib.request.Request(url, method="GET")
-        upstream = urllib.request.urlopen(req, timeout=60)
-    except urllib.error.HTTPError as e:
-        handler.send_response(e.code)
-        handler.send_header("Content-Type", e.headers.get("Content-Type", "text/plain"))
-        handler.end_headers()
-        handler.wfile.write(e.read())
-        return
-    except urllib.error.URLError as e:
-        handler.send_error(502, str(e.reason if hasattr(e, "reason") else e))
-        return
-    try:
-        handler.send_response(upstream.status)
-        ct = upstream.headers.get("Content-Type")
-        if ct:
-            handler.send_header("Content-Type", ct)
-        cc = upstream.headers.get("Cache-Control")
-        if cc:
-            handler.send_header("Cache-Control", cc)
-        handler.end_headers()
-        while True:
-            chunk = upstream.read(65536)
-            if not chunk:
-                break
-            handler.wfile.write(chunk)
-    finally:
-        upstream.close()
-
-
-def proxy_coding_terminal_ws(
-    handler: BaseHTTPRequestHandler, session_id: str, proj_id: str
-) -> None:
-    if not read_session_user(handler):
-        handler.send_error(401, "login required")
-        return
-    client_key = handler.headers.get("Sec-WebSocket-Key")
-    if not client_key:
-        handler.send_error(400, "missing Sec-WebSocket-Key")
-        return
-    if not session_id.strip() or not str(proj_id).strip():
-        handler.send_error(400, "sessionId and projId required")
-        return
-    subpath = (
-        f"/v1/sessions/{urllib.parse.quote(session_id, safe='')}"
-        f"/terminal/ws?projId={urllib.parse.quote(str(proj_id), safe='')}"
-    )
-    upstream_url = _effective_proxy_url(PUBLIC_GATEWAY_BASE, subpath)
-    if not is_allowed_upstream(upstream_url):
-        handler.send_error(400, "upstream host/port not allowed")
-        return
-    try:
-        upstream = _connect_upstream_ws(upstream_url)
-    except (ConnectionError, OSError, ValueError) as e:
-        handler.send_error(502, f"upstream websocket: {e}")
-        return
-    accept = _ws_accept(client_key)
-    proto = handler.headers.get("Sec-WebSocket-Protocol", "tty")
-    handler.connection.sendall(
-        b"HTTP/1.1 101 Switching Protocols\r\n"
-        b"Upgrade: websocket\r\n"
-        b"Connection: Upgrade\r\n"
-        + b"Sec-WebSocket-Accept: "
-        + accept.encode("ascii")
-        + b"\r\nSec-WebSocket-Protocol: "
-        + proto.encode("ascii")
-        + b"\r\n\r\n"
-    )
-    try:
-        _relay_ws(handler.connection, upstream)
-    finally:
-        for s in (handler.connection, upstream):
-            try:
-                s.close()
-            except OSError:
-                pass
 
 
 def ovs_workspace_folder(proj_id: str) -> str:
@@ -919,29 +821,6 @@ def send_static_bytes(
     handler.wfile.write(data)
 
 
-def _claw_display_safe_path(rel: str) -> Path | None:
-    rel = rel.lstrip("/")
-    if not rel:
-        return None
-    target = (CLAW_DISPLAY_DIR / rel).resolve()
-    root = CLAW_DISPLAY_DIR.resolve()
-    try:
-        target.relative_to(root)
-    except ValueError:
-        return None
-    return target if target.is_file() else None
-
-
-def serve_claw_display(handler: BaseHTTPRequestHandler, subpath: str) -> bool:
-    hit = _claw_display_safe_path(subpath)
-    if hit is None:
-        handler.send_error(404, "not found")
-        return True
-    mime = _ADMIN_MIME.get(hit.suffix.lower(), "application/octet-stream")
-    send_static_bytes(handler, 200, hit.read_bytes(), mime)
-    return True
-
-
 def _admin_dist_safe_path(rel: str) -> Path | None:
     """Resolve `rel` under ADMIN_DIST; reject path traversal."""
     rel = rel.lstrip("/")
@@ -1049,11 +928,6 @@ class Handler(BaseHTTPRequestHandler):
         qs = urllib.parse.parse_qs(parsed.query)
 
         if self.headers.get("Upgrade", "").lower() == "websocket":
-            if path.startswith("/coding/terminal/"):
-                session_id = urllib.parse.unquote(path[len("/coding/terminal/") :].strip("/"))
-                proj_id = (qs.get("projId") or qs.get("proj_id") or [""])[0]
-                proxy_coding_terminal_ws(self, session_id, proj_id)
-                return
             if path == "/ovs/agent/ws":
                 proj_id = (qs.get("projId") or qs.get("proj_id") or ["1"])[0]
                 session_id = (qs.get("sessionId") or qs.get("session_id") or [""])[0]
@@ -1162,43 +1036,6 @@ class Handler(BaseHTTPRequestHandler):
                 sys.stderr.flush()
             return
 
-        if path.startswith("/coding/workspace/") and path.endswith("/media"):
-            session_id = urllib.parse.unquote(
-                path[len("/coding/workspace/") : -len("/media")].strip("/")
-            )
-            proj_id = (qs.get("projId") or qs.get("proj_id") or [""])[0]
-            rel_path = (qs.get("path") or [""])[0]
-            proxy_coding_workspace_media(self, session_id, proj_id, rel_path)
-            return
-
-        if path.startswith("/claw-display/"):
-            if not read_session_user(self):
-                nxt = urllib.parse.quote("/coding", safe="")
-                send_redirect(self, f"/admin/login?next={nxt}")
-                return
-            serve_claw_display(self, path[len("/claw-display/") :])
-            return
-
-        if path in ("/coding", "/coding/"):
-            if not read_session_user(self):
-                nxt = urllib.parse.quote("/coding", safe="")
-                send_redirect(self, f"/admin/login?next={nxt}")
-                return
-            if not CODING_HTML.is_file():
-                send_html_bytes(
-                    self,
-                    503,
-                    b"<h1>coding.html missing</h1>",
-                )
-                return
-            send_static_bytes(
-                self,
-                200,
-                CODING_HTML.read_bytes(),
-                "text/html; charset=utf-8",
-            )
-            return
-
         if path == "/ovs" or path.startswith("/ovs/"):
             if path == "/ovs/agent/ws":
                 self.send_error(405, "use websocket")
@@ -1213,7 +1050,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path in ("/", "/index.html"):
-            send_redirect(self, "/coding")
+            send_redirect(self, "/admin")
             return
 
         self.send_error(404, "not found")

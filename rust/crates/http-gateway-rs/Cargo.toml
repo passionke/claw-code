@@ -13,10 +13,6 @@ path = "src/lib.rs"
 name = "http-gateway-rs"
 path = "src/main.rs"
 
-[[bin]]
-name = "claw-pool-daemon"
-path = "src/bin/claw-pool-daemon.rs"
-
 [dependencies]
 base64 = "0.22"
 flate2 = "1"
@@ -40,8 +36,6 @@ api = { path = "../api" }
 tools = { path = "../tools" }
 telemetry = { path = "../telemetry" }
 gateway-solve-turn = { path = "../gateway-solve-turn" }
-claw-sandbox-protocol = { path = "../../../sandbox/crates/claw-sandbox-protocol" }
-claw-sandbox-client = { path = "../../../sandbox/crates/claw-sandbox-client" }
 claw-fc-sandbox-client = { path = "../claw-fc-sandbox-client" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json", "uuid"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

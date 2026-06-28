@@ -229,11 +229,7 @@ claw_nuclear_pool_reset() {
   local http_port="${CLAW_POOL_HTTP_PORT:-9944}"
   local t0=$SECONDS t_step
   claw_log "nuclear pool reset begin: daemon :${port}/:${http_port} + workers + slot tree"
-  claw_log "[1/4] pool-daemon-down (skip tcp/legacy; nuclear owns teardown) …"
-  t_step=$SECONDS
-  CLAW_POOL_DOWN_TCP_KILL=0 CLAW_POOL_DOWN_LEGACY_CLEANUP=0 \
-    "${podman_dir}/lib/pool-daemon-down.sh" || true
-  claw_log "[1/4] pool-daemon-down done in $((SECONDS - t_step))s"
+  claw_log "[1/4] skip pool-daemon-down (host claw-sandbox removed) …"
   claw_log "[2/4] free TCP :${port} …"
   t_step=$SECONDS
   claw_kill_tcp_listeners "${port}" "pool-rpc"

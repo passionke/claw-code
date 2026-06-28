@@ -1,5 +1,5 @@
 //! FC cloud sandbox pool — `CLAW_INTERACTIVE_BACKEND=fc` 时 solve 走 fc-cloud。
-//! Worker 内 tap：proxy + trace 写；Live 观察见 `FcSessionObserveSingleton`。
+//! Worker 内 tap：proxy + trace 写；Live 观察见 `deploy/fc-sandbox/fc-tap-live-up.py` + PG。
 //! Author: kejiqing
 
 use std::collections::{BTreeMap, HashMap};
@@ -30,7 +30,6 @@ pub const FC_POOL_ID: &str = "fc-cloud";
 struct FcSlot {
     sandbox_id: String,
     session_segment: String,
-    worker_id: String,
     proj_id: i64,
 }
 
@@ -161,7 +160,6 @@ impl PoolOps for FcOrchestratedPool {
             FcSlot {
                 sandbox_id: handle.sandbox_id.clone(),
                 session_segment: session_segment.clone(),
-                worker_id,
                 proj_id,
             },
         );

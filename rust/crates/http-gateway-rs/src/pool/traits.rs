@@ -20,7 +20,7 @@ pub struct TaskOutcome {
     pub stderr: String,
 }
 
-/// Abstract pool: host [`super::rpc::PoolRpcClient`] talking to `claw-pool-daemon`. Author: kejiqing
+/// Abstract solve pool; the supported implementation is FC cloud sandbox. Author: kejiqing
 #[async_trait]
 pub trait PoolOps: Send + Sync {
     async fn acquire_slot(

@@ -1,5 +1,7 @@
 # 稳定沙箱主机（10.22.28.94）
 
+> **DEPRECATED（2026-06）** 宿主机 pool / `stable-dev-up` 已移除。请用 **FC + 外连 PG**：[`docs/architecture-governance.md`](../../../docs/architecture-governance.md)、`env.selfhosted-e2b.example`。
+
 Author: kejiqing
 
 与 GitLab CI **隔离**的 dev-stable：PG `5434` / pool `9954` / tap 代理 `8081` / tap Live `3001`。

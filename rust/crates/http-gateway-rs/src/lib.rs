@@ -17,7 +17,6 @@
 
 pub mod admin_mcp_http;
 pub mod biz_advice_report;
-pub mod biz_report_pool_proxy;
 pub mod biz_report_sse_log;
 pub mod claw_tap_cluster_state;
 pub mod client_origin;
@@ -27,7 +26,9 @@ pub mod gateway_admin_mcp_token;
 pub mod gateway_claw_tap_lifecycle;
 pub mod gateway_claw_tap_settings;
 pub mod gateway_fc_nas_settings;
+pub mod gateway_fc_ovs_settings;
 pub mod gateway_fc_observe_proxy;
+pub mod gateway_fc_observe_reset;
 pub mod gateway_global_settings;
 pub mod gateway_llm_cluster_store;
 pub mod gateway_llm_config_sync;
@@ -56,7 +57,6 @@ pub mod session_execution;
 pub mod session_merge;
 pub mod session_ovs_api;
 pub mod session_terminal_api;
-pub mod session_workspace_api;
 pub mod solve_llm_route;
 pub mod task_status;
 pub mod turn_id;

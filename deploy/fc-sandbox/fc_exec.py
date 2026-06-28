@@ -105,6 +105,9 @@ def main() -> None:
     sandbox_id = payload.get("sandbox_id") or ""
     script = payload.get("script") or ""
     timeout = int(payload.get("timeout") or (600 if op == "exec_solve" else 180))
+    # connect() without an explicit timeout makes the e2b SDK reset the sandbox
+    # lifetime to its 300s default; keep the create-time lifetime instead.
+    sandbox_timeout = int(payload.get("sandbox_timeout") or 0)
     if not (payload.get("api_key") or "").strip():
         _fail("api_key required")
     if not sandbox_id.strip():
@@ -123,7 +126,10 @@ def main() -> None:
 
     connect = _connect_opts(payload)
     try:
-        sandbox = Sandbox.connect(sandbox_id, **connect)
+        if sandbox_timeout > 0:
+            sandbox = Sandbox.connect(sandbox_id, timeout=sandbox_timeout, **connect)
+        else:
+            sandbox = Sandbox.connect(sandbox_id, **connect)
         if op == "exec_solve":
             env = payload.get("env") or {}
             exports = "\n".join(

@@ -1,5 +1,7 @@
 # Live BOSS 报告契约（stdout-v1-pool-sse）
 
+> **2026-06 FC-only：** 宿主机 `claw-sandbox` 已移除。路径 B 现经 **gateway LiveReportHub + FC exec stdout**；`CLAW_SANDBOX_URL` / `:9944` **不再使用**。`claw_pool` JOIN 仍用于历史 turn 元数据。
+
 Author: kejiqing
 
 运行中 BOSS 报告增量流的权威说明。实现与排障以本文为准。
@@ -55,18 +57,15 @@ sequenceDiagram
 
 ---
 
-## 4. 部署与环境
+## 4. 部署与环境（FC）
 
 | 变量 | 说明 |
 |------|------|
-| `CLAW_SANDBOX_URL` | Gateway → pool HTTP RPC（`POST /v1/sandbox/rpc`） |
-| `CLAW_POOL_HTTP_BASE` | 与 `CLAW_SANDBOX_URL` 同义后备；live JOIN 失败返回 **503** |
-| `CLAW_POOL_ID` | Gateway 与 `claw-sandbox` 须一致；入队时预绑 `gateway_turns.pool_id` |
-| `CLAW_POOL_HTTP_BIND` | `claw-sandbox` 监听（默认 `0.0.0.0:9944`） |
+| `CLAW_FC_API_URL` | e2b API |
+| `CLAW_CLUSTER_ID` | PG 行级隔离 |
+| `gateway_turns.pool_id` | 历史 JOIN；FC 新 turn 可能为空或占位 |
 
-**必须**运行宿主机 **`claw-sandbox`**。Gateway 持本地 LiveReportHub（exec 流中继）。
-
-改 Rust 后：`./deploy/stack/gateway.sh pack-deploy`，并重启 pool daemon。
+改 Rust 后：`./deploy/stack/gateway.sh pack-deploy`。
 
 ---
 

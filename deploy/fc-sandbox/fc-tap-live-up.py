@@ -5,6 +5,7 @@ Usage (from repo root, after `.env` with self-hosted e2b vars):
   set -a && source .env && set +a
   python3 deploy/fc-sandbox/fc-tap-live-up.py
   python3 deploy/fc-sandbox/fc-tap-live-up.py --reuse   # reconnect + ensure Live
+  python3 deploy/fc-sandbox/fc-tap-live-up.py --reset   # kill old observe-singleton, recreate, write PG
   python3 deploy/fc-sandbox/fc-tap-live-up.py --json
 
 Requires e2b SDK for in-sandbox exec: auto-creates `.venv-fc` on first run
@@ -19,15 +20,19 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+_FC_SANDBOX_DIR = Path(__file__).resolve().parent
+if str(_FC_SANDBOX_DIR) not in sys.path:
+    sys.path.insert(0, str(_FC_SANDBOX_DIR))
 EXEC_HELPER = ROOT / "deploy/fc-sandbox/fc_exec.py"
 GUEST_CLAW_WS = "/claw_ws"
-_FC_VENV_DEPS = ("e2b==2.26.0", "e2b-code-interpreter", "python-dotenv")
+_FC_VENV_DEPS = ("e2b==2.26.0", "e2b-code-interpreter", "python-dotenv", "psycopg[binary]")
 
 
 def _fc_venv_dir() -> Path:
@@ -46,7 +51,7 @@ def _fc_python() -> Path:
         return py
     try:
         subprocess.run(
-            [str(py), "-c", "import e2b_code_interpreter"],
+            [str(py), "-c", "import e2b_code_interpreter; import psycopg"],
             capture_output=True,
             check=True,
         )
@@ -54,6 +59,13 @@ def _fc_python() -> Path:
         print(f"==> install FC venv deps in {venv}", file=sys.stderr)
         subprocess.check_call([str(venv / "bin" / "pip"), "install", "-q", *_FC_VENV_DEPS])
     return py
+
+
+def _ensure_fc_venv_python() -> None:
+    """Re-exec under .venv-fc so psycopg + e2b share one interpreter. Author: kejiqing"""
+    fc_py = _fc_python()
+    if Path(sys.executable).resolve() != fc_py.resolve():
+        os.execv(str(fc_py), [str(fc_py), *sys.argv])
 
 
 def _load_dotenv(path: Path) -> None:
@@ -226,6 +238,7 @@ def _run_fc_exec(
     domain: str,
     self_hosted: bool,
     timeout: int = 180,
+    sandbox_timeout: int = 0,
 ) -> None:
     if not EXEC_HELPER.is_file():
         raise RuntimeError(f"missing {EXEC_HELPER}")
@@ -239,6 +252,7 @@ def _run_fc_exec(
         "script": script,
         "self_hosted": self_hosted,
         "timeout": timeout,
+        "sandbox_timeout": sandbox_timeout,
     }
     proc = subprocess.run(
         [str(_fc_python()), str(EXEC_HELPER)],
@@ -315,6 +329,34 @@ def _kill_sandbox(sandbox_id: str, api_url: str, api_key: str, self_hosted: bool
     _http_json("DELETE", f"{api_url.rstrip('/')}/sandboxes/{sandbox_id}", api_key, self_hosted)
 
 
+def _proxy_base_url(sandbox_id: str, domain: str, proxy_port: int = 8080) -> str:
+    host = _service_public_host(proxy_port, sandbox_id, domain)
+    scheme = "http" if _is_self_hosted(_env("CLAW_FC_API_URL", "http://10.8.0.9:3000")) else "https"
+    return f"{scheme}://{host}"
+
+
+def _persist_observe_urls_to_pg(urls: dict[str, str], domain: str, live_port: int) -> None:
+    """Write observe tap URLs into gateway_global_settings.settings_json.clawTap. Author: kejiqing"""
+    from fc_pg_settings import merge_settings_json_key
+
+    sandbox_id = urls["sandboxId"]
+    proxy_port = 8080
+    proxy_host = _service_public_host(proxy_port, sandbox_id, domain)
+    now_ms = int(time.time() * 1000)
+    patch = {
+        "mode": "remote",
+        "host": proxy_host,
+        "proxyPort": proxy_port,
+        "livePort": live_port,
+        "updatedAtMs": now_ms,
+        "liveBaseUrl": urls["liveBaseUrl"],
+        "liveSessionUrlTemplate": urls["liveSessionUrlTemplate"],
+        "proxyBaseUrl": _proxy_base_url(sandbox_id, domain, proxy_port),
+        "fcObserveSandboxId": sandbox_id,
+    }
+    merge_settings_json_key("clawTap", patch, now_ms=now_ms)
+
+
 def _verify_traffic(live_base_url: str) -> bool:
     proc = subprocess.run(
         [
@@ -343,11 +385,22 @@ def _verify_traffic(live_base_url: str) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start e2b claude-tap Live (no gateway proxy)")
     parser.add_argument("--reuse", action="store_true", help="reuse existing observe-singleton sandbox")
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="kill existing observe-singleton, create fresh sandbox, start tap, write PG",
+    )
     parser.add_argument("--kill", metavar="SANDBOX_ID", help="kill sandbox and exit")
     parser.add_argument("--json", action="store_true", help="print JSON only")
+    parser.add_argument(
+        "--no-persist",
+        action="store_true",
+        help="skip writing liveBaseUrl to gateway_global_settings (default: persist on success)",
+    )
     args = parser.parse_args()
 
     _load_dotenv(ROOT / ".env")
+    _ensure_fc_venv_python()
 
     api_key = _env("CLAW_FC_API_KEY") or _env("E2B_API_KEY") or _env("ALIYUN_E2B_TOKEN")
     if not api_key:
@@ -371,7 +424,12 @@ def main() -> int:
     sandbox_id: str | None = None
     domain = fc_domain
 
-    if args.reuse:
+    if args.reset:
+        existing = _find_observe_singleton(cluster_id, api_url, api_key, self_hosted)
+        if existing:
+            print(f"==> reset: kill observe sandbox {existing}", file=sys.stderr)
+            _kill_sandbox(existing, api_url, api_key, self_hosted)
+    elif args.reuse:
         sandbox_id = _find_observe_singleton(cluster_id, api_url, api_key, self_hosted)
         if sandbox_id:
             print(f"==> reuse observe sandbox {sandbox_id}", file=sys.stderr)
@@ -399,6 +457,7 @@ def main() -> int:
         sandbox_url=sandbox_url,
         domain=domain,
         self_hosted=self_hosted,
+        sandbox_timeout=timeout_secs,
     )
 
     urls = _browser_urls(sandbox_id, domain, live_port)
@@ -407,6 +466,10 @@ def main() -> int:
 
     ok = _verify_traffic(urls["liveBaseUrl"])
     urls["trafficReachable"] = ok
+
+    if not args.no_persist:
+        print("==> persist observe tap URLs to PG …", file=sys.stderr)
+        _persist_observe_urls_to_pg(urls, domain, live_port)
 
     if args.json:
         print(json.dumps(urls, indent=2, ensure_ascii=False))

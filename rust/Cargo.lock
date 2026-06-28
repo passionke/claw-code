@@ -481,31 +481,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "claw-sandbox-client"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64",
- "claw-sandbox-protocol",
- "futures-util",
- "gateway-solve-turn",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "claw-sandbox-protocol"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "claw-server"
 version = "0.1.0"
 dependencies = [
@@ -1278,8 +1253,6 @@ dependencies = [
  "bytes",
  "chrono",
  "claw-fc-sandbox-client",
- "claw-sandbox-client",
- "claw-sandbox-protocol",
  "flate2",
  "futures-util",
  "gateway-solve-turn",

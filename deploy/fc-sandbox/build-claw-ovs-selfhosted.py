@@ -2,14 +2,13 @@
 """Build claw-ovs template (debian base + HTTP bundle) on self-hosted e2b. Author: kejiqing"""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
-import threading
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -78,67 +77,26 @@ def _sudo_nfs_setup() -> str:
     && chmod 440 /etc/sudoers.d/claw-nfs"""
 
 
-def _dockerfile_http(base_url: str) -> str:
-    b = base_url.rstrip("/")
+def _dockerfile_context() -> str:
     sudo = _sudo_nfs_setup()
     return f"""FROM docker.1ms.run/library/debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     nfs-common ca-certificates curl{sudo} \\
     && rm -rf /var/lib/apt/lists/* \\
-    && mkdir -p /home /opt /claw_ws /tmp/ovs-bundle \\
-    && curl -fsSL {b}/claw-ovs-bundle.tar.gz | tar -xz -C /tmp/ovs-bundle \\
+    && mkdir -p /home /opt /claw_ws /tmp/ovs-bundle
+COPY claw-ovs-bundle.tar.gz /tmp/claw-ovs-bundle.tar.gz
+RUN tar -xz -C /tmp/ovs-bundle -f /tmp/claw-ovs-bundle.tar.gz \\
     && mv /tmp/ovs-bundle/openvscode-server /home/.openvscode-server \\
     && mv /tmp/ovs-bundle/claw-extensions /opt/claw-extensions \\
     && mv /tmp/ovs-bundle/claw-ovs /opt/claw-ovs \\
-    && rm -rf /tmp/ovs-bundle \\
+    && rm -rf /tmp/ovs-bundle /tmp/claw-ovs-bundle.tar.gz \\
     && chmod -R a+rwX /home/.openvscode-server /opt/claw-extensions /opt/claw-ovs /claw_ws
 """
-
-
-def _make_handler(directory: Path) -> type[SimpleHTTPRequestHandler]:
-    dir_str = str(directory)
-
-    class Handler(SimpleHTTPRequestHandler):
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            super().__init__(*args, directory=dir_str, **kwargs)
-
-    return Handler
-
-
-class _ArtifactServer:
-    def __init__(self, directory: Path, host: str, port: int) -> None:
-        self._directory = directory
-        self._host = host
-        self._port = port
-        self._httpd: ThreadingHTTPServer | None = None
-        self._thread: threading.Thread | None = None
-
-    @property
-    def base_url(self) -> str:
-        return f"http://{self._host}:{self._port}"
-
-    def __enter__(self) -> "_ArtifactServer":
-        bind_host = _env("CLAW_E2B_TEMPLATE_HTTP_BIND", "0.0.0.0")
-        handler = _make_handler(self._directory)
-        self._httpd = ThreadingHTTPServer((bind_host, self._port), handler)
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
-        self._thread.start()
-        print(f"==> artifact HTTP {self.base_url} (dir={self._directory})")
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        if self._httpd:
-            self._httpd.shutdown()
-            self._httpd.server_close()
-        if self._thread:
-            self._thread.join(timeout=5)
 
 
 def main() -> int:
     opts = _conn_opts()
     alias = _env("CLAW_FC_OVS_TEMPLATE", "claw-ovs")
-    host = _env("CLAW_E2B_OVS_TEMPLATE_HTTP_HOST", _env("CLAW_E2B_TEMPLATE_HTTP_HOST", "10.8.0.2"))
-    port = int(_env("CLAW_E2B_OVS_TEMPLATE_HTTP_PORT", "18889"))
 
     os.environ.setdefault("E2B_API_KEY", opts["api_key"])
     os.environ.setdefault("E2B_API_URL", opts["api_url"])
@@ -152,11 +110,11 @@ def main() -> int:
         print("==> staging OVS tree from podman image …")
         _stage_ovs_tree(staging)
         _pack_bundle(staging)
-        dockerfile = _dockerfile_http(f"http://{host}:{port}")
-        with _ArtifactServer(staging, host, port) as server:
-            print(f"==> http build artifacts={server.base_url!r}")
-            template = Template().from_dockerfile(dockerfile)
-            Template.build(template, alias=alias, on_build_logs=default_build_logger(), **opts)
+        dockerfile_path = staging / "Dockerfile"
+        dockerfile_path.write_text(_dockerfile_context(), encoding="utf-8")
+        print(f"==> build ctx={staging}")
+        template = Template(file_context_path=str(staging)).from_dockerfile(str(dockerfile_path))
+        Template.build(template, alias=alias, on_build_logs=default_build_logger(), **opts)
 
     print(f"OK: template {alias!r} ready on {opts['api_url']}")
     return 0

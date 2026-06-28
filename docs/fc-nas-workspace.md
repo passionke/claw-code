@@ -21,7 +21,6 @@ Author: kejiqing
 ├── proj_{N}/sessions/{segment}/  ← 必须是 symlink → ../workers/{workerId}
 ├── .claw-fc-tools/               ← claw / ttyd / claude-tap（FC bootstrap 拷贝源）
 ├── tap-traces/                   ← claude-tap traces（可选）
-└── .claw-pool-work/              ← 本机 podman_pool solve 用（与 FC worker 树分离）
 ```
 
 **Invariant：**
@@ -42,7 +41,6 @@ Author: kejiqing
 | **Gateway** | 本机 Podman 容器 | Mac host: `/Volumes/claw-nas` | 容器: `CLAW_WORK_ROOT` = `/var/lib/claw/workspace`（compose 直 bind NAS） | mkdir `workers/`、symlink `sessions/`、materialize `home/` |
 | **e2b（Mac / Linux）** | 10.8.0.9 等 | `/Volumes/claw-nas` 或 `/mnt/nas0` | FC 沙箱 guest: `/claw_ws` / `/claw_ds` / `/claw_host_root` | 仅直 bind `{hostMountRoot}/{relPath}`；写盘在 guest 内落到 NAS |
 | **OVS compose**（迁移期） | Gateway 同栈 | 同 Gateway | `/home/workspace` | 非 FC 时用 compose volume |
-| **podman_pool worker** | Gateway host | `CLAW_POOL_WORK_ROOT_BIND_SRC`（可与 NAS 同盘不同目录） | worker 容器 `/claw_ds` 等 | pool daemon |
 
 Admin 只读镜像：`GET /v1/gateway/global-settings` → `fcNas`（`nasHostMount`、`nasRootResolved`、`layoutActive`）。**改 NAS 只改 repo 根 `.env`，重启 gateway。**
 

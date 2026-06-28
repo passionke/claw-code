@@ -12,13 +12,12 @@ Usage:
   ./deploy/stack/gateway.sh <command>
 
 Commands:
-  quick         Daily local stack: host pool-daemon + fast playground image + up + check
+  quick         Daily local stack: playground image + up + check (FC-only)
   clean         Remove rust/target (or --debug-only) + .linux-artifacts; optional podman cache/images
   build         clean (default) + build images (Darwin: podman run compile; log: .build.log)
   pack-deploy   Build gateway images + restart stack (slow; after Rust/image changes; log: .build.log)
   playground    Run host playground UI (solve_async + /admin; builds admin dist first)
   admin-build   Local only: gateway-admin dist (needs Node>=18; set CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1)
-  claw-display-build  Local only: claw-display bundle for /coding (set CLAW_DISPLAY_LOCAL_BUILD=1)
   admin-reload  Local only: admin-build + copy dist into playground container (not for --release servers)
   solve-once-local  Host-side one-turn gateway-solve-once (no worker container)
   up            Start/recreate gateway + pool only (does not stop/start postgres)
@@ -26,9 +25,9 @@ Commands:
   pg-up         Start postgres only
   pg-down       Stop postgres only (data volume kept)
   restart       Recreate gateway stack (down + up)
-  pool-reset    Stop host pool daemon + remove all claw-worker containers
-  stable-dev-up Start dev-stable PG+pool+tap on Linux host (.env.dev-stable; see env.stable-dev-host.example)
-  pool-up       Start host claw-pool-daemon if HTTP down (skips if already listening; --restart to replace)
+  pool-reset    REMOVED — local podman pool deleted; use FC (CLAW_INTERACTIVE_BACKEND=fc)
+  stable-dev-up Start dev-stable PG+tap on Linux host (.env.dev-stable; see env.stable-dev-host.example)
+  pool-up       REMOVED — use CLAW_INTERACTIVE_BACKEND=fc
   fix-workspace chown ds_* sessions + pool slots to CLAW_WORKER_UID (before up if preflight failed)
   install-docker  Linux production: apt/dnf install docker.io + compose + registry mirror (idempotent)
   check         Connectivity smoke check (auto pool-up if HTTP down)
@@ -38,7 +37,7 @@ Commands:
   tap-up        Start pool claude-tap only (same as pool-up ensure; CLAUDE_TAP_MODE: docker/native)
   tap-down      Stop pool claude-tap only
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
-  bench         Pool bench 30s
+  bench         REMOVED — local pool bench deleted
   logs          Follow gateway logs
   ps            Show relevant containers
   e2e           Run tests/http-gateway-session-continuity-e2e.sh
@@ -76,7 +75,6 @@ case "${cmd}" in
   pack-deploy) run_with_manual_hint "${LIB}/pack-deploy.sh" "$@" ;;
   playground) "${LIB}/playground.sh" "$@" ;;
   admin-build) "${LIB}/build-gateway-admin.sh" "$@" ;;
-  claw-display-build) "${LIB}/build-claw-display.sh" "$@" ;;
   admin-reload) "${LIB}/admin-reload.sh" "$@" ;;
   solve-once-local) "${LIB}/solve-once-local.sh" "$@" ;;
   up) run_with_manual_hint "${LIB}/up.sh" "$@" ;;
@@ -87,9 +85,18 @@ case "${cmd}" in
     run_with_manual_hint "${LIB}/down.sh"
     run_with_manual_hint "${LIB}/up.sh" "$@"
     ;;
-  pool-reset) "${LIB}/pool-reset.sh" "$@" ;;
-  stable-dev-up) bash "${LIB}/stable-dev-host-up.sh" "$@" ;;
-  pool-up) "${LIB}/pool-daemon-up.sh" "$@" ;;
+  pool-reset)
+    echo "error: pool-reset removed (local claw-sandbox pool deleted; use CLAW_INTERACTIVE_BACKEND=fc)" >&2
+    exit 1
+    ;;
+  stable-dev-up)
+    echo "error: stable-dev-up removed (host claw-sandbox pool deleted; use infra-pg + FC)" >&2
+    exit 1
+    ;;
+  pool-up)
+    echo "error: pool-up removed (use CLAW_INTERACTIVE_BACKEND=fc)" >&2
+    exit 1
+    ;;
   fix-workspace) "${LIB}/fix-session-ownership.sh" "$@" ;;
   install-docker) "${LIB}/install-docker.sh" "$@" ;;
   check) "${LIB}/check-connectivity.sh" "$@" ;;
@@ -111,7 +118,10 @@ case "${cmd}" in
     rt="$(claw_container_runtime_cli)"
     claw_claude_tap_build_image "${rt}" "${ctx}" "${CLAUDE_TAP_IMAGE:-claude-tap:local}"
     ;;
-  bench) "${LIB}/bench-pool-30s.sh" "$@" ;;
+  bench)
+    echo "error: bench removed (local pool deleted)" >&2
+    exit 1
+    ;;
   logs)
     rt="$(command -v podman >/dev/null 2>&1 && echo podman || echo docker)"
     "${rt}" logs -f claw-gateway-rs

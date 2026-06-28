@@ -1,5 +1,7 @@
 # 本地开发 · 远程后端（模式 B）
 
+> **DEPRECATED（2026-06）** 远程 pool RPC 路径已移除。请用 **自托管 e2b**：[`docs/local-dev.md`](../../../docs/local-dev.md)、`env.selfhosted-e2b.example`。
+
 Author: kejiqing
 
 ## 结论（先看）

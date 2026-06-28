@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 日常本地起栈：host pool-daemon + playground（slim 或已有镜像）+ up + check（不自动 pool-reset）
+# 日常本地起栈：playground + up + check（FC-only，无 host pool-daemon）
 # Author: kejiqing
 set -euo pipefail
 
@@ -19,12 +19,8 @@ set -a
 source "${ROOT_DIR}/.env"
 set +a
 
-echo "==> [1/4] host claw-pool-daemon"
-# shellcheck source=/dev/null
-source "${LIB_DIR}/pool-daemon-binary.sh"
-claw_ensure_pool_daemon_binary "${STACK_DIR}" "${ROOT_DIR}" >/dev/null
-
-echo "==> [2/4] playground image (slim if missing; admin via bind mount when dist/ exists)"
+echo "==> [1/3] skip host pool (FC-only)"
+echo "==> [2/3] playground image (slim if missing; admin via bind mount when dist/ exists)"
 rt="$(command -v podman 2>/dev/null || command -v docker)"
 pg_img="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
 debian_reg="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
@@ -42,11 +38,11 @@ else
   echo "    reusing ${pg_img}"
 fi
 
-echo "==> [3/4] up"
+echo "==> [3/3] up"
 "${LIB_DIR}/up.sh" "$@"
 
 port="${GATEWAY_HOST_PORT:-8088}"
-echo "==> [4/4] wait healthz + check"
+echo "==> wait healthz + check"
 for _ in $(seq 1 45); do
   if curl -fsS "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
     break

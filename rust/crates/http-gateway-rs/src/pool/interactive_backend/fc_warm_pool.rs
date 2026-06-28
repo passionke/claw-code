@@ -341,8 +341,6 @@ mod tests {
                     ttyd_port: 7681,
                     ovs_template: "claw-ovs".into(),
                     ovs_port: 3000,
-                    observe_template: "claw-observe".into(),
-                    observe_live_port: 3000,
                 },
             )),
             std::path::PathBuf::from("/tmp/nas-test"),

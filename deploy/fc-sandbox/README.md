@@ -1,10 +1,10 @@
-# FC cloud sandbox (interactive OVS / terminal)
+# FC cloud sandbox (interactive + solve)
 
 Author: kejiqing
 
-Interactive sessions (`terminal/start`, `agent/ws`, `ovs-*`) can run on **Alibaba Cloud FC sandbox** (E2B-compatible API, **cn-beijing only**) instead of the local podman worker pool. **solve_async** stays on `claw-sandbox` — unchanged.
+**solve_async** 与 **interactive**（`terminal/start`, `agent/ws`, `ovs-*`）均在 **e2b（FC）MicroVM** 内执行。本地无 `claw-sandbox` / podman worker pool。
 
-**Self-hosted e2b + NAS（10.8.0.x）：** 路径与 bind 契约见 **[`docs/fc-nas-workspace.md`](../../docs/fc-nas-workspace.md)**；env 模板 `deploy/stack/env.selfhosted-e2b.example`。
+**Self-hosted e2b + NAS（10.8.0.x）：** [`docs/fc-nas-workspace.md`](../../docs/fc-nas-workspace.md)；env 模板 `deploy/stack/env.selfhosted-e2b.example`。
 
 ## Cost (NAS)
 

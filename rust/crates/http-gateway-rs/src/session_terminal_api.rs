@@ -8,7 +8,6 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use claw_sandbox_protocol::{LeasedSlotInfo, SlotLeaseOwner};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -21,7 +20,6 @@ use crate::claw_tap_cluster_state::{self, ClawTapClusterHandle};
 use crate::client_origin;
 use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
-use crate::pool::sandbox_orchestrator::worker_isolation_to_sandbox;
 use crate::pool::{
     self, build_fc_session_attach_with_tap, build_proj_bake_script, build_start_ttyd_script,
     fc_worker_llm_env, interactive_backend_is_fc, proj_work_dir, session_home_under_work_root,
@@ -245,81 +243,6 @@ fn ttyd_connect_host() -> String {
         .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
-const START_TTYD_SH_TERMINAL: &str = r#"
-set -e
-if ! command -v ttyd >/dev/null 2>&1; then
-  echo 'ttyd not installed in worker image' >&2
-  exit 127
-fi
-if [ -f /claw_host_root/.claw/ttyd.pid ]; then
-  kill "$(cat /claw_host_root/.claw/ttyd.pid)" 2>/dev/null || true
-fi
-export HOME=/claw_host_root
-export CLAW_PROJECT_CONFIG_ROOT=/claw_ds
-export CLAW_GATEWAY_WORK_ROOT=/claw_host_root
-export CLAW_DISPLAY_MODE=web
-export XDG_CONFIG_HOME=/claw_host_root/.config
-export XDG_CACHE_HOME=/claw_host_root/.cache
-export XDG_DATA_HOME=/claw_host_root/.local/share
-mkdir -p /claw_host_root/.claw/sessions /claw_host_root/.config /claw_host_root/.cache /claw_host_root/.local/share
-if [ -f /claw_host_root/.claw/terminal-llm.env ]; then
-  set -a
-  # shellcheck source=/dev/null
-  . /claw_host_root/.claw/terminal-llm.env
-  set +a
-fi
-MODEL="${CLAW_DEFAULT_MODEL:-openai/mimo-v2.5}"
-# Non-OVS interactive terminal: cwd stays on session tmpfs (legacy /coding-style).
-nohup ttyd -d 1 -i 0.0.0.0 -p 7681 -W -w /claw_host_root \
-  claw --allow-broad-cwd --model "$MODEL" \
-  >/claw_host_root/.claw/ttyd.log 2>&1 &
-echo $! >/claw_host_root/.claw/ttyd.pid
-sleep 0.5
-kill -0 "$(cat /claw_host_root/.claw/ttyd.pid)" 2>/dev/null
-"#;
-
-/// OVS `@claw` interactive REPL: cwd = `/claw_ds` (same tree as OVS `proj_N/home`); session writes under `HOME=/claw_host_root`.
-const START_TTYD_SH_OVS: &str = r#"
-set -e
-if ! command -v ttyd >/dev/null 2>&1; then
-  echo 'ttyd not installed in worker image' >&2
-  exit 127
-fi
-if [ -f /claw_host_root/.claw/ttyd.pid ]; then
-  kill "$(cat /claw_host_root/.claw/ttyd.pid)" 2>/dev/null || true
-fi
-export HOME=/claw_host_root
-export CLAW_PROJECT_CONFIG_ROOT=/claw_ds
-export CLAW_GATEWAY_WORK_ROOT=/claw_host_root
-export CLAW_DISPLAY_MODE=web
-export XDG_CONFIG_HOME=/claw_host_root/.config
-export XDG_CACHE_HOME=/claw_host_root/.cache
-export XDG_DATA_HOME=/claw_host_root/.local/share
-mkdir -p /claw_host_root/.claw/sessions /claw_host_root/.config /claw_host_root/.cache /claw_host_root/.local/share
-if [ -f /claw_host_root/.claw/terminal-llm.env ]; then
-  set -a
-  # shellcheck source=/dev/null
-  . /claw_host_root/.claw/terminal-llm.env
-  set +a
-fi
-MODEL="${CLAW_DEFAULT_MODEL:-openai/mimo-v2.5}"
-# OVS alignment: project cwd matches openvscode-server workspace (`proj_N/home` → `/claw_ds`).
-nohup ttyd -d 1 -i 0.0.0.0 -p 7681 -W -w /claw_ds \
-  claw --allow-broad-cwd --model "$MODEL" \
-  >/claw_host_root/.claw/ttyd.log 2>&1 &
-echo $! >/claw_host_root/.claw/ttyd.pid
-sleep 0.5
-kill -0 "$(cat /claw_host_root/.claw/ttyd.pid)" 2>/dev/null
-"#;
-
-fn start_ttyd_sh_for_session(session_id: &str) -> &'static str {
-    if session_id.starts_with("ovs-") {
-        START_TTYD_SH_OVS
-    } else {
-        START_TTYD_SH_TERMINAL
-    }
-}
-
 fn terminal_ws_path(session_id: &str, proj_id: i64) -> String {
     format!("/v1/sessions/{session_id}/terminal/ws?projId={proj_id}")
 }
@@ -341,99 +264,15 @@ fn response_from_active_key(
     }
 }
 
-async fn fetch_pool_status(
-    ctx: &TerminalApiContext,
-) -> Option<(TerminalPoolStatus, Vec<LeasedSlotInfo>)> {
-    let sandbox = ctx.pool_clients.sandbox_rpc_client()?;
-    let cap = sandbox.capacity().await.ok()?;
-    let leased = sandbox.list_leased().await.ok().unwrap_or_default();
-    let mut terminal_count = 0usize;
-    let mut solve_count = 0usize;
-    let mut orphan_count = 0usize;
-    for slot in &leased {
-        match slot.owner.as_ref() {
-            Some(SlotLeaseOwner::Terminal { .. }) => terminal_count += 1,
-            Some(SlotLeaseOwner::Solve { .. }) => solve_count += 1,
-            None => orphan_count += 1,
-        }
-    }
-    let pool = TerminalPoolStatus {
-        slots_max: cap.slots_max,
-        slots_idle: cap.slots_idle,
-        slots_leased: cap.slots_leased,
-        terminal_count,
-        solve_count,
-        orphan_count,
-    };
-    Some((pool, leased))
-}
-
-fn leased_slot_to_api(slot: &LeasedSlotInfo) -> TerminalLeasedSlot {
-    let (owner_kind, session_id, turn_id, proj_id) = match slot.owner.as_ref() {
-        Some(SlotLeaseOwner::Terminal {
-            session_id,
-            proj_id,
-        }) => (
-            "terminal".to_string(),
-            Some(session_id.clone()),
-            None,
-            Some(*proj_id),
-        ),
-        Some(SlotLeaseOwner::Solve { turn_id, proj_id }) => (
-            "solve".to_string(),
-            None,
-            Some(turn_id.clone()),
-            Some(*proj_id),
-        ),
-        None => ("orphan".to_string(), None, None, None),
-    };
-    TerminalLeasedSlot {
-        slot_index: slot.slot_index,
-        worker_name: slot.worker_name.clone(),
-        owner_kind,
-        session_id,
-        turn_id,
-        proj_id,
-    }
-}
-
 pub async fn terminal_inventory(
     ctx: TerminalApiContext,
     q: TerminalProjQuery,
 ) -> Result<Json<TerminalInventoryResponse>, TerminalApiError> {
-    let (pool, leased_raw) = fetch_pool_status(&ctx)
-        .await
-        .map(|(p, l)| (Some(p), l))
-        .unwrap_or((None, Vec::new()));
-    let leased_slots: Vec<TerminalLeasedSlot> = leased_raw.iter().map(leased_slot_to_api).collect();
+    let pool = None;
+    let leased_slots: Vec<TerminalLeasedSlot> = Vec::new();
 
-    let mut active_workers: Vec<TerminalActiveWorker> = leased_raw
-        .iter()
-        .filter_map(|slot| {
-            let SlotLeaseOwner::Terminal {
-                session_id,
-                proj_id,
-            } = slot.owner.as_ref()?
-            else {
-                return None;
-            };
-            if *proj_id != q.proj_id {
-                return None;
-            }
-            Some(TerminalActiveWorker {
-                proj_id: *proj_id,
-                session_id: session_id.clone(),
-                slot_index: slot.slot_index,
-                worker_name: slot.worker_name.clone(),
-            })
-        })
-        .collect();
-
-    // Gateway registry may still hold ttyd ports for live WS on this process.
+    let mut active_workers: Vec<TerminalActiveWorker> = Vec::new();
     for (session_id, active) in ctx.registry.list_for_proj(q.proj_id).await {
-        if active_workers.iter().any(|w| w.session_id == session_id) {
-            continue;
-        }
         active_workers.push(TerminalActiveWorker {
             proj_id: q.proj_id,
             session_id: session_id.clone(),
@@ -444,32 +283,8 @@ pub async fn terminal_inventory(
 
     let mut entries: Vec<TerminalInventoryEntry> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-
-    for slot in &leased_raw {
-        let Some(SlotLeaseOwner::Terminal {
-            session_id,
-            proj_id,
-        }) = slot.owner.as_ref()
-        else {
-            continue;
-        };
-        if *proj_id != q.proj_id || !seen.insert(session_id.clone()) {
-            continue;
-        }
-        let ws_path = terminal_ws_path(session_id, q.proj_id);
-        entries.push(TerminalInventoryEntry {
-            session_id: session_id.clone(),
-            status: "active".into(),
-            slot_index: Some(slot.slot_index),
-            worker_name: slot.worker_name.clone(),
-            ws_path: Some(ws_path),
-        });
-    }
-
     for (session_id, active) in ctx.registry.list_for_proj(q.proj_id).await {
-        if !seen.insert(session_id.clone()) {
-            continue;
-        }
+        seen.insert(session_id.clone());
         entries.push(TerminalInventoryEntry {
             session_id: session_id.clone(),
             status: "active".into(),
@@ -581,16 +396,8 @@ pub async fn terminal_pool_force_release(
         released += 1;
     }
 
-    let mut force_killed = 0usize;
-    if let Some(sandbox) = ctx.pool_clients.sandbox_rpc_client() {
-        if let Ok(cap) = sandbox.capacity().await {
-            for idx in 0..cap.slots_max {
-                if sandbox.force_kill(idx).await.is_ok() {
-                    force_killed += 1;
-                }
-            }
-        }
-    }
+    let force_killed = 0usize;
+    let _ = force_killed;
 
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -623,15 +430,6 @@ pub async fn terminal_attach(
         session_id: session_id.to_string(),
     };
     if let Some(active) = ctx.registry.get(&key).await {
-        if !interactive_backend_is_fc() {
-            materialize_proj_home(
-                &ctx.session_db,
-                &proj_work_dir(&ctx.work_root, req.proj_id),
-                req.proj_id,
-            )
-            .await
-            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        }
         info!(
             target: "claw_gateway_terminal",
             session_id = %session_id,
@@ -680,11 +478,11 @@ pub async fn terminal_start(
         ));
     }
 
-    let fc_mode = interactive_backend_is_fc();
+    let _ = interactive_backend_is_fc();
     let session_segment = crate::session_merge::sessions_directory_segment(session_id);
     let session_home = session_home_under_work_root(&ctx.work_root, req.proj_id, session_id);
     let nas_root = ctx.pool_clients.nas_host_root();
-    if fc_mode && ctx.pool_clients.fc_nas_layout_active() {
+    if ctx.pool_clients.fc_nas_layout_active() {
         pool::ensure_fc_proj_nas_roots(&nas_root, req.proj_id)
             .await
             .map_err(|e| {
@@ -693,26 +491,6 @@ pub async fn terminal_start(
                     format!("NAS proj roots: {e}"),
                 )
             })?;
-    } else if !fc_mode {
-        tokio::fs::create_dir_all(&session_home.join(".claw"))
-            .await
-            .map_err(|e| {
-                TerminalApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("mkdir session workspace: {e}"),
-                )
-            })?;
-        pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(
-            &ctx.pool_runtime_bin,
-            &session_home,
-        )
-        .await
-        .map_err(|e| {
-            TerminalApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("session ownership: {e}"),
-            )
-        })?;
     }
 
     let session_home_rel = format!("proj_{}/sessions/{}", req.proj_id, session_segment);
@@ -761,61 +539,30 @@ pub async fn terminal_start(
     }
 
     let proj_dir = proj_work_dir(&ctx.work_root, req.proj_id);
-    if !fc_mode {
-        materialize_proj_home(&ctx.session_db, &proj_dir, req.proj_id)
-            .await
-            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    }
 
     ctx.pool_clients
         .assert_proj_worker_isolation_supported(&ctx.session_db, req.proj_id)
         .await
         .map_err(|e| TerminalApiError::new(StatusCode::BAD_REQUEST, e))?;
 
-    let mode = PoolClients::effective_mode_for_proj(&ctx.session_db, req.proj_id).await;
-    let isolation = worker_isolation_to_sandbox(mode);
-
     let mut llm_env =
         resolve_terminal_llm_env(&ctx.session_db, &ctx.claw_tap_cluster, &ctx.llm_runtime)
             .await
             .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
-    if fc_mode {
-        llm_env = fc_worker_llm_env(llm_env);
-    }
-    if !fc_mode {
-        write_terminal_llm_env_file(&session_home.join(".claw/terminal-llm.env"), &llm_env)
-            .await
-            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    }
+    llm_env = fc_worker_llm_env(llm_env);
 
     let proj_home = proj_dir.join("home");
-    if !fc_mode {
-        tokio::fs::create_dir_all(&proj_home).await.map_err(|e| {
-            TerminalApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("mkdir proj home: {e}"),
-            )
-        })?;
-    }
 
-    let fc_session_attach_script = if fc_mode {
-        Some(
-            build_fc_session_attach_with_tap(&ctx.session_db, &llm_env)
-                .await
-                .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?,
-        )
-    } else {
-        None
-    };
-    let fc_proj_bake_script = if fc_mode {
-        Some(
-            build_proj_bake_script(&ctx.session_db, req.proj_id)
-                .await
-                .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?,
-        )
-    } else {
-        None
-    };
+    let fc_session_attach_script = Some(
+        build_fc_session_attach_with_tap(&ctx.session_db, &llm_env)
+            .await
+            .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?,
+    );
+    let fc_proj_bake_script = Some(
+        build_proj_bake_script(&ctx.session_db, req.proj_id)
+            .await
+            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?,
+    );
 
     let interactive_backend = ctx
         .pool_clients
@@ -831,12 +578,7 @@ pub async fn terminal_start(
         proj_home,
         llm_env,
         ovs_mode: session_id.starts_with("ovs-"),
-        sandbox_isolation: isolation,
-        start_ttyd_script: if fc_mode {
-            build_start_ttyd_script(session_id)
-        } else {
-            start_ttyd_sh_for_session(session_id).to_string()
-        },
+        start_ttyd_script: build_start_ttyd_script(session_id),
         fc_session_attach_script,
         fc_proj_bake_script,
     };
@@ -911,15 +653,6 @@ pub async fn ensure_terminal_active(
         session_id: session_id.to_string(),
     };
     if let Some(active) = ctx.registry.get(&key).await {
-        if !interactive_backend_is_fc() {
-            materialize_proj_home(
-                &ctx.session_db,
-                &proj_work_dir(&ctx.work_root, proj_id),
-                proj_id,
-            )
-            .await
-            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        }
         return Ok(active);
     }
     let _ = terminal_start(
@@ -1118,37 +851,6 @@ async fn resolve_terminal_llm_env(
         );
     }
     Ok(env)
-}
-
-async fn write_terminal_llm_env_file(
-    path: &Path,
-    env: &BTreeMap<String, String>,
-) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-    }
-    let body = shell_export_env_file(env);
-    tokio::fs::write(path, body)
-        .await
-        .map_err(|e| format!("write {}: {e}", path.display()))
-}
-
-fn shell_export_env_file(env: &BTreeMap<String, String>) -> String {
-    let mut out = String::from("# terminal worker LLM env (Admin active LLM + clawTap)\n");
-    for (key, value) in env {
-        out.push_str("export ");
-        out.push_str(key);
-        out.push('=');
-        out.push_str(&shell_single_quote(value));
-        out.push('\n');
-    }
-    out
-}
-
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[must_use]

@@ -283,22 +283,6 @@ impl FcSandboxClient {
         }
     }
 
-    /// HTTP base for OVS singleton (`http(s)://{port}-{sandboxId}.{domain}/ovs`).
-    #[must_use]
-    pub fn ovs_public_base_url(&self, handle: &FcSandboxHandle) -> String {
-        let scheme = if self.config.is_self_hosted() {
-            "http"
-        } else {
-            "https"
-        };
-        let host = self.service_public_host(
-            self.config.ovs_port,
-            &handle.sandbox_id,
-            &handle.sandbox_domain,
-        );
-        format!("{scheme}://{host}/ovs")
-    }
-
     /// After `POST /sandboxes` + `nasConfig`: every `mountDir` must be a mountpoint in the guest.
     async fn finish_sandbox_create(
         &self,
@@ -406,155 +390,6 @@ impl FcSandboxClient {
         self.register_sandbox_lease(&handle.sandbox_id);
         self.finish_sandbox_create(handle, nas_configured, &mount_points)
             .await
-    }
-
-    /// Create the cluster OVS singleton sandbox (`metadata.clawRole=ovs-singleton`).
-    pub async fn create_ovs_singleton_sandbox(
-        &self,
-        cluster_id: &str,
-    ) -> Result<FcSandboxHandle, String> {
-        self.prepare_self_hosted_create().await?;
-        let mut metadata = BTreeMap::new();
-        metadata.insert("clawRole".to_string(), "ovs-singleton".to_string());
-        metadata.insert("clusterId".to_string(), cluster_id.to_string());
-
-        let mount_points = ovs_root_mounts();
-        let mut body = json!({
-            "templateID": self.config.ovs_template,
-            "timeout": self.config.sandbox_timeout_secs,
-            "metadata": metadata,
-        });
-        let nas = self.require_nas_config_body(&mount_points)?;
-        body["nasConfig"] = json!(nas);
-        let nas_configured = true;
-        self.apply_self_hosted_create_opts(&mut body);
-
-        let url = format!("{}/sandboxes", self.config.api_url);
-        debug!(target: "claw_fc_sandbox", %url, cluster_id, "create ovs singleton sandbox");
-        let resp = self
-            .http
-            .post(&url)
-            .headers(self.auth_headers()?)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("fc create ovs sandbox request: {e}"))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| format!("fc create ovs sandbox body: {e}"))?;
-        if !status.is_success() {
-            return Err(format!("fc create ovs sandbox HTTP {status}: {text}"));
-        }
-
-        let parsed: CreateSandboxResponse = serde_json::from_str(&text)
-            .map_err(|e| format!("fc create ovs sandbox parse: {e}; body={text}"))?;
-        let sandbox_domain = if self.config.is_self_hosted() {
-            self.config.domain.clone()
-        } else {
-            parsed
-                .domain
-                .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| self.config.domain.clone())
-        };
-        let ttyd_public_host = self.ttyd_public_host(&parsed.sandbox_id, &sandbox_domain);
-        let handle = FcSandboxHandle {
-            sandbox_id: parsed.sandbox_id,
-            sandbox_domain,
-            envd_access_token: parsed.envd_access_token,
-            traffic_access_token: parsed.traffic_access_token,
-            ttyd_public_host,
-            ttyd_use_tls: !self.config.is_self_hosted(),
-        };
-        self.register_sandbox_lease(&handle.sandbox_id);
-        self.touch_sandbox_lease(&handle.sandbox_id).await?;
-        self.finish_sandbox_create(handle, nas_configured, &mount_points)
-            .await
-    }
-
-    /// Create the cluster session-observe singleton (`metadata.clawRole=observe-singleton`).
-    pub async fn create_observe_singleton_sandbox(
-        &self,
-        cluster_id: &str,
-    ) -> Result<FcSandboxHandle, String> {
-        self.prepare_self_hosted_create().await?;
-        let mut metadata = BTreeMap::new();
-        metadata.insert("clawRole".to_string(), "observe-singleton".to_string());
-        metadata.insert("clusterId".to_string(), cluster_id.to_string());
-
-        let mount_points = ovs_root_mounts();
-        let mut body = json!({
-            "templateID": self.config.observe_template,
-            "timeout": self.config.sandbox_timeout_secs,
-            "metadata": metadata,
-        });
-        let nas = self.require_nas_config_body(&mount_points)?;
-        body["nasConfig"] = json!(nas);
-        let nas_configured = true;
-        self.apply_self_hosted_create_opts(&mut body);
-
-        let url = format!("{}/sandboxes", self.config.api_url);
-        debug!(target: "claw_fc_sandbox", %url, cluster_id, "create observe singleton sandbox");
-        let resp = self
-            .http
-            .post(&url)
-            .headers(self.auth_headers()?)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("fc create observe sandbox request: {e}"))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| format!("fc create observe sandbox body: {e}"))?;
-        if !status.is_success() {
-            return Err(format!("fc create observe sandbox HTTP {status}: {text}"));
-        }
-
-        let parsed: CreateSandboxResponse = serde_json::from_str(&text)
-            .map_err(|e| format!("fc create observe sandbox parse: {e}; body={text}"))?;
-        let sandbox_domain = if self.config.is_self_hosted() {
-            self.config.domain.clone()
-        } else {
-            parsed
-                .domain
-                .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| self.config.domain.clone())
-        };
-        let ttyd_public_host = self.ttyd_public_host(&parsed.sandbox_id, &sandbox_domain);
-        let handle = FcSandboxHandle {
-            sandbox_id: parsed.sandbox_id,
-            sandbox_domain,
-            envd_access_token: parsed.envd_access_token,
-            traffic_access_token: parsed.traffic_access_token,
-            ttyd_public_host,
-            ttyd_use_tls: !self.config.is_self_hosted(),
-        };
-        self.register_sandbox_lease(&handle.sandbox_id);
-        self.touch_sandbox_lease(&handle.sandbox_id).await?;
-        self.finish_sandbox_create(handle, nas_configured, &mount_points)
-            .await
-    }
-
-    /// HTTP base for session-observe Live viewer (`http(s)://{livePort}-{sandboxId}.{domain}`).
-    #[must_use]
-    pub fn observe_public_live_base_url(&self, handle: &FcSandboxHandle) -> String {
-        let scheme = if self.config.is_self_hosted() {
-            "http"
-        } else {
-            "https"
-        };
-        let host = self.service_public_host(
-            self.config.observe_live_port,
-            &handle.sandbox_id,
-            &handle.sandbox_domain,
-        );
-        let base = format!("{scheme}://{host}");
-        Self::traffic_url(&base, handle.traffic_access_token.as_deref())
     }
 
     /// Create a project-bound warm worker (`metadata.clawRole=warm-proj`).
@@ -742,60 +577,9 @@ impl FcSandboxClient {
         killed
     }
 
-    /// Gateway shutdown: remove orphan observe/ovs singletons for this cluster (restart leaks).
-    pub async fn kill_cluster_singleton_orphans(&self, cluster_id: &str) -> Result<usize, String> {
-        let url = format!("{}/sandboxes", self.config.api_url);
-        let resp = self
-            .http
-            .get(&url)
-            .headers(self.auth_headers()?)
-            .send()
-            .await
-            .map_err(|e| format!("fc list sandboxes: {e}"))?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| format!("fc list sandboxes body: {e}"))?;
-        if !status.is_success() {
-            return Err(format!("fc list sandboxes HTTP {status}: {text}"));
-        }
-        let rows: Vec<serde_json::Value> =
-            serde_json::from_str(&text).map_err(|e| format!("fc list sandboxes parse: {e}"))?;
-        let mut killed = 0usize;
-        for row in rows {
-            let Some(sid) = row
-                .get("sandboxID")
-                .or_else(|| row.get("sandboxId"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-            else {
-                continue;
-            };
-            let meta = row.get("metadata").and_then(|v| v.as_object());
-            let role = meta
-                .and_then(|m| m.get("clawRole"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let cid = meta
-                .and_then(|m| m.get("clusterId"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let is_singleton = matches!(role, "observe-singleton" | "ovs-singleton");
-            if !is_singleton || cid != cluster_id {
-                continue;
-            }
-            if self.kill_sandbox(sid).await.is_ok() {
-                killed += 1;
-                info!(
-                    target: "claw_fc_sandbox",
-                    sandbox_id = %sid,
-                    %role,
-                    "shutdown killed orphan singleton"
-                );
-            }
-        }
-        Ok(killed)
+    /// Gateway shutdown: persistent singletons (observe/ovs) are Python-managed — no-op here.
+    pub async fn kill_cluster_singleton_orphans(&self, _cluster_id: &str) -> Result<usize, String> {
+        Ok(0)
     }
 
     /// Run `claw gateway-solve-once` inside an FC sandbox.
@@ -1101,8 +885,6 @@ mod client_tests {
             ttyd_port: 7681,
             ovs_template: "claw-ovs".into(),
             ovs_port: 3000,
-            observe_template: "claw-observe".into(),
-            observe_live_port: 3000,
         };
         let c = FcSandboxClient::new(cfg);
         assert_eq!(

@@ -2552,7 +2552,7 @@ impl GatewaySessionDb {
         Ok(row.and_then(|(o,)| o))
     }
 
-    /// Register or refresh a pool node (`claw-pool-daemon` startup). Author: kejiqing
+    /// Register or refresh a legacy `claw_pool` row. Author: kejiqing
     pub async fn upsert_claw_pool(&self, row: &ClawPoolUpsert<'_>) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO claw_pool (

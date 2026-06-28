@@ -16,98 +16,6 @@ use crate::session_db::GatewaySessionDb;
 
 pub(crate) const PROJ_HOME: &str = GUEST_CLAW_DS;
 pub(crate) const WORK_ROOT: &str = GUEST_CLAW_HOST_ROOT;
-/// OVS / observe singleton NAS export root inside sandbox.
-pub const OVS_WORKSPACE_ROOT: &str = claw_fc_sandbox_client::GUEST_CLAW_WS;
-
-/// Start openvscode-server on OVS singleton (NAS root already at [`OVS_WORKSPACE_ROOT`]).
-#[must_use]
-pub fn start_ovs_server_sh(port: u16) -> String {
-    format!(
-        r#"set -e
-OVS_BIN="/home/.openvscode-server/bin/openvscode-server"
-if [ ! -x "$OVS_BIN" ]; then
-  echo "fc ovs: openvscode-server not found (rebuild claw-ovs template)" >&2
-  exit 127
-fi
-OVS_LOG="{OVS_WORKSPACE_ROOT}/.claw-ovs.log"
-OVS_PID="{OVS_WORKSPACE_ROOT}/.claw-ovs.pid"
-if [ -f "$OVS_PID" ] && kill -0 "$(cat "$OVS_PID")" 2>/dev/null; then
-  if curl -fsS --connect-timeout 2 "http://127.0.0.1:{port}/ovs/" >/dev/null 2>&1; then
-    exit 0
-  fi
-  kill "$(cat "$OVS_PID")" 2>/dev/null || true
-  rm -f "$OVS_PID"
-fi
-export HOME=/opt/claw-ovs/home
-mkdir -p /opt/claw-ovs/home /opt/claw-extensions /opt/claw-ovs/server-data/data/logs /opt/claw-ovs/server-data/data/Machine {OVS_WORKSPACE_ROOT}
-nohup "$OVS_BIN" \
-  --host=0.0.0.0 --port={port} \
-  --without-connection-token \
-  --server-base-path=/ovs \
-  --extensions-dir=/opt/claw-extensions \
-  --server-data-dir=/opt/claw-ovs/server-data \
-  --enable-proposed-api=claw.claw-vscode,claw.ovs-chat-demo \
-  >"$OVS_LOG" 2>&1 &
-echo $! >"$OVS_PID"
-for _ in $(seq 1 30); do
-  if curl -fsS --connect-timeout 2 "http://127.0.0.1:{port}/ovs/" >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 1
-done
-echo "fc ovs: openvscode /ovs/ timeout (see $OVS_LOG)" >&2
-exit 1
-"#
-    )
-}
-
-/// Start claude-tap Live on observe singleton (read NAS `tap-traces/` at [`OVS_WORKSPACE_ROOT`]).
-/// Browser traffic uses E2B Host domain (`{port}-{sandboxId}.supone.top`); no path prefix env.
-#[must_use]
-pub fn start_observe_server_sh(live_port: u16, cluster_id: &str, db_url: &str) -> String {
-    let tap_traces = format!("{OVS_WORKSPACE_ROOT}/tap-traces");
-    format!(
-        r#"set -e
-OBS_LOG="{OVS_WORKSPACE_ROOT}/.claw-observe.log"
-OBS_PID="{OVS_WORKSPACE_ROOT}/.claw-observe.pid"
-TAP_BIN=""
-for cand in /usr/local/bin/claude-tap /opt/claw-tap-runtime/bin/claude-tap; do
-  if [ -x "$cand" ]; then TAP_BIN="$cand"; break; fi
-done
-if [ -z "$TAP_BIN" ]; then
-  echo "fc observe: claude-tap not found (rebuild claw-observe template)" >&2
-  exit 127
-fi
-if [ -f "$OBS_PID" ] && kill -0 "$(cat "$OBS_PID")" 2>/dev/null; then
-  if curl -fsS --connect-timeout 2 "http://127.0.0.1:{live_port}/" >/dev/null 2>&1; then
-    exit 0
-  fi
-fi
-mkdir -p "{tap_traces}"
-nohup env CLAW_CLUSTER_ID={cluster_id:?} CLAW_GATEWAY_DATABASE_URL={db_url:?} \
-  "$TAP_BIN" \
-  --tap-no-launch \
-  --tap-live \
-  --tap-host 0.0.0.0 \
-  --tap-port 8080 \
-  --tap-live-port {live_port} \
-  --tap-target https://bootstrap.invalid/v1 \
-  --tap-output-dir "{tap_traces}" \
-  --tap-no-update-check \
-  --tap-no-auto-update \
-  >"$OBS_LOG" 2>&1 &
-echo $! >"$OBS_PID"
-for _ in $(seq 1 45); do
-  if curl -fsS --connect-timeout 2 "http://127.0.0.1:{live_port}/" >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 1
-done
-echo "fc observe: Live / timeout (see $OBS_LOG)" >&2
-exit 1
-"#
-    )
-}
 
 /// Stop ttyd on flat worker root (`/claw_host_root`).
 #[must_use]
@@ -264,25 +172,5 @@ mod tests {
         let sh = build_start_ttyd_script("sess-abc");
         assert!(sh.contains("/claw_host_root"));
         assert!(!sh.contains("/claw_host_root/sess-abc"));
-    }
-
-    #[test]
-    fn ovs_start_script_uses_claw_ws() {
-        let sh = start_ovs_server_sh(3000);
-        assert!(sh.contains(OVS_WORKSPACE_ROOT));
-    }
-
-    #[test]
-    fn observe_start_script_uses_tap_live_flags() {
-        let sh = start_observe_server_sh(
-            3000,
-            "local-dev",
-            "postgres://u:p@10.8.0.10:5433/claw_gateway",
-        );
-        assert!(sh.contains("--tap-no-launch"));
-        assert!(sh.contains("--tap-live"));
-        assert!(!sh.contains("CLAUDE_TAP_LIVE_PREFIX_PATH"));
-        assert!(!sh.contains("claude-tap serve"));
-        assert!(sh.contains("/claw_ws/tap-traces"));
     }
 }

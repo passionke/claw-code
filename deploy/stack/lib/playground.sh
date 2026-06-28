@@ -23,8 +23,6 @@ export PLAYGROUND_PUBLIC_GATEWAY_BASE="${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://
 unset PLAYGROUND_GATEWAY_BASE
 export CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1
 "${LIB_DIR}/build-gateway-admin.sh"
-export CLAW_DISPLAY_LOCAL_BUILD=1
-"${LIB_DIR}/build-claw-display.sh"
 port="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
 export PLAYGROUND_LISTEN_PORT="${port}"
 lsof -ti ":${port}" 2>/dev/null | xargs kill -9 2>/dev/null || true

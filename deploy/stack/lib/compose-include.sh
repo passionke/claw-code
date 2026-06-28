@@ -68,8 +68,19 @@ claw_pool_uses_remote() {
   claw_pool_remote_base >/dev/null 2>&1
 }
 
+# True when interactive solve/OVS/terminal use e2b/FC (no host claw-pool-daemon). Author: kejiqing
+claw_interactive_backend_is_fc() {
+  case "${CLAW_INTERACTIVE_BACKEND:-podman}" in
+    fc | fc-cloud | e2b | firecracker) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # v1: host `claw-pool-daemon` only (no compose pool sidecar). Set CLAW_POOL_HOST_DAEMON=0 to fail fast. Author: kejiqing
 claw_pool_daemon_on_host() {
+  if claw_interactive_backend_is_fc; then
+    return 1
+  fi
   if claw_pool_uses_remote; then
     return 1
   fi
@@ -564,67 +575,21 @@ claw_podman_load_compose_args() {
   source "${script_dir}/lib/claw-pool-registry-env.sh"
   base_pool_id="$(claw_default_pool_id)"
   pool_id="${CLAW_POOL_ID:-${base_pool_id}}"
-  if remote_base="$(claw_pool_remote_base 2>/dev/null)"; then
+  if claw_interactive_backend_is_fc; then
     {
-      printf '%s\n' '# GENERATED — remote claw-sandbox (local dev · remote backend). kejiqing'
-      printf '%s\n' "CLAW_SANDBOX_URL=${remote_base}"
-      printf '%s\n' "CLAW_POOL_HTTP_BASE=${remote_base}"
+      printf '%s\n' '# GENERATED — FC interactive (no host claw-pool-daemon). kejiqing'
       printf '%s\n' "CLAW_POOL_ID=${pool_id}"
       printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
-      printf '%s\n' "CLAW_POOL_DAEMON_TCP="
-      printf '%s\n' "CLAW_POOL_DAEMON_SOCKET="
-      # shellcheck source=pool-health.sh
-      source "${script_dir}/lib/pool-health.sh"
       if claw_relaxed_worker_allowed_from_env; then
         printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=true"
       else
         printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=false"
       fi
-      printf '%s\n' "# CLAW_POOL_REMOTE_BASE=${remote_base}"
     } >"${rpc_root}/gateway.env"
     claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
     return 0
   fi
-  if claw_pool_daemon_on_host; then
-    profile_name="$(claw_deploy_profile_name 2>/dev/null || true)"
-    # v1 host pool: gateway container → host pool HTTP (not LAN IP). kejiqing
-    if [[ "${profile_name}" == local ]]; then
-      if [[ "$(claw_container_runtime_cli 2>/dev/null || true)" == docker ]]; then
-        http_host="host.docker.internal"
-      else
-        http_host="host.containers.internal"
-      fi
-    else
-      # Docker on Linux CI: container → host pool via host-gateway (hairpin to LAN IP often fails). kejiqing
-      if [[ "$(claw_container_runtime_cli 2>/dev/null || true)" == docker ]]; then
-        http_host="host.docker.internal"
-      else
-        http_host="$(claw_pool_gateway_to_host_rpc_ip)" || return 1
-      fi
-    fi
-    {
-      printf '%s\n' '# GENERATED — host claw-sandbox HTTP (POST /v1/sandbox/rpc). kejiqing'
-      printf '%s\n' "CLAW_SANDBOX_URL=http://${http_host}:${pool_http_port}"
-      printf '%s\n' "CLAW_POOL_HTTP_BASE=http://${http_host}:${pool_http_port}"
-      printf '%s\n' "CLAW_POOL_ID=${pool_id}"
-      printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
-      printf '%s\n' "CLAW_POOL_DAEMON_TCP="
-      printf '%s\n' "CLAW_POOL_DAEMON_SOCKET="
-      # shellcheck source=pool-health.sh
-      source "${script_dir}/lib/pool-health.sh"
-      if claw_relaxed_worker_allowed_from_env; then
-        printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=true"
-      else
-        printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=false"
-      fi
-      if [[ -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
-        printf '%s\n' "# pool registry advertise (claw_pool.advertise_ip): ${CLAW_POOL_ADVERTISE_HOST}"
-      fi
-    } >"${rpc_root}/gateway.env"
-    claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
-    return 0
-  fi
-  echo "error: compose pool sidecar removed; start host claw-pool-daemon (gateway.sh up does this on macOS/Linux)" >&2
+  echo "error: CLAW_INTERACTIVE_BACKEND must be fc (local claw-sandbox pool removed)" >&2
   return 1
 }
 
@@ -1116,5 +1081,3 @@ source "${_claw_podman_dir}/env-profile.sh"
 source "${_claw_podman_dir}/release-images.sh"
 # shellcheck disable=SC1091
 source "${_claw_podman_dir}/worker-llm-wiring.sh"
-# shellcheck disable=SC1091
-source "${_claw_podman_dir}/pool-daemon-binary.sh"

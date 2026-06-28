@@ -13,7 +13,7 @@ claw_linux_compile_prune_ci_bins() {
     base="$(basename "${item}")"
     keep=0
     case "${base}" in
-      claw | http-gateway-rs | claw-sandbox) keep=1 ;;
+      claw | http-gateway-rs) keep=1 ;;
     esac
     if [[ "${keep}" -eq 0 ]]; then
       rm -rf "${item}"
@@ -134,16 +134,10 @@ claw_linux_compile_release() {
       fi
       cargo build --release -p rusty-claude-cli --bin claw \
         -p http-gateway-rs --bin http-gateway-rs
-      cd /workspace/sandbox
-      export CARGO_TARGET_DIR=/artifacts
-      if [ -f .cargo/config.toml.example ] && [ ! -f .cargo/config.toml ]; then
-        cp .cargo/config.toml.example .cargo/config.toml
-      fi
-      cargo build --release -p claw-sandbox-server
       if command -v sccache >/dev/null 2>&1; then
         sccache --show-stats || true
       fi
-      ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw /artifacts/release/claw-sandbox
+      ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw
       if [ -n "${CLAW_HOST_UID:-}" ] && [ -n "${CLAW_HOST_GID:-}" ]; then
         chown -R "${CLAW_HOST_UID}:${CLAW_HOST_GID}" /artifacts
       fi
@@ -152,7 +146,7 @@ claw_linux_compile_release() {
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
     claw_linux_compile_prune_ci_bins "${out_dir}"
   fi
-  for bin in http-gateway-rs claw claw-sandbox; do
+  for bin in http-gateway-rs claw; do
     if [[ ! -f "${out_dir}/${bin}" ]]; then
       echo "error: missing ${out_dir}/${bin} after linux compile" >&2
       exit 1

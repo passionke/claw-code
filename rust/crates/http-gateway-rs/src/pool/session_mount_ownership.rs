@@ -1,8 +1,7 @@
 //! Session bind-mount uid alignment for pool workers (`claw` / `CLAW_WORKER_*`). Author: kejiqing
 //!
-//! Gateway `prepare_gateway_session` delegates to [`super::PoolOps::chown_session_tree_for_pool_worker`]
-//! when `CLAW_POOL_RPC_HOST_WORK_ROOT` is set (RPC → `claw-pool-daemon`). In-process pool and daemon
-//! `run_worker_container` use this helper with the local engine CLI.
+//! Gateway `prepare_gateway_session` uses this when a container path must map to a host/NAS path
+//! before FC bind mounting.
 
 use std::path::{Path, PathBuf};
 

@@ -1,5 +1,7 @@
 # Pool v1: worker artifacts ↔ HTTP consumer read matrix
 
+> **Note (2026-06):** Worker 现运行在 **FC MicroVM**；下文「pool v1 / tmpfs」描述历史宿主机 pool 行为，**PG-only 消费规则**仍适用。
+
 Author: kejiqing
 
 Pool v1 runs solve in a worker with **tmpfs** `CLAW_PROJECT_CONFIG_ROOT=/claw_host_root`. Worker `.claw/*` is ephemeral; durable state lands in PostgreSQL on `readback_out`.
@@ -88,4 +90,4 @@ Worker in-container loop still writes local `.claw/*` for the active solve; that
 
 - [`docs/http-gateway-container-pool.md`](http-gateway-container-pool.md)
 - [`docs/persistence-model.md`](persistence-model.md)
-- [`deploy/stack/docs/host-pool-daemon.md`](../deploy/stack/docs/host-pool-daemon.md)
+- [`docs/architecture-governance.md`](architecture-governance.md)

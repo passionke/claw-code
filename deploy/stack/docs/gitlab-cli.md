@@ -164,4 +164,5 @@ curl -fsS "http://10.22.28.94:9944/healthz/live-report" | head -c 200
 | [`gitlab-ci-variables.md`](gitlab-ci-variables.md) | GitLab CI/CD Variables |
 | [`gitlab-ci-troubleshoot.md`](gitlab-ci-troubleshoot.md) | deploy 失败关键字、迁移/ pool 坑 |
 | [`cluster-deploy-verify.md`](cluster-deploy-verify.md) | 预发/生产 `cluster-verify` |
-| [`host-pool-daemon.md`](host-pool-daemon.md) | pool 503 / launchd / systemd |
+| [`docs/architecture-governance.md`](../../../docs/architecture-governance.md) | FC 拓扑 / 迁移 |
+| [`deploy/fc-sandbox/README.md`](../../fc-sandbox/README.md) | FC 503 / 模板 |
