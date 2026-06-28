@@ -34,8 +34,9 @@ Commands:
   solve-e2e     Admin-equivalent solve_async + poll to succeeded/failed (real gate, not healthz)
   verify        Stack truth checks (schema, pool registry, binary); fails loud
   cluster-verify  Shared-PG multi-host: claw_pool zombies + each gateway /v1/pools (pre-prod gate)
-  tap-up        Start pool claude-tap only (same as pool-up ensure; CLAUDE_TAP_MODE: docker/native)
-  tap-down      Stop pool claude-tap only
+  ovs-up        Ensure FC OVS singleton on e2b (claw-ovs template startCmd)
+  observe-tap-up Ensure FC observe-singleton on e2b (claude-tap Live via template startCmd)
+  tap-down      Stop pool claude-tap only (legacy compose; FC mode uses CLAUDE_TAP_MODE=off)
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
   bench         REMOVED — local pool bench deleted
   logs          Follow gateway logs
@@ -43,7 +44,7 @@ Commands:
   e2e           Run tests/http-gateway-session-continuity-e2e.sh
   help          Show this help
 
-Implementation scripts: deploy/stack/lib/ (do not run directly unless you know why).
+Implementation scripts: deploy/stack/lib/ (FC singleton: use ovs-up / observe-tap-up above).
 EOF
 }
 
@@ -103,7 +104,12 @@ case "${cmd}" in
   solve-e2e) "${LIB}/admin-solve-e2e.sh" "$@" ;;
   verify) "${LIB}/claw-stack-verify.sh" "$@" ;;
   cluster-verify) "${LIB}/claw-cluster-verify.sh" "$@" ;;
-  tap-up) bash "${LIB}/tap-up.sh" "$@" ;;
+  ovs-up) bash "${LIB}/fc-ovs-up.sh" "$@" ;;
+  observe-tap-up) bash "${LIB}/fc-tap-live-up.sh" "$@" ;;
+  tap-up)
+    echo "error: tap-up removed (FC mode: use ./deploy/stack/gateway.sh observe-tap-up)" >&2
+    exit 1
+    ;;
   tap-down) bash "${LIB}/tap-down.sh" "$@" ;;
   build-tap)
     set -a

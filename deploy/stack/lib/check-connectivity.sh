@@ -15,6 +15,8 @@ fi
 source "${ENV_FILE}"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/compose-include.sh"
+# shellcheck disable=SC1091
+source "${LIB_DIR}/pool-health.sh"
 
 if ! claw_interactive_backend_is_fc; then
   echo "error: CLAW_INTERACTIVE_BACKEND must be fc (local podman pool removed)" >&2

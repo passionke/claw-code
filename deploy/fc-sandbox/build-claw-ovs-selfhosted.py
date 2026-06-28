@@ -77,7 +77,7 @@ def _sudo_nfs_setup() -> str:
     && chmod 440 /etc/sudoers.d/claw-nfs"""
 
 
-def _dockerfile_context() -> str:
+def _dockerfile_context(ovs_port: int) -> str:
     sudo = _sudo_nfs_setup()
     return f"""FROM docker.1ms.run/library/debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \\
@@ -91,12 +91,42 @@ RUN tar -xz -C /tmp/ovs-bundle -f /tmp/claw-ovs-bundle.tar.gz \\
     && mv /tmp/ovs-bundle/claw-ovs /opt/claw-ovs \\
     && rm -rf /tmp/ovs-bundle /tmp/claw-ovs-bundle.tar.gz \\
     && chmod -R a+rwX /home/.openvscode-server /opt/claw-extensions /opt/claw-ovs /claw_ws
+RUN printf '%s\\n' \\
+        '#!/bin/sh' \\
+        'set -eu' \\
+        'export HOME=/opt/claw-ovs/home' \\
+        'mkdir -p /opt/claw-ovs/home /opt/claw-extensions /opt/claw-ovs/server-data/data/logs /opt/claw-ovs/server-data/data/Machine /claw_ws' \\
+        'exec /home/.openvscode-server/bin/openvscode-server --host=0.0.0.0 --port={ovs_port} --without-connection-token --server-base-path=/ovs --extensions-dir=/opt/claw-extensions --server-data-dir=/opt/claw-ovs/server-data --enable-proposed-api=claw.claw-vscode,claw.ovs-chat-demo' \\
+        > /usr/local/bin/claw-ovs-start \\
+    && printf '%s\\n' \\
+        '#!/bin/sh' \\
+        'exec curl -fsS --connect-timeout 2 http://127.0.0.1:{ovs_port}/ovs/' \\
+        > /usr/local/bin/claw-ovs-ready \\
+    && chmod +x /usr/local/bin/claw-ovs-start /usr/local/bin/claw-ovs-ready
 """
+
+
+def _ovs_port() -> int:
+    try:
+        return int(_env("CLAW_FC_OVS_PORT", "3000") or "3000")
+    except ValueError:
+        return 3000
+
+
+def _ovs_start_cmd(port: int) -> str:
+    _ = port
+    return "/usr/local/bin/claw-ovs-start"
+
+
+def _ovs_ready_cmd(port: int) -> str:
+    _ = port
+    return "/usr/local/bin/claw-ovs-ready"
 
 
 def main() -> int:
     opts = _conn_opts()
     alias = _env("CLAW_FC_OVS_TEMPLATE", "claw-ovs")
+    ovs_port = _ovs_port()
 
     os.environ.setdefault("E2B_API_KEY", opts["api_key"])
     os.environ.setdefault("E2B_API_URL", opts["api_url"])
@@ -111,9 +141,14 @@ def main() -> int:
         _stage_ovs_tree(staging)
         _pack_bundle(staging)
         dockerfile_path = staging / "Dockerfile"
-        dockerfile_path.write_text(_dockerfile_context(), encoding="utf-8")
+        dockerfile_path.write_text(_dockerfile_context(ovs_port), encoding="utf-8")
         print(f"==> build ctx={staging}")
-        template = Template(file_context_path=str(staging)).from_dockerfile(str(dockerfile_path))
+        template = (
+            Template(file_context_path=str(staging))
+            .from_dockerfile(str(dockerfile_path))
+            .set_start_cmd(_ovs_start_cmd(ovs_port), _ovs_ready_cmd(ovs_port))
+        )
+        print(f"==> template startCmd=openvscode-server :{ovs_port}/ovs")
         Template.build(template, alias=alias, on_build_logs=default_build_logger(), **opts)
 
     print(f"OK: template {alias!r} ready on {opts['api_url']}")

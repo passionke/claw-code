@@ -428,8 +428,8 @@ def main() -> int:
 
     sandbox_id = _find_ovs_singleton(cluster_id, api_url, api_key, self_hosted)
     if not sandbox_id:
-        print(f"==> no ovs-singleton for cluster={cluster_id}; run fc-ovs-up.sh first", file=sys.stderr)
-        raise RuntimeError("missing ovs-singleton — run: ./deploy/stack/lib/fc-ovs-up.sh --reuse")
+        print(f"==> no ovs-singleton for cluster={cluster_id}; run gateway.sh ovs-up first", file=sys.stderr)
+        raise RuntimeError("missing ovs-singleton — run: ./deploy/stack/gateway.sh ovs-up --reuse")
 
     print(f"==> ovs sandbox {sandbox_id}", file=sys.stderr)
     script = _install_restart_script(

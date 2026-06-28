@@ -143,7 +143,7 @@ pub async fn get_ovs_workspace(
             .ok_or_else(|| {
                 OvsApiError::new(
                     StatusCode::SERVICE_UNAVAILABLE,
-                    "OVS not configured — run deploy/stack/lib/fc-ovs-up.sh",
+                    "OVS not configured — run ./deploy/stack/gateway.sh ovs-up",
                 )
             })?;
         let workspace_folder = workspace_folder_path(proj_id);

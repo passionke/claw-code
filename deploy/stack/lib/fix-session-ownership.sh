@@ -125,9 +125,6 @@ claw_fix_session_workspace_ownership() {
   if [[ "$(uname -s)" == Darwin ]]; then
     # :U + gateway user=host uid; only strip root-owned paths (sidecar). kejiqing
     uid="$(claw_bind_mount_owner_uid)"
-    # shellcheck disable=SC1091
-    source "${LIB_DIR}/nuclear-pool-reset.sh"
-    claw_remove_pool_slot_tree "${root}/.claw-pool-slot" 2>/dev/null || true
     shopt -s nullglob
     for ds in "${root}"/ds_* "${root}"/proj_*; do
       [[ -d "${ds}" ]] || continue
@@ -146,10 +143,6 @@ claw_fix_session_workspace_ownership() {
   if [[ -z "${root}" || ! -d "${root}" ]]; then
     return 0
   fi
-
-  # shellcheck disable=SC1091
-  source "${LIB_DIR}/nuclear-pool-reset.sh"
-  claw_remove_pool_slot_tree "${root}/.claw-pool-slot" 2>/dev/null || true
 
   rt="$(claw_container_runtime_cli)"
   image="${CLAW_CHOWN_RUNNER_IMAGE:-docker.1ms.run/library/alpine:3.20}"

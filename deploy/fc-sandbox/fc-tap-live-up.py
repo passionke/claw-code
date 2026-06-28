@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Start claude-tap Live on e2b (observe sandbox) — direct traffic URL, no gateway proxy.
+"""Ensure FC observe-singleton sandbox on e2b — direct Live traffic URL, no gateway proxy.
+
+claude-tap Live is started only by the claw-observe template startCmd (Panel envd bootstrap
+on sandbox create). This script does not fc_exec a second launch path.
 
 Usage (from repo root, after `.env` with self-hosted e2b vars):
-  set -a && source .env && set +a
   python3 deploy/fc-sandbox/fc-tap-live-up.py
-  python3 deploy/fc-sandbox/fc-tap-live-up.py --reuse   # reconnect + ensure Live
-  python3 deploy/fc-sandbox/fc-tap-live-up.py --reset   # kill old observe-singleton, recreate, write PG
+  python3 deploy/fc-sandbox/fc-tap-live-up.py --reuse
+  python3 deploy/fc-sandbox/fc-tap-live-up.py --reset
   python3 deploy/fc-sandbox/fc-tap-live-up.py --json
-
-Requires e2b SDK for in-sandbox exec: auto-creates `.venv-fc` on first run
-(same as `build-claw-worker-template.sh`; override with `CLAW_FC_VENV`).
 
 Author: kejiqing
 """
@@ -30,9 +29,8 @@ ROOT = Path(__file__).resolve().parents[2]
 _FC_SANDBOX_DIR = Path(__file__).resolve().parent
 if str(_FC_SANDBOX_DIR) not in sys.path:
     sys.path.insert(0, str(_FC_SANDBOX_DIR))
-EXEC_HELPER = ROOT / "deploy/fc-sandbox/fc_exec.py"
 GUEST_CLAW_WS = "/claw_ws"
-_FC_VENV_DEPS = ("e2b==2.26.0", "e2b-code-interpreter", "python-dotenv", "psycopg[binary]")
+_FC_VENV_DEPS = ("python-dotenv", "psycopg[binary]")
 
 
 def _fc_venv_dir() -> Path:
@@ -41,17 +39,17 @@ def _fc_venv_dir() -> Path:
 
 
 def _fc_python() -> Path:
-    """Python with e2b-code-interpreter (auto-create repo .venv-fc when missing). Author: kejiqing"""
+    """Python with psycopg for PG persist (auto-create repo .venv-fc when missing). Author: kejiqing"""
     venv = _fc_venv_dir()
     py = venv / "bin" / "python3"
     if not py.is_file():
-        print(f"==> create FC venv {venv} (e2b SDK for fc_exec)", file=sys.stderr)
+        print(f"==> create FC venv {venv} (psycopg for PG persist)", file=sys.stderr)
         subprocess.check_call([sys.executable, "-m", "venv", str(venv)])
         subprocess.check_call([str(venv / "bin" / "pip"), "install", "-q", *_FC_VENV_DEPS])
         return py
     try:
         subprocess.run(
-            [str(py), "-c", "import e2b_code_interpreter; import psycopg"],
+            [str(py), "-c", "import psycopg"],
             capture_output=True,
             check=True,
         )
@@ -182,88 +180,7 @@ def _database_url() -> str:
         val = _env(key)
         if val:
             return val
-    raise RuntimeError(f"set CLAW_FC_WORKER_DATABASE_URL or CLAW_GATEWAY_DATABASE_URL in .env")
-
-
-def _start_observe_script(live_port: int, cluster_id: str, db_url: str) -> str:
-    tap_traces = f"{GUEST_CLAW_WS}/tap-traces"
-    return f"""set -e
-OBS_LOG="{GUEST_CLAW_WS}/.claw-observe.log"
-OBS_PID="{GUEST_CLAW_WS}/.claw-observe.pid"
-TAP_BIN=""
-for cand in /usr/local/bin/claude-tap /opt/claw-tap-runtime/bin/claude-tap; do
-  if [ -x "$cand" ]; then TAP_BIN="$cand"; break; fi
-done
-if [ -z "$TAP_BIN" ]; then
-  echo "fc observe: claude-tap not found (rebuild claw-observe template with claw-tap>=0.0.10)" >&2
-  exit 127
-fi
-if [ -f "$OBS_PID" ] && kill -0 "$(cat "$OBS_PID")" 2>/dev/null; then
-  if curl -fsS --connect-timeout 2 "http://127.0.0.1:{live_port}/" >/dev/null 2>&1; then
-    exit 0
-  fi
-fi
-mkdir -p "{tap_traces}"
-nohup env CLAW_CLUSTER_ID={json.dumps(cluster_id)} CLAW_GATEWAY_DATABASE_URL={json.dumps(db_url)} \\
-  "$TAP_BIN" \\
-  --tap-no-launch \\
-  --tap-live \\
-  --tap-host 0.0.0.0 \\
-  --tap-port 8080 \\
-  --tap-live-port {live_port} \\
-  --tap-target https://bootstrap.invalid/v1 \\
-  --tap-output-dir "{tap_traces}" \\
-  --tap-no-update-check \\
-  --tap-no-auto-update \\
-  >"$OBS_LOG" 2>&1 &
-echo $! >"$OBS_PID"
-for _ in $(seq 1 45); do
-  if curl -fsS --connect-timeout 2 "http://127.0.0.1:{live_port}/" >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 1
-done
-echo "fc observe: Live / timeout (see $OBS_LOG)" >&2
-exit 1
-"""
-
-
-def _run_fc_exec(
-    *,
-    sandbox_id: str,
-    script: str,
-    api_key: str,
-    api_url: str,
-    sandbox_url: str,
-    domain: str,
-    self_hosted: bool,
-    timeout: int = 180,
-    sandbox_timeout: int = 0,
-) -> None:
-    if not EXEC_HELPER.is_file():
-        raise RuntimeError(f"missing {EXEC_HELPER}")
-    payload = {
-        "op": "run_sh",
-        "api_key": api_key,
-        "domain": domain,
-        "api_url": api_url,
-        "sandbox_url": sandbox_url or None,
-        "sandbox_id": sandbox_id,
-        "script": script,
-        "self_hosted": self_hosted,
-        "timeout": timeout,
-        "sandbox_timeout": sandbox_timeout,
-    }
-    proc = subprocess.run(
-        [str(_fc_python()), str(EXEC_HELPER)],
-        input=json.dumps(payload).encode("utf-8"),
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        err = proc.stderr.decode("utf-8", errors="replace").strip()
-        out = proc.stdout.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(err or out or f"fc_exec exit {proc.returncode}")
+    raise RuntimeError("set CLAW_FC_WORKER_DATABASE_URL or CLAW_GATEWAY_DATABASE_URL in .env")
 
 
 def _list_sandboxes(api_url: str, api_key: str, self_hosted: bool) -> list[dict[str, Any]]:
@@ -301,6 +218,7 @@ def _create_observe_sandbox(
     template: str,
     timeout_secs: int,
     cluster_id: str,
+    db_url: str,
 ) -> tuple[str, str]:
     body: dict[str, Any] = {
         "templateID": template,
@@ -308,6 +226,10 @@ def _create_observe_sandbox(
         "metadata": {
             "clawRole": "observe-singleton",
             "clusterId": cluster_id,
+        },
+        "envVars": {
+            "CLAW_CLUSTER_ID": cluster_id,
+            "CLAW_GATEWAY_DATABASE_URL": db_url,
         },
     }
     nas = _nas_config_body()
@@ -382,13 +304,24 @@ def _verify_traffic(live_base_url: str) -> bool:
     return ok_exit and code.startswith("2")
 
 
+def _wait_live_traffic(live_base_url: str, *, max_attempts: int = 60, sleep_sec: int = 2) -> bool:
+    """Wait for Panel template startCmd to bring up Live traffic."""
+    for i in range(1, max_attempts + 1):
+        if _verify_traffic(live_base_url):
+            print(f"==> observe Live traffic ready ({live_base_url}, attempt {i}/{max_attempts})", file=sys.stderr)
+            return True
+        print(f"==> waiting observe Live traffic ({i}/{max_attempts}) …", file=sys.stderr)
+        time.sleep(sleep_sec)
+    return False
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Start e2b claude-tap Live (no gateway proxy)")
+    parser = argparse.ArgumentParser(description="Ensure e2b observe-singleton (claude-tap Live)")
     parser.add_argument("--reuse", action="store_true", help="reuse existing observe-singleton sandbox")
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="kill existing observe-singleton, create fresh sandbox, start tap, write PG",
+        help="kill existing observe-singleton, create fresh sandbox, write PG",
     )
     parser.add_argument("--kill", metavar="SANDBOX_ID", help="kill sandbox and exit")
     parser.add_argument("--json", action="store_true", help="print JSON only")
@@ -408,13 +341,13 @@ def main() -> int:
         return 1
 
     api_url = _env("CLAW_FC_API_URL") or _env("E2B_API_URL") or "http://10.8.0.9:3000"
-    sandbox_url = _env("CLAW_E2B_SANDBOX_URL") or _env("E2B_SANDBOX_URL")
     fc_domain = _env("CLAW_FC_DOMAIN") or _env("E2B_DOMAIN") or "supone.top"
     cluster_id = _env("CLAW_CLUSTER_ID") or "default"
     template = _env("CLAW_FC_OBSERVE_TEMPLATE") or "claw-observe"
     timeout_secs = int(_env("CLAW_FC_SANDBOX_TIMEOUT_SECS", "3600") or "3600")
     live_port = _observe_live_port()
     self_hosted = _is_self_hosted(api_url)
+    db_url = _database_url()
 
     if args.kill:
         _kill_sandbox(args.kill.strip(), api_url, api_key, self_hosted)
@@ -443,26 +376,24 @@ def main() -> int:
             template=template,
             timeout_secs=timeout_secs,
             cluster_id=cluster_id,
+            db_url=db_url,
         )
         print(f"==> sandbox_id={sandbox_id}", file=sys.stderr)
-
-    db_url = _database_url()
-    script = _start_observe_script(live_port, cluster_id, db_url)
-    print("==> start claude-tap Live inside sandbox …", file=sys.stderr)
-    _run_fc_exec(
-        sandbox_id=sandbox_id,
-        script=script,
-        api_key=api_key,
-        api_url=api_url,
-        sandbox_url=sandbox_url,
-        domain=domain,
-        self_hosted=self_hosted,
-        sandbox_timeout=timeout_secs,
-    )
 
     urls = _browser_urls(sandbox_id, domain, live_port)
     urls["clusterId"] = cluster_id
     urls["internalLiveBaseUrl"] = _internal_live_base(sandbox_id, domain, live_port)
+
+    print(
+        "==> wait for observe Live traffic (template startCmd via Panel; no fc_exec launch) …",
+        file=sys.stderr,
+    )
+    if not _wait_live_traffic(urls["liveBaseUrl"]):
+        raise RuntimeError(
+            f"observe Live traffic not reachable at {urls['liveBaseUrl']} — "
+            "claw-observe template startCmd should start claude-tap on sandbox create; "
+            "rebuild template (build-claw-observe-selfhosted.py) or recreate sandbox (--reset)"
+        )
 
     ok = _verify_traffic(urls["liveBaseUrl"])
     urls["trafficReachable"] = ok

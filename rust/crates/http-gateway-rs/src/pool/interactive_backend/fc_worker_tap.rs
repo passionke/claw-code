@@ -1,5 +1,5 @@
 //! FC worker co-located claude-tap **proxy** (`127.0.0.1:8080`): LLM 代理 + session trace **写入**。
-//! Worker 内 tap：proxy + trace 写入 NAS；Live 观察由 `fc-tap-live-up.py` 负责。
+//! Worker 内 tap：proxy + trace 写入 NAS；Live 观察由 observe-singleton 模板 startCmd 负责（gateway.sh observe-tap-up）。
 //! Author: kejiqing
 
 use std::collections::BTreeMap;

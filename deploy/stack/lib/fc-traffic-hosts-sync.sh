@@ -26,7 +26,7 @@ Options:
 
 Why sandbox id keeps changing:
   e2b assigns a new sbx_* on each sandbox CREATE (gateway restart, unhealthy recreate, no --reuse).
-  Keep stable: ./deploy/stack/lib/fc-tap-live-up.sh --reuse
+  Keep stable: ./deploy/stack/gateway.sh observe-tap-up --reuse
 
 One-time wildcard DNS (no per-id hosts lines): see deploy/stack/lib/fc-traffic-hosts-sync.sh header in docs
 EOF
@@ -87,7 +87,7 @@ if curl -fsS --connect-timeout 2 "http://127.0.0.1:${GATEWAY_PORT}/healthz" >/de
 fi
 
 if [[ ${#lines[@]} -eq 0 ]]; then
-  echo "error: no traffic hosts found (run fc-tap-live-up.sh --reuse; gateway up for OVS)" >&2
+  echo "error: no traffic hosts found (run gateway.sh observe-tap-up --reuse; gateway up for OVS)" >&2
   exit 1
 fi
 

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Start FC OVS singleton (openvscode-server) on e2b — direct traffic URL, no gateway.
+"""Ensure FC OVS singleton sandbox exists on e2b — direct traffic URL, no gateway.
+
+OVS is started only by the claw-ovs template startCmd (Panel envd bootstrap on
+sandbox create). This script does not fc_exec a second launch path.
 
 Usage (repo root, `.env` with self-hosted e2b vars):
   python3 deploy/fc-sandbox/fc-ovs-up.py
@@ -26,9 +29,8 @@ ROOT = Path(__file__).resolve().parents[2]
 _FC_SANDBOX_DIR = Path(__file__).resolve().parent
 if str(_FC_SANDBOX_DIR) not in sys.path:
     sys.path.insert(0, str(_FC_SANDBOX_DIR))
-EXEC_HELPER = ROOT / "deploy/fc-sandbox/fc_exec.py"
 GUEST_CLAW_WS = "/claw_ws"
-_FC_VENV_DEPS = ("e2b==2.26.0", "e2b-code-interpreter", "python-dotenv", "psycopg[binary]")
+_FC_VENV_DEPS = ("python-dotenv", "psycopg[binary]")
 
 
 def _fc_venv_dir() -> Path:
@@ -40,13 +42,13 @@ def _fc_python() -> Path:
     venv = _fc_venv_dir()
     py = venv / "bin" / "python3"
     if not py.is_file():
-        print(f"==> create FC venv {venv} (e2b SDK for fc_exec)", file=sys.stderr)
+        print(f"==> create FC venv {venv} (e2b SDK + psycopg)", file=sys.stderr)
         subprocess.check_call([sys.executable, "-m", "venv", str(venv)])
         subprocess.check_call([str(venv / "bin" / "pip"), "install", "-q", *_FC_VENV_DEPS])
         return py
     try:
         subprocess.run(
-            [str(py), "-c", "import e2b_code_interpreter; import psycopg"],
+            [str(py), "-c", "import psycopg"],
             capture_output=True,
             check=True,
         )
@@ -157,82 +159,6 @@ def _workspace_folder_url(base_url: str, proj_id: int) -> str:
     return f"{base}?folder={GUEST_CLAW_WS}/proj_{proj_id}/home"
 
 
-def _start_ovs_script(ovs_port: int) -> str:
-    return f"""set -e
-OVS_BIN="/home/.openvscode-server/bin/openvscode-server"
-if [ ! -x "$OVS_BIN" ]; then
-  echo "fc ovs: openvscode-server not found (rebuild claw-ovs template)" >&2
-  exit 127
-fi
-OVS_LOG="{GUEST_CLAW_WS}/.claw-ovs.log"
-OVS_PID="{GUEST_CLAW_WS}/.claw-ovs.pid"
-if [ -f "$OVS_PID" ] && kill -0 "$(cat "$OVS_PID")" 2>/dev/null; then
-  if curl -fsS --connect-timeout 2 "http://127.0.0.1:{ovs_port}/ovs/" >/dev/null 2>&1; then
-    exit 0
-  fi
-  kill "$(cat "$OVS_PID")" 2>/dev/null || true
-  rm -f "$OVS_PID"
-fi
-export HOME=/opt/claw-ovs/home
-mkdir -p /opt/claw-ovs/home /opt/claw-extensions /opt/claw-ovs/server-data/data/logs /opt/claw-ovs/server-data/data/Machine {GUEST_CLAW_WS}
-nohup "$OVS_BIN" \\
-  --host=0.0.0.0 --port={ovs_port} \\
-  --without-connection-token \\
-  --server-base-path=/ovs \\
-  --extensions-dir=/opt/claw-extensions \\
-  --server-data-dir=/opt/claw-ovs/server-data \\
-  --enable-proposed-api=claw.claw-vscode,claw.ovs-chat-demo \\
-  >"$OVS_LOG" 2>&1 &
-echo $! >"$OVS_PID"
-for _ in $(seq 1 30); do
-  if curl -fsS --connect-timeout 2 "http://127.0.0.1:{ovs_port}/ovs/" >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 1
-done
-echo "fc ovs: openvscode /ovs/ timeout (see $OVS_LOG)" >&2
-exit 1
-"""
-
-
-def _run_fc_exec(
-    *,
-    sandbox_id: str,
-    script: str,
-    api_key: str,
-    api_url: str,
-    sandbox_url: str,
-    domain: str,
-    self_hosted: bool,
-    timeout: int = 180,
-    sandbox_timeout: int = 0,
-) -> None:
-    if not EXEC_HELPER.is_file():
-        raise RuntimeError(f"missing {EXEC_HELPER}")
-    payload = {
-        "op": "run_sh",
-        "api_key": api_key,
-        "domain": domain,
-        "api_url": api_url,
-        "sandbox_url": sandbox_url or None,
-        "sandbox_id": sandbox_id,
-        "script": script,
-        "self_hosted": self_hosted,
-        "timeout": timeout,
-        "sandbox_timeout": sandbox_timeout,
-    }
-    proc = subprocess.run(
-        [str(_fc_python()), str(EXEC_HELPER)],
-        input=json.dumps(payload).encode("utf-8"),
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        err = proc.stderr.decode("utf-8", errors="replace").strip()
-        out = proc.stdout.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(err or out or f"fc_exec exit {proc.returncode}")
-
-
 def _list_sandboxes(api_url: str, api_key: str, self_hosted: bool) -> list[dict[str, Any]]:
     rows = _http_json("GET", f"{api_url.rstrip('/')}/sandboxes", api_key, self_hosted)
     if isinstance(rows, list):
@@ -332,13 +258,24 @@ def _verify_traffic(ovs_url: str) -> bool:
     return proc.returncode in (0, 18) and code.startswith("2")
 
 
+def _wait_ovs_traffic(ovs_url: str, *, max_attempts: int = 60, sleep_sec: int = 2) -> bool:
+    """Wait for Panel template startCmd to bring up /ovs/ traffic."""
+    for i in range(1, max_attempts + 1):
+        if _verify_traffic(ovs_url):
+            print(f"==> OVS traffic ready ({ovs_url}, attempt {i}/{max_attempts})", file=sys.stderr)
+            return True
+        print(f"==> waiting OVS traffic ({i}/{max_attempts}) …", file=sys.stderr)
+        time.sleep(sleep_sec)
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start e2b FC OVS singleton (openvscode-server)")
     parser.add_argument("--reuse", action="store_true", help="reuse existing ovs-singleton sandbox")
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="kill existing ovs-singleton, create fresh sandbox, start OVS, write PG",
+        help="kill existing ovs-singleton, create fresh sandbox, write PG",
     )
     parser.add_argument("--kill", metavar="SANDBOX_ID", help="kill sandbox and exit")
     parser.add_argument("--json", action="store_true", help="print JSON only")
@@ -360,7 +297,6 @@ def main() -> int:
         return 1
 
     api_url = _env("CLAW_FC_API_URL") or _env("E2B_API_URL") or "http://10.8.0.9:3000"
-    sandbox_url = _env("CLAW_E2B_SANDBOX_URL") or _env("E2B_SANDBOX_URL")
     fc_domain = _env("CLAW_FC_DOMAIN") or _env("E2B_DOMAIN") or "supone.top"
     cluster_id = _env("CLAW_CLUSTER_ID") or "default"
     template = _env("CLAW_FC_OVS_TEMPLATE") or "claw-ovs"
@@ -398,19 +334,17 @@ def main() -> int:
         )
         print(f"==> sandbox_id={sandbox_id}", file=sys.stderr)
 
-    print("==> start openvscode-server inside sandbox …", file=sys.stderr)
-    _run_fc_exec(
-        sandbox_id=sandbox_id,
-        script=_start_ovs_script(ovs_port),
-        api_key=api_key,
-        api_url=api_url,
-        sandbox_url=sandbox_url,
-        domain=domain,
-        self_hosted=self_hosted,
-        sandbox_timeout=timeout_secs,
-    )
-
     ovs_url = _ovs_base_url(sandbox_id, domain, ovs_port)
+    print(
+        "==> wait for OVS traffic (template startCmd via Panel; no fc_exec launch) …",
+        file=sys.stderr,
+    )
+    if not _wait_ovs_traffic(ovs_url):
+        raise RuntimeError(
+            f"OVS traffic not reachable at {ovs_url} — "
+            "claw-ovs template startCmd should start openvscode on sandbox create; "
+            "rebuild template (build-claw-ovs-selfhosted.py) or recreate sandbox (--reset)"
+        )
     folder_url = _workspace_folder_url(ovs_url, args.proj_id)
     result = {
         "sandboxId": sandbox_id,

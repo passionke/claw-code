@@ -8,7 +8,9 @@ REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 ENV_FILE="${REPO_ROOT}/.env"
 
 # shellcheck disable=SC1091
-source "${LIB_DIR}/compose-include.sh"
+source "${LIB_DIR}/pool-health.sh"
+
+if [[ ! -f "${ENV_FILE}" ]]; then
   echo "missing ${ENV_FILE}" >&2
   echo "copy ${REPO_ROOT}/.env.example to ${ENV_FILE} and edit" >&2
   exit 1
@@ -86,14 +88,13 @@ fi
 
 # Release up: tap down + compose down + delete legacy workers, then pull fresh images. kejiqing
 if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
-  echo "==> release ${CLAW_IMAGE_RELEASE_TAG}: compose down + nuclear pool reset" >&2
+  echo "==> release ${CLAW_IMAGE_RELEASE_TAG}: compose down" >&2
   echo "    gateway=${GATEWAY_IMAGE} worker=${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}}" >&2
   if claw_stack_manages_local_claude_tap; then
     echo "==> release: claude-tap down" >&2
     claw_claude_tap_stop "${PODMAN_DIR}"
   fi
   claw_compose_gateway_down "${PODMAN_DIR}" "${ENV_FILE}" 2>/dev/null || true
-  claw_nuclear_pool_reset "${PODMAN_DIR}"
   claw_fix_session_workspace_ownership "${CLAW_POOL_WORK_ROOT_BIND_SRC:-${PODMAN_DIR}/claw-workspace}"
   rt="$(claw_container_runtime_cli)"
   claw_release_pull_image_if_needed "${rt}" "${GATEWAY_IMAGE}"

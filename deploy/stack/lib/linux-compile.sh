@@ -29,7 +29,6 @@ claw_linux_compile_release() {
   local use_cn_cargo="$4"
 
   local rust_dir="${root_dir}/rust"
-  local sandbox_dir="${root_dir}/sandbox"
   local out_root="${root_dir}/deploy/stack/.linux-artifacts"
   local out_dir="${out_root}/release"
   mkdir -p "${out_dir}"
@@ -39,11 +38,6 @@ claw_linux_compile_release() {
     cp "${rust_dir}/.cargo/config.toml.example" "${rust_dir}/.cargo/config.toml"
   elif [[ "${use_cn_cargo}" == "1" ]] && ! grep -q 'rsproxy-sparse' "${rust_dir}/.cargo/config.toml" 2>/dev/null; then
     cp "${rust_dir}/.cargo/config.toml.example" "${rust_dir}/.cargo/config.toml"
-  fi
-
-  mkdir -p "${sandbox_dir}/.cargo"
-  if [[ ! -f "${sandbox_dir}/.cargo/config.toml" ]]; then
-    cp "${sandbox_dir}/.cargo/config.toml.example" "${sandbox_dir}/.cargo/config.toml"
   fi
 
   echo "linux compile: ${container_cli} run (registry/git/target/sccache volumes persist across runs)"
