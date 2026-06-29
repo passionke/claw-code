@@ -27,7 +27,7 @@ FC sandbox runtime is billed separately (MicroVM uptime; use sleep/wake to reduc
 
 Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径**：
 
-- self-hosted worker: `Template(file_context_path=...).from_dockerfile(...)` + Dockerfile `COPY`
+- self-hosted worker: `FROM <CI claw-gateway-worker:release-vX>` + e2b runtime 层（NFS sudo / claw-tap / start-ready）；**禁止**用 NAS 中转 `claw`/`ttyd` 二进制
 - cloud worker: `from_image`，或 `file_context_path` + Dockerfile `COPY`
 
 严禁使用临时 HTTP artifact server、`RUN curl http://host:port/...`、`dockerfile-http`、`CLAW_*_TEMPLATE_HTTP_*` 等非标准路径。模板构建链路必须由 e2b SDK 负责上传上下文或引用镜像，不允许依赖本机临时端口、内网 HTTP、手写 artifact server。Author: kejiqing

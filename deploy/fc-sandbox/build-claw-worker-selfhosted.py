@@ -11,6 +11,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
+DEFAULT_WORKER_IMAGE = (
+    "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/"
+    "passionke/claw-gateway-worker:release-v1.6.14"
+)
+
+WORKER_START_CMD = "/usr/local/bin/claw-worker-start"
+WORKER_READY_CMD = "/usr/local/bin/claw-worker-ready"
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
@@ -24,83 +32,41 @@ def _conn_opts() -> dict[str, str]:
     }
 
 
-def _stage_claude_tap(staging: Path, rt: str) -> None:
-    tap_image = _env(
-        "CLAUDE_TAP_IMAGE",
-        "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-tap:latest",
-    )
-    for candidate in (
-        _env("CLAUDE_TAP_SOURCE_BIN"),
-        shutil.which("claude-tap") or "",
-        str(Path.home() / ".local/bin/claude-tap"),
-    ):
-        if candidate and Path(candidate).is_file():
-            shutil.copy2(candidate, staging / "claude-tap")
-            return
-    try:
-        subprocess.check_call(
-            [rt, "pull", "--platform", "linux/amd64", tap_image],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        cid = subprocess.check_output(
-            [rt, "create", "--platform", "linux/amd64", tap_image],
-            text=True,
-        ).strip()
-        try:
-            for path in ("/usr/local/bin/claude-tap", "/app/.venv/bin/claude-tap"):
-                try:
-                    subprocess.check_call(
-                        [rt, "cp", f"{cid}:{path}", str(staging / "claude-tap")]
-                    )
-                    return
-                except subprocess.CalledProcessError:
-                    continue
-        finally:
-            subprocess.call([rt, "rm", "-f", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except subprocess.CalledProcessError:
-        print("warn: claude-tap not staged (install uv tool install claw-tap or set CLAUDE_TAP_SOURCE_BIN)", file=sys.stderr)
+def _worker_base_image() -> str:
+    return _env("CLAW_E2B_TEMPLATE_FROM_IMAGE") or _env("CLAW_FC_WORKER_IMAGE", DEFAULT_WORKER_IMAGE)
 
 
-def _stage_binaries(staging: Path) -> None:
-    nas_tools = _env("CLAW_NAS_TOOLS_DIR")
-    if nas_tools and (Path(nas_tools) / "claw").is_file():
-        shutil.copy2(f"{nas_tools}/claw", staging / "claw")
-        shutil.copy2(f"{nas_tools}/ttyd", staging / "ttyd")
-        tap = Path(nas_tools) / "claude-tap"
-        if tap.is_file():
-            shutil.copy2(tap, staging / "claude-tap")
-        else:
-            _stage_claude_tap(staging, _env("CLAW_CONTAINER_RUNTIME", "podman"))
-        return
-    worker = _env(
-        "CLAW_FC_WORKER_IMAGE",
-        "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-gateway-worker:release-v1.6.13",
-    )
+def _container_runtime() -> str:
     rt = _env("CLAW_CONTAINER_RUNTIME", "podman")
     if rt == "auto":
-        rt = "podman"
-    cid = subprocess.check_output([rt, "create", worker], text=True).strip()
+        for candidate in ("podman", "docker"):
+            if shutil.which(candidate):
+                return candidate
+        return "podman"
+    return rt
+
+
+def _stage_from_worker_tag(staging: Path, worker_image: str) -> None:
+    """Pull CI worker tag (linux/amd64) and stage claw+ttyd into e2b build context."""
+    rt = _container_runtime()
+    platform = _env("CLAW_E2B_TEMPLATE_PLATFORM", "linux/amd64")
+    print(f"==> stage binaries from worker tag {worker_image!r} via {rt} ({platform})")
+    subprocess.check_call([rt, "pull", "--platform", platform, worker_image])
+    cid = subprocess.check_output(
+        [rt, "create", "--platform", platform, worker_image],
+        text=True,
+    ).strip()
     try:
-        subprocess.check_call([rt, "cp", f"{cid}:/usr/local/bin/claw", str(staging / "claw")])
-        subprocess.check_call([rt, "cp", f"{cid}:/usr/local/bin/ttyd", str(staging / "ttyd")])
+        for name in ("claw", "ttyd"):
+            dest = staging / name
+            subprocess.check_call([rt, "cp", f"{cid}:/usr/local/bin/{name}", str(dest)])
+            dest.chmod(0o755)
+            probe = subprocess.check_output(["file", "-b", str(dest)], text=True).strip()
+            print(f"  {name}: {probe}")
+            if "x86-64" not in probe and "x86_64" not in probe:
+                raise SystemExit(f"error: {name} is not amd64 ({probe})")
     finally:
         subprocess.call([rt, "rm", "-f", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _stage_claude_tap(staging, rt)
-
-
-def _sudo_nfs_setup() -> str:
-    return r""" && apt-get install -y --no-install-recommends sudo \
-    && echo 'user ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, /usr/bin/mountpoint, /bin/mkdir, /bin/chown' > /etc/sudoers.d/claw-nfs \
-    && chmod 440 /etc/sudoers.d/claw-nfs"""
-
-
-# worker is not a resident service: gateway creates the sandbox then envd-execs
-# `claw gateway-solve-once` (and ttyd on demand). startCmd just keeps the sandbox
-# alive so envd stays up; ready probe confirms the `claw` binary is in place.
-# Same install style as claw-ovs / claw-nas-api templates. Author: kejiqing
-WORKER_START_CMD = "/usr/local/bin/claw-worker-start"
-WORKER_READY_CMD = "/usr/local/bin/claw-worker-ready"
 
 
 def _worker_start_ready_install() -> str:
@@ -117,11 +83,16 @@ def _worker_start_ready_install() -> str:
 """
 
 
-def _dockerfile_copy() -> str:
-    sudo = _sudo_nfs_setup()
-    return f"""FROM docker.1ms.run/library/debian:bookworm-slim
+def _dockerfile_debian_copy() -> str:
+    debian = _env(
+        "CLAW_E2B_TEMPLATE_DEBIAN_IMAGE",
+        "docker.1ms.run/library/debian:bookworm-slim",
+    )
+    return f"""FROM {debian}
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    nfs-common ca-certificates curl python3 python3-pip{sudo} \\
+    nfs-common ca-certificates python3 python3-pip sudo \\
+    && echo 'user ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, /usr/bin/mountpoint, /bin/mkdir, /bin/chown' > /etc/sudoers.d/claw-nfs \\
+    && chmod 440 /etc/sudoers.d/claw-nfs \\
     && pip3 install --no-cache-dir --break-system-packages claw-tap \\
       -i https://pypi.tuna.tsinghua.edu.cn/simple \\
     && rm -rf /var/lib/apt/lists/*
@@ -131,22 +102,30 @@ RUN chmod +x /usr/local/bin/claw /usr/local/bin/ttyd
 {_worker_start_ready_install()}"""
 
 
+def _forbidden_http() -> bool:
+    if _env("CLAW_E2B_TEMPLATE_BUILD_STRATEGY") == "http":
+        return True
+    return any(
+        _env(key)
+        for key in (
+            "CLAW_E2B_TEMPLATE_HTTP_BASE",
+            "CLAW_E2B_TEMPLATE_HTTP_BIND",
+            "CLAW_E2B_TEMPLATE_HTTP_HOST",
+            "CLAW_E2B_TEMPLATE_HTTP_PORT",
+        )
+    )
+
+
 def main() -> int:
     opts = _conn_opts()
     alias = _env("CLAW_E2B_TEMPLATE", "claw-worker")
-    strategy = _env("CLAW_E2B_TEMPLATE_BUILD_STRATEGY", "copy")
+    strategy = _env("CLAW_E2B_TEMPLATE_BUILD_STRATEGY", "from_image")
     verify = _env("CLAW_E2B_TEMPLATE_SKIP_VERIFY", "0") not in ("1", "true", "yes")
-    forbidden_http_keys = [
-        "CLAW_E2B_TEMPLATE_HTTP_BASE",
-        "CLAW_E2B_TEMPLATE_HTTP_BIND",
-        "CLAW_E2B_TEMPLATE_HTTP_HOST",
-        "CLAW_E2B_TEMPLATE_HTTP_PORT",
-    ]
-    if strategy == "http" or any(_env(key) for key in forbidden_http_keys):
+
+    if _forbidden_http():
         print(
             "error: HTTP artifact template builds are forbidden. "
-            "Use the e2b standard file_context/COPY build path "
-            "(CLAW_E2B_TEMPLATE_BUILD_STRATEGY=copy).",
+            "Use CLAW_E2B_TEMPLATE_BUILD_STRATEGY=from_image with a CI worker image tag.",
             file=sys.stderr,
         )
         return 2
@@ -160,18 +139,37 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="claw-e2b-tpl-") as tmp:
         staging = Path(tmp)
-        nas_tools = _env("CLAW_NAS_TOOLS_DIR")
-        artifact_dir = Path(nas_tools) if nas_tools and (Path(nas_tools) / "claw").is_file() else staging
-        if artifact_dir is staging:
-            _stage_binaries(staging)
+        dockerfile_path = staging / "Dockerfile"
 
-        if strategy == "copy":
-            if artifact_dir is not staging:
-                shutil.copy2(artifact_dir / "claw", staging / "claw")
-                shutil.copy2(artifact_dir / "ttyd", staging / "ttyd")
-            dockerfile_path = staging / "Dockerfile"
-            dockerfile_path.write_text(_dockerfile_copy(), encoding="utf-8")
-            print(f"==> copy build ctx={staging}")
+        if strategy == "from_image":
+            worker_image = _worker_base_image()
+            _stage_from_worker_tag(staging, worker_image)
+            dockerfile_path.write_text(_dockerfile_debian_copy(), encoding="utf-8")
+            print(f"==> e2b build worker_tag={worker_image!r} ctx={staging}")
+            template = (
+                Template(file_context_path=str(staging))
+                .from_dockerfile(str(dockerfile_path))
+                .set_start_cmd(WORKER_START_CMD, WORKER_READY_CMD)
+            )
+        elif strategy == "copy":
+            copy_dir = _env("CLAW_E2B_TEMPLATE_COPY_DIR")
+            if not copy_dir:
+                print(
+                    "error: CLAW_E2B_TEMPLATE_BUILD_STRATEGY=copy requires "
+                    "CLAW_E2B_TEMPLATE_COPY_DIR with claw+ttyd.",
+                    file=sys.stderr,
+                )
+                return 1
+            src = Path(copy_dir)
+            for name in ("claw", "ttyd"):
+                if not (src / name).is_file():
+                    print(f"error: missing {src / name}", file=sys.stderr)
+                    return 1
+            for name in ("claw", "ttyd"):
+                (staging / name).write_bytes((src / name).read_bytes())
+                (staging / name).chmod(0o755)
+            dockerfile_path.write_text(_dockerfile_debian_copy(), encoding="utf-8")
+            print(f"==> copy build ctx={staging} (from {copy_dir})")
             template = (
                 Template(file_context_path=str(staging))
                 .from_dockerfile(str(dockerfile_path))
@@ -181,25 +179,33 @@ def main() -> int:
             print(f"unknown CLAW_E2B_TEMPLATE_BUILD_STRATEGY={strategy!r}", file=sys.stderr)
             return 1
 
-        Template.build(template, alias=alias, on_build_logs=default_build_logger(), **opts)
+        build = Template.build(template, alias=alias, on_build_logs=default_build_logger(), **opts)
 
-    print(f"OK: template {alias!r} ready on {opts['api_url']}")
+    print(f"template_id: {build.template_id}")
+    print(f"build_id: {build.build_id}")
+    print(f"OK: template {alias!r} ({build.template_id}) ready on {opts['api_url']}")
     if verify:
-        return _verify(alias, opts)
+        return _verify(build.template_id, opts)
     return 0
 
 
-def _verify(alias: str, opts: dict[str, str]) -> int:
+def _verify(template: str, opts: dict[str, str]) -> int:
     from e2b import Sandbox
 
-    print("==> verify: create sandbox + check ttyd/claw")
-    sandbox = Sandbox.create(alias, timeout=900, **opts)
+    print(f"==> verify: create sandbox template={template!r} + check ttyd/claw")
+    sandbox = Sandbox.create(template, timeout=900, **opts)
     try:
         print(f"sandbox_id: {sandbox.sandbox_id}")
-        for cmd in ("command -v ttyd", "command -v claw"):
+        for cmd in (
+            "command -v ttyd",
+            "command -v claw",
+            "test -x /usr/local/bin/claw-worker-start",
+            "test -x /usr/local/bin/claw-worker-ready",
+        ):
             r = sandbox.commands.run(cmd, timeout=120)
-            print(f"$ {cmd} -> exit={r.exit_code} stdout={(r.stdout or '').strip()!r}")
-            if r.exit_code not in (0, None):
+            out = (r.stdout or "").strip()
+            print(f"$ {cmd} -> exit={r.exit_code} stdout={out!r}")
+            if r.exit_code not in (0, None) and cmd.startswith("command -v"):
                 return r.exit_code or 1
     finally:
         sandbox.kill()

@@ -16,17 +16,14 @@ if ! mountpoint -q "${MOUNT_POINT}" 2>/dev/null; then
 fi
 touch "${MOUNT_POINT}/.claw-probe" && rm -f "${MOUNT_POINT}/.claw-probe"
 
-echo "==> NAS fc tools (claw + ttyd for template build)"
-export CLAW_NAS_HOST_MOUNT="${MOUNT_POINT}"
-./deploy/fc-sandbox/install-nas-fc-tools.sh
-
 echo "==> python e2b SDK"
 if ! python3 -c "import e2b" 2>/dev/null; then
   python3 -m pip install -q e2b e2b-code-interpreter
 fi
 
-echo "==> build claw-worker template on e2bserver"
-export CLAW_NAS_TOOLS_DIR="${MOUNT_POINT}/.claw-fc-tools"
+echo "==> build claw-worker template on e2bserver (FROM CI worker image tag)"
+export CLAW_E2B_TEMPLATE_BUILD_STRATEGY="${CLAW_E2B_TEMPLATE_BUILD_STRATEGY:-from_image}"
+export CLAW_FC_WORKER_IMAGE="${CLAW_FC_WORKER_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-gateway-worker:release-v1.6.14}"
 export E2B_API_KEY="${CLAW_FC_API_KEY:-e2b_53ae1fed82754c17ad8077fbc8bcdd90}"
 export E2B_API_URL="${CLAW_FC_API_URL:-http://10.8.0.1:3000}"
 export E2B_SANDBOX_URL="${CLAW_E2B_SANDBOX_URL:-http://10.8.0.1:3002}"
