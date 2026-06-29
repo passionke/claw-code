@@ -244,7 +244,10 @@ fn bootstrap_label(kind: &str) -> &'static str {
         "bootstrap_pool_acquired" => "Pool · 租 slot + tar 灌入",
         "bootstrap_exec_started" => "Pool · docker exec 启动",
         "bootstrap_worker_entered" => "Worker · gateway-solve-once",
-        "bootstrap_mcp_ready" => "Worker · MCP discover",
+        "bootstrap_project_config_loaded" => "Worker · 加载项目配置",
+        "bootstrap_system_prompt_loaded" => "Worker · 加载 system prompt",
+        "bootstrap_turn_language_inferred" => "Worker · 语言推断",
+        "bootstrap_mcp_ready" => "Worker · MCP 工具发现",
         "session_started" => "Orchestration · 开始",
         _ => "启动",
     }
@@ -840,6 +843,9 @@ mod tests {
                 r#"{"kind":"bootstrap_solve_pool_start","tsMs":10050,"source":"bootstrap"}"#,
                 r#"{"kind":"bootstrap_pool_acquired","tsMs":20000,"source":"bootstrap"}"#,
                 r#"{"kind":"bootstrap_worker_entered","tsMs":20100,"source":"bootstrap"}"#,
+                r#"{"kind":"bootstrap_project_config_loaded","tsMs":20120,"source":"bootstrap"}"#,
+                r#"{"kind":"bootstrap_system_prompt_loaded","tsMs":20140,"source":"bootstrap"}"#,
+                r#"{"kind":"bootstrap_turn_language_inferred","tsMs":20160,"source":"bootstrap"}"#,
                 r#"{"kind":"bootstrap_mcp_ready","tsMs":20200,"source":"bootstrap"}"#,
             ],
         );
@@ -849,9 +855,10 @@ mod tests {
             .iter()
             .find(|l| l.id == "bootstrap")
             .expect("bootstrap lane");
-        assert_eq!(boot.segments.len(), 5);
+        assert_eq!(boot.segments.len(), 8);
         assert_eq!(boot.segments[0].duration_ms, 50);
         assert_eq!(boot.segments[1].duration_ms, 9950);
-        assert_eq!(boot.segments[4].label, "Orchestration · 开始");
+        assert_eq!(boot.segments[6].label, "Worker · MCP 工具发现");
+        assert_eq!(boot.segments[7].label, "Orchestration · 开始");
     }
 }

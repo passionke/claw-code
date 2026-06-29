@@ -5,13 +5,13 @@
 //! against e2b; runtime renews TTL per env; shutdown does not kill workers.
 //! Template rotation is per-proj when `settings_json.fcWorker.templateId` changes.
 //! Renew TTL/interval: `CLAW_FC_PROJECT_WORKER_TTL_SECS` (default 3600) and optional
-//! `CLAW_FC_PROJECT_WORKER_RENEW_INTERVAL_SECS`. Author: kejiqing
+//! `CLAW_FC_PROJECT_WORKER_RENEW_INTERVAL_SECS` (reconcile health check; TTL touch is 60s lease ticker).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use claw_fc_sandbox_client::{FcSandboxClient, FcSandboxHandle};
+use claw_fc_sandbox_client::{FcSandboxClient, FcSandboxHandle, SANDBOX_LEASE_TICK_SECS};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
@@ -58,6 +58,7 @@ impl FcProjWorkerRegistry {
             target: "claw_fc_proj_worker",
             worker_ttl_secs,
             renew_interval_secs,
+            lease_tick_secs = SANDBOX_LEASE_TICK_SECS,
             "project worker renew policy from env"
         );
         Self {
@@ -111,7 +112,22 @@ impl FcProjWorkerRegistry {
                 );
             }
         }
+        self.seed_lease_tracking_from_db().await;
         Ok(())
+    }
+
+    /// Register persisted project workers for 60s TTL lease ticker.
+    pub async fn seed_lease_tracking_from_db(&self) {
+        let ids = self.all_persisted_sandbox_ids().await;
+        if ids.is_empty() {
+            return;
+        }
+        self.client.register_tracked_sandboxes(&ids);
+        info!(
+            target: "claw_fc_proj_worker",
+            count = ids.len(),
+            "seeded project worker sandboxes for lease ticker"
+        );
     }
 
     /// Per-proj: skip if online + template matches; rotate or create otherwise.
@@ -234,6 +250,7 @@ impl FcProjWorkerRegistry {
         template_id: String,
         tap_started: bool,
     ) {
+        self.client.register_tracked_sandbox(&handle.sandbox_id);
         self.workers.lock().await.insert(
             proj_id,
             ProjWorkerRuntime {
@@ -313,7 +330,7 @@ impl FcProjWorkerRegistry {
             .collect()
     }
 
-    /// Background: renew every project worker TTL every 10 minutes.
+    /// Background reconcile health check (TTL touch is [`SANDBOX_LEASE_TICK_SECS`] lease ticker).
     pub fn spawn_renewal_ticker(self: Arc<Self>) {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(self.renew_interval_secs));
@@ -346,22 +363,6 @@ impl FcProjWorkerRegistry {
                             error = %e,
                             "renewal ticker reconcile failed"
                         );
-                        continue;
-                    }
-                    if let Some(handle) = self.leased_handle(proj_id).await {
-                        if let Err(e) = self
-                            .client
-                            .renew_sandbox_ttl_secs(&handle.sandbox_id, self.worker_ttl_secs)
-                            .await
-                        {
-                            warn!(
-                                target: "claw_fc_proj_worker",
-                                proj_id,
-                                sandbox_id = %handle.sandbox_id,
-                                error = %e,
-                                "renewal ticker touch failed"
-                            );
-                        }
                     }
                 }
             }

@@ -23,6 +23,15 @@ FC sandbox runtime is billed separately (MicroVM uptime; use sleep/wake to reduc
 3. For FC dynamic NAS mount: NAS VPC mount point + security group **2049/TCP**
 4. Gateway / OVS: compose **NFS volume** mounts NAS inside containers; or run stack on Beijing ECS in VPC
 
+## Template Build Guardrail
+
+Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径**：
+
+- self-hosted worker: `Template(file_context_path=...).from_dockerfile(...)` + Dockerfile `COPY`
+- cloud worker: `from_image`，或 `file_context_path` + Dockerfile `COPY`
+
+严禁使用临时 HTTP artifact server、`RUN curl http://host:port/...`、`dockerfile-http`、`CLAW_*_TEMPLATE_HTTP_*` 等非标准路径。模板构建链路必须由 e2b SDK 负责上传上下文或引用镜像，不允许依赖本机临时端口、内网 HTTP、手写 artifact server。Author: kejiqing
+
 ## Phase 0 — verify before gateway code path
 
 ### Step A — FC API (no NAS)
@@ -206,7 +215,7 @@ export CLAW_FC_TEMPLATE_SKIP_CACHE=0
 | 方式 | 234 结果 |
 | --- | --- |
 | `dockerfile` + COPY 25MB `claw` | `FileUploadException: Failed to get file upload link` |
-| `dockerfile-http` + RUN curl | `400: steps are not supported` |
+| `dockerfile-http` + RUN curl / 临时 artifact HTTP server | **禁止使用**；不走 e2b 标准上下文上传，且依赖本机临时端口，已在脚本中硬拒绝 |
 | `fromTemplate` | `fromTemplate is not supported` |
 | 重建同名 `claw-worker-v1` | `409: template rebuild is not supported` |
 | dest 指向杭州 ACR | FC builder 平面访问 `cr.cn-hangzhou.aliyuncs.com` **超时** |

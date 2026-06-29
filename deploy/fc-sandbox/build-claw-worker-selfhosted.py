@@ -7,8 +7,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -119,20 +117,6 @@ def _worker_start_ready_install() -> str:
 """
 
 
-def _dockerfile_http(artifact_base: str) -> str:
-    sudo = _sudo_nfs_setup()
-    return f"""FROM docker.1ms.run/library/debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    nfs-common ca-certificates curl python3 python3-pip{sudo} \\
-    && pip3 install --no-cache-dir --break-system-packages claw-tap \\
-      -i https://pypi.tuna.tsinghua.edu.cn/simple \\
-    && rm -rf /var/lib/apt/lists/* \\
-    && curl -fsSL {artifact_base}/claw -o /usr/local/bin/claw \\
-    && curl -fsSL {artifact_base}/ttyd -o /usr/local/bin/ttyd \\
-    && chmod +x /usr/local/bin/claw /usr/local/bin/ttyd
-{_worker_start_ready_install()}"""
-
-
 def _dockerfile_copy() -> str:
     sudo = _sudo_nfs_setup()
     return f"""FROM docker.1ms.run/library/debian:bookworm-slim
@@ -147,50 +131,25 @@ RUN chmod +x /usr/local/bin/claw /usr/local/bin/ttyd
 {_worker_start_ready_install()}"""
 
 
-def _make_handler(directory: Path) -> type[SimpleHTTPRequestHandler]:
-    dir_str = str(directory)
-
-    class Handler(SimpleHTTPRequestHandler):
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            super().__init__(*args, directory=dir_str, **kwargs)
-
-    return Handler
-
-
-class _ArtifactServer:
-    def __init__(self, directory: Path, host: str, port: int) -> None:
-        self._directory = directory
-        self._host = host
-        self._port = port
-        self._httpd: ThreadingHTTPServer | None = None
-        self._thread: threading.Thread | None = None
-
-    @property
-    def base_url(self) -> str:
-        return f"http://{self._host}:{self._port}"
-
-    def __enter__(self) -> "_ArtifactServer":
-        bind_host = _env("CLAW_E2B_TEMPLATE_HTTP_BIND", "0.0.0.0")
-        handler = _make_handler(self._directory)
-        self._httpd = ThreadingHTTPServer((bind_host, self._port), handler)
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
-        self._thread.start()
-        print(f"==> artifact HTTP {self.base_url} (dir={self._directory})")
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        if self._httpd:
-            self._httpd.shutdown()
-            self._httpd.server_close()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-
 def main() -> int:
     opts = _conn_opts()
     alias = _env("CLAW_E2B_TEMPLATE", "claw-worker")
-    strategy = _env("CLAW_E2B_TEMPLATE_BUILD_STRATEGY", "http")
+    strategy = _env("CLAW_E2B_TEMPLATE_BUILD_STRATEGY", "copy")
     verify = _env("CLAW_E2B_TEMPLATE_SKIP_VERIFY", "0") not in ("1", "true", "yes")
+    forbidden_http_keys = [
+        "CLAW_E2B_TEMPLATE_HTTP_BASE",
+        "CLAW_E2B_TEMPLATE_HTTP_BIND",
+        "CLAW_E2B_TEMPLATE_HTTP_HOST",
+        "CLAW_E2B_TEMPLATE_HTTP_PORT",
+    ]
+    if strategy == "http" or any(_env(key) for key in forbidden_http_keys):
+        print(
+            "error: HTTP artifact template builds are forbidden. "
+            "Use the e2b standard file_context/COPY build path "
+            "(CLAW_E2B_TEMPLATE_BUILD_STRATEGY=copy).",
+            file=sys.stderr,
+        )
+        return 2
 
     os.environ.setdefault("E2B_API_KEY", opts["api_key"])
     os.environ.setdefault("E2B_API_URL", opts["api_url"])
@@ -206,34 +165,7 @@ def main() -> int:
         if artifact_dir is staging:
             _stage_binaries(staging)
 
-        if strategy == "http":
-            host = _env("CLAW_E2B_TEMPLATE_HTTP_HOST", "10.8.0.10")
-            port = int(_env("CLAW_E2B_TEMPLATE_HTTP_PORT", "18888"))
-            artifact_base = _env("CLAW_E2B_TEMPLATE_HTTP_BASE")
-            if artifact_base:
-                dockerfile = _dockerfile_http(artifact_base.rstrip("/"))
-                print(f"==> http build artifacts={artifact_base!r}")
-                template = Template().from_dockerfile(dockerfile).set_start_cmd(
-                    WORKER_START_CMD, WORKER_READY_CMD
-                )
-            else:
-                with _ArtifactServer(artifact_dir, host, port) as server:
-                    dockerfile = _dockerfile_http(server.base_url)
-                    print(f"==> http build (embedded server) strategy={strategy!r}")
-                    template = Template().from_dockerfile(dockerfile).set_start_cmd(
-                        WORKER_START_CMD, WORKER_READY_CMD
-                    )
-                    Template.build(
-                        template,
-                        alias=alias,
-                        on_build_logs=default_build_logger(),
-                        **opts,
-                    )
-                print(f"OK: template {alias!r} ready on {opts['api_url']}")
-                if verify:
-                    return _verify(alias, opts)
-                return 0
-        elif strategy == "copy":
+        if strategy == "copy":
             if artifact_dir is not staging:
                 shutil.copy2(artifact_dir / "claw", staging / "claw")
                 shutil.copy2(artifact_dir / "ttyd", staging / "ttyd")

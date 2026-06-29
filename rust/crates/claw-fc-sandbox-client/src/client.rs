@@ -14,6 +14,35 @@ use tracing::{debug, warn};
 /// Renew sandbox TTL when local estimate of remaining time falls below this (e2b min is 5m).
 pub const SANDBOX_LEASE_RENEW_LEAD_SECS: u64 = 300;
 
+/// Background TTL touch interval for tracked project workers (`spawn_lease_ticker`).
+pub const SANDBOX_LEASE_TICK_SECS: u64 = 60;
+
+/// POST /timeout then GET /sandboxes/{id} retries when `endAt` did not expand.
+const SANDBOX_TTL_VERIFY_MAX_ATTEMPTS: u32 = 3;
+
+/// Platform snapshot from `GET /sandboxes/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxSnapshot {
+    pub state: String,
+    pub end_at_ms: Option<i64>,
+}
+
+impl SandboxSnapshot {
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.state == "running"
+    }
+
+    #[must_use]
+    pub fn remaining_ttl_secs(&self, now_ms: i64) -> Option<u64> {
+        let end = self.end_at_ms?;
+        if end <= now_ms {
+            return Some(0);
+        }
+        Some(((end - now_ms) / 1000) as u64)
+    }
+}
+
 use crate::config::FcSandboxConfig;
 use crate::e2b_platform::{fetch_e2b_platform_nas, E2bNasPlatform};
 use crate::nas_paths::{self, warm_worker_mounts, worker_mounts, NasMountPoint};
@@ -207,10 +236,159 @@ impl FcSandboxClient {
             .remove(sandbox_id);
     }
 
-    /// Background lease touch for idle sandboxes (no-op when TTL still > 5m).
+    fn now_ms() -> i64 {
+        chrono::Utc::now().timestamp_millis()
+    }
+
+    #[must_use]
+    pub fn min_verified_remaining_secs(requested_timeout_secs: u64) -> u64 {
+        requested_timeout_secs.saturating_sub(SANDBOX_LEASE_RENEW_LEAD_SECS.saturating_mul(2))
+    }
+
+    fn parse_end_at_ms(body: &Value) -> Option<i64> {
+        let raw = body
+            .get("endAt")
+            .or_else(|| body.get("end_at"))
+            .and_then(Value::as_str)?;
+        chrono::DateTime::parse_from_rfc3339(raw)
+            .ok()
+            .map(|dt| dt.timestamp_millis())
+    }
+
+    fn sync_local_lease_from_end_at(&self, sandbox_id: &str, end_at_ms: i64) {
+        let now_ms = Self::now_ms();
+        let remaining_secs = if end_at_ms <= now_ms {
+            0
+        } else {
+            ((end_at_ms - now_ms) / 1000) as u64
+        };
+        self.lease_expires
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                sandbox_id.to_string(),
+                Instant::now() + Duration::from_secs(remaining_secs),
+            );
+    }
+
+    /// Track a sandbox for [`Self::spawn_lease_ticker`] (project workers, warm sandboxes).
+    pub fn register_tracked_sandbox(&self, sandbox_id: &str) {
+        if sandbox_id.trim().is_empty() {
+            return;
+        }
+        self.lease_expires
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(sandbox_id.to_string())
+            .or_insert_with(Instant::now);
+    }
+
+    pub fn register_tracked_sandboxes(&self, sandbox_ids: &[String]) {
+        for id in sandbox_ids {
+            self.register_tracked_sandbox(id);
+        }
+    }
+
+    /// `GET /sandboxes/{id}` — state + `endAt` for TTL verification.
+    pub async fn fetch_sandbox_snapshot(&self, sandbox_id: &str) -> Result<SandboxSnapshot, String> {
+        let url = format!("{}/sandboxes/{}", self.config.api_url, sandbox_id);
+        let resp = self
+            .http
+            .get(&url)
+            .headers(self.auth_headers().unwrap_or_default())
+            .send()
+            .await
+            .map_err(|e| format!("fc get sandbox request: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "fc get sandbox HTTP {} for {sandbox_id}",
+                resp.status()
+            ));
+        }
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("fc get sandbox parse: {e}"))?;
+        Ok(SandboxSnapshot {
+            state: body
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            end_at_ms: Self::parse_end_at_ms(&body),
+        })
+    }
+
+    /// POST /timeout then read `endAt`; retry when platform did not expand TTL.
+    pub async fn renew_sandbox_ttl_verified(
+        &self,
+        sandbox_id: &str,
+        timeout_secs: u64,
+    ) -> Result<SandboxSnapshot, String> {
+        let min_remaining = Self::min_verified_remaining_secs(timeout_secs);
+        let mut last_snap: Option<SandboxSnapshot> = None;
+        for attempt in 1..=SANDBOX_TTL_VERIFY_MAX_ATTEMPTS {
+            self.set_sandbox_timeout(sandbox_id, timeout_secs).await?;
+            if attempt < SANDBOX_TTL_VERIFY_MAX_ATTEMPTS {
+                tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+            }
+            let snap = self.fetch_sandbox_snapshot(sandbox_id).await?;
+            last_snap = Some(snap.clone());
+            if !snap.is_running() {
+                return Err(format!(
+                    "sandbox {sandbox_id} not running after set_timeout (state={})",
+                    snap.state
+                ));
+            }
+            let now_ms = Self::now_ms();
+            let remaining = snap.remaining_ttl_secs(now_ms).unwrap_or(0);
+            if remaining >= min_remaining {
+                if let Some(end_at_ms) = snap.end_at_ms {
+                    self.sync_local_lease_from_end_at(sandbox_id, end_at_ms);
+                } else {
+                    let now = Instant::now();
+                    self.lease_expires
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(
+                            sandbox_id.to_string(),
+                            now + Duration::from_secs(timeout_secs),
+                        );
+                }
+                self.register_tracked_sandbox(sandbox_id);
+                debug!(
+                    target: "claw_fc_sandbox",
+                    sandbox_id,
+                    timeout_secs,
+                    remaining_secs = remaining,
+                    end_at_ms = ?snap.end_at_ms,
+                    attempt,
+                    "sandbox TTL renewed and verified via endAt"
+                );
+                return Ok(snap);
+            }
+            warn!(
+                target: "claw_fc_sandbox",
+                sandbox_id,
+                timeout_secs,
+                remaining_secs = remaining,
+                min_remaining_secs = min_remaining,
+                attempt,
+                end_at_ms = ?snap.end_at_ms,
+                "sandbox endAt below expected after set_timeout; retrying"
+            );
+        }
+        Err(format!(
+            "sandbox {sandbox_id} TTL verify failed after {SANDBOX_TTL_VERIFY_MAX_ATTEMPTS} attempts (last endAt={:?})",
+            last_snap.and_then(|s| s.end_at_ms)
+        ))
+    }
+
+    /// Background lease touch for tracked sandboxes (60s tick; verifies `endAt` on self-hosted).
     pub fn spawn_lease_ticker(self: Arc<Self>) {
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(SANDBOX_LEASE_TICK_SECS));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
@@ -501,7 +679,6 @@ impl FcSandboxClient {
     pub async fn touch_sandbox_lease(&self, sandbox_id: &str) -> Result<(), String> {
         let timeout_secs = self.config.sandbox_timeout_secs;
         let now = Instant::now();
-        // Self-hosted e2b often creates sandboxes with ~5m TTL regardless of request; renew every tick.
         let should_renew = if self.config.is_self_hosted() {
             true
         } else {
@@ -519,72 +696,28 @@ impl FcSandboxClient {
         if !should_renew {
             return Ok(());
         }
-        self.set_sandbox_timeout(sandbox_id, timeout_secs).await?;
-        self.lease_expires
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                sandbox_id.to_string(),
-                now + Duration::from_secs(timeout_secs),
-            );
-        debug!(
-            target: "claw_fc_sandbox",
-            sandbox_id,
-            timeout_secs,
-            "sandbox lease renewed"
-        );
-        Ok(())
+        self.renew_sandbox_ttl_verified(sandbox_id, timeout_secs)
+            .await
+            .map(|_| ())
     }
 
-    /// True when e2b still has this sandbox (GET /sandboxes/{id} → 2xx).
+    /// True when e2b still has this sandbox running (`GET /sandboxes/{id}` → `state:"running"`).
     pub async fn sandbox_running(&self, sandbox_id: &str) -> bool {
-        let url = format!("{}/sandboxes/{}", self.config.api_url, sandbox_id);
-        let resp = match self
-            .http
-            .get(&url)
-            .headers(self.auth_headers().unwrap_or_default())
-            .send()
-            .await
-        {
-            Ok(resp) => resp,
-            Err(_) => return false,
-        };
-        if !resp.status().is_success() {
-            return false;
-        }
-        // A killed/expired sandbox still answers GET with HTTP 200 and `state:"killed"`.
-        // Only an explicit `state:"running"` counts as alive, so the registry recreates
-        // dead workers instead of handing out a stale handle. Author: kejiqing
-        match resp.json::<Value>().await {
-            Ok(body) => {
-                body.get("state").and_then(Value::as_str).unwrap_or("") == "running"
-            }
+        match self.fetch_sandbox_snapshot(sandbox_id).await {
+            Ok(snap) => snap.is_running(),
             Err(_) => false,
         }
     }
 
-    /// Renew sandbox TTL to an explicit duration (project workers: 10 minutes).
+    /// Renew sandbox TTL; verifies platform `endAt` after `POST /timeout`.
     pub async fn renew_sandbox_ttl_secs(
         &self,
         sandbox_id: &str,
         timeout_secs: u64,
     ) -> Result<(), String> {
-        self.set_sandbox_timeout(sandbox_id, timeout_secs).await?;
-        let now = Instant::now();
-        self.lease_expires
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                sandbox_id.to_string(),
-                now + Duration::from_secs(timeout_secs),
-            );
-        debug!(
-            target: "claw_fc_sandbox",
-            sandbox_id,
-            timeout_secs,
-            "sandbox TTL renewed (explicit)"
-        );
-        Ok(())
+        self.renew_sandbox_ttl_verified(sandbox_id, timeout_secs)
+            .await
+            .map(|_| ())
     }
 
     #[must_use]
@@ -1019,6 +1152,31 @@ mod client_tests {
         assert!(!FcSandboxClient::lease_should_renew(300));
         assert!(FcSandboxClient::lease_should_renew(299));
         assert!(FcSandboxClient::lease_should_renew(0));
+    }
+
+    #[test]
+    fn min_verified_remaining_secs_uses_renew_lead() {
+        assert_eq!(
+            FcSandboxClient::min_verified_remaining_secs(3600),
+            3600 - SANDBOX_LEASE_RENEW_LEAD_SECS * 2
+        );
+    }
+
+    #[test]
+    fn parse_end_at_ms_from_rfc3339() {
+        let body = json!({ "endAt": "2027-06-29T09:25:09.303247652Z" });
+        let ms = FcSandboxClient::parse_end_at_ms(&body).expect("parse");
+        assert!(ms > 1_700_000_000_000);
+    }
+
+    #[test]
+    fn sandbox_snapshot_remaining_ttl() {
+        let now = 1_000_000_000_000_i64;
+        let snap = SandboxSnapshot {
+            state: "running".into(),
+            end_at_ms: Some(now + 90_000),
+        };
+        assert_eq!(snap.remaining_ttl_secs(now), Some(90));
     }
 
     #[test]

@@ -69,6 +69,7 @@ impl PoolClients {
             Arc::clone(&fc_client),
             nas_layout.clone(),
         ));
+        FcSandboxClient::spawn_lease_ticker(Arc::clone(&fc_client));
         FcProjWorkerRegistry::spawn_renewal_ticker(Arc::clone(&fc_workers));
 
         let fc_pool = Arc::new(FcOrchestratedPool::new(

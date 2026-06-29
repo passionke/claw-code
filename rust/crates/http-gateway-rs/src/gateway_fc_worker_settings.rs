@@ -42,11 +42,11 @@ pub fn fc_project_worker_ttl_secs_from_env() -> u64 {
         .unwrap_or(3600)
 }
 
-/// Background renew tick interval (`CLAW_FC_PROJECT_WORKER_RENEW_INTERVAL_SECS` or ttl/6, min 120s).
+/// Background reconcile tick (`CLAW_FC_PROJECT_WORKER_RENEW_INTERVAL_SECS` or 600s).
+/// TTL touch uses [`claw_fc_sandbox_client::SANDBOX_LEASE_TICK_SECS`] lease ticker.
 #[must_use]
-pub fn fc_project_worker_renew_interval_secs_from_env(ttl_secs: u64) -> u64 {
-    parse_positive_u64_env("CLAW_FC_PROJECT_WORKER_RENEW_INTERVAL_SECS")
-        .unwrap_or_else(|| (ttl_secs / 6).max(120))
+pub fn fc_project_worker_renew_interval_secs_from_env(_ttl_secs: u64) -> u64 {
+    parse_positive_u64_env("CLAW_FC_PROJECT_WORKER_RENEW_INTERVAL_SECS").unwrap_or(600)
 }
 
 fn parse_positive_u64_env(key: &str) -> Option<u64> {
@@ -70,8 +70,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn renew_interval_defaults_to_ttl_over_six_min_120() {
+    fn renew_interval_defaults_to_ten_minutes() {
         assert_eq!(fc_project_worker_renew_interval_secs_from_env(3600), 600);
-        assert_eq!(fc_project_worker_renew_interval_secs_from_env(600), 120);
+        assert_eq!(fc_project_worker_renew_interval_secs_from_env(31_536_000), 600);
     }
 }

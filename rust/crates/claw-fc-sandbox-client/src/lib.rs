@@ -7,7 +7,7 @@ mod nas_bootstrap;
 mod nas_paths;
 mod types;
 
-pub use client::{FcSandboxClient, SANDBOX_LEASE_RENEW_LEAD_SECS};
+pub use client::{FcSandboxClient, SandboxSnapshot, SANDBOX_LEASE_RENEW_LEAD_SECS, SANDBOX_LEASE_TICK_SECS};
 pub use config::FcSandboxConfig;
 pub use e2b_platform::{nas_mount_source_addr, E2bNasPlatform};
 pub use nas_bootstrap::{fc_exec_with_nas_bootstrap, NAS_BOOTSTRAP_SH};

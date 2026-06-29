@@ -299,6 +299,8 @@ Mac compose：**gateway + pg + playground**；**无** `openvscode-server`。
 
 ## 10. Template 分工
 
+模板构建必须使用 e2b 标准模式（SDK 上传 build context / `COPY`，或 `from_image`）。严禁临时 HTTP artifact server、`RUN curl http://host:port/...`、`dockerfile-http`、`CLAW_*_TEMPLATE_HTTP_*`。这类路径依赖本机临时端口和私有网络，不属于稳定模板构建契约。Author: kejiqing
+
 | Template | Build 脚本 | 内容 |
 |----------|------------|------|
 | `claw-worker` | `deploy/fc-sandbox/build-claw-worker-selfhosted.py` | debian, nfs-common, claw, ttyd |

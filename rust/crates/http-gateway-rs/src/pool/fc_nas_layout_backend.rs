@@ -65,24 +65,38 @@ impl NasLayoutBackend {
         self.nas_api.unlink(rel).await
     }
 
+    /// Read a UTF-8 text file under `{session}/.claw/{file_name}` via nas-api.
+    pub async fn read_session_claw_utf8(
+        &self,
+        proj_id: i64,
+        session_segment: &str,
+        claw_file_name: &str,
+    ) -> Result<Option<String>, String> {
+        let cluster_id = self.cluster_id()?;
+        let file_name = claw_file_name
+            .trim_start_matches(".claw/")
+            .trim_start_matches('/');
+        let rel = format!(
+            "{}/.claw/{file_name}",
+            session_rel(&cluster_id, proj_id, session_segment)
+        );
+        let bytes = self.nas_api.get_file(&rel).await?;
+        match bytes {
+            Some(b) => Ok(Some(
+                String::from_utf8(b).map_err(|e| format!("session {file_name} not utf8: {e}"))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
     /// Read session solve transcript jsonl via nas-api (gateway never reads NAS disk directly).
     pub async fn read_session_jsonl(
         &self,
         proj_id: i64,
         session_segment: &str,
     ) -> Result<Option<String>, String> {
-        let cluster_id = self.cluster_id()?;
-        let rel = format!(
-            "{}/.claw/gateway-solve-session.jsonl",
-            session_rel(&cluster_id, proj_id, session_segment)
-        );
-        let bytes = self.nas_api.get_file(&rel).await?;
-        match bytes {
-            Some(b) => Ok(Some(
-                String::from_utf8(b).map_err(|e| format!("session jsonl not utf8: {e}"))?,
-            )),
-            None => Ok(None),
-        }
+        self.read_session_claw_utf8(proj_id, session_segment, "gateway-solve-session.jsonl")
+            .await
     }
 
     pub async fn ensure_fc_proj_nas_roots(&self, proj_id: i64) -> Result<(), String> {

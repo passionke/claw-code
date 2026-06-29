@@ -87,22 +87,20 @@ def _build_from_dockerfile(
     fc_dir = repo_root / "deploy" / "fc-sandbox"
     fc_dir.mkdir(parents=True, exist_ok=True)
 
-    if strategy == "dockerfile-http":
-        host = _env("CLAW_FC_TEMPLATE_HTTP_HOST", "127.0.0.1")
-        port = _env("CLAW_FC_TEMPLATE_HTTP_PORT", "18888")
-        base_url = f"http://{host}:{port}"
-        dockerfile = f"""\
-FROM {base}
-USER root
-RUN curl -fsSL {base_url}/claw -o /usr/local/bin/claw && \\
-    curl -fsSL {base_url}/ttyd -o /usr/local/bin/ttyd && \\
-    chmod +x /usr/local/bin/claw /usr/local/bin/ttyd
-USER 1000
-"""
-        print(f"==> dockerfile-http build base={base!r} artifacts={base_url}")
-    else:
-        _extract_binaries(worker_image, fc_dir)
-        dockerfile = f"""\
+    if strategy == "dockerfile-http" or any(
+        _env(key)
+        for key in (
+            "CLAW_FC_TEMPLATE_HTTP_HOST",
+            "CLAW_FC_TEMPLATE_HTTP_PORT",
+            "CLAW_FC_TEMPLATE_HTTP_BASE",
+        )
+    ):
+        raise SystemExit(
+            "error: HTTP artifact template builds are forbidden. "
+            "Use e2b standard file_context/COPY or from_image build paths."
+        )
+    _extract_binaries(worker_image, fc_dir)
+    dockerfile = f"""\
 FROM {base}
 USER root
 COPY claw /usr/local/bin/claw
@@ -110,7 +108,7 @@ COPY ttyd /usr/local/bin/ttyd
 RUN chmod +x /usr/local/bin/claw /usr/local/bin/ttyd
 USER 1000
 """
-        print(f"==> dockerfile build base={base!r} worker={worker_image!r} ctx={fc_dir}")
+    print(f"==> dockerfile build base={base!r} worker={worker_image!r} ctx={fc_dir}")
 
     builder = Template(file_context_path=fc_dir).from_dockerfile(dockerfile)
     headers = _build_headers()
@@ -158,6 +156,22 @@ def _build_from_image(
 
 
 def main() -> int:
+    mode = _env("CLAW_FC_TEMPLATE_BUILD_STRATEGY", "from_image")
+    if mode == "dockerfile-http" or any(
+        _env(key)
+        for key in (
+            "CLAW_FC_TEMPLATE_HTTP_HOST",
+            "CLAW_FC_TEMPLATE_HTTP_PORT",
+            "CLAW_FC_TEMPLATE_HTTP_BASE",
+        )
+    ):
+        print(
+            "error: HTTP artifact template builds are forbidden. "
+            "Use e2b standard from_image or file_context/COPY build paths.",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         from dotenv import load_dotenv
         from e2b_code_interpreter import Sandbox
@@ -168,14 +182,20 @@ def main() -> int:
     load_dotenv()
     opts = _conn_opts()
     template_name = _env("CLAW_FC_TEMPLATE", "claw-worker-v1")
-    mode = _env("CLAW_FC_TEMPLATE_BUILD_STRATEGY", "from_image")
     cpu = int(_env("CLAW_FC_TEMPLATE_CPU", "2"))
     mem = int(_env("CLAW_FC_TEMPLATE_MEMORY_MB", "4096"))
     verify = _env("CLAW_FC_TEMPLATE_SKIP_VERIFY", "0") not in ("1", "true", "yes")
     build_mode = _env("CLAW_FC_TEMPLATE_BUILD_MODE", "builder")
     default_skip_cache = "0" if build_mode == "builder" else "1"
 
-    if mode in ("dockerfile", "dockerfile-http"):
+    if mode == "dockerfile-http":
+        print(
+            "error: CLAW_FC_TEMPLATE_BUILD_STRATEGY=dockerfile-http is forbidden; "
+            "use from_image or dockerfile with e2b file_context/COPY.",
+            file=sys.stderr,
+        )
+        return 2
+    if mode == "dockerfile":
         build = _build_from_dockerfile(opts, template_name, cpu, mem, default_skip_cache)
     elif mode == "from_image":
         build = _build_from_image(opts, template_name, cpu, mem, default_skip_cache)
