@@ -57,7 +57,6 @@ def on_error(ws, error):
         err = str(error)
 
 def on_open(ws):
-    ws.send(json.dumps({"type": "spawn"}))
     ws.send(json.dumps({"type": "prompt", "text": prompt + "\n"}))
 
 ws = websocket.WebSocketApp(url, on_open=on_open, on_message=on_message, on_error=on_error)
@@ -95,7 +94,6 @@ const ws = new WS(url);
 let got = false;
 let err = '';
 ws.onopen = () => {
-  ws.send(JSON.stringify({type:'spawn'}));
   ws.send(JSON.stringify({type:'prompt',text:'${PROMPT}\\n'}));
 };
 ws.onmessage = (e) => {

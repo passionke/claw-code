@@ -97,6 +97,28 @@ def _sudo_nfs_setup() -> str:
     && chmod 440 /etc/sudoers.d/claw-nfs"""
 
 
+# worker is not a resident service: gateway creates the sandbox then envd-execs
+# `claw gateway-solve-once` (and ttyd on demand). startCmd just keeps the sandbox
+# alive so envd stays up; ready probe confirms the `claw` binary is in place.
+# Same install style as claw-ovs / claw-nas-api templates. Author: kejiqing
+WORKER_START_CMD = "/usr/local/bin/claw-worker-start"
+WORKER_READY_CMD = "/usr/local/bin/claw-worker-ready"
+
+
+def _worker_start_ready_install() -> str:
+    return r"""RUN printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+        'exec sleep infinity' \
+        > /usr/local/bin/claw-worker-start \
+    && printf '%s\n' \
+        '#!/bin/sh' \
+        'command -v claw >/dev/null 2>&1' \
+        > /usr/local/bin/claw-worker-ready \
+    && chmod +x /usr/local/bin/claw-worker-start /usr/local/bin/claw-worker-ready
+"""
+
+
 def _dockerfile_http(artifact_base: str) -> str:
     sudo = _sudo_nfs_setup()
     return f"""FROM docker.1ms.run/library/debian:bookworm-slim
@@ -108,7 +130,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     && curl -fsSL {artifact_base}/claw -o /usr/local/bin/claw \\
     && curl -fsSL {artifact_base}/ttyd -o /usr/local/bin/ttyd \\
     && chmod +x /usr/local/bin/claw /usr/local/bin/ttyd
-"""
+{_worker_start_ready_install()}"""
 
 
 def _dockerfile_copy() -> str:
@@ -122,7 +144,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 COPY claw /usr/local/bin/claw
 COPY ttyd /usr/local/bin/ttyd
 RUN chmod +x /usr/local/bin/claw /usr/local/bin/ttyd
-"""
+{_worker_start_ready_install()}"""
 
 
 def _make_handler(directory: Path) -> type[SimpleHTTPRequestHandler]:
@@ -191,12 +213,16 @@ def main() -> int:
             if artifact_base:
                 dockerfile = _dockerfile_http(artifact_base.rstrip("/"))
                 print(f"==> http build artifacts={artifact_base!r}")
-                template = Template().from_dockerfile(dockerfile)
+                template = Template().from_dockerfile(dockerfile).set_start_cmd(
+                    WORKER_START_CMD, WORKER_READY_CMD
+                )
             else:
                 with _ArtifactServer(artifact_dir, host, port) as server:
                     dockerfile = _dockerfile_http(server.base_url)
                     print(f"==> http build (embedded server) strategy={strategy!r}")
-                    template = Template().from_dockerfile(dockerfile)
+                    template = Template().from_dockerfile(dockerfile).set_start_cmd(
+                        WORKER_START_CMD, WORKER_READY_CMD
+                    )
                     Template.build(
                         template,
                         alias=alias,
@@ -214,7 +240,11 @@ def main() -> int:
             dockerfile_path = staging / "Dockerfile"
             dockerfile_path.write_text(_dockerfile_copy(), encoding="utf-8")
             print(f"==> copy build ctx={staging}")
-            template = Template(file_context_path=str(staging)).from_dockerfile(str(dockerfile_path))
+            template = (
+                Template(file_context_path=str(staging))
+                .from_dockerfile(str(dockerfile_path))
+                .set_start_cmd(WORKER_START_CMD, WORKER_READY_CMD)
+            )
         else:
             print(f"unknown CLAW_E2B_TEMPLATE_BUILD_STRATEGY={strategy!r}", file=sys.stderr)
             return 1

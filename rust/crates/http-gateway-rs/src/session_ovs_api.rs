@@ -8,8 +8,8 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::gateway_fc_ovs_settings::{self, workspace_folder_path, workspace_folder_url};
-use crate::pool::interactive_backend::{ovs_backend_is_fc, FcProjWarmPool};
-use crate::pool::proj_work_dir;
+use crate::pool::interactive_backend::ovs_backend_is_fc;
+use crate::pool::FcProjWorkerRegistry;
 use crate::session_db::GatewaySessionDb;
 use crate::session_terminal_api;
 
@@ -121,7 +121,7 @@ pub fn ovs_workspace_folder(ctx: &OvsApiContext, proj_id: i64) -> String {
 pub async fn get_ovs_workspace(
     ctx: OvsApiContext,
     session_db: &GatewaySessionDb,
-    fc_warm: Option<&FcProjWarmPool>,
+    fc_workers: Option<&FcProjWorkerRegistry>,
     proj_id: i64,
 ) -> Result<Json<OvsWorkspaceResponse>, OvsApiError> {
     if proj_id < 1 {
@@ -132,8 +132,9 @@ pub async fn get_ovs_workspace(
     }
 
     if ovs_backend_is_fc() {
-        if let Some(pool) = fc_warm {
-            pool.ensure_warm(proj_id)
+        if let Some(registry) = fc_workers {
+            registry
+                .ensure_worker(proj_id)
                 .await
                 .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         }
@@ -163,7 +164,9 @@ pub async fn get_ovs_workspace(
     session_terminal_api::materialize_ovs_proj_workspace(session_db, &ctx.work_root, proj_id)
         .await
         .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let host_path = proj_work_dir(&ctx.work_root, proj_id).join("home");
+    let host_path = crate::pool::gateway_proj_work_dir(&ctx.work_root, proj_id)
+        .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .join("home");
     Ok(Json(OvsWorkspaceResponse {
         proj_id,
         workspace_folder: ovs_workspace_folder(&ctx, proj_id),

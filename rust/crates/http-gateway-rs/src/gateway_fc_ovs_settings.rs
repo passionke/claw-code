@@ -20,11 +20,7 @@ pub struct FcOvsSettings {
 impl FcOvsSettings {
     #[must_use]
     pub fn configured(&self) -> bool {
-        self.updated_at_ms > 0
-            && self
-                .base_url
-                .as_ref()
-                .is_some_and(|u| !u.trim().is_empty())
+        self.updated_at_ms > 0 && self.base_url.as_ref().is_some_and(|u| !u.trim().is_empty())
     }
 }
 

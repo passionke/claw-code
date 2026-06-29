@@ -17,20 +17,7 @@ use crate::session_db::GatewaySessionDb;
 pub(crate) const PROJ_HOME: &str = GUEST_CLAW_DS;
 pub(crate) const WORK_ROOT: &str = GUEST_CLAW_HOST_ROOT;
 
-/// Stop ttyd on flat worker root (`/claw_host_root`).
-#[must_use]
-pub fn session_release_sh() -> String {
-    format!(
-        r#"set -e
-if [ -f {WORK_ROOT}/.claw/ttyd.pid ]; then
-  kill "$(cat {WORK_ROOT}/.claw/ttyd.pid)" 2>/dev/null || true
-  rm -f {WORK_ROOT}/.claw/ttyd.pid
-fi
-"#
-    )
-}
-
-/// Project config from PG → `/claw_ds` (warm pool bake; no session files).
+/// Project config from PG → `/claw_ds` (proj worker bind; no session files).
 pub async fn build_proj_bake_script(
     session_db: &GatewaySessionDb,
     proj_id: i64,
@@ -160,12 +147,6 @@ fn shell_single_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn session_release_uses_flat_work_root() {
-        let sh = session_release_sh();
-        assert!(sh.contains("/claw_host_root/.claw/ttyd.pid"));
-    }
 
     #[test]
     fn start_ttyd_uses_flat_work_root() {

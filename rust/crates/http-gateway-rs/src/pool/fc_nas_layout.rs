@@ -1,14 +1,14 @@
 //! Gateway-side NAS host path layout (logical rel → local filesystem). Author: kejiqing
 //!
-//! FC mode: Gateway prepares worker dirs and session symlinks on NAS; e2b binds
-//! `proj_N/workers/{workerId}` into sandboxes at create.
+//! FC mode: Gateway prepares worker dirs and real session roots on NAS; e2b binds
+//! `{clusterId}/proj_N/workers|sessions|home` into sandboxes at create.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use claw_fc_sandbox_client::{
-    proj_home_rel, session_rel, session_symlink_target, sessions_root_rel, tap_traces_rel,
+    proj_home_rel, session_ds_symlink_target, session_rel, sessions_root_rel, tap_traces_rel,
     worker_rel, workers_root_rel,
 };
 
@@ -36,12 +36,9 @@ pub fn fc_nas_layout_active(nas_root: &Path) -> bool {
             if Path::new(trimmed).exists() {
                 return true;
             }
-            // Gateway container: CLAW_NAS_HOST_MOUNT names the e2b Mac host path (/Volumes/…)
-            // while NAS is bind-mounted at work_root (nas_root). Still prepare dirs there. kejiqing
             return nas_root.is_dir();
         }
     }
-    // Workspace volume direct-bind without explicit host mount env.
     nas_root.join("proj_1").exists() || nas_root.join(".claw-fc-tools").exists()
 }
 
@@ -60,30 +57,36 @@ pub fn nas_host_root(work_root: &Path, _pool_rpc_host_work_root: Option<&Path>) 
     work_root.to_path_buf()
 }
 
-/// `{nas_root}/proj_{id}/home`
+/// `{nas_root}/{clusterId}/proj_{id}/home`
 #[must_use]
-pub fn proj_home_host_path(nas_root: &Path, proj_id: i64) -> PathBuf {
-    nas_root.join(proj_home_rel(proj_id))
+pub fn proj_home_host_path(nas_root: &Path, cluster_id: &str, proj_id: i64) -> PathBuf {
+    nas_root.join(proj_home_rel(cluster_id, proj_id))
 }
 
-/// `{nas_root}/proj_{id}/workers/{worker_id}`
+/// `{nas_root}/{clusterId}/proj_{id}/workers/{worker_id}`
 #[must_use]
-pub fn worker_host_path(nas_root: &Path, proj_id: i64, worker_id: &str) -> PathBuf {
-    nas_root.join(worker_rel(proj_id, worker_id))
+pub fn worker_host_path(nas_root: &Path, cluster_id: &str, proj_id: i64, worker_id: &str) -> PathBuf {
+    nas_root.join(worker_rel(cluster_id, proj_id, worker_id))
 }
 
-/// `{nas_root}/proj_{id}/sessions/{segment}`
+/// `{nas_root}/{clusterId}/proj_{id}/sessions/{segment}`
 #[must_use]
-pub fn session_host_path(nas_root: &Path, proj_id: i64, session_segment: &str) -> PathBuf {
-    nas_root.join(session_rel(proj_id, session_segment))
+pub fn session_host_path(
+    nas_root: &Path,
+    cluster_id: &str,
+    proj_id: i64,
+    session_segment: &str,
+) -> PathBuf {
+    nas_root.join(session_rel(cluster_id, proj_id, session_segment))
 }
 
-/// Ensure `proj_N/sessions` exists (symlink namespace).
+/// Ensure `proj_N/sessions` exists.
 pub async fn ensure_proj_sessions_root_on_nas(
     nas_root: &Path,
+    cluster_id: &str,
     proj_id: i64,
 ) -> Result<PathBuf, String> {
-    let sessions_abs = nas_root.join(sessions_root_rel(proj_id));
+    let sessions_abs = nas_root.join(sessions_root_rel(cluster_id, proj_id));
     tokio::fs::create_dir_all(&sessions_abs)
         .await
         .map_err(|e| format!("mkdir NAS sessions root {}: {e}", sessions_abs.display()))?;
@@ -93,9 +96,10 @@ pub async fn ensure_proj_sessions_root_on_nas(
 /// Ensure `proj_N/workers` exists.
 pub async fn ensure_proj_workers_root_on_nas(
     nas_root: &Path,
+    cluster_id: &str,
     proj_id: i64,
 ) -> Result<PathBuf, String> {
-    let workers_abs = nas_root.join(workers_root_rel(proj_id));
+    let workers_abs = nas_root.join(workers_root_rel(cluster_id, proj_id));
     tokio::fs::create_dir_all(&workers_abs)
         .await
         .map_err(|e| format!("mkdir NAS workers root {}: {e}", workers_abs.display()))?;
@@ -106,11 +110,12 @@ pub async fn ensure_proj_workers_root_on_nas(
 pub async fn ensure_worker_root_on_nas(
     runtime_bin: &str,
     nas_root: &Path,
+    cluster_id: &str,
     proj_id: i64,
     worker_id: &str,
 ) -> Result<PathBuf, String> {
-    ensure_proj_workers_root_on_nas(nas_root, proj_id).await?;
-    let worker_abs = worker_host_path(nas_root, proj_id, worker_id);
+    ensure_proj_workers_root_on_nas(nas_root, cluster_id, proj_id).await?;
+    let worker_abs = worker_host_path(nas_root, cluster_id, proj_id, worker_id);
     tokio::fs::create_dir_all(worker_abs.join(".claw"))
         .await
         .map_err(|e| format!("mkdir NAS worker root {}: {e}", worker_abs.display()))?;
@@ -122,8 +127,8 @@ pub async fn ensure_worker_root_on_nas(
     Ok(worker_abs)
 }
 
-/// Replace any prior session path (legacy real dir or old symlink) before linking to worker.
-async fn replace_session_link_path(link_path: &Path) -> Result<(), String> {
+/// Replace legacy symlink or rename old session dir before creating real session root.
+pub(crate) async fn replace_session_path_local(link_path: &Path) -> Result<(), String> {
     let meta = match tokio::fs::symlink_metadata(link_path).await {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -155,41 +160,36 @@ async fn replace_session_link_path(link_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("rm {}: {e}", link_path.display()))
 }
 
-/// `sessions/{segment}` → `../workers/{worker_id}` (Gateway routing).
-pub async fn link_session_to_worker(
+/// Real session directory: `.claw/`, `work/`, `ds → ../../home` (readonly). Author: kejiqing
+pub async fn ensure_session_root_on_nas(
     nas_root: &Path,
+    cluster_id: &str,
     proj_id: i64,
     session_segment: &str,
-    worker_id: &str,
 ) -> Result<PathBuf, String> {
-    ensure_proj_sessions_root_on_nas(nas_root, proj_id).await?;
-    let link_path = session_host_path(nas_root, proj_id, session_segment);
-    replace_session_link_path(&link_path).await?;
-    let target = session_symlink_target(worker_id);
-    #[cfg(unix)]
-    {
-        tokio::fs::symlink(&target, &link_path)
-            .await
-            .map_err(|e| format!("symlink {} -> {}: {e}", link_path.display(), target))?;
+    ensure_proj_sessions_root_on_nas(nas_root, cluster_id, proj_id).await?;
+    let session_abs = session_host_path(nas_root, cluster_id, proj_id, session_segment);
+    replace_session_path_local(&session_abs).await?;
+    tokio::fs::create_dir_all(session_abs.join(".claw"))
+        .await
+        .map_err(|e| format!("mkdir session .claw {}: {e}", session_abs.display()))?;
+    tokio::fs::create_dir_all(session_abs.join("work"))
+        .await
+        .map_err(|e| format!("mkdir session work {}: {e}", session_abs.display()))?;
+    let ds_link = session_abs.join("ds");
+    if !ds_link.exists() && !ds_link.is_symlink() {
+        #[cfg(unix)]
+        {
+            tokio::fs::symlink(session_ds_symlink_target(), &ds_link)
+                .await
+                .map_err(|e| format!("symlink {} -> ../../home: {e}", ds_link.display()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            return Err("NAS session ds symlink requires unix".into());
+        }
     }
-    #[cfg(not(unix))]
-    {
-        return Err("NAS session symlink requires unix".into());
-    }
-    Ok(link_path)
-}
-
-/// Remove session symlink after terminal/stop (keeps worker dir for warm reuse).
-pub async fn unlink_session_symlink(
-    nas_root: &Path,
-    proj_id: i64,
-    session_segment: &str,
-) -> Result<(), String> {
-    let link_path = session_host_path(nas_root, proj_id, session_segment);
-    if link_path.exists() || link_path.is_symlink() {
-        remove_path_all(&link_path).await?;
-    }
-    Ok(())
+    Ok(session_abs)
 }
 
 /// `{nas_root}/tap-traces` (shared claude-tap traces bind source).
@@ -202,8 +202,12 @@ pub async fn ensure_tap_traces_root_on_nas(nas_root: &Path) -> Result<PathBuf, S
 }
 
 /// `proj_N/home` must exist on the e2b bind source before `/claw_ds` attach.
-pub async fn ensure_proj_home_dir_on_nas(nas_root: &Path, proj_id: i64) -> Result<PathBuf, String> {
-    let home_abs = proj_home_host_path(nas_root, proj_id);
+pub async fn ensure_proj_home_dir_on_nas(
+    nas_root: &Path,
+    cluster_id: &str,
+    proj_id: i64,
+) -> Result<PathBuf, String> {
+    let home_abs = proj_home_host_path(nas_root, cluster_id, proj_id);
     tokio::fs::create_dir_all(&home_abs)
         .await
         .map_err(|e| format!("mkdir NAS proj home {}: {e}", home_abs.display()))?;
@@ -211,10 +215,14 @@ pub async fn ensure_proj_home_dir_on_nas(nas_root: &Path, proj_id: i64) -> Resul
 }
 
 /// FC terminal/solve prep: sessions, workers, proj home, tap-traces on NAS bind source.
-pub async fn ensure_fc_proj_nas_roots(nas_root: &Path, proj_id: i64) -> Result<(), String> {
-    ensure_proj_sessions_root_on_nas(nas_root, proj_id).await?;
-    ensure_proj_workers_root_on_nas(nas_root, proj_id).await?;
-    ensure_proj_home_dir_on_nas(nas_root, proj_id).await?;
+pub async fn ensure_fc_proj_nas_roots(
+    nas_root: &Path,
+    cluster_id: &str,
+    proj_id: i64,
+) -> Result<(), String> {
+    ensure_proj_sessions_root_on_nas(nas_root, cluster_id, proj_id).await?;
+    ensure_proj_workers_root_on_nas(nas_root, cluster_id, proj_id).await?;
+    ensure_proj_home_dir_on_nas(nas_root, cluster_id, proj_id).await?;
     ensure_tap_traces_root_on_nas(nas_root).await?;
     Ok(())
 }
@@ -224,18 +232,19 @@ pub async fn prepare_fc_worker_bind_sources(
     session_db: &GatewaySessionDb,
     runtime_bin: &str,
     nas_root: &Path,
+    cluster_id: &str,
     proj_id: i64,
     worker_id: &str,
 ) -> Result<(), String> {
-    ensure_fc_proj_nas_roots(nas_root, proj_id).await?;
+    ensure_fc_proj_nas_roots(nas_root, cluster_id, proj_id).await?;
     crate::session_terminal_api::materialize_ovs_proj_workspace(session_db, nas_root, proj_id)
-        .await
-        .map_err(|e| format!("materialize proj_{proj_id}/home on NAS: {e}"))?;
-    ensure_worker_root_on_nas(runtime_bin, nas_root, proj_id, worker_id).await?;
+    .await
+    .map_err(|e| format!("materialize proj_{proj_id}/home on NAS: {e}"))?;
+    ensure_worker_root_on_nas(runtime_bin, nas_root, cluster_id, proj_id, worker_id).await?;
     Ok(())
 }
 
-async fn remove_path_all(path: &Path) -> Result<(), String> {
+pub(crate) async fn remove_path_all_local(path: &Path) -> Result<(), String> {
     let meta = tokio::fs::symlink_metadata(path)
         .await
         .map_err(|e| format!("stat {}: {e}", path.display()))?;
@@ -258,15 +267,21 @@ mod tests {
     #[test]
     fn session_host_path_format() {
         let root = PathBuf::from("/mnt/nas0");
-        let p = session_host_path(&root, 1, "ovs-1");
-        assert_eq!(p, PathBuf::from("/mnt/nas0/proj_1/sessions/ovs-1"));
+        let p = session_host_path(&root, "dev-stable", 1, "ovs-1");
+        assert_eq!(
+            p,
+            PathBuf::from("/mnt/nas0/dev-stable/proj_1/sessions/ovs-1")
+        );
     }
 
     #[test]
     fn worker_host_path_format() {
         let root = PathBuf::from("/mnt/nas0");
-        let p = worker_host_path(&root, 1, "wrk_abc");
-        assert_eq!(p, PathBuf::from("/mnt/nas0/proj_1/workers/wrk_abc"));
+        let p = worker_host_path(&root, "dev-stable", 1, "wrk_abc");
+        assert_eq!(
+            p,
+            PathBuf::from("/mnt/nas0/dev-stable/proj_1/workers/wrk_abc")
+        );
     }
 
     #[test]
@@ -275,19 +290,5 @@ mod tests {
         let b = allocate_worker_id();
         assert!(a.starts_with("wrk_"));
         assert_ne!(a, b);
-    }
-
-    #[test]
-    fn fc_nas_layout_active_dir_when_host_mount_env_only() {
-        let dir = std::env::temp_dir().join(format!("claw_fc_nas_layout_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let prev = std::env::var("CLAW_NAS_HOST_MOUNT").ok();
-        std::env::set_var("CLAW_NAS_HOST_MOUNT", "/Volumes/claw-nas-no-such-path");
-        assert!(fc_nas_layout_active(&dir));
-        match prev {
-            Some(v) => std::env::set_var("CLAW_NAS_HOST_MOUNT", v),
-            None => std::env::remove_var("CLAW_NAS_HOST_MOUNT"),
-        }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

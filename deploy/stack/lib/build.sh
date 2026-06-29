@@ -93,6 +93,17 @@ RELAXED_WORKER_IMAGE_NAME="claw-gateway-worker-relaxed:${IMAGE_TAG}"
 PLAYGROUND_IMAGE_NAME="claw-gateway-playground:${IMAGE_TAG}"
 OVS_IMAGE_NAME="claw-openvscode-server:${IMAGE_TAG}"
 
+# FC backend runs the worker inside e2b sandboxes via CLAW_FC_WORKER_IMAGE (remote registry),
+# so the local claw-gateway-worker[-relaxed] images are unused on dev machines. Skip them to
+# cut pack-deploy time. CI/release (GITHUB_ACTIONS) still bakes worker images for all backends. kejiqing
+skip_local_worker_images() {
+  [[ "${GITHUB_ACTIONS:-}" != "true" && "${CLAW_INTERACTIVE_BACKEND:-}" == "fc" ]]
+}
+WORKER_IMAGES_NOTE="${WORKER_IMAGE_NAME} ${RELAXED_WORKER_IMAGE_NAME}"
+if skip_local_worker_images; then
+  WORKER_IMAGES_NOTE="(skipped: FC backend uses CLAW_FC_WORKER_IMAGE)"
+fi
+
 step() {
   claw_step_begin "$*"
 }
@@ -237,23 +248,27 @@ if use_prebuilt_linux_path; then
     -t "${IMAGE_NAME}" \
     "${ROOT_DIR}"
 
-  step "3/4 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
-  # shellcheck disable=SC2086
-  "${CONTAINER_CLI}" build \
-    --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
-    "${APT_MIRROR_BUILD_ARGS[@]}" \
-    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker.prebuilt" \
-    -t "${WORKER_IMAGE_NAME}" \
-    "${ROOT_DIR}"
+  if skip_local_worker_images; then
+    step "skip worker images (FC backend: worker runs in e2b via CLAW_FC_WORKER_IMAGE; set CLAW_INTERACTIVE_BACKEND!=fc or GITHUB_ACTIONS to build)"
+  else
+    step "3/4 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
+    # shellcheck disable=SC2086
+    "${CONTAINER_CLI}" build \
+      --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+      "${APT_MIRROR_BUILD_ARGS[@]}" \
+      -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker.prebuilt" \
+      -t "${WORKER_IMAGE_NAME}" \
+      "${ROOT_DIR}"
 
-  step "4/4 image ${RELAXED_WORKER_IMAGE_NAME} (Containerfile.gateway-worker-relaxed.prebuilt)"
-  # shellcheck disable=SC2086
-  "${CONTAINER_CLI}" build \
-    --build-arg "WORKER_BASE_IMAGE=${WORKER_IMAGE_NAME}" \
-    "${APT_MIRROR_BUILD_ARGS[@]}" \
-    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker-relaxed.prebuilt" \
-    -t "${RELAXED_WORKER_IMAGE_NAME}" \
-    "${ROOT_DIR}"
+    step "4/4 image ${RELAXED_WORKER_IMAGE_NAME} (Containerfile.gateway-worker-relaxed.prebuilt)"
+    # shellcheck disable=SC2086
+    "${CONTAINER_CLI}" build \
+      --build-arg "WORKER_BASE_IMAGE=${WORKER_IMAGE_NAME}" \
+      "${APT_MIRROR_BUILD_ARGS[@]}" \
+      -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker-relaxed.prebuilt" \
+      -t "${RELAXED_WORKER_IMAGE_NAME}" \
+      "${ROOT_DIR}"
+  fi
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
   claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
@@ -284,26 +299,30 @@ else
     -t "${IMAGE_NAME}" \
     "${ROOT_DIR}"
 
-  step "2/5 image ${WORKER_IMAGE_NAME}"
-  # shellcheck disable=SC2086
-  "${CONTAINER_CLI}" build \
-    --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
-    --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
-    "${RUSTUP_BUILD_ARGS[@]}" \
-    "${CARGO_MIRROR_BUILD_ARGS[@]}" \
-    "${APT_MIRROR_BUILD_ARGS[@]}" \
-    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker" \
-    -t "${WORKER_IMAGE_NAME}" \
-    "${ROOT_DIR}"
+  if skip_local_worker_images; then
+    step "skip worker images (FC backend: worker runs in e2b via CLAW_FC_WORKER_IMAGE)"
+  else
+    step "2/5 image ${WORKER_IMAGE_NAME}"
+    # shellcheck disable=SC2086
+    "${CONTAINER_CLI}" build \
+      --build-arg "RUST_BASE_IMAGE=${RUST_BASE_IMAGE}" \
+      --build-arg "DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+      "${RUSTUP_BUILD_ARGS[@]}" \
+      "${CARGO_MIRROR_BUILD_ARGS[@]}" \
+      "${APT_MIRROR_BUILD_ARGS[@]}" \
+      -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker" \
+      -t "${WORKER_IMAGE_NAME}" \
+      "${ROOT_DIR}"
 
-  step "3/5 image ${RELAXED_WORKER_IMAGE_NAME} (Containerfile.gateway-worker-relaxed)"
-  # shellcheck disable=SC2086
-  "${CONTAINER_CLI}" build \
-    --build-arg "WORKER_BASE_IMAGE=${WORKER_IMAGE_NAME}" \
-    "${APT_MIRROR_BUILD_ARGS[@]}" \
-    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker-relaxed" \
-    -t "${RELAXED_WORKER_IMAGE_NAME}" \
-    "${ROOT_DIR}"
+    step "3/5 image ${RELAXED_WORKER_IMAGE_NAME} (Containerfile.gateway-worker-relaxed)"
+    # shellcheck disable=SC2086
+    "${CONTAINER_CLI}" build \
+      --build-arg "WORKER_BASE_IMAGE=${WORKER_IMAGE_NAME}" \
+      "${APT_MIRROR_BUILD_ARGS[@]}" \
+      -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker-relaxed" \
+      -t "${RELAXED_WORKER_IMAGE_NAME}" \
+      "${ROOT_DIR}"
+  fi
 
   claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
   claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
@@ -313,7 +332,7 @@ fi
 "${ROOT_DIR}/deploy/stack/lib/claw-write-build-stamp.sh"
 
 step "done"
-echo "Built: ${IMAGE_NAME} ${WORKER_IMAGE_NAME} ${RELAXED_WORKER_IMAGE_NAME} ${PLAYGROUND_IMAGE_NAME} ${OVS_IMAGE_NAME}"
+echo "Built: ${IMAGE_NAME} ${WORKER_IMAGES_NOTE} ${PLAYGROUND_IMAGE_NAME} ${OVS_IMAGE_NAME}"
 claw_timing_summary
 if [[ "${CLAW_BUILD_NO_LOG}" != "1" ]]; then
   echo "log: ${BUILD_LOG}"

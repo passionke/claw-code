@@ -36,7 +36,42 @@ def _nfs_sudo() -> str:
     )
 
 
-def _build_template(staging: Path):
+def _nas_api_port() -> int:
+    try:
+        return int(_env("CLAW_FC_NAS_API_PORT", "8090") or "8090")
+    except ValueError:
+        return 8090
+
+
+def _install_nas_api_scripts(port: int) -> str:
+    return (
+        f"printf '%s\\n' "
+        "'#!/bin/sh' "
+        "'set -eu' "
+        "'export CLAW_NAS_API_ROOT=/claw_ws' "
+        "'export CLAW_NAS_API_LISTEN_HOST=0.0.0.0' "
+        f"'export CLAW_NAS_API_LISTEN_PORT={port}' "
+        "'exec python3 /opt/claw-nas-api/server.py' "
+        "> /usr/local/bin/claw-nas-api-start "
+        "&& printf '%s\\n' "
+        "'#!/bin/sh' "
+        f"'exec curl -fsS --connect-timeout 2 http://127.0.0.1:{port}/healthz' "
+        "> /usr/local/bin/claw-nas-api-ready "
+        "&& chmod +x /usr/local/bin/claw-nas-api-start /usr/local/bin/claw-nas-api-ready"
+    )
+
+
+def _nas_api_start_cmd(port: int) -> str:
+    _ = port
+    return "/usr/local/bin/claw-nas-api-start"
+
+
+def _nas_api_ready_cmd(port: int) -> str:
+    _ = port
+    return "/usr/local/bin/claw-nas-api-ready"
+
+
+def _build_template(staging: Path, port: int):
     from e2b import Template
 
     base_image = _env("CLAW_NAS_API_TEMPLATE_BASE_IMAGE", "debian:bookworm-slim")
@@ -52,7 +87,11 @@ def _build_template(staging: Path):
             user="root",
         )
         .copy("server.py", "/opt/claw-nas-api/server.py", force_upload=True)
-        .run_cmd("chmod -R a+rwX /opt/claw-nas-api /claw_ws", user="root")
+        .run_cmd(
+            f"chmod -R a+rwX /opt/claw-nas-api /claw_ws && {_install_nas_api_scripts(port)}",
+            user="root",
+        )
+        .set_start_cmd(_nas_api_start_cmd(port), _nas_api_ready_cmd(port))
     )
 
 
@@ -86,6 +125,7 @@ def main() -> int:
         return 1
     opts = _conn_opts()
     alias = _env("CLAW_FC_NAS_API_TEMPLATE", "claw-nas-api")
+    nas_port = _nas_api_port()
 
     os.environ.setdefault("E2B_API_KEY", opts["api_key"])
     os.environ.setdefault("E2B_API_URL", opts["api_url"])
@@ -101,7 +141,8 @@ def main() -> int:
         staging = Path(tmp)
         (staging / "server.py").write_bytes(SERVER_SRC.read_bytes())
         print(f"==> e2b Template.build alias={alias!r} (server.py baked into /opt/claw-nas-api)")
-        template = _build_template(staging)
+        template = _build_template(staging, nas_port)
+        print(f"==> template startCmd=claw-nas-api :{nas_port}")
         headers = _build_headers()
         skip_cache = _env("CLAW_FC_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
         Template.build(

@@ -36,6 +36,7 @@ Commands:
   cluster-verify  Shared-PG multi-host: claw_pool zombies + each gateway /v1/pools (pre-prod gate)
   ovs-up        Ensure FC OVS singleton on e2b (claw-ovs template startCmd)
   observe-tap-up Ensure FC observe-singleton on e2b (claude-tap Live via template startCmd)
+  nas-api-up    Ensure FC claw-nas-api singleton on e2b (gateway NAS service; template startCmd)
   tap-down      Stop pool claude-tap only (legacy compose; FC mode uses CLAUDE_TAP_MODE=off)
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
   bench         REMOVED — local pool bench deleted
@@ -106,6 +107,7 @@ case "${cmd}" in
   cluster-verify) "${LIB}/claw-cluster-verify.sh" "$@" ;;
   ovs-up) bash "${LIB}/fc-ovs-up.sh" "$@" ;;
   observe-tap-up) bash "${LIB}/fc-tap-live-up.sh" "$@" ;;
+  nas-api-up) bash "${LIB}/fc-nas-api-up.sh" "$@" ;;
   tap-up)
     echo "error: tap-up removed (FC mode: use ./deploy/stack/gateway.sh observe-tap-up)" >&2
     exit 1

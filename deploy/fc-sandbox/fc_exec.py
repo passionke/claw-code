@@ -38,6 +38,28 @@ def _connect_opts(payload: dict) -> dict:
     return out
 
 
+def _inline_writes_sh(task_file: str, task_json, session_jsonl, session_root: str) -> str:
+    """Shell snippet that lands per-turn inputs onto the session mount.
+
+    Content is base64-encoded (shell-safe charset) and decoded in-guest. Author: kejiqing
+    """
+    import base64
+
+    lines: list[str] = []
+    root = session_root.rstrip("/") or "/claw_host_root"
+    if task_json is not None and str(task_json) != "":
+        b = base64.b64encode(str(task_json).encode("utf-8")).decode("ascii")
+        lines.append(f"mkdir -p {root}")
+        lines.append(f"printf %s '{b}' | base64 -d > {task_file}")
+    if session_jsonl is not None and str(session_jsonl) != "":
+        b = base64.b64encode(str(session_jsonl).encode("utf-8")).decode("ascii")
+        lines.append(f"mkdir -p {root}/.claw")
+        lines.append(
+            f"printf %s '{b}' | base64 -d > {root}/.claw/gateway-solve-session.jsonl"
+        )
+    return ("\n".join(lines) + "\n") if lines else ""
+
+
 def _emit_stdout_line(line: str) -> None:
     print(json.dumps({"ev": "stdout_line", "line": line}), flush=True)
 
@@ -136,14 +158,28 @@ def main() -> None:
                 f'export {k}={json.dumps(str(v))}' for k, v in env.items() if str(v).strip()
             )
             claw_bin = payload.get("claw_bin") or "claw"
-            task_file = payload.get("task_file") or "/claw_host_root/gateway-solve-task.json"
+            session_segment = str(payload.get("session_segment") or "").strip()
+            session_root = str(payload.get("session_root") or "").strip()
+            if not session_root and session_segment:
+                session_root = f"/claw_sessions/{session_segment}"
+            if not session_root:
+                session_root = "/claw_host_root"
+            task_file = payload.get("task_file") or f"{session_root}/gateway-solve-task.json"
+            inline = _inline_writes_sh(
+                task_file,
+                payload.get("task_json"),
+                payload.get("session_jsonl"),
+                session_root,
+            )
             script = (
                 f"{bootstrap}\n"
                 "set -eu\n"
-                "cd /claw_host_root\n"
-                "export HOME=/claw_host_root\n"
-                "export XDG_CONFIG_HOME=/claw_host_root/.config\n"
-                "export XDG_DATA_HOME=/claw_host_root/.local/share\n"
+                f"cd {session_root}\n"
+                f"export HOME={session_root}\n"
+                f"export XDG_CONFIG_HOME={session_root}/.config\n"
+                f"export XDG_DATA_HOME={session_root}/.local/share\n"
+                "export CLAW_PROJECT_CONFIG_ROOT=/claw_ds\n"
+                f"{inline}"
                 f"{exports}\n"
                 f"{claw_bin} gateway-solve-once --task-file {task_file}\n"
             )

@@ -1,5 +1,6 @@
-//! Agent WebSocket bridge for OVS `@claw` Chat (JSON + CDP over ttyd). Author: kejiqing
+//! Agent WebSocket bridge for OVS `@claw` Chat (JSON + CDP via FC exec + per-record jsonl). Author: kejiqing
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -9,25 +10,28 @@ use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::Mutex;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
 use tracing::warn;
 
 use crate::client_origin::CLIENT_ORIGIN_OVS_CHAT;
+use crate::persistence::transcript::{
+    import_turn_messages_to_db, report_body_from_turn_messages, turn_message_groups_from_jsonl_contents,
+};
 use crate::persistence::transcript;
 use crate::pool::interactive_backend::{
     interactive_backend_is_fc, InteractiveBackendKind, FC_INTERACTIVE_POOL_ID,
 };
-use crate::pool::terminal_ws_connect_url;
 use crate::session_db::GatewaySessionDb;
 use crate::session_ovs_api::{ovs_agent_session_id, ovs_chat_record_session_id};
 use crate::session_terminal_api::{
     ensure_terminal_active, ActiveTerminalSession, TerminalApiContext, TerminalApiError,
 };
 use crate::turn_id;
+use crate::pool::nas_cluster_id;
 use claw_fc_sandbox_client::FcSandboxHandle;
-use gateway_solve_turn::build_write_gateway_record_session_script;
+use gateway_solve_turn::{
+    build_ovs_interactive_prompt_script, build_write_gateway_record_session_script,
+    ovs_interactive_jsonl_host,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,8 +43,6 @@ pub struct AgentProjQuery {
 
 const OSC_PREFIX: &str = "\x1b]1337;Claw;";
 const OSC_SUFFIX: char = '\x07';
-const TTYD_SPAWN_COLS: u16 = 120;
-const TTYD_SPAWN_ROWS: u16 = 24;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -52,6 +54,29 @@ enum AgentClientMsg {
 struct ActiveOvsTurn {
     turn_id: String,
     buffer: String,
+}
+
+/// Per-`record_session_id` exec lock — concurrent prompts on same record return 409. Author: kejiqing
+static RECORD_EXEC_LOCKS: std::sync::OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+    std::sync::OnceLock::new();
+
+fn record_exec_locks() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
+    RECORD_EXEC_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn try_acquire_record_exec(
+    record_session_id: &str,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    let map = record_exec_locks();
+    let slot = {
+        let mut guard = map.lock().await;
+        guard
+            .entry(record_session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    slot.try_lock_owned()
+        .map_err(|_| "previous turn still running for this chat session".to_string())
 }
 
 fn extract_cdp_frames(input: &str) -> (Vec<serde_json::Value>, String) {
@@ -75,23 +100,6 @@ fn extract_cdp_frames(input: &str) -> (Vec<serde_json::Value>, String) {
     }
     clean.push_str(rest);
     (frames, clean)
-}
-
-fn ttyd_input_frame(text: &str) -> Vec<u8> {
-    let body = text.as_bytes();
-    let mut out = Vec::with_capacity(1 + body.len());
-    out.push(0x30);
-    out.extend_from_slice(body);
-    out
-}
-
-fn ttyd_resize_frame(cols: u16, rows: u16) -> Vec<u8> {
-    let json = format!(r#"{{"columns":{cols},"rows":{rows}}}"#);
-    let body = json.as_bytes();
-    let mut out = Vec::with_capacity(1 + body.len());
-    out.push(0x31);
-    out.extend_from_slice(body);
-    out
 }
 
 async fn finalize_active_turn(
@@ -240,7 +248,7 @@ fn ovs_turn_exec_user(active: &ActiveTerminalSession) -> Option<&'static str> {
     }
 }
 
-/// Reconstruct [`FcSandboxHandle`] for cold-start workers (warm pool uses [`FcProjWarmPool::leased_handle`]). Author: kejiqing
+/// Reconstruct [`FcSandboxHandle`] from an active interactive session. Author: kejiqing
 fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<FcSandboxHandle, String> {
     let sandbox_id = active
         .fc_sandbox_id
@@ -278,7 +286,20 @@ fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<FcSandbo
     })
 }
 
-/// Stage dialogue `record_session_id` on worker before ttyd prompt (tap reads `claw-session-id` from LLM). Author: kejiqing
+async fn fc_handle_for_active(
+    ctx: &TerminalApiContext,
+    active: &ActiveTerminalSession,
+) -> Result<FcSandboxHandle, String> {
+    if let Some(proj_id) = active.fc_warm_proj_id {
+        let reg = ctx.pool_clients.fc_worker_registry();
+        if let Some(handle) = reg.leased_handle(proj_id).await {
+            return Ok(handle);
+        }
+    }
+    fc_exec_handle_from_active(active)
+}
+
+/// Stage dialogue `record_session_id` on worker before exec (tap reads `claw-session-id` from LLM). Author: kejiqing
 async fn stage_gateway_record_session_id(
     ctx: &TerminalApiContext,
     active: &ActiveTerminalSession,
@@ -288,16 +309,7 @@ async fn stage_gateway_record_session_id(
         return Ok(());
     }
     let script = build_write_gateway_record_session_script(record_session_id);
-    if let Some(slot) = active.fc_warm_slot {
-        if let Some(pool) = ctx.pool_clients.fc_warm_pool() {
-            if let Some(handle) = pool.leased_handle(slot).await {
-                if let Some(client) = ctx.pool_clients.fc_sandbox_client() {
-                    return client.exec_shell_script(&handle, &script).await;
-                }
-            }
-        }
-    }
-    let handle = fc_exec_handle_from_active(active)?;
+    let handle = fc_handle_for_active(ctx, active).await?;
     let client = ctx
         .pool_clients
         .fc_sandbox_client()
@@ -331,6 +343,226 @@ async fn assign_ovs_turn_pool_worker(
             "assign ovs-chat turn pool/worker failed"
         );
     }
+}
+
+async fn import_interactive_turn_from_jsonl(
+    db: &GatewaySessionDb,
+    work_root: &std::path::Path,
+    proj_id: i64,
+    record_session_id: &str,
+    turn_id: &str,
+) -> Result<(), String> {
+    let seg = crate::session_merge::sessions_directory_segment(record_session_id);
+    let cluster_id = nas_cluster_id()?;
+    let path = ovs_interactive_jsonl_host(work_root, &cluster_id, proj_id, &seg);
+    let contents = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("read interactive jsonl {}: {e}", path.display()))?;
+    let groups = turn_message_groups_from_jsonl_contents(&contents);
+    let Some(messages) = groups.last() else {
+        return Ok(());
+    };
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let now = transcript::now_ms();
+    import_turn_messages_to_db(db, record_session_id, proj_id, turn_id, messages, now)
+        .await
+        .map_err(|e| format!("import interactive turn messages: {e}"))?;
+    Ok(())
+}
+
+async fn send_cdp_event(
+    cli_tx: &Arc<tokio::sync::Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    ev: &serde_json::Value,
+) -> Result<(), String> {
+    let body = serde_json::json!({ "type": "cdp", "event": ev });
+    let mut guard = cli_tx.lock().await;
+    guard
+        .send(Message::Text(
+            serde_json::to_string(&body)
+                .map_err(|e| format!("serialize cdp: {e}"))?
+                .into(),
+        ))
+        .await
+        .map_err(|e| format!("client send: {e}"))?;
+    Ok(())
+}
+
+async fn process_exec_stdout_chunk(
+    carry: &mut String,
+    chunk: &str,
+    cli_tx: &Arc<tokio::sync::Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    active_turn: &Arc<Mutex<Option<ActiveOvsTurn>>>,
+    session_db: &Arc<GatewaySessionDb>,
+) {
+    carry.push_str(chunk);
+    let (frames, clean) = extract_cdp_frames(carry);
+    *carry = clean;
+    for ev in frames {
+        if let Some(text) = ev.get("text").and_then(|v| v.as_str()) {
+            if ev.get("ev").and_then(|v| v.as_str()) == Some("content.delta") && !text.is_empty() {
+                let mut turn_guard = active_turn.lock().await;
+                if let Some(active) = turn_guard.as_mut() {
+                    active.buffer.push_str(text);
+                }
+            }
+        }
+        if let (Some("status"), Some(phase)) = (
+            ev.get("ev").and_then(|v| v.as_str()),
+            ev.get("phase").and_then(|v| v.as_str()),
+        ) {
+            if phase == "failed" {
+                let mut turn_guard = active_turn.lock().await;
+                finalize_active_turn(session_db, &mut turn_guard, "failed").await;
+            }
+        }
+        if let Err(e) = send_cdp_event(cli_tx, &ev).await {
+            warn!(target: "claw_gateway_agent", error = %e, "send cdp to client failed");
+        }
+    }
+}
+
+async fn run_ovs_interactive_prompt(
+    ctx: &TerminalApiContext,
+    proj_id: i64,
+    record_session_id: &str,
+    worker_session_id: &str,
+    ovs_chat_key: Option<&str>,
+    active: &ActiveTerminalSession,
+    text: &str,
+    cli_tx: &Arc<tokio::sync::Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    active_turn: &Arc<Mutex<Option<ActiveOvsTurn>>>,
+) -> Result<(), String> {
+    let _exec_guard = try_acquire_record_exec(record_session_id).await?;
+
+    {
+        let mut guard = active_turn.lock().await;
+        finalize_active_turn(&ctx.session_db, &mut guard, "failed").await;
+    }
+
+    ensure_ovs_chat_record_session(ctx, proj_id, record_session_id).await?;
+    let turn_id = start_ovs_turn(
+        &ctx.session_db,
+        proj_id,
+        record_session_id,
+        worker_session_id,
+        ovs_chat_key,
+        text,
+    )
+    .await?;
+    assign_ovs_turn_pool_worker(&ctx.session_db, &turn_id, active).await;
+    stage_gateway_record_session_id(ctx, active, record_session_id).await?;
+
+    *active_turn.lock().await = Some(ActiveOvsTurn {
+        turn_id: turn_id.clone(),
+        buffer: String::new(),
+    });
+
+    let segment = crate::session_merge::sessions_directory_segment(record_session_id);
+    if ctx.pool_clients.fc_nas_layout_active() {
+        let worker_id = active
+            .fc_worker_id
+            .as_deref()
+            .ok_or_else(|| "ovs interactive: missing fc worker id".to_string())?;
+        ctx.pool_clients
+            .nas_layout()
+            .ensure_session_context(proj_id, &segment, worker_id)
+            .await
+            .map_err(|e| format!("ensure ovs session root: {e}"))?;
+    }
+    let script = build_ovs_interactive_prompt_script(&segment, record_session_id, text);
+    let handle = fc_handle_for_active(ctx, active).await?;
+    let client = ctx
+        .pool_clients
+        .fc_sandbox_client()
+        .ok_or_else(|| "fc interactive: sandbox client not configured".to_string())?;
+
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let hook = {
+        let line_tx = line_tx.clone();
+        Arc::new(move |chunk: String| {
+            let _ = line_tx.send(chunk);
+        })
+    };
+
+    let cli_tx_stream = Arc::clone(cli_tx);
+    let active_turn_stream = Arc::clone(active_turn);
+    let session_db_stream = Arc::clone(&ctx.session_db);
+    let mut carry = String::new();
+    let pump = tokio::spawn(async move {
+        while let Some(chunk) = line_rx.recv().await {
+            process_exec_stdout_chunk(
+                &mut carry,
+                &chunk,
+                &cli_tx_stream,
+                &active_turn_stream,
+                &session_db_stream,
+            )
+            .await;
+        }
+        carry
+    });
+
+    let outcome = client
+        .exec_shell_script_streaming(&handle, &script, hook)
+        .await?;
+    drop(line_tx);
+    let mut tail_carry = pump.await.map_err(|e| format!("stdout pump join: {e}"))?;
+    if !tail_carry.is_empty() {
+        process_exec_stdout_chunk(
+            &mut tail_carry,
+            "",
+            cli_tx,
+            active_turn,
+            &ctx.session_db,
+        )
+        .await;
+    }
+
+    if outcome.exit_code != 0 {
+        let mut guard = active_turn.lock().await;
+        finalize_active_turn(&ctx.session_db, &mut guard, "failed").await;
+        return Err(format!(
+            "ovs interactive exec exit {}: {}",
+            outcome.exit_code,
+            outcome.stderr.trim()
+        ));
+    }
+
+    if let Err(e) = import_interactive_turn_from_jsonl(
+        &ctx.session_db,
+        &ctx.work_root,
+        proj_id,
+        record_session_id,
+        &turn_id,
+    )
+    .await
+    {
+        warn!(
+            target: "claw_gateway_agent",
+            turn_id = %turn_id,
+            error = %e,
+            "import interactive turn to cc_messages failed"
+        );
+    }
+
+    let mut guard = active_turn.lock().await;
+    if let Some(active_turn_state) = guard.as_mut() {
+        if active_turn_state.buffer.trim().is_empty() {
+            let seg = crate::session_merge::sessions_directory_segment(record_session_id);
+            let cluster_id = nas_cluster_id().unwrap_or_default();
+            let path = ovs_interactive_jsonl_host(&ctx.work_root, &cluster_id, proj_id, &seg);
+            if let Ok(contents) = tokio::fs::read_to_string(&path).await {
+                let groups = turn_message_groups_from_jsonl_contents(&contents);
+                if let Some(messages) = groups.last() {
+                    active_turn_state.buffer = report_body_from_turn_messages(messages);
+                }
+            }
+        }
+    }
+    finalize_active_turn(&ctx.session_db, &mut guard, "succeeded").await;
+    Ok(())
 }
 
 pub async fn agent_ws_upgrade(
@@ -391,7 +623,6 @@ async fn run_agent_ws_bridge(
 
     let (mut cli_tx, mut cli_rx) = client.split();
     let active_turn: Arc<Mutex<Option<ActiveOvsTurn>>> = Arc::new(Mutex::new(None));
-    let session_db = Arc::clone(&ctx.session_db);
 
     let active = match ensure_terminal_active(&ctx, proj_id, &worker_session_id).await {
         Ok(a) => a,
@@ -401,208 +632,52 @@ async fn run_agent_ws_bridge(
         }
     };
 
-    let ttyd = active.ttyd.clone();
-    let url = terminal_ws_connect_url(&ttyd);
-    let mut req = url
-        .as_str()
-        .into_client_request()
-        .map_err(|e| format!("ws request {url}: {e}"))?;
-    req.headers_mut()
-        .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("tty"));
-    if let Some(host_hdr) = ttyd.proxy_host_header.as_deref() {
-        req.headers_mut().insert(
-            "Host",
-            HeaderValue::from_str(host_hdr).map_err(|e| format!("Host: {e}"))?,
-        );
-    }
-    if let Some(token) = ttyd.traffic_access_token.as_deref() {
-        req.headers_mut().insert(
-            "X-Access-Token",
-            HeaderValue::from_str(token).map_err(|e| format!("X-Access-Token: {e}"))?,
-        );
-    }
-    let (upstream, _) = match connect_async(req).await {
-        Ok(pair) => pair,
-        Err(e) => {
-            let msg = format!("connect ttyd {url}: {e}");
-            send_agent_error(&mut cli_tx, &msg).await;
-            return Err(msg);
-        }
-    };
-    let (mut up_tx, mut up_rx) = upstream.split();
-
-    let spawn_json = format!(r#"{{"columns":{TTYD_SPAWN_COLS},"rows":{TTYD_SPAWN_ROWS}}}"#);
-    if let Err(e) = up_tx.send(WsMessage::Text(spawn_json.into())).await {
-        let msg = format!("ttyd spawn: {e}");
-        send_agent_error(&mut cli_tx, &msg).await;
-        return Err(msg);
-    }
-    if let Err(e) = up_tx
-        .send(WsMessage::Binary(
-            ttyd_resize_frame(TTYD_SPAWN_COLS, TTYD_SPAWN_ROWS).into(),
-        ))
-        .await
-    {
-        let msg = format!("ttyd resize: {e}");
-        send_agent_error(&mut cli_tx, &msg).await;
-        return Err(msg);
-    }
-
     let cli_tx = Arc::new(tokio::sync::Mutex::new(cli_tx));
     let active_terminal = active.clone();
 
-    let cli_tx_up = Arc::clone(&cli_tx);
-    let active_turn_up = Arc::clone(&active_turn);
-    let session_db_up = Arc::clone(&session_db);
-    let record_session_id_up = record_session_id.clone();
-    let worker_session_id_up = worker_session_id.clone();
-    let ovs_chat_key_up = ovs_chat_key.clone();
-    let active_terminal_up = active_terminal.clone();
-    let ctx_up = ctx.clone();
-    let client_to_up = async move {
-        while let Some(msg) = cli_rx.next().await {
-            let msg = msg.map_err(|e| format!("client ws: {e}"))?;
-            match msg {
-                Message::Text(t) => {
-                    let parsed: AgentClientMsg =
-                        serde_json::from_str(&t).map_err(|e| format!("invalid agent json: {e}"))?;
-                    match parsed {
-                        AgentClientMsg::Spawn => {
-                            up_tx
-                                .send(WsMessage::Text(
-                                    format!(
-                                        r#"{{"columns":{TTYD_SPAWN_COLS},"rows":{TTYD_SPAWN_ROWS}}}"#
-                                    )
-                                    .into(),
-                                ))
-                                .await
-                                .map_err(|e| format!("ttyd respawn: {e}"))?;
+    while let Some(msg) = cli_rx.next().await {
+        let msg = msg.map_err(|e| format!("client ws: {e}"))?;
+        match msg {
+            Message::Text(t) => {
+                let parsed: AgentClientMsg =
+                    serde_json::from_str(&t).map_err(|e| format!("invalid agent json: {e}"))?;
+                match parsed {
+                    AgentClientMsg::Spawn => {
+                        // Legacy no-op: context is per-record jsonl + exec, not ttyd respawn.
+                    }
+                    AgentClientMsg::Prompt { text } => {
+                        if text.is_empty() {
+                            continue;
                         }
-                        AgentClientMsg::Prompt { text } => {
-                            if text.is_empty() {
-                                continue;
-                            }
-                            {
-                                let mut guard = active_turn_up.lock().await;
-                                finalize_active_turn(&session_db_up, &mut guard, "failed").await;
-                            }
-                            ensure_ovs_chat_record_session(&ctx_up, proj_id, &record_session_id_up)
-                                .await?;
-                            let turn_id = start_ovs_turn(
-                                &session_db_up,
-                                proj_id,
-                                &record_session_id_up,
-                                &worker_session_id_up,
-                                ovs_chat_key_up.as_deref(),
-                                &text,
-                            )
-                            .await?;
-                            assign_ovs_turn_pool_worker(
-                                &session_db_up,
-                                &turn_id,
-                                &active_terminal_up,
-                            )
-                            .await;
-                            stage_gateway_record_session_id(
-                                &ctx_up,
-                                &active_terminal_up,
-                                &record_session_id_up,
-                            )
-                            .await?;
-                            *active_turn_up.lock().await = Some(ActiveOvsTurn {
-                                turn_id,
-                                buffer: String::new(),
-                            });
-                            up_tx
-                                .send(WsMessage::Binary(ttyd_input_frame(&text).into()))
-                                .await
-                                .map_err(|e| format!("ttyd prompt: {e}"))?;
+                        if let Err(e) = run_ovs_interactive_prompt(
+                            &ctx,
+                            proj_id,
+                            &record_session_id,
+                            &worker_session_id,
+                            ovs_chat_key.as_deref(),
+                            &active_terminal,
+                            &text,
+                            &cli_tx,
+                            &active_turn,
+                        )
+                        .await
+                        {
+                            let mut guard = cli_tx.lock().await;
+                            send_agent_error(&mut guard, &e).await;
                         }
                     }
                 }
-                Message::Close(_) => break,
-                _ => {}
             }
+            Message::Close(_) => break,
+            _ => {}
         }
-        Ok::<(), String>(())
-    };
+    }
 
-    let active_turn_down = Arc::clone(&active_turn);
-    let session_db_down = Arc::clone(&session_db);
-    let up_to_client = async move {
-        let mut carry = String::new();
-        while let Some(msg) = up_rx.next().await {
-            let msg = msg.map_err(|e| format!("upstream ws: {e}"))?;
-            let payload = match msg {
-                WsMessage::Binary(b) => {
-                    if b.is_empty() {
-                        continue;
-                    }
-                    let kind = b[0];
-                    if kind != 0x30 {
-                        continue;
-                    }
-                    String::from_utf8_lossy(&b[1..]).into_owned()
-                }
-                WsMessage::Text(t) => t.to_string(),
-                WsMessage::Close(_) => break,
-                _ => continue,
-            };
-            carry.push_str(&payload);
-            let (frames, clean) = extract_cdp_frames(&carry);
-            carry = clean;
-            let mut guard = cli_tx_up.lock().await;
-            for ev in frames {
-                if let Some(text) = ev.get("text").and_then(|v| v.as_str()) {
-                    if ev.get("ev").and_then(|v| v.as_str()) == Some("content.delta")
-                        && !text.is_empty()
-                    {
-                        let mut turn_guard = active_turn_down.lock().await;
-                        if let Some(active) = turn_guard.as_mut() {
-                            active.buffer.push_str(text);
-                        }
-                    }
-                }
-                if let (Some("status"), Some(phase)) = (
-                    ev.get("ev").and_then(|v| v.as_str()),
-                    ev.get("phase").and_then(|v| v.as_str()),
-                ) {
-                    if phase == "done" {
-                        let mut turn_guard = active_turn_down.lock().await;
-                        finalize_active_turn(&session_db_down, &mut turn_guard, "succeeded").await;
-                    } else if phase == "failed" {
-                        let mut turn_guard = active_turn_down.lock().await;
-                        finalize_active_turn(&session_db_down, &mut turn_guard, "failed").await;
-                    }
-                }
-                let body = serde_json::json!({ "type": "cdp", "event": ev });
-                guard
-                    .send(Message::Text(
-                        serde_json::to_string(&body)
-                            .map_err(|e| format!("serialize cdp: {e}"))?
-                            .into(),
-                    ))
-                    .await
-                    .map_err(|e| format!("client send: {e}"))?;
-            }
-        }
-        Ok::<(), String>(())
-    };
-
-    let result = tokio::select! {
-        r = client_to_up => r,
-        r = up_to_client => r,
-    };
     {
         let mut guard = active_turn.lock().await;
-        let status = if result.is_ok() {
-            "cancelled"
-        } else {
-            "failed"
-        };
-        finalize_active_turn(&session_db, &mut guard, status).await;
+        finalize_active_turn(&ctx.session_db, &mut guard, "cancelled").await;
     }
-    result
+    Ok(())
 }
 
 #[cfg(test)]
@@ -654,5 +729,15 @@ mod tests {
         let h = fc_exec_handle_from_active(&active).expect("handle");
         assert_eq!(h.sandbox_id, "sbx_abc");
         assert_eq!(h.sandbox_domain, "supone.top");
+    }
+
+    #[tokio::test]
+    async fn record_exec_lock_rejects_concurrent_same_record() {
+        let _a = try_acquire_record_exec("ovs-chat-1-x").await.expect("first");
+        let err = try_acquire_record_exec("ovs-chat-1-x")
+            .await
+            .expect_err("second");
+        assert!(err.contains("previous turn still running"));
+        let _b = try_acquire_record_exec("ovs-chat-1-y").await.expect("other record");
     }
 }

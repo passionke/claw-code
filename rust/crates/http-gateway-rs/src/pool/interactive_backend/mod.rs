@@ -2,7 +2,7 @@
 
 mod fc_interactive;
 mod fc_interactive_materialize;
-mod fc_warm_pool;
+mod fc_nas_api_singleton;
 mod fc_worker_tap;
 mod ttyd_url;
 
@@ -10,7 +10,7 @@ pub use fc_interactive_materialize::{
     build_fc_guest_writes_script, build_proj_bake_script, build_session_attach_script,
     build_start_ttyd_script,
 };
-pub use fc_warm_pool::FcProjWarmPool;
+pub use fc_nas_api_singleton::FcNasApiSingleton;
 pub use fc_worker_tap::{
     build_fc_session_attach_with_tap, build_fc_worker_tap_start_script_from_db, fc_worker_llm_env,
     fc_worker_solve_route, resolve_fc_worker_solve_llm_route, FC_WORKER_TAP_PROXY_URL,
@@ -47,9 +47,9 @@ pub struct InteractiveSessionSpec {
     pub llm_env: std::collections::BTreeMap<String, String>,
     pub ovs_mode: bool,
     pub start_ttyd_script: String,
-    /// FC: session attach (LLM env on `/claw_host_root`); project baked in warm pool.
+    /// FC: session attach (LLM env on `/claw_host_root`); project config on `/claw_ds`.
     pub fc_session_attach_script: Option<String>,
-    /// FC cold fallback: project bake when warm pool unavailable.
+    /// FC cold fallback: project bake when proj worker unavailable.
     pub fc_proj_bake_script: Option<String>,
 }
 
@@ -69,9 +69,7 @@ pub fn interactive_backend_is_fc() -> bool {
             std::process::exit(1);
         }
         Some(other) => {
-            eprintln!(
-                "http-gateway-rs: invalid CLAW_INTERACTIVE_BACKEND={other:?}; use fc"
-            );
+            eprintln!("http-gateway-rs: invalid CLAW_INTERACTIVE_BACKEND={other:?}; use fc");
             std::process::exit(1);
         }
     }
@@ -107,9 +105,9 @@ pub struct InteractiveLease {
     pub worker_name: Option<String>,
     pub pool_id: String,
     pub fc_sandbox_id: Option<String>,
-    /// Warm-pool slot index when leased from [`FcProjWarmPool`]; `None` = cold sandbox.
+    /// Proj worker lease marker (`fc_warm_slot` legacy name); `None` = cold sandbox.
     pub fc_warm_slot: Option<usize>,
-    /// Project id for warm-pool release / top-up.
+    /// Project id for [`FcProjWorkerRegistry`] release.
     pub fc_warm_proj_id: Option<i64>,
     /// Session directory segment under `proj_N/sessions` (symlink name).
     pub fc_session_segment: Option<String>,
@@ -125,23 +123,13 @@ pub trait InteractiveSandboxBackend: Send + Sync {
     async fn stop_session(&self, lease: &InteractiveLease) -> Result<(), String>;
 }
 
-/// Construct FC interactive backend (only supported mode).
+/// Construct FC interactive backend (prefer [`super::clients::PoolClients::fc_interactive`]).
 #[must_use]
 pub fn interactive_backend_from_env(
-    _pool_clients: super::clients::PoolClients,
-    fc_client: Option<Arc<claw_fc_sandbox_client::FcSandboxClient>>,
-    pool_id: String,
-    pool_rpc_host_work_root: Option<PathBuf>,
-    work_root: PathBuf,
+    pool_clients: super::clients::PoolClients,
+    _fc_client: Option<Arc<claw_fc_sandbox_client::FcSandboxClient>>,
+    _pool_id: String,
+    _nas_layout: crate::pool::NasLayoutBackend,
 ) -> Arc<dyn InteractiveSandboxBackend> {
-    let client = fc_client.unwrap_or_else(|| {
-        eprintln!("http-gateway-rs: FC client not configured");
-        std::process::exit(1);
-    });
-    Arc::new(FcInteractiveBackend::new(
-        client,
-        pool_id,
-        work_root,
-        pool_rpc_host_work_root,
-    )) as Arc<dyn InteractiveSandboxBackend>
+    pool_clients.fc_interactive_arc()
 }

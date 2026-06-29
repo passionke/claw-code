@@ -67,6 +67,7 @@ pub mod sqlbot_preflight;
 pub mod task_progress;
 pub mod turn_language;
 pub mod turn_tools;
+pub mod ovs_interactive;
 pub mod worker_env;
 pub use gateway_stdout::{
     emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
@@ -93,6 +94,12 @@ pub use task_progress::{
     sanitize_current_task_desc, should_emit_tool_progress_event, task_progress_history_path,
     task_progress_json_path, truncate_progress_history, ProgressEvent, ReportProgressInput,
     TaskProgressFile, TaskProgressTodo, REPORT_PROGRESS_TOOL_NAME,
+};
+pub use ovs_interactive::{
+    build_ensure_ovs_interactive_session_script, build_ovs_interactive_prompt_script,
+    ovs_interactive_jsonl_guest, ovs_interactive_jsonl_host, ovs_interactive_meta_session_id,
+    GUEST_CLAW_DS, GUEST_CLAW_HOST_ROOT, GUEST_CLAW_SESSIONS, OVS_INTERACTIVE_JSONL_NAME,
+    OVS_INTERACTIVE_REL,
 };
 pub use worker_env::{
     apply_worker_env, build_write_gateway_record_session_script, gateway_llm_session_extra_headers,

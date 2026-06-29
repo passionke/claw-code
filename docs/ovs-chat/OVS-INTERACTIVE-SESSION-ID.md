@@ -4,7 +4,7 @@ Author: kejiqing
 
 **原则：不新造 session 模型。** 复用 Admin 对话里已有的 `sessionId`（`record_session_id`）、solve 已有的 LLM header 契约、claude-tap 已有的 `claw-session-id` 索引。
 
-**多轮上下文续聊（计划）：** 现状每轮 agent prompt 会新建 claw session，导致 AI 失忆。目标方案见 **[OVS-INTERACTIVE-CONTEXT-PLAN.md](./OVS-INTERACTIVE-CONTEXT-PLAN.md)**（B1：exec + resume 固定 jsonl；交互 vs solve 两套分界）。下文「数据流」在计划落地前仍描述 **legacy ttyd** 路径。
+**上下文 SoT：** `record_session_id` → `{clusterId}/proj_{N}/sessions/{segment}/.claw/interactive-session.jsonl`（guest `/claw_sessions/{segment}`）。`worker_session_id`（`ovs-{projId}`）仅表示项目级 worker 租约，**不**决定 prior messages。`home/`（`/claw_ds`）对 worker **只读**。
 
 ---
 
@@ -12,31 +12,33 @@ Author: kejiqing
 
 | 名称 | 示例 | 用途 | 是否给 tap / Admin Tap 链接 |
 |------|------|------|------------------------------|
-| **`record_session_id`** | `ovs-chat-3-afc29a80…` | `gateway_sessions` / `gateway_turns.session_id`；Admin 对话与 Tap `?session=` | **是** |
-| **`worker_session_id`** | `ovs-3` | FC warm pool 租约、ttyd、agent WS path | 否 |
-| **claw 交互续聊 jsonl**（计划） | `…/ovs-chat/{segment}/interactive-session.jsonl` | harness 多轮 transcript（per `record_session_id`） | 否 |
-| **claw 托管 session** | `session-1739…-0` | 默认 SessionStore；**legacy 每轮新建（bug）** | 否 |
+| **`record_session_id`** | `ovs-chat-3-afc29a80…` | `gateway_sessions` / `gateway_turns.session_id`；续聊 jsonl 主键；Tap `?session=` | **是** |
+| **`worker_session_id`** | `ovs-3` | FC 项目 worker 租约、agent WS path、人工 terminal | 否 |
+| **claw 交互续聊 jsonl** | `{clusterId}/proj_N/sessions/{segment}/.claw/interactive-session.jsonl` | harness 多轮 transcript（per `record_session_id`） | 否 |
+| **claw 默认 SessionStore** | `session-1739…-0` | **legacy ttyd REPL** 每轮新建；agent 主路径已不用 | 否 |
 
 OVS Chat 扩展通过 `chatSessionId` query 把 **record** 传给网关；worker 始终是 `ovs-{projId}`（见 `extensions/claw-vscode/extension.js` `agentWsParts`）。
 
 ---
 
-## 数据流（FC 交互式）
+## 数据流（FC 交互式 — agent/ws 主路径）
 
 ```
 OVS Chat
-  → gateway agent/ws (record_session_id 已知)
-  → 每轮 Prompt 前：fc exec 写 /claw_host_root/.claw/gateway-record-session-id
-  → ttyd 输入用户问题
-  → claw REPL 每次 LLM：
-       读 gateway-record-session-id（或 solve 的 CLAW_SESSION_ID）
-       → extra_headers: claw-session-id / clawcode-session-id
-  → worker 内 claude-tap :8080（OPENAI_BASE_URL）
-       → 按 header 写 NAS tap-traces/
-  → Observe singleton Live：`/api/sessions/traces?session={record_session_id}`
+  → gateway agent/ws（query: projId, chatSessionId → record_session_id）
+  → ensure_terminal_active(worker_session_id = ovs-{projId})   // 项目 worker 存活
+  → ensure_ovs_chat_record_session(record_session_id)          // gateway_sessions 注册
+  → stage gateway-record-session-id（Tap header）
+  → ensure interactive-session.jsonl（不存在则写 session_meta）
+  → fc exec: claw gateway-interactive-once --session-jsonl <JSONL> --prompt-b64 …
+  → gateway 解析 stdout CDP → WS 推给扩展
+  → import_turn_messages_to_db（cc_messages 写回）
+  → finalize gateway_turns
 ```
 
-与 **`/v1/solve` / `gateway-solve-once`** 使用同一套 header 名；差别只是 solve 用 task 文件 + `docker exec -e CLAW_SESSION_ID`，交互式用 **文件**（warm worker 上 `claw` 进程已启动，不能靠改 env）。
+**不再**用 ttyd WS 喂 `@claw` prompt（`Spawn` 为 legacy no-op）。人工 `/terminal/*` 仍可用 ttyd，与 agent 解耦。
+
+与 **`/v1/solve` / `gateway-solve-once`** 使用同一套 LLM header 名；交互式上下文来自 **per-record jsonl**，不从 PG 注水。
 
 ---
 
@@ -44,11 +46,12 @@ OVS Chat
 
 | 环节 | 位置 |
 |------|------|
-| 文件契约 + header 解析 | `rust/crates/gateway-solve-turn/src/worker_env.rs`（`GATEWAY_RECORD_SESSION_ID_*`、`gateway_llm_session_extra_headers`） |
-| REPL 发 LLM 带 header | `rust/crates/rusty-claude-cli/src/main.rs` `AnthropicRuntimeClient::stream` |
-| 每轮 Prompt 写文件 | `rust/crates/http-gateway-rs/src/session_agent_api.rs` `stage_gateway_record_session_id` |
-| Admin turn `pool` / `worker` | 同上 `assign_ovs_turn_pool_worker` → `pool_id=fc-interactive`，`worker_name=fc:sbx_…` |
-| tap 只认 header | `claude_tap/claw_session.py`（无 header 则不写 session trace） |
+| jsonl 路径 + exec 脚本 | `rust/crates/gateway-solve-turn/src/ovs_interactive.rs` |
+| worker 内 one-shot | `rust/crates/rusty-claude-cli` → `claw gateway-interactive-once` |
+| Agent WS 桥 | `rust/crates/http-gateway-rs/src/session_agent_api.rs` |
+| Tap header 文件 | `rust/crates/gateway-solve-turn/src/worker_env.rs` |
+| 扩展 WS | `extensions/claw-vscode/extension.js`（仅 `prompt`，无 `spawn`） |
+| E2E | `deploy/stack/lib/verify-ovs-claw-e2e.sh`、`verify-ovs-claw-context-isolation.sh` |
 
 ---
 
@@ -57,23 +60,21 @@ OVS Chat
 `gateway_turns` 在 OVS agent 开 turn 后应写入：
 
 - `pool_id` = `fc-interactive`（常量 `FC_INTERACTIVE_POOL_ID`，与 solve 的 `fc-cloud` 区分）
-- `worker_name` = 实际 warm worker，如 `fc:sbx_866ed706f88d`
-
-此前只 `insert_turn` 未 `assign_turn_pool_worker`，Admin 会显示 `pool —`。
+- `worker_name` = 实际项目 worker，如 `fc:sbx_866ed706f88d`
 
 ---
 
 ## 排障
 
-1. Worker 内：`cat /claw_host_root/.claw/gateway-record-session-id` 应等于对话 `sessionId`。
-2. tap 日志：有 header 时为 `[Turn N]`，无 header 为 `[proxy]`（不写 session 索引）。
-3. `GET {observe}/api/sessions/traces?session={record_session_id}` 应有记录。
-4. 不要用 claw 托管 `session-…` 或 `turnId` 查 Tap（与 Admin 对话模型不一致）。
+1. 每 `record_session_id` 只有一个 jsonl：`ls {clusterId}/proj_N/sessions/{segment}/.claw/interactive-session.jsonl`（行数随轮次增长）。
+2. Worker 内：`cat /claw_host_root/.claw/gateway-record-session-id` 应等于当轮对话 `sessionId`。
+3. 不同 Chat 面板（不同 `record_session_id`）不得共享同一 jsonl 路径（见 `verify-ovs-claw-context-isolation.sh`）。
+4. `GET {observe}/api/sessions/traces?session={record_session_id}` 应有记录。
 
 ---
 
 ## 相关文档
 
-- **交互式多轮上下文（实施计划）：** [OVS-INTERACTIVE-CONTEXT-PLAN.md](./OVS-INTERACTIVE-CONTEXT-PLAN.md)
+- **实施细节与验收：** [OVS-INTERACTIVE-CONTEXT-PLAN.md](./OVS-INTERACTIVE-CONTEXT-PLAN.md)
+- NAS 布局：`docs/fc-nas-workspace.md`
 - Tap 写入 vs Live 读取：`docs/ovs-chat/FC-TAP-SINGLETON-DESIGN.md`
-- solve header 约定：`docs/gateway-mcp-call-meta.md`、`docs/http-gateway-rs-api.md`

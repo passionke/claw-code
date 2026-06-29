@@ -9,6 +9,7 @@ use crate::session_db::GatewaySessionDb;
 
 use super::config::relaxed_worker_allowed_from_env;
 use super::fc_orchestrated_pool::{FcOrchestratedPool, FC_POOL_ID};
+use super::fc_proj_worker_registry::FcProjWorkerRegistry;
 use super::interactive_backend::{
     FcInteractiveBackend, InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend,
 };
@@ -17,17 +18,19 @@ use super::worker_isolation::{
     default_worker_isolation_json, effective_mode, is_fc_sandbox_mode, mode_from_json,
     WorkerIsolationMode,
 };
-use super::LiveReportHub;
+use super::{LiveReportHub, NasLayoutBackend};
 
 /// FC-only pool routing. Author: kejiqing
 #[derive(Clone)]
 pub struct PoolClients {
     fc_pool: Arc<FcOrchestratedPool>,
+    fc_workers: Arc<FcProjWorkerRegistry>,
     pool_id: String,
     fc_interactive: Arc<FcInteractiveBackend>,
     fc_client: Arc<FcSandboxClient>,
     work_root: PathBuf,
     pool_rpc_host_work_root: Option<PathBuf>,
+    nas_layout: NasLayoutBackend,
 }
 
 impl PoolClients {
@@ -37,6 +40,7 @@ impl PoolClients {
         work_root: PathBuf,
         fc_client: Option<Arc<FcSandboxClient>>,
         pool_rpc_host_work_root: Option<PathBuf>,
+        nas_layout: NasLayoutBackend,
     ) -> Self {
         let pool_id = std::env::var("CLAW_POOL_ID")
             .ok()
@@ -46,32 +50,56 @@ impl PoolClients {
 
         let fc_client = fc_client.unwrap_or_else(|| {
             eprintln!(
-                "http-gateway-rs: FC sandbox required (set CLAW_FC_* / CLAW_E2B_* and CLAW_INTERACTIVE_BACKEND=fc)"
+                "http-gateway-rs: FC/E2B sandbox is required; configure CLAW_FC_* / CLAW_E2B_*"
             );
             std::process::exit(1);
         });
-        FcSandboxClient::spawn_lease_ticker(Arc::clone(&fc_client));
+        if let Err(e) = nas_layout.cluster_id() {
+            eprintln!("http-gateway-rs: CLAW_CLUSTER_ID is required for FC/E2B NAS layout: {e}");
+            std::process::exit(1);
+        }
+        if !nas_layout.active() {
+            eprintln!(
+                "http-gateway-rs: FC/E2B NAS layout is required; configure claw-nas-api or CLAW_NAS_HOST_MOUNT/CLAW_WORK_ROOT"
+            );
+            std::process::exit(1);
+        }
+
+        let fc_workers = Arc::new(FcProjWorkerRegistry::new(
+            Arc::clone(&fc_client),
+            nas_layout.clone(),
+        ));
+        FcProjWorkerRegistry::spawn_renewal_ticker(Arc::clone(&fc_workers));
 
         let fc_pool = Arc::new(FcOrchestratedPool::new(
             Arc::clone(&fc_client),
             work_root.clone(),
             live_report_hub,
+            nas_layout.clone(),
+            Arc::clone(&fc_workers),
         ));
         let fc_interactive = Arc::new(FcInteractiveBackend::new(
             Arc::clone(&fc_client),
             pool_id.clone(),
-            work_root.clone(),
-            pool_rpc_host_work_root.clone(),
+            nas_layout.clone(),
+            Arc::clone(&fc_workers),
         ));
 
         Self {
             fc_pool,
+            fc_workers,
             pool_id,
             fc_interactive,
             fc_client,
             work_root,
             pool_rpc_host_work_root,
+            nas_layout,
         }
+    }
+
+    #[must_use]
+    pub fn nas_layout(&self) -> &NasLayoutBackend {
+        &self.nas_layout
     }
 
     #[must_use]
@@ -84,7 +112,7 @@ impl PoolClients {
 
     #[must_use]
     pub fn fc_nas_layout_active(&self) -> bool {
-        super::fc_nas_layout::fc_nas_layout_active(&self.nas_host_root())
+        self.nas_layout.active()
     }
 
     #[must_use]
@@ -93,8 +121,13 @@ impl PoolClients {
     }
 
     #[must_use]
-    pub fn fc_warm_pool(&self) -> Option<&super::interactive_backend::FcProjWarmPool> {
-        Some(self.fc_interactive.warm_pool())
+    pub fn fc_interactive_arc(&self) -> Arc<dyn InteractiveSandboxBackend + Send + Sync> {
+        Arc::clone(&self.fc_interactive) as Arc<dyn InteractiveSandboxBackend + Send + Sync>
+    }
+
+    #[must_use]
+    pub fn fc_worker_registry(&self) -> &FcProjWorkerRegistry {
+        &self.fc_workers
     }
 
     #[must_use]
@@ -102,7 +135,7 @@ impl PoolClients {
         Some(&self.fc_client)
     }
 
-    /// Graceful shutdown: DELETE every FC sandbox this gateway owns.
+    /// Graceful shutdown: project workers survive on e2b; kill only non-persisted leases.
     pub async fn shutdown_fc_sandboxes(&self) {
         let cluster_id = std::env::var("CLAW_CLUSTER_ID")
             .ok()
@@ -112,7 +145,8 @@ impl PoolClients {
 
         self.fc_interactive.shutdown_all().await;
 
-        let leased = self.fc_client.kill_all_leased_sandboxes().await;
+        let skip = self.fc_workers.all_persisted_sandbox_ids().await;
+        let leased = self.fc_client.kill_all_leased_sandboxes_except(&skip).await;
         let orphans = self
             .fc_client
             .kill_cluster_singleton_orphans(&cluster_id)
@@ -121,9 +155,10 @@ impl PoolClients {
         tracing::info!(
             target: "claw_fc_sandbox",
             cluster_id = %cluster_id,
-            leased_killed = leased,
+            persisted_workers = skip.len(),
+            ephemeral_killed = leased,
             orphan_singletons_killed = orphans,
-            "shutdown_fc_sandboxes complete"
+            "shutdown_fc_sandboxes complete (project workers left running)"
         );
     }
 
@@ -242,6 +277,12 @@ impl PoolClients {
 
     pub async fn bind_session_db(&self, db: Arc<GatewaySessionDb>) {
         self.fc_pool.bind_session_db(Arc::clone(&db)).await;
-        self.fc_interactive.bind_session_db(Arc::clone(&db)).await;
+        self.fc_workers.bind_session_db(Arc::clone(&db)).await;
+        self.fc_interactive.bind_session_db(db).await;
+    }
+
+    /// Startup reconcile: ensure every project's worker exists on e2b and matches template.
+    pub async fn reconcile_project_workers_on_startup(&self) -> Result<(), String> {
+        self.fc_workers.reconcile_all_on_startup().await
     }
 }

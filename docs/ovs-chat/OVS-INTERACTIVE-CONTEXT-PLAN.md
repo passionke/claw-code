@@ -2,7 +2,7 @@
 
 Author: kejiqing
 
-Status: **计划（未实施）** — 方案对齐后再动代码。
+Status: **已实施（B1 agent/ws）** — 2026-06-29。ttyd 人工终端仍 legacy；solve 路径未改。
 
 相关：
 
@@ -42,7 +42,20 @@ OVS 扩展 runAgentPrompt
 
 `record_session_id` 当前只用于 `gateway_turns` 记账 + `gateway-record-session-id`（Tap header），**未绑定续聊 jsonl**。
 
-`PLAN.md` 写「共用 `ovs-{projId}` terminal、共享 REPL 上下文」— **设计与实现不一致**（待本计划修复）。
+`PLAN.md` 写「共用 `ovs-{projId}` terminal、共享 REPL 上下文」— **已与实现对齐修正**：worker 共享，**上下文按 record jsonl 隔离**。
+
+### 1.4 跨 session 混入 prior messages（2026-06-29，Admin / fc-cloud 线索）
+
+| 证据 | 内容 |
+|------|------|
+| 用户可见 prompt | `Determine the language…` 含 **Prior turn 1–3**（`4`、`2`、`今天营业额多少`），Current turn 为 `are you ok?` |
+| turn 元数据 | `pool fc-cloud`、`worker fc:sbx_*`（solve 池，非 `fc-interactive`） |
+| 代码 | `deploy/fc-sandbox/fc_exec.py` 将 inline `session_jsonl` 写到 **固定** `/claw_host_root/.claw/gateway-solve-session.jsonl`；新 session 无 PG 消息时不覆盖，**残留上一 session 文件** |
+| 语言推理 | `gateway-solve-turn/src/turn_language.rs` `collect_prior_user_prompts` 读该固定路径 |
+
+**OVS B1 修复范围：** agent/ws 使用 per-record `interactive-session.jsonl`，不经过上述 solve 固定路径。
+
+**Solve 残留问题（未在本变更修改）：** fc-cloud NAS 下应用 per-session 路径或每轮清空/覆盖 `gateway-solve-session.jsonl` — 需单独变更 `fc_exec.py` / solve materialize。
 
 ---
 
@@ -179,35 +192,32 @@ NAS:    proj_{N}/home/.claw/ovs-chat/{segment}/interactive-session.jsonl
 - [x] 问题证据、分界原则、B1 流程、路径、范围
 - [ ] 评审通过后更新 `OVS-INTERACTIVE-SESSION-ID.md`、`PLAN.md` 轮次语义
 
-### Phase 1 — 脚本契约（gateway-solve-turn 或 http-gateway-rs）
+### Phase 1 — 脚本契约（gateway-solve-turn）
 
-- [ ] `ovs_interactive_session_jsonl_guest(segment) -> Path` 常量
-- [ ] `build_ensure_ovs_interactive_session_script(segment)` — mkdir + bootstrap meta
-- [ ] `build_ovs_interactive_prompt_script(segment, prompt_b64)` — env、`--resume`、`-p`
-- [ ] 单元测试：脚本含路径、base64 prompt、无 shell 注入
+- [x] `ovs_interactive_jsonl_guest` / `ovs_interactive_jsonl_host`
+- [x] `build_ensure_ovs_interactive_session_script`
+- [x] `build_ovs_interactive_prompt_script` + `claw gateway-interactive-once`
+- [x] 单元测试
 
 ### Phase 2 — `session_agent_api.rs` 重构
 
-- [ ] 抽出 `run_interactive_prompt_exec(...)`：CDP 解析复用现有 `extract_cdp_frames`
-- [ ] FC：`FcSandboxClient` 流式 exec（stdout line callback，对齐 solve live）
-- [ ] Podman：`guest_exec_sh` 或 `docker_cli::runtime_exec_with_live_streams` 同一脚本
-- [ ] per-`record_session_id` 运行中登记 + 409；WS drop → cancel
-- [ ] 新增 `import_interactive_turn_to_cc_messages`（NAS 读 jsonl → `turn_message_groups` → `import_turn_messages_to_db`）
-- [ ] 移除/绕过 agent 路径上的 ttyd WS
+- [x] FC exec 流式 CDP（`exec_shell_script_streaming`）
+- [x] per-`record_session_id` 409 锁
+- [x] turn 后 `import_turn_messages_to_db`
+- [x] agent 路径绕过 ttyd WS
 
 ### Phase 3 — 扩展与 E2E
 
-- [ ] `extension.js`：去掉 `spawn`；保留 prompt + cancel
-- [ ] `verify-ovs-claw-e2e.sh`：两轮同 `chatSessionId`，第二轮断言 report 含第一轮关键词
-- [ ] 文档：排障「jsonl 路径」「每轮是否同一文件」
+- [x] `extension.js`：去掉 `spawn`
+- [x] `verify-ovs-claw-e2e.sh` 更新
+- [x] `verify-ovs-claw-context-isolation.sh` 路径隔离
+- [x] 文档更新
 
 ### Phase 4 — 验收与回归
 
-- [ ] FC 环境：围棋 session 多轮不复读「你要什么计划」
-- [ ] NAS：`ls proj_N/home/.claw/ovs-chat/{segment}/` 仅一个 `interactive-session.jsonl`，行数随轮次增长
-- [ ] Admin：`gateway_turns` 仍正常；Tap `?session=record_session_id` 仍有条目
-- [ ] Solve E2E / `cc_messages` 续聊回归：**无 diff**（未改 solve 路径）
-- [ ] Podman 本地：`CLAW_INTERACTIVE_BACKEND=podman` 两轮续聊冒烟
+- [ ] FC 环境：两轮同 `chatSessionId` 续聊（需在线 gateway + worker）
+- [ ] 两 panel 不同 `record_session_id` 不串 prior messages
+- [ ] Solve E2E 无 diff（未改 solve 路径）
 
 ---
 

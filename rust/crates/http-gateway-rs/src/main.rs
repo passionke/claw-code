@@ -132,6 +132,8 @@ pub(crate) struct AppState {
     claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
     /// Active interactive sessions for OVS `agent/ws` (internal ttyd bridge). Author: kejiqing
     terminal_registry: session_terminal_api::TerminalSessionRegistry,
+    /// NAS layout + file writes via e2b claw-nas-api singleton (when `CLAW_FC_NAS_API` enabled).
+    nas_api: Option<Arc<pool::FcNasApiSingleton>>,
 }
 
 impl AppState {
@@ -1266,11 +1268,22 @@ async fn main() {
             );
         }
     }
+    // nas-api is deployed out-of-band (./deploy/stack/gateway.sh nas-api-up) and its
+    // endpoint lives in PG (settings_json.fcNasApi). The gateway is a pure consumer:
+    // construct the HTTP client here; bind the DB after session_db opens (below).
+    let nas_api = if fc_client.is_some() && pool::FcNasApiSingleton::enabled_from_env() {
+        Some(Arc::new(pool::FcNasApiSingleton::new()))
+    } else {
+        None
+    };
+    let nas_host = pool::nas_host_root(&work_root, pool_rpc_host_work_root.as_deref());
+    let nas_layout = pool::NasLayoutBackend::new(nas_api.clone(), nas_host);
     let pool_clients = pool::PoolClients::from_env(
         Arc::clone(&live_report_hub),
         work_root.clone(),
         fc_client.clone(),
         pool_rpc_host_work_root.clone(),
+        nas_layout,
     );
     let co_located_pool_id = Some(pool_clients.pool_id().to_string());
     tracing::info!(
@@ -1449,6 +1462,16 @@ async fn main() {
     }
     let session_db = Arc::new(session_db);
     pool_clients.bind_session_db(Arc::clone(&session_db)).await;
+    if let Some(ref n) = nas_api {
+        n.bind_session_db(Arc::clone(&session_db)).await;
+    }
+    if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
+        tracing::warn!(
+            target: "claw_fc_proj_worker",
+            error = %e,
+            "startup project worker reconcile failed (best-effort)"
+        );
+    }
     info!(
         target: "claw_gateway_orchestration",
         component = "startup",
@@ -1470,6 +1493,7 @@ async fn main() {
         llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
         terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
+        nas_api,
     };
 
     run_startup_project_config_apply(&state).await;
@@ -3777,7 +3801,7 @@ async fn ovs_workspace_handler(
     session_ovs_api::get_ovs_workspace(
         state.ovs_api_ctx(),
         &state.session_db,
-        state.pool_clients.fc_warm_pool(),
+        Some(state.pool_clients.fc_worker_registry()),
         proj_id,
     )
     .await

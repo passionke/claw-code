@@ -274,7 +274,7 @@ claw_podman_export_pool_workspace() {
   # Host directory for pool daemon worker `-v` binds (local fallback when compose uses NFS volume). kejiqing
   export CLAW_POOL_WORK_ROOT_BIND_SRC="${ws}"
   if claw_compose_nas_volume_enabled; then
-    echo "note: pool daemon uses host ${ws} for solve workers; Gateway/OVS use NFS compose volume" >&2
+    echo "note: FC/E2B components use host ${ws} as the NAS bind source" >&2
   fi
   # Merged last in podman-compose.yml. MUST be a path that exists inside the gateway container: the gateway
   # runs Linux and calls canonicalize() before podman run. A macOS /Users/... path breaks startup with

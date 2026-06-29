@@ -1,26 +1,21 @@
-//! FC cloud sandbox interactive backend (proj-bound warm pool). Author: kejiqing
+//! FC cloud sandbox interactive backend (proj-bound worker registry). Author: kejiqing
 
 use std::sync::Arc;
 
 use claw_fc_sandbox_client::FcSandboxClient;
-use tracing::warn;
 
-use super::fc_warm_pool::FcProjWarmPool;
 use super::{
     InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend, InteractiveSessionSpec,
     TtydConnectTarget,
 };
-use crate::pool::fc_nas_layout::{
-    allocate_worker_id, ensure_fc_proj_nas_roots, ensure_worker_root_on_nas, fc_nas_layout_active,
-    link_session_to_worker, nas_host_root, unlink_session_symlink,
-};
+use crate::pool::fc_proj_worker_registry::FcProjWorkerRegistry;
+use crate::pool::NasLayoutBackend;
 
 pub struct FcInteractiveBackend {
     client: Arc<FcSandboxClient>,
     pool_id: String,
-    nas_root: std::path::PathBuf,
-    warm: Arc<FcProjWarmPool>,
-    runtime_bin: String,
+    nas_layout: NasLayoutBackend,
+    workers: Arc<FcProjWorkerRegistry>,
 }
 
 impl FcInteractiveBackend {
@@ -28,53 +23,38 @@ impl FcInteractiveBackend {
     pub fn new(
         client: Arc<FcSandboxClient>,
         pool_id: String,
-        work_root: std::path::PathBuf,
-        pool_rpc_host_work_root: Option<std::path::PathBuf>,
+        nas_layout: NasLayoutBackend,
+        workers: Arc<FcProjWorkerRegistry>,
     ) -> Self {
-        let nas_root = nas_host_root(&work_root, pool_rpc_host_work_root.as_deref());
-        let warm = Arc::new(FcProjWarmPool::from_env(
-            Arc::clone(&client),
-            nas_root.clone(),
-        ));
-        let runtime_bin =
-            std::env::var("CLAW_CONTAINER_RUNTIME").unwrap_or_else(|_| "podman".into());
         Self {
             client,
             pool_id,
-            nas_root,
-            warm,
-            runtime_bin,
+            nas_layout,
+            workers,
         }
     }
 
-    pub async fn bind_session_db(&self, db: Arc<crate::session_db::GatewaySessionDb>) {
-        self.warm.bind_session_db(db).await;
+    pub async fn bind_session_db(&self, _db: Arc<crate::session_db::GatewaySessionDb>) {
+        // Bound via PoolClients::bind_session_db → fc_workers.
     }
 
     #[must_use]
-    pub fn warm_pool(&self) -> &FcProjWarmPool {
-        &self.warm
+    pub fn worker_registry(&self) -> &FcProjWorkerRegistry {
+        &self.workers
     }
 
-    async fn link_session(
+    async fn ensure_session(
         &self,
         proj_id: i64,
         session_segment: &str,
         worker_id: &str,
     ) -> Result<(), String> {
-        if !fc_nas_layout_active(&self.nas_root) {
-            return Ok(());
-        }
-        ensure_worker_root_on_nas(&self.runtime_bin, &self.nas_root, proj_id, worker_id).await?;
-        link_session_to_worker(&self.nas_root, proj_id, session_segment, worker_id).await?;
-        Ok(())
-    }
-
-    async fn unlink_session(&self, proj_id: i64, session_segment: &str) -> Result<(), String> {
-        if !fc_nas_layout_active(&self.nas_root) {
-            return Ok(());
-        }
-        unlink_session_symlink(&self.nas_root, proj_id, session_segment).await
+        self.nas_layout
+            .ensure_worker_root(proj_id, worker_id)
+            .await?;
+        self.nas_layout
+            .ensure_session_context(proj_id, session_segment, worker_id)
+            .await
     }
 
     fn ttyd_target(&self, handle: &claw_fc_sandbox_client::FcSandboxHandle) -> TtydConnectTarget {
@@ -107,69 +87,9 @@ impl FcInteractiveBackend {
         parts.join("\n")
     }
 
-    /// Cold path when warm pool is exhausted (one-shot sandbox; killed on stop).
-    async fn start_session_cold(
-        &self,
-        spec: &InteractiveSessionSpec,
-    ) -> Result<InteractiveLease, String> {
-        warn!(
-            target: "claw_fc_warm_pool",
-            proj_id = spec.proj_id,
-            session_id = %spec.session_id,
-            "warm pool unavailable; cold create"
-        );
-        let worker_id = allocate_worker_id();
-        if fc_nas_layout_active(&self.nas_root) {
-            ensure_fc_proj_nas_roots(&self.nas_root, spec.proj_id).await?;
-            ensure_worker_root_on_nas(&self.runtime_bin, &self.nas_root, spec.proj_id, &worker_id)
-                .await?;
-        }
-        let handle = self
-            .client
-            .create_sandbox(
-                &spec.session_id,
-                &spec.session_segment,
-                spec.proj_id,
-                true,
-                &worker_id,
-            )
-            .await?;
-        self.link_session(spec.proj_id, &spec.session_segment, &worker_id)
-            .await?;
-        let mut script = String::from("set -e\n");
-        if let Some(ref bake) = spec.fc_proj_bake_script {
-            script.push_str(bake);
-            script.push('\n');
-        }
-        if let Some(ref attach) = spec.fc_session_attach_script {
-            script.push_str(attach);
-            script.push('\n');
-        }
-        script.push_str(&spec.start_ttyd_script);
-        if let Err(e) = self.client.exec_shell_script(&handle, &script).await {
-            let _ = self
-                .unlink_session(spec.proj_id, &spec.session_segment)
-                .await;
-            let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
-            return Err(format!("fc cold start: {e}"));
-        }
-        Ok(InteractiveLease {
-            backend: InteractiveBackendKind::Fc,
-            slot_index: 0,
-            worker_name: Some(format!("fc:{}", handle.sandbox_id)),
-            pool_id: self.pool_id.clone(),
-            fc_sandbox_id: Some(handle.sandbox_id.clone()),
-            fc_warm_slot: None,
-            fc_warm_proj_id: Some(spec.proj_id),
-            fc_session_segment: Some(spec.session_segment.clone()),
-            fc_worker_id: Some(worker_id),
-            ttyd: self.ttyd_target(&handle),
-        })
-    }
-
-    /// Gateway shutdown: release all warm-pool sandboxes.
+    /// Gateway shutdown: workers survive on e2b (registry clears in-memory state only).
     pub async fn shutdown_all(&self) {
-        self.warm.shutdown_all().await;
+        self.workers.shutdown_all().await;
     }
 }
 
@@ -194,73 +114,43 @@ impl InteractiveSandboxBackend for FcInteractiveBackend {
         spec: InteractiveSessionSpec,
     ) -> Result<InteractiveLease, String> {
         let attach_script = self.session_attach_script(&spec);
-        match self.warm.acquire(spec.proj_id).await {
-            Ok((handle, slot_index, worker_id)) => {
-                self.client.touch_sandbox_lease(&handle.sandbox_id).await?;
-                if let Err(e) = self
-                    .link_session(spec.proj_id, &spec.session_segment, &worker_id)
-                    .await
-                {
-                    let _ = self.warm.release(slot_index, &spec.session_segment).await;
-                    return Err(format!("fc warm link session: {e}"));
-                }
-                if let Err(e) = self.client.exec_shell_script(&handle, &attach_script).await {
-                    let _ = self
-                        .unlink_session(spec.proj_id, &spec.session_segment)
-                        .await;
-                    let _ = self.warm.release(slot_index, &spec.session_segment).await;
-                    return Err(format!("fc warm attach session: {e}"));
-                }
-                Ok(InteractiveLease {
-                    backend: InteractiveBackendKind::Fc,
-                    slot_index,
-                    worker_name: Some(format!("fc:{}", handle.sandbox_id)),
-                    pool_id: self.pool_id.clone(),
-                    fc_sandbox_id: Some(handle.sandbox_id.clone()),
-                    fc_warm_slot: Some(slot_index),
-                    fc_warm_proj_id: Some(spec.proj_id),
-                    fc_session_segment: Some(spec.session_segment.clone()),
-                    fc_worker_id: Some(worker_id),
-                    ttyd: self.ttyd_target(&handle),
-                })
-            }
-            Err(e) => {
-                warn!(
-                    target: "claw_fc_warm_pool",
-                    proj_id = spec.proj_id,
-                    error = %e,
-                    "acquire failed; trying cold start"
-                );
-                self.start_session_cold(&spec).await
-            }
+        let (handle, worker_id) = self.workers.acquire(spec.proj_id).await?;
+        if let Err(e) = self
+            .ensure_session(spec.proj_id, &spec.session_segment, &worker_id)
+            .await
+        {
+            self.workers.release(spec.proj_id).await;
+            return Err(format!("fc ensure session: {e}"));
         }
+        if let Err(e) = self.client.exec_shell_script(&handle, &attach_script).await {
+            self.workers.release(spec.proj_id).await;
+            return Err(format!("fc attach session: {e}"));
+        }
+        Ok(InteractiveLease {
+            backend: InteractiveBackendKind::Fc,
+            slot_index: spec.proj_id as usize,
+            worker_name: Some(format!("fc:{}", handle.sandbox_id)),
+            pool_id: self.pool_id.clone(),
+            fc_sandbox_id: Some(handle.sandbox_id.clone()),
+            fc_warm_slot: Some(spec.proj_id as usize),
+            fc_warm_proj_id: Some(spec.proj_id),
+            fc_session_segment: Some(spec.session_segment.clone()),
+            fc_worker_id: Some(worker_id),
+            ttyd: self.ttyd_target(&handle),
+        })
     }
 
     async fn stop_session(&self, lease: &InteractiveLease) -> Result<(), String> {
         if lease.backend != InteractiveBackendKind::Fc {
             return Err("fc stop called on non-fc lease".into());
         }
-        if let Some(slot_index) = lease.fc_warm_slot {
-            let segment = lease
-                .fc_session_segment
-                .as_deref()
-                .ok_or_else(|| "fc warm release: missing session segment".to_string())?;
-            let result = self.warm.release(slot_index, segment).await;
-            if let Some(proj_id) = lease.fc_warm_proj_id {
-                FcProjWarmPool::schedule_ensure_warm(&self.warm, proj_id);
-            }
-            return result;
-        }
         if let (Some(proj_id), Some(segment)) =
             (lease.fc_warm_proj_id, lease.fc_session_segment.as_deref())
         {
-            let _ = self.unlink_session(proj_id, segment).await;
+            let _ = segment;
+            self.workers.release(proj_id).await;
         }
-        let sandbox_id = lease
-            .fc_sandbox_id
-            .as_deref()
-            .ok_or_else(|| "fc lease missing sandbox_id".to_string())?;
-        self.client.kill_sandbox(sandbox_id).await
+        Ok(())
     }
 }
 

@@ -9,15 +9,15 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Renew sandbox TTL when local estimate of remaining time falls below this (e2b min is 5m).
 pub const SANDBOX_LEASE_RENEW_LEAD_SECS: u64 = 300;
 
 use crate::config::FcSandboxConfig;
 use crate::e2b_platform::{fetch_e2b_platform_nas, E2bNasPlatform};
-use crate::nas_paths::{self, ovs_root_mounts, warm_worker_mounts, worker_mounts};
-use crate::types::{CreateSandboxResponse, FcExecOutcome, FcSandboxHandle};
+use crate::nas_paths::{self, warm_worker_mounts, worker_mounts, NasMountPoint};
+use crate::types::{CreateSandboxResponse, FcExecOutcome, FcSandboxHandle, GatewaySolveInputs};
 
 enum FcExecHelperIngest {
     More,
@@ -288,7 +288,7 @@ impl FcSandboxClient {
         &self,
         handle: FcSandboxHandle,
         nas_configured: bool,
-        mount_points: &[(String, String)],
+        mount_points: &[NasMountPoint],
     ) -> Result<FcSandboxHandle, String> {
         if nas_configured {
             if let Err(e) = self.assert_guest_nas_mounts(&handle, mount_points).await {
@@ -302,11 +302,11 @@ impl FcSandboxClient {
     async fn assert_guest_nas_mounts(
         &self,
         handle: &FcSandboxHandle,
-        mount_points: &[(String, String)],
+        mount_points: &[NasMountPoint],
     ) -> Result<(), String> {
         let dirs: Vec<&str> = mount_points
             .iter()
-            .map(|(_, mount_dir)| mount_dir.as_str())
+            .map(|m| m.mount_dir.as_str())
             .collect();
         if dirs.is_empty() {
             return Ok(());
@@ -324,6 +324,7 @@ impl FcSandboxClient {
     /// Create a sandbox with session affinity metadata (`sessionId` key).
     pub async fn create_sandbox(
         &self,
+        cluster_id: &str,
         session_id: &str,
         session_segment: &str,
         proj_id: i64,
@@ -337,7 +338,7 @@ impl FcSandboxClient {
         metadata.insert("workerId".to_string(), worker_id.to_string());
         metadata.insert("projId".to_string(), proj_id.to_string());
 
-        let mount_points = worker_mounts(proj_id, worker_id, ovs_mode);
+        let mount_points = worker_mounts(cluster_id, proj_id, worker_id, ovs_mode);
         let mut body = json!({
             "templateID": self.config.template,
             "timeout": self.config.sandbox_timeout_secs,
@@ -395,6 +396,7 @@ impl FcSandboxClient {
     /// Create a project-bound warm worker (`metadata.clawRole=warm-proj`).
     pub async fn create_warm_proj_sandbox(
         &self,
+        cluster_id: &str,
         proj_id: i64,
         worker_id: &str,
     ) -> Result<FcSandboxHandle, String> {
@@ -406,7 +408,7 @@ impl FcSandboxClient {
         metadata.insert("sessionId".to_string(), warm_session_id);
         metadata.insert("clawRole".to_string(), "warm-proj".to_string());
 
-        let mount_points = warm_worker_mounts(proj_id, worker_id);
+        let mount_points = warm_worker_mounts(cluster_id, proj_id, worker_id);
         let mut body = json!({
             "templateID": self.config.template,
             "timeout": self.config.sandbox_timeout_secs,
@@ -534,6 +536,150 @@ impl FcSandboxClient {
         Ok(())
     }
 
+    /// True when e2b still has this sandbox (GET /sandboxes/{id} → 2xx).
+    pub async fn sandbox_running(&self, sandbox_id: &str) -> bool {
+        let url = format!("{}/sandboxes/{}", self.config.api_url, sandbox_id);
+        let resp = match self
+            .http
+            .get(&url)
+            .headers(self.auth_headers().unwrap_or_default())
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(_) => return false,
+        };
+        if !resp.status().is_success() {
+            return false;
+        }
+        // A killed/expired sandbox still answers GET with HTTP 200 and `state:"killed"`.
+        // Only an explicit `state:"running"` counts as alive, so the registry recreates
+        // dead workers instead of handing out a stale handle. Author: kejiqing
+        match resp.json::<Value>().await {
+            Ok(body) => {
+                body.get("state").and_then(Value::as_str).unwrap_or("") == "running"
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Renew sandbox TTL to an explicit duration (project workers: 10 minutes).
+    pub async fn renew_sandbox_ttl_secs(
+        &self,
+        sandbox_id: &str,
+        timeout_secs: u64,
+    ) -> Result<(), String> {
+        self.set_sandbox_timeout(sandbox_id, timeout_secs).await?;
+        let now = Instant::now();
+        self.lease_expires
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                sandbox_id.to_string(),
+                now + Duration::from_secs(timeout_secs),
+            );
+        debug!(
+            target: "claw_fc_sandbox",
+            sandbox_id,
+            timeout_secs,
+            "sandbox TTL renewed (explicit)"
+        );
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn handle_to_json(handle: &FcSandboxHandle) -> serde_json::Value {
+        json!({
+            "sandboxId": handle.sandbox_id,
+            "sandboxDomain": handle.sandbox_domain,
+            "envdAccessToken": handle.envd_access_token,
+            "trafficAccessToken": handle.traffic_access_token,
+            "ttydPublicHost": handle.ttyd_public_host,
+            "ttydUseTls": handle.ttyd_use_tls,
+        })
+    }
+
+    pub fn handle_from_json(value: &serde_json::Value) -> Result<FcSandboxHandle, String> {
+        let sandbox_id = value
+            .get("sandboxId")
+            .or_else(|| value.get("sandbox_id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "handle_json missing sandboxId".to_string())?
+            .to_string();
+        let sandbox_domain = value
+            .get("sandboxDomain")
+            .or_else(|| value.get("sandbox_domain"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let envd_access_token = value
+            .get("envdAccessToken")
+            .or_else(|| value.get("envd_access_token"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let traffic_access_token = value
+            .get("trafficAccessToken")
+            .or_else(|| value.get("traffic_access_token"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let ttyd_public_host = value
+            .get("ttydPublicHost")
+            .or_else(|| value.get("ttyd_public_host"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let ttyd_use_tls = value
+            .get("ttydUseTls")
+            .or_else(|| value.get("ttyd_use_tls"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(!sandbox_domain.contains("10.8.0."));
+        Ok(FcSandboxHandle {
+            sandbox_id,
+            sandbox_domain,
+            envd_access_token,
+            traffic_access_token,
+            ttyd_public_host,
+            ttyd_use_tls,
+        })
+    }
+
+    /// Gateway shutdown: DELETE leased sandboxes except persisted project workers.
+    pub async fn kill_all_leased_sandboxes_except(
+        &self,
+        skip_sandbox_ids: &[String],
+    ) -> usize {
+        let skip: std::collections::HashSet<&str> =
+            skip_sandbox_ids.iter().map(String::as_str).collect();
+        let ids: Vec<String> = self
+            .lease_expires
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .filter(|id| !skip.contains(id.as_str()))
+            .cloned()
+            .collect();
+        let mut killed = 0usize;
+        for sid in ids {
+            match self.kill_sandbox(&sid).await {
+                Ok(()) => killed += 1,
+                Err(e) => warn!(
+                    target: "claw_fc_sandbox",
+                    sandbox_id = %sid,
+                    error = %e,
+                    "shutdown kill leased sandbox failed"
+                ),
+            }
+        }
+        killed
+    }
+
+    /// Gateway shutdown: DELETE every sandbox still in the lease registry (legacy).
+    pub async fn kill_all_leased_sandboxes(&self) -> usize {
+        self.kill_all_leased_sandboxes_except(&[]).await
+    }
+
     /// Kill a sandbox (`DELETE /sandboxes/{id}`).
     pub async fn kill_sandbox(&self, sandbox_id: &str) -> Result<(), String> {
         let url = format!("{}/sandboxes/{}", self.config.api_url, sandbox_id);
@@ -553,30 +699,6 @@ impl FcSandboxClient {
         Err(format!("fc kill sandbox HTTP {status}: {text}"))
     }
 
-    /// Gateway shutdown: DELETE every sandbox still in the lease registry.
-    pub async fn kill_all_leased_sandboxes(&self) -> usize {
-        let ids: Vec<String> = self
-            .lease_expires
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .keys()
-            .cloned()
-            .collect();
-        let mut killed = 0usize;
-        for sid in ids {
-            match self.kill_sandbox(&sid).await {
-                Ok(()) => killed += 1,
-                Err(e) => warn!(
-                    target: "claw_fc_sandbox",
-                    sandbox_id = %sid,
-                    error = %e,
-                    "shutdown kill leased sandbox failed"
-                ),
-            }
-        }
-        killed
-    }
-
     /// Gateway shutdown: persistent singletons (observe/ovs) are Python-managed — no-op here.
     pub async fn kill_cluster_singleton_orphans(&self, _cluster_id: &str) -> Result<usize, String> {
         Ok(0)
@@ -586,17 +708,20 @@ impl FcSandboxClient {
     pub async fn exec_gateway_solve_once(
         &self,
         sandbox_id: &str,
-        task_rel_under_root: &str,
+        _task_rel_under_root: &str,
         claw_bin: &str,
         env: BTreeMap<String, String>,
+        inputs: GatewaySolveInputs<'_>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<FcExecOutcome, String> {
         self.touch_sandbox_lease(sandbox_id).await?;
-        let task_file = format!(
-            "{}/{}",
-            nas_paths::GUEST_CLAW_HOST_ROOT,
-            task_rel_under_root
-        );
+        let session_root = if inputs.session_segment.is_empty() {
+            nas_paths::GUEST_CLAW_HOST_ROOT.to_string()
+        } else {
+            nas_paths::guest_session_root(inputs.session_segment)
+        };
+        let task_file = format!("{session_root}/gateway-solve-task.json");
+        // Per-turn inputs travel inline; the worker lands them on its session mount. Author: kejiqing
         let payload = json!({
             "op": "exec_solve",
             "api_key": self.config.api_key,
@@ -606,6 +731,10 @@ impl FcSandboxClient {
             "sandbox_id": sandbox_id,
             "claw_bin": claw_bin,
             "task_file": task_file,
+            "task_json": inputs.task_json,
+            "session_jsonl": inputs.session_jsonl,
+            "session_segment": inputs.session_segment,
+            "session_root": session_root,
             "env": env,
             "timeout": 600,
             "nas_tools_rel": self.config.nas_tools_rel,
@@ -623,6 +752,28 @@ impl FcSandboxClient {
         self.exec_shell_script_stdout(handle, script)
             .await
             .map(|_| ())
+    }
+
+    /// Like [`Self::exec_shell_script`] but streams guest stdout lines to `on_stdout_line`.
+    pub async fn exec_shell_script_streaming(
+        &self,
+        handle: &FcSandboxHandle,
+        script: &str,
+        on_stdout_line: Arc<dyn Fn(String) + Send + Sync>,
+    ) -> Result<FcExecOutcome, String> {
+        self.touch_sandbox_lease(&handle.sandbox_id).await?;
+        let payload = json!({
+            "op": "run_sh",
+            "api_key": self.config.api_key,
+            "domain": handle.sandbox_domain,
+            "api_url": self.config.api_url,
+            "sandbox_url": self.config.sandbox_url,
+            "sandbox_id": handle.sandbox_id,
+            "script": script,
+            "nas_tools_rel": self.config.nas_tools_rel,
+            "self_hosted": self.config.is_self_hosted(),
+        });
+        Self::run_exec_helper(&self.config.exec_helper, &payload, Some(on_stdout_line)).await
     }
 
     /// Like [`Self::exec_shell_script`] but returns captured stdout (for small in-guest reads).
@@ -755,7 +906,7 @@ impl FcSandboxClient {
         Err("fc exec helper: missing terminal outcome envelope".into())
     }
 
-    fn nas_config_body(&self, mount_points: &[(String, String)]) -> Option<Value> {
+    fn nas_config_body(&self, mount_points: &[NasMountPoint]) -> Option<Value> {
         if mount_points.is_empty() {
             return None;
         }
@@ -767,12 +918,15 @@ impl FcSandboxClient {
         let p = platform.filter(|p| p.ready && p.uses_host_bind_inject())?;
         let points: Vec<Value> = mount_points
             .iter()
-            .map(|(rel, dir)| {
-                let mut pt = json!({ "mountDir": dir });
-                if rel.is_empty() {
+            .map(|m| {
+                let mut pt = json!({ "mountDir": m.mount_dir });
+                if m.rel_path.is_empty() {
                     pt["relPath"] = json!("");
                 } else {
-                    pt["relPath"] = json!(rel);
+                    pt["relPath"] = json!(m.rel_path);
+                }
+                if m.read_only {
+                    pt["readOnly"] = json!(true);
                 }
                 pt
             })
@@ -801,7 +955,7 @@ impl FcSandboxClient {
         platform.host_mount_root.clone()
     }
 
-    fn require_nas_config_body(&self, mount_points: &[(String, String)]) -> Result<Value, String> {
+    fn require_nas_config_body(&self, mount_points: &[NasMountPoint]) -> Result<Value, String> {
         self.nas_config_body(mount_points).ok_or_else(|| {
             "e2b NAS bind not ready: GET /health must report nas.ready, hostMountRoot, sandboxInject=bind"
                 .into()

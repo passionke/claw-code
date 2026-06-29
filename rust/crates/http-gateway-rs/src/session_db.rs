@@ -121,6 +121,17 @@ pub struct ProjectConfigRow {
     pub worker_isolation_json: Value,
 }
 
+/// Gateway-managed FC worker sandbox bound to one project (`project_fc_worker`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct ProjectFcWorkerRow {
+    pub proj_id: i64,
+    pub sandbox_id: String,
+    pub worker_id: String,
+    pub template_id: String,
+    pub handle_json: Value,
+    pub updated_at_ms: i64,
+}
+
 /// Row summary for [`GatewaySessionDb::list_project_config_summaries`]. Author: kejiqing
 #[derive(Debug, Clone)]
 pub struct ProjectConfigSummary {
@@ -952,6 +963,11 @@ impl GatewaySessionDb {
             .await?;
 
         Self::migrate_proj_id_columns(pool).await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/007_project_fc_worker.sql"),
+        )
+        .await?;
 
         Ok(())
     }
@@ -1608,6 +1624,74 @@ impl GatewaySessionDb {
         Ok(row
             .map(|j| j.0)
             .unwrap_or_else(crate::pool::default_worker_isolation_json))
+    }
+
+    /// Persisted FC worker sandbox for a project (gateway-managed lifecycle). Author: kejiqing
+    pub async fn get_project_fc_worker(
+        &self,
+        proj_id: i64,
+    ) -> Result<Option<ProjectFcWorkerRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT proj_id, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
+               FROM project_fc_worker WHERE proj_id = $1",
+        )
+        .bind(proj_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(ProjectFcWorkerRow {
+            proj_id: row.try_get("proj_id")?,
+            sandbox_id: row.try_get("sandbox_id")?,
+            worker_id: row.try_get("worker_id")?,
+            template_id: row.try_get("template_id")?,
+            handle_json: row.try_get::<Json<Value>, _>("handle_json")?.0,
+            updated_at_ms: row.try_get("updated_at_ms")?,
+        }))
+    }
+
+    pub async fn upsert_project_fc_worker(
+        &self,
+        row: &ProjectFcWorkerRow,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO project_fc_worker (
+                 proj_id, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (proj_id) DO UPDATE SET
+                 sandbox_id = EXCLUDED.sandbox_id,
+                 worker_id = EXCLUDED.worker_id,
+                 template_id = EXCLUDED.template_id,
+                 handle_json = EXCLUDED.handle_json,
+                 updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(row.proj_id)
+        .bind(&row.sandbox_id)
+        .bind(&row.worker_id)
+        .bind(&row.template_id)
+        .bind(Json(&row.handle_json))
+        .bind(row.updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_project_fc_worker(&self, proj_id: i64) -> Result<(), SqlxError> {
+        sqlx::query("DELETE FROM project_fc_worker WHERE proj_id = $1")
+            .bind(proj_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_project_fc_worker_sandbox_ids(&self) -> Result<Vec<String>, SqlxError> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT sandbox_id FROM project_fc_worker ORDER BY proj_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     pub async fn upsert_project_config(

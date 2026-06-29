@@ -22,7 +22,7 @@ use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::{
     self, build_fc_session_attach_with_tap, build_proj_bake_script, build_start_ttyd_script,
-    fc_worker_llm_env, interactive_backend_is_fc, proj_work_dir, session_home_under_work_root,
+    fc_worker_llm_env, gateway_proj_work_dir, gateway_session_home, interactive_backend_is_fc,
     terminal_ws_connect_url, InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec,
     PoolClients, TtydConnectTarget,
 };
@@ -294,7 +294,9 @@ pub async fn terminal_inventory(
         });
     }
 
-    let sessions_dir = proj_work_dir(&ctx.work_root, q.proj_id).join("sessions");
+    let sessions_dir = gateway_proj_work_dir(&ctx.work_root, q.proj_id)
+        .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .join("sessions");
     if let Ok(mut rd) = tokio::fs::read_dir(&sessions_dir).await {
         while let Ok(Some(ent)) = rd.next_entry().await {
             let Ok(ft) = ent.file_type().await else {
@@ -480,10 +482,15 @@ pub async fn terminal_start(
 
     let _ = interactive_backend_is_fc();
     let session_segment = crate::session_merge::sessions_directory_segment(session_id);
-    let session_home = session_home_under_work_root(&ctx.work_root, req.proj_id, session_id);
+    let session_home = gateway_session_home(&ctx.work_root, req.proj_id, session_id).map_err(
+        |e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e),
+    )?;
     let nas_root = ctx.pool_clients.nas_host_root();
     if ctx.pool_clients.fc_nas_layout_active() {
-        pool::ensure_fc_proj_nas_roots(&nas_root, req.proj_id)
+        let cluster_id = pool::nas_cluster_id().map_err(|e| {
+            TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e)
+        })?;
+        pool::ensure_fc_proj_nas_roots(&nas_root, &cluster_id, req.proj_id)
             .await
             .map_err(|e| {
                 TerminalApiError::new(
@@ -538,7 +545,9 @@ pub async fn terminal_start(
             })?;
     }
 
-    let proj_dir = proj_work_dir(&ctx.work_root, req.proj_id);
+    let proj_dir = gateway_proj_work_dir(&ctx.work_root, req.proj_id).map_err(|e| {
+        TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e)
+    })?;
 
     ctx.pool_clients
         .assert_proj_worker_isolation_supported(&ctx.session_db, req.proj_id)
@@ -824,7 +833,7 @@ pub async fn materialize_ovs_proj_workspace(
     work_root: &Path,
     proj_id: i64,
 ) -> Result<(), String> {
-    let proj_dir = proj_work_dir(work_root, proj_id);
+    let proj_dir = gateway_proj_work_dir(work_root, proj_id)?;
     materialize_proj_home(session_db, &proj_dir, proj_id).await
 }
 

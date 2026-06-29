@@ -6,7 +6,7 @@ Author: kejiqing
 
 **Invariant（NAS 进 sandbox）：** 仅 **host 直 bind**（`{hostMountRoot}/{relPath}` → guest `mountDir`）。**禁止** rsync / `data/nas-bind` 副本 — 该路径已从 e2bserver 移除（2026-06）。
 
-相关：[`deploy/stack/env.selfhosted-e2b.example`](../deploy/stack/env.selfhosted-e2b.example)、[`claw-fc-sandbox-client/src/nas_paths.rs`](../rust/crates/claw-fc-sandbox-client/src/nas_paths.rs)、[`http-gateway-rs/src/pool/fc_nas_layout.rs`](../rust/crates/http-gateway-rs/src/pool/fc_nas_layout.rs)、[`docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md`](ovs-chat/FC-OVS-SINGLETON-DESIGN.md)。
+相关：[`FC-WORKER-CONTEXT-PLAN.md`](fc-nas/FC-WORKER-CONTEXT-PLAN.md)、[`deploy/stack/env.selfhosted-e2b.example`](../deploy/stack/env.selfhosted-e2b.example)、[`claw-fc-sandbox-client/src/nas_paths.rs`](../rust/crates/claw-fc-sandbox-client/src/nas_paths.rs)、[`http-gateway-rs/src/pool/fc_nas_layout.rs`](../rust/crates/http-gateway-rs/src/pool/fc_nas_layout.rs)、[`docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md`](ovs-chat/FC-OVS-SINGLETON-DESIGN.md)。
 
 ---
 
@@ -15,19 +15,22 @@ Author: kejiqing
 所有 FC 交互模式（OVS singleton、worker warm pool、fc-cloud solve）共享 **同一个 NAS export 树**，用 **相对 export 根的逻辑路径** 描述，与具体机器挂载点无关：
 
 ```text
-<export-root>/                    ← 逻辑根（relPath ""）
-├── proj_{N}/home/                ← 项目 home（PG materialize、OVS folder）
-├── proj_{N}/workers/{workerId}/  ← worker 工作区（e2b bind → /claw_host_root）
-├── proj_{N}/sessions/{segment}/  ← 必须是 symlink → ../workers/{workerId}
-├── .claw-fc-tools/               ← claw / ttyd / claude-tap（FC bootstrap 拷贝源）
-├── tap-traces/                   ← claude-tap traces（可选）
+<export-root>/                              ← 逻辑根（relPath ""）
+├── {clusterId}/                              ← CLAW_CLUSTER_ID（多集群隔离）
+│   └── proj_{N}/
+│       ├── home/                             ← ds_home（管理后台 materialize；worker 只读 bind）
+│       ├── sessions/{sessionId}/             ← 真实目录（OVS + resolve 上下文 SoT）
+│       └── workers/{workerId}/               ← 执行缓存（e2b bind → /claw_host_root）
+├── .claw-fc-tools/                           ← claw / ttyd / claude-tap（FC bootstrap 拷贝源）
+└── tap-traces/                               ← claude-tap traces（可选）
 ```
 
 **Invariant：**
 
-- Gateway **唯一**负责在 NAS 上 `mkdir` / session symlink（`fc_nas_layout`）。
+- Gateway **唯一**负责在 NAS 上 `mkdir` / session 真实目录 / `ds → home` 只读 link（`fc_nas_layout`）。
 - e2b **只**按 `nasConfig` 做 `{hostMountRoot}/{relPath}` → guest `mountDir` bind，**不**在 sandbox 内 `mount.nfs4`。
-- `sessions/{segment}` 在 FC NAS 模式下 **必须是 symlink**；旧版实体目录会在 link 时被 rename 为 `.legacy-*` 再建链。
+- `sessions/{sessionId}` 为**真实目录**；禁止再把 session 目录 symlink 到 worker 目录。
+- `home/` 仅管理后台可写；worker 侧 `/claw_ds` 为只读 bind。
 
 ---
 
@@ -38,9 +41,8 @@ Author: kejiqing
 | 组件 | 跑在哪 | 本机如何看到 NAS | 进程/容器内 work/bind 点 | 谁写盘 |
 |------|--------|------------------|---------------------------|--------|
 | **NAS 文件** | 10.8.0.8 NFS | — | export `10.8.0.8:/`（或 `/mnt/NAS0/nfs-export`） | — |
-| **Gateway** | 本机 Podman 容器 | Mac host: `/Volumes/claw-nas` | 容器: `CLAW_WORK_ROOT` = `/var/lib/claw/workspace`（compose 直 bind NAS） | mkdir `workers/`、symlink `sessions/`、materialize `home/` |
+| **Gateway** | 本机 Podman 容器 | Mac host: `/Volumes/claw-nas` | 容器: `CLAW_WORK_ROOT` = `/var/lib/claw/workspace`（NAS 直 bind） | mkdir `workers/`、真实 `sessions/`、materialize `home/` |
 | **e2b（Mac / Linux）** | 10.8.0.9 等 | `/Volumes/claw-nas` 或 `/mnt/nas0` | FC 沙箱 guest: `/claw_ws` / `/claw_ds` / `/claw_host_root` | 仅直 bind `{hostMountRoot}/{relPath}`；写盘在 guest 内落到 NAS |
-| **OVS compose**（迁移期） | Gateway 同栈 | 同 Gateway | `/home/workspace` | 非 FC 时用 compose volume |
 
 Admin 只读镜像：`GET /v1/gateway/global-settings` → `fcNas`（`nasHostMount`、`nasRootResolved`、`layoutActive`）。**改 NAS 只改 repo 根 `.env`，重启 gateway。**
 
@@ -50,11 +52,12 @@ Admin 只读镜像：`GET /v1/gateway/global-settings` → `fcNas`（`nasHostMou
 
 代码单一来源：`rust/crates/claw-fc-sandbox-client/src/nas_paths.rs`。
 
-| 场景 | relPath（相对 export 根） | guest mountDir |
-|------|---------------------------|----------------|
-| OVS / observe singleton | ``（空 = export 根） | `/claw_ws` |
-| Worker warm / fc-cloud solve | `proj_N/home` | `/claw_ds` |
-| Worker warm / fc-cloud solve | `proj_N/workers/{workerId}` | `/claw_host_root` |
+| 场景 | relPath（相对 export 根） | guest mountDir | 权限 |
+|------|---------------------------|----------------|------|
+| OVS / observe singleton | ``（空 = export 根） | `/claw_ws` | rw |
+| Worker warm / solve / OVS agent | `{clusterId}/proj_N/home` | `/claw_ds` | **ro** |
+| Worker warm / solve / OVS agent | `{clusterId}/proj_N/sessions` | `/claw_sessions` | rw |
+| Worker warm / solve / OVS agent | `{clusterId}/proj_N/workers/{workerId}` | `/claw_host_root` | rw（缓存） |
 
 create sandbox 时 Gateway 发送：
 
@@ -62,8 +65,9 @@ create sandbox 时 Gateway 发送：
 {
   "hostMountRoot": "/Volumes/claw-nas",
   "mountPoints": [
-    { "relPath": "proj_3/workers/wrk_abc", "mountDir": "/claw_host_root" },
-    { "relPath": "proj_3/home", "mountDir": "/claw_ds" }
+    { "relPath": "prod-claw-01/proj_3/workers/wrk_abc", "mountDir": "/claw_host_root" },
+    { "relPath": "prod-claw-01/proj_3/sessions", "mountDir": "/claw_sessions" },
+    { "relPath": "prod-claw-01/proj_3/home", "mountDir": "/claw_ds", "readOnly": true }
   ]
 }
 ```
@@ -149,18 +153,22 @@ Gateway compose NAS bind **不要** `:U`（NFS 不能 chown）：见 `deploy/sta
 
 ```text
 1. Gateway acquire_slot
-      → ensure_worker_root_on_nas(work_root, proj, wrk_x)   # NAS 上 mkdir
-      → link_session_to_worker → sessions/{id} → ../workers/wrk_x
+      → ensure_worker_root_on_nas(work_root, cluster, proj, wrk_x)
+      → ensure_session_root_on_nas(work_root, cluster, proj, session_segment)
 
-2. Gateway POST e2b /sandboxes + nasConfig(relPath=proj_N/workers/wrk_x)
+2. Gateway POST e2b /sandboxes + nasConfig
+      relPath={cluster}/proj_N/home      → /claw_ds (ro)
+      relPath={cluster}/proj_N/sessions  → /claw_sessions
+      relPath={cluster}/proj_N/workers/wrk_x → /claw_host_root
 
 3. e2b host
-      → 解析 {hostMountRoot}/proj_N/workers/wrk_x 存在
-      → podman 直 bind 该路径
-      → FC guest 看到 /claw_host_root（virtiofs）
+      → 解析 {hostMountRoot}/{relPath}
+      → podman 直 bind 这些路径
+      → FC guest 看到 /claw_ds、/claw_sessions、/claw_host_root
 
-4. Gateway materialize / exec solve
-      → 写经 work_root 或 guest bind 落到同一 NAS 文件
+4. Gateway exec solve
+      → inline 写入 /claw_sessions/{segment}/gateway-solve-task.json
+      → inline 写入 /claw_sessions/{segment}/.claw/gateway-solve-session.jsonl
 ```
 
 ---
@@ -204,7 +212,7 @@ CLAW_FC_E2E_CLEANUP=0 ./deploy/stack/lib/verify-fc-ovs-e2e.sh
 | `mirror CLAUDE.md … Operation not permitted` | NFS 上 `fs::copy` 失败 | 应用 `write` 双份，勿 `copy` |
 | `NAS host path not found` | Gateway 未 mkdir | `fcNas.layoutActive`；`ls …/proj_N/workers/` |
 | `podman bind path missing` / `sync-nas-bind` | host 路径不存在，或 podman machine 未 `-v` NAS，或 e2b 未升级 | §5；`verify-e2b-nas-inject.sh` |
-| `Directory not empty` on session link | 旧 session 实体目录 | 已 rename `.legacy-*`；勿在 FC 模式直接写 `sessions/` 目录 |
+| `Directory not empty` on session root | 旧 symlink/异常文件占用 session 路径 | Gateway 会移除旧 symlink 或 rename 旧实体目录为 `.legacy-*` 后创建真实 session root |
 | playground `Name or service not known` | gateway-rs 未运行 | `podman ps claw-gateway-rs` |
 
 详细踩坑记录：[`docs/ovs-chat/FC-OVS-E2E-FAILURES.md`](ovs-chat/FC-OVS-E2E-FAILURES.md)。

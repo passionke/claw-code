@@ -100,12 +100,12 @@ python3 deploy/fc-sandbox/build-claw-ovs-selfhosted.py
 | 变量 | 默认 / 说明 |
 |------|-------------|
 | `CLAW_OVS_UPSTREAM_IMAGE` | `…/openvscode-server:1.109.5-ovs-chat-amd64` |
-| `CLAW_OVS_IMAGE` | 覆盖上游（compose 本地 OVS 同源） |
+| `CLAW_OVS_IMAGE` | 覆盖上游镜像 |
 | `CLAW_FC_OVS_TEMPLATE` | **`claw-ovs`**（e2b 别名） |
 | `CLAW_FC_API_URL` / `CLAW_FC_API_KEY` / `CLAW_FC_DOMAIN` | 自建 e2b API |
 | `CLAW_CONTAINER_RUNTIME` | `podman`（staging 用） |
 
-compose 本地 OVS（非 FC）仍用 `Containerfile.openvscode` + `deploy/stack/gateway.sh build`；**FC 单例**走本文 + `build-claw-ovs-selfhosted.py`，两条路径共用同一上游镜像族。
+FC/E2B OVS 模板走本文 + `build-claw-ovs-selfhosted.py`；项目运行依赖 FC/E2B 组件。
 
 ---
 
