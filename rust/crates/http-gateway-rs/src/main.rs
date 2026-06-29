@@ -2957,7 +2957,22 @@ async fn activate_project_config_revision_row(
         .map_err(|e| session_db_err(&e))?;
     let lock = get_proj_lock(state, proj_id).await;
     let _guard = lock.lock().await;
+    // FC worker reads project config from NAS `{cluster}/proj_N/home` (mounted ro as `/claw_ds`):
+    // write the effective config there via nas-api on activate (the real bug fix). The host
+    // `work_root/proj_N` materialization is kept for now (health / project-list rev sync).
+    // Author: kejiqing
     apply_project_config_for_proj_inner(state, proj_id, true).await?;
+    state
+        .pool_clients
+        .nas_layout()
+        .materialize_proj_workspace(&state.session_db, proj_id)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("materialize project config to NAS failed: {e}"),
+            )
+        })?;
     let applied = project_config_apply::read_applied_content_rev(&proj_work_dir(
         &state.cfg.work_root,
         proj_id,
@@ -5176,8 +5191,14 @@ async fn admin_mcp_http_handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    admin_mcp_http::handle_admin_mcp_post(&state.session_db, &state.cfg.work_root, &headers, body)
-        .await
+    admin_mcp_http::handle_admin_mcp_post(
+        &state.session_db,
+        &state.cfg.work_root,
+        state.pool_clients.nas_layout(),
+        &headers,
+        body,
+    )
+    .await
 }
 
 async fn put_gateway_active_llm_config_handler(

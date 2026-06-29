@@ -47,7 +47,7 @@ Status: **实施中**（2026-06-29）
 | `{clusterId}/proj_N/sessions` | `/claw_sessions` | 读写 |
 | `{clusterId}/proj_N/workers/{workerId}` | `/claw_host_root` | 读写（缓存） |
 
-solve / OVS exec：`cd /claw_sessions/{segment}`，`HOME` 同路径；`CLAW_PROJECT_CONFIG_ROOT=/claw_ds`。
+solve / OVS exec：`cd /claw_sessions/{segment}`，`HOME` 同路径；`CLAW_PROJECT_CONFIG_ROOT=/claw_ds/project_home_def`。
 
 ---
 

@@ -163,7 +163,7 @@ def main() -> None:
                 f"export HOME={session_root}\n"
                 f"export XDG_CONFIG_HOME={session_root}/.config\n"
                 f"export XDG_DATA_HOME={session_root}/.local/share\n"
-                "export CLAW_PROJECT_CONFIG_ROOT=/claw_ds\n"
+                "export CLAW_PROJECT_CONFIG_ROOT=/claw_ds/project_home_def\n"
                 f"{inline}"
                 f"{exports}\n"
                 f"{claw_bin} gateway-solve-once --task-file {task_file}\n"

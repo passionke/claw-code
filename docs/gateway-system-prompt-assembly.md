@@ -59,7 +59,7 @@ Admin「系统提示词」页与 clawTap 看到的 **不含** tool schema；缺 
 
 ## 4. 物化路径（`project_config_apply`）与 pool 分层
 
-**Project / session 分层**（pool v1）：宿主机 `apply_project_config` 物化到 `proj_{id}/`；worker 通过 **`/claw_ds` 只读 bind** 读 project 配置（`CLAW_PROJECT_CONFIG_ROOT=/claw_ds`）。**`materialize_in` 不再**把 skills / rules / CLAUDE / MCP 写入 session tmpfs（`/claw_host_root`）。
+**Project / session 分层**（pool v1）：宿主机 `apply_project_config` 物化到 `proj_{id}/`；worker 通过 **`/claw_ds` 只读 bind** 读 NAS project 配置的稳定版本名（`CLAW_PROJECT_CONFIG_ROOT=/claw_ds/project_home_def`）。**`materialize_in` 不再**把 skills / rules / CLAUDE / MCP 写入 session tmpfs（`/claw_host_root`）。
 
 | 字段 | 宿主机 `proj_{id}/` | Pool guest 读路径 |
 | --- | --- | --- |
