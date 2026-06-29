@@ -1547,7 +1547,7 @@ async fn main() {
         .route("/v1/sessions/{session_id}/turns", get(list_session_turns))
         .route(
             "/v1/sessions/{session_id}/conversation_translate",
-            get(get_conversation_translate).put(put_conversation_translate),
+            get(get_conversation_translate).post(rebuild_conversation_translate),
         )
         .route("/v1/pools", get(list_claw_pools_handler))
         .route("/v1/pools/{pool_id}", delete(delete_claw_pool_handler))
@@ -8440,17 +8440,15 @@ async fn get_conversation_translate(
     .map_err(|e| ApiError::new(e.status, e.message))
 }
 
-async fn put_conversation_translate(
+async fn rebuild_conversation_translate(
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,
     Query(query): Query<ListSessionTurnsQuery>,
-    Json(body): Json<gateway_translate::PutConversationTranslateRequest>,
-) -> Result<Json<gateway_translate::PutConversationTranslateResponse>, ApiError> {
-    gateway_translate::put_conversation_translate_handler(
-        &state.session_db,
-        &session_id,
+) -> Result<Json<gateway_translate::RebuildConversationTranslateResponse>, ApiError> {
+    gateway_translate::rebuild_conversation_translate_handler(
+        state.session_db.clone(),
+        session_id,
         query.proj_id,
-        body,
     )
     .await
     .map_err(|e| ApiError::new(e.status, e.message))

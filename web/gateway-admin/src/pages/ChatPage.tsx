@@ -11,7 +11,6 @@ import { useApp } from "../context/AppContext";
 import { useChatSession } from "../context/ChatSessionContext";
 import { useSessionTurnFeedback } from "../hooks/useSessionTurnFeedback";
 import type { ListSessionTurnsResponse, SolveAsyncResponse } from "../types/chat";
-import type { ConversationTurnInput } from "../utils/collectConversationForTranslate";
 import { buildExtraSession } from "../utils/extraSession";
 import {
   emptyFieldsRecord,
@@ -301,19 +300,7 @@ export default function ChatPage() {
     }
   };
 
-  const threadTurns: ConversationTurnInput[] = thread
-    .filter((item): item is TurnEntry => !isSys(item))
-    .map((item) => ({
-      turnId: item.turnId,
-      sessionId: item.sessionId,
-      taskId: item.taskId,
-      userText: item.userText,
-      viewMode: item.viewMode,
-      historicalReport: item.historicalReport,
-      failureDetail: item.failureDetail,
-    }));
-
-  const canTranslate = Boolean(activeSessionId || threadTurns.length > 0);
+  const canTranslate = Boolean(activeSessionId);
 
   return (
     <div className={styles.chatPage}>
@@ -501,7 +488,6 @@ export default function ChatPage() {
         gatewayBase={gatewayBase}
         projId={projId}
         sessionId={activeSessionId}
-        threadTurns={threadTurns}
       />
     </div>
   );

@@ -202,6 +202,9 @@ pub struct ConversationTranslateSnapshotRow {
     pub markdown: String,
     pub target_language: String,
     pub model_id: Option<String>,
+    /// `translating` | `ready` | `error`. Author: kejiqing
+    pub status: String,
+    pub error_text: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -487,6 +490,8 @@ impl GatewaySessionDb {
                 markdown TEXT NOT NULL,
                 target_language TEXT NOT NULL DEFAULT 'zh-CN',
                 model_id TEXT,
+                status TEXT NOT NULL DEFAULT 'ready',
+                error_text TEXT,
                 created_at_ms BIGINT NOT NULL,
                 updated_at_ms BIGINT NOT NULL,
                 PRIMARY KEY (session_id, ds_id)
@@ -510,6 +515,8 @@ impl GatewaySessionDb {
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS solve_task_json JSONB",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS solve_timing_jsonb JSONB",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS spill_json JSONB",
+            "ALTER TABLE gateway_conversation_translate ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ready'",
+            "ALTER TABLE gateway_conversation_translate ADD COLUMN IF NOT EXISTS error_text TEXT",
         ] {
             sqlx::query(ddl).execute(pool).await?;
         }
@@ -3338,7 +3345,7 @@ impl GatewaySessionDb {
     ) -> Result<Option<ConversationTranslateSnapshotRow>, SqlxError> {
         let row = sqlx::query(
             r"SELECT session_id, proj_id, source_fingerprint, turns_json, markdown,
-                     target_language, model_id, created_at_ms, updated_at_ms
+                     target_language, model_id, status, error_text, created_at_ms, updated_at_ms
               FROM gateway_conversation_translate
               WHERE session_id = $1 AND proj_id = $2",
         )
@@ -3357,12 +3364,53 @@ impl GatewaySessionDb {
             markdown: r.try_get("markdown")?,
             target_language: r.try_get("target_language")?,
             model_id: r.try_get("model_id")?,
+            status: r.try_get("status")?,
+            error_text: r.try_get("error_text")?,
             created_at_ms: r.try_get("created_at_ms")?,
             updated_at_ms: r.try_get("updated_at_ms")?,
         }))
     }
 
-    pub async fn upsert_conversation_translate_snapshot(
+    /// Single-flight claim: flip the row to `translating` only if it is not already
+    /// translating, OR a previous `translating` row has gone stale (older than
+    /// `stale_before_ms`, e.g. the worker died on restart). Returns true when this
+    /// caller acquired the slot. Author: kejiqing
+    pub async fn begin_conversation_translate(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+        source_fingerprint: &str,
+        target_language: &str,
+        now_ms: i64,
+        stale_before_ms: i64,
+    ) -> Result<bool, SqlxError> {
+        let res = sqlx::query(
+            r"INSERT INTO gateway_conversation_translate (
+                session_id, ds_id, proj_id, source_fingerprint, turns_json, markdown,
+                target_language, model_id, status, error_text, created_at_ms, updated_at_ms
+              ) VALUES ($1, $2, $2, $3, '[]'::jsonb, '', $4, NULL, 'translating', NULL, $5, $5)
+              ON CONFLICT (session_id, ds_id) DO UPDATE SET
+                source_fingerprint = EXCLUDED.source_fingerprint,
+                target_language = EXCLUDED.target_language,
+                status = 'translating',
+                error_text = NULL,
+                updated_at_ms = EXCLUDED.updated_at_ms
+              WHERE gateway_conversation_translate.status <> 'translating'
+                 OR gateway_conversation_translate.updated_at_ms < $6",
+        )
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(source_fingerprint)
+        .bind(target_language)
+        .bind(now_ms)
+        .bind(stale_before_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() >= 1)
+    }
+
+    /// Persist a finished translation snapshot (status = `ready`). Author: kejiqing
+    pub async fn complete_conversation_translate(
         &self,
         session_id: &str,
         proj_id: i64,
@@ -3376,14 +3424,16 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO gateway_conversation_translate (
                 session_id, ds_id, proj_id, source_fingerprint, turns_json, markdown,
-                target_language, model_id, created_at_ms, updated_at_ms
-              ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $8)
+                target_language, model_id, status, error_text, created_at_ms, updated_at_ms
+              ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, 'ready', NULL, $8, $8)
               ON CONFLICT (session_id, ds_id) DO UPDATE SET
                 source_fingerprint = EXCLUDED.source_fingerprint,
                 turns_json = EXCLUDED.turns_json,
                 markdown = EXCLUDED.markdown,
                 target_language = EXCLUDED.target_language,
                 model_id = EXCLUDED.model_id,
+                status = 'ready',
+                error_text = NULL,
                 updated_at_ms = EXCLUDED.updated_at_ms",
         )
         .bind(session_id)
@@ -3393,6 +3443,28 @@ impl GatewaySessionDb {
         .bind(markdown)
         .bind(target_language)
         .bind(model_id)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Mark an in-flight translation as failed (status = `error`). Author: kejiqing
+    pub async fn fail_conversation_translate(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+        error_text: &str,
+        now_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"UPDATE gateway_conversation_translate
+              SET status = 'error', error_text = $3, updated_at_ms = $4
+              WHERE session_id = $1 AND proj_id = $2",
+        )
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(error_text)
         .bind(now_ms)
         .execute(&self.pool)
         .await?;
