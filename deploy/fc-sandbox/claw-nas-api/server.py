@@ -59,6 +59,21 @@ def _read_json(handler: BaseHTTPRequestHandler) -> dict:
     return parsed
 
 
+def _atomic_symlink(link_path: Path, link_target: str) -> None:
+    """Create or replace a symlink atomically (tmp link + os.replace). Author: kejiqing"""
+    if link_path.exists() or link_path.is_symlink():
+        if link_path.is_dir() and not link_path.is_symlink():
+            raise ValueError("refusing to replace directory with symlink")
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_link = link_path.with_name(f".{link_path.name}.tmp-{secrets.token_hex(8)}")
+    try:
+        tmp_link.symlink_to(link_target)
+        os.replace(tmp_link, link_path)
+    finally:
+        if tmp_link.exists() or tmp_link.is_symlink():
+            tmp_link.unlink()
+
+
 def _stat_rel(rel_path: str) -> dict:
     target = _safe_rel(rel_path)
     if not target.exists() and not target.is_symlink():
@@ -149,13 +164,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not link_target:
                     raise ValueError("target is required")
                 link_path = _safe_rel(rel)
-                if link_path.exists() or link_path.is_symlink():
-                    if link_path.is_symlink() or link_path.is_file():
-                        link_path.unlink()
-                    elif link_path.is_dir():
-                        raise ValueError("refusing to replace directory with symlink")
-                link_path.parent.mkdir(parents=True, exist_ok=True)
-                link_path.symlink_to(link_target)
+                _atomic_symlink(link_path, link_target)
                 _json(self, 200, {"relPath": rel, "target": link_target, "linked": True})
             except ValueError as exc:
                 _json(self, 400, {"error": str(exc)})

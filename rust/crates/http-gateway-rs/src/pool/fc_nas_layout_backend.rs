@@ -15,6 +15,9 @@ use crate::session_db::GatewaySessionDb;
 
 use super::interactive_backend::FcNasApiSingleton;
 
+pub const PROJECT_HOME_STABLE_LINK: &str = "project_home_def";
+pub const PROJECT_HOME_VERSIONS_DIR: &str = ".claw/project-home-versions";
+
 #[derive(Clone)]
 pub struct NasLayoutBackend {
     nas_api: Arc<FcNasApiSingleton>,
@@ -63,6 +66,30 @@ impl NasLayoutBackend {
 
     async fn unlink_rel(&self, rel: &str) -> Result<(), String> {
         self.nas_api.unlink(rel).await
+    }
+
+    fn project_home_version_segment(content_rev: &str) -> Result<String, String> {
+        let rev = content_rev.trim();
+        if rev.is_empty() || rev == "." || rev == ".." || rev.contains('/') || rev.contains('\\') {
+            return Err(format!(
+                "unsafe project config content_rev for NAS path: {content_rev:?}"
+            ));
+        }
+        Ok(rev.to_string())
+    }
+
+    fn project_home_version_prefix(content_rev: &str) -> Result<String, String> {
+        Ok(format!(
+            "{PROJECT_HOME_VERSIONS_DIR}/{}",
+            Self::project_home_version_segment(content_rev)?
+        ))
+    }
+
+    fn project_home_stable_target(content_rev: &str) -> Result<String, String> {
+        Ok(format!(
+            "{PROJECT_HOME_VERSIONS_DIR}/{}",
+            Self::project_home_version_segment(content_rev)?
+        ))
     }
 
     /// Read a UTF-8 text file under `{session}/.claw/{file_name}` via nas-api.
@@ -147,7 +174,7 @@ impl NasLayoutBackend {
         self.symlink_rel(&ds_rel, session_ds_symlink_target()).await
     }
 
-    /// PG project config → `proj_N/home` on NAS via nas-api.
+    /// PG project config → versioned `proj_N/home/project_home_def` on NAS via nas-api.
     pub async fn materialize_proj_workspace(
         &self,
         session_db: &GatewaySessionDb,
@@ -168,29 +195,42 @@ impl NasLayoutBackend {
             .map_err(|e| format!("load system prompt scaffold: {e}"))?;
         let writes = project_config_apply::build_guest_materialize_writes(&row, &scaffold)
             .map_err(|e| format!("build guest materialize writes: {e}"))?;
+        let version_prefix = Self::project_home_version_prefix(&row.content_rev)?;
         for write in writes {
-            let rel_under_home = write.rel_path.to_string_lossy();
+            let rel_under_home = format!("{version_prefix}/{}", write.rel_path.to_string_lossy());
             self.put_proj_home_file(&cluster_id, proj_id, &rel_under_home, &write.bytes)
                 .await?;
         }
-        let proj_prefix = format!("{cluster_id}/proj_{proj_id}");
-        self.mkdir_rel(&format!("{proj_prefix}/home/skills"))
-            .await
-            .ok();
-        self.mkdir_rel(&format!("{proj_prefix}/home/.cursor/rules"))
-            .await
-            .ok();
-        self.symlink_rel(&format!("{proj_prefix}/.claw/skills"), "../home/skills")
-            .await
-            .ok();
+        self.write_proj_vscode_settings_at(&cluster_id, proj_id, &version_prefix)
+            .await?;
         self.symlink_rel(
-            &format!("{proj_prefix}/.cursor/rules"),
-            "../home/.cursor/rules",
+            &format!("{cluster_id}/proj_{proj_id}/home/{PROJECT_HOME_STABLE_LINK}"),
+            &Self::project_home_stable_target(&row.content_rev)?,
+        )
+        .await?;
+        let proj_prefix = format!("{cluster_id}/proj_{proj_id}");
+        self.mkdir_rel(&format!(
+            "{proj_prefix}/home/{PROJECT_HOME_STABLE_LINK}/.claw/skills"
+        ))
+        .await
+        .ok();
+        self.mkdir_rel(&format!(
+            "{proj_prefix}/home/{PROJECT_HOME_STABLE_LINK}/.cursor/rules"
+        ))
+        .await
+        .ok();
+        self.symlink_rel(
+            &format!("{proj_prefix}/.claw/skills"),
+            "../home/project_home_def/.claw/skills",
         )
         .await
         .ok();
-        self.write_proj_vscode_settings(&cluster_id, proj_id)
-            .await?;
+        self.symlink_rel(
+            &format!("{proj_prefix}/.cursor/rules"),
+            "../home/project_home_def/.cursor/rules",
+        )
+        .await
+        .ok();
         Ok(())
     }
 
@@ -199,16 +239,29 @@ impl NasLayoutBackend {
         cluster_id: &str,
         proj_id: i64,
     ) -> Result<(), String> {
+        self.write_proj_vscode_settings_at(cluster_id, proj_id, "")
+            .await
+    }
+
+    async fn write_proj_vscode_settings_at(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+        prefix_under_home: &str,
+    ) -> Result<(), String> {
         let body = serde_json::to_string_pretty(&json!({ "claw.projId": proj_id }))
             .map_err(|e| format!("serialize vscode settings: {e}"))?
             + "\n";
-        self.put_proj_home_file(
-            cluster_id,
-            proj_id,
-            ".vscode/settings.json",
-            body.as_bytes(),
-        )
-        .await
+        let rel = if prefix_under_home.trim_matches('/').is_empty() {
+            ".vscode/settings.json".to_string()
+        } else {
+            format!(
+                "{}/.vscode/settings.json",
+                prefix_under_home.trim_matches('/')
+            )
+        };
+        self.put_proj_home_file(cluster_id, proj_id, &rel, body.as_bytes())
+            .await
     }
 
     pub async fn prepare_fc_worker_bind_sources(
@@ -221,5 +274,43 @@ impl NasLayoutBackend {
         self.materialize_proj_workspace(session_db, proj_id).await?;
         self.ensure_worker_root(proj_id, worker_id).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_project_home_target_uses_content_rev() {
+        assert_eq!(
+            NasLayoutBackend::project_home_stable_target("2026-06-30_00-30-00").unwrap(),
+            ".claw/project-home-versions/2026-06-30_00-30-00"
+        );
+    }
+
+    #[test]
+    fn project_home_version_segment_rejects_path_separators() {
+        assert!(NasLayoutBackend::project_home_version_segment("../x").is_err());
+        assert!(NasLayoutBackend::project_home_version_segment("a/b").is_err());
+        assert!(NasLayoutBackend::project_home_version_segment("").is_err());
+    }
+
+    #[test]
+    fn versioned_materialize_rel_under_home_prefixes_writes() {
+        let rev = "2026-06-30_00-30-00";
+        let prefix = NasLayoutBackend::project_home_version_prefix(rev).unwrap();
+        assert_eq!(
+            format!("{prefix}/CLAUDE.md"),
+            ".claw/project-home-versions/2026-06-30_00-30-00/CLAUDE.md"
+        );
+        assert_eq!(
+            format!("{prefix}/.claw/settings.json"),
+            ".claw/project-home-versions/2026-06-30_00-30-00/.claw/settings.json"
+        );
+        assert_eq!(
+            format!("dev-stable/proj_3/home/{PROJECT_HOME_STABLE_LINK}"),
+            "dev-stable/proj_3/home/project_home_def"
+        );
     }
 }

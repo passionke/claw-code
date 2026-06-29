@@ -197,8 +197,8 @@ impl ProjectContext {
     }
 }
 
-/// Pool worker read-only `ds_home` bind inside the solve container (`http-gateway-rs` pool v1).
-pub const GATEWAY_POOL_DS_CONFIG_ROOT: &str = "/claw_ds";
+/// Pool worker read-only project config root inside the solve container (`http-gateway-rs` pool v1).
+pub const GATEWAY_POOL_DS_CONFIG_ROOT: &str = "/claw_ds/project_home_def";
 
 /// Legacy path (no longer written from `claude_md`); kept for guest lock / read-only allowlist. Author: kejiqing
 pub const GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL: &str = ".claw/system_prompt_user_override.md";
@@ -1531,6 +1531,25 @@ mod tests {
         assert!(prompt.contains("pool ds scaffold"));
         fs::remove_dir_all(ds_root).expect("cleanup ds");
         fs::remove_dir_all(work_root).expect("cleanup work");
+    }
+
+    #[test]
+    fn gateway_project_config_root_honors_stable_claw_ds_path() {
+        let _pcr =
+            crate::ScopedEnvVar::set("CLAW_PROJECT_CONFIG_ROOT", "/claw_ds/project_home_def");
+        let session_home = std::path::PathBuf::from("/claw_sessions/sess-1");
+        assert_eq!(
+            super::gateway_project_config_root(&session_home),
+            std::path::PathBuf::from("/claw_ds/project_home_def")
+        );
+    }
+
+    #[test]
+    fn gateway_pool_layout_prompt_mentions_stable_project_home_def() {
+        let _wr = crate::ScopedEnvVar::set("CLAW_GATEWAY_WORK_ROOT", "/claw_sessions/sess-1");
+        let section = super::gateway_pool_layout_prompt_section().expect("pool section");
+        assert!(section.contains("/claw_ds/project_home_def"));
+        assert!(section.contains("/claw_sessions/sess-1"));
     }
 
     #[test]
