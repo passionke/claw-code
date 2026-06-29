@@ -58,9 +58,9 @@ impl PoolClients {
             eprintln!("http-gateway-rs: CLAW_CLUSTER_ID is required for FC/E2B NAS layout: {e}");
             std::process::exit(1);
         }
-        if !nas_layout.active() {
+        if !nas_layout.uses_nas_api() {
             eprintln!(
-                "http-gateway-rs: FC/E2B NAS layout is required; configure claw-nas-api or CLAW_NAS_HOST_MOUNT/CLAW_WORK_ROOT"
+                "http-gateway-rs: FC/E2B requires claw-nas-api; deploy: ./deploy/stack/gateway.sh nas-api-up"
             );
             std::process::exit(1);
         }
@@ -73,7 +73,6 @@ impl PoolClients {
 
         let fc_pool = Arc::new(FcOrchestratedPool::new(
             Arc::clone(&fc_client),
-            work_root.clone(),
             live_report_hub,
             nas_layout.clone(),
             Arc::clone(&fc_workers),

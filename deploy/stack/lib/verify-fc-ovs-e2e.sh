@@ -15,7 +15,7 @@ OVS_BACKEND="${CLAW_OVS_BACKEND:-compose}"
 fail() { echo "verify-fc-ovs-e2e: $*" >&2; exit 1; }
 
 fc_sandbox_count() {
-  local api="${CLAW_FC_API_URL:-http://10.8.0.9:3000}"
+  local api="${CLAW_FC_API_URL:-http://10.8.0.1:3000}"
   local key="${CLAW_FC_API_KEY:-${ALIYUN_E2B_TOKEN:-}}"
   [[ -n "${key}" ]] || { echo 0; return; }
   curl -sS -m 10 "${api%/}/sandboxes" -H "X-API-Key: ${key}" \
@@ -64,7 +64,7 @@ if [[ "${OVS_BACKEND}" == "fc" ]]; then
   echo "${ws}" | grep -q '"ovsFolderUrl"' || fail "missing ovsFolderUrl: ${ws}"
   ovs_url="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsUrl',''))" <<<"${ws}")"
   [[ -n "${ovs_url}" ]] || fail "empty ovsUrl"
-  fc_domain="${CLAW_FC_DOMAIN:-10.8.0.9}"
+  fc_domain="${CLAW_FC_DOMAIN:-supone.top}"
   traffic_port="${CLAW_FC_TRAFFIC_PORT:-3001}"
   folder_url="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsFolderUrl',''))" <<<"${ws}")"
   hosts_line="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsBrowserHostsLine',''))" <<<"${ws}")"

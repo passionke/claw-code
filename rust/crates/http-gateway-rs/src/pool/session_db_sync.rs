@@ -1,12 +1,16 @@
 //! FC/E2B session transcript helpers; read back from NAS session roots after exec. Author: kejiqing
+//! FC solve 主路径不写 workspace gzip-tar 到 DB（legacy docker pool 除外）。
 
 use std::path::Path;
 
 use crate::cluster_identity;
-use crate::persistence::transcript::{import_turn_messages_to_db, now_ms, JsonlMessage};
+use crate::persistence::transcript::{
+    now_ms, reconcile_session_transcript_from_jsonl, JsonlMessage,
+};
 use crate::session_db::GatewaySessionDb;
 use serde_json::Value;
-use sqlx::PgPool;
+
+use super::NasLayoutBackend;
 
 pub const GUEST_CLAW_SESSIONS: &str = "/claw_sessions";
 pub const DS_MOUNT_TARGET: &str = "/claw_ds";
@@ -80,35 +84,31 @@ pub fn bootstrap_empty_solve_session_jsonl(session_id: &str, session_segment: &s
     format!("{line}\n")
 }
 
+/// NAS jsonl → DB reconcile. Gateway reads the transcript through the nas-api
+/// service layer (never the gateway-local workspace disk). Author: kejiqing
 pub async fn readback_turn_from_session_home(
     db: &GatewaySessionDb,
-    pool: &PgPool,
-    work_root: &Path,
-    cluster_id: &str,
+    nas_layout: &NasLayoutBackend,
     session_id: &str,
     proj_id: i64,
     turn_id: &str,
     user_prompt: &str,
 ) -> Result<Vec<JsonlMessage>, String> {
-    use tokio::fs;
-
-    let session_home = session_home_under_work_root(work_root, cluster_id, proj_id, session_id);
-    let jsonl_path = session_home.join(".claw/gateway-solve-session.jsonl");
-    let jsonl = fs::read_to_string(&jsonl_path).await.unwrap_or_default();
-    let groups = crate::persistence::transcript::turn_message_groups_from_jsonl_contents(&jsonl);
-    let messages = groups.last().cloned().unwrap_or_else(|| {
-        vec![JsonlMessage {
-            role: "user".to_string(),
-            blocks: serde_json::json!([{"type":"text","text":user_prompt}]),
-            usage: None,
-        }]
-    });
-    let now = now_ms();
-    import_turn_messages_to_db(db, session_id, proj_id, turn_id, &messages, now)
-        .await
-        .map_err(|e| format!("import cc_messages: {e}"))?;
-    let _ = pool;
-    Ok(messages)
+    let session_segment = crate::session_merge::sessions_directory_segment(session_id);
+    let jsonl = nas_layout
+        .read_session_jsonl(proj_id, &session_segment)
+        .await?
+        .unwrap_or_default();
+    reconcile_session_transcript_from_jsonl(
+        db,
+        session_id,
+        proj_id,
+        &jsonl,
+        turn_id,
+        user_prompt,
+    )
+    .await
+    .map_err(|e| format!("reconcile cc_messages from jsonl: {e}"))
 }
 
 /// Mark turn ready for next enqueue; sets terminal `succeeded` in same transaction. Author: kejiqing

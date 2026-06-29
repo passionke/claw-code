@@ -26,7 +26,7 @@ use crate::session_terminal_api::{
     ensure_terminal_active, ActiveTerminalSession, TerminalApiContext, TerminalApiError,
 };
 use crate::turn_id;
-use crate::pool::nas_cluster_id;
+use crate::pool::{gateway_session_home, nas_cluster_id};
 use claw_fc_sandbox_client::FcSandboxHandle;
 use gateway_solve_turn::{
     build_ovs_interactive_prompt_script, build_write_gateway_record_session_script,
@@ -179,16 +179,13 @@ async fn ensure_ovs_chat_record_session(
             .map_err(|e| format!("session registry touch: {e}"))?;
         return Ok(());
     }
-    let seg = crate::session_merge::sessions_directory_segment(record_session_id);
-    let session_home = ctx
-        .work_root
-        .join(format!("proj_{proj_id}"))
-        .join("sessions")
-        .join(&seg);
+    let session_home = gateway_session_home(&ctx.work_root, proj_id, record_session_id)?;
     tokio::fs::create_dir_all(session_home.join(".claw"))
         .await
         .map_err(|e| format!("mkdir chat record session: {e}"))?;
-    let session_home_rel = format!("proj_{proj_id}/sessions/{seg}");
+    let session_home_rel =
+        crate::session_merge::session_home_rel_under_work_root(&ctx.work_root, &session_home)
+            .map_err(|e| e.detail().to_string())?;
     let now = transcript::now_ms();
     ctx.session_db
         .insert_session(
@@ -720,7 +717,7 @@ mod tests {
             fc_session_segment: None,
             fc_worker_id: None,
             ttyd: TtydConnectTarget::e2b_self_hosted_proxy(
-                "10.8.0.9".into(),
+                "10.8.0.1".into(),
                 80,
                 "7681-sbx_abc.supone.top".into(),
                 None,

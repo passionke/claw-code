@@ -27,8 +27,8 @@ def _container_runtime() -> str:
 def _conn_opts() -> dict[str, str]:
     return {
         "api_key": _env("E2B_API_KEY", _env("CLAW_FC_API_KEY", "e2b_53ae1fed82754c17ad8077fbc8bcdd90")),
-        "api_url": _env("E2B_API_URL", _env("CLAW_FC_API_URL", "http://10.8.0.9:3000")),
-        "domain": _env("E2B_DOMAIN", _env("CLAW_FC_DOMAIN", "10.8.0.9")),
+        "api_url": _env("E2B_API_URL", _env("CLAW_FC_API_URL", "http://10.8.0.1:3000")),
+        "domain": _env("E2B_DOMAIN", _env("CLAW_FC_DOMAIN", "supone.top")),
     }
 
 
@@ -183,7 +183,7 @@ def main() -> int:
     os.environ.setdefault("E2B_API_URL", opts["api_url"])
     os.environ.setdefault(
         "E2B_SANDBOX_URL",
-        _env("E2B_SANDBOX_URL", _env("CLAW_E2B_SANDBOX_URL", "http://10.8.0.9:3002")),
+        _env("E2B_SANDBOX_URL", _env("CLAW_E2B_SANDBOX_URL", "http://10.8.0.1:3002")),
     )
     os.environ.setdefault("E2B_DOMAIN", opts["domain"])
 

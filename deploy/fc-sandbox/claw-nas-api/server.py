@@ -92,6 +92,30 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 _json(self, 400, {"error": str(exc)})
             return
+        if self.path.startswith("/v1/files/"):
+            if not _authorized(self.headers):
+                _json(self, 401, {"error": "unauthorized"})
+                return
+            rel = self.path[len("/v1/files/") :]
+            try:
+                target = _safe_rel(rel)
+            except ValueError as exc:
+                _json(self, 400, {"error": str(exc)})
+                return
+            if not target.is_file():
+                _json(self, 404, {"error": "not found"})
+                return
+            try:
+                data = target.read_bytes()
+            except OSError as exc:
+                _json(self, 500, {"error": str(exc)})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if not _authorized(self.headers):
             _json(self, 401, {"error": "unauthorized"})
             return

@@ -378,7 +378,7 @@ def _service_public_host(port: int, sandbox_id: str, domain: str) -> str:
 
 def _ovs_base_url(sandbox_id: str, domain: str, ovs_port: int) -> str:
     host = _service_public_host(ovs_port, sandbox_id, domain)
-    scheme = "http" if _is_self_hosted(_env("CLAW_FC_API_URL", "http://10.8.0.9:3000")) else "https"
+    scheme = "http" if _is_self_hosted(_env("CLAW_FC_API_URL", "http://10.8.0.1:3000")) else "https"
     return f"{scheme}://{host}/ovs"
 
 
@@ -406,7 +406,7 @@ def main() -> int:
         print("error: set CLAW_FC_API_KEY in .env", file=sys.stderr)
         return 1
 
-    api_url = _env("CLAW_FC_API_URL") or _env("E2B_API_URL") or "http://10.8.0.9:3000"
+    api_url = _env("CLAW_FC_API_URL") or _env("E2B_API_URL") or "http://10.8.0.1:3000"
     sandbox_url = _env("CLAW_E2B_SANDBOX_URL") or _env("E2B_SANDBOX_URL")
     fc_domain = _env("CLAW_FC_DOMAIN") or _env("E2B_DOMAIN") or "supone.top"
     cluster_id = _env("CLAW_CLUSTER_ID") or "default"

@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=/dev/null
 [[ -f "${ROOT_DIR}/.env" ]] && source "${ROOT_DIR}/.env"
 
-API_URL="${CLAW_FC_API_URL:-http://10.8.0.9:3000}"
+API_URL="${CLAW_FC_API_URL:-http://10.8.0.1:3000}"
 API_KEY="${CLAW_FC_API_KEY:-${ALIYUN_E2B_TOKEN:-}}"
 
 fail() { echo "fc-sandbox-cleanup: $*" >&2; exit 1; }

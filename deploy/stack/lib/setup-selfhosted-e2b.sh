@@ -28,9 +28,9 @@ fi
 echo "==> build claw-worker template on e2bserver"
 export CLAW_NAS_TOOLS_DIR="${MOUNT_POINT}/.claw-fc-tools"
 export E2B_API_KEY="${CLAW_FC_API_KEY:-e2b_53ae1fed82754c17ad8077fbc8bcdd90}"
-export E2B_API_URL="${CLAW_FC_API_URL:-http://10.8.0.9:3000}"
-export E2B_SANDBOX_URL="${CLAW_E2B_SANDBOX_URL:-http://10.8.0.9:3002}"
-export E2B_DOMAIN="${CLAW_FC_DOMAIN:-10.8.0.9}"
+export E2B_API_URL="${CLAW_FC_API_URL:-http://10.8.0.1:3000}"
+export E2B_SANDBOX_URL="${CLAW_E2B_SANDBOX_URL:-http://10.8.0.1:3002}"
+export E2B_DOMAIN="${CLAW_FC_DOMAIN:-supone.top}"
 python3 ./deploy/fc-sandbox/build-claw-worker-selfhosted.py
 
 echo "==> gateway stack"

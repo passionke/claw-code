@@ -4,8 +4,8 @@
 //! Boundary: the gateway NEVER creates the nas-api sandbox. It discovers the
 //! endpoint from PG (`gateway_global_settings.settings_json.fcNasApi`, written by
 //! `fc-nas-api-up.py`) on every call, so a re-deploy of the singleton is picked up
-//! without restarting the gateway. If no endpoint is configured, NAS writes fail
-//! loudly with a hint to run the deploy command — the gateway is not blocked.
+//! without restarting the gateway. If no endpoint is configured, startup fails
+//! with a hint to run `./deploy/stack/gateway.sh nas-api-up`.
 
 use std::sync::Arc;
 
@@ -113,30 +113,43 @@ impl FcNasApiSingleton {
         Err(format!("nas-api put_file HTTP {status}: {text}"))
     }
 
-    /// `PUT /v1/proj/{proj_id}/home/{rel}` — project-home write path.
+    /// Write project-home bytes through the generic cluster-aware file API. Author: kejiqing
     pub async fn put_proj_home_file(
         &self,
+        cluster_id: &str,
         proj_id: i64,
         rel_path: &str,
         bytes: &[u8],
     ) -> Result<(), String> {
+        let rel = rel_path.trim_start_matches('/');
+        let home_rel = format!("{cluster_id}/proj_{proj_id}/home/{rel}");
+        self.put_file(&home_rel, bytes).await
+    }
+
+    /// `GET /v1/files/{relPath}` — read bytes under NAS export root; `Ok(None)` on 404.
+    pub async fn get_file(&self, rel_path: &str) -> Result<Option<Vec<u8>>, String> {
         let base = self.base_url().await?;
         let rel = rel_path.trim_start_matches('/');
-        let url = format!("{base}/v1/proj/{proj_id}/home/{rel}");
+        let url = format!("{base}/v1/files/{rel}");
         let resp = self
             .http
-            .put(&url)
-            .header(CONTENT_TYPE, "application/octet-stream")
-            .body(bytes.to_vec())
+            .get(&url)
             .send()
             .await
-            .map_err(|e| format!("nas-api put_proj_home request: {e}"))?;
-        if resp.status().is_success() {
-            return Ok(());
+            .map_err(|e| format!("nas-api get_file request: {e}"))?;
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
         }
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        Err(format!("nas-api put_proj_home HTTP {status}: {text}"))
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("nas-api get_file HTTP {status}: {text}"));
+        }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("nas-api get_file body: {e}"))?;
+        Ok(Some(bytes.to_vec()))
     }
 
     /// `POST /v1/symlink` — session → worker link.
@@ -175,6 +188,11 @@ impl FcNasApiSingleton {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         Err(format!("nas-api unlink HTTP {status}: {text}"))
+    }
+
+    /// Startup probe: PG must have `fcNasApi.baseUrl` before FC NAS layout runs.
+    pub async fn verify_endpoint_configured(&self) -> Result<(), String> {
+        self.base_url().await.map(|_| ())
     }
 
     /// `CLAW_FC_NAS_API` gate: unset/`1`/`true` → enabled; `0`/`false`/`no`/`off` → disabled.

@@ -60,9 +60,14 @@ def _fc_python() -> Path:
 
 
 def _ensure_fc_venv_python() -> None:
-    """Re-exec under .venv-fc so psycopg + e2b share one interpreter. Author: kejiqing"""
+    """Re-exec under .venv-fc so psycopg + e2b share one interpreter. Author: kejiqing
+
+    Compare by venv prefix, not the interpreter path: the venv `python3` is a symlink
+    to the base interpreter, so `resolve()` collapses both sides and would falsely
+    report "already in venv" -> never re-exec -> venv site-packages missing.
+    """
     fc_py = _fc_python()
-    if Path(sys.executable).resolve() != fc_py.resolve():
+    if Path(sys.prefix).resolve() != _fc_venv_dir().resolve():
         os.execv(str(fc_py), [str(fc_py), *sys.argv])
 
 
@@ -159,7 +164,7 @@ def _observe_live_port() -> int:
 
 def _internal_live_base(sandbox_id: str, domain: str, live_port: int) -> str:
     host = _service_public_host(live_port, sandbox_id, domain)
-    scheme = "http" if _is_self_hosted(_env("CLAW_FC_API_URL", "http://10.8.0.9:3000")) else "https"
+    scheme = "http" if _is_self_hosted(_env("CLAW_FC_API_URL", "http://10.8.0.1:3000")) else "https"
     return f"{scheme}://{host}"
 
 
@@ -253,7 +258,7 @@ def _kill_sandbox(sandbox_id: str, api_url: str, api_key: str, self_hosted: bool
 
 def _proxy_base_url(sandbox_id: str, domain: str, proxy_port: int = 8080) -> str:
     host = _service_public_host(proxy_port, sandbox_id, domain)
-    scheme = "http" if _is_self_hosted(_env("CLAW_FC_API_URL", "http://10.8.0.9:3000")) else "https"
+    scheme = "http" if _is_self_hosted(_env("CLAW_FC_API_URL", "http://10.8.0.1:3000")) else "https"
     return f"{scheme}://{host}"
 
 
@@ -340,7 +345,7 @@ def main() -> int:
         print("error: set CLAW_FC_API_KEY (or E2B_API_KEY) in .env", file=sys.stderr)
         return 1
 
-    api_url = _env("CLAW_FC_API_URL") or _env("E2B_API_URL") or "http://10.8.0.9:3000"
+    api_url = _env("CLAW_FC_API_URL") or _env("E2B_API_URL") or "http://10.8.0.1:3000"
     fc_domain = _env("CLAW_FC_DOMAIN") or _env("E2B_DOMAIN") or "supone.top"
     cluster_id = _env("CLAW_CLUSTER_ID") or "default"
     template = _env("CLAW_FC_OBSERVE_TEMPLATE") or "claw-observe"

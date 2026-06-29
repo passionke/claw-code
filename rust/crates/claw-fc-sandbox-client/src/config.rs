@@ -7,7 +7,7 @@ use std::path::PathBuf;
 pub struct FcSandboxConfig {
     pub api_key: String,
     pub api_url: String,
-    /// Client proxy base (`http://10.8.0.9:3002` for self-hosted e2bserver).
+    /// Client proxy base (`http://10.8.0.1:3002` for self-hosted e2bserver).
     pub sandbox_url: Option<String>,
     pub domain: String,
     pub template: String,

@@ -25,6 +25,12 @@ use super::fc_nas_layout::allocate_worker_id;
 use super::interactive_backend::build_fc_worker_tap_start_script_from_db;
 use super::NasLayoutBackend;
 
+const PROJECT_WORKER_CONTRACT_VERSION: &str = "nas-session-root-v1";
+
+fn worker_contract_key(template_id: &str) -> String {
+    format!("{template_id}#{PROJECT_WORKER_CONTRACT_VERSION}")
+}
+
 struct ProjWorkerRuntime {
     handle: FcSandboxHandle,
     worker_id: String,
@@ -83,6 +89,7 @@ impl FcProjWorkerRegistry {
         let template_id = load_fc_worker_template_id(db.as_ref())
             .await
             .map_err(|e| format!("load fcWorker template: {e}"))?;
+        let desired_contract = worker_contract_key(&template_id);
         let proj_ids = db
             .list_project_config_proj_ids()
             .await
@@ -91,6 +98,7 @@ impl FcProjWorkerRegistry {
             target: "claw_fc_proj_worker",
             proj_count = proj_ids.len(),
             template_id = %template_id,
+            contract = %desired_contract,
             "reconcile project FC workers on startup"
         );
         for proj_id in proj_ids {
@@ -109,13 +117,14 @@ impl FcProjWorkerRegistry {
     /// Per-proj: skip if online + template matches; rotate or create otherwise.
     pub async fn reconcile_proj(&self, proj_id: i64, desired_template: &str) -> Result<(), String> {
         let db = self.session_db().await?;
+        let desired_contract = worker_contract_key(desired_template);
         let row = db
             .get_project_fc_worker(proj_id)
             .await
             .map_err(|e| format!("get project_fc_worker: {e}"))?;
 
         if let Some(ref existing) = row {
-            if existing.template_id == desired_template
+            if existing.template_id == desired_contract
                 && self.client.sandbox_running(&existing.sandbox_id).await
             {
                 let handle = FcSandboxClient::handle_from_json(&existing.handle_json)?;
@@ -136,6 +145,7 @@ impl FcProjWorkerRegistry {
                     proj_id,
                     sandbox_id = %existing.sandbox_id,
                     ttl_secs = self.worker_ttl_secs,
+                    contract = %desired_contract,
                     "proj worker online — skip create"
                 );
                 return Ok(());
@@ -145,7 +155,7 @@ impl FcProjWorkerRegistry {
                 proj_id,
                 old_sandbox = %existing.sandbox_id,
                 old_template = %existing.template_id,
-                new_template = %desired_template,
+                new_template = %desired_contract,
                 "proj worker rotate (template mismatch or offline)"
             );
             if self.client.sandbox_running(&existing.sandbox_id).await {
@@ -160,12 +170,11 @@ impl FcProjWorkerRegistry {
 
     async fn create_and_persist(&self, proj_id: i64, template_id: &str) -> Result<(), String> {
         let db = self.session_db().await?;
+        let contract_key = worker_contract_key(template_id);
         let worker_id = allocate_worker_id();
-        if self.nas_layout.active() {
-            self.nas_layout
-                .prepare_fc_worker_bind_sources(db.as_ref(), proj_id, &worker_id)
-                .await?;
-        }
+        self.nas_layout
+            .prepare_fc_worker_bind_sources(db.as_ref(), proj_id, &worker_id)
+            .await?;
         let handle = self
             .client
             .create_warm_proj_sandbox(&self.nas_layout.cluster_id()?, proj_id, &worker_id)
@@ -189,7 +198,7 @@ impl FcProjWorkerRegistry {
             proj_id,
             sandbox_id: handle.sandbox_id.clone(),
             worker_id: worker_id.clone(),
-            template_id: template_id.to_string(),
+            template_id: contract_key.clone(),
             handle_json: FcSandboxClient::handle_to_json(&handle),
             updated_at_ms: now_ms,
         };
@@ -201,7 +210,7 @@ impl FcProjWorkerRegistry {
             proj_id,
             handle.clone(),
             worker_id,
-            template_id.to_string(),
+            contract_key.clone(),
             true,
         )
         .await;
@@ -210,6 +219,7 @@ impl FcProjWorkerRegistry {
             proj_id,
             sandbox_id = %handle.sandbox_id,
             template_id,
+            contract = %contract_key,
             ttl_secs = self.worker_ttl_secs,
             "proj worker created and persisted"
         );

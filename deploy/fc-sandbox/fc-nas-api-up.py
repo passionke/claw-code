@@ -57,9 +57,14 @@ def _fc_python() -> Path:
 
 
 def _ensure_fc_venv_python() -> None:
-    """Re-exec under .venv-fc so psycopg is available for PG persist. Author: kejiqing"""
+    """Re-exec under .venv-fc so psycopg is available for PG persist. Author: kejiqing
+
+    Compare by venv prefix, not the interpreter path: the venv `python3` is a symlink
+    to the base interpreter, so `resolve()` collapses both sides and would falsely
+    report "already in venv" -> never re-exec -> venv site-packages missing.
+    """
     fc_py = _fc_python()
-    if Path(sys.executable).resolve() != fc_py.resolve():
+    if Path(sys.prefix).resolve() != _fc_venv_dir().resolve():
         os.execv(str(fc_py), [str(fc_py), *sys.argv])
 
 
@@ -293,7 +298,7 @@ def main() -> int:
         print("error: set CLAW_FC_API_KEY in .env", file=sys.stderr)
         return 1
 
-    api_url = _env("CLAW_FC_API_URL") or _env("E2B_API_URL") or "http://10.8.0.9:3000"
+    api_url = _env("CLAW_FC_API_URL") or _env("E2B_API_URL") or "http://10.8.0.1:3000"
     fc_domain = _env("CLAW_FC_DOMAIN") or _env("E2B_DOMAIN") or "supone.top"
     cluster_id = _env("CLAW_CLUSTER_ID") or "default"
     template = _env("CLAW_FC_NAS_API_TEMPLATE") or "claw-nas-api"

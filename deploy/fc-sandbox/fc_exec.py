@@ -24,7 +24,7 @@ def _nas_bootstrap_sh(tools_rel: str) -> str:
 
 
 def _connect_opts(payload: dict) -> dict:
-    domain = payload.get("domain") or "10.8.0.9"
+    domain = payload.get("domain") or "supone.top"
     out: dict = {
         "api_key": payload.get("api_key") or "",
         "domain": domain,

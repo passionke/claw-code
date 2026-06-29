@@ -2506,6 +2506,20 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Remove all transcript rows for a session (before full jsonl reconcile). Author: kejiqing
+    pub async fn delete_messages_for_session(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query("DELETE FROM cc_messages WHERE session_id = $1 AND proj_id = $2")
+            .bind(session_id)
+            .bind(proj_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn ensure_runtime_iteration(
         &self,
         turn_id: &str,

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Deploy e2bserver traffic proxy + nginx routing on 10.8.0.9. Author: kejiqing
+# Deploy e2bserver traffic proxy + nginx routing on e2b host (10.8.0.1). Author: kejiqing
 set -euo pipefail
 
-E2B_HOST="${CLAW_FC_DOMAIN:-10.8.0.9}"
+E2B_HOST="${CLAW_FC_DOMAIN:-supone.top}"
 E2B_ROOT="${E2B_SERVER_ROOT:-$HOME/work/e2bserver}"
 NGINX_BIN="${NGINX_BIN:-/usr/local/opt/nginx/bin/nginx}"
 

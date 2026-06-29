@@ -161,8 +161,8 @@ mod tests {
     #[test]
     fn parse_proxy_base_host_port() {
         assert_eq!(
-            parse_proxy_base("http://10.8.0.9:3002"),
-            ("10.8.0.9".into(), 3002)
+            parse_proxy_base("http://10.8.0.1:3002"),
+            ("10.8.0.1".into(), 3002)
         );
     }
 }

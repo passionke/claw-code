@@ -1,6 +1,6 @@
-//! FC/E2B NAS layout + materialize via claw-nas-api singleton or direct NAS bind. Author: kejiqing
+//! FC/E2B NAS layout + materialize via claw-nas-api singleton (required). Author: kejiqing
 
-use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use claw_fc_sandbox_client::{
     proj_home_rel, session_ds_symlink_target, session_rel, sessions_root_rel, tap_traces_rel,
@@ -13,42 +13,27 @@ use crate::project_config_apply;
 use crate::project_config_draft;
 use crate::session_db::GatewaySessionDb;
 
-use super::fc_nas_layout::fc_nas_layout_active;
 use super::interactive_backend::FcNasApiSingleton;
-use super::session_mount_ownership::ensure_session_tree_owned_for_worker_with_runtime_fallback;
 
 #[derive(Clone)]
 pub struct NasLayoutBackend {
-    nas_api: Option<std::sync::Arc<FcNasApiSingleton>>,
-    local_root: PathBuf,
-    runtime_bin: String,
+    nas_api: Arc<FcNasApiSingleton>,
 }
 
 impl NasLayoutBackend {
     #[must_use]
-    pub fn new(nas_api: Option<std::sync::Arc<FcNasApiSingleton>>, local_root: PathBuf) -> Self {
-        let runtime_bin =
-            std::env::var("CLAW_CONTAINER_RUNTIME").unwrap_or_else(|_| "podman".into());
-        Self {
-            nas_api,
-            local_root,
-            runtime_bin,
-        }
+    pub fn new(nas_api: Arc<FcNasApiSingleton>) -> Self {
+        Self { nas_api }
     }
 
     #[must_use]
     pub fn uses_nas_api(&self) -> bool {
-        self.nas_api.is_some()
+        true
     }
 
     #[must_use]
     pub fn active(&self) -> bool {
-        self.uses_nas_api() || fc_nas_layout_active(&self.local_root)
-    }
-
-    #[must_use]
-    pub fn local_root(&self) -> &Path {
-        &self.local_root
+        true
     }
 
     pub fn cluster_id(&self) -> Result<String, String> {
@@ -56,13 +41,7 @@ impl NasLayoutBackend {
     }
 
     async fn mkdir_rel(&self, rel: &str) -> Result<(), String> {
-        if let Some(api) = &self.nas_api {
-            return api.mkdir(rel, true).await;
-        }
-        let path = self.local_root.join(rel);
-        tokio::fs::create_dir_all(&path)
-            .await
-            .map_err(|e| format!("mkdir {}: {e}", path.display()))
+        self.nas_api.mkdir(rel, true).await
     }
 
     async fn put_proj_home_file(
@@ -73,51 +52,37 @@ impl NasLayoutBackend {
         bytes: &[u8],
     ) -> Result<(), String> {
         let rel = rel_under_home.trim_start_matches('/');
-        if let Some(api) = &self.nas_api {
-            return api.put_proj_home_file(proj_id, rel, bytes).await;
-        }
-        let path = self
-            .local_root
-            .join(proj_home_rel(cluster_id, proj_id))
-            .join(rel);
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-        }
-        tokio::fs::write(&path, bytes)
+        self.nas_api
+            .put_proj_home_file(cluster_id, proj_id, rel, bytes)
             .await
-            .map_err(|e| format!("write {}: {e}", path.display()))
     }
 
     async fn symlink_rel(&self, rel: &str, target: &str) -> Result<(), String> {
-        if let Some(api) = &self.nas_api {
-            return api.symlink(rel, target).await;
-        }
-        let link_path = self.local_root.join(rel);
-        super::fc_nas_layout::replace_session_path_local(&link_path).await?;
-        #[cfg(unix)]
-        {
-            tokio::fs::symlink(target, &link_path)
-                .await
-                .map_err(|e| format!("symlink {} -> {target}: {e}", link_path.display()))?;
-        }
-        #[cfg(not(unix))]
-        {
-            return Err("NAS session symlink requires unix".into());
-        }
-        Ok(())
+        self.nas_api.symlink(rel, target).await
     }
 
     async fn unlink_rel(&self, rel: &str) -> Result<(), String> {
-        if let Some(api) = &self.nas_api {
-            return api.unlink(rel).await;
+        self.nas_api.unlink(rel).await
+    }
+
+    /// Read session solve transcript jsonl via nas-api (gateway never reads NAS disk directly).
+    pub async fn read_session_jsonl(
+        &self,
+        proj_id: i64,
+        session_segment: &str,
+    ) -> Result<Option<String>, String> {
+        let cluster_id = self.cluster_id()?;
+        let rel = format!(
+            "{}/.claw/gateway-solve-session.jsonl",
+            session_rel(&cluster_id, proj_id, session_segment)
+        );
+        let bytes = self.nas_api.get_file(&rel).await?;
+        match bytes {
+            Some(b) => Ok(Some(
+                String::from_utf8(b).map_err(|e| format!("session jsonl not utf8: {e}"))?,
+            )),
+            None => Ok(None),
         }
-        let path = self.local_root.join(rel);
-        if path.exists() || path.is_symlink() {
-            super::fc_nas_layout::remove_path_all_local(&path).await?;
-        }
-        Ok(())
     }
 
     pub async fn ensure_fc_proj_nas_roots(&self, proj_id: i64) -> Result<(), String> {
@@ -138,14 +103,6 @@ impl NasLayoutBackend {
             .await?;
         let wr = worker_rel(&cluster_id, proj_id, worker_id);
         self.mkdir_rel(&format!("{wr}/.claw")).await?;
-        if self.nas_api.is_none() {
-            let worker_abs = self.local_root.join(&wr);
-            ensure_session_tree_owned_for_worker_with_runtime_fallback(
-                &self.runtime_bin,
-                &worker_abs,
-            )
-            .await?;
-        }
         Ok(())
     }
 
@@ -168,22 +125,16 @@ impl NasLayoutBackend {
         self.mkdir_rel(&sessions_root_rel(&cluster_id, proj_id))
             .await?;
         let session_rel_path = session_rel(&cluster_id, proj_id, session_segment);
-        if self.nas_api.is_none() {
-            let session_abs = self.local_root.join(&session_rel_path);
-            super::fc_nas_layout::replace_session_path_local(&session_abs).await?;
-        }
         self.mkdir_rel(&format!("{session_rel_path}/.claw"))
             .await?;
         self.mkdir_rel(&format!("{session_rel_path}/work")).await?;
         let ds_rel = format!("{session_rel_path}/ds");
-        if self.nas_api.is_some() {
-            let _ = self.unlink_rel(&ds_rel).await;
-        }
+        let _ = self.unlink_rel(&ds_rel).await;
         self.symlink_rel(&ds_rel, session_ds_symlink_target())
             .await
     }
 
-    /// PG project config → `proj_N/home` on NAS (via nas-api or local bind).
+    /// PG project config → `proj_N/home` on NAS via nas-api.
     pub async fn materialize_proj_workspace(
         &self,
         session_db: &GatewaySessionDb,

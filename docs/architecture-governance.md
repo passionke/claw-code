@@ -17,6 +17,16 @@ Author: kejiqing
 | NAS | `10.8.0.11:/` | 唯一 NFS export；e2b 宿主机 mount → `/mnt/nas0` |
 | 本地 dev | gateway + playground | 无 bundled PG、无 NAS volume bind |
 
+**IP 治理（勿混用）：**
+
+| 地址 | 角色 | 常见误写 |
+|------|------|----------|
+| `10.8.0.1` | PG + e2bserver API `:3000` / envd `:3002` | ~~`10.8.0.9`~~（旧节点，已废弃） |
+| `10.8.0.11` | NAS NFS export | ~~`10.8.0.8`~~（旧 NAS 节点） |
+| `supone.top` | FC sandbox 浏览器 traffic（wildcard DNS → e2b traffic 入口） | 勿把 `CLAW_FC_DOMAIN` 写成 IP |
+
+脚本 / `.env.example` 的 fallback 必须与上表一致；历史文档（`docs/ovs-chat/*` 踩坑记录）内 `10.8.0.9` 保留为**当时取证**，文首有勘误横幅。
+
 ```text
 all -> cluster_id -> project -> session -> turn
 ```

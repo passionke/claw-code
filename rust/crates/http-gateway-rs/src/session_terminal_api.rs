@@ -500,7 +500,9 @@ pub async fn terminal_start(
             })?;
     }
 
-    let session_home_rel = format!("proj_{}/sessions/{}", req.proj_id, session_segment);
+    let session_home_rel =
+        crate::session_merge::session_home_rel_under_work_root(&ctx.work_root, &session_home)
+            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.detail()))?;
     let client_origin = if session_id.starts_with("ovs-") {
         Some(client_origin::CLIENT_ORIGIN_OVS_CHAT)
     } else {

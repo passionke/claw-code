@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::pool::interactive_backend::FcNasApiSingleton;
-use crate::pool::{fc_nas_layout_active, nas_host_root};
+use crate::pool::nas_host_root;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FcNasSettingsPublic {
@@ -85,14 +85,10 @@ pub fn fc_nas_settings_public(work_root: &Path) -> FcNasSettingsPublic {
         nas_host_mount,
         fc_nas_server,
         fc_nas_export,
-        configured: nas_api_enabled || env_nas_host_mount().is_some(),
+        configured: nas_api_enabled,
         gateway_work_root: gateway_work_root.display().to_string(),
-        nas_root_resolved: if nas_api_enabled {
-            "claw-nas-api:/claw_ws".to_string()
-        } else {
-            resolved.display().to_string()
-        },
-        layout_active: nas_api_enabled || fc_nas_layout_active(&resolved),
+        nas_root_resolved: "claw-nas-api:/claw_ws".to_string(),
+        layout_active: nas_api_enabled,
         path_exists,
         nas_api_enabled,
         has_proj_tree,

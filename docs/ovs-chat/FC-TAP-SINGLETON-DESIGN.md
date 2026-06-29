@@ -64,7 +64,7 @@ flowchart TB
     WarmPool["FcProjWarmPool"]
   end
 
-  subgraph e2b["e2b 10.8.0.9"]
+  subgraph e2b["e2b 10.8.0.1"]
     OBS["1× Observe<br/>:3000 Live 只读"]
     OVS["1× OVS"]
     W1["worker + 内嵌 tap :8080"]

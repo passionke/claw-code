@@ -132,8 +132,8 @@ pub(crate) struct AppState {
     claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
     /// Active interactive sessions for OVS `agent/ws` (internal ttyd bridge). Author: kejiqing
     terminal_registry: session_terminal_api::TerminalSessionRegistry,
-    /// NAS layout + file writes via e2b claw-nas-api singleton (when `CLAW_FC_NAS_API` enabled).
-    nas_api: Option<Arc<pool::FcNasApiSingleton>>,
+    /// NAS layout + file writes via e2b claw-nas-api singleton (required in FC/E2B mode).
+    nas_api: Arc<pool::FcNasApiSingleton>,
 }
 
 impl AppState {
@@ -1268,16 +1268,15 @@ async fn main() {
             );
         }
     }
-    // nas-api is deployed out-of-band (./deploy/stack/gateway.sh nas-api-up) and its
-    // endpoint lives in PG (settings_json.fcNasApi). The gateway is a pure consumer:
-    // construct the HTTP client here; bind the DB after session_db opens (below).
-    let nas_api = if fc_client.is_some() && pool::FcNasApiSingleton::enabled_from_env() {
-        Some(Arc::new(pool::FcNasApiSingleton::new()))
-    } else {
-        None
-    };
-    let nas_host = pool::nas_host_root(&work_root, pool_rpc_host_work_root.as_deref());
-    let nas_layout = pool::NasLayoutBackend::new(nas_api.clone(), nas_host);
+    // FC/E2B: NAS layout is claw-nas-api only (no gateway local mount fallback).
+    if fc_client.is_some() && !pool::FcNasApiSingleton::enabled_from_env() {
+        eprintln!(
+            "http-gateway-rs: CLAW_FC_NAS_API must not be disabled in FC/E2B mode"
+        );
+        std::process::exit(1);
+    }
+    let nas_api = Arc::new(pool::FcNasApiSingleton::new());
+    let nas_layout = pool::NasLayoutBackend::new(Arc::clone(&nas_api));
     let pool_clients = pool::PoolClients::from_env(
         Arc::clone(&live_report_hub),
         work_root.clone(),
@@ -1462,8 +1461,10 @@ async fn main() {
     }
     let session_db = Arc::new(session_db);
     pool_clients.bind_session_db(Arc::clone(&session_db)).await;
-    if let Some(ref n) = nas_api {
-        n.bind_session_db(Arc::clone(&session_db)).await;
+    nas_api.bind_session_db(Arc::clone(&session_db)).await;
+    if let Err(e) = nas_api.verify_endpoint_configured().await {
+        eprintln!("http-gateway-rs: claw-nas-api not ready: {e}");
+        std::process::exit(1);
     }
     if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
         tracing::warn!(
@@ -8245,7 +8246,8 @@ async fn prepare_gateway_session(
         )
     };
 
-    let proj_base = state.cfg.work_root.join(format!("proj_{proj_id}"));
+    let proj_base = pool::gateway_proj_work_dir(&state.cfg.work_root, proj_id)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let explicit_continuation = session_merge::trim_session_id(body_session_id).is_some();
 
     let (session_home, need_insert_row, purge_mcp_discovery, session_fs_label) = if skip_session_db

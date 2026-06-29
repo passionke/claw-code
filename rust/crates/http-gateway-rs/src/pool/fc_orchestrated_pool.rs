@@ -2,7 +2,6 @@
 //! Author: kejiqing
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,8 +18,7 @@ use super::interactive_backend::fc_worker_llm_env;
 use super::merge_stdout_hooks;
 use super::result::parse_gateway_solve_exec_stdout;
 use super::session_db_sync::{
-    bootstrap_empty_solve_session_jsonl, finalize_turn_after_readback,
-    readback_turn_from_session_home, SESSION_MANIFEST_MAX_BYTES,
+    finalize_turn_after_readback, readback_turn_from_session_home, SESSION_MANIFEST_MAX_BYTES,
 };
 use super::traits::{PoolOps, SlotLease, TaskOutcome};
 use super::{LiveReportHub, NasLayoutBackend};
@@ -36,7 +34,6 @@ struct FcSlot {
 /// Per-turn leases on shared per-project worker sandboxes. Author: kejiqing
 pub struct FcOrchestratedPool {
     client: Arc<FcSandboxClient>,
-    work_root: PathBuf,
     nas_layout: NasLayoutBackend,
     workers: Arc<FcProjWorkerRegistry>,
     db: RwLock<Option<Arc<GatewaySessionDb>>>,
@@ -50,14 +47,12 @@ impl FcOrchestratedPool {
     #[must_use]
     pub fn new(
         client: Arc<FcSandboxClient>,
-        work_root: PathBuf,
         live_report_hub: Arc<LiveReportHub>,
         nas_layout: NasLayoutBackend,
         workers: Arc<FcProjWorkerRegistry>,
     ) -> Self {
         Self {
             client,
-            work_root,
             nas_layout,
             workers,
             db: RwLock::new(None),
@@ -89,13 +84,8 @@ impl FcOrchestratedPool {
         self.next_slot.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// PG → per-turn inputs delivered inline to the FC/E2B worker. Author: kejiqing
-    async fn collect_inline_solve_inputs(
-        &self,
-        db: &GatewaySessionDb,
-        turn_id: &str,
-        session_segment: &str,
-    ) -> Result<(String, String), String> {
+    /// Per-turn task JSON only; transcript SoT is NAS `gateway-solve-session.jsonl`. Author: kejiqing
+    async fn load_solve_task_json(&self, db: &GatewaySessionDb, turn_id: &str) -> Result<String, String> {
         let task = db
             .get_solve_task_json(turn_id)
             .await
@@ -107,27 +97,7 @@ impl FcOrchestratedPool {
                 "solve_task_json exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
             ));
         }
-
-        let session_jsonl = match db.turn_session_scope(turn_id).await {
-            Ok(Some((session_id, proj_id))) => {
-                let body = db
-                    .render_session_jsonl(&session_id, proj_id)
-                    .await
-                    .map_err(|e| format!("render session jsonl: {e}"))?;
-                if body.len() > SESSION_MANIFEST_MAX_BYTES {
-                    return Err(format!(
-                        "session transcript exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-                    ));
-                }
-                if GatewaySessionDb::session_jsonl_has_messages(&body) {
-                    body
-                } else {
-                    bootstrap_empty_solve_session_jsonl(&session_id, session_segment)
-                }
-            }
-            _ => bootstrap_empty_solve_session_jsonl("", session_segment),
-        };
-        Ok((task_json, session_jsonl))
+        Ok(task_json)
     }
 }
 
@@ -203,9 +173,7 @@ impl PoolOps for FcOrchestratedPool {
             .map(|s| s.session_segment.clone())
             .unwrap_or_default();
 
-        let (task_json, session_jsonl) = self
-            .collect_inline_solve_inputs(db.as_ref(), turn_id, &session_segment)
-            .await?;
+        let task_json = self.load_solve_task_json(db.as_ref(), turn_id).await?;
 
         let stdout_hook = merge_stdout_hooks(
             turn_id,
@@ -221,7 +189,7 @@ impl PoolOps for FcOrchestratedPool {
                 fc_worker_llm_env(worker_llm_env.unwrap_or_default()),
                 claw_fc_sandbox_client::GatewaySolveInputs {
                     task_json: &task_json,
-                    session_jsonl: Some(session_jsonl.as_str()),
+                    session_jsonl: None,
                     session_segment: &session_segment,
                 },
                 stdout_hook,
@@ -236,7 +204,6 @@ impl PoolOps for FcOrchestratedPool {
 
         if task_outcome.exit_code == 0 {
             if let Ok(Some((session_id, proj_id))) = db.turn_session_scope(turn_id).await {
-                let cluster_id = self.nas_layout.cluster_id()?;
                 let user_prompt = db
                     .get_turn_user_prompt(turn_id)
                     .await
@@ -245,9 +212,7 @@ impl PoolOps for FcOrchestratedPool {
                     .unwrap_or_default();
                 if let Err(e) = readback_turn_from_session_home(
                     db.as_ref(),
-                    db.pg_pool(),
-                    &self.work_root,
-                    &cluster_id,
+                    &self.nas_layout,
                     &session_id,
                     proj_id,
                     turn_id,
