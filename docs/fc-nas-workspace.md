@@ -21,7 +21,6 @@ Author: kejiqing
 │       ├── home/                             ← ds_home（管理后台 materialize；worker 只读 bind）
 │       ├── sessions/{sessionId}/             ← 真实目录（OVS + resolve 上下文 SoT）
 │       └── workers/{workerId}/               ← 执行缓存（e2b bind → /claw_host_root）
-├── .claw-fc-tools/                           ← claw / ttyd / claude-tap（FC bootstrap 拷贝源）
 └── tap-traces/                               ← claude-tap traces（可选）
 ```
 

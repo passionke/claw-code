@@ -6,21 +6,11 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 
 
 def _fail(message: str, code: int = 1) -> None:
     print(json.dumps({"ok": False, "error": message}), flush=True)
     sys.exit(code)
-
-
-def _nas_bootstrap_sh(tools_rel: str) -> str:
-    here = Path(__file__).resolve().parent
-    bootstrap = here / "fc-nas-bootstrap.sh"
-    if not bootstrap.is_file():
-        _fail(f"missing {bootstrap}")
-    body = bootstrap.read_text(encoding="utf-8")
-    return f"export CLAW_FC_NAS_TOOLS_REL={json.dumps(tools_rel)}\n{body}"
 
 
 def _connect_opts(payload: dict) -> dict:
@@ -137,10 +127,6 @@ def main() -> None:
     if op == "run_sh" and not script.strip():
         _fail("script required")
 
-    tools_rel = str(payload.get("nas_tools_rel") or ".claw-fc-tools").strip() or ".claw-fc-tools"
-    self_hosted = bool(payload.get("self_hosted"))
-    bootstrap = "" if self_hosted else _nas_bootstrap_sh(tools_rel)
-
     try:
         from e2b_code_interpreter import Sandbox
     except ImportError:
@@ -172,7 +158,6 @@ def main() -> None:
                 session_root,
             )
             script = (
-                f"{bootstrap}\n"
                 "set -eu\n"
                 f"cd {session_root}\n"
                 f"export HOME={session_root}\n"
@@ -196,15 +181,23 @@ def main() -> None:
                 flush=True,
             )
             return
-        else:
-            script = f"{bootstrap}\n{script}" if bootstrap else script
-        result = sandbox.commands.run(script, timeout=timeout)
+        result, stdout, stderr = _run_streaming(sandbox, script, timeout)
         if result.exit_code != 0:
-            stderr = (result.stderr or "").strip()
-            stdout = (result.stdout or "").strip()
+            stderr = (stderr or "").strip()
+            stdout = (stdout or "").strip()
             detail = stderr or stdout or f"exit {result.exit_code}"
             _fail(f"command exit {result.exit_code}: {detail}")
-        print(json.dumps({"ok": True, "stdout": result.stdout or ""}), flush=True)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "exit_code": result.exit_code,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                }
+            ),
+            flush=True,
+        )
     except Exception as exc:  # noqa: BLE001 — helper must always emit JSON
         _fail(str(exc))
 

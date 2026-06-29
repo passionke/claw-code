@@ -82,6 +82,44 @@ claw_export_pool_worker_image_matched_to_gateway() {
   export CLAW_RELAXED_PODMAN_IMAGE="$derived_relaxed"
 }
 
+# Same worker image ref as solve pool / pack-deploy build (no separate CLAW_FC_WORKER_IMAGE). kejiqing
+claw_resolve_worker_image_ref() {
+  if [[ -n "${CLAW_PODMAN_IMAGE:-}" ]]; then
+    printf '%s' "${CLAW_PODMAN_IMAGE}"
+    return 0
+  fi
+  if [[ -n "${CLAW_DOCKER_IMAGE:-}" ]]; then
+    printf '%s' "${CLAW_DOCKER_IMAGE}"
+    return 0
+  fi
+  local gw="${GATEWAY_IMAGE:-}"
+  if [[ -n "$gw" ]]; then
+    if [[ "$gw" == *claw-gateway-rs* ]]; then
+      printf '%s' "${gw/claw-gateway-rs/claw-gateway-worker}"
+      return 0
+    fi
+    if [[ "$gw" == *claw-code* ]]; then
+      printf '%s' "${gw/claw-code/claw-gateway-worker}"
+      return 0
+    fi
+    printf '%s' "claw-gateway-worker:${gw##*:}"
+    return 0
+  fi
+  printf '%s' "claw-gateway-worker:local"
+}
+
+# pack-deploy: one tag for gateway + worker + sandbox (local or release-*). Author: kejiqing
+claw_apply_pack_deploy_image_tag() {
+  local tag="${1:?pack-deploy image tag required}"
+  export GATEWAY_IMAGE="claw-gateway-rs:${tag}"
+  export GATEWAY_PLAYGROUND_IMAGE="claw-gateway-playground:${tag}"
+  export CLAW_PODMAN_IMAGE="claw-gateway-worker:${tag}"
+  export CLAW_RELAXED_PODMAN_IMAGE="claw-gateway-worker-relaxed:${tag}"
+  if [[ -z "${CLAW_SANDBOX_IMAGE:-}" || "${CLAW_SANDBOX_IMAGE}" == claw-sandbox:* ]]; then
+    export CLAW_SANDBOX_IMAGE="claw-sandbox:${tag}"
+  fi
+}
+
 # Compose pool sidecar reads env files from disk — last file wins; override stale CLAW_*_IMAGE in repo .env.
 claw_write_pool_worker_env_override() {
   local script_dir="${1:?}"

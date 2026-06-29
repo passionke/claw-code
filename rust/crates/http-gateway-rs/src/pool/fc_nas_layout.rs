@@ -65,7 +65,12 @@ pub fn proj_home_host_path(nas_root: &Path, cluster_id: &str, proj_id: i64) -> P
 
 /// `{nas_root}/{clusterId}/proj_{id}/workers/{worker_id}`
 #[must_use]
-pub fn worker_host_path(nas_root: &Path, cluster_id: &str, proj_id: i64, worker_id: &str) -> PathBuf {
+pub fn worker_host_path(
+    nas_root: &Path,
+    cluster_id: &str,
+    proj_id: i64,
+    worker_id: &str,
+) -> PathBuf {
     nas_root.join(worker_rel(cluster_id, proj_id, worker_id))
 }
 
@@ -238,8 +243,8 @@ pub async fn prepare_fc_worker_bind_sources(
 ) -> Result<(), String> {
     ensure_fc_proj_nas_roots(nas_root, cluster_id, proj_id).await?;
     crate::session_terminal_api::materialize_ovs_proj_workspace(session_db, nas_root, proj_id)
-    .await
-    .map_err(|e| format!("materialize proj_{proj_id}/home on NAS: {e}"))?;
+        .await
+        .map_err(|e| format!("materialize proj_{proj_id}/home on NAS: {e}"))?;
     ensure_worker_root_on_nas(runtime_bin, nas_root, cluster_id, proj_id, worker_id).await?;
     Ok(())
 }

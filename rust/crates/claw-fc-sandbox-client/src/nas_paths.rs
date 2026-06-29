@@ -194,10 +194,7 @@ mod tests {
 
     #[test]
     fn guest_session_root_format() {
-        assert_eq!(
-            guest_session_root("seg-a"),
-            "/claw_sessions/seg-a"
-        );
+        assert_eq!(guest_session_root("seg-a"), "/claw_sessions/seg-a");
     }
 
     #[test]

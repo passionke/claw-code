@@ -1270,9 +1270,7 @@ async fn main() {
     }
     // FC/E2B: NAS layout is claw-nas-api only (no gateway local mount fallback).
     if fc_client.is_some() && !pool::FcNasApiSingleton::enabled_from_env() {
-        eprintln!(
-            "http-gateway-rs: CLAW_FC_NAS_API must not be disabled in FC/E2B mode"
-        );
+        eprintln!("http-gateway-rs: CLAW_FC_NAS_API must not be disabled in FC/E2B mode");
         std::process::exit(1);
     }
     let nas_api = Arc::new(pool::FcNasApiSingleton::new());

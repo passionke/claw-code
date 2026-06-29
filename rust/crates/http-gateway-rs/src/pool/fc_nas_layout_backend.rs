@@ -82,9 +82,11 @@ impl NasLayoutBackend {
         );
         let bytes = self.nas_api.get_file(&rel).await?;
         match bytes {
-            Some(b) => Ok(Some(
-                String::from_utf8(b).map_err(|e| format!("session {file_name} not utf8: {e}"))?,
-            )),
+            Some(b) => {
+                Ok(Some(String::from_utf8(b).map_err(|e| {
+                    format!("session {file_name} not utf8: {e}")
+                })?))
+            }
             None => Ok(None),
         }
     }
@@ -105,8 +107,7 @@ impl NasLayoutBackend {
             .await?;
         self.mkdir_rel(&workers_root_rel(&cluster_id, proj_id))
             .await?;
-        self.mkdir_rel(&proj_home_rel(&cluster_id, proj_id))
-            .await?;
+        self.mkdir_rel(&proj_home_rel(&cluster_id, proj_id)).await?;
         self.mkdir_rel(tap_traces_rel()).await?;
         Ok(())
     }
@@ -139,13 +140,11 @@ impl NasLayoutBackend {
         self.mkdir_rel(&sessions_root_rel(&cluster_id, proj_id))
             .await?;
         let session_rel_path = session_rel(&cluster_id, proj_id, session_segment);
-        self.mkdir_rel(&format!("{session_rel_path}/.claw"))
-            .await?;
+        self.mkdir_rel(&format!("{session_rel_path}/.claw")).await?;
         self.mkdir_rel(&format!("{session_rel_path}/work")).await?;
         let ds_rel = format!("{session_rel_path}/ds");
         let _ = self.unlink_rel(&ds_rel).await;
-        self.symlink_rel(&ds_rel, session_ds_symlink_target())
-            .await
+        self.symlink_rel(&ds_rel, session_ds_symlink_target()).await
     }
 
     /// PG project config → `proj_N/home` on NAS via nas-api.
@@ -160,7 +159,8 @@ impl NasLayoutBackend {
             .await
             .map_err(|e| format!("load project_config: {e}"))?;
         let Some(row) = row else {
-            self.write_proj_vscode_settings(&cluster_id, proj_id).await?;
+            self.write_proj_vscode_settings(&cluster_id, proj_id)
+                .await?;
             return Ok(());
         };
         let scaffold = crate::gateway_global_settings::load_system_prompt_default(session_db)
@@ -189,7 +189,8 @@ impl NasLayoutBackend {
         )
         .await
         .ok();
-        self.write_proj_vscode_settings(&cluster_id, proj_id).await?;
+        self.write_proj_vscode_settings(&cluster_id, proj_id)
+            .await?;
         Ok(())
     }
 
@@ -201,8 +202,13 @@ impl NasLayoutBackend {
         let body = serde_json::to_string_pretty(&json!({ "claw.projId": proj_id }))
             .map_err(|e| format!("serialize vscode settings: {e}"))?
             + "\n";
-        self.put_proj_home_file(cluster_id, proj_id, ".vscode/settings.json", body.as_bytes())
-            .await
+        self.put_proj_home_file(
+            cluster_id,
+            proj_id,
+            ".vscode/settings.json",
+            body.as_bytes(),
+        )
+        .await
     }
 
     pub async fn prepare_fc_worker_bind_sources(

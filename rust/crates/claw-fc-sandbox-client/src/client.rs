@@ -290,7 +290,10 @@ impl FcSandboxClient {
     }
 
     /// `GET /sandboxes/{id}` — state + `endAt` for TTL verification.
-    pub async fn fetch_sandbox_snapshot(&self, sandbox_id: &str) -> Result<SandboxSnapshot, String> {
+    pub async fn fetch_sandbox_snapshot(
+        &self,
+        sandbox_id: &str,
+    ) -> Result<SandboxSnapshot, String> {
         let url = format!("{}/sandboxes/{}", self.config.api_url, sandbox_id);
         let resp = self
             .http
@@ -387,8 +390,7 @@ impl FcSandboxClient {
     /// Background lease touch for tracked sandboxes (60s tick; verifies `endAt` on self-hosted).
     pub fn spawn_lease_ticker(self: Arc<Self>) {
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(Duration::from_secs(SANDBOX_LEASE_TICK_SECS));
+            let mut interval = tokio::time::interval(Duration::from_secs(SANDBOX_LEASE_TICK_SECS));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
@@ -482,10 +484,7 @@ impl FcSandboxClient {
         handle: &FcSandboxHandle,
         mount_points: &[NasMountPoint],
     ) -> Result<(), String> {
-        let dirs: Vec<&str> = mount_points
-            .iter()
-            .map(|m| m.mount_dir.as_str())
-            .collect();
+        let dirs: Vec<&str> = mount_points.iter().map(|m| m.mount_dir.as_str()).collect();
         if dirs.is_empty() {
             return Ok(());
         }
@@ -779,10 +778,7 @@ impl FcSandboxClient {
     }
 
     /// Gateway shutdown: DELETE leased sandboxes except persisted project workers.
-    pub async fn kill_all_leased_sandboxes_except(
-        &self,
-        skip_sandbox_ids: &[String],
-    ) -> usize {
+    pub async fn kill_all_leased_sandboxes_except(&self, skip_sandbox_ids: &[String]) -> usize {
         let skip: std::collections::HashSet<&str> =
             skip_sandbox_ids.iter().map(String::as_str).collect();
         let ids: Vec<String> = self
@@ -870,8 +866,6 @@ impl FcSandboxClient {
             "session_root": session_root,
             "env": env,
             "timeout": 600,
-            "nas_tools_rel": self.config.nas_tools_rel,
-            "self_hosted": self.config.is_self_hosted(),
         });
         Self::run_exec_helper(&self.config.exec_helper, &payload, on_stdout_line).await
     }
@@ -887,12 +881,12 @@ impl FcSandboxClient {
             .map(|_| ())
     }
 
-    /// Like [`Self::exec_shell_script`] but streams guest stdout lines to `on_stdout_line`.
+    /// Like [`Self::exec_shell_script`] but streams stdout lines via NDJSON `stdout_line` events.
     pub async fn exec_shell_script_streaming(
         &self,
         handle: &FcSandboxHandle,
         script: &str,
-        on_stdout_line: Arc<dyn Fn(String) + Send + Sync>,
+        on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<FcExecOutcome, String> {
         self.touch_sandbox_lease(&handle.sandbox_id).await?;
         let payload = json!({
@@ -903,10 +897,8 @@ impl FcSandboxClient {
             "sandbox_url": self.config.sandbox_url,
             "sandbox_id": handle.sandbox_id,
             "script": script,
-            "nas_tools_rel": self.config.nas_tools_rel,
-            "self_hosted": self.config.is_self_hosted(),
         });
-        Self::run_exec_helper(&self.config.exec_helper, &payload, Some(on_stdout_line)).await
+        Self::run_exec_helper(&self.config.exec_helper, &payload, on_stdout_line).await
     }
 
     /// Like [`Self::exec_shell_script`] but returns captured stdout (for small in-guest reads).
@@ -924,8 +916,6 @@ impl FcSandboxClient {
             "sandbox_url": self.config.sandbox_url,
             "sandbox_id": handle.sandbox_id,
             "script": script,
-            "nas_tools_rel": self.config.nas_tools_rel,
-            "self_hosted": self.config.is_self_hosted(),
         });
         let outcome = Self::run_exec_helper(&self.config.exec_helper, &payload, None).await?;
         Ok(outcome.stdout)
@@ -980,6 +970,7 @@ impl FcSandboxClient {
         let mut line = String::new();
         let mut outcome: Option<FcExecOutcome> = None;
         let mut helper_error: Option<String> = None;
+        let mut stdout_line_events = 0u32;
 
         loop {
             line.clear();
@@ -996,6 +987,9 @@ impl FcSandboxClient {
             }
             let parsed: Value = serde_json::from_str(trimmed)
                 .map_err(|e| format!("fc exec helper ndjson decode: {e}: {trimmed}"))?;
+            if parsed.get("ev").and_then(Value::as_str) == Some("stdout_line") {
+                stdout_line_events = stdout_line_events.saturating_add(1);
+            }
             match ingest_fc_exec_helper_line(&parsed, trimmed, on_stdout_line.as_ref()) {
                 FcExecHelperIngest::More => {}
                 FcExecHelperIngest::Outcome(done) => {
@@ -1018,7 +1012,14 @@ impl FcSandboxClient {
         if let Some(err) = helper_error {
             return Err(err);
         }
-        if let Some(out) = outcome {
+        if let Some(mut out) = outcome {
+            if stdout_line_events == 0 {
+                if let Some(hook) = on_stdout_line.as_ref() {
+                    if !out.stdout.is_empty() {
+                        hook(out.stdout.clone());
+                    }
+                }
+            }
             if !status.success() && out.exit_code == 0 {
                 warn!(
                     target: "claw_fc_sandbox",
@@ -1190,7 +1191,6 @@ mod client_tests {
             sandbox_timeout_secs: 300,
             nas_server: None,
             nas_export: None,
-            nas_tools_rel: ".claw-fc-tools".into(),
             nas_user_id: 1000,
             nas_group_id: 1000,
             exec_helper: "deploy/fc-sandbox/fc_exec.py".into(),

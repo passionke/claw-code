@@ -56,8 +56,7 @@ pub fn build_ensure_ovs_interactive_session_script(segment: &str) -> String {
         "workspace_root": format!("{GUEST_CLAW_SESSIONS}/{segment}"),
     })
     .to_string();
-    let meta_b64 =
-        base64::engine::general_purpose::STANDARD.encode(meta_line.as_bytes());
+    let meta_b64 = base64::engine::general_purpose::STANDARD.encode(meta_line.as_bytes());
     format!(
         r#"set -e
 JSONL={jsonl}

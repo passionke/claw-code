@@ -74,11 +74,102 @@ print(f"OK projId={pid} session={sid}")
 PY
 }
 
+run_agent_ws_multi_host() {
+  GATEWAY_PORT="${GATEWAY_PORT}" SESSION_ID="${SESSION_ID}" PROJ_ID="${PROJ_ID}" \
+    CHAT_SESSION_ID="${CHAT_SESSION_ID:-e2e-multi}" TIMEOUT_SEC="${TIMEOUT_SEC}" python3 - <<'PY'
+import json, os, sys, time
+try:
+    import websocket
+except ImportError:
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "websocket-client"])
+    import websocket
+
+port = os.environ["GATEWAY_PORT"]
+sid = os.environ["SESSION_ID"]
+pid = os.environ["PROJ_ID"]
+chat = os.environ.get("CHAT_SESSION_ID", "e2e-multi")
+timeout_sec = int(os.environ.get("TIMEOUT_SEC", "90"))
+url = f"ws://127.0.0.1:{port}/v1/sessions/{sid}/agent/ws?projId={pid}&chatSessionId={chat}"
+prompts = [
+    "Remember the secret codeword ZEBRA42 for this chat only.\n",
+    "What secret codeword did I ask you to remember? Reply with the codeword only.\n",
+]
+replies = []
+err = ""
+
+def run_prompt(prompt):
+    global err
+    got = False
+    text_parts = []
+
+    def on_message(ws, message):
+        nonlocal got, err
+        got = True
+        try:
+            m = json.loads(message)
+            if m.get("type") == "error":
+                err = m.get("message") or "agent error"
+                ws.close()
+            elif m.get("type") == "cdp":
+                ev = m.get("event") or {}
+                if ev.get("ev") == "content.delta" and ev.get("text"):
+                    text_parts.append(ev["text"])
+                if ev.get("ev") == "status" and ev.get("phase") in ("done", "failed"):
+                    ws.close()
+        except Exception:
+            pass
+
+    def on_open(ws):
+        ws.send(json.dumps({"type": "prompt", "text": prompt}))
+
+    ws = websocket.WebSocketApp(url, on_open=on_open, on_message=on_message)
+    ws.run_forever(ping_interval=20, ping_timeout=10)
+    if err:
+        raise RuntimeError(err)
+    if not got:
+        raise RuntimeError("no response")
+    replies.append("".join(text_parts))
+
+for p in prompts:
+    run_prompt(p)
+    time.sleep(0.5)
+
+if "ZEBRA42" not in replies[-1].upper():
+    print("FAIL:multi-turn context missing ZEBRA42 in reply:", replies[-1][:200])
+    sys.exit(3)
+
+nas = os.environ.get("CLAW_NAS_HOST_MOUNT", "").strip()
+if nas:
+    import pathlib
+    record = f"ovs-chat-{pid}-{chat}"
+    jsonl = pathlib.Path(nas) / f"proj_{pid}/sessions/{record}/interactive-session.jsonl"
+    if not jsonl.is_file():
+        print(f"FAIL:missing consolidated jsonl {jsonl}")
+        sys.exit(4)
+    lines = [ln for ln in jsonl.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if len(lines) < 3:
+        print(f"FAIL:jsonl too short ({len(lines)} lines) at {jsonl}")
+        sys.exit(5)
+    body = jsonl.read_text(encoding="utf-8")
+    if "ZEBRA42" not in body:
+        print(f"FAIL:jsonl missing ZEBRA42 at {jsonl}")
+        sys.exit(6)
+
+print(f"OK multi-turn projId={pid} chat={chat}")
+PY
+}
+
 if [[ "${CLAW_OVS_E2E_SKIP_CONTAINER:-0}" == "1" ]]; then
   curl -sS "http://127.0.0.1:${GATEWAY_PORT}/healthz" | grep -q '"ok":true' || fail "gateway :${GATEWAY_PORT} not healthy"
   echo "==> agent WS from host (projId=${PROJ_ID} session=${SESSION_ID} prompt=${PROMPT})"
   out="$(run_agent_ws_host 2>&1)" || { echo "${out}"; exit 1; }
   echo "${out}"
+  if [[ "${CLAW_OVS_E2E_MULTI_TURN:-0}" == "1" ]]; then
+    echo "==> multi-turn agent WS (chatSessionId=e2e-multi)"
+    out="$(run_agent_ws_multi_host 2>&1)" || { echo "${out}"; exit 1; }
+    echo "${out}"
+  fi
   echo "verify-ovs-claw-e2e: OK"
   exit 0
 fi

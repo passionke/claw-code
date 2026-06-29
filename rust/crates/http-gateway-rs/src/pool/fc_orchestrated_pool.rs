@@ -85,7 +85,11 @@ impl FcOrchestratedPool {
     }
 
     /// Per-turn task JSON only; transcript SoT is NAS `gateway-solve-session.jsonl`. Author: kejiqing
-    async fn load_solve_task_json(&self, db: &GatewaySessionDb, turn_id: &str) -> Result<String, String> {
+    async fn load_solve_task_json(
+        &self,
+        db: &GatewaySessionDb,
+        turn_id: &str,
+    ) -> Result<String, String> {
         let task = db
             .get_solve_task_json(turn_id)
             .await

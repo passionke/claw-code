@@ -482,14 +482,12 @@ pub async fn terminal_start(
 
     let _ = interactive_backend_is_fc();
     let session_segment = crate::session_merge::sessions_directory_segment(session_id);
-    let session_home = gateway_session_home(&ctx.work_root, req.proj_id, session_id).map_err(
-        |e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e),
-    )?;
+    let session_home = gateway_session_home(&ctx.work_root, req.proj_id, session_id)
+        .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let nas_root = ctx.pool_clients.nas_host_root();
     if ctx.pool_clients.fc_nas_layout_active() {
-        let cluster_id = pool::nas_cluster_id().map_err(|e| {
-            TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e)
-        })?;
+        let cluster_id = pool::nas_cluster_id()
+            .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         pool::ensure_fc_proj_nas_roots(&nas_root, &cluster_id, req.proj_id)
             .await
             .map_err(|e| {
@@ -547,9 +545,8 @@ pub async fn terminal_start(
             })?;
     }
 
-    let proj_dir = gateway_proj_work_dir(&ctx.work_root, req.proj_id).map_err(|e| {
-        TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e)
-    })?;
+    let proj_dir = gateway_proj_work_dir(&ctx.work_root, req.proj_id)
+        .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     ctx.pool_clients
         .assert_proj_worker_isolation_supported(&ctx.session_db, req.proj_id)

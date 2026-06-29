@@ -13,20 +13,21 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::client_origin::CLIENT_ORIGIN_OVS_CHAT;
-use crate::persistence::transcript::{
-    import_turn_messages_to_db, report_body_from_turn_messages, turn_message_groups_from_jsonl_contents,
-};
 use crate::persistence::transcript;
+use crate::persistence::transcript::{
+    import_turn_messages_to_db, report_body_from_turn_messages,
+    turn_message_groups_from_jsonl_contents,
+};
 use crate::pool::interactive_backend::{
     interactive_backend_is_fc, InteractiveBackendKind, FC_INTERACTIVE_POOL_ID,
 };
+use crate::pool::{gateway_session_home, nas_cluster_id};
 use crate::session_db::GatewaySessionDb;
 use crate::session_ovs_api::{ovs_agent_session_id, ovs_chat_record_session_id};
 use crate::session_terminal_api::{
     ensure_terminal_active, ActiveTerminalSession, TerminalApiContext, TerminalApiError,
 };
 use crate::turn_id;
-use crate::pool::{gateway_session_home, nas_cluster_id};
 use claw_fc_sandbox_client::FcSandboxHandle;
 use gateway_solve_turn::{
     build_ovs_interactive_prompt_script, build_write_gateway_record_session_script,
@@ -502,19 +503,12 @@ async fn run_ovs_interactive_prompt(
     });
 
     let outcome = client
-        .exec_shell_script_streaming(&handle, &script, hook)
+        .exec_shell_script_streaming(&handle, &script, Some(hook))
         .await?;
     drop(line_tx);
     let mut tail_carry = pump.await.map_err(|e| format!("stdout pump join: {e}"))?;
     if !tail_carry.is_empty() {
-        process_exec_stdout_chunk(
-            &mut tail_carry,
-            "",
-            cli_tx,
-            active_turn,
-            &ctx.session_db,
-        )
-        .await;
+        process_exec_stdout_chunk(&mut tail_carry, "", cli_tx, active_turn, &ctx.session_db).await;
     }
 
     if outcome.exit_code != 0 {
@@ -730,11 +724,15 @@ mod tests {
 
     #[tokio::test]
     async fn record_exec_lock_rejects_concurrent_same_record() {
-        let _a = try_acquire_record_exec("ovs-chat-1-x").await.expect("first");
+        let _a = try_acquire_record_exec("ovs-chat-1-x")
+            .await
+            .expect("first");
         let err = try_acquire_record_exec("ovs-chat-1-x")
             .await
             .expect_err("second");
         assert!(err.contains("previous turn still running"));
-        let _b = try_acquire_record_exec("ovs-chat-1-y").await.expect("other record");
+        let _b = try_acquire_record_exec("ovs-chat-1-y")
+            .await
+            .expect("other record");
     }
 }

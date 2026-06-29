@@ -18,8 +18,8 @@ use crate::multi_agent::timings::MultiAgentTimings;
 use crate::multi_agent::writer_turn::run_writer_turn;
 use crate::project_orchestration::SolveOrchestrationConfig;
 use crate::project_preflight;
-use crate::sqlbot_preflight::sqlbot_query_context_from_session;
 use crate::solve_timing::append_solve_timing_point;
+use crate::sqlbot_preflight::sqlbot_query_context_from_session;
 use crate::{
     default_system_date, err, gateway_solve_session_persistence_path, initialize_mcp_runtime,
     reset_task_progress, truncate_progress_history, DirectToolExecutor, GatewayMcpCallContext,

@@ -52,9 +52,7 @@ pub fn gateway_session_home(
 /// Host path `work_root/{clusterId}/proj_<id>/` (gateway view). Author: kejiqing
 #[must_use]
 pub fn proj_work_dir(work_root: &Path, cluster_id: &str, proj_id: i64) -> std::path::PathBuf {
-    work_root
-        .join(cluster_id)
-        .join(format!("proj_{proj_id}"))
+    work_root.join(cluster_id).join(format!("proj_{proj_id}"))
 }
 
 #[must_use]
@@ -208,4 +206,3 @@ pub async fn finalize_turn_after_readback(
     .await
     .map_err(|e| format!("finalize turn: {e}"))
 }
-

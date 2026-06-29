@@ -72,6 +72,9 @@ mod tests {
     #[test]
     fn renew_interval_defaults_to_ten_minutes() {
         assert_eq!(fc_project_worker_renew_interval_secs_from_env(3600), 600);
-        assert_eq!(fc_project_worker_renew_interval_secs_from_env(31_536_000), 600);
+        assert_eq!(
+            fc_project_worker_renew_interval_secs_from_env(31_536_000),
+            600
+        );
     }
 }

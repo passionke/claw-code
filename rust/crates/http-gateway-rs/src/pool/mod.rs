@@ -21,10 +21,9 @@ pub use traits::{PoolOps, SlotLease, TaskOutcome};
 pub use clients::PoolClients;
 pub use fc_nas_layout::{
     allocate_worker_id, ensure_fc_proj_nas_roots, ensure_proj_home_dir_on_nas,
-    ensure_proj_sessions_root_on_nas, ensure_proj_workers_root_on_nas,
-    ensure_session_root_on_nas, ensure_tap_traces_root_on_nas, ensure_worker_root_on_nas,
-    fc_nas_layout_active, nas_host_root, prepare_fc_worker_bind_sources, proj_home_host_path,
-    session_host_path, worker_host_path,
+    ensure_proj_sessions_root_on_nas, ensure_proj_workers_root_on_nas, ensure_session_root_on_nas,
+    ensure_tap_traces_root_on_nas, ensure_worker_root_on_nas, fc_nas_layout_active, nas_host_root,
+    prepare_fc_worker_bind_sources, proj_home_host_path, session_host_path, worker_host_path,
 };
 pub use fc_nas_layout_backend::NasLayoutBackend;
 pub use fc_orchestrated_pool::{FcOrchestratedPool, FC_POOL_ID};

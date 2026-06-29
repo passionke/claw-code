@@ -6,6 +6,8 @@ Author: kejiqing
 
 **上下文 SoT：** `record_session_id` → `{clusterId}/proj_{N}/sessions/{segment}/.claw/interactive-session.jsonl`（guest `/claw_sessions/{segment}`）。`worker_session_id`（`ovs-{projId}`）仅表示项目级 worker 租约，**不**决定 prior messages。`home/`（`/claw_ds`）对 worker **只读**。
 
+**多轮上下文续聊：** 已落地 B1（`session_agent_api` exec + `interactive-session.jsonl` resume）。详见 **[OVS-INTERACTIVE-CONTEXT-PLAN.md](./OVS-INTERACTIVE-CONTEXT-PLAN.md)**。
+
 ---
 
 ## 三种 ID（不要混用）
