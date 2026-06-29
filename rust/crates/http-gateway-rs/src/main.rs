@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
@@ -42,12 +42,12 @@ use http_gateway_rs::biz_advice_report::{
 };
 use http_gateway_rs::{
     admin_mcp_http, claw_tap_cluster_state, client_origin, gateway_admin_mcp_token,
-    gateway_claw_tap_settings, gateway_fc_nas_settings, gateway_global_settings,
-    gateway_llm_config_sync, gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve,
-    project_config_apply, project_config_version, project_entity_revision, project_extra_session,
-    project_git_sync, project_id, project_tools, session_agent_api, session_db, session_merge,
-    session_ovs_api, session_terminal_api, session_workspace_api, turn_id, turn_timeline_api,
-    turn_tools_api,
+    gateway_claw_tap_settings, gateway_fc_nas_settings, gateway_fc_observe_proxy,
+    gateway_fc_observe_reset, gateway_global_settings, gateway_llm_config_sync, gateway_translate,
+    llm_probe, mcp_probe, pool, pool_consumer_resolve, project_config_apply,
+    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
+    project_id, project_tools, session_agent_api, session_db, session_merge, session_ovs_api,
+    session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -119,7 +119,7 @@ pub(crate) struct AppState {
     session_solve_locks: Arc<Mutex<HashMap<(i64, String), Arc<Mutex<()>>>>>,
     session_db: Arc<session_db::GatewaySessionDb>,
     cfg: Arc<GatewayConfig>,
-    /// When using `docker_pool` / `podman_pool`, active async task id → pool + slot for cancel.
+    /// Active async task id → pool + slot for cancel (FC solve leases).
     docker_slots: Arc<Mutex<HashMap<String, (Arc<dyn pool::PoolOps + Send + Sync>, usize)>>>,
     pool_clients: pool::PoolClients,
     /// Worker stdout `report.delta` ingest + live SSE for running turns. Author: kejiqing
@@ -130,8 +130,10 @@ pub(crate) struct AppState {
     llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle,
     /// clawTap cluster consistency (strict only; mismatch blocks solve). Author: kejiqing
     claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
-    /// Active interactive terminal sessions (`/coding`). Author: kejiqing
+    /// Active interactive sessions for OVS `agent/ws` (internal ttyd bridge). Author: kejiqing
     terminal_registry: session_terminal_api::TerminalSessionRegistry,
+    /// NAS layout + file writes via e2b claw-nas-api singleton (required in FC/E2B mode).
+    nas_api: Arc<pool::FcNasApiSingleton>,
 }
 
 impl AppState {
@@ -143,15 +145,10 @@ impl AppState {
             self.pool_clients.clone(),
             self.session_db.clone(),
             self.terminal_registry.clone(),
-            pool_runtime_cli_bin(self.cfg.solve_isolation).to_string(),
+            container_runtime_bin(),
             self.claw_tap_cluster.clone(),
             self.llm_runtime.clone(),
         )
-    }
-
-    #[must_use]
-    fn workspace_api_ctx(&self) -> session_workspace_api::WorkspaceApiContext {
-        session_workspace_api::workspace_api_context(self.cfg.work_root.clone())
     }
 
     #[must_use]
@@ -160,58 +157,21 @@ impl AppState {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SolveIsolation {
-    DockerPool,
-    PodmanPool,
-}
-
-impl SolveIsolation {
-    fn from_env() -> Self {
-        let raw = std::env::var("CLAW_SOLVE_ISOLATION")
-            .map(|v| v.trim().to_ascii_lowercase())
-            .unwrap_or_default();
-        match raw.as_str() {
-            "" | "podman_pool" => Self::PodmanPool,
-            "docker_pool" => Self::DockerPool,
-            "inprocess" => {
-                eprintln!(
-                    "http-gateway-rs: CLAW_SOLVE_ISOLATION=inprocess is removed; use podman_pool or docker_pool."
-                );
-                std::process::exit(1);
-            }
-            other => {
-                eprintln!(
-                    "http-gateway-rs: invalid CLAW_SOLVE_ISOLATION={other:?}; expected podman_pool or docker_pool."
-                );
-                std::process::exit(1);
-            }
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::DockerPool => "docker_pool",
-            Self::PodmanPool => "podman_pool",
-        }
-    }
+#[must_use]
+fn container_runtime_bin() -> String {
+    std::env::var("CLAW_CONTAINER_RUNTIME")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("auto"))
+        .unwrap_or_else(|| "podman".to_string())
 }
 
 #[derive(Clone)]
 pub(crate) struct GatewayConfig {
-    solve_isolation: SolveIsolation,
     claw_bin: String,
     work_root: PathBuf,
-    /// Host `CLAW_WORK_ROOT` equivalent when the gateway is containerized and uses [`pool::PoolRpcClient`].
+    /// Host `CLAW_WORK_ROOT` when gateway container paths differ from NAS bind source.
     pool_rpc_host_work_root: Option<PathBuf>,
-    /// `CLAW_POOL_DAEMON_TCP` (`host:port`) when using TCP to host daemon.
-    pool_rpc_tcp: Option<String>,
-    /// `CLAW_POOL_DAEMON_SOCKET` when using Unix RPC (optional).
-    pool_rpc_unix_socket: Option<String>,
-    /// True when pool RPC goes to out-of-process daemon (TCP or Unix).
-    pool_rpc_remote: bool,
-    /// Base URL for pool live report HTTP (e.g. `http://claw-pool-daemon:9944`).
-    pool_http_base: String,
     /// Same-machine pool id (`CLAW_POOL_ID` / hostname); written on turn enqueue for live SSE JOIN.
     co_located_pool_id: Option<String>,
     ds_registry_path: PathBuf,
@@ -1106,7 +1066,7 @@ async fn finalize_solve_turn_success(
     turn_id: &str,
     result: &SolveResponse,
 ) {
-    // Pool v1: `claw-pool-daemon` commits `status=succeeded` + `artifacts_ready=true` after readback.
+    // FC solve readback can mark `status=succeeded` + `artifacts_ready=true` before this handoff.
     // Gateway must not overwrite that with `finalize_turn_terminal` (which omits `artifacts_ready`).
     match db.turn_artifacts_ready(turn_id).await {
         Ok(true) => return,
@@ -1256,7 +1216,6 @@ fn validate_projects_git_at_startup(url: &str, token: Option<&str>) {
 
 #[tokio::main]
 async fn main() {
-    let solve_isolation = SolveIsolation::from_env();
     let work_root = PathBuf::from(
         std::env::var("CLAW_WORK_ROOT").unwrap_or_else(|_| "/tmp/claw-workspace".to_string()),
     );
@@ -1274,7 +1233,7 @@ async fn main() {
         component = "startup",
         phase = "process_boot",
         work_root = %work_root.display(),
-        solve_isolation = solve_isolation.as_str(),
+        solve_backend = "fc",
         file_log_dir = file_log.as_ref().map(|p| p.display().to_string()),
         file_log_enabled = file_log.is_some(),
         stdout_json_forced_for_file_sink = file_log.is_some(),
@@ -1296,28 +1255,7 @@ async fn main() {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
 
-    let pool_daemon_tcp = std::env::var("CLAW_POOL_DAEMON_TCP")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-
-    let pool_daemon_socket = std::env::var("CLAW_POOL_DAEMON_SOCKET")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-
-    let pool_rpc_tcp_cfg = pool_daemon_tcp.clone();
-    let pool_rpc_unix_cfg = pool_daemon_socket.clone();
-
-    if pool_rpc_host_work_root.is_none() {
-        warn!(
-            target: "claw_gateway_orchestration",
-            component = "startup",
-            phase = "pool_rpc_missing_host_root",
-            "CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
-        );
-    }
-    // Pool RPC: single claw-sandbox HTTP client. Author: kejiqing
+    // FC cloud sandbox pool (local podman claw-sandbox removed). Author: kejiqing
     let live_report_hub = Arc::new(pool::LiveReportHub::default());
     let fc_client = claw_fc_sandbox_client::FcSandboxConfig::from_env()
         .map(|cfg| Arc::new(claw_fc_sandbox_client::FcSandboxClient::new(cfg)));
@@ -1330,24 +1268,28 @@ async fn main() {
             );
         }
     }
+    // FC/E2B: NAS layout is claw-nas-api only (no gateway local mount fallback).
+    if fc_client.is_some() && !pool::FcNasApiSingleton::enabled_from_env() {
+        eprintln!("http-gateway-rs: CLAW_FC_NAS_API must not be disabled in FC/E2B mode");
+        std::process::exit(1);
+    }
+    let nas_api = Arc::new(pool::FcNasApiSingleton::new());
+    let nas_layout = pool::NasLayoutBackend::new(Arc::clone(&nas_api));
     let pool_clients = pool::PoolClients::from_env(
         Arc::clone(&live_report_hub),
         work_root.clone(),
         fc_client.clone(),
         pool_rpc_host_work_root.clone(),
+        nas_layout,
     );
-    pool_clients.spawn_fc_observe_warmup();
-    pool_clients.spawn_fc_ovs_warmup();
-    let pool_rpc_remote = true;
     let co_located_pool_id = Some(pool_clients.pool_id().to_string());
     tracing::info!(
         target: "claw_live_report",
         component = "gateway_startup",
         contract = http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT,
-        pool_rpc_remote,
         pool_id = %pool_clients.pool_id(),
         co_located_pool_id = ?co_located_pool_id,
-        "live_report.gateway — terminal snapshot from DB; running live SSE from gateway LiveReportHub (sandbox exec NDJSON relay)"
+        "live_report.gateway — terminal snapshot from DB; running live SSE from gateway LiveReportHub (FC worker stdout relay)"
     );
 
     let projects_git_url = std::env::var("CLAW_PROJECTS_GIT_URL")
@@ -1423,22 +1365,10 @@ async fn main() {
         }
     };
 
-    let pool_http_base = std::env::var("CLAW_SANDBOX_URL")
-        .ok()
-        .or_else(|| std::env::var("CLAW_POOL_HTTP_BASE").ok())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_default();
-
     let cfg = GatewayConfig {
-        solve_isolation,
         claw_bin: std::env::var("CLAW_BIN").unwrap_or_else(|_| "claw".to_string()),
         work_root,
         pool_rpc_host_work_root,
-        pool_rpc_tcp: pool_rpc_tcp_cfg,
-        pool_rpc_unix_socket: pool_rpc_unix_cfg,
-        pool_rpc_remote,
-        pool_http_base,
         co_located_pool_id,
         ds_registry_path: std::env::var("CLAW_DS_REGISTRY").map_or_else(
             |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("datasources.example.yaml"),
@@ -1529,6 +1459,18 @@ async fn main() {
     }
     let session_db = Arc::new(session_db);
     pool_clients.bind_session_db(Arc::clone(&session_db)).await;
+    nas_api.bind_session_db(Arc::clone(&session_db)).await;
+    if let Err(e) = nas_api.verify_endpoint_configured().await {
+        eprintln!("http-gateway-rs: claw-nas-api not ready: {e}");
+        std::process::exit(1);
+    }
+    if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
+        tracing::warn!(
+            target: "claw_fc_proj_worker",
+            error = %e,
+            "startup project worker reconcile failed (best-effort)"
+        );
+    }
     info!(
         target: "claw_gateway_orchestration",
         component = "startup",
@@ -1550,6 +1492,7 @@ async fn main() {
         llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
         terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
+        nas_api,
     };
 
     run_startup_project_config_apply(&state).await;
@@ -1627,7 +1570,7 @@ async fn main() {
         .route("/v1/sessions/{session_id}/turns", get(list_session_turns))
         .route(
             "/v1/sessions/{session_id}/conversation_translate",
-            get(get_conversation_translate).put(put_conversation_translate),
+            get(get_conversation_translate).post(rebuild_conversation_translate),
         )
         .route("/v1/pools", get(list_claw_pools_handler))
         .route("/v1/pools/{pool_id}", delete(delete_claw_pool_handler))
@@ -1643,47 +1586,10 @@ async fn main() {
             "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
             post(cancel_session_turn),
         )
-        .route("/v1/terminal/inventory", get(terminal_inventory_handler))
-        .route(
-            "/v1/terminal/pool-force-release",
-            post(terminal_pool_force_release_handler),
-        )
-        .route(
-            "/v1/sessions/{session_id}/terminal/attach",
-            post(terminal_attach_handler),
-        )
-        .route(
-            "/v1/sessions/{session_id}/terminal/start",
-            post(terminal_start_handler),
-        )
-        .route(
-            "/v1/sessions/{session_id}/terminal/stop",
-            post(terminal_stop_handler),
-        )
-        .route(
-            "/v1/sessions/{session_id}/terminal/reattach",
-            post(terminal_reattach_handler),
-        )
-        .route(
-            "/v1/sessions/{session_id}/terminal/ws",
-            get(terminal_ws_handler),
-        )
         .route("/v1/sessions/{session_id}/agent/ws", get(agent_ws_handler))
         .route(
             "/v1/projects/{proj_id}/ovs/workspace",
             get(ovs_workspace_handler),
-        )
-        .route(
-            "/v1/sessions/{session_id}/workspace/tree",
-            get(workspace_tree_handler),
-        )
-        .route(
-            "/v1/sessions/{session_id}/workspace/file",
-            get(workspace_file_handler),
-        )
-        .route(
-            "/v1/sessions/{session_id}/workspace/media",
-            get(workspace_media_handler),
         )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
@@ -1740,6 +1646,10 @@ async fn main() {
         .route(
             "/v1/gateway/global-settings",
             get(get_gateway_global_settings_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/observe-tap/reset",
+            post(reset_gateway_observe_tap_handler),
         )
         // FC OVS / observe Live: browsers use direct e2b traffic URLs from API (no gateway proxy).
         .route(
@@ -2882,7 +2792,7 @@ fn default_project_config_row(proj_id: i64) -> session_db::ProjectConfigRow {
         language_pipeline_json: json!({}),
         extra_session_fields_json: json!([]),
         prompt_limits_json: project_config_apply::default_prompt_limits_json(),
-        worker_isolation_json: pool::worker_isolation::default_worker_isolation_json(),
+        worker_isolation_json: pool::default_worker_isolation_json(),
     }
 }
 
@@ -3874,64 +3784,6 @@ async fn list_proj_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, Api
     Ok(out)
 }
 
-async fn terminal_inventory_handler(
-    State(state): State<AppState>,
-    Query(q): Query<session_terminal_api::TerminalProjQuery>,
-) -> Result<
-    Json<session_terminal_api::TerminalInventoryResponse>,
-    session_terminal_api::TerminalApiError,
-> {
-    session_terminal_api::terminal_inventory(state.terminal_api_ctx(), q).await
-}
-
-async fn terminal_pool_force_release_handler(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, session_terminal_api::TerminalApiError> {
-    session_terminal_api::terminal_pool_force_release(state.terminal_api_ctx()).await
-}
-
-async fn terminal_attach_handler(
-    State(state): State<AppState>,
-    AxumPath(session_id): AxumPath<String>,
-    Json(req): Json<session_terminal_api::TerminalStartRequest>,
-) -> Result<Json<session_terminal_api::TerminalStartResponse>, session_terminal_api::TerminalApiError>
-{
-    session_terminal_api::terminal_attach(state.terminal_api_ctx(), session_id, Json(req)).await
-}
-
-async fn terminal_start_handler(
-    State(state): State<AppState>,
-    Json(req): Json<session_terminal_api::TerminalStartRequest>,
-) -> Result<Json<session_terminal_api::TerminalStartResponse>, session_terminal_api::TerminalApiError>
-{
-    session_terminal_api::terminal_start(state.terminal_api_ctx(), Json(req)).await
-}
-
-async fn terminal_stop_handler(
-    State(state): State<AppState>,
-    AxumPath(session_id): AxumPath<String>,
-    Query(q): Query<session_terminal_api::TerminalProjQuery>,
-) -> Result<Json<Value>, session_terminal_api::TerminalApiError> {
-    session_terminal_api::terminal_stop(state.terminal_api_ctx(), session_id, q).await
-}
-
-async fn terminal_reattach_handler(
-    State(state): State<AppState>,
-    Json(req): Json<session_terminal_api::TerminalStartRequest>,
-) -> Result<Json<session_terminal_api::TerminalStartResponse>, session_terminal_api::TerminalApiError>
-{
-    session_terminal_api::terminal_reattach(state.terminal_api_ctx(), Json(req)).await
-}
-
-async fn terminal_ws_handler(
-    ws: axum::extract::ws::WebSocketUpgrade,
-    State(state): State<AppState>,
-    AxumPath(session_id): AxumPath<String>,
-    Query(q): Query<session_terminal_api::TerminalProjQuery>,
-) -> impl IntoResponse {
-    session_terminal_api::terminal_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
-}
-
 async fn agent_ws_handler(
     ws: axum::extract::ws::WebSocketUpgrade,
     State(state): State<AppState>,
@@ -3948,45 +3800,13 @@ async fn ovs_workspace_handler(
     session_ovs_api::get_ovs_workspace(
         state.ovs_api_ctx(),
         &state.session_db,
-        state.pool_clients.fc_ovs_singleton(),
-        state.pool_clients.fc_warm_pool(),
+        Some(state.pool_clients.fc_worker_registry()),
         proj_id,
     )
     .await
 }
 
-async fn workspace_tree_handler(
-    State(state): State<AppState>,
-    AxumPath(session_id): AxumPath<String>,
-    Query(q): Query<session_terminal_api::TerminalProjQuery>,
-) -> Result<
-    Json<session_workspace_api::WorkspaceTreeResponse>,
-    session_terminal_api::TerminalApiError,
-> {
-    session_workspace_api::workspace_tree(state.workspace_api_ctx(), session_id, q).await
-}
-
-async fn workspace_file_handler(
-    State(state): State<AppState>,
-    AxumPath(session_id): AxumPath<String>,
-    Query(q): Query<session_workspace_api::WorkspaceFileQuery>,
-) -> Result<
-    Json<session_workspace_api::WorkspaceFileResponse>,
-    session_terminal_api::TerminalApiError,
-> {
-    session_workspace_api::workspace_file(state.workspace_api_ctx(), session_id, q).await
-}
-
-async fn workspace_media_handler(
-    State(state): State<AppState>,
-    AxumPath(session_id): AxumPath<String>,
-    Query(q): Query<session_workspace_api::WorkspaceMediaQuery>,
-) -> Result<impl IntoResponse, session_terminal_api::TerminalApiError> {
-    session_workspace_api::workspace_media(state.workspace_api_ctx(), session_id, q).await
-}
-
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
-    let isolation = state.cfg.solve_isolation.as_str();
     let proj_workspaces = build_proj_workspaces_health(&state).await;
     let deploy_image_ref = http_gateway_rs::deploy_image::image_ref_from_env();
     let deploy_image_tag = http_gateway_rs::deploy_image::deploy_image_tag(&deploy_image_ref);
@@ -4003,11 +3823,8 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "defaultHttpMcpName": state.cfg.default_http_mcp_name,
         "defaultHttpMcpUrl": state.cfg.default_http_mcp_url,
         "defaultHttpMcpTransport": state.cfg.default_http_mcp_transport,
-        "solveIsolation": isolation,
-        "containerPool": true,
-        "poolRpcRemote": state.cfg.pool_rpc_remote,
-        "poolRpcTcp": state.cfg.pool_rpc_tcp,
-        "poolRpcUnixSocket": state.cfg.pool_rpc_unix_socket,
+        "solveBackend": "fc",
+        "fcSandbox": true,
         "poolRpcHostWorkRoot": state.cfg.pool_rpc_host_work_root.as_ref().map(|p| p.display().to_string()),
         "sessionDatabaseBackend": "postgresql",
         "gatewayDatabaseUrl": state.session_db.database_url_redacted(),
@@ -4025,14 +3842,13 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
                 http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT
             },
             "producer": "worker:claw gateway-solve-once stdout __CLAW_GATEWAY_STDOUT__ report.delta",
-            "ingest": "pool-local (claw-pool-daemon LiveReportHub)",
+            "ingest": "gateway LiveReportHub (FC worker stdout)",
             "terminalSnapshot": "gateway-db (GET biz_advice_report stream when succeeded)",
             "live": if state.cfg.live_biz_report_spill_enabled {
-                "LLM polish SSE (biz_advice_report after succeeded; no pool proxy)"
+                "LLM polish SSE (biz_advice_report after succeeded)"
             } else {
-                "gateway-proxy → pool HTTP /v1/biz_advice_report/live"
+                "gateway LiveReportHub SSE"
             },
-            "poolHttpBase": state.cfg.pool_http_base,
         },
         "clawTapCluster": cluster_snap,
     }))
@@ -4537,7 +4353,7 @@ async fn create_project(
             language_pipeline_json: &json!({}),
             extra_session_fields_json: &empty_arr,
             prompt_limits_json: &empty_obj,
-            worker_isolation_json: &pool::worker_isolation::default_worker_isolation_json(),
+            worker_isolation_json: &pool::default_worker_isolation_json(),
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -4851,7 +4667,7 @@ fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
     if let Some(ref wi) = req.worker_isolation_json {
-        pool::worker_isolation::validate_worker_isolation_json(wi)
+        pool::validate_worker_isolation_json(wi)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
     Ok(())
@@ -5249,55 +5065,29 @@ async fn get_gateway_global_settings_handler(
     let mut body = gateway_global_settings::load_response(&state.session_db)
         .await
         .map_err(|e| session_db_err(&e))?;
-    if let Some(observe) = state.pool_clients.fc_observe_singleton() {
-        // Probe + reuse/recreate so liveBaseUrl always matches current sandbox id (Host domain).
-        let observe_result = match observe.ensure().await {
-            Ok(url) => Ok(url),
-            Err(e) => {
-                if let Some(cached) = observe.cached_live_base_url().await {
-                    tracing::info!(
-                        target: "claw_fc_observe",
-                        %cached,
-                        "fc observe ensure failed; using cached live base for Admin"
-                    );
-                    Ok(cached)
-                } else {
-                    tracing::warn!(
-                        target: "claw_fc_observe",
-                        error = %e,
-                        "fc observe ensure failed; Admin session traces URL withheld"
-                    );
-                    Err(e)
-                }
+    if crate::pool::interactive_backend::fc_observe_is_enabled() {
+        if let Some(tap) = body.claw_tap.as_mut() {
+            let fc_traffic = tap
+                .live_base_url
+                .as_deref()
+                .is_some_and(gateway_fc_observe_proxy::should_use_fc_traffic_browser_proxy);
+            if !fc_traffic {
+                *tap = gateway_claw_tap_settings::strip_compose_live_urls_for_fc_admin(tap.clone());
             }
-        };
-        let fc_domain = std::env::var("CLAW_FC_DOMAIN")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "supone.top".into());
-        let tap = body.claw_tap.take().unwrap_or_else(|| {
-            gateway_claw_tap_settings::ClawTapSettingsPublic {
-                mode: gateway_claw_tap_settings::ClawTapMode::Local,
-                host: String::new(),
-                proxy_port: gateway_claw_tap_settings::DEFAULT_CLAW_TAP_PROXY_PORT,
-                live_port: None,
-                updated_at_ms: 0,
-                configured: false,
-                proxy_base_url: None,
-                live_base_url: None,
-                live_session_url_template: None,
-                live_browser_hosts_line: None,
-            }
-        });
-        body.claw_tap = Some(gateway_claw_tap_settings::apply_fc_observe_admin_claw_tap(
-            tap,
-            observe_result,
-            &fc_domain,
-        ));
+        }
     }
     body.fc_nas = Some(gateway_fc_nas_settings::fc_nas_settings_public(
         &state.cfg.work_root,
     ));
+    Ok(Json(body))
+}
+
+async fn reset_gateway_observe_tap_handler(
+    State(state): State<AppState>,
+) -> Result<Json<gateway_fc_observe_reset::ObserveTapResetResponse>, ApiError> {
+    let body = gateway_fc_observe_reset::reset_observe_tap(&state.session_db)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
     Ok(Json(body))
 }
 
@@ -8424,13 +8214,6 @@ fn validate_extra_session(extra_session: Option<&Value>) -> Result<(), ApiError>
     Ok(())
 }
 
-fn pool_runtime_cli_bin(isolation: SolveIsolation) -> &'static str {
-    match isolation {
-        SolveIsolation::DockerPool => "docker",
-        SolveIsolation::PodmanPool => "podman",
-    }
-}
-
 /// Ensures `(sessionId, dsId)` exists in `SQLite` and session `.claw/settings.json` on disk. kejiqing
 async fn prepare_gateway_session(
     state: &AppState,
@@ -8461,7 +8244,8 @@ async fn prepare_gateway_session(
         )
     };
 
-    let proj_base = state.cfg.work_root.join(format!("proj_{proj_id}"));
+    let proj_base = pool::gateway_proj_work_dir(&state.cfg.work_root, proj_id)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let explicit_continuation = session_merge::trim_session_id(body_session_id).is_some();
 
     let (session_home, need_insert_row, purge_mcp_discovery, session_fs_label) = if skip_session_db
@@ -8543,8 +8327,8 @@ async fn prepare_gateway_session(
     }
 
     // Optional gateway-local cache (②): uid-align session dir; pool v1 does not bind it. kejiqing
-    let pool_bin = pool_runtime_cli_bin(state.cfg.solve_isolation);
-    pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(pool_bin, &session_home)
+    let pool_bin = container_runtime_bin();
+    pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(&pool_bin, &session_home)
         .await
         .map_err(|e| {
             ApiError::new(
@@ -8680,17 +8464,15 @@ async fn get_conversation_translate(
     .map_err(|e| ApiError::new(e.status, e.message))
 }
 
-async fn put_conversation_translate(
+async fn rebuild_conversation_translate(
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,
     Query(query): Query<ListSessionTurnsQuery>,
-    Json(body): Json<gateway_translate::PutConversationTranslateRequest>,
-) -> Result<Json<gateway_translate::PutConversationTranslateResponse>, ApiError> {
-    gateway_translate::put_conversation_translate_handler(
-        &state.session_db,
-        &session_id,
+) -> Result<Json<gateway_translate::RebuildConversationTranslateResponse>, ApiError> {
+    gateway_translate::rebuild_conversation_translate_handler(
+        state.session_db.clone(),
+        session_id,
         query.proj_id,
-        body,
     )
     .await
     .map_err(|e| ApiError::new(e.status, e.message))
@@ -8791,9 +8573,9 @@ async fn run_solve_request(
         task_id = ctx.task_id.as_deref(),
         session_fs_id = %prepared.session_fs_label,
         session_home = %prepared.session_home.display(),
-        solve_isolation = state.cfg.solve_isolation.as_str(),
+        solve_backend = "fc",
         timeout_seconds,
-        "session .claw/settings.json written; starting solve (container pool)"
+        "session .claw/settings.json written; starting solve (FC sandbox)"
     );
 
     let (pool, pool_id) = state

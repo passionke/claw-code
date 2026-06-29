@@ -6,22 +6,23 @@ Author: kejiqing
 
 **路线方针（维护优先，不搞多套叙事）**：
 
-| 场景 | 容器引擎 | 镜像从哪来 | 入口命令 |
-| --- | --- | --- | --- |
-| **本地开发**（笔记本 / 研发机） | **Podman**（`auto` 时 PATH 里优先 podman） | **本机编译打包**：`gateway.sh quick`（日常）或 **`pack-deploy`**（改 Rust/网关镜像后；慢但可预期） | `./deploy/stack/gateway.sh quick` / `pack-deploy` |
-| **线上 Linux** | **Docker** + **宿主机 `claw-sandbox`**（租还 worker，无 compose sidecar） | **只拉 CI tag**（GHCR/ACR），服务器 **不 cargo** | `./deploy/stack/gateway.sh up --release release-v…` |
+| 场景 | 容器引擎 | Worker | 镜像从哪来 | 入口命令 |
+| --- | --- | --- | --- | --- |
+| **本地开发** | Podman（`auto` 优先 podman） | **FC / e2b** | `gateway.sh quick` / `pack-deploy` | `./deploy/stack/gateway.sh quick` |
+| **线上 Linux** | Docker + compose | **FC / e2b** | **只拉 CI tag**（GHCR/ACR） | `./deploy/stack/gateway.sh up --release release-v…` |
 
-两套环境用 **同一份脚本树** `deploy/stack/lib/`；差别只在根 `.env`（模板见下表）。`deploy/podman/*.sh` 仅为旧路径 **exec 转发** 到 `deploy/stack/lib/`，新文档不再展开。
+两套环境用 **同一份脚本树** `deploy/stack/lib/`；差别在根 `.env`（模板见下表）。**solve / interactive 均经 e2b**，无宿主机 `claw-sandbox` `:9944`。
 
-**`.env` 模板（与上表对应）**：
+**`.env` 模板**：
 
-| 环境 | 模板 | 关键变量 |
+| 环境 | 模板 | 说明 |
 | --- | --- | --- |
-| 生产 Linux | `env.production.example` | `CLAW_DEPLOY_PROFILE=production`（脚本默认 `CLAW_POOL_HOST_DAEMON=1`），`up --release` 拉镜像 |
-| 本地全栈（macOS Podman） | `env.local.example` | `gateway.sh quick` / `pack-deploy local` |
-| **本地开发 · 远程后端** | `env.local-remote-backend.example` | 本机 gateway+playground；PG/pool/tap 在稳定主机。**可用但性能差**，非日常默认（见 `docs/local-dev-remote-backend.md`） |
-| 稳定沙箱主机（如 10.22.28.94） | `env.stable-dev-host.example` | 仅维护 PG+pool+tap（见 `docs/stable-sandbox-host.md`） |
-| 本地 / rootless podman | `env.production.rootless.example` | `CLAW_CONTAINER_RUNTIME=podman`；Linux 可选手写 socket；**macOS** 一般留空（自动用 `podman machine` API sock） |
+| **自托管 e2b（推荐）** | `env.selfhosted-e2b.example` | 外连 PG + e2b；见 `docs/architecture-governance.md` |
+| FC interactive 叠加 | `env.fc-interactive.example` | OVS / NAS / Observe 变量 |
+| 生产 Linux | `env.production.example` | `up --release` 拉镜像 |
+| 本地全栈 compose | `env.local.example` | `gateway.sh quick`（须 `CLAW_*_BACKEND=fc`） |
+| ~~稳定沙箱主机~~ | ~~`env.stable-dev-host.example`~~ | **已废弃** |
+| ~~远程 pool 后端~~ | ~~`env.local-remote-backend.example`~~ | **已废弃** |
 
 `compose-include.sh` 按 `CLAW_CONTAINER_RUNTIME` 解析 socket：**docker 只认** `/var/run/docker.sock`；**podman 不会在 macOS 上误回落到 docker.sock**。装真 Docker 的生产机可 `sudo touch /etc/containers/nodocker`，避免 podman 冒充 `docker` 命令。
 
@@ -30,7 +31,7 @@ Author: kejiqing
 **单入口**：**`./deploy/stack/gateway.sh`**。日常起栈用 **`quick`**；改 Rust 网关镜像后用 **`pack-deploy`**（不要等 `podman build` 里 cargo，那会卡 `Updating crates.io index`）。
 
 ```bash
-# 日常：host pool-daemon + gateway-admin dist + playground 镜像 + up + check
+# 日常：gateway-admin dist + playground 镜像 + up + check（FC worker，无 pool-daemon）
 ./deploy/stack/gateway.sh quick
 
 # 只改 React 管理台（web/gateway-admin/src）：
@@ -59,9 +60,9 @@ Author: kejiqing
 
 实现脚本在 **`deploy/stack/lib/`**（`pack-deploy.sh`、`build.sh`、`solve-once-local.sh` 等）。**不要**用 `build --in-container`（镜像内 cargo，慢且易超时）。`scripts/local-pack-deploy.sh` 等仅为兼容，转调 `gateway.sh`。
 
-其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh`**：`linux-compile` 产出 **`http-gateway-rs` + `claw` + `claw-sandbox`**，再 **`Containerfile.gateway-rs.prebuilt`** / worker 镜像 **COPY** 预编译产物（镜像内不 cargo）。
+其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh`**：`linux-compile` 产出 **`http-gateway-rs` + `claw`**，再 **`Containerfile.gateway-rs.prebuilt`** **COPY** 预编译产物（镜像内不 cargo）。**FC worker 模板**在 `deploy/fc-sandbox/`，不在 gateway 镜像内编译。
 
-**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)，**一次 `linux-compile`** 后 **prebuilt 镜像 COPY** 推 GHCR（与本地 `pack-deploy` 同路径），同一 job 链 **`mirror-to-acr`** 再 **pull → retag → push ACR**（不再二次 Rust 编译）。包名：**`claw-code`**、**`claw-gateway-worker`**、**`claw-gateway-worker-relaxed`**、**`claw-gateway-playground`**（**同一 tag**；relaxed 在 strict worker 构建完成后 **FROM strict 镜像** 追加工具层；playground 镜像内 **CI 多阶段构建** `gateway-admin`，含 `dist/assets/*.js`）。服务器 **`./deploy/stack/gateway.sh up --release release-vX.Y.Z`** 会写 **`deploy/stack/.claw-image-release.env`**（含 **`GATEWAY_PLAYGROUND_IMAGE`**、**`CLAW_RELAXED_PODMAN_IMAGE`**），**不要**在服务器跑 **`build`** / **`admin-build`** / **`admin-reload`**（无需 Node/npm）。**`/admin` 白屏**多为旧 playground 镜像缺 JS：拉 **含本修复之后** 的 release tag 并 `up --release` 重建 `gateway-playground`。**`./deploy/stack/gateway.sh up`** 起 **`claw-gateway-rs`** compose + 宿主机 **`claw-sandbox`**（`.linux-artifacts` 或本地 cargo，不在网关镜像内）。横向扩容：每台机器 **`up --release <tag>` + 根目录 `.env`** 即可。校验/发布镜像见 [`claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)（GHCR build + ACR mirror）。
+**线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)。包名：**`claw-code`**、**`claw-gateway-playground`** 等（**同一 tag**）。服务器 **`./deploy/stack/gateway.sh up --release release-vX.Y.Z`**；**不要**在服务器跑 **`build`** / **`admin-build`**。Worker 执行在 **e2b**，非宿主机 pool。
 
 **镜像仓库默认（国内）**：未设置 **`CLAW_IMAGE_PREFIX`** / **`CLAW_GHCR_PREFIX`** 且 **`GATEWAY_IMAGE`** 不含 `…/claw-code` 时，`./deploy/stack/gateway.sh up --release …` 默认从 **阿里云个人版 ACR**（`crpi-….personal.cr.aliyuncs.com/passionke`，可由 **`CLAW_ACR_IMAGE_PREFIX`** 覆盖）拼接镜像名；若要改用 GHCR，在根目录 **`.env`** 设 **`CLAW_IMAGE_REGISTRY=ghcr`**（默认前缀 **`ghcr.io/passionke`**，可由 **`CLAW_GHCR_DEFAULT_PREFIX`** 覆盖）。仍可直接设 **`CLAW_IMAGE_PREFIX=…`**（不要 `https://`），优先级最高。
 
@@ -98,8 +99,8 @@ cp deploy/stack/env.production.example .env
 
 | Profile | 环境 | 启动 |
 | --- | --- | --- |
-| `local` | macOS + podman，`podman_pool` | `gateway.sh pack-deploy local` → `up` |
-| `production` | Linux + docker，`docker_pool` | `gateway.sh up --release release-vX.Y.Z`（仅 CI 镜像） |
+| `local` | macOS + podman，**FC worker** | `gateway.sh quick` |
+| `production` | Linux + docker，**FC worker** | `gateway.sh up --release release-vX.Y.Z` |
 
 在 **仓库根目录** `.env` 里至少保证：
 
@@ -116,13 +117,14 @@ cp deploy/stack/env.production.example .env
 | `GATEWAY_PLAYGROUND_HOST_PORT` | solve_async / 项目管理 UI，默认 `18765`（compose 服务 `gateway-playground`） |
 | `PLAYGROUND_PUBLIC_GATEWAY_BASE` | 浏览器里 playground 默认网关，应与 `GATEWAY_HOST_PORT` 一致，如 `http://127.0.0.1:8088` |
 | `PLAYGROUND_ADMIN_USER` / `PLAYGROUND_ADMIN_PASSWORD` | `/admin` 登录账号密码（默认 `admin` / `sunmi123`） |
-| `CLAW_PODMAN_IMAGE` / `CLAW_DOCKER_IMAGE` | worker 镜像名（与 `CLAW_SOLVE_ISOLATION` 前缀一致） |
+| `CLAW_FC_API_URL` / `CLAW_E2B_SANDBOX_URL` | e2b API（solve + interactive **必填**） |
+| `CLAW_FC_API_KEY` | e2b 认证 |
 | `CLAW_GATEWAY_DATABASE_URL` | 必填（网关进程）；compose 内网关连 **`postgres:5432`**；宿主机映射默认 **`127.0.0.1:5433`**（`CLAW_GATEWAY_PG_HOST_PORT`，避开 sqlbot 常用 5432） |
 | `project_config`（PG） | **必填（业务）**：规则 / MCP / skills / `CLAUDE.md` 在 Admin 或 API 写入 DB，网关物化到 `ds_<id>/home` |
 | `git_sync_json`（PG，每 ds） | 可选：每项目单向 push 的 `gitUrl` / `gitRef` / token（见 `docs/project-config-model.md`） |
 | `CLAW_PROJECTS_GIT_AUTHOR` | 可选：gitSync 未填 author 时的默认 commit 作者 |
 
-`solve` 始终走 **容器池**（`podman_pool` 或 `docker_pool`）；未设置 `CLAW_SOLVE_ISOLATION` 时与 compose 默认一致为 **`podman_pool`**。
+`solve` 与 interactive 均走 **FC / e2b**（`CLAW_SOLVE_ISOLATION=fc`、`CLAW_INTERACTIVE_BACKEND=fc`）。
 
 ### 1.2 镜像
 
@@ -138,26 +140,18 @@ cp deploy/stack/env.production.example .env
 
 `gateway.sh up`（`lib/up.sh`）会：
 
-- 生成 `deploy/stack/.claw-pool-workspace.env`（其中 **`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`**，与容器内工作目录一致；不要在容器场景下写 macOS `/Users/...`）。
-- **v1**：仅 **宿主机 `claw-sandbox`（HTTP `:9944`）**；已删除 compose pool sidecar。网关经 `CLAW_SANDBOX_URL` 连 host pool；session 制品在 PostgreSQL（见 `sandbox/docs/system-design.md`）。
-- **`claw_compose`**：按 **`CLAW_CONTAINER_RUNTIME`** 调用 **`docker compose`** 或 **`podman compose`**（`podman` 时若装了 **`podman-compose`** 会用作后端，减轻 macOS 混用问题）。
-- 使用 **`up -d --force-recreate`**，避免只改 env 文件却沿用旧容器环境。
-- **启动硬门禁（必过）**：preflight 会递归校验 `CLAW_POOL_WORK_ROOT_BIND_SRC`（默认 `deploy/stack/claw-workspace`）下 **`ds_*` 等业务目录** 的 owner 是否为 `CLAW_WORKER_UID:CLAW_WORKER_GID`（默认 `1000:1000`）。**跳过** `.claw-pool-slot/`。`gateway.sh up` / `up --release` 会在 preflight **之前** 自动 `fix-workspace`（修历史 sidecar root 写的 session）；仍失败时：`./deploy/stack/gateway.sh fix-workspace` 或 `sudo chown -R 1000:1000 ./deploy/stack/claw-workspace/ds_*`。
-
-**宿主机 pool（Admin solve 必看）**：gateway 在 compose 里；**`claw-sandbox` 在宿主机 `:9944`**（单进程，strict/relaxed 为 worker profile）。macOS 上 **`pool-up` 走 launchd**。运维见 **`deploy/stack/docs/host-pool-daemon.md`**。
+- 生成 compose 所需 env（`deploy/stack/.claw-pool-workspace.env` 等历史文件名仍可能存在）。
+- **`claw_compose`**：按 **`CLAW_CONTAINER_RUNTIME`** 调用 **`docker compose`** 或 **`podman compose`**。
+- 使用 **`up -d --force-recreate`**。
+- **不**启动宿主机 pool-daemon；solve 经 **e2b API**（见 `docs/http-gateway-container-pool.md`）。
 
 检查：
 
 ```bash
 curl -sS "http://127.0.0.1:${GATEWAY_HOST_PORT:-8088}/healthz"
-curl -sS "http://127.0.0.1:${CLAW_POOL_HTTP_PORT:-9944}/healthz/live-report"
-# 可选：async 调试页 + /admin（与 gateway 同 up/down）
 curl -sS "http://127.0.0.1:${GATEWAY_PLAYGROUND_HOST_PORT:-18765}/"
-# 与当前 CLAW_CONTAINER_RUNTIME 一致（auto 时与 build/up 相同）：
-podman ps   # 或  docker ps
+podman ps   # 或  docker ps  — 应有 claw-gateway-rs、gateway-playground
 ```
-
-`/healthz` 里 **`"containerPool": true`** 表示网关已加载池句柄（当前实现下恒为 true）。池化正常时，宿主机上还能看到 **`claw-worker-*`** 池内 worker（旧版本曾用 `claw-gw-*`，清理脚本仍会顺带删掉）。
 
 ### 1.4 停止
 
@@ -200,7 +194,7 @@ podman ps   # 或  docker ps
 - **会话 / 轮次 / 反馈（PostgreSQL）**：`podman-compose.yml` 启动 **`postgres`**（数据卷 **`./claw-postgres-data`**），网关通过 **`CLAW_GATEWAY_DATABASE_URL`** 连接。生产可将 URL 指向**独立 PG**（仅改连接串，无需与网关同 compose）。`/healthz` 的 **`gatewayDatabaseUrl`**（脱敏）与 **`sessionDatabaseBackend`** 可核对。
 - **Compose 后端**：需要 `podman-compose` 时 `brew install podman-compose`；勿假定 `podman compose` 一定走 Docker 的 compose。
 
-远程 Docker / `docker_pool` 与 env 前缀对照仍见文末表格；细节设计见 `docs/http-gateway-container-pool.md`。
+FC / e2b 设计与 env 契约见 `docs/http-gateway-container-pool.md`、`deploy/fc-sandbox/README.md`。
 
 ---
 
@@ -208,22 +202,13 @@ podman ps   # 或  docker ps
 
 | 现象 | 处理 |
 | --- | --- |
-| Admin `solve_async` **503**，gateway `/healthz` 仍 OK | **pool 不在 9944**（常见：macOS pool 未走 launchd 被 agent/终端杀掉）。`./deploy/stack/gateway.sh pool-up` 或 `up`；详见 **`deploy/stack/docs/host-pool-daemon.md`** |
-| `podman ps` 看不到网关 | 可能已退出：`podman ps -a \| grep claw-gateway-rs`，看 `podman logs claw-gateway-rs` |
-| 只有 `claw-gateway-rs` 没有 `claw-worker-*` | 是否打了 **worker 镜像**；查 **`deploy/stack/.claw-pool-rpc/daemon.log`** 是否 `spawn docker: No such file or directory`（`docker_pool` 需宿主机 docker CLI） |
-| `ensure_warm_failed` / worker 起不来 | 查 **`daemon.log`**、`podman ps` / `docker ps`、preflight 的 `ds_*` **1000:1000** owner |
-| preflight 让 `chown 1000:1000` | 仅 **`ds_*` 业务目录**（跳过 `.claw-pool-slot/`）；`gateway.sh up` 会先 `fix-workspace` |
-| solve 报 `session workspace ownership…` | **② Gateway cache**（`claw-workspace/ds_*/sessions/…`）uid 对齐；pool v1 **不 bind** session 进 worker，制品在 **PostgreSQL** |
-| 启动报 canonicalize `/Users/...` | 容器内不能拿 macOS 路径当 `CLAW_POOL_WORK_ROOT_HOST`；用 **`./deploy/stack/gateway.sh up`** 生成 env（`CLAW_POOL_WORK_ROOT_HOST=/var/lib/claw/workspace`） |
-| 改 `.env` 不生效 | 必须用 **`./deploy/stack/gateway.sh up`**（带 `--force-recreate`），不要指望无重建的 `up` |
-| 改了 `rust/` 里 worker（`claw`）或网关逻辑，solve 仍像旧的 | **`./deploy/stack/gateway.sh build`** 会**同时**重建 **`claw-gateway-rs`**、**`claw-gateway-worker`**（strict）与 **`claw-gateway-worker-relaxed`**；只 `up` 不 `build` 会继续用旧镜像 |
-| `http://localhost:3000/?session=…` 没有预期内容 | 见上文 **Live Viewer**：stock tap **不解析** `session` query；且须有经 **tap 代理端口**（`CLAUDE_TAP_PORT`，默认 8080）的 **OpenAI 兼容 API** 流量写入当前 `trace_*.jsonl` 后 Live 才有数据；仅打网关 **`/healthz`** 不会进 tap trace |
-| 续聊第 2 轮长期 **处理中** / pool `acquire_prepare_failed` | 多为 **PG workspace tar 解压**失败（macOS podman tmpfs utime/chmod）；查 `deploy/stack/.claw-pool-rpc/daemon.log`；续聊冒烟：`./tests/http-gateway-session-workspace-rebuild-e2e.sh` |
-| turn1 `running` 时 turn2 应 **409** | PG `inflight` 闸门；冒烟：`./tests/http-gateway-session-inflight-e2e.sh` |
+| Admin `solve_async` **503** | 查 `CLAW_FC_API_URL`、API key、e2b 模板；gateway 日志与 `deploy/fc-sandbox/README.md` |
+| `podman ps` 看不到网关 | `podman ps -a \| grep claw-gateway-rs`，看 `podman logs claw-gateway-rs` |
+| FC worker 创建失败 | e2bserver 日志、NAS mount、`docs/fc-nas-workspace.md` |
+| 改 `.env` 不生效 | **`./deploy/stack/gateway.sh up`**（`--force-recreate`） |
+| 改了 `rust/` 网关逻辑仍像旧的 | **`./deploy/stack/gateway.sh pack-deploy`** |
 
-联通性脚本：`./deploy/stack/gateway.sh check`。
-
-简易池压测（30s、每秒 3 次 `solve_async`，并采样 **`claw-worker-*`** 数量）：`./deploy/stack/gateway.sh bench 'http://127.0.0.1:8088'`。
+联通性：`./deploy/stack/gateway.sh check`。
 
 ---
 
@@ -234,25 +219,10 @@ podman ps   # 或  docker ps
 
 ---
 
-## 5. Local Podman vs remote Docker（对照）
+## 5. 环境变量：只维护根 `.env`
 
-| 场景 | `CLAW_SOLVE_ISOLATION` | 运行时 CLI | 环境前缀 | 与网关的衔接 |
-| --- | --- | --- | --- | --- |
-| 本仓库 compose（默认） | `podman_pool` | `podman`（宿主机 `claw-sandbox`） | `CLAW_PODMAN_*` | **v1** `CLAW_SANDBOX_URL` / `CLAW_POOL_HTTP_BASE` → `host.containers.internal:9944` |
-| 线上 Docker（推荐与默认脚本对齐） | `docker_pool` | `docker`（宿主机 daemon） | `CLAW_DOCKER_*` | 同上；`.env` 可用 `host.docker.internal:9944` |
-| 网关内嵌池（备选） | `docker_pool` / `podman_pool` | `docker` / `podman` 在**网关容器**内 | 同上 | **不设** `CLAW_POOL_DAEMON_TCP`：走进程内 `DockerPoolManager`；需 sock 挂载 + 镜像带对应 CLI（`Containerfile.gateway-rs`：`podman` + `docker.io`） |
+网关 compose **只加载仓库根**的 `.env`。`deploy/stack/` 下由 **`gateway.sh up`** 生成的 `*.env` 为**中间物**，不要手改。
 
-**会话与磁盘**：每次 solve 租 **一个 worker 槽**；续聊制品在 **PostgreSQL**。见 `sandbox/docs/system-design.md`。本仓库 **`gateway.sh up`** 使用 **宿主机 `claw-sandbox`（`:9944`）**。
-
-线上只有 Docker 时 **`CLAW_CONTAINER_RUNTIME` 可不写**（`auto` 会选 docker）；仍用同一套 `deploy/stack/podman-compose*.yml`（文件名历史原因）。
-
-Worker 镜像名：`CLAW_PODMAN_IMAGE` 与 `CLAW_DOCKER_IMAGE` 二选一；池大小等同名前缀变量，见 `docs/http-gateway-container-pool.md`。
-
----
-
-## 6. 环境变量：只维护根 `.env`
-
-网关 compose **只加载仓库根**的 `.env`。每 `projId` 的工具白名单在 **Admin → Tools** / `project_config.allowed_tools_json`（PG），**不**读 `CLAW_ALLOWED_TOOLS`。`deploy/stack/` 下由 **`gateway.sh up`** / **`lib/compose-include.sh`** 生成的 `*.env` 为**中间物**，每次脚本会覆盖，**不要手改**。
-
-- **全量 env 清单 + 双模式**：`docs/env-config.md`
-- **人手 vs 生成物**、禁止 `deploy/stack/.env`：`docs/env-files.md`
+- **全量 env 清单：** `docs/env-config.md`
+- **文档索引：** `docs/README.md`
+- **人手 vs 生成物：** `docs/env-files.md`

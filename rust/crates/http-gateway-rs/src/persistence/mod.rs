@@ -4,5 +4,5 @@ pub mod transcript;
 
 pub use transcript::{
     ensure_jsonl_from_db, import_turn_messages_to_db, now_ms, persist_turn_after_solve,
-    report_body_from_turn_messages, JsonlMessage,
+    reconcile_session_transcript_from_jsonl, report_body_from_turn_messages, JsonlMessage,
 };

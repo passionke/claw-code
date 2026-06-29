@@ -18,6 +18,7 @@ use crate::multi_agent::timings::MultiAgentTimings;
 use crate::multi_agent::writer_turn::run_writer_turn;
 use crate::project_orchestration::SolveOrchestrationConfig;
 use crate::project_preflight;
+use crate::solve_timing::append_solve_timing_point;
 use crate::sqlbot_preflight::sqlbot_query_context_from_session;
 use crate::{
     default_system_date, err, gateway_solve_session_persistence_path, initialize_mcp_runtime,
@@ -59,6 +60,12 @@ pub fn run_multi_agent_solve_turn(
         None => RuntimeConfig::empty(),
     };
     apply_config_env_if_unset(&project_cfg);
+    let turn_id_attr = std::env::var("CLAW_TURN_ID").ok();
+    let _ = append_solve_timing_point(
+        work_dir,
+        "bootstrap_project_config_loaded",
+        turn_id_attr.as_deref(),
+    );
     let effective_model = model
         .map(str::to_string)
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
@@ -76,6 +83,7 @@ pub fn run_multi_agent_solve_turn(
         parallel_friendly_mcp_tool_names,
         runtime_mcp_manager,
     ) = initialize_mcp_runtime(work_dir)?;
+    let _ = append_solve_timing_point(work_dir, "bootstrap_mcp_ready", turn_id_attr.as_deref());
 
     reset_task_progress(work_dir, clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;

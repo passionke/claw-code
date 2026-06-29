@@ -80,11 +80,9 @@ pub use mcp_call_context::{
 };
 pub use ovs_interactive::{
     build_ensure_ovs_interactive_session_script, build_ovs_interactive_prompt_script,
-    ovs_interactive_guest_symlink_host, ovs_interactive_session_dir_host,
-    ovs_interactive_session_jsonl_guest, ovs_interactive_session_jsonl_host,
-    ovs_interactive_symlink_target, OVS_INTERACTIVE_GUEST_REL_PREFIX,
-    OVS_INTERACTIVE_LEGACY_GUEST_REL_PREFIX, OVS_INTERACTIVE_PROJ_HOME,
-    OVS_INTERACTIVE_SESSION_FILENAME, OVS_INTERACTIVE_WORK_ROOT,
+    ovs_interactive_jsonl_guest, ovs_interactive_jsonl_host, ovs_interactive_meta_session_id,
+    GUEST_CLAW_DS, GUEST_CLAW_HOST_ROOT, GUEST_CLAW_SESSIONS, OVS_INTERACTIVE_JSONL_NAME,
+    OVS_INTERACTIVE_REL,
 };
 pub use runtime::McpCallContext;
 pub use session_report::{
@@ -1289,6 +1287,11 @@ pub fn run_gateway_solve_turn(
         None => RuntimeConfig::empty(),
     };
     apply_config_env_if_unset(&project_cfg);
+    let _ = append_solve_timing_point(
+        work_dir,
+        "bootstrap_project_config_loaded",
+        turn_id_attr.as_deref(),
+    );
     let effective_model = model
         .map(str::to_string)
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
@@ -1303,6 +1306,11 @@ pub fn run_gateway_solve_turn(
         mcp.extra_session.clone(),
     )
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
+    let _ = append_solve_timing_point(
+        work_dir,
+        "bootstrap_system_prompt_loaded",
+        turn_id_attr.as_deref(),
+    );
 
     let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
     let session_is_continuation = gateway_jsonl.exists();
@@ -1320,7 +1328,11 @@ pub fn run_gateway_solve_turn(
         &pipeline_cfg,
     )?;
     turn_language::inject_language_into_system_prompt(&mut system_prompt, &locked_language);
-    let _ = append_solve_timing_point(work_dir, "turn_language_inferred", turn_id_attr.as_deref());
+    let _ = append_solve_timing_point(
+        work_dir,
+        "bootstrap_turn_language_inferred",
+        turn_id_attr.as_deref(),
+    );
 
     let (
         runtime_mcp_tools,

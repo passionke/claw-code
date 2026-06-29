@@ -38,20 +38,11 @@ claw_apply_deploy_profile() {
 
   case "${profile}" in
     local)
-      # One pool URL: HTTP on 9944 (live SSE + POST /v1/pool/rpc). No 9943 TCP / unix. kejiqing
-      if [[ -z "${CLAW_POOL_HTTP_BASE:-}" && -z "${CLAW_POOL_REMOTE_BASE:-}" ]]; then
-        if [[ "${CLAW_CONTAINER_RUNTIME:-podman}" == docker || "${CLAW_USE_DOCKER:-0}" == "1" ]]; then
-          export CLAW_POOL_HTTP_BASE="http://host.docker.internal:9944"
-        else
-          export CLAW_POOL_HTTP_BASE="http://host.containers.internal:9944"
-        fi
-      elif [[ -z "${CLAW_POOL_HTTP_BASE:-}" && -n "${CLAW_POOL_REMOTE_BASE:-}" ]]; then
-        export CLAW_POOL_HTTP_BASE="${CLAW_POOL_REMOTE_BASE%/}"
-      fi
       unset CLAW_POOL_DAEMON_TCP CLAW_POOL_DAEMON_SOCKET CLAW_POOL_DAEMON_TCP_HOST 2>/dev/null || true
       unset CLAW_POOL_RPC_TRANSPORT 2>/dev/null || true
       export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-podman}"
-      export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
+      export CLAW_INTERACTIVE_BACKEND="${CLAW_INTERACTIVE_BACKEND:-fc}"
+      export CLAW_OVS_BACKEND="${CLAW_OVS_BACKEND:-fc}"
       export GATEWAY_IMAGE="${GATEWAY_IMAGE:-claw-gateway-rs:local}"
       export GATEWAY_PLAYGROUND_IMAGE="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
       # shellcheck source=/dev/null
@@ -70,7 +61,7 @@ claw_apply_deploy_profile() {
       export PLAYGROUND_PUBLIC_GATEWAY_BASE="${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://127.0.0.1:${GATEWAY_HOST_PORT}}"
       export CLAW_TIMEOUT_SECONDS="${CLAW_TIMEOUT_SECONDS:-900}"
       export CONTAINER_BASE_REGISTRY="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
-      # macOS Podman: one network for gateway + docker tap + pool workers (claw-claude-tap DNS).
+      # macOS Podman: one network for gateway + docker tap. FC workers run on e2b. kejiqing
       # Linux local keeps stack_default unless overridden. Human .env should not fork these. kejiqing
       if [[ "$(uname -s)" == Darwin ]]; then
         export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
@@ -89,13 +80,8 @@ claw_apply_deploy_profile() {
       ;;
     production)
       export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-docker}"
-      export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-docker_pool}"
-      export CLAW_POOL_HOST_DAEMON="${CLAW_POOL_HOST_DAEMON:-1}"
-      export CLAW_POOL_DAEMON_SKIP_BUILD="${CLAW_POOL_DAEMON_SKIP_BUILD:-1}"
-      # Same port for live + RPC unless overridden in .env. kejiqing
-      if [[ -z "${CLAW_POOL_HTTP_BASE:-}" && -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
-        export CLAW_POOL_HTTP_BASE="http://${CLAW_POOL_ADVERTISE_HOST}:${CLAW_POOL_HTTP_PORT:-9944}"
-      fi
+      export CLAW_INTERACTIVE_BACKEND="${CLAW_INTERACTIVE_BACKEND:-fc}"
+      export CLAW_OVS_BACKEND="${CLAW_OVS_BACKEND:-fc}"
       export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-direct}"
       export CLAW_IMAGE_REGISTRY="${CLAW_IMAGE_REGISTRY:-acr}"
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8088}"

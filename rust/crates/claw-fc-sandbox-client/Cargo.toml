@@ -7,6 +7,7 @@ publish = false
 description = "Alibaba FC cloud sandbox (E2B-compatible REST) client. Author: kejiqing"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true

@@ -1,4 +1,4 @@
-//! Solve path via container pool (`docker exec claw gateway-solve-once`). Author: kejiqing
+//! Solve path via FC sandbox (`claw gateway-solve-once`). Author: kejiqing
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,8 +16,7 @@ use http_gateway_rs::claw_tap_cluster_state::resolve_solve_llm_route;
 use http_gateway_rs::pool::interactive_backend::resolve_fc_worker_solve_llm_route;
 use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease, FC_POOL_ID};
 
-/// When the gateway uses [`PoolRpcClient`](http_gateway_rs::pool::PoolRpcClient) (TCP or Unix), session dirs
-/// live under the container `CLAW_WORK_ROOT` but the host daemon must bind-mount the host path. Author: kejiqing
+/// Map gateway container `CLAW_WORK_ROOT` paths to the host/NAS path used by FC bind mounts.
 pub(crate) fn session_mount_for_pool_acquire(
     session_home: &Path,
     cfg: &crate::GatewayConfig,
@@ -490,14 +489,9 @@ mod session_path_tests {
     #[test]
     fn strips_container_work_root_for_rpc_host() {
         let cfg = crate::GatewayConfig {
-            solve_isolation: crate::SolveIsolation::PodmanPool,
             claw_bin: "claw".into(),
             work_root: PathBuf::from("/var/lib/claw/workspace"),
             pool_rpc_host_work_root: Some(PathBuf::from("/host/claw/ws")),
-            pool_rpc_tcp: Some("host.containers.internal:9943".into()),
-            pool_rpc_unix_socket: None,
-            pool_rpc_remote: true,
-            pool_http_base: "http://claw-pool-daemon:9944".into(),
             co_located_pool_id: Some("pool-test".into()),
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
@@ -525,14 +519,9 @@ mod session_path_tests {
     #[test]
     fn no_host_mapping_returns_session_unchanged() {
         let cfg = crate::GatewayConfig {
-            solve_isolation: crate::SolveIsolation::PodmanPool,
             claw_bin: "claw".into(),
             work_root: PathBuf::from("/var/lib/claw/workspace"),
             pool_rpc_host_work_root: None,
-            pool_rpc_tcp: None,
-            pool_rpc_unix_socket: None,
-            pool_rpc_remote: false,
-            pool_http_base: String::new(),
             co_located_pool_id: None,
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,

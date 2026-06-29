@@ -24,11 +24,7 @@ stages:
   CLAW_RELEASE_SKIP_PULL: "1"
   CLAW_USE_CN_CRATES_MIRROR: "1"
   CLAW_USE_CN_RUST_MIRROR: "1"
-  CLAW_POOL_ADVERTISE_HOST: "10.22.28.94"
   CLAW_CLUSTER_ID: sunmi-ci-01
-  CLAW_POOL_ID: pool-sunmi-ci-01
-  # CI: nohup claw-sandbox (production default is systemd claw-sandbox.service)
-  CLAW_POOL_DAEMON_USE_SYSTEMD: "0"
   CLAW_AUTO_BOOTSTRAP: "1"
 
 # Weekly: GitLab → CI/CD → Schedules (cron e.g. 0 4 * * 0, branch main). Manual: Run pipeline + CLAW_DISK_PRUNE=1.
@@ -66,8 +62,7 @@ build:release-images:
       docker tag claw-gateway-worker:local "${PREFIX}/claw-gateway-worker:${TAG}"
       docker tag claw-gateway-worker-relaxed:local "${PREFIX}/claw-gateway-worker-relaxed:${TAG}"
       docker tag claw-gateway-playground:local "${PREFIX}/claw-gateway-playground:${TAG}"
-      docker tag claw-sandbox:local "${PREFIX}/claw-sandbox:${TAG}"
-      echo "built ${PREFIX}/claw-code:${TAG} (+ strict/relaxed worker, playground, claw-sandbox)"
+      echo "built ${PREFIX}/claw-code:${TAG} (+ strict/relaxed worker, playground)"
   timeout: 2h
 
 deploy:release:
@@ -85,10 +80,8 @@ deploy:release:
   script:
     - source ./deploy/stack/lib/ci-sync-worktree.sh
     - ./deploy/stack/lib/render-env-from-ci.sh
-    - ./deploy/stack/lib/ci-cluster-cleanup.sh
     - ./deploy/stack/gateway.sh up --release "${CLAW_RELEASE_TAG}"
     - ./deploy/stack/gateway.sh verify
     - ./deploy/stack/lib/admin-solve-e2e.sh 1 ping
     - ./deploy/stack/lib/admin-solve-e2e.sh 1 ping
-    - ./deploy/stack/lib/ci-cluster-dual-deploy.sh
   timeout: 2h

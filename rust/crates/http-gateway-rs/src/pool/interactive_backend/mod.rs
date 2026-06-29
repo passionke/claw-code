@@ -1,22 +1,16 @@
-//! Interactive session backends (podman pool vs FC cloud sandbox). Author: kejiqing
+//! Interactive session backends (FC cloud sandbox only). Author: kejiqing
 
 mod fc_interactive;
 mod fc_interactive_materialize;
-mod fc_ovs_claw_vscode;
-mod fc_ovs_singleton;
-mod fc_session_observe_singleton;
-mod fc_warm_pool;
+mod fc_nas_api_singleton;
 mod fc_worker_tap;
-mod podman_interactive;
 mod ttyd_url;
 
 pub use fc_interactive_materialize::{
     build_fc_guest_writes_script, build_proj_bake_script, build_session_attach_script,
     build_start_ttyd_script,
 };
-pub use fc_ovs_singleton::FcOvsSingleton;
-pub use fc_session_observe_singleton::FcSessionObserveSingleton;
-pub use fc_warm_pool::FcProjWarmPool;
+pub use fc_nas_api_singleton::FcNasApiSingleton;
 pub use fc_worker_tap::{
     build_fc_session_attach_with_tap, build_fc_worker_tap_start_script_from_db, fc_worker_llm_env,
     fc_worker_solve_route, resolve_fc_worker_solve_llm_route, FC_WORKER_TAP_PROXY_URL,
@@ -29,20 +23,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use claw_sandbox_protocol::IsolationMode;
 use serde::{Deserialize, Serialize};
 
-use super::clients::PoolClients;
-
 pub use fc_interactive::FcInteractiveBackend;
-pub use podman_interactive::PodmanInteractiveBackend;
 pub use ttyd_url::{terminal_ws_connect_url, TtydConnectTarget};
 
-/// Which backend holds an interactive lease.
+/// FC is the only supported interactive backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractiveBackendKind {
-    Podman,
     Fc,
 }
 
@@ -57,21 +46,33 @@ pub struct InteractiveSessionSpec {
     pub proj_home: PathBuf,
     pub llm_env: std::collections::BTreeMap<String, String>,
     pub ovs_mode: bool,
-    pub sandbox_isolation: IsolationMode,
     pub start_ttyd_script: String,
-    /// FC: session attach (LLM env on `/claw_host_root`); project baked in warm pool.
+    /// FC: session attach (LLM env on `/claw_host_root`); project config on `/claw_ds`.
     pub fc_session_attach_script: Option<String>,
-    /// FC cold fallback: project bake when warm pool unavailable.
+    /// FC cold fallback: project bake when proj worker unavailable.
     pub fc_proj_bake_script: Option<String>,
 }
 
-/// True when `CLAW_INTERACTIVE_BACKEND=fc` (gateway skips host project materialize).
+/// True when `CLAW_INTERACTIVE_BACKEND=fc` (required; podman pool removed).
 #[must_use]
 pub fn interactive_backend_is_fc() -> bool {
-    std::env::var("CLAW_INTERACTIVE_BACKEND")
+    match std::env::var("CLAW_INTERACTIVE_BACKEND")
         .ok()
-        .map(|v| v.trim().eq_ignore_ascii_case("fc"))
-        .unwrap_or(false)
+        .map(|v| v.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("fc") => true,
+        Some("") | None => {
+            eprintln!(
+                "http-gateway-rs: CLAW_INTERACTIVE_BACKEND must be fc (local podman pool removed)"
+            );
+            std::process::exit(1);
+        }
+        Some(other) => {
+            eprintln!("http-gateway-rs: invalid CLAW_INTERACTIVE_BACKEND={other:?}; use fc");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// True when `CLAW_OVS_BACKEND=fc` (OVS runs as e2b singleton, not compose).
@@ -96,7 +97,7 @@ pub fn fc_observe_is_enabled() -> bool {
         )
 }
 
-/// Active interactive worker lease (podman slot or FC sandbox).
+/// Active interactive worker lease (FC sandbox).
 #[derive(Debug, Clone)]
 pub struct InteractiveLease {
     pub backend: InteractiveBackendKind,
@@ -104,9 +105,9 @@ pub struct InteractiveLease {
     pub worker_name: Option<String>,
     pub pool_id: String,
     pub fc_sandbox_id: Option<String>,
-    /// Warm-pool slot index when leased from [`FcProjWarmPool`]; `None` = cold sandbox.
+    /// Proj worker lease marker (`fc_warm_slot` legacy name); `None` = cold sandbox.
     pub fc_warm_slot: Option<usize>,
-    /// Project id for warm-pool release / top-up.
+    /// Project id for [`FcProjWorkerRegistry`] release.
     pub fc_warm_proj_id: Option<i64>,
     /// Session directory segment under `proj_N/sessions` (symlink name).
     pub fc_session_segment: Option<String>,
@@ -122,53 +123,13 @@ pub trait InteractiveSandboxBackend: Send + Sync {
     async fn stop_session(&self, lease: &InteractiveLease) -> Result<(), String>;
 }
 
-/// Construct backend from `CLAW_INTERACTIVE_BACKEND` (`podman` default, `fc` for cloud).
+/// Construct FC interactive backend (prefer [`super::clients::PoolClients::fc_interactive`]).
 #[must_use]
 pub fn interactive_backend_from_env(
-    pool_clients: PoolClients,
-    fc_client: Option<Arc<claw_fc_sandbox_client::FcSandboxClient>>,
-    pool_id: String,
-    pool_rpc_host_work_root: Option<PathBuf>,
-    work_root: PathBuf,
+    pool_clients: super::clients::PoolClients,
+    _fc_client: Option<Arc<claw_fc_sandbox_client::FcSandboxClient>>,
+    _pool_id: String,
+    _nas_layout: crate::pool::NasLayoutBackend,
 ) -> Arc<dyn InteractiveSandboxBackend> {
-    let mode = std::env::var("CLAW_INTERACTIVE_BACKEND")
-        .ok()
-        .map(|v| v.trim().to_ascii_lowercase())
-        .unwrap_or_else(|| "podman".into());
-    match mode.as_str() {
-        "fc" => {
-            let client = fc_client.unwrap_or_else(|| {
-                eprintln!(
-                    "http-gateway-rs: CLAW_INTERACTIVE_BACKEND=fc but FC client not configured"
-                );
-                std::process::exit(1);
-            });
-            Arc::new(FcInteractiveBackend::new(
-                client,
-                pool_id,
-                work_root,
-                pool_rpc_host_work_root,
-            )) as Arc<dyn InteractiveSandboxBackend>
-        }
-        "podman" | "" => {
-            let sandbox = pool_clients.sandbox_rpc_client().unwrap_or_else(|| {
-                eprintln!(
-                    "http-gateway-rs: CLAW_INTERACTIVE_BACKEND=podman requires claw-sandbox RPC"
-                );
-                std::process::exit(1);
-            });
-            Arc::new(PodmanInteractiveBackend::new(
-                sandbox,
-                pool_id,
-                work_root,
-                pool_rpc_host_work_root,
-            )) as Arc<dyn InteractiveSandboxBackend>
-        }
-        other => {
-            eprintln!(
-                "http-gateway-rs: invalid CLAW_INTERACTIVE_BACKEND={other:?}; use podman or fc"
-            );
-            std::process::exit(1);
-        }
-    }
+    pool_clients.fc_interactive_arc()
 }

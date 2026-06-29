@@ -9,15 +9,44 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Renew sandbox TTL when local estimate of remaining time falls below this (e2b min is 5m).
 pub const SANDBOX_LEASE_RENEW_LEAD_SECS: u64 = 300;
 
+/// Background TTL touch interval for tracked project workers (`spawn_lease_ticker`).
+pub const SANDBOX_LEASE_TICK_SECS: u64 = 60;
+
+/// POST /timeout then GET /sandboxes/{id} retries when `endAt` did not expand.
+const SANDBOX_TTL_VERIFY_MAX_ATTEMPTS: u32 = 3;
+
+/// Platform snapshot from `GET /sandboxes/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxSnapshot {
+    pub state: String,
+    pub end_at_ms: Option<i64>,
+}
+
+impl SandboxSnapshot {
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.state == "running"
+    }
+
+    #[must_use]
+    pub fn remaining_ttl_secs(&self, now_ms: i64) -> Option<u64> {
+        let end = self.end_at_ms?;
+        if end <= now_ms {
+            return Some(0);
+        }
+        Some(((end - now_ms) / 1000) as u64)
+    }
+}
+
 use crate::config::FcSandboxConfig;
 use crate::e2b_platform::{fetch_e2b_platform_nas, E2bNasPlatform};
-use crate::nas_paths::{self, ovs_root_mounts, warm_worker_mounts, worker_mounts};
-use crate::types::{CreateSandboxResponse, FcExecOutcome, FcSandboxHandle};
+use crate::nas_paths::{self, warm_worker_mounts, worker_mounts, NasMountPoint};
+use crate::types::{CreateSandboxResponse, FcExecOutcome, FcSandboxHandle, GatewaySolveInputs};
 
 enum FcExecHelperIngest {
     More,
@@ -207,10 +236,161 @@ impl FcSandboxClient {
             .remove(sandbox_id);
     }
 
-    /// Background lease touch for idle sandboxes (no-op when TTL still > 5m).
+    fn now_ms() -> i64 {
+        chrono::Utc::now().timestamp_millis()
+    }
+
+    #[must_use]
+    pub fn min_verified_remaining_secs(requested_timeout_secs: u64) -> u64 {
+        requested_timeout_secs.saturating_sub(SANDBOX_LEASE_RENEW_LEAD_SECS.saturating_mul(2))
+    }
+
+    fn parse_end_at_ms(body: &Value) -> Option<i64> {
+        let raw = body
+            .get("endAt")
+            .or_else(|| body.get("end_at"))
+            .and_then(Value::as_str)?;
+        chrono::DateTime::parse_from_rfc3339(raw)
+            .ok()
+            .map(|dt| dt.timestamp_millis())
+    }
+
+    fn sync_local_lease_from_end_at(&self, sandbox_id: &str, end_at_ms: i64) {
+        let now_ms = Self::now_ms();
+        let remaining_secs = if end_at_ms <= now_ms {
+            0
+        } else {
+            ((end_at_ms - now_ms) / 1000) as u64
+        };
+        self.lease_expires
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                sandbox_id.to_string(),
+                Instant::now() + Duration::from_secs(remaining_secs),
+            );
+    }
+
+    /// Track a sandbox for [`Self::spawn_lease_ticker`] (project workers, warm sandboxes).
+    pub fn register_tracked_sandbox(&self, sandbox_id: &str) {
+        if sandbox_id.trim().is_empty() {
+            return;
+        }
+        self.lease_expires
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(sandbox_id.to_string())
+            .or_insert_with(Instant::now);
+    }
+
+    pub fn register_tracked_sandboxes(&self, sandbox_ids: &[String]) {
+        for id in sandbox_ids {
+            self.register_tracked_sandbox(id);
+        }
+    }
+
+    /// `GET /sandboxes/{id}` — state + `endAt` for TTL verification.
+    pub async fn fetch_sandbox_snapshot(
+        &self,
+        sandbox_id: &str,
+    ) -> Result<SandboxSnapshot, String> {
+        let url = format!("{}/sandboxes/{}", self.config.api_url, sandbox_id);
+        let resp = self
+            .http
+            .get(&url)
+            .headers(self.auth_headers().unwrap_or_default())
+            .send()
+            .await
+            .map_err(|e| format!("fc get sandbox request: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "fc get sandbox HTTP {} for {sandbox_id}",
+                resp.status()
+            ));
+        }
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("fc get sandbox parse: {e}"))?;
+        Ok(SandboxSnapshot {
+            state: body
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            end_at_ms: Self::parse_end_at_ms(&body),
+        })
+    }
+
+    /// POST /timeout then read `endAt`; retry when platform did not expand TTL.
+    pub async fn renew_sandbox_ttl_verified(
+        &self,
+        sandbox_id: &str,
+        timeout_secs: u64,
+    ) -> Result<SandboxSnapshot, String> {
+        let min_remaining = Self::min_verified_remaining_secs(timeout_secs);
+        let mut last_snap: Option<SandboxSnapshot> = None;
+        for attempt in 1..=SANDBOX_TTL_VERIFY_MAX_ATTEMPTS {
+            self.set_sandbox_timeout(sandbox_id, timeout_secs).await?;
+            if attempt < SANDBOX_TTL_VERIFY_MAX_ATTEMPTS {
+                tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+            }
+            let snap = self.fetch_sandbox_snapshot(sandbox_id).await?;
+            last_snap = Some(snap.clone());
+            if !snap.is_running() {
+                return Err(format!(
+                    "sandbox {sandbox_id} not running after set_timeout (state={})",
+                    snap.state
+                ));
+            }
+            let now_ms = Self::now_ms();
+            let remaining = snap.remaining_ttl_secs(now_ms).unwrap_or(0);
+            if remaining >= min_remaining {
+                if let Some(end_at_ms) = snap.end_at_ms {
+                    self.sync_local_lease_from_end_at(sandbox_id, end_at_ms);
+                } else {
+                    let now = Instant::now();
+                    self.lease_expires
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(
+                            sandbox_id.to_string(),
+                            now + Duration::from_secs(timeout_secs),
+                        );
+                }
+                self.register_tracked_sandbox(sandbox_id);
+                debug!(
+                    target: "claw_fc_sandbox",
+                    sandbox_id,
+                    timeout_secs,
+                    remaining_secs = remaining,
+                    end_at_ms = ?snap.end_at_ms,
+                    attempt,
+                    "sandbox TTL renewed and verified via endAt"
+                );
+                return Ok(snap);
+            }
+            warn!(
+                target: "claw_fc_sandbox",
+                sandbox_id,
+                timeout_secs,
+                remaining_secs = remaining,
+                min_remaining_secs = min_remaining,
+                attempt,
+                end_at_ms = ?snap.end_at_ms,
+                "sandbox endAt below expected after set_timeout; retrying"
+            );
+        }
+        Err(format!(
+            "sandbox {sandbox_id} TTL verify failed after {SANDBOX_TTL_VERIFY_MAX_ATTEMPTS} attempts (last endAt={:?})",
+            last_snap.and_then(|s| s.end_at_ms)
+        ))
+    }
+
+    /// Background lease touch for tracked sandboxes (60s tick; verifies `endAt` on self-hosted).
     pub fn spawn_lease_ticker(self: Arc<Self>) {
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            let mut interval = tokio::time::interval(Duration::from_secs(SANDBOX_LEASE_TICK_SECS));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
@@ -283,28 +463,12 @@ impl FcSandboxClient {
         }
     }
 
-    /// HTTP base for OVS singleton (`http(s)://{port}-{sandboxId}.{domain}/ovs`).
-    #[must_use]
-    pub fn ovs_public_base_url(&self, handle: &FcSandboxHandle) -> String {
-        let scheme = if self.config.is_self_hosted() {
-            "http"
-        } else {
-            "https"
-        };
-        let host = self.service_public_host(
-            self.config.ovs_port,
-            &handle.sandbox_id,
-            &handle.sandbox_domain,
-        );
-        format!("{scheme}://{host}/ovs")
-    }
-
     /// After `POST /sandboxes` + `nasConfig`: every `mountDir` must be a mountpoint in the guest.
     async fn finish_sandbox_create(
         &self,
         handle: FcSandboxHandle,
         nas_configured: bool,
-        mount_points: &[(String, String)],
+        mount_points: &[NasMountPoint],
     ) -> Result<FcSandboxHandle, String> {
         if nas_configured {
             if let Err(e) = self.assert_guest_nas_mounts(&handle, mount_points).await {
@@ -318,12 +482,9 @@ impl FcSandboxClient {
     async fn assert_guest_nas_mounts(
         &self,
         handle: &FcSandboxHandle,
-        mount_points: &[(String, String)],
+        mount_points: &[NasMountPoint],
     ) -> Result<(), String> {
-        let dirs: Vec<&str> = mount_points
-            .iter()
-            .map(|(_, mount_dir)| mount_dir.as_str())
-            .collect();
+        let dirs: Vec<&str> = mount_points.iter().map(|m| m.mount_dir.as_str()).collect();
         if dirs.is_empty() {
             return Ok(());
         }
@@ -340,6 +501,7 @@ impl FcSandboxClient {
     /// Create a sandbox with session affinity metadata (`sessionId` key).
     pub async fn create_sandbox(
         &self,
+        cluster_id: &str,
         session_id: &str,
         session_segment: &str,
         proj_id: i64,
@@ -353,7 +515,7 @@ impl FcSandboxClient {
         metadata.insert("workerId".to_string(), worker_id.to_string());
         metadata.insert("projId".to_string(), proj_id.to_string());
 
-        let mount_points = worker_mounts(proj_id, worker_id, ovs_mode);
+        let mount_points = worker_mounts(cluster_id, proj_id, worker_id, ovs_mode);
         let mut body = json!({
             "templateID": self.config.template,
             "timeout": self.config.sandbox_timeout_secs,
@@ -408,158 +570,10 @@ impl FcSandboxClient {
             .await
     }
 
-    /// Create the cluster OVS singleton sandbox (`metadata.clawRole=ovs-singleton`).
-    pub async fn create_ovs_singleton_sandbox(
-        &self,
-        cluster_id: &str,
-    ) -> Result<FcSandboxHandle, String> {
-        self.prepare_self_hosted_create().await?;
-        let mut metadata = BTreeMap::new();
-        metadata.insert("clawRole".to_string(), "ovs-singleton".to_string());
-        metadata.insert("clusterId".to_string(), cluster_id.to_string());
-
-        let mount_points = ovs_root_mounts();
-        let mut body = json!({
-            "templateID": self.config.ovs_template,
-            "timeout": self.config.sandbox_timeout_secs,
-            "metadata": metadata,
-        });
-        let nas = self.require_nas_config_body(&mount_points)?;
-        body["nasConfig"] = json!(nas);
-        let nas_configured = true;
-        self.apply_self_hosted_create_opts(&mut body);
-
-        let url = format!("{}/sandboxes", self.config.api_url);
-        debug!(target: "claw_fc_sandbox", %url, cluster_id, "create ovs singleton sandbox");
-        let resp = self
-            .http
-            .post(&url)
-            .headers(self.auth_headers()?)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("fc create ovs sandbox request: {e}"))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| format!("fc create ovs sandbox body: {e}"))?;
-        if !status.is_success() {
-            return Err(format!("fc create ovs sandbox HTTP {status}: {text}"));
-        }
-
-        let parsed: CreateSandboxResponse = serde_json::from_str(&text)
-            .map_err(|e| format!("fc create ovs sandbox parse: {e}; body={text}"))?;
-        let sandbox_domain = if self.config.is_self_hosted() {
-            self.config.domain.clone()
-        } else {
-            parsed
-                .domain
-                .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| self.config.domain.clone())
-        };
-        let ttyd_public_host = self.ttyd_public_host(&parsed.sandbox_id, &sandbox_domain);
-        let handle = FcSandboxHandle {
-            sandbox_id: parsed.sandbox_id,
-            sandbox_domain,
-            envd_access_token: parsed.envd_access_token,
-            traffic_access_token: parsed.traffic_access_token,
-            ttyd_public_host,
-            ttyd_use_tls: !self.config.is_self_hosted(),
-        };
-        self.register_sandbox_lease(&handle.sandbox_id);
-        self.touch_sandbox_lease(&handle.sandbox_id).await?;
-        self.finish_sandbox_create(handle, nas_configured, &mount_points)
-            .await
-    }
-
-    /// Create the cluster session-observe singleton (`metadata.clawRole=observe-singleton`).
-    pub async fn create_observe_singleton_sandbox(
-        &self,
-        cluster_id: &str,
-    ) -> Result<FcSandboxHandle, String> {
-        self.prepare_self_hosted_create().await?;
-        let mut metadata = BTreeMap::new();
-        metadata.insert("clawRole".to_string(), "observe-singleton".to_string());
-        metadata.insert("clusterId".to_string(), cluster_id.to_string());
-
-        let mount_points = ovs_root_mounts();
-        let mut body = json!({
-            "templateID": self.config.observe_template,
-            "timeout": self.config.sandbox_timeout_secs,
-            "metadata": metadata,
-        });
-        let nas = self.require_nas_config_body(&mount_points)?;
-        body["nasConfig"] = json!(nas);
-        let nas_configured = true;
-        self.apply_self_hosted_create_opts(&mut body);
-
-        let url = format!("{}/sandboxes", self.config.api_url);
-        debug!(target: "claw_fc_sandbox", %url, cluster_id, "create observe singleton sandbox");
-        let resp = self
-            .http
-            .post(&url)
-            .headers(self.auth_headers()?)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("fc create observe sandbox request: {e}"))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| format!("fc create observe sandbox body: {e}"))?;
-        if !status.is_success() {
-            return Err(format!("fc create observe sandbox HTTP {status}: {text}"));
-        }
-
-        let parsed: CreateSandboxResponse = serde_json::from_str(&text)
-            .map_err(|e| format!("fc create observe sandbox parse: {e}; body={text}"))?;
-        let sandbox_domain = if self.config.is_self_hosted() {
-            self.config.domain.clone()
-        } else {
-            parsed
-                .domain
-                .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| self.config.domain.clone())
-        };
-        let ttyd_public_host = self.ttyd_public_host(&parsed.sandbox_id, &sandbox_domain);
-        let handle = FcSandboxHandle {
-            sandbox_id: parsed.sandbox_id,
-            sandbox_domain,
-            envd_access_token: parsed.envd_access_token,
-            traffic_access_token: parsed.traffic_access_token,
-            ttyd_public_host,
-            ttyd_use_tls: !self.config.is_self_hosted(),
-        };
-        self.register_sandbox_lease(&handle.sandbox_id);
-        self.touch_sandbox_lease(&handle.sandbox_id).await?;
-        self.finish_sandbox_create(handle, nas_configured, &mount_points)
-            .await
-    }
-
-    /// HTTP base for session-observe Live viewer (`http(s)://{livePort}-{sandboxId}.{domain}`).
-    #[must_use]
-    pub fn observe_public_live_base_url(&self, handle: &FcSandboxHandle) -> String {
-        let scheme = if self.config.is_self_hosted() {
-            "http"
-        } else {
-            "https"
-        };
-        let host = self.service_public_host(
-            self.config.observe_live_port,
-            &handle.sandbox_id,
-            &handle.sandbox_domain,
-        );
-        let base = format!("{scheme}://{host}");
-        Self::traffic_url(&base, handle.traffic_access_token.as_deref())
-    }
-
     /// Create a project-bound warm worker (`metadata.clawRole=warm-proj`).
     pub async fn create_warm_proj_sandbox(
         &self,
+        cluster_id: &str,
         proj_id: i64,
         worker_id: &str,
     ) -> Result<FcSandboxHandle, String> {
@@ -571,7 +585,7 @@ impl FcSandboxClient {
         metadata.insert("sessionId".to_string(), warm_session_id);
         metadata.insert("clawRole".to_string(), "warm-proj".to_string());
 
-        let mount_points = warm_worker_mounts(proj_id, worker_id);
+        let mount_points = warm_worker_mounts(cluster_id, proj_id, worker_id);
         let mut body = json!({
             "templateID": self.config.template,
             "timeout": self.config.sandbox_timeout_secs,
@@ -664,7 +678,6 @@ impl FcSandboxClient {
     pub async fn touch_sandbox_lease(&self, sandbox_id: &str) -> Result<(), String> {
         let timeout_secs = self.config.sandbox_timeout_secs;
         let now = Instant::now();
-        // Self-hosted e2b often creates sandboxes with ~5m TTL regardless of request; renew every tick.
         let should_renew = if self.config.is_self_hosted() {
             true
         } else {
@@ -682,21 +695,118 @@ impl FcSandboxClient {
         if !should_renew {
             return Ok(());
         }
-        self.set_sandbox_timeout(sandbox_id, timeout_secs).await?;
-        self.lease_expires
+        self.renew_sandbox_ttl_verified(sandbox_id, timeout_secs)
+            .await
+            .map(|_| ())
+    }
+
+    /// True when e2b still has this sandbox running (`GET /sandboxes/{id}` → `state:"running"`).
+    pub async fn sandbox_running(&self, sandbox_id: &str) -> bool {
+        match self.fetch_sandbox_snapshot(sandbox_id).await {
+            Ok(snap) => snap.is_running(),
+            Err(_) => false,
+        }
+    }
+
+    /// Renew sandbox TTL; verifies platform `endAt` after `POST /timeout`.
+    pub async fn renew_sandbox_ttl_secs(
+        &self,
+        sandbox_id: &str,
+        timeout_secs: u64,
+    ) -> Result<(), String> {
+        self.renew_sandbox_ttl_verified(sandbox_id, timeout_secs)
+            .await
+            .map(|_| ())
+    }
+
+    #[must_use]
+    pub fn handle_to_json(handle: &FcSandboxHandle) -> serde_json::Value {
+        json!({
+            "sandboxId": handle.sandbox_id,
+            "sandboxDomain": handle.sandbox_domain,
+            "envdAccessToken": handle.envd_access_token,
+            "trafficAccessToken": handle.traffic_access_token,
+            "ttydPublicHost": handle.ttyd_public_host,
+            "ttydUseTls": handle.ttyd_use_tls,
+        })
+    }
+
+    pub fn handle_from_json(value: &serde_json::Value) -> Result<FcSandboxHandle, String> {
+        let sandbox_id = value
+            .get("sandboxId")
+            .or_else(|| value.get("sandbox_id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "handle_json missing sandboxId".to_string())?
+            .to_string();
+        let sandbox_domain = value
+            .get("sandboxDomain")
+            .or_else(|| value.get("sandbox_domain"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let envd_access_token = value
+            .get("envdAccessToken")
+            .or_else(|| value.get("envd_access_token"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let traffic_access_token = value
+            .get("trafficAccessToken")
+            .or_else(|| value.get("traffic_access_token"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let ttyd_public_host = value
+            .get("ttydPublicHost")
+            .or_else(|| value.get("ttyd_public_host"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let ttyd_use_tls = value
+            .get("ttydUseTls")
+            .or_else(|| value.get("ttyd_use_tls"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(!sandbox_domain.contains("10.8.0."));
+        Ok(FcSandboxHandle {
+            sandbox_id,
+            sandbox_domain,
+            envd_access_token,
+            traffic_access_token,
+            ttyd_public_host,
+            ttyd_use_tls,
+        })
+    }
+
+    /// Gateway shutdown: DELETE leased sandboxes except persisted project workers.
+    pub async fn kill_all_leased_sandboxes_except(&self, skip_sandbox_ids: &[String]) -> usize {
+        let skip: std::collections::HashSet<&str> =
+            skip_sandbox_ids.iter().map(String::as_str).collect();
+        let ids: Vec<String> = self
+            .lease_expires
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                sandbox_id.to_string(),
-                now + Duration::from_secs(timeout_secs),
-            );
-        debug!(
-            target: "claw_fc_sandbox",
-            sandbox_id,
-            timeout_secs,
-            "sandbox lease renewed"
-        );
-        Ok(())
+            .keys()
+            .filter(|id| !skip.contains(id.as_str()))
+            .cloned()
+            .collect();
+        let mut killed = 0usize;
+        for sid in ids {
+            match self.kill_sandbox(&sid).await {
+                Ok(()) => killed += 1,
+                Err(e) => warn!(
+                    target: "claw_fc_sandbox",
+                    sandbox_id = %sid,
+                    error = %e,
+                    "shutdown kill leased sandbox failed"
+                ),
+            }
+        }
+        killed
+    }
+
+    /// Gateway shutdown: DELETE every sandbox still in the lease registry (legacy).
+    pub async fn kill_all_leased_sandboxes(&self) -> usize {
+        self.kill_all_leased_sandboxes_except(&[]).await
     }
 
     /// Kill a sandbox (`DELETE /sandboxes/{id}`).
@@ -718,101 +828,29 @@ impl FcSandboxClient {
         Err(format!("fc kill sandbox HTTP {status}: {text}"))
     }
 
-    /// Gateway shutdown: DELETE every sandbox still in the lease registry.
-    pub async fn kill_all_leased_sandboxes(&self) -> usize {
-        let ids: Vec<String> = self
-            .lease_expires
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .keys()
-            .cloned()
-            .collect();
-        let mut killed = 0usize;
-        for sid in ids {
-            match self.kill_sandbox(&sid).await {
-                Ok(()) => killed += 1,
-                Err(e) => warn!(
-                    target: "claw_fc_sandbox",
-                    sandbox_id = %sid,
-                    error = %e,
-                    "shutdown kill leased sandbox failed"
-                ),
-            }
-        }
-        killed
-    }
-
-    /// Gateway shutdown: remove orphan observe/ovs singletons for this cluster (restart leaks).
-    pub async fn kill_cluster_singleton_orphans(&self, cluster_id: &str) -> Result<usize, String> {
-        let url = format!("{}/sandboxes", self.config.api_url);
-        let resp = self
-            .http
-            .get(&url)
-            .headers(self.auth_headers()?)
-            .send()
-            .await
-            .map_err(|e| format!("fc list sandboxes: {e}"))?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| format!("fc list sandboxes body: {e}"))?;
-        if !status.is_success() {
-            return Err(format!("fc list sandboxes HTTP {status}: {text}"));
-        }
-        let rows: Vec<serde_json::Value> =
-            serde_json::from_str(&text).map_err(|e| format!("fc list sandboxes parse: {e}"))?;
-        let mut killed = 0usize;
-        for row in rows {
-            let Some(sid) = row
-                .get("sandboxID")
-                .or_else(|| row.get("sandboxId"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-            else {
-                continue;
-            };
-            let meta = row.get("metadata").and_then(|v| v.as_object());
-            let role = meta
-                .and_then(|m| m.get("clawRole"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let cid = meta
-                .and_then(|m| m.get("clusterId"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let is_singleton = matches!(role, "observe-singleton" | "ovs-singleton");
-            if !is_singleton || cid != cluster_id {
-                continue;
-            }
-            if self.kill_sandbox(sid).await.is_ok() {
-                killed += 1;
-                info!(
-                    target: "claw_fc_sandbox",
-                    sandbox_id = %sid,
-                    %role,
-                    "shutdown killed orphan singleton"
-                );
-            }
-        }
-        Ok(killed)
+    /// Gateway shutdown: persistent singletons (observe/ovs) are Python-managed — no-op here.
+    pub async fn kill_cluster_singleton_orphans(&self, _cluster_id: &str) -> Result<usize, String> {
+        Ok(0)
     }
 
     /// Run `claw gateway-solve-once` inside an FC sandbox.
     pub async fn exec_gateway_solve_once(
         &self,
         sandbox_id: &str,
-        task_rel_under_root: &str,
+        _task_rel_under_root: &str,
         claw_bin: &str,
         env: BTreeMap<String, String>,
+        inputs: GatewaySolveInputs<'_>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<FcExecOutcome, String> {
         self.touch_sandbox_lease(sandbox_id).await?;
-        let task_file = format!(
-            "{}/{}",
-            nas_paths::GUEST_CLAW_HOST_ROOT,
-            task_rel_under_root
-        );
+        let session_root = if inputs.session_segment.is_empty() {
+            nas_paths::GUEST_CLAW_HOST_ROOT.to_string()
+        } else {
+            nas_paths::guest_session_root(inputs.session_segment)
+        };
+        let task_file = format!("{session_root}/gateway-solve-task.json");
+        // Per-turn inputs travel inline; the worker lands them on its session mount. Author: kejiqing
         let payload = json!({
             "op": "exec_solve",
             "api_key": self.config.api_key,
@@ -822,6 +860,10 @@ impl FcSandboxClient {
             "sandbox_id": sandbox_id,
             "claw_bin": claw_bin,
             "task_file": task_file,
+            "task_json": inputs.task_json,
+            "session_jsonl": inputs.session_jsonl,
+            "session_segment": inputs.session_segment,
+            "session_root": session_root,
             "env": env,
             "timeout": 600,
         });
@@ -998,7 +1040,7 @@ impl FcSandboxClient {
         Err("fc exec helper: missing terminal outcome envelope".into())
     }
 
-    fn nas_config_body(&self, mount_points: &[(String, String)]) -> Option<Value> {
+    fn nas_config_body(&self, mount_points: &[NasMountPoint]) -> Option<Value> {
         if mount_points.is_empty() {
             return None;
         }
@@ -1010,12 +1052,15 @@ impl FcSandboxClient {
         let p = platform.filter(|p| p.ready && p.uses_host_bind_inject())?;
         let points: Vec<Value> = mount_points
             .iter()
-            .map(|(rel, dir)| {
-                let mut pt = json!({ "mountDir": dir });
-                if rel.is_empty() {
+            .map(|m| {
+                let mut pt = json!({ "mountDir": m.mount_dir });
+                if m.rel_path.is_empty() {
                     pt["relPath"] = json!("");
                 } else {
-                    pt["relPath"] = json!(rel);
+                    pt["relPath"] = json!(m.rel_path);
+                }
+                if m.read_only {
+                    pt["readOnly"] = json!(true);
                 }
                 pt
             })
@@ -1044,7 +1089,7 @@ impl FcSandboxClient {
         platform.host_mount_root.clone()
     }
 
-    fn require_nas_config_body(&self, mount_points: &[(String, String)]) -> Result<Value, String> {
+    fn require_nas_config_body(&self, mount_points: &[NasMountPoint]) -> Result<Value, String> {
         self.nas_config_body(mount_points).ok_or_else(|| {
             "e2b NAS bind not ready: GET /health must report nas.ready, hostMountRoot, sandboxInject=bind"
                 .into()
@@ -1111,6 +1156,31 @@ mod client_tests {
     }
 
     #[test]
+    fn min_verified_remaining_secs_uses_renew_lead() {
+        assert_eq!(
+            FcSandboxClient::min_verified_remaining_secs(3600),
+            3600 - SANDBOX_LEASE_RENEW_LEAD_SECS * 2
+        );
+    }
+
+    #[test]
+    fn parse_end_at_ms_from_rfc3339() {
+        let body = json!({ "endAt": "2027-06-29T09:25:09.303247652Z" });
+        let ms = FcSandboxClient::parse_end_at_ms(&body).expect("parse");
+        assert!(ms > 1_700_000_000_000);
+    }
+
+    #[test]
+    fn sandbox_snapshot_remaining_ttl() {
+        let now = 1_000_000_000_000_i64;
+        let snap = SandboxSnapshot {
+            state: "running".into(),
+            end_at_ms: Some(now + 90_000),
+        };
+        assert_eq!(snap.remaining_ttl_secs(now), Some(90));
+    }
+
+    #[test]
     fn ttyd_host_format() {
         let cfg = FcSandboxConfig {
             api_key: "e2b_test".into(),
@@ -1127,8 +1197,6 @@ mod client_tests {
             ttyd_port: 7681,
             ovs_template: "claw-ovs".into(),
             ovs_port: 3000,
-            observe_template: "claw-observe".into(),
-            observe_live_port: 3000,
         };
         let c = FcSandboxClient::new(cfg);
         assert_eq!(

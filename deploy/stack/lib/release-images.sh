@@ -53,7 +53,6 @@ claw_apply_release_image_tag() {
   prefix="$(claw_image_registry_prefix_from_env)"
   export GATEWAY_IMAGE="${prefix}/claw-code:${tag}"
   export GATEWAY_PLAYGROUND_IMAGE="${prefix}/claw-gateway-playground:${tag}"
-  export CLAW_SANDBOX_IMAGE="${prefix}/claw-sandbox:${tag}"
   case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
     docker_pool)
       export CLAW_DOCKER_IMAGE="${prefix}/claw-gateway-worker:${tag}"
@@ -170,7 +169,6 @@ claw_write_release_pin_env() {
     printf '%s\n' "# GENERATED — do not edit. rm file to drop pin. Author: kejiqing"
     printf '%s\n' "GATEWAY_IMAGE=${GATEWAY_IMAGE}"
     printf '%s\n' "GATEWAY_PLAYGROUND_IMAGE=${GATEWAY_PLAYGROUND_IMAGE}"
-    printf '%s\n' "CLAW_SANDBOX_IMAGE=${CLAW_SANDBOX_IMAGE}"
     case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
       docker_pool) printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}" ;;
       *) printf '%s\n' "CLAW_PODMAN_IMAGE=${CLAW_PODMAN_IMAGE}" ;;
@@ -203,9 +201,6 @@ claw_reapply_pool_image_pins() {
     # shellcheck disable=SC1090
     source "${podman_dir}/.claw-image-release.env"
     set +a
-    if [[ -z "${CLAW_SANDBOX_IMAGE:-}" && "${GATEWAY_IMAGE:-}" == *"/claw-code:"* ]]; then
-      export CLAW_SANDBOX_IMAGE="${GATEWAY_IMAGE/claw-code/claw-sandbox}"
-    fi
     claw_export_pool_worker_image_matched_to_gateway
     claw_write_release_pin_env "${podman_dir}"
   else

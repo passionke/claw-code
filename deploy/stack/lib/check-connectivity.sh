@@ -18,10 +18,11 @@ source "${LIB_DIR}/compose-include.sh"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/pool-health.sh"
 
-if ! claw_ensure_host_pool_running "${PODMAN_DIR}"; then
-  echo "error: host pool not running — Admin solve_async will 503" >&2
+if ! claw_interactive_backend_is_fc; then
+  echo "error: CLAW_INTERACTIVE_BACKEND must be fc (local podman pool removed)" >&2
   exit 1
 fi
+echo "[1b/5] skip host pool (FC-only)"
 
 PLAYGROUND_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
 GATEWAY_PORT="${GATEWAY_HOST_PORT:-18088}"
@@ -43,48 +44,13 @@ else:
 cat /tmp/claw_gateway_healthz.json
 echo
 
-echo "[2/5] pool HTTP from gateway-rs container"
-POOL_BASE="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
-echo "    ${POOL_BASE}/healthz/live-report"
-if ! claw_gateway_container_exec "${GW_CTN}" curl -fsS --max-time 5 \
-  "${POOL_BASE}/healthz/live-report" \
-  >/tmp/claw_pool_health.json; then
-  echo "error: gateway cannot reach pool HTTP — same failure as Admin 503" >&2
-  echo "hint: ./deploy/stack/gateway.sh pool-up" >&2
-  exit 1
-fi
-python3 -c 'import json; d=json.load(open("/tmp/claw_pool_health.json")); print("pool live-report ok", d.get("ok", d))' 2>/dev/null || cat /tmp/claw_pool_health.json
+echo "[2/5] skip pool HTTP (FC backend)"
 echo
 
-if claw_pool_uses_remote; then
-  echo "[2b/5] remote claw-sandbox (${CLAW_POOL_REMOTE_BASE})"
-  claw_assert_remote_pool_registry_ready "${PODMAN_DIR}" || exit 1
-  base="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
-  echo "[2c/5] pool HTTP from gateway-rs container (${base})"
-  claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" || exit 1
-  echo "gateway → remote pool HTTP ok"
-  echo
-elif claw_pool_daemon_on_host; then
-  base="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
-  echo "[2b/5] host claw-sandbox HTTP (127.0.0.1:${CLAW_POOL_HTTP_PORT:-9944})"
-  claw_assert_host_pool_http_ready "$(claw_pool_rpc_root "${PODMAN_DIR}")" || exit 1
-  echo "host claw-sandbox HTTP ok"
-  if claw_relaxed_worker_allowed_from_env; then
-    echo "[2b2/5] relaxed workers enabled (same pool; capacity RPC)"
-  else
-    echo "[2b2/5] relaxed workers disabled (CLAW_ALLOW_RELAXED_WORKER=false)"
-  fi
-  echo "[2c/5] pool HTTP from gateway-rs container (${base})"
-  claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" || exit 1
-  echo "gateway → pool HTTP ok"
-  echo
-else
-  echo "error: compose pool sidecar removed in pool v1; set CLAW_POOL_HOST_DAEMON=1 or run ./deploy/stack/gateway.sh pool-up" >&2
-  exit 1
-fi
-
 echo "[3/5] solve_async smoke (extraSession from ds 1 project config when defined)"
-if claw_pool_uses_remote; then
+if claw_interactive_backend_is_fc; then
+  :
+elif claw_pool_uses_remote; then
   claw_assert_remote_pool_registry_ready "${PODMAN_DIR}" || exit 1
   claw_wait_gateway_pool_rpc_ready "${PODMAN_DIR}" || exit 1
 elif claw_pool_daemon_on_host; then
@@ -284,11 +250,5 @@ if head -c 20 /tmp/claw_playground_main.js | grep -q '<!DOCTYPE'; then
   exit 1
 fi
 echo "playground admin assets ok (${js_path})"
-
-echo "[6/6] coding terminal E2E (playground __proxy__ + WS)"
-PLAYGROUND_BASE="http://127.0.0.1:${PLAYGROUND_PORT}" \
-GATEWAY_BASE="http://127.0.0.1:${GATEWAY_PORT}" \
-E2E_POOL_RESET=1 \
-python3 "${REPO_ROOT}/web/gateway-async-playground/e2e_coding_terminal.py"
 
 echo "Connectivity check passed. taskId=${TASK_ID}"

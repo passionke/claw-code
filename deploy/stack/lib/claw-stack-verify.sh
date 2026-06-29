@@ -33,8 +33,6 @@ set +a
 source "${PODMAN_DIR}/lib/compose-include.sh"
 # shellcheck source=claw-pool-registry-env.sh
 source "${LIB_DIR}/claw-pool-registry-env.sh"
-# shellcheck source=pool-health.sh
-source "${LIB_DIR}/pool-health.sh"
 
 RT="$(claw_container_runtime_cli 2>/dev/null || true)"
 [[ -n "${RT}" ]] || fail "need docker or podman in PATH for verify"
@@ -90,95 +88,11 @@ has_artifact_upsert_key="$(psql_q "SELECT to_regclass('public.gateway_session_ar
 
 ok "claw_pool + gateway_turns.pool_id/worker_name + session_artifacts pool-v1 schema present"
 
-# Lines after the last pool-daemon-up start (ignore stale errors from prior runs). kejiqing
-claw_pool_daemon_log_current_run() {
-  local log="${1:?log}"
-  [[ -f "${log}" ]] || return 1
-  awk '/pool-daemon-up: starting/{buf=""; on=1; next} on{buf=buf $0 ORS} END{printf "%s", buf}' "${log}"
-}
-
-claw_verify_pool_profile() {
-  local profile="$1" rpc_dir="$2" pool_id="$3" http_port="$4"
-  export CLAW_POOL_HTTP_PORT="${http_port}"
-  export CLAW_POOL_ID="${pool_id}"
-  echo "==> pool verify [${profile}] pool_id=${pool_id} HTTP :${http_port}"
-  [[ -d "${rpc_dir}" ]] || fail "missing ${rpc_dir} — run gateway.sh pool-up"
-  claw_assert_host_pool_http_ready "${rpc_dir}" || fail "host ${profile} pool HTTP not ready on 127.0.0.1:${http_port}"
-  [[ -f "${rpc_dir}/pool-registry.env" ]] || fail "missing ${rpc_dir}/pool-registry.env"
-  LOG="${rpc_dir}/daemon.log"
-  [[ -f "${LOG}" ]] || fail "missing ${LOG}"
-  run_log="$(claw_pool_daemon_log_current_run "${LOG}")"
-  if [[ -z "${run_log}" ]]; then
-    tail -30 "${LOG}" >&2
-    fail "${profile} daemon.log has no lines after last pool-daemon-up start"
-  fi
-  if printf '%s' "${run_log}" | grep -q "claw_pool registry disabled"; then
-    printf '%s\n' "${run_log}" | tail -30 >&2
-    fail "${profile} pool registry disabled in current daemon run"
-  fi
-  if ! printf '%s' "${run_log}" | grep -q "claw_pool registered"; then
-    printf '%s' "${run_log}" | tail -30 >&2
-    fail "no claw_pool registered in current ${profile} daemon run"
-  fi
-  ok "${profile} daemon.log shows claw_pool registered"
-  row_pool_id="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${pool_id}' LIMIT 1;")"
-  [[ "${row_pool_id}" == "${pool_id}" ]] || fail "claw_pool has no row for ${profile} pool_id=${pool_id}"
-  hb="$(psql_q "SELECT (EXTRACT(EPOCH FROM NOW())*1000 - last_heartbeat_ms) < 120000 FROM claw_pool WHERE pool_id='${pool_id}';")"
-  [[ "${hb}" == "t" ]] || fail "claw_pool heartbeat stale (>120s) for ${pool_id}"
-  ok "claw_pool row ${pool_id} heartbeat fresh"
-  claw_assert_host_pool_rpc_ready "${rpc_dir}" || fail "${profile} pool RPC died during verify"
-}
-
-# POST /v1/sandbox/rpc Capacity — unified pool must expose strict (+ relaxed when enabled). kejiqing
-claw_verify_sandbox_capacity_profiles() {
-  local http_port="$1"
-  local want_relaxed="$2"
-  local body resp
-  body='{"op":"capacity"}'
-  resp="$(curl -fsS --connect-timeout 5 -X POST \
-    "http://127.0.0.1:${http_port}/v1/sandbox/rpc" \
-    -H 'Content-Type: application/json' \
-    -d "${body}" 2>/dev/null)" \
-    || fail "sandbox Capacity RPC failed on :${http_port}"
-  if ! python3 -c '
-import json, sys
-want_relaxed = sys.argv[1] == "1"
-d = json.loads(sys.argv[2])
-if not d.get("ok"):
-    raise SystemExit("capacity not ok: " + str(d.get("error")))
-cap = d.get("capacity") or {}
-profiles = {p.get("profile") for p in (cap.get("profiles") or [])}
-if "strict" not in profiles:
-    raise SystemExit("missing strict profile in capacity.profiles: " + str(profiles))
-if want_relaxed and "relaxed" not in profiles:
-    raise SystemExit("missing relaxed profile in capacity.profiles: " + str(profiles))
-' "${want_relaxed}" "${resp}"; then
-    fail "sandbox capacity profiles check failed (port ${http_port})"
-  fi
-  ok "sandbox capacity lists required worker profiles"
-}
-
-REMOTE_POOL=0
-echo "==> [2/6] Host pool daemon (v1: no compose sidecar)"
-if claw_pool_uses_remote; then
-  REMOTE_POOL=1
-  claw_assert_remote_pool_registry_ready "${PODMAN_DIR}" || fail "remote pool registry not ready"
-  ok "remote pool ${CLAW_POOL_REMOTE_BASE} + claw_pool row ${CLAW_POOL_ID}"
-elif claw_pool_daemon_on_host; then
-  BIN="${CLAW_POOL_DAEMON_BIN:-$(claw_default_pool_daemon_bin "${PODMAN_DIR}")}"
-  # shellcheck source=pool-daemon-binary.sh
-  source "${LIB_DIR}/pool-daemon-binary.sh"
-  [[ -x "${BIN}" ]] || fail "host claw-sandbox not executable: ${BIN}"
-  if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if b'claw_pool registered' in b else 1)" "${BIN}" 2>/dev/null; then
-    fail "host ${BIN} lacks 'claw_pool registered' — run gateway.sh build or cargo build -p claw-sandbox-server in sandbox/"
-  fi
-  if ! python3 -c "import pathlib,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if (b'assign_turn_pool_worker_ok' in b or b'acquire_slot_ok' in b or b'claw-sandbox:' in b) else 1)" "${BIN}" 2>/dev/null; then
-    fail "host ${BIN} looks stale (expected claw-sandbox or legacy claw-pool-daemon markers)"
-  fi
-  ok "pool daemon binary contains registry + pool markers"
-else
-  fail "host pool or CLAW_POOL_REMOTE_BASE required"
+echo "==> [2/6] Host pool daemon"
+if ! claw_interactive_backend_is_fc; then
+  fail "CLAW_INTERACTIVE_BACKEND must be fc (local claw-sandbox pool removed)"
 fi
+ok "FC interactive backend — no host claw-pool-daemon"
 
 if [[ -f "${RPC_DIR}/gateway.env" ]]; then
   set -a
@@ -190,70 +104,10 @@ _base_pool_id="$(claw_default_pool_id)"
 POOL_ID="${CLAW_POOL_ID:-${_base_pool_id}}"
 POOL_HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
 
-claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" \
-  || fail "gateway container cannot reach pool HTTP — run gateway.sh up"
-
-if [[ "${REMOTE_POOL}" == "1" ]]; then
-  echo "==> [3/6] remote sandbox capacity"
-  remote_base="$(claw_pool_remote_base)"
-  body='{"op":"capacity"}'
-  resp="$(curl -fsS --connect-timeout 5 -X POST \
-    "${remote_base}/v1/sandbox/rpc" \
-    -H 'Content-Type: application/json' \
-    -d "${body}" 2>/dev/null)" \
-    || fail "remote sandbox Capacity RPC failed (${remote_base})"
-  want_relaxed=0
-  claw_relaxed_worker_allowed_from_env && want_relaxed=1
-  python3 -c '
-import json, sys
-want_relaxed = sys.argv[1] == "1"
-d = json.loads(sys.argv[2])
-if not d.get("ok"):
-    raise SystemExit("capacity not ok: " + str(d.get("error")))
-cap = d.get("capacity") or {}
-profiles = {p.get("profile") for p in (cap.get("profiles") or [])}
-if "strict" not in profiles:
-    raise SystemExit("missing strict profile: " + str(profiles))
-if want_relaxed and "relaxed" not in profiles:
-    raise SystemExit("missing relaxed profile: " + str(profiles))
-' "${want_relaxed}" "${resp}" || fail "remote capacity profiles check failed"
-  ok "remote sandbox capacity ok"
-  echo "==> [4/6] shared PG registry (remote pool)"
-  echo "==> [5/6] claw_pool registry row"
-  row_pool="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${POOL_ID}' LIMIT 1;")"
-  [[ "${row_pool}" == "${POOL_ID}" ]] || fail "claw_pool missing row pool_id=${POOL_ID}"
-  ok "claw_pool has row ${POOL_ID}"
-else
-  echo "==> [3/6] single claw-sandbox registry"
-  claw_verify_pool_profile sandbox "${POOL_RPC_DIR}" "${POOL_ID}" "${POOL_HTTP_PORT}"
-  if claw_relaxed_worker_allowed_from_env; then
-    claw_verify_sandbox_capacity_profiles "${POOL_HTTP_PORT}" 1
-  else
-    claw_verify_sandbox_capacity_profiles "${POOL_HTTP_PORT}" 0
-  fi
-
-  echo "==> [4/6] pool daemon DB URL (host must not use compose hostname postgres)"
-  pool_db_url="$(claw_pool_daemon_database_url)" || fail "CLAW_GATEWAY_DATABASE_URL unset"
-  case "${pool_db_url}" in
-    *@postgres:*)
-      fail "host pool would use @postgres: — use 127.0.0.1:${PG_PORT} (claw_pool_daemon_database_url)"
-      ;;
-  esac
-  ok "host pool DB URL uses reachable host (${pool_db_url%%@*}@…)"
-
-  echo "==> [5/6] claw_pool registry row"
-  row_pool="$(psql_q "SELECT pool_id FROM claw_pool WHERE pool_id='${POOL_ID}' LIMIT 1;")"
-  [[ "${row_pool}" == "${POOL_ID}" ]] || fail "claw_pool missing row pool_id=${POOL_ID}"
-  ok "claw_pool has row ${POOL_ID}"
-fi
-
-echo "==> [6/6] gateway.env sandbox URL"
-[[ -f "${RPC_DIR}/gateway.env" ]] || fail "missing gateway.env"
-grep -q '^CLAW_SANDBOX_URL=' "${RPC_DIR}/gateway.env" \
-  || fail "gateway.env missing CLAW_SANDBOX_URL"
-grep -q '^CLAW_POOL_HTTP_BASE=' "${RPC_DIR}/gateway.env" \
-  || fail "gateway.env missing CLAW_POOL_HTTP_BASE"
-ok "gateway.env lists CLAW_SANDBOX_URL + CLAW_POOL_HTTP_BASE"
+echo "==> [3/6] skip pool HTTP reachability (FC backend)"
+echo "==> [4/6] skip claw_pool registry (FC backend)"
+echo "==> [5/6] skip claw_pool row (FC backend)"
+echo "==> [6/6] skip gateway.env sandbox URL (FC backend)"
 
 if [[ -f "${STAMP_FILE}" ]]; then
   echo "--- build stamp ---"

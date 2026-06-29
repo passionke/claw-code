@@ -7,7 +7,7 @@ use std::path::PathBuf;
 pub struct FcSandboxConfig {
     pub api_key: String,
     pub api_url: String,
-    /// Client proxy base (`http://10.8.0.9:3002` for self-hosted e2bserver).
+    /// Client proxy base (`http://10.8.0.1:3002` for self-hosted e2bserver).
     pub sandbox_url: Option<String>,
     pub domain: String,
     pub template: String,
@@ -21,9 +21,6 @@ pub struct FcSandboxConfig {
     /// OVS singleton template (`claw-ovs`); separate from worker template.
     pub ovs_template: String,
     pub ovs_port: u16,
-    /// Session observe singleton template (`claw-observe`); Live viewer only, no LLM proxy.
-    pub observe_template: String,
-    pub observe_live_port: u16,
 }
 
 impl FcSandboxConfig {
@@ -92,14 +89,6 @@ impl FcSandboxConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3000);
-        let observe_template = std::env::var("CLAW_FC_OBSERVE_TEMPLATE")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "claw-observe".into());
-        let observe_live_port = std::env::var("CLAW_FC_OBSERVE_LIVE_PORT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3000);
         Some(Self {
             api_key,
             api_url: api_url.trim_end_matches('/').to_string(),
@@ -115,8 +104,6 @@ impl FcSandboxConfig {
             ttyd_port,
             ovs_template,
             ovs_port,
-            observe_template,
-            observe_live_port,
         })
     }
 

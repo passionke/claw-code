@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::pool::{fc_nas_layout_active, nas_host_root};
+use crate::pool::interactive_backend::FcNasApiSingleton;
+use crate::pool::nas_host_root;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FcNasSettingsPublic {
@@ -27,6 +28,8 @@ pub struct FcNasSettingsPublic {
     pub layout_active: bool,
     #[serde(rename = "pathExists")]
     pub path_exists: bool,
+    #[serde(rename = "nasApiEnabled")]
+    pub nas_api_enabled: bool,
     #[serde(rename = "hasProjTree", skip_serializing_if = "Option::is_none")]
     pub has_proj_tree: Option<bool>,
 }
@@ -76,16 +79,18 @@ pub fn fc_nas_settings_public(work_root: &Path) -> FcNasSettingsPublic {
     } else {
         None
     };
+    let nas_api_enabled = FcNasApiSingleton::enabled_from_env();
     FcNasSettingsPublic {
         read_only: true,
         nas_host_mount,
         fc_nas_server,
         fc_nas_export,
-        configured: env_nas_host_mount().is_some(),
+        configured: nas_api_enabled,
         gateway_work_root: gateway_work_root.display().to_string(),
-        nas_root_resolved: resolved.display().to_string(),
-        layout_active: fc_nas_layout_active(&resolved),
+        nas_root_resolved: "claw-nas-api:/claw_ws".to_string(),
+        layout_active: nas_api_enabled,
         path_exists,
+        nas_api_enabled,
         has_proj_tree,
     }
 }

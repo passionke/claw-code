@@ -1,9 +1,7 @@
-//! FC cloud sandbox pool — `CLAW_INTERACTIVE_BACKEND=fc` 时 solve 走 fc-cloud。
-//! Worker 内 tap：proxy + trace 写；Live 观察见 `FcSessionObserveSingleton`。
+//! FC cloud sandbox pool — solve uses per-project workers from [`FcProjWorkerRegistry`].
 //! Author: kejiqing
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,29 +13,29 @@ use tracing::warn;
 
 use crate::session_db::GatewaySessionDb;
 
-use super::interactive_backend::{build_fc_worker_tap_start_script_from_db, fc_worker_llm_env};
+use super::fc_proj_worker_registry::FcProjWorkerRegistry;
+use super::interactive_backend::fc_worker_llm_env;
 use super::merge_stdout_hooks;
 use super::result::parse_gateway_solve_exec_stdout;
 use super::session_db_sync::{
-    finalize_turn_after_readback, materialize_turn_via_sandbox_host_paths, proj_work_dir,
-    readback_turn_from_session_home, MaterializeInput,
+    finalize_turn_after_readback, readback_turn_from_session_home, SESSION_MANIFEST_MAX_BYTES,
 };
 use super::traits::{PoolOps, SlotLease, TaskOutcome};
-use super::LiveReportHub;
+use super::{LiveReportHub, NasLayoutBackend};
 
 pub const FC_POOL_ID: &str = "fc-cloud";
 
 struct FcSlot {
     sandbox_id: String,
     session_segment: String,
-    worker_id: String,
     proj_id: i64,
 }
 
-/// Per-turn FC sandbox leases (synthetic slot indices). Author: kejiqing
+/// Per-turn leases on shared per-project worker sandboxes. Author: kejiqing
 pub struct FcOrchestratedPool {
     client: Arc<FcSandboxClient>,
-    work_root: PathBuf,
+    nas_layout: NasLayoutBackend,
+    workers: Arc<FcProjWorkerRegistry>,
     db: RwLock<Option<Arc<GatewaySessionDb>>>,
     slots: Mutex<HashMap<usize, FcSlot>>,
     turn_slots: Mutex<HashMap<String, usize>>,
@@ -49,12 +47,14 @@ impl FcOrchestratedPool {
     #[must_use]
     pub fn new(
         client: Arc<FcSandboxClient>,
-        work_root: PathBuf,
         live_report_hub: Arc<LiveReportHub>,
+        nas_layout: NasLayoutBackend,
+        workers: Arc<FcProjWorkerRegistry>,
     ) -> Self {
         Self {
             client,
-            work_root,
+            nas_layout,
+            workers,
             db: RwLock::new(None),
             slots: Mutex::new(HashMap::new()),
             turn_slots: Mutex::new(HashMap::new()),
@@ -83,6 +83,26 @@ impl FcOrchestratedPool {
     fn alloc_slot_index(&self) -> usize {
         self.next_slot.fetch_add(1, Ordering::Relaxed)
     }
+
+    /// Per-turn task JSON only; transcript SoT is NAS `gateway-solve-session.jsonl`. Author: kejiqing
+    async fn load_solve_task_json(
+        &self,
+        db: &GatewaySessionDb,
+        turn_id: &str,
+    ) -> Result<String, String> {
+        let task = db
+            .get_solve_task_json(turn_id)
+            .await
+            .map_err(|e| format!("load solve_task_json: {e}"))?
+            .ok_or_else(|| format!("missing solve_task_json for turn {turn_id}"))?;
+        let task_json = serde_json::to_string(&task).map_err(|e| format!("serialize task: {e}"))?;
+        if task_json.len() > SESSION_MANIFEST_MAX_BYTES {
+            return Err(format!(
+                "solve_task_json exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
+            ));
+        }
+        Ok(task_json)
+    }
 }
 
 #[async_trait]
@@ -100,68 +120,22 @@ impl PoolOps for FcOrchestratedPool {
             .map_err(|reason| format!("session acquire blocked: {reason}"))?;
 
         let session_segment = crate::session_merge::sessions_directory_segment(&session_id);
-        let worker_id = super::fc_nas_layout::allocate_worker_id();
-        let nas_root = super::fc_nas_layout::nas_host_root(&self.work_root, None);
-        if super::fc_nas_layout::fc_nas_layout_active(&nas_root) {
-            let runtime_bin =
-                std::env::var("CLAW_CONTAINER_RUNTIME").unwrap_or_else(|_| "podman".into());
-            super::fc_nas_layout::prepare_fc_worker_bind_sources(
-                db.as_ref(),
-                &runtime_bin,
-                &nas_root,
-                proj_id,
-                &worker_id,
-            )
+        let (handle, worker_id) = self.workers.acquire(proj_id).await?;
+        self.nas_layout
+            .ensure_session_context(proj_id, &session_segment, &worker_id)
             .await?;
-            super::fc_nas_layout::link_session_to_worker(
-                &nas_root,
-                proj_id,
-                &session_segment,
-                &worker_id,
-            )
-            .await?;
-        }
 
-        let handle = self
-            .client
-            .create_sandbox(&session_id, &session_segment, proj_id, true, &worker_id)
-            .await?;
         let slot_index = self.alloc_slot_index();
         let worker_name = format!("fc:{}", handle.sandbox_id);
         let _ = db
             .assign_turn_pool_worker(&turn_id, FC_POOL_ID, &worker_name, Some("0:0"))
             .await;
 
-        let proj_work_dir = proj_work_dir(&self.work_root, proj_id);
-        let materialize_root = if super::fc_nas_layout::fc_nas_layout_active(&nas_root) {
-            nas_root.as_path()
-        } else {
-            self.work_root.as_path()
-        };
-        materialize_turn_via_sandbox_host_paths(
-            db.as_ref(),
-            materialize_root,
-            &proj_work_dir,
-            &MaterializeInput {
-                session_id: session_id.clone(),
-                proj_id,
-                turn_id: turn_id.clone(),
-            },
-        )
-        .await?;
-
-        let tap_start = build_fc_worker_tap_start_script_from_db(db.as_ref()).await?;
-        if let Err(e) = self.client.exec_shell_script(&handle, &tap_start).await {
-            let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
-            return Err(format!("fc worker tap start: {e}"));
-        }
-
         self.slots.lock().await.insert(
             slot_index,
             FcSlot {
                 sandbox_id: handle.sandbox_id.clone(),
                 session_segment: session_segment.clone(),
-                worker_id,
                 proj_id,
             },
         );
@@ -192,6 +166,19 @@ impl PoolOps for FcOrchestratedPool {
             .lock()
             .await
             .insert(turn_id.to_string(), slot.slot_index);
+
+        // Hand the FC/E2B worker per-turn inputs inline; it writes into `/claw_sessions/{segment}`.
+        // Author: kejiqing
+        let session_segment = self
+            .slots
+            .lock()
+            .await
+            .get(&slot.slot_index)
+            .map(|s| s.session_segment.clone())
+            .unwrap_or_default();
+
+        let task_json = self.load_solve_task_json(db.as_ref(), turn_id).await?;
+
         let stdout_hook = merge_stdout_hooks(
             turn_id,
             Some(Arc::clone(&self.live_report_hub)),
@@ -204,6 +191,11 @@ impl PoolOps for FcOrchestratedPool {
                 task_rel_under_root,
                 claw_bin,
                 fc_worker_llm_env(worker_llm_env.unwrap_or_default()),
+                claw_fc_sandbox_client::GatewaySolveInputs {
+                    task_json: &task_json,
+                    session_jsonl: None,
+                    session_segment: &session_segment,
+                },
                 stdout_hook,
             )
             .await?;
@@ -224,8 +216,7 @@ impl PoolOps for FcOrchestratedPool {
                     .unwrap_or_default();
                 if let Err(e) = readback_turn_from_session_home(
                     db.as_ref(),
-                    db.pg_pool(),
-                    &self.work_root,
+                    &self.nas_layout,
                     &session_id,
                     proj_id,
                     turn_id,
@@ -273,16 +264,7 @@ impl PoolOps for FcOrchestratedPool {
             .await
             .retain(|_, idx| *idx != slot.slot_index);
         if let Some(fc_slot) = removed {
-            let nas_root = super::fc_nas_layout::nas_host_root(&self.work_root, None);
-            if super::fc_nas_layout::fc_nas_layout_active(&nas_root) {
-                let _ = super::fc_nas_layout::unlink_session_symlink(
-                    &nas_root,
-                    fc_slot.proj_id,
-                    &fc_slot.session_segment,
-                )
-                .await;
-            }
-            self.client.kill_sandbox(&fc_slot.sandbox_id).await?;
+            self.workers.release(fc_slot.proj_id).await;
         }
         Ok(())
     }

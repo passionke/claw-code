@@ -1,42 +1,36 @@
-//! Gateway → claw-sandbox RPC + optional FC cloud sandbox per project. Author: kejiqing
+//! Gateway → FC cloud sandbox (solve + interactive). Author: kejiqing
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use claw_fc_sandbox_client::FcSandboxClient;
-use claw_sandbox_client::SandboxRpcClient;
 
 use crate::session_db::GatewaySessionDb;
 
 use super::config::relaxed_worker_allowed_from_env;
 use super::fc_orchestrated_pool::{FcOrchestratedPool, FC_POOL_ID};
+use super::fc_proj_worker_registry::FcProjWorkerRegistry;
 use super::interactive_backend::{
-    fc_observe_is_enabled, interactive_backend_is_fc, ovs_backend_is_fc, FcInteractiveBackend,
-    FcOvsSingleton, FcSessionObserveSingleton, InteractiveBackendKind, InteractiveLease,
-    InteractiveSandboxBackend, PodmanInteractiveBackend,
+    FcInteractiveBackend, InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend,
 };
-use super::sandbox_orchestrator::SandboxOrchestratedPool;
 use super::traits::PoolOps;
 use super::worker_isolation::{
-    default_worker_isolation_json, effective_mode, execution_backend_from_json, is_fc_sandbox_mode,
-    mode_from_json, WorkerExecutionBackend, WorkerIsolationMode,
+    default_worker_isolation_json, effective_mode, is_fc_sandbox_mode, mode_from_json,
+    WorkerIsolationMode,
 };
-use super::LiveReportHub;
+use super::{LiveReportHub, NasLayoutBackend};
 
-/// Pool routing: podman claw-sandbox + optional FC cloud sandbox. Author: kejiqing
+/// FC-only pool routing. Author: kejiqing
 #[derive(Clone)]
 pub struct PoolClients {
-    podman_pool: Arc<dyn PoolOps + Send + Sync>,
-    fc_pool: Option<Arc<FcOrchestratedPool>>,
+    fc_pool: Arc<FcOrchestratedPool>,
+    fc_workers: Arc<FcProjWorkerRegistry>,
     pool_id: String,
-    sandbox_pool: Option<Arc<SandboxOrchestratedPool>>,
-    podman_interactive: Arc<PodmanInteractiveBackend>,
-    fc_interactive: Option<Arc<FcInteractiveBackend>>,
-    fc_ovs: Option<Arc<FcOvsSingleton>>,
-    fc_observe: Option<Arc<FcSessionObserveSingleton>>,
-    fc_client: Option<Arc<FcSandboxClient>>,
+    fc_interactive: Arc<FcInteractiveBackend>,
+    fc_client: Arc<FcSandboxClient>,
     work_root: PathBuf,
     pool_rpc_host_work_root: Option<PathBuf>,
+    nas_layout: NasLayoutBackend,
 }
 
 impl PoolClients {
@@ -46,95 +40,66 @@ impl PoolClients {
         work_root: PathBuf,
         fc_client: Option<Arc<FcSandboxClient>>,
         pool_rpc_host_work_root: Option<PathBuf>,
+        nas_layout: NasLayoutBackend,
     ) -> Self {
-        let sandbox_base = std::env::var("CLAW_SANDBOX_URL")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .or_else(|| {
-                std::env::var("CLAW_POOL_HTTP_BASE")
-                    .ok()
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-            });
-        let sandbox_base = sandbox_base.unwrap_or_else(|| {
-            eprintln!("http-gateway-rs: set CLAW_SANDBOX_URL or CLAW_POOL_HTTP_BASE");
-            std::process::exit(1);
-        });
-
         let pool_id = std::env::var("CLAW_POOL_ID")
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(crate::pool_registry::resolve_pool_id);
 
-        let client = Arc::new(SandboxRpcClient::new(&sandbox_base));
-        let orch = SandboxOrchestratedPool::new(
-            client.clone(),
-            work_root.clone(),
-            pool_id.clone(),
-            live_report_hub.clone(),
-        );
-        let sandbox_pool = Some(Arc::clone(&orch));
-        let podman_pool: Arc<dyn PoolOps + Send + Sync> = orch;
-
-        let fc_pool = fc_client.as_ref().map(|fc| {
-            Arc::new(FcOrchestratedPool::new(
-                Arc::clone(fc),
-                work_root.clone(),
-                live_report_hub,
-            ))
+        let fc_client = fc_client.unwrap_or_else(|| {
+            eprintln!(
+                "http-gateway-rs: FC/E2B sandbox is required; configure CLAW_FC_* / CLAW_E2B_*"
+            );
+            std::process::exit(1);
         });
-        let fc_interactive = fc_client.clone().map(|fc| {
-            Arc::new(FcInteractiveBackend::new(
-                fc,
-                pool_id.clone(),
-                work_root.clone(),
-                pool_rpc_host_work_root.clone(),
-            ))
-        });
-        if let Some(ref fc) = fc_client {
-            FcSandboxClient::spawn_lease_ticker(Arc::clone(fc));
+        if let Err(e) = nas_layout.cluster_id() {
+            eprintln!("http-gateway-rs: CLAW_CLUSTER_ID is required for FC/E2B NAS layout: {e}");
+            std::process::exit(1);
         }
-        let fc_client = fc_client.clone();
-        let nas_root =
-            super::fc_nas_layout::nas_host_root(&work_root, pool_rpc_host_work_root.as_deref());
-        let gateway_port = std::env::var("GATEWAY_HOST_PORT")
-            .ok()
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(8088);
-        let fc_ovs = match (fc_client.as_ref(), ovs_backend_is_fc()) {
-            (Some(fc), true) => Some(Arc::new(FcOvsSingleton::new(
-                Arc::clone(fc),
-                nas_root,
-                gateway_port,
-            ))),
-            _ => None,
-        };
-        let fc_observe = match (fc_client.as_ref(), fc_observe_is_enabled()) {
-            (Some(fc), true) => Some(Arc::new(FcSessionObserveSingleton::new(Arc::clone(fc)))),
-            _ => None,
-        };
-        let podman_interactive = Arc::new(PodmanInteractiveBackend::new(
-            client,
+        if !nas_layout.uses_nas_api() {
+            eprintln!(
+                "http-gateway-rs: FC/E2B requires claw-nas-api; deploy: ./deploy/stack/gateway.sh nas-api-up"
+            );
+            std::process::exit(1);
+        }
+
+        let fc_workers = Arc::new(FcProjWorkerRegistry::new(
+            Arc::clone(&fc_client),
+            nas_layout.clone(),
+        ));
+        FcSandboxClient::spawn_lease_ticker(Arc::clone(&fc_client));
+        FcProjWorkerRegistry::spawn_renewal_ticker(Arc::clone(&fc_workers));
+
+        let fc_pool = Arc::new(FcOrchestratedPool::new(
+            Arc::clone(&fc_client),
+            live_report_hub,
+            nas_layout.clone(),
+            Arc::clone(&fc_workers),
+        ));
+        let fc_interactive = Arc::new(FcInteractiveBackend::new(
+            Arc::clone(&fc_client),
             pool_id.clone(),
-            work_root.clone(),
-            pool_rpc_host_work_root.clone(),
+            nas_layout.clone(),
+            Arc::clone(&fc_workers),
         ));
 
         Self {
-            podman_pool,
             fc_pool,
+            fc_workers,
             pool_id,
-            sandbox_pool,
-            podman_interactive,
             fc_interactive,
-            fc_ovs,
-            fc_observe,
             fc_client,
             work_root,
             pool_rpc_host_work_root,
+            nas_layout,
         }
+    }
+
+    #[must_use]
+    pub fn nas_layout(&self) -> &NasLayoutBackend {
+        &self.nas_layout
     }
 
     #[must_use]
@@ -147,69 +112,30 @@ impl PoolClients {
 
     #[must_use]
     pub fn fc_nas_layout_active(&self) -> bool {
-        super::fc_nas_layout::fc_nas_layout_active(&self.nas_host_root())
-    }
-
-    #[must_use]
-    pub fn fc_observe_singleton(&self) -> Option<&FcSessionObserveSingleton> {
-        self.fc_observe.as_deref()
-    }
-
-    /// **Only** observe startup entry: gateway boot calls this once (no Admin/proxy re-entry).
-    pub fn spawn_fc_observe_warmup(&self) {
-        let Some(ob) = self.fc_observe.as_ref() else {
-            return;
-        };
-        let ob = Arc::clone(ob);
-        tokio::spawn(async move {
-            if let Err(e) = ob.ensure().await {
-                tracing::warn!(
-                    target: "claw_fc_observe",
-                    error = %e,
-                    "background observe ensure failed"
-                );
-            }
-        });
-    }
-
-    /// Warm OVS singleton on gateway startup (same lifecycle as observe).
-    pub fn spawn_fc_ovs_warmup(&self) {
-        let Some(ovs) = self.fc_ovs.as_ref() else {
-            return;
-        };
-        let ovs = Arc::clone(ovs);
-        tokio::spawn(async move {
-            if let Err(e) = ovs.ensure().await {
-                tracing::warn!(
-                    target: "claw_fc_ovs",
-                    error = %e,
-                    "background ovs ensure failed"
-                );
-            }
-        });
+        self.nas_layout.active()
     }
 
     #[must_use]
     pub fn fc_interactive(&self) -> Option<&FcInteractiveBackend> {
-        self.fc_interactive.as_deref()
+        Some(&self.fc_interactive)
     }
 
     #[must_use]
-    pub fn fc_ovs_singleton(&self) -> Option<&FcOvsSingleton> {
-        self.fc_ovs.as_deref()
+    pub fn fc_interactive_arc(&self) -> Arc<dyn InteractiveSandboxBackend + Send + Sync> {
+        Arc::clone(&self.fc_interactive) as Arc<dyn InteractiveSandboxBackend + Send + Sync>
     }
 
     #[must_use]
-    pub fn fc_warm_pool(&self) -> Option<&super::interactive_backend::FcProjWarmPool> {
-        self.fc_interactive.as_ref().map(|b| b.warm_pool())
+    pub fn fc_worker_registry(&self) -> &FcProjWorkerRegistry {
+        &self.fc_workers
     }
 
     #[must_use]
     pub fn fc_sandbox_client(&self) -> Option<&Arc<FcSandboxClient>> {
-        self.fc_client.as_ref()
+        Some(&self.fc_client)
     }
 
-    /// Graceful shutdown: DELETE every FC sandbox this gateway owns (warm workers + singletons + lease registry).
+    /// Graceful shutdown: project workers survive on e2b; kill only non-persisted leases.
     pub async fn shutdown_fc_sandboxes(&self) {
         let cluster_id = std::env::var("CLAW_CLUSTER_ID")
             .ok()
@@ -217,30 +143,23 @@ impl PoolClients {
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| "default".to_string());
 
-        if let Some(fc) = &self.fc_interactive {
-            fc.shutdown_all().await;
-        }
-        if let Some(ovs) = &self.fc_ovs {
-            ovs.shutdown().await;
-        }
-        if let Some(ob) = &self.fc_observe {
-            ob.shutdown().await;
-        }
+        self.fc_interactive.shutdown_all().await;
 
-        if let Some(client) = &self.fc_client {
-            let leased = client.kill_all_leased_sandboxes().await;
-            let orphans = client
-                .kill_cluster_singleton_orphans(&cluster_id)
-                .await
-                .unwrap_or(0);
-            tracing::info!(
-                target: "claw_fc_sandbox",
-                cluster_id = %cluster_id,
-                leased_killed = leased,
-                orphan_singletons_killed = orphans,
-                "shutdown_fc_sandboxes complete"
-            );
-        }
+        let skip = self.fc_workers.all_persisted_sandbox_ids().await;
+        let leased = self.fc_client.kill_all_leased_sandboxes_except(&skip).await;
+        let orphans = self
+            .fc_client
+            .kill_cluster_singleton_orphans(&cluster_id)
+            .await
+            .unwrap_or(0);
+        tracing::info!(
+            target: "claw_fc_sandbox",
+            cluster_id = %cluster_id,
+            persisted_workers = skip.len(),
+            ephemeral_killed = leased,
+            orphan_singletons_killed = orphans,
+            "shutdown_fc_sandboxes complete (project workers left running)"
+        );
     }
 
     #[must_use]
@@ -250,7 +169,7 @@ impl PoolClients {
 
     #[must_use]
     pub fn client(&self) -> Arc<dyn PoolOps + Send + Sync> {
-        Arc::clone(&self.podman_pool)
+        Arc::clone(&self.fc_pool) as Arc<dyn PoolOps + Send + Sync>
     }
 
     pub async fn worker_json_for_proj(db: &GatewaySessionDb, proj_id: i64) -> serde_json::Value {
@@ -274,13 +193,6 @@ impl PoolClients {
     ) -> Result<(), String> {
         let json = Self::worker_json_for_proj(db, proj_id).await;
         if is_fc_sandbox_mode(&json) {
-            if self.fc_pool.is_none() || self.fc_interactive.is_none() {
-                return Err(
-                    "proj worker_isolation_json.mode=sandbox but FC sandbox is not configured on gateway \
-                     (set CLAW_FC_* / NAS_BASE_URL; FC template must have VPC for nasConfig)"
-                        .into(),
-                );
-            }
             return Ok(());
         }
         if mode_from_json(&json) != WorkerIsolationMode::Relaxed {
@@ -289,7 +201,7 @@ impl PoolClients {
         if !relaxed_worker_allowed_from_env() {
             return Err(
                 "proj worker_isolation_json.mode=relaxed but CLAW_ALLOW_RELAXED_WORKER=false on gateway; \
-                 set CLAW_ALLOW_RELAXED_WORKER=true in repo .env and restart pool + gateway, or set proj to strict"
+                 set CLAW_ALLOW_RELAXED_WORKER=true in repo .env and restart gateway, or set proj to strict"
                     .into(),
             );
         }
@@ -301,34 +213,14 @@ impl PoolClients {
         db: &GatewaySessionDb,
         proj_id: i64,
     ) -> Result<(Arc<dyn PoolOps + Send + Sync>, String), String> {
-        // FC interactive stack: solve always on fc-cloud (worker co-located tap proxy + trace writes).
-        // Live viewing is FcSessionObserveSingleton — not worker tap, not compose claw-claude-tap.
-        if interactive_backend_is_fc() {
-            let fc = self.fc_pool.as_ref().ok_or_else(|| {
-                "FC sandbox pool unavailable (configure CLAW_FC_* and restart gateway)".to_string()
-            })?;
-            return Ok((
-                Arc::clone(fc) as Arc<dyn PoolOps + Send + Sync>,
-                FC_POOL_ID.to_string(),
-            ));
-        }
-        let json = Self::worker_json_for_proj(db, proj_id).await;
-        match execution_backend_from_json(&json) {
-            WorkerExecutionBackend::FcSandbox => {
-                let fc = self
-                    .fc_pool
-                    .as_ref()
-                    .ok_or_else(|| "FC sandbox pool unavailable".to_string())?;
-                Ok((
-                    Arc::clone(fc) as Arc<dyn PoolOps + Send + Sync>,
-                    FC_POOL_ID.to_string(),
-                ))
-            }
-            WorkerExecutionBackend::PodmanPool { .. } => {
-                let _ = Self::effective_mode_for_proj(db, proj_id).await;
-                Ok((Arc::clone(&self.podman_pool), self.pool_id.clone()))
-            }
-        }
+        let _ = db;
+        let _ = proj_id;
+        self.assert_proj_worker_isolation_supported(db, proj_id)
+            .await?;
+        Ok((
+            Arc::clone(&self.fc_pool) as Arc<dyn PoolOps + Send + Sync>,
+            FC_POOL_ID.to_string(),
+        ))
     }
 
     pub async fn pool_for_turn(
@@ -340,16 +232,15 @@ impl PoolClients {
     ) -> Result<Arc<dyn PoolOps + Send + Sync>, String> {
         if let Ok(Some(pool_id)) = db.get_turn_pool_id(turn_id, session_id, proj_id).await {
             if pool_id == FC_POOL_ID {
-                if let Some(fc) = &self.fc_pool {
-                    return Ok(Arc::clone(fc) as Arc<dyn PoolOps + Send + Sync>);
-                }
-            } else if pool_id != self.pool_id {
+                return Ok(Arc::clone(&self.fc_pool) as Arc<dyn PoolOps + Send + Sync>);
+            }
+            if pool_id != self.pool_id {
                 tracing::warn!(
                     target: "claw_gateway_pool",
                     turn_id = %turn_id,
                     stored_pool_id = %pool_id,
                     current_pool_id = %self.pool_id,
-                    "turn pool_id does not match current pool (legacy dual-pool row?)"
+                    "turn pool_id does not match current pool (legacy row?)"
                 );
             }
         }
@@ -360,51 +251,20 @@ impl PoolClients {
 
     pub async fn interactive_backend_for_proj(
         &self,
-        db: &GatewaySessionDb,
-        proj_id: i64,
+        _db: &GatewaySessionDb,
+        _proj_id: i64,
     ) -> Result<Arc<dyn InteractiveSandboxBackend + Send + Sync>, String> {
-        if interactive_backend_is_fc() {
-            return self
-                .fc_interactive
-                .clone()
-                .ok_or_else(|| "FC interactive backend unavailable".into())
-                .map(|b| b as Arc<dyn InteractiveSandboxBackend + Send + Sync>);
-        }
-        let json = Self::worker_json_for_proj(db, proj_id).await;
-        match execution_backend_from_json(&json) {
-            WorkerExecutionBackend::FcSandbox => self
-                .fc_interactive
-                .clone()
-                .ok_or_else(|| "FC interactive backend unavailable".into())
-                .map(|b| b as Arc<dyn InteractiveSandboxBackend + Send + Sync>),
-            WorkerExecutionBackend::PodmanPool { .. } => {
-                Ok(self.podman_interactive.clone()
-                    as Arc<dyn InteractiveSandboxBackend + Send + Sync>)
-            }
-        }
+        Ok(self.fc_interactive.clone() as Arc<dyn InteractiveSandboxBackend + Send + Sync>)
     }
 
     pub async fn stop_interactive_lease(&self, lease: &InteractiveLease) -> Result<(), String> {
         match lease.backend {
-            InteractiveBackendKind::Fc => {
-                let fc = self
-                    .fc_interactive
-                    .as_ref()
-                    .ok_or_else(|| "fc interactive backend missing".to_string())?;
-                fc.stop_session(lease).await
-            }
-            InteractiveBackendKind::Podman => self.podman_interactive.stop_session(lease).await,
+            InteractiveBackendKind::Fc => self.fc_interactive.stop_session(lease).await,
         }
     }
 
     pub async fn has_report_for_turn(&self, _db: &GatewaySessionDb, turn_id: &str) -> bool {
-        if self.podman_pool.has_report_for_turn(turn_id).await {
-            return true;
-        }
-        if let Some(fc) = &self.fc_pool {
-            return fc.has_report_for_turn(turn_id).await;
-        }
-        false
+        self.fc_pool.has_report_for_turn(turn_id).await
     }
 
     pub async fn first_report_at_ms_for_turn(
@@ -412,29 +272,17 @@ impl PoolClients {
         _db: &GatewaySessionDb,
         turn_id: &str,
     ) -> Option<i64> {
-        if let Some(ms) = self.podman_pool.first_report_at_ms_for_turn(turn_id).await {
-            return Some(ms);
-        }
-        if let Some(fc) = &self.fc_pool {
-            return fc.first_report_at_ms_for_turn(turn_id).await;
-        }
-        None
-    }
-
-    #[must_use]
-    pub fn sandbox_rpc_client(&self) -> Option<Arc<SandboxRpcClient>> {
-        self.sandbox_pool.as_ref().map(|p| p.rpc_client())
+        self.fc_pool.first_report_at_ms_for_turn(turn_id).await
     }
 
     pub async fn bind_session_db(&self, db: Arc<GatewaySessionDb>) {
-        if let Some(pool) = self.sandbox_pool.as_ref() {
-            pool.bind_session_db(Arc::clone(&db)).await;
-        }
-        if let Some(fc) = self.fc_pool.as_ref() {
-            fc.bind_session_db(Arc::clone(&db)).await;
-        }
-        if let Some(fc) = &self.fc_interactive {
-            fc.bind_session_db(Arc::clone(&db)).await;
-        }
+        self.fc_pool.bind_session_db(Arc::clone(&db)).await;
+        self.fc_workers.bind_session_db(Arc::clone(&db)).await;
+        self.fc_interactive.bind_session_db(db).await;
+    }
+
+    /// Startup reconcile: ensure every project's worker exists on e2b and matches template.
+    pub async fn reconcile_project_workers_on_startup(&self) -> Result<(), String> {
+        self.fc_workers.reconcile_all_on_startup().await
     }
 }

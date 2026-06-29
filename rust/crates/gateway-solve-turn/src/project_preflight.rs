@@ -176,6 +176,15 @@ pub(crate) fn run_first_turn_preflight(
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
+
+    /// Serializes tests that read/write the process-global `CLAW_PROJECT_CONFIG_ROOT`
+    /// env so parallel runners cannot leak it across cases. Author: kejiqing
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn resolve_config_from_pool_ro_mount_under_session_home() {
@@ -195,6 +204,7 @@ mod tests {
 
     #[test]
     fn resolve_config_from_claw_project_config_root_env() {
+        let _env = env_guard();
         let ds_root =
             std::env::temp_dir().join(format!("claw-preflight-env-{}", std::process::id()));
         let _ = fs::remove_dir_all(&ds_root);
@@ -222,6 +232,7 @@ mod tests {
 
     #[test]
     fn resolve_config_under_ds_home() {
+        let _env = env_guard();
         let root = std::env::temp_dir().join(format!("claw-preflight-cfg-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let session_home = root.join("sessions").join("sess1");
@@ -282,6 +293,9 @@ mod tests {
 
     #[test]
     fn resolve_config_root_disabled_tombstone_returns_none() {
+        let _env = env_guard();
+        let prev = std::env::var("CLAW_PROJECT_CONFIG_ROOT").ok();
+        std::env::remove_var("CLAW_PROJECT_CONFIG_ROOT");
         let root = std::env::temp_dir().join(format!("claw-preflight-off-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let session_home = root.join("sessions").join("sess-off");
@@ -289,11 +303,15 @@ mod tests {
         let cfg_path = root.join(SOLVE_PREFLIGHT_CONFIG_REL);
         fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
         fs::write(&cfg_path, r#"{"kinds":[]}"#).unwrap();
+        let resolved = resolve_solve_preflight_config(&session_home);
+        if let Some(p) = prev {
+            std::env::set_var("CLAW_PROJECT_CONFIG_ROOT", p);
+        }
+        let _ = fs::remove_dir_all(&root);
         assert!(
-            resolve_solve_preflight_config(&session_home).is_none(),
+            resolved.is_none(),
             "empty kinds on config root must not enable preflight"
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -318,6 +336,7 @@ mod tests {
     /// End-to-end pool fix: PG `kind:none` → materialized tombstone → no preflight despite stale `/claw_ds`.
     #[test]
     fn pool_pg_none_materialized_tombstone_skips_preflight() {
+        let _env = env_guard();
         let ds_root =
             std::env::temp_dir().join(format!("claw-preflight-pool-fix-{}", std::process::id()));
         let _ = fs::remove_dir_all(&ds_root);
@@ -372,6 +391,7 @@ mod tests {
     /// home was wiped each solve and `materialize_in` did not write a tombstone. Author: kejiqing
     #[test]
     fn stale_claw_ds_preflight_blocked_by_session_disabled_marker() {
+        let _env = env_guard();
         let ds_root =
             std::env::temp_dir().join(format!("claw-preflight-stale-{}", std::process::id()));
         let _ = fs::remove_dir_all(&ds_root);
@@ -409,6 +429,7 @@ mod tests {
 
     #[test]
     fn stale_claw_ds_preflight_used_when_session_marker_missing() {
+        let _env = env_guard();
         let ds_root =
             std::env::temp_dir().join(format!("claw-preflight-miss-{}", std::process::id()));
         let _ = fs::remove_dir_all(&ds_root);

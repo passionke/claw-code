@@ -3,7 +3,7 @@
 Author: kejiqing  
 Date: 2026-06-20  
 Claw 集成方：claw-code（Gateway + FC OVS singleton + warm worker）  
-e2b 节点：`10.8.0.9`（self-hosted e2bserver，WireGuard `10.8.x`）
+e2b 节点：`10.8.0.9`（self-hosted e2bserver，WireGuard `10.8.x`）— **历史取证**；当前节点 **`10.8.0.1`**，见 [`architecture-governance.md`](../architecture-governance.md)。
 
 ---
 

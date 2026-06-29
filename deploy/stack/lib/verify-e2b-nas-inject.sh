@@ -7,11 +7,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 [[ -f "${ROOT_DIR}/.env" ]] && source "${ROOT_DIR}/.env"
 
 API_KEY="${CLAW_FC_API_KEY:-${E2B_API_KEY:-}}"
-API_URL="${CLAW_FC_API_URL:-http://10.8.0.9:3000}"
-SANDBOX_URL="${CLAW_E2B_SANDBOX_URL:-http://10.8.0.9:3002}"
-DOMAIN="${CLAW_FC_DOMAIN:-10.8.0.9}"
+API_URL="${CLAW_FC_API_URL:-http://10.8.0.1:3000}"
+SANDBOX_URL="${CLAW_E2B_SANDBOX_URL:-http://10.8.0.1:3002}"
+DOMAIN="${CLAW_FC_DOMAIN:-supone.top}"
 TEMPLATE="${CLAW_FC_TEMPLATE:-claw-worker}"
-# Bind source on the **e2b host** (10.8.0.9). Prefer CLAW_E2B_NAS_HOST_MOUNT; else e2b /health nas.hostMountRoot.
+# Bind source on the **e2b host** (`10.8.0.1`). Prefer CLAW_E2B_NAS_HOST_MOUNT; else e2b /health nas.hostMountRoot.
 E2B_NAS_ROOT="${CLAW_E2B_NAS_HOST_MOUNT:-}"
 if [[ -z "${E2B_NAS_ROOT}" ]]; then
   E2B_NAS_ROOT="$(curl -sS -m 10 "${API_URL%/}/health" | python3 -c "import json,sys; print((json.load(sys.stdin).get('nas') or {}).get('hostMountRoot',''))")"

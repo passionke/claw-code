@@ -1,686 +1,185 @@
-//! Materialize session files from PG into worker `/claw_host_root`; read back after exec. Author: kejiqing
+//! FC/E2B session readback helpers; transcript + solve timing from NAS after exec. Author: kejiqing
+//! FC solve 主路径不写 workspace gzip-tar 到 DB（legacy docker pool 除外）。
 
 use std::path::Path;
 
-use claw_sandbox_client::SandboxRpcClient;
-use claw_sandbox_protocol::{
-    GuestExecActor, GuestVolume, GUEST_WIPE_DS_SH, GUEST_WIPE_WORK_ROOT_SH,
+use crate::cluster_identity;
+use crate::persistence::transcript::{
+    now_ms, reconcile_session_transcript_from_jsonl, JsonlMessage,
 };
-use runtime::builtin_system_prompt_scaffold_default;
-
-use crate::persistence::transcript::{import_turn_messages_to_db, now_ms, JsonlMessage};
-use crate::pool::docker_cli::{runtime_exec, runtime_exec_stdin};
-use crate::pool::guest_materialize_tar;
-use crate::project_config_apply;
-use crate::project_git_sync;
 use crate::session_db::GatewaySessionDb;
+use gateway_solve_turn::multi_agent::ORCHESTRATION_EVENTS_REL;
+use gateway_solve_turn::SOLVE_TIMING_EVENTS_REL;
 use serde_json::Value;
-use sqlx::PgPool;
+use tracing::warn;
 
-pub const GUEST_WORK_ROOT: &str = "/claw_host_root";
+use super::NasLayoutBackend;
+
+pub const GUEST_CLAW_SESSIONS: &str = "/claw_sessions";
 pub const DS_MOUNT_TARGET: &str = "/claw_ds";
-/// Per-turn workspace tar.gz cap (pool v1). Author: kejiqing
+#[allow(dead_code)]
 pub const WORKSPACE_TAR_MAX_BYTES: usize = 16 * 1024 * 1024;
-/// Task/jsonl/settings cap (separate from workspace tar). Author: kejiqing
 pub const SESSION_MANIFEST_MAX_BYTES: usize = 16 * 1024 * 1024;
 pub const WORKSPACE_TAR_ARTIFACT_PATH: &str = "__workspace_tar_gz__";
 pub const WORKSPACE_TAR_ARTIFACT_KIND: &str = "workspace_tar_gz";
 
-#[derive(Debug, Clone)]
-pub struct MaterializeInput {
-    pub session_id: String,
-    pub proj_id: i64,
-    pub turn_id: String,
+/// Resolve `CLAW_CLUSTER_ID` for NAS path operations. Author: kejiqing
+pub fn nas_cluster_id() -> Result<String, String> {
+    cluster_identity::gateway_cluster_id()
 }
 
-/// Wipe ephemeral tmpfs before materialize: `/claw_ds` as root, `/claw_host_root` as worker user. Author: kejiqing
-async fn wipe_guest_ephemeral_mounts(
-    runtime_bin: &str,
-    container_name: &str,
-    worker_exec_user: &str,
-) -> Result<(), String> {
-    exec_sh_lc_as_user(runtime_bin, container_name, "0:0", GUEST_WIPE_DS_SH).await?;
-    exec_sh_lc_as_user(
-        runtime_bin,
-        container_name,
-        worker_exec_user,
-        GUEST_WIPE_WORK_ROOT_SH,
-    )
-    .await
-}
-
-/// Write session task/jsonl + workspace tar from PG before `gateway-solve-once`.
-/// Project config (skills/rules/CLAUDE) is read from `/claw_ds` bind, not copied here. Author: kejiqing
-pub async fn materialize_in(
-    runtime_bin: &str,
-    _work_root_host: &Path,
-    container_name: &str,
-    db: &GatewaySessionDb,
-    input: &MaterializeInput,
-    worker_exec_user: &str,
-) -> Result<(), String> {
-    wipe_guest_ephemeral_mounts(runtime_bin, container_name, worker_exec_user).await?;
-
-    let workspace_tar_b64 = db
-        .get_latest_workspace_tar_b64(
-            &input.session_id,
-            input.proj_id,
-            WORKSPACE_TAR_ARTIFACT_PATH,
-            WORKSPACE_TAR_ARTIFACT_KIND,
-        )
-        .await
-        .map_err(|e| format!("load workspace tar: {e}"))?;
-    if let Some(ref b64) = workspace_tar_b64 {
-        if !b64.trim().is_empty() {
-            extract_workspace_tar_b64(runtime_bin, container_name, worker_exec_user, b64).await?;
-        }
-    }
-    exec_sh_lc_as_user(
-        runtime_bin,
-        container_name,
-        worker_exec_user,
-        project_config_apply::guest_prepare_worker_native_paths_shell(),
-    )
-    .await?;
-
-    let task = db
-        .get_solve_task_json(&input.turn_id)
-        .await
-        .map_err(|e| format!("load solve_task_json: {e}"))?
-        .ok_or_else(|| format!("missing solve_task_json for turn {}", input.turn_id))?;
-    let task_bytes = serde_json::to_vec(&task).map_err(|e| format!("serialize task: {e}"))?;
-    if task_bytes.len() > SESSION_MANIFEST_MAX_BYTES {
-        return Err(format!(
-            "solve_task_json exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-        ));
-    }
-    let jsonl_body = db
-        .render_session_jsonl(&input.session_id, input.proj_id)
-        .await
-        .map_err(|e| format!("render session jsonl: {e}"))?;
-    if jsonl_body.len() > SESSION_MANIFEST_MAX_BYTES {
-        return Err(format!(
-            "session transcript exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-        ));
-    }
-    let mut writes: Vec<(String, Vec<u8>)> = vec![(
-        format!("{GUEST_WORK_ROOT}/gateway-solve-task.json"),
-        task_bytes,
-    )];
-    if GatewaySessionDb::session_jsonl_has_messages(&jsonl_body) {
-        writes.push((
-            format!("{GUEST_WORK_ROOT}/.claw/gateway-solve-session.jsonl",),
-            jsonl_body.into_bytes(),
-        ));
-    }
-    if let Some(row) = db
-        .get_project_config(input.proj_id)
-        .await
-        .map_err(|e| format!("load project_config: {e}"))?
-    {
-        for (path, bytes) in guest_session_marker_writes(&row)
-            .map_err(|e| format!("guest session markers proj {}: {e}", input.proj_id))?
-        {
-            writes.push((path, bytes));
-        }
-    }
-    for (path, bytes) in writes {
-        if bytes.len() > SESSION_MANIFEST_MAX_BYTES {
-            return Err(format!(
-                "guest file {path} exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-            ));
-        }
-        write_file_via_exec_user(runtime_bin, container_name, worker_exec_user, &path, &bytes)
-            .await?;
-    }
-    Ok(())
-}
-
-/// Host path `work_root/proj_<id>/` (gateway view; same tree as `git pull`). Author: kejiqing
+/// Gateway convenience: `work_root/{clusterId}/proj_{id}/`.
 #[must_use]
-pub fn proj_work_dir(work_root: &Path, proj_id: i64) -> std::path::PathBuf {
-    work_root.join(format!("proj_{proj_id}"))
+pub fn gateway_proj_work_dir(work_root: &Path, proj_id: i64) -> Result<std::path::PathBuf, String> {
+    Ok(proj_work_dir(work_root, &nas_cluster_id()?, proj_id))
 }
 
-/// One `guest_extract_tar_b64` RPC for many files under a guest volume. Author: kejiqing
-async fn guest_extract_tar_batch(
-    client: &SandboxRpcClient,
-    slot_index: usize,
-    volume: GuestVolume,
-    entries: &[(String, Vec<u8>)],
-    label: &str,
-) -> Result<(), String> {
-    if entries.is_empty() {
-        return Ok(());
-    }
-    let tar_b64 = guest_materialize_tar::build_tar_gz_b64(entries, SESSION_MANIFEST_MAX_BYTES)
-        .map_err(|e| format!("{label}: build tar: {e}"))?;
-    client
-        .guest_extract_tar_b64(slot_index, volume, "", &tar_b64)
-        .await
-        .map_err(|e| format!("{label}: extract tar: {e}"))
-}
-
-/// PG → sandbox guest paths before `exec_solve` (end-state RPC). Author: kejiqing
-pub async fn materialize_turn_via_sandbox(
-    client: &SandboxRpcClient,
-    slot_index: usize,
-    db: &GatewaySessionDb,
-    proj_work_dir: &Path,
-    input: &MaterializeInput,
-) -> Result<(), String> {
-    client.guest_wipe(slot_index).await?;
-
-    let workspace_tar_b64 = db
-        .get_latest_workspace_tar_b64(
-            &input.session_id,
-            input.proj_id,
-            WORKSPACE_TAR_ARTIFACT_PATH,
-            WORKSPACE_TAR_ARTIFACT_KIND,
-        )
-        .await
-        .map_err(|e| format!("load workspace tar: {e}"))?;
-    if let Some(ref b64) = workspace_tar_b64 {
-        if !b64.trim().is_empty() {
-            client
-                .guest_extract_tar_b64(slot_index, GuestVolume::SessionWorkspace, "", b64)
-                .await?;
-        }
-    }
-    client.guest_prepare_session_workspace(slot_index).await?;
-
-    let project_config_row = db
-        .get_project_config(input.proj_id)
-        .await
-        .map_err(|e| format!("load project_config: {e}"))?;
-
-    let mut project_entries: Vec<(String, Vec<u8>)> = Vec::new();
-    if let Some(ref row) = project_config_row {
-        let scaffold = builtin_system_prompt_scaffold_default();
-        let writes = project_config_apply::build_guest_materialize_writes(row, &scaffold)
-            .map_err(|e| format!("build_guest_materialize_writes proj {}: {e}", input.proj_id))?;
-        for write in writes {
-            project_entries.push((write.rel_path.to_string_lossy().into_owned(), write.bytes));
-        }
-        let excluded = project_config_apply::git_excluded_home_relpaths(row);
-        let git_writes = project_git_sync::build_guest_git_import_writes(
-            proj_work_dir,
-            &excluded,
-            SESSION_MANIFEST_MAX_BYTES,
-        )
-        .map_err(|e| format!("build_guest_git_import_writes proj {}: {e}", input.proj_id))?;
-        for write in git_writes {
-            project_entries.push((write.rel_path.to_string_lossy().into_owned(), write.bytes));
-        }
-    }
-    guest_extract_tar_batch(
-        client,
-        slot_index,
-        GuestVolume::ProjectConfig,
-        &project_entries,
-        "project config",
-    )
-    .await?;
-
-    let task = db
-        .get_solve_task_json(&input.turn_id)
-        .await
-        .map_err(|e| format!("load solve_task_json: {e}"))?
-        .ok_or_else(|| format!("missing solve_task_json for turn {}", input.turn_id))?;
-    let task_bytes = serde_json::to_vec(&task).map_err(|e| format!("serialize task: {e}"))?;
-    if task_bytes.len() > SESSION_MANIFEST_MAX_BYTES {
-        return Err(format!(
-            "solve_task_json exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-        ));
-    }
-    let jsonl_body = db
-        .render_session_jsonl(&input.session_id, input.proj_id)
-        .await
-        .map_err(|e| format!("render session jsonl: {e}"))?;
-    if jsonl_body.len() > SESSION_MANIFEST_MAX_BYTES {
-        return Err(format!(
-            "session transcript exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-        ));
-    }
-    let mut session_entries: Vec<(String, Vec<u8>)> =
-        vec![("gateway-solve-task.json".to_string(), task_bytes)];
-    if GatewaySessionDb::session_jsonl_has_messages(&jsonl_body) {
-        session_entries.push((
-            ".claw/gateway-solve-session.jsonl".to_string(),
-            jsonl_body.into_bytes(),
-        ));
-    }
-    if let Some(ref row) = project_config_row {
-        for (path, bytes) in guest_session_marker_writes(row).map_err(|e| {
-            format!(
-                "guest session markers proj {} (sandbox): {e}",
-                input.proj_id
-            )
-        })? {
-            let rel = path
-                .strip_prefix(&format!("{GUEST_WORK_ROOT}/"))
-                .map(std::string::ToString::to_string)
-                .unwrap_or(path);
-            session_entries.push((rel, bytes));
-        }
-    }
-    guest_extract_tar_batch(
-        client,
-        slot_index,
-        GuestVolume::SessionWorkspace,
-        &session_entries,
-        "session manifest",
-    )
-    .await?;
-
-    client.guest_lock_project_config(slot_index).await?;
-    Ok(())
-}
-
-/// Running turn: worker `.claw` progress via sandbox `guest_read`. Author: kejiqing
-pub async fn sync_progress_via_sandbox(
-    client: &SandboxRpcClient,
-    slot_index: usize,
-    db: &GatewaySessionDb,
-    turn_id: &str,
-) -> Result<(), String> {
-    let paths = vec![
-        format!("{GUEST_WORK_ROOT}/.claw/progress-events.ndjson"),
-        format!("{GUEST_WORK_ROOT}/.claw/task-progress.json"),
-    ];
-    let files = client.guest_read(slot_index, &paths).await?;
-    let progress = guest_read_text(&files, &paths[0]);
-    let task_progress = guest_read_text(&files, &paths[1]);
-    if progress.is_empty() && task_progress.is_empty() {
-        return Ok(());
-    }
-    db.replace_turn_progress_snapshot(turn_id, &progress, &task_progress)
-        .await
-        .map_err(|e| format!("replace turn progress: {e}"))?;
-    Ok(())
-}
-
-/// Import jsonl + workspace tar + timing after sandbox exec. Author: kejiqing
-pub async fn readback_turn_via_sandbox(
-    client: &SandboxRpcClient,
-    slot_index: usize,
-    db: &GatewaySessionDb,
-    pool: &PgPool,
-    session_id: &str,
+/// Gateway convenience: session home under cluster-prefixed NAS tree.
+#[must_use]
+pub fn gateway_session_home(
+    work_root: &Path,
     proj_id: i64,
-    turn_id: &str,
-    user_prompt: &str,
-) -> Result<Vec<JsonlMessage>, String> {
-    let jsonl_path = format!("{GUEST_WORK_ROOT}/.claw/gateway-solve-session.jsonl");
-    let jsonl = guest_read_single_string(client, slot_index, &jsonl_path)
-        .await
-        .unwrap_or_default();
-    let groups = crate::persistence::transcript::turn_message_groups_from_jsonl_contents(&jsonl);
-    let messages = groups.last().cloned().unwrap_or_else(|| {
-        vec![JsonlMessage {
-            role: "user".to_string(),
-            blocks: serde_json::json!([{"type":"text","text":user_prompt}]),
-            usage: None,
-        }]
-    });
-    let now = now_ms();
-    import_turn_messages_to_db(db, session_id, proj_id, turn_id, &messages, now)
-        .await
-        .map_err(|e| format!("import cc_messages: {e}"))?;
-
-    readback_workspace_tar_via_sandbox(client, slot_index, db, session_id, proj_id, turn_id, now)
-        .await?;
-
-    readback_timing_via_sandbox(client, slot_index, db, turn_id).await?;
-    let _ = pool;
-    Ok(messages)
-}
-
-async fn readback_timing_via_sandbox(
-    client: &SandboxRpcClient,
-    slot_index: usize,
-    db: &GatewaySessionDb,
-    turn_id: &str,
-) -> Result<(), String> {
-    let timing_path = format!(
-        "{GUEST_WORK_ROOT}/{}",
-        gateway_solve_turn::SOLVE_TIMING_EVENTS_REL
-    );
-    let orchestration_path = format!(
-        "{GUEST_WORK_ROOT}/{}",
-        gateway_solve_turn::multi_agent::ORCHESTRATION_EVENTS_REL
-    );
-    let progress_path = format!("{GUEST_WORK_ROOT}/.claw/progress-events.ndjson");
-    let task_progress_path = format!("{GUEST_WORK_ROOT}/.claw/task-progress.json");
-    let paths = vec![
-        timing_path.clone(),
-        orchestration_path.clone(),
-        progress_path.clone(),
-        task_progress_path.clone(),
-    ];
-    let files = client.guest_read(slot_index, &paths).await?;
-    let timing = guest_read_text(&files, &timing_path);
-    let orchestration = guest_read_text(&files, &orchestration_path);
-    let progress = guest_read_text(&files, &progress_path);
-    let task_progress = guest_read_text(&files, &task_progress_path);
-    let total = timing.len() + orchestration.len() + progress.len() + task_progress.len();
-    if total > SESSION_MANIFEST_MAX_BYTES {
-        return Err(format!(
-            "timing artifacts exceed cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-        ));
-    }
-    db.replace_turn_progress_snapshot(turn_id, &progress, &task_progress)
-        .await
-        .map_err(|e| format!("replace turn progress: {e}"))?;
-    db.merge_turn_timing_worker_readback(turn_id, &timing, &orchestration)
-        .await
-        .map_err(|e| format!("merge turn timing: {e}"))
-}
-
-async fn readback_workspace_tar_via_sandbox(
-    client: &SandboxRpcClient,
-    slot_index: usize,
-    db: &GatewaySessionDb,
     session_id: &str,
-    proj_id: i64,
-    turn_id: &str,
-    created_at_ms: i64,
-) -> Result<(), String> {
-    let meta_path = format!("{GUEST_WORK_ROOT}/.claw/__ws_tar_readback_meta.txt");
-    let cap = WORKSPACE_TAR_MAX_BYTES;
-    let script = format!(
-        r#"set -eu
-tmp=$(mktemp)
-list=$(mktemp)
-trap 'rm -f "$tmp" "$list"' EXIT
-find {GUEST_WORK_ROOT} -type f \
-  ! -path '{GUEST_WORK_ROOT}/gateway-solve-task.json' \
-  ! -path '{GUEST_WORK_ROOT}/.claw/*' \
-  ! -path '{GUEST_WORK_ROOT}/.cursor/rules/*' \
-  ! -path '{GUEST_WORK_ROOT}/CLAUDE.md' 2>/dev/null \
-  | sed "s|^{GUEST_WORK_ROOT}/||" > "$list" || true
-if [ ! -s "$list" ]; then
-  printf '0\n' > '{meta_path}'
-  exit 0
-fi
-tar -czf "$tmp" -C {GUEST_WORK_ROOT} -T "$list"
-sz=$(wc -c < "$tmp" | tr -d ' ')
-if [ "$sz" -gt {cap} ]; then exit 2; fi
-printf '%s\n' "$sz" > '{meta_path}'
-base64 < "$tmp" | tr -d '\n' >> '{meta_path}'
-"#
-    );
-    if let Err(e) = client
-        .guest_exec_sh(slot_index, &script, GuestExecActor::SlotWorker)
-        .await
-    {
-        if e.contains("exit") && e.contains('2') {
-            return Err(format!(
-                "workspace tar exceeds cap {WORKSPACE_TAR_MAX_BYTES} bytes"
-            ));
-        }
-        return Err(e);
-    }
-    let out = guest_read_single_string(client, slot_index, &meta_path)
-        .await
-        .unwrap_or_default();
-    let mut lines = out.splitn(2, '\n');
-    let size_line = lines.next().unwrap_or("0").trim();
-    let raw_size: usize = size_line
-        .parse()
-        .map_err(|_| format!("invalid workspace tar size line: {size_line}"))?;
-    if raw_size == 0 {
-        return Ok(());
-    }
-    let tar_b64 = lines.next().unwrap_or("").trim();
-    if tar_b64.is_empty() {
-        return Err("workspace tar base64 empty".into());
-    }
-    db.upsert_workspace_tar_b64(
-        session_id,
+) -> Result<std::path::PathBuf, String> {
+    Ok(session_home_under_work_root(
+        work_root,
+        &nas_cluster_id()?,
         proj_id,
-        turn_id,
-        WORKSPACE_TAR_ARTIFACT_PATH,
-        WORKSPACE_TAR_ARTIFACT_KIND,
-        tar_b64,
-        raw_size,
-        created_at_ms,
-    )
-    .await
-    .map_err(|e| format!("upsert workspace tar: {e}"))?;
+        session_id,
+    ))
+}
+
+/// Host path `work_root/{clusterId}/proj_<id>/` (gateway view). Author: kejiqing
+#[must_use]
+pub fn proj_work_dir(work_root: &Path, cluster_id: &str, proj_id: i64) -> std::path::PathBuf {
+    work_root.join(cluster_id).join(format!("proj_{proj_id}"))
+}
+
+#[must_use]
+pub fn session_home_under_work_root(
+    work_root: &Path,
+    cluster_id: &str,
+    proj_id: i64,
+    session_id: &str,
+) -> std::path::PathBuf {
+    let seg = crate::session_merge::sessions_directory_segment(session_id);
+    work_root
+        .join(cluster_id)
+        .join(format!("proj_{proj_id}"))
+        .join("sessions")
+        .join(seg)
+}
+
+/// Empty `session_meta` jsonl for first-turn solve (overwrites stale worker-root files). Author: kejiqing
+#[must_use]
+pub fn bootstrap_empty_solve_session_jsonl(session_id: &str, session_segment: &str) -> String {
+    let workspace = format!("{GUEST_CLAW_SESSIONS}/{session_segment}");
+    let line = serde_json::json!({
+        "type": "session_meta",
+        "session_id": session_id,
+        "version": 1,
+        "created_at_ms": 0_i64,
+        "updated_at_ms": 0_i64,
+        "workspace_root": workspace,
+    });
+    format!("{line}\n")
+}
+
+fn claw_rel_file_name(rel: &str) -> &str {
+    rel.trim_start_matches(".claw/").trim_start_matches('/')
+}
+
+/// NAS session artifacts → `solve_timing_jsonb` (tool/llm/orchestration/progress swimlanes).
+async fn readback_turn_solve_timing_from_session_home(
+    db: &GatewaySessionDb,
+    nas_layout: &NasLayoutBackend,
+    proj_id: i64,
+    session_segment: &str,
+    turn_id: &str,
+) -> Result<(), String> {
+    let solve_timing = nas_layout
+        .read_session_claw_utf8(
+            proj_id,
+            session_segment,
+            claw_rel_file_name(SOLVE_TIMING_EVENTS_REL),
+        )
+        .await?
+        .unwrap_or_default();
+    let orchestration = nas_layout
+        .read_session_claw_utf8(
+            proj_id,
+            session_segment,
+            claw_rel_file_name(ORCHESTRATION_EVENTS_REL),
+        )
+        .await?
+        .unwrap_or_default();
+    if !solve_timing.is_empty() || !orchestration.is_empty() {
+        db.merge_turn_timing_worker_readback(turn_id, &solve_timing, &orchestration)
+            .await
+            .map_err(|e| format!("merge solve_timing_jsonb: {e}"))?;
+    }
+
+    let progress = nas_layout
+        .read_session_claw_utf8(proj_id, session_segment, "progress-events.ndjson")
+        .await?
+        .unwrap_or_default();
+    let task_progress = nas_layout
+        .read_session_claw_utf8(proj_id, session_segment, "task-progress.json")
+        .await?
+        .unwrap_or_default();
+    if !progress.is_empty() || !task_progress.is_empty() {
+        db.replace_turn_progress_snapshot(turn_id, &progress, &task_progress)
+            .await
+            .map_err(|e| format!("replace turn progress snapshot: {e}"))?;
+    }
     Ok(())
 }
 
-fn guest_read_text(files: &[(String, Vec<u8>)], path: &str) -> String {
-    files
-        .iter()
-        .find(|(p, _)| p == path)
-        .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
-        .unwrap_or_default()
-}
-
-async fn guest_read_single_string(
-    client: &SandboxRpcClient,
-    slot_index: usize,
-    path: &str,
-) -> Result<String, String> {
-    let files = client.guest_read(slot_index, &[path.to_string()]).await?;
-    Ok(guest_read_text(&files, path))
-}
-
-/// Import jsonl turn segment + workspace tar + timing after exec. Author: kejiqing
-pub async fn readback_out(
-    runtime_bin: &str,
-    container_name: &str,
+/// NAS session home → DB: transcript (`cc_messages`) + solve timing (`solve_timing_jsonb`).
+/// Gateway reads through nas-api (never the gateway-local workspace disk). Author: kejiqing
+pub async fn readback_turn_from_session_home(
     db: &GatewaySessionDb,
-    pool: &PgPool,
+    nas_layout: &NasLayoutBackend,
     session_id: &str,
     proj_id: i64,
     turn_id: &str,
     user_prompt: &str,
 ) -> Result<Vec<JsonlMessage>, String> {
-    let jsonl = read_file_from_container(
-        runtime_bin,
-        container_name,
-        &format!("{GUEST_WORK_ROOT}/.claw/gateway-solve-session.jsonl"),
-    )
-    .await
-    .unwrap_or_default();
-    let groups = crate::persistence::transcript::turn_message_groups_from_jsonl_contents(&jsonl);
-    let messages = groups.last().cloned().unwrap_or_else(|| {
-        vec![JsonlMessage {
-            role: "user".to_string(),
-            blocks: serde_json::json!([{"type":"text","text":user_prompt}]),
-            usage: None,
-        }]
-    });
-    let now = now_ms();
-    import_turn_messages_to_db(db, session_id, proj_id, turn_id, &messages, now)
-        .await
-        .map_err(|e| format!("import cc_messages: {e}"))?;
-
-    readback_workspace_tar(
-        runtime_bin,
-        container_name,
+    let session_segment = crate::session_merge::sessions_directory_segment(session_id);
+    let jsonl = nas_layout
+        .read_session_jsonl(proj_id, &session_segment)
+        .await?
+        .unwrap_or_default();
+    let messages = reconcile_session_transcript_from_jsonl(
         db,
         session_id,
         proj_id,
+        &jsonl,
         turn_id,
-        now,
-    )
-    .await?;
-
-    readback_timing_to_db(runtime_bin, container_name, db, turn_id).await?;
-    let _ = pool;
-    Ok(messages)
-}
-
-async fn readback_timing_to_db(
-    runtime_bin: &str,
-    container_name: &str,
-    db: &GatewaySessionDb,
-    turn_id: &str,
-) -> Result<(), String> {
-    let timing = read_file_from_container(
-        runtime_bin,
-        container_name,
-        &format!(
-            "{GUEST_WORK_ROOT}/{}",
-            gateway_solve_turn::SOLVE_TIMING_EVENTS_REL
-        ),
+        user_prompt,
     )
     .await
-    .unwrap_or_default();
-    let orchestration = read_file_from_container(
-        runtime_bin,
-        container_name,
-        &format!(
-            "{GUEST_WORK_ROOT}/{}",
-            gateway_solve_turn::multi_agent::ORCHESTRATION_EVENTS_REL
-        ),
-    )
-    .await
-    .unwrap_or_default();
-    let (progress, task_progress) =
-        read_worker_progress_artifacts(runtime_bin, container_name).await;
-    let total = timing.len() + orchestration.len() + progress.len() + task_progress.len();
-    if total > SESSION_MANIFEST_MAX_BYTES {
-        return Err(format!(
-            "timing artifacts exceed cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-        ));
-    }
-    db.replace_turn_progress_snapshot(turn_id, &progress, &task_progress)
-        .await
-        .map_err(|e| format!("replace turn progress: {e}"))?;
-    db.merge_turn_timing_worker_readback(turn_id, &timing, &orchestration)
-        .await
-        .map_err(|e| format!("merge turn timing: {e}"))
-}
+    .map_err(|e| format!("reconcile cc_messages from jsonl: {e}"))?;
 
-/// Read `.claw/progress-events.ndjson` + `task-progress.json` from a live worker. Author: kejiqing
-pub async fn read_worker_progress_artifacts(
-    runtime_bin: &str,
-    container_name: &str,
-) -> (String, String) {
-    let progress = read_file_from_container(
-        runtime_bin,
-        container_name,
-        &format!("{GUEST_WORK_ROOT}/.claw/progress-events.ndjson"),
-    )
-    .await
-    .unwrap_or_default();
-    let task_progress = read_file_from_container(
-        runtime_bin,
-        container_name,
-        &format!("{GUEST_WORK_ROOT}/.claw/task-progress.json"),
-    )
-    .await
-    .unwrap_or_default();
-    (progress, task_progress)
-}
-
-async fn readback_workspace_tar(
-    runtime_bin: &str,
-    container_name: &str,
-    db: &GatewaySessionDb,
-    session_id: &str,
-    proj_id: i64,
-    turn_id: &str,
-    created_at_ms: i64,
-) -> Result<(), String> {
-    let cap = WORKSPACE_TAR_MAX_BYTES;
-    let script = format!(
-        r#"set -eu
-tmp=$(mktemp)
-list=$(mktemp)
-trap 'rm -f "$tmp" "$list"' EXIT
-find {GUEST_WORK_ROOT} -type f \
-  ! -path '{GUEST_WORK_ROOT}/gateway-solve-task.json' \
-  ! -path '{GUEST_WORK_ROOT}/.claw/*' \
-  ! -path '{GUEST_WORK_ROOT}/.cursor/rules/*' \
-  ! -path '{GUEST_WORK_ROOT}/CLAUDE.md' 2>/dev/null \
-  | sed "s|^{GUEST_WORK_ROOT}/||" > "$list" || true
-if [ ! -s "$list" ]; then
-  printf '0\n'
-  exit 0
-fi
-tar -czf "$tmp" -C {GUEST_WORK_ROOT} -T "$list"
-sz=$(wc -c < "$tmp" | tr -d ' ')
-if [ "$sz" -gt {cap} ]; then exit 2; fi
-printf '%s\n' "$sz"
-base64 < "$tmp" | tr -d '\n'
-"#
-    );
-    let out = match exec_sh_lc_capture(runtime_bin, container_name, &script).await {
-        Ok(v) => v,
-        Err(e) if e.contains("exit") && e.contains('2') => {
-            return Err(format!(
-                "workspace tar exceeds cap {WORKSPACE_TAR_MAX_BYTES} bytes"
-            ));
-        }
-        Err(e) => return Err(e),
-    };
-    let mut lines = out.splitn(2, '\n');
-    let size_line = lines.next().unwrap_or("0").trim();
-    let raw_size: usize = size_line
-        .parse()
-        .map_err(|_| format!("invalid workspace tar size line: {size_line}"))?;
-    if raw_size == 0 {
-        return Ok(());
-    }
-    let tar_b64 = lines.next().unwrap_or("").trim();
-    if tar_b64.is_empty() {
-        return Err("workspace tar base64 empty".into());
-    }
-    db.upsert_workspace_tar_b64(
-        session_id,
+    if let Err(e) = readback_turn_solve_timing_from_session_home(
+        db,
+        nas_layout,
         proj_id,
+        &session_segment,
         turn_id,
-        WORKSPACE_TAR_ARTIFACT_PATH,
-        WORKSPACE_TAR_ARTIFACT_KIND,
-        tar_b64,
-        raw_size,
-        created_at_ms,
     )
     .await
-    .map_err(|e| format!("upsert workspace tar: {e}"))?;
-    Ok(())
-}
+    {
+        warn!(
+            target: "claw_gateway_fc_readback",
+            turn_id = %turn_id,
+            session_id = %session_id,
+            error = %e,
+            "solve timing readback from NAS failed (transcript readback succeeded)"
+        );
+    }
 
-async fn extract_workspace_tar_b64(
-    runtime_bin: &str,
-    container_name: &str,
-    worker_exec_user: &str,
-    tar_b64: &str,
-) -> Result<(), String> {
-    // Extract to tmp then cp files — avoids tar utime/chmod on {GUEST_WORK_ROOT} (macOS podman). Author: kejiqing
-    let script = format!(
-        r#"set -eu
-ws_tmp=$(mktemp -d)
-staging="$ws_tmp/staging"
-mkdir -p "$staging"
-trap 'rm -rf "$ws_tmp"' EXIT
-base64 -d > "$ws_tmp/archive.tar.gz"
-tar -xzf "$ws_tmp/archive.tar.gz" -C "$staging" -m --no-same-owner --no-same-permissions 2>/dev/null \
-  || tar -xzf "$ws_tmp/archive.tar.gz" -C "$staging" -m 2>/dev/null \
-  || tar -xzf "$ws_tmp/archive.tar.gz" -C "$staging"
-find "$staging" -type f | while IFS= read -r f; do
-  rel="${{f#"$staging"/}}"
-  rel="${{rel#./}}"
-  dest="{GUEST_WORK_ROOT}/$rel"
-  mkdir -p "$(dirname "$dest")"
-  cp -f "$f" "$dest"
-done
-"#
-    );
-    exec_sh_lc_stdin_as_user(
-        runtime_bin,
-        container_name,
-        worker_exec_user,
-        &script,
-        tar_b64.trim().as_bytes(),
-    )
-    .await
+    Ok(messages)
 }
 
 /// Mark turn ready for next enqueue; sets terminal `succeeded` in same transaction. Author: kejiqing
@@ -706,381 +205,4 @@ pub async fn finalize_turn_after_readback(
     )
     .await
     .map_err(|e| format!("finalize turn: {e}"))
-}
-
-async fn write_file_via_exec_user(
-    runtime_bin: &str,
-    container: &str,
-    worker_exec_user: &str,
-    dest_path: &str,
-    bytes: &[u8],
-) -> Result<(), String> {
-    let mkdir_script = format!("mkdir -p \"$(dirname '{dest_path}')\"");
-    exec_sh_lc_as_user(runtime_bin, container, worker_exec_user, &mkdir_script).await?;
-    let argv = [
-        "exec",
-        "-i",
-        "--user",
-        worker_exec_user,
-        container,
-        "tee",
-        dest_path,
-    ];
-    let out = runtime_exec_stdin(runtime_bin, &argv, bytes)
-        .await
-        .map_err(|e| format!("{runtime_bin} exec tee: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{} exec tee {} failed: {}",
-            runtime_bin,
-            dest_path,
-            String::from_utf8_lossy(&out.stderr)
-        ))
-    }
-}
-
-async fn read_file_from_container(
-    runtime_bin: &str,
-    container: &str,
-    path: &str,
-) -> Result<String, String> {
-    let script = format!("cat '{path}' 2>/dev/null || true");
-    let out = exec_sh_lc_capture(runtime_bin, container, &script).await?;
-    Ok(out)
-}
-
-async fn exec_sh_lc_as_user(
-    runtime_bin: &str,
-    container: &str,
-    exec_user: &str,
-    script: &str,
-) -> Result<(), String> {
-    let argv = ["exec", "--user", exec_user, container, "sh", "-lc", script];
-    let out = runtime_exec(runtime_bin, &argv)
-        .await
-        .map_err(|e| format!("{runtime_bin} exec: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{} exec failed: {}",
-            runtime_bin,
-            String::from_utf8_lossy(&out.stderr)
-        ))
-    }
-}
-
-async fn exec_sh_lc_stdin_as_user(
-    runtime_bin: &str,
-    container: &str,
-    exec_user: &str,
-    script: &str,
-    stdin: &[u8],
-) -> Result<(), String> {
-    let argv = [
-        "exec", "-i", "--user", exec_user, container, "sh", "-lc", script,
-    ];
-    let out = runtime_exec_stdin(runtime_bin, &argv, stdin)
-        .await
-        .map_err(|e| format!("{runtime_bin} exec stdin: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{} exec stdin failed: {}",
-            runtime_bin,
-            String::from_utf8_lossy(&out.stderr)
-        ))
-    }
-}
-
-async fn exec_sh_lc_capture(
-    runtime_bin: &str,
-    container: &str,
-    script: &str,
-) -> Result<String, String> {
-    let argv = ["exec", container, "sh", "-lc", script];
-    let out = runtime_exec(runtime_bin, &argv)
-        .await
-        .map_err(|e| format!("{runtime_bin} exec: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        let code = out.status.code().unwrap_or(-1);
-        Err(format!(
-            "{} exec capture failed (exit {code}): {}",
-            runtime_bin,
-            String::from_utf8_lossy(&out.stderr)
-        ))
-    }
-}
-
-#[must_use]
-pub fn session_home_under_work_root(
-    work_root: &Path,
-    proj_id: i64,
-    session_id: &str,
-) -> std::path::PathBuf {
-    let seg = crate::session_merge::sessions_directory_segment(session_id);
-    work_root
-        .join(format!("proj_{proj_id}"))
-        .join("sessions")
-        .join(seg)
-}
-
-/// PG project_config markers written under `/claw_host_root` each solve (pool `materialize_in`). Author: kejiqing
-pub fn guest_session_marker_writes(
-    row: &crate::session_db::ProjectConfigRow,
-) -> Result<Vec<(String, Vec<u8>)>, String> {
-    let orch = project_config_apply::solve_orchestration_marker_bytes(row)
-        .map_err(|e| format!("solve-orchestration: {e}"))?;
-    let lang = project_config_apply::language_pipeline_marker_bytes(row)
-        .map_err(|e| format!("language-pipeline: {e}"))?;
-    let preflight = project_config_apply::solve_preflight_marker_bytes(row)
-        .map_err(|e| format!("solve-preflight: {e}"))?;
-    Ok(vec![
-        (
-            format!(
-                "{GUEST_WORK_ROOT}/{}",
-                project_config_apply::SOLVE_ORCHESTRATION_MARKER
-            ),
-            orch,
-        ),
-        (
-            format!(
-                "{GUEST_WORK_ROOT}/{}",
-                project_config_apply::LANGUAGE_PIPELINE_MARKER
-            ),
-            lang,
-        ),
-        (
-            format!(
-                "{GUEST_WORK_ROOT}/{}",
-                project_config_apply::SOLVE_PREFLIGHT_MARKER
-            ),
-            preflight,
-        ),
-    ])
-}
-
-/// PG → host session paths for FC NAS-backed sandboxes (shared with gateway). Author: kejiqing
-pub async fn materialize_turn_via_sandbox_host_paths(
-    db: &GatewaySessionDb,
-    work_root: &Path,
-    _proj_work_dir: &Path,
-    input: &MaterializeInput,
-) -> Result<(), String> {
-    use tokio::fs;
-
-    let session_home = session_home_under_work_root(work_root, input.proj_id, &input.session_id);
-    fs::create_dir_all(session_home.join(".claw"))
-        .await
-        .map_err(|e| format!("mkdir session .claw: {e}"))?;
-
-    let task = db
-        .get_solve_task_json(&input.turn_id)
-        .await
-        .map_err(|e| format!("load solve_task_json: {e}"))?
-        .ok_or_else(|| format!("missing solve_task_json for turn {}", input.turn_id))?;
-    let task_bytes = serde_json::to_vec(&task).map_err(|e| format!("serialize task: {e}"))?;
-    if task_bytes.len() > SESSION_MANIFEST_MAX_BYTES {
-        return Err(format!(
-            "solve_task_json exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-        ));
-    }
-    fs::write(session_home.join("gateway-solve-task.json"), &task_bytes)
-        .await
-        .map_err(|e| format!("write gateway-solve-task.json: {e}"))?;
-
-    let jsonl_body = db
-        .render_session_jsonl(&input.session_id, input.proj_id)
-        .await
-        .map_err(|e| format!("render session jsonl: {e}"))?;
-    if jsonl_body.len() > SESSION_MANIFEST_MAX_BYTES {
-        return Err(format!(
-            "session transcript exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-        ));
-    }
-    if GatewaySessionDb::session_jsonl_has_messages(&jsonl_body) {
-        fs::write(
-            session_home.join(".claw/gateway-solve-session.jsonl"),
-            jsonl_body.as_bytes(),
-        )
-        .await
-        .map_err(|e| format!("write session jsonl: {e}"))?;
-    }
-
-    if let Ok(Some(row)) = db.get_project_config(input.proj_id).await {
-        for (path, bytes) in guest_session_marker_writes(&row)
-            .map_err(|e| format!("guest session markers proj {} (host): {e}", input.proj_id))?
-        {
-            let rel = path
-                .strip_prefix(&format!("{GUEST_WORK_ROOT}/"))
-                .unwrap_or(path.as_str());
-            let dest = session_home.join(rel);
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| format!("mkdir marker parent: {e}"))?;
-            }
-            fs::write(&dest, bytes)
-                .await
-                .map_err(|e| format!("write marker {rel}: {e}"))?;
-        }
-    }
-    Ok(())
-}
-
-/// Build exec script to push solve session files into FC sandbox (self-hosted dev without shared NAS).
-pub async fn build_fc_solve_materialize_script(
-    db: &GatewaySessionDb,
-    work_root: &Path,
-    input: &MaterializeInput,
-) -> Result<String, String> {
-    use super::interactive_backend::build_fc_guest_writes_script;
-
-    let session_home = session_home_under_work_root(work_root, input.proj_id, &input.session_id);
-    let task = db
-        .get_solve_task_json(&input.turn_id)
-        .await
-        .map_err(|e| format!("load solve_task_json: {e}"))?
-        .ok_or_else(|| format!("missing solve_task_json for turn {}", input.turn_id))?;
-    let task_bytes = serde_json::to_vec(&task).map_err(|e| format!("serialize task: {e}"))?;
-    if task_bytes.len() > SESSION_MANIFEST_MAX_BYTES {
-        return Err(format!(
-            "solve_task_json exceeds cap {SESSION_MANIFEST_MAX_BYTES} bytes"
-        ));
-    }
-    let mut files: Vec<(String, Vec<u8>)> =
-        vec![("gateway-solve-task.json".to_string(), task_bytes)];
-    let settings_path = session_home.join(".claw/settings.json");
-    if settings_path.is_file() {
-        let settings = tokio::fs::read(&settings_path)
-            .await
-            .map_err(|e| format!("read session settings.json: {e}"))?;
-        if settings.len() <= SESSION_MANIFEST_MAX_BYTES {
-            files.push((".claw/settings.json".to_string(), settings));
-        }
-    }
-    let jsonl_body = db
-        .render_session_jsonl(&input.session_id, input.proj_id)
-        .await
-        .map_err(|e| format!("render session jsonl: {e}"))?;
-    if jsonl_body.len() <= SESSION_MANIFEST_MAX_BYTES
-        && GatewaySessionDb::session_jsonl_has_messages(&jsonl_body)
-    {
-        files.push((
-            ".claw/gateway-solve-session.jsonl".to_string(),
-            jsonl_body.into_bytes(),
-        ));
-    }
-    if let Ok(Some(row)) = db.get_project_config(input.proj_id).await {
-        for (path, bytes) in guest_session_marker_writes(&row).map_err(|e| {
-            format!(
-                "guest session markers proj {} (fc exec): {e}",
-                input.proj_id
-            )
-        })? {
-            let rel = path
-                .strip_prefix(&format!("{GUEST_WORK_ROOT}/"))
-                .map(std::string::ToString::to_string)
-                .unwrap_or(path);
-            if bytes.len() <= SESSION_MANIFEST_MAX_BYTES {
-                files.push((rel, bytes));
-            }
-        }
-    }
-    Ok(build_fc_guest_writes_script(GUEST_WORK_ROOT, &files))
-}
-pub async fn readback_turn_from_session_home(
-    db: &GatewaySessionDb,
-    pool: &PgPool,
-    work_root: &Path,
-    session_id: &str,
-    proj_id: i64,
-    turn_id: &str,
-    user_prompt: &str,
-) -> Result<Vec<JsonlMessage>, String> {
-    use tokio::fs;
-
-    let session_home = session_home_under_work_root(work_root, proj_id, session_id);
-    let jsonl_path = session_home.join(".claw/gateway-solve-session.jsonl");
-    let jsonl = fs::read_to_string(&jsonl_path).await.unwrap_or_default();
-    let groups = crate::persistence::transcript::turn_message_groups_from_jsonl_contents(&jsonl);
-    let messages = groups.last().cloned().unwrap_or_else(|| {
-        vec![JsonlMessage {
-            role: "user".to_string(),
-            blocks: serde_json::json!([{"type":"text","text":user_prompt}]),
-            usage: None,
-        }]
-    });
-    let now = now_ms();
-    import_turn_messages_to_db(db, session_id, proj_id, turn_id, &messages, now)
-        .await
-        .map_err(|e| format!("import cc_messages: {e}"))?;
-    let _ = pool;
-    Ok(messages)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session_db::ProjectConfigRow;
-    use serde_json::{json, Value};
-
-    fn test_row(solve_preflight_json: Value) -> ProjectConfigRow {
-        ProjectConfigRow {
-            proj_id: 27,
-            content_rev: "rev-sync".into(),
-            stable_content_rev: Some("rev-sync".into()),
-            draft_open: false,
-            updated_at_ms: 0,
-            rules_json: json!([]),
-            mcp_servers_json: json!({}),
-            skills_sources_json: json!([]),
-            skills_json: json!([]),
-            allowed_tools_json: json!([]),
-            claude_md: None,
-            git_sync_json: json!({}),
-            solve_preflight_json,
-            solve_orchestration_json: json!({"kind": "single_turn"}),
-            language_pipeline_json: json!({}),
-            extra_session_fields_json: json!([]),
-            prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
-        }
-    }
-
-    #[test]
-    fn guest_session_marker_writes_include_preflight_tombstone_when_pg_none() {
-        let writes =
-            guest_session_marker_writes(&test_row(json!({"kind": "none"}))).expect("marker writes");
-        let preflight = writes
-            .iter()
-            .find(|(path, _)| path.ends_with("solve-preflight.json"))
-            .expect("preflight write");
-        assert_eq!(
-            preflight.0,
-            "/claw_host_root/home/.claw/solve-preflight.json"
-        );
-        let parsed: Value = serde_json::from_slice(&preflight.1).expect("json");
-        assert_eq!(parsed.get("kinds").and_then(Value::as_array), Some(&vec![]));
-    }
-
-    #[test]
-    fn guest_session_marker_writes_include_sqlbot_preflight_when_enabled() {
-        let writes = guest_session_marker_writes(&test_row(json!({"kind": "sqlbot_mcp_start"})))
-            .expect("marker writes");
-        let preflight = writes
-            .iter()
-            .find(|(path, _)| path.ends_with("solve-preflight.json"))
-            .expect("preflight write");
-        let parsed: Value = serde_json::from_slice(&preflight.1).expect("json");
-        assert_eq!(
-            parsed.get("kinds").and_then(Value::as_array),
-            Some(&vec![json!("sqlbot_mcp_start")])
-        );
-    }
 }

@@ -3,7 +3,7 @@
 #
 # Chain:
 # - Push tag refs/tags/release-v* → linux-compile-once (single Rust build) → prebuilt images
-#   claw-code, claw-gateway-worker, claw-sandbox, claw-gateway-playground (same tag).
+#   claw-code, claw-gateway-worker, claw-gateway-playground (same tag).
 # - build-and-push-relaxed-worker: FROM strict worker image.
 # - mirror-to-acr: pull GHCR tags → retag → push ACR (no second Rust compile).
 #
@@ -28,9 +28,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Verify image rust/sandbox layout
-        run: bash deploy/stack/lib/verify-image-rust-layout.sh
 
       - name: Resolve build base images
         id: base_images
@@ -57,7 +54,7 @@ jobs:
             .ci-cache/cargo-registry
             .ci-cache/cargo-git
             .ci-cache/sccache
-          key: linux-compile-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock', 'sandbox/Cargo.lock', 'deploy/stack/Containerfile.rust-compile') }}
+          key: linux-compile-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock', 'deploy/stack/Containerfile.rust-compile') }}
           restore-keys: |
             linux-compile-${{ runner.os }}-
 
@@ -90,8 +87,6 @@ jobs:
             dockerfile: deploy/stack/Containerfile.gateway-rs.prebuilt
           - package: claw-gateway-worker
             dockerfile: deploy/stack/Containerfile.gateway-worker.prebuilt
-          - package: claw-sandbox
-            dockerfile: deploy/stack/Containerfile.claw-sandbox.prebuilt
           - package: claw-gateway-playground
             dockerfile: deploy/stack/Containerfile.gateway-playground
     steps:
@@ -254,7 +249,6 @@ jobs:
         package:
           - claw-code
           - claw-gateway-worker
-          - claw-sandbox
           - claw-gateway-worker-relaxed
           - claw-gateway-playground
     steps:

@@ -21,3 +21,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && chmod +x /usr/local/bin/sccache \
     && sccache --version \
     && mold --version
+
+# Self-contained pinned toolchain: rust-toolchain.toml declares rustfmt+clippy.
+# Pre-install so linux-compile never triggers an online `rustup` channel sync.
+RUN rustup component add rustfmt clippy \
+    && rustfmt --version \
+    && cargo clippy --version

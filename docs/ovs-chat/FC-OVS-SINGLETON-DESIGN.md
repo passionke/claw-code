@@ -1,7 +1,7 @@
 # FC OVS Singleton — 1 Gateway : 1 OVS : N Workers
 
 Author: kejiqing  
-Status: **implemented (P0–P2 code)** — verify on 10.8.0.9 e2b (§14)  
+Status: **implemented (P0–P2 code)** — verify on **`10.8.0.1`** e2b（§14 部分步骤仍引用旧 `10.8.0.9` 取证，见 [`architecture-governance.md`](../architecture-governance.md)）  
 Related: [INTEGRATION.md](./INTEGRATION.md), [boundaries-claw-stack.md](../boundaries-claw-stack.md), `deploy/fc-sandbox/README.md`
 
 ---
@@ -52,7 +52,7 @@ flowchart TB
     WarmPool[FcProjWarmPool]
   end
 
-  subgraph e2b["e2b 10.8.0.9"]
+  subgraph e2b["e2b 10.8.0.1"]
     OVS["1× OVS sandbox<br/>claw-ovs :3000"]
     W1["worker proj_1"]
     W2["worker proj_2"]
@@ -280,13 +280,13 @@ CLAW_INTERACTIVE_BACKEND=fc
 CLAW_OVS_BACKEND=fc
 CLAW_USE_NAS_VOLUME=0
 
-NAS_BASE_URL=10.8.0.8
-CLAW_FC_NAS_SERVER=10.8.0.8
-CLAW_FC_NAS_EXPORT=/mnt/NAS0/nfs-export   # 或 / 视 export 布局
+NAS_BASE_URL=10.8.0.11
+CLAW_FC_NAS_SERVER=10.8.0.11
+CLAW_FC_NAS_EXPORT=/
 
-CLAW_FC_API_URL=http://10.8.0.9:3000
-CLAW_E2B_SANDBOX_URL=http://10.8.0.9:3002
-CLAW_FC_DOMAIN=10.8.0.9
+CLAW_FC_API_URL=http://10.8.0.1:3000
+CLAW_E2B_SANDBOX_URL=http://10.8.0.1:3002
+CLAW_FC_DOMAIN=supone.top
 CLAW_FC_TEMPLATE=claw-worker
 CLAW_FC_OVS_TEMPLATE=claw-ovs
 CLAW_FC_POOL_MIN_IDLE=1
@@ -298,6 +298,8 @@ Mac compose：**gateway + pg + playground**；**无** `openvscode-server`。
 ---
 
 ## 10. Template 分工
+
+模板构建必须使用 e2b 标准模式（SDK 上传 build context / `COPY`，或 `from_image`）。严禁临时 HTTP artifact server、`RUN curl http://host:port/...`、`dockerfile-http`、`CLAW_*_TEMPLATE_HTTP_*`。这类路径依赖本机临时端口和私有网络，不属于稳定模板构建契约。Author: kejiqing
 
 | Template | Build 脚本 | 内容 |
 |----------|------------|------|

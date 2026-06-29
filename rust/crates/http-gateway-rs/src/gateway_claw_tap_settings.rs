@@ -50,6 +50,15 @@ pub struct ClawTapSettings {
     pub live_port: u16,
     #[serde(rename = "updatedAtMs", default)]
     pub updated_at_ms: i64,
+    /// FC observe singleton URLs persisted by `fc-tap-live-up.py` (Admin reads PG). Author: kejiqing
+    #[serde(rename = "liveBaseUrl", default)]
+    pub live_base_url: Option<String>,
+    #[serde(rename = "liveSessionUrlTemplate", default)]
+    pub live_session_url_template: Option<String>,
+    #[serde(rename = "proxyBaseUrl", default)]
+    pub proxy_base_url: Option<String>,
+    #[serde(rename = "fcObserveSandboxId", default)]
+    pub fc_observe_sandbox_id: Option<String>,
 }
 
 fn default_proxy_port() -> u16 {
@@ -154,6 +163,25 @@ pub fn resolve_local_tap_live_public_host() -> String {
 
 impl From<&ClawTapSettings> for ClawTapSettingsPublic {
     fn from(s: &ClawTapSettings) -> Self {
+        if let Some(live) = s.live_base_url.as_ref().filter(|u| !u.trim().is_empty()) {
+            let configured = s.updated_at_ms > 0;
+            return Self {
+                mode: s.mode,
+                host: if s.mode == ClawTapMode::Local {
+                    String::new()
+                } else {
+                    s.host.clone()
+                },
+                proxy_port: normalize_proxy_port(s.proxy_port),
+                live_port: Some(normalize_live_port(s.live_port)),
+                updated_at_ms: s.updated_at_ms,
+                configured,
+                proxy_base_url: s.proxy_base_url.clone(),
+                live_base_url: Some(live.trim().to_string()),
+                live_session_url_template: s.live_session_url_template.clone(),
+                live_browser_hosts_line: None,
+            };
+        }
         let configured =
             s.updated_at_ms > 0 && (s.mode == ClawTapMode::Local || !s.host.trim().is_empty());
         let proxy_port = normalize_proxy_port(s.proxy_port);
@@ -312,20 +340,6 @@ pub async fn load_claw_tap_public(
     Ok(ClawTapSettingsPublic::from(&settings.claw_tap))
 }
 
-/// FC observe singleton: override Admin Live URLs (direct e2b traffic when self-hosted).
-#[must_use]
-pub fn overlay_fc_observe_live_urls(
-    tap: ClawTapSettingsPublic,
-    live_base_url: &str,
-    fc_domain: &str,
-) -> ClawTapSettingsPublic {
-    crate::gateway_fc_observe_proxy::overlay_fc_observe_direct_browser_urls(
-        tap,
-        live_base_url,
-        fc_domain,
-    )
-}
-
 /// FC mode: Admin session traces **only** via e2b observe — never compose `192.168.x:3000`.
 #[must_use]
 pub fn strip_compose_live_urls_for_fc_admin(
@@ -335,26 +349,6 @@ pub fn strip_compose_live_urls_for_fc_admin(
     tap.live_session_url_template = None;
     tap.live_port = None;
     tap
-}
-
-/// Apply e2b observe URL to Admin clawTap; on failure leave Live URLs empty (no compose fallback).
-#[must_use]
-pub fn apply_fc_observe_admin_claw_tap(
-    tap: ClawTapSettingsPublic,
-    observe_live_base: Result<String, String>,
-    fc_domain: &str,
-) -> ClawTapSettingsPublic {
-    let tap = strip_compose_live_urls_for_fc_admin(tap);
-    match observe_live_base {
-        Ok(live_base) => {
-            let mut out = overlay_fc_observe_live_urls(tap, &live_base, fc_domain);
-            if out.live_base_url.is_some() {
-                out.configured = true;
-            }
-            out
-        }
-        Err(_) => tap,
-    }
 }
 
 fn local_identity_for_settings() -> Result<ClusterIdentity, String> {
@@ -538,6 +532,7 @@ pub async fn put_claw_tap_settings(
         proxy_port,
         live_port,
         updated_at_ms: now_ms(),
+        ..Default::default()
     };
     save_gateway_global_settings(db, &settings, &tokens, now_ms())
         .await
@@ -590,6 +585,7 @@ mod tests {
             proxy_port: 8081,
             live_port: 3000,
             updated_at_ms: 1,
+            ..Default::default()
         };
         s.normalize_mode();
         assert_eq!(s.mode, ClawTapMode::Remote);
@@ -604,6 +600,7 @@ mod tests {
             proxy_port: 8080,
             live_port: 3000,
             updated_at_ms: 1,
+            ..Default::default()
         };
         let pub_ = ClawTapSettingsPublic::from(&s);
         assert!(pub_.configured);
@@ -621,6 +618,7 @@ mod tests {
             proxy_port: 8081,
             live_port: 3000,
             updated_at_ms: 1,
+            ..Default::default()
         };
         let pub_ = ClawTapSettingsPublic::from(&s);
         assert_eq!(pub_.host, "10.22.28.94");
@@ -629,53 +627,30 @@ mod tests {
     }
 
     #[test]
-    fn overlay_fc_observe_live_urls_sets_template() {
-        let tap = ClawTapSettingsPublic {
-            mode: ClawTapMode::Local,
-            host: String::new(),
+    fn from_persisted_fc_observe_urls() {
+        let s = ClawTapSettings {
+            mode: ClawTapMode::Remote,
+            host: "8080-sbx_abc.supone.top".into(),
             proxy_port: 8080,
-            live_port: None,
-            updated_at_ms: 0,
-            configured: false,
-            proxy_base_url: None,
-            live_base_url: None,
-            live_session_url_template: None,
-            live_browser_hosts_line: None,
+            live_port: 3000,
+            updated_at_ms: 1_700_000_000_000,
+            live_base_url: Some("http://3000-sbx_abc.supone.top".into()),
+            live_session_url_template: Some(
+                "http://3000-sbx_abc.supone.top/?session={sessionId}".into(),
+            ),
+            proxy_base_url: Some("http://8080-sbx_abc.supone.top".into()),
+            fc_observe_sandbox_id: Some("sbx_abc".into()),
         };
-        let out = overlay_fc_observe_live_urls(tap, "http://3000-sbx_abc.supone.top", "supone.top");
+        let pub_ = ClawTapSettingsPublic::from(&s);
+        assert!(pub_.configured);
         assert_eq!(
-            out.live_base_url.as_deref(),
+            pub_.live_base_url.as_deref(),
             Some("http://3000-sbx_abc.supone.top")
         );
-        assert!(out
-            .live_session_url_template
-            .as_deref()
-            .unwrap_or("")
-            .contains("?session={sessionId}"));
-        assert!(out.live_browser_hosts_line.is_none());
-    }
-
-    #[test]
-    fn apply_fc_observe_admin_claw_tap_marks_configured() {
-        let tap = ClawTapSettingsPublic {
-            mode: ClawTapMode::Local,
-            host: String::new(),
-            proxy_port: 8080,
-            live_port: None,
-            updated_at_ms: 0,
-            configured: false,
-            proxy_base_url: None,
-            live_base_url: None,
-            live_session_url_template: None,
-            live_browser_hosts_line: None,
-        };
-        let out = apply_fc_observe_admin_claw_tap(
-            tap,
-            Ok("http://3000-sbx_abc.supone.top".into()),
-            "supone.top",
+        assert_eq!(
+            pub_.proxy_base_url.as_deref(),
+            Some("http://8080-sbx_abc.supone.top")
         );
-        assert!(out.configured);
-        assert!(out.live_base_url.is_some());
     }
 
     #[test]
@@ -695,32 +670,6 @@ mod tests {
         assert_eq!(
             live_session_viewer_url_template("http://3000-sbx_abc.supone.top"),
             "http://3000-sbx_abc.supone.top/?session={sessionId}"
-        );
-    }
-
-    #[test]
-    fn fc_observe_failure_strips_compose_live_urls() {
-        let tap = ClawTapSettingsPublic {
-            mode: ClawTapMode::Local,
-            host: String::new(),
-            proxy_port: 8080,
-            live_port: Some(3000),
-            updated_at_ms: 1,
-            configured: true,
-            proxy_base_url: Some("http://claw-claude-tap:8080".into()),
-            live_base_url: Some("http://192.168.125.115:3000".into()),
-            live_session_url_template: Some(
-                "http://192.168.125.115:3000/api/sessions/traces?session={sessionId}".into(),
-            ),
-            live_browser_hosts_line: None,
-        };
-        let out = apply_fc_observe_admin_claw_tap(tap, Err("template missing".into()), "10.8.0.9");
-        assert!(out.live_base_url.is_none());
-        assert!(out.live_session_url_template.is_none());
-        assert!(out.live_port.is_none());
-        assert_eq!(
-            out.proxy_base_url.as_deref(),
-            Some("http://claw-claude-tap:8080")
         );
     }
 }

@@ -348,14 +348,14 @@ def _run_fc_exec(
     return str(parsed.get("stdout") or "")
 
 
-def _ensure_ovs_via_gateway(proj_id: int, gateway_port: int) -> dict[str, Any]:
-    url = f"http://127.0.0.1:{gateway_port}/v1/projects/{proj_id}/ovs/workspace"
-    try:
-        with urllib.request.urlopen(url, timeout=180) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"gateway ovs/workspace HTTP {exc.code}: {detail}") from exc
+def _service_public_host(port: int, sandbox_id: str, domain: str) -> str:
+    return f"{port}-{sandbox_id}.{domain}"
+
+
+def _ovs_base_url(sandbox_id: str, domain: str, ovs_port: int) -> str:
+    host = _service_public_host(ovs_port, sandbox_id, domain)
+    scheme = "http" if _is_self_hosted(_env("CLAW_FC_API_URL", "http://10.8.0.1:3000")) else "https"
+    return f"{scheme}://{host}/ovs"
 
 
 def _curl_ok(url: str) -> bool:
@@ -382,7 +382,7 @@ def main() -> int:
         print("error: set CLAW_FC_API_KEY in .env", file=sys.stderr)
         return 1
 
-    api_url = _env("CLAW_FC_API_URL") or _env("E2B_API_URL") or "http://10.8.0.9:3000"
+    api_url = _env("CLAW_FC_API_URL") or _env("E2B_API_URL") or "http://10.8.0.1:3000"
     sandbox_url = _env("CLAW_E2B_SANDBOX_URL") or _env("E2B_SANDBOX_URL")
     fc_domain = _env("CLAW_FC_DOMAIN") or _env("E2B_DOMAIN") or "supone.top"
     cluster_id = _env("CLAW_CLUSTER_ID") or "default"
@@ -403,12 +403,8 @@ def main() -> int:
 
     sandbox_id = _find_ovs_singleton(cluster_id, api_url, api_key, self_hosted)
     if not sandbox_id:
-        print(f"==> no ovs-singleton for cluster={cluster_id}; ensure via gateway proj={args.proj_id}", file=sys.stderr)
-        ws = _ensure_ovs_via_gateway(args.proj_id, gateway_port)
-        sandbox_id = _find_ovs_singleton(cluster_id, api_url, api_key, self_hosted)
-        if not sandbox_id:
-            ovs_url = ws.get("ovsUrl") or ws.get("ovs_url") or ""
-            raise RuntimeError(f"ovs singleton still missing after gateway ensure (ovsUrl={ovs_url!r})")
+        print(f"==> no ovs-singleton for cluster={cluster_id}; run gateway.sh ovs-up first", file=sys.stderr)
+        raise RuntimeError("missing ovs-singleton — run: ./deploy/stack/gateway.sh ovs-up --reuse")
 
     print(f"==> ovs sandbox {sandbox_id}", file=sys.stderr)
     script = _install_restart_script(
@@ -426,9 +422,8 @@ def main() -> int:
     if out.strip():
         print(out.strip(), file=sys.stderr)
 
-    ws = _ensure_ovs_via_gateway(args.proj_id, gateway_port)
-    folder_url = str(ws.get("ovsFolderUrl") or ws.get("ovs_folder_url") or "").strip()
-    ovs_url = str(ws.get("ovsUrl") or ws.get("ovs_url") or "").strip()
+    ovs_url = _ovs_base_url(sandbox_id, fc_domain, ovs_port)
+    folder_url = f"{ovs_url.rstrip('/')}?folder={GUEST_CLAW_WS}/proj_{args.proj_id}/home"
 
     result = {
         "sandboxId": sandbox_id,

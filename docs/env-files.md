@@ -22,13 +22,10 @@ Each file is recreated when you run the matching flow (`gateway.sh up`, `tap-up`
 | `deploy/stack/.claw-worker-llm.env` | `lib/worker-llm-wiring.sh` (via `up.sh` / tap) |
 | `deploy/stack/.claw-worker-runtime.env` | `lib/worker-llm-wiring.sh` |
 | `deploy/stack/.claw-llm-runtime.env` | `lib/compose-include.sh` → `claw_export_llm_runtime_layout` |
-| `deploy/stack/.claw-pool-rpc/pool-daemon.env` | `lib/pool-daemon-up.sh` 生成（`claw-sandbox` 进程 env） |
-| `deploy/stack/.claw-pool-workspace.env` | `lib/compose-include.sh` → `claw_podman_export_pool_workspace` |
-| `deploy/stack/.claw-pool-rpc/gateway.env` | `lib/compose-include.sh` (pool TCP/HTTP for gateway) |
-| `deploy/stack/.claw-pool-rpc/pool-registry.env` | `lib/claw-pool-registry-env.sh` |
 | `deploy/stack/.claw-image-release.env` | `lib/release-images.sh` (`up --release …`) |
-| `deploy/stack/.claw-pool-worker.env` | `lib/release-images.sh` (worker image pin) |
 | `deploy/stack/.claw-build-stamp.env` | `lib/claw-write-build-stamp.sh` |
+
+（`deploy/stack/.claw-pool-rpc/*` 为历史 pool 路径，FC-only 下可能不再生成。）
 
 If you need a new key for containers or workers, add it to **repo root `.env`** (or the code that generates the snippet), then re-run **`./deploy/stack/gateway.sh up`** — not a new hand-maintained file under `web/` or `deploy/stack/`.
 
@@ -36,10 +33,11 @@ If you need a new key for containers or workers, add it to **repo root `.env`** 
 
 Set `CLAW_DEPLOY_PROFILE=local|production` in repo root `.env`. Defaults: macOS → `local`, Linux → `production`. Full variable inventory: **`docs/env-config.md`**.
 
-Starters: `deploy/stack/env.local.example`, `deploy/stack/env.production.example`.
+Starters: `deploy/stack/env.selfhosted-e2b.example`, `deploy/stack/env.local.example`, `deploy/stack/env.production.example`.
 
 ## See also
 
-- `docs/env-config.md` — 全量 env 表 + 双模式对照 + 1.4.x 排障
+- `docs/README.md` — 文档索引
+- `docs/env-config.md` — 全量 env 表
 - `deploy/stack/README.md` — §6 环境变量
 - `.env.example` — 最小模板

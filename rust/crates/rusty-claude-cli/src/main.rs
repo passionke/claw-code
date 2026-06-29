@@ -413,6 +413,153 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
     run_result
 }
 
+/// `claw gateway-interactive-once` — one resumed turn for OVS agent WS (FC exec + CDP). Author: kejiqing
+fn run_gateway_interactive_once(
+    session_jsonl: &Path,
+    prompt: &str,
+    model: &str,
+    permission_mode: PermissionMode,
+    allow_broad_cwd: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use base64::Engine;
+
+    gateway_solve_turn::apply_worker_env();
+    enforce_broad_cwd_policy(allow_broad_cwd, CliOutputFormat::Text)?;
+    if prompt.trim().is_empty() {
+        return Err("gateway-interactive-once: empty prompt".into());
+    }
+    if !session_jsonl.is_absolute() {
+        return Err(format!(
+            "gateway-interactive-once: session-jsonl must be absolute path, got {}",
+            session_jsonl.display()
+        )
+        .into());
+    }
+
+    let session_ref = session_jsonl.display().to_string();
+    let (handle, session) = load_session_reference(&session_ref)?;
+    let resolved_model = if model.trim().is_empty() {
+        resolve_repl_model(DEFAULT_MODEL.to_string())
+    } else {
+        model.to_string()
+    };
+    let interactive_repl = display_mode() == DisplayMode::Web;
+    let system_prompt = build_system_prompt(interactive_repl)?;
+    let mut built = build_runtime(
+        session,
+        &handle.id,
+        resolved_model,
+        system_prompt,
+        true,
+        true,
+        None,
+        permission_mode,
+        None,
+        None,
+    )?;
+    let mut runtime = built
+        .runtime
+        .take()
+        .ok_or_else(|| "gateway-interactive-once: runtime unavailable".to_string())?;
+
+    let mut stdout = io::stdout();
+    let mut display = DisplaySession::new(&mut stdout);
+    display.begin_turn(prompt)?;
+    display.status(StatusPhase::Thinking, "🦀 Thinking...")?;
+    let mut permission_prompter = CliPermissionPrompter::new(permission_mode);
+    let result = runtime.run_turn(prompt, Some(&mut permission_prompter));
+    match result {
+        Ok(summary) => {
+            display.status(StatusPhase::Done, "✨ Done")?;
+            if display_mode() == DisplayMode::Web {
+                if let Some(event) = summary.auto_compaction {
+                    display.transcript_note(
+                        "system",
+                        &format_auto_compaction_notice(event.removed_message_count),
+                    )?;
+                }
+            }
+            runtime.session().save_to_path(&handle.path)?;
+            Ok(())
+        }
+        Err(error) => {
+            display.status(StatusPhase::Failed, "❌ Request failed")?;
+            if display_mode() == DisplayMode::Web {
+                display.transcript_note("error", &error.to_string())?;
+            }
+            Err(Box::new(error))
+        }
+    }
+}
+
+fn parse_gateway_interactive_once(args: &[String]) -> Result<CliAction, String> {
+    use base64::Engine;
+    let mut session_jsonl: Option<PathBuf> = None;
+    let mut prompt_b64: Option<String> = None;
+    let mut model = String::new();
+    let mut permission_mode = PermissionMode::DangerFullAccess;
+    let mut allow_broad_cwd = false;
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--session-jsonl" => {
+                let p = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --session-jsonl".to_string())?;
+                session_jsonl = Some(PathBuf::from(p));
+                i += 2;
+            }
+            "--prompt-b64" => {
+                let p = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --prompt-b64".to_string())?;
+                prompt_b64 = Some(p.clone());
+                i += 2;
+            }
+            "--model" => {
+                let p = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --model".to_string())?;
+                model = p.clone();
+                i += 2;
+            }
+            "--permission-mode" => {
+                let p = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --permission-mode".to_string())?;
+                permission_mode = parse_permission_mode_arg(p)?;
+                i += 2;
+            }
+            "--allow-broad-cwd" => {
+                allow_broad_cwd = true;
+                i += 1;
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unknown gateway-interactive-once option: {other}"));
+            }
+            other => {
+                return Err(format!("unexpected argument: {other}"));
+            }
+        }
+    }
+    let session_jsonl = session_jsonl
+        .ok_or_else(|| "gateway-interactive-once requires --session-jsonl PATH".to_string())?;
+    let prompt_b64 =
+        prompt_b64.ok_or_else(|| "gateway-interactive-once requires --prompt-b64".to_string())?;
+    let prompt_bytes = base64::engine::general_purpose::STANDARD
+        .decode(prompt_b64.trim())
+        .map_err(|e| format!("invalid --prompt-b64: {e}"))?;
+    let prompt = String::from_utf8(prompt_bytes)
+        .map_err(|e| format!("--prompt-b64 is not valid UTF-8: {e}"))?;
+    Ok(CliAction::GatewayInteractiveOnce {
+        session_jsonl,
+        prompt,
+        model,
+        permission_mode,
+        allow_broad_cwd,
+    })
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     match parse_args(&args)? {
@@ -616,6 +763,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         CliAction::HelpTopic(topic) => print_help_topic(topic),
         CliAction::Help { output_format } => print_help(output_format)?,
         CliAction::GatewaySolveOnce { task_file } => run_gateway_solve_once(&task_file)?,
+        CliAction::GatewayInteractiveOnce {
+            session_jsonl,
+            prompt,
+            model,
+            permission_mode,
+            allow_broad_cwd,
+        } => run_gateway_interactive_once(
+            &session_jsonl,
+            &prompt,
+            &model,
+            permission_mode,
+            allow_broad_cwd,
+        )?,
     }
     Ok(())
 }
@@ -741,6 +901,14 @@ enum CliAction {
     /// Non-interactive single turn for `http-gateway-rs` container pool (`claw gateway-solve-once`).
     GatewaySolveOnce {
         task_file: PathBuf,
+    },
+    /// One-shot OVS `@claw` turn with resumed `interactive-session.jsonl` (web CDP on stdout). Author: kejiqing
+    GatewayInteractiveOnce {
+        session_jsonl: PathBuf,
+        prompt: String,
+        model: String,
+        permission_mode: PermissionMode,
+        allow_broad_cwd: bool,
     },
 }
 
@@ -1052,6 +1220,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
 
     match rest[0].as_str() {
         "gateway-solve-once" => parse_gateway_solve_once(&rest[1..]),
+        "gateway-interactive-once" => parse_gateway_interactive_once(&rest[1..]),
         "dump-manifests" => parse_dump_manifests_args(&rest[1..], output_format),
         "bootstrap-plan" => Ok(CliAction::BootstrapPlan { output_format }),
         "agents" => Ok(CliAction::Agents {

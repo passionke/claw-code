@@ -5,6 +5,8 @@ Author: kejiqing
 
 **NAS 路径 / bind 总览：** [`docs/fc-nas-workspace.md`](../fc-nas-workspace.md)
 
+> **地址勘误（2026-06）：** 下文 `10.8.0.9` 为旧 e2b 节点取证；当前 canonical 见 [`architecture-governance.md`](../architecture-governance.md) — e2bserver **`10.8.0.1`**，NAS **`10.8.0.11`**。
+
 ---
 
 ## 状态图例

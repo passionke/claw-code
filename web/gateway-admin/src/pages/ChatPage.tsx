@@ -11,7 +11,6 @@ import { useApp } from "../context/AppContext";
 import { useChatSession } from "../context/ChatSessionContext";
 import { useSessionTurnFeedback } from "../hooks/useSessionTurnFeedback";
 import type { ListSessionTurnsResponse, SolveAsyncResponse } from "../types/chat";
-import type { ConversationTurnInput } from "../utils/collectConversationForTranslate";
 import { buildExtraSession } from "../utils/extraSession";
 import {
   emptyFieldsRecord,
@@ -77,7 +76,6 @@ function isSys(item: ThreadItem): item is SysEntry {
 
 /** solve_async 对话：按时间线 user → assistant 卡片交错展示。Author: kejiqing */
 const CHAT_AUDIT_ONLY = false;
-const CODING_TERMINAL_HREF = "/coding";
 export default function ChatPage() {
   const { gatewayBase, projId, projectConfig } = useApp();
   const { tapLiveBase, tapLiveTemplate } = useChatSession();
@@ -302,19 +300,7 @@ export default function ChatPage() {
     }
   };
 
-  const threadTurns: ConversationTurnInput[] = thread
-    .filter((item): item is TurnEntry => !isSys(item))
-    .map((item) => ({
-      turnId: item.turnId,
-      sessionId: item.sessionId,
-      taskId: item.taskId,
-      userText: item.userText,
-      viewMode: item.viewMode,
-      historicalReport: item.historicalReport,
-      failureDetail: item.failureDetail,
-    }));
-
-  const canTranslate = Boolean(activeSessionId || threadTurns.length > 0);
+  const canTranslate = Boolean(activeSessionId);
 
   return (
     <div className={styles.chatPage}>
@@ -343,15 +329,7 @@ export default function ChatPage() {
             type="info"
             showIcon
             message="对话页仅用于审计与历史查看"
-            description={
-              <>
-                交互式编码请使用{" "}
-                <a href={CODING_TERMINAL_HREF} target="_blank" rel="noreferrer">
-                  Coding 终端
-                </a>
-                （ttyd + claw REPL）。
-              </>
-            }
+            description="交互式编码请使用 OVS（/ovs?projId=）。"
             style={{ margin: "0 12px 8px" }}
           />
         ) : null}
@@ -510,7 +488,6 @@ export default function ChatPage() {
         gatewayBase={gatewayBase}
         projId={projId}
         sessionId={activeSessionId}
-        threadTurns={threadTurns}
       />
     </div>
   );

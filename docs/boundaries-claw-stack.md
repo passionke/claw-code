@@ -19,7 +19,7 @@ Author: kejiqing
 | Component | Code / deploy | Owns | Does **not** own |
 | --- | --- | --- | --- |
 | **Claw** | `rust/` | Tool surface, `mcp__*` allowlist, session | HTTP, datasource encryption, SQLBot product |
-| **HTTP gateway** | `rust/crates/http-gateway-rs/` | Axum API, solve via **host `claw-sandbox` + worker 容器池**, `mcpServers` merge, `dsId` registry | Doris query implementation, SQLBot server code |
+| **HTTP gateway** | `rust/crates/http-gateway-rs/` | Axum API, solve via **FC / e2b worker**, `mcpServers` merge, `dsId` registry | Doris query implementation, SQLBot server code |
 | **Doris MCP** | `third_party/doris-mcp/` | Read-only SQL + metadata **only** (`mcp__doris__*`) | Gateway, SQLBot, transport bridge |
 | **SQLBot (product)** | Your cluster (e.g. :8000 / :8001) | NL 问数、MCP 工具 `mcp_start` / `mcp_question`、业务库 | This repo (except optional PG/API **read** for config) |
 | **Transport adapter** | Out-of-repo or custom bridge | Remote MCP (SSE/HTTP) **wire** → one stdio-shaped child for the gateway | **Not** the name “SQLBot MCP” in front of Claw; Claw sees **`mcp__sqlbot__*`** from the **merged** server config |
@@ -43,7 +43,7 @@ Author: kejiqing
 4. **Image** = convenience bundle (gateway + Doris dist + adapter script + `claw`); **repository** boundaries still split for understanding.
 5. **`CLAW_MCP_MAX_CONCURRENT`**: max in-flight MCP `tools/call` per worker; values `> 1` also enable same-turn parallel SQLBot fan-out (`[parallel-friendly]` tool hint + `shared_executor`). Set `1` for fully serial MCP (`rust/crates/runtime/src/mcp_client.rs`).
 6. **Solve preflight (per `ds_*`)**: `ds_<id>/home/.claw/solve-preflight.json` with ordered `kinds` (e.g. `["sqlbot_mcp_start"]`, compatible with legacy `kind`) → **first** `sessionId` turn only, after user text in jsonl, code-run preflight (`rust/crates/gateway-solve-turn/src/project_preflight.rs`). Table DDL: `ds_<id>/home/schema.md`, ro mount + system prompt (`GATEWAY_SCHEMA_MD_REL`).
-7. **claude-tap (LLM proxy)**: **one sidecar per pool** on the worker network (`claw-claude-tap:8080`); lifecycle in `deploy/stack/lib/pool-tap.sh` + `pool-daemon-up.sh` — **not** inside gateway. Gateway: PG clawTap settings, `/readyz` cluster probe, per-solve `OPENAI_BASE_URL` inject. Traces: `CLAW_TAP_TRACES_DIR` or `${CLAW_NAS_HOST_MOUNT}/tap-traces` on NAS.
+7. **claude-tap (LLM proxy)**: sidecar 或远程共享 tap；Gateway 注入 per-solve `OPENAI_BASE_URL`。Traces: `CLAW_TAP_TRACES_DIR` 或 NAS `tap-traces/`。
 8. **FC NAS workspace**: one logical NFS export root; Gateway mkdir/symlink on container `CLAW_WORK_ROOT`; e2b bind via `hostMountRoot` + relPath. **Do not** mix host path strings with container bind points — see **`docs/fc-nas-workspace.md`**.
 
 ## Where to change what
@@ -94,9 +94,9 @@ Build (local): `./deploy/stack/gateway.sh build` builds `claw-openvscode-server:
 
 | Layer | Path | Role |
 | --- | --- | --- |
-| **Backend switch** | `CLAW_INTERACTIVE_BACKEND` (`podman` \| `fc`) | Interactive only; **solve_async** stays `claw-sandbox` pool |
+| **Backend switch** | `CLAW_INTERACTIVE_BACKEND=fc` | Interactive + solve 均经 e2b |
 | **Rust FC client** | `rust/crates/claw-fc-sandbox-client/` | E2B-compatible REST (`cn-beijing`); ttyd via `deploy/fc-sandbox/fc_exec.py` |
-| **Backend trait** | `pool/interactive_backend/` | `PodmanInteractiveBackend` / `FcInteractiveBackend` |
+| **Backend trait** | `pool/interactive_backend/` | `FcInteractiveBackend` |
 | **Terminal API** | `session_terminal_api.rs` | `terminal/start\|stop\|reattach` → `InteractiveSandboxBackend` |
 | **Agent bridge** | `session_agent_api.rs` | ttyd WS via `TtydConnectTarget` (loopback or `wss://7681-sbx…`) |
 | **Workspace truth** | NAS (e2b sandbox mount) | `CLAW_OVS_BACKEND=fc` → OVS singleton on e2b (`claw-ovs`); `CLAW_USE_NAS_VOLUME=0` on Mac; see `docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md` |
@@ -112,8 +112,8 @@ Build (local): `./deploy/stack/gateway.sh build` builds `claw-openvscode-server:
 - `deploy/config/datasources.example.yaml` — `CLAW_DS_REGISTRY` 模板
 - `rust/crates/http-gateway-rs/datasources.example.yaml` — 数据源 registry 模板（勿提交真实凭据）
 - `third_party/doris-mcp/README.md` — Doris-only build
-- `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 与 **宿主机 `claw-sandbox` / Docker·Podman 容器池**
-- `sandbox/docs/system-design.md` — pool_outside 终态（单 pool、HTTP RPC）
+- `docs/http-gateway-container-pool.md` — **FC worker 编排**（e2b solve）
+- `docs/architecture-governance.md` — 目标拓扑与迁移
 - `docs/persistence-model.md` — solve **磁盘 jsonl（运行时）** 与 **`gateway_turns` 终态（交接）** 的分工与 `turn_id` 边界
 - `docs/ovs-chat-source-handoff.md` — OVS `@demo` / `@claw` Chat 阻塞与 fork 修源码交接
 - `docs/ovs-chat/EXTENSION-STABLE-DEPLOY.md` — **@claw 稳定部署契约（install/cache/settings）**

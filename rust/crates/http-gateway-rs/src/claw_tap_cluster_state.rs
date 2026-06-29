@@ -123,6 +123,7 @@ async fn refresh_fc_claw_tap_cluster_state(
             proxy_port: DEFAULT_CLAW_TAP_PROXY_PORT,
             live_port: DEFAULT_CLAW_TAP_LIVE_PORT,
             updated_at_ms: now_ms(),
+            ..Default::default()
         },
         tap_base_url: FC_WORKER_TAP_PROXY_URL.to_string(),
         local_identity: local,

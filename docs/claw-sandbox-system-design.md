@@ -1,20 +1,13 @@
-# claw-sandbox 系分索引
+# claw-sandbox — 已废弃
 
 Author: kejiqing
 
-**完整系统详细设计**见：[sandbox/docs/system-design.md](../sandbox/docs/system-design.md)
+> **DEPRECATED（2026-06）** 宿主机 `claw-sandbox` / `claw-pool-daemon` / `podman_pool` / `docker_pool` 路径已从本仓库移除。
 
-**项目根目录**：`sandbox/`（workspace + deploy + protocol crate）
+请改读：
 
-**快速开始**：
+- **架构总纲：** [`architecture-governance.md`](architecture-governance.md)
+- **FC worker 编排：** [`http-gateway-container-pool.md`](http-gateway-container-pool.md)
+- **文档索引：** [`README.md`](README.md)
 
-```bash
-# 构建
-./sandbox/deploy/sandbox.sh build
-
-# 启动（P0：复用 pool-daemon 部署链，二进制为 claw-sandbox）
-./sandbox/deploy/sandbox.sh up
-
-# 验收（与 pool 相同）
-./deploy/stack/lib/admin-solve-e2e.sh 1 ping
-```
+历史设计稿曾位于 `sandbox/docs/system-design.md`（目录可能仍存在，仅作归档）。

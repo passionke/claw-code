@@ -15,7 +15,7 @@ OVS_BACKEND="${CLAW_OVS_BACKEND:-compose}"
 fail() { echo "verify-fc-ovs-e2e: $*" >&2; exit 1; }
 
 fc_sandbox_count() {
-  local api="${CLAW_FC_API_URL:-http://10.8.0.9:3000}"
+  local api="${CLAW_FC_API_URL:-http://10.8.0.1:3000}"
   local key="${CLAW_FC_API_KEY:-${ALIYUN_E2B_TOKEN:-}}"
   [[ -n "${key}" ]] || { echo 0; return; }
   curl -sS -m 10 "${api%/}/sandboxes" -H "X-API-Key: ${key}" \
@@ -64,7 +64,7 @@ if [[ "${OVS_BACKEND}" == "fc" ]]; then
   echo "${ws}" | grep -q '"ovsFolderUrl"' || fail "missing ovsFolderUrl: ${ws}"
   ovs_url="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsUrl',''))" <<<"${ws}")"
   [[ -n "${ovs_url}" ]] || fail "empty ovsUrl"
-  fc_domain="${CLAW_FC_DOMAIN:-10.8.0.9}"
+  fc_domain="${CLAW_FC_DOMAIN:-supone.top}"
   traffic_port="${CLAW_FC_TRAFFIC_PORT:-3001}"
   folder_url="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsFolderUrl',''))" <<<"${ws}")"
   hosts_line="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsBrowserHostsLine',''))" <<<"${ws}")"
@@ -108,15 +108,6 @@ else
   echo "==> skip workspace probe (claw-gateway-rs not running)" >&2
 fi
 
-echo "==> terminal/start (FC worker warm pool)"
-curl -sS -X POST "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/terminal/stop?projId=${PROJ_ID}" \
-  >/dev/null 2>&1 || true
-resp="$(curl -sS -X POST "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/terminal/start" \
-  -H 'Content-Type: application/json' \
-  -d "{\"projId\":${PROJ_ID},\"sessionId\":\"${SESSION_ID}\"}")"
-echo "${resp}" | grep -q '"sessionId"' || fail "terminal/start failed: ${resp}"
-echo "${resp}"
-
 if [[ "${OVS_BACKEND}" == "fc" ]]; then
   echo "==> agent/ws via gateway (fc worker ttyd)"
   if [[ "${CLAW_FC_E2E_SKIP_AGENT_WS:-0}" == "1" ]]; then
@@ -132,10 +123,6 @@ elif [[ -x "${ROOT_DIR}/deploy/stack/lib/verify-ovs-claw-e2e.sh" ]]; then
   CLAW_OVS_E2E_PROJ_ID="${PROJ_ID}" CLAW_OVS_E2E_PROMPT="${CLAW_FC_E2E_PROMPT:-ping}" \
     "${ROOT_DIR}/deploy/stack/lib/verify-ovs-claw-e2e.sh" || fail "OVS agent WS failed"
 fi
-
-echo "==> terminal/stop (release warm slot)"
-stop_resp="$(curl -sS -X POST "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/terminal/stop?projId=${PROJ_ID}")"
-echo "${stop_resp}" | grep -q '"ok":true' || fail "terminal/stop failed: ${stop_resp}"
 
 after_count="$(fc_sandbox_count)"
 echo "==> e2b sandboxes after E2E: ${after_count} (before=${before_count})"

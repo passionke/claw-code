@@ -35,7 +35,7 @@ impl TtydConnectTarget {
         }
     }
 
-    /// Self-hosted e2bserver: connect to traffic proxy (`10.8.0.9:80`) with Host `{port}-{id}.{domain}`.
+    /// Self-hosted e2bserver (`10.8.0.1`): connect to traffic proxy with Host `{port}-{id}.{domain}`.
     /// (`CLAW_E2B_SANDBOX_URL` :3002 is envd/exec only.)
     #[must_use]
     pub fn e2b_self_hosted_proxy(

@@ -13,7 +13,10 @@ use std::collections::BTreeMap;
 use crate::cluster_identity::gateway_cluster_id_optional;
 use crate::gateway_admin_mcp_token::{admin_mcp_tokens_public, AdminMcpTokenPublic};
 use crate::gateway_claw_tap_settings::{ClawTapSettings, ClawTapSettingsPublic};
+use crate::gateway_fc_nas_api_settings::FcNasApiSettings;
 use crate::gateway_fc_nas_settings::FcNasSettingsPublic;
+use crate::gateway_fc_ovs_settings::FcOvsSettings;
+use crate::gateway_fc_worker_settings::FcWorkerSettings;
 use crate::gateway_llm_cluster_store::{self, resolve_llm_cluster_id};
 use crate::gateway_llm_model_apply::{self, LlmModelApplyOutcome};
 use crate::gateway_llm_model_revision::{
@@ -226,6 +229,12 @@ pub struct GatewayGlobalSettingsStore {
     pub(crate) cluster_id: String,
     #[serde(rename = "clawTap", default)]
     pub(crate) claw_tap: ClawTapSettings,
+    #[serde(rename = "fcOvs", default)]
+    pub(crate) fc_ovs: FcOvsSettings,
+    #[serde(rename = "fcNasApi", default)]
+    pub(crate) fc_nas_api: FcNasApiSettings,
+    #[serde(rename = "fcWorker", default)]
+    pub(crate) fc_worker: FcWorkerSettings,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -512,20 +521,19 @@ pub async fn upsert_llm_model(
             name: name.to_string(),
             base_model_url: base,
             model_name: model,
-            current_rev: rev,
+            current_rev: rev.clone(),
             created_at_ms: now,
             updated_at_ms: now,
         });
     }
 
-    if store.active_id.is_empty() {
+    // Admin has no "version" concept: editing a model must take effect immediately.
+    // First model becomes active; editing the already-active model advances active_rev
+    // to the new revision — otherwise active_rev strands on the old rev whose api key
+    // was just pruned (prune_llm_api_keys_for_model above), breaking solve/readyz. kejiqing
+    if store.active_id.is_empty() || store.active_id == id {
         store.active_id = id.clone();
-        store.active_rev = store
-            .models
-            .iter()
-            .find(|m| m.id == id)
-            .map(|m| m.current_rev.clone())
-            .unwrap_or_default();
+        store.active_rev = rev.clone();
         store.active_applied_at_ms = Some(now);
     }
 
