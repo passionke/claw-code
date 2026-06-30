@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pool registry env helpers (FC-only; host claw-sandbox removed). Author: kejiqing
+# Pool registry env helpers (e2b-only; host claw-sandbox removed). Author: kejiqing
 
 # External PG URL for verify scripts (host cannot use compose hostname `postgres`).
 claw_pool_daemon_database_url() {
@@ -40,7 +40,7 @@ claw_export_pool_registry_env() {
   local rpc_root="${1:?}"
   mkdir -p "${rpc_root}"
   {
-    printf '%s\n' '# GENERATED — FC-only pool id (no host claw-sandbox). kejiqing'
+    printf '%s\n' '# GENERATED — e2b-only pool id (no host claw-sandbox). kejiqing'
     printf '%s\n' "CLAW_POOL_ID=${CLAW_POOL_ID:-$(claw_default_pool_id)}"
   } >"${rpc_root}/pool-registry.env"
 }

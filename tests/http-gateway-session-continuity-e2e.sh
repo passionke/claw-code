@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # E2E: session PostgreSQL + same workDir on continuation + 400 for unknown sessionId.
-# Defaults to podman_pool (same as deploy). Requires worker image / pool env; OPENAI_* only if solve must succeed.
+# Defaults to e2b (same as deploy). Requires worker image / pool env; OPENAI_* only if solve must succeed.
 #
 # Author: kejiqing
 set -euo pipefail
@@ -37,7 +37,7 @@ export CLAW_WORK_ROOT="$WORK_ROOT"
 export CLAW_GATEWAY_DATABASE_URL="$GATEWAY_PG_URL"
 export CLAW_DS_REGISTRY="$REGISTRY"
 export CLAW_BIN
-export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
+export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-e2b}"
 export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
 export CLAW_PROJECTS_GIT_URL="${CLAW_PROJECTS_GIT_URL:-git@github.com:passionke/claw-code-projects.git}"
 export CLAW_PROJECTS_GIT_BRANCH="${CLAW_PROJECTS_GIT_BRANCH:-main}"

@@ -13,10 +13,10 @@ use std::collections::BTreeMap;
 use crate::cluster_identity::gateway_cluster_id_optional;
 use crate::gateway_admin_mcp_token::{admin_mcp_tokens_public, AdminMcpTokenPublic};
 use crate::gateway_claw_tap_settings::{ClawTapSettings, ClawTapSettingsPublic};
-use crate::gateway_fc_nas_api_settings::FcNasApiSettings;
-use crate::gateway_fc_nas_settings::FcNasSettingsPublic;
-use crate::gateway_fc_ovs_settings::FcOvsSettings;
-use crate::gateway_fc_worker_settings::FcWorkerSettings;
+use crate::gateway_e2b_nas_api_settings::E2bNasApiSettings;
+use crate::gateway_e2b_nas_settings::E2bNasSettingsPublic;
+use crate::gateway_e2b_ovs_settings::E2bOvsSettings;
+use crate::gateway_e2b_worker_settings::E2bWorkerSettings;
 use crate::gateway_llm_cluster_store::{self, resolve_llm_cluster_id};
 use crate::gateway_llm_model_apply::{self, LlmModelApplyOutcome};
 use crate::gateway_llm_model_revision::{
@@ -155,12 +155,12 @@ pub struct GatewayGlobalSettingsPublic {
     )]
     pub claw_tap: Option<ClawTapSettingsPublic>,
     #[serde(
-        rename = "fcNas",
+        rename = "e2bNas",
         default,
         skip_deserializing,
         skip_serializing_if = "Option::is_none"
     )]
-    pub fc_nas: Option<FcNasSettingsPublic>,
+    pub e2b_nas: Option<E2bNasSettingsPublic>,
     #[serde(
         rename = "adminMcpTokens",
         default,
@@ -229,12 +229,12 @@ pub struct GatewayGlobalSettingsStore {
     pub(crate) cluster_id: String,
     #[serde(rename = "clawTap", default)]
     pub(crate) claw_tap: ClawTapSettings,
-    #[serde(rename = "fcOvs", default)]
-    pub(crate) fc_ovs: FcOvsSettings,
-    #[serde(rename = "fcNasApi", default)]
-    pub(crate) fc_nas_api: FcNasApiSettings,
-    #[serde(rename = "fcWorker", default)]
-    pub(crate) fc_worker: FcWorkerSettings,
+    #[serde(rename = "e2bOvs", default)]
+    pub(crate) e2b_ovs: E2bOvsSettings,
+    #[serde(rename = "e2bNasApi", default)]
+    pub(crate) e2b_nas_api: E2bNasApiSettings,
+    #[serde(rename = "e2bWorker", default)]
+    pub(crate) e2b_worker: E2bWorkerSettings,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -290,8 +290,8 @@ pub struct GatewayGlobalSettingsResponse {
     pub active_llm_config: Option<ActiveLlmConfigPublic>,
     #[serde(rename = "clawTap", skip_serializing_if = "Option::is_none")]
     pub claw_tap: Option<ClawTapSettingsPublic>,
-    #[serde(rename = "fcNas", skip_serializing_if = "Option::is_none")]
-    pub fc_nas: Option<FcNasSettingsPublic>,
+    #[serde(rename = "e2bNas", skip_serializing_if = "Option::is_none")]
+    pub e2b_nas: Option<E2bNasSettingsPublic>,
     #[serde(rename = "adminMcpTokens", default)]
     pub admin_mcp_tokens: Vec<AdminMcpTokenPublic>,
     #[serde(rename = "clusterId", skip_serializing_if = "Option::is_none")]
@@ -818,8 +818,8 @@ pub async fn load_public(
         active_llm_applied_at_ms: llm.active_applied_at_ms,
         active_llm_config: load_active_llm_config_public(db).await?,
         claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
-        fc_nas: Some(crate::gateway_fc_nas_settings::fc_nas_settings_public(
-            &crate::gateway_fc_nas_settings::gateway_work_root_from_env(),
+        e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
+            &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
         )),
         admin_mcp_tokens: admin_mcp_tokens_public(&settings),
         cluster_id: cluster_id_public(),
@@ -840,8 +840,8 @@ pub async fn load_response(
         active_llm_applied_at_ms: llm.active_applied_at_ms,
         active_llm_config: load_active_llm_config_public(db).await?,
         claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
-        fc_nas: Some(crate::gateway_fc_nas_settings::fc_nas_settings_public(
-            &crate::gateway_fc_nas_settings::gateway_work_root_from_env(),
+        e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
+            &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
         )),
         admin_mcp_tokens: admin_mcp_tokens_public(&settings),
         cluster_id: cluster_id_public(),
@@ -1080,8 +1080,8 @@ pub fn to_public(
         active_llm_applied_at_ms: None,
         active_llm_config: None,
         claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
-        fc_nas: Some(crate::gateway_fc_nas_settings::fc_nas_settings_public(
-            &crate::gateway_fc_nas_settings::gateway_work_root_from_env(),
+        e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
+            &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
         )),
         admin_mcp_tokens: admin_mcp_tokens_public(settings),
         cluster_id: cluster_id_public(),

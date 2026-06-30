@@ -47,7 +47,7 @@ claw_e2e_curl_gateway() {
 source "${LIB_DIR}/e2e-project-isolation.sh"
 
 if [[ -n "${CLAW_E2E_WORKER_ISOLATION:-}" ]]; then
-  claw_e2e_set_project_worker_isolation "${GATEWAY_PORT}" "${DS_ID}" "${CLAW_E2E_WORKER_ISOLATION}"
+  claw_e2e_set_project_worker_profile "${GATEWAY_PORT}" "${DS_ID}" "${CLAW_E2E_WORKER_ISOLATION}"
 fi
 
 claw_e2e_assert_solve_task() {
@@ -60,11 +60,11 @@ claw_e2e_assert_solve_task() {
       exit 1
     fi
   fi
-  if [[ -n "${CLAW_E2E_EXPECT_WORKER_ISOLATION:-}" ]]; then
+  if [[ -n "${CLAW_E2E_EXPECT_WORKER_PROFILE:-}" ]]; then
     local got_iso
-    got_iso="$(printf '%s' "${json}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("workerIsolation") or "")')"
-    if [[ "${got_iso}" != "${CLAW_E2E_EXPECT_WORKER_ISOLATION}" ]]; then
-      echo "error: ${label} workerIsolation=${got_iso!r} expected ${CLAW_E2E_EXPECT_WORKER_ISOLATION!r}" >&2
+    got_iso="$(printf '%s' "${json}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("workerProfile") or "")')"
+    if [[ "${got_iso}" != "${CLAW_E2E_EXPECT_WORKER_PROFILE}" ]]; then
+      echo "error: ${label} workerProfile=${got_iso!r} expected ${CLAW_E2E_EXPECT_WORKER_PROFILE!r}" >&2
       exit 1
     fi
   fi

@@ -1,4 +1,4 @@
-# 架构治理 — FC-only 本地栈
+# 架构治理 — e2b-only 本地栈
 
 Author: kejiqing
 
@@ -23,7 +23,7 @@ Author: kejiqing
 |------|------|----------|
 | `10.8.0.1` | PG + e2bserver API `:3000` / envd `:3002` | ~~`10.8.0.9`~~（旧节点，已废弃） |
 | `10.8.0.11` | NAS NFS export | ~~`10.8.0.8`~~（旧 NAS 节点） |
-| `supone.top` | FC sandbox 浏览器 traffic（wildcard DNS → e2b traffic 入口） | 勿把 `CLAW_FC_DOMAIN` 写成 IP |
+| `supone.top` | e2b sandbox 浏览器 traffic（wildcard DNS → e2b traffic 入口） | 勿把 `CLAW_E2B_DOMAIN` 写成 IP |
 
 脚本 / `.env.example` 的 fallback 必须与上表一致；历史文档（`docs/ovs-chat/*` 踩坑记录）内 `10.8.0.9` 保留为**当时取证**，文首有勘误横幅。
 
@@ -42,7 +42,7 @@ all -> cluster_id -> project -> session -> turn
 - **禁止** sandbox 内 `mount.nfs4`（Firecracker 无 `CAP_SYS_ADMIN`，见 `docs/ovs-chat/FC-OVS-E2E-FAILURES.md` F2）
 - Gateway **不** bind-mount NAS；项目资源读写经 **claw-nas-api** e2b singleton
 
-详见 [`fc-nas-workspace.md`](fc-nas-workspace.md)。
+详见 [`e2b-nas-workspace.md`](e2b-nas-workspace.md)。
 
 ---
 
@@ -58,9 +58,9 @@ Gateway shutdown **不杀** persistent singleton；worker lease ticker 与 singl
 
 ---
 
-## 4. Worker 模式（FC-only）
+## 4. Worker 模式（e2b-only）
 
-- **唯一路径：** `CLAW_SOLVE_ISOLATION=fc`、`CLAW_INTERACTIVE_BACKEND=fc`
+- **唯一路径：** `CLAW_SOLVE_ISOLATION=e2b`、`CLAW_INTERACTIVE_BACKEND=e2b`
 - **strict：** `claw-worker-strict`（guest `claw` uid）
 - **relaxed：** `claw-worker-relaxed`（guest root，需 `CLAW_ALLOW_RELAXED_WORKER=1`）
 
@@ -84,7 +84,7 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID / key
 ## 6. 迁移 checklist
 
 - [ ] `CLAW_GATEWAY_DATABASE_URL` → `@10.8.0.1:5433`
-- [ ] `CLAW_FC_API_URL` / `CLAW_E2B_SANDBOX_URL` → `10.8.0.1`
+- [ ] `CLAW_E2B_API_URL` / `CLAW_E2B_SANDBOX_URL` → `10.8.0.1`
 - [ ] NAS server → `10.8.0.11`；e2b 宿主机 `/mnt/nas0` 已挂载
 - [ ] `CLAW_CLUSTER_ID` 已设；旧 PG 数据 migrate 回填 cluster_id
 - [ ] e2b 模板：`claw-worker-strict`、`claw-worker-relaxed`、`claw-ovs`、`claw-observe`、`claw-nas-api`

@@ -1,4 +1,4 @@
-# Claw 文档索引（FC-only）
+# Claw 文档索引（e2b-only）
 
 Author: kejiqing
 
@@ -23,7 +23,7 @@ Author: kejiqing
 | 场景 | 模板 |
 |------|------|
 | 自托管 e2b + 外连 PG（推荐） | `deploy/stack/env.selfhosted-e2b.example` |
-| FC interactive 叠加项 | `deploy/stack/env.fc-interactive.example` |
+| e2b interactive 叠加项 | `deploy/stack/env.e2b-interactive.example` |
 | macOS 全本地 compose | `deploy/stack/env.local.example` |
 | Linux 线上 CI 镜像 | `deploy/stack/env.production.example` |
 
@@ -34,8 +34,8 @@ Author: kejiqing
 | 文档 | 用途 |
 |------|------|
 | [`boundaries-claw-stack.md`](boundaries-claw-stack.md) | 组件职责、不变量、改哪里 |
-| [`http-gateway-container-pool.md`](http-gateway-container-pool.md) | **FC worker 编排**（solve 经 e2b，非宿主机 pool） |
-| [`fc-nas-workspace.md`](fc-nas-workspace.md) | NAS 路径、host bind、e2b 挂载契约 |
+| [`http-gateway-container-pool.md`](http-gateway-container-pool.md) | **e2b worker 编排**（solve 经 e2b，非宿主机 pool） |
+| [`e2b-nas-workspace.md`](e2b-nas-workspace.md) | NAS 路径、host bind、e2b 挂载契约 |
 | [`persistence-model.md`](persistence-model.md) | jsonl 运行时 vs `gateway_turns` 终态 |
 | [`live-report-contract.md`](live-report-contract.md) | stdout hooks、live SSE（FC 路径） |
 | [`pool-registry.md`](pool-registry.md) | `claw_pool` 表（**历史/兼容**；无 `:9944` RPC） |
@@ -43,15 +43,15 @@ Author: kejiqing
 
 ---
 
-## FC / OVS / NAS
+## e2b / OVS / NAS
 
 | 文档 | 用途 |
 |------|------|
-| [`deploy/fc-sandbox/README.md`](../deploy/fc-sandbox/README.md) | FC API 验收、模板构建、成本 |
+| [`deploy/e2b/README.md`](../deploy/e2b/README.md) | e2b API 验收、模板构建、成本 |
 | [`ovs-chat/FC-OVS-SINGLETON-DESIGN.md`](ovs-chat/FC-OVS-SINGLETON-DESIGN.md) | OVS e2b singleton |
 | [`ovs-chat/FC-OVS-TEMPLATE-BUILD.md`](ovs-chat/FC-OVS-TEMPLATE-BUILD.md) | `claw-ovs` 模板 |
 | [`ovs-chat/FC-TAP-SINGLETON-DESIGN.md`](ovs-chat/FC-TAP-SINGLETON-DESIGN.md) | Observe tap singleton |
-| [`ovs-chat/FC-OVS-E2E-FAILURES.md`](ovs-chat/FC-OVS-E2E-FAILURES.md) | 已知 FC 排障 |
+| [`ovs-chat/FC-OVS-E2E-FAILURES.md`](ovs-chat/FC-OVS-E2E-FAILURES.md) | 已知 e2b 排障 |
 | [`ovs-chat/INTEGRATION.md`](ovs-chat/INTEGRATION.md) | OVS + claw-vscode 集成 |
 
 ---
@@ -67,7 +67,7 @@ Author: kejiqing
 | [`claw-tap-cluster-identity.md`](claw-tap-cluster-identity.md) | clawTap `clusterHash` |
 | [`langfuse-otel.md`](langfuse-otel.md) | OTEL span 命名 |
 
-**Deploy 子文档：** `deploy/stack/docs/` — GitLab CI、集群验收（已按 FC-only 更新引用）。
+**Deploy 子文档：** `deploy/stack/docs/` — GitLab CI、集群验收（已按 e2b-only 更新引用）。
 
 ---
 

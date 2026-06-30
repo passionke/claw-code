@@ -34,7 +34,7 @@ pub struct ProjectConfigSidecars {
     pub language_pipeline_json: Value,
     pub extra_session_fields_json: Value,
     pub prompt_limits_json: Value,
-    pub worker_isolation_json: Value,
+    pub worker_profile_json: Value,
 }
 
 impl ProjectConfigSidecars {
@@ -47,7 +47,7 @@ impl ProjectConfigSidecars {
             language_pipeline_json: row.language_pipeline_json.clone(),
             extra_session_fields_json: row.extra_session_fields_json.clone(),
             prompt_limits_json: row.prompt_limits_json.clone(),
-            worker_isolation_json: row.worker_isolation_json.clone(),
+            worker_profile_json: row.worker_profile_json.clone(),
         }
     }
 }
@@ -224,7 +224,7 @@ pub fn config_row_from_revision(
         language_pipeline_json: sidecars.language_pipeline_json,
         extra_session_fields_json: sidecars.extra_session_fields_json,
         prompt_limits_json: sidecars.prompt_limits_json,
-        worker_isolation_json: sidecars.worker_isolation_json,
+        worker_profile_json: sidecars.worker_profile_json,
     }
 }
 
@@ -254,7 +254,7 @@ pub fn upsert_from_row<'a>(
         language_pipeline_json: &row.language_pipeline_json,
         extra_session_fields_json: &row.extra_session_fields_json,
         prompt_limits_json: &row.prompt_limits_json,
-        worker_isolation_json: &row.worker_isolation_json,
+        worker_profile_json: &row.worker_profile_json,
     }
 }
 
@@ -351,7 +351,7 @@ pub async fn ensure_draft(
         language_pipeline_json: &row.language_pipeline_json,
         extra_session_fields_json: &row.extra_session_fields_json,
         prompt_limits_json: &row.prompt_limits_json,
-        worker_isolation_json: &row.worker_isolation_json,
+        worker_profile_json: &row.worker_profile_json,
     };
     db.upsert_project_config(upsert).await?;
     db.get_project_config(proj_id).await?.ok_or_else(|| {

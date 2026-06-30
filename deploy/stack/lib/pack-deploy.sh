@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本地标准：打包镜像 + 重启网关栈（macOS 默认 build 走 linux-compile，不在 podman build 里拉 crates.io）
-# FC 交互：claw/ttyd 仅来自 e2b 模板；改二进制后需 rebuild template。Author: kejiqing
+# e2b 交互：claw/ttyd 仅来自 e2b 模板；改二进制后需 rebuild template。Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,12 +62,12 @@ echo "    日志: deploy/stack/.build.log（全程: tail -f deploy/stack/.build.
 echo "    只改 gateway Rust: ./deploy/stack/gateway.sh build local && ./deploy/stack/gateway.sh up" >&2
 "${LIB_DIR}/build.sh" "${BUILD_FLAGS[@]}" "${TAG}"
 
-if [[ "${CLAW_INTERACTIVE_BACKEND:-}" == "fc" ]]; then
+if [[ "${CLAW_INTERACTIVE_BACKEND:-}" == "e2b" ]]; then
   claw_apply_pack_deploy_image_tag "${TAG}"
   echo "==> FC: claw/ttyd are baked into e2b template only (no NAS copy)." >&2
-  echo "    After claw/ttyd change: python3 deploy/fc-sandbox/build-claw-worker-selfhosted.py && ./deploy/stack/gateway.sh pool-reset" >&2
+  echo "    After claw/ttyd change: python3 deploy/e2b/build-claw-worker-selfhosted.py && ./deploy/stack/gateway.sh pool-reset" >&2
 else
-  echo "==> skip FC template hint (CLAW_INTERACTIVE_BACKEND=${CLAW_INTERACTIVE_BACKEND:-unset})"
+  echo "==> skip e2b template hint (CLAW_INTERACTIVE_BACKEND=${CLAW_INTERACTIVE_BACKEND:-unset})"
 fi
 
 claw_step_begin "2/4 restart stack (down + up)"

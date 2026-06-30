@@ -1,4 +1,4 @@
-# HTTP Gateway：FC worker 编排
+# HTTP Gateway：e2b worker 编排
 
 面向 **`http-gateway-rs`**：每次 solve / interactive 在 **e2b（FC）MicroVM** 内执行 `claw`，与网关进程隔离。网关负责 HTTP、队列、PG 物化/回写、经 **E2B-compatible API** 租还 sandbox。
 
@@ -12,9 +12,9 @@ Author: kejiqing
 
 | 角色 | 代码 / 部署 | 职责 |
 |------|-------------|------|
-| **Gateway** | `rust/crates/http-gateway-rs/` | Axum API、`FcOrchestratedPool` 编排、NAS 经 claw-nas-api singleton |
-| **e2bserver** | 自托管或阿里云 FC API | 创建/销毁 MicroVM、host bind NAS、`fc_exec.py` 远程 exec |
-| **Worker 模板** | `deploy/fc-sandbox/build-claw-worker-*.py` | `claw-worker-strict` / `claw-worker-relaxed` 镜像层 |
+| **Gateway** | `rust/crates/http-gateway-rs/` | Axum API、`E2bOrchestratedPool` 编排、NAS 经 claw-nas-api singleton |
+| **e2bserver** | 自托管或阿里云 e2b API | 创建/销毁 MicroVM、host bind NAS、`e2b_exec.py` 远程 exec |
+| **Worker 模板** | `deploy/e2b/build-claw-worker-*.py` | `claw-worker-strict` / `claw-worker-relaxed` 镜像层 |
 
 **无** 宿主机 `:9944` pool daemon；**无** `SandboxRpcClient` / `claw-sandbox` 二进制。
 
@@ -27,7 +27,7 @@ sequenceDiagram
     participant GW as http-gateway-rs
     participant PG as PostgreSQL
     participant E2B as e2bserver
-    participant W as FC worker VM
+    participant W as e2b worker VM
 
     GW->>PG: INSERT turn + solve_task_json
     GW->>E2B: create sandbox (strict|relaxed template)
@@ -38,7 +38,7 @@ sequenceDiagram
     GW->>E2B: destroy or return to warm pool
 ```
 
-续聊制品在 **PostgreSQL**（`gateway_turns` + workspace tar）；worker 内路径经 NAS host bind，见 [`fc-nas-workspace.md`](fc-nas-workspace.md)。
+续聊制品在 **PostgreSQL**（`gateway_turns` + workspace tar）；worker 内路径经 NAS host bind，见 [`e2b-nas-workspace.md`](e2b-nas-workspace.md)。
 
 ---
 
@@ -48,10 +48,10 @@ sequenceDiagram
 |------|------|
 | `CLAW_INTERACTIVE_BACKEND` | **必须** `fc` |
 | `CLAW_SOLVE_ISOLATION` | **必须** `fc`（`env-profile.sh` 默认） |
-| `CLAW_FC_API_URL` / `CLAW_E2B_SANDBOX_URL` | e2b API 基址（如 `http://10.8.0.1:3000`） |
-| `CLAW_FC_API_KEY` / `ALIYUN_E2B_TOKEN` | API 密钥 |
-| `CLAW_FC_WORKER_STRICT_TEMPLATE` | strict worker 模板 id |
-| `CLAW_FC_WORKER_RELAXED_TEMPLATE` | relaxed（需 `CLAW_ALLOW_RELAXED_WORKER=1`） |
+| `CLAW_E2B_API_URL` / `CLAW_E2B_SANDBOX_URL` | e2b API 基址（如 `http://10.8.0.1:3000`） |
+| `CLAW_E2B_API_KEY` / `ALIYUN_E2B_TOKEN` | API 密钥 |
+| `CLAW_E2B_WORKER_STRICT_TEMPLATE` | strict worker 模板 id |
+| `CLAW_E2B_WORKER_RELAXED_TEMPLATE` | relaxed（需 `CLAW_ALLOW_RELAXED_WORKER=1`） |
 | `CLAW_NAS_*` | NAS export 与 gateway 侧路径；**禁止** gateway 直接 bind NAS |
 | `CLAW_CLUSTER_ID` | PG 行级隔离 |
 
@@ -63,11 +63,11 @@ sequenceDiagram
 
 | 路径 | 作用 |
 |------|------|
-| `pool/fc_orchestrated_pool.rs` | solve 租还 FC worker |
+| `pool/e2b_orchestrated_pool.rs` | solve 租还 e2b worker |
 | `pool/interactive_backend/fc_*.rs` | terminal / agent / OVS / NAS API singleton |
 | `pool/session_db_sync.rs` | PG ↔ guest 路径物化 |
 | `solve_pool.rs` | solve 队列与 `PoolClients` 入口 |
-| `claw-fc-sandbox-client/` | E2B REST 客户端 |
+| `claw-e2b-sandbox-client/` | E2B REST 客户端 |
 
 `claw_pool` 表与 `/v1/pools` API **保留**（历史 JOIN、Admin 展示），**不**用于挑选 RPC 目标。
 
@@ -75,13 +75,13 @@ sequenceDiagram
 
 ## 5. Interactive / OVS
 
-与 solve 共用 `CLAW_INTERACTIVE_BACKEND=fc`：
+与 solve 共用 `CLAW_INTERACTIVE_BACKEND=e2b`：
 
-- **OVS：** `claw-ovs` singleton（`CLAW_OVS_BACKEND=fc`）
+- **OVS：** `claw-ovs` singleton（`CLAW_OVS_BACKEND=e2b`）
 - **Observe tap：** `claw-observe` singleton
 - **NAS 写盘：** `claw-nas-api` singleton
 
-设计细节：`docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md`、`deploy/fc-sandbox/README.md`。
+设计细节：`docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md`、`deploy/e2b/README.md`。
 
 ---
 

@@ -50,18 +50,18 @@ OVS 扩展 runAgentPrompt
 |------|------|
 | 用户可见 prompt | `Determine the language…` 含 **Prior turn 1–3**（`4`、`2`、`今天营业额多少`），Current turn 为 `are you ok?` |
 | turn 元数据 | `pool fc-cloud`、`worker fc:sbx_*`（solve 池，非 `fc-interactive`） |
-| 代码 | `deploy/fc-sandbox/fc_exec.py` 将 inline `session_jsonl` 写到 **固定** `/claw_host_root/.claw/gateway-solve-session.jsonl`；新 session 无 PG 消息时不覆盖，**残留上一 session 文件** |
+| 代码 | `deploy/e2b/e2b_exec.py` 将 inline `session_jsonl` 写到 **固定** `/claw_host_root/.claw/gateway-solve-session.jsonl`；新 session 无 PG 消息时不覆盖，**残留上一 session 文件** |
 | 语言推理 | `gateway-solve-turn/src/turn_language.rs` `collect_prior_user_prompts` 读该固定路径 |
 
 **OVS B1 修复范围：** agent/ws 使用 per-record `interactive-session.jsonl`，不经过上述 solve 固定路径。
 
-**Solve 残留问题（未在本变更修改）：** fc-cloud NAS 下应用 per-session 路径或每轮清空/覆盖 `gateway-solve-session.jsonl` — 需单独变更 `fc_exec.py` / solve materialize。
+**Solve 残留问题（未在本变更修改）：** fc-cloud NAS 下应用 per-session 路径或每轮清空/覆盖 `gateway-solve-session.jsonl` — 需单独变更 `e2b_exec.py` / solve materialize。
 
 ---
 
 ## 2. 架构原则（分界轴）
 
-### 2.1 按「是否交互」分两套，不按 FC / Podman 分
+### 2.1 按「是否交互」分两套，不按 e2b / Podman 分
 
 | 模式 | API / 入口 | **LLM 上下文 SoT** | PG `cc_messages` |
 |------|-------------|-------------------|------------------|
@@ -77,7 +77,7 @@ Solve 仍可能走沙箱（`fc-cloud` 或 podman 槽）— 那是 resolve 线，
 | 用途 | `pool_id` / 模块 | 本计划 |
 |------|------------------|--------|
 | OVS 交互 warm worker | `fc-interactive` / `FcProjWarmPool` | **改** agent prompt 路径 |
-| Solve（含 FC 沙箱） | `fc-cloud` / `fc_orchestrated_pool` | **不动** |
+| Solve（含 e2b 沙箱） | `fc-cloud` / `e2b_orchestrated_pool` | **不动** |
 | OVS 壳 | `claw-ovs` singleton | **不动** |
 | Observe Live | `claw-observe` singleton | **不动** |
 
@@ -203,7 +203,7 @@ NAS:    proj_{N}/sessions/{segment}/interactive-session.jsonl
 
 ### Phase 2 — `session_agent_api.rs` 重构
 
-- [x] FC exec 流式 CDP（`exec_shell_script_streaming`）
+- [x] e2b exec 流式 CDP（`exec_shell_script_streaming`）
 - [x] per-`record_session_id` 409 锁
 - [x] turn 后 `import_turn_messages_to_db`
 - [x] agent 路径绕过 ttyd WS
@@ -217,7 +217,7 @@ NAS:    proj_{N}/sessions/{segment}/interactive-session.jsonl
 
 ### Phase 4 — 验收与回归
 
-- [ ] FC 环境：两轮同 `chatSessionId` 续聊（需在线 gateway + worker）
+- [ ] e2b 环境：两轮同 `chatSessionId` 续聊（需在线 gateway + worker）
 - [ ] 两 panel 不同 `record_session_id` 不串 prior messages
 - [ ] Solve E2E 无 diff（未改 solve 路径）
 
@@ -229,7 +229,7 @@ NAS:    proj_{N}/sessions/{segment}/interactive-session.jsonl
 |------|------|
 | 脚本契约 | `rust/crates/gateway-solve-turn/src/worker_env.rs`（或新 `ovs_interactive.rs`） |
 | Agent WS | `rust/crates/http-gateway-rs/src/session_agent_api.rs` |
-| FC 流式 exec | `rust/crates/claw-fc-sandbox-client/src/client.rs`（`exec_shell_script_streaming`） |
+| e2b 流式 exec | `rust/crates/claw-e2b-sandbox-client/src/client.rs`（`exec_shell_script_streaming`） |
 | Podman exec | `rust/crates/http-gateway-rs/src/pool/docker_cli.rs` / sandbox RPC |
 | 扩展 | `extensions/claw-vscode/extension.js` |
 | E2E | `deploy/stack/lib/verify-ovs-claw-e2e.sh` |
@@ -280,7 +280,7 @@ NAS:    proj_{N}/sessions/{segment}/interactive-session.jsonl
 | 3 扩展 + E2E | 1d |
 | 4 验收回归 | 1d |
 
-**合计约 5–6d**（含 FC + Podman 双环境验证）。
+**合计约 5–6d**（含 e2b + Podman 双环境验证）。
 
 ---
 

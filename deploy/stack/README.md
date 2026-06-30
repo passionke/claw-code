@@ -18,7 +18,7 @@ Author: kejiqing
 | 环境 | 模板 | 说明 |
 | --- | --- | --- |
 | **自托管 e2b（推荐）** | `env.selfhosted-e2b.example` | 外连 PG + e2b；见 `docs/architecture-governance.md` |
-| FC interactive 叠加 | `env.fc-interactive.example` | OVS / NAS / Observe 变量 |
+| e2b interactive 叠加 | `env.e2b-interactive.example` | OVS / NAS / Observe 变量 |
 | 生产 Linux | `env.production.example` | `up --release` 拉镜像 |
 | 本地全栈 compose | `env.local.example` | `gateway.sh quick`（须 `CLAW_*_BACKEND=fc`） |
 | ~~稳定沙箱主机~~ | ~~`env.stable-dev-host.example`~~ | **已废弃** |
@@ -31,7 +31,7 @@ Author: kejiqing
 **单入口**：**`./deploy/stack/gateway.sh`**。日常起栈用 **`quick`**；改 Rust 网关镜像后用 **`pack-deploy`**（不要等 `podman build` 里 cargo，那会卡 `Updating crates.io index`）。
 
 ```bash
-# 日常：gateway-admin dist + playground 镜像 + up + check（FC worker，无 pool-daemon）
+# 日常：gateway-admin dist + playground 镜像 + up + check（e2b worker，无 pool-daemon）
 ./deploy/stack/gateway.sh quick
 
 # 只改 React 管理台（web/gateway-admin/src）：
@@ -60,7 +60,7 @@ Author: kejiqing
 
 实现脚本在 **`deploy/stack/lib/`**（`pack-deploy.sh`、`build.sh`、`solve-once-local.sh` 等）。**不要**用 `build --in-container`（镜像内 cargo，慢且易超时）。`scripts/local-pack-deploy.sh` 等仅为兼容，转调 `gateway.sh`。
 
-其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh`**：`linux-compile` 产出 **`http-gateway-rs` + `claw`**，再 **`Containerfile.gateway-rs.prebuilt`** **COPY** 预编译产物（镜像内不 cargo）。**FC worker 模板**在 `deploy/fc-sandbox/`，不在 gateway 镜像内编译。
+其中 `./deploy/stack/gateway.sh build` 通过 **`lib/build.sh`**：`linux-compile` 产出 **`http-gateway-rs` + `claw`**，再 **`Containerfile.gateway-rs.prebuilt`** **COPY** 预编译产物（镜像内不 cargo）。**e2b worker 模板**在 `deploy/e2b/`，不在 gateway 镜像内编译。
 
 **线上部署（与 GitHub Actions 一致）**：打 tag `release-*` 触发 [`.github/workflows/claw-code-image.yaml`](../../.github/workflows/claw-code-image.yaml)。包名：**`claw-code`**、**`claw-gateway-playground`** 等（**同一 tag**）。服务器 **`./deploy/stack/gateway.sh up --release release-vX.Y.Z`**；**不要**在服务器跑 **`build`** / **`admin-build`**。Worker 执行在 **e2b**，非宿主机 pool。
 
@@ -80,7 +80,7 @@ Author: kejiqing
 
 ### 1.1 环境
 
-**Linux 线上首次**：宿主机须装 **Docker**（`docker_pool` + compose）。标准化一条命令（与网关镜像内 `docker.io` 包一致；默认配置 `docker.1ms.run` 拉取镜像；`CLAW_USE_DOCKER_IO=1` 跳过镜像加速）：
+**Linux 线上首次**：宿主机须装 **Docker**（`e2b` + compose）。标准化一条命令（与网关镜像内 `docker.io` 包一致；默认配置 `docker.1ms.run` 拉取镜像；`CLAW_USE_DOCKER_IO=1` 跳过镜像加速）：
 
 ```bash
 ./deploy/stack/gateway.sh install-docker
@@ -99,8 +99,8 @@ cp deploy/stack/env.production.example .env
 
 | Profile | 环境 | 启动 |
 | --- | --- | --- |
-| `local` | macOS + podman，**FC worker** | `gateway.sh quick` |
-| `production` | Linux + docker，**FC worker** | `gateway.sh up --release release-vX.Y.Z` |
+| `local` | macOS + podman，**e2b worker** | `gateway.sh quick` |
+| `production` | Linux + docker，**e2b worker** | `gateway.sh up --release release-vX.Y.Z` |
 
 在 **仓库根目录** `.env` 里至少保证：
 
@@ -117,14 +117,14 @@ cp deploy/stack/env.production.example .env
 | `GATEWAY_PLAYGROUND_HOST_PORT` | solve_async / 项目管理 UI，默认 `18765`（compose 服务 `gateway-playground`） |
 | `PLAYGROUND_PUBLIC_GATEWAY_BASE` | 浏览器里 playground 默认网关，应与 `GATEWAY_HOST_PORT` 一致，如 `http://127.0.0.1:8088` |
 | `PLAYGROUND_ADMIN_USER` / `PLAYGROUND_ADMIN_PASSWORD` | `/admin` 登录账号密码（默认 `admin` / `sunmi123`） |
-| `CLAW_FC_API_URL` / `CLAW_E2B_SANDBOX_URL` | e2b API（solve + interactive **必填**） |
-| `CLAW_FC_API_KEY` | e2b 认证 |
+| `CLAW_E2B_API_URL` / `CLAW_E2B_SANDBOX_URL` | e2b API（solve + interactive **必填**） |
+| `CLAW_E2B_API_KEY` | e2b 认证 |
 | `CLAW_GATEWAY_DATABASE_URL` | 必填（网关进程）；compose 内网关连 **`postgres:5432`**；宿主机映射默认 **`127.0.0.1:5433`**（`CLAW_GATEWAY_PG_HOST_PORT`，避开 sqlbot 常用 5432） |
 | `project_config`（PG） | **必填（业务）**：规则 / MCP / skills / `CLAUDE.md` 在 Admin 或 API 写入 DB，网关物化到 `ds_<id>/home` |
 | `git_sync_json`（PG，每 ds） | 可选：每项目单向 push 的 `gitUrl` / `gitRef` / token（见 `docs/project-config-model.md`） |
 | `CLAW_PROJECTS_GIT_AUTHOR` | 可选：gitSync 未填 author 时的默认 commit 作者 |
 
-`solve` 与 interactive 均走 **FC / e2b**（`CLAW_SOLVE_ISOLATION=fc`、`CLAW_INTERACTIVE_BACKEND=fc`）。
+`solve` 与 interactive 均走 **FC / e2b**（`CLAW_SOLVE_ISOLATION=e2b`、`CLAW_INTERACTIVE_BACKEND=e2b`）。
 
 ### 1.2 镜像
 
@@ -194,7 +194,7 @@ podman ps   # 或  docker ps  — 应有 claw-gateway-rs、gateway-playground
 - **会话 / 轮次 / 反馈（PostgreSQL）**：`podman-compose.yml` 启动 **`postgres`**（数据卷 **`./claw-postgres-data`**），网关通过 **`CLAW_GATEWAY_DATABASE_URL`** 连接。生产可将 URL 指向**独立 PG**（仅改连接串，无需与网关同 compose）。`/healthz` 的 **`gatewayDatabaseUrl`**（脱敏）与 **`sessionDatabaseBackend`** 可核对。
 - **Compose 后端**：需要 `podman-compose` 时 `brew install podman-compose`；勿假定 `podman compose` 一定走 Docker 的 compose。
 
-FC / e2b 设计与 env 契约见 `docs/http-gateway-container-pool.md`、`deploy/fc-sandbox/README.md`。
+FC / e2b 设计与 env 契约见 `docs/http-gateway-container-pool.md`、`deploy/e2b/README.md`。
 
 ---
 
@@ -202,9 +202,9 @@ FC / e2b 设计与 env 契约见 `docs/http-gateway-container-pool.md`、`deploy
 
 | 现象 | 处理 |
 | --- | --- |
-| Admin `solve_async` **503** | 查 `CLAW_FC_API_URL`、API key、e2b 模板；gateway 日志与 `deploy/fc-sandbox/README.md` |
+| Admin `solve_async` **503** | 查 `CLAW_E2B_API_URL`、API key、e2b 模板；gateway 日志与 `deploy/e2b/README.md` |
 | `podman ps` 看不到网关 | `podman ps -a \| grep claw-gateway-rs`，看 `podman logs claw-gateway-rs` |
-| FC worker 创建失败 | e2bserver 日志、NAS mount、`docs/fc-nas-workspace.md` |
+| e2b worker 创建失败 | e2bserver 日志、NAS mount、`docs/e2b-nas-workspace.md` |
 | 改 `.env` 不生效 | **`./deploy/stack/gateway.sh up`**（`--force-recreate`） |
 | 改了 `rust/` 网关逻辑仍像旧的 | **`./deploy/stack/gateway.sh pack-deploy`** |
 

@@ -101,8 +101,8 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
   if [[ -n "${GATEWAY_PLAYGROUND_IMAGE:-}" ]]; then
     claw_release_pull_image_if_needed "${rt}" "${GATEWAY_PLAYGROUND_IMAGE}"
   fi
-  case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
-    docker_pool)
+  case "${CLAW_SOLVE_ISOLATION:-e2b}" in
+    e2b)
       claw_release_pull_image_if_needed "${rt}" "${CLAW_DOCKER_IMAGE}"
       ;;
     *)
@@ -124,7 +124,7 @@ echo "pool daemon worker image: ${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE:-unset}
 export CLAW_IMAGE_RELEASE_TAG
 
 POOL_RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
-# Host claw-pool-daemon removed; FC-only. kejiqing
+# Host claw-pool-daemon removed; e2b-only. kejiqing
 
 # Recreate gateway only. kejiqing
 claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
@@ -134,8 +134,8 @@ claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
 source "${LIB_DIR}/bootstrap-runtime.sh"
 claw_wait_gateway_http_ready 60 || exit 1
 
-if ! claw_interactive_backend_is_fc; then
-  echo "error: CLAW_INTERACTIVE_BACKEND must be fc (local podman claw-sandbox pool removed)" >&2
+if ! claw_interactive_backend_is_e2b; then
+  echo "error: CLAW_INTERACTIVE_BACKEND must be e2b (local podman claw-sandbox pool removed)" >&2
   exit 1
 fi
 echo "FC interactive backend — solve/OVS on e2b sandboxes" >&2

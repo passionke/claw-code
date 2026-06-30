@@ -1,6 +1,6 @@
-//! ttyd WebSocket URL helpers for podman vs FC backends. Author: kejiqing
+//! ttyd WebSocket URL helpers for podman vs e2b backends. Author: kejiqing
 
-/// Where the gateway dials ttyd (loopback podman or FC public host).
+/// Where the gateway dials ttyd (loopback podman or e2b public host).
 #[derive(Debug, Clone)]
 pub struct TtydConnectTarget {
     pub host: String,
@@ -25,7 +25,7 @@ impl TtydConnectTarget {
     }
 
     #[must_use]
-    pub fn fc_public(host: String) -> Self {
+    pub fn e2b_public(host: String) -> Self {
         Self {
             host,
             port: 443,
@@ -62,7 +62,7 @@ pub fn terminal_ws_connect_url(target: &TtydConnectTarget) -> String {
     } else {
         format!("{scheme}://{}:{}/ws", target.host, target.port)
     };
-    claw_fc_sandbox_client::FcSandboxClient::traffic_url(
+    claw_e2b_sandbox_client::E2bSandboxClient::traffic_url(
         &base,
         target.traffic_access_token.as_deref(),
     )
@@ -73,8 +73,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fc_wss_url_uses_host_prefix_port() {
-        let url = terminal_ws_connect_url(&TtydConnectTarget::fc_public(
+    fn e2b_wss_url_uses_host_prefix_port() {
+        let url = terminal_ws_connect_url(&TtydConnectTarget::e2b_public(
             "7681-sbx-1.cn-beijing.e2b.fc.aliyuncs.com".into(),
         ));
         assert_eq!(url, "wss://7681-sbx-1.cn-beijing.e2b.fc.aliyuncs.com/ws");

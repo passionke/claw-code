@@ -2,7 +2,7 @@
 
 Author: kejiqing  
 Date: 2026-06-20  
-Claw 集成方：claw-code（Gateway + FC OVS singleton + warm worker）  
+Claw 集成方：claw-code（Gateway + e2b OVS singleton + warm worker）  
 e2b 节点：`10.8.0.9`（self-hosted e2bserver，WireGuard `10.8.x`）— **历史取证**；当前节点 **`10.8.0.1`**，见 [`architecture-governance.md`](../architecture-governance.md)。
 
 ---
@@ -27,7 +27,7 @@ e2b 节点：`10.8.0.9`（self-hosted e2bserver，WireGuard `10.8.x`）— **历
 |----|-----|
 | API | `http://10.8.0.9:3000` |
 | envd / SDK connect | `http://10.8.0.9:3002` |
-| `CLAW_FC_DOMAIN` | `10.8.0.9` |
+| `CLAW_E2B_DOMAIN` | `10.8.0.9` |
 | worker 端口 | `7681`（ttyd） |
 | OVS 端口 | `3000`（openvscode，`--server-base-path=/ovs`） |
 
@@ -84,7 +84,7 @@ curl -sS --resolve "7681-sbx_448215e49df6.10.8.0.9:80:10.8.0.9" \
 |------|------|
 | `GET /ovs/workspace` → 浏览器打开 `ovsUrl` | 外网 URL 打开是默认站，非 IDE |
 | Gateway `agent/ws` → ttyd | `connect ws://10.8.0.9:80/ws` 得 HTML 200，非 WS 101 |
-| E2E `verify-fc-ovs-e2e.sh` | 在检查 OVS body 时失败：`OVS URL hit e2b default site (F14)` |
+| E2E `verify-e2b-ovs-e2e.sh` | 在检查 OVS body 时失败：`OVS URL hit e2b default site (F14)` |
 
 **结论（有证据链）：** 问题在 **e2bserver 流量入口 / nginx 对 port-prefix 域名的路由**，不是 Claw gateway 业务逻辑。
 
@@ -118,8 +118,8 @@ curl -sS --resolve "3000-OVS_SANDBOX_ID.10.8.0.9:80:10.8.0.9" \
 
 ## 5. 建议 e2b 侧检查项
 
-1. **nginx / ingress** 是否配置了 `{port}-{sandboxId}.{domain}` → 对应 MicroVM 端口的反向代理（与阿里云 FC 公网域名行为对齐）。
-2. **`domain` 字段**：创建 sandbox API 返回 `"domain":"localhost"`；SDK 侧我们用 `CLAW_FC_DOMAIN=10.8.0.9` 覆盖。流量路由是否应统一认 `10.8.0.9`？
+1. **nginx / ingress** 是否配置了 `{port}-{sandboxId}.{domain}` → 对应 MicroVM 端口的反向代理（与阿里云 e2b 公网域名行为对齐）。
+2. **`domain` 字段**：创建 sandbox API 返回 `"domain":"localhost"`；SDK 侧我们用 `CLAW_E2B_DOMAIN=10.8.0.9` 覆盖。流量路由是否应统一认 `10.8.0.9`？
 3. **traffic_access_token**：创建响应含 `trafficAccessToken`；公网代理是否要求额外鉴权头？当前外网请求未带 token 时是否应 401 而非默认站 200？
 4. **端口矩阵**：确认 traffic 入口端口（:80 / :443 / 其他）与 envd `:3002` 职责分离文档。
 
@@ -128,13 +128,13 @@ curl -sS --resolve "3000-OVS_SANDBOX_ID.10.8.0.9:80:10.8.0.9" \
 ## 6. Claw 侧已做（无需 e2b 改）
 
 - Gateway 编排、warm pool、OVS singleton 创建与沙箱内启动脚本 — **沙箱内 OK**
-- `fc-sandbox-cleanup.sh` 清理 orphan sandbox
+- `e2b-sandbox-cleanup.sh` 清理 orphan sandbox
 - 验收脚本不再用「HTTP 200」误判，会检测 `<title>君子慎独</title>`
 
 修通 F14 后，Claw 将复跑：
 
 ```bash
-./deploy/stack/lib/verify-fc-ovs-e2e.sh
+./deploy/stack/lib/verify-e2b-ovs-e2e.sh
 ```
 
 ---

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Documented check: worker guest /claw_ds should be read-only (nasConfig readOnly). Author: kejiqing
-# Run inside FC worker after deploy; expects write to /claw_ds to fail.
+# Run inside e2b worker after deploy; expects write to /claw_ds to fail.
 set -euo pipefail
 
 if [[ ! -d /claw_ds ]]; then
-  echo "SKIP: /claw_ds not mounted (not inside FC worker)"
+  echo "SKIP: /claw_ds not mounted (not inside e2b worker)"
   exit 0
 fi
 

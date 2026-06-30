@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Standard Docker install for production Linux (docker_pool + gateway.sh compose). Author: kejiqing
+# Standard Docker install for production Linux (e2b + gateway.sh compose). Author: kejiqing
 #
 # Usage:
 #   ./deploy/stack/gateway.sh install-docker

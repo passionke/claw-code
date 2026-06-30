@@ -57,11 +57,11 @@ export interface ClawTapProbeResponse {
   latencyMs?: number;
 }
 
-export interface FcNasSettings {
+export interface E2bNasSettings {
   readOnly: boolean;
   nasHostMount: string;
-  fcNasServer: string;
-  fcNasExport: string;
+  e2bNasServer: string;
+  e2bNasExport: string;
   configured: boolean;
   gatewayWorkRoot: string;
   nasRootResolved: string;
@@ -77,7 +77,7 @@ export interface GlobalSettingsResponse {
   activeLlmModelId?: string;
   activeLlmAppliedAtMs?: number;
   clawTap?: ClawTapSettings;
-  fcNas?: FcNasSettings;
+  e2bNas?: E2bNasSettings;
   adminMcpTokens?: AdminMcpTokenRow[];
   /** Derived from gateway PG URL; read-only. */
   clusterId?: string;

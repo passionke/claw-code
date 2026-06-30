@@ -48,19 +48,19 @@ Chat → `@claw ping`；View → Output → **Claw** 应出现 `activate()`、`c
 
 ---
 
-## 2b. FC OVS（`CLAW_OVS_BACKEND=fc`）— Gateway 编排
+## 2b. e2b OVS（`CLAW_OVS_BACKEND=e2b`）— Gateway 编排
 
 **不要**在 OVS 起完后手工跑 Python 才算「标准路径」。Gateway 与 OVS singleton **同一编排**：
 
 1. `FcOvsSingleton::ensure()` → openvscode `/ovs/` 健康
 2. 紧接着 `ensure_claw_vscode_on_ovs`（`fc_ovs_claw_vscode.rs`）：
-   - 读 gateway 镜像内打包的 VSIX（或 `CLAW_FC_OVS_VSIX`）
+   - 读 gateway 镜像内打包的 VSIX（或 `CLAW_E2B_OVS_VSIX`）
    - `--install-extension` + Machine `chat.agent.enabled` + `claw.gatewayHost`
    - 按版本 marker 幂等；缺扩展时重启 OVS
 
 **前置：** `pack-deploy` 打包 VSIX 进 gateway 镜像（`deploy/stack/lib/package-claw-vscode-vsix.sh`）。
 
-**手工兜底（仅排障）：** `./deploy/stack/lib/install-claw-vscode-fc-ovs.sh`
+**手工兜底（仅排障）：** `./deploy/stack/lib/install-claw-vscode-e2b-ovs.sh`
 
 **代码：** `rust/crates/http-gateway-rs/src/pool/interactive_backend/fc_ovs_singleton.rs` + `fc_ovs_claw_vscode.rs`
 

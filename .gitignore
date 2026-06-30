@@ -82,10 +82,10 @@ deploy/stack/claw-ovs-extensions/
 deploy/stack/.cargo-build-cache/
 deploy/stack/.claw-worker-check
 # FC sandbox template build extracts large worker binaries locally. kejiqing
-deploy/fc-sandbox/claw
-deploy/fc-sandbox/ttyd
-deploy/fc-sandbox/.fc-template-build/
-deploy/fc-sandbox/.fc-tools-staging/
+deploy/e2b/claw
+deploy/e2b/ttyd
+deploy/e2b/.e2b-template-build/
+deploy/e2b/.e2b-tools-staging/
 deploy/stack/claw-pg-data/
 deploy/stack/.claw-postgres-network.override.yml
 deploy/stack/.claw-instance.envfile.override.yml

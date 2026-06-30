@@ -93,15 +93,15 @@ RELAXED_WORKER_IMAGE_NAME="claw-gateway-worker-relaxed:${IMAGE_TAG}"
 PLAYGROUND_IMAGE_NAME="claw-gateway-playground:${IMAGE_TAG}"
 OVS_IMAGE_NAME="claw-openvscode-server:${IMAGE_TAG}"
 
-# FC backend runs the worker inside e2b sandboxes via CLAW_FC_WORKER_IMAGE (remote registry),
+# e2b backend runs the worker inside e2b sandboxes via CLAW_E2B_WORKER_IMAGE (remote registry),
 # so the local claw-gateway-worker[-relaxed] images are unused on dev machines. Skip them to
 # cut pack-deploy time. CI/release (GITHUB_ACTIONS) still bakes worker images for all backends. kejiqing
 skip_local_worker_images() {
-  [[ "${GITHUB_ACTIONS:-}" != "true" && "${CLAW_INTERACTIVE_BACKEND:-}" == "fc" ]]
+  [[ "${GITHUB_ACTIONS:-}" != "true" && "${CLAW_INTERACTIVE_BACKEND:-}" == "e2b" ]]
 }
 WORKER_IMAGES_NOTE="${WORKER_IMAGE_NAME} ${RELAXED_WORKER_IMAGE_NAME}"
 if skip_local_worker_images; then
-  WORKER_IMAGES_NOTE="(skipped: FC backend uses CLAW_FC_WORKER_IMAGE)"
+  WORKER_IMAGES_NOTE="(skipped: e2b backend uses CLAW_E2B_WORKER_IMAGE)"
 fi
 
 step() {
@@ -249,7 +249,7 @@ if use_prebuilt_linux_path; then
     "${ROOT_DIR}"
 
   if skip_local_worker_images; then
-    step "skip worker images (FC backend: worker runs in e2b via CLAW_FC_WORKER_IMAGE; set CLAW_INTERACTIVE_BACKEND!=fc or GITHUB_ACTIONS to build)"
+    step "skip worker images (e2b backend: worker runs in e2b via CLAW_E2B_WORKER_IMAGE; set CLAW_INTERACTIVE_BACKEND!=e2b or GITHUB_ACTIONS to build)"
   else
     step "3/4 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
     # shellcheck disable=SC2086
@@ -300,7 +300,7 @@ else
     "${ROOT_DIR}"
 
   if skip_local_worker_images; then
-    step "skip worker images (FC backend: worker runs in e2b via CLAW_FC_WORKER_IMAGE)"
+    step "skip worker images (e2b backend: worker runs in e2b via CLAW_E2B_WORKER_IMAGE)"
   else
     step "2/5 image ${WORKER_IMAGE_NAME}"
     # shellcheck disable=SC2086

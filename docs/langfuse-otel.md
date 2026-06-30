@@ -29,14 +29,14 @@ Optional overrides (Collector / advanced):
 | `http-gateway-rs` | `claw-gateway-rs` | `gateway.solve` |
 | `http-gateway-rs` (FC exec) | `fc-worker` | `pool.exec_solve` |
 
-FC worker 从 gateway 注入的 env 读取 OTEL keys（非 `pool-daemon.env`）。改 `.env` 后 `gateway.sh up`。
+e2b worker 从 gateway 注入的 env 读取 OTEL keys（非 `pool-daemon.env`）。改 `.env` 后 `gateway.sh up`。
 | `claw gateway-solve-once` (worker) | `claw-worker` | `gateway_solve_turn`, `llm.chat`, `tool.execution` |
 
 Distributed trace: gateway writes W3C `traceparent` into the solve task file and `TRACEPARENT` exec env; worker continues the same trace.
 
 ## Worker env forwarding
 
-[`WORKER_ENV_KEYS`](rust/crates/gateway-solve-turn/src/worker_env.rs) includes `CLAW_OTEL_*` and `LANGFUSE_*`. FC worker exec merges [`otel_forward_env()`](rust/crates/gateway-solve-turn/src/worker_env.rs) into guest environment. After changing `.env`, run `gateway.sh up`.
+[`WORKER_ENV_KEYS`](rust/crates/gateway-solve-turn/src/worker_env.rs) includes `CLAW_OTEL_*` and `LANGFUSE_*`. e2b worker exec merges [`otel_forward_env()`](rust/crates/gateway-solve-turn/src/worker_env.rs) into guest environment. After changing `.env`, run `gateway.sh up`.
 
 ## Langfuse requirements
 

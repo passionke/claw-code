@@ -1,5 +1,5 @@
-//! FC/E2B session readback helpers; transcript + solve timing from NAS after exec. Author: kejiqing
-//! FC solve 主路径不写 workspace gzip-tar 到 DB（legacy docker pool 除外）。
+//! e2b session readback helpers; transcript + solve timing from NAS after exec. Author: kejiqing
+//! e2b solve 主路径不写 workspace gzip-tar 到 DB（legacy docker pool 除外）。
 
 use std::path::Path;
 
@@ -171,7 +171,7 @@ pub async fn readback_turn_from_session_home(
     .await
     {
         warn!(
-            target: "claw_gateway_fc_readback",
+            target: "claw_gateway_e2b_readback",
             turn_id = %turn_id,
             session_id = %session_id,
             error = %e,

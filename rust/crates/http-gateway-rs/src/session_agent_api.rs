@@ -1,4 +1,4 @@
-//! Agent WebSocket bridge for OVS `@claw` Chat (JSON + CDP via FC exec + per-record jsonl). Author: kejiqing
+//! Agent WebSocket bridge for OVS `@claw` Chat (JSON + CDP via e2b exec + per-record jsonl). Author: kejiqing
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use crate::persistence::transcript::{
     turn_message_groups_from_jsonl_contents,
 };
 use crate::pool::interactive_backend::{
-    interactive_backend_is_fc, InteractiveBackendKind, FC_INTERACTIVE_POOL_ID,
+    interactive_backend_is_e2b, InteractiveBackendKind, E2B_INTERACTIVE_POOL_ID,
 };
 use crate::pool::{gateway_session_home, nas_cluster_id};
 use crate::session_db::GatewaySessionDb;
@@ -28,7 +28,7 @@ use crate::session_terminal_api::{
     ensure_terminal_active, ActiveTerminalSession, TerminalApiContext, TerminalApiError,
 };
 use crate::turn_id;
-use claw_fc_sandbox_client::FcSandboxHandle;
+use claw_e2b_sandbox_client::E2bSandboxHandle;
 use gateway_solve_turn::{
     build_ovs_interactive_prompt_script, build_write_gateway_record_session_script,
     ovs_interactive_jsonl_host,
@@ -231,25 +231,25 @@ fn ovs_record_session_id(
 }
 
 fn ovs_turn_pool_id(active: &ActiveTerminalSession) -> &str {
-    if active.backend == InteractiveBackendKind::Fc {
-        FC_INTERACTIVE_POOL_ID
+    if active.backend == InteractiveBackendKind::E2b {
+        E2B_INTERACTIVE_POOL_ID
     } else {
         active.pool_id.as_str()
     }
 }
 
 fn ovs_turn_exec_user(active: &ActiveTerminalSession) -> Option<&'static str> {
-    if active.backend == InteractiveBackendKind::Fc {
+    if active.backend == InteractiveBackendKind::E2b {
         Some("0:0")
     } else {
         Some("claw")
     }
 }
 
-/// Reconstruct [`FcSandboxHandle`] from an active interactive session. Author: kejiqing
-fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<FcSandboxHandle, String> {
+/// Reconstruct [`E2bSandboxHandle`] from an active interactive session. Author: kejiqing
+fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<E2bSandboxHandle, String> {
     let sandbox_id = active
-        .fc_sandbox_id
+        .e2b_sandbox_id
         .as_deref()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "fc interactive: missing sandbox id".to_string())?;
@@ -274,7 +274,7 @@ fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<FcSandbo
         .strip_prefix(sandbox_id)
         .and_then(|tail| tail.strip_prefix('.'))
         .ok_or_else(|| format!("fc interactive: sandbox {sandbox_id} not in ttyd host {host}"))?;
-    Ok(FcSandboxHandle {
+    Ok(E2bSandboxHandle {
         sandbox_id: sandbox_id.to_string(),
         sandbox_domain: domain.to_string(),
         envd_access_token: None,
@@ -287,9 +287,9 @@ fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<FcSandbo
 async fn fc_handle_for_active(
     ctx: &TerminalApiContext,
     active: &ActiveTerminalSession,
-) -> Result<FcSandboxHandle, String> {
-    if let Some(proj_id) = active.fc_warm_proj_id {
-        let reg = ctx.pool_clients.fc_worker_registry();
+) -> Result<E2bSandboxHandle, String> {
+    if let Some(proj_id) = active.e2b_warm_proj_id {
+        let reg = ctx.pool_clients.e2b_worker_registry();
         if let Some(handle) = reg.leased_handle(proj_id).await {
             return Ok(handle);
         }
@@ -303,14 +303,14 @@ async fn stage_gateway_record_session_id(
     active: &ActiveTerminalSession,
     record_session_id: &str,
 ) -> Result<(), String> {
-    if !interactive_backend_is_fc() {
+    if !interactive_backend_is_e2b() {
         return Ok(());
     }
     let script = build_write_gateway_record_session_script(record_session_id);
     let handle = fc_handle_for_active(ctx, active).await?;
     let client = ctx
         .pool_clients
-        .fc_sandbox_client()
+        .e2b_sandbox_client()
         .ok_or_else(|| "fc interactive: sandbox client not configured".to_string())?;
     client.exec_shell_script(&handle, &script).await
 }
@@ -458,9 +458,9 @@ async fn run_ovs_interactive_prompt(
     });
 
     let segment = crate::session_merge::sessions_directory_segment(record_session_id);
-    if ctx.pool_clients.fc_nas_layout_active() {
+    if ctx.pool_clients.e2b_nas_layout_active() {
         let worker_id = active
-            .fc_worker_id
+            .e2b_worker_id
             .as_deref()
             .ok_or_else(|| "ovs interactive: missing fc worker id".to_string())?;
         ctx.pool_clients
@@ -473,7 +473,7 @@ async fn run_ovs_interactive_prompt(
     let handle = fc_handle_for_active(ctx, active).await?;
     let client = ctx
         .pool_clients
-        .fc_sandbox_client()
+        .e2b_sandbox_client()
         .ok_or_else(|| "fc interactive: sandbox client not configured".to_string())?;
 
     let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -701,15 +701,15 @@ mod tests {
 
         let active = ActiveTerminalSession {
             slot_index: 0,
-            worker_name: Some("fc:sbx_abc".into()),
+            worker_name: Some("e2b:sbx_abc".into()),
             ttyd_host_port: 80,
-            pool_id: FC_INTERACTIVE_POOL_ID.into(),
-            backend: InteractiveBackendKind::Fc,
-            fc_sandbox_id: Some("sbx_abc".into()),
-            fc_warm_slot: Some(1),
-            fc_warm_proj_id: Some(3),
-            fc_session_segment: None,
-            fc_worker_id: None,
+            pool_id: E2B_INTERACTIVE_POOL_ID.into(),
+            backend: InteractiveBackendKind::E2b,
+            e2b_sandbox_id: Some("sbx_abc".into()),
+            e2b_warm_slot: Some(1),
+            e2b_warm_proj_id: Some(3),
+            e2b_session_segment: None,
+            e2b_worker_id: None,
             ttyd: TtydConnectTarget::e2b_self_hosted_proxy(
                 "10.8.0.1".into(),
                 80,

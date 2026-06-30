@@ -2,7 +2,7 @@
 
 Author: kejiqing
 
-> **2026-06 FC-only：** 宿主机 `claw-sandbox` / pool-daemon **已移除**。`claw_pool` 表与 `gateway_turns.pool_id` **保留**用于历史 turn 元数据、Admin 展示、live SSE JOIN。**新 solve** 经 e2b，不再向 `claw_pool` 注册心跳。
+> **2026-06 e2b-only：** 宿主机 `claw-sandbox` / pool-daemon **已移除**。`claw_pool` 表与 `gateway_turns.pool_id` **保留**用于历史 turn 元数据、Admin 展示、live SSE JOIN。**新 solve** 经 e2b，不再向 `claw_pool` 注册心跳。
 
 ## 当前语义（兼容层）
 

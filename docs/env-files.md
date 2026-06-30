@@ -25,7 +25,7 @@ Each file is recreated when you run the matching flow (`gateway.sh up`, `tap-up`
 | `deploy/stack/.claw-image-release.env` | `lib/release-images.sh` (`up --release …`) |
 | `deploy/stack/.claw-build-stamp.env` | `lib/claw-write-build-stamp.sh` |
 
-（`deploy/stack/.claw-pool-rpc/*` 为历史 pool 路径，FC-only 下可能不再生成。）
+（`deploy/stack/.claw-pool-rpc/*` 为历史 pool 路径，e2b-only 下可能不再生成。）
 
 If you need a new key for containers or workers, add it to **repo root `.env`** (or the code that generates the snippet), then re-run **`./deploy/stack/gateway.sh up`** — not a new hand-maintained file under `web/` or `deploy/stack/`.
 

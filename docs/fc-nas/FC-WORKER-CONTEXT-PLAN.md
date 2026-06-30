@@ -1,10 +1,10 @@
-# FC Worker 上下文架构 — 契约
+# e2b Worker 上下文架构 — 契约
 
 Author: kejiqing
 
 Status: **实施中**（2026-06-29）
 
-相关：[`fc-nas-workspace.md`](../fc-nas-workspace.md)、[`OVS-INTERACTIVE-SESSION-ID.md`](../ovs-chat/OVS-INTERACTIVE-SESSION-ID.md)
+相关：[`e2b-nas-workspace.md`](../e2b-nas-workspace.md)、[`OVS-INTERACTIVE-SESSION-ID.md`](../ovs-chat/OVS-INTERACTIVE-SESSION-ID.md)
 
 ---
 

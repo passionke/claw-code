@@ -40,19 +40,19 @@ Author: kejiqing
 
 ---
 
-## FC OVS Singleton（已实现 P0–P2）
+## e2b OVS Singleton（已实现 P0–P2）
 
 **1 Gateway : 1 OVS : N Worker** — OVS 走 e2b 单例（`claw-ovs` template），不进 worker template；Mac compose 不跑 OVS。
 
 → 完整设计：[FC-OVS-SINGLETON-DESIGN.md](./FC-OVS-SINGLETON-DESIGN.md)  
-→ **NAS 路径与各组件本地视图：** [fc-nas-workspace.md](../fc-nas-workspace.md)
+→ **NAS 路径与各组件本地视图：** [e2b-nas-workspace.md](../e2b-nas-workspace.md)
 
-## FC Session 可观测单例（P1 代码已合入）
+## e2b Session 可观测单例（P1 代码已合入）
 
 **1 Gateway : 1 Observe : 1 OVS : N Worker** — e2b 只读 Live 看 sessionId 执行过程；**不做 LLM 代理**；worker 内嵌 tap 不变。
 
 → 设计：[FC-TAP-SINGLETON-DESIGN.md](./FC-TAP-SINGLETON-DESIGN.md)  
-→ 模板：`python3 deploy/fc-sandbox/build-claw-observe-selfhosted.py`
+→ 模板：`python3 deploy/e2b/build-claw-observe-selfhosted.py`
 
 ---
 

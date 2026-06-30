@@ -64,7 +64,7 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、FC 
 ## 常见坑
 
 - **`zsh: no such file or directory: ./deploy/stack/gateway.sh`** — 先 `cd` 到仓库根。
-- **solve 503 / FC 错误** — 查 `CLAW_FC_API_URL`、模板是否已 build；见 `deploy/fc-sandbox/README.md`。
+- **solve 503 / e2b 错误** — 查 `CLAW_E2B_API_URL`、模板是否已 build；见 `deploy/e2b/README.md`。
 - **Admin 界面旧** — `gateway.sh admin-build` 或 `quick`；浏览器强制刷新。
 
 更多：`deploy/stack/README.md`、`docs/README.md`。

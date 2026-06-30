@@ -36,7 +36,7 @@ api = { path = "../api" }
 tools = { path = "../tools" }
 telemetry = { path = "../telemetry" }
 gateway-solve-turn = { path = "../gateway-solve-turn" }
-claw-fc-sandbox-client = { path = "../claw-fc-sandbox-client" }
+claw-e2b-sandbox-client = { path = "../claw-e2b-sandbox-client" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json", "uuid"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

@@ -61,9 +61,9 @@ export interface PromptLimitsJson {
   instructionTotalMaxChars?: number;
 }
 
-/** Per-ds worker backend (`project_config.worker_isolation_json`). Author: kejiqing */
-export interface WorkerIsolationJson {
-  mode: "strict" | "relaxed" | "sandbox";
+/** Per-ds worker profile on e2b (`project_config.worker_profile_json`). Author: kejiqing */
+export interface WorkerProfileJson {
+  mode: "strict" | "relaxed";
 }
 
 export interface ProjectConfig {
@@ -85,8 +85,8 @@ export interface ProjectConfig {
   extraSessionFieldsJson?: string[];
   /** Instruction truncation budgets → `.claw/settings.json`. Author: kejiqing */
   promptLimitsJson?: PromptLimitsJson;
-  /** Pool worker strict/relaxed (`project_config.worker_isolation_json`). Author: kejiqing */
-  workerIsolationJson?: WorkerIsolationJson;
+  /** Pool worker strict/relaxed (`project_config.worker_profile_json`). Author: kejiqing */
+  workerProfileJson?: WorkerProfileJson;
 }
 
 export interface SkillJsonItem {

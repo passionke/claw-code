@@ -923,7 +923,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         }
     }
 
@@ -950,7 +950,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         let ex = git_excluded_home_relpaths(&row);
         assert!(ex.contains(&PathBuf::from("CLAUDE.md")));
@@ -1023,7 +1023,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         apply_interactive_ds_layout_under_home(&root, &row, "scaffold")
             .await
@@ -1064,7 +1064,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes.iter().map(|w| w.rel_path.clone()).collect();
@@ -1095,7 +1095,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes.iter().map(|w| w.rel_path.clone()).collect();
@@ -1146,7 +1146,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let preflight = writes
@@ -1299,7 +1299,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes
@@ -1352,7 +1352,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         let writes = build_guest_materialize_writes(&row, "scaffold").expect("writes");
         let paths: Vec<_> = writes
@@ -1417,7 +1417,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         apply_full(&root, &row, "pg scaffold body")
             .await
@@ -1481,7 +1481,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         apply_full(&root, &row, "pg scaffold")
             .await
@@ -1518,7 +1518,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         let v = build_settings_json_from_row(&row);
         assert_eq!(v.get("auto_hidden_system_prompt"), Some(&json!(1)));
@@ -1548,7 +1548,7 @@ mod tests {
                 "instructionFileMaxChars": 12000,
                 "instructionTotalMaxChars": 36000
             }),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         let v = build_settings_json_from_row(&row);
         assert_eq!(v.get("instructionFileMaxChars"), Some(&json!(12000)));

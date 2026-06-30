@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 日常本地起栈：playground + up + check（FC-only，无 host pool-daemon）
+# 日常本地起栈：playground + up + check（e2b-only，无 host pool-daemon）
 # Author: kejiqing
 set -euo pipefail
 
@@ -19,7 +19,7 @@ set -a
 source "${ROOT_DIR}/.env"
 set +a
 
-echo "==> [1/3] skip host pool (FC-only)"
+echo "==> [1/3] skip host pool (e2b-only)"
 echo "==> [2/3] playground image (slim if missing; admin via bind mount when dist/ exists)"
 rt="$(command -v podman 2>/dev/null || command -v docker)"
 pg_img="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"

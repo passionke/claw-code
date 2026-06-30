@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Print /etc/hosts line for FC OVS browser (self-hosted IP domain). Author: kejiqing
+# Print /etc/hosts line for e2b OVS browser (self-hosted IP domain). Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,5 +21,5 @@ print("ovsFolderUrl:", d.get("ovsFolderUrl", ""))
 print("ovsBrowserHostsLine:", d.get("ovsBrowserHostsLine", ""))
 print()
 print("# Add to /etc/hosts (sudo), then open ovsFolderUrl in browser:")
-print(d.get("ovsBrowserHostsLine", "(missing — CLAW_OVS_BACKEND=fc?)"))
+print(d.get("ovsBrowserHostsLine", "(missing — CLAW_OVS_BACKEND=e2b?)"))
 PY

@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Sets CLAW_POOL_WORK_ROOT_HOST and CLAW_PODMAN_COMPOSE_ARGS. Default solve mode is podman_pool (second compose file). Author: kejiqing
+# Sets CLAW_POOL_WORK_ROOT_HOST and CLAW_PODMAN_COMPOSE_ARGS. Default solve mode is e2b (second compose file). Author: kejiqing
 
 _COMPOSE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=stack-instance.sh
@@ -68,17 +68,17 @@ claw_pool_uses_remote() {
   claw_pool_remote_base >/dev/null 2>&1
 }
 
-# True when interactive solve/OVS/terminal use e2b/FC (no host claw-pool-daemon). Author: kejiqing
-claw_interactive_backend_is_fc() {
+# True when interactive solve/OVS/terminal use e2b (no host claw-pool-daemon). Author: kejiqing
+claw_interactive_backend_is_e2b() {
   case "${CLAW_INTERACTIVE_BACKEND:-podman}" in
-    fc | fc-cloud | e2b | firecracker) return 0 ;;
+    e2b | firecracker) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 # v1: host `claw-pool-daemon` only (no compose pool sidecar). Set CLAW_POOL_HOST_DAEMON=0 to fail fast. Author: kejiqing
 claw_pool_daemon_on_host() {
-  if claw_interactive_backend_is_fc; then
+  if claw_interactive_backend_is_e2b; then
     return 1
   fi
   if claw_pool_uses_remote; then
@@ -274,7 +274,7 @@ claw_podman_export_pool_workspace() {
   # Host directory for pool daemon worker `-v` binds (local fallback when compose uses NFS volume). kejiqing
   export CLAW_POOL_WORK_ROOT_BIND_SRC="${ws}"
   if claw_compose_nas_volume_enabled; then
-    echo "note: FC/E2B components use host ${ws} as the NAS bind source" >&2
+    echo "note: e2b components use host ${ws} as the NAS bind source" >&2
   fi
   # Merged last in podman-compose.yml. MUST be a path that exists inside the gateway container: the gateway
   # runs Linux and calls canonicalize() before podman run. A macOS /Users/... path breaks startup with
@@ -298,12 +298,12 @@ claw_compose_write_workspace_volume_yml() {
   fi
 
   if claw_compose_nas_volume_enabled; then
-    nas_server="${NAS_BASE_URL:-${CLAW_FC_NAS_SERVER:-}}"
+    nas_server="${NAS_BASE_URL:-${CLAW_E2B_NAS_SERVER:-}}"
     if [[ -z "${nas_server}" ]]; then
-      echo "error: NAS_BASE_URL or CLAW_FC_NAS_SERVER required for CLAW_USE_NAS_VOLUME" >&2
+      echo "error: NAS_BASE_URL or CLAW_E2B_NAS_SERVER required for CLAW_USE_NAS_VOLUME" >&2
       return 1
     fi
-    nas_export="${CLAW_FC_NAS_EXPORT:-/claw-workspace}"
+    nas_export="${CLAW_E2B_NAS_EXPORT:-/claw-workspace}"
     nas_path="${nas_export#/}"
     case "${CLAW_NAS_NFS_VERSION:-3}" in
       4)
@@ -356,16 +356,16 @@ claw_compose_write_workspace_volume_yml() {
 claw_compose_append_fc_ovs_backend() {
   local script_dir="$1"
   local rel="${2:-}"
-  if ! claw_ovs_backend_is_fc; then
+  if ! claw_ovs_backend_is_e2b; then
     return 0
   fi
   if [[ -n "${rel}" ]]; then
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.fc-ovs-backend.yml" )
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.e2b-ovs-backend.yml" )
   else
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.fc-ovs-backend.yml" )
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.e2b-ovs-backend.yml" )
   fi
   export PLAYGROUND_OVS_FROM_GATEWAY=1
-  echo "compose: CLAW_OVS_BACKEND=fc — OVS e2b singleton; openvscode-server not started" >&2
+  echo "compose: CLAW_OVS_BACKEND=e2b — OVS e2b singleton; openvscode-server not started" >&2
 }
 
 claw_nas_mount_ok() {
@@ -407,7 +407,7 @@ claw_compose_append_workspace_volume() {
 claw_podman_append_ovs_public_bind() {
   local script_dir="$1"
   local rel="${2:-}"
-  if claw_ovs_backend_is_fc; then
+  if claw_ovs_backend_is_e2b; then
     return 0
   fi
   case "${CLAW_OVS_PUBLIC_BIND:-}" in
@@ -424,16 +424,16 @@ claw_podman_append_ovs_public_bind() {
 claw_compose_append_fc_ovs_backend() {
   local script_dir="$1"
   local rel="${2:-}"
-  if ! claw_ovs_backend_is_fc; then
+  if ! claw_ovs_backend_is_e2b; then
     return 0
   fi
   if [[ -n "${rel}" ]]; then
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.fc-ovs-backend.yml" )
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.e2b-ovs-backend.yml" )
   else
-    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.fc-ovs-backend.yml" )
+    CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.e2b-ovs-backend.yml" )
   fi
   export PLAYGROUND_OVS_FROM_GATEWAY=1
-  echo "compose: CLAW_OVS_BACKEND=fc — OVS e2b singleton; openvscode-server not started" >&2
+  echo "compose: CLAW_OVS_BACKEND=e2b — OVS e2b singleton; openvscode-server not started" >&2
 }
 
 
@@ -575,9 +575,9 @@ claw_podman_load_compose_args() {
   source "${script_dir}/lib/claw-pool-registry-env.sh"
   base_pool_id="$(claw_default_pool_id)"
   pool_id="${CLAW_POOL_ID:-${base_pool_id}}"
-  if claw_interactive_backend_is_fc; then
+  if claw_interactive_backend_is_e2b; then
     {
-      printf '%s\n' '# GENERATED — FC interactive (no host claw-pool-daemon). kejiqing'
+      printf '%s\n' '# GENERATED — e2b interactive (no host claw-pool-daemon). kejiqing'
       printf '%s\n' "CLAW_POOL_ID=${pool_id}"
       printf '%s\n' "CLAW_POOL_RPC_HOST_WORK_ROOT=${CLAW_POOL_WORK_ROOT_BIND_SRC}"
       if claw_relaxed_worker_allowed_from_env; then
@@ -589,7 +589,7 @@ claw_podman_load_compose_args() {
     claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
     return 0
   fi
-  echo "error: CLAW_INTERACTIVE_BACKEND must be fc (local claw-sandbox pool removed)" >&2
+  echo "error: CLAW_INTERACTIVE_BACKEND must be e2b (local claw-sandbox pool removed)" >&2
   return 1
 }
 
@@ -628,7 +628,7 @@ claw_container_runtime_cli() {
       else
         echo "error: neither podman nor docker in PATH; install one or set CLAW_CONTAINER_RUNTIME" >&2
         if [[ "$(uname -s)" == "Linux" ]]; then
-          echo "hint: ./deploy/stack/gateway.sh install-docker   (production docker_pool)" >&2
+          echo "hint: ./deploy/stack/gateway.sh install-docker   (production e2b)" >&2
         fi
         return 1
       fi
@@ -958,7 +958,7 @@ claw_compose_gateway_service_list() {
   while IFS= read -r svc; do
     [[ -z "${svc}" ]] && continue
     [[ "${svc}" == "${pg}" ]] && continue
-    if claw_ovs_backend_is_fc && [[ "${svc}" == "openvscode-server" ]]; then
+    if claw_ovs_backend_is_e2b && [[ "${svc}" == "openvscode-server" ]]; then
       continue
     fi
     printf '%s ' "${svc}"

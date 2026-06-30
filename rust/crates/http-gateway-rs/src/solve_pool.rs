@@ -1,4 +1,4 @@
-//! Solve path via FC sandbox (`claw gateway-solve-once`). Author: kejiqing
+//! Solve path via e2b sandbox (`claw gateway-solve-once`). Author: kejiqing
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,10 +13,10 @@ use tracing::{info, warn};
 
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
 use http_gateway_rs::claw_tap_cluster_state::resolve_solve_llm_route;
-use http_gateway_rs::pool::interactive_backend::resolve_fc_worker_solve_llm_route;
-use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease, FC_POOL_ID};
+use http_gateway_rs::pool::interactive_backend::resolve_e2b_worker_solve_llm_route;
+use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease, E2B_POOL_ID};
 
-/// Map gateway container `CLAW_WORK_ROOT` paths to the host/NAS path used by FC bind mounts.
+/// Map gateway container `CLAW_WORK_ROOT` paths to the host/NAS path used by e2b bind mounts.
 pub(crate) fn session_mount_for_pool_acquire(
     session_home: &Path,
     cfg: &crate::GatewayConfig,
@@ -116,8 +116,8 @@ pub async fn run_solve_request_docker(
         .timeout_seconds
         .unwrap_or(state.cfg.default_timeout_seconds);
 
-    let (llm_route, worker_llm_env) = if pool_id == FC_POOL_ID {
-        resolve_fc_worker_solve_llm_route(&state.session_db, req.model.as_deref())
+    let (llm_route, worker_llm_env) = if pool_id == E2B_POOL_ID {
+        resolve_e2b_worker_solve_llm_route(&state.session_db, req.model.as_deref())
             .await
             .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?
     } else {
@@ -456,7 +456,7 @@ pub async fn run_solve_request_docker(
         proj_id = req.proj_id,
         phase = "solve_run_ok",
         duration_ms,
-        isolation = "docker_pool",
+        isolation = "e2b",
         claw_exit_code,
         session_home = %session_home.display(),
         "docker pool gateway_solve completed and response built"

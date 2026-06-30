@@ -19,7 +19,7 @@ use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::gateway_llm_model_apply::{
     normalize_model_name_for_upstream, normalize_upstream_base_url,
 };
-use crate::pool::interactive_backend::{interactive_backend_is_fc, FC_WORKER_TAP_PROXY_URL};
+use crate::pool::interactive_backend::{interactive_backend_is_e2b, E2B_WORKER_TAP_PROXY_URL};
 use crate::session_db::GatewaySessionDb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -125,7 +125,7 @@ async fn refresh_fc_claw_tap_cluster_state(
             updated_at_ms: now_ms(),
             ..Default::default()
         },
-        tap_base_url: FC_WORKER_TAP_PROXY_URL.to_string(),
+        tap_base_url: E2B_WORKER_TAP_PROXY_URL.to_string(),
         local_identity: local,
         consistency: TapConsistency::Strict,
         mismatch_reason: None,
@@ -138,7 +138,7 @@ pub async fn refresh_claw_tap_cluster_state(
     db: &GatewaySessionDb,
     llm_handle: &LlmRuntimeHandle,
 ) -> Result<Option<ClawTapClusterStateInner>, String> {
-    if interactive_backend_is_fc() {
+    if interactive_backend_is_e2b() {
         return refresh_fc_claw_tap_cluster_state(db, llm_handle).await;
     }
     let (cluster_id, tap) = load_cluster_settings(db).await?;

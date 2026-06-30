@@ -1,0 +1,2 @@
+-- worker_profile_json column migration runs in Rust (migrate_worker_profile_json_column).
+-- Semicolon-split SQL files cannot host DO $$ blocks. Author: kejiqing
