@@ -55,6 +55,8 @@ use tools::{
 pub mod agent_orchestration;
 pub mod entity_labels;
 pub mod gateway_stdout;
+pub mod landlock_dsl;
+pub mod landlock_jail;
 pub mod mcp_call_context;
 pub mod multi_agent;
 mod otel_solve_turn;
@@ -101,6 +103,13 @@ pub use task_progress::{
     task_progress_json_path, truncate_progress_history, ProgressEvent, ReportProgressInput,
     TaskProgressFile, TaskProgressTodo, REPORT_PROGRESS_TOOL_NAME,
 };
+pub use landlock_dsl::{
+    default_landlock_dsl, expand_landlock_dsl, landlock_from_global_settings,
+    landlock_from_worker_profile_strict, project_has_custom_landlock, resolve_landlock_dsl,
+    validate_landlock_dsl, LandlockDsl, LandlockDslSource, LandlockExpandContext,
+    ResolvedLandlockPaths, LANDLOCK_DSL_VARIABLES,
+};
+pub use landlock_jail::{apply_strict_landlock_jail, probe_landlock, restrict_self_landlock};
 pub use worker_env::{
     apply_worker_env, build_write_gateway_record_session_script, gateway_llm_session_extra_headers,
     otel_forward_env, resolve_gateway_llm_session_id, worker_env_keys_set,
@@ -210,6 +219,11 @@ pub struct GatewaySolveTaskFile {
     /// W3C traceparent from gateway `gateway.solve` span for distributed tracing. Author: kejiqing
     #[serde(rename = "otelTraceparent", skip_serializing_if = "Option::is_none")]
     pub otel_traceparent: Option<String>,
+    /// Resolved strict Landlock DSL (gateway-injected). Author: kejiqing
+    #[serde(rename = "landlockDsl", skip_serializing_if = "Option::is_none")]
+    pub landlock_dsl: Option<crate::landlock_dsl::LandlockDsl>,
+    #[serde(rename = "landlockDslSource", skip_serializing_if = "Option::is_none")]
+    pub landlock_dsl_source: Option<crate::landlock_dsl::LandlockDslSource>,
 }
 
 pub(crate) fn default_system_date() -> String {
@@ -1236,9 +1250,30 @@ pub fn run_gateway_solve_turn(
     allowed_tools: Vec<String>,
     max_iterations: usize,
     llm_route: Option<Value>,
+    landlock: Option<(crate::landlock_dsl::LandlockDsl, crate::landlock_dsl::LandlockDslSource)>,
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
+
+    if let Some((dsl, source)) = landlock {
+        let session_root = work_dir.to_string_lossy().to_string();
+        let tmpdir = std::env::var("TMPDIR")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| format!("{session_root}/tmp"));
+        let ctx = crate::landlock_dsl::LandlockExpandContext {
+            session_root: &session_root,
+            project_home_def: "/claw_ds/project_home_def",
+            tmpdir: &tmpdir,
+            claw_bin_dir: "/usr/local/bin",
+        };
+        crate::landlock_jail::apply_strict_landlock_jail(&dsl, source, &ctx).map_err(|e| {
+            err(
+                HTTP_INTERNAL,
+                format!("strict Landlock jail install failed: {e}"),
+            )
+        })?;
+    }
 
     let mut otel_turn = otel_solve_turn::SolveTurnOtelGuard::start(&mcp, prompt);
     let _otel_turn_scope = otel_turn.enter();
@@ -1684,6 +1719,8 @@ mod gateway_solve_task_file_tests {
             worker_name: None,
             llm_route: None,
             otel_traceparent: None,
+            landlock_dsl: None,
+            landlock_dsl_source: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();

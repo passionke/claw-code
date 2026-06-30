@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::biz_advice_report::{report_body_from_persisted, solve_failure_detail_from_output_json};
+use crate::pool::system_landlock_default_json;
 use crate::turn_id::{self, TURN_ID_PREFIX};
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
@@ -971,6 +972,7 @@ impl GatewaySessionDb {
         .await?;
         Self::migrate_worker_profile_json_column(pool).await?;
         Self::migrate_settings_json_e2b_keys(pool).await?;
+        Self::migrate_strict_landlock_default(pool).await?;
         Self::migrate_gateway_turns_e2b_ids(pool).await?;
 
         Ok(())
@@ -1110,6 +1112,25 @@ impl GatewaySessionDb {
         .execute(pool)
         .await?;
 
+        Ok(())
+    }
+
+    /// Seed `settings_json.strictLandlockDefault` when absent. Author: kejiqing
+    async fn migrate_strict_landlock_default(pool: &PgPool) -> Result<(), SqlxError> {
+        let seed = system_landlock_default_json();
+        sqlx::query(
+            r"UPDATE gateway_global_settings SET settings_json = jsonb_set(
+                settings_json,
+                '{strictLandlockDefault}',
+                $1::jsonb,
+                true
+              )
+              WHERE singleton_id = 1
+                AND NOT (settings_json ? 'strictLandlockDefault')",
+        )
+        .bind(Json(seed))
+        .execute(pool)
+        .await?;
         Ok(())
     }
 

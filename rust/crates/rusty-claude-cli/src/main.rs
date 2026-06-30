@@ -393,6 +393,9 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
             allowed_tools,
             max_iterations,
             task.llm_route.clone(),
+            task.landlock_dsl
+                .clone()
+                .zip(task.landlock_dsl_source),
         )
     };
     let run_result = match result {

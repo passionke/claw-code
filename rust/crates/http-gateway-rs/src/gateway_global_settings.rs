@@ -175,6 +175,8 @@ pub struct GatewayGlobalSettingsPublic {
         skip_serializing_if = "Option::is_none"
     )]
     pub cluster_id: Option<String>,
+    #[serde(rename = "strictLandlockDefault", skip_serializing_if = "Option::is_none")]
+    pub strict_landlock_default: Option<gateway_solve_turn::LandlockDsl>,
 }
 
 /// 当前全局生效的 LLM（`active_llm_model_*` + revision 行）。Author: kejiqing
@@ -235,6 +237,8 @@ pub struct GatewayGlobalSettingsStore {
     pub(crate) e2b_nas_api: E2bNasApiSettings,
     #[serde(rename = "e2bWorker", default)]
     pub(crate) e2b_worker: E2bWorkerSettings,
+    #[serde(rename = "strictLandlockDefault", default, skip_serializing_if = "Option::is_none")]
+    pub(crate) strict_landlock_default: Option<gateway_solve_turn::LandlockDsl>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -296,6 +300,8 @@ pub struct GatewayGlobalSettingsResponse {
     pub admin_mcp_tokens: Vec<AdminMcpTokenPublic>,
     #[serde(rename = "clusterId", skip_serializing_if = "Option::is_none")]
     pub cluster_id: Option<String>,
+    #[serde(rename = "strictLandlockDefault", skip_serializing_if = "Option::is_none")]
+    pub strict_landlock_default: Option<gateway_solve_turn::LandlockDsl>,
 }
 
 fn cluster_id_public() -> Option<String> {
@@ -823,6 +829,7 @@ pub async fn load_public(
         )),
         admin_mcp_tokens: admin_mcp_tokens_public(&settings),
         cluster_id: cluster_id_public(),
+        strict_landlock_default: settings.strict_landlock_default.clone(),
     })
 }
 
@@ -845,6 +852,7 @@ pub async fn load_response(
         )),
         admin_mcp_tokens: admin_mcp_tokens_public(&settings),
         cluster_id: cluster_id_public(),
+        strict_landlock_default: settings.strict_landlock_default.clone(),
     })
 }
 
@@ -1085,6 +1093,7 @@ pub fn to_public(
         )),
         admin_mcp_tokens: admin_mcp_tokens_public(settings),
         cluster_id: cluster_id_public(),
+        strict_landlock_default: settings.strict_landlock_default.clone(),
     }
 }
 

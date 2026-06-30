@@ -21,6 +21,7 @@ import AdminMcpTokensPage from "./pages/global/AdminMcpTokensPage";
 import GlobalInferencePage from "./pages/global/GlobalInferencePage";
 import GlobalPoolsPage from "./pages/global/GlobalPoolsPage";
 import E2bNasPage from "./pages/global/E2bNasPage";
+import StrictLandlockDefaultPage from "./pages/global/StrictLandlockDefaultPage";
 import ChatPage from "./pages/ChatPage";
 
 export default function App() {
@@ -62,10 +63,11 @@ export default function App() {
               <Route path="tools" element={<ToolsPage />} />
               <Route path="extra-session" element={<ExtraSessionPage />} />
               <Route path="preflight" element={<PreflightPage />} />
-              <Route path="worker-isolation" element={<WorkerProfilePage />} />
+              <Route path="worker-profile" element={<WorkerProfilePage />} />
               <Route path="global" element={<GlobalSettingsRedirect />} />
               <Route path="global/inference" element={<GlobalInferencePage />} />
               <Route path="global/e2b-nas" element={<E2bNasPage />} />
+              <Route path="global/strict-landlock" element={<StrictLandlockDefaultPage />} />
               <Route path="global/models" element={<Navigate to="/global/inference" replace />} />
               <Route path="global/claw-tap" element={<Navigate to="/global/inference" replace />} />
               <Route path="global/pats" element={<GitPatsPage />} />

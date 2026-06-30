@@ -31,6 +31,7 @@ pub mod gateway_e2b_observe_proxy;
 pub mod gateway_e2b_observe_reset;
 pub mod gateway_e2b_ovs_settings;
 pub mod gateway_e2b_worker_settings;
+pub mod gateway_strict_landlock_settings;
 pub mod gateway_global_settings;
 pub mod gateway_llm_cluster_store;
 pub mod gateway_llm_config_sync;
