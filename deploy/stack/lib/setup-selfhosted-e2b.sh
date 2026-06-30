@@ -24,7 +24,7 @@ fi
 echo "==> build claw-worker template on e2bserver (FROM CI worker image tag)"
 export CLAW_NAS_HOST_MOUNT="${MOUNT_POINT}"
 export CLAW_E2B_TEMPLATE_BUILD_STRATEGY="${CLAW_E2B_TEMPLATE_BUILD_STRATEGY:-from_image}"
-export CLAW_E2B_WORKER_IMAGE="${CLAW_E2B_WORKER_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-gateway-worker:release-v1.6.14}"
+export CLAW_E2B_WORKER_IMAGE="${CLAW_E2B_WORKER_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-gateway-worker:release-v1.6.17}"
 export E2B_API_KEY="${CLAW_E2B_API_KEY:-e2b_53ae1fed82754c17ad8077fbc8bcdd90}"
 export E2B_API_URL="${CLAW_E2B_API_URL:-http://10.8.0.1:3000}"
 export E2B_SANDBOX_URL="${CLAW_E2B_SANDBOX_URL:-http://10.8.0.1:3002}"
