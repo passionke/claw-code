@@ -12,9 +12,9 @@ pub use e2b_interactive_materialize::{
 };
 pub use e2b_nas_api_singleton::E2bNasApiSingleton;
 pub use e2b_worker_tap::{
-    build_e2b_session_attach_with_tap, build_e2b_worker_tap_start_script_from_db,
-    e2b_worker_llm_env, e2b_worker_solve_route, resolve_e2b_worker_solve_llm_route,
-    E2B_WORKER_TAP_PROXY_URL,
+    apply_e2b_observe_worker_llm_env, e2b_worker_llm_env, e2b_worker_solve_route,
+    load_e2b_observe_proxy_base_url, resolve_e2b_worker_solve_llm_route,
+    E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
 };
 
 /// Admin `gateway_turns.pool_id` for OVS `@claw` interactive turns (distinct from solve `e2b-cloud`). Author: kejiqing

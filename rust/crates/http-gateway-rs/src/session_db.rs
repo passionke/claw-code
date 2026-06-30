@@ -133,6 +133,18 @@ pub struct ProjectFcWorkerRow {
     pub updated_at_ms: i64,
 }
 
+/// One append-only worker rotation audit event (`worker_rotation_log`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct WorkerRotationEvent {
+    pub proj_id: i64,
+    pub event: String,
+    pub sandbox_id: Option<String>,
+    pub worker_id: Option<String>,
+    pub template_id: Option<String>,
+    pub reason: Option<String>,
+    pub at_ms: i64,
+}
+
 /// Row summary for [`GatewaySessionDb::list_project_config_summaries`]. Author: kejiqing
 #[derive(Debug, Clone)]
 pub struct ProjectConfigSummary {
@@ -968,6 +980,11 @@ impl GatewaySessionDb {
         Self::run_sql_migration_file(
             pool,
             include_str!("../migrations/007_project_e2b_worker.sql"),
+        )
+        .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/008_worker_rotation_log.sql"),
         )
         .await?;
         Self::migrate_worker_profile_json_column(pool).await?;
@@ -1871,6 +1888,60 @@ impl GatewaySessionDb {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Append one worker rotation audit event (history only; never updated/deleted). Author: kejiqing
+    pub async fn insert_worker_rotation_event(
+        &self,
+        event: &WorkerRotationEvent,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO worker_rotation_log (
+                 proj_id, event, sandbox_id, worker_id, template_id, reason, at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(event.proj_id)
+        .bind(&event.event)
+        .bind(event.sandbox_id.as_deref())
+        .bind(event.worker_id.as_deref())
+        .bind(event.template_id.as_deref())
+        .bind(event.reason.as_deref())
+        .bind(event.at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Recent worker rotation events for a project (newest first). Author: kejiqing
+    pub async fn list_worker_rotation_log(
+        &self,
+        proj_id: i64,
+        limit: i64,
+    ) -> Result<Vec<WorkerRotationEvent>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT proj_id, event, sandbox_id, worker_id, template_id, reason, at_ms
+               FROM worker_rotation_log
+               WHERE proj_id = $1
+               ORDER BY at_ms DESC, id DESC
+               LIMIT $2",
+        )
+        .bind(proj_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(WorkerRotationEvent {
+                    proj_id: row.try_get("proj_id")?,
+                    event: row.try_get("event")?,
+                    sandbox_id: row.try_get("sandbox_id")?,
+                    worker_id: row.try_get("worker_id")?,
+                    template_id: row.try_get("template_id")?,
+                    reason: row.try_get("reason")?,
+                    at_ms: row.try_get("at_ms")?,
+                })
+            })
+            .collect()
     }
 
     pub async fn upsert_project_config(

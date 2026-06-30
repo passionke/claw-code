@@ -78,7 +78,7 @@ sequenceDiagram
 与 solve 共用 `CLAW_INTERACTIVE_BACKEND=e2b`：
 
 - **OVS：** `claw-ovs` singleton（`CLAW_OVS_BACKEND=e2b`）
-- **Observe tap：** `claw-observe` singleton
+- **Observe tap：** `claw-observe` singleton（统一 LLM 代理 `:8080` + Live `:3000`；worker 不内嵌 tap）
 - **NAS 写盘：** `claw-nas-api` singleton
 
 设计细节：`docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md`、`deploy/e2b/README.md`。
