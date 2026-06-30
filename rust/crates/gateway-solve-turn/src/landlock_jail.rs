@@ -28,8 +28,7 @@ pub fn probe_landlock() -> LandlockProbeStatus {
 
 #[cfg(target_os = "linux")]
 fn probe_landlock_linux() -> LandlockProbeStatus {
-    use landlock::ruleset::{AccessFs, Ruleset};
-    use landlock::ABI;
+    use landlock::{AccessFs, Ruleset, RulesetAttr, ABI};
 
     match Ruleset::default()
         .set_compatibility(landlock::CompatLevel::BestEffort)
@@ -64,52 +63,33 @@ pub fn restrict_self_landlock(paths: &ResolvedLandlockPaths) -> Result<(), Strin
 
 #[cfg(target_os = "linux")]
 fn restrict_self_landlock_linux(paths: &ResolvedLandlockPaths) -> Result<(), String> {
-    use landlock::path_beneath::PathBeneath;
-    use landlock::ruleset::{AccessFs, Ruleset};
-    use landlock::{set_no_new_privs, ABI};
-    use std::path::Path;
+    use landlock::{
+        Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
+    };
 
-    set_no_new_privs(true).map_err(|e| format!("prctl NO_NEW_PRIVS failed: {e}"))?;
-
-    const ACCESS_RW: AccessFs = AccessFs::from_all(
-        AccessFs::ReadFile
-            .union(AccessFs::WriteFile)
-            .union(AccessFs::ReadDir)
-            .union(AccessFs::RemoveDir)
-            .union(AccessFs::RemoveFile)
-            .union(AccessFs::MakeChar)
-            .union(AccessFs::MakeDir)
-            .union(AccessFs::MakeReg)
-            .union(AccessFs::MakeSock)
-            .union(AccessFs::MakeFifo)
-            .union(AccessFs::MakeSym)
-            .union(AccessFs::MakeBlock)
-            .union(AccessFs::Truncate),
-    );
-
-    const ACCESS_RO: AccessFs = AccessFs::from_readonly(
-        AccessFs::ReadFile
-            .union(AccessFs::ReadDir)
-            .union(AccessFs::Execute),
-    );
+    let abi = ABI::V4;
+    let access_rw = AccessFs::from_all(abi);
+    let access_ro = AccessFs::from_read(abi);
 
     let mut ruleset = Ruleset::default()
         .set_compatibility(landlock::CompatLevel::BestEffort)
-        .handle_access(ACCESS_RW)
+        .handle_access(access_rw)
         .map_err(|e| format!("landlock ruleset rw handle: {e}"))?
-        .handle_access(ACCESS_RO)
+        .handle_access(access_ro)
         .map_err(|e| format!("landlock ruleset ro handle: {e}"))?
         .create()
         .map_err(|e| format!("landlock ruleset create: {e}"))?;
 
     for path in &paths.rw {
+        let fd = PathFd::new(path).map_err(|e| format!("landlock open rw path {path}: {e}"))?;
         ruleset = ruleset
-            .add_rule(PathBeneath::new(Path::new(path), ACCESS_RW))
+            .add_rule(PathBeneath::new(fd, access_rw))
             .map_err(|e| format!("landlock add rw rule {path}: {e}"))?;
     }
     for path in &paths.ro {
+        let fd = PathFd::new(path).map_err(|e| format!("landlock open ro path {path}: {e}"))?;
         ruleset = ruleset
-            .add_rule(PathBeneath::new(Path::new(path), ACCESS_RO))
+            .add_rule(PathBeneath::new(fd, access_ro))
             .map_err(|e| format!("landlock add ro rule {path}: {e}"))?;
     }
 
