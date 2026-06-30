@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_WORKER_IMAGE = (
     "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/"
-    "passionke/claw-gateway-worker:release-v1.6.14"
+    "passionke/claw-gateway-worker:release-v1.6.17"
 )
 
 WORKER_START_CMD = "/usr/local/bin/claw-worker-start"

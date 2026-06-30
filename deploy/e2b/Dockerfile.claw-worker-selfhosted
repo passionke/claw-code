@@ -1,7 +1,7 @@
 # claw-worker for self-hosted e2bserver: CI worker image + e2b runtime layers. Author: kejiqing
 # Build: CLAW_E2B_WORKER_IMAGE=<acr>/claw-gateway-worker:release-vX \
 #        python3 deploy/e2b/build-claw-worker-selfhosted.py
-ARG WORKER_BASE_IMAGE=crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-gateway-worker:release-v1.6.14
+ARG WORKER_BASE_IMAGE=crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-gateway-worker:release-v1.6.17
 FROM ${WORKER_BASE_IMAGE}
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
