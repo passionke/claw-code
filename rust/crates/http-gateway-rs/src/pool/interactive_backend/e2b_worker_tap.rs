@@ -30,14 +30,15 @@ pub async fn load_e2b_observe_proxy_base_url(
     tap.proxy_base_url
         .filter(|s| !s.trim().is_empty())
         .or_else(|| claw_tap_proxy_base_url(&tap.host, tap.proxy_port))
-        .ok_or_else(|| {
-            "e2b observe tap proxyBaseUrl missing: run gateway.sh observe-tap-up".into()
-        })
+        .ok_or_else(|| "e2b observe tap proxyBaseUrl missing: run gateway.sh observe-tap-up".into())
 }
 
 /// Worker LLM env points at observe proxy; placeholder key only (no real credentials).
 #[must_use]
-pub fn e2b_worker_llm_env(mut env: BTreeMap<String, String>, proxy_base_url: &str) -> BTreeMap<String, String> {
+pub fn e2b_worker_llm_env(
+    mut env: BTreeMap<String, String>,
+    proxy_base_url: &str,
+) -> BTreeMap<String, String> {
     let proxy = proxy_base_url.trim().trim_end_matches('/').to_string();
     env.insert("OPENAI_BASE_URL".to_string(), proxy.clone());
     env.insert("INTERNAL_CLAUDE_TAP_HOST".to_string(), proxy);
@@ -114,10 +115,7 @@ mod tests {
         env.insert("OPENAI_API_KEY".to_string(), "sk-real-secret".to_string());
         let proxy = "http://8080-sbx_abc.supone.top";
         let out = e2b_worker_llm_env(env, proxy);
-        assert_eq!(
-            out.get("OPENAI_BASE_URL").map(String::as_str),
-            Some(proxy)
-        );
+        assert_eq!(out.get("OPENAI_BASE_URL").map(String::as_str), Some(proxy));
         assert_eq!(
             out.get("OPENAI_API_KEY").map(String::as_str),
             Some(E2B_WORKER_TAP_PLACEHOLDER_API_KEY)

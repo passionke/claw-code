@@ -22,9 +22,9 @@ use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::{
     self, apply_e2b_observe_worker_llm_env, build_proj_bake_script, build_session_attach_script,
-    build_start_ttyd_script, gateway_proj_work_dir, gateway_session_home, interactive_backend_is_e2b,
-    terminal_ws_connect_url, InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec,
-    PoolClients, TtydConnectTarget,
+    build_start_ttyd_script, gateway_proj_work_dir, gateway_session_home,
+    interactive_backend_is_e2b, terminal_ws_connect_url, InteractiveBackendKind, InteractiveLease,
+    InteractiveSessionSpec, PoolClients, TtydConnectTarget,
 };
 use crate::project_config_apply;
 use crate::project_config_draft;

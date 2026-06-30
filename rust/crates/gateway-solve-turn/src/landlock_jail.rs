@@ -118,7 +118,10 @@ pub fn apply_strict_landlock_jail(
     restrict_self_landlock(&paths)
 }
 
-fn prepare_session_rw_dirs(paths: &ResolvedLandlockPaths, session_root: &str) -> Result<(), String> {
+fn prepare_session_rw_dirs(
+    paths: &ResolvedLandlockPaths,
+    session_root: &str,
+) -> Result<(), String> {
     let root = std::path::Path::new(session_root);
     for raw in &paths.rw {
         let path = std::path::Path::new(raw);

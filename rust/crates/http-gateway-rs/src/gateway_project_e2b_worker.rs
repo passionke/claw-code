@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use crate::gateway_e2b_observe_proxy;
 use crate::gateway_e2b_worker_settings::load_e2b_worker_template_id;
-use crate::pool::E2bProjWorkerRegistry;
 use crate::pool::interactive_backend::{terminal_ws_connect_url, TtydConnectTarget};
+use crate::pool::E2bProjWorkerRegistry;
 use crate::session_db::{GatewaySessionDb, WorkerRotationEvent};
 
 #[derive(Debug, Clone, Serialize)]

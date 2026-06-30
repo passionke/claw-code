@@ -253,13 +253,8 @@ impl E2bProjWorkerRegistry {
         )
         .await;
 
-        self.cache_worker(
-            proj_id,
-            handle.clone(),
-            worker_id,
-            contract_key.clone(),
-        )
-        .await;
+        self.cache_worker(proj_id, handle.clone(), worker_id, contract_key.clone())
+            .await;
         info!(
             target: "claw_e2b_proj_worker",
             proj_id,
