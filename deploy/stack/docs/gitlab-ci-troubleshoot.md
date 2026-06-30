@@ -1,6 +1,6 @@
 # Sunmi GitLab CI 排查闭环（claw-code）
 
-> **2026-06：** `:9944` pool / `host-pool-daemon.md` 已废弃。FC 503 查 `CLAW_FC_API_URL` 与 e2b 模板（`deploy/fc-sandbox/README.md`）。
+> **2026-06：** `:9944` pool / `host-pool-daemon.md` 已废弃。FC 503 查 `CLAW_E2B_API_URL` 与 e2b 模板（`deploy/e2b/README.md`）。
 
 Author: kejiqing
 
@@ -48,7 +48,7 @@ Runner 工作目录：`/home/gitlab-runner/builds/.../minidata/claw-code`（`GIT
 |--------|------|
 | `Restarting (1)` | 网关容器崩溃循环 → `docker logs claw-gateway-rs` |
 | `schema migration failed` | PG 迁移；查 SQL 与 `session_db` migrate |
-| `503` / FC unavailable | 查 `CLAW_FC_API_URL`、API key、e2b 健康；见 `deploy/fc-sandbox/README.md` |
+| `503` / e2b unavailable | 查 `CLAW_E2B_API_URL`、API key、e2b 健康；见 `deploy/e2b/README.md` |
 | `no such service: postgres` | node B 误对 gateway-only compose 起 postgres → 应复用 A 的 `claw-gateway-postgres` |
 | `POOL_B: unbound variable` | `ci-cluster-dual-deploy.sh` 未定义 pool id（已修，见 `gitlab-cli.md` §7） |
 | `CLUSTER VERIFY FAIL` | `claw-cluster-verify.sh`；查 `claw_pool` 僵尸行 / 各 gateway `/v1/pools` |
@@ -69,5 +69,5 @@ Runner 工作目录：`/home/gitlab-runner/builds/.../minidata/claw-code`（`GIT
 - **glab / 盯盘 / job 链接**：[`gitlab-cli.md`](gitlab-cli.md)
 - CI 变量：[`gitlab-ci-variables.md`](gitlab-ci-variables.md)
 - 集群验收：[`cluster-deploy-verify.md`](cluster-deploy-verify.md)
-- FC / Admin 503：[`deploy/fc-sandbox/README.md`](../../fc-sandbox/README.md)、[`docs/deploy-ops-truth.md`](../../../docs/deploy-ops-truth.md)
+- e2b / Admin 503：[`deploy/e2b/README.md`](../../e2b/README.md)、[`docs/deploy-ops-truth.md`](../../../docs/deploy-ops-truth.md)
 - 部署总览：[`../README.md`](../README.md)

@@ -12,7 +12,7 @@ Author: kejiqing
 | **`gateway.sh quick`** | admin build + playground + `up` + `check` | gateway 镜像若未 build 仍可能旧 |
 | **`gateway.sh up`** | 起 gateway + playground compose | 仅当镜像已新 |
 | **`gateway.sh build`** | 编译 gateway 镜像 + stamp | 只构建，不重启 |
-| **`gateway.sh check`** | healthz + 连通性冒烟 | **不**检查 FC 模板 |
+| **`gateway.sh check`** | healthz + 连通性冒烟 | **不**检查 e2b 模板 |
 | **`gateway.sh verify`** | PG schema、FC 配置、gateway 健康 | **必须**用于确认 |
 
 ## 标准发布（本机）
@@ -22,11 +22,11 @@ Author: kejiqing
 ./deploy/stack/gateway.sh verify
 ```
 
-## verify 检查项（FC-only 摘要）
+## verify 检查项（e2b-only 摘要）
 
 1. PG：迁移表存在；`CLAW_CLUSTER_ID` 与连接串一致
 2. Gateway `/healthz` 与 `/readyz`（clawTap clusterHash 若启用 strict）
-3. **FC**：`CLAW_FC_API_URL` 可达；必要模板已 build（见 `deploy/fc-sandbox/README.md`）
+3. **FC**：`CLAW_E2B_API_URL` 可达；必要模板已 build（见 `deploy/e2b/README.md`）
 4. **跳过**：宿主机 `:9944` pool、`claw-worker-*` 容器、`daemon.log`
 
 ## 构建戳
@@ -35,7 +35,7 @@ Author: kejiqing
 
 ## Live SSE
 
-`running`/`queued` 的 live stream 经 gateway LiveReportHub 或 FC 路径；无 `CLAW_POOL_HTTP_BASE` fallback。见 `docs/live-report-contract.md`。
+`running`/`queued` 的 live stream 经 gateway LiveReportHub 或 e2b 路径；无 `CLAW_POOL_HTTP_BASE` fallback。见 `docs/live-report-contract.md`。
 
 ## See also
 

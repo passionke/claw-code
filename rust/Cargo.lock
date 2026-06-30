@@ -470,7 +470,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "claw-fc-sandbox-client"
+name = "claw-e2b-sandbox-client"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -1253,7 +1253,7 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
- "claw-fc-sandbox-client",
+ "claw-e2b-sandbox-client",
  "flate2",
  "futures-util",
  "gateway-solve-turn",

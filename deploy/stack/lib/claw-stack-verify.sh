@@ -89,8 +89,8 @@ has_artifact_upsert_key="$(psql_q "SELECT to_regclass('public.gateway_session_ar
 ok "claw_pool + gateway_turns.pool_id/worker_name + session_artifacts pool-v1 schema present"
 
 echo "==> [2/6] Host pool daemon"
-if ! claw_interactive_backend_is_fc; then
-  fail "CLAW_INTERACTIVE_BACKEND must be fc (local claw-sandbox pool removed)"
+if ! claw_interactive_backend_is_e2b; then
+  fail "CLAW_INTERACTIVE_BACKEND must be e2b (local claw-sandbox pool removed)"
 fi
 ok "FC interactive backend — no host claw-pool-daemon"
 
@@ -104,10 +104,10 @@ _base_pool_id="$(claw_default_pool_id)"
 POOL_ID="${CLAW_POOL_ID:-${_base_pool_id}}"
 POOL_HTTP_PORT="${CLAW_POOL_HTTP_PORT:-9944}"
 
-echo "==> [3/6] skip pool HTTP reachability (FC backend)"
-echo "==> [4/6] skip claw_pool registry (FC backend)"
-echo "==> [5/6] skip claw_pool row (FC backend)"
-echo "==> [6/6] skip gateway.env sandbox URL (FC backend)"
+echo "==> [3/6] skip pool HTTP reachability (e2b backend)"
+echo "==> [4/6] skip claw_pool registry (e2b backend)"
+echo "==> [5/6] skip claw_pool row (e2b backend)"
+echo "==> [6/6] skip gateway.env sandbox URL (e2b backend)"
 
 if [[ -f "${STAMP_FILE}" ]]; then
   echo "--- build stamp ---"

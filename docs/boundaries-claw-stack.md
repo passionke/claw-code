@@ -44,13 +44,13 @@ Author: kejiqing
 5. **`CLAW_MCP_MAX_CONCURRENT`**: max in-flight MCP `tools/call` per worker; values `> 1` also enable same-turn parallel SQLBot fan-out (`[parallel-friendly]` tool hint + `shared_executor`). Set `1` for fully serial MCP (`rust/crates/runtime/src/mcp_client.rs`).
 6. **Solve preflight (per `ds_*`)**: `ds_<id>/home/.claw/solve-preflight.json` with ordered `kinds` (e.g. `["sqlbot_mcp_start"]`, compatible with legacy `kind`) → **first** `sessionId` turn only, after user text in jsonl, code-run preflight (`rust/crates/gateway-solve-turn/src/project_preflight.rs`). Table DDL: `ds_<id>/home/schema.md`, ro mount + system prompt (`GATEWAY_SCHEMA_MD_REL`).
 7. **claude-tap (LLM proxy)**: sidecar 或远程共享 tap；Gateway 注入 per-solve `OPENAI_BASE_URL`。Traces: `CLAW_TAP_TRACES_DIR` 或 NAS `tap-traces/`。
-8. **FC NAS workspace**: one logical NFS export root; Gateway mkdir/symlink on container `CLAW_WORK_ROOT`; e2b bind via `hostMountRoot` + relPath. **Do not** mix host path strings with container bind points — see **`docs/fc-nas-workspace.md`**.
+8. **FC NAS workspace**: one logical NFS export root; Gateway mkdir/symlink on container `CLAW_WORK_ROOT`; e2b bind via `hostMountRoot` + relPath. **Do not** mix host path strings with container bind points — see **`docs/e2b-nas-workspace.md`**.
 
 ## Where to change what
 
 | You want to… | Edit |
 | --- | --- |
-| FC NAS layout, env, Mac podman / e2b bind | **`docs/fc-nas-workspace.md`** + repo root `.env` (`CLAW_NAS_*`, `CLAW_FC_*`) |
+| e2b NAS layout, env, Mac podman / e2b bind | **`docs/e2b-nas-workspace.md`** + repo root `.env` (`CLAW_NAS_*`, `CLAW_E2B_*`) |
 | HTTP routes, timeout, inject MCP, 容器池、`SQLBOT_MCP_*`、`CLAW_DEFAULT_HTTP_MCP_*`、根 `.claw.json` | `rust/crates/http-gateway-rs/`（`main.rs`、`solve_pool.rs`、`pool/` 等） |
 | Doris SQL guard / `doris_query` | `doris-mcp/src/` |
 | Remote→stdio wire | Your transport bridge（本仓库默认不内置） |
@@ -90,19 +90,19 @@ Default OVS agent session id: `ovs-{projId}`（每 project 一个 REPL；后续 
 
 Build (local): `./deploy/stack/gateway.sh build` builds `claw-openvscode-server:local` via `Containerfile.openvscode`.
 
-## FC cloud sandbox (interactive only)
+## e2b cloud sandbox (interactive only)
 
 | Layer | Path | Role |
 | --- | --- | --- |
-| **Backend switch** | `CLAW_INTERACTIVE_BACKEND=fc` | Interactive + solve 均经 e2b |
-| **Rust FC client** | `rust/crates/claw-fc-sandbox-client/` | E2B-compatible REST (`cn-beijing`); ttyd via `deploy/fc-sandbox/fc_exec.py` |
-| **Backend trait** | `pool/interactive_backend/` | `FcInteractiveBackend` |
+| **Backend switch** | `CLAW_INTERACTIVE_BACKEND=e2b` | Interactive + solve 均经 e2b |
+| **Rust e2b client** | `rust/crates/claw-e2b-sandbox-client/` | E2B-compatible REST (`cn-beijing`); ttyd via `deploy/e2b/e2b_exec.py` |
+| **Backend trait** | `pool/interactive_backend/` | `E2bInteractiveBackend` |
 | **Terminal API** | `session_terminal_api.rs` | `terminal/start\|stop\|reattach` → `InteractiveSandboxBackend` |
 | **Agent bridge** | `session_agent_api.rs` | ttyd WS via `TtydConnectTarget` (loopback or `wss://7681-sbx…`) |
-| **Workspace truth** | NAS (e2b sandbox mount) | `CLAW_OVS_BACKEND=fc` → OVS singleton on e2b (`claw-ovs`); `CLAW_USE_NAS_VOLUME=0` on Mac; see `docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md` |
-| **Deploy docs** | `deploy/fc-sandbox/README.md` | Phase 0 quickstart, template, NAS, ~¥876/yr @100GB |
-| **Env overlay** | `deploy/stack/env.fc-interactive.example` | FC + NAS vars for repo root `.env` |
-| **E2E** | `deploy/stack/lib/verify-fc-ovs-e2e.sh` | NAS probe + `terminal/start` + optional OVS agent WS |
+| **Workspace truth** | NAS (e2b sandbox mount) | `CLAW_OVS_BACKEND=e2b` → OVS singleton on e2b (`claw-ovs`); `CLAW_USE_NAS_VOLUME=0` on Mac; see `docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md` |
+| **Deploy docs** | `deploy/e2b/README.md` | Phase 0 quickstart, template, NAS, ~¥876/yr @100GB |
+| **Env overlay** | `deploy/stack/env.e2b-interactive.example` | e2b + NAS vars for repo root `.env` |
+| **E2E** | `deploy/stack/lib/verify-e2b-ovs-e2e.sh` | NAS probe + `terminal/start` + optional OVS agent WS |
 
 **OVS Chat 源码修复（另开工程）：** `docs/ovs-chat-source-handoff.md` — 调用链、证据、证伪清单、demo 成功标准。
 
@@ -112,7 +112,7 @@ Build (local): `./deploy/stack/gateway.sh build` builds `claw-openvscode-server:
 - `deploy/config/datasources.example.yaml` — `CLAW_DS_REGISTRY` 模板
 - `rust/crates/http-gateway-rs/datasources.example.yaml` — 数据源 registry 模板（勿提交真实凭据）
 - `third_party/doris-mcp/README.md` — Doris-only build
-- `docs/http-gateway-container-pool.md` — **FC worker 编排**（e2b solve）
+- `docs/http-gateway-container-pool.md` — **e2b worker 编排**（e2b solve）
 - `docs/architecture-governance.md` — 目标拓扑与迁移
 - `docs/persistence-model.md` — solve **磁盘 jsonl（运行时）** 与 **`gateway_turns` 终态（交接）** 的分工与 `turn_id` 边界
 - `docs/ovs-chat-source-handoff.md` — OVS `@demo` / `@claw` Chat 阻塞与 fork 修源码交接

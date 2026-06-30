@@ -104,7 +104,7 @@ is_darwin = platform.system() == "Darwin"
 defaults = [
     ("GATEWAY_HOST_PORT", "18088"),
     ("CLAW_TIMEOUT_SECONDS", "120"),
-    ("CLAW_SOLVE_ISOLATION", "docker_pool"),
+    ("CLAW_SOLVE_ISOLATION", "e2b"),
     ("CLAW_POOL_DAEMON_SKIP_BUILD", "1"),
     ("CLAW_CONTAINER_RUNTIME", "docker"),
     ("CLAW_DOCKER_POOL_SIZE", "4"),

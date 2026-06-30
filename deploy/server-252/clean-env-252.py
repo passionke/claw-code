@@ -177,7 +177,7 @@ def main() -> None:
         "CLAW_DEPLOY_PROFILE": "production",
         "CLAW_CLUSTER_ID": kept.get("CLAW_CLUSTER_ID", "prod-claw-252"),
         "CLAW_CONTAINER_RUNTIME": "docker",
-        "CLAW_SOLVE_ISOLATION": "docker_pool",
+        "CLAW_SOLVE_ISOLATION": "e2b",
         "CLAW_POOL_HOST_DAEMON": "1",
         "CLAW_POOL_DAEMON_SKIP_BUILD": "1",
         "CLAW_POOL_DAEMON_BIN": "/home/admin/.local/bin/claw-pool-daemon",
@@ -196,7 +196,7 @@ def main() -> None:
     for k, v in defaults.items():
         kept.setdefault(k, v)
 
-    header = """# 192.168.9.252 — human .env (Rust http-gateway-rs + docker_pool + host pool)
+    header = """# 192.168.9.252 — human .env (Rust http-gateway-rs + e2b + host pool)
 # Author: kejiqing
 # Images: ./deploy/stack/gateway.sh up --release release-vX.Y.Z  → .claw-image-release.env
 # Do NOT set GATEWAY_IMAGE=:local here. Do NOT set CLAW_POOL_DAEMON_TCP_HOST to LAN IP.

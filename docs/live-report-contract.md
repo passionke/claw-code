@@ -1,6 +1,6 @@
 # Live BOSS 报告契约（stdout-v1-pool-sse）
 
-> **2026-06 FC-only：** 宿主机 `claw-sandbox` 已移除。路径 B 现经 **gateway LiveReportHub + FC exec stdout**；`CLAW_SANDBOX_URL` / `:9944` **不再使用**。`claw_pool` JOIN 仍用于历史 turn 元数据。
+> **2026-06 e2b-only：** 宿主机 `claw-sandbox` 已移除。路径 B 现经 **gateway LiveReportHub + e2b exec stdout**；`CLAW_SANDBOX_URL` / `:9944` **不再使用**。`claw_pool` JOIN 仍用于历史 turn 元数据。
 
 Author: kejiqing
 
@@ -61,7 +61,7 @@ sequenceDiagram
 
 | 变量 | 说明 |
 |------|------|
-| `CLAW_FC_API_URL` | e2b API |
+| `CLAW_E2B_API_URL` | e2b API |
 | `CLAW_CLUSTER_ID` | PG 行级隔离 |
 | `gateway_turns.pool_id` | 历史 JOIN；FC 新 turn 可能为空或占位 |
 

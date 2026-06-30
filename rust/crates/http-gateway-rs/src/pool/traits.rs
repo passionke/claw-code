@@ -20,7 +20,7 @@ pub struct TaskOutcome {
     pub stderr: String,
 }
 
-/// Abstract solve pool; the supported implementation is FC cloud sandbox. Author: kejiqing
+/// Abstract solve pool; the supported implementation is e2b cloud sandbox. Author: kejiqing
 #[async_trait]
 pub trait PoolOps: Send + Sync {
     async fn acquire_slot(

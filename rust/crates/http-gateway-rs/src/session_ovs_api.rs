@@ -7,9 +7,9 @@ use axum::Json;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
-use crate::gateway_fc_ovs_settings::{self, workspace_folder_path, workspace_folder_url};
-use crate::pool::interactive_backend::ovs_backend_is_fc;
-use crate::pool::FcProjWorkerRegistry;
+use crate::gateway_e2b_ovs_settings::{self, workspace_folder_path, workspace_folder_url};
+use crate::pool::interactive_backend::ovs_backend_is_e2b;
+use crate::pool::E2bProjWorkerRegistry;
 use crate::session_db::GatewaySessionDb;
 use crate::session_terminal_api;
 
@@ -24,7 +24,7 @@ pub struct OvsWorkspaceResponse {
     pub host_path: Option<String>,
     /// Default agent session id for `@claw` in OVS (`ovs-{projId}`).
     pub agent_session_id: String,
-    /// FC singleton OVS base URL (`http://3000-{sandboxId}.{domain}/ovs`).
+    /// e2b singleton OVS base URL (`http://3000-{sandboxId}.{domain}/ovs`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ovs_url: Option<String>,
     /// Full browser URL including `?folder=…` (fc: direct e2b traffic, not gateway proxy).
@@ -33,7 +33,7 @@ pub struct OvsWorkspaceResponse {
     /// Self-hosted: add this line to `/etc/hosts` once per OVS sandbox recreate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ovs_browser_hosts_line: Option<String>,
-    /// `compose` | `fc`.
+    /// `compose` | `e2b`.
     pub ovs_backend: String,
 }
 
@@ -72,7 +72,7 @@ pub struct OvsApiContext {
 
 #[must_use]
 pub fn ovs_api_context(work_root: PathBuf) -> OvsApiContext {
-    let ovs_mount_root = if ovs_backend_is_fc() {
+    let ovs_mount_root = if ovs_backend_is_e2b() {
         std::env::var("CLAW_OVS_MOUNT_ROOT")
             .ok()
             .map(|v| v.trim().to_string())
@@ -121,7 +121,7 @@ pub fn ovs_workspace_folder(ctx: &OvsApiContext, proj_id: i64) -> String {
 pub async fn get_ovs_workspace(
     ctx: OvsApiContext,
     session_db: &GatewaySessionDb,
-    fc_workers: Option<&FcProjWorkerRegistry>,
+    e2b_workers: Option<&E2bProjWorkerRegistry>,
     proj_id: i64,
 ) -> Result<Json<OvsWorkspaceResponse>, OvsApiError> {
     if proj_id < 1 {
@@ -131,14 +131,14 @@ pub async fn get_ovs_workspace(
         ));
     }
 
-    if ovs_backend_is_fc() {
-        if let Some(registry) = fc_workers {
+    if ovs_backend_is_e2b() {
+        if let Some(registry) = e2b_workers {
             registry
                 .ensure_worker(proj_id)
                 .await
                 .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         }
-        let base_url = gateway_fc_ovs_settings::load_fc_ovs_base_url(session_db)
+        let base_url = gateway_e2b_ovs_settings::load_e2b_ovs_base_url(session_db)
             .await
             .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .ok_or_else(|| {
@@ -157,7 +157,7 @@ pub async fn get_ovs_workspace(
             ovs_url: Some(base_url),
             ovs_folder_url: Some(ovs_folder_url),
             ovs_browser_hosts_line: None,
-            ovs_backend: "fc".into(),
+            ovs_backend: "e2b".into(),
         }));
     }
 

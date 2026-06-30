@@ -1,0 +1,8 @@
+# e2b OVS backend — skip compose openvscode-server; playground uses Gateway ovsUrl. Author: kejiqing
+services:
+  gateway-playground:
+    depends_on:
+      - gateway-rs
+    environment:
+      PLAYGROUND_OVS_FROM_GATEWAY: "1"
+      PLAYGROUND_OVS_WORKSPACE_ROOT: /claw_ws

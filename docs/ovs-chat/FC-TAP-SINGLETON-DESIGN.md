@@ -1,4 +1,4 @@
-# FC Session 可观测单例 — 1 Gateway : 1 Observe : 1 OVS : N Workers
+# e2b Session 可观测单例 — 1 Gateway : 1 Observe : 1 OVS : N Workers
 
 Author: kejiqing  
 Status: **implemented (P1 code)** — build `claw-observe` template on e2b then verify  
@@ -16,7 +16,7 @@ Related: [FC-OVS-SINGLETON-DESIGN.md](./FC-OVS-SINGLETON-DESIGN.md)
 
 | 链路 | 现状 | Admin 为何不稳定 |
 |------|------|------------------|
-| **LLM 代理** | worker 内 `127.0.0.1:8080` claude-tap（`fc_worker_tap.rs`） | 与 Admin **无关**，**不改** |
+| **LLM 代理** | worker 内 `127.0.0.1:8080` claude-tap（`e2b_worker_tap.rs`） | 与 Admin **无关**，**不改** |
 | **trace 落盘** | worker tap 写 NAS `tap-traces/`（需 LLM 请求带 `claw-session-id` = 对话 `record_session_id`） | 见 [OVS-INTERACTIVE-SESSION-ID.md](./OVS-INTERACTIVE-SESSION-ID.md) |
 | **Admin 观测** | TurnCard 链 `liveSessionUrlTemplate` → 全局 clawTap Live | 链到 compose pool tap 或已死的 worker tap 进程 → **Live 打不开 / 空白** |
 
@@ -43,7 +43,7 @@ Related: [FC-OVS-SINGLETON-DESIGN.md](./FC-OVS-SINGLETON-DESIGN.md)
 | 不变量 | 说明 |
 |--------|------|
 | **Observe 不做代理** | 不监听 8080 给 worker；不替换 `OPENAI_BASE_URL` |
-| **worker 内嵌 tap 保留** | `fc_worker_tap.rs` 逻辑 **不动**（代理 + 写 NAS） |
+| **worker 内嵌 tap 保留** | `e2b_worker_tap.rs` 逻辑 **不动**（代理 + 写 NAS） |
 | **Observe 只读 NAS** | 挂全局 trace / session 记录目录；进程稳定、跟 Gateway 走 |
 | **Admin 只链 Observe** | `liveSessionUrlTemplate` / sessionId 链接 → Observe 的 Live 或 `/api/sessions/traces` |
 | **cluster probe / readyz** | 仍 probe **代理 tap**（compose pool 或后续单独约定）；**不**用 Observe 代替 strict 探针 |
@@ -106,9 +106,9 @@ claude-tap --tap-live-only ... \
 
 ## 6. Admin 链接
 
-| 字段 | FC 模式来源 |
+| 字段 | e2b 模式来源 |
 |------|-------------|
-| `liveBaseUrl` | `http://3000-{observeSandboxId}.{CLAW_FC_DOMAIN}` |
+| `liveBaseUrl` | `http://3000-{observeSandboxId}.{CLAW_E2B_DOMAIN}` |
 | `liveSessionUrlTemplate` | `{liveBaseUrl}/api/sessions/traces?session={sessionId}`（统一，不用 `/?session=`） |
 
 **不**把 worker 内 tap 的 `:8080` 暴露给 Admin Live。

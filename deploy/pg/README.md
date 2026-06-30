@@ -35,4 +35,4 @@ CLAW_GATEWAY_SKIP_DB_MIGRATE=0 ./target/release/http-gateway-rs --migrate-only
 | `gateway_llm_cluster_model` | gateway | LLM model cluster config |
 | `gateway_llm_cluster_revision` | gateway | LLM revision history |
 | `gateway_llm_cluster_state` | gateway | LLM cluster state snapshots |
-| `claw_pool` | gateway (legacy schema) | Historical pool registry; **no live heartbeat** in FC-only mode |
+| `claw_pool` | gateway (legacy schema) | Historical pool registry; **no live heartbeat** in e2b-only mode |

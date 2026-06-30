@@ -322,7 +322,7 @@ async fn upsert_project_draft(
         language_pipeline_json: &existing.language_pipeline_json,
         extra_session_fields_json: &existing.extra_session_fields_json,
         prompt_limits_json: &existing.prompt_limits_json,
-        worker_isolation_json: &existing.worker_isolation_json,
+        worker_profile_json: &existing.worker_profile_json,
     };
     db.upsert_project_config(upsert)
         .await
@@ -513,7 +513,7 @@ async fn handle_tools_call(
             project_config_draft::activate_formal_revision(db, proj_id, content_rev)
                 .await
                 .map_err(|e| e.message)?;
-            // FC worker reads project config from NAS `{cluster}/proj_N/home` (mounted ro as
+            // e2b worker reads project config from NAS `{cluster}/proj_N/home` (mounted ro as
             // `/claw_ds`): write effective config there via nas-api on activate (the real bug fix).
             // The host `work_root/proj_N` materialization is kept for now. Author: kejiqing
             let materialized = materialize_effective_config(db, work_root, proj_id).await?;

@@ -21,8 +21,8 @@ use crate::client_origin;
 use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::{
-    self, build_fc_session_attach_with_tap, build_proj_bake_script, build_start_ttyd_script,
-    fc_worker_llm_env, gateway_proj_work_dir, gateway_session_home, interactive_backend_is_fc,
+    self, build_e2b_session_attach_with_tap, build_proj_bake_script, build_start_ttyd_script,
+    e2b_worker_llm_env, gateway_proj_work_dir, gateway_session_home, interactive_backend_is_e2b,
     terminal_ws_connect_url, InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec,
     PoolClients, TtydConnectTarget,
 };
@@ -40,15 +40,15 @@ pub struct TerminalSessionKey {
 pub struct ActiveTerminalSession {
     pub slot_index: usize,
     pub worker_name: Option<String>,
-    /// Loopback port for podman; 443 placeholder when FC public host is used.
+    /// Loopback port for podman; 443 placeholder when e2b public host is used.
     pub ttyd_host_port: u16,
     pub pool_id: String,
     pub backend: InteractiveBackendKind,
-    pub fc_sandbox_id: Option<String>,
-    pub fc_warm_slot: Option<usize>,
-    pub fc_warm_proj_id: Option<i64>,
-    pub fc_session_segment: Option<String>,
-    pub fc_worker_id: Option<String>,
+    pub e2b_sandbox_id: Option<String>,
+    pub e2b_warm_slot: Option<usize>,
+    pub e2b_warm_proj_id: Option<i64>,
+    pub e2b_session_segment: Option<String>,
+    pub e2b_worker_id: Option<String>,
     pub ttyd: TtydConnectTarget,
 }
 
@@ -357,11 +357,11 @@ fn active_terminal_to_lease(active: &ActiveTerminalSession) -> InteractiveLease 
         slot_index: active.slot_index,
         worker_name: active.worker_name.clone(),
         pool_id: active.pool_id.clone(),
-        fc_sandbox_id: active.fc_sandbox_id.clone(),
-        fc_warm_slot: active.fc_warm_slot,
-        fc_warm_proj_id: active.fc_warm_proj_id,
-        fc_session_segment: active.fc_session_segment.clone(),
-        fc_worker_id: active.fc_worker_id.clone(),
+        e2b_sandbox_id: active.e2b_sandbox_id.clone(),
+        e2b_warm_slot: active.e2b_warm_slot,
+        e2b_warm_proj_id: active.e2b_warm_proj_id,
+        e2b_session_segment: active.e2b_session_segment.clone(),
+        e2b_worker_id: active.e2b_worker_id.clone(),
         ttyd: active.ttyd.clone(),
     }
 }
@@ -378,11 +378,11 @@ fn lease_to_active_terminal(lease: InteractiveLease) -> ActiveTerminalSession {
         ttyd_host_port,
         pool_id: lease.pool_id,
         backend: lease.backend,
-        fc_sandbox_id: lease.fc_sandbox_id,
-        fc_warm_slot: lease.fc_warm_slot,
-        fc_warm_proj_id: lease.fc_warm_proj_id,
-        fc_session_segment: lease.fc_session_segment,
-        fc_worker_id: lease.fc_worker_id,
+        e2b_sandbox_id: lease.e2b_sandbox_id,
+        e2b_warm_slot: lease.e2b_warm_slot,
+        e2b_warm_proj_id: lease.e2b_warm_proj_id,
+        e2b_session_segment: lease.e2b_session_segment,
+        e2b_worker_id: lease.e2b_worker_id,
         ttyd: lease.ttyd,
     }
 }
@@ -480,15 +480,15 @@ pub async fn terminal_start(
         ));
     }
 
-    let _ = interactive_backend_is_fc();
+    let _ = interactive_backend_is_e2b();
     let session_segment = crate::session_merge::sessions_directory_segment(session_id);
     let session_home = gateway_session_home(&ctx.work_root, req.proj_id, session_id)
         .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let nas_root = ctx.pool_clients.nas_host_root();
-    if ctx.pool_clients.fc_nas_layout_active() {
+    if ctx.pool_clients.e2b_nas_layout_active() {
         let cluster_id = pool::nas_cluster_id()
             .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        pool::ensure_fc_proj_nas_roots(&nas_root, &cluster_id, req.proj_id)
+        pool::ensure_e2b_proj_nas_roots(&nas_root, &cluster_id, req.proj_id)
             .await
             .map_err(|e| {
                 TerminalApiError::new(
@@ -549,7 +549,7 @@ pub async fn terminal_start(
         .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     ctx.pool_clients
-        .assert_proj_worker_isolation_supported(&ctx.session_db, req.proj_id)
+        .assert_proj_worker_profile_supported(&ctx.session_db, req.proj_id)
         .await
         .map_err(|e| TerminalApiError::new(StatusCode::BAD_REQUEST, e))?;
 
@@ -557,16 +557,16 @@ pub async fn terminal_start(
         resolve_terminal_llm_env(&ctx.session_db, &ctx.claw_tap_cluster, &ctx.llm_runtime)
             .await
             .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
-    llm_env = fc_worker_llm_env(llm_env);
+    llm_env = e2b_worker_llm_env(llm_env);
 
     let proj_home = proj_dir.join("home");
 
-    let fc_session_attach_script = Some(
-        build_fc_session_attach_with_tap(&ctx.session_db, &llm_env)
+    let e2b_session_attach_script = Some(
+        build_e2b_session_attach_with_tap(&ctx.session_db, &llm_env)
             .await
             .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?,
     );
-    let fc_proj_bake_script = Some(
+    let e2b_proj_bake_script = Some(
         build_proj_bake_script(&ctx.session_db, req.proj_id)
             .await
             .map_err(|e| TerminalApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?,
@@ -587,8 +587,8 @@ pub async fn terminal_start(
         llm_env,
         ovs_mode: session_id.starts_with("ovs-"),
         start_ttyd_script: build_start_ttyd_script(session_id),
-        fc_session_attach_script,
-        fc_proj_bake_script,
+        e2b_session_attach_script,
+        e2b_proj_bake_script,
     };
 
     let lease = interactive_backend

@@ -1,7 +1,7 @@
 //! Session bind-mount uid alignment for pool workers (`claw` / `CLAW_WORKER_*`). Author: kejiqing
 //!
 //! Gateway `prepare_gateway_session` uses this when a container path must map to a host/NAS path
-//! before FC bind mounting.
+//! before e2b bind mounting.
 
 use std::path::{Path, PathBuf};
 

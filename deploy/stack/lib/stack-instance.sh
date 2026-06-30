@@ -6,15 +6,15 @@ claw_compose_nas_volume_enabled() {
   case "${CLAW_USE_NAS_VOLUME:-}" in
     0 | false | no | off) return 1 ;;
   esac
-  [[ -n "${NAS_BASE_URL:-${CLAW_FC_NAS_SERVER:-}}" ]] || return 1
+  [[ -n "${NAS_BASE_URL:-${CLAW_E2B_NAS_SERVER:-}}" ]] || return 1
   case "${CLAW_USE_NAS_VOLUME:-auto}" in
     1 | true | yes | on | auto) return 0 ;;
     *) return 1 ;;
   esac
 }
 
-# OVS runs as e2b singleton (CLAW_OVS_BACKEND=fc); compose openvscode-server skipped. kejiqing
-claw_ovs_backend_is_fc() {
+# OVS runs as e2b singleton (CLAW_OVS_BACKEND=e2b); compose openvscode-server skipped. kejiqing
+claw_ovs_backend_is_e2b() {
   case "${CLAW_OVS_BACKEND:-}" in
     fc | FC) return 0 ;;
     *) return 1 ;;

@@ -1,0 +1,2 @@
+-- settings_json fc* → e2b* keys migration runs in Rust (migrate_settings_json_e2b_keys).
+-- Semicolon-split SQL files cannot host DO $$ blocks. Author: kejiqing

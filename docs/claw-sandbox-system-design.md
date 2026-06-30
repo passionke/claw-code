@@ -7,7 +7,7 @@ Author: kejiqing
 请改读：
 
 - **架构总纲：** [`architecture-governance.md`](architecture-governance.md)
-- **FC worker 编排：** [`http-gateway-container-pool.md`](http-gateway-container-pool.md)
+- **e2b worker 编排：** [`http-gateway-container-pool.md`](http-gateway-container-pool.md)
 - **文档索引：** [`README.md`](README.md)
 
 历史设计稿曾位于 `sandbox/docs/system-design.md`（目录可能仍存在，仅作归档）。

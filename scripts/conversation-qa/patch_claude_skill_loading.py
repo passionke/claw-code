@@ -127,7 +127,7 @@ def push_config(cur: dict, md: str, note: str) -> str:
         "solveOrchestrationJson",
         "extraSessionFieldsJson",
         "promptLimitsJson",
-        "workerIsolationJson",
+        "workerProfileJson",
     ):
         if k in cur and cur[k] is not None:
             payload[k] = cur[k]

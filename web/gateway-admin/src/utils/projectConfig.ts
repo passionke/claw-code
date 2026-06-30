@@ -15,7 +15,7 @@ export function emptyProjectConfig(projId: number): ProjectConfig {
     languagePipelineJson: {},
     extraSessionFieldsJson: [],
     promptLimitsJson: {},
-    workerIsolationJson: { mode: "strict" },
+    workerProfileJson: { mode: "strict" },
   };
 }
 
@@ -72,10 +72,10 @@ export async function putProjectConfigDraft(
       patch.promptLimitsJson !== undefined
         ? patch.promptLimitsJson
         : cfg.promptLimitsJson ?? {},
-    workerIsolationJson:
-      patch.workerIsolationJson !== undefined
-        ? patch.workerIsolationJson
-        : cfg.workerIsolationJson ?? { mode: "strict" },
+    workerProfileJson:
+      patch.workerProfileJson !== undefined
+        ? patch.workerProfileJson
+        : cfg.workerProfileJson ?? { mode: "strict" },
   };
   const r = await proxyHttp<{ activeConfig?: ProjectConfig } & ProjectConfig>(
     gatewayBase,

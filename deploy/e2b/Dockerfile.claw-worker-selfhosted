@@ -1,0 +1,27 @@
+# claw-worker for self-hosted e2bserver: CI worker image + e2b runtime layers. Author: kejiqing
+# Build: CLAW_E2B_WORKER_IMAGE=<acr>/claw-gateway-worker:release-vX \
+#        python3 deploy/e2b/build-claw-worker-selfhosted.py
+ARG WORKER_BASE_IMAGE=crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-gateway-worker:release-v1.6.14
+FROM ${WORKER_BASE_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nfs-common \
+    ca-certificates \
+    python3 \
+    python3-pip \
+    sudo \
+    && echo 'user ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, /usr/bin/mountpoint, /bin/mkdir, /bin/chown' > /etc/sudoers.d/claw-nfs \
+    && chmod 440 /etc/sudoers.d/claw-nfs \
+    && pip3 install --no-cache-dir --break-system-packages claw-tap \
+      -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    && rm -rf /var/lib/apt/lists/*
+RUN printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+        'exec sleep infinity' \
+        > /usr/local/bin/claw-worker-start \
+    && printf '%s\n' \
+        '#!/bin/sh' \
+        'command -v claw >/dev/null 2>&1' \
+        > /usr/local/bin/claw-worker-ready \
+    && chmod +x /usr/local/bin/claw-worker-start /usr/local/bin/claw-worker-ready

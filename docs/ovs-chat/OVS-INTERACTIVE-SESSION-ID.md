@@ -15,7 +15,7 @@ Author: kejiqing
 | 名称 | 示例 | 用途 | 是否给 tap / Admin Tap 链接 |
 |------|------|------|------------------------------|
 | **`record_session_id`** | `ovs-chat-3-afc29a80…` | `gateway_sessions` / `gateway_turns.session_id`；续聊 jsonl 主键；Tap `?session=` | **是** |
-| **`worker_session_id`** | `ovs-3` | FC 项目 worker 租约、agent WS path、人工 terminal | 否 |
+| **`worker_session_id`** | `ovs-3` | e2b 项目 worker 租约、agent WS path、人工 terminal | 否 |
 | **claw 交互续聊 jsonl** | `{clusterId}/proj_N/sessions/{segment}/.claw/interactive-session.jsonl` | harness 多轮 transcript（per `record_session_id`） | 否 |
 | **claw 默认 SessionStore** | `session-1739…-0` | **legacy ttyd REPL** 每轮新建；agent 主路径已不用 | 否 |
 
@@ -61,7 +61,7 @@ OVS Chat
 
 `gateway_turns` 在 OVS agent 开 turn 后应写入：
 
-- `pool_id` = `fc-interactive`（常量 `FC_INTERACTIVE_POOL_ID`，与 solve 的 `fc-cloud` 区分）
+- `pool_id` = `fc-interactive`（常量 `E2B_INTERACTIVE_POOL_ID`，与 solve 的 `fc-cloud` 区分）
 - `worker_name` = 实际项目 worker，如 `fc:sbx_866ed706f88d`
 
 ---
@@ -78,5 +78,5 @@ OVS Chat
 ## 相关文档
 
 - **实施细节与验收：** [OVS-INTERACTIVE-CONTEXT-PLAN.md](./OVS-INTERACTIVE-CONTEXT-PLAN.md)
-- NAS 布局：`docs/fc-nas-workspace.md`
+- NAS 布局：`docs/e2b-nas-workspace.md`
 - Tap 写入 vs Live 读取：`docs/ovs-chat/FC-TAP-SINGLETON-DESIGN.md`

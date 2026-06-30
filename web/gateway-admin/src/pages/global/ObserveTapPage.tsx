@@ -34,7 +34,7 @@ function onlineTag(tap: ClawTapSettings | null): ReactNode {
   return <Tag color="warning">等待初始化</Tag>;
 }
 
-/** FC e2b observe singleton — full-featured Tap proxy + Live viewer. Author: kejiqing */
+/** e2b e2b observe singleton — full-featured Tap proxy + Live viewer. Author: kejiqing */
 export default function ObserveTapPage() {
   const { gatewayBase } = useApp();
   const [loading, setLoading] = useState(false);

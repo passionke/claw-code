@@ -523,7 +523,7 @@ def proxy_ovs_http(
                 send_redirect(handler, str(folder_url).strip())
                 return
             backend = str(data.get("ovsBackend") or data.get("ovs_backend") or "").strip().lower()
-            if backend == "fc" or OVS_FROM_GATEWAY:
+            if backend == "e2b" or OVS_FROM_GATEWAY:
                 send_ovs_wait_page(
                     handler,
                     proj_id,

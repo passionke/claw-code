@@ -18,11 +18,11 @@ source "${LIB_DIR}/compose-include.sh"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/pool-health.sh"
 
-if ! claw_interactive_backend_is_fc; then
-  echo "error: CLAW_INTERACTIVE_BACKEND must be fc (local podman pool removed)" >&2
+if ! claw_interactive_backend_is_e2b; then
+  echo "error: CLAW_INTERACTIVE_BACKEND must be e2b (local podman pool removed)" >&2
   exit 1
 fi
-echo "[1b/5] skip host pool (FC-only)"
+echo "[1b/5] skip host pool (e2b-only)"
 
 PLAYGROUND_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
 GATEWAY_PORT="${GATEWAY_HOST_PORT:-18088}"
@@ -44,11 +44,11 @@ else:
 cat /tmp/claw_gateway_healthz.json
 echo
 
-echo "[2/5] skip pool HTTP (FC backend)"
+echo "[2/5] skip pool HTTP (e2b backend)"
 echo
 
 echo "[3/5] solve_async smoke (extraSession from ds 1 project config when defined)"
-if claw_interactive_backend_is_fc; then
+if claw_interactive_backend_is_e2b; then
   :
 elif claw_pool_uses_remote; then
   claw_assert_remote_pool_registry_ready "${PODMAN_DIR}" || exit 1
@@ -139,7 +139,7 @@ else:
     print("skip tools chain assert (solve had no tool lane — ping-style smoke)")
 PY
 
-echo "[3d/5] FC OVS product entry (direct e2b traffic URL, not gateway proxy)"
+echo "[3d/5] e2b OVS product entry (direct e2b traffic URL, not gateway proxy)"
 case "${CLAW_OVS_BACKEND:-compose}" in
   fc)
     ws="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/projects/1/ovs/workspace")"
@@ -181,7 +181,7 @@ case "${CLAW_OVS_BACKEND:-compose}" in
     echo "FC OVS direct entry ok → ${folder_url}"
     ;;
   *)
-    echo "skip FC OVS entry (CLAW_OVS_BACKEND=${CLAW_OVS_BACKEND:-compose})"
+    echo "skip e2b OVS entry (CLAW_OVS_BACKEND=${CLAW_OVS_BACKEND:-compose})"
     ;;
 esac
 

@@ -50,15 +50,15 @@ pub struct ClawTapSettings {
     pub live_port: u16,
     #[serde(rename = "updatedAtMs", default)]
     pub updated_at_ms: i64,
-    /// FC observe singleton URLs persisted by `fc-tap-live-up.py` (Admin reads PG). Author: kejiqing
+    /// e2b observe singleton URLs persisted by `e2b-tap-live-up.py` (Admin reads PG). Author: kejiqing
     #[serde(rename = "liveBaseUrl", default)]
     pub live_base_url: Option<String>,
     #[serde(rename = "liveSessionUrlTemplate", default)]
     pub live_session_url_template: Option<String>,
     #[serde(rename = "proxyBaseUrl", default)]
     pub proxy_base_url: Option<String>,
-    #[serde(rename = "fcObserveSandboxId", default)]
-    pub fc_observe_sandbox_id: Option<String>,
+    #[serde(rename = "e2bObserveSandboxId", default)]
+    pub e2b_observe_sandbox_id: Option<String>,
 }
 
 fn default_proxy_port() -> u16 {
@@ -340,7 +340,7 @@ pub async fn load_claw_tap_public(
     Ok(ClawTapSettingsPublic::from(&settings.claw_tap))
 }
 
-/// FC mode: Admin session traces **only** via e2b observe — never compose `192.168.x:3000`.
+/// e2b mode: Admin session traces **only** via e2b observe — never compose `192.168.x:3000`.
 #[must_use]
 pub fn strip_compose_live_urls_for_fc_admin(
     mut tap: ClawTapSettingsPublic,
@@ -627,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn from_persisted_fc_observe_urls() {
+    fn from_persisted_e2b_observe_urls() {
         let s = ClawTapSettings {
             mode: ClawTapMode::Remote,
             host: "8080-sbx_abc.supone.top".into(),
@@ -639,7 +639,7 @@ mod tests {
                 "http://3000-sbx_abc.supone.top/?session={sessionId}".into(),
             ),
             proxy_base_url: Some("http://8080-sbx_abc.supone.top".into()),
-            fc_observe_sandbox_id: Some("sbx_abc".into()),
+            e2b_observe_sandbox_id: Some("sbx_abc".into()),
         };
         let pub_ = ClawTapSettingsPublic::from(&s);
         assert!(pub_.configured);
