@@ -8,6 +8,7 @@ import {
   Modal,
   Select,
   Space,
+  Spin,
   Switch,
   Table,
   Tag,
@@ -46,6 +47,8 @@ export default function ProjectPage() {
   const [gitPatOptions, setGitPatOptions] = useState<{ value: string; label: string }[]>(
     []
   );
+  /** NAS 物化较慢，切换生效时展示 loading。Author: kejiqing */
+  const [activatingRev, setActivatingRev] = useState<string | null>(null);
 
   const SOLVE_ORCHESTRATION_KIND_OPTIONS = [
     { value: "single_turn", label: "单 turn（默认，现有 gateway-solve-turn）" },
@@ -121,20 +124,30 @@ export default function ProjectPage() {
   }, [projectConfig, projId, row, gitForm, orchestrationForm]);
 
   const activate = async (contentRev: string) => {
-    const r = await proxyHttp<{
-      activeContentRev: string;
-      materialized?: boolean;
-    }>(
-      gatewayBase,
-      "POST",
-      `/v1/project/config/${projId}/versions/${encodeURIComponent(contentRev)}/activate`
-    );
-    message.success(
-      `已切换生效为 ${r.activeContentRev}${r.materialized ? "（已物化）" : "（待物化）"}`
-    );
-    await refreshProjects();
-    await refreshProjectConfig();
-    await loadVersions();
+    if (activatingRev) return;
+    setActivatingRev(contentRev);
+    const hide = message.loading("正在切换生效版本并同步到 NAS…", 0);
+    try {
+      const r = await proxyHttp<{
+        activeContentRev: string;
+        materialized?: boolean;
+      }>(
+        gatewayBase,
+        "POST",
+        `/v1/project/config/${projId}/versions/${encodeURIComponent(contentRev)}/activate`
+      );
+      message.success(
+        `已切换生效为 ${r.activeContentRev}${r.materialized ? "（已物化）" : "（待物化）"}`
+      );
+      await refreshProjects();
+      await refreshProjectConfig();
+      await loadVersions();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "切换生效版本失败");
+    } finally {
+      hide();
+      setActivatingRev(null);
+    }
   };
 
   const saveVersionNote = async (v: VersionEntry, value: string) => {
@@ -253,12 +266,23 @@ export default function ProjectPage() {
           );
         }
         if (!v.isActive) {
+          const busy = activatingRev !== null;
           return (
             <Space>
-              <Button size="small" onClick={() => activate(v.contentRev)}>
+              <Button
+                size="small"
+                loading={activatingRev === v.contentRev}
+                disabled={busy && activatingRev !== v.contentRev}
+                onClick={() => void activate(v.contentRev)}
+              >
                 设为生效
               </Button>
-              <Button size="small" danger onClick={() => discard(v.contentRev)}>
+              <Button
+                size="small"
+                danger
+                disabled={busy}
+                onClick={() => discard(v.contentRev)}
+              >
                 废弃
               </Button>
             </Space>
@@ -518,17 +542,19 @@ export default function ProjectPage() {
             </Space>
           }
         />
-        <Table
-          rowKey="contentRev"
-          size="small"
-          pagination={{
-            pageSize: CONFIG_VERSION_PAGE_SIZE,
-            showSizeChanger: false,
-            showTotal: (total) => `共 ${total} 条`,
-          }}
-          dataSource={versions?.versions || []}
-          columns={columns}
-        />
+        <Spin spinning={activatingRev !== null} tip="正在同步配置到 NAS…">
+          <Table
+            rowKey="contentRev"
+            size="small"
+            pagination={{
+              pageSize: CONFIG_VERSION_PAGE_SIZE,
+              showSizeChanger: false,
+              showTotal: (total) => `共 ${total} 条`,
+            }}
+            dataSource={versions?.versions || []}
+            columns={columns}
+          />
+        </Spin>
         <VersionComparePanel
           gatewayBase={gatewayBase}
           projId={projId}

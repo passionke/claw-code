@@ -216,6 +216,16 @@ pub async fn run_solve_request_docker(
     );
 
     let acquire_wait = Duration::from_secs(timeout_seconds.saturating_add(30));
+    state
+        .session_db
+        .append_turn_solve_timing_bootstrap(&turn_id, "bootstrap_pool_waiting")
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persist bootstrap timing failed: {e}"),
+            )
+        })?;
     let lease = pool
         .acquire_slot(
             acquire_wait,
