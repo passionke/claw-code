@@ -75,6 +75,13 @@ pub use gateway_stdout::{
     emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
     GATEWAY_STDOUT_LINE_PREFIX,
 };
+pub use landlock_dsl::{
+    default_landlock_dsl, expand_landlock_dsl, landlock_from_global_settings,
+    landlock_from_worker_profile_strict, project_has_custom_landlock, resolve_landlock_dsl,
+    validate_landlock_dsl, LandlockDsl, LandlockDslSource, LandlockExpandContext,
+    ResolvedLandlockPaths, LANDLOCK_DSL_VARIABLES,
+};
+pub use landlock_jail::{apply_strict_landlock_jail, probe_landlock, restrict_self_landlock};
 pub use mcp_call_context::{
     build_mcp_call_meta, build_sqlbot_mcp_start_arguments, gateway_mcp_call_context_from_task,
     inject_mcp_call_meta, resolve_gateway_mcp_call_context, resolve_gateway_trace_id,
@@ -103,13 +110,6 @@ pub use task_progress::{
     task_progress_json_path, truncate_progress_history, ProgressEvent, ReportProgressInput,
     TaskProgressFile, TaskProgressTodo, REPORT_PROGRESS_TOOL_NAME,
 };
-pub use landlock_dsl::{
-    default_landlock_dsl, expand_landlock_dsl, landlock_from_global_settings,
-    landlock_from_worker_profile_strict, project_has_custom_landlock, resolve_landlock_dsl,
-    validate_landlock_dsl, LandlockDsl, LandlockDslSource, LandlockExpandContext,
-    ResolvedLandlockPaths, LANDLOCK_DSL_VARIABLES,
-};
-pub use landlock_jail::{apply_strict_landlock_jail, probe_landlock, restrict_self_landlock};
 pub use worker_env::{
     apply_worker_env, build_write_gateway_record_session_script, gateway_llm_session_extra_headers,
     otel_forward_env, resolve_gateway_llm_session_id, worker_env_keys_set,
@@ -1250,7 +1250,10 @@ pub fn run_gateway_solve_turn(
     allowed_tools: Vec<String>,
     max_iterations: usize,
     llm_route: Option<Value>,
-    landlock: Option<(crate::landlock_dsl::LandlockDsl, crate::landlock_dsl::LandlockDslSource)>,
+    landlock: Option<(
+        crate::landlock_dsl::LandlockDsl,
+        crate::landlock_dsl::LandlockDslSource,
+    )>,
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;

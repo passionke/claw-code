@@ -122,7 +122,9 @@ fn validate_path_list(field: &str, paths: &[String]) -> Result<(), String> {
             return Err(format!("landlock.{field}[{idx}] must not contain '..'"));
         }
         if path.contains('*') || path.contains('?') {
-            return Err(format!("landlock.{field}[{idx}] must not contain wildcards"));
+            return Err(format!(
+                "landlock.{field}[{idx}] must not contain wildcards"
+            ));
         }
         if !is_allowed_template_path(path) {
             return Err(format!(

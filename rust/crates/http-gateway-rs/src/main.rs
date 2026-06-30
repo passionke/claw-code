@@ -31,8 +31,9 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use gateway_solve_turn::{
-    probe_landlock, reset_task_progress, run_gateway_biz_polish_llm, run_gateway_biz_polish_llm_async,
-    truncate_progress_history, ReportPolishDeepseek, BOSS_REPORT_SKILL_PROJ_ID,
+    probe_landlock, reset_task_progress, run_gateway_biz_polish_llm,
+    run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
+    BOSS_REPORT_SKILL_PROJ_ID,
 };
 use http_gateway_rs::biz_advice_report::{
     biz_report_sse_event_stream, build_biz_advice_polish_prompt, db_snapshot_report_sse_response,
@@ -44,11 +45,11 @@ use http_gateway_rs::{
     admin_mcp_http, claw_tap_cluster_state, client_origin, gateway_admin_mcp_token,
     gateway_claw_tap_settings, gateway_e2b_nas_settings, gateway_e2b_observe_proxy,
     gateway_e2b_observe_reset, gateway_global_settings, gateway_llm_config_sync,
-    gateway_strict_landlock_settings, gateway_translate,
-    llm_probe, mcp_probe, pool, pool_consumer_resolve, project_config_apply,
-    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
-    project_id, project_tools, session_agent_api, session_db, session_merge, session_ovs_api,
-    session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
+    gateway_strict_landlock_settings, gateway_translate, llm_probe, mcp_probe, pool,
+    pool_consumer_resolve, project_config_apply, project_config_version, project_entity_revision,
+    project_extra_session, project_git_sync, project_id, project_tools, session_agent_api,
+    session_db, session_merge, session_ovs_api, session_terminal_api, turn_id, turn_timeline_api,
+    turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -5153,9 +5154,10 @@ async fn put_gateway_strict_landlock_default_handler(
     State(state): State<AppState>,
     Json(req): Json<gateway_strict_landlock_settings::PutStrictLandlockDefaultInput>,
 ) -> Result<Json<gateway_strict_landlock_settings::PutStrictLandlockDefaultResponse>, ApiError> {
-    let body = gateway_strict_landlock_settings::put_strict_landlock_default(&state.session_db, req)
-        .await
-        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let body =
+        gateway_strict_landlock_settings::put_strict_landlock_default(&state.session_db, req)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     Ok(Json(body))
 }
 

@@ -176,8 +176,9 @@ pub async fn run_solve_request_docker(
                 format!("load strictLandlockDefault failed: {e}"),
             )
         })?;
-    let landlock_resolved = gateway_solve_turn::resolve_landlock_dsl(&worker_profile, &system_landlock)
-        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let landlock_resolved =
+        gateway_solve_turn::resolve_landlock_dsl(&worker_profile, &system_landlock)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let (landlock_dsl, landlock_dsl_source) = match landlock_resolved {
         Some((dsl, source)) => (Some(dsl), Some(source)),
         None => (None, None),
