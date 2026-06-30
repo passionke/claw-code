@@ -28,7 +28,7 @@ pub fn probe_landlock() -> LandlockProbeStatus {
 
 #[cfg(target_os = "linux")]
 fn probe_landlock_linux() -> LandlockProbeStatus {
-    use landlock::{AccessFs, Ruleset, RulesetAttr, ABI};
+    use landlock::{AccessFs, Compatible, Ruleset, RulesetAttr, ABI};
 
     match Ruleset::default()
         .set_compatibility(landlock::CompatLevel::BestEffort)
@@ -64,18 +64,19 @@ pub fn restrict_self_landlock(paths: &ResolvedLandlockPaths) -> Result<(), Strin
 #[cfg(target_os = "linux")]
 fn restrict_self_landlock_linux(paths: &ResolvedLandlockPaths) -> Result<(), String> {
     use landlock::{
-        Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
+        Access, AccessFs, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        RulesetCreatedAttr, ABI,
     };
 
     let abi = ABI::V4;
-    let access_rw = AccessFs::from_all(abi);
-    let access_ro = AccessFs::from_read(abi);
+    let write_access = AccessFs::from_all(abi);
+    let read_access = AccessFs::from_read(abi);
 
     let mut ruleset = Ruleset::default()
         .set_compatibility(landlock::CompatLevel::BestEffort)
-        .handle_access(access_rw)
+        .handle_access(write_access)
         .map_err(|e| format!("landlock ruleset rw handle: {e}"))?
-        .handle_access(access_ro)
+        .handle_access(read_access)
         .map_err(|e| format!("landlock ruleset ro handle: {e}"))?
         .create()
         .map_err(|e| format!("landlock ruleset create: {e}"))?;
@@ -83,13 +84,13 @@ fn restrict_self_landlock_linux(paths: &ResolvedLandlockPaths) -> Result<(), Str
     for path in &paths.rw {
         let fd = PathFd::new(path).map_err(|e| format!("landlock open rw path {path}: {e}"))?;
         ruleset = ruleset
-            .add_rule(PathBeneath::new(fd, access_rw))
+            .add_rule(PathBeneath::new(fd, write_access))
             .map_err(|e| format!("landlock add rw rule {path}: {e}"))?;
     }
     for path in &paths.ro {
         let fd = PathFd::new(path).map_err(|e| format!("landlock open ro path {path}: {e}"))?;
         ruleset = ruleset
-            .add_rule(PathBeneath::new(fd, access_ro))
+            .add_rule(PathBeneath::new(fd, read_access))
             .map_err(|e| format!("landlock add ro rule {path}: {e}"))?;
     }
 
