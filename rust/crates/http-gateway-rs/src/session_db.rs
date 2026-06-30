@@ -978,19 +978,17 @@ impl GatewaySessionDb {
 
     /// `project_fc_worker` → `project_e2b_worker` (idempotent). Author: kejiqing
     async fn migrate_project_e2b_worker_table(pool: &PgPool) -> Result<(), SqlxError> {
-        let fc_exists: bool = sqlx::query_scalar(
-            "SELECT to_regclass('public.project_fc_worker') IS NOT NULL",
-        )
-        .fetch_one(pool)
-        .await?;
+        let fc_exists: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.project_fc_worker') IS NOT NULL")
+                .fetch_one(pool)
+                .await?;
         if !fc_exists {
             return Ok(());
         }
-        let e2b_exists: bool = sqlx::query_scalar(
-            "SELECT to_regclass('public.project_e2b_worker') IS NOT NULL",
-        )
-        .fetch_one(pool)
-        .await?;
+        let e2b_exists: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.project_e2b_worker') IS NOT NULL")
+                .fetch_one(pool)
+                .await?;
         if e2b_exists {
             sqlx::query("DROP TABLE project_fc_worker")
                 .execute(pool)
@@ -1117,11 +1115,9 @@ impl GatewaySessionDb {
 
     /// Historical turn metadata: `fc-cloud` / `fc-interactive` / `fc:sbx_*` → e2b names. Author: kejiqing
     async fn migrate_gateway_turns_e2b_ids(pool: &PgPool) -> Result<(), SqlxError> {
-        sqlx::query(
-            "UPDATE gateway_turns SET pool_id = 'e2b-cloud' WHERE pool_id = 'fc-cloud'",
-        )
-        .execute(pool)
-        .await?;
+        sqlx::query("UPDATE gateway_turns SET pool_id = 'e2b-cloud' WHERE pool_id = 'fc-cloud'")
+            .execute(pool)
+            .await?;
         sqlx::query(
             "UPDATE gateway_turns SET pool_id = 'e2b-interactive' WHERE pool_id = 'fc-interactive'",
         )
