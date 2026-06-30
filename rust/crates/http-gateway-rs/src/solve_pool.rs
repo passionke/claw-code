@@ -13,6 +13,7 @@ use tracing::{info, warn};
 
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
 use http_gateway_rs::claw_tap_cluster_state::resolve_solve_llm_route;
+use http_gateway_rs::gateway_strict_landlock_settings::load_system_landlock_default;
 use http_gateway_rs::pool::interactive_backend::resolve_e2b_worker_solve_llm_route;
 use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease, E2B_POOL_ID};
 
@@ -157,6 +158,31 @@ pub async fn run_solve_request_docker(
     let otel_traceparent = otel_guard
         .as_ref()
         .and_then(|g| inject_traceparent(g.context()));
+    let worker_profile = state
+        .session_db
+        .get_worker_profile_json(req.proj_id)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("load worker_profile_json failed: {e}"),
+            )
+        })?;
+    let system_landlock = load_system_landlock_default(&state.session_db)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("load strictLandlockDefault failed: {e}"),
+            )
+        })?;
+    let landlock_resolved =
+        gateway_solve_turn::resolve_landlock_dsl(&worker_profile, &system_landlock)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let (landlock_dsl, landlock_dsl_source) = match landlock_resolved {
+        Some((dsl, source)) => (Some(dsl), Some(source)),
+        None => (None, None),
+    };
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
@@ -171,6 +197,8 @@ pub async fn run_solve_request_docker(
         worker_name: None,
         llm_route: Some(serde_json::to_value(&llm_route).unwrap_or_default()),
         otel_traceparent,
+        landlock_dsl,
+        landlock_dsl_source,
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(

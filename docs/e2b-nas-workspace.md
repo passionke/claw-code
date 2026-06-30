@@ -221,7 +221,21 @@ CLAW_E2B_E2E_CLEANUP=0 ./deploy/stack/lib/verify-e2b-ovs-e2e.sh
 
 ---
 
-## 10. 代码索引
+## 10. Strict session 隔离（Landlock per-solve）
+
+strict worker 在 **进程层** 做 session 隔离（非 remount、非工具层拦截）：
+
+- 每个 `gateway-solve-once` 启动后、模型/工具执行前，按 **resolve 后的 DSL** 安装 Landlock `restrict_self`。
+- **系统级预制默认**：`gateway_global_settings.strictLandlockDefault`（Admin → 全局配置 → Strict Landlock）。
+- **项目级覆盖**：`project_config.worker_profile_json.strict.landlock`（Admin → Worker profile）；未定义时继承系统默认。
+- worker 镜像只带 DSL 解释器；调规则改系统/项目配置，**不重新发布 worker**。
+- relaxed / OVS **不**启用 Landlock。
+
+代码：`rust/crates/gateway-solve-turn/src/landlock_dsl.rs`、`landlock_jail.rs`；resolve：`http-gateway-rs/src/gateway_strict_landlock_settings.rs`。
+
+---
+
+## 11. 代码索引
 
 | 职责 | 路径 |
 |------|------|
@@ -234,5 +248,6 @@ CLAW_E2B_E2E_CLEANUP=0 ./deploy/stack/lib/verify-e2b-ovs-e2e.sh
 | nasConfig JSON | `rust/crates/claw-e2b-sandbox-client/src/client.rs` |
 | compose NAS bind | `deploy/stack/lib/compose-include.sh` |
 | Admin 只读 e2bNas | `rust/crates/http-gateway-rs/src/gateway_e2b_nas_settings.rs` |
+| Strict Landlock DSL | `rust/crates/gateway-solve-turn/src/landlock_dsl.rs` |
 | e2b host 直 bind | `e2bserver/crates/e2b-core/src/nas.rs`（独立仓库） |
 | e2b bind 验收 | `deploy/stack/lib/verify-e2b-nas-inject.sh` |

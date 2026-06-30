@@ -31,8 +31,9 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use gateway_solve_turn::{
-    reset_task_progress, run_gateway_biz_polish_llm, run_gateway_biz_polish_llm_async,
-    truncate_progress_history, ReportPolishDeepseek, BOSS_REPORT_SKILL_PROJ_ID,
+    probe_landlock, reset_task_progress, run_gateway_biz_polish_llm,
+    run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
+    BOSS_REPORT_SKILL_PROJ_ID,
 };
 use http_gateway_rs::biz_advice_report::{
     biz_report_sse_event_stream, build_biz_advice_polish_prompt, db_snapshot_report_sse_response,
@@ -43,11 +44,12 @@ use http_gateway_rs::biz_advice_report::{
 use http_gateway_rs::{
     admin_mcp_http, claw_tap_cluster_state, client_origin, gateway_admin_mcp_token,
     gateway_claw_tap_settings, gateway_e2b_nas_settings, gateway_e2b_observe_proxy,
-    gateway_e2b_observe_reset, gateway_global_settings, gateway_llm_config_sync, gateway_translate,
-    llm_probe, mcp_probe, pool, pool_consumer_resolve, project_config_apply,
-    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
-    project_id, project_tools, session_agent_api, session_db, session_merge, session_ovs_api,
-    session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
+    gateway_e2b_observe_reset, gateway_global_settings, gateway_llm_config_sync,
+    gateway_strict_landlock_settings, gateway_translate, llm_probe, mcp_probe, pool,
+    pool_consumer_resolve, project_config_apply, project_config_version, project_entity_revision,
+    project_extra_session, project_git_sync, project_id, project_tools, session_agent_api,
+    session_db, session_merge, session_ovs_api, session_terminal_api, turn_id, turn_timeline_api,
+    turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -1695,6 +1697,10 @@ async fn main() {
         .route(
             "/v1/gateway/global-settings/claw-tap/probe",
             post(probe_gateway_claw_tap_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/strict-landlock-default",
+            put(put_gateway_strict_landlock_default_handler),
         )
         .route(
             "/v1/gateway/global-settings/admin-mcp-tokens",
@@ -3871,10 +3877,19 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
 
 async fn readyz(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let snap = claw_tap_cluster_state::snapshot_from_handle(&state.claw_tap_cluster).await;
+    let landlock = probe_landlock();
     if claw_tap_cluster_state::is_ready(&snap) {
         return Ok((
             StatusCode::OK,
-            Json(json!({ "ok": true, "clawTapCluster": snap })),
+            Json(json!({
+                "ok": true,
+                "clawTapCluster": snap,
+                "strictLandlockProbe": {
+                    "supported": landlock.supported,
+                    "enforcing": landlock.enforcing,
+                    "message": landlock.message,
+                },
+            })),
         ));
     }
     Err(ApiError::new(
@@ -5133,6 +5148,17 @@ async fn probe_gateway_claw_tap_handler(
 ) -> Result<Json<gateway_claw_tap_settings::ProbeClawTapResponse>, ApiError> {
     let resp = gateway_claw_tap_settings::probe_claw_tap_endpoint(&state.session_db, req).await;
     Ok(Json(resp))
+}
+
+async fn put_gateway_strict_landlock_default_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_strict_landlock_settings::PutStrictLandlockDefaultInput>,
+) -> Result<Json<gateway_strict_landlock_settings::PutStrictLandlockDefaultResponse>, ApiError> {
+    let body =
+        gateway_strict_landlock_settings::put_strict_landlock_default(&state.session_db, req)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(body))
 }
 
 async fn upsert_gateway_git_pat_handler(

@@ -61,10 +61,9 @@ export interface PromptLimitsJson {
   instructionTotalMaxChars?: number;
 }
 
-/** Per-ds worker profile on e2b (`project_config.worker_profile_json`). Author: kejiqing */
-export interface WorkerProfileJson {
-  mode: "strict" | "relaxed";
-}
+import type { WorkerProfileJson } from "./landlock";
+
+export type { WorkerProfileJson } from "./landlock";
 
 export interface ProjectConfig {
   projId: number;

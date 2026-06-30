@@ -463,6 +463,8 @@ export default function ChatPage() {
               disabled={composerDisabled}
               autoSize={{ minRows: 2, maxRows: 6 }}
               onKeyDown={(ev) => {
+                // 中文/日文等输入法合成候选词时，回车用于确认候选词，不应触发发送
+                if (ev.nativeEvent.isComposing || ev.keyCode === 229) return;
                 if (ev.key === "Enter" && !ev.shiftKey) {
                   ev.preventDefault();
                   void onSend();

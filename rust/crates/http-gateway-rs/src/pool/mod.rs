@@ -53,5 +53,6 @@ pub use session_mount_ownership::{
 pub use stdout_hooks::merge_stdout_hooks;
 pub use worker_profile::{
     default_worker_profile_json, effective_mode, mode_from_json, profile_mode_label,
-    validate_worker_profile_json, WorkerProfileMode,
+    system_landlock_default_json, validate_system_landlock_default, validate_worker_profile_json,
+    WorkerProfileMode,
 };

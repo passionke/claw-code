@@ -1,5 +1,7 @@
 /** Gateway global settings API shapes. Author: kejiqing */
 
+import type { LandlockDsl } from "./landlock";
+
 export interface GitPatRow {
   id: string;
   name: string;
@@ -81,6 +83,7 @@ export interface GlobalSettingsResponse {
   adminMcpTokens?: AdminMcpTokenRow[];
   /** Derived from gateway PG URL; read-only. */
   clusterId?: string;
+  strictLandlockDefault?: LandlockDsl;
 }
 
 export interface AdminMcpTokenRow {
