@@ -14,7 +14,6 @@ use tracing::warn;
 use crate::session_db::GatewaySessionDb;
 
 use super::e2b_proj_worker_registry::E2bProjWorkerRegistry;
-use super::interactive_backend::e2b_worker_llm_env;
 use super::merge_stdout_hooks;
 use super::result::parse_gateway_solve_exec_stdout;
 use super::session_db_sync::{
@@ -190,7 +189,7 @@ impl PoolOps for E2bOrchestratedPool {
                 &sandbox_id,
                 task_rel_under_root,
                 claw_bin,
-                e2b_worker_llm_env(worker_llm_env.unwrap_or_default()),
+                worker_llm_env.unwrap_or_default(),
                 claw_e2b_sandbox_client::GatewaySolveInputs {
                     task_json: &task_json,
                     session_jsonl: None,

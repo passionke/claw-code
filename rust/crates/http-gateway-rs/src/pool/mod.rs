@@ -31,12 +31,13 @@ pub use e2b_orchestrated_pool::{E2bOrchestratedPool, E2B_POOL_ID};
 pub use e2b_proj_worker_registry::E2bProjWorkerRegistry;
 pub use interactive_backend::E2B_INTERACTIVE_POOL_ID;
 pub use interactive_backend::{
-    build_e2b_session_attach_with_tap, build_proj_bake_script, build_session_attach_script,
+    apply_e2b_observe_worker_llm_env, build_proj_bake_script, build_session_attach_script,
     build_start_ttyd_script, e2b_observe_is_enabled, e2b_worker_llm_env, e2b_worker_solve_route,
-    interactive_backend_from_env, interactive_backend_is_e2b, ovs_backend_is_e2b,
-    resolve_e2b_worker_solve_llm_route, terminal_ws_connect_url, E2bInteractiveBackend,
-    E2bNasApiSingleton, InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend,
-    InteractiveSessionSpec, TtydConnectTarget, E2B_WORKER_TAP_PROXY_URL,
+    interactive_backend_from_env, interactive_backend_is_e2b, load_e2b_observe_proxy_base_url,
+    ovs_backend_is_e2b, resolve_e2b_worker_solve_llm_route, terminal_ws_connect_url,
+    E2bInteractiveBackend, E2bNasApiSingleton, InteractiveBackendKind, InteractiveLease,
+    InteractiveSandboxBackend, InteractiveSessionSpec, TtydConnectTarget,
+    E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
 };
 pub use live_report_hub::{HubMsg, LiveReportHub};
 pub use live_report_sse::live_report_sse_response;

@@ -10,16 +10,13 @@ use crate::cluster_identity::{
     fetch_tap_cluster_identity, gateway_cluster_id, gateway_database_url, local_cluster_identity,
     verify_tap_cluster, ClusterIdentity, ClusterMismatchError,
 };
-use crate::gateway_claw_tap_settings::{
-    claw_tap_proxy_base_url, ClawTapMode, ClawTapSettings, DEFAULT_CLAW_TAP_LIVE_PORT,
-    DEFAULT_CLAW_TAP_PROXY_PORT,
-};
+use crate::gateway_claw_tap_settings::{claw_tap_proxy_base_url, ClawTapSettings};
 use crate::gateway_global_settings::{self, ActiveLlmRuntime};
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::gateway_llm_model_apply::{
     normalize_model_name_for_upstream, normalize_upstream_base_url,
 };
-use crate::pool::interactive_backend::{interactive_backend_is_e2b, E2B_WORKER_TAP_PROXY_URL};
+use crate::pool::interactive_backend::interactive_backend_is_e2b;
 use crate::session_db::GatewaySessionDb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -105,7 +102,15 @@ async fn refresh_fc_claw_tap_cluster_state(
     db: &GatewaySessionDb,
     llm_handle: &LlmRuntimeHandle,
 ) -> Result<Option<ClawTapClusterStateInner>, String> {
-    let cluster_id = gateway_cluster_id()?;
+    let (cluster_id, tap) = load_cluster_settings(db).await?;
+    let tap_base = tap
+        .proxy_base_url
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| claw_tap_proxy_base_url(&tap.host, tap.proxy_port))
+        .ok_or_else(|| {
+            "e2b observe tap proxyBaseUrl missing: run gateway.sh observe-tap-up".to_string()
+        })?;
     let db_url = gateway_database_url()?;
     let local = local_cluster_identity(&cluster_id, &db_url)?;
     let _ = crate::gateway_llm_config_sync::sync_llm_runtime_from_db(db, llm_handle).await;
@@ -115,22 +120,25 @@ async fn refresh_fc_claw_tap_cluster_state(
     if active.is_none() {
         return Err("no active LLM model configured in Admin".into());
     }
+    let poll = fetch_tap_cluster_identity(&tap_base, &cluster_id).await;
+    let (consistency, mismatch_reason, tap_identity) = match poll {
+        Ok(tap_id) => match verify_tap_cluster(&local, &tap_id) {
+            Ok(()) => (TapConsistency::Strict, None, Some(tap_id)),
+            Err(ClusterMismatchError { message, .. }) => {
+                (TapConsistency::ClusterMismatch, Some(message), Some(tap_id))
+            }
+        },
+        Err(e) => (TapConsistency::ClusterMismatch, Some(e), None),
+    };
     Ok(Some(ClawTapClusterStateInner {
         cluster_id,
-        tap: ClawTapSettings {
-            mode: ClawTapMode::Local,
-            host: String::new(),
-            proxy_port: DEFAULT_CLAW_TAP_PROXY_PORT,
-            live_port: DEFAULT_CLAW_TAP_LIVE_PORT,
-            updated_at_ms: now_ms(),
-            ..Default::default()
-        },
-        tap_base_url: E2B_WORKER_TAP_PROXY_URL.to_string(),
+        tap,
+        tap_base_url: tap_base,
         local_identity: local,
-        consistency: TapConsistency::Strict,
-        mismatch_reason: None,
+        consistency,
+        mismatch_reason,
         last_check_ms: now_ms(),
-        tap_identity: None,
+        tap_identity,
     }))
 }
 

@@ -2,16 +2,20 @@ import {
   Alert,
   Button,
   Card,
+  Descriptions,
   Form,
   Input,
+  Popconfirm,
   Radio,
   Space,
+  Spin,
   Switch,
+  Table,
   Tag,
   Typography,
   message,
 } from "antd";
-import { MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
+import { MinusCircleOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../api/client";
 import { useApp } from "../context/AppContext";
@@ -19,6 +23,10 @@ import { putProjectConfigDraft } from "../utils/projectConfig";
 import type { GlobalSettingsResponse } from "../types/globalSettings";
 import type { LandlockDsl, WorkerProfileJson } from "../types/landlock";
 import { validateLandlockDslClient } from "../types/landlock";
+import type {
+  ProjectE2bWorkerResetResponse,
+  ProjectE2bWorkerStatusResponse,
+} from "../types/projectE2bWorker";
 
 type Mode = WorkerProfileJson["mode"];
 
@@ -34,7 +42,27 @@ export default function WorkerProfilePage() {
   const { gatewayBase, projId, projectConfig, refreshProjectConfig } = useApp();
   const [form] = Form.useForm<FormValues>();
   const [systemDefault, setSystemDefault] = useState<LandlockDsl | null>(null);
+  const [workerStatus, setWorkerStatus] = useState<ProjectE2bWorkerStatusResponse | null>(null);
+  const [workerLoading, setWorkerLoading] = useState(false);
+  const [workerResetting, setWorkerResetting] = useState(false);
   const mode = Form.useWatch("mode", form);
+
+  const loadWorkerStatus = useCallback(async () => {
+    setWorkerLoading(true);
+    try {
+      const r = await proxyHttp<ProjectE2bWorkerStatusResponse>(
+        gatewayBase,
+        "GET",
+        `/v1/projects/${projId}/e2b-worker`
+      );
+      setWorkerStatus(r);
+    } catch (e) {
+      setWorkerStatus(null);
+      message.error(e instanceof Error ? e.message : "加载 e2b worker 状态失败");
+    } finally {
+      setWorkerLoading(false);
+    }
+  }, [gatewayBase, projId]);
 
   const loadSystemDefault = useCallback(async () => {
     try {
@@ -52,6 +80,10 @@ export default function WorkerProfilePage() {
   useEffect(() => {
     void loadSystemDefault();
   }, [loadSystemDefault]);
+
+  useEffect(() => {
+    void loadWorkerStatus();
+  }, [loadWorkerStatus]);
 
   useEffect(() => {
     const wp = projectConfig?.workerProfileJson;
@@ -116,6 +148,137 @@ export default function WorkerProfilePage() {
           </>
         }
       />
+      <Card
+        type="inner"
+        title="e2b Worker 沙箱"
+        size="small"
+        style={{ marginBottom: 16 }}
+        extra={
+          <Space>
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              loading={workerLoading}
+              onClick={() => void loadWorkerStatus()}
+            >
+              刷新
+            </Button>
+            <Popconfirm
+              title="强制重建 Worker？"
+              description="将 kill 当前项目 warm worker 并按最新模板重新创建。"
+              okText="重建"
+              cancelText="取消"
+              onConfirm={async () => {
+                setWorkerResetting(true);
+                try {
+                  const r = await proxyHttp<ProjectE2bWorkerResetResponse>(
+                    gatewayBase,
+                    "POST",
+                    `/v1/projects/${projId}/e2b-worker/reset`
+                  );
+                  setWorkerStatus({
+                    projId: r.projId,
+                    desiredTemplate: workerStatus?.desiredTemplate ?? "claw-worker",
+                    worker: r.worker,
+                    rotationLog: r.rotationLog,
+                  });
+                  message.success(`Worker 已重建：${r.worker.sandboxId}`);
+                  await loadWorkerStatus();
+                } catch (e) {
+                  message.error(e instanceof Error ? e.message : "重建 Worker 失败");
+                } finally {
+                  setWorkerResetting(false);
+                }
+              }}
+            >
+              <Button size="small" type="primary" danger loading={workerResetting}>
+                强制重建最新 Worker
+              </Button>
+            </Popconfirm>
+          </Space>
+        }
+      >
+        {workerLoading && !workerStatus ? (
+          <Spin />
+        ) : workerStatus?.worker ? (
+          <>
+            <Descriptions size="small" column={1} bordered>
+              <Descriptions.Item label="sandboxId">
+                <Typography.Text copyable>{workerStatus.worker.sandboxId}</Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="workerId">
+                <Typography.Text copyable>{workerStatus.worker.workerId}</Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="模板契约">
+                {workerStatus.worker.templateContract}
+              </Descriptions.Item>
+              <Descriptions.Item label="期望模板">
+                {workerStatus.desiredTemplate}
+              </Descriptions.Item>
+              <Descriptions.Item label="运行状态">
+                {workerStatus.worker.running ? (
+                  <Tag color="green">running</Tag>
+                ) : (
+                  <Tag color="red">offline</Tag>
+                )}
+                {workerStatus.worker.remainingTtlSecs != null ? (
+                  <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+                    TTL {workerStatus.worker.remainingTtlSecs}s
+                  </Typography.Text>
+                ) : null}
+              </Descriptions.Item>
+              <Descriptions.Item label="e2b API">
+                <Typography.Text copyable>{workerStatus.worker.urls.e2bApiUrl}</Typography.Text>
+              </Descriptions.Item>
+              {workerStatus.worker.urls.trafficProxyBase ? (
+                <Descriptions.Item label="Traffic 代理">
+                  <Typography.Text copyable>
+                    {workerStatus.worker.urls.trafficProxyBase}
+                  </Typography.Text>
+                </Descriptions.Item>
+              ) : null}
+              <Descriptions.Item label="沙箱域名">
+                <Typography.Text copyable>{workerStatus.worker.urls.sandboxDomain}</Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="ttyd Host">
+                <Typography.Text copyable>{workerStatus.worker.urls.ttydPublicHost}</Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="ttyd WS URL">
+                <Typography.Text copyable style={{ wordBreak: "break-all" }}>
+                  {workerStatus.worker.urls.ttydWsUrl}
+                </Typography.Text>
+              </Descriptions.Item>
+            </Descriptions>
+            {workerStatus.rotationLog.length > 0 ? (
+              <Table
+                size="small"
+                style={{ marginTop: 12 }}
+                pagination={false}
+                rowKey={(row) => `${row.atMs}-${row.event}-${row.sandboxId ?? ""}`}
+                dataSource={workerStatus.rotationLog}
+                columns={[
+                  { title: "事件", dataIndex: "event", width: 100 },
+                  { title: "sandboxId", dataIndex: "sandboxId", ellipsis: true },
+                  { title: "原因", dataIndex: "reason", ellipsis: true },
+                  {
+                    title: "时间",
+                    dataIndex: "atMs",
+                    width: 180,
+                    render: (ms: number) => new Date(ms).toLocaleString(),
+                  },
+                ]}
+              />
+            ) : null}
+          </>
+        ) : (
+          <Alert
+            type="warning"
+            showIcon
+            message="当前项目尚无 warm worker"
+            description={`期望模板：${workerStatus?.desiredTemplate ?? "claw-worker"}。可点击「强制重建」创建。`}
+          />
+        )}
+      </Card>
       <Form form={form} layout="vertical">
         <Form.Item name="mode" label="Worker profile">
           <Radio.Group>

@@ -114,7 +114,20 @@ pub fn apply_strict_landlock_jail(
         ));
     }
     let paths = crate::landlock_dsl::expand_landlock_dsl(dsl, source, ctx)?;
+    prepare_session_rw_dirs(&paths, ctx.session_root)?;
     restrict_self_landlock(&paths)
+}
+
+fn prepare_session_rw_dirs(paths: &ResolvedLandlockPaths, session_root: &str) -> Result<(), String> {
+    let root = std::path::Path::new(session_root);
+    for raw in &paths.rw {
+        let path = std::path::Path::new(raw);
+        if path == root || path.starts_with(root) {
+            std::fs::create_dir_all(path)
+                .map_err(|e| format!("landlock mkdir rw path {raw}: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

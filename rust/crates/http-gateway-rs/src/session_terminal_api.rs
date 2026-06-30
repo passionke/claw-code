@@ -21,8 +21,8 @@ use crate::client_origin;
 use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::{
-    self, build_e2b_session_attach_with_tap, build_proj_bake_script, build_start_ttyd_script,
-    e2b_worker_llm_env, gateway_proj_work_dir, gateway_session_home, interactive_backend_is_e2b,
+    self, apply_e2b_observe_worker_llm_env, build_proj_bake_script, build_session_attach_script,
+    build_start_ttyd_script, gateway_proj_work_dir, gateway_session_home, interactive_backend_is_e2b,
     terminal_ws_connect_url, InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec,
     PoolClients, TtydConnectTarget,
 };
@@ -557,15 +557,13 @@ pub async fn terminal_start(
         resolve_terminal_llm_env(&ctx.session_db, &ctx.claw_tap_cluster, &ctx.llm_runtime)
             .await
             .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
-    llm_env = e2b_worker_llm_env(llm_env);
+    llm_env = apply_e2b_observe_worker_llm_env(&ctx.session_db, llm_env)
+        .await
+        .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
 
     let proj_home = proj_dir.join("home");
 
-    let e2b_session_attach_script = Some(
-        build_e2b_session_attach_with_tap(&ctx.session_db, &llm_env)
-            .await
-            .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?,
-    );
+    let e2b_session_attach_script = Some(build_session_attach_script(&llm_env));
     let e2b_proj_bake_script = Some(
         build_proj_bake_script(&ctx.session_db, req.proj_id)
             .await

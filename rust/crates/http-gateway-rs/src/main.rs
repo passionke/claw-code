@@ -45,11 +45,11 @@ use http_gateway_rs::{
     admin_mcp_http, claw_tap_cluster_state, client_origin, gateway_admin_mcp_token,
     gateway_claw_tap_settings, gateway_e2b_nas_settings, gateway_e2b_observe_proxy,
     gateway_e2b_observe_reset, gateway_global_settings, gateway_llm_config_sync,
-    gateway_strict_landlock_settings, gateway_translate, llm_probe, mcp_probe, pool,
-    pool_consumer_resolve, project_config_apply, project_config_version, project_entity_revision,
-    project_extra_session, project_git_sync, project_id, project_tools, session_agent_api,
-    session_db, session_merge, session_ovs_api, session_terminal_api, turn_id, turn_timeline_api,
-    turn_tools_api,
+    gateway_project_e2b_worker, gateway_strict_landlock_settings, gateway_translate, llm_probe,
+    mcp_probe, pool, pool_consumer_resolve, project_config_apply, project_config_version,
+    project_entity_revision, project_extra_session, project_git_sync, project_id, project_tools,
+    session_agent_api, session_db, session_merge, session_ovs_api, session_terminal_api, turn_id,
+    turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -1559,6 +1559,14 @@ async fn main() {
         )
         .route("/v1/projects/{proj_id}", delete(delete_project))
         .route("/v1/projects/{proj_id}/git/pull", post(pull_project_git))
+        .route(
+            "/v1/projects/{proj_id}/e2b-worker",
+            get(get_project_e2b_worker_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/e2b-worker/reset",
+            post(reset_project_e2b_worker_handler),
+        )
         .route("/v1/init", post(init_workspace))
         .route("/v1/solve", post(solve))
         .route("/v1/start", post(solve_start))
@@ -5118,6 +5126,47 @@ async fn reset_gateway_observe_tap_handler(
     let body = gateway_e2b_observe_reset::reset_observe_tap(&state.session_db)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(body))
+}
+
+async fn get_project_e2b_worker_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<gateway_project_e2b_worker::ProjectE2bWorkerStatusResponse>, ApiError> {
+    let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "e2b sandbox client not configured",
+        )
+    })?;
+    let body = gateway_project_e2b_worker::get_project_e2b_worker_status(
+        &state.session_db,
+        client,
+        proj_id,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(body))
+}
+
+async fn reset_project_e2b_worker_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<gateway_project_e2b_worker::ProjectE2bWorkerResetResponse>, ApiError> {
+    let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "e2b sandbox client not configured",
+        )
+    })?;
+    let body = gateway_project_e2b_worker::reset_project_e2b_worker(
+        state.pool_clients.e2b_worker_registry(),
+        &state.session_db,
+        client,
+        proj_id,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
     Ok(Json(body))
 }
 

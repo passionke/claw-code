@@ -90,11 +90,9 @@ def _dockerfile_debian_copy() -> str:
     )
     return f"""FROM {debian}
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    nfs-common ca-certificates python3 python3-pip sudo \\
+    nfs-common ca-certificates sudo \\
     && echo 'user ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, /usr/bin/mountpoint, /bin/mkdir, /bin/chown' > /etc/sudoers.d/claw-nfs \\
     && chmod 440 /etc/sudoers.d/claw-nfs \\
-    && pip3 install --no-cache-dir --break-system-packages claw-tap \\
-      -i https://pypi.tuna.tsinghua.edu.cn/simple \\
     && rm -rf /var/lib/apt/lists/*
 COPY claw /usr/local/bin/claw
 COPY ttyd /usr/local/bin/ttyd

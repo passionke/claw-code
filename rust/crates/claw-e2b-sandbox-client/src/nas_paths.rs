@@ -96,7 +96,7 @@ pub fn guest_worker_work_dir() -> &'static str {
     GUEST_CLAW_HOST_ROOT
 }
 
-/// Warm worker: home (ro) + sessions + worker cache + tap-traces.
+/// Warm worker: home (ro) + sessions + worker cache.
 #[must_use]
 pub fn warm_worker_mounts(cluster_id: &str, proj_id: i64, worker_id: &str) -> Vec<NasMountPoint> {
     vec![
@@ -113,11 +113,6 @@ pub fn warm_worker_mounts(cluster_id: &str, proj_id: i64, worker_id: &str) -> Ve
         NasMountPoint {
             rel_path: worker_rel(cluster_id, proj_id, worker_id),
             mount_dir: GUEST_CLAW_HOST_ROOT.into(),
-            read_only: false,
-        },
-        NasMountPoint {
-            rel_path: tap_traces_rel().to_string(),
-            mount_dir: GUEST_CLAW_TAP_TRACES.into(),
             read_only: false,
         },
     ]
@@ -150,11 +145,6 @@ pub fn worker_mounts(
         NasMountPoint {
             rel_path: worker_rel(cluster_id, proj_id, worker_id),
             mount_dir: GUEST_CLAW_HOST_ROOT.into(),
-            read_only: false,
-        },
-        NasMountPoint {
-            rel_path: tap_traces_rel().to_string(),
-            mount_dir: GUEST_CLAW_TAP_TRACES.into(),
             read_only: false,
         },
     ];
@@ -200,7 +190,7 @@ mod tests {
     #[test]
     fn warm_mounts_include_sessions_and_ro_home() {
         let warm = warm_worker_mounts(CID, 1, "wrk_1");
-        assert_eq!(warm.len(), 4);
+        assert_eq!(warm.len(), 3);
         assert!(warm[0].read_only);
         assert_eq!(warm[0].mount_dir, GUEST_CLAW_DS);
         assert_eq!(warm[1].mount_dir, GUEST_CLAW_SESSIONS);

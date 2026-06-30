@@ -36,6 +36,7 @@ pub mod gateway_llm_cluster_store;
 pub mod gateway_llm_config_sync;
 pub mod gateway_llm_model_apply;
 pub mod gateway_llm_model_revision;
+pub mod gateway_project_e2b_worker;
 pub mod gateway_strict_landlock_settings;
 pub mod gateway_translate;
 pub mod live_report_audit;

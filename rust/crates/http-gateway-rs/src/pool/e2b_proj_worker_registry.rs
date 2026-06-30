@@ -19,10 +19,9 @@ use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
     load_e2b_worker_template_id,
 };
-use crate::session_db::{GatewaySessionDb, ProjectFcWorkerRow};
+use crate::session_db::{GatewaySessionDb, ProjectFcWorkerRow, WorkerRotationEvent};
 
 use super::e2b_nas_layout::allocate_worker_id;
-use super::interactive_backend::build_e2b_worker_tap_start_script_from_db;
 use super::NasLayoutBackend;
 
 const PROJECT_WORKER_CONTRACT_VERSION: &str = "nas-session-root-v1";
@@ -31,11 +30,23 @@ fn worker_contract_key(template_id: &str) -> String {
     format!("{template_id}#{PROJECT_WORKER_CONTRACT_VERSION}")
 }
 
+/// Best-effort append to `worker_rotation_log`; audit never blocks worker lifecycle. Author: kejiqing
+async fn audit_rotation(db: &GatewaySessionDb, event: WorkerRotationEvent) {
+    if let Err(e) = db.insert_worker_rotation_event(&event).await {
+        warn!(
+            target: "claw_e2b_proj_worker",
+            proj_id = event.proj_id,
+            event = %event.event,
+            error = %e,
+            "worker rotation audit insert failed (best-effort)"
+        );
+    }
+}
+
 struct ProjWorkerRuntime {
     handle: E2bSandboxHandle,
     worker_id: String,
     template_id: String,
-    tap_started: bool,
 }
 
 /// In-memory cache + lease ref-count per project worker.
@@ -149,7 +160,6 @@ impl E2bProjWorkerRegistry {
                     handle,
                     existing.worker_id.clone(),
                     existing.template_id.clone(),
-                    true,
                 )
                 .await;
                 self.client
@@ -177,6 +187,19 @@ impl E2bProjWorkerRegistry {
             if self.client.sandbox_running(&existing.sandbox_id).await {
                 let _ = self.client.kill_sandbox(&existing.sandbox_id).await;
             }
+            audit_rotation(
+                db.as_ref(),
+                WorkerRotationEvent {
+                    proj_id,
+                    event: "rotated_out".to_string(),
+                    sandbox_id: Some(existing.sandbox_id.clone()),
+                    worker_id: Some(existing.worker_id.clone()),
+                    template_id: Some(existing.template_id.clone()),
+                    reason: Some("template_mismatch_or_offline".to_string()),
+                    at_ms: chrono::Utc::now().timestamp_millis(),
+                },
+            )
+            .await;
             let _ = db.delete_project_e2b_worker(proj_id).await;
             self.workers.lock().await.remove(&proj_id);
         }
@@ -195,11 +218,6 @@ impl E2bProjWorkerRegistry {
             .client
             .create_warm_proj_sandbox(&self.nas_layout.cluster_id()?, proj_id, &worker_id)
             .await?;
-        let tap_start = build_e2b_worker_tap_start_script_from_db(db.as_ref()).await?;
-        if let Err(e) = self.client.exec_shell_script(&handle, &tap_start).await {
-            let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
-            return Err(format!("fc proj worker tap start: {e}"));
-        }
         if let Err(e) = self
             .client
             .renew_sandbox_ttl_secs(&handle.sandbox_id, self.worker_ttl_secs)
@@ -221,13 +239,25 @@ impl E2bProjWorkerRegistry {
         db.upsert_project_e2b_worker(&row)
             .await
             .map_err(|e| format!("upsert project_e2b_worker: {e}"))?;
+        audit_rotation(
+            db.as_ref(),
+            WorkerRotationEvent {
+                proj_id,
+                event: "created".to_string(),
+                sandbox_id: Some(row.sandbox_id.clone()),
+                worker_id: Some(row.worker_id.clone()),
+                template_id: Some(contract_key.clone()),
+                reason: None,
+                at_ms: now_ms,
+            },
+        )
+        .await;
 
         self.cache_worker(
             proj_id,
             handle.clone(),
             worker_id,
             contract_key.clone(),
-            true,
         )
         .await;
         info!(
@@ -248,7 +278,6 @@ impl E2bProjWorkerRegistry {
         handle: E2bSandboxHandle,
         worker_id: String,
         template_id: String,
-        tap_started: bool,
     ) {
         self.client.register_tracked_sandbox(&handle.sandbox_id);
         self.workers.lock().await.insert(
@@ -257,7 +286,6 @@ impl E2bProjWorkerRegistry {
                 handle,
                 worker_id,
                 template_id,
-                tap_started,
             },
         );
     }
@@ -367,6 +395,45 @@ impl E2bProjWorkerRegistry {
                 }
             }
         });
+    }
+
+    /// Force kill + recreate project worker on latest template (admin reset). Author: kejiqing
+    pub async fn force_rotate_proj(&self, proj_id: i64) -> Result<(), String> {
+        let db = self.session_db().await?;
+        let template_id = load_e2b_worker_template_id(db.as_ref())
+            .await
+            .map_err(|e| format!("load e2bWorker template: {e}"))?;
+        let row = db
+            .get_project_e2b_worker(proj_id)
+            .await
+            .map_err(|e| format!("get project_e2b_worker: {e}"))?;
+        if let Some(ref existing) = row {
+            info!(
+                target: "claw_e2b_proj_worker",
+                proj_id,
+                sandbox_id = %existing.sandbox_id,
+                "admin force rotate project worker"
+            );
+            if self.client.sandbox_running(&existing.sandbox_id).await {
+                let _ = self.client.kill_sandbox(&existing.sandbox_id).await;
+            }
+            audit_rotation(
+                db.as_ref(),
+                WorkerRotationEvent {
+                    proj_id,
+                    event: "rotated_out".to_string(),
+                    sandbox_id: Some(existing.sandbox_id.clone()),
+                    worker_id: Some(existing.worker_id.clone()),
+                    template_id: Some(existing.template_id.clone()),
+                    reason: Some("admin_force_reset".to_string()),
+                    at_ms: chrono::Utc::now().timestamp_millis(),
+                },
+            )
+            .await;
+            let _ = db.delete_project_e2b_worker(proj_id).await;
+            self.workers.lock().await.remove(&proj_id);
+        }
+        self.create_and_persist(proj_id, &template_id).await
     }
 
     /// Gateway shutdown: workers survive (no kill).

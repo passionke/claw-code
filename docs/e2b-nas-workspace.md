@@ -21,7 +21,7 @@ Author: kejiqing
 │       ├── home/                             ← ds_home（管理后台 materialize；worker 只读 bind）
 │       ├── sessions/{sessionId}/             ← 真实目录（OVS + resolve 上下文 SoT）
 │       └── workers/{workerId}/               ← 执行缓存（e2b bind → /claw_host_root）
-└── tap-traces/                               ← claude-tap traces（可选）
+└── tap-traces/                               ← observe 单例 claude-tap 写（worker 不挂载）
 ```
 
 **Invariant：**
