@@ -11,8 +11,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# v0.0.10+ published to GHCR by claude-tap CI (not ACR). Override via CLAUDE_TAP_IMAGE.
-DEFAULT_CLAUDE_TAP_IMAGE = "ghcr.io/passionke/claude-tap:v0.0.10"
+# v0.0.11+ injects PG api key in gateway mode (v0.0.10 forwarded claw-tap-cluster → 401).
+# Published to GHCR by claude-tap CI (not ACR). Override via CLAUDE_TAP_IMAGE only for dev.
+DEFAULT_CLAUDE_TAP_IMAGE = "ghcr.io/passionke/claude-tap:v0.0.11"
 
 
 def _env(name: str, default: str = "") -> str:

@@ -126,8 +126,9 @@ Gateway 本地计算 `local = local_cluster_identity(CLAW_CLUSTER_ID, CLAW_GATEW
 ## 6. LLM / 上游模型（tap 侧）
 
 - **生效模型真源**：与 gateway 相同的 PostgreSQL（Admin「全局推理」写入的 active LLM）。
-- Gateway solve 时仍把 Admin 中的 `apiKey`、`model` 经 `Exec -e` 传给 worker；`OPENAI_BASE_URL` **固定为 tap**。
-- **期望**：claw-tap 用 PG 中的配置做代理/路由（实现细节在 claude-tap 仓库；本仓库只要求 health 契约 + 同库同 hash）。
+- **e2b 生产路径**：Gateway **不**把真实 `apiKey` 经 Worker 传递；Worker 仅 `OPENAI_API_KEY=claw-tap-cluster`（占位），`OPENAI_BASE_URL` 指向 tap。详见 [`llm-usage-layer.md`](llm-usage-layer.md)。
+- **tap 必须**：从 PG 解密 `api_key_ciphertext`，在转发上游时设置 `Authorization: Bearer <解密 key>`，**禁止**把 Worker 占位 `Authorization` 原样转发。
+- **本地 compose pool**（非 e2b）：Gateway 可向可信 Worker 注入真实 key；与 e2b 路径不可混用。
 
 Gateway `output_json.llmRoute` 快照字段（供审计，非 tap 接口）：
 

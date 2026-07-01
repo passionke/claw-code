@@ -349,7 +349,11 @@ def main() -> int:
     fc_domain = _env("CLAW_E2B_DOMAIN") or _env("E2B_DOMAIN") or "supone.top"
     cluster_id = _env("CLAW_CLUSTER_ID") or "default"
     template = _env("CLAW_E2B_OBSERVE_TEMPLATE") or "claw-observe"
-    timeout_secs = int(_env("CLAW_E2B_SANDBOX_TIMEOUT_SECS", "3600") or "3600")
+    # observe 是常驻单例（与 nas-api 同级），生命周期必须长命：默认一年。
+    # 关键边界：不复用 worker 短命旋钮 CLAW_E2B_SANDBOX_TIMEOUT_SECS（.env 里通常=3600 给临时 worker），
+    # 否则单例会跟着 1h 自然死、全集群 solve 被 block。单例用独立旋钮 CLAW_E2B_OBSERVE_TIMEOUT_SECS。
+    _observe_default_timeout = str(365 * 24 * 3600)
+    timeout_secs = int(_env("CLAW_E2B_OBSERVE_TIMEOUT_SECS", _observe_default_timeout) or _observe_default_timeout)
     live_port = _observe_live_port()
     self_hosted = _is_self_hosted(api_url)
     db_url = _database_url()
