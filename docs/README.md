@@ -64,6 +64,8 @@ Author: kejiqing
 | [`http-gateway-rs-api.md`](http-gateway-rs-api.md) | 接口详表 |
 | [`deploy-ops-truth.md`](deploy-ops-truth.md) | 脚本实际行为（与 README 对照） |
 | [`project-config-model.md`](project-config-model.md) | PG `project_config` |
+| [`gateway-solve-preflight.md`](gateway-solve-preflight.md) | 首轮 solve preflight（现状） |
+| [`ovs-chat/PREFLIGHT-SPI-PLAN.md`](ovs-chat/PREFLIGHT-SPI-PLAN.md) | **Preflight SPI 插件化**（`feat/preflight-spi` 设计稿） |
 | [`claw-tap-cluster-identity.md`](claw-tap-cluster-identity.md) | clawTap `clusterHash` |
 | [`langfuse-otel.md`](langfuse-otel.md) | OTEL span 命名 |
 
