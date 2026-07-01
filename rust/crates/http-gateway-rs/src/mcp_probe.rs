@@ -238,7 +238,11 @@ pub async fn probe_mcp_server(server_name: &str, config: &Value) -> McpTestRespo
     cleanup();
 
     let ok = discover_ok && errors.is_empty();
-    let status = if ok { "ok".to_string() } else { "error".to_string() };
+    let status = if ok {
+        "ok".to_string()
+    } else {
+        "error".to_string()
+    };
 
     McpTestResponse {
         ok,
