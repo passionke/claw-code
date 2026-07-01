@@ -198,13 +198,12 @@ impl E2bNasApiSingleton {
     /// `CLAW_E2B_NAS_API` gate: unset/`1`/`true` → enabled; `0`/`false`/`no`/`off` → disabled.
     #[must_use]
     pub fn enabled_from_env() -> bool {
-        match std::env::var("CLAW_E2B_NAS_API")
-            .ok()
-            .map(|v| v.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("0") | Some("false") | Some("no") | Some("off") => false,
-            _ => true,
-        }
+        !matches!(
+            std::env::var("CLAW_E2B_NAS_API")
+                .ok()
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("0" | "false" | "no" | "off")
+        )
     }
 }

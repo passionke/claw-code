@@ -238,11 +238,11 @@ fn ovs_turn_pool_id(active: &ActiveTerminalSession) -> &str {
     }
 }
 
-fn ovs_turn_exec_user(active: &ActiveTerminalSession) -> Option<&'static str> {
+fn ovs_turn_exec_user(active: &ActiveTerminalSession) -> &'static str {
     if active.backend == InteractiveBackendKind::E2b {
-        Some("0:0")
+        "0:0"
     } else {
-        Some("claw")
+        "claw"
     }
 }
 
@@ -258,7 +258,7 @@ fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<E2bSandb
         .proxy_host_header
         .as_deref()
         .filter(|h| !h.is_empty())
-        .or_else(|| {
+        .or({
             if active.ttyd.use_tls && !active.ttyd.host.is_empty() {
                 Some(active.ttyd.host.as_str())
             } else {
@@ -328,7 +328,7 @@ async fn assign_ovs_turn_pool_worker(
             turn_id,
             ovs_turn_pool_id(active),
             worker_name,
-            ovs_turn_exec_user(active),
+            Some(ovs_turn_exec_user(active)),
         )
         .await
     {
@@ -556,9 +556,10 @@ async fn run_ovs_interactive_prompt(
     Ok(())
 }
 
-pub async fn agent_ws_upgrade(
+#[allow(clippy::unused_async)]
+pub fn agent_ws_upgrade(
     ctx: TerminalApiContext,
-    session_id: String,
+    session_id: &str,
     q: AgentProjQuery,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {

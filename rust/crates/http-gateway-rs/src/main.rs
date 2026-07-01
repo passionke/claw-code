@@ -3813,7 +3813,7 @@ async fn agent_ws_handler(
     AxumPath(session_id): AxumPath<String>,
     Query(q): Query<session_agent_api::AgentProjQuery>,
 ) -> impl IntoResponse {
-    session_agent_api::agent_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
+    session_agent_api::agent_ws_upgrade(state.terminal_api_ctx(), &session_id, q, ws)
 }
 
 async fn ovs_workspace_handler(

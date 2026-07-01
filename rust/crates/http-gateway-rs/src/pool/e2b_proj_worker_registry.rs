@@ -46,6 +46,7 @@ async fn audit_rotation(db: &GatewaySessionDb, event: WorkerRotationEvent) {
 struct ProjWorkerRuntime {
     handle: E2bSandboxHandle,
     worker_id: String,
+    #[allow(dead_code)]
     template_id: String,
 }
 
@@ -360,9 +361,8 @@ impl E2bProjWorkerRegistry {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                let db = match self.session_db().await {
-                    Ok(d) => d,
-                    Err(_) => continue,
+                let Ok(db) = self.session_db().await else {
+                    continue;
                 };
                 let template_id = match load_e2b_worker_template_id(db.as_ref()).await {
                     Ok(t) => t,

@@ -29,13 +29,11 @@ pub fn nas_cluster_id() -> Result<String, String> {
 }
 
 /// Gateway convenience: `work_root/{clusterId}/proj_{id}/`.
-#[must_use]
 pub fn gateway_proj_work_dir(work_root: &Path, proj_id: i64) -> Result<std::path::PathBuf, String> {
     Ok(proj_work_dir(work_root, &nas_cluster_id()?, proj_id))
 }
 
 /// Gateway convenience: session home under cluster-prefixed NAS tree.
-#[must_use]
 pub fn gateway_session_home(
     work_root: &Path,
     proj_id: i64,
