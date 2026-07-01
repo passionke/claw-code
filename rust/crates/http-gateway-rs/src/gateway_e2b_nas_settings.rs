@@ -8,6 +8,7 @@ use crate::pool::interactive_backend::E2bNasApiSingleton;
 use crate::pool::nas_host_root;
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct E2bNasSettingsPublic {
     #[serde(rename = "readOnly")]
     pub read_only: bool,

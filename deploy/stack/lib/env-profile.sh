@@ -45,7 +45,8 @@ claw_apply_deploy_profile() {
     local)
       unset CLAW_POOL_DAEMON_TCP CLAW_POOL_DAEMON_SOCKET CLAW_POOL_DAEMON_TCP_HOST 2>/dev/null || true
       unset CLAW_POOL_RPC_TRANSPORT 2>/dev/null || true
-      export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-podman}"
+      # Local dev is podman-only (no colima/docker.sock fallback). kejiqing
+      export CLAW_CONTAINER_RUNTIME=podman
       export GATEWAY_IMAGE="${GATEWAY_IMAGE:-claw-gateway-rs:local}"
       export GATEWAY_PLAYGROUND_IMAGE="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
       # shellcheck source=/dev/null
@@ -93,19 +94,8 @@ claw_apply_deploy_profile() {
       ;;
   esac
 
-  if [[ "${CLAW_USE_DOCKER:-0}" == "1" && "${CLAW_CONTAINER_RUNTIME:-}" == "auto" ]]; then
+  if [[ "${profile}" == production && "${CLAW_USE_DOCKER:-0}" == "1" && "${CLAW_CONTAINER_RUNTIME:-}" == "auto" ]]; then
     export CLAW_CONTAINER_RUNTIME=docker
-  fi
-
-  # Local docker: claude-tap sidecar only (solve/interactive on e2b). kejiqing
-  if [[ "${profile}" == local && "${CLAW_CONTAINER_RUNTIME:-}" == docker ]]; then
-    export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-docker}"
-    export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
-    export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
-    export CLAUDE_TAP_DOCKER_NETWORK="${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
-    export CLAW_DOCKER_NETWORK="${CLAW_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
-    export CLAUDE_TAP_PUBLISH_PROXY="${CLAUDE_TAP_PUBLISH_PROXY:-127.0.0.1:8080:8080}"
-    export CLAUDE_TAP_PUBLISH_LIVE="${CLAUDE_TAP_PUBLISH_LIVE:-0.0.0.0:3000:3000}"
   fi
 
   export CLAW_GATEWAY_DATABASE_URL="${CLAW_GATEWAY_DATABASE_URL:-$(claw_default_gateway_database_url)}"
@@ -143,7 +133,17 @@ claw_validate_deploy_profile() {
   esac
 
   case "${profile}" in
-    local) ;;
+    local)
+      if [[ "${CLAW_USE_DOCKER:-0}" == "1" ]]; then
+        echo "error: CLAW_DEPLOY_PROFILE=local is locked to podman; remove CLAW_USE_DOCKER from .env" >&2
+        return 1
+      fi
+      if [[ "${rt}" != podman ]]; then
+        echo "error: CLAW_DEPLOY_PROFILE=local requires podman (got runtime=${rt:-none})" >&2
+        echo "hint: podman machine start (macOS) or install podman; do not set CLAW_CONTAINER_RUNTIME=docker/auto" >&2
+        return 1
+      fi
+      ;;
     production)
       case "${CLAW_LLM_PROXY:-direct}" in
         local)

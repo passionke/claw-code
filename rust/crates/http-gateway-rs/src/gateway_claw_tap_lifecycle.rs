@@ -22,6 +22,7 @@ pub fn is_local_claw_tap(settings: &ClawTapSettings) -> bool {
 const POOL_MANAGED_TAP_HINT: &str = "claude-tap is pool-managed (gateway.sh up / pool-up); upstream hot-reloads via claw-tap-upstream.json";
 
 /// Gateway does not restart tap; pool host scripts own lifecycle.
+#[allow(clippy::unused_async)]
 pub async fn restart_local_claw_tap(_live_port: u16) -> TapRestartOutcome {
     TapRestartOutcome {
         attempted: false,

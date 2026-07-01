@@ -150,9 +150,9 @@ pub fn build_write_gateway_record_session_script(record_session_id: &str) -> Str
     let trimmed = record_session_id.trim();
     let b64 = base64::engine::general_purpose::STANDARD.encode(trimmed.as_bytes());
     format!(
-        r#"set -e
+        r"set -e
 mkdir -p /claw_host_root/.claw
-printf '%s' '{b64}' | base64 -d > {GATEWAY_RECORD_SESSION_ID_GUEST}"#
+printf '%s' '{b64}' | base64 -d > {GATEWAY_RECORD_SESSION_ID_GUEST}"
     )
 }
 

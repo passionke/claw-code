@@ -593,10 +593,10 @@ claw_podman_load_compose_args() {
   return 1
 }
 
-# 同一套脚本本地/线上共用：自动选 `podman` 或 `docker`（无需按环境改两套变量）。
-# - 默认 auto：PATH 里**优先 podman**，否则 docker（线上常只有 docker；本机常装 podman）。
-# - 两台都装了要强制其一：`.env` 里 `CLAW_CONTAINER_RUNTIME=podman` 或 `docker`。
-# - 兼容旧 `.env`：`CLAW_USE_DOCKER=1` 等价于 `CLAW_CONTAINER_RUNTIME=docker`（勿与新变量同时矛盾使用）。
+# 同一套脚本本地/线上共用：按 profile 选 `podman` 或 `docker`。
+# - local profile：env-profile 强制 podman（勿设 CLAW_CONTAINER_RUNTIME=docker / CLAW_USE_DOCKER）。
+# - production：默认 docker；`auto` 时 PATH 优先 podman，否则 docker。
+# - 显式覆盖：`.env` 里 `CLAW_CONTAINER_RUNTIME=podman` 或 `docker`（local 下 docker 会在 validate 失败）。
 # Author: kejiqing
 claw_container_runtime_cli() {
   local r

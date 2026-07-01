@@ -8,7 +8,7 @@ Author: kejiqing
 
 | 场景 | 容器引擎 | Worker | 镜像从哪来 | 入口命令 |
 | --- | --- | --- | --- | --- |
-| **本地开发** | Podman（`auto` 优先 podman） | **FC / e2b** | `gateway.sh quick` / `pack-deploy` | `./deploy/stack/gateway.sh quick` |
+| **本地开发** | **Podman**（`local` profile 强制） | **FC / e2b** | `gateway.sh quick` / `pack-deploy` | `./deploy/stack/gateway.sh quick` |
 | **线上 Linux** | Docker + compose | **FC / e2b** | **只拉 CI tag**（GHCR/ACR） | `./deploy/stack/gateway.sh up --release release-v…` |
 
 两套环境用 **同一份脚本树** `deploy/stack/lib/`；差别在根 `.env`（模板见下表）。**solve / interactive 均经 e2b**，无宿主机 `claw-sandbox` `:9944`。
@@ -70,7 +70,7 @@ Author: kejiqing
 
 **GHCR 握手超时 / 服务器拉不下来**：在能稳定访问镜像源的环境执行 **`./deploy/stack/lib/ship-release-tar-to-remote.sh release-v1.0.25`**（默认推到 **`admin@192.168.9.252` 的 `~`**）；本机若也拉不动 GHCR，可先设 **`CLAW_SHIP_REGISTRY_PREFIX=…`** 指向已能拉到的 ACR 前缀再跑脚本。远端 **`podman load -i`** / **`docker load -i`** 后，再在服务器上 **`CLAW_IMAGE_PREFIX=… ./deploy/stack/gateway.sh up --release …`**。
 
-**同一套脚本、本地与线上共用**：`deploy/stack/lib/` 下的 `build.sh` / `up.sh` / `down.sh` / tap / `bench-pool-30s.sh` 由 **`gateway.sh`** 调用；它们通过 **`CLAW_CONTAINER_RUNTIME`** 选 CLI——默认 **`auto`**（PATH 里**有 podman 先用 podman**，否则 **docker**）。线上常只有 docker，无需改 `.env`；本机有 podman 也会自动走 podman。只有两台都装了且必须指定时，才设 **`CLAW_CONTAINER_RUNTIME=podman`** 或 **`docker`**。
+**同一套脚本、本地与线上共用**：`deploy/stack/lib/` 下的 `build.sh` / `up.sh` / `down.sh` / tap / `bench-pool-30s.sh` 由 **`gateway.sh`** 调用。**`CLAW_DEPLOY_PROFILE=local` 强制 podman**；**`production` 默认 docker**。线上无需改 `.env`；本地勿设 `CLAW_CONTAINER_RUNTIME=auto` / `docker` 或 `CLAW_USE_DOCKER=1`。
 
 更全的接口与本地调试见：`docs/http-gateway-rs-quickstart.md`（第二节已与本文对齐）。
 

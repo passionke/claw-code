@@ -824,12 +824,6 @@ struct TestMcpRequest {
     #[serde(rename = "serverName")]
     server_name: String,
     config: Value,
-    #[serde(rename = "probeMcpStart", default = "default_probe_mcp_start")]
-    probe_mcp_start: bool,
-}
-
-fn default_probe_mcp_start() -> bool {
-    true
 }
 
 #[derive(Debug, Serialize)]
@@ -3819,7 +3813,7 @@ async fn agent_ws_handler(
     AxumPath(session_id): AxumPath<String>,
     Query(q): Query<session_agent_api::AgentProjQuery>,
 ) -> impl IntoResponse {
-    session_agent_api::agent_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
+    session_agent_api::agent_ws_upgrade(state.terminal_api_ctx(), &session_id, q, ws)
 }
 
 async fn ovs_workspace_handler(
@@ -8834,7 +8828,7 @@ async fn test_mcp(
             ));
         }
     }
-    let resp = mcp_probe::probe_mcp_server(server_name, &req.config, req.probe_mcp_start).await;
+    let resp = mcp_probe::probe_mcp_server(server_name, &req.config).await;
     Ok(Json(resp))
 }
 

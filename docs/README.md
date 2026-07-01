@@ -34,6 +34,7 @@ Author: kejiqing
 | 文档 | 用途 |
 |------|------|
 | [`boundaries-claw-stack.md`](boundaries-claw-stack.md) | 组件职责、不变量、改哪里 |
+| [`llm-usage-layer.md`](llm-usage-layer.md) | **LLM 使用层**：凭证边界、PG 加密、Tap/Worker/Gateway 分工与验收 |
 | [`http-gateway-container-pool.md`](http-gateway-container-pool.md) | **e2b worker 编排**（solve 经 e2b，非宿主机 pool） |
 | [`e2b-nas-workspace.md`](e2b-nas-workspace.md) | NAS 路径、host bind、e2b 挂载契约 |
 | [`persistence-model.md`](persistence-model.md) | jsonl 运行时 vs `gateway_turns` 终态 |
@@ -65,6 +66,8 @@ Author: kejiqing
 | [`deploy-ops-truth.md`](deploy-ops-truth.md) | 脚本实际行为（与 README 对照） |
 | [`project-config-model.md`](project-config-model.md) | PG `project_config` |
 | [`claw-tap-cluster-identity.md`](claw-tap-cluster-identity.md) | clawTap `clusterHash` |
+| [`claw-tap-integration-requirements.md`](claw-tap-integration-requirements.md) | claude-tap 对接硬性要求 |
+| [`llm-usage-layer.md`](llm-usage-layer.md) | LLM 使用层架构与排障 |
 | [`langfuse-otel.md`](langfuse-otel.md) | OTEL span 命名 |
 
 **Deploy 子文档：** `deploy/stack/docs/` — GitLab CI、集群验收（已按 e2b-only 更新引用）。

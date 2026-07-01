@@ -48,7 +48,7 @@ e2b workers receive filtered env via e2b exec (`WORKER_ENV_KEYS` in `worker_env.
 
 | Variable | `local` default | `production` default |
 | --- | --- | --- |
-| `CLAW_CONTAINER_RUNTIME` | `podman` | `docker` |
+| `CLAW_CONTAINER_RUNTIME` | `podman`（**local 强制**，`.env` 里写 auto/docker 会被覆盖） | `docker` |
 | `CLAW_INTERACTIVE_BACKEND` | `e2b` | `e2b` |
 | `CLAW_SOLVE_ISOLATION` | `e2b` | `e2b` |
 | `GATEWAY_IMAGE` | `claw-gateway-rs:local` | *(unset — use `--release`)* |

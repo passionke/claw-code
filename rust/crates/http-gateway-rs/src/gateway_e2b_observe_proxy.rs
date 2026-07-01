@@ -32,7 +32,6 @@ pub fn parse_e2b_traffic_identity(internal_base: &str) -> Result<(u16, String), 
 }
 
 /// Legacy: Host-domain routing needs no `/etc/hosts` when wildcard DNS resolves `*.supone.top`.
-#[must_use]
 pub fn e2b_traffic_browser_hosts_line(
     _internal_base: &str,
     _fc_domain: &str,
@@ -40,7 +39,6 @@ pub fn e2b_traffic_browser_hosts_line(
     Err("e2b Host traffic: use wildcard DNS (no hosts line)".into())
 }
 
-#[must_use]
 pub fn fc_ovs_browser_hosts_line(
     internal_ovs_base: &str,
     fc_domain: &str,

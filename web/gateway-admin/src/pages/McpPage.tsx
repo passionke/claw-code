@@ -135,11 +135,10 @@ export default function McpPage() {
         projId,
         serverName: name,
         config,
-        probeMcpStart: true,
       });
       setTestResult(r);
       if (r.ok) {
-        message.success(`MCP「${name}」连通与认证通过（${r.durationMs}ms）`);
+        message.success(`MCP「${name}」连通测试通过（${r.durationMs}ms）`);
       } else {
         message.error(`MCP「${name}」测试未通过`);
       }
@@ -287,16 +286,14 @@ export default function McpPage() {
 
       {testing && (
         <div style={{ marginTop: 12 }}>
-          <Spin tip="正在探测 MCP（initialize → tools/list → mcp_start）…" />
+          <Spin tip="正在探测 MCP（initialize → tools/list）…" />
         </div>
       )}
 
       {testResult && !testing && (
         <Alert
           style={{ marginTop: 12 }}
-          type={
-            testResult.ok ? "success" : testResult.discoverOk ? "warning" : "error"
-          }
+          type={testResult.ok ? "success" : "error"}
           showIcon
           message={
             testResult.ok
@@ -318,15 +315,6 @@ export default function McpPage() {
                   <>（{(testResult.toolsSample ?? []).join(", ")}…）</>
                 )}
               </div>
-              {testResult.hasMcpStart && (
-                <div>
-                  <Typography.Text type="secondary">mcp_start：</Typography.Text>{" "}
-                  {testResult.mcpStartOk ? "成功" : "失败"}
-                  {testResult.mcpStartMessage && (
-                    <> — {testResult.mcpStartMessage}</>
-                  )}
-                </div>
-              )}
               {(testResult.warnings ?? []).map((w) => (
                 <div key={w} style={{ marginTop: 4 }}>
                   <Typography.Text type="warning">{w}</Typography.Text>

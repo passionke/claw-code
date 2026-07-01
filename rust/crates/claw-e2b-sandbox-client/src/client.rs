@@ -39,7 +39,7 @@ impl SandboxSnapshot {
         if end <= now_ms {
             return Some(0);
         }
-        Some(((end - now_ms) / 1000) as u64)
+        u64::try_from((end - now_ms) / 1000).ok()
     }
 }
 
@@ -260,7 +260,7 @@ impl E2bSandboxClient {
         let remaining_secs = if end_at_ms <= now_ms {
             0
         } else {
-            ((end_at_ms - now_ms) / 1000) as u64
+            u64::try_from((end_at_ms - now_ms) / 1000).unwrap_or(0)
         };
         self.lease_expires
             .lock()
@@ -765,7 +765,7 @@ impl E2bSandboxClient {
         let ttyd_use_tls = value
             .get("ttydUseTls")
             .or_else(|| value.get("ttyd_use_tls"))
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(!sandbox_domain.contains("10.8.0."));
         Ok(E2bSandboxHandle {
             sandbox_id,
@@ -829,6 +829,7 @@ impl E2bSandboxClient {
     }
 
     /// Gateway shutdown: persistent singletons (observe/ovs) are Python-managed — no-op here.
+    #[allow(clippy::unused_async)]
     pub async fn kill_cluster_singleton_orphans(&self, _cluster_id: &str) -> Result<usize, String> {
         Ok(0)
     }
@@ -921,6 +922,7 @@ impl E2bSandboxClient {
         Ok(outcome.stdout)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run_exec_helper(
         helper: &Path,
         payload: &Value,
@@ -1012,7 +1014,7 @@ impl E2bSandboxClient {
         if let Some(err) = helper_error {
             return Err(err);
         }
-        if let Some(mut out) = outcome {
+        if let Some(out) = outcome {
             if stdout_line_events == 0 {
                 if let Some(hook) = on_stdout_line.as_ref() {
                     if !out.stdout.is_empty() {
@@ -1099,6 +1101,7 @@ impl E2bSandboxClient {
 
 /// NAS `serverAddr` for e2b `nasConfig.mountPoints` (`host:export/rel`).
 #[must_use]
+#[allow(dead_code)] // unit tests in `nas_addr_tests`
 pub fn nas_server_addr(nas_server: &str, export: &str, rel_path: &str) -> String {
     let host = nas_server.trim().trim_end_matches('/');
     let rel = rel_path.trim_start_matches('/');
