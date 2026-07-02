@@ -61,7 +61,7 @@ pub struct LlmModelPublic {
     pub base_model_url: String,
     #[serde(rename = "modelName")]
     pub model_name: String,
-    #[serde(rename = "currentRev", skip_serializing)]
+    #[serde(rename = "currentRev", skip_serializing_if = "String::is_empty")]
     pub current_rev: String,
     #[serde(rename = "apiKeySet")]
     pub api_key_set: bool,

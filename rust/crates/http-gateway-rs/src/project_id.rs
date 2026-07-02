@@ -1,7 +1,38 @@
 //! Project identifier type and query-param parsing (projId / legacy dsId). Author: kejiqing
 
+use std::path::Path;
+
 /// Gateway project id (API `projId`, disk `proj_<id>/`). Author: kejiqing
 pub type ProjectId = i64;
+
+/// List `proj_<id>/` directory names under `CLAW_WORK_ROOT`. Author: kejiqing
+pub async fn list_proj_ids_under_work_root(work_root: &Path) -> std::io::Result<Vec<ProjectId>> {
+    let mut out = Vec::new();
+    let mut rd = tokio::fs::read_dir(work_root).await?;
+    while let Some(ent) = rd.next_entry().await? {
+        let name = ent.file_name().to_string_lossy().to_string();
+        let Some(rest) = name.strip_prefix("proj_") else {
+            continue;
+        };
+        if let Ok(id) = rest.parse::<ProjectId>() {
+            if id >= 1 {
+                out.push(id);
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
+/// Merge sorted unique project ids from disk and DB lists. Author: kejiqing
+#[must_use]
+pub fn merge_sorted_proj_ids(mut disk: Vec<ProjectId>, mut db: Vec<ProjectId>) -> Vec<ProjectId> {
+    disk.append(&mut db);
+    disk.sort_unstable();
+    disk.dedup();
+    disk
+}
 
 /// Axum / handler query: accept `projId`, `proj_id`, `dsId`, or `ds_id`. Author: kejiqing
 #[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
@@ -55,5 +86,10 @@ mod tests {
         assert_eq!(parse_project_id_query(&q), None);
         let q: ProjectIdQuery = serde_json::from_str("{}").unwrap();
         assert_eq!(parse_project_id_query(&q), None);
+    }
+
+    #[test]
+    fn merge_sorted_proj_ids_dedups() {
+        assert_eq!(merge_sorted_proj_ids(vec![3, 1], vec![2, 1]), vec![1, 2, 3]);
     }
 }

@@ -16,6 +16,7 @@
 )]
 
 pub mod admin_mcp_http;
+pub mod admin_mcp_solve;
 pub mod biz_advice_report;
 pub mod biz_report_sse_log;
 pub mod claw_tap_cluster_state;

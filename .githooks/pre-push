@@ -58,20 +58,6 @@ while IFS= read -r path; do
   fi
 done < <(git diff --name-only --diff-filter=ACMR "${diff_range}" 2>/dev/null || true)
 
-containerfile_changed=0
-while IFS= read -r path; do
-  case "${path}" in
-    deploy/stack/Containerfile.gateway-rs|deploy/stack/Containerfile.gateway-worker)
-      containerfile_changed=1
-      break
-      ;;
-  esac
-done < <(git diff --name-only --diff-filter=ACMR "${diff_range}" 2>/dev/null || true)
-if [[ "${containerfile_changed}" -eq 1 ]]; then
-  echo "[pre-push] running verify-image-rust-layout.sh"
-  bash "${repo_root}/deploy/stack/lib/verify-image-rust-layout.sh"
-fi
-
 if [[ "${#rust_pkgs[@]}" -eq 0 ]]; then
   rust_changed=0
   while IFS= read -r path; do

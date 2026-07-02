@@ -1,0 +1,16 @@
+# Claw pool worker — 基于已发布的 claw-gateway-worker 镜像，槽位可 docker run 启动。
+# Author: kejiqing
+#
+#   docker build -f deploy/stack/Dockerfile.worker -t claw-worker:local .
+#   docker run -d --name claw-worker-0 ... claw-worker:local
+#   完整 run 参数见 deploy/stack/docs/pool-worker-image-and-startup.md
+
+ARG WORKER_IMAGE=crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/claw-gateway-worker:release-v1.4.5
+
+FROM ${WORKER_IMAGE}
+
+USER claw
+WORKDIR /claw_host_root
+
+# claw-sandbox 等价：docker run --entrypoint sleep <image> infinity
+ENTRYPOINT ["sleep", "infinity"]

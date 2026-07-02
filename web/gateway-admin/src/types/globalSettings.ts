@@ -11,6 +11,14 @@ export interface GitPatRow {
   tokenSet: boolean;
 }
 
+export interface ActiveLlmConfig {
+  modelId: string;
+  name: string;
+  baseModelUrl: string;
+  modelName: string;
+  apiKeySet: boolean;
+}
+
 export interface LlmModelRow {
   id: string;
   name: string;
@@ -18,6 +26,10 @@ export interface LlmModelRow {
   modelName: string;
   apiKeySet: boolean;
   active?: boolean;
+  /** Head revision after last save. */
+  currentRev?: string;
+  /** Active revision when this row is the current model. */
+  activeRev?: string;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -77,7 +89,10 @@ export interface GlobalSettingsResponse {
   gitPats: GitPatRow[];
   llmModels?: LlmModelRow[];
   activeLlmModelId?: string;
+  activeLlmModelRev?: string;
   activeLlmAppliedAtMs?: number;
+  /** Present only when solve/runtime can load the active LLM. */
+  activeLlmConfig?: ActiveLlmConfig;
   clawTap?: ClawTapSettings;
   e2bNas?: E2bNasSettings;
   adminMcpTokens?: AdminMcpTokenRow[];

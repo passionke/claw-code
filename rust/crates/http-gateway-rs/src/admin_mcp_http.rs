@@ -8,17 +8,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::admin_mcp_solve::{
+    parse_solve_tool_args, solve_tools_schema, validate_admin_mcp_solve_input, AdminMcpSolveBackend,
+};
 use crate::gateway_admin_mcp_token::{extract_bearer_token, verify_admin_mcp_token};
 use crate::gateway_global_settings;
 use crate::pool::NasLayoutBackend;
 use crate::project_config_apply;
 use crate::project_config_draft;
+use crate::project_extra_session;
+use crate::project_id::{list_proj_ids_under_work_root, merge_sorted_proj_ids};
 use crate::session_db::{GatewaySessionDb, ProjectConfigRow, ProjectConfigUpsert};
 use std::path::{Path, PathBuf};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SERVER_NAME: &str = "claw-gateway-admin";
-const MCP_SERVER_VERSION: &str = "0.1.0";
+const MCP_SERVER_VERSION: &str = "0.2.0";
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -79,9 +84,10 @@ impl Default for DraftPatch<'_> {
     }
 }
 
-pub async fn handle_admin_mcp_post(
+pub async fn handle_admin_mcp_post<B: AdminMcpSolveBackend>(
     db: &GatewaySessionDb,
     work_root: &Path,
+    solve_backend: &B,
     nas_layout: &NasLayoutBackend,
     headers: &HeaderMap,
     body: Bytes,
@@ -119,12 +125,15 @@ pub async fn handle_admin_mcp_post(
         "initialize" => Ok(handle_initialize(request.params.as_ref())),
         "notifications/initialized" | "initialized" | "ping" => Ok(json!({})),
         "tools/list" => Ok(tools_list_result()),
-        "tools/call" => match handle_tools_call(db, work_root, nas_layout, request.params).await {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                return json_rpc_error_response(id, -32000, e, StatusCode::OK);
+        "tools/call" => {
+            match handle_tools_call(db, work_root, solve_backend, nas_layout, request.params).await
+            {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    return json_rpc_error_response(id, -32000, e, StatusCode::OK);
+                }
             }
-        },
+        }
         other => {
             return json_rpc_error_response(
                 id,
@@ -177,8 +186,7 @@ fn proj_id_only_tool(name: &str, description: &str) -> Value {
 }
 
 fn tools_list_result() -> Value {
-    json!({
-        "tools": [
+    let mut tools: Vec<Value> = vec![
             proj_id_only_tool(
                 "project_config_get",
                 "Read full project_config row for projId (draft when open, else effective formal).",
@@ -265,8 +273,9 @@ fn tools_list_result() -> Value {
                 }),
                 &["projId", "skillsJson"],
             ),
-        ]
-    })
+    ];
+    tools.extend(solve_tools_schema());
+    json!({ "tools": tools })
 }
 
 async fn row_for_editing_or_err(
@@ -442,9 +451,10 @@ fn parse_config_put_draft_patch(args: &Value) -> Result<DraftPatch<'_>, String> 
     Ok(patch)
 }
 
-async fn handle_tools_call(
+async fn handle_tools_call<B: AdminMcpSolveBackend>(
     db: &GatewaySessionDb,
     work_root: &Path,
+    solve_backend: &B,
     nas_layout: &NasLayoutBackend,
     params: Option<Value>,
 ) -> Result<Value, String> {
@@ -457,6 +467,105 @@ async fn handle_tools_call(
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
+
+    match name {
+        "project_list" => handle_project_list(db, work_root).await,
+        "project_extra_session_fields_get" => {
+            let proj_id = args
+                .get("projId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| "arguments.projId required".to_string())?;
+            handle_project_extra_session_fields_get(db, proj_id).await
+        }
+        "gateway_solve" => {
+            let input = parse_solve_tool_args(&args)?;
+            validate_admin_mcp_solve_input(db, &input).await?;
+            let value = solve_backend.gateway_solve_sync(input).await?;
+            Ok(tool_text_result(&value))
+        }
+        "gateway_solve_async" => {
+            let input = parse_solve_tool_args(&args)?;
+            validate_admin_mcp_solve_input(db, &input).await?;
+            let value = solve_backend.gateway_solve_async(input).await?;
+            Ok(tool_text_result(&value))
+        }
+        "gateway_task_get" => {
+            let task_id = args
+                .get("taskId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "arguments.taskId required".to_string())?;
+            let value = solve_backend.gateway_task_get(task_id).await?;
+            Ok(tool_text_result(&value))
+        }
+        _ => handle_project_config_tool(db, work_root, nas_layout, name, &args).await,
+    }
+}
+
+async fn handle_project_list(db: &GatewaySessionDb, work_root: &Path) -> Result<Value, String> {
+    let on_disk = list_proj_ids_under_work_root(work_root)
+        .await
+        .map_err(|e| format!("list work_root failed: {e}"))?;
+    let in_config = db
+        .list_project_config_proj_ids()
+        .await
+        .map_err(|e| e.to_string())?;
+    let proj_ids = merge_sorted_proj_ids(on_disk, in_config);
+    let mut projects = Vec::with_capacity(proj_ids.len());
+    for proj_id in proj_ids {
+        let (extra_session_fields, project_config_registered) = match db
+            .get_project_config(proj_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(row) => (
+                project_extra_session::parse_extra_session_fields_json(
+                    &row.extra_session_fields_json,
+                )?,
+                true,
+            ),
+            None => (Vec::new(), false),
+        };
+        projects.push(json!({
+            "projId": proj_id,
+            "extraSessionFields": extra_session_fields,
+            "projectConfigRegistered": project_config_registered,
+        }));
+    }
+    Ok(tool_text_result(&json!({
+        "listedAtMs": now_ms(),
+        "projects": projects,
+    })))
+}
+
+async fn handle_project_extra_session_fields_get(
+    db: &GatewaySessionDb,
+    proj_id: i64,
+) -> Result<Value, String> {
+    if proj_id < 1 {
+        return Err("projId must be >= 1".to_string());
+    }
+    let row = db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("project_config not found for projId={proj_id}"))?;
+    let fields =
+        project_extra_session::parse_extra_session_fields_json(&row.extra_session_fields_json)?;
+    Ok(tool_text_result(&json!({
+        "projId": proj_id,
+        "extraSessionFields": fields,
+    })))
+}
+
+async fn handle_project_config_tool(
+    db: &GatewaySessionDb,
+    work_root: &Path,
+    nas_layout: &NasLayoutBackend,
+    name: &str,
+    args: &Value,
+) -> Result<Value, String> {
     let proj_id = args
         .get("projId")
         .and_then(Value::as_i64)
@@ -479,7 +588,7 @@ async fn handle_tools_call(
             Ok(tool_text_result(&payload))
         }
         "project_config_put_draft" => {
-            let patch = parse_config_put_draft_patch(&args)?;
+            let patch = parse_config_put_draft_patch(args)?;
             upsert_project_draft(db, proj_id, patch).await?;
             Ok(tool_text_result(&json!({
                 "projId": proj_id,
@@ -715,6 +824,14 @@ fn mcp_auth_error_response(message: &str) -> Response {
 mod tests {
     use super::*;
 
+    const SOLVE_TOOLS: &[&str] = &[
+        "project_list",
+        "project_extra_session_fields_get",
+        "gateway_solve",
+        "gateway_solve_async",
+        "gateway_task_get",
+    ];
+
     const REQUIRED_TOOLS: &[&str] = &[
         "project_config_get",
         "project_config_put_draft",
@@ -739,10 +856,10 @@ mod tests {
             .iter()
             .filter_map(|t| t.get("name").and_then(Value::as_str))
             .collect();
-        for expected in REQUIRED_TOOLS {
+        for expected in REQUIRED_TOOLS.iter().chain(SOLVE_TOOLS.iter()) {
             assert!(names.contains(expected), "missing tool {expected}");
         }
-        assert_eq!(names.len(), REQUIRED_TOOLS.len());
+        assert_eq!(names.len(), REQUIRED_TOOLS.len() + SOLVE_TOOLS.len());
     }
 
     #[test]
