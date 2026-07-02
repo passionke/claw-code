@@ -1,4 +1,4 @@
-//! Solve path via container pool (`docker exec claw gateway-solve-once`). Author: kejiqing
+//! Solve path via e2b sandbox (`claw gateway-solve-once`). Author: kejiqing
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,24 +13,20 @@ use tracing::{info, warn};
 
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
 use http_gateway_rs::claw_tap_cluster_state::resolve_solve_llm_route;
-use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease};
+use http_gateway_rs::gateway_strict_landlock_settings::load_system_landlock_default;
+use http_gateway_rs::pool::interactive_backend::resolve_e2b_worker_solve_llm_route;
+use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease, E2B_POOL_ID};
 
-/// When the gateway uses [`PoolRpcClient`](http_gateway_rs::pool::PoolRpcClient) (TCP or Unix), session dirs
-/// live under the container `CLAW_WORK_ROOT` but the host daemon must bind-mount the host path. Author: kejiqing
+/// Map gateway container `CLAW_WORK_ROOT` paths to the host/NAS path used by e2b bind mounts.
 pub(crate) fn session_mount_for_pool_acquire(
     session_home: &Path,
     cfg: &crate::GatewayConfig,
 ) -> PathBuf {
-    let Some(host_root) = cfg.pool_rpc_host_work_root.as_ref() else {
-        return session_home.to_path_buf();
-    };
-    let sh = session_home.to_string_lossy();
-    let wr = cfg.work_root.to_string_lossy();
-    if let Some(rest) = sh.strip_prefix(wr.as_ref()) {
-        let rel = rest.trim_start_matches('/');
-        return host_root.join(rel);
-    }
-    session_home.to_path_buf()
+    crate::pool::path_for_pool_acquire(
+        session_home,
+        &cfg.work_root,
+        cfg.pool_rpc_host_work_root.as_deref(),
+    )
 }
 
 /// Fixed name inside the per-session bind mount (no `..`, not client-controlled).
@@ -101,6 +97,7 @@ pub async fn run_solve_request_docker(
     req: SolveRequest,
     ctx: RunSolveContext,
     pool: Arc<dyn PoolOps + Send + Sync>,
+    pool_id: &str,
     started: Instant,
     effective_allowed_tools: Vec<String>,
     paths: SolveSessionPaths,
@@ -120,14 +117,20 @@ pub async fn run_solve_request_docker(
         .timeout_seconds
         .unwrap_or(state.cfg.default_timeout_seconds);
 
-    let (llm_route, worker_llm_env) = resolve_solve_llm_route(
-        &state.session_db,
-        &state.claw_tap_cluster,
-        &state.llm_runtime,
-        req.model.as_deref(),
-    )
-    .await
-    .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+    let (llm_route, worker_llm_env) = if pool_id == E2B_POOL_ID {
+        resolve_e2b_worker_solve_llm_route(&state.session_db, req.model.as_deref())
+            .await
+            .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?
+    } else {
+        resolve_solve_llm_route(
+            &state.session_db,
+            &state.claw_tap_cluster,
+            &state.llm_runtime,
+            req.model.as_deref(),
+        )
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?
+    };
 
     state
         .session_db
@@ -155,6 +158,31 @@ pub async fn run_solve_request_docker(
     let otel_traceparent = otel_guard
         .as_ref()
         .and_then(|g| inject_traceparent(g.context()));
+    let worker_profile = state
+        .session_db
+        .get_worker_profile_json(req.proj_id)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("load worker_profile_json failed: {e}"),
+            )
+        })?;
+    let system_landlock = load_system_landlock_default(&state.session_db)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("load strictLandlockDefault failed: {e}"),
+            )
+        })?;
+    let landlock_resolved =
+        gateway_solve_turn::resolve_landlock_dsl(&worker_profile, &system_landlock)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let (landlock_dsl, landlock_dsl_source) = match landlock_resolved {
+        Some((dsl, source)) => (Some(dsl), Some(source)),
+        None => (None, None),
+    };
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
@@ -169,6 +197,8 @@ pub async fn run_solve_request_docker(
         worker_name: None,
         llm_route: Some(serde_json::to_value(&llm_route).unwrap_or_default()),
         otel_traceparent,
+        landlock_dsl,
+        landlock_dsl_source,
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(
@@ -214,6 +244,16 @@ pub async fn run_solve_request_docker(
     );
 
     let acquire_wait = Duration::from_secs(timeout_seconds.saturating_add(30));
+    state
+        .session_db
+        .append_turn_solve_timing_bootstrap(&turn_id, "bootstrap_pool_waiting")
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persist bootstrap timing failed: {e}"),
+            )
+        })?;
     let lease = pool
         .acquire_slot(
             acquire_wait,
@@ -444,7 +484,7 @@ pub async fn run_solve_request_docker(
         proj_id = req.proj_id,
         phase = "solve_run_ok",
         duration_ms,
-        isolation = "docker_pool",
+        isolation = "e2b",
         claw_exit_code,
         session_home = %session_home.display(),
         "docker pool gateway_solve completed and response built"
@@ -487,14 +527,9 @@ mod session_path_tests {
     #[test]
     fn strips_container_work_root_for_rpc_host() {
         let cfg = crate::GatewayConfig {
-            solve_isolation: crate::SolveIsolation::PodmanPool,
             claw_bin: "claw".into(),
             work_root: PathBuf::from("/var/lib/claw/workspace"),
             pool_rpc_host_work_root: Some(PathBuf::from("/host/claw/ws")),
-            pool_rpc_tcp: Some("host.containers.internal:9943".into()),
-            pool_rpc_unix_socket: None,
-            pool_rpc_remote: true,
-            pool_http_base: "http://claw-pool-daemon:9944".into(),
             co_located_pool_id: Some("pool-test".into()),
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,
@@ -522,14 +557,9 @@ mod session_path_tests {
     #[test]
     fn no_host_mapping_returns_session_unchanged() {
         let cfg = crate::GatewayConfig {
-            solve_isolation: crate::SolveIsolation::PodmanPool,
             claw_bin: "claw".into(),
             work_root: PathBuf::from("/var/lib/claw/workspace"),
             pool_rpc_host_work_root: None,
-            pool_rpc_tcp: None,
-            pool_rpc_unix_socket: None,
-            pool_rpc_remote: false,
-            pool_http_base: String::new(),
             co_located_pool_id: None,
             ds_registry_path: Path::new("/dev/null").to_path_buf(),
             default_timeout_seconds: 1,

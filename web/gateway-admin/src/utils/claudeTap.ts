@@ -1,27 +1,42 @@
-/** claude-tap Live session URL from Admin global-settings clawTap. Author: kejiqing */
+/** claude-tap session Live viewer URL from Admin global-settings clawTap. Author: kejiqing */
 
 import type { ClawTapSettings } from "../types/globalSettings";
 
+/** Browser Claude Trace UI: claude-tap Live `GET /?session=…` on E2B Host traffic URL. */
+export function liveSessionViewerUrlTemplate(liveBaseUrl: string): string {
+  const base = String(liveBaseUrl || "").replace(/\/$/, "");
+  if (!base) return "";
+  return `${base}/?session={sessionId}`;
+}
+
+/** JSON API (debug only; Admin TurnCard uses viewer template). */
+export function liveSessionTracesUrlTemplate(liveBaseUrl: string): string {
+  const base = String(liveBaseUrl || "").replace(/\/$/, "");
+  if (!base) return "";
+  return `${base}/api/sessions/traces?session={sessionId}`;
+}
+
+/** Loose http(s) check; e2b traffic hosts use underscores (`3000-sbx_xxx.domain`). Author: kejiqing */
 export function isValidHttpUrl(href: string): boolean {
   if (!href || href === "#") return false;
   try {
     const u = new URL(href);
     return u.protocol === "http:" || u.protocol === "https:";
   } catch {
-    return false;
+    return /^https?:\/\/[^/\s?#]+/i.test(href);
   }
 }
 
 export function tapLiveFromClawTapSettings(
   tap: ClawTapSettings | undefined | null
 ): { tapLiveBase: string; tapLiveTemplate: string } {
-  if (!tap?.configured || !tap.liveBaseUrl) {
+  if (!tap?.liveBaseUrl) {
     return { tapLiveBase: "", tapLiveTemplate: "" };
   }
   const tapLiveBase = String(tap.liveBaseUrl).replace(/\/$/, "");
   const tapLiveTemplate =
     String(tap.liveSessionUrlTemplate || "").trim() ||
-    `${tapLiveBase}/?session={sessionId}`;
+    liveSessionViewerUrlTemplate(tapLiveBase);
   return { tapLiveBase, tapLiveTemplate };
 }
 
@@ -37,13 +52,10 @@ export function claudeTapSessionUrl(
   if (template) {
     href = template.replace("{sessionId}", encodeURIComponent(sessionId));
   } else if (base) {
-    try {
-      const u = new URL(base);
-      u.searchParams.set("session", sessionId);
-      href = u.href;
-    } catch {
-      href = `${base}?session=${encodeURIComponent(sessionId)}`;
-    }
+    href = liveSessionViewerUrlTemplate(base).replace(
+      "{sessionId}",
+      encodeURIComponent(sessionId)
+    );
   }
-  return isValidHttpUrl(href) ? href : "";
+  return href;
 }

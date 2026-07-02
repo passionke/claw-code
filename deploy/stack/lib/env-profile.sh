@@ -36,43 +36,40 @@ claw_apply_deploy_profile() {
   profile="$(claw_deploy_profile_name)" || return 1
   export CLAW_DEPLOY_PROFILE="${profile}"
 
+  # e2b is the only worker execution backend. kejiqing
+  export CLAW_INTERACTIVE_BACKEND="${CLAW_INTERACTIVE_BACKEND:-e2b}"
+  export CLAW_OVS_BACKEND="${CLAW_OVS_BACKEND:-e2b}"
+  export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-e2b}"
+
   case "${profile}" in
     local)
-      # One pool URL: HTTP on 9944 (live SSE + POST /v1/pool/rpc). No 9943 TCP / unix. kejiqing
-      if [[ -z "${CLAW_POOL_HTTP_BASE:-}" && -z "${CLAW_POOL_REMOTE_BASE:-}" ]]; then
-        if [[ "${CLAW_CONTAINER_RUNTIME:-podman}" == docker || "${CLAW_USE_DOCKER:-0}" == "1" ]]; then
-          export CLAW_POOL_HTTP_BASE="http://host.docker.internal:9944"
-        else
-          export CLAW_POOL_HTTP_BASE="http://host.containers.internal:9944"
-        fi
-      elif [[ -z "${CLAW_POOL_HTTP_BASE:-}" && -n "${CLAW_POOL_REMOTE_BASE:-}" ]]; then
-        export CLAW_POOL_HTTP_BASE="${CLAW_POOL_REMOTE_BASE%/}"
-      fi
       unset CLAW_POOL_DAEMON_TCP CLAW_POOL_DAEMON_SOCKET CLAW_POOL_DAEMON_TCP_HOST 2>/dev/null || true
       unset CLAW_POOL_RPC_TRANSPORT 2>/dev/null || true
       export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-podman}"
-      export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
       export GATEWAY_IMAGE="${GATEWAY_IMAGE:-claw-gateway-rs:local}"
       export GATEWAY_PLAYGROUND_IMAGE="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
-      export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
-      export CLAW_RELAXED_PODMAN_IMAGE="${CLAW_RELAXED_PODMAN_IMAGE:-claw-gateway-worker-relaxed:local}"
+      # shellcheck source=/dev/null
+      [[ -f "${CLAW_REPO_ROOT:-}/deploy/stack/ovs-image.env" ]] && source "${CLAW_REPO_ROOT}/deploy/stack/ovs-image.env"
+      if [[ -z "${CLAW_OVS_UPSTREAM_IMAGE:-}" && -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env" ]]; then
+        # shellcheck source=/dev/null
+        source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env"
+      fi
+      export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat}"
+      export CLAW_OVS_IMAGE="${CLAW_OVS_IMAGE:-${CLAW_OVS_UPSTREAM_IMAGE}}"
       export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-local}"
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
       export PLAYGROUND_PUBLIC_GATEWAY_BASE="${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://127.0.0.1:${GATEWAY_HOST_PORT}}"
       export CLAW_TIMEOUT_SECONDS="${CLAW_TIMEOUT_SECONDS:-900}"
       export CONTAINER_BASE_REGISTRY="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
-      # macOS Podman: one network for gateway + docker tap + pool workers (claw-claude-tap DNS).
-      # Linux local keeps stack_default unless overridden. Human .env should not fork these. kejiqing
+      # macOS Podman: one network for gateway + docker tap. e2b workers run on e2b. kejiqing
       if [[ "$(uname -s)" == Darwin ]]; then
         export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
         export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-docker}"
         export CLAUDE_TAP_DOCKER_NETWORK="${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
         export CLAW_PODMAN_NETWORK="${CLAW_PODMAN_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
-        # virtiofs: gateway compose user + bind mounts must be host uid (not orphan 1000). kejiqing
         export CLAW_WORKER_UID="$(id -u)"
         export CLAW_WORKER_GID="$(id -g)"
-        # Podman chown on bind mounts is a no-op on virtiofs; :U at container start fixes ownership. kejiqing
         export CLAW_PODMAN_BIND_MOUNT_SUFFIX=":U"
       else
         export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-native}"
@@ -81,19 +78,18 @@ claw_apply_deploy_profile() {
       ;;
     production)
       export CLAW_CONTAINER_RUNTIME="${CLAW_CONTAINER_RUNTIME:-docker}"
-      export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-docker_pool}"
-      export CLAW_POOL_HOST_DAEMON="${CLAW_POOL_HOST_DAEMON:-1}"
-      export CLAW_POOL_DAEMON_SKIP_BUILD="${CLAW_POOL_DAEMON_SKIP_BUILD:-1}"
-      # Same port for live + RPC unless overridden in .env. kejiqing
-      if [[ -z "${CLAW_POOL_HTTP_BASE:-}" && -n "${CLAW_POOL_ADVERTISE_HOST:-}" ]]; then
-        export CLAW_POOL_HTTP_BASE="http://${CLAW_POOL_ADVERTISE_HOST}:${CLAW_POOL_HTTP_PORT:-9944}"
-      fi
       export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-direct}"
       export CLAW_IMAGE_REGISTRY="${CLAW_IMAGE_REGISTRY:-acr}"
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
       export CLAW_GATEWAY_PG_IMAGE="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
       export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
+      if [[ -z "${CLAW_OVS_UPSTREAM_IMAGE:-}" && -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env" ]]; then
+        # shellcheck source=/dev/null
+        source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env"
+      fi
+      export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat}"
+      export CLAW_OVS_IMAGE="${CLAW_OVS_IMAGE:-${CLAW_OVS_UPSTREAM_IMAGE}}"
       ;;
   esac
 
@@ -101,16 +97,13 @@ claw_apply_deploy_profile() {
     export CLAW_CONTAINER_RUNTIME=docker
   fi
 
-  # Linux docker + local pack-deploy: tap/solve defaults live in profile, not human .env. kejiqing
+  # Local docker: claude-tap sidecar only (solve/interactive on e2b). kejiqing
   if [[ "${profile}" == local && "${CLAW_CONTAINER_RUNTIME:-}" == docker ]]; then
-    export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-docker_pool}"
     export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-docker}"
     export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
     export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claw}"
     export CLAUDE_TAP_DOCKER_NETWORK="${CLAUDE_TAP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
     export CLAW_DOCKER_NETWORK="${CLAW_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
-    # Local dev: publish Live (3000) + proxy (8080) on host for trace viewer / curl debug.
-    # Local docker: publish tap on loopback; Admin host defaults to 127.0.0.1 unless CLAW_POOL_ADVERTISE_HOST set.
     export CLAUDE_TAP_PUBLISH_PROXY="${CLAUDE_TAP_PUBLISH_PROXY:-127.0.0.1:8080:8080}"
     export CLAUDE_TAP_PUBLISH_LIVE="${CLAUDE_TAP_PUBLISH_LIVE:-0.0.0.0:3000:3000}"
   fi
@@ -121,49 +114,36 @@ claw_apply_deploy_profile() {
     export CLAW_CLUSTER_ID="${CLAW_CLUSTER_ID:-local-dev}"
   fi
 
-  claw_sync_solve_worker_image_prefix || return 1
   return 0
 }
 
-# When solve mode is docker_pool, drop stale CLAW_PODMAN_IMAGE from human .env unless explicit opt-out.
-claw_sync_solve_worker_image_prefix() {
-  case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
-    docker_pool)
-      if [[ "${CLAW_POOL_WORKER_IMAGE_EXPLICIT:-0}" != "1" && -n "${CLAW_PODMAN_IMAGE:-}" && -z "${CLAW_DOCKER_IMAGE:-}" ]]; then
-        export CLAW_DOCKER_IMAGE="${CLAW_DOCKER_IMAGE:-${CLAW_PODMAN_IMAGE}}"
-        unset CLAW_PODMAN_IMAGE
-      fi
-      ;;
-    podman_pool)
-      if [[ "${CLAW_POOL_WORKER_IMAGE_EXPLICIT:-0}" != "1" && -n "${CLAW_DOCKER_IMAGE:-}" && -z "${CLAW_PODMAN_IMAGE:-}" ]]; then
-        export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-${CLAW_DOCKER_IMAGE}}"
-        unset CLAW_DOCKER_IMAGE
-      fi
-      ;;
-  esac
-  return 0
-}
-
-# Fail fast on common 1.4.x deploy mistakes (socket / pool TCP / mixed runtimes).
+# Fail fast on common deploy mistakes.
 claw_validate_deploy_profile() {
   local profile rt iso
   profile="$(claw_deploy_profile_name)" || return 1
   rt="$(claw_container_runtime_cli 2>/dev/null || true)"
-  iso="${CLAW_SOLVE_ISOLATION:-podman_pool}"
+  iso="${CLAW_SOLVE_ISOLATION:-e2b}"
 
   if [[ -n "${PODMAN_HOST_SOCK:-}" ]]; then
     echo "error: PODMAN_HOST_SOCK is removed; delete it from .env" >&2
     return 1
   fi
 
-  case "${profile}" in
-    local)
-      if [[ "${iso}" == docker_pool && "${rt}" == podman ]]; then
-        echo "error: CLAW_DEPLOY_PROFILE=local expects podman_pool, not docker_pool" >&2
-        echo "hint: remove CLAW_SOLVE_ISOLATION=docker_pool from .env or set CLAW_DEPLOY_PROFILE=production" >&2
-        return 1
-      fi
+  if [[ "${iso}" != e2b ]]; then
+    echo "error: CLAW_SOLVE_ISOLATION must be e2b (got ${iso}); podman_pool/docker_pool removed" >&2
+    return 1
+  fi
+
+  case "${CLAW_INTERACTIVE_BACKEND:-e2b}" in
+    e2b) ;;
+    *)
+      echo "error: CLAW_INTERACTIVE_BACKEND must be e2b (got ${CLAW_INTERACTIVE_BACKEND})" >&2
+      return 1
       ;;
+  esac
+
+  case "${profile}" in
+    local) ;;
     production)
       case "${CLAW_LLM_PROXY:-direct}" in
         local)
@@ -183,10 +163,6 @@ claw_validate_deploy_profile() {
           return 1
           ;;
       esac
-      if [[ "${iso}" == podman_pool ]]; then
-        echo "error: CLAW_DEPLOY_PROFILE=production expects docker_pool (got podman_pool)" >&2
-        return 1
-      fi
       if [[ "${rt}" == podman ]]; then
         echo "error: CLAW_DEPLOY_PROFILE=production expects CLAW_CONTAINER_RUNTIME=docker" >&2
         return 1
@@ -195,21 +171,8 @@ claw_validate_deploy_profile() {
         echo "error: production needs GATEWAY_IMAGE, --release release-vX.Y.Z, or deploy/stack/.claw-image-release.env" >&2
         return 1
       fi
-      if ! claw_pool_daemon_on_host; then
-        echo "error: Linux production uses host claw-pool-daemon (unset CLAW_POOL_HOST_DAEMON=0)" >&2
-        return 1
-      fi
       ;;
   esac
-
-  if [[ "${iso}" == docker_pool && -z "${CLAW_DOCKER_IMAGE:-}" ]]; then
-    echo "error: CLAW_DOCKER_IMAGE unset for docker_pool (set GATEWAY_IMAGE + --release, or CLAW_IMAGE_PREFIX)" >&2
-    return 1
-  fi
-  if [[ "${iso}" == podman_pool && -z "${CLAW_PODMAN_IMAGE:-}" ]]; then
-    echo "error: CLAW_PODMAN_IMAGE unset for podman_pool" >&2
-    return 1
-  fi
 
   return 0
 }

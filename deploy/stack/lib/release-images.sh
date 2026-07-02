@@ -53,9 +53,8 @@ claw_apply_release_image_tag() {
   prefix="$(claw_image_registry_prefix_from_env)"
   export GATEWAY_IMAGE="${prefix}/claw-code:${tag}"
   export GATEWAY_PLAYGROUND_IMAGE="${prefix}/claw-gateway-playground:${tag}"
-  export CLAW_SANDBOX_IMAGE="${prefix}/claw-sandbox:${tag}"
-  case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
-    docker_pool)
+  case "${CLAW_SOLVE_ISOLATION:-e2b}" in
+    e2b)
       export CLAW_DOCKER_IMAGE="${prefix}/claw-gateway-worker:${tag}"
       export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-gateway-worker-relaxed:${tag}"
       ;;
@@ -76,11 +75,49 @@ claw_export_pool_worker_image_matched_to_gateway() {
   fi
   local derived="${gw/claw-code/claw-gateway-worker}"
   local derived_relaxed="${gw/claw-code/claw-gateway-worker-relaxed}"
-  case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
-    docker_pool) export CLAW_DOCKER_IMAGE="$derived" ;;
-    podman_pool) export CLAW_PODMAN_IMAGE="$derived" ;;
+  case "${CLAW_SOLVE_ISOLATION:-e2b}" in
+    e2b) export CLAW_DOCKER_IMAGE="$derived" ;;
+    e2b) export CLAW_PODMAN_IMAGE="$derived" ;;
   esac
   export CLAW_RELAXED_PODMAN_IMAGE="$derived_relaxed"
+}
+
+# Same worker image ref as solve pool / pack-deploy build (no separate CLAW_E2B_WORKER_IMAGE). kejiqing
+claw_resolve_worker_image_ref() {
+  if [[ -n "${CLAW_PODMAN_IMAGE:-}" ]]; then
+    printf '%s' "${CLAW_PODMAN_IMAGE}"
+    return 0
+  fi
+  if [[ -n "${CLAW_DOCKER_IMAGE:-}" ]]; then
+    printf '%s' "${CLAW_DOCKER_IMAGE}"
+    return 0
+  fi
+  local gw="${GATEWAY_IMAGE:-}"
+  if [[ -n "$gw" ]]; then
+    if [[ "$gw" == *claw-gateway-rs* ]]; then
+      printf '%s' "${gw/claw-gateway-rs/claw-gateway-worker}"
+      return 0
+    fi
+    if [[ "$gw" == *claw-code* ]]; then
+      printf '%s' "${gw/claw-code/claw-gateway-worker}"
+      return 0
+    fi
+    printf '%s' "claw-gateway-worker:${gw##*:}"
+    return 0
+  fi
+  printf '%s' "claw-gateway-worker:local"
+}
+
+# pack-deploy: one tag for gateway + worker + sandbox (local or release-*). Author: kejiqing
+claw_apply_pack_deploy_image_tag() {
+  local tag="${1:?pack-deploy image tag required}"
+  export GATEWAY_IMAGE="claw-gateway-rs:${tag}"
+  export GATEWAY_PLAYGROUND_IMAGE="claw-gateway-playground:${tag}"
+  export CLAW_PODMAN_IMAGE="claw-gateway-worker:${tag}"
+  export CLAW_RELAXED_PODMAN_IMAGE="claw-gateway-worker-relaxed:${tag}"
+  if [[ -z "${CLAW_SANDBOX_IMAGE:-}" || "${CLAW_SANDBOX_IMAGE}" == claw-sandbox:* ]]; then
+    export CLAW_SANDBOX_IMAGE="claw-sandbox:${tag}"
+  fi
 }
 
 # Compose pool sidecar reads env files from disk — last file wins; override stale CLAW_*_IMAGE in repo .env.
@@ -94,8 +131,8 @@ claw_write_pool_worker_env_override() {
     } >"${f}"
     return 0
   fi
-  case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
-    docker_pool)
+  case "${CLAW_SOLVE_ISOLATION:-e2b}" in
+    e2b)
       [[ -n "${CLAW_DOCKER_IMAGE:-}" ]] || {
         {
           printf '%s\n' '# GENERATED — CLAW_DOCKER_IMAGE unset; pool sidecar uses repo .env only. kejiqing'
@@ -132,9 +169,8 @@ claw_write_release_pin_env() {
     printf '%s\n' "# GENERATED — do not edit. rm file to drop pin. Author: kejiqing"
     printf '%s\n' "GATEWAY_IMAGE=${GATEWAY_IMAGE}"
     printf '%s\n' "GATEWAY_PLAYGROUND_IMAGE=${GATEWAY_PLAYGROUND_IMAGE}"
-    printf '%s\n' "CLAW_SANDBOX_IMAGE=${CLAW_SANDBOX_IMAGE}"
-    case "${CLAW_SOLVE_ISOLATION:-podman_pool}" in
-      docker_pool) printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}" ;;
+    case "${CLAW_SOLVE_ISOLATION:-e2b}" in
+      e2b) printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}" ;;
       *) printf '%s\n' "CLAW_PODMAN_IMAGE=${CLAW_PODMAN_IMAGE}" ;;
     esac
     [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]] && printf '%s\n' "CLAW_RELAXED_PODMAN_IMAGE=${CLAW_RELAXED_PODMAN_IMAGE}"
@@ -165,9 +201,6 @@ claw_reapply_pool_image_pins() {
     # shellcheck disable=SC1090
     source "${podman_dir}/.claw-image-release.env"
     set +a
-    if [[ -z "${CLAW_SANDBOX_IMAGE:-}" && "${GATEWAY_IMAGE:-}" == *"/claw-code:"* ]]; then
-      export CLAW_SANDBOX_IMAGE="${GATEWAY_IMAGE/claw-code/claw-sandbox}"
-    fi
     claw_export_pool_worker_image_matched_to_gateway
     claw_write_release_pin_env "${podman_dir}"
   else

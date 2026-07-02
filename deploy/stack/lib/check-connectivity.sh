@@ -18,10 +18,11 @@ source "${LIB_DIR}/compose-include.sh"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/pool-health.sh"
 
-if ! claw_ensure_host_pool_running "${PODMAN_DIR}"; then
-  echo "error: host pool not running — Admin solve_async will 503" >&2
+if ! claw_interactive_backend_is_e2b; then
+  echo "error: CLAW_INTERACTIVE_BACKEND must be e2b (local podman pool removed)" >&2
   exit 1
 fi
+echo "[1b/5] skip host pool (e2b-only)"
 
 PLAYGROUND_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
 GATEWAY_PORT="${GATEWAY_HOST_PORT:-18088}"
@@ -43,48 +44,13 @@ else:
 cat /tmp/claw_gateway_healthz.json
 echo
 
-echo "[2/5] pool HTTP from gateway-rs container"
-POOL_BASE="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
-echo "    ${POOL_BASE}/healthz/live-report"
-if ! claw_gateway_container_exec "${GW_CTN}" curl -fsS --max-time 5 \
-  "${POOL_BASE}/healthz/live-report" \
-  >/tmp/claw_pool_health.json; then
-  echo "error: gateway cannot reach pool HTTP — same failure as Admin 503" >&2
-  echo "hint: ./deploy/stack/gateway.sh pool-up" >&2
-  exit 1
-fi
-python3 -c 'import json; d=json.load(open("/tmp/claw_pool_health.json")); print("pool live-report ok", d.get("ok", d))' 2>/dev/null || cat /tmp/claw_pool_health.json
+echo "[2/5] skip pool HTTP (e2b backend)"
 echo
 
-if claw_pool_uses_remote; then
-  echo "[2b/5] remote claw-sandbox (${CLAW_POOL_REMOTE_BASE})"
-  claw_assert_remote_pool_registry_ready "${PODMAN_DIR}" || exit 1
-  base="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
-  echo "[2c/5] pool HTTP from gateway-rs container (${base})"
-  claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" || exit 1
-  echo "gateway → remote pool HTTP ok"
-  echo
-elif claw_pool_daemon_on_host; then
-  base="$(claw_pool_http_base_url "${PODMAN_DIR}")" || exit 1
-  echo "[2b/5] host claw-sandbox HTTP (127.0.0.1:${CLAW_POOL_HTTP_PORT:-9944})"
-  claw_assert_host_pool_http_ready "$(claw_pool_rpc_root "${PODMAN_DIR}")" || exit 1
-  echo "host claw-sandbox HTTP ok"
-  if claw_relaxed_worker_allowed_from_env; then
-    echo "[2b2/5] relaxed workers enabled (same pool; capacity RPC)"
-  else
-    echo "[2b2/5] relaxed workers disabled (CLAW_ALLOW_RELAXED_WORKER=false)"
-  fi
-  echo "[2c/5] pool HTTP from gateway-rs container (${base})"
-  claw_assert_gateway_pool_http_reachable "${PODMAN_DIR}" || exit 1
-  echo "gateway → pool HTTP ok"
-  echo
-else
-  echo "error: compose pool sidecar removed in pool v1; set CLAW_POOL_HOST_DAEMON=1 or run ./deploy/stack/gateway.sh pool-up" >&2
-  exit 1
-fi
-
 echo "[3/5] solve_async smoke (extraSession from ds 1 project config when defined)"
-if claw_pool_uses_remote; then
+if claw_interactive_backend_is_e2b; then
+  :
+elif claw_pool_uses_remote; then
   claw_assert_remote_pool_registry_ready "${PODMAN_DIR}" || exit 1
   claw_wait_gateway_pool_rpc_ready "${PODMAN_DIR}" || exit 1
 elif claw_pool_daemon_on_host; then
@@ -143,7 +109,7 @@ TOOLS_CHAIN_JSON="$(mktemp)"
 TIMELINE_JSON="$(mktemp)"
 curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/turns/${TURN_ID}/timeline?proj_id=1" \
   -o "${TIMELINE_JSON}" || true
-curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/turns/${TURN_ID}/tools?ds_id=1" \
+curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/sessions/${SESSION_ID}/turns/${TURN_ID}/tools?proj_id=1" \
   -o "${TOOLS_CHAIN_JSON}"
 python3 - "${TIMELINE_JSON}" "${TOOLS_CHAIN_JSON}" <<'PY'
 import json, sys
@@ -172,6 +138,52 @@ if tool_segments > 0:
 else:
     print("skip tools chain assert (solve had no tool lane — ping-style smoke)")
 PY
+
+echo "[3d/5] e2b OVS product entry (direct e2b traffic URL, not gateway proxy)"
+case "${CLAW_OVS_BACKEND:-compose}" in
+  fc)
+    ws="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/projects/1/ovs/workspace")"
+    folder_url="$(printf '%s' "${ws}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsFolderUrl') or '')")"
+    hosts_line="$(printf '%s' "${ws}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsBrowserHostsLine') or '')")"
+    [[ -n "${folder_url}" ]] || { echo "error: missing ovsFolderUrl: ${ws}" >&2; exit 1; }
+    if [[ "${folder_url}" == *":13000"* ]] || [[ "${folder_url}" == *"/v1/fc-ovs"* ]]; then
+      echo "error: ovsFolderUrl must be direct e2b traffic (got ${folder_url})" >&2
+      exit 1
+    fi
+    if [[ "${folder_url}" != *"-sbx_"* ]]; then
+      echo "error: ovsFolderUrl must be e2b Host traffic URL: ${folder_url}" >&2
+      exit 1
+    fi
+    if [[ "${folder_url}" == *"/e2b/"* ]]; then
+      echo "error: ovsFolderUrl must not use legacy /e2b/ path: ${folder_url}" >&2
+      exit 1
+    fi
+    code="$(curl -sS -o /dev/null -w '%{http_code}' -m 15 "${folder_url}" || true)"
+    [[ "${code}" == "200" ]] || { echo "error: direct OVS URL HTTP ${code} at ${folder_url}" >&2; exit 1; }
+    PG_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
+    PG_USER="${PLAYGROUND_ADMIN_USER:-admin}"
+    PG_PASS="${PLAYGROUND_ADMIN_PASSWORD:-sunmi123}"
+    PG_COOKIE="$(mktemp)"
+    curl -fsS -c "${PG_COOKIE}" -X POST "http://127.0.0.1:${PG_PORT}/__admin_login__" \
+      -H "Content-Type: application/json" \
+      -d "{\"user\":\"${PG_USER}\",\"password\":\"${PG_PASS}\"}" >/dev/null
+    LOC="$(
+      curl -sS -D - -o /dev/null "http://127.0.0.1:${PG_PORT}/ovs/?projId=1" -b "${PG_COOKIE}" \
+        | awk 'tolower($0) ~ /^location:/ { sub(/\r$/, ""); print $2; exit }'
+    )"
+    rm -f "${PG_COOKIE}"
+    [[ "${LOC}" == "${folder_url}" ]] || {
+      echo "error: playground /ovs redirect mismatch" >&2
+      echo "  api: ${folder_url}" >&2
+      echo "  loc: ${LOC}" >&2
+      exit 1
+    }
+    echo "FC OVS direct entry ok → ${folder_url}"
+    ;;
+  *)
+    echo "skip e2b OVS entry (CLAW_OVS_BACKEND=${CLAW_OVS_BACKEND:-compose})"
+    ;;
+esac
 
 TASK_POLL_JSON="$(mktemp)"
 curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/tasks/${TASK_ID}" -o "${TASK_POLL_JSON}"

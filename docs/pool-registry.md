@@ -2,13 +2,9 @@
 
 Author: kejiqing
 
-Each **`claw-sandbox`** (host pool on `:9944`) registers in PostgreSQL; each running turn records which pool and worker ran it.
+> **2026-06 e2b-only：** 宿主机 `claw-sandbox` / pool-daemon **已移除**。`claw_pool` 表与 `gateway_turns.pool_id` **保留**用于历史 turn 元数据、Admin 展示、live SSE JOIN。**新 solve** 经 e2b，不再向 `claw_pool` 注册心跳。
 
-**Deployment locality (KISS):** solve/cancel **RPC** is **same-host only**. Each machine runs **gateway + pool daemon** together. Gateway dials co-located pool via **`CLAW_POOL_HTTP_BASE`** / `CLAW_POOL_DAEMON_*`. It does **not** look up `pool_id` in DB to pick an RPC target for new solves.
-
-**Multi-machine:** share one PostgreSQL; each host runs its own `(gateway + pool)` pair. **`claw_pool`** lists all registered pools; **`GET /v1/pools`** and Admin **Pool 集群** expose the registry. Playground chat turn cards show **`poolId`** / **`workerName`** per turn.
-
-**Cross-host** use of `claw_pool` is **observability**, **live SSE HTTP proxy** (read path), and **turn metadata in API/UI** — not remote exec.
+## 当前语义（兼容层）
 
 ## `claw_pool` table
 

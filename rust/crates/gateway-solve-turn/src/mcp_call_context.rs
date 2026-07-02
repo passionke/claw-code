@@ -95,6 +95,8 @@ mod tests {
             worker_name: None,
             llm_route: None,
             otel_traceparent: None,
+            landlock_dsl: None,
+            landlock_dsl_source: None,
         };
         let ctx = gateway_mcp_call_context_from_task(&task);
         assert_eq!(ctx.session_id, "sess-stable");
@@ -118,6 +120,8 @@ mod tests {
             worker_name: None,
             llm_route: None,
             otel_traceparent: None,
+            landlock_dsl: None,
+            landlock_dsl_source: None,
         };
         let from_task = gateway_mcp_call_context_from_task(&task);
         let resolved = resolve_gateway_mcp_call_context(

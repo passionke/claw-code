@@ -12,7 +12,7 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 用途：健康检查与关键运行配置回显
   - 回显字段含 `sessionDatabaseBackend`（`postgresql`）、`gatewayDatabaseUrl`（脱敏连接串）。会话/轮次/反馈表在 **PostgreSQL**，由环境变量 **`CLAW_GATEWAY_DATABASE_URL`** 指定（compose 默认连栈内 `postgres` 服务；生产可指向独立 PG 集群）。
   - **`deployImageRef`** / **`deployImageTag`**：由 **`./deploy/stack/gateway.sh up`** 带入的 **`GATEWAY_IMAGE`**（根 `.env` 或 `up --release release-vX.Y.Z` 写入的 `deploy/stack/.claw-image-release.env`）经 compose 注入 **`CLAW_GATEWAY_IMAGE_REF`**，无需单独配置。Admin 顶栏展示 `deployImageTag`：`…:local` → `local`；`…:release-v1.2.3` → `release-v1.2.3`。
-  - **`clawTapCluster`**：内存态 clawTap 集群校验快照（`strict` / `mismatch` 等）；端点主机与 Live URL 在 Admin **`GET /v1/gateway/global-settings`** 的 **`clawTap`**（PG）中维护：`host`、`proxyPort`、`livePort`，以及派生字段 `proxyBaseUrl`、`liveBaseUrl`、`liveSessionUrlTemplate`（例 `http://192.168.9.252:3000/?session={sessionId}`）
+  - **`clawTapCluster`**：内存态 clawTap 集群校验快照（`strict` / `mismatch` 等）；端点主机与 Live URL 在 Admin **`GET /v1/gateway/global-settings`** 的 **`clawTap`**（PG）中维护：`host`、`proxyPort`、`livePort`，以及派生字段 `proxyBaseUrl`、`liveBaseUrl`、`liveSessionUrlTemplate`（统一为 `http://…:3000/api/sessions/traces?session={sessionId}`）
   - **`liveReport`**：求解过程 stdout 实时 SSE（经 pool 代理），与 claude-tap Live 查看器无关
 
 ## Solve
@@ -270,3 +270,32 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - 请求体：`skillName`（`[a-zA-Z0-9._-]`）、`skillContent`
   - 落盘：`proj_<projId>/home/skills/<skillName>/SKILL.md`
   - 返回：`projId`、`skillName`、`skillPath`、`created`、`updated`、`bytesWritten`、`workDir`
+
+## Interactive coding terminal (`/coding`, ttyd)
+
+交互式会话以 **宿主机磁盘目录** `proj_{projId}/sessions/{sessionId}/` 为真相（bind 到 worker `/claw_host_root`）。**不走** PG `workspace_tar_gz` 的 `materialize_in` / `readback_out`（与 `solve_async` tmpfs+tar 双轨）。
+
+- `POST /v1/sessions/{session_id}/terminal/start`
+  - 请求体：`{ "projId", "sessionId" }`（camelCase）
+  - 行为：`mkdir` 会话目录、物化 `proj_<id>/home`（`project_config`）、interactive pool acquire（bind session + proj home ro）、worker 内启动 `ttyd -W claw --resume latest`
+  - 响应：`sessionId`、`projId`、`slotIndex`、`ttydHostPort`、`wsPath`（例 `/v1/sessions/{id}/terminal/ws?projId=1`）、`workerName`
+  - 冲突：同 `(projId, sessionId)` 已有活跃终端 → **409**
+
+- `POST /v1/sessions/{session_id}/terminal/stop?projId=`
+  - 停止 ttyd、release worker；**保留**会话目录（不打 tar）
+
+- `POST /v1/sessions/{session_id}/terminal/reattach`
+  - 请求体同 `terminal/start`；释放旧登记后重新 acquire + bind **同一路径**
+
+- `GET /v1/sessions/{session_id}/terminal/ws?projId=`
+  - WebSocket：网关反代到 worker 内 ttyd（`127.0.0.1:7681`）；playground 对外路径 `/coding/terminal/{session_id}?projId=`（需 admin 登录态）
+
+## Session workspace (read-only sidebar)
+
+读宿主机 `CLAW_WORK_ROOT/proj_{projId}/sessions/{sessionId}/`（与 interactive bind 同路径）。
+
+- `GET /v1/sessions/{session_id}/workspace/tree?projId=`
+  - 响应：`{ sessionId, projId, entries: [ { name, path, isDir } ] }`（跳过 `.git` / `target`；最多约 2000 项）
+
+- `GET /v1/sessions/{session_id}/workspace/file?projId=&path=`
+  - 响应：`{ path, content, truncated }`（单文件上限约 2MB；路径不得逃逸会话根）

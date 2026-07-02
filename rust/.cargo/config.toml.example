@@ -20,3 +20,21 @@ multiplexing = false
 
 [net]
 git-fetch-with-cli = true
+
+# Faster Linux release links (linux-compile container with mold). Author: kejiqing
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# Faster macOS host links when Xcode/clang provides lld. Author: kejiqing
+[target.aarch64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.x86_64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

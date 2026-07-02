@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::biz_advice_report::{report_body_from_persisted, solve_failure_detail_from_output_json};
+use crate::pool::system_landlock_default_json;
 use crate::turn_id::{self, TURN_ID_PREFIX};
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
@@ -118,7 +119,30 @@ pub struct ProjectConfigRow {
     /// Per-ds instruction budgets → `.claw/settings.json`. Author: kejiqing
     pub prompt_limits_json: Value,
     /// Pool worker profile: `{"mode":"strict"|"relaxed"}` (sidecar; not in revision snapshots). Author: kejiqing
-    pub worker_isolation_json: Value,
+    pub worker_profile_json: Value,
+}
+
+/// Gateway-managed e2b worker sandbox bound to one project (`project_e2b_worker`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct ProjectFcWorkerRow {
+    pub proj_id: i64,
+    pub sandbox_id: String,
+    pub worker_id: String,
+    pub template_id: String,
+    pub handle_json: Value,
+    pub updated_at_ms: i64,
+}
+
+/// One append-only worker rotation audit event (`worker_rotation_log`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct WorkerRotationEvent {
+    pub proj_id: i64,
+    pub event: String,
+    pub sandbox_id: Option<String>,
+    pub worker_id: Option<String>,
+    pub template_id: Option<String>,
+    pub reason: Option<String>,
+    pub at_ms: i64,
 }
 
 /// Row summary for [`GatewaySessionDb::list_project_config_summaries`]. Author: kejiqing
@@ -202,6 +226,9 @@ pub struct ConversationTranslateSnapshotRow {
     pub markdown: String,
     pub target_language: String,
     pub model_id: Option<String>,
+    /// `translating` | `ready` | `error`. Author: kejiqing
+    pub status: String,
+    pub error_text: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -304,7 +331,7 @@ pub struct ProjectConfigUpsert<'a> {
     pub language_pipeline_json: &'a Value,
     pub extra_session_fields_json: &'a Value,
     pub prompt_limits_json: &'a Value,
-    pub worker_isolation_json: &'a Value,
+    pub worker_profile_json: &'a Value,
 }
 
 /// Gateway session index: one row per `(session_id, proj_id)` with a workspace-relative `session_home`.
@@ -487,6 +514,8 @@ impl GatewaySessionDb {
                 markdown TEXT NOT NULL,
                 target_language TEXT NOT NULL DEFAULT 'zh-CN',
                 model_id TEXT,
+                status TEXT NOT NULL DEFAULT 'ready',
+                error_text TEXT,
                 created_at_ms BIGINT NOT NULL,
                 updated_at_ms BIGINT NOT NULL,
                 PRIMARY KEY (session_id, ds_id)
@@ -510,6 +539,8 @@ impl GatewaySessionDb {
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS solve_task_json JSONB",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS solve_timing_jsonb JSONB",
             "ALTER TABLE gateway_turns ADD COLUMN IF NOT EXISTS spill_json JSONB",
+            "ALTER TABLE gateway_conversation_translate ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ready'",
+            "ALTER TABLE gateway_conversation_translate ADD COLUMN IF NOT EXISTS error_text TEXT",
         ] {
             sqlx::query(ddl).execute(pool).await?;
         }
@@ -675,7 +706,7 @@ impl GatewaySessionDb {
         .execute(pool)
         .await?;
         sqlx::query(
-            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS worker_isolation_json JSONB NOT NULL DEFAULT '{\"mode\":\"strict\"}'::jsonb",
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS worker_profile_json JSONB NOT NULL DEFAULT '{\"mode\":\"strict\"}'::jsonb",
         )
         .execute(pool)
         .await?;
@@ -945,7 +976,199 @@ impl GatewaySessionDb {
             .await?;
 
         Self::migrate_proj_id_columns(pool).await?;
+        Self::migrate_project_e2b_worker_table(pool).await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/007_project_e2b_worker.sql"),
+        )
+        .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/008_worker_rotation_log.sql"),
+        )
+        .await?;
+        Self::migrate_worker_profile_json_column(pool).await?;
+        Self::migrate_settings_json_e2b_keys(pool).await?;
+        Self::migrate_strict_landlock_default(pool).await?;
+        Self::migrate_gateway_turns_e2b_ids(pool).await?;
+        Self::run_sql_migration_file(pool, include_str!("../migrations/010_preflight_plugin.sql"))
+            .await?;
 
+        Ok(())
+    }
+
+    /// `project_fc_worker` → `project_e2b_worker` (idempotent). Author: kejiqing
+    async fn migrate_project_e2b_worker_table(pool: &PgPool) -> Result<(), SqlxError> {
+        let fc_exists: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.project_fc_worker') IS NOT NULL")
+                .fetch_one(pool)
+                .await?;
+        if !fc_exists {
+            return Ok(());
+        }
+        let e2b_exists: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.project_e2b_worker') IS NOT NULL")
+                .fetch_one(pool)
+                .await?;
+        if e2b_exists {
+            sqlx::query("DROP TABLE project_fc_worker")
+                .execute(pool)
+                .await?;
+            return Ok(());
+        }
+        sqlx::query("ALTER TABLE project_fc_worker RENAME TO project_e2b_worker")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "ALTER INDEX IF EXISTS idx_project_fc_worker_sandbox_id \
+             RENAME TO idx_project_e2b_worker_sandbox_id",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// `worker_isolation_json` → `worker_profile_json` (idempotent). Author: kejiqing
+    async fn migrate_worker_profile_json_column(pool: &PgPool) -> Result<(), SqlxError> {
+        let has_isolation: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'project_config'
+                  AND column_name = 'worker_isolation_json'
+            )",
+        )
+        .fetch_one(pool)
+        .await?;
+
+        if !has_isolation {
+            return Ok(());
+        }
+
+        let has_profile: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'project_config'
+                  AND column_name = 'worker_profile_json'
+            )",
+        )
+        .fetch_one(pool)
+        .await?;
+
+        if has_profile {
+            sqlx::query(
+                "UPDATE project_config SET worker_profile_json = worker_isolation_json \
+                 WHERE worker_profile_json = '{\"mode\":\"strict\"}'::jsonb",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query("ALTER TABLE project_config DROP COLUMN worker_isolation_json")
+                .execute(pool)
+                .await?;
+        } else {
+            sqlx::query(
+                "ALTER TABLE project_config RENAME COLUMN worker_isolation_json TO worker_profile_json",
+            )
+            .execute(pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// `settings_json` fc* → e2b* (`fcOvs`, `fcNasApi`, `clawTap.fcObserveSandboxId`). Author: kejiqing
+    async fn migrate_settings_json_e2b_keys(pool: &PgPool) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"UPDATE gateway_global_settings SET settings_json =
+                CASE
+                  WHEN settings_json ? 'fcOvs' AND NOT (settings_json ? 'e2bOvs')
+                  THEN jsonb_set(settings_json - 'fcOvs', '{e2bOvs}', settings_json->'fcOvs', true)
+                  WHEN settings_json ? 'fcOvs'
+                  THEN settings_json - 'fcOvs'
+                  ELSE settings_json
+                END
+              WHERE singleton_id = 1",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r"UPDATE gateway_global_settings SET settings_json =
+                CASE
+                  WHEN settings_json ? 'fcNasApi' AND NOT (settings_json ? 'e2bNasApi')
+                  THEN jsonb_set(settings_json - 'fcNasApi', '{e2bNasApi}', settings_json->'fcNasApi', true)
+                  WHEN settings_json ? 'fcNasApi'
+                  THEN settings_json - 'fcNasApi'
+                  ELSE settings_json
+                END
+              WHERE singleton_id = 1",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r"UPDATE gateway_global_settings SET settings_json = jsonb_set(
+                settings_json,
+                '{clawTap,e2bObserveSandboxId}',
+                settings_json #> '{clawTap,fcObserveSandboxId}',
+                true
+              )
+              WHERE singleton_id = 1
+                AND settings_json #>> '{clawTap,fcObserveSandboxId}' IS NOT NULL
+                AND settings_json #>> '{clawTap,e2bObserveSandboxId}' IS NULL",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r"UPDATE gateway_global_settings SET settings_json = jsonb_set(
+                settings_json,
+                '{clawTap}',
+                (settings_json->'clawTap') - 'fcObserveSandboxId',
+                false
+              )
+              WHERE singleton_id = 1
+                AND settings_json->'clawTap' ? 'fcObserveSandboxId'",
+        )
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Seed `settings_json.strictLandlockDefault` when absent. Author: kejiqing
+    async fn migrate_strict_landlock_default(pool: &PgPool) -> Result<(), SqlxError> {
+        let seed = system_landlock_default_json();
+        sqlx::query(
+            r"UPDATE gateway_global_settings SET settings_json = jsonb_set(
+                settings_json,
+                '{strictLandlockDefault}',
+                $1::jsonb,
+                true
+              )
+              WHERE singleton_id = 1
+                AND NOT (settings_json ? 'strictLandlockDefault')",
+        )
+        .bind(Json(seed))
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Historical turn metadata: `fc-cloud` / `fc-interactive` / `fc:sbx_*` → e2b names. Author: kejiqing
+    async fn migrate_gateway_turns_e2b_ids(pool: &PgPool) -> Result<(), SqlxError> {
+        sqlx::query("UPDATE gateway_turns SET pool_id = 'e2b-cloud' WHERE pool_id = 'fc-cloud'")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "UPDATE gateway_turns SET pool_id = 'e2b-interactive' WHERE pool_id = 'fc-interactive'",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "UPDATE gateway_turns SET worker_name = 'e2b:' || substring(worker_name FROM 4) \
+             WHERE worker_name LIKE 'fc:%'",
+        )
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
@@ -1465,6 +1688,75 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    pub async fn list_preflight_plugins(
+        &self,
+    ) -> Result<Vec<preflight_spi::PreflightPluginRecord>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT plugin_id, display_name, spi_version, default_impl, config_schema
+             FROM preflight_plugin ORDER BY plugin_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let plugin_id: String = row.try_get("plugin_id")?;
+            let display_name: String = row.try_get("display_name")?;
+            let spi_version: String = row.try_get("spi_version")?;
+            let default_impl: Option<Value> = row
+                .try_get::<Option<Json<Value>>, _>("default_impl")?
+                .map(|j| j.0);
+            let config_schema: Value = row.try_get::<Json<Value>, _>("config_schema")?.0;
+            let default_impl = default_impl.and_then(|v| serde_json::from_value(v).ok());
+            out.push(preflight_spi::PreflightPluginRecord {
+                plugin_id,
+                display_name,
+                spi_version,
+                default_impl,
+                config_schema,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn list_preflight_plugin_ids(&self) -> Result<Vec<String>, SqlxError> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT plugin_id FROM preflight_plugin ORDER BY plugin_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn upsert_preflight_plugin(
+        &self,
+        record: &preflight_spi::PreflightPluginRecord,
+        updated_at_ms: i64,
+    ) -> Result<(), SqlxError> {
+        let default_impl = record
+            .default_impl
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok());
+        sqlx::query(
+            r"INSERT INTO preflight_plugin (plugin_id, display_name, spi_version, default_impl, config_schema, updated_at_ms)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (plugin_id) DO UPDATE SET
+               display_name = EXCLUDED.display_name,
+               spi_version = EXCLUDED.spi_version,
+               default_impl = EXCLUDED.default_impl,
+               config_schema = EXCLUDED.config_schema,
+               updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(&record.plugin_id)
+        .bind(&record.display_name)
+        .bind(&record.spi_version)
+        .bind(default_impl.map(Json))
+        .bind(Json(record.config_schema.clone()))
+        .bind(updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn list_project_config_proj_ids(&self) -> Result<Vec<i64>, SqlxError> {
         let rows =
             sqlx::query_scalar::<_, i64>("SELECT proj_id FROM project_config ORDER BY proj_id")
@@ -1532,7 +1824,7 @@ impl GatewaySessionDb {
                       rules_json, mcp_servers_json, skills_sources_json, skills_json,
                       allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
                       solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
-                      prompt_limits_json, worker_isolation_json
+                      prompt_limits_json, worker_profile_json
                FROM project_config WHERE proj_id = $1",
         )
         .bind(proj_id)
@@ -1562,8 +1854,7 @@ impl GatewaySessionDb {
             .try_get::<Json<Value>, _>("extra_session_fields_json")?
             .0;
         let prompt_limits_json: Value = row.try_get::<Json<Value>, _>("prompt_limits_json")?.0;
-        let worker_isolation_json: Value =
-            row.try_get::<Json<Value>, _>("worker_isolation_json")?.0;
+        let worker_profile_json: Value = row.try_get::<Json<Value>, _>("worker_profile_json")?.0;
 
         let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
         let draft_open: bool = row.try_get("draft_open")?;
@@ -1586,21 +1877,142 @@ impl GatewaySessionDb {
             language_pipeline_json,
             extra_session_fields_json,
             prompt_limits_json,
-            worker_isolation_json,
+            worker_profile_json,
         }))
     }
 
     /// Sidecar for pool acquire: per-ds worker strict/relaxed profile. Author: kejiqing
-    pub async fn get_worker_isolation_json(&self, proj_id: i64) -> Result<Value, SqlxError> {
-        let row: Option<Json<Value>> = sqlx::query_scalar(
-            "SELECT worker_isolation_json FROM project_config WHERE proj_id = $1",
+    pub async fn get_worker_profile_json(&self, proj_id: i64) -> Result<Value, SqlxError> {
+        let row: Option<Json<Value>> =
+            sqlx::query_scalar("SELECT worker_profile_json FROM project_config WHERE proj_id = $1")
+                .bind(proj_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row
+            .map(|j| j.0)
+            .unwrap_or_else(crate::pool::default_worker_profile_json))
+    }
+
+    /// Persisted e2b worker sandbox for a project (gateway-managed lifecycle). Author: kejiqing
+    pub async fn get_project_e2b_worker(
+        &self,
+        proj_id: i64,
+    ) -> Result<Option<ProjectFcWorkerRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT proj_id, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
+               FROM project_e2b_worker WHERE proj_id = $1",
         )
         .bind(proj_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row
-            .map(|j| j.0)
-            .unwrap_or_else(crate::pool::default_worker_isolation_json))
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(ProjectFcWorkerRow {
+            proj_id: row.try_get("proj_id")?,
+            sandbox_id: row.try_get("sandbox_id")?,
+            worker_id: row.try_get("worker_id")?,
+            template_id: row.try_get("template_id")?,
+            handle_json: row.try_get::<Json<Value>, _>("handle_json")?.0,
+            updated_at_ms: row.try_get("updated_at_ms")?,
+        }))
+    }
+
+    pub async fn upsert_project_e2b_worker(
+        &self,
+        row: &ProjectFcWorkerRow,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO project_e2b_worker (
+                 proj_id, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (proj_id) DO UPDATE SET
+                 sandbox_id = EXCLUDED.sandbox_id,
+                 worker_id = EXCLUDED.worker_id,
+                 template_id = EXCLUDED.template_id,
+                 handle_json = EXCLUDED.handle_json,
+                 updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(row.proj_id)
+        .bind(&row.sandbox_id)
+        .bind(&row.worker_id)
+        .bind(&row.template_id)
+        .bind(Json(&row.handle_json))
+        .bind(row.updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_project_e2b_worker(&self, proj_id: i64) -> Result<(), SqlxError> {
+        sqlx::query("DELETE FROM project_e2b_worker WHERE proj_id = $1")
+            .bind(proj_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_project_e2b_worker_sandbox_ids(&self) -> Result<Vec<String>, SqlxError> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT sandbox_id FROM project_e2b_worker ORDER BY proj_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Append one worker rotation audit event (history only; never updated/deleted). Author: kejiqing
+    pub async fn insert_worker_rotation_event(
+        &self,
+        event: &WorkerRotationEvent,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO worker_rotation_log (
+                 proj_id, event, sandbox_id, worker_id, template_id, reason, at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(event.proj_id)
+        .bind(&event.event)
+        .bind(event.sandbox_id.as_deref())
+        .bind(event.worker_id.as_deref())
+        .bind(event.template_id.as_deref())
+        .bind(event.reason.as_deref())
+        .bind(event.at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Recent worker rotation events for a project (newest first). Author: kejiqing
+    pub async fn list_worker_rotation_log(
+        &self,
+        proj_id: i64,
+        limit: i64,
+    ) -> Result<Vec<WorkerRotationEvent>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT proj_id, event, sandbox_id, worker_id, template_id, reason, at_ms
+               FROM worker_rotation_log
+               WHERE proj_id = $1
+               ORDER BY at_ms DESC, id DESC
+               LIMIT $2",
+        )
+        .bind(proj_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(WorkerRotationEvent {
+                    proj_id: row.try_get("proj_id")?,
+                    event: row.try_get("event")?,
+                    sandbox_id: row.try_get("sandbox_id")?,
+                    worker_id: row.try_get("worker_id")?,
+                    template_id: row.try_get("template_id")?,
+                    reason: row.try_get("reason")?,
+                    at_ms: row.try_get("at_ms")?,
+                })
+            })
+            .collect()
     }
 
     pub async fn upsert_project_config(
@@ -1613,7 +2025,7 @@ impl GatewaySessionDb {
                 rules_json, mcp_servers_json, skills_sources_json, skills_json,
                 allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
                 solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
-                prompt_limits_json, worker_isolation_json
+                prompt_limits_json, worker_profile_json
             ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             ON CONFLICT (ds_id) DO UPDATE SET
                 proj_id = EXCLUDED.proj_id,
@@ -1633,7 +2045,7 @@ impl GatewaySessionDb {
                 language_pipeline_json = EXCLUDED.language_pipeline_json,
                 extra_session_fields_json = EXCLUDED.extra_session_fields_json,
                 prompt_limits_json = EXCLUDED.prompt_limits_json,
-                worker_isolation_json = EXCLUDED.worker_isolation_json",
+                worker_profile_json = EXCLUDED.worker_profile_json",
         )
         .bind(row.proj_id)
         .bind(row.content_rev)
@@ -1652,7 +2064,7 @@ impl GatewaySessionDb {
         .bind(Json(row.language_pipeline_json))
         .bind(Json(row.extra_session_fields_json))
         .bind(Json(row.prompt_limits_json))
-        .bind(Json(row.worker_isolation_json))
+        .bind(Json(row.worker_profile_json))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -2415,6 +2827,20 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Remove all transcript rows for a session (before full jsonl reconcile). Author: kejiqing
+    pub async fn delete_messages_for_session(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query("DELETE FROM cc_messages WHERE session_id = $1 AND proj_id = $2")
+            .bind(session_id)
+            .bind(proj_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn ensure_runtime_iteration(
         &self,
         turn_id: &str,
@@ -2552,7 +2978,7 @@ impl GatewaySessionDb {
         Ok(row.and_then(|(o,)| o))
     }
 
-    /// Register or refresh a pool node (`claw-pool-daemon` startup). Author: kejiqing
+    /// Register or refresh a legacy `claw_pool` row. Author: kejiqing
     pub async fn upsert_claw_pool(&self, row: &ClawPoolUpsert<'_>) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO claw_pool (
@@ -3338,7 +3764,7 @@ impl GatewaySessionDb {
     ) -> Result<Option<ConversationTranslateSnapshotRow>, SqlxError> {
         let row = sqlx::query(
             r"SELECT session_id, proj_id, source_fingerprint, turns_json, markdown,
-                     target_language, model_id, created_at_ms, updated_at_ms
+                     target_language, model_id, status, error_text, created_at_ms, updated_at_ms
               FROM gateway_conversation_translate
               WHERE session_id = $1 AND proj_id = $2",
         )
@@ -3357,12 +3783,53 @@ impl GatewaySessionDb {
             markdown: r.try_get("markdown")?,
             target_language: r.try_get("target_language")?,
             model_id: r.try_get("model_id")?,
+            status: r.try_get("status")?,
+            error_text: r.try_get("error_text")?,
             created_at_ms: r.try_get("created_at_ms")?,
             updated_at_ms: r.try_get("updated_at_ms")?,
         }))
     }
 
-    pub async fn upsert_conversation_translate_snapshot(
+    /// Single-flight claim: flip the row to `translating` only if it is not already
+    /// translating, OR a previous `translating` row has gone stale (older than
+    /// `stale_before_ms`, e.g. the worker died on restart). Returns true when this
+    /// caller acquired the slot. Author: kejiqing
+    pub async fn begin_conversation_translate(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+        source_fingerprint: &str,
+        target_language: &str,
+        now_ms: i64,
+        stale_before_ms: i64,
+    ) -> Result<bool, SqlxError> {
+        let res = sqlx::query(
+            r"INSERT INTO gateway_conversation_translate (
+                session_id, ds_id, proj_id, source_fingerprint, turns_json, markdown,
+                target_language, model_id, status, error_text, created_at_ms, updated_at_ms
+              ) VALUES ($1, $2, $2, $3, '[]'::jsonb, '', $4, NULL, 'translating', NULL, $5, $5)
+              ON CONFLICT (session_id, ds_id) DO UPDATE SET
+                source_fingerprint = EXCLUDED.source_fingerprint,
+                target_language = EXCLUDED.target_language,
+                status = 'translating',
+                error_text = NULL,
+                updated_at_ms = EXCLUDED.updated_at_ms
+              WHERE gateway_conversation_translate.status <> 'translating'
+                 OR gateway_conversation_translate.updated_at_ms < $6",
+        )
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(source_fingerprint)
+        .bind(target_language)
+        .bind(now_ms)
+        .bind(stale_before_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() >= 1)
+    }
+
+    /// Persist a finished translation snapshot (status = `ready`). Author: kejiqing
+    pub async fn complete_conversation_translate(
         &self,
         session_id: &str,
         proj_id: i64,
@@ -3376,14 +3843,16 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO gateway_conversation_translate (
                 session_id, ds_id, proj_id, source_fingerprint, turns_json, markdown,
-                target_language, model_id, created_at_ms, updated_at_ms
-              ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $8)
+                target_language, model_id, status, error_text, created_at_ms, updated_at_ms
+              ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, 'ready', NULL, $8, $8)
               ON CONFLICT (session_id, ds_id) DO UPDATE SET
                 source_fingerprint = EXCLUDED.source_fingerprint,
                 turns_json = EXCLUDED.turns_json,
                 markdown = EXCLUDED.markdown,
                 target_language = EXCLUDED.target_language,
                 model_id = EXCLUDED.model_id,
+                status = 'ready',
+                error_text = NULL,
                 updated_at_ms = EXCLUDED.updated_at_ms",
         )
         .bind(session_id)
@@ -3393,6 +3862,28 @@ impl GatewaySessionDb {
         .bind(markdown)
         .bind(target_language)
         .bind(model_id)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Mark an in-flight translation as failed (status = `error`). Author: kejiqing
+    pub async fn fail_conversation_translate(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+        error_text: &str,
+        now_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"UPDATE gateway_conversation_translate
+              SET status = 'error', error_text = $3, updated_at_ms = $4
+              WHERE session_id = $1 AND proj_id = $2",
+        )
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(error_text)
         .bind(now_ms)
         .execute(&self.pool)
         .await?;
@@ -3801,7 +4292,7 @@ mod tests {
             language_pipeline_json: &json!({}),
             extra_session_fields_json: &json!([]),
             prompt_limits_json: &json!({}),
-            worker_isolation_json: &json!({"mode": "strict"}),
+            worker_profile_json: &json!({"mode": "strict"}),
         })
         .await
         .unwrap();
@@ -3832,7 +4323,7 @@ mod tests {
             language_pipeline_json: &json!({}),
             extra_session_fields_json: &json!([]),
             prompt_limits_json: &json!({}),
-            worker_isolation_json: &json!({"mode": "strict"}),
+            worker_profile_json: &json!({"mode": "strict"}),
         })
         .await
         .unwrap();

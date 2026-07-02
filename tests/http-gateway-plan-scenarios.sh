@@ -2,7 +2,7 @@
 # HTTP smoke: concurrent reads during solve_async; workDir is canonical proj_home.
 # - Read paths stay fast while an async solve runs (no proj lock starvation on GET CLAUDE.md).
 # - Successful solve: workDir should be .../proj_{id} (not a separate sessions/ tree).
-# - `CLAW_SOLVE_ISOLATION` defaults to podman_pool (needs podman + CLAW_PODMAN_IMAGE, or set docker_pool + CLAW_DOCKER_*).
+# - `CLAW_SOLVE_ISOLATION` defaults to e2b (needs podman + CLAW_PODMAN_IMAGE, or set e2b + CLAW_DOCKER_*).
 #
 # Author: kejiqing
 set -euo pipefail
@@ -34,8 +34,8 @@ export CLAW_HTTP_ADDR="127.0.0.1:$PORT"
 export CLAW_WORK_ROOT="$WORK_ROOT"
 export CLAW_DS_REGISTRY="$REGISTRY"
 export CLAW_BIN
-# Match product default: container pool (see .env.example). Use docker_pool + CLAW_DOCKER_* if you run Docker workers.
-export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-podman_pool}"
+# Match product default: container pool (see .env.example). Use e2b + CLAW_DOCKER_* if you run Docker workers.
+export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-e2b}"
 export CLAW_PODMAN_IMAGE="${CLAW_PODMAN_IMAGE:-claw-gateway-worker:local}"
 export CLAW_PROJECTS_GIT_URL="${CLAW_PROJECTS_GIT_URL:-git@github.com:passionke/claw-code-projects.git}"
 export CLAW_PROJECTS_GIT_BRANCH="${CLAW_PROJECTS_GIT_BRANCH:-main}"

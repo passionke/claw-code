@@ -170,9 +170,20 @@ impl ProjectContext {
         cwd: impl Into<PathBuf>,
         current_date: impl Into<String>,
     ) -> std::io::Result<Self> {
+        Self::discover_bounded(cwd, current_date, None)
+    }
+
+    /// Like [`Self::discover`], but `ceiling` caps the upward parent walk for
+    /// instruction/rule discovery (inclusive). Gateway solve passes the project-config
+    /// root so discovery never climbs past the strict-landlock jail. Author: kejiqing
+    pub fn discover_bounded(
+        cwd: impl Into<PathBuf>,
+        current_date: impl Into<String>,
+        ceiling: Option<&Path>,
+    ) -> std::io::Result<Self> {
         let cwd = cwd.into();
-        let instruction_files = discover_instruction_files(&cwd)?;
-        let rule_files = discover_project_rules_files(&cwd)?;
+        let instruction_files = discover_instruction_files(&cwd, ceiling)?;
+        let rule_files = discover_project_rules_files(&cwd, ceiling)?;
         Ok(Self {
             cwd,
             current_date: current_date.into(),
@@ -189,7 +200,17 @@ impl ProjectContext {
         cwd: impl Into<PathBuf>,
         current_date: impl Into<String>,
     ) -> std::io::Result<Self> {
-        let mut context = Self::discover(cwd, current_date)?;
+        Self::discover_with_git_bounded(cwd, current_date, None)
+    }
+
+    /// Like [`Self::discover_with_git`], with a discovery `ceiling` (see
+    /// [`Self::discover_bounded`]). Author: kejiqing
+    pub fn discover_with_git_bounded(
+        cwd: impl Into<PathBuf>,
+        current_date: impl Into<String>,
+        ceiling: Option<&Path>,
+    ) -> std::io::Result<Self> {
+        let mut context = Self::discover_bounded(cwd, current_date, ceiling)?;
         context.git_status = read_git_status(&context.cwd);
         context.git_diff = read_git_diff(&context.cwd);
         context.git_context = GitContext::detect(&context.cwd);
@@ -197,8 +218,8 @@ impl ProjectContext {
     }
 }
 
-/// Pool worker read-only `ds_home` bind inside the solve container (`http-gateway-rs` pool v1).
-pub const GATEWAY_POOL_DS_CONFIG_ROOT: &str = "/claw_ds";
+/// Pool worker read-only project config root inside the solve container (`http-gateway-rs` pool v1).
+pub const GATEWAY_POOL_DS_CONFIG_ROOT: &str = "/claw_ds/project_home_def";
 
 /// Legacy path (no longer written from `claude_md`); kept for guest lock / read-only allowlist. Author: kejiqing
 pub const GATEWAY_SYSTEM_PROMPT_USER_OVERRIDE_REL: &str = ".claw/system_prompt_user_override.md";
@@ -392,11 +413,19 @@ pub fn prepend_bullets(items: Vec<String>) -> Vec<String> {
     items.into_iter().map(|item| format!(" - {item}")).collect()
 }
 
-fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
+fn discover_instruction_files(
+    cwd: &Path,
+    ceiling: Option<&Path>,
+) -> std::io::Result<Vec<ContextFile>> {
     let mut directories = Vec::new();
     let mut cursor = Some(cwd);
     while let Some(dir) = cursor {
         directories.push(dir.to_path_buf());
+        // Gateway solve: stop at the declared project-config root so the parent walk
+        // never reaches paths outside the strict-landlock jail (EACCES). Author: kejiqing
+        if ceiling == Some(dir) {
+            break;
+        }
         cursor = dir.parent();
     }
     directories.reverse();
@@ -416,7 +445,10 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
 }
 
 /// Worker discovers rules via `.cursor/rules` at project root (`ds_home` on host disk stays under `home/`). kejiqing
-fn discover_project_rules_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
+fn discover_project_rules_files(
+    cwd: &Path,
+    ceiling: Option<&Path>,
+) -> std::io::Result<Vec<ContextFile>> {
     let mut cursor = Some(cwd);
     while let Some(dir) = cursor {
         let rules_root = dir.join(".cursor").join("rules");
@@ -425,6 +457,10 @@ fn discover_project_rules_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>>
             collect_rule_mdc_files(&rules_root, &mut files)?;
             files.sort_by(|a, b| a.path.cmp(&b.path));
             return Ok(files);
+        }
+        // Bound the parent walk to the jail boundary (see discover_instruction_files). kejiqing
+        if ceiling == Some(dir) {
+            break;
         }
         cursor = dir.parent();
     }
@@ -743,11 +779,25 @@ fn discover_project_context_for_prompt(
     session_work_dir: &Path,
     current_date: impl Into<String>,
 ) -> Result<ProjectContext, PromptBuildError> {
-    let mut project_context = ProjectContext::discover_with_git(config_root, current_date.into())?;
+    let ceiling = project_config_discovery_ceiling(config_root);
+    let mut project_context = ProjectContext::discover_with_git_bounded(
+        config_root,
+        current_date.into(),
+        ceiling.as_deref(),
+    )?;
     if config_root != session_work_dir {
         project_context.cwd = session_work_dir.to_path_buf();
     }
     Ok(project_context)
+}
+
+/// Gateway solve declares the project root via `CLAW_PROJECT_CONFIG_ROOT`; bound prompt
+/// discovery to it so the upward file walk stays inside the strict-landlock jail. Local
+/// runs (env unset) keep the unbounded walk for monorepo ancestor discovery. Author: kejiqing
+fn project_config_discovery_ceiling(config_root: &Path) -> Option<PathBuf> {
+    std::env::var_os("CLAW_PROJECT_CONFIG_ROOT")
+        .filter(|raw| !raw.is_empty())
+        .map(|_| config_root.to_path_buf())
 }
 
 /// Resolve `Model family` for `# Environment context` (explicit → `CLAW_DEFAULT_MODEL` → project model → default).
@@ -1184,6 +1234,42 @@ mod tests {
     }
 
     #[test]
+    fn discovery_ceiling_caps_ancestor_walk_at_config_root() {
+        // Regression: gateway strict-landlock jail allows only the project-config root
+        // subtree; discovery must not climb to `root/CLAUDE.md` (jail-external EACCES).
+        let root = temp_dir();
+        let proj = root.join("project_home_def");
+        fs::create_dir_all(&proj).expect("proj dir");
+        fs::write(root.join("CLAUDE.md"), "ancestor instructions").expect("write ancestor");
+        fs::write(proj.join("CLAUDE.md"), "project instructions").expect("write project");
+
+        let bounded = ProjectContext::discover_bounded(&proj, "2026-03-31", Some(proj.as_path()))
+            .expect("bounded discover");
+        assert_eq!(
+            bounded
+                .instruction_files
+                .iter()
+                .map(|f| f.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["project instructions"],
+            "ceiling must stop the walk at config_root"
+        );
+
+        let unbounded = ProjectContext::discover_bounded(&proj, "2026-03-31", None)
+            .expect("unbounded discover");
+        assert_eq!(
+            unbounded
+                .instruction_files
+                .iter()
+                .map(|f| f.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ancestor instructions", "project instructions"],
+            "no ceiling keeps the unbounded ancestor walk for local monorepo runs"
+        );
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
     fn dedupes_identical_instruction_content_across_scopes() {
         let root = temp_dir();
         let nested = root.join("apps").join("api");
@@ -1531,6 +1617,25 @@ mod tests {
         assert!(prompt.contains("pool ds scaffold"));
         fs::remove_dir_all(ds_root).expect("cleanup ds");
         fs::remove_dir_all(work_root).expect("cleanup work");
+    }
+
+    #[test]
+    fn gateway_project_config_root_honors_stable_claw_ds_path() {
+        let _pcr =
+            crate::ScopedEnvVar::set("CLAW_PROJECT_CONFIG_ROOT", "/claw_ds/project_home_def");
+        let session_home = std::path::PathBuf::from("/claw_sessions/sess-1");
+        assert_eq!(
+            super::gateway_project_config_root(&session_home),
+            std::path::PathBuf::from("/claw_ds/project_home_def")
+        );
+    }
+
+    #[test]
+    fn gateway_pool_layout_prompt_mentions_stable_project_home_def() {
+        let _wr = crate::ScopedEnvVar::set("CLAW_GATEWAY_WORK_ROOT", "/claw_sessions/sess-1");
+        let section = super::gateway_pool_layout_prompt_section().expect("pool section");
+        assert!(section.contains("/claw_ds/project_home_def"));
+        assert!(section.contains("/claw_sessions/sess-1"));
     }
 
     #[test]

@@ -1,12 +1,8 @@
 /** Gateway project / config types (camelCase API). Author: kejiqing */
 
-/** First-turn solve preflight (`project_config.solve_preflight_json`). Author: kejiqing */
-export interface SolvePreflightJson {
-  /** legacy single kind, still accepted by backend */
-  kind?: "none" | "sqlbot_mcp_start" | string;
-  /** ordered preflight pipeline kinds */
-  kinds?: string[];
-}
+import type { SolvePreflightJson } from "./preflight";
+
+export type { SolvePreflightJson } from "./preflight";
 
 /** Solve orchestration pipeline (`project_config.solve_orchestration_json`). Author: kejiqing */
 export interface SolveOrchestrationJson {
@@ -61,10 +57,9 @@ export interface PromptLimitsJson {
   instructionTotalMaxChars?: number;
 }
 
-/** Per-ds pool worker profile (`project_config.worker_isolation_json`). Author: kejiqing */
-export interface WorkerIsolationJson {
-  mode: "strict" | "relaxed";
-}
+import type { WorkerProfileJson } from "./landlock";
+
+export type { WorkerProfileJson } from "./landlock";
 
 export interface ProjectConfig {
   projId: number;
@@ -85,8 +80,8 @@ export interface ProjectConfig {
   extraSessionFieldsJson?: string[];
   /** Instruction truncation budgets → `.claw/settings.json`. Author: kejiqing */
   promptLimitsJson?: PromptLimitsJson;
-  /** Pool worker strict/relaxed (`project_config.worker_isolation_json`). Author: kejiqing */
-  workerIsolationJson?: WorkerIsolationJson;
+  /** Pool worker strict/relaxed (`project_config.worker_profile_json`). Author: kejiqing */
+  workerProfileJson?: WorkerProfileJson;
 }
 
 export interface SkillJsonItem {

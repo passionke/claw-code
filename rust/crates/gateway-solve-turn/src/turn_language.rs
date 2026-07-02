@@ -116,6 +116,69 @@ pub fn collect_prior_user_prompts(
     (formatted, used_count.min(max_turns))
 }
 
+/// Like [`collect_prior_user_prompts`], but drops a trailing user text equal to `exclude` (current turn).
+#[must_use]
+pub fn collect_prior_user_prompts_excluding(
+    session_home: &Path,
+    max_turns: usize,
+    max_chars: usize,
+    exclude: &str,
+) -> (String, usize) {
+    let path = gateway_solve_session_persistence_path(session_home);
+    let mut texts = Vec::new();
+    if path.is_file() {
+        if let Ok(contents) = fs::read_to_string(&path) {
+            for line in contents.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let Ok(record) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
+                if record.get("type").and_then(Value::as_str) != Some("message") {
+                    continue;
+                }
+                let Some(msg) = record.get("message") else {
+                    continue;
+                };
+                if msg.get("role").and_then(Value::as_str) != Some("user") {
+                    continue;
+                }
+                let Some(blocks) = msg.get("blocks").and_then(Value::as_array) else {
+                    continue;
+                };
+                let mut parts = Vec::new();
+                for block in blocks {
+                    if block.get("type").and_then(Value::as_str) == Some("text") {
+                        if let Some(text) = block.get("text").and_then(Value::as_str) {
+                            let t = text.trim();
+                            if !t.is_empty() {
+                                parts.push(t.to_string());
+                            }
+                        }
+                    }
+                }
+                if !parts.is_empty() {
+                    texts.push(parts.join("\n"));
+                }
+            }
+        }
+    }
+    let exclude_trim = exclude.trim();
+    if let Some(last) = texts.last() {
+        if last.trim() == exclude_trim {
+            texts.pop();
+        }
+    }
+    let used_count = texts.len();
+    if max_turns > 0 && texts.len() > max_turns {
+        texts = texts.split_off(texts.len() - max_turns);
+    }
+    let formatted = format_prior_user_prompts(&texts, max_chars);
+    (formatted, used_count.min(max_turns))
+}
+
 fn format_prior_user_prompts(texts: &[String], max_chars: usize) -> String {
     if texts.is_empty() {
         return String::from("(none)");
@@ -242,6 +305,28 @@ async fn run_language_inference_llm(
         })?;
     let (text, _) = polish_output_from_events(&events, model)?;
     Ok(text)
+}
+
+/// Infer language string from a rendered inference prompt (no persist).
+pub async fn infer_turn_language_only(
+    user_message: &str,
+    model: &str,
+    session_id: &str,
+) -> Result<String, GatewaySolveTurnError> {
+    match run_language_inference_llm(user_message, model, session_id).await {
+        Ok(raw) => match parse_inference_json(&raw) {
+            Ok(parsed) => {
+                let lang = parsed.language.trim().to_string();
+                if lang.is_empty() {
+                    Ok(FALLBACK_LANGUAGE.to_string())
+                } else {
+                    Ok(lang)
+                }
+            }
+            Err(_) => Ok(FALLBACK_LANGUAGE.to_string()),
+        },
+        Err(_) => Ok(FALLBACK_LANGUAGE.to_string()),
+    }
 }
 
 /// Step 0: infer language, persist, return locked language string.

@@ -1,0 +1,6 @@
+# Publish OVS on all interfaces (ECS / remote host). Author: kejiqing
+# Merged when CLAW_OVS_PUBLIC_BIND=1 (see compose-include.sh).
+services:
+  openvscode-server:
+    ports:
+      - "${CLAW_OVS_HOST_PORT:-13000}:3000"

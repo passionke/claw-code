@@ -18,12 +18,10 @@ pub struct JsonlMessage {
     pub usage: Option<Value>,
 }
 
-/// Split session jsonl into per-user-turn message groups.
+/// Parse all `type:message` lines from session jsonl (order preserved).
 #[must_use]
-pub fn turn_message_groups_from_jsonl_contents(contents: &str) -> Vec<Vec<JsonlMessage>> {
-    let mut groups: Vec<Vec<JsonlMessage>> = Vec::new();
-    let mut current: Vec<JsonlMessage> = Vec::new();
-
+pub fn messages_from_jsonl_contents(contents: &str) -> Vec<JsonlMessage> {
+    let mut messages = Vec::new();
     for line in contents.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -43,19 +41,32 @@ pub fn turn_message_groups_from_jsonl_contents(contents: &str) -> Vec<Vec<JsonlM
             .and_then(Value::as_str)
             .unwrap_or("user")
             .to_string();
-        if role == "user" && !current.is_empty() {
-            groups.push(std::mem::take(&mut current));
-        }
         let blocks = msg
             .get("blocks")
             .cloned()
             .unwrap_or_else(|| Value::Array(Vec::new()));
         let usage = msg.get("usage").cloned();
-        current.push(JsonlMessage {
+        messages.push(JsonlMessage {
             role,
             blocks,
             usage,
         });
+    }
+    messages
+}
+
+/// Split session jsonl into per-user-turn message groups.
+#[must_use]
+pub fn turn_message_groups_from_jsonl_contents(contents: &str) -> Vec<Vec<JsonlMessage>> {
+    let messages = messages_from_jsonl_contents(contents);
+    let mut groups: Vec<Vec<JsonlMessage>> = Vec::new();
+    let mut current: Vec<JsonlMessage> = Vec::new();
+
+    for msg in messages {
+        if msg.role == "user" && !current.is_empty() {
+            groups.push(std::mem::take(&mut current));
+        }
+        current.push(msg);
     }
     if !current.is_empty() {
         groups.push(current);
@@ -137,6 +148,59 @@ pub async fn import_turn_messages_to_db(
         .await?;
     }
     Ok(())
+}
+
+/// NAS jsonl → DB: reconcile full session transcript into `cc_messages` (one-way index). Author: kejiqing
+pub async fn reconcile_session_transcript_from_jsonl(
+    db: &GatewaySessionDb,
+    session_id: &str,
+    proj_id: i64,
+    jsonl: &str,
+    fallback_turn_id: &str,
+    fallback_user_prompt: &str,
+) -> Result<Vec<JsonlMessage>, sqlx::Error> {
+    let groups = turn_message_groups_from_jsonl_contents(jsonl);
+    if groups.is_empty() {
+        let fallback = vec![JsonlMessage {
+            role: "user".to_string(),
+            blocks: serde_json::json!([{"type":"text","text":fallback_user_prompt}]),
+            usage: None,
+        }];
+        import_turn_messages_to_db(
+            db,
+            session_id,
+            proj_id,
+            fallback_turn_id,
+            &fallback,
+            now_ms(),
+        )
+        .await?;
+        return Ok(fallback);
+    }
+
+    let turns = db.list_turns_for_session(session_id, proj_id).await?;
+    db.delete_messages_for_session(session_id, proj_id).await?;
+
+    let mut imported = Vec::new();
+    for (idx, group) in groups.iter().enumerate() {
+        if group.is_empty() {
+            continue;
+        }
+        let turn_id = turns
+            .get(idx)
+            .map(|t| t.turn_id.as_str())
+            .or_else(|| turns.last().map(|t| t.turn_id.as_str()))
+            .unwrap_or(fallback_turn_id);
+        let created_at_ms = turns
+            .get(idx)
+            .map(|t| t.created_at_ms)
+            .unwrap_or_else(now_ms);
+        import_turn_messages_to_db(db, session_id, proj_id, turn_id, group, created_at_ms).await?;
+        if idx == groups.len() - 1 {
+            imported.clone_from(group);
+        }
+    }
+    Ok(imported)
 }
 
 fn insert_model_usage_from_solve_json(

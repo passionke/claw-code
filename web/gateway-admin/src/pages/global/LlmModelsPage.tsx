@@ -24,8 +24,35 @@ import { useApp } from "../../context/AppContext";
 import type { GlobalSettingsResponse, LlmModelRow } from "../../types/globalSettings";
 import type { LlmTestResponse, ThinkingMode } from "../../types/llmTest";
 import { testLlmModel, thinkingModeToApi } from "../../utils/llmTest";
+import {
+  findLlmPresetByEndpoint,
+  groupLlmPresetsByProvider,
+  LLM_PROVIDER_CUSTOM_ID,
+  LLM_PROVIDER_PRESETS,
+  type LlmProviderPreset,
+} from "../../utils/llmProviders";
 
 const DEFAULT_TEST_PROMPT = "Reply with exactly: pong";
+
+const PROVIDER_GROUPS = groupLlmPresetsByProvider(LLM_PROVIDER_PRESETS);
+const DEFAULT_PRESET_ID = LLM_PROVIDER_PRESETS.find((p) => p.presetId === "deepseek-v4-flash")?.presetId
+  ?? LLM_PROVIDER_PRESETS[0]?.presetId
+  ?? LLM_PROVIDER_CUSTOM_ID;
+
+function applyPresetToForm(
+  form: ReturnType<typeof Form.useForm>[0],
+  preset: LlmProviderPreset
+) {
+  form.setFieldsValue({
+    name: preset.displayName,
+    baseModelUrl: preset.baseModelUrl,
+    modelName: preset.modelId,
+  });
+}
+
+function presetIdForRow(row: LlmModelRow): string {
+  return findLlmPresetByEndpoint(row.baseModelUrl, row.modelName)?.presetId ?? LLM_PROVIDER_CUSTOM_ID;
+}
 
 function formatMs(ms?: number): string {
   if (!ms) return "—";
@@ -46,6 +73,8 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<LlmModelRow | null>(null);
   const [form] = Form.useForm();
+  const presetId = Form.useWatch("presetId", form);
+  const isCustomPreset = !presetId || presetId === LLM_PROVIDER_CUSTOM_ID;
   const [testModalOpen, setTestModalOpen] = useState(false);
   const [testingRow, setTestingRow] = useState<LlmModelRow | null>(null);
   const [testing, setTesting] = useState(false);
@@ -91,18 +120,29 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
+    const preset = LLM_PROVIDER_PRESETS.find((p) => p.presetId === DEFAULT_PRESET_ID);
+    form.setFieldsValue({ presetId: DEFAULT_PRESET_ID });
+    if (preset) applyPresetToForm(form, preset);
     setModalOpen(true);
   };
 
   const openEdit = (row: LlmModelRow) => {
     setEditing(row);
+    const pid = presetIdForRow(row);
     form.setFieldsValue({
+      presetId: pid,
       name: row.name,
       baseModelUrl: row.baseModelUrl,
       modelName: row.modelName,
       apiKey: "",
     });
     setModalOpen(true);
+  };
+
+  const onPresetChange = (id: string) => {
+    if (id === LLM_PROVIDER_CUSTOM_ID) return;
+    const preset = LLM_PROVIDER_PRESETS.find((p) => p.presetId === id);
+    if (preset) applyPresetToForm(form, preset);
   };
 
   const saveModel = async () => {
@@ -147,12 +187,22 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
   };
 
   const applyModel = async (row: LlmModelRow) => {
-    await proxyHttp(
+    const resp = await proxyHttp<{
+      outcome?: { tapRestarted?: boolean; message?: string };
+    }>(
       gatewayBase,
       "POST",
       `/v1/gateway/global-settings/llm-models/${encodeURIComponent(row.id)}/apply`
     );
-    message.success(`已切换为当前模型：${row.name}`);
+    const restarted = resp.outcome?.tapRestarted;
+    const detail = resp.outcome?.message;
+    if (restarted) {
+      message.success(`已切换为当前模型：${row.name}（tap 已重启）`);
+    } else if (detail) {
+      message.success(`已切换为当前模型：${row.name}（${detail}）`);
+    } else {
+      message.success(`已切换为当前模型：${row.name}`);
+    }
     await load();
   };
 
@@ -376,25 +426,58 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
       >
         <Form form={form} layout="vertical">
           <Form.Item
+            name="presetId"
+            label="服务商 / 模型"
+            rules={[{ required: true, message: "请选择服务商" }]}
+            tooltip="预设来自 llm-providers.csv；仅需填写 API Key"
+          >
+            <Select
+              showSearch
+              optionFilterProp="label"
+              onChange={onPresetChange}
+              options={[
+                ...PROVIDER_GROUPS.map((g) => ({
+                  label: g.providerLabel,
+                  options: g.presets.map((p) => ({
+                    value: p.presetId,
+                    label: p.modelId,
+                  })),
+                })),
+                {
+                  label: "其他",
+                  options: [{ value: LLM_PROVIDER_CUSTOM_ID, label: "自定义（手动填写 URL）" }],
+                },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
             name="name"
             label="显示名称"
             rules={[{ required: true, message: "请填写名称" }]}
           >
-            <Input placeholder="例如 小米 MiMo 生产" />
+            <Input placeholder="例如 DeepSeek Chat" />
           </Form.Item>
           <Form.Item
             name="baseModelUrl"
             label="Base URL"
             rules={[{ required: true, message: "请填写 Base URL" }]}
           >
-            <Input placeholder="https://api.example.com/v1" />
+            <Input
+              placeholder="https://api.example.com/v1"
+              readOnly={!isCustomPreset}
+              variant={isCustomPreset ? undefined : "borderless"}
+            />
           </Form.Item>
           <Form.Item
             name="modelName"
             label="模型 ID"
             rules={[{ required: true, message: "请填写模型 ID" }]}
           >
-            <Input placeholder="model-name" />
+            <Input
+              placeholder="model-name"
+              readOnly={!isCustomPreset}
+              variant={isCustomPreset ? undefined : "borderless"}
+            />
           </Form.Item>
           <Form.Item
             name="apiKey"

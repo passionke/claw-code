@@ -89,10 +89,10 @@ def ensure_project(port: int, proj_id: int) -> None:
     http_json("POST", f"http://127.0.0.1:{port}/v1/init", {"projId": proj_id})
 
 
-def set_worker_isolation(port: int, proj_id: int, mode: str) -> None:
+def set_worker_profile(port: int, proj_id: int, mode: str) -> None:
     if mode not in ("strict", "relaxed"):
         fail(f"worker isolation mode must be strict or relaxed (got {mode})")
-    print(f"==> e2e set proj={proj_id} workerIsolationJson.mode={mode} (gateway :{port})", file=sys.stderr)
+    print(f"==> e2e set proj={proj_id} workerProfileJson.mode={mode} (gateway :{port})", file=sys.stderr)
     cfg = http_json("GET", f"http://127.0.0.1:{port}/v1/project/config/{proj_id}")
     body = {
         "contentRev": cfg.get("contentRev") or "",
@@ -107,13 +107,13 @@ def set_worker_isolation(port: int, proj_id: int, mode: str) -> None:
         "solveOrchestrationJson": cfg.get("solveOrchestrationJson") or {},
         "extraSessionFieldsJson": cfg.get("extraSessionFieldsJson") or [],
         "promptLimitsJson": cfg.get("promptLimitsJson") or {},
-        "workerIsolationJson": {"mode": mode},
+        "workerProfileJson": {"mode": mode},
     }
     http_json("PUT", f"http://127.0.0.1:{port}/v1/project/config/{proj_id}", body)
     got = http_json("GET", f"http://127.0.0.1:{port}/v1/project/config/{proj_id}")
-    got_mode = ((got.get("workerIsolationJson") or {}).get("mode") or "").strip()
+    got_mode = ((got.get("workerProfileJson") or {}).get("mode") or "").strip()
     if got_mode != mode:
-        fail(f"workerIsolationJson.mode={got_mode!r} expected {mode!r}")
+        fail(f"workerProfileJson.mode={got_mode!r} expected {mode!r}")
 
 
 def build_solve_body(port: int, proj_id: int, prompt: str, session_id: str | None) -> dict[str, Any]:
@@ -145,9 +145,9 @@ def assert_task(
         if got != expect_pool_id:
             fail(f"{label} poolId={got!r} expected {expect_pool_id!r}")
     if expect_isolation is not None:
-        got = (task.get("workerIsolation") or "").strip()
+        got = (task.get("workerProfile") or "").strip()
         if got != expect_isolation:
-            fail(f"{label} workerIsolation={got!r} expected {expect_isolation!r}")
+            fail(f"{label} workerProfile={got!r} expected {expect_isolation!r}")
 
 
 def solve_e2e(
@@ -156,13 +156,13 @@ def solve_e2e(
     prompt: str = "ping",
     *,
     pool_id: str | None = None,
-    worker_isolation: str | None = None,
+    worker_profile: str | None = None,
     expect_isolation: str | None = None,
     session_id: str | None = None,
 ) -> str:
     """POST solve_async, poll to terminal; return sessionId from solve_async response."""
-    if worker_isolation:
-        set_worker_isolation(port, proj_id, worker_isolation)
+    if worker_profile:
+        set_worker_profile(port, proj_id, worker_profile)
     wait_readyz(port)
     ensure_project(port, proj_id)
 
@@ -276,12 +276,12 @@ def main() -> None:
         gw_b,
         proj_id,
         pool_id=pool_b,
-        worker_isolation="relaxed",
+        worker_profile="relaxed",
         expect_isolation="relaxed",
     )
 
     print(f"==> [7/7] node A still solves after cluster (:{gw_a} pool={pool_a})")
-    set_worker_isolation(gw_a, proj_id, "strict")
+    set_worker_profile(gw_a, proj_id, "strict")
     solve_e2e(gw_a, proj_id, pool_id=pool_a, expect_isolation="strict")
 
     ok("per-gateway workspace + node B solve + cross-gateway session passed")

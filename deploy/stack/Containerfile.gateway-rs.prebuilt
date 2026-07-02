@@ -14,15 +14,26 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
     git \
     podman \
     docker.io \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY deploy/stack/.linux-artifacts/release/claw /usr/local/bin/claw
 COPY deploy/stack/.linux-artifacts/release/http-gateway-rs /usr/local/bin/http-gateway-rs
+# claw-vscode VSIX for e2b OVS bootstrap (package-claw-vscode-vsix.sh before image build). kejiqing
+COPY deploy/stack/claw.claw-vscode-*.vsix /app/deploy/stack/
+COPY deploy/e2b/e2b_exec.py /app/deploy/e2b/
+# Self-hosted e2b exec helper (CLAW_E2B_EXEC_HELPER default). Author: kejiqing
+RUN pip3 install --no-cache-dir --break-system-packages e2b e2b-code-interpreter \
+    && chmod +x /app/deploy/e2b/e2b_exec.py
+# Artifact upload may drop +x; enforce before ENTRYPOINT. kejiqing
+RUN chmod +x /usr/local/bin/claw /usr/local/bin/http-gateway-rs
 # Host pool: claw-sandbox from linux-compile (.linux-artifacts/release/claw-sandbox), not in gateway image. kejiqing
 
 ENV CLAW_HTTP_ADDR=0.0.0.0:8080
 ENV CLAW_WORK_ROOT=/var/lib/claw/workspace
+ENV CLAW_E2B_EXEC_HELPER=/app/deploy/e2b/e2b_exec.py
 
 RUN mkdir -p /var/lib/claw/workspace /var/log/claw/traces
 

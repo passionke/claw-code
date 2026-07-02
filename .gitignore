@@ -6,6 +6,7 @@ __pycache__/
 *~
 
 archive/
+.cache/
 .omx/
 .clawd-agents/
 # Cursor IDE (machine-local rules, state)
@@ -73,16 +74,30 @@ deploy/stack/.claw-pool-rpc/
 deploy/stack/.claw-worker-llm.env
 deploy/stack/.claw-worker-runtime.env
 deploy/stack/.linux-artifacts/
+deploy/stack/.e2b-worker-bins/
 deploy/stack/*.bin
 deploy/stack/.tmp-bin-check/
+deploy/stack/claw.claw-vscode-*.vsix
+deploy/stack/claw.ovs-chat-demo-*.vsix
+deploy/stack/claw-ovs-extensions/
+deploy/stack/.cargo-build-cache/
+deploy/stack/.claw-worker-check
+# FC sandbox template build extracts large worker binaries locally. kejiqing
+deploy/e2b/claw
+deploy/e2b/ttyd
+deploy/e2b/.e2b-template-build/
+deploy/e2b/.e2b-tools-staging/
+deploy/stack/claw-pg-data/
 deploy/stack/.claw-postgres-network.override.yml
 deploy/stack/.claw-instance.envfile.override.yml
+deploy/stack/.claw-workspace-volume.yml
 # Admin UI hashed bundles (local build; do not commit)
 web/gateway-admin/dist/assets/
 
 # Local qemu/rust crash dumps (large; never commit)
 rust/*.core
 rust/.cargo/config.toml
+sandbox/.cargo/config.toml
 # Compose auto-loads this filename next to podman-compose.yml — do not create; use repo root `.env` only.
 deploy/stack/.env
 

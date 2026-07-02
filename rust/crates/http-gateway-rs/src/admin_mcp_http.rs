@@ -13,6 +13,7 @@ use crate::admin_mcp_solve::{
 };
 use crate::gateway_admin_mcp_token::{extract_bearer_token, verify_admin_mcp_token};
 use crate::gateway_global_settings;
+use crate::pool::NasLayoutBackend;
 use crate::project_config_apply;
 use crate::project_config_draft;
 use crate::project_extra_session;
@@ -87,6 +88,7 @@ pub async fn handle_admin_mcp_post<B: AdminMcpSolveBackend>(
     db: &GatewaySessionDb,
     work_root: &Path,
     solve_backend: &B,
+    nas_layout: &NasLayoutBackend,
     headers: &HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -123,13 +125,15 @@ pub async fn handle_admin_mcp_post<B: AdminMcpSolveBackend>(
         "initialize" => Ok(handle_initialize(request.params.as_ref())),
         "notifications/initialized" | "initialized" | "ping" => Ok(json!({})),
         "tools/list" => Ok(tools_list_result()),
-        "tools/call" => match handle_tools_call(db, work_root, solve_backend, request.params).await
-        {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                return json_rpc_error_response(id, -32000, e, StatusCode::OK);
+        "tools/call" => {
+            match handle_tools_call(db, work_root, solve_backend, nas_layout, request.params).await
+            {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    return json_rpc_error_response(id, -32000, e, StatusCode::OK);
+                }
             }
-        },
+        }
         other => {
             return json_rpc_error_response(
                 id,
@@ -327,7 +331,7 @@ async fn upsert_project_draft(
         language_pipeline_json: &existing.language_pipeline_json,
         extra_session_fields_json: &existing.extra_session_fields_json,
         prompt_limits_json: &existing.prompt_limits_json,
-        worker_isolation_json: &existing.worker_isolation_json,
+        worker_profile_json: &existing.worker_profile_json,
     };
     db.upsert_project_config(upsert)
         .await
@@ -451,6 +455,7 @@ async fn handle_tools_call<B: AdminMcpSolveBackend>(
     db: &GatewaySessionDb,
     work_root: &Path,
     solve_backend: &B,
+    nas_layout: &NasLayoutBackend,
     params: Option<Value>,
 ) -> Result<Value, String> {
     let params = params.ok_or_else(|| "params required".to_string())?;
@@ -494,7 +499,7 @@ async fn handle_tools_call<B: AdminMcpSolveBackend>(
             let value = solve_backend.gateway_task_get(task_id).await?;
             Ok(tool_text_result(&value))
         }
-        _ => handle_project_config_tool(db, work_root, name, &args).await,
+        _ => handle_project_config_tool(db, work_root, nas_layout, name, &args).await,
     }
 }
 
@@ -557,6 +562,7 @@ async fn handle_project_extra_session_fields_get(
 async fn handle_project_config_tool(
     db: &GatewaySessionDb,
     work_root: &Path,
+    nas_layout: &NasLayoutBackend,
     name: &str,
     args: &Value,
 ) -> Result<Value, String> {
@@ -616,7 +622,14 @@ async fn handle_project_config_tool(
             project_config_draft::activate_formal_revision(db, proj_id, content_rev)
                 .await
                 .map_err(|e| e.message)?;
+            // e2b worker reads project config from NAS `{cluster}/proj_N/home` (mounted ro as
+            // `/claw_ds`): write effective config there via nas-api on activate (the real bug fix).
+            // The host `work_root/proj_N` materialization is kept for now. Author: kejiqing
             let materialized = materialize_effective_config(db, work_root, proj_id).await?;
+            nas_layout
+                .materialize_proj_workspace(db, proj_id)
+                .await
+                .map_err(|e| format!("materialize project config to NAS failed: {e}"))?;
             Ok(tool_text_result(&json!({
                 "projId": proj_id,
                 "activeContentRev": content_rev,

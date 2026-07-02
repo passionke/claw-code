@@ -59,7 +59,7 @@ services:
       # Gateway session / turn / feedback tables (PostgreSQL). Override for external managed PG.
       CLAW_GATEWAY_DATABASE_URL: ${CLAW_GATEWAY_DATABASE_URL:-postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway}
       CLAW_GATEWAY_INTERNAL_TOKEN: ${CLAW_GATEWAY_INTERNAL_TOKEN:-claw-internal-dev-token}
-      CLAW_SOLVE_ISOLATION: ${CLAW_SOLVE_ISOLATION:-podman_pool}
+      CLAW_SOLVE_ISOLATION: ${CLAW_SOLVE_ISOLATION:-fc}
       # Pool sizing / image: explicit defaults so a bare `podman compose` still gets worker settings when
       # project-dir `.env` is missing (always prefer `./deploy/stack/gateway.sh up` from repo root with `.env`).
       CLAW_POOL_SIZE_CAP: ${CLAW_POOL_SIZE_CAP:-4}
@@ -78,12 +78,14 @@ services:
       CLAW_SSE_LOG_FILE: /var/log/claw/sse-debug.log
       # Gateway rolling logs (not under sandbox CLAW_WORK_ROOT). Author: kejiqing
       CLAW_GATEWAY_LOG_DIR: /var/log/claw
+      # Interactive coding terminal: ttyd published on host loopback; gateway container dials host. kejiqing
+      CLAW_TERMINAL_TTYD_CONNECT_HOST: ${CLAW_TERMINAL_TTYD_CONNECT_HOST:-host.containers.internal}
     ports:
       - "${GATEWAY_HOST_PORT}:8080"
     volumes:
-      # Bind mount so podman_pool on the host can use the same path as CLAW_POOL_WORK_ROOT_HOST.
-      # Darwin: env-profile sets CLAW_PODMAN_BIND_MOUNT_SUFFIX=:U (Podman chown to container user). kejiqing
-      - ${CLAW_POOL_WORK_ROOT_BIND_SRC:-./claw-workspace}:/var/lib/claw/workspace${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}
+      # Workspace: bind or NFS — see generated `.claw-workspace-volume.yml` (CLAW_USE_NAS_VOLUME + NAS_BASE_URL).
+      # ECS host NAS: set CLAW_NAS_HOST_MOUNT=/mnt → direct bind (see env.e2b-interactive.example). kejiqing
+      - ${CLAW_GATEWAY_WORKSPACE_BIND:-claw-workspace-data:/var/lib/claw/workspace}
       - ${CLAW_HOST_LOG_DIR:-./claw-logs}:/var/log/claw${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}
       - ../../.claw.json:/app/.claw.json:ro
       # Human deploy .env (ro). PG-synced LLM + tap upstream live under .claw/ (rw). kejiqing
@@ -112,15 +114,54 @@ services:
       # Set in repo root .env (e.g. http://127.0.0.1:18088); avoid nested ${} — playground resolves GATEWAY_HOST_PORT if needed.
       PLAYGROUND_PUBLIC_GATEWAY_BASE: ${PLAYGROUND_PUBLIC_GATEWAY_BASE:-http://127.0.0.1:18088}
       GATEWAY_HOST_PORT: ${GATEWAY_HOST_PORT:-18088}
-      PLAYGROUND_ALLOWED_HOSTS: ${PLAYGROUND_ALLOWED_HOSTS:-127.0.0.1,localhost,gateway-rs,192.168.9.252,10.200.2.171,10.22.28.94}
-      PLAYGROUND_ALLOWED_PORTS: ${PLAYGROUND_ALLOWED_PORTS:-8080,8088,18088,18089}
+      PLAYGROUND_ALLOWED_HOSTS: ${PLAYGROUND_ALLOWED_HOSTS:-127.0.0.1,localhost,gateway-rs,openvscode-server,192.168.9.252,10.200.2.171,10.22.28.94}
+      PLAYGROUND_ALLOWED_PORTS: ${PLAYGROUND_ALLOWED_PORTS:-8080,8088,18088,18089,3000,13000}
       PLAYGROUND_ADMIN_USER: ${PLAYGROUND_ADMIN_USER:-admin}
       PLAYGROUND_ADMIN_PASSWORD: ${PLAYGROUND_ADMIN_PASSWORD:-sunmi123}
       PLAYGROUND_ADMIN_SESSION_SECRET: ${PLAYGROUND_ADMIN_SESSION_SECRET:-}
       PLAYGROUND_ADMIN_SESSION_TTL_SEC: ${PLAYGROUND_ADMIN_SESSION_TTL_SEC:-604800}
+      PLAYGROUND_OVS_BASE: ${PLAYGROUND_OVS_BASE:-http://openvscode-server:3000}
+      PLAYGROUND_PUBLIC_OVS_BASE: ${PLAYGROUND_PUBLIC_OVS_BASE:-http://127.0.0.1:13000}
+      PLAYGROUND_OVS_WORKSPACE_ROOT: ${PLAYGROUND_OVS_WORKSPACE_ROOT:-/home/workspace}
+    depends_on:
+      - openvscode-server
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18765/')\""]
       interval: 15s
       timeout: 5s
       retries: 6
       start_period: 5s
+
+  # Web IDE — passionke/openvscode-server:1.109.5-ovs-chat + claw-vscode (hot-install via lib/install-claw-vscode-container.sh). kejiqing
+  openvscode-server:
+    image: ${CLAW_OVS_IMAGE}
+    container_name: claw-openvscode-server
+    restart: unless-stopped
+    user: "${CLAW_WORKER_UID:-1000}:${CLAW_WORKER_GID:-1000}"
+    environment:
+      HOME: /opt/claw-ovs/home
+      CLAW_GATEWAY_HOST: gateway-rs:8080
+    ports:
+      - "${CLAW_OVS_PUBLISH_HOST:-127.0.0.1}:${CLAW_OVS_HOST_PORT:-13000}:3000"
+    volumes:
+      - ${CLAW_OVS_WORKSPACE_BIND:-claw-workspace-data:/home/workspace}
+      - ./openvscode-settings.json:/opt/claw-ovs/server-data/Machine/settings.json:ro
+      - ./claw-ovs-extensions:/opt/claw-extensions${CLAW_PODMAN_BIND_MOUNT_SUFFIX:-}
+    command:
+      - --host=0.0.0.0
+      - --port=3000
+      - --without-connection-token
+      - --server-base-path=/ovs
+      - --extensions-dir=/opt/claw-extensions
+      - --server-data-dir=/opt/claw-ovs/server-data
+      - --enable-proposed-api=claw.claw-vscode
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:3000/ovs/ >/dev/null || exit 1",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s

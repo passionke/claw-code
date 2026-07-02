@@ -1,10 +1,28 @@
 //! Session bind-mount uid alignment for pool workers (`claw` / `CLAW_WORKER_*`). Author: kejiqing
 //!
-//! Gateway `prepare_gateway_session` delegates to [`super::PoolOps::chown_session_tree_for_pool_worker`]
-//! when `CLAW_POOL_RPC_HOST_WORK_ROOT` is set (RPC → `claw-pool-daemon`). In-process pool and daemon
-//! `run_worker_container` use this helper with the local engine CLI.
+//! Gateway `prepare_gateway_session` uses this when a container path must map to a host/NAS path
+//! before e2b bind mounting.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Map gateway container `CLAW_WORK_ROOT` paths to host paths for pool RPC acquire binds. Author: kejiqing
+#[must_use]
+pub fn path_for_pool_acquire(
+    path: &Path,
+    work_root: &Path,
+    pool_rpc_host_work_root: Option<&Path>,
+) -> PathBuf {
+    let Some(host_root) = pool_rpc_host_work_root else {
+        return path.to_path_buf();
+    };
+    let sh = path.to_string_lossy();
+    let wr = work_root.to_string_lossy();
+    if let Some(rest) = sh.strip_prefix(wr.as_ref()) {
+        let rel = rest.trim_start_matches('/');
+        return host_root.join(rel);
+    }
+    path.to_path_buf()
+}
 
 /// Try recursive in-process `chown`; on failure run `runtime_bin run --rm -v … --user root … chown -R`
 /// (Docker/Podman), then verify with another in-process `chown` pass.

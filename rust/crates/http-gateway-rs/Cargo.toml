@@ -13,13 +13,12 @@ path = "src/lib.rs"
 name = "http-gateway-rs"
 path = "src/main.rs"
 
-[[bin]]
-name = "claw-pool-daemon"
-path = "src/bin/claw-pool-daemon.rs"
-
 [dependencies]
+base64 = "0.22"
+flate2 = "1"
+tar = "0.4"
 async-trait = "0.1"
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
 bytes = "1"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -37,11 +36,12 @@ api = { path = "../api" }
 tools = { path = "../tools" }
 telemetry = { path = "../telemetry" }
 gateway-solve-turn = { path = "../gateway-solve-turn" }
-claw-sandbox-protocol = { path = "../../../sandbox/crates/claw-sandbox-protocol" }
-claw-sandbox-client = { path = "../../../sandbox/crates/claw-sandbox-client" }
+preflight-spi = { path = "../preflight-spi" }
+claw-e2b-sandbox-client = { path = "../claw-e2b-sandbox-client" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json", "uuid"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio-tungstenite = "0.26"
 sha2 = "0.10"
 hex = "0.4"
 aes-gcm = "0.10"

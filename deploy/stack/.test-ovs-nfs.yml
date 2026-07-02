@@ -1,0 +1,13 @@
+volumes:
+  ovs-nas:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: rw,vers=4.2,hard,timeo=600,retrans=2,resvport
+      device: "10.8.0.8:/mnt/NAS0/nfs-export"
+services:
+  probe:
+    image: docker.io/library/alpine:latest
+    volumes:
+      - ovs-nas:/home/workspace
+    command: ["sh", "-c", "touch /home/workspace/.ovs_nfs_probe && echo OK"]

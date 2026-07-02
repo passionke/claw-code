@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# E2E helpers: project workerIsolationJson for admin-solve-e2e. Author: kejiqing
+# E2E helpers: project workerProfileJson for admin-solve-e2e. Author: kejiqing
 set -euo pipefail
 
-claw_e2e_set_project_worker_isolation() {
+claw_e2e_set_project_worker_profile() {
   local port="${1:?port}"
   local proj_id="${2:?proj_id}"
   local mode="${3:?mode}"
   case "${mode}" in
-    strict | relaxed) ;;
+    strict | relaxed | sandbox) ;;
     *)
-      echo "error: worker isolation mode must be strict or relaxed (got ${mode})" >&2
+      echo "error: worker isolation mode must be strict, relaxed, or sandbox (got ${mode})" >&2
       return 1
       ;;
   esac
-  echo "==> e2e set proj=${proj_id} workerIsolationJson.mode=${mode} (gateway :${port})" >&2
+  echo "==> e2e set proj=${proj_id} workerProfileJson.mode=${mode} (gateway :${port})" >&2
   GATEWAY_PORT="${port}" PROJ_ID="${proj_id}" MODE="${mode}" python3 <<'PY'
 import json, os, sys, urllib.error, urllib.request
 
@@ -40,7 +40,7 @@ body = {
     "solveOrchestrationJson": cfg.get("solveOrchestrationJson") or {},
     "extraSessionFieldsJson": cfg.get("extraSessionFieldsJson") or [],
     "promptLimitsJson": cfg.get("promptLimitsJson") or {},
-    "workerIsolationJson": {"mode": mode},
+    "workerProfileJson": {"mode": mode},
 }
 req = urllib.request.Request(
     f"{base}/v1/project/config/{proj}",
@@ -56,9 +56,9 @@ except urllib.error.HTTPError as e:
     raise SystemExit(f"PUT project config HTTP {e.code}: {err}") from e
 
 got = load(f"{base}/v1/project/config/{proj}")
-got_mode = ((got.get("workerIsolationJson") or {}).get("mode") or "").strip()
+got_mode = ((got.get("workerProfileJson") or {}).get("mode") or "").strip()
 if got_mode != mode:
-    raise SystemExit(f"workerIsolationJson.mode={got_mode!r} expected {mode!r}")
-print(f"ok proj={proj} workerIsolationJson.mode={mode}")
+    raise SystemExit(f"workerProfileJson.mode={got_mode!r} expected {mode!r}")
+print(f"ok proj={proj} workerProfileJson.mode={mode}")
 PY
 }

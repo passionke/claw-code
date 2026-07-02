@@ -1,0 +1,8 @@
+# e2b sandbox worker: official code-interpreter base + claw + ttyd. Author: kejiqing
+# Build context must include deploy/e2b/claw and deploy/e2b/ttyd (extracted from claw-gateway-worker).
+FROM fc-e2b-registry.cn-beijing.cr.aliyuncs.com/runtime/code-interpreter-v1:v0.0.18
+USER root
+COPY claw /usr/local/bin/claw
+COPY ttyd /usr/local/bin/ttyd
+RUN chmod +x /usr/local/bin/claw /usr/local/bin/ttyd
+USER 1000

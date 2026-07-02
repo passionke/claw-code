@@ -16,6 +16,7 @@ use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::gateway_llm_model_apply::{
     normalize_model_name_for_upstream, normalize_upstream_base_url,
 };
+use crate::pool::interactive_backend::interactive_backend_is_e2b;
 use crate::session_db::GatewaySessionDb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -97,10 +98,57 @@ pub async fn load_cluster_settings(
     Ok((cluster_id, settings.claw_tap))
 }
 
+async fn refresh_fc_claw_tap_cluster_state(
+    db: &GatewaySessionDb,
+    llm_handle: &LlmRuntimeHandle,
+) -> Result<Option<ClawTapClusterStateInner>, String> {
+    let (cluster_id, tap) = load_cluster_settings(db).await?;
+    let tap_base = tap
+        .proxy_base_url
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| claw_tap_proxy_base_url(&tap.host, tap.proxy_port))
+        .ok_or_else(|| {
+            "e2b observe tap proxyBaseUrl missing: run gateway.sh observe-tap-up".to_string()
+        })?;
+    let db_url = gateway_database_url()?;
+    let local = local_cluster_identity(&cluster_id, &db_url)?;
+    let _ = crate::gateway_llm_config_sync::sync_llm_runtime_from_db(db, llm_handle).await;
+    let active = gateway_global_settings::load_active_llm_runtime(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    if active.is_none() {
+        return Err("no active LLM model configured in Admin".into());
+    }
+    let poll = fetch_tap_cluster_identity(&tap_base, &cluster_id).await;
+    let (consistency, mismatch_reason, tap_identity) = match poll {
+        Ok(tap_id) => match verify_tap_cluster(&local, &tap_id) {
+            Ok(()) => (TapConsistency::Strict, None, Some(tap_id)),
+            Err(ClusterMismatchError { message, .. }) => {
+                (TapConsistency::ClusterMismatch, Some(message), Some(tap_id))
+            }
+        },
+        Err(e) => (TapConsistency::ClusterMismatch, Some(e), None),
+    };
+    Ok(Some(ClawTapClusterStateInner {
+        cluster_id,
+        tap,
+        tap_base_url: tap_base,
+        local_identity: local,
+        consistency,
+        mismatch_reason,
+        last_check_ms: now_ms(),
+        tap_identity,
+    }))
+}
+
 pub async fn refresh_claw_tap_cluster_state(
     db: &GatewaySessionDb,
     llm_handle: &LlmRuntimeHandle,
 ) -> Result<Option<ClawTapClusterStateInner>, String> {
+    if interactive_backend_is_e2b() {
+        return refresh_fc_claw_tap_cluster_state(db, llm_handle).await;
+    }
     let (cluster_id, tap) = load_cluster_settings(db).await?;
     let tap_base = claw_tap_proxy_base_url(&tap.host, tap.proxy_port)
         .ok_or_else(|| "invalid clawTap host/port".to_string())?;
@@ -299,4 +347,44 @@ pub async fn resolve_solve_llm_route(
     env.insert("CLAW_DEFAULT_MODEL".to_string(), model);
     env.insert("INTERNAL_CLAUDE_TAP_HOST".to_string(), openai_base);
     Ok((route, env))
+}
+
+/// Admin/tap wire model (e.g. `deepseek-v4-pro`) → `claw --model` for interactive REPL.
+/// REPL requires `provider/model`; clawTap is OpenAI-compat so prefix `openai/`.
+#[must_use]
+pub fn claw_repl_model_name(wire_model: &str) -> String {
+    let s = wire_model.trim();
+    if s.is_empty() {
+        return "openai/deepseek-v4-pro".to_string();
+    }
+    if s.contains('/') {
+        return s.to_string();
+    }
+    format!("openai/{s}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::claw_repl_model_name;
+
+    #[test]
+    fn claw_repl_model_name_prefixes_bare_upstream_id() {
+        assert_eq!(
+            claw_repl_model_name("deepseek-v4-pro"),
+            "openai/deepseek-v4-pro"
+        );
+        assert_eq!(claw_repl_model_name("mimo-v2.5"), "openai/mimo-v2.5");
+    }
+
+    #[test]
+    fn claw_repl_model_name_keeps_existing_provider_prefix() {
+        assert_eq!(
+            claw_repl_model_name("openai/deepseek-v4-pro"),
+            "openai/deepseek-v4-pro"
+        );
+        assert_eq!(
+            claw_repl_model_name("anthropic/claude-opus-4-6"),
+            "anthropic/claude-opus-4-6"
+        );
+    }
 }

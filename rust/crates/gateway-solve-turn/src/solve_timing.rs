@@ -190,6 +190,26 @@ pub fn filter_solve_timing_events_for_window(
         .collect()
 }
 
+/// Map legacy worker timing kinds to bootstrap milestones (timeline read path). Author: kejiqing
+#[must_use]
+pub fn canonical_bootstrap_timing_kind(kind: &str) -> Option<&'static str> {
+    match kind {
+        "turn_language_inferred" => Some("bootstrap_turn_language_inferred"),
+        "project_config_loaded" => Some("bootstrap_project_config_loaded"),
+        "system_prompt_loaded" => Some("bootstrap_system_prompt_loaded"),
+        "bootstrap_solve_pool_start" => Some("bootstrap_solve_pool_start"),
+        "bootstrap_pool_waiting" => Some("bootstrap_pool_waiting"),
+        "bootstrap_pool_acquired" => Some("bootstrap_pool_acquired"),
+        "bootstrap_exec_started" => Some("bootstrap_exec_started"),
+        "bootstrap_worker_entered" => Some("bootstrap_worker_entered"),
+        "bootstrap_project_config_loaded" => Some("bootstrap_project_config_loaded"),
+        "bootstrap_system_prompt_loaded" => Some("bootstrap_system_prompt_loaded"),
+        "bootstrap_turn_language_inferred" => Some("bootstrap_turn_language_inferred"),
+        "bootstrap_mcp_ready" => Some("bootstrap_mcp_ready"),
+        _ => None,
+    }
+}
+
 /// Append a single bootstrap milestone (gateway pool / worker cold start). Author: kejiqing
 pub fn append_solve_timing_point(
     session_home: &Path,
@@ -316,6 +336,19 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].kind, "turn_started");
         assert_eq!(events[1].source.as_deref(), Some("preflight"));
+    }
+
+    #[test]
+    fn canonical_bootstrap_timing_kind_maps_legacy_worker_events() {
+        assert_eq!(
+            canonical_bootstrap_timing_kind("turn_language_inferred"),
+            Some("bootstrap_turn_language_inferred")
+        );
+        assert_eq!(
+            canonical_bootstrap_timing_kind("bootstrap_mcp_ready"),
+            Some("bootstrap_mcp_ready")
+        );
+        assert!(canonical_bootstrap_timing_kind("llm_stream_started").is_none());
     }
 
     #[test]

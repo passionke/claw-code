@@ -16,6 +16,7 @@ use crate::multi_agent::timings::MultiAgentTimings;
 use crate::multi_agent::writer_turn::run_writer_turn;
 use crate::project_orchestration::SolveOrchestrationConfig;
 use crate::project_preflight;
+use crate::solve_timing::append_solve_timing_point;
 use crate::sqlbot_preflight::sqlbot_query_context_from_session;
 use crate::{
     apply_solve_env_from_config_and_extra, default_system_date, err,
@@ -58,6 +59,12 @@ pub fn run_multi_agent_solve_turn(
         None => RuntimeConfig::empty(),
     };
     apply_solve_env_from_config_and_extra(&project_cfg, mcp.extra_session.as_ref());
+    let turn_id_attr = std::env::var("CLAW_TURN_ID").ok();
+    let _ = append_solve_timing_point(
+        work_dir,
+        "bootstrap_project_config_loaded",
+        turn_id_attr.as_deref(),
+    );
     let effective_model = model
         .map(str::to_string)
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
@@ -75,6 +82,7 @@ pub fn run_multi_agent_solve_turn(
         parallel_friendly_mcp_tool_names,
         runtime_mcp_manager,
     ) = initialize_mcp_runtime(work_dir)?;
+    let _ = append_solve_timing_point(work_dir, "bootstrap_mcp_ready", turn_id_attr.as_deref());
 
     reset_task_progress(work_dir, clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
@@ -134,13 +142,40 @@ pub fn run_multi_agent_solve_turn(
         event_bus.clone(),
     )?;
 
-    if !project_preflight::preflight_satisfied(work_dir, &session) {
-        project_preflight::run_first_turn_preflight(work_dir, &mut session, &mut tool_executor)?;
+    let language_pipeline_json =
+        crate::project_language_pipeline::load_language_pipeline_json(work_dir);
+    let turn_id_for_preflight = turn_id_attr
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("unknown");
+    let mut system_prompt = Vec::<String>::new();
+    let preflight_params = crate::preflight_runner::PreflightRunParams {
+        session_home: work_dir,
+        session: &mut session,
+        system_prompt: &mut system_prompt,
+        executor: &mut tool_executor,
+        is_continuation: session_is_continuation,
+        user_prompt: prompt,
+        turn_id: turn_id_for_preflight,
+        session_id: clawcode_session_id,
+        model: &effective_model,
+        extra_session: mcp
+            .extra_session
+            .clone()
+            .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null)),
+    };
+    let preflight_report =
+        project_preflight::run_solve_preflight(preflight_params, &language_pipeline_json)?;
+    if preflight_report.ran_session_first_turn {
         let _ = event_bus.preflight_done();
     }
 
     let executor = Arc::new(tool_executor);
-    let schema_section = gateway_schema_prompt_section(work_dir);
+    let schema_section = if preflight_report.ran_session_first_turn {
+        gateway_schema_prompt_section(work_dir)
+    } else {
+        None
+    };
 
     let plan = run_planner_turn(
         work_dir,

@@ -3,7 +3,7 @@
 //! **全局大模型（按 `CLAW_CLUSTER_ID` 隔离，独立 PG 表 + 密钥加密）**
 //! 1. Admin 保存 → `gateway_llm_cluster_model`（API Key 以 clusterId 派生 AES 密钥加密）。
 //! 2. `gateway_llm_cluster_state` 指向当前生效条目 → handler 调 `sync_llm_runtime_from_db`。
-//! 3. claude-tap 从 PG 轮询 upstream；gateway 求解时经 pool Exec 注入 worker LLM env（不写 `.claw/*` 文件）。
+//! 3. claude-tap（pool 侧单实例）从 PG 轮询 upstream；gateway 求解时经 pool Exec 注入 worker LLM env。
 
 use runtime::builtin_system_prompt_scaffold_default;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,10 @@ use std::collections::BTreeMap;
 use crate::cluster_identity::gateway_cluster_id_optional;
 use crate::gateway_admin_mcp_token::{admin_mcp_tokens_public, AdminMcpTokenPublic};
 use crate::gateway_claw_tap_settings::{ClawTapSettings, ClawTapSettingsPublic};
+use crate::gateway_e2b_nas_api_settings::E2bNasApiSettings;
+use crate::gateway_e2b_nas_settings::E2bNasSettingsPublic;
+use crate::gateway_e2b_ovs_settings::E2bOvsSettings;
+use crate::gateway_e2b_worker_settings::E2bWorkerSettings;
 use crate::gateway_llm_cluster_store::{self, resolve_llm_cluster_id};
 use crate::gateway_llm_model_apply::{self, LlmModelApplyOutcome};
 use crate::gateway_llm_model_revision::{
@@ -151,6 +155,13 @@ pub struct GatewayGlobalSettingsPublic {
     )]
     pub claw_tap: Option<ClawTapSettingsPublic>,
     #[serde(
+        rename = "e2bNas",
+        default,
+        skip_deserializing,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub e2b_nas: Option<E2bNasSettingsPublic>,
+    #[serde(
         rename = "adminMcpTokens",
         default,
         skip_deserializing,
@@ -164,6 +175,11 @@ pub struct GatewayGlobalSettingsPublic {
         skip_serializing_if = "Option::is_none"
     )]
     pub cluster_id: Option<String>,
+    #[serde(
+        rename = "strictLandlockDefault",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub strict_landlock_default: Option<gateway_solve_turn::LandlockDsl>,
 }
 
 /// 当前全局生效的 LLM（`active_llm_model_*` + revision 行）。Author: kejiqing
@@ -218,6 +234,18 @@ pub struct GatewayGlobalSettingsStore {
     pub(crate) cluster_id: String,
     #[serde(rename = "clawTap", default)]
     pub(crate) claw_tap: ClawTapSettings,
+    #[serde(rename = "e2bOvs", default)]
+    pub(crate) e2b_ovs: E2bOvsSettings,
+    #[serde(rename = "e2bNasApi", default)]
+    pub(crate) e2b_nas_api: E2bNasApiSettings,
+    #[serde(rename = "e2bWorker", default)]
+    pub(crate) e2b_worker: E2bWorkerSettings,
+    #[serde(
+        rename = "strictLandlockDefault",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) strict_landlock_default: Option<gateway_solve_turn::LandlockDsl>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -273,10 +301,17 @@ pub struct GatewayGlobalSettingsResponse {
     pub active_llm_config: Option<ActiveLlmConfigPublic>,
     #[serde(rename = "clawTap", skip_serializing_if = "Option::is_none")]
     pub claw_tap: Option<ClawTapSettingsPublic>,
+    #[serde(rename = "e2bNas", skip_serializing_if = "Option::is_none")]
+    pub e2b_nas: Option<E2bNasSettingsPublic>,
     #[serde(rename = "adminMcpTokens", default)]
     pub admin_mcp_tokens: Vec<AdminMcpTokenPublic>,
     #[serde(rename = "clusterId", skip_serializing_if = "Option::is_none")]
     pub cluster_id: Option<String>,
+    #[serde(
+        rename = "strictLandlockDefault",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub strict_landlock_default: Option<gateway_solve_turn::LandlockDsl>,
 }
 
 fn cluster_id_public() -> Option<String> {
@@ -508,12 +543,12 @@ pub async fn upsert_llm_model(
         });
     }
 
-    if store.active_id.is_empty() {
+    // Admin has no "version" concept: editing a model must take effect immediately.
+    // First model becomes active; editing the already-active model advances active_rev
+    // to the new revision — otherwise active_rev strands on the old rev whose api key
+    // was just pruned (prune_llm_api_keys_for_model above), breaking solve/readyz. kejiqing
+    if store.active_id.is_empty() || store.active_id == id {
         store.active_id = id.clone();
-        store.active_rev = rev.clone();
-        store.active_applied_at_ms = Some(now);
-    } else if store.active_id == id {
-        // Editing the active model creates a new revision; keep active pointer in sync.
         store.active_rev = rev.clone();
         store.active_applied_at_ms = Some(now);
     }
@@ -741,7 +776,10 @@ fn active_llm_model_rev_public(store: &LlmModelsStore) -> Option<String> {
 }
 
 fn parse_settings_store(v: &serde_json::Value) -> GatewayGlobalSettingsStore {
-    serde_json::from_value(v.clone()).unwrap_or_default()
+    let mut store: GatewayGlobalSettingsStore =
+        serde_json::from_value(v.clone()).unwrap_or_default();
+    store.claw_tap.normalize_mode();
+    store
 }
 
 fn parse_tokens_store(v: &serde_json::Value) -> GitPatTokensStore {
@@ -796,8 +834,12 @@ pub async fn load_public(
         active_llm_applied_at_ms: llm.active_applied_at_ms,
         active_llm_config: load_active_llm_config_public(db).await?,
         claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
+        e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
+            &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
+        )),
         admin_mcp_tokens: admin_mcp_tokens_public(&settings),
         cluster_id: cluster_id_public(),
+        strict_landlock_default: settings.strict_landlock_default.clone(),
     })
 }
 
@@ -815,8 +857,12 @@ pub async fn load_response(
         active_llm_applied_at_ms: llm.active_applied_at_ms,
         active_llm_config: load_active_llm_config_public(db).await?,
         claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
+        e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
+            &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
+        )),
         admin_mcp_tokens: admin_mcp_tokens_public(&settings),
         cluster_id: cluster_id_public(),
+        strict_landlock_default: settings.strict_landlock_default.clone(),
     })
 }
 
@@ -1052,8 +1098,12 @@ pub fn to_public(
         active_llm_applied_at_ms: None,
         active_llm_config: None,
         claw_tap: Some(ClawTapSettingsPublic::from(&settings.claw_tap)),
+        e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
+            &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
+        )),
         admin_mcp_tokens: admin_mcp_tokens_public(settings),
         cluster_id: cluster_id_public(),
+        strict_landlock_default: settings.strict_landlock_default.clone(),
     }
 }
 

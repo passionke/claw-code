@@ -1,4 +1,4 @@
-import { Button, Input, Spin, Tooltip, message } from "antd";
+import { Alert, Button, Input, Spin, Tooltip, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChatHistorySidebar from "../components/chat/ChatHistorySidebar";
 import ChatTurnCard from "../components/chat/ChatTurnCard";
@@ -11,7 +11,6 @@ import { useApp } from "../context/AppContext";
 import { useChatSession } from "../context/ChatSessionContext";
 import { useSessionTurnFeedback } from "../hooks/useSessionTurnFeedback";
 import type { ListSessionTurnsResponse, SolveAsyncResponse } from "../types/chat";
-import type { ConversationTurnInput } from "../utils/collectConversationForTranslate";
 import { buildExtraSession } from "../utils/extraSession";
 import {
   emptyFieldsRecord,
@@ -47,7 +46,7 @@ interface TurnEntry {
   finishedAtMs?: number | null;
   poolId?: string | null;
   workerName?: string | null;
-  workerIsolation?: string | null;
+  workerProfile?: string | null;
   workerExecUser?: string | null;
 }
 
@@ -76,6 +75,7 @@ function isSys(item: ThreadItem): item is SysEntry {
 }
 
 /** solve_async 对话：按时间线 user → assistant 卡片交错展示。Author: kejiqing */
+const CHAT_AUDIT_ONLY = false;
 export default function ChatPage() {
   const { gatewayBase, projId, projectConfig } = useApp();
   const { tapLiveBase, tapLiveTemplate } = useChatSession();
@@ -100,7 +100,8 @@ export default function ChatPage() {
   );
 
   const composerDisabled =
-    activeSessionId != null && isExternalOrigin(sessionClientOrigin);
+    CHAT_AUDIT_ONLY ||
+    (activeSessionId != null && isExternalOrigin(sessionClientOrigin));
 
   const {
     feedbackByTurn,
@@ -192,7 +193,7 @@ export default function ChatPage() {
             finishedAtMs: t.finishedAtMs,
             poolId: t.poolId ?? undefined,
             workerName: t.workerName ?? undefined,
-            workerIsolation: t.workerIsolation ?? undefined,
+            workerProfile: t.workerProfile ?? undefined,
             workerExecUser: t.workerExecUser ?? undefined,
           }))
         );
@@ -270,7 +271,7 @@ export default function ChatPage() {
         createdAtMs: Date.now(),
         poolId: asyncRes.poolId ?? undefined,
         workerName: asyncRes.workerName ?? undefined,
-        workerIsolation: asyncRes.workerIsolation ?? undefined,
+        workerProfile: asyncRes.workerProfile ?? undefined,
         workerExecUser: asyncRes.workerExecUser ?? undefined,
       },
     ]);
@@ -299,19 +300,7 @@ export default function ChatPage() {
     }
   };
 
-  const threadTurns: ConversationTurnInput[] = thread
-    .filter((item): item is TurnEntry => !isSys(item))
-    .map((item) => ({
-      turnId: item.turnId,
-      sessionId: item.sessionId,
-      taskId: item.taskId,
-      userText: item.userText,
-      viewMode: item.viewMode,
-      historicalReport: item.historicalReport,
-      failureDetail: item.failureDetail,
-    }));
-
-  const canTranslate = Boolean(activeSessionId || threadTurns.length > 0);
+  const canTranslate = Boolean(activeSessionId);
 
   return (
     <div className={styles.chatPage}>
@@ -335,6 +324,15 @@ export default function ChatPage() {
             translateDisabled={!canTranslate || loadingHistory}
           />
         </div>
+        {CHAT_AUDIT_ONLY ? (
+          <Alert
+            type="info"
+            showIcon
+            message="对话页仅用于审计与历史查看"
+            description="交互式编码请使用 OVS（/ovs?projId=）。"
+            style={{ margin: "0 12px 8px" }}
+          />
+        ) : null}
         <div className={styles.chatMain}>
           <div className={styles.chatLog}>
             {loadingHistory ? (
@@ -398,7 +396,7 @@ export default function ChatPage() {
                   finishedAtMs={item.finishedAtMs}
                   initialPoolId={item.poolId}
                   initialWorkerName={item.workerName}
-                  initialWorkerIsolation={item.workerIsolation}
+                  initialWorkerProfile={item.workerProfile}
                   initialWorkerExecUser={item.workerExecUser}
                   turnFeedback={feedbackByTurn[item.turnId] ?? item.feedback}
                   feedbackSubmitting={submittingTurnId === item.turnId}
@@ -424,8 +422,18 @@ export default function ChatPage() {
             />
           </div>
           {composerDisabled ? (
-            <Tooltip title="外部会话，仅可查看">
-              <span className={styles.composerDisabledHint}>外部会话，不可追问</span>
+            <Tooltip
+              title={
+                CHAT_AUDIT_ONLY
+                  ? "交互式编码请使用 Coding 终端"
+                  : "外部会话，仅可查看"
+              }
+            >
+              <span className={styles.composerDisabledHint}>
+                {CHAT_AUDIT_ONLY
+                  ? "只读审计模式，请打开 Coding 终端"
+                  : "外部会话，不可追问"}
+              </span>
             </Tooltip>
           ) : null}
           <div className={styles.quickPrompts}>
@@ -447,12 +455,16 @@ export default function ChatPage() {
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={
                 composerDisabled
-                  ? "外部会话，仅可查看历史"
+                  ? CHAT_AUDIT_ONLY
+                    ? "只读审计：请在 Coding 终端进行交互"
+                    : "外部会话，仅可查看历史"
                   : "输入任务描述（自然语言），Enter 发送；Shift+Enter 换行"
               }
               disabled={composerDisabled}
               autoSize={{ minRows: 2, maxRows: 6 }}
               onKeyDown={(ev) => {
+                // 中文/日文等输入法合成候选词时，回车用于确认候选词，不应触发发送
+                if (ev.nativeEvent.isComposing || ev.keyCode === 229) return;
                 if (ev.key === "Enter" && !ev.shiftKey) {
                   ev.preventDefault();
                   void onSend();
@@ -478,7 +490,6 @@ export default function ChatPage() {
         gatewayBase={gatewayBase}
         projId={projId}
         sessionId={activeSessionId}
-        threadTurns={threadTurns}
       />
     </div>
   );

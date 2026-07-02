@@ -603,24 +603,36 @@ pub struct MarkdownStreamState {
 }
 
 impl MarkdownStreamState {
+    /// Returns raw markdown ready to render once a stream-safe boundary is reached.
     #[must_use]
-    pub fn push(&mut self, renderer: &TerminalRenderer, delta: &str) -> Option<String> {
+    pub fn push_raw(&mut self, delta: &str) -> Option<String> {
         self.pending.push_str(delta);
         let split = find_stream_safe_boundary(&self.pending)?;
         let ready = self.pending[..split].to_string();
         self.pending.drain(..split);
-        Some(renderer.markdown_to_ansi(&ready))
+        Some(ready)
     }
 
     #[must_use]
-    pub fn flush(&mut self, renderer: &TerminalRenderer) -> Option<String> {
+    pub fn push(&mut self, renderer: &TerminalRenderer, delta: &str) -> Option<String> {
+        self.push_raw(delta)
+            .map(|ready| renderer.markdown_to_ansi(&ready))
+    }
+
+    #[must_use]
+    pub fn flush_raw(&mut self) -> Option<String> {
         if self.pending.trim().is_empty() {
             self.pending.clear();
             None
         } else {
-            let pending = std::mem::take(&mut self.pending);
-            Some(renderer.markdown_to_ansi(&pending))
+            Some(std::mem::take(&mut self.pending))
         }
+    }
+
+    #[must_use]
+    pub fn flush(&mut self, renderer: &TerminalRenderer) -> Option<String> {
+        self.flush_raw()
+            .map(|pending| renderer.markdown_to_ansi(&pending))
     }
 }
 
@@ -836,7 +848,7 @@ fn find_stream_safe_boundary(markdown: &str) -> Option<usize> {
             continue;
         }
 
-        if line_without_newline.trim().is_empty() {
+        if line_without_newline.trim().is_empty() || line.ends_with('\n') {
             last_boundary = Some(offset + line.len());
         }
     }
@@ -888,7 +900,7 @@ fn visible_width(input: &str) -> usize {
     strip_ansi(input).chars().count()
 }
 
-fn strip_ansi(input: &str) -> String {
+pub(crate) fn strip_ansi(input: &str) -> String {
     let mut output = String::new();
     let mut chars = input.chars().peekable();
 
@@ -1050,6 +1062,17 @@ mod tests {
         assert!(plain_text.contains("╭─ markdown"));
         assert!(plain_text.contains("```rust"));
         assert!(plain_text.contains("fn nested()"));
+    }
+
+    fn markdown_stream_flushes_on_each_line() {
+        let mut stream = MarkdownStreamState::default();
+        let first = stream.push_raw("萤火渡篱落，\n");
+        assert_eq!(first.as_deref(), Some("萤火渡篱落，\n"));
+        let second = stream.push_raw("荷风送晚凉。\n");
+        assert_eq!(second.as_deref(), Some("荷风送晚凉。\n"));
+        assert!(stream.push_raw("竹椅").is_none());
+        let tail = stream.flush_raw();
+        assert_eq!(tail.as_deref(), Some("竹椅"));
     }
 
     #[test]

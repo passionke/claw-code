@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   ApiOutlined,
+  CodeOutlined,
   CommentOutlined,
   FileTextOutlined,
   GlobalOutlined,
@@ -17,11 +18,14 @@ import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { adminLogout, fetchAdminMe, proxyHttp } from "../api/client";
 import { useApp } from "../context/AppContext";
+import { ovsIdeHref } from "../utils/ovsUrl";
 
 const { Header, Sider, Content } = Layout;
 
 const GLOBAL_MENU_CHILDREN = [
   { key: "/global/inference", label: "全局推理" },
+  { key: "/global/e2b-nas", label: "e2b NAS 存储" },
+  { key: "/global/strict-landlock", label: "Strict Landlock" },
   { key: "/global/pats", label: "PAT 配置" },
   { key: "/global/admin-mcp", label: "Admin MCP Token" },
   { key: "/global/pools", label: "Pool 集群" },
@@ -34,7 +38,7 @@ const TAB_ITEMS: MenuProps["items"] = [
   { key: "/claude", icon: <FileTextOutlined />, label: "CLAUDE.md" },
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
   { key: "/preflight", icon: <SettingOutlined />, label: "Preflight" },
-  { key: "/worker-isolation", icon: <SettingOutlined />, label: "Worker 隔离" },
+  { key: "/worker-profile", icon: <SettingOutlined />, label: "Worker profile" },
   { key: "/prompt", icon: <FileTextOutlined />, label: "系统提示词" },
   { key: "/tools", icon: <ToolOutlined />, label: "Tools" },
   { key: "/extra-session", icon: <FormOutlined />, label: "extraSession" },
@@ -156,6 +160,9 @@ export default function AdminLayout() {
           options={projOptions.length ? projOptions : [{ value: 1, label: "项目 1" }]}
           onChange={setProjId}
         />
+        <Button href={ovsIdeHref(projId)} target="_blank" rel="noreferrer" icon={<CodeOutlined />}>
+          Web IDE
+        </Button>
         <div style={{ flex: 1 }} />
         <Space>
           <Button

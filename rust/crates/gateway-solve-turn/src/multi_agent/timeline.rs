@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use crate::multi_agent::event_bus::{OrchestrationEvent, ORCHESTRATION_EVENTS_REL};
 use crate::multi_agent::timings::MultiAgentTimings;
 use crate::solve_timing::{
-    filter_solve_timing_events_for_window, read_solve_timing_events, SolveTimingEvent,
+    canonical_bootstrap_timing_kind, filter_solve_timing_events_for_window,
+    read_solve_timing_events, SolveTimingEvent,
 };
 use crate::task_progress::{read_progress_events, ProgressEvent, REPORT_PROGRESS_EVENT_KIND};
 
@@ -241,13 +242,28 @@ fn short_tool_label(name: &str) -> String {
 fn bootstrap_label(kind: &str) -> &'static str {
     match kind {
         "bootstrap_solve_pool_start" => "网关 · 写 task / 解析 LLM",
-        "bootstrap_pool_acquired" => "Pool · 租 slot (podman rm+run)",
+        "bootstrap_pool_waiting" => "Pool · 等待 slot",
+        "bootstrap_pool_acquired" => "Pool · 灌入 + bind",
         "bootstrap_exec_started" => "Pool · docker exec 启动",
         "bootstrap_worker_entered" => "Worker · gateway-solve-once",
-        "bootstrap_mcp_ready" => "Worker · MCP discover",
+        "bootstrap_project_config_loaded" => "Worker · 加载项目配置",
+        "bootstrap_system_prompt_loaded" => "Worker · 加载 system prompt",
+        "bootstrap_turn_language_inferred" => "Worker · 语言推断",
+        "bootstrap_mcp_ready" => "Worker · MCP 工具发现",
         "session_started" => "Orchestration · 开始",
         _ => "启动",
     }
+}
+
+fn push_bootstrap_point(points: &mut Vec<(i64, String, String)>, ts_ms: i64, kind: &str) {
+    let Some(canonical) = canonical_bootstrap_timing_kind(kind) else {
+        return;
+    };
+    points.push((
+        ts_ms,
+        canonical.to_string(),
+        bootstrap_label(canonical).to_string(),
+    ));
 }
 
 fn build_bootstrap_lane(
@@ -257,13 +273,7 @@ fn build_bootstrap_lane(
 ) -> Option<TimelineLane> {
     let mut points: Vec<(i64, String, String)> = Vec::new();
     for ev in timing {
-        if ev.kind.starts_with("bootstrap_") {
-            points.push((
-                ev.ts_ms,
-                ev.kind.clone(),
-                bootstrap_label(&ev.kind).to_string(),
-            ));
-        }
+        push_bootstrap_point(&mut points, ev.ts_ms, &ev.kind);
     }
     if let Some(ts) = ts(orch, "session_started") {
         points.push((
@@ -300,18 +310,132 @@ fn build_bootstrap_lane(
     Some(lane("bootstrap", "启动 · 排队到开始工作", false, segments))
 }
 
+fn timing_ts(events: &[SolveTimingEvent], kind: &str) -> Option<i64> {
+    events
+        .iter()
+        .filter(|ev| ev.kind == kind)
+        .map(|ev| ev.ts_ms)
+        .min()
+}
+
+fn timing_ts_max(events: &[SolveTimingEvent], kind: &str) -> Option<i64> {
+    events
+        .iter()
+        .filter(|ev| ev.kind == kind)
+        .map(|ev| ev.ts_ms)
+        .max()
+}
+
+fn build_overhead_lane(events: &[SolveTimingEvent]) -> Option<TimelineLane> {
+    let mut segments = Vec::new();
+
+    if let (Some(turn_start), Some(first_llm)) = (
+        timing_ts(events, "turn_started"),
+        events
+            .iter()
+            .filter(|ev| ev.kind == "llm_stream_started")
+            .map(|ev| ev.ts_ms)
+            .min(),
+    ) {
+        if first_llm > turn_start {
+            segments.push(seg(
+                "overhead-pre-llm",
+                "Worker · agent 循环初始化",
+                turn_start,
+                first_llm,
+                "info",
+                Some(format!("{}ms", first_llm.saturating_sub(turn_start))),
+            ));
+        }
+    }
+
+    let mut llm_starts: BTreeMap<u64, i64> = BTreeMap::new();
+    for ev in events {
+        if ev.kind == "llm_stream_started" {
+            if let Some(iter) = ev.iteration {
+                llm_starts.entry(iter).or_insert(ev.ts_ms);
+            }
+        }
+    }
+    let mut iter_done: BTreeMap<u64, i64> = BTreeMap::new();
+    for ev in events {
+        if ev.kind == "assistant_iteration_completed" {
+            if let Some(iter) = ev.iteration {
+                iter_done.insert(iter, ev.ts_ms);
+            }
+        }
+    }
+    for (iter, done_ts) in &iter_done {
+        let next_iter = iter.saturating_add(1);
+        if let Some(next_start) = llm_starts.get(&next_iter).copied() {
+            if next_start > *done_ts {
+                segments.push(seg(
+                    format!("overhead-iter-{iter}-gap"),
+                    format!("Worker · 迭代 {next_iter} 准备"),
+                    *done_ts,
+                    next_start,
+                    "info",
+                    Some(format!("{}ms", next_start.saturating_sub(*done_ts))),
+                ));
+            }
+        }
+    }
+
+    if let Some(turn_end) = timing_ts_max(events, "turn_completed") {
+        let last_activity = events
+            .iter()
+            .filter(|ev| {
+                matches!(
+                    ev.kind.as_str(),
+                    "llm_stream_finished"
+                        | "llm_stream_failed"
+                        | "tool_execution_finished"
+                        | "assistant_iteration_completed"
+                )
+            })
+            .map(|ev| ev.ts_ms)
+            .max()
+            .unwrap_or(turn_end);
+        if turn_end > last_activity {
+            segments.push(seg(
+                "overhead-tail",
+                "Worker · 收尾",
+                last_activity,
+                turn_end,
+                "info",
+                Some(format!("{}ms", turn_end.saturating_sub(last_activity))),
+            ));
+        }
+    }
+
+    if segments.is_empty() {
+        return None;
+    }
+    segments.sort_by_key(|s| s.start_ms);
+    Some(lane("overhead", "迭代间隙 / 收尾", false, segments))
+}
+
 fn build_timing_lanes(events: &[SolveTimingEvent]) -> Vec<TimelineLane> {
     let mut llm_segments = Vec::new();
     let mut tool_segments = Vec::new();
     let mut tool_starts: BTreeMap<String, (String, i64)> = BTreeMap::new();
+    let mut llm_starts: BTreeMap<u64, i64> = BTreeMap::new();
 
     for ev in events {
         match ev.kind.as_str() {
+            "llm_stream_started" => {
+                if let Some(iter) = ev.iteration {
+                    llm_starts.entry(iter).or_insert(ev.ts_ms);
+                }
+            }
             "llm_stream_finished" => {
                 let dur = ev.duration_ms.unwrap_or(0).max(0);
                 let end = ev.ts_ms;
-                let start = end.saturating_sub(dur);
                 let iter = ev.iteration.unwrap_or(0);
+                let start = llm_starts
+                    .get(&iter)
+                    .copied()
+                    .unwrap_or_else(|| end.saturating_sub(dur));
                 llm_segments.push(seg(
                     format!("llm-{iter}"),
                     format!("LLM · iter {iter}"),
@@ -324,8 +448,11 @@ fn build_timing_lanes(events: &[SolveTimingEvent]) -> Vec<TimelineLane> {
             "llm_stream_failed" => {
                 let dur = ev.duration_ms.unwrap_or(0).max(0);
                 let end = ev.ts_ms;
-                let start = end.saturating_sub(dur);
                 let iter = ev.iteration.unwrap_or(0);
+                let start = llm_starts
+                    .get(&iter)
+                    .copied()
+                    .unwrap_or_else(|| end.saturating_sub(dur));
                 llm_segments.push(seg(
                     format!("llm-fail-{iter}"),
                     format!("LLM · iter {iter}"),
@@ -373,6 +500,9 @@ fn build_timing_lanes(events: &[SolveTimingEvent]) -> Vec<TimelineLane> {
     }
     if !tool_segments.is_empty() {
         lanes.push(lane("tools", "Tool 执行", false, tool_segments));
+    }
+    if let Some(overhead) = build_overhead_lane(events) {
+        lanes.push(overhead);
     }
     lanes
 }
@@ -840,6 +970,9 @@ mod tests {
                 r#"{"kind":"bootstrap_solve_pool_start","tsMs":10050,"source":"bootstrap"}"#,
                 r#"{"kind":"bootstrap_pool_acquired","tsMs":20000,"source":"bootstrap"}"#,
                 r#"{"kind":"bootstrap_worker_entered","tsMs":20100,"source":"bootstrap"}"#,
+                r#"{"kind":"bootstrap_project_config_loaded","tsMs":20120,"source":"bootstrap"}"#,
+                r#"{"kind":"bootstrap_system_prompt_loaded","tsMs":20140,"source":"bootstrap"}"#,
+                r#"{"kind":"bootstrap_turn_language_inferred","tsMs":20160,"source":"bootstrap"}"#,
                 r#"{"kind":"bootstrap_mcp_ready","tsMs":20200,"source":"bootstrap"}"#,
             ],
         );
@@ -849,9 +982,71 @@ mod tests {
             .iter()
             .find(|l| l.id == "bootstrap")
             .expect("bootstrap lane");
-        assert_eq!(boot.segments.len(), 5);
+        assert_eq!(boot.segments.len(), 8);
         assert_eq!(boot.segments[0].duration_ms, 50);
         assert_eq!(boot.segments[1].duration_ms, 9950);
-        assert_eq!(boot.segments[4].label, "Orchestration · 开始");
+        assert_eq!(boot.segments[6].label, "Worker · MCP 工具发现");
+        assert_eq!(boot.segments[7].label, "Orchestration · 开始");
+    }
+
+    #[test]
+    fn turn_window_maps_legacy_language_inferred_into_bootstrap_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        write_timing_events(
+            home,
+            &[
+                r#"{"kind":"bootstrap_worker_entered","tsMs":20100,"source":"bootstrap"}"#,
+                r#"{"kind":"turn_language_inferred","tsMs":21100,"source":"bootstrap"}"#,
+                r#"{"kind":"bootstrap_mcp_ready","tsMs":21200,"source":"bootstrap"}"#,
+            ],
+        );
+        let t = build_solve_turn_timeline_for_turn(home, 20_000, Some(25_000)).unwrap();
+        let boot = t
+            .lanes
+            .iter()
+            .find(|l| l.id == "bootstrap")
+            .expect("bootstrap lane");
+        assert_eq!(boot.segments.len(), 3);
+        assert_eq!(boot.segments[1].label, "Worker · 语言推断");
+        assert_eq!(boot.segments[1].duration_ms, 1000);
+        assert_eq!(boot.segments[2].label, "Worker · MCP 工具发现");
+        assert_eq!(boot.segments[2].duration_ms, 100);
+    }
+
+    #[test]
+    fn turn_window_pairs_llm_started_with_finished_and_builds_overhead_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        write_timing_events(
+            home,
+            &[
+                r#"{"kind":"turn_started","tsMs":600500}"#,
+                r#"{"kind":"llm_stream_started","tsMs":601000,"iteration":1}"#,
+                r#"{"kind":"llm_stream_finished","tsMs":602000,"iteration":1,"durationMs":1000}"#,
+                r#"{"kind":"assistant_iteration_completed","tsMs":602100,"iteration":1}"#,
+                r#"{"kind":"llm_stream_started","tsMs":602500,"iteration":2}"#,
+                r#"{"kind":"llm_stream_finished","tsMs":603000,"iteration":2,"durationMs":500}"#,
+                r#"{"kind":"turn_completed","tsMs":603800}"#,
+            ],
+        );
+        let t = build_solve_turn_timeline_for_turn(home, 600_000, Some(604_000)).unwrap();
+        let llm = t.lanes.iter().find(|l| l.id == "llm").expect("llm lane");
+        assert_eq!(llm.segments[0].start_ms, 601_000);
+        assert_eq!(llm.segments[0].duration_ms, 1000);
+        let overhead = t
+            .lanes
+            .iter()
+            .find(|l| l.id == "overhead")
+            .expect("overhead lane");
+        assert!(overhead
+            .segments
+            .iter()
+            .any(|s| s.label == "Worker · agent 循环初始化"));
+        assert!(overhead
+            .segments
+            .iter()
+            .any(|s| s.label == "Worker · 迭代 2 准备"));
+        assert!(overhead.segments.iter().any(|s| s.label == "Worker · 收尾"));
     }
 }

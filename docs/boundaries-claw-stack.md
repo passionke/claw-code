@@ -19,11 +19,12 @@ Author: kejiqing
 | Component | Code / deploy | Owns | Does **not** own |
 | --- | --- | --- | --- |
 | **Claw** | `rust/` | Tool surface, `mcp__*` allowlist, session | HTTP, datasource encryption, SQLBot product |
-| **HTTP gateway** | `rust/crates/http-gateway-rs/` | Axum API, solve via **host `claw-sandbox` + worker 容器池**, `mcpServers` merge, `dsId` registry | Doris query implementation, SQLBot server code |
+| **HTTP gateway** | `rust/crates/http-gateway-rs/` | Axum API, solve via **FC / e2b worker**, `mcpServers` merge, `dsId` registry | Doris query implementation, SQLBot server code |
 | **Doris MCP** | `third_party/doris-mcp/` | Read-only SQL + metadata **only** (`mcp__doris__*`) | Gateway, SQLBot, transport bridge |
 | **SQLBot (product)** | Your cluster (e.g. :8000 / :8001) | NL 问数、MCP 工具 `mcp_start` / `mcp_question`、业务库 | This repo (except optional PG/API **read** for config) |
 | **Transport adapter** | Out-of-repo or custom bridge | Remote MCP (SSE/HTTP) **wire** → one stdio-shaped child for the gateway | **Not** the name “SQLBot MCP” in front of Claw; Claw sees **`mcp__sqlbot__*`** from the **merged** server config |
 | **SQLBot Postgres (metadata)** | `SQLBOT_PG_*` | Encrypted datasource rows for **resolve** | Not the MCP port; not “running SQLBot” inside gateway |
+| **OVS Web IDE** | `deploy/stack` `openvscode-server` + `extensions/claw-vscode` | Project-scoped VS Code Web UI + `@claw` Chat | Worker pool, solve_async, `/coding` ttyd UI |
 
 ## Two SQLBot product channels (do not mix)
 
@@ -42,11 +43,14 @@ Author: kejiqing
 4. **Image** = convenience bundle (gateway + Doris dist + adapter script + `claw`); **repository** boundaries still split for understanding.
 5. **`CLAW_MCP_MAX_CONCURRENT`**: max in-flight MCP `tools/call` per worker; values `> 1` also enable same-turn parallel SQLBot fan-out (`[parallel-friendly]` tool hint + `shared_executor`). Set `1` for fully serial MCP (`rust/crates/runtime/src/mcp_client.rs`).
 6. **Solve preflight (per `ds_*`)**: `ds_<id>/home/.claw/solve-preflight.json` with ordered `kinds` (e.g. `["sqlbot_mcp_start"]`, compatible with legacy `kind`) → **first** `sessionId` turn only, after user text in jsonl, code-run preflight (`rust/crates/gateway-solve-turn/src/project_preflight.rs`). Table DDL: `ds_<id>/home/schema.md`, ro mount + system prompt (`GATEWAY_SCHEMA_MD_REL`).
+7. **claude-tap (LLM proxy)**: sidecar 或远程共享 tap；Gateway 注入 per-solve `OPENAI_BASE_URL`。Traces: `CLAW_TAP_TRACES_DIR` 或 NAS `tap-traces/`。
+8. **FC NAS workspace**: one logical NFS export root; Gateway mkdir/symlink on container `CLAW_WORK_ROOT`; e2b bind via `hostMountRoot` + relPath. **Do not** mix host path strings with container bind points — see **`docs/e2b-nas-workspace.md`**.
 
 ## Where to change what
 
 | You want to… | Edit |
 | --- | --- |
+| e2b NAS layout, env, Mac podman / e2b bind | **`docs/e2b-nas-workspace.md`** + repo root `.env` (`CLAW_NAS_*`, `CLAW_E2B_*`) |
 | HTTP routes, timeout, inject MCP, 容器池、`SQLBOT_MCP_*`、`CLAW_DEFAULT_HTTP_MCP_*`、根 `.claw.json` | `rust/crates/http-gateway-rs/`（`main.rs`、`solve_pool.rs`、`pool/` 等） |
 | Doris SQL guard / `doris_query` | `doris-mcp/src/` |
 | Remote→stdio wire | Your transport bridge（本仓库默认不内置） |
@@ -58,12 +62,61 @@ Author: kejiqing
 - **All `deploy/stack/*.env` except `.env.example`:** generated or overridden by **`./deploy/stack/gateway.sh`** / `deploy/stack/lib/*.sh` — do not edit by hand; re-run `gateway.sh up` after changing root `.env`.
 - **Never create `deploy/stack/.env`** — Compose loads it implicitly and fights root `.env` / release pins (`docs/env-files.md`).
 
+## Interactive coding terminal (CDP)
+
+| Layer | Path | Role |
+| --- | --- | --- |
+| **Claw CLI display** | `rust/crates/rusty-claude-cli/src/display.rs` | `DisplaySession`: ANSI (local TTY) vs OSC **Claw Display Protocol** (`CLAW_DISPLAY_MODE=web`) |
+| **Worker env** | `session_terminal_api.rs` ttyd spawn | Sets `CLAW_DISPLAY_MODE=web` for browser workers |
+| **Web bundle** | `web/claw-display/` → `web/gateway-async-playground/claw-display/` | `DisplayRouter`: strip OSC → document pane (markdown) + status bar; clean bytes → xterm |
+| **Playground UI** | `web/gateway-async-playground/coding.html` | Hybrid shell: document view + xterm input pane |
+
+CDP v1 frame (embedded in ttyd stdout): `ESC ] 1337 ; Claw ; <base64url(json)> BEL` — events `content.delta`, `content.flush`, `status`, `thinking`, `turn.begin`. One WS (ttyd); no second SSE for interactive REPL.
+
+Build (local): `CLAW_DISPLAY_LOCAL_BUILD=1 ./deploy/stack/gateway.sh claw-display-build`
+
+## Web IDE (openvscode-server) — primary interactive entry (OVS + plugin)
+
+| Layer | Path | Role |
+| --- | --- | --- |
+| **Product entry** | `/ovs?projId=N` (playground) or `:13000/ovs/` | VS Code Web IDE for `proj_N/home/`; **forward path** for `@claw` Chat (`/coding` shelved) |
+| **OVS service** | `deploy/stack/podman-compose.yml` → `openvscode-server` | Central **openvscode-server**; mounts `CLAW_WORK_ROOT` at `/home/workspace` |
+| **Extension** | `extensions/claw-vscode/`（`ovs-chat-demo` 仅 plumbing 参考） | `@claw` Chat + stub LM；agent WS via `/ovs/agent/ws` |
+| **Agent bridge** | `session_agent_api.rs` | `GET /v1/sessions/{id}/agent/ws` → ttyd CDP；每次 `prompt` 写 `gateway_turns`（`client_origin=ovs-chat`） |
+| **Project workspace** | `session_ovs_api.rs` | `GET /v1/projects/{id}/ovs/workspace` — folder contract |
+| **Session registry** | `session_terminal_api.rs` | `ovs-*` 首次 `terminal_start` → `gateway_sessions`（`client_origin=ovs-chat`） |
+
+Default OVS agent session id: `ovs-{projId}`（每 project 一个 REPL；后续 git 分支见 `docs/ovs-chat/PLAN.md`）。**OVS 交互** worker：`cwd=/claw_ds`（= `proj_N/home`）；**solve** worker：仍为 `/claw_host_root` session 工作区。
+
+Build (local): `./deploy/stack/gateway.sh build` builds `claw-openvscode-server:local` via `Containerfile.openvscode`.
+
+## e2b cloud sandbox (interactive only)
+
+| Layer | Path | Role |
+| --- | --- | --- |
+| **Backend switch** | `CLAW_INTERACTIVE_BACKEND=e2b` | Interactive + solve 均经 e2b |
+| **Rust e2b client** | `rust/crates/claw-e2b-sandbox-client/` | E2B-compatible REST (`cn-beijing`); ttyd via `deploy/e2b/e2b_exec.py` |
+| **Backend trait** | `pool/interactive_backend/` | `E2bInteractiveBackend` |
+| **Terminal API** | `session_terminal_api.rs` | `terminal/start\|stop\|reattach` → `InteractiveSandboxBackend` |
+| **Agent bridge** | `session_agent_api.rs` | ttyd WS via `TtydConnectTarget` (loopback or `wss://7681-sbx…`) |
+| **Workspace truth** | NAS (e2b sandbox mount) | `CLAW_OVS_BACKEND=e2b` → OVS singleton on e2b (`claw-ovs`); `CLAW_USE_NAS_VOLUME=0` on Mac; see `docs/ovs-chat/FC-OVS-SINGLETON-DESIGN.md` |
+| **Deploy docs** | `deploy/e2b/README.md` | Phase 0 quickstart, template, NAS, ~¥876/yr @100GB |
+| **Env overlay** | `deploy/stack/env.e2b-interactive.example` | e2b + NAS vars for repo root `.env` |
+| **E2E** | `deploy/stack/lib/verify-e2b-ovs-e2e.sh` | NAS probe + `terminal/start` + optional OVS agent WS |
+
+**OVS Chat 源码修复（另开工程）：** `docs/ovs-chat-source-handoff.md` — 调用链、证据、证伪清单、demo 成功标准。
+
 ## See also
 
 - `docs/env-files.md` — 人手 vs 生成物路径表、禁止项
 - `deploy/config/datasources.example.yaml` — `CLAW_DS_REGISTRY` 模板
 - `rust/crates/http-gateway-rs/datasources.example.yaml` — 数据源 registry 模板（勿提交真实凭据）
 - `third_party/doris-mcp/README.md` — Doris-only build
-- `docs/http-gateway-container-pool.md` — **`http-gateway-rs`** 与 **宿主机 `claw-sandbox` / Docker·Podman 容器池**
-- `sandbox/docs/system-design.md` — pool_outside 终态（单 pool、HTTP RPC）
+- `docs/http-gateway-container-pool.md` — **e2b worker 编排**（e2b solve）
+- `docs/architecture-governance.md` — 目标拓扑与迁移
 - `docs/persistence-model.md` — solve **磁盘 jsonl（运行时）** 与 **`gateway_turns` 终态（交接）** 的分工与 `turn_id` 边界
+- `docs/ovs-chat-source-handoff.md` — OVS `@demo` / `@claw` Chat 阻塞与 fork 修源码交接
+- `docs/ovs-chat/EXTENSION-STABLE-DEPLOY.md` — **@claw 稳定部署契约（install/cache/settings）**
+- `docs/ovs-chat/INTEGRATION.md` — OVS + claw-vscode 集成手册
+- `docs/ovs-chat/PLAN.md` — OVS 路线图（git 分支 → REPL 等）
+- `docs/ovs-chat-debug-log.md` — claw-code 内简版时间线

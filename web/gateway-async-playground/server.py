@@ -7,13 +7,17 @@ Stdlib Python only (no Rust, no pip deps). Author: kejiqing
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import os
 import re
 import secrets
+import socket
+import struct
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -54,8 +58,8 @@ ADMIN_PASSWORD = os.environ.get("PLAYGROUND_ADMIN_PASSWORD", "sunmi123")
 SESSION_COOKIE = "claw_pg_admin"
 SESSION_TTL_SEC = int(os.environ.get("PLAYGROUND_ADMIN_SESSION_TTL_SEC", str(7 * 86400)))
 
-_DEFAULT_HOSTS = "127.0.0.1,localhost,192.168.9.252,10.200.2.171,10.22.28.94,gateway-rs"
-_DEFAULT_PORTS = "18088,18089,8080,8088"
+_DEFAULT_HOSTS = "127.0.0.1,localhost,192.168.9.252,10.200.2.171,10.22.28.94,gateway-rs,openvscode-server"
+_DEFAULT_PORTS = "18088,18089,8080,8088,3000,13000"
 
 
 def _norm_host(hostname: str | None) -> str | None:
@@ -133,6 +137,56 @@ PUBLIC_GATEWAY_BASE = _resolve_gateway_base_url(
 UPSTREAM_GATEWAY_BASE = _resolve_gateway_base_url(
     os.environ.get("PLAYGROUND_GATEWAY_BASE", "").strip()
 )
+
+OVS_UPSTREAM_BASE = _resolve_gateway_base_url(
+    os.environ.get("PLAYGROUND_OVS_BASE", "http://openvscode-server:3000").strip()
+) or "http://openvscode-server:3000"
+
+OVS_PUBLIC_BASE = (
+    os.environ.get("PLAYGROUND_PUBLIC_OVS_BASE", "").strip()
+    or f"http://127.0.0.1:{os.environ.get('CLAW_OVS_HOST_PORT', '13000').strip() or '13000'}"
+).rstrip("/")
+
+OVS_FROM_GATEWAY = os.environ.get("PLAYGROUND_OVS_FROM_GATEWAY", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+OVS_WORKSPACE_ROOT = os.environ.get("PLAYGROUND_OVS_WORKSPACE_ROOT", "/home/workspace").rstrip("/")
+
+
+def _ovs_upstream_netloc() -> tuple[str | None, int | None]:
+    try:
+        p = urlparse(OVS_UPSTREAM_BASE)
+    except ValueError:
+        return None, None
+    host = _norm_host(p.hostname)
+    if not host:
+        return None, None
+    port = p.port or (443 if p.scheme == "https" else 80)
+    return host, port
+
+
+def _upstream_host_port_allowed(url: str) -> bool:
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return False
+    if p.scheme not in ("http", "https"):
+        return False
+    host = _norm_host(p.hostname)
+    port = p.port or (443 if p.scheme == "https" else 80)
+    if port not in ALLOWED_PORTS:
+        ovs_host, ovs_port = _ovs_upstream_netloc()
+        if not (ovs_host and ovs_port == port and host == ovs_host):
+            return False
+    if host in ALLOWED_HOSTNAMES:
+        return True
+    ovs_host, _ = _ovs_upstream_netloc()
+    if ovs_host and host == ovs_host:
+        return True
+    return _is_private_lan_host(host)
 
 
 def _loopback_gateway_key(url: str) -> tuple[str, int] | None:
@@ -225,6 +279,415 @@ def _admin_requires_login(path: str) -> bool:
     return False
 
 
+WS_ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_accept(sec_key: str) -> str:
+    digest = hashlib.sha1((sec_key + WS_ACCEPT_GUID).encode("ascii")).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("socket closed")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _read_ws_frame(sock: socket.socket) -> tuple[int, bytes] | None:
+    try:
+        header = _recv_exact(sock, 2)
+    except (ConnectionError, OSError):
+        return None
+    opcode = header[0] & 0x0F
+    masked = (header[1] & 0x80) != 0
+    length = header[1] & 0x7F
+    if length == 126:
+        length = struct.unpack("!H", _recv_exact(sock, 2))[0]
+    elif length == 127:
+        length = struct.unpack("!Q", _recv_exact(sock, 8))[0]
+    mask = _recv_exact(sock, 4) if masked else None
+    payload = _recv_exact(sock, length) if length else b""
+    if mask:
+        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    if opcode == 0x8:
+        return None
+    if opcode == 0x9:
+        _write_ws_frame(sock, 0xA, payload, mask_out=True)
+        return _read_ws_frame(sock)
+    return opcode, payload
+
+
+def _write_ws_frame(sock: socket.socket, opcode: int, payload: bytes, *, mask_out: bool) -> None:
+    fin_opcode = 0x80 | (opcode & 0x0F)
+    n = len(payload)
+    header = bytearray([fin_opcode])
+    if mask_out:
+        if n < 126:
+            header.append(0x80 | n)
+        elif n < 65536:
+            header.append(0x80 | 126)
+            header.extend(struct.pack("!H", n))
+        else:
+            header.append(0x80 | 127)
+            header.extend(struct.pack("!Q", n))
+        mask = os.urandom(4)
+        header.extend(mask)
+        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        sock.sendall(header + payload)
+        return
+    if n < 126:
+        header.append(n)
+    elif n < 65536:
+        header.append(126)
+        header.extend(struct.pack("!H", n))
+    else:
+        header.append(127)
+        header.extend(struct.pack("!Q", n))
+    sock.sendall(header + payload)
+
+
+def _connect_upstream_ws(upstream_http_url: str) -> socket.socket:
+    parsed = urlparse(upstream_http_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    sock = socket.create_connection((host, port), timeout=30)
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    req = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        f"Upgrade: websocket\r\n"
+        f"Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        f"Sec-WebSocket-Version: 13\r\n"
+        f"Sec-WebSocket-Protocol: tty\r\n"
+        f"\r\n"
+    )
+    sock.sendall(req.encode("ascii"))
+    resp = b""
+    while b"\r\n\r\n" not in resp:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("upstream closed during websocket handshake")
+        resp += chunk
+    status_line = resp.split(b"\r\n", 1)[0]
+    if b" 101 " not in status_line:
+        raise ConnectionError(f"upstream websocket handshake failed: {status_line!r}")
+    return sock
+
+
+def _relay_ws(client: socket.socket, upstream: socket.socket) -> None:
+    def pump(src: socket.socket, dst: socket.socket, mask_out: bool) -> None:
+        try:
+            while True:
+                frame = _read_ws_frame(src)
+                if frame is None:
+                    break
+                opcode, payload = frame
+                if opcode in (0x1, 0x2):
+                    _write_ws_frame(dst, opcode, payload, mask_out=mask_out)
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    t1 = threading.Thread(target=pump, args=(client, upstream, True), daemon=True)
+    t2 = threading.Thread(target=pump, args=(upstream, client, False), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+
+def ovs_workspace_folder(proj_id: str) -> str:
+    pid = str(proj_id).strip() or "1"
+    return f"{OVS_WORKSPACE_ROOT}/proj_{pid}/home"
+
+
+def fetch_ovs_workspace_from_gateway(proj_id: str) -> dict | None:
+    """Gateway OVS workspace contract (`ovsFolderUrl`, `ovsBackend`, …)."""
+    if not UPSTREAM_GATEWAY_BASE:
+        return None
+    url = (
+        f"{UPSTREAM_GATEWAY_BASE.rstrip('/')}/v1/projects/"
+        f"{urllib.parse.quote(str(proj_id).strip() or '1', safe='')}/ovs/workspace"
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def fetch_ovs_folder_url_from_gateway(proj_id: str) -> str | None:
+    """FC mode: Gateway returns direct e2b traffic ovsFolderUrl (WebSocket-native; no gateway proxy)."""
+    data = fetch_ovs_workspace_from_gateway(proj_id)
+    if not data:
+        return None
+    raw = data.get("ovsFolderUrl") or data.get("ovs_folder_url")
+    return str(raw).strip() if raw else None
+
+
+def send_ovs_wait_page(handler: BaseHTTPRequestHandler, proj_id: str, detail: str) -> None:
+    """FC OVS not ready — never redirect to dead :13000. Author: kejiqing"""
+    gw = PUBLIC_GATEWAY_BASE.rstrip("/")
+    retry = f"/ovs/?projId={urllib.parse.quote(str(proj_id).strip() or '1', safe='')}"
+    body = (
+        f"<!DOCTYPE html><html><head><meta charset=utf-8>"
+        f"<title>OVS 启动中</title>"
+        f'<meta http-equiv="refresh" content="5;url={retry}">'
+        f"</head><body>"
+        f"<h1>OVS 尚未就绪</h1><p>{detail}</p>"
+        f"<p>projId={proj_id} · 5 秒后自动重试，或 "
+        f'<a href="{retry}">点此重试</a>。</p>'
+        f"<p>Gateway: <a href=\"{gw}/healthz\">{gw}/healthz</a></p>"
+        f"</body></html>"
+    ).encode("utf-8")
+    send_html_bytes(handler, 503, body)
+
+
+_ovs_workspace_materialized: set[str] = set()
+_ovs_workspace_materialize_lock = threading.Lock()
+
+
+def materialize_ovs_workspace_via_gateway(proj_id: str) -> None:
+    """Gateway writes claw.projId into proj_N/home/.vscode/settings.json (OVS contract)."""
+    pid = str(proj_id).strip() or "1"
+    with _ovs_workspace_materialize_lock:
+        if pid in _ovs_workspace_materialized:
+            return
+    url = f"{UPSTREAM_GATEWAY_BASE.rstrip('/')}/v1/projects/{urllib.parse.quote(pid, safe='')}/ovs/workspace"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            if 200 <= resp.status < 300:
+                with _ovs_workspace_materialize_lock:
+                    _ovs_workspace_materialized.add(pid)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        pass
+
+
+def ovs_upstream_url(rel_path: str, qs: dict[str, list[str]], proj_id: str) -> str:
+    folder = ovs_workspace_folder(proj_id)
+    base = OVS_UPSTREAM_BASE.rstrip("/")
+    path = rel_path if rel_path.startswith("/") else f"/{rel_path}"
+    if not path.startswith("/ovs"):
+        if path == "/":
+            path = "/ovs"
+        else:
+            path = "/ovs" + path
+    merged = dict(qs)
+    # Workspace bootstrap only; static assets under /stable-* must not get folder=.
+    if rel_path in ("", "/"):
+        merged["folder"] = [folder]
+    query = urllib.parse.urlencode(merged, doseq=True)
+    return f"{base}{path}?{query}" if query else f"{base}{path}"
+
+
+_HOP_BY_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
+
+
+def proxy_ovs_http(
+    handler: BaseHTTPRequestHandler, rel_path: str, qs: dict[str, list[str]], proj_id: str
+) -> None:
+    if not read_session_user(handler):
+        handler.send_error(401, "login required")
+        return
+    # Browser must load OVS directly with ?folder=proj_N/home (proxy HTML loses workspace root). kejiqing
+    if rel_path in ("", "/"):
+        materialize_ovs_workspace_via_gateway(proj_id)
+        data = fetch_ovs_workspace_from_gateway(proj_id) if UPSTREAM_GATEWAY_BASE else None
+        if data:
+            folder_url = data.get("ovsFolderUrl") or data.get("ovs_folder_url")
+            if folder_url:
+                send_redirect(handler, str(folder_url).strip())
+                return
+            backend = str(data.get("ovsBackend") or data.get("ovs_backend") or "").strip().lower()
+            if backend == "e2b" or OVS_FROM_GATEWAY:
+                send_ovs_wait_page(
+                    handler,
+                    proj_id,
+                    "FC OVS singleton 仍在 warmup。就绪后请用 API 返回的 ovsFolderUrl + /etc/hosts 行打开。",
+                )
+                return
+        if OVS_FROM_GATEWAY:
+            send_ovs_wait_page(
+                handler,
+                proj_id,
+                "无法从 Gateway 读取 OVS 工作区（请确认 gateway-rs 已 up）。",
+            )
+            return
+        folder = ovs_workspace_folder(proj_id)
+        q = urllib.parse.urlencode({"folder": folder})
+        send_redirect(handler, f"{OVS_PUBLIC_BASE}/ovs/?{q}")
+        return
+    url = ovs_upstream_url(rel_path, qs, proj_id)
+    if not is_allowed_upstream(url.split("?", 1)[0]):
+        handler.send_error(400, "upstream not allowed")
+        return
+    method = handler.command.upper()
+    length = handler.headers.get("Content-Length")
+    body: bytes | None = None
+    if length:
+        try:
+            n = int(length)
+        except ValueError:
+            handler.send_error(400, "bad Content-Length")
+            return
+        if n > 0:
+            body = handler.rfile.read(n)
+    headers = {
+        k: v
+        for k, v in handler.headers.items()
+        if k.lower() not in _HOP_BY_HOP and k.lower() not in ("host", "accept-encoding")
+    }
+    try:
+        req = urllib.request.Request(url, data=body, method=method, headers=headers)
+        req.add_header("Accept-Encoding", "identity")
+        upstream = urllib.request.urlopen(req, timeout=120)
+    except urllib.error.HTTPError as e:
+        handler.send_response(e.code)
+        for k, v in e.headers.items():
+            if k.lower() not in _HOP_BY_HOP:
+                handler.send_header(k, v)
+        handler.end_headers()
+        handler.wfile.write(e.read())
+        return
+    except urllib.error.URLError as e:
+        handler.send_error(502, str(e.reason if hasattr(e, "reason") else e))
+        return
+    try:
+        payload = upstream.read()
+    finally:
+        upstream.close()
+    handler.send_response(upstream.status)
+    for k, v in upstream.headers.items():
+        lk = k.lower()
+        if lk in _HOP_BY_HOP or lk in ("content-encoding", "content-length", "transfer-encoding"):
+            continue
+        handler.send_header(k, v)
+    handler.send_header("Content-Length", str(len(payload)))
+    handler.send_header("Connection", "close")
+    handler.end_headers()
+    if method != "HEAD":
+        handler.wfile.write(payload)
+
+
+def proxy_ovs_agent_ws(
+    handler: BaseHTTPRequestHandler, proj_id: str, session_id: str, chat_session_id: str = ""
+) -> None:
+    if not read_session_user(handler):
+        handler.send_error(401, "login required")
+        return
+    client_key = handler.headers.get("Sec-WebSocket-Key")
+    if not client_key:
+        handler.send_error(400, "missing Sec-WebSocket-Key")
+        return
+    sid = session_id.strip() or f"ovs-{proj_id.strip() or '1'}"
+    pid = proj_id.strip() or "1"
+    subpath = (
+        f"/v1/sessions/{urllib.parse.quote(sid, safe='')}"
+        f"/agent/ws?projId={urllib.parse.quote(pid, safe='')}"
+    )
+    chat_sid = chat_session_id.strip()
+    if chat_sid:
+        subpath += f"&chatSessionId={urllib.parse.quote(chat_sid, safe='')}"
+    upstream_url = _effective_proxy_url(PUBLIC_GATEWAY_BASE, subpath)
+    if not is_allowed_upstream(upstream_url):
+        handler.send_error(400, "upstream host/port not allowed")
+        return
+    try:
+        upstream = _connect_upstream_ws(upstream_url)
+    except (ConnectionError, OSError, ValueError) as e:
+        handler.send_error(502, f"upstream websocket: {e}")
+        return
+    accept = _ws_accept(client_key)
+    handler.connection.sendall(
+        b"HTTP/1.1 101 Switching Protocols\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Connection: Upgrade\r\n"
+        + b"Sec-WebSocket-Accept: "
+        + accept.encode("ascii")
+        + b"\r\n\r\n"
+    )
+    try:
+        _relay_ws(handler.connection, upstream)
+    finally:
+        for s in (handler.connection, upstream):
+            try:
+                s.close()
+            except OSError:
+                pass
+
+
+def proxy_ovs_vscode_ws(
+    handler: BaseHTTPRequestHandler, rel_path: str, qs: dict[str, list[str]], proj_id: str
+) -> None:
+    if not read_session_user(handler):
+        handler.send_error(401, "login required")
+        return
+    client_key = handler.headers.get("Sec-WebSocket-Key")
+    if not client_key:
+        handler.send_error(400, "missing Sec-WebSocket-Key")
+        return
+    http_url = ovs_upstream_url(rel_path, qs, proj_id)
+    parsed = urlparse(http_url)
+    if parsed.scheme not in ("http", "https"):
+        handler.send_error(400, "bad ovs upstream")
+        return
+    ws_scheme = "wss" if parsed.scheme == "https" else "ws"
+    ws_url = f"{ws_scheme}://{parsed.netloc}{parsed.path}"
+    if parsed.query:
+        ws_url += f"?{parsed.query}"
+    try:
+        upstream = _connect_upstream_ws(ws_url)
+    except (ConnectionError, OSError, ValueError) as e:
+        handler.send_error(502, f"upstream ovs websocket: {e}")
+        return
+    accept = _ws_accept(client_key)
+    proto = handler.headers.get("Sec-WebSocket-Protocol", "")
+    hdr = (
+        b"HTTP/1.1 101 Switching Protocols\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Connection: Upgrade\r\n"
+        + b"Sec-WebSocket-Accept: "
+        + accept.encode("ascii")
+        + b"\r\n"
+    )
+    if proto.strip():
+        hdr += b"Sec-WebSocket-Protocol: " + proto.encode("ascii") + b"\r\n"
+    hdr += b"\r\n"
+    handler.connection.sendall(hdr)
+    try:
+        _relay_ws(handler.connection, upstream)
+    finally:
+        for s in (handler.connection, upstream):
+            try:
+                s.close()
+            except OSError:
+                pass
+
+
 def make_session_token(user: str) -> str:
     exp = int(time.time()) + SESSION_TTL_SEC
     payload = f"{user}:{exp}"
@@ -284,13 +747,7 @@ def is_allowed_upstream(url: str) -> bool:
         return False
     if p.scheme not in ("http", "https"):
         return False
-    host = _norm_host(p.hostname)
-    port = p.port or (443 if p.scheme == "https" else 80)
-    if port not in ALLOWED_PORTS:
-        return False
-    if host in ALLOWED_HOSTNAMES:
-        return True
-    return _is_private_lan_host(host)
+    return _upstream_host_port_allowed(url)
 
 
 def read_allowed_json_body(handler: BaseHTTPRequestHandler, max_bytes: int = 2_000_000) -> dict | None:
@@ -470,6 +927,21 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
 
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            if path == "/ovs/agent/ws":
+                proj_id = (qs.get("projId") or qs.get("proj_id") or ["1"])[0]
+                session_id = (qs.get("sessionId") or qs.get("session_id") or [""])[0]
+                chat_session_id = (qs.get("chatSessionId") or qs.get("chat_session_id") or [""])[0]
+                proxy_ovs_agent_ws(self, proj_id, session_id, chat_session_id)
+                return
+            if path == "/ovs" or path.startswith("/ovs/"):
+                rel = path[len("/ovs") :] or "/"
+                proj_id = (qs.get("projId") or qs.get("proj_id") or ["1"])[0]
+                proxy_ovs_vscode_ws(self, rel, qs, proj_id)
+                return
+            self.send_error(400, "unsupported websocket path")
+            return
+
         if path == "/__config__":
             send_json(self, 200, playground_config())
             return
@@ -564,9 +1036,21 @@ class Handler(BaseHTTPRequestHandler):
                 sys.stderr.flush()
             return
 
-        if path in ("/", "/index.html"):
-            send_redirect(self, "/admin/chat")
+        if path == "/ovs" or path.startswith("/ovs/"):
+            if path == "/ovs/agent/ws":
+                self.send_error(405, "use websocket")
+                return
+            if not read_session_user(self):
+                nxt = urllib.parse.quote(path + ("?" + parsed.query if parsed.query else ""), safe="")
+                send_redirect(self, f"/admin/login?next={nxt}")
+                return
+            proj_id = (qs.get("projId") or qs.get("proj_id") or ["1"])[0]
+            rel = path[len("/ovs") :] or "/"
+            proxy_ovs_http(self, rel, qs, proj_id)
             return
+
+        if path in ("/", "/index.html"):
+            send_redirect(self, "/admin")
             return
 
         self.send_error(404, "not found")

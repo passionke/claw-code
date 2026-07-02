@@ -7,14 +7,19 @@ publish.workspace = true
 
 [dependencies]
 api = { path = "../api" }
+base64 = "0.22"
 runtime = { path = "../runtime" }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 telemetry = { path = "../telemetry" }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
 tools = { path = "../tools" }
+preflight-spi = { path = "../preflight-spi" }
 futures-util = "0.3"
 tracing = "0.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }

@@ -1,0 +1,25 @@
+# openvscode-server 1.109.5 (ovs-chat-fix) + claw-vscode VSIX. Author: kejiqing
+ARG OVS_BASE_IMAGE=crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat
+FROM ${OVS_BASE_IMAGE}
+
+USER root
+COPY deploy/stack/openvscode-settings.json /opt/claw-ovs/server-data/Machine/settings.json
+COPY deploy/stack/claw.claw-vscode-0.2.9.vsix /tmp/claw-vscode.vsix
+
+RUN set -eux; \
+  mkdir -p /opt/claw-extensions /opt/claw-ovs/home /opt/claw-ovs/server-data/data/logs; \
+  HOME=/opt/claw-ovs/home /home/.openvscode-server/bin/openvscode-server \
+    --install-extension /tmp/claw-vscode.vsix \
+    --extensions-dir=/opt/claw-extensions \
+    --server-data-dir=/opt/claw-ovs/server-data \
+    --force; \
+  HOME=/opt/claw-ovs/home /home/.openvscode-server/bin/openvscode-server \
+    --list-extensions \
+    --extensions-dir=/opt/claw-extensions \
+    --server-data-dir=/opt/claw-ovs/server-data | grep -q 'claw\.claw-vscode'; \
+  chmod -R a+rwX /opt/claw-extensions /opt/claw-ovs; \
+  rm -f /tmp/claw-vscode.vsix
+
+EXPOSE 3000
+ENTRYPOINT ["/home/.openvscode-server/bin/openvscode-server"]
+CMD ["--host=0.0.0.0", "--port=3000", "--without-connection-token", "--server-base-path=/ovs", "--extensions-dir=/opt/claw-extensions", "--server-data-dir=/opt/claw-ovs/server-data", "--enable-proposed-api=claw.claw-vscode"]

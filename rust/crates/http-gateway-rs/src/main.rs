@@ -31,8 +31,9 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use gateway_solve_turn::{
-    reset_task_progress, run_gateway_biz_polish_llm, run_gateway_biz_polish_llm_async,
-    truncate_progress_history, ReportPolishDeepseek, BOSS_REPORT_SKILL_PROJ_ID,
+    probe_landlock, reset_task_progress, run_gateway_biz_polish_llm,
+    run_gateway_biz_polish_llm_async, truncate_progress_history, ReportPolishDeepseek,
+    BOSS_REPORT_SKILL_PROJ_ID,
 };
 use http_gateway_rs::biz_advice_report::{
     biz_report_sse_event_stream, build_biz_advice_polish_prompt, db_snapshot_report_sse_response,
@@ -42,11 +43,13 @@ use http_gateway_rs::biz_advice_report::{
 };
 use http_gateway_rs::{
     admin_mcp_http, admin_mcp_solve, claw_tap_cluster_state, client_origin,
-    gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_global_settings,
-    gateway_llm_config_sync, gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve,
+    gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_e2b_nas_settings,
+    gateway_e2b_observe_proxy, gateway_e2b_observe_reset, gateway_global_settings,
+    gateway_llm_config_sync, gateway_project_e2b_worker, gateway_strict_landlock_settings,
+    gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api,
     project_config_apply, project_config_version, project_entity_revision, project_extra_session,
-    project_git_sync, project_id, project_tools, session_db, session_merge, turn_id,
-    turn_timeline_api, turn_tools_api,
+    project_git_sync, project_id, project_tools, session_agent_api, session_db, session_merge,
+    session_ovs_api, session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -118,7 +121,7 @@ pub(crate) struct AppState {
     session_solve_locks: Arc<Mutex<HashMap<(i64, String), Arc<Mutex<()>>>>>,
     session_db: Arc<session_db::GatewaySessionDb>,
     cfg: Arc<GatewayConfig>,
-    /// When using `docker_pool` / `podman_pool`, active async task id → pool + slot for cancel.
+    /// Active async task id → pool + slot for cancel (FC solve leases).
     docker_slots: Arc<Mutex<HashMap<String, (Arc<dyn pool::PoolOps + Send + Sync>, usize)>>>,
     pool_clients: pool::PoolClients,
     /// Worker stdout `report.delta` ingest + live SSE for running turns. Author: kejiqing
@@ -129,60 +132,48 @@ pub(crate) struct AppState {
     llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle,
     /// clawTap cluster consistency (strict only; mismatch blocks solve). Author: kejiqing
     claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
+    /// Active interactive sessions for OVS `agent/ws` (internal ttyd bridge). Author: kejiqing
+    terminal_registry: session_terminal_api::TerminalSessionRegistry,
+    /// NAS layout + file writes via e2b claw-nas-api singleton (required in e2b mode).
+    nas_api: Arc<pool::E2bNasApiSingleton>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SolveIsolation {
-    DockerPool,
-    PodmanPool,
+impl AppState {
+    #[must_use]
+    fn terminal_api_ctx(&self) -> session_terminal_api::TerminalApiContext {
+        session_terminal_api::terminal_api_context(
+            self.cfg.work_root.clone(),
+            self.cfg.pool_rpc_host_work_root.clone(),
+            self.pool_clients.clone(),
+            self.session_db.clone(),
+            self.terminal_registry.clone(),
+            container_runtime_bin(),
+            self.claw_tap_cluster.clone(),
+            self.llm_runtime.clone(),
+        )
+    }
+
+    #[must_use]
+    fn ovs_api_ctx(&self) -> session_ovs_api::OvsApiContext {
+        session_ovs_api::ovs_api_context(self.cfg.work_root.clone())
+    }
 }
 
-impl SolveIsolation {
-    fn from_env() -> Self {
-        let raw = std::env::var("CLAW_SOLVE_ISOLATION")
-            .map(|v| v.trim().to_ascii_lowercase())
-            .unwrap_or_default();
-        match raw.as_str() {
-            "" | "podman_pool" => Self::PodmanPool,
-            "docker_pool" => Self::DockerPool,
-            "inprocess" => {
-                eprintln!(
-                    "http-gateway-rs: CLAW_SOLVE_ISOLATION=inprocess is removed; use podman_pool or docker_pool."
-                );
-                std::process::exit(1);
-            }
-            other => {
-                eprintln!(
-                    "http-gateway-rs: invalid CLAW_SOLVE_ISOLATION={other:?}; expected podman_pool or docker_pool."
-                );
-                std::process::exit(1);
-            }
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::DockerPool => "docker_pool",
-            Self::PodmanPool => "podman_pool",
-        }
-    }
+#[must_use]
+fn container_runtime_bin() -> String {
+    std::env::var("CLAW_CONTAINER_RUNTIME")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("auto"))
+        .unwrap_or_else(|| "podman".to_string())
 }
 
 #[derive(Clone)]
 pub(crate) struct GatewayConfig {
-    solve_isolation: SolveIsolation,
     claw_bin: String,
     work_root: PathBuf,
-    /// Host `CLAW_WORK_ROOT` equivalent when the gateway is containerized and uses [`pool::PoolRpcClient`].
+    /// Host `CLAW_WORK_ROOT` when gateway container paths differ from NAS bind source.
     pool_rpc_host_work_root: Option<PathBuf>,
-    /// `CLAW_POOL_DAEMON_TCP` (`host:port`) when using TCP to host daemon.
-    pool_rpc_tcp: Option<String>,
-    /// `CLAW_POOL_DAEMON_SOCKET` when using Unix RPC (optional).
-    pool_rpc_unix_socket: Option<String>,
-    /// True when pool RPC goes to out-of-process daemon (TCP or Unix).
-    pool_rpc_remote: bool,
-    /// Base URL for pool live report HTTP (e.g. `http://claw-pool-daemon:9944`).
-    pool_http_base: String,
     /// Same-machine pool id (`CLAW_POOL_ID` / hostname); written on turn enqueue for live SSE JOIN.
     co_located_pool_id: Option<String>,
     ds_registry_path: PathBuf,
@@ -271,9 +262,9 @@ struct SolveAsyncResponse {
     pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
     worker_name: Option<String>,
-    /// Requested ds isolation (`project_config.worker_isolation_json.mode`). Author: kejiqing
-    #[serde(rename = "workerIsolation", skip_serializing_if = "Option::is_none")]
-    worker_isolation: Option<String>,
+    /// Requested ds isolation (`project_config.worker_profile_json.mode`). Author: kejiqing
+    #[serde(rename = "workerProfile", skip_serializing_if = "Option::is_none")]
+    worker_profile: Option<String>,
     /// Actual `podman exec --user` on the pool (`claw`, etc.). Author: kejiqing
     #[serde(rename = "workerExecUser", skip_serializing_if = "Option::is_none")]
     worker_exec_user: Option<String>,
@@ -447,9 +438,9 @@ struct UpsertProjectConfigRequest {
     /// Omit on PUT to keep existing `prompt_limits_json`. Author: kejiqing
     #[serde(rename = "promptLimitsJson", default)]
     prompt_limits_json: Option<Value>,
-    /// Omit on PUT to keep existing `worker_isolation_json`. Author: kejiqing
-    #[serde(rename = "workerIsolationJson", default)]
-    worker_isolation_json: Option<Value>,
+    /// Omit on PUT to keep existing `worker_profile_json`. Author: kejiqing
+    #[serde(rename = "workerProfileJson", default)]
+    worker_profile_json: Option<Value>,
 }
 
 /// Body for `POST /v1/project/config/{proj_id}/versions/commit` — save draft as immutable formal revision (does not change effective). Author: kejiqing
@@ -501,8 +492,8 @@ struct ProjectConfigResponse {
     extra_session_fields_json: Value,
     #[serde(rename = "promptLimitsJson")]
     prompt_limits_json: Value,
-    #[serde(rename = "workerIsolationJson")]
-    worker_isolation_json: Value,
+    #[serde(rename = "workerProfileJson")]
+    worker_profile_json: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -694,8 +685,8 @@ struct TaskRecord {
     pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
     worker_name: Option<String>,
-    #[serde(rename = "workerIsolation", skip_serializing_if = "Option::is_none")]
-    worker_isolation: Option<String>,
+    #[serde(rename = "workerProfile", skip_serializing_if = "Option::is_none")]
+    worker_profile: Option<String>,
     #[serde(rename = "workerExecUser", skip_serializing_if = "Option::is_none")]
     worker_exec_user: Option<String>,
 }
@@ -1077,7 +1068,7 @@ async fn finalize_solve_turn_success(
     turn_id: &str,
     result: &SolveResponse,
 ) {
-    // Pool v1: `claw-pool-daemon` commits `status=succeeded` + `artifacts_ready=true` after readback.
+    // e2b solve readback can mark `status=succeeded` + `artifacts_ready=true` before this handoff.
     // Gateway must not overwrite that with `finalize_turn_terminal` (which omits `artifacts_ready`).
     match db.turn_artifacts_ready(turn_id).await {
         Ok(true) => return,
@@ -1227,7 +1218,6 @@ fn validate_projects_git_at_startup(url: &str, token: Option<&str>) {
 
 #[tokio::main]
 async fn main() {
-    let solve_isolation = SolveIsolation::from_env();
     let work_root = PathBuf::from(
         std::env::var("CLAW_WORK_ROOT").unwrap_or_else(|_| "/tmp/claw-workspace".to_string()),
     );
@@ -1245,7 +1235,7 @@ async fn main() {
         component = "startup",
         phase = "process_boot",
         work_root = %work_root.display(),
-        solve_isolation = solve_isolation.as_str(),
+        solve_backend = "e2b",
         file_log_dir = file_log.as_ref().map(|p| p.display().to_string()),
         file_log_enabled = file_log.is_some(),
         stdout_json_forced_for_file_sink = file_log.is_some(),
@@ -1267,40 +1257,41 @@ async fn main() {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
 
-    let pool_daemon_tcp = std::env::var("CLAW_POOL_DAEMON_TCP")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-
-    let pool_daemon_socket = std::env::var("CLAW_POOL_DAEMON_SOCKET")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-
-    let pool_rpc_tcp_cfg = pool_daemon_tcp.clone();
-    let pool_rpc_unix_cfg = pool_daemon_socket.clone();
-
-    if pool_rpc_host_work_root.is_none() {
-        warn!(
-            target: "claw_gateway_orchestration",
-            component = "startup",
-            phase = "pool_rpc_missing_host_root",
-            "CLAW_POOL_RPC_HOST_WORK_ROOT is empty; acquire paths may not match the host daemon"
-        );
-    }
-    // Pool RPC: single claw-sandbox HTTP client. Author: kejiqing
+    // e2b cloud sandbox pool (local podman claw-sandbox removed). Author: kejiqing
     let live_report_hub = Arc::new(pool::LiveReportHub::default());
-    let pool_clients = pool::PoolClients::from_env(Arc::clone(&live_report_hub), work_root.clone());
-    let pool_rpc_remote = true;
+    let e2b_client = claw_e2b_sandbox_client::E2bSandboxConfig::from_env()
+        .map(|cfg| Arc::new(claw_e2b_sandbox_client::E2bSandboxClient::new(cfg)));
+    if let Some(ref fc) = e2b_client {
+        if let Err(e) = fc.refresh_e2b_platform_nas().await {
+            tracing::warn!(
+                target: "claw_e2b_sandbox",
+                error = %e,
+                "startup e2b platform health fetch failed"
+            );
+        }
+    }
+    // e2b: NAS layout is claw-nas-api only (no gateway local mount fallback).
+    if e2b_client.is_some() && !pool::E2bNasApiSingleton::enabled_from_env() {
+        eprintln!("http-gateway-rs: CLAW_E2B_NAS_API must not be disabled in e2b mode");
+        std::process::exit(1);
+    }
+    let nas_api = Arc::new(pool::E2bNasApiSingleton::new());
+    let nas_layout = pool::NasLayoutBackend::new(Arc::clone(&nas_api));
+    let pool_clients = pool::PoolClients::from_env(
+        Arc::clone(&live_report_hub),
+        work_root.clone(),
+        e2b_client.clone(),
+        pool_rpc_host_work_root.clone(),
+        nas_layout,
+    );
     let co_located_pool_id = Some(pool_clients.pool_id().to_string());
     tracing::info!(
         target: "claw_live_report",
         component = "gateway_startup",
         contract = http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT,
-        pool_rpc_remote,
         pool_id = %pool_clients.pool_id(),
         co_located_pool_id = ?co_located_pool_id,
-        "live_report.gateway — terminal snapshot from DB; running live SSE from gateway LiveReportHub (sandbox exec NDJSON relay)"
+        "live_report.gateway — terminal snapshot from DB; running live SSE from gateway LiveReportHub (e2b worker stdout relay)"
     );
 
     let projects_git_url = std::env::var("CLAW_PROJECTS_GIT_URL")
@@ -1376,22 +1367,10 @@ async fn main() {
         }
     };
 
-    let pool_http_base = std::env::var("CLAW_SANDBOX_URL")
-        .ok()
-        .or_else(|| std::env::var("CLAW_POOL_HTTP_BASE").ok())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_default();
-
     let cfg = GatewayConfig {
-        solve_isolation,
         claw_bin: std::env::var("CLAW_BIN").unwrap_or_else(|_| "claw".to_string()),
         work_root,
         pool_rpc_host_work_root,
-        pool_rpc_tcp: pool_rpc_tcp_cfg,
-        pool_rpc_unix_socket: pool_rpc_unix_cfg,
-        pool_rpc_remote,
-        pool_http_base,
         co_located_pool_id,
         ds_registry_path: std::env::var("CLAW_DS_REGISTRY").map_or_else(
             |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("datasources.example.yaml"),
@@ -1482,6 +1461,18 @@ async fn main() {
     }
     let session_db = Arc::new(session_db);
     pool_clients.bind_session_db(Arc::clone(&session_db)).await;
+    nas_api.bind_session_db(Arc::clone(&session_db)).await;
+    if let Err(e) = nas_api.verify_endpoint_configured().await {
+        eprintln!("http-gateway-rs: claw-nas-api not ready: {e}");
+        std::process::exit(1);
+    }
+    if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
+        tracing::warn!(
+            target: "claw_e2b_proj_worker",
+            error = %e,
+            "startup project worker reconcile failed (best-effort)"
+        );
+    }
     info!(
         target: "claw_gateway_orchestration",
         component = "startup",
@@ -1502,6 +1493,8 @@ async fn main() {
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
         llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
+        terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
+        nas_api,
     };
 
     run_startup_project_config_apply(&state).await;
@@ -1566,6 +1559,14 @@ async fn main() {
         )
         .route("/v1/projects/{proj_id}", delete(delete_project))
         .route("/v1/projects/{proj_id}/git/pull", post(pull_project_git))
+        .route(
+            "/v1/projects/{proj_id}/e2b-worker",
+            get(get_project_e2b_worker_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/e2b-worker/reset",
+            post(reset_project_e2b_worker_handler),
+        )
         .route("/v1/init", post(init_workspace))
         .route("/v1/solve", post(solve))
         .route("/v1/start", post(solve_start))
@@ -1579,7 +1580,7 @@ async fn main() {
         .route("/v1/sessions/{session_id}/turns", get(list_session_turns))
         .route(
             "/v1/sessions/{session_id}/conversation_translate",
-            get(get_conversation_translate).put(put_conversation_translate),
+            get(get_conversation_translate).post(rebuild_conversation_translate),
         )
         .route("/v1/pools", get(list_claw_pools_handler))
         .route("/v1/pools/{pool_id}", delete(delete_claw_pool_handler))
@@ -1595,6 +1596,11 @@ async fn main() {
             "/v1/sessions/{session_id}/turns/{turn_id}/cancel",
             post(cancel_session_turn),
         )
+        .route("/v1/sessions/{session_id}/agent/ws", get(agent_ws_handler))
+        .route(
+            "/v1/projects/{proj_id}/ovs/workspace",
+            get(ovs_workspace_handler),
+        )
         .route("/v1/biz_advice_report", get(get_biz_advice_report))
         .route("/v1/biz_advice_report_bak", get(get_biz_advice_report_bak))
         .route(
@@ -1609,6 +1615,11 @@ async fn main() {
         .route(
             "/v1/project/prompt/{proj_id}/effective",
             get(get_effective_prompt).post(post_effective_prompt),
+        )
+        .route("/v1/preflight/plugins", get(get_preflight_plugins_handler))
+        .route(
+            "/v1/preflight/plugins/{plugin_id}",
+            put(put_preflight_plugin_handler),
         )
         .route(
             "/v1/project/config/{proj_id}",
@@ -1652,6 +1663,11 @@ async fn main() {
             get(get_gateway_global_settings_handler),
         )
         .route(
+            "/v1/gateway/global-settings/observe-tap/reset",
+            post(reset_gateway_observe_tap_handler),
+        )
+        // e2b OVS / observe Live: browsers use direct e2b traffic URLs from API (no gateway proxy).
+        .route(
             "/v1/gateway/global-settings/git-pats",
             post(upsert_gateway_git_pat_handler),
         )
@@ -1694,6 +1710,10 @@ async fn main() {
         .route(
             "/v1/gateway/global-settings/claw-tap/probe",
             post(probe_gateway_claw_tap_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/strict-landlock-default",
+            put(put_gateway_strict_landlock_default_handler),
         )
         .route(
             "/v1/gateway/global-settings/admin-mcp-tokens",
@@ -1745,14 +1765,15 @@ async fn main() {
                 ),
         )
         .layer(middleware::from_fn(inject_http_request_id))
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr = std::env::var("CLAW_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("bind listener");
     info!("http gateway rs listening on {}", addr);
-    let shutdown = async {
+    let pool_clients_shutdown = state.pool_clients.clone();
+    let shutdown = async move {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
@@ -1775,6 +1796,7 @@ async fn main() {
         if tokio::signal::ctrl_c().await.is_ok() {
             info!(phase = "shutdown", "http gateway received SIGINT");
         }
+        pool_clients_shutdown.shutdown_e2b_sandboxes().await;
         telemetry::shutdown_otel();
     };
     axum::serve(listener, app)
@@ -2789,7 +2811,7 @@ fn default_project_config_row(proj_id: i64) -> session_db::ProjectConfigRow {
         language_pipeline_json: json!({}),
         extra_session_fields_json: json!([]),
         prompt_limits_json: project_config_apply::default_prompt_limits_json(),
-        worker_isolation_json: pool::worker_isolation::default_worker_isolation_json(),
+        worker_profile_json: pool::default_worker_profile_json(),
     }
 }
 
@@ -2948,13 +2970,28 @@ async fn activate_project_config_revision_row(
             language_pipeline_json: &sidecars.language_pipeline_json,
             extra_session_fields_json: &sidecars.extra_session_fields_json,
             prompt_limits_json: &sidecars.prompt_limits_json,
-            worker_isolation_json: &sidecars.worker_isolation_json,
+            worker_profile_json: &sidecars.worker_profile_json,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
     let lock = get_proj_lock(state, proj_id).await;
     let _guard = lock.lock().await;
+    // e2b worker reads project config from NAS `{cluster}/proj_N/home` (mounted ro as `/claw_ds`):
+    // write the effective config there via nas-api on activate (the real bug fix). The host
+    // `work_root/proj_N` materialization is kept for now (health / project-list rev sync).
+    // Author: kejiqing
     apply_project_config_for_proj_inner(state, proj_id, true).await?;
+    state
+        .pool_clients
+        .nas_layout()
+        .materialize_proj_workspace(&state.session_db, proj_id)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("materialize project config to NAS failed: {e}"),
+            )
+        })?;
     let applied = project_config_apply::read_applied_content_rev(&proj_work_dir(
         &state.cfg.work_root,
         proj_id,
@@ -3478,7 +3515,13 @@ async fn sync_proj_home_from_repo(
     }
     let (home_claude, root_claude) = project_claude_paths(work_dir);
     if fs::metadata(&home_claude).await.is_ok_and(|m| m.is_file()) {
-        fs::copy(&home_claude, &root_claude).await.map_err(|e| {
+        let text = fs::read_to_string(&home_claude).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read home CLAUDE.md for mirror failed: {e}"),
+            )
+        })?;
+        fs::write(&root_claude, &text).await.map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("mirror home CLAUDE.md to root failed: {e}"),
@@ -3775,8 +3818,29 @@ async fn list_proj_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, Api
     Ok(out)
 }
 
+async fn agent_ws_handler(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Query(q): Query<session_agent_api::AgentProjQuery>,
+) -> impl IntoResponse {
+    session_agent_api::agent_ws_upgrade(state.terminal_api_ctx(), session_id, q, ws).await
+}
+
+async fn ovs_workspace_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<session_ovs_api::OvsWorkspaceResponse>, session_ovs_api::OvsApiError> {
+    session_ovs_api::get_ovs_workspace(
+        state.ovs_api_ctx(),
+        &state.session_db,
+        Some(state.pool_clients.e2b_worker_registry()),
+        proj_id,
+    )
+    .await
+}
+
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
-    let isolation = state.cfg.solve_isolation.as_str();
     let proj_workspaces = build_proj_workspaces_health(&state).await;
     let deploy_image_ref = http_gateway_rs::deploy_image::image_ref_from_env();
     let deploy_image_tag = http_gateway_rs::deploy_image::deploy_image_tag(&deploy_image_ref);
@@ -3793,11 +3857,8 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
         "defaultHttpMcpName": state.cfg.default_http_mcp_name,
         "defaultHttpMcpUrl": state.cfg.default_http_mcp_url,
         "defaultHttpMcpTransport": state.cfg.default_http_mcp_transport,
-        "solveIsolation": isolation,
-        "containerPool": true,
-        "poolRpcRemote": state.cfg.pool_rpc_remote,
-        "poolRpcTcp": state.cfg.pool_rpc_tcp,
-        "poolRpcUnixSocket": state.cfg.pool_rpc_unix_socket,
+        "solveBackend": "e2b",
+        "e2bSandbox": true,
         "poolRpcHostWorkRoot": state.cfg.pool_rpc_host_work_root.as_ref().map(|p| p.display().to_string()),
         "sessionDatabaseBackend": "postgresql",
         "gatewayDatabaseUrl": state.session_db.database_url_redacted(),
@@ -3815,14 +3876,13 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
                 http_gateway_rs::live_report_audit::LIVE_REPORT_CONTRACT
             },
             "producer": "worker:claw gateway-solve-once stdout __CLAW_GATEWAY_STDOUT__ report.delta",
-            "ingest": "pool-local (claw-pool-daemon LiveReportHub)",
+            "ingest": "gateway LiveReportHub (e2b worker stdout)",
             "terminalSnapshot": "gateway-db (GET biz_advice_report stream when succeeded)",
             "live": if state.cfg.live_biz_report_spill_enabled {
-                "LLM polish SSE (biz_advice_report after succeeded; no pool proxy)"
+                "LLM polish SSE (biz_advice_report after succeeded)"
             } else {
-                "gateway-proxy → pool HTTP /v1/biz_advice_report/live"
+                "gateway LiveReportHub SSE"
             },
-            "poolHttpBase": state.cfg.pool_http_base,
         },
         "clawTapCluster": cluster_snap,
     }))
@@ -3830,10 +3890,19 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
 
 async fn readyz(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let snap = claw_tap_cluster_state::snapshot_from_handle(&state.claw_tap_cluster).await;
+    let landlock = probe_landlock();
     if claw_tap_cluster_state::is_ready(&snap) {
         return Ok((
             StatusCode::OK,
-            Json(json!({ "ok": true, "clawTapCluster": snap })),
+            Json(json!({
+                "ok": true,
+                "clawTapCluster": snap,
+                "strictLandlockProbe": {
+                    "supported": landlock.supported,
+                    "enforcing": landlock.enforcing,
+                    "message": landlock.message,
+                },
+            })),
         ));
     }
     Err(ApiError::new(
@@ -3875,14 +3944,15 @@ async fn solve(
         })?;
     state
         .pool_clients
-        .assert_proj_worker_isolation_supported(&state.session_db, req.proj_id)
+        .assert_proj_worker_profile_supported(&state.session_db, req.proj_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     let new_turn_id = turn_id::mint_turn_id();
     let (_, prebind_pool_id) = state
         .pool_clients
         .pool_and_id_for_proj(&state.session_db, req.proj_id)
-        .await;
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     register_solve_turn(
         &state.session_db,
         &new_turn_id,
@@ -4326,7 +4396,7 @@ async fn create_project(
             language_pipeline_json: &json!({}),
             extra_session_fields_json: &empty_arr,
             prompt_limits_json: &empty_obj,
-            worker_isolation_json: &pool::worker_isolation::default_worker_isolation_json(),
+            worker_profile_json: &pool::default_worker_profile_json(),
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -4482,7 +4552,7 @@ async fn project_config_row_to_response(
             ),
         extra_session_fields_json: row.extra_session_fields_json,
         prompt_limits_json: row.prompt_limits_json,
-        worker_isolation_json: row.worker_isolation_json,
+        worker_profile_json: row.worker_profile_json,
     }
 }
 
@@ -4639,11 +4709,31 @@ fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(
         project_config_apply::validate_prompt_limits_json(pl)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
-    if let Some(ref wi) = req.worker_isolation_json {
-        pool::worker_isolation::validate_worker_isolation_json(wi)
+    if let Some(ref wi) = req.worker_profile_json {
+        pool::validate_worker_profile_json(wi)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
     Ok(())
+}
+
+async fn get_preflight_plugins_handler(
+    State(state): State<AppState>,
+) -> Result<Json<preflight_plugin_api::PreflightPluginListResponse>, ApiError> {
+    preflight_plugin_api::list_preflight_plugins(&state.session_db)
+        .await
+        .map_err(|(status, msg)| ApiError::new(status, msg))
+        .map(Json)
+}
+
+async fn put_preflight_plugin_handler(
+    State(state): State<AppState>,
+    AxumPath(plugin_id): AxumPath<String>,
+    Json(req): Json<preflight_plugin_api::UpsertPreflightPluginRequest>,
+) -> Result<Json<preflight_spi::PreflightPluginRecord>, ApiError> {
+    preflight_plugin_api::upsert_preflight_plugin(&state.session_db, &plugin_id, req)
+        .await
+        .map_err(|(status, msg)| ApiError::new(status, msg))
+        .map(Json)
 }
 
 async fn get_project_config(
@@ -4880,9 +4970,9 @@ async fn put_project_config(
         Some(incoming) => incoming.clone(),
         None => existing.prompt_limits_json.clone(),
     };
-    let worker_isolation_json = match &req.worker_isolation_json {
+    let worker_profile_json = match &req.worker_profile_json {
         Some(incoming) => incoming.clone(),
-        None => existing.worker_isolation_json.clone(),
+        None => existing.worker_profile_json.clone(),
     };
     let req_for_validate = UpsertProjectConfigRequest {
         content_rev: String::new(),
@@ -4898,9 +4988,15 @@ async fn put_project_config(
         language_pipeline_json: Some(language_pipeline_json.clone()),
         extra_session_fields_json: Some(extra_session_fields_json.clone()),
         prompt_limits_json: Some(prompt_limits_json.clone()),
-        worker_isolation_json: Some(worker_isolation_json.clone()),
+        worker_profile_json: Some(worker_profile_json.clone()),
     };
     validate_project_config_payload(&req_for_validate)?;
+    preflight_plugin_api::validate_solve_preflight_plugin_refs(
+        &state.session_db,
+        &solve_preflight_json,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     gateway_global_settings::validate_git_sync_json_with_global(&state.session_db, &git_sync_json)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
@@ -4929,7 +5025,7 @@ async fn put_project_config(
         language_pipeline_json: &language_pipeline_json,
         extra_session_fields_json: &extra_session_fields_json,
         prompt_limits_json: &prompt_limits_json,
-        worker_isolation_json: &worker_isolation_json,
+        worker_profile_json: &worker_profile_json,
     };
     state
         .session_db
@@ -5018,7 +5114,7 @@ async fn commit_project_config_draft(
             language_pipeline_json: row.language_pipeline_json.clone(),
             extra_session_fields_json: row.extra_session_fields_json.clone(),
             prompt_limits_json: row.prompt_limits_json.clone(),
-            worker_isolation_json: row.worker_isolation_json.clone(),
+            worker_profile_json: row.worker_profile_json.clone(),
         },
     )
     .await
@@ -5035,16 +5131,80 @@ async fn commit_project_config_draft(
 async fn get_gateway_global_settings_handler(
     State(state): State<AppState>,
 ) -> Result<Json<gateway_global_settings::GatewayGlobalSettingsResponse>, ApiError> {
-    let body = gateway_global_settings::load_response(&state.session_db)
+    let mut body = gateway_global_settings::load_response(&state.session_db)
         .await
         .map_err(|e| session_db_err(&e))?;
+    if crate::pool::interactive_backend::e2b_observe_is_enabled() {
+        if let Some(tap) = body.claw_tap.as_mut() {
+            let e2b_traffic = tap
+                .live_base_url
+                .as_deref()
+                .is_some_and(gateway_e2b_observe_proxy::should_use_e2b_traffic_browser_proxy);
+            if !e2b_traffic {
+                *tap = gateway_claw_tap_settings::strip_compose_live_urls_for_fc_admin(tap.clone());
+            }
+        }
+    }
+    body.e2b_nas = Some(gateway_e2b_nas_settings::e2b_nas_settings_public(
+        &state.cfg.work_root,
+    ));
+    Ok(Json(body))
+}
+
+async fn reset_gateway_observe_tap_handler(
+    State(state): State<AppState>,
+) -> Result<Json<gateway_e2b_observe_reset::ObserveTapResetResponse>, ApiError> {
+    let body = gateway_e2b_observe_reset::reset_observe_tap(&state.session_db)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(body))
+}
+
+async fn get_project_e2b_worker_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<gateway_project_e2b_worker::ProjectE2bWorkerStatusResponse>, ApiError> {
+    let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "e2b sandbox client not configured",
+        )
+    })?;
+    let body = gateway_project_e2b_worker::get_project_e2b_worker_status(
+        &state.session_db,
+        client,
+        proj_id,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(body))
+}
+
+async fn reset_project_e2b_worker_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<gateway_project_e2b_worker::ProjectE2bWorkerResetResponse>, ApiError> {
+    let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "e2b sandbox client not configured",
+        )
+    })?;
+    let body = gateway_project_e2b_worker::reset_project_e2b_worker(
+        state.pool_clients.e2b_worker_registry(),
+        &state.session_db,
+        client,
+        proj_id,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
     Ok(Json(body))
 }
 
 async fn put_gateway_claw_tap_handler(
     State(state): State<AppState>,
     Json(req): Json<gateway_claw_tap_settings::PutClawTapSettingsInput>,
-) -> Result<Json<gateway_claw_tap_settings::ClawTapSettingsPublic>, ApiError> {
+) -> Result<Json<gateway_claw_tap_settings::PutClawTapSettingsResponse>, ApiError> {
     let body = gateway_claw_tap_settings::put_claw_tap_settings(&state.session_db, req)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
@@ -5068,6 +5228,17 @@ async fn probe_gateway_claw_tap_handler(
 ) -> Result<Json<gateway_claw_tap_settings::ProbeClawTapResponse>, ApiError> {
     let resp = gateway_claw_tap_settings::probe_claw_tap_endpoint(&state.session_db, req).await;
     Ok(Json(resp))
+}
+
+async fn put_gateway_strict_landlock_default_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_strict_landlock_settings::PutStrictLandlockDefaultInput>,
+) -> Result<Json<gateway_strict_landlock_settings::PutStrictLandlockDefaultResponse>, ApiError> {
+    let body =
+        gateway_strict_landlock_settings::put_strict_landlock_default(&state.session_db, req)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(body))
 }
 
 async fn upsert_gateway_git_pat_handler(
@@ -5126,11 +5297,14 @@ async fn admin_mcp_http_handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let backend = GatewayAdminMcpSolveBackend { state };
+    let backend = GatewayAdminMcpSolveBackend {
+        state: state.clone(),
+    };
     admin_mcp_http::handle_admin_mcp_post(
         &backend.state.session_db,
         &backend.state.cfg.work_root,
         &backend,
+        state.pool_clients.nas_layout(),
         &headers,
         body,
     )
@@ -5175,14 +5349,15 @@ async fn admin_mcp_run_solve_sync(
         })?;
     state
         .pool_clients
-        .assert_proj_worker_isolation_supported(&state.session_db, req.proj_id)
+        .assert_proj_worker_profile_supported(&state.session_db, req.proj_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     let new_turn_id = turn_id::mint_turn_id();
     let (_, prebind_pool_id) = state
         .pool_clients
         .pool_and_id_for_proj(&state.session_db, req.proj_id)
-        .await;
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     register_solve_turn(
         &state.session_db,
         &new_turn_id,
@@ -5420,6 +5595,16 @@ async fn apply_gateway_llm_model_with_sync(
         resp.outcome = outcome;
     } else if let Some(path) = sync.upstream_config_file {
         resp.outcome.env_file = path;
+    }
+    if let Some(restart) = sync.tap_restart {
+        resp.outcome.tap_restarted = restart.restarted;
+        if restart.restarted {
+            resp.outcome.message = restart
+                .message
+                .or_else(|| Some("local clawTap restarted after LLM apply".into()));
+        } else if let Some(msg) = restart.message {
+            resp.outcome.message = Some(msg);
+        }
     }
     Ok(resp)
 }
@@ -6106,15 +6291,14 @@ async fn load_turn_progress_snapshot(
     status: &str,
     limit: usize,
 ) -> Result<pool_consumer_resolve::TurnProgressSnapshot, ApiError> {
-    pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
-        &state
-            .pool_clients
-            .pool_for_turn(&state.session_db, turn_id, session_id, proj_id)
-            .await,
-        turn_id,
-        status,
-    )
-    .await;
+    if let Ok(pool) = state
+        .pool_clients
+        .pool_for_turn(&state.session_db, turn_id, session_id, proj_id)
+        .await
+    {
+        pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(&pool, turn_id, status)
+            .await;
+    }
     pool_consumer_resolve::resolve_turn_progress(&state.session_db, turn_id, limit)
         .await
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))
@@ -6313,8 +6497,8 @@ struct GatewayTurnSummaryJson {
     pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
     worker_name: Option<String>,
-    #[serde(rename = "workerIsolation", skip_serializing_if = "Option::is_none")]
-    worker_isolation: Option<String>,
+    #[serde(rename = "workerProfile", skip_serializing_if = "Option::is_none")]
+    worker_profile: Option<String>,
     #[serde(rename = "workerExecUser", skip_serializing_if = "Option::is_none")]
     worker_exec_user: Option<String>,
 }
@@ -6434,12 +6618,12 @@ async fn list_session_turns(
         .list_turns_for_session(&session_id, query.proj_id)
         .await
         .map_err(|e| session_db_err(&e))?;
-    let worker_isolation = state
+    let worker_profile = state
         .session_db
-        .get_worker_isolation_json(query.proj_id)
+        .get_worker_profile_json(query.proj_id)
         .await
         .ok()
-        .map(|j| pool::isolation_mode_label(&j).to_string());
+        .map(|j| pool::profile_mode_label(&j).to_string());
     Ok(Json(ListSessionTurnsResponse {
         session_id,
         proj_id: query.proj_id,
@@ -6459,7 +6643,7 @@ async fn list_session_turns(
                 extra_session: r.extra_session,
                 pool_id: r.pool_id,
                 worker_name: r.worker_name,
-                worker_isolation: worker_isolation.clone(),
+                worker_profile: worker_profile.clone(),
                 worker_exec_user: r.worker_exec_user,
             })
             .collect(),
@@ -6693,15 +6877,18 @@ async fn get_turn_tools(
         .await
         .map_err(|e| session_db_err(&e))?
         .unwrap_or_else(|| "unknown".to_string());
-    pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
-        &state
-            .pool_clients
-            .pool_for_turn(&state.session_db, &turn_id, &session_id, query.proj_id)
-            .await,
-        &turn_id,
-        &turn_status,
-    )
-    .await;
+    if let Ok(pool) = state
+        .pool_clients
+        .pool_for_turn(&state.session_db, &turn_id, &session_id, query.proj_id)
+        .await
+    {
+        pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
+            &pool,
+            &turn_id,
+            &turn_status,
+        )
+        .await;
+    }
     let progress_snap =
         pool_consumer_resolve::resolve_turn_progress(&state.session_db, &turn_id, 500)
             .await
@@ -6766,15 +6953,18 @@ async fn get_turn_timeline(
         .await
         .map_err(|e| session_db_err(&e))?
         .unwrap_or_else(|| "unknown".to_string());
-    pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
-        &state
-            .pool_clients
-            .pool_for_turn(&state.session_db, &turn_id, &session_id, query.proj_id)
-            .await,
-        &turn_id,
-        &turn_status,
-    )
-    .await;
+    if let Ok(pool) = state
+        .pool_clients
+        .pool_for_turn(&state.session_db, &turn_id, &session_id, query.proj_id)
+        .await
+    {
+        pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(
+            &pool,
+            &turn_id,
+            &turn_status,
+        )
+        .await;
+    }
     let timeline = pool_consumer_resolve::resolve_turn_timeline(
         &state.session_db,
         &turn_id,
@@ -6859,14 +7049,15 @@ async fn enqueue_solve_async(
         })?;
     state
         .pool_clients
-        .assert_proj_worker_isolation_supported(&state.session_db, proj_id)
+        .assert_proj_worker_profile_supported(&state.session_db, proj_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     let new_turn_id = turn_id::mint_turn_id();
     let (_, prebind_pool_id) = state
         .pool_clients
         .pool_and_id_for_proj(&state.session_db, proj_id)
-        .await;
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     register_solve_turn(
         &state.session_db,
         &new_turn_id,
@@ -6924,12 +7115,12 @@ async fn enqueue_solve_async(
                     todos: Vec::new(),
                     pool_id: Some(prebind_pool_id.clone()),
                     worker_name: None,
-                    worker_isolation: state
+                    worker_profile: state
                         .session_db
-                        .get_worker_isolation_json(proj_id)
+                        .get_worker_profile_json(proj_id)
                         .await
                         .ok()
-                        .map(|j| pool::isolation_mode_label(&j).to_string()),
+                        .map(|j| pool::profile_mode_label(&j).to_string()),
                     worker_exec_user: None,
                 },
                 cancel: None,
@@ -7064,12 +7255,12 @@ async fn enqueue_solve_async(
             .flatten()
             .or_else(|| state.cfg.co_located_pool_id.clone()),
         worker_name: None,
-        worker_isolation: state
+        worker_profile: state
             .session_db
-            .get_worker_isolation_json(proj_id)
+            .get_worker_profile_json(proj_id)
             .await
             .ok()
-            .map(|j| pool::isolation_mode_label(&j).to_string()),
+            .map(|j| pool::profile_mode_label(&j).to_string()),
         worker_exec_user: None,
     })
 }
@@ -7274,12 +7465,12 @@ async fn task_record_from_latest_turn_row(
         todos: Vec::new(),
         pool_id: row.pool_id.clone(),
         worker_name: row.worker_name.clone(),
-        worker_isolation: state
+        worker_profile: state
             .session_db
-            .get_worker_isolation_json(row.proj_id)
+            .get_worker_profile_json(row.proj_id)
             .await
             .ok()
-            .map(|j| pool::isolation_mode_label(&j).to_string()),
+            .map(|j| pool::profile_mode_label(&j).to_string()),
         worker_exec_user: row.worker_exec_user.clone(),
     };
     let (plan_title, todos) = pool_consumer_resolve::plan_fields_from_snapshot(&progress_snap);
@@ -7845,7 +8036,7 @@ async fn dev_seed_biz_report_task(
         todos: Vec::new(),
         pool_id: None,
         worker_name: None,
-        worker_isolation: None,
+        worker_profile: None,
         worker_exec_user: None,
     };
     {
@@ -8345,13 +8536,6 @@ fn validate_extra_session(extra_session: Option<&Value>) -> Result<(), ApiError>
     Ok(())
 }
 
-fn pool_runtime_cli_bin(isolation: SolveIsolation) -> &'static str {
-    match isolation {
-        SolveIsolation::DockerPool => "docker",
-        SolveIsolation::PodmanPool => "podman",
-    }
-}
-
 /// Ensures `(sessionId, dsId)` exists in `SQLite` and session `.claw/settings.json` on disk. kejiqing
 async fn prepare_gateway_session(
     state: &AppState,
@@ -8382,7 +8566,8 @@ async fn prepare_gateway_session(
         )
     };
 
-    let proj_base = state.cfg.work_root.join(format!("proj_{proj_id}"));
+    let proj_base = pool::gateway_proj_work_dir(&state.cfg.work_root, proj_id)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let explicit_continuation = session_merge::trim_session_id(body_session_id).is_some();
 
     let (session_home, need_insert_row, purge_mcp_discovery, session_fs_label) = if skip_session_db
@@ -8464,8 +8649,8 @@ async fn prepare_gateway_session(
     }
 
     // Optional gateway-local cache (②): uid-align session dir; pool v1 does not bind it. kejiqing
-    let pool_bin = pool_runtime_cli_bin(state.cfg.solve_isolation);
-    pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(pool_bin, &session_home)
+    let pool_bin = container_runtime_bin();
+    pool::ensure_session_tree_owned_for_worker_with_runtime_fallback(&pool_bin, &session_home)
         .await
         .map_err(|e| {
             ApiError::new(
@@ -8601,17 +8786,15 @@ async fn get_conversation_translate(
     .map_err(|e| ApiError::new(e.status, e.message))
 }
 
-async fn put_conversation_translate(
+async fn rebuild_conversation_translate(
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,
     Query(query): Query<ListSessionTurnsQuery>,
-    Json(body): Json<gateway_translate::PutConversationTranslateRequest>,
-) -> Result<Json<gateway_translate::PutConversationTranslateResponse>, ApiError> {
-    gateway_translate::put_conversation_translate_handler(
-        &state.session_db,
-        &session_id,
+) -> Result<Json<gateway_translate::RebuildConversationTranslateResponse>, ApiError> {
+    gateway_translate::rebuild_conversation_translate_handler(
+        state.session_db.clone(),
+        session_id,
         query.proj_id,
-        body,
     )
     .await
     .map_err(|e| ApiError::new(e.status, e.message))
@@ -8712,20 +8895,22 @@ async fn run_solve_request(
         task_id = ctx.task_id.as_deref(),
         session_fs_id = %prepared.session_fs_label,
         session_home = %prepared.session_home.display(),
-        solve_isolation = state.cfg.solve_isolation.as_str(),
+        solve_backend = "e2b",
         timeout_seconds,
-        "session .claw/settings.json written; starting solve (container pool)"
+        "session .claw/settings.json written; starting solve (e2b sandbox)"
     );
 
-    let (pool, _) = state
+    let (pool, pool_id) = state
         .pool_clients
         .pool_and_id_for_proj(&state.session_db, req.proj_id)
-        .await;
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     solve_pool::run_solve_request_docker(
         state,
         req,
         ctx,
         pool,
+        &pool_id,
         started,
         effective_allowed_tools,
         solve_pool::SolveSessionPaths {
@@ -9327,7 +9512,7 @@ mod tests {
             language_pipeline_json: json!({}),
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
-            worker_isolation_json: json!({"mode": "strict"}),
+            worker_profile_json: json!({"mode": "strict"}),
         };
         std::fs::create_dir_all(tmp.join(".claw")).unwrap();
         std::fs::write(

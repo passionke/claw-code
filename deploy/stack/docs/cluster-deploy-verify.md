@@ -1,5 +1,7 @@
 # 集群部署验收（预发 / 生产）
 
+> **2026-06：** 宿主机 pool / systemd `claw-sandbox` 已移除。新部署按 [`docs/architecture-governance.md`](../../../docs/architecture-governance.md) 验收 e2b + 外连 PG。下文部分检查项为历史集群 pool 口径。
+
 Author: kejiqing
 
 **问题根因：** GitLab CI（10.22.28.94）是 **单机 + nohup**，不覆盖：
@@ -49,4 +51,4 @@ git pull
 | 预发多机 | **每台** `verify` + **一次** `cluster-verify` |
 | 生产多机 | 同上；禁止只 curl healthz |
 
-`CLAW_POOL_DAEMON_USE_SYSTEMD=0` 在 CI 有意为之；**预发 Linux 必须用 production profile + systemd**（见 `host-pool-daemon.md`）。
+`CLAW_POOL_DAEMON_USE_SYSTEMD=0` 在旧 CI 有意为之；**e2b-only 栈不再使用 pool systemd**。见 `docs/deploy-ops-truth.md`。

@@ -55,9 +55,13 @@ pub mod agent_orchestration;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
 pub mod gateway_stdout;
+pub mod landlock_dsl;
+pub mod landlock_jail;
 pub mod mcp_call_context;
 pub mod multi_agent;
 mod otel_solve_turn;
+pub mod ovs_interactive;
+pub mod preflight_runner;
 pub mod project_language_pipeline;
 pub mod project_orchestration;
 pub mod project_preflight;
@@ -77,10 +81,23 @@ pub use gateway_stdout::{
     emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
     GATEWAY_STDOUT_LINE_PREFIX,
 };
+pub use landlock_dsl::{
+    default_landlock_dsl, expand_landlock_dsl, landlock_from_global_settings,
+    landlock_from_worker_profile_strict, project_has_custom_landlock, resolve_landlock_dsl,
+    validate_landlock_dsl, LandlockDsl, LandlockDslSource, LandlockExpandContext,
+    ResolvedLandlockPaths, LANDLOCK_DSL_VARIABLES,
+};
+pub use landlock_jail::{apply_strict_landlock_jail, probe_landlock, restrict_self_landlock};
 pub use mcp_call_context::{
     build_mcp_call_meta, build_sqlbot_mcp_start_arguments, gateway_mcp_call_context_from_task,
     inject_mcp_call_meta, resolve_gateway_mcp_call_context, resolve_gateway_trace_id,
     GatewayMcpCallContext, CLAW_EXTRA_SESSION_SESSION_ID, CLAW_EXTRA_SESSION_TURN_ID,
+};
+pub use ovs_interactive::{
+    build_ensure_ovs_interactive_session_script, build_ovs_interactive_prompt_script,
+    ovs_interactive_jsonl_guest, ovs_interactive_jsonl_host, ovs_interactive_meta_session_id,
+    GUEST_CLAW_DS, GUEST_CLAW_HOST_ROOT, GUEST_CLAW_SESSIONS, OVS_INTERACTIVE_JSONL_NAME,
+    OVS_INTERACTIVE_REL,
 };
 pub use runtime::McpCallContext;
 pub use session_report::{
@@ -100,7 +117,10 @@ pub use task_progress::{
     TaskProgressFile, TaskProgressTodo, REPORT_PROGRESS_TOOL_NAME,
 };
 pub use worker_env::{
-    apply_worker_env, otel_forward_env, worker_env_keys_set, WORKER_ENV_KEYS, WORKER_ENV_MOUNT_PATH,
+    apply_worker_env, build_write_gateway_record_session_script, gateway_llm_session_extra_headers,
+    otel_forward_env, resolve_gateway_llm_session_id, worker_env_keys_set,
+    GATEWAY_RECORD_SESSION_ID_GUEST, GATEWAY_RECORD_SESSION_ID_REL, WORKER_ENV_KEYS,
+    WORKER_ENV_MOUNT_PATH,
 };
 
 pub(crate) const HTTP_INTERNAL: u16 = 500;
@@ -205,6 +225,11 @@ pub struct GatewaySolveTaskFile {
     /// W3C traceparent from gateway `gateway.solve` span for distributed tracing. Author: kejiqing
     #[serde(rename = "otelTraceparent", skip_serializing_if = "Option::is_none")]
     pub otel_traceparent: Option<String>,
+    /// Resolved strict Landlock DSL (gateway-injected). Author: kejiqing
+    #[serde(rename = "landlockDsl", skip_serializing_if = "Option::is_none")]
+    pub landlock_dsl: Option<crate::landlock_dsl::LandlockDsl>,
+    #[serde(rename = "landlockDslSource", skip_serializing_if = "Option::is_none")]
+    pub landlock_dsl_source: Option<crate::landlock_dsl::LandlockDslSource>,
 }
 
 pub(crate) fn default_system_date() -> String {
@@ -1231,9 +1256,33 @@ pub fn run_gateway_solve_turn(
     allowed_tools: Vec<String>,
     max_iterations: usize,
     llm_route: Option<Value>,
+    landlock: Option<(
+        crate::landlock_dsl::LandlockDsl,
+        crate::landlock_dsl::LandlockDslSource,
+    )>,
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
+
+    if let Some((dsl, source)) = landlock {
+        let session_root = work_dir.to_string_lossy().to_string();
+        let tmpdir = std::env::var("TMPDIR")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| format!("{session_root}/tmp"));
+        let ctx = crate::landlock_dsl::LandlockExpandContext {
+            session_root: &session_root,
+            project_home_def: "/claw_ds/project_home_def",
+            tmpdir: &tmpdir,
+            claw_bin_dir: "/usr/local/bin",
+        };
+        crate::landlock_jail::apply_strict_landlock_jail(&dsl, source, &ctx).map_err(|e| {
+            err(
+                HTTP_INTERNAL,
+                format!("strict Landlock jail install failed: {e}"),
+            )
+        })?;
+    }
 
     let mut otel_turn = otel_solve_turn::SolveTurnOtelGuard::start(&mcp, prompt);
     let _otel_turn_scope = otel_turn.enter();
@@ -1282,6 +1331,11 @@ pub fn run_gateway_solve_turn(
         None => RuntimeConfig::empty(),
     };
     apply_solve_env_from_config_and_extra(&project_cfg, mcp.extra_session.as_ref());
+    let _ = append_solve_timing_point(
+        work_dir,
+        "bootstrap_project_config_loaded",
+        turn_id_attr.as_deref(),
+    );
     let effective_model = model
         .map(str::to_string)
         .or_else(|| std::env::var("CLAW_DEFAULT_MODEL").ok())
@@ -1296,24 +1350,14 @@ pub fn run_gateway_solve_turn(
         mcp.extra_session.clone(),
     )
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
+    let _ = append_solve_timing_point(
+        work_dir,
+        "bootstrap_system_prompt_loaded",
+        turn_id_attr.as_deref(),
+    );
 
     let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
     let session_is_continuation = gateway_jsonl.exists();
-    let pipeline_cfg = project_language_pipeline::resolve_language_pipeline_config(work_dir);
-    let turn_id_for_language = turn_id_attr
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or("unknown");
-    let locked_language = turn_language::infer_and_persist_turn_language_blocking(
-        work_dir,
-        prompt,
-        turn_id_for_language,
-        &clawcode_session_id,
-        &effective_model,
-        &pipeline_cfg,
-    )?;
-    turn_language::inject_language_into_system_prompt(&mut system_prompt, &locked_language);
-    let _ = append_solve_timing_point(work_dir, "turn_language_inferred", turn_id_attr.as_deref());
 
     let (
         runtime_mcp_tools,
@@ -1356,6 +1400,7 @@ pub fn run_gateway_solve_turn(
             "gateway solve requires a Tokio runtime (gateway-solve-once must call run_gateway_solve_turn inside rt.enter())",
         )
     })?;
+    let mcp_extra_session = mcp.extra_session.clone();
     let mut tool_executor = DirectToolExecutor::new(
         work_dir.to_path_buf(),
         mcp,
@@ -1381,9 +1426,32 @@ pub fn run_gateway_solve_turn(
     session
         .push_user_text(prompt)
         .map_err(|e| err(HTTP_INTERNAL, format!("push user message failed: {e}")))?;
-    // Project preflight (e.g. SQLBot `mcp_start`) once per sessionId when not yet in transcript.
-    if !project_preflight::preflight_satisfied(work_dir, &session) {
-        project_preflight::run_first_turn_preflight(work_dir, &mut session, &mut tool_executor)?;
+
+    let language_pipeline_json = project_language_pipeline::load_language_pipeline_json(work_dir);
+    let turn_id_for_preflight = turn_id_attr
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("unknown");
+    let preflight_params = preflight_runner::PreflightRunParams {
+        session_home: work_dir,
+        session: &mut session,
+        system_prompt: &mut system_prompt,
+        executor: &mut tool_executor,
+        is_continuation: session_is_continuation,
+        user_prompt: prompt,
+        turn_id: turn_id_for_preflight,
+        session_id: &clawcode_session_id,
+        model: &effective_model,
+        extra_session: mcp_extra_session.map(|m| serde_json::to_value(m).unwrap_or(Value::Null)),
+    };
+    let preflight_report =
+        project_preflight::run_solve_preflight(preflight_params, &language_pipeline_json)?;
+    let _ = append_solve_timing_point(
+        work_dir,
+        "bootstrap_turn_language_inferred",
+        turn_id_attr.as_deref(),
+    );
+    if preflight_report.ran_session_first_turn {
         let _ = orchestration_bus.preflight_done();
         if let Some(section) = gateway_schema_prompt_section(work_dir) {
             system_prompt.push(section);
@@ -1677,6 +1745,8 @@ mod gateway_solve_task_file_tests {
             worker_name: None,
             llm_route: None,
             otel_traceparent: None,
+            landlock_dsl: None,
+            landlock_dsl_source: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();

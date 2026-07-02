@@ -1,5 +1,7 @@
 # SSE burst 定位验证（`release-v1.4.2.sse` 类 tag）
 
+> **历史：** 下文针对宿主机 `claw-sandbox` pool。e2b-only 栈请在 e2b worker guest 内查 `CLAW_SSE_BURST_*` env。
+
 Author: kejiqing
 
 ## 唯一配置面：仓库根 `.env`

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://claw.local/schemas/preflight-spi-v1.json",
+  "title": "Preflight SPI v1",
+  "description": "Subprocess stdin/stdout contract for gateway solve preflight plugins. Author: kejiqing",
+  "definitions": {
+    "scope": {
+      "type": "string",
+      "enum": ["every_turn", "session_first_turn"]
+    },
+    "request": {
+      "type": "object",
+      "required": ["spiVersion", "step", "context"],
+      "properties": {
+        "spiVersion": { "const": "1" },
+        "step": {
+          "type": "object",
+          "required": ["pluginId", "scope"],
+          "properties": {
+            "pluginId": { "type": "string", "minLength": 1 },
+            "scope": { "$ref": "#/definitions/scope" },
+            "config": { "type": "object" }
+          }
+        },
+        "context": {
+          "type": "object",
+          "required": ["sessionId", "turnId", "workDir", "isContinuation", "userPrompt", "model"],
+          "properties": {
+            "sessionId": { "type": "string" },
+            "turnId": { "type": "string" },
+            "workDir": { "type": "string" },
+            "isContinuation": { "type": "boolean" },
+            "userPrompt": { "type": "string" },
+            "priorUserPrompts": { "type": "array", "items": { "type": "string" } },
+            "extraSession": { "type": "object" },
+            "model": { "type": "string" }
+          }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "enum": ["ok", "skip", "error"] },
+        "message": { "type": "string" },
+        "effects": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/effect" }
+        },
+        "metrics": { "type": "object" }
+      }
+    },
+    "effect": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "language"],
+          "properties": {
+            "type": { "const": "lockLanguage" },
+            "language": { "type": "string" },
+            "reason": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "relPath", "content"],
+          "properties": {
+            "type": { "const": "writeSessionFile" },
+            "relPath": { "type": "string" },
+            "content": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "markdown"],
+          "properties": {
+            "type": { "const": "appendSystemPromptSection" },
+            "markdown": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "text"],
+          "properties": {
+            "type": { "const": "appendTranscriptSummary" },
+            "text": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "toolName", "input", "output"],
+          "properties": {
+            "type": { "const": "injectToolExchange" },
+            "toolName": { "type": "string" },
+            "input": { "type": "string" },
+            "output": { "type": "string" },
+            "isError": { "type": "boolean" }
+          }
+        }
+      ]
+    }
+  }
+}

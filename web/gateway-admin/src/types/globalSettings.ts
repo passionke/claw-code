@@ -1,5 +1,7 @@
 /** Gateway global settings API shapes. Author: kejiqing */
 
+import type { LandlockDsl } from "./landlock";
+
 export interface GitPatRow {
   id: string;
   name: string;
@@ -32,15 +34,28 @@ export interface LlmModelRow {
   updatedAtMs: number;
 }
 
+export type ClawTapMode = "local" | "remote";
+
 export interface ClawTapSettings {
+  mode: ClawTapMode;
   host: string;
   proxyPort: number;
-  livePort: number;
+  livePort?: number;
   updatedAtMs: number;
   configured: boolean;
   proxyBaseUrl?: string;
   liveBaseUrl?: string;
   liveSessionUrlTemplate?: string;
+  liveBrowserHostsLine?: string;
+}
+
+export interface PutClawTapSettingsResponse extends ClawTapSettings {
+  tapRestart?: {
+    attempted: boolean;
+    restarted: boolean;
+    message?: string;
+  };
+  message?: string;
 }
 
 export interface ClawTapProbeResponse {
@@ -56,6 +71,19 @@ export interface ClawTapProbeResponse {
   latencyMs?: number;
 }
 
+export interface E2bNasSettings {
+  readOnly: boolean;
+  nasHostMount: string;
+  e2bNasServer: string;
+  e2bNasExport: string;
+  configured: boolean;
+  gatewayWorkRoot: string;
+  nasRootResolved: string;
+  layoutActive: boolean;
+  pathExists: boolean;
+  hasProjTree?: boolean;
+}
+
 export interface GlobalSettingsResponse {
   updatedAtMs: number;
   gitPats: GitPatRow[];
@@ -66,9 +94,11 @@ export interface GlobalSettingsResponse {
   /** Present only when solve/runtime can load the active LLM. */
   activeLlmConfig?: ActiveLlmConfig;
   clawTap?: ClawTapSettings;
+  e2bNas?: E2bNasSettings;
   adminMcpTokens?: AdminMcpTokenRow[];
   /** Derived from gateway PG URL; read-only. */
   clusterId?: string;
+  strictLandlockDefault?: LandlockDsl;
 }
 
 export interface AdminMcpTokenRow {

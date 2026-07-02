@@ -48,10 +48,13 @@ claw_claude_tap_stop() {
   pkill -f 'claude-tap.*--tap-no-launch' 2>/dev/null || true
 }
 
-# True when this host runs claude-tap (production docker tap or local sidecar). Author: kejiqing
+# True when this host runs compose/pool claude-tap sidecar (not e2b e2b worker tap + observe singleton). Author: kejiqing
 claw_stack_manages_local_claude_tap() {
   case "${CLAW_LLM_PROXY:-direct}" in
     remote) return 1 ;;
+  esac
+  case "${CLAW_INTERACTIVE_BACKEND:-podman}" in
+    fc) return 1 ;;
   esac
   case "${CLAUDE_TAP_MODE:-docker}" in
     off | none | disabled | false | '0') return 1 ;;
@@ -94,6 +97,20 @@ claw_claude_tap_upstream_config_path() {
     return 0
   fi
   printf '%s\n' "${root_dir}/.claw/claw-tap-upstream.json"
+}
+
+# Shared trace dir for pool tap (NAS when mounted; mergeable across restarts). Author: kejiqing
+claw_claude_tap_resolve_traces_dir() {
+  local podman_dir="$1"
+  if [[ -n "${CLAW_TAP_TRACES_DIR:-}" ]]; then
+    printf '%s\n' "${CLAW_TAP_TRACES_DIR}"
+    return 0
+  fi
+  if [[ -n "${CLAW_NAS_HOST_MOUNT:-}" ]]; then
+    printf '%s\n' "${CLAW_NAS_HOST_MOUNT}/tap-traces"
+    return 0
+  fi
+  printf '%s\n' "${podman_dir}/claude-tap-data/traces"
 }
 
 claw_claude_tap_ensure_upstream_config_file() {
@@ -234,10 +251,10 @@ claw_claude_tap_start_docker() {
   local container_name="${CLAUDE_TAP_CONTAINER_NAME:-claw-claude-tap}"
   local port="${CLAUDE_TAP_PORT:-8080}"
   local live_port="${CLAUDE_TAP_LIVE_PORT:-3000}"
-  local traces_dir="${CLAUDE_TAP_TRACES_DIR:-${podman_dir}/claude-tap-data/traces}"
-  local tap_target="$5"
-  local log_file="${podman_dir}/claude-tap.log"
-  local upstream_cfg
+  local traces_dir tap_target log_file upstream_cfg
+  traces_dir="$(claw_claude_tap_resolve_traces_dir "${podman_dir}")"
+  tap_target="$5"
+  log_file="${podman_dir}/claude-tap.log"
   upstream_cfg="$(claw_claude_tap_upstream_args "${root_dir}" "${tap_target}")"
 
   mkdir -p "${traces_dir}"
@@ -324,8 +341,9 @@ claw_claude_tap_start_source() {
   local log_file="${podman_dir}/claude-tap.log"
   local upstream_cfg
   upstream_cfg="$(claw_claude_tap_upstream_args "${root_dir}" "${tap_target}")"
-  local traces_dir="${CLAUDE_TAP_TRACES_DIR:-${podman_dir}/claude-tap-data/traces}"
-  local bin="${CLAUDE_TAP_SOURCE_BIN:-}"
+  local traces_dir bin
+  traces_dir="$(claw_claude_tap_resolve_traces_dir "${podman_dir}")"
+  bin="${CLAUDE_TAP_SOURCE_BIN:-}"
 
   [[ -d "${ctx}" ]] || {
     echo "CLAUDE_TAP_BUILD_CONTEXT not found: ${ctx}" >&2
@@ -418,7 +436,7 @@ claw_claude_tap_start_native() {
   local log_file="${podman_dir}/claude-tap.log"
   local upstream_cfg traces_dir bin pypi_ver
   upstream_cfg="$(claw_claude_tap_upstream_args "${root_dir}" "${tap_target}")"
-  traces_dir="${CLAUDE_TAP_TRACES_DIR:-${podman_dir}/claude-tap-data/traces}"
+  traces_dir="$(claw_claude_tap_resolve_traces_dir "${podman_dir}")"
   pypi_ver="$(claw_claude_tap_pypi_version)"
   bin="$(claw_claude_tap_ensure_pypi_bin "${pypi_ver}")"
   mkdir -p "${traces_dir}"
