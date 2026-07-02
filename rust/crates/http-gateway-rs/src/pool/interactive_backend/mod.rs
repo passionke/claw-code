@@ -94,7 +94,7 @@ pub fn e2b_observe_is_enabled() -> bool {
                 .ok()
                 .map(|v| v.trim().to_ascii_lowercase())
                 .as_deref(),
-            Some("0") | Some("false") | Some("no") | Some("off")
+            Some("0" | "false" | "no" | "off")
         )
 }
 
@@ -127,7 +127,7 @@ pub trait InteractiveSandboxBackend: Send + Sync {
 /// Construct e2b interactive backend (prefer [`super::clients::PoolClients::e2b_interactive`]).
 #[must_use]
 pub fn interactive_backend_from_env(
-    pool_clients: super::clients::PoolClients,
+    pool_clients: &super::clients::PoolClients,
     _e2b_client: Option<Arc<claw_e2b_sandbox_client::E2bSandboxClient>>,
     _pool_id: String,
     _nas_layout: crate::pool::NasLayoutBackend,

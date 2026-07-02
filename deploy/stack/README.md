@@ -6,10 +6,10 @@ Author: kejiqing
 
 **路线方针（维护优先，不搞多套叙事）**：
 
-| 场景 | 容器引擎 | Worker | 镜像从哪来 | 入口命令 |
+| 场景 | 容器引擎 | Worker | 镜像 / 模板从哪来 | 入口命令 |
 | --- | --- | --- | --- | --- |
-| **本地开发** | Podman（`auto` 优先 podman） | **FC / e2b** | `gateway.sh quick` / `pack-deploy` | `./deploy/stack/gateway.sh quick` |
-| **线上 Linux** | Docker + compose | **FC / e2b** | **只拉 CI tag**（GHCR/ACR） | `./deploy/stack/gateway.sh up --release release-v…` |
+| **本地开发** | Podman（`auto` 优先 podman） | **FC / e2b** | gateway：`quick` / `pack-deploy`；**e2b worker 模板 dev：`e2b-worker-deploy`（不走 CI）** | `./deploy/stack/gateway.sh quick` |
+| **线上 Linux** | Docker + compose | **FC / e2b** | **只拉 CI tag**（GHCR/ACR）；e2b 模板 `from_image` | `./deploy/stack/gateway.sh up --release release-v…` |
 
 两套环境用 **同一份脚本树** `deploy/stack/lib/`；差别在根 `.env`（模板见下表）。**solve / interactive 均经 e2b**，无宿主机 `claw-sandbox` `:9944`。
 
@@ -37,8 +37,12 @@ Author: kejiqing
 # 只改 React 管理台（web/gateway-admin/src）：
 ./deploy/stack/gateway.sh admin-build   # 然后 quick 或 playground，并提交 dist/
 
-# 改 rust 网关 / worker 镜像后：build + 重启（默认保留编译缓存，日志 deploy/stack/.build.log）
+# 改 rust 网关（http-gateway-rs）后：build + 重启
 ./deploy/stack/gateway.sh pack-deploy
+
+# 改 e2b 沙箱里的 claw 二进制（dev，不走 CI / ACR）：
+./deploy/stack/gateway.sh e2b-worker-deploy
+# 详见 docs/local-dev.md §「改 e2b worker 里的 claw」
 
 # 怀疑缓存脏了：先 clean 或 pack-deploy --clean
 

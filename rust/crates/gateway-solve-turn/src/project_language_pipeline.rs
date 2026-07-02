@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// Relative to `ds_*` root and session worker root.
 pub const LANGUAGE_PIPELINE_CONFIG_REL: &str = "home/.claw/language-pipeline.json";
@@ -105,6 +105,28 @@ fn parse_language_pipeline_file(path: &Path) -> Option<LanguagePipelineConfig> {
     let raw = std::fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&raw).ok()?;
     serde_json::from_value(materialize_language_pipeline_json(&value)).ok()
+}
+
+/// Load raw `language_pipeline_json` from session or project config root.
+#[must_use]
+pub fn load_language_pipeline_json(session_home: &Path) -> Value {
+    let path = session_home.join(LANGUAGE_PIPELINE_CONFIG_REL);
+    if path.is_file() {
+        return std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| Value::Object(Map::default()));
+    }
+    let config_root = runtime::gateway_project_config_root(session_home);
+    let root_path = config_root.join(LANGUAGE_PIPELINE_CONFIG_REL);
+    if root_path.is_file() {
+        std::fs::read_to_string(&root_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| Value::Object(Map::default()))
+    } else {
+        Value::Object(Map::default())
+    }
 }
 
 /// Resolve language pipeline config for a worker session (pool ro mount or ds tree).

@@ -14,6 +14,7 @@ serde_json.workspace = true
 telemetry = { path = "../telemetry" }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
 tools = { path = "../tools" }
+preflight-spi = { path = "../preflight-spi" }
 futures-util = "0.3"
 tracing = "0.1"
 

@@ -46,10 +46,10 @@ use http_gateway_rs::{
     gateway_claw_tap_settings, gateway_e2b_nas_settings, gateway_e2b_observe_proxy,
     gateway_e2b_observe_reset, gateway_global_settings, gateway_llm_config_sync,
     gateway_project_e2b_worker, gateway_strict_landlock_settings, gateway_translate, llm_probe,
-    mcp_probe, pool, pool_consumer_resolve, project_config_apply, project_config_version,
-    project_entity_revision, project_extra_session, project_git_sync, project_id, project_tools,
-    session_agent_api, session_db, session_merge, session_ovs_api, session_terminal_api, turn_id,
-    turn_timeline_api, turn_tools_api,
+    mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api, project_config_apply,
+    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
+    project_id, project_tools, session_agent_api, session_db, session_merge, session_ovs_api,
+    session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -1615,6 +1615,11 @@ async fn main() {
         .route(
             "/v1/project/prompt/{proj_id}/effective",
             get(get_effective_prompt).post(post_effective_prompt),
+        )
+        .route("/v1/preflight/plugins", get(get_preflight_plugins_handler))
+        .route(
+            "/v1/preflight/plugins/{plugin_id}",
+            put(put_preflight_plugin_handler),
         )
         .route(
             "/v1/project/config/{proj_id}",
@@ -4711,6 +4716,26 @@ fn validate_project_config_payload(req: &UpsertProjectConfigRequest) -> Result<(
     Ok(())
 }
 
+async fn get_preflight_plugins_handler(
+    State(state): State<AppState>,
+) -> Result<Json<preflight_plugin_api::PreflightPluginListResponse>, ApiError> {
+    preflight_plugin_api::list_preflight_plugins(&state.session_db)
+        .await
+        .map_err(|(status, msg)| ApiError::new(status, msg))
+        .map(Json)
+}
+
+async fn put_preflight_plugin_handler(
+    State(state): State<AppState>,
+    AxumPath(plugin_id): AxumPath<String>,
+    Json(req): Json<preflight_plugin_api::UpsertPreflightPluginRequest>,
+) -> Result<Json<preflight_spi::PreflightPluginRecord>, ApiError> {
+    preflight_plugin_api::upsert_preflight_plugin(&state.session_db, &plugin_id, req)
+        .await
+        .map_err(|(status, msg)| ApiError::new(status, msg))
+        .map(Json)
+}
+
 async fn get_project_config(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
@@ -4966,6 +4991,12 @@ async fn put_project_config(
         worker_profile_json: Some(worker_profile_json.clone()),
     };
     validate_project_config_payload(&req_for_validate)?;
+    preflight_plugin_api::validate_solve_preflight_plugin_refs(
+        &state.session_db,
+        &solve_preflight_json,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     gateway_global_settings::validate_git_sync_json_with_global(&state.session_db, &git_sync_json)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;

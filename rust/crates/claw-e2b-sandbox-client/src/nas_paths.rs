@@ -2,11 +2,11 @@
 //!
 //! Gateway pool maps **logical rel paths** under NAS export root to guest mount dirs.
 //! Layout: `{clusterId}/proj_{N}/home|sessions|workers/...`.
-//! Sessions are real directories (context SoT); workers are execution cache only.
+//! Sessions are real directories (context `SoT`); workers are execution cache only.
 
 /// OVS / observe singleton: NAS export root inside sandbox.
 pub const GUEST_CLAW_WS: &str = "/claw_ws";
-/// Project home / ds_home (readonly in worker sandboxes).
+/// Project home / `ds_home` (readonly in worker sandboxes).
 pub const GUEST_CLAW_DS: &str = "/claw_ds";
 /// Worker execution cache (`proj_N/workers/{workerId}` bind target).
 pub const GUEST_CLAW_HOST_ROOT: &str = "/claw_host_root";
@@ -119,6 +119,7 @@ pub fn warm_worker_mounts(cluster_id: &str, proj_id: i64, worker_id: &str) -> Ve
 }
 
 /// OVS / observe singleton: export root only.
+#[allow(dead_code)]
 #[must_use]
 pub fn ovs_root_mounts() -> Vec<NasMountPoint> {
     vec![NasMountPoint {

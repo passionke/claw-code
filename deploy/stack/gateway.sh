@@ -16,6 +16,7 @@ Commands:
   clean         Remove rust/target (or --debug-only) + .linux-artifacts; optional podman cache/images
   build         clean (default) + build images (Darwin: podman run compile; log: .build.log)
   pack-deploy   Build gateway images + restart stack (slow; after Rust/image changes; log: .build.log)
+  e2b-worker-deploy  Local dev: amd64 compile + e2b worker template (no CI/ACR)
   playground    Run host playground UI (solve_async + /admin; builds admin dist first)
   admin-build   Local only: gateway-admin dist (needs Node>=18; set CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1)
   admin-reload  Local only: admin-build + copy dist into playground container (not for --release servers)
@@ -75,6 +76,7 @@ case "${cmd}" in
   clean) "${LIB}/clean.sh" "$@" ;;
   build) run_with_manual_hint "${LIB}/build.sh" "$@" ;;
   pack-deploy) run_with_manual_hint "${LIB}/pack-deploy.sh" "$@" ;;
+  e2b-worker-deploy) run_with_manual_hint "${LIB}/e2b-worker-deploy.sh" "$@" ;;
   playground) "${LIB}/playground.sh" "$@" ;;
   admin-build) "${LIB}/build-gateway-admin.sh" "$@" ;;
   admin-reload) "${LIB}/admin-reload.sh" "$@" ;;

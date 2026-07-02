@@ -23,10 +23,23 @@ Author: kejiqing
 | `claude_md` | `TEXT` | 物化为 `home/CLAUDE.md`（非空才满足 `proj_project_tree_ready`）。 |
 | `allowed_tools_json` | `JSONB NOT NULL` | 本项目工具勾选。 |
 | `git_sync_json` | `JSONB NOT NULL` | 每项目 **单向** Git 拉取配置（见下）；默认 `{}`。 |
-| `solve_preflight_json` | `JSONB NOT NULL` | 首轮 solve 代码 preflight，如 `{"kinds":["sqlbot_mcp_start"]}`（兼容历史 `{"kind":"sqlbot_mcp_start"}`）；物化到 `home/.claw/solve-preflight.json`；默认 `{"kind":"none"}`。见 `docs/gateway-solve-preflight.md`。 |
+| `solve_preflight_json` | `JSONB NOT NULL` | Preflight 管道：`steps[]`（`pluginId`、`scope`、`impl`、`config`）；兼容 `kinds` / `kind`；物化到 `home/.claw/solve-preflight.json`；默认 `{"kind":"none"}`。`language_pipeline_json` 迁移期合并进 `turn_language` step。见 `docs/gateway-solve-preflight.md`、`docs/preflight-spi-v1.md`。 |
 | `solve_orchestration_json` | `JSONB NOT NULL` | solve 编排管道，如 `{"kind":"multi_agent_analysis","queryConcurrency":6}`；物化到 `home/.claw/solve-orchestration.json`；默认 `{"kind":"single_turn"}`。见 `docs/multi-agent-analysis.md`。 |
 | `extra_session_fields_json` | `JSONB NOT NULL` | 本项目允许的 `extraSession` 业务字段名列表（`string[]`，如 `["store_id","org_id"]`）；solve 时要求请求体 `extraSession` 含这些 key 且值为 string（可为 `""`）；系统 key（`tenant_code`、`solution_code`、`biz_type`、`_claw_*`）可额外存在。默认 `[]` 表示不校验业务字段。 |
 | `worker_profile_json` | `JSONB NOT NULL` | e2b worker profile：`{"mode":"strict"}`（默认，对话模式）或 `{"mode":"relaxed"}`（OVS 模式）。sidecar，不进 `project_config_revision`；gateway acquire 时读，选择 `claw-worker-strict` / `claw-worker-relaxed` 模板（relaxed：guest root、跳过 `CLAW_SECURITY_BOOST`）。Admin：`workerProfileJson`。 |
+
+### `preflight_plugin`（全局插件注册表）
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `plugin_id` | `TEXT PRIMARY KEY` | 如 `turn_language`、`sqlbot_mcp_start` |
+| `display_name` | `TEXT NOT NULL` | Admin 展示名 |
+| `spi_version` | `TEXT NOT NULL` | 当前 `"1"` |
+| `default_impl` | `JSONB` | `builtin` 或 `subprocess` 默认 command |
+| `config_schema` | `JSONB NOT NULL` | Admin 表单 JSON Schema（可选） |
+| `updated_at_ms` | `BIGINT NOT NULL` | 更新时间 |
+
+API：`GET /v1/preflight/plugins`、`PUT /v1/preflight/plugins/{pluginId}`。迁移种子内置 `turn_language` 与 `sqlbot_mcp_start`。
 
 ### `git_sync_json`（每项目 Git 导入）
 

@@ -245,6 +245,7 @@ impl PoolClients {
             .map(|(pool, _)| pool)
     }
 
+    #[allow(clippy::unused_async)]
     pub async fn interactive_backend_for_proj(
         &self,
         _db: &GatewaySessionDb,

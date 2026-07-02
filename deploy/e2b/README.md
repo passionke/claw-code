@@ -25,12 +25,46 @@ e2b sandbox runtime is billed separately (MicroVM uptime; use sleep/wake to redu
 
 ## Template Build Guardrail
 
-Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径**：
+Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径**（SDK `Template.build` 上传）：
 
-- self-hosted worker: `FROM <CI claw-gateway-worker:release-vX>` + e2b runtime 层（NFS sudo / claw-tap / start-ready）；**禁止**用 NAS 中转 `claw`/`ttyd` 二进制
+- **dev worker**：本机 `linux/amd64` compile + `COPY` → `gateway.sh e2b-worker-deploy`（见上文 **Dev 模式**）
+- **release worker**：`FROM <CI claw-gateway-worker:release-vX>` 抽二进制再 upload，或 `from_image` 策略
 - cloud worker: `from_image`，或 `file_context_path` + Dockerfile `COPY`
 
 严禁使用临时 HTTP artifact server、`RUN curl http://host:port/...`、`dockerfile-http`、`CLAW_*_TEMPLATE_HTTP_*` 等非标准路径。模板构建链路必须由 e2b SDK 负责上传上下文或引用镜像，不允许依赖本机临时端口、内网 HTTP、手写 artifact server。Author: kejiqing
+
+## Dev 模式：worker 模板（不走 CI）
+
+日常开发改 `rusty-claude-cli`（e2b 沙箱内 `claw`）时，**不要**走 `push → GitHub CI → ACR pull → from_image`。
+
+### 本机 arm64 worker（`10.8.0.2`，推荐 Mac dev）
+
+```bash
+# .env
+CLAW_E2B_WORKER_ARCH=arm64
+CLAW_E2B_DEV_WORKER_HOST=10.8.0.2
+
+./deploy/stack/gateway.sh e2b-worker-deploy
+```
+
+原生 **linux/arm64** 编译 + `Template.build` 上传；e2b 调度到已注册的 arm64 worker 节点。**自己打、自己用、自己调试**，无 CI、无 amd64 模拟。
+
+### 生产 amd64（`10.8.0.1`）
+
+```bash
+CLAW_E2B_WORKER_ARCH=amd64
+# 或 release: CLAW_E2B_TEMPLATE_BUILD_STRATEGY=from_image + CI worker 镜像
+```
+
+| 步骤 | 说明 |
+|------|------|
+| 本机 podman | 编 `claw`（arch 由 `CLAW_E2B_WORKER_ARCH` 决定） |
+| stage | `claw` + `ttyd` → `deploy/stack/.e2b-worker-bins/` |
+| e2b SDK | `Template.build(alias=CLAW_E2B_TEMPLATE)` → `CLAW_E2B_API_URL` |
+
+完整说明：[`docs/local-dev.md`](../../docs/local-dev.md)。脚本：`deploy/stack/lib/e2b-worker-deploy.sh`、`e2b-worker-arch.sh`。
+
+OVS / observe / nas-api 模板仍按需单独 build（见下文 env 注释）；体积大或与 Rust 无关，不并入 `e2b-worker-deploy`。
 
 ## Phase 0 — verify before gateway code path
 

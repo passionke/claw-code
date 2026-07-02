@@ -47,6 +47,7 @@ pub mod pool;
 pub mod pool_consumer_resolve;
 pub mod pool_registry;
 pub mod pool_worker_runtime_sync;
+pub mod preflight_plugin_api;
 pub mod project_config_apply;
 pub mod project_config_draft;
 pub mod project_config_version;

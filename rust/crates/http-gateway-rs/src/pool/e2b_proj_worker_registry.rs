@@ -4,6 +4,8 @@
 //! solve and OVS share the same proj-bound worker. Gateway startup reconciles DB rows
 //! against e2b; runtime renews TTL per env; shutdown does not kill workers.
 //! Template rotation is per-proj when `settings_json.e2bWorker.templateId` changes.
+//! Project-home rotation: when NAS `project_home_def` symlink target (`content_rev`)
+//! changes, the warm worker's ro `/claw_ds` bind must be recreated (NFS stale handle).
 //! Renew TTL/interval: `CLAW_E2B_PROJECT_WORKER_TTL_SECS` (default 3600) and optional
 //! `CLAW_E2B_PROJECT_WORKER_RENEW_INTERVAL_SECS` (reconcile health check; TTL touch is 60s lease ticker).
 
@@ -19,15 +21,29 @@ use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
     load_e2b_worker_template_id,
 };
+use crate::project_config_draft;
 use crate::session_db::{GatewaySessionDb, ProjectFcWorkerRow, WorkerRotationEvent};
 
 use super::e2b_nas_layout::allocate_worker_id;
 use super::NasLayoutBackend;
 
-const PROJECT_WORKER_CONTRACT_VERSION: &str = "nas-session-root-v1";
+const PROJECT_WORKER_CONTRACT_VERSION: &str = "nas-session-root-v2";
 
-fn worker_contract_key(template_id: &str) -> String {
-    format!("{template_id}#{PROJECT_WORKER_CONTRACT_VERSION}")
+fn worker_contract_key(template_id: &str, project_home_rev: &str) -> String {
+    format!("{template_id}#{PROJECT_WORKER_CONTRACT_VERSION}#home={project_home_rev}")
+}
+
+async fn desired_worker_contract(
+    db: &GatewaySessionDb,
+    template_id: &str,
+    proj_id: i64,
+) -> Result<String, String> {
+    let home_rev = match project_config_draft::row_for_materialize(db, proj_id).await {
+        Ok(Some(row)) => row.content_rev,
+        Ok(None) => "none".to_string(),
+        Err(e) => return Err(format!("load project home rev for worker contract: {e}")),
+    };
+    Ok(worker_contract_key(template_id, &home_rev))
 }
 
 /// Best-effort append to `worker_rotation_log`; audit never blocks worker lifecycle. Author: kejiqing
@@ -46,6 +62,7 @@ async fn audit_rotation(db: &GatewaySessionDb, event: WorkerRotationEvent) {
 struct ProjWorkerRuntime {
     handle: E2bSandboxHandle,
     worker_id: String,
+    #[allow(dead_code)]
     template_id: String,
 }
 
@@ -101,7 +118,6 @@ impl E2bProjWorkerRegistry {
         let template_id = load_e2b_worker_template_id(db.as_ref())
             .await
             .map_err(|e| format!("load e2bWorker template: {e}"))?;
-        let desired_contract = worker_contract_key(&template_id);
         let proj_ids = db
             .list_project_config_proj_ids()
             .await
@@ -110,7 +126,6 @@ impl E2bProjWorkerRegistry {
             target: "claw_e2b_proj_worker",
             proj_count = proj_ids.len(),
             template_id = %template_id,
-            contract = %desired_contract,
             "reconcile project e2b workers on startup"
         );
         for proj_id in proj_ids {
@@ -144,7 +159,8 @@ impl E2bProjWorkerRegistry {
     /// Per-proj: skip if online + template matches; rotate or create otherwise.
     pub async fn reconcile_proj(&self, proj_id: i64, desired_template: &str) -> Result<(), String> {
         let db = self.session_db().await?;
-        let desired_contract = worker_contract_key(desired_template);
+        let desired_contract =
+            desired_worker_contract(db.as_ref(), desired_template, proj_id).await?;
         let row = db
             .get_project_e2b_worker(proj_id)
             .await
@@ -182,7 +198,7 @@ impl E2bProjWorkerRegistry {
                 old_sandbox = %existing.sandbox_id,
                 old_template = %existing.template_id,
                 new_template = %desired_contract,
-                "proj worker rotate (template mismatch or offline)"
+                "proj worker rotate (contract mismatch or offline)"
             );
             if self.client.sandbox_running(&existing.sandbox_id).await {
                 let _ = self.client.kill_sandbox(&existing.sandbox_id).await;
@@ -195,7 +211,7 @@ impl E2bProjWorkerRegistry {
                     sandbox_id: Some(existing.sandbox_id.clone()),
                     worker_id: Some(existing.worker_id.clone()),
                     template_id: Some(existing.template_id.clone()),
-                    reason: Some("template_mismatch_or_offline".to_string()),
+                    reason: Some("contract_mismatch_or_offline".to_string()),
                     at_ms: chrono::Utc::now().timestamp_millis(),
                 },
             )
@@ -209,7 +225,7 @@ impl E2bProjWorkerRegistry {
 
     async fn create_and_persist(&self, proj_id: i64, template_id: &str) -> Result<(), String> {
         let db = self.session_db().await?;
-        let contract_key = worker_contract_key(template_id);
+        let contract_key = desired_worker_contract(db.as_ref(), template_id, proj_id).await?;
         let worker_id = allocate_worker_id();
         self.nas_layout
             .prepare_e2b_worker_bind_sources(db.as_ref(), proj_id, &worker_id)
@@ -287,18 +303,12 @@ impl E2bProjWorkerRegistry {
 
     /// Ensure proj worker exists (reconcile on demand) and return handle + worker_id.
     pub async fn ensure_worker(&self, proj_id: i64) -> Result<(E2bSandboxHandle, String), String> {
-        {
-            let guard = self.workers.lock().await;
-            if let Some(rt) = guard.get(&proj_id) {
-                if self.client.sandbox_running(&rt.handle.sandbox_id).await {
-                    return Ok((rt.handle.clone(), rt.worker_id.clone()));
-                }
-            }
-        }
         let db = self.session_db().await?;
         let template_id = load_e2b_worker_template_id(db.as_ref())
             .await
             .map_err(|e| format!("load e2bWorker template: {e}"))?;
+        // Always reconcile: warm worker `/claw_ds` ro bind goes stale after NAS
+        // `project_home_def` symlink rotation (NFS EIO 116).
         self.reconcile_proj(proj_id, &template_id).await?;
         let guard = self.workers.lock().await;
         let rt = guard
@@ -360,9 +370,8 @@ impl E2bProjWorkerRegistry {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                let db = match self.session_db().await {
-                    Ok(d) => d,
-                    Err(_) => continue,
+                let Ok(db) = self.session_db().await else {
+                    continue;
                 };
                 let template_id = match load_e2b_worker_template_id(db.as_ref()).await {
                     Ok(t) => t,
@@ -436,5 +445,17 @@ impl E2bProjWorkerRegistry {
         self.workers.lock().await.clear();
         self.leases.lock().await.clear();
         info!(target: "claw_e2b_proj_worker", "shutdown_all (workers left running on e2b)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_contract_includes_project_home_rev() {
+        let key = worker_contract_key("claw-worker", "2026-07-01_12-00-00");
+        assert!(key.contains("nas-session-root-v2"));
+        assert!(key.ends_with("#home=2026-07-01_12-00-00"));
     }
 }

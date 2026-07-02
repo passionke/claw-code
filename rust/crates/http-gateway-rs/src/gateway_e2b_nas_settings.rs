@@ -7,6 +7,7 @@ use serde::Serialize;
 use crate::pool::interactive_backend::E2bNasApiSingleton;
 use crate::pool::nas_host_root;
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize)]
 pub struct E2bNasSettingsPublic {
     #[serde(rename = "readOnly")]

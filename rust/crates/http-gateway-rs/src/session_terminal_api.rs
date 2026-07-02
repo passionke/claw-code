@@ -367,11 +367,7 @@ fn active_terminal_to_lease(active: &ActiveTerminalSession) -> InteractiveLease 
 }
 
 fn lease_to_active_terminal(lease: InteractiveLease) -> ActiveTerminalSession {
-    let ttyd_host_port = if lease.ttyd.use_tls {
-        lease.ttyd.port
-    } else {
-        lease.ttyd.port
-    };
+    let ttyd_host_port = lease.ttyd.port;
     ActiveTerminalSession {
         slot_index: lease.slot_index,
         worker_name: lease.worker_name,
@@ -701,12 +697,9 @@ pub async fn terminal_ws_upgrade(
         proj_id: q.proj_id,
         session_id: session_id.clone(),
     };
-    let active = match ctx.registry.get(&key).await {
-        Some(a) => a,
-        None => {
-            return TerminalApiError::new(StatusCode::NOT_FOUND, "no active terminal for session")
-                .into_response();
-        }
+    let Some(active) = ctx.registry.get(&key).await else {
+        return TerminalApiError::new(StatusCode::NOT_FOUND, "no active terminal for session")
+            .into_response();
     };
     let ttyd = active.ttyd.clone();
     ws.on_upgrade(move |socket| async move {
@@ -752,9 +745,9 @@ async fn proxy_terminal_ws(client: WebSocket, ttyd: &TtydConnectTarget) -> Resul
             let msg = msg.map_err(|e| format!("client ws: {e}"))?;
             let out = match msg {
                 Message::Text(t) => WsMessage::Text(t.to_string().into()),
-                Message::Binary(b) => WsMessage::Binary(b.into()),
-                Message::Ping(p) => WsMessage::Ping(p.into()),
-                Message::Pong(p) => WsMessage::Pong(p.into()),
+                Message::Binary(b) => WsMessage::Binary(b),
+                Message::Ping(p) => WsMessage::Ping(p),
+                Message::Pong(p) => WsMessage::Pong(p),
                 Message::Close(_) => WsMessage::Close(None),
             };
             up_tx
@@ -770,9 +763,9 @@ async fn proxy_terminal_ws(client: WebSocket, ttyd: &TtydConnectTarget) -> Resul
             let msg = msg.map_err(|e| format!("upstream ws: {e}"))?;
             let out = match msg {
                 WsMessage::Text(t) => Message::Text(t.to_string().into()),
-                WsMessage::Binary(b) => Message::Binary(b.into()),
-                WsMessage::Ping(p) => Message::Ping(p.into()),
-                WsMessage::Pong(p) => Message::Pong(p.into()),
+                WsMessage::Binary(b) => Message::Binary(b),
+                WsMessage::Ping(p) => Message::Ping(p),
+                WsMessage::Pong(p) => Message::Pong(p),
                 WsMessage::Close(_) => Message::Close(None),
                 WsMessage::Frame(_) => continue,
             };
