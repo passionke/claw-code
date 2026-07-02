@@ -61,6 +61,7 @@ pub mod mcp_call_context;
 pub mod multi_agent;
 mod otel_solve_turn;
 pub mod ovs_interactive;
+pub mod preflight_runner;
 pub mod project_language_pipeline;
 pub mod project_orchestration;
 pub mod project_preflight;
@@ -1352,25 +1353,6 @@ pub fn run_gateway_solve_turn(
 
     let gateway_jsonl = gateway_solve_session_persistence_path(work_dir);
     let session_is_continuation = gateway_jsonl.exists();
-    let pipeline_cfg = project_language_pipeline::resolve_language_pipeline_config(work_dir);
-    let turn_id_for_language = turn_id_attr
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or("unknown");
-    let locked_language = turn_language::infer_and_persist_turn_language_blocking(
-        work_dir,
-        prompt,
-        turn_id_for_language,
-        &clawcode_session_id,
-        &effective_model,
-        &pipeline_cfg,
-    )?;
-    turn_language::inject_language_into_system_prompt(&mut system_prompt, &locked_language);
-    let _ = append_solve_timing_point(
-        work_dir,
-        "bootstrap_turn_language_inferred",
-        turn_id_attr.as_deref(),
-    );
 
     let (
         runtime_mcp_tools,
@@ -1413,6 +1395,7 @@ pub fn run_gateway_solve_turn(
             "gateway solve requires a Tokio runtime (gateway-solve-once must call run_gateway_solve_turn inside rt.enter())",
         )
     })?;
+    let mcp_extra_session = mcp.extra_session.clone();
     let mut tool_executor = DirectToolExecutor::new(
         work_dir.to_path_buf(),
         mcp,
@@ -1438,9 +1421,32 @@ pub fn run_gateway_solve_turn(
     session
         .push_user_text(prompt)
         .map_err(|e| err(HTTP_INTERNAL, format!("push user message failed: {e}")))?;
-    // Project preflight (e.g. SQLBot `mcp_start`) once per sessionId when not yet in transcript.
-    if !project_preflight::preflight_satisfied(work_dir, &session) {
-        project_preflight::run_first_turn_preflight(work_dir, &mut session, &mut tool_executor)?;
+
+    let language_pipeline_json = project_language_pipeline::load_language_pipeline_json(work_dir);
+    let turn_id_for_preflight = turn_id_attr
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("unknown");
+    let preflight_params = preflight_runner::PreflightRunParams {
+        session_home: work_dir,
+        session: &mut session,
+        system_prompt: &mut system_prompt,
+        executor: &mut tool_executor,
+        is_continuation: session_is_continuation,
+        user_prompt: prompt,
+        turn_id: turn_id_for_preflight,
+        session_id: &clawcode_session_id,
+        model: &effective_model,
+        extra_session: mcp_extra_session.map(|m| serde_json::to_value(m).unwrap_or(Value::Null)),
+    };
+    let preflight_report =
+        project_preflight::run_solve_preflight(preflight_params, &language_pipeline_json)?;
+    let _ = append_solve_timing_point(
+        work_dir,
+        "bootstrap_turn_language_inferred",
+        turn_id_attr.as_deref(),
+    );
+    if preflight_report.ran_session_first_turn {
         let _ = orchestration_bus.preflight_done();
         if let Some(section) = gateway_schema_prompt_section(work_dir) {
             system_prompt.push(section);

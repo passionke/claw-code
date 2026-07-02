@@ -13,7 +13,7 @@ Author: kejiqing
 | 文档 | 用途 |
 |------|------|
 | [`architecture-governance.md`](architecture-governance.md) | 目标拓扑、NAS 不变量、e2b singleton、部署命令、迁移 checklist |
-| [`local-dev.md`](local-dev.md) | 本地一条命令 `gateway.sh quick` |
+| [`local-dev.md`](local-dev.md) | 本地开发：`quick`、**e2b worker dev 模式（不走 CI）** |
 | [`deploy/stack/README.md`](../deploy/stack/README.md) | 运维手册：起停、镜像、排障 |
 | [`env-config.md`](env-config.md) | 根 `.env` 变量清单（`local` / `production` profile） |
 | [`env-files.md`](env-files.md) | 人手维护 vs 脚本生成路径 |
@@ -64,6 +64,8 @@ Author: kejiqing
 | [`http-gateway-rs-api.md`](http-gateway-rs-api.md) | 接口详表 |
 | [`deploy-ops-truth.md`](deploy-ops-truth.md) | 脚本实际行为（与 README 对照） |
 | [`project-config-model.md`](project-config-model.md) | PG `project_config` |
+| [`gateway-solve-preflight.md`](gateway-solve-preflight.md) | Solve preflight 插件化管道（`steps` / scope / SPI） |
+| [`preflight-spi-v1.md`](preflight-spi-v1.md) | Preflight 子进程 SPI v1 契约 |
 | [`claw-tap-cluster-identity.md`](claw-tap-cluster-identity.md) | clawTap `clusterHash` |
 | [`langfuse-otel.md`](langfuse-otel.md) | OTEL span 命名 |
 

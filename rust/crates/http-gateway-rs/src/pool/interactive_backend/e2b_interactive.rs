@@ -34,6 +34,7 @@ impl E2bInteractiveBackend {
         }
     }
 
+    #[allow(clippy::unused_async)]
     pub async fn bind_session_db(&self, _db: Arc<crate::session_db::GatewaySessionDb>) {
         // Bound via PoolClients::bind_session_db → e2b_workers.
     }
@@ -77,7 +78,7 @@ impl E2bInteractiveBackend {
         )
     }
 
-    fn session_attach_script(&self, spec: &InteractiveSessionSpec) -> String {
+    fn session_attach_script(spec: &InteractiveSessionSpec) -> String {
         let mut parts: Vec<String> = Vec::new();
         parts.push("set -e".to_string());
         if let Some(ref attach) = spec.e2b_session_attach_script {
@@ -113,7 +114,7 @@ impl InteractiveSandboxBackend for E2bInteractiveBackend {
         &self,
         spec: InteractiveSessionSpec,
     ) -> Result<InteractiveLease, String> {
-        let attach_script = self.session_attach_script(&spec);
+        let attach_script = Self::session_attach_script(&spec);
         let (handle, worker_id) = self.workers.acquire(spec.proj_id).await?;
         if let Err(e) = self
             .ensure_session(spec.proj_id, &spec.session_segment, &worker_id)
@@ -128,11 +129,11 @@ impl InteractiveSandboxBackend for E2bInteractiveBackend {
         }
         Ok(InteractiveLease {
             backend: InteractiveBackendKind::E2b,
-            slot_index: spec.proj_id as usize,
+            slot_index: usize::try_from(spec.proj_id).unwrap_or(0),
             worker_name: Some(format!("e2b:{}", handle.sandbox_id)),
             pool_id: self.pool_id.clone(),
             e2b_sandbox_id: Some(handle.sandbox_id.clone()),
-            e2b_warm_slot: Some(spec.proj_id as usize),
+            e2b_warm_slot: Some(usize::try_from(spec.proj_id).unwrap_or(0)),
             e2b_warm_proj_id: Some(spec.proj_id),
             e2b_session_segment: Some(spec.session_segment.clone()),
             e2b_worker_id: Some(worker_id),

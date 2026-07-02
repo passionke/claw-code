@@ -88,6 +88,10 @@ fn restrict_self_landlock_linux(paths: &ResolvedLandlockPaths) -> Result<(), Str
             .map_err(|e| format!("landlock add rw rule {path}: {e}"))?;
     }
     for path in &paths.ro {
+        // Optional distro paths (e.g. /lib64 on merged-/lib images) may be absent.
+        if !std::path::Path::new(path).exists() {
+            continue;
+        }
         let fd = PathFd::new(path).map_err(|e| format!("landlock open ro path {path}: {e}"))?;
         ruleset = ruleset
             .add_rule(PathBeneath::new(fd, read_access))
@@ -142,5 +146,25 @@ mod tests {
         let status = probe_landlock();
         #[cfg(not(target_os = "linux"))]
         assert!(!status.supported);
+    }
+
+    #[test]
+    fn skips_missing_ro_paths_when_filtering() {
+        use crate::landlock_dsl::{LandlockDslSource, ResolvedLandlockPaths};
+        let paths = ResolvedLandlockPaths {
+            source: LandlockDslSource::SystemDefault,
+            rw: vec!["/tmp".into()],
+            ro: vec![
+                "/this-path-does-not-exist-claw-landlock-test".into(),
+                "/usr".into(),
+            ],
+        };
+        let existing_ro: Vec<_> = paths
+            .ro
+            .iter()
+            .filter(|p| std::path::Path::new(p).exists())
+            .collect();
+        assert_eq!(existing_ro.len(), 1);
+        assert_eq!(existing_ro[0], "/usr");
     }
 }

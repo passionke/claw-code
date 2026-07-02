@@ -74,6 +74,7 @@ deploy/stack/.claw-pool-rpc/
 deploy/stack/.claw-worker-llm.env
 deploy/stack/.claw-worker-runtime.env
 deploy/stack/.linux-artifacts/
+deploy/stack/.e2b-worker-bins/
 deploy/stack/*.bin
 deploy/stack/.tmp-bin-check/
 deploy/stack/claw.claw-vscode-*.vsix

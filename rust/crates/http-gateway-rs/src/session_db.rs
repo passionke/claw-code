@@ -991,6 +991,8 @@ impl GatewaySessionDb {
         Self::migrate_settings_json_e2b_keys(pool).await?;
         Self::migrate_strict_landlock_default(pool).await?;
         Self::migrate_gateway_turns_e2b_ids(pool).await?;
+        Self::run_sql_migration_file(pool, include_str!("../migrations/010_preflight_plugin.sql"))
+            .await?;
 
         Ok(())
     }
@@ -1680,6 +1682,75 @@ impl GatewaySessionDb {
         )
         .bind(Json(settings_json))
         .bind(Json(git_pat_tokens_json))
+        .bind(updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_preflight_plugins(
+        &self,
+    ) -> Result<Vec<preflight_spi::PreflightPluginRecord>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT plugin_id, display_name, spi_version, default_impl, config_schema
+             FROM preflight_plugin ORDER BY plugin_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let plugin_id: String = row.try_get("plugin_id")?;
+            let display_name: String = row.try_get("display_name")?;
+            let spi_version: String = row.try_get("spi_version")?;
+            let default_impl: Option<Value> = row
+                .try_get::<Option<Json<Value>>, _>("default_impl")?
+                .map(|j| j.0);
+            let config_schema: Value = row.try_get::<Json<Value>, _>("config_schema")?.0;
+            let default_impl = default_impl.and_then(|v| serde_json::from_value(v).ok());
+            out.push(preflight_spi::PreflightPluginRecord {
+                plugin_id,
+                display_name,
+                spi_version,
+                default_impl,
+                config_schema,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn list_preflight_plugin_ids(&self) -> Result<Vec<String>, SqlxError> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT plugin_id FROM preflight_plugin ORDER BY plugin_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn upsert_preflight_plugin(
+        &self,
+        record: &preflight_spi::PreflightPluginRecord,
+        updated_at_ms: i64,
+    ) -> Result<(), SqlxError> {
+        let default_impl = record
+            .default_impl
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok());
+        sqlx::query(
+            r"INSERT INTO preflight_plugin (plugin_id, display_name, spi_version, default_impl, config_schema, updated_at_ms)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (plugin_id) DO UPDATE SET
+               display_name = EXCLUDED.display_name,
+               spi_version = EXCLUDED.spi_version,
+               default_impl = EXCLUDED.default_impl,
+               config_schema = EXCLUDED.config_schema,
+               updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(&record.plugin_id)
+        .bind(&record.display_name)
+        .bind(&record.spi_version)
+        .bind(default_impl.map(Json))
+        .bind(Json(record.config_schema.clone()))
         .bind(updated_at_ms)
         .execute(&self.pool)
         .await?;

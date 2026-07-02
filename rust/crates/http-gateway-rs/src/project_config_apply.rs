@@ -1154,7 +1154,7 @@ mod tests {
             .find(|w| w.rel_path == PathBuf::from(SOLVE_PREFLIGHT_MARKER))
             .expect("disabled preflight must still materialize tombstone");
         let parsed: Value = serde_json::from_slice(&preflight.bytes).expect("json");
-        assert_eq!(parsed.get("kinds").and_then(Value::as_array), Some(&vec![]));
+        assert_eq!(parsed.get("steps").and_then(Value::as_array), Some(&vec![]));
     }
 
     #[test]
@@ -1162,9 +1162,14 @@ mod tests {
         let bytes = solve_preflight_marker_bytes(&test_row(json!({"kind": "sqlbot_mcp_start"})))
             .expect("bytes");
         let parsed: Value = serde_json::from_slice(&bytes).expect("json");
+        let steps = parsed
+            .get("steps")
+            .and_then(Value::as_array)
+            .expect("steps");
+        assert_eq!(steps.len(), 2);
         assert_eq!(
-            parsed.get("kinds").and_then(Value::as_array),
-            Some(&vec![json!("sqlbot_mcp_start")])
+            steps[1].get("pluginId").and_then(Value::as_str),
+            Some("sqlbot_mcp_start")
         );
     }
 
@@ -1173,7 +1178,7 @@ mod tests {
         let bytes =
             solve_preflight_marker_bytes(&test_row(json!({"kind": "none"}))).expect("bytes");
         let parsed: Value = serde_json::from_slice(&bytes).expect("json");
-        assert_eq!(parsed.get("kinds").and_then(Value::as_array), Some(&vec![]));
+        assert_eq!(parsed.get("steps").and_then(Value::as_array), Some(&vec![]));
     }
 
     #[test]
@@ -1188,9 +1193,14 @@ mod tests {
             .find(|w| w.rel_path == PathBuf::from(SOLVE_PREFLIGHT_MARKER))
             .expect("enabled preflight marker");
         let parsed: Value = serde_json::from_slice(&preflight.bytes).expect("json");
+        let steps = parsed
+            .get("steps")
+            .and_then(Value::as_array)
+            .expect("steps");
+        assert_eq!(steps.len(), 2);
         assert_eq!(
-            parsed.get("kinds").and_then(Value::as_array),
-            Some(&vec![json!("sqlbot_mcp_start")])
+            steps[0].get("pluginId").and_then(Value::as_str),
+            Some("turn_language")
         );
     }
 
@@ -1235,9 +1245,14 @@ mod tests {
             .await
             .expect("marker file");
         let parsed: Value = serde_json::from_str(&raw).expect("json");
+        let steps = parsed
+            .get("steps")
+            .and_then(Value::as_array)
+            .expect("steps");
+        assert_eq!(steps.len(), 2);
         assert_eq!(
-            parsed.get("kinds").and_then(Value::as_array),
-            Some(&vec![json!("sqlbot_mcp_start")])
+            steps[1].get("pluginId").and_then(Value::as_str),
+            Some("sqlbot_mcp_start")
         );
         let _ = fs::remove_dir_all(root).await;
     }

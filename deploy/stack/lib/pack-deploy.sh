@@ -65,7 +65,7 @@ echo "    只改 gateway Rust: ./deploy/stack/gateway.sh build local && ./deploy
 if [[ "${CLAW_INTERACTIVE_BACKEND:-}" == "e2b" ]]; then
   claw_apply_pack_deploy_image_tag "${TAG}"
   echo "==> FC: claw/ttyd are baked into e2b template only (no NAS copy)." >&2
-  echo "    After claw/ttyd change: python3 deploy/e2b/build-claw-worker-selfhosted.py && ./deploy/stack/gateway.sh pool-reset" >&2
+  echo "    After claw/ttyd change: ./deploy/stack/gateway.sh e2b-worker-deploy" >&2
 else
   echo "==> skip e2b template hint (CLAW_INTERACTIVE_BACKEND=${CLAW_INTERACTIVE_BACKEND:-unset})"
 fi

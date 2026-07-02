@@ -10,7 +10,7 @@ export function emptyProjectConfig(projId: number): ProjectConfig {
     skillsJson: [],
     allowedToolsJson: [],
     claudeMd: null,
-    solvePreflightJson: { kinds: [] },
+    solvePreflightJson: { kind: "none", steps: [] },
     solveOrchestrationJson: { kind: "single_turn" },
     languagePipelineJson: {},
     extraSessionFieldsJson: [],

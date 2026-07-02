@@ -249,6 +249,7 @@ pub async fn prepare_e2b_worker_bind_sources(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) async fn remove_path_all_local(path: &Path) -> Result<(), String> {
     let meta = tokio::fs::symlink_metadata(path)
         .await

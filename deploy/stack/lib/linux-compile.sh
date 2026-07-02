@@ -4,6 +4,29 @@
 # Author: kejiqing
 set -euo pipefail
 
+# Resolve container platform arch (override via CLAW_LINUX_COMPILE_PLATFORM=linux/amd64). Author: kejiqing
+claw_linux_compile_arch() {
+  local raw="${CLAW_LINUX_COMPILE_PLATFORM:-}"
+  if [[ -n "${raw}" ]]; then
+    case "${raw}" in
+      linux/amd64 | amd64 | x86_64) printf '%s\n' amd64; return 0 ;;
+      linux/arm64 | arm64 | aarch64) printf '%s\n' arm64; return 0 ;;
+      *)
+        echo "linux compile: unsupported CLAW_LINUX_COMPILE_PLATFORM=${raw}" >&2
+        return 1
+        ;;
+    esac
+  fi
+  case "$(uname -m)" in
+    arm64 | aarch64) printf '%s\n' arm64 ;;
+    x86_64 | amd64) printf '%s\n' amd64 ;;
+    *)
+      echo "linux compile: unsupported host arch $(uname -m)" >&2
+      return 1
+      ;;
+  esac
+}
+
 # CI: drop cargo target debris; keep only release binaries for artifact upload. Author: kejiqing
 claw_linux_compile_prune_ci_bins() {
   local out_dir="$1"
@@ -46,15 +69,7 @@ claw_linux_compile_release() {
   echo "  image: ${rust_image}"
 
   local linux_arch
-  linux_arch="$(uname -m)"
-  case "${linux_arch}" in
-    arm64 | aarch64) linux_arch=arm64 ;;
-    x86_64 | amd64) linux_arch=amd64 ;;
-    *)
-      echo "linux compile: unsupported host arch ${linux_arch}" >&2
-      exit 1
-      ;;
-  esac
+  linux_arch="$(claw_linux_compile_arch)"
   echo "  platform: linux/${linux_arch}"
 
   # shellcheck disable=SC2086

@@ -46,10 +46,34 @@ def _container_runtime() -> str:
     return rt
 
 
+def _template_platform() -> str:
+    return _env("CLAW_E2B_TEMPLATE_PLATFORM", "linux/amd64")
+
+
+def _linux_arch_from_platform(platform: str) -> str:
+    p = platform.strip().lower()
+    if p in ("linux/arm64", "arm64", "aarch64"):
+        return "arm64"
+    if p in ("linux/amd64", "amd64", "x86_64"):
+        return "amd64"
+    raise SystemExit(f"error: unsupported CLAW_E2B_TEMPLATE_PLATFORM={platform!r}")
+
+
+def _elf_arch_ok(probe: str, arch: str) -> bool:
+    if "ELF" not in probe:
+        return False
+    if arch == "arm64":
+        return "aarch64" in probe or "ARM" in probe
+    if arch == "amd64":
+        return "x86-64" in probe or "x86_64" in probe
+    return False
+
+
 def _stage_from_worker_tag(staging: Path, worker_image: str) -> None:
-    """Pull CI worker tag (linux/amd64) and stage claw+ttyd into e2b build context."""
+    """Pull CI worker tag and stage claw+ttyd into e2b build context."""
     rt = _container_runtime()
-    platform = _env("CLAW_E2B_TEMPLATE_PLATFORM", "linux/amd64")
+    platform = _template_platform()
+    arch = _linux_arch_from_platform(platform)
     print(f"==> stage binaries from worker tag {worker_image!r} via {rt} ({platform})")
     subprocess.check_call([rt, "pull", "--platform", platform, worker_image])
     cid = subprocess.check_output(
@@ -63,8 +87,8 @@ def _stage_from_worker_tag(staging: Path, worker_image: str) -> None:
             dest.chmod(0o755)
             probe = subprocess.check_output(["file", "-b", str(dest)], text=True).strip()
             print(f"  {name}: {probe}")
-            if "x86-64" not in probe and "x86_64" not in probe:
-                raise SystemExit(f"error: {name} is not amd64 ({probe})")
+            if not _elf_arch_ok(probe, arch):
+                raise SystemExit(f"error: {name} is not linux/{arch} ({probe})")
     finally:
         subprocess.call([rt, "rm", "-f", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -166,6 +190,12 @@ def main() -> int:
             for name in ("claw", "ttyd"):
                 (staging / name).write_bytes((src / name).read_bytes())
                 (staging / name).chmod(0o755)
+            arch = _linux_arch_from_platform(_template_platform())
+            for name in ("claw", "ttyd"):
+                probe = subprocess.check_output(["file", "-b", str(staging / name)], text=True).strip()
+                print(f"  {name}: {probe}")
+                if not _elf_arch_ok(probe, arch):
+                    raise SystemExit(f"error: {name} is not linux/{arch} ({probe})")
             dockerfile_path.write_text(_dockerfile_debian_copy(), encoding="utf-8")
             print(f"==> copy build ctx={staging} (from {copy_dir})")
             template = (
