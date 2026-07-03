@@ -836,15 +836,16 @@ def _admin_dist_safe_path(rel: str) -> Path | None:
 
 
 def serve_admin_dist(handler: BaseHTTPRequestHandler, subpath: str) -> bool:
-    """Serve Vite SPA: static assets or index.html fallback."""
+    """Serve Vite SPA: static assets or index.html fallback (routes only, not missing assets)."""
     if not ADMIN_INDEX.is_file():
         send_html_bytes(
             handler,
             503,
             (
                 "<h1>admin dist missing</h1>"
-                "<p>Run <code>cd web/gateway-admin && npm ci && npm run build</code> "
-                "and commit <code>dist/</code>.</p>"
+                "<p>Rebuild playground image (<code>gateway.sh build</code> / <code>quick</code>) "
+                "or bind a full <code>web/gateway-admin/dist</code> "
+                "(<code>CLAW_GATEWAY_ADMIN_BIND=1</code>).</p>"
             ).encode("utf-8"),
         )
         return True
@@ -852,6 +853,10 @@ def serve_admin_dist(handler: BaseHTTPRequestHandler, subpath: str) -> bool:
     if hit is not None:
         mime = _ADMIN_MIME.get(hit.suffix.lower(), "application/octet-stream")
         send_static_bytes(handler, 200, hit.read_bytes(), mime)
+        return True
+    # Missing hashed bundles must 404 — SPA fallback here caused silent black screens. kejiqing
+    if subpath.startswith("assets/"):
+        handler.send_error(404, "admin asset not found")
         return True
     send_html_bytes(handler, 200, ADMIN_INDEX.read_bytes())
     return True

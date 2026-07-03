@@ -38,6 +38,9 @@ Commands:
   ovs-up        Ensure e2b OVS singleton on e2b (claw-ovs template startCmd)
   observe-tap-up Ensure e2b observe-singleton on e2b (claude-tap Live via template startCmd)
   nas-api-up    Ensure e2b claw-nas-api singleton on e2b (gateway NAS service; template startCmd)
+  e2b-singletons-up  nas-api-up + ovs-up + observe-tap-up (--reuse default)
+  e2b-pre-bootstrap  build templates (local) then singletons → PG; then gateway up --release
+  pre-252-e2b-up     full pre-prod: preflight → templates → singletons → up --release → verify
   tap-down      Stop pool claude-tap only (legacy compose; e2b mode uses CLAUDE_TAP_MODE=off)
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
   bench         REMOVED — local pool bench deleted
@@ -110,6 +113,9 @@ case "${cmd}" in
   ovs-up) bash "${LIB}/e2b-ovs-up.sh" "$@" ;;
   observe-tap-up) bash "${LIB}/e2b-tap-live-up.sh" "$@" ;;
   nas-api-up) bash "${LIB}/e2b-nas-api-up.sh" "$@" ;;
+  e2b-singletons-up) bash "${LIB}/e2b-singletons-up.sh" "$@" ;;
+  e2b-pre-bootstrap) bash "${LIB}/e2b-pre-bootstrap.sh" "$@" ;;
+  pre-252-e2b-up) bash "${LIB}/pre-252-e2b-pipeline.sh" "$@" ;;
   tap-up)
     echo "error: tap-up removed (FC mode: use ./deploy/stack/gateway.sh observe-tap-up)" >&2
     exit 1

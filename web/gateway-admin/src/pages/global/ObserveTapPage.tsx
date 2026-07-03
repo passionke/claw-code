@@ -3,15 +3,9 @@ import { Alert, Button, Card, Descriptions, Popconfirm, Space, Tag, Typography, 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
-import type { ClawTapSettings, GlobalSettingsResponse } from "../../types/globalSettings";
+import type { ClawTapSettings, GlobalSettingsResponse, ObserveTapResetResponse } from "../../types/globalSettings";
 
-export interface ObserveTapResetResponse {
-  tap: ClawTapSettings;
-  sandboxId: string;
-  liveBaseUrl: string;
-  trafficReachable: boolean;
-  message?: string;
-}
+export type { ObserveTapResetResponse };
 
 function formatMs(ms?: number): string {
   if (!ms) return "—";

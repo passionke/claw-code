@@ -22,6 +22,7 @@ pub mod biz_report_sse_log;
 pub mod claw_tap_cluster_state;
 pub mod client_origin;
 pub mod cluster_identity;
+pub mod cluster_scope;
 pub mod deploy_image;
 pub mod gateway_admin_mcp_token;
 pub mod gateway_claw_tap_lifecycle;

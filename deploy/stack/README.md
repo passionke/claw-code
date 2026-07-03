@@ -209,6 +209,7 @@ FC / e2b 设计与 env 契约见 `docs/http-gateway-container-pool.md`、`deploy
 | Admin `solve_async` **503** | 查 `CLAW_E2B_API_URL`、API key、e2b 模板；gateway 日志与 `deploy/e2b/README.md` |
 | `podman ps` 看不到网关 | `podman ps -a \| grep claw-gateway-rs`，看 `podman logs claw-gateway-rs` |
 | e2b worker 创建失败 | e2bserver 日志、NAS mount、`docs/e2b-nas-workspace.md` |
+| observe / clawTap **502**、Admin 等 observe-tap-up | `deploy/docs/e2b-observe-tap-troubleshoot.md`；`observe-tap-up --reset` |
 | 改 `.env` 不生效 | **`./deploy/stack/gateway.sh up`**（`--force-recreate`） |
 | 改了 `rust/` 网关逻辑仍像旧的 | **`./deploy/stack/gateway.sh pack-deploy`** |
 

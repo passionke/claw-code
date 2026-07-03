@@ -46,7 +46,7 @@ claw_deploy_preflight() {
       "${rt}" pull "${pg}"
     fi
   else
-    echo "    postgres: external (${CLAW_GATEWAY_DATABASE_URL%%@*}@…); skip local image pull" >&2
+    echo "    postgres: external ($(claw_redact_database_url "${CLAW_GATEWAY_DATABASE_URL}")); skip local image pull" >&2
   fi
 
   if claw_pool_uses_remote; then

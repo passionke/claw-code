@@ -4,42 +4,40 @@
 
 Author: kejiqing
 
-## 技术栈
+## 边界（单一默认路径）
 
-- Vite 5 + React 18 + TypeScript
-- Ant Design 5（暗色主题）
-- 构建产物 **`dist/` 提交进 Git**（镜像/compose **不**跑 `npm build`）
+| 层 | 职责 |
+|----|------|
+| **Git** | 只提交 `src/`，**不提交** `dist/` |
+| **构建** | CI / `Containerfile.gateway-playground` 内 `npm ci && vite build` |
+| **运行时默认** | playground **镜像**内 `/app/admin-dist`（`gateway.sh up` / `quick`） |
+| **前端热更新（可选）** | `admin-build` 后 `CLAW_GATEWAY_ADMIN_BIND=1 gateway.sh up` bind 本机 `dist/` |
 
-## 标准构建（推荐）
+不要用「Git 里半截 index.html + 本机旧 assets + 默认 bind」——会黑屏。
 
-在**仓库根目录**：
+## 常用命令
 
 ```bash
-./deploy/stack/gateway.sh quick          # 日常：含 admin dist + playground 镜像
-./deploy/stack/gateway.sh admin-build    # 仅重建 admin dist
-./deploy/stack/gateway.sh playground     # host 调试页（会先 admin-build）
-./deploy/stack/gateway.sh build          # 全量镜像前也会 build admin
+./deploy/stack/gateway.sh quick          # 推荐：完整 playground 镜像 + up
+./deploy/stack/gateway.sh up             # admin 来自已有 playground 镜像
+./deploy/stack/gateway.sh build local    # 含 playground 镜像（镜像内 npm build）
 ```
 
-`dist/` **提交进 Git**；镜像/compose **不**在容器里跑 `npm`（见 `Containerfile.gateway-playground`）。
+改 React 源码后（可选 bind 热更新）：
 
-跳过构建（仅用仓库里已有 dist）：`SKIP_GATEWAY_ADMIN_BUILD=1 gateway.sh playground`
+```bash
+CLAW_GATEWAY_ADMIN_LOCAL_BUILD=1 ./deploy/stack/gateway.sh admin-build
+CLAW_GATEWAY_ADMIN_BIND=1 ./deploy/stack/gateway.sh up
+```
 
-## 本地前端开发（可选）
+## 本地前端开发（Vite dev server）
 
 ```bash
 cd web/gateway-admin
 npm ci
-npm run dev    # Vite 开发服；登录/代理需自行对接
-npm run build
+npm run dev
 ```
 
 `.npmrc` 默认 `registry.npmmirror.com`。
 
 旧版单文件 UI：`web/gateway-async-playground/admin.legacy.html`。
-
-## 目录
-
-- `src/api/client.ts` — `__proxy__` / `__config__` / 登录
-- `src/context/AppContext.tsx` — 网关、proj_id、项目列表
-- `src/pages/*` — 各 Tab（对应原 admin.html）

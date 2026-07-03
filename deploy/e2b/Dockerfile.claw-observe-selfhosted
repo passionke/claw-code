@@ -1,0 +1,42 @@
+# claw-observe: FROM claude-tap image (like worker FROM claw-gateway-worker). Author: kejiqing
+# Local: podman build → push ACR → e2b Template.from_image
+ARG TAP_BASE_IMAGE=ghcr.io/passionke/claude-tap:v0.0.11
+ARG OBSERVE_LIVE_PORT=3000
+# CLAW_E2B_CN=1 → mirrors.aliyun.com; override with CLAW_E2B_DEBIAN_APT_MIRROR. Author: kejiqing
+ARG DEBIAN_APT_MIRROR=
+FROM ${TAP_BASE_IMAGE}
+ARG OBSERVE_LIVE_PORT=3000
+ARG DEBIAN_APT_MIRROR
+ENV CLAW_OBSERVE_LIVE_PORT=${OBSERVE_LIVE_PORT}
+USER root
+RUN if [ -n "${DEBIAN_APT_MIRROR}" ]; then \
+      sed -i "s|mirrors.tuna.tsinghua.edu.cn|${DEBIAN_APT_MIRROR}|g; s|deb.debian.org|${DEBIAN_APT_MIRROR}|g; s|security.debian.org|${DEBIAN_APT_MIRROR}|g" \
+        /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+      sed -i "s|mirrors.tuna.tsinghua.edu.cn|${DEBIAN_APT_MIRROR}|g; s|deb.debian.org|${DEBIAN_APT_MIRROR}|g; s|security.debian.org|${DEBIAN_APT_MIRROR}|g" \
+        /etc/apt/sources.list 2>/dev/null || true; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    nfs-common \
+    ca-certificates \
+    curl \
+    sudo \
+    && echo 'user ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, /usr/bin/mountpoint, /bin/mkdir, /bin/chown' > /etc/sudoers.d/claw-nfs \
+    && chmod 440 /etc/sudoers.d/claw-nfs \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /claw_ws/tap-traces \
+    && chmod -R a+rwX /claw_ws
+RUN printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+        ': "${CLAW_CLUSTER_ID:?missing CLAW_CLUSTER_ID (sandbox create envVars)}"' \
+        ': "${CLAW_GATEWAY_DATABASE_URL:?missing CLAW_GATEWAY_DATABASE_URL (sandbox create envVars)}"' \
+        'mkdir -p /claw_ws/tap-traces' \
+        'live_port="${CLAW_OBSERVE_LIVE_PORT:-3000}"' \
+        'exec env CLAW_CLUSTER_ID="$CLAW_CLUSTER_ID" CLAW_GATEWAY_DATABASE_URL="$CLAW_GATEWAY_DATABASE_URL" /usr/local/bin/claude-tap --tap-no-launch --tap-live --tap-host 0.0.0.0 --tap-port 8080 --tap-live-port "$live_port" --tap-target https://bootstrap.invalid/v1 --tap-output-dir /claw_ws/tap-traces --tap-no-update-check --tap-no-auto-update' \
+        > /usr/local/bin/claw-observe-start \
+    && printf '%s\n' \
+        '#!/bin/sh' \
+        'live_port="${CLAW_OBSERVE_LIVE_PORT:-3000}"' \
+        'exec curl -fsS --connect-timeout 2 "http://127.0.0.1:${live_port}/"' \
+        > /usr/local/bin/claw-observe-ready \
+    && chmod +x /usr/local/bin/claw-observe-start /usr/local/bin/claw-observe-ready

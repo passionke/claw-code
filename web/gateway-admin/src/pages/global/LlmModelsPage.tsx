@@ -352,9 +352,7 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
         <Typography.Title level={4} style={{ marginTop: 0 }}>
           模型配置
         </Typography.Title>
-      ) : (
-        <Typography.Title level={5}>大模型列表</Typography.Title>
-      )}
+      ) : null}
 
       <Card
         title={

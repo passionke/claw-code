@@ -96,6 +96,33 @@ pub struct ClawTapSettingsPublic {
         skip_serializing_if = "Option::is_none"
     )]
     pub live_browser_hosts_line: Option<String>,
+    /// e2b observe singleton sandbox (`observe-tap-up` writes PG). Author: kejiqing
+    #[serde(
+        rename = "e2bObserveSandboxId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub e2b_observe_sandbox_id: Option<String>,
+    /// Live e2b `GET /sandboxes/{id}` state (running / killed / …). Author: kejiqing
+    #[serde(
+        rename = "e2bObserveSandboxState",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub e2b_observe_sandbox_state: Option<String>,
+    #[serde(
+        rename = "e2bObserveSandboxRunning",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub e2b_observe_sandbox_running: Option<bool>,
+    #[serde(
+        rename = "e2bObserveSandboxEndAtMs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub e2b_observe_sandbox_end_at_ms: Option<i64>,
+    #[serde(
+        rename = "e2bObserveSandboxRemainingTtlSecs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub e2b_observe_sandbox_remaining_ttl_secs: Option<u64>,
 }
 
 impl ClawTapSettings {
@@ -180,6 +207,11 @@ impl From<&ClawTapSettings> for ClawTapSettingsPublic {
                 live_base_url: Some(live.trim().to_string()),
                 live_session_url_template: s.live_session_url_template.clone(),
                 live_browser_hosts_line: None,
+                e2b_observe_sandbox_id: s.e2b_observe_sandbox_id.clone(),
+                e2b_observe_sandbox_state: None,
+                e2b_observe_sandbox_running: None,
+                e2b_observe_sandbox_end_at_ms: None,
+                e2b_observe_sandbox_remaining_ttl_secs: None,
             };
         }
         let configured =
@@ -219,7 +251,40 @@ impl From<&ClawTapSettings> for ClawTapSettingsPublic {
             live_base_url,
             live_session_url_template,
             live_browser_hosts_line: None,
+            e2b_observe_sandbox_id: s.e2b_observe_sandbox_id.clone(),
+            e2b_observe_sandbox_state: None,
+            e2b_observe_sandbox_running: None,
+            e2b_observe_sandbox_end_at_ms: None,
+            e2b_observe_sandbox_remaining_ttl_secs: None,
         }
+    }
+}
+
+/// Attach live e2b sandbox TTL/state for Admin observe diagnostics. Author: kejiqing
+pub async fn enrich_claw_tap_observe_runtime(
+    tap: &mut ClawTapSettingsPublic,
+    client: &claw_e2b_sandbox_client::E2bSandboxClient,
+) {
+    let Some(sid) = tap
+        .e2b_observe_sandbox_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    if let Ok(snap) = client.fetch_sandbox_snapshot(sid).await {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let running = snap.is_running();
+        let end_at_ms = snap.end_at_ms;
+        let remaining = snap.remaining_ttl_secs(now_ms);
+        tap.e2b_observe_sandbox_state = Some(snap.state);
+        tap.e2b_observe_sandbox_running = Some(running);
+        tap.e2b_observe_sandbox_end_at_ms = end_at_ms;
+        tap.e2b_observe_sandbox_remaining_ttl_secs = remaining;
+    } else {
+        tap.e2b_observe_sandbox_state = Some("unknown".into());
+        tap.e2b_observe_sandbox_running = Some(false);
     }
 }
 

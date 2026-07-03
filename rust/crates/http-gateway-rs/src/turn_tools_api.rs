@@ -78,7 +78,7 @@ mod tests {
         let uid = uuid::Uuid::new_v4().simple().to_string();
         let sid = format!("tools_chain_{uid}");
         let turn_id = format!("T_{uid}");
-        let session_home_rel = format!("proj_1/sessions/{sid}");
+        let session_home_rel = format!("test-cluster/proj_1/sessions/{sid}");
         db.insert_session(&sid, 1, &session_home_rel, t, None)
             .await
             .unwrap();

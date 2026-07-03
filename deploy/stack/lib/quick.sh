@@ -20,19 +20,22 @@ source "${ROOT_DIR}/.env"
 set +a
 
 echo "==> [1/3] skip host pool (e2b-only)"
-echo "==> [2/3] playground image (slim if missing; admin via bind mount when dist/ exists)"
+echo "==> [2/3] playground image (admin SPA baked in image; default — no host dist bind)"
 rt="$(command -v podman 2>/dev/null || command -v docker)"
 pg_img="${GATEWAY_PLAYGROUND_IMAGE:-claw-gateway-playground:local}"
 debian_reg="${CONTAINER_BASE_REGISTRY:-docker.1ms.run}"
 debian_reg="${debian_reg%/}"
+node_img="${debian_reg}/library/node:20-alpine"
 apt_mirror_arg=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
 [[ "${CLAW_USE_CN_CRATES_MIRROR:-0}" == "1" || "${CLAW_USE_CN_RUST_MIRROR:-0}" == "1" ]] && apt_mirror_arg=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
 if ! "${rt}" image exists "${pg_img}" 2>/dev/null; then
+  echo "    building ${pg_img} (Containerfile.gateway-playground — npm build inside image)"
   # shellcheck disable=SC2086
   "${rt}" build -q \
     --build-arg "DEBIAN_BASE_IMAGE=${debian_reg}/library/debian:bookworm-slim" \
+    --build-arg "NODE_BASE_IMAGE=${node_img}" \
     "${apt_mirror_arg[@]}" \
-    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground.slim" \
+    -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-playground" \
     -t "${pg_img}" "${ROOT_DIR}" >/dev/null
 else
   echo "    reusing ${pg_img}"

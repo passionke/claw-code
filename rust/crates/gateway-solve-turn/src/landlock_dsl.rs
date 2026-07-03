@@ -40,7 +40,9 @@ pub fn default_landlock_dsl() -> LandlockDsl {
             "${session_root}/tmp".into(),
         ],
         ro: vec![
-            "/claw_ds/project_home_def".into(),
+            // Whole NAS ro mount (not only the stable symlink): landlock skips missing
+            // paths at install time; project_home_def may appear after worker create.
+            "/claw_ds".into(),
             "/usr".into(),
             "/bin".into(),
             "/lib".into(),

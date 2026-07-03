@@ -11,7 +11,13 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+_E2B_DIR = Path(__file__).resolve().parent
+if str(_E2B_DIR) not in sys.path:
+    sys.path.insert(0, str(_E2B_DIR))
+from e2b_template_registry import load_repo_dotenv, log_debian_base_resolution, template_debian_base_image
+
 ROOT = Path(__file__).resolve().parents[2]
+load_repo_dotenv(ROOT)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -79,7 +85,8 @@ def _sudo_nfs_setup() -> str:
 
 def _dockerfile_context(ovs_port: int) -> str:
     sudo = _sudo_nfs_setup()
-    return f"""FROM docker.1ms.run/library/debian:bookworm-slim
+    debian = template_debian_base_image()
+    return f"""FROM {debian}
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     nfs-common ca-certificates curl{sudo} \\
     && rm -rf /var/lib/apt/lists/* \\
@@ -125,6 +132,7 @@ def _ovs_ready_cmd(port: int) -> str:
 
 def main() -> int:
     opts = _conn_opts()
+    log_debian_base_resolution(api_url=opts["api_url"])
     alias = _env("CLAW_E2B_OVS_TEMPLATE", "claw-ovs")
     ovs_port = _ovs_port()
 

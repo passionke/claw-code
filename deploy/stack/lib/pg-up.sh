@@ -18,7 +18,7 @@ fi
 
 claw_podman_load_compose_args "${PODMAN_DIR}" "${ENV_FILE}"
 if ! claw_compose_uses_local_postgres; then
-  echo "Postgres: external (${CLAW_GATEWAY_DATABASE_URL%%@*}@…); compose postgres not used (pg-up skipped)." >&2
+  echo "Postgres: external ($(claw_redact_database_url "${CLAW_GATEWAY_DATABASE_URL}")); compose postgres not used (pg-up skipped)." >&2
   exit 0
 fi
 claw_compose_pg_ensure "${PODMAN_DIR}" "${ENV_FILE}"

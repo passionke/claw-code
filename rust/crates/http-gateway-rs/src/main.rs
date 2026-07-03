@@ -1462,9 +1462,18 @@ async fn main() {
     let session_db = Arc::new(session_db);
     pool_clients.bind_session_db(Arc::clone(&session_db)).await;
     nas_api.bind_session_db(Arc::clone(&session_db)).await;
-    if let Err(e) = nas_api.verify_endpoint_configured().await {
-        eprintln!("http-gateway-rs: claw-nas-api not ready: {e}");
-        std::process::exit(1);
+    if pool::E2bNasApiSingleton::enabled_from_env() {
+        match nas_api.verify_endpoint_configured().await {
+            Ok(()) => {}
+            Err(e) => warn!(
+                target: "claw_e2b_sandbox",
+                component = "startup",
+                phase = "nas_api",
+                error = %e,
+                "claw-nas-api endpoint not in PG yet; gateway starts without it — \
+                 NAS layout/solve will fail until: ./deploy/stack/gateway.sh nas-api-up"
+            ),
+        }
     }
     if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
         tracing::warn!(
@@ -5143,6 +5152,9 @@ async fn get_gateway_global_settings_handler(
             if !e2b_traffic {
                 *tap = gateway_claw_tap_settings::strip_compose_live_urls_for_fc_admin(tap.clone());
             }
+            if let Some(client) = state.pool_clients.e2b_sandbox_client() {
+                gateway_claw_tap_settings::enrich_claw_tap_observe_runtime(tap, client).await;
+            }
         }
     }
     body.e2b_nas = Some(gateway_e2b_nas_settings::e2b_nas_settings_public(
@@ -5154,9 +5166,16 @@ async fn get_gateway_global_settings_handler(
 async fn reset_gateway_observe_tap_handler(
     State(state): State<AppState>,
 ) -> Result<Json<gateway_e2b_observe_reset::ObserveTapResetResponse>, ApiError> {
-    let body = gateway_e2b_observe_reset::reset_observe_tap(&state.session_db)
+    let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "e2b sandbox client not configured",
+        )
+    })?;
+    let mut body = gateway_e2b_observe_reset::reset_observe_tap(&state.session_db, client)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
+    gateway_claw_tap_settings::enrich_claw_tap_observe_runtime(&mut body.tap, client).await;
     Ok(Json(body))
 }
 
