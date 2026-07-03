@@ -122,7 +122,7 @@ pub fn apply_strict_landlock_jail(
 
 /// Resolve ro DSL paths for Landlock install. Missing optional distro paths are skipped;
 /// missing `project_home_def` falls back to the `/claw_ds` mount root when present.
-#[cfg(test)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn resolve_ro_landlock_paths(ro: &[String]) -> Vec<std::path::PathBuf> {
     use std::collections::HashSet;
     let mut out = Vec::new();
@@ -140,7 +140,7 @@ fn resolve_ro_landlock_paths(ro: &[String]) -> Vec<std::path::PathBuf> {
     out
 }
 
-#[cfg(test)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn ro_landlock_candidates(path: &str) -> Vec<std::path::PathBuf> {
     let path = path.trim();
     let p = std::path::Path::new(path);
