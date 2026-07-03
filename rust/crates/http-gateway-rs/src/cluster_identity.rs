@@ -227,6 +227,63 @@ pub fn gateway_database_url() -> Result<String, String> {
         })
 }
 
+fn worker_database_url() -> Result<String, String> {
+    if let Ok(v) = std::env::var("CLAW_E2B_WORKER_DATABASE_URL") {
+        let t = v.trim();
+        if !t.is_empty() {
+            return Ok(t.to_string());
+        }
+    }
+    gateway_database_url()
+}
+
+fn replace_pg_url_host(url: &str, new_host: &str, new_port: u16) -> Result<String, String> {
+    let trimmed = url.trim();
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return Err("database URL must include scheme".into());
+    };
+    let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (auth, hostpath) = rest
+        .rsplit_once('@')
+        .ok_or_else(|| "database URL missing user@host".to_string())?;
+    let (_, dbpath) = hostpath
+        .split_once('/')
+        .ok_or_else(|| "database URL missing dbname".to_string())?;
+    let mut out = format!("{scheme}://{auth}@{new_host}:{new_port}/{dbpath}");
+    if !query.is_empty() {
+        out.push('?');
+        out.push_str(query);
+    }
+    Ok(out)
+}
+
+/// PG URL injected into e2b sandboxes (remote host cannot use gateway `127.0.0.1`). Author: kejiqing
+pub fn sandbox_database_url() -> Result<String, String> {
+    if let Ok(v) = std::env::var("CLAW_E2B_SANDBOX_DATABASE_URL") {
+        let t = v.trim();
+        if !t.is_empty() {
+            return Ok(t.to_string());
+        }
+    }
+    let url = worker_database_url()?;
+    let parts = parse_pg_url(&url)?;
+    let host_lower = parts.host.to_lowercase();
+    if !matches!(host_lower.as_str(), "127.0.0.1" | "localhost" | "::1") {
+        return Ok(url);
+    }
+    let sandbox_host = std::env::var("CLAW_E2B_SANDBOX_PG_HOST")
+        .or_else(|_| std::env::var("CLAW_POOL_ADVERTISE_HOST"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            "CLAW_E2B_WORKER_DATABASE_URL uses 127.0.0.1 but e2b sandboxes run on another host; \
+             set CLAW_E2B_SANDBOX_DATABASE_URL or CLAW_E2B_SANDBOX_PG_HOST"
+                .to_string()
+        })?;
+    replace_pg_url_host(&url, &sandbox_host, parts.port)
+}
+
 /// GET `{tap_base}/healthz` and parse cluster fields. Author: kejiqing
 pub async fn fetch_tap_cluster_identity(
     tap_base_url: &str,

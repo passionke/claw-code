@@ -66,6 +66,17 @@ CLAW_E2B_WORKER_ARCH=amd64
 
 OVS / observe / nas-api 模板仍按需单独 build（见下文 env 注释）；体积大或与 Rust 无关，不并入 `e2b-worker-deploy`。
 
+### Observe 单例（clawTap / LLM 代理 + Live）
+
+e2b 模式下 **不在宿主机起 tap**（`CLAUDE_TAP_MODE=off`）。observe 是 e2b 上的 **单例沙箱**（模板 `claw-observe`），由 `observe-tap-up` 创建并把 `clawTap` 写入 PG。
+
+```bash
+./deploy/stack/gateway.sh observe-tap-up --reuse    # 日常
+./deploy/stack/gateway.sh observe-tap-up --reset    # 单例 502 / PG 脏数据 / 换模板后
+```
+
+**排障（502、PG 里仍是 252、`singleton_id` 报错等）：** [`deploy/docs/e2b-observe-tap-troubleshoot.md`](../docs/e2b-observe-tap-troubleshoot.md)
+
 ## Phase 0 — verify before gateway code path
 
 ### Step A — e2b API (no NAS)

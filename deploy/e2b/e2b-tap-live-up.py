@@ -60,12 +60,15 @@ def _fc_python() -> Path:
 
 
 def _ensure_fc_venv_python() -> None:
-    """Re-exec under .venv-fc so psycopg + e2b share one interpreter. Author: kejiqing
+    """Re-exec under .venv-fc when psycopg missing; skip when system python already has deps.
 
-    Compare by venv prefix, not the interpreter path: the venv `python3` is a symlink
-    to the base interpreter, so `resolve()` collapses both sides and would falsely
-    report "already in venv" -> never re-exec -> venv site-packages missing.
+    Gateway container installs psycopg in the image — no writable venv under /app. Author: kejiqing
     """
+    try:
+        import psycopg  # noqa: F401
+        return
+    except ImportError:
+        pass
     fc_py = _fc_python()
     if Path(sys.prefix).resolve() != _fc_venv_dir().resolve():
         os.execv(str(fc_py), [str(fc_py), *sys.argv])
@@ -188,6 +191,20 @@ def _database_url() -> str:
     raise RuntimeError("set CLAW_E2B_WORKER_DATABASE_URL or CLAW_GATEWAY_DATABASE_URL in .env")
 
 
+def _observe_template_id() -> str:
+    """PG e2bObserve.templateId (last build) → env → alias default."""
+    try:
+        from e2b_pg_settings import load_settings_json_key
+
+        row = load_settings_json_key("e2bObserve")
+        tid = row.get("templateId") if isinstance(row, dict) else None
+        if isinstance(tid, str) and tid.strip():
+            return tid.strip()
+    except Exception as exc:  # noqa: BLE001
+        print(f"warn: load e2bObserve.templateId from PG: {exc}", file=sys.stderr)
+    return _env("CLAW_E2B_OBSERVE_TEMPLATE") or "claw-observe"
+
+
 def _list_sandboxes(api_url: str, api_key: str, self_hosted: bool) -> list[dict[str, Any]]:
     rows = _http_json("GET", f"{api_url.rstrip('/')}/sandboxes", api_key, self_hosted)
     if isinstance(rows, list):
@@ -254,6 +271,24 @@ def _create_observe_sandbox(
 
 def _kill_sandbox(sandbox_id: str, api_url: str, api_key: str, self_hosted: bool) -> None:
     _http_json("DELETE", f"{api_url.rstrip('/')}/sandboxes/{sandbox_id}", api_key, self_hosted)
+
+
+def _apply_sandbox_timeout(
+    sandbox_id: str,
+    *,
+    api_url: str,
+    api_key: str,
+    self_hosted: bool,
+    timeout_secs: int,
+) -> None:
+    """e2b create may leave template default TTL (~300s); POST /timeout applies CLAW_E2B_SANDBOX_TIMEOUT_SECS."""
+    _http_json(
+        "POST",
+        f"{api_url.rstrip('/')}/sandboxes/{sandbox_id}/timeout",
+        api_key,
+        self_hosted,
+        {"timeout": timeout_secs},
+    )
 
 
 def _proxy_base_url(sandbox_id: str, domain: str, proxy_port: int = 8080) -> str:
@@ -348,11 +383,16 @@ def main() -> int:
     api_url = _env("CLAW_E2B_API_URL") or _env("E2B_API_URL") or "http://10.8.0.1:3000"
     fc_domain = _env("CLAW_E2B_DOMAIN") or _env("E2B_DOMAIN") or "supone.top"
     cluster_id = _env("CLAW_CLUSTER_ID") or "default"
-    template = _env("CLAW_E2B_OBSERVE_TEMPLATE") or "claw-observe"
+    template = _observe_template_id()
     timeout_secs = int(_env("CLAW_E2B_SANDBOX_TIMEOUT_SECS", "3600") or "3600")
     live_port = _observe_live_port()
     self_hosted = _is_self_hosted(api_url)
+    from e2b_pg_settings import sandbox_database_url
+
     db_url = _database_url()
+    sandbox_db_url = sandbox_database_url()
+    if sandbox_db_url != db_url:
+        print(f"==> sandbox PG URL: {sandbox_db_url!r} (not 127.0.0.1 — e2b host must reach Mac PG)", file=sys.stderr)
 
     if args.kill:
         _kill_sandbox(args.kill.strip(), api_url, api_key, self_hosted)
@@ -381,9 +421,17 @@ def main() -> int:
             template=template,
             timeout_secs=timeout_secs,
             cluster_id=cluster_id,
-            db_url=db_url,
+            db_url=sandbox_db_url,
         )
         print(f"==> sandbox_id={sandbox_id}", file=sys.stderr)
+        print(f"==> apply sandbox TTL {timeout_secs}s (POST /timeout)", file=sys.stderr)
+        _apply_sandbox_timeout(
+            sandbox_id,
+            api_url=api_url,
+            api_key=api_key,
+            self_hosted=self_hosted,
+            timeout_secs=timeout_secs,
+        )
 
     urls = _browser_urls(sandbox_id, domain, live_port)
     urls["clusterId"] = cluster_id

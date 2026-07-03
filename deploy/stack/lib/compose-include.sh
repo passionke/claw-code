@@ -437,7 +437,7 @@ claw_compose_append_fc_ovs_backend() {
 }
 
 
-# Local dev only: bind-mount gateway-admin dist. Production/release always use image SPA. Author: kejiqing
+# Admin SPA default: baked in playground image. Bind host dist only when CLAW_GATEWAY_ADMIN_BIND=1. kejiqing
 claw_podman_append_admin_dist_bind() {
   local script_dir="$1"
   local rel="${2:-}"
@@ -450,30 +450,27 @@ claw_podman_append_admin_dist_bind() {
   if [[ "${profile}" == production ]] || [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
     return 0
   fi
-  local dist=""
-  if [[ -n "${repo_root}" ]]; then
-    dist="${repo_root}/web/gateway-admin/dist/index.html"
-  else
-    dist="$(cd "${script_dir}/../.." && pwd)/web/gateway-admin/dist/index.html"
-  fi
-  if [[ ! -f "${dist}" ]]; then
+  if [[ "${CLAW_GATEWAY_ADMIN_BIND:-0}" != "1" ]]; then
     return 0
   fi
-  local assets_glob
+  # shellcheck source=/dev/null
+  source "${script_dir}/lib/gateway-admin-dist.sh"
+  local dist_dir
   if [[ -n "${repo_root}" ]]; then
-    assets_glob="${repo_root}/web/gateway-admin/dist/assets/*.js"
+    dist_dir="${repo_root}/web/gateway-admin/dist"
   else
-    assets_glob="$(cd "${script_dir}/../.." && pwd)/web/gateway-admin/dist/assets/*.js"
+    dist_dir="$(claw_gateway_admin_dist_dir "$(cd "${script_dir}/../.." && pwd)")"
   fi
-  if ! compgen -G "${assets_glob}" >/dev/null 2>&1; then
-    echo "note: skip admin-dist bind (no dist/assets/*.js); playground uses image-built admin SPA" >&2
-    return 0
+  if ! claw_gateway_admin_dist_consistent "${dist_dir}"; then
+    claw_gateway_admin_dist_consistency_hint "${dist_dir}"
+    exit 1
   fi
   if [[ -n "${rel}" ]]; then
     CLAW_PODMAN_COMPOSE_ARGS+=( -f "${rel}/podman-compose.admin-dist-bind.yml" )
   else
     CLAW_PODMAN_COMPOSE_ARGS+=( -f "${script_dir}/podman-compose.admin-dist-bind.yml" )
   fi
+  echo "compose: CLAW_GATEWAY_ADMIN_BIND=1 — admin SPA from host ${dist_dir}" >&2
 }
 
 claw_ensure_compose_env_stubs() {
@@ -1033,7 +1030,7 @@ claw_compose_pg_up() {
 # Start existing postgres container or create via compose (avoids name-already-in-use on retry). kejiqing
 claw_compose_pg_ensure() {
   if ! claw_compose_uses_local_postgres; then
-    echo "Postgres: external (${CLAW_GATEWAY_DATABASE_URL%%@*}@…); skipping compose postgres" >&2
+    echo "Postgres: external ($(claw_redact_database_url "${CLAW_GATEWAY_DATABASE_URL}")); skipping compose postgres" >&2
     return 0
   fi
   local podman_dir="$1"

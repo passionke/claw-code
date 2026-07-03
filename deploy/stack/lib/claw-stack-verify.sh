@@ -62,7 +62,7 @@ if claw_compose_uses_local_postgres; then
     fail "postgres container ${PG_CTN} not running (gateway.sh pg-up)"
   fi
 else
-  ok "external postgres (${CLAW_GATEWAY_DATABASE_URL%%@*}@…)"
+  ok "external postgres ($(claw_redact_database_url "${CLAW_GATEWAY_DATABASE_URL}"))"
 fi
 
 has_claw_pool="$(psql_q "SELECT to_regclass('public.claw_pool') IS NOT NULL;")"

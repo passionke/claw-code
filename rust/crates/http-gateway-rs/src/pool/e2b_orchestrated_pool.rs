@@ -127,7 +127,7 @@ impl PoolOps for E2bOrchestratedPool {
         let slot_index = self.alloc_slot_index();
         let worker_name = format!("e2b:{}", handle.sandbox_id);
         let _ = db
-            .assign_turn_pool_worker(&turn_id, E2B_POOL_ID, &worker_name, Some("0:0"))
+            .assign_turn_pool_worker(&turn_id, E2B_POOL_ID, &worker_name, Some("1000:1000"))
             .await;
 
         self.slots.lock().await.insert(

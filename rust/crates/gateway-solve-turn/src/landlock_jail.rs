@@ -87,15 +87,13 @@ fn restrict_self_landlock_linux(paths: &ResolvedLandlockPaths) -> Result<(), Str
             .add_rule(PathBeneath::new(fd, write_access))
             .map_err(|e| format!("landlock add rw rule {path}: {e}"))?;
     }
-    for path in &paths.ro {
-        // Optional distro paths (e.g. /lib64 on merged-/lib images) may be absent.
-        if !std::path::Path::new(path).exists() {
-            continue;
-        }
-        let fd = PathFd::new(path).map_err(|e| format!("landlock open ro path {path}: {e}"))?;
+    for path in resolve_ro_landlock_paths(&paths.ro) {
+        let path_str = path.display().to_string();
+        let fd =
+            PathFd::new(&path).map_err(|e| format!("landlock open ro path {path_str}: {e}"))?;
         ruleset = ruleset
             .add_rule(PathBeneath::new(fd, read_access))
-            .map_err(|e| format!("landlock add ro rule {path}: {e}"))?;
+            .map_err(|e| format!("landlock add ro rule {path_str}: {e}"))?;
     }
 
     ruleset
@@ -120,6 +118,39 @@ pub fn apply_strict_landlock_jail(
     let paths = crate::landlock_dsl::expand_landlock_dsl(dsl, source, ctx)?;
     prepare_session_rw_dirs(&paths, ctx.session_root)?;
     restrict_self_landlock(&paths)
+}
+
+/// Resolve ro DSL paths for Landlock install. Missing optional distro paths are skipped;
+/// missing `project_home_def` falls back to the `/claw_ds` mount root when present.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn resolve_ro_landlock_paths(ro: &[String]) -> Vec<std::path::PathBuf> {
+    use std::collections::HashSet;
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for path in ro {
+        for candidate in ro_landlock_candidates(path) {
+            if candidate.exists() {
+                let key = candidate.display().to_string();
+                if seen.insert(key) {
+                    out.push(candidate);
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn ro_landlock_candidates(path: &str) -> Vec<std::path::PathBuf> {
+    let path = path.trim();
+    let p = std::path::Path::new(path);
+    if p.exists() {
+        return vec![p.to_path_buf()];
+    }
+    if path == "/claw_ds/project_home_def" || path.ends_with("/project_home_def") {
+        return vec![std::path::PathBuf::from("/claw_ds")];
+    }
+    Vec::new()
 }
 
 fn prepare_session_rw_dirs(
@@ -150,21 +181,17 @@ mod tests {
 
     #[test]
     fn skips_missing_ro_paths_when_filtering() {
-        use crate::landlock_dsl::{LandlockDslSource, ResolvedLandlockPaths};
-        let paths = ResolvedLandlockPaths {
-            source: LandlockDslSource::SystemDefault,
-            rw: vec!["/tmp".into()],
-            ro: vec![
-                "/this-path-does-not-exist-claw-landlock-test".into(),
-                "/usr".into(),
-            ],
-        };
-        let existing_ro: Vec<_> = paths
-            .ro
-            .iter()
-            .filter(|p| std::path::Path::new(p).exists())
-            .collect();
-        assert_eq!(existing_ro.len(), 1);
-        assert_eq!(existing_ro[0], "/usr");
+        let resolved = resolve_ro_landlock_paths(&[
+            "/this-path-does-not-exist-claw-landlock-test".into(),
+            "/usr".into(),
+        ]);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0], std::path::PathBuf::from("/usr"));
+    }
+
+    #[test]
+    fn project_home_def_missing_falls_back_to_claw_ds_mount() {
+        let candidates = ro_landlock_candidates("/claw_ds/project_home_def");
+        assert_eq!(candidates, vec![std::path::PathBuf::from("/claw_ds")]);
     }
 }

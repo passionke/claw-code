@@ -107,7 +107,7 @@ export default function ChatPage() {
     feedbackByTurn,
     submittingTurnId,
     submitFeedback,
-  } = useSessionTurnFeedback(gatewayBase, projId, activeSessionId, historyRefreshKey);
+  } = useSessionTurnFeedback(gatewayBase, projId, activeSessionId);
 
   const scrollLog = (smooth = true) => {
     requestAnimationFrame(() =>
@@ -400,11 +400,26 @@ export default function ChatPage() {
                   initialWorkerExecUser={item.workerExecUser}
                   turnFeedback={feedbackByTurn[item.turnId] ?? item.feedback}
                   feedbackSubmitting={submittingTurnId === item.turnId}
-                  onTurnFeedback={(fb) =>
+                  onTurnFeedback={(fb) => {
+                    const previousFeedback = item.feedback;
+                    setThread((prev) =>
+                      prev.map((entry) => {
+                        if (isSys(entry) || entry.turnId !== item.turnId) return entry;
+                        return { ...entry, feedback: fb };
+                      })
+                    );
                     void submitFeedback(item.turnId, fb)
                       .then(() => setHistoryRefreshKey((k) => k + 1))
-                      .catch((e) => message.error(String((e as Error).message || e)))
-                  }
+                      .catch((e) => {
+                        setThread((prev) =>
+                          prev.map((entry) => {
+                            if (isSys(entry) || entry.turnId !== item.turnId) return entry;
+                            return { ...entry, feedback: previousFeedback };
+                          })
+                        );
+                        message.error(String((e as Error).message || e));
+                      });
+                  }}
                 />
               </div>
             );

@@ -1,6 +1,30 @@
 # shellcheck shell=bash
 # Per-instance paths for CI multi-gateway on one host (shared PG). Author: kejiqing
 
+# Hide password in database URLs for logs (matches http-gateway-rs redact_database_url). Author: kejiqing
+claw_redact_database_url() {
+  local url="${1:-}"
+  if [[ -z "${url}" ]]; then
+    printf '%s' '<unset-database-url>'
+    return 0
+  fi
+  if [[ "${url}" != *"://"* ]]; then
+    printf '%s' '<invalid-database-url>'
+    return 0
+  fi
+  local scheme="${url%%://*}"
+  local after_scheme="${url#*://}"
+  if [[ "${after_scheme}" == *"@"* ]]; then
+    local user_pass="${after_scheme%%@*}"
+    local host_rest="${after_scheme#*@}"
+    local user="${user_pass%%:*}"
+    [[ -n "${user}" ]] || user="user"
+    printf '%s' "${scheme}://${user}:***@${host_rest}"
+    return 0
+  fi
+  printf '%s' "${scheme}://${after_scheme}"
+}
+
 # Gateway/OVS use compose NFS volume when NAS_BASE_URL is set (CLAW_USE_NAS_VOLUME=0 to disable). kejiqing
 claw_compose_nas_volume_enabled() {
   case "${CLAW_USE_NAS_VOLUME:-}" in
@@ -15,8 +39,9 @@ claw_compose_nas_volume_enabled() {
 
 # OVS runs as e2b singleton (CLAW_OVS_BACKEND=e2b); compose openvscode-server skipped. kejiqing
 claw_ovs_backend_is_e2b() {
-  case "${CLAW_OVS_BACKEND:-}" in
-    fc | FC) return 0 ;;
+  case "$(printf '%s' "${CLAW_OVS_BACKEND:-e2b}" | tr '[:upper:]' '[:lower:]')" in
+    e2b | fc) return 0 ;;
+    compose) return 1 ;;
     *) return 1 ;;
   esac
 }

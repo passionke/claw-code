@@ -29,7 +29,7 @@ admin_dist_bind_src() {
 bind_src="$(admin_dist_bind_src)"
 if [[ -n "${bind_src}" ]]; then
   echo "OK — ${CONTAINER}:/app/admin-dist 已 bind 挂载 ${bind_src}"
-  echo "（admin-build 后容器内已是新 dist，无需 cp）"
+  echo "（admin-build 后容器内已是新 dist；若未 bind 请 CLAW_GATEWAY_ADMIN_BIND=1 ./deploy/stack/gateway.sh up）"
 else
   "${rt}" cp "${DIST}/." "${CONTAINER}:/app/admin-dist/"
   echo "OK — admin dist → ${CONTAINER}:/app/admin-dist"

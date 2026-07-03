@@ -4,8 +4,9 @@
 //! Boundary: the gateway NEVER creates the nas-api sandbox. It discovers the
 //! endpoint from PG (`gateway_global_settings.settings_json.e2bNasApi`, written by
 //! `e2b-nas-api-up.py`) on every call, so a re-deploy of the singleton is picked up
-//! without restarting the gateway. If no endpoint is configured, startup fails
-//! with a hint to run `./deploy/stack/gateway.sh nas-api-up`.
+//! without restarting the gateway. If no endpoint is configured, startup logs a
+//! warning; NAS layout operations fail at use-time with a hint to run
+//! `./deploy/stack/gateway.sh nas-api-up`.
 
 use std::sync::Arc;
 
@@ -190,7 +191,7 @@ impl E2bNasApiSingleton {
         Err(format!("nas-api unlink HTTP {status}: {text}"))
     }
 
-    /// Startup probe: PG must have `e2bNasApi.baseUrl` before e2b NAS layout runs.
+    /// Optional startup probe: PG `e2bNasApi.baseUrl` (warn-only at boot; errors on use).
     pub async fn verify_endpoint_configured(&self) -> Result<(), String> {
         self.base_url().await.map(|_| ())
     }

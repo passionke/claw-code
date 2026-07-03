@@ -133,36 +133,30 @@ def _nas_api_base_url(sandbox_id: str, domain: str, port: int, self_hosted: bool
 
 
 def _e2b_host_mount_root(api_url: str, api_key: str, self_hosted: bool) -> str:
-    """e2b host NAS bind source (hostMountRoot). Env override → /health → /mnt/nas0."""
-    root = _env("CLAW_E2B_NAS_HOST_MOUNT")
-    if root:
-        return root
-    try:
-        health = _http_json("GET", f"{api_url.rstrip('/')}/health", api_key, self_hosted)
-        nas = health.get("nas") or {}
-        r = (nas.get("hostMountRoot") or "").strip()
-        if r:
-            return r
-    except Exception:  # noqa: BLE001 — health is best-effort
-        pass
-    return "/mnt/nas0"
+    from e2b_nas_bind_config import e2b_host_mount_root
+
+    return e2b_host_mount_root(
+        env_get=_env,
+        api_url=api_url,
+        api_key=api_key,
+        self_hosted=self_hosted,
+        http_json=_http_json,
+    )
 
 
 def _nas_config_body(api_url: str, api_key: str, self_hosted: bool) -> dict[str, Any]:
-    """Host-bind-inject form (hostMountRoot + relPath) — the form e2bserver actually binds.
+    """Host-bind-inject: hostMountRoot on each mountPoint (e2bserver ignores top-level only)."""
+    from e2b_nas_bind_config import nas_bind_config_body
 
-    nas-api MUST have /claw_ws backed by NAS (gateway writes proj layout through it),
-    so unlike ovs this is required, not optional.
-    """
     uid = int(_env("CLAW_WORKER_UID", "1000") or "1000")
     gid = int(_env("CLAW_WORKER_GID", "1000") or "1000")
     root = _e2b_host_mount_root(api_url, api_key, self_hosted)
-    return {
-        "userId": uid,
-        "groupId": gid,
-        "hostMountRoot": root,
-        "mountPoints": [{"relPath": "", "mountDir": GUEST_CLAW_WS}],
-    }
+    return nas_bind_config_body(
+        host_mount_root=root,
+        mount_points=[("", GUEST_CLAW_WS)],
+        user_id=uid,
+        group_id=gid,
+    )
 
 
 def _list_sandboxes(api_url: str, api_key: str, self_hosted: bool) -> list[dict[str, Any]]:

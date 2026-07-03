@@ -28,6 +28,20 @@ def _connect_opts(payload: dict) -> dict:
     return out
 
 
+def _run_as_claw_user_script(inner: str) -> str:
+    """e2b envd runs `commands.run` as `user` (uid 1001); NAS session trees are claw (1000).
+
+    Without this wrapper, inline writes to `/claw_sessions/{segment}/gateway-solve-task.json`
+    fail with bash redirect Permission denied. Author: kejiqing
+    """
+    return (
+        "set -eu\n"
+        "sudo -u claw bash <<'CLAW_SOLVE_EOF'\n"
+        f"{inner}"
+        "CLAW_SOLVE_EOF\n"
+    )
+
+
 def _inline_writes_sh(task_file: str, task_json, session_jsonl, session_root: str) -> str:
     """Shell snippet that lands per-turn inputs onto the session mount.
 
@@ -157,7 +171,7 @@ def main() -> None:
                 payload.get("session_jsonl"),
                 session_root,
             )
-            script = (
+            inner = (
                 "set -eu\n"
                 f"cd {session_root}\n"
                 f"export HOME={session_root}\n"
@@ -168,6 +182,7 @@ def main() -> None:
                 f"{exports}\n"
                 f"{claw_bin} gateway-solve-once --task-file {task_file}\n"
             )
+            script = _run_as_claw_user_script(inner)
             result, stdout, stderr = _run_streaming(sandbox, script, timeout)
             print(
                 json.dumps(

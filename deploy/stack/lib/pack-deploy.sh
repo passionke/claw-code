@@ -29,18 +29,11 @@ source "${LIB_DIR}/release-images.sh"
 
 TAG="local"
 BUILD_FLAGS=()
-# macOS: slim playground + optional host dist bind-mount. Linux CI/runner: bake admin in image.
-if [[ "$(uname -s)" == Darwin ]]; then
-  BUILD_FLAGS+=(--skip-playground)
-fi
 UP_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --clean)
       BUILD_FLAGS=(--clean)
-      if [[ "$(uname -s)" == Darwin ]]; then
-        BUILD_FLAGS+=(--skip-playground)
-      fi
       shift
       ;;
     local | release-*)

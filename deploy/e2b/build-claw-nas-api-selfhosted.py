@@ -11,7 +11,18 @@ import sys
 import tempfile
 from pathlib import Path
 
+_E2B_DIR = Path(__file__).resolve().parent
+if str(_E2B_DIR) not in sys.path:
+    sys.path.insert(0, str(_E2B_DIR))
+from e2b_template_registry import (
+    load_repo_dotenv,
+    log_debian_base_resolution,
+    template_apt_prepare_prefix,
+    template_debian_base_image,
+)
+
 ROOT = Path(__file__).resolve().parents[2]
+load_repo_dotenv(ROOT)
 SERVER_SRC = ROOT / "deploy" / "e2b" / "claw-nas-api" / "server.py"
 
 
@@ -74,11 +85,12 @@ def _nas_api_ready_cmd(port: int) -> str:
 def _build_template(staging: Path, port: int):
     from e2b import Template
 
-    base_image = _env("CLAW_NAS_API_TEMPLATE_BASE_IMAGE", "debian:bookworm-slim")
+    base_image = _env("CLAW_NAS_API_TEMPLATE_BASE_IMAGE") or template_debian_base_image()
     return (
         Template(file_context_path=str(staging))
         .from_image(base_image)
         .run_cmd(
+            f"{template_apt_prepare_prefix()}"
             "apt-get update && apt-get install -y --no-install-recommends "
             "nfs-common ca-certificates curl python3 "
             f"&& {_nfs_sudo()} "
@@ -126,6 +138,7 @@ def main() -> int:
     opts = _conn_opts()
     alias = _env("CLAW_E2B_NAS_API_TEMPLATE", "claw-nas-api")
     nas_port = _nas_api_port()
+    log_debian_base_resolution(api_url=opts["api_url"])
 
     os.environ.setdefault("E2B_API_KEY", opts["api_key"])
     os.environ.setdefault("E2B_API_URL", opts["api_url"])

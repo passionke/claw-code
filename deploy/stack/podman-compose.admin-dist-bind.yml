@@ -1,5 +1,4 @@
-# Local dev only (`CLAW_DEPLOY_PROFILE=local`). Production/release never merge this file.
-# Requires full `gateway.sh admin-build` (dist/assets/*.js). kejiqing
+# Opt-in only: CLAW_GATEWAY_ADMIN_BIND=1 after `admin-build` (dist hash must match index.html). kejiqing
 services:
   gateway-playground:
     volumes:

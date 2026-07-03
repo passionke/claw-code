@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::biz_advice_report::{report_body_from_persisted, solve_failure_detail_from_output_json};
+use crate::cluster_scope::resolve_gateway_cluster_id_for_connect;
 use crate::pool::system_landlock_default_json;
 use crate::turn_id::{self, TURN_ID_PREFIX};
 use serde_json::{json, Value};
@@ -334,10 +335,11 @@ pub struct ProjectConfigUpsert<'a> {
     pub worker_profile_json: &'a Value,
 }
 
-/// Gateway session index: one row per `(session_id, proj_id)` with a workspace-relative `session_home`.
+/// Gateway session index: one row per `(cluster_id, session_id, proj_id)`.
 pub struct GatewaySessionDb {
     pool: PgPool,
     database_url_redacted: String,
+    cluster_id: String,
 }
 
 // Second gateway on shared PG: node A already ran migrate (pg_advisory_lock). Author: kejiqing
@@ -393,10 +395,13 @@ impl GatewaySessionDb {
             );
             return Err(e);
         }
-        Ok(Self {
+        let db = Self {
             pool,
             database_url_redacted: redact_database_url(database_url),
-        })
+            cluster_id: resolve_gateway_cluster_id_for_connect()?,
+        };
+        db.ensure_gateway_global_settings_row().await?;
+        Ok(db)
     }
 
     /// Connect without schema migration (existing PG schema required). Author: kejiqing
@@ -408,7 +413,14 @@ impl GatewaySessionDb {
         Ok(Self {
             pool,
             database_url_redacted: redact_database_url(database_url),
+            cluster_id: resolve_gateway_cluster_id_for_connect()?,
         })
+    }
+
+    /// This gateway's cluster root (`CLAW_CLUSTER_ID`). Author: kejiqing
+    #[must_use]
+    pub fn cluster_id(&self) -> &str {
+        &self.cluster_id
     }
 
     #[must_use]
@@ -761,12 +773,14 @@ impl GatewaySessionDb {
         )
         .execute(pool)
         .await?;
-        sqlx::query(
-            r"INSERT INTO gateway_global_settings (singleton_id)
-             VALUES (1) ON CONFLICT (singleton_id) DO NOTHING",
-        )
-        .execute(pool)
-        .await?;
+        if Self::gateway_global_settings_has_singleton_id(pool).await? {
+            sqlx::query(
+                r"INSERT INTO gateway_global_settings (singleton_id)
+                 VALUES (1) ON CONFLICT (singleton_id) DO NOTHING",
+            )
+            .execute(pool)
+            .await?;
+        }
         sqlx::query(
             "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS system_prompt_default TEXT NOT NULL DEFAULT ''",
         )
@@ -802,29 +816,31 @@ impl GatewaySessionDb {
         )
         .execute(pool)
         .await?;
-        sqlx::query(
-            r"UPDATE gateway_global_settings SET
-                 llm_base_model_url = COALESCE(settings_json #>> '{llmModel,baseModelUrl}', ''),
-                 llm_model_name = COALESCE(settings_json #>> '{llmModel,modelName}', ''),
-                 llm_model_updated_at_ms = COALESCE(
-                   NULLIF(settings_json #>> '{llmModel,updatedAtMs}', '')::bigint, 0),
-                 llm_model_applied_at_ms = NULLIF(
-                   NULLIF(settings_json #>> '{llmModel,appliedAtMs}', '')::bigint, 0)
-             WHERE singleton_id = 1
-               AND llm_model_updated_at_ms = 0
-               AND settings_json ? 'llmModel'",
-        )
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            r"UPDATE gateway_global_settings SET
-                 llm_model_api_key = COALESCE(git_pat_tokens_json ->> '__gateway_llm_api_key__', '')
-             WHERE singleton_id = 1
-               AND llm_model_api_key = ''
-               AND git_pat_tokens_json ? '__gateway_llm_api_key__'",
-        )
-        .execute(pool)
-        .await?;
+        if Self::gateway_global_settings_has_singleton_id(pool).await? {
+            sqlx::query(
+                r"UPDATE gateway_global_settings SET
+                     llm_base_model_url = COALESCE(settings_json #>> '{llmModel,baseModelUrl}', ''),
+                     llm_model_name = COALESCE(settings_json #>> '{llmModel,modelName}', ''),
+                     llm_model_updated_at_ms = COALESCE(
+                       NULLIF(settings_json #>> '{llmModel,updatedAtMs}', '')::bigint, 0),
+                     llm_model_applied_at_ms = NULLIF(
+                       NULLIF(settings_json #>> '{llmModel,appliedAtMs}', '')::bigint, 0)
+                 WHERE singleton_id = 1
+                   AND llm_model_updated_at_ms = 0
+                   AND settings_json ? 'llmModel'",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                r"UPDATE gateway_global_settings SET
+                     llm_model_api_key = COALESCE(git_pat_tokens_json ->> '__gateway_llm_api_key__', '')
+                 WHERE singleton_id = 1
+                   AND llm_model_api_key = ''
+                   AND git_pat_tokens_json ? '__gateway_llm_api_key__'",
+            )
+            .execute(pool)
+            .await?;
+        }
         sqlx::query(
             "ALTER TABLE gateway_global_settings ADD COLUMN IF NOT EXISTS llm_models_json JSONB NOT NULL DEFAULT '[]'::jsonb",
         )
@@ -870,37 +886,39 @@ impl GatewaySessionDb {
         )
         .execute(pool)
         .await?;
-        sqlx::query(
-            r"UPDATE gateway_global_settings SET
-                 llm_models_json = jsonb_build_array(jsonb_build_object(
-                   'id', 'llm-migrated',
-                   'name', 'Migrated',
-                   'baseModelUrl', llm_base_model_url,
-                   'modelName', llm_model_name,
-                   'createdAtMs', llm_model_updated_at_ms,
-                   'updatedAtMs', llm_model_updated_at_ms
-                 )),
-                 llm_model_api_keys_json = jsonb_build_object(
-                   'llm-migrated', llm_model_api_key),
-                 active_llm_model_id = 'llm-migrated',
-                 active_llm_applied_at_ms = llm_model_applied_at_ms
-             WHERE singleton_id = 1
-               AND jsonb_array_length(llm_models_json) = 0
-               AND length(trim(llm_base_model_url)) > 0
-               AND length(trim(llm_model_name)) > 0",
-        )
-        .execute(pool)
-        .await?;
-        let default_scaffold = runtime::builtin_system_prompt_scaffold_default();
-        sqlx::query(
-            r"UPDATE gateway_global_settings
-             SET system_prompt_default = $1, system_prompt_version = 'v1'
-             WHERE singleton_id = 1
-               AND (system_prompt_default = '' OR length(trim(system_prompt_default)) = 0)",
-        )
-        .bind(default_scaffold)
-        .execute(pool)
-        .await?;
+        if Self::gateway_global_settings_has_singleton_id(pool).await? {
+            sqlx::query(
+                r"UPDATE gateway_global_settings SET
+                     llm_models_json = jsonb_build_array(jsonb_build_object(
+                       'id', 'llm-migrated',
+                       'name', 'Migrated',
+                       'baseModelUrl', llm_base_model_url,
+                       'modelName', llm_model_name,
+                       'createdAtMs', llm_model_updated_at_ms,
+                       'updatedAtMs', llm_model_updated_at_ms
+                     )),
+                     llm_model_api_keys_json = jsonb_build_object(
+                       'llm-migrated', llm_model_api_key),
+                     active_llm_model_id = 'llm-migrated',
+                     active_llm_applied_at_ms = llm_model_applied_at_ms
+                 WHERE singleton_id = 1
+                   AND jsonb_array_length(llm_models_json) = 0
+                   AND length(trim(llm_base_model_url)) > 0
+                   AND length(trim(llm_model_name)) > 0",
+            )
+            .execute(pool)
+            .await?;
+            let default_scaffold = runtime::builtin_system_prompt_scaffold_default();
+            sqlx::query(
+                r"UPDATE gateway_global_settings
+                 SET system_prompt_default = $1, system_prompt_version = 'v1'
+                 WHERE singleton_id = 1
+                   AND (system_prompt_default = '' OR length(trim(system_prompt_default)) = 0)",
+            )
+            .bind(default_scaffold)
+            .execute(pool)
+            .await?;
+        }
         sqlx::query(
             r"CREATE TABLE IF NOT EXISTS project_entity_revision (
                 ds_id BIGINT NOT NULL,
@@ -991,9 +1009,313 @@ impl GatewaySessionDb {
         Self::migrate_settings_json_e2b_keys(pool).await?;
         Self::migrate_strict_landlock_default(pool).await?;
         Self::migrate_gateway_turns_e2b_ids(pool).await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/006_cluster_id_scoping.sql"),
+        )
+        .await?;
+        Self::migrate_cluster_id_backfill(pool).await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/011_cluster_id_models.sql"),
+        )
+        .await?;
+        Self::migrate_cluster_id_phase2(pool).await?;
         Self::run_sql_migration_file(pool, include_str!("../migrations/010_preflight_plugin.sql"))
             .await?;
 
+        Ok(())
+    }
+
+    const LEGACY_CLUSTER_ID: &'static str = "__legacy__";
+
+    async fn gateway_global_settings_has_singleton_id(pool: &PgPool) -> Result<bool, SqlxError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'gateway_global_settings'
+                  AND column_name = 'singleton_id'
+            )",
+        )
+        .fetch_one(pool)
+        .await
+    }
+
+    async fn migrate_cluster_id_backfill(pool: &PgPool) -> Result<(), SqlxError> {
+        let has_col: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'gateway_sessions'
+                  AND column_name = 'cluster_id'
+            )",
+        )
+        .fetch_one(pool)
+        .await?;
+        if !has_col {
+            return Ok(());
+        }
+        sqlx::query(
+            r"UPDATE gateway_sessions SET cluster_id = split_part(session_home, '/', 1)
+              WHERE cluster_id IS NULL
+                AND session_home ~ '^[^/]+/proj_[0-9]+/'",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"UPDATE gateway_turns t SET cluster_id = s.cluster_id
+              FROM gateway_sessions s
+              WHERE t.cluster_id IS NULL
+                AND t.session_id = s.session_id AND t.proj_id = s.proj_id
+                AND s.cluster_id IS NOT NULL",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"UPDATE gateway_feedback f SET cluster_id = s.cluster_id
+              FROM gateway_sessions s
+              WHERE f.cluster_id IS NULL
+                AND f.session_id = s.session_id AND f.proj_id = s.proj_id
+                AND s.cluster_id IS NOT NULL",
+        )
+        .execute(pool)
+        .await?;
+        for child in [
+            "cc_messages",
+            "gateway_session_artifacts",
+            "gateway_conversation_translate",
+        ] {
+            let sql = format!(
+                "UPDATE {child} c SET cluster_id = s.cluster_id \
+                 FROM gateway_sessions s \
+                 WHERE c.cluster_id IS NULL \
+                   AND c.session_id = s.session_id AND c.proj_id = s.proj_id \
+                   AND s.cluster_id IS NOT NULL"
+            );
+            sqlx::query(&sql).execute(pool).await?;
+        }
+        sqlx::query(
+            r"UPDATE project_config pc SET cluster_id = sub.cid
+              FROM (
+                SELECT proj_id, MIN(cluster_id) AS cid FROM gateway_sessions
+                WHERE cluster_id IS NOT NULL GROUP BY proj_id
+                HAVING COUNT(DISTINCT cluster_id) = 1
+              ) sub
+              WHERE pc.proj_id = sub.proj_id AND pc.cluster_id IS NULL",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// PK retarget + per-cluster `gateway_global_settings` (idempotent). Author: kejiqing
+    async fn migrate_cluster_id_phase2(pool: &PgPool) -> Result<(), SqlxError> {
+        let legacy = Self::LEGACY_CLUSTER_ID;
+        sqlx::query("UPDATE gateway_sessions SET cluster_id = $1 WHERE cluster_id IS NULL")
+            .bind(legacy)
+            .execute(pool)
+            .await?;
+        sqlx::query("UPDATE project_config SET cluster_id = $1 WHERE cluster_id IS NULL")
+            .bind(legacy)
+            .execute(pool)
+            .await?;
+        sqlx::query("UPDATE claw_pool SET cluster_id = $1 WHERE cluster_id IS NULL")
+            .bind(legacy)
+            .execute(pool)
+            .await?;
+        // Revision rows predate cluster_id column; inherit from project_config (same proj_id).
+        sqlx::query(
+            r"UPDATE project_config_revision pcr
+              SET cluster_id = pc.cluster_id
+              FROM project_config pc
+              WHERE pcr.proj_id = pc.proj_id
+                AND pcr.cluster_id IS NULL
+                AND pc.cluster_id IS NOT NULL",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"UPDATE project_entity_revision per
+              SET cluster_id = pc.cluster_id
+              FROM project_config pc
+              WHERE per.proj_id = pc.proj_id
+                AND per.cluster_id IS NULL
+                AND pc.cluster_id IS NOT NULL",
+        )
+        .execute(pool)
+        .await?;
+
+        let pk_ok: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'public.project_config'::regclass
+                  AND contype = 'p' AND pg_get_constraintdef(oid) LIKE '%cluster_id%'
+            )",
+        )
+        .fetch_one(pool)
+        .await?;
+        if !pk_ok {
+            sqlx::query("ALTER TABLE project_config DROP CONSTRAINT IF EXISTS project_config_pkey")
+                .execute(pool)
+                .await?;
+            sqlx::query(
+                r"INSERT INTO project_config (
+                    ds_id, proj_id, cluster_id, content_rev, stable_content_rev, draft_open,
+                    updated_at_ms, rules_json, mcp_servers_json, skills_sources_json, skills_json,
+                    allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
+                    solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
+                    prompt_limits_json, worker_profile_json
+                  )
+                  SELECT pc.ds_id, pc.proj_id, s.cluster_id, pc.content_rev, pc.stable_content_rev,
+                         pc.draft_open, pc.updated_at_ms, pc.rules_json, pc.mcp_servers_json,
+                         pc.skills_sources_json, pc.skills_json, pc.allowed_tools_json, pc.claude_md,
+                         pc.git_sync_json, pc.solve_preflight_json, pc.solve_orchestration_json,
+                         pc.language_pipeline_json, pc.extra_session_fields_json, pc.prompt_limits_json,
+                         pc.worker_profile_json
+                  FROM project_config pc
+                  JOIN (
+                    SELECT DISTINCT proj_id, cluster_id FROM gateway_sessions
+                    WHERE cluster_id IS NOT NULL AND cluster_id <> $1
+                  ) s ON s.proj_id = pc.proj_id
+                  WHERE NOT EXISTS (
+                    SELECT 1 FROM project_config x
+                    WHERE x.cluster_id = s.cluster_id AND x.proj_id = s.proj_id
+                  )",
+            )
+            .bind(legacy)
+            .execute(pool)
+            .await?;
+            sqlx::query("ALTER TABLE project_config ADD PRIMARY KEY (cluster_id, proj_id)")
+                .execute(pool)
+                .await?;
+        }
+
+        sqlx::query(
+            r"UPDATE project_e2b_worker w SET cluster_id = pc.cluster_id
+              FROM project_config pc
+              WHERE w.proj_id = pc.proj_id AND w.cluster_id IS NULL AND pc.cluster_id IS NOT NULL",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(r"UPDATE project_e2b_worker SET cluster_id = $1 WHERE cluster_id IS NULL")
+            .bind(legacy)
+            .execute(pool)
+            .await?;
+        let e2b_pk_ok: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'public.project_e2b_worker'::regclass
+                  AND contype = 'p' AND pg_get_constraintdef(oid) LIKE '%cluster_id%'
+            )",
+        )
+        .fetch_one(pool)
+        .await?;
+        if !e2b_pk_ok {
+            sqlx::query(
+                "ALTER TABLE project_e2b_worker DROP CONSTRAINT IF EXISTS project_e2b_worker_pkey",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query("ALTER TABLE project_e2b_worker ADD PRIMARY KEY (cluster_id, proj_id)")
+                .execute(pool)
+                .await?;
+        }
+
+        let has_singleton: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'gateway_global_settings'
+                  AND column_name = 'singleton_id'
+            )",
+        )
+        .fetch_one(pool)
+        .await?;
+        if has_singleton {
+            sqlx::query(
+                "ALTER TABLE gateway_global_settings DROP CONSTRAINT IF EXISTS gateway_global_settings_singleton_id_check",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "ALTER TABLE gateway_global_settings DROP CONSTRAINT IF EXISTS gateway_global_settings_pkey",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                r"INSERT INTO gateway_global_settings (
+                    cluster_id, singleton_id, settings_json, git_pat_tokens_json, updated_at_ms,
+                    system_prompt_default, system_prompt_version,
+                    llm_models_json, llm_model_api_keys_json, active_llm_model_id,
+                    active_llm_model_rev, active_llm_applied_at_ms,
+                    llm_base_model_url, llm_model_name, llm_model_api_key,
+                    llm_model_updated_at_ms, llm_model_applied_at_ms
+                  )
+                  SELECT c.cluster_id, 1, g.settings_json, g.git_pat_tokens_json, g.updated_at_ms,
+                         g.system_prompt_default, g.system_prompt_version,
+                         g.llm_models_json, g.llm_model_api_keys_json, g.active_llm_model_id,
+                         g.active_llm_model_rev, g.active_llm_applied_at_ms,
+                         g.llm_base_model_url, g.llm_model_name, g.llm_model_api_key,
+                         g.llm_model_updated_at_ms, g.llm_model_applied_at_ms
+                  FROM gateway_global_settings g
+                  CROSS JOIN (
+                    SELECT DISTINCT cluster_id FROM (
+                      SELECT cluster_id FROM gateway_sessions
+                      WHERE cluster_id IS NOT NULL AND cluster_id <> $1
+                      UNION SELECT cluster_id FROM gateway_llm_cluster_state
+                      UNION SELECT cluster_id FROM project_config
+                      WHERE cluster_id IS NOT NULL AND cluster_id <> $1
+                    ) u
+                  ) c
+                  WHERE g.singleton_id = 1 AND g.cluster_id IS NULL
+                    AND NOT EXISTS (
+                      SELECT 1 FROM gateway_global_settings x WHERE x.cluster_id = c.cluster_id
+                    )",
+            )
+            .bind(legacy)
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "DELETE FROM gateway_global_settings WHERE singleton_id = 1 AND cluster_id IS NULL",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query("ALTER TABLE gateway_global_settings DROP COLUMN IF EXISTS singleton_id")
+                .execute(pool)
+                .await?;
+            sqlx::query(
+                "DELETE FROM gateway_global_settings WHERE cluster_id IS NULL OR cluster_id = $1",
+            )
+            .bind(legacy)
+            .execute(pool)
+            .await?;
+            let settings_pk_ok: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conrelid = 'public.gateway_global_settings'::regclass
+                      AND contype = 'p' AND pg_get_constraintdef(oid) LIKE '%cluster_id%'
+                )",
+            )
+            .fetch_one(pool)
+            .await?;
+            if !settings_pk_ok {
+                sqlx::query("ALTER TABLE gateway_global_settings ADD PRIMARY KEY (cluster_id)")
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn ensure_gateway_global_settings_row(&self) -> Result<(), SqlxError> {
+        let empty = json!({"gitPats": []});
+        sqlx::query(
+            r"INSERT INTO gateway_global_settings (cluster_id, settings_json, git_pat_tokens_json, updated_at_ms)
+               VALUES ($1, $2, '{}'::jsonb, 0)
+               ON CONFLICT (cluster_id) DO NOTHING",
+        )
+        .bind(self.cluster_id())
+        .bind(Json(empty))
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1076,60 +1398,70 @@ impl GatewaySessionDb {
 
     /// `settings_json` fc* → e2b* (`fcOvs`, `fcNasApi`, `clawTap.fcObserveSandboxId`). Author: kejiqing
     async fn migrate_settings_json_e2b_keys(pool: &PgPool) -> Result<(), SqlxError> {
-        sqlx::query(
+        let singleton = Self::gateway_global_settings_has_singleton_id(pool).await?;
+        let scope = if singleton {
+            "WHERE singleton_id = 1"
+        } else {
+            ""
+        };
+        let sql1 = format!(
             r"UPDATE gateway_global_settings SET settings_json =
                 CASE
                   WHEN settings_json ? 'fcOvs' AND NOT (settings_json ? 'e2bOvs')
-                  THEN jsonb_set(settings_json - 'fcOvs', '{e2bOvs}', settings_json->'fcOvs', true)
+                  THEN jsonb_set(settings_json - 'fcOvs', '{{e2bOvs}}', settings_json->'fcOvs', true)
                   WHEN settings_json ? 'fcOvs'
                   THEN settings_json - 'fcOvs'
                   ELSE settings_json
                 END
-              WHERE singleton_id = 1",
-        )
-        .execute(pool)
-        .await?;
+              {scope}"
+        );
+        sqlx::query(&sql1).execute(pool).await?;
 
-        sqlx::query(
+        let sql2 = format!(
             r"UPDATE gateway_global_settings SET settings_json =
                 CASE
                   WHEN settings_json ? 'fcNasApi' AND NOT (settings_json ? 'e2bNasApi')
-                  THEN jsonb_set(settings_json - 'fcNasApi', '{e2bNasApi}', settings_json->'fcNasApi', true)
+                  THEN jsonb_set(settings_json - 'fcNasApi', '{{e2bNasApi}}', settings_json->'fcNasApi', true)
                   WHEN settings_json ? 'fcNasApi'
                   THEN settings_json - 'fcNasApi'
                   ELSE settings_json
                 END
-              WHERE singleton_id = 1",
-        )
-        .execute(pool)
-        .await?;
+              {scope}"
+        );
+        sqlx::query(&sql2).execute(pool).await?;
 
-        sqlx::query(
+        let sql3 = format!(
             r"UPDATE gateway_global_settings SET settings_json = jsonb_set(
                 settings_json,
-                '{clawTap,e2bObserveSandboxId}',
-                settings_json #> '{clawTap,fcObserveSandboxId}',
+                '{{clawTap,e2bObserveSandboxId}}',
+                settings_json #> '{{clawTap,fcObserveSandboxId}}',
                 true
               )
-              WHERE singleton_id = 1
-                AND settings_json #>> '{clawTap,fcObserveSandboxId}' IS NOT NULL
-                AND settings_json #>> '{clawTap,e2bObserveSandboxId}' IS NULL",
-        )
-        .execute(pool)
-        .await?;
+              {prefix} settings_json #>> '{{clawTap,fcObserveSandboxId}}' IS NOT NULL
+                AND settings_json #>> '{{clawTap,e2bObserveSandboxId}}' IS NULL",
+            prefix = if singleton {
+                "WHERE singleton_id = 1 AND"
+            } else {
+                "WHERE"
+            }
+        );
+        sqlx::query(&sql3).execute(pool).await?;
 
-        sqlx::query(
+        let sql4 = format!(
             r"UPDATE gateway_global_settings SET settings_json = jsonb_set(
                 settings_json,
-                '{clawTap}',
+                '{{clawTap}}',
                 (settings_json->'clawTap') - 'fcObserveSandboxId',
                 false
               )
-              WHERE singleton_id = 1
-                AND settings_json->'clawTap' ? 'fcObserveSandboxId'",
-        )
-        .execute(pool)
-        .await?;
+              {prefix} settings_json->'clawTap' ? 'fcObserveSandboxId'",
+            prefix = if singleton {
+                "WHERE singleton_id = 1 AND"
+            } else {
+                "WHERE"
+            }
+        );
+        sqlx::query(&sql4).execute(pool).await?;
 
         Ok(())
     }
@@ -1137,19 +1469,35 @@ impl GatewaySessionDb {
     /// Seed `settings_json.strictLandlockDefault` when absent. Author: kejiqing
     async fn migrate_strict_landlock_default(pool: &PgPool) -> Result<(), SqlxError> {
         let seed = system_landlock_default_json();
-        sqlx::query(
-            r"UPDATE gateway_global_settings SET settings_json = jsonb_set(
-                settings_json,
-                '{strictLandlockDefault}',
-                $1::jsonb,
-                true
-              )
-              WHERE singleton_id = 1
-                AND NOT (settings_json ? 'strictLandlockDefault')",
-        )
-        .bind(Json(seed))
-        .execute(pool)
-        .await?;
+        let singleton = Self::gateway_global_settings_has_singleton_id(pool).await?;
+        if singleton {
+            sqlx::query(
+                r"UPDATE gateway_global_settings SET settings_json = jsonb_set(
+                    settings_json,
+                    '{strictLandlockDefault}',
+                    $1::jsonb,
+                    true
+                  )
+                  WHERE singleton_id = 1
+                    AND NOT (settings_json ? 'strictLandlockDefault')",
+            )
+            .bind(Json(seed))
+            .execute(pool)
+            .await?;
+        } else {
+            sqlx::query(
+                r"UPDATE gateway_global_settings SET settings_json = jsonb_set(
+                    settings_json,
+                    '{strictLandlockDefault}',
+                    $1::jsonb,
+                    true
+                  )
+                  WHERE NOT (settings_json ? 'strictLandlockDefault')",
+            )
+            .bind(Json(seed))
+            .execute(pool)
+            .await?;
+        }
         Ok(())
     }
 
@@ -1242,8 +1590,9 @@ impl GatewaySessionDb {
     pub async fn get_gateway_system_prompt_default(&self) -> Result<(String, String), SqlxError> {
         let row = sqlx::query(
             r"SELECT system_prompt_default, system_prompt_version
-               FROM gateway_global_settings WHERE singleton_id = 1",
+               FROM gateway_global_settings WHERE cluster_id = $1",
         )
+        .bind(self.cluster_id())
         .fetch_optional(&self.pool)
         .await?;
         let Some(row) = row else {
@@ -1258,8 +1607,9 @@ impl GatewaySessionDb {
     pub async fn get_gateway_global_settings_raw(&self) -> Result<(Value, Value, i64), SqlxError> {
         let row = sqlx::query(
             r"SELECT settings_json, git_pat_tokens_json, updated_at_ms
-               FROM gateway_global_settings WHERE singleton_id = 1",
+               FROM gateway_global_settings WHERE cluster_id = $1",
         )
+        .bind(self.cluster_id())
         .fetch_optional(&self.pool)
         .await?;
         let Some(row) = row else {
@@ -1278,8 +1628,9 @@ impl GatewaySessionDb {
         let row = sqlx::query(
             r"SELECT llm_models_json, llm_model_api_keys_json, active_llm_model_id,
                       active_llm_model_rev, active_llm_applied_at_ms
-               FROM gateway_global_settings WHERE singleton_id = 1",
+               FROM gateway_global_settings WHERE cluster_id = $1",
         )
+        .bind(self.cluster_id())
         .fetch_optional(&self.pool)
         .await?;
         let Some(row) = row else {
@@ -1304,10 +1655,10 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO gateway_global_settings (
-                 singleton_id, llm_models_json, llm_model_api_keys_json,
+                 cluster_id, llm_models_json, llm_model_api_keys_json,
                  active_llm_model_id, active_llm_model_rev, active_llm_applied_at_ms, updated_at_ms
-               ) VALUES (1, $1, $2, $3, $4, $5, $6)
-               ON CONFLICT (singleton_id) DO UPDATE SET
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+               ON CONFLICT (cluster_id) DO UPDATE SET
                  llm_models_json = EXCLUDED.llm_models_json,
                  llm_model_api_keys_json = EXCLUDED.llm_model_api_keys_json,
                  active_llm_model_id = EXCLUDED.active_llm_model_id,
@@ -1317,6 +1668,7 @@ impl GatewaySessionDb {
                  settings_json = gateway_global_settings.settings_json - 'llmModel',
                  git_pat_tokens_json = gateway_global_settings.git_pat_tokens_json - '__gateway_llm_api_key__'",
         )
+        .bind(self.cluster_id())
         .bind(Json(models_json))
         .bind(Json(api_keys_json))
         .bind(active_llm_model_id)
@@ -1673,13 +2025,14 @@ impl GatewaySessionDb {
         updated_at_ms: i64,
     ) -> Result<(), SqlxError> {
         sqlx::query(
-            r"INSERT INTO gateway_global_settings (singleton_id, settings_json, git_pat_tokens_json, updated_at_ms)
-               VALUES (1, $1, $2, $3)
-               ON CONFLICT (singleton_id) DO UPDATE SET
+            r"INSERT INTO gateway_global_settings (cluster_id, settings_json, git_pat_tokens_json, updated_at_ms)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (cluster_id) DO UPDATE SET
                  settings_json = EXCLUDED.settings_json,
                  git_pat_tokens_json = EXCLUDED.git_pat_tokens_json,
                  updated_at_ms = EXCLUDED.updated_at_ms",
         )
+        .bind(self.cluster_id())
         .bind(Json(settings_json))
         .bind(Json(git_pat_tokens_json))
         .bind(updated_at_ms)
@@ -1758,10 +2111,12 @@ impl GatewaySessionDb {
     }
 
     pub async fn list_project_config_proj_ids(&self) -> Result<Vec<i64>, SqlxError> {
-        let rows =
-            sqlx::query_scalar::<_, i64>("SELECT proj_id FROM project_config ORDER BY proj_id")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query_scalar::<_, i64>(
+            "SELECT proj_id FROM project_config WHERE cluster_id = $1 ORDER BY proj_id",
+        )
+        .bind(self.cluster_id())
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows)
     }
 
@@ -1772,8 +2127,9 @@ impl GatewaySessionDb {
         let rows = sqlx::query(
             r"SELECT proj_id, content_rev, stable_content_rev, draft_open, updated_at_ms, claude_md,
                       skills_json, rules_json, mcp_servers_json, git_sync_json
-               FROM project_config ORDER BY proj_id",
+               FROM project_config WHERE cluster_id = $1 ORDER BY proj_id",
         )
+        .bind(self.cluster_id())
         .fetch_all(&self.pool)
         .await?;
 
@@ -1825,8 +2181,9 @@ impl GatewaySessionDb {
                       allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
                       solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
                       prompt_limits_json, worker_profile_json
-               FROM project_config WHERE proj_id = $1",
+               FROM project_config WHERE cluster_id = $1 AND proj_id = $2",
         )
+        .bind(self.cluster_id())
         .bind(proj_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -1883,11 +2240,13 @@ impl GatewaySessionDb {
 
     /// Sidecar for pool acquire: per-ds worker strict/relaxed profile. Author: kejiqing
     pub async fn get_worker_profile_json(&self, proj_id: i64) -> Result<Value, SqlxError> {
-        let row: Option<Json<Value>> =
-            sqlx::query_scalar("SELECT worker_profile_json FROM project_config WHERE proj_id = $1")
-                .bind(proj_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let row: Option<Json<Value>> = sqlx::query_scalar(
+            "SELECT worker_profile_json FROM project_config WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row
             .map(|j| j.0)
             .unwrap_or_else(crate::pool::default_worker_profile_json))
@@ -1900,8 +2259,9 @@ impl GatewaySessionDb {
     ) -> Result<Option<ProjectFcWorkerRow>, SqlxError> {
         let row = sqlx::query(
             r"SELECT proj_id, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
-               FROM project_e2b_worker WHERE proj_id = $1",
+               FROM project_e2b_worker WHERE cluster_id = $1 AND proj_id = $2",
         )
+        .bind(self.cluster_id())
         .bind(proj_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -1924,9 +2284,9 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO project_e2b_worker (
-                 proj_id, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
-               ) VALUES ($1, $2, $3, $4, $5, $6)
-               ON CONFLICT (proj_id) DO UPDATE SET
+                 proj_id, cluster_id, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+               ON CONFLICT (cluster_id, proj_id) DO UPDATE SET
                  sandbox_id = EXCLUDED.sandbox_id,
                  worker_id = EXCLUDED.worker_id,
                  template_id = EXCLUDED.template_id,
@@ -1934,6 +2294,7 @@ impl GatewaySessionDb {
                  updated_at_ms = EXCLUDED.updated_at_ms",
         )
         .bind(row.proj_id)
+        .bind(self.cluster_id())
         .bind(&row.sandbox_id)
         .bind(&row.worker_id)
         .bind(&row.template_id)
@@ -1945,7 +2306,8 @@ impl GatewaySessionDb {
     }
 
     pub async fn delete_project_e2b_worker(&self, proj_id: i64) -> Result<(), SqlxError> {
-        sqlx::query("DELETE FROM project_e2b_worker WHERE proj_id = $1")
+        sqlx::query("DELETE FROM project_e2b_worker WHERE cluster_id = $1 AND proj_id = $2")
+            .bind(self.cluster_id())
             .bind(proj_id)
             .execute(&self.pool)
             .await?;
@@ -1954,8 +2316,9 @@ impl GatewaySessionDb {
 
     pub async fn list_project_e2b_worker_sandbox_ids(&self) -> Result<Vec<String>, SqlxError> {
         let rows = sqlx::query_scalar::<_, String>(
-            "SELECT sandbox_id FROM project_e2b_worker ORDER BY proj_id",
+            "SELECT sandbox_id FROM project_e2b_worker WHERE cluster_id = $1 ORDER BY proj_id",
         )
+        .bind(self.cluster_id())
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -1968,10 +2331,11 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO worker_rotation_log (
-                 proj_id, event, sandbox_id, worker_id, template_id, reason, at_ms
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                 proj_id, cluster_id, event, sandbox_id, worker_id, template_id, reason, at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(event.proj_id)
+        .bind(self.cluster_id())
         .bind(&event.event)
         .bind(event.sandbox_id.as_deref())
         .bind(event.worker_id.as_deref())
@@ -1992,10 +2356,11 @@ impl GatewaySessionDb {
         let rows = sqlx::query(
             r"SELECT proj_id, event, sandbox_id, worker_id, template_id, reason, at_ms
                FROM worker_rotation_log
-               WHERE proj_id = $1
+               WHERE cluster_id = $1 AND proj_id = $2
                ORDER BY at_ms DESC, id DESC
-               LIMIT $2",
+               LIMIT $3",
         )
+        .bind(self.cluster_id())
         .bind(proj_id)
         .bind(limit)
         .fetch_all(&self.pool)
@@ -2021,14 +2386,14 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO project_config (
-                ds_id, proj_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
+                ds_id, proj_id, cluster_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
                 rules_json, mcp_servers_json, skills_sources_json, skills_json,
                 allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
                 solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
                 prompt_limits_json, worker_profile_json
-            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-            ON CONFLICT (ds_id) DO UPDATE SET
-                proj_id = EXCLUDED.proj_id,
+            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+            ON CONFLICT (cluster_id, proj_id) DO UPDATE SET
+                ds_id = EXCLUDED.ds_id,
                 content_rev = EXCLUDED.content_rev,
                 stable_content_rev = EXCLUDED.stable_content_rev,
                 draft_open = EXCLUDED.draft_open,
@@ -2048,6 +2413,7 @@ impl GatewaySessionDb {
                 worker_profile_json = EXCLUDED.worker_profile_json",
         )
         .bind(row.proj_id)
+        .bind(self.cluster_id())
         .bind(row.content_rev)
         .bind(row.stable_content_rev)
         .bind(row.draft_open)
@@ -2077,12 +2443,13 @@ impl GatewaySessionDb {
     ) -> Result<bool, SqlxError> {
         let r = sqlx::query(
             r"INSERT INTO project_config_revision (
-                ds_id, proj_id, content_rev, created_at_ms, note, rules_json, mcp_servers_json,
+                ds_id, proj_id, cluster_id, content_rev, created_at_ms, note, rules_json, mcp_servers_json,
                 skills_sources_json, skills_json, allowed_tools_json, claude_md
-            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (ds_id, content_rev) DO NOTHING",
         )
         .bind(row.proj_id)
+        .bind(self.cluster_id())
         .bind(&row.content_rev)
         .bind(row.created_at_ms)
         .bind(&row.note)
@@ -2106,8 +2473,9 @@ impl GatewaySessionDb {
             r"SELECT proj_id, content_rev, created_at_ms, note, rules_json, mcp_servers_json,
                       skills_sources_json, skills_json, allowed_tools_json, claude_md
                FROM project_config_revision
-               WHERE proj_id = $1 AND content_rev = $2",
+               WHERE cluster_id = $1 AND proj_id = $2 AND content_rev = $3",
         )
+        .bind(self.cluster_id())
         .bind(proj_id)
         .bind(content_rev)
         .fetch_optional(&self.pool)
@@ -2136,9 +2504,10 @@ impl GatewaySessionDb {
         let rows = sqlx::query(
             r"SELECT content_rev, created_at_ms, note, claude_md, skills_json, rules_json, mcp_servers_json
                FROM project_config_revision
-               WHERE proj_id = $1
+               WHERE cluster_id = $1 AND proj_id = $2
                ORDER BY created_at_ms DESC, content_rev DESC",
         )
+        .bind(self.cluster_id())
         .bind(proj_id)
         .fetch_all(&self.pool)
         .await?;
@@ -2175,8 +2544,9 @@ impl GatewaySessionDb {
         note: Option<&str>,
     ) -> Result<bool, SqlxError> {
         let r = sqlx::query(
-            "UPDATE project_config_revision SET note = $3 WHERE proj_id = $1 AND content_rev = $2",
+            "UPDATE project_config_revision SET note = $4 WHERE cluster_id = $1 AND proj_id = $2 AND content_rev = $3",
         )
+        .bind(self.cluster_id())
         .bind(proj_id)
         .bind(content_rev)
         .bind(note)
@@ -2192,8 +2562,9 @@ impl GatewaySessionDb {
         content_rev: &str,
     ) -> Result<bool, SqlxError> {
         let r = sqlx::query(
-            "DELETE FROM project_config_revision WHERE proj_id = $1 AND content_rev = $2",
+            "DELETE FROM project_config_revision WHERE cluster_id = $1 AND proj_id = $2 AND content_rev = $3",
         )
+        .bind(self.cluster_id())
         .bind(proj_id)
         .bind(content_rev)
         .execute(&self.pool)
@@ -2202,10 +2573,13 @@ impl GatewaySessionDb {
     }
 
     pub async fn delete_project_config_revisions(&self, proj_id: i64) -> Result<u64, SqlxError> {
-        let r = sqlx::query("DELETE FROM project_config_revision WHERE proj_id = $1")
-            .bind(proj_id)
-            .execute(&self.pool)
-            .await?;
+        let r = sqlx::query(
+            "DELETE FROM project_config_revision WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .execute(&self.pool)
+        .await?;
         Ok(r.rows_affected())
     }
 
@@ -2215,11 +2589,12 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO project_entity_revision (
-                ds_id, proj_id, domain, entity_key, entity_rev, created_at_ms, note, body
-            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7)
+                ds_id, proj_id, cluster_id, domain, entity_key, entity_rev, created_at_ms, note, body
+            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (ds_id, domain, entity_key, entity_rev) DO NOTHING",
         )
         .bind(row.proj_id)
+        .bind(self.cluster_id())
         .bind(&row.domain)
         .bind(&row.entity_key)
         .bind(&row.entity_rev)
@@ -2241,8 +2616,9 @@ impl GatewaySessionDb {
         let row = sqlx::query(
             r"SELECT proj_id, domain, entity_key, entity_rev, created_at_ms, note, body
                FROM project_entity_revision
-               WHERE proj_id = $1 AND domain = $2 AND entity_key = $3 AND entity_rev = $4",
+               WHERE cluster_id = $1 AND proj_id = $2 AND domain = $3 AND entity_key = $4 AND entity_rev = $5",
         )
+        .bind(self.cluster_id())
         .bind(proj_id)
         .bind(domain)
         .bind(entity_key)
@@ -2272,9 +2648,10 @@ impl GatewaySessionDb {
         let rows = sqlx::query(
             r"SELECT entity_rev, created_at_ms, note
                FROM project_entity_revision
-               WHERE proj_id = $1 AND domain = $2 AND entity_key = $3
+               WHERE cluster_id = $1 AND proj_id = $2 AND domain = $3 AND entity_key = $4
                ORDER BY created_at_ms DESC, entity_rev DESC",
         )
+        .bind(self.cluster_id())
         .bind(proj_id)
         .bind(domain)
         .bind(entity_key)
@@ -2292,10 +2669,13 @@ impl GatewaySessionDb {
     }
 
     pub async fn delete_project_entity_revisions(&self, proj_id: i64) -> Result<u64, SqlxError> {
-        let r = sqlx::query("DELETE FROM project_entity_revision WHERE proj_id = $1")
-            .bind(proj_id)
-            .execute(&self.pool)
-            .await?;
+        let r = sqlx::query(
+            "DELETE FROM project_entity_revision WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .execute(&self.pool)
+        .await?;
         Ok(r.rows_affected())
     }
 
@@ -2303,7 +2683,8 @@ impl GatewaySessionDb {
     pub async fn delete_project_config(&self, proj_id: i64) -> Result<bool, SqlxError> {
         let _ = self.delete_project_config_revisions(proj_id).await?;
         let _ = self.delete_project_entity_revisions(proj_id).await?;
-        let r = sqlx::query("DELETE FROM project_config WHERE proj_id = $1")
+        let r = sqlx::query("DELETE FROM project_config WHERE cluster_id = $1 AND proj_id = $2")
+            .bind(self.cluster_id())
             .bind(proj_id)
             .execute(&self.pool)
             .await?;
@@ -2312,11 +2693,13 @@ impl GatewaySessionDb {
 
     /// Delete all sessions and turns for a ds (optional on project delete). Author: kejiqing
     pub async fn delete_sessions_for_proj(&self, proj_id: i64) -> Result<u64, SqlxError> {
-        sqlx::query("DELETE FROM gateway_turns WHERE proj_id = $1")
+        sqlx::query("DELETE FROM gateway_turns WHERE cluster_id = $1 AND proj_id = $2")
+            .bind(self.cluster_id())
             .bind(proj_id)
             .execute(&self.pool)
             .await?;
-        let r = sqlx::query("DELETE FROM gateway_sessions WHERE proj_id = $1")
+        let r = sqlx::query("DELETE FROM gateway_sessions WHERE cluster_id = $1 AND proj_id = $2")
+            .bind(self.cluster_id())
             .bind(proj_id)
             .execute(&self.pool)
             .await?;
@@ -2329,8 +2712,9 @@ impl GatewaySessionDb {
         proj_id: i64,
     ) -> Result<Option<String>, SqlxError> {
         sqlx::query_scalar::<_, String>(
-            "SELECT session_home FROM gateway_sessions WHERE session_id = $1 AND proj_id = $2",
+            "SELECT session_home FROM gateway_sessions WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .fetch_optional(&self.pool)
@@ -2346,11 +2730,12 @@ impl GatewaySessionDb {
         client_origin: Option<&str>,
     ) -> Result<(), SqlxError> {
         sqlx::query(
-            r"INSERT INTO gateway_sessions (session_id, ds_id, proj_id, session_home, created_at_ms, updated_at_ms, client_origin)
-              VALUES ($1, $2, $2, $3, $4, $5, $6)",
+            r"INSERT INTO gateway_sessions (session_id, ds_id, proj_id, cluster_id, session_home, created_at_ms, updated_at_ms, client_origin)
+              VALUES ($1, $2, $2, $3, $4, $5, $6, $7)",
         )
         .bind(session_id)
         .bind(proj_id)
+        .bind(self.cluster_id())
         .bind(session_home_rel)
         .bind(now_ms)
         .bind(now_ms)
@@ -2367,9 +2752,10 @@ impl GatewaySessionDb {
         now_ms: i64,
     ) -> Result<(), SqlxError> {
         sqlx::query(
-            "UPDATE gateway_sessions SET updated_at_ms = $1 WHERE session_id = $2 AND proj_id = $3",
+            "UPDATE gateway_sessions SET updated_at_ms = $1 WHERE cluster_id = $2 AND session_id = $3 AND proj_id = $4",
         )
         .bind(now_ms)
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .execute(&self.pool)
@@ -2379,8 +2765,9 @@ impl GatewaySessionDb {
 
     pub async fn session_exists(&self, session_id: &str, proj_id: i64) -> Result<bool, SqlxError> {
         let row: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM gateway_sessions WHERE session_id = $1 AND proj_id = $2 LIMIT 1",
+            "SELECT 1 FROM gateway_sessions WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3 LIMIT 1",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .fetch_optional(&self.pool)
@@ -2431,11 +2818,12 @@ impl GatewaySessionDb {
             sqlx::query_scalar(
                 r"SELECT EXISTS(
                     SELECT 1 FROM gateway_turns
-                    WHERE session_id = $1 AND proj_id = $2
+                    WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3
                       AND status IN ('queued', 'running')
-                      AND turn_id <> $3
+                      AND turn_id <> $4
                   )",
             )
+            .bind(self.cluster_id())
             .bind(session_id)
             .bind(proj_id)
             .bind(tid)
@@ -2446,9 +2834,11 @@ impl GatewaySessionDb {
             sqlx::query_scalar(
                 r"SELECT EXISTS(
                     SELECT 1 FROM gateway_turns
-                    WHERE session_id = $1 AND proj_id = $2 AND status IN ('queued', 'running')
+                    WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3
+                      AND status IN ('queued', 'running')
                   )",
             )
+            .bind(self.cluster_id())
             .bind(session_id)
             .bind(proj_id)
             .fetch_one(&self.pool)
@@ -2461,10 +2851,11 @@ impl GatewaySessionDb {
         let blocked: bool = sqlx::query_scalar(
             r"SELECT EXISTS(
                 SELECT 1 FROM gateway_turns
-                WHERE session_id = $1 AND proj_id = $2
+                WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3
                   AND status = 'succeeded' AND artifacts_ready = FALSE
               )",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .fetch_one(&self.pool)
@@ -2703,9 +3094,10 @@ impl GatewaySessionDb {
             r"SELECT m.role, m.blocks, m.usage
               FROM cc_messages m
               JOIN gateway_turns t ON m.turn_id = t.turn_id
-              WHERE m.session_id = $1 AND m.proj_id = $2
+              WHERE m.cluster_id = $1 AND m.session_id = $2 AND m.proj_id = $3
               ORDER BY t.created_at_ms ASC, m.seq ASC",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .fetch_all(&self.pool)
@@ -2770,8 +3162,8 @@ impl GatewaySessionDb {
         let artifact_id = uuid::Uuid::new_v4();
         sqlx::query(
             r"INSERT INTO gateway_session_artifacts
-                (artifact_id, session_id, ds_id, proj_id, turn_id, kind, relative_path, content, size_bytes, created_at_ms)
-              VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9)
+                (artifact_id, session_id, ds_id, proj_id, cluster_id, turn_id, kind, relative_path, content, size_bytes, created_at_ms)
+              VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10)
               ON CONFLICT (session_id, ds_id, turn_id, relative_path) DO UPDATE SET
                 kind = EXCLUDED.kind,
                 content = EXCLUDED.content,
@@ -2781,6 +3173,7 @@ impl GatewaySessionDb {
         .bind(artifact_id)
         .bind(session_id)
         .bind(proj_id)
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(tar_kind)
         .bind(tar_path)
@@ -2804,12 +3197,13 @@ impl GatewaySessionDb {
             r"SELECT a.content
               FROM gateway_session_artifacts a
               INNER JOIN gateway_turns t ON t.turn_id = a.turn_id
-              WHERE a.session_id = $1 AND a.proj_id = $2
-                AND a.kind = $3 AND a.relative_path = $4
+              WHERE a.cluster_id = $1 AND a.session_id = $2 AND a.proj_id = $3
+                AND a.kind = $4 AND a.relative_path = $5
                 AND a.content IS NOT NULL AND t.artifacts_ready = TRUE
               ORDER BY COALESCE(t.finished_at_ms, t.created_at_ms) DESC, t.turn_id DESC
               LIMIT 1",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .bind(tar_kind)
@@ -2833,11 +3227,14 @@ impl GatewaySessionDb {
         session_id: &str,
         proj_id: i64,
     ) -> Result<(), SqlxError> {
-        sqlx::query("DELETE FROM cc_messages WHERE session_id = $1 AND proj_id = $2")
-            .bind(session_id)
-            .bind(proj_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "DELETE FROM cc_messages WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3",
+        )
+        .bind(self.cluster_id())
+        .bind(session_id)
+        .bind(proj_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -2884,11 +3281,12 @@ impl GatewaySessionDb {
         created_at_ms: i64,
     ) -> Result<(), SqlxError> {
         sqlx::query(
-            r"INSERT INTO cc_messages (session_id, ds_id, proj_id, turn_id, iteration_id, seq, role, blocks, usage, created_at_ms)
-              VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $9)",
+            r"INSERT INTO cc_messages (session_id, ds_id, proj_id, cluster_id, turn_id, iteration_id, seq, role, blocks, usage, created_at_ms)
+              VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(session_id)
         .bind(proj_id)
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(iteration_id)
         .bind(seq)
@@ -2945,12 +3343,13 @@ impl GatewaySessionDb {
         entry_params_json: Option<&Value>,
     ) -> Result<(), SqlxError> {
         sqlx::query(
-            r"INSERT INTO gateway_turns (turn_id, session_id, ds_id, proj_id, status, created_at_ms, finished_at_ms, user_prompt, client_origin, entry_params_json)
-              VALUES ($1, $2, $3, $3, $4, $5, NULL, $6, $7, $8)",
+            r"INSERT INTO gateway_turns (turn_id, session_id, ds_id, proj_id, cluster_id, status, created_at_ms, finished_at_ms, user_prompt, client_origin, entry_params_json)
+              VALUES ($1, $2, $3, $3, $4, $5, $6, NULL, $7, $8, $9)",
         )
         .bind(turn_id)
         .bind(session_id)
         .bind(proj_id)
+        .bind(self.cluster_id())
         .bind(status)
         .bind(created_at_ms)
         .bind(user_prompt)
@@ -2968,8 +3367,9 @@ impl GatewaySessionDb {
         proj_id: i64,
     ) -> Result<Option<String>, SqlxError> {
         let row: Option<(Option<String>,)> = sqlx::query_as(
-            "SELECT client_origin FROM gateway_turns WHERE turn_id = $1 AND session_id = $2 AND proj_id = $3 LIMIT 1",
+            "SELECT client_origin FROM gateway_turns WHERE cluster_id = $1 AND turn_id = $2 AND session_id = $3 AND proj_id = $4 LIMIT 1",
         )
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(session_id)
         .bind(proj_id)
@@ -2982,10 +3382,11 @@ impl GatewaySessionDb {
     pub async fn upsert_claw_pool(&self, row: &ClawPoolUpsert<'_>) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO claw_pool (
-                pool_id, registration_time_ms, slots_max, slots_min,
+                pool_id, cluster_id, registration_time_ms, slots_max, slots_min,
                 advertise_ip, sse_port, gateway_base, last_heartbeat_ms
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
               ON CONFLICT (pool_id) DO UPDATE SET
+                cluster_id = EXCLUDED.cluster_id,
                 slots_max = EXCLUDED.slots_max,
                 slots_min = EXCLUDED.slots_min,
                 advertise_ip = EXCLUDED.advertise_ip,
@@ -2994,6 +3395,7 @@ impl GatewaySessionDb {
                 last_heartbeat_ms = EXCLUDED.last_heartbeat_ms",
         )
         .bind(row.pool_id)
+        .bind(self.cluster_id())
         .bind(row.registration_time_ms)
         .bind(row.slots_max)
         .bind(row.slots_min)
@@ -3011,11 +3413,14 @@ impl GatewaySessionDb {
         pool_id: &str,
         last_heartbeat_ms: i64,
     ) -> Result<(), SqlxError> {
-        sqlx::query("UPDATE claw_pool SET last_heartbeat_ms = $2 WHERE pool_id = $1")
-            .bind(pool_id)
-            .bind(last_heartbeat_ms)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE claw_pool SET last_heartbeat_ms = $2 WHERE cluster_id = $1 AND pool_id = $3",
+        )
+        .bind(self.cluster_id())
+        .bind(last_heartbeat_ms)
+        .bind(pool_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -3028,8 +3433,9 @@ impl GatewaySessionDb {
     ) -> Result<bool, SqlxError> {
         let stale_before = now_ms.saturating_sub(120_000);
         let result = sqlx::query(
-            "DELETE FROM claw_pool WHERE pool_id = $1 AND advertise_ip = $2 AND last_heartbeat_ms < $3",
+            "DELETE FROM claw_pool WHERE cluster_id = $1 AND pool_id = $2 AND advertise_ip = $3 AND last_heartbeat_ms < $4",
         )
+        .bind(self.cluster_id())
         .bind(pool_id)
         .bind(advertise_ip)
         .bind(stale_before)
@@ -3040,7 +3446,8 @@ impl GatewaySessionDb {
 
     /// Admin: remove stale `claw_pool` row; pool-daemon re-registers on next start. Author: kejiqing
     pub async fn delete_claw_pool(&self, pool_id: &str) -> Result<bool, SqlxError> {
-        let result = sqlx::query("DELETE FROM claw_pool WHERE pool_id = $1")
+        let result = sqlx::query("DELETE FROM claw_pool WHERE cluster_id = $1 AND pool_id = $2")
+            .bind(self.cluster_id())
             .bind(pool_id)
             .execute(&self.pool)
             .await?;
@@ -3053,8 +3460,10 @@ impl GatewaySessionDb {
             r"SELECT pool_id, registration_time_ms, slots_max, slots_min,
                      advertise_ip, sse_port, gateway_base, last_heartbeat_ms
               FROM claw_pool
+              WHERE cluster_id = $1
               ORDER BY last_heartbeat_ms DESC, pool_id ASC",
         )
+        .bind(self.cluster_id())
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
@@ -3193,8 +3602,9 @@ impl GatewaySessionDb {
         proj_id: i64,
     ) -> Result<Option<String>, SqlxError> {
         sqlx::query_scalar(
-            "SELECT pool_id FROM gateway_turns WHERE turn_id = $1 AND session_id = $2 AND proj_id = $3 LIMIT 1",
+            "SELECT pool_id FROM gateway_turns WHERE cluster_id = $1 AND turn_id = $2 AND session_id = $3 AND proj_id = $4 LIMIT 1",
         )
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(session_id)
         .bind(proj_id)
@@ -3212,10 +3622,11 @@ impl GatewaySessionDb {
         let row: Option<(String, i32)> = sqlx::query_as(
             r"SELECT p.advertise_ip, p.sse_port
               FROM gateway_turns t
-              JOIN claw_pool p ON t.pool_id = p.pool_id
-              WHERE t.turn_id = $1 AND t.session_id = $2 AND t.proj_id = $3
+              JOIN claw_pool p ON t.pool_id = p.pool_id AND t.cluster_id = p.cluster_id
+              WHERE t.cluster_id = $1 AND t.turn_id = $2 AND t.session_id = $3 AND t.proj_id = $4
               LIMIT 1",
         )
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(session_id)
         .bind(proj_id)
@@ -3281,9 +3692,10 @@ impl GatewaySessionDb {
     ) -> Result<Option<String>, SqlxError> {
         sqlx::query_scalar::<_, String>(
             r"SELECT report_message FROM gateway_turns
-              WHERE turn_id = $1 AND session_id = $2 AND proj_id = $3
+              WHERE cluster_id = $1 AND turn_id = $2 AND session_id = $3 AND proj_id = $4
                 AND report_message IS NOT NULL AND btrim(report_message) <> ''",
         )
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(session_id)
         .bind(proj_id)
@@ -3300,9 +3712,10 @@ impl GatewaySessionDb {
     ) -> Result<Option<Value>, SqlxError> {
         let row = sqlx::query(
             r"SELECT output_json FROM gateway_turns
-              WHERE turn_id = $1 AND session_id = $2 AND proj_id = $3
+              WHERE cluster_id = $1 AND turn_id = $2 AND session_id = $3 AND proj_id = $4
                 AND output_json IS NOT NULL",
         )
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(session_id)
         .bind(proj_id)
@@ -3324,15 +3737,16 @@ impl GatewaySessionDb {
         let row = sqlx::query(
             r"SELECT s.session_home, t.created_at_ms, t.finished_at_ms,
                      (SELECT COUNT(*)::bigint FROM gateway_turns t2
-                      WHERE t2.session_id = t.session_id AND t2.proj_id = t.proj_id
+                      WHERE t2.cluster_id = t.cluster_id AND t2.session_id = t.session_id AND t2.proj_id = t.proj_id
                         AND (t2.created_at_ms < t.created_at_ms
                              OR (t2.created_at_ms = t.created_at_ms AND t2.turn_id <= t.turn_id))
                      ) AS user_turn_index
               FROM gateway_turns t
               INNER JOIN gateway_sessions s
-                ON s.session_id = t.session_id AND s.proj_id = t.proj_id
-              WHERE t.turn_id = $1 AND t.session_id = $2 AND t.proj_id = $3",
+                ON s.cluster_id = t.cluster_id AND s.session_id = t.session_id AND s.proj_id = t.proj_id
+              WHERE t.cluster_id = $1 AND t.turn_id = $2 AND t.session_id = $3 AND t.proj_id = $4",
         )
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(session_id)
         .bind(proj_id)
@@ -3358,8 +3772,9 @@ impl GatewaySessionDb {
         proj_id: i64,
     ) -> Result<Option<i64>, SqlxError> {
         sqlx::query_scalar::<_, i64>(
-            "SELECT created_at_ms FROM gateway_turns WHERE turn_id = $1 AND session_id = $2 AND proj_id = $3",
+            "SELECT created_at_ms FROM gateway_turns WHERE cluster_id = $1 AND turn_id = $2 AND session_id = $3 AND proj_id = $4",
         )
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(session_id)
         .bind(proj_id)
@@ -3378,9 +3793,10 @@ impl GatewaySessionDb {
     ) -> Result<i64, SqlxError> {
         let v: i64 = sqlx::query_scalar(
             r"SELECT COUNT(*)::bigint FROM gateway_turns
-              WHERE session_id = $1 AND proj_id = $2
-                AND (created_at_ms < $3 OR (created_at_ms = $3 AND turn_id <= $4))",
+              WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3
+                AND (created_at_ms < $4 OR (created_at_ms = $4 AND turn_id <= $5))",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .bind(created_at_ms)
@@ -3411,10 +3827,11 @@ impl GatewaySessionDb {
                 report_message = NULL,
                 output_json = $2,
                 claw_exit_code = NULL
-              WHERE status IN ('queued', 'running')",
+              WHERE cluster_id = $3 AND status IN ('queued', 'running')",
         )
         .bind(now_ms)
         .bind(detail)
+        .bind(self.cluster_id())
         .execute(&self.pool)
         .await?;
         Ok(r.rows_affected())
@@ -3475,24 +3892,26 @@ impl GatewaySessionDb {
         let mut qb = QueryBuilder::new(
             r"SELECT s.session_id, s.created_at_ms, s.updated_at_ms, s.client_origin,
                      (SELECT COUNT(*)::bigint FROM gateway_turns t
-                        WHERE t.session_id = s.session_id AND t.proj_id = s.proj_id) AS turn_count,
+                        WHERE t.cluster_id = s.cluster_id AND t.session_id = s.session_id AND t.proj_id = s.proj_id) AS turn_count,
                      (SELECT t.user_prompt FROM gateway_turns t
-                        WHERE t.session_id = s.session_id AND t.proj_id = s.proj_id
+                        WHERE t.cluster_id = s.cluster_id AND t.session_id = s.session_id AND t.proj_id = s.proj_id
                         ORDER BY t.created_at_ms ASC, t.turn_id ASC
                         LIMIT 1) AS preview_prompt,
                      EXISTS (
                        SELECT 1 FROM gateway_feedback f
-                       WHERE f.session_id = s.session_id AND f.proj_id = s.proj_id
+                       WHERE f.cluster_id = s.cluster_id AND f.session_id = s.session_id AND f.proj_id = s.proj_id
                          AND f.feedback = 'bad'
                      ) AS has_bad_feedback,
                      EXISTS (
                        SELECT 1 FROM gateway_feedback f
-                       WHERE f.session_id = s.session_id AND f.proj_id = s.proj_id
+                       WHERE f.cluster_id = s.cluster_id AND f.session_id = s.session_id AND f.proj_id = s.proj_id
                          AND f.feedback = 'good'
                      ) AS has_good_feedback
               FROM gateway_sessions s
-              WHERE s.proj_id = ",
+              WHERE s.cluster_id = ",
         );
+        qb.push_bind(self.cluster_id());
+        qb.push(" AND s.proj_id = ");
         qb.push_bind(proj_id);
         if let Some(from) = updated_from_ms {
             qb.push(" AND s.updated_at_ms >= ");
@@ -3506,7 +3925,7 @@ impl GatewaySessionDb {
             qb.push(
                 " AND (
                     SELECT t.user_prompt FROM gateway_turns t
-                      WHERE t.session_id = s.session_id AND t.proj_id = s.proj_id
+                      WHERE t.cluster_id = s.cluster_id AND t.session_id = s.session_id AND t.proj_id = s.proj_id
                       ORDER BY t.created_at_ms ASC, t.turn_id ASC
                       LIMIT 1
                   ) ILIKE ",
@@ -3539,7 +3958,7 @@ impl GatewaySessionDb {
                 qb.push(
                     "EXISTS (
                       SELECT 1 FROM gateway_turns t
-                      WHERE t.proj_id = s.proj_id
+                      WHERE t.cluster_id = s.cluster_id AND t.proj_id = s.proj_id
                         AND t.session_id = s.session_id
                         AND t.turn_id = ",
                 );
@@ -3554,7 +3973,7 @@ impl GatewaySessionDb {
                 qb.push(
                     " AND EXISTS (
                       SELECT 1 FROM gateway_turns t
-                      WHERE t.session_id = s.session_id AND t.proj_id = s.proj_id
+                      WHERE t.cluster_id = s.cluster_id AND t.session_id = s.session_id AND t.proj_id = s.proj_id
                         AND COALESCE(t.entry_params_json->'extraSession'->>",
                 );
                 qb.push_bind(key);
@@ -3599,10 +4018,11 @@ impl GatewaySessionDb {
                      ) AS has_report
               FROM gateway_turns t
               LEFT JOIN gateway_feedback f
-                ON f.turn_id = t.turn_id AND f.session_id = t.session_id AND f.proj_id = t.proj_id
-              WHERE t.session_id = $1 AND t.proj_id = $2
+                ON f.cluster_id = t.cluster_id AND f.turn_id = t.turn_id AND f.session_id = t.session_id AND f.proj_id = t.proj_id
+              WHERE t.cluster_id = $1 AND t.session_id = $2 AND t.proj_id = $3
               ORDER BY t.created_at_ms ASC, t.turn_id ASC",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .fetch_all(&self.pool)
@@ -3690,8 +4110,9 @@ impl GatewaySessionDb {
         proj_id: i64,
     ) -> Result<Option<String>, SqlxError> {
         let row: Option<(String,)> = sqlx::query_as(
-            "SELECT status FROM gateway_turns WHERE turn_id = $1 AND session_id = $2 AND proj_id = $3 LIMIT 1",
+            "SELECT status FROM gateway_turns WHERE cluster_id = $1 AND turn_id = $2 AND session_id = $3 AND proj_id = $4 LIMIT 1",
         )
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(session_id)
         .bind(proj_id)
@@ -3707,8 +4128,9 @@ impl GatewaySessionDb {
         proj_id: i64,
     ) -> Result<bool, SqlxError> {
         let row: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM gateway_turns WHERE turn_id = $1 AND session_id = $2 AND proj_id = $3 LIMIT 1",
+            "SELECT 1 FROM gateway_turns WHERE cluster_id = $1 AND turn_id = $2 AND session_id = $3 AND proj_id = $4 LIMIT 1",
         )
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(session_id)
         .bind(proj_id)
@@ -3726,14 +4148,15 @@ impl GatewaySessionDb {
         updated_at_ms: i64,
     ) -> Result<(), SqlxError> {
         sqlx::query(
-            r"INSERT INTO gateway_feedback (session_id, ds_id, proj_id, turn_id, feedback, updated_at_ms)
-              VALUES ($1, $2, $2, $3, $4, $5)
+            r"INSERT INTO gateway_feedback (session_id, ds_id, proj_id, cluster_id, turn_id, feedback, updated_at_ms)
+              VALUES ($1, $2, $2, $3, $4, $5, $6)
               ON CONFLICT (session_id, ds_id, turn_id) DO UPDATE SET
                 feedback = EXCLUDED.feedback,
                 updated_at_ms = EXCLUDED.updated_at_ms",
         )
         .bind(session_id)
         .bind(proj_id)
+        .bind(self.cluster_id())
         .bind(turn_id)
         .bind(feedback)
         .bind(updated_at_ms)
@@ -3748,8 +4171,9 @@ impl GatewaySessionDb {
         proj_id: i64,
     ) -> Result<BTreeMap<String, String>, SqlxError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT turn_id, feedback FROM gateway_feedback WHERE session_id = $1 AND proj_id = $2 ORDER BY turn_id",
+            "SELECT turn_id, feedback FROM gateway_feedback WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3 ORDER BY turn_id",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .fetch_all(&self.pool)
@@ -3766,8 +4190,9 @@ impl GatewaySessionDb {
             r"SELECT session_id, proj_id, source_fingerprint, turns_json, markdown,
                      target_language, model_id, status, error_text, created_at_ms, updated_at_ms
               FROM gateway_conversation_translate
-              WHERE session_id = $1 AND proj_id = $2",
+              WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .fetch_optional(&self.pool)
@@ -3805,9 +4230,9 @@ impl GatewaySessionDb {
     ) -> Result<bool, SqlxError> {
         let res = sqlx::query(
             r"INSERT INTO gateway_conversation_translate (
-                session_id, ds_id, proj_id, source_fingerprint, turns_json, markdown,
+                session_id, ds_id, proj_id, cluster_id, source_fingerprint, turns_json, markdown,
                 target_language, model_id, status, error_text, created_at_ms, updated_at_ms
-              ) VALUES ($1, $2, $2, $3, '[]'::jsonb, '', $4, NULL, 'translating', NULL, $5, $5)
+              ) VALUES ($1, $2, $2, $3, $4, '[]'::jsonb, '', $5, NULL, 'translating', NULL, $6, $6)
               ON CONFLICT (session_id, ds_id) DO UPDATE SET
                 source_fingerprint = EXCLUDED.source_fingerprint,
                 target_language = EXCLUDED.target_language,
@@ -3815,10 +4240,11 @@ impl GatewaySessionDb {
                 error_text = NULL,
                 updated_at_ms = EXCLUDED.updated_at_ms
               WHERE gateway_conversation_translate.status <> 'translating'
-                 OR gateway_conversation_translate.updated_at_ms < $6",
+                 OR gateway_conversation_translate.updated_at_ms < $7",
         )
         .bind(session_id)
         .bind(proj_id)
+        .bind(self.cluster_id())
         .bind(source_fingerprint)
         .bind(target_language)
         .bind(now_ms)
@@ -3842,9 +4268,9 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO gateway_conversation_translate (
-                session_id, ds_id, proj_id, source_fingerprint, turns_json, markdown,
+                session_id, ds_id, proj_id, cluster_id, source_fingerprint, turns_json, markdown,
                 target_language, model_id, status, error_text, created_at_ms, updated_at_ms
-              ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, 'ready', NULL, $8, $8)
+              ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, 'ready', NULL, $9, $9)
               ON CONFLICT (session_id, ds_id) DO UPDATE SET
                 source_fingerprint = EXCLUDED.source_fingerprint,
                 turns_json = EXCLUDED.turns_json,
@@ -3857,6 +4283,7 @@ impl GatewaySessionDb {
         )
         .bind(session_id)
         .bind(proj_id)
+        .bind(self.cluster_id())
         .bind(source_fingerprint)
         .bind(Json(turns_json))
         .bind(markdown)
@@ -3878,9 +4305,10 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"UPDATE gateway_conversation_translate
-              SET status = 'error', error_text = $3, updated_at_ms = $4
-              WHERE session_id = $1 AND proj_id = $2",
+              SET status = 'error', error_text = $4, updated_at_ms = $5
+              WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .bind(error_text)
@@ -3897,8 +4325,9 @@ impl GatewaySessionDb {
         proj_id: i64,
     ) -> Result<Option<i64>, SqlxError> {
         sqlx::query_scalar::<_, i64>(
-            "SELECT updated_at_ms FROM gateway_sessions WHERE session_id = $1 AND proj_id = $2",
+            "SELECT updated_at_ms FROM gateway_sessions WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3",
         )
+        .bind(self.cluster_id())
         .bind(session_id)
         .bind(proj_id)
         .fetch_optional(&self.pool)

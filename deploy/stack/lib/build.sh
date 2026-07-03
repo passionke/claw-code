@@ -31,7 +31,7 @@ Options:
   --log PATH       Tee full stdout/stderr to PATH (default: deploy/stack/.build.log)
   --no-log         Print only to terminal
   --in-container   Force in-image cargo build (slow on macOS; hits crates.io in build)
-  --skip-playground  Skip playground image npm build (pack-deploy default; uses slim + bind mount)
+  --skip-playground  Skip full playground image; build slim shell only (needs CLAW_GATEWAY_ADMIN_BIND=1 + admin-build)
   -h, --help       Show this help
 
 Default: container-run compile + prebuilt images (see deploy/stack/lib/linux-compile.sh).

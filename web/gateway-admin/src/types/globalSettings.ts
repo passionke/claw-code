@@ -47,6 +47,13 @@ export interface ClawTapSettings {
   liveBaseUrl?: string;
   liveSessionUrlTemplate?: string;
   liveBrowserHostsLine?: string;
+  /** e2b observe singleton; written by `observe-tap-up`, not hand-edited in Admin. */
+  e2bObserveSandboxId?: string;
+  /** Live e2b sandbox state from gateway `GET /sandboxes/{id}`. Author: kejiqing */
+  e2bObserveSandboxState?: string;
+  e2bObserveSandboxRunning?: boolean;
+  e2bObserveSandboxEndAtMs?: number;
+  e2bObserveSandboxRemainingTtlSecs?: number;
 }
 
 export interface PutClawTapSettingsResponse extends ClawTapSettings {
@@ -82,6 +89,14 @@ export interface E2bNasSettings {
   layoutActive: boolean;
   pathExists: boolean;
   hasProjTree?: boolean;
+}
+
+export interface ObserveTapResetResponse {
+  tap: ClawTapSettings;
+  sandboxId: string;
+  liveBaseUrl: string;
+  trafficReachable: boolean;
+  message?: string;
 }
 
 export interface GlobalSettingsResponse {
