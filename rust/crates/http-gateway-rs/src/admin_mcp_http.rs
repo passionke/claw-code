@@ -53,7 +53,9 @@ struct JsonRpcErrorObj {
 }
 
 /// CLAUDE.md field update for draft patch.
+#[derive(Default)]
 enum ClaudeMdPatch<'a> {
+    #[default]
     Unchanged,
     Clear,
     Set(&'a str),
@@ -65,12 +67,6 @@ struct DraftPatch<'a> {
     rules_json: Option<&'a Value>,
     mcp_servers_json: Option<&'a Value>,
     skills_json: Option<&'a Value>,
-}
-
-impl Default for ClaudeMdPatch<'_> {
-    fn default() -> Self {
-        Self::Unchanged
-    }
 }
 
 impl Default for DraftPatch<'_> {

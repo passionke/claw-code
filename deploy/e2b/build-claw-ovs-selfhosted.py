@@ -9,11 +9,13 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 _E2B_DIR = Path(__file__).resolve().parent
 if str(_E2B_DIR) not in sys.path:
     sys.path.insert(0, str(_E2B_DIR))
+from e2b_pg_settings import merge_settings_json_key
 from e2b_template_registry import load_repo_dotenv, log_debian_base_resolution, template_debian_base_image
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -157,9 +159,26 @@ def main() -> int:
             .set_start_cmd(_ovs_start_cmd(ovs_port), _ovs_ready_cmd(ovs_port))
         )
         print(f"==> template startCmd=openvscode-server :{ovs_port}/ovs")
-        Template.build(template, alias=alias, on_build_logs=default_build_logger(), **opts)
+        build = Template.build(template, alias=alias, on_build_logs=default_build_logger(), **opts)
 
-    print(f"OK: template {alias!r} ready on {opts['api_url']}")
+    now_ms = int(time.time() * 1000)
+    print(f"template_id: {build.template_id}")
+    print(f"build_id: {build.build_id}")
+    try:
+        merge_settings_json_key(
+            "e2bOvs",
+            {
+                "templateId": build.template_id,
+                "alias": alias,
+                "updatedAtMs": now_ms,
+            },
+            now_ms=now_ms,
+        )
+        print(f"==> persisted e2bOvs.templateId={build.template_id!r} to PG")
+    except Exception as exc:  # noqa: BLE001
+        print(f"warn: skip PG e2bOvs.templateId persist: {exc}", file=sys.stderr)
+
+    print(f"OK: template {alias!r} ({build.template_id}) ready on {opts['api_url']}")
     return 0
 
 

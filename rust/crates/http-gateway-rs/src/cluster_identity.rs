@@ -209,7 +209,7 @@ pub fn tap_identity_from_health(
     }
     Ok(ClusterIdentity {
         cluster_id: tap_cluster.to_string(),
-        db_host: db_host.to_string(),
+        db_host: db_host.clone(),
         cluster_hash: cluster_hash.to_string(),
     })
 }

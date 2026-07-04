@@ -35,34 +35,24 @@ Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径*
 
 ## Dev 模式：worker 模板（不走 CI）
 
-日常开发改 `rusty-claude-cli`（e2b 沙箱内 `claw`）时，**不要**走 `push → GitHub CI → ACR pull → from_image`。
-
-### 本机 arm64 worker（`10.8.0.2`，推荐 Mac dev）
+日常改 `rusty-claude-cli`（e2b 沙箱内 `claw`）：
 
 ```bash
-# .env
-CLAW_E2B_WORKER_ARCH=arm64
-CLAW_E2B_DEV_WORKER_HOST=10.8.0.2
-
 ./deploy/stack/gateway.sh e2b-worker-deploy
 ```
 
-原生 **linux/arm64** 编译 + `Template.build` 上传；e2b 调度到已注册的 arm64 worker 节点。**自己打、自己用、自己调试**，无 CI、无 amd64 模拟。
+**唯一手册：** [`WORKER-BUILD.md`](./WORKER-BUILD.md)（架构 amd64、PG 上报、gateway 自动 reconcile/续期）。
 
-### 生产 amd64（`10.8.0.1`）
-
-```bash
-CLAW_E2B_WORKER_ARCH=amd64
-# 或 release: CLAW_E2B_TEMPLATE_BUILD_STRATEGY=from_image + CI worker 镜像
-```
+自托管 e2b（10.8.0.x）**全是 linux/amd64**；Mac 交叉编译，不要设 `CLAW_E2B_WORKER_ARCH=arm64`。
 
 | 步骤 | 说明 |
 |------|------|
-| 本机 podman | 编 `claw`（arch 由 `CLAW_E2B_WORKER_ARCH` 决定） |
+| 交叉编译 | `linux/amd64` → `deploy/stack/.linux-artifacts/release/claw` |
 | stage | `claw` + `ttyd` → `deploy/stack/.e2b-worker-bins/` |
-| e2b SDK | `Template.build(alias=CLAW_E2B_TEMPLATE)` → `CLAW_E2B_API_URL` |
+| e2b SDK | `Template.build` → 写 PG `e2bWorker.templateId` |
+| gateway | 启动 reconcile + renewal ticker 自动轮换 proj worker |
 
-完整说明：[`docs/local-dev.md`](../../docs/local-dev.md)。脚本：`deploy/stack/lib/e2b-worker-deploy.sh`、`e2b-worker-arch.sh`。
+完整说明：[`WORKER-BUILD.md`](./WORKER-BUILD.md)。脚本：`deploy/stack/lib/e2b-worker-deploy.sh`。
 
 OVS / observe / nas-api 模板仍按需单独 build（见下文 env 注释）；体积大或与 Rust 无关，不并入 `e2b-worker-deploy`。
 

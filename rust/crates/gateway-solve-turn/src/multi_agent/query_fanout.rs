@@ -218,8 +218,8 @@ pub async fn run_query_fanout(
     let futs: Vec<_> = plan
         .todos
         .iter()
-        .cloned()
         .map(|todo| {
+            let todo = todo.clone();
             let ex = Arc::clone(&executor);
             let tn = tool_name.clone();
             let iso = isolated_fanout;

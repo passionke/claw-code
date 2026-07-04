@@ -831,7 +831,7 @@ async fn write_proj_vscode_settings(proj_dir: &Path, proj_id: i64) -> Result<(),
     crate::session_ovs_api::ensure_proj_claw_settings(proj_dir, proj_id).await
 }
 
-async fn resolve_terminal_llm_env(
+pub(crate) async fn resolve_terminal_llm_env(
     session_db: &GatewaySessionDb,
     cluster_handle: &ClawTapClusterHandle,
     llm_handle: &LlmRuntimeHandle,

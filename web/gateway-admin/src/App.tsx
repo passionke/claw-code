@@ -20,7 +20,7 @@ import GitPatsPage from "./pages/global/GitPatsPage";
 import AdminMcpTokensPage from "./pages/global/AdminMcpTokensPage";
 import GlobalInferencePage from "./pages/global/GlobalInferencePage";
 import GlobalPoolsPage from "./pages/global/GlobalPoolsPage";
-import E2bNasPage from "./pages/global/E2bNasPage";
+import E2bCoreComponentsPage from "./pages/global/E2bCoreComponentsPage";
 import StrictLandlockDefaultPage from "./pages/global/StrictLandlockDefaultPage";
 import ChatPage from "./pages/ChatPage";
 
@@ -66,7 +66,8 @@ export default function App() {
               <Route path="worker-profile" element={<WorkerProfilePage />} />
               <Route path="global" element={<GlobalSettingsRedirect />} />
               <Route path="global/inference" element={<GlobalInferencePage />} />
-              <Route path="global/e2b-nas" element={<E2bNasPage />} />
+              <Route path="global/e2b-core" element={<E2bCoreComponentsPage />} />
+              <Route path="global/e2b-nas" element={<E2bCoreComponentsPage />} />
               <Route path="global/strict-landlock" element={<StrictLandlockDefaultPage />} />
               <Route path="global/models" element={<Navigate to="/global/inference" replace />} />
               <Route path="global/claw-tap" element={<Navigate to="/global/inference" replace />} />

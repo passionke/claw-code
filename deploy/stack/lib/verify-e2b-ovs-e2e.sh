@@ -25,8 +25,10 @@ e2b_sandbox_count() {
 
 echo "==> backend=${BACKEND} ovsBackend=${OVS_BACKEND} projId=${PROJ_ID} session=${SESSION_ID}"
 
-if [[ "${BACKEND}" == "e2b" && "${CLAW_E2B_E2E_CLEANUP:-1}" == "1" ]]; then
-  echo "==> e2b sandbox cleanup (orphans from prior runs)"
+# Disabled by default — singletons + proj workers must survive gateway restart/E2E.
+# Opt-in only: CLAW_E2B_E2E_CLEANUP=1 ./deploy/stack/lib/verify-e2b-ovs-e2e.sh
+if [[ "${BACKEND}" == "e2b" && "${CLAW_E2B_E2E_CLEANUP:-0}" == "1" ]]; then
+  echo "==> e2b sandbox cleanup (CLAW_E2B_E2E_CLEANUP=1 — kills ALL sandboxes on e2b API)"
   bash "${ROOT_DIR}/deploy/stack/lib/e2b-sandbox-cleanup.sh"
   if podman container exists claw-gateway-rs >/dev/null 2>&1; then
     echo "==> restart gateway-rs (clear in-memory e2b pool after cleanup)"

@@ -35,10 +35,10 @@ Commands:
   solve-e2e     Admin-equivalent solve_async + poll to succeeded/failed (real gate, not healthz)
   verify        Stack truth checks (schema, pool registry, binary); fails loud
   cluster-verify  Shared-PG multi-host: claw_pool zombies + each gateway /v1/pools (pre-prod gate)
-  ovs-up        Ensure e2b OVS singleton on e2b (claw-ovs template startCmd)
-  observe-tap-up Ensure e2b observe-singleton on e2b (claude-tap Live via template startCmd)
-  nas-api-up    Ensure e2b claw-nas-api singleton on e2b (gateway NAS service; template startCmd)
-  e2b-singletons-up  nas-api-up + ovs-up + observe-tap-up (--reuse default)
+  ovs-up        Ensure e2b OVS singleton (gateway API; gateway must be up)
+  observe-tap-up Ensure e2b observe singleton (gateway API)
+  nas-api-up    Ensure e2b claw-nas-api singleton (gateway API)
+  e2b-singletons-up  nas-api + ovs + observe via gateway API (--reset to recreate)
   e2b-pre-bootstrap  build templates (local) then singletons → PG; then gateway up --release
   pre-252-e2b-up     full pre-prod: preflight → templates → singletons → up --release → verify
   tap-down      Stop pool claude-tap only (legacy compose; e2b mode uses CLAUDE_TAP_MODE=off)
@@ -49,7 +49,7 @@ Commands:
   e2e           Run tests/http-gateway-session-continuity-e2e.sh
   help          Show this help
 
-Implementation scripts: deploy/stack/lib/ (FC singleton: use ovs-up / observe-tap-up above).
+Implementation scripts: deploy/stack/lib/ (singleton lifecycle: gateway-rs + Admin API).
 EOF
 }
 

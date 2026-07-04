@@ -1210,11 +1210,17 @@ impl GatewaySessionDb {
         .fetch_one(pool)
         .await?;
         if !e2b_pk_ok {
-            sqlx::query(
-                "ALTER TABLE project_e2b_worker DROP CONSTRAINT IF EXISTS project_e2b_worker_pkey",
-            )
-            .execute(pool)
-            .await?;
+            // Renamed from project_fc_worker; legacy PK name may still be project_fc_worker_pkey.
+            for drop_name in ["project_e2b_worker_pkey", "project_fc_worker_pkey"] {
+                sqlx::query(&format!(
+                    "ALTER TABLE project_e2b_worker DROP CONSTRAINT IF EXISTS {drop_name}"
+                ))
+                .execute(pool)
+                .await?;
+            }
+            sqlx::query("ALTER TABLE project_e2b_worker ALTER COLUMN cluster_id SET NOT NULL")
+                .execute(pool)
+                .await?;
             sqlx::query("ALTER TABLE project_e2b_worker ADD PRIMARY KEY (cluster_id, proj_id)")
                 .execute(pool)
                 .await?;

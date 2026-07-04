@@ -134,7 +134,7 @@ impl PoolClients {
         Some(&self.e2b_client)
     }
 
-    /// Graceful shutdown: project workers survive on e2b; kill only non-persisted leases.
+    /// Graceful shutdown: project workers + singletons survive on e2b; kill only ephemeral leases.
     pub async fn shutdown_e2b_sandboxes(&self) {
         let cluster_id = std::env::var("CLAW_CLUSTER_ID")
             .ok()
@@ -144,7 +144,10 @@ impl PoolClients {
 
         self.e2b_interactive.shutdown_all().await;
 
-        let skip = self.e2b_workers.all_persisted_sandbox_ids().await;
+        let mut skip = self.e2b_workers.all_persisted_sandbox_ids().await;
+        skip.extend(self.e2b_client.persistent_sandbox_ids());
+        skip.sort();
+        skip.dedup();
         let leased = self
             .e2b_client
             .kill_all_leased_sandboxes_except(&skip)
@@ -281,5 +284,21 @@ impl PoolClients {
     /// Startup reconcile: ensure every project's worker exists on e2b and matches template.
     pub async fn reconcile_project_workers_on_startup(&self) -> Result<(), String> {
         self.e2b_workers.reconcile_all_on_startup().await
+    }
+
+    /// Ensure observe / nas-api / ovs singletons + register lease ticker tracking.
+    pub async fn ensure_e2b_singletons_on_startup(&self, db: &GatewaySessionDb) {
+        crate::gateway_e2b_singleton_lifecycle::ensure_e2b_singletons_on_startup(
+            db,
+            self.e2b_client.as_ref(),
+        )
+        .await;
+    }
+
+    pub fn spawn_singleton_health_reconcile_loop(&self, db: Arc<GatewaySessionDb>) {
+        crate::gateway_e2b_singleton_lifecycle::spawn_singleton_health_reconcile_loop(
+            db,
+            Arc::clone(&self.e2b_client),
+        );
     }
 }

@@ -44,12 +44,13 @@ use http_gateway_rs::biz_advice_report::{
 use http_gateway_rs::{
     admin_mcp_http, admin_mcp_solve, claw_tap_cluster_state, client_origin,
     gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_e2b_nas_settings,
-    gateway_e2b_observe_proxy, gateway_e2b_observe_reset, gateway_global_settings,
-    gateway_llm_config_sync, gateway_project_e2b_worker, gateway_strict_landlock_settings,
-    gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api,
-    project_config_apply, project_config_version, project_entity_revision, project_extra_session,
-    project_git_sync, project_id, project_tools, session_agent_api, session_db, session_merge,
-    session_ovs_api, session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
+    gateway_e2b_observe_proxy, gateway_e2b_observe_reset, gateway_e2b_singleton_api,
+    gateway_global_settings, gateway_llm_config_sync, gateway_project_e2b_worker,
+    gateway_strict_landlock_settings, gateway_translate, llm_probe, mcp_probe, pool,
+    pool_consumer_resolve, preflight_plugin_api, project_config_apply, project_config_version,
+    project_entity_revision, project_extra_session, project_git_sync, project_id, project_tools,
+    session_agent_api, session_db, session_merge, session_ovs_api, session_terminal_api, turn_id,
+    turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -1462,19 +1463,9 @@ async fn main() {
     let session_db = Arc::new(session_db);
     pool_clients.bind_session_db(Arc::clone(&session_db)).await;
     nas_api.bind_session_db(Arc::clone(&session_db)).await;
-    if pool::E2bNasApiSingleton::enabled_from_env() {
-        match nas_api.verify_endpoint_configured().await {
-            Ok(()) => {}
-            Err(e) => warn!(
-                target: "claw_e2b_sandbox",
-                component = "startup",
-                phase = "nas_api",
-                error = %e,
-                "claw-nas-api endpoint not in PG yet; gateway starts without it — \
-                 NAS layout/solve will fail until: ./deploy/stack/gateway.sh nas-api-up"
-            ),
-        }
-    }
+    pool_clients
+        .ensure_e2b_singletons_on_startup(session_db.as_ref())
+        .await;
     if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
         tracing::warn!(
             target: "claw_e2b_proj_worker",
@@ -1516,6 +1507,12 @@ async fn main() {
     .await
     {
         *state.claw_tap_cluster.write().await = Some(cluster);
+    }
+
+    {
+        let poll_db = state.session_db.clone();
+        let poll_pool = state.pool_clients.clone();
+        poll_pool.spawn_singleton_health_reconcile_loop(poll_db);
     }
 
     {
@@ -1674,6 +1671,22 @@ async fn main() {
         .route(
             "/v1/gateway/global-settings/observe-tap/reset",
             post(reset_gateway_observe_tap_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-singletons",
+            get(get_gateway_e2b_singletons_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-singleton-templates",
+            put(put_gateway_e2b_singleton_templates_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-singletons/{component}/ensure",
+            post(ensure_gateway_e2b_singleton_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-singletons/{component}/reset",
+            post(reset_gateway_e2b_singleton_handler),
         )
         // e2b OVS / observe Live: browsers use direct e2b traffic URLs from API (no gateway proxy).
         .route(
@@ -5176,6 +5189,63 @@ async fn reset_gateway_observe_tap_handler(
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
     gateway_claw_tap_settings::enrich_claw_tap_observe_runtime(&mut body.tap, client).await;
+    Ok(Json(body))
+}
+
+async fn get_gateway_e2b_singletons_handler(
+    State(state): State<AppState>,
+) -> Result<Json<gateway_e2b_singleton_api::E2bSingletonsStatusResponse>, ApiError> {
+    let body = gateway_e2b_singleton_api::load_e2b_singletons_status(&state.session_db)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(Json(body))
+}
+
+async fn put_gateway_e2b_singleton_templates_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_e2b_singleton_api::PutE2bSingletonTemplatesInput>,
+) -> Result<Json<gateway_e2b_singleton_api::PutE2bSingletonTemplatesResponse>, ApiError> {
+    let body = gateway_e2b_singleton_api::put_e2b_singleton_templates(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(body))
+}
+
+async fn ensure_gateway_e2b_singleton_handler(
+    State(state): State<AppState>,
+    AxumPath(component): AxumPath<String>,
+) -> Result<Json<gateway_e2b_singleton_api::E2bSingletonActionResponse>, ApiError> {
+    let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "e2b sandbox client not configured",
+        )
+    })?;
+    let role = gateway_e2b_singleton_api::parse_singleton_component(&component)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let body =
+        gateway_e2b_singleton_api::ensure_e2b_singleton_via_api(&state.session_db, client, role)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(body))
+}
+
+async fn reset_gateway_e2b_singleton_handler(
+    State(state): State<AppState>,
+    AxumPath(component): AxumPath<String>,
+) -> Result<Json<gateway_e2b_singleton_api::E2bSingletonActionResponse>, ApiError> {
+    let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "e2b sandbox client not configured",
+        )
+    })?;
+    let role = gateway_e2b_singleton_api::parse_singleton_component(&component)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let body =
+        gateway_e2b_singleton_api::reset_e2b_singleton_via_api(&state.session_db, client, role)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
     Ok(Json(body))
 }
 

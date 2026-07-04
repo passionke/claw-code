@@ -40,8 +40,9 @@ while [[ $# -gt 0 ]]; do
       cat <<EOF
 Usage: gateway.sh e2b-worker-deploy [options]
 
-Local dev: compile claw + stage ttyd → e2b worker template (copy strategy).
-No GitHub CI or ACR pull. Sandboxes run on e2b worker nodes (e.g. 10.8.0.2 arm64).
+Local dev: cross-compile linux/amd64 claw + stage ttyd → e2b worker template (copy).
+Build persists settings_json.e2bWorker.templateId to PG. Gateway startup/renewal reconciles workers.
+See deploy/e2b/WORKER-BUILD.md
 
 Options:
   --skip-compile   Reuse deploy/stack/.linux-artifacts/release/claw (must match target arch)
@@ -49,7 +50,7 @@ Options:
 
 Env (from .env):
   CLAW_E2B_API_URL, CLAW_E2B_API_KEY, CLAW_E2B_TEMPLATE (default claw-worker)
-  CLAW_E2B_WORKER_ARCH       arm64 (dev Mac / 10.8.0.2) | amd64 (prod 10.8.0.1)
+  CLAW_E2B_WORKER_ARCH       amd64（自托管默认；e2b 节点全是 x86_64）
   CLAW_E2B_DEV_WORKER_HOST   optional hint (e.g. 10.8.0.2); logged only
   CLAW_E2B_TEMPLATE_COPY_DIR default deploy/stack/.e2b-worker-bins
 

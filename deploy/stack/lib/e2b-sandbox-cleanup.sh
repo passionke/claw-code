@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kill all sandboxes on self-hosted / e2b e2b (orphan cleanup after gateway restarts). Author: kejiqing
+# Kill all sandboxes on self-hosted e2b (manual orphan cleanup only — never auto-run from E2E). Author: kejiqing
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

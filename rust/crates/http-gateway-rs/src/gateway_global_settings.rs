@@ -13,9 +13,10 @@ use std::collections::BTreeMap;
 use crate::cluster_identity::gateway_cluster_id_optional;
 use crate::gateway_admin_mcp_token::{admin_mcp_tokens_public, AdminMcpTokenPublic};
 use crate::gateway_claw_tap_settings::{ClawTapSettings, ClawTapSettingsPublic};
-use crate::gateway_e2b_nas_api_settings::E2bNasApiSettings;
+use crate::gateway_e2b_nas_api_settings::{E2bNasApiSettings, E2bNasApiSettingsPublic};
 use crate::gateway_e2b_nas_settings::E2bNasSettingsPublic;
-use crate::gateway_e2b_ovs_settings::E2bOvsSettings;
+use crate::gateway_e2b_observe_settings::{E2bObserveSettings, E2bObserveSettingsPublic};
+use crate::gateway_e2b_ovs_settings::{E2bOvsSettings, E2bOvsSettingsPublic};
 use crate::gateway_e2b_worker_settings::E2bWorkerSettings;
 use crate::gateway_llm_cluster_store::{self, resolve_llm_cluster_id};
 use crate::gateway_llm_model_apply::{self, LlmModelApplyOutcome};
@@ -238,6 +239,8 @@ pub struct GatewayGlobalSettingsStore {
     pub(crate) e2b_ovs: E2bOvsSettings,
     #[serde(rename = "e2bNasApi", default)]
     pub(crate) e2b_nas_api: E2bNasApiSettings,
+    #[serde(rename = "e2bObserve", default)]
+    pub(crate) e2b_observe: E2bObserveSettings,
     #[serde(rename = "e2bWorker", default)]
     pub(crate) e2b_worker: E2bWorkerSettings,
     #[serde(
@@ -303,6 +306,12 @@ pub struct GatewayGlobalSettingsResponse {
     pub claw_tap: Option<ClawTapSettingsPublic>,
     #[serde(rename = "e2bNas", skip_serializing_if = "Option::is_none")]
     pub e2b_nas: Option<E2bNasSettingsPublic>,
+    #[serde(rename = "e2bNasApi", skip_serializing_if = "Option::is_none")]
+    pub e2b_nas_api: Option<E2bNasApiSettingsPublic>,
+    #[serde(rename = "e2bOvs", skip_serializing_if = "Option::is_none")]
+    pub e2b_ovs: Option<E2bOvsSettingsPublic>,
+    #[serde(rename = "e2bObserve", skip_serializing_if = "Option::is_none")]
+    pub e2b_observe: Option<E2bObserveSettingsPublic>,
     #[serde(rename = "adminMcpTokens", default)]
     pub admin_mcp_tokens: Vec<AdminMcpTokenPublic>,
     #[serde(rename = "clusterId", skip_serializing_if = "Option::is_none")]
@@ -860,6 +869,15 @@ pub async fn load_response(
         e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
             &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
         )),
+        e2b_nas_api: crate::gateway_e2b_nas_api_settings::e2b_nas_api_settings_public(db)
+            .await
+            .ok(),
+        e2b_ovs: crate::gateway_e2b_ovs_settings::e2b_ovs_settings_public(db)
+            .await
+            .ok(),
+        e2b_observe: crate::gateway_e2b_observe_settings::e2b_observe_settings_public(db)
+            .await
+            .ok(),
         admin_mcp_tokens: admin_mcp_tokens_public(&settings),
         cluster_id: cluster_id_public(),
         strict_landlock_default: settings.strict_landlock_default.clone(),

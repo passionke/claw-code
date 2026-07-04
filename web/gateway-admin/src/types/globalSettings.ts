@@ -47,7 +47,7 @@ export interface ClawTapSettings {
   liveBaseUrl?: string;
   liveSessionUrlTemplate?: string;
   liveBrowserHostsLine?: string;
-  /** e2b observe singleton; written by `observe-tap-up`, not hand-edited in Admin. */
+  /** e2b observe singleton; gateway lifecycle writes PG. */
   e2bObserveSandboxId?: string;
   /** Live e2b sandbox state from gateway `GET /sandboxes/{id}`. Author: kejiqing */
   e2bObserveSandboxState?: string;
@@ -99,6 +99,51 @@ export interface ObserveTapResetResponse {
   message?: string;
 }
 
+export interface E2bNasApiSettings {
+  templateId?: string;
+  effectiveTemplateId: string;
+  baseUrl?: string;
+  sandboxId?: string;
+  updatedAtMs: number;
+  online: boolean;
+}
+
+export interface E2bOvsSettings {
+  templateId?: string;
+  effectiveTemplateId: string;
+  baseUrl?: string;
+  sandboxId?: string;
+  updatedAtMs: number;
+  configured: boolean;
+}
+
+export interface E2bObserveTemplateSettings {
+  templateId?: string;
+  effectiveTemplateId: string;
+  updatedAtMs: number;
+  configured: boolean;
+}
+
+export interface E2bSingletonsStatusResponse {
+  nasApi: E2bNasApiSettings;
+  ovs: E2bOvsSettings;
+  observe: E2bObserveTemplateSettings;
+}
+
+export interface PutE2bSingletonTemplatesResponse {
+  nasApi: E2bNasApiSettings;
+  ovs: E2bOvsSettings;
+  observe: E2bObserveTemplateSettings;
+}
+
+export interface E2bSingletonActionResponse {
+  component: string;
+  sandboxId?: string;
+  baseUrl?: string;
+  trafficReachable: boolean;
+  message?: string;
+}
+
 export interface GlobalSettingsResponse {
   updatedAtMs: number;
   gitPats: GitPatRow[];
@@ -110,6 +155,9 @@ export interface GlobalSettingsResponse {
   activeLlmConfig?: ActiveLlmConfig;
   clawTap?: ClawTapSettings;
   e2bNas?: E2bNasSettings;
+  e2bNasApi?: E2bNasApiSettings;
+  e2bOvs?: E2bOvsSettings;
+  e2bObserve?: E2bObserveTemplateSettings;
   adminMcpTokens?: AdminMcpTokenRow[];
   /** Derived from gateway PG URL; read-only. */
   clusterId?: string;

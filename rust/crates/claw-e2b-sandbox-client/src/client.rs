@@ -1,6 +1,6 @@
 //! E2B-compatible REST client for Alibaba e2b cloud sandbox. Author: kejiqing
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -14,8 +14,13 @@ use tracing::{debug, warn};
 /// Renew sandbox TTL when local estimate of remaining time falls below this (e2b min is 5m).
 pub const SANDBOX_LEASE_RENEW_LEAD_SECS: u64 = 300;
 
-/// Background TTL touch interval for tracked project workers (`spawn_lease_ticker`).
+/// Background TTL touch interval for tracked sandboxes (`spawn_lease_ticker`).
 pub const SANDBOX_LEASE_TICK_SECS: u64 = 60;
+
+/// e2b singleton `metadata.clawRole` values (observe / nas-api / ovs).
+pub const SINGLETON_ROLE_OBSERVE: &str = "observe-singleton";
+pub const SINGLETON_ROLE_NAS_API: &str = "nas-api-singleton";
+pub const SINGLETON_ROLE_OVS: &str = "ovs-singleton";
 
 /// POST /timeout then GET /sandboxes/{id} retries when `endAt` did not expand.
 const SANDBOX_TTL_VERIFY_MAX_ATTEMPTS: u32 = 3;
@@ -133,6 +138,8 @@ pub struct E2bSandboxClient {
     http: reqwest::Client,
     /// Local TTL estimate per sandbox (`POST /timeout` resets from request time).
     lease_expires: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Persistent singletons (observe / nas-api / ovs) — never killed on gateway shutdown.
+    persistent_sandboxes: Arc<Mutex<HashSet<String>>>,
     /// e2b `GET /health` NAS platform (host bind inject).
     e2b_platform_nas: Arc<Mutex<Option<E2bNasPlatform>>>,
 }
@@ -144,6 +151,7 @@ impl E2bSandboxClient {
             config,
             http: reqwest::Client::new(),
             lease_expires: Arc::new(Mutex::new(HashMap::new())),
+            persistent_sandboxes: Arc::new(Mutex::new(HashSet::new())),
             e2b_platform_nas: Arc::new(Mutex::new(None)),
         }
     }
@@ -287,6 +295,41 @@ impl E2bSandboxClient {
         for id in sandbox_ids {
             self.register_tracked_sandbox(id);
         }
+    }
+
+    /// Register a persistent e2b singleton for lease ticker + gateway shutdown skip. Author: kejiqing
+    pub fn track_persistent_sandbox(&self, sandbox_id: &str) {
+        if sandbox_id.trim().is_empty() {
+            return;
+        }
+        self.register_tracked_sandbox(sandbox_id);
+        self.persistent_sandboxes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(sandbox_id.to_string());
+    }
+
+    pub fn track_persistent_sandboxes(&self, sandbox_ids: &[String]) {
+        for id in sandbox_ids {
+            self.track_persistent_sandbox(id);
+        }
+    }
+
+    #[must_use]
+    pub fn persistent_sandbox_ids(&self) -> Vec<String> {
+        self.persistent_sandboxes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Renew TTL and register for lease ticker (observe / nas-api / ovs singletons).
+    pub async fn touch_persistent_sandbox(&self, sandbox_id: &str) -> Result<(), String> {
+        self.track_persistent_sandbox(sandbox_id);
+        self.renew_sandbox_ttl_secs(sandbox_id, self.config.sandbox_timeout_secs)
+            .await
     }
 
     /// `GET /sandboxes/{id}` — state + `endAt` for TTL verification.
@@ -679,11 +722,15 @@ impl E2bSandboxClient {
             .collect())
     }
 
-    /// Find observe singleton sandbox id for `cluster_id` (`metadata.clawRole=observe-singleton`).
-    pub async fn find_observe_singleton(&self, cluster_id: &str) -> Result<Option<String>, String> {
+    /// Find singleton sandbox id for `cluster_id` + `claw_role`.
+    pub async fn find_singleton(
+        &self,
+        cluster_id: &str,
+        claw_role: &str,
+    ) -> Result<Option<String>, String> {
         let cluster_id = cluster_id.trim();
         for row in self.list_sandboxes().await? {
-            if row.get("clawRole").map(String::as_str) == Some("observe-singleton")
+            if row.get("clawRole").map(String::as_str) == Some(claw_role)
                 && row.get("clusterId").map(String::as_str) == Some(cluster_id)
             {
                 if let Some(sid) = row.get("__sandboxId") {
@@ -694,35 +741,85 @@ impl E2bSandboxClient {
         Ok(None)
     }
 
-    /// Create observe singleton (`metadata.clawRole=observe-singleton`). NAS optional. Author: kejiqing
-    pub async fn create_observe_singleton(
+    /// Find observe singleton sandbox id for `cluster_id` (`metadata.clawRole=observe-singleton`).
+    pub async fn find_observe_singleton(&self, cluster_id: &str) -> Result<Option<String>, String> {
+        self.find_singleton(cluster_id, SINGLETON_ROLE_OBSERVE)
+            .await
+    }
+
+    pub async fn find_nas_api_singleton(&self, cluster_id: &str) -> Result<Option<String>, String> {
+        self.find_singleton(cluster_id, SINGLETON_ROLE_NAS_API)
+            .await
+    }
+
+    pub async fn find_ovs_singleton(&self, cluster_id: &str) -> Result<Option<String>, String> {
+        self.find_singleton(cluster_id, SINGLETON_ROLE_OVS).await
+    }
+
+    /// Kill every singleton match for `claw_role` except `keep_sandbox_id`.
+    pub async fn reap_singleton_orphans(
+        &self,
+        cluster_id: &str,
+        claw_role: &str,
+        keep_sandbox_id: &str,
+    ) -> Result<usize, String> {
+        let cluster_id = cluster_id.trim();
+        let keep = keep_sandbox_id.trim();
+        let mut killed = 0usize;
+        for row in self.list_sandboxes().await? {
+            if row.get("clawRole").map(String::as_str) != Some(claw_role)
+                || row.get("clusterId").map(String::as_str) != Some(cluster_id)
+            {
+                continue;
+            }
+            let Some(sid) = row.get("__sandboxId") else {
+                continue;
+            };
+            if sid == keep {
+                continue;
+            }
+            self.kill_sandbox(sid).await?;
+            killed += 1;
+        }
+        Ok(killed)
+    }
+
+    async fn create_singleton_sandbox(
         &self,
         template_id: &str,
         cluster_id: &str,
-        sandbox_database_url: &str,
+        claw_role: &str,
+        env_vars: BTreeMap<String, String>,
+        mount_points: &[NasMountPoint],
+        require_nas: bool,
     ) -> Result<E2bSandboxHandle, String> {
         if self.config.is_self_hosted() {
             let _ = self.refresh_e2b_platform_nas().await;
         }
         let mut metadata = BTreeMap::new();
-        metadata.insert("clawRole".to_string(), "observe-singleton".to_string());
+        metadata.insert("clawRole".to_string(), claw_role.to_string());
         metadata.insert("clusterId".to_string(), cluster_id.to_string());
 
-        let mount_points = nas_paths::ovs_root_mounts();
         let mut body = json!({
             "templateID": template_id,
             "timeout": self.config.sandbox_timeout_secs,
             "metadata": metadata,
-            "envVars": {
-                "CLAW_CLUSTER_ID": cluster_id,
-                "CLAW_GATEWAY_DATABASE_URL": sandbox_database_url,
-            },
         });
-        let nas = self.nas_config_body(&mount_points);
-        let nas_configured = nas.is_some();
-        if let Some(nas) = nas {
-            body["nasConfig"] = json!(nas);
+        if !env_vars.is_empty() {
+            body["envVars"] = json!(env_vars);
         }
+        let nas_configured = if require_nas {
+            let nas = self.require_nas_config_body(mount_points)?;
+            body["nasConfig"] = json!(nas);
+            true
+        } else {
+            let nas = self.nas_config_body(mount_points);
+            let nas_configured = nas.is_some();
+            if let Some(nas) = nas {
+                body["nasConfig"] = json!(nas);
+            }
+            nas_configured
+        };
         self.apply_self_hosted_create_opts(&mut body);
 
         let url = format!("{}/sandboxes", self.config.api_url.trim_end_matches('/'));
@@ -731,7 +828,8 @@ impl E2bSandboxClient {
             %url,
             template = %template_id,
             cluster_id,
-            "create observe-singleton sandbox"
+            claw_role,
+            "create singleton sandbox"
         );
         let resp = self
             .http
@@ -740,19 +838,21 @@ impl E2bSandboxClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("e2b create observe sandbox request: {e}"))?;
+            .map_err(|e| format!("e2b create {claw_role} sandbox request: {e}"))?;
 
         let status = resp.status();
         let text = resp
             .text()
             .await
-            .map_err(|e| format!("e2b create observe sandbox body: {e}"))?;
+            .map_err(|e| format!("e2b create {claw_role} sandbox body: {e}"))?;
         if !status.is_success() {
-            return Err(format!("e2b create observe sandbox HTTP {status}: {text}"));
+            return Err(format!(
+                "e2b create {claw_role} sandbox HTTP {status}: {text}"
+            ));
         }
 
         let parsed: CreateSandboxResponse = serde_json::from_str(&text)
-            .map_err(|e| format!("e2b create observe sandbox parse: {e}; body={text}"))?;
+            .map_err(|e| format!("e2b create {claw_role} sandbox parse: {e}; body={text}"))?;
         let sandbox_domain = if self.config.is_self_hosted() {
             self.config.domain.clone()
         } else {
@@ -771,12 +871,70 @@ impl E2bSandboxClient {
             ttyd_use_tls: !self.config.is_self_hosted(),
         };
         let handle = self
-            .finish_sandbox_create(handle, nas_configured, &mount_points)
+            .finish_sandbox_create(handle, nas_configured, mount_points)
             .await?;
-        // Observe has no lease ticker; NAS probe may be skipped — always verify platform TTL.
+        self.track_persistent_sandbox(&handle.sandbox_id);
         self.renew_sandbox_ttl_verified(&handle.sandbox_id, self.config.sandbox_timeout_secs)
             .await?;
         Ok(handle)
+    }
+
+    /// Create observe singleton (`metadata.clawRole=observe-singleton`). NAS optional. Author: kejiqing
+    pub async fn create_observe_singleton(
+        &self,
+        template_id: &str,
+        cluster_id: &str,
+        sandbox_database_url: &str,
+    ) -> Result<E2bSandboxHandle, String> {
+        let mut env_vars = BTreeMap::new();
+        env_vars.insert("CLAW_CLUSTER_ID".to_string(), cluster_id.to_string());
+        env_vars.insert(
+            "CLAW_GATEWAY_DATABASE_URL".to_string(),
+            sandbox_database_url.to_string(),
+        );
+        self.create_singleton_sandbox(
+            template_id,
+            cluster_id,
+            SINGLETON_ROLE_OBSERVE,
+            env_vars,
+            &nas_paths::ovs_root_mounts(),
+            false,
+        )
+        .await
+    }
+
+    /// Create nas-api singleton (`metadata.clawRole=nas-api-singleton`). Author: kejiqing
+    pub async fn create_nas_api_singleton(
+        &self,
+        template_id: &str,
+        cluster_id: &str,
+    ) -> Result<E2bSandboxHandle, String> {
+        self.create_singleton_sandbox(
+            template_id,
+            cluster_id,
+            SINGLETON_ROLE_NAS_API,
+            BTreeMap::new(),
+            &nas_paths::ovs_root_mounts(),
+            true,
+        )
+        .await
+    }
+
+    /// Create OVS singleton (`metadata.clawRole=ovs-singleton`). Author: kejiqing
+    pub async fn create_ovs_singleton(
+        &self,
+        template_id: &str,
+        cluster_id: &str,
+    ) -> Result<E2bSandboxHandle, String> {
+        self.create_singleton_sandbox(
+            template_id,
+            cluster_id,
+            SINGLETON_ROLE_OVS,
+            BTreeMap::new(),
+            &nas_paths::ovs_root_mounts(),
+            false,
+        )
+        .await
     }
 
     fn parse_sandbox_id(row: &Value) -> Option<String> {
@@ -928,16 +1086,21 @@ impl E2bSandboxClient {
         })
     }
 
-    /// Gateway shutdown: DELETE leased sandboxes except persisted project workers.
+    /// Gateway shutdown: DELETE leased sandboxes except persisted project workers + singletons.
     pub async fn kill_all_leased_sandboxes_except(&self, skip_sandbox_ids: &[String]) -> usize {
         let skip: std::collections::HashSet<&str> =
             skip_sandbox_ids.iter().map(String::as_str).collect();
+        let persistent: std::collections::HashSet<String> = self
+            .persistent_sandboxes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let ids: Vec<String> = self
             .lease_expires
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
-            .filter(|id| !skip.contains(id.as_str()))
+            .filter(|id| !skip.contains(id.as_str()) && !persistent.contains(id.as_str()))
             .cloned()
             .collect();
         let mut killed = 0usize;
@@ -971,6 +1134,10 @@ impl E2bSandboxClient {
             .await
             .map_err(|e| format!("e2b kill sandbox request: {e}"))?;
         self.unregister_sandbox_lease(sandbox_id);
+        self.persistent_sandboxes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(sandbox_id);
         if resp.status().is_success() || resp.status().as_u16() == 404 {
             return Ok(());
         }
@@ -979,8 +1146,7 @@ impl E2bSandboxClient {
         Err(format!("e2b kill sandbox HTTP {status}: {text}"))
     }
 
-    /// Gateway shutdown: persistent singletons (observe/ovs) are Python-managed — no-op here.
-    /// Gateway shutdown: persistent singletons (observe/ovs) are Python-managed — no-op here.
+    /// Gateway shutdown: persistent singletons are tracked separately — never killed here.
     #[allow(clippy::unused_async)]
     pub async fn kill_cluster_singleton_orphans(&self, _cluster_id: &str) -> Result<usize, String> {
         Ok(0)

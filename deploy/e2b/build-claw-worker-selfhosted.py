@@ -7,11 +7,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 _E2B_DIR = Path(__file__).resolve().parent
 if str(_E2B_DIR) not in sys.path:
     sys.path.insert(0, str(_E2B_DIR))
+from e2b_pg_settings import merge_settings_json_key
 from e2b_template_registry import (
     apply_template_skip_cache_force,
     load_repo_dotenv,
@@ -321,9 +323,25 @@ def main() -> int:
             **opts,
         )
 
+    now_ms = int(time.time() * 1000)
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
+    try:
+        merge_settings_json_key(
+            "e2bWorker",
+            {
+                "templateId": build.template_id,
+                "alias": alias,
+                "updatedAtMs": now_ms,
+            },
+            now_ms=now_ms,
+        )
+        print(f"==> persisted e2bWorker.templateId={build.template_id!r} to PG")
+    except Exception as exc:  # noqa: BLE001
+        print(f"warn: skip PG e2bWorker.templateId persist: {exc}", file=sys.stderr)
+
     print(f"OK: template {alias!r} ({build.template_id}) ready on {opts['api_url']}")
+    print("hint: restart gateway or wait for renewal ticker — startup reconcile rotates proj workers on templateId mismatch")
     if verify:
         return _verify(build.template_id, opts)
     return 0

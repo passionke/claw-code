@@ -23,7 +23,7 @@ Writes claw + ttyd (linux/${WORKER_ARCH}) into:
   ${OUT_DIR}/
 
 Env:
-  CLAW_E2B_WORKER_ARCH         arm64 | amd64 (default: host arch; dev Mac → arm64)
+  CLAW_E2B_WORKER_ARCH         amd64 | arm64 (default amd64 for self-hosted e2b)
   CLAW_E2B_TEMPLATE_COPY_DIR   output dir
   CLAW_TTYD_VERSION            default ${TTYD_VERSION}
 

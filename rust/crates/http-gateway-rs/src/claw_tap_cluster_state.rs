@@ -109,7 +109,7 @@ async fn refresh_fc_claw_tap_cluster_state(
         .filter(|s| !s.trim().is_empty())
         .or_else(|| claw_tap_proxy_base_url(&tap.host, tap.proxy_port))
         .ok_or_else(|| {
-            "e2b observe tap proxyBaseUrl missing: run gateway.sh observe-tap-up".to_string()
+            "e2b observe tap proxyBaseUrl missing: gateway ensure or Admin reset".to_string()
         })?;
     let db_url = gateway_database_url()?;
     let local = local_cluster_identity(&cluster_id, &db_url)?;
