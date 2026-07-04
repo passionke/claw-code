@@ -743,7 +743,8 @@ impl E2bSandboxClient {
 
     /// Find observe singleton sandbox id for `cluster_id` (`metadata.clawRole=observe-singleton`).
     pub async fn find_observe_singleton(&self, cluster_id: &str) -> Result<Option<String>, String> {
-        self.find_singleton(cluster_id, SINGLETON_ROLE_OBSERVE).await
+        self.find_singleton(cluster_id, SINGLETON_ROLE_OBSERVE)
+            .await
     }
 
     pub async fn find_nas_api_singleton(&self, cluster_id: &str) -> Result<Option<String>, String> {
@@ -845,7 +846,9 @@ impl E2bSandboxClient {
             .await
             .map_err(|e| format!("e2b create {claw_role} sandbox body: {e}"))?;
         if !status.is_success() {
-            return Err(format!("e2b create {claw_role} sandbox HTTP {status}: {text}"));
+            return Err(format!(
+                "e2b create {claw_role} sandbox HTTP {status}: {text}"
+            ));
         }
 
         let parsed: CreateSandboxResponse = serde_json::from_str(&text)

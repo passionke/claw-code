@@ -3,9 +3,7 @@
 use claw_e2b_sandbox_client::E2bSandboxClient;
 
 use crate::gateway_claw_tap_settings::{load_claw_tap_public, ClawTapSettingsPublic};
-use crate::gateway_e2b_singleton_lifecycle::{
-    reset_e2b_singleton, E2bSingletonComponent,
-};
+use crate::gateway_e2b_singleton_lifecycle::{reset_e2b_singleton, E2bSingletonComponent};
 use crate::pool::interactive_backend::e2b_observe_is_enabled;
 use crate::session_db::GatewaySessionDb;
 

@@ -295,10 +295,7 @@ impl PoolClients {
         .await;
     }
 
-    pub fn spawn_singleton_health_reconcile_loop(
-        self: &Self,
-        db: Arc<GatewaySessionDb>,
-    ) {
+    pub fn spawn_singleton_health_reconcile_loop(self: &Self, db: Arc<GatewaySessionDb>) {
         crate::gateway_e2b_singleton_lifecycle::spawn_singleton_health_reconcile_loop(
             db,
             Arc::clone(&self.e2b_client),

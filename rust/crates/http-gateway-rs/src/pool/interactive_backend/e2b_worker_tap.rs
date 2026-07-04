@@ -23,8 +23,7 @@ pub async fn load_e2b_observe_proxy_base_url(
     let tap = settings.claw_tap;
     if tap.updated_at_ms <= 0 {
         return Err(
-            "e2b observe tap not configured: gateway startup ensure or Admin 核心组件 reset"
-                .into(),
+            "e2b observe tap not configured: gateway startup ensure or Admin 核心组件 reset".into(),
         );
     }
     tap.proxy_base_url

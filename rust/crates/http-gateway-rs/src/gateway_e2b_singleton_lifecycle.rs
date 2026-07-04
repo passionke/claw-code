@@ -9,19 +9,21 @@ use claw_e2b_sandbox_client::{
 };
 use tracing::{info, warn};
 
-use crate::cluster_identity::{fetch_tap_cluster_identity, gateway_cluster_id, sandbox_database_url};
+use crate::cluster_identity::{
+    fetch_tap_cluster_identity, gateway_cluster_id, sandbox_database_url,
+};
 use crate::gateway_claw_tap_settings::{
     live_session_viewer_url_template, ClawTapMode, ClawTapSettings, DEFAULT_CLAW_TAP_LIVE_PORT,
     DEFAULT_CLAW_TAP_PROXY_PORT,
 };
-use crate::gateway_e2b_nas_api_settings::{
-    load_e2b_nas_api_template_id, E2bNasApiSettings,
-};
+use crate::gateway_e2b_nas_api_settings::{load_e2b_nas_api_template_id, E2bNasApiSettings};
 use crate::gateway_e2b_observe_settings::load_e2b_observe_template_id;
 use crate::gateway_e2b_ovs_settings::{load_e2b_ovs_template_id, E2bOvsSettings};
-use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_global_settings};
 use crate::gateway_e2b_worker_settings::e2b_project_worker_renew_interval_secs_from_env;
-use crate::pool::interactive_backend::{e2b_observe_is_enabled, interactive_backend_is_e2b, E2bNasApiSingleton};
+use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_global_settings};
+use crate::pool::interactive_backend::{
+    e2b_observe_is_enabled, interactive_backend_is_e2b, E2bNasApiSingleton,
+};
 use crate::session_db::GatewaySessionDb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +68,12 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn service_base_url(client: &E2bSandboxClient, port: u16, sandbox_id: &str, domain: &str) -> String {
+fn service_base_url(
+    client: &E2bSandboxClient,
+    port: u16,
+    sandbox_id: &str,
+    domain: &str,
+) -> String {
     let host = client.service_public_host(port, sandbox_id, domain);
     let scheme = if client.config().is_self_hosted() {
         "http"
@@ -245,7 +252,10 @@ async fn kill_existing_singleton(
     }
 }
 
-async fn ensure_nas_api(db: &GatewaySessionDb, client: &E2bSandboxClient) -> Result<E2bSingletonOutcome, String> {
+async fn ensure_nas_api(
+    db: &GatewaySessionDb,
+    client: &E2bSandboxClient,
+) -> Result<E2bSingletonOutcome, String> {
     if !E2bNasApiSingleton::enabled_from_env() {
         return Ok(E2bSingletonOutcome {
             sandbox_id: None,
@@ -327,7 +337,10 @@ async fn ensure_nas_api(db: &GatewaySessionDb, client: &E2bSandboxClient) -> Res
     })
 }
 
-async fn ensure_observe(db: &GatewaySessionDb, client: &E2bSandboxClient) -> Result<E2bSingletonOutcome, String> {
+async fn ensure_observe(
+    db: &GatewaySessionDb,
+    client: &E2bSandboxClient,
+) -> Result<E2bSingletonOutcome, String> {
     if !e2b_observe_is_enabled() {
         return Ok(E2bSingletonOutcome {
             sandbox_id: None,
@@ -364,7 +377,8 @@ async fn ensure_observe(db: &GatewaySessionDb, client: &E2bSandboxClient) -> Res
         let proxy_ok = fetch_tap_cluster_identity(&proxy_base, &cluster_id)
             .await
             .is_ok();
-        if client.sandbox_running(sid).await && (live_ok || proxy_ok || http_get_ok(&proxy_health).await)
+        if client.sandbox_running(sid).await
+            && (live_ok || proxy_ok || http_get_ok(&proxy_health).await)
         {
             client.touch_persistent_sandbox(sid).await?;
             let handle = E2bSandboxHandle {
@@ -430,7 +444,10 @@ async fn ensure_observe(db: &GatewaySessionDb, client: &E2bSandboxClient) -> Res
     })
 }
 
-async fn ensure_ovs(db: &GatewaySessionDb, client: &E2bSandboxClient) -> Result<E2bSingletonOutcome, String> {
+async fn ensure_ovs(
+    db: &GatewaySessionDb,
+    client: &E2bSandboxClient,
+) -> Result<E2bSingletonOutcome, String> {
     let cluster_id = gateway_cluster_id()?;
     let template = load_e2b_ovs_template_id(db)
         .await
@@ -441,13 +458,8 @@ async fn ensure_ovs(db: &GatewaySessionDb, client: &E2bSandboxClient) -> Result<
         .ok()
         .and_then(|(s, _, _)| s.e2b_ovs.sandbox_id);
 
-    let candidate = resolve_sandbox_id(
-        client,
-        &cluster_id,
-        SINGLETON_ROLE_OVS,
-        pg_sid.as_deref(),
-    )
-    .await;
+    let candidate =
+        resolve_sandbox_id(client, &cluster_id, SINGLETON_ROLE_OVS, pg_sid.as_deref()).await;
 
     if let Some(ref sid) = candidate {
         let domain = client.config().domain.clone();
@@ -488,18 +500,11 @@ async fn ensure_ovs(db: &GatewaySessionDb, client: &E2bSandboxClient) -> Result<
         cluster_id = %cluster_id,
         "create ovs singleton"
     );
-    let handle = client
-        .create_ovs_singleton(&template, &cluster_id)
-        .await?;
+    let handle = client.create_ovs_singleton(&template, &cluster_id).await?;
     let ovs_url = format!(
         "{}/ovs",
-        service_base_url(
-            client,
-            ovs_port,
-            &handle.sandbox_id,
-            &handle.sandbox_domain,
-        )
-        .trim_end_matches('/')
+        service_base_url(client, ovs_port, &handle.sandbox_id, &handle.sandbox_domain,)
+            .trim_end_matches('/')
     );
     let check_url = format!("{ovs_url}/");
     let traffic_reachable = wait_http_ok(&check_url, "OVS traffic", 60).await;
@@ -545,8 +550,13 @@ pub async fn reset_e2b_singleton(
                 .await
                 .ok()
                 .and_then(|(s, _, _)| s.e2b_nas_api.sandbox_id);
-            kill_existing_singleton(client, &cluster_id, SINGLETON_ROLE_NAS_API, pg_sid.as_deref())
-                .await;
+            kill_existing_singleton(
+                client,
+                &cluster_id,
+                SINGLETON_ROLE_NAS_API,
+                pg_sid.as_deref(),
+            )
+            .await;
             ensure_nas_api(db, client).await
         }
         E2bSingletonComponent::Observe => {
@@ -554,8 +564,13 @@ pub async fn reset_e2b_singleton(
                 .await
                 .ok()
                 .and_then(|(s, _, _)| s.claw_tap.e2b_observe_sandbox_id.clone());
-            kill_existing_singleton(client, &cluster_id, SINGLETON_ROLE_OBSERVE, pg_sid.as_deref())
-                .await;
+            kill_existing_singleton(
+                client,
+                &cluster_id,
+                SINGLETON_ROLE_OBSERVE,
+                pg_sid.as_deref(),
+            )
+            .await;
             ensure_observe(db, client).await
         }
         E2bSingletonComponent::Ovs => {
@@ -571,10 +586,7 @@ pub async fn reset_e2b_singleton(
 }
 
 /// Startup: ensure observe / nas-api / ovs singletons exist, healthy, tracked for lease ticker.
-pub async fn ensure_e2b_singletons_on_startup(
-    db: &GatewaySessionDb,
-    client: &E2bSandboxClient,
-) {
+pub async fn ensure_e2b_singletons_on_startup(db: &GatewaySessionDb, client: &E2bSandboxClient) {
     if !interactive_backend_is_e2b() {
         return;
     }
@@ -605,7 +617,10 @@ pub async fn ensure_e2b_singletons_on_startup(
 }
 
 /// Periodic health reconcile — recreate unhealthy singletons (TTL handled by lease ticker).
-pub fn spawn_singleton_health_reconcile_loop(db: Arc<GatewaySessionDb>, client: Arc<E2bSandboxClient>) {
+pub fn spawn_singleton_health_reconcile_loop(
+    db: Arc<GatewaySessionDb>,
+    client: Arc<E2bSandboxClient>,
+) {
     let interval_secs = e2b_project_worker_renew_interval_secs_from_env(3600);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));

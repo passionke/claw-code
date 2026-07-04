@@ -60,7 +60,9 @@ pub async fn load_e2b_ovs_template_id(db: &GatewaySessionDb) -> Result<String, s
         .unwrap_or_else(e2b_ovs_template_from_env))
 }
 
-pub async fn e2b_ovs_settings_public(db: &GatewaySessionDb) -> Result<E2bOvsSettingsPublic, sqlx::Error> {
+pub async fn e2b_ovs_settings_public(
+    db: &GatewaySessionDb,
+) -> Result<E2bOvsSettingsPublic, sqlx::Error> {
     let (settings, _, _) = get_gateway_global_settings(db).await?;
     let effective_template_id = load_e2b_ovs_template_id(db).await?;
     let s = &settings.e2b_ovs;

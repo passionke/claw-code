@@ -3,19 +3,13 @@
 use claw_e2b_sandbox_client::E2bSandboxClient;
 use serde::{Deserialize, Serialize};
 
-use crate::gateway_e2b_nas_api_settings::{
-    e2b_nas_api_settings_public, E2bNasApiSettingsPublic,
-};
-use crate::gateway_e2b_observe_settings::{
-    e2b_observe_settings_public, E2bObserveSettingsPublic,
-};
+use crate::gateway_e2b_nas_api_settings::{e2b_nas_api_settings_public, E2bNasApiSettingsPublic};
+use crate::gateway_e2b_observe_settings::{e2b_observe_settings_public, E2bObserveSettingsPublic};
 use crate::gateway_e2b_ovs_settings::{e2b_ovs_settings_public, E2bOvsSettingsPublic};
 use crate::gateway_e2b_singleton_lifecycle::{
     ensure_e2b_singleton, reset_e2b_singleton, E2bSingletonComponent,
 };
-use crate::gateway_global_settings::{
-    get_gateway_global_settings, save_gateway_global_settings,
-};
+use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_global_settings};
 use crate::session_db::GatewaySessionDb;
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,8 +64,7 @@ fn now_ms() -> i64 {
 }
 
 fn normalize_template_id(raw: Option<String>) -> Option<String> {
-    raw.map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 pub async fn load_e2b_singletons_status(

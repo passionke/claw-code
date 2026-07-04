@@ -101,7 +101,9 @@ pub fn build_ovs_interactive_prompt_script(
     let proj_home = shell_single_quote(GUEST_CLAW_DS);
     let worker_root = shell_single_quote(GUEST_CLAW_HOST_ROOT);
     let model = shell_single_quote(
-        model.trim().is_empty()
+        model
+            .trim()
+            .is_empty()
             .then_some("openai/mimo-v2.5")
             .unwrap_or(model.trim()),
     );
@@ -156,7 +158,12 @@ mod tests {
 
     #[test]
     fn prompt_script_uses_gateway_interactive_once() {
-        let sh = build_ovs_interactive_prompt_script("seg-b", "ovs-chat-2-x", "hello", "openai/mimo-v2.5");
+        let sh = build_ovs_interactive_prompt_script(
+            "seg-b",
+            "ovs-chat-2-x",
+            "hello",
+            "openai/mimo-v2.5",
+        );
         assert!(sh.contains("gateway-interactive-once"));
         assert!(sh.contains("--prompt-b64"));
         assert!(sh.contains("CLAW_SESSION_ID='ovs-chat-2-x'"));
