@@ -1,17 +1,29 @@
 #!/usr/bin/env bash
-# Ensure e2b observe-singleton on e2b (template startCmd). Author: kejiqing
+# Ensure e2b observe singleton via gateway API. Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${LIB_DIR}/../../.." && pwd)"
-ENV_FILE="${REPO_ROOT}/.env"
+# shellcheck source=bootstrap-runtime.sh
+source "${LIB_DIR}/bootstrap-runtime.sh"
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "missing ${ENV_FILE} — copy from deploy/stack/env.selfhosted-e2b.example" >&2
+reset=0
+for arg in "$@"; do
+  case "${arg}" in
+    --reset) reset=1 ;;
+  esac
+done
+
+gw_port="${GATEWAY_HOST_PORT:-18088}"
+gw_base="http://127.0.0.1:${gw_port}"
+action="ensure"
+[[ "${reset}" -eq 1 ]] && action="reset"
+
+claw_wait_gateway_http_ready 30 || {
+  echo "error: gateway not reachable at ${gw_base}" >&2
   exit 1
-fi
+}
 
-# shellcheck disable=SC1090
-set -a && source "${ENV_FILE}" && set +a
-
-exec python3 "${REPO_ROOT}/deploy/e2b/e2b-tap-live-up.py" "$@"
+curl -fsS -X POST "${gw_base}/v1/gateway/global-settings/e2b-singletons/observe/${action}" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+echo

@@ -24,8 +24,11 @@ use crate::pool::interactive_backend::{
 use crate::pool::{gateway_session_home, nas_cluster_id};
 use crate::session_db::GatewaySessionDb;
 use crate::session_ovs_api::{ovs_agent_session_id, ovs_chat_record_session_id};
+use crate::claw_tap_cluster_state;
+use crate::pool::interactive_backend::apply_e2b_observe_worker_llm_env;
 use crate::session_terminal_api::{
-    ensure_terminal_active, ActiveTerminalSession, TerminalApiContext, TerminalApiError,
+    ensure_terminal_active, resolve_terminal_llm_env, ActiveTerminalSession, TerminalApiContext,
+    TerminalApiError,
 };
 use crate::turn_id;
 use claw_e2b_sandbox_client::E2bSandboxHandle;
@@ -469,7 +472,26 @@ async fn run_ovs_interactive_prompt(
             .await
             .map_err(|e| format!("ensure ovs session root: {e}"))?;
     }
-    let script = build_ovs_interactive_prompt_script(&segment, record_session_id, text);
+    let mut llm_env = resolve_terminal_llm_env(
+        &ctx.session_db,
+        &ctx.claw_tap_cluster,
+        &ctx.llm_runtime,
+    )
+    .await
+    .map_err(|e| format!("resolve OVS LLM env: {e}"))?;
+    llm_env = apply_e2b_observe_worker_llm_env(&ctx.session_db, llm_env)
+        .await
+        .map_err(|e| format!("apply e2b observe LLM env: {e}"))?;
+    let model = llm_env
+        .get("CLAW_DEFAULT_MODEL")
+        .map(|m| claw_tap_cluster_state::claw_repl_model_name(m))
+        .unwrap_or_else(|| "openai/mimo-v2.5".to_string());
+    let script = build_ovs_interactive_prompt_script(
+        &segment,
+        record_session_id,
+        text,
+        &model,
+    );
     let handle = fc_handle_for_active(ctx, active).await?;
     let client = ctx
         .pool_clients

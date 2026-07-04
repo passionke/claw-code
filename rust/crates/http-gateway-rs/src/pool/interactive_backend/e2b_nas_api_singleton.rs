@@ -1,12 +1,9 @@
-//! e2b NAS API client — gateway NAS layout + file writes via the out-of-band
-//! `claw-nas-api` singleton (deployed by `gateway.sh nas-api-up`). Author: kejiqing
+//! e2b NAS API client — gateway NAS layout + file writes via the `claw-nas-api`
+//! singleton (ensured on gateway startup + lease ticker). Author: kejiqing
 //!
-//! Boundary: the gateway NEVER creates the nas-api sandbox. It discovers the
-//! endpoint from PG (`gateway_global_settings.settings_json.e2bNasApi`, written by
-//! `e2b-nas-api-up.py`) on every call, so a re-deploy of the singleton is picked up
-//! without restarting the gateway. If no endpoint is configured, startup logs a
-//! warning; NAS layout operations fail at use-time with a hint to run
-//! `./deploy/stack/gateway.sh nas-api-up`.
+//! The gateway ensures the nas-api sandbox exists and registers it for TTL renewal;
+//! endpoint is read from PG (`gateway_global_settings.settings_json.e2bNasApi`) on
+//! every call so re-deploy picks up without gateway restart.
 
 use std::sync::Arc;
 

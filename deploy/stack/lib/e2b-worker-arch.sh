@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resolve linux worker arch for dev template build (arm64 local node vs amd64 prod). Author: kejiqing
+# Resolve linux arch for e2b worker template + claw compile (self-hosted fleet = amd64). Author: kejiqing
 
 # Prints: arm64 | amd64
 claw_e2b_worker_linux_arch() {
@@ -20,15 +20,8 @@ claw_e2b_worker_linux_arch() {
     claw_linux_compile_arch
     return $?
   fi
-  # Dev default: match host (arm64 Mac → native linux/arm64 for 10.8.0.2 worker node).
-  case "$(uname -m)" in
-    arm64 | aarch64) printf '%s\n' arm64 ;;
-    x86_64 | amd64) printf '%s\n' amd64 ;;
-    *)
-      echo "e2b worker arch: unsupported host $(uname -m)" >&2
-      return 1
-      ;;
-  esac
+  # Self-hosted e2b (10.8.0.x) and FC worker nodes are linux/amd64. Mac dev cross-compiles.
+  printf '%s\n' amd64
 }
 
 claw_e2b_worker_linux_platform() {

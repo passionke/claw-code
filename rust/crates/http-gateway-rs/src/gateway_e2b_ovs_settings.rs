@@ -1,4 +1,4 @@
-//! e2b OVS singleton URLs persisted by `e2b-ovs-up.py` in PG. Author: kejiqing
+//! e2b OVS singleton URLs persisted by gateway lifecycle in PG. Author: kejiqing
 
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +9,8 @@ pub const OVS_WORKSPACE_ROOT: &str = claw_e2b_sandbox_client::GUEST_CLAW_WS;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct E2bOvsSettings {
+    #[serde(rename = "templateId", default)]
+    pub template_id: Option<String>,
     #[serde(rename = "baseUrl", default)]
     pub base_url: Option<String>,
     #[serde(rename = "sandboxId", default)]
@@ -26,6 +28,10 @@ impl E2bOvsSettings {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct E2bOvsSettingsPublic {
+    #[serde(rename = "templateId", skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    #[serde(rename = "effectiveTemplateId")]
+    pub effective_template_id: String,
     #[serde(rename = "baseUrl", skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(rename = "sandboxId", skip_serializing_if = "Option::is_none")]
@@ -35,15 +41,37 @@ pub struct E2bOvsSettingsPublic {
     pub configured: bool,
 }
 
-impl From<&E2bOvsSettings> for E2bOvsSettingsPublic {
-    fn from(s: &E2bOvsSettings) -> Self {
-        Self {
-            base_url: s.base_url.clone(),
-            sandbox_id: s.sandbox_id.clone(),
-            updated_at_ms: s.updated_at_ms,
-            configured: s.configured(),
-        }
-    }
+/// PG `e2bOvs.templateId` → env `CLAW_E2B_OVS_TEMPLATE` → `claw-ovs`.
+#[must_use]
+pub fn e2b_ovs_template_from_env() -> String {
+    std::env::var("CLAW_E2B_OVS_TEMPLATE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "claw-ovs".into())
+}
+
+pub async fn load_e2b_ovs_template_id(db: &GatewaySessionDb) -> Result<String, sqlx::Error> {
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    Ok(settings
+        .e2b_ovs
+        .template_id
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(e2b_ovs_template_from_env))
+}
+
+pub async fn e2b_ovs_settings_public(db: &GatewaySessionDb) -> Result<E2bOvsSettingsPublic, sqlx::Error> {
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    let effective_template_id = load_e2b_ovs_template_id(db).await?;
+    let s = &settings.e2b_ovs;
+    Ok(E2bOvsSettingsPublic {
+        template_id: s.template_id.clone(),
+        effective_template_id,
+        base_url: s.base_url.clone(),
+        sandbox_id: s.sandbox_id.clone(),
+        updated_at_ms: s.updated_at_ms,
+        configured: s.configured(),
+    })
 }
 
 /// Folder URL for a project inside the singleton OVS.

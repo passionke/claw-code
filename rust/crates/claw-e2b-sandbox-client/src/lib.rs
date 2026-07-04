@@ -8,6 +8,7 @@ mod types;
 
 pub use client::{
     E2bSandboxClient, SandboxSnapshot, SANDBOX_LEASE_RENEW_LEAD_SECS, SANDBOX_LEASE_TICK_SECS,
+    SINGLETON_ROLE_NAS_API, SINGLETON_ROLE_OBSERVE, SINGLETON_ROLE_OVS,
 };
 pub use config::E2bSandboxConfig;
 pub use e2b_platform::{nas_mount_source_addr, E2bNasPlatform};

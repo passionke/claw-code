@@ -104,9 +104,7 @@ export default function ObserveTapPage() {
             LLM 配置由 tap 通过 PG 自行感知并热更新；Gateway 只把
             <Typography.Text code>OPENAI_BASE_URL</Typography.Text> 指向这里。
             <br />
-            Live / 代理地址由{" "}
-            <Typography.Text code>./deploy/stack/gateway.sh observe-tap-up</Typography.Text>{" "}
-            写入 PG；「重置 Tap」会先杀旧 observe sandbox 再重建。
+            Live / 代理地址由 gateway 启动时自动 ensure 写入 PG；「重置 Tap」会先杀旧 observe sandbox 再重建。
           </Typography.Paragraph>
         }
       />
@@ -116,7 +114,7 @@ export default function ObserveTapPage() {
           type="warning"
           showIcon
           message="尚未初始化 Tap"
-          description="运行 ./deploy/stack/gateway.sh observe-tap-up，或在下方点击「重置 Tap」创建 observe 单例并写入 PG。"
+          description="gateway 启动后会自动 ensure observe 单例，或在下方点击「重置 Tap」。"
         />
       ) : null}
 

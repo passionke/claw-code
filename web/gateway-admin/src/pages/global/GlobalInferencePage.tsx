@@ -81,7 +81,7 @@ function observeStatusTag(tap: ClawTapSettings | null): ReactNode {
   if (tap.proxyBaseUrl) {
     return <Tag color="warning">代理已配置（缺 sandboxId）</Tag>;
   }
-  return <Tag color="warning">等待 observe-tap-up</Tag>;
+  return <Tag color="warning">等待 gateway 初始化</Tag>;
 }
 
 /** e2b 全局推理：集群 ID + LLM 模型列表 + observe 单例只读信息。Author: kejiqing */
@@ -152,9 +152,8 @@ export default function GlobalInferencePage() {
           <Typography.Paragraph style={{ marginBottom: 0 }}>
             LLM 上游与 API Key 在本页配置；worker solve 时 gateway 将{" "}
             <Typography.Text code>OPENAI_BASE_URL</Typography.Text> 指向 observe 沙箱代理（8080）。
-            代理端点与 sandboxId 由{" "}
-            <Typography.Text code>gateway.sh observe-tap-up</Typography.Text> 写入 PG，不在此手填
-            IP/端口。
+            代理端点与 sandboxId 由 gateway 启动时自动 ensure 并写入 PG，不在此手填
+            IP/端口。模版 ID 与重置见「核心组件」页。
           </Typography.Paragraph>
         }
       />
@@ -203,7 +202,7 @@ export default function GlobalInferencePage() {
             showIcon
             style={{ marginBottom: 16 }}
             message="observe 尚未初始化"
-            description="运行 ./deploy/stack/gateway.sh observe-tap-up --reuse，或点击「重置 observe」。"
+            description="gateway 启动后会自动 ensure observe 单例；也可点击「重置 observe」。"
           />
         ) : null}
 

@@ -84,4 +84,4 @@ done
 
 echo "" >&2
 echo "OK: templates built on ${CLAW_E2B_API_URL:-e2b}" >&2
-echo "next: ./deploy/stack/gateway.sh e2b-singletons-up --reuse" >&2
+echo "next: curl -X POST http://127.0.0.1:\${GATEWAY_HOST_PORT:-8088}/v1/gateway/global-settings/e2b-singletons/<nas-api|ovs|observe>/reset" >&2

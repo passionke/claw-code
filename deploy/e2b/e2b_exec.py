@@ -29,16 +29,21 @@ def _connect_opts(payload: dict) -> dict:
 
 
 def _run_as_claw_user_script(inner: str) -> str:
-    """e2b envd runs `commands.run` as `user` (uid 1001); NAS session trees are claw (1000).
+    """Run solve as the worker exec user (e2b envd `user`, uid 1000).
 
-    Without this wrapper, inline writes to `/claw_sessions/{segment}/gateway-solve-task.json`
-    fail with bash redirect Permission denied. Author: kejiqing
+    Legacy worker images expose a `claw` account; self-hosted e2b templates use
+    `user` (uid 1000) with NAS trees owned by `user`. Prefer `claw` when present.
+    Author: kejiqing
     """
     return (
         "set -eu\n"
-        "sudo -u claw bash <<'CLAW_SOLVE_EOF'\n"
+        "if id claw >/dev/null 2>&1; then\n"
+        "  sudo -u claw bash <<'CLAW_SOLVE_EOF'\n"
         f"{inner}"
         "CLAW_SOLVE_EOF\n"
+        "else\n"
+        f"{inner}"
+        "fi\n"
     )
 
 

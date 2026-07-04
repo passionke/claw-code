@@ -42,7 +42,7 @@ Author: kejiqing
 
 # 改 e2b 沙箱里的 claw 二进制（dev，不走 CI / ACR）：
 ./deploy/stack/gateway.sh e2b-worker-deploy
-# 详见 docs/local-dev.md §「改 e2b worker 里的 claw」
+# 唯一手册：deploy/e2b/WORKER-BUILD.md（amd64 + PG templateId + gateway 自动 reconcile）
 
 # 怀疑缓存脏了：先 clean 或 pack-deploy --clean
 

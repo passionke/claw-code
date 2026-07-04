@@ -111,7 +111,7 @@ claw_linux_compile_release() {
   fi
 
   # shellcheck disable=SC2086
-  "${container_cli}" run --rm --platform "linux/${linux_arch}" \
+  "${container_cli}" run --rm --pull=never --platform "linux/${linux_arch}" \
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
     -e "RUSTUP_DIST_SERVER=${rustup_dist}" \
     -e "RUSTUP_UPDATE_ROOT=${rustup_root}" \

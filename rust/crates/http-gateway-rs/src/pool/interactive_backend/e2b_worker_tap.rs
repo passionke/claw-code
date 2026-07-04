@@ -23,14 +23,14 @@ pub async fn load_e2b_observe_proxy_base_url(
     let tap = settings.claw_tap;
     if tap.updated_at_ms <= 0 {
         return Err(
-            "e2b observe tap not configured: run gateway.sh observe-tap-up (clawTap settings empty)"
+            "e2b observe tap not configured: gateway startup ensure or Admin 核心组件 reset"
                 .into(),
         );
     }
     tap.proxy_base_url
         .filter(|s| !s.trim().is_empty())
         .or_else(|| claw_tap_proxy_base_url(&tap.host, tap.proxy_port))
-        .ok_or_else(|| "e2b observe tap proxyBaseUrl missing: run gateway.sh observe-tap-up".into())
+        .ok_or_else(|| "e2b observe tap proxyBaseUrl missing: gateway ensure or Admin reset".into())
 }
 
 /// Worker LLM env points at observe proxy; placeholder key only (no real credentials).

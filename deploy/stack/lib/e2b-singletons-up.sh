@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ensure e2b singletons (nas-api / ovs / observe) and persist endpoints to PG. Author: kejiqing
+# Ensure e2b singletons via gateway admin API (nas-api / ovs / observe). Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,6 +8,8 @@ REPO_ROOT="$(cd "${PODMAN_DIR}/../.." && pwd)"
 ENV_FILE="${REPO_ROOT}/.env"
 # shellcheck source=stack-instance.sh
 source "${LIB_DIR}/stack-instance.sh"
+# shellcheck source=bootstrap-runtime.sh
+source "${LIB_DIR}/bootstrap-runtime.sh"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "error: missing ${ENV_FILE}" >&2
@@ -19,25 +21,36 @@ set -a
 source "${ENV_FILE}"
 set +a
 
-reuse=0
 reset=0
 for arg in "$@"; do
   case "${arg}" in
-    --reuse) reuse=1 ;;
     --reset) reset=1 ;;
+    --reuse) ;; # legacy alias: ensure only
   esac
 done
 
-args=()
-[[ "${reuse}" -eq 1 ]] && args+=(--reuse)
-[[ "${reset}" -eq 1 ]] && args+=(--reset)
+gw_port="${GATEWAY_HOST_PORT:-18088}"
+gw_base="http://127.0.0.1:${gw_port}"
 
-echo "==> e2b singletons (PG $(claw_redact_database_url "${CLAW_GATEWAY_DATABASE_URL}"))" >&2
-echo "    API ${CLAW_E2B_API_URL:-unset}" >&2
+echo "==> e2b singletons via gateway API (${gw_base})" >&2
+echo "    PG $(claw_redact_database_url "${CLAW_GATEWAY_DATABASE_URL}")" >&2
 
-"${LIB_DIR}/e2b-nas-api-up.sh" "${args[@]}"
-"${LIB_DIR}/e2b-ovs-up.sh" "${args[@]}"
-"${LIB_DIR}/e2b-tap-live-up.sh" "${args[@]}"
+if ! claw_wait_gateway_http_ready 30; then
+  echo "error: gateway not reachable at ${gw_base}" >&2
+  echo "hint: run ./deploy/stack/gateway.sh up first (singletons auto-ensure on startup)" >&2
+  exit 1
+fi
 
-echo "OK — nas-api + ovs + observe singletons ready in PG" >&2
-echo "next: ./deploy/stack/gateway.sh up --release release-vX.Y.Z" >&2
+action="ensure"
+if [[ "${reset}" -eq 1 ]]; then
+  action="reset"
+fi
+
+for component in nas-api ovs observe; do
+  echo "    ${action} ${component} ..." >&2
+  curl -fsS -X POST "${gw_base}/v1/gateway/global-settings/e2b-singletons/${component}/${action}" \
+    -H "Content-Type: application/json" \
+    -d '{}' >/dev/null
+done
+
+echo "OK — nas-api + ovs + observe singletons ensured via gateway API" >&2

@@ -24,7 +24,7 @@ const { Header, Sider, Content } = Layout;
 
 const GLOBAL_MENU_CHILDREN = [
   { key: "/global/inference", label: "全局推理" },
-  { key: "/global/e2b-nas", label: "e2b NAS 存储" },
+  { key: "/global/e2b-core", label: "核心组件" },
   { key: "/global/strict-landlock", label: "Strict Landlock" },
   { key: "/global/pats", label: "PAT 配置" },
   { key: "/global/admin-mcp", label: "Admin MCP Token" },

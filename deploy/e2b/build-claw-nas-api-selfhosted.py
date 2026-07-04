@@ -9,11 +9,13 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 _E2B_DIR = Path(__file__).resolve().parent
 if str(_E2B_DIR) not in sys.path:
     sys.path.insert(0, str(_E2B_DIR))
+from e2b_pg_settings import merge_settings_json_key
 from e2b_template_registry import (
     load_repo_dotenv,
     log_debian_base_resolution,
@@ -158,7 +160,7 @@ def main() -> int:
         print(f"==> template startCmd=claw-nas-api :{nas_port}")
         headers = _build_headers()
         skip_cache = _env("CLAW_E2B_TEMPLATE_SKIP_CACHE", "0") not in ("0", "false", "no")
-        Template.build(
+        build = Template.build(
             template,
             name=alias,
             alias=alias,
@@ -168,7 +170,24 @@ def main() -> int:
             **opts,
         )
 
-    print(f"OK: template {alias!r} ready on {opts['api_url']}")
+    now_ms = int(time.time() * 1000)
+    print(f"template_id: {build.template_id}")
+    print(f"build_id: {build.build_id}")
+    try:
+        merge_settings_json_key(
+            "e2bNasApi",
+            {
+                "templateId": build.template_id,
+                "alias": alias,
+                "updatedAtMs": now_ms,
+            },
+            now_ms=now_ms,
+        )
+        print(f"==> persisted e2bNasApi.templateId={build.template_id!r} to PG")
+    except Exception as exc:  # noqa: BLE001
+        print(f"warn: skip PG e2bNasApi.templateId persist: {exc}", file=sys.stderr)
+
+    print(f"OK: template {alias!r} ({build.template_id}) ready on {opts['api_url']}")
     return 0
 
 
