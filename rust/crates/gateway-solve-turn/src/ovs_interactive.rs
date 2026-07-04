@@ -100,17 +100,15 @@ pub fn build_ovs_interactive_prompt_script(
     let session_root = shell_single_quote(&format!("{GUEST_CLAW_SESSIONS}/{segment}"));
     let proj_home = shell_single_quote(GUEST_CLAW_DS);
     let worker_root = shell_single_quote(GUEST_CLAW_HOST_ROOT);
-    let model = shell_single_quote(
-        model
-            .trim()
-            .is_empty()
-            .then_some("openai/mimo-v2.5")
-            .unwrap_or(model.trim()),
-    );
+    let model = shell_single_quote(if model.trim().is_empty() {
+        "openai/mimo-v2.5"
+    } else {
+        model.trim()
+    });
     let prompt_b64 = base64::engine::general_purpose::STANDARD.encode(prompt.as_bytes());
     let ensure = build_ensure_ovs_interactive_session_script(segment);
     format!(
-        r#"{ensure}
+        r"{ensure}
 set -e
 cd {proj_home}
 export HOME={worker_root}
@@ -128,7 +126,7 @@ claw gateway-interactive-once \
   --session-jsonl {jsonl} \
   --prompt-b64 '{prompt_b64}' \
   --model {model} \
-  --permission-mode danger-full-access"#
+  --permission-mode danger-full-access"
     )
 }
 
