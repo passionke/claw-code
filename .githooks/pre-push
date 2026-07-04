@@ -29,10 +29,10 @@ if upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "@{upstream}" 2>/
   base_ref="${upstream}"
 elif [[ -n "${current_branch}" ]] && git rev-parse --verify "origin/${current_branch}" >/dev/null 2>&1; then
   base_ref="origin/${current_branch}"
-elif git rev-parse --verify origin/persist--on-pg >/dev/null 2>&1; then
-  base_ref="origin/persist--on-pg"
 elif git rev-parse --verify origin/main >/dev/null 2>&1; then
   base_ref="origin/main"
+elif git rev-parse --verify origin/persist--on-pg >/dev/null 2>&1; then
+  base_ref="origin/persist--on-pg"
 fi
 
 diff_range="HEAD"
