@@ -98,13 +98,12 @@ fn observe_live_port() -> u16 {
 }
 
 async fn http_get_ok(url: &str) -> bool {
-    let client = match reqwest::Client::builder()
+    let Ok(client) = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
+    else {
+        return false;
     };
     match client.get(url).send().await {
         Ok(resp) => resp.status().is_success(),
@@ -132,13 +131,12 @@ async fn wait_http_ok(url: &str, label: &str, max_attempts: u32) -> bool {
 
 async fn nas_api_health_ok(base_url: &str) -> bool {
     let url = format!("{}/healthz", base_url.trim_end_matches('/'));
-    let client = match reqwest::Client::builder()
+    let Ok(client) = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
+    else {
+        return false;
     };
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => resp

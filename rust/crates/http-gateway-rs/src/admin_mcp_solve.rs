@@ -56,7 +56,7 @@ pub async fn validate_admin_mcp_solve_input(
         input.extra_session.as_ref(),
         &fields,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.clone())
 }
 
 pub fn parse_solve_tool_args(args: &Value) -> Result<AdminMcpSolveInput, String> {

@@ -84,7 +84,7 @@ impl E2bInteractiveBackend {
         if let Some(ref attach) = spec.e2b_session_attach_script {
             parts.push(attach.clone());
         }
-        parts.push(spec.start_ttyd_script.to_string());
+        parts.push(spec.start_ttyd_script.clone());
         parts.join("\n")
     }
 
