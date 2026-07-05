@@ -108,21 +108,17 @@ podman exec claw-openvscode-server ls -la /home/workspace/.probe
 
 **solve podman pool** 仍用本机 `deploy/stack/claw-workspace` 作 worker bind（与 Gateway/OVS 的 NAS 树分离，直到 solve 迁远程 pool）。
 
-### Step C — e2b interactive（方案 A：NAS 注入 claw/ttyd，无需自定义 template）
+### Step C — e2b interactive（legacy：Aliyun `code-interpreter-v1` + NAS 注入）
 
-OVS `@claw` 需要沙箱内有 **`claw`** 与 **`ttyd`**。因 e2b builder / ACR EE 路径不可行，采用 **官方 `code-interpreter-v1` + NAS 启动时拷贝二进制**。
+> **Legacy / 已废弃默认路径。** 当前推荐自托管 e2b + 自定义模板（`claw-worker`、`claw-observe` 等），见 [`docs/deploy-ops-runbook.md`](../../docs/deploy-ops-runbook.md) 与 [`WORKER-BUILD.md`](./WORKER-BUILD.md)。下文 Phase 0 Step C 仅保留 Aliyun 历史记录。
 
-#### 1. 一次性：把工具装到 NAS
+OVS `@claw` 需要沙箱内有 **`claw`** 与 **`ttyd`**。因 e2b builder / ACR EE 路径不可行，曾采用 **官方 `code-interpreter-v1` + NAS 启动时拷贝二进制**。
 
-在 gateway 能写 NAS 的机器上（234 ECS 已挂 `/mnt` 时 `CLAW_NAS_HOST_MOUNT=/mnt`）：
+#### 1. 一次性：把工具装到 NAS（legacy）
 
-```bash
-./deploy/e2b/install-nas-fc-tools.sh
-```
+`install-nas-fc-tools.sh` **已从仓库移除**。自托管路径请用 `./deploy/e2b/build-selfhosted-templates.sh` 或 `gateway.sh e2b-worker-deploy`。
 
-产物：`{work_root}/.claw-e2b-tools/claw` + `ttyd`（默认 `CLAW_E2B_NAS_TOOLS_REL=.claw-e2b-tools`）。
-
-#### 2. `.env`（交互 e2b 模式）
+#### 2. `.env`（交互 e2b 模式，legacy Aliyun）
 
 ```bash
 CLAW_INTERACTIVE_BACKEND=e2b

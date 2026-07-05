@@ -2,14 +2,16 @@
 
 Author: kejiqing
 
+**运维总入口：** [`docs/deploy-ops-runbook.md`](../../docs/deploy-ops-runbook.md)（e2b 注册、生命周期、gateway/admin 发布）。
+
 **稳定做法只有一条**：在仓库根目录准备好 `.env`，用 **`./deploy/stack/gateway.sh`** 起栈；不要用「手写一长串 compose / 只挂单个 compose 文件 / 在容器里配 macOS 的 `/Users/...` 路径」这类容易翻车的玩法。
 
 **路线方针（维护优先，不搞多套叙事）**：
 
 | 场景 | 容器引擎 | Worker | 镜像 / 模板从哪来 | 入口命令 |
 | --- | --- | --- | --- | --- |
-| **本地开发** | Podman（`auto` 优先 podman） | **FC / e2b** | gateway：`quick` / `pack-deploy`；**e2b worker 模板 dev：`e2b-worker-deploy`（不走 CI）** | `./deploy/stack/gateway.sh quick` |
-| **线上 Linux** | Docker + compose | **FC / e2b** | **只拉 CI tag**（GHCR/ACR）；e2b 模板 `from_image` | `./deploy/stack/gateway.sh up --release release-v…` |
+| **本地开发** | Podman（`auto` 优先 podman） | **e2b** | gateway：`quick` / `pack-deploy`；**e2b worker 模板 dev：`e2b-worker-deploy`（不走 CI）** | `./deploy/stack/gateway.sh quick` |
+| **线上 Linux** | Docker + compose | **e2b** | **只拉 CI tag**（GHCR/ACR）；e2b 模板 `from_image` | `./deploy/stack/gateway.sh up --release release-v…` |
 
 两套环境用 **同一份脚本树** `deploy/stack/lib/`；差别在根 `.env`（模板见下表）。**solve / interactive 均经 e2b**，无宿主机 `claw-sandbox` `:9944`。
 
@@ -20,7 +22,7 @@ Author: kejiqing
 | **自托管 e2b（推荐）** | `env.selfhosted-e2b.example` | 外连 PG + e2b；见 `docs/architecture-governance.md` |
 | e2b interactive 叠加 | `env.e2b-interactive.example` | OVS / NAS / Observe 变量 |
 | 生产 Linux | `env.production.example` | `up --release` 拉镜像 |
-| 本地全栈 compose | `env.local.example` | `gateway.sh quick`（须 `CLAW_*_BACKEND=fc`） |
+| 本地全栈 compose | `env.local.example` | `gateway.sh quick`（须 `CLAW_*_BACKEND=e2b`） |
 | ~~稳定沙箱主机~~ | ~~`env.stable-dev-host.example`~~ | **已废弃** |
 | ~~远程 pool 后端~~ | ~~`env.local-remote-backend.example`~~ | **已废弃** |
 

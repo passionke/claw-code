@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
-NAS_SERVER="${NAS_BASE_URL:-10.8.0.8}"
+NAS_SERVER="${NAS_BASE_URL:-10.8.0.11}"
 NAS_EXPORT="${CLAW_E2B_NAS_EXPORT:-/}"
 MOUNT_POINT="${CLAW_NAS_HOST_MOUNT:-/mnt/nas0}"
 

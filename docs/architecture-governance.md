@@ -61,8 +61,8 @@ Gateway shutdown **不杀** persistent singleton；worker lease ticker 与 singl
 ## 4. Worker 模式（e2b-only）
 
 - **唯一路径：** `CLAW_SOLVE_ISOLATION=e2b`、`CLAW_INTERACTIVE_BACKEND=e2b`
-- **strict：** `claw-worker-strict`（guest `claw` uid）
-- **relaxed：** `claw-worker-relaxed`（guest root，需 `CLAW_ALLOW_RELAXED_WORKER=1`）
+- **strict：** alias `claw-worker`；PG `e2bWorker.templateId` 由 strict 构建写入；gateway exec 层 guest `claw` uid
+- **relaxed：** alias `claw-worker-relaxed`；**不写 PG**；gateway exec 层 guest root（需 `CLAW_ALLOW_RELAXED_WORKER=1`）
 
 宿主机 `claw-sandbox` / `podman_pool` / `docker_pool` / `claw-pool-daemon` **已从代码与 deploy 脚本移除**。
 
@@ -87,7 +87,7 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID / key
 - [ ] `CLAW_E2B_API_URL` / `CLAW_E2B_SANDBOX_URL` → `10.8.0.1`
 - [ ] NAS server → `10.8.0.11`；e2b 宿主机 `/mnt/nas0` 已挂载
 - [ ] `CLAW_CLUSTER_ID` 已设；旧 PG 数据 migrate 回填 cluster_id
-- [ ] e2b 模板：`claw-worker-strict`、`claw-worker-relaxed`、`claw-ovs`、`claw-observe`、`claw-nas-api`
+- [ ] e2b 模板 alias：`claw-worker`、`claw-worker-relaxed`、`claw-ovs`、`claw-observe`、`claw-nas-api`（PG 仅存 strict worker templateId）
 - [ ] `verify-e2b-nas-inject.sh` 通过
 
 ---

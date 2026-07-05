@@ -47,6 +47,25 @@ def _run_as_claw_user_script(inner: str) -> str:
     )
 
 
+def _env_exports_sh(env: dict) -> str:
+    """Inline shell exports for worker LLM env (shared by exec_solve and run_sh). Author: kejiqing"""
+    if not env:
+        return ""
+    lines = [
+        f"export {k}={json.dumps(str(v))}"
+        for k, v in env.items()
+        if str(v).strip()
+    ]
+    return ("\n".join(lines) + "\n") if lines else ""
+
+
+def _prepend_env_exports(script: str, env: dict) -> str:
+    exports = _env_exports_sh(env)
+    if not exports:
+        return script
+    return f"set -eu\n{exports}{script}"
+
+
 def _inline_writes_sh(task_file: str, task_json, session_jsonl, session_root: str) -> str:
     """Shell snippet that lands per-turn inputs onto the session mount.
 
@@ -159,9 +178,7 @@ def main() -> None:
             sandbox = Sandbox.connect(sandbox_id, **connect)
         if op == "exec_solve":
             env = payload.get("env") or {}
-            exports = "\n".join(
-                f'export {k}={json.dumps(str(v))}' for k, v in env.items() if str(v).strip()
-            )
+            exports = _env_exports_sh(env)
             claw_bin = payload.get("claw_bin") or "claw"
             session_segment = str(payload.get("session_segment") or "").strip()
             session_root = str(payload.get("session_root") or "").strip()
@@ -201,6 +218,8 @@ def main() -> None:
                 flush=True,
             )
             return
+        run_env = payload.get("env") or {}
+        script = _prepend_env_exports(script, run_env)
         result, stdout, stderr = _run_streaming(sandbox, script, timeout)
         if result.exit_code != 0:
             stderr = (stderr or "").strip()
