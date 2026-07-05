@@ -2,14 +2,14 @@
 
 Author: kejiqing
 
-## 推荐路径（FC + 外连 PG）
+## 推荐路径（e2b + 外连 PG）
 
 ```bash
-cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、FC keys、PG URL
+cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、e2b keys、PG URL
 ./deploy/stack/gateway.sh quick
 ```
 
-前提：e2bserver 与 PostgreSQL 已就绪（见 [`architecture-governance.md`](architecture-governance.md)）。
+前提：e2bserver 与 PostgreSQL 已就绪（见 [`architecture-governance.md`](architecture-governance.md)）。完整运维顺序见 [`deploy-ops-runbook.md`](deploy-ops-runbook.md)。
 
 ## 一条命令（macOS 全本地 compose）
 
@@ -25,7 +25,7 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、FC 
 2. 快速重建 `claw-gateway-playground` 镜像
 3. `up` → `check`（**无** host pool-daemon）
 
-`CLAW_INTERACTIVE_BACKEND` / `CLAW_SOLVE_ISOLATION` 须为 **`fc`**（`env-profile.sh` 默认）。
+`CLAW_INTERACTIVE_BACKEND` / `CLAW_SOLVE_ISOLATION` 须为 **`e2b`**（`env-profile.sh` 默认）。
 
 ## 只改根目录 `.env`
 

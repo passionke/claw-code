@@ -339,13 +339,32 @@ def _run_fc_exec(
         err = proc.stderr.decode("utf-8", errors="replace").strip()
         out = proc.stdout.decode("utf-8", errors="replace").strip()
         raise RuntimeError(err or out or f"fc_exec exit {proc.returncode}")
-    try:
-        parsed = json.loads(proc.stdout.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"fc_exec bad json: {proc.stdout!r}") from exc
+    parsed = _parse_fc_exec_stdout(proc.stdout.decode("utf-8", errors="replace"))
     if not parsed.get("ok"):
         raise RuntimeError(parsed.get("error") or "fc_exec failed")
     return str(parsed.get("stdout") or "")
+
+
+def _parse_fc_exec_stdout(raw: str) -> dict[str, Any]:
+    """Parse e2b_exec NDJSON (stdout_line events + final ok payload). Author: kejiqing"""
+    result: dict[str, Any] | None = None
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("ev") == "stdout_line":
+            continue
+        if obj.get("ok") is False:
+            raise RuntimeError(obj.get("error") or "fc_exec failed")
+        if obj.get("ok") is True:
+            result = obj
+    if result is None:
+        raise RuntimeError(f"fc_exec bad json: {raw!r}")
+    return result
 
 
 def _service_public_host(port: int, sandbox_id: str, domain: str) -> str:

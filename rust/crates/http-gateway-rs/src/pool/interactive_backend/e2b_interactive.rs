@@ -123,7 +123,11 @@ impl InteractiveSandboxBackend for E2bInteractiveBackend {
             self.workers.release(spec.proj_id).await;
             return Err(format!("fc ensure session: {e}"));
         }
-        if let Err(e) = self.client.exec_shell_script(&handle, &attach_script).await {
+        if let Err(e) = self
+            .client
+            .exec_shell_script(&handle, &attach_script, None)
+            .await
+        {
             self.workers.release(spec.proj_id).await;
             return Err(format!("fc attach session: {e}"));
         }

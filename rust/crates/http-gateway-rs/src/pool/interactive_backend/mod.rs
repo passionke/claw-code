@@ -12,8 +12,7 @@ pub use e2b_interactive_materialize::{
 };
 pub use e2b_nas_api_singleton::E2bNasApiSingleton;
 pub use e2b_worker_tap::{
-    apply_e2b_observe_worker_llm_env, e2b_worker_llm_env, e2b_worker_solve_route,
-    load_e2b_observe_proxy_base_url, resolve_e2b_worker_solve_llm_route,
+    e2b_worker_llm_env, e2b_worker_solve_route, load_e2b_observe_proxy_base_url,
     E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
 };
 

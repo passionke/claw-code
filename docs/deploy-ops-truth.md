@@ -26,7 +26,7 @@ Author: kejiqing
 
 1. PG：迁移表存在；`CLAW_CLUSTER_ID` 与连接串一致
 2. Gateway `/healthz` 与 `/readyz`（clawTap clusterHash 若启用 strict）
-3. **FC**：`CLAW_E2B_API_URL` 可达；必要模板已 build（见 `deploy/e2b/README.md`）
+3. **e2b**：`CLAW_E2B_API_URL` 可达；必要模板已 build（见 [`deploy-ops-runbook.md`](deploy-ops-runbook.md)）
 4. **跳过**：宿主机 `:9944` pool、`claw-worker-*` 容器、`daemon.log`
 
 ## 构建戳
@@ -39,5 +39,6 @@ Author: kejiqing
 
 ## See also
 
+- [`deploy-ops-runbook.md`](deploy-ops-runbook.md)
 - `deploy/stack/README.md`
 - `docs/architecture-governance.md`

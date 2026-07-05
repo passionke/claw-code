@@ -46,6 +46,10 @@ Author: kejiqing
 
 Gateway 读 `load_e2b_worker_template_id()`：`PG templateId` → env `CLAW_E2B_TEMPLATE` → `claw-worker`。
 
+### relaxed alias（不写 PG）
+
+`build-claw-worker-relaxed-selfhosted.py` 注册 e2b alias `claw-worker-relaxed`，**跳过** `e2bWorker.templateId` 写入。relaxed/strict 选择在 gateway exec 层（`worker_profile_json.mode`），非独立 PG template 链。`build-selfhosted-templates.sh worker` 先 strict 后 relaxed，PG 保留 strict 的 templateId。
+
 ## Gateway 启动 / 运行时（不用手 reset 除非急）
 
 `main.rs` 启动时：

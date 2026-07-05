@@ -532,7 +532,7 @@ impl E2bSandboxClient {
             return Ok(());
         }
         let script = guest_nas_mount_probe_script(&dirs);
-        self.exec_shell_script(handle, &script).await.map_err(|e| {
+        self.exec_shell_script(handle, &script, None).await.map_err(|e| {
             format!(
                 "sandbox {} nasConfig bind not mounted in guest ({}): {e}",
                 handle.sandbox_id,
@@ -1194,8 +1194,9 @@ impl E2bSandboxClient {
         &self,
         handle: &E2bSandboxHandle,
         script: &str,
+        env: Option<&BTreeMap<String, String>>,
     ) -> Result<(), String> {
-        self.exec_shell_script_stdout(handle, script)
+        self.exec_shell_script_stdout(handle, script, env)
             .await
             .map(|_| ())
     }
@@ -1205,10 +1206,11 @@ impl E2bSandboxClient {
         &self,
         handle: &E2bSandboxHandle,
         script: &str,
+        env: Option<&BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<E2bExecOutcome, String> {
         self.touch_sandbox_lease(&handle.sandbox_id).await?;
-        let payload = json!({
+        let mut payload = json!({
             "op": "run_sh",
             "api_key": self.config.api_key,
             "domain": handle.sandbox_domain,
@@ -1217,6 +1219,9 @@ impl E2bSandboxClient {
             "sandbox_id": handle.sandbox_id,
             "script": script,
         });
+        if let Some(env) = env.filter(|m| !m.is_empty()) {
+            payload["env"] = json!(env);
+        }
         Self::run_exec_helper(&self.config.exec_helper, &payload, on_stdout_line).await
     }
 
@@ -1225,9 +1230,10 @@ impl E2bSandboxClient {
         &self,
         handle: &E2bSandboxHandle,
         script: &str,
+        env: Option<&BTreeMap<String, String>>,
     ) -> Result<String, String> {
         self.touch_sandbox_lease(&handle.sandbox_id).await?;
-        let payload = json!({
+        let mut payload = json!({
             "op": "run_sh",
             "api_key": self.config.api_key,
             "domain": handle.sandbox_domain,
@@ -1236,6 +1242,9 @@ impl E2bSandboxClient {
             "sandbox_id": handle.sandbox_id,
             "script": script,
         });
+        if let Some(env) = env.filter(|m| !m.is_empty()) {
+            payload["env"] = json!(env);
+        }
         let outcome = Self::run_exec_helper(&self.config.exec_helper, &payload, None).await?;
         Ok(outcome.stdout)
     }

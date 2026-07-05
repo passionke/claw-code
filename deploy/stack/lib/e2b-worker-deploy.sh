@@ -93,10 +93,23 @@ if [[ -n "${CLAW_E2B_DEV_WORKER_HOST:-}" ]]; then
   echo "==> dev worker node: ${CLAW_E2B_DEV_WORKER_HOST} (arch linux/${WORKER_ARCH})"
 fi
 
-if ! python3 -c "import e2b" 2>/dev/null; then
-  echo "==> install e2b python SDK"
-  python3 -m pip install -q e2b e2b-code-interpreter
-fi
+# PEP 668: never pip into system python; reuse repo .venv-fc (same as build-selfhosted-templates.sh). Author: kejiqing
+E2B_PY="${ROOT_DIR}/.venv-fc/bin/python3"
+claw_ensure_e2b_python_venv() {
+  if [[ -x "${E2B_PY}" ]] && "${E2B_PY}" -c "import e2b" 2>/dev/null; then
+    return 0
+  fi
+  if [[ ! -x "${E2B_PY}" ]]; then
+    echo "==> create ${ROOT_DIR}/.venv-fc (e2b SDK)" >&2
+    if ! python3 -m venv "${ROOT_DIR}/.venv-fc" 2>/dev/null; then
+      echo "error: python3 -m venv failed; install python3-venv (apt install python3-venv)" >&2
+      exit 1
+    fi
+  fi
+  echo "==> install e2b python SDK in .venv-fc" >&2
+  "${E2B_PY}" -m pip install -q e2b==2.26.0 e2b-code-interpreter python-dotenv 'psycopg[binary]'
+}
+claw_ensure_e2b_python_venv
 
 CLAW_TIMING_LABEL="e2b-worker-deploy"
 claw_timing_init
@@ -130,7 +143,7 @@ claw_step_begin "3/3 e2b Template.build (copy, alias=${CLAW_E2B_TEMPLATE:-claw-w
 if [[ "${SKIP_VERIFY}" -eq 1 ]]; then
   export CLAW_E2B_TEMPLATE_SKIP_VERIFY=1
 fi
-python3 "${ROOT_DIR}/deploy/e2b/build-claw-worker-selfhosted.py"
+"${E2B_PY}" "${ROOT_DIR}/deploy/e2b/build-claw-worker-selfhosted.py"
 
 claw_timing_summary
 echo "==> e2b worker template ready (${CLAW_E2B_TEMPLATE:-claw-worker}, linux/${WORKER_ARCH})"
