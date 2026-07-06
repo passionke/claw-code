@@ -7,9 +7,15 @@ use axum::Json;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
-use crate::gateway_e2b_ovs_settings::{self, workspace_folder_path, workspace_folder_url};
+use crate::cluster_identity;
+use crate::gateway_e2b_ovs_settings::{
+    ovs_base_url_from_handle, ovs_folder_url_from_handle, workspace_folder_path,
+};
 use crate::pool::interactive_backend::ovs_backend_is_e2b;
-use crate::pool::E2bProjWorkerRegistry;
+use crate::pool::{
+    default_worker_profile_json, effective_mode, profile_mode_label, relaxed_worker_allowed_from_env,
+    E2bProjWorkerRegistry, WorkerProfileMode,
+};
 use crate::session_db::GatewaySessionDb;
 use crate::session_terminal_api;
 
@@ -17,17 +23,22 @@ use crate::session_terminal_api;
 #[serde(rename_all = "camelCase")]
 pub struct OvsWorkspaceResponse {
     pub proj_id: i64,
-    /// Path inside the OVS container (`CLAW_OVS_MOUNT_ROOT` or fc `/claw_ws`).
+    pub cluster_id: String,
+    pub worker_profile: String,
+    /// Path inside relaxed worker / built-in OVS (`/claw_ds`).
     pub workspace_folder: String,
+    /// Worker sandbox id (same sandbox hosts ttyd + built-in OVS).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_id: Option<String>,
     /// Path on the gateway host under `work_root` (compose mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_path: Option<String>,
     /// Default agent session id for `@claw` in OVS (`ovs-{projId}`).
     pub agent_session_id: String,
-    /// e2b singleton OVS base URL (`http://3000-{sandboxId}.{domain}/ovs`).
+    /// Built-in OVS base URL (`http://3000-{sandboxId}.{domain}/ovs`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ovs_url: Option<String>,
-    /// Full browser URL including `?folder=…` (fc: direct e2b traffic, not gateway proxy).
+    /// Full browser URL including `?folder=/claw_ds`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ovs_folder_url: Option<String>,
     /// Self-hosted: add this line to `/etc/hosts` once per OVS sandbox recreate.
@@ -66,7 +77,7 @@ impl axum::response::IntoResponse for OvsApiError {
 #[derive(Clone)]
 pub struct OvsApiContext {
     pub work_root: PathBuf,
-    /// Container mount root for OVS (compose `/home/workspace`; fc `/claw_ws`).
+    /// Container mount root for OVS (compose `/home/workspace`; legacy fc `/claw_ws`).
     pub ovs_mount_root: String,
 }
 
@@ -118,6 +129,24 @@ pub fn ovs_workspace_folder(ctx: &OvsApiContext, proj_id: i64) -> String {
     )
 }
 
+async fn assert_ovs_available_for_proj(
+    session_db: &GatewaySessionDb,
+    proj_id: i64,
+) -> Result<(WorkerProfileMode, String), OvsApiError> {
+    let json = session_db
+        .get_worker_profile_json(proj_id)
+        .await
+        .unwrap_or_else(|_| default_worker_profile_json());
+    let mode = effective_mode(relaxed_worker_allowed_from_env(), &json);
+    if mode != WorkerProfileMode::Relaxed {
+        return Err(OvsApiError::new(
+            StatusCode::FORBIDDEN,
+            "OVS requires relaxed worker profile",
+        ));
+    }
+    Ok((mode, profile_mode_label(&json).to_string()))
+}
+
 pub async fn get_ovs_workspace(
     ctx: OvsApiContext,
     session_db: &GatewaySessionDb,
@@ -131,30 +160,47 @@ pub async fn get_ovs_workspace(
         ));
     }
 
+    let cluster_id = cluster_identity::gateway_cluster_id()
+        .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let (_mode, worker_profile) = assert_ovs_available_for_proj(session_db, proj_id).await?;
+
     if ovs_backend_is_e2b() {
-        if let Some(registry) = e2b_workers {
-            registry
-                .ensure_worker(proj_id)
-                .await
-                .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        }
-        let base_url = gateway_e2b_ovs_settings::load_e2b_ovs_base_url(session_db)
+        let registry = e2b_workers.ok_or_else(|| {
+            OvsApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "e2b project worker registry not configured",
+            )
+        })?;
+        let (handle, _worker_id) = registry
+            .ensure_worker(proj_id)
             .await
-            .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .ok_or_else(|| {
-                OvsApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "OVS not configured — run ./deploy/stack/gateway.sh ovs-up",
-                )
-            })?;
-        let workspace_folder = workspace_folder_path(proj_id);
-        let ovs_folder_url = workspace_folder_url(&base_url, proj_id);
+            .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        registry
+            .write_ovs_vscode_settings(proj_id, &cluster_id, &worker_profile)
+            .await
+            .map_err(|e| OvsApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let ovs_url = ovs_base_url_from_handle(&handle).ok_or_else(|| {
+            OvsApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "relaxed worker missing built-in OVS URL — rebuild claw-worker-relaxed template",
+            )
+        })?;
+        let ovs_folder_url = ovs_folder_url_from_handle(&handle).ok_or_else(|| {
+            OvsApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "relaxed worker missing ovsFolderUrl",
+            )
+        })?;
+        let workspace_folder = workspace_folder_path().to_string();
         return Ok(Json(OvsWorkspaceResponse {
             proj_id,
+            cluster_id,
+            worker_profile: worker_profile.clone(),
             workspace_folder,
+            sandbox_id: Some(handle.sandbox_id.clone()),
             host_path: None,
             agent_session_id: ovs_agent_session_id(proj_id),
-            ovs_url: Some(base_url),
+            ovs_url: Some(ovs_url),
             ovs_folder_url: Some(ovs_folder_url),
             ovs_browser_hosts_line: None,
             ovs_backend: "e2b".into(),
@@ -169,7 +215,10 @@ pub async fn get_ovs_workspace(
         .join("home");
     Ok(Json(OvsWorkspaceResponse {
         proj_id,
+        cluster_id,
+        worker_profile,
         workspace_folder: ovs_workspace_folder(&ctx, proj_id),
+        sandbox_id: None,
         host_path: Some(host_path.display().to_string()),
         agent_session_id: ovs_agent_session_id(proj_id),
         ovs_url: None,

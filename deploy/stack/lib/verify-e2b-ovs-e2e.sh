@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# E2E checks for e2b interactive + e2b OVS singleton. Author: kejiqing
+# E2E checks for e2b interactive + relaxed worker built-in OVS. Author: kejiqing
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -7,7 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 [[ -f "${ROOT_DIR}/.env" ]] && source "${ROOT_DIR}/.env"
 
 GATEWAY_PORT="${GATEWAY_HOST_PORT:-8088}"
-PROJ_ID="${CLAW_E2B_E2E_PROJ_ID:-1}"
+PROJ_ID="${CLAW_E2B_E2E_PROJ_ID:-2}"
 SESSION_ID="ovs-${PROJ_ID}"
 BACKEND="${CLAW_INTERACTIVE_BACKEND:-podman}"
 OVS_BACKEND="${CLAW_OVS_BACKEND:-compose}"
@@ -58,21 +58,25 @@ else
 fi
 
 if [[ "${OVS_BACKEND}" == "e2b" ]]; then
-  echo "==> GET /v1/projects/${PROJ_ID}/ovs/workspace (e2b OVS singleton)"
+  echo "==> GET /v1/projects/${PROJ_ID}/ovs/workspace (relaxed worker built-in OVS)"
   ws="$(curl -sS "http://127.0.0.1:${GATEWAY_PORT}/v1/projects/${PROJ_ID}/ovs/workspace")"
   echo "${ws}"
   echo "${ws}" | grep -q '"ovsBackend":"e2b"' || fail "ovs/workspace not e2b backend: ${ws}"
-  echo "${ws}" | grep -q '"ovsUrl"' || fail "missing ovsUrl: ${ws}"
+  echo "${ws}" | grep -q '"workerProfile":"relaxed"' || fail "missing workerProfile=relaxed: ${ws}"
+  echo "${ws}" | grep -q '"workspaceFolder":"/claw_ds"' || fail "workspaceFolder must be /claw_ds: ${ws}"
+  echo "${ws}" | grep -q '"sandboxId"' || fail "missing sandboxId: ${ws}"
   echo "${ws}" | grep -q '"ovsFolderUrl"' || fail "missing ovsFolderUrl: ${ws}"
-  ovs_url="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsUrl',''))" <<<"${ws}")"
-  [[ -n "${ovs_url}" ]] || fail "empty ovsUrl"
   fc_domain="${CLAW_E2B_DOMAIN:-supone.top}"
   traffic_port="${CLAW_E2B_TRAFFIC_PORT:-3001}"
   folder_url="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsFolderUrl',''))" <<<"${ws}")"
+  sandbox_id="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('sandboxId',''))" <<<"${ws}")"
   hosts_line="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsBrowserHostsLine',''))" <<<"${ws}")"
   [[ -n "${folder_url}" ]] || fail "empty ovsFolderUrl"
+  [[ "${folder_url}" == *"folder=/claw_ds"* ]] || fail "ovsFolderUrl must contain folder=/claw_ds: ${folder_url}"
+  [[ "${folder_url}" != *"/claw_ws/proj_"* ]] || fail "ovsFolderUrl must not use legacy /claw_ws/proj_: ${folder_url}"
   [[ "${folder_url}" != *"/v1/fc-ovs"* ]] || fail "ovsFolderUrl must not use gateway proxy: ${folder_url}"
   [[ "${folder_url}" == *"-sbx_"* ]] || fail "ovsFolderUrl must use e2b Host traffic URL: ${folder_url}"
+  [[ "${folder_url}" == *"${sandbox_id}"* ]] || fail "ovsFolderUrl sandbox must match sandboxId (${sandbox_id})"
   [[ "${folder_url}" != *"/e2b/"* ]] || fail "ovsFolderUrl must not use legacy /e2b/ path: ${folder_url}"
   body="$(/usr/bin/curl -sS -m 15 "${folder_url}" || true)"
   code="$(/usr/bin/curl -sS -o /dev/null -w '%{http_code}' -m 15 "${folder_url}" || true)"

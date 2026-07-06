@@ -27,6 +27,7 @@ use crate::pool::{
 };
 use crate::session_db::GatewaySessionDb;
 use crate::session_ovs_api::{ovs_agent_session_id, ovs_chat_record_session_id};
+use crate::pool::{PoolClients, WorkerProfileMode};
 use crate::session_terminal_api::{
     ensure_terminal_active, ActiveTerminalSession, TerminalApiContext, TerminalApiError,
 };
@@ -241,8 +242,8 @@ fn ovs_turn_pool_id(active: &ActiveTerminalSession) -> &str {
     }
 }
 
-fn ovs_turn_exec_user(active: &ActiveTerminalSession) -> &'static str {
-    if active.backend == InteractiveBackendKind::E2b {
+fn ovs_turn_exec_user(active: &ActiveTerminalSession, relaxed: bool) -> &'static str {
+    if active.backend == InteractiveBackendKind::E2b && relaxed {
         "0:0"
     } else {
         "claw"
@@ -284,6 +285,8 @@ fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<E2bSandb
         traffic_access_token: active.ttyd.traffic_access_token.clone(),
         ttyd_public_host: host.to_string(),
         ttyd_use_tls: active.ttyd.use_tls,
+        ovs_public_host: None,
+        ovs_base_url: None,
     })
 }
 
@@ -322,6 +325,7 @@ async fn assign_ovs_turn_pool_worker(
     db: &GatewaySessionDb,
     turn_id: &str,
     active: &ActiveTerminalSession,
+    relaxed: bool,
 ) {
     let Some(worker_name) = active.worker_name.as_deref().filter(|s| !s.is_empty()) else {
         return;
@@ -331,7 +335,7 @@ async fn assign_ovs_turn_pool_worker(
             turn_id,
             ovs_turn_pool_id(active),
             worker_name,
-            Some(ovs_turn_exec_user(active)),
+            Some(ovs_turn_exec_user(active, relaxed)),
         )
         .await
     {
@@ -452,7 +456,9 @@ async fn run_ovs_interactive_prompt(
         text,
     )
     .await?;
-    assign_ovs_turn_pool_worker(&ctx.session_db, &turn_id, active).await;
+    let relaxed = PoolClients::effective_mode_for_proj(&ctx.session_db, proj_id).await
+        == WorkerProfileMode::Relaxed;
+    assign_ovs_turn_pool_worker(&ctx.session_db, &turn_id, active, relaxed).await;
     stage_gateway_record_session_id(ctx, active, record_session_id).await?;
 
     *active_turn.lock().await = Some(ActiveOvsTurn {
@@ -618,6 +624,13 @@ async fn run_agent_ws_bridge(
     client: WebSocket,
 ) -> Result<(), String> {
     let proj_id = q.proj_id;
+    if PoolClients::effective_mode_for_proj(&ctx.session_db, proj_id).await
+        != WorkerProfileMode::Relaxed
+    {
+        let (mut cli_tx, _) = client.split();
+        send_agent_error(&mut cli_tx, "OVS requires relaxed worker profile").await;
+        return Err("OVS requires relaxed worker profile".into());
+    }
     let worker_session_id = ovs_worker_session_id(proj_id, &path_session_id);
     let record_session_id =
         ovs_record_session_id(proj_id, &path_session_id, q.chat_session_id.as_deref());
