@@ -25,9 +25,9 @@ use crate::pool::{
     gateway_session_home, nas_cluster_id, prepare_e2b_worker_llm_material,
     PrepareE2bWorkerLlmOptions,
 };
+use crate::pool::{PoolClients, WorkerProfileMode};
 use crate::session_db::GatewaySessionDb;
 use crate::session_ovs_api::{ovs_agent_session_id, ovs_chat_record_session_id};
-use crate::pool::{PoolClients, WorkerProfileMode};
 use crate::session_terminal_api::{
     ensure_terminal_active, ActiveTerminalSession, TerminalApiContext, TerminalApiError,
 };
@@ -485,12 +485,8 @@ async fn run_ovs_interactive_prompt(
     )
     .await
     .map_err(|e| format!("prepare OVS LLM material: {e}"))?;
-    let script = build_ovs_interactive_prompt_script(
-        &segment,
-        record_session_id,
-        text,
-        &material.model,
-    );
+    let script =
+        build_ovs_interactive_prompt_script(&segment, record_session_id, text, &material.model);
     let handle = fc_handle_for_active(ctx, active).await?;
     let client = ctx
         .pool_clients

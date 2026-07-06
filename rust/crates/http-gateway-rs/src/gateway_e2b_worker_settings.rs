@@ -126,7 +126,9 @@ pub async fn load_e2b_worker_template_id(db: &GatewaySessionDb) -> Result<String
 }
 
 /// PG `e2bWorkerRelaxed.templateId` → env → alias `claw-worker-relaxed`.
-pub async fn load_e2b_worker_relaxed_template_id(db: &GatewaySessionDb) -> Result<String, sqlx::Error> {
+pub async fn load_e2b_worker_relaxed_template_id(
+    db: &GatewaySessionDb,
+) -> Result<String, sqlx::Error> {
     let (settings, _, _) = get_gateway_global_settings(db).await?;
     Ok(settings
         .e2b_worker_relaxed

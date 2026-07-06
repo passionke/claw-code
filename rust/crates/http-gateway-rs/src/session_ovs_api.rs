@@ -13,8 +13,8 @@ use crate::gateway_e2b_ovs_settings::{
 };
 use crate::pool::interactive_backend::ovs_backend_is_e2b;
 use crate::pool::{
-    default_worker_profile_json, effective_mode, profile_mode_label, relaxed_worker_allowed_from_env,
-    E2bProjWorkerRegistry, WorkerProfileMode,
+    default_worker_profile_json, effective_mode, profile_mode_label,
+    relaxed_worker_allowed_from_env, E2bProjWorkerRegistry, WorkerProfileMode,
 };
 use crate::session_db::GatewaySessionDb;
 use crate::session_terminal_api;

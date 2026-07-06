@@ -71,9 +71,7 @@ pub(crate) async fn resolve_e2b_worker_solve_llm_route(
     let material = crate::pool::prepare_e2b_worker_llm_material(
         session_db,
         model_override,
-        crate::pool::PrepareE2bWorkerLlmOptions {
-            for_repl: false,
-        },
+        crate::pool::PrepareE2bWorkerLlmOptions { for_repl: false },
     )
     .await?;
     Ok((material.route, material.env))

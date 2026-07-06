@@ -259,11 +259,16 @@ impl NasLayoutBackend {
         if let Some(profile) = worker_profile.map(str::trim).filter(|s| !s.is_empty()) {
             cfg["claw.workerProfile"] = json!(profile);
         }
-        let body =
-            serde_json::to_string_pretty(&cfg).map_err(|e| format!("serialize vscode settings: {e}"))?
-                + "\n";
-        self.put_proj_home_file(cluster_id, proj_id, ".vscode/settings.json", body.as_bytes())
-            .await
+        let body = serde_json::to_string_pretty(&cfg)
+            .map_err(|e| format!("serialize vscode settings: {e}"))?
+            + "\n";
+        self.put_proj_home_file(
+            cluster_id,
+            proj_id,
+            ".vscode/settings.json",
+            body.as_bytes(),
+        )
+        .await
     }
 
     async fn write_proj_vscode_settings_at(

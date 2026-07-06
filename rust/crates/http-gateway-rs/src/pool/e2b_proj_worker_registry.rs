@@ -231,7 +231,11 @@ impl E2bProjWorkerRegistry {
         }
     }
 
-    fn normalize_handle(&self, mut handle: E2bSandboxHandle, include_ovs: bool) -> E2bSandboxHandle {
+    fn normalize_handle(
+        &self,
+        mut handle: E2bSandboxHandle,
+        include_ovs: bool,
+    ) -> E2bSandboxHandle {
         if include_ovs {
             handle = E2bSandboxClient::handle_with_builtin_ovs(handle, &self.client);
         }
@@ -278,7 +282,11 @@ impl E2bProjWorkerRegistry {
                 }
             }
         }
-        match self.client.reap_cluster_warm_proj_orphans(&keep_by_proj).await {
+        match self
+            .client
+            .reap_cluster_warm_proj_orphans(&keep_by_proj)
+            .await
+        {
             Ok(n) if n > 0 => info!(
                 target: "claw_e2b_proj_worker",
                 reaped = n,
@@ -367,9 +375,9 @@ impl E2bProjWorkerRegistry {
                         let mut updated = existing.clone();
                         updated.template_id = desired_contract.clone();
                         updated.updated_at_ms = now_ms;
-                        db.upsert_project_e2b_worker(&updated)
-                            .await
-                            .map_err(|e| format!("upsert project_e2b_worker contract relabel: {e}"))?;
+                        db.upsert_project_e2b_worker(&updated).await.map_err(|e| {
+                            format!("upsert project_e2b_worker contract relabel: {e}")
+                        })?;
                         self.cache_worker(
                             proj_id,
                             handle,
@@ -425,7 +433,8 @@ impl E2bProjWorkerRegistry {
                     "proj worker rotate (contract mismatch or offline)"
                 );
             }
-            self.retire_worker_sandbox(proj_id, &existing.sandbox_id).await;
+            self.retire_worker_sandbox(proj_id, &existing.sandbox_id)
+                .await;
             audit_rotation(
                 db.as_ref(),
                 WorkerRotationEvent {
@@ -688,7 +697,8 @@ impl E2bProjWorkerRegistry {
                 sandbox_id = %existing.sandbox_id,
                 "admin force rotate project worker"
             );
-            self.retire_worker_sandbox(proj_id, &existing.sandbox_id).await;
+            self.retire_worker_sandbox(proj_id, &existing.sandbox_id)
+                .await;
             audit_rotation(
                 db.as_ref(),
                 WorkerRotationEvent {

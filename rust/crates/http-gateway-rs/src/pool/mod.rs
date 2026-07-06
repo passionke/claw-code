@@ -19,8 +19,8 @@ mod worker_profile;
 
 pub use traits::{PoolOps, SlotLease, TaskOutcome};
 
-pub use config::relaxed_worker_allowed_from_env;
 pub use clients::PoolClients;
+pub use config::relaxed_worker_allowed_from_env;
 pub use e2b_nas_layout::{
     allocate_worker_id, e2b_nas_layout_active, ensure_e2b_proj_nas_roots,
     ensure_proj_home_dir_on_nas, ensure_proj_sessions_root_on_nas, ensure_proj_workers_root_on_nas,

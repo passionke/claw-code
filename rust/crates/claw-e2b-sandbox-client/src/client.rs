@@ -564,13 +564,15 @@ impl E2bSandboxClient {
             return Ok(());
         }
         let script = guest_nas_mount_probe_script(&dirs);
-        self.exec_shell_script(handle, &script, None).await.map_err(|e| {
-            format!(
-                "sandbox {} nasConfig bind not mounted in guest ({}): {e}",
-                handle.sandbox_id,
-                dirs.join(", ")
-            )
-        })
+        self.exec_shell_script(handle, &script, None)
+            .await
+            .map_err(|e| {
+                format!(
+                    "sandbox {} nasConfig bind not mounted in guest ({}): {e}",
+                    handle.sandbox_id,
+                    dirs.join(", ")
+                )
+            })
     }
 
     /// Create a sandbox with session affinity metadata (`sessionId` key).
@@ -1230,7 +1232,10 @@ impl E2bSandboxClient {
 
     /// Fill OVS traffic URLs when the relaxed worker template includes built-in openvscode-server.
     #[must_use]
-    pub fn handle_with_builtin_ovs(mut handle: E2bSandboxHandle, client: &E2bSandboxClient) -> E2bSandboxHandle {
+    pub fn handle_with_builtin_ovs(
+        mut handle: E2bSandboxHandle,
+        client: &E2bSandboxClient,
+    ) -> E2bSandboxHandle {
         if handle.ovs_base_url.is_some() {
             return handle;
         }

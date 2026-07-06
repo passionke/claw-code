@@ -15,8 +15,8 @@ use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
 use http_gateway_rs::claw_tap_cluster_state::resolve_solve_llm_route;
 use http_gateway_rs::gateway_strict_landlock_settings::load_system_landlock_default;
 use http_gateway_rs::pool::{
-    parse_gateway_solve_exec_stdout, prepare_e2b_worker_llm_material, PoolOps, PrepareE2bWorkerLlmOptions,
-    SlotLease, E2B_POOL_ID,
+    parse_gateway_solve_exec_stdout, prepare_e2b_worker_llm_material, PoolOps,
+    PrepareE2bWorkerLlmOptions, SlotLease, E2B_POOL_ID,
 };
 
 /// Map gateway container `CLAW_WORK_ROOT` paths to the host/NAS path used by e2b bind mounts.
@@ -123,9 +123,7 @@ pub async fn run_solve_request_docker(
         let material = prepare_e2b_worker_llm_material(
             &state.session_db,
             req.model.as_deref(),
-            PrepareE2bWorkerLlmOptions {
-                for_repl: false,
-            },
+            PrepareE2bWorkerLlmOptions { for_repl: false },
         )
         .await
         .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
