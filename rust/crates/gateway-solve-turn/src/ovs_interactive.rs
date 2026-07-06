@@ -106,10 +106,7 @@ pub fn build_ovs_interactive_prompt_script(
         model.trim()
     };
     let model = shell_single_quote(model_raw);
-    let claw_json = shell_single_quote(
-        &serde_json::json!({ "model": model_raw })
-            .to_string(),
-    );
+    let claw_json = shell_single_quote(&serde_json::json!({ "model": model_raw }).to_string());
     let prompt_b64 = base64::engine::general_purpose::STANDARD.encode(prompt.as_bytes());
     let ensure = build_ensure_ovs_interactive_session_script(segment);
     format!(
@@ -170,7 +167,8 @@ mod tests {
         assert!(sh.contains("CLAW_GATEWAY_WORK_ROOT='/claw_sessions/seg-b'"));
         assert!(sh.contains("CLAW_DEFAULT_MODEL='openai/mimo-v2.5'"));
         assert!(sh.contains("claw --model 'openai/mimo-v2.5' gateway-interactive-once"));
-        assert!(sh.contains("printf '%s\\n' '{\"model\":\"openai/mimo-v2.5\"}' > '/claw_ds'/.claw.json"));
+        assert!(sh
+            .contains("printf '%s\\n' '{\"model\":\"openai/mimo-v2.5\"}' > '/claw_ds'/.claw.json"));
         assert!(!sh.contains("--allow-broad-cwd"));
         assert!(!sh.contains("terminal-llm.env"));
         assert!(!sh.contains("hello"));

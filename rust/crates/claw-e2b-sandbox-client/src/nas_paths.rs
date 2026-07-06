@@ -96,6 +96,22 @@ pub fn guest_worker_work_dir() -> &'static str {
     GUEST_CLAW_HOST_ROOT
 }
 
+/// OVS workspace folder inside relaxed worker (same guest path as project-config root).
+#[must_use]
+pub fn ovs_workspace_folder() -> &'static str {
+    GUEST_CLAW_DS
+}
+
+/// Browser `?folder=` query for relaxed worker built-in OVS.
+#[must_use]
+pub fn ovs_folder_url(ovs_base_url: &str) -> String {
+    format!(
+        "{}?folder={}",
+        ovs_base_url.trim_end_matches('/'),
+        ovs_workspace_folder()
+    )
+}
+
 /// Warm worker: home (ro) + sessions + worker cache.
 #[must_use]
 pub fn warm_worker_mounts(cluster_id: &str, proj_id: i64, worker_id: &str) -> Vec<NasMountPoint> {
@@ -186,6 +202,13 @@ mod tests {
     #[test]
     fn guest_session_root_format() {
         assert_eq!(guest_session_root("seg-a"), "/claw_sessions/seg-a");
+    }
+
+    #[test]
+    fn ovs_workspace_folder_is_claw_ds() {
+        assert_eq!(ovs_workspace_folder(), "/claw_ds");
+        assert!(ovs_folder_url("http://3000-sbx_abc.supone.top/ovs").contains("folder=/claw_ds"));
+        assert!(!ovs_folder_url("http://3000-sbx_abc.supone.top/ovs").contains("/claw_ws/"));
     }
 
     #[test]

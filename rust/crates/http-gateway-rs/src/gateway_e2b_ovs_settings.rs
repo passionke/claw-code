@@ -1,13 +1,14 @@
-//! e2b OVS singleton URLs persisted by gateway lifecycle in PG. Author: kejiqing
+//! OVS workspace URLs derived from relaxed worker built-in openvscode-server. Author: kejiqing
 
-use serde::{Deserialize, Serialize};
+use claw_e2b_sandbox_client::{ovs_folder_url, ovs_workspace_folder, E2bSandboxHandle};
 
 use crate::gateway_global_settings::get_gateway_global_settings;
 use crate::session_db::GatewaySessionDb;
 
+/// Deprecated: legacy singleton OVS mount root (`/claw_ws`). New code uses [`ovs_workspace_folder`].
 pub const OVS_WORKSPACE_ROOT: &str = claw_e2b_sandbox_client::GUEST_CLAW_WS;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct E2bOvsSettings {
     #[serde(rename = "templateId", default)]
     pub template_id: Option<String>,
@@ -26,7 +27,7 @@ impl E2bOvsSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct E2bOvsSettingsPublic {
     #[serde(rename = "templateId", skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
@@ -39,9 +40,60 @@ pub struct E2bOvsSettingsPublic {
     #[serde(rename = "updatedAtMs")]
     pub updated_at_ms: i64,
     pub configured: bool,
+    #[serde(rename = "deprecated")]
+    pub deprecated: bool,
+    #[serde(rename = "migrationNote", skip_serializing_if = "Option::is_none")]
+    pub migration_note: Option<String>,
 }
 
-/// PG `e2bOvs.templateId` → env `CLAW_E2B_OVS_TEMPLATE` → `claw-ovs`.
+/// Built-in OVS base URL from a relaxed project worker handle.
+#[must_use]
+pub fn ovs_base_url_from_handle(handle: &E2bSandboxHandle) -> Option<String> {
+    handle
+        .ovs_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .map(str::to_string)
+}
+
+/// Browser folder URL (`?folder=/claw_ds`) from a relaxed project worker handle.
+#[must_use]
+pub fn ovs_folder_url_from_handle(handle: &E2bSandboxHandle) -> Option<String> {
+    ovs_base_url_from_handle(handle).map(|base| ovs_folder_url(&base))
+}
+
+#[must_use]
+pub fn workspace_folder_path() -> &'static str {
+    ovs_workspace_folder()
+}
+
+pub async fn e2b_ovs_settings_public(
+    db: &GatewaySessionDb,
+) -> Result<E2bOvsSettingsPublic, sqlx::Error> {
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    let s = &settings.e2b_ovs;
+    Ok(E2bOvsSettingsPublic {
+        template_id: s.template_id.clone(),
+        effective_template_id: "claw-worker-relaxed (built-in)".into(),
+        base_url: s.base_url.clone(),
+        sandbox_id: s.sandbox_id.clone(),
+        updated_at_ms: s.updated_at_ms,
+        configured: s.configured(),
+        deprecated: true,
+        migration_note: Some(
+            "OVS runs inside relaxed project workers; use GET /v1/projects/{id}/ovs/workspace"
+                .into(),
+        ),
+    })
+}
+
+pub async fn load_e2b_ovs_settings(db: &GatewaySessionDb) -> Result<E2bOvsSettings, sqlx::Error> {
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    Ok(settings.e2b_ovs)
+}
+
+/// Legacy singleton template id (deprecated).
 #[must_use]
 pub fn e2b_ovs_template_from_env() -> String {
     std::env::var("CLAW_E2B_OVS_TEMPLATE")
@@ -60,55 +112,25 @@ pub async fn load_e2b_ovs_template_id(db: &GatewaySessionDb) -> Result<String, s
         .unwrap_or_else(e2b_ovs_template_from_env))
 }
 
-pub async fn e2b_ovs_settings_public(
-    db: &GatewaySessionDb,
-) -> Result<E2bOvsSettingsPublic, sqlx::Error> {
-    let (settings, _, _) = get_gateway_global_settings(db).await?;
-    let effective_template_id = load_e2b_ovs_template_id(db).await?;
-    let s = &settings.e2b_ovs;
-    Ok(E2bOvsSettingsPublic {
-        template_id: s.template_id.clone(),
-        effective_template_id,
-        base_url: s.base_url.clone(),
-        sandbox_id: s.sandbox_id.clone(),
-        updated_at_ms: s.updated_at_ms,
-        configured: s.configured(),
-    })
-}
-
-/// Folder URL for a project inside the singleton OVS.
-#[must_use]
-pub fn workspace_folder_url(base_url: &str, proj_id: i64) -> String {
-    format!(
-        "{}?folder={}/proj_{proj_id}/home",
-        base_url.trim_end_matches('/'),
-        OVS_WORKSPACE_ROOT
-    )
-}
-
-#[must_use]
-pub fn workspace_folder_path(proj_id: i64) -> String {
-    format!("{OVS_WORKSPACE_ROOT}/proj_{proj_id}/home")
-}
-
-pub async fn load_e2b_ovs_settings(db: &GatewaySessionDb) -> Result<E2bOvsSettings, sqlx::Error> {
-    let (settings, _, _) = get_gateway_global_settings(db).await?;
-    Ok(settings.e2b_ovs)
-}
-
-pub async fn load_e2b_ovs_base_url(db: &GatewaySessionDb) -> Result<Option<String>, sqlx::Error> {
-    let s = load_e2b_ovs_settings(db).await?;
-    Ok(s.base_url.filter(|u| !u.trim().is_empty()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn workspace_folder_url_format() {
-        let url = workspace_folder_url("http://3000-sbx_abc.supone.top/ovs", 2);
-        assert!(url.contains("proj_2/home"));
-        assert!(url.starts_with("http://3000-sbx_abc.supone.top/ovs?folder="));
+    fn ovs_folder_url_from_handle_uses_claw_ds() {
+        let handle = E2bSandboxHandle {
+            sandbox_id: "sbx_abc".into(),
+            sandbox_domain: "supone.top".into(),
+            envd_access_token: None,
+            traffic_access_token: None,
+            ttyd_public_host: "7681-sbx_abc.supone.top".into(),
+            ttyd_use_tls: false,
+            ovs_public_host: Some("3000-sbx_abc.supone.top".into()),
+            ovs_base_url: Some("http://3000-sbx_abc.supone.top/ovs".into()),
+        };
+        let url = ovs_folder_url_from_handle(&handle).expect("url");
+        assert!(url.contains("folder=/claw_ds"));
+        assert!(!url.contains("/claw_ws/"));
+        assert_eq!(workspace_folder_path(), "/claw_ds");
     }
 }

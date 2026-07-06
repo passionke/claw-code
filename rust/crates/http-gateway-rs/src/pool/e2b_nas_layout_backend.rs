@@ -239,8 +239,36 @@ impl NasLayoutBackend {
         cluster_id: &str,
         proj_id: i64,
     ) -> Result<(), String> {
-        self.write_proj_vscode_settings_at(cluster_id, proj_id, "")
+        self.write_proj_claw_vscode_settings(cluster_id, proj_id, None)
             .await
+    }
+
+    /// Write `home/.vscode/settings.json` with Gateway OVS contract fields.
+    pub async fn write_proj_claw_vscode_settings(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+        worker_profile: Option<&str>,
+    ) -> Result<(), String> {
+        let mut cfg = json!({
+            "claw.projId": proj_id,
+            "claw.clusterId": cluster_id,
+            "claw.gatewayHost": crate::gateway_e2b_worker_settings::ovs_gateway_host_for_e2b(),
+            "claw.gatewayPublicHost": crate::gateway_e2b_worker_settings::ovs_gateway_public_host(),
+        });
+        if let Some(profile) = worker_profile.map(str::trim).filter(|s| !s.is_empty()) {
+            cfg["claw.workerProfile"] = json!(profile);
+        }
+        let body = serde_json::to_string_pretty(&cfg)
+            .map_err(|e| format!("serialize vscode settings: {e}"))?
+            + "\n";
+        self.put_proj_home_file(
+            cluster_id,
+            proj_id,
+            ".vscode/settings.json",
+            body.as_bytes(),
+        )
+        .await
     }
 
     async fn write_proj_vscode_settings_at(

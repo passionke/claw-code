@@ -87,7 +87,10 @@ mod tests {
     #[test]
     fn worker_llm_material_env_uses_observe_placeholder_key() {
         let mut env = std::collections::BTreeMap::new();
-        env.insert("CLAW_DEFAULT_MODEL".to_string(), "openai/mimo-v2.5".to_string());
+        env.insert(
+            "CLAW_DEFAULT_MODEL".to_string(),
+            "openai/mimo-v2.5".to_string(),
+        );
         let proxy = "http://8080-sbx_abc.supone.top";
         let out = e2b_worker_llm_env(env, proxy);
         assert_eq!(out.get("OPENAI_BASE_URL").map(String::as_str), Some(proxy));

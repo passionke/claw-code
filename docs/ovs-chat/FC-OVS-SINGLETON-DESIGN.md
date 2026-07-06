@@ -1,7 +1,9 @@
 # e2b OVS Singleton — 1 Gateway : 1 OVS : N Workers
 
+> **DEPRECATED (2026-07)**：OVS 已迁入 **relaxed worker 内置**（`claw-worker-relaxed`），不再使用独立 `ovs-singleton`。见 [RELAXED-WORKER-OVS.md](./RELAXED-WORKER-OVS.md) 与 [ACCEPTANCE.md](./ACCEPTANCE.md)。
+
 Author: kejiqing  
-Status: **implemented (P0–P2 code)** — verify on **`10.8.0.1`** e2b（§14 部分步骤仍引用旧 `10.8.0.9` 取证，见 [`architecture-governance.md`](../architecture-governance.md)）  
+Status: **superseded** — 历史设计文档，仅供追溯  
 Related: [INTEGRATION.md](./INTEGRATION.md), [boundaries-claw-stack.md](../boundaries-claw-stack.md), `deploy/e2b/README.md`
 
 ---

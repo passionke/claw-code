@@ -2,7 +2,7 @@ import { AppstoreOutlined, CodeOutlined } from "@ant-design/icons";
 import { Button, Layout, Select, Space, Typography } from "antd";
 import { Link, Outlet } from "react-router-dom";
 import { useApp } from "../context/AppContext";
-import { ovsIdeHref } from "../utils/ovsUrl";
+import { isOvsWorkerRelaxed, ovsIdeHref } from "../utils/ovsUrl";
 
 const { Header, Content } = Layout;
 
@@ -16,6 +16,7 @@ export default function ChatLayout() {
     projId,
     setProjId,
     projects,
+    projectConfig,
   } = useApp();
 
   const projOptions = projects.map((p) => ({
@@ -72,9 +73,11 @@ export default function ChatLayout() {
             onChange={setProjId}
           />
         </Space>
-        <Button href={ovsIdeHref(projId)} target="_blank" rel="noreferrer" icon={<CodeOutlined />}>
-          Web IDE
-        </Button>
+        {isOvsWorkerRelaxed(projectConfig?.workerProfileJson) ? (
+          <Button href={ovsIdeHref(projId)} target="_blank" rel="noreferrer" icon={<CodeOutlined />}>
+            Web IDE
+          </Button>
+        ) : null}
         <div style={{ flex: 1 }} />
         <Link to="/">
           <Button type="link" icon={<AppstoreOutlined />}>

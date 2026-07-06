@@ -12426,7 +12426,11 @@ mod tests {
             "c2F5LWhp".to_string(),
         ];
         match parse_args(&args).expect("gateway-interactive-once argv should parse") {
-            CliAction::GatewayInteractiveOnce { model, session_jsonl, .. } => {
+            CliAction::GatewayInteractiveOnce {
+                model,
+                session_jsonl,
+                ..
+            } => {
                 assert_eq!(
                     session_jsonl,
                     PathBuf::from("/claw_sessions/seg/interactive-session.jsonl")

@@ -21,6 +21,8 @@ pub const SANDBOX_LEASE_TICK_SECS: u64 = 60;
 pub const SINGLETON_ROLE_OBSERVE: &str = "observe-singleton";
 pub const SINGLETON_ROLE_NAS_API: &str = "nas-api-singleton";
 pub const SINGLETON_ROLE_OVS: &str = "ovs-singleton";
+/// Per-project worker `metadata.clawRole`.
+pub const WARM_PROJ_ROLE: &str = "warm-proj";
 
 /// POST /timeout then GET /sandboxes/{id} retries when `endAt` did not expand.
 const SANDBOX_TTL_VERIFY_MAX_ATTEMPTS: u32 = 3;
@@ -480,6 +482,36 @@ impl E2bSandboxClient {
         self.service_public_host(self.config.ttyd_port, sandbox_id, sandbox_domain)
     }
 
+    fn ovs_public_host(&self, sandbox_id: &str, sandbox_domain: &str) -> String {
+        self.service_public_host(self.config.ovs_port, sandbox_id, sandbox_domain)
+    }
+
+    /// `http(s)://{port}-{sandboxId}.{domain}/ovs`
+    #[must_use]
+    pub fn ovs_service_base_url(&self, sandbox_id: &str, sandbox_domain: &str) -> String {
+        let host = self.ovs_public_host(sandbox_id, sandbox_domain);
+        let scheme = if self.config.is_self_hosted() {
+            "http"
+        } else {
+            "https"
+        };
+        format!("{scheme}://{host}/ovs")
+    }
+
+    fn ovs_handle_fields(
+        &self,
+        sandbox_id: &str,
+        sandbox_domain: &str,
+        include_ovs: bool,
+    ) -> (Option<String>, Option<String>) {
+        if !include_ovs {
+            return (None, None);
+        }
+        let host = self.ovs_public_host(sandbox_id, sandbox_domain);
+        let base = self.ovs_service_base_url(sandbox_id, sandbox_domain);
+        (Some(host), Some(base))
+    }
+
     /// Host for a published sandbox port (`{port}-{sandboxId}.{domain}`).
     #[must_use]
     pub fn service_public_host(&self, port: u16, sandbox_id: &str, sandbox_domain: &str) -> String {
@@ -532,13 +564,15 @@ impl E2bSandboxClient {
             return Ok(());
         }
         let script = guest_nas_mount_probe_script(&dirs);
-        self.exec_shell_script(handle, &script, None).await.map_err(|e| {
-            format!(
-                "sandbox {} nasConfig bind not mounted in guest ({}): {e}",
-                handle.sandbox_id,
-                dirs.join(", ")
-            )
-        })
+        self.exec_shell_script(handle, &script, None)
+            .await
+            .map_err(|e| {
+                format!(
+                    "sandbox {} nasConfig bind not mounted in guest ({}): {e}",
+                    handle.sandbox_id,
+                    dirs.join(", ")
+                )
+            })
     }
 
     /// Create a sandbox with session affinity metadata (`sessionId` key).
@@ -607,6 +641,8 @@ impl E2bSandboxClient {
             traffic_access_token: parsed.traffic_access_token,
             ttyd_public_host,
             ttyd_use_tls: !self.config.is_self_hosted(),
+            ovs_public_host: None,
+            ovs_base_url: None,
         };
         self.register_sandbox_lease(&handle.sandbox_id);
         self.finish_sandbox_create(handle, nas_configured, &mount_points)
@@ -619,6 +655,8 @@ impl E2bSandboxClient {
         cluster_id: &str,
         proj_id: i64,
         worker_id: &str,
+        template_id: &str,
+        include_ovs: bool,
     ) -> Result<E2bSandboxHandle, String> {
         self.prepare_self_hosted_create().await?;
         let warm_session_id = format!("warm-proj-{proj_id}");
@@ -626,11 +664,14 @@ impl E2bSandboxClient {
         metadata.insert("projId".to_string(), proj_id.to_string());
         metadata.insert("workerId".to_string(), worker_id.to_string());
         metadata.insert("sessionId".to_string(), warm_session_id);
-        metadata.insert("clawRole".to_string(), "warm-proj".to_string());
+        metadata.insert("clawRole".to_string(), WARM_PROJ_ROLE.to_string());
+        if include_ovs {
+            metadata.insert("ovsBuiltin".to_string(), "true".to_string());
+        }
 
         let mount_points = warm_worker_mounts(cluster_id, proj_id, worker_id);
         let mut body = json!({
-            "templateID": self.config.template,
+            "templateID": template_id,
             "timeout": self.config.sandbox_timeout_secs,
             "metadata": metadata,
         });
@@ -670,6 +711,8 @@ impl E2bSandboxClient {
                 .unwrap_or_else(|| self.config.domain.clone())
         };
         let ttyd_public_host = self.ttyd_public_host(&parsed.sandbox_id, &sandbox_domain);
+        let (ovs_public_host, ovs_base_url) =
+            self.ovs_handle_fields(&parsed.sandbox_id, &sandbox_domain, include_ovs);
         let handle = E2bSandboxHandle {
             sandbox_id: parsed.sandbox_id,
             sandbox_domain,
@@ -677,13 +720,13 @@ impl E2bSandboxClient {
             traffic_access_token: parsed.traffic_access_token,
             ttyd_public_host,
             ttyd_use_tls: !self.config.is_self_hosted(),
+            ovs_public_host,
+            ovs_base_url,
         };
         self.register_sandbox_lease(&handle.sandbox_id);
         self.finish_sandbox_create(handle, nas_configured, &mount_points)
             .await
     }
-
-    /// List sandboxes (`GET /sandboxes`).
     pub async fn list_sandboxes(&self) -> Result<Vec<BTreeMap<String, String>>, String> {
         let url = format!("{}/sandboxes", self.config.api_url.trim_end_matches('/'));
         let resp = self
@@ -784,6 +827,82 @@ impl E2bSandboxClient {
         Ok(killed)
     }
 
+    /// Kill every `warm-proj` sandbox for `proj_id` except `keep_sandbox_id` (empty = kill all for proj).
+    pub async fn reap_warm_proj_orphans(
+        &self,
+        proj_id: i64,
+        keep_sandbox_id: &str,
+    ) -> Result<usize, String> {
+        let keep = keep_sandbox_id.trim();
+        let proj_key = proj_id.to_string();
+        let mut killed = 0usize;
+        for row in self.list_sandboxes().await? {
+            if row.get("clawRole").map(String::as_str) != Some(WARM_PROJ_ROLE) {
+                continue;
+            }
+            let row_proj = row
+                .get("projId")
+                .or_else(|| row.get("proj_id"))
+                .map(String::as_str);
+            if row_proj != Some(proj_key.as_str()) {
+                continue;
+            }
+            let Some(sid) = row.get("__sandboxId") else {
+                continue;
+            };
+            if !keep.is_empty() && sid == keep {
+                continue;
+            }
+            match self.kill_sandbox(sid).await {
+                Ok(()) => killed += 1,
+                Err(e) => warn!(
+                    target: "claw_e2b_sandbox",
+                    proj_id,
+                    sandbox_id = %sid,
+                    error = %e,
+                    "reap warm-proj orphan failed"
+                ),
+            }
+        }
+        Ok(killed)
+    }
+
+    /// Kill stray `warm-proj` sandboxes: not the PG-registered `keep_by_proj` sandbox per proj.
+    pub async fn reap_cluster_warm_proj_orphans(
+        &self,
+        keep_by_proj: &HashMap<i64, String>,
+    ) -> Result<usize, String> {
+        let mut killed = 0usize;
+        for row in self.list_sandboxes().await? {
+            if row.get("clawRole").map(String::as_str) != Some(WARM_PROJ_ROLE) {
+                continue;
+            }
+            let Some(proj_str) = row.get("projId").or_else(|| row.get("proj_id")) else {
+                continue;
+            };
+            let Ok(proj_id) = proj_str.parse::<i64>() else {
+                continue;
+            };
+            let Some(sid) = row.get("__sandboxId") else {
+                continue;
+            };
+            if keep_by_proj.get(&proj_id).is_some_and(|keep| keep == sid) {
+                continue;
+            }
+            match self.kill_sandbox(sid).await {
+                Ok(()) => killed += 1,
+                Err(e) => warn!(
+                    target: "claw_e2b_sandbox",
+                    proj_id,
+                    sandbox_id = %sid,
+                    error = %e,
+                    "reap cluster warm-proj orphan failed"
+                ),
+            }
+        }
+        Ok(killed)
+    }
+
     async fn create_singleton_sandbox(
         &self,
         template_id: &str,
@@ -869,6 +988,8 @@ impl E2bSandboxClient {
             traffic_access_token: parsed.traffic_access_token,
             ttyd_public_host,
             ttyd_use_tls: !self.config.is_self_hosted(),
+            ovs_public_host: None,
+            ovs_base_url: None,
         };
         let handle = self
             .finish_sandbox_create(handle, nas_configured, mount_points)
@@ -1030,14 +1151,21 @@ impl E2bSandboxClient {
 
     #[must_use]
     pub fn handle_to_json(handle: &E2bSandboxHandle) -> serde_json::Value {
-        json!({
+        let mut out = json!({
             "sandboxId": handle.sandbox_id,
             "sandboxDomain": handle.sandbox_domain,
             "envdAccessToken": handle.envd_access_token,
             "trafficAccessToken": handle.traffic_access_token,
             "ttydPublicHost": handle.ttyd_public_host,
             "ttydUseTls": handle.ttyd_use_tls,
-        })
+        });
+        if let Some(ref host) = handle.ovs_public_host {
+            out["ovsPublicHost"] = json!(host);
+        }
+        if let Some(ref base) = handle.ovs_base_url {
+            out["ovsBaseUrl"] = json!(base);
+        }
+        out
     }
 
     pub fn handle_from_json(value: &serde_json::Value) -> Result<E2bSandboxHandle, String> {
@@ -1076,6 +1204,20 @@ impl E2bSandboxClient {
             .or_else(|| value.get("ttyd_use_tls"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(!sandbox_domain.contains("10.8.0."));
+        let ovs_public_host = value
+            .get("ovsPublicHost")
+            .or_else(|| value.get("ovs_public_host"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let ovs_base_url = value
+            .get("ovsBaseUrl")
+            .or_else(|| value.get("ovs_base_url"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         Ok(E2bSandboxHandle {
             sandbox_id,
             sandbox_domain,
@@ -1083,7 +1225,25 @@ impl E2bSandboxClient {
             traffic_access_token,
             ttyd_public_host,
             ttyd_use_tls,
+            ovs_public_host,
+            ovs_base_url,
         })
+    }
+
+    /// Fill OVS traffic URLs when the relaxed worker template includes built-in openvscode-server.
+    #[must_use]
+    pub fn handle_with_builtin_ovs(
+        mut handle: E2bSandboxHandle,
+        client: &E2bSandboxClient,
+    ) -> E2bSandboxHandle {
+        if handle.ovs_base_url.is_some() {
+            return handle;
+        }
+        let (ovs_public_host, ovs_base_url) =
+            client.ovs_handle_fields(&handle.sandbox_id, &handle.sandbox_domain, true);
+        handle.ovs_public_host = ovs_public_host;
+        handle.ovs_base_url = ovs_base_url;
+        handle
     }
 
     /// Gateway shutdown: DELETE leased sandboxes except persisted project workers + singletons.
@@ -1133,12 +1293,12 @@ impl E2bSandboxClient {
             .send()
             .await
             .map_err(|e| format!("e2b kill sandbox request: {e}"))?;
-        self.unregister_sandbox_lease(sandbox_id);
-        self.persistent_sandboxes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(sandbox_id);
         if resp.status().is_success() || resp.status().as_u16() == 404 {
+            self.unregister_sandbox_lease(sandbox_id);
+            self.persistent_sandboxes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(sandbox_id);
             return Ok(());
         }
         let status = resp.status();

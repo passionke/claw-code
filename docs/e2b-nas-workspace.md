@@ -12,7 +12,7 @@ Author: kejiqing
 
 ## 1. 唯一逻辑根（SoT）
 
-所有 e2b 交互模式（OVS singleton、worker warm pool、fc-cloud solve）共享 **同一个 NAS export 树**，用 **相对 export 根的逻辑路径** 描述，与具体机器挂载点无关：
+所有 e2b 交互模式（relaxed worker 内置 OVS、worker warm pool、fc-cloud solve）共享 **同一个 NAS export 树**，用 **相对 export 根的逻辑路径** 描述，与具体机器挂载点无关：
 
 ```text
 <export-root>/                              ← 逻辑根（relPath ""）
@@ -54,7 +54,8 @@ Admin 只读镜像：`GET /v1/gateway/global-settings` → `e2bNas`（`nasHostMo
 
 | 场景 | relPath（相对 export 根） | guest mountDir | 权限 |
 |------|---------------------------|----------------|------|
-| OVS / observe singleton | ``（空 = export 根） | `/claw_ws` | rw |
+| observe singleton | ``（空 = export 根） | `/claw_ws` | rw |
+| **Relaxed worker 内置 OVS** | 同 worker warm（见下行） | `/claw_ds`（OVS `?folder=`） | ro（home） |
 | Worker warm / solve / OVS agent | `{clusterId}/proj_N/home` | `/claw_ds` | **ro** |
 | Worker warm / solve / OVS agent | `{clusterId}/proj_N/sessions` | `/claw_sessions` | rw |
 | Worker warm / solve / OVS agent | `{clusterId}/proj_N/workers/{workerId}` | `/claw_host_root` | rw（缓存） |

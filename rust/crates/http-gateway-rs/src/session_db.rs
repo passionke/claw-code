@@ -4416,6 +4416,11 @@ mod tests {
             .map_or(0_i64, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
     }
 
+    /// Unique `gateway_turns.turn_id` for integration tests (PK is global, not per-session).
+    fn test_turn_id() -> String {
+        format!("T_{}", uuid::Uuid::new_v4().simple())
+    }
+
     #[test]
     fn redact_hides_password() {
         let r =
@@ -4438,20 +4443,21 @@ mod tests {
             return;
         };
 
-        assert!(db.get_session_home_rel("s1", 7).await.unwrap().is_none());
+        let sid = format!("s1_{}", uuid::Uuid::new_v4().simple());
+        assert!(db.get_session_home_rel(&sid, 7).await.unwrap().is_none());
 
-        db.insert_session("s1", 7, "proj_7/sessions/u1", now_ms(), None)
+        db.insert_session(&sid, 7, "proj_7/sessions/u1", now_ms(), None)
             .await
             .unwrap();
         assert_eq!(
-            db.get_session_home_rel("s1", 7).await.unwrap().as_deref(),
+            db.get_session_home_rel(&sid, 7).await.unwrap().as_deref(),
             Some("proj_7/sessions/u1")
         );
 
         let t2 = now_ms() + 10_000;
-        db.touch_updated("s1", 7, t2).await.unwrap();
+        db.touch_updated(&sid, 7, t2).await.unwrap();
         assert_eq!(
-            db.fetch_updated_at_ms_for_test("s1", 7).await.unwrap(),
+            db.fetch_updated_at_ms_for_test(&sid, 7).await.unwrap(),
             Some(t2)
         );
     }
@@ -4484,8 +4490,9 @@ mod tests {
         db.insert_session(&sid, 1, "proj_1/sessions/u1", t, None)
             .await
             .unwrap();
+        let tid = test_turn_id();
         db.insert_turn(
-            "T_a1b2c3d4e5f6478990abcdef12345678",
+            &tid,
             &sid,
             1,
             "queued",
@@ -4496,23 +4503,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(db
-            .turn_belongs_to_session("T_a1b2c3d4e5f6478990abcdef12345678", &sid, 1)
-            .await
-            .unwrap());
-        db.upsert_feedback(&sid, 1, "T_a1b2c3d4e5f6478990abcdef12345678", "good", t)
-            .await
-            .unwrap();
-        db.upsert_feedback(&sid, 1, "T_a1b2c3d4e5f6478990abcdef12345678", "bad", t + 1)
+        assert!(db.turn_belongs_to_session(&tid, &sid, 1).await.unwrap());
+        db.upsert_feedback(&sid, 1, &tid, "good", t).await.unwrap();
+        db.upsert_feedback(&sid, 1, &tid, "bad", t + 1)
             .await
             .unwrap();
         let items = db.list_feedback(&sid, 1).await.unwrap();
-        assert_eq!(
-            items
-                .get("T_a1b2c3d4e5f6478990abcdef12345678")
-                .map(String::as_str),
-            Some("bad")
-        );
+        assert_eq!(items.get(&tid).map(String::as_str), Some("bad"));
         let listed = db
             .list_sessions_for_proj(1, 100, None, None, None, None, None, None, None)
             .await
@@ -4535,16 +4532,16 @@ mod tests {
         db.insert_session(&sid, 1, "proj_1/sessions/x", t, None)
             .await
             .unwrap();
-        let tid1 = "T_10000000000000000000000000000001";
-        let tid2 = "T_20000000000000000000000000000002";
-        db.insert_turn(tid1, &sid, 1, "queued", t, Some("a"), None, None)
+        let tid1 = test_turn_id();
+        let tid2 = test_turn_id();
+        db.insert_turn(&tid1, &sid, 1, "queued", t, Some("a"), None, None)
             .await
             .unwrap();
-        db.insert_turn(tid2, &sid, 1, "queued", t + 100, Some("b"), None, None)
+        db.insert_turn(&tid2, &sid, 1, "queued", t + 100, Some("b"), None, None)
             .await
             .unwrap();
         db.finalize_turn_terminal(
-            tid1,
+            &tid1,
             "succeeded",
             Some(t + 10),
             Some("report-one"),
@@ -4554,20 +4551,20 @@ mod tests {
         .await
         .unwrap();
         let msg = db
-            .get_turn_report_message(tid1, &sid, 1)
+            .get_turn_report_message(&tid1, &sid, 1)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(msg, "report-one");
         let t2 = db
-            .get_turn_created_at_ms(tid2, &sid, 1)
+            .get_turn_created_at_ms(&tid2, &sid, 1)
             .await
             .unwrap()
             .unwrap();
-        let idx = db.turn_index_in_session(tid2, &sid, 1, t2).await.unwrap();
+        let idx = db.turn_index_in_session(&tid2, &sid, 1, t2).await.unwrap();
         assert_eq!(idx, 2);
         let tools_ctx = db
-            .get_turn_tools_context(tid2, &sid, 1)
+            .get_turn_tools_context(&tid2, &sid, 1)
             .await
             .unwrap()
             .unwrap();
@@ -4587,7 +4584,7 @@ mod tests {
         assert_eq!(by_id.len(), 1);
         assert_eq!(by_id[0].session_id, sid);
         let by_turn = db
-            .list_sessions_for_proj(1, 50, None, None, None, None, None, Some(tid1), None)
+            .list_sessions_for_proj(1, 50, None, None, None, None, None, Some(&tid1), None)
             .await
             .unwrap();
         assert_eq!(by_turn.len(), 1);
@@ -4613,7 +4610,7 @@ mod tests {
         assert_eq!(listed[1].status, "queued");
 
         db.finalize_turn_terminal(
-            tid2,
+            &tid2,
             "succeeded",
             Some(t + 11),
             None,
@@ -4623,12 +4620,12 @@ mod tests {
         .await
         .unwrap();
         assert!(db
-            .get_turn_report_message(tid2, &sid, 1)
+            .get_turn_report_message(&tid2, &sid, 1)
             .await
             .unwrap()
             .is_none());
         let oj = db
-            .get_turn_output_json(tid2, &sid, 1)
+            .get_turn_output_json(&tid2, &sid, 1)
             .await
             .unwrap()
             .expect("output_json expected");
@@ -4645,12 +4642,12 @@ mod tests {
         };
         let t = now_ms();
         let sid = format!("spool_{}", uuid::Uuid::new_v4().simple());
-        let tid = "T_30000000000000000000000000000003";
+        let tid = test_turn_id();
         let pool_id = format!("pool-test-{}", uuid::Uuid::new_v4().simple());
         db.insert_session(&sid, 1, "proj_1/sessions/pool", t, None)
             .await
             .unwrap();
-        db.insert_turn(tid, &sid, 1, "queued", t, Some("q"), None, None)
+        db.insert_turn(&tid, &sid, 1, "queued", t, Some("q"), None, None)
             .await
             .unwrap();
         db.upsert_claw_pool(&ClawPoolUpsert {
@@ -4665,19 +4662,19 @@ mod tests {
         })
         .await
         .unwrap();
-        db.assign_turn_pool_id(tid, &pool_id).await.unwrap();
+        db.assign_turn_pool_id(&tid, &pool_id).await.unwrap();
         let base = db
-            .resolve_pool_http_base_for_turn(tid, &sid, 1)
+            .resolve_pool_http_base_for_turn(&tid, &sid, 1)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(base, "http://10.0.0.8:9944");
-        db.assign_turn_pool_worker(tid, &pool_id, "claw-worker-test-0", Some("claw"))
+        db.assign_turn_pool_worker(&tid, &pool_id, "claw-worker-test-0", Some("claw"))
             .await
             .unwrap();
         let row: Option<(Option<String>, Option<String>)> =
             sqlx::query_as("SELECT pool_id, worker_name FROM gateway_turns WHERE turn_id = $1")
-                .bind(tid)
+                .bind(&tid)
                 .fetch_optional(&db.pool)
                 .await
                 .unwrap();
@@ -4786,8 +4783,10 @@ mod tests {
             .unwrap();
         let entry_match = json!({"extraSession": {"store_id": "SH001"}, "projId": 1});
         let entry_other = json!({"extraSession": {"store_id": "SH999"}, "projId": 1});
+        let tid_match = test_turn_id();
+        let tid_other = test_turn_id();
         db.insert_turn(
-            "T_a0000000000000000000000000000001",
+            &tid_match,
             &sid_match,
             1,
             "queued",
@@ -4799,7 +4798,7 @@ mod tests {
         .await
         .unwrap();
         db.insert_turn(
-            "T_b0000000000000000000000000000001",
+            &tid_other,
             &sid_other,
             1,
             "queued",
@@ -4833,13 +4832,13 @@ mod tests {
         db.insert_session(&sid, 1, "proj_1/sessions/gate_inflight", t, None)
             .await
             .unwrap();
-        let tid_running = "T_c1000000000000000000000000000001";
-        db.insert_turn(tid_running, &sid, 1, "running", t, Some("q1"), None, None)
+        let tid_running = test_turn_id();
+        db.insert_turn(&tid_running, &sid, 1, "running", t, Some("q1"), None, None)
             .await
             .unwrap();
         let err = db.assert_session_can_enqueue(&sid, 1).await.unwrap_err();
         assert_eq!(err, "inflight");
-        db.assert_session_can_acquire_for_turn(&sid, 1, tid_running)
+        db.assert_session_can_acquire_for_turn(&sid, 1, &tid_running)
             .await
             .unwrap();
     }
@@ -4857,13 +4856,13 @@ mod tests {
         db.insert_session(&sid, 1, "proj_1/sessions/gate_art", t, None)
             .await
             .unwrap();
-        let tid = "T_d2000000000000000000000000000002";
-        db.insert_turn(tid, &sid, 1, "succeeded", t, Some("q1"), None, None)
+        let tid = test_turn_id();
+        db.insert_turn(&tid, &sid, 1, "succeeded", t, Some("q1"), None, None)
             .await
             .unwrap();
         let err = db.assert_session_can_enqueue(&sid, 1).await.unwrap_err();
         assert_eq!(err, "artifacts_not_ready");
-        db.finalize_turn_with_artifacts_ready(tid, "succeeded", Some(t + 1), 0, None, None, true)
+        db.finalize_turn_with_artifacts_ready(&tid, "succeeded", Some(t + 1), 0, None, None, true)
             .await
             .unwrap();
         db.assert_session_can_enqueue(&sid, 1).await.unwrap();
@@ -4884,21 +4883,29 @@ mod tests {
         db.insert_session(&sid, 1, "proj_1/sessions/art", t, None)
             .await
             .unwrap();
-        let tid1 = "T_a1000000000000000000000000000001";
-        let tid2 = "T_b2000000000000000000000000000002";
-        db.insert_turn(tid1, &sid, 1, "succeeded", t, Some("q1"), None, None)
+        let tid1 = test_turn_id();
+        let tid2 = test_turn_id();
+        db.insert_turn(&tid1, &sid, 1, "succeeded", t, Some("q1"), None, None)
             .await
             .unwrap();
-        db.insert_turn(tid2, &sid, 1, "queued", t + 100, Some("q2"), None, None)
+        db.insert_turn(&tid2, &sid, 1, "queued", t + 100, Some("q2"), None, None)
             .await
             .unwrap();
-        db.finalize_turn_with_artifacts_ready(tid1, "succeeded", Some(t + 10), 0, None, None, true)
-            .await
-            .unwrap();
+        db.finalize_turn_with_artifacts_ready(
+            &tid1,
+            "succeeded",
+            Some(t + 10),
+            0,
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
         db.upsert_workspace_tar_b64(
             &sid,
             1,
-            tid1,
+            &tid1,
             WORKSPACE_TAR_ARTIFACT_PATH,
             WORKSPACE_TAR_ARTIFACT_KIND,
             "b2xkMQ==",
@@ -4910,7 +4917,7 @@ mod tests {
         db.upsert_workspace_tar_b64(
             &sid,
             1,
-            tid2,
+            &tid2,
             WORKSPACE_TAR_ARTIFACT_PATH,
             WORKSPACE_TAR_ARTIFACT_KIND,
             "b2xkMg==",
@@ -4920,7 +4927,7 @@ mod tests {
         .await
         .unwrap();
         db.finalize_turn_with_artifacts_ready(
-            tid2,
+            &tid2,
             "succeeded",
             Some(t + 110),
             0,
