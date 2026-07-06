@@ -123,7 +123,7 @@ async fn write_probe_settings(
 /// Run MCP discover (`initialize` + `tools/list`) for one server config.
 pub async fn probe_mcp_server(server_name: &str, config: &Value) -> McpTestResponse {
     let started = Instant::now();
-    let mut warnings = collect_warnings(server_name, config);
+    let warnings = collect_warnings(server_name, config);
     let url = url_from_config(config);
     let transport = transport_from_config(config);
 
