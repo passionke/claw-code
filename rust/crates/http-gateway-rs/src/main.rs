@@ -825,12 +825,6 @@ struct TestMcpRequest {
     #[serde(rename = "serverName")]
     server_name: String,
     config: Value,
-    #[serde(rename = "probeMcpStart", default = "default_probe_mcp_start")]
-    probe_mcp_start: bool,
-}
-
-fn default_probe_mcp_start() -> bool {
-    true
 }
 
 #[derive(Debug, Serialize)]
@@ -9149,7 +9143,7 @@ async fn test_mcp(
             ));
         }
     }
-    let resp = mcp_probe::probe_mcp_server(server_name, &req.config, req.probe_mcp_start).await;
+    let resp = mcp_probe::probe_mcp_server(server_name, &req.config).await;
     Ok(Json(resp))
 }
 
