@@ -4504,9 +4504,7 @@ mod tests {
         .await
         .unwrap();
         assert!(db.turn_belongs_to_session(&tid, &sid, 1).await.unwrap());
-        db.upsert_feedback(&sid, 1, &tid, "good", t)
-            .await
-            .unwrap();
+        db.upsert_feedback(&sid, 1, &tid, "good", t).await.unwrap();
         db.upsert_feedback(&sid, 1, &tid, "bad", t + 1)
             .await
             .unwrap();
@@ -4893,9 +4891,17 @@ mod tests {
         db.insert_turn(&tid2, &sid, 1, "queued", t + 100, Some("q2"), None, None)
             .await
             .unwrap();
-        db.finalize_turn_with_artifacts_ready(&tid1, "succeeded", Some(t + 10), 0, None, None, true)
-            .await
-            .unwrap();
+        db.finalize_turn_with_artifacts_ready(
+            &tid1,
+            "succeeded",
+            Some(t + 10),
+            0,
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
         db.upsert_workspace_tar_b64(
             &sid,
             1,
