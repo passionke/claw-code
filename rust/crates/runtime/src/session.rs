@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -231,23 +231,113 @@ impl Session {
     }
 
     pub fn push_message(&mut self, message: ConversationMessage) -> Result<(), SessionError> {
+        self.push_messages_batch(std::slice::from_ref(&message))
+    }
+
+    /// Append multiple messages to memory and jsonl in one step; rolls back memory on persist failure.
+    pub fn push_messages_batch(
+        &mut self,
+        messages: &[ConversationMessage],
+    ) -> Result<(), SessionError> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let start_len = self.messages.len();
         self.touch();
-        self.messages.push(message);
-        let persist_result = {
-            let message_ref = self.messages.last().ok_or_else(|| {
-                SessionError::Format("message was just pushed but missing".to_string())
-            })?;
-            self.append_persisted_message(message_ref)
-        };
-        if let Err(error) = persist_result {
-            self.messages.pop();
+        self.messages.extend(messages.iter().cloned());
+        if let Err(error) = self.append_persisted_messages_batch(messages) {
+            self.messages.truncate(start_len);
             return Err(error);
         }
         Ok(())
     }
 
+    /// Persist one assistant `tool_use` turn and all matching `tool_result` rows together.
+    pub fn push_tool_exchange(
+        &mut self,
+        assistant: ConversationMessage,
+        tool_results: &[ConversationMessage],
+    ) -> Result<(), SessionError> {
+        let tool_use_ids: Vec<String> = assistant
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        if tool_use_ids.is_empty() {
+            return Err(SessionError::Format(
+                "push_tool_exchange requires assistant tool_use blocks".to_string(),
+            ));
+        }
+        for tool_use_id in &tool_use_ids {
+            let paired = tool_results.iter().any(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            ..
+                        } if id == tool_use_id
+                    )
+                })
+            });
+            if !paired {
+                return Err(SessionError::Format(format!(
+                    "push_tool_exchange missing tool_result for {tool_use_id}"
+                )));
+            }
+        }
+        let mut batch = Vec::with_capacity(1 + tool_results.len());
+        batch.push(assistant);
+        batch.extend(tool_results.iter().cloned());
+        self.push_messages_batch(&batch)
+    }
+
     pub fn push_user_text(&mut self, text: impl Into<String>) -> Result<(), SessionError> {
         self.push_message(ConversationMessage::user_text(text))
+    }
+
+    /// Tool-use ids emitted by assistant messages that have no matching tool-result yet.
+    #[must_use]
+    pub fn unanswered_tool_uses(&self) -> Vec<(String, String)> {
+        let mut answered = HashSet::new();
+        let mut pending = Vec::new();
+        for message in &self.messages {
+            for block in &message.blocks {
+                match block {
+                    ContentBlock::ToolUse { id, name, .. } => {
+                        pending.push((id.clone(), name.clone()));
+                    }
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        answered.insert(tool_use_id.clone());
+                    }
+                    ContentBlock::Text { .. } | ContentBlock::ReasoningContent { .. } => {}
+                }
+            }
+        }
+        pending
+            .into_iter()
+            .filter(|(id, _)| !answered.contains(id))
+            .collect()
+    }
+
+    /// Append error `tool_result` rows for every unanswered `tool_use` so the transcript
+    /// stays valid for the next model request after interrupt/cancel/external failure.
+    pub fn seal_unanswered_tool_uses(&mut self, reason: impl AsRef<str>) -> Result<usize, SessionError> {
+        let reason = reason.as_ref();
+        let pending = self.unanswered_tool_uses();
+        let count = pending.len();
+        for (tool_use_id, tool_name) in pending {
+            self.push_message(ConversationMessage::tool_result(
+                tool_use_id,
+                tool_name,
+                reason,
+                true,
+            ))?;
+        }
+        Ok(count)
     }
 
     pub fn record_compaction(&mut self, summary: impl Into<String>, removed_message_count: usize) {
@@ -543,6 +633,16 @@ impl Session {
     }
 
     fn append_persisted_message(&self, message: &ConversationMessage) -> Result<(), SessionError> {
+        self.append_persisted_messages_batch(std::slice::from_ref(message))
+    }
+
+    fn append_persisted_messages_batch(
+        &self,
+        messages: &[ConversationMessage],
+    ) -> Result<(), SessionError> {
+        if messages.is_empty() {
+            return Ok(());
+        }
         let Some(path) = self.persistence_path() else {
             return Ok(());
         };
@@ -554,7 +654,9 @@ impl Session {
         }
 
         let mut file = OpenOptions::new().append(true).open(path)?;
-        writeln!(file, "{}", message_record(message).render())?;
+        for message in messages {
+            writeln!(file, "{}", message_record(message).render())?;
+        }
         Ok(())
     }
 
@@ -1277,6 +1379,143 @@ mod tests {
             ConversationMessage::user_text("legacy")
         );
         assert!(!restored.session_id.is_empty());
+    }
+
+    #[test]
+    fn seal_unanswered_tool_uses_appends_error_tool_results() {
+        let mut session = Session::new();
+        session
+            .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+                id: "call_a".to_string(),
+                name: "WebFetch".to_string(),
+                input: "{}".to_string(),
+            }]))
+            .expect("assistant tool_use");
+        session
+            .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+                id: "call_b".to_string(),
+                name: "bash".to_string(),
+                input: "{}".to_string(),
+            }]))
+            .expect("assistant tool_use");
+        session
+            .push_message(ConversationMessage::tool_result(
+                "call_a",
+                "WebFetch",
+                "ok",
+                false,
+            ))
+            .expect("tool result");
+
+        let sealed = session
+            .seal_unanswered_tool_uses("turn cancelled mid-tool")
+            .expect("seal");
+        assert_eq!(sealed, 1);
+        assert!(session.unanswered_tool_uses().is_empty());
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            output,
+            is_error,
+            ..
+        } = &session.messages.last().expect("sealed row").blocks[0]
+        else {
+            panic!("expected tool_result block");
+        };
+        assert_eq!(tool_use_id, "call_b");
+        assert_eq!(output, "turn cancelled mid-tool");
+        assert!(*is_error);
+    }
+
+    #[test]
+    fn seal_unanswered_tool_uses_is_idempotent() {
+        let mut session = Session::new();
+        session
+            .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+                id: "call_x".to_string(),
+                name: "bash".to_string(),
+                input: "{}".to_string(),
+            }]))
+            .expect("assistant tool_use");
+
+        assert_eq!(
+            session
+                .seal_unanswered_tool_uses("interrupted once")
+                .expect("first seal"),
+            1
+        );
+        assert_eq!(
+            session
+                .seal_unanswered_tool_uses("interrupted twice")
+                .expect("second seal"),
+            0
+        );
+        assert!(session.unanswered_tool_uses().is_empty());
+    }
+
+    #[test]
+    fn seal_unanswered_tool_uses_persists_to_jsonl() {
+        let path = temp_session_path("seal-persist");
+        let mut session = Session::new().with_persistence_path(path.clone());
+        session
+            .save_to_path(&path)
+            .expect("bootstrap jsonl");
+        session
+            .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+                id: "call_persist".to_string(),
+                name: "WebFetch".to_string(),
+                input: "{}".to_string(),
+            }]))
+            .expect("assistant tool_use");
+        session
+            .seal_unanswered_tool_uses("context deadline exceeded")
+            .expect("seal");
+
+        let restored = Session::load_from_path(&path).expect("reload jsonl");
+        fs::remove_file(&path).expect("temp file should be removable");
+        assert!(restored.unanswered_tool_uses().is_empty());
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            output,
+            is_error,
+            ..
+        } = &restored.messages.last().expect("sealed row").blocks[0]
+        else {
+            panic!("expected sealed tool_result");
+        };
+        assert_eq!(tool_use_id, "call_persist");
+        assert_eq!(output, "context deadline exceeded");
+        assert!(*is_error);
+    }
+
+    #[test]
+    fn push_tool_exchange_persists_pair_atomically() {
+        let path = temp_session_path("tool-exchange-pair");
+        let mut session = Session::new().with_persistence_path(path.clone());
+        session
+            .save_to_path(&path)
+            .expect("bootstrap jsonl");
+        let assistant = ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+            id: "call_pair".to_string(),
+            name: "echo".to_string(),
+            input: "{}".to_string(),
+        }]);
+        let tool_result = ConversationMessage::tool_result("call_pair", "echo", "ok", false);
+        session
+            .push_tool_exchange(assistant, std::slice::from_ref(&tool_result))
+            .expect("paired exchange should persist");
+
+        let restored = Session::load_from_path(&path).expect("reload jsonl");
+        fs::remove_file(&path).expect("temp file should be removable");
+        assert_eq!(restored.messages.len(), 2);
+        assert!(restored.unanswered_tool_uses().is_empty());
+        assert!(matches!(
+            restored.messages[0].blocks[0],
+            ContentBlock::ToolUse { .. }
+        ));
+        assert!(matches!(
+            restored.messages[1].blocks[0],
+            ContentBlock::ToolResult { .. }
+        ));
     }
 
     #[test]

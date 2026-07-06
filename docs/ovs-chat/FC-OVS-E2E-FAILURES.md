@@ -39,6 +39,7 @@ Author: kejiqing
 | F10 | gateway build `uid_args[@]: unbound variable` | bash 空数组展开 | `linux-compile.sh` `${uid_args[@]+"${uid_args[@]}"}` | FIXED |
 | F11 | `main.rs` move `state` 编译失败 | shutdown 闭包需 `pool_clients` 但 `state` 已 move 进 axum | `.with_state(state.clone())` | FIXED |
 | F12 | bootstrap 预热 proj_1+2 → 稳定 **3** sandbox | 设计：`min_idle=1` × 2 proj + 1 OVS singleton | 非 bug；E2E 应断言「≤ cap」而非 0 | **BY DESIGN** |
+| F16 | 取消 WebFetch 后下轮 `tool_calls` 400 / `api_http_error` | assistant `tool_use` 增量 append 后 turn 中断，jsonl 悬空；见 [`docs/runtime/TRANSCRIPT-TOOL-EXCHANGE.md`](../runtime/TRANSCRIPT-TOOL-EXCHANGE.md) | `runtime`：成对落盘 `push_tool_exchange` + dispatch 守卫 | **FIXED**（单元测试）；worker 部署后 E2E **待 VERIFIED** |
 
 ---
 

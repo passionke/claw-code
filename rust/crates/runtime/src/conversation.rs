@@ -23,6 +23,9 @@ use crate::usage::{TokenUsage, UsageTracker};
 const DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD: u32 = 100_000;
 const AUTO_COMPACTION_THRESHOLD_ENV_VAR: &str = "CLAUDE_CODE_AUTO_COMPACT_INPUT_TOKENS";
 
+/// Default reason when dispatch guard must synthesize a missing tool result.
+pub const TOOL_DISPATCH_GUARD_REASON: &str = "[error-kind: tool_dispatch_incomplete]\nTool dispatch ended before a result was recorded for this tool_use.";
+
 /// Fully assembled request payload sent to the upstream model client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiRequest {
@@ -523,23 +526,25 @@ where
                 pending_tool_uses.len(),
             );
 
-            self.session
-                .push_message(assistant_message.clone())
-                .map_err(|error| RuntimeError::new(error.to_string()))?;
-            assistant_messages.push(assistant_message);
-
             if pending_tool_uses.is_empty() {
+                self.session
+                    .push_message(assistant_message.clone())
+                    .map_err(|error| RuntimeError::new(error.to_string()))?;
+                assistant_messages.push(assistant_message);
                 break;
             }
 
-            let tool_dispatch = self.execute_pending_tool_uses(
+            let collected_tool_results = self.execute_pending_tool_uses(
                 iterations,
                 &turn_id,
                 pending_tool_uses,
                 &mut prompter,
                 &mut tool_results,
-            );
-            tool_dispatch?;
+            )?;
+            self.session
+                .push_tool_exchange(assistant_message.clone(), &collected_tool_results)
+                .map_err(|error| RuntimeError::new(error.to_string()))?;
+            assistant_messages.push(assistant_message);
         }
 
         let auto_compaction = self.maybe_auto_compact();
@@ -591,8 +596,8 @@ where
     }
 
     #[must_use]
-    pub fn into_session(self) -> Session {
-        self.session
+    pub fn into_session(mut self) -> Session {
+        std::mem::take(&mut self.session)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -603,7 +608,9 @@ where
         pending_tool_uses: Vec<(String, String, String)>,
         prompter: &mut Option<&mut dyn PermissionPrompter>,
         tool_results: &mut Vec<ConversationMessage>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<Vec<ConversationMessage>, RuntimeError> {
+        let dispatch_order = pending_tool_uses.clone();
+        let mut collected = Vec::with_capacity(pending_tool_uses.len());
         let shared_executor = self.tool_executor.shared_executor();
         let mut background_jobs: HashMap<String, BackgroundToolJob> = HashMap::new();
         let mut prebuilt_results: HashMap<String, ConversationMessage> = HashMap::new();
@@ -679,9 +686,6 @@ where
             for (tool_use_id, tool_name, input) in pending_tool_uses {
                 let trace_tool_use_id = tool_use_id.clone();
                 if let Some(result_message) = prebuilt_results.remove(&tool_use_id) {
-                    self.session
-                        .push_message(result_message.clone())
-                        .map_err(|error| RuntimeError::new(error.to_string()))?;
                     self.record_tool_finished(
                         iterations,
                         turn_id,
@@ -689,7 +693,8 @@ where
                         &result_message,
                         0,
                     );
-                    tool_results.push(result_message);
+                    tool_results.push(result_message.clone());
+                    collected.push(result_message);
                     continue;
                 }
 
@@ -705,9 +710,6 @@ where
                         &job.effective_input,
                         raw,
                     );
-                    self.session
-                        .push_message(result_message.clone())
-                        .map_err(|error| RuntimeError::new(error.to_string()))?;
                     self.record_tool_finished(
                         iterations,
                         turn_id,
@@ -715,7 +717,8 @@ where
                         &result_message,
                         job.started_at.elapsed().as_millis(),
                     );
-                    tool_results.push(result_message);
+                    tool_results.push(result_message.clone());
+                    collected.push(result_message);
                     continue;
                 }
 
@@ -765,9 +768,6 @@ where
                         true,
                     ),
                 };
-                self.session
-                    .push_message(result_message.clone())
-                    .map_err(|error| RuntimeError::new(error.to_string()))?;
                 self.record_tool_finished(
                     iterations,
                     turn_id,
@@ -775,12 +775,37 @@ where
                     &result_message,
                     tool_started_at.elapsed().as_millis(),
                 );
-                tool_results.push(result_message);
+                tool_results.push(result_message.clone());
+                collected.push(result_message);
             }
             Ok(())
         })();
         join_remaining_background_jobs(&mut background_jobs);
-        dispatch_result
+        dispatch_result?;
+        for (tool_use_id, tool_name, _) in &dispatch_order {
+            let paired = collected.iter().any(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            ..
+                        } if id == tool_use_id
+                    )
+                })
+            });
+            if !paired {
+                let guard_result = ConversationMessage::tool_result(
+                    tool_use_id.clone(),
+                    tool_name.clone(),
+                    TOOL_DISPATCH_GUARD_REASON,
+                    true,
+                );
+                tool_results.push(guard_result.clone());
+                collected.push(guard_result);
+            }
+        }
+        Ok(collected)
     }
 
     fn permission_outcome_for_tool(
@@ -1317,7 +1342,7 @@ mod tests {
         PermissionRequest,
     };
     use crate::prompt::{ProjectContext, SystemPromptBuilder};
-    use crate::session::{ContentBlock, MessageRole, Session};
+    use crate::session::{ContentBlock, ConversationMessage, MessageRole, Session};
     use crate::usage::TokenUsage;
     use crate::ToolError;
     use std::collections::HashMap;
@@ -2294,6 +2319,188 @@ mod tests {
 
         // then
         assert_eq!(error.to_string(), "upstream failed");
+    }
+
+    #[test]
+    fn run_turn_tool_exchange_no_dangling_on_jsonl() {
+        struct SingleToolApi {
+            called: bool,
+        }
+
+        impl ApiClient for SingleToolApi {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                if self.called {
+                    return Ok(vec![
+                        AssistantEvent::TextDelta("done".to_string()),
+                        AssistantEvent::MessageStop,
+                    ]);
+                }
+                self.called = true;
+                Ok(vec![
+                    AssistantEvent::ToolUse {
+                        id: "call_exchange".to_string(),
+                        name: "echo".to_string(),
+                        input: "hi".to_string(),
+                    },
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let path = temp_session_path("tool-exchange-no-dangling");
+        let session = Session::new().with_persistence_path(path.clone());
+        session.save_to_path(&path).expect("bootstrap jsonl");
+
+        let mut runtime = ConversationRuntime::new(
+            session,
+            SingleToolApi { called: false },
+            StaticToolExecutor::new().register("echo", |input| Ok(input.to_string())),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        runtime
+            .run_turn("go", None)
+            .expect("tool turn should complete");
+
+        assert!(runtime.session().unanswered_tool_uses().is_empty());
+
+        let restored = Session::load_from_path(&path).expect("reload jsonl");
+        fs::remove_file(&path).expect("temp file should be removable");
+        assert!(restored.unanswered_tool_uses().is_empty());
+        assert_eq!(restored.messages.len(), 4);
+    }
+
+    #[test]
+    fn run_turn_without_tools_still_pushes_immediately() {
+        struct TextOnlyApi;
+
+        impl ApiClient for TextOnlyApi {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                Ok(vec![
+                    AssistantEvent::TextDelta("plain reply".to_string()),
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let path = temp_session_path("text-only-immediate");
+        let session = Session::new().with_persistence_path(path.clone());
+        session.save_to_path(&path).expect("bootstrap jsonl");
+
+        let mut runtime = ConversationRuntime::new(
+            session,
+            TextOnlyApi,
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        runtime.run_turn("hello", None).expect("turn should succeed");
+
+        let restored = Session::load_from_path(&path).expect("reload jsonl");
+        fs::remove_file(&path).expect("temp file should be removable");
+        assert_eq!(restored.messages.len(), 2);
+        assert!(matches!(
+            restored.messages[1].blocks.first(),
+            Some(ContentBlock::Text { .. })
+        ));
+    }
+
+    #[test]
+    fn run_turn_api_failure_leaves_legacy_dangling_unsealed() {
+        struct FailingApi;
+
+        impl ApiClient for FailingApi {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                Err(RuntimeError::new("upstream failed"))
+            }
+        }
+
+        let mut session = Session::new();
+        session
+            .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+                id: "call_prior".to_string(),
+                name: "bash".to_string(),
+                input: "{}".to_string(),
+            }]))
+            .expect("seed legacy dangling tool_use");
+
+        let mut runtime = ConversationRuntime::new(
+            session,
+            FailingApi,
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        let error = runtime
+            .run_turn("continue", None)
+            .expect_err("api failure should propagate");
+        assert_eq!(error.to_string(), "upstream failed");
+        assert_eq!(runtime.session().unanswered_tool_uses().len(), 1);
+    }
+
+    #[test]
+    fn run_turn_tool_error_still_pairs_exchange() {
+        struct FailThenTextApi {
+            called: bool,
+        }
+
+        impl ApiClient for FailThenTextApi {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                if self.called {
+                    return Ok(vec![
+                        AssistantEvent::TextDelta("done".to_string()),
+                        AssistantEvent::MessageStop,
+                    ]);
+                }
+                self.called = true;
+                Ok(vec![
+                    AssistantEvent::ToolUse {
+                        id: "call_err".to_string(),
+                        name: "fail".to_string(),
+                        input: "{}".to_string(),
+                    },
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            FailThenTextApi { called: false },
+            StaticToolExecutor::new().register("fail", |_input| {
+                Err(ToolError::new("tool failed"))
+            }),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        runtime
+            .run_turn("go", None)
+            .expect("error tool_result should still pair");
+
+        assert!(runtime.session().unanswered_tool_uses().is_empty());
+        assert!(matches!(
+            runtime.session().messages[2].blocks[0],
+            ContentBlock::ToolResult {
+                is_error: true,
+                ..
+            }
+        ));
     }
 
     #[test]
