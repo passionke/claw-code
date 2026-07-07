@@ -15,9 +15,9 @@ use api::{
     MessageRequest, OpenAiCompatConfig,
 };
 use runtime::{
-    ApiClient, ApiRequest, AssistantEvent, ContentBlock, ConversationMessage,
-    ConversationRuntime, MessageRole, PermissionMode, PermissionPolicy, RuntimeError,
-    Session, StaticToolExecutor, ToolError,
+    ApiClient, ApiRequest, AssistantEvent, ContentBlock, ConversationMessage, ConversationRuntime,
+    MessageRole, PermissionMode, PermissionPolicy, RuntimeError, Session, StaticToolExecutor,
+    ToolError,
 };
 use serde_json::{json, Value};
 
@@ -196,11 +196,13 @@ fn f16_repro_legacy_dangling_transcript_fails_provider_invariant() {
     let mut session = Session::new().with_persistence_path(path.clone());
     session.save_to_path(&path).expect("bootstrap");
     session
-        .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
-            id: "call_dangling".to_string(),
-            name: "WebFetch".to_string(),
-            input: "{}".to_string(),
-        }]))
+        .push_message(ConversationMessage::assistant(vec![
+            ContentBlock::ToolUse {
+                id: "call_dangling".to_string(),
+                name: "WebFetch".to_string(),
+                input: "{}".to_string(),
+            },
+        ]))
         .expect("legacy half assistant");
     session
         .push_user_text("continue after interrupt")
@@ -336,7 +338,11 @@ fn slow_tool_does_not_persist_half_assistant_before_exchange_completes() {
     let mid_count = checker.join().expect("checker join");
     turn_result.expect("turn completes");
 
-    assert_eq!(mid_count, before + 1, "only user row before exchange completes");
+    assert_eq!(
+        mid_count,
+        before + 1,
+        "only user row before exchange completes"
+    );
 
     let restored = Session::load_from_path(&path).expect("reload final");
     assert_session_transcript_api_safe(&restored);

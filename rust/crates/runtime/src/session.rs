@@ -325,7 +325,10 @@ impl Session {
 
     /// Append error `tool_result` rows for every unanswered `tool_use` so the transcript
     /// stays valid for the next model request after interrupt/cancel/external failure.
-    pub fn seal_unanswered_tool_uses(&mut self, reason: impl AsRef<str>) -> Result<usize, SessionError> {
+    pub fn seal_unanswered_tool_uses(
+        &mut self,
+        reason: impl AsRef<str>,
+    ) -> Result<usize, SessionError> {
         let reason = reason.as_ref();
         let pending = self.unanswered_tool_uses();
         let count = pending.len();
@@ -1385,25 +1388,26 @@ mod tests {
     fn seal_unanswered_tool_uses_appends_error_tool_results() {
         let mut session = Session::new();
         session
-            .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
-                id: "call_a".to_string(),
-                name: "WebFetch".to_string(),
-                input: "{}".to_string(),
-            }]))
+            .push_message(ConversationMessage::assistant(vec![
+                ContentBlock::ToolUse {
+                    id: "call_a".to_string(),
+                    name: "WebFetch".to_string(),
+                    input: "{}".to_string(),
+                },
+            ]))
             .expect("assistant tool_use");
         session
-            .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
-                id: "call_b".to_string(),
-                name: "bash".to_string(),
-                input: "{}".to_string(),
-            }]))
+            .push_message(ConversationMessage::assistant(vec![
+                ContentBlock::ToolUse {
+                    id: "call_b".to_string(),
+                    name: "bash".to_string(),
+                    input: "{}".to_string(),
+                },
+            ]))
             .expect("assistant tool_use");
         session
             .push_message(ConversationMessage::tool_result(
-                "call_a",
-                "WebFetch",
-                "ok",
-                false,
+                "call_a", "WebFetch", "ok", false,
             ))
             .expect("tool result");
 
@@ -1430,11 +1434,13 @@ mod tests {
     fn seal_unanswered_tool_uses_is_idempotent() {
         let mut session = Session::new();
         session
-            .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
-                id: "call_x".to_string(),
-                name: "bash".to_string(),
-                input: "{}".to_string(),
-            }]))
+            .push_message(ConversationMessage::assistant(vec![
+                ContentBlock::ToolUse {
+                    id: "call_x".to_string(),
+                    name: "bash".to_string(),
+                    input: "{}".to_string(),
+                },
+            ]))
             .expect("assistant tool_use");
 
         assert_eq!(
@@ -1456,15 +1462,15 @@ mod tests {
     fn seal_unanswered_tool_uses_persists_to_jsonl() {
         let path = temp_session_path("seal-persist");
         let mut session = Session::new().with_persistence_path(path.clone());
+        session.save_to_path(&path).expect("bootstrap jsonl");
         session
-            .save_to_path(&path)
-            .expect("bootstrap jsonl");
-        session
-            .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
-                id: "call_persist".to_string(),
-                name: "WebFetch".to_string(),
-                input: "{}".to_string(),
-            }]))
+            .push_message(ConversationMessage::assistant(vec![
+                ContentBlock::ToolUse {
+                    id: "call_persist".to_string(),
+                    name: "WebFetch".to_string(),
+                    input: "{}".to_string(),
+                },
+            ]))
             .expect("assistant tool_use");
         session
             .seal_unanswered_tool_uses("context deadline exceeded")
@@ -1491,9 +1497,7 @@ mod tests {
     fn push_tool_exchange_persists_pair_atomically() {
         let path = temp_session_path("tool-exchange-pair");
         let mut session = Session::new().with_persistence_path(path.clone());
-        session
-            .save_to_path(&path)
-            .expect("bootstrap jsonl");
+        session.save_to_path(&path).expect("bootstrap jsonl");
         let assistant = ConversationMessage::assistant(vec![ContentBlock::ToolUse {
             id: "call_pair".to_string(),
             name: "echo".to_string(),

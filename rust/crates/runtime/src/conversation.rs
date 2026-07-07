@@ -2402,7 +2402,9 @@ mod tests {
             vec!["system".to_string()],
         );
 
-        runtime.run_turn("hello", None).expect("turn should succeed");
+        runtime
+            .run_turn("hello", None)
+            .expect("turn should succeed");
 
         let restored = Session::load_from_path(&path).expect("reload jsonl");
         fs::remove_file(&path).expect("temp file should be removable");
@@ -2428,11 +2430,13 @@ mod tests {
 
         let mut session = Session::new();
         session
-            .push_message(ConversationMessage::assistant(vec![ContentBlock::ToolUse {
-                id: "call_prior".to_string(),
-                name: "bash".to_string(),
-                input: "{}".to_string(),
-            }]))
+            .push_message(ConversationMessage::assistant(vec![
+                ContentBlock::ToolUse {
+                    id: "call_prior".to_string(),
+                    name: "bash".to_string(),
+                    input: "{}".to_string(),
+                },
+            ]))
             .expect("seed legacy dangling tool_use");
 
         let mut runtime = ConversationRuntime::new(
@@ -2482,9 +2486,7 @@ mod tests {
         let mut runtime = ConversationRuntime::new(
             Session::new(),
             FailThenTextApi { called: false },
-            StaticToolExecutor::new().register("fail", |_input| {
-                Err(ToolError::new("tool failed"))
-            }),
+            StaticToolExecutor::new().register("fail", |_input| Err(ToolError::new("tool failed"))),
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
         );
@@ -2496,10 +2498,7 @@ mod tests {
         assert!(runtime.session().unanswered_tool_uses().is_empty());
         assert!(matches!(
             runtime.session().messages[2].blocks[0],
-            ContentBlock::ToolResult {
-                is_error: true,
-                ..
-            }
+            ContentBlock::ToolResult { is_error: true, .. }
         ));
     }
 
