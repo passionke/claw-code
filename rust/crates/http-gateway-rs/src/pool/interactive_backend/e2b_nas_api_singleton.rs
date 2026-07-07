@@ -184,7 +184,9 @@ impl E2bNasApiSingleton {
         }
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        Err(format!("nas-api prepare_session_root HTTP {status}: {text}"))
+        Err(format!(
+            "nas-api prepare_session_root HTTP {status}: {text}"
+        ))
     }
 
     /// `POST /v1/symlink` — session → worker link.

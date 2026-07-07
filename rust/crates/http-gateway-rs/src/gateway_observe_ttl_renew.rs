@@ -115,8 +115,7 @@ pub async fn observe_ttl_renew_loop(client: Arc<E2bSandboxClient>, db: Arc<Gatew
         extend_secs = observe_ttl_renew_extend_secs(),
         "observe singleton TTL renew ticker enabled"
     );
-    let mut interval =
-        tokio::time::interval(std::time::Duration::from_secs(poll_secs));
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(poll_secs));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         interval.tick().await;

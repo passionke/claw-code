@@ -45,11 +45,12 @@ use http_gateway_rs::{
     admin_mcp_http, admin_mcp_solve, claw_tap_cluster_state, client_origin,
     gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_e2b_nas_settings,
     gateway_e2b_observe_proxy, gateway_e2b_observe_reset, gateway_global_settings,
-    gateway_llm_config_sync, gateway_observe_ttl_renew, gateway_project_e2b_worker, gateway_strict_landlock_settings,
-    gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api,
-    project_config_apply, project_config_version, project_entity_revision, project_extra_session,
-    project_git_sync, project_id, project_tools, session_agent_api, session_db, session_merge,
-    session_ovs_api, session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
+    gateway_llm_config_sync, gateway_observe_ttl_renew, gateway_project_e2b_worker,
+    gateway_strict_landlock_settings, gateway_translate, llm_probe, mcp_probe, pool,
+    pool_consumer_resolve, preflight_plugin_api, project_config_apply, project_config_version,
+    project_entity_revision, project_extra_session, project_git_sync, project_id, project_tools,
+    session_agent_api, session_db, session_merge, session_ovs_api, session_terminal_api, turn_id,
+    turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
