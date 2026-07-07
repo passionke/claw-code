@@ -115,6 +115,9 @@ export interface E2bOvsSettings {
   sandboxId?: string;
   updatedAtMs: number;
   configured: boolean;
+  /** Legacy cluster OVS singleton — OVS now runs inside relaxed project workers. */
+  deprecated?: boolean;
+  migrationNote?: string;
 }
 
 export interface E2bObserveTemplateSettings {

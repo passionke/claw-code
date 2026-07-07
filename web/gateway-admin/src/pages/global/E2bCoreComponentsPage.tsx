@@ -31,7 +31,7 @@ function onlineTag(online: boolean, label: string) {
   return <Tag color={online ? "success" : "warning"}>{online ? `${label} 在线` : `${label} 未就绪`}</Tag>;
 }
 
-/** Gateway 核心 e2b 单例：nas-api / observe / ovs — 生命周期由 gateway 掌控。Author: kejiqing */
+/** Gateway 核心 e2b 单例：nas-api / observe；OVS 内置在 relaxed worker。Author: kejiqing */
 export default function E2bCoreComponentsPage() {
   const { gatewayBase } = useApp();
   const [loading, setLoading] = useState(false);
@@ -41,7 +41,6 @@ export default function E2bCoreComponentsPage() {
   const [clusterId, setClusterId] = useState("");
   const [form] = Form.useForm<{
     nasApiTemplateId: string;
-    ovsTemplateId: string;
     observeTemplateId: string;
   }>();
 
@@ -60,7 +59,6 @@ export default function E2bCoreComponentsPage() {
       setStatus(singletons);
       form.setFieldsValue({
         nasApiTemplateId: singletons.nasApi.templateId ?? singletons.nasApi.effectiveTemplateId,
-        ovsTemplateId: singletons.ovs.templateId ?? singletons.ovs.effectiveTemplateId,
         observeTemplateId:
           singletons.observe.templateId ?? singletons.observe.effectiveTemplateId,
       });
@@ -85,7 +83,6 @@ export default function E2bCoreComponentsPage() {
         "/v1/gateway/global-settings/e2b-singleton-templates",
         {
           nasApiTemplateId: values.nasApiTemplateId.trim(),
-          ovsTemplateId: values.ovsTemplateId.trim(),
           observeTemplateId: values.observeTemplateId.trim(),
         }
       );
@@ -102,7 +99,7 @@ export default function E2bCoreComponentsPage() {
     }
   };
 
-  const resetComponent = async (component: "nas-api" | "ovs" | "observe") => {
+  const resetComponent = async (component: "nas-api" | "observe") => {
     setResetting(component);
     try {
       const r = await proxyHttp<E2bSingletonActionResponse>(
@@ -137,10 +134,12 @@ export default function E2bCoreComponentsPage() {
       <Alert
         type="info"
         showIcon
-        message="生命周期由 Gateway 统一掌控"
+        message="nas-api / observe 单例由 Gateway 统一掌控"
         description={
           <Typography.Paragraph style={{ marginBottom: 0 }}>
-            nas-api、observe、ovs 三个单例在 gateway 启动时自动 ensure，健康检查失败时自动重建。
+            nas-api、observe 在 gateway 启动时自动 ensure，健康检查失败时自动重建。
+            OVS 已内置在 relaxed project worker（<Typography.Text code>claw-worker-relaxed</Typography.Text>
+            ），不再维护集群级 OVS singleton。
             模版 ID 注册在 PG（<Typography.Text code>settings_json</Typography.Text>
             ），新模版构建后在此更新并点「重置」即可滚动升级。
             <br />
@@ -176,19 +175,6 @@ export default function E2bCoreComponentsPage() {
             }
           >
             <Input placeholder="claw-observe" />
-          </Form.Item>
-          <Form.Item
-            label="ovs templateId"
-            name="ovsTemplateId"
-            extra={
-              status ? (
-                <Typography.Text type="secondary">
-                  当前生效：{status.ovs.effectiveTemplateId}
-                </Typography.Text>
-              ) : null
-            }
-          >
-            <Input placeholder="claw-ovs" />
           </Form.Item>
           <Button
             type="primary"
@@ -283,14 +269,24 @@ export default function E2bCoreComponentsPage() {
         ) : null}
       </Card>
 
-      <Card title="ovs" loading={loading}>
+      <Card title="ovs（已废弃集群单例）" loading={loading}>
         {status ? (
           <>
+            <Alert
+              type="warning"
+              showIcon
+              message="OVS 运行在 relaxed project worker 内"
+              description={
+                status.ovs.migrationNote ??
+                "请使用各项目 OVS workspace API，不再创建或重置集群级 OVS singleton。"
+              }
+              style={{ marginBottom: 16 }}
+            />
             <Descriptions column={1} bordered size="small">
-              <Descriptions.Item label="状态">
-                {onlineTag(status.ovs.configured, "ovs")}
+              <Descriptions.Item label="运行方式">
+                <Typography.Text code>{status.ovs.effectiveTemplateId}</Typography.Text>
               </Descriptions.Item>
-              <Descriptions.Item label="sandboxId">
+              <Descriptions.Item label="legacy sandboxId">
                 {status.ovs.sandboxId ? (
                   <Typography.Text code copyable>
                     {status.ovs.sandboxId}
@@ -299,7 +295,7 @@ export default function E2bCoreComponentsPage() {
                   "—"
                 )}
               </Descriptions.Item>
-              <Descriptions.Item label="baseUrl">
+              <Descriptions.Item label="legacy baseUrl">
                 {status.ovs.baseUrl ? (
                   <Typography.Text code copyable>
                     {status.ovs.baseUrl}
@@ -308,25 +304,10 @@ export default function E2bCoreComponentsPage() {
                   "—"
                 )}
               </Descriptions.Item>
-              <Descriptions.Item label="更新时间">
+              <Descriptions.Item label="PG 更新时间">
                 {formatMs(status.ovs.updatedAtMs)}
               </Descriptions.Item>
             </Descriptions>
-            <Popconfirm
-              title="重置 OVS 单例？"
-              description="将删除当前 OVS sandbox 并按 PG 模版 ID 重建。"
-              onConfirm={() => void resetComponent("ovs")}
-              okText="重置"
-              cancelText="取消"
-            >
-              <Button
-                style={{ marginTop: 16 }}
-                icon={<SyncOutlined />}
-                loading={resetting === "ovs"}
-              >
-                重置 ovs
-              </Button>
-            </Popconfirm>
           </>
         ) : null}
       </Card>

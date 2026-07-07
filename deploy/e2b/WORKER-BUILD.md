@@ -26,7 +26,7 @@ Author: kejiqing
 1. `linux/amd64` 交叉编译 `claw`（`CLAW_LINUX_COMPILE_PLATFORM` 由 `e2b-worker-arch.sh` 固定）
 2. stage `claw` + `ttyd` → `deploy/stack/.e2b-worker-bins/`
 3. `Template.build(alias=claw-worker)` 上传到 `CLAW_E2B_API_URL`
-4. **写 PG** `e2bWorker.templateId` + `updatedAtMs`（与 ovs/observe/nas-api 同构）
+4. **写 PG** `e2bWorker.templateId` + `updatedAtMs`（与 observe/nas-api 同构；OVS 不走集群 singleton）
 
 可选：`--skip-compile` 复用 `deploy/stack/.linux-artifacts/release/claw`（须为 **amd64** ELF）。
 
@@ -54,7 +54,7 @@ Gateway 读 `load_e2b_worker_template_id()`：`PG templateId` → env `CLAW_E2B_
 
 `main.rs` 启动时：
 
-- `ensure_e2b_singletons_on_startup` — ovs / observe / nas-api 单例
+- `ensure_e2b_singletons_on_startup` — observe / nas-api 单例（**OVS 内置 relaxed worker，无集群 singleton**）
 - `reconcile_project_workers_on_startup` — 各 proj worker 与 PG `templateId` 对齐，**mismatch 自动轮换**
 
 运行时：
@@ -75,7 +75,7 @@ curl -X POST http://127.0.0.1:8088/v1/projects/1/e2b-worker/reset
 # OVS @claw agent/ws（须 gateway-interactive-once 或新 claw 正常）
 ./deploy/stack/lib/verify-ovs-claw-e2e.sh
 
-# 全链路（OVS singleton + agent WS）
+# 全链路（relaxed worker 内置 OVS + agent WS）
 CLAW_INTERACTIVE_BACKEND=e2b CLAW_OVS_BACKEND=e2b \
   ./deploy/stack/lib/verify-e2b-ovs-e2e.sh
 ```
@@ -92,7 +92,7 @@ worker 内版本对齐：
 |--------|------|
 | `http-gateway-rs` | `./deploy/stack/gateway.sh pack-deploy` |
 | **e2b 沙箱内 `claw`** | `./deploy/stack/gateway.sh e2b-worker-deploy` |
-| ovs / observe / nas-api 模板 | 各自 `build-claw-*-selfhosted.py`（也会写 PG） |
+| ovs / observe / nas-api 模板 | `build-claw-ovs-selfhosted.py`（legacy，可选）、`build-claw-*-observe/nas-api`；**OVS 运行时走 `claw-worker-relaxed`** |
 
 **不要**指望 `pack-deploy` 更新 worker 里的 claw — 那是两个镜像/模板链路。
 
