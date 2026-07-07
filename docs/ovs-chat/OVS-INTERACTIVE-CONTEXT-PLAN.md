@@ -7,6 +7,7 @@ Status: **已实施（B1 agent/ws）** — 2026-06-29。ttyd 人工终端仍 leg
 相关：
 
 - 会话 ID / Tap：[OVS-INTERACTIVE-SESSION-ID.md](./OVS-INTERACTIVE-SESSION-ID.md)
+- Transcript 工具成对落盘（内核）：[../runtime/TRANSCRIPT-TOOL-EXCHANGE.md](../runtime/TRANSCRIPT-TOOL-EXCHANGE.md)
 - 路线图：[PLAN.md](./PLAN.md)
 - Solve 持久化（**本计划不采用**）：[persistence-model.md](../persistence-model.md)
 
