@@ -1,6 +1,6 @@
 //! Interactive coding terminal API (`/v1/sessions/.../terminal/*`). Author: kejiqing
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -16,15 +16,16 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
 use tracing::{info, warn};
 
-use crate::claw_tap_cluster_state::{self, ClawTapClusterHandle};
+use crate::claw_tap_cluster_state::ClawTapClusterHandle;
 use crate::client_origin;
 use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::{
-    self, apply_e2b_observe_worker_llm_env, build_proj_bake_script, build_session_attach_script,
-    build_start_ttyd_script, gateway_proj_work_dir, gateway_session_home,
-    interactive_backend_is_e2b, terminal_ws_connect_url, InteractiveBackendKind, InteractiveLease,
-    InteractiveSessionSpec, PoolClients, TtydConnectTarget,
+    self, build_proj_bake_script, build_session_attach_script, build_start_ttyd_script,
+    gateway_proj_work_dir, gateway_session_home, interactive_backend_is_e2b,
+    prepare_e2b_worker_llm_material, terminal_ws_connect_url, InteractiveBackendKind,
+    InteractiveLease, InteractiveSessionSpec, PoolClients, PrepareE2bWorkerLlmOptions,
+    TtydConnectTarget,
 };
 use crate::project_config_apply;
 use crate::project_config_draft;
@@ -549,13 +550,14 @@ pub async fn terminal_start(
         .await
         .map_err(|e| TerminalApiError::new(StatusCode::BAD_REQUEST, e))?;
 
-    let mut llm_env =
-        resolve_terminal_llm_env(&ctx.session_db, &ctx.claw_tap_cluster, &ctx.llm_runtime)
-            .await
-            .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
-    llm_env = apply_e2b_observe_worker_llm_env(&ctx.session_db, llm_env)
-        .await
-        .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+    let material = prepare_e2b_worker_llm_material(
+        &ctx.session_db,
+        None,
+        PrepareE2bWorkerLlmOptions { for_repl: true },
+    )
+    .await
+    .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+    let llm_env = material.env;
 
     let proj_home = proj_dir.join("home");
 
@@ -829,27 +831,6 @@ pub async fn materialize_ovs_proj_workspace(
 
 async fn write_proj_vscode_settings(proj_dir: &Path, proj_id: i64) -> Result<(), String> {
     crate::session_ovs_api::ensure_proj_claw_settings(proj_dir, proj_id).await
-}
-
-pub(crate) async fn resolve_terminal_llm_env(
-    session_db: &GatewaySessionDb,
-    cluster_handle: &ClawTapClusterHandle,
-    llm_handle: &LlmRuntimeHandle,
-) -> Result<BTreeMap<String, String>, String> {
-    let (_route, mut env) = claw_tap_cluster_state::resolve_solve_llm_route(
-        session_db,
-        cluster_handle,
-        llm_handle,
-        None,
-    )
-    .await?;
-    if let Some(model) = env.remove("CLAW_DEFAULT_MODEL") {
-        env.insert(
-            "CLAW_DEFAULT_MODEL".to_string(),
-            claw_tap_cluster_state::claw_repl_model_name(&model),
-        );
-    }
-    Ok(env)
 }
 
 #[must_use]

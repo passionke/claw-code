@@ -10,6 +10,8 @@ use crate::session_db::GatewaySessionDb;
 pub struct E2bWorkerSettings {
     #[serde(rename = "templateId", default)]
     pub template_id: Option<String>,
+    #[serde(rename = "alias", default)]
+    pub alias: Option<String>,
     #[serde(rename = "updatedAtMs", default)]
     pub updated_at_ms: i64,
 }
@@ -23,15 +25,73 @@ impl E2bWorkerSettings {
     }
 }
 
-/// Effective worker template: PG `e2bWorker.templateId` → env `CLAW_E2B_TEMPLATE` → `claw-worker`.
+/// Effective strict worker template: PG `e2bWorker.templateId` → env `CLAW_E2B_TEMPLATE` → `claw-worker`.
 #[must_use]
 pub fn e2b_worker_template_from_env() -> String {
     std::env::var("CLAW_E2B_TEMPLATE")
         .ok()
-        .or_else(|| std::env::var("CLAW_E2B_TEMPLATE").ok())
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "claw-worker".into())
+}
+
+/// Relaxed fallback: env `CLAW_E2B_WORKER_RELAXED_TEMPLATE` → alias `claw-worker-relaxed`.
+#[must_use]
+pub fn e2b_worker_relaxed_template_from_env() -> String {
+    std::env::var("CLAW_E2B_WORKER_RELAXED_TEMPLATE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "claw-worker-relaxed".into())
+}
+
+/// Browser → gateway WS (`claw.gatewayPublicHost` in OVS settings).
+#[must_use]
+pub fn ovs_gateway_public_host() -> String {
+    if let Ok(v) = std::env::var("CLAW_GATEWAY_PUBLIC_HOST") {
+        let t = v.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    let port = std::env::var("GATEWAY_HOST_PORT")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "8088".into());
+    if let Ok(host) = std::env::var("CLAW_POOL_ADVERTISE_HOST") {
+        let h = host.trim();
+        if !h.is_empty() {
+            return format!("{h}:{port}");
+        }
+    }
+    format!("127.0.0.1:{port}")
+}
+
+/// e2b OVS sandbox → gateway HTTP/WS (`claw.gatewayHost`; reachable from worker sandbox).
+#[must_use]
+pub fn ovs_gateway_host_for_e2b() -> String {
+    if let Ok(v) = std::env::var("CLAW_E2B_OVS_GATEWAY_HOST") {
+        let t = v.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    if let Ok(v) = std::env::var("CLAW_E2B_GATEWAY_ADVERTISE_HOST") {
+        let t = v.trim();
+        if !t.is_empty() {
+            return if t.contains(':') {
+                t.to_string()
+            } else {
+                let port = std::env::var("GATEWAY_HOST_PORT")
+                    .ok()
+                    .filter(|p| !p.trim().is_empty())
+                    .unwrap_or_else(|| "8088".into());
+                format!("{t}:{port}")
+            };
+        }
+    }
+    ovs_gateway_public_host()
 }
 
 /// Project worker e2b TTL on each renew (`CLAW_E2B_PROJECT_WORKER_TTL_SECS` → `CLAW_E2B_SANDBOX_TIMEOUT_SECS` → 3600).
@@ -63,6 +123,18 @@ pub async fn load_e2b_worker_template_id(db: &GatewaySessionDb) -> Result<String
         .template_id
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(e2b_worker_template_from_env))
+}
+
+/// PG `e2bWorkerRelaxed.templateId` → env → alias `claw-worker-relaxed`.
+pub async fn load_e2b_worker_relaxed_template_id(
+    db: &GatewaySessionDb,
+) -> Result<String, sqlx::Error> {
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    Ok(settings
+        .e2b_worker_relaxed
+        .template_id
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(e2b_worker_relaxed_template_from_env))
 }
 
 #[cfg(test)]

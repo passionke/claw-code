@@ -386,6 +386,8 @@ async fn ensure_observe(
                 traffic_access_token: None,
                 ttyd_public_host: String::new(),
                 ttyd_use_tls: !client.config().is_self_hosted(),
+                ovs_public_host: None,
+                ovs_base_url: None,
             };
             let _ = persist_observe_tap(db, client, &handle, live_port, &live_base).await;
             let _ = client
@@ -532,8 +534,29 @@ pub async fn ensure_e2b_singleton(
     match component {
         E2bSingletonComponent::NasApi => ensure_nas_api(db, client).await,
         E2bSingletonComponent::Observe => ensure_observe(db, client).await,
-        E2bSingletonComponent::Ovs => ensure_ovs(db, client).await,
+        E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
     }
+}
+
+async fn deprecated_ovs_singleton_outcome(
+    db: &GatewaySessionDb,
+    client: &E2bSandboxClient,
+) -> Result<E2bSingletonOutcome, String> {
+    let cluster_id = gateway_cluster_id()?;
+    let pg_sid = get_gateway_global_settings(db)
+        .await
+        .ok()
+        .and_then(|(s, _, _)| s.e2b_ovs.sandbox_id);
+    kill_existing_singleton(client, &cluster_id, SINGLETON_ROLE_OVS, pg_sid.as_deref()).await;
+    Ok(E2bSingletonOutcome {
+        sandbox_id: None,
+        base_url: None,
+        traffic_reachable: false,
+        message: Some(
+            "OVS cluster singleton deprecated — OVS runs inside relaxed project workers (claw-worker-relaxed)"
+                .into(),
+        ),
+    })
 }
 
 pub async fn reset_e2b_singleton(
@@ -571,19 +594,12 @@ pub async fn reset_e2b_singleton(
             .await;
             ensure_observe(db, client).await
         }
-        E2bSingletonComponent::Ovs => {
-            let pg_sid = get_gateway_global_settings(db)
-                .await
-                .ok()
-                .and_then(|(s, _, _)| s.e2b_ovs.sandbox_id);
-            kill_existing_singleton(client, &cluster_id, SINGLETON_ROLE_OVS, pg_sid.as_deref())
-                .await;
-            ensure_ovs(db, client).await
-        }
+        E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
     }
 }
 
-/// Startup: ensure observe / nas-api / ovs singletons exist, healthy, tracked for lease ticker.
+/// Startup: ensure observe / nas-api singletons exist, healthy, tracked for lease ticker.
+/// OVS is built into relaxed project workers — no cluster OVS singleton.
 pub async fn ensure_e2b_singletons_on_startup(db: &GatewaySessionDb, client: &E2bSandboxClient) {
     if !interactive_backend_is_e2b() {
         return;
@@ -600,14 +616,6 @@ pub async fn ensure_e2b_singletons_on_startup(db: &GatewaySessionDb, client: &E2
         warn!(
             target: "claw_e2b_singleton",
             component = "observe",
-            error = %e,
-            "singleton ensure failed (best-effort)"
-        );
-    }
-    if let Err(e) = ensure_ovs(db, client).await {
-        warn!(
-            target: "claw_e2b_singleton",
-            component = "ovs",
             error = %e,
             "singleton ensure failed (best-effort)"
         );

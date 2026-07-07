@@ -326,19 +326,30 @@ def main() -> int:
     now_ms = int(time.time() * 1000)
     print(f"template_id: {build.template_id}")
     print(f"build_id: {build.build_id}")
-    try:
-        merge_settings_json_key(
-            "e2bWorker",
-            {
-                "templateId": build.template_id,
-                "alias": alias,
-                "updatedAtMs": now_ms,
-            },
-            now_ms=now_ms,
+    skip_pg = os.environ.get("CLAW_E2B_SKIP_WORKER_PG_PERSIST", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if skip_pg:
+        print(
+            f"==> skip PG e2bWorker.templateId (alias {alias!r} only; strict PG unchanged)",
+            file=sys.stderr,
         )
-        print(f"==> persisted e2bWorker.templateId={build.template_id!r} to PG")
-    except Exception as exc:  # noqa: BLE001
-        print(f"warn: skip PG e2bWorker.templateId persist: {exc}", file=sys.stderr)
+    else:
+        try:
+            merge_settings_json_key(
+                "e2bWorker",
+                {
+                    "templateId": build.template_id,
+                    "alias": alias,
+                    "updatedAtMs": now_ms,
+                },
+                now_ms=now_ms,
+            )
+            print(f"==> persisted e2bWorker.templateId={build.template_id!r} to PG")
+        except Exception as exc:  # noqa: BLE001
+            print(f"warn: skip PG e2bWorker.templateId persist: {exc}", file=sys.stderr)
 
     print(f"OK: template {alias!r} ({build.template_id}) ready on {opts['api_url']}")
     print("hint: restart gateway or wait for renewal ticker — startup reconcile rotates proj workers on templateId mismatch")

@@ -100,32 +100,29 @@ pub fn build_ovs_interactive_prompt_script(
     let session_root = shell_single_quote(&format!("{GUEST_CLAW_SESSIONS}/{segment}"));
     let proj_home = shell_single_quote(GUEST_CLAW_DS);
     let worker_root = shell_single_quote(GUEST_CLAW_HOST_ROOT);
-    let model = shell_single_quote(if model.trim().is_empty() {
+    let model_raw = if model.trim().is_empty() {
         "openai/mimo-v2.5"
     } else {
         model.trim()
-    });
+    };
+    let model = shell_single_quote(model_raw);
+    let claw_json = shell_single_quote(&serde_json::json!({ "model": model_raw }).to_string());
     let prompt_b64 = base64::engine::general_purpose::STANDARD.encode(prompt.as_bytes());
     let ensure = build_ensure_ovs_interactive_session_script(segment);
     format!(
         r"{ensure}
 set -e
 cd {proj_home}
+printf '%s\n' {claw_json} > {proj_home}/.claw.json
 export HOME={worker_root}
 export CLAW_GATEWAY_WORK_ROOT={session_root}
 export CLAW_PROJECT_CONFIG_ROOT={GUEST_CLAW_DS:?}
 export CLAW_DISPLAY_MODE=web
 export CLAW_SESSION_ID={record_sid}
-if [ -f {GUEST_CLAW_HOST_ROOT:?}/.claw/terminal-llm.env ]; then
-  set -a
-  # shellcheck source=/dev/null
-  . {GUEST_CLAW_HOST_ROOT:?}/.claw/terminal-llm.env
-  set +a
-fi
-claw gateway-interactive-once \
+export CLAW_DEFAULT_MODEL={model}
+claw --model {model} gateway-interactive-once \
   --session-jsonl {jsonl} \
   --prompt-b64 '{prompt_b64}' \
-  --model {model} \
   --permission-mode danger-full-access"
     )
 }
@@ -168,15 +165,19 @@ mod tests {
         assert!(sh.contains("cd '/claw_ds'"));
         assert!(sh.contains("export HOME='/claw_host_root'"));
         assert!(sh.contains("CLAW_GATEWAY_WORK_ROOT='/claw_sessions/seg-b'"));
-        assert!(sh.contains("--model 'openai/mimo-v2.5'"));
+        assert!(sh.contains("CLAW_DEFAULT_MODEL='openai/mimo-v2.5'"));
+        assert!(sh.contains("claw --model 'openai/mimo-v2.5' gateway-interactive-once"));
+        assert!(sh
+            .contains("printf '%s\\n' '{\"model\":\"openai/mimo-v2.5\"}' > '/claw_ds'/.claw.json"));
         assert!(!sh.contains("--allow-broad-cwd"));
+        assert!(!sh.contains("terminal-llm.env"));
         assert!(!sh.contains("hello"));
     }
 
     #[test]
     fn prompt_script_falls_back_when_model_blank() {
         let sh = build_ovs_interactive_prompt_script("seg-c", "ovs-chat-1-x", "hi", "  ");
-        assert!(sh.contains("--model 'openai/mimo-v2.5'"));
+        assert!(sh.contains("claw --model 'openai/mimo-v2.5' gateway-interactive-once"));
     }
 
     #[test]

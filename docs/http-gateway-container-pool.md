@@ -46,8 +46,8 @@ sequenceDiagram
 
 | 变量 | 说明 |
 |------|------|
-| `CLAW_INTERACTIVE_BACKEND` | **必须** `fc` |
-| `CLAW_SOLVE_ISOLATION` | **必须** `fc`（`env-profile.sh` 默认） |
+| `CLAW_INTERACTIVE_BACKEND` | **必须** `e2b` |
+| `CLAW_SOLVE_ISOLATION` | **必须** `e2b`（`env-profile.sh` 默认） |
 | `CLAW_E2B_API_URL` / `CLAW_E2B_SANDBOX_URL` | e2b API 基址（如 `http://10.8.0.1:3000`） |
 | `CLAW_E2B_API_KEY` / `ALIYUN_E2B_TOKEN` | API 密钥 |
 | `CLAW_E2B_WORKER_STRICT_TEMPLATE` | strict worker 模板 id |

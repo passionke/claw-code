@@ -413,10 +413,10 @@ def ovs_workspace_folder(proj_id: str) -> str:
     return f"{OVS_WORKSPACE_ROOT}/proj_{pid}/home"
 
 
-def fetch_ovs_workspace_from_gateway(proj_id: str) -> dict | None:
-    """Gateway OVS workspace contract (`ovsFolderUrl`, `ovsBackend`, …)."""
+def fetch_ovs_workspace_from_gateway(proj_id: str) -> tuple[dict | None, int | None, str | None]:
+    """Gateway OVS workspace contract (`ovsFolderUrl`, `ovsBackend`, …). Returns (data, http_status, error)."""
     if not UPSTREAM_GATEWAY_BASE:
-        return None
+        return None, None, "gateway upstream not configured"
     url = (
         f"{UPSTREAM_GATEWAY_BASE.rstrip('/')}/v1/projects/"
         f"{urllib.parse.quote(str(proj_id).strip() or '1', safe='')}/ovs/workspace"
@@ -424,18 +424,43 @@ def fetch_ovs_workspace_from_gateway(proj_id: str) -> dict | None:
     try:
         with urllib.request.urlopen(url, timeout=120) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+            if isinstance(data, dict):
+                return data, resp.status, None
+            return None, resp.status, "invalid ovs/workspace JSON"
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        err = raw
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and parsed.get("error"):
+                err = str(parsed["error"])
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+        return None, e.code, err
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError) as e:
+        return None, None, str(e)
 
 
 def fetch_ovs_folder_url_from_gateway(proj_id: str) -> str | None:
     """FC mode: Gateway returns direct e2b traffic ovsFolderUrl (WebSocket-native; no gateway proxy)."""
-    data = fetch_ovs_workspace_from_gateway(proj_id)
+    data, _status, _err = fetch_ovs_workspace_from_gateway(proj_id)
     if not data:
         return None
     raw = data.get("ovsFolderUrl") or data.get("ovs_folder_url")
     return str(raw).strip() if raw else None
+
+
+def send_ovs_strict_page(handler: BaseHTTPRequestHandler, proj_id: str) -> None:
+    """Strict worker profile — OVS not available for this project. Author: kejiqing"""
+    body = (
+        f"<!DOCTYPE html><html><head><meta charset=utf-8>"
+        f"<title>OVS 不可用</title></head><body>"
+        f"<h1>该项目为 Strict Worker</h1>"
+        f"<p>projId={proj_id} 的 worker profile 为 strict，无 Web IDE / OVS。</p>"
+        f"<p>请在 Admin → Worker profile 将项目设为 <code>relaxed</code> 后重试。</p>"
+        f"</body></html>"
+    ).encode("utf-8")
+    send_html_bytes(handler, 403, body)
 
 
 def send_ovs_wait_page(handler: BaseHTTPRequestHandler, proj_id: str, detail: str) -> None:
@@ -516,7 +541,12 @@ def proxy_ovs_http(
     # Browser must load OVS directly with ?folder=proj_N/home (proxy HTML loses workspace root). kejiqing
     if rel_path in ("", "/"):
         materialize_ovs_workspace_via_gateway(proj_id)
-        data = fetch_ovs_workspace_from_gateway(proj_id) if UPSTREAM_GATEWAY_BASE else None
+        data, status, err = (
+            fetch_ovs_workspace_from_gateway(proj_id) if UPSTREAM_GATEWAY_BASE else (None, None, None)
+        )
+        if status == 403:
+            send_ovs_strict_page(handler, proj_id)
+            return
         if data:
             folder_url = data.get("ovsFolderUrl") or data.get("ovs_folder_url")
             if folder_url:
@@ -527,7 +557,8 @@ def proxy_ovs_http(
                 send_ovs_wait_page(
                     handler,
                     proj_id,
-                    "FC OVS singleton 仍在 warmup。就绪后请用 API 返回的 ovsFolderUrl + /etc/hosts 行打开。",
+                    err
+                    or "relaxed worker OVS 仍在 warmup。就绪后请用 API 返回的 ovsFolderUrl 打开。",
                 )
                 return
         if OVS_FROM_GATEWAY:

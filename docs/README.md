@@ -2,7 +2,11 @@
 
 Author: kejiqing
 
-**当前唯一支持的 worker 路径：** solve / interactive / OVS / Observe / NAS 写盘均经 **e2b（FC）沙箱**；本地栈仅 **gateway + playground**，外连独立 PG 与 e2bserver。
+**运维部署总入口（本机开发 + 部署运维）：** [`deploy-ops-runbook.md`](deploy-ops-runbook.md)
+
+**Cursor Skill：** [`.cursor/skills/claw-deploy-ops/SKILL.md`](../.cursor/skills/claw-deploy-ops/SKILL.md)
+
+**当前唯一支持的 worker 路径：** solve / interactive / OVS / Observe / NAS 写盘均经 **e2b 沙箱**；本地栈仅 **gateway + playground**，外连独立 PG 与 e2bserver。
 
 **架构总纲：** [`architecture-governance.md`](architecture-governance.md)
 
@@ -12,6 +16,7 @@ Author: kejiqing
 
 | 文档 | 用途 |
 |------|------|
+| [**`deploy-ops-runbook.md`**](deploy-ops-runbook.md) | **运维总入口**：e2b 注册、生命周期、gateway/admin 发布 |
 | [`architecture-governance.md`](architecture-governance.md) | 目标拓扑、NAS 不变量、e2b singleton、部署命令、迁移 checklist |
 | [`local-dev.md`](local-dev.md) | 本地开发：`quick`、**e2b worker dev 模式（不走 CI）** |
 | [`deploy/stack/README.md`](../deploy/stack/README.md) | 运维手册：起停、镜像、排障 |

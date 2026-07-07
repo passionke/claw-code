@@ -439,11 +439,7 @@ fn run_gateway_interactive_once(
 
     let session_ref = session_jsonl.display().to_string();
     let (handle, session) = load_session_reference(&session_ref)?;
-    let resolved_model = if model.trim().is_empty() {
-        resolve_repl_model(DEFAULT_MODEL.to_string())
-    } else {
-        model.to_string()
-    };
+    let resolved_model = resolve_gateway_interactive_model(model);
     let interactive_repl = display_mode() == DisplayMode::Web;
     let system_prompt = build_system_prompt(interactive_repl)?;
     let mut built = build_runtime(
@@ -1221,7 +1217,22 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
 
     match rest[0].as_str() {
         "gateway-solve-once" => parse_gateway_solve_once(&rest[1..]),
-        "gateway-interactive-once" => parse_gateway_interactive_once(&rest[1..]),
+        "gateway-interactive-once" => {
+            let mut action = parse_gateway_interactive_once(&rest[1..])?;
+            // Top-level parse consumes `--model` anywhere in argv before the subcommand
+            // parser runs, so OVS `… gateway-interactive-once --session-jsonl … --model openai/…`
+            // leaves the subcommand model empty unless we merge the global flag value.
+            if let CliAction::GatewayInteractiveOnce { ref mut model, .. } = action {
+                if model.trim().is_empty() {
+                    if let Some(raw) = model_flag_raw.as_deref() {
+                        *model = resolve_model_alias_with_config(raw);
+                    }
+                } else {
+                    *model = resolve_model_alias_with_config(model);
+                }
+            }
+            Ok(action)
+        }
         "dump-manifests" => parse_dump_manifests_args(&rest[1..], output_format),
         "bootstrap-plan" => Ok(CliAction::BootstrapPlan { output_format }),
         "agents" => Ok(CliAction::Agents {
@@ -1959,6 +1970,20 @@ fn config_model_for_current_dir() -> Option<String> {
     let cwd = env::current_dir().ok()?;
     let loader = ConfigLoader::default_for(&cwd);
     loader.load().ok()?.model().map(ToOwned::to_owned)
+}
+
+/// Model for `gateway-interactive-once`: honor explicit `--model`, then worker `CLAW_DEFAULT_MODEL`.
+fn resolve_gateway_interactive_model(model: &str) -> String {
+    if !model.trim().is_empty() {
+        return resolve_model_alias_with_config(model);
+    }
+    if let Ok(raw) = env::var("CLAW_DEFAULT_MODEL") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return resolve_model_alias_with_config(trimmed);
+        }
+    }
+    resolve_repl_model(DEFAULT_MODEL.to_string())
 }
 
 fn resolve_repl_model(cli_model: String) -> String {
@@ -12387,6 +12412,48 @@ mod tests {
         assert!(report.contains("plugin slash commands"));
         assert!(report.contains("statusline"));
         assert!(report.contains("session hooks"));
+    }
+
+    #[test]
+    fn parses_gateway_interactive_once_merges_global_model_after_session_jsonl() {
+        let args = vec![
+            "gateway-interactive-once".to_string(),
+            "--session-jsonl".to_string(),
+            "/claw_sessions/seg/interactive-session.jsonl".to_string(),
+            "--model".to_string(),
+            "openai/deepseek-v4-pro".to_string(),
+            "--prompt-b64".to_string(),
+            "c2F5LWhp".to_string(),
+        ];
+        match parse_args(&args).expect("gateway-interactive-once argv should parse") {
+            CliAction::GatewayInteractiveOnce {
+                model,
+                session_jsonl,
+                ..
+            } => {
+                assert_eq!(
+                    session_jsonl,
+                    PathBuf::from("/claw_sessions/seg/interactive-session.jsonl")
+                );
+                assert_eq!(model, "openai/deepseek-v4-pro");
+            }
+            other => panic!("expected GatewayInteractiveOnce, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_gateway_interactive_model_uses_claw_default_model_when_flag_omitted() {
+        let _guard = env_lock();
+        let prev = std::env::var("CLAW_DEFAULT_MODEL").ok();
+        std::env::set_var("CLAW_DEFAULT_MODEL", "openai/mimo-v2.5");
+        assert_eq!(
+            super::resolve_gateway_interactive_model(""),
+            "openai/mimo-v2.5"
+        );
+        match prev {
+            Some(v) => std::env::set_var("CLAW_DEFAULT_MODEL", v),
+            None => std::env::remove_var("CLAW_DEFAULT_MODEL"),
+        }
     }
 
     #[test]

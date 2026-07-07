@@ -16,7 +16,7 @@ _E2B_DIR = Path(__file__).resolve().parent
 if str(_E2B_DIR) not in sys.path:
     sys.path.insert(0, str(_E2B_DIR))
 from e2b_pg_settings import merge_settings_json_key
-from e2b_template_registry import load_repo_dotenv, log_debian_base_resolution, template_debian_base_image
+from e2b_template_registry import load_repo_dotenv, log_debian_base_resolution, template_debian_base_image, template_apt_prepare_prefix
 
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)

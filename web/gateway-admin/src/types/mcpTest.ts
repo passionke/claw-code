@@ -9,9 +9,6 @@ export interface McpTestResponse {
   discoverOk: boolean;
   toolCount: number;
   toolsSample: string[];
-  hasMcpStart: boolean;
-  mcpStartOk?: boolean;
-  mcpStartMessage?: string;
   warnings: string[];
   errors: string[];
   durationMs: number;
@@ -22,5 +19,4 @@ export interface McpTestRequest {
   projId: number;
   serverName: string;
   config: Record<string, unknown>;
-  probeMcpStart?: boolean;
 }

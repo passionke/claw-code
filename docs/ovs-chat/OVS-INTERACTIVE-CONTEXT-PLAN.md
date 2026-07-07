@@ -7,6 +7,7 @@ Status: **已实施（B1 agent/ws）** — 2026-06-29。ttyd 人工终端仍 leg
 相关：
 
 - 会话 ID / Tap：[OVS-INTERACTIVE-SESSION-ID.md](./OVS-INTERACTIVE-SESSION-ID.md)
+- Transcript 工具成对落盘（内核）：[../runtime/TRANSCRIPT-TOOL-EXCHANGE.md](../runtime/TRANSCRIPT-TOOL-EXCHANGE.md)
 - 路线图：[PLAN.md](./PLAN.md)
 - Solve 持久化（**本计划不采用**）：[persistence-model.md](../persistence-model.md)
 
@@ -227,10 +228,11 @@ NAS:    proj_{N}/sessions/{segment}/interactive-session.jsonl
 
 | 组件 | 文件 |
 |------|------|
-| 脚本契约 | `rust/crates/gateway-solve-turn/src/worker_env.rs`（或新 `ovs_interactive.rs`） |
+| 脚本契约 | `rust/crates/gateway-solve-turn/src/ovs_interactive.rs`（OVS prompt；LLM 凭证由 exec env 注入，不 source `terminal-llm.env`） |
+| Worker LLM 准备 | `rust/crates/http-gateway-rs/src/pool/e2b_worker_llm_material.rs`（`prepare_e2b_worker_llm_material` — solve / OVS / terminal 共用） |
 | Agent WS | `rust/crates/http-gateway-rs/src/session_agent_api.rs` |
-| e2b 流式 exec | `rust/crates/claw-e2b-sandbox-client/src/client.rs`（`exec_shell_script_streaming`） |
-| Podman exec | `rust/crates/http-gateway-rs/src/pool/docker_cli.rs` / sandbox RPC |
+| e2b 流式 exec | `rust/crates/claw-e2b-sandbox-client/src/client.rs`（`exec_shell_script_streaming(..., env)`） |
+| e2b exec helper | `deploy/e2b/e2b_exec.py`（`run_sh` + `env` inline export，与 `exec_solve` 共用 `_env_exports_sh`） |
 | 扩展 | `extensions/claw-vscode/extension.js` |
 | E2E | `deploy/stack/lib/verify-ovs-claw-e2e.sh` |
 | 文档 | 本文件、`OVS-INTERACTIVE-SESSION-ID.md`、`PLAN.md` |

@@ -12,23 +12,24 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use crate::claw_tap_cluster_state;
 use crate::client_origin::CLIENT_ORIGIN_OVS_CHAT;
 use crate::persistence::transcript;
 use crate::persistence::transcript::{
     import_turn_messages_to_db, report_body_from_turn_messages,
     turn_message_groups_from_jsonl_contents,
 };
-use crate::pool::interactive_backend::apply_e2b_observe_worker_llm_env;
 use crate::pool::interactive_backend::{
     interactive_backend_is_e2b, InteractiveBackendKind, E2B_INTERACTIVE_POOL_ID,
 };
-use crate::pool::{gateway_session_home, nas_cluster_id};
+use crate::pool::{
+    gateway_session_home, nas_cluster_id, prepare_e2b_worker_llm_material,
+    PrepareE2bWorkerLlmOptions,
+};
+use crate::pool::{PoolClients, WorkerProfileMode};
 use crate::session_db::GatewaySessionDb;
 use crate::session_ovs_api::{ovs_agent_session_id, ovs_chat_record_session_id};
 use crate::session_terminal_api::{
-    ensure_terminal_active, resolve_terminal_llm_env, ActiveTerminalSession, TerminalApiContext,
-    TerminalApiError,
+    ensure_terminal_active, ActiveTerminalSession, TerminalApiContext, TerminalApiError,
 };
 use crate::turn_id;
 use claw_e2b_sandbox_client::E2bSandboxHandle;
@@ -241,8 +242,8 @@ fn ovs_turn_pool_id(active: &ActiveTerminalSession) -> &str {
     }
 }
 
-fn ovs_turn_exec_user(active: &ActiveTerminalSession) -> &'static str {
-    if active.backend == InteractiveBackendKind::E2b {
+fn ovs_turn_exec_user(active: &ActiveTerminalSession, relaxed: bool) -> &'static str {
+    if active.backend == InteractiveBackendKind::E2b && relaxed {
         "0:0"
     } else {
         "claw"
@@ -284,6 +285,8 @@ fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<E2bSandb
         traffic_access_token: active.ttyd.traffic_access_token.clone(),
         ttyd_public_host: host.to_string(),
         ttyd_use_tls: active.ttyd.use_tls,
+        ovs_public_host: None,
+        ovs_base_url: None,
     })
 }
 
@@ -315,13 +318,14 @@ async fn stage_gateway_record_session_id(
         .pool_clients
         .e2b_sandbox_client()
         .ok_or_else(|| "fc interactive: sandbox client not configured".to_string())?;
-    client.exec_shell_script(&handle, &script).await
+    client.exec_shell_script(&handle, &script, None).await
 }
 
 async fn assign_ovs_turn_pool_worker(
     db: &GatewaySessionDb,
     turn_id: &str,
     active: &ActiveTerminalSession,
+    relaxed: bool,
 ) {
     let Some(worker_name) = active.worker_name.as_deref().filter(|s| !s.is_empty()) else {
         return;
@@ -331,7 +335,7 @@ async fn assign_ovs_turn_pool_worker(
             turn_id,
             ovs_turn_pool_id(active),
             worker_name,
-            Some(ovs_turn_exec_user(active)),
+            Some(ovs_turn_exec_user(active, relaxed)),
         )
         .await
     {
@@ -452,7 +456,9 @@ async fn run_ovs_interactive_prompt(
         text,
     )
     .await?;
-    assign_ovs_turn_pool_worker(&ctx.session_db, &turn_id, active).await;
+    let relaxed = PoolClients::effective_mode_for_proj(&ctx.session_db, proj_id).await
+        == WorkerProfileMode::Relaxed;
+    assign_ovs_turn_pool_worker(&ctx.session_db, &turn_id, active, relaxed).await;
     stage_gateway_record_session_id(ctx, active, record_session_id).await?;
 
     *active_turn.lock().await = Some(ActiveOvsTurn {
@@ -472,18 +478,15 @@ async fn run_ovs_interactive_prompt(
             .await
             .map_err(|e| format!("ensure ovs session root: {e}"))?;
     }
-    let mut llm_env =
-        resolve_terminal_llm_env(&ctx.session_db, &ctx.claw_tap_cluster, &ctx.llm_runtime)
-            .await
-            .map_err(|e| format!("resolve OVS LLM env: {e}"))?;
-    llm_env = apply_e2b_observe_worker_llm_env(&ctx.session_db, llm_env)
-        .await
-        .map_err(|e| format!("apply e2b observe LLM env: {e}"))?;
-    let model = llm_env
-        .get("CLAW_DEFAULT_MODEL")
-        .map(|m| claw_tap_cluster_state::claw_repl_model_name(m))
-        .unwrap_or_else(|| "openai/mimo-v2.5".to_string());
-    let script = build_ovs_interactive_prompt_script(&segment, record_session_id, text, &model);
+    let material = prepare_e2b_worker_llm_material(
+        &ctx.session_db,
+        None,
+        PrepareE2bWorkerLlmOptions { for_repl: true },
+    )
+    .await
+    .map_err(|e| format!("prepare OVS LLM material: {e}"))?;
+    let script =
+        build_ovs_interactive_prompt_script(&segment, record_session_id, text, &material.model);
     let handle = fc_handle_for_active(ctx, active).await?;
     let client = ctx
         .pool_clients
@@ -517,7 +520,7 @@ async fn run_ovs_interactive_prompt(
     });
 
     let outcome = client
-        .exec_shell_script_streaming(&handle, &script, Some(hook))
+        .exec_shell_script_streaming(&handle, &script, Some(&material.env), Some(hook))
         .await?;
     drop(line_tx);
     let mut tail_carry = pump.await.map_err(|e| format!("stdout pump join: {e}"))?;
@@ -617,6 +620,13 @@ async fn run_agent_ws_bridge(
     client: WebSocket,
 ) -> Result<(), String> {
     let proj_id = q.proj_id;
+    if PoolClients::effective_mode_for_proj(&ctx.session_db, proj_id).await
+        != WorkerProfileMode::Relaxed
+    {
+        let (mut cli_tx, _) = client.split();
+        send_agent_error(&mut cli_tx, "OVS requires relaxed worker profile").await;
+        return Err("OVS requires relaxed worker profile".into());
+    }
     let worker_session_id = ovs_worker_session_id(proj_id, &path_session_id);
     let record_session_id =
         ovs_record_session_id(proj_id, &path_session_id, q.chat_session_id.as_deref());

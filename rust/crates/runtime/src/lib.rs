@@ -76,7 +76,7 @@ pub use config_validate::{
 pub use conversation::{
     auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
     ConversationRuntime, PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
-    ToolError, ToolExecutor, TurnSummary,
+    ToolError, ToolExecutor, TurnSummary, TOOL_DISPATCH_GUARD_REASON,
 };
 pub use file_ops::{
     edit_file, glob_search, grep_search, read_file, write_file, write_file_max_bytes,

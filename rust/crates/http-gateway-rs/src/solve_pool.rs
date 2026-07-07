@@ -14,8 +14,10 @@ use tracing::{info, warn};
 use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
 use http_gateway_rs::claw_tap_cluster_state::resolve_solve_llm_route;
 use http_gateway_rs::gateway_strict_landlock_settings::load_system_landlock_default;
-use http_gateway_rs::pool::interactive_backend::resolve_e2b_worker_solve_llm_route;
-use http_gateway_rs::pool::{parse_gateway_solve_exec_stdout, PoolOps, SlotLease, E2B_POOL_ID};
+use http_gateway_rs::pool::{
+    parse_gateway_solve_exec_stdout, prepare_e2b_worker_llm_material, PoolOps,
+    PrepareE2bWorkerLlmOptions, SlotLease, E2B_POOL_ID,
+};
 
 /// Map gateway container `CLAW_WORK_ROOT` paths to the host/NAS path used by e2b bind mounts.
 pub(crate) fn session_mount_for_pool_acquire(
@@ -118,9 +120,14 @@ pub async fn run_solve_request_docker(
         .unwrap_or(state.cfg.default_timeout_seconds);
 
     let (llm_route, worker_llm_env) = if pool_id == E2B_POOL_ID {
-        resolve_e2b_worker_solve_llm_route(&state.session_db, req.model.as_deref())
-            .await
-            .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?
+        let material = prepare_e2b_worker_llm_material(
+            &state.session_db,
+            req.model.as_deref(),
+            PrepareE2bWorkerLlmOptions { for_repl: false },
+        )
+        .await
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+        (material.route, material.env)
     } else {
         resolve_solve_llm_route(
             &state.session_db,

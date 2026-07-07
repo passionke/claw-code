@@ -4,8 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::claw_tap_cluster_state::{active_llm_upstream, SolveLlmRoute};
-use crate::cluster_identity::{gateway_cluster_id, gateway_database_url, local_cluster_identity};
+use crate::claw_tap_cluster_state::SolveLlmRoute;
 use crate::gateway_claw_tap_settings::claw_tap_proxy_base_url;
 use crate::gateway_global_settings;
 use crate::session_db::GatewaySessionDb;
@@ -49,7 +48,7 @@ pub fn e2b_worker_llm_env(
 }
 
 /// Async wrapper: load observe proxy from DB then apply worker-safe env.
-pub async fn apply_e2b_observe_worker_llm_env(
+pub(crate) async fn apply_e2b_observe_worker_llm_env(
     session_db: &GatewaySessionDb,
     env: BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, String> {
@@ -65,39 +64,17 @@ pub fn e2b_worker_solve_route(mut route: SolveLlmRoute, proxy_base_url: &str) ->
 }
 
 /// e2b solve: observe singleton proxy; worker env has placeholder key only.
-pub async fn resolve_e2b_worker_solve_llm_route(
+pub(crate) async fn resolve_e2b_worker_solve_llm_route(
     session_db: &GatewaySessionDb,
     model_override: Option<&str>,
 ) -> Result<(SolveLlmRoute, BTreeMap<String, String>), String> {
-    let cluster_id = gateway_cluster_id()?;
-    let db_url = gateway_database_url()?;
-    let local = local_cluster_identity(&cluster_id, &db_url)?;
-    let proxy_base = load_e2b_observe_proxy_base_url(session_db).await?;
-    let active = gateway_global_settings::load_active_llm_runtime(session_db)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no active LLM model configured in Admin".to_string())?;
-    let (upstream, default_model) = active_llm_upstream(&active)?;
-    let model = model_override
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or(default_model);
-    let route = e2b_worker_solve_route(
-        SolveLlmRoute {
-            mode: "e2bObserveTap".to_string(),
-            cluster_id: cluster_id.clone(),
-            cluster_hash: local.cluster_hash.clone(),
-            claw_tap_base_url: Some(proxy_base.clone()),
-            upstream_base_url: upstream,
-            model: model.clone(),
-            reason: None,
-        },
-        &proxy_base,
-    );
-    let mut env = BTreeMap::new();
-    env.insert("CLAW_DEFAULT_MODEL".to_string(), model);
-    Ok((route, e2b_worker_llm_env(env, &proxy_base)))
+    let material = crate::pool::prepare_e2b_worker_llm_material(
+        session_db,
+        model_override,
+        crate::pool::PrepareE2bWorkerLlmOptions { for_repl: false },
+    )
+    .await?;
+    Ok((material.route, material.env))
 }
 
 #[cfg(test)]

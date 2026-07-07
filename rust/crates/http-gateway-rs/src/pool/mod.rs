@@ -6,6 +6,7 @@ mod e2b_nas_layout;
 mod e2b_nas_layout_backend;
 mod e2b_orchestrated_pool;
 mod e2b_proj_worker_registry;
+mod e2b_worker_llm_material;
 pub mod interactive_backend;
 mod live_report_hub;
 mod live_report_sse;
@@ -19,6 +20,7 @@ mod worker_profile;
 pub use traits::{PoolOps, SlotLease, TaskOutcome};
 
 pub use clients::PoolClients;
+pub use config::relaxed_worker_allowed_from_env;
 pub use e2b_nas_layout::{
     allocate_worker_id, e2b_nas_layout_active, ensure_e2b_proj_nas_roots,
     ensure_proj_home_dir_on_nas, ensure_proj_sessions_root_on_nas, ensure_proj_workers_root_on_nas,
@@ -29,15 +31,16 @@ pub use e2b_nas_layout::{
 pub use e2b_nas_layout_backend::NasLayoutBackend;
 pub use e2b_orchestrated_pool::{E2bOrchestratedPool, E2B_POOL_ID};
 pub use e2b_proj_worker_registry::E2bProjWorkerRegistry;
+pub use e2b_worker_llm_material::{
+    prepare_e2b_worker_llm_material, PrepareE2bWorkerLlmOptions, WorkerLlmMaterial,
+};
 pub use interactive_backend::E2B_INTERACTIVE_POOL_ID;
 pub use interactive_backend::{
-    apply_e2b_observe_worker_llm_env, build_proj_bake_script, build_session_attach_script,
-    build_start_ttyd_script, e2b_observe_is_enabled, e2b_worker_llm_env, e2b_worker_solve_route,
-    interactive_backend_from_env, interactive_backend_is_e2b, load_e2b_observe_proxy_base_url,
-    ovs_backend_is_e2b, resolve_e2b_worker_solve_llm_route, terminal_ws_connect_url,
-    E2bInteractiveBackend, E2bNasApiSingleton, InteractiveBackendKind, InteractiveLease,
-    InteractiveSandboxBackend, InteractiveSessionSpec, TtydConnectTarget,
-    E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
+    build_proj_bake_script, build_session_attach_script, build_start_ttyd_script,
+    e2b_observe_is_enabled, interactive_backend_from_env, interactive_backend_is_e2b,
+    ovs_backend_is_e2b, terminal_ws_connect_url, E2bInteractiveBackend, E2bNasApiSingleton,
+    InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend, InteractiveSessionSpec,
+    TtydConnectTarget, E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
 };
 pub use live_report_hub::{HubMsg, LiveReportHub};
 pub use live_report_sse::live_report_sse_response;

@@ -243,6 +243,8 @@ pub struct GatewayGlobalSettingsStore {
     pub(crate) e2b_observe: E2bObserveSettings,
     #[serde(rename = "e2bWorker", default)]
     pub(crate) e2b_worker: E2bWorkerSettings,
+    #[serde(rename = "e2bWorkerRelaxed", default)]
+    pub(crate) e2b_worker_relaxed: E2bWorkerSettings,
     #[serde(
         rename = "strictLandlockDefault",
         default,
