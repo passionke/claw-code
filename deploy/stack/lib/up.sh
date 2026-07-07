@@ -47,6 +47,11 @@ set +a
 
 claw_apply_deploy_profile || exit 1
 
+# Co-located e2bserver: panel/worker toml follows repo .env anchors (no hand-edit). kejiqing
+if [[ -n "${CLAW_E2B_SERVER_ROOT:-}" && -d "${CLAW_E2B_SERVER_ROOT}" ]]; then
+  bash "${LIB_DIR}/sync-e2b-host-env.sh"
+fi
+
 # shellcheck source=claw-pool-registry-env.sh
 source "${LIB_DIR}/claw-pool-registry-env.sh"
 claw_export_pool_registry_env "$(claw_pool_rpc_root "${PODMAN_DIR}")"

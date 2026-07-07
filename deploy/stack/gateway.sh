@@ -39,6 +39,7 @@ Commands:
   observe-tap-up Ensure e2b observe singleton (gateway API)
   nas-api-up    Ensure e2b claw-nas-api singleton (gateway API)
   e2b-singletons-up  nas-api + ovs + observe via gateway API (--reset to recreate)
+  sync-e2b-env     Apply .env anchors → e2bserver panel/worker config (--restart --nginx)
   e2b-pre-bootstrap  build templates (local) then singletons → PG; then gateway up --release
   pre-252-e2b-up     full pre-prod: preflight → templates → singletons → up --release → verify
   tap-down      Stop pool claude-tap only (legacy compose; e2b mode uses CLAUDE_TAP_MODE=off)
@@ -114,6 +115,7 @@ case "${cmd}" in
   observe-tap-up) bash "${LIB}/e2b-tap-live-up.sh" "$@" ;;
   nas-api-up) bash "${LIB}/e2b-nas-api-up.sh" "$@" ;;
   e2b-singletons-up) bash "${LIB}/e2b-singletons-up.sh" "$@" ;;
+  sync-e2b-env) bash "${LIB}/sync-e2b-host-env.sh" "$@" ;;
   e2b-pre-bootstrap) bash "${LIB}/e2b-pre-bootstrap.sh" "$@" ;;
   pre-252-e2b-up) bash "${LIB}/pre-252-e2b-pipeline.sh" "$@" ;;
   tap-up)
