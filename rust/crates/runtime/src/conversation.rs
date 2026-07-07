@@ -682,7 +682,7 @@ where
             }
         }
 
-        let dispatch_result = (|| -> Result<(), RuntimeError> {
+        let dispatch_result = {
             for (tool_use_id, tool_name, input) in pending_tool_uses {
                 let trace_tool_use_id = tool_use_id.clone();
                 if let Some(result_message) = prebuilt_results.remove(&tool_use_id) {
@@ -779,7 +779,7 @@ where
                 collected.push(result_message);
             }
             Ok(())
-        })();
+        };
         join_remaining_background_jobs(&mut background_jobs);
         dispatch_result?;
         for (tool_use_id, tool_name, _) in &dispatch_order {

@@ -231,7 +231,20 @@ impl Session {
     }
 
     pub fn push_message(&mut self, message: ConversationMessage) -> Result<(), SessionError> {
-        self.push_messages_batch(std::slice::from_ref(&message))
+        let start_len = self.messages.len();
+        self.touch();
+        self.messages.push(message);
+        let persist_result = {
+            let message_ref = self.messages.last().ok_or_else(|| {
+                SessionError::Format("message was just pushed but missing".to_string())
+            })?;
+            self.append_persisted_messages_batch(std::slice::from_ref(message_ref))
+        };
+        if let Err(error) = persist_result {
+            self.messages.truncate(start_len);
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Append multiple messages to memory and jsonl in one step; rolls back memory on persist failure.
@@ -633,10 +646,6 @@ impl Session {
         let mut rendered = lines.join("\n");
         rendered.push('\n');
         Ok(rendered)
-    }
-
-    fn append_persisted_message(&self, message: &ConversationMessage) -> Result<(), SessionError> {
-        self.append_persisted_messages_batch(std::slice::from_ref(message))
     }
 
     fn append_persisted_messages_batch(
