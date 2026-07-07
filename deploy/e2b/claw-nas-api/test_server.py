@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from server import _atomic_symlink
+from server import NAS_ROOT, _atomic_symlink, _prepare_session_root
 
 
 class AtomicSymlinkTests(unittest.TestCase):
@@ -52,6 +53,52 @@ class AtomicSymlinkTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 _atomic_symlink(link, ".claw/project-home-versions/rev-a")
             self.assertIn("refusing to replace directory", str(ctx.exception))
+
+
+class SessionRootLayoutTests(unittest.TestCase):
+    def test_prepares_claw_work_and_ds_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_root = NAS_ROOT
+            try:
+                import server
+
+                server.NAS_ROOT = root
+                _prepare_session_root(
+                    "local-dev/proj_1/sessions/sess_abc",
+                    "../../home",
+                )
+            finally:
+                import server
+
+                server.NAS_ROOT = old_root
+            session = root / "local-dev" / "proj_1" / "sessions" / "sess_abc"
+            self.assertTrue((session / ".claw").is_dir())
+            self.assertTrue((session / "work").is_dir())
+            ds = session / "ds"
+            self.assertTrue(ds.is_symlink())
+            self.assertEqual(os.readlink(ds), "../../home")
+
+    def test_replaces_existing_ds_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_root = NAS_ROOT
+            try:
+                import server
+
+                server.NAS_ROOT = root
+                session = root / "proj_1" / "sessions" / "seg"
+                session.mkdir(parents=True)
+                ds = session / "ds"
+                ds.symlink_to("../old")
+                _prepare_session_root("proj_1/sessions/seg", "../../home")
+            finally:
+                import server
+
+                server.NAS_ROOT = old_root
+            ds = root / "proj_1" / "sessions" / "seg" / "ds"
+            self.assertTrue(ds.is_symlink())
+            self.assertEqual(os.readlink(ds), "../../home")
 
 
 if __name__ == "__main__":

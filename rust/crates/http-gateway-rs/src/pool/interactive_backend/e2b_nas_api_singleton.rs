@@ -37,6 +37,14 @@ struct SymlinkBody<'a> {
     target: &'a str,
 }
 
+#[derive(Serialize)]
+struct SessionRootLayoutBody<'a> {
+    #[serde(rename = "sessionRel")]
+    session_rel: &'a str,
+    #[serde(rename = "dsTarget")]
+    ds_target: &'a str,
+}
+
 impl Default for E2bNasApiSingleton {
     fn default() -> Self {
         Self::new()
@@ -151,6 +159,32 @@ impl E2bNasApiSingleton {
             .await
             .map_err(|e| format!("nas-api get_file body: {e}"))?;
         Ok(Some(bytes.to_vec()))
+    }
+
+    /// `POST /v1/layout/session-root` — mkdir `.claw` + `work` + `ds` symlink in one HTTP hop.
+    pub async fn prepare_session_root(
+        &self,
+        session_rel: &str,
+        ds_target: &str,
+    ) -> Result<(), String> {
+        let base = self.base_url().await?;
+        let url = format!("{base}/v1/layout/session-root");
+        let resp = self
+            .http
+            .post(&url)
+            .json(&SessionRootLayoutBody {
+                session_rel,
+                ds_target,
+            })
+            .send()
+            .await
+            .map_err(|e| format!("nas-api prepare_session_root request: {e}"))?;
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        Err(format!("nas-api prepare_session_root HTTP {status}: {text}"))
     }
 
     /// `POST /v1/symlink` — session → worker link.

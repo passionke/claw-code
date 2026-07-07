@@ -45,7 +45,7 @@ use http_gateway_rs::{
     admin_mcp_http, admin_mcp_solve, claw_tap_cluster_state, client_origin,
     gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_e2b_nas_settings,
     gateway_e2b_observe_proxy, gateway_e2b_observe_reset, gateway_global_settings,
-    gateway_llm_config_sync, gateway_project_e2b_worker, gateway_strict_landlock_settings,
+    gateway_llm_config_sync, gateway_observe_ttl_renew, gateway_project_e2b_worker, gateway_strict_landlock_settings,
     gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api,
     project_config_apply, project_config_version, project_entity_revision, project_extra_session,
     project_git_sync, project_id, project_tools, session_agent_api, session_db, session_merge,
@@ -1525,6 +1525,15 @@ async fn main() {
         tokio::spawn(async move {
             claw_tap_cluster_state::cluster_poll_loop(poll_db, poll_llm, poll_cluster).await;
         });
+    }
+
+    if pool::interactive_backend::interactive_backend_is_e2b() {
+        if let Some(client) = e2b_client.clone() {
+            let renew_db = state.session_db.clone();
+            tokio::spawn(async move {
+                gateway_observe_ttl_renew::observe_ttl_renew_loop(client, renew_db).await;
+            });
+        }
     }
 
     if let Some(secs) = state.cfg.gateway_llm_config_poll_interval_secs {

@@ -155,7 +155,8 @@ claw_build_ovs_image() {
   local image_name="$2"
   local ovs_base="$3"
   local root_dir="$4"
-  shift 4
+  local build_ctx="$5"
+  shift 5
   if [[ "${CLAW_FORCE_REBUILD_OVS:-0}" != "1" ]] && [[ "${CLAW_OVS_IMAGE:-}" != "${image_name}" ]] && \
     [[ "${CLAW_OVS_IMAGE:-}" != "claw-openvscode-server:"* ]]; then
     step "skip ovs layer build (CLAW_OVS_IMAGE=${CLAW_OVS_IMAGE:-<upstream>}; set CLAW_OVS_IMAGE=${image_name} + CLAW_FORCE_REBUILD_OVS=1 to bake claw-vscode)"
@@ -176,7 +177,7 @@ claw_build_ovs_image() {
     "$@" \
     -f "${root_dir}/deploy/stack/Containerfile.openvscode" \
     -t "${image_name}" \
-    "${root_dir}"
+    "${build_ctx}"
 }
 
 claw_build_playground_image() {
@@ -185,7 +186,8 @@ claw_build_playground_image() {
   local debian_base="$3"
   local node_base="$4"
   local root_dir="$5"
-  shift 5
+  local build_ctx="$6"
+  shift 6
 
   if [[ "${CLAW_BUILD_SKIP_PLAYGROUND}" == "1" ]]; then
     if "${container_cli}" image exists "${image_name}" 2>/dev/null; then
@@ -199,7 +201,7 @@ claw_build_playground_image() {
       "$@" \
       -f "${root_dir}/deploy/stack/Containerfile.gateway-playground.slim" \
       -t "${image_name}" \
-      "${root_dir}"
+      "${build_ctx}"
     return 0
   fi
 
@@ -211,7 +213,7 @@ claw_build_playground_image() {
     "$@" \
     -f "${root_dir}/deploy/stack/Containerfile.gateway-playground" \
     -t "${image_name}" \
-    "${root_dir}"
+    "${build_ctx}"
 }
 
 use_prebuilt_linux_path() {
@@ -219,6 +221,10 @@ use_prebuilt_linux_path() {
 }
 
 CONTAINER_CLI="$(claw_container_runtime_cli)" || exit 1
+if [[ "${CONTAINER_CLI}" == podman ]]; then
+  claw_ensure_macos_podman_remote || exit 1
+fi
+
 CN_FLAG=0
 cn_mirror_enabled && CN_FLAG=1
 
@@ -239,6 +245,13 @@ if use_prebuilt_linux_path; then
   APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=0")
   cn_mirror_enabled && APT_MIRROR_BUILD_ARGS=(--build-arg "CLAW_USE_CN_APT_MIRROR=1")
 
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/deploy/stack/lib/staged-build-context.sh"
+  BUILD_CTX="$(claw_resolve_build_context "${ROOT_DIR}")"
+  if [[ "${BUILD_CTX}" != "${ROOT_DIR}" ]]; then
+    trap 'rm -rf "${BUILD_CTX}"' EXIT
+  fi
+
   step "2/3 image ${IMAGE_NAME} (Containerfile.gateway-rs.prebuilt)"
   # shellcheck disable=SC2086
   "${CONTAINER_CLI}" build \
@@ -246,7 +259,7 @@ if use_prebuilt_linux_path; then
     "${APT_MIRROR_BUILD_ARGS[@]}" \
     -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-rs.prebuilt" \
     -t "${IMAGE_NAME}" \
-    "${ROOT_DIR}"
+    "${BUILD_CTX}"
 
   if skip_local_worker_images; then
     step "skip worker images (e2b backend: worker runs in e2b via CLAW_E2B_WORKER_IMAGE; set CLAW_INTERACTIVE_BACKEND!=e2b or GITHUB_ACTIONS to build)"
@@ -258,7 +271,7 @@ if use_prebuilt_linux_path; then
       "${APT_MIRROR_BUILD_ARGS[@]}" \
       -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker.prebuilt" \
       -t "${WORKER_IMAGE_NAME}" \
-      "${ROOT_DIR}"
+      "${BUILD_CTX}"
 
     step "4/4 image ${RELAXED_WORKER_IMAGE_NAME} (Containerfile.gateway-worker-relaxed.prebuilt)"
     # shellcheck disable=SC2086
@@ -267,11 +280,11 @@ if use_prebuilt_linux_path; then
       "${APT_MIRROR_BUILD_ARGS[@]}" \
       -f "${ROOT_DIR}/deploy/stack/Containerfile.gateway-worker-relaxed.prebuilt" \
       -t "${RELAXED_WORKER_IMAGE_NAME}" \
-      "${ROOT_DIR}"
+      "${BUILD_CTX}"
   fi
 
-  claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
-  claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
+  claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${BUILD_CTX}" "${APT_MIRROR_BUILD_ARGS[@]}"
+  claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${BUILD_CTX}" "${APT_MIRROR_BUILD_ARGS[@]}"
 
 else
   step "config: in-image cargo build (Containerfile.gateway-rs)"
@@ -324,8 +337,8 @@ else
       "${ROOT_DIR}"
   fi
 
-  claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
-  claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
+  claw_build_playground_image "${CONTAINER_CLI}" "${PLAYGROUND_IMAGE_NAME}" "${DEBIAN_BASE_IMAGE}" "${NODE_BASE_IMAGE}" "${ROOT_DIR}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
+  claw_build_ovs_image "${CONTAINER_CLI}" "${OVS_IMAGE_NAME}" "${OVS_BASE_IMAGE}" "${ROOT_DIR}" "${ROOT_DIR}" "${APT_MIRROR_BUILD_ARGS[@]}"
 
 fi
 

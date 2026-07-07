@@ -64,10 +64,6 @@ impl NasLayoutBackend {
         self.nas_api.symlink(rel, target).await
     }
 
-    async fn unlink_rel(&self, rel: &str) -> Result<(), String> {
-        self.nas_api.unlink(rel).await
-    }
-
     fn project_home_version_segment(content_rev: &str) -> Result<String, String> {
         let rev = content_rev.trim();
         if rev.is_empty() || rev == "." || rev == ".." || rev.contains('/') || rev.contains('\\') {
@@ -130,12 +126,16 @@ impl NasLayoutBackend {
 
     pub async fn ensure_e2b_proj_nas_roots(&self, proj_id: i64) -> Result<(), String> {
         let cluster_id = self.cluster_id()?;
-        self.mkdir_rel(&sessions_root_rel(&cluster_id, proj_id))
-            .await?;
-        self.mkdir_rel(&workers_root_rel(&cluster_id, proj_id))
-            .await?;
-        self.mkdir_rel(&proj_home_rel(&cluster_id, proj_id)).await?;
-        self.mkdir_rel(tap_traces_rel()).await?;
+        let sessions = sessions_root_rel(&cluster_id, proj_id);
+        let workers = workers_root_rel(&cluster_id, proj_id);
+        let home = proj_home_rel(&cluster_id, proj_id);
+        let traces = tap_traces_rel().to_string();
+        tokio::try_join!(
+            self.mkdir_rel(&sessions),
+            self.mkdir_rel(&workers),
+            self.mkdir_rel(&home),
+            self.mkdir_rel(&traces),
+        )?;
         Ok(())
     }
 
@@ -164,14 +164,10 @@ impl NasLayoutBackend {
         session_segment: &str,
     ) -> Result<(), String> {
         let cluster_id = self.cluster_id()?;
-        self.mkdir_rel(&sessions_root_rel(&cluster_id, proj_id))
-            .await?;
         let session_rel_path = session_rel(&cluster_id, proj_id, session_segment);
-        self.mkdir_rel(&format!("{session_rel_path}/.claw")).await?;
-        self.mkdir_rel(&format!("{session_rel_path}/work")).await?;
-        let ds_rel = format!("{session_rel_path}/ds");
-        let _ = self.unlink_rel(&ds_rel).await;
-        self.symlink_rel(&ds_rel, session_ds_symlink_target()).await
+        self.nas_api
+            .prepare_session_root(&session_rel_path, session_ds_symlink_target())
+            .await
     }
 
     /// PG project config → versioned `proj_N/home/project_home_def` on NAS via nas-api.

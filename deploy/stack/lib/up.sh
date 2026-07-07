@@ -32,6 +32,11 @@ fi
 
 # shellcheck disable=SC1090
 source "${PODMAN_DIR}/lib/compose-include.sh"
+if claw_container_runtime_cli >/dev/null 2>&1; then
+  if [[ "$(claw_container_runtime_cli)" == podman ]]; then
+    claw_ensure_macos_podman_remote || exit 1
+  fi
+fi
 if ! claw_parse_up_release_args "$@"; then
   rc=$?
   if [[ "${rc}" == 2 ]]; then
@@ -125,6 +130,16 @@ export CLAW_IMAGE_RELEASE_TAG
 
 POOL_RPC_DIR="$(claw_pool_rpc_root "${PODMAN_DIR}")"
 # Host claw-pool-daemon removed; e2b-only. kejiqing
+
+# e2b singletons must be alive before gateway (solve LLM + NAS layout). kejiqing
+# Set CLAW_SKIP_E2B_SINGLETONS_UP=1 only when e2b API is unreachable but PG already has singletons.
+# shellcheck source=e2b-singletons-bootstrap.sh
+source "${LIB_DIR}/e2b-singletons-bootstrap.sh"
+if claw_interactive_backend_is_e2b && [[ "${CLAW_SKIP_E2B_SINGLETONS_UP:-0}" != "1" ]]; then
+  claw_e2b_singletons_up_and_verify "${LIB_DIR}" "${REPO_ROOT}"
+elif claw_interactive_backend_is_e2b; then
+  echo "warn: CLAW_SKIP_E2B_SINGLETONS_UP=1 — skipping e2b-singletons-up (PG must already have nas-api/ovs/observe)" >&2
+fi
 
 # Recreate gateway only. kejiqing
 claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate

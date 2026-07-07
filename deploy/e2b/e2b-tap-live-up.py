@@ -220,15 +220,44 @@ def _sandbox_id(row: dict[str, Any]) -> str:
     return ""
 
 
+def _sandbox_state(row: dict[str, Any]) -> str:
+    state = row.get("state")
+    return state.strip().lower() if isinstance(state, str) else ""
+
+
+def _is_running_sandbox(row: dict[str, Any]) -> bool:
+    return _sandbox_state(row) == "running"
+
+
+def _observe_singleton_id_from_row(row: dict[str, Any], cluster_id: str) -> str | None:
+    meta = row.get("metadata") or {}
+    if not isinstance(meta, dict):
+        return None
+    if meta.get("clawRole") != "observe-singleton" or meta.get("clusterId") != cluster_id:
+        return None
+    sid = _sandbox_id(row)
+    return sid or None
+
+
 def _find_observe_singleton(cluster_id: str, api_url: str, api_key: str, self_hosted: bool) -> str | None:
+    """--reuse: only a running observe singleton is reusable."""
     for row in _list_sandboxes(api_url, api_key, self_hosted):
-        meta = row.get("metadata") or {}
-        if not isinstance(meta, dict):
+        if not _is_running_sandbox(row):
             continue
-        if meta.get("clawRole") == "observe-singleton" and meta.get("clusterId") == cluster_id:
-            sid = _sandbox_id(row)
-            if sid:
-                return sid
+        sid = _observe_singleton_id_from_row(row, cluster_id)
+        if sid:
+            return sid
+    return None
+
+
+def _find_observe_singleton_any_state(
+    cluster_id: str, api_url: str, api_key: str, self_hosted: bool
+) -> str | None:
+    """--reset: kill by metadata regardless of e2b state."""
+    for row in _list_sandboxes(api_url, api_key, self_hosted):
+        sid = _observe_singleton_id_from_row(row, cluster_id)
+        if sid:
+            return sid
     return None
 
 
@@ -403,7 +432,7 @@ def main() -> int:
     domain = fc_domain
 
     if args.reset:
-        existing = _find_observe_singleton(cluster_id, api_url, api_key, self_hosted)
+        existing = _find_observe_singleton_any_state(cluster_id, api_url, api_key, self_hosted)
         if existing:
             print(f"==> reset: kill observe sandbox {existing}", file=sys.stderr)
             _kill_sandbox(existing, api_url, api_key, self_hosted)
@@ -411,6 +440,11 @@ def main() -> int:
         sandbox_id = _find_observe_singleton(cluster_id, api_url, api_key, self_hosted)
         if sandbox_id:
             print(f"==> reuse observe sandbox {sandbox_id}", file=sys.stderr)
+        else:
+            print(
+                "==> no running observe singleton; creating fresh sandbox (--reuse auto-reset)",
+                file=sys.stderr,
+            )
 
     if not sandbox_id:
         print(f"==> create observe sandbox (template={template}, cluster={cluster_id})", file=sys.stderr)

@@ -1,0 +1,12 @@
+# Podman/Docker build context excludes (gateway image build uses repo root). Author: kejiqing
+# Host workspace dirs are often root/1000-owned (drwx------) and break context upload on macOS.
+deploy/stack/claw-workspace
+deploy/stack/claw-workspace-local
+deploy/stack/claw-workspace-ci-b
+deploy/stack/claw-workspace-remote
+deploy/stack/claw-workspace-host
+deploy/stack/claw-logs-host
+deploy/stack/.build.log
+rust/target
+sandbox/target
+.git

@@ -74,6 +74,19 @@ def _atomic_symlink(link_path: Path, link_target: str) -> None:
             tmp_link.unlink()
 
 
+def _prepare_session_root(session_rel: str, ds_target: str) -> None:
+    """mkdir session `.claw/` + `work/`, replace `ds` symlink — one NAS-side round trip. Author: kejiqing"""
+    base = _safe_rel(session_rel)
+    (base / "work").mkdir(parents=True, exist_ok=True)
+    (base / ".claw").mkdir(parents=True, exist_ok=True)
+    ds_link = base / "ds"
+    if ds_link.exists() or ds_link.is_symlink():
+        if ds_link.is_dir() and not ds_link.is_symlink():
+            raise ValueError("refusing to replace directory ds with symlink")
+        ds_link.unlink()
+    _atomic_symlink(ds_link, ds_target)
+
+
 def _stat_rel(rel_path: str) -> dict:
     target = _safe_rel(rel_path)
     if not target.exists() and not target.is_symlink():
@@ -166,6 +179,30 @@ class Handler(BaseHTTPRequestHandler):
                 link_path = _safe_rel(rel)
                 _atomic_symlink(link_path, link_target)
                 _json(self, 200, {"relPath": rel, "target": link_target, "linked": True})
+            except ValueError as exc:
+                _json(self, 400, {"error": str(exc)})
+            except OSError as exc:
+                _json(self, 500, {"error": str(exc)})
+            return
+        if self.path == "/v1/layout/session-root":
+            try:
+                body = _read_json(self)
+                session_rel = str(body.get("sessionRel", "")).strip()
+                ds_target = str(body.get("dsTarget", "")).strip()
+                if not session_rel:
+                    raise ValueError("sessionRel is required")
+                if not ds_target:
+                    raise ValueError("dsTarget is required")
+                _prepare_session_root(session_rel, ds_target)
+                _json(
+                    self,
+                    200,
+                    {
+                        "sessionRel": session_rel,
+                        "dsTarget": ds_target,
+                        "prepared": True,
+                    },
+                )
             except ValueError as exc:
                 _json(self, 400, {"error": str(exc)})
             except OSError as exc:

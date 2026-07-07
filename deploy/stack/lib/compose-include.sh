@@ -637,6 +637,27 @@ claw_container_runtime_cli() {
   esac
 }
 
+# macOS: podman machine API socket (SSH default often stale). Author: kejiqing
+claw_ensure_macos_podman_remote() {
+  [[ "$(uname -s)" == Darwin ]] || return 0
+  command -v podman >/dev/null 2>&1 || return 0
+  local state
+  state="$(podman machine inspect --format '{{.State}}' 2>/dev/null || true)"
+  if [[ "${state}" != "running" ]]; then
+    podman machine start
+    sleep 2
+  fi
+  local sock
+  sock="$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null || true)"
+  if [[ -z "${sock}" || ! -S "${sock}" ]]; then
+    echo "error: podman machine started but API socket missing (${sock:-unset})" >&2
+    return 1
+  fi
+  export CONTAINER_HOST="unix://${sock}"
+  export DOCKER_HOST="unix://${sock}"
+  export CLAW_CONTAINER_SOCKET="${sock}"
+}
+
 # `docker network exists` missing on older docker.io; fall back to network ls. Author: kejiqing
 claw_network_exists() {
   local rt="$1" name="$2"
