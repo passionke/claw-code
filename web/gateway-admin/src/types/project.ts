@@ -45,8 +45,6 @@ export interface ProjectListItem {
   environmentPrepared?: boolean;
   dbSyncedToDisk?: boolean;
   workDirPresent?: boolean;
-  /** false when ds_* exists on disk but is not in project_config yet */
-  projectConfigRegistered?: boolean;
   gitSync?: GitSyncJson;
 }
 

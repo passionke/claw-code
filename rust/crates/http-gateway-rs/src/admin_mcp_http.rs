@@ -17,7 +17,6 @@ use crate::pool::NasLayoutBackend;
 use crate::project_config_apply;
 use crate::project_config_draft;
 use crate::project_extra_session;
-use crate::project_id::{list_proj_ids_under_work_root, merge_sorted_proj_ids};
 use crate::session_db::{GatewaySessionDb, ProjectConfigRow, ProjectConfigUpsert};
 use std::path::{Path, PathBuf};
 
@@ -465,7 +464,7 @@ async fn handle_tools_call<B: AdminMcpSolveBackend>(
         .unwrap_or_else(|| json!({}));
 
     match name {
-        "project_list" => handle_project_list(db, work_root).await,
+        "project_list" => handle_project_list(db).await,
         "project_extra_session_fields_get" => {
             let proj_id = args
                 .get("projId")
@@ -499,34 +498,23 @@ async fn handle_tools_call<B: AdminMcpSolveBackend>(
     }
 }
 
-async fn handle_project_list(db: &GatewaySessionDb, work_root: &Path) -> Result<Value, String> {
-    let on_disk = list_proj_ids_under_work_root(work_root)
-        .await
-        .map_err(|e| format!("list work_root failed: {e}"))?;
-    let in_config = db
+async fn handle_project_list(db: &GatewaySessionDb) -> Result<Value, String> {
+    let proj_ids = db
         .list_project_config_proj_ids()
         .await
         .map_err(|e| e.to_string())?;
-    let proj_ids = merge_sorted_proj_ids(on_disk, in_config);
     let mut projects = Vec::with_capacity(proj_ids.len());
     for proj_id in proj_ids {
-        let (extra_session_fields, project_config_registered) = match db
+        let row = db
             .get_project_config(proj_id)
             .await
             .map_err(|e| e.to_string())?
-        {
-            Some(row) => (
-                project_extra_session::parse_extra_session_fields_json(
-                    &row.extra_session_fields_json,
-                )?,
-                true,
-            ),
-            None => (Vec::new(), false),
-        };
+            .ok_or_else(|| format!("project_config missing for projId={proj_id}"))?;
+        let extra_session_fields =
+            project_extra_session::parse_extra_session_fields_json(&row.extra_session_fields_json)?;
         projects.push(json!({
             "projId": proj_id,
             "extraSessionFields": extra_session_fields,
-            "projectConfigRegistered": project_config_registered,
         }));
     }
     Ok(tool_text_result(&json!({
