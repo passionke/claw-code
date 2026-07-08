@@ -183,6 +183,7 @@ async fn persist_nas_api(
     save_gateway_global_settings(db, &settings, &tokens, now).await
 }
 
+#[allow(dead_code)]
 async fn persist_ovs(
     db: &GatewaySessionDb,
     base_url: &str,
@@ -444,6 +445,7 @@ async fn ensure_observe(
     })
 }
 
+#[allow(dead_code)]
 async fn ensure_ovs(
     db: &GatewaySessionDb,
     client: &E2bSandboxClient,

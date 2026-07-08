@@ -48,6 +48,7 @@ pub fn e2b_worker_llm_env(
 }
 
 /// Async wrapper: load observe proxy from DB then apply worker-safe env.
+#[allow(dead_code)]
 pub(crate) async fn apply_e2b_observe_worker_llm_env(
     session_db: &GatewaySessionDb,
     env: BTreeMap<String, String>,
@@ -64,6 +65,7 @@ pub fn e2b_worker_solve_route(mut route: SolveLlmRoute, proxy_base_url: &str) ->
 }
 
 /// e2b solve: observe singleton proxy; worker env has placeholder key only.
+#[allow(dead_code)]
 pub(crate) async fn resolve_e2b_worker_solve_llm_route(
     session_db: &GatewaySessionDb,
     model_override: Option<&str>,
