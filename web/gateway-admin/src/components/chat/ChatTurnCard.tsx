@@ -2,7 +2,6 @@ import { StopOutlined } from "@ant-design/icons";
 import { Button, Collapse, Popconfirm, Space, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../../api/client";
-import { useApp } from "../../context/AppContext";
 import { useBizReportStream } from "../../hooks/useBizReportStream";
 import type {
   BizAdviceReportResponse,
@@ -14,7 +13,6 @@ import type {
 import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import { isAdminOrigin } from "../../utils/clientOrigin";
-import { gatewayBaseForPoolId } from "../../utils/gatewayClusterOptions";
 import ReportMarkdown from "./ReportMarkdown";
 import TurnFeedbackButtons from "./TurnFeedbackButtons";
 import TurnToolsDrawer from "./TurnToolsDrawer";
@@ -132,12 +130,11 @@ export default function ChatTurnCard({
   extraSession,
   createdAtMs,
   finishedAtMs,
-  initialPoolId,
+  initialPoolId: _initialPoolId,
   initialWorkerName,
   initialWorkerProfile,
   initialWorkerExecUser,
 }: ChatTurnCardProps) {
-  const { clusterPools } = useApp();
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
   const initialHistoryMode = isEffectiveHistoryTurnView(viewMode, initialStatus);
@@ -416,22 +413,10 @@ export default function ChatTurnCard({
     showArrow: false,
   }));
 
-  const poolId = (task.poolId ?? initialPoolId ?? "").trim();
   const workerName = (task.workerName ?? initialWorkerName ?? "").trim();
   const workerProfile = (task.workerProfile ?? initialWorkerProfile ?? "").trim();
   const workerExecUser = (task.workerExecUser ?? initialWorkerExecUser ?? "").trim();
-  const turnGatewayBase = gatewayBaseForPoolId(poolId, clusterPools, gatewayBase);
-  const gwLabel = gatewayHostLabel(turnGatewayBase);
-
-  const poolTag = !poolId ? (
-    <Tag color="warning" className={styles.turnRouteTag}>
-      pool —
-    </Tag>
-  ) : (
-    <Tag color="cyan" className={styles.turnRouteTag}>
-      pool {poolId}
-    </Tag>
-  );
+  const gwLabel = gatewayHostLabel(gatewayBase);
 
   const workerTag = workerName ? (
     <Tooltip title="exec 当时的 worker 容器名；池回收后容器可能已销毁，仅作历史记录">
@@ -471,18 +456,11 @@ export default function ChatTurnCard({
           </span>
         </div>
         <div className={styles.turnRoute}>
-          <Tooltip
-            title={
-              turnGatewayBase !== gatewayBase && gatewayBase
-                ? `${turnGatewayBase}（本机 UI 网关 ${gatewayHostLabel(gatewayBase)}）`
-                : turnGatewayBase || "未选择网关"
-            }
-          >
+          <Tooltip title={gatewayBase || "未选择网关"}>
             <Tag color="geekblue" className={styles.turnRouteTag}>
               gateway {gwLabel}
             </Tag>
           </Tooltip>
-          {poolTag}
           {workerTag}
         </div>
         <div className={styles.turnStatus}>

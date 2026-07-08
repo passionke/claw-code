@@ -231,6 +231,8 @@ async fn persist_observe_tap(
         proxy_base_url: Some(proxy_base),
         e2b_observe_sandbox_id: Some(handle.sandbox_id.clone()),
     };
+    // Keep e2bObserve metadata in sync with runtime observe singleton lifecycle.
+    settings.e2b_observe.updated_at_ms = now;
     save_gateway_global_settings(db, &settings, &tokens, now).await
 }
 

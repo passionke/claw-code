@@ -14,14 +14,7 @@ import {
   type PlaygroundConfig,
 } from "../api/client";
 import type { ProjectConfig, ProjectListItem } from "../types/project";
-import type { ListClawPoolsResponse } from "../types/pools";
-import {
-  allGatewayOptionValues,
-  buildGatewayOptions,
-  defaultGatewayFromPools,
-  normalizeGatewayBase,
-  shouldShowGatewayPicker,
-} from "../utils/gatewayClusterOptions";
+import { normalizeGatewayBase } from "../utils/gatewayBase";
 import { loadProjectConfig } from "../utils/projectConfig";
 
 const PROJ_KEY = "claw-playground-proj-id";
@@ -39,6 +32,11 @@ function readSavedProjId(): number | null {
   }
 }
 
+function defaultGatewayBase(playground: PlaygroundConfig | null): string {
+  const def = playground?.defaultGatewayBase?.trim();
+  return def ? normalizeGatewayBase(def) : "";
+}
+
 interface AppContextValue {
   playground: PlaygroundConfig | null;
   gatewayBase: string;
@@ -52,11 +50,6 @@ interface AppContextValue {
   /** Apply PUT /v1/project/config response without an extra GET. */
   applyProjectConfig: (cfg: ProjectConfig) => void;
   gatewayOptions: { label: string; value: string }[];
-  /** Multiple claw_pool rows with gatewayBase — else hide meaningless picker. Author: kejiqing */
-  showGatewayPicker: boolean;
-  /** GET /v1/pools — shared PG registry; refreshed for gateway picker + Pool 集群. Author: kejiqing */
-  clusterPools: ListClawPoolsResponse | null;
-  refreshClusterPools: () => Promise<void>;
   /** From GET /healthz deployImageTag (local | release-vX.Y.Z | …). Author: kejiqing */
   gatewayImageTag: string;
 }
@@ -70,37 +63,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [projectConfig, setProjectConfig] = useState<ProjectConfig | null>(null);
   const [gatewayImageTag, setGatewayImageTag] = useState("");
-  const [clusterPools, setClusterPools] = useState<ListClawPoolsResponse | null>(
-    null
-  );
 
   const gatewayOptions = useMemo(() => {
-    if (!playground) return [];
-    return buildGatewayOptions({
-      playground,
-      clusterPools,
-      gatewayBase,
-      gatewayImageTag,
-    });
-  }, [playground, clusterPools, gatewayBase, gatewayImageTag]);
-
-  const showGatewayPicker = useMemo(() => {
-    if (!playground) return false;
-    return shouldShowGatewayPicker(playground, clusterPools);
-  }, [playground, clusterPools]);
-
-  const refreshClusterPools = useCallback(async () => {
-    const seed =
-      normalizeGatewayBase(gatewayBase) ||
-      normalizeGatewayBase(playground?.defaultGatewayBase || "");
-    if (!seed) return;
-    try {
-      const pools = await proxyHttp<ListClawPoolsResponse>(seed, "GET", "/v1/pools");
-      setClusterPools(pools);
-    } catch {
-      /* keep last snapshot — registry is best-effort for labels */
+    const def = defaultGatewayBase(playground);
+    if (!def) return [];
+    const tagSuffix =
+      gatewayImageTag && gatewayBase ? ` · ${gatewayImageTag}` : "";
+    let label = playground?.defaultGatewayLabel || `本机 · ${new URL(def).host}`;
+    if (gatewayBase && normalizeGatewayBase(gatewayBase) === def) {
+      label += tagSuffix;
     }
-  }, [gatewayBase, playground?.defaultGatewayBase]);
+    return [{ value: def, label }];
+  }, [playground, gatewayBase, gatewayImageTag]);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,28 +84,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         setPlayground(cfg);
 
-        let pools: ListClawPoolsResponse | null = null;
-        const seed = cfg.defaultGatewayBase?.trim();
-        if (seed) {
-          try {
-            pools = await proxyHttp<ListClawPoolsResponse>(seed, "GET", "/v1/pools");
-          } catch {
-            pools = null;
-          }
-        }
-        if (cancelled) return;
-        setClusterPools(pools);
-
         let saved = "";
         try {
           saved = localStorage.getItem(GW_KEY) || "";
         } catch {
           /* ignore */
         }
-        const values = allGatewayOptionValues(cfg, pools);
+        const fallback = defaultGatewayBase(cfg);
         const savedNorm = normalizeGatewayBase(saved);
-        const fallback = defaultGatewayFromPools(cfg, pools);
-        if (savedNorm && values.some((v) => normalizeGatewayBase(v) === savedNorm)) {
+        if (savedNorm && fallback && savedNorm === fallback) {
           setGatewayBaseState(savedNorm);
         } else if (fallback) {
           setGatewayBaseState(fallback);
@@ -145,13 +106,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  useEffect(() => {
-    if (!gatewayBase && !playground?.defaultGatewayBase) return;
-    void refreshClusterPools();
-    const id = window.setInterval(() => void refreshClusterPools(), 30_000);
-    return () => window.clearInterval(id);
-  }, [gatewayBase, playground?.defaultGatewayBase, refreshClusterPools]);
-
   const setGatewayBase = useCallback((v: string) => {
     setGatewayBaseState(v);
     try {
@@ -160,17 +114,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
   }, []);
-
-  // Drop selection when pool goes offline (picker is online-only). kejiqing
-  useEffect(() => {
-    if (!playground || !gatewayBase) return;
-    const values = allGatewayOptionValues(playground, clusterPools);
-    if (!values.length) return;
-    const norm = normalizeGatewayBase(gatewayBase);
-    if (values.some((v) => normalizeGatewayBase(v) === norm)) return;
-    const fallback = defaultGatewayFromPools(playground, clusterPools);
-    if (fallback) setGatewayBase(fallback);
-  }, [playground, clusterPools, gatewayBase, setGatewayBase]);
 
   const setProjId = useCallback((id: number) => {
     setProjIdState(id);
@@ -272,9 +215,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshProjectConfig,
     applyProjectConfig,
     gatewayOptions,
-    showGatewayPicker,
-    clusterPools,
-    refreshClusterPools,
     gatewayImageTag,
   };
 

@@ -29,6 +29,7 @@ pub mod gateway_claw_tap_lifecycle;
 pub mod gateway_claw_tap_settings;
 pub mod gateway_e2b_nas_api_settings;
 pub mod gateway_e2b_nas_settings;
+pub mod gateway_e2b_platform_settings;
 pub mod gateway_e2b_observe_proxy;
 pub mod gateway_e2b_observe_reset;
 pub mod gateway_e2b_observe_settings;

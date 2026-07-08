@@ -4379,7 +4379,6 @@ pub fn pg_tcp_reachable(database_url: &str, timeout: std::time::Duration) -> boo
 
 fn gateway_integration_database_url() -> Option<String> {
     std::env::var("CLAW_GATEWAY_TEST_DATABASE_URL")
-        .or_else(|_| std::env::var("CLAW_GATEWAY_DATABASE_URL"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -4395,7 +4394,7 @@ pub async fn try_open_integration_database() -> Option<GatewaySessionDb> {
     GatewaySessionDb::connect(&url).await.ok()
 }
 
-/// Test DB from `CLAW_GATEWAY_TEST_DATABASE_URL` or `CLAW_GATEWAY_DATABASE_URL`. Author: kejiqing
+/// Open PG when `CLAW_GATEWAY_TEST_DATABASE_URL` is set and TCP-reachable; `None` → skip integration test.
 #[cfg(test)]
 pub async fn connect_gateway_test_db() -> Option<GatewaySessionDb> {
     try_open_integration_database().await
@@ -4419,6 +4418,17 @@ mod tests {
     /// Unique `gateway_turns.turn_id` for integration tests (PK is global, not per-session).
     fn test_turn_id() -> String {
         format!("T_{}", uuid::Uuid::new_v4().simple())
+    }
+
+    /// Random proj id for ephemeral PG integration tests (not small e2e ids like 1/2/10).
+    fn ephemeral_test_proj_id() -> i64 {
+        i64::try_from(uuid::Uuid::new_v4().as_u128() % 900_000_000).unwrap_or(42) + 1
+    }
+
+    async fn cleanup_ephemeral_project(db: &GatewaySessionDb, proj_id: i64) {
+        if let Err(e) = db.delete_project_config(proj_id).await {
+            eprintln!("warn: ephemeral project cleanup failed proj_id={proj_id}: {e}");
+        }
     }
 
     #[test]
@@ -4693,75 +4703,88 @@ mod tests {
             eprintln!("skip project_config_upsert_get: set CLAW_GATEWAY_TEST_DATABASE_URL");
             return;
         };
-        let proj_id = i64::try_from(uuid::Uuid::new_v4().as_u128() % 900_000_000).unwrap_or(42) + 1;
+        let proj_id = ephemeral_test_proj_id();
+        let outcome = {
+            use futures_util::FutureExt;
+            std::panic::AssertUnwindSafe(async {
+                assert!(db.get_project_config(proj_id).await.unwrap().is_none());
 
-        assert!(db.get_project_config(proj_id).await.unwrap().is_none());
+                let rules = json!([{
+                    "ruleId": "r1",
+                    "relativePath": ".cursor/rules/r1.mdc",
+                    "content": "# R"
+                }]);
+                let mcp = json!({"demo": {"type": "http", "url": "http://127.0.0.1:9"}});
+                let skills = json!([{
+                    "skillName": "demo-skill",
+                    "skillContent": "# Demo\n"
+                }]);
+                let t = now_ms();
+                let tools = json!(["bash", "read_file"]);
+                db.upsert_project_config(ProjectConfigUpsert {
+                    proj_id,
+                    content_rev: "rev-1",
+                    stable_content_rev: Some("rev-1"),
+                    draft_open: false,
+                    updated_at_ms: t,
+                    rules_json: &rules,
+                    mcp_servers_json: &mcp,
+                    skills_sources_json: &json!([]),
+                    skills_json: &skills,
+                    allowed_tools_json: &tools,
+                    claude_md: Some("# Claude\n"),
+                    git_sync_json: &json!({}),
+                    solve_preflight_json: &json!({"kind": "sqlbot_mcp_start"}),
+                    solve_orchestration_json: &json!({"kind": "single_turn"}),
+                    language_pipeline_json: &json!({}),
+                    extra_session_fields_json: &json!([]),
+                    prompt_limits_json: &json!({}),
+                    worker_profile_json: &json!({"mode": "strict"}),
+                })
+                .await
+                .unwrap();
 
-        let rules =
-            json!([{"ruleId": "r1", "relativePath": ".cursor/rules/r1.mdc", "content": "# R"}]);
-        let mcp = json!({"demo": {"type": "http", "url": "http://127.0.0.1:9"}});
-        let skills = json!([{
-            "skillName": "demo-skill",
-            "skillContent": "# Demo\n"
-        }]);
-        let t = now_ms();
-        let tools = json!(["bash", "read_file"]);
-        db.upsert_project_config(ProjectConfigUpsert {
-            proj_id,
-            content_rev: "rev-1",
-            stable_content_rev: Some("rev-1"),
-            draft_open: false,
-            updated_at_ms: t,
-            rules_json: &rules,
-            mcp_servers_json: &mcp,
-            skills_sources_json: &json!([]),
-            skills_json: &skills,
-            allowed_tools_json: &tools,
-            claude_md: Some("# Claude\n"),
-            git_sync_json: &json!({}),
-            solve_preflight_json: &json!({"kind": "sqlbot_mcp_start"}),
-            solve_orchestration_json: &json!({"kind": "single_turn"}),
-            language_pipeline_json: &json!({}),
-            extra_session_fields_json: &json!([]),
-            prompt_limits_json: &json!({}),
-            worker_profile_json: &json!({"mode": "strict"}),
-        })
-        .await
-        .unwrap();
+                let row = db.get_project_config(proj_id).await.unwrap().unwrap();
+                assert_eq!(row.content_rev, "rev-1");
+                assert_eq!(row.rules_json, rules);
+                assert_eq!(row.mcp_servers_json, mcp);
+                assert_eq!(row.skills_json, skills);
+                assert_eq!(row.allowed_tools_json, tools);
+                assert_eq!(row.claude_md.as_deref(), Some("# Claude\n"));
 
-        let row = db.get_project_config(proj_id).await.unwrap().unwrap();
-        assert_eq!(row.content_rev, "rev-1");
-        assert_eq!(row.rules_json, rules);
-        assert_eq!(row.mcp_servers_json, mcp);
-        assert_eq!(row.skills_json, skills);
-        assert_eq!(row.allowed_tools_json, tools);
-        assert_eq!(row.claude_md.as_deref(), Some("# Claude\n"));
-
-        db.upsert_project_config(ProjectConfigUpsert {
-            proj_id,
-            content_rev: "rev-2",
-            stable_content_rev: Some("rev-2"),
-            draft_open: false,
-            updated_at_ms: t + 1,
-            rules_json: &json!([]),
-            mcp_servers_json: &json!({}),
-            skills_sources_json: &json!([]),
-            skills_json: &json!([]),
-            allowed_tools_json: &json!([]),
-            claude_md: None,
-            git_sync_json: &json!({}),
-            solve_preflight_json: &json!({"kind": "none"}),
-            solve_orchestration_json: &json!({"kind": "single_turn"}),
-            language_pipeline_json: &json!({}),
-            extra_session_fields_json: &json!([]),
-            prompt_limits_json: &json!({}),
-            worker_profile_json: &json!({"mode": "strict"}),
-        })
-        .await
-        .unwrap();
-        let row2 = db.get_project_config(proj_id).await.unwrap().unwrap();
-        assert_eq!(row2.content_rev, "rev-2");
-        assert!(row2.claude_md.is_none());
+                db.upsert_project_config(ProjectConfigUpsert {
+                    proj_id,
+                    content_rev: "rev-2",
+                    stable_content_rev: Some("rev-2"),
+                    draft_open: false,
+                    updated_at_ms: t + 1,
+                    rules_json: &json!([]),
+                    mcp_servers_json: &json!({}),
+                    skills_sources_json: &json!([]),
+                    skills_json: &json!([]),
+                    allowed_tools_json: &json!([]),
+                    claude_md: None,
+                    git_sync_json: &json!({}),
+                    solve_preflight_json: &json!({"kind": "none"}),
+                    solve_orchestration_json: &json!({"kind": "single_turn"}),
+                    language_pipeline_json: &json!({}),
+                    extra_session_fields_json: &json!([]),
+                    prompt_limits_json: &json!({}),
+                    worker_profile_json: &json!({"mode": "strict"}),
+                })
+                .await
+                .unwrap();
+                let row2 = db.get_project_config(proj_id).await.unwrap().unwrap();
+                assert_eq!(row2.content_rev, "rev-2");
+                assert!(row2.claude_md.is_none());
+            })
+            .catch_unwind()
+            .await
+        };
+        cleanup_ephemeral_project(&db, proj_id).await;
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     #[tokio::test]

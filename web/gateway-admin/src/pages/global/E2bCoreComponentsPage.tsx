@@ -5,19 +5,21 @@ import {
   Card,
   Descriptions,
   Form,
-  Input,
   Popconfirm,
+  Select,
   Space,
   Tag,
   Typography,
   message,
 } from "antd";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import type {
   E2bSingletonActionResponse,
   E2bSingletonsStatusResponse,
+  E2bTemplateEntry,
+  E2bTemplatesListResponse,
   GlobalSettingsResponse,
   PutE2bSingletonTemplatesResponse,
 } from "../../types/globalSettings";
@@ -31,38 +33,112 @@ function onlineTag(online: boolean, label: string) {
   return <Tag color={online ? "success" : "warning"}>{online ? `${label} 在线` : `${label} 未就绪`}</Tag>;
 }
 
-/** Gateway 核心 e2b 单例：nas-api / observe / ovs — 生命周期由 gateway 掌控。Author: kejiqing */
+function boolTag(ok?: boolean, yes = "是", no = "否") {
+  if (ok === undefined) return "—";
+  return <Tag color={ok ? "success" : "error"}>{ok ? yes : no}</Tag>;
+}
+
+function templateSelectLabel(t: E2bTemplateEntry): string {
+  const alias = t.aliases[0] ?? t.templateId;
+  const ready = t.imagePresent ? "" : "（镜像未就绪）";
+  return `${alias} · ${t.templateId}${ready}`;
+}
+
+function templatesForAlias(templates: E2bTemplateEntry[], alias: string): E2bTemplateEntry[] {
+  return templates.filter((t) => t.aliases.includes(alias));
+}
+
+function preferredTemplateId(
+  pgTemplateId: string | undefined,
+  effectiveId: string,
+  templates: E2bTemplateEntry[],
+  alias: string
+): string {
+  const fromPg = pgTemplateId?.trim();
+  if (fromPg?.startsWith("tpl_")) return fromPg;
+  const fromEffective = effectiveId.trim();
+  if (fromEffective.startsWith("tpl_")) return fromEffective;
+  const ready = templatesForAlias(templates, alias).filter((t) => t.imagePresent);
+  if (ready.length > 0) return ready[0].templateId;
+  return fromPg || fromEffective;
+}
+
+function templateSelectOptions(
+  templates: E2bTemplateEntry[],
+  alias: string,
+  currentValue?: string
+): { value: string; label: string; disabled?: boolean }[] {
+  const filtered = templatesForAlias(templates, alias);
+  const seen = new Set<string>();
+  const options = filtered.map((t) => {
+    seen.add(t.templateId);
+    return {
+      value: t.templateId,
+      label: templateSelectLabel(t),
+      disabled: !t.imagePresent,
+    };
+  });
+  if (currentValue && !seen.has(currentValue)) {
+    options.unshift({
+      value: currentValue,
+      label: `${currentValue}（PG 当前，e2bserver 未列出）`,
+      disabled: false,
+    });
+  }
+  return options;
+}
+
+/** Gateway 核心 e2b 组件：nas-api / observe（OVS 已迁至 relaxed worker）。Author: kejiqing */
 export default function E2bCoreComponentsPage() {
   const { gatewayBase } = useApp();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState<string | null>(null);
   const [status, setStatus] = useState<E2bSingletonsStatusResponse | null>(null);
+  const [e2bTemplates, setE2bTemplates] = useState<E2bTemplateEntry[]>([]);
+  const [e2bApiUrl, setE2bApiUrl] = useState("");
   const [clusterId, setClusterId] = useState("");
   const [form] = Form.useForm<{
     nasApiTemplateId: string;
-    ovsTemplateId: string;
     observeTemplateId: string;
   }>();
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [gs, singletons] = await Promise.all([
+      const [gs, singletons, templatesResp] = await Promise.all([
         proxyHttp<GlobalSettingsResponse>(gatewayBase, "GET", "/v1/gateway/global-settings"),
         proxyHttp<E2bSingletonsStatusResponse>(
           gatewayBase,
           "GET",
           "/v1/gateway/global-settings/e2b-singletons"
         ),
+        proxyHttp<E2bTemplatesListResponse>(
+          gatewayBase,
+          "GET",
+          "/v1/gateway/global-settings/e2b-templates"
+        ).catch(() => null),
       ]);
       setClusterId(gs.clusterId ?? "");
       setStatus(singletons);
+      const templates = templatesResp?.templates ?? [];
+      if (templatesResp) {
+        setE2bTemplates(templates);
+        setE2bApiUrl(templatesResp.apiUrl);
+      }
       form.setFieldsValue({
-        nasApiTemplateId: singletons.nasApi.templateId ?? singletons.nasApi.effectiveTemplateId,
-        ovsTemplateId: singletons.ovs.templateId ?? singletons.ovs.effectiveTemplateId,
-        observeTemplateId:
-          singletons.observe.templateId ?? singletons.observe.effectiveTemplateId,
+        nasApiTemplateId: preferredTemplateId(
+          singletons.nasApi.templateId,
+          singletons.nasApi.effectiveTemplateId,
+          templates,
+          "claw-nas-api"
+        ),
+        observeTemplateId: preferredTemplateId(
+          singletons.observe.templateId,
+          singletons.observe.effectiveTemplateId,
+          templates,
+          "claw-observe"
+        ),
       });
     } catch (e) {
       message.error(`加载核心组件失败：${String(e)}`);
@@ -75,6 +151,26 @@ export default function E2bCoreComponentsPage() {
     void load();
   }, [load]);
 
+  const nasApiTemplateOptions = useMemo(
+    () =>
+      templateSelectOptions(
+        e2bTemplates,
+        "claw-nas-api",
+        status?.nasApi.templateId ?? status?.nasApi.effectiveTemplateId
+      ),
+    [e2bTemplates, status]
+  );
+
+  const observeTemplateOptions = useMemo(
+    () =>
+      templateSelectOptions(
+        e2bTemplates,
+        "claw-observe",
+        status?.observe.templateId ?? status?.observe.effectiveTemplateId
+      ),
+    [e2bTemplates, status]
+  );
+
   const saveTemplates = async () => {
     const values = await form.validateFields();
     setSaving(true);
@@ -85,7 +181,6 @@ export default function E2bCoreComponentsPage() {
         "/v1/gateway/global-settings/e2b-singleton-templates",
         {
           nasApiTemplateId: values.nasApiTemplateId.trim(),
-          ovsTemplateId: values.ovsTemplateId.trim(),
           observeTemplateId: values.observeTemplateId.trim(),
         }
       );
@@ -102,7 +197,7 @@ export default function E2bCoreComponentsPage() {
     }
   };
 
-  const resetComponent = async (component: "nas-api" | "ovs" | "observe") => {
+  const resetComponent = async (component: "nas-api" | "observe") => {
     setResetting(component);
     try {
       const r = await proxyHttp<E2bSingletonActionResponse>(
@@ -140,7 +235,7 @@ export default function E2bCoreComponentsPage() {
         message="生命周期由 Gateway 统一掌控"
         description={
           <Typography.Paragraph style={{ marginBottom: 0 }}>
-            nas-api、observe、ovs 三个单例在 gateway 启动时自动 ensure，健康检查失败时自动重建。
+            nas-api、observe 两个核心组件由 gateway 启动时自动 ensure，健康检查失败时自动重建。
             模版 ID 注册在 PG（<Typography.Text code>settings_json</Typography.Text>
             ），新模版构建后在此更新并点「重置」即可滚动升级。
             <br />
@@ -149,46 +244,63 @@ export default function E2bCoreComponentsPage() {
         }
       />
 
-      <Card title="模版 ID（PG）" loading={loading}>
+      <Card
+        title="模版 ID（PG）"
+        loading={loading}
+        extra={
+          e2bApiUrl ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              e2bserver: <Typography.Text code>{e2bApiUrl}</Typography.Text>
+            </Typography.Text>
+          ) : null
+        }
+      >
         <Form form={form} layout="vertical">
           <Form.Item
             label="nas-api templateId"
             name="nasApiTemplateId"
+            rules={[{ required: true, message: "请选择 nas-api 模版" }]}
             extra={
               status ? (
                 <Typography.Text type="secondary">
                   当前生效：{status.nasApi.effectiveTemplateId}
+                  {templatesForAlias(e2bTemplates, "claw-nas-api").length === 0
+                    ? "（e2bserver 未返回 claw-nas-api 模版）"
+                    : null}
                 </Typography.Text>
               ) : null
             }
           >
-            <Input placeholder="claw-nas-api" />
+            <Select
+              showSearch
+              placeholder="从 e2bserver 选择 claw-nas-api 模版"
+              optionFilterProp="label"
+              options={nasApiTemplateOptions}
+              notFoundContent="e2bserver 无 claw-nas-api 模版，请先 build"
+            />
           </Form.Item>
           <Form.Item
             label="observe templateId"
             name="observeTemplateId"
+            rules={[{ required: true, message: "请选择 observe 模版" }]}
             extra={
               status ? (
                 <Typography.Text type="secondary">
                   当前生效：{status.observe.effectiveTemplateId}
+                  {templatesForAlias(e2bTemplates, "claw-observe").length === 0
+                    ? "（e2bserver 未返回 claw-observe 模版）"
+                    : null}
                 </Typography.Text>
               ) : null
             }
           >
-            <Input placeholder="claw-observe" />
-          </Form.Item>
-          <Form.Item
-            label="ovs templateId"
-            name="ovsTemplateId"
-            extra={
-              status ? (
-                <Typography.Text type="secondary">
-                  当前生效：{status.ovs.effectiveTemplateId}
-                </Typography.Text>
-              ) : null
-            }
-          >
-            <Input placeholder="claw-ovs" />
+            <Select
+              showSearch
+              placeholder="从 e2bserver 选择 claw-observe 模版"
+              optionFilterProp="label"
+              options={observeTemplateOptions}
+              notFoundContent="e2bserver 无 claw-observe 模版，请先 build"
+            />
           </Form.Item>
           <Button
             type="primary"
@@ -253,11 +365,40 @@ export default function E2bCoreComponentsPage() {
         {status ? (
           <>
             <Descriptions column={1} bordered size="small">
+              <Descriptions.Item label="状态">
+                {onlineTag(Boolean(status.observe.healthy), "observe")}
+              </Descriptions.Item>
               <Descriptions.Item label="模版">
                 <Typography.Text code>{status.observe.effectiveTemplateId}</Typography.Text>
               </Descriptions.Item>
+              <Descriptions.Item label="sandboxId">
+                {status.observe.sandboxId ? (
+                  <Typography.Text code copyable>
+                    {status.observe.sandboxId}
+                  </Typography.Text>
+                ) : (
+                  "—"
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label="Live URL">
+                {status.observe.baseUrl ? (
+                  <Typography.Text code copyable>
+                    {status.observe.baseUrl}
+                  </Typography.Text>
+                ) : (
+                  "—"
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label="运行中">{boolTag(status.observe.running)}</Descriptions.Item>
+              <Descriptions.Item label="可达">{boolTag(status.observe.reachable)}</Descriptions.Item>
               <Descriptions.Item label="模版更新时间">
                 {formatMs(status.observe.updatedAtMs)}
+              </Descriptions.Item>
+              <Descriptions.Item label="最近检查">
+                {formatMs(status.observe.lastCheckedAtMs)}
+              </Descriptions.Item>
+              <Descriptions.Item label="最近错误">
+                {status.observe.lastError || "—"}
               </Descriptions.Item>
             </Descriptions>
             <Popconfirm
@@ -279,54 +420,6 @@ export default function E2bCoreComponentsPage() {
             <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
               代理/Live 详情见「全局推理」页。
             </Typography.Paragraph>
-          </>
-        ) : null}
-      </Card>
-
-      <Card title="ovs" loading={loading}>
-        {status ? (
-          <>
-            <Descriptions column={1} bordered size="small">
-              <Descriptions.Item label="状态">
-                {onlineTag(status.ovs.configured, "ovs")}
-              </Descriptions.Item>
-              <Descriptions.Item label="sandboxId">
-                {status.ovs.sandboxId ? (
-                  <Typography.Text code copyable>
-                    {status.ovs.sandboxId}
-                  </Typography.Text>
-                ) : (
-                  "—"
-                )}
-              </Descriptions.Item>
-              <Descriptions.Item label="baseUrl">
-                {status.ovs.baseUrl ? (
-                  <Typography.Text code copyable>
-                    {status.ovs.baseUrl}
-                  </Typography.Text>
-                ) : (
-                  "—"
-                )}
-              </Descriptions.Item>
-              <Descriptions.Item label="更新时间">
-                {formatMs(status.ovs.updatedAtMs)}
-              </Descriptions.Item>
-            </Descriptions>
-            <Popconfirm
-              title="重置 OVS 单例？"
-              description="将删除当前 OVS sandbox 并按 PG 模版 ID 重建。"
-              onConfirm={() => void resetComponent("ovs")}
-              okText="重置"
-              cancelText="取消"
-            >
-              <Button
-                style={{ marginTop: 16 }}
-                icon={<SyncOutlined />}
-                loading={resetting === "ovs"}
-              >
-                重置 ovs
-              </Button>
-            </Popconfirm>
           </>
         ) : null}
       </Card>

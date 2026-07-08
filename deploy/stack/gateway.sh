@@ -25,6 +25,8 @@ Commands:
   down          Stop gateway + pool only (postgres keeps running)
   pg-up         Start postgres only
   pg-down       Stop postgres only (data volume kept)
+  pg-test-up    Start isolated postgres for cargo test PG integration (:5434)
+  pg-test-down  Stop test postgres only (data volume kept)
   restart       Recreate gateway stack (down + up)
   pool-reset    REMOVED — local podman pool deleted (e2b-only)
   stable-dev-up Start dev-stable PG+tap on Linux host (.env.dev-stable; see env.stable-dev-host.example)
@@ -89,6 +91,8 @@ case "${cmd}" in
   down) "${LIB}/down.sh" "$@" ;;
   pg-up) "${LIB}/pg-up.sh" "$@" ;;
   pg-down) "${LIB}/pg-down.sh" "$@" ;;
+  pg-test-up) "${LIB}/pg-test-up.sh" "$@" ;;
+  pg-test-down) "${LIB}/pg-test-down.sh" "$@" ;;
   restart)
     run_with_manual_hint "${LIB}/down.sh"
     run_with_manual_hint "${LIB}/up.sh" "$@"

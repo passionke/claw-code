@@ -1,6 +1,6 @@
 //! Self-hosted e2bserver platform health (NAS inject contract). Author: kejiqing
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Cached NAS platform state from e2b `GET /health` (not Claw business logic).
 #[derive(Debug, Clone)]
@@ -14,11 +14,53 @@ pub struct E2bNasPlatform {
     pub sandbox_inject: Option<String>,
 }
 
+/// One template row from e2bserver `GET /health` → `templates.items`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct E2bTemplateEntry {
+    #[serde(rename = "templateId")]
+    pub template_id: String,
+    pub aliases: Vec<String>,
+    #[serde(rename = "imagePresent", default)]
+    pub image_present: bool,
+    pub image: Option<String>,
+    pub arch: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct E2bHealthTemplatesBlock {
+    items: Option<Vec<E2bTemplateEntryRaw>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct E2bTemplateEntryRaw {
+    #[serde(rename = "templateId")]
+    template_id: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(rename = "imagePresent", default)]
+    image_present: bool,
+    image: Option<String>,
+    arch: Option<String>,
+}
+
+impl E2bTemplateEntryRaw {
+    fn into_entry(self) -> E2bTemplateEntry {
+        E2bTemplateEntry {
+            template_id: self.template_id,
+            aliases: self.aliases,
+            image_present: self.image_present,
+            image: self.image,
+            arch: self.arch,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct E2bHealthResponse {
     #[allow(dead_code)]
     pub ok: Option<bool>,
     pub nas: Option<E2bNasStatus>,
+    templates: Option<E2bHealthTemplatesBlock>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +168,52 @@ pub async fn fetch_e2b_platform_nas(
     Ok(None)
 }
 
+/// List templates registered on self-hosted e2bserver (`GET /health` → `templates.items`).
+pub async fn fetch_e2b_templates(
+    http: &reqwest::Client,
+    api_url: &str,
+    api_key: &str,
+) -> Result<Vec<E2bTemplateEntry>, String> {
+    let base = api_url.trim_end_matches('/');
+    for path in HEALTH_PATHS {
+        let url = format!("{base}{path}");
+        let resp = http
+            .get(&url)
+            .header("X-API-Key", api_key)
+            .send()
+            .await
+            .map_err(|e| format!("e2b GET {url}: {e}"))?;
+        if !resp.status().is_success() {
+            continue;
+        }
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("e2b GET {url} body: {e}"))?;
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed: E2bHealthResponse =
+            serde_json::from_str(trimmed).map_err(|e| format!("e2b GET {url} JSON: {e}"))?;
+        let Some(block) = parsed.templates else {
+            continue;
+        };
+        let items = block.items.unwrap_or_default();
+        let mut out: Vec<E2bTemplateEntry> = items
+            .into_iter()
+            .map(E2bTemplateEntryRaw::into_entry)
+            .collect();
+        out.sort_by(|a, b| {
+            b.image_present
+                .cmp(&a.image_present)
+                .then_with(|| b.template_id.cmp(&a.template_id))
+        });
+        return Ok(out);
+    }
+    Err("e2b GET /health missing templates.items (self-hosted e2bserver required)".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +258,29 @@ mod tests {
             sandbox_inject: Some("bind".into()),
         };
         assert!(!p.uses_host_bind_inject());
+    }
+
+    #[test]
+    fn parse_health_templates_block() {
+        let raw = r#"{
+            "ok": true,
+            "templates": {
+                "items": [
+                    {
+                        "templateId": "tpl_abc",
+                        "aliases": ["claw-nas-api"],
+                        "imagePresent": true,
+                        "image": "e2b-tpl-claw-nas-api:ready",
+                        "arch": "amd64"
+                    }
+                ]
+            }
+        }"#;
+        let h: E2bHealthResponse = serde_json::from_str(raw).unwrap();
+        let items = h.templates.unwrap().items.unwrap();
+        let t = items.into_iter().next().unwrap().into_entry();
+        assert_eq!(t.template_id, "tpl_abc");
+        assert_eq!(t.aliases, vec!["claw-nas-api"]);
+        assert!(t.image_present);
     }
 }
