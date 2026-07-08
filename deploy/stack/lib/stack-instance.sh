@@ -37,13 +37,9 @@ claw_compose_nas_volume_enabled() {
   esac
 }
 
-# OVS runs as e2b singleton (CLAW_OVS_BACKEND=e2b); compose openvscode-server skipped. kejiqing
+# OVS always runs as e2b singleton; compose openvscode-server skipped. kejiqing
 claw_ovs_backend_is_e2b() {
-  case "$(printf '%s' "${CLAW_OVS_BACKEND:-e2b}" | tr '[:upper:]' '[:lower:]')" in
-    e2b | fc) return 0 ;;
-    compose) return 1 ;;
-    *) return 1 ;;
-  esac
+  return 0
 }
 
 claw_pool_rpc_root() {

@@ -66,15 +66,6 @@ EOF
   esac
 done
 
-if [[ "${CLAW_INTERACTIVE_BACKEND:-}" != "e2b" && "${CLAW_SOLVE_ISOLATION:-}" != "e2b" ]]; then
-  echo "warn: CLAW_INTERACTIVE_BACKEND=${CLAW_INTERACTIVE_BACKEND:-unset}; e2b-worker-deploy is for e2b mode" >&2
-fi
-
-WORKER_ARCH="$(claw_e2b_worker_linux_arch)"
-WORKER_PLATFORM="$(claw_e2b_worker_linux_platform)"
-export CLAW_LINUX_COMPILE_PLATFORM="${CLAW_LINUX_COMPILE_PLATFORM:-${WORKER_PLATFORM}}"
-export CLAW_E2B_TEMPLATE_PLATFORM="${CLAW_E2B_TEMPLATE_PLATFORM:-${WORKER_PLATFORM}}"
-
 CONTAINER_CLI="$(claw_container_runtime_cli)" || exit 1
 export CLAW_E2B_TEMPLATE_BUILD_STRATEGY=copy
 export CLAW_E2B_TEMPLATE_COPY_DIR="${CLAW_E2B_TEMPLATE_COPY_DIR:-${ROOT_DIR}/deploy/stack/.e2b-worker-bins}"

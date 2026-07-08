@@ -89,9 +89,6 @@ has_artifact_upsert_key="$(psql_q "SELECT to_regclass('public.gateway_session_ar
 ok "claw_pool + gateway_turns.pool_id/worker_name + session_artifacts pool-v1 schema present"
 
 echo "==> [2/6] Host pool daemon"
-if ! claw_interactive_backend_is_e2b; then
-  fail "CLAW_INTERACTIVE_BACKEND must be e2b (local claw-sandbox pool removed)"
-fi
 ok "FC interactive backend — no host claw-pool-daemon"
 
 if [[ -f "${RPC_DIR}/gateway.env" ]]; then

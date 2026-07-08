@@ -36,10 +36,7 @@ claw_apply_deploy_profile() {
   profile="$(claw_deploy_profile_name)" || return 1
   export CLAW_DEPLOY_PROFILE="${profile}"
 
-  # e2b is the only worker execution backend. kejiqing
-  export CLAW_INTERACTIVE_BACKEND="${CLAW_INTERACTIVE_BACKEND:-e2b}"
-  export CLAW_OVS_BACKEND="${CLAW_OVS_BACKEND:-e2b}"
-  export CLAW_SOLVE_ISOLATION="${CLAW_SOLVE_ISOLATION:-e2b}"
+  # e2b-only: CLAW_INTERACTIVE_BACKEND / CLAW_SOLVE_ISOLATION / CLAW_OVS_BACKEND removed from .env. kejiqing
 
   case "${profile}" in
     local)
@@ -83,7 +80,8 @@ claw_apply_deploy_profile() {
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
       export CLAW_GATEWAY_PG_IMAGE="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
-      export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
+      # e2b observe singleton; never compose claude-tap on production. kejiqing
+      export CLAUDE_TAP_MODE=off
       if [[ -z "${CLAW_OVS_UPSTREAM_IMAGE:-}" && -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env" ]]; then
         # shellcheck source=/dev/null
         source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env"
@@ -117,30 +115,34 @@ claw_apply_deploy_profile() {
   return 0
 }
 
+# Reject removed backend/tap knobs still present in human .env. kejiqing
+claw_reject_removed_backend_env() {
+  local v raw
+  for v in CLAW_INTERACTIVE_BACKEND CLAW_OVS_BACKEND CLAW_SOLVE_ISOLATION; do
+    raw="${!v:-}"
+    [[ -z "${raw}" ]] && continue
+    echo "error: ${v} is removed from .env (e2b-only); delete this line" >&2
+    return 1
+  done
+  if [[ "$(claw_deploy_profile_name)" == production && -n "${CLAUDE_TAP_MODE:-}" ]]; then
+    echo "error: CLAUDE_TAP_MODE is removed from .env in production (observe runs in e2b); delete this line" >&2
+    return 1
+  fi
+  return 0
+}
+
 # Fail fast on common deploy mistakes.
 claw_validate_deploy_profile() {
-  local profile rt iso
+  local profile rt
   profile="$(claw_deploy_profile_name)" || return 1
   rt="$(claw_container_runtime_cli 2>/dev/null || true)"
-  iso="${CLAW_SOLVE_ISOLATION:-e2b}"
+
+  claw_reject_removed_backend_env || return 1
 
   if [[ -n "${PODMAN_HOST_SOCK:-}" ]]; then
     echo "error: PODMAN_HOST_SOCK is removed; delete it from .env" >&2
     return 1
   fi
-
-  if [[ "${iso}" != e2b ]]; then
-    echo "error: CLAW_SOLVE_ISOLATION must be e2b (got ${iso}); podman_pool/docker_pool removed" >&2
-    return 1
-  fi
-
-  case "${CLAW_INTERACTIVE_BACKEND:-e2b}" in
-    e2b) ;;
-    *)
-      echo "error: CLAW_INTERACTIVE_BACKEND must be e2b (got ${CLAW_INTERACTIVE_BACKEND})" >&2
-      return 1
-      ;;
-  esac
 
   case "${profile}" in
     local) ;;

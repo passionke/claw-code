@@ -39,7 +39,7 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、PG 
 ./deploy/stack/gateway.sh check
 ```
 
-预发全链路：`./deploy/stack/gateway.sh pre-252-e2b-up`（preflight → templates → singletons → up --release → verify）。
+预发 252：`cp deploy/stack/env.pre-252.e2b.example .env` 后 `./deploy/stack/gateway.sh up --release <tag>`（与生产同命令；pool/tap 已内化到 e2b，见 [`deploy/docs/pre-252-e2b-pipeline.md`](../deploy/docs/pre-252-e2b-pipeline.md)）。
 
 ---
 
@@ -202,7 +202,6 @@ CLAW_GATEWAY_ADMIN_BIND=1 ./deploy/stack/gateway.sh up
 | `e2b-singletons-up` | `lib/e2b-singletons-up.sh` |
 | `ovs-up` / `observe-tap-up` / `nas-api-up` | `lib/e2b-ovs-up.sh` 等 |
 | `e2b-pre-bootstrap` | `lib/e2b-pre-bootstrap.sh` → `deploy/e2b/build-selfhosted-templates.sh` |
-| `pre-252-e2b-up` | `lib/pre-252-e2b-pipeline.sh` |
 | `install-docker` | `lib/install-docker.sh` |
 | `e2e` | `tests/http-gateway-session-continuity-e2e.sh` |
 

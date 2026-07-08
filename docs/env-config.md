@@ -12,8 +12,7 @@ Set **one** knob in repo root `.env`:
 | **`production`** (default on Linux) | Docker + Linux | **e2b** | CI only: `up --release release-vX.Y.Z` | `./deploy/stack/gateway.sh up --release release-vX.Y.Z` |
 
 Scripts apply defaults via `deploy/stack/lib/env-profile.sh` after sourcing `.env`:
-- `CLAW_INTERACTIVE_BACKEND=e2b`
-- `CLAW_SOLVE_ISOLATION=e2b`
+- **e2b-only** — `CLAW_INTERACTIVE_BACKEND` / `CLAW_SOLVE_ISOLATION` / `CLAW_OVS_BACKEND` / production `CLAUDE_TAP_MODE` are **not** in `.env` (compose + gateway hardcode e2b; local dev tap mode from profile only).
 
 Copy-paste starters:
 
@@ -44,17 +43,15 @@ Project content lives in **PostgreSQL `project_config`**, not `.env`. See `docs/
 
 e2b workers receive LLM env via **one gateway entry** — `prepare_e2b_worker_llm_material()` in `pool/e2b_worker_llm_material.rs` — then **inline export** on each e2b exec (`exec_solve` / `run_sh` in `deploy/e2b/e2b_exec.py`). Keys match `WORKER_ENV_KEYS` in `worker_env.rs` (placeholder `OPENAI_API_KEY`, observe proxy `OPENAI_BASE_URL`). **Solve**, **OVS `@claw`**, and **terminal/start** share the same material; OVS no longer `source`s `terminal-llm.env`. ttyd still refreshes `terminal-llm.env` at session start/reattach only (Admin LLM change needs terminal restart to refresh ttyd).
 
-### Usually defaulted by profile
+### Usually defaulted by profile (do not set in `.env`)
 
-| Variable | `local` default | `production` default |
-| --- | --- | --- |
-| `CLAW_CONTAINER_RUNTIME` | `podman` | `docker` |
-| `CLAW_INTERACTIVE_BACKEND` | `e2b` | `e2b` |
-| `CLAW_SOLVE_ISOLATION` | `e2b` | `e2b` |
-| `GATEWAY_IMAGE` | `claw-gateway-rs:local` | *(unset — use `--release`)* |
-| `GATEWAY_HOST_PORT` | `18088` | `8088` |
-| `CLAW_LLM_PROXY` | `local` | `remote` + `CLAW_TAP_PROXY_URL` |
-| `CLAW_IMAGE_REGISTRY` | — | `acr` (or `ghcr`) |
+| Variable | Notes |
+| --- | --- |
+| `CLAW_INTERACTIVE_BACKEND` | **Removed** — always e2b (compose `environment:`) |
+| `CLAW_SOLVE_ISOLATION` | **Removed** — always e2b |
+| `CLAW_OVS_BACKEND` | **Removed** — always e2b singleton |
+| `CLAUDE_TAP_MODE` | **Removed** in production; local profile picks docker/native in `env-profile.sh` |
+| `CLAW_CONTAINER_RUNTIME` | `local` → `podman`; `production` → `docker` |
 
 ### e2b templates (override in `.env`)
 
@@ -63,7 +60,7 @@ e2b workers receive LLM env via **one gateway entry** — `prepare_e2b_worker_ll
 | `CLAW_E2B_WORKER_STRICT_TEMPLATE` | strict solve worker template id |
 | `CLAW_E2B_WORKER_RELAXED_TEMPLATE` | relaxed worker (needs `CLAW_ALLOW_RELAXED_WORKER=1`) |
 | `CLAW_NAS_HOST_MOUNT` / `CLAW_NAS_*` | NAS layout — see `docs/e2b-nas-workspace.md` |
-| `CLAW_OVS_BACKEND` | `e2b` for OVS singleton |
+| `CLAW_OVS_UPSTREAM_IMAGE` | OVS image ref (e2b singleton template build) |
 
 ### Optional tuning
 
@@ -78,6 +75,7 @@ e2b workers receive LLM env via **one gateway entry** — `prepare_e2b_worker_ll
 
 | Variable | Was |
 | --- | --- |
+| `CLAW_INTERACTIVE_BACKEND` / `CLAW_SOLVE_ISOLATION` / `CLAW_OVS_BACKEND` | removed — e2b-only |
 | `CLAW_SANDBOX_URL` / `CLAW_POOL_HTTP_*` | host pool `:9944` |
 | `CLAW_SOLVE_ISOLATION=podman_pool` / `docker_pool` | local container pool |
 | `CLAW_PODMAN_*_POOL_SIZE` / `CLAW_DOCKER_*` | pool daemon sizing |

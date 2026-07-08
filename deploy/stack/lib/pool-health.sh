@@ -6,11 +6,7 @@ _LIB_POOL_HEALTH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_LIB_POOL_HEALTH_DIR}/claw-pool-registry-env.sh"
 
 claw_ensure_host_pool_running() {
-  if claw_interactive_backend_is_e2b 2>/dev/null; then
-    return 0
-  fi
-  echo "error: host claw-sandbox pool removed; set CLAW_INTERACTIVE_BACKEND=e2b" >&2
-  return 1
+  return 0
 }
 
 claw_assert_host_pool_http_ready() {

@@ -53,16 +53,8 @@ claw_apply_release_image_tag() {
   prefix="$(claw_image_registry_prefix_from_env)"
   export GATEWAY_IMAGE="${prefix}/claw-code:${tag}"
   export GATEWAY_PLAYGROUND_IMAGE="${prefix}/claw-gateway-playground:${tag}"
-  case "${CLAW_SOLVE_ISOLATION:-e2b}" in
-    e2b)
-      export CLAW_DOCKER_IMAGE="${prefix}/claw-gateway-worker:${tag}"
-      export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-gateway-worker-relaxed:${tag}"
-      ;;
-    *)
-      export CLAW_PODMAN_IMAGE="${prefix}/claw-gateway-worker:${tag}"
-      export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-gateway-worker-relaxed:${tag}"
-      ;;
-  esac
+  export CLAW_DOCKER_IMAGE="${prefix}/claw-gateway-worker:${tag}"
+  export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-gateway-worker-relaxed:${tag}"
 }
 
 # One upgrade knob: pool worker image follows GATEWAY_IMAGE tag/registry (unless explicit opt-out). kejiqing
@@ -75,10 +67,7 @@ claw_export_pool_worker_image_matched_to_gateway() {
   fi
   local derived="${gw/claw-code/claw-gateway-worker}"
   local derived_relaxed="${gw/claw-code/claw-gateway-worker-relaxed}"
-  case "${CLAW_SOLVE_ISOLATION:-e2b}" in
-    e2b) export CLAW_DOCKER_IMAGE="$derived" ;;
-    e2b) export CLAW_PODMAN_IMAGE="$derived" ;;
-  esac
+  export CLAW_DOCKER_IMAGE="$derived"
   export CLAW_RELAXED_PODMAN_IMAGE="$derived_relaxed"
 }
 
@@ -131,33 +120,16 @@ claw_write_pool_worker_env_override() {
     } >"${f}"
     return 0
   fi
-  case "${CLAW_SOLVE_ISOLATION:-e2b}" in
-    e2b)
-      [[ -n "${CLAW_DOCKER_IMAGE:-}" ]] || {
-        {
-          printf '%s\n' '# GENERATED — CLAW_DOCKER_IMAGE unset; pool sidecar uses repo .env only. kejiqing'
-        } >"${f}"
-        return 0
-      }
-      {
-        printf '%s\n' '# GENERATED — do not edit. CLAW_DOCKER_IMAGE synced from GATEWAY_IMAGE (claw-code→claw-gateway-worker). Set CLAW_POOL_WORKER_IMAGE_EXPLICIT=1 to use repo .env only. kejiqing'
-        printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}"
-      } >"${f}"
-      ;;
-    *)
-      [[ -n "${CLAW_PODMAN_IMAGE:-}" ]] || {
-        {
-          printf '%s\n' '# GENERATED — CLAW_PODMAN_IMAGE unset; pool sidecar uses repo .env only. kejiqing'
-        } >"${f}"
-        return 0
-      }
-      {
-        printf '%s\n' '# GENERATED — do not edit. CLAW_PODMAN_IMAGE synced from GATEWAY_IMAGE. kejiqing'
-        printf '%s\n' "CLAW_PODMAN_IMAGE=${CLAW_PODMAN_IMAGE}"
-        [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]] && printf '%s\n' "CLAW_RELAXED_PODMAN_IMAGE=${CLAW_RELAXED_PODMAN_IMAGE}"
-      } >"${f}"
-      ;;
-  esac
+  [[ -n "${CLAW_DOCKER_IMAGE:-}" ]] || {
+    {
+      printf '%s\n' '# GENERATED — CLAW_DOCKER_IMAGE unset; pool sidecar uses repo .env only. kejiqing'
+    } >"${f}"
+    return 0
+  }
+  {
+    printf '%s\n' '# GENERATED — do not edit. CLAW_DOCKER_IMAGE synced from GATEWAY_IMAGE (claw-code→claw-gateway-worker). Set CLAW_POOL_WORKER_IMAGE_EXPLICIT=1 to use repo .env only. kejiqing'
+    printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}"
+  } >"${f}"
 }
 
 # Compose reads --env-file from disk; second file overrides keys from repo .env.
@@ -169,10 +141,7 @@ claw_write_release_pin_env() {
     printf '%s\n' "# GENERATED — do not edit. rm file to drop pin. Author: kejiqing"
     printf '%s\n' "GATEWAY_IMAGE=${GATEWAY_IMAGE}"
     printf '%s\n' "GATEWAY_PLAYGROUND_IMAGE=${GATEWAY_PLAYGROUND_IMAGE}"
-    case "${CLAW_SOLVE_ISOLATION:-e2b}" in
-      e2b) printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}" ;;
-      *) printf '%s\n' "CLAW_PODMAN_IMAGE=${CLAW_PODMAN_IMAGE}" ;;
-    esac
+    printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}"
     [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]] && printf '%s\n' "CLAW_RELAXED_PODMAN_IMAGE=${CLAW_RELAXED_PODMAN_IMAGE}"
   } >"${f}"
 }

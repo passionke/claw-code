@@ -53,35 +53,38 @@ pub struct InteractiveSessionSpec {
     pub e2b_proj_bake_script: Option<String>,
 }
 
-/// True when `CLAW_INTERACTIVE_BACKEND=e2b` (required; podman pool removed).
+/// Interactive backend is always e2b (legacy `CLAW_INTERACTIVE_BACKEND` removed).
 #[must_use]
 pub fn interactive_backend_is_e2b() -> bool {
-    match std::env::var("CLAW_INTERACTIVE_BACKEND")
-        .ok()
-        .map(|v| v.trim().to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("e2b") => true,
-        Some("") | None => {
+    if let Some(raw) = std::env::var("CLAW_INTERACTIVE_BACKEND").ok() {
+        let v = raw.trim();
+        if !v.is_empty()
+            && !v.eq_ignore_ascii_case("e2b")
+            && !v.eq_ignore_ascii_case("fc")
+            && !v.eq_ignore_ascii_case("firecracker")
+        {
             eprintln!(
-                "http-gateway-rs: CLAW_INTERACTIVE_BACKEND must be e2b (local podman pool removed)"
+                "http-gateway-rs: CLAW_INTERACTIVE_BACKEND={v:?} removed; delete from .env (e2b-only)"
             );
             std::process::exit(1);
         }
-        Some(other) => {
-            eprintln!("http-gateway-rs: invalid CLAW_INTERACTIVE_BACKEND={other:?}; use e2b");
+    }
+    true
+}
+
+/// OVS always runs as e2b singleton (legacy `CLAW_OVS_BACKEND` removed).
+#[must_use]
+pub fn ovs_backend_is_e2b() -> bool {
+    if let Some(raw) = std::env::var("CLAW_OVS_BACKEND").ok() {
+        let v = raw.trim();
+        if !v.is_empty() && !v.eq_ignore_ascii_case("e2b") && !v.eq_ignore_ascii_case("fc") {
+            eprintln!(
+                "http-gateway-rs: CLAW_OVS_BACKEND={v:?} removed; delete from .env (e2b-only)"
+            );
             std::process::exit(1);
         }
     }
-}
-
-/// True when `CLAW_OVS_BACKEND=e2b` (OVS runs as e2b singleton, not compose).
-#[must_use]
-pub fn ovs_backend_is_e2b() -> bool {
-    std::env::var("CLAW_OVS_BACKEND")
-        .ok()
-        .map(|v| v.trim().eq_ignore_ascii_case("e2b"))
-        .unwrap_or(false)
+    true
 }
 
 /// True when e2b session-observe singleton should run (Admin Live on e2b).

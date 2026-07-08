@@ -25,9 +25,7 @@ pub async fn reset_observe_tap(
     client: &E2bSandboxClient,
 ) -> Result<ObserveTapResetResponse, String> {
     if !e2b_observe_is_enabled() {
-        return Err(
-            "e2b observe tap disabled (CLAW_INTERACTIVE_BACKEND≠e2b or CLAW_E2B_OBSERVE=0)".into(),
-        );
+        return Err("e2b observe tap disabled (CLAW_E2B_OBSERVE=0)".into());
     }
 
     let outcome = reset_e2b_singleton(db, client, E2bSingletonComponent::Observe).await?;
