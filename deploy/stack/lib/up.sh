@@ -45,6 +45,9 @@ set -a
 source "${ENV_FILE}"
 set +a
 
+# Reject removed keys from human .env before apply overwrites CLAUDE_TAP_MODE=off (production). kejiqing
+claw_reject_removed_backend_env || exit 1
+
 claw_apply_deploy_profile || exit 1
 
 # Co-located e2bserver: panel/worker toml follows repo .env anchors (no hand-edit). kejiqing
