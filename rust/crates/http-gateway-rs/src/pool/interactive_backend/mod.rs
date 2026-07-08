@@ -77,10 +77,7 @@ pub fn interactive_backend_is_e2b() -> bool {
 pub fn ovs_backend_is_e2b() -> bool {
     if let Some(raw) = std::env::var("CLAW_OVS_BACKEND").ok() {
         let v = raw.trim();
-        if !v.is_empty()
-            && !v.eq_ignore_ascii_case("e2b")
-            && !v.eq_ignore_ascii_case("fc")
-        {
+        if !v.is_empty() && !v.eq_ignore_ascii_case("e2b") && !v.eq_ignore_ascii_case("fc") {
             eprintln!(
                 "http-gateway-rs: CLAW_OVS_BACKEND={v:?} removed; delete from .env (e2b-only)"
             );
