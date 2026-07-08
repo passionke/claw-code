@@ -59,7 +59,9 @@ services:
       # Gateway session / turn / feedback tables (PostgreSQL). Override for external managed PG.
       CLAW_GATEWAY_DATABASE_URL: ${CLAW_GATEWAY_DATABASE_URL:-postgres://claw_gateway:clawGw9Dev_Pg@postgres:5432/claw_gateway}
       CLAW_GATEWAY_INTERNAL_TOKEN: ${CLAW_GATEWAY_INTERNAL_TOKEN:-claw-internal-dev-token}
-      CLAW_SOLVE_ISOLATION: ${CLAW_SOLVE_ISOLATION:-fc}
+      CLAW_INTERACTIVE_BACKEND: e2b
+      CLAW_OVS_BACKEND: e2b
+      CLAW_SOLVE_ISOLATION: e2b
       # Pool sizing / image: explicit defaults so a bare `podman compose` still gets worker settings when
       # project-dir `.env` is missing (always prefer `./deploy/stack/gateway.sh up` from repo root with `.env`).
       CLAW_POOL_SIZE_CAP: ${CLAW_POOL_SIZE_CAP:-4}

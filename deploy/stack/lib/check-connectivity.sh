@@ -18,10 +18,6 @@ source "${LIB_DIR}/compose-include.sh"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/pool-health.sh"
 
-if ! claw_interactive_backend_is_e2b; then
-  echo "error: CLAW_INTERACTIVE_BACKEND must be e2b (local podman pool removed)" >&2
-  exit 1
-fi
 echo "[1b/5] skip host pool (e2b-only)"
 
 PLAYGROUND_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
@@ -140,50 +136,43 @@ else:
 PY
 
 echo "[3d/5] e2b OVS product entry (direct e2b traffic URL, not gateway proxy)"
-case "${CLAW_OVS_BACKEND:-compose}" in
-  fc)
-    ws="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/projects/1/ovs/workspace")"
-    folder_url="$(printf '%s' "${ws}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsFolderUrl') or '')")"
-    hosts_line="$(printf '%s' "${ws}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsBrowserHostsLine') or '')")"
-    [[ -n "${folder_url}" ]] || { echo "error: missing ovsFolderUrl: ${ws}" >&2; exit 1; }
-    if [[ "${folder_url}" == *":13000"* ]] || [[ "${folder_url}" == *"/v1/fc-ovs"* ]]; then
-      echo "error: ovsFolderUrl must be direct e2b traffic (got ${folder_url})" >&2
-      exit 1
-    fi
-    if [[ "${folder_url}" != *"-sbx_"* ]]; then
-      echo "error: ovsFolderUrl must be e2b Host traffic URL: ${folder_url}" >&2
-      exit 1
-    fi
-    if [[ "${folder_url}" == *"/e2b/"* ]]; then
-      echo "error: ovsFolderUrl must not use legacy /e2b/ path: ${folder_url}" >&2
-      exit 1
-    fi
-    code="$(curl -sS -o /dev/null -w '%{http_code}' -m 15 "${folder_url}" || true)"
-    [[ "${code}" == "200" ]] || { echo "error: direct OVS URL HTTP ${code} at ${folder_url}" >&2; exit 1; }
-    PG_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
-    PG_USER="${PLAYGROUND_ADMIN_USER:-admin}"
-    PG_PASS="${PLAYGROUND_ADMIN_PASSWORD:-sunmi123}"
-    PG_COOKIE="$(mktemp)"
-    curl -fsS -c "${PG_COOKIE}" -X POST "http://127.0.0.1:${PG_PORT}/__admin_login__" \
-      -H "Content-Type: application/json" \
-      -d "{\"user\":\"${PG_USER}\",\"password\":\"${PG_PASS}\"}" >/dev/null
-    LOC="$(
-      curl -sS -D - -o /dev/null "http://127.0.0.1:${PG_PORT}/ovs/?projId=1" -b "${PG_COOKIE}" \
-        | awk 'tolower($0) ~ /^location:/ { sub(/\r$/, ""); print $2; exit }'
-    )"
-    rm -f "${PG_COOKIE}"
-    [[ "${LOC}" == "${folder_url}" ]] || {
-      echo "error: playground /ovs redirect mismatch" >&2
-      echo "  api: ${folder_url}" >&2
-      echo "  loc: ${LOC}" >&2
-      exit 1
-    }
-    echo "FC OVS direct entry ok → ${folder_url}"
-    ;;
-  *)
-    echo "skip e2b OVS entry (CLAW_OVS_BACKEND=${CLAW_OVS_BACKEND:-compose})"
-    ;;
-esac
+ws="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/projects/1/ovs/workspace")"
+folder_url="$(printf '%s' "${ws}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsFolderUrl') or '')")"
+hosts_line="$(printf '%s' "${ws}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsBrowserHostsLine') or '')")"
+[[ -n "${folder_url}" ]] || { echo "error: missing ovsFolderUrl: ${ws}" >&2; exit 1; }
+if [[ "${folder_url}" == *":13000"* ]] || [[ "${folder_url}" == *"/v1/fc-ovs"* ]]; then
+  echo "error: ovsFolderUrl must be direct e2b traffic (got ${folder_url})" >&2
+  exit 1
+fi
+if [[ "${folder_url}" != *"-sbx_"* ]]; then
+  echo "error: ovsFolderUrl must be e2b Host traffic URL: ${folder_url}" >&2
+  exit 1
+fi
+if [[ "${folder_url}" == *"/e2b/"* ]]; then
+  echo "error: ovsFolderUrl must not use legacy /e2b/ path: ${folder_url}" >&2
+  exit 1
+fi
+code="$(curl -sS -o /dev/null -w '%{http_code}' -m 15 "${folder_url}" || true)"
+[[ "${code}" == "200" ]] || { echo "error: direct OVS URL HTTP ${code} at ${folder_url}" >&2; exit 1; }
+PG_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
+PG_USER="${PLAYGROUND_ADMIN_USER:-admin}"
+PG_PASS="${PLAYGROUND_ADMIN_PASSWORD:-sunmi123}"
+PG_COOKIE="$(mktemp)"
+curl -fsS -c "${PG_COOKIE}" -X POST "http://127.0.0.1:${PG_PORT}/__admin_login__" \
+  -H "Content-Type: application/json" \
+  -d "{\"user\":\"${PG_USER}\",\"password\":\"${PG_PASS}\"}" >/dev/null
+LOC="$(
+  curl -sS -D - -o /dev/null "http://127.0.0.1:${PG_PORT}/ovs/?projId=1" -b "${PG_COOKIE}" \
+    | awk 'tolower($0) ~ /^location:/ { sub(/\r$/, ""); print $2; exit }'
+)"
+rm -f "${PG_COOKIE}"
+[[ "${LOC}" == "${folder_url}" ]] || {
+  echo "error: playground /ovs redirect mismatch" >&2
+  echo "  api: ${folder_url}" >&2
+  echo "  loc: ${LOC}" >&2
+  exit 1
+}
+echo "FC OVS direct entry ok → ${folder_url}"
 
 TASK_POLL_JSON="$(mktemp)"
 curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/tasks/${TASK_ID}" -o "${TASK_POLL_JSON}"

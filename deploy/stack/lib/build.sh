@@ -97,7 +97,7 @@ OVS_IMAGE_NAME="claw-openvscode-server:${IMAGE_TAG}"
 # so the local claw-gateway-worker[-relaxed] images are unused on dev machines. Skip them to
 # cut pack-deploy time. CI/release (GITHUB_ACTIONS) still bakes worker images for all backends. kejiqing
 skip_local_worker_images() {
-  [[ "${GITHUB_ACTIONS:-}" != "true" && "${CLAW_INTERACTIVE_BACKEND:-}" == "e2b" ]]
+  [[ "${GITHUB_ACTIONS:-}" != "true" ]]
 }
 WORKER_IMAGES_NOTE="${WORKER_IMAGE_NAME} ${RELAXED_WORKER_IMAGE_NAME}"
 if skip_local_worker_images; then
@@ -249,7 +249,7 @@ if use_prebuilt_linux_path; then
     "${ROOT_DIR}"
 
   if skip_local_worker_images; then
-    step "skip worker images (e2b backend: worker runs in e2b via CLAW_E2B_WORKER_IMAGE; set CLAW_INTERACTIVE_BACKEND!=e2b or GITHUB_ACTIONS to build)"
+    step "skip worker images (e2b-only: worker runs in e2b; set GITHUB_ACTIONS=true to build on CI)"
   else
     step "3/4 image ${WORKER_IMAGE_NAME} (Containerfile.gateway-worker.prebuilt)"
     # shellcheck disable=SC2086

@@ -68,12 +68,9 @@ claw_pool_uses_remote() {
   claw_pool_remote_base >/dev/null 2>&1
 }
 
-# True when interactive solve/OVS/terminal use e2b (no host claw-pool-daemon). Author: kejiqing
+# Interactive solve/OVS/terminal always use e2b (legacy CLAW_INTERACTIVE_BACKEND removed). kejiqing
 claw_interactive_backend_is_e2b() {
-  case "${CLAW_INTERACTIVE_BACKEND:-podman}" in
-    e2b | firecracker) return 0 ;;
-    *) return 1 ;;
-  esac
+  return 0
 }
 
 # v1: host `claw-pool-daemon` only (no compose pool sidecar). Set CLAW_POOL_HOST_DAEMON=0 to fail fast. Author: kejiqing
@@ -586,7 +583,7 @@ claw_podman_load_compose_args() {
     claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
     return 0
   fi
-  echo "error: CLAW_INTERACTIVE_BACKEND must be e2b (local claw-sandbox pool removed)" >&2
+  echo "error: unreachable (e2b-only interactive backend)" >&2
   return 1
 }
 

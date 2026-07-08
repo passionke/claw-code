@@ -26,9 +26,9 @@ Commands:
   pg-up         Start postgres only
   pg-down       Stop postgres only (data volume kept)
   restart       Recreate gateway stack (down + up)
-  pool-reset    REMOVED — local podman pool deleted; use e2b (CLAW_INTERACTIVE_BACKEND=e2b)
+  pool-reset    REMOVED — local podman pool deleted (e2b-only)
   stable-dev-up Start dev-stable PG+tap on Linux host (.env.dev-stable; see env.stable-dev-host.example)
-  pool-up       REMOVED — use CLAW_INTERACTIVE_BACKEND=e2b
+  pool-up       REMOVED — e2b-only
   fix-workspace chown ds_* sessions + pool slots to CLAW_WORKER_UID (before up if preflight failed)
   install-docker  Linux production: apt/dnf install docker.io + compose + registry mirror (idempotent)
   check         Connectivity smoke check (auto pool-up if HTTP down)
@@ -41,8 +41,8 @@ Commands:
   e2b-singletons-up  nas-api + ovs + observe via gateway API (--reset to recreate)
   sync-e2b-env     Apply .env anchors → e2bserver panel/worker config (--restart --nginx)
   e2b-pre-bootstrap  build templates (local) then singletons → PG; then gateway up --release
-  pre-252-e2b-up     pre-prod 252: preflight → templates → up --release → verify
-  tap-down      Stop pool claude-tap only (legacy compose; e2b mode uses CLAUDE_TAP_MODE=off)
+  pre-252-e2b-up     REMOVED — use up --release (e2b internalizes former host pool/tap)
+  tap-down      Stop pool claude-tap only (legacy compose; production uses e2b observe)
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
   bench         REMOVED — local pool bench deleted
   logs          Follow gateway logs
@@ -94,7 +94,7 @@ case "${cmd}" in
     run_with_manual_hint "${LIB}/up.sh" "$@"
     ;;
   pool-reset)
-    echo "error: pool-reset removed (local claw-sandbox pool deleted; use CLAW_INTERACTIVE_BACKEND=e2b)" >&2
+    echo "error: pool-reset removed (local claw-sandbox pool deleted; e2b-only)" >&2
     exit 1
     ;;
   stable-dev-up)
@@ -102,7 +102,7 @@ case "${cmd}" in
     exit 1
     ;;
   pool-up)
-    echo "error: pool-up removed (use CLAW_INTERACTIVE_BACKEND=e2b)" >&2
+    echo "error: pool-up removed (e2b-only)" >&2
     exit 1
     ;;
   fix-workspace) "${LIB}/fix-session-ownership.sh" "$@" ;;
@@ -117,7 +117,10 @@ case "${cmd}" in
   e2b-singletons-up) bash "${LIB}/e2b-singletons-up.sh" "$@" ;;
   sync-e2b-env) bash "${LIB}/sync-e2b-host-env.sh" "$@" ;;
   e2b-pre-bootstrap) bash "${LIB}/e2b-pre-bootstrap.sh" "$@" ;;
-  pre-252-e2b-up) bash "${LIB}/pre-252-e2b-pipeline.sh" "$@" ;;
+  pre-252-e2b-up)
+    echo "error: pre-252-e2b-up removed — use ./deploy/stack/gateway.sh up --release <tag> (see deploy/stack/env.pre-252.e2b.example)" >&2
+    exit 1
+    ;;
   tap-up)
     echo "error: tap-up removed (FC mode: use ./deploy/stack/gateway.sh observe-tap-up)" >&2
     exit 1

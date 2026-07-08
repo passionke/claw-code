@@ -167,7 +167,7 @@ curl -fsS "http://8080-${SBX}.${CLAW_E2B_DOMAIN}/healthz" | grep -q "\"clusterId
 curl -fsS "http://127.0.0.1:18088/healthz" | grep -q '"consistency":"strict"' && echo "gateway strict OK"
 ```
 
-预发 252 全栈串联见 [`pre-252-e2b-pipeline.md`](./pre-252-e2b-pipeline.md)（`e2b-singletons-up` 含 observe）。
+预发 252 部署见 [`pre-252-e2b-pipeline.md`](./pre-252-e2b-pipeline.md)（`up --release`；observe 在 e2b 单例内）。
 
 ---
 

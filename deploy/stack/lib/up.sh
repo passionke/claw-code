@@ -110,9 +110,6 @@ if [[ -n "${CLAW_IMAGE_RELEASE_TAG:-}" ]]; then
     e2b)
       claw_release_pull_image_if_needed "${rt}" "${CLAW_DOCKER_IMAGE}"
       ;;
-    *)
-      claw_release_pull_image_if_needed "${rt}" "${CLAW_PODMAN_IMAGE}"
-      ;;
   esac
   if [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]]; then
     claw_release_pull_image_if_needed "${rt}" "${CLAW_RELAXED_PODMAN_IMAGE}"
@@ -139,10 +136,6 @@ claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
 source "${LIB_DIR}/bootstrap-runtime.sh"
 claw_wait_gateway_http_ready 60 || exit 1
 
-if ! claw_interactive_backend_is_e2b; then
-  echo "error: CLAW_INTERACTIVE_BACKEND must be e2b (local podman claw-sandbox pool removed)" >&2
-  exit 1
-fi
 echo "FC interactive backend — solve/OVS on e2b sandboxes" >&2
 
 # Default project ds_1 (project_config + workspace init) on every up. kejiqing

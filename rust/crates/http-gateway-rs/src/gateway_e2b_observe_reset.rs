@@ -26,7 +26,7 @@ pub async fn reset_observe_tap(
 ) -> Result<ObserveTapResetResponse, String> {
     if !e2b_observe_is_enabled() {
         return Err(
-            "e2b observe tap disabled (CLAW_INTERACTIVE_BACKEND≠e2b or CLAW_E2B_OBSERVE=0)".into(),
+            "e2b observe tap disabled (CLAW_E2B_OBSERVE=0)".into(),
         );
     }
 
