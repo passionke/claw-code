@@ -45,7 +45,7 @@ flowchart LR
 | e2b API | `http://192.168.9.250:3000` | `config.toml` 的 **api_key**（不是 worker_token） |
 | e2b envd | `http://192.168.9.250:3002` | sandbox 通道 |
 
-252 `.env` 模板：`deploy/server-252/env.pre-252.e2b.example`
+252 `.env` 模板：`deploy/stack/env.pre-252.e2b.example`
 
 ---
 
@@ -56,20 +56,19 @@ flowchart LR
 ```bash
 # === 开发机 claw-code：模板（可不加 --release）===
 cd ~/work/claw-code
-cp deploy/server-252/env.pre-252.e2b.example .env   # 或已有 .env
+cp deploy/stack/env.pre-252.e2b.example .env   # 或已有 .env
 # 必填：CLAW_E2B_API_URL、CLAW_E2B_API_KEY、CLAW_GATEWAY_DATABASE_URL
 
-./deploy/stack/gateway.sh 252-up --skip-gateway --skip-cache
+./deploy/stack/gateway.sh pre-252-e2b-up --skip-gateway --skip-cache
 
 # === 252：gateway + Admin + verify ===
-cd ~/work/claw-code   # 或 claw-deploy 同步后的同路径
-cp deploy/server-252/env.pre-252.e2b.example .env   # 填 CLAW_E2B_API_KEY 等
+cd ~/work/claw-code
+cp deploy/stack/env.pre-252.e2b.example .env   # 填 CLAW_E2B_API_KEY 等
 
-./deploy/stack/gateway.sh 252-up --release release-v1.6.18
-# 或: ./deploy/server-252/deploy-one-click.sh --release release-v1.6.18
+./deploy/stack/gateway.sh pre-252-e2b-up --release release-v1.6.18
 ```
 
-`252-up` / `pre-252-e2b-up` 阶段：
+`pre-252-e2b-up` 阶段：
 
 1. **preflight** — PG 连通、e2b `/health`、Claw 四类模板是否已注册
 2. **templates** — 仅 `claw-code` 执行 `build-selfhosted-templates.sh`
@@ -142,7 +141,7 @@ CLAW_E2B_TEMPLATE_SKIP_CACHE=1    # 或 build 脚本 --skip-cache
 ```bash
 cd ~/work/claw-code
 git pull
-./deploy/stack/gateway.sh 252-up --release release-vX.Y.Z
+./deploy/stack/gateway.sh pre-252-e2b-up --release release-vX.Y.Z
 ```
 
 Worker 模板变更时需先在开发机重跑 `build-selfhosted-templates.sh worker`。

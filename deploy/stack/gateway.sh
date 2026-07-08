@@ -41,8 +41,7 @@ Commands:
   e2b-singletons-up  nas-api + ovs + observe via gateway API (--reset to recreate)
   sync-e2b-env     Apply .env anchors → e2bserver panel/worker config (--restart --nginx)
   e2b-pre-bootstrap  build templates (local) then singletons → PG; then gateway up --release
-  pre-252-e2b-up     full pre-prod: preflight → templates → singletons → up --release → verify
-  252-up             alias for pre-252-e2b-up (252 gateway + Admin + e2b)
+  pre-252-e2b-up     pre-prod 252: preflight → templates → up --release → verify
   tap-down      Stop pool claude-tap only (legacy compose; e2b mode uses CLAUDE_TAP_MODE=off)
   build-tap     Build claude-tap image from CLAUDE_TAP_BUILD_CONTEXT (fork)
   bench         REMOVED — local pool bench deleted
@@ -119,7 +118,6 @@ case "${cmd}" in
   sync-e2b-env) bash "${LIB}/sync-e2b-host-env.sh" "$@" ;;
   e2b-pre-bootstrap) bash "${LIB}/e2b-pre-bootstrap.sh" "$@" ;;
   pre-252-e2b-up) bash "${LIB}/pre-252-e2b-pipeline.sh" "$@" ;;
-  252-up) bash "${LIB}/pre-252-e2b-pipeline.sh" "$@" ;;
   tap-up)
     echo "error: tap-up removed (FC mode: use ./deploy/stack/gateway.sh observe-tap-up)" >&2
     exit 1

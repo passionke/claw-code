@@ -47,8 +47,7 @@ Options:
   ./deploy/stack/gateway.sh pre-252-e2b-up --skip-gateway --skip-cache
 
   # 252（claw-code 或 claw-deploy）
-  ./deploy/stack/gateway.sh 252-up --release release-v1.6.18
-  # 等价: pre-252-e2b-up --release release-v1.6.18
+  ./deploy/stack/gateway.sh pre-252-e2b-up --release release-v1.6.18
 EOF
 }
 
@@ -145,7 +144,7 @@ phase_gateway() {
   if [[ "${skip_gateway}" -eq 1 ]] || [[ -z "${release}" ]]; then
     if [[ -z "${release}" ]] && [[ "${skip_gateway}" -eq 0 ]]; then
       echo "==> Phase 2: skip gateway (no --release)" >&2
-      echo "    next: ./deploy/stack/gateway.sh 252-up --release release-vX.Y.Z" >&2
+      echo "    next: ./deploy/stack/gateway.sh pre-252-e2b-up --release release-vX.Y.Z" >&2
     fi
     return 0
   fi
@@ -183,5 +182,5 @@ phase_verify
 echo "" >&2
 echo "OK — pre-252 e2b pipeline done" >&2
 if [[ -z "${release}" ]] || [[ "${skip_gateway}" -eq 1 ]]; then
-  echo "next: ./deploy/stack/gateway.sh 252-up --release release-vX.Y.Z" >&2
+  echo "next: ./deploy/stack/gateway.sh pre-252-e2b-up --release release-vX.Y.Z" >&2
 fi
