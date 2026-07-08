@@ -43,14 +43,14 @@ use http_gateway_rs::biz_advice_report::{
 };
 use http_gateway_rs::{
     admin_mcp_http, admin_mcp_solve, claw_tap_cluster_state, client_origin,
-    gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_e2b_nas_settings,
-    gateway_e2b_observe_proxy, gateway_e2b_observe_reset, gateway_e2b_singleton_api,
-    gateway_global_settings, gateway_llm_config_sync, gateway_project_e2b_worker,
-    gateway_strict_landlock_settings, gateway_translate, llm_probe, mcp_probe, pool,
-    pool_consumer_resolve, preflight_plugin_api, project_config_apply, project_config_version,
-    project_entity_revision, project_extra_session, project_git_sync, project_id, project_tools,
-    session_agent_api, session_db, session_merge, session_ovs_api, session_terminal_api, turn_id,
-    turn_timeline_api, turn_tools_api,
+    gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_e2b_core_readiness,
+    gateway_e2b_nas_settings, gateway_e2b_observe_proxy, gateway_e2b_observe_reset,
+    gateway_e2b_singleton_api, gateway_global_settings, gateway_llm_config_sync,
+    gateway_project_e2b_worker, gateway_strict_landlock_settings, gateway_translate, llm_probe,
+    mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api, project_config_apply,
+    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
+    project_id, project_tools, session_agent_api, session_db, session_merge, session_ovs_api,
+    session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -1454,9 +1454,13 @@ async fn main() {
     let session_db = Arc::new(session_db);
     pool_clients.bind_session_db(Arc::clone(&session_db)).await;
     nas_api.bind_session_db(Arc::clone(&session_db)).await;
-    pool_clients
-        .ensure_e2b_singletons_on_startup(session_db.as_ref())
-        .await;
+    if let Err(e) = pool_clients
+        .ensure_e2b_singletons_on_startup_strict(session_db.as_ref())
+        .await
+    {
+        eprintln!("http-gateway-rs: e2b core singleton ensure failed (nas-api / observe): {e}");
+        std::process::exit(1);
+    }
     if let Err(e) = pool_clients.reconcile_project_workers_on_startup().await {
         tracing::warn!(
             target: "claw_e2b_proj_worker",
@@ -3869,14 +3873,20 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
 }
 
 async fn readyz(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
-    let snap = claw_tap_cluster_state::snapshot_from_handle(&state.claw_tap_cluster).await;
+    let core = gateway_e2b_core_readiness::load_core_readiness_snapshot(
+        &state.session_db,
+        state.pool_clients.e2b_sandbox_client().map(|v| &**v),
+        &state.claw_tap_cluster,
+    )
+    .await
+    .map_err(|e| session_db_err(&e))?;
     let landlock = probe_landlock();
-    if claw_tap_cluster_state::is_ready(&snap) {
+    if core.ready {
         return Ok((
             StatusCode::OK,
             Json(json!({
                 "ok": true,
-                "clawTapCluster": snap,
+                "e2bCore": core,
                 "strictLandlockProbe": {
                     "supported": landlock.supported,
                     "enforcing": landlock.enforcing,
@@ -3887,8 +3897,9 @@ async fn readyz(State(state): State<AppState>) -> Result<impl IntoResponse, ApiE
     }
     Err(ApiError::new(
         StatusCode::SERVICE_UNAVAILABLE,
-        snap.reason
-            .unwrap_or_else(|| "CLAW_CLUSTER_ID and clawTap must be configured".into()),
+        core.reason.unwrap_or_else(|| {
+            "e2b core components not ready (nas-api / observe / clawTap)".into()
+        }),
     ))
 }
 

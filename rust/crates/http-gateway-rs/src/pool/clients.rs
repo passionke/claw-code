@@ -286,13 +286,16 @@ impl PoolClients {
         self.e2b_workers.reconcile_all_on_startup().await
     }
 
-    /// Ensure observe / nas-api / ovs singletons + register lease ticker tracking.
-    pub async fn ensure_e2b_singletons_on_startup(&self, db: &GatewaySessionDb) {
-        crate::gateway_e2b_singleton_lifecycle::ensure_e2b_singletons_on_startup(
+    /// Startup gate: nas-api + observe must be online before gateway serves traffic.
+    pub async fn ensure_e2b_singletons_on_startup_strict(
+        &self,
+        db: &GatewaySessionDb,
+    ) -> Result<(), String> {
+        crate::gateway_e2b_singleton_lifecycle::ensure_e2b_singletons_on_startup_strict(
             db,
             self.e2b_client.as_ref(),
         )
-        .await;
+        .await
     }
 
     pub fn spawn_singleton_health_reconcile_loop(&self, db: Arc<GatewaySessionDb>) {

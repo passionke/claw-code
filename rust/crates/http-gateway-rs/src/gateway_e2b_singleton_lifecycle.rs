@@ -602,9 +602,88 @@ pub async fn reset_e2b_singleton(
     }
 }
 
-/// Startup: ensure observe / nas-api singletons exist, healthy, tracked for lease ticker.
-/// OVS is built into relaxed project workers — no cluster OVS singleton.
-pub async fn ensure_e2b_singletons_on_startup(db: &GatewaySessionDb, client: &E2bSandboxClient) {
+fn verify_nas_api_strict(outcome: &E2bSingletonOutcome) -> Result<(), String> {
+    if !E2bNasApiSingleton::enabled_from_env() {
+        return Ok(());
+    }
+    let sid = outcome
+        .sandbox_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "nas-api ensure succeeded but sandbox_id missing".to_string())?;
+    let base = outcome
+        .base_url
+        .as_deref()
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| "nas-api ensure succeeded but baseUrl missing".to_string())?;
+    if !outcome.traffic_reachable {
+        return Err(format!(
+            "nas-api traffic not reachable at {base} (sandbox {sid})"
+        ));
+    }
+    Ok(())
+}
+
+fn verify_observe_strict(outcome: &E2bSingletonOutcome) -> Result<(), String> {
+    if !e2b_observe_is_enabled() {
+        return Ok(());
+    }
+    let sid = outcome
+        .sandbox_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "observe ensure succeeded but sandbox_id missing".to_string())?;
+    let live = outcome
+        .base_url
+        .as_deref()
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| "observe ensure succeeded but liveBaseUrl missing".to_string())?;
+    if !outcome.traffic_reachable {
+        return Err(format!(
+            "observe Live not reachable at {live} (sandbox {sid})"
+        ));
+    }
+    Ok(())
+}
+
+/// Startup gate: core singletons must be online + persisted; failure aborts gateway boot.
+pub async fn ensure_e2b_singletons_on_startup_strict(
+    db: &GatewaySessionDb,
+    client: &E2bSandboxClient,
+) -> Result<(), String> {
+    if !interactive_backend_is_e2b() {
+        return Ok(());
+    }
+    let nas = ensure_nas_api(db, client).await?;
+    verify_nas_api_strict(&nas)?;
+    if E2bNasApiSingleton::enabled_from_env() {
+        info!(
+            target: "claw_e2b_singleton",
+            component = "nas-api",
+            sandbox_id = ?nas.sandbox_id,
+            base_url = ?nas.base_url,
+            "nas-api singleton ready (startup strict)"
+        );
+    }
+    let observe = ensure_observe(db, client).await?;
+    verify_observe_strict(&observe)?;
+    if e2b_observe_is_enabled() {
+        info!(
+            target: "claw_e2b_singleton",
+            component = "observe",
+            sandbox_id = ?observe.sandbox_id,
+            live_base_url = ?observe.base_url,
+            "observe singleton ready (startup strict)"
+        );
+    }
+    Ok(())
+}
+
+/// Runtime reconcile only — logs warnings, does not define gateway readiness.
+pub async fn reconcile_e2b_singletons_best_effort(
+    db: &GatewaySessionDb,
+    client: &E2bSandboxClient,
+) {
     if !interactive_backend_is_e2b() {
         return;
     }
@@ -613,7 +692,7 @@ pub async fn ensure_e2b_singletons_on_startup(db: &GatewaySessionDb, client: &E2
             target: "claw_e2b_singleton",
             component = "nas-api",
             error = %e,
-            "singleton ensure failed (best-effort)"
+            "singleton reconcile failed (best-effort)"
         );
     }
     if let Err(e) = ensure_observe(db, client).await {
@@ -621,7 +700,7 @@ pub async fn ensure_e2b_singletons_on_startup(db: &GatewaySessionDb, client: &E2
             target: "claw_e2b_singleton",
             component = "observe",
             error = %e,
-            "singleton ensure failed (best-effort)"
+            "singleton reconcile failed (best-effort)"
         );
     }
 }
@@ -637,7 +716,45 @@ pub fn spawn_singleton_health_reconcile_loop(
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            ensure_e2b_singletons_on_startup(db.as_ref(), client.as_ref()).await;
+            reconcile_e2b_singletons_best_effort(db.as_ref(), client.as_ref()).await;
         }
     });
+}
+
+#[cfg(test)]
+mod strict_tests {
+    use super::*;
+
+    #[test]
+    fn verify_nas_api_strict_requires_sandbox_and_base_url() {
+        let err = verify_nas_api_strict(&E2bSingletonOutcome {
+            sandbox_id: None,
+            base_url: Some("http://8090-sbx_x.spone.xyz".into()),
+            traffic_reachable: true,
+            message: None,
+        })
+        .unwrap_err();
+        assert!(err.contains("sandbox_id missing"));
+
+        let err = verify_nas_api_strict(&E2bSingletonOutcome {
+            sandbox_id: Some("sbx_x".into()),
+            base_url: None,
+            traffic_reachable: true,
+            message: None,
+        })
+        .unwrap_err();
+        assert!(err.contains("baseUrl missing"));
+    }
+
+    #[test]
+    fn verify_observe_strict_requires_live_base_url() {
+        let err = verify_observe_strict(&E2bSingletonOutcome {
+            sandbox_id: Some("sbx_o".into()),
+            base_url: None,
+            traffic_reachable: true,
+            message: None,
+        })
+        .unwrap_err();
+        assert!(err.contains("liveBaseUrl missing"));
+    }
 }
