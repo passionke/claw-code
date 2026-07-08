@@ -320,7 +320,7 @@ fn default_true() -> bool {
     true
 }
 
-/// `GET /v1/projects` — list `project_config` from `PostgreSQL` + disk overlay. Author: kejiqing
+/// `GET /v1/projects` — list registered projects from `project_config` (`PostgreSQL` only). Author: kejiqing
 #[derive(Debug, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 struct ProjectListEntry {
@@ -352,9 +352,6 @@ struct ProjectListEntry {
     applied_rev: Option<String>,
     #[serde(rename = "dbSyncedToDisk")]
     db_synced_to_disk: bool,
-    /// `false` when `proj_*` exists on disk but has no `project_config` row yet. Author: kejiqing
-    #[serde(rename = "projectConfigRegistered")]
-    project_config_registered: bool,
     /// Per-project one-way git (no PAT in list). Author: kejiqing
     #[serde(rename = "gitSync")]
     git_sync: Value,
@@ -3281,10 +3278,11 @@ async fn count_skill_dirs(skills_root: &Path) -> u64 {
 /// Read-only snapshot of per-`proj_*` workspace readiness (for `/healthz`). Author: kejiqing
 async fn build_proj_workspaces_health(state: &AppState) -> Value {
     let work_root = &state.cfg.work_root;
-    let on_disk = list_proj_ids_under_work_root(work_root)
+    let ids = state
+        .session_db
+        .list_project_config_proj_ids()
         .await
         .unwrap_or_default();
-    let ids = on_disk;
 
     let mut workspaces = Vec::new();
     let mut prepared_count = 0u64;
@@ -3760,21 +3758,12 @@ async fn list_proj_ids_in_projects_mirror(repo_dir: &Path) -> Result<Vec<i64>, A
     Ok(out)
 }
 
-fn merge_sorted_proj_ids(mut a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
-    a.extend(b);
-    a.sort_unstable();
-    a.dedup();
-    a
-}
-
 async fn tick_project_config_apply_poll(state: &AppState) -> Result<(), ApiError> {
-    let on_disk = list_proj_ids_under_work_root(&state.cfg.work_root).await?;
-    let in_config = state
+    let ids = state
         .session_db
         .list_project_config_proj_ids()
         .await
         .map_err(|e| session_db_err(&e))?;
-    let ids = merge_sorted_proj_ids(on_disk, in_config);
     for proj_id in ids {
         let lock = get_proj_lock(state, proj_id).await;
         let Ok(_guard) = lock.try_lock() else {
@@ -3803,35 +3792,6 @@ async fn tick_project_config_apply_poll(state: &AppState) -> Result<(), ApiError
         }
     }
     Ok(())
-}
-
-async fn list_proj_ids_under_work_root(work_root: &Path) -> Result<Vec<i64>, ApiError> {
-    let mut out = Vec::new();
-    let mut rd = fs::read_dir(work_root).await.map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("list work_root for proj poll failed: {e}"),
-        )
-    })?;
-    while let Some(ent) = rd.next_entry().await.map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read work_root entry failed: {e}"),
-        )
-    })? {
-        let name = ent.file_name().to_string_lossy().to_string();
-        let Some(rest) = name.strip_prefix("proj_") else {
-            continue;
-        };
-        if let Ok(id) = rest.parse::<i64>() {
-            if id >= 1 {
-                out.push(id);
-            }
-        }
-    }
-    out.sort_unstable();
-    out.dedup();
-    Ok(out)
 }
 
 async fn agent_ws_handler(
@@ -4020,13 +3980,11 @@ fn default_project_claude_md(proj_id: i64) -> String {
 }
 
 async fn collect_known_proj_ids(state: &AppState) -> Result<Vec<i64>, ApiError> {
-    let on_disk = list_proj_ids_under_work_root(&state.cfg.work_root).await?;
-    let in_config = state
+    state
         .session_db
         .list_project_config_proj_ids()
         .await
-        .map_err(|e| session_db_err(&e))?;
-    Ok(merge_sorted_proj_ids(on_disk, in_config))
+        .map_err(|e| session_db_err(&e))
 }
 
 async fn resolve_create_proj_id(state: &AppState, requested: Option<i64>) -> Result<i64, ApiError> {
@@ -4043,19 +4001,6 @@ async fn resolve_create_proj_id(state: &AppState, requested: Option<i64>) -> Res
     Ok(ids.last().copied().unwrap_or(0) + 1)
 }
 
-async fn proj_exists_on_stack(state: &AppState, proj_id: i64) -> Result<bool, ApiError> {
-    let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
-    if fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir()) {
-        return Ok(true);
-    }
-    Ok(state
-        .session_db
-        .get_project_config(proj_id)
-        .await
-        .map_err(|e| session_db_err(&e))?
-        .is_some())
-}
-
 async fn project_config_exists(state: &AppState, proj_id: i64) -> Result<bool, ApiError> {
     Ok(state
         .session_db
@@ -4063,18 +4008,6 @@ async fn project_config_exists(state: &AppState, proj_id: i64) -> Result<bool, A
         .await
         .map_err(|e| session_db_err(&e))?
         .is_some())
-}
-
-async fn read_project_claude_from_disk(work_dir: &Path, proj_id: i64) -> String {
-    let (home_claude, root_claude) = project_claude_paths(work_dir);
-    for path in [home_claude, root_claude] {
-        if claude_instructions_usable(&path).await {
-            if let Ok(text) = fs::read_to_string(&path).await {
-                return text;
-            }
-        }
-    }
-    default_project_claude_md(proj_id)
 }
 
 async fn write_file_if_missing(path: &Path, content: &str) -> Result<(), ApiError> {
@@ -4091,9 +4024,9 @@ async fn write_file_if_missing(path: &Path, content: &str) -> Result<(), ApiErro
 
 async fn build_project_list_entry(
     state: &AppState,
-    summary: Option<&session_db::ProjectConfigSummary>,
-    proj_id: i64,
+    summary: &session_db::ProjectConfigSummary,
 ) -> ProjectListEntry {
+    let proj_id = summary.proj_id;
     let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     let work_dir_present = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
     let materialize_row = project_config_draft::row_for_materialize(&state.session_db, proj_id)
@@ -4111,52 +4044,28 @@ async fn build_project_list_entry(
         0
     };
     let applied_rev = project_config_apply::read_applied_content_rev(&work_dir).await;
-    if let Some(s) = summary {
-        let stable_rev = s
-            .stable_content_rev
-            .as_deref()
-            .filter(|r| !project_config_draft::is_draft_content_rev(r))
-            .unwrap_or(s.content_rev.as_str());
-        let db_synced_to_disk = applied_rev.as_deref() == Some(stable_rev);
-        ProjectListEntry {
-            proj_id: s.proj_id,
-            content_rev: stable_rev.to_string(),
-            draft_open: s.draft_open,
-            updated_at_ms: s.updated_at_ms,
-            skills_count_db: s.skills_count_db,
-            claude_in_db: s.claude_in_db,
-            rules_count_db: s.rules_count_db,
-            mcp_servers_count_db: s.mcp_servers_count_db,
-            work_dir_present,
-            environment_prepared,
-            claude_on_disk,
-            skills_count_disk,
-            applied_rev,
-            db_synced_to_disk,
-            project_config_registered: true,
-            git_sync: git_sync_list_summary(&s.git_sync_json),
-        }
-    } else {
-        ProjectListEntry {
-            proj_id,
-            content_rev: applied_rev
-                .clone()
-                .unwrap_or_else(|| "disk-only".to_string()),
-            draft_open: false,
-            updated_at_ms: 0,
-            skills_count_db: 0,
-            claude_in_db: false,
-            rules_count_db: 0,
-            mcp_servers_count_db: 0,
-            work_dir_present,
-            environment_prepared,
-            claude_on_disk,
-            skills_count_disk,
-            applied_rev,
-            db_synced_to_disk: false,
-            project_config_registered: false,
-            git_sync: json!({}),
-        }
+    let stable_rev = summary
+        .stable_content_rev
+        .as_deref()
+        .filter(|r| !project_config_draft::is_draft_content_rev(r))
+        .unwrap_or(summary.content_rev.as_str());
+    let db_synced_to_disk = applied_rev.as_deref() == Some(stable_rev);
+    ProjectListEntry {
+        proj_id: summary.proj_id,
+        content_rev: stable_rev.to_string(),
+        draft_open: summary.draft_open,
+        updated_at_ms: summary.updated_at_ms,
+        skills_count_db: summary.skills_count_db,
+        claude_in_db: summary.claude_in_db,
+        rules_count_db: summary.rules_count_db,
+        mcp_servers_count_db: summary.mcp_servers_count_db,
+        work_dir_present,
+        environment_prepared,
+        claude_on_disk,
+        skills_count_disk,
+        applied_rev,
+        db_synced_to_disk,
+        git_sync: git_sync_list_summary(&summary.git_sync_json),
     }
 }
 
@@ -4315,18 +4224,9 @@ async fn list_projects(
         .list_project_config_summaries()
         .await
         .map_err(|e| session_db_err(&e))?;
-    let on_disk = list_proj_ids_under_work_root(&state.cfg.work_root).await?;
-    let mut projects = Vec::with_capacity(summaries.len().saturating_add(on_disk.len()));
-    let mut registered = std::collections::HashSet::new();
+    let mut projects = Vec::with_capacity(summaries.len());
     for s in &summaries {
-        registered.insert(s.proj_id);
-        projects.push(build_project_list_entry(&state, Some(s), s.proj_id).await);
-    }
-    for proj_id in on_disk {
-        if registered.contains(&proj_id) {
-            continue;
-        }
-        projects.push(build_project_list_entry(&state, None, proj_id).await);
+        projects.push(build_project_list_entry(&state, s).await);
     }
     projects.sort_by_key(|p| p.proj_id);
     Ok(Json(ProjectListResponse {
@@ -4381,15 +4281,21 @@ async fn create_project(
     let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     let lock = get_proj_lock(&state, proj_id).await;
     let _guard = lock.lock().await;
-    let work_dir_existed = fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir());
+    if fs::metadata(&work_dir).await.is_ok_and(|m| m.is_dir()) {
+        fs::remove_dir_all(&work_dir).await.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "remove existing work_dir {} failed: {e}",
+                    work_dir.display()
+                ),
+            )
+        })?;
+    }
     scaffold_proj_workspace(&work_dir, proj_id).await?;
     let now = now_ms();
     let content_rev = project_config_draft::format_formal_content_rev_local_ms(now);
-    let claude_md = if work_dir_existed {
-        read_project_claude_from_disk(&work_dir, proj_id).await
-    } else {
-        default_project_claude_md(proj_id)
-    };
+    let claude_md = default_project_claude_md(proj_id);
     let empty_obj = json!({});
     let empty_arr = json!([]);
     state
@@ -4440,10 +4346,10 @@ async fn delete_project(
             "projId must be >= 1",
         ));
     }
-    if !proj_exists_on_stack(&state, proj_id).await? {
+    if !project_config_exists(&state, proj_id).await? {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            format!("ds {proj_id} not found"),
+            format!("project {proj_id} not registered in project_config"),
         ));
     }
     let lock = get_proj_lock(&state, proj_id).await;

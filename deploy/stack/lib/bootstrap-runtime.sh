@@ -145,22 +145,22 @@ claw_ensure_default_project_ds() {
   rm -f "${resp}"
 }
 
-# Materialize `claw.projId` for every `proj_N/home` (OVS switch 1↔2 without manual curl). Author: kejiqing
+# Materialize `claw.projId` for registered projects (OVS switch 1↔2 without manual curl). Author: kejiqing
 claw_materialize_ovs_workspace_projects() {
   local port="${GATEWAY_HOST_PORT:-18088}"
-  local root="${CLAW_POOL_WORK_ROOT_BIND_SRC:-${CLAW_REPO_ROOT:-}/deploy/stack/claw-workspace}"
   local -a proj_ids=()
-  local extra pid name resp http_code
+  local pid name resp http_code
 
   if [[ -n "${CLAW_OVS_BOOTSTRAP_PROJ_IDS:-}" ]]; then
     IFS=',' read -r -a proj_ids <<<"${CLAW_OVS_BOOTSTRAP_PROJ_IDS}"
-  elif [[ -d "${root}" ]]; then
-    for d in "${root}"/proj_*/home; do
-      [[ -d "${d}" ]] || continue
-      name="$(basename "$(dirname "${d}")")"
-      [[ "${name}" =~ ^proj_([0-9]+)$ ]] || continue
-      proj_ids+=("${BASH_REMATCH[1]}")
-    done
+  else
+    resp="$(mktemp)"
+    if curl -fsS --connect-timeout 15 "http://127.0.0.1:${port}/v1/projects" -o "${resp}" 2>/dev/null; then
+      while IFS= read -r pid; do
+        [[ -n "${pid}" ]] && proj_ids+=("${pid}")
+      done < <(python3 -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(str(p["projId"]) for p in d.get("projects",[])))' <"${resp}")
+    fi
+    rm -f "${resp}"
   fi
 
   for pid in "${proj_ids[@]}"; do

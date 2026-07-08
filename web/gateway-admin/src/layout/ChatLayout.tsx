@@ -21,10 +21,7 @@ export default function ChatLayout() {
 
   const projOptions = projects.map((p) => ({
     value: p.projId,
-    label:
-      p.projectConfigRegistered === false
-        ? `项目 ${p.projId} — 未注册`
-        : `项目 ${p.projId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
+    label: `项目 ${p.projId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
   }));
 
   return (
