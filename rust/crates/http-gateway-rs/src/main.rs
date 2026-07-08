@@ -1668,6 +1668,10 @@ async fn main() {
             get(get_gateway_e2b_singletons_handler),
         )
         .route(
+            "/v1/gateway/global-settings/e2b-templates",
+            get(get_gateway_e2b_templates_handler),
+        )
+        .route(
             "/v1/gateway/global-settings/e2b-singleton-templates",
             put(put_gateway_e2b_singleton_templates_handler),
         )
@@ -5095,9 +5099,27 @@ async fn reset_gateway_observe_tap_handler(
 async fn get_gateway_e2b_singletons_handler(
     State(state): State<AppState>,
 ) -> Result<Json<gateway_e2b_singleton_api::E2bSingletonsStatusResponse>, ApiError> {
-    let body = gateway_e2b_singleton_api::load_e2b_singletons_status(&state.session_db)
+    let body = gateway_e2b_singleton_api::load_e2b_singletons_status(
+        &state.session_db,
+        state.pool_clients.e2b_sandbox_client().map(|v| &**v),
+    )
+    .await
+    .map_err(|e| session_db_err(&e))?;
+    Ok(Json(body))
+}
+
+async fn get_gateway_e2b_templates_handler(
+    State(state): State<AppState>,
+) -> Result<Json<gateway_e2b_singleton_api::E2bTemplatesListResponse>, ApiError> {
+    let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "e2b sandbox client not configured",
+        )
+    })?;
+    let body = gateway_e2b_singleton_api::list_e2b_templates(client)
         .await
-        .map_err(|e| session_db_err(&e))?;
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
     Ok(Json(body))
 }
 

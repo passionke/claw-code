@@ -9,10 +9,6 @@ const { Header, Content } = Layout;
 /** solve_async 对话壳。Author: kejiqing */
 export default function ChatLayout() {
   const {
-    gatewayBase,
-    setGatewayBase,
-    gatewayOptions,
-    showGatewayPicker,
     projId,
     setProjId,
     projects,
@@ -46,19 +42,6 @@ export default function ChatLayout() {
           lineHeight: 1.4,
         }}
       >
-        {showGatewayPicker ? (
-          <Space direction="vertical" size={4}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Pool
-            </Typography.Text>
-            <Select
-              style={{ minWidth: 280 }}
-              value={gatewayBase || undefined}
-              options={gatewayOptions}
-              onChange={setGatewayBase}
-            />
-          </Space>
-        ) : null}
         <Space direction="vertical" size={4}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             项目

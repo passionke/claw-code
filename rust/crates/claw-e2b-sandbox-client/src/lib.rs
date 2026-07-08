@@ -11,7 +11,7 @@ pub use client::{
     SINGLETON_ROLE_NAS_API, SINGLETON_ROLE_OBSERVE, SINGLETON_ROLE_OVS, WARM_PROJ_ROLE,
 };
 pub use config::E2bSandboxConfig;
-pub use e2b_platform::{nas_mount_source_addr, E2bNasPlatform};
+pub use e2b_platform::{nas_mount_source_addr, E2bNasPlatform, E2bTemplateEntry};
 pub use nas_paths::{
     export_root_rel, guest_session_root, guest_session_work_dir, guest_worker_work_dir,
     ovs_folder_url, ovs_workspace_folder, proj_home_rel, session_ds_symlink_target, session_rel,

@@ -19,7 +19,7 @@ import GlobalSettingsRedirect from "./pages/GlobalSettingsRedirect";
 import GitPatsPage from "./pages/global/GitPatsPage";
 import AdminMcpTokensPage from "./pages/global/AdminMcpTokensPage";
 import GlobalInferencePage from "./pages/global/GlobalInferencePage";
-import GlobalPoolsPage from "./pages/global/GlobalPoolsPage";
+import E2bPlatformPage from "./pages/global/E2bPlatformPage";
 import E2bCoreComponentsPage from "./pages/global/E2bCoreComponentsPage";
 import StrictLandlockDefaultPage from "./pages/global/StrictLandlockDefaultPage";
 import ChatPage from "./pages/ChatPage";
@@ -66,6 +66,7 @@ export default function App() {
               <Route path="worker-profile" element={<WorkerProfilePage />} />
               <Route path="global" element={<GlobalSettingsRedirect />} />
               <Route path="global/inference" element={<GlobalInferencePage />} />
+              <Route path="global/e2b-platform" element={<E2bPlatformPage />} />
               <Route path="global/e2b-core" element={<E2bCoreComponentsPage />} />
               <Route path="global/e2b-nas" element={<E2bCoreComponentsPage />} />
               <Route path="global/strict-landlock" element={<StrictLandlockDefaultPage />} />
@@ -73,7 +74,7 @@ export default function App() {
               <Route path="global/claw-tap" element={<Navigate to="/global/inference" replace />} />
               <Route path="global/pats" element={<GitPatsPage />} />
               <Route path="global/admin-mcp" element={<AdminMcpTokensPage />} />
-              <Route path="global/pools" element={<GlobalPoolsPage />} />
+              <Route path="global/pools" element={<Navigate to="/global/e2b-platform" replace />} />
             </Route>
           </Route>
         </Route>

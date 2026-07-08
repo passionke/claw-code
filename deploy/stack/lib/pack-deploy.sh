@@ -53,7 +53,11 @@ claw_timing_init
 claw_step_begin "1/4 build images (tag=${TAG})"
 echo "    日志: deploy/stack/.build.log（全程: tail -f deploy/stack/.build.log）"
 echo "    只改 gateway Rust: ./deploy/stack/gateway.sh build local && ./deploy/stack/gateway.sh up" >&2
-"${LIB_DIR}/build.sh" "${BUILD_FLAGS[@]}" "${TAG}"
+if ((${#BUILD_FLAGS[@]} > 0)); then
+  "${LIB_DIR}/build.sh" "${BUILD_FLAGS[@]}" "${TAG}"
+else
+  "${LIB_DIR}/build.sh" "${TAG}"
+fi
 
 claw_apply_pack_deploy_image_tag "${TAG}"
 echo "==> FC: claw/ttyd are baked into e2b template only (no NAS copy)." >&2

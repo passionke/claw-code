@@ -3,8 +3,12 @@
 use claw_e2b_sandbox_client::E2bSandboxClient;
 use serde::{Deserialize, Serialize};
 
-use crate::gateway_e2b_nas_api_settings::{e2b_nas_api_settings_public, E2bNasApiSettingsPublic};
-use crate::gateway_e2b_observe_settings::{e2b_observe_settings_public, E2bObserveSettingsPublic};
+use crate::gateway_e2b_nas_api_settings::{
+    e2b_nas_api_settings_public, e2b_nas_api_settings_public_with_runtime, E2bNasApiSettingsPublic,
+};
+use crate::gateway_e2b_observe_settings::{
+    e2b_observe_settings_public, e2b_observe_settings_public_with_runtime, E2bObserveSettingsPublic,
+};
 use crate::gateway_e2b_ovs_settings::{e2b_ovs_settings_public, E2bOvsSettingsPublic};
 use crate::gateway_e2b_singleton_lifecycle::{
     ensure_e2b_singleton, reset_e2b_singleton, E2bSingletonComponent,
@@ -67,13 +71,37 @@ fn normalize_template_id(raw: Option<String>) -> Option<String> {
     raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+#[derive(Debug, Serialize)]
+pub struct E2bTemplatesListResponse {
+    #[serde(rename = "apiUrl")]
+    pub api_url: String,
+    pub templates: Vec<claw_e2b_sandbox_client::E2bTemplateEntry>,
+}
+
+pub async fn list_e2b_templates(
+    client: &E2bSandboxClient,
+) -> Result<E2bTemplatesListResponse, String> {
+    let templates = client.list_templates().await?;
+    Ok(E2bTemplatesListResponse {
+        api_url: client.config().api_url.clone(),
+        templates,
+    })
+}
+
 pub async fn load_e2b_singletons_status(
     db: &GatewaySessionDb,
+    client: Option<&E2bSandboxClient>,
 ) -> Result<E2bSingletonsStatusResponse, sqlx::Error> {
     Ok(E2bSingletonsStatusResponse {
-        nas_api: e2b_nas_api_settings_public(db).await?,
+        nas_api: match client {
+            Some(c) => e2b_nas_api_settings_public_with_runtime(db, Some(c)).await?,
+            None => e2b_nas_api_settings_public(db).await?,
+        },
         ovs: e2b_ovs_settings_public(db).await?,
-        observe: e2b_observe_settings_public(db).await?,
+        observe: match client {
+            Some(c) => e2b_observe_settings_public_with_runtime(db, Some(c)).await?,
+            None => e2b_observe_settings_public(db).await?,
+        },
     })
 }
 
@@ -134,7 +162,7 @@ pub async fn ensure_e2b_singleton_via_api(
     component: E2bSingletonComponent,
 ) -> Result<E2bSingletonActionResponse, String> {
     let outcome = ensure_e2b_singleton(db, client, component).await?;
-    build_action_response(db, component, outcome).await
+    build_action_response(db, client, component, outcome).await
 }
 
 pub async fn reset_e2b_singleton_via_api(
@@ -143,15 +171,16 @@ pub async fn reset_e2b_singleton_via_api(
     component: E2bSingletonComponent,
 ) -> Result<E2bSingletonActionResponse, String> {
     let outcome = reset_e2b_singleton(db, client, component).await?;
-    build_action_response(db, component, outcome).await
+    build_action_response(db, client, component, outcome).await
 }
 
 async fn build_action_response(
     db: &GatewaySessionDb,
+    client: &E2bSandboxClient,
     component: E2bSingletonComponent,
     outcome: crate::gateway_e2b_singleton_lifecycle::E2bSingletonOutcome,
 ) -> Result<E2bSingletonActionResponse, String> {
-    let status = load_e2b_singletons_status(db)
+    let status = load_e2b_singletons_status(db, Some(client))
         .await
         .map_err(|e| e.to_string())?;
     Ok(E2bSingletonActionResponse {

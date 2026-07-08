@@ -124,7 +124,8 @@ claw_reject_removed_backend_env() {
     echo "error: ${v} is removed from .env (e2b-only); delete this line" >&2
     return 1
   done
-  if [[ "$(claw_deploy_profile_name)" == production && -n "${CLAUDE_TAP_MODE:-}" ]]; then
+  # production apply sets CLAUDE_TAP_MODE=off; only reject human .env values (docker/native/…). kejiqing
+  if [[ "$(claw_deploy_profile_name)" == production && -n "${CLAUDE_TAP_MODE:-}" && "${CLAUDE_TAP_MODE}" != off ]]; then
     echo "error: CLAUDE_TAP_MODE is removed from .env in production (observe runs in e2b); delete this line" >&2
     return 1
   fi

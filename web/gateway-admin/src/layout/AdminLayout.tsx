@@ -24,11 +24,11 @@ const { Header, Sider, Content } = Layout;
 
 const GLOBAL_MENU_CHILDREN = [
   { key: "/global/inference", label: "全局推理" },
+  { key: "/global/e2b-platform", label: "e2b 平台" },
   { key: "/global/e2b-core", label: "核心组件" },
   { key: "/global/strict-landlock", label: "Strict Landlock" },
   { key: "/global/pats", label: "PAT 配置" },
   { key: "/global/admin-mcp", label: "Admin MCP Token" },
-  { key: "/global/pools", label: "Pool 集群" },
 ];
 
 const TAB_ITEMS: MenuProps["items"] = [
@@ -53,9 +53,6 @@ const TAB_ITEMS: MenuProps["items"] = [
 export default function AdminLayout() {
   const {
     gatewayBase,
-    setGatewayBase,
-    gatewayOptions,
-    showGatewayPicker,
     projId,
     setProjId,
     projects,
@@ -135,17 +132,6 @@ export default function AdminLayout() {
           background: "#1a2332",
         }}
       >
-        {showGatewayPicker ? (
-          <>
-            <Typography.Text type="secondary">Pool</Typography.Text>
-            <Select
-              style={{ minWidth: 300 }}
-              value={gatewayBase || undefined}
-              options={gatewayOptions}
-              onChange={setGatewayBase}
-            />
-          </>
-        ) : null}
         {gatewayImageTag ? (
           <Tag color={gatewayImageTag === "local" ? "blue" : "gold"} title="GET /healthz deployImageTag">
             {gatewayImageTag}

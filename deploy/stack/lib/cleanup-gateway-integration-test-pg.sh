@@ -18,9 +18,9 @@ import sys
 
 root = ${ROOT@Q}
 sys.path.insert(0, os.path.join(root, "deploy/e2b"))
-url = os.environ.get("CLAW_GATEWAY_TEST_DATABASE_URL") or os.environ.get("CLAW_GATEWAY_DATABASE_URL")
+url = os.environ.get("CLAW_GATEWAY_TEST_DATABASE_URL")
 if not url:
-    print("error: set CLAW_GATEWAY_TEST_DATABASE_URL or CLAW_GATEWAY_DATABASE_URL", file=sys.stderr)
+    print("error: set CLAW_GATEWAY_TEST_DATABASE_URL (./deploy/stack/gateway.sh pg-test-up)", file=sys.stderr)
     sys.exit(1)
 
 import psycopg
@@ -56,6 +56,19 @@ with psycopg.connect(url) as conn:
             ("s1", 7),
         )
         print(f"  gateway_sessions: deleted {cur.rowcount} rows")
+        # Ephemeral rows from session_db::project_config_upsert_get (rev-1/rev-2 fixture).
+        cur.execute(
+            """
+            DELETE FROM project_config
+            WHERE content_rev = 'rev-2'
+              AND claude_md IS NULL
+              AND proj_id > 100
+              AND rules_json::text = '[]'
+              AND skills_json::text = '[]'
+              AND mcp_servers_json::text = '{}'
+            """
+        )
+        print(f"  project_config (ephemeral rev-2 orphans): deleted {cur.rowcount} rows")
     conn.commit()
 print("Done.")
 PY

@@ -51,7 +51,9 @@ impl SandboxSnapshot {
 }
 
 use crate::config::E2bSandboxConfig;
-use crate::e2b_platform::{fetch_e2b_platform_nas, E2bNasPlatform};
+use crate::e2b_platform::{
+    fetch_e2b_platform_nas, fetch_e2b_templates, E2bNasPlatform, E2bTemplateEntry,
+};
 use crate::nas_paths::{self, warm_worker_mounts, worker_mounts, NasMountPoint};
 use crate::types::{CreateSandboxResponse, E2bExecOutcome, E2bSandboxHandle, GatewaySolveInputs};
 
@@ -197,6 +199,11 @@ impl E2bSandboxClient {
             ),
             Err(e) => Err(e),
         }
+    }
+
+    /// Templates registered on e2bserver (`GET /health` → `templates.items`).
+    pub async fn list_templates(&self) -> Result<Vec<E2bTemplateEntry>, String> {
+        fetch_e2b_templates(&self.http, &self.config.api_url, &self.config.api_key).await
     }
 
     /// True when e2b host injects NAS into sandbox via bind (`nas.ready` + hostMountRoot).

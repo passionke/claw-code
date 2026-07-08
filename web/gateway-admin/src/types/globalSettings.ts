@@ -91,6 +91,18 @@ export interface E2bNasSettings {
   hasProjTree?: boolean;
 }
 
+export interface E2bPlatformSettings {
+  readOnly: boolean;
+  e2bApiUrl: string;
+  e2bSandboxUrl?: string;
+  e2bDomain: string;
+  apiKeySet: boolean;
+  workerStrictTemplate: string;
+  workerRelaxedTemplate: string;
+  sandboxTimeoutSecs: number;
+  configured: boolean;
+}
+
 export interface ObserveTapResetResponse {
   tap: ClawTapSettings;
   sandboxId: string;
@@ -105,6 +117,12 @@ export interface E2bNasApiSettings {
   baseUrl?: string;
   sandboxId?: string;
   updatedAtMs: number;
+  configured?: boolean;
+  running?: boolean;
+  reachable?: boolean;
+  healthy?: boolean;
+  lastCheckedAtMs?: number;
+  lastError?: string;
   online: boolean;
 }
 
@@ -122,6 +140,13 @@ export interface E2bObserveTemplateSettings {
   effectiveTemplateId: string;
   updatedAtMs: number;
   configured: boolean;
+  baseUrl?: string;
+  sandboxId?: string;
+  running?: boolean;
+  reachable?: boolean;
+  healthy?: boolean;
+  lastCheckedAtMs?: number;
+  lastError?: string;
 }
 
 export interface E2bSingletonsStatusResponse {
@@ -144,6 +169,19 @@ export interface E2bSingletonActionResponse {
   message?: string;
 }
 
+export interface E2bTemplateEntry {
+  templateId: string;
+  aliases: string[];
+  imagePresent: boolean;
+  image?: string;
+  arch?: string;
+}
+
+export interface E2bTemplatesListResponse {
+  apiUrl: string;
+  templates: E2bTemplateEntry[];
+}
+
 export interface GlobalSettingsResponse {
   updatedAtMs: number;
   gitPats: GitPatRow[];
@@ -155,6 +193,7 @@ export interface GlobalSettingsResponse {
   activeLlmConfig?: ActiveLlmConfig;
   clawTap?: ClawTapSettings;
   e2bNas?: E2bNasSettings;
+  e2bPlatform?: E2bPlatformSettings;
   e2bNasApi?: E2bNasApiSettings;
   e2bOvs?: E2bOvsSettings;
   e2bObserve?: E2bObserveTemplateSettings;
