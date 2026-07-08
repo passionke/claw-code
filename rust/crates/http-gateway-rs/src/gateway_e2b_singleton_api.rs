@@ -78,7 +78,9 @@ pub struct E2bTemplatesListResponse {
     pub templates: Vec<claw_e2b_sandbox_client::E2bTemplateEntry>,
 }
 
-pub async fn list_e2b_templates(client: &E2bSandboxClient) -> Result<E2bTemplatesListResponse, String> {
+pub async fn list_e2b_templates(
+    client: &E2bSandboxClient,
+) -> Result<E2bTemplatesListResponse, String> {
     let templates = client.list_templates().await?;
     Ok(E2bTemplatesListResponse {
         api_url: client.config().api_url.clone(),

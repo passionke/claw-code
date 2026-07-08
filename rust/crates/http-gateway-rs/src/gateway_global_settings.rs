@@ -15,9 +15,9 @@ use crate::gateway_admin_mcp_token::{admin_mcp_tokens_public, AdminMcpTokenPubli
 use crate::gateway_claw_tap_settings::{ClawTapSettings, ClawTapSettingsPublic};
 use crate::gateway_e2b_nas_api_settings::{E2bNasApiSettings, E2bNasApiSettingsPublic};
 use crate::gateway_e2b_nas_settings::E2bNasSettingsPublic;
-use crate::gateway_e2b_platform_settings::E2bPlatformSettingsPublic;
 use crate::gateway_e2b_observe_settings::{E2bObserveSettings, E2bObserveSettingsPublic};
 use crate::gateway_e2b_ovs_settings::{E2bOvsSettings, E2bOvsSettingsPublic};
+use crate::gateway_e2b_platform_settings::E2bPlatformSettingsPublic;
 use crate::gateway_e2b_worker_settings::E2bWorkerSettings;
 use crate::gateway_llm_cluster_store::{self, resolve_llm_cluster_id};
 use crate::gateway_llm_model_apply::{self, LlmModelApplyOutcome};
