@@ -27,6 +27,7 @@ pub mod deploy_image;
 pub mod gateway_admin_mcp_token;
 pub mod gateway_claw_tap_lifecycle;
 pub mod gateway_claw_tap_settings;
+pub mod gateway_e2b_core_readiness;
 pub mod gateway_e2b_nas_api_settings;
 pub mod gateway_e2b_nas_settings;
 pub mod gateway_e2b_observe_proxy;
