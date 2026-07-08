@@ -45,36 +45,36 @@ flowchart LR
 | e2b API | `http://192.168.9.250:3000` | `config.toml` 的 **api_key**（不是 worker_token） |
 | e2b envd | `http://192.168.9.250:3002` | sandbox 通道 |
 
-252 `.env` 模板：`claw-deploy/env/pre-252.env.example`
+252 `.env` 模板：`deploy/server-252/env.pre-252.e2b.example`
 
 ---
 
 ## 串联命令（推荐）
 
-### 一条命令（按仓库自动分 phase）
+### 一条命令（252 gateway + Admin + e2b）
 
 ```bash
-# === 开发机 claw-code：模板 + singleton（可不加 --release）===
+# === 开发机 claw-code：模板（可不加 --release）===
 cd ~/work/claw-code
-cp .env.example .env   # 或已有 .env
+cp deploy/server-252/env.pre-252.e2b.example .env   # 或已有 .env
 # 必填：CLAW_E2B_API_URL、CLAW_E2B_API_KEY、CLAW_GATEWAY_DATABASE_URL
-# 国内 build：CLAW_E2B_CN=1（注释请单独一行，勿写在 = 后面）
 
-./deploy/stack/gateway.sh pre-252-e2b-up --skip-gateway --skip-cache
+./deploy/stack/gateway.sh 252-up --skip-gateway --skip-cache
 
-# === 252 claw-deploy：singleton + gateway + verify ===
-cd ~/work/claw-deploy
-cp env/pre-252.env.example .env   # 填 CLAW_E2B_API_KEY 等
+# === 252：gateway + Admin + verify ===
+cd ~/work/claw-code   # 或 claw-deploy 同步后的同路径
+cp deploy/server-252/env.pre-252.e2b.example .env   # 填 CLAW_E2B_API_KEY 等
 
-./deploy/stack/gateway.sh pre-252-e2b-up --release release-v1.6.18
+./deploy/stack/gateway.sh 252-up --release release-v1.6.18
+# 或: ./deploy/server-252/deploy-one-click.sh --release release-v1.6.18
 ```
 
-`pre-252-e2b-up` 阶段：
+`252-up` / `pre-252-e2b-up` 阶段：
 
 1. **preflight** — PG 连通、e2b `/health`、Claw 四类模板是否已注册
 2. **templates** — 仅 `claw-code` 执行 `build-selfhosted-templates.sh`
-3. **singletons** — `nas-api-up` + `ovs-up` + `observe-tap-up` → 写入 PG
-4. **gateway** — `up --release <tag>`（需 `--release`）
+3. **gateway** — `up --release <tag>`（启动时 ensure e2b singletons + bootstrap proj_1）
+4. **singletons** — 经 gateway API 再 ensure 一遍（幂等）
 5. **verify** — `claw-stack-verify.sh`
 
 ### 分步（等价）
@@ -84,10 +84,10 @@ cp env/pre-252.env.example .env   # 填 CLAW_E2B_API_KEY 等
 cd ~/work/claw-code
 ./deploy/e2b/build-selfhosted-templates.sh --skip-cache
 
-# B. 252 — singleton + 网关
-cd ~/work/claw-deploy
-./deploy/stack/gateway.sh e2b-singletons-up --reuse
+# B. 252 — gateway（singleton 随 gateway 启动）+ 可选 API ensure
+cd ~/work/claw-code
 ./deploy/stack/gateway.sh up --release release-v1.6.18
+./deploy/stack/gateway.sh e2b-singletons-up --reuse   # 可选；gateway 启动已 ensure
 ./deploy/stack/gateway.sh verify
 ./deploy/stack/lib/admin-solve-e2e.sh 1 ping
 ```
@@ -140,10 +140,9 @@ CLAW_E2B_TEMPLATE_SKIP_CACHE=1    # 或 build 脚本 --skip-cache
 ## 升级 release
 
 ```bash
-cd ~/work/claw-deploy
+cd ~/work/claw-code
 git pull
-./deploy/stack/gateway.sh up --release release-vX.Y.Z
-./deploy/stack/gateway.sh verify
+./deploy/stack/gateway.sh 252-up --release release-vX.Y.Z
 ```
 
 Worker 模板变更时需先在开发机重跑 `build-selfhosted-templates.sh worker`。

@@ -83,7 +83,12 @@ claw_apply_deploy_profile() {
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8088}"
       export GATEWAY_PLAYGROUND_HOST_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
       export CLAW_GATEWAY_PG_IMAGE="${CLAW_GATEWAY_PG_IMAGE:-docker.io/library/postgres:17-alpine}"
-      export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
+      # e2b observe singleton replaces compose claude-tap on production. kejiqing
+      if [[ "${CLAW_INTERACTIVE_BACKEND:-e2b}" == e2b ]]; then
+        export CLAUDE_TAP_MODE="${CLAUDE_TAP_MODE:-off}"
+      else
+        export CLAUDE_TAP_IMAGE="${CLAUDE_TAP_IMAGE:-$(claw_default_claude_tap_image)}"
+      fi
       if [[ -z "${CLAW_OVS_UPSTREAM_IMAGE:-}" && -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env" ]]; then
         # shellcheck source=/dev/null
         source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env"

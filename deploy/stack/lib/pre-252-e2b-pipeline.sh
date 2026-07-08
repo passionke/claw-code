@@ -25,8 +25,8 @@ Usage: ./deploy/stack/gateway.sh pre-252-e2b-up [options]
 
   Phase 0  preflight   PG + e2b /health + Claw 模板存在性
   Phase 1  templates   claw-code 本机构建模板 → 250 e2bserver（claw-deploy 自动跳过）
-  Phase 2  singletons  nas-api + ovs + observe → PG
-  Phase 3  gateway      up --release <tag>
+  Phase 2  gateway      up --release <tag>（启动时 ensure e2b singletons）
+  Phase 3  singletons  经 gateway API 再 ensure 一遍（幂等）
   Phase 4  verify      claw-stack-verify
 
 Options:
@@ -46,8 +46,9 @@ Options:
   # 开发机（claw-code）
   ./deploy/stack/gateway.sh pre-252-e2b-up --skip-gateway --skip-cache
 
-  # 252（claw-deploy）
-  ./deploy/stack/gateway.sh pre-252-e2b-up --release release-v1.6.18
+  # 252（claw-code 或 claw-deploy）
+  ./deploy/stack/gateway.sh 252-up --release release-v1.6.18
+  # 等价: pre-252-e2b-up --release release-v1.6.18
 EOF
 }
 
@@ -140,25 +141,29 @@ phase_templates() {
   "${BUILD_TEMPLATES_SH}" "${template_args[@]}"
 }
 
-phase_singletons() {
-  if [[ "${skip_singletons}" -eq 1 ]]; then
-    echo "==> Phase 2: skip singletons" >&2
-    return 0
-  fi
-  echo "==> Phase 2: e2b singletons → PG" >&2
-  "${LIB_DIR}/e2b-singletons-up.sh" "${singleton_args[@]}"
-}
-
 phase_gateway() {
   if [[ "${skip_gateway}" -eq 1 ]] || [[ -z "${release}" ]]; then
     if [[ -z "${release}" ]] && [[ "${skip_gateway}" -eq 0 ]]; then
-      echo "==> Phase 3: skip gateway (no --release)" >&2
-      echo "    next: ./deploy/stack/gateway.sh up --release release-vX.Y.Z" >&2
+      echo "==> Phase 2: skip gateway (no --release)" >&2
+      echo "    next: ./deploy/stack/gateway.sh 252-up --release release-vX.Y.Z" >&2
     fi
     return 0
   fi
-  echo "==> Phase 3: gateway up --release ${release}" >&2
+  echo "==> Phase 2: gateway up --release ${release}" >&2
   "${LIB_DIR}/up.sh" --release "${release}"
+}
+
+phase_singletons() {
+  if [[ "${skip_singletons}" -eq 1 ]]; then
+    echo "==> Phase 3: skip singletons (--skip-singletons)" >&2
+    return 0
+  fi
+  if [[ "${skip_gateway}" -eq 1 ]] || [[ -z "${release}" ]]; then
+    echo "==> Phase 3: skip singletons API (no gateway up; singletons run on gateway startup when --release)" >&2
+    return 0
+  fi
+  echo "==> Phase 3: e2b singletons → PG (gateway API, idempotent)" >&2
+  "${LIB_DIR}/e2b-singletons-up.sh" "${singleton_args[@]}"
 }
 
 phase_verify() {
@@ -171,12 +176,12 @@ phase_verify() {
 
 preflight_remote
 phase_templates
-phase_singletons
 phase_gateway
+phase_singletons
 phase_verify
 
 echo "" >&2
 echo "OK — pre-252 e2b pipeline done" >&2
 if [[ -z "${release}" ]] || [[ "${skip_gateway}" -eq 1 ]]; then
-  echo "next: ./deploy/stack/gateway.sh up --release release-vX.Y.Z && ./deploy/stack/gateway.sh verify" >&2
+  echo "next: ./deploy/stack/gateway.sh 252-up --release release-vX.Y.Z" >&2
 fi
