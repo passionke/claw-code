@@ -24,6 +24,7 @@ import type { GlobalSettingsResponse } from "../types/globalSettings";
 import type { LandlockDsl, WorkerProfileJson } from "../types/landlock";
 import { validateLandlockDslClient } from "../types/landlock";
 import type {
+  ProjectE2bWorkerInfo,
   ProjectE2bWorkerResetResponse,
   ProjectE2bWorkerStatusResponse,
 } from "../types/projectE2bWorker";
@@ -129,11 +130,44 @@ export default function WorkerProfilePage() {
     };
   };
 
+  const resetWorker = async (slotIndex?: number) => {
+    setWorkerResetting(true);
+    try {
+      const path =
+        slotIndex != null
+          ? `/v1/projects/${projId}/e2b-worker/reset?slotIndex=${slotIndex}`
+          : `/v1/projects/${projId}/e2b-worker/reset`;
+      const r = await proxyHttp<ProjectE2bWorkerResetResponse>(
+        gatewayBase,
+        "POST",
+        path
+      );
+      setWorkerStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              workers: r.workers,
+              rotationLog: r.rotationLog,
+            }
+          : null
+      );
+      const label = slotIndex != null ? `slot ${slotIndex}` : "全部 slot";
+      message.success(`Worker 已重建（${label}）`);
+      await loadWorkerStatus();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "重建 Worker 失败");
+    } finally {
+      setWorkerResetting(false);
+    }
+  };
+
+  const isStrict = workerStatus?.workerProfile === "strict";
+
   return (
     <Card title="Worker 执行环境" size="small">
       <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
         存于 <Typography.Text code>project_config.worker_profile_json</Typography.Text>
-        （项目 {projId}）。Worker 在 e2b 沙箱运行；strict 模式通过 Landlock per-solve 做 session 隔离。
+        （项目 {projId}）。strict = solve worker 池（无 ttyd）；relaxed = 单 worker + OVS/ttyd 交互。
       </Typography.Paragraph>
       <Alert
         type="info"
@@ -150,7 +184,11 @@ export default function WorkerProfilePage() {
       />
       <Card
         type="inner"
-        title="e2b Worker 沙箱"
+        title={
+          isStrict
+            ? `e2b Worker 池（strict · 目标 ${workerStatus?.desiredPoolSize ?? 4}）`
+            : "e2b Worker（relaxed · 单实例 + ttyd）"
+        }
         size="small"
         style={{ marginBottom: 16 }}
         extra={
@@ -163,92 +201,145 @@ export default function WorkerProfilePage() {
             >
               刷新
             </Button>
-            <Popconfirm
-              title="强制重建 Worker？"
-              description="将 kill 当前项目 warm worker 并按最新模板重新创建。"
-              okText="重建"
-              cancelText="取消"
-              onConfirm={async () => {
-                setWorkerResetting(true);
-                try {
-                  const r = await proxyHttp<ProjectE2bWorkerResetResponse>(
-                    gatewayBase,
-                    "POST",
-                    `/v1/projects/${projId}/e2b-worker/reset`
-                  );
-                  setWorkerStatus({
-                    projId: r.projId,
-                    desiredTemplate: workerStatus?.desiredTemplate ?? "claw-worker",
-                    worker: r.worker,
-                    rotationLog: r.rotationLog,
-                  });
-                  message.success(`Worker 已重建：${r.worker.sandboxId}`);
-                  await loadWorkerStatus();
-                } catch (e) {
-                  message.error(e instanceof Error ? e.message : "重建 Worker 失败");
-                } finally {
-                  setWorkerResetting(false);
-                }
-              }}
-            >
-              <Button size="small" type="primary" danger loading={workerResetting}>
-                强制重建最新 Worker
-              </Button>
-            </Popconfirm>
+            {isStrict ? (
+              <Popconfirm
+                title="强制重建全部 Worker slot？"
+                description="将 kill 当前项目全部 warm worker 并按最新模板重新创建。"
+                okText="重建全部"
+                cancelText="取消"
+                onConfirm={() => void resetWorker()}
+              >
+                <Button size="small" type="primary" danger loading={workerResetting}>
+                  强制重建全部
+                </Button>
+              </Popconfirm>
+            ) : (
+              <Popconfirm
+                title="强制重建 Worker？"
+                description="将 kill 当前项目 warm worker 并按最新模板重新创建。"
+                okText="重建"
+                cancelText="取消"
+                onConfirm={() => void resetWorker()}
+              >
+                <Button size="small" type="primary" danger loading={workerResetting}>
+                  强制重建
+                </Button>
+              </Popconfirm>
+            )}
           </Space>
         }
       >
         {workerLoading && !workerStatus ? (
           <Spin />
-        ) : workerStatus?.worker ? (
+        ) : workerStatus && workerStatus.workers.length > 0 ? (
           <>
-            <Descriptions size="small" column={1} bordered>
-              <Descriptions.Item label="sandboxId">
-                <Typography.Text copyable>{workerStatus.worker.sandboxId}</Typography.Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="workerId">
-                <Typography.Text copyable>{workerStatus.worker.workerId}</Typography.Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="模板契约">
-                {workerStatus.worker.templateContract}
-              </Descriptions.Item>
+            <Descriptions size="small" column={1} bordered style={{ marginBottom: 12 }}>
               <Descriptions.Item label="期望模板">
                 {workerStatus.desiredTemplate}
               </Descriptions.Item>
-              <Descriptions.Item label="运行状态">
-                {workerStatus.worker.running ? (
-                  <Tag color="green">running</Tag>
-                ) : (
-                  <Tag color="red">offline</Tag>
-                )}
-                {workerStatus.worker.remainingTtlSecs != null ? (
-                  <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-                    TTL {workerStatus.worker.remainingTtlSecs}s
-                  </Typography.Text>
-                ) : null}
-              </Descriptions.Item>
-              <Descriptions.Item label="e2b API">
-                <Typography.Text copyable>{workerStatus.worker.urls.e2bApiUrl}</Typography.Text>
-              </Descriptions.Item>
-              {workerStatus.worker.urls.trafficProxyBase ? (
-                <Descriptions.Item label="Traffic 代理">
-                  <Typography.Text copyable>
-                    {workerStatus.worker.urls.trafficProxyBase}
-                  </Typography.Text>
+              {isStrict ? (
+                <Descriptions.Item label="池大小">
+                  {workerStatus.workers.length} / {workerStatus.desiredPoolSize} slot
                 </Descriptions.Item>
               ) : null}
-              <Descriptions.Item label="沙箱域名">
-                <Typography.Text copyable>{workerStatus.worker.urls.sandboxDomain}</Typography.Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="ttyd Host">
-                <Typography.Text copyable>{workerStatus.worker.urls.ttydPublicHost}</Typography.Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="ttyd WS URL">
-                <Typography.Text copyable style={{ wordBreak: "break-all" }}>
-                  {workerStatus.worker.urls.ttydWsUrl}
-                </Typography.Text>
-              </Descriptions.Item>
             </Descriptions>
+            {isStrict ? (
+              <Table
+                size="small"
+                pagination={false}
+                rowKey={(row) => String(row.slotIndex)}
+                dataSource={workerStatus.workers}
+                columns={[
+                  { title: "slot", dataIndex: "slotIndex", width: 56 },
+                  {
+                    title: "sandboxId",
+                    dataIndex: "sandboxId",
+                    ellipsis: true,
+                    render: (v: string) => <Typography.Text copyable>{v}</Typography.Text>,
+                  },
+                  {
+                    title: "workerId",
+                    dataIndex: "workerId",
+                    ellipsis: true,
+                    render: (v: string) => <Typography.Text copyable>{v}</Typography.Text>,
+                  },
+                  {
+                    title: "状态",
+                    width: 100,
+                    render: (_: unknown, row: ProjectE2bWorkerInfo) =>
+                      row.running ? <Tag color="green">running</Tag> : <Tag color="red">offline</Tag>,
+                  },
+                  {
+                    title: "lease",
+                    dataIndex: "activeLeases",
+                    width: 64,
+                    render: (n?: number) => n ?? 0,
+                  },
+                  {
+                    title: "操作",
+                    width: 100,
+                    render: (_: unknown, row: ProjectE2bWorkerInfo) => (
+                      <Popconfirm
+                        title={`重建 slot ${row.slotIndex}？`}
+                        onConfirm={() => void resetWorker(row.slotIndex)}
+                        okText="重建"
+                        cancelText="取消"
+                      >
+                        <Button size="small" loading={workerResetting}>
+                          重建
+                        </Button>
+                      </Popconfirm>
+                    ),
+                  },
+                ]}
+              />
+            ) : (
+              (() => {
+                const w = workerStatus.workers[0];
+                return (
+                  <Descriptions size="small" column={1} bordered>
+                    <Descriptions.Item label="sandboxId">
+                      <Typography.Text copyable>{w.sandboxId}</Typography.Text>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="workerId">
+                      <Typography.Text copyable>{w.workerId}</Typography.Text>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="模板契约">{w.templateContract}</Descriptions.Item>
+                    <Descriptions.Item label="运行状态">
+                      {w.running ? <Tag color="green">running</Tag> : <Tag color="red">offline</Tag>}
+                      {w.remainingTtlSecs != null ? (
+                        <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+                          TTL {w.remainingTtlSecs}s
+                        </Typography.Text>
+                      ) : null}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="e2b API">
+                      <Typography.Text copyable>{w.urls.e2bApiUrl}</Typography.Text>
+                    </Descriptions.Item>
+                    {w.urls.trafficProxyBase ? (
+                      <Descriptions.Item label="Traffic 代理">
+                        <Typography.Text copyable>{w.urls.trafficProxyBase}</Typography.Text>
+                      </Descriptions.Item>
+                    ) : null}
+                    <Descriptions.Item label="沙箱域名">
+                      <Typography.Text copyable>{w.urls.sandboxDomain}</Typography.Text>
+                    </Descriptions.Item>
+                    {w.urls.ttydPublicHost ? (
+                      <Descriptions.Item label="ttyd Host">
+                        <Typography.Text copyable>{w.urls.ttydPublicHost}</Typography.Text>
+                      </Descriptions.Item>
+                    ) : null}
+                    {w.urls.ttydWsUrl ? (
+                      <Descriptions.Item label="ttyd WS URL">
+                        <Typography.Text copyable style={{ wordBreak: "break-all" }}>
+                          {w.urls.ttydWsUrl}
+                        </Typography.Text>
+                      </Descriptions.Item>
+                    ) : null}
+                  </Descriptions>
+                );
+              })()
+            )}
             {workerStatus.rotationLog.length > 0 ? (
               <Table
                 size="small"

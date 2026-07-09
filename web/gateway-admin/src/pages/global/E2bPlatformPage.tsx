@@ -3,13 +3,14 @@ import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from "antd"
 import { useCallback, useEffect, useState } from "react";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
-import type { E2bPlatformSettings, GlobalSettingsResponse } from "../../types/globalSettings";
+import type { E2bPlatformSettings, E2bWorkerSettings, GlobalSettingsResponse } from "../../types/globalSettings";
 
 /** Admin read-only e2b platform view (source: repo `.env`, restart gateway to apply). Author: kejiqing */
 export default function E2bPlatformPage() {
   const { gatewayBase } = useApp();
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<E2bPlatformSettings | null>(null);
+  const [e2bWorker, setE2bWorker] = useState<E2bWorkerSettings | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -31,6 +32,7 @@ export default function E2bPlatformPage() {
           configured: false,
         }
       );
+      setE2bWorker(r.e2bWorker ?? null);
     } finally {
       setLoading(false);
     }
@@ -98,6 +100,12 @@ export default function E2bPlatformPage() {
             </Descriptions.Item>
             <Descriptions.Item label="worker strict 模板">
               <Typography.Text code>{settings.workerStrictTemplate}</Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="Strict poolSize（PG）">
+              <Typography.Text code>{e2bWorker?.poolSize ?? 4}</Typography.Text>
+              <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+                在「核心组件」页修改
+              </Typography.Text>
             </Descriptions.Item>
             <Descriptions.Item label="worker relaxed 模板">
               <Typography.Text code>{settings.workerRelaxedTemplate}</Typography.Text>

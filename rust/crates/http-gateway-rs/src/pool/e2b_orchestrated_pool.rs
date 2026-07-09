@@ -28,6 +28,7 @@ struct E2bSlot {
     sandbox_id: String,
     session_segment: String,
     proj_id: i64,
+    worker_slot_index: u32,
 }
 
 /// Per-turn leases on shared per-project worker sandboxes. Author: kejiqing
@@ -119,7 +120,8 @@ impl PoolOps for E2bOrchestratedPool {
             .map_err(|reason| format!("session acquire blocked: {reason}"))?;
 
         let session_segment = crate::session_merge::sessions_directory_segment(&session_id);
-        let (handle, worker_id) = self.workers.acquire(proj_id).await?;
+        let (handle, worker_id, worker_slot_index) =
+            self.workers.acquire_for_solve(proj_id, &session_id).await?;
         self.nas_layout
             .ensure_session_context(proj_id, &session_segment, &worker_id)
             .await?;
@@ -136,6 +138,7 @@ impl PoolOps for E2bOrchestratedPool {
                 sandbox_id: handle.sandbox_id.clone(),
                 session_segment: session_segment.clone(),
                 proj_id,
+                worker_slot_index,
             },
         );
         self.turn_slots.lock().await.insert(turn_id, slot_index);
@@ -263,7 +266,9 @@ impl PoolOps for E2bOrchestratedPool {
             .await
             .retain(|_, idx| *idx != slot.slot_index);
         if let Some(e2b_slot) = removed {
-            self.workers.release(e2b_slot.proj_id).await;
+            self.workers
+                .release_slot(e2b_slot.proj_id, e2b_slot.worker_slot_index)
+                .await;
         }
         Ok(())
     }

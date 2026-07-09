@@ -185,13 +185,12 @@ RUN {apt}apt-get update && apt-get install -y --no-install-recommends \\
     && chmod 440 /etc/sudoers.d/claw-nfs \\
     && rm -rf /var/lib/apt/lists/*
 COPY claw.bin /usr/local/bin/claw
-COPY ttyd.bin /usr/local/bin/ttyd
-RUN chmod +x /usr/local/bin/claw /usr/local/bin/ttyd
+RUN chmod +x /usr/local/bin/claw
 {_worker_start_ready_install()}"""
 
 
 def _stage_from_worker_tag(staging: Path, worker_image: str) -> None:
-    """Pull CI worker tag and stage claw+ttyd (copy strategy / dev only)."""
+    """Pull CI worker tag and stage claw only (strict solve worker; no ttyd)."""
     rt = _container_runtime()
     platform = _template_platform()
     arch = _linux_arch_from_platform(platform)
@@ -202,7 +201,7 @@ def _stage_from_worker_tag(staging: Path, worker_image: str) -> None:
         text=True,
     ).strip()
     try:
-        for name in ("claw", "ttyd"):
+        for name in ("claw",):
             dest = staging / name
             subprocess.check_call([rt, "cp", f"{cid}:/usr/local/bin/{name}", str(dest)])
             dest.chmod(0o755)
@@ -272,23 +271,23 @@ def main() -> int:
             if not copy_dir:
                 print(
                     "error: CLAW_E2B_TEMPLATE_BUILD_STRATEGY=copy requires "
-                    "CLAW_E2B_TEMPLATE_COPY_DIR with claw+ttyd.",
+                    "CLAW_E2B_TEMPLATE_COPY_DIR with claw.",
                     file=sys.stderr,
                 )
                 return 1
             src = Path(copy_dir)
-            for name in ("claw", "ttyd"):
+            for name in ("claw",):
                 if not (src / name).is_file():
                     print(f"error: missing {src / name}", file=sys.stderr)
                     return 1
             # Upload as *.bin so e2b artifact cache keys differ from legacy claw/ttyd blobs.
-            upload_names = {"claw": "claw.bin", "ttyd": "ttyd.bin"}
-            for name in ("claw", "ttyd"):
+            upload_names = {"claw": "claw.bin"}
+            for name in ("claw",):
                 upload = upload_names[name]
                 (staging / upload).write_bytes((src / name).read_bytes())
                 (staging / upload).chmod(0o755)
             arch = _linux_arch_from_platform(_template_platform())
-            for name in ("claw", "ttyd"):
+            for name in ("claw",):
                 upload = upload_names[name]
                 probe = subprocess.check_output(["file", "-b", str(staging / upload)], text=True).strip()
                 print(f"  {name}: {probe}")
@@ -361,12 +360,11 @@ def main() -> int:
 def _verify(template: str, opts: dict[str, str]) -> int:
     from e2b import Sandbox
 
-    print(f"==> verify: create sandbox template={template!r} + check ttyd/claw")
+    print(f"==> verify: create sandbox template={template!r} + check claw (strict: no ttyd)")
     sandbox = Sandbox.create(template, timeout=900, **opts)
     try:
         print(f"sandbox_id: {sandbox.sandbox_id}")
         for cmd in (
-            "command -v ttyd",
             "command -v claw",
             "test -x /usr/local/bin/claw-worker-start",
             "test -x /usr/local/bin/claw-worker-ready",
@@ -376,6 +374,11 @@ def _verify(template: str, opts: dict[str, str]) -> int:
             print(f"$ {cmd} -> exit={r.exit_code} stdout={out!r}")
             if r.exit_code not in (0, None) and cmd.startswith("command -v"):
                 return r.exit_code or 1
+        r_ttyd = sandbox.commands.run("command -v ttyd", timeout=120)
+        print(f"$ command -v ttyd -> exit={r_ttyd.exit_code}")
+        if r_ttyd.exit_code in (0, None):
+            print("error: strict worker must not include ttyd", file=sys.stderr)
+            return 1
     finally:
         sandbox.kill()
     return 0

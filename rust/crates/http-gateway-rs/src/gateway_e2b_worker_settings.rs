@@ -2,14 +2,21 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::gateway_global_settings::get_gateway_global_settings;
+use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_global_settings};
 use crate::session_db::GatewaySessionDb;
+
+/// Default strict worker pool size per project (Admin `e2bWorker.poolSize`).
+pub const STRICT_WORKER_POOL_SIZE_DEFAULT: u32 = 4;
+/// Upper bound for Admin `e2bWorker.poolSize`.
+pub const STRICT_WORKER_POOL_SIZE_MAX: u32 = 16;
 
 /// Gateway-desired claw-worker e2b template (`settings_json.e2bWorker.templateId`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct E2bWorkerSettings {
     #[serde(rename = "templateId", default)]
     pub template_id: Option<String>,
+    #[serde(rename = "poolSize", default)]
+    pub pool_size: Option<u32>,
     #[serde(rename = "alias", default)]
     pub alias: Option<String>,
     #[serde(rename = "updatedAtMs", default)]
@@ -23,6 +30,69 @@ impl E2bWorkerSettings {
             .as_ref()
             .is_some_and(|t| !t.trim().is_empty())
     }
+}
+
+/// Admin read model for `settings_json.e2bWorker`.
+#[derive(Debug, Clone, Serialize)]
+pub struct E2bWorkerSettingsPublic {
+    #[serde(rename = "templateId", skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    #[serde(rename = "poolSize")]
+    pub pool_size: u32,
+    #[serde(rename = "updatedAtMs")]
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PutE2bWorkerSettingsInput {
+    #[serde(rename = "templateId", default)]
+    pub template_id: Option<String>,
+    #[serde(rename = "poolSize", default)]
+    pub pool_size: Option<u32>,
+}
+
+#[must_use]
+pub fn e2b_worker_settings_public(settings: &E2bWorkerSettings) -> E2bWorkerSettingsPublic {
+    E2bWorkerSettingsPublic {
+        template_id: settings
+            .template_id
+            .clone()
+            .filter(|t| !t.trim().is_empty()),
+        pool_size: clamp_strict_worker_pool_size(
+            settings
+                .pool_size
+                .unwrap_or(STRICT_WORKER_POOL_SIZE_DEFAULT),
+        ),
+        updated_at_ms: settings.updated_at_ms,
+    }
+}
+
+pub async fn put_e2b_worker_settings(
+    db: &GatewaySessionDb,
+    input: PutE2bWorkerSettingsInput,
+) -> Result<E2bWorkerSettingsPublic, String> {
+    let (mut settings, tokens, _) = get_gateway_global_settings(db)
+        .await
+        .map_err(|e| format!("load global settings: {e}"))?;
+    if let Some(tpl) = input.template_id {
+        let trimmed = tpl.trim();
+        if trimmed.is_empty() {
+            settings.e2b_worker.template_id = None;
+        } else {
+            settings.e2b_worker.template_id = Some(trimmed.to_string());
+        }
+    }
+    if let Some(n) = input.pool_size {
+        settings.e2b_worker.pool_size = Some(clamp_strict_worker_pool_size(n));
+    } else if settings.e2b_worker.pool_size.is_none() {
+        settings.e2b_worker.pool_size = Some(STRICT_WORKER_POOL_SIZE_DEFAULT);
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    settings.e2b_worker.updated_at_ms = now;
+    save_gateway_global_settings(db, &settings, &tokens, now)
+        .await
+        .map_err(|e| format!("save global settings: {e}"))?;
+    Ok(e2b_worker_settings_public(&settings.e2b_worker))
 }
 
 /// Effective strict worker template: PG `e2bWorker.templateId` → env `CLAW_E2B_TEMPLATE` → `claw-worker`.
@@ -102,8 +172,9 @@ pub fn e2b_project_worker_ttl_secs_from_env() -> u64 {
         .unwrap_or(3600)
 }
 
-/// Background reconcile tick (`CLAW_E2B_PROJECT_WORKER_RENEW_INTERVAL_SECS` or 600s).
-/// TTL touch uses [`claw_e2b_sandbox_client::SANDBOX_LEASE_TICK_SECS`] lease ticker.
+/// Background reconcile tick (`CLAW_E2B_PROJECT_WORKER_RENEW_INTERVAL_SECS` or 600s):
+/// best-effort TTL touch for persisted sandboxes (full `reconcile_proj` is startup / Admin only).
+/// Primary TTL renewal: [`claw_e2b_sandbox_client::SANDBOX_LEASE_TICK_SECS`] lease ticker.
 #[must_use]
 pub fn e2b_project_worker_renew_interval_secs_from_env(_ttl_secs: u64) -> u64 {
     parse_positive_u64_env("CLAW_E2B_PROJECT_WORKER_RENEW_INTERVAL_SECS").unwrap_or(600)
@@ -137,9 +208,35 @@ pub async fn load_e2b_worker_relaxed_template_id(
         .unwrap_or_else(e2b_worker_relaxed_template_from_env))
 }
 
+/// PG `e2bWorker.poolSize` → default 4, clamped to 1..=16.
+pub async fn load_e2b_strict_worker_pool_size(db: &GatewaySessionDb) -> Result<u32, sqlx::Error> {
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    Ok(clamp_strict_worker_pool_size(
+        settings
+            .e2b_worker
+            .pool_size
+            .unwrap_or(STRICT_WORKER_POOL_SIZE_DEFAULT),
+    ))
+}
+
+#[must_use]
+pub fn clamp_strict_worker_pool_size(n: u32) -> u32 {
+    n.clamp(1, STRICT_WORKER_POOL_SIZE_MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pool_size_clamps_to_bounds() {
+        assert_eq!(clamp_strict_worker_pool_size(0), 1);
+        assert_eq!(clamp_strict_worker_pool_size(4), 4);
+        assert_eq!(
+            clamp_strict_worker_pool_size(99),
+            STRICT_WORKER_POOL_SIZE_MAX
+        );
+    }
 
     #[test]
     fn renew_interval_defaults_to_ten_minutes() {

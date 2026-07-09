@@ -24,7 +24,7 @@ Author: kejiqing
 内部步骤：
 
 1. `linux/amd64` 交叉编译 `claw`（`CLAW_LINUX_COMPILE_PLATFORM` 由 `e2b-worker-arch.sh` 固定）
-2. stage `claw` + `ttyd` → `deploy/stack/.e2b-worker-bins/`
+2. stage `claw` → `deploy/stack/.e2b-worker-bins/`（strict 不含 ttyd；relaxed 见 `build-claw-worker-relaxed-selfhosted.py`）
 3. `Template.build(alias=claw-worker)` 上传到 `CLAW_E2B_API_URL`
 4. **写 PG** `e2bWorker.templateId` + `updatedAtMs`（与 ovs/observe/nas-api 同构）
 
@@ -49,6 +49,8 @@ Gateway 读 `load_e2b_worker_template_id()`：`PG templateId` → env `CLAW_E2B_
 ### relaxed alias（不写 PG）
 
 `build-claw-worker-relaxed-selfhosted.py` 注册 e2b alias `claw-worker-relaxed`，**跳过** `e2bWorker.templateId` 写入。relaxed/strict 选择在 gateway exec 层（`worker_profile_json.mode`），非独立 PG template 链。`build-selfhosted-templates.sh worker` 先 strict 后 relaxed，PG 保留 strict 的 templateId。
+
+**strict vs relaxed 镜像**：strict（`claw-worker`）仅含 `claw`，用于 solve 池；relaxed（`claw-worker-relaxed`）含 `claw` + `ttyd`，用于 OVS/终端交互。
 
 ## Gateway 启动 / 运行时（不用手 reset 除非急）
 
