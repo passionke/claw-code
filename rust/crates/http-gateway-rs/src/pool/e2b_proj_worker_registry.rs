@@ -1,7 +1,8 @@
 //! Per-project e2b worker registry — gateway-managed lifecycle (DB + e2b). Author: kejiqing
 //!
 //! Strict projects: N warm worker sandboxes per `proj_id` (PG `e2bWorker.poolSize`, default 4).
-//! Relaxed: 1 worker with built-in OVS. Gateway reconciles DB rows against e2b on startup/ticker.
+//! Relaxed: 1 worker with built-in OVS. Full-pool reconcile on startup / Admin poolSize change;
+//! solve acquire picks one slot from memory and reconciles only on cache miss.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -687,6 +688,10 @@ impl E2bProjWorkerRegistry {
     }
 
     /// Strict solve: least-lease among pool slots. Relaxed: slot 0 only.
+    ///
+    /// Hot path: memory `pick_least_lease_slot` → `acquire_slot` for **one** slot only.
+    /// Full-pool `reconcile_proj` runs on gateway startup / Admin poolSize change / background
+    /// ticker — not on every solve acquire. Author: kejiqing
     pub async fn acquire_for_solve(
         &self,
         proj_id: i64,
@@ -697,7 +702,6 @@ impl E2bProjWorkerRegistry {
             let (handle, worker_id) = self.acquire_slot(proj_id, 0).await?;
             return Ok((handle, worker_id, 0));
         }
-        self.reconcile_proj(proj_id).await?;
         let slot_index = self.pick_least_lease_slot(proj_id, pool_size).await?;
         let (handle, worker_id) = self.acquire_slot(proj_id, slot_index).await?;
         Ok((handle, worker_id, slot_index))
@@ -736,11 +740,23 @@ impl E2bProjWorkerRegistry {
         proj_id: i64,
         slot_index: u32,
     ) -> Result<(E2bSandboxHandle, String), String> {
-        self.reconcile_proj_slot(proj_id, slot_index).await?;
         let key = WorkerSlotKey {
             proj_id,
             slot_index,
         };
+        // Warm hit: in-memory handle + lease bump only (no e2b HTTP on acquire hot path).
+        if let Some((handle, worker_id)) = {
+            let guard = self.workers.lock().await;
+            guard
+                .get(&key)
+                .map(|rt| (rt.handle.clone(), rt.worker_id.clone()))
+        } {
+            let mut leases = self.leases.lock().await;
+            *leases.entry(key).or_insert(0) += 1;
+            return Ok((handle, worker_id));
+        }
+        // Cache miss / missing slot: reconcile this slot only (create or PG→e2b probe).
+        self.reconcile_proj_slot(proj_id, slot_index).await?;
         let guard = self.workers.lock().await;
         let rt = guard.get(&key).ok_or_else(|| {
             format!("proj worker missing after reconcile proj_{proj_id} slot {slot_index}")
@@ -748,10 +764,6 @@ impl E2bProjWorkerRegistry {
         let handle = rt.handle.clone();
         let worker_id = rt.worker_id.clone();
         drop(guard);
-        self.client
-            .renew_sandbox_ttl_secs(&handle.sandbox_id, self.worker_ttl_secs)
-            .await
-            .map_err(|e| format!("renew acquired project worker TTL: {e}"))?;
         let mut leases = self.leases.lock().await;
         *leases.entry(key).or_insert(0) += 1;
         Ok((handle, worker_id))
@@ -819,29 +831,21 @@ impl E2bProjWorkerRegistry {
             .collect()
     }
 
+    /// Best-effort TTL touch for persisted workers (`spawn_lease_ticker` is primary at 60s).
     pub fn spawn_renewal_ticker(self: Arc<Self>) {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(self.renew_interval_secs));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                let Ok(db) = self.session_db().await else {
-                    continue;
-                };
-                let proj_ids = match db.list_project_config_proj_ids().await {
-                    Ok(ids) => ids,
-                    Err(e) => {
-                        warn!(target: "claw_e2b_proj_worker", error = %e, "renewal ticker: list proj_ids failed");
-                        continue;
-                    }
-                };
-                for proj_id in proj_ids {
-                    if let Err(e) = self.reconcile_proj(proj_id).await {
+                let sandbox_ids = self.all_persisted_sandbox_ids().await;
+                for sandbox_id in sandbox_ids {
+                    if let Err(e) = self.client.touch_sandbox_lease(&sandbox_id).await {
                         warn!(
                             target: "claw_e2b_proj_worker",
-                            proj_id,
+                            sandbox_id = %sandbox_id,
                             error = %e,
-                            "renewal ticker reconcile failed"
+                            "renewal ticker TTL touch failed"
                         );
                     }
                 }

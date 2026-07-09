@@ -172,8 +172,9 @@ pub fn e2b_project_worker_ttl_secs_from_env() -> u64 {
         .unwrap_or(3600)
 }
 
-/// Background reconcile tick (`CLAW_E2B_PROJECT_WORKER_RENEW_INTERVAL_SECS` or 600s).
-/// TTL touch uses [`claw_e2b_sandbox_client::SANDBOX_LEASE_TICK_SECS`] lease ticker.
+/// Background reconcile tick (`CLAW_E2B_PROJECT_WORKER_RENEW_INTERVAL_SECS` or 600s):
+/// best-effort TTL touch for persisted sandboxes (full `reconcile_proj` is startup / Admin only).
+/// Primary TTL renewal: [`claw_e2b_sandbox_client::SANDBOX_LEASE_TICK_SECS`] lease ticker.
 #[must_use]
 pub fn e2b_project_worker_renew_interval_secs_from_env(_ttl_secs: u64) -> u64 {
     parse_positive_u64_env("CLAW_E2B_PROJECT_WORKER_RENEW_INTERVAL_SECS").unwrap_or(600)
