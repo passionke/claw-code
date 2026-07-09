@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Build e2b cloud sandbox template claw-worker-v1 (E2B SDK). Author: kejiqing
-"""Build claw-worker-v1: e2b Beijing base + claw/ttyd from local worker image."""
+"""Build claw-worker-v1: e2b Beijing base + claw from local worker image (strict; no ttyd)."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def _extract_binaries(worker_image: str, out_dir: Path) -> None:
         text=True,
     ).strip()
     try:
-        for name in ("claw", "ttyd"):
+        for name in ("claw",):
             dest = out_dir / name
             subprocess.check_call([rt, "cp", f"{cid}:/usr/local/bin/{name}", str(dest)])
             dest.chmod(0o755)
@@ -104,8 +104,7 @@ def _build_from_dockerfile(
 FROM {base}
 USER root
 COPY claw /usr/local/bin/claw
-COPY ttyd /usr/local/bin/ttyd
-RUN chmod +x /usr/local/bin/claw /usr/local/bin/ttyd
+RUN chmod +x /usr/local/bin/claw
 USER 1000
 """
     print(f"==> dockerfile build base={base!r} worker={worker_image!r} ctx={fc_dir}")
@@ -209,12 +208,11 @@ def main() -> int:
     if not verify:
         return 0
 
-    print("==> verify: create sandbox + check ttyd/claw")
+    print("==> verify: create sandbox + check claw (strict: no ttyd)")
     sandbox = Sandbox.create(template=template_name, timeout=900, **opts)
     try:
         print(f"sandbox_id: {sandbox.sandbox_id}")
         checks = (
-            "command -v ttyd",
             "command -v claw",
             "python3 -c \"print('claw-worker-v1 ok')\"",
         )
@@ -225,6 +223,11 @@ def main() -> int:
                 if r.stderr:
                     print(f"  stderr={(r.stderr or '').strip()!r}", file=sys.stderr)
                 return r.exit_code or 1
+        r_ttyd = sandbox.commands.run("command -v ttyd", timeout=120)
+        print(f"$ command -v ttyd -> exit={r_ttyd.exit_code}")
+        if r_ttyd.exit_code in (0, None):
+            print("error: strict worker must not include ttyd", file=sys.stderr)
+            return 1
     finally:
         sandbox.kill()
         print("sandbox killed")

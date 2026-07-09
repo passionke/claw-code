@@ -45,12 +45,12 @@ use http_gateway_rs::{
     admin_mcp_http, admin_mcp_solve, claw_tap_cluster_state, client_origin,
     gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_e2b_core_readiness,
     gateway_e2b_nas_settings, gateway_e2b_observe_proxy, gateway_e2b_observe_reset,
-    gateway_e2b_singleton_api, gateway_global_settings, gateway_llm_config_sync,
-    gateway_project_e2b_worker, gateway_strict_landlock_settings, gateway_translate, llm_probe,
-    mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api, project_config_apply,
-    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
-    project_id, project_tools, session_agent_api, session_db, session_merge, session_ovs_api,
-    session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
+    gateway_e2b_singleton_api, gateway_e2b_worker_settings, gateway_global_settings,
+    gateway_llm_config_sync, gateway_project_e2b_worker, gateway_strict_landlock_settings,
+    gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api,
+    project_config_apply, project_config_version, project_entity_revision, project_extra_session,
+    project_git_sync, project_id, project_tools, session_agent_api, session_db, session_merge,
+    session_ovs_api, session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -1678,6 +1678,10 @@ async fn main() {
         .route(
             "/v1/gateway/global-settings/e2b-singleton-templates",
             put(put_gateway_e2b_singleton_templates_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-worker",
+            put(put_gateway_e2b_worker_settings_handler),
         )
         .route(
             "/v1/gateway/global-settings/e2b-singletons/{component}/ensure",
@@ -5193,6 +5197,7 @@ async fn get_project_e2b_worker_handler(
         )
     })?;
     let body = gateway_project_e2b_worker::get_project_e2b_worker_status(
+        state.pool_clients.e2b_worker_registry(),
         &state.session_db,
         client,
         proj_id,
@@ -5205,6 +5210,7 @@ async fn get_project_e2b_worker_handler(
 async fn reset_project_e2b_worker_handler(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
+    Query(query): Query<ResetProjectE2bWorkerQuery>,
 ) -> Result<Json<gateway_project_e2b_worker::ProjectE2bWorkerResetResponse>, ApiError> {
     let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
         ApiError::new(
@@ -5217,9 +5223,36 @@ async fn reset_project_e2b_worker_handler(
         &state.session_db,
         client,
         proj_id,
+        query.slot_index,
     )
     .await
     .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(body))
+}
+
+#[derive(Debug, Deserialize)]
+struct ResetProjectE2bWorkerQuery {
+    #[serde(rename = "slotIndex")]
+    slot_index: Option<u32>,
+}
+
+async fn put_gateway_e2b_worker_settings_handler(
+    State(state): State<AppState>,
+    Json(req): Json<gateway_e2b_worker_settings::PutE2bWorkerSettingsInput>,
+) -> Result<Json<gateway_e2b_worker_settings::E2bWorkerSettingsPublic>, ApiError> {
+    let body = gateway_e2b_worker_settings::put_e2b_worker_settings(&state.session_db, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let pool = state.pool_clients.clone();
+    tokio::spawn(async move {
+        if let Err(e) = pool.reconcile_all_project_workers().await {
+            tracing::warn!(
+                target: "claw_e2b_proj_worker",
+                error = %e,
+                "post poolSize reconcile failed (best-effort)"
+            );
+        }
+    });
     Ok(Json(body))
 }
 

@@ -4,11 +4,15 @@ export interface ProjectE2bWorkerUrls {
   e2bApiUrl: string;
   trafficProxyBase?: string | null;
   sandboxDomain: string;
-  ttydPublicHost: string;
-  ttydWsUrl: string;
+  /** Relaxed only */
+  ttydPublicHost?: string;
+  /** Relaxed only */
+  ttydWsUrl?: string;
 }
 
 export interface ProjectE2bWorkerInfo {
+  slotIndex: number;
+  activeLeases?: number;
   sandboxId: string;
   workerId: string;
   templateContract: string;
@@ -29,14 +33,16 @@ export interface WorkerRotationEventPublic {
 
 export interface ProjectE2bWorkerStatusResponse {
   projId: number;
+  workerProfile: "strict" | "relaxed";
   desiredTemplate: string;
-  worker?: ProjectE2bWorkerInfo | null;
+  desiredPoolSize: number;
+  workers: ProjectE2bWorkerInfo[];
   rotationLog: WorkerRotationEventPublic[];
 }
 
 export interface ProjectE2bWorkerResetResponse {
   projId: number;
   ok: boolean;
-  worker: ProjectE2bWorkerInfo;
+  workers: ProjectE2bWorkerInfo[];
   rotationLog: WorkerRotationEventPublic[];
 }

@@ -5,6 +5,7 @@ import {
   Card,
   Descriptions,
   Form,
+  InputNumber,
   Popconfirm,
   Select,
   Space,
@@ -20,6 +21,7 @@ import type {
   E2bSingletonsStatusResponse,
   E2bTemplateEntry,
   E2bTemplatesListResponse,
+  E2bWorkerSettings,
   GlobalSettingsResponse,
   PutE2bSingletonTemplatesResponse,
 } from "../../types/globalSettings";
@@ -93,14 +95,20 @@ export default function E2bCoreComponentsPage() {
   const { gatewayBase } = useApp();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingWorker, setSavingWorker] = useState(false);
   const [resetting, setResetting] = useState<string | null>(null);
   const [status, setStatus] = useState<E2bSingletonsStatusResponse | null>(null);
+  const [e2bWorker, setE2bWorker] = useState<E2bWorkerSettings | null>(null);
   const [e2bTemplates, setE2bTemplates] = useState<E2bTemplateEntry[]>([]);
   const [e2bApiUrl, setE2bApiUrl] = useState("");
   const [clusterId, setClusterId] = useState("");
   const [form] = Form.useForm<{
     nasApiTemplateId: string;
     observeTemplateId: string;
+  }>();
+  const [workerForm] = Form.useForm<{
+    workerTemplateId: string;
+    poolSize: number;
   }>();
 
   const load = useCallback(async () => {
@@ -120,6 +128,7 @@ export default function E2bCoreComponentsPage() {
         ).catch(() => null),
       ]);
       setClusterId(gs.clusterId ?? "");
+      setE2bWorker(gs.e2bWorker ?? null);
       setStatus(singletons);
       const templates = templatesResp?.templates ?? [];
       if (templatesResp) {
@@ -140,12 +149,21 @@ export default function E2bCoreComponentsPage() {
           "claw-observe"
         ),
       });
+      workerForm.setFieldsValue({
+        workerTemplateId: preferredTemplateId(
+          gs.e2bWorker?.templateId,
+          gs.e2bPlatform?.workerStrictTemplate ?? "claw-worker",
+          templates,
+          "claw-worker"
+        ),
+        poolSize: gs.e2bWorker?.poolSize ?? 4,
+      });
     } catch (e) {
       message.error(`加载核心组件失败：${String(e)}`);
     } finally {
       setLoading(false);
     }
-  }, [form, gatewayBase]);
+  }, [form, workerForm, gatewayBase]);
 
   useEffect(() => {
     void load();
@@ -170,6 +188,38 @@ export default function E2bCoreComponentsPage() {
       ),
     [e2bTemplates, status]
   );
+
+  const workerTemplateOptions = useMemo(
+    () =>
+      templateSelectOptions(
+        e2bTemplates,
+        "claw-worker",
+        e2bWorker?.templateId
+      ),
+    [e2bTemplates, e2bWorker]
+  );
+
+  const saveWorkerSettings = async () => {
+    const values = await workerForm.validateFields();
+    setSavingWorker(true);
+    try {
+      const r = await proxyHttp<E2bWorkerSettings>(
+        gatewayBase,
+        "PUT",
+        "/v1/gateway/global-settings/e2b-worker",
+        {
+          templateId: values.workerTemplateId.trim(),
+          poolSize: values.poolSize,
+        }
+      );
+      setE2bWorker(r);
+      message.success("Strict Worker 池配置已保存；Gateway 将后台 reconcile");
+    } catch (e) {
+      message.error(`保存 Strict Worker 配置失败：${String(e)}`);
+    } finally {
+      setSavingWorker(false);
+    }
+  };
 
   const saveTemplates = async () => {
     const values = await form.validateFields();
@@ -309,6 +359,57 @@ export default function E2bCoreComponentsPage() {
             onClick={() => void saveTemplates()}
           >
             保存模版 ID
+          </Button>
+        </Form>
+      </Card>
+
+      <Card
+        title="Strict Worker（PG）"
+        loading={loading}
+        extra={
+          e2bWorker?.updatedAtMs ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              更新于 {formatMs(e2bWorker.updatedAtMs)}
+            </Typography.Text>
+          ) : null
+        }
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="每 strict 项目的 solve worker 池"
+          description="poolSize 变更后 Gateway 后台 reconcile；缩容需等待各 slot lease 清空。strict 镜像不含 ttyd（仅 relaxed 使用 ttyd/OVS）。"
+        />
+        <Form form={workerForm} layout="vertical">
+          <Form.Item
+            label="claw-worker templateId"
+            name="workerTemplateId"
+            rules={[{ required: true, message: "请选择 strict worker 模版" }]}
+          >
+            <Select
+              showSearch
+              placeholder="从 e2bserver 选择 claw-worker 模版"
+              optionFilterProp="label"
+              options={workerTemplateOptions}
+              notFoundContent="e2bserver 无 claw-worker 模版，请先 build"
+            />
+          </Form.Item>
+          <Form.Item
+            label="poolSize（每 strict 项目）"
+            name="poolSize"
+            rules={[{ required: true, type: "number", min: 1, max: 16 }]}
+            extra="默认 4，范围 1–16。relaxed 项目固定 1 worker。"
+          >
+            <InputNumber min={1} max={16} style={{ width: 120 }} />
+          </Form.Item>
+          <Button
+            type="primary"
+            icon={<SaveOutlined />}
+            loading={savingWorker}
+            onClick={() => void saveWorkerSettings()}
+          >
+            保存 Strict Worker 配置
           </Button>
         </Form>
       </Card>

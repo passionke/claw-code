@@ -834,13 +834,17 @@ impl E2bSandboxClient {
         Ok(killed)
     }
 
-    /// Kill every `warm-proj` sandbox for `proj_id` except `keep_sandbox_id` (empty = kill all for proj).
+    /// Kill every `warm-proj` sandbox for `proj_id` except those in `keep_sandbox_ids` (empty = kill all for proj).
     pub async fn reap_warm_proj_orphans(
         &self,
         proj_id: i64,
-        keep_sandbox_id: &str,
+        keep_sandbox_ids: &[String],
     ) -> Result<usize, String> {
-        let keep = keep_sandbox_id.trim();
+        let keep: std::collections::HashSet<&str> = keep_sandbox_ids
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
         let proj_key = proj_id.to_string();
         let mut killed = 0usize;
         for row in self.list_sandboxes().await? {
@@ -857,7 +861,7 @@ impl E2bSandboxClient {
             let Some(sid) = row.get("__sandboxId") else {
                 continue;
             };
-            if !keep.is_empty() && sid == keep {
+            if !keep.is_empty() && keep.contains(sid.as_str()) {
                 continue;
             }
             match self.kill_sandbox(sid).await {
@@ -874,10 +878,10 @@ impl E2bSandboxClient {
         Ok(killed)
     }
 
-    /// Kill stray `warm-proj` sandboxes: not the PG-registered `keep_by_proj` sandbox per proj.
+    /// Kill stray `warm-proj` sandboxes: not any PG-registered keep sandbox per proj.
     pub async fn reap_cluster_warm_proj_orphans(
         &self,
-        keep_by_proj: &HashMap<i64, String>,
+        keep_by_proj: &HashMap<i64, Vec<String>>,
     ) -> Result<usize, String> {
         let mut killed = 0usize;
         for row in self.list_sandboxes().await? {
@@ -893,7 +897,10 @@ impl E2bSandboxClient {
             let Some(sid) = row.get("__sandboxId") else {
                 continue;
             };
-            if keep_by_proj.get(&proj_id).is_some_and(|keep| keep == sid) {
+            if keep_by_proj
+                .get(&proj_id)
+                .is_some_and(|keeps| keeps.iter().any(|k| k == sid))
+            {
                 continue;
             }
             match self.kill_sandbox(sid).await {

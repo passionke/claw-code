@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dev: local linux compile → stage claw+ttyd → e2b Template.build (no CI/ACR). Author: kejiqing
+# Dev: local linux compile → stage claw → strict e2b Template.build (no ttyd). Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,7 +40,7 @@ while [[ $# -gt 0 ]]; do
       cat <<EOF
 Usage: gateway.sh e2b-worker-deploy [options]
 
-Local dev: cross-compile linux/amd64 claw + stage ttyd → e2b worker template (copy).
+Local dev: cross-compile linux/amd64 claw → strict e2b worker template (copy; no ttyd).
 Build persists settings_json.e2bWorker.templateId to PG. Gateway startup/renewal reconciles workers.
 See deploy/e2b/WORKER-BUILD.md
 
@@ -102,6 +102,10 @@ claw_ensure_e2b_python_venv() {
 }
 claw_ensure_e2b_python_venv
 
+WORKER_ARCH="$(claw_e2b_worker_linux_arch)"
+export CLAW_E2B_TEMPLATE_PLATFORM="${CLAW_E2B_TEMPLATE_PLATFORM:-$(claw_e2b_worker_linux_platform)}"
+export CLAW_LINUX_COMPILE_PLATFORM="${CLAW_LINUX_COMPILE_PLATFORM:-${CLAW_E2B_TEMPLATE_PLATFORM}}"
+
 CLAW_TIMING_LABEL="e2b-worker-deploy"
 claw_timing_init
 
@@ -127,7 +131,7 @@ else
   claw_step_begin "1/3 skip compile (reuse .linux-artifacts/release/claw)"
 fi
 
-claw_step_begin "2/3 stage claw + ttyd → ${CLAW_E2B_TEMPLATE_COPY_DIR}"
+claw_step_begin "2/3 stage claw → ${CLAW_E2B_TEMPLATE_COPY_DIR}"
 "${LIB_DIR}/stage-e2b-worker-bins.sh"
 
 claw_step_begin "3/3 e2b Template.build (copy, alias=${CLAW_E2B_TEMPLATE:-claw-worker}, platform=${CLAW_E2B_TEMPLATE_PLATFORM})"

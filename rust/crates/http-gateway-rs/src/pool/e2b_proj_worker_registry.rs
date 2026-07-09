@@ -1,10 +1,10 @@
 //! Per-project e2b worker registry — gateway-managed lifecycle (DB + e2b). Author: kejiqing
 //!
-//! One worker sandbox per `proj_id` (workspace). Relaxed projects use `claw-worker-relaxed`
-//! (built-in OVS on :3000); strict projects use PG `e2bWorker.templateId`. Gateway startup
-//! reconciles DB rows against e2b; runtime renews TTL per env; shutdown does not kill workers.
+//! Strict projects: N warm worker sandboxes per `proj_id` (PG `e2bWorker.poolSize`, default 4).
+//! Relaxed: 1 worker with built-in OVS. Gateway reconciles DB rows against e2b on startup/ticker.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,10 +14,14 @@ use tracing::{info, warn};
 
 use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
-    load_e2b_worker_relaxed_template_id, load_e2b_worker_template_id,
+    load_e2b_strict_worker_pool_size, load_e2b_worker_relaxed_template_id,
+    load_e2b_worker_template_id,
 };
 use crate::project_config_draft;
-use crate::session_db::{GatewaySessionDb, ProjectFcWorkerRow, WorkerRotationEvent};
+use crate::session_db::{
+    e2b_worker_slot_i32, e2b_worker_slot_u32, GatewaySessionDb, ProjectFcWorkerRow,
+    WorkerRotationEvent,
+};
 
 use super::config::relaxed_worker_allowed_from_env;
 use super::e2b_nas_layout::allocate_worker_id;
@@ -29,6 +33,12 @@ use super::NasLayoutBackend;
 const PROJECT_WORKER_CONTRACT_VERSION: &str = "nas-session-root-v3";
 /// e2b alias for relaxed worker; PG may store `tpl_*` for the same template.
 const RELAXED_WORKER_ALIAS: &str = "claw-worker-relaxed";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct WorkerSlotKey {
+    proj_id: i64,
+    slot_index: u32,
+}
 
 fn worker_contract_key(template_id: &str, project_home_rev: &str, profile: &str) -> String {
     format!(
@@ -72,7 +82,6 @@ fn parse_worker_contract(key: &str) -> Option<WorkerContractParts> {
     })
 }
 
-/// Whether template change alone should trigger sandbox rotation.
 fn template_rotation_needed(stored_tpl: &str, desired_tpl: &str) -> bool {
     if stored_tpl == desired_tpl {
         return false;
@@ -80,7 +89,6 @@ fn template_rotation_needed(stored_tpl: &str, desired_tpl: &str) -> bool {
     let stored_is_alias = stored_tpl == RELAXED_WORKER_ALIAS;
     let desired_is_alias = desired_tpl == RELAXED_WORKER_ALIAS;
     if stored_is_alias || desired_is_alias {
-        // Relaxed alias vs PG `tpl_*` is the same lineage — relabel contract, do not rotate.
         return false;
     }
     if stored_tpl.starts_with("tpl_") && desired_tpl.starts_with("tpl_") {
@@ -89,7 +97,6 @@ fn template_rotation_needed(stored_tpl: &str, desired_tpl: &str) -> bool {
     true
 }
 
-/// True when home/profile/version differ, or template change requires a new sandbox.
 fn contract_requires_rotation(stored: &str, desired: &str) -> bool {
     if stored == desired {
         return false;
@@ -115,7 +122,6 @@ struct WorkerSpec {
     profile_label: String,
 }
 
-/// Best-effort append to `worker_rotation_log`; audit never blocks worker lifecycle. Author: kejiqing
 async fn audit_rotation(db: &GatewaySessionDb, event: WorkerRotationEvent) {
     if let Err(e) = db.insert_worker_rotation_event(&event).await {
         warn!(
@@ -135,13 +141,15 @@ struct ProjWorkerRuntime {
     template_id: String,
 }
 
-/// In-memory cache + lease ref-count per project worker.
+/// In-memory cache + per-slot lease ref-count.
 pub struct E2bProjWorkerRegistry {
     client: Arc<E2bSandboxClient>,
     nas_layout: NasLayoutBackend,
     db: RwLock<Option<Arc<GatewaySessionDb>>>,
-    workers: Mutex<HashMap<i64, ProjWorkerRuntime>>,
-    leases: Mutex<HashMap<i64, u32>>,
+    workers: Mutex<HashMap<WorkerSlotKey, ProjWorkerRuntime>>,
+    leases: Mutex<HashMap<WorkerSlotKey, u32>>,
+    pending_retire: Mutex<HashSet<WorkerSlotKey>>,
+    acquire_tie_break: AtomicUsize,
     worker_ttl_secs: u64,
     renew_interval_secs: u64,
 }
@@ -164,6 +172,8 @@ impl E2bProjWorkerRegistry {
             db: RwLock::new(None),
             workers: Mutex::new(HashMap::new()),
             leases: Mutex::new(HashMap::new()),
+            pending_retire: Mutex::new(HashSet::new()),
+            acquire_tie_break: AtomicUsize::new(0),
             worker_ttl_secs,
             renew_interval_secs,
         }
@@ -213,6 +223,21 @@ impl E2bProjWorkerRegistry {
         }
     }
 
+    async fn desired_pool_size(&self, proj_id: i64) -> Result<u32, String> {
+        let db = self.session_db().await?;
+        let json = db
+            .get_worker_profile_json(proj_id)
+            .await
+            .unwrap_or_else(|_| default_worker_profile_json());
+        let mode = effective_mode(relaxed_worker_allowed_from_env(), &json);
+        match mode {
+            WorkerProfileMode::Relaxed => Ok(1),
+            WorkerProfileMode::Strict => load_e2b_strict_worker_pool_size(db.as_ref())
+                .await
+                .map_err(|e| format!("load e2bWorker poolSize: {e}")),
+        }
+    }
+
     async fn relaxed_ovs_http_ok(&self, handle: &E2bSandboxHandle) -> bool {
         let Some(base) = handle.ovs_base_url.as_deref().filter(|u| !u.is_empty()) else {
             return false;
@@ -242,7 +267,6 @@ impl E2bProjWorkerRegistry {
         handle
     }
 
-    /// Gateway startup: reconcile every project in DB against e2b + desired template.
     pub async fn reconcile_all_on_startup(&self) -> Result<(), String> {
         let db = self.session_db().await?;
         let proj_ids = db
@@ -269,16 +293,38 @@ impl E2bProjWorkerRegistry {
         Ok(())
     }
 
-    /// Kill stray warm-proj sandboxes not registered in PG (rotation leftovers).
+    /// Best-effort reconcile every project (e.g. after Admin poolSize change).
+    pub async fn reconcile_all_projects(&self) -> Result<(), String> {
+        let db = self.session_db().await?;
+        let proj_ids = db
+            .list_project_config_proj_ids()
+            .await
+            .map_err(|e| format!("list project_config proj_ids: {e}"))?;
+        for proj_id in proj_ids {
+            if let Err(e) = self.reconcile_proj(proj_id).await {
+                warn!(
+                    target: "claw_e2b_proj_worker",
+                    proj_id,
+                    error = %e,
+                    "reconcile proj worker failed (best-effort)"
+                );
+            }
+        }
+        Ok(())
+    }
+
     async fn reap_cluster_warm_proj_orphans_best_effort(&self) {
         let Ok(db) = self.session_db().await else {
             return;
         };
-        let mut keep_by_proj = HashMap::new();
+        let mut keep_by_proj: HashMap<i64, Vec<String>> = HashMap::new();
         if let Ok(proj_ids) = db.list_project_config_proj_ids().await {
             for proj_id in proj_ids {
-                if let Ok(Some(row)) = db.get_project_e2b_worker(proj_id).await {
-                    keep_by_proj.insert(proj_id, row.sandbox_id);
+                if let Ok(rows) = db.list_project_e2b_workers(proj_id).await {
+                    let ids: Vec<String> = rows.into_iter().map(|r| r.sandbox_id).collect();
+                    if !ids.is_empty() {
+                        keep_by_proj.insert(proj_id, ids);
+                    }
                 }
             }
         }
@@ -301,7 +347,6 @@ impl E2bProjWorkerRegistry {
         }
     }
 
-    /// Kill a rotated-out worker; log failures and reap same-proj orphans.
     async fn retire_worker_sandbox(&self, proj_id: i64, sandbox_id: &str) {
         if !self.client.sandbox_running(sandbox_id).await {
             return;
@@ -315,7 +360,13 @@ impl E2bProjWorkerRegistry {
                 "kill rotated project worker failed — reaping warm-proj orphans"
             );
         }
-        match self.client.reap_warm_proj_orphans(proj_id, "").await {
+        let keep: Vec<String> = self
+            .all_persisted_sandbox_ids()
+            .await
+            .into_iter()
+            .filter(|id| id != sandbox_id)
+            .collect();
+        match self.client.reap_warm_proj_orphans(proj_id, &keep).await {
             Ok(n) if n > 0 => info!(
                 target: "claw_e2b_proj_worker",
                 proj_id,
@@ -332,7 +383,6 @@ impl E2bProjWorkerRegistry {
         }
     }
 
-    /// Register persisted project workers for 60s TTL lease ticker.
     pub async fn seed_lease_tracking_from_db(&self) {
         let ids = self.all_persisted_sandbox_ids().await;
         if ids.is_empty() {
@@ -346,8 +396,62 @@ impl E2bProjWorkerRegistry {
         );
     }
 
-    /// Per-proj: skip if online + contract matches; rotate or create otherwise.
     pub async fn reconcile_proj(&self, proj_id: i64) -> Result<(), String> {
+        let pool_size = self.desired_pool_size(proj_id).await?;
+        for slot_index in 0..pool_size {
+            self.reconcile_proj_slot(proj_id, slot_index).await?;
+        }
+        let db = self.session_db().await?;
+        let existing = db
+            .list_project_e2b_workers(proj_id)
+            .await
+            .map_err(|e| format!("list project_e2b_workers: {e}"))?;
+        for row in existing {
+            if e2b_worker_slot_u32(row.slot_index) >= pool_size {
+                self.try_retire_slot(proj_id, e2b_worker_slot_u32(row.slot_index))
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn try_retire_slot(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
+        let key = WorkerSlotKey {
+            proj_id,
+            slot_index,
+        };
+        let active = self.active_leases(key).await;
+        if active > 0 {
+            self.pending_retire.lock().await.insert(key);
+            return Ok(());
+        }
+        self.pending_retire.lock().await.remove(&key);
+        let db = self.session_db().await?;
+        let row = db
+            .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
+            .await
+            .map_err(|e| format!("get project_e2b_worker slot: {e}"))?;
+        let Some(existing) = row else {
+            self.workers.lock().await.remove(&key);
+            return Ok(());
+        };
+        info!(
+            target: "claw_e2b_proj_worker",
+            proj_id,
+            slot_index,
+            sandbox_id = %existing.sandbox_id,
+            "retire worker slot (pool shrink)"
+        );
+        self.retire_worker_sandbox(proj_id, &existing.sandbox_id)
+            .await;
+        db.delete_project_e2b_worker_slot(proj_id, e2b_worker_slot_i32(slot_index))
+            .await
+            .map_err(|e| format!("delete project_e2b_worker slot: {e}"))?;
+        self.workers.lock().await.remove(&key);
+        Ok(())
+    }
+
+    async fn reconcile_proj_slot(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
         let spec = self.desired_worker_spec(proj_id).await?;
         let db = self.session_db().await?;
         let desired_contract = desired_worker_contract(
@@ -358,9 +462,14 @@ impl E2bProjWorkerRegistry {
         )
         .await?;
         let row = db
-            .get_project_e2b_worker(proj_id)
+            .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
             .await
             .map_err(|e| format!("get project_e2b_worker: {e}"))?;
+
+        let key = WorkerSlotKey {
+            proj_id,
+            slot_index,
+        };
 
         if let Some(ref existing) = row {
             let contract_ok = existing.template_id == desired_contract
@@ -379,23 +488,15 @@ impl E2bProjWorkerRegistry {
                             format!("upsert project_e2b_worker contract relabel: {e}")
                         })?;
                         self.cache_worker(
-                            proj_id,
+                            key,
                             handle,
                             updated.worker_id.clone(),
                             desired_contract.clone(),
                         )
                         .await;
-                        info!(
-                            target: "claw_e2b_proj_worker",
-                            proj_id,
-                            sandbox_id = %existing.sandbox_id,
-                            old_contract = %existing.template_id,
-                            new_contract = %desired_contract,
-                            "proj worker contract relabeled (no sandbox rotation)"
-                        );
                     } else {
                         self.cache_worker(
-                            proj_id,
+                            key,
                             handle,
                             existing.worker_id.clone(),
                             existing.template_id.clone(),
@@ -406,20 +507,12 @@ impl E2bProjWorkerRegistry {
                         .renew_sandbox_ttl_secs(&existing.sandbox_id, self.worker_ttl_secs)
                         .await
                         .map_err(|e| format!("renew existing project worker TTL: {e}"))?;
-                    info!(
-                        target: "claw_e2b_proj_worker",
-                        proj_id,
-                        sandbox_id = %existing.sandbox_id,
-                        ttl_secs = self.worker_ttl_secs,
-                        contract = %desired_contract,
-                        profile = %spec.profile_label,
-                        "proj worker online — skip create"
-                    );
                     return Ok(());
                 }
                 warn!(
                     target: "claw_e2b_proj_worker",
                     proj_id,
+                    slot_index,
                     sandbox_id = %existing.sandbox_id,
                     "relaxed worker OVS unhealthy — rotate"
                 );
@@ -427,11 +520,14 @@ impl E2bProjWorkerRegistry {
                 info!(
                     target: "claw_e2b_proj_worker",
                     proj_id,
+                    slot_index,
                     old_sandbox = %existing.sandbox_id,
-                    old_template = %existing.template_id,
-                    new_template = %desired_contract,
                     "proj worker rotate (contract mismatch or offline)"
                 );
+            }
+            if self.active_leases(key).await > 0 {
+                self.pending_retire.lock().await.insert(key);
+                return Ok(());
             }
             self.retire_worker_sandbox(proj_id, &existing.sandbox_id)
                 .await;
@@ -448,39 +544,37 @@ impl E2bProjWorkerRegistry {
                 },
             )
             .await;
-            db.delete_project_e2b_worker(proj_id)
+            db.delete_project_e2b_worker_slot(proj_id, e2b_worker_slot_i32(slot_index))
                 .await
                 .map_err(|e| format!("delete project_e2b_worker: {e}"))?;
-            self.workers.lock().await.remove(&proj_id);
+            self.workers.lock().await.remove(&key);
         }
 
-        self.create_and_persist(proj_id, &spec).await?;
-        if let Ok(Some(row)) = db.get_project_e2b_worker(proj_id).await {
-            match self
-                .client
-                .reap_warm_proj_orphans(proj_id, &row.sandbox_id)
+        self.create_and_persist_slot(proj_id, slot_index, &spec)
+            .await?;
+        if let Ok(Some(row)) = db
+            .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
+            .await
+        {
+            let keep: Vec<String> = db
+                .list_project_e2b_workers(proj_id)
                 .await
-            {
-                Ok(n) if n > 0 => info!(
-                    target: "claw_e2b_proj_worker",
-                    proj_id,
-                    keep = %row.sandbox_id,
-                    reaped = n,
-                    "reaped warm-proj orphans after create"
-                ),
-                Ok(_) => {}
-                Err(e) => warn!(
-                    target: "claw_e2b_proj_worker",
-                    proj_id,
-                    error = %e,
-                    "reap warm-proj orphans after create failed"
-                ),
-            }
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| r.sandbox_id)
+                .collect();
+            let _ = self.client.reap_warm_proj_orphans(proj_id, &keep).await;
+            let _ = row;
         }
         Ok(())
     }
 
-    async fn create_and_persist(&self, proj_id: i64, spec: &WorkerSpec) -> Result<(), String> {
+    async fn create_and_persist_slot(
+        &self,
+        proj_id: i64,
+        slot_index: u32,
+        spec: &WorkerSpec,
+    ) -> Result<(), String> {
         let db = self.session_db().await?;
         let contract_key = desired_worker_contract(
             db.as_ref(),
@@ -504,40 +598,21 @@ impl E2bProjWorkerRegistry {
             )
             .await?;
         if spec.include_ovs && !self.relaxed_ovs_http_ok(&handle).await {
-            if let Err(kill_err) = self.client.kill_sandbox(&handle.sandbox_id).await {
-                warn!(
-                    target: "claw_e2b_proj_worker",
-                    proj_id,
-                    sandbox_id = %handle.sandbox_id,
-                    error = %kill_err,
-                    "kill failed after OVS health check on new worker"
-                );
-            }
+            let _ = self.client.kill_sandbox(&handle.sandbox_id).await;
             return Err(format!(
                 "relaxed worker sandbox {} created but built-in OVS :3000/ovs not reachable",
                 handle.sandbox_id
             ));
         }
-        if let Err(e) = self
-            .client
+        self.client
             .renew_sandbox_ttl_secs(&handle.sandbox_id, self.worker_ttl_secs)
             .await
-        {
-            if let Err(kill_err) = self.client.kill_sandbox(&handle.sandbox_id).await {
-                warn!(
-                    target: "claw_e2b_proj_worker",
-                    proj_id,
-                    sandbox_id = %handle.sandbox_id,
-                    error = %kill_err,
-                    "kill failed after TTL renew error on new worker"
-                );
-            }
-            return Err(format!("renew new project worker TTL: {e}"));
-        }
+            .map_err(|e| format!("renew new project worker TTL: {e}"))?;
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let row = ProjectFcWorkerRow {
             proj_id,
+            slot_index: e2b_worker_slot_i32(slot_index),
             sandbox_id: handle.sandbox_id.clone(),
             worker_id: worker_id.clone(),
             template_id: contract_key.clone(),
@@ -561,32 +636,34 @@ impl E2bProjWorkerRegistry {
         )
         .await;
 
-        self.cache_worker(proj_id, handle.clone(), worker_id, contract_key.clone())
+        let key = WorkerSlotKey {
+            proj_id,
+            slot_index,
+        };
+        self.cache_worker(key, handle.clone(), worker_id, contract_key.clone())
             .await;
         info!(
             target: "claw_e2b_proj_worker",
             proj_id,
+            slot_index,
             sandbox_id = %handle.sandbox_id,
-            template_id = %spec.e2b_template_id,
             contract = %contract_key,
             profile = %spec.profile_label,
-            builtin_ovs = spec.include_ovs,
-            ttl_secs = self.worker_ttl_secs,
-            "proj worker created and persisted"
+            "proj worker slot created and persisted"
         );
         Ok(())
     }
 
     async fn cache_worker(
         &self,
-        proj_id: i64,
+        key: WorkerSlotKey,
         handle: E2bSandboxHandle,
         worker_id: String,
         template_id: String,
     ) {
         self.client.register_tracked_sandbox(&handle.sandbox_id);
         self.workers.lock().await.insert(
-            proj_id,
+            key,
             ProjWorkerRuntime {
                 handle,
                 worker_id,
@@ -595,37 +672,125 @@ impl E2bProjWorkerRegistry {
         );
     }
 
-    /// Ensure proj worker exists (reconcile on demand) and return handle + worker_id.
+    /// Ensure slot-0 worker (relaxed OVS / legacy callers).
     pub async fn ensure_worker(&self, proj_id: i64) -> Result<(E2bSandboxHandle, String), String> {
-        self.reconcile_proj(proj_id).await?;
+        self.reconcile_proj_slot(proj_id, 0).await?;
+        let key = WorkerSlotKey {
+            proj_id,
+            slot_index: 0,
+        };
         let guard = self.workers.lock().await;
         let rt = guard
-            .get(&proj_id)
-            .ok_or_else(|| format!("proj worker missing after reconcile proj_{proj_id}"))?;
+            .get(&key)
+            .ok_or_else(|| format!("proj worker missing after reconcile proj_{proj_id} slot 0"))?;
         Ok((rt.handle.clone(), rt.worker_id.clone()))
     }
 
-    /// Lease proj worker for a turn or interactive session (ref-count).
+    /// Strict solve: least-lease among pool slots. Relaxed: slot 0 only.
+    pub async fn acquire_for_solve(
+        &self,
+        proj_id: i64,
+        _session_id: &str,
+    ) -> Result<(E2bSandboxHandle, String, u32), String> {
+        let pool_size = self.desired_pool_size(proj_id).await?;
+        if pool_size == 1 {
+            let (handle, worker_id) = self.acquire_slot(proj_id, 0).await?;
+            return Ok((handle, worker_id, 0));
+        }
+        self.reconcile_proj(proj_id).await?;
+        let slot_index = self.pick_least_lease_slot(proj_id, pool_size).await?;
+        let (handle, worker_id) = self.acquire_slot(proj_id, slot_index).await?;
+        Ok((handle, worker_id, slot_index))
+    }
+
+    async fn pick_least_lease_slot(&self, proj_id: i64, pool_size: u32) -> Result<u32, String> {
+        let workers = self.workers.lock().await;
+        let leases = self.leases.lock().await;
+        let present: Vec<u32> = workers
+            .keys()
+            .filter(|k| k.proj_id == proj_id)
+            .map(|k| k.slot_index)
+            .collect();
+        let lease_by_slot: HashMap<u32, u32> = leases
+            .iter()
+            .filter(|(k, _)| k.proj_id == proj_id)
+            .map(|(k, &n)| (k.slot_index, n))
+            .collect();
+        let tie = self.acquire_tie_break.fetch_add(1, Ordering::Relaxed);
+        Ok(select_least_lease_slot(
+            pool_size,
+            &present,
+            &lease_by_slot,
+            tie as u32,
+        ))
+    }
+
+    /// Relaxed interactive: slot 0 only.
     pub async fn acquire(&self, proj_id: i64) -> Result<(E2bSandboxHandle, String), String> {
-        let (handle, worker_id) = self.ensure_worker(proj_id).await?;
+        let (handle, worker_id, _) = self.acquire_for_solve(proj_id, "").await?;
+        Ok((handle, worker_id))
+    }
+
+    async fn acquire_slot(
+        &self,
+        proj_id: i64,
+        slot_index: u32,
+    ) -> Result<(E2bSandboxHandle, String), String> {
+        self.reconcile_proj_slot(proj_id, slot_index).await?;
+        let key = WorkerSlotKey {
+            proj_id,
+            slot_index,
+        };
+        let guard = self.workers.lock().await;
+        let rt = guard.get(&key).ok_or_else(|| {
+            format!("proj worker missing after reconcile proj_{proj_id} slot {slot_index}")
+        })?;
+        let handle = rt.handle.clone();
+        let worker_id = rt.worker_id.clone();
+        drop(guard);
         self.client
             .renew_sandbox_ttl_secs(&handle.sandbox_id, self.worker_ttl_secs)
             .await
             .map_err(|e| format!("renew acquired project worker TTL: {e}"))?;
         let mut leases = self.leases.lock().await;
-        *leases.entry(proj_id).or_insert(0) += 1;
+        *leases.entry(key).or_insert(0) += 1;
         Ok((handle, worker_id))
     }
 
-    /// Release lease — worker stays alive (no kill).
-    pub async fn release(&self, proj_id: i64) {
+    pub async fn release_slot(&self, proj_id: i64, slot_index: u32) {
+        let key = WorkerSlotKey {
+            proj_id,
+            slot_index,
+        };
         let mut leases = self.leases.lock().await;
-        if let Some(n) = leases.get_mut(&proj_id) {
+        if let Some(n) = leases.get_mut(&key) {
             *n = n.saturating_sub(1);
             if *n == 0 {
-                leases.remove(&proj_id);
+                leases.remove(&key);
             }
         }
+        drop(leases);
+        if self.pending_retire.lock().await.contains(&key) && self.active_leases(key).await == 0 {
+            let _ = self.try_retire_slot(proj_id, slot_index).await;
+        }
+    }
+
+    /// Release slot 0 (relaxed interactive).
+    pub async fn release(&self, proj_id: i64) {
+        self.release_slot(proj_id, 0).await;
+    }
+
+    async fn active_leases(&self, key: WorkerSlotKey) -> u32 {
+        self.leases.lock().await.get(&key).copied().unwrap_or(0)
+    }
+
+    #[must_use]
+    pub async fn active_leases_for_slot(&self, proj_id: i64, slot_index: u32) -> u32 {
+        self.active_leases(WorkerSlotKey {
+            proj_id,
+            slot_index,
+        })
+        .await
     }
 
     #[must_use]
@@ -633,7 +798,10 @@ impl E2bProjWorkerRegistry {
         self.workers
             .lock()
             .await
-            .get(&proj_id)
+            .get(&WorkerSlotKey {
+                proj_id,
+                slot_index: 0,
+            })
             .map(|rt| rt.handle.clone())
     }
 
@@ -651,7 +819,6 @@ impl E2bProjWorkerRegistry {
             .collect()
     }
 
-    /// Background reconcile health check (TTL touch is [`SANDBOX_LEASE_TICK_SECS`] lease ticker).
     pub fn spawn_renewal_ticker(self: Arc<Self>) {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(self.renew_interval_secs));
@@ -682,20 +849,45 @@ impl E2bProjWorkerRegistry {
         });
     }
 
-    /// Force kill + recreate project worker on latest template (admin reset). Author: kejiqing
-    pub async fn force_rotate_proj(&self, proj_id: i64) -> Result<(), String> {
+    pub async fn force_rotate_proj(
+        &self,
+        proj_id: i64,
+        slot_index: Option<u32>,
+    ) -> Result<(), String> {
+        let pool_size = self.desired_pool_size(proj_id).await?;
+        let slots: Vec<u32> = match slot_index {
+            Some(s) => vec![s],
+            None => (0..pool_size).collect(),
+        };
+        for slot in slots {
+            self.force_rotate_slot(proj_id, slot).await?;
+        }
+        Ok(())
+    }
+
+    async fn force_rotate_slot(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
         let db = self.session_db().await?;
         let spec = self.desired_worker_spec(proj_id).await?;
         let row = db
-            .get_project_e2b_worker(proj_id)
+            .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
             .await
             .map_err(|e| format!("get project_e2b_worker: {e}"))?;
+        let key = WorkerSlotKey {
+            proj_id,
+            slot_index,
+        };
         if let Some(ref existing) = row {
+            if self.active_leases(key).await > 0 {
+                return Err(format!(
+                    "proj_{proj_id} slot {slot_index} has active leases; wait for turns to finish"
+                ));
+            }
             info!(
                 target: "claw_e2b_proj_worker",
                 proj_id,
+                slot_index,
                 sandbox_id = %existing.sandbox_id,
-                "admin force rotate project worker"
+                "admin force rotate project worker slot"
             );
             self.retire_worker_sandbox(proj_id, &existing.sandbox_id)
                 .await;
@@ -712,29 +904,23 @@ impl E2bProjWorkerRegistry {
                 },
             )
             .await;
-            db.delete_project_e2b_worker(proj_id)
+            db.delete_project_e2b_worker_slot(proj_id, e2b_worker_slot_i32(slot_index))
                 .await
                 .map_err(|e| format!("delete project_e2b_worker: {e}"))?;
-            self.workers.lock().await.remove(&proj_id);
+            self.workers.lock().await.remove(&key);
         }
-        self.create_and_persist(proj_id, &spec).await?;
-        if let Ok(Some(row)) = db.get_project_e2b_worker(proj_id).await {
-            let _ = self
-                .client
-                .reap_warm_proj_orphans(proj_id, &row.sandbox_id)
-                .await;
-        }
+        self.create_and_persist_slot(proj_id, slot_index, &spec)
+            .await?;
         Ok(())
     }
 
-    /// Gateway shutdown: workers survive (no kill).
     pub async fn shutdown_all(&self) {
         self.workers.lock().await.clear();
         self.leases.lock().await.clear();
+        self.pending_retire.lock().await.clear();
         info!(target: "claw_e2b_proj_worker", "shutdown_all (workers left running on e2b)");
     }
 
-    /// NAS `home/.vscode/settings.json` for OVS (`claw.projId`, `claw.clusterId`, …).
     pub async fn write_ovs_vscode_settings(
         &self,
         proj_id: i64,
@@ -745,6 +931,30 @@ impl E2bProjWorkerRegistry {
             .write_proj_claw_vscode_settings(cluster_id, proj_id, Some(worker_profile))
             .await
     }
+}
+
+/// Pure least-lease slot picker (missing slot first, else min lease + tie-break).
+fn select_least_lease_slot(
+    pool_size: u32,
+    present_slots: &[u32],
+    lease_by_slot: &HashMap<u32, u32>,
+    tie_break: u32,
+) -> u32 {
+    for slot_index in 0..pool_size {
+        if !present_slots.contains(&slot_index) {
+            return slot_index;
+        }
+    }
+    let mut best_slot = 0u32;
+    let mut best_count = u32::MAX;
+    for slot_index in 0..pool_size {
+        let count = *lease_by_slot.get(&slot_index).unwrap_or(&0);
+        if count < best_count {
+            best_count = count;
+            best_slot = slot_index;
+        }
+    }
+    (best_slot + (tie_break % pool_size)) % pool_size
 }
 
 #[cfg(test)]
@@ -779,5 +989,27 @@ mod tests {
         let a = worker_contract_key("tpl_aaaa", "rev-1", "strict");
         let b = worker_contract_key("tpl_aaaa", "rev-2", "strict");
         assert!(contract_requires_rotation(&a, &b));
+    }
+
+    #[test]
+    fn least_lease_prefers_missing_slot() {
+        let present = vec![0, 1, 3];
+        let leases = HashMap::from([(0, 1), (1, 0), (3, 0)]);
+        assert_eq!(select_least_lease_slot(4, &present, &leases, 0), 2);
+    }
+
+    #[test]
+    fn least_lease_picks_lowest_lease_count() {
+        let present = vec![0, 1, 2, 3];
+        let leases = HashMap::from([(0, 2), (1, 0), (2, 1), (3, 3)]);
+        assert_eq!(select_least_lease_slot(4, &present, &leases, 0), 1);
+    }
+
+    #[test]
+    fn least_lease_tie_break_is_deterministic() {
+        let present = vec![0, 1];
+        let leases = HashMap::from([(0, 0), (1, 0)]);
+        assert_eq!(select_least_lease_slot(2, &present, &leases, 0), 0);
+        assert_eq!(select_least_lease_slot(2, &present, &leases, 1), 1);
     }
 }

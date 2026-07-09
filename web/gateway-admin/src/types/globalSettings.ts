@@ -182,6 +182,18 @@ export interface E2bTemplatesListResponse {
   templates: E2bTemplateEntry[];
 }
 
+export interface E2bWorkerSettings {
+  templateId?: string;
+  /** Strict solve worker pool size per project (PG). Default 4, range 1–16. */
+  poolSize?: number;
+  updatedAtMs?: number;
+}
+
+export interface PutE2bWorkerSettingsInput {
+  templateId?: string;
+  poolSize?: number;
+}
+
 export interface GlobalSettingsResponse {
   updatedAtMs: number;
   gitPats: GitPatRow[];
@@ -197,6 +209,7 @@ export interface GlobalSettingsResponse {
   e2bNasApi?: E2bNasApiSettings;
   e2bOvs?: E2bOvsSettings;
   e2bObserve?: E2bObserveTemplateSettings;
+  e2bWorker?: E2bWorkerSettings;
   adminMcpTokens?: AdminMcpTokenRow[];
   /** Derived from gateway PG URL; read-only. */
   clusterId?: string;

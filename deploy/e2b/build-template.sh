@@ -16,7 +16,7 @@ usage() {
 Usage: $0 [worker-image|fc-layered|template]
 
   worker-image  Build claw-gateway-worker (default CI image) locally
-  fc-layered    Build e2b code-interpreter base + claw/ttyd (needs binaries in deploy/e2b/)
+  fc-layered    Build e2b code-interpreter base + claw only (needs claw in deploy/e2b/)
   template      Run E2B Template.build (see build-claw-worker-template.sh)
 
 Env: CLAW_E2B_WORKER_IMAGE, CLAW_E2B_LAYERED_IMAGE, CLAW_E2B_TEMPLATE, CLAW_E2B_TEMPLATE_DEST_* (see README.md)
@@ -30,14 +30,13 @@ case "${cmd}" in
     podman build -f "${CONTAINERFILE}" -t "${WORKER_IMAGE}" .
     ;;
   fc-layered)
-    if [[ ! -f "${FC_DIR}/claw" || ! -f "${FC_DIR}/ttyd" ]]; then
-      echo "==> extract claw/ttyd from ${WORKER_IMAGE}"
+    if [[ ! -f "${FC_DIR}/claw" ]]; then
+      echo "==> extract claw from ${WORKER_IMAGE}"
       podman pull "${WORKER_IMAGE}" 2>/dev/null || true
       cid="$(podman create "${WORKER_IMAGE}")"
       podman cp "${cid}:/usr/local/bin/claw" "${FC_DIR}/claw"
-      podman cp "${cid}:/usr/local/bin/ttyd" "${FC_DIR}/ttyd"
       podman rm -f "${cid}" >/dev/null
-      chmod +x "${FC_DIR}/claw" "${FC_DIR}/ttyd"
+      chmod +x "${FC_DIR}/claw"
     fi
     echo "==> build e2b layered image ${FC_LAYERED_IMAGE}"
     podman build -f "${FC_CONTAINERFILE}" -t "${FC_LAYERED_IMAGE}" "${FC_DIR}"

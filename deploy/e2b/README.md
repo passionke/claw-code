@@ -48,7 +48,7 @@ Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径*
 | 步骤 | 说明 |
 |------|------|
 | 交叉编译 | `linux/amd64` → `deploy/stack/.linux-artifacts/release/claw` |
-| stage | `claw` + `ttyd` → `deploy/stack/.e2b-worker-bins/` |
+| stage | strict：`claw` only → `deploy/stack/.e2b-worker-bins/`；relaxed：`claw` + `ttyd` |
 | e2b SDK | `Template.build` → 写 PG `e2bWorker.templateId` |
 | gateway | 启动 reconcile + renewal ticker 自动轮换 proj worker |
 

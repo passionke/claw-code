@@ -286,6 +286,11 @@ impl PoolClients {
         self.e2b_workers.reconcile_all_on_startup().await
     }
 
+    /// Reconcile all strict project worker pools (e.g. after Admin poolSize change).
+    pub async fn reconcile_all_project_workers(&self) -> Result<(), String> {
+        self.e2b_workers.reconcile_all_projects().await
+    }
+
     /// Startup gate: nas-api + observe must be online before gateway serves traffic.
     pub async fn ensure_e2b_singletons_on_startup_strict(
         &self,

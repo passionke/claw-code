@@ -127,11 +127,24 @@ pub struct ProjectConfigRow {
 #[derive(Debug, Clone)]
 pub struct ProjectFcWorkerRow {
     pub proj_id: i64,
+    pub slot_index: i32,
     pub sandbox_id: String,
     pub worker_id: String,
     pub template_id: String,
     pub handle_json: Value,
     pub updated_at_ms: i64,
+}
+
+/// PG `slot_index` (non-negative) → registry `u32`.
+#[inline]
+pub fn e2b_worker_slot_u32(slot: i32) -> u32 {
+    u32::try_from(slot).unwrap_or(0)
+}
+
+/// Registry `slot_index` → PG `i32` (pool size ≤ 16).
+#[inline]
+pub fn e2b_worker_slot_i32(slot: u32) -> i32 {
+    i32::try_from(slot).expect("e2b worker slot_index fits i32")
 }
 
 /// One append-only worker rotation audit event (`worker_rotation_log`). Author: kejiqing
@@ -351,6 +364,18 @@ fn gateway_skip_db_migrate_from_env() -> bool {
             .map(str::trim),
         Some("1" | "true" | "yes" | "TRUE" | "YES")
     )
+}
+
+fn row_to_project_fc_worker(row: &sqlx::postgres::PgRow) -> Result<ProjectFcWorkerRow, SqlxError> {
+    Ok(ProjectFcWorkerRow {
+        proj_id: row.try_get("proj_id")?,
+        slot_index: row.try_get("slot_index").unwrap_or(0),
+        sandbox_id: row.try_get("sandbox_id")?,
+        worker_id: row.try_get("worker_id")?,
+        template_id: row.try_get("template_id")?,
+        handle_json: row.try_get::<Json<Value>, _>("handle_json")?.0,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
 }
 
 impl GatewaySessionDb {
@@ -1023,6 +1048,12 @@ impl GatewaySessionDb {
         Self::migrate_cluster_id_phase2(pool).await?;
         Self::run_sql_migration_file(pool, include_str!("../migrations/010_preflight_plugin.sql"))
             .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/012_project_e2b_worker_pool.sql"),
+        )
+        .await?;
+        Self::migrate_project_e2b_worker_pool_slot(pool).await?;
 
         Ok(())
     }
@@ -1350,6 +1381,59 @@ impl GatewaySessionDb {
         sqlx::query(
             "ALTER INDEX IF EXISTS idx_project_fc_worker_sandbox_id \
              RENAME TO idx_project_e2b_worker_sandbox_id",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// `project_e2b_worker` PK → `(cluster_id, proj_id, slot_index)` for strict worker pool. Author: kejiqing
+    async fn migrate_project_e2b_worker_pool_slot(pool: &PgPool) -> Result<(), SqlxError> {
+        let table_exists: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.project_e2b_worker') IS NOT NULL")
+                .fetch_one(pool)
+                .await?;
+        if !table_exists {
+            return Ok(());
+        }
+        let has_slot: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'project_e2b_worker'
+                  AND column_name = 'slot_index'
+            )",
+        )
+        .fetch_one(pool)
+        .await?;
+        if !has_slot {
+            sqlx::query(
+                "ALTER TABLE project_e2b_worker ADD COLUMN slot_index INT NOT NULL DEFAULT 0",
+            )
+            .execute(pool)
+            .await?;
+        }
+        let pk_has_slot: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'public.project_e2b_worker'::regclass
+                  AND contype = 'p'
+                  AND pg_get_constraintdef(oid) LIKE '%slot_index%'
+            )",
+        )
+        .fetch_one(pool)
+        .await?;
+        if pk_has_slot {
+            return Ok(());
+        }
+        for drop_name in ["project_e2b_worker_pkey", "project_fc_worker_pkey"] {
+            sqlx::query(&format!(
+                "ALTER TABLE project_e2b_worker DROP CONSTRAINT IF EXISTS {drop_name}"
+            ))
+            .execute(pool)
+            .await?;
+        }
+        sqlx::query(
+            "ALTER TABLE project_e2b_worker ADD PRIMARY KEY (cluster_id, proj_id, slot_index)",
         )
         .execute(pool)
         .await?;
@@ -2258,30 +2342,51 @@ impl GatewaySessionDb {
             .unwrap_or_else(crate::pool::default_worker_profile_json))
     }
 
-    /// Persisted e2b worker sandbox for a project (gateway-managed lifecycle). Author: kejiqing
+    /// Persisted e2b worker sandbox for a project slot (gateway-managed lifecycle). Author: kejiqing
     pub async fn get_project_e2b_worker(
         &self,
         proj_id: i64,
+        slot_index: i32,
     ) -> Result<Option<ProjectFcWorkerRow>, SqlxError> {
         let row = sqlx::query(
-            r"SELECT proj_id, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
-               FROM project_e2b_worker WHERE cluster_id = $1 AND proj_id = $2",
+            r"SELECT proj_id, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
+               FROM project_e2b_worker
+               WHERE cluster_id = $1 AND proj_id = $2 AND slot_index = $3",
         )
         .bind(self.cluster_id())
         .bind(proj_id)
+        .bind(slot_index)
         .fetch_optional(&self.pool)
         .await?;
         let Some(row) = row else {
             return Ok(None);
         };
-        Ok(Some(ProjectFcWorkerRow {
-            proj_id: row.try_get("proj_id")?,
-            sandbox_id: row.try_get("sandbox_id")?,
-            worker_id: row.try_get("worker_id")?,
-            template_id: row.try_get("template_id")?,
-            handle_json: row.try_get::<Json<Value>, _>("handle_json")?.0,
-            updated_at_ms: row.try_get("updated_at_ms")?,
-        }))
+        Ok(Some(row_to_project_fc_worker(&row)?))
+    }
+
+    /// First slot (legacy callers).
+    pub async fn get_project_e2b_worker_slot0(
+        &self,
+        proj_id: i64,
+    ) -> Result<Option<ProjectFcWorkerRow>, SqlxError> {
+        self.get_project_e2b_worker(proj_id, 0).await
+    }
+
+    pub async fn list_project_e2b_workers(
+        &self,
+        proj_id: i64,
+    ) -> Result<Vec<ProjectFcWorkerRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT proj_id, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
+               FROM project_e2b_worker
+               WHERE cluster_id = $1 AND proj_id = $2
+               ORDER BY slot_index ASC",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_project_fc_worker).collect()
     }
 
     pub async fn upsert_project_e2b_worker(
@@ -2290,9 +2395,9 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO project_e2b_worker (
-                 proj_id, cluster_id, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-               ON CONFLICT (cluster_id, proj_id) DO UPDATE SET
+                 proj_id, cluster_id, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (cluster_id, proj_id, slot_index) DO UPDATE SET
                  sandbox_id = EXCLUDED.sandbox_id,
                  worker_id = EXCLUDED.worker_id,
                  template_id = EXCLUDED.template_id,
@@ -2301,6 +2406,7 @@ impl GatewaySessionDb {
         )
         .bind(row.proj_id)
         .bind(self.cluster_id())
+        .bind(row.slot_index)
         .bind(&row.sandbox_id)
         .bind(&row.worker_id)
         .bind(&row.template_id)
@@ -2311,6 +2417,39 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    pub async fn delete_project_e2b_worker_slot(
+        &self,
+        proj_id: i64,
+        slot_index: i32,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "DELETE FROM project_e2b_worker WHERE cluster_id = $1 AND proj_id = $2 AND slot_index = $3",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .bind(slot_index)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_project_e2b_workers_above_slot(
+        &self,
+        proj_id: i64,
+        max_slot_exclusive: i32,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "DELETE FROM project_e2b_worker WHERE cluster_id = $1 AND proj_id = $2 AND slot_index >= $3",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .bind(max_slot_exclusive)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete all slots for a project.
     pub async fn delete_project_e2b_worker(&self, proj_id: i64) -> Result<(), SqlxError> {
         sqlx::query("DELETE FROM project_e2b_worker WHERE cluster_id = $1 AND proj_id = $2")
             .bind(self.cluster_id())
