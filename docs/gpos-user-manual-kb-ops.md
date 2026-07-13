@@ -2,18 +2,27 @@
 
 Author: kejiqing
 
-面向预发 / 生产的**可执行**运维说明：双语静态 KB、三路意图（闲聊 / 产品手册 / 经营分析）、Admin 同构配置发布、NAS 同步与验收回滚。
+面向预发 / 生产的**可执行**运维说明：双语静态 KB、三路意图（闲聊 / 产品手册 / 经营问数）、Admin 同构配置发布、NAS 同步与验收回滚。
+
+## 命名边界
+
+| 名称 | 指什么 | 不指什么 |
+|------|--------|----------|
+| **GPOS 经营助手** | claw 项目（271/27）整包能力 | QueryX 品牌本身 |
+| **QueryX** | Boss 报表 / 经营问数 **BFF 契约**（[`analysis-api-queryx-bff.md`](analysis-api-queryx-bff.md)） | 产品手册 KB、整条助手、claw-code 平台 |
+| **手册 KB** | `home/kb` 静态原文 + `product-manual-qa` | 经营数据答案 |
 
 关联文档：
 
 | 文档 | 用途 |
 |------|------|
 | 本文 | **上线与日常运维真源** |
-| [`docs/queryx-intent-routing-regress.md`](queryx-intent-routing-regress.md) | 回归检查清单 |
-| [`docs/queryx-agent-prompt-content.md`](queryx-agent-prompt-content.md) | CLAUDE / Rules 粘贴参考 |
+| [`docs/gpos-intent-routing-regress.md`](gpos-intent-routing-regress.md) | 三路意图回归检查清单 |
+| [`docs/gpos-assistant-prompt-content.md`](gpos-assistant-prompt-content.md) | CLAUDE / Rules 粘贴参考 |
 | [`scripts/gpos-manual-crawl/`](../scripts/gpos-manual-crawl/) | 爬取工具（产出本地 KB，不入库） |
 | [`scripts/gpos-manual-eval/`](../scripts/gpos-manual-eval/) | 冒烟 / Live 评测工具 |
 | [`docs/project-config-model.md`](project-config-model.md) | `project_config` / `git_sync` 模型 |
+| [`docs/analysis-api-queryx-bff.md`](analysis-api-queryx-bff.md) | QueryX 问数 BFF 契约（仅问数） |
 
 **边界：** 业务知识库（GPOS 手册及后续其它域 KB）**不进 claw-code**。仓库只保留爬取 / 同步 / 评测脚本与 Admin 配置 fixtures；KB 正文落本地缓存或 NAS `home/kb`。
 
@@ -122,7 +131,7 @@ PY
 |------|------|
 | [`scripts/fixtures/skills/product-manual-qa.SKILL.md`](../scripts/fixtures/skills/product-manual-qa.SKILL.md) | 手册检索 + 语种硬锁 |
 | [`scripts/fixtures/skills/self-introduction.SKILL.md`](../scripts/fixtures/skills/self-introduction.SKILL.md) | 闲聊引导（产品 how-to 不走此 skill） |
-| [`docs/queryx-agent-prompt-content.md`](queryx-agent-prompt-content.md) | CLAUDE / Rules 参考文案 |
+| [`docs/gpos-assistant-prompt-content.md`](gpos-assistant-prompt-content.md) | CLAUDE / Rules 参考文案 |
 | [`scripts/fixtures/proj271_skills_with_product_manual.json`](../scripts/fixtures/proj271_skills_with_product_manual.json) | **整表 skills 备份样例**（合并用） |
 
 ### Step C — Admin 同构发布（必须有记录）
@@ -230,7 +239,7 @@ python3 scripts/gpos-manual-eval/run_live_core_271.py --min 100
 
 #### E3 意图对照（小集）
 
-见 [`docs/queryx-intent-routing-regress.md`](queryx-intent-routing-regress.md)。
+见 [`docs/gpos-intent-routing-regress.md`](gpos-intent-routing-regress.md)。
 
 ---
 

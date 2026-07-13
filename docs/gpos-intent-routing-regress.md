@@ -1,9 +1,16 @@
-# QueryX 前置意图分流 — 回归清单
+# GPOS 经营助手 — 三路意图分流回归清单
 
 Author: kejiqing
 
 **上线与日常运维真源：** [`docs/gpos-user-manual-kb-ops.md`](gpos-user-manual-kb-ops.md)  
 本文只列验收检查项；发布 / rsync / 回滚步骤见运维手册。
+
+## 命名边界
+
+| 名称 | 指什么 |
+|------|--------|
+| **GPOS 经营助手** | claw 项目能力（预发 271 / 生产 27）：闲聊 + 产品手册 + 经营问数 |
+| **QueryX** | 对外 **Boss 报表 / 经营问数 BFF** 契约风格（见 [`analysis-api-queryx-bff.md`](analysis-api-queryx-bff.md)），不是整条助手、也不是手册 KB |
 
 目标 project：预发 **271**；生产 **27**（或灰度 id）。先完成 KB 同步与 Admin **commit + activate**。
 
@@ -62,9 +69,9 @@ python3 scripts/gpos-manual-eval/run_live_core_271.py --min 100
 
 ---
 
-## 3. 经营分析对照（`scripts/gpos-manual-eval/analysis.jsonl`）
+## 3. 经营问数对照（`scripts/gpos-manual-eval/analysis.jsonl`）
 
-- 仍进分析 skills / SQLBot
+- 走分析 skills / SQLBot（对上 QueryX 问数产品面）
 - 不用手册文章当经营数据答案
 - 续聊 `sessionId` + `biz_advice_report` 可用
 
@@ -76,11 +83,11 @@ python3 scripts/gpos-manual-eval/run_live_core_271.py --min 100
 |------|------|
 | 怎么加商品 | product-manual-qa + en 链接 |
 | เพิ่มสมาชิก… | product-manual-qa + **th** 链接 |
-| 昨天销售额 | analysis |
+| 昨天销售额 | 经营问数 |
 | 你好 | self-introduction |
 
 ---
 
 ## 5. 协议
 
-外部 `SolveRequest` 字段不变；灰度仅允许换 `projId`。
+外部 `SolveRequest` 字段不变；灰度仅允许换 `projId`。BFF 侧 QueryX 风格参数仍只服务问数链路，不因手册分流而改契约。

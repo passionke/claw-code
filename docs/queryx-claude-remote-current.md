@@ -1,6 +1,8 @@
 # QueryX 智能体执行规范（CLAUDE 指令稿）
 
-> 拆分后正文：`docs/queryx-agent-prompt-content.md`
+> **定位：** 本文是 **QueryX = 经营问数** 历史指令稿快照，**不是**现行 GPOS 经营助手（含手册三路）的粘贴源。  
+> **现行粘贴正文：** [`docs/gpos-assistant-prompt-content.md`](gpos-assistant-prompt-content.md)  
+> QueryX BFF 契约：[`docs/analysis-api-queryx-bff.md`](analysis-api-queryx-bff.md)
 
 > Remote snapshot from `http://192.168.9.252:18088/v1/project/claude/27`
 >
@@ -8,7 +10,7 @@
 >
 > Author: kejiqing
 
-本文件为 QueryX 智能体在零售及餐饮场景下生成运营诊断分析报告提供强制性执行规范。智能体必须以**用户核心问题的精准回应**、**数据口径的严格一致**和**建议动作的可执行性**为最高优先级，杜绝过程性叙述、推测性填充或未经验证的推论。
+本文件为 **经营问数（QueryX 产品面）** 智能体在零售及餐饮场景下生成运营诊断分析报告提供强制性执行规范。智能体必须以**用户核心问题的精准回应**、**数据口径的严格一致**和**建议动作的可执行性**为最高优先级，杜绝过程性叙述、推测性填充或未经验证的推论。
 
 ## Skill 清单与选型（第 0 步，先于一切 MCP）
 

@@ -4,7 +4,7 @@ Author: kejiqing
 
 本文档是 **Admin `claude_md` / 物化 / runtime `load_system_prompt`** 的硬性契约。改 `prompt.rs`、`project_config_apply.rs` 或物化路径前**必须先读**，并跑对应单元测试（见文末）。
 
-相关：`docs/project-config-model.md`（PG 真源与路径表）、`GET /v1/project/prompt/{ds_id}/effective`（Admin 预览）。QueryX 拆分后正文：`docs/queryx-agent-prompt-content.md`。
+相关：`docs/project-config-model.md`（PG 真源与路径表）、`GET /v1/project/prompt/{ds_id}/effective`（Admin 预览）。GPOS 经营助手（含三路意图）粘贴正文：`docs/gpos-assistant-prompt-content.md`。QueryX 仅指经营问数 BFF：`docs/analysis-api-queryx-bff.md`。
 
 ---
 
@@ -13,7 +13,7 @@ Author: kejiqing
 | 配置来源 | 作用 | **不是** |
 | --- | --- | --- |
 | **`gateway_global_settings.system_prompt_default`** → `.claw/system_prompt_scaffold.md` | 替换内置英文 intro / `# System` / `# Doing tasks` / actions | 项目业务指令 |
-| **`project_config.claude_md`** → `CLAUDE.md`（+ 宿主机 `home/CLAUDE.md`） | `# Claude instructions` 段（项目/QueryX 业务规范） | **禁止**再写入 `.claw/system_prompt_user_override.md` 顶替 scaffold |
+| **`project_config.claude_md`** → `CLAUDE.md`（+ 宿主机 `home/CLAUDE.md`） | `# Claude instructions` 段（项目业务规范，如 GPOS 经营助手） | **禁止**再写入 `.claw/system_prompt_user_override.md` 顶替 scaffold |
 | **`project_config.mcp_servers_json`** → `.claw/settings.json` | `# Runtime config` 里的 `mcpServers`；runtime 加载 MCP 进程 | **禁止**把 MCP tool schema 塞进 system prompt |
 | **`project_config.rules_json`** | `# Project rules` | — |
 | **Solve 请求 `extraSession`** | `# Project context` 内 JSON | — |
