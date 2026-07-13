@@ -1,0 +1,21 @@
+# Live product-manual eval summary (proj 271)
+
+- total: **105**
+- passed: **101** (96.2%)
+- url_lang_ok_rate: **97.1%**
+- wrong_lang_url_count: **2**
+- by_lang: `{'en': 35, 'zh': 35, 'th': 35}`
+- pass_by_lang: `{'en': 34, 'zh': 33, 'th': 34}`
+- contentRev: `2026-07-13_06-48-55`
+- rerun_failed: `True`
+
+## Failed ids
+
+- `en-store-management-back-office-set-up-qr-code-display-in-preliminary-bill-after-connecting-to-kbank-back-office-en-16`
+- `en-store-management-back-office-scan-to-order-settings-zh-15`
+- `en-store-management-back-office-label-production-order-format-settings-back-office-zh-32`
+- `th-store-management-back-office-how-to-add-kitchen-printers-back-office-th-27`
+
+See also `LIVE_REPORT.md`.
+
+Author: kejiqing

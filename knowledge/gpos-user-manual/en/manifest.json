@@ -1,0 +1,1277 @@
+{
+  "lang": "en",
+  "source": "https://gpos.co.th/en/user-manual",
+  "crawled_at": "2026-07-13T05:43:06Z",
+  "page_count": 141,
+  "pages": [
+    {
+      "title": "User Manual",
+      "source_url": "https://gpos.co.th/en/user-manual",
+      "lang": "en",
+      "category": "Getting Started",
+      "category_slug": "root",
+      "path": "en/getting-started.md",
+      "body_len": 337
+    },
+    {
+      "title": "Device Settings",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/index.md",
+      "body_len": 392
+    },
+    {
+      "title": "Discounts",
+      "source_url": "https://gpos.co.th/en/user-manual/discounts",
+      "lang": "en",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "en/discounts/index.md",
+      "body_len": 219
+    },
+    {
+      "title": "Gpos Pro",
+      "source_url": "https://gpos.co.th/en/user-manual/gpos-pro",
+      "lang": "en",
+      "category": "Gpos Pro",
+      "category_slug": "gpos-pro",
+      "path": "en/gpos-pro/index.md",
+      "body_len": 102
+    },
+    {
+      "title": "Grab X Gpos",
+      "source_url": "https://gpos.co.th/en/user-manual/grab-x-gpos",
+      "lang": "en",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "en/grab-x-gpos/index.md",
+      "body_len": 314
+    },
+    {
+      "title": "Head Office",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/index.md",
+      "body_len": 1046
+    },
+    {
+      "title": "Manager App",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/index.md",
+      "body_len": 567
+    },
+    {
+      "title": "Membership",
+      "source_url": "https://gpos.co.th/en/user-manual/membership",
+      "lang": "en",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "en/membership/index.md",
+      "body_len": 223
+    },
+    {
+      "title": "Printer Settings",
+      "source_url": "https://gpos.co.th/en/user-manual/printer-settings",
+      "lang": "en",
+      "category": "Printer Settings",
+      "category_slug": "printer-settings",
+      "path": "en/printer-settings/index.md",
+      "body_len": 125
+    },
+    {
+      "title": "Product Management",
+      "source_url": "https://gpos.co.th/en/user-manual/product-management",
+      "lang": "en",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "en/product-management/index.md",
+      "body_len": 360
+    },
+    {
+      "title": "Add Product (Back Office)",
+      "source_url": "https://gpos.co.th/en/user-manual/product-management/add-product-back-office",
+      "lang": "en",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "en/product-management/add-product-back-office.md",
+      "body_len": 2627
+    },
+    {
+      "title": "Staff Management",
+      "source_url": "https://gpos.co.th/en/user-manual/staff-management",
+      "lang": "en",
+      "category": "Staff Management",
+      "category_slug": "staff-management",
+      "path": "en/staff-management/index.md",
+      "body_len": 127
+    },
+    {
+      "title": "Store Management (Back Office)",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/index.md",
+      "body_len": 899
+    },
+    {
+      "title": "System Setup & Program Usage",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/index.md",
+      "body_len": 389
+    },
+    {
+      "title": "Warehouse Management",
+      "source_url": "https://gpos.co.th/en/user-manual/warehouse-management",
+      "lang": "en",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "en/warehouse-management/index.md",
+      "body_len": 132
+    },
+    {
+      "title": "Add tables, add zones (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/add-tables-add-zones-pos",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/add-tables-add-zones-pos.md",
+      "body_len": 177
+    },
+    {
+      "title": "Basic settings (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/all-settings-pos",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/all-settings-pos.md",
+      "body_len": 3864
+    },
+    {
+      "title": "How to choose payment via KBank on POS after connecting",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/how-to-choose-payment-via-kbank-on-pos-after-connecting",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/how-to-choose-payment-via-kbank-on-pos-after-connecting.md",
+      "body_len": 414
+    },
+    {
+      "title": "How to print dynamic QR codes on bills after connecting with KBank",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/how-to-print-dynamic-qr-codes-on-bills-after-connecting-with-kbank",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/how-to-print-dynamic-qr-codes-on-bills-after-connecting-with-kbank.md",
+      "body_len": 447
+    },
+    {
+      "title": "How to print QR codes for tables",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/how-to-print-qr-codes-for-tables",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/how-to-print-qr-codes-for-tables.md",
+      "body_len": 396
+    },
+    {
+      "title": "How to refund via other payment channels (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/how-to-refund-via-other-payment-channels",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/how-to-refund-via-other-payment-channels.md",
+      "body_len": 378
+    },
+    {
+      "title": "How to use the tipping system for all payment methods (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/how-to-use-the-tipping-system-for-all-payment-methods-pos",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/how-to-use-the-tipping-system-for-all-payment-methods-pos.md",
+      "body_len": 505
+    },
+    {
+      "title": "How to use the tipping system for cash payments (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/how-to-use-the-tipping-system-for-cash-payments-pos",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/how-to-use-the-tipping-system-for-cash-payments-pos.md",
+      "body_len": 457
+    },
+    {
+      "title": "Notification sound settings (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/notification-sound-settings-pos",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/notification-sound-settings-pos.md",
+      "body_len": 961
+    },
+    {
+      "title": "Pickup settings (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/pickup-settings-pos",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/pickup-settings-pos.md",
+      "body_len": 677
+    },
+    {
+      "title": "Print barcodes via POS machine",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/print-barcodes-via-pos-machine",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/print-barcodes-via-pos-machine.md",
+      "body_len": 415
+    },
+    {
+      "title": "Queue system settings (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/queue-system-settings-pos",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/queue-system-settings-pos.md",
+      "body_len": 811
+    },
+    {
+      "title": "Set up Gpos payment channel after connecting with KBank (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/set-up-gpos-payment-channel-after-connecting-with-kbank-pos",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/set-up-gpos-payment-channel-after-connecting-with-kbank-pos.md",
+      "body_len": 329
+    },
+    {
+      "title": "Set up payment types (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/set-up-payment-types-pos",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/set-up-payment-types-pos.md",
+      "body_len": 1397
+    },
+    {
+      "title": "Sales Channels (POS)",
+      "source_url": "https://gpos.co.th/en/user-manual/device-settings/setting-up-sales-channels-in-the-store-pos",
+      "lang": "en",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "en/device-settings/setting-up-sales-channels-in-the-store-pos.md",
+      "body_len": 1799
+    },
+    {
+      "title": "Amount Off Coupon",
+      "source_url": "https://gpos.co.th/en/user-manual/discounts/amount-off-coupon",
+      "lang": "en",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "en/discounts/amount-off-coupon.md",
+      "body_len": 2913
+    },
+    {
+      "title": "Category Percent Off (%)",
+      "source_url": "https://gpos.co.th/en/user-manual/discounts/category-percent-off",
+      "lang": "en",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "en/discounts/category-percent-off.md",
+      "body_len": 2130
+    },
+    {
+      "title": "Flexible Discount",
+      "source_url": "https://gpos.co.th/en/user-manual/discounts/flexible-discount",
+      "lang": "en",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "en/discounts/flexible-discount.md",
+      "body_len": 1034
+    },
+    {
+      "title": "Gift Coupon",
+      "source_url": "https://gpos.co.th/en/user-manual/discounts/gift-coupon",
+      "lang": "en",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "en/discounts/gift-coupon.md",
+      "body_len": 2231
+    },
+    {
+      "title": "Item Percent Off (%)",
+      "source_url": "https://gpos.co.th/en/user-manual/discounts/item-percent-off",
+      "lang": "en",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "en/discounts/item-percent-off.md",
+      "body_len": 2529
+    },
+    {
+      "title": "Percent Off Coupon",
+      "source_url": "https://gpos.co.th/en/user-manual/discounts/percent-off-coupon",
+      "lang": "en",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "en/discounts/percent-off-coupon.md",
+      "body_len": 2671
+    },
+    {
+      "title": "Set Discount for Entire Bill (%)",
+      "source_url": "https://gpos.co.th/en/user-manual/discounts/set-discount-for-entire-bill",
+      "lang": "en",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "en/discounts/set-discount-for-entire-bill.md",
+      "body_len": 2581
+    },
+    {
+      "title": "Special Item Offer",
+      "source_url": "https://gpos.co.th/en/user-manual/discounts/special-item-offer",
+      "lang": "en",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "en/discounts/special-item-offer.md",
+      "body_len": 2480
+    },
+    {
+      "title": "Dashboard Reports",
+      "source_url": "https://gpos.co.th/en/user-manual/gpos-pro/dashboard-reports",
+      "lang": "en",
+      "category": "Gpos Pro",
+      "category_slug": "gpos-pro",
+      "path": "en/gpos-pro/dashboard-reports.md",
+      "body_len": 191
+    },
+    {
+      "title": "How to Create Ingredients",
+      "source_url": "https://gpos.co.th/en/user-manual/gpos-pro/how-to-create-ingredients",
+      "lang": "en",
+      "category": "Gpos Pro",
+      "category_slug": "gpos-pro",
+      "path": "en/gpos-pro/how-to-create-ingredients.md",
+      "body_len": 229
+    },
+    {
+      "title": "Ingredient Recipe Mapping",
+      "source_url": "https://gpos.co.th/en/user-manual/gpos-pro/ingredient-recipe-mapping",
+      "lang": "en",
+      "category": "Gpos Pro",
+      "category_slug": "gpos-pro",
+      "path": "en/gpos-pro/ingredient-recipe-mapping.md",
+      "body_len": 226
+    },
+    {
+      "title": "Magic Ai",
+      "source_url": "https://gpos.co.th/en/user-manual/gpos-pro/magic-ai",
+      "lang": "en",
+      "category": "Gpos Pro",
+      "category_slug": "gpos-pro",
+      "path": "en/gpos-pro/magic-ai.md",
+      "body_len": 206
+    },
+    {
+      "title": "Add GrabFood Items via GPOS (Back Office)",
+      "source_url": "https://gpos.co.th/en/user-manual/grab-x-gpos/add-grabfood-items-via-gpos-back-office",
+      "lang": "en",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "en/grab-x-gpos/add-grabfood-items-via-gpos-back-office.md",
+      "body_len": 8860
+    },
+    {
+      "title": "Connect GPOS with Grab (Sync from GPOS)",
+      "source_url": "https://gpos.co.th/en/user-manual/grab-x-gpos/connect-gpos-with-grab-sync-from-gpos",
+      "lang": "en",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "en/grab-x-gpos/connect-gpos-with-grab-sync-from-gpos.md",
+      "body_len": 1179
+    },
+    {
+      "title": "Connect Grab with GPOS (Sync from Grab)",
+      "source_url": "https://gpos.co.th/en/user-manual/grab-x-gpos/connect-grab-with-gpos-sync-from-grab",
+      "lang": "en",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "en/grab-x-gpos/connect-grab-with-gpos-sync-from-grab.md",
+      "body_len": 1262
+    },
+    {
+      "title": "Separate Grab & POS Menus (Back Office)",
+      "source_url": "https://gpos.co.th/en/user-manual/grab-x-gpos/separate-grab-and-pos-menus-back-office",
+      "lang": "en",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "en/grab-x-gpos/separate-grab-and-pos-menus-back-office.md",
+      "body_len": 760
+    },
+    {
+      "title": "Set Option Price for GPOS & Grab (Back Office)",
+      "source_url": "https://gpos.co.th/en/user-manual/grab-x-gpos/set-option-price-for-gpos-and-grab-back-office",
+      "lang": "en",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "en/grab-x-gpos/set-option-price-for-gpos-and-grab-back-office.md",
+      "body_len": 414
+    },
+    {
+      "title": "Set Sales Time for Grab Items",
+      "source_url": "https://gpos.co.th/en/user-manual/grab-x-gpos/set-sales-time-for-grab-items",
+      "lang": "en",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "en/grab-x-gpos/set-sales-time-for-grab-items.md",
+      "body_len": 161
+    },
+    {
+      "title": "Add branch stores",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/add-branch-stores",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/add-branch-stores.md",
+      "body_len": 395
+    },
+    {
+      "title": "Adding Items from Head Office to Branches",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/add-items-from-headquarters-to-branches",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/add-items-from-headquarters-to-branches.md",
+      "body_len": 640
+    },
+    {
+      "title": "Configuration and Export to Store Branches",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/configuration-and-export-to-store-branches",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/configuration-and-export-to-store-branches.md",
+      "body_len": 7789
+    },
+    {
+      "title": "Create all template settings (Back office)",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/create-all-template-settings-back-office",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/create-all-template-settings-back-office.md",
+      "body_len": 2958
+    },
+    {
+      "title": "Create employees and assign roles from headquarters to manage stores (branches)",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/create-employees-and-assign-roles-from-headquarters-to-manage-stores-branches",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/create-employees-and-assign-roles-from-headquarters-to-manage-stores-branches.md",
+      "body_len": 1023
+    },
+    {
+      "title": "Create receipt, order, and invoice template settings (Back office)",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/create-receipt-order-and-invoice-template-settings-back-office",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/create-receipt-order-and-invoice-template-settings-back-office.md",
+      "body_len": 1102
+    },
+    {
+      "title": "Creating a Cashier Printer and Exporting It to Store Branches",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/creating-a-cashier-printer-and-exporting-it-to-store-branches",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/creating-a-cashier-printer-and-exporting-it-to-store-branches.md",
+      "body_len": 5080
+    },
+    {
+      "title": "Creating and Exporting Additional Service Charges to Store Branches",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/creating-and-exporting-additional-service-charges-to-store-branches",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/creating-and-exporting-additional-service-charges-to-store-branches.md",
+      "body_len": 4084
+    },
+    {
+      "title": "Creating and Exporting Payment Types to Store Branches",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/creating-and-exporting-payment-types-to-store-branches",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/creating-and-exporting-payment-types-to-store-branches.md",
+      "body_len": 4135
+    },
+    {
+      "title": "Creating and Exporting Tip Templates to Store Branches",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/creating-and-exporting-tip-templates-to-store-branches",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/creating-and-exporting-tip-templates-to-store-branches.md",
+      "body_len": 2417
+    },
+    {
+      "title": "Creating Kitchen Printers and Exporting to Store Branches",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/creating-kitchen-printers-and-exporting-to-store-branches",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/creating-kitchen-printers-and-exporting-to-store-branches.md",
+      "body_len": 4601
+    },
+    {
+      "title": "Creating Sales Channels via Head Office",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/creating-sales-channels-via-head-office",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/creating-sales-channels-via-head-office.md",
+      "body_len": 2797
+    },
+    {
+      "title": "Remove Distributed Items from Head Office to Branches",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/remove-distributed-items-from-head-office-to-branches",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/remove-distributed-items-from-head-office-to-branches.md",
+      "body_len": 971
+    },
+    {
+      "title": "Replace the menu from Head Office to Branches",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/replace-the-menu-from-head-office-to-branches",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/replace-the-menu-from-head-office-to-branches.md",
+      "body_len": 681
+    },
+    {
+      "title": "Set up kitchen printers and export to stores (Back office)",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/set-up-kitchen-printers-and-export-to-stores-back-office",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/set-up-kitchen-printers-and-export-to-stores-back-office.md",
+      "body_len": 1779
+    },
+    {
+      "title": "Set up tips and export to stores (Back office)",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/set-up-tips-and-export-to-stores-back-office",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/set-up-tips-and-export-to-stores-back-office.md",
+      "body_len": 899
+    },
+    {
+      "title": "Store duplication (Back office)",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/store-duplication-back-office",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/store-duplication-back-office.md",
+      "body_len": 676
+    },
+    {
+      "title": "Updating Existing Items from Head Office to Branches",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/update-existing-items-for-headquarters",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/update-existing-items-for-headquarters.md",
+      "body_len": 696
+    },
+    {
+      "title": "Add product categories to the product shortcut menu",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/add-product-categories-to-the-product-shortcut-menu",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/add-product-categories-to-the-product-shortcut-menu.md",
+      "body_len": 902
+    },
+    {
+      "title": "Add Product (Manager)",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/add-product-manager",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/add-product-manager.md",
+      "body_len": 1141
+    },
+    {
+      "title": "How to Check Product Stock via the Manager App",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/how-to-check-product-stock-via-the-manager-app",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/how-to-check-product-stock-via-the-manager-app.md",
+      "body_len": 137
+    },
+    {
+      "title": "How to Create Options / Additional Options (Manager App)",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/how-to-create-options-additional-options-manager-app",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/how-to-create-options-additional-options-manager-app.md",
+      "body_len": 611
+    },
+    {
+      "title": "How to log in Manager App",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/how-to-log-in-manager-app",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/how-to-log-in-manager-app.md",
+      "body_len": 558
+    },
+    {
+      "title": "How to View Reports via the Manager App",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/how-to-view-reports-via-the-manager-app",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/how-to-view-reports-via-the-manager-app.md",
+      "body_len": 427
+    },
+    {
+      "title": "How to View Store Overview Manager App",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/how-to-view-store-overview-manager-app",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/how-to-view-store-overview-manager-app.md",
+      "body_len": 162
+    },
+    {
+      "title": "Manage and Edit Product Information (Manager)",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/manage-product-items-in-the-product-shortcut-menu",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/manage-product-items-in-the-product-shortcut-menu.md",
+      "body_len": 766
+    },
+    {
+      "title": "Managing GrabFood items via Manager App",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/managing-grabfood-items-via-manager-app",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/managing-grabfood-items-via-manager-app.md",
+      "body_len": 941
+    },
+    {
+      "title": "Managing the POS system through Manager App",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/managing-the-pos-system-through-manager-app",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/managing-the-pos-system-through-manager-app.md",
+      "body_len": 839
+    },
+    {
+      "title": "Managing the Scan system via Manager App",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/managing-the-scan-system-via-manager-app",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/managing-the-scan-system-via-manager-app.md",
+      "body_len": 443
+    },
+    {
+      "title": "Open-close GRABFOOD stores via Manager App",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/open-close-grabfood-stores-via-manager-app",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/open-close-grabfood-stores-via-manager-app.md",
+      "body_len": 555
+    },
+    {
+      "title": "Steps to Add Combo Items (Manager)",
+      "source_url": "https://gpos.co.th/en/user-manual/manager-app/steps-to-add-combo-items-manager",
+      "lang": "en",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "en/manager-app/steps-to-add-combo-items-manager.md",
+      "body_len": 620
+    },
+    {
+      "title": "Add Member (Back Office)",
+      "source_url": "https://gpos.co.th/en/user-manual/membership/add-member-back-office",
+      "lang": "en",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "en/membership/add-member-back-office.md",
+      "body_len": 2852
+    },
+    {
+      "title": "Percentage-Based Item Discount for Members",
+      "source_url": "https://gpos.co.th/en/user-manual/membership/create-item-discount-percentage-member",
+      "lang": "en",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "en/membership/create-item-discount-percentage-member.md",
+      "body_len": 4490
+    },
+    {
+      "title": "Item Discount (Fixed Amount) for Members",
+      "source_url": "https://gpos.co.th/en/user-manual/membership/create-item-discount-quantity-member",
+      "lang": "en",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "en/membership/create-item-discount-quantity-member.md",
+      "body_len": 4391
+    },
+    {
+      "title": "Top-Up Package for Members",
+      "source_url": "https://gpos.co.th/en/user-manual/membership/create-top-up-package-membership",
+      "lang": "en",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "en/membership/create-top-up-package-membership.md",
+      "body_len": 1930
+    },
+    {
+      "title": "Member Point Settings (Back Office)",
+      "source_url": "https://gpos.co.th/en/user-manual/membership/member-point-settings-back-office",
+      "lang": "en",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "en/membership/member-point-settings-back-office.md",
+      "body_len": 1529
+    },
+    {
+      "title": "Membership – Add Member (POS Device)",
+      "source_url": "https://gpos.co.th/en/user-manual/membership/membership-add-member-pos-device",
+      "lang": "en",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "en/membership/membership-add-member-pos-device.md",
+      "body_len": 392
+    },
+    {
+      "title": "Membership Level Management (Back Office)",
+      "source_url": "https://gpos.co.th/en/user-manual/membership/membership-level-management-back-office",
+      "lang": "en",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "en/membership/membership-level-management-back-office.md",
+      "body_len": 1619
+    },
+    {
+      "title": "Membership – Set Points (POS Device)",
+      "source_url": "https://gpos.co.th/en/user-manual/membership/membership-set-points-pos-device",
+      "lang": "en",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "en/membership/membership-set-points-pos-device.md",
+      "body_len": 597
+    },
+    {
+      "title": "Connect Bluetooth Printer via USB",
+      "source_url": "https://gpos.co.th/en/user-manual/printer-settings/connect-bluetooth-printer-via-usb",
+      "lang": "en",
+      "category": "Printer Settings",
+      "category_slug": "printer-settings",
+      "path": "en/printer-settings/connect-bluetooth-printer-via-usb.md",
+      "body_len": 313
+    },
+    {
+      "title": "Connect BT Printer",
+      "source_url": "https://gpos.co.th/en/user-manual/printer-settings/connect-bt-printer",
+      "lang": "en",
+      "category": "Printer Settings",
+      "category_slug": "printer-settings",
+      "path": "en/printer-settings/connect-bt-printer.md",
+      "body_len": 371
+    },
+    {
+      "title": "Connect LAN Printer",
+      "source_url": "https://gpos.co.th/en/user-manual/printer-settings/connect-lan-printer",
+      "lang": "en",
+      "category": "Printer Settings",
+      "category_slug": "printer-settings",
+      "path": "en/printer-settings/connect-lan-printer.md",
+      "body_len": 404
+    },
+    {
+      "title": "Connect Q80A via USB",
+      "source_url": "https://gpos.co.th/en/user-manual/printer-settings/connect-q80a-via-usb",
+      "lang": "en",
+      "category": "Printer Settings",
+      "category_slug": "printer-settings",
+      "path": "en/printer-settings/connect-q80a-via-usb.md",
+      "body_len": 348
+    },
+    {
+      "title": "Adding tags to products",
+      "source_url": "https://gpos.co.th/en/user-manual/product-management/adding-tags-to-products",
+      "lang": "en",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "en/product-management/adding-tags-to-products.md",
+      "body_len": 524
+    },
+    {
+      "title": "Barcode generation system via Excel file",
+      "source_url": "https://gpos.co.th/en/user-manual/product-management/barcode-generation-system-via-excel-file",
+      "lang": "en",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "en/product-management/barcode-generation-system-via-excel-file.md",
+      "body_len": 1919
+    },
+    {
+      "title": "Bulk actions (images, price, enable/disable sales, delete)",
+      "source_url": "https://gpos.co.th/en/user-manual/product-management/bulk-actions-images-price-enable-disable-sales-delete",
+      "lang": "en",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "en/product-management/bulk-actions-images-price-enable-disable-sales-delete.md",
+      "body_len": 1828
+    },
+    {
+      "title": "Create Product List via Excel File",
+      "source_url": "https://gpos.co.th/en/user-manual/product-management/create-product-list-via-excel-file",
+      "lang": "en",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "en/product-management/create-product-list-via-excel-file.md",
+      "body_len": 2358
+    },
+    {
+      "title": "How to create categories",
+      "source_url": "https://gpos.co.th/en/user-manual/product-management/how-to-create-categories",
+      "lang": "en",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "en/product-management/how-to-create-categories.md",
+      "body_len": 593
+    },
+    {
+      "title": "How to Create Product Combo List",
+      "source_url": "https://gpos.co.th/en/user-manual/product-management/how-to-create-product-combo-list",
+      "lang": "en",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "en/product-management/how-to-create-product-combo-list.md",
+      "body_len": 3887
+    },
+    {
+      "title": "Create Options / Additional Options (Back Office System)",
+      "source_url": "https://gpos.co.th/en/user-manual/product-management/mandatory-options-add-ons-back-office",
+      "lang": "en",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "en/product-management/mandatory-options-add-ons-back-office.md",
+      "body_len": 1068
+    },
+    {
+      "title": "Set POS Sales Time",
+      "source_url": "https://gpos.co.th/en/user-manual/product-management/set-pos-sales-time",
+      "lang": "en",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "en/product-management/set-pos-sales-time.md",
+      "body_len": 865
+    },
+    {
+      "title": "Staff Login via POS Device",
+      "source_url": "https://gpos.co.th/en/user-manual/staff-management/lock-staff-login-via-pos-device",
+      "lang": "en",
+      "category": "Staff Management",
+      "category_slug": "staff-management",
+      "path": "en/staff-management/lock-staff-login-via-pos-device.md",
+      "body_len": 145
+    },
+    {
+      "title": "Role & Permission Management",
+      "source_url": "https://gpos.co.th/en/user-manual/staff-management/manage-roles-and-permissions",
+      "lang": "en",
+      "category": "Staff Management",
+      "category_slug": "staff-management",
+      "path": "en/staff-management/manage-roles-and-permissions.md",
+      "body_len": 1722
+    },
+    {
+      "title": "Reset Staff/Owner PIN",
+      "source_url": "https://gpos.co.th/en/user-manual/staff-management/reset-staff-owner-pin",
+      "lang": "en",
+      "category": "Staff Management",
+      "category_slug": "staff-management",
+      "path": "en/staff-management/reset-staff-owner-pin.md",
+      "body_len": 767
+    },
+    {
+      "title": "Employee Creation",
+      "source_url": "https://gpos.co.th/en/user-manual/staff-management/staff-management-back-office",
+      "lang": "en",
+      "category": "Staff Management",
+      "category_slug": "staff-management",
+      "path": "en/staff-management/staff-management-back-office.md",
+      "body_len": 2427
+    },
+    {
+      "title": "Add zones and add tables",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/add-zones-and-tables-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/add-zones-and-tables-back-office.md",
+      "body_len": 4522
+    },
+    {
+      "title": "Basic settings",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/basic-settings-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/basic-settings-back-office.md",
+      "body_len": 4969
+    },
+    {
+      "title": "Cashier Sections",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/cashier-sections-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/cashier-sections-back-office.md",
+      "body_len": 2123
+    },
+    {
+      "title": "How to add kitchen printers",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/how-to-add-kitchen-printers-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/how-to-add-kitchen-printers-back-office.md",
+      "body_len": 2165
+    },
+    {
+      "title": "How to add tips",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/how-to-add-tips-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/how-to-add-tips-back-office.md",
+      "body_len": 1563
+    },
+    {
+      "title": "How to create a payment channel",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/how-to-create-a-payment-channel-back-officer",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/how-to-create-a-payment-channel-back-officer.md",
+      "body_len": 2099
+    },
+    {
+      "title": "How to Sort Payment Channels",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/how-to-sort-payment-channels-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/how-to-sort-payment-channels-back-office.md",
+      "body_len": 1243
+    },
+    {
+      "title": "Label production order format settings",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/label-production-order-format-settings-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/label-production-order-format-settings-back-office.md",
+      "body_len": 2185
+    },
+    {
+      "title": "Manage service charges",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/manage-service-charges-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/manage-service-charges-back-office.md",
+      "body_len": 1660
+    },
+    {
+      "title": "Outbound Setting",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/outbound-setting",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/outbound-setting.md",
+      "body_len": 0
+    },
+    {
+      "title": "Product stock notification settings",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/product-stock-notification-settings-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/product-stock-notification-settings-back-office.md",
+      "body_len": 1169
+    },
+    {
+      "title": "Queue settings",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/queue-settings-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/queue-settings-back-office.md",
+      "body_len": 1387
+    },
+    {
+      "title": "Sales Channels",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/sales-channels-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/sales-channels-back-office.md",
+      "body_len": 2289
+    },
+    {
+      "title": "Scan To Order Layout",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/scan-to-order-layout",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/scan-to-order-layout.md",
+      "body_len": 5057
+    },
+    {
+      "title": "Scan To Order Settings",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/scan-to-order-settings",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/scan-to-order-settings.md",
+      "body_len": 3595
+    },
+    {
+      "title": "Set up advertisement images and back screen",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/set-up-advertisement-images-and-back-screen-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/set-up-advertisement-images-and-back-screen-back-office.md",
+      "body_len": 1855
+    },
+    {
+      "title": "Set up pick-up numbers",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/set-up-pick-up-numbers-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/set-up-pick-up-numbers-back-office.md",
+      "body_len": 1085
+    },
+    {
+      "title": "Set up QR Code display in Preliminary bill after connecting to Kbank",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/set-up-qr-code-display-in-preliminary-bill-after-connecting-to-kbank-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/set-up-qr-code-display-in-preliminary-bill-after-connecting-to-kbank-back-office.md",
+      "body_len": 2978
+    },
+    {
+      "title": "Set up receipt format",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/set-up-receipt-format-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/set-up-receipt-format-back-office.md",
+      "body_len": 2887
+    },
+    {
+      "title": "Set up the order form",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/set-up-the-order-form-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/set-up-the-order-form-back-office.md",
+      "body_len": 2896
+    },
+    {
+      "title": "Store Management (Back Office)",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/store-management-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/store-management-back-office.md",
+      "body_len": 96
+    },
+    {
+      "title": "Tax Management",
+      "source_url": "https://gpos.co.th/en/user-manual/store-management-back-office/tax-settings-back-office",
+      "lang": "en",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "en/store-management-back-office/tax-settings-back-office.md",
+      "body_len": 4130
+    },
+    {
+      "title": "For D3 80mm model",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage/for-d3-80mm-model",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/for-d3-80mm-model.md",
+      "body_len": 0
+    },
+    {
+      "title": "For D3 Standard Single Screen model",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage/for-d3-standard-single-screen",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/for-d3-standard-single-screen.md",
+      "body_len": 0
+    },
+    {
+      "title": "For D3 mini model",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage/for-d3mini-model",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/for-d3mini-model.md",
+      "body_len": 0
+    },
+    {
+      "title": "For D3 Pro model",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage/for-d3pro-model",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/for-d3pro-model.md",
+      "body_len": 0
+    },
+    {
+      "title": "For Desktop Devices",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage/for-desktop-devices",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/for-desktop-devices.md",
+      "body_len": 0
+    },
+    {
+      "title": "For Handheld Devices",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage/for-handheld-devices",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/for-handheld-devices.md",
+      "body_len": 0
+    },
+    {
+      "title": "For V3 model",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage/for-v3-model",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/for-v3-model.md",
+      "body_len": 0
+    },
+    {
+      "title": "How to Edit the IP Printer Using a Mobile Phone",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage/how-to-edit-the-ip-printer-using-a-mobile-phone",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/how-to-edit-the-ip-printer-using-a-mobile-phone.md",
+      "body_len": 0
+    },
+    {
+      "title": "Set Item Sales Status",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage/set-item-sales-status",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/set-item-sales-status.md",
+      "body_len": 528
+    },
+    {
+      "title": "Split Table Bill Items",
+      "source_url": "https://gpos.co.th/en/user-manual/system-setup-program-usage/split-table-bill-items",
+      "lang": "en",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "en/system-setup-program-usage/split-table-bill-items.md",
+      "body_len": 535
+    },
+    {
+      "title": "Export Inventory",
+      "source_url": "https://gpos.co.th/en/user-manual/warehouse-management/export-inventory",
+      "lang": "en",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "en/warehouse-management/export-inventory.md",
+      "body_len": 565
+    },
+    {
+      "title": "Import Inventory",
+      "source_url": "https://gpos.co.th/en/user-manual/warehouse-management/import-inventory",
+      "lang": "en",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "en/warehouse-management/import-inventory.md",
+      "body_len": 771
+    },
+    {
+      "title": "Record Damaged Goods",
+      "source_url": "https://gpos.co.th/en/user-manual/warehouse-management/record-damaged-goods",
+      "lang": "en",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "en/warehouse-management/record-damaged-goods.md",
+      "body_len": 581
+    },
+    {
+      "title": "Split Multipack",
+      "source_url": "https://gpos.co.th/en/user-manual/warehouse-management/split-multipack",
+      "lang": "en",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "en/warehouse-management/split-multipack.md",
+      "body_len": 874
+    },
+    {
+      "title": "Stock Inventory Counting",
+      "source_url": "https://gpos.co.th/en/user-manual/warehouse-management/stock-inventory-counting",
+      "lang": "en",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "en/warehouse-management/stock-inventory-counting.md",
+      "body_len": 844
+    },
+    {
+      "title": "User Manual",
+      "source_url": "https://gpos.co.th/en/user-manual/head-office/creating-a-menu-template",
+      "lang": "en",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "en/head-office/creating-a-menu-template.md",
+      "body_len": 0
+    }
+  ]
+}

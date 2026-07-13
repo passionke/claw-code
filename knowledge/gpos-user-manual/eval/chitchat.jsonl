@@ -1,0 +1,10 @@
+{"id": "chat-01", "question": "Hi, who are you?", "lang": "en", "intent": "chitchat", "must_not_call_mcp": true, "expected_skill": "self-introduction"}
+{"id": "chat-02", "question": "Tell me a joke", "lang": "en", "intent": "chitchat", "must_not_call_mcp": true, "expected_skill": "self-introduction"}
+{"id": "chat-03", "question": "What's the weather in Bangkok?", "lang": "en", "intent": "chitchat", "must_not_call_mcp": true, "expected_skill": "self-introduction"}
+{"id": "chat-04", "question": "你好，你能做什么？", "lang": "zh", "intent": "chitchat", "must_not_call_mcp": true, "expected_skill": "self-introduction"}
+{"id": "chat-05", "question": "讲个笑话吧", "lang": "zh", "intent": "chitchat", "must_not_call_mcp": true, "expected_skill": "self-introduction"}
+{"id": "chat-06", "question": "帮我写一段 Python 代码", "lang": "zh", "intent": "chitchat", "must_not_call_mcp": true, "expected_skill": "self-introduction"}
+{"id": "chat-07", "question": "สวัสดี คุณคือใคร", "lang": "th", "intent": "chitchat", "must_not_call_mcp": true, "expected_skill": "self-introduction"}
+{"id": "chat-08", "question": "เล่าเรื่องตลกให้ฟังหน่อย", "lang": "th", "intent": "chitchat", "must_not_call_mcp": true, "expected_skill": "self-introduction"}
+{"id": "chat-09", "question": "What model are you?", "lang": "en", "intent": "chitchat", "must_not_call_mcp": true, "expected_skill": "self-introduction"}
+{"id": "chat-10", "question": "今天股市怎么样？", "lang": "zh", "intent": "chitchat", "must_not_call_mcp": true, "expected_skill": "self-introduction"}

@@ -1,0 +1,1268 @@
+{
+  "lang": "th",
+  "source": "https://gpos.co.th/th/user-manual",
+  "crawled_at": "2026-07-13T05:45:54Z",
+  "page_count": 140,
+  "pages": [
+    {
+      "title": "คู่มือการใช้งาน",
+      "source_url": "https://gpos.co.th/th/user-manual",
+      "lang": "th",
+      "category": "Getting Started",
+      "category_slug": "root",
+      "path": "th/getting-started.md",
+      "body_len": 255
+    },
+    {
+      "title": "การตั้งค่า/อื่นๆ (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/index.md",
+      "body_len": 417
+    },
+    {
+      "title": "การจัดการส่วนลด",
+      "source_url": "https://gpos.co.th/th/user-manual/discounts",
+      "lang": "th",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "th/discounts/index.md",
+      "body_len": 258
+    },
+    {
+      "title": "Gpos Pro",
+      "source_url": "https://gpos.co.th/th/user-manual/gpos-pro",
+      "lang": "th",
+      "category": "Gpos Pro",
+      "category_slug": "gpos-pro",
+      "path": "th/gpos-pro/index.md",
+      "body_len": 103
+    },
+    {
+      "title": "Grab X Gpos",
+      "source_url": "https://gpos.co.th/th/user-manual/grab-x-gpos",
+      "lang": "th",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "th/grab-x-gpos/index.md",
+      "body_len": 363
+    },
+    {
+      "title": "ระบบสำนักงานใหญ่",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/index.md",
+      "body_len": 1014
+    },
+    {
+      "title": "Manager App",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/index.md",
+      "body_len": 483
+    },
+    {
+      "title": "ระบบสมาชิก",
+      "source_url": "https://gpos.co.th/th/user-manual/membership",
+      "lang": "th",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "th/membership/index.md",
+      "body_len": 361
+    },
+    {
+      "title": "การจัดการเครื่องพิมพ์",
+      "source_url": "https://gpos.co.th/th/user-manual/printer-settings",
+      "lang": "th",
+      "category": "Printer Settings",
+      "category_slug": "printer-settings",
+      "path": "th/printer-settings/index.md",
+      "body_len": 160
+    },
+    {
+      "title": "การจัดการรายการสินค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/product-management",
+      "lang": "th",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "th/product-management/index.md",
+      "body_len": 113
+    },
+    {
+      "title": "การสร้างรายการสินค้า (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/product-management/add-product-back-office",
+      "lang": "th",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "th/product-management/add-product-back-office.md",
+      "body_len": 2077
+    },
+    {
+      "title": "การจัดการพนักงาน",
+      "source_url": "https://gpos.co.th/th/user-manual/staff-management",
+      "lang": "th",
+      "category": "Staff Management",
+      "category_slug": "staff-management",
+      "path": "th/staff-management/index.md",
+      "body_len": 172
+    },
+    {
+      "title": "การจัดการการตั้งค่าทั้งหมด (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/index.md",
+      "body_len": 870
+    },
+    {
+      "title": "เริ่มต้นระบบ & การใช้งานโปรแกรม",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/index.md",
+      "body_len": 364
+    },
+    {
+      "title": "การจัดการคลังสินค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/warehouse-management",
+      "lang": "th",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "th/warehouse-management/index.md",
+      "body_len": 132
+    },
+    {
+      "title": "เพิ่มโต๊ะ เพิ่มโซน (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/add-tables-add-zones-pos",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/add-tables-add-zones-pos.md",
+      "body_len": 177
+    },
+    {
+      "title": "การตั้งค่าพื้นฐาน (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/all-settings-pos",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/all-settings-pos.md",
+      "body_len": 3864
+    },
+    {
+      "title": "วิธีเลือกชำระเงินผ่าน Kbank บน POS หลังเชื่อมต่อ",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/how-to-choose-payment-via-kbank-on-pos-after-connecting",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/how-to-choose-payment-via-kbank-on-pos-after-connecting.md",
+      "body_len": 414
+    },
+    {
+      "title": "วิธีการพิมพ์ QR แบบไดนามิกบนใบเรียกเก็บเงินหลังจากเชื่อมต่อ Kbank (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/how-to-print-dynamic-qr-codes-on-bills-after-connecting-with-kbank",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/how-to-print-dynamic-qr-codes-on-bills-after-connecting-with-kbank.md",
+      "body_len": 460
+    },
+    {
+      "title": "วิธีการปริ้นคิวอาร์โค้ดโต๊ะ",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/how-to-print-qr-codes-for-tables",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/how-to-print-qr-codes-for-tables.md",
+      "body_len": 396
+    },
+    {
+      "title": "วิธีการคืนเงินผ่านช่องทางชำระเงินอื่น (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/how-to-refund-via-other-payment-channels",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/how-to-refund-via-other-payment-channels.md",
+      "body_len": 378
+    },
+    {
+      "title": "วิธีการใช้งานระบบทิป ทุกช่องทางชำระเงิน (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/how-to-use-the-tipping-system-for-all-payment-methods-pos",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/how-to-use-the-tipping-system-for-all-payment-methods-pos.md",
+      "body_len": 505
+    },
+    {
+      "title": "วิธีการใช้งานระบบทิป ช่องทางชำระเงินสด (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/how-to-use-the-tipping-system-for-cash-payments-pos",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/how-to-use-the-tipping-system-for-cash-payments-pos.md",
+      "body_len": 457
+    },
+    {
+      "title": "การตั้งค่าเสียงแจ้งเตือน (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/notification-sound-settings-pos",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/notification-sound-settings-pos.md",
+      "body_len": 961
+    },
+    {
+      "title": "การตั้งค่า Pickup (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/pickup-settings-pos",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/pickup-settings-pos.md",
+      "body_len": 677
+    },
+    {
+      "title": "ปริ้นบาร์โค้ดผ่านหน้าเครื่อง",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/print-barcodes-via-pos-machine",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/print-barcodes-via-pos-machine.md",
+      "body_len": 415
+    },
+    {
+      "title": "การตั้งค่าระบบคิว (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/queue-system-settings-pos",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/queue-system-settings-pos.md",
+      "body_len": 811
+    },
+    {
+      "title": "ตั้งค่าช่องทางชำระเงิน Gpos หลังเชื่อมต่อ Kbank หน้าเครื่อง",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/set-up-gpos-payment-channel-after-connecting-with-kbank-pos",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/set-up-gpos-payment-channel-after-connecting-with-kbank-pos.md",
+      "body_len": 266
+    },
+    {
+      "title": "ตั้งค่าประเภทการชำระเงิน (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/set-up-payment-types-pos",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/set-up-payment-types-pos.md",
+      "body_len": 1397
+    },
+    {
+      "title": "การตั้งค่าช่องทางการขายในร้าน (POS)",
+      "source_url": "https://gpos.co.th/th/user-manual/device-settings/setting-up-sales-channels-in-the-store-pos",
+      "lang": "th",
+      "category": "Device Settings",
+      "category_slug": "device-settings",
+      "path": "th/device-settings/setting-up-sales-channels-in-the-store-pos.md",
+      "body_len": 1799
+    },
+    {
+      "title": "คูปองส่วนลดแบบจำนวนเงิน",
+      "source_url": "https://gpos.co.th/th/user-manual/discounts/amount-off-coupon",
+      "lang": "th",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "th/discounts/amount-off-coupon.md",
+      "body_len": 3247
+    },
+    {
+      "title": "สร้างส่วนลดหมวดหมู่แบบเปอร์เซ็นต์ (%)",
+      "source_url": "https://gpos.co.th/th/user-manual/discounts/category-percent-off",
+      "lang": "th",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "th/discounts/category-percent-off.md",
+      "body_len": 2022
+    },
+    {
+      "title": "ส่วนลดกำหนดเอง",
+      "source_url": "https://gpos.co.th/th/user-manual/discounts/flexible-discount",
+      "lang": "th",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "th/discounts/flexible-discount.md",
+      "body_len": 966
+    },
+    {
+      "title": "คูปองฟรี",
+      "source_url": "https://gpos.co.th/th/user-manual/discounts/gift-coupon",
+      "lang": "th",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "th/discounts/gift-coupon.md",
+      "body_len": 3033
+    },
+    {
+      "title": "ส่วนลดรายการแบบเปอร์เซ็นต์ (%)",
+      "source_url": "https://gpos.co.th/th/user-manual/discounts/item-percent-off",
+      "lang": "th",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "th/discounts/item-percent-off.md",
+      "body_len": 2638
+    },
+    {
+      "title": "คูปองส่วนลดแบบเปอร์เซ็นต์",
+      "source_url": "https://gpos.co.th/th/user-manual/discounts/percent-off-coupon",
+      "lang": "th",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "th/discounts/percent-off-coupon.md",
+      "body_len": 2372
+    },
+    {
+      "title": "สร้างส่วนลดเปอร์เซ็นต์แบบทั้งบิล (%)",
+      "source_url": "https://gpos.co.th/th/user-manual/discounts/set-discount-for-entire-bill",
+      "lang": "th",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "th/discounts/set-discount-for-entire-bill.md",
+      "body_len": 1880
+    },
+    {
+      "title": "ส่วนลดรายการแบบจำนวน (บาท)",
+      "source_url": "https://gpos.co.th/th/user-manual/discounts/special-item-offer",
+      "lang": "th",
+      "category": "Discounts",
+      "category_slug": "discounts",
+      "path": "th/discounts/special-item-offer.md",
+      "body_len": 2438
+    },
+    {
+      "title": "ฟีเจอร์ รายงานแดชบอร์ด",
+      "source_url": "https://gpos.co.th/th/user-manual/gpos-pro/dashboard-reports",
+      "lang": "th",
+      "category": "Gpos Pro",
+      "category_slug": "gpos-pro",
+      "path": "th/gpos-pro/dashboard-reports.md",
+      "body_len": 161
+    },
+    {
+      "title": "วิธีการสร้างวัตถุดิบ",
+      "source_url": "https://gpos.co.th/th/user-manual/gpos-pro/how-to-create-ingredients",
+      "lang": "th",
+      "category": "Gpos Pro",
+      "category_slug": "gpos-pro",
+      "path": "th/gpos-pro/how-to-create-ingredients.md",
+      "body_len": 971
+    },
+    {
+      "title": "การผูกสูตรวัตถุดิบ",
+      "source_url": "https://gpos.co.th/th/user-manual/gpos-pro/ingredient-recipe-mapping",
+      "lang": "th",
+      "category": "Gpos Pro",
+      "category_slug": "gpos-pro",
+      "path": "th/gpos-pro/ingredient-recipe-mapping.md",
+      "body_len": 150
+    },
+    {
+      "title": "ฟีเจอร์ Magic Ai",
+      "source_url": "https://gpos.co.th/th/user-manual/gpos-pro/magic-ai",
+      "lang": "th",
+      "category": "Gpos Pro",
+      "category_slug": "gpos-pro",
+      "path": "th/gpos-pro/magic-ai.md",
+      "body_len": 156
+    },
+    {
+      "title": "เพิ่มรายการสินค้า GrabFood ผ่าน GPOS (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/grab-x-gpos/add-grabfood-items-via-gpos-back-office",
+      "lang": "th",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "th/grab-x-gpos/add-grabfood-items-via-gpos-back-office.md",
+      "body_len": 1455
+    },
+    {
+      "title": "วิธีเชื่อมต่อ GPOS กับ Grab (ดึงข้อมูลจาก GPOS)",
+      "source_url": "https://gpos.co.th/th/user-manual/grab-x-gpos/connect-gpos-with-grab-sync-from-gpos",
+      "lang": "th",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "th/grab-x-gpos/connect-gpos-with-grab-sync-from-gpos.md",
+      "body_len": 953
+    },
+    {
+      "title": "วิธีเชื่อมต่อ Grab กับ GPOS (ดึงข้อมูลจาก Grab)",
+      "source_url": "https://gpos.co.th/th/user-manual/grab-x-gpos/connect-grab-with-gpos-sync-from-grab",
+      "lang": "th",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "th/grab-x-gpos/connect-grab-with-gpos-sync-from-grab.md",
+      "body_len": 1012
+    },
+    {
+      "title": "วิธีแยกเมนู Grab และ POS ในร้านค้า (หลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/grab-x-gpos/separate-grab-and-pos-menus-back-office",
+      "lang": "th",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "th/grab-x-gpos/separate-grab-and-pos-menus-back-office.md",
+      "body_len": 760
+    },
+    {
+      "title": "วิธีตั้งราคาตัวเลือกที่ต่างกันจาก gpos และ grab จากหลังบ้าน",
+      "source_url": "https://gpos.co.th/th/user-manual/grab-x-gpos/set-option-price-for-gpos-and-grab-back-office",
+      "lang": "th",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "th/grab-x-gpos/set-option-price-for-gpos-and-grab-back-office.md",
+      "body_len": 414
+    },
+    {
+      "title": "กำหนดเวลาการขายรายการสินค้า Grab",
+      "source_url": "https://gpos.co.th/th/user-manual/grab-x-gpos/set-sales-time-for-grab-items",
+      "lang": "th",
+      "category": "Grab X Gpos",
+      "category_slug": "grab-x-gpos",
+      "path": "th/grab-x-gpos/set-sales-time-for-grab-items.md",
+      "body_len": 574
+    },
+    {
+      "title": "เพิ่มร้านค้าสาขาย่อย",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/add-branch-stores",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/add-branch-stores.md",
+      "body_len": 395
+    },
+    {
+      "title": "การเพิ่มรายการจากสำนักงานใหญ่ไปสาขาย่อย",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/add-items-from-headquarters-to-branches",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/add-items-from-headquarters-to-branches.md",
+      "body_len": 517
+    },
+    {
+      "title": "การตั้งค่าและส่งออกไปยังร้านค้า (สาขาย่อย)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/configuration-and-export-to-store-branches",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/configuration-and-export-to-store-branches.md",
+      "body_len": 8392
+    },
+    {
+      "title": "สร้างเทมเพลตการตั้งค่าทั้งหมด (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/create-all-template-settings-back-office",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/create-all-template-settings-back-office.md",
+      "body_len": 2960
+    },
+    {
+      "title": "สร้างพนักงานและผูกบทบาทจากสำนักงานใหญ่เพื่อดูแลร้านค้า (สาขา)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/create-employees-and-assign-roles-from-headquarters-to-manage-stores-branches",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/create-employees-and-assign-roles-from-headquarters-to-manage-stores-branches.md",
+      "body_len": 1005
+    },
+    {
+      "title": "สร้างเทมเพลตตั้งค่าบิลใบเสร็จ บิลออเดอร์ และบิลเรียกเก็บเงิน (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/create-receipt-order-and-invoice-template-settings-back-office",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/create-receipt-order-and-invoice-template-settings-back-office.md",
+      "body_len": 1111
+    },
+    {
+      "title": "การสร้างเครื่องพิมพ์แคชเชียร์และส่งออกไปยังร้านค้า (สาขาย่อย)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/creating-a-cashier-printer-and-exporting-it-to-store-branches",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/creating-a-cashier-printer-and-exporting-it-to-store-branches.md",
+      "body_len": 4998
+    },
+    {
+      "title": "การสร้างค่าบริการเพิ่มเติมและส่งออกไปยังร้านค้า (สาขาย่อย)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/creating-and-exporting-additional-service-charges-to-store-branches",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/creating-and-exporting-additional-service-charges-to-store-branches.md",
+      "body_len": 3508
+    },
+    {
+      "title": "การสร้างประเภทการชําระเงินและส่งออกไปยังร้านค้า (สาขาย่อย)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/creating-and-exporting-payment-types-to-store-branches",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/creating-and-exporting-payment-types-to-store-branches.md",
+      "body_len": 3629
+    },
+    {
+      "title": "การสร้างทิปและส่งออกไปยังร้านค้า (สาขาย่อย)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/creating-and-exporting-tip-templates-to-store-branches",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/creating-and-exporting-tip-templates-to-store-branches.md",
+      "body_len": 2183
+    },
+    {
+      "title": "การสร้างเครื่องพิมพ์ในห้องครัวและส่งออกไปยังร้านค้า (สาขาย่อย)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/creating-kitchen-printers-and-exporting-to-store-branches",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/creating-kitchen-printers-and-exporting-to-store-branches.md",
+      "body_len": 4429
+    },
+    {
+      "title": "การสร้างช่องทางการขายผ่านสำนักงานใหญ่",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/creating-sales-channels-via-head-office",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/creating-sales-channels-via-head-office.md",
+      "body_len": 2568
+    },
+    {
+      "title": "การลบรายการสินค้าจากสำนักงานใหญ่ไปสาขาย่อย",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/remove-distributed-items-from-head-office-to-branches",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/remove-distributed-items-from-head-office-to-branches.md",
+      "body_len": 543
+    },
+    {
+      "title": "การเปลี่ยนเมนูจากสำนักงานใหญ่ไปสาขาย่อย",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/replace-the-menu-from-head-office-to-branches",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/replace-the-menu-from-head-office-to-branches.md",
+      "body_len": 702
+    },
+    {
+      "title": "ตั้งค่าเครื่องพิมพ์ในห้องครัว และส่งออกไปยังร้านค้า (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/set-up-kitchen-printers-and-export-to-stores-back-office",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/set-up-kitchen-printers-and-export-to-stores-back-office.md",
+      "body_len": 1847
+    },
+    {
+      "title": "ตั้งค่าทิป และส่งออกไปยังร้านค้า (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/set-up-tips-and-export-to-stores-back-office",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/set-up-tips-and-export-to-stores-back-office.md",
+      "body_len": 899
+    },
+    {
+      "title": "การคัดลอกร้านค้า (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/store-duplication-back-office",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/store-duplication-back-office.md",
+      "body_len": 676
+    },
+    {
+      "title": "การอัพเดตรายการเดิมจากสำนักงานใหญ่ไปสาขาย่อย",
+      "source_url": "https://gpos.co.th/th/user-manual/head-office/update-existing-items-for-headquarters",
+      "lang": "th",
+      "category": "Head Office",
+      "category_slug": "head-office",
+      "path": "th/head-office/update-existing-items-for-headquarters.md",
+      "body_len": 530
+    },
+    {
+      "title": "เพิ่มหมวดหมู่สินค้าในเมนูลัดสินค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/add-product-categories-to-the-product-shortcut-menu",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/add-product-categories-to-the-product-shortcut-menu.md",
+      "body_len": 196
+    },
+    {
+      "title": "เพิ่มสินค้าสินค้า (Manager)",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/add-product-manager",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/add-product-manager.md",
+      "body_len": 937
+    },
+    {
+      "title": "วิธีดูสต็อกสินค้าผ่าน Manager App",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/how-to-check-product-stock-via-the-manager-app",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/how-to-check-product-stock-via-the-manager-app.md",
+      "body_len": 130
+    },
+    {
+      "title": "วิธีสร้างตัวเลือก/ตัวเลือกเพิ่มเติม (Manager App)",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/how-to-create-options-additional-options-manager-app",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/how-to-create-options-additional-options-manager-app.md",
+      "body_len": 516
+    },
+    {
+      "title": "วิธีล็อกอินเข้าสู่ระบบ Manager App",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/how-to-log-in-manager-app",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/how-to-log-in-manager-app.md",
+      "body_len": 500
+    },
+    {
+      "title": "วิธีดูรายงานผ่าน Manager App",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/how-to-view-reports-via-the-manager-app",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/how-to-view-reports-via-the-manager-app.md",
+      "body_len": 329
+    },
+    {
+      "title": "วิธีดูภาพรวมร้านค้า Manager App",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/how-to-view-store-overview-manager-app",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/how-to-view-store-overview-manager-app.md",
+      "body_len": 39
+    },
+    {
+      "title": "จัดการแก้ไขข้อมูลรายการสินค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/manage-product-items-in-the-product-shortcut-menu",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/manage-product-items-in-the-product-shortcut-menu.md",
+      "body_len": 660
+    },
+    {
+      "title": "การจัดการรายการ GrabFood (Manager App)",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/managing-grabfood-items-via-manager-app",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/managing-grabfood-items-via-manager-app.md",
+      "body_len": 765
+    },
+    {
+      "title": "การจัดการ ระบบPOS (Manager App)",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/managing-the-pos-system-through-manager-app",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/managing-the-pos-system-through-manager-app.md",
+      "body_len": 642
+    },
+    {
+      "title": "การจัดการ ระบบ Scan (Manager App)",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/managing-the-scan-system-via-manager-app",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/managing-the-scan-system-via-manager-app.md",
+      "body_len": 612
+    },
+    {
+      "title": "เปิด-ปิด ร้านค้า GRABFOOD (Manager App)",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/open-close-grabfood-stores-via-manager-app",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/open-close-grabfood-stores-via-manager-app.md",
+      "body_len": 408
+    },
+    {
+      "title": "การเพิ่มรายการคอมโบ (Manager)",
+      "source_url": "https://gpos.co.th/th/user-manual/manager-app/steps-to-add-combo-items-manager",
+      "lang": "th",
+      "category": "Manager App",
+      "category_slug": "manager-app",
+      "path": "th/manager-app/steps-to-add-combo-items-manager.md",
+      "body_len": 487
+    },
+    {
+      "title": "การเพิ่มสมาชิก (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/membership/add-member-back-office",
+      "lang": "th",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "th/membership/add-member-back-office.md",
+      "body_len": 2495
+    },
+    {
+      "title": "ส่วนลดรายการแบบเปอร์เซ็นต์ สำหรับสมาชิก",
+      "source_url": "https://gpos.co.th/th/user-manual/membership/create-item-discount-percentage-member",
+      "lang": "th",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "th/membership/create-item-discount-percentage-member.md",
+      "body_len": 4685
+    },
+    {
+      "title": "ส่วนลดรายการแบบจำนวน (บาท) สำหรับสมาชิก",
+      "source_url": "https://gpos.co.th/th/user-manual/membership/create-item-discount-quantity-member",
+      "lang": "th",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "th/membership/create-item-discount-quantity-member.md",
+      "body_len": 4616
+    },
+    {
+      "title": "แพ็กเกจเติมเงิน สำหรับสมาชิก",
+      "source_url": "https://gpos.co.th/th/user-manual/membership/create-top-up-package-membership",
+      "lang": "th",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "th/membership/create-top-up-package-membership.md",
+      "body_len": 1724
+    },
+    {
+      "title": "ตั้งค่าพอยท์สมาชิก (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/membership/member-point-settings-back-office",
+      "lang": "th",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "th/membership/member-point-settings-back-office.md",
+      "body_len": 1342
+    },
+    {
+      "title": "ระบบสมาชิก วิธีการเพิ่มสมาชิก (หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/membership/membership-add-member-pos-device",
+      "lang": "th",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "th/membership/membership-add-member-pos-device.md",
+      "body_len": 392
+    },
+    {
+      "title": "การจัดการระดับสมาชิก (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/membership/membership-level-management-back-office",
+      "lang": "th",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "th/membership/membership-level-management-back-office.md",
+      "body_len": 1399
+    },
+    {
+      "title": "ตั้งค่าพอยท์สมาชิก ( หน้าเครื่อง)",
+      "source_url": "https://gpos.co.th/th/user-manual/membership/membership-set-points-pos-device",
+      "lang": "th",
+      "category": "Membership",
+      "category_slug": "membership",
+      "path": "th/membership/membership-set-points-pos-device.md",
+      "body_len": 597
+    },
+    {
+      "title": "เชื่อมต่อเครื่องปริ้นเตอร์บลูทูธแบบ USB",
+      "source_url": "https://gpos.co.th/th/user-manual/printer-settings/connect-bluetooth-printer-via-usb",
+      "lang": "th",
+      "category": "Printer Settings",
+      "category_slug": "printer-settings",
+      "path": "th/printer-settings/connect-bluetooth-printer-via-usb.md",
+      "body_len": 331
+    },
+    {
+      "title": "เชื่อมต่อเครื่องปริ้นเตอร์ BT",
+      "source_url": "https://gpos.co.th/th/user-manual/printer-settings/connect-bt-printer",
+      "lang": "th",
+      "category": "Printer Settings",
+      "category_slug": "printer-settings",
+      "path": "th/printer-settings/connect-bt-printer.md",
+      "body_len": 386
+    },
+    {
+      "title": "เชื่อมต่อเครื่องปริ้นเตอร์ LAN",
+      "source_url": "https://gpos.co.th/th/user-manual/printer-settings/connect-lan-printer",
+      "lang": "th",
+      "category": "Printer Settings",
+      "category_slug": "printer-settings",
+      "path": "th/printer-settings/connect-lan-printer.md",
+      "body_len": 422
+    },
+    {
+      "title": "เชื่อมต่อ Q80A แบบ USB",
+      "source_url": "https://gpos.co.th/th/user-manual/printer-settings/connect-q80a-via-usb",
+      "lang": "th",
+      "category": "Printer Settings",
+      "category_slug": "printer-settings",
+      "path": "th/printer-settings/connect-q80a-via-usb.md",
+      "body_len": 365
+    },
+    {
+      "title": "การเพิ่มแท็กรายการสินค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/product-management/adding-tags-to-products",
+      "lang": "th",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "th/product-management/adding-tags-to-products.md",
+      "body_len": 449
+    },
+    {
+      "title": "ระบบสร้างบาร์โค้ดผ่านไฟล์ Excel",
+      "source_url": "https://gpos.co.th/th/user-manual/product-management/barcode-generation-system-via-excel-file",
+      "lang": "th",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "th/product-management/barcode-generation-system-via-excel-file.md",
+      "body_len": 1638
+    },
+    {
+      "title": "การดำเนินการหลายรายการ (รูปภาพ, ราคา, ปิด/เปิดขาย, ลบ)",
+      "source_url": "https://gpos.co.th/th/user-manual/product-management/bulk-actions-images-price-enable-disable-sales-delete",
+      "lang": "th",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "th/product-management/bulk-actions-images-price-enable-disable-sales-delete.md",
+      "body_len": 1604
+    },
+    {
+      "title": "สร้างรายการสินค้าผ่านไฟล์ Excel",
+      "source_url": "https://gpos.co.th/th/user-manual/product-management/create-product-list-via-excel-file",
+      "lang": "th",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "th/product-management/create-product-list-via-excel-file.md",
+      "body_len": 2049
+    },
+    {
+      "title": "วิธีสร้างหมวดหมู่",
+      "source_url": "https://gpos.co.th/th/user-manual/product-management/how-to-create-categories",
+      "lang": "th",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "th/product-management/how-to-create-categories.md",
+      "body_len": 538
+    },
+    {
+      "title": "วิธีการสร้างรายการคอมโบ",
+      "source_url": "https://gpos.co.th/th/user-manual/product-management/how-to-create-product-combo-list",
+      "lang": "th",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "th/product-management/how-to-create-product-combo-list.md",
+      "body_len": 3119
+    },
+    {
+      "title": "การสร้าง ตัวเลือก/ ตัวเลือกเพิ่มเติม (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/product-management/mandatory-options-add-ons-back-office",
+      "lang": "th",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "th/product-management/mandatory-options-add-ons-back-office.md",
+      "body_len": 957
+    },
+    {
+      "title": "ตั้งเวลาการขายของระบบ POS",
+      "source_url": "https://gpos.co.th/th/user-manual/product-management/set-pos-sales-time",
+      "lang": "th",
+      "category": "Product Management",
+      "category_slug": "product-management",
+      "path": "th/product-management/set-pos-sales-time.md",
+      "body_len": 733
+    },
+    {
+      "title": "วิธีการล็อกอินเข้าระบบของพนักงานผ่านหน้าเครื่อง pos",
+      "source_url": "https://gpos.co.th/th/user-manual/staff-management/lock-staff-login-via-pos-device",
+      "lang": "th",
+      "category": "Staff Management",
+      "category_slug": "staff-management",
+      "path": "th/staff-management/lock-staff-login-via-pos-device.md",
+      "body_len": 151
+    },
+    {
+      "title": "การจัดการบทบาทและจำกัดสิทธิพนักงาน",
+      "source_url": "https://gpos.co.th/th/user-manual/staff-management/manage-roles-and-permissions",
+      "lang": "th",
+      "category": "Staff Management",
+      "category_slug": "staff-management",
+      "path": "th/staff-management/manage-roles-and-permissions.md",
+      "body_len": 1844
+    },
+    {
+      "title": "วิธีการสลับ PIN พนักงานและเจ้าของร้าน",
+      "source_url": "https://gpos.co.th/th/user-manual/staff-management/reset-staff-owner-pin",
+      "lang": "th",
+      "category": "Staff Management",
+      "category_slug": "staff-management",
+      "path": "th/staff-management/reset-staff-owner-pin.md",
+      "body_len": 485
+    },
+    {
+      "title": "การสร้างพนักงาน",
+      "source_url": "https://gpos.co.th/th/user-manual/staff-management/staff-management-back-office",
+      "lang": "th",
+      "category": "Staff Management",
+      "category_slug": "staff-management",
+      "path": "th/staff-management/staff-management-back-office.md",
+      "body_len": 2102
+    },
+    {
+      "title": "การเพิ่มโซน เพิ่มโต๊ะ",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/add-zones-and-tables-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/add-zones-and-tables-back-office.md",
+      "body_len": 4984
+    },
+    {
+      "title": "การตั้งค่าพื้นฐาน",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/basic-settings-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/basic-settings-back-office.md",
+      "body_len": 4511
+    },
+    {
+      "title": "การตั้งค่าเครื่องพิมพ์แคชเชียร์",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/cashier-sections-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/cashier-sections-back-office.md",
+      "body_len": 1887
+    },
+    {
+      "title": "วิธีเพิ่มเครื่องพิมพ์ในห้องครัว",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/how-to-add-kitchen-printers-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/how-to-add-kitchen-printers-back-office.md",
+      "body_len": 2175
+    },
+    {
+      "title": "วิธีเพิ่มทิป",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/how-to-add-tips-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/how-to-add-tips-back-office.md",
+      "body_len": 1472
+    },
+    {
+      "title": "วิธีสร้างช่องทางชำระเงิน",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/how-to-create-a-payment-channel-back-officer",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/how-to-create-a-payment-channel-back-officer.md",
+      "body_len": 1992
+    },
+    {
+      "title": "การเรียงลำดับช่องทางชำระเงิน",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/how-to-sort-payment-channels-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/how-to-sort-payment-channels-back-office.md",
+      "body_len": 1175
+    },
+    {
+      "title": "การตั้งค่ารูปแบบใบสั่งผลิตฉลาก",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/label-production-order-format-settings-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/label-production-order-format-settings-back-office.md",
+      "body_len": 2066
+    },
+    {
+      "title": "การจัดการค่าบริการเพิ่มเติม",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/manage-service-charges-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/manage-service-charges-back-office.md",
+      "body_len": 1498
+    },
+    {
+      "title": "การตั้งค่ารุปแบบสต๊อก",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/outbound-setting",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/outbound-setting.md",
+      "body_len": 903
+    },
+    {
+      "title": "การตั้งค่าแจ้งเตือนสต๊อกสินค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/product-stock-notification-settings-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/product-stock-notification-settings-back-office.md",
+      "body_len": 1085
+    },
+    {
+      "title": "การตั้งค่าระบบคิว (ระบบหลังบ้าน)",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/queue-settings-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/queue-settings-back-office.md",
+      "body_len": 1138
+    },
+    {
+      "title": "การตั้งค่าช่องทางการขายในร้าน",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/sales-channels-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/sales-channels-back-office.md",
+      "body_len": 2041
+    },
+    {
+      "title": "เลย์เอาต์การสแกนเพื่อสั่ง",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/scan-to-order-layout",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/scan-to-order-layout.md",
+      "body_len": 4603
+    },
+    {
+      "title": "การตั้งค่าสแกนเพื่อสั่ง",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/scan-to-order-settings",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/scan-to-order-settings.md",
+      "body_len": 3039
+    },
+    {
+      "title": "การตั้งค่ารูปภาพโฆษณาและหน้าจอหลัง",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/set-up-advertisement-images-and-back-screen-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/set-up-advertisement-images-and-back-screen-back-office.md",
+      "body_len": 1508
+    },
+    {
+      "title": "การตั้งค่าหมายเลข Pick up",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/set-up-pick-up-numbers-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/set-up-pick-up-numbers-back-office.md",
+      "body_len": 962
+    },
+    {
+      "title": "ตั้งค่าแสดง QR Code ในใบเรียกเก็บเงิน หลังจากเชื่อมต่อ Kbank",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/set-up-qr-code-display-in-preliminary-bill-after-connecting-to-kbank-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/set-up-qr-code-display-in-preliminary-bill-after-connecting-to-kbank-back-office.md",
+      "body_len": 2599
+    },
+    {
+      "title": "ตั้งค่ารูปแบบใบเสร็จ",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/set-up-receipt-format-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/set-up-receipt-format-back-office.md",
+      "body_len": 2542
+    },
+    {
+      "title": "ตั้งค่ารูปแบบใบออเดอร์",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/set-up-the-order-form-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/set-up-the-order-form-back-office.md",
+      "body_len": 2390
+    },
+    {
+      "title": "การจัดการร้านค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/store-management-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/store-management-back-office.md",
+      "body_len": 221
+    },
+    {
+      "title": "การจัดการภาษี",
+      "source_url": "https://gpos.co.th/th/user-manual/store-management-back-office/tax-settings-back-office",
+      "lang": "th",
+      "category": "Store Management (Back Office)",
+      "category_slug": "store-management-back-office",
+      "path": "th/store-management-back-office/tax-settings-back-office.md",
+      "body_len": 2503
+    },
+    {
+      "title": "สำหรับรุ่น D3 80mm",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage/for-d3-80mm-model",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/for-d3-80mm-model.md",
+      "body_len": 0
+    },
+    {
+      "title": "สำหรับรุ่น D3 Standard Single Screen",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage/for-d3-standard-single-screen",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/for-d3-standard-single-screen.md",
+      "body_len": 0
+    },
+    {
+      "title": "สำหรับรุ่น D3 mini",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage/for-d3mini-model",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/for-d3mini-model.md",
+      "body_len": 0
+    },
+    {
+      "title": "สำหรับรุ่น D3 Pro",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage/for-d3pro-model",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/for-d3pro-model.md",
+      "body_len": 0
+    },
+    {
+      "title": "สำหรับเครื่องตั้งโต๊ะ",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage/for-desktop-devices",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/for-desktop-devices.md",
+      "body_len": 0
+    },
+    {
+      "title": "สำหรับเครื่องพกพา",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage/for-handheld-devices",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/for-handheld-devices.md",
+      "body_len": 0
+    },
+    {
+      "title": "สำหรับรุ่น V3",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage/for-v3-model",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/for-v3-model.md",
+      "body_len": 0
+    },
+    {
+      "title": "วิธีการแก้ไข IP Printer ด้วยโทรศัพท์มือถือ",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage/how-to-edit-the-ip-printer-using-a-mobile-phone",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/how-to-edit-the-ip-printer-using-a-mobile-phone.md",
+      "body_len": 0
+    },
+    {
+      "title": "ตั้งสถาะการขายสินค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage/set-item-sales-status",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/set-item-sales-status.md",
+      "body_len": 369
+    },
+    {
+      "title": "แยกบิลรายการโต๊ะ",
+      "source_url": "https://gpos.co.th/th/user-manual/system-setup-program-usage/split-table-bill-items",
+      "lang": "th",
+      "category": "System Setup & Program Usage",
+      "category_slug": "system-setup-program-usage",
+      "path": "th/system-setup-program-usage/split-table-bill-items.md",
+      "body_len": 608
+    },
+    {
+      "title": "การส่งออกสต๊อกสินค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/warehouse-management/export-inventory",
+      "lang": "th",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "th/warehouse-management/export-inventory.md",
+      "body_len": 489
+    },
+    {
+      "title": "การนำเข้าสต๊อกสินค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/warehouse-management/import-inventory",
+      "lang": "th",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "th/warehouse-management/import-inventory.md",
+      "body_len": 614
+    },
+    {
+      "title": "บันทึกสินค้าเสียหาย",
+      "source_url": "https://gpos.co.th/th/user-manual/warehouse-management/record-damaged-goods",
+      "lang": "th",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "th/warehouse-management/record-damaged-goods.md",
+      "body_len": 496
+    },
+    {
+      "title": "ระบบแยกยกลัง",
+      "source_url": "https://gpos.co.th/th/user-manual/warehouse-management/split-multipack",
+      "lang": "th",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "th/warehouse-management/split-multipack.md",
+      "body_len": 769
+    },
+    {
+      "title": "การตรวจนับสต๊อกสินค้า",
+      "source_url": "https://gpos.co.th/th/user-manual/warehouse-management/stock-inventory-counting",
+      "lang": "th",
+      "category": "Warehouse Management",
+      "category_slug": "warehouse-management",
+      "path": "th/warehouse-management/stock-inventory-counting.md",
+      "body_len": 701
+    }
+  ]
+}
