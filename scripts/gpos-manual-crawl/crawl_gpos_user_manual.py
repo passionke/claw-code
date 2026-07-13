@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Crawl GPOS user manual (EN + TH) into knowledge/gpos-user-manual/{en,th}/.
+"""Crawl GPOS user manual (EN + TH) into local knowledge/gpos-user-manual/{en,th}/.
 
+Output is gitignored — business KB is not stored in claw-code.
 Raw extract only — no LLM rewrite. Author: kejiqing
 """
 
@@ -10,6 +11,7 @@ from __future__ import annotations
 import argparse
 import html as html_lib
 import json
+import os
 import re
 import time
 import urllib.error
@@ -569,7 +571,12 @@ def main() -> int:
     ap.add_argument(
         "--out",
         type=Path,
-        default=Path(__file__).resolve().parents[2] / "knowledge" / "gpos-user-manual",
+        default=Path(
+            os.environ.get(
+                "GPOS_MANUAL_KB",
+                str(Path(__file__).resolve().parents[2] / "knowledge" / "gpos-user-manual"),
+            )
+        ),
     )
     ap.add_argument("--lang", choices=["en", "th", "all"], default="all")
     ap.add_argument("--delay", type=float, default=0.2)

@@ -9,11 +9,13 @@ Author: kejiqing
 | 文档 | 用途 |
 |------|------|
 | 本文 | **上线与日常运维真源** |
-| [`knowledge/gpos-user-manual/README.md`](../knowledge/gpos-user-manual/README.md) | KB 目录约定 |
 | [`docs/queryx-intent-routing-regress.md`](queryx-intent-routing-regress.md) | 回归检查清单 |
 | [`docs/queryx-agent-prompt-content.md`](queryx-agent-prompt-content.md) | CLAUDE / Rules 粘贴参考 |
-| [`knowledge/gpos-user-manual/eval/LIVE_REPORT.md`](../knowledge/gpos-user-manual/eval/LIVE_REPORT.md) | 预发 live 验收快照 |
+| [`scripts/gpos-manual-crawl/`](../scripts/gpos-manual-crawl/) | 爬取工具（产出本地 KB，不入库） |
+| [`scripts/gpos-manual-eval/`](../scripts/gpos-manual-eval/) | 冒烟 / Live 评测工具 |
 | [`docs/project-config-model.md`](project-config-model.md) | `project_config` / `git_sync` 模型 |
+
+**边界：** 业务知识库（GPOS 手册及后续其它域 KB）**不进 claw-code**。仓库只保留爬取 / 同步 / 评测脚本与 Admin 配置 fixtures；KB 正文落本地缓存或 NAS `home/kb`。
 
 ---
 
@@ -72,15 +74,19 @@ Worker 将该 version 根挂为 `/claw_ds`：
 
 **重要：** 每次 `activate` 会切到**新的** `contentRev` 目录。KB 必须 **rsync 到当前 `project_home_def` 指向的版本**，否则 worker 读到空 KB。
 
-### 2.3 仓库种子
+### 2.3 本地 KB 缓存（不入库）
+
+默认爬取落盘（`.gitignore` 的 `knowledge/`）：
 
 ```text
-knowledge/gpos-user-manual/
+knowledge/gpos-user-manual/   # 或 $GPOS_MANUAL_KB
   index.md
   en/ …          # EN 手册
   th/ …          # TH 手册
-  eval/          # 评测（勿同步到运行时 kb，或 rsync --exclude）
+  eval/          # 本地跑批产物（勿 rsync 到运行时 kb）
 ```
+
+仓库内只提交 `scripts/gpos-manual-crawl/` 与 `scripts/gpos-manual-eval/`。未来其它业务 KB 同样：脚本进仓、正文走 NAS / 独立存储。
 
 ---
 
@@ -188,8 +194,8 @@ scripts/gpos-manual-crawl/sync_kb_to_home.sh /path/to/proj_${PROJ}/home/kb
 #### E1 路由冒烟（约 4 题）
 
 ```bash
-python3 knowledge/gpos-user-manual/eval/route_smoke_271.py
-# 或按环境改脚本内 GATEWAY / TOKEN / projId / extraSession
+python3 scripts/gpos-manual-eval/route_smoke_271.py
+# 需 export CLAW_ADMIN_TOKEN=...；可选 CLAW_ADMIN_MCP_URL / GPOS_MANUAL_KB
 ```
 
 最低用例：
@@ -206,7 +212,8 @@ python3 knowledge/gpos-user-manual/eval/route_smoke_271.py
 
 ```bash
 # 重建题集并跑 batch（默认 proj 271；上线生产前改脚本常量）
-python3 knowledge/gpos-user-manual/eval/run_live_core_271.py --min 100
+export CLAW_ADMIN_TOKEN=...
+python3 scripts/gpos-manual-eval/run_live_core_271.py --min 100
 ```
 
 门槛（与产品约定一致时可调整）：
@@ -243,7 +250,7 @@ rsync -az --delete --exclude eval/ --exclude README.md \
   "admin@192.168.9.250:${VER}/home/kb/"
 
 # 3) 冒烟 + 可选全量
-python3 knowledge/gpos-user-manual/eval/route_smoke_271.py
+python3 scripts/gpos-manual-eval/route_smoke_271.py
 ```
 
 **不要**假设 worker 启动会拉 Git。`git_sync` 若启用：仍须显式 `POST /v1/projects/{projId}/git/pull`，且 pull 目标目录须与当前物化布局一致（见 [`project-config-model.md`](project-config-model.md)）。
@@ -282,7 +289,7 @@ project_config_activate({ projId, contentRev: "<上一稳定版>" })
 
 ### 6.2 仅回滚 KB
 
-对当前 `project_home_def` 重新 rsync 上一份已知良好的 `knowledge/gpos-user-manual/` 快照（git tag / 备份目录）。
+对当前 `project_home_def` 重新 rsync 上一份已知良好的本地 `knowledge/gpos-user-manual/`（或其它备份目录）快照。
 
 ---
 
@@ -359,6 +366,6 @@ export CLAW_GATEWAY=http://192.168.9.252:18088
 
 - 生效配置曾至 `2026-07-13_06-48-55`  
 - Live **105** 题（en/zh/th 各 35）：通过率约 **96.2%**；语种链接约 **97.1%**  
-- 明细见 [`eval/LIVE_REPORT.md`](../knowledge/gpos-user-manual/eval/LIVE_REPORT.md)
+- 明细见本地 `knowledge/gpos-user-manual/eval/LIVE_REPORT.md`（不入库）或钉钉「Live 105 基线」文档
 
 生产发布以**当次**验收为准，勿直接照搬历史通过率数字作为放行唯一依据。

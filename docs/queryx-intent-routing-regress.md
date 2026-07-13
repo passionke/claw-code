@@ -7,13 +7,15 @@ Author: kejiqing
 
 目标 project：预发 **271**；生产 **27**（或灰度 id）。先完成 KB 同步与 Admin **commit + activate**。
 
+前置：本地已 crawl 出 KB（默认 `knowledge/gpos-user-manual/`，**不入库**），并 `export CLAW_ADMIN_TOKEN=...`。
+
 ---
 
 ## 0. 离线 / 题集
 
 ```bash
 # 重建双语题集（≥100，含 en/zh/th）
-python3 knowledge/gpos-user-manual/eval/run_live_core_271.py --build-only --min 100
+python3 scripts/gpos-manual-eval/run_live_core_271.py --build-only --min 100
 wc -l knowledge/gpos-user-manual/eval/core-questions.jsonl
 ```
 
@@ -26,7 +28,7 @@ wc -l knowledge/gpos-user-manual/eval/core-questions.jsonl
 冒烟：
 
 ```bash
-python3 knowledge/gpos-user-manual/eval/route_smoke_271.py
+python3 scripts/gpos-manual-eval/route_smoke_271.py
 ```
 
 | 问法 | 期望 |
@@ -38,7 +40,7 @@ python3 knowledge/gpos-user-manual/eval/route_smoke_271.py
 全量：
 
 ```bash
-python3 knowledge/gpos-user-manual/eval/run_live_core_271.py --min 100
+python3 scripts/gpos-manual-eval/run_live_core_271.py --min 100
 ```
 
 | 检查 | 门槛 |
@@ -49,18 +51,18 @@ python3 knowledge/gpos-user-manual/eval/run_live_core_271.py --min 100
 | 错语种链接 | 尽量 0 |
 | 产品题误调 SQLBot | 0（抽检） |
 
-产出：`eval/results.jsonl`、`summary.json`、`failures.md`、`LIVE_REPORT.md`。
+产出（本地，不入库）：`knowledge/gpos-user-manual/eval/results.jsonl`、`summary.json`、`failures.md`、`LIVE_REPORT.md`。
 
 ---
 
-## 2. 闲聊对照（`eval/chitchat.jsonl`）
+## 2. 闲聊对照（`scripts/gpos-manual-eval/chitchat.jsonl`）
 
 - 仅 `self-introduction`（或等价固定介绍）
 - 无 SQLBot；不要求手册 URL
 
 ---
 
-## 3. 经营分析对照（`eval/analysis.jsonl`）
+## 3. 经营分析对照（`scripts/gpos-manual-eval/analysis.jsonl`）
 
 - 仍进分析 skills / SQLBot
 - 不用手册文章当经营数据答案
