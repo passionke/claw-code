@@ -226,6 +226,12 @@ impl NasLayoutBackend {
         .await
         .ok();
         self.symlink_rel(
+            &format!("{proj_prefix}/home/.claw/skills"),
+            "project_home_def/.claw/skills",
+        )
+        .await
+        .ok();
+        self.symlink_rel(
             &format!("{proj_prefix}/.cursor/rules"),
             "../home/project_home_def/.cursor/rules",
         )

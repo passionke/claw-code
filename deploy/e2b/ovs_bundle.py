@@ -38,10 +38,28 @@ def ensure_claw_vscode_vsix(staging_claw_ovs: Path) -> str:
     return ext_ver
 
 
+def _container_platform_args() -> list[str]:
+    """e2b sandboxes are linux/amd64; Mac arm64 host must pull/extract with matching platform."""
+    import os
+
+    plat = os.environ.get("CLAW_E2B_TEMPLATE_PLATFORM", "linux/amd64").strip()
+    return ["--platform", plat] if plat else []
+
+
 def stage_ovs_tree(staging: Path, container_runtime: str, ovs_image: str) -> str:
     """Stage OVS tree + machine settings; returns claw-vscode extension version."""
     rt = container_runtime
-    cid = subprocess.check_output([rt, "create", ovs_image], text=True).strip()
+    plat_args = _container_platform_args()
+    if (
+        subprocess.call(
+            [rt, "image", "inspect", ovs_image, *plat_args],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        != 0
+    ):
+        subprocess.check_call([rt, "pull", *plat_args, ovs_image])
+    cid = subprocess.check_output([rt, "create", *plat_args, ovs_image], text=True).strip()
     try:
         for src, dst in (
             ("/home/.openvscode-server", staging / "openvscode-server"),
