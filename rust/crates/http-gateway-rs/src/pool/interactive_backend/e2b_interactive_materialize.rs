@@ -15,6 +15,8 @@ use crate::project_config_draft;
 use crate::session_db::GatewaySessionDb;
 
 pub(crate) const PROJ_HOME: &str = GUEST_CLAW_DS;
+/// Stable project config root on NAS (`home/project_home_def` → versioned tree). Author: kejiqing
+pub(crate) const PROJ_CONFIG_ROOT: &str = "/claw_ds/project_home_def";
 pub(crate) const WORK_ROOT: &str = GUEST_CLAW_HOST_ROOT;
 
 /// Project config from PG → `/claw_ds` (proj worker bind; no session files).
@@ -82,7 +84,7 @@ if [ -f "$WORK/.claw/ttyd.pid" ]; then
   kill "$(cat "$WORK/.claw/ttyd.pid")" 2>/dev/null || true
 fi
 export HOME="$WORK"
-export CLAW_PROJECT_CONFIG_ROOT={PROJ_HOME:?}
+export CLAW_PROJECT_CONFIG_ROOT={PROJ_CONFIG_ROOT:?}
 export CLAW_GATEWAY_WORK_ROOT="$WORK"
 export CLAW_DISPLAY_MODE=web
 export XDG_CONFIG_HOME="$WORK/.config"
