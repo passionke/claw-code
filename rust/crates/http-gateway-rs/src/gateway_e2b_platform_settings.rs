@@ -8,6 +8,7 @@ use crate::gateway_e2b_worker_settings::{
 use crate::pool::relaxed_worker_allowed_from_env;
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // Admin snapshot: readOnly / apiKeySet / relaxedWorkerAllowed / configured
 pub struct E2bPlatformSettingsPublic {
     #[serde(rename = "readOnly")]
     pub read_only: bool,
