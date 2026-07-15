@@ -56,7 +56,7 @@ pub trait PoolOps: Send + Sync {
         None
     }
 
-    /// Running turn: read worker `.claw` progress on the pool host and upsert PG. Author: kejiqing
+    /// Running turn: pull session `.claw` progress into PG (e2b: nas-api). Author: kejiqing
     async fn sync_turn_progress_to_db(&self, _turn_id: &str) -> Result<(), String> {
         Ok(())
     }

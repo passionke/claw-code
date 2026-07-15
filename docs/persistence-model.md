@@ -6,10 +6,10 @@ This document aligns runtime behavior with the **Claw persistence design** plan 
 
 ## Principles
 
-1. **Worker runtime (in-container): local `.claw` files** — Within one solve, the worker loop appends to `.claw/gateway-solve-session.jsonl`, `progress-events.ndjson`, and `task-progress.json` on the slot mount (`CLAW_PROJECT_CONFIG_ROOT`, pool v1 tmpfs). These files are **not** durable on the host session directory.
+1. **Worker runtime (in-container): local `.claw` files** — Within one solve, the worker loop appends to `.claw/gateway-solve-session.jsonl`, `progress-events.ndjson`, and `task-progress.json` on the session NAS mount. These files are durable on NAS for the session, but **HTTP consumers do not read them directly**.
 2. **HTTP consumer / handoff source of truth: PostgreSQL** — Transcript in **`cc_messages`** (`render_session_jsonl`); progress and timing in **`gateway_turns.solve_timing_jsonb`**. Consumer APIs read **PG only** — see [`docs/pool-v1-consumer-matrix.md`](pool-v1-consumer-matrix.md).
-   - **Terminal:** `readback_out` on solve end (pool daemon host `podman exec`).
-   - **Running:** each `GET /v1/tasks` poll triggers pool RPC **`sync_turn_progress`** (host daemon exec → PG). Gateway container **must not** `podman exec` workers directly (confirmed failure mode: PG empty until `succeeded`). See matrix § Running `report_progress`.
+   - **Terminal:** e2b `readback_turn_from_session_home` (nas-api → PG).
+   - **Running:** each progress load (`GET /v1/tasks` / memory poller) calls `sync_turn_progress_to_db` → nas-api read `.claw/progress*` → PG. Sandbox never holds PG credentials. See matrix § Running `report_progress`.
 3. **Terminal turn snapshot** — On turn end, `gateway_turns` also stores `report_message`, `output_json`, `claw_exit_code`, `user_prompt`, status timestamps. After gateway restart, **`GET /v1/tasks/{task_id}`** and formal report resolution use this row before relying on in-memory `TaskRecord`.
 4. **Retry / idempotency boundary: `turn_id` (`T_<32 hex>`)** — A failed or abandoned turn is retried by issuing a **new** `turn_id` on the next solve; there is no requirement to resume half-finished model iterations from DB.
 
@@ -26,8 +26,8 @@ This document aligns runtime behavior with the **Claw persistence design** plan 
 | `output_json` | Optional full solve JSON payload for handoff. |
 | `claw_exit_code` | Exit code from the worker when succeeded. |
 | `entry_params_json` | Immutable enqueue snapshot per turn (`projId`, `userPrompt`, `extraSession`, `model`, `allowedTools`, `clientOrigin`, …). Admin `GET /v1/sessions/{sessionId}/turns` exposes `extraSession` from this column. |
-| `worker_name` | Leased worker container name while `running`; used by pool daemon `sync_turn_progress` to read live `.claw/progress*`. |
-| `solve_timing_jsonb` | `progressEvents`, `taskProgress`, `solveTimingEvents`, … — HTTP `progressHistory` / timeline source; updated on running sync + `readback_out`. |
+| `worker_name` | Leased e2b worker id while `running` (e.g. `e2b:sbx_…`). |
+| `solve_timing_jsonb` | `progressEvents`, `taskProgress`, `solveTimingEvents`, … — HTTP `progressHistory` / timeline source; updated on running nas-api sync + terminal readback. |
 
 Schema is applied at gateway startup via `GatewaySessionDb::migrate` (`ALTER TABLE ... IF NOT EXISTS` for new columns). Per-`proj_id` agent bundle storage lives in **`project_config`** (see `docs/project-config-model.md`).
 
@@ -58,11 +58,11 @@ This matches the rule: after restart, an “in-flight” DB row is not trustwort
 
 - `rust/crates/http-gateway-rs/src/session_db.rs` — DDL + repositories.
 - `rust/crates/http-gateway-rs/src/pool_consumer_resolve.rs` — running sync trigger + PG progress resolve.
-- `rust/crates/http-gateway-rs/src/pool/rpc.rs` — `SyncTurnProgress` pool RPC.
-- `rust/crates/http-gateway-rs/src/pool/docker_pool.rs` — host `sync_turn_progress_to_db`.
+- `rust/crates/http-gateway-rs/src/pool/session_db_sync.rs` — `sync_turn_progress_from_session_home` (nas-api → PG).
+- `rust/crates/http-gateway-rs/src/pool/e2b_orchestrated_pool.rs` — `sync_turn_progress_to_db` override.
 - `rust/crates/http-gateway-rs/src/main.rs` — `finalize_solve_turn_*`, `try_load_task_record`, solve/async/cancel wiring.
-- `rust/crates/http-gateway-rs/src/turn_stdout_hub.rs` — in-memory live report buffer.
-- `rust/crates/http-gateway-rs/src/turn_stdout_live_sse.rs` — `GET /v1/biz_advice_report?stream=true` while `running`.
+- `rust/crates/http-gateway-rs/src/pool/live_report_hub.rs` — in-memory live report buffer.
+- `rust/crates/http-gateway-rs/src/pool/live_report_sse.rs` — live SSE while `running`.
 - `rust/crates/gateway-solve-turn/src/gateway_stdout.rs` — worker stdout `__CLAW_GATEWAY_STDOUT__` lines.
 - `rust/crates/gateway-solve-turn/src/session_report.rs` — jsonl helpers including per–user-turn index.
 

@@ -87,6 +87,31 @@ fn claw_rel_file_name(rel: &str) -> &str {
     rel.trim_start_matches(".claw/").trim_start_matches('/')
 }
 
+/// Running or terminal: NAS `.claw/progress*` → PG `solve_timing_jsonb` progress fields.
+/// Empty files are a no-op (does not clear an existing snapshot). Author: kejiqing
+pub async fn sync_turn_progress_from_session_home(
+    db: &GatewaySessionDb,
+    nas_layout: &NasLayoutBackend,
+    proj_id: i64,
+    session_segment: &str,
+    turn_id: &str,
+) -> Result<(), String> {
+    let progress = nas_layout
+        .read_session_claw_utf8(proj_id, session_segment, "progress-events.ndjson")
+        .await?
+        .unwrap_or_default();
+    let task_progress = nas_layout
+        .read_session_claw_utf8(proj_id, session_segment, "task-progress.json")
+        .await?
+        .unwrap_or_default();
+    if progress.is_empty() && task_progress.is_empty() {
+        return Ok(());
+    }
+    db.replace_turn_progress_snapshot(turn_id, &progress, &task_progress)
+        .await
+        .map_err(|e| format!("replace turn progress snapshot: {e}"))
+}
+
 /// NAS session artifacts → `solve_timing_jsonb` (tool/llm/orchestration/progress swimlanes).
 async fn readback_turn_solve_timing_from_session_home(
     db: &GatewaySessionDb,
@@ -117,20 +142,7 @@ async fn readback_turn_solve_timing_from_session_home(
             .map_err(|e| format!("merge solve_timing_jsonb: {e}"))?;
     }
 
-    let progress = nas_layout
-        .read_session_claw_utf8(proj_id, session_segment, "progress-events.ndjson")
-        .await?
-        .unwrap_or_default();
-    let task_progress = nas_layout
-        .read_session_claw_utf8(proj_id, session_segment, "task-progress.json")
-        .await?
-        .unwrap_or_default();
-    if !progress.is_empty() || !task_progress.is_empty() {
-        db.replace_turn_progress_snapshot(turn_id, &progress, &task_progress)
-            .await
-            .map_err(|e| format!("replace turn progress snapshot: {e}"))?;
-    }
-    Ok(())
+    sync_turn_progress_from_session_home(db, nas_layout, proj_id, session_segment, turn_id).await
 }
 
 /// NAS session home → DB: transcript (`cc_messages`) + solve timing (`solve_timing_jsonb`).

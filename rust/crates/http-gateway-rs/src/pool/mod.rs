@@ -50,8 +50,9 @@ pub use live_report_sse::live_report_sse_response;
 pub use result::parse_gateway_solve_exec_stdout;
 pub use session_db_sync::{
     bootstrap_empty_solve_session_jsonl, gateway_proj_work_dir, gateway_session_home,
-    nas_cluster_id, proj_work_dir, session_home_under_work_root, DS_MOUNT_TARGET,
-    GUEST_CLAW_SESSIONS, WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH,
+    nas_cluster_id, proj_work_dir, session_home_under_work_root,
+    sync_turn_progress_from_session_home, DS_MOUNT_TARGET, GUEST_CLAW_SESSIONS,
+    WORKSPACE_TAR_ARTIFACT_KIND, WORKSPACE_TAR_ARTIFACT_PATH,
 };
 pub use session_mount_ownership::{
     ensure_session_tree_owned_for_worker_with_runtime_fallback, path_for_pool_acquire,

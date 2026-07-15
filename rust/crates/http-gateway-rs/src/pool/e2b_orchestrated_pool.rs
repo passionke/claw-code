@@ -17,7 +17,8 @@ use super::e2b_proj_worker_registry::E2bProjWorkerRegistry;
 use super::merge_stdout_hooks;
 use super::result::parse_gateway_solve_exec_stdout;
 use super::session_db_sync::{
-    finalize_turn_after_readback, readback_turn_from_session_home, SESSION_MANIFEST_MAX_BYTES,
+    finalize_turn_after_readback, readback_turn_from_session_home,
+    sync_turn_progress_from_session_home, SESSION_MANIFEST_MAX_BYTES,
 };
 use super::traits::{PoolOps, SlotLease, TaskOutcome};
 use super::{LiveReportHub, NasLayoutBackend};
@@ -283,5 +284,43 @@ impl PoolOps for E2bOrchestratedPool {
 
     async fn first_report_at_ms_for_turn(&self, turn_id: &str) -> Option<i64> {
         self.live_report_hub.first_report_at_ms_for_turn(turn_id)
+    }
+
+    /// Running poll: nas-api read `.claw/progress*` → PG (no sandbox PG creds). Author: kejiqing
+    async fn sync_turn_progress_to_db(&self, turn_id: &str) -> Result<(), String> {
+        if turn_id.is_empty() {
+            return Ok(());
+        }
+        let db = self.session_db().await?;
+        let Some((session_id, proj_id)) = db
+            .turn_session_scope(turn_id)
+            .await
+            .map_err(|e| format!("turn_session_scope: {e}"))?
+        else {
+            return Ok(());
+        };
+        let session_segment = crate::session_merge::sessions_directory_segment(&session_id);
+        match sync_turn_progress_from_session_home(
+            db.as_ref(),
+            &self.nas_layout,
+            proj_id,
+            &session_segment,
+            turn_id,
+        )
+        .await
+        {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                warn!(
+                    target: "claw_gateway_e2b_pool",
+                    turn_id = %turn_id,
+                    session_id = %session_id,
+                    proj_id,
+                    error = %e,
+                    "sync_turn_progress_to_db via nas-api failed"
+                );
+                Err(e)
+            }
+        }
     }
 }
