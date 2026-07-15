@@ -5795,6 +5795,7 @@ fn execute_repl(input: ReplInput) -> Result<ReplOutput, String> {
 
     let output = if let Some(timeout_ms) = input.timeout_ms {
         let mut child = process.spawn().map_err(|error| error.to_string())?;
+        let deadline = Duration::from_millis(timeout_ms);
         loop {
             if child
                 .try_wait()
@@ -5805,16 +5806,17 @@ fn execute_repl(input: ReplInput) -> Result<ReplOutput, String> {
                     .wait_with_output()
                     .map_err(|error| error.to_string())?;
             }
-            if started.elapsed() >= Duration::from_millis(timeout_ms) {
-                child.kill().map_err(|error| error.to_string())?;
-                child
-                    .wait_with_output()
-                    .map_err(|error| error.to_string())?;
+            if started.elapsed() >= deadline {
+                // Child may already have exited between try_wait and kill (ESRCH);
+                // match bash timeout path: still report the timeout contract.
+                let _ = child.kill();
+                let _ = child.wait_with_output();
                 return Err(format!(
                     "REPL execution exceeded timeout of {timeout_ms} ms"
                 ));
             }
-            std::thread::sleep(Duration::from_millis(10));
+            let remaining = deadline.saturating_sub(started.elapsed());
+            std::thread::sleep(remaining.min(Duration::from_millis(10)));
         }
     } else {
         process
@@ -9725,13 +9727,16 @@ mod tests {
             "REPL",
             &json!({
                 "language": "python",
-                "code": "import time\ntime.sleep(1)",
-                "timeout_ms": 10
+                "code": "import time\ntime.sleep(2)",
+                "timeout_ms": 50
             }),
         );
 
         let error = result.expect_err("timed out REPL execution should fail");
-        assert!(error.contains("REPL execution exceeded timeout of 10 ms"));
+        assert!(
+            error.contains("REPL execution exceeded timeout of 50 ms"),
+            "unexpected REPL timeout error: {error}"
+        );
     }
 
     #[test]
