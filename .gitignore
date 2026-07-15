@@ -107,3 +107,7 @@ scripts/eval/**/scored/
 scripts/eval/**/results/
 scripts/eval/**/cases.bak-*/
 scripts/eval/**/*.log
+
+# Business knowledge bases: crawl/sync artifacts only. Never commit KB content
+# (GPOS manuals and future domain KBs live on NAS / local disk, not in claw-code).
+knowledge/

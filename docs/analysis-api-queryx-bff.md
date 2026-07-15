@@ -2,6 +2,8 @@
 
 本文档描述面向前端 / 业务方的 **QueryX 风格** HTTP 接口约定，及其与 **claw-code HTTP 网关**（Rust `http-gateway-rs`）内部接口的对应关系。网关 Base URL 与路径前缀以实际部署为准；分析类路径以 `/api/v1/analysis` 为前缀；**准入**为独立资源 `/api/v1/admittance`。
 
+**QueryX 在本仓库的定位：** 仅指 **Boss 报表 / 经营问数** 对外 BFF 契约与参数风格。不含产品手册 KB、不含「GPOS 经营助手」整包三路意图；后者见 [`gpos-assistant-prompt-content.md`](gpos-assistant-prompt-content.md)、[`gpos-user-manual-kb-ops.md`](gpos-user-manual-kb-ops.md)。
+
 **上一版文档（钉钉）：** [https://alidocs.dingtalk.com/i/nodes/14lgGw3P8vvea74PhQNo43mk85daZ90D](https://alidocs.dingtalk.com/i/nodes/14lgGw3P8vvea74PhQNo43mk85daZ90D)
 
 ## 固定业务维度（本对接场景）

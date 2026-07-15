@@ -1,0 +1,10 @@
+{"id": "an-01", "question": "What were yesterday's sales?", "lang": "en", "intent": "analysis", "must_not_use_manual_kb": true, "expect_sqlbot": true}
+{"id": "an-02", "question": "Show payment method breakdown for last week.", "lang": "en", "intent": "analysis", "must_not_use_manual_kb": true, "expect_sqlbot": true}
+{"id": "an-03", "question": "Which menu items had the highest revenue this month?", "lang": "en", "intent": "analysis", "must_not_use_manual_kb": true, "expect_sqlbot": true}
+{"id": "an-04", "question": "昨天的销售额和订单量是多少？", "lang": "zh", "intent": "analysis", "must_not_use_manual_kb": true, "expect_sqlbot": true}
+{"id": "an-05", "question": "最近 7 天各收款方式占比？", "lang": "zh", "intent": "analysis", "must_not_use_manual_kb": true, "expect_sqlbot": true}
+{"id": "an-06", "question": "本月销量最高的菜品有哪些？", "lang": "zh", "intent": "analysis", "must_not_use_manual_kb": true, "expect_sqlbot": true}
+{"id": "an-07", "question": "ยอดขายเมื่อวานเป็นเท่าไร?", "lang": "th", "intent": "analysis", "must_not_use_manual_kb": true, "expect_sqlbot": true}
+{"id": "an-08", "question": "สัดส่วนช่องทางชำระเงิน 7 วันที่ผ่านมา?", "lang": "th", "intent": "analysis", "must_not_use_manual_kb": true, "expect_sqlbot": true}
+{"id": "an-09", "question": "Compare this week's performance to last week.", "lang": "en", "intent": "analysis", "must_not_use_manual_kb": true, "expect_sqlbot": true}
+{"id": "an-10", "question": "对比上周，本周营业额变化如何？", "lang": "zh", "intent": "analysis", "must_not_use_manual_kb": true, "expect_sqlbot": true}
