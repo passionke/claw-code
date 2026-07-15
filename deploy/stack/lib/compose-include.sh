@@ -579,6 +579,7 @@ claw_podman_load_compose_args() {
       else
         printf '%s\n' "CLAW_ALLOW_RELAXED_WORKER=false"
       fi
+      printf '%s\n' "CLAW_E2B_POOL_SIZE_CAP=${CLAW_E2B_POOL_SIZE_CAP:-16}"
     } >"${rpc_root}/gateway.env"
     claw_podman_append_admin_dist_bind "${script_dir}" "${rel}"
     return 0

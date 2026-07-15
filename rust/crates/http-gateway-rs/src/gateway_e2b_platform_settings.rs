@@ -5,6 +5,7 @@ use serde::Serialize;
 use crate::gateway_e2b_worker_settings::{
     e2b_worker_relaxed_template_from_env, e2b_worker_template_from_env,
 };
+use crate::pool::relaxed_worker_allowed_from_env;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct E2bPlatformSettingsPublic {
@@ -24,6 +25,9 @@ pub struct E2bPlatformSettingsPublic {
     pub worker_relaxed_template: String,
     #[serde(rename = "sandboxTimeoutSecs")]
     pub sandbox_timeout_secs: u64,
+    /// `CLAW_ALLOW_RELAXED_WORKER` — false hides Admin relaxed option and rejects API writes.
+    #[serde(rename = "relaxedWorkerAllowed")]
+    pub relaxed_worker_allowed: bool,
     pub configured: bool,
 }
 
@@ -74,6 +78,7 @@ pub fn e2b_platform_settings_public() -> E2bPlatformSettingsPublic {
         worker_strict_template: e2b_worker_template_from_env(),
         worker_relaxed_template: e2b_worker_relaxed_template_from_env(),
         sandbox_timeout_secs: sandbox_timeout_secs_from_env(),
+        relaxed_worker_allowed: relaxed_worker_allowed_from_env(),
         configured: api_key_set && !e2b_api_url.is_empty(),
         api_key_set,
         e2b_api_url,

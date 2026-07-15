@@ -1,6 +1,7 @@
 //! Per-project e2b worker registry — gateway-managed lifecycle (DB + e2b). Author: kejiqing
 //!
-//! Strict projects: N warm worker sandboxes per `proj_id` (PG `e2bWorker.poolSize`, default 4).
+//! Strict projects: N warm worker sandboxes per `proj_id` (global `e2bWorker.poolSize` default 1,
+//! optional per-project `worker_profile_json.poolSize`, capped by `CLAW_E2B_POOL_SIZE_CAP`).
 //! Relaxed: 1 worker with built-in OVS. Full-pool reconcile on startup / Admin poolSize change;
 //! solve acquire picks one slot from memory and reconciles only on cache miss.
 
@@ -27,7 +28,8 @@ use crate::session_db::{
 use super::config::relaxed_worker_allowed_from_env;
 use super::e2b_nas_layout::allocate_worker_id;
 use super::worker_profile::{
-    default_worker_profile_json, effective_mode, profile_mode_label, WorkerProfileMode,
+    default_worker_profile_json, effective_mode, pool_size_override_from_json, profile_mode_label,
+    WorkerProfileMode,
 };
 use super::NasLayoutBackend;
 
@@ -233,9 +235,15 @@ impl E2bProjWorkerRegistry {
         let mode = effective_mode(relaxed_worker_allowed_from_env(), &json);
         match mode {
             WorkerProfileMode::Relaxed => Ok(1),
-            WorkerProfileMode::Strict => load_e2b_strict_worker_pool_size(db.as_ref())
-                .await
-                .map_err(|e| format!("load e2bWorker poolSize: {e}")),
+            WorkerProfileMode::Strict => {
+                if let Some(n) = pool_size_override_from_json(&json) {
+                    Ok(crate::gateway_e2b_worker_settings::clamp_strict_worker_pool_size(n))
+                } else {
+                    load_e2b_strict_worker_pool_size(db.as_ref())
+                        .await
+                        .map_err(|e| format!("load e2bWorker poolSize: {e}"))
+                }
+            }
         }
     }
 

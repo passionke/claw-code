@@ -6,9 +6,36 @@ use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_g
 use crate::session_db::GatewaySessionDb;
 
 /// Default strict worker pool size per project (Admin `e2bWorker.poolSize`).
-pub const STRICT_WORKER_POOL_SIZE_DEFAULT: u32 = 4;
-/// Upper bound for Admin `e2bWorker.poolSize`.
+pub const STRICT_WORKER_POOL_SIZE_DEFAULT: u32 = 1;
+/// Fallback upper bound when `CLAW_E2B_POOL_SIZE_CAP` unset.
 pub const STRICT_WORKER_POOL_SIZE_MAX: u32 = 16;
+
+/// Admin / runtime upper bound (`CLAW_E2B_POOL_SIZE_CAP` → default [`STRICT_WORKER_POOL_SIZE_MAX`]).
+#[must_use]
+pub fn strict_worker_pool_size_cap_from_env() -> u32 {
+    std::env::var("CLAW_E2B_POOL_SIZE_CAP")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(STRICT_WORKER_POOL_SIZE_MAX)
+}
+
+/// Reject out-of-range poolSize (Admin write — do not silently clamp). Author: kejiqing
+pub fn validate_strict_worker_pool_size(n: u32) -> Result<u32, String> {
+    let max = strict_worker_pool_size_cap_from_env();
+    if !(1..=max).contains(&n) {
+        return Err(format!(
+            "poolSize must be 1..={max} (CLAW_E2B_POOL_SIZE_CAP); got {n}"
+        ));
+    }
+    Ok(n)
+}
+
+/// Runtime clamp (legacy PG rows may exceed a later-lowered env cap).
+#[must_use]
+pub fn clamp_strict_worker_pool_size(n: u32) -> u32 {
+    n.clamp(1, strict_worker_pool_size_cap_from_env())
+}
 
 /// Gateway-desired claw-worker e2b template (`settings_json.e2bWorker.templateId`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -39,6 +66,9 @@ pub struct E2bWorkerSettingsPublic {
     pub template_id: Option<String>,
     #[serde(rename = "poolSize")]
     pub pool_size: u32,
+    /// Env `CLAW_E2B_POOL_SIZE_CAP` (Admin write rejects values above this).
+    #[serde(rename = "poolSizeCap")]
+    pub pool_size_cap: u32,
     #[serde(rename = "updatedAtMs")]
     pub updated_at_ms: i64,
 }
@@ -63,6 +93,7 @@ pub fn e2b_worker_settings_public(settings: &E2bWorkerSettings) -> E2bWorkerSett
                 .pool_size
                 .unwrap_or(STRICT_WORKER_POOL_SIZE_DEFAULT),
         ),
+        pool_size_cap: strict_worker_pool_size_cap_from_env(),
         updated_at_ms: settings.updated_at_ms,
     }
 }
@@ -83,7 +114,7 @@ pub async fn put_e2b_worker_settings(
         }
     }
     if let Some(n) = input.pool_size {
-        settings.e2b_worker.pool_size = Some(clamp_strict_worker_pool_size(n));
+        settings.e2b_worker.pool_size = Some(validate_strict_worker_pool_size(n)?);
     } else if settings.e2b_worker.pool_size.is_none() {
         settings.e2b_worker.pool_size = Some(STRICT_WORKER_POOL_SIZE_DEFAULT);
     }
@@ -208,7 +239,7 @@ pub async fn load_e2b_worker_relaxed_template_id(
         .unwrap_or_else(e2b_worker_relaxed_template_from_env))
 }
 
-/// PG `e2bWorker.poolSize` → default 4, clamped to 1..=16.
+/// PG `e2bWorker.poolSize` → default 1, clamped to 1..=`CLAW_E2B_POOL_SIZE_CAP`.
 pub async fn load_e2b_strict_worker_pool_size(db: &GatewaySessionDb) -> Result<u32, sqlx::Error> {
     let (settings, _, _) = get_gateway_global_settings(db).await?;
     Ok(clamp_strict_worker_pool_size(
@@ -219,11 +250,6 @@ pub async fn load_e2b_strict_worker_pool_size(db: &GatewaySessionDb) -> Result<u
     ))
 }
 
-#[must_use]
-pub fn clamp_strict_worker_pool_size(n: u32) -> u32 {
-    n.clamp(1, STRICT_WORKER_POOL_SIZE_MAX)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,11 +257,19 @@ mod tests {
     #[test]
     fn pool_size_clamps_to_bounds() {
         assert_eq!(clamp_strict_worker_pool_size(0), 1);
-        assert_eq!(clamp_strict_worker_pool_size(4), 4);
-        assert_eq!(
-            clamp_strict_worker_pool_size(99),
-            STRICT_WORKER_POOL_SIZE_MAX
-        );
+        assert_eq!(clamp_strict_worker_pool_size(1), 1);
+        let max = strict_worker_pool_size_cap_from_env();
+        assert_eq!(clamp_strict_worker_pool_size(max), max);
+        assert_eq!(clamp_strict_worker_pool_size(max.saturating_add(99)), max);
+    }
+
+    #[test]
+    fn pool_size_validate_rejects_over_cap() {
+        let max = strict_worker_pool_size_cap_from_env();
+        assert!(validate_strict_worker_pool_size(0).is_err());
+        assert!(validate_strict_worker_pool_size(1).is_ok());
+        assert!(validate_strict_worker_pool_size(max).is_ok());
+        assert!(validate_strict_worker_pool_size(max.saturating_add(1)).is_err());
     }
 
     #[test]

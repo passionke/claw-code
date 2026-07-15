@@ -111,6 +111,52 @@ async fn http_get_ok(url: &str) -> bool {
     }
 }
 
+/// clawTap / observe traffic probe with retries before declaring unhealthy (avoids kill on blips).
+/// Max 3 attempts, 3s sleep between failures. Author: kejiqing
+const OBSERVE_PROBE_MAX_ATTEMPTS: u32 = 3;
+const OBSERVE_PROBE_RETRY_SLEEP_SECS: u64 = 3;
+
+async fn observe_traffic_ok(
+    client: &E2bSandboxClient,
+    sid: &str,
+    domain: &str,
+    live_port: u16,
+    cluster_id: &str,
+) -> bool {
+    let live_base = service_base_url(client, live_port, sid, domain);
+    let proxy_base = service_base_url(client, DEFAULT_CLAW_TAP_PROXY_PORT, sid, domain);
+    let proxy_health = format!("{}/healthz", proxy_base.trim_end_matches('/'));
+    for attempt in 1..=OBSERVE_PROBE_MAX_ATTEMPTS {
+        let live_ok = http_get_ok(&live_base).await;
+        let proxy_ok = fetch_tap_cluster_identity(&proxy_base, cluster_id)
+            .await
+            .is_ok();
+        let health_ok = http_get_ok(&proxy_health).await;
+        if live_ok || proxy_ok || health_ok {
+            if attempt > 1 {
+                info!(
+                    target: "claw_e2b_singleton",
+                    sandbox_id = %sid,
+                    attempt,
+                    "observe clawTap probe recovered after retry"
+                );
+            }
+            return true;
+        }
+        if attempt < OBSERVE_PROBE_MAX_ATTEMPTS {
+            warn!(
+                target: "claw_e2b_singleton",
+                sandbox_id = %sid,
+                attempt,
+                sleep_secs = OBSERVE_PROBE_RETRY_SLEEP_SECS,
+                "observe clawTap probe failed; retrying before recreate"
+            );
+            tokio::time::sleep(Duration::from_secs(OBSERVE_PROBE_RETRY_SLEEP_SECS)).await;
+        }
+    }
+    false
+}
+
 async fn wait_http_ok(url: &str, label: &str, max_attempts: u32) -> bool {
     for i in 1..=max_attempts {
         if http_get_ok(url).await {
@@ -372,14 +418,8 @@ async fn ensure_observe(
     if let Some(ref sid) = candidate {
         let domain = client.config().domain.clone();
         let live_base = service_base_url(client, live_port, sid, &domain);
-        let proxy_base = service_base_url(client, DEFAULT_CLAW_TAP_PROXY_PORT, sid, &domain);
-        let proxy_health = format!("{}/healthz", proxy_base.trim_end_matches('/'));
-        let live_ok = http_get_ok(&live_base).await;
-        let proxy_ok = fetch_tap_cluster_identity(&proxy_base, &cluster_id)
-            .await
-            .is_ok();
         if client.sandbox_running(sid).await
-            && (live_ok || proxy_ok || http_get_ok(&proxy_health).await)
+            && observe_traffic_ok(client, sid, &domain, live_port, &cluster_id).await
         {
             client.touch_persistent_sandbox(sid).await?;
             let handle = E2bSandboxHandle {
@@ -407,7 +447,7 @@ async fn ensure_observe(
         warn!(
             target: "claw_e2b_singleton",
             sandbox_id = %sid,
-            "observe singleton unhealthy — recreate"
+            "observe singleton unhealthy after retries — recreate"
         );
         let _ = client.kill_sandbox(sid).await;
     }

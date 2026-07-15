@@ -5,6 +5,9 @@ use gateway_solve_turn::{
 };
 use serde_json::{json, Value};
 
+use super::config::relaxed_worker_allowed_from_env;
+use crate::gateway_e2b_worker_settings::validate_strict_worker_pool_size;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkerProfileMode {
     #[default]
@@ -29,6 +32,16 @@ pub fn mode_from_json(value: &Value) -> WorkerProfileMode {
     {
         Some("relaxed") => WorkerProfileMode::Relaxed,
         _ => WorkerProfileMode::Strict,
+    }
+}
+
+/// Optional per-project override of strict pool size (`worker_profile_json.poolSize`).
+/// Absent / null → inherit global `e2bWorker.poolSize`. Author: kejiqing
+#[must_use]
+pub fn pool_size_override_from_json(value: &Value) -> Option<u32> {
+    match value.get("poolSize") {
+        None | Some(Value::Null) => None,
+        Some(v) => v.as_u64().and_then(|n| u32::try_from(n).ok()),
     }
 }
 
@@ -65,7 +78,22 @@ fn validate_worker_profile_strict_block(strict: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate Admin `worker_profile_json` shape.
+fn validate_worker_profile_pool_size(value: &Value) -> Result<(), String> {
+    match value.get("poolSize") {
+        None | Some(Value::Null) => Ok(()),
+        Some(v) => {
+            let n = v
+                .as_u64()
+                .ok_or_else(|| "worker_profile_json.poolSize must be a positive integer".to_string())?;
+            let n = u32::try_from(n)
+                .map_err(|_| "worker_profile_json.poolSize out of u32 range".to_string())?;
+            validate_strict_worker_pool_size(n)?;
+            Ok(())
+        }
+    }
+}
+
+/// Validate Admin `worker_profile_json` shape (+ env gate for relaxed / poolSize cap).
 pub fn validate_worker_profile_json(value: &Value) -> Result<(), String> {
     let mode = value
         .get("mode")
@@ -78,11 +106,25 @@ pub fn validate_worker_profile_json(value: &Value) -> Result<(), String> {
             if let Some(strict) = value.get("strict") {
                 validate_worker_profile_strict_block(strict)?;
             }
+            validate_worker_profile_pool_size(value)?;
             Ok(())
         }
         "relaxed" => {
+            if !relaxed_worker_allowed_from_env() {
+                return Err(
+                    "worker_profile_json.mode=relaxed rejected: CLAW_ALLOW_RELAXED_WORKER=false \
+                     (strict-only gateway); set CLAW_ALLOW_RELAXED_WORKER=true and restart, or use mode=strict"
+                        .into(),
+                );
+            }
             if value.get("strict").is_some() {
                 return Err("worker_profile_json.strict is only valid when mode=strict".into());
+            }
+            if !matches!(value.get("poolSize"), None | Some(Value::Null)) {
+                return Err(
+                    "worker_profile_json.poolSize is only valid when mode=strict (relaxed is fixed at 1)"
+                        .into(),
+                );
             }
             Ok(())
         }
@@ -144,6 +186,23 @@ mod tests {
                 }
             }
         });
+        assert!(validate_worker_profile_json(&json).is_err());
+    }
+
+    #[test]
+    fn accepts_strict_with_pool_size() {
+        let json = json!({"mode": "strict", "poolSize": 1});
+        validate_worker_profile_json(&json).unwrap();
+        assert_eq!(pool_size_override_from_json(&json), Some(1));
+        assert_eq!(
+            pool_size_override_from_json(&json!({"mode": "strict"})),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_relaxed_with_pool_size() {
+        let json = json!({"mode": "relaxed", "poolSize": 2});
         assert!(validate_worker_profile_json(&json).is_err());
     }
 }

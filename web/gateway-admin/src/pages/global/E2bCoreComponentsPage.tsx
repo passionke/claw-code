@@ -102,6 +102,7 @@ export default function E2bCoreComponentsPage() {
   const [e2bTemplates, setE2bTemplates] = useState<E2bTemplateEntry[]>([]);
   const [e2bApiUrl, setE2bApiUrl] = useState("");
   const [clusterId, setClusterId] = useState("");
+  const [poolSizeCap, setPoolSizeCap] = useState(16);
   const [form] = Form.useForm<{
     nasApiTemplateId: string;
     observeTemplateId: string;
@@ -129,6 +130,7 @@ export default function E2bCoreComponentsPage() {
       ]);
       setClusterId(gs.clusterId ?? "");
       setE2bWorker(gs.e2bWorker ?? null);
+      setPoolSizeCap(gs.e2bWorker?.poolSizeCap ?? 16);
       setStatus(singletons);
       const templates = templatesResp?.templates ?? [];
       if (templatesResp) {
@@ -156,7 +158,7 @@ export default function E2bCoreComponentsPage() {
           templates,
           "claw-worker"
         ),
-        poolSize: gs.e2bWorker?.poolSize ?? 4,
+        poolSize: gs.e2bWorker?.poolSize ?? 1,
       });
     } catch (e) {
       message.error(`加载核心组件失败：${String(e)}`);
@@ -378,8 +380,8 @@ export default function E2bCoreComponentsPage() {
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="每 strict 项目的 solve worker 池"
-          description="poolSize 变更后 Gateway 后台 reconcile；缩容需等待各 slot lease 清空。strict 镜像不含 ttyd（仅 relaxed 使用 ttyd/OVS）。"
+          message="每 strict 项目的 solve worker 池（全局默认）"
+          description="poolSize 为全局默认；单项目可在「Worker 执行环境」用 workerProfileJson.poolSize 覆盖。变更后 Gateway 后台 reconcile；缩容需等待各 slot lease 清空。上限来自 .env 的 CLAW_E2B_POOL_SIZE_CAP（超过会报错）。"
         />
         <Form form={workerForm} layout="vertical">
           <Form.Item
@@ -396,12 +398,12 @@ export default function E2bCoreComponentsPage() {
             />
           </Form.Item>
           <Form.Item
-            label="poolSize（每 strict 项目）"
+            label="poolSize（全局默认 · 每 strict 项目）"
             name="poolSize"
-            rules={[{ required: true, type: "number", min: 1, max: 16 }]}
-            extra="默认 4，范围 1–16。relaxed 项目固定 1 worker。"
+            rules={[{ required: true, type: "number", min: 1, max: poolSizeCap }]}
+            extra={`默认 1，范围 1–${poolSizeCap}（CLAW_E2B_POOL_SIZE_CAP）。relaxed 项目固定 1 worker。`}
           >
-            <InputNumber min={1} max={16} style={{ width: 120 }} />
+            <InputNumber min={1} max={poolSizeCap} style={{ width: 120 }} />
           </Form.Item>
           <Button
             type="primary"

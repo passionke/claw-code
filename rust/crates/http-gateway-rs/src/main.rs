@@ -4973,6 +4973,19 @@ async fn put_project_config(
         .upsert_project_config(upsert)
         .await
         .map_err(|e| session_db_err(&e))?;
+    if req.worker_profile_json.is_some() {
+        let pool = state.pool_clients.clone();
+        tokio::spawn(async move {
+            if let Err(e) = pool.reconcile_project_worker(proj_id).await {
+                tracing::warn!(
+                    target: "claw_e2b_proj_worker",
+                    proj_id,
+                    error = %e,
+                    "post worker_profile reconcile failed (best-effort)"
+                );
+            }
+        });
+    }
     project_entity_revision::record_draft_put_sidecars(
         &state.session_db,
         proj_id,
