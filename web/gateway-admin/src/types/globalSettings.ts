@@ -100,6 +100,8 @@ export interface E2bPlatformSettings {
   workerStrictTemplate: string;
   workerRelaxedTemplate: string;
   sandboxTimeoutSecs: number;
+  /** false when CLAW_ALLOW_RELAXED_WORKER=false on gateway. */
+  relaxedWorkerAllowed?: boolean;
   configured: boolean;
 }
 
@@ -184,8 +186,10 @@ export interface E2bTemplatesListResponse {
 
 export interface E2bWorkerSettings {
   templateId?: string;
-  /** Strict solve worker pool size per project (PG). Default 4, range 1–16. */
+  /** Global default strict solve worker pool size per project (PG). Default 1. */
   poolSize?: number;
+  /** Env CLAW_E2B_POOL_SIZE_CAP; Admin write rejects values above this. */
+  poolSizeCap?: number;
   updatedAtMs?: number;
 }
 

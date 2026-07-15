@@ -15,6 +15,8 @@ export interface WorkerProfileStrictJson {
 
 export interface WorkerProfileJson {
   mode: "strict" | "relaxed";
+  /** Optional per-project override; omit to inherit global e2bWorker.poolSize. */
+  poolSize?: number | null;
   strict?: WorkerProfileStrictJson;
 }
 

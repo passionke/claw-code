@@ -5,6 +5,7 @@ import {
   Descriptions,
   Form,
   Input,
+  InputNumber,
   Popconfirm,
   Radio,
   Space,
@@ -33,6 +34,7 @@ type Mode = WorkerProfileJson["mode"];
 
 type FormValues = {
   mode: Mode;
+  poolSize?: number | null;
   landlockInherit: boolean;
   landlockEnabled: boolean;
   landlockRw: string[];
@@ -43,6 +45,9 @@ export default function WorkerProfilePage() {
   const { gatewayBase, projId, projectConfig, refreshProjectConfig } = useApp();
   const [form] = Form.useForm<FormValues>();
   const [systemDefault, setSystemDefault] = useState<LandlockDsl | null>(null);
+  const [relaxedAllowed, setRelaxedAllowed] = useState(true);
+  const [poolSizeCap, setPoolSizeCap] = useState(16);
+  const [globalPoolSize, setGlobalPoolSize] = useState(1);
   const [workerStatus, setWorkerStatus] = useState<ProjectE2bWorkerStatusResponse | null>(null);
   const [workerLoading, setWorkerLoading] = useState(false);
   const [workerResetting, setWorkerResetting] = useState(false);
@@ -73,6 +78,9 @@ export default function WorkerProfilePage() {
         "/v1/gateway/global-settings"
       );
       setSystemDefault(r.strictLandlockDefault ?? null);
+      setRelaxedAllowed(r.e2bPlatform?.relaxedWorkerAllowed !== false);
+      setPoolSizeCap(r.e2bWorker?.poolSizeCap ?? 16);
+      setGlobalPoolSize(r.e2bWorker?.poolSize ?? 1);
     } catch {
       setSystemDefault(null);
     }
@@ -88,7 +96,8 @@ export default function WorkerProfilePage() {
 
   useEffect(() => {
     const wp = projectConfig?.workerProfileJson;
-    const rawMode = wp?.mode === "relaxed" ? "relaxed" : "strict";
+    const rawMode =
+      wp?.mode === "relaxed" && relaxedAllowed ? "relaxed" : "strict";
     const strict = wp?.strict;
     const inherit =
       rawMode === "strict" &&
@@ -96,12 +105,13 @@ export default function WorkerProfilePage() {
     const landlock = strict?.landlock;
     form.setFieldsValue({
       mode: rawMode,
+      poolSize: typeof wp?.poolSize === "number" ? wp.poolSize : null,
       landlockInherit: inherit,
       landlockEnabled: landlock?.enabled ?? systemDefault?.enabled ?? true,
       landlockRw: landlock?.rw ?? systemDefault?.rw ?? ["${session_root}"],
       landlockRo: landlock?.ro ?? systemDefault?.ro ?? [],
     });
-  }, [projectConfig, form, systemDefault]);
+  }, [projectConfig, form, systemDefault, relaxedAllowed]);
 
   const fillFromSystemDefault = () => {
     if (!systemDefault) return;
@@ -116,8 +126,14 @@ export default function WorkerProfilePage() {
     if (v.mode === "relaxed") {
       return { mode: "relaxed" };
     }
+    const poolSize =
+      typeof v.poolSize === "number" && Number.isFinite(v.poolSize) ? v.poolSize : undefined;
     if (v.landlockInherit) {
-      return { mode: "strict", strict: { useSystemDefault: true } };
+      return {
+        mode: "strict",
+        ...(poolSize != null ? { poolSize } : {}),
+        strict: { useSystemDefault: true },
+      };
     }
     const landlock: LandlockDsl = {
       enabled: v.landlockEnabled,
@@ -126,6 +142,7 @@ export default function WorkerProfilePage() {
     };
     return {
       mode: "strict",
+      ...(poolSize != null ? { poolSize } : {}),
       strict: { useSystemDefault: false, landlock },
     };
   };
@@ -186,7 +203,7 @@ export default function WorkerProfilePage() {
         type="inner"
         title={
           isStrict
-            ? `e2b Worker 池（strict · 目标 ${workerStatus?.desiredPoolSize ?? 4}）`
+            ? `e2b Worker 池（strict · 目标 ${workerStatus?.desiredPoolSize ?? globalPoolSize}）`
             : "e2b Worker（relaxed · 单实例 + ttyd）"
         }
         size="small"
@@ -374,9 +391,43 @@ export default function WorkerProfilePage() {
         <Form.Item name="mode" label="Worker profile">
           <Radio.Group>
             <Radio value="strict">Strict（Landlock session 隔离）</Radio>
-            <Radio value="relaxed">Relaxed（OVS：root + 可写容器）</Radio>
+            {relaxedAllowed ? (
+              <Radio value="relaxed">Relaxed（OVS：root + 可写容器）</Radio>
+            ) : null}
           </Radio.Group>
         </Form.Item>
+        {!relaxedAllowed ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="当前网关为严格模式（CLAW_ALLOW_RELAXED_WORKER=false）"
+            description="已隐藏 Relaxed 选项；接口亦拒绝写入 mode=relaxed。"
+          />
+        ) : null}
+
+        {mode === "strict" ? (
+          <Form.Item
+            name="poolSize"
+            label="本项目 poolSize（可选）"
+            extra={`留空则继承全局默认 ${globalPoolSize}；范围 1–${poolSizeCap}（CLAW_E2B_POOL_SIZE_CAP）。`}
+            rules={[
+              {
+                type: "number",
+                min: 1,
+                max: poolSizeCap,
+                message: `须在 1–${poolSizeCap} 之间`,
+              },
+            ]}
+          >
+            <InputNumber
+              min={1}
+              max={poolSizeCap}
+              placeholder={`全局默认 ${globalPoolSize}`}
+              style={{ width: 160 }}
+            />
+          </Form.Item>
+        ) : null}
 
         {mode === "strict" ? (
           <Card type="inner" title="Landlock 隔离规则" size="small" style={{ marginBottom: 16 }}>

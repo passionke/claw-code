@@ -21,6 +21,8 @@ pub use traits::{PoolOps, SlotLease, TaskOutcome};
 
 pub use clients::PoolClients;
 pub use config::relaxed_worker_allowed_from_env;
+#[cfg(test)]
+pub(crate) use config::test_env_lock;
 pub use e2b_nas_layout::{
     allocate_worker_id, e2b_nas_layout_active, ensure_e2b_proj_nas_roots,
     ensure_proj_home_dir_on_nas, ensure_proj_sessions_root_on_nas, ensure_proj_workers_root_on_nas,
@@ -56,7 +58,7 @@ pub use session_mount_ownership::{
 };
 pub use stdout_hooks::merge_stdout_hooks;
 pub use worker_profile::{
-    default_worker_profile_json, effective_mode, mode_from_json, profile_mode_label,
-    system_landlock_default_json, validate_system_landlock_default, validate_worker_profile_json,
-    WorkerProfileMode,
+    default_worker_profile_json, effective_mode, mode_from_json, pool_size_override_from_json,
+    profile_mode_label, system_landlock_default_json, validate_system_landlock_default,
+    validate_worker_profile_json, WorkerProfileMode,
 };

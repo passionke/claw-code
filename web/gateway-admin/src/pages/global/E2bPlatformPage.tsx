@@ -102,10 +102,20 @@ export default function E2bPlatformPage() {
               <Typography.Text code>{settings.workerStrictTemplate}</Typography.Text>
             </Descriptions.Item>
             <Descriptions.Item label="Strict poolSize（PG）">
-              <Typography.Text code>{e2bWorker?.poolSize ?? 4}</Typography.Text>
+              <Typography.Text code>{e2bWorker?.poolSize ?? 1}</Typography.Text>
+              {e2bWorker?.poolSizeCap != null ? (
+                <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+                  cap={e2bWorker.poolSizeCap}
+                </Typography.Text>
+              ) : null}
               <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
                 在「核心组件」页修改
               </Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="relaxedWorkerAllowed">
+              <Tag color={settings.relaxedWorkerAllowed === false ? "red" : "green"}>
+                {settings.relaxedWorkerAllowed === false ? "false（严格模式）" : "true"}
+              </Tag>
             </Descriptions.Item>
             <Descriptions.Item label="worker relaxed 模板">
               <Typography.Text code>{settings.workerRelaxedTemplate}</Typography.Text>
