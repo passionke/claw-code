@@ -253,23 +253,92 @@ pub async fn load_e2b_strict_worker_pool_size(db: &GatewaySessionDb) -> Result<u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pool::test_env_lock;
+
+    fn with_env(key: &str, value: Option<&str>, f: impl FnOnce()) {
+        let _guard = test_env_lock();
+        let prev = std::env::var(key).ok();
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        f();
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn default_pool_size_is_one() {
+        assert_eq!(STRICT_WORKER_POOL_SIZE_DEFAULT, 1);
+        let public = e2b_worker_settings_public(&E2bWorkerSettings::default());
+        assert_eq!(public.pool_size, 1);
+    }
 
     #[test]
     fn pool_size_clamps_to_bounds() {
-        assert_eq!(clamp_strict_worker_pool_size(0), 1);
-        assert_eq!(clamp_strict_worker_pool_size(1), 1);
-        let max = strict_worker_pool_size_cap_from_env();
-        assert_eq!(clamp_strict_worker_pool_size(max), max);
-        assert_eq!(clamp_strict_worker_pool_size(max.saturating_add(99)), max);
+        with_env("CLAW_E2B_POOL_SIZE_CAP", None, || {
+            assert_eq!(clamp_strict_worker_pool_size(0), 1);
+            assert_eq!(clamp_strict_worker_pool_size(1), 1);
+            assert_eq!(
+                clamp_strict_worker_pool_size(STRICT_WORKER_POOL_SIZE_MAX),
+                STRICT_WORKER_POOL_SIZE_MAX
+            );
+            assert_eq!(
+                clamp_strict_worker_pool_size(STRICT_WORKER_POOL_SIZE_MAX + 99),
+                STRICT_WORKER_POOL_SIZE_MAX
+            );
+        });
     }
 
     #[test]
     fn pool_size_validate_rejects_over_cap() {
-        let max = strict_worker_pool_size_cap_from_env();
-        assert!(validate_strict_worker_pool_size(0).is_err());
-        assert!(validate_strict_worker_pool_size(1).is_ok());
-        assert!(validate_strict_worker_pool_size(max).is_ok());
-        assert!(validate_strict_worker_pool_size(max.saturating_add(1)).is_err());
+        with_env("CLAW_E2B_POOL_SIZE_CAP", Some("32"), || {
+            assert_eq!(strict_worker_pool_size_cap_from_env(), 32);
+            assert!(validate_strict_worker_pool_size(0).is_err());
+            assert!(validate_strict_worker_pool_size(1).is_ok());
+            assert!(validate_strict_worker_pool_size(32).is_ok());
+            let err = validate_strict_worker_pool_size(33).unwrap_err();
+            assert!(
+                err.contains("CLAW_E2B_POOL_SIZE_CAP"),
+                "unexpected err: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn pool_size_cap_falls_back_when_unset_or_invalid() {
+        with_env("CLAW_E2B_POOL_SIZE_CAP", None, || {
+            assert_eq!(
+                strict_worker_pool_size_cap_from_env(),
+                STRICT_WORKER_POOL_SIZE_MAX
+            );
+        });
+        with_env("CLAW_E2B_POOL_SIZE_CAP", Some("0"), || {
+            assert_eq!(
+                strict_worker_pool_size_cap_from_env(),
+                STRICT_WORKER_POOL_SIZE_MAX
+            );
+        });
+        with_env("CLAW_E2B_POOL_SIZE_CAP", Some("nope"), || {
+            assert_eq!(
+                strict_worker_pool_size_cap_from_env(),
+                STRICT_WORKER_POOL_SIZE_MAX
+            );
+        });
+    }
+
+    #[test]
+    fn public_settings_exposes_pool_size_cap() {
+        with_env("CLAW_E2B_POOL_SIZE_CAP", Some("8"), || {
+            let public = e2b_worker_settings_public(&E2bWorkerSettings {
+                pool_size: Some(4),
+                ..Default::default()
+            });
+            assert_eq!(public.pool_size, 4);
+            assert_eq!(public.pool_size_cap, 8);
+        });
     }
 
     #[test]

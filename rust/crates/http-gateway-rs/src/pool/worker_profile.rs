@@ -145,7 +145,22 @@ pub fn system_landlock_default_json() -> Value {
 
 #[cfg(test)]
 mod tests {
+    use super::super::config::test_env_lock;
     use super::*;
+
+    fn with_env(key: &str, value: Option<&str>, f: impl FnOnce()) {
+        let _guard = test_env_lock();
+        let prev = std::env::var(key).ok();
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        f();
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
 
     #[test]
     fn default_json_is_strict() {
@@ -163,9 +178,29 @@ mod tests {
     }
 
     #[test]
+    fn rejects_relaxed_when_env_disallows() {
+        with_env("CLAW_ALLOW_RELAXED_WORKER", Some("false"), || {
+            let err = validate_worker_profile_json(&json!({"mode": "relaxed"})).unwrap_err();
+            assert!(
+                err.contains("CLAW_ALLOW_RELAXED_WORKER=false"),
+                "unexpected err: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn accepts_relaxed_when_env_allows() {
+        with_env("CLAW_ALLOW_RELAXED_WORKER", Some("true"), || {
+            validate_worker_profile_json(&json!({"mode": "relaxed"})).unwrap();
+        });
+    }
+
+    #[test]
     fn rejects_relaxed_with_strict_block() {
-        let json = json!({"mode": "relaxed", "strict": {"useSystemDefault": true}});
-        assert!(validate_worker_profile_json(&json).is_err());
+        with_env("CLAW_ALLOW_RELAXED_WORKER", Some("true"), || {
+            let json = json!({"mode": "relaxed", "strict": {"useSystemDefault": true}});
+            assert!(validate_worker_profile_json(&json).is_err());
+        });
     }
 
     #[test]
@@ -191,18 +226,42 @@ mod tests {
 
     #[test]
     fn accepts_strict_with_pool_size() {
-        let json = json!({"mode": "strict", "poolSize": 1});
-        validate_worker_profile_json(&json).unwrap();
-        assert_eq!(pool_size_override_from_json(&json), Some(1));
-        assert_eq!(
-            pool_size_override_from_json(&json!({"mode": "strict"})),
-            None
-        );
+        with_env("CLAW_E2B_POOL_SIZE_CAP", Some("16"), || {
+            let json = json!({"mode": "strict", "poolSize": 1});
+            validate_worker_profile_json(&json).unwrap();
+            assert_eq!(pool_size_override_from_json(&json), Some(1));
+            assert_eq!(
+                pool_size_override_from_json(&json!({"mode": "strict"})),
+                None
+            );
+        });
+    }
+
+    #[test]
+    fn rejects_project_pool_size_over_env_cap() {
+        with_env("CLAW_E2B_POOL_SIZE_CAP", Some("8"), || {
+            let err = validate_worker_profile_json(&json!({"mode": "strict", "poolSize": 9}))
+                .unwrap_err();
+            assert!(
+                err.contains("CLAW_E2B_POOL_SIZE_CAP"),
+                "unexpected err: {err}"
+            );
+        });
     }
 
     #[test]
     fn rejects_relaxed_with_pool_size() {
-        let json = json!({"mode": "relaxed", "poolSize": 2});
-        assert!(validate_worker_profile_json(&json).is_err());
+        with_env("CLAW_ALLOW_RELAXED_WORKER", Some("true"), || {
+            let json = json!({"mode": "relaxed", "poolSize": 2});
+            assert!(validate_worker_profile_json(&json).is_err());
+        });
+    }
+
+    #[test]
+    fn pool_size_override_ignores_null() {
+        assert_eq!(
+            pool_size_override_from_json(&json!({"mode": "strict", "poolSize": null})),
+            None
+        );
     }
 }
