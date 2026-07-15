@@ -1,72 +1,70 @@
 # Pool v1: worker artifacts ↔ HTTP consumer read matrix
 
-> **Note (2026-06):** Worker 现运行在 **FC MicroVM**；下文「pool v1 / tmpfs」描述历史宿主机 pool 行为，**PG-only 消费规则**仍适用。
+> **Note (2026-07):** Worker runs in **e2b sandbox**; durable consumer state is still **PostgreSQL only**. Historical host pool / tmpfs wording is background.
 
 Author: kejiqing
 
-Pool v1 runs solve in a worker with **tmpfs** `CLAW_PROJECT_CONFIG_ROOT=/claw_host_root`. Worker `.claw/*` is ephemeral; durable state lands in PostgreSQL on `readback_out`.
+Pool-style solve writes worker `.claw/*` under the session on NAS; durable HTTP state lands in PostgreSQL (terminal readback + running sync).
 
 **HTTP consumer rule:** read **PostgreSQL only**. No host `ds_X/sessions/.../.claw/*` for tools / progress / timeline APIs.
 
 **Resolver:** `rust/crates/http-gateway-rs/src/pool_consumer_resolve.rs`
 
-## Running `report_progress`（已确认根因 2026-06-06）
+## Running `report_progress`（e2b：nas-api sync）
 
-### 现象
+### 现象（旧）
 
 `GET /v1/tasks/{taskId}` 在 **`status=running`** 时长期返回：
 
 - `currentTaskDesc`: 「处理中」
 - 无 `progressHistory` / `planTitle` / `todos`（空数组被 JSON 省略）
 
-同一 turn **`succeeded` 后** 一次 poll 才出现完整 progress（与 worker 内 `report_progress` 实际已写入 tmpfs 矛盾）。
+同一 turn **`succeeded` 后** 一次 poll 才出现完整 progress（worker 内已写 `.claw` 但未进 PG）。
 
-### 根因
+### 根因（迁移后）
 
 | 层 | 事实 |
 | --- | --- |
-| Worker | `report_progress` 写入槽位 tmpfs：`.claw/task-progress.json`、`progress-events.ndjson` |
-| 终态 | **pool_outside**：Gateway `readback` 经 sandbox RPC；legacy 路径为宿主机 pool `readback_out` |
-| 错误路径（已删除） | **gateway 容器内**直接 `podman exec` 读 worker → **失败**（gateway 与 worker 不在同一 runtime 命名空间；worker 由宿主机 pool 管理） |
-| 结果 | **`running` 期间 PG `solve_timing_jsonb` 为空**；HTTP 消费端只读 PG → poll 看不到中间进度 |
+| Worker | `report_progress` / MCP start / multi-agent `progress_sync` 写入 session `.claw/task-progress.json`、`progress-events.ndjson`（NAS 可见） |
+| 终态 | Gateway `readback_turn_from_session_home` 经 **nas-api** 读 NAS → `replace_turn_progress_snapshot` |
+| 缺口（已修） | 删宿主机 pool-daemon 后，`PoolOps::sync_turn_progress_to_db` 曾为 trait 空实现 → **running 期间不进 PG** |
+| 结果 | HTTP 只读 PG → running poll 看不到中间进度 |
 
-### 修法
+### 修法（当前）
 
-1. **Pool RPC `sync_turn_progress`**（`POST /v1/pool/rpc`，op `sync_turn_progress`）  
-   - **Gateway**（`PoolRpcClient`）在 `status=running` 的每次 progress 解析前调用。  
-   - **Pool daemon（宿主机）**：`gateway_turns.worker_name` → `podman exec` → 读 worker `.claw/progress*` → `replace_turn_progress_snapshot` 写入 PG。
+1. **`E2bOrchestratedPool::sync_turn_progress_to_db`**
+   - `turn_id` → session scope → nas-api 读 `progress-events.ndjson` + `task-progress.json` → `replace_turn_progress_snapshot`。
+   - 实现：`session_db_sync::sync_turn_progress_from_session_home`（与终态 readback 共用）。
 
-2. **`GET /v1/tasks` running 轮询**（`main.rs`）  
-   - `load_turn_progress_snapshot` → 先 RPC sync，再 `resolve_turn_progress` 读 PG。  
-   - `queued`/`running`：**每次 poll** 用 PG 刷新 `currentTaskDesc`、`progressHistory`、`planTitle`、`todos`（不再仅在 `currentTaskDesc.is_none()` 时更新）。  
-   - 后台 `refresh_task_progress` poller 同步更新内存 `TaskRecord` 的同字段。
+2. **`GET /v1/tasks` / 内存 progress poller**（`main.rs`）
+   - `load_turn_progress_snapshot` → `maybe_sync_running_turn_progress_from_worker`（仅 `status=running`）→ `resolve_turn_progress` 读 PG。
+   - 后台 `refresh_task_progress`（默认 400ms）与客户端 GET 共用同一 sync，暂不 debounce。
 
 ### 代码
 
 | 角色 | 路径 |
 | --- | --- |
-| RPC 定义 / 客户端 | `rust/crates/http-gateway-rs/src/pool/rpc.rs` — `PoolRpcReq::SyncTurnProgress` |
-| 宿主机执行 | `rust/crates/http-gateway-rs/src/pool/docker_pool.rs` — `sync_turn_progress_to_db` |
+| Progress-only NAS→PG | `rust/crates/http-gateway-rs/src/pool/session_db_sync.rs` — `sync_turn_progress_from_session_home` |
+| e2b override | `rust/crates/http-gateway-rs/src/pool/e2b_orchestrated_pool.rs` — `sync_turn_progress_to_db` |
 | Gateway 触发 | `rust/crates/http-gateway-rs/src/pool_consumer_resolve.rs` — `maybe_sync_running_turn_progress_from_worker` |
 | Task poll | `rust/crates/http-gateway-rs/src/main.rs` — `load_turn_progress_snapshot`, `get_task`, `refresh_task_progress` |
 
 ### 部署约束
 
-**Gateway 与 pool daemon 必须同版本升级。** 仅升 gateway、pool daemon 仍为旧版时，RPC `sync_turn_progress` 无法识别，`running` 中间进度仍进不了 PG。
+Gateway 需带本修复的镜像；nas-api 须在线（与终态 readback 同依赖）。沙箱**不**持有 PG 凭据。
 
 ```bash
-./deploy/stack/gateway.sh pack-deploy local   # 或目标环境 up --release
-# 验收：长任务 running 期间 poll 应出现 progressHistory，而非仅终态
+# 验收：长任务 running 期间 poll 应出现 progressHistory / todos，而非仅终态
 ```
 
 ## Write path (worker → PG)
 
 | Worker artifact | Readback | PG storage |
 | --- | --- | --- |
-| `gateway-solve-session.jsonl` | `readback_out` transcript | `cc_messages` (`render_session_jsonl`) |
-| `progress-events.ndjson` | `readback_timing_to_db` | `solve_timing_jsonb.progressEvents` |
-| `task-progress.json` | `readback_timing_to_db` | `solve_timing_jsonb.taskProgress` |
-| solve timing / orchestration | `readback_timing_to_db` | `solveTimingEvents`, `orchestrationEvents` |
+| `gateway-solve-session.jsonl` | nas-api readback transcript | `cc_messages` (`render_session_jsonl`) |
+| `progress-events.ndjson` | running sync + terminal readback | `solve_timing_jsonb.progressEvents` |
+| `task-progress.json` | running sync + terminal readback | `solve_timing_jsonb.taskProgress` |
+| solve timing / orchestration | terminal readback | `solveTimingEvents`, `orchestrationEvents` |
 
 ## Read path (HTTP consumer → PG)
 
