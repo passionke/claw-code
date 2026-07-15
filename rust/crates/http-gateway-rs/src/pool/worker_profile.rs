@@ -82,9 +82,9 @@ fn validate_worker_profile_pool_size(value: &Value) -> Result<(), String> {
     match value.get("poolSize") {
         None | Some(Value::Null) => Ok(()),
         Some(v) => {
-            let n = v
-                .as_u64()
-                .ok_or_else(|| "worker_profile_json.poolSize must be a positive integer".to_string())?;
+            let n = v.as_u64().ok_or_else(|| {
+                "worker_profile_json.poolSize must be a positive integer".to_string()
+            })?;
             let n = u32::try_from(n)
                 .map_err(|_| "worker_profile_json.poolSize out of u32 range".to_string())?;
             validate_strict_worker_pool_size(n)?;
