@@ -85,6 +85,8 @@ export interface ChatHistorySidebarProps {
   /** Predefined extraSession field names from project config. Author: kejiqing */
   extraSessionFieldDefs: string[];
   activeSessionId: string | null;
+  /** From `/admin/chat?sessionId=` — seeds the sessionId filter (no debounce). Author: kejiqing */
+  sessionIdFilter?: string;
   refreshKey: number;
   onSelectSession: (sessionId: string, clientOrigin?: string | null) => void;
   onNewSession: () => void;
@@ -96,6 +98,7 @@ export default function ChatHistorySidebar({
   projId,
   extraSessionFieldDefs,
   activeSessionId,
+  sessionIdFilter = "",
   refreshKey,
   onSelectSession,
   onNewSession,
@@ -114,8 +117,8 @@ export default function ChatHistorySidebar({
   const [error, setError] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [searchQ, setSearchQ] = useState("");
-  const [sessionIdInput, setSessionIdInput] = useState("");
-  const [sessionIdQ, setSessionIdQ] = useState("");
+  const [sessionIdInput, setSessionIdInput] = useState(() => sessionIdFilter.trim());
+  const [sessionIdQ, setSessionIdQ] = useState(() => sessionIdFilter.trim());
   const [extraFilterInput, setExtraFilterInput] = useState<ExtraSessionKv>({});
   const [extraFilterQ, setExtraFilterQ] = useState<ExtraSessionKv>({});
   const [filterDate, setFilterDate] = useState<Dayjs | null>(null);
@@ -179,6 +182,13 @@ export default function ChatHistorySidebar({
     setExtraFilterInput({});
     setExtraFilterQ({});
   }, [projId, extraSessionFieldDefs.join(",")]);
+
+  // URL / parent-driven sessionId filter (shareable deep link). Author: kejiqing
+  useEffect(() => {
+    const next = sessionIdFilter.trim();
+    setSessionIdInput(next);
+    setSessionIdQ(next);
+  }, [sessionIdFilter]);
 
   const reload = useCallback(() => {
     void fetchPage(false);

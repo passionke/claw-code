@@ -1,5 +1,6 @@
 import { Alert, Button, Input, Spin, Tooltip, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import ChatHistorySidebar from "../components/chat/ChatHistorySidebar";
 import ChatTurnCard from "../components/chat/ChatTurnCard";
 import ChatToolbar from "../components/chat/ChatToolbar";
@@ -79,6 +80,8 @@ const CHAT_AUDIT_ONLY = false;
 export default function ChatPage() {
   const { gatewayBase, projId, projectConfig } = useApp();
   const { tapLiveBase, tapLiveTemplate } = useChatSession();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlSessionId = (searchParams.get("sessionId") ?? "").trim();
   const [thread, setThread] = useState<ThreadItem[]>([]);
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
@@ -89,7 +92,25 @@ export default function ChatPage() {
   const [translateOpen, setTranslateOpen] = useState(false);
   const [extraKv, setExtraKv] = useState<ExtraSessionKv>({});
   const sessionIdRef = useRef<string | null>(null);
+  /** Avoid re-fetching the same `?sessionId=` deep link (projId-scoped). Author: kejiqing */
+  const openedFromUrlRef = useRef("");
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  const setUrlSessionId = useCallback(
+    (id: string | null) => {
+      const trimmed = (id ?? "").trim();
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (trimmed) next.set("sessionId", trimmed);
+          else next.delete("sessionId");
+          return next;
+        },
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
 
   const fieldDefs = useMemo(
     () =>
@@ -126,10 +147,12 @@ export default function ChatPage() {
   }, [projId, fieldDefs]);
 
   const onNewSession = () => {
+    openedFromUrlRef.current = "";
     sessionIdRef.current = null;
     setActiveSessionId(null);
     setSessionClientOrigin(null);
     setThread([]);
+    setUrlSessionId(null);
     prefillExtraFromStorage();
   };
 
@@ -212,6 +235,24 @@ export default function ChatPage() {
     [gatewayBase, projId, fieldDefs]
   );
 
+  const selectSession = useCallback(
+    (sessionId: string, clientOrigin?: string | null) => {
+      openedFromUrlRef.current = `${projId}:${sessionId}`;
+      setUrlSessionId(sessionId);
+      void loadSessionHistory(sessionId, clientOrigin);
+    },
+    [projId, setUrlSessionId, loadSessionHistory]
+  );
+
+  // Deep link: `/admin/chat?sessionId=` → filter + open history. Author: kejiqing
+  useEffect(() => {
+    if (!gatewayBase || !urlSessionId) return;
+    const key = `${projId}:${urlSessionId}`;
+    if (openedFromUrlRef.current === key) return;
+    openedFromUrlRef.current = key;
+    void loadSessionHistory(urlSessionId);
+  }, [gatewayBase, urlSessionId, projId, loadSessionHistory]);
+
   const runSend = async (userText: string) => {
     if (!gatewayBase) {
       message.error("未选择网关");
@@ -254,6 +295,8 @@ export default function ChatPage() {
 
     sessionIdRef.current = asyncRes.sessionId;
     setActiveSessionId(asyncRes.sessionId);
+    openedFromUrlRef.current = `${projId}:${asyncRes.sessionId}`;
+    setUrlSessionId(asyncRes.sessionId);
     setSessionClientOrigin(CLIENT_ORIGIN_GATEWAY_ADMIN);
     setHistoryRefreshKey((k) => k + 1);
     setThread((prev) => [
@@ -309,8 +352,9 @@ export default function ChatPage() {
         projId={projId}
         extraSessionFieldDefs={fieldDefs}
         activeSessionId={activeSessionId}
+        sessionIdFilter={urlSessionId}
         refreshKey={historyRefreshKey}
-        onSelectSession={(id, origin) => void loadSessionHistory(id, origin)}
+        onSelectSession={selectSession}
         onNewSession={onNewSession}
       />
       <div className={styles.chatPageMain}>
