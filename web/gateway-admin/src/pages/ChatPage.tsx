@@ -75,13 +75,20 @@ function isSys(item: ThreadItem): item is SysEntry {
   return "kind" in item && item.kind === "sys";
 }
 
+/** Parse `?projId=` (≥1). Author: kejiqing */
+function parseUrlProjId(raw: string | null): number | null {
+  const n = parseInt((raw ?? "").trim(), 10);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+}
+
 /** solve_async 对话：按时间线 user → assistant 卡片交错展示。Author: kejiqing */
 const CHAT_AUDIT_ONLY = false;
 export default function ChatPage() {
-  const { gatewayBase, projId, projectConfig } = useApp();
+  const { gatewayBase, projId, setProjId, projectConfig } = useApp();
   const { tapLiveBase, tapLiveTemplate } = useChatSession();
   const [searchParams, setSearchParams] = useSearchParams();
   const urlSessionId = (searchParams.get("sessionId") ?? "").trim();
+  const urlProjId = parseUrlProjId(searchParams.get("projId"));
   const [thread, setThread] = useState<ThreadItem[]>([]);
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
@@ -92,16 +99,18 @@ export default function ChatPage() {
   const [translateOpen, setTranslateOpen] = useState(false);
   const [extraKv, setExtraKv] = useState<ExtraSessionKv>({});
   const sessionIdRef = useRef<string | null>(null);
-  /** Avoid re-fetching the same `?sessionId=` deep link (projId-scoped). Author: kejiqing */
+  /** Avoid re-fetching the same `?projId=&sessionId=` deep link. Author: kejiqing */
   const openedFromUrlRef = useRef("");
   const logEndRef = useRef<HTMLDivElement>(null);
 
-  const setUrlSessionId = useCallback(
-    (id: string | null) => {
-      const trimmed = (id ?? "").trim();
+  /** Shareable chat URL always carries projId (sessions are project-scoped). Author: kejiqing */
+  const syncChatUrl = useCallback(
+    (sessionId: string | null) => {
+      const trimmed = (sessionId ?? "").trim();
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
+          next.set("projId", String(projId));
           if (trimmed) next.set("sessionId", trimmed);
           else next.delete("sessionId");
           return next;
@@ -109,8 +118,14 @@ export default function ChatPage() {
         { replace: true }
       );
     },
-    [setSearchParams]
+    [setSearchParams, projId]
   );
+
+  // Deep link: `?projId=` forces the project before loading the session. Author: kejiqing
+  useEffect(() => {
+    if (urlProjId == null || urlProjId === projId) return;
+    setProjId(urlProjId);
+  }, [urlProjId, projId, setProjId]);
 
   const fieldDefs = useMemo(
     () =>
@@ -152,7 +167,7 @@ export default function ChatPage() {
     setActiveSessionId(null);
     setSessionClientOrigin(null);
     setThread([]);
-    setUrlSessionId(null);
+    syncChatUrl(null);
     prefillExtraFromStorage();
   };
 
@@ -238,20 +253,22 @@ export default function ChatPage() {
   const selectSession = useCallback(
     (sessionId: string, clientOrigin?: string | null) => {
       openedFromUrlRef.current = `${projId}:${sessionId}`;
-      setUrlSessionId(sessionId);
+      syncChatUrl(sessionId);
       void loadSessionHistory(sessionId, clientOrigin);
     },
-    [projId, setUrlSessionId, loadSessionHistory]
+    [projId, syncChatUrl, loadSessionHistory]
   );
 
-  // Deep link: `/admin/chat?sessionId=` → filter + open history. Author: kejiqing
+  // Deep link: `/admin/chat?projId=&sessionId=` → switch project + open history. Author: kejiqing
   useEffect(() => {
     if (!gatewayBase || !urlSessionId) return;
+    // Wait until URL projId (if any) has been applied — avoids false "not found" on wrong project.
+    if (urlProjId != null && urlProjId !== projId) return;
     const key = `${projId}:${urlSessionId}`;
     if (openedFromUrlRef.current === key) return;
     openedFromUrlRef.current = key;
     void loadSessionHistory(urlSessionId);
-  }, [gatewayBase, urlSessionId, projId, loadSessionHistory]);
+  }, [gatewayBase, urlSessionId, urlProjId, projId, loadSessionHistory]);
 
   const runSend = async (userText: string) => {
     if (!gatewayBase) {
@@ -296,7 +313,7 @@ export default function ChatPage() {
     sessionIdRef.current = asyncRes.sessionId;
     setActiveSessionId(asyncRes.sessionId);
     openedFromUrlRef.current = `${projId}:${asyncRes.sessionId}`;
-    setUrlSessionId(asyncRes.sessionId);
+    syncChatUrl(asyncRes.sessionId);
     setSessionClientOrigin(CLIENT_ORIGIN_GATEWAY_ADMIN);
     setHistoryRefreshKey((k) => k + 1);
     setThread((prev) => [

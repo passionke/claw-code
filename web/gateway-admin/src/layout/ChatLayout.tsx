@@ -1,6 +1,6 @@
 import { AppstoreOutlined, CodeOutlined } from "@ant-design/icons";
 import { Button, Layout, Select, Space, Typography } from "antd";
-import { Link, Outlet } from "react-router-dom";
+import { Link, Outlet, useSearchParams } from "react-router-dom";
 import { useApp } from "../context/AppContext";
 import { isOvsWorkerRelaxed, ovsIdeHref } from "../utils/ovsUrl";
 
@@ -14,11 +14,26 @@ export default function ChatLayout() {
     projects,
     projectConfig,
   } = useApp();
+  const [, setSearchParams] = useSearchParams();
 
   const projOptions = projects.map((p) => ({
     value: p.projId,
     label: `项目 ${p.projId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
   }));
+
+  const onProjChange = (id: number) => {
+    setProjId(id);
+    // Keep URL projId in sync; drop sessionId — sessions are project-scoped. Author: kejiqing
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("projId", String(id));
+        next.delete("sessionId");
+        return next;
+      },
+      { replace: true }
+    );
+  };
 
   return (
     <Layout
@@ -50,7 +65,7 @@ export default function ChatLayout() {
             style={{ minWidth: 160 }}
             value={projId}
             options={projOptions.length ? projOptions : [{ value: 1, label: "项目 1" }]}
-            onChange={setProjId}
+            onChange={onProjChange}
           />
         </Space>
         {isOvsWorkerRelaxed(projectConfig?.workerProfileJson) ? (

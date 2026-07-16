@@ -59,7 +59,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [playground, setPlayground] = useState<PlaygroundConfig | null>(null);
   const [gatewayBase, setGatewayBaseState] = useState("");
-  const [projId, setProjIdState] = useState(1);
+  const [projId, setProjIdState] = useState(() => readSavedProjId() ?? 1);
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [projectConfig, setProjectConfig] = useState<ProjectConfig | null>(null);
   const [gatewayImageTag, setGatewayImageTag] = useState("");
@@ -175,18 +175,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setProjects(list);
       const saved = readSavedProjId();
       const cur = projId;
+      // Only remap when current selection is missing from the list (do not
+      // clobber an explicit setProjId / URL ?projId=). Author: kejiqing
       if (list.length && !list.some((p) => p.projId === cur)) {
         const pick =
           (saved != null ? list.find((p) => p.projId === saved) : undefined) ||
           list.find((p) => p.environmentPrepared) ||
           list[0];
         setProjId(pick.projId);
-      } else if (
-        list.length &&
-        saved != null &&
-        list.some((p) => p.projId === saved)
-      ) {
-        setProjIdState(saved);
       }
       if (!silent) message.success(`已加载 ${list.length} 个项目`);
     },
