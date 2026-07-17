@@ -3,6 +3,9 @@
 """
 Static UI + reverse proxy for gateway async playground (browser CORS bypass).
 
+Public gateway path: ``/gateway/<upstream path>`` → default upstream (strip prefix),
+no admin login. Browser Admin UI still uses ``/__proxy__`` (envelope + baseUrl).
+
 Stdlib Python only (no Rust, no pip deps). Author: kejiqing
 """
 from __future__ import annotations
@@ -624,6 +627,122 @@ def proxy_ovs_http(
         handler.wfile.write(payload)
 
 
+def _gateway_public_upstream_url(request_path: str, query: str) -> str | None:
+    """Map ``/gateway/...`` to upstream URL (strip prefix). Author: kejiqing"""
+    if request_path == "/gateway":
+        sub = "/"
+    elif request_path.startswith("/gateway/"):
+        sub = request_path[len("/gateway") :] or "/"
+    else:
+        return None
+    if not sub.startswith("/"):
+        sub = "/" + sub
+    base = _effective_proxy_base(PUBLIC_GATEWAY_BASE).rstrip("/")
+    q = f"?{query}" if query else ""
+    return f"{base}{sub}{q}"
+
+
+def proxy_gateway_public(handler: BaseHTTPRequestHandler) -> None:
+    """Transparent public reverse proxy: ``/gateway/*`` → gateway (no login). Author: kejiqing"""
+    parsed = urllib.parse.urlparse(handler.path)
+    url = _gateway_public_upstream_url(parsed.path, parsed.query)
+    if not url:
+        handler.send_error(404, "not found")
+        return
+    check = url.split("?", 1)[0]
+    if not is_allowed_upstream(check):
+        handler.send_error(400, "upstream host/port not allowed")
+        return
+
+    method = handler.command.upper()
+    length = handler.headers.get("Content-Length")
+    body: bytes | None = None
+    if length and method not in ("GET", "HEAD"):
+        try:
+            n = int(length)
+        except ValueError:
+            handler.send_error(400, "bad Content-Length")
+            return
+        if n > 0:
+            body = handler.rfile.read(n)
+
+    headers = {
+        k: v
+        for k, v in handler.headers.items()
+        if k.lower() not in _HOP_BY_HOP and k.lower() not in ("host", "accept-encoding")
+    }
+    try:
+        req = urllib.request.Request(url, data=body, method=method, headers=headers)
+        req.add_header("Accept-Encoding", "identity")
+        upstream = urllib.request.urlopen(req, timeout=600)
+    except urllib.error.HTTPError as e:
+        handler.send_response(e.code)
+        for k, v in e.headers.items():
+            if k.lower() not in _HOP_BY_HOP:
+                handler.send_header(k, v)
+        handler.end_headers()
+        if method != "HEAD":
+            handler.wfile.write(e.read())
+        return
+    except urllib.error.URLError as e:
+        handler.send_error(502, str(e.reason if hasattr(e, "reason") else e))
+        return
+
+    ct = (upstream.headers.get("Content-Type") or "") if upstream.headers else ""
+    is_sse = "text/event-stream" in ct.lower()
+    try:
+        if is_sse:
+            handler.send_response(upstream.status)
+            for k, v in upstream.headers.items():
+                lk = k.lower()
+                if lk in _HOP_BY_HOP or lk in (
+                    "content-encoding",
+                    "content-length",
+                    "transfer-encoding",
+                ):
+                    continue
+                handler.send_header(k, v)
+            handler.send_header("Cache-Control", "no-cache")
+            handler.send_header("Connection", "close")
+            handler.send_header("X-Accel-Buffering", "no")
+            handler.end_headers()
+            try:
+                while True:
+                    chunk = upstream.read(4096)
+                    if not chunk:
+                        break
+                    handler.wfile.write(chunk)
+                    handler.wfile.flush()
+            finally:
+                upstream.close()
+            return
+
+        try:
+            payload = upstream.read()
+        finally:
+            upstream.close()
+        handler.send_response(upstream.status)
+        for k, v in upstream.headers.items():
+            lk = k.lower()
+            if lk in _HOP_BY_HOP or lk in (
+                "content-encoding",
+                "content-length",
+                "transfer-encoding",
+            ):
+                continue
+            handler.send_header(k, v)
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.send_header("Connection", "close")
+        handler.end_headers()
+        if method != "HEAD":
+            handler.wfile.write(payload)
+    except BrokenPipeError:
+        try:
+            upstream.close()
+        except Exception:
+            pass
+
+
 def proxy_ovs_agent_ws(
     handler: BaseHTTPRequestHandler, proj_id: str, session_id: str, chat_session_id: str = ""
 ) -> None:
@@ -947,6 +1066,7 @@ def playground_config() -> dict:
         "defaultGatewayBase": PUBLIC_GATEWAY_BASE,
         "defaultGatewayLabel": _gateway_preset_label(PUBLIC_GATEWAY_BASE),
         "gatewayPresets": presets,
+        "gatewayPublicPath": "/gateway",
         "adminLoginRequired": True,
         "adminChatPublic": True,
     }
@@ -976,6 +1096,10 @@ class Handler(BaseHTTPRequestHandler):
                 proxy_ovs_vscode_ws(self, rel, qs, proj_id)
                 return
             self.send_error(400, "unsupported websocket path")
+            return
+
+        if path == "/gateway" or path.startswith("/gateway/"):
+            proxy_gateway_public(self)
             return
 
         if path == "/__config__":
@@ -1094,6 +1218,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        if path == "/gateway" or path.startswith("/gateway/"):
+            proxy_gateway_public(self)
+            return
 
         if path == "/__admin_login__":
             payload = read_allowed_json_body(self)
@@ -1242,6 +1370,27 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             resp.close()
 
+    def do_PUT(self) -> None:
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/gateway" or path.startswith("/gateway/"):
+            proxy_gateway_public(self)
+            return
+        self.send_error(404, "not found")
+
+    def do_PATCH(self) -> None:
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/gateway" or path.startswith("/gateway/"):
+            proxy_gateway_public(self)
+            return
+        self.send_error(404, "not found")
+
+    def do_DELETE(self) -> None:
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/gateway" or path.startswith("/gateway/"):
+            proxy_gateway_public(self)
+            return
+        self.send_error(404, "not found")
+
 
 def main(argv: list[str]) -> int:
     host = LISTEN_HOST
@@ -1251,6 +1400,7 @@ def main(argv: list[str]) -> int:
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"gateway-async-playground: http://{host}:{port}/", flush=True)
     print(f"  default gateway: {PUBLIC_GATEWAY_BASE}", flush=True)
+    print(f"  public API: /gateway → {UPSTREAM_GATEWAY_BASE or PUBLIC_GATEWAY_BASE}", flush=True)
     print(f"  admin user: {ADMIN_USER}", flush=True)
     httpd.serve_forever()
     return 0
