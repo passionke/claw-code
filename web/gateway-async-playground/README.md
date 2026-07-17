@@ -36,6 +36,7 @@ python3 server.py
 
 - `http://127.0.0.1:${GATEWAY_PLAYGROUND_HOST_PORT:-18765}/` — solve_async 调试
 - `http://127.0.0.1:18765/admin` — 项目管理（需登录；账号密码见根目录 `.env` 的 `PLAYGROUND_ADMIN_USER` / `PLAYGROUND_ADMIN_PASSWORD`，默认 `admin` / `sunmi123`）
+- `http://127.0.0.1:18765/gateway/...` — **公开**网关反代（去前缀后转到默认上游；与 Admin 的 `/__proxy__` 并存，无需登录）。例：`/gateway/healthz` → upstream `/healthz`，`/gateway/v1/solve` → `/v1/solve`
 
 连通性：`./deploy/stack/gateway.sh check`（含 playground `/__config__`）。
 
