@@ -54,6 +54,9 @@ claw_linux_compile_release() {
   local rust_dir="${root_dir}/rust"
   local out_root="${root_dir}/deploy/stack/.linux-artifacts"
   local out_dir="${out_root}/release"
+  if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
+    rm -rf "${out_root}" 2>/dev/null || sudo rm -rf "${out_root}" 2>/dev/null || true
+  fi
   mkdir -p "${out_dir}"
 
   mkdir -p "${rust_dir}/.cargo"
@@ -148,6 +151,8 @@ claw_linux_compile_release() {
         sccache --show-stats || true
       fi
       ls -la /artifacts/release/http-gateway-rs /artifacts/release/claw
+      find /artifacts/release -mindepth 1 -maxdepth 1 \
+        ! -name claw ! -name http-gateway-rs -exec rm -rf {} + 2>/dev/null || true
       if [ -n "${CLAW_HOST_UID:-}" ] && [ -n "${CLAW_HOST_GID:-}" ]; then
         chown -R "${CLAW_HOST_UID}:${CLAW_HOST_GID}" /artifacts
       fi

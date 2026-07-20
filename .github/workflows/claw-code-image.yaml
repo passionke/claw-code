@@ -89,6 +89,24 @@ jobs:
           echo "runs_on=${{ needs.pick-runner.outputs.runs_on }}"
           echo "hostname=$(hostname)"
 
+      - name: Self-hosted workspace prep
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+            exit 0
+          fi
+          WS="${GITHUB_WORKSPACE}"
+          ART="${WS}/deploy/stack/.linux-artifacts"
+          if [ -d "${ART}" ]; then
+            echo "remove ${ART} (root-owned cargo build debris blocks checkout)"
+            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}"
+          fi
+          if ! touch "${WS}/.ci-self-hosted-prep" 2>/dev/null; then
+            echo "chown ${WS} for actions/checkout clean"
+            sudo chown -R "$(id -u):$(id -g)" "${WS}"
+          fi
+          rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -138,6 +156,19 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Self-hosted workspace cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+            exit 0
+          fi
+          ART="${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts"
+          if [ -d "${ART}" ]; then
+            echo "remove ${ART}"
+            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}" || true
+          fi
+
   build-and-push:
     if: startsWith(github.ref, 'refs/tags/release-v')
     needs:
@@ -159,6 +190,24 @@ jobs:
         run: |
           echo "runner_choice=${{ needs.pick-runner.outputs.runner_choice }}"
           echo "hostname=$(hostname)"
+
+      - name: Self-hosted workspace prep
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+            exit 0
+          fi
+          WS="${GITHUB_WORKSPACE}"
+          ART="${WS}/deploy/stack/.linux-artifacts"
+          if [ -d "${ART}" ]; then
+            echo "remove ${ART} (root-owned cargo build debris blocks checkout)"
+            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}"
+          fi
+          if ! touch "${WS}/.ci-self-hosted-prep" 2>/dev/null; then
+            echo "chown ${WS} for actions/checkout clean"
+            sudo chown -R "$(id -u):$(id -g)" "${WS}"
+          fi
+          rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -241,6 +290,19 @@ jobs:
           docker run --rm "${IMG}" sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
           echo "playground admin-dist ok in ${IMG}"
 
+      - name: Self-hosted workspace cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+            exit 0
+          fi
+          ART="${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts"
+          if [ -d "${ART}" ]; then
+            echo "remove ${ART}"
+            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}" || true
+          fi
+
   build-and-push-relaxed-worker:
     if: startsWith(github.ref, 'refs/tags/release-v')
     needs:
@@ -252,6 +314,24 @@ jobs:
         run: |
           echo "runner_choice=${{ needs.pick-runner.outputs.runner_choice }}"
           echo "hostname=$(hostname)"
+
+      - name: Self-hosted workspace prep
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+            exit 0
+          fi
+          WS="${GITHUB_WORKSPACE}"
+          ART="${WS}/deploy/stack/.linux-artifacts"
+          if [ -d "${ART}" ]; then
+            echo "remove ${ART} (root-owned cargo build debris blocks checkout)"
+            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}"
+          fi
+          if ! touch "${WS}/.ci-self-hosted-prep" 2>/dev/null; then
+            echo "chown ${WS} for actions/checkout clean"
+            sudo chown -R "$(id -u):$(id -g)" "${WS}"
+          fi
+          rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -310,6 +390,19 @@ jobs:
           docker run --rm --entrypoint sh "${IMG}" -c 'command -v curl && command -v git && command -v python3'
           echo "relaxed worker curl/git/python3 ok in ${IMG}"
 
+      - name: Self-hosted workspace cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+            exit 0
+          fi
+          ART="${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts"
+          if [ -d "${ART}" ]; then
+            echo "remove ${ART}"
+            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}" || true
+          fi
+
   mirror-to-acr:
     if: startsWith(github.ref, 'refs/tags/release-v')
     needs:
@@ -334,6 +427,24 @@ jobs:
         run: |
           echo "runner_choice=${{ needs.pick-runner.outputs.runner_choice }}"
           echo "hostname=$(hostname)"
+
+      - name: Self-hosted workspace prep
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+            exit 0
+          fi
+          WS="${GITHUB_WORKSPACE}"
+          ART="${WS}/deploy/stack/.linux-artifacts"
+          if [ -d "${ART}" ]; then
+            echo "remove ${ART} (root-owned cargo build debris blocks checkout)"
+            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}"
+          fi
+          if ! touch "${WS}/.ci-self-hosted-prep" 2>/dev/null; then
+            echo "chown ${WS} for actions/checkout clean"
+            sudo chown -R "$(id -u):$(id -g)" "${WS}"
+          fi
+          rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
 
       - name: Verify ACR_REGISTRY and derive login host
         id: reg
@@ -390,3 +501,16 @@ jobs:
           IMG="${PREFIX}/claw-gateway-playground:${RELEASE_TAG}"
           docker run --rm "${IMG}" sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
           echo "playground admin-dist ok in ${IMG}"
+
+      - name: Self-hosted workspace cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+            exit 0
+          fi
+          ART="${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts"
+          if [ -d "${ART}" ]; then
+            echo "remove ${ART}"
+            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}" || true
+          fi
