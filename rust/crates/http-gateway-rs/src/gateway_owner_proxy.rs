@@ -8,9 +8,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use futures_util::StreamExt;
 
-use crate::gateway_endpoint::{
-    is_gateway_endpoint_online, GatewayEndpointIdentity,
-};
+use crate::gateway_endpoint::{is_gateway_endpoint_online, GatewayEndpointIdentity};
 use crate::session_db::GatewaySessionDb;
 
 /// Decide whether this process owns the turn; if not, return owner base URL when online.
@@ -97,9 +95,9 @@ pub async fn proxy_to_owner_gateway(
             builder = builder.header(hn, hv);
         }
     }
-    let stream = upstream.bytes_stream().map(|chunk| {
-        chunk.map_err(|e| std::io::Error::other(format!("upstream sse chunk: {e}")))
-    });
+    let stream = upstream
+        .bytes_stream()
+        .map(|chunk| chunk.map_err(|e| std::io::Error::other(format!("upstream sse chunk: {e}"))));
     builder
         .body(Body::from_stream(stream))
         .map_err(|e| format!("build proxy response: {e}"))

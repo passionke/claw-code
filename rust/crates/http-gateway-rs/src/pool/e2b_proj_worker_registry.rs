@@ -944,11 +944,7 @@ impl E2bProjWorkerRegistry {
         .await
     }
 
-    async fn force_rotate_slot_locked(
-        &self,
-        proj_id: i64,
-        slot_index: u32,
-    ) -> Result<(), String> {
+    async fn force_rotate_slot_locked(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
         let db = self.session_db().await?;
         let spec = self.desired_worker_spec(proj_id).await?;
         let row = db

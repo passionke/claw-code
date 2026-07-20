@@ -3972,13 +3972,12 @@ impl GatewaySessionDb {
     }
 
     pub async fn delete_gateway_endpoint(&self, gateway_id: &str) -> Result<bool, SqlxError> {
-        let result = sqlx::query(
-            "DELETE FROM gateway_endpoint WHERE cluster_id = $1 AND gateway_id = $2",
-        )
-        .bind(self.cluster_id())
-        .bind(gateway_id)
-        .execute(&self.pool)
-        .await?;
+        let result =
+            sqlx::query("DELETE FROM gateway_endpoint WHERE cluster_id = $1 AND gateway_id = $2")
+                .bind(self.cluster_id())
+                .bind(gateway_id)
+                .execute(&self.pool)
+                .await?;
         Ok(result.rows_affected() > 0)
     }
 

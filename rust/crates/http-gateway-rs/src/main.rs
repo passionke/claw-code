@@ -1043,10 +1043,7 @@ async fn register_solve_turn(
     .await
     .map_err(|e| session_db_err(&e))?;
     // Backend marker only — not machine ingress. Author: kejiqing
-    if let Err(e) = db
-        .assign_turn_pool_id(turn_id, pool::E2B_POOL_ID)
-        .await
-    {
+    if let Err(e) = db.assign_turn_pool_id(turn_id, pool::E2B_POOL_ID).await {
         warn!(
             target: "claw_live_report",
             turn_id = %turn_id,
@@ -1642,10 +1639,7 @@ async fn main() {
         )
         .route("/v1/pools", get(list_claw_pools_handler))
         .route("/v1/pools/{pool_id}", delete(delete_claw_pool_handler))
-        .route(
-            "/v1/gateway/endpoints",
-            get(list_gateway_endpoints_handler),
-        )
+        .route("/v1/gateway/endpoints", get(list_gateway_endpoints_handler))
         .route(
             "/v1/gateway/endpoints/{gateway_id}",
             delete(delete_gateway_endpoint_handler),
