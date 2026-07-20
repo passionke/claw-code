@@ -37,6 +37,8 @@ export interface GitSyncJson {
 
 export interface ProjectListItem {
   projId: number;
+  projectCode?: string;
+  projectDescription?: string;
   contentRev?: string;
   draftOpen?: boolean;
   updatedAtMs?: number;
@@ -61,6 +63,8 @@ export type { WorkerProfileJson } from "./landlock";
 
 export interface ProjectConfig {
   projId: number;
+  projectCode?: string;
+  projectDescription?: string;
   contentRev: string;
   stableContentRev?: string;
   draftOpen?: boolean;

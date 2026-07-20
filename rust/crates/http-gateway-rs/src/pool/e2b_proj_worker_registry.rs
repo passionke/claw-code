@@ -16,8 +16,7 @@ use tracing::{info, warn};
 
 use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
-    load_e2b_strict_worker_pool_size, load_e2b_worker_relaxed_template_id,
-    load_e2b_worker_template_id,
+    load_e2b_worker_relaxed_template_id, load_e2b_worker_template_id,
 };
 use crate::project_config_draft;
 use crate::session_db::{
@@ -28,7 +27,7 @@ use crate::session_db::{
 use super::config::relaxed_worker_allowed_from_env;
 use super::e2b_nas_layout::allocate_worker_id;
 use super::worker_profile::{
-    default_worker_profile_json, effective_mode, pool_size_override_from_json, profile_mode_label,
+    default_worker_profile_json, effective_mode, load_desired_worker_pool_size, profile_mode_label,
     WorkerProfileMode,
 };
 use super::NasLayoutBackend;
@@ -228,23 +227,7 @@ impl E2bProjWorkerRegistry {
 
     async fn desired_pool_size(&self, proj_id: i64) -> Result<u32, String> {
         let db = self.session_db().await?;
-        let json = db
-            .get_worker_profile_json(proj_id)
-            .await
-            .unwrap_or_else(|_| default_worker_profile_json());
-        let mode = effective_mode(relaxed_worker_allowed_from_env(), &json);
-        match mode {
-            WorkerProfileMode::Relaxed => Ok(1),
-            WorkerProfileMode::Strict => {
-                if let Some(n) = pool_size_override_from_json(&json) {
-                    Ok(crate::gateway_e2b_worker_settings::clamp_strict_worker_pool_size(n))
-                } else {
-                    load_e2b_strict_worker_pool_size(db.as_ref())
-                        .await
-                        .map_err(|e| format!("load e2bWorker poolSize: {e}"))
-                }
-            }
-        }
+        load_desired_worker_pool_size(db.as_ref(), proj_id).await
     }
 
     async fn relaxed_ovs_http_ok(&self, handle: &E2bSandboxHandle) -> bool {

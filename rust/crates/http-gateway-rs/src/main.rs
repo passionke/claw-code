@@ -28,7 +28,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use gateway_solve_turn::{
     probe_landlock, reset_task_progress, run_gateway_biz_polish_llm,
@@ -314,6 +314,31 @@ struct CreateProjectRequest {
         default
     )]
     proj_id: Option<i64>,
+    #[serde(rename = "projectCode", alias = "project_code")]
+    project_code: String,
+    #[serde(rename = "projectDescription", alias = "project_description", default)]
+    project_description: Option<String>,
+}
+
+/// `PATCH /v1/projects/{proj_id}` — update project metadata (code + description). Author: kejiqing
+#[derive(Debug, Deserialize)]
+struct PatchProjectRequest {
+    #[serde(rename = "projectCode", alias = "project_code")]
+    project_code: Option<String>,
+    #[serde(rename = "projectDescription", alias = "project_description")]
+    project_description: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PatchProjectResponse {
+    #[serde(rename = "projId")]
+    proj_id: i64,
+    #[serde(rename = "projectCode")]
+    project_code: String,
+    #[serde(rename = "projectDescription")]
+    project_description: String,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -361,6 +386,10 @@ struct ProjectListEntry {
     /// Per-project one-way git (no PAT in list). Author: kejiqing
     #[serde(rename = "gitSync")]
     git_sync: Value,
+    #[serde(rename = "projectCode")]
+    project_code: String,
+    #[serde(rename = "projectDescription")]
+    project_description: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -498,6 +527,10 @@ struct ProjectConfigResponse {
     prompt_limits_json: Value,
     #[serde(rename = "workerProfileJson")]
     worker_profile_json: Value,
+    #[serde(rename = "projectCode")]
+    project_code: String,
+    #[serde(rename = "projectDescription")]
+    project_description: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1612,7 +1645,10 @@ async fn main() {
             "/v1/projects/{proj_id}/sessions",
             get(list_project_sessions),
         )
-        .route("/v1/projects/{proj_id}", delete(delete_project))
+        .route(
+            "/v1/projects/{proj_id}",
+            patch(patch_project).delete(delete_project),
+        )
         .route("/v1/projects/{proj_id}/git/pull", post(pull_project_git))
         .route(
             "/v1/projects/{proj_id}/e2b-worker",
@@ -2896,6 +2932,8 @@ fn default_project_config_row(proj_id: i64) -> session_db::ProjectConfigRow {
         extra_session_fields_json: json!([]),
         prompt_limits_json: project_config_apply::default_prompt_limits_json(),
         worker_profile_json: pool::default_worker_profile_json(),
+        project_code: String::new(),
+        project_description: String::new(),
     }
 }
 
@@ -3055,6 +3093,8 @@ async fn activate_project_config_revision_row(
             extra_session_fields_json: &sidecars.extra_session_fields_json,
             prompt_limits_json: &sidecars.prompt_limits_json,
             worker_profile_json: &sidecars.worker_profile_json,
+            project_code: &sidecars.project_code,
+            project_description: &sidecars.project_description,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -4080,6 +4120,75 @@ async fn resolve_create_proj_id(state: &AppState, requested: Option<i64>) -> Res
     Ok(ids.last().copied().unwrap_or(0) + 1)
 }
 
+const MAX_PROJECT_CODE_LEN: usize = 64;
+const MAX_PROJECT_DESCRIPTION_LEN: usize = 500;
+
+fn normalize_project_code(raw: &str) -> Result<String, ApiError> {
+    let code = raw.trim();
+    if code.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projectCode cannot be empty",
+        ));
+    }
+    if code.len() > MAX_PROJECT_CODE_LEN {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("projectCode must be at most {MAX_PROJECT_CODE_LEN} characters"),
+        ));
+    }
+    if !code
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projectCode only allows [a-zA-Z0-9_-]",
+        ));
+    }
+    if !code
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projectCode must start with a letter or digit",
+        ));
+    }
+    Ok(code.to_string())
+}
+
+fn normalize_project_description(raw: Option<&str>) -> Result<String, ApiError> {
+    let desc = raw.unwrap_or("").trim().to_string();
+    if desc.len() > MAX_PROJECT_DESCRIPTION_LEN {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("projectDescription must be at most {MAX_PROJECT_DESCRIPTION_LEN} characters"),
+        ));
+    }
+    Ok(desc)
+}
+
+async fn ensure_project_code_available(
+    state: &AppState,
+    code: &str,
+    exclude_proj_id: Option<i64>,
+) -> Result<(), ApiError> {
+    let taken = state
+        .session_db
+        .project_code_taken(code, exclude_proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if taken {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            format!("projectCode {code:?} is already in use"),
+        ));
+    }
+    Ok(())
+}
+
 async fn project_config_exists(state: &AppState, proj_id: i64) -> Result<bool, ApiError> {
     Ok(state
         .session_db
@@ -4145,6 +4254,8 @@ async fn build_project_list_entry(
         applied_rev,
         db_synced_to_disk,
         git_sync: git_sync_list_summary(&summary.git_sync_json),
+        project_code: summary.project_code.clone(),
+        project_description: summary.project_description.clone(),
     }
 }
 
@@ -4350,6 +4461,9 @@ async fn create_project(
     State(state): State<AppState>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<Json<InitResponse>, ApiError> {
+    let project_code = normalize_project_code(&req.project_code)?;
+    let project_description = normalize_project_description(req.project_description.as_deref())?;
+    ensure_project_code_available(&state, &project_code, None).await?;
     let proj_id = resolve_create_proj_id(&state, req.proj_id).await?;
     if project_config_exists(&state, proj_id).await? {
         return Err(ApiError::new(
@@ -4398,6 +4512,8 @@ async fn create_project(
             extra_session_fields_json: &empty_arr,
             prompt_limits_json: &empty_obj,
             worker_profile_json: &pool::default_worker_profile_json(),
+            project_code: &project_code,
+            project_description: &project_description,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -4411,6 +4527,67 @@ async fn create_project(
         proj_id,
         work_dir: work_dir.display().to_string(),
         initialized: true,
+    }))
+}
+
+async fn patch_project(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+    Json(req): Json<PatchProjectRequest>,
+) -> Result<Json<PatchProjectResponse>, ApiError> {
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
+    }
+    if req.project_code.is_none() && req.project_description.is_none() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "provide projectCode and/or projectDescription",
+        ));
+    }
+    let existing = state
+        .session_db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("project {proj_id} not registered in project_config"),
+            )
+        })?;
+    let project_code = if let Some(raw) = req.project_code.as_deref() {
+        normalize_project_code(raw)?
+    } else {
+        existing.project_code.clone()
+    };
+    let project_description = if req.project_description.is_some() {
+        normalize_project_description(req.project_description.as_deref())?
+    } else {
+        existing.project_description.clone()
+    };
+    if project_code != existing.project_code {
+        ensure_project_code_available(&state, &project_code, Some(proj_id)).await?;
+    }
+    let now = now_ms();
+    let updated = state
+        .session_db
+        .update_project_metadata(proj_id, &project_code, &project_description, now)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if !updated {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("project {proj_id} not registered in project_config"),
+        ));
+    }
+    Ok(Json(PatchProjectResponse {
+        proj_id,
+        project_code,
+        project_description,
+        updated_at_ms: now,
     }))
 }
 
@@ -4554,6 +4731,8 @@ async fn project_config_row_to_response(
         extra_session_fields_json: row.extra_session_fields_json,
         prompt_limits_json: row.prompt_limits_json,
         worker_profile_json: row.worker_profile_json,
+        project_code: row.project_code,
+        project_description: row.project_description,
     }
 }
 
@@ -5027,6 +5206,8 @@ async fn put_project_config(
         extra_session_fields_json: &extra_session_fields_json,
         prompt_limits_json: &prompt_limits_json,
         worker_profile_json: &worker_profile_json,
+        project_code: &existing.project_code,
+        project_description: &existing.project_description,
     };
     state
         .session_db
@@ -5129,6 +5310,8 @@ async fn commit_project_config_draft(
             extra_session_fields_json: row.extra_session_fields_json.clone(),
             prompt_limits_json: row.prompt_limits_json.clone(),
             worker_profile_json: row.worker_profile_json.clone(),
+            project_code: row.project_code.clone(),
+            project_description: row.project_description.clone(),
         },
     )
     .await
@@ -5433,6 +5616,7 @@ async fn admin_mcp_http_handler(
         &backend.state.cfg.work_root,
         &backend,
         state.pool_clients.nas_layout(),
+        &state.pool_clients,
         &headers,
         body,
     )
@@ -9799,6 +9983,8 @@ mod tests {
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_profile_json: json!({"mode": "strict"}),
+            project_code: String::new(),
+            project_description: String::new(),
         };
         std::fs::create_dir_all(tmp.join(".claw")).unwrap();
         std::fs::write(

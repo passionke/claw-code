@@ -2,7 +2,7 @@
 //!
 //! Semantics: this is a **gateway ingress** registry, not a pool/worker registry.
 //! Each gateway process upserts itself at startup and heartbeats; Admin lists online rows
-//! under the shared `CLAW_CLUSTER_ID`.
+//! plus offline rows with heartbeat within 24h under the shared `CLAW_CLUSTER_ID`.
 
 use serde::Serialize;
 
@@ -10,6 +10,8 @@ use crate::session_db::GatewaySessionDb;
 
 /// Online if heartbeat within this window (ms). Author: kejiqing
 pub const GATEWAY_ENDPOINT_ONLINE_WINDOW_MS: i64 = 90_000;
+/// Admin list: offline rows kept while last heartbeat is within this window (ms). Author: kejiqing
+pub const GATEWAY_ENDPOINT_LIST_OFFLINE_RETENTION_MS: i64 = 86_400_000;
 /// Background heartbeat interval. Author: kejiqing
 pub const GATEWAY_ENDPOINT_HEARTBEAT_INTERVAL_SECS: u64 = 30;
 
@@ -131,6 +133,18 @@ pub fn is_gateway_endpoint_online(last_heartbeat_ms: i64, now_ms: i64) -> bool {
         && now_ms.saturating_sub(last_heartbeat_ms) <= GATEWAY_ENDPOINT_ONLINE_WINDOW_MS
 }
 
+/// Admin `GET /v1/gateway/endpoints`: all online + offline with heartbeat within 24h. Author: kejiqing
+#[must_use]
+pub fn should_list_gateway_endpoint(last_heartbeat_ms: i64, now_ms: i64) -> bool {
+    if last_heartbeat_ms <= 0 {
+        return false;
+    }
+    if is_gateway_endpoint_online(last_heartbeat_ms, now_ms) {
+        return true;
+    }
+    now_ms.saturating_sub(last_heartbeat_ms) <= GATEWAY_ENDPOINT_LIST_OFFLINE_RETENTION_MS
+}
+
 /// Register this gateway and spawn heartbeat ticker. Author: kejiqing
 pub async fn register_and_spawn_heartbeat(
     db: std::sync::Arc<GatewaySessionDb>,
@@ -179,6 +193,7 @@ pub async fn list_endpoints_response(
         .map_err(|e| e.to_string())?;
     let endpoints = rows
         .into_iter()
+        .filter(|r| should_list_gateway_endpoint(r.last_heartbeat_ms, now))
         .map(|r| GatewayEndpointPublic {
             online: is_gateway_endpoint_online(r.last_heartbeat_ms, now),
             is_self: r.gateway_id == self_identity.gateway_id,
@@ -226,5 +241,27 @@ mod tests {
             1000,
             1000 + GATEWAY_ENDPOINT_ONLINE_WINDOW_MS + 1
         ));
+    }
+
+    #[test]
+    fn list_filter_keeps_online_and_recent_offline() {
+        let now = 1_000_000_000_i64;
+        assert!(should_list_gateway_endpoint(
+            now - GATEWAY_ENDPOINT_ONLINE_WINDOW_MS,
+            now
+        ));
+        assert!(should_list_gateway_endpoint(
+            now - GATEWAY_ENDPOINT_LIST_OFFLINE_RETENTION_MS,
+            now
+        ));
+        assert!(should_list_gateway_endpoint(
+            now - GATEWAY_ENDPOINT_LIST_OFFLINE_RETENTION_MS + 1,
+            now
+        ));
+        assert!(!should_list_gateway_endpoint(
+            now - GATEWAY_ENDPOINT_LIST_OFFLINE_RETENTION_MS - 1,
+            now
+        ));
+        assert!(!should_list_gateway_endpoint(0, now));
     }
 }

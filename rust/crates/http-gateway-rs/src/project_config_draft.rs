@@ -35,6 +35,8 @@ pub struct ProjectConfigSidecars {
     pub extra_session_fields_json: Value,
     pub prompt_limits_json: Value,
     pub worker_profile_json: Value,
+    pub project_code: String,
+    pub project_description: String,
 }
 
 impl ProjectConfigSidecars {
@@ -48,6 +50,8 @@ impl ProjectConfigSidecars {
             extra_session_fields_json: row.extra_session_fields_json.clone(),
             prompt_limits_json: row.prompt_limits_json.clone(),
             worker_profile_json: row.worker_profile_json.clone(),
+            project_code: row.project_code.clone(),
+            project_description: row.project_description.clone(),
         }
     }
 }
@@ -225,6 +229,8 @@ pub fn config_row_from_revision(
         extra_session_fields_json: sidecars.extra_session_fields_json,
         prompt_limits_json: sidecars.prompt_limits_json,
         worker_profile_json: sidecars.worker_profile_json,
+        project_code: sidecars.project_code,
+        project_description: sidecars.project_description,
     }
 }
 
@@ -255,6 +261,8 @@ pub fn upsert_from_row<'a>(
         extra_session_fields_json: &row.extra_session_fields_json,
         prompt_limits_json: &row.prompt_limits_json,
         worker_profile_json: &row.worker_profile_json,
+        project_code: &row.project_code,
+        project_description: &row.project_description,
     }
 }
 
@@ -352,6 +360,8 @@ pub async fn ensure_draft(
         extra_session_fields_json: &row.extra_session_fields_json,
         prompt_limits_json: &row.prompt_limits_json,
         worker_profile_json: &row.worker_profile_json,
+        project_code: &row.project_code,
+        project_description: &row.project_description,
     };
     db.upsert_project_config(upsert).await?;
     db.get_project_config(proj_id).await?.ok_or_else(|| {

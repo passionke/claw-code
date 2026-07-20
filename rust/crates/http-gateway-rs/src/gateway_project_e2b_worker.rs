@@ -5,12 +5,11 @@ use serde::Serialize;
 
 use crate::gateway_e2b_observe_proxy;
 use crate::gateway_e2b_worker_settings::{
-    load_e2b_strict_worker_pool_size, load_e2b_worker_relaxed_template_id,
-    load_e2b_worker_template_id,
+    load_e2b_worker_relaxed_template_id, load_e2b_worker_template_id,
 };
 use crate::pool::interactive_backend::{terminal_ws_connect_url, TtydConnectTarget};
 use crate::pool::{
-    default_worker_profile_json, effective_mode, profile_mode_label,
+    default_worker_profile_json, effective_mode, load_desired_worker_pool_size, profile_mode_label,
     relaxed_worker_allowed_from_env, E2bProjWorkerRegistry, WorkerProfileMode,
 };
 use crate::session_db::{
@@ -220,13 +219,7 @@ pub async fn get_project_e2b_worker_status(
             .await
             .map_err(|e| format!("load e2bWorker template: {e}"))?
     };
-    let desired_pool_size = if relaxed {
-        1
-    } else {
-        load_e2b_strict_worker_pool_size(db)
-            .await
-            .map_err(|e| format!("load poolSize: {e}"))?
-    };
+    let desired_pool_size = load_desired_worker_pool_size(db, proj_id).await?;
     let rows = db
         .list_project_e2b_workers(proj_id)
         .await

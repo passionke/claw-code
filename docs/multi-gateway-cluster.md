@@ -38,7 +38,7 @@ sequenceDiagram
 
 | API | 说明 |
 |-----|------|
-| `GET /v1/gateway/endpoints` | 本 cluster 清单 + `online` + `self` |
+| `GET /v1/gateway/endpoints` | 本 cluster 清单 + `online` + `self`（全部 online；offline 仅最近 24h 内有心跳） |
 | `DELETE /v1/gateway/endpoints/{id}` | 删僵尸行（不可删本机 running 进程） |
 
 **不**复活 pool-daemon / `claw_pool_join` 主路径；`claw_pool` 仅历史兼容，见 [`pool-registry.md`](pool-registry.md)。

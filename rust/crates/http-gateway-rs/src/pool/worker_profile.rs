@@ -6,7 +6,11 @@ use gateway_solve_turn::{
 use serde_json::{json, Value};
 
 use super::config::relaxed_worker_allowed_from_env;
-use crate::gateway_e2b_worker_settings::validate_strict_worker_pool_size;
+use crate::gateway_e2b_worker_settings::{
+    clamp_strict_worker_pool_size, load_e2b_strict_worker_pool_size,
+    validate_strict_worker_pool_size,
+};
+use crate::session_db::GatewaySessionDb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkerProfileMode {
@@ -42,6 +46,38 @@ pub fn pool_size_override_from_json(value: &Value) -> Option<u32> {
     match value.get("poolSize") {
         None | Some(Value::Null) => None,
         Some(v) => v.as_u64().and_then(|n| u32::try_from(n).ok()),
+    }
+}
+
+/// Strict pool size for one project: `worker_profile_json.poolSize` → global default (clamped).
+#[must_use]
+pub fn desired_strict_pool_size_from_profile(
+    worker_profile_json: &Value,
+    global_pool_size: u32,
+) -> u32 {
+    pool_size_override_from_json(worker_profile_json)
+        .map(clamp_strict_worker_pool_size)
+        .unwrap_or(global_pool_size)
+}
+
+/// Relaxed → 1; strict → per-project override or PG `e2bWorker.poolSize`. Author: kejiqing
+pub async fn load_desired_worker_pool_size(
+    db: &GatewaySessionDb,
+    proj_id: i64,
+) -> Result<u32, String> {
+    let json = db
+        .get_worker_profile_json(proj_id)
+        .await
+        .map_err(|e| format!("load worker_profile_json for proj {proj_id}: {e}"))?;
+    let mode = effective_mode(relaxed_worker_allowed_from_env(), &json);
+    match mode {
+        WorkerProfileMode::Relaxed => Ok(1),
+        WorkerProfileMode::Strict => {
+            let global = load_e2b_strict_worker_pool_size(db)
+                .await
+                .map_err(|e| format!("load e2bWorker poolSize: {e}"))?;
+            Ok(desired_strict_pool_size_from_profile(&json, global))
+        }
     }
 }
 
@@ -263,5 +299,17 @@ mod tests {
             pool_size_override_from_json(&json!({"mode": "strict", "poolSize": null})),
             None
         );
+    }
+
+    #[test]
+    fn desired_strict_pool_size_prefers_project_override() {
+        with_env("CLAW_E2B_POOL_SIZE_CAP", Some("16"), || {
+            let json = json!({"mode": "strict", "poolSize": 3});
+            assert_eq!(desired_strict_pool_size_from_profile(&json, 1), 3);
+            assert_eq!(
+                desired_strict_pool_size_from_profile(&json!({"mode": "strict"}), 2),
+                2
+            );
+        });
     }
 }

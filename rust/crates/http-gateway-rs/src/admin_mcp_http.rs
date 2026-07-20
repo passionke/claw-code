@@ -13,7 +13,7 @@ use crate::admin_mcp_solve::{
 };
 use crate::gateway_admin_mcp_token::{extract_bearer_token, verify_admin_mcp_token};
 use crate::gateway_global_settings;
-use crate::pool::NasLayoutBackend;
+use crate::pool::{validate_worker_profile_json, NasLayoutBackend, PoolClients};
 use crate::project_config_apply;
 use crate::project_config_draft;
 use crate::project_extra_session;
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SERVER_NAME: &str = "claw-gateway-admin";
-const MCP_SERVER_VERSION: &str = "0.2.0";
+const MCP_SERVER_VERSION: &str = "0.2.1";
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -66,6 +66,7 @@ struct DraftPatch<'a> {
     rules_json: Option<&'a Value>,
     mcp_servers_json: Option<&'a Value>,
     skills_json: Option<&'a Value>,
+    worker_profile_json: Option<&'a Value>,
 }
 
 impl Default for DraftPatch<'_> {
@@ -75,6 +76,7 @@ impl Default for DraftPatch<'_> {
             rules_json: None,
             mcp_servers_json: None,
             skills_json: None,
+            worker_profile_json: None,
         }
     }
 }
@@ -84,6 +86,7 @@ pub async fn handle_admin_mcp_post<B: AdminMcpSolveBackend>(
     work_root: &Path,
     solve_backend: &B,
     nas_layout: &NasLayoutBackend,
+    pool_clients: &PoolClients,
     headers: &HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -121,7 +124,15 @@ pub async fn handle_admin_mcp_post<B: AdminMcpSolveBackend>(
         "notifications/initialized" | "initialized" | "ping" => Ok(json!({})),
         "tools/list" => Ok(tools_list_result()),
         "tools/call" => {
-            match handle_tools_call(db, work_root, solve_backend, nas_layout, request.params).await
+            match handle_tools_call(
+                db,
+                work_root,
+                solve_backend,
+                nas_layout,
+                pool_clients,
+                request.params,
+            )
+            .await
             {
                 Ok(v) => Ok(v),
                 Err(e) => {
@@ -188,13 +199,17 @@ fn tools_list_result() -> Value {
             ),
             tool_def(
                 "project_config_put_draft",
-                "Write claudeMd / rulesJson / mcpServersJson / skillsJson into open draft; pass at least one field.",
+                "Write claudeMd / rulesJson / mcpServersJson / skillsJson / workerProfileJson into open draft; pass at least one field. workerProfileJson.poolSize overrides global e2bWorker.poolSize for strict projects.",
                 &json!({
                     "projId": { "type": "integer" },
                     "claudeMd": { "type": "string" },
                     "rulesJson": { "type": "array" },
                     "mcpServersJson": { "type": "object" },
-                    "skillsJson": { "type": "array" }
+                    "skillsJson": { "type": "array" },
+                    "workerProfileJson": {
+                        "type": "object",
+                        "description": "e2b worker profile sidecar: mode strict|relaxed; strict may set poolSize (1..CLAW_E2B_POOL_SIZE_CAP)."
+                    }
                 }),
                 &["projId"],
             ),
@@ -268,6 +283,19 @@ fn tools_list_result() -> Value {
                 }),
                 &["projId", "skillsJson"],
             ),
+            proj_id_only_tool(
+                "project_worker_profile_get",
+                "Read workerProfileJson sidecar (strict/relaxed mode, optional poolSize override).",
+            ),
+            tool_def(
+                "project_worker_profile_put_draft",
+                "Write workerProfileJson sidecar; triggers e2b worker pool reconcile. Example strict poolSize: {\"mode\":\"strict\",\"poolSize\":2}.",
+                &json!({
+                    "projId": { "type": "integer" },
+                    "workerProfileJson": { "type": "object" }
+                }),
+                &["projId", "workerProfileJson"],
+            ),
     ];
     tools.extend(solve_tools_schema());
     json!({ "tools": tools })
@@ -287,7 +315,7 @@ async fn upsert_project_draft(
     db: &GatewaySessionDb,
     proj_id: i64,
     patch: DraftPatch<'_>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     project_config_draft::ensure_draft(db, proj_id)
         .await
         .map_err(|e| e.message)?;
@@ -307,6 +335,9 @@ async fn upsert_project_draft(
     let rules_json = patch.rules_json.unwrap_or(&existing.rules_json);
     let mcp_servers_json = patch.mcp_servers_json.unwrap_or(&existing.mcp_servers_json);
     let skills_json = patch.skills_json.unwrap_or(&existing.skills_json);
+    let worker_profile_json = patch
+        .worker_profile_json
+        .unwrap_or(&existing.worker_profile_json);
     let now = now_ms();
     let upsert = ProjectConfigUpsert {
         proj_id,
@@ -326,11 +357,14 @@ async fn upsert_project_draft(
         language_pipeline_json: &existing.language_pipeline_json,
         extra_session_fields_json: &existing.extra_session_fields_json,
         prompt_limits_json: &existing.prompt_limits_json,
-        worker_profile_json: &existing.worker_profile_json,
+        worker_profile_json,
+        project_code: &existing.project_code,
+        project_description: &existing.project_description,
     };
     db.upsert_project_config(upsert)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(patch.worker_profile_json.is_some())
 }
 
 fn validate_rules_json(v: &Value) -> Result<(), String> {
@@ -438,12 +472,31 @@ fn parse_config_put_draft_patch(args: &Value) -> Result<DraftPatch<'_>, String> 
         validate_skills_json(v)?;
         patch.skills_json = Some(v);
     }
+    if let Some(v) = args.get("workerProfileJson") {
+        any = true;
+        validate_worker_profile_json(v)?;
+        patch.worker_profile_json = Some(v);
+    }
     if !any {
         return Err(
-            "at least one of claudeMd, rulesJson, mcpServersJson, skillsJson is required".into(),
+            "at least one of claudeMd, rulesJson, mcpServersJson, skillsJson, workerProfileJson is required".into(),
         );
     }
     Ok(patch)
+}
+
+fn spawn_worker_profile_reconcile(pool_clients: &PoolClients, proj_id: i64) {
+    let pool = pool_clients.clone();
+    tokio::spawn(async move {
+        if let Err(e) = pool.reconcile_project_worker(proj_id).await {
+            tracing::warn!(
+                target: "claw_e2b_proj_worker",
+                proj_id,
+                error = %e,
+                "post admin_mcp worker_profile reconcile failed (best-effort)"
+            );
+        }
+    });
 }
 
 async fn handle_tools_call<B: AdminMcpSolveBackend>(
@@ -451,6 +504,7 @@ async fn handle_tools_call<B: AdminMcpSolveBackend>(
     work_root: &Path,
     solve_backend: &B,
     nas_layout: &NasLayoutBackend,
+    pool_clients: &PoolClients,
     params: Option<Value>,
 ) -> Result<Value, String> {
     let params = params.ok_or_else(|| "params required".to_string())?;
@@ -494,7 +548,7 @@ async fn handle_tools_call<B: AdminMcpSolveBackend>(
             let value = solve_backend.gateway_task_get(task_id).await?;
             Ok(tool_text_result(&value))
         }
-        _ => handle_project_config_tool(db, work_root, nas_layout, name, &args).await,
+        _ => handle_project_config_tool(db, work_root, nas_layout, pool_clients, name, &args).await,
     }
 }
 
@@ -514,6 +568,8 @@ async fn handle_project_list(db: &GatewaySessionDb) -> Result<Value, String> {
             project_extra_session::parse_extra_session_fields_json(&row.extra_session_fields_json)?;
         projects.push(json!({
             "projId": proj_id,
+            "projectCode": row.project_code,
+            "projectDescription": row.project_description,
             "extraSessionFields": extra_session_fields,
         }));
     }
@@ -547,6 +603,7 @@ async fn handle_project_config_tool(
     db: &GatewaySessionDb,
     work_root: &Path,
     nas_layout: &NasLayoutBackend,
+    pool_clients: &PoolClients,
     name: &str,
     args: &Value,
 ) -> Result<Value, String> {
@@ -568,12 +625,16 @@ async fn handle_project_config_tool(
                 "skillsJson": row.skills_json,
                 "mcpServersJson": row.mcp_servers_json,
                 "allowedToolsJson": row.allowed_tools_json,
+                "workerProfileJson": row.worker_profile_json,
             });
             Ok(tool_text_result(&payload))
         }
         "project_config_put_draft" => {
             let patch = parse_config_put_draft_patch(args)?;
-            upsert_project_draft(db, proj_id, patch).await?;
+            let worker_profile_updated = upsert_project_draft(db, proj_id, patch).await?;
+            if worker_profile_updated {
+                spawn_worker_profile_reconcile(pool_clients, proj_id);
+            }
             Ok(tool_text_result(&json!({
                 "projId": proj_id,
                 "updated": true,
@@ -647,6 +708,13 @@ async fn handle_project_config_tool(
             Ok(tool_text_result(&json!({
                 "projId": proj_id,
                 "skillsJson": row.skills_json
+            })))
+        }
+        "project_worker_profile_get" => {
+            let row = row_for_editing_or_err(db, proj_id).await?;
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "workerProfileJson": row.worker_profile_json
             })))
         }
         "project_claude_put_draft" => {
@@ -735,6 +803,27 @@ async fn handle_project_config_tool(
                 "projId": proj_id,
                 "updated": true,
                 "skillCount": count
+            })))
+        }
+        "project_worker_profile_put_draft" => {
+            let worker_profile_json = args
+                .get("workerProfileJson")
+                .ok_or_else(|| "arguments.workerProfileJson required".to_string())?;
+            validate_worker_profile_json(worker_profile_json)?;
+            upsert_project_draft(
+                db,
+                proj_id,
+                DraftPatch {
+                    worker_profile_json: Some(worker_profile_json),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            spawn_worker_profile_reconcile(pool_clients, proj_id);
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "updated": true,
+                "workerProfileJson": worker_profile_json
             })))
         }
         other => Err(format!("unknown tool: {other}")),
@@ -829,6 +918,8 @@ mod tests {
         "project_mcp_put_draft",
         "project_skills_get",
         "project_skills_put_draft",
+        "project_worker_profile_get",
+        "project_worker_profile_put_draft",
     ];
 
     #[test]
@@ -850,5 +941,24 @@ mod tests {
     fn validate_skills_json_rejects_missing_skill_name() {
         let err = validate_skills_json(&json!([{ "skillContent": "x" }])).unwrap_err();
         assert!(err.contains("skillName"));
+    }
+
+    #[test]
+    fn parse_config_put_draft_accepts_worker_profile_json() {
+        let args = json!({
+            "projId": 1,
+            "workerProfileJson": { "mode": "strict", "poolSize": 2 }
+        });
+        let patch = parse_config_put_draft_patch(&args).unwrap();
+        assert!(patch.worker_profile_json.is_some());
+    }
+
+    #[test]
+    fn parse_config_put_draft_rejects_invalid_worker_profile_json() {
+        let args = json!({
+            "projId": 1,
+            "workerProfileJson": { "mode": "nope" }
+        });
+        assert!(parse_config_put_draft_patch(&args).is_err());
     }
 }

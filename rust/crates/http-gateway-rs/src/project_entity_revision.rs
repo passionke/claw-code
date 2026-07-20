@@ -476,6 +476,8 @@ pub async fn restore_entity_revision_to_draft(
         extra_session_fields_json: &row.extra_session_fields_json,
         prompt_limits_json: &row.prompt_limits_json,
         worker_profile_json: &row.worker_profile_json,
+        project_code: &row.project_code,
+        project_description: &row.project_description,
     })
     .await
     .map_err(|e| EntityRevisionError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
