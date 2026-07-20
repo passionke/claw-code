@@ -125,6 +125,10 @@ pub struct ProjectConfigRow {
     pub prompt_limits_json: Value,
     /// Pool worker profile: `{"mode":"strict"|"relaxed"}` (sidecar; not in revision snapshots). Author: kejiqing
     pub worker_profile_json: Value,
+    /// Human-readable slug within cluster (unique when non-empty). Author: kejiqing
+    pub project_code: String,
+    /// Admin-facing project description (sidecar). Author: kejiqing
+    pub project_description: String,
 }
 
 /// Gateway-managed e2b worker sandbox bound to one project (`project_e2b_worker`). Author: kejiqing
@@ -180,6 +184,8 @@ pub struct ProjectConfigSummary {
     pub rules_count_db: i64,
     pub mcp_servers_count_db: i64,
     pub git_sync_json: Value,
+    pub project_code: String,
+    pub project_description: String,
 }
 
 /// Immutable snapshot for one `content_rev` (history); `git_sync_json` stays on active `project_config` only.
@@ -354,6 +360,8 @@ pub struct ProjectConfigUpsert<'a> {
     pub extra_session_fields_json: &'a Value,
     pub prompt_limits_json: &'a Value,
     pub worker_profile_json: &'a Value,
+    pub project_code: &'a str,
+    pub project_description: &'a str,
 }
 
 /// Gateway session index: one row per `(cluster_id, session_id, proj_id)`.
@@ -758,6 +766,22 @@ impl GatewaySessionDb {
         .execute(pool)
         .await?;
         sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS project_code TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE project_config ADD COLUMN IF NOT EXISTS project_description TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_config_code_unique \
+             ON project_config (cluster_id, project_code) WHERE project_code <> ''",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
             "UPDATE project_config SET stable_content_rev = content_rev WHERE stable_content_rev IS NULL OR stable_content_rev = ''",
         )
         .execute(pool)
@@ -1069,6 +1093,8 @@ impl GatewaySessionDb {
             include_str!("../migrations/013_multi_gateway_cluster.sql"),
         )
         .await?;
+        Self::run_sql_migration_file(pool, include_str!("../migrations/014_project_metadata.sql"))
+            .await?;
 
         Ok(())
     }
@@ -2231,7 +2257,8 @@ impl GatewaySessionDb {
     ) -> Result<Vec<ProjectConfigSummary>, SqlxError> {
         let rows = sqlx::query(
             r"SELECT proj_id, content_rev, stable_content_rev, draft_open, updated_at_ms, claude_md,
-                      skills_json, rules_json, mcp_servers_json, git_sync_json
+                      skills_json, rules_json, mcp_servers_json, git_sync_json,
+                      project_code, project_description
                FROM project_config WHERE cluster_id = $1 ORDER BY proj_id",
         )
         .bind(self.cluster_id())
@@ -2250,6 +2277,9 @@ impl GatewaySessionDb {
             let rules_json: Value = row.try_get::<Json<Value>, _>("rules_json")?.0;
             let mcp_servers_json: Value = row.try_get::<Json<Value>, _>("mcp_servers_json")?.0;
             let git_sync_json: Value = row.try_get::<Json<Value>, _>("git_sync_json")?.0;
+            let project_code: String = row.try_get("project_code").unwrap_or_default();
+            let project_description: String =
+                row.try_get("project_description").unwrap_or_default();
             let claude_in_db = claude_md.as_deref().is_some_and(|s| !s.trim().is_empty());
             let skills_count_db = skills_json
                 .as_array()
@@ -2271,6 +2301,8 @@ impl GatewaySessionDb {
                 rules_count_db,
                 mcp_servers_count_db,
                 git_sync_json,
+                project_code,
+                project_description,
             });
         }
         Ok(out)
@@ -2285,7 +2317,7 @@ impl GatewaySessionDb {
                       rules_json, mcp_servers_json, skills_sources_json, skills_json,
                       allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
                       solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
-                      prompt_limits_json, worker_profile_json
+                      prompt_limits_json, worker_profile_json, project_code, project_description
                FROM project_config WHERE cluster_id = $1 AND proj_id = $2",
         )
         .bind(self.cluster_id())
@@ -2317,6 +2349,8 @@ impl GatewaySessionDb {
             .0;
         let prompt_limits_json: Value = row.try_get::<Json<Value>, _>("prompt_limits_json")?.0;
         let worker_profile_json: Value = row.try_get::<Json<Value>, _>("worker_profile_json")?.0;
+        let project_code: String = row.try_get("project_code").unwrap_or_default();
+        let project_description: String = row.try_get("project_description").unwrap_or_default();
 
         let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
         let draft_open: bool = row.try_get("draft_open")?;
@@ -2340,7 +2374,57 @@ impl GatewaySessionDb {
             extra_session_fields_json,
             prompt_limits_json,
             worker_profile_json,
+            project_code,
+            project_description,
         }))
+    }
+
+    /// Whether another project in this cluster already uses `project_code`. Author: kejiqing
+    pub async fn project_code_taken(
+        &self,
+        project_code: &str,
+        exclude_proj_id: Option<i64>,
+    ) -> Result<bool, SqlxError> {
+        let code = project_code.trim();
+        if code.is_empty() {
+            return Ok(false);
+        }
+        let taken: bool = sqlx::query_scalar(
+            r"SELECT EXISTS (
+                SELECT 1 FROM project_config
+                WHERE cluster_id = $1 AND project_code = $2
+                  AND ($3::bigint IS NULL OR proj_id <> $3)
+            )",
+        )
+        .bind(self.cluster_id())
+        .bind(code)
+        .bind(exclude_proj_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(taken)
+    }
+
+    /// Update project metadata sidecar (code + description); does not touch revision fields. Author: kejiqing
+    pub async fn update_project_metadata(
+        &self,
+        proj_id: i64,
+        project_code: &str,
+        project_description: &str,
+        updated_at_ms: i64,
+    ) -> Result<bool, SqlxError> {
+        let r = sqlx::query(
+            r"UPDATE project_config
+             SET project_code = $3, project_description = $4, updated_at_ms = $5
+             WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .bind(project_code)
+        .bind(project_description)
+        .bind(updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected() > 0)
     }
 
     /// Sidecar for pool acquire: per-ds worker strict/relaxed profile. Author: kejiqing
@@ -2728,8 +2812,8 @@ impl GatewaySessionDb {
                 rules_json, mcp_servers_json, skills_sources_json, skills_json,
                 allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
                 solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
-                prompt_limits_json, worker_profile_json
-            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                prompt_limits_json, worker_profile_json, project_code, project_description
+            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
             ON CONFLICT (cluster_id, proj_id) DO UPDATE SET
                 ds_id = EXCLUDED.ds_id,
                 content_rev = EXCLUDED.content_rev,
@@ -2748,7 +2832,9 @@ impl GatewaySessionDb {
                 language_pipeline_json = EXCLUDED.language_pipeline_json,
                 extra_session_fields_json = EXCLUDED.extra_session_fields_json,
                 prompt_limits_json = EXCLUDED.prompt_limits_json,
-                worker_profile_json = EXCLUDED.worker_profile_json",
+                worker_profile_json = EXCLUDED.worker_profile_json,
+                project_code = EXCLUDED.project_code,
+                project_description = EXCLUDED.project_description",
         )
         .bind(row.proj_id)
         .bind(self.cluster_id())
@@ -2769,6 +2855,8 @@ impl GatewaySessionDb {
         .bind(Json(row.extra_session_fields_json))
         .bind(Json(row.prompt_limits_json))
         .bind(Json(row.worker_profile_json))
+        .bind(row.project_code)
+        .bind(row.project_description)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -5225,6 +5313,8 @@ mod tests {
                     extra_session_fields_json: &json!([]),
                     prompt_limits_json: &json!({}),
                     worker_profile_json: &json!({"mode": "strict"}),
+                    project_code: "",
+                    project_description: "",
                 })
                 .await
                 .unwrap();
@@ -5256,6 +5346,8 @@ mod tests {
                     extra_session_fields_json: &json!([]),
                     prompt_limits_json: &json!({}),
                     worker_profile_json: &json!({"mode": "strict"}),
+                    project_code: "",
+                    project_description: "",
                 })
                 .await
                 .unwrap();

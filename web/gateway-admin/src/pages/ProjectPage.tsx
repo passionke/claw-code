@@ -43,12 +43,16 @@ export default function ProjectPage() {
   const [editingNoteValue, setEditingNoteValue] = useState("");
   const [detailJson, setDetailJson] = useState("");
   const [gitForm] = Form.useForm();
+  const [metaForm] = Form.useForm<{ projectCode: string; projectDescription: string }>();
   const [orchestrationForm] = Form.useForm();
   const [gitPatOptions, setGitPatOptions] = useState<{ value: string; label: string }[]>(
     []
   );
   /** NAS 物化较慢，切换生效时展示 loading。Author: kejiqing */
   const [activatingRev, setActivatingRev] = useState<string | null>(null);
+  const [savingMeta, setSavingMeta] = useState(false);
+
+  const CODE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
   const SOLVE_ORCHESTRATION_KIND_OPTIONS = [
     { value: "single_turn", label: "单 turn（默认，现有 gateway-solve-turn）" },
@@ -121,7 +125,35 @@ export default function ProjectPage() {
       writerMaxIter: projectConfig.solveOrchestrationJson?.writerMaxIter ?? 4,
       narratorThrottleMs: projectConfig.solveOrchestrationJson?.narratorThrottleMs ?? 3000,
     });
-  }, [projectConfig, projId, row, gitForm, orchestrationForm]);
+    metaForm.setFieldsValue({
+      projectCode: projectConfig.projectCode || row?.projectCode || "",
+      projectDescription:
+        projectConfig.projectDescription || row?.projectDescription || "",
+    });
+  }, [projectConfig, projId, row, gitForm, orchestrationForm, metaForm]);
+
+  const saveProjectMeta = async () => {
+    const values = await metaForm.validateFields();
+    setSavingMeta(true);
+    try {
+      await proxyHttp(
+        gatewayBase,
+        "PATCH",
+        `/v1/projects/${projId}`,
+        {
+          projectCode: values.projectCode.trim(),
+          projectDescription: values.projectDescription?.trim() || "",
+        }
+      );
+      message.success("项目信息已保存");
+      await refreshProjects();
+      await refreshProjectConfig();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "保存项目信息失败");
+    } finally {
+      setSavingMeta(false);
+    }
+  };
 
   const activate = async (contentRev: string) => {
     if (activatingRev) return;
@@ -305,10 +337,42 @@ export default function ProjectPage() {
 
   return (
     <div>
-      <Typography.Title level={4}>项目管理 · 项目 {projId}</Typography.Title>
+      <Typography.Title level={4}>项目管理</Typography.Title>
       <Typography.Paragraph type="secondary">
         顶栏切换项目；本页每 15s 静默同步项目列表。状态机：至多 1 个临时版；生效只能从正式版切换；保存为正式版不改生效。
       </Typography.Paragraph>
+
+      <Card title="项目信息" size="small" style={{ marginBottom: 16 }}>
+        <Form form={metaForm} layout="vertical">
+          <Form.Item label="项目 ID">
+            <Input value={String(projId)} disabled />
+          </Form.Item>
+          <Form.Item
+            name="projectCode"
+            label="项目 Code"
+            rules={[
+              { required: true, message: "请输入项目 Code" },
+              { max: 64, message: "最多 64 个字符" },
+              {
+                pattern: CODE_PATTERN,
+                message: "以字母或数字开头，仅允许字母、数字、-、_",
+              },
+            ]}
+          >
+            <Input placeholder="例如 sqlbot-pre" />
+          </Form.Item>
+          <Form.Item
+            name="projectDescription"
+            label="项目说明"
+            rules={[{ max: 500, message: "最多 500 个字符" }]}
+          >
+            <Input.TextArea rows={3} placeholder="简要描述项目用途" />
+          </Form.Item>
+          <Button type="primary" loading={savingMeta} onClick={() => void saveProjectMeta()}>
+            保存项目信息
+          </Button>
+        </Form>
+      </Card>
 
       <Space style={{ marginBottom: 16 }}>
         <Button

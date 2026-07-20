@@ -16,8 +16,10 @@ import type { MenuProps } from "antd";
 import { Avatar, Button, Dropdown, Layout, Menu, Select, Space, Tag, Typography } from "antd";
 import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
-import { adminLogout, fetchAdminMe, proxyHttp } from "../api/client";
+import { adminLogout, fetchAdminMe } from "../api/client";
+import CreateProjectModal from "../components/CreateProjectModal";
 import { useApp } from "../context/AppContext";
+import { formatProjectLabel } from "../utils/projectLabel";
 import { isOvsWorkerRelaxed, ovsIdeHref } from "../utils/ovsUrl";
 
 const { Header, Sider, Content } = Layout;
@@ -63,6 +65,7 @@ export default function AdminLayout() {
   const loc = useLocation();
   const nav = useNavigate();
   const [adminUser, setAdminUser] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
   const [openKeys, setOpenKeys] = useState<string[]>([]);
   const selectedKey = (() => {
     if (loc.pathname.startsWith("/global")) {
@@ -118,7 +121,7 @@ export default function AdminLayout() {
 
   const projOptions = projects.map((p) => ({
     value: p.projId,
-    label: `项目 ${p.projId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
+    label: formatProjectLabel(p),
   }));
 
   return (
@@ -139,9 +142,9 @@ export default function AdminLayout() {
         ) : null}
         <Typography.Text type="secondary">项目</Typography.Text>
         <Select
-          style={{ minWidth: 160 }}
+          style={{ minWidth: 280 }}
           value={projId}
-          options={projOptions.length ? projOptions : [{ value: 1, label: "项目 1" }]}
+          options={projOptions.length ? projOptions : [{ value: 1, label: "#1" }]}
           onChange={setProjId}
         />
         {isOvsWorkerRelaxed(projectConfig?.workerProfileJson) ? (
@@ -151,29 +154,18 @@ export default function AdminLayout() {
         ) : null}
         <div style={{ flex: 1 }} />
         <Space>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={async () => {
-              const raw = window.prompt("项目 ID（留空自动分配）", "");
-              const body: { projId?: number } = {};
-              if (raw != null && raw.trim() !== "") {
-                const n = parseInt(raw.trim(), 10);
-                if (!Number.isFinite(n) || n < 1) return;
-                body.projId = n;
-              }
-              const r = await proxyHttp<{ projId: number }>(
-                gatewayBase,
-                "POST",
-                "/v1/projects",
-                body
-              );
-              await refreshProjects();
-              setProjId(r.projId);
-            }}
-          >
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
             新建项目
           </Button>
+          <CreateProjectModal
+            open={createOpen}
+            gatewayBase={gatewayBase}
+            onClose={() => setCreateOpen(false)}
+            onCreated={async (id) => {
+              await refreshProjects();
+              setProjId(id);
+            }}
+          />
           <Dropdown
             menu={{
               items: userMenuItems,

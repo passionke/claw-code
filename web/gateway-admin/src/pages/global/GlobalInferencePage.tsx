@@ -201,8 +201,8 @@ export default function GlobalInferencePage() {
         }
       >
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          同 clusterId 的多 gateway 入口注册表（心跳 90s 内视为 online）。Admin 仍按集群组织会话，不按
-          gateway 筛选。
+          同 clusterId 的多 gateway 入口注册表（心跳 90s 内视为 online；offline 仅展示最近 24h
+          内有心跳的条目）。Admin 仍按集群组织会话，不按 gateway 筛选。
         </Typography.Paragraph>
         <Table
           size="small"
