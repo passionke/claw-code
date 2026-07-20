@@ -911,13 +911,12 @@ impl E2bSandboxClient {
             if row.get("clawRole").map(String::as_str) != Some(WARM_PROJ_ROLE) {
                 continue;
             }
-            if let Some(cid) = row.get("clusterId").map(String::as_str) {
-                if cid != cluster_id {
-                    continue;
-                }
-            } else {
+            let Some(cid) = row.get("clusterId").map(String::as_str) else {
                 // Skip legacy no-clusterId warm sandboxes in cluster-wide reap to avoid
                 // cross-cluster damage; per-proj reap still cleans them. Author: kejiqing
+                continue;
+            };
+            if cid != cluster_id {
                 continue;
             }
             let Some(proj_str) = row.get("projId").or_else(|| row.get("proj_id")) else {
