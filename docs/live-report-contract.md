@@ -18,9 +18,11 @@ Author: kejiqing
 
 **禁止**再使用：Gateway `TurnStdoutHub`、`POST /v1/internal/turns/{turnId}/stdout-event`、daemon → gateway HTTP 转发。
 
-**同机部署：** solve/cancel 的 **Pool RPC** 只打本机 `CLAW_POOL_DAEMON_TCP`（不按 DB `pool_id` 选池）。多机 = 多组 gateway+pool；详见 `docs/pool-registry.md`。
+> **2026-07 multi-gateway：** 同 `CLAW_CLUSTER_ID` 多 gateway 时，running live SSE 在**非 owner** 机器上 **HTTP 反代**到 `gateway_turns.gateway_base`（见 [`multi-gateway-cluster.md`](multi-gateway-cluster.md)）。**禁止**在错机建空 Hub。
 
-**Live 路由（路径 B）：** Gateway 在 `/v1/solve` / `/v1/solve_async` **入队建 turn** 时即用本机 `CLAW_POOL_ID`（`pool_registry::resolve_pool_id`）预写 `gateway_turns.pool_id`，使排队阶段 `GET /v1/biz_advice_report?stream=true` 可走 `claw_pool` JOIN（`pool_http_source=claw_pool_join`），不必等 worker `exec_solve_start`。`worker_name` 仍在 pool 开 exec 时写入。
+**Live 路由（路径 B，e2b）：** Gateway **LiveReportHub** 仅在 **turn owner** 进程 ingest stdout。入队写入 `gateway_turns.gateway_id` / `gateway_base`（`CLAW_GATEWAY_ID` / `CLAW_GATEWAY_BASE`）。`pool_id = e2b-cloud` 为后端类型标记，**不**表达入口。
+
+**Legacy pool-daemon：** 入队预写 `CLAW_POOL_ID` + `claw_pool_join` 代理仅适用于已拆除的宿主机 pool；e2b 新部署勿依赖。
 
 ---
 
@@ -104,5 +106,6 @@ rg -n 'stdout-event|forward_claw_stdout|turn_stdout_live_sse' rust deploy script
 | 日期 | 说明 |
 |------|------|
 | 2026-05-23 | stdout-v1-pool-sse：hub/SSE 下沉 pool；gateway DB 快照 + 代理；拆除 gateway ingest |
+| 2026-07-20 | Multi-gateway：turn owner 反代 live SSE；`gateway_id`/`gateway_base` 入队；错机禁止空 Hub |
 | 2026-05-23 | Gateway 入队预写 `pool_id`（`CLAW_POOL_ID`），排队期 live SSE 可走 `claw_pool_join` |
 | 2026-05-23 | 禁用 `CLAW_POOL_HTTP_BASE` fallback；无 JOIN → 503 + `pool_proxy_sse_denied` |

@@ -2,6 +2,24 @@
 
 import type { LandlockDsl } from "./landlock";
 
+/** `GET /v1/gateway/endpoints` — multi-gateway same clusterId. Author: kejiqing */
+export interface GatewayEndpointPublic {
+  gatewayId: string;
+  gatewayBase: string;
+  hostname: string;
+  startedAtMs: number;
+  lastHeartbeatMs: number;
+  online: boolean;
+  self: boolean;
+}
+
+export interface GatewayEndpointsResponse {
+  clusterId: string;
+  selfGatewayId: string;
+  selfGatewayBase: string;
+  endpoints: GatewayEndpointPublic[];
+}
+
 export interface GitPatRow {
   id: string;
   name: string;

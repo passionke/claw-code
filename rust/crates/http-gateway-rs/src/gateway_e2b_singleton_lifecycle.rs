@@ -13,14 +13,13 @@ use crate::cluster_identity::{
     fetch_tap_cluster_identity, gateway_cluster_id, sandbox_database_url,
 };
 use crate::gateway_claw_tap_settings::{
-    live_session_viewer_url_template, ClawTapMode, ClawTapSettings, DEFAULT_CLAW_TAP_LIVE_PORT,
-    DEFAULT_CLAW_TAP_PROXY_PORT,
+    live_session_viewer_url_template, DEFAULT_CLAW_TAP_LIVE_PORT, DEFAULT_CLAW_TAP_PROXY_PORT,
 };
-use crate::gateway_e2b_nas_api_settings::{load_e2b_nas_api_template_id, E2bNasApiSettings};
+use crate::gateway_e2b_nas_api_settings::load_e2b_nas_api_template_id;
 use crate::gateway_e2b_observe_settings::load_e2b_observe_template_id;
-use crate::gateway_e2b_ovs_settings::{load_e2b_ovs_template_id, E2bOvsSettings};
+use crate::gateway_e2b_ovs_settings::load_e2b_ovs_template_id;
 use crate::gateway_e2b_worker_settings::e2b_project_worker_renew_interval_secs_from_env;
-use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_global_settings};
+use crate::gateway_global_settings::get_gateway_global_settings;
 use crate::pool::interactive_backend::{
     e2b_observe_is_enabled, interactive_backend_is_e2b, E2bNasApiSingleton,
 };
@@ -245,15 +244,16 @@ async fn persist_nas_api(
     base_url: &str,
     sandbox_id: &str,
 ) -> Result<(), sqlx::Error> {
-    let (mut settings, tokens, _) = get_gateway_global_settings(db).await?;
     let now = now_ms();
-    settings.e2b_nas_api = E2bNasApiSettings {
-        template_id: settings.e2b_nas_api.template_id.clone(),
-        base_url: Some(base_url.trim_end_matches('/').to_string()),
-        sandbox_id: Some(sandbox_id.to_string()),
-        updated_at_ms: now,
-    };
-    save_gateway_global_settings(db, &settings, &tokens, now).await
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    let value = serde_json::json!({
+        "templateId": settings.e2b_nas_api.template_id,
+        "baseUrl": base_url.trim_end_matches('/'),
+        "sandboxId": sandbox_id,
+        "updatedAtMs": now,
+    });
+    db.merge_gateway_global_settings_json(&["e2bNasApi"], &value)
+        .await
 }
 
 #[allow(dead_code)]
@@ -262,15 +262,16 @@ async fn persist_ovs(
     base_url: &str,
     sandbox_id: &str,
 ) -> Result<(), sqlx::Error> {
-    let (mut settings, tokens, _) = get_gateway_global_settings(db).await?;
     let now = now_ms();
-    settings.e2b_ovs = E2bOvsSettings {
-        template_id: settings.e2b_ovs.template_id.clone(),
-        base_url: Some(base_url.trim_end_matches('/').to_string()),
-        sandbox_id: Some(sandbox_id.to_string()),
-        updated_at_ms: now,
-    };
-    save_gateway_global_settings(db, &settings, &tokens, now).await
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    let value = serde_json::json!({
+        "templateId": settings.e2b_ovs.template_id,
+        "baseUrl": base_url.trim_end_matches('/'),
+        "sandboxId": sandbox_id,
+        "updatedAtMs": now,
+    });
+    db.merge_gateway_global_settings_json(&["e2bOvs"], &value)
+        .await
 }
 
 async fn persist_observe_tap(
@@ -280,7 +281,6 @@ async fn persist_observe_tap(
     live_port: u16,
     live_base_url: &str,
 ) -> Result<(), sqlx::Error> {
-    let (mut settings, tokens, _) = get_gateway_global_settings(db).await?;
     let now = now_ms();
     let proxy_host = client.service_public_host(
         DEFAULT_CLAW_TAP_PROXY_PORT,
@@ -293,20 +293,26 @@ async fn persist_observe_tap(
         &handle.sandbox_id,
         &handle.sandbox_domain,
     );
-    settings.claw_tap = ClawTapSettings {
-        mode: ClawTapMode::Remote,
-        host: proxy_host,
-        proxy_port: DEFAULT_CLAW_TAP_PROXY_PORT,
-        live_port,
-        updated_at_ms: now,
-        live_base_url: Some(live_base_url.to_string()),
-        live_session_url_template: Some(live_session_viewer_url_template(live_base_url)),
-        proxy_base_url: Some(proxy_base),
-        e2b_observe_sandbox_id: Some(handle.sandbox_id.clone()),
-    };
-    // Keep e2bObserve metadata in sync with runtime observe singleton lifecycle.
-    settings.e2b_observe.updated_at_ms = now;
-    save_gateway_global_settings(db, &settings, &tokens, now).await
+    let claw_tap = serde_json::json!({
+        "mode": "remote",
+        "host": proxy_host,
+        "proxyPort": DEFAULT_CLAW_TAP_PROXY_PORT,
+        "livePort": live_port,
+        "updatedAtMs": now,
+        "liveBaseUrl": live_base_url,
+        "liveSessionUrlTemplate": live_session_viewer_url_template(live_base_url),
+        "proxyBaseUrl": proxy_base,
+        "e2bObserveSandboxId": handle.sandbox_id,
+    });
+    db.merge_gateway_global_settings_json(&["clawTap"], &claw_tap)
+        .await?;
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    let observe = serde_json::json!({
+        "templateId": settings.e2b_observe.template_id,
+        "updatedAtMs": now,
+    });
+    db.merge_gateway_global_settings_json(&["e2bObserve"], &observe)
+        .await
 }
 
 async fn kill_existing_singleton(
@@ -602,11 +608,70 @@ pub async fn ensure_e2b_singleton(
     client: &E2bSandboxClient,
     component: E2bSingletonComponent,
 ) -> Result<E2bSingletonOutcome, String> {
-    match component {
-        E2bSingletonComponent::NasApi => ensure_nas_api(db, client).await,
-        E2bSingletonComponent::Observe => ensure_observe(db, client).await,
-        E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
-    }
+    let role = match component {
+        E2bSingletonComponent::NasApi => SINGLETON_ROLE_NAS_API,
+        E2bSingletonComponent::Observe => SINGLETON_ROLE_OBSERVE,
+        E2bSingletonComponent::Ovs => {
+            return deprecated_ovs_singleton_outcome(db, client).await;
+        }
+    };
+    db.with_e2b_singleton_role_lock(role, || async {
+        match component {
+            E2bSingletonComponent::NasApi => ensure_nas_api(db, client).await,
+            E2bSingletonComponent::Observe => ensure_observe(db, client).await,
+            E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
+        }
+    })
+    .await
+}
+
+pub async fn reset_e2b_singleton(
+    db: &GatewaySessionDb,
+    client: &E2bSandboxClient,
+    component: E2bSingletonComponent,
+) -> Result<E2bSingletonOutcome, String> {
+    let role = match component {
+        E2bSingletonComponent::NasApi => SINGLETON_ROLE_NAS_API,
+        E2bSingletonComponent::Observe => SINGLETON_ROLE_OBSERVE,
+        E2bSingletonComponent::Ovs => {
+            return deprecated_ovs_singleton_outcome(db, client).await;
+        }
+    };
+    db.with_e2b_singleton_role_lock(role, || async {
+        let cluster_id = gateway_cluster_id()?;
+        match component {
+            E2bSingletonComponent::NasApi => {
+                let pg_sid = get_gateway_global_settings(db)
+                    .await
+                    .ok()
+                    .and_then(|(s, _, _)| s.e2b_nas_api.sandbox_id);
+                kill_existing_singleton(
+                    client,
+                    &cluster_id,
+                    SINGLETON_ROLE_NAS_API,
+                    pg_sid.as_deref(),
+                )
+                .await;
+                ensure_nas_api(db, client).await
+            }
+            E2bSingletonComponent::Observe => {
+                let pg_sid = get_gateway_global_settings(db)
+                    .await
+                    .ok()
+                    .and_then(|(s, _, _)| s.claw_tap.e2b_observe_sandbox_id.clone());
+                kill_existing_singleton(
+                    client,
+                    &cluster_id,
+                    SINGLETON_ROLE_OBSERVE,
+                    pg_sid.as_deref(),
+                )
+                .await;
+                ensure_observe(db, client).await
+            }
+            E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
+        }
+    })
+    .await
 }
 
 async fn deprecated_ovs_singleton_outcome(
@@ -628,45 +693,6 @@ async fn deprecated_ovs_singleton_outcome(
                 .into(),
         ),
     })
-}
-
-pub async fn reset_e2b_singleton(
-    db: &GatewaySessionDb,
-    client: &E2bSandboxClient,
-    component: E2bSingletonComponent,
-) -> Result<E2bSingletonOutcome, String> {
-    let cluster_id = gateway_cluster_id()?;
-    match component {
-        E2bSingletonComponent::NasApi => {
-            let pg_sid = get_gateway_global_settings(db)
-                .await
-                .ok()
-                .and_then(|(s, _, _)| s.e2b_nas_api.sandbox_id);
-            kill_existing_singleton(
-                client,
-                &cluster_id,
-                SINGLETON_ROLE_NAS_API,
-                pg_sid.as_deref(),
-            )
-            .await;
-            ensure_nas_api(db, client).await
-        }
-        E2bSingletonComponent::Observe => {
-            let pg_sid = get_gateway_global_settings(db)
-                .await
-                .ok()
-                .and_then(|(s, _, _)| s.claw_tap.e2b_observe_sandbox_id.clone());
-            kill_existing_singleton(
-                client,
-                &cluster_id,
-                SINGLETON_ROLE_OBSERVE,
-                pg_sid.as_deref(),
-            )
-            .await;
-            ensure_observe(db, client).await
-        }
-        E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
-    }
 }
 
 fn verify_nas_api_strict(outcome: &E2bSingletonOutcome) -> Result<(), String> {

@@ -60,6 +60,10 @@ pub struct GatewayTurnSummary {
     pub worker_name: Option<String>,
     /// `podman exec --user` for this turn (`claw`, etc.). Author: kejiqing
     pub worker_exec_user: Option<String>,
+    /// Ingress gateway that enqueued this turn (`gateway_turns.gateway_id`). Author: kejiqing
+    pub gateway_id: Option<String>,
+    /// Browser-reachable base URL of the ingress gateway. Author: kejiqing
+    pub gateway_base: Option<String>,
 }
 
 /// Row for tools API: session path + turn times + 1-based user turn index (single query). Author: kejiqing
@@ -133,6 +137,10 @@ pub struct ProjectFcWorkerRow {
     pub template_id: String,
     pub handle_json: Value,
     pub updated_at_ms: i64,
+    /// Cross-gateway busy refcount (shared PG). Author: kejiqing
+    pub in_use_count: i32,
+    /// Soft expiry for stale busy counts (ms since epoch). Author: kejiqing
+    pub in_use_until_ms: i64,
 }
 
 /// PG `slot_index` (non-negative) → registry `u32`.
@@ -375,6 +383,8 @@ fn row_to_project_fc_worker(row: &sqlx::postgres::PgRow) -> Result<ProjectFcWork
         template_id: row.try_get("template_id")?,
         handle_json: row.try_get::<Json<Value>, _>("handle_json")?.0,
         updated_at_ms: row.try_get("updated_at_ms")?,
+        in_use_count: row.try_get("in_use_count").unwrap_or(0),
+        in_use_until_ms: row.try_get("in_use_until_ms").unwrap_or(0),
     })
 }
 
@@ -1054,6 +1064,11 @@ impl GatewaySessionDb {
         )
         .await?;
         Self::migrate_project_e2b_worker_pool_slot(pool).await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/013_multi_gateway_cluster.sql"),
+        )
+        .await?;
 
         Ok(())
     }
@@ -2349,7 +2364,8 @@ impl GatewaySessionDb {
         slot_index: i32,
     ) -> Result<Option<ProjectFcWorkerRow>, SqlxError> {
         let row = sqlx::query(
-            r"SELECT proj_id, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
+            r"SELECT proj_id, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms,
+                      in_use_count, in_use_until_ms
                FROM project_e2b_worker
                WHERE cluster_id = $1 AND proj_id = $2 AND slot_index = $3",
         )
@@ -2377,7 +2393,8 @@ impl GatewaySessionDb {
         proj_id: i64,
     ) -> Result<Vec<ProjectFcWorkerRow>, SqlxError> {
         let rows = sqlx::query(
-            r"SELECT proj_id, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
+            r"SELECT proj_id, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms,
+                      in_use_count, in_use_until_ms
                FROM project_e2b_worker
                WHERE cluster_id = $1 AND proj_id = $2
                ORDER BY slot_index ASC",
@@ -2395,8 +2412,9 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO project_e2b_worker (
-                 proj_id, cluster_id, slot_index, sandbox_id, worker_id, template_id, handle_json, updated_at_ms
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 proj_id, cluster_id, slot_index, sandbox_id, worker_id, template_id, handle_json,
+                 updated_at_ms, in_use_count, in_use_until_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                ON CONFLICT (cluster_id, proj_id, slot_index) DO UPDATE SET
                  sandbox_id = EXCLUDED.sandbox_id,
                  worker_id = EXCLUDED.worker_id,
@@ -2412,6 +2430,181 @@ impl GatewaySessionDb {
         .bind(&row.template_id)
         .bind(Json(&row.handle_json))
         .bind(row.updated_at_ms)
+        .bind(row.in_use_count)
+        .bind(row.in_use_until_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Soft busy bump shared across gateways. Author: kejiqing
+    pub async fn bump_project_e2b_worker_in_use(
+        &self,
+        proj_id: i64,
+        slot_index: i32,
+        lease_ttl_ms: i64,
+    ) -> Result<(), SqlxError> {
+        let until = chrono::Utc::now().timestamp_millis() + lease_ttl_ms.max(1_000);
+        sqlx::query(
+            r"UPDATE project_e2b_worker
+               SET in_use_count = GREATEST(in_use_count, 0) + 1,
+                   in_use_until_ms = GREATEST(in_use_until_ms, $4)
+               WHERE cluster_id = $1 AND proj_id = $2 AND slot_index = $3",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .bind(slot_index)
+        .bind(until)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Soft busy release shared across gateways. Author: kejiqing
+    pub async fn release_project_e2b_worker_in_use(
+        &self,
+        proj_id: i64,
+        slot_index: i32,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"UPDATE project_e2b_worker
+               SET in_use_count = GREATEST(in_use_count - 1, 0)
+               WHERE cluster_id = $1 AND proj_id = $2 AND slot_index = $3",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .bind(slot_index)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// True when another gateway (or this one) still holds a non-expired busy lease. Author: kejiqing
+    pub async fn project_e2b_worker_is_busy(
+        &self,
+        proj_id: i64,
+        slot_index: i32,
+    ) -> Result<bool, SqlxError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let busy: bool = sqlx::query_scalar(
+            r"SELECT EXISTS(
+                 SELECT 1 FROM project_e2b_worker
+                 WHERE cluster_id = $1 AND proj_id = $2 AND slot_index = $3
+                   AND in_use_count > 0 AND in_use_until_ms > $4
+               )",
+        )
+        .bind(self.cluster_id())
+        .bind(proj_id)
+        .bind(slot_index)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(busy)
+    }
+
+    /// Serialize mutate path for one worker slot across gateways. Author: kejiqing
+    pub async fn with_project_e2b_worker_slot_lock<T, F, Fut>(
+        &self,
+        proj_id: i64,
+        slot_index: i32,
+        f: F,
+    ) -> Result<T, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let key = format!("{}:{}:{}", self.cluster_id(), proj_id, slot_index);
+        sqlx::query("SELECT pg_advisory_lock(hashtext($1::text))")
+            .bind(&key)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("pg_advisory_lock worker slot: {e}"))?;
+        let out = f().await;
+        let unlock = sqlx::query("SELECT pg_advisory_unlock(hashtext($1::text))")
+            .bind(&key)
+            .execute(&self.pool)
+            .await;
+        if let Err(e) = unlock {
+            tracing::warn!(
+                target: "claw_e2b_proj_worker",
+                proj_id,
+                slot_index,
+                error = %e,
+                "pg_advisory_unlock worker slot failed"
+            );
+        }
+        out
+    }
+
+    /// Serialize cluster singleton ensure/reset across gateways. Author: kejiqing
+    pub async fn with_e2b_singleton_role_lock<T, F, Fut>(
+        &self,
+        role: &str,
+        f: F,
+    ) -> Result<T, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let key = format!("{}:{}", self.cluster_id(), role);
+        sqlx::query("SELECT pg_advisory_lock(hashtext($1::text))")
+            .bind(&key)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("pg_advisory_lock singleton {role}: {e}"))?;
+        let out = f().await;
+        let unlock = sqlx::query("SELECT pg_advisory_unlock(hashtext($1::text))")
+            .bind(&key)
+            .execute(&self.pool)
+            .await;
+        if let Err(e) = unlock {
+            tracing::warn!(
+                target: "claw_e2b_singleton",
+                role = %role,
+                error = %e,
+                "pg_advisory_unlock singleton failed"
+            );
+        }
+        out
+    }
+
+    /// Field-level merge into gateway_global_settings.settings_json. Author: kejiqing
+    pub async fn merge_gateway_global_settings_json(
+        &self,
+        path: &[&str],
+        value: &Value,
+    ) -> Result<(), SqlxError> {
+        if path.is_empty() {
+            return Err(SqlxError::Protocol(
+                "merge_gateway_global_settings_json path empty".into(),
+            ));
+        }
+        let path_arr: Vec<String> = path.iter().map(|s| (*s).to_string()).collect();
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            r"INSERT INTO gateway_global_settings (cluster_id, settings_json, updated_at_ms)
+               VALUES ($1, '{}'::jsonb, $2)
+               ON CONFLICT (cluster_id) DO NOTHING",
+        )
+        .bind(self.cluster_id())
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r"UPDATE gateway_global_settings
+               SET settings_json = jsonb_set(
+                     COALESCE(settings_json, '{}'::jsonb),
+                     $2::text[],
+                     $3::jsonb,
+                     true
+                   ),
+                   updated_at_ms = $4
+               WHERE cluster_id = $1",
+        )
+        .bind(self.cluster_id())
+        .bind(&path_arr)
+        .bind(Json(value))
+        .bind(now)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -3637,6 +3830,158 @@ impl GatewaySessionDb {
         Ok(())
     }
 
+    /// Bind ingress gateway identity at turn enqueue. Author: kejiqing
+    pub async fn assign_turn_gateway(
+        &self,
+        turn_id: &str,
+        gateway_id: &str,
+        gateway_base: &str,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"UPDATE gateway_turns
+               SET gateway_id = $2, gateway_base = $3
+               WHERE cluster_id = $1 AND turn_id = $4",
+        )
+        .bind(self.cluster_id())
+        .bind(gateway_id)
+        .bind(gateway_base)
+        .bind(turn_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_turn_gateway_owner(
+        &self,
+        turn_id: &str,
+        session_id: &str,
+        proj_id: i64,
+    ) -> Result<Option<(String, String)>, SqlxError> {
+        let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            r"SELECT gateway_id, gateway_base
+               FROM gateway_turns
+               WHERE cluster_id = $1 AND turn_id = $2 AND session_id = $3 AND proj_id = $4
+               LIMIT 1",
+        )
+        .bind(self.cluster_id())
+        .bind(turn_id)
+        .bind(session_id)
+        .bind(proj_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.and_then(|(id, base)| match (id, base) {
+            (Some(i), Some(b)) if !i.trim().is_empty() && !b.trim().is_empty() => Some((i, b)),
+            _ => None,
+        }))
+    }
+
+    pub async fn upsert_gateway_endpoint(
+        &self,
+        identity: &crate::gateway_endpoint::GatewayEndpointIdentity,
+        started_at_ms: i64,
+        last_heartbeat_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_endpoint (
+                 cluster_id, gateway_id, gateway_base, hostname, started_at_ms, last_heartbeat_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (cluster_id, gateway_id) DO UPDATE SET
+                 gateway_base = EXCLUDED.gateway_base,
+                 hostname = EXCLUDED.hostname,
+                 started_at_ms = EXCLUDED.started_at_ms,
+                 last_heartbeat_ms = EXCLUDED.last_heartbeat_ms",
+        )
+        .bind(self.cluster_id())
+        .bind(&identity.gateway_id)
+        .bind(&identity.gateway_base)
+        .bind(&identity.hostname)
+        .bind(started_at_ms)
+        .bind(last_heartbeat_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn touch_gateway_endpoint_heartbeat(
+        &self,
+        gateway_id: &str,
+        last_heartbeat_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"UPDATE gateway_endpoint
+               SET last_heartbeat_ms = $3
+               WHERE cluster_id = $1 AND gateway_id = $2",
+        )
+        .bind(self.cluster_id())
+        .bind(gateway_id)
+        .bind(last_heartbeat_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_gateway_endpoints(
+        &self,
+    ) -> Result<Vec<crate::gateway_endpoint::GatewayEndpointRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT gateway_id, gateway_base, hostname, started_at_ms, last_heartbeat_ms
+               FROM gateway_endpoint
+               WHERE cluster_id = $1
+               ORDER BY gateway_id ASC",
+        )
+        .bind(self.cluster_id())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(crate::gateway_endpoint::GatewayEndpointRow {
+                gateway_id: r.try_get("gateway_id")?,
+                gateway_base: r.try_get("gateway_base")?,
+                hostname: r.try_get("hostname")?,
+                started_at_ms: r.try_get("started_at_ms")?,
+                last_heartbeat_ms: r.try_get("last_heartbeat_ms")?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn get_gateway_endpoint(
+        &self,
+        gateway_id: &str,
+    ) -> Result<Option<crate::gateway_endpoint::GatewayEndpointRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT gateway_id, gateway_base, hostname, started_at_ms, last_heartbeat_ms
+               FROM gateway_endpoint
+               WHERE cluster_id = $1 AND gateway_id = $2
+               LIMIT 1",
+        )
+        .bind(self.cluster_id())
+        .bind(gateway_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(r) = row else {
+            return Ok(None);
+        };
+        Ok(Some(crate::gateway_endpoint::GatewayEndpointRow {
+            gateway_id: r.try_get("gateway_id")?,
+            gateway_base: r.try_get("gateway_base")?,
+            hostname: r.try_get("hostname")?,
+            started_at_ms: r.try_get("started_at_ms")?,
+            last_heartbeat_ms: r.try_get("last_heartbeat_ms")?,
+        }))
+    }
+
+    pub async fn delete_gateway_endpoint(&self, gateway_id: &str) -> Result<bool, SqlxError> {
+        let result = sqlx::query(
+            "DELETE FROM gateway_endpoint WHERE cluster_id = $1 AND gateway_id = $2",
+        )
+        .bind(self.cluster_id())
+        .bind(gateway_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Bind turn to executing pool + worker container name when exec starts. Author: kejiqing
     pub async fn assign_turn_pool_worker(
         &self,
@@ -4156,7 +4501,7 @@ impl GatewaySessionDb {
         let rows = sqlx::query(
             r"SELECT t.turn_id, t.user_prompt, t.status, t.created_at_ms, t.finished_at_ms,
                      t.report_message, t.output_json, t.client_origin, t.entry_params_json, f.feedback,
-                     t.pool_id, t.worker_name, t.worker_exec_user,
+                     t.pool_id, t.worker_name, t.worker_exec_user, t.gateway_id, t.gateway_base,
                      (
                        (t.report_message IS NOT NULL AND btrim(t.report_message) <> '')
                        OR t.output_json IS NOT NULL
@@ -4207,6 +4552,8 @@ impl GatewaySessionDb {
                 pool_id: r.try_get("pool_id")?,
                 worker_name: r.try_get("worker_name")?,
                 worker_exec_user: r.try_get("worker_exec_user")?,
+                gateway_id: r.try_get("gateway_id")?,
+                gateway_base: r.try_get("gateway_base")?,
             });
         }
         Ok(out)

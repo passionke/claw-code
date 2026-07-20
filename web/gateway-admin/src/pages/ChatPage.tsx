@@ -45,6 +45,8 @@ interface TurnEntry {
   createdAtMs?: number;
   finishedAtMs?: number | null;
   poolId?: string | null;
+  gatewayId?: string | null;
+  gatewayBase?: string | null;
   workerName?: string | null;
   workerProfile?: string | null;
   workerExecUser?: string | null;
@@ -192,6 +194,8 @@ export default function ChatPage() {
             createdAtMs: t.createdAtMs,
             finishedAtMs: t.finishedAtMs,
             poolId: t.poolId ?? undefined,
+            gatewayId: t.gatewayId ?? undefined,
+            gatewayBase: t.gatewayBase ?? undefined,
             workerName: t.workerName ?? undefined,
             workerProfile: t.workerProfile ?? undefined,
             workerExecUser: t.workerExecUser ?? undefined,
@@ -270,6 +274,8 @@ export default function ChatPage() {
         extraSession: extra,
         createdAtMs: Date.now(),
         poolId: asyncRes.poolId ?? undefined,
+        gatewayId: asyncRes.gatewayId ?? undefined,
+        gatewayBase: asyncRes.gatewayBase ?? undefined,
         workerName: asyncRes.workerName ?? undefined,
         workerProfile: asyncRes.workerProfile ?? undefined,
         workerExecUser: asyncRes.workerExecUser ?? undefined,
@@ -395,6 +401,8 @@ export default function ChatPage() {
                   createdAtMs={item.createdAtMs}
                   finishedAtMs={item.finishedAtMs}
                   initialPoolId={item.poolId}
+                  initialGatewayId={item.gatewayId}
+                  initialGatewayBase={item.gatewayBase}
                   initialWorkerName={item.workerName}
                   initialWorkerProfile={item.workerProfile}
                   initialWorkerExecUser={item.workerExecUser}

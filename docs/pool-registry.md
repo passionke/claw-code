@@ -2,11 +2,22 @@
 
 Author: kejiqing
 
-> **2026-06 e2b-only：** 宿主机 `claw-sandbox` / pool-daemon **已移除**。`claw_pool` 表与 `gateway_turns.pool_id` **保留**用于历史 turn 元数据、Admin 展示、live SSE JOIN。**新 solve** 经 e2b，不再向 `claw_pool` 注册心跳。
+> **2026-07 multi-gateway：** 新部署的 **gateway 入口**注册表为 **`gateway_endpoint`**（`GET /v1/gateway/endpoints`），见 [`multi-gateway-cluster.md`](multi-gateway-cluster.md)。`claw_pool` 与 `gateway_turns.pool_id` **保留**用于历史 turn 元数据；**新 solve** 经 e2b，`pool_id = e2b-cloud` 为后端类型标记。
 
-## 当前语义（兼容层）
+> **2026-06 e2b-only：** 宿主机 `claw-sandbox` / pool-daemon **已移除**。下文 pool-daemon 段落为 **legacy 兼容**说明。
 
-## `claw_pool` table
+## 当前语义
+
+### Gateway 入口（新）
+
+| Surface | Purpose |
+|---------|---------|
+| **`GET /v1/gateway/endpoints`** | 同 cluster 在线 gateway 清单 |
+| **`DELETE /v1/gateway/endpoints/{gatewayId}`** | 删僵尸 endpoint |
+| **Admin → 全局推理 → 在线 Gateway 清单** | id / base / online / 本机 |
+| **Playground turn 卡片** | **`gateway {host}`** = turn 接入 gateway（`gateway_turns.gateway_base`） |
+
+### `claw_pool` table（legacy）
 
 | Column | Meaning |
 |--------|---------|
@@ -23,8 +34,9 @@ Author: kejiqing
 
 | Column | Set when |
 |--------|----------|
-| `pool_id` | Gateway **enqueue prebind** (`CLAW_POOL_ID` / co-located); confirmed on pool exec |
-| `worker_name` | Pool `exec_solve` starts (container name) |
+| `gateway_id` / `gateway_base` | Gateway **enqueue**（接入入口，multi-gateway） |
+| `pool_id` | e2b：`e2b-cloud`；legacy：enqueue prebind |
+| `worker_name` | Pool/e2b exec starts |
 
 ## Worker / task file
 
@@ -49,9 +61,11 @@ For `running` / `queued` stream: join `gateway_turns.pool_id` → `claw_pool`, p
 | **`DELETE /v1/pools/{poolId}`** | Remove stale registry row (daemon re-registers on next `pool-up`) |
 | **Admin → 全局配置 → Pool 集群** | Table view; 30s refresh; delete offline/zombie rows |
 | **Playground chat turn card** | Cyan **`pool {poolId}`** tag per turn; tooltip **`workerName`** when set |
-| **`GET /v1/sessions/…/turns`**, **`GET /v1/tasks/…`**, **`POST /v1/solve_async`** | JSON fields `poolId`, `workerName` |
+| **`GET /v1/sessions/…/turns`**, **`GET /v1/tasks/…`**, **`POST /v1/solve_async`** | JSON: `gatewayId`, `gatewayBase`, `poolId`, `workerName` |
 
-Playground **solve and poll should use the same `gatewayBase`** (same host). Cross-gateway status poll has known gaps for running progress/cancel; see [`deploy-ops-truth.md`](deploy-ops-truth.md).
+Playground **live SSE** 应对**任意**在线 gateway 发起；非 owner 时 gateway 反代到 turn 接入机。Cross-gateway **status poll** 经共享 PG 仍可用；progress/cancel 经 owner 反代。
+
+Admin **不按 gateway 筛选**项目/会话；全局页仅展示在线 gateway 清单。
 
 Admin **Pool dropdown** (shared PG): only when **≥2 online** `claw_pool` rows have non-empty **`gateway_base`** (offline / zombie rows stay in **Pool 集群** table only). Each option is **`{poolId} · {gateway host}`** or **`本机 · {poolId}`** for co-located; default = playground **`defaultGatewayBase`**. Pool-daemon registers `gateway_base` at startup; production `gateway.sh up` sets **`CLAW_POOL_GATEWAY_BASE`** / **`PLAYGROUND_PUBLIC_GATEWAY_BASE`** from **`CLAW_POOL_ADVERTISE_HOST`** (per machine — do not copy another host's IP into `.env`).
 

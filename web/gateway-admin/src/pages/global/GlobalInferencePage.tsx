@@ -8,6 +8,7 @@ import {
   Input,
   Popconfirm,
   Space,
+  Table,
   Tag,
   Typography,
   message,
@@ -17,6 +18,7 @@ import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import type {
   ClawTapSettings,
+  GatewayEndpointsResponse,
   GlobalSettingsResponse,
   ObserveTapResetResponse,
 } from "../../types/globalSettings";
@@ -84,6 +86,16 @@ function observeStatusTag(tap: ClawTapSettings | null): ReactNode {
   return <Tag color="warning">等待 gateway 初始化</Tag>;
 }
 
+function gatewayHostLabel(base: string): string {
+  const t = base.trim();
+  if (!t) return "—";
+  try {
+    return new URL(t).host;
+  } catch {
+    return t.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") || t;
+  }
+}
+
 /** e2b 全局推理：集群 ID + LLM 模型列表 + observe 单例只读信息。Author: kejiqing */
 export default function GlobalInferencePage() {
   const { gatewayBase } = useApp();
@@ -91,17 +103,26 @@ export default function GlobalInferencePage() {
   const [resetting, setResetting] = useState(false);
   const [clusterId, setClusterId] = useState("");
   const [observeTap, setObserveTap] = useState<ClawTapSettings | null>(null);
+  const [endpoints, setEndpoints] = useState<GatewayEndpointsResponse | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await proxyHttp<GlobalSettingsResponse>(
-        gatewayBase,
-        "GET",
-        "/v1/gateway/global-settings"
-      );
-      setClusterId(r.clusterId ?? "");
-      setObserveTap(r.clawTap ?? null);
+      const [settingsRes, endpointsRes] = await Promise.all([
+        proxyHttp<GlobalSettingsResponse>(
+          gatewayBase,
+          "GET",
+          "/v1/gateway/global-settings"
+        ),
+        proxyHttp<GatewayEndpointsResponse>(
+          gatewayBase,
+          "GET",
+          "/v1/gateway/endpoints"
+        ),
+      ]);
+      setClusterId(settingsRes.clusterId ?? "");
+      setObserveTap(settingsRes.clawTap ?? null);
+      setEndpoints(endpointsRes);
     } finally {
       setLoading(false);
     }
@@ -168,6 +189,66 @@ export default function GlobalInferencePage() {
           />
         </Form.Item>
       </Form>
+
+      <Card
+        title="在线 Gateway 清单"
+        loading={loading}
+        style={{ marginBottom: 16 }}
+        extra={
+          <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
+            刷新
+          </Button>
+        }
+      >
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          同 clusterId 的多 gateway 入口注册表（心跳 90s 内视为 online）。Admin 仍按集群组织会话，不按
+          gateway 筛选。
+        </Typography.Paragraph>
+        <Table
+          size="small"
+          rowKey="gatewayId"
+          pagination={false}
+          dataSource={endpoints?.endpoints ?? []}
+          locale={{ emptyText: loading ? "加载中…" : "暂无 gateway 注册" }}
+          columns={[
+            {
+              title: "Gateway ID",
+              dataIndex: "gatewayId",
+              render: (id: string, row) => (
+                <Space size="small">
+                  <Typography.Text code>{id}</Typography.Text>
+                  {row.self ? <Tag color="blue">本机</Tag> : null}
+                </Space>
+              ),
+            },
+            {
+              title: "Base URL",
+              dataIndex: "gatewayBase",
+              render: (base: string) => (
+                <Typography.Text copyable style={{ wordBreak: "break-all" }}>
+                  {base}
+                </Typography.Text>
+              ),
+            },
+            {
+              title: "Host",
+              key: "host",
+              render: (_: unknown, row) => gatewayHostLabel(row.gatewayBase),
+            },
+            {
+              title: "状态",
+              key: "online",
+              render: (_: unknown, row) =>
+                row.online ? <Tag color="success">online</Tag> : <Tag>offline</Tag>,
+            },
+            {
+              title: "最后心跳",
+              dataIndex: "lastHeartbeatMs",
+              render: (ms: number) => formatMs(ms),
+            },
+          ]}
+        />
+      </Card>
 
       <Card
         title={
