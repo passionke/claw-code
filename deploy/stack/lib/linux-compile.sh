@@ -55,7 +55,10 @@ claw_linux_compile_release() {
   local out_root="${root_dir}/deploy/stack/.linux-artifacts"
   local out_dir="${out_root}/release"
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
-    rm -rf "${out_root}" 2>/dev/null || sudo rm -rf "${out_root}" 2>/dev/null || true
+    rm -rf "${out_root}" 2>/dev/null || true
+    if [[ -d "${out_root}" ]] && command -v docker >/dev/null 2>&1; then
+      docker run --rm -v "${root_dir}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts 2>/dev/null || true
+    fi
   fi
   mkdir -p "${out_dir}"
 
