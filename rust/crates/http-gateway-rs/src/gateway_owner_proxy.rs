@@ -80,7 +80,7 @@ pub async fn proxy_to_owner_gateway(
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut builder = Response::builder().status(status);
-    for (k, v) in upstream.headers().iter() {
+    for (k, v) in upstream.headers() {
         let name = k.as_str();
         if matches!(
             name,
