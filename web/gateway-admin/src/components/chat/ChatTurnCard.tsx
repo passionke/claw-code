@@ -52,6 +52,9 @@ export interface ChatTurnCardProps {
   finishedAtMs?: number | null;
   /** Prebound pool at enqueue (history or solve_async). Author: kejiqing */
   initialPoolId?: string | null;
+  /** Ingress gateway at enqueue (turn owner). Author: kejiqing */
+  initialGatewayId?: string | null;
+  initialGatewayBase?: string | null;
   initialWorkerName?: string | null;
   initialWorkerProfile?: string | null;
   initialWorkerExecUser?: string | null;
@@ -131,6 +134,8 @@ export default function ChatTurnCard({
   createdAtMs,
   finishedAtMs,
   initialPoolId: _initialPoolId,
+  initialGatewayId,
+  initialGatewayBase,
   initialWorkerName,
   initialWorkerProfile,
   initialWorkerExecUser,
@@ -416,7 +421,14 @@ export default function ChatTurnCard({
   const workerName = (task.workerName ?? initialWorkerName ?? "").trim();
   const workerProfile = (task.workerProfile ?? initialWorkerProfile ?? "").trim();
   const workerExecUser = (task.workerExecUser ?? initialWorkerExecUser ?? "").trim();
-  const gwLabel = gatewayHostLabel(gatewayBase);
+  const ingressBase = (task.gatewayBase ?? initialGatewayBase ?? "").trim();
+  const ingressId = (task.gatewayId ?? initialGatewayId ?? "").trim();
+  const gwLabel = gatewayHostLabel(ingressBase);
+  const gwTooltip = ingressBase
+    ? ingressId
+      ? `${ingressId} · ${ingressBase}`
+      : ingressBase
+    : "未记录接入 gateway（历史 turn 或旧版本 gateway）";
 
   const workerTag = workerName ? (
     <Tooltip title="exec 当时的 worker 容器名；池回收后容器可能已销毁，仅作历史记录">
@@ -456,9 +468,9 @@ export default function ChatTurnCard({
           </span>
         </div>
         <div className={styles.turnRoute}>
-          <Tooltip title={gatewayBase || "未选择网关"}>
+          <Tooltip title={gwTooltip}>
             <Tag color="geekblue" className={styles.turnRouteTag}>
-              gateway {gwLabel}
+              gateway {gwLabel || "—"}
             </Tag>
           </Tooltip>
           {workerTag}

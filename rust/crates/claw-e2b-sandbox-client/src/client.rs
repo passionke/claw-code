@@ -672,6 +672,7 @@ impl E2bSandboxClient {
         metadata.insert("workerId".to_string(), worker_id.to_string());
         metadata.insert("sessionId".to_string(), warm_session_id);
         metadata.insert("clawRole".to_string(), WARM_PROJ_ROLE.to_string());
+        metadata.insert("clusterId".to_string(), cluster_id.trim().to_string());
         if include_ovs {
             metadata.insert("ovsBuiltin".to_string(), "true".to_string());
         }
@@ -772,23 +773,35 @@ impl E2bSandboxClient {
             .collect())
     }
 
-    /// Find singleton sandbox id for `cluster_id` + `claw_role`.
-    pub async fn find_singleton(
+    /// List all singleton sandbox ids for `cluster_id` + `claw_role`, sorted ascending. Author: kejiqing
+    pub async fn list_singleton_ids(
         &self,
         cluster_id: &str,
         claw_role: &str,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Vec<String>, String> {
         let cluster_id = cluster_id.trim();
+        let mut ids = Vec::new();
         for row in self.list_sandboxes().await? {
             if row.get("clawRole").map(String::as_str) == Some(claw_role)
                 && row.get("clusterId").map(String::as_str) == Some(cluster_id)
             {
                 if let Some(sid) = row.get("__sandboxId") {
-                    return Ok(Some(sid.clone()));
+                    ids.push(sid.clone());
                 }
             }
         }
-        Ok(None)
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// Deterministic singleton pick: lexicographically smallest sandbox id. Author: kejiqing
+    pub async fn find_singleton(
+        &self,
+        cluster_id: &str,
+        claw_role: &str,
+    ) -> Result<Option<String>, String> {
+        let ids = self.list_singleton_ids(cluster_id, claw_role).await?;
+        Ok(ids.into_iter().next())
     }
 
     /// Find observe singleton sandbox id for `cluster_id` (`metadata.clawRole=observe-singleton`).
@@ -837,6 +850,7 @@ impl E2bSandboxClient {
     /// Kill every `warm-proj` sandbox for `proj_id` except those in `keep_sandbox_ids` (empty = kill all for proj).
     pub async fn reap_warm_proj_orphans(
         &self,
+        cluster_id: &str,
         proj_id: i64,
         keep_sandbox_ids: &[String],
     ) -> Result<usize, String> {
@@ -846,10 +860,17 @@ impl E2bSandboxClient {
             .filter(|s| !s.is_empty())
             .collect();
         let proj_key = proj_id.to_string();
+        let cluster_id = cluster_id.trim();
         let mut killed = 0usize;
         for row in self.list_sandboxes().await? {
             if row.get("clawRole").map(String::as_str) != Some(WARM_PROJ_ROLE) {
                 continue;
+            }
+            // Legacy warm sandboxes without clusterId are still reaped for this proj. Author: kejiqing
+            if let Some(cid) = row.get("clusterId").map(String::as_str) {
+                if cid != cluster_id {
+                    continue;
+                }
             }
             let row_proj = row
                 .get("projId")
@@ -878,14 +899,24 @@ impl E2bSandboxClient {
         Ok(killed)
     }
 
-    /// Kill stray `warm-proj` sandboxes: not any PG-registered keep sandbox per proj.
+    /// Kill stray `warm-proj` sandboxes for this cluster: not any PG-registered keep sandbox per proj.
     pub async fn reap_cluster_warm_proj_orphans(
         &self,
+        cluster_id: &str,
         keep_by_proj: &HashMap<i64, Vec<String>>,
     ) -> Result<usize, String> {
+        let cluster_id = cluster_id.trim();
         let mut killed = 0usize;
         for row in self.list_sandboxes().await? {
             if row.get("clawRole").map(String::as_str) != Some(WARM_PROJ_ROLE) {
+                continue;
+            }
+            let Some(cid) = row.get("clusterId").map(String::as_str) else {
+                // Skip legacy no-clusterId warm sandboxes in cluster-wide reap to avoid
+                // cross-cluster damage; per-proj reap still cleans them. Author: kejiqing
+                continue;
+            };
+            if cid != cluster_id {
                 continue;
             }
             let Some(proj_str) = row.get("projId").or_else(|| row.get("proj_id")) else {

@@ -47,6 +47,9 @@ export interface SolveTask {
   workerProfile?: string | null;
   /** Pool `podman exec --user` (e.g. claw). Author: kejiqing */
   workerExecUser?: string | null;
+  /** Ingress gateway that enqueued this turn. Author: kejiqing */
+  gatewayId?: string | null;
+  gatewayBase?: string | null;
 }
 
 export interface SolveAsyncResponse {
@@ -59,6 +62,8 @@ export interface SolveAsyncResponse {
   workerProfile?: string | null;
   /** Pool `podman exec --user` (e.g. claw). Author: kejiqing */
   workerExecUser?: string | null;
+  gatewayId?: string | null;
+  gatewayBase?: string | null;
 }
 
 export interface ChatBubble {
@@ -110,6 +115,9 @@ export interface GatewayTurnSummary {
   workerProfile?: string | null;
   /** Pool `podman exec --user` (e.g. claw). Author: kejiqing */
   workerExecUser?: string | null;
+  /** Ingress gateway that enqueued this turn. Author: kejiqing */
+  gatewayId?: string | null;
+  gatewayBase?: string | null;
 }
 
 export interface ListSessionTurnsResponse {

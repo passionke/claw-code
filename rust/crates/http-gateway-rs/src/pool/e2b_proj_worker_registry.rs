@@ -339,7 +339,10 @@ impl E2bProjWorkerRegistry {
         }
         match self
             .client
-            .reap_cluster_warm_proj_orphans(&keep_by_proj)
+            .reap_cluster_warm_proj_orphans(
+                &self.nas_layout.cluster_id().unwrap_or_default(),
+                &keep_by_proj,
+            )
             .await
         {
             Ok(n) if n > 0 => info!(
@@ -375,13 +378,12 @@ impl E2bProjWorkerRegistry {
             .into_iter()
             .filter(|id| id != sandbox_id)
             .collect();
-        match self.client.reap_warm_proj_orphans(proj_id, &keep).await {
-            Ok(n) if n > 0 => info!(
-                target: "claw_e2b_proj_worker",
-                proj_id,
-                reaped = n,
-                "reaped warm-proj orphans after retire"
-            ),
+        let cluster_id = self.nas_layout.cluster_id().unwrap_or_default();
+        match self
+            .client
+            .reap_warm_proj_orphans(&cluster_id, proj_id, &keep)
+            .await
+        {
             Ok(_) => {}
             Err(e) => warn!(
                 target: "claw_e2b_proj_worker",
@@ -425,17 +427,29 @@ impl E2bProjWorkerRegistry {
     }
 
     async fn try_retire_slot(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
+        let db = self.session_db().await?;
+        db.with_project_e2b_worker_slot_lock(proj_id, e2b_worker_slot_i32(slot_index), || async {
+            self.try_retire_slot_locked(proj_id, slot_index).await
+        })
+        .await
+    }
+
+    async fn try_retire_slot_locked(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
         let key = WorkerSlotKey {
             proj_id,
             slot_index,
         };
         let active = self.active_leases(key).await;
-        if active > 0 {
+        let db = self.session_db().await?;
+        let pg_busy = db
+            .project_e2b_worker_is_busy(proj_id, e2b_worker_slot_i32(slot_index))
+            .await
+            .map_err(|e| format!("project_e2b_worker_is_busy: {e}"))?;
+        if active > 0 || pg_busy {
             self.pending_retire.lock().await.insert(key);
             return Ok(());
         }
         self.pending_retire.lock().await.remove(&key);
-        let db = self.session_db().await?;
         let row = db
             .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
             .await
@@ -461,6 +475,18 @@ impl E2bProjWorkerRegistry {
     }
 
     async fn reconcile_proj_slot(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
+        let db = self.session_db().await?;
+        db.with_project_e2b_worker_slot_lock(proj_id, e2b_worker_slot_i32(slot_index), || async {
+            self.reconcile_proj_slot_locked(proj_id, slot_index).await
+        })
+        .await
+    }
+
+    async fn reconcile_proj_slot_locked(
+        &self,
+        proj_id: i64,
+        slot_index: u32,
+    ) -> Result<(), String> {
         let spec = self.desired_worker_spec(proj_id).await?;
         let db = self.session_db().await?;
         let desired_contract = desired_worker_contract(
@@ -534,7 +560,11 @@ impl E2bProjWorkerRegistry {
                     "proj worker rotate (contract mismatch or offline)"
                 );
             }
-            if self.active_leases(key).await > 0 {
+            let pg_busy = db
+                .project_e2b_worker_is_busy(proj_id, e2b_worker_slot_i32(slot_index))
+                .await
+                .map_err(|e| format!("project_e2b_worker_is_busy: {e}"))?;
+            if self.active_leases(key).await > 0 || pg_busy {
                 self.pending_retire.lock().await.insert(key);
                 return Ok(());
             }
@@ -572,7 +602,11 @@ impl E2bProjWorkerRegistry {
                 .into_iter()
                 .map(|r| r.sandbox_id)
                 .collect();
-            let _ = self.client.reap_warm_proj_orphans(proj_id, &keep).await;
+            let cluster_id = self.nas_layout.cluster_id().unwrap_or_default();
+            let _ = self
+                .client
+                .reap_warm_proj_orphans(&cluster_id, proj_id, &keep)
+                .await;
             let _ = row;
         }
         Ok(())
@@ -627,6 +661,8 @@ impl E2bProjWorkerRegistry {
             template_id: contract_key.clone(),
             handle_json: E2bSandboxClient::handle_to_json(&handle),
             updated_at_ms: now_ms,
+            in_use_count: 0,
+            in_use_until_ms: 0,
         };
         db.upsert_project_e2b_worker(&row)
             .await
@@ -761,6 +797,15 @@ impl E2bProjWorkerRegistry {
         } {
             let mut leases = self.leases.lock().await;
             *leases.entry(key).or_insert(0) += 1;
+            if let Ok(db) = self.session_db().await {
+                let _ = db
+                    .bump_project_e2b_worker_in_use(
+                        proj_id,
+                        e2b_worker_slot_i32(slot_index),
+                        30 * 60 * 1000,
+                    )
+                    .await;
+            }
             return Ok((handle, worker_id));
         }
         // Cache miss / missing slot: reconcile this slot only (create or PG→e2b probe).
@@ -774,6 +819,15 @@ impl E2bProjWorkerRegistry {
         drop(guard);
         let mut leases = self.leases.lock().await;
         *leases.entry(key).or_insert(0) += 1;
+        if let Ok(db) = self.session_db().await {
+            let _ = db
+                .bump_project_e2b_worker_in_use(
+                    proj_id,
+                    e2b_worker_slot_i32(slot_index),
+                    30 * 60 * 1000,
+                )
+                .await;
+        }
         Ok((handle, worker_id))
     }
 
@@ -790,6 +844,11 @@ impl E2bProjWorkerRegistry {
             }
         }
         drop(leases);
+        if let Ok(db) = self.session_db().await {
+            let _ = db
+                .release_project_e2b_worker_in_use(proj_id, e2b_worker_slot_i32(slot_index))
+                .await;
+        }
         if self.pending_retire.lock().await.contains(&key) && self.active_leases(key).await == 0 {
             let _ = self.try_retire_slot(proj_id, slot_index).await;
         }
@@ -879,6 +938,14 @@ impl E2bProjWorkerRegistry {
 
     async fn force_rotate_slot(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
         let db = self.session_db().await?;
+        db.with_project_e2b_worker_slot_lock(proj_id, e2b_worker_slot_i32(slot_index), || async {
+            self.force_rotate_slot_locked(proj_id, slot_index).await
+        })
+        .await
+    }
+
+    async fn force_rotate_slot_locked(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
+        let db = self.session_db().await?;
         let spec = self.desired_worker_spec(proj_id).await?;
         let row = db
             .get_project_e2b_worker(proj_id, e2b_worker_slot_i32(slot_index))
@@ -889,7 +956,11 @@ impl E2bProjWorkerRegistry {
             slot_index,
         };
         if let Some(ref existing) = row {
-            if self.active_leases(key).await > 0 {
+            let pg_busy = db
+                .project_e2b_worker_is_busy(proj_id, e2b_worker_slot_i32(slot_index))
+                .await
+                .map_err(|e| format!("project_e2b_worker_is_busy: {e}"))?;
+            if self.active_leases(key).await > 0 || pg_busy {
                 return Err(format!(
                     "proj_{proj_id} slot {slot_index} has active leases; wait for turns to finish"
                 ));

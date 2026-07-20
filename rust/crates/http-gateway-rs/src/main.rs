@@ -137,6 +137,8 @@ pub(crate) struct AppState {
     terminal_registry: session_terminal_api::TerminalSessionRegistry,
     /// NAS layout + file writes via e2b claw-nas-api singleton (required in e2b mode).
     nas_api: Arc<pool::E2bNasApiSingleton>,
+    /// This process's gateway ingress identity (multi-gateway same clusterId). Author: kejiqing
+    gateway_identity: Arc<http_gateway_rs::gateway_endpoint::GatewayEndpointIdentity>,
 }
 
 impl AppState {
@@ -269,6 +271,10 @@ struct SolveAsyncResponse {
     /// Actual `podman exec --user` on the pool (`claw`, etc.). Author: kejiqing
     #[serde(rename = "workerExecUser", skip_serializing_if = "Option::is_none")]
     worker_exec_user: Option<String>,
+    #[serde(rename = "gatewayId", skip_serializing_if = "Option::is_none")]
+    gateway_id: Option<String>,
+    #[serde(rename = "gatewayBase", skip_serializing_if = "Option::is_none")]
+    gateway_base: Option<String>,
 }
 
 /// Session bootstrap (`POST /v1/start`): sync `SQLite` + workspace only (no solve). kejiqing
@@ -687,6 +693,10 @@ struct TaskRecord {
     worker_profile: Option<String>,
     #[serde(rename = "workerExecUser", skip_serializing_if = "Option::is_none")]
     worker_exec_user: Option<String>,
+    #[serde(rename = "gatewayId", skip_serializing_if = "Option::is_none")]
+    gateway_id: Option<String>,
+    #[serde(rename = "gatewayBase", skip_serializing_if = "Option::is_none")]
+    gateway_base: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -993,6 +1003,19 @@ async fn apply_turn_pool_fields_from_db(
             record.worker_exec_user = Some(t.to_string());
         }
     }
+    if let Ok(Some((gid, gbase))) = db
+        .get_turn_gateway_owner(turn_id, session_id, proj_id)
+        .await
+    {
+        let id = gid.trim();
+        if !id.is_empty() {
+            record.gateway_id = Some(id.to_string());
+        }
+        let base = gbase.trim();
+        if !base.is_empty() {
+            record.gateway_base = Some(base.to_string());
+        }
+    }
 }
 
 async fn register_solve_turn(
@@ -1000,8 +1023,9 @@ async fn register_solve_turn(
     turn_id: &str,
     session_id: &str,
     req: &SolveRequest,
-    co_located_pool_id: Option<&str>,
+    _co_located_pool_id: Option<&str>,
     client_origin: Option<&str>,
+    gateway_identity: Option<&http_gateway_rs::gateway_endpoint::GatewayEndpointIdentity>,
 ) -> Result<(), ApiError> {
     let prompt = req.user_prompt.trim();
     let user_prompt = (!prompt.is_empty()).then_some(prompt);
@@ -1018,25 +1042,34 @@ async fn register_solve_turn(
     )
     .await
     .map_err(|e| session_db_err(&e))?;
-    if let Some(pool_id) = co_located_pool_id.map(str::trim).filter(|s| !s.is_empty()) {
-        match db.assign_turn_pool_id(turn_id, pool_id).await {
-            Ok(()) => info!(
-                target: "claw_live_report",
-                component = "gateway_turns",
-                phase = "prebind_pool_id",
+    // Backend marker only — not machine ingress. Author: kejiqing
+    if let Err(e) = db.assign_turn_pool_id(turn_id, pool::E2B_POOL_ID).await {
+        warn!(
+            target: "claw_live_report",
+            turn_id = %turn_id,
+            error = %e,
+            "gateway_turns pool_id=e2b-cloud bind failed"
+        );
+    }
+    if let Some(identity) = gateway_identity {
+        if let Err(e) = db
+            .assign_turn_gateway(turn_id, &identity.gateway_id, &identity.gateway_base)
+            .await
+        {
+            warn!(
+                target: "claw_gateway_endpoint",
                 turn_id = %turn_id,
-                pool_id = %pool_id,
-                "gateway_turns pool_id prebound at enqueue for live SSE routing"
-            ),
-            Err(e) => warn!(
-                target: "claw_live_report",
-                component = "gateway_turns",
-                phase = "prebind_pool_id_failed",
-                turn_id = %turn_id,
-                pool_id = %pool_id,
                 error = %e,
-                "gateway_turns pool_id prebind failed"
-            ),
+                "assign_turn_gateway failed"
+            );
+        } else {
+            info!(
+                target: "claw_gateway_endpoint",
+                turn_id = %turn_id,
+                gateway_id = %identity.gateway_id,
+                gateway_base = %identity.gateway_base,
+                "turn ingress gateway bound at enqueue"
+            );
         }
     }
     Ok(())
@@ -1454,6 +1487,26 @@ async fn main() {
     let session_db = Arc::new(session_db);
     pool_clients.bind_session_db(Arc::clone(&session_db)).await;
     nas_api.bind_session_db(Arc::clone(&session_db)).await;
+    let gateway_identity = Arc::new(
+        http_gateway_rs::gateway_endpoint::resolve_gateway_endpoint_identity().unwrap_or_else(
+            |e| {
+                eprintln!("http-gateway-rs: CLAW_GATEWAY_ID/BASE resolve failed: {e}");
+                std::process::exit(1);
+            },
+        ),
+    );
+    if let Err(e) = http_gateway_rs::gateway_endpoint::register_and_spawn_heartbeat(
+        Arc::clone(&session_db),
+        (*gateway_identity).clone(),
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "claw_gateway_endpoint",
+            error = %e,
+            "gateway_endpoint register failed (best-effort)"
+        );
+    }
     if let Err(e) = pool_clients
         .ensure_e2b_singletons_on_startup_strict(session_db.as_ref())
         .await
@@ -1490,6 +1543,7 @@ async fn main() {
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
         terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
         nas_api,
+        gateway_identity: Arc::clone(&gateway_identity),
     };
 
     run_startup_project_config_apply(&state).await;
@@ -1585,6 +1639,11 @@ async fn main() {
         )
         .route("/v1/pools", get(list_claw_pools_handler))
         .route("/v1/pools/{pool_id}", delete(delete_claw_pool_handler))
+        .route("/v1/gateway/endpoints", get(list_gateway_endpoints_handler))
+        .route(
+            "/v1/gateway/endpoints/{gateway_id}",
+            delete(delete_gateway_endpoint_handler),
+        )
         .route(
             "/v1/sessions/{session_id}/turns/{turn_id}/tools",
             get(get_turn_tools),
@@ -3955,6 +4014,7 @@ async fn solve(
         &req,
         Some(prebind_pool_id.as_str()),
         client_origin.as_deref(),
+        Some(state.gateway_identity.as_ref()),
     )
     .await?;
     let result = run_solve_request(
@@ -5433,6 +5493,7 @@ async fn admin_mcp_run_solve_sync(
         &req,
         Some(prebind_pool_id.as_str()),
         client_origin.as_deref(),
+        Some(state.gateway_identity.as_ref()),
     )
     .await?;
     let result = run_solve_request(
@@ -6569,6 +6630,10 @@ struct GatewayTurnSummaryJson {
     worker_profile: Option<String>,
     #[serde(rename = "workerExecUser", skip_serializing_if = "Option::is_none")]
     worker_exec_user: Option<String>,
+    #[serde(rename = "gatewayId", skip_serializing_if = "Option::is_none")]
+    gateway_id: Option<String>,
+    #[serde(rename = "gatewayBase", skip_serializing_if = "Option::is_none")]
+    gateway_base: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -6713,6 +6778,8 @@ async fn list_session_turns(
                 worker_name: r.worker_name,
                 worker_profile: worker_profile.clone(),
                 worker_exec_user: r.worker_exec_user,
+                gateway_id: r.gateway_id,
+                gateway_base: r.gateway_base,
             })
             .collect(),
     }))
@@ -6723,6 +6790,43 @@ struct DeleteClawPoolResponse {
     #[serde(rename = "poolId")]
     pool_id: String,
     deleted: bool,
+}
+
+async fn list_gateway_endpoints_handler(
+    State(state): State<AppState>,
+) -> Result<Json<http_gateway_rs::gateway_endpoint::GatewayEndpointsResponse>, ApiError> {
+    let body = http_gateway_rs::gateway_endpoint::list_endpoints_response(
+        &state.session_db,
+        state.gateway_identity.as_ref(),
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(body))
+}
+
+async fn delete_gateway_endpoint_handler(
+    State(state): State<AppState>,
+    AxumPath(gateway_id): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    let gid = gateway_id.trim();
+    if gid.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "gateway_id must not be empty",
+        ));
+    }
+    if gid == state.gateway_identity.gateway_id {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "cannot delete self gateway endpoint while process is running",
+        ));
+    }
+    let deleted = state
+        .session_db
+        .delete_gateway_endpoint(gid)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    Ok(Json(json!({ "gatewayId": gid, "deleted": deleted })))
 }
 
 async fn delete_claw_pool_handler(
@@ -7133,6 +7237,7 @@ async fn enqueue_solve_async(
         &req,
         Some(prebind_pool_id.as_str()),
         client_origin.as_deref(),
+        Some(state.gateway_identity.as_ref()),
     )
     .await?;
     if let Some(rel) = state
@@ -7190,6 +7295,8 @@ async fn enqueue_solve_async(
                         .ok()
                         .map(|j| pool::profile_mode_label(&j).to_string()),
                     worker_exec_user: None,
+                    gateway_id: Some(state.gateway_identity.gateway_id.clone()),
+                    gateway_base: Some(state.gateway_identity.gateway_base.clone()),
                 },
                 cancel: None,
                 proj_id,
@@ -7330,6 +7437,8 @@ async fn enqueue_solve_async(
             .ok()
             .map(|j| pool::profile_mode_label(&j).to_string()),
         worker_exec_user: None,
+        gateway_id: Some(state.gateway_identity.gateway_id.clone()),
+        gateway_base: Some(state.gateway_identity.gateway_base.clone()),
     })
 }
 
@@ -7540,15 +7649,27 @@ async fn task_record_from_latest_turn_row(
             .ok()
             .map(|j| pool::profile_mode_label(&j).to_string()),
         worker_exec_user: row.worker_exec_user.clone(),
+        gateway_id: None,
+        gateway_base: None,
     };
     let (plan_title, todos) = pool_consumer_resolve::plan_fields_from_snapshot(&progress_snap);
     record.progress_history = progress_snap.events;
     record.plan_title = plan_title;
     record.todos = todos;
     let _ = session_home;
+    let turn_id = record.turn_id.clone();
+    let session_id = record.session_id.clone();
+    let proj_id = record.proj_id;
+    apply_turn_pool_fields_from_db(
+        &state.session_db,
+        &turn_id,
+        &session_id,
+        proj_id,
+        &mut record,
+    )
+    .await;
     record.has_report = task_has_report(state, &record).await;
     record.report_time_ms = task_report_time_ms(state, &record).await;
-    let proj_id = record.proj_id;
     Ok((record, proj_id))
 }
 
@@ -7688,11 +7809,14 @@ fn task_cancel_idempotent_response(record: TaskRecord) -> TaskRecord {
     out
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TurnCancelResponse {
+    #[serde(rename = "sessionId", alias = "session_id")]
     session_id: String,
+    #[serde(rename = "turnId", alias = "turn_id")]
     turn_id: String,
+    #[serde(rename = "projId", alias = "proj_id")]
     proj_id: i64,
     status: String,
     #[serde(rename = "cancelApplied")]
@@ -7857,6 +7981,60 @@ async fn cancel_session_turn(
             StatusCode::BAD_REQUEST,
             "turnId must match T_<32 lowercase hex>",
         ));
+    }
+
+    // If this turn is owned by another online gateway and we have no local memory task,
+    // reverse-proxy cancel to the owner. Author: kejiqing
+    let local_memory = {
+        let tasks = state.tasks.lock().await;
+        tasks
+            .get(&session_id)
+            .is_some_and(|inner| inner.record.turn_id == turn_id)
+    };
+    if !local_memory {
+        if let Ok(Some(owner_base)) =
+            http_gateway_rs::gateway_owner_proxy::resolve_turn_owner_proxy_base(
+                &state.session_db,
+                state.gateway_identity.as_ref(),
+                &turn_id,
+                &session_id,
+                query.proj_id,
+            )
+            .await
+        {
+            let path = format!(
+                "/v1/sessions/{session_id}/turns/{turn_id}/cancel?projId={}",
+                query.proj_id
+            );
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let url = format!("{}{}", owner_base.trim_end_matches('/'), path);
+            let upstream = client
+                .post(&url)
+                .send()
+                .await
+                .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e.to_string()))?;
+            let status = upstream.status();
+            let bytes = upstream
+                .bytes()
+                .await
+                .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e.to_string()))?;
+            if !status.is_success() {
+                return Err(ApiError::new(
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+                    String::from_utf8_lossy(&bytes).to_string(),
+                ));
+            }
+            let parsed: TurnCancelResponse = serde_json::from_slice(&bytes).map_err(|e| {
+                ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    format!("parse cancel proxy json: {e}"),
+                )
+            })?;
+            return Ok(Json(parsed));
+        }
     }
 
     match try_memory_cancel_turn(&state, &session_id, &turn_id, query.proj_id).await? {
@@ -8106,6 +8284,8 @@ async fn dev_seed_biz_report_task(
         worker_name: None,
         worker_profile: None,
         worker_exec_user: None,
+        gateway_id: None,
+        gateway_base: None,
     };
     {
         let mut tasks = state.tasks.lock().await;
@@ -8355,6 +8535,44 @@ async fn get_biz_advice_report(
     }
 
     if query.stream && matches!(ctx.status.as_str(), "running" | "queued") {
+        match http_gateway_rs::gateway_owner_proxy::resolve_turn_owner_proxy_base(
+            &state.session_db,
+            state.gateway_identity.as_ref(),
+            &ctx.turn_id,
+            &query.session_id,
+            query.proj_id,
+        )
+        .await
+        {
+            Ok(Some(owner_base)) => {
+                tracing::info!(
+                    target: "claw_live_report",
+                    component = "biz_advice_report",
+                    phase = "route",
+                    route = "owner_gateway_proxy_sse",
+                    turn_id = %ctx.turn_id,
+                    owner_base = %owner_base,
+                    "biz_advice_report stream — reverse proxy to owning gateway"
+                );
+                let path = format!(
+                    "/v1/biz_advice_report?sessionId={}&turnId={}&projId={}&stream=true",
+                    query.session_id, query.turn_id, query.proj_id
+                );
+                let headers = HeaderMap::new();
+                return http_gateway_rs::gateway_owner_proxy::proxy_to_owner_gateway(
+                    &owner_base,
+                    "GET",
+                    &path,
+                    &headers,
+                )
+                .await
+                .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e));
+            }
+        }
         tracing::info!(
             target: "claw_live_report",
             component = "biz_advice_report",
