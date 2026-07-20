@@ -96,14 +96,19 @@ jobs:
             exit 0
           fi
           WS="${GITHUB_WORKSPACE}"
+          RUN_UID="$(id -u)"
+          RUN_GID="$(id -g)"
+          docker_root() {
+            docker run --rm -v "${WS}:/w:rw" alpine:3.20 "$@"
+          }
           ART="${WS}/deploy/stack/.linux-artifacts"
           if [ -d "${ART}" ]; then
-            echo "remove ${ART} (root-owned cargo build debris blocks checkout)"
-            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}"
+            echo "remove ${ART} (docker fallback; runner has no passwordless sudo)"
+            rm -rf "${ART}" 2>/dev/null || docker_root rm -rf /w/deploy/stack/.linux-artifacts
           fi
           if ! touch "${WS}/.ci-self-hosted-prep" 2>/dev/null; then
-            echo "chown ${WS} for actions/checkout clean"
-            sudo chown -R "$(id -u):$(id -g)" "${WS}"
+            echo "chown ${WS} via docker"
+            docker_root chown -R "${RUN_UID}:${RUN_GID}" /w
           fi
           rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
 
@@ -163,10 +168,11 @@ jobs:
           if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
             exit 0
           fi
-          ART="${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts"
+          WS="${GITHUB_WORKSPACE}"
+          ART="${WS}/deploy/stack/.linux-artifacts"
           if [ -d "${ART}" ]; then
             echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}" || true
+            rm -rf "${ART}" 2>/dev/null || docker run --rm -v "${WS}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts || true
           fi
 
   build-and-push:
@@ -198,14 +204,19 @@ jobs:
             exit 0
           fi
           WS="${GITHUB_WORKSPACE}"
+          RUN_UID="$(id -u)"
+          RUN_GID="$(id -g)"
+          docker_root() {
+            docker run --rm -v "${WS}:/w:rw" alpine:3.20 "$@"
+          }
           ART="${WS}/deploy/stack/.linux-artifacts"
           if [ -d "${ART}" ]; then
-            echo "remove ${ART} (root-owned cargo build debris blocks checkout)"
-            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}"
+            echo "remove ${ART} (docker fallback; runner has no passwordless sudo)"
+            rm -rf "${ART}" 2>/dev/null || docker_root rm -rf /w/deploy/stack/.linux-artifacts
           fi
           if ! touch "${WS}/.ci-self-hosted-prep" 2>/dev/null; then
-            echo "chown ${WS} for actions/checkout clean"
-            sudo chown -R "$(id -u):$(id -g)" "${WS}"
+            echo "chown ${WS} via docker"
+            docker_root chown -R "${RUN_UID}:${RUN_GID}" /w
           fi
           rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
 
@@ -297,10 +308,11 @@ jobs:
           if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
             exit 0
           fi
-          ART="${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts"
+          WS="${GITHUB_WORKSPACE}"
+          ART="${WS}/deploy/stack/.linux-artifacts"
           if [ -d "${ART}" ]; then
             echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}" || true
+            rm -rf "${ART}" 2>/dev/null || docker run --rm -v "${WS}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts || true
           fi
 
   build-and-push-relaxed-worker:
@@ -322,14 +334,19 @@ jobs:
             exit 0
           fi
           WS="${GITHUB_WORKSPACE}"
+          RUN_UID="$(id -u)"
+          RUN_GID="$(id -g)"
+          docker_root() {
+            docker run --rm -v "${WS}:/w:rw" alpine:3.20 "$@"
+          }
           ART="${WS}/deploy/stack/.linux-artifacts"
           if [ -d "${ART}" ]; then
-            echo "remove ${ART} (root-owned cargo build debris blocks checkout)"
-            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}"
+            echo "remove ${ART} (docker fallback; runner has no passwordless sudo)"
+            rm -rf "${ART}" 2>/dev/null || docker_root rm -rf /w/deploy/stack/.linux-artifacts
           fi
           if ! touch "${WS}/.ci-self-hosted-prep" 2>/dev/null; then
-            echo "chown ${WS} for actions/checkout clean"
-            sudo chown -R "$(id -u):$(id -g)" "${WS}"
+            echo "chown ${WS} via docker"
+            docker_root chown -R "${RUN_UID}:${RUN_GID}" /w
           fi
           rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
 
@@ -397,10 +414,11 @@ jobs:
           if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
             exit 0
           fi
-          ART="${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts"
+          WS="${GITHUB_WORKSPACE}"
+          ART="${WS}/deploy/stack/.linux-artifacts"
           if [ -d "${ART}" ]; then
             echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}" || true
+            rm -rf "${ART}" 2>/dev/null || docker run --rm -v "${WS}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts || true
           fi
 
   mirror-to-acr:
@@ -435,14 +453,19 @@ jobs:
             exit 0
           fi
           WS="${GITHUB_WORKSPACE}"
+          RUN_UID="$(id -u)"
+          RUN_GID="$(id -g)"
+          docker_root() {
+            docker run --rm -v "${WS}:/w:rw" alpine:3.20 "$@"
+          }
           ART="${WS}/deploy/stack/.linux-artifacts"
           if [ -d "${ART}" ]; then
-            echo "remove ${ART} (root-owned cargo build debris blocks checkout)"
-            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}"
+            echo "remove ${ART} (docker fallback; runner has no passwordless sudo)"
+            rm -rf "${ART}" 2>/dev/null || docker_root rm -rf /w/deploy/stack/.linux-artifacts
           fi
           if ! touch "${WS}/.ci-self-hosted-prep" 2>/dev/null; then
-            echo "chown ${WS} for actions/checkout clean"
-            sudo chown -R "$(id -u):$(id -g)" "${WS}"
+            echo "chown ${WS} via docker"
+            docker_root chown -R "${RUN_UID}:${RUN_GID}" /w
           fi
           rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
 
@@ -509,8 +532,9 @@ jobs:
           if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
             exit 0
           fi
-          ART="${GITHUB_WORKSPACE}/deploy/stack/.linux-artifacts"
+          WS="${GITHUB_WORKSPACE}"
+          ART="${WS}/deploy/stack/.linux-artifacts"
           if [ -d "${ART}" ]; then
             echo "remove ${ART}"
-            rm -rf "${ART}" 2>/dev/null || sudo rm -rf "${ART}" || true
+            rm -rf "${ART}" 2>/dev/null || docker run --rm -v "${WS}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts || true
           fi
