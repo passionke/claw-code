@@ -8,8 +8,11 @@
 # - mirror-to-acr: pull GHCR tags → retag → push ACR (no second Rust compile).
 #
 # Runner selection (Author: kejiqing):
-# - Prefer online repo self-hosted Linux/X64; if none, fall back to ubuntu-latest.
+# - Prefer online repo self-hosted Linux/X64; if none / probe fails, fall back to ubuntu-latest.
 # - pick-runner always uses github-hosted so selection itself cannot hang on a dead self-host.
+# - Listing runners needs Administration: Read. Default GITHUB_TOKEN cannot call that API (403);
+#   set repo secret ACTIONS_RUNNER_LIST_TOKEN (classic PAT with repo admin, or fine-grained
+#   Administration: Read) to enable real self-hosted preference. Without it, always github-hosted.
 #
 # Optional repo/org Actions variable CONTAINER_BASE_REGISTRY (hostname only, no path):
 # - unset → docker.io (recommended on github-hosted runners; mirrors may serve incomplete blobs).
@@ -24,8 +27,6 @@ on:
 permissions:
   contents: read
   packages: write
-  # Required for listing self-hosted runners in pick-runner. Author: kejiqing
-  actions: read
 
 jobs:
   pick-runner:
@@ -40,11 +41,27 @@ jobs:
         id: pick
         uses: actions/github-script@v7
         with:
+          # Optional PAT: Administration Read on this repo. Author: kejiqing
+          github-token: ${{ secrets.ACTIONS_RUNNER_LIST_TOKEN || github.token }}
           script: |
-            const runners = await github.paginate(
-              github.rest.actions.listSelfHostedRunnersForRepo,
-              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
-            );
+            function useGithubHosted(reason) {
+              core.warning(`${reason}; falling back to ubuntu-latest`);
+              core.setOutput("runs_on", JSON.stringify(["ubuntu-latest"]));
+              core.setOutput("runner_choice", "github-hosted:ubuntu-latest");
+            }
+            let runners;
+            try {
+              runners = await github.paginate(
+                github.rest.actions.listSelfHostedRunnersForRepo,
+                { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+              );
+            } catch (err) {
+              const status = err && err.status;
+              useGithubHosted(
+                `list self-hosted runners failed (status=${status || "unknown"}): ${err.message}`
+              );
+              return;
+            }
             const match = runners.find((r) => {
               if (r.status !== "online") return false;
               const names = new Set((r.labels || []).map((l) => l.name));
@@ -58,11 +75,7 @@ jobs:
               );
               core.setOutput("runner_choice", `self-hosted:${match.name}`);
             } else {
-              core.warning(
-                "No online self-hosted Linux/X64 runner; falling back to ubuntu-latest"
-              );
-              core.setOutput("runs_on", JSON.stringify(["ubuntu-latest"]));
-              core.setOutput("runner_choice", "github-hosted:ubuntu-latest");
+              useGithubHosted("No online self-hosted Linux/X64 runner");
             }
 
   linux-compile-once:
