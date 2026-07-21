@@ -170,17 +170,21 @@ impl PoolOps for E2bOrchestratedPool {
             .await
             .insert(turn_id.to_string(), slot.slot_index);
 
-        // Hand the e2b worker per-turn inputs inline; it writes into `/claw_sessions/{segment}`.
+        // Land per-turn task on NAS via nas-api; guest shell only runs short --task-file.
         // Author: kejiqing
-        let session_segment = self
-            .slots
-            .lock()
-            .await
-            .get(&slot.slot_index)
-            .map(|s| s.session_segment.clone())
-            .unwrap_or_default();
+        let (session_segment, proj_id) = {
+            let slots = self.slots.lock().await;
+            let s = slots
+                .get(&slot.slot_index)
+                .ok_or_else(|| format!("fc slot {} not found", slot.slot_index))?;
+            (s.session_segment.clone(), s.proj_id)
+        };
 
         let task_json = self.load_solve_task_json(db.as_ref(), turn_id).await?;
+        self.nas_layout
+            .write_session_task_json(proj_id, &session_segment, task_json.as_bytes())
+            .await
+            .map_err(|e| format!("nas-api write gateway-solve-task.json: {e}"))?;
 
         let stdout_hook = merge_stdout_hooks(
             turn_id,
@@ -195,8 +199,6 @@ impl PoolOps for E2bOrchestratedPool {
                 claw_bin,
                 worker_llm_env.unwrap_or_default(),
                 claw_e2b_sandbox_client::GatewaySolveInputs {
-                    task_json: &task_json,
-                    session_jsonl: None,
                     session_segment: &session_segment,
                 },
                 stdout_hook,

@@ -66,28 +66,6 @@ def _prepend_env_exports(script: str, env: dict) -> str:
     return f"set -eu\n{exports}{script}"
 
 
-def _inline_writes_sh(task_file: str, task_json, session_jsonl, session_root: str) -> str:
-    """Shell snippet that lands per-turn inputs onto the session mount.
-
-    Content is base64-encoded (shell-safe charset) and decoded in-guest. Author: kejiqing
-    """
-    import base64
-
-    lines: list[str] = []
-    root = session_root.rstrip("/") or "/claw_host_root"
-    if task_json is not None and str(task_json) != "":
-        b = base64.b64encode(str(task_json).encode("utf-8")).decode("ascii")
-        lines.append(f"mkdir -p {root}")
-        lines.append(f"printf %s '{b}' | base64 -d > {task_file}")
-    if session_jsonl is not None and str(session_jsonl) != "":
-        b = base64.b64encode(str(session_jsonl).encode("utf-8")).decode("ascii")
-        lines.append(f"mkdir -p {root}/.claw")
-        lines.append(
-            f"printf %s '{b}' | base64 -d > {root}/.claw/gateway-solve-session.jsonl"
-        )
-    return ("\n".join(lines) + "\n") if lines else ""
-
-
 def _emit_stdout_line(line: str) -> None:
     print(json.dumps({"ev": "stdout_line", "line": line}), flush=True)
 
@@ -187,12 +165,7 @@ def main() -> None:
             if not session_root:
                 session_root = "/claw_host_root"
             task_file = payload.get("task_file") or f"{session_root}/gateway-solve-task.json"
-            inline = _inline_writes_sh(
-                task_file,
-                payload.get("task_json"),
-                payload.get("session_jsonl"),
-                session_root,
-            )
+            # Task body is on NAS (gateway nas-api PUT); never embed in shell (ARG_MAX). Author: kejiqing
             inner = (
                 "set -eu\n"
                 f"cd {session_root}\n"
@@ -200,7 +173,7 @@ def main() -> None:
                 f"export XDG_CONFIG_HOME={session_root}/.config\n"
                 f"export XDG_DATA_HOME={session_root}/.local/share\n"
                 "export CLAW_PROJECT_CONFIG_ROOT=/claw_ds/project_home_def\n"
-                f"{inline}"
+                f'test -f {task_file} || {{ echo "missing task file: {task_file}" >&2; exit 1; }}\n'
                 f"{exports}\n"
                 f"{claw_bin} gateway-solve-once --task-file {task_file}\n"
             )

@@ -128,6 +128,22 @@ impl NasLayoutBackend {
             .await
     }
 
+    /// Per-turn task JSON onto NAS session dir (guest `/claw_sessions/{segment}/gateway-solve-task.json`).
+    /// Avoids embedding large task bodies in e2b `commands.run` shell (ARG_MAX). Author: kejiqing
+    pub async fn write_session_task_json(
+        &self,
+        proj_id: i64,
+        session_segment: &str,
+        task_bytes: &[u8],
+    ) -> Result<(), String> {
+        let cluster_id = self.cluster_id()?;
+        let rel = format!(
+            "{}/gateway-solve-task.json",
+            session_rel(&cluster_id, proj_id, session_segment)
+        );
+        self.nas_api.put_file(&rel, task_bytes).await
+    }
+
     pub async fn ensure_e2b_proj_nas_roots(&self, proj_id: i64) -> Result<(), String> {
         let cluster_id = self.cluster_id()?;
         self.mkdir_rel(&sessions_root_rel(&cluster_id, proj_id))
