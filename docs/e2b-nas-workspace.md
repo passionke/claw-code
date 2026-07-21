@@ -162,7 +162,8 @@ Gateway **不设** `CLAW_NAS_HOST_MOUNT`（不直连 NAS）。Canonical IP 见 [
       → e2b guest 看到 /claw_ds、/claw_sessions、/claw_host_root
 
 4. Gateway exec solve
-      → inline 写入 /claw_sessions/{segment}/gateway-solve-task.json（仅 task_json）
+      → nas-api `PUT` `{cluster}/proj_N/sessions/{segment}/gateway-solve-task.json`（大 task **不**进 e2b shell / ARG_MAX）
+      → guest 短命令：`claw gateway-solve-once --task-file /claw_sessions/{segment}/gateway-solve-task.json`
       → worker 直接读写 /claw_sessions/{segment}/.claw/gateway-solve-session.jsonl（续聊 SoT，**不**从 DB 回灌）
       → solve 结束后 readback：NAS jsonl 全量 reconcile → DB `cc_messages`（单向索引）
       → **不**将 session 目录 gzip-tar 写回 DB（`gateway_session_artifacts` workspace tar 仅 legacy docker pool）
@@ -180,10 +181,11 @@ Gateway **不设** `CLAW_NAS_HOST_MOUNT`（不直连 NAS）。Canonical IP 见 [
 | DB `render_session_jsonl` → worker inline | **不做** | 禁止回灌覆盖 NAS 文件 |
 | session 目录 gzip-tar → DB | **不做** | e2b 主路径不写 `gateway_session_artifacts` workspace tar |
 | DB → 覆盖 NAS jsonl | **不做** | 禁止反向写盘 |
+| 大 `userPrompt` / task JSON → e2b `commands.run` shell base64 | **不做** | 经 nas-api 落盘；shell 只跑短 `--task-file`（避免 ARG_MAX） |
 
 逻辑路径：`{clusterId}/proj_{N}/sessions/{sessionId}/.claw/gateway-solve-session.jsonl`。
 
-代码：`e2b_orchestrated_pool.rs`（`session_jsonl: None`）、`e2b_nas_layout_backend.rs`（`read_session_jsonl`）、`e2b_nas_api_singleton.rs`（`get_file`）、`session_db_sync.rs`、`persistence/transcript.rs`。
+代码：`e2b_orchestrated_pool.rs`（`write_session_task_json` + 短 `exec_solve`）、`e2b_nas_layout_backend.rs`、`deploy/e2b/e2b_exec.py`、`e2b_nas_api_singleton.rs`（`put_file` / `get_file`）、`session_db_sync.rs`、`persistence/transcript.rs`。
 
 ---
 
@@ -203,6 +205,9 @@ CLAW_E2B_E2E_CLEANUP=0 ./deploy/stack/lib/verify-e2b-ovs-e2e.sh
 
 # fc-cloud solve（proj sandbox 模式）
 # POST /v1/solve_async → poll /v1/tasks/{sessionId} → status succeeded
+
+# 大 prompt / ARG_MAX 回归：userPrompt ≥ 500KB 时 error 不得含 argument list too long；
+# NAS 上应有 …/sessions/{segment}/gateway-solve-task.json；e2b shell 不含 task base64。
 ```
 
 ---

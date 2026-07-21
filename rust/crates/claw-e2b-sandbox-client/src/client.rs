@@ -1374,7 +1374,7 @@ impl E2bSandboxClient {
             nas_paths::guest_session_root(inputs.session_segment)
         };
         let task_file = format!("{session_root}/gateway-solve-task.json");
-        // Per-turn inputs travel inline; the worker lands them on its session mount. Author: kejiqing
+        // Task JSON is already on NAS (`gateway-solve-task.json`); helper runs a short claw argv. Author: kejiqing
         let payload = json!({
             "op": "exec_solve",
             "api_key": self.config.api_key,
@@ -1384,8 +1384,6 @@ impl E2bSandboxClient {
             "sandbox_id": sandbox_id,
             "claw_bin": claw_bin,
             "task_file": task_file,
-            "task_json": inputs.task_json,
-            "session_jsonl": inputs.session_jsonl,
             "session_segment": inputs.session_segment,
             "session_root": session_root,
             "env": env,

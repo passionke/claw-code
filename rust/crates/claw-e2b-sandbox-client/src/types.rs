@@ -26,13 +26,9 @@ pub struct E2bExecOutcome {
     pub stderr: String,
 }
 
-/// Per-turn solve inputs delivered inline to the worker (no claw-nas-api write). Author: kejiqing
+/// Per-turn solve cwd routing for e2b guest. Task body is on NAS via nas-api (not shell). Author: kejiqing
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GatewaySolveInputs<'a> {
-    /// Serialized `gateway-solve-task.json` (empty → worker reads the existing `task_file`).
-    pub task_json: &'a str,
-    /// Optional session transcript seeded under `.claw/gateway-solve-session.jsonl`.
-    pub session_jsonl: Option<&'a str>,
     /// Session directory segment under `/claw_sessions/{segment}`.
     pub session_segment: &'a str,
 }
