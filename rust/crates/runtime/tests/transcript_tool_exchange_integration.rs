@@ -86,6 +86,7 @@ fn convert_runtime_messages_to_api(messages: &[ConversationMessage]) -> Vec<Inpu
                         }],
                         is_error: *is_error,
                     }),
+                    ContentBlock::Image { .. } => None,
                 })
                 .collect();
             InputMessage { role, content }
