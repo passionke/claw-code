@@ -480,12 +480,19 @@ jobs:
           echo "login_host=${LOGIN_HOST}" >> "$GITHUB_OUTPUT"
           echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
 
-      - name: Route ACR via VPN (optional)
+      # VPN /32 routes are SG self-hosted only (Hangzhou ACR via 10.8 jump).
+      # GitHub-hosted has no that VPN and no CAP_NET_ADMIN — must skip. Author: kejiqing
+      - name: Route ACR via VPN (optional, self-hosted only)
         env:
           ACR_LOGIN_HOST: ${{ steps.reg.outputs.login_host }}
           ACR_MIRROR_VPN_GW: ${{ vars.ACR_MIRROR_VPN_GW }}
           ACR_MIRROR_VPN_DEV: ${{ vars.ACR_MIRROR_VPN_DEV }}
         run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+            echo "github-hosted runner: skip ACR VPN routes (ACR_MIRROR_VPN_GW is for SG self-hosted only)"
+            exit 0
+          fi
           chmod +x ./deploy/stack/lib/ci-acr-vpn-route.sh
           ./deploy/stack/lib/ci-acr-vpn-route.sh up
 
@@ -537,7 +544,12 @@ jobs:
           ACR_LOGIN_HOST: ${{ steps.reg.outputs.login_host }}
           ACR_MIRROR_VPN_GW: ${{ vars.ACR_MIRROR_VPN_GW }}
           ACR_MIRROR_VPN_DEV: ${{ vars.ACR_MIRROR_VPN_DEV }}
-        run: ./deploy/stack/lib/ci-acr-vpn-route.sh down
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+            exit 0
+          fi
+          ./deploy/stack/lib/ci-acr-vpn-route.sh down
 
       - name: Self-hosted workspace cleanup
         if: always()
