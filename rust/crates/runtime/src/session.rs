@@ -34,6 +34,12 @@ pub enum ContentBlock {
     ReasoningContent {
         text: String,
     },
+    /// Image reference (session-relative path). Bytes are loaded at send time, not persisted. Author: kejiqing
+    Image {
+        path: String,
+        mime: String,
+        name: Option<String>,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -326,7 +332,9 @@ impl Session {
                     ContentBlock::ToolResult { tool_use_id, .. } => {
                         answered.insert(tool_use_id.clone());
                     }
-                    ContentBlock::Text { .. } | ContentBlock::ReasoningContent { .. } => {}
+                    ContentBlock::Text { .. }
+                    | ContentBlock::ReasoningContent { .. }
+                    | ContentBlock::Image { .. } => {}
                 }
             }
         }
@@ -871,6 +879,14 @@ impl ContentBlock {
                 object.insert("name".to_string(), JsonValue::String(name.clone()));
                 object.insert("input".to_string(), JsonValue::String(input.clone()));
             }
+            Self::Image { path, mime, name } => {
+                object.insert("type".to_string(), JsonValue::String("image".to_string()));
+                object.insert("path".to_string(), JsonValue::String(path.clone()));
+                object.insert("mime".to_string(), JsonValue::String(mime.clone()));
+                if let Some(name) = name {
+                    object.insert("name".to_string(), JsonValue::String(name.clone()));
+                }
+            }
             Self::ToolResult {
                 tool_use_id,
                 tool_name,
@@ -910,6 +926,14 @@ impl ContentBlock {
             }),
             "reasoning_content" => Ok(Self::ReasoningContent {
                 text: required_string(object, "text")?,
+            }),
+            "image" => Ok(Self::Image {
+                path: required_string(object, "path")?,
+                mime: required_string(object, "mime")?,
+                name: object
+                    .get("name")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string),
             }),
             "tool_use" => Ok(Self::ToolUse {
                 id: required_string(object, "id")?,

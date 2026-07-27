@@ -109,6 +109,11 @@ pub enum InputContentBlock {
     ReasoningContent {
         text: String,
     },
+    /// Image bytes for vision models (filled at send time from session path). Author: kejiqing
+    Image {
+        media_type: String,
+        data_base64: String,
+    },
     ToolUse {
         id: String,
         name: String,

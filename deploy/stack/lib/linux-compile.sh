@@ -116,6 +116,13 @@ claw_linux_compile_release() {
     uid_args=(-e "CLAW_HOST_UID=$(id -u)" -e "CLAW_HOST_GID=$(id -g)")
   fi
 
+  # Only forward when set — empty CARGO_BUILD_JOBS makes cargo error. Author: kejiqing
+  local -a cargo_env_args=()
+  [[ -n "${CARGO_BUILD_JOBS:-}" ]] && cargo_env_args+=(-e "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}")
+  [[ -n "${CARGO_INCREMENTAL:-}" ]] && cargo_env_args+=(-e "CARGO_INCREMENTAL=${CARGO_INCREMENTAL}")
+  [[ -n "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-}" ]] && \
+    cargo_env_args+=(-e "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}")
+
   # shellcheck disable=SC2086
   "${container_cli}" run --rm --pull=never --platform "linux/${linux_arch}" \
     -e "CLAW_RUST_VERSION=${CLAW_RUST_VERSION}" \
@@ -125,6 +132,7 @@ claw_linux_compile_release() {
     -e "SCCACHE_DIR=/root/.cache/sccache" \
     -e "SCCACHE_CACHE_SIZE=${sccache_size}" \
     -e "RUST_MIN_STACK=${RUST_MIN_STACK:-16777216}" \
+    "${cargo_env_args[@]+"${cargo_env_args[@]}"}" \
     "${uid_args[@]+"${uid_args[@]}"}" \
     -v "${root_dir}:/workspace:Z" \
     "${vol_args[@]}" \

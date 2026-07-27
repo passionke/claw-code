@@ -1252,6 +1252,7 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                     InputContentBlock::ReasoningContent { text: value } => {
                         reasoning.push_str(value);
                     }
+                    InputContentBlock::Image { .. } => {}
                     InputContentBlock::ToolUse { id, name, input } => tool_calls.push(json!({
                         "id": id,
                         "type": "function",
@@ -1292,37 +1293,81 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                 vec![msg]
             }
         }
-        _ => message
-            .content
-            .iter()
-            .filter_map(|block| match block {
-                InputContentBlock::Text { text } => Some(json!({
-                    "role": "user",
-                    "content": text,
-                })),
-                InputContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } => {
-                    let mut msg = json!({
-                        "role": "tool",
-                        "tool_call_id": tool_use_id,
-                        "content": flatten_tool_result_content(content),
-                    });
-                    // Only include is_error for models that support it.
-                    // kimi models reject this field with 400 Bad Request.
-                    if supports_is_error {
-                        msg["is_error"] = json!(is_error);
+        _ => {
+            // User / mixed turns: keep plain string when text-only; array when images present.
+            // Author: kejiqing
+            let mut text_parts = Vec::new();
+            let mut image_parts = Vec::new();
+            let mut out = Vec::new();
+            for block in &message.content {
+                match block {
+                    InputContentBlock::Text { text } => text_parts.push(text.clone()),
+                    InputContentBlock::Image {
+                        media_type,
+                        data_base64,
+                    } => {
+                        image_parts.push(json!({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": format!("data:{media_type};base64,{data_base64}"),
+                            }
+                        }));
                     }
-                    Some(msg)
+                    InputContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } => {
+                        // Flush pending multimodal user content before tool results.
+                        if !text_parts.is_empty() || !image_parts.is_empty() {
+                            out.push(openai_user_content_message(&text_parts, &image_parts));
+                            text_parts.clear();
+                            image_parts.clear();
+                        }
+                        let mut msg = json!({
+                            "role": "tool",
+                            "tool_call_id": tool_use_id,
+                            "content": flatten_tool_result_content(content),
+                        });
+                        if supports_is_error {
+                            msg["is_error"] = json!(is_error);
+                        }
+                        out.push(msg);
+                    }
+                    InputContentBlock::ReasoningContent { .. }
+                    | InputContentBlock::ToolUse { .. } => {}
                 }
-                InputContentBlock::ReasoningContent { .. } | InputContentBlock::ToolUse { .. } => {
-                    None
-                }
-            })
-            .collect(),
+            }
+            if !text_parts.is_empty() || !image_parts.is_empty() {
+                out.push(openai_user_content_message(&text_parts, &image_parts));
+            }
+            out
+        }
     }
+}
+
+fn openai_user_content_message(text_parts: &[String], image_parts: &[Value]) -> Value {
+    if image_parts.is_empty() {
+        return json!({
+            "role": "user",
+            "content": text_parts.join("\n"),
+        });
+    }
+    let mut content = Vec::new();
+    for text in text_parts {
+        if text.is_empty() {
+            continue;
+        }
+        content.push(json!({ "type": "text", "text": text }));
+    }
+    content.extend(image_parts.iter().cloned());
+    if content.is_empty() {
+        content.push(json!({ "type": "text", "text": "请查看附件" }));
+    }
+    json!({
+        "role": "user",
+        "content": content,
+    })
 }
 
 /// Remove `role:"tool"` messages from `messages` that have no valid paired
@@ -2870,5 +2915,51 @@ mod tests {
         assert_eq!(super::strip_routing_prefix("kimi/kimi-k2.5"), "kimi-k2.5");
         assert_eq!(super::strip_routing_prefix("kimi-k2.5"), "kimi-k2.5"); // no prefix, unchanged
         assert_eq!(super::strip_routing_prefix("kimi/kimi-k1.5"), "kimi-k1.5");
+    }
+
+    #[test]
+    fn translate_message_text_only_keeps_string_content() {
+        use crate::types::{InputContentBlock, InputMessage};
+        let msg = InputMessage {
+            role: "user".into(),
+            content: vec![InputContentBlock::Text {
+                text: "hello".into(),
+            }],
+        };
+        let out = super::translate_message(&msg, "qwen-plus");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "user");
+        assert_eq!(out[0]["content"], "hello");
+    }
+
+    #[test]
+    fn translate_message_image_emits_data_url_array() {
+        use crate::types::{InputContentBlock, InputMessage};
+        let msg = InputMessage {
+            role: "user".into(),
+            content: vec![
+                InputContentBlock::Text {
+                    text: "describe".into(),
+                },
+                InputContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data_base64: "AAAA".into(),
+                },
+            ],
+        };
+        let out = super::translate_message(&msg, "qwen3.7-plus");
+        assert_eq!(out.len(), 1);
+        let content = out[0]["content"].as_array().expect("content array");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image_url");
+        let url = content[1]["image_url"]["url"].as_str().expect("url");
+        assert!(
+            url.starts_with("data:image/png;base64,"),
+            "expected data URL, got {url}"
+        );
+        assert!(
+            !url.contains("file://") && !url.starts_with('/'),
+            "must not use file paths, got {url}"
+        );
     }
 }

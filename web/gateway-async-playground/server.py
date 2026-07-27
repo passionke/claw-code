@@ -1278,31 +1278,87 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         body = payload.get("body")
+        multipart_files = payload.get("multipartFiles")
         body_bytes: bytes | None
-        if body is None:
+        if isinstance(multipart_files, list) and multipart_files:
+            boundary = f"----clawproxy{secrets.token_hex(8)}"
+            chunks: list[bytes] = []
+            for item in multipart_files:
+                if not isinstance(item, dict):
+                    continue
+                field = str(item.get("field") or "file")
+                filename = str(item.get("filename") or "file")
+                mime = str(item.get("mime") or "application/octet-stream")
+                b64 = str(item.get("dataBase64") or "")
+                try:
+                    raw_file = base64.b64decode(b64, validate=False)
+                except Exception as e:  # noqa: BLE001
+                    send_json(self, 400, {"error": f"invalid dataBase64: {e}"})
+                    return
+                chunks.append(f"--{boundary}\r\n".encode())
+                chunks.append(
+                    (
+                        f'Content-Disposition: form-data; name="{field}"; '
+                        f'filename="{filename}"\r\n'
+                        f"Content-Type: {mime}\r\n\r\n"
+                    ).encode()
+                )
+                chunks.append(raw_file)
+                chunks.append(b"\r\n")
+            chunks.append(f"--{boundary}--\r\n".encode())
+            body_bytes = b"".join(chunks)
+            headers: dict[str, str] = {}
+            raw_headers = payload.get("headers")
+            if isinstance(raw_headers, dict):
+                for k, v in raw_headers.items():
+                    if isinstance(k, str) and isinstance(v, str):
+                        lk = k.lower()
+                        if lk in ("host", "connection", "content-length", "content-type"):
+                            continue
+                        headers[k] = v
+            headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        elif body is None:
             body_bytes = None
+            headers = {}
+            raw_headers = payload.get("headers")
+            if isinstance(raw_headers, dict):
+                for k, v in raw_headers.items():
+                    if isinstance(k, str) and isinstance(v, str):
+                        lk = k.lower()
+                        if lk in ("host", "connection", "content-length"):
+                            continue
+                        headers[k] = v
         elif isinstance(body, str):
             body_bytes = body.encode("utf-8")
+            headers = {}
+            raw_headers = payload.get("headers")
+            if isinstance(raw_headers, dict):
+                for k, v in raw_headers.items():
+                    if isinstance(k, str) and isinstance(v, str):
+                        lk = k.lower()
+                        if lk in ("host", "connection", "content-length"):
+                            continue
+                        headers[k] = v
         elif isinstance(body, dict):
             body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            headers = {}
+            raw_headers = payload.get("headers")
+            if isinstance(raw_headers, dict):
+                for k, v in raw_headers.items():
+                    if isinstance(k, str) and isinstance(v, str):
+                        lk = k.lower()
+                        if lk in ("host", "connection", "content-length"):
+                            continue
+                        headers[k] = v
         else:
             send_json(self, 400, {"error": "body must be string, object, or null"})
             return
 
-        headers: dict[str, str] = {}
-        raw_headers = payload.get("headers")
-        if isinstance(raw_headers, dict):
-            for k, v in raw_headers.items():
-                if isinstance(k, str) and isinstance(v, str):
-                    lk = k.lower()
-                    if lk in ("host", "connection", "content-length"):
-                        continue
-                    headers[k] = v
-
-        if body_bytes is not None and not any(
-            k.lower() == "content-type" for k in headers
-        ):
-            headers["Content-Type"] = "application/json; charset=utf-8"
+        if not isinstance(multipart_files, list) or not multipart_files:
+            if body_bytes is not None and not any(
+                k.lower() == "content-type" for k in headers
+            ):
+                headers["Content-Type"] = "application/json; charset=utf-8"
 
         try:
             req = urllib.request.Request(url, data=body_bytes, method=method, headers=headers)

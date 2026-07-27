@@ -42,6 +42,8 @@ export interface LlmModelRow {
   name: string;
   baseModelUrl: string;
   modelName: string;
+  /** When true, solve accepts image attachments. Author: kejiqing */
+  supportsVision?: boolean;
   apiKeySet: boolean;
   active?: boolean;
   /** Head revision after last save. */

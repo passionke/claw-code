@@ -13,15 +13,29 @@ REMOTE_REPO="${2:-/home/admin/claw-code}"
 DEST="${REMOTE}:${REMOTE_REPO}/deploy/stack/"
 
 echo "rsync deploy/stack scripts -> ${DEST}" >&2
+# Local compile/runtime leftovers under deploy/stack must never ship. Author: kejiqing
 rsync -avz \
   --chmod=Du=rwx,Fu=rx,Dg=rx,Fg=rx \
   --exclude 'claw-workspace/' \
+  --exclude 'claw-workspace-local/' \
+  --exclude 'claw-workspace-remote/' \
   --exclude 'claw-gateway-sessions/' \
   --exclude 'claw-logs/' \
+  --exclude 'claw-logs-*/' \
+  --exclude 'claw-postgres-data/' \
+  --exclude 'claw-ovs-extensions/' \
+  --exclude 'claw-workspace-host/' \
+  --exclude 'claw-from-worker.bin' \
+  --exclude '.claw-from-worker.bin' \
+  --exclude '.linux-artifacts/' \
+  --exclude '.e2b-worker-bins/' \
+  --exclude '.tmp-bin-check/' \
+  --exclude '.pack-deploy*.log' \
+  --exclude '.claw-pool-rpc/' \
+  --exclude '.claw-pool-rpc-*/' \
   --exclude 'claude-tap-data/' \
   --exclude 'claude-tap.log' \
   --exclude 'claude-tap.pid' \
-  --exclude '.claw-pool-rpc/' \
   --exclude '.build.log' \
   --exclude 'worker-openai.env' \
   --exclude '.claw-pool-workspace.env' \

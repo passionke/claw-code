@@ -394,6 +394,7 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
             max_iterations,
             task.llm_route.clone(),
             task.landlock_dsl.clone().zip(task.landlock_dsl_source),
+            task.attachments.as_deref().unwrap_or(&[]),
         )
     };
     let run_result = match result {
@@ -7457,6 +7458,10 @@ fn render_export_text(session: &Session) -> String {
                 ContentBlock::ReasoningContent { text } => {
                     lines.push(format!("[reasoning_content] {text}"));
                 }
+                ContentBlock::Image { path, mime, name } => {
+                    let label = name.as_deref().unwrap_or(path.as_str());
+                    lines.push(format!("[image path={path} mime={mime} name={label}]"));
+                }
                 ContentBlock::ToolUse { id, name, input } => {
                     lines.push(format!("[tool_use id={id} name={name}] {input}"));
                 }
@@ -7650,6 +7655,11 @@ fn render_session_markdown(session: &Session, session_id: &str, session_path: &P
                         lines.push(format!("> {}", trimmed.replace('\n', "\n> ")));
                         lines.push(String::new());
                     }
+                }
+                ContentBlock::Image { path, mime, name } => {
+                    let label = name.as_deref().unwrap_or(path.as_str());
+                    lines.push(format!("**Image** `{label}` _(path `{path}`, {mime})_"));
+                    lines.push(String::new());
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     lines.push(format!(
@@ -10070,47 +10080,8 @@ fn permission_policy(
 }
 
 fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
-    messages
-        .iter()
-        .filter_map(|message| {
-            let role = match message.role {
-                MessageRole::System | MessageRole::User | MessageRole::Tool => "user",
-                MessageRole::Assistant => "assistant",
-            };
-            let content = message
-                .blocks
-                .iter()
-                .map(|block| match block {
-                    ContentBlock::Text { text } => InputContentBlock::Text { text: text.clone() },
-                    ContentBlock::ReasoningContent { text } => {
-                        InputContentBlock::ReasoningContent { text: text.clone() }
-                    }
-                    ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
-                        id: id.clone(),
-                        name: name.clone(),
-                        input: serde_json::from_str(input)
-                            .unwrap_or_else(|_| serde_json::json!({ "raw": input })),
-                    },
-                    ContentBlock::ToolResult {
-                        tool_use_id,
-                        output,
-                        is_error,
-                        ..
-                    } => InputContentBlock::ToolResult {
-                        tool_use_id: tool_use_id.clone(),
-                        content: vec![ToolResultContentBlock::Text {
-                            text: output.clone(),
-                        }],
-                        is_error: *is_error,
-                    },
-                })
-                .collect::<Vec<_>>();
-            (!content.is_empty()).then(|| InputMessage {
-                role: role.to_string(),
-                content,
-            })
-        })
-        .collect()
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    api::convert_runtime_messages(messages, &cwd)
 }
 
 #[allow(clippy::too_many_lines)]

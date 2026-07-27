@@ -79,6 +79,7 @@ use uuid::Uuid;
 
 mod gateway_logging;
 mod session_execution;
+mod session_upload;
 mod solve_pool;
 mod task_status;
 
@@ -219,6 +220,9 @@ struct SolveRequest {
     extra_session: Option<Value>,
     #[serde(rename = "allowedTools")]
     allowed_tools: Option<Vec<String>>,
+    /// Session-relative attachments (uploaded via `/v1/sessions/{id}/files`). Author: kejiqing
+    #[serde(default, rename = "attachments")]
+    attachments: Option<Vec<gateway_solve_turn::SolveAttachment>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1007,6 +1011,7 @@ fn build_turn_entry_params_json(
         "timeoutSeconds": req.timeout_seconds,
         "extraSession": req.extra_session,
         "allowedTools": req.allowed_tools,
+        "attachments": req.attachments,
         "clientOrigin": client_origin,
     })
 }
@@ -1669,6 +1674,10 @@ async fn main() {
             get(get_session_execution),
         )
         .route("/v1/sessions/{session_id}/turns", get(list_session_turns))
+        .route(
+            "/v1/sessions/{session_id}/files",
+            post(session_upload::upload_session_files),
+        )
         .route(
             "/v1/sessions/{session_id}/conversation_translate",
             get(get_conversation_translate).post(rebuild_conversation_translate),
@@ -5637,6 +5646,7 @@ fn admin_mcp_input_to_solve_request(input: admin_mcp_solve::AdminMcpSolveInput) 
         timeout_seconds: input.timeout_seconds,
         extra_session: input.extra_session,
         allowed_tools: input.allowed_tools,
+        attachments: input.attachments,
     }
 }
 
@@ -8977,11 +8987,36 @@ async fn validate_solve_request(
             "projId must be >= 1",
         ));
     }
-    if req.user_prompt.trim().is_empty() {
+    let has_attachments = req
+        .attachments
+        .as_ref()
+        .is_some_and(|a| !a.is_empty());
+    if req.user_prompt.trim().is_empty() && !has_attachments {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "userPrompt cannot be empty",
         ));
+    }
+    if let Some(atts) = req.attachments.as_ref() {
+        let has_image = atts.iter().any(|a| a.kind.eq_ignore_ascii_case("image"));
+        if has_image {
+            let supports = gateway_global_settings::load_active_llm_runtime(db)
+                .await
+                .map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("load active LLM failed: {e}"),
+                    )
+                })?
+                .map(|r| r.supports_vision)
+                .unwrap_or(false);
+            if !supports {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "MODEL_NO_VISION: current model does not support images; switch model or remove image attachments",
+                ));
+            }
+        }
     }
     validate_solve_extra_session_for_ds(db, req.proj_id, req.extra_session.as_ref()).await
 }

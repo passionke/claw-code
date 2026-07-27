@@ -18,7 +18,7 @@ base64 = "0.22"
 flate2 = "1"
 tar = "0.4"
 async-trait = "0.1"
-axum = { version = "0.8", features = ["macros", "ws"] }
+axum = { version = "0.8", features = ["macros", "ws", "multipart"] }
 bytes = "1"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }

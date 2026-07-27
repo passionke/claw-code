@@ -2,6 +2,7 @@ mod boundary_log;
 mod client;
 mod error;
 mod http_client;
+mod message_convert;
 mod otel_llm;
 mod prompt_cache;
 mod providers;
@@ -13,6 +14,10 @@ pub use boundary_log::{boundary_log_enabled, boundary_log_stage, BOUNDARY_LOG_EN
 pub use client::{
     oauth_token_is_expired, read_base_url, read_xai_base_url, resolve_saved_oauth_token,
     resolve_startup_auth_source, MessageStream, OAuthTokenSet, ProviderClient,
+};
+pub use message_convert::{
+    convert_runtime_messages, convert_runtime_messages_gateway, image_input_from_path,
+    runtime_block_to_input,
 };
 pub use error::ApiError;
 pub use http_client::{

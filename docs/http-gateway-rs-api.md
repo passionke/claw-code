@@ -25,7 +25,8 @@ Base URL 示例：`http://127.0.0.1:18088`
   - **续聊与路径**：网关将 `(sessionId, projId)` 与工作区目录的映射写入 PostgreSQL（`gateway_sessions`）。请求体传入 **`sessionId` 且非空** 表示显式续聊：若库中无该 `(sessionId, projId)` 行，返回 `400`（`unknown sessionId (no session history for this dsId)`，文案仍含历史 `dsId` 字样）。未传 `sessionId` 但头里携带的会话在库中已有记录时，会 **复用同一工作目录** 与磁盘上的对话 jsonl，实现多轮连续。
   - 请求体字段：
     - `projId`：必填，项目 ID，整数且需 `>= 1`（请求体可写别名 `dsId` / `ds_id` / `proj_id`）
-    - `userPrompt`：必填，用户自然语言输入，非空字符串
+    - `userPrompt`：必填，用户自然语言输入，非空字符串（若带非空 `attachments` 则可为空，worker 会补「请查看附件」）
+    - `attachments`：可选，会话相对路径附件元数据数组（先 `POST /v1/sessions/{sessionId}/files` 上传）。每项：`path`、`mime`、`kind`（`image`|`document`）、可选 `name`/`size`。含 `kind=image` 时，生效 LLM 须 `supportsVision=true`，否则 `400`（`MODEL_NO_VISION: …`）
     - `sessionId`：可选，非空时表示按该 id 续聊（须已在库中有历史）；与头冲突规则见上
     - `model`：可选，指定使用的模型标识，缺省走网关默认模型
     - `timeoutSeconds`：可选，整体超时时间（秒）
@@ -293,6 +294,11 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
 ## Session workspace (read-only sidebar)
 
 读宿主机 `CLAW_WORK_ROOT/proj_{projId}/sessions/{sessionId}/`（与 interactive bind 同路径）。
+
+- `POST /v1/sessions/{session_id}/files?projId=`
+  - 用途：上传用户附件到该会话 `uploads/`（NAS SoT + 本地 session 目录）。须先 `POST /v1/start`（或已有 session）。
+  - 请求：`multipart/form-data`，字段名 `file`（可多 part）；单文件默认上限 10MB；允许图片（png/jpeg/webp/gif）与文档（pdf/csv/txt/md/json）。
+  - 响应：`{ attachments: [ { path, mime, kind, name?, size? } ] }`，`path` 相对 session cwd（如 `uploads/a1b2c3d4_report.pdf`），供后续 `solve` / `solve_async` 的 `attachments` 字段引用。
 
 - `GET /v1/sessions/{session_id}/workspace/tree?projId=`
   - 响应：`{ sessionId, projId, entries: [ { name, path, isDir } ] }`（跳过 `.git` / `target`；最多约 2000 项）

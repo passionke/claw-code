@@ -23,6 +23,8 @@ pub struct AdminMcpSolveInput {
     pub extra_session: Option<Value>,
     #[serde(rename = "allowedTools")]
     pub allowed_tools: Option<Vec<String>>,
+    #[serde(default, rename = "attachments")]
+    pub attachments: Option<Vec<gateway_solve_turn::SolveAttachment>>,
 }
 
 /// Backend implemented by the gateway binary (`AppState`). Author: kejiqing
@@ -102,6 +104,21 @@ pub fn solve_tools_schema() -> Vec<Value> {
             "type": "array",
             "items": { "type": "string" },
             "description": "Optional per-request tool allowlist."
+        },
+        "attachments": {
+            "type": "array",
+            "description": "Session-relative files from POST /v1/sessions/{id}/files (path/mime/kind/name/size).",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "mime": { "type": "string" },
+                    "kind": { "type": "string", "enum": ["image", "document"] },
+                    "name": { "type": "string" },
+                    "size": { "type": "integer" }
+                },
+                "required": ["path", "mime", "kind"]
+            }
         }
     });
     let solve_required = &["projId", "userPrompt"];
