@@ -459,7 +459,7 @@ fn estimate_message_tokens(message: &ConversationMessage) -> usize {
                 text.len() / 4 + 1
             }
             ContentBlock::Image { path, mime, name } => {
-                (path.len() + mime.len() + name.as_ref().map(|n| n.len()).unwrap_or(0)) / 4 + 1
+                (path.len() + mime.len() + name.as_ref().map_or(0, String::len)) / 4 + 1
             }
             ContentBlock::ToolUse { name, input, .. } => (name.len() + input.len()) / 4 + 1,
             ContentBlock::ToolResult {

@@ -4,15 +4,10 @@
 use std::collections::BTreeSet;
 use std::io;
 
-use api::{
-    InputContentBlock, InputMessage, MessageRequest, ProviderClient, ToolChoice, ToolDefinition,
-    ToolResultContentBlock,
-};
+use api::{InputMessage, MessageRequest, ProviderClient, ToolChoice, ToolDefinition};
 use runtime::{
-    ApiClient, ApiRequest, AssistantEvent, ContentBlock, ConversationMessage, MessageRole,
-    PromptCacheEvent, RuntimeError,
+    ApiClient, ApiRequest, AssistantEvent, ConversationMessage, PromptCacheEvent, RuntimeError,
 };
-use serde_json::json;
 
 use self::render_minimal::response_to_events;
 

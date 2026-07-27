@@ -91,9 +91,8 @@ pub fn convert_runtime_messages_gateway(
         .map(|message| {
             let role = match message.role {
                 MessageRole::System => "system",
-                MessageRole::User => "user",
+                MessageRole::User | MessageRole::Tool => "user",
                 MessageRole::Assistant => "assistant",
-                MessageRole::Tool => "user",
             }
             .to_string();
             let content = message
