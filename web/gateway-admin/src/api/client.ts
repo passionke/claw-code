@@ -44,6 +44,45 @@ export async function proxyHttp<T = unknown>(
   return upstreamBodyFromEnvelope(wrap) as T;
 }
 
+/** Upload files via proxy: JSON envelope → playground rebuilds multipart to gateway. Author: kejiqing */
+export async function proxyUploadFiles<T = unknown>(
+  gatewayBase: string,
+  path: string,
+  files: File[]
+): Promise<T> {
+  const multipartFiles = await Promise.all(
+    files.map(async (f) => {
+      const buf = await f.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+      return {
+        field: "file",
+        filename: f.name,
+        mime: f.type || "application/octet-stream",
+        dataBase64: btoa(binary),
+      };
+    })
+  );
+  const res = await fetch("/__proxy__", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      baseUrl: gatewayBase.replace(/\/$/, ""),
+      method: "POST",
+      path,
+      multipartFiles,
+      headers: {},
+    }),
+  });
+  const wrap = (await res.json().catch(() => ({}))) as ProxyEnvelope;
+  if (!wrap.ok) {
+    throw new ApiError(upstreamErrorMessage(wrap));
+  }
+  return upstreamBodyFromEnvelope(wrap) as T;
+}
+
 export async function fetchPlaygroundConfig(): Promise<PlaygroundConfig> {
   const r = await fetch("/__config__");
   if (!r.ok) throw new ApiError("无法加载 playground 配置");

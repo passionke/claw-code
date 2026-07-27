@@ -6,6 +6,8 @@
 #   claw-code, claw-gateway-worker, claw-gateway-playground (same tag).
 # - build-and-push-relaxed-worker: FROM strict worker image.
 # - mirror-to-acr: pull GHCR tags → retag → push ACR (no second Rust compile).
+#   Optional repo variable ACR_MIRROR_VPN_GW (+ ACR_MIRROR_VPN_DEV): host routes for ACR
+#   registry IPs via SG runner VPN jump (10.8 segment); see deploy/stack/docs/github-ci-variables.md.
 #
 # Runner selection (Author: kejiqing):
 # - Prefer online repo self-hosted Linux/X64; if none / probe fails, fall back to ubuntu-latest.
@@ -461,6 +463,9 @@ jobs:
           fi
           rm -f "${WS}/.ci-self-hosted-prep" 2>/dev/null || true
 
+      - name: Checkout (route helper)
+        uses: actions/checkout@v4
+
       - name: Verify ACR_REGISTRY and derive login host
         id: reg
         env:
@@ -474,6 +479,15 @@ jobs:
           LOGIN_HOST="${ACR_REGISTRY%%/*}"
           echo "login_host=${LOGIN_HOST}" >> "$GITHUB_OUTPUT"
           echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
+
+      - name: Route ACR via VPN (optional)
+        env:
+          ACR_LOGIN_HOST: ${{ steps.reg.outputs.login_host }}
+          ACR_MIRROR_VPN_GW: ${{ vars.ACR_MIRROR_VPN_GW }}
+          ACR_MIRROR_VPN_DEV: ${{ vars.ACR_MIRROR_VPN_DEV }}
+        run: |
+          chmod +x ./deploy/stack/lib/ci-acr-vpn-route.sh
+          ./deploy/stack/lib/ci-acr-vpn-route.sh up
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -517,6 +531,14 @@ jobs:
           docker run --rm "${IMG}" sh -c 'test -f /app/admin-dist/index.html && test -n "$(ls /app/admin-dist/assets/*.js 2>/dev/null)"'
           echo "playground admin-dist ok in ${IMG}"
 
+      - name: Remove ACR VPN routes
+        if: always()
+        env:
+          ACR_LOGIN_HOST: ${{ steps.reg.outputs.login_host }}
+          ACR_MIRROR_VPN_GW: ${{ vars.ACR_MIRROR_VPN_GW }}
+          ACR_MIRROR_VPN_DEV: ${{ vars.ACR_MIRROR_VPN_DEV }}
+        run: ./deploy/stack/lib/ci-acr-vpn-route.sh down
+
       - name: Self-hosted workspace cleanup
         if: always()
         run: |
@@ -526,7 +548,7 @@ jobs:
           fi
           WS="${GITHUB_WORKSPACE}"
           ART="${WS}/deploy/stack/.linux-artifacts"
-          if [ -d "${ART}" ]; then
+          if [ -d "${ART}" ]]; then
             echo "remove ${ART}"
             rm -rf "${ART}" 2>/dev/null || docker run --rm -v "${WS}:/w:rw" alpine:3.20 rm -rf /w/deploy/stack/.linux-artifacts || true
           fi

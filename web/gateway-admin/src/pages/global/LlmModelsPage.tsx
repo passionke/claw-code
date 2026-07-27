@@ -12,6 +12,7 @@ import {
   Select,
   Space,
   Spin,
+  Switch,
   Table,
   Tag,
   Typography,
@@ -134,6 +135,7 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
       name: row.name,
       baseModelUrl: row.baseModelUrl,
       modelName: row.modelName,
+      supportsVision: Boolean(row.supportsVision),
       apiKey: "",
     });
     setModalOpen(true);
@@ -166,8 +168,14 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
         name: string;
         baseModelUrl: string;
         modelName: string;
+        supportsVision?: boolean;
         apiKey?: string;
-      } = { name, baseModelUrl, modelName };
+      } = {
+        name,
+        baseModelUrl,
+        modelName,
+        supportsVision: Boolean(v.supportsVision),
+      };
       if (editing) body.id = editing.id;
       if (apiKey) body.apiKey = apiKey;
       await proxyHttp<LlmModelRow>(
@@ -298,6 +306,12 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
       ellipsis: true,
     },
     { title: "模型 ID", dataIndex: "modelName", width: 160, ellipsis: true },
+    {
+      title: "视觉",
+      dataIndex: "supportsVision",
+      width: 72,
+      render: (v: boolean | undefined) => (v ? <Tag color="blue">是</Tag> : <Tag>否</Tag>),
+    },
     {
       title: "API Key",
       width: 90,
@@ -476,6 +490,14 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
               readOnly={!isCustomPreset}
               variant={isCustomPreset ? undefined : "borderless"}
             />
+          </Form.Item>
+          <Form.Item
+            name="supportsVision"
+            label="支持视觉"
+            valuePropName="checked"
+            tooltip="勾选后允许带图片附件的 solve；纯文本模型请关闭"
+          >
+            <Switch />
           </Form.Item>
           <Form.Item
             name="apiKey"

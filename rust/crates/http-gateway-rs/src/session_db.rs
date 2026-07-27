@@ -233,6 +233,7 @@ pub struct GatewayLlmModelRevisionRow {
     pub name: String,
     pub base_model_url: String,
     pub model_name: String,
+    pub supports_vision: bool,
     pub note: Option<String>,
 }
 
@@ -1041,6 +1042,12 @@ impl GatewaySessionDb {
         .execute(pool)
         .await?;
         sqlx::query(
+            r"ALTER TABLE gateway_llm_cluster_revision
+               ADD COLUMN IF NOT EXISTS supports_vision BOOLEAN NOT NULL DEFAULT FALSE",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
             r"CREATE INDEX IF NOT EXISTS idx_gateway_llm_cluster_revision_list
              ON gateway_llm_cluster_revision (cluster_id, model_id, created_at_ms DESC)",
         )
@@ -1836,6 +1843,7 @@ impl GatewaySessionDb {
             name: row.try_get("name")?,
             base_model_url: row.try_get("base_model_url")?,
             model_name: row.try_get("model_name")?,
+            supports_vision: false,
             note: row.try_get("note")?,
         }))
     }
@@ -1863,6 +1871,7 @@ impl GatewaySessionDb {
                     name: row.try_get("name")?,
                     base_model_url: row.try_get("base_model_url")?,
                     model_name: row.try_get("model_name")?,
+                    supports_vision: false,
                     note: row.try_get("note")?,
                 })
             })
@@ -2069,7 +2078,8 @@ impl GatewaySessionDb {
         model_rev: &str,
     ) -> Result<Option<GatewayLlmModelRevisionRow>, SqlxError> {
         let row = sqlx::query(
-            r"SELECT cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name, note
+            r"SELECT cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
+                     COALESCE(supports_vision, FALSE) AS supports_vision, note
                FROM gateway_llm_cluster_revision
                WHERE cluster_id = $1 AND model_id = $2 AND model_rev = $3",
         )
@@ -2086,6 +2096,7 @@ impl GatewaySessionDb {
             name: row.try_get("name").unwrap_or_default(),
             base_model_url: row.try_get("base_model_url").unwrap_or_default(),
             model_name: row.try_get("model_name").unwrap_or_default(),
+            supports_vision: row.try_get("supports_vision").unwrap_or(false),
             note: row.try_get("note").ok(),
         }))
     }
@@ -2096,12 +2107,14 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO gateway_llm_cluster_revision (
-                 cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name, note
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
+                 supports_vision, note
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                ON CONFLICT (cluster_id, model_id, model_rev) DO UPDATE SET
                  name = EXCLUDED.name,
                  base_model_url = EXCLUDED.base_model_url,
                  model_name = EXCLUDED.model_name,
+                 supports_vision = EXCLUDED.supports_vision,
                  note = EXCLUDED.note,
                  created_at_ms = EXCLUDED.created_at_ms",
         )
@@ -2112,6 +2125,7 @@ impl GatewaySessionDb {
         .bind(&row.name)
         .bind(&row.base_model_url)
         .bind(&row.model_name)
+        .bind(row.supports_vision)
         .bind(&row.note)
         .execute(&self.pool)
         .await?;

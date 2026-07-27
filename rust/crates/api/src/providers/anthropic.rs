@@ -9,7 +9,7 @@ use runtime::{
     OAuthTokenExchangeRequest,
 };
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use telemetry::{AnalyticsEvent, AnthropicRequestProfile, ClientIdentity, SessionTracer};
 
 use crate::error::ApiError;
@@ -497,6 +497,7 @@ impl AnthropicClient {
         let request_url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let wire_request = request.without_reasoning_replay_blocks();
         let mut request_body = self.request_profile.render_json_body(&wire_request)?;
+        rewrite_anthropic_image_blocks(&mut request_body);
         strip_unsupported_beta_body_fields(&mut request_body);
         let request_builder = self
             .build_request(&request_url, &request.extra_headers)
@@ -568,6 +569,7 @@ impl AnthropicClient {
         );
         let wire_request = request.without_reasoning_replay_blocks();
         let mut request_body = self.request_profile.render_json_body(&wire_request)?;
+        rewrite_anthropic_image_blocks(&mut request_body);
         strip_unsupported_beta_body_fields(&mut request_body);
         let response = self
             .build_request(&request_url, &request.extra_headers)
@@ -1026,6 +1028,46 @@ fn enrich_bearer_auth_error(error: ApiError, auth: &AuthSource) -> ApiError {
         body,
         retryable,
         suggested_action,
+    }
+}
+
+/// Rewrite internal `Image { media_type, data_base64 }` blocks into Anthropic
+/// Messages `source.base64` shape. Author: kejiqing
+fn rewrite_anthropic_image_blocks(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return;
+    };
+    for message in messages {
+        let Some(content) = message.get_mut("content").and_then(|c| c.as_array_mut()) else {
+            continue;
+        };
+        for block in content.iter_mut() {
+            let Some(obj) = block.as_object_mut() else {
+                continue;
+            };
+            if obj.get("type").and_then(|t| t.as_str()) != Some("image") {
+                continue;
+            }
+            if obj.contains_key("source") {
+                continue;
+            }
+            let media_type = obj
+                .remove("media_type")
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| "image/png".to_string());
+            let data = obj
+                .remove("data_base64")
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            obj.insert(
+                "source".to_string(),
+                json!({
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": data,
+                }),
+            );
+        }
     }
 }
 

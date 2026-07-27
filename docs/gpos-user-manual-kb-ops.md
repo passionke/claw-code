@@ -17,6 +17,7 @@ Author: kejiqing
 | 文档 | 用途 |
 |------|------|
 | 本文 | **上线与日常运维真源** |
+| [`docs/gpos-user-manual-kb-usage.md`](gpos-user-manual-kb-usage.md) | 爬取 → 产物格式 → 同步 → 检索 → 评测的完整使用说明 |
 | [`docs/gpos-intent-routing-regress.md`](gpos-intent-routing-regress.md) | 三路意图回归检查清单 |
 | [`docs/gpos-assistant-prompt-content.md`](gpos-assistant-prompt-content.md) | CLAUDE / Rules 粘贴参考 |
 | [`scripts/gpos-manual-crawl/`](../scripts/gpos-manual-crawl/) | 爬取工具（产出本地 KB，不入库） |

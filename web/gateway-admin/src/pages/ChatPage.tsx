@@ -1,4 +1,5 @@
-import { Alert, Button, Input, Spin, Tooltip, message } from "antd";
+import { Alert, Button, Input, Spin, Tooltip, Upload, message } from "antd";
+import { PaperClipOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChatHistorySidebar from "../components/chat/ChatHistorySidebar";
 import ChatTurnCard from "../components/chat/ChatTurnCard";
@@ -6,7 +7,7 @@ import ChatToolbar from "../components/chat/ChatToolbar";
 import ExtraSessionComposer from "../components/chat/ExtraSessionComposer";
 import ConversationTranslateModal from "../components/chat/ConversationTranslateModal";
 import styles from "../components/chat/chat.module.css";
-import { proxyHttp } from "../api/client";
+import { proxyHttp, proxyUploadFiles } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { useChatSession } from "../context/ChatSessionContext";
 import { useSessionTurnFeedback } from "../hooks/useSessionTurnFeedback";
@@ -27,6 +28,14 @@ import {
 import { extractSolveReportMessage } from "../utils/solveReportBody";
 import { turnViewModeForStatus } from "../utils/turnViewMode";
 import type { TurnFeedbackValue } from "../types/chat";
+
+interface SolveAttachmentMeta {
+  path: string;
+  mime: string;
+  kind: string;
+  name?: string;
+  size?: number;
+}
 
 interface TurnEntry {
   id: string;
@@ -84,6 +93,7 @@ export default function ChatPage() {
   const [thread, setThread] = useState<ThreadItem[]>([]);
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionClientOrigin, setSessionClientOrigin] = useState<string | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
@@ -225,14 +235,69 @@ export default function ChatPage() {
       message.warning("外部会话，仅可查看");
       return;
     }
+    const files = pendingFiles.slice();
+    if (!userText.trim() && files.length === 0) {
+      message.warning("请输入内容或添加附件");
+      return;
+    }
     saveExtraSessionKvForDs(projId, extraKv);
     const extra = buildExtraSession(extraKv);
+
+    let sid = sessionIdRef.current;
+    if (!sid && files.length > 0) {
+      try {
+        const startRes = await proxyHttp<{ sessionId: string }>(
+          gatewayBase,
+          "POST",
+          "/v1/start",
+          { projId, extraSession: extra }
+        );
+        sid = startRes.sessionId;
+        sessionIdRef.current = sid;
+        setActiveSessionId(sid);
+        setSessionClientOrigin(CLIENT_ORIGIN_GATEWAY_ADMIN);
+      } catch (e) {
+        appendSys({
+          tag: "start session 失败",
+          text: String((e as Error).message || e),
+          variant: "err",
+        });
+        return;
+      }
+    }
+
+    let attachments: SolveAttachmentMeta[] | undefined;
+    if (files.length > 0 && sid) {
+      try {
+        const up = await proxyUploadFiles<{ attachments: SolveAttachmentMeta[] }>(
+          gatewayBase,
+          `/v1/sessions/${encodeURIComponent(sid)}/files?projId=${projId}`,
+          files
+        );
+        attachments = up.attachments ?? [];
+        setPendingFiles([]);
+      } catch (e) {
+        appendSys({
+          tag: "上传失败",
+          text: String((e as Error).message || e),
+          variant: "err",
+        });
+        return;
+      }
+    }
+
+    const displayText =
+      userText.trim() ||
+      (attachments?.length
+        ? `[附件] ${attachments.map((a) => a.name || a.path).join(", ")}`
+        : "");
     const payload: Record<string, unknown> = {
       projId,
-      userPrompt: userText,
+      userPrompt: userText.trim() || "请查看附件",
       extraSession: extra,
     };
-    if (sessionIdRef.current) payload.sessionId = sessionIdRef.current;
+    if (sid) payload.sessionId = sid;
+    if (attachments?.length) payload.attachments = attachments;
 
     let asyncRes: SolveAsyncResponse;
     try {
@@ -264,7 +329,7 @@ export default function ChatPage() {
       ...prev,
       {
         id: asyncRes.turnId,
-        userText,
+        userText: displayText,
         taskId: asyncRes.taskId,
         sessionId: asyncRes.sessionId,
         turnId: asyncRes.turnId,
@@ -286,7 +351,7 @@ export default function ChatPage() {
 
   const onSend = async () => {
     const text = prompt.trim();
-    if (!text) return;
+    if (!text && pendingFiles.length === 0) return;
     setPrompt("");
     setSending(true);
     try {
@@ -473,6 +538,21 @@ export default function ChatPage() {
             ))}
           </div>
           <div className={styles.composerRow}>
+            <Upload
+              multiple
+              showUploadList={false}
+              beforeUpload={(file) => {
+                setPendingFiles((prev) => [...prev, file]);
+                return false;
+              }}
+              disabled={composerDisabled || sending}
+            >
+              <Button
+                icon={<PaperClipOutlined />}
+                disabled={composerDisabled || sending}
+                title="添加附件"
+              />
+            </Upload>
             <Input.TextArea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
@@ -481,7 +561,7 @@ export default function ChatPage() {
                   ? CHAT_AUDIT_ONLY
                     ? "只读审计：请在 Coding 终端进行交互"
                     : "外部会话，仅可查看历史"
-                  : "输入任务描述（自然语言），Enter 发送；Shift+Enter 换行"
+                  : "输入任务描述（自然语言），Enter 发送；Shift+Enter 换行；可附加图片/PDF/CSV"
               }
               disabled={composerDisabled}
               autoSize={{ minRows: 2, maxRows: 6 }}
@@ -503,6 +583,24 @@ export default function ChatPage() {
               发送
             </Button>
           </div>
+          {pendingFiles.length > 0 ? (
+            <div className={styles.quickPrompts} style={{ marginTop: 8 }}>
+              {pendingFiles.map((f, i) => (
+                <button
+                  key={`${f.name}-${i}`}
+                  type="button"
+                  className={styles.quickPromptBtn}
+                  disabled={sending}
+                  title="点击移除"
+                  onClick={() =>
+                    setPendingFiles((prev) => prev.filter((_, idx) => idx !== i))
+                  }
+                >
+                  {f.name} ({Math.round(f.size / 1024)}KB) ×
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
         </div>
         </div>

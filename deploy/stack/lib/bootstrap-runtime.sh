@@ -99,10 +99,12 @@ claw_ensure_default_project_ds() {
   if [[ "${code}" != "200" ]]; then
     echo "==> bootstrap POST /v1/projects projId=${proj_id} (config was HTTP ${code})" >&2
     resp="$(mktemp)"
+    # release-v1.7.10+ requires projectCode. Author: kejiqing
+    local code_name="${CLAW_BOOTSTRAP_PROJECT_CODE:-default}"
     http_code="$(curl -sS --connect-timeout 120 -o "${resp}" -w '%{http_code}' -X POST \
       "http://127.0.0.1:${port}/v1/projects" \
       -H 'Content-Type: application/json' \
-      -d "{\"projId\":${proj_id}}" 2>/dev/null || echo 000)"
+      -d "{\"projId\":${proj_id},\"projectCode\":\"${code_name}\",\"projectDescription\":\"bootstrap default project\"}" 2>/dev/null || echo 000)"
     if [[ "${http_code}" != "200" && "${http_code}" != "409" ]]; then
       echo "error: POST /v1/projects proj=${proj_id} HTTP ${http_code}: $(tr -d '\n' <"${resp}" | head -c 500)" >&2
       rm -f "${resp}"

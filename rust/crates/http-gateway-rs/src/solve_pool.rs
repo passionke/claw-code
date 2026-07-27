@@ -202,6 +202,7 @@ pub async fn run_solve_request_docker(
         session_id: Some(session_id.clone()),
         pool_id: None,
         worker_name: None,
+        attachments: req.attachments.clone(),
         llm_route: Some(serde_json::to_value(&llm_route).unwrap_or_default()),
         otel_traceparent,
         landlock_dsl,

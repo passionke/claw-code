@@ -49,6 +49,8 @@ pub struct LlmModelEntry {
     pub base_model_url: String,
     #[serde(rename = "modelName")]
     pub model_name: String,
+    #[serde(rename = "supportsVision", default)]
+    pub supports_vision: bool,
     #[serde(rename = "currentRev", default, skip_serializing)]
     pub current_rev: String,
     #[serde(rename = "createdAtMs")]
@@ -65,6 +67,8 @@ pub struct LlmModelPublic {
     pub base_model_url: String,
     #[serde(rename = "modelName")]
     pub model_name: String,
+    #[serde(rename = "supportsVision", default)]
+    pub supports_vision: bool,
     #[serde(rename = "currentRev", skip_serializing_if = "String::is_empty")]
     pub current_rev: String,
     #[serde(rename = "apiKeySet")]
@@ -88,6 +92,8 @@ pub struct LlmModelVersionPublic {
     pub base_model_url: String,
     #[serde(rename = "modelName")]
     pub model_name: String,
+    #[serde(rename = "supportsVision", default)]
+    pub supports_vision: bool,
     #[serde(rename = "apiKeySet")]
     pub api_key_set: bool,
     pub active: bool,
@@ -116,6 +122,7 @@ pub struct ActiveLlmRuntime {
     pub base_model_url: String,
     pub model_name: String,
     pub api_key: String,
+    pub supports_vision: bool,
     pub applied_at_ms: Option<i64>,
 }
 
@@ -289,6 +296,8 @@ pub struct PutLlmModelInput {
     pub base_model_url: String,
     #[serde(rename = "modelName")]
     pub model_name: String,
+    #[serde(default, rename = "supportsVision")]
+    pub supports_vision: bool,
     #[serde(default, rename = "apiKey")]
     pub api_key: Option<String>,
     #[serde(default)]
@@ -441,6 +450,7 @@ async fn ensure_llm_model_versions_backfilled(
             name: entry.name.clone(),
             base_model_url: entry.base_model_url.clone(),
             model_name: entry.model_name.clone(),
+            supports_vision: entry.supports_vision,
             note: None,
         };
         db.upsert_llm_cluster_revision(&row).await?;
@@ -540,6 +550,7 @@ pub async fn upsert_llm_model(
         name: name.to_string(),
         base_model_url: base.clone(),
         model_name: model.clone(),
+        supports_vision: input.supports_vision,
         note: normalize_revision_note(input.note),
     };
     db.upsert_llm_cluster_revision(&row)
@@ -554,6 +565,7 @@ pub async fn upsert_llm_model(
         entry.name = name.to_string();
         entry.base_model_url = base.clone();
         entry.model_name = model.clone();
+        entry.supports_vision = input.supports_vision;
         entry.current_rev = rev.clone();
         entry.updated_at_ms = now;
     } else {
@@ -562,6 +574,7 @@ pub async fn upsert_llm_model(
             name: name.to_string(),
             base_model_url: base,
             model_name: model,
+            supports_vision: input.supports_vision,
             current_rev: rev.clone(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -625,6 +638,7 @@ pub async fn put_active_llm_config(
             name: name.to_string(),
             base_model_url: input.base_model_url,
             model_name: input.model_name,
+            supports_vision: false,
             api_key: input.api_key,
             note: input.note,
         },
@@ -671,11 +685,12 @@ pub async fn load_llm_runtime_for_model_id(
         base_model_url: row.base_model_url,
         model_name: row.model_name,
         api_key,
+        supports_vision: row.supports_vision,
         applied_at_ms: None,
     })
 }
 
-pub(crate) async fn load_active_llm_runtime(
+pub async fn load_active_llm_runtime(
     db: &GatewaySessionDb,
 ) -> Result<Option<ActiveLlmRuntime>, sqlx::Error> {
     let Some(cluster_id) = resolve_llm_cluster_id() else {
@@ -700,6 +715,7 @@ pub(crate) async fn load_active_llm_runtime(
         base_model_url: row.base_model_url,
         model_name: row.model_name,
         api_key,
+        supports_vision: row.supports_vision,
         applied_at_ms: store.active_applied_at_ms,
     }))
 }
@@ -736,25 +752,33 @@ async fn llm_entry_to_public(
     } else {
         entry.current_rev.clone()
     };
-    let (name, base_model_url, model_name) = if let Some(cluster_id) = resolve_llm_cluster_id() {
-        match db
-            .get_llm_cluster_revision(&cluster_id, &entry.id, &current_rev)
-            .await?
-        {
-            Some(row) => (row.name, row.base_model_url, row.model_name),
-            None => (
+    let (name, base_model_url, model_name, supports_vision) =
+        if let Some(cluster_id) = resolve_llm_cluster_id() {
+            match db
+                .get_llm_cluster_revision(&cluster_id, &entry.id, &current_rev)
+                .await?
+            {
+                Some(row) => (
+                    row.name,
+                    row.base_model_url,
+                    row.model_name,
+                    row.supports_vision,
+                ),
+                None => (
+                    entry.name.clone(),
+                    entry.base_model_url.clone(),
+                    entry.model_name.clone(),
+                    entry.supports_vision,
+                ),
+            }
+        } else {
+            (
                 entry.name.clone(),
                 entry.base_model_url.clone(),
                 entry.model_name.clone(),
-            ),
-        }
-    } else {
-        (
-            entry.name.clone(),
-            entry.base_model_url.clone(),
-            entry.model_name.clone(),
-        )
-    };
+                entry.supports_vision,
+            )
+        };
     let is_active_model = !store.active_id.is_empty() && store.active_id == entry.id;
     let api_key_set = llm_api_key_for(store, &entry.id, &current_rev).is_some();
     Ok(LlmModelPublic {
@@ -762,6 +786,7 @@ async fn llm_entry_to_public(
         name,
         base_model_url,
         model_name,
+        supports_vision,
         current_rev,
         api_key_set,
         active: is_active_model,

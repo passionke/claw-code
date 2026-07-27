@@ -31,7 +31,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use api::{
     ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, OutputContentBlock,
-    ProviderClient, StreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    ProviderClient, StreamEvent, ToolChoice, ToolDefinition,
 };
 use runtime::{
     apply_mcp_tool_annotations_from_config, concurrent_mcp_tool_names, default_mcp_max_concurrent,
@@ -195,6 +195,19 @@ pub fn normalize_extra_session(extra_session: Option<Value>) -> Option<Value> {
     }
 }
 
+/// User attachment metadata (paths relative to session cwd). Author: kejiqing
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SolveAttachment {
+    pub path: String,
+    pub mime: String,
+    /// `image` | `document`
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
 /// Task payload written by the gateway / read by `claw gateway-solve-once`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewaySolveTaskFile {
@@ -219,6 +232,13 @@ pub struct GatewaySolveTaskFile {
     pub pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
     pub worker_name: Option<String>,
+    /// User-uploaded attachments (session-relative paths). Author: kejiqing
+    #[serde(
+        default,
+        rename = "attachments",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attachments: Option<Vec<SolveAttachment>>,
     /// Per-solve LLM routing snapshot (gateway-injected). Author: kejiqing
     #[serde(rename = "llmRoute", skip_serializing_if = "Option::is_none")]
     pub llm_route: Option<Value>,
@@ -890,52 +910,57 @@ fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {
 }
 
 fn convert_runtime_messages_to_api(messages: &[ConversationMessage]) -> Vec<InputMessage> {
-    messages
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    api::convert_runtime_messages_gateway(messages, &cwd)
+}
+
+/// Build the user turn from prompt + attachments (images as content blocks, docs as path text).
+/// Author: kejiqing
+pub fn build_user_turn_message(
+    prompt: &str,
+    attachments: &[SolveAttachment],
+) -> ConversationMessage {
+    let mut blocks = Vec::new();
+    for att in attachments {
+        let kind = att.kind.trim().to_ascii_lowercase();
+        if kind == "image" {
+            blocks.push(ContentBlock::Image {
+                path: att.path.clone(),
+                mime: att.mime.clone(),
+                name: att.name.clone(),
+            });
+        } else {
+            let name = att.name.as_deref().unwrap_or(att.path.as_str());
+            blocks.push(ContentBlock::Text {
+                text: format!(
+                    "[attachment document] path={} mime={} name={} — use Read/Bash to inspect",
+                    att.path, att.mime, name
+                ),
+            });
+        }
+    }
+    let prompt = prompt.trim();
+    if !prompt.is_empty() {
+        blocks.push(ContentBlock::Text {
+            text: prompt.to_string(),
+        });
+    } else if attachments
         .iter()
-        .map(|message| {
-            let role = match message.role {
-                MessageRole::System => "system",
-                MessageRole::User => "user",
-                MessageRole::Assistant => "assistant",
-                MessageRole::Tool => "user",
-            }
-            .to_string();
-            let content = message
-                .blocks
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text } => {
-                        Some(InputContentBlock::Text { text: text.clone() })
-                    }
-                    ContentBlock::ReasoningContent { text } => {
-                        Some(InputContentBlock::ReasoningContent { text: text.clone() })
-                    }
-                    ContentBlock::ToolUse { id, name, input } => {
-                        let parsed =
-                            serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
-                        Some(InputContentBlock::ToolUse {
-                            id: id.clone(),
-                            name: name.clone(),
-                            input: parsed,
-                        })
-                    }
-                    ContentBlock::ToolResult {
-                        tool_use_id,
-                        output,
-                        is_error,
-                        ..
-                    } => Some(InputContentBlock::ToolResult {
-                        tool_use_id: tool_use_id.clone(),
-                        content: vec![ToolResultContentBlock::Text {
-                            text: output.clone(),
-                        }],
-                        is_error: *is_error,
-                    }),
-                })
-                .collect::<Vec<_>>();
-            InputMessage { role, content }
-        })
-        .collect()
+        .any(|a| a.kind.eq_ignore_ascii_case("image"))
+    {
+        blocks.push(ContentBlock::Text {
+            text: "请查看附件".to_string(),
+        });
+    } else if blocks.is_empty() {
+        blocks.push(ContentBlock::Text {
+            text: String::new(),
+        });
+    }
+    ConversationMessage {
+        role: MessageRole::User,
+        blocks,
+        usage: None,
+    }
 }
 
 fn push_text_delta<F>(
@@ -1260,6 +1285,7 @@ pub fn run_gateway_solve_turn(
         crate::landlock_dsl::LandlockDsl,
         crate::landlock_dsl::LandlockDslSource,
     )>,
+    attachments: &[SolveAttachment],
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
@@ -1424,7 +1450,7 @@ pub fn run_gateway_solve_turn(
     );
 
     session
-        .push_user_text(prompt)
+        .push_message(build_user_turn_message(prompt, attachments))
         .map_err(|e| err(HTTP_INTERNAL, format!("push user message failed: {e}")))?;
 
     let language_pipeline_json = project_language_pipeline::load_language_pipeline_json(work_dir);
@@ -1730,6 +1756,41 @@ mod gateway_solve_task_file_tests {
     use serde_json::json;
 
     #[test]
+    fn build_user_turn_message_images_and_docs() {
+        use super::{build_user_turn_message, SolveAttachment};
+        use runtime::ContentBlock;
+        let atts = vec![
+            SolveAttachment {
+                path: "uploads/a.png".into(),
+                mime: "image/png".into(),
+                kind: "image".into(),
+                name: Some("a.png".into()),
+                size: Some(10),
+            },
+            SolveAttachment {
+                path: "uploads/b.pdf".into(),
+                mime: "application/pdf".into(),
+                kind: "document".into(),
+                name: Some("b.pdf".into()),
+                size: Some(20),
+            },
+        ];
+        let msg = build_user_turn_message("look", &atts);
+        assert!(msg
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })));
+        assert!(msg
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("uploads/b.pdf"))));
+        assert!(msg
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text == "look")));
+    }
+
+    #[test]
     fn gateway_solve_task_file_serde_roundtrip() {
         let t = GatewaySolveTaskFile {
             request_id: "r1".into(),
@@ -1743,6 +1804,7 @@ mod gateway_solve_task_file_tests {
             session_id: Some("sess-1".into()),
             pool_id: None,
             worker_name: None,
+            attachments: None,
             llm_route: None,
             otel_traceparent: None,
             landlock_dsl: None,
