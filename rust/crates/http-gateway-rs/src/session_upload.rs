@@ -11,9 +11,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::{ApiError, AppState};
 use http_gateway_rs::cluster_identity::gateway_cluster_id;
 use http_gateway_rs::session_merge;
-use crate::{ApiError, AppState};
 
 const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 
@@ -31,8 +31,7 @@ pub fn classify_attachment(mime: &str, name: &str) -> Result<&'static str, Strin
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if mime.starts_with("image/")
-        || matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif")
+    if mime.starts_with("image/") || matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif")
     {
         return Ok("image");
     }
@@ -130,9 +129,8 @@ pub async fn upload_session_files(
                 format!("unknown sessionId {session_id}; call POST /v1/start first"),
             )
         })?;
-    session_merge::validate_session_home_rel(&home_rel).map_err(|_| {
-        ApiError::new(StatusCode::BAD_REQUEST, "invalid session_home in registry")
-    })?;
+    session_merge::validate_session_home_rel(&home_rel)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid session_home in registry"))?;
     let segment = session_merge::sessions_directory_segment(&session_id);
     let cluster_id = gateway_cluster_id().map_err(|e| {
         ApiError::new(
@@ -193,10 +191,7 @@ pub async fn upload_session_files(
             session_rel(&cluster_id, q.proj_id, &segment)
         );
         // Ensure uploads/ on NAS then put file.
-        let uploads_dir = format!(
-            "{}/uploads",
-            session_rel(&cluster_id, q.proj_id, &segment)
-        );
+        let uploads_dir = format!("{}/uploads", session_rel(&cluster_id, q.proj_id, &segment));
         let _ = state.nas_api.mkdir(&uploads_dir, true).await;
         state
             .nas_api
@@ -242,7 +237,10 @@ mod tests {
             classify_attachment("application/pdf", "r.pdf").unwrap(),
             "document"
         );
-        assert_eq!(classify_attachment("text/csv", "t.csv").unwrap(), "document");
+        assert_eq!(
+            classify_attachment("text/csv", "t.csv").unwrap(),
+            "document"
+        );
         assert!(classify_attachment("application/zip", "x.zip").is_err());
     }
 }

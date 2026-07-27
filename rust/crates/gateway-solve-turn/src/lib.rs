@@ -233,7 +233,11 @@ pub struct GatewaySolveTaskFile {
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
     pub worker_name: Option<String>,
     /// User-uploaded attachments (session-relative paths). Author: kejiqing
-    #[serde(default, rename = "attachments", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "attachments",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub attachments: Option<Vec<SolveAttachment>>,
     /// Per-solve LLM routing snapshot (gateway-injected). Author: kejiqing
     #[serde(rename = "llmRoute", skip_serializing_if = "Option::is_none")]
@@ -912,7 +916,10 @@ fn convert_runtime_messages_to_api(messages: &[ConversationMessage]) -> Vec<Inpu
 
 /// Build the user turn from prompt + attachments (images as content blocks, docs as path text).
 /// Author: kejiqing
-pub fn build_user_turn_message(prompt: &str, attachments: &[SolveAttachment]) -> ConversationMessage {
+pub fn build_user_turn_message(
+    prompt: &str,
+    attachments: &[SolveAttachment],
+) -> ConversationMessage {
     let mut blocks = Vec::new();
     for att in attachments {
         let kind = att.kind.trim().to_ascii_lowercase();
@@ -1748,7 +1755,6 @@ mod gateway_solve_task_file_tests {
     use super::GatewaySolveTaskFile;
     use serde_json::json;
 
-
     #[test]
     fn build_user_turn_message_images_and_docs() {
         use super::{build_user_turn_message, SolveAttachment};
@@ -1770,9 +1776,18 @@ mod gateway_solve_task_file_tests {
             },
         ];
         let msg = build_user_turn_message("look", &atts);
-        assert!(msg.blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. })));
-        assert!(msg.blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if text.contains("uploads/b.pdf"))));
-        assert!(msg.blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if text == "look")));
+        assert!(msg
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })));
+        assert!(msg
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("uploads/b.pdf"))));
+        assert!(msg
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text == "look")));
     }
 
     #[test]
