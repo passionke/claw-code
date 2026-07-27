@@ -76,6 +76,10 @@ route_del_one() {
 }
 
 cmd_up() {
+  if [[ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" && -n "${GITHUB_ACTIONS:-}" ]]; then
+    echo "ci-acr-vpn-route: RUNNER_ENVIRONMENT=${RUNNER_ENVIRONMENT:-unset} — skip VPN routes on non-self-hosted Actions runners"
+    return 0
+  fi
   if [[ -z "${gw}" ]]; then
     echo "ci-acr-vpn-route: ACR_MIRROR_VPN_GW unset — skip VPN routes"
     return 0

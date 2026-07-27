@@ -119,7 +119,7 @@ SG 公网直连个人版 ACR 常 **TLS 握手超时**；build/push GHCR 不受�
 | `ACR_MIRROR_VPN_GW` | ACR 域名解析出的 IP 走此 next-hop（10.8 跳板） | `10.8.0.2` |
 | `ACR_MIRROR_VPN_DEV` | 可选，VPN 网卡名 | `wg0` |
 
-`mirror-to-acr` 会在 login/push 前执行 `deploy/stack/lib/ci-acr-vpn-route.sh up`（为 registry hostname 的 `/32` 加路由），job 结束 `down` 清理。未设 `ACR_MIRROR_VPN_GW` 时脚本 no-op。
+`mirror-to-acr` **仅在 self-hosted runner** 上、且设了 `ACR_MIRROR_VPN_GW` 时，才会在 login/push 前执行 `deploy/stack/lib/ci-acr-vpn-route.sh up`（为 registry hostname 的 `/32` 加路由），job 结束 `down` 清理。落在 **GitHub-hosted (`ubuntu-latest`)** 时跳过 VPN（公网直连 ACR）；未设 `ACR_MIRROR_VPN_GW` 时脚本也 no-op。
 
 **SG 宿主机前提**：
 
