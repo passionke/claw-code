@@ -187,13 +187,13 @@ pub async fn ensure_project_observe(
         .map_err(|e| e.to_string())?;
     let pg_sid = pg_row.as_ref().map(|r| r.sandbox_id.as_str());
 
-    let candidate =
-        resolve_project_observe_sandbox_id(client, &cluster_id, proj_id, pg_sid).await;
+    let candidate = resolve_project_observe_sandbox_id(client, &cluster_id, proj_id, pg_sid).await;
 
     if let Some(ref sid) = candidate {
         let domain = client.config().domain.clone();
         let live_base = service_base_url(client, live_port, sid, &domain);
-        if client.sandbox_running(sid).await && wait_http_ok(&live_base, "observe-proj Live", 3).await
+        if client.sandbox_running(sid).await
+            && wait_http_ok(&live_base, "observe-proj Live", 3).await
         {
             client.touch_persistent_sandbox(sid).await?;
             let handle = E2bSandboxHandle {
@@ -206,9 +206,17 @@ pub async fn ensure_project_observe(
                 ovs_public_host: None,
                 ovs_base_url: None,
             };
-            persist_project_observe(db, client, &cluster_id, proj_id, &handle, live_port, &live_base)
-                .await
-                .map_err(|e| e.to_string())?;
+            persist_project_observe(
+                db,
+                client,
+                &cluster_id,
+                proj_id,
+                &handle,
+                live_port,
+                &live_base,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
             info!(target: "claw_project_observe", proj_id, sandbox_id = %sid, "project observe online");
             let settings = load_project_inference_settings(db, proj_id).await?;
             return Ok(ProjectObserveResetResponse {
@@ -291,8 +299,7 @@ pub async fn reset_project_observe(
         );
         let _ = client.kill_sandbox(&sid).await;
     }
-    let _ = db
-        .delete_llm_project_observe(&cluster_id, proj_id)
+    db.delete_llm_project_observe(&cluster_id, proj_id)
         .await
         .map_err(|e| e.to_string())?;
     ensure_project_observe(db, client, proj_id).await
@@ -336,8 +343,7 @@ pub async fn get_project_observe_status(
 ) -> Result<ProjectObserveStatusResponse, String> {
     let mut settings = load_project_inference_settings(db, proj_id).await?;
     if let (Some(client), Some(sid)) = (client, settings.observe.sandbox_id.clone()) {
-        settings.observe.e2b_observe_sandbox_running =
-            Some(client.sandbox_running(&sid).await);
+        settings.observe.e2b_observe_sandbox_running = Some(client.sandbox_running(&sid).await);
     }
     Ok(ProjectObserveStatusResponse {
         proj_id,

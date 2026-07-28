@@ -327,9 +327,7 @@ pub async fn resolve_solve_llm_route(
         let proxy = crate::gateway_project_llm::load_project_observe_proxy_base_url(db, proj_id)
             .await?
             .ok_or_else(|| {
-                format!(
-                    "project {proj_id} has custom LLM but project observe proxyBaseUrl missing"
-                )
+                format!("project {proj_id} has custom LLM but project observe proxyBaseUrl missing")
             })?;
         (active, proxy, "clawTapProject")
     } else {

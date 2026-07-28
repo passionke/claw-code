@@ -5557,9 +5557,8 @@ async fn upsert_project_llm_model_handler(
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     if let Some(client) = state.pool_clients.e2b_sandbox_client() {
-        let _ =
-            gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
-                .await;
+        let _ = gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
+            .await;
     }
     Ok(Json(cfg))
 }
@@ -5603,9 +5602,8 @@ async fn delete_project_llm_model_handler(
                 .await;
         }
     } else if let Some(client) = state.pool_clients.e2b_sandbox_client() {
-        let _ =
-            gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
-                .await;
+        let _ = gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
+            .await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -5634,9 +5632,8 @@ async fn apply_project_llm_model_head_handler(
     .await
     .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     if let Some(client) = state.pool_clients.e2b_sandbox_client() {
-        let _ =
-            gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
-                .await;
+        let _ = gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
+            .await;
     }
     Ok(Json(resp))
 }
@@ -5654,9 +5651,8 @@ async fn apply_project_llm_model_revision_handler(
     .await
     .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     if let Some(client) = state.pool_clients.e2b_sandbox_client() {
-        let _ =
-            gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
-                .await;
+        let _ = gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
+            .await;
     }
     Ok(Json(resp))
 }

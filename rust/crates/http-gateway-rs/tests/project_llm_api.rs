@@ -20,10 +20,7 @@ fn ensure_test_env(tmp: &std::path::Path) {
     std::env::set_var("CLAW_REPO_ROOT", tmp.display().to_string());
     std::env::set_var(
         "CLAW_LLM_RUNTIME_ENV_FILE",
-        claw_dir
-            .join("claw-llm-runtime.env")
-            .display()
-            .to_string(),
+        claw_dir.join("claw-llm-runtime.env").display().to_string(),
     );
     std::env::set_var(
         "CLAW_TAP_UPSTREAM_CONFIG_FILE",
@@ -94,17 +91,16 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
     assert_eq!(s0.mode, ProjectLlmMode::Inherit);
     assert!(s0.active_llm_config.is_none());
 
-    let material_inherit = prepare_e2b_worker_llm_material(
-        &db,
-        PROJ1,
-        None,
-        PrepareE2bWorkerLlmOptions::default(),
-    )
-    .await
-    .expect("material inherit");
+    let material_inherit =
+        prepare_e2b_worker_llm_material(&db, PROJ1, None, PrepareE2bWorkerLlmOptions::default())
+            .await
+            .expect("material inherit");
     assert_eq!(material_inherit.route.mode, "e2bObserveTap");
     assert_eq!(
-        material_inherit.env.get("OPENAI_BASE_URL").map(String::as_str),
+        material_inherit
+            .env
+            .get("OPENAI_BASE_URL")
+            .map(String::as_str),
         Some("http://8080-global-observe.test")
     );
     assert!(material_inherit.model.contains("qwen-global-default"));
@@ -152,14 +148,10 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
         Some("http://8080-proj1-observe.test")
     );
 
-    let material_plus = prepare_e2b_worker_llm_material(
-        &db,
-        PROJ1,
-        None,
-        PrepareE2bWorkerLlmOptions::default(),
-    )
-    .await
-    .expect("material plus");
+    let material_plus =
+        prepare_e2b_worker_llm_material(&db, PROJ1, None, PrepareE2bWorkerLlmOptions::default())
+            .await
+            .expect("material plus");
     assert_eq!(material_plus.route.mode, "e2bProjectObserveTap");
     assert_eq!(
         material_plus.env.get("OPENAI_BASE_URL").map(String::as_str),
@@ -213,14 +205,10 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
         "switching model must keep same project observe"
     );
 
-    let material_max = prepare_e2b_worker_llm_material(
-        &db,
-        PROJ1,
-        None,
-        PrepareE2bWorkerLlmOptions::default(),
-    )
-    .await
-    .expect("material max");
+    let material_max =
+        prepare_e2b_worker_llm_material(&db, PROJ1, None, PrepareE2bWorkerLlmOptions::default())
+            .await
+            .expect("material max");
     assert_eq!(material_max.route.mode, "e2bProjectObserveTap");
     assert!(
         material_max.model.contains("qwen3.7-max"),
@@ -240,16 +228,11 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
     assert_eq!(global_active.model_name, "qwen-global-default");
 
     // 5) Delete all project models → inherit + observe row cleared
-    let models: Vec<_> = s2
-        .llm_models
-        .iter()
-        .map(|m| m.id.clone())
-        .collect();
+    let models: Vec<_> = s2.llm_models.iter().map(|m| m.id.clone()).collect();
     for id in models {
-        let (deleted, inherit_now) =
-            gateway_project_llm::delete_project_llm_model(&db, PROJ1, &id)
-                .await
-                .expect("delete");
+        let (deleted, inherit_now) = gateway_project_llm::delete_project_llm_model(&db, PROJ1, &id)
+            .await
+            .expect("delete");
         assert!(deleted);
         if inherit_now {
             db.delete_llm_project_observe(&test_cluster, PROJ1)
@@ -265,20 +248,13 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
     assert!(!s3.observe.configured);
     assert!(s3.active_llm_config.is_none());
 
-    let material_back = prepare_e2b_worker_llm_material(
-        &db,
-        PROJ1,
-        None,
-        PrepareE2bWorkerLlmOptions::default(),
-    )
-    .await
-    .expect("material back to global");
+    let material_back =
+        prepare_e2b_worker_llm_material(&db, PROJ1, None, PrepareE2bWorkerLlmOptions::default())
+            .await
+            .expect("material back to global");
     assert_eq!(material_back.route.mode, "e2bObserveTap");
     assert_eq!(
-        material_back
-            .env
-            .get("OPENAI_BASE_URL")
-            .map(String::as_str),
+        material_back.env.get("OPENAI_BASE_URL").map(String::as_str),
         Some("http://8080-global-observe.test")
     );
     assert!(material_back.model.contains("qwen-global-default"));

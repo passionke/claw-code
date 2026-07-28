@@ -12,7 +12,9 @@ use crate::gateway_llm_cluster_store::resolve_llm_cluster_id;
 use crate::gateway_llm_model_apply::LlmModelApplyOutcome;
 use crate::gateway_llm_model_revision::{format_model_rev_local_ms, llm_api_key_slot};
 use crate::gateway_llm_project_store::{load_project_llm_store, save_project_llm_store};
-use crate::session_db::{GatewayLlmProjectObserveRow, GatewayLlmProjectRevisionRow, GatewaySessionDb};
+use crate::session_db::{
+    GatewayLlmProjectObserveRow, GatewayLlmProjectRevisionRow, GatewaySessionDb,
+};
 
 /// Inference mode for a project. Author: kejiqing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +42,10 @@ pub struct ProjectObservePublic {
     pub live_port: Option<i32>,
     #[serde(rename = "updatedAtMs", skip_serializing_if = "Option::is_none")]
     pub updated_at_ms: Option<i64>,
-    #[serde(rename = "e2bObserveSandboxRunning", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "e2bObserveSandboxRunning",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub e2b_observe_sandbox_running: Option<bool>,
 }
 
@@ -57,7 +62,10 @@ pub struct ProjectInferenceSettingsResponse {
     pub active_llm_model_id: Option<String>,
     #[serde(rename = "activeLlmModelRev", skip_serializing_if = "Option::is_none")]
     pub active_llm_model_rev: Option<String>,
-    #[serde(rename = "activeLlmAppliedAtMs", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "activeLlmAppliedAtMs",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub active_llm_applied_at_ms: Option<i64>,
     #[serde(rename = "activeLlmConfig", skip_serializing_if = "Option::is_none")]
     pub active_llm_config: Option<ActiveLlmConfigPublic>,
@@ -135,8 +143,7 @@ fn resolve_llm_api_key_on_save(
 }
 
 fn normalize_revision_note(note: Option<String>) -> Option<String> {
-    note.map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    note.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// True when project has an active custom LLM (override mode). Author: kejiqing
@@ -592,15 +599,14 @@ pub async fn load_project_observe_proxy_base_url(
         .get_llm_project_observe(&cluster_id, proj_id)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(row
-        .and_then(|r| {
-            let u = r.proxy_base_url.trim().trim_end_matches('/').to_string();
-            if u.is_empty() {
-                None
-            } else {
-                Some(u)
-            }
-        }))
+    Ok(row.and_then(|r| {
+        let u = r.proxy_base_url.trim().trim_end_matches('/').to_string();
+        if u.is_empty() {
+            None
+        } else {
+            Some(u)
+        }
+    }))
 }
 
 #[cfg(test)]
@@ -628,12 +634,8 @@ mod tests {
     #[test]
     fn prune_removes_at_slots() {
         let mut store = LlmModelsStore::default();
-        store
-            .api_keys
-            .insert("llm-1@old".into(), "sk-old".into());
-        store
-            .api_keys
-            .insert("llm-1@new".into(), "sk-new".into());
+        store.api_keys.insert("llm-1@old".into(), "sk-old".into());
+        store.api_keys.insert("llm-1@new".into(), "sk-new".into());
         store.api_keys.insert("llm-2@x".into(), "sk-2".into());
         prune_llm_api_keys_for_model(&mut store, "llm-1");
         assert!(!store.api_keys.contains_key("llm-1@old"));

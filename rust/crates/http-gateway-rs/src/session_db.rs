@@ -2460,11 +2460,13 @@ impl GatewaySessionDb {
             .bind(proj_id)
             .execute(&self.pool)
             .await?;
-        sqlx::query("DELETE FROM gateway_llm_project_observe WHERE cluster_id = $1 AND proj_id = $2")
-            .bind(cluster_id)
-            .bind(proj_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "DELETE FROM gateway_llm_project_observe WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
