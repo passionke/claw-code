@@ -122,6 +122,7 @@ pub async fn run_solve_request_docker(
     let (llm_route, worker_llm_env) = if pool_id == E2B_POOL_ID {
         let material = prepare_e2b_worker_llm_material(
             &state.session_db,
+            req.proj_id,
             req.model.as_deref(),
             PrepareE2bWorkerLlmOptions { for_repl: false },
         )
@@ -133,6 +134,7 @@ pub async fn run_solve_request_docker(
             &state.session_db,
             &state.claw_tap_cluster,
             &state.llm_runtime,
+            req.proj_id,
             req.model.as_deref(),
         )
         .await

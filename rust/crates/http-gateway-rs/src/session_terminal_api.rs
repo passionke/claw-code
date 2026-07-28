@@ -552,6 +552,7 @@ pub async fn terminal_start(
 
     let material = prepare_e2b_worker_llm_material(
         &ctx.session_db,
+        req.proj_id,
         None,
         PrepareE2bWorkerLlmOptions { for_repl: true },
     )

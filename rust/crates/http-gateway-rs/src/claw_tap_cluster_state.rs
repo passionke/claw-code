@@ -294,6 +294,7 @@ pub async fn resolve_solve_llm_route(
     db: &GatewaySessionDb,
     cluster_handle: &ClawTapClusterHandle,
     _llm_handle: &LlmRuntimeHandle,
+    proj_id: i64,
     model_override: Option<&str>,
 ) -> Result<(SolveLlmRoute, std::collections::BTreeMap<String, String>), String> {
     let snapshot = snapshot_from_handle(cluster_handle).await;
@@ -317,10 +318,28 @@ pub async fn resolve_solve_llm_route(
             .mismatch_reason
             .unwrap_or_else(|| "clawTap not in strict cluster mode".into()));
     }
-    let active = gateway_global_settings::load_active_llm_runtime(db)
+
+    let project_active = crate::gateway_project_llm::load_active_project_llm_runtime(db, proj_id)
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no active LLM model configured in Admin".to_string())?;
+        .map_err(|e| e.to_string())?;
+
+    let (active, openai_base, mode) = if let Some(active) = project_active {
+        let proxy = crate::gateway_project_llm::load_project_observe_proxy_base_url(db, proj_id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "project {proj_id} has custom LLM but project observe proxyBaseUrl missing"
+                )
+            })?;
+        (active, proxy, "clawTapProject")
+    } else {
+        let active = gateway_global_settings::load_active_llm_runtime(db)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no active LLM model configured in Admin".to_string())?;
+        (active, inner.tap_base_url.clone(), "clawTap")
+    };
+
     let (upstream, default_model) = active_llm_upstream(&active)?;
     let model = model_override
         .map(str::trim)
@@ -331,12 +350,11 @@ pub async fn resolve_solve_llm_route(
     if api_key.is_empty() {
         return Err("active LLM apiKey missing".into());
     }
-    let openai_base = inner.tap_base_url.clone();
     let route = SolveLlmRoute {
-        mode: "clawTap".to_string(),
+        mode: mode.to_string(),
         cluster_id: inner.cluster_id.clone(),
         cluster_hash: inner.local_identity.cluster_hash.clone(),
-        claw_tap_base_url: Some(inner.tap_base_url.clone()),
+        claw_tap_base_url: Some(openai_base.clone()),
         upstream_base_url: upstream,
         model: model.clone(),
         reason: None,

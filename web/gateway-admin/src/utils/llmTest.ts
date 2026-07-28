@@ -50,13 +50,9 @@ export function normalizeLlmTestResponse(raw: unknown): LlmTestResponse {
 
 export async function testLlmModel(
   gatewayBase: string,
-  req: LlmTestRequest
+  req: LlmTestRequest,
+  testPath = "/v1/gateway/global-settings/llm-models/test"
 ): Promise<LlmTestResponse> {
-  const raw = await proxyHttp<unknown>(
-    gatewayBase,
-    "POST",
-    "/v1/gateway/global-settings/llm-models/test",
-    req
-  );
+  const raw = await proxyHttp<unknown>(gatewayBase, "POST", testPath, req);
   return normalizeLlmTestResponse(raw);
 }

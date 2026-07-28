@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 use crate::claw_tap_cluster_state::{active_llm_upstream, claw_repl_model_name, SolveLlmRoute};
 use crate::cluster_identity::{gateway_cluster_id, gateway_database_url, local_cluster_identity};
 use crate::gateway_global_settings;
+use crate::gateway_project_llm::{
+    load_active_project_llm_runtime, load_project_observe_proxy_base_url,
+};
 use crate::session_db::GatewaySessionDb;
 
 use super::interactive_backend::{
@@ -26,20 +29,40 @@ pub struct PrepareE2bWorkerLlmOptions {
     pub for_repl: bool,
 }
 
-/// e2b-only: PG active LLM + observe singleton proxy → worker-safe env (placeholder key).
+/// e2b-only: project override LLM+observe when configured, else global active + global observe.
 pub async fn prepare_e2b_worker_llm_material(
     session_db: &GatewaySessionDb,
+    proj_id: i64,
     model_override: Option<&str>,
     options: PrepareE2bWorkerLlmOptions,
 ) -> Result<WorkerLlmMaterial, String> {
     let cluster_id = gateway_cluster_id()?;
     let db_url = gateway_database_url()?;
     let local = local_cluster_identity(&cluster_id, &db_url)?;
-    let proxy_base = load_e2b_observe_proxy_base_url(session_db).await?;
-    let active = gateway_global_settings::load_active_llm_runtime(session_db)
+
+    let project_active = load_active_project_llm_runtime(session_db, proj_id)
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no active LLM model configured in Admin".to_string())?;
+        .map_err(|e| e.to_string())?;
+
+    let (proxy_base, active, mode) = if let Some(active) = project_active {
+        let proxy = load_project_observe_proxy_base_url(session_db, proj_id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "project {proj_id} has custom LLM but project observe proxyBaseUrl missing; \
+                     Admin → 项目推理 reset observe"
+                )
+            })?;
+        (proxy, active, "e2bProjectObserveTap")
+    } else {
+        let proxy = load_e2b_observe_proxy_base_url(session_db).await?;
+        let active = gateway_global_settings::load_active_llm_runtime(session_db)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no active LLM model configured in Admin".to_string())?;
+        (proxy, active, "e2bObserveTap")
+    };
+
     let (upstream, default_model) = active_llm_upstream(&active)?;
     let wire_model = model_override
         .map(str::trim)
@@ -53,7 +76,7 @@ pub async fn prepare_e2b_worker_llm_material(
     };
     let route = e2b_worker_solve_route(
         SolveLlmRoute {
-            mode: "e2bObserveTap".to_string(),
+            mode: mode.to_string(),
             cluster_id: cluster_id.clone(),
             cluster_hash: local.cluster_hash.clone(),
             claw_tap_base_url: Some(proxy_base.clone()),

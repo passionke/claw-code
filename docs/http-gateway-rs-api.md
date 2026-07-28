@@ -221,6 +221,16 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - `DELETE /v1/gateway/global-settings/git-pats/{pat_id}` — 删除 PAT
   - 项目 `gitSyncJson` 使用 `gitPatId` 引用全局 PAT；拉取时由网关解析 token，**不在** `project_config` 存 PAT 明文（兼容旧 `gitToken` 内联）
 
+- **项目级推理（可选 LLM 覆盖 + 项目 observe）**
+  - `GET /v1/projects/{proj_id}/inference` — `{ mode: inherit|override, llmModels, activeLlm*, observe }`；无 active 项目模型时 `mode=inherit`
+  - `POST /v1/projects/{proj_id}/inference/llm-models` — 同全局 upsert 形状
+  - `POST .../llm-models/{model_id}/apply` — 设为项目 active；触发 ensure 项目 observe
+  - `DELETE .../llm-models/{model_id}` — 删光后自动 `inherit` 并 teardown 项目 observe
+  - `POST .../llm-models/test` — 连通性探测（直连 upstream）
+  - `GET .../observe` / `POST .../observe/reset` — 项目 observe 状态 / 重置
+  - PG：`gateway_llm_project_*`（均带 `cluster_id` + `proj_id`）；**不**写入 `project_config`
+  - 验收（proj1）：配 `qwen3-plus` → override + 项目 observe proxy；切 `qwen3.7-max`；删光 → 回落全局
+
 - `POST /v1/projects/{proj_id}/git/pull`
   - 用途：从远程拉取到 `home/` 下**非 DB 物化**路径（排除列表由当前 `project_config` 行计算）；pull 后 `apply_project_config` 叠加 PG
   - 前置：`gitSyncJson.enabled=true` 且 URL/分支合法

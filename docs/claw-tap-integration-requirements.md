@@ -32,7 +32,19 @@ Author: kejiqing
 - 环境变量 **`CLAW_GATEWAY_DATABASE_URL`**（或与 gateway **完全相同**的 PG 连接串）。
 - 用于：
   1. 计算 **clusterHash**（与 gateway 同一算法）；
-  2. 读取 gateway 在 PG 中的**当前生效 LLM**（`gateway_global_settings` / active model，具体表结构以 gateway 为准）。
+  2. 读取 gateway 在 PG 中的**当前生效 LLM**：
+     - **全局 observe**（未设 `CLAW_PROJ_ID`）：读 `gateway_llm_cluster_*`（按 `CLAW_CLUSTER_ID`）；
+     - **项目 observe**（设置了 `CLAW_PROJ_ID`）：读 `gateway_llm_project_*`（按 `(CLAW_CLUSTER_ID, CLAW_PROJ_ID)`）。
+
+### 2.2.1 项目级 LLM / observe（可选）
+
+- Gateway 可为**已配置自定义 LLM** 的项目起独立 observe 沙箱（`metadata.clawRole=observe-proj` + `projId`）。
+- 该沙箱创建时注入：
+  - `CLAW_CLUSTER_ID`（同全局）
+  - `CLAW_GATEWAY_DATABASE_URL`
+  - **`CLAW_PROJ_ID`**（项目 id，整数）
+- **claude-tap 要求**：若环境变量 `CLAW_PROJ_ID` 非空，则从 `gateway_llm_project_model` / `gateway_llm_project_state` / `gateway_llm_project_revision` 加载该 proj 的 active upstream + API key；否则继续读集群全局表。
+- 未配置项目级模型的 proj **不**起独立 observe，worker 仍指向全局 observe。
 
 ### 2.3 网络
 
