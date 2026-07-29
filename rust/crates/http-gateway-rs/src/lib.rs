@@ -54,6 +54,7 @@ pub mod gateway_translate;
 pub mod live_report_audit;
 pub mod llm_probe;
 pub mod mcp_probe;
+pub mod oss_object_store;
 pub mod persistence;
 pub mod pool;
 pub mod pool_consumer_resolve;

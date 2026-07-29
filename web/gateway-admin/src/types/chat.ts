@@ -5,6 +5,20 @@ export interface ProgressEvent {
   message?: string;
 }
 
+/** Session upload / turn attachment metadata. Author: kejiqing */
+export interface SolveAttachmentMeta {
+  path: string;
+  mime: string;
+  kind: string;
+  name?: string;
+  size?: number;
+  ossKey?: string;
+  ossUrl?: string;
+  ossRetainUntilMs?: number;
+  /** Temporary signed GET URL from turns API. Author: kejiqing */
+  ossSignedUrl?: string;
+}
+
 /** Multi-agent plan todo from `task-progress.json`. Author: kejiqing */
 export interface TaskProgressTodo {
   id: string;
@@ -110,6 +124,8 @@ export interface GatewayTurnSummary {
   feedback?: TurnFeedbackValue | null;
   /** Enqueue snapshot from `entry_params_json`. Author: kejiqing */
   extraSession?: Record<string, unknown> | null;
+  /** Enqueue attachments (may include ossSignedUrl). Author: kejiqing */
+  attachments?: SolveAttachmentMeta[] | null;
   poolId?: string | null;
   workerName?: string | null;
   workerProfile?: string | null;

@@ -54,6 +54,8 @@ pub struct GatewayTurnSummary {
     pub feedback: Option<String>,
     /// Snapshot `extraSession` from enqueue `entry_params_json`. Author: kejiqing
     pub extra_session: Option<Value>,
+    /// Snapshot `attachments` from enqueue `entry_params_json` (unsigned). Author: kejiqing
+    pub attachments: Option<Value>,
     /// Pool assigned at enqueue or exec (`gateway_turns.pool_id`). Author: kejiqing
     pub pool_id: Option<String>,
     /// Worker container name after pool exec starts. Author: kejiqing
@@ -5016,9 +5018,11 @@ impl GatewaySessionDb {
                 report_body_from_persisted(report_message.as_deref(), output_value.as_ref())
             };
             let entry_params_json: Option<Json<Value>> = r.try_get("entry_params_json")?;
-            let extra_session = entry_params_json
-                .map(|Json(v)| v)
+            let entry = entry_params_json.map(|Json(v)| v);
+            let extra_session = entry
+                .as_ref()
                 .and_then(|v| v.get("extraSession").cloned());
+            let attachments = entry.as_ref().and_then(|v| v.get("attachments").cloned());
             out.push(GatewayTurnSummary {
                 turn_id: r.try_get("turn_id")?,
                 user_prompt: r.try_get("user_prompt")?,
@@ -5031,6 +5035,7 @@ impl GatewaySessionDb {
                 client_origin: r.try_get("client_origin")?,
                 feedback: r.try_get("feedback")?,
                 extra_session,
+                attachments,
                 pool_id: r.try_get("pool_id")?,
                 worker_name: r.try_get("worker_name")?,
                 worker_exec_user: r.try_get("worker_exec_user")?,

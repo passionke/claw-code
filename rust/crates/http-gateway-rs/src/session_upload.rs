@@ -1,10 +1,11 @@
-//! Session file upload → NAS `sessions/{seg}/uploads/`. Author: kejiqing
+//! Session file upload → NAS `sessions/{seg}/uploads/` (+ optional OSS dual-write). Author: kejiqing
 
 use std::path::{Component, Path};
 
 use axum::extract::{Multipart, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use chrono::Utc;
 use claw_e2b_sandbox_client::session_rel;
 use gateway_solve_turn::SolveAttachment;
 use serde::Deserialize;
@@ -13,6 +14,7 @@ use uuid::Uuid;
 
 use crate::{ApiError, AppState};
 use http_gateway_rs::cluster_identity::gateway_cluster_id;
+use http_gateway_rs::oss_object_store::OssConfig;
 use http_gateway_rs::session_merge;
 
 const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
@@ -139,6 +141,7 @@ pub async fn upload_session_files(
         )
     })?;
     let local_home = session_merge::join_session_home_from_rel(&state.cfg.work_root, &home_rel);
+    let oss = OssConfig::from_env();
     let mut uploaded: Vec<SolveAttachment> = Vec::new();
 
     while let Some(field) = multipart.next_field().await.map_err(|e| {
@@ -176,7 +179,8 @@ pub async fn upload_session_files(
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
         let safe = safe_original_name(&original);
         let short = &Uuid::new_v4().simple().to_string()[..8];
-        let rel_under = format!("uploads/{short}_{safe}");
+        let file_leaf = format!("{short}_{safe}");
+        let rel_under = format!("uploads/{file_leaf}");
         if Path::new(&rel_under)
             .components()
             .any(|c| matches!(c, Component::ParentDir | Component::RootDir))
@@ -208,12 +212,32 @@ pub async fn upload_session_files(
             let _ = tokio::fs::create_dir_all(parent).await;
         }
         let _ = tokio::fs::write(&local, &bytes).await;
+
+        let mut oss_key = None;
+        let mut oss_url = None;
+        let mut oss_retain_until_ms = None;
+        if oss.enabled() {
+            let key = oss.build_attachment_key(&cluster_id, q.proj_id, &session_id, &file_leaf);
+            oss.put_object(&key, &bytes, &mime).await.map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("OSS put_object failed: {e}"),
+                )
+            })?;
+            oss_url = Some(oss.object_url(&key));
+            oss_retain_until_ms = Some(oss.retain_until_ms(Utc::now()));
+            oss_key = Some(key);
+        }
+
         uploaded.push(SolveAttachment {
             path: rel_under,
             mime,
             kind: kind.to_string(),
             name: Some(original),
             size: Some(bytes.len() as u64),
+            oss_key,
+            oss_url,
+            oss_retain_until_ms,
         });
     }
 
@@ -223,7 +247,30 @@ pub async fn upload_session_files(
             "no file parts found; use multipart field name \"file\"",
         ));
     }
-    Ok(Json(json!({ "attachments": uploaded })))
+    // Enrich response with temporary ossSignedUrl (not stored in entry_params / SolveAttachment).
+    let attachments_json: Value = if oss.enabled() {
+        let now = Utc::now();
+        let ttl = oss.signed_url_ttl_secs;
+        Value::Array(
+            uploaded
+                .into_iter()
+                .map(|att| {
+                    let signed = att
+                        .oss_key
+                        .as_deref()
+                        .and_then(|k| oss.presign_get(k, ttl, now).ok());
+                    let mut v = serde_json::to_value(&att).unwrap_or(json!({}));
+                    if let (Some(url), Some(obj)) = (signed, v.as_object_mut()) {
+                        obj.insert("ossSignedUrl".into(), Value::String(url));
+                    }
+                    v
+                })
+                .collect(),
+        )
+    } else {
+        json!(uploaded)
+    };
+    Ok(Json(json!({ "attachments": attachments_json })))
 }
 
 #[cfg(test)]

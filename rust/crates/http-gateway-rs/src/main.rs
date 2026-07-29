@@ -7008,6 +7008,8 @@ struct GatewayTurnSummaryJson {
     feedback: Option<String>,
     #[serde(rename = "extraSession", skip_serializing_if = "Option::is_none")]
     extra_session: Option<Value>,
+    #[serde(rename = "attachments", skip_serializing_if = "Option::is_none")]
+    attachments: Option<Value>,
     #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
     pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
@@ -7110,6 +7112,35 @@ async fn list_project_sessions(
     }))
 }
 
+/// Attach temporary `ossSignedUrl` for history UI. Author: kejiqing
+fn sign_turn_attachments_for_response(attachments: Option<Value>) -> Option<Value> {
+    let mut atts = attachments?;
+    let arr = atts.as_array_mut()?;
+    let oss = http_gateway_rs::oss_object_store::OssConfig::from_env();
+    if !oss.enabled() {
+        return Some(atts);
+    }
+    let now = chrono::Utc::now();
+    let ttl = oss.signed_url_ttl_secs;
+    for item in arr.iter_mut() {
+        let Some(obj) = item.as_object_mut() else {
+            continue;
+        };
+        let Some(key) = obj
+            .get("ossKey")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        if let Ok(url) = oss.presign_get(key, ttl, now) {
+            obj.insert("ossSignedUrl".into(), Value::String(url));
+        }
+    }
+    Some(atts)
+}
+
 async fn list_session_turns(
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,
@@ -7148,24 +7179,29 @@ async fn list_session_turns(
         proj_id: query.proj_id,
         turns: rows
             .into_iter()
-            .map(|r| GatewayTurnSummaryJson {
-                turn_id: r.turn_id,
-                user_prompt: r.user_prompt,
-                status: r.status,
-                created_at_ms: r.created_at_ms,
-                finished_at_ms: r.finished_at_ms,
-                has_report: r.has_report,
-                report_body: r.report_body,
-                failure_detail: r.failure_detail,
-                client_origin: r.client_origin,
-                feedback: r.feedback,
-                extra_session: r.extra_session,
-                pool_id: r.pool_id,
-                worker_name: r.worker_name,
-                worker_profile: worker_profile.clone(),
-                worker_exec_user: r.worker_exec_user,
-                gateway_id: r.gateway_id,
-                gateway_base: r.gateway_base,
+            .map(|r| {
+                let attachments =
+                    sign_turn_attachments_for_response(r.attachments);
+                GatewayTurnSummaryJson {
+                    turn_id: r.turn_id,
+                    user_prompt: r.user_prompt,
+                    status: r.status,
+                    created_at_ms: r.created_at_ms,
+                    finished_at_ms: r.finished_at_ms,
+                    has_report: r.has_report,
+                    report_body: r.report_body,
+                    failure_detail: r.failure_detail,
+                    client_origin: r.client_origin,
+                    feedback: r.feedback,
+                    extra_session: r.extra_session,
+                    attachments,
+                    pool_id: r.pool_id,
+                    worker_name: r.worker_name,
+                    worker_profile: worker_profile.clone(),
+                    worker_exec_user: r.worker_exec_user,
+                    gateway_id: r.gateway_id,
+                    gateway_base: r.gateway_base,
+                }
             })
             .collect(),
     }))
