@@ -114,7 +114,7 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
             name: "proj1 qwen3-plus".into(),
             base_model_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".into(),
             model_name: "qwen3-plus".into(),
-            supports_vision: false,
+            supports_vision: true,
             api_key: Some("sk-proj1-plus".into()),
             note: None,
         },
@@ -170,6 +170,15 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
         .expect("active runtime");
     assert_eq!(runtime_plus.model_name, "qwen3-plus");
     assert_eq!(runtime_plus.api_key, "sk-proj1-plus");
+    assert!(runtime_plus.supports_vision);
+    let effective_proj1 = gateway_project_llm::load_effective_llm_runtime(&db, PROJ1)
+        .await
+        .expect("load effective proj1")
+        .expect("proj1 effective runtime");
+    assert!(
+        effective_proj1.supports_vision,
+        "project override must determine the effective vision capability"
+    );
 
     // 3) Switch to qwen3.7-max (same observe proxy)
     let max = gateway_project_llm::upsert_project_llm_model(
@@ -226,6 +235,14 @@ async fn proj1_qwen_plus_then_max_then_inherit_global() {
         .expect("global active")
         .expect("global has active");
     assert_eq!(global_active.model_name, "qwen-global-default");
+    let effective_proj2 = gateway_project_llm::load_effective_llm_runtime(&db, PROJ2)
+        .await
+        .expect("load effective proj2")
+        .expect("proj2 effective runtime");
+    assert!(
+        !effective_proj2.supports_vision,
+        "project without override must inherit global vision capability"
+    );
 
     // 5) Delete all project models → inherit + observe row cleared
     let models: Vec<_> = s2.llm_models.iter().map(|m| m.id.clone()).collect();

@@ -262,6 +262,18 @@ pub async fn load_active_project_llm_runtime(
     }))
 }
 
+/// Resolve the runtime used by a project: project override first, cluster global otherwise.
+/// Author: kejiqing
+pub async fn load_effective_llm_runtime(
+    db: &GatewaySessionDb,
+    proj_id: i64,
+) -> Result<Option<ActiveLlmRuntime>, sqlx::Error> {
+    if let Some(runtime) = load_active_project_llm_runtime(db, proj_id).await? {
+        return Ok(Some(runtime));
+    }
+    crate::gateway_global_settings::load_active_llm_runtime(db).await
+}
+
 pub async fn load_active_project_llm_config_public(
     db: &GatewaySessionDb,
     proj_id: i64,
