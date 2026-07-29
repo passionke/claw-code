@@ -5019,9 +5019,7 @@ impl GatewaySessionDb {
             };
             let entry_params_json: Option<Json<Value>> = r.try_get("entry_params_json")?;
             let entry = entry_params_json.map(|Json(v)| v);
-            let extra_session = entry
-                .as_ref()
-                .and_then(|v| v.get("extraSession").cloned());
+            let extra_session = entry.as_ref().and_then(|v| v.get("extraSession").cloned());
             let attachments = entry.as_ref().and_then(|v| v.get("attachments").cloned());
             out.push(GatewayTurnSummary {
                 turn_id: r.try_get("turn_id")?,

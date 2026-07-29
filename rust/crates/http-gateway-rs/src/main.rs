@@ -7180,8 +7180,7 @@ async fn list_session_turns(
         turns: rows
             .into_iter()
             .map(|r| {
-                let attachments =
-                    sign_turn_attachments_for_response(r.attachments);
+                let attachments = sign_turn_attachments_for_response(r.attachments);
                 GatewayTurnSummaryJson {
                     turn_id: r.turn_id,
                     user_prompt: r.user_prompt,

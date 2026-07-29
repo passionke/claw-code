@@ -59,7 +59,13 @@ fn signing_key(secret: &str, date: &str, region: &str) -> Vec<u8> {
 fn sorted_query_string(params: &BTreeMap<String, String>) -> String {
     params
         .iter()
-        .map(|(k, v)| format!("{}={}", encode_query_component(k), encode_query_component(v)))
+        .map(|(k, v)| {
+            format!(
+                "{}={}",
+                encode_query_component(k),
+                encode_query_component(v)
+            )
+        })
         .collect::<Vec<_>>()
         .join("&")
 }
@@ -169,7 +175,8 @@ impl OssConfig {
     #[must_use]
     pub fn retain_until_ms(&self, now: DateTime<Utc>) -> i64 {
         let secs = i64::try_from(self.object_ttl_days.saturating_mul(86_400)).unwrap_or(i64::MAX);
-        now.timestamp_millis().saturating_add(secs.saturating_mul(1000))
+        now.timestamp_millis()
+            .saturating_add(secs.saturating_mul(1000))
     }
 
     /// Presigned GET URL (query V4, `x-oss-additional-headers=host`).
@@ -211,10 +218,7 @@ impl OssConfig {
         let host = self.virtual_host();
         let encoded_key = encode_object_key(key);
         let mut query = BTreeMap::new();
-        query.insert(
-            "x-oss-signature-version".into(),
-            "OSS4-HMAC-SHA256".into(),
-        );
+        query.insert("x-oss-signature-version".into(), "OSS4-HMAC-SHA256".into());
         query.insert("x-oss-date".into(), datetime.clone());
         query.insert("x-oss-expires".into(), expires_secs.to_string());
         query.insert("x-oss-credential".into(), credential);
@@ -261,9 +265,7 @@ impl OssConfig {
         let content_type_trim = content_type.trim();
         let (canonical_headers, signed_headers_line) = if content_type_trim.is_empty() {
             (
-                format!(
-                    "x-oss-content-sha256:UNSIGNED-PAYLOAD\nx-oss-date:{datetime}\n"
-                ),
+                format!("x-oss-content-sha256:UNSIGNED-PAYLOAD\nx-oss-date:{datetime}\n"),
                 String::new(),
             )
         } else {
@@ -385,9 +387,7 @@ pub fn canonical_request_presign_get(
 ) -> String {
     let canonical_uri = format!("/{bucket}/{encoded_key}");
     let canonical_headers = format!("host:{host}\n");
-    format!(
-        "GET\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\nhost\nUNSIGNED-PAYLOAD"
-    )
+    format!("GET\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\nhost\nUNSIGNED-PAYLOAD")
 }
 
 #[cfg(test)]
@@ -428,20 +428,14 @@ mod tests {
     fn presign_canonical_includes_host_additional() {
         let host = "clawcode-sessions.oss-ap-southeast-1.aliyuncs.com";
         let mut q = BTreeMap::new();
-        q.insert(
-            "x-oss-additional-headers".into(),
-            "host".into(),
-        );
+        q.insert("x-oss-additional-headers".into(), "host".into());
         q.insert(
             "x-oss-credential".into(),
             "AKID/20260729/ap-southeast-1/oss/aliyun_v4_request".into(),
         );
         q.insert("x-oss-date".into(), "20260729T105824Z".into());
         q.insert("x-oss-expires".into(), "900".into());
-        q.insert(
-            "x-oss-signature-version".into(),
-            "OSS4-HMAC-SHA256".into(),
-        );
+        q.insert("x-oss-signature-version".into(), "OSS4-HMAC-SHA256".into());
         let cq = sorted_query_string(&q);
         let cr = canonical_request_presign_get(
             "clawcode-sessions",
