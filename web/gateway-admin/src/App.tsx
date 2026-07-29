@@ -15,12 +15,14 @@ import ToolsPage from "./pages/ToolsPage";
 import ExtraSessionPage from "./pages/ExtraSessionPage";
 import PreflightPage from "./pages/PreflightPage";
 import WorkerProfilePage from "./pages/WorkerProfilePage";
+import ProjectInferencePage from "./pages/ProjectInferencePage";
 import GlobalSettingsRedirect from "./pages/GlobalSettingsRedirect";
 import GitPatsPage from "./pages/global/GitPatsPage";
 import AdminMcpTokensPage from "./pages/global/AdminMcpTokensPage";
 import GlobalInferencePage from "./pages/global/GlobalInferencePage";
 import E2bPlatformPage from "./pages/global/E2bPlatformPage";
 import E2bCoreComponentsPage from "./pages/global/E2bCoreComponentsPage";
+import OssStoragePage from "./pages/global/OssStoragePage";
 import StrictLandlockDefaultPage from "./pages/global/StrictLandlockDefaultPage";
 import ChatPage from "./pages/ChatPage";
 
@@ -64,11 +66,13 @@ export default function App() {
               <Route path="extra-session" element={<ExtraSessionPage />} />
               <Route path="preflight" element={<PreflightPage />} />
               <Route path="worker-profile" element={<WorkerProfilePage />} />
+              <Route path="inference" element={<ProjectInferencePage />} />
               <Route path="global" element={<GlobalSettingsRedirect />} />
               <Route path="global/inference" element={<GlobalInferencePage />} />
               <Route path="global/e2b-platform" element={<E2bPlatformPage />} />
               <Route path="global/e2b-core" element={<E2bCoreComponentsPage />} />
               <Route path="global/e2b-nas" element={<E2bCoreComponentsPage />} />
+              <Route path="global/oss" element={<OssStoragePage />} />
               <Route path="global/strict-landlock" element={<StrictLandlockDefaultPage />} />
               <Route path="global/models" element={<Navigate to="/global/inference" replace />} />
               <Route path="global/claw-tap" element={<Navigate to="/global/inference" replace />} />

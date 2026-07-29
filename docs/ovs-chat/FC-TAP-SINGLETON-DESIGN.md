@@ -8,7 +8,7 @@ Related: [FC-OVS-SINGLETON-DESIGN.md](./FC-OVS-SINGLETON-DESIGN.md)
 
 ## 1. 一句话
 
-**e2b 起一个稳定的 observe 沙箱，同时承载 LLM 代理（8080）与 Live 观测（3000）；所有 worker 只连 observe 代理，不内嵌 tap、不持有真实 LLM 凭证、不写 trace。**
+**e2b 起一个稳定的 observe 沙箱，同时承载 LLM 代理（8080）与 Live 观测（3000）；所有 worker 只连 observe 代理，不内嵌 tap、不持有真实 LLM 凭证、不写 trace。可选：已配置项目级 LLM 的 proj 另起独立 observe-proj，未配置的 proj 仍共用全局 observe。**
 
 ---
 

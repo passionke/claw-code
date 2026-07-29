@@ -206,6 +206,19 @@ pub struct SolveAttachment {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+    /// OSS object key (durable store). Author: kejiqing
+    #[serde(default, rename = "ossKey", skip_serializing_if = "Option::is_none")]
+    pub oss_key: Option<String>,
+    /// Unsigned virtual-host object URL. Author: kejiqing
+    #[serde(default, rename = "ossUrl", skip_serializing_if = "Option::is_none")]
+    pub oss_url: Option<String>,
+    /// Wall-clock ms when OSS retention ends (`CLAW_OSS_OBJECT_TTL_DAYS`). Author: kejiqing
+    #[serde(
+        default,
+        rename = "ossRetainUntilMs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oss_retain_until_ms: Option<i64>,
 }
 
 /// Task payload written by the gateway / read by `claw gateway-solve-once`.
@@ -1766,6 +1779,9 @@ mod gateway_solve_task_file_tests {
                 kind: "image".into(),
                 name: Some("a.png".into()),
                 size: Some(10),
+                oss_key: None,
+                oss_url: None,
+                oss_retain_until_ms: None,
             },
             SolveAttachment {
                 path: "uploads/b.pdf".into(),
@@ -1773,6 +1789,9 @@ mod gateway_solve_task_file_tests {
                 kind: "document".into(),
                 name: Some("b.pdf".into()),
                 size: Some(20),
+                oss_key: None,
+                oss_url: None,
+                oss_retain_until_ms: None,
             },
         ];
         let msg = build_user_turn_message("look", &atts);

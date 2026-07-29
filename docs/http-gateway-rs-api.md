@@ -34,7 +34,7 @@ Base URL 示例：`http://127.0.0.1:18088`
       - 若存在但不是 object，将返回 `400`（`extraSession must be a JSON object when present`）
       - 序列化后大小上限约为 `8KB`，超出将返回 `400`（`extraSession is too large (max 8KB)`）
       - 若 `project_config.extra_session_fields_json` 非空：请求体须为 object，且**每个定义字段**均存在且值为 **string**（可为 `""`）；允许额外系统 key（`tenant_code`、`solution_code`、`biz_type`、`_claw_*`）。否则 `400`（`extraSession 不符合要求：…`）
-      - enqueue 时将完整入口参数写入 `gateway_turns.entry_params_json`（含 `extraSession`）；`GET /v1/sessions/{sessionId}/turns` 每项返回 `extraSession` 快照
+      - enqueue 时将完整入口参数写入 `gateway_turns.entry_params_json`（含 `extraSession` / `attachments`）；`GET /v1/sessions/{sessionId}/turns` 每项返回 `extraSession` 与 `attachments` 快照（有 `ossKey` 时附 `ossSignedUrl`）
     - `allowedTools`：可选，字符串数组，指定**本次 solve**允许暴露给模型并执行的工具名（与异步 `/v1/solve_async` 相同）。
       - **未传 `allowedTools`**：沿用网关进程环境变量 `CLAW_ALLOWED_TOOLS`（逗号分隔，与 `GET /healthz` 中 `allowedTools` 字段一致）。若该环境变量也未配置（空），则下游 `gateway-solve-turn` 将空列表视为「不额外收紧」，**内置 MVP 工具（含 `bash` 等）会全部挂上**。
       - **已配置全局 `CLAW_ALLOWED_TOOLS`（非空）**：请求里的 `allowedTools` 若出现，则其中**每一项**都必须被全局策略放行（支持前缀通配：全局项若以 `*` 结尾，则匹配该前缀开头的工具名；请求侧若以 `*` 结尾，则该项须与全局列表中的某一项字面完全一致）。否则返回 `400`，提示 `requested tool pattern is not allowed by gateway policy`。因此若部署里把全局白名单写得很窄（例如仅 `read_file,glob_search`），仅靠请求体无法「偷偷」加上 `bash`，需要先把 **`CLAW_ALLOWED_TOOLS` 扩大到包含 `bash`（或 `bash*`）等**。
@@ -221,6 +221,16 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - `DELETE /v1/gateway/global-settings/git-pats/{pat_id}` — 删除 PAT
   - 项目 `gitSyncJson` 使用 `gitPatId` 引用全局 PAT；拉取时由网关解析 token，**不在** `project_config` 存 PAT 明文（兼容旧 `gitToken` 内联）
 
+- **项目级推理（可选 LLM 覆盖 + 项目 observe）**
+  - `GET /v1/projects/{proj_id}/inference` — `{ mode: inherit|override, llmModels, activeLlm*, observe }`；无 active 项目模型时 `mode=inherit`
+  - `POST /v1/projects/{proj_id}/inference/llm-models` — 同全局 upsert 形状
+  - `POST .../llm-models/{model_id}/apply` — 设为项目 active；触发 ensure 项目 observe
+  - `DELETE .../llm-models/{model_id}` — 删光后自动 `inherit` 并 teardown 项目 observe
+  - `POST .../llm-models/test` — 连通性探测（直连 upstream）
+  - `GET .../observe` / `POST .../observe/reset` — 项目 observe 状态 / 重置
+  - PG：`gateway_llm_project_*`（均带 `cluster_id` + `proj_id`）；**不**写入 `project_config`
+  - 验收（proj1）：配 `qwen3-plus` → override + 项目 observe proxy；切 `qwen3.7-max`；删光 → 回落全局
+
 - `POST /v1/projects/{proj_id}/git/pull`
   - 用途：从远程拉取到 `home/` 下**非 DB 物化**路径（排除列表由当前 `project_config` 行计算）；pull 后 `apply_project_config` 叠加 PG
   - 前置：`gitSyncJson.enabled=true` 且 URL/分支合法
@@ -296,9 +306,15 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
 读宿主机 `CLAW_WORK_ROOT/proj_{projId}/sessions/{sessionId}/`（与 interactive bind 同路径）。
 
 - `POST /v1/sessions/{session_id}/files?projId=`
-  - 用途：上传用户附件到该会话 `uploads/`（NAS SoT + 本地 session 目录）。须先 `POST /v1/start`（或已有 session）。
+  - 用途：上传用户附件到该会话 `uploads/`（NAS 供 solve 读取 + 可选 OSS 双写长周期持久化）。须先 `POST /v1/start`（或已有 session）。
   - 请求：`multipart/form-data`，字段名 `file`（可多 part）；单文件默认上限 10MB；允许图片（png/jpeg/webp/gif）与文档（pdf/csv/txt/md/json）。
-  - 响应：`{ attachments: [ { path, mime, kind, name?, size? } ] }`，`path` 相对 session cwd（如 `uploads/a1b2c3d4_report.pdf`），供后续 `solve` / `solve_async` 的 `attachments` 字段引用。
+  - 响应：`{ attachments: [ { path, mime, kind, name?, size?, ossKey?, ossUrl?, ossRetainUntilMs?, ossSignedUrl? } ] }`
+    - `path` 相对 session cwd（如 `uploads/a1b2c3d4_report.pdf`），供后续 `solve` / `solve_async` 的 `attachments` 引用。
+    - `CLAW_OSS_ENABLED` 时额外返回 `ossKey` / `ossUrl`（原始对象地址）/ `ossRetainUntilMs`；`ossSignedUrl` 为临时 GET 加签（仅响应，不入库）。
+    - OSS 启用时上传失败返回 **500**（不做静默降级）。
+
+- `GET /v1/sessions/{session_id}/turns?projId=`
+  - 每轮含 `attachments`（来自 `entry_params_json`）；若条目有 `ossKey` 且 OSS 已配置，额外填 `ossSignedUrl`（`CLAW_OSS_SIGNED_URL_TTL_SECS`，默认 3600s）。
 
 - `GET /v1/sessions/{session_id}/workspace/tree?projId=`
   - 响应：`{ sessionId, projId, entries: [ { name, path, isDir } ] }`（跳过 `.git` / `target`；最多约 2000 项）

@@ -1,4 +1,4 @@
-import { Alert, Button, Input, Spin, Tooltip, Upload, message } from "antd";
+import { Alert, Button, Image, Input, Spin, Tooltip, Upload, message } from "antd";
 import { PaperClipOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChatHistorySidebar from "../components/chat/ChatHistorySidebar";
@@ -11,7 +11,11 @@ import { proxyHttp, proxyUploadFiles } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { useChatSession } from "../context/ChatSessionContext";
 import { useSessionTurnFeedback } from "../hooks/useSessionTurnFeedback";
-import type { ListSessionTurnsResponse, SolveAsyncResponse } from "../types/chat";
+import type {
+  ListSessionTurnsResponse,
+  SolveAsyncResponse,
+  SolveAttachmentMeta,
+} from "../types/chat";
 import { buildExtraSession } from "../utils/extraSession";
 import {
   emptyFieldsRecord,
@@ -29,14 +33,6 @@ import { extractSolveReportMessage } from "../utils/solveReportBody";
 import { turnViewModeForStatus } from "../utils/turnViewMode";
 import type { TurnFeedbackValue } from "../types/chat";
 
-interface SolveAttachmentMeta {
-  path: string;
-  mime: string;
-  kind: string;
-  name?: string;
-  size?: number;
-}
-
 interface TurnEntry {
   id: string;
   userText: string;
@@ -51,6 +47,7 @@ interface TurnEntry {
   clientOrigin?: string | null;
   feedback?: TurnFeedbackValue;
   extraSession?: Record<string, unknown> | null;
+  attachments?: SolveAttachmentMeta[] | null;
   createdAtMs?: number;
   finishedAtMs?: number | null;
   poolId?: string | null;
@@ -201,6 +198,7 @@ export default function ChatPage() {
             clientOrigin: t.clientOrigin ?? undefined,
             feedback: t.feedback ?? undefined,
             extraSession: t.extraSession ?? undefined,
+            attachments: t.attachments ?? undefined,
             createdAtMs: t.createdAtMs,
             finishedAtMs: t.finishedAtMs,
             poolId: t.poolId ?? undefined,
@@ -337,6 +335,7 @@ export default function ChatPage() {
         viewMode: "live",
         clientOrigin: CLIENT_ORIGIN_GATEWAY_ADMIN,
         extraSession: extra,
+        attachments: attachments ?? undefined,
         createdAtMs: Date.now(),
         poolId: asyncRes.poolId ?? undefined,
         gatewayId: asyncRes.gatewayId ?? undefined,
@@ -447,7 +446,64 @@ export default function ChatPage() {
             }
             return (
               <div key={item.id} className={styles.turnThread}>
-                <div className={styles.bubbleUser}>{item.userText}</div>
+                <div className={styles.bubbleUser}>
+                  {item.userText}
+                  {item.attachments && item.attachments.length > 0 ? (
+                    <div className={styles.attachmentRow}>
+                      {item.attachments.map((att, idx) => {
+                        const label = att.name || att.path;
+                        const expired =
+                          typeof att.ossRetainUntilMs === "number" &&
+                          Date.now() > att.ossRetainUntilMs;
+                        if (expired) {
+                          return (
+                            <span
+                              key={`${att.path}-${idx}`}
+                              className={styles.attachmentChipMuted}
+                              title="OSS 保留期已过"
+                            >
+                              {label}（已过期）
+                            </span>
+                          );
+                        }
+                        if (att.kind === "image" && att.ossSignedUrl) {
+                          return (
+                            <div key={`${att.path}-${idx}`} className={styles.attachmentImageWrap}>
+                              <Image
+                                src={att.ossSignedUrl}
+                                alt={label}
+                                width={120}
+                                style={{ borderRadius: 8 }}
+                              />
+                            </div>
+                          );
+                        }
+                        if (att.ossSignedUrl) {
+                          return (
+                            <a
+                              key={`${att.path}-${idx}`}
+                              className={styles.attachmentChip}
+                              href={att.ossSignedUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {label}
+                            </a>
+                          );
+                        }
+                        return (
+                          <span
+                            key={`${att.path}-${idx}`}
+                            className={styles.attachmentChipMuted}
+                            title="无 OSS 加签地址，无法预览"
+                          >
+                            {label}（不可预览）
+                          </span>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
                 <ChatTurnCard
                   taskId={item.taskId}
                   sessionId={item.sessionId}

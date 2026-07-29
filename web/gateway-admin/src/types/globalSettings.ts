@@ -111,6 +111,18 @@ export interface E2bNasSettings {
   hasProjTree?: boolean;
 }
 
+/** Session attachment OSS (CLAW_OSS_*; no secret). Author: kejiqing */
+export interface OssStorageSettings {
+  enabled: boolean;
+  endpoint: string;
+  region: string;
+  bucket: string;
+  keyPrefix: string;
+  accessKeyIdSet: boolean;
+  objectTtlDays: number;
+  signedUrlTtlSecs: number;
+}
+
 export interface E2bPlatformSettings {
   readOnly: boolean;
   e2bApiUrl: string;
@@ -229,6 +241,8 @@ export interface GlobalSettingsResponse {
   activeLlmConfig?: ActiveLlmConfig;
   clawTap?: ClawTapSettings;
   e2bNas?: E2bNasSettings;
+  /** Session attachment OSS store (env CLAW_OSS_*; read-only). Author: kejiqing */
+  oss?: OssStorageSettings;
   e2bPlatform?: E2bPlatformSettings;
   e2bNasApi?: E2bNasApiSettings;
   e2bOvs?: E2bOvsSettings;

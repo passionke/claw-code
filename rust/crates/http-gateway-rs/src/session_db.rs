@@ -54,6 +54,8 @@ pub struct GatewayTurnSummary {
     pub feedback: Option<String>,
     /// Snapshot `extraSession` from enqueue `entry_params_json`. Author: kejiqing
     pub extra_session: Option<Value>,
+    /// Snapshot `attachments` from enqueue `entry_params_json` (unsigned). Author: kejiqing
+    pub attachments: Option<Value>,
     /// Pool assigned at enqueue or exec (`gateway_turns.pool_id`). Author: kejiqing
     pub pool_id: Option<String>,
     /// Worker container name after pool exec starts. Author: kejiqing
@@ -283,6 +285,61 @@ pub struct GatewayLlmClusterStateRow {
     pub active_model_id: String,
     pub active_model_rev: String,
     pub active_applied_at_ms: Option<i64>,
+    pub updated_at_ms: i64,
+}
+
+/// Per-project LLM model row (`gateway_llm_project_model`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct GatewayLlmProjectModelRow {
+    pub cluster_id: String,
+    pub proj_id: i64,
+    pub model_id: String,
+    pub name: String,
+    pub base_model_url: String,
+    pub model_name: String,
+    pub current_rev: String,
+    pub api_key_ciphertext: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// Active LLM pointer for one project (`gateway_llm_project_state`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct GatewayLlmProjectStateRow {
+    pub cluster_id: String,
+    pub proj_id: i64,
+    pub active_model_id: String,
+    pub active_model_rev: String,
+    pub active_applied_at_ms: Option<i64>,
+    pub updated_at_ms: i64,
+}
+
+/// One immutable project LLM model revision (`gateway_llm_project_revision`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct GatewayLlmProjectRevisionRow {
+    pub cluster_id: String,
+    pub proj_id: i64,
+    pub model_id: String,
+    pub model_rev: String,
+    pub created_at_ms: i64,
+    pub name: String,
+    pub base_model_url: String,
+    pub model_name: String,
+    pub supports_vision: bool,
+    pub note: Option<String>,
+}
+
+/// Per-project observe singleton state (`gateway_llm_project_observe`). Author: kejiqing
+#[derive(Debug, Clone, Default)]
+pub struct GatewayLlmProjectObserveRow {
+    pub cluster_id: String,
+    pub proj_id: i64,
+    pub sandbox_id: String,
+    pub proxy_base_url: String,
+    pub live_base_url: String,
+    pub host: String,
+    pub proxy_port: i32,
+    pub live_port: i32,
     pub updated_at_ms: i64,
 }
 
@@ -1101,6 +1158,8 @@ impl GatewaySessionDb {
         )
         .await?;
         Self::run_sql_migration_file(pool, include_str!("../migrations/014_project_metadata.sql"))
+            .await?;
+        Self::run_sql_migration_file(pool, include_str!("../migrations/015_project_llm.sql"))
             .await?;
 
         Ok(())
@@ -2160,6 +2219,330 @@ impl GatewaySessionDb {
             .bind(cluster_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    pub async fn list_llm_project_models(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+    ) -> Result<Vec<GatewayLlmProjectModelRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT cluster_id, proj_id, model_id, name, base_model_url, model_name, current_rev,
+                      api_key_ciphertext, created_at_ms, updated_at_ms
+               FROM gateway_llm_project_model
+               WHERE cluster_id = $1 AND proj_id = $2
+               ORDER BY created_at_ms ASC",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(GatewayLlmProjectModelRow {
+                    cluster_id: row.try_get("cluster_id")?,
+                    proj_id: row.try_get("proj_id")?,
+                    model_id: row.try_get("model_id")?,
+                    name: row.try_get("name")?,
+                    base_model_url: row.try_get("base_model_url")?,
+                    model_name: row.try_get("model_name")?,
+                    current_rev: row.try_get("current_rev")?,
+                    api_key_ciphertext: row.try_get("api_key_ciphertext")?,
+                    created_at_ms: row.try_get("created_at_ms")?,
+                    updated_at_ms: row.try_get("updated_at_ms")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn upsert_llm_project_model(
+        &self,
+        row: &GatewayLlmProjectModelRow,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_llm_project_model (
+                 cluster_id, proj_id, model_id, name, base_model_url, model_name, current_rev,
+                 api_key_ciphertext, created_at_ms, updated_at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               ON CONFLICT (cluster_id, proj_id, model_id) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 base_model_url = EXCLUDED.base_model_url,
+                 model_name = EXCLUDED.model_name,
+                 current_rev = EXCLUDED.current_rev,
+                 api_key_ciphertext = EXCLUDED.api_key_ciphertext,
+                 updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(&row.cluster_id)
+        .bind(row.proj_id)
+        .bind(&row.model_id)
+        .bind(&row.name)
+        .bind(&row.base_model_url)
+        .bind(&row.model_name)
+        .bind(&row.current_rev)
+        .bind(&row.api_key_ciphertext)
+        .bind(row.created_at_ms)
+        .bind(row.updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_llm_project_model(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+        model_id: &str,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "DELETE FROM gateway_llm_project_model WHERE cluster_id = $1 AND proj_id = $2 AND model_id = $3",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .bind(model_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_llm_project_state(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+    ) -> Result<Option<GatewayLlmProjectStateRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT cluster_id, proj_id, active_model_id, active_model_rev, active_applied_at_ms, updated_at_ms
+               FROM gateway_llm_project_state WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| GatewayLlmProjectStateRow {
+            cluster_id: row.try_get("cluster_id").unwrap_or_default(),
+            proj_id: row.try_get("proj_id").unwrap_or(0),
+            active_model_id: row.try_get("active_model_id").unwrap_or_default(),
+            active_model_rev: row.try_get("active_model_rev").unwrap_or_default(),
+            active_applied_at_ms: row.try_get("active_applied_at_ms").ok(),
+            updated_at_ms: row.try_get("updated_at_ms").unwrap_or(0),
+        }))
+    }
+
+    pub async fn save_llm_project_state(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+        active_model_id: &str,
+        active_model_rev: &str,
+        active_applied_at_ms: Option<i64>,
+        updated_at_ms: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_llm_project_state (
+                 cluster_id, proj_id, active_model_id, active_model_rev, active_applied_at_ms, updated_at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (cluster_id, proj_id) DO UPDATE SET
+                 active_model_id = EXCLUDED.active_model_id,
+                 active_model_rev = EXCLUDED.active_model_rev,
+                 active_applied_at_ms = EXCLUDED.active_applied_at_ms,
+                 updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .bind(active_model_id)
+        .bind(active_model_rev)
+        .bind(active_applied_at_ms)
+        .bind(updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_llm_project_revision(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+        model_id: &str,
+        model_rev: &str,
+    ) -> Result<Option<GatewayLlmProjectRevisionRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT cluster_id, proj_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
+                     COALESCE(supports_vision, FALSE) AS supports_vision, note
+               FROM gateway_llm_project_revision
+               WHERE cluster_id = $1 AND proj_id = $2 AND model_id = $3 AND model_rev = $4",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .bind(model_id)
+        .bind(model_rev)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| GatewayLlmProjectRevisionRow {
+            cluster_id: row.try_get("cluster_id").unwrap_or_default(),
+            proj_id: row.try_get("proj_id").unwrap_or(0),
+            model_id: row.try_get("model_id").unwrap_or_default(),
+            model_rev: row.try_get("model_rev").unwrap_or_default(),
+            created_at_ms: row.try_get("created_at_ms").unwrap_or(0),
+            name: row.try_get("name").unwrap_or_default(),
+            base_model_url: row.try_get("base_model_url").unwrap_or_default(),
+            model_name: row.try_get("model_name").unwrap_or_default(),
+            supports_vision: row.try_get("supports_vision").unwrap_or(false),
+            note: row.try_get("note").ok(),
+        }))
+    }
+
+    pub async fn upsert_llm_project_revision(
+        &self,
+        row: &GatewayLlmProjectRevisionRow,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_llm_project_revision (
+                 cluster_id, proj_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
+                 supports_vision, note
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               ON CONFLICT (cluster_id, proj_id, model_id, model_rev) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 base_model_url = EXCLUDED.base_model_url,
+                 model_name = EXCLUDED.model_name,
+                 supports_vision = EXCLUDED.supports_vision,
+                 note = EXCLUDED.note,
+                 created_at_ms = EXCLUDED.created_at_ms",
+        )
+        .bind(&row.cluster_id)
+        .bind(row.proj_id)
+        .bind(&row.model_id)
+        .bind(&row.model_rev)
+        .bind(row.created_at_ms)
+        .bind(&row.name)
+        .bind(&row.base_model_url)
+        .bind(&row.model_name)
+        .bind(row.supports_vision)
+        .bind(&row.note)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_llm_project_revisions(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+        model_id: &str,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "DELETE FROM gateway_llm_project_revision WHERE cluster_id = $1 AND proj_id = $2 AND model_id = $3",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .bind(model_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_llm_project_all(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "DELETE FROM gateway_llm_project_revision WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("DELETE FROM gateway_llm_project_model WHERE cluster_id = $1 AND proj_id = $2")
+            .bind(cluster_id)
+            .bind(proj_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM gateway_llm_project_state WHERE cluster_id = $1 AND proj_id = $2")
+            .bind(cluster_id)
+            .bind(proj_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            "DELETE FROM gateway_llm_project_observe WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_llm_project_observe(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+    ) -> Result<Option<GatewayLlmProjectObserveRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT cluster_id, proj_id, sandbox_id, proxy_base_url, live_base_url, host,
+                     proxy_port, live_port, updated_at_ms
+               FROM gateway_llm_project_observe WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| GatewayLlmProjectObserveRow {
+            cluster_id: row.try_get("cluster_id").unwrap_or_default(),
+            proj_id: row.try_get("proj_id").unwrap_or(0),
+            sandbox_id: row.try_get("sandbox_id").unwrap_or_default(),
+            proxy_base_url: row.try_get("proxy_base_url").unwrap_or_default(),
+            live_base_url: row.try_get("live_base_url").unwrap_or_default(),
+            host: row.try_get("host").unwrap_or_default(),
+            proxy_port: row.try_get("proxy_port").unwrap_or(8080),
+            live_port: row.try_get("live_port").unwrap_or(3000),
+            updated_at_ms: row.try_get("updated_at_ms").unwrap_or(0),
+        }))
+    }
+
+    pub async fn save_llm_project_observe(
+        &self,
+        row: &GatewayLlmProjectObserveRow,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            r"INSERT INTO gateway_llm_project_observe (
+                 cluster_id, proj_id, sandbox_id, proxy_base_url, live_base_url, host,
+                 proxy_port, live_port, updated_at_ms
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               ON CONFLICT (cluster_id, proj_id) DO UPDATE SET
+                 sandbox_id = EXCLUDED.sandbox_id,
+                 proxy_base_url = EXCLUDED.proxy_base_url,
+                 live_base_url = EXCLUDED.live_base_url,
+                 host = EXCLUDED.host,
+                 proxy_port = EXCLUDED.proxy_port,
+                 live_port = EXCLUDED.live_port,
+                 updated_at_ms = EXCLUDED.updated_at_ms",
+        )
+        .bind(&row.cluster_id)
+        .bind(row.proj_id)
+        .bind(&row.sandbox_id)
+        .bind(&row.proxy_base_url)
+        .bind(&row.live_base_url)
+        .bind(&row.host)
+        .bind(row.proxy_port)
+        .bind(row.live_port)
+        .bind(row.updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_llm_project_observe(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "DELETE FROM gateway_llm_project_observe WHERE cluster_id = $1 AND proj_id = $2",
+        )
+        .bind(cluster_id)
+        .bind(proj_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -4635,9 +5018,9 @@ impl GatewaySessionDb {
                 report_body_from_persisted(report_message.as_deref(), output_value.as_ref())
             };
             let entry_params_json: Option<Json<Value>> = r.try_get("entry_params_json")?;
-            let extra_session = entry_params_json
-                .map(|Json(v)| v)
-                .and_then(|v| v.get("extraSession").cloned());
+            let entry = entry_params_json.map(|Json(v)| v);
+            let extra_session = entry.as_ref().and_then(|v| v.get("extraSession").cloned());
+            let attachments = entry.as_ref().and_then(|v| v.get("attachments").cloned());
             out.push(GatewayTurnSummary {
                 turn_id: r.try_get("turn_id")?,
                 user_prompt: r.try_get("user_prompt")?,
@@ -4650,6 +5033,7 @@ impl GatewaySessionDb {
                 client_origin: r.try_get("client_origin")?,
                 feedback: r.try_get("feedback")?,
                 extra_session,
+                attachments,
                 pool_id: r.try_get("pool_id")?,
                 worker_name: r.try_get("worker_name")?,
                 worker_exec_user: r.try_get("worker_exec_user")?,

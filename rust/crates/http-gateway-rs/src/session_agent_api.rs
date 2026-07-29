@@ -480,6 +480,7 @@ async fn run_ovs_interactive_prompt(
     }
     let material = prepare_e2b_worker_llm_material(
         &ctx.session_db,
+        proj_id,
         None,
         PrepareE2bWorkerLlmOptions { for_repl: true },
     )

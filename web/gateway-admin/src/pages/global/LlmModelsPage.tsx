@@ -60,8 +60,18 @@ function formatMs(ms?: number): string {
   return new Date(ms).toLocaleString();
 }
 
-export default function LlmModelsPage({ embedded = false }: { embedded?: boolean }) {
+export default function LlmModelsPage({
+  embedded = false,
+  /** API prefix: global `/v1/gateway/global-settings` or project `/v1/projects/{id}/inference`. */
+  apiPrefix = "/v1/gateway/global-settings",
+}: {
+  embedded?: boolean;
+  apiPrefix?: string;
+}) {
   const { gatewayBase } = useApp();
+  const settingsPath = apiPrefix;
+  const modelsPath = `${apiPrefix}/llm-models`;
+  const testPath = `${apiPrefix}/llm-models/test`;
   const [models, setModels] = useState<LlmModelRow[]>([]);
   const [activeLlmModelId, setActiveLlmModelId] = useState<string | undefined>();
   const [activeLlmModelRev, setActiveLlmModelRev] = useState<string | undefined>();
@@ -94,11 +104,13 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await proxyHttp<GlobalSettingsResponse>(
-        gatewayBase,
-        "GET",
-        "/v1/gateway/global-settings"
-      );
+      const r = await proxyHttp<{
+        llmModels?: LlmModelRow[];
+        activeLlmModelId?: string;
+        activeLlmModelRev?: string;
+        activeLlmConfig?: GlobalSettingsResponse["activeLlmConfig"];
+        activeLlmAppliedAtMs?: number;
+      }>(gatewayBase, "GET", settingsPath);
       setModels(r.llmModels || []);
       setActiveLlmModelId(r.activeLlmModelId);
       setActiveLlmModelRev(r.activeLlmModelRev);
@@ -107,7 +119,7 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
     } finally {
       setLoading(false);
     }
-  }, [gatewayBase]);
+  }, [gatewayBase, settingsPath]);
 
   useEffect(() => {
     load().catch(() => {
@@ -178,12 +190,7 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
       };
       if (editing) body.id = editing.id;
       if (apiKey) body.apiKey = apiKey;
-      await proxyHttp<LlmModelRow>(
-        gatewayBase,
-        "POST",
-        "/v1/gateway/global-settings/llm-models",
-        body
-      );
+      await proxyHttp<LlmModelRow>(gatewayBase, "POST", modelsPath, body);
       message.success(editing ? "模型已更新" : "模型已添加");
       setModalOpen(false);
       await load();
@@ -200,7 +207,7 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
     }>(
       gatewayBase,
       "POST",
-      `/v1/gateway/global-settings/llm-models/${encodeURIComponent(row.id)}/apply`
+      `${modelsPath}/${encodeURIComponent(row.id)}/apply`
     );
     const restarted = resp.outcome?.tapRestarted;
     const detail = resp.outcome?.message;
@@ -254,7 +261,7 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
       const effort = (v.reasoningEffort || "").trim();
       if (effort) req.reasoningEffort = effort;
 
-      const r = await testLlmModel(gatewayBase, req);
+      const r = await testLlmModel(gatewayBase, req, testPath);
       setTestResult(r);
       if (r.ok) {
         message.success(`模型「${testingRow.name}」测试通过（${r.durationMs}ms）`);
@@ -272,7 +279,7 @@ export default function LlmModelsPage({ embedded = false }: { embedded?: boolean
     await proxyHttp(
       gatewayBase,
       "DELETE",
-      `/v1/gateway/global-settings/llm-models/${encodeURIComponent(row.id)}`
+      `${modelsPath}/${encodeURIComponent(row.id)}`
     );
     message.success("已删除");
     await load();

@@ -132,6 +132,40 @@ pub async fn probe_llm_model(
     }
 
     let runtime = gateway_global_settings::load_llm_runtime_for_model_id(db, model_id).await?;
+    probe_with_runtime(runtime, req).await
+}
+
+/// Probe a project-scoped LLM model (Admin project inference test). Author: kejiqing
+pub async fn probe_project_llm_model(
+    db: &GatewaySessionDb,
+    proj_id: i64,
+    req: LlmTestRequest,
+) -> Result<LlmTestResponse, String> {
+    let model_id = req.model_id.trim();
+    if model_id.is_empty() {
+        return Err("modelId must be non-empty".into());
+    }
+    validate_sampling(req.temperature, "temperature", 0.0, 2.0)?;
+    validate_sampling(req.top_p, "topP", 0.0, 1.0)?;
+    validate_sampling(req.frequency_penalty, "frequencyPenalty", -2.0, 2.0)?;
+    validate_sampling(req.presence_penalty, "presencePenalty", -2.0, 2.0)?;
+    if let Some(max_tokens) = req.max_tokens {
+        if max_tokens == 0 || max_tokens > 32_768 {
+            return Err("maxTokens must be between 1 and 32768".into());
+        }
+    }
+
+    let runtime =
+        crate::gateway_project_llm::load_llm_runtime_for_project_model_id(db, proj_id, model_id)
+            .await?;
+    probe_with_runtime(runtime, req).await
+}
+
+async fn probe_with_runtime(
+    runtime: gateway_global_settings::ActiveLlmRuntime,
+    req: LlmTestRequest,
+) -> Result<LlmTestResponse, String> {
+    let _model_id = req.model_id.trim();
     let (upstream, wire_model) = active_llm_upstream(&runtime)?;
     let api_key = runtime.api_key.trim();
     if api_key.is_empty() {

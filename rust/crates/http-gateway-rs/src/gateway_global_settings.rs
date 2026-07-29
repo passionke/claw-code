@@ -173,6 +173,13 @@ pub struct GatewayGlobalSettingsPublic {
     )]
     pub e2b_nas: Option<E2bNasSettingsPublic>,
     #[serde(
+        rename = "oss",
+        default,
+        skip_deserializing,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oss: Option<crate::oss_object_store::OssSettingsPublic>,
+    #[serde(
         rename = "e2bPlatform",
         default,
         skip_deserializing,
@@ -327,6 +334,8 @@ pub struct GatewayGlobalSettingsResponse {
     pub claw_tap: Option<ClawTapSettingsPublic>,
     #[serde(rename = "e2bNas", skip_serializing_if = "Option::is_none")]
     pub e2b_nas: Option<E2bNasSettingsPublic>,
+    #[serde(rename = "oss", skip_serializing_if = "Option::is_none")]
+    pub oss: Option<crate::oss_object_store::OssSettingsPublic>,
     #[serde(rename = "e2bPlatform", skip_serializing_if = "Option::is_none")]
     pub e2b_platform: Option<E2bPlatformSettingsPublic>,
     #[serde(rename = "e2bNasApi", skip_serializing_if = "Option::is_none")]
@@ -887,6 +896,7 @@ pub async fn load_public(
         e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
             &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
         )),
+        oss: Some((&crate::oss_object_store::OssConfig::from_env()).into()),
         e2b_platform: Some(crate::gateway_e2b_platform_settings::e2b_platform_settings_public()),
         admin_mcp_tokens: admin_mcp_tokens_public(&settings),
         cluster_id: cluster_id_public(),
@@ -911,6 +921,7 @@ pub async fn load_response(
         e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
             &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
         )),
+        oss: Some((&crate::oss_object_store::OssConfig::from_env()).into()),
         e2b_platform: Some(crate::gateway_e2b_platform_settings::e2b_platform_settings_public()),
         e2b_nas_api: crate::gateway_e2b_nas_api_settings::e2b_nas_api_settings_public(db)
             .await
@@ -1163,6 +1174,7 @@ pub fn to_public(
         e2b_nas: Some(crate::gateway_e2b_nas_settings::e2b_nas_settings_public(
             &crate::gateway_e2b_nas_settings::gateway_work_root_from_env(),
         )),
+        oss: Some((&crate::oss_object_store::OssConfig::from_env()).into()),
         e2b_platform: Some(crate::gateway_e2b_platform_settings::e2b_platform_settings_public()),
         admin_mcp_tokens: admin_mcp_tokens_public(settings),
         cluster_id: cluster_id_public(),

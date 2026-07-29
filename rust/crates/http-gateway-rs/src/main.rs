@@ -46,11 +46,12 @@ use http_gateway_rs::{
     gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_e2b_core_readiness,
     gateway_e2b_nas_settings, gateway_e2b_observe_proxy, gateway_e2b_observe_reset,
     gateway_e2b_singleton_api, gateway_e2b_worker_settings, gateway_global_settings,
-    gateway_llm_config_sync, gateway_project_e2b_worker, gateway_strict_landlock_settings,
-    gateway_translate, llm_probe, mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api,
-    project_config_apply, project_config_version, project_entity_revision, project_extra_session,
-    project_git_sync, project_id, project_tools, session_agent_api, session_db, session_merge,
-    session_ovs_api, session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
+    gateway_llm_config_sync, gateway_project_e2b_worker, gateway_project_llm,
+    gateway_project_observe, gateway_strict_landlock_settings, gateway_translate, llm_probe,
+    mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api, project_config_apply,
+    project_config_version, project_entity_revision, project_extra_session, project_git_sync,
+    project_id, project_tools, session_agent_api, session_db, session_merge, session_ovs_api,
+    session_terminal_api, turn_id, turn_timeline_api, turn_tools_api,
 };
 use project_git_sync::{
     git_sync_list_summary, git_sync_to_json, parse_git_sync_json, GitPullOutcome,
@@ -1662,6 +1663,42 @@ async fn main() {
         .route(
             "/v1/projects/{proj_id}/e2b-worker/reset",
             post(reset_project_e2b_worker_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference",
+            get(get_project_inference_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference/llm-models",
+            post(upsert_project_llm_model_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference/llm-models/test",
+            post(test_project_llm_model_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference/llm-models/{model_id}",
+            delete(delete_project_llm_model_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference/llm-models/{model_id}/versions",
+            get(list_project_llm_model_versions_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference/llm-models/{model_id}/apply",
+            post(apply_project_llm_model_head_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference/llm-models/{model_id}/versions/{model_rev}/apply",
+            post(apply_project_llm_model_revision_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference/observe",
+            get(get_project_observe_handler),
+        )
+        .route(
+            "/v1/projects/{proj_id}/inference/observe/reset",
+            post(reset_project_observe_handler),
         )
         .route("/v1/init", post(init_workspace))
         .route("/v1/solve", post(solve))
@@ -5495,6 +5532,161 @@ async fn reset_project_e2b_worker_handler(
     Ok(Json(body))
 }
 
+async fn get_project_inference_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<gateway_project_llm::ProjectInferenceSettingsResponse>, ApiError> {
+    let mut body = gateway_project_llm::load_project_inference_settings(&state.session_db, proj_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if let (Some(client), Some(sid)) = (
+        state.pool_clients.e2b_sandbox_client(),
+        body.observe.sandbox_id.clone(),
+    ) {
+        body.observe.e2b_observe_sandbox_running = Some(client.sandbox_running(&sid).await);
+    }
+    Ok(Json(body))
+}
+
+async fn upsert_project_llm_model_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+    Json(req): Json<gateway_global_settings::PutLlmModelInput>,
+) -> Result<Json<gateway_global_settings::LlmModelPublic>, ApiError> {
+    let cfg = gateway_project_llm::upsert_project_llm_model(&state.session_db, proj_id, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if let Some(client) = state.pool_clients.e2b_sandbox_client() {
+        let _ = gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
+            .await;
+    }
+    Ok(Json(cfg))
+}
+
+async fn test_project_llm_model_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+    Json(req): Json<llm_probe::LlmTestRequest>,
+) -> Result<Json<llm_probe::LlmTestResponse>, ApiError> {
+    let resp = llm_probe::probe_project_llm_model(&state.session_db, proj_id, req)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(resp))
+}
+
+async fn delete_project_llm_model_handler(
+    State(state): State<AppState>,
+    AxumPath((proj_id, model_id)): AxumPath<(i64, String)>,
+) -> Result<StatusCode, ApiError> {
+    let (deleted, inherit_now) =
+        gateway_project_llm::delete_project_llm_model(&state.session_db, proj_id, &model_id)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if !deleted {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "llm model not found"));
+    }
+    if inherit_now {
+        if let Some(client) = state.pool_clients.e2b_sandbox_client() {
+            let _ = gateway_project_observe::teardown_project_observe(
+                &state.session_db,
+                client,
+                proj_id,
+            )
+            .await;
+        } else if let Some(cluster_id) =
+            http_gateway_rs::gateway_llm_cluster_store::resolve_llm_cluster_id()
+        {
+            let _ = state
+                .session_db
+                .delete_llm_project_observe(&cluster_id, proj_id)
+                .await;
+        }
+    } else if let Some(client) = state.pool_clients.e2b_sandbox_client() {
+        let _ = gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
+            .await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_project_llm_model_versions_handler(
+    State(state): State<AppState>,
+    AxumPath((proj_id, model_id)): AxumPath<(i64, String)>,
+) -> Result<Json<gateway_global_settings::LlmModelVersionsResponse>, ApiError> {
+    let body =
+        gateway_project_llm::list_project_llm_model_versions(&state.session_db, proj_id, &model_id)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(body))
+}
+
+async fn apply_project_llm_model_head_handler(
+    State(state): State<AppState>,
+    AxumPath((proj_id, model_id)): AxumPath<(i64, String)>,
+) -> Result<Json<gateway_global_settings::ApplyLlmModelResponse>, ApiError> {
+    let resp = gateway_project_llm::apply_project_llm_model_by_id(
+        &state.session_db,
+        proj_id,
+        &model_id,
+        None,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if let Some(client) = state.pool_clients.e2b_sandbox_client() {
+        let _ = gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
+            .await;
+    }
+    Ok(Json(resp))
+}
+
+async fn apply_project_llm_model_revision_handler(
+    State(state): State<AppState>,
+    AxumPath((proj_id, model_id, model_rev)): AxumPath<(i64, String, String)>,
+) -> Result<Json<gateway_global_settings::ApplyLlmModelResponse>, ApiError> {
+    let resp = gateway_project_llm::apply_project_llm_model_by_id(
+        &state.session_db,
+        proj_id,
+        &model_id,
+        Some(&model_rev),
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if let Some(client) = state.pool_clients.e2b_sandbox_client() {
+        let _ = gateway_project_observe::ensure_project_observe(&state.session_db, client, proj_id)
+            .await;
+    }
+    Ok(Json(resp))
+}
+
+async fn get_project_observe_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<gateway_project_observe::ProjectObserveStatusResponse>, ApiError> {
+    let body = gateway_project_observe::get_project_observe_status(
+        &state.session_db,
+        state.pool_clients.e2b_sandbox_client().map(|v| &**v),
+        proj_id,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(body))
+}
+
+async fn reset_project_observe_handler(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+) -> Result<Json<gateway_project_observe::ProjectObserveResetResponse>, ApiError> {
+    let client = state.pool_clients.e2b_sandbox_client().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "e2b sandbox client not configured",
+        )
+    })?;
+    let body = gateway_project_observe::reset_project_observe(&state.session_db, client, proj_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(body))
+}
+
 #[derive(Debug, Deserialize)]
 struct ResetProjectE2bWorkerQuery {
     #[serde(rename = "slotIndex")]
@@ -6816,6 +7008,8 @@ struct GatewayTurnSummaryJson {
     feedback: Option<String>,
     #[serde(rename = "extraSession", skip_serializing_if = "Option::is_none")]
     extra_session: Option<Value>,
+    #[serde(rename = "attachments", skip_serializing_if = "Option::is_none")]
+    attachments: Option<Value>,
     #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
     pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
@@ -6918,6 +7112,35 @@ async fn list_project_sessions(
     }))
 }
 
+/// Attach temporary `ossSignedUrl` for history UI. Author: kejiqing
+fn sign_turn_attachments_for_response(attachments: Option<Value>) -> Option<Value> {
+    let mut atts = attachments?;
+    let arr = atts.as_array_mut()?;
+    let oss = http_gateway_rs::oss_object_store::OssConfig::from_env();
+    if !oss.enabled() {
+        return Some(atts);
+    }
+    let now = chrono::Utc::now();
+    let ttl = oss.signed_url_ttl_secs;
+    for item in arr.iter_mut() {
+        let Some(obj) = item.as_object_mut() else {
+            continue;
+        };
+        let Some(key) = obj
+            .get("ossKey")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        if let Ok(url) = oss.presign_get(key, ttl, now) {
+            obj.insert("ossSignedUrl".into(), Value::String(url));
+        }
+    }
+    Some(atts)
+}
+
 async fn list_session_turns(
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,
@@ -6956,24 +7179,28 @@ async fn list_session_turns(
         proj_id: query.proj_id,
         turns: rows
             .into_iter()
-            .map(|r| GatewayTurnSummaryJson {
-                turn_id: r.turn_id,
-                user_prompt: r.user_prompt,
-                status: r.status,
-                created_at_ms: r.created_at_ms,
-                finished_at_ms: r.finished_at_ms,
-                has_report: r.has_report,
-                report_body: r.report_body,
-                failure_detail: r.failure_detail,
-                client_origin: r.client_origin,
-                feedback: r.feedback,
-                extra_session: r.extra_session,
-                pool_id: r.pool_id,
-                worker_name: r.worker_name,
-                worker_profile: worker_profile.clone(),
-                worker_exec_user: r.worker_exec_user,
-                gateway_id: r.gateway_id,
-                gateway_base: r.gateway_base,
+            .map(|r| {
+                let attachments = sign_turn_attachments_for_response(r.attachments);
+                GatewayTurnSummaryJson {
+                    turn_id: r.turn_id,
+                    user_prompt: r.user_prompt,
+                    status: r.status,
+                    created_at_ms: r.created_at_ms,
+                    finished_at_ms: r.finished_at_ms,
+                    has_report: r.has_report,
+                    report_body: r.report_body,
+                    failure_detail: r.failure_detail,
+                    client_origin: r.client_origin,
+                    feedback: r.feedback,
+                    extra_session: r.extra_session,
+                    attachments,
+                    pool_id: r.pool_id,
+                    worker_name: r.worker_name,
+                    worker_profile: worker_profile.clone(),
+                    worker_exec_user: r.worker_exec_user,
+                    gateway_id: r.gateway_id,
+                    gateway_base: r.gateway_base,
+                }
             })
             .collect(),
     }))

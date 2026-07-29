@@ -21,6 +21,8 @@ pub const SANDBOX_LEASE_TICK_SECS: u64 = 60;
 pub const SINGLETON_ROLE_OBSERVE: &str = "observe-singleton";
 pub const SINGLETON_ROLE_NAS_API: &str = "nas-api-singleton";
 pub const SINGLETON_ROLE_OVS: &str = "ovs-singleton";
+/// Per-project observe singleton (`metadata.clawRole=observe-proj` + `projId`).
+pub const SINGLETON_ROLE_OBSERVE_PROJ: &str = "observe-proj";
 /// Per-project worker `metadata.clawRole`.
 pub const WARM_PROJ_ROLE: &str = "warm-proj";
 
@@ -1067,6 +1069,133 @@ impl E2bSandboxClient {
             false,
         )
         .await
+    }
+
+    /// Create per-project observe (`metadata.clawRole=observe-proj` + `projId`). Author: kejiqing
+    pub async fn create_observe_proj_singleton(
+        &self,
+        template_id: &str,
+        cluster_id: &str,
+        proj_id: i64,
+        sandbox_database_url: &str,
+    ) -> Result<E2bSandboxHandle, String> {
+        if self.config.is_self_hosted() {
+            let _ = self.refresh_e2b_platform_nas().await;
+        }
+        let mut env_vars = BTreeMap::new();
+        env_vars.insert("CLAW_CLUSTER_ID".to_string(), cluster_id.to_string());
+        env_vars.insert(
+            "CLAW_GATEWAY_DATABASE_URL".to_string(),
+            sandbox_database_url.to_string(),
+        );
+        env_vars.insert("CLAW_PROJ_ID".to_string(), proj_id.to_string());
+
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            "clawRole".to_string(),
+            SINGLETON_ROLE_OBSERVE_PROJ.to_string(),
+        );
+        metadata.insert("clusterId".to_string(), cluster_id.to_string());
+        metadata.insert("projId".to_string(), proj_id.to_string());
+
+        let mount_points = nas_paths::ovs_root_mounts();
+        let mut body = json!({
+            "templateID": template_id,
+            "timeout": self.config.sandbox_timeout_secs,
+            "metadata": metadata,
+            "envVars": env_vars,
+        });
+        let nas = self.nas_config_body(&mount_points);
+        let nas_configured = nas.is_some();
+        if let Some(nas) = nas {
+            body["nasConfig"] = json!(nas);
+        }
+        self.apply_self_hosted_create_opts(&mut body);
+
+        let url = format!("{}/sandboxes", self.config.api_url.trim_end_matches('/'));
+        debug!(
+            target: "claw_e2b_sandbox",
+            %url,
+            template = %template_id,
+            cluster_id,
+            proj_id,
+            "create observe-proj singleton"
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .headers(self.auth_headers()?)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("e2b create observe-proj sandbox request: {e}"))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("e2b create observe-proj sandbox body: {e}"))?;
+        if !status.is_success() {
+            return Err(format!(
+                "e2b create observe-proj sandbox HTTP {status}: {text}"
+            ));
+        }
+        let parsed: CreateSandboxResponse = serde_json::from_str(&text)
+            .map_err(|e| format!("e2b create observe-proj sandbox parse: {e}; body={text}"))?;
+        let sandbox_domain = if self.config.is_self_hosted() {
+            self.config.domain.clone()
+        } else {
+            parsed
+                .domain
+                .filter(|d| !d.trim().is_empty())
+                .unwrap_or_else(|| self.config.domain.clone())
+        };
+        let ttyd_public_host = self.ttyd_public_host(&parsed.sandbox_id, &sandbox_domain);
+        let handle = E2bSandboxHandle {
+            sandbox_id: parsed.sandbox_id,
+            sandbox_domain,
+            envd_access_token: parsed.envd_access_token,
+            traffic_access_token: parsed.traffic_access_token,
+            ttyd_public_host,
+            ttyd_use_tls: !self.config.is_self_hosted(),
+            ovs_public_host: None,
+            ovs_base_url: None,
+        };
+        let sid = handle.sandbox_id.clone();
+        let handle = self
+            .finish_sandbox_create(handle, nas_configured, &mount_points)
+            .await?;
+        self.track_persistent_sandbox(&sid);
+        self.renew_sandbox_ttl_verified(&sid, self.config.sandbox_timeout_secs)
+            .await?;
+        Ok(handle)
+    }
+
+    /// Find per-project observe sandbox id. Author: kejiqing
+    pub async fn find_observe_proj(
+        &self,
+        cluster_id: &str,
+        proj_id: i64,
+    ) -> Result<Option<String>, String> {
+        let want_cluster = cluster_id.trim();
+        let want_proj = proj_id.to_string();
+        for row in self.list_sandboxes().await? {
+            if row.get("clawRole").map(String::as_str) != Some(SINGLETON_ROLE_OBSERVE_PROJ) {
+                continue;
+            }
+            if row.get("clusterId").map(String::as_str) != Some(want_cluster) {
+                continue;
+            }
+            if row.get("projId").map(String::as_str) != Some(want_proj.as_str()) {
+                continue;
+            }
+            if let Some(sid) = row.get("sandboxID").or_else(|| row.get("sandboxId")) {
+                let t = sid.trim();
+                if !t.is_empty() {
+                    return Ok(Some(t.to_string()));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Create nas-api singleton (`metadata.clawRole=nas-api-singleton`). Author: kejiqing

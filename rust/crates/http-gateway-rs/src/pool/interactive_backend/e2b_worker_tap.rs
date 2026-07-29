@@ -68,10 +68,12 @@ pub fn e2b_worker_solve_route(mut route: SolveLlmRoute, proxy_base_url: &str) ->
 #[allow(dead_code)]
 pub(crate) async fn resolve_e2b_worker_solve_llm_route(
     session_db: &GatewaySessionDb,
+    proj_id: i64,
     model_override: Option<&str>,
 ) -> Result<(SolveLlmRoute, BTreeMap<String, String>), String> {
     let material = crate::pool::prepare_e2b_worker_llm_material(
         session_db,
+        proj_id,
         model_override,
         crate::pool::PrepareE2bWorkerLlmOptions { for_repl: false },
     )
