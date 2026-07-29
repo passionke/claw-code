@@ -9224,16 +9224,15 @@ async fn validate_solve_request(
     if let Some(atts) = req.attachments.as_ref() {
         let has_image = atts.iter().any(|a| a.kind.eq_ignore_ascii_case("image"));
         if has_image {
-            let supports = gateway_global_settings::load_active_llm_runtime(db)
+            let supports = gateway_project_llm::load_effective_llm_runtime(db, req.proj_id)
                 .await
                 .map_err(|e| {
                     ApiError::new(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("load active LLM failed: {e}"),
+                        format!("load effective LLM failed: {e}"),
                     )
                 })?
-                .map(|r| r.supports_vision)
-                .unwrap_or(false);
+                .is_some_and(|r| r.supports_vision);
             if !supports {
                 return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
