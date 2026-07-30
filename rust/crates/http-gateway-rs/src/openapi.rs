@@ -135,13 +135,10 @@ pub fn document() -> Value {
     let mut document =
         serde_json::to_value(DerivedApi::openapi()).expect("serialize derived OpenAPI document");
 
-    document
-        .as_object_mut()
-        .expect("OpenAPI root")
-        .insert(
-            "servers".to_string(),
-            json!([{"url": "/", "description": "Current gateway"}]),
-        );
+    document.as_object_mut().expect("OpenAPI root").insert(
+        "servers".to_string(),
+        json!([{"url": "/", "description": "Current gateway"}]),
+    );
 
     let operation_count = count_operations(&document);
     document
@@ -221,9 +218,11 @@ mod tests {
             "string"
         );
         // No Swagger additionalProp1 trap
-        assert!(operation["requestBody"]["content"]["application/json"]["schema"]
-            .get("additionalProperties")
-            .is_none());
+        assert!(
+            operation["requestBody"]["content"]["application/json"]["schema"]
+                .get("additionalProperties")
+                .is_none()
+        );
     }
 
     #[test]
@@ -263,9 +262,8 @@ mod tests {
             json!(["rule", "skill", "mcp", "claude", "tools"])
         );
         assert_eq!(
-            document["paths"]
-                ["/v1/gateway/global-settings/e2b-singletons/{component}/ensure"]["post"]
-                ["parameters"][0]["schema"]["$ref"],
+            document["paths"]["/v1/gateway/global-settings/e2b-singletons/{component}/ensure"]
+                ["post"]["parameters"][0]["schema"]["$ref"],
             "#/components/schemas/E2bSingletonComponent"
         );
         assert_eq!(

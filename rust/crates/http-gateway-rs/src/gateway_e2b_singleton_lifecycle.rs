@@ -26,9 +26,7 @@ use crate::pool::interactive_backend::{
 };
 use crate::session_db::GatewaySessionDb;
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
 pub enum E2bSingletonComponent {
     #[serde(rename = "nas-api", alias = "nas_api", alias = "nasapi")]
     NasApi,
