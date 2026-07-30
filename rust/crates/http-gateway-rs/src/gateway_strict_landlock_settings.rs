@@ -13,13 +13,13 @@ pub struct StrictLandlockDefaultPublic {
     pub dsl: LandlockDsl,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct PutStrictLandlockDefaultInput {
     #[serde(flatten)]
     pub dsl: LandlockDsl,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct PutStrictLandlockDefaultResponse {
     #[serde(rename = "strictLandlockDefault")]
     pub strict_landlock_default: LandlockDsl,

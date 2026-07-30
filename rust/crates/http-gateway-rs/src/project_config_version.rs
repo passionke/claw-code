@@ -5,14 +5,14 @@ use serde_json::Value;
 
 use crate::session_db::ProjectConfigRevisionRow;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ConfigFieldChange {
     pub field: String,
     pub kind: String,
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ProjectConfigCompareResponse {
     #[serde(rename = "projId")]
     pub proj_id: i64,
@@ -25,8 +25,10 @@ pub struct ProjectConfigCompareResponse {
     pub changes: Vec<ConfigFieldChange>,
     /// Expanded project config JSON for `from` (materialization fields only).
     #[serde(rename = "fromDocument")]
+    #[schema(value_type = Object)]
     pub from_document: Value,
     #[serde(rename = "toDocument")]
+    #[schema(value_type = Object)]
     pub to_document: Value,
 }
 

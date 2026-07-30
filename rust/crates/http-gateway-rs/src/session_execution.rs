@@ -8,7 +8,7 @@ use gateway_solve_turn::{ProgressEvent, TaskProgressFile};
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionExecutionResponse {
     #[serde(rename = "sessionId")]
@@ -19,15 +19,18 @@ pub struct SessionExecutionResponse {
     pub session_home_rel: String,
     pub task: SessionExecutionTask,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Object)]
     pub progress: Option<TaskProgressFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(value_type = Vec<Object>)]
     pub progress_history: Vec<ProgressEvent>,
     pub queue: GatewayQueueSnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(value_type = Vec<Object>)]
     pub trace_tail: Vec<Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionExecutionTask {
     #[serde(rename = "taskId")]

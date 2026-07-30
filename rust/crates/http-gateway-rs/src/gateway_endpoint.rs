@@ -34,7 +34,7 @@ pub struct GatewayEndpointRow {
     pub last_heartbeat_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayEndpointPublic {
     pub gateway_id: String,
@@ -47,7 +47,7 @@ pub struct GatewayEndpointPublic {
     pub is_self: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayEndpointsResponse {
     pub cluster_id: String,

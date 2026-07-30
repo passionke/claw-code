@@ -14,7 +14,7 @@ pub const ADMIN_MCP_HTTP_PATH: &str = "/v1/admin/mcp";
 pub const TOKEN_PREFIX: &str = "camt_";
 const TEMPORARY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AdminMcpTokenKind {
     Temporary,
@@ -40,7 +40,7 @@ pub struct AdminMcpTokenEntry {
     pub last_used_at_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AdminMcpTokenPublic {
     pub id: String,
     pub name: String,
@@ -59,7 +59,7 @@ pub struct AdminMcpTokenPublic {
     pub expired: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct IssueAdminMcpTokenInput {
     pub name: String,
     pub kind: AdminMcpTokenKind,
@@ -67,7 +67,7 @@ pub struct IssueAdminMcpTokenInput {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct IssueAdminMcpTokenResponse {
     pub entry: AdminMcpTokenPublic,
     /// Plaintext bearer; shown once at issuance.
@@ -75,6 +75,7 @@ pub struct IssueAdminMcpTokenResponse {
     #[serde(rename = "mcpEndpointPath")]
     pub mcp_endpoint_path: String,
     #[serde(rename = "mcpTransport")]
+    #[schema(value_type = String, example = "streamable-http")]
     pub mcp_transport: &'static str,
 }
 

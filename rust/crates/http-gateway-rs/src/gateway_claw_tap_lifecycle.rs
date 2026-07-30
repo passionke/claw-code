@@ -6,7 +6,7 @@ use crate::gateway_claw_tap_settings::{ClawTapMode, ClawTapSettings};
 use crate::gateway_global_settings::get_gateway_global_settings;
 use crate::session_db::GatewaySessionDb;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct TapRestartOutcome {
     pub attempted: bool,
     pub restarted: bool,

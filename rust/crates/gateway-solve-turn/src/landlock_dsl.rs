@@ -13,7 +13,7 @@ pub enum LandlockDslSource {
 }
 
 /// Allowlist paths for strict per-solve Landlock jail.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LandlockDsl {
     #[serde(default = "default_enabled")]
     pub enabled: bool,

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use gateway_solve_turn::{sanitize_current_task_desc, REPORT_PROGRESS_TOOL_NAME};
 use serde::Serialize;
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayQueueSnapshot {
     pub gateway_tasks_queued: usize,

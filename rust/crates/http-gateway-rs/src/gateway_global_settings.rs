@@ -59,7 +59,7 @@ pub struct LlmModelEntry {
     pub updated_at_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LlmModelPublic {
     pub id: String,
     pub name: String,
@@ -83,7 +83,7 @@ pub struct LlmModelPublic {
     pub updated_at_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct LlmModelVersionPublic {
     #[serde(rename = "modelRev")]
     pub model_rev: String,
@@ -103,7 +103,7 @@ pub struct LlmModelVersionPublic {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct LlmModelVersionsResponse {
     #[serde(rename = "modelId")]
     pub model_id: String,
@@ -208,7 +208,7 @@ pub struct GatewayGlobalSettingsPublic {
 }
 
 /// 当前全局生效的 LLM（`active_llm_model_*` + revision 行）。Author: kejiqing
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ActiveLlmConfigPublic {
     #[serde(rename = "modelId")]
     pub model_id: String,
@@ -221,7 +221,7 @@ pub struct ActiveLlmConfigPublic {
     pub api_key_set: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutActiveLlmConfigInput {
     #[serde(default)]
     pub name: Option<String>,
@@ -235,7 +235,7 @@ pub struct PutActiveLlmConfigInput {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct GitPatPublic {
     pub id: String,
     pub name: String,
@@ -283,7 +283,7 @@ pub struct GitPatTokensStore {
     pub tokens: std::collections::BTreeMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutGitPatInput {
     /// Omit to create; must be unique when provided.
     pub id: Option<String>,
@@ -295,7 +295,7 @@ pub struct PutGitPatInput {
     pub token: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutLlmModelInput {
     pub id: Option<String>,
     pub name: String,
@@ -311,7 +311,7 @@ pub struct PutLlmModelInput {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GatewayGlobalSettingsResponse {
     #[serde(rename = "updatedAtMs")]
     pub updated_at_ms: i64,
@@ -361,7 +361,7 @@ fn cluster_id_public() -> Option<String> {
     gateway_cluster_id_optional()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApplyLlmModelResponse {
     #[serde(rename = "llmModel")]
     pub llm_model: LlmModelPublic,

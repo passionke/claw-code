@@ -27,7 +27,7 @@ impl E2bOvsSettings {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 pub struct E2bOvsSettingsPublic {
     #[serde(rename = "templateId", skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,

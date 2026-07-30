@@ -1,0 +1,109 @@
+//! gateway_settings routes. Author: kejiqing
+use crate::app_state::AppState;
+use crate::routes::app::{
+    apply_gateway_llm_model_head_handler, apply_gateway_llm_model_revision_handler,
+    delete_gateway_git_pat_handler, delete_gateway_llm_model_handler,
+    ensure_gateway_e2b_singleton_handler, get_gateway_e2b_singletons_handler,
+    get_gateway_e2b_templates_handler, get_gateway_global_settings_handler,
+    issue_gateway_admin_mcp_token_handler, list_gateway_llm_model_versions_handler,
+    probe_gateway_claw_tap_handler, put_gateway_active_llm_config_handler,
+    put_gateway_claw_tap_handler, put_gateway_e2b_singleton_templates_handler,
+    put_gateway_e2b_worker_settings_handler, put_gateway_strict_landlock_default_handler,
+    reset_gateway_e2b_singleton_handler, reset_gateway_observe_tap_handler,
+    revoke_gateway_admin_mcp_token_handler, test_gateway_llm_model_handler,
+    upsert_gateway_git_pat_handler, upsert_gateway_llm_model_handler,
+};
+use axum::routing::{delete, get, post, put};
+use axum::Router;
+
+pub(crate) fn router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/v1/gateway/global-settings",
+            get(get_gateway_global_settings_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/observe-tap/reset",
+            post(reset_gateway_observe_tap_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-singletons",
+            get(get_gateway_e2b_singletons_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-templates",
+            get(get_gateway_e2b_templates_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-singleton-templates",
+            put(put_gateway_e2b_singleton_templates_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-worker",
+            put(put_gateway_e2b_worker_settings_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-singletons/{component}/ensure",
+            post(ensure_gateway_e2b_singleton_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/e2b-singletons/{component}/reset",
+            post(reset_gateway_e2b_singleton_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/git-pats",
+            post(upsert_gateway_git_pat_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/git-pats/{pat_id}",
+            delete(delete_gateway_git_pat_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/active-llm-config",
+            put(put_gateway_active_llm_config_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models",
+            post(upsert_gateway_llm_model_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/test",
+            post(test_gateway_llm_model_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}",
+            delete(delete_gateway_llm_model_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}/versions",
+            get(list_gateway_llm_model_versions_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}/apply",
+            post(apply_gateway_llm_model_head_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/llm-models/{model_id}/versions/{model_rev}/apply",
+            post(apply_gateway_llm_model_revision_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/claw-tap",
+            put(put_gateway_claw_tap_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/claw-tap/probe",
+            post(probe_gateway_claw_tap_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/strict-landlock-default",
+            put(put_gateway_strict_landlock_default_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/admin-mcp-tokens",
+            post(issue_gateway_admin_mcp_token_handler),
+        )
+        .route(
+            "/v1/gateway/global-settings/admin-mcp-tokens/{token_id}",
+            delete(revoke_gateway_admin_mcp_token_handler),
+        )
+}

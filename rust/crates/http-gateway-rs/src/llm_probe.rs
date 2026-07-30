@@ -16,7 +16,7 @@ const DEFAULT_PROBE_PROMPT: &str = "Reply with exactly: pong";
 const PROBE_HINT: &str =
     "探测在 Gateway 进程直连上游 OpenAI-compat API，不经过 clawTap。thinking 开关与采样参数按请求体传入。";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmTestRequest {
     #[serde(rename = "modelId")]
@@ -40,7 +40,7 @@ pub struct LlmTestRequest {
     pub reasoning_effort: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmTestUsagePublic {
     #[serde(rename = "inputTokens")]
@@ -51,7 +51,7 @@ pub struct LlmTestUsagePublic {
     pub total_tokens: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmTestResponse {
     pub ok: bool,
@@ -80,6 +80,7 @@ pub struct LlmTestResponse {
     pub errors: Vec<String>,
     #[serde(rename = "durationMs")]
     pub duration_ms: u64,
+    #[schema(value_type = String)]
     pub hint: &'static str,
 }
 

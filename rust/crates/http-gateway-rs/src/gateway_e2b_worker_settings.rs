@@ -60,7 +60,7 @@ impl E2bWorkerSettings {
 }
 
 /// Admin read model for `settings_json.e2bWorker`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct E2bWorkerSettingsPublic {
     #[serde(rename = "templateId", skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
@@ -73,7 +73,7 @@ pub struct E2bWorkerSettingsPublic {
     pub updated_at_ms: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutE2bWorkerSettingsInput {
     #[serde(rename = "templateId", default)]
     pub template_id: Option<String>,

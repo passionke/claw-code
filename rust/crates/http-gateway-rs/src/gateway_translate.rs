@@ -27,11 +27,15 @@ fn is_terminal_turn_status(status: &str) -> bool {
     matches!(status, "succeeded" | "failed" | "cancelled")
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct GatewayTranslateRequest {
+    /// Source text to translate. Must be non-empty and at most 8000 characters.
+    #[schema(example = "The sandbox failed to start because the image was missing.")]
     pub text: String,
+    /// BCP-47 target language tag. Defaults to `zh-CN` when omitted.
     #[serde(default = "default_target_language")]
     #[serde(rename = "targetLanguage")]
+    #[schema(example = "zh-CN", default = "zh-CN")]
     pub target_language: String,
 }
 
@@ -39,9 +43,11 @@ fn default_target_language() -> String {
     "zh-CN".to_string()
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct GatewayTranslateResponse {
+    /// Translation body only: no title, explanation, or markdown fences.
     #[serde(rename = "translatedText")]
+    #[schema(example = "沙箱因为镜像缺失而启动失败。")]
     pub translated_text: String,
 }
 
@@ -392,7 +398,7 @@ async fn translate_conversation(
     Ok(out)
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ConversationTranslateTurnJson {
     pub index: i32,
     #[serde(rename = "turnId")]
@@ -407,7 +413,7 @@ pub struct ConversationTranslateTurnJson {
     pub assistant_text_zh: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ConversationTranslateSnapshotJson {
     #[serde(rename = "sourceFingerprint")]
     pub source_fingerprint: String,
@@ -427,12 +433,12 @@ pub struct ConversationTranslateSnapshotJson {
     pub updated_at_ms: i64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct GetConversationTranslateResponse {
     pub snapshot: Option<ConversationTranslateSnapshotJson>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct RebuildConversationTranslateResponse {
     pub ok: bool,
     /// Always `translating` on a fresh claim; poll GET for completion.

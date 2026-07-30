@@ -4,7 +4,8 @@
 pub type ProjectId = i64;
 
 /// Axum / handler query: accept `projId`, `proj_id`, `dsId`, or `ds_id`. Author: kejiqing
-#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ProjectIdQuery {
     #[serde(default, rename = "projId")]
     pub proj_id: Option<ProjectId>,

@@ -15,7 +15,7 @@ use crate::gateway_project_llm::{
 use crate::pool::interactive_backend::e2b_observe_is_enabled;
 use crate::session_db::{GatewayLlmProjectObserveRow, GatewaySessionDb};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ProjectObserveStatusResponse {
     #[serde(rename = "projId")]
     pub proj_id: i64,
@@ -24,7 +24,7 @@ pub struct ProjectObserveStatusResponse {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ProjectObserveResetResponse {
     #[serde(rename = "projId")]
     pub proj_id: i64,

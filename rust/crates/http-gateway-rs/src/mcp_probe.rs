@@ -13,7 +13,7 @@ use tokio::fs;
 
 const PROBE_HINT_WORKER: &str = "探测在 Gateway 进程环境执行。若 solve 使用 pool worker 容器，URL 须用 worker 能访问宿主机 MCP 的地址（如 http://host.docker.internal:8001/mcp-streamable），勿写 127.0.0.1。";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct McpTestResponse {
     pub ok: bool,

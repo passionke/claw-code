@@ -7,6 +7,7 @@ use claw_e2b_sandbox_client::{
     E2bSandboxClient, E2bSandboxHandle, SINGLETON_ROLE_NAS_API, SINGLETON_ROLE_OBSERVE,
     SINGLETON_ROLE_OVS,
 };
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::cluster_identity::{
@@ -25,10 +26,13 @@ use crate::pool::interactive_backend::{
 };
 use crate::session_db::GatewaySessionDb;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
 pub enum E2bSingletonComponent {
+    #[serde(rename = "nas-api", alias = "nas_api", alias = "nasapi")]
     NasApi,
+    #[serde(rename = "observe", alias = "tap", alias = "observe-tap")]
     Observe,
+    #[serde(rename = "ovs")]
     Ovs,
 }
 

@@ -7,7 +7,7 @@ use crate::gateway_e2b_singleton_lifecycle::{reset_e2b_singleton, E2bSingletonCo
 use crate::pool::interactive_backend::e2b_observe_is_enabled;
 use crate::session_db::GatewaySessionDb;
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ObserveTapResetResponse {
     pub tap: ClawTapSettingsPublic,
     #[serde(rename = "sandboxId")]

@@ -9,15 +9,17 @@ use serde_json::{Map, Value};
 
 use crate::session_db::GatewaySessionDb;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpsertPreflightPluginRequest {
     pub display_name: String,
     #[serde(default = "default_spi_version")]
     pub spi_version: String,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub default_impl: Option<PreflightImpl>,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub config_schema: Value,
 }
 
@@ -25,9 +27,10 @@ fn default_spi_version() -> String {
     "1".to_string()
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PreflightPluginListResponse {
+    #[schema(value_type = Vec<Object>)]
     pub plugins: Vec<PreflightPluginRecord>,
 }
 
