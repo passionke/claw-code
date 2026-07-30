@@ -83,7 +83,7 @@ fn default_git_ref() -> String {
     "main".to_string()
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct GitPullOutcome {
     pub pulled: bool,
     #[serde(rename = "commitId", skip_serializing_if = "Option::is_none")]

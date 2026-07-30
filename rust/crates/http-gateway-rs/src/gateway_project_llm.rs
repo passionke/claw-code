@@ -17,14 +17,14 @@ use crate::session_db::{
 };
 
 /// Inference mode for a project. Author: kejiqing
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ProjectLlmMode {
     Inherit,
     Override,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ProjectObservePublic {
     #[serde(rename = "configured")]
     pub configured: bool,
@@ -49,7 +49,7 @@ pub struct ProjectObservePublic {
     pub e2b_observe_sandbox_running: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ProjectInferenceSettingsResponse {
     #[serde(rename = "projId")]
     pub proj_id: i64,

@@ -6,13 +6,14 @@ use gateway_solve_turn::turn_tools::{
 use gateway_solve_turn::ProgressEvent;
 use serde::Serialize;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnToolsResponse {
     pub session_id: String,
     pub turn_id: String,
     pub proj_id: i64,
     pub user_turn_index: i64,
+    #[schema(value_type = Vec<Object>)]
     pub tools: Vec<TurnToolRecord>,
 }
 

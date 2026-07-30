@@ -19,7 +19,7 @@ use crate::pool::{
 use crate::session_db::GatewaySessionDb;
 use crate::session_terminal_api;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OvsWorkspaceResponse {
     pub proj_id: i64,

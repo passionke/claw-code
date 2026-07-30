@@ -3,7 +3,7 @@
 //! Append-only history per `(proj_id, domain, entity_key)`. Project-level publish (L1) unchanged.
 
 use axum::http::StatusCode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::project_config_draft::{self, DRAFT_CONTENT_REV};
@@ -18,6 +18,33 @@ pub const DOMAIN_CLAUDE: &str = "claude";
 pub const DOMAIN_TOOLS: &str = "tools";
 pub const CLAUDE_ENTITY_KEY: &str = "_";
 pub const TOOLS_ENTITY_KEY: &str = "_";
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, utoipa::ToSchema)]
+pub enum ProjectEntityDomain {
+    #[serde(rename = "rule", alias = "rules")]
+    Rule,
+    #[serde(rename = "skill", alias = "skills")]
+    Skill,
+    #[serde(rename = "mcp")]
+    Mcp,
+    #[serde(rename = "claude")]
+    Claude,
+    #[serde(rename = "tools", alias = "tool")]
+    Tools,
+}
+
+impl ProjectEntityDomain {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rule => DOMAIN_RULE,
+            Self::Skill => DOMAIN_SKILL,
+            Self::Mcp => DOMAIN_MCP,
+            Self::Claude => DOMAIN_CLAUDE,
+            Self::Tools => DOMAIN_TOOLS,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct EntityRevisionError {
@@ -294,7 +321,7 @@ pub async fn record_draft_put_sidecars(
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EntityVersionsListResponse {
     #[serde(rename = "projId")]
     pub proj_id: i64,
@@ -304,7 +331,7 @@ pub struct EntityVersionsListResponse {
     pub versions: Vec<EntityVersionEntry>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EntityVersionEntry {
     #[serde(rename = "entityRev")]
     pub entity_rev: String,
@@ -314,7 +341,7 @@ pub struct EntityVersionEntry {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EntityCompareResponse {
     #[serde(rename = "projId")]
     pub proj_id: i64,
@@ -325,8 +352,10 @@ pub struct EntityCompareResponse {
     pub to: String,
     pub same: bool,
     #[serde(rename = "fromBody")]
+    #[schema(value_type = Object)]
     pub from_body: Value,
     #[serde(rename = "toBody")]
+    #[schema(value_type = Object)]
     pub to_body: Value,
 }
 
@@ -400,13 +429,13 @@ pub async fn compare_entity_versions(
     })
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct RestoreEntityRevisionRequest {
     #[serde(rename = "entityRev")]
     pub entity_rev: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RestoreEntityRevisionResponse {
     #[serde(rename = "projId")]
     pub proj_id: i64,

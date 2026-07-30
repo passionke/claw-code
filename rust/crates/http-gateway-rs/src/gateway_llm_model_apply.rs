@@ -9,7 +9,7 @@ use tokio::process::Command;
 /// Key in `git_pat_tokens_json` for the global LLM API key (not a Git PAT). Author: kejiqing
 pub const LLM_API_KEY_STORE_ID: &str = "__gateway_llm_api_key__";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct LlmModelApplyOutcome {
     #[serde(rename = "envFile")]
     pub env_file: String,

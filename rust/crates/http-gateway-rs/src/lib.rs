@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 //! Library surface (pool + daemon). The `http-gateway-rs` binary links this crate. Author: kejiqing
 #![allow(
     clippy::assigning_clones,
@@ -81,3 +82,19 @@ pub mod turn_id;
 pub mod turn_timeline_api;
 pub mod turn_tools_api;
 pub mod workspace_perm;
+
+pub mod gateway_logging;
+
+pub mod solve_pool;
+
+pub mod session_upload;
+
+pub mod app_state;
+
+pub mod api_error;
+
+pub mod bootstrap;
+
+pub mod openapi;
+
+pub mod routes;

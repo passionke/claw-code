@@ -30,7 +30,7 @@ pub fn live_session_traces_url_template(live_base_url: &str) -> String {
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ClawTapMode {
     #[default]
@@ -69,7 +69,7 @@ fn default_live_port() -> u16 {
     DEFAULT_CLAW_TAP_LIVE_PORT
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ClawTapSettingsPublic {
     pub mode: ClawTapMode,
     pub host: String,
@@ -288,7 +288,7 @@ pub async fn enrich_claw_tap_observe_runtime(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutClawTapSettingsInput {
     #[serde(default)]
     pub mode: ClawTapMode,
@@ -300,7 +300,7 @@ pub struct PutClawTapSettingsInput {
     pub live_port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct PutClawTapSettingsResponse {
     #[serde(flatten)]
     pub settings: ClawTapSettingsPublic,
@@ -310,7 +310,7 @@ pub struct PutClawTapSettingsResponse {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ProbeClawTapInput {
     #[serde(default)]
     pub mode: ClawTapMode,
@@ -320,7 +320,7 @@ pub struct ProbeClawTapInput {
     pub proxy_port: u16,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ProbeClawTapResponse {
     pub ok: bool,
     pub message: String,

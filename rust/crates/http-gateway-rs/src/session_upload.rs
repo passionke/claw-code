@@ -8,21 +8,31 @@ use axum::Json;
 use chrono::Utc;
 use claw_e2b_sandbox_client::session_rel;
 use gateway_solve_turn::SolveAttachment;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::{ApiError, AppState};
-use http_gateway_rs::cluster_identity::gateway_cluster_id;
-use http_gateway_rs::oss_object_store::OssConfig;
-use http_gateway_rs::session_merge;
+use crate::api_error::ApiError;
+use crate::app_state::AppState;
+use crate::cluster_identity::gateway_cluster_id;
+use crate::oss_object_store::OssConfig;
+use crate::session_merge;
 
 const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct SessionFilesQuery {
     #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
+    #[param(rename = "projId")]
     pub proj_id: i64,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFilesUploadResponse {
+    #[schema(value_type = Vec<Object>)]
+    pub attachments: Vec<Value>,
 }
 
 /// Classify attachment kind from MIME / filename. Unknown → reject. Author: kejiqing
@@ -100,6 +110,22 @@ fn mime_for_name(name: &str, provided: Option<&str>) -> String {
 }
 
 /// `POST /v1/sessions/{session_id}/files?projId=` multipart field `file`. Author: kejiqing
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/files",
+    tag = "Sessions",
+    operation_id = "session_upload_upload_session_files",
+    summary = "Upload session files (multipart)",
+    description = "Accepts `multipart/form-data` with field name `file` or `files`. Requires prior POST /v1/start.",
+    params(
+        ("session_id" = String, Path, description = "Gateway session id"),
+        SessionFilesQuery
+    ),
+    responses(
+        (status = 200, description = "Uploaded attachment metadata", body = SessionFilesUploadResponse),
+        (status = 400, description = "Unknown session, empty file, or unsupported type")
+    )
+)]
 pub async fn upload_session_files(
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,

@@ -11,19 +11,17 @@ use tokio::fs;
 use tokio::time::{timeout, Duration as TokioDuration};
 use tracing::{info, warn};
 
-use crate::{ApiError, AppState, RunSolveContext, SolveRequest, SolveResponse};
-use http_gateway_rs::claw_tap_cluster_state::resolve_solve_llm_route;
-use http_gateway_rs::gateway_strict_landlock_settings::load_system_landlock_default;
-use http_gateway_rs::pool::{
+use crate::api_error::ApiError;
+use crate::app_state::{AppState, GatewayConfig, RunSolveContext, SolveRequest, SolveResponse};
+use crate::claw_tap_cluster_state::resolve_solve_llm_route;
+use crate::gateway_strict_landlock_settings::load_system_landlock_default;
+use crate::pool::{
     parse_gateway_solve_exec_stdout, prepare_e2b_worker_llm_material, PoolOps,
     PrepareE2bWorkerLlmOptions, SlotLease, E2B_POOL_ID,
 };
 
 /// Map gateway container `CLAW_WORK_ROOT` paths to the host/NAS path used by e2b bind mounts.
-pub(crate) fn session_mount_for_pool_acquire(
-    session_home: &Path,
-    cfg: &crate::GatewayConfig,
-) -> PathBuf {
+pub(crate) fn session_mount_for_pool_acquire(session_home: &Path, cfg: &GatewayConfig) -> PathBuf {
     crate::pool::path_for_pool_acquire(
         session_home,
         &cfg.work_root,
@@ -37,7 +35,7 @@ const GATEWAY_SOLVE_TASK_FILE: &str = "gateway-solve-task.json";
 /// Path to `claw` inside worker images. Host `CLAW_BIN` may be a macOS absolute path unusable in `podman exec`. kejiqing
 const POOL_WORKER_CLAW_BIN: &str = "/usr/local/bin/claw";
 
-fn claw_bin_for_pool_exec(cfg: &crate::GatewayConfig) -> &str {
+fn claw_bin_for_pool_exec(cfg: &GatewayConfig) -> &str {
     let bin = cfg.claw_bin.trim();
     if bin == "claw" || bin.starts_with("/usr/local/") {
         return bin;
@@ -533,10 +531,11 @@ mod session_path_tests {
     use std::path::{Path, PathBuf};
 
     use super::session_mount_for_pool_acquire;
+    use crate::app_state::GatewayConfig;
 
     #[test]
     fn strips_container_work_root_for_rpc_host() {
-        let cfg = crate::GatewayConfig {
+        let cfg = GatewayConfig {
             claw_bin: "claw".into(),
             work_root: PathBuf::from("/var/lib/claw/workspace"),
             pool_rpc_host_work_root: Some(PathBuf::from("/host/claw/ws")),
@@ -566,7 +565,7 @@ mod session_path_tests {
 
     #[test]
     fn no_host_mapping_returns_session_unchanged() {
-        let cfg = crate::GatewayConfig {
+        let cfg = GatewayConfig {
             claw_bin: "claw".into(),
             work_root: PathBuf::from("/var/lib/claw/workspace"),
             pool_rpc_host_work_root: None,

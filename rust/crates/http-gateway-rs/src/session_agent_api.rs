@@ -38,9 +38,11 @@ use gateway_solve_turn::{
     ovs_interactive_jsonl_host,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
 pub struct AgentProjQuery {
+    #[param(rename = "projId")]
     pub proj_id: i64,
     /// OVS Chat panel id for `gateway_turns` only; worker REPL stays `ovs-{projId}`.
     pub chat_session_id: Option<String>,

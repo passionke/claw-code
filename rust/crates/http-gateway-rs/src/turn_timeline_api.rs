@@ -6,7 +6,7 @@ use gateway_solve_turn::multi_agent::{
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnTimelineResponse {
     pub session_id: String,
@@ -17,6 +17,7 @@ pub struct TurnTimelineResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_finished_at_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Object)]
     pub timeline: Option<SolveTurnTimeline>,
 }
 

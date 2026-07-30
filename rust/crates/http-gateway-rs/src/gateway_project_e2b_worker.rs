@@ -16,7 +16,7 @@ use crate::session_db::{
     e2b_worker_slot_u32, GatewaySessionDb, ProjectFcWorkerRow, WorkerRotationEvent,
 };
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ProjectE2bWorkerUrls {
     #[serde(rename = "e2bApiUrl")]
     pub e2b_api_url: String,
@@ -30,7 +30,7 @@ pub struct ProjectE2bWorkerUrls {
     pub ttyd_ws_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ProjectE2bWorkerInfo {
     #[serde(rename = "slotIndex")]
     pub slot_index: i32,
@@ -50,7 +50,7 @@ pub struct ProjectE2bWorkerInfo {
     pub urls: ProjectE2bWorkerUrls,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct WorkerRotationEventPublic {
     pub event: String,
     #[serde(rename = "sandboxId", skip_serializing_if = "Option::is_none")]
@@ -65,7 +65,7 @@ pub struct WorkerRotationEventPublic {
     pub at_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ProjectE2bWorkerStatusResponse {
     #[serde(rename = "projId")]
     pub proj_id: i64,
@@ -80,7 +80,7 @@ pub struct ProjectE2bWorkerStatusResponse {
     pub rotation_log: Vec<WorkerRotationEventPublic>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ProjectE2bWorkerResetResponse {
     #[serde(rename = "projId")]
     pub proj_id: i64,

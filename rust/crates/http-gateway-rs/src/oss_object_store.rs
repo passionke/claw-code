@@ -314,7 +314,7 @@ impl OssConfig {
 }
 
 /// Admin-safe snapshot (no secret). Author: kejiqing
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct OssSettingsPublic {
     pub enabled: bool,
     pub endpoint: String,

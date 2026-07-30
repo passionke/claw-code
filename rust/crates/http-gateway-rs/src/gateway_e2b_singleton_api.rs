@@ -16,7 +16,7 @@ use crate::gateway_e2b_singleton_lifecycle::{
 use crate::gateway_global_settings::{get_gateway_global_settings, save_gateway_global_settings};
 use crate::session_db::GatewaySessionDb;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct E2bSingletonsStatusResponse {
     #[serde(rename = "nasApi")]
     pub nas_api: E2bNasApiSettingsPublic,
@@ -24,7 +24,7 @@ pub struct E2bSingletonsStatusResponse {
     pub observe: E2bObserveSettingsPublic,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutE2bSingletonTemplatesInput {
     #[serde(default, rename = "nasApiTemplateId")]
     pub nas_api_template_id: Option<String>,
@@ -34,7 +34,7 @@ pub struct PutE2bSingletonTemplatesInput {
     pub observe_template_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PutE2bSingletonTemplatesResponse {
     #[serde(rename = "nasApi")]
     pub nas_api: E2bNasApiSettingsPublic,
@@ -42,9 +42,9 @@ pub struct PutE2bSingletonTemplatesResponse {
     pub observe: E2bObserveSettingsPublic,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct E2bSingletonActionResponse {
-    pub component: String,
+    pub component: E2bSingletonComponent,
     #[serde(rename = "sandboxId", skip_serializing_if = "Option::is_none")]
     pub sandbox_id: Option<String>,
     #[serde(rename = "baseUrl", skip_serializing_if = "Option::is_none")]
@@ -71,10 +71,23 @@ fn normalize_template_id(raw: Option<String>) -> Option<String> {
     raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-#[derive(Debug, Serialize)]
+/// OpenAPI schema mirror for [`claw_e2b_sandbox_client::E2bTemplateEntry`]. Author: kejiqing
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct E2bTemplateEntrySchema {
+    #[serde(rename = "templateId")]
+    pub template_id: String,
+    pub aliases: Vec<String>,
+    #[serde(rename = "imagePresent", default)]
+    pub image_present: bool,
+    pub image: Option<String>,
+    pub arch: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct E2bTemplatesListResponse {
     #[serde(rename = "apiUrl")]
     pub api_url: String,
+    #[schema(value_type = Vec<E2bTemplateEntrySchema>)]
     pub templates: Vec<claw_e2b_sandbox_client::E2bTemplateEntry>,
 }
 
@@ -152,10 +165,6 @@ pub async fn put_e2b_singleton_templates(
     })
 }
 
-pub fn parse_singleton_component(raw: &str) -> Result<E2bSingletonComponent, String> {
-    E2bSingletonComponent::parse(raw)
-}
-
 pub async fn ensure_e2b_singleton_via_api(
     db: &GatewaySessionDb,
     client: &E2bSandboxClient,
@@ -184,7 +193,7 @@ async fn build_action_response(
         .await
         .map_err(|e| e.to_string())?;
     Ok(E2bSingletonActionResponse {
-        component: component.as_str().to_string(),
+        component,
         sandbox_id: outcome.sandbox_id,
         base_url: outcome.base_url,
         traffic_reachable: outcome.traffic_reachable,

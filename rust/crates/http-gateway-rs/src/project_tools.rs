@@ -4,7 +4,7 @@ use serde_json::Value;
 use tools::mvp_tool_specs;
 
 /// One entry in the gateway-registered tool catalog (`GET /v1/project/tools/catalog`).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 pub struct ToolCatalogEntry {
     pub name: String,
     pub description: String,
