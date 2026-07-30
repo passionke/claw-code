@@ -1,7 +1,10 @@
 //! biz_report routes. Author: kejiqing
 use crate::app_state::AppState;
-use crate::routes::app::*;
-use axum::routing::{delete, get, patch, post, put};
+use crate::routes::app::{
+    dev_seed_biz_report_task, get_agent_feedback, get_biz_advice_report, get_biz_advice_report_bak,
+    post_agent_feedback,
+};
+use axum::routing::{get, post};
 use axum::Router;
 
 pub(crate) fn router() -> Router<AppState> {

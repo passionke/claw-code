@@ -1,7 +1,7 @@
 //! mcp routes. Author: kejiqing
 use crate::app_state::AppState;
-use crate::routes::app::*;
-use axum::routing::{delete, get, patch, post, put};
+use crate::routes::app::{delete_injected_mcp, get_injected_mcp, inject_mcp, test_mcp};
+use axum::routing::{get, post};
 use axum::Router;
 
 pub(crate) fn router() -> Router<AppState> {

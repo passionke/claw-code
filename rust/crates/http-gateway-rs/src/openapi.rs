@@ -3,6 +3,7 @@
 use serde_json::{json, Value};
 use utoipa::OpenApi;
 
+#[cfg(test)]
 const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt");
 
 /// Sole OpenAPI source: `#[utoipa::path]` on handlers + `ToSchema` on DTOs.

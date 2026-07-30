@@ -612,7 +612,7 @@ pub(crate) fn civil_from_days(days: i64) -> (i32, u32, u32) {
     } else {
         (z - 146_096) / 146_097
     };
-    let doe = (z - era * 146_097) as u64; // [0, 146_096]
+    let doe = u64::try_from(z - era * 146_097).expect("day-of-era is non-negative"); // [0, 146_096]
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
     let y = yoe as i64 + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]

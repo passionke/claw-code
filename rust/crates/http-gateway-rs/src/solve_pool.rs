@@ -1,6 +1,6 @@
 //! Solve path via e2b sandbox (`claw gateway-solve-once`). Author: kejiqing
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,11 @@ use crate::pool::{
 };
 
 /// Map gateway container `CLAW_WORK_ROOT` paths to the host/NAS path used by e2b bind mounts.
-pub(crate) fn session_mount_for_pool_acquire(session_home: &Path, cfg: &GatewayConfig) -> PathBuf {
+#[cfg(test)]
+pub(crate) fn session_mount_for_pool_acquire(
+    session_home: &std::path::Path,
+    cfg: &GatewayConfig,
+) -> PathBuf {
     crate::pool::path_for_pool_acquire(
         session_home,
         &cfg.work_root,
@@ -92,7 +96,7 @@ impl Drop for DockerLeaseCleanup {
     }
 }
 
-pub async fn run_solve_request_docker(
+pub(crate) async fn run_solve_request_docker(
     state: AppState,
     req: SolveRequest,
     ctx: RunSolveContext,
@@ -546,7 +550,6 @@ mod session_path_tests {
             default_http_mcp_name: None,
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),
-            config_mcp_servers: HashMap::default(),
             projects_git_url: "git@github.com:passionke/claw-code-projects.git".into(),
             projects_git_branch: "main".into(),
             projects_git_author: "kejiqing <kejiqing@local>".into(),
@@ -576,7 +579,6 @@ mod session_path_tests {
             default_http_mcp_name: None,
             default_http_mcp_url: None,
             default_http_mcp_transport: "http".into(),
-            config_mcp_servers: HashMap::default(),
             projects_git_url: "git@github.com:passionke/claw-code-projects.git".into(),
             projects_git_branch: "main".into(),
             projects_git_author: "kejiqing <kejiqing@local>".into(),

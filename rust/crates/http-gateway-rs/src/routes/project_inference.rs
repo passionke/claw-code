@@ -1,7 +1,14 @@
 //! project_inference routes. Author: kejiqing
 use crate::app_state::AppState;
-use crate::routes::app::*;
-use axum::routing::{delete, get, patch, post, put};
+use crate::routes::app::{
+    apply_project_llm_model_head_handler, apply_project_llm_model_revision_handler,
+    delete_project_llm_model_handler, get_project_e2b_worker_handler,
+    get_project_inference_handler, get_project_observe_handler,
+    list_project_llm_model_versions_handler, reset_project_e2b_worker_handler,
+    reset_project_observe_handler, test_project_llm_model_handler,
+    upsert_project_llm_model_handler,
+};
+use axum::routing::{delete, get, post};
 use axum::Router;
 
 pub(crate) fn router() -> Router<AppState> {

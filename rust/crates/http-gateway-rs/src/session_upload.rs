@@ -126,7 +126,7 @@ fn mime_for_name(name: &str, provided: Option<&str>) -> String {
         (status = 400, description = "Unknown session, empty file, or unsupported type")
     )
 )]
-pub async fn upload_session_files(
+pub(crate) async fn upload_session_files(
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,
     Query(q): Query<SessionFilesQuery>,

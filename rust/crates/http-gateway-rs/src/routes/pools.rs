@@ -1,7 +1,10 @@
 //! pools routes. Author: kejiqing
 use crate::app_state::AppState;
-use crate::routes::app::*;
-use axum::routing::{delete, get, patch, post, put};
+use crate::routes::app::{
+    delete_claw_pool_handler, delete_gateway_endpoint_handler, get_preflight_plugins_handler,
+    list_claw_pools_handler, list_gateway_endpoints_handler, put_preflight_plugin_handler,
+};
+use axum::routing::{delete, get, put};
 use axum::Router;
 
 pub(crate) fn router() -> Router<AppState> {

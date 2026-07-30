@@ -1,7 +1,7 @@
 //! solve routes. Author: kejiqing
 use crate::app_state::AppState;
-use crate::routes::app::*;
-use axum::routing::{delete, get, patch, post, put};
+use crate::routes::app::{solve, solve_async, solve_start};
+use axum::routing::post;
 use axum::Router;
 
 pub(crate) fn router() -> Router<AppState> {

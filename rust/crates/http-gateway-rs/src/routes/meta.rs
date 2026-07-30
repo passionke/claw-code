@@ -1,7 +1,7 @@
 //! meta routes. Author: kejiqing
 use crate::app_state::AppState;
-use crate::routes::app::*;
-use axum::routing::{delete, get, patch, post, put};
+use crate::routes::app::{docs, openapi, root};
+use axum::routing::get;
 use axum::Router;
 use utoipa_swagger_ui::{Config, SwaggerUi};
 
