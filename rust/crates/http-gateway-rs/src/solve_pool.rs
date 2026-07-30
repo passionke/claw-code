@@ -531,7 +531,6 @@ fn tail_for_log(s: &str, max_bytes: usize) -> String {
 
 #[cfg(test)]
 mod session_path_tests {
-    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
 
     use super::session_mount_for_pool_acquire;
