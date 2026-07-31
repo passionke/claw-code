@@ -2833,6 +2833,8 @@ pub struct AgentJob {
     terminal_hook: Option<AgentTerminalHook>,
     /// Cooperative cancel for Background agents. Author: kejiqing
     abort_signal: Option<HookAbortSignal>,
+    /// Parent turn budget when injected by gateway; `None` → env/code fallback. Author: kejiqing
+    max_iterations: Option<usize>,
     started_instant: Instant,
 }
 
@@ -2846,6 +2848,13 @@ impl AgentJob {
     #[must_use]
     pub fn with_abort_signal(mut self, abort: HookAbortSignal) -> Self {
         self.abort_signal = Some(abort);
+        self
+    }
+
+    /// Inherit parent turn `max_iterations` (gateway path). Author: kejiqing
+    #[must_use]
+    pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations = Some(max_iterations);
         self
     }
 
@@ -3727,7 +3736,21 @@ fn parse_skill_frontmatter_value(contents: &str, key: &str) -> Option<String> {
 
 const DEFAULT_AGENT_MODEL: &str = "claude-opus-4-6";
 const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
-const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
+/// Code fallback when no parent turn budget and no `CLAW_MAX_ITERATIONS`. Author: kejiqing
+const DEFAULT_AGENT_MAX_ITERATIONS: usize = 128;
+
+/// Resolve sub-agent loop budget: parent inject > `CLAW_MAX_ITERATIONS` > code default.
+/// Parent inject skips env so gateway does not re-decide. Author: kejiqing
+fn resolve_agent_max_iterations(job: &AgentJob) -> usize {
+    if let Some(n) = job.max_iterations.filter(|&n| n > 0) {
+        return n;
+    }
+    std::env::var("CLAW_MAX_ITERATIONS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_AGENT_MAX_ITERATIONS)
+}
 
 /// Session-scoped agent artifact directory under session home / work root. Author: kejiqing
 pub const AGENT_STORE_REL: &str = ".claw/agents";
@@ -3896,6 +3919,7 @@ where
         mcp_call_context,
         terminal_hook: None,
         abort_signal: None,
+        max_iterations: None,
         started_instant,
     };
 
@@ -3994,7 +4018,8 @@ pub fn run_agent_job_to_terminal(job: &AgentJob) -> Result<AgentOutput, String> 
         job.invoke_terminal_hook("failed", Some(String::from("sub-agent cancelled")));
         return read_agent_manifest(&job.manifest.manifest_file);
     }
-    let mut runtime = build_agent_runtime(job)?.with_max_iterations(DEFAULT_AGENT_MAX_ITERATIONS);
+    let mut runtime =
+        build_agent_runtime(job)?.with_max_iterations(resolve_agent_max_iterations(job));
     if let Some(abort) = job.abort_signal.clone() {
         runtime = runtime.with_hook_abort_signal(abort);
     }
@@ -6391,8 +6416,10 @@ fn detect_powershell_shell() -> std::io::Result<&'static str> {
 }
 
 fn command_exists(command: &str) -> bool {
+    // Non-login shell: login `-l` reloads profile against current HOME and can
+    // drop Homebrew PATH when tests temporarily rewrite HOME. Author: kejiqing
     std::process::Command::new("sh")
-        .arg("-lc")
+        .arg("-c")
         .arg(format!("command -v {command} >/dev/null 2>&1"))
         .status()
         .is_ok_and(|status| status.success())
@@ -6610,9 +6637,10 @@ mod tests {
         is_live_agent, kill_all_subagents, live_agent_count, live_agent_test_lock,
         mark_live_agent_finished, maybe_commit_provenance, mvp_tool_specs,
         permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
-        read_agent_manifest, register_live_agent, reset_live_agents_for_test, resolve_agent_model,
-        run_task_packet, AgentInput, AgentJob, AwaitAgentInput, GlobalToolRegistry, LaneEventName,
-        LaneFailureClass, ProviderRuntimeClient, SubagentToolExecutor, AGENT_STORE_REL,
+        read_agent_manifest, register_live_agent, reset_live_agents_for_test,
+        resolve_agent_max_iterations, resolve_agent_model, run_task_packet, AgentInput, AgentJob,
+        AwaitAgentInput, GlobalToolRegistry, LaneEventName, LaneFailureClass,
+        ProviderRuntimeClient, SubagentToolExecutor, AGENT_STORE_REL, DEFAULT_AGENT_MAX_ITERATIONS,
         DEFAULT_AGENT_MODEL,
     };
     use api::OutputContentBlock;
@@ -9041,6 +9069,103 @@ mod tests {
     }
 
     #[test]
+    fn resolve_agent_max_iterations_parent_inject_skips_env() {
+        let _guard = env_guard();
+        let previous = std::env::var("CLAW_MAX_ITERATIONS").ok();
+        std::env::set_var("CLAW_MAX_ITERATIONS", "999");
+
+        let dir = temp_path("agent-max-iter-parent");
+        let captured = Arc::new(Mutex::new(None::<AgentJob>));
+        let captured_for_spawn = Arc::clone(&captured);
+        execute_agent_with_spawn(
+            AgentInput {
+                description: "max iter parent".to_string(),
+                prompt: "work".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: None,
+                model: None,
+                run_in_background: Some(true),
+            },
+            &dir,
+            None,
+            None,
+            move |job| {
+                *captured_for_spawn
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(job.with_max_iterations(1024));
+                Ok(None)
+            },
+        )
+        .expect("spawn");
+
+        let job = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("job captured");
+        assert_eq!(resolve_agent_max_iterations(&job), 1024);
+
+        match previous {
+            Some(v) => std::env::set_var("CLAW_MAX_ITERATIONS", v),
+            None => std::env::remove_var("CLAW_MAX_ITERATIONS"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_agent_max_iterations_falls_back_to_env_then_default() {
+        let _guard = env_guard();
+        let previous = std::env::var("CLAW_MAX_ITERATIONS").ok();
+
+        let dir = temp_path("agent-max-iter-fallback");
+        let captured = Arc::new(Mutex::new(None::<AgentJob>));
+        let captured_for_spawn = Arc::clone(&captured);
+        execute_agent_with_spawn(
+            AgentInput {
+                description: "max iter fallback".to_string(),
+                prompt: "work".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: None,
+                model: None,
+                run_in_background: Some(true),
+            },
+            &dir,
+            None,
+            None,
+            move |job| {
+                *captured_for_spawn
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
+                Ok(None)
+            },
+        )
+        .expect("spawn");
+
+        let job = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("job captured");
+
+        std::env::set_var("CLAW_MAX_ITERATIONS", "256");
+        assert_eq!(resolve_agent_max_iterations(&job), 256);
+
+        std::env::remove_var("CLAW_MAX_ITERATIONS");
+        assert_eq!(
+            resolve_agent_max_iterations(&job),
+            DEFAULT_AGENT_MAX_ITERATIONS
+        );
+        assert_eq!(DEFAULT_AGENT_MAX_ITERATIONS, 128);
+
+        match previous {
+            Some(v) => std::env::set_var("CLAW_MAX_ITERATIONS", v),
+            None => std::env::remove_var("CLAW_MAX_ITERATIONS"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn agent_spawn_inherits_parent_turn_model_when_input_omits_model() {
         let _guard = env_lock()
             .lock()
@@ -10343,6 +10468,7 @@ mod tests {
 
     #[test]
     fn repl_executes_python_code() {
+        let _guard = env_guard();
         let result = execute_tool(
             "REPL",
             &json!({"language": "python", "code": "print(1 + 1)", "timeout_ms": 500}),
