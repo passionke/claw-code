@@ -255,6 +255,13 @@ pub struct GatewaySolveTaskFile {
     pub allowed_tools: Option<Vec<String>>,
     #[serde(rename = "maxIterations")]
     pub max_iterations: Option<usize>,
+    /// Where `maxIterations` was resolved from (`request` | `project` | `cluster`). Author: kejiqing
+    #[serde(
+        default,
+        rename = "maxIterationsSource",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_iterations_source: Option<String>,
     #[serde(rename = "turnId")]
     pub turn_id: String,
     #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
@@ -1859,6 +1866,7 @@ mod gateway_solve_task_file_tests {
             extra_session: Some(json!({"k": 1})),
             allowed_tools: Some(vec!["bash".into()]),
             max_iterations: Some(4),
+            max_iterations_source: Some("request".into()),
             turn_id: "T_a1b2c3d4e5f6478990abcdef12345678".into(),
             session_id: Some("sess-1".into()),
             pool_id: None,
@@ -1876,6 +1884,20 @@ mod gateway_solve_task_file_tests {
         assert_eq!(t.model, back.model);
         assert_eq!(t.timeout_seconds, back.timeout_seconds);
         assert_eq!(t.max_iterations, back.max_iterations);
+        assert_eq!(t.max_iterations_source, back.max_iterations_source);
+    }
+
+    #[test]
+    fn gateway_solve_task_file_deserializes_without_source() {
+        let v = json!({
+            "requestId": "r1",
+            "userPrompt": "hello",
+            "maxIterations": 2,
+            "turnId": "T_a1b2c3d4e5f6478990abcdef12345678"
+        });
+        let t: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
+        assert_eq!(t.max_iterations, Some(2));
+        assert_eq!(t.max_iterations_source, None);
     }
 }
 

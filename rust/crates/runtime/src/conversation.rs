@@ -2291,6 +2291,66 @@ mod tests {
     }
 
     #[test]
+    fn run_turn_max_iterations_limit_value_is_honored() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct CountingLoopApi {
+            calls: Rc<Cell<usize>>,
+        }
+
+        impl ApiClient for CountingLoopApi {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls.set(self.calls.get() + 1);
+                Ok(vec![
+                    AssistantEvent::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "echo".to_string(),
+                        input: "payload".to_string(),
+                    },
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let run = |n: usize| -> (usize, String) {
+            let calls = Rc::new(Cell::new(0));
+            let mut runtime = ConversationRuntime::new(
+                Session::new(),
+                CountingLoopApi {
+                    calls: Rc::clone(&calls),
+                },
+                StaticToolExecutor::new().register("echo", |input| Ok(input.to_string())),
+                PermissionPolicy::new(PermissionMode::DangerFullAccess),
+                vec!["system".to_string()],
+            )
+            .with_max_iterations(n);
+            let err = runtime
+                .run_turn("loop", None)
+                .expect_err("looping tools must hit max_iterations");
+            (calls.get(), err.to_string())
+        };
+
+        let (calls1, msg1) = run(1);
+        assert!(msg1.contains("conversation loop exceeded the maximum number of iterations"));
+        assert_eq!(
+            calls1, 1,
+            "N=1 allows one LLM round then fails on next check"
+        );
+
+        let (calls3, msg3) = run(3);
+        assert!(msg3.contains("conversation loop exceeded the maximum number of iterations"));
+        assert_eq!(calls3, 3, "N=3 must allow three LLM rounds before failing");
+        assert!(
+            calls3 > calls1,
+            "higher maxIterations must allow more iterations"
+        );
+    }
+
+    #[test]
     fn run_turn_propagates_api_errors() {
         struct FailingApi;
 

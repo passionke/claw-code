@@ -44,13 +44,17 @@ pub fn now_ms_for_registry() -> i64 {
 }
 
 /// Register or refresh a legacy `claw_pool` row.
-pub async fn upsert_claw_pool(pg: &PgPool, row: &ClawPoolUpsert<'_>) -> Result<(), SqlxError> {
+pub async fn upsert_claw_pool(
+    pg: &PgPool,
+    cluster_id: &str,
+    row: &ClawPoolUpsert<'_>,
+) -> Result<(), SqlxError> {
     sqlx::query(
         r"INSERT INTO claw_pool (
-            pool_id, registration_time_ms, slots_max, slots_min,
+            cluster_id, pool_id, registration_time_ms, slots_max, slots_min,
             advertise_ip, sse_port, gateway_base, last_heartbeat_ms
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-          ON CONFLICT (pool_id) DO UPDATE SET
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          ON CONFLICT (cluster_id, pool_id) DO UPDATE SET
             slots_max = EXCLUDED.slots_max,
             slots_min = EXCLUDED.slots_min,
             advertise_ip = EXCLUDED.advertise_ip,
@@ -58,6 +62,7 @@ pub async fn upsert_claw_pool(pg: &PgPool, row: &ClawPoolUpsert<'_>) -> Result<(
             gateway_base = EXCLUDED.gateway_base,
             last_heartbeat_ms = EXCLUDED.last_heartbeat_ms",
     )
+    .bind(cluster_id)
     .bind(row.pool_id)
     .bind(row.registration_time_ms)
     .bind(row.slots_max)
@@ -73,28 +78,35 @@ pub async fn upsert_claw_pool(pg: &PgPool, row: &ClawPoolUpsert<'_>) -> Result<(
 
 pub async fn touch_claw_pool_heartbeat(
     pg: &PgPool,
+    cluster_id: &str,
     pool_id: &str,
     last_heartbeat_ms: i64,
 ) -> Result<(), SqlxError> {
-    sqlx::query("UPDATE claw_pool SET last_heartbeat_ms = $2 WHERE pool_id = $1")
-        .bind(pool_id)
-        .bind(last_heartbeat_ms)
-        .execute(pg)
-        .await?;
+    sqlx::query(
+        "UPDATE claw_pool SET last_heartbeat_ms = $3 WHERE cluster_id = $1 AND pool_id = $2",
+    )
+    .bind(cluster_id)
+    .bind(pool_id)
+    .bind(last_heartbeat_ms)
+    .execute(pg)
+    .await?;
     Ok(())
 }
 
 /// Delete a pool row only when heartbeat is stale (offline).
 pub async fn delete_claw_pool_if_offline(
     pg: &PgPool,
+    cluster_id: &str,
     pool_id: &str,
     advertise_ip: &str,
     now_ms: i64,
 ) -> Result<bool, SqlxError> {
     let stale_before = now_ms.saturating_sub(120_000);
     let result = sqlx::query(
-        "DELETE FROM claw_pool WHERE pool_id = $1 AND advertise_ip = $2 AND last_heartbeat_ms < $3",
+        "DELETE FROM claw_pool WHERE cluster_id = $1 AND pool_id = $2 \
+         AND advertise_ip = $3 AND last_heartbeat_ms < $4",
     )
+    .bind(cluster_id)
     .bind(pool_id)
     .bind(advertise_ip)
     .bind(stale_before)
@@ -104,8 +116,13 @@ pub async fn delete_claw_pool_if_offline(
 }
 
 /// Admin: remove stale `claw_pool` row; pool-daemon re-registers on next start.
-pub async fn delete_claw_pool(pg: &PgPool, pool_id: &str) -> Result<bool, SqlxError> {
-    let result = sqlx::query("DELETE FROM claw_pool WHERE pool_id = $1")
+pub async fn delete_claw_pool(
+    pg: &PgPool,
+    cluster_id: &str,
+    pool_id: &str,
+) -> Result<bool, SqlxError> {
+    let result = sqlx::query("DELETE FROM claw_pool WHERE cluster_id = $1 AND pool_id = $2")
+        .bind(cluster_id)
         .bind(pool_id)
         .execute(pg)
         .await?;
@@ -113,13 +130,15 @@ pub async fn delete_claw_pool(pg: &PgPool, pool_id: &str) -> Result<bool, SqlxEr
 }
 
 /// All registered pool nodes (multi-host observability).
-pub async fn list_claw_pools(pg: &PgPool) -> Result<Vec<ClawPoolRow>, SqlxError> {
+pub async fn list_claw_pools(pg: &PgPool, cluster_id: &str) -> Result<Vec<ClawPoolRow>, SqlxError> {
     let rows = sqlx::query(
         r"SELECT pool_id, registration_time_ms, slots_max, slots_min,
                  advertise_ip, sse_port, gateway_base, last_heartbeat_ms
           FROM claw_pool
+          WHERE cluster_id = $1
           ORDER BY last_heartbeat_ms DESC, pool_id ASC",
     )
+    .bind(cluster_id)
     .fetch_all(pg)
     .await?;
     let mut out = Vec::with_capacity(rows.len());

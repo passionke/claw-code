@@ -5,6 +5,7 @@ import {
   Collapse,
   Form,
   Input,
+  InputNumber,
   Modal,
   Select,
   Space,
@@ -45,12 +46,14 @@ export default function ProjectPage() {
   const [gitForm] = Form.useForm();
   const [metaForm] = Form.useForm<{ projectCode: string; projectDescription: string }>();
   const [orchestrationForm] = Form.useForm();
+  const [maxIterForm] = Form.useForm<{ maxIterations?: number | null }>();
   const [gitPatOptions, setGitPatOptions] = useState<{ value: string; label: string }[]>(
     []
   );
   /** NAS 物化较慢，切换生效时展示 loading。Author: kejiqing */
   const [activatingRev, setActivatingRev] = useState<string | null>(null);
   const [savingMeta, setSavingMeta] = useState(false);
+  const [savingMaxIter, setSavingMaxIter] = useState(false);
 
   const CODE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
@@ -130,7 +133,10 @@ export default function ProjectPage() {
       projectDescription:
         projectConfig.projectDescription || row?.projectDescription || "",
     });
-  }, [projectConfig, projId, row, gitForm, orchestrationForm, metaForm]);
+    maxIterForm.setFieldsValue({
+      maxIterations: projectConfig.maxIterations ?? null,
+    });
+  }, [projectConfig, projId, row, gitForm, orchestrationForm, metaForm, maxIterForm]);
 
   const saveProjectMeta = async () => {
     const values = await metaForm.validateFields();
@@ -503,6 +509,56 @@ export default function ProjectPage() {
             从 Git 拉取
           </Button>
         </Space>
+      </Card>
+
+      <Card title="Agent 迭代上限" size="small" style={{ marginBottom: 16 }}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          存于 <Typography.Text code>project_config.max_iterations</Typography.Text>
+          。空 = 走集群{" "}
+          <Typography.Text code>CLAW_MAX_ITERATIONS</Typography.Text>
+          （默认 64）。Solve 请求可按 turn 传{" "}
+          <Typography.Text code>maxIterations</Typography.Text> 临时覆盖；解析结果写入{" "}
+          <Typography.Text code>solve_task_json.maxIterations</Typography.Text> /{" "}
+          <Typography.Text code>maxIterationsSource</Typography.Text>。
+        </Typography.Paragraph>
+        <Form form={maxIterForm} layout="inline">
+          <Form.Item name="maxIterations" label="maxIterations">
+            <InputNumber min={1} placeholder="集群默认" style={{ width: 140 }} />
+          </Form.Item>
+          <Form.Item>
+            <Button
+              type="primary"
+              loading={savingMaxIter}
+              onClick={async () => {
+                if (!projectConfig) return;
+                const v = await maxIterForm.validateFields();
+                const raw = v.maxIterations;
+                const maxIterations =
+                  raw === undefined || raw === null || Number.isNaN(Number(raw))
+                    ? null
+                    : Number(raw);
+                if (maxIterations !== null && maxIterations < 1) {
+                  message.error("maxIterations 必须 >= 1");
+                  return;
+                }
+                setSavingMaxIter(true);
+                try {
+                  await putProjectConfigDraft(gatewayBase, projId, projectConfig, {
+                    maxIterations,
+                  });
+                  message.success("迭代上限已保存到临时版；设为生效后对 solve 生效");
+                  await refreshProjectConfig();
+                } catch (e) {
+                  message.error(e instanceof Error ? e.message : "保存失败");
+                } finally {
+                  setSavingMaxIter(false);
+                }
+              }}
+            >
+              保存迭代上限
+            </Button>
+          </Form.Item>
+        </Form>
       </Card>
 
       <Card title="Solve 编排管道" size="small" style={{ marginBottom: 16 }}>

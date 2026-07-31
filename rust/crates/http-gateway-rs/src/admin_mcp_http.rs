@@ -67,6 +67,9 @@ struct DraftPatch<'a> {
     mcp_servers_json: Option<&'a Value>,
     skills_json: Option<&'a Value>,
     worker_profile_json: Option<&'a Value>,
+    /// `None` = omit (keep); `Some(None)` = clear; `Some(Some(n))` = set. Author: kejiqing
+    #[allow(clippy::option_option)]
+    max_iterations: Option<Option<usize>>,
 }
 
 impl Default for DraftPatch<'_> {
@@ -77,6 +80,7 @@ impl Default for DraftPatch<'_> {
             mcp_servers_json: None,
             skills_json: None,
             worker_profile_json: None,
+            max_iterations: None,
         }
     }
 }
@@ -338,6 +342,10 @@ async fn upsert_project_draft(
     let worker_profile_json = patch
         .worker_profile_json
         .unwrap_or(&existing.worker_profile_json);
+    let max_iterations = crate::max_iterations::parse_project_max_iterations_put(
+        patch.max_iterations,
+        existing.max_iterations,
+    )?;
     let now = now_ms();
     let upsert = ProjectConfigUpsert {
         proj_id,
@@ -360,6 +368,7 @@ async fn upsert_project_draft(
         worker_profile_json,
         project_code: &existing.project_code,
         project_description: &existing.project_description,
+        max_iterations,
     };
     db.upsert_project_config(upsert)
         .await
@@ -477,9 +486,24 @@ fn parse_config_put_draft_patch(args: &Value) -> Result<DraftPatch<'_>, String> 
         validate_worker_profile_json(v)?;
         patch.worker_profile_json = Some(v);
     }
+    if let Some(v) = args.get("maxIterations") {
+        any = true;
+        if v.is_null() {
+            patch.max_iterations = Some(None);
+        } else {
+            let n = v
+                .as_u64()
+                .ok_or_else(|| "maxIterations must be a positive integer or null".to_string())?;
+            let n = usize::try_from(n).map_err(|_| "maxIterations out of range".to_string())?;
+            if n == 0 {
+                return Err("maxIterations must be >= 1".into());
+            }
+            patch.max_iterations = Some(Some(n));
+        }
+    }
     if !any {
         return Err(
-            "at least one of claudeMd, rulesJson, mcpServersJson, skillsJson, workerProfileJson is required".into(),
+            "at least one of claudeMd, rulesJson, mcpServersJson, skillsJson, workerProfileJson, maxIterations is required".into(),
         );
     }
     Ok(patch)
@@ -626,6 +650,7 @@ async fn handle_project_config_tool(
                 "mcpServersJson": row.mcp_servers_json,
                 "allowedToolsJson": row.allowed_tools_json,
                 "workerProfileJson": row.worker_profile_json,
+                "maxIterations": row.max_iterations,
             });
             Ok(tool_text_result(&payload))
         }

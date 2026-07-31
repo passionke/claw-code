@@ -3,3 +3,5 @@ rust/.sandbox-home
 rust/.sandbox-tmp
 rust/.claude
 rust/.claw
+# Host/workspace bind trees must not enter image build context (often root/1000 perms). Author: kejiqing
+deploy/stack/claw-workspace*

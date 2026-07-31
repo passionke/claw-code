@@ -638,6 +638,12 @@ pub(crate) async fn validate_solve_request(
             "projId must be >= 1",
         ));
     }
+    if req.max_iterations == Some(0) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "maxIterations must be >= 1",
+        ));
+    }
     let has_attachments = req.attachments.as_ref().is_some_and(|a| !a.is_empty());
     if req.user_prompt.trim().is_empty() && !has_attachments {
         return Err(ApiError::new(

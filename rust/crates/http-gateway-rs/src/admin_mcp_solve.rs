@@ -23,6 +23,8 @@ pub struct AdminMcpSolveInput {
     pub extra_session: Option<Value>,
     #[serde(rename = "allowedTools")]
     pub allowed_tools: Option<Vec<String>>,
+    #[serde(default, rename = "maxIterations")]
+    pub max_iterations: Option<usize>,
     #[serde(default, rename = "attachments")]
     pub attachments: Option<Vec<gateway_solve_turn::SolveAttachment>>,
 }

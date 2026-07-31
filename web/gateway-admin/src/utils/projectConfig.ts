@@ -16,6 +16,7 @@ export function emptyProjectConfig(projId: number): ProjectConfig {
     extraSessionFieldsJson: [],
     promptLimitsJson: {},
     workerProfileJson: { mode: "strict" },
+    maxIterations: null,
   };
 }
 
@@ -76,6 +77,8 @@ export async function putProjectConfigDraft(
       patch.workerProfileJson !== undefined
         ? patch.workerProfileJson
         : cfg.workerProfileJson ?? { mode: "strict" },
+    maxIterations:
+      patch.maxIterations !== undefined ? patch.maxIterations : cfg.maxIterations ?? null,
   };
   const r = await proxyHttp<{ activeConfig?: ProjectConfig } & ProjectConfig>(
     gatewayBase,

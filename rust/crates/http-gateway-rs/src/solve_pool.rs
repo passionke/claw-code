@@ -194,6 +194,22 @@ pub(crate) async fn run_solve_request_docker(
         Some((dsl, source)) => (Some(dsl), Some(source)),
         None => (None, None),
     };
+    let project_max_iterations = state
+        .session_db
+        .get_project_max_iterations(req.proj_id)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("load project max_iterations failed: {e}"),
+            )
+        })?;
+    let (max_iterations, max_iterations_source) = crate::max_iterations::resolve_max_iterations(
+        req.max_iterations,
+        project_max_iterations,
+        state.cfg.default_max_iterations,
+    )
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let mut attachments = req.attachments.clone();
     if let Some(ref mut atts) = attachments {
         crate::session_upload::enrich_media_attachment_urls(
@@ -208,7 +224,8 @@ pub(crate) async fn run_solve_request_docker(
         timeout_seconds: Some(timeout_seconds),
         extra_session: req.extra_session.clone(),
         allowed_tools: Some(effective_allowed_tools),
-        max_iterations: Some(state.cfg.default_max_iterations),
+        max_iterations: Some(max_iterations),
+        max_iterations_source: Some(max_iterations_source.as_str().to_string()),
         turn_id: turn_id.clone(),
         session_id: Some(session_id.clone()),
         pool_id: None,
