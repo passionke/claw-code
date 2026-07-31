@@ -64,6 +64,7 @@ pub struct LlmModelEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct LlmModelPublic {
     pub id: String,
     pub name: String,
@@ -92,6 +93,7 @@ pub struct LlmModelPublic {
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct LlmModelVersionPublic {
     #[serde(rename = "modelRev")]
     pub model_rev: String,

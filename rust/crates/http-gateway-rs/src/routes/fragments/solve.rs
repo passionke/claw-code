@@ -53,7 +53,7 @@ pub(crate) struct ProbeQuery {
                         "mime": "video/mp4",
                         "kind": "video",
                         "name": "clip.mp4",
-                        "size": 1234567,
+                        "size": 1_234_567,
                         "url": "https://example.oss-cn-hangzhou.aliyuncs.com/sessions/.../clip.mp4?Expires=..."
                     }]
                 })
@@ -68,7 +68,7 @@ pub(crate) struct ProbeQuery {
                         "mime": "audio/wav",
                         "kind": "audio",
                         "name": "voice.wav",
-                        "size": 234567,
+                        "size": 234_567,
                         "url": "https://example.oss-cn-hangzhou.aliyuncs.com/sessions/.../voice.wav?Expires=..."
                     }]
                 })
@@ -561,7 +561,7 @@ pub(crate) async fn solve_start(
                         "mime": "video/mp4",
                         "kind": "video",
                         "name": "clip.mp4",
-                        "size": 1234567,
+                        "size": 1_234_567,
                         "url": "https://example.oss-cn-hangzhou.aliyuncs.com/sessions/.../clip.mp4?Expires=..."
                     }]
                 })
@@ -576,7 +576,7 @@ pub(crate) async fn solve_start(
                         "mime": "audio/wav",
                         "kind": "audio",
                         "name": "voice.wav",
-                        "size": 234567,
+                        "size": 234_567,
                         "url": "https://example.oss-cn-hangzhou.aliyuncs.com/sessions/.../voice.wav?Expires=..."
                     }]
                 })
