@@ -115,13 +115,14 @@ pub fn wait_live_agent(agent_id: &str, timeout: Duration) -> bool {
     if *guard {
         return true;
     }
-    let (guard, wait_result) = cvar
+    let (guard, _wait_result) = cvar
         .wait_timeout(guard, timeout)
-        .unwrap_or_else(|e| e.into_inner());
-    *guard || !wait_result.timed_out() && *guard
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard
 }
 
 /// Abort all live agents and wait until registry is empty (or timeout). Author: kejiqing
+#[must_use]
 pub fn kill_all_subagents(join_timeout: Duration) -> usize {
     let handles: Vec<LiveAgentHandle> = with_registry(|reg| {
         reg.agents

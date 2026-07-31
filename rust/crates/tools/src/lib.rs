@@ -1376,7 +1376,7 @@ fn execute_tool_with_enforcer(
         "TodoWrite" => from_value::<TodoWriteInput>(input).and_then(run_todo_write),
         "Skill" => from_value::<SkillInput>(input).and_then(run_skill),
         "Agent" => from_value::<AgentInput>(input).and_then(run_agent),
-        "AwaitAgent" => from_value::<AwaitAgentInput>(input).and_then(run_await_agent),
+        "AwaitAgent" => from_value::<AwaitAgentInput>(input).and_then(|input| run_await_agent(&input)),
         "ToolSearch" => from_value::<ToolSearchInput>(input).and_then(run_tool_search),
         "NotebookEdit" => from_value::<NotebookEditInput>(input).and_then(run_notebook_edit),
         "Sleep" => from_value::<SleepInput>(input).and_then(run_sleep),
@@ -2305,7 +2305,7 @@ fn run_agent(input: AgentInput) -> Result<String, String> {
     to_pretty_json(execute_agent(input)?)
 }
 
-fn run_await_agent(input: AwaitAgentInput) -> Result<String, String> {
+fn run_await_agent(input: &AwaitAgentInput) -> Result<String, String> {
     to_pretty_json(execute_await_agent(input)?)
 }
 
@@ -2810,7 +2810,7 @@ pub struct AgentOutput {
     derived_state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-    /// Terminal summary text (Foreground result / AwaitAgent). Author: kejiqing
+    /// Terminal summary text (Foreground result / `AwaitAgent`). Author: kejiqing
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
     /// Overall sub-agent wall clock in ms. Author: kejiqing
@@ -3765,7 +3765,7 @@ pub(crate) fn execute_agent_with_mcp_context(
                 spawn_agent_job(job)?;
                 Ok(None)
             } else {
-                Ok(Some(run_agent_job_to_terminal(job)?))
+                Ok(Some(run_agent_job_to_terminal(&job)?))
             }
         },
     )
@@ -3932,7 +3932,7 @@ pub fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
         .name(thread_name)
         .spawn(move || {
             let job_for_hook = job.clone();
-            let run = || run_agent_job_to_terminal(job);
+            let run = || run_agent_job_to_terminal(&job);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if let Some(ctx) = mcp_ctx {
                     with_mcp_call_context(ctx, run)
@@ -3942,10 +3942,10 @@ pub fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
             }));
             match result {
                 Ok(Ok(terminal)) => {
-                    let status = match terminal.status.as_str() {
-                        "completed" => "completed",
-                        "cancelled" => "failed",
-                        _ => "failed",
+                    let status = if terminal.status == "completed" {
+                        "completed"
+                    } else {
+                        "failed"
                     };
                     job_for_hook.invoke_terminal_hook(status, terminal.error.clone());
                 }
@@ -3974,7 +3974,7 @@ pub fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
 }
 
 /// Run agent job to terminal state; returns final manifest. Author: kejiqing
-pub fn run_agent_job_to_terminal(job: AgentJob) -> Result<AgentOutput, String> {
+pub fn run_agent_job_to_terminal(job: &AgentJob) -> Result<AgentOutput, String> {
     let duration_ms =
         || i64::try_from(job.started_instant.elapsed().as_millis()).unwrap_or(i64::MAX);
     if job
@@ -3992,7 +3992,7 @@ pub fn run_agent_job_to_terminal(job: AgentJob) -> Result<AgentOutput, String> {
         job.invoke_terminal_hook("failed", Some(String::from("sub-agent cancelled")));
         return read_agent_manifest(&job.manifest.manifest_file);
     }
-    let mut runtime = build_agent_runtime(&job)?.with_max_iterations(DEFAULT_AGENT_MAX_ITERATIONS);
+    let mut runtime = build_agent_runtime(job)?.with_max_iterations(DEFAULT_AGENT_MAX_ITERATIONS);
     if let Some(abort) = job.abort_signal.clone() {
         runtime = runtime.with_hook_abort_signal(abort);
     }
@@ -4013,14 +4013,7 @@ pub fn run_agent_job_to_terminal(job: AgentJob) -> Result<AgentOutput, String> {
                 Some(duration_ms()),
             )?;
             let terminal = read_agent_manifest(&job.manifest.manifest_file)?;
-            job.invoke_terminal_hook(
-                if status == "cancelled" {
-                    "failed"
-                } else {
-                    "failed"
-                },
-                Some(msg.clone()),
-            );
+            job.invoke_terminal_hook("failed", Some(msg.clone()));
             return if status == "cancelled" {
                 Ok(terminal)
             } else {
@@ -4046,7 +4039,7 @@ fn read_agent_manifest(path: &str) -> Result<AgentOutput, String> {
     serde_json::from_str(&contents).map_err(|e| e.to_string())
 }
 
-fn execute_await_agent(input: AwaitAgentInput) -> Result<AgentOutput, String> {
+fn execute_await_agent(input: &AwaitAgentInput) -> Result<AgentOutput, String> {
     let agent_id = input.agent_id.trim();
     if agent_id.is_empty() {
         return Err(String::from("agent_id must not be empty"));
@@ -9379,7 +9372,7 @@ mod tests {
             },
         )
         .expect("background spawn");
-        let awaited = execute_await_agent(AwaitAgentInput {
+        let awaited = execute_await_agent(&AwaitAgentInput {
             agent_id: out.agent_id.clone(),
             wait: Some(true),
             timeout_ms: Some(5_000),
@@ -9402,7 +9395,7 @@ mod tests {
         let work = temp_path("agent-await-missing");
         std::fs::create_dir_all(work.join(AGENT_STORE_REL)).expect("store");
         std::env::set_var("CLAW_GATEWAY_WORK_ROOT", &work);
-        let err = execute_await_agent(AwaitAgentInput {
+        let err = execute_await_agent(&AwaitAgentInput {
             agent_id: "does-not-exist".to_string(),
             wait: Some(true),
             timeout_ms: Some(100),
@@ -9548,7 +9541,7 @@ mod tests {
         .expect("bg spawn");
         let _ = kill_all_subagents(Duration::from_secs(2));
         assert_eq!(live_agent_count(), 0);
-        let err = execute_await_agent(AwaitAgentInput {
+        let err = execute_await_agent(&AwaitAgentInput {
             agent_id: out.agent_id.clone(),
             wait: Some(true),
             timeout_ms: Some(200),

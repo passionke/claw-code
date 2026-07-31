@@ -43,5 +43,5 @@ pub fn run_gateway_agent_foreground(bus: &EventBus, job: AgentJob) -> Result<Age
         let _ = bus.agent_failed(&agent_id, e);
     })?;
     // terminal_hook emits done/failed; do not double-emit on Err. Author: kejiqing
-    run_agent_job_to_terminal(job)
+    run_agent_job_to_terminal(&job)
 }

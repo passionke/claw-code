@@ -55,6 +55,7 @@ pub mod agent_orchestration;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
 pub mod gateway_stdout;
+#[cfg(test)]
 mod integ_subagent_escape;
 pub mod landlock_dsl;
 pub mod landlock_jail;
