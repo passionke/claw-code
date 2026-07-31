@@ -19,7 +19,8 @@ Usage: stage-e2b-worker-bins.sh
 Writes claw only (linux/${WORKER_ARCH}) into:
   ${OUT_DIR}/
 
-Relaxed template uses build-claw-worker-relaxed-selfhosted.py.
+Relaxed template reuses this claw when CLAW_E2B_TEMPLATE_COPY_DIR is set
+(e2b-worker-deploy builds strict then relaxed).
 
 Env:
   CLAW_E2B_WORKER_ARCH         amd64 | arm64 (default amd64 for self-hosted e2b)
