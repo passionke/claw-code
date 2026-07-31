@@ -6635,10 +6635,11 @@ mod tests {
         is_live_agent, kill_all_subagents, live_agent_count, live_agent_test_lock,
         mark_live_agent_finished, maybe_commit_provenance, mvp_tool_specs,
         permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
-        read_agent_manifest, register_live_agent, reset_live_agents_for_test, resolve_agent_model,
-        resolve_agent_max_iterations, run_task_packet, AgentInput, AgentJob, AwaitAgentInput,
-        GlobalToolRegistry, LaneEventName, LaneFailureClass, ProviderRuntimeClient,
-        SubagentToolExecutor, AGENT_STORE_REL, DEFAULT_AGENT_MAX_ITERATIONS, DEFAULT_AGENT_MODEL,
+        read_agent_manifest, register_live_agent, reset_live_agents_for_test,
+        resolve_agent_max_iterations, resolve_agent_model, run_task_packet, AgentInput, AgentJob,
+        AwaitAgentInput, GlobalToolRegistry, LaneEventName, LaneFailureClass,
+        ProviderRuntimeClient, SubagentToolExecutor, AGENT_STORE_REL, DEFAULT_AGENT_MAX_ITERATIONS,
+        DEFAULT_AGENT_MODEL,
     };
     use api::OutputContentBlock;
     use runtime::ProviderFallbackConfig;
