@@ -2336,12 +2336,18 @@ mod tests {
 
         let (calls1, msg1) = run(1);
         assert!(msg1.contains("conversation loop exceeded the maximum number of iterations"));
-        assert_eq!(calls1, 1, "N=1 allows one LLM round then fails on next check");
+        assert_eq!(
+            calls1, 1,
+            "N=1 allows one LLM round then fails on next check"
+        );
 
         let (calls3, msg3) = run(3);
         assert!(msg3.contains("conversation loop exceeded the maximum number of iterations"));
         assert_eq!(calls3, 3, "N=3 must allow three LLM rounds before failing");
-        assert!(calls3 > calls1, "higher maxIterations must allow more iterations");
+        assert!(
+            calls3 > calls1,
+            "higher maxIterations must allow more iterations"
+        );
     }
 
     #[test]

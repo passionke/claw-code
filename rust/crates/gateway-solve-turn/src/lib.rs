@@ -256,7 +256,11 @@ pub struct GatewaySolveTaskFile {
     #[serde(rename = "maxIterations")]
     pub max_iterations: Option<usize>,
     /// Where `maxIterations` was resolved from (`request` | `project` | `cluster`). Author: kejiqing
-    #[serde(default, rename = "maxIterationsSource", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "maxIterationsSource",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_iterations_source: Option<String>,
     #[serde(rename = "turnId")]
     pub turn_id: String,
