@@ -7462,6 +7462,30 @@ fn render_export_text(session: &Session) -> String {
                     let label = name.as_deref().unwrap_or(path.as_str());
                     lines.push(format!("[image path={path} mime={mime} name={label}]"));
                 }
+                ContentBlock::Video {
+                    path,
+                    mime,
+                    name,
+                    url,
+                } => {
+                    let label = name.as_deref().unwrap_or(path.as_str());
+                    let url_note = url.as_deref().unwrap_or("");
+                    lines.push(format!(
+                        "[video path={path} mime={mime} name={label} url={url_note}]"
+                    ));
+                }
+                ContentBlock::Audio {
+                    path,
+                    mime,
+                    name,
+                    url,
+                } => {
+                    let label = name.as_deref().unwrap_or(path.as_str());
+                    let url_note = url.as_deref().unwrap_or("");
+                    lines.push(format!(
+                        "[audio path={path} mime={mime} name={label} url={url_note}]"
+                    ));
+                }
                 ContentBlock::ToolUse { id, name, input } => {
                     lines.push(format!("[tool_use id={id} name={name}] {input}"));
                 }
@@ -7659,6 +7683,38 @@ fn render_session_markdown(session: &Session, session_id: &str, session_path: &P
                 ContentBlock::Image { path, mime, name } => {
                     let label = name.as_deref().unwrap_or(path.as_str());
                     lines.push(format!("**Image** `{label}` _(path `{path}`, {mime})_"));
+                    lines.push(String::new());
+                }
+                ContentBlock::Video {
+                    path,
+                    mime,
+                    name,
+                    url,
+                } => {
+                    let label = name.as_deref().unwrap_or(path.as_str());
+                    let url_note = url
+                        .as_deref()
+                        .map(|u| format!(", url `{u}`"))
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "**Video** `{label}` _(path `{path}`, {mime}{url_note})_"
+                    ));
+                    lines.push(String::new());
+                }
+                ContentBlock::Audio {
+                    path,
+                    mime,
+                    name,
+                    url,
+                } => {
+                    let label = name.as_deref().unwrap_or(path.as_str());
+                    let url_note = url
+                        .as_deref()
+                        .map(|u| format!(", url `{u}`"))
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "**Audio** `{label}` _(path `{path}`, {mime}{url_note})_"
+                    ));
                     lines.push(String::new());
                 }
                 ContentBlock::ToolUse { id, name, input } => {

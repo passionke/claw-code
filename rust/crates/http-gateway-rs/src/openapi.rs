@@ -306,7 +306,7 @@ mod tests {
         );
         assert_eq!(
             document["components"]["schemas"]["SolveAttachmentKind"]["enum"],
-            json!(["image", "document"])
+            json!(["image", "video", "audio", "document"])
         );
         assert_eq!(
             document["components"]["schemas"]["SolveAttachment"]["properties"]["kind"]["$ref"],

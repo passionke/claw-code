@@ -44,6 +44,10 @@ export interface LlmModelRow {
   modelName: string;
   /** When true, solve accepts image attachments. Author: kejiqing */
   supportsVision?: boolean;
+  /** When true, solve accepts video attachments (`video_url` wire). Author: kejiqing */
+  supportsVideo?: boolean;
+  /** When true, solve accepts audio attachments (`input_audio` wire). Author: kejiqing */
+  supportsAudio?: boolean;
   apiKeySet: boolean;
   active?: boolean;
   /** Head revision after last save. */

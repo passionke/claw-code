@@ -201,6 +201,8 @@ pub fn normalize_extra_session(extra_session: Option<Value>) -> Option<Value> {
 #[schema(example = "image")]
 pub enum SolveAttachmentKind {
     Image,
+    Video,
+    Audio,
     Document,
 }
 
@@ -211,7 +213,7 @@ pub struct SolveAttachment {
     pub path: String,
     #[schema(example = "image/png")]
     pub mime: String,
-    /// Enum: `image` | `document`.
+    /// Enum: `image` | `video` | `audio` | `document`.
     pub kind: SolveAttachmentKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "photo.png")]
@@ -231,6 +233,10 @@ pub struct SolveAttachment {
         skip_serializing_if = "Option::is_none"
     )]
     pub oss_retain_until_ms: Option<i64>,
+    /// Temporary HTTPS URL for model wire (presigned OSS). Prefer for video/audio. Author: kejiqing
+    #[serde(default, rename = "url", skip_serializing_if = "Option::is_none")]
+    #[schema(example = "https://bucket.oss-example.com/sessions/.../clip.mp4?Expires=...")]
+    pub url: Option<String>,
 }
 
 /// Task payload written by the gateway / read by `claw gateway-solve-once`.
@@ -939,7 +945,7 @@ fn convert_runtime_messages_to_api(messages: &[ConversationMessage]) -> Vec<Inpu
     api::convert_runtime_messages_gateway(messages, &cwd)
 }
 
-/// Build the user turn from prompt + attachments (images as content blocks, docs as path text).
+/// Build the user turn from prompt + attachments (media as content blocks, docs as path text).
 /// Author: kejiqing
 pub fn build_user_turn_message(
     prompt: &str,
@@ -953,6 +959,22 @@ pub fn build_user_turn_message(
                     path: att.path.clone(),
                     mime: att.mime.clone(),
                     name: att.name.clone(),
+                });
+            }
+            SolveAttachmentKind::Video => {
+                blocks.push(ContentBlock::Video {
+                    path: att.path.clone(),
+                    mime: att.mime.clone(),
+                    name: att.name.clone(),
+                    url: att.url.clone(),
+                });
+            }
+            SolveAttachmentKind::Audio => {
+                blocks.push(ContentBlock::Audio {
+                    path: att.path.clone(),
+                    mime: att.mime.clone(),
+                    name: att.name.clone(),
+                    url: att.url.clone(),
                 });
             }
             SolveAttachmentKind::Document => {
@@ -971,10 +993,12 @@ pub fn build_user_turn_message(
         blocks.push(ContentBlock::Text {
             text: prompt.to_string(),
         });
-    } else if attachments
-        .iter()
-        .any(|a| a.kind == SolveAttachmentKind::Image)
-    {
+    } else if attachments.iter().any(|a| {
+        matches!(
+            a.kind,
+            SolveAttachmentKind::Image | SolveAttachmentKind::Video | SolveAttachmentKind::Audio
+        )
+    }) {
         blocks.push(ContentBlock::Text {
             text: "请查看附件".to_string(),
         });
@@ -1796,6 +1820,7 @@ mod gateway_solve_task_file_tests {
                 oss_key: None,
                 oss_url: None,
                 oss_retain_until_ms: None,
+                url: None,
             },
             SolveAttachment {
                 path: "uploads/b.pdf".into(),
@@ -1806,6 +1831,7 @@ mod gateway_solve_task_file_tests {
                 oss_key: None,
                 oss_url: None,
                 oss_retain_until_ms: None,
+                url: None,
             },
         ];
         let msg = build_user_turn_message("look", &atts);

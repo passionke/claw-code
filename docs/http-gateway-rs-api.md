@@ -26,7 +26,7 @@ Base URL 示例：`http://127.0.0.1:18088`
   - 请求体字段：
     - `projId`：必填，项目 ID，整数且需 `>= 1`（请求体可写别名 `dsId` / `ds_id` / `proj_id`）
     - `userPrompt`：必填，用户自然语言输入，非空字符串（若带非空 `attachments` 则可为空，worker 会补「请查看附件」）
-    - `attachments`：可选，会话相对路径附件元数据数组（先 `POST /v1/sessions/{sessionId}/files` 上传）。每项：`path`、`mime`、`kind`（`image`|`document`）、可选 `name`/`size`。含 `kind=image` 时，生效 LLM 须 `supportsVision=true`，否则 `400`（`MODEL_NO_VISION: …`）
+    - `attachments`：可选，会话相对路径附件元数据数组（先 `POST /v1/sessions/{sessionId}/files` 上传）。每项：`path`、`mime`、`kind`（`image`|`video`|`audio`|`document`）、可选 `name`/`size`/`url`（视频/音频优先 OSS 临时 URL）。含 `kind=image` 时生效 LLM 须 `supportsVision=true`；`video`→`supportsVideo`；`audio`→`supportsAudio`；否则 `400`（`MODEL_NO_VISION` / `MODEL_NO_VIDEO` / `MODEL_NO_AUDIO`）
     - `sessionId`：可选，非空时表示按该 id 续聊（须已在库中有历史）；与头冲突规则见上
     - `model`：可选，指定使用的模型标识，缺省走网关默认模型
     - `timeoutSeconds`：可选，整体超时时间（秒）

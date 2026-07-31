@@ -148,6 +148,8 @@ export default function LlmModelsPage({
       baseModelUrl: row.baseModelUrl,
       modelName: row.modelName,
       supportsVision: Boolean(row.supportsVision),
+      supportsVideo: Boolean(row.supportsVideo),
+      supportsAudio: Boolean(row.supportsAudio),
       apiKey: "",
     });
     setModalOpen(true);
@@ -181,12 +183,16 @@ export default function LlmModelsPage({
         baseModelUrl: string;
         modelName: string;
         supportsVision?: boolean;
+        supportsVideo?: boolean;
+        supportsAudio?: boolean;
         apiKey?: string;
       } = {
         name,
         baseModelUrl,
         modelName,
         supportsVision: Boolean(v.supportsVision),
+        supportsVideo: Boolean(v.supportsVideo),
+        supportsAudio: Boolean(v.supportsAudio),
       };
       if (editing) body.id = editing.id;
       if (apiKey) body.apiKey = apiKey;
@@ -316,6 +322,18 @@ export default function LlmModelsPage({
     {
       title: "视觉",
       dataIndex: "supportsVision",
+      width: 72,
+      render: (v: boolean | undefined) => (v ? <Tag color="blue">是</Tag> : <Tag>否</Tag>),
+    },
+    {
+      title: "视频",
+      dataIndex: "supportsVideo",
+      width: 72,
+      render: (v: boolean | undefined) => (v ? <Tag color="blue">是</Tag> : <Tag>否</Tag>),
+    },
+    {
+      title: "音频",
+      dataIndex: "supportsAudio",
       width: 72,
       render: (v: boolean | undefined) => (v ? <Tag color="blue">是</Tag> : <Tag>否</Tag>),
     },
@@ -503,6 +521,22 @@ export default function LlmModelsPage({
             label="支持视觉"
             valuePropName="checked"
             tooltip="勾选后允许带图片附件的 solve；纯文本模型请关闭"
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            name="supportsVideo"
+            label="支持视频"
+            valuePropName="checked"
+            tooltip="勾选后允许视频附件（OpenAI-compat video_url，通常需 VL 模型）"
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            name="supportsAudio"
+            label="支持音频"
+            valuePropName="checked"
+            tooltip="勾选后允许音频附件（OpenAI-compat input_audio，通常需 Omni 模型）"
           >
             <Switch />
           </Form.Item>

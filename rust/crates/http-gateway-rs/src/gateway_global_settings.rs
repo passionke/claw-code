@@ -51,6 +51,10 @@ pub struct LlmModelEntry {
     pub model_name: String,
     #[serde(rename = "supportsVision", default)]
     pub supports_vision: bool,
+    #[serde(rename = "supportsVideo", default)]
+    pub supports_video: bool,
+    #[serde(rename = "supportsAudio", default)]
+    pub supports_audio: bool,
     #[serde(rename = "currentRev", default, skip_serializing)]
     pub current_rev: String,
     #[serde(rename = "createdAtMs")]
@@ -60,6 +64,7 @@ pub struct LlmModelEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct LlmModelPublic {
     pub id: String,
     pub name: String,
@@ -69,6 +74,10 @@ pub struct LlmModelPublic {
     pub model_name: String,
     #[serde(rename = "supportsVision", default)]
     pub supports_vision: bool,
+    #[serde(rename = "supportsVideo", default)]
+    pub supports_video: bool,
+    #[serde(rename = "supportsAudio", default)]
+    pub supports_audio: bool,
     #[serde(rename = "currentRev", skip_serializing_if = "String::is_empty")]
     pub current_rev: String,
     #[serde(rename = "apiKeySet")]
@@ -84,6 +93,7 @@ pub struct LlmModelPublic {
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct LlmModelVersionPublic {
     #[serde(rename = "modelRev")]
     pub model_rev: String,
@@ -94,6 +104,10 @@ pub struct LlmModelVersionPublic {
     pub model_name: String,
     #[serde(rename = "supportsVision", default)]
     pub supports_vision: bool,
+    #[serde(rename = "supportsVideo", default)]
+    pub supports_video: bool,
+    #[serde(rename = "supportsAudio", default)]
+    pub supports_audio: bool,
     #[serde(rename = "apiKeySet")]
     pub api_key_set: bool,
     pub active: bool,
@@ -123,6 +137,8 @@ pub struct ActiveLlmRuntime {
     pub model_name: String,
     pub api_key: String,
     pub supports_vision: bool,
+    pub supports_video: bool,
+    pub supports_audio: bool,
     pub applied_at_ms: Option<i64>,
 }
 
@@ -305,6 +321,10 @@ pub struct PutLlmModelInput {
     pub model_name: String,
     #[serde(default, rename = "supportsVision")]
     pub supports_vision: bool,
+    #[serde(default, rename = "supportsVideo")]
+    pub supports_video: bool,
+    #[serde(default, rename = "supportsAudio")]
+    pub supports_audio: bool,
     #[serde(default, rename = "apiKey")]
     pub api_key: Option<String>,
     #[serde(default)]
@@ -460,6 +480,8 @@ async fn ensure_llm_model_versions_backfilled(
             base_model_url: entry.base_model_url.clone(),
             model_name: entry.model_name.clone(),
             supports_vision: entry.supports_vision,
+            supports_video: entry.supports_video,
+            supports_audio: entry.supports_audio,
             note: None,
         };
         db.upsert_llm_cluster_revision(&row).await?;
@@ -560,6 +582,8 @@ pub async fn upsert_llm_model(
         base_model_url: base.clone(),
         model_name: model.clone(),
         supports_vision: input.supports_vision,
+        supports_video: input.supports_video,
+        supports_audio: input.supports_audio,
         note: normalize_revision_note(input.note),
     };
     db.upsert_llm_cluster_revision(&row)
@@ -575,6 +599,8 @@ pub async fn upsert_llm_model(
         entry.base_model_url = base.clone();
         entry.model_name = model.clone();
         entry.supports_vision = input.supports_vision;
+        entry.supports_video = input.supports_video;
+        entry.supports_audio = input.supports_audio;
         entry.current_rev = rev.clone();
         entry.updated_at_ms = now;
     } else {
@@ -584,6 +610,8 @@ pub async fn upsert_llm_model(
             base_model_url: base,
             model_name: model,
             supports_vision: input.supports_vision,
+            supports_video: input.supports_video,
+            supports_audio: input.supports_audio,
             current_rev: rev.clone(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -648,6 +676,8 @@ pub async fn put_active_llm_config(
             base_model_url: input.base_model_url,
             model_name: input.model_name,
             supports_vision: false,
+            supports_video: false,
+            supports_audio: false,
             api_key: input.api_key,
             note: input.note,
         },
@@ -695,6 +725,8 @@ pub async fn load_llm_runtime_for_model_id(
         model_name: row.model_name,
         api_key,
         supports_vision: row.supports_vision,
+        supports_video: row.supports_video,
+        supports_audio: row.supports_audio,
         applied_at_ms: None,
     })
 }
@@ -725,6 +757,8 @@ pub async fn load_active_llm_runtime(
         model_name: row.model_name,
         api_key,
         supports_vision: row.supports_vision,
+        supports_video: row.supports_video,
+        supports_audio: row.supports_audio,
         applied_at_ms: store.active_applied_at_ms,
     }))
 }
@@ -761,7 +795,7 @@ async fn llm_entry_to_public(
     } else {
         entry.current_rev.clone()
     };
-    let (name, base_model_url, model_name, supports_vision) =
+    let (name, base_model_url, model_name, supports_vision, supports_video, supports_audio) =
         if let Some(cluster_id) = resolve_llm_cluster_id() {
             match db
                 .get_llm_cluster_revision(&cluster_id, &entry.id, &current_rev)
@@ -772,12 +806,16 @@ async fn llm_entry_to_public(
                     row.base_model_url,
                     row.model_name,
                     row.supports_vision,
+                    row.supports_video,
+                    row.supports_audio,
                 ),
                 None => (
                     entry.name.clone(),
                     entry.base_model_url.clone(),
                     entry.model_name.clone(),
                     entry.supports_vision,
+                    entry.supports_video,
+                    entry.supports_audio,
                 ),
             }
         } else {
@@ -786,6 +824,8 @@ async fn llm_entry_to_public(
                 entry.base_model_url.clone(),
                 entry.model_name.clone(),
                 entry.supports_vision,
+                entry.supports_video,
+                entry.supports_audio,
             )
         };
     let is_active_model = !store.active_id.is_empty() && store.active_id == entry.id;
@@ -796,6 +836,8 @@ async fn llm_entry_to_public(
         base_model_url,
         model_name,
         supports_vision,
+        supports_video,
+        supports_audio,
         current_rev,
         api_key_set,
         active: is_active_model,

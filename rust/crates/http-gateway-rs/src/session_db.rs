@@ -236,6 +236,8 @@ pub struct GatewayLlmModelRevisionRow {
     pub base_model_url: String,
     pub model_name: String,
     pub supports_vision: bool,
+    pub supports_video: bool,
+    pub supports_audio: bool,
     pub note: Option<String>,
 }
 
@@ -326,6 +328,8 @@ pub struct GatewayLlmProjectRevisionRow {
     pub base_model_url: String,
     pub model_name: String,
     pub supports_vision: bool,
+    pub supports_video: bool,
+    pub supports_audio: bool,
     pub note: Option<String>,
 }
 
@@ -1101,6 +1105,30 @@ impl GatewaySessionDb {
         sqlx::query(
             r"ALTER TABLE gateway_llm_cluster_revision
                ADD COLUMN IF NOT EXISTS supports_vision BOOLEAN NOT NULL DEFAULT FALSE",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"ALTER TABLE gateway_llm_cluster_revision
+               ADD COLUMN IF NOT EXISTS supports_video BOOLEAN NOT NULL DEFAULT FALSE",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"ALTER TABLE gateway_llm_cluster_revision
+               ADD COLUMN IF NOT EXISTS supports_audio BOOLEAN NOT NULL DEFAULT FALSE",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"ALTER TABLE gateway_llm_project_revision
+               ADD COLUMN IF NOT EXISTS supports_video BOOLEAN NOT NULL DEFAULT FALSE",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"ALTER TABLE gateway_llm_project_revision
+               ADD COLUMN IF NOT EXISTS supports_audio BOOLEAN NOT NULL DEFAULT FALSE",
         )
         .execute(pool)
         .await?;
@@ -1903,6 +1931,8 @@ impl GatewaySessionDb {
             base_model_url: row.try_get("base_model_url")?,
             model_name: row.try_get("model_name")?,
             supports_vision: false,
+            supports_video: false,
+            supports_audio: false,
             note: row.try_get("note")?,
         }))
     }
@@ -1931,6 +1961,8 @@ impl GatewaySessionDb {
                     base_model_url: row.try_get("base_model_url")?,
                     model_name: row.try_get("model_name")?,
                     supports_vision: false,
+                    supports_video: false,
+                    supports_audio: false,
                     note: row.try_get("note")?,
                 })
             })
@@ -2138,7 +2170,9 @@ impl GatewaySessionDb {
     ) -> Result<Option<GatewayLlmModelRevisionRow>, SqlxError> {
         let row = sqlx::query(
             r"SELECT cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
-                     COALESCE(supports_vision, FALSE) AS supports_vision, note
+                     COALESCE(supports_vision, FALSE) AS supports_vision,
+                     COALESCE(supports_video, FALSE) AS supports_video,
+                     COALESCE(supports_audio, FALSE) AS supports_audio, note
                FROM gateway_llm_cluster_revision
                WHERE cluster_id = $1 AND model_id = $2 AND model_rev = $3",
         )
@@ -2156,6 +2190,8 @@ impl GatewaySessionDb {
             base_model_url: row.try_get("base_model_url").unwrap_or_default(),
             model_name: row.try_get("model_name").unwrap_or_default(),
             supports_vision: row.try_get("supports_vision").unwrap_or(false),
+            supports_video: row.try_get("supports_video").unwrap_or(false),
+            supports_audio: row.try_get("supports_audio").unwrap_or(false),
             note: row.try_get("note").ok(),
         }))
     }
@@ -2167,13 +2203,15 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO gateway_llm_cluster_revision (
                  cluster_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
-                 supports_vision, note
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 supports_vision, supports_video, supports_audio, note
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                ON CONFLICT (cluster_id, model_id, model_rev) DO UPDATE SET
                  name = EXCLUDED.name,
                  base_model_url = EXCLUDED.base_model_url,
                  model_name = EXCLUDED.model_name,
                  supports_vision = EXCLUDED.supports_vision,
+                 supports_video = EXCLUDED.supports_video,
+                 supports_audio = EXCLUDED.supports_audio,
                  note = EXCLUDED.note,
                  created_at_ms = EXCLUDED.created_at_ms",
         )
@@ -2185,6 +2223,8 @@ impl GatewaySessionDb {
         .bind(&row.base_model_url)
         .bind(&row.model_name)
         .bind(row.supports_vision)
+        .bind(row.supports_video)
+        .bind(row.supports_audio)
         .bind(&row.note)
         .execute(&self.pool)
         .await?;
@@ -2367,7 +2407,9 @@ impl GatewaySessionDb {
     ) -> Result<Option<GatewayLlmProjectRevisionRow>, SqlxError> {
         let row = sqlx::query(
             r"SELECT cluster_id, proj_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
-                     COALESCE(supports_vision, FALSE) AS supports_vision, note
+                     COALESCE(supports_vision, FALSE) AS supports_vision,
+                     COALESCE(supports_video, FALSE) AS supports_video,
+                     COALESCE(supports_audio, FALSE) AS supports_audio, note
                FROM gateway_llm_project_revision
                WHERE cluster_id = $1 AND proj_id = $2 AND model_id = $3 AND model_rev = $4",
         )
@@ -2387,6 +2429,8 @@ impl GatewaySessionDb {
             base_model_url: row.try_get("base_model_url").unwrap_or_default(),
             model_name: row.try_get("model_name").unwrap_or_default(),
             supports_vision: row.try_get("supports_vision").unwrap_or(false),
+            supports_video: row.try_get("supports_video").unwrap_or(false),
+            supports_audio: row.try_get("supports_audio").unwrap_or(false),
             note: row.try_get("note").ok(),
         }))
     }
@@ -2398,13 +2442,15 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO gateway_llm_project_revision (
                  cluster_id, proj_id, model_id, model_rev, created_at_ms, name, base_model_url, model_name,
-                 supports_vision, note
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 supports_vision, supports_video, supports_audio, note
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                ON CONFLICT (cluster_id, proj_id, model_id, model_rev) DO UPDATE SET
                  name = EXCLUDED.name,
                  base_model_url = EXCLUDED.base_model_url,
                  model_name = EXCLUDED.model_name,
                  supports_vision = EXCLUDED.supports_vision,
+                 supports_video = EXCLUDED.supports_video,
+                 supports_audio = EXCLUDED.supports_audio,
                  note = EXCLUDED.note,
                  created_at_ms = EXCLUDED.created_at_ms",
         )
@@ -2417,6 +2463,8 @@ impl GatewaySessionDb {
         .bind(&row.base_model_url)
         .bind(&row.model_name)
         .bind(row.supports_vision)
+        .bind(row.supports_video)
+        .bind(row.supports_audio)
         .bind(&row.note)
         .execute(&self.pool)
         .await?;

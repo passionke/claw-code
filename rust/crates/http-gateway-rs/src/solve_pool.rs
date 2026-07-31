@@ -194,6 +194,13 @@ pub(crate) async fn run_solve_request_docker(
         Some((dsl, source)) => (Some(dsl), Some(source)),
         None => (None, None),
     };
+    let mut attachments = req.attachments.clone();
+    if let Some(ref mut atts) = attachments {
+        crate::session_upload::enrich_media_attachment_urls(
+            atts,
+            &crate::oss_object_store::OssConfig::from_env(),
+        );
+    }
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
@@ -206,7 +213,7 @@ pub(crate) async fn run_solve_request_docker(
         session_id: Some(session_id.clone()),
         pool_id: None,
         worker_name: None,
-        attachments: req.attachments.clone(),
+        attachments,
         llm_route: Some(serde_json::to_value(&llm_route).unwrap_or_default()),
         otel_traceparent,
         landlock_dsl,

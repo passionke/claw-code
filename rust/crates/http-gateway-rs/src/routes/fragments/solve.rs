@@ -20,7 +20,7 @@ pub(crate) struct ProbeQuery {
     operation_id = "solve",
     request_body(
         content = SolveRequest,
-        description = "Text-only or multimodal (attachments from POST /v1/sessions/{id}/files). Image attachments require a vision-capable active model.",
+        description = "Text-only or multimodal (attachments from POST /v1/sessions/{id}/files). Image/video/audio require matching model capability flags (supportsVision/supportsVideo/supportsAudio).",
         examples(
             ("TextOnly" = (
                 summary = "Text-only solve",
@@ -40,6 +40,36 @@ pub(crate) struct ProbeQuery {
                         "kind": "image",
                         "name": "photo.png",
                         "size": 12345
+                    }]
+                })
+            )),
+            ("MultimodalVideo" = (
+                summary = "Multimodal video (prefer OSS url; model must supportsVideo)",
+                value = json!({
+                    "projId": 1,
+                    "userPrompt": "请总结这段视频",
+                    "attachments": [{
+                        "path": "uploads/clip.mp4",
+                        "mime": "video/mp4",
+                        "kind": "video",
+                        "name": "clip.mp4",
+                        "size": 1_234_567,
+                        "url": "https://example.oss-cn-hangzhou.aliyuncs.com/sessions/.../clip.mp4?Expires=..."
+                    }]
+                })
+            )),
+            ("MultimodalAudio" = (
+                summary = "Multimodal audio (prefer OSS url; model must supportsAudio)",
+                value = json!({
+                    "projId": 1,
+                    "userPrompt": "请转写这段音频",
+                    "attachments": [{
+                        "path": "uploads/voice.wav",
+                        "mime": "audio/wav",
+                        "kind": "audio",
+                        "name": "voice.wav",
+                        "size": 234_567,
+                        "url": "https://example.oss-cn-hangzhou.aliyuncs.com/sessions/.../voice.wav?Expires=..."
                     }]
                 })
             ))
@@ -498,7 +528,7 @@ pub(crate) async fn solve_start(
     operation_id = "solve_async",
     request_body(
         content = SolveRequest,
-        description = "Text-only or multimodal (attachments from POST /v1/sessions/{id}/files). Image attachments require a vision-capable active model.",
+        description = "Text-only or multimodal (attachments from POST /v1/sessions/{id}/files). Image/video/audio require matching model capability flags (supportsVision/supportsVideo/supportsAudio).",
         examples(
             ("TextOnly" = (
                 summary = "Text-only async solve",
@@ -518,6 +548,36 @@ pub(crate) async fn solve_start(
                         "kind": "image",
                         "name": "photo.png",
                         "size": 12345
+                    }]
+                })
+            )),
+            ("MultimodalVideo" = (
+                summary = "Multimodal video (prefer OSS url; model must supportsVideo)",
+                value = json!({
+                    "projId": 1,
+                    "userPrompt": "请总结这段视频",
+                    "attachments": [{
+                        "path": "uploads/clip.mp4",
+                        "mime": "video/mp4",
+                        "kind": "video",
+                        "name": "clip.mp4",
+                        "size": 1_234_567,
+                        "url": "https://example.oss-cn-hangzhou.aliyuncs.com/sessions/.../clip.mp4?Expires=..."
+                    }]
+                })
+            )),
+            ("MultimodalAudio" = (
+                summary = "Multimodal audio (prefer OSS url; model must supportsAudio)",
+                value = json!({
+                    "projId": 1,
+                    "userPrompt": "请转写这段音频",
+                    "attachments": [{
+                        "path": "uploads/voice.wav",
+                        "mime": "audio/wav",
+                        "kind": "audio",
+                        "name": "voice.wav",
+                        "size": 234_567,
+                        "url": "https://example.oss-cn-hangzhou.aliyuncs.com/sessions/.../voice.wav?Expires=..."
                     }]
                 })
             ))
@@ -586,23 +646,40 @@ pub(crate) async fn validate_solve_request(
         ));
     }
     if let Some(atts) = req.attachments.as_ref() {
-        let has_image = atts
+        let needs_vision = atts
             .iter()
             .any(|a| a.kind == gateway_solve_turn::SolveAttachmentKind::Image);
-        if has_image {
-            let supports = gateway_project_llm::load_effective_llm_runtime(db, req.proj_id)
+        let needs_video = atts
+            .iter()
+            .any(|a| a.kind == gateway_solve_turn::SolveAttachmentKind::Video);
+        let needs_audio = atts
+            .iter()
+            .any(|a| a.kind == gateway_solve_turn::SolveAttachmentKind::Audio);
+        if needs_vision || needs_video || needs_audio {
+            let runtime = gateway_project_llm::load_effective_llm_runtime(db, req.proj_id)
                 .await
                 .map_err(|e| {
                     ApiError::new(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("load effective LLM failed: {e}"),
                     )
-                })?
-                .is_some_and(|r| r.supports_vision);
-            if !supports {
+                })?;
+            if needs_vision && !runtime.as_ref().is_some_and(|r| r.supports_vision) {
                 return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "MODEL_NO_VISION: current model does not support images; switch model or remove image attachments",
+                ));
+            }
+            if needs_video && !runtime.as_ref().is_some_and(|r| r.supports_video) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "MODEL_NO_VIDEO: current model does not support video; switch model or remove video attachments",
+                ));
+            }
+            if needs_audio && !runtime.as_ref().is_some_and(|r| r.supports_audio) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "MODEL_NO_AUDIO: current model does not support audio; switch model or remove audio attachments",
                 ));
             }
         }

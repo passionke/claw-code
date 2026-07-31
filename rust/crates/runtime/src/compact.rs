@@ -214,7 +214,9 @@ fn summarize_messages(messages: &[ConversationMessage]) -> String {
             ContentBlock::ToolResult { tool_name, .. } => Some(tool_name.as_str()),
             ContentBlock::Text { .. }
             | ContentBlock::ReasoningContent { .. }
-            | ContentBlock::Image { .. } => None,
+            | ContentBlock::Image { .. }
+            | ContentBlock::Video { .. }
+            | ContentBlock::Audio { .. } => None,
         })
         .collect::<Vec<_>>();
     tool_names.sort_unstable();
@@ -324,6 +326,18 @@ fn summarize_block(block: &ContentBlock) -> String {
             let label = name.as_deref().unwrap_or(path.as_str());
             format!("image {label} ({mime})")
         }
+        ContentBlock::Video {
+            path, mime, name, ..
+        } => {
+            let label = name.as_deref().unwrap_or(path.as_str());
+            format!("video {label} ({mime})")
+        }
+        ContentBlock::Audio {
+            path, mime, name, ..
+        } => {
+            let label = name.as_deref().unwrap_or(path.as_str());
+            format!("audio {label} ({mime})")
+        }
         ContentBlock::ToolUse { name, input, .. } => format!("tool_use {name}({input})"),
         ContentBlock::ToolResult {
             tool_name,
@@ -383,7 +397,9 @@ fn collect_key_files(messages: &[ConversationMessage]) -> Vec<String> {
         .flat_map(|message| message.blocks.iter())
         .map(|block| match block {
             ContentBlock::Text { text } | ContentBlock::ReasoningContent { text } => text.as_str(),
-            ContentBlock::Image { path, .. } => path.as_str(),
+            ContentBlock::Image { path, .. }
+            | ContentBlock::Video { path, .. }
+            | ContentBlock::Audio { path, .. } => path.as_str(),
             ContentBlock::ToolUse { input, .. } => input.as_str(),
             ContentBlock::ToolResult { output, .. } => output.as_str(),
         })
@@ -410,7 +426,9 @@ fn first_text_block(message: &ConversationMessage) -> Option<&str> {
         | ContentBlock::ToolResult { .. }
         | ContentBlock::Text { .. }
         | ContentBlock::ReasoningContent { .. }
-        | ContentBlock::Image { .. } => None,
+        | ContentBlock::Image { .. }
+        | ContentBlock::Video { .. }
+        | ContentBlock::Audio { .. } => None,
     })
 }
 
@@ -458,9 +476,13 @@ fn estimate_message_tokens(message: &ConversationMessage) -> usize {
             ContentBlock::Text { text } | ContentBlock::ReasoningContent { text } => {
                 text.len() / 4 + 1
             }
-            ContentBlock::Image { path, mime, name } => {
-                (path.len() + mime.len() + name.as_ref().map_or(0, String::len)) / 4 + 1
+            ContentBlock::Image { path, mime, name }
+            | ContentBlock::Video {
+                path, mime, name, ..
             }
+            | ContentBlock::Audio {
+                path, mime, name, ..
+            } => (path.len() + mime.len() + name.as_ref().map_or(0, String::len)) / 4 + 1,
             ContentBlock::ToolUse { name, input, .. } => (name.len() + input.len()) / 4 + 1,
             ContentBlock::ToolResult {
                 tool_name, output, ..

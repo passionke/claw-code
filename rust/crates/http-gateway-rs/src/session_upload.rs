@@ -17,7 +17,7 @@ use crate::cluster_identity::gateway_cluster_id;
 use crate::oss_object_store::OssConfig;
 use crate::session_merge;
 
-const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
+const MAX_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -59,6 +59,7 @@ pub struct SessionUploadedAttachment {
 }
 
 impl SessionUploadedAttachment {
+    #[must_use]
     pub fn from_solve_attachment(att: SolveAttachment, oss_signed_url: Option<String>) -> Self {
         Self {
             path: att.path,
@@ -96,6 +97,19 @@ pub fn classify_attachment(mime: &str, name: &str) -> Result<SolveAttachmentKind
     {
         return Ok(SolveAttachmentKind::Image);
     }
+    if mime.starts_with("video/")
+        || matches!(ext.as_str(), "mp4" | "webm" | "mov" | "mkv" | "avi" | "m4v")
+    {
+        return Ok(SolveAttachmentKind::Video);
+    }
+    if mime.starts_with("audio/")
+        || matches!(
+            ext.as_str(),
+            "wav" | "mp3" | "m4a" | "ogg" | "flac" | "aac" | "opus"
+        )
+    {
+        return Ok(SolveAttachmentKind::Audio);
+    }
     if matches!(
         mime.as_str(),
         "application/pdf"
@@ -109,8 +123,42 @@ pub fn classify_attachment(mime: &str, name: &str) -> Result<SolveAttachmentKind
         return Ok(SolveAttachmentKind::Document);
     }
     Err(format!(
-        "unsupported file type mime={mime} name={name}; allow images (png/jpeg/webp/gif) and documents (pdf/csv/txt/md/json)"
+        "unsupported file type mime={mime} name={name}; allow images (png/jpeg/webp/gif), video (mp4/webm/mov/mkv), audio (wav/mp3/m4a/ogg/flac), and documents (pdf/csv/txt/md/json)"
     ))
+}
+
+/// Fill `url` on video/audio attachments with a fresh OSS presigned GET (model wire). Author: kejiqing
+pub fn enrich_media_attachment_urls(attachments: &mut [SolveAttachment], oss: &OssConfig) {
+    if !oss.enabled() {
+        return;
+    }
+    let now = Utc::now();
+    let ttl = oss.signed_url_ttl_secs;
+    for att in attachments.iter_mut() {
+        if !matches!(
+            att.kind,
+            SolveAttachmentKind::Video | SolveAttachmentKind::Audio
+        ) {
+            continue;
+        }
+        if att
+            .url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty())
+        {
+            continue;
+        }
+        if let Some(key) = att.oss_key.as_deref().filter(|k| !k.is_empty()) {
+            if let Ok(signed) = oss.presign_get(key, ttl, now) {
+                att.url = Some(signed);
+                continue;
+            }
+        }
+        if let Some(u) = att.oss_url.clone().filter(|s| !s.trim().is_empty()) {
+            att.url = Some(u);
+        }
+    }
 }
 
 fn safe_original_name(name: &str) -> String {
@@ -313,6 +361,7 @@ pub(crate) async fn upload_session_files(
             oss_key,
             oss_url,
             oss_retain_until_ms,
+            url: None,
         });
     }
 
@@ -351,7 +400,7 @@ mod tests {
     use gateway_solve_turn::SolveAttachmentKind;
 
     #[test]
-    fn classify_image_and_document() {
+    fn classify_image_document_video_audio() {
         assert_eq!(
             classify_attachment("image/png", "a.png").unwrap(),
             SolveAttachmentKind::Image
@@ -363,6 +412,22 @@ mod tests {
         assert_eq!(
             classify_attachment("text/csv", "t.csv").unwrap(),
             SolveAttachmentKind::Document
+        );
+        assert_eq!(
+            classify_attachment("video/mp4", "clip.mp4").unwrap(),
+            SolveAttachmentKind::Video
+        );
+        assert_eq!(
+            classify_attachment("video/webm", "clip.webm").unwrap(),
+            SolveAttachmentKind::Video
+        );
+        assert_eq!(
+            classify_attachment("audio/mpeg", "a.mp3").unwrap(),
+            SolveAttachmentKind::Audio
+        );
+        assert_eq!(
+            classify_attachment("audio/wav", "a.wav").unwrap(),
+            SolveAttachmentKind::Audio
         );
         assert!(classify_attachment("application/zip", "x.zip").is_err());
     }
