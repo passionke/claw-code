@@ -3,11 +3,9 @@
 use claw_e2b_sandbox_client::{E2bSandboxClient, E2bSandboxHandle};
 use serde::Serialize;
 
-use crate::gateway_e2b_observe_proxy;
 use crate::gateway_e2b_worker_settings::{
     load_e2b_worker_relaxed_template_id, load_e2b_worker_template_id,
 };
-use crate::pool::interactive_backend::{terminal_ws_connect_url, TtydConnectTarget};
 use crate::pool::{
     default_worker_profile_json, effective_mode, load_desired_worker_pool_size, profile_mode_label,
     relaxed_worker_allowed_from_env, E2bProjWorkerRegistry, WorkerProfileMode,
@@ -24,10 +22,6 @@ pub struct ProjectE2bWorkerUrls {
     pub traffic_proxy_base: Option<String>,
     #[serde(rename = "sandboxDomain")]
     pub sandbox_domain: String,
-    #[serde(rename = "ttydPublicHost", skip_serializing_if = "Option::is_none")]
-    pub ttyd_public_host: Option<String>,
-    #[serde(rename = "ttydWsUrl", skip_serializing_if = "Option::is_none")]
-    pub ttyd_ws_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -90,59 +84,12 @@ pub struct ProjectE2bWorkerResetResponse {
     pub rotation_log: Vec<WorkerRotationEventPublic>,
 }
 
-fn worker_urls_strict(
-    client: &E2bSandboxClient,
-    handle: &E2bSandboxHandle,
-) -> ProjectE2bWorkerUrls {
+fn worker_urls(client: &E2bSandboxClient, handle: &E2bSandboxHandle) -> ProjectE2bWorkerUrls {
     let cfg = client.config();
     ProjectE2bWorkerUrls {
         e2b_api_url: cfg.api_url.clone(),
         traffic_proxy_base: cfg.sandbox_url.clone(),
         sandbox_domain: handle.sandbox_domain.clone(),
-        ttyd_public_host: None,
-        ttyd_ws_url: None,
-    }
-}
-
-fn worker_urls_relaxed(
-    client: &E2bSandboxClient,
-    handle: &E2bSandboxHandle,
-) -> ProjectE2bWorkerUrls {
-    let cfg = client.config();
-    let ttyd_target = if handle.ttyd_use_tls {
-        TtydConnectTarget::e2b_public(handle.ttyd_public_host.clone())
-    } else {
-        let traffic_host = cfg
-            .sandbox_url
-            .as_deref()
-            .and_then(parse_proxy_host)
-            .unwrap_or_else(|| cfg.domain.clone());
-        TtydConnectTarget::e2b_self_hosted_proxy(
-            traffic_host,
-            gateway_e2b_observe_proxy::e2b_traffic_proxy_port(),
-            handle.ttyd_public_host.clone(),
-            handle.traffic_access_token.clone(),
-        )
-    };
-    ProjectE2bWorkerUrls {
-        e2b_api_url: cfg.api_url.clone(),
-        traffic_proxy_base: cfg.sandbox_url.clone(),
-        sandbox_domain: handle.sandbox_domain.clone(),
-        ttyd_public_host: Some(handle.ttyd_public_host.clone()),
-        ttyd_ws_url: Some(terminal_ws_connect_url(&ttyd_target)),
-    }
-}
-
-fn parse_proxy_host(url: &str) -> Option<String> {
-    let trimmed = url.trim().trim_end_matches('/');
-    let no_scheme = trimmed
-        .strip_prefix("http://")
-        .or_else(|| trimmed.strip_prefix("https://"))?;
-    let host = no_scheme.split('/').next()?.split(':').next()?;
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_string())
     }
 }
 
@@ -161,7 +108,6 @@ async fn build_worker_info(
     registry: &E2bProjWorkerRegistry,
     client: &E2bSandboxClient,
     row: &ProjectFcWorkerRow,
-    relaxed: bool,
 ) -> Result<ProjectE2bWorkerInfo, String> {
     let handle = E2bSandboxClient::handle_from_json(&row.handle_json)?;
     let snap = client.fetch_sandbox_snapshot(&row.sandbox_id).await.ok();
@@ -171,11 +117,7 @@ async fn build_worker_info(
     let active_leases = registry
         .active_leases_for_slot(row.proj_id, e2b_worker_slot_u32(row.slot_index))
         .await;
-    let urls = if relaxed {
-        worker_urls_relaxed(client, &handle)
-    } else {
-        worker_urls_strict(client, &handle)
-    };
+    let urls = worker_urls(client, &handle);
     Ok(ProjectE2bWorkerInfo {
         slot_index: row.slot_index,
         active_leases: Some(active_leases),
@@ -226,7 +168,7 @@ pub async fn get_project_e2b_worker_status(
         .map_err(|e| format!("list project_e2b_workers: {e}"))?;
     let mut workers = Vec::new();
     for row in &rows {
-        workers.push(build_worker_info(registry, client, row, relaxed).await?);
+        workers.push(build_worker_info(registry, client, row).await?);
     }
     let rotation_log = load_rotation_log(db, proj_id).await?;
     Ok(ProjectE2bWorkerStatusResponse {

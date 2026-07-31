@@ -130,7 +130,7 @@ Admin `ChatTurnCard` 展示分析大纲 checklist。
 
 ### 编排事件与泳道（统一契约）
 
-**可视化与耗时分析只认** `home/.claw/orchestration-events.ndjson`：各关键节点在发生时 **append 一条**（`EventBus`），`GET /v1/sessions/{sessionId}/turns/{turnId}/timeline` 据此生成泳道，**不扫描** `.clawd-agents` 等旁路文件。
+**可视化与耗时分析只认** `home/.claw/orchestration-events.ndjson`：各关键节点在发生时 **append 一条**（`EventBus`），`GET /v1/sessions/{sessionId}/turns/{turnId}/timeline` 据此生成泳道，**不扫描** session 下 `.claw/agents` 等旁路文件。
 
 | 场景 | 典型 `kind` |
 |------|-------------|

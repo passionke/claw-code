@@ -252,41 +252,27 @@ fn ovs_turn_exec_user(active: &ActiveTerminalSession, relaxed: bool) -> &'static
     }
 }
 
-/// Reconstruct [`E2bSandboxHandle`] from an active interactive session. Author: kejiqing
+/// Reconstruct [`E2bSandboxHandle`] from an active interactive session when the worker
+/// registry lease is no longer held (identity comes from the lease, not a proxy host).
+/// Author: kejiqing
 fn fc_exec_handle_from_active(active: &ActiveTerminalSession) -> Result<E2bSandboxHandle, String> {
     let sandbox_id = active
         .e2b_sandbox_id
         .as_deref()
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "fc interactive: missing sandbox id".to_string())?;
-    let host = active
-        .ttyd
-        .proxy_host_header
+    let sandbox_domain = active
+        .e2b_sandbox_domain
         .as_deref()
-        .filter(|h| !h.is_empty())
-        .or({
-            if active.ttyd.use_tls && !active.ttyd.host.is_empty() {
-                Some(active.ttyd.host.as_str())
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| "fc interactive: missing ttyd public host".to_string())?;
-    let rest = host
-        .split_once('-')
-        .map(|(_, after)| after)
-        .ok_or_else(|| format!("fc interactive: invalid ttyd host {host}"))?;
-    let domain = rest
-        .strip_prefix(sandbox_id)
-        .and_then(|tail| tail.strip_prefix('.'))
-        .ok_or_else(|| format!("fc interactive: sandbox {sandbox_id} not in ttyd host {host}"))?;
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("fc interactive: missing sandbox domain for {sandbox_id}"))?;
     Ok(E2bSandboxHandle {
         sandbox_id: sandbox_id.to_string(),
-        sandbox_domain: domain.to_string(),
+        sandbox_domain: sandbox_domain.to_string(),
         envd_access_token: None,
-        traffic_access_token: active.ttyd.traffic_access_token.clone(),
-        ttyd_public_host: host.to_string(),
-        ttyd_use_tls: active.ttyd.use_tls,
+        traffic_access_token: active.e2b_traffic_access_token.clone(),
         ovs_public_host: None,
         ovs_base_url: None,
     })
@@ -662,7 +648,7 @@ async fn run_agent_ws_bridge(
                     serde_json::from_str(&t).map_err(|e| format!("invalid agent json: {e}"))?;
                 match parsed {
                     AgentClientMsg::Spawn => {
-                        // Legacy no-op: context is per-record jsonl + exec, not ttyd respawn.
+                        // Legacy no-op: context is per-record jsonl + exec, not a worker respawn.
                     }
                     AgentClientMsg::Prompt { text } => {
                         if text.is_empty() {
@@ -723,14 +709,10 @@ mod tests {
         assert_eq!(ovs_record_session_id(1, "ovs-1", None), "ovs-1");
     }
 
-    #[test]
-    fn fc_exec_handle_from_ttyd_host_parses_domain() {
-        use crate::pool::interactive_backend::TtydConnectTarget;
-
-        let active = ActiveTerminalSession {
+    fn active_session(sandbox_domain: Option<&str>) -> ActiveTerminalSession {
+        ActiveTerminalSession {
             slot_index: 0,
             worker_name: Some("e2b:sbx_abc".into()),
-            ttyd_host_port: 80,
             pool_id: E2B_INTERACTIVE_POOL_ID.into(),
             backend: InteractiveBackendKind::E2b,
             e2b_sandbox_id: Some("sbx_abc".into()),
@@ -738,16 +720,23 @@ mod tests {
             e2b_warm_proj_id: Some(3),
             e2b_session_segment: None,
             e2b_worker_id: None,
-            ttyd: TtydConnectTarget::e2b_self_hosted_proxy(
-                "10.8.0.1".into(),
-                80,
-                "7681-sbx_abc.supone.top".into(),
-                None,
-            ),
-        };
-        let h = fc_exec_handle_from_active(&active).expect("handle");
+            e2b_sandbox_domain: sandbox_domain.map(str::to_string),
+            e2b_traffic_access_token: Some("tok".into()),
+        }
+    }
+
+    #[test]
+    fn fc_exec_handle_uses_lease_sandbox_identity() {
+        let h = fc_exec_handle_from_active(&active_session(Some("supone.top"))).expect("handle");
         assert_eq!(h.sandbox_id, "sbx_abc");
         assert_eq!(h.sandbox_domain, "supone.top");
+        assert_eq!(h.traffic_access_token.as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn fc_exec_handle_requires_sandbox_domain() {
+        let err = fc_exec_handle_from_active(&active_session(None)).expect_err("no domain");
+        assert!(err.contains("missing sandbox domain"));
     }
 
     #[tokio::test]

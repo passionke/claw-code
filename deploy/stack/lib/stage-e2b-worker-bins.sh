@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage linux claw for strict e2b worker template (copy strategy; no ttyd). Author: kejiqing
+# Stage linux claw for strict e2b worker template (copy strategy). Author: kejiqing
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -19,7 +19,7 @@ Usage: stage-e2b-worker-bins.sh
 Writes claw only (linux/${WORKER_ARCH}) into:
   ${OUT_DIR}/
 
-Strict solve worker has no ttyd; relaxed template uses build-claw-worker-relaxed-selfhosted.py.
+Relaxed template uses build-claw-worker-relaxed-selfhosted.py.
 
 Env:
   CLAW_E2B_WORKER_ARCH         amd64 | arm64 (default amd64 for self-hosted e2b)
@@ -59,6 +59,4 @@ require_linux_elf "${CLAW_BIN}" claw
 cp -f "${CLAW_BIN}" "${OUT_DIR}/claw"
 chmod +x "${OUT_DIR}/claw"
 
-rm -f "${OUT_DIR}/ttyd"
-
-echo "OK: ${OUT_DIR}/claw (linux/${WORKER_ARCH}; strict, no ttyd)"
+echo "OK: ${OUT_DIR}/claw (linux/${WORKER_ARCH}; strict)"

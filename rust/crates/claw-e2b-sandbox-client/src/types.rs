@@ -2,16 +2,13 @@
 
 use serde::Deserialize;
 
-/// Created sandbox identity + ttyd reachability.
+/// Created sandbox identity + traffic reachability.
 #[derive(Debug, Clone)]
 pub struct E2bSandboxHandle {
     pub sandbox_id: String,
     pub sandbox_domain: String,
     pub envd_access_token: Option<String>,
     pub traffic_access_token: Option<String>,
-    /// Host for gateway → ttyd WebSocket (`{port}-{sandboxId}.{domain}`).
-    pub ttyd_public_host: String,
-    pub ttyd_use_tls: bool,
     /// Relaxed worker built-in OVS (`{ovs_port}-{sandboxId}.{domain}`).
     pub ovs_public_host: Option<String>,
     /// `http(s)://{ovs_public_host}/ovs`

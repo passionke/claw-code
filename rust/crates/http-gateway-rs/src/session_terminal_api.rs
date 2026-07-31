@@ -1,19 +1,15 @@
-//! Interactive coding terminal API (`/v1/sessions/.../terminal/*`). Author: kejiqing
+//! Interactive worker lifecycle for OVS `agent/ws` (worker + registry; no in-guest server).
+//! Author: kejiqing
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
 use tracing::{info, warn};
 
 use crate::claw_tap_cluster_state::ClawTapClusterHandle;
@@ -21,11 +17,10 @@ use crate::client_origin;
 use crate::gateway_global_settings;
 use crate::gateway_llm_config_sync::LlmRuntimeHandle;
 use crate::pool::{
-    self, build_proj_bake_script, build_session_attach_script, build_start_ttyd_script,
-    gateway_proj_work_dir, gateway_session_home, interactive_backend_is_e2b,
-    prepare_e2b_worker_llm_material, terminal_ws_connect_url, InteractiveBackendKind,
-    InteractiveLease, InteractiveSessionSpec, PoolClients, PrepareE2bWorkerLlmOptions,
-    TtydConnectTarget,
+    self, build_proj_bake_script, build_session_attach_script, gateway_proj_work_dir,
+    gateway_session_home, interactive_backend_is_e2b, prepare_e2b_worker_llm_material,
+    InteractiveBackendKind, InteractiveLease, InteractiveSessionSpec, PoolClients,
+    PrepareE2bWorkerLlmOptions,
 };
 use crate::project_config_apply;
 use crate::project_config_draft;
@@ -41,8 +36,6 @@ pub struct TerminalSessionKey {
 pub struct ActiveTerminalSession {
     pub slot_index: usize,
     pub worker_name: Option<String>,
-    /// Loopback port for podman; 443 placeholder when e2b public host is used.
-    pub ttyd_host_port: u16,
     pub pool_id: String,
     pub backend: InteractiveBackendKind,
     pub e2b_sandbox_id: Option<String>,
@@ -50,7 +43,9 @@ pub struct ActiveTerminalSession {
     pub e2b_warm_proj_id: Option<i64>,
     pub e2b_session_segment: Option<String>,
     pub e2b_worker_id: Option<String>,
-    pub ttyd: TtydConnectTarget,
+    /// Sandbox traffic domain for per-turn exec handle rebuild. Author: kejiqing
+    pub e2b_sandbox_domain: Option<String>,
+    pub e2b_traffic_access_token: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -109,7 +104,6 @@ pub struct TerminalApiContext {
     pub pool_clients: PoolClients,
     pub session_db: Arc<GatewaySessionDb>,
     pub registry: TerminalSessionRegistry,
-    pub ttyd_connect_host: String,
     pub pool_runtime_bin: String,
     pub claw_tap_cluster: ClawTapClusterHandle,
     pub llm_runtime: LlmRuntimeHandle,
@@ -128,26 +122,19 @@ pub struct TerminalStartResponse {
     pub session_id: String,
     pub proj_id: i64,
     pub slot_index: usize,
-    pub ttyd_host_port: u16,
-    pub ws_path: String,
     pub worker_name: Option<String>,
-    /// `true` when an active worker was reused (attach) without pool acquire.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reused_worker: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalInventoryEntry {
     pub session_id: String,
-    /// `active` = worker + ttyd running; `idle` = disk workspace only.
+    /// `active` = interactive worker leased; `idle` = disk workspace only.
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slot_index: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ws_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -236,35 +223,6 @@ impl IntoResponse for TerminalApiError {
     }
 }
 
-fn ttyd_connect_host() -> String {
-    std::env::var("CLAW_TERMINAL_TTYD_CONNECT_HOST")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "127.0.0.1".to_string())
-}
-
-fn terminal_ws_path(session_id: &str, proj_id: i64) -> String {
-    format!("/v1/sessions/{session_id}/terminal/ws?projId={proj_id}")
-}
-
-fn response_from_active_key(
-    session_id: String,
-    proj_id: i64,
-    active: &ActiveTerminalSession,
-    reused_worker: bool,
-) -> TerminalStartResponse {
-    TerminalStartResponse {
-        ws_path: terminal_ws_path(&session_id, proj_id),
-        session_id,
-        proj_id,
-        slot_index: active.slot_index,
-        ttyd_host_port: active.ttyd_host_port,
-        worker_name: active.worker_name.clone(),
-        reused_worker: reused_worker.then_some(true),
-    }
-}
-
 pub async fn terminal_inventory(
     ctx: TerminalApiContext,
     q: TerminalProjQuery,
@@ -291,7 +249,6 @@ pub async fn terminal_inventory(
             status: "active".into(),
             slot_index: Some(active.slot_index),
             worker_name: active.worker_name.clone(),
-            ws_path: Some(terminal_ws_path(&session_id, q.proj_id)),
         });
     }
 
@@ -315,7 +272,6 @@ pub async fn terminal_inventory(
                 status: "idle".into(),
                 slot_index: None,
                 worker_name: None,
-                ws_path: None,
             });
         }
     }
@@ -363,16 +319,15 @@ fn active_terminal_to_lease(active: &ActiveTerminalSession) -> InteractiveLease 
         e2b_warm_proj_id: active.e2b_warm_proj_id,
         e2b_session_segment: active.e2b_session_segment.clone(),
         e2b_worker_id: active.e2b_worker_id.clone(),
-        ttyd: active.ttyd.clone(),
+        e2b_sandbox_domain: active.e2b_sandbox_domain.clone(),
+        e2b_traffic_access_token: active.e2b_traffic_access_token.clone(),
     }
 }
 
 fn lease_to_active_terminal(lease: InteractiveLease) -> ActiveTerminalSession {
-    let ttyd_host_port = lease.ttyd.port;
     ActiveTerminalSession {
         slot_index: lease.slot_index,
         worker_name: lease.worker_name,
-        ttyd_host_port,
         pool_id: lease.pool_id,
         backend: lease.backend,
         e2b_sandbox_id: lease.e2b_sandbox_id,
@@ -380,7 +335,8 @@ fn lease_to_active_terminal(lease: InteractiveLease) -> ActiveTerminalSession {
         e2b_warm_proj_id: lease.e2b_warm_proj_id,
         e2b_session_segment: lease.e2b_session_segment,
         e2b_worker_id: lease.e2b_worker_id,
-        ttyd: lease.ttyd,
+        e2b_sandbox_domain: lease.e2b_sandbox_domain,
+        e2b_traffic_access_token: lease.e2b_traffic_access_token,
     }
 }
 
@@ -405,56 +361,7 @@ pub async fn terminal_pool_force_release(
     })))
 }
 
-/// Attach to an active worker (instant) or allocate a new worker for an idle session.
-pub async fn terminal_attach(
-    ctx: TerminalApiContext,
-    session_id: String,
-    Json(req): Json<TerminalStartRequest>,
-) -> Result<Json<TerminalStartResponse>, TerminalApiError> {
-    let session_id = session_id.trim();
-    if session_id.is_empty() {
-        return Err(TerminalApiError::new(
-            StatusCode::BAD_REQUEST,
-            "sessionId required",
-        ));
-    }
-    if req.session_id.trim() != session_id {
-        return Err(TerminalApiError::new(
-            StatusCode::BAD_REQUEST,
-            "sessionId in path and body must match",
-        ));
-    }
-    let key = TerminalSessionKey {
-        proj_id: req.proj_id,
-        session_id: session_id.to_string(),
-    };
-    if let Some(active) = ctx.registry.get(&key).await {
-        info!(
-            target: "claw_gateway_terminal",
-            session_id = %session_id,
-            proj_id = req.proj_id,
-            slot_index = active.slot_index,
-            "interactive terminal attach (reuse active worker)"
-        );
-        return Ok(Json(response_from_active_key(
-            session_id.to_string(),
-            req.proj_id,
-            &active,
-            true,
-        )));
-    }
-    let mut out = terminal_start(
-        ctx,
-        Json(TerminalStartRequest {
-            proj_id: req.proj_id,
-            session_id: session_id.to_string(),
-        }),
-    )
-    .await?;
-    out.reused_worker = Some(false);
-    Ok(out)
-}
-
+/// Acquire an interactive worker for one session and register it. Author: kejiqing
 pub async fn terminal_start(
     ctx: TerminalApiContext,
     Json(req): Json<TerminalStartRequest>,
@@ -583,7 +490,6 @@ pub async fn terminal_start(
         proj_home,
         llm_env,
         ovs_mode: session_id.starts_with("ovs-"),
-        start_ttyd_script: build_start_ttyd_script(session_id),
         e2b_session_attach_script,
         e2b_proj_bake_script,
     };
@@ -595,7 +501,7 @@ pub async fn terminal_start(
 
     let active = lease_to_active_terminal(lease);
     let slot_index = active.slot_index;
-    let ttyd_port = active.ttyd_host_port;
+    let sandbox_id = active.e2b_sandbox_id.clone();
 
     let worker_name = active.worker_name.clone();
     ctx.registry.insert(key.clone(), active).await;
@@ -605,18 +511,15 @@ pub async fn terminal_start(
         session_id = %session_id,
         proj_id = req.proj_id,
         slot_index,
-        ttyd_host_port = ttyd_port,
-        "interactive terminal started"
+        sandbox_id = ?sandbox_id,
+        "interactive worker started"
     );
 
     Ok(Json(TerminalStartResponse {
         session_id: session_id.to_string(),
         proj_id: req.proj_id,
         slot_index,
-        ttyd_host_port: ttyd_port,
-        ws_path: terminal_ws_path(session_id, req.proj_id),
         worker_name,
-        reused_worker: None,
     }))
 }
 
@@ -640,7 +543,7 @@ pub async fn terminal_stop(
     ))
 }
 
-/// Ensure an interactive worker + ttyd exist for agent/OVS chat (`ovs-{projId}` default).
+/// Ensure an interactive worker exists for agent/OVS chat (`ovs-{projId}` default).
 pub async fn ensure_terminal_active(
     ctx: &TerminalApiContext,
     proj_id: i64,
@@ -674,116 +577,6 @@ pub async fn ensure_terminal_active(
             "terminal started but registry missing entry",
         )
     })
-}
-
-pub async fn terminal_reattach(
-    ctx: TerminalApiContext,
-    Json(req): Json<TerminalStartRequest>,
-) -> Result<Json<TerminalStartResponse>, TerminalApiError> {
-    let _ = ctx
-        .registry
-        .remove(&TerminalSessionKey {
-            proj_id: req.proj_id,
-            session_id: req.session_id.clone(),
-        })
-        .await;
-    terminal_start(ctx, Json(req)).await
-}
-
-pub async fn terminal_ws_upgrade(
-    ctx: TerminalApiContext,
-    session_id: String,
-    q: TerminalProjQuery,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    let key = TerminalSessionKey {
-        proj_id: q.proj_id,
-        session_id: session_id.clone(),
-    };
-    let Some(active) = ctx.registry.get(&key).await else {
-        return TerminalApiError::new(StatusCode::NOT_FOUND, "no active terminal for session")
-            .into_response();
-    };
-    let ttyd = active.ttyd.clone();
-    ws.on_upgrade(move |socket| async move {
-        if let Err(e) = proxy_terminal_ws(socket, &ttyd).await {
-            warn!(
-                target: "claw_gateway_terminal",
-                session_id = %session_id,
-                error = %e,
-                "terminal ws proxy ended with error"
-            );
-        }
-    })
-}
-
-async fn proxy_terminal_ws(client: WebSocket, ttyd: &TtydConnectTarget) -> Result<(), String> {
-    let url = terminal_ws_connect_url(ttyd);
-    let mut req = url
-        .as_str()
-        .into_client_request()
-        .map_err(|e| format!("ws request {url}: {e}"))?;
-    req.headers_mut()
-        .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("tty"));
-    if let Some(host_hdr) = ttyd.proxy_host_header.as_deref() {
-        req.headers_mut().insert(
-            "Host",
-            HeaderValue::from_str(host_hdr).map_err(|e| format!("Host: {e}"))?,
-        );
-    }
-    if let Some(token) = ttyd.traffic_access_token.as_deref() {
-        req.headers_mut().insert(
-            "X-Access-Token",
-            HeaderValue::from_str(token).map_err(|e| format!("X-Access-Token: {e}"))?,
-        );
-    }
-    let (upstream, _) = connect_async(req)
-        .await
-        .map_err(|e| format!("connect ttyd {url}: {e}"))?;
-    let (mut up_tx, mut up_rx) = upstream.split();
-    let (mut cli_tx, mut cli_rx) = client.split();
-
-    let client_to_up = async {
-        while let Some(msg) = cli_rx.next().await {
-            let msg = msg.map_err(|e| format!("client ws: {e}"))?;
-            let out = match msg {
-                Message::Text(t) => WsMessage::Text(t.to_string().into()),
-                Message::Binary(b) => WsMessage::Binary(b),
-                Message::Ping(p) => WsMessage::Ping(p),
-                Message::Pong(p) => WsMessage::Pong(p),
-                Message::Close(_) => WsMessage::Close(None),
-            };
-            up_tx
-                .send(out)
-                .await
-                .map_err(|e| format!("upstream send: {e}"))?;
-        }
-        Ok::<(), String>(())
-    };
-
-    let up_to_client = async {
-        while let Some(msg) = up_rx.next().await {
-            let msg = msg.map_err(|e| format!("upstream ws: {e}"))?;
-            let out = match msg {
-                WsMessage::Text(t) => Message::Text(t.to_string().into()),
-                WsMessage::Binary(b) => Message::Binary(b),
-                WsMessage::Ping(p) => Message::Ping(p),
-                WsMessage::Pong(p) => Message::Pong(p),
-                WsMessage::Close(_) => Message::Close(None),
-                WsMessage::Frame(_) => continue,
-            };
-            cli_tx
-                .send(out)
-                .await
-                .map_err(|e| format!("client send: {e}"))?;
-        }
-        Ok::<(), String>(())
-    };
-
-    tokio::select! {
-        r = client_to_up => r,
-        r = up_to_client => r,
-    }
 }
 
 async fn materialize_proj_home(
@@ -851,7 +644,6 @@ pub fn terminal_api_context(
         pool_clients,
         session_db,
         registry,
-        ttyd_connect_host: ttyd_connect_host(),
         pool_runtime_bin,
         claw_tap_cluster,
         llm_runtime,

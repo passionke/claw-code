@@ -201,7 +201,6 @@ def main() -> int:
 
         checks = [
             "command -v claw",
-            "command -v ttyd",
             "test -x /usr/local/bin/claw-worker-relaxed-start",
             "test -x /usr/local/bin/claw-worker-relaxed-ready",
             "test -x /usr/local/bin/claw-ovs-start",

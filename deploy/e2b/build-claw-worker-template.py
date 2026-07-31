@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Build e2b cloud sandbox template claw-worker-v1 (E2B SDK). Author: kejiqing
-"""Build claw-worker-v1: e2b Beijing base + claw from local worker image (strict; no ttyd)."""
+"""Build claw-worker-v1: e2b Beijing base + claw from local worker image (strict)."""
 
 from __future__ import annotations
 
@@ -208,7 +208,7 @@ def main() -> int:
     if not verify:
         return 0
 
-    print("==> verify: create sandbox + check claw (strict: no ttyd)")
+    print("==> verify: create sandbox + check claw")
     sandbox = Sandbox.create(template=template_name, timeout=900, **opts)
     try:
         print(f"sandbox_id: {sandbox.sandbox_id}")
@@ -223,11 +223,6 @@ def main() -> int:
                 if r.stderr:
                     print(f"  stderr={(r.stderr or '').strip()!r}", file=sys.stderr)
                 return r.exit_code or 1
-        r_ttyd = sandbox.commands.run("command -v ttyd", timeout=120)
-        print(f"$ command -v ttyd -> exit={r_ttyd.exit_code}")
-        if r_ttyd.exit_code in (0, None):
-            print("error: strict worker must not include ttyd", file=sys.stderr)
-            return 1
     finally:
         sandbox.kill()
         print("sandbox killed")

@@ -138,7 +138,7 @@ impl LineEditor {
     }
 
     pub fn read_line(&mut self) -> io::Result<ReadOutcome> {
-        // Web worker (ttyd): PTY is a TTY but must not run rustyline echo/redraw — CDP owns the UI.
+        // Web worker: PTY is a TTY but must not run rustyline echo/redraw — CDP owns the UI.
         if web_display_mode() || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             return self.read_line_silent();
         }

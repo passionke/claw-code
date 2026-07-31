@@ -4,10 +4,6 @@ export interface ProjectE2bWorkerUrls {
   e2bApiUrl: string;
   trafficProxyBase?: string | null;
   sandboxDomain: string;
-  /** Relaxed only */
-  ttydPublicHost?: string;
-  /** Relaxed only */
-  ttydWsUrl?: string;
 }
 
 export interface ProjectE2bWorkerInfo {

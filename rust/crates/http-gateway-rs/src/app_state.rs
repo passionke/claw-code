@@ -58,7 +58,7 @@ pub(crate) struct AppState {
     pub(crate) llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle,
     /// clawTap cluster consistency (strict only; mismatch blocks solve). Author: kejiqing
     pub(crate) claw_tap_cluster: claw_tap_cluster_state::ClawTapClusterHandle,
-    /// Active interactive sessions for OVS `agent/ws` (internal ttyd bridge). Author: kejiqing
+    /// Active interactive worker leases for OVS `agent/ws`. Author: kejiqing
     pub(crate) terminal_registry: session_terminal_api::TerminalSessionRegistry,
     /// NAS layout + file writes via e2b claw-nas-api singleton (required in e2b mode).
     pub(crate) nas_api: Arc<pool::E2bNasApiSingleton>,

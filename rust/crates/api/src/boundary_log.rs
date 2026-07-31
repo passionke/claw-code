@@ -17,7 +17,7 @@ pub fn boundary_log_enabled() -> bool {
 }
 
 /// Runtime/provider boundary stage line (CLI + gateway). Emits to `tracing` target
-/// `claw.boundary` — not stderr — so interactive ttyd sessions stay clean.
+/// `claw.boundary` — not stderr — so interactive web sessions stay clean.
 pub fn boundary_log_stage(stage: &str, message: impl AsRef<str>) {
     if !boundary_log_enabled() {
         return;

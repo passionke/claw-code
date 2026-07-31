@@ -103,7 +103,7 @@ else
   echo "==> skip workspace probe (claw-gateway-rs not running)" >&2
 fi
 
-echo "==> agent/ws via gateway (fc worker ttyd)"
+echo "==> agent/ws via gateway (fc worker gateway-interactive-once)"
 if [[ "${CLAW_E2B_E2E_SKIP_AGENT_WS:-0}" == "1" ]]; then
   echo "skip agent WS (CLAW_E2B_E2E_SKIP_AGENT_WS=1; blocked on F14 e2b traffic routing)" >&2
 elif [[ -x "${ROOT_DIR}/deploy/stack/lib/verify-ovs-claw-e2e.sh" ]]; then

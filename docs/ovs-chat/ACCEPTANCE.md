@@ -17,7 +17,7 @@ Author: kejiqing
 | INV-3 | `ovsFolderUrl` 中 sandbox 与 `sandboxId`（= `project_e2b_worker.sandbox_id`）一致 |
 | INV-4 | e2b API 上无 `metadata.clawRole=ovs-singleton` 存活 sandbox |
 | INV-5 | 响应含 `clusterId`、`workerProfile` |
-| INV-6 | OVS 流量 host `3000-sbx_*` 与 worker ttyd `7681-sbx_*` 共享同一 `sbx_*` |
+| INV-6 | OVS 与 `claw` 在同一 sandbox：OVS 流量 host `3000-sbx_*` 的 `sbx_*` 等于 `project_e2b_worker.sandbox_id` |
 | INV-9 | `ovsFolderUrl` 不得含 legacy `/claw_ws/proj_*` |
 
 ## 验证层级

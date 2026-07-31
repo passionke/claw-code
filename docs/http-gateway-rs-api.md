@@ -282,24 +282,15 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - 落盘：`proj_<projId>/home/skills/<skillName>/SKILL.md`
   - 返回：`projId`、`skillName`、`skillPath`、`created`、`updated`、`bytesWritten`、`workDir`
 
-## Interactive coding terminal (`/coding`, ttyd)
+## Interactive worker（OVS `agent/ws`）
 
 交互式会话以 **宿主机磁盘目录** `proj_{projId}/sessions/{sessionId}/` 为真相（bind 到 worker `/claw_host_root`）。**不走** PG `workspace_tar_gz` 的 `materialize_in` / `readback_out`（与 `solve_async` tmpfs+tar 双轨）。
 
-- `POST /v1/sessions/{session_id}/terminal/start`
-  - 请求体：`{ "projId", "sessionId" }`（camelCase）
-  - 行为：`mkdir` 会话目录、物化 `proj_<id>/home`（`project_config`）、interactive pool acquire（bind session + proj home ro）、worker 内启动 `ttyd -W claw --resume latest`
-  - 响应：`sessionId`、`projId`、`slotIndex`、`ttydHostPort`、`wsPath`（例 `/v1/sessions/{id}/terminal/ws?projId=1`）、`workerName`
-  - 冲突：同 `(projId, sessionId)` 已有活跃终端 → **409**
+- `GET /v1/sessions/{session_id}/agent/ws?projId=`
+  - WebSocket：OVS `@claw` 对话通道；网关内部 `ensure_terminal_active` 保证该 `(projId, sessionId)` 已租到一个 interactive worker（NAS 会话目录 + `.claw/terminal-llm.env` attach），随后每轮 prompt 走 `claw gateway-interactive-once` exec。
+  - **沙箱内不再常驻任何终端服务**：worker 身份（`sandboxId` + `sandboxDomain` + traffic token）由 lease 直接携带，不从代理 Host 反解。
 
-- `POST /v1/sessions/{session_id}/terminal/stop?projId=`
-  - 停止 ttyd、release worker；**保留**会话目录（不打 tar）
-
-- `POST /v1/sessions/{session_id}/terminal/reattach`
-  - 请求体同 `terminal/start`；释放旧登记后重新 acquire + bind **同一路径**
-
-- `GET /v1/sessions/{session_id}/terminal/ws?projId=`
-  - WebSocket：网关反代到 worker 内 ttyd（`127.0.0.1:7681`）；playground 对外路径 `/coding/terminal/{session_id}?projId=`（需 admin 登录态）
+`/v1/sessions/{session_id}/terminal/*` 一组 HTTP 路由（`start` / `stop` / `reattach` / `ws`）已随 ttyd 一起移除。
 
 ## Session workspace (read-only sidebar)
 

@@ -4,11 +4,9 @@ mod e2b_interactive;
 mod e2b_interactive_materialize;
 mod e2b_nas_api_singleton;
 mod e2b_worker_tap;
-mod ttyd_url;
 
 pub use e2b_interactive_materialize::{
     build_e2b_guest_writes_script, build_proj_bake_script, build_session_attach_script,
-    build_start_ttyd_script,
 };
 pub use e2b_nas_api_singleton::E2bNasApiSingleton;
 pub use e2b_worker_tap::{
@@ -26,7 +24,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use e2b_interactive::E2bInteractiveBackend;
-pub use ttyd_url::{terminal_ws_connect_url, TtydConnectTarget};
 
 /// e2b is the only supported interactive backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +43,6 @@ pub struct InteractiveSessionSpec {
     pub proj_home: PathBuf,
     pub llm_env: std::collections::BTreeMap<String, String>,
     pub ovs_mode: bool,
-    pub start_ttyd_script: String,
     /// FC: session attach (LLM env on `/claw_host_root`); project config on `/claw_ds`.
     pub e2b_session_attach_script: Option<String>,
     /// e2b cold fallback: project bake when proj worker unavailable.
@@ -116,7 +112,11 @@ pub struct InteractiveLease {
     pub e2b_session_segment: Option<String>,
     /// NAS worker root id (`proj_N/workers/{id}` bind target).
     pub e2b_worker_id: Option<String>,
-    pub ttyd: TtydConnectTarget,
+    /// Sandbox traffic domain (`{sandboxId}.{domain}` suffix); rebuilds [`E2bSandboxHandle`]
+    /// for exec when the worker registry lease is gone. Author: kejiqing
+    pub e2b_sandbox_domain: Option<String>,
+    /// e2b traffic proxy token (`X-Access-Token`).
+    pub e2b_traffic_access_token: Option<String>,
 }
 
 #[async_trait]

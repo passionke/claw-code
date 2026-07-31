@@ -21,7 +21,6 @@ flowchart LR
   subgraph relaxed [RelaxedProject]
     RW[claw-worker-relaxed sandbox]
     RW --> OVS[openvscode :3000/ovs]
-    RW --> TTYD[ttyd :7681]
     RW --> CLAW[claw exec]
     NAS[/claw_ds NAS mount/] --> RW
   end

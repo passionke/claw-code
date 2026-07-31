@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本地标准：打包镜像 + 重启网关栈（macOS 默认 build 走 linux-compile，不在 podman build 里拉 crates.io）
-# e2b 交互：claw/ttyd 仅来自 e2b 模板；改二进制后需 rebuild template。Author: kejiqing
+# e2b 交互：claw 仅来自 e2b 模板；改二进制后需 rebuild template。Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,8 +60,8 @@ else
 fi
 
 claw_apply_pack_deploy_image_tag "${TAG}"
-echo "==> FC: claw/ttyd are baked into e2b template only (no NAS copy)." >&2
-echo "    After claw/ttyd change: ./deploy/stack/gateway.sh e2b-worker-deploy" >&2
+echo "==> FC: claw is baked into e2b template only (no NAS copy)." >&2
+echo "    After claw change: ./deploy/stack/gateway.sh e2b-worker-deploy" >&2
 
 claw_step_begin "2/4 restart stack (down + up)"
 if [[ "${TAG}" == local && -f "${STACK_DIR}/.claw-image-release.env" ]]; then

@@ -8,7 +8,6 @@ __pycache__/
 archive/
 .cache/
 .omx/
-.clawd-agents/
 # Cursor IDE (machine-local rules, state)
 .cursor/
 # OpenClaw local / machine state
@@ -85,7 +84,6 @@ deploy/stack/.cargo-build-cache/
 deploy/stack/.claw-worker-check
 # FC sandbox template build extracts large worker binaries locally. kejiqing
 deploy/e2b/claw
-deploy/e2b/ttyd
 deploy/e2b/.e2b-template-build/
 deploy/e2b/.e2b-tools-staging/
 deploy/stack/claw-pg-data/

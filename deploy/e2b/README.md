@@ -2,7 +2,7 @@
 
 Author: kejiqing
 
-**solve_async** 与 **interactive**（`terminal/start`, `agent/ws`, `ovs-*`）均在 **e2b（FC）MicroVM** 内执行。本地无 `claw-sandbox` / podman worker pool。
+**solve_async** 与 **interactive**（`agent/ws`, `ovs-*`）均在 **e2b（FC）MicroVM** 内执行。本地无 `claw-sandbox` / podman worker pool。
 
 **Self-hosted e2b + NAS（10.8.0.x）：** [`docs/e2b-nas-workspace.md`](../../docs/e2b-nas-workspace.md)；env 模板 `deploy/stack/env.selfhosted-e2b.example`。
 
@@ -48,7 +48,7 @@ Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径*
 | 步骤 | 说明 |
 |------|------|
 | 交叉编译 | `linux/amd64` → `deploy/stack/.linux-artifacts/release/claw` |
-| stage | strict：`claw` only → `deploy/stack/.e2b-worker-bins/`；relaxed：`claw` + `ttyd` |
+| stage | strict：`claw` only → `deploy/stack/.e2b-worker-bins/`；relaxed：`claw` + 内置 OVS |
 | e2b SDK | `Template.build` → 写 PG `e2bWorker.templateId` |
 | gateway | 启动 reconcile + renewal ticker 自动轮换 proj worker |
 
@@ -235,7 +235,7 @@ export CLAW_E2B_TEMPLATE_SKIP_CACHE=0
 ./deploy/e2b/build-claw-worker-template.sh
 ```
 
-成功时脚本会 create sandbox 并验证 `command -v ttyd`、`command -v claw`。
+成功时脚本会 create sandbox 并验证 `command -v claw`。
 
 ### e2b 控制台 NAS（legacy，已移除）
 

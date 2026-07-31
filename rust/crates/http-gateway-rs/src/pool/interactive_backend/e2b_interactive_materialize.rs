@@ -1,7 +1,7 @@
 //! e2b sandbox guest materialize scripts (no in-guest NFS mount). Author: kejiqing
 //!
 //! NAS bind is static at sandbox create: `/claw_host_root` = `proj_N/workers/{workerId}`.
-//! Gateway links `proj_N/sessions/{session}` → worker at terminal/start.
+//! Gateway links `proj_N/sessions/{session}` → worker when the interactive lease is acquired.
 
 use std::collections::BTreeMap;
 
@@ -15,8 +15,6 @@ use crate::project_config_draft;
 use crate::session_db::GatewaySessionDb;
 
 pub(crate) const PROJ_HOME: &str = GUEST_CLAW_DS;
-/// Stable project config root on NAS (`home/project_home_def` → versioned tree). Author: kejiqing
-pub(crate) const PROJ_CONFIG_ROOT: &str = "/claw_ds/project_home_def";
 pub(crate) const WORK_ROOT: &str = GUEST_CLAW_HOST_ROOT;
 
 /// Project config from PG → `/claw_ds` (proj worker bind; no session files).
@@ -68,46 +66,6 @@ pub fn build_session_attach_script(llm_env: &BTreeMap<String, String>) -> String
     lines.join("\n")
 }
 
-/// Start ttyd for interactive session; cwd = `/claw_ds` for OVS REPL else worker root.
-#[must_use]
-pub fn build_start_ttyd_script(session_id: &str) -> String {
-    let ovs = session_id.starts_with("ovs-");
-    let ttyd_cwd = if ovs { PROJ_HOME } else { WORK_ROOT };
-    format!(
-        r#"set -e
-if ! command -v ttyd >/dev/null 2>&1; then
-  echo 'ttyd not installed in worker image' >&2
-  exit 127
-fi
-WORK={WORK_ROOT:?}
-if [ -f "$WORK/.claw/ttyd.pid" ]; then
-  kill "$(cat "$WORK/.claw/ttyd.pid")" 2>/dev/null || true
-fi
-export HOME="$WORK"
-export CLAW_PROJECT_CONFIG_ROOT={PROJ_CONFIG_ROOT:?}
-export CLAW_GATEWAY_WORK_ROOT="$WORK"
-export CLAW_DISPLAY_MODE=web
-export XDG_CONFIG_HOME="$WORK/.config"
-export XDG_CACHE_HOME="$WORK/.cache"
-export XDG_DATA_HOME="$WORK/.local/share"
-mkdir -p "$WORK/.claw/sessions" "$WORK/.config" "$WORK/.cache" "$WORK/.local/share"
-if [ -f "$WORK/.claw/terminal-llm.env" ]; then
-  set -a
-  # shellcheck source=/dev/null
-  . "$WORK/.claw/terminal-llm.env"
-  set +a
-fi
-MODEL="${{CLAW_DEFAULT_MODEL:-openai/mimo-v2.5}}"
-nohup ttyd -d 1 -i 0.0.0.0 -p 7681 -W -w {ttyd_cwd:?} \
-  claw --allow-broad-cwd --model "$MODEL" \
-  >"$WORK/.claw/ttyd.log" 2>&1 &
-echo $! >"$WORK/.claw/ttyd.pid"
-sleep 0.5
-kill -0 "$(cat "$WORK/.claw/ttyd.pid")" 2>/dev/null
-"#
-    )
-}
-
 fn shell_write_bytes(abs_path: &str, bytes: &[u8]) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     format!(
@@ -151,9 +109,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn start_ttyd_uses_flat_work_root() {
-        let sh = build_start_ttyd_script("sess-abc");
-        assert!(sh.contains("/claw_host_root"));
-        assert!(!sh.contains("/claw_host_root/sess-abc"));
+    fn session_attach_writes_llm_env_on_flat_work_root() {
+        let mut env = BTreeMap::new();
+        env.insert("CLAW_DEFAULT_MODEL".to_string(), "openai/mimo-v2.5".into());
+        let sh = build_session_attach_script(&env);
+        assert!(sh.contains("/claw_host_root/.claw/terminal-llm.env"));
+        assert!(!sh.contains("ttyd"));
     }
 }

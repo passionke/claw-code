@@ -201,8 +201,6 @@ pub async fn ensure_project_observe(
                 sandbox_domain: domain,
                 envd_access_token: None,
                 traffic_access_token: None,
-                ttyd_public_host: String::new(),
-                ttyd_use_tls: !client.config().is_self_hosted(),
                 ovs_public_host: None,
                 ovs_base_url: None,
             };

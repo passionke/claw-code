@@ -41,7 +41,7 @@ Project content lives in **PostgreSQL `project_config`**, not `.env`. See `docs/
 - `.claw/claw-llm-runtime.env`
 - `.claw/claw-tap-upstream.json`
 
-e2b workers receive LLM env via **one gateway entry** — `prepare_e2b_worker_llm_material()` in `pool/e2b_worker_llm_material.rs` — then **inline export** on each e2b exec (`exec_solve` / `run_sh` in `deploy/e2b/e2b_exec.py`). Keys match `WORKER_ENV_KEYS` in `worker_env.rs` (placeholder `OPENAI_API_KEY`, observe proxy `OPENAI_BASE_URL`). **Solve**, **OVS `@claw`**, and **terminal/start** share the same material; OVS no longer `source`s `terminal-llm.env`. ttyd still refreshes `terminal-llm.env` at session start/reattach only (Admin LLM change needs terminal restart to refresh ttyd).
+e2b workers receive LLM env via **one gateway entry** — `prepare_e2b_worker_llm_material()` in `pool/e2b_worker_llm_material.rs` — then **inline export** on each e2b exec (`exec_solve` / `run_sh` in `deploy/e2b/e2b_exec.py`). Keys match `WORKER_ENV_KEYS` in `worker_env.rs` (placeholder `OPENAI_API_KEY`, observe proxy `OPENAI_BASE_URL`). **Solve** and **OVS `@claw`** share the same material; OVS no longer `source`s `terminal-llm.env`. The interactive worker attach still refreshes `terminal-llm.env` once per worker lease, but each `@claw` turn exports LLM env inline, so an Admin LLM change takes effect on the next turn.
 
 ### Usually defaulted by profile (do not set in `.env`)
 
