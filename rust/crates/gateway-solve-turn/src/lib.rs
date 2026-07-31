@@ -733,8 +733,11 @@ impl DirectToolExecutorInner {
             return serde_json::to_string_pretty(&out).map_err(|e| ToolError::new(e.to_string()));
         }
         if tool_name == "AwaitAgent" {
-            return execute_tool(tool_name, &serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({})))
-                .map_err(ToolError::new);
+            return execute_tool(
+                tool_name,
+                &serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({})),
+            )
+            .map_err(ToolError::new);
         }
         let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
         execute_tool(tool_name, &parsed).map_err(ToolError::new)

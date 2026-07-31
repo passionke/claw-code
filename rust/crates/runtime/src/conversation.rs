@@ -2958,7 +2958,9 @@ mod tests {
             );
             let rows = session_tool_result_rows(&session);
             assert_eq!(rows.len(), 2);
-            assert!(rows.iter().all(|(_, _, is_error, out)| !is_error && out.starts_with("ok:")));
+            assert!(rows
+                .iter()
+                .all(|(_, _, is_error, out)| !is_error && out.starts_with("ok:")));
         }
 
         #[test]

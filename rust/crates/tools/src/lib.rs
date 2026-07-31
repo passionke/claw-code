@@ -3954,8 +3954,9 @@ pub fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
                 }
                 Err(_) => {
                     let panic_msg = String::from("sub-agent thread panicked");
-                    let duration_ms = i64::try_from(job_for_hook.started_instant.elapsed().as_millis())
-                        .unwrap_or(i64::MAX);
+                    let duration_ms =
+                        i64::try_from(job_for_hook.started_instant.elapsed().as_millis())
+                            .unwrap_or(i64::MAX);
                     let _ = persist_agent_terminal_state(
                         &job_for_hook.manifest,
                         "failed",
@@ -3974,7 +3975,8 @@ pub fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
 
 /// Run agent job to terminal state; returns final manifest. Author: kejiqing
 pub fn run_agent_job_to_terminal(job: AgentJob) -> Result<AgentOutput, String> {
-    let duration_ms = || i64::try_from(job.started_instant.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let duration_ms =
+        || i64::try_from(job.started_instant.elapsed().as_millis()).unwrap_or(i64::MAX);
     if job
         .abort_signal
         .as_ref()
@@ -6614,9 +6616,9 @@ mod tests {
         mark_live_agent_finished, maybe_commit_provenance, mvp_tool_specs,
         permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
         read_agent_manifest, register_live_agent, reset_live_agents_for_test, resolve_agent_model,
-        run_task_packet, AgentInput, AgentJob, AwaitAgentInput,
-        GlobalToolRegistry, LaneEventName, LaneFailureClass, ProviderRuntimeClient,
-        SubagentToolExecutor, AGENT_STORE_REL, DEFAULT_AGENT_MODEL,
+        run_task_packet, AgentInput, AgentJob, AwaitAgentInput, GlobalToolRegistry, LaneEventName,
+        LaneFailureClass, ProviderRuntimeClient, SubagentToolExecutor, AGENT_STORE_REL,
+        DEFAULT_AGENT_MODEL,
     };
     use api::OutputContentBlock;
     use runtime::ProviderFallbackConfig;
@@ -8286,7 +8288,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("ship-audit".to_string()),
                 model: None,
-                            run_in_background: Some(true),
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8374,7 +8376,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("complete-task".to_string()),
                 model: Some("claude-sonnet-4-6".to_string()),
-                            run_in_background: Some(true),
+                run_in_background: Some(true),
             },
             &dir,
             None,

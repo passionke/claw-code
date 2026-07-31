@@ -74,7 +74,9 @@ pub fn mark_live_agent_finished(agent_id: &str) {
     });
     if let Some(finished) = finished {
         let (lock, cvar) = &*finished;
-        let mut done = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut done = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *done = true;
         cvar.notify_all();
     }
@@ -107,7 +109,9 @@ pub fn wait_live_agent(agent_id: &str, timeout: Duration) -> bool {
         return true;
     };
     let (lock, cvar) = &*finished;
-    let guard = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if *guard {
         return true;
     }
@@ -142,7 +146,9 @@ pub fn kill_all_subagents(join_timeout: Duration) -> usize {
         for (id, entry) in reg.agents.drain() {
             entry.handle.done.store(true, Ordering::SeqCst);
             let (lock, cvar) = &*entry.handle.finished;
-            let mut done = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut done = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *done = true;
             cvar.notify_all();
             let _ = id;
