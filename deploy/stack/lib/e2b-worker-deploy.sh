@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dev: local linux compile → stage claw → strict e2b Template.build (no ttyd). Author: kejiqing
+# Dev: local linux compile → stage claw → strict e2b Template.build. Author: kejiqing
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,7 +40,7 @@ while [[ $# -gt 0 ]]; do
       cat <<EOF
 Usage: gateway.sh e2b-worker-deploy [options]
 
-Local dev: cross-compile linux/amd64 claw → strict e2b worker template (copy; no ttyd).
+Local dev: cross-compile linux/amd64 claw → strict e2b worker template (copy).
 Build persists settings_json.e2bWorker.templateId to PG. Gateway startup/renewal reconciles workers.
 See deploy/e2b/WORKER-BUILD.md
 

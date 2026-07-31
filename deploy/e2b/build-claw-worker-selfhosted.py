@@ -190,7 +190,7 @@ RUN chmod +x /usr/local/bin/claw
 
 
 def _stage_from_worker_tag(staging: Path, worker_image: str) -> None:
-    """Pull CI worker tag and stage claw only (strict solve worker; no ttyd)."""
+    """Pull CI worker tag and stage claw only (strict solve worker)."""
     rt = _container_runtime()
     platform = _template_platform()
     arch = _linux_arch_from_platform(platform)
@@ -280,7 +280,7 @@ def main() -> int:
                 if not (src / name).is_file():
                     print(f"error: missing {src / name}", file=sys.stderr)
                     return 1
-            # Upload as *.bin so e2b artifact cache keys differ from legacy claw/ttyd blobs.
+            # Upload as *.bin so e2b artifact cache keys differ from legacy blobs.
             upload_names = {"claw": "claw.bin"}
             for name in ("claw",):
                 upload = upload_names[name]
@@ -360,7 +360,7 @@ def main() -> int:
 def _verify(template: str, opts: dict[str, str]) -> int:
     from e2b import Sandbox
 
-    print(f"==> verify: create sandbox template={template!r} + check claw (strict: no ttyd)")
+    print(f"==> verify: create sandbox template={template!r} + check claw")
     sandbox = Sandbox.create(template, timeout=900, **opts)
     try:
         print(f"sandbox_id: {sandbox.sandbox_id}")
@@ -374,11 +374,6 @@ def _verify(template: str, opts: dict[str, str]) -> int:
             print(f"$ {cmd} -> exit={r.exit_code} stdout={out!r}")
             if r.exit_code not in (0, None) and cmd.startswith("command -v"):
                 return r.exit_code or 1
-        r_ttyd = sandbox.commands.run("command -v ttyd", timeout=120)
-        print(f"$ command -v ttyd -> exit={r_ttyd.exit_code}")
-        if r_ttyd.exit_code in (0, None):
-            print("error: strict worker must not include ttyd", file=sys.stderr)
-            return 1
     finally:
         sandbox.kill()
     return 0

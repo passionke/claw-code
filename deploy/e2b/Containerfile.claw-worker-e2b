@@ -1,4 +1,4 @@
-# e2b strict sandbox worker: code-interpreter base + claw only (no ttyd). Author: kejiqing
+# e2b strict sandbox worker: code-interpreter base + claw only. Author: kejiqing
 # Build context must include deploy/e2b/claw (extracted from claw-gateway-worker).
 FROM fc-e2b-registry.cn-beijing.cr.aliyuncs.com/runtime/code-interpreter-v1:v0.0.18
 USER root

@@ -63,7 +63,7 @@ The user sees a **web chat transcript** — not a terminal, not a local browser,
 - Emit ANSI escape codes or box-drawing terminal art."
 }
 
-/// Session-scoped sink writing to one stdout stream (PTY / ttyd).
+/// Session-scoped sink writing to one stdout stream (PTY / web worker).
 pub struct DisplaySession<'a, W: Write> {
     out: &'a mut W,
     mode: DisplayMode,
@@ -353,7 +353,7 @@ fn emit_web_frame(out: &mut dyn Write, value: &serde_json::Value) -> io::Result<
     out.flush()
 }
 
-/// Strip CDP OSC sequences from a ttyd payload (for tests / tooling).
+/// Strip CDP OSC sequences from a web worker payload (for tests / tooling).
 #[must_use]
 pub fn strip_claw_osc_frames(input: &str) -> String {
     let mut out = String::with_capacity(input.len());

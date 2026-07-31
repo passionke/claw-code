@@ -67,7 +67,7 @@ CLAW_E2B_DEV_WORKER_HOST=10.8.0.2
 | 步骤 | 在哪 | 说明 |
 |------|------|------|
 | 1 | 本机 podman | 编 `claw`（默认 **linux/arm64** on Apple Silicon） |
-| 2 | 本机 | stage `claw` + curl `ttyd.aarch64`（或 `x86_64`）→ `.e2b-worker-bins/` |
+| 2 | 本机 | stage `claw` → `.e2b-worker-bins/` |
 | 3 | e2b API | `Template.build` 上传，注册别名 `claw-worker` |
 
 Mac 是 **模板发布客户端**；沙箱在 e2b worker 节点（如 `10.8.0.2`）上跑，不是 gateway 容器里跑。

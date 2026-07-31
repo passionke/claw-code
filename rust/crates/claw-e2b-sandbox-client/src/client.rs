@@ -487,10 +487,6 @@ impl E2bSandboxClient {
         Ok(headers)
     }
 
-    fn ttyd_public_host(&self, sandbox_id: &str, sandbox_domain: &str) -> String {
-        self.service_public_host(self.config.ttyd_port, sandbox_id, sandbox_domain)
-    }
-
     fn ovs_public_host(&self, sandbox_id: &str, sandbox_domain: &str) -> String {
         self.service_public_host(self.config.ovs_port, sandbox_id, sandbox_domain)
     }
@@ -642,14 +638,11 @@ impl E2bSandboxClient {
                 .filter(|d| !d.trim().is_empty())
                 .unwrap_or_else(|| self.config.domain.clone())
         };
-        let ttyd_public_host = self.ttyd_public_host(&parsed.sandbox_id, &sandbox_domain);
         let handle = E2bSandboxHandle {
             sandbox_id: parsed.sandbox_id,
             sandbox_domain,
             envd_access_token: parsed.envd_access_token,
             traffic_access_token: parsed.traffic_access_token,
-            ttyd_public_host,
-            ttyd_use_tls: !self.config.is_self_hosted(),
             ovs_public_host: None,
             ovs_base_url: None,
         };
@@ -720,7 +713,6 @@ impl E2bSandboxClient {
                 .filter(|d| !d.trim().is_empty())
                 .unwrap_or_else(|| self.config.domain.clone())
         };
-        let ttyd_public_host = self.ttyd_public_host(&parsed.sandbox_id, &sandbox_domain);
         let (ovs_public_host, ovs_base_url) =
             self.ovs_handle_fields(&parsed.sandbox_id, &sandbox_domain, include_ovs);
         let handle = E2bSandboxHandle {
@@ -728,8 +720,6 @@ impl E2bSandboxClient {
             sandbox_domain,
             envd_access_token: parsed.envd_access_token,
             traffic_access_token: parsed.traffic_access_token,
-            ttyd_public_host,
-            ttyd_use_tls: !self.config.is_self_hosted(),
             ovs_public_host,
             ovs_base_url,
         };
@@ -1027,14 +1017,11 @@ impl E2bSandboxClient {
                 .filter(|d| !d.trim().is_empty())
                 .unwrap_or_else(|| self.config.domain.clone())
         };
-        let ttyd_public_host = self.ttyd_public_host(&parsed.sandbox_id, &sandbox_domain);
         let handle = E2bSandboxHandle {
             sandbox_id: parsed.sandbox_id,
             sandbox_domain,
             envd_access_token: parsed.envd_access_token,
             traffic_access_token: parsed.traffic_access_token,
-            ttyd_public_host,
-            ttyd_use_tls: !self.config.is_self_hosted(),
             ovs_public_host: None,
             ovs_base_url: None,
         };
@@ -1149,14 +1136,11 @@ impl E2bSandboxClient {
                 .filter(|d| !d.trim().is_empty())
                 .unwrap_or_else(|| self.config.domain.clone())
         };
-        let ttyd_public_host = self.ttyd_public_host(&parsed.sandbox_id, &sandbox_domain);
         let handle = E2bSandboxHandle {
             sandbox_id: parsed.sandbox_id,
             sandbox_domain,
             envd_access_token: parsed.envd_access_token,
             traffic_access_token: parsed.traffic_access_token,
-            ttyd_public_host,
-            ttyd_use_tls: !self.config.is_self_hosted(),
             ovs_public_host: None,
             ovs_base_url: None,
         };
@@ -1330,8 +1314,6 @@ impl E2bSandboxClient {
             "sandboxDomain": handle.sandbox_domain,
             "envdAccessToken": handle.envd_access_token,
             "trafficAccessToken": handle.traffic_access_token,
-            "ttydPublicHost": handle.ttyd_public_host,
-            "ttydUseTls": handle.ttyd_use_tls,
         });
         if let Some(ref host) = handle.ovs_public_host {
             out["ovsPublicHost"] = json!(host);
@@ -1367,17 +1349,6 @@ impl E2bSandboxClient {
             .or_else(|| value.get("traffic_access_token"))
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let ttyd_public_host = value
-            .get("ttydPublicHost")
-            .or_else(|| value.get("ttyd_public_host"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let ttyd_use_tls = value
-            .get("ttydUseTls")
-            .or_else(|| value.get("ttyd_use_tls"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(!sandbox_domain.contains("10.8.0."));
         let ovs_public_host = value
             .get("ovsPublicHost")
             .or_else(|| value.get("ovs_public_host"))
@@ -1397,8 +1368,6 @@ impl E2bSandboxClient {
             sandbox_domain,
             envd_access_token,
             traffic_access_token,
-            ttyd_public_host,
-            ttyd_use_tls,
             ovs_public_host,
             ovs_base_url,
         })
@@ -1838,7 +1807,7 @@ mod client_tests {
     }
 
     #[test]
-    fn ttyd_host_format() {
+    fn ovs_host_format() {
         let cfg = E2bSandboxConfig {
             api_key: "e2b_test".into(),
             api_url: "https://api.cn-beijing.e2b.fc.aliyuncs.com".into(),
@@ -1851,14 +1820,13 @@ mod client_tests {
             nas_user_id: 1000,
             nas_group_id: 1000,
             exec_helper: "deploy/e2b/e2b_exec.py".into(),
-            ttyd_port: 7681,
             ovs_template: "claw-ovs".into(),
             ovs_port: 3000,
         };
         let c = E2bSandboxClient::new(cfg);
         assert_eq!(
-            c.ttyd_public_host("sbx-abc", "cn-beijing.e2b.fc.aliyuncs.com"),
-            "7681-sbx-abc.cn-beijing.e2b.fc.aliyuncs.com"
+            c.ovs_public_host("sbx-abc", "cn-beijing.e2b.fc.aliyuncs.com"),
+            "3000-sbx-abc.cn-beijing.e2b.fc.aliyuncs.com"
         );
     }
 }

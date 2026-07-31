@@ -184,7 +184,7 @@ export default function WorkerProfilePage() {
     <Card title="Worker 执行环境" size="small">
       <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
         存于 <Typography.Text code>project_config.worker_profile_json</Typography.Text>
-        （项目 {projId}）。strict = solve worker 池（无 ttyd）；relaxed = 单 worker + OVS/ttyd 交互。
+        （项目 {projId}）。strict = solve worker 池；relaxed = 单 worker + 内置 OVS 交互。
       </Typography.Paragraph>
       <Alert
         type="info"
@@ -204,7 +204,7 @@ export default function WorkerProfilePage() {
         title={
           isStrict
             ? `e2b Worker 池（strict · 目标 ${workerStatus?.desiredPoolSize ?? globalPoolSize}）`
-            : "e2b Worker（relaxed · 单实例 + ttyd）"
+            : "e2b Worker（relaxed · 单实例 + OVS）"
         }
         size="small"
         style={{ marginBottom: 16 }}
@@ -341,18 +341,6 @@ export default function WorkerProfilePage() {
                     <Descriptions.Item label="沙箱域名">
                       <Typography.Text copyable>{w.urls.sandboxDomain}</Typography.Text>
                     </Descriptions.Item>
-                    {w.urls.ttydPublicHost ? (
-                      <Descriptions.Item label="ttyd Host">
-                        <Typography.Text copyable>{w.urls.ttydPublicHost}</Typography.Text>
-                      </Descriptions.Item>
-                    ) : null}
-                    {w.urls.ttydWsUrl ? (
-                      <Descriptions.Item label="ttyd WS URL">
-                        <Typography.Text copyable style={{ wordBreak: "break-all" }}>
-                          {w.urls.ttydWsUrl}
-                        </Typography.Text>
-                      </Descriptions.Item>
-                    ) : null}
                   </Descriptions>
                 );
               })()

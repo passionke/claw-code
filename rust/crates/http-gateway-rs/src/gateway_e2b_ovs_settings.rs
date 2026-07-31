@@ -123,8 +123,6 @@ mod tests {
             sandbox_domain: "supone.top".into(),
             envd_access_token: None,
             traffic_access_token: None,
-            ttyd_public_host: "7681-sbx_abc.supone.top".into(),
-            ttyd_use_tls: false,
             ovs_public_host: Some("3000-sbx_abc.supone.top".into()),
             ovs_base_url: Some("http://3000-sbx_abc.supone.top/ovs".into()),
         };

@@ -28,19 +28,6 @@ claw_e2b_worker_linux_platform() {
   printf 'linux/%s\n' "$(claw_e2b_worker_linux_arch)"
 }
 
-claw_e2b_ttyd_asset_name() {
-  local arch
-  arch="$(claw_e2b_worker_linux_arch)"
-  case "${arch}" in
-    arm64) printf '%s\n' aarch64 ;;
-    amd64) printf '%s\n' x86_64 ;;
-    *)
-      echo "e2b ttyd: unsupported arch ${arch}" >&2
-      return 1
-      ;;
-  esac
-}
-
 # file(1) probe must match ELF for the target arch.
 claw_e2b_elf_arch_ok() {
   local probe="$1"

@@ -6,7 +6,6 @@ use claw_e2b_sandbox_client::E2bSandboxClient;
 
 use super::{
     InteractiveBackendKind, InteractiveLease, InteractiveSandboxBackend, InteractiveSessionSpec,
-    TtydConnectTarget,
 };
 use crate::pool::e2b_proj_worker_registry::E2bProjWorkerRegistry;
 use crate::pool::NasLayoutBackend;
@@ -58,33 +57,14 @@ impl E2bInteractiveBackend {
             .await
     }
 
-    fn ttyd_target(&self, handle: &claw_e2b_sandbox_client::E2bSandboxHandle) -> TtydConnectTarget {
-        if handle.ttyd_use_tls {
-            return TtydConnectTarget::e2b_public(handle.ttyd_public_host.clone());
-        }
-        let cfg = self.client.config();
-        let traffic_host = cfg
-            .sandbox_url
-            .as_deref()
-            .map(parse_proxy_base)
-            .map(|(h, _)| h)
-            .unwrap_or_else(|| cfg.domain.clone());
-        let traffic_port = crate::gateway_e2b_observe_proxy::e2b_traffic_proxy_port();
-        TtydConnectTarget::e2b_self_hosted_proxy(
-            traffic_host,
-            traffic_port,
-            handle.ttyd_public_host.clone(),
-            handle.traffic_access_token.clone(),
-        )
-    }
-
+    /// Session attach only stages NAS dirs + LLM material; no in-guest server is started.
+    /// Prompts run per-turn via `gateway-interactive-once` exec. Author: kejiqing
     fn session_attach_script(spec: &InteractiveSessionSpec) -> String {
         let mut parts: Vec<String> = Vec::new();
         parts.push("set -e".to_string());
         if let Some(ref attach) = spec.e2b_session_attach_script {
             parts.push(attach.clone());
         }
-        parts.push(spec.start_ttyd_script.clone());
         parts.join("\n")
     }
 
@@ -92,20 +72,6 @@ impl E2bInteractiveBackend {
     pub async fn shutdown_all(&self) {
         self.workers.shutdown_all().await;
     }
-}
-
-fn parse_proxy_base(url: &str) -> (String, u16) {
-    let trimmed = url.trim().trim_end_matches('/');
-    let no_scheme = trimmed
-        .strip_prefix("http://")
-        .or_else(|| trimmed.strip_prefix("https://"))
-        .unwrap_or(trimmed);
-    if let Some((host, port)) = no_scheme.rsplit_once(':') {
-        if let Ok(p) = port.parse::<u16>() {
-            return (host.to_string(), p);
-        }
-    }
-    (no_scheme.to_string(), 3002)
 }
 
 #[async_trait::async_trait]
@@ -141,7 +107,8 @@ impl InteractiveSandboxBackend for E2bInteractiveBackend {
             e2b_warm_proj_id: Some(spec.proj_id),
             e2b_session_segment: Some(spec.session_segment.clone()),
             e2b_worker_id: Some(worker_id),
-            ttyd: self.ttyd_target(&handle),
+            e2b_sandbox_domain: Some(handle.sandbox_domain.clone()),
+            e2b_traffic_access_token: handle.traffic_access_token.clone(),
         })
     }
 
@@ -163,11 +130,28 @@ impl InteractiveSandboxBackend for E2bInteractiveBackend {
 mod tests {
     use super::*;
 
+    fn spec_with_attach(attach: Option<&str>) -> InteractiveSessionSpec {
+        InteractiveSessionSpec {
+            session_id: "ovs-1".into(),
+            session_segment: "ovs-1".into(),
+            proj_id: 1,
+            session_home: std::path::PathBuf::from("/tmp/session"),
+            proj_home: std::path::PathBuf::from("/tmp/proj"),
+            llm_env: std::collections::BTreeMap::new(),
+            ovs_mode: true,
+            e2b_session_attach_script: attach.map(str::to_string),
+            e2b_proj_bake_script: None,
+        }
+    }
+
     #[test]
-    fn parse_proxy_base_host_port() {
-        assert_eq!(
-            parse_proxy_base("http://10.8.0.1:3002"),
-            ("10.8.0.1".into(), 3002)
-        );
+    fn session_attach_script_has_no_in_guest_server() {
+        let sh = E2bInteractiveBackend::session_attach_script(&spec_with_attach(Some(
+            "mkdir -p /claw_host_root/.claw",
+        )));
+        assert!(sh.starts_with("set -e"));
+        assert!(sh.contains("mkdir -p /claw_host_root/.claw"));
+        assert!(!sh.contains("ttyd"));
+        assert!(!sh.contains("nohup"));
     }
 }

@@ -59,7 +59,7 @@ def _ovs_upstream_image() -> str:
 
 
 def _stage_worker_bins(staging: Path, worker_image: str) -> None:
-    """Extract claw+ttyd from a local or remote worker image (pull only if missing)."""
+    """Extract claw from a local or remote worker image (pull only if missing)."""
     rt = _container_runtime()
     platform = _env("CLAW_E2B_TEMPLATE_PLATFORM", "linux/amd64")
     if subprocess.call([rt, "image", "inspect", worker_image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
@@ -69,7 +69,7 @@ def _stage_worker_bins(staging: Path, worker_image: str) -> None:
         print(f"==> use local worker image {worker_image!r}")
     cid = subprocess.check_output([rt, "create", "--platform", platform, worker_image], text=True).strip()
     try:
-        for name in ("claw", "ttyd"):
+        for name in ("claw",):
             dest = staging / name
             subprocess.check_call([rt, "cp", f"{cid}:/usr/local/bin/{name}", str(dest)])
             dest.chmod(0o755)
@@ -98,8 +98,7 @@ def _relaxed_dockerfile(port: int, ext_ver: str) -> str:
         "    && chmod 440 /etc/sudoers.d/claw-nfs \\\n"
         "    && rm -rf /var/lib/apt/lists/*\n"
         "COPY claw.bin /usr/local/bin/claw\n"
-        "COPY ttyd.bin /usr/local/bin/ttyd\n"
-        "RUN chmod +x /usr/local/bin/claw /usr/local/bin/ttyd\n"
+        "RUN chmod +x /usr/local/bin/claw\n"
         "COPY openvscode-settings.json /tmp/openvscode-machine-settings.json\n"
         "RUN mkdir -p /tmp/ovs-bundle\n"
         "COPY claw-ovs-bundle.tar.gz /tmp/claw-ovs-bundle.tar.gz\n"
@@ -129,12 +128,10 @@ def main() -> int:
         staging = Path(tmp)
         bin_dir = staging / "bins"
         bin_dir.mkdir()
-        print(f"==> stage claw+ttyd from {worker_image!r}")
+        print(f"==> stage claw from {worker_image!r}")
         _stage_worker_bins(bin_dir, worker_image)
         shutil.copy2(bin_dir / "claw", staging / "claw.bin")
-        shutil.copy2(bin_dir / "ttyd", staging / "ttyd.bin")
         (staging / "claw.bin").chmod(0o755)
-        (staging / "ttyd.bin").chmod(0o755)
 
         print("==> staging OVS tree for relaxed worker …")
         ext_ver = stage_ovs_tree(staging, rt, _ovs_upstream_image())

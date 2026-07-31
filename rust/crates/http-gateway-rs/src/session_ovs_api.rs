@@ -27,7 +27,7 @@ pub struct OvsWorkspaceResponse {
     pub worker_profile: String,
     /// Path inside relaxed worker / built-in OVS (`/claw_ds`).
     pub workspace_folder: String,
-    /// Worker sandbox id (same sandbox hosts ttyd + built-in OVS).
+    /// Worker sandbox id (same sandbox hosts claw + built-in OVS).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_id: Option<String>,
     /// Path on the gateway host under `work_root` (compose mode).
