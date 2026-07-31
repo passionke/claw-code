@@ -1376,7 +1376,9 @@ fn execute_tool_with_enforcer(
         "TodoWrite" => from_value::<TodoWriteInput>(input).and_then(run_todo_write),
         "Skill" => from_value::<SkillInput>(input).and_then(run_skill),
         "Agent" => from_value::<AgentInput>(input).and_then(run_agent),
-        "AwaitAgent" => from_value::<AwaitAgentInput>(input).and_then(|input| run_await_agent(&input)),
+        "AwaitAgent" => {
+            from_value::<AwaitAgentInput>(input).and_then(|input| run_await_agent(&input))
+        }
         "ToolSearch" => from_value::<ToolSearchInput>(input).and_then(run_tool_search),
         "NotebookEdit" => from_value::<NotebookEditInput>(input).and_then(run_notebook_edit),
         "Sleep" => from_value::<SleepInput>(input).and_then(run_sleep),
