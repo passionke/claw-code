@@ -2,33 +2,43 @@
 
 Author: kejiqing
 
-**自托管 e2b（10.8.0.x）worker 节点全是 `linux/amd64`。** Mac 开发机用 podman **交叉编译** amd64，不要编 arm64 再上传。
+**自托管 e2b（10.8.0.x）worker 节点全是 `linux/amd64`。**
 
 ## 三件事（别每次从 0 到 1）
 
 | 层 | 谁负责 | 做什么 |
 |----|--------|--------|
-| **1. 打包** | 人 / CI（偶尔） | `e2b-worker-deploy` → 编 `claw` + 打 e2b 模板 |
-| **2. 上报 PG** | 构建脚本（自动） | `build-claw-worker-selfhosted.py` 写 `settings_json.e2bWorker.templateId` |
+| **1. 打包** | 人 / CI | `e2b-worker-deploy` → 拿 amd64 `claw` + 打 e2b **strict + relaxed** 模板 |
+| **2. 上报 PG** | 构建脚本（自动） | 写 `e2bWorker.templateId` + `e2bWorkerRelaxed.templateId` |
 | **3. 初始化 + 续期** | gateway 启动 / 运行时（自动） | 读 PG → reconcile worker / singleton → TTL renewal ticker |
 
 改完 `rusty-claude-cli` 才需要 **1**；**2、3 不用手搓**。
 
-## 一条命令（改 claw 二进制后）
+## 一条命令
+
+**amd64 CI / Linux 主机（交叉编译）：**
 
 ```bash
-# 仓库根，已 merge env.selfhosted-e2b.example → .env
 ./deploy/stack/gateway.sh e2b-worker-deploy
+```
+
+**Mac arm64（用 CI 镜像里的 amd64 claw，勿走 qemu 编译）：**
+
+```bash
+./deploy/stack/gateway.sh e2b-worker-deploy --from-ci-image release-v1.7.19
 ```
 
 内部步骤：
 
-1. `linux/amd64` 交叉编译 `claw`（`CLAW_LINUX_COMPILE_PLATFORM` 由 `e2b-worker-arch.sh` 固定）
-2. stage `claw` → `deploy/stack/.e2b-worker-bins/`（relaxed 见 `build-claw-worker-relaxed-selfhosted.py`）
-3. `Template.build(alias=claw-worker)` 上传到 `CLAW_E2B_API_URL`
-4. **写 PG** `e2bWorker.templateId` + `updatedAtMs`（与 ovs/observe/nas-api 同构）
+1. 获得 linux/amd64 `claw`（编译，或从 `claw-code:<tag>` 抽出）
+2. stage → `deploy/stack/.e2b-worker-bins/`
+3. `Template.build(alias=claw-worker)` → 写 PG `e2bWorker.templateId`
+4. `Template.build(alias=claw-worker-relaxed)`（**同一份 claw** + OVS）→ 写 PG `e2bWorkerRelaxed.templateId`
 
-可选：`--skip-compile` 复用 `deploy/stack/.linux-artifacts/release/claw`（须为 **amd64** ELF）。
+其它：
+
+- `--skip-compile` 复用已有 `.linux-artifacts/release/claw`（须 amd64 ELF）
+- `--strict-only` 只打 strict（默认 strict+relaxed）
 
 ## PG 契约
 
@@ -40,17 +50,32 @@ Author: kejiqing
     "templateId": "tpl_…",
     "alias": "claw-worker",
     "updatedAtMs": 1783…
+  },
+  "e2bWorkerRelaxed": {
+    "templateId": "tpl_…",
+    "alias": "claw-worker-relaxed",
+    "updatedAtMs": 1783…
   }
 }
 ```
 
-Gateway 读 `load_e2b_worker_template_id()`：`PG templateId` → env `CLAW_E2B_TEMPLATE` → `claw-worker`。
+Gateway：
 
-### relaxed alias（不写 PG）
+- strict：`load_e2b_worker_template_id()` → `PG e2bWorker.templateId` → env → `claw-worker`
+- relaxed：`load_e2b_worker_relaxed_template_id()` → `PG e2bWorkerRelaxed.templateId` → env → `claw-worker-relaxed`
 
-`build-claw-worker-relaxed-selfhosted.py` 注册 e2b alias `claw-worker-relaxed`，**跳过** `e2bWorker.templateId` 写入。relaxed/strict 选择在 gateway exec 层（`worker_profile_json.mode`），非独立 PG template 链。`build-selfhosted-templates.sh worker` 先 strict 后 relaxed，PG 保留 strict 的 templateId。
+**strict vs relaxed**：strict 用于 solve 池；relaxed = `claw` + **curl/git/python3/pip** + **内置 OVS**，用于 OVS / interactive。  
+e2b 模板 `claw-worker-relaxed` 与 CI 镜像 `claw-gateway-worker-relaxed` **工具包对齐**（OVS 由 e2b 模板 bake；沙箱更新必须走本手册「一条命令」）。
 
-**strict vs relaxed 镜像**：strict（`claw-worker`）用于 solve 池；relaxed（`claw-worker-relaxed`）含 `claw` + 内置 OVS，用于 OVS 交互。
+单独只打 relaxed（少见；一般用上面一条命令）：
+
+```bash
+# 须已有 stage 好的 claw，或由脚本从 CLAW_E2B_WORKER_IMAGE 抽出
+CLAW_E2B_TEMPLATE_COPY_DIR=deploy/stack/.e2b-worker-bins \
+  .venv-fc/bin/python3 deploy/e2b/build-claw-worker-relaxed-selfhosted.py
+```
+
+`build-selfhosted-templates.sh worker` 仍是 strict→relaxed，与 `e2b-worker-deploy` 同序。
 
 ## Gateway 启动 / 运行时（不用手 reset 除非急）
 
@@ -93,7 +118,7 @@ worker 内版本对齐：
 | 改什么 | 命令 |
 |--------|------|
 | `http-gateway-rs` | `./deploy/stack/gateway.sh pack-deploy` |
-| **e2b 沙箱内 `claw`** | `./deploy/stack/gateway.sh e2b-worker-deploy` |
+| **e2b 沙箱内 `claw`（strict + relaxed）** | `./deploy/stack/gateway.sh e2b-worker-deploy` |
 | ovs / observe / nas-api 模板 | 各自 `build-claw-*-selfhosted.py`（也会写 PG） |
 
 **不要**指望 `pack-deploy` 更新 worker 里的 claw — 那是两个镜像/模板链路。
@@ -114,7 +139,9 @@ CLAW_CLUSTER_ID=local-dev
 
 | 现象 | 原因 | 处理 |
 |------|------|------|
-| `claw is not linux/amd64 ELF` | 用了 arm64 产物 | 删 `.linux-artifacts/release/claw`，重跑 `e2b-worker-deploy` |
+| `claw is not linux/amd64 ELF` | 用了 arm64 产物 | Mac 用 `--from-ci-image release-v…`；或删 `.linux-artifacts/release/claw` 后在 amd64 上重编 |
+| arm64 Mac 直接 `e2b-worker-deploy` 退出 | 默认禁止 qemu 交叉编译 | 用 `--from-ci-image`；勿 `--force-compile` 除非调试 |
 | `image not known` (compile) | 缺 amd64 compile 镜像 | 脚本会自动 `podman build --platform linux/amd64` → `claw-rust-compile:1.88-bookworm-amd64` |
 | OVS `missing_credentials` | worker 里旧 claw | 跑本手册「一条命令」+ reset 或等 reconcile |
 | PG 无 `e2bWorker.templateId` | 旧构建脚本 / 无 `CLAW_GATEWAY_DATABASE_URL` | 重跑 deploy，查构建日志 `persisted e2bWorker.templateId` |
+| relaxed 仍是旧 claw | 只打了 strict / 未轮换 | 默认 `e2b-worker-deploy` 含 relaxed；查 `e2bWorkerRelaxed.templateId` 后 restart / reset |

@@ -25,11 +25,6 @@ from ovs_bundle import ovs_port, pack_ovs_bundle, relaxed_worker_ovs_install_run
 ROOT = Path(__file__).resolve().parents[2]
 load_repo_dotenv(ROOT)
 
-DEFAULT_WORKER_IMAGE = (
-    "crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/"
-    "passionke/claw-gateway-worker:release-v1.6.17"
-)
-
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
@@ -37,7 +32,12 @@ def _env(name: str, default: str = "") -> str:
 
 def _container_runtime() -> str:
     rt = _env("CLAW_CONTAINER_RUNTIME", "podman")
-    return "podman" if rt == "auto" else rt
+    if rt == "auto":
+        for candidate in ("podman", "docker"):
+            if shutil.which(candidate):
+                return candidate
+        return "podman"
+    return rt
 
 
 def _conn_opts() -> dict[str, str]:
@@ -87,13 +87,43 @@ def _worker_base_image() -> str:
     )
 
 
+def _stage_claw_into(staging: Path) -> None:
+    """Prefer staged COPY_DIR claw (e2b-worker-deploy); else extract from worker image. Author: kejiqing"""
+    copy_dir = _env("CLAW_E2B_TEMPLATE_COPY_DIR")
+    if copy_dir:
+        src = Path(copy_dir) / "claw"
+        if not src.is_file():
+            raise SystemExit(
+                f"error: CLAW_E2B_TEMPLATE_COPY_DIR={copy_dir!r} missing claw "
+                "(run gateway.sh e2b-worker-deploy stage first)"
+            )
+        print(f"==> stage claw from COPY_DIR {src}")
+        shutil.copy2(src, staging / "claw.bin")
+        (staging / "claw.bin").chmod(0o755)
+        probe = subprocess.check_output(["file", "-b", str(staging / "claw.bin")], text=True).strip()
+        print(f"  claw: {probe}")
+        return
+
+    worker_image = _worker_base_image()
+    bin_dir = staging / "bins"
+    bin_dir.mkdir(exist_ok=True)
+    print(f"==> stage claw from {worker_image!r}")
+    _stage_worker_bins(bin_dir, worker_image)
+    shutil.copy2(bin_dir / "claw", staging / "claw.bin")
+    (staging / "claw.bin").chmod(0o755)
+
+
 def _relaxed_dockerfile(port: int, ext_ver: str) -> str:
     debian = template_debian_base_image()
     apt = template_apt_prepare_prefix()
     return (
         f"FROM {debian}\n"
+        # Relaxed package set = CI claw-gateway-worker-relaxed tools + NAS sudo + OVS (below).
+        # Author: kejiqing
         f"RUN {apt}apt-get update && apt-get install -y --no-install-recommends \\\n"
-        "    nfs-common ca-certificates sudo curl \\\n"
+        "    nfs-common ca-certificates sudo \\\n"
+        "    curl git python3 python3-pip \\\n"
+        "    && ln -sf /usr/bin/pip3 /usr/local/bin/pip \\\n"
         "    && echo 'user ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount, /usr/bin/mountpoint, /bin/mkdir, /bin/chown' > /etc/sudoers.d/claw-nfs \\\n"
         "    && chmod 440 /etc/sudoers.d/claw-nfs \\\n"
         "    && rm -rf /var/lib/apt/lists/*\n"
@@ -112,7 +142,6 @@ def main() -> int:
     alias = _env("CLAW_E2B_WORKER_RELAXED_ALIAS") or "claw-worker-relaxed"
     port = ovs_port()
     rt = _container_runtime()
-    worker_image = _worker_base_image()
 
     os.environ.setdefault("E2B_API_KEY", opts["api_key"])
     os.environ.setdefault("E2B_API_URL", opts["api_url"])
@@ -126,12 +155,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="claw-e2b-relaxed-") as tmp:
         staging = Path(tmp)
-        bin_dir = staging / "bins"
-        bin_dir.mkdir()
-        print(f"==> stage claw from {worker_image!r}")
-        _stage_worker_bins(bin_dir, worker_image)
-        shutil.copy2(bin_dir / "claw", staging / "claw.bin")
-        (staging / "claw.bin").chmod(0o755)
+        _stage_claw_into(staging)
 
         print("==> staging OVS tree for relaxed worker …")
         ext_ver = stage_ovs_tree(staging, rt, _ovs_upstream_image())

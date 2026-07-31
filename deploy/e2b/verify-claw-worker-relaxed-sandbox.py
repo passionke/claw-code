@@ -201,6 +201,11 @@ def main() -> int:
 
         checks = [
             "command -v claw",
+            "command -v curl",
+            "command -v git",
+            "command -v python3",
+            "command -v pip3",
+            "command -v pip",
             "test -x /usr/local/bin/claw-worker-relaxed-start",
             "test -x /usr/local/bin/claw-worker-relaxed-ready",
             "test -x /usr/local/bin/claw-ovs-start",

@@ -32,7 +32,7 @@ flowchart LR
 ## 模板
 
 - **strict**：`claw-worker`（现有）
-- **relaxed**：`claw-worker-relaxed` = strict 镜像 + OVS bundle 层
+- **relaxed**：`claw-worker-relaxed` = claw + curl/git/python3/pip + OVS bundle 层
 
 构建：
 

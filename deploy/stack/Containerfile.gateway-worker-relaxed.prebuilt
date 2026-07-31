@@ -1,4 +1,5 @@
-# Relaxed pool worker: strict base + dev tools (root exec at solve time). Author: kejiqing
+# Relaxed worker tools: curl/git/python3/pip (align with e2b claw-worker-relaxed). Author: kejiqing
+# OVS is baked only in the e2b template (build-claw-worker-relaxed-selfhosted.py).
 ARG WORKER_BASE_IMAGE=claw-gateway-worker:local
 ARG DEBIAN_BASE_IMAGE=docker.1ms.run/library/debian:bookworm-slim
 
@@ -14,6 +15,8 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
     curl \
     git \
     python3 \
+    python3-pip \
+    && ln -sf /usr/bin/pip3 /usr/local/bin/pip \
     && rm -rf /var/lib/apt/lists/*
 
 USER claw

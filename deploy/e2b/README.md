@@ -48,13 +48,13 @@ Worker / OVS / observe / nas-api 模板构建必须走 **e2b 标准构建路径*
 | 步骤 | 说明 |
 |------|------|
 | 交叉编译 | `linux/amd64` → `deploy/stack/.linux-artifacts/release/claw` |
-| stage | strict：`claw` only → `deploy/stack/.e2b-worker-bins/`；relaxed：`claw` + 内置 OVS |
+| stage | strict：`claw` only → `deploy/stack/.e2b-worker-bins/`；relaxed：`claw` + curl/git/python3/pip + 内置 OVS |
 | e2b SDK | `Template.build` → 写 PG `e2bWorker.templateId` |
 | gateway | 启动 reconcile + renewal ticker 自动轮换 proj worker |
 
 完整说明：[`WORKER-BUILD.md`](./WORKER-BUILD.md)。脚本：`deploy/stack/lib/e2b-worker-deploy.sh`。
 
-OVS / observe / nas-api 模板仍按需单独 build（见下文 env 注释）；体积大或与 Rust 无关，不并入 `e2b-worker-deploy`。
+`e2b-worker-deploy` 默认打 **strict + relaxed**（同一份 stage claw；relaxed 另 bake OVS）。observe / nas-api / 独立 ovs 模板仍按需单独 build。
 
 ### Observe 单例（clawTap / LLM 代理 + Live）
 
