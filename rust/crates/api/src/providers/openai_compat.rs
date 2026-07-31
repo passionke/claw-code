@@ -1242,121 +1242,127 @@ pub fn model_rejects_is_error_field(model: &str) -> bool {
 pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
     let supports_is_error = !model_rejects_is_error_field(model);
     if message.role.as_str() == "assistant" {
-        let mut text = String::new();
-        let mut reasoning = String::new();
-        let mut tool_calls = Vec::new();
-        for block in &message.content {
-            match block {
-                InputContentBlock::Text { text: value } => text.push_str(value),
-                InputContentBlock::ReasoningContent { text: value } => {
-                    reasoning.push_str(value);
-                }
-                InputContentBlock::ToolUse { id, name, input } => tool_calls.push(json!({
-                    "id": id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": input.to_string(),
-                    }
-                })),
-                InputContentBlock::Image { .. }
-                | InputContentBlock::Video { .. }
-                | InputContentBlock::Audio { .. }
-                | InputContentBlock::ToolResult { .. } => {}
-            }
-        }
-        if text.is_empty() && tool_calls.is_empty() {
-            // DeepSeek replay: preserve reasoning-only assistant turns (no visible reply yet).
-            if is_deepseek_wire_model(model) && !reasoning.is_empty() {
-                return vec![json!({
-                    "role": "assistant",
-                    "content": Value::Null,
-                    "reasoning_content": reasoning,
-                })];
-            }
-            Vec::new()
-        } else {
-            let mut msg = serde_json::json!({
-                "role": "assistant",
-                "content": (!text.is_empty()).then_some(text),
-            });
-            // Only include tool_calls when non-empty: some providers reject
-            // assistant messages with an explicit empty tool_calls array.
-            if !tool_calls.is_empty() {
-                msg["tool_calls"] = json!(tool_calls);
-            }
-            if is_deepseek_wire_model(model) && !tool_calls.is_empty() {
-                // DeepSeek requires `reasoning_content` on tool-call turns when thinking is on.
-                msg["reasoning_content"] = json!(reasoning);
-            } else if is_deepseek_wire_model(model) && !reasoning.is_empty() {
-                msg["reasoning_content"] = json!(reasoning);
-            }
-            vec![msg]
-        }
+        translate_assistant_message(message, model)
     } else {
-        // User / mixed turns: keep plain string when text-only; array when media present.
-        // Author: kejiqing
-        let mut text_parts = Vec::new();
-        let mut media_parts = Vec::new();
-        let mut out = Vec::new();
-        for block in &message.content {
-            match block {
-                InputContentBlock::Text { text } => text_parts.push(text.clone()),
-                InputContentBlock::Image {
-                    media_type,
-                    data_base64,
-                } => {
-                    media_parts.push(json!({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": format!("data:{media_type};base64,{data_base64}"),
-                        }
-                    }));
-                }
-                InputContentBlock::Video { url, .. } => {
-                    media_parts.push(json!({
-                        "type": "video_url",
-                        "video_url": { "url": url },
-                    }));
-                }
-                InputContentBlock::Audio { format, data } => {
-                    media_parts.push(json!({
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": data,
-                            "format": format,
-                        }
-                    }));
-                }
-                InputContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } => {
-                    // Flush pending multimodal user content before tool results.
-                    if !text_parts.is_empty() || !media_parts.is_empty() {
-                        out.push(openai_user_content_message(&text_parts, &media_parts));
-                        text_parts.clear();
-                        media_parts.clear();
-                    }
-                    let mut msg = json!({
-                        "role": "tool",
-                        "tool_call_id": tool_use_id,
-                        "content": flatten_tool_result_content(content),
-                    });
-                    if supports_is_error {
-                        msg["is_error"] = json!(is_error);
-                    }
-                    out.push(msg);
-                }
-                InputContentBlock::ReasoningContent { .. } | InputContentBlock::ToolUse { .. } => {}
-            }
-        }
-        if !text_parts.is_empty() || !media_parts.is_empty() {
-            out.push(openai_user_content_message(&text_parts, &media_parts));
-        }
-        out
+        translate_user_or_tool_message(message, supports_is_error)
     }
+}
+
+fn translate_assistant_message(message: &InputMessage, model: &str) -> Vec<Value> {
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    let mut tool_calls = Vec::new();
+    for block in &message.content {
+        match block {
+            InputContentBlock::Text { text: value } => text.push_str(value),
+            InputContentBlock::ReasoningContent { text: value } => {
+                reasoning.push_str(value);
+            }
+            InputContentBlock::ToolUse { id, name, input } => tool_calls.push(json!({
+                "id": id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": input.to_string(),
+                }
+            })),
+            InputContentBlock::Image { .. }
+            | InputContentBlock::Video { .. }
+            | InputContentBlock::Audio { .. }
+            | InputContentBlock::ToolResult { .. } => {}
+        }
+    }
+    if text.is_empty() && tool_calls.is_empty() {
+        // DeepSeek replay: preserve reasoning-only assistant turns (no visible reply yet).
+        if is_deepseek_wire_model(model) && !reasoning.is_empty() {
+            return vec![json!({
+                "role": "assistant",
+                "content": Value::Null,
+                "reasoning_content": reasoning,
+            })];
+        }
+        return Vec::new();
+    }
+    let mut msg = serde_json::json!({
+        "role": "assistant",
+        "content": (!text.is_empty()).then_some(text),
+    });
+    // Only include tool_calls when non-empty: some providers reject
+    // assistant messages with an explicit empty tool_calls array.
+    if !tool_calls.is_empty() {
+        msg["tool_calls"] = json!(tool_calls);
+    }
+    if is_deepseek_wire_model(model) && !tool_calls.is_empty() {
+        // DeepSeek requires `reasoning_content` on tool-call turns when thinking is on.
+        msg["reasoning_content"] = json!(reasoning);
+    } else if is_deepseek_wire_model(model) && !reasoning.is_empty() {
+        msg["reasoning_content"] = json!(reasoning);
+    }
+    vec![msg]
+}
+
+/// User / mixed turns: plain string when text-only; content array when media present. Author: kejiqing
+fn translate_user_or_tool_message(message: &InputMessage, supports_is_error: bool) -> Vec<Value> {
+    let mut text_parts = Vec::new();
+    let mut media_parts = Vec::new();
+    let mut out = Vec::new();
+    for block in &message.content {
+        match block {
+            InputContentBlock::Text { text } => text_parts.push(text.clone()),
+            InputContentBlock::Image {
+                media_type,
+                data_base64,
+            } => {
+                media_parts.push(json!({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:{media_type};base64,{data_base64}"),
+                    }
+                }));
+            }
+            InputContentBlock::Video { url, .. } => {
+                media_parts.push(json!({
+                    "type": "video_url",
+                    "video_url": { "url": url },
+                }));
+            }
+            InputContentBlock::Audio { format, data } => {
+                media_parts.push(json!({
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": data,
+                        "format": format,
+                    }
+                }));
+            }
+            InputContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                // Flush pending multimodal user content before tool results.
+                if !text_parts.is_empty() || !media_parts.is_empty() {
+                    out.push(openai_user_content_message(&text_parts, &media_parts));
+                    text_parts.clear();
+                    media_parts.clear();
+                }
+                let mut msg = json!({
+                    "role": "tool",
+                    "tool_call_id": tool_use_id,
+                    "content": flatten_tool_result_content(content),
+                });
+                if supports_is_error {
+                    msg["is_error"] = json!(is_error);
+                }
+                out.push(msg);
+            }
+            InputContentBlock::ReasoningContent { .. } | InputContentBlock::ToolUse { .. } => {}
+        }
+    }
+    if !text_parts.is_empty() || !media_parts.is_empty() {
+        out.push(openai_user_content_message(&text_parts, &media_parts));
+    }
+    out
 }
 
 fn openai_user_content_message(text_parts: &[String], media_parts: &[Value]) -> Value {
