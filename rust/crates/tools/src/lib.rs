@@ -3726,7 +3726,13 @@ pub fn execute_agent_with_mcp_context_and_spawn<F>(
 where
     F: FnOnce(AgentJob) -> Result<(), String>,
 {
-    execute_agent_with_spawn(input, store_dir, mcp_call_context, parent_turn_model, spawn_fn)
+    execute_agent_with_spawn(
+        input,
+        store_dir,
+        mcp_call_context,
+        parent_turn_model,
+        spawn_fn,
+    )
 }
 
 fn execute_agent_with_spawn<F>(
