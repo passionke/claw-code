@@ -6416,8 +6416,10 @@ fn detect_powershell_shell() -> std::io::Result<&'static str> {
 }
 
 fn command_exists(command: &str) -> bool {
+    // Non-login shell: login `-l` reloads profile against current HOME and can
+    // drop Homebrew PATH when tests temporarily rewrite HOME. Author: kejiqing
     std::process::Command::new("sh")
-        .arg("-lc")
+        .arg("-c")
         .arg(format!("command -v {command} >/dev/null 2>&1"))
         .status()
         .is_ok_and(|status| status.success())
@@ -10466,6 +10468,7 @@ mod tests {
 
     #[test]
     fn repl_executes_python_code() {
+        let _guard = env_guard();
         let result = execute_tool(
             "REPL",
             &json!({"language": "python", "code": "print(1 + 1)", "timeout_ms": 500}),
