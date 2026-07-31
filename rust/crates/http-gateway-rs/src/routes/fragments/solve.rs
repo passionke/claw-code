@@ -18,7 +18,33 @@ pub(crate) struct ProbeQuery {
     path = "/v1/solve",
     tag = "Solve",
     operation_id = "solve",
-    request_body = SolveRequest,
+    request_body(
+        content = SolveRequest,
+        description = "Text-only or multimodal (attachments from POST /v1/sessions/{id}/files). Image attachments require a vision-capable active model.",
+        examples(
+            ("TextOnly" = (
+                summary = "Text-only solve",
+                value = json!({
+                    "projId": 1,
+                    "userPrompt": "connectivity check"
+                })
+            )),
+            ("MultimodalImage" = (
+                summary = "Multimodal image (upload files first; model must supportsVision)",
+                value = json!({
+                    "projId": 1,
+                    "userPrompt": "请描述这张图",
+                    "attachments": [{
+                        "path": "uploads/photo.png",
+                        "mime": "image/png",
+                        "kind": "image",
+                        "name": "photo.png",
+                        "size": 12345
+                    }]
+                })
+            ))
+        )
+    ),
     responses(
         (status = 200, description = "Solve finished", body = SolveResponse),
         (status = 400, description = "Invalid request or unknown sessionId"),
@@ -470,7 +496,33 @@ pub(crate) async fn solve_start(
     path = "/v1/solve_async",
     tag = "Solve",
     operation_id = "solve_async",
-    request_body = SolveRequest,
+    request_body(
+        content = SolveRequest,
+        description = "Text-only or multimodal (attachments from POST /v1/sessions/{id}/files). Image attachments require a vision-capable active model.",
+        examples(
+            ("TextOnly" = (
+                summary = "Text-only async solve",
+                value = json!({
+                    "projId": 1,
+                    "userPrompt": "connectivity check"
+                })
+            )),
+            ("MultimodalImage" = (
+                summary = "Multimodal image (upload files first; model must supportsVision)",
+                value = json!({
+                    "projId": 1,
+                    "userPrompt": "请描述这张图",
+                    "attachments": [{
+                        "path": "uploads/photo.png",
+                        "mime": "image/png",
+                        "kind": "image",
+                        "name": "photo.png",
+                        "size": 12345
+                    }]
+                })
+            ))
+        )
+    ),
     responses(
         (status = 200, description = "Async task created", body = SolveAsyncResponse),
         (status = 400, description = "Unknown sessionId for continuation"),
@@ -534,7 +586,9 @@ pub(crate) async fn validate_solve_request(
         ));
     }
     if let Some(atts) = req.attachments.as_ref() {
-        let has_image = atts.iter().any(|a| a.kind.eq_ignore_ascii_case("image"));
+        let has_image = atts
+            .iter()
+            .any(|a| a.kind == gateway_solve_turn::SolveAttachmentKind::Image);
         if has_image {
             let supports = gateway_project_llm::load_effective_llm_runtime(db, req.proj_id)
                 .await

@@ -7,9 +7,8 @@ use axum::http::StatusCode;
 use axum::Json;
 use chrono::Utc;
 use claw_e2b_sandbox_client::session_rel;
-use gateway_solve_turn::SolveAttachment;
+use gateway_solve_turn::{SolveAttachment, SolveAttachmentKind};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::api_error::ApiError;
@@ -28,15 +27,65 @@ pub struct SessionFilesQuery {
     pub proj_id: i64,
 }
 
+/// Upload / turn-list attachment with optional temporary signed URL. Author: kejiqing
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SessionUploadedAttachment {
+    #[schema(example = "uploads/photo.png")]
+    pub path: String,
+    #[schema(example = "image/png")]
+    pub mime: String,
+    pub kind: SolveAttachmentKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, rename = "ossKey", skip_serializing_if = "Option::is_none")]
+    pub oss_key: Option<String>,
+    #[serde(default, rename = "ossUrl", skip_serializing_if = "Option::is_none")]
+    pub oss_url: Option<String>,
+    #[serde(
+        default,
+        rename = "ossRetainUntilMs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oss_retain_until_ms: Option<i64>,
+    /// Temporary GET URL; not stored on solve request attachments. Author: kejiqing
+    #[serde(
+        default,
+        rename = "ossSignedUrl",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oss_signed_url: Option<String>,
+}
+
+impl SessionUploadedAttachment {
+    pub fn from_solve_attachment(att: SolveAttachment, oss_signed_url: Option<String>) -> Self {
+        Self {
+            path: att.path,
+            mime: att.mime,
+            kind: att.kind,
+            name: att.name,
+            size: att.size,
+            oss_key: att.oss_key,
+            oss_url: att.oss_url,
+            oss_retain_until_ms: att.oss_retain_until_ms,
+            oss_signed_url,
+        }
+    }
+
+    pub fn from_json_value(v: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(v.clone()).ok()
+    }
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionFilesUploadResponse {
-    #[schema(value_type = Vec<Object>)]
-    pub attachments: Vec<Value>,
+    pub attachments: Vec<SessionUploadedAttachment>,
 }
 
 /// Classify attachment kind from MIME / filename. Unknown → reject. Author: kejiqing
-pub fn classify_attachment(mime: &str, name: &str) -> Result<&'static str, String> {
+pub fn classify_attachment(mime: &str, name: &str) -> Result<SolveAttachmentKind, String> {
     let mime = mime.trim().to_ascii_lowercase();
     let ext = Path::new(name)
         .extension()
@@ -45,7 +94,7 @@ pub fn classify_attachment(mime: &str, name: &str) -> Result<&'static str, Strin
         .to_ascii_lowercase();
     if mime.starts_with("image/") || matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif")
     {
-        return Ok("image");
+        return Ok(SolveAttachmentKind::Image);
     }
     if matches!(
         mime.as_str(),
@@ -57,7 +106,7 @@ pub fn classify_attachment(mime: &str, name: &str) -> Result<&'static str, Strin
             | "application/json"
     ) || matches!(ext.as_str(), "pdf" | "txt" | "csv" | "md" | "json")
     {
-        return Ok("document");
+        return Ok(SolveAttachmentKind::Document);
     }
     Err(format!(
         "unsupported file type mime={mime} name={name}; allow images (png/jpeg/webp/gif) and documents (pdf/csv/txt/md/json)"
@@ -131,7 +180,7 @@ pub(crate) async fn upload_session_files(
     AxumPath(session_id): AxumPath<String>,
     Query(q): Query<SessionFilesQuery>,
     mut multipart: Multipart,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<SessionFilesUploadResponse>, ApiError> {
     if q.proj_id < 1 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -258,7 +307,7 @@ pub(crate) async fn upload_session_files(
         uploaded.push(SolveAttachment {
             path: rel_under,
             mime,
-            kind: kind.to_string(),
+            kind,
             name: Some(original),
             size: Some(bytes.len() as u64),
             oss_key,
@@ -274,45 +323,46 @@ pub(crate) async fn upload_session_files(
         ));
     }
     // Enrich response with temporary ossSignedUrl (not stored in entry_params / SolveAttachment).
-    let attachments_json: Value = if oss.enabled() {
+    let attachments = if oss.enabled() {
         let now = Utc::now();
         let ttl = oss.signed_url_ttl_secs;
-        Value::Array(
-            uploaded
-                .into_iter()
-                .map(|att| {
-                    let signed = att
-                        .oss_key
-                        .as_deref()
-                        .and_then(|k| oss.presign_get(k, ttl, now).ok());
-                    let mut v = serde_json::to_value(&att).unwrap_or(json!({}));
-                    if let (Some(url), Some(obj)) = (signed, v.as_object_mut()) {
-                        obj.insert("ossSignedUrl".into(), Value::String(url));
-                    }
-                    v
-                })
-                .collect(),
-        )
+        uploaded
+            .into_iter()
+            .map(|att| {
+                let signed = att
+                    .oss_key
+                    .as_deref()
+                    .and_then(|k| oss.presign_get(k, ttl, now).ok());
+                SessionUploadedAttachment::from_solve_attachment(att, signed)
+            })
+            .collect()
     } else {
-        json!(uploaded)
+        uploaded
+            .into_iter()
+            .map(|att| SessionUploadedAttachment::from_solve_attachment(att, None))
+            .collect()
     };
-    Ok(Json(json!({ "attachments": attachments_json })))
+    Ok(Json(SessionFilesUploadResponse { attachments }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::classify_attachment;
+    use gateway_solve_turn::SolveAttachmentKind;
 
     #[test]
     fn classify_image_and_document() {
-        assert_eq!(classify_attachment("image/png", "a.png").unwrap(), "image");
+        assert_eq!(
+            classify_attachment("image/png", "a.png").unwrap(),
+            SolveAttachmentKind::Image
+        );
         assert_eq!(
             classify_attachment("application/pdf", "r.pdf").unwrap(),
-            "document"
+            SolveAttachmentKind::Document
         );
         assert_eq!(
             classify_attachment("text/csv", "t.csv").unwrap(),
-            "document"
+            SolveAttachmentKind::Document
         );
         assert!(classify_attachment("application/zip", "x.zip").is_err());
     }

@@ -195,14 +195,26 @@ pub fn normalize_extra_session(extra_session: Option<Value>) -> Option<Value> {
     }
 }
 
+/// Attachment kind for multimodal solve turns. Author: kejiqing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+#[schema(example = "image")]
+pub enum SolveAttachmentKind {
+    Image,
+    Document,
+}
+
 /// User attachment metadata (paths relative to session cwd). Author: kejiqing
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct SolveAttachment {
+    #[schema(example = "uploads/photo.png")]
     pub path: String,
+    #[schema(example = "image/png")]
     pub mime: String,
-    /// `image` | `document`
-    pub kind: String,
+    /// Enum: `image` | `document`.
+    pub kind: SolveAttachmentKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "photo.png")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
@@ -935,21 +947,23 @@ pub fn build_user_turn_message(
 ) -> ConversationMessage {
     let mut blocks = Vec::new();
     for att in attachments {
-        let kind = att.kind.trim().to_ascii_lowercase();
-        if kind == "image" {
-            blocks.push(ContentBlock::Image {
-                path: att.path.clone(),
-                mime: att.mime.clone(),
-                name: att.name.clone(),
-            });
-        } else {
-            let name = att.name.as_deref().unwrap_or(att.path.as_str());
-            blocks.push(ContentBlock::Text {
-                text: format!(
-                    "[attachment document] path={} mime={} name={} — use Read/Bash to inspect",
-                    att.path, att.mime, name
-                ),
-            });
+        match att.kind {
+            SolveAttachmentKind::Image => {
+                blocks.push(ContentBlock::Image {
+                    path: att.path.clone(),
+                    mime: att.mime.clone(),
+                    name: att.name.clone(),
+                });
+            }
+            SolveAttachmentKind::Document => {
+                let name = att.name.as_deref().unwrap_or(att.path.as_str());
+                blocks.push(ContentBlock::Text {
+                    text: format!(
+                        "[attachment document] path={} mime={} name={} — use Read/Bash to inspect",
+                        att.path, att.mime, name
+                    ),
+                });
+            }
         }
     }
     let prompt = prompt.trim();
@@ -959,7 +973,7 @@ pub fn build_user_turn_message(
         });
     } else if attachments
         .iter()
-        .any(|a| a.kind.eq_ignore_ascii_case("image"))
+        .any(|a| a.kind == SolveAttachmentKind::Image)
     {
         blocks.push(ContentBlock::Text {
             text: "请查看附件".to_string(),
@@ -1770,13 +1784,13 @@ mod gateway_solve_task_file_tests {
 
     #[test]
     fn build_user_turn_message_images_and_docs() {
-        use super::{build_user_turn_message, SolveAttachment};
+        use super::{build_user_turn_message, SolveAttachment, SolveAttachmentKind};
         use runtime::ContentBlock;
         let atts = vec![
             SolveAttachment {
                 path: "uploads/a.png".into(),
                 mime: "image/png".into(),
-                kind: "image".into(),
+                kind: SolveAttachmentKind::Image,
                 name: Some("a.png".into()),
                 size: Some(10),
                 oss_key: None,
@@ -1786,7 +1800,7 @@ mod gateway_solve_task_file_tests {
             SolveAttachment {
                 path: "uploads/b.pdf".into(),
                 mime: "application/pdf".into(),
-                kind: "document".into(),
+                kind: SolveAttachmentKind::Document,
                 name: Some("b.pdf".into()),
                 size: Some(20),
                 oss_key: None,

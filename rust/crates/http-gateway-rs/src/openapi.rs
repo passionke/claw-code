@@ -274,4 +274,74 @@ mod tests {
             "#/components/schemas/ProjectEntityDomain"
         );
     }
+
+    #[test]
+    fn solve_attachments_and_progress_types_are_derived() {
+        let document = document();
+        let operation = &document["paths"]["/v1/solve_async"]["post"];
+        assert_eq!(
+            operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/SolveRequest"
+        );
+        assert!(
+            operation["requestBody"]["content"]["application/json"]["schema"]
+                .get("additionalProperties")
+                .is_none()
+        );
+
+        let attachments =
+            &document["components"]["schemas"]["SolveRequest"]["properties"]["attachments"];
+        let items_ref = attachments
+            .get("items")
+            .and_then(|i| i.get("$ref"))
+            .or_else(|| {
+                attachments
+                    .pointer("/allOf/0/items/$ref")
+                    .or_else(|| attachments.pointer("/oneOf/0/items/$ref"))
+            });
+        assert_eq!(
+            items_ref,
+            Some(&json!("#/components/schemas/SolveAttachment")),
+            "attachments items must ref SolveAttachment, got {attachments}"
+        );
+        assert_eq!(
+            document["components"]["schemas"]["SolveAttachmentKind"]["enum"],
+            json!(["image", "document"])
+        );
+        assert_eq!(
+            document["components"]["schemas"]["SolveAttachment"]["properties"]["kind"]["$ref"],
+            "#/components/schemas/SolveAttachmentKind"
+        );
+
+        let task = &document["components"]["schemas"]["TaskRecord"];
+        assert_eq!(
+            task["properties"]["progressHistory"]["items"]["$ref"],
+            "#/components/schemas/ProgressEvent"
+        );
+        assert_eq!(
+            task["properties"]["todos"]["items"]["$ref"],
+            "#/components/schemas/TaskProgressTodo"
+        );
+
+        let progress = &document["components"]["schemas"]["SessionExecutionResponse"]["properties"]
+            ["progress"];
+        let progress_s = progress.to_string();
+        assert!(
+            progress_s.contains("#/components/schemas/TaskProgressFile"),
+            "SessionExecutionResponse.progress must ref TaskProgressFile, got {progress}"
+        );
+        assert!(document["components"]["schemas"]
+            .get("TaskProgressFile")
+            .is_some());
+        assert_eq!(
+            document["components"]["schemas"]["TurnToolsResponse"]["properties"]["tools"]["items"]
+                ["$ref"],
+            "#/components/schemas/TurnToolRecord"
+        );
+        assert_eq!(
+            document["components"]["schemas"]["SessionFilesUploadResponse"]["properties"]
+                ["attachments"]["items"]["$ref"],
+            "#/components/schemas/SessionUploadedAttachment"
+        );
+    }
 }

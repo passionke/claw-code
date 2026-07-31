@@ -41,8 +41,8 @@ use crate::{
     mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api, project_config_apply,
     project_config_draft, project_config_version, project_entity_revision, project_extra_session,
     project_git_sync, project_id, project_tools, session_agent_api, session_db, session_execution,
-    session_merge, session_ovs_api, solve_pool, task_status, turn_id, turn_timeline_api,
-    turn_tools_api,
+    session_merge, session_ovs_api, session_upload, solve_pool, task_status, turn_id,
+    turn_timeline_api, turn_tools_api,
 };
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
