@@ -491,10 +491,18 @@ impl GatewaySessionDb {
         Self::connect_without_migrate(url).await
     }
 
+    /// sqlx pool size for gateway PG.
+    ///
+    /// Session advisory locks (worker slot / singleton) hold one physical connection
+    /// for the whole mutate — including e2b sandbox create (tens of seconds) — and the
+    /// closure still borrows more connections from this same pool for SQL. Concurrent
+    /// resets therefore need headroom beyond "one query at a time". Author: kejiqing
+    const PG_POOL_MAX_CONNECTIONS: u32 = 32;
+
     /// Connect and run schema migration (tests and explicit URLs).
     pub async fn connect(database_url: &str) -> Result<Self, SqlxError> {
         let pool = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(Self::PG_POOL_MAX_CONNECTIONS)
             .connect(database_url)
             .await?;
         if let Err(e) = Self::migrate(&pool).await {
@@ -515,7 +523,7 @@ impl GatewaySessionDb {
     /// Connect without schema migration (existing PG schema required). Author: kejiqing
     pub async fn connect_without_migrate(database_url: &str) -> Result<Self, SqlxError> {
         let pool = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(Self::PG_POOL_MAX_CONNECTIONS)
             .connect(database_url)
             .await?;
         Ok(Self {
@@ -568,17 +576,24 @@ impl GatewaySessionDb {
     }
 
     async fn migrate(pool: &PgPool) -> Result<(), SqlxError> {
-        // Serialize DDL when gateway-rs and pool-daemon start together (CI release up). Author: kejiqing
+        // Serialize DDL when gateway-rs and pool-daemon start together (CI release up).
+        // Lock and unlock share one connection: a session advisory lock stays on the
+        // connection that took it, and unlocking via the pool can miss it. Author: kejiqing
         const MIGRATE_ADVISORY_LOCK: i64 = 0x434C_4157_4D49;
+        let mut conn = pool.acquire().await?;
         sqlx::query("SELECT pg_advisory_lock($1)")
             .bind(MIGRATE_ADVISORY_LOCK)
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         let result = Self::run_migrate(pool).await;
-        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+        if sqlx::query("SELECT pg_advisory_unlock($1)")
             .bind(MIGRATE_ADVISORY_LOCK)
-            .execute(pool)
-            .await;
+            .execute(&mut *conn)
+            .await
+            .is_err()
+        {
+            conn.close().await.ok();
+        }
         result
     }
 
@@ -3287,6 +3302,51 @@ impl GatewaySessionDb {
         Ok(busy)
     }
 
+    /// Run `f` while holding a session-scoped `pg_advisory_lock` on `key`.
+    ///
+    /// The lock lives on the physical connection that took it, so lock and unlock
+    /// must share one `PoolConnection`. Running them on `&self.pool` can send the
+    /// unlock to a different pooled connection, which then reports "you don't own a
+    /// lock of type `ExclusiveLock`" while the real lock leaks until its holder
+    /// closes. Author: kejiqing
+    async fn with_pg_advisory_lock<T, F, Fut>(
+        &self,
+        what: &str,
+        key: &str,
+        f: F,
+    ) -> Result<T, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| format!("pg_advisory_lock {what}: acquire connection: {e}"))?;
+        sqlx::query("SELECT pg_advisory_lock(hashtext($1::text))")
+            .bind(key)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| format!("pg_advisory_lock {what}: {e}"))?;
+        let out = f().await;
+        if let Err(e) = sqlx::query("SELECT pg_advisory_unlock(hashtext($1::text))")
+            .bind(key)
+            .execute(&mut *conn)
+            .await
+        {
+            tracing::warn!(
+                target: "claw_pg_advisory_lock",
+                what,
+                key,
+                error = %e,
+                "pg_advisory_unlock failed; dropping the connection so PG releases the lock"
+            );
+            conn.close().await.ok();
+        }
+        out
+    }
+
     /// Serialize mutate path for one worker slot across gateways. Author: kejiqing
     pub async fn with_project_e2b_worker_slot_lock<T, F, Fut>(
         &self,
@@ -3299,26 +3359,7 @@ impl GatewaySessionDb {
         Fut: std::future::Future<Output = Result<T, String>>,
     {
         let key = format!("{}:{}:{}", self.cluster_id(), proj_id, slot_index);
-        sqlx::query("SELECT pg_advisory_lock(hashtext($1::text))")
-            .bind(&key)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| format!("pg_advisory_lock worker slot: {e}"))?;
-        let out = f().await;
-        let unlock = sqlx::query("SELECT pg_advisory_unlock(hashtext($1::text))")
-            .bind(&key)
-            .execute(&self.pool)
-            .await;
-        if let Err(e) = unlock {
-            tracing::warn!(
-                target: "claw_e2b_proj_worker",
-                proj_id,
-                slot_index,
-                error = %e,
-                "pg_advisory_unlock worker slot failed"
-            );
-        }
-        out
+        self.with_pg_advisory_lock("worker slot", &key, f).await
     }
 
     /// Serialize cluster singleton ensure/reset across gateways. Author: kejiqing
@@ -3332,25 +3373,8 @@ impl GatewaySessionDb {
         Fut: std::future::Future<Output = Result<T, String>>,
     {
         let key = format!("{}:{}", self.cluster_id(), role);
-        sqlx::query("SELECT pg_advisory_lock(hashtext($1::text))")
-            .bind(&key)
-            .execute(&self.pool)
+        self.with_pg_advisory_lock(&format!("singleton {role}"), &key, f)
             .await
-            .map_err(|e| format!("pg_advisory_lock singleton {role}: {e}"))?;
-        let out = f().await;
-        let unlock = sqlx::query("SELECT pg_advisory_unlock(hashtext($1::text))")
-            .bind(&key)
-            .execute(&self.pool)
-            .await;
-        if let Err(e) = unlock {
-            tracing::warn!(
-                target: "claw_e2b_singleton",
-                role = %role,
-                error = %e,
-                "pg_advisory_unlock singleton failed"
-            );
-        }
-        out
     }
 
     /// Field-level merge into gateway_global_settings.settings_json. Author: kejiqing
