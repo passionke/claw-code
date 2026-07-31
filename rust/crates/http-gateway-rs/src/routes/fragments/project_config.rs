@@ -42,6 +42,9 @@ pub(crate) struct UpsertProjectConfigRequest {
     /// Omit on PUT to keep existing `worker_profile_json`. Author: kejiqing
     #[serde(rename = "workerProfileJson", default)]
     worker_profile_json: Option<Value>,
+    /// Omit to keep; JSON `null` clears; positive int sets. Author: kejiqing
+    #[serde(default, rename = "maxIterations")]
+    max_iterations: Option<Option<usize>>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -105,6 +108,9 @@ pub(crate) struct ProjectConfigResponse {
     project_code: String,
     #[serde(rename = "projectDescription")]
     project_description: String,
+    /// Project default agent loop max iterations; omit/null = cluster default. Author: kejiqing
+    #[serde(rename = "maxIterations")]
+    max_iterations: Option<usize>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -319,6 +325,7 @@ pub(crate) fn default_project_config_row(proj_id: i64) -> session_db::ProjectCon
         worker_profile_json: pool::default_worker_profile_json(),
         project_code: String::new(),
         project_description: String::new(),
+    max_iterations: None,
     }
 }
 
@@ -480,6 +487,7 @@ pub(crate) async fn activate_project_config_revision_row(
             worker_profile_json: &sidecars.worker_profile_json,
             project_code: &sidecars.project_code,
             project_description: &sidecars.project_description,
+        max_iterations: sidecars.max_iterations,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -686,6 +694,7 @@ pub(crate) async fn project_config_row_to_response(
         worker_profile_json: row.worker_profile_json,
         project_code: row.project_code,
         project_description: row.project_description,
+        max_iterations: row.max_iterations,
     }
 }
 
@@ -816,6 +825,12 @@ pub(crate) fn validate_project_config_payload(req: &UpsertProjectConfigRequest) 
     if let Some(ref wi) = req.worker_profile_json {
         pool::validate_worker_profile_json(wi)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
+    if let Some(Some(0)) = req.max_iterations {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "maxIterations must be >= 1",
+        ));
     }
     Ok(())
 }
@@ -1126,6 +1141,11 @@ pub(crate) async fn put_project_config(
         Some(incoming) => incoming.clone(),
         None => existing.worker_profile_json.clone(),
     };
+    let max_iterations = crate::max_iterations::parse_project_max_iterations_put(
+        req.max_iterations,
+        existing.max_iterations,
+    )
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let req_for_validate = UpsertProjectConfigRequest {
         content_rev: String::new(),
         rules_json: req.rules_json.clone(),
@@ -1141,6 +1161,7 @@ pub(crate) async fn put_project_config(
         extra_session_fields_json: Some(extra_session_fields_json.clone()),
         prompt_limits_json: Some(prompt_limits_json.clone()),
         worker_profile_json: Some(worker_profile_json.clone()),
+        max_iterations: Some(max_iterations),
     };
     validate_project_config_payload(&req_for_validate)?;
     preflight_plugin_api::validate_solve_preflight_plugin_refs(
@@ -1180,6 +1201,7 @@ pub(crate) async fn put_project_config(
         worker_profile_json: &worker_profile_json,
         project_code: &existing.project_code,
         project_description: &existing.project_description,
+        max_iterations,
     };
     state
         .session_db
@@ -1297,6 +1319,7 @@ pub(crate) async fn commit_project_config_draft(
             worker_profile_json: row.worker_profile_json.clone(),
             project_code: row.project_code.clone(),
             project_description: row.project_description.clone(),
+            max_iterations: row.max_iterations,
         },
     )
     .await
@@ -1460,5 +1483,39 @@ pub(crate) async fn delete_project_config_version(
         content_rev: content_rev.to_string(),
         deleted: true,
     }))
+}
+
+#[cfg(test)]
+mod max_iterations_project_response_tests {
+    use super::*;
+
+    #[test]
+    fn project_response_serializes_max_iterations() {
+        let response = ProjectConfigResponse {
+            proj_id: 1,
+            content_rev: "rev".into(),
+            stable_content_rev: Some("rev".into()),
+            draft_open: false,
+            updated_at_ms: 0,
+            rules_json: json!([]),
+            mcp_servers_json: json!({}),
+            skills_sources_json: json!([]),
+            skills_json: json!([]),
+            allowed_tools_json: json!([]),
+            claude_md: None,
+            git_sync_json: json!({}),
+            solve_preflight_json: json!({"kind": "none"}),
+            solve_orchestration_json: json!({"kind": "single_turn"}),
+            language_pipeline_json: json!({}),
+            extra_session_fields_json: json!([]),
+            prompt_limits_json: json!({}),
+            worker_profile_json: json!({"mode": "strict"}),
+            project_code: String::new(),
+            project_description: String::new(),
+            max_iterations: Some(5),
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["maxIterations"], 5);
+    }
 }
 

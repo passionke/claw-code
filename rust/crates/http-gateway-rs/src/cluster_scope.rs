@@ -15,16 +15,16 @@
 //! **Tier A — cluster-native (PK includes `cluster_id`)**
 //! - `gateway_llm_cluster_model`, `gateway_llm_cluster_revision`, `gateway_llm_cluster_state`
 //!
-//! **Tier B — project/session tree (column + index; legacy PK unchanged until phase 2)**
+//! **Tier B — project/session tree (PK/uniqueness includes `cluster_id`)**
 //! - Session: `gateway_sessions`, `gateway_turns`, `gateway_feedback`,
 //!   `cc_messages`, `gateway_session_artifacts`, `gateway_runtime_iterations`,
 //!   `gateway_conversation_translate`
 //! - Project: `project_config`, `project_config_revision`, `project_entity_revision`
 //! - Infra: `project_e2b_worker`, `worker_rotation_log`
 //!
-//! **Tier C — cluster-tagged operational**
+//! **Tier C — cluster-tagged operational (PK includes `cluster_id`)**
 //! - `claw_pool` — pool registration; each row belongs to one gateway cluster
-//! - `gateway_global_settings` — per-cluster row (phase 2: PK `cluster_id`; today `settings_json` + LLM cluster tables)
+//! - `gateway_global_settings` — per-cluster row (`settings_json` + LLM cluster tables)
 //!
 //! **Tier D — global (no `cluster_id`)**
 //! - `preflight_plugin` — installable plugin catalog, shared across clusters
@@ -34,7 +34,7 @@
 //!
 //! - [`GatewaySessionDb`] binds `cluster_id` at connect from [`crate::cluster_identity::gateway_cluster_id`].
 //! - All reads/writes on tier B/C tables MUST filter or set `cluster_id = db.cluster_id()`.
-//! - Legacy rows with `cluster_id IS NULL` are invisible to the gateway (not backfilled across clusters).
+//! - Rows that cannot inherit a cluster during migration are isolated under `__legacy__`.
 //! - NAS paths: `{cluster_id}/proj_{proj_id}/sessions/{segment}` — backfill derives cluster from prefix.
 
 use sqlx::Error as SqlxError;

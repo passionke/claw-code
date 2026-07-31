@@ -144,6 +144,9 @@ pub(crate) struct SolveRequest {
     pub(crate) extra_session: Option<Value>,
     #[serde(rename = "allowedTools")]
     pub(crate) allowed_tools: Option<Vec<String>>,
+    /// Per-turn agent loop max iterations (overrides project / cluster). Author: kejiqing
+    #[serde(default, rename = "maxIterations")]
+    pub(crate) max_iterations: Option<usize>,
     /// Session-relative attachments (uploaded via `/v1/sessions/{id}/files`). Author: kejiqing
     #[serde(default, rename = "attachments")]
     pub(crate) attachments: Option<Vec<gateway_solve_turn::SolveAttachment>>,

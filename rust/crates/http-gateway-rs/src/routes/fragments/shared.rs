@@ -89,6 +89,7 @@ pub(crate) fn build_turn_entry_params_json(
         "turnId": turn_id,
         "model": req.model,
         "timeoutSeconds": req.timeout_seconds,
+        "maxIterations": req.max_iterations,
         "extraSession": req.extra_session,
         "allowedTools": req.allowed_tools,
         "attachments": req.attachments,
@@ -658,5 +659,37 @@ pub(crate) fn resolve_effective_allowed_tools_for_ds(
 ) -> Result<Vec<String>, ApiError> {
     project_tools::resolve_effective_allowed_tools_for_ds(project_selected, requested_allowed_tools)
         .map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))
+}
+
+#[cfg(test)]
+mod max_iterations_entry_params_tests {
+    use super::*;
+
+    fn request(max_iterations: Option<usize>) -> SolveRequest {
+        SolveRequest {
+            proj_id: 1,
+            user_prompt: "test".into(),
+            session_id: None,
+            model: None,
+            timeout_seconds: None,
+            extra_session: None,
+            allowed_tools: None,
+            max_iterations,
+            attachments: None,
+        }
+    }
+
+    #[test]
+    fn entry_params_persists_request_max_iterations() {
+        let entry =
+            build_turn_entry_params_json(&request(Some(4)), "session-1", "T_1", None);
+        assert_eq!(entry["maxIterations"], 4);
+    }
+
+    #[test]
+    fn entry_params_keeps_unset_request_as_null() {
+        let entry = build_turn_entry_params_json(&request(None), "session-1", "T_1", None);
+        assert!(entry["maxIterations"].is_null());
+    }
 }
 

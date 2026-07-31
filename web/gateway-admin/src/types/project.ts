@@ -84,6 +84,8 @@ export interface ProjectConfig {
   promptLimitsJson?: PromptLimitsJson;
   /** Pool worker strict/relaxed (`project_config.worker_profile_json`). Author: kejiqing */
   workerProfileJson?: WorkerProfileJson;
+  /** Project default agent loop max iterations; null/omit = cluster CLAW_MAX_ITERATIONS. Author: kejiqing */
+  maxIterations?: number | null;
 }
 
 export interface SkillJsonItem {

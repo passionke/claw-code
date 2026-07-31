@@ -195,6 +195,7 @@ mod tests {
             worker_profile_json: json!({"mode": "strict"}),
             project_code: String::new(),
             project_description: String::new(),
+            max_iterations: None,
         };
         std::fs::create_dir_all(tmp.join(".claw")).unwrap();
         std::fs::write(

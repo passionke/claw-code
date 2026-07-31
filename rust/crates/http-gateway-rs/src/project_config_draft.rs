@@ -37,6 +37,7 @@ pub struct ProjectConfigSidecars {
     pub worker_profile_json: Value,
     pub project_code: String,
     pub project_description: String,
+    pub max_iterations: Option<usize>,
 }
 
 impl ProjectConfigSidecars {
@@ -52,6 +53,7 @@ impl ProjectConfigSidecars {
             worker_profile_json: row.worker_profile_json.clone(),
             project_code: row.project_code.clone(),
             project_description: row.project_description.clone(),
+            max_iterations: row.max_iterations,
         }
     }
 }
@@ -231,6 +233,7 @@ pub fn config_row_from_revision(
         worker_profile_json: sidecars.worker_profile_json,
         project_code: sidecars.project_code,
         project_description: sidecars.project_description,
+        max_iterations: sidecars.max_iterations,
     }
 }
 
@@ -263,6 +266,7 @@ pub fn upsert_from_row<'a>(
         worker_profile_json: &row.worker_profile_json,
         project_code: &row.project_code,
         project_description: &row.project_description,
+        max_iterations: row.max_iterations,
     }
 }
 
@@ -362,6 +366,7 @@ pub async fn ensure_draft(
         worker_profile_json: &row.worker_profile_json,
         project_code: &row.project_code,
         project_description: &row.project_description,
+        max_iterations: row.max_iterations,
     };
     db.upsert_project_config(upsert).await?;
     db.get_project_config(proj_id).await?.ok_or_else(|| {

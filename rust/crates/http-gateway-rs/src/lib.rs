@@ -16,6 +16,9 @@
     clippy::must_use_candidate
 )]
 
+/// Bump when an `include!` route fragment changes its wire contract. Author: kejiqing
+pub const ROUTE_FRAGMENT_CONTRACT_VERSION: u32 = 1;
+
 pub mod admin_mcp_http;
 pub mod admin_mcp_solve;
 pub mod biz_advice_report;
@@ -54,6 +57,7 @@ pub mod gateway_strict_landlock_settings;
 pub mod gateway_translate;
 pub mod live_report_audit;
 pub mod llm_probe;
+pub mod max_iterations;
 pub mod mcp_probe;
 pub mod oss_object_store;
 pub mod persistence;

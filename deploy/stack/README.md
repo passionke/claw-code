@@ -213,9 +213,30 @@ FC / e2b 设计与 env 契约见 `docs/http-gateway-container-pool.md`、`deploy
 | e2b worker 创建失败 | e2bserver 日志、NAS mount、`docs/e2b-nas-workspace.md` |
 | observe / clawTap **502**、Admin 等 observe-tap-up | `deploy/docs/e2b-observe-tap-troubleshoot.md`；`observe-tap-up --reset` |
 | 改 `.env` 不生效 | **`./deploy/stack/gateway.sh up`**（`--force-recreate`） |
-| 改了 `rust/` 网关逻辑仍像旧的 | **`./deploy/stack/gateway.sh pack-deploy`** |
+| 改了 `rust/` 网关逻辑仍像旧的 | 先按下文检查 `18088` 是否被宿主 debug 进程分流；确认请求命中容器后再执行 **`./deploy/stack/gateway.sh pack-deploy`** |
 
 联通性：`./deploy/stack/gateway.sh check`。
+
+### 3.1 `18088` 同时出现宿主机与容器监听
+
+macOS Podman 的 `gvproxy` 可能以 `tcp46 *:18088` 发布容器端口，同时宿主机旧的
+`rust/target/debug/http-gateway-rs` 仍监听 `tcp4 127.0.0.1:18088`。两者属于不同
+地址族/绑定地址，内核允许共存；此时 `curl http://127.0.0.1:18088` 会命中更具体的
+宿主机 IPv4 监听，而 `[::1]:18088` 或本机 LAN IPv4 可能命中容器，造成
+pack-deploy 已更新但健康检查、smoke 和 Admin 仍表现为旧代码。
+
+排查时同时核对监听者与响应身份：
+
+```bash
+lsof -nP -iTCP:18088 -sTCP:LISTEN
+curl -sS http://127.0.0.1:18088/healthz | jq '{workRoot,deployImageTag}'
+curl -g -sS 'http://[::1]:18088/healthz' | jq '{workRoot,deployImageTag}'
+```
+
+容器部署的 `workRoot` 应与 compose 配置一致（当前为 `/var/lib/claw/workspace`）。
+若 `127.0.0.1` 返回宿主开发目录（例如 `/tmp/claw-swagger-work`），应先正常终止对应
+debug 网关进程，再继续验证；不要把该现象归因为构建缓存，也不要通过重启 Podman
+machine 掩盖端口分流。
 
 ---
 

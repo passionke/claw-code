@@ -46,6 +46,7 @@ pub(crate) fn admin_mcp_input_to_solve_request(input: admin_mcp_solve::AdminMcpS
         timeout_seconds: input.timeout_seconds,
         extra_session: input.extra_session,
         allowed_tools: input.allowed_tools,
+        max_iterations: input.max_iterations,
         attachments: input.attachments,
     }
 }

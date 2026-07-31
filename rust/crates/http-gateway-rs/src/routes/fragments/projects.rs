@@ -1256,6 +1256,7 @@ pub(crate) async fn create_project(
             worker_profile_json: &pool::default_worker_profile_json(),
             project_code: &project_code,
             project_description: &project_description,
+        max_iterations: None,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
