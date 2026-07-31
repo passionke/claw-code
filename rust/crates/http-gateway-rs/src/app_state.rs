@@ -146,7 +146,6 @@ pub(crate) struct SolveRequest {
     pub(crate) allowed_tools: Option<Vec<String>>,
     /// Session-relative attachments (uploaded via `/v1/sessions/{id}/files`). Author: kejiqing
     #[serde(default, rename = "attachments")]
-    #[schema(value_type = Option<Vec<Object>>)]
     pub(crate) attachments: Option<Vec<gateway_solve_turn::SolveAttachment>>,
 }
 
@@ -268,7 +267,6 @@ pub(crate) struct TaskRecord {
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
-    #[schema(value_type = Vec<Object>)]
     pub(crate) progress_history: Vec<gateway_solve_turn::ProgressEvent>,
     /// `true` after first `report.delta` is observed (or terminal persisted report). Author: kejiqing
     #[serde(rename = "hasReport")]
@@ -279,7 +277,6 @@ pub(crate) struct TaskRecord {
     #[serde(rename = "planTitle", skip_serializing_if = "Option::is_none")]
     pub(crate) plan_title: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schema(value_type = Vec<Object>)]
     pub(crate) todos: Vec<gateway_solve_turn::TaskProgressTodo>,
     #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
     pub(crate) pool_id: Option<String>,

@@ -8,12 +8,14 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 /// One tool invocation for a user turn (jsonl order + optional progress timestamps).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnToolRecord {
     pub tool_use_id: String,
     #[serde(rename = "toolName")]
     pub name: String,
+    /// Open tool-arg bag (shape varies by tool). Author: kejiqing
+    #[schema(value_type = Object)]
     pub input: Value,
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

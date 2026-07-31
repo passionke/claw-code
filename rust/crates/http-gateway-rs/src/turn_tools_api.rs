@@ -13,7 +13,6 @@ pub struct TurnToolsResponse {
     pub turn_id: String,
     pub proj_id: i64,
     pub user_turn_index: i64,
-    #[schema(value_type = Vec<Object>)]
     pub tools: Vec<TurnToolRecord>,
 }
 

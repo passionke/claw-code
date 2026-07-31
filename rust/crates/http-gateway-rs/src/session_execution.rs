@@ -19,10 +19,8 @@ pub struct SessionExecutionResponse {
     pub session_home_rel: String,
     pub task: SessionExecutionTask,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Object)]
     pub progress: Option<TaskProgressFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schema(value_type = Vec<Object>)]
     pub progress_history: Vec<ProgressEvent>,
     pub queue: GatewayQueueSnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -38,7 +38,8 @@ Author: kejiqing
 
 | 文档 | 用途 |
 |------|------|
-| [`boundaries-claw-stack.md`](boundaries-claw-stack.md) | 组件职责、不变量、改哪里 |
+| [`boundaries-claw-stack.md`](boundaries-claw-stack.md) | 组件职责、不变量（含**对外 HTTP API 明确类型**）、改哪里 |
+| [`http-gateway-rs-docs-practice.md`](http-gateway-rs-docs-practice.md) | 网关文档实践：OpenAPI 类型推导、少用泛型 Object、PR checklist |
 | [`http-gateway-container-pool.md`](http-gateway-container-pool.md) | **e2b worker 编排**（solve 经 e2b，非宿主机 pool） |
 | [`e2b-nas-workspace.md`](e2b-nas-workspace.md) | NAS 路径、host bind、e2b 挂载契约 |
 | [`persistence-model.md`](persistence-model.md) | jsonl 运行时 vs `gateway_turns` 终态 |
@@ -67,6 +68,7 @@ Author: kejiqing
 |------|------|
 | [`http-gateway-rs-quickstart.md`](http-gateway-rs-quickstart.md) | API 速查 |
 | [`http-gateway-rs-api.md`](http-gateway-rs-api.md) | 接口详表 |
+| [`http-gateway-rs-docs-practice.md`](http-gateway-rs-docs-practice.md) | 对外契约类型 / OpenAPI 实践 |
 | [`deploy-ops-truth.md`](deploy-ops-truth.md) | 脚本实际行为（与 README 对照） |
 | [`project-config-model.md`](project-config-model.md) | PG `project_config` |
 | [`gateway-solve-preflight.md`](gateway-solve-preflight.md) | Solve preflight 插件化管道（`steps` / scope / SPI） |

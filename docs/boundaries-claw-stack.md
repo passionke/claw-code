@@ -45,13 +45,14 @@ Author: kejiqing
 6. **Solve preflight (per `ds_*`)**: `ds_<id>/home/.claw/solve-preflight.json` with ordered `kinds` (e.g. `["sqlbot_mcp_start"]`, compatible with legacy `kind`) → **first** `sessionId` turn only, after user text in jsonl, code-run preflight (`rust/crates/gateway-solve-turn/src/project_preflight.rs`). Table DDL: `ds_<id>/home/schema.md`, ro mount + system prompt (`GATEWAY_SCHEMA_MD_REL`).
 7. **claude-tap (LLM proxy)**: sidecar 或远程共享 tap；Gateway 注入 per-solve `OPENAI_BASE_URL`。Traces: `CLAW_TAP_TRACES_DIR` 或 NAS `tap-traces/`。
 8. **FC NAS workspace**: one logical NFS export root; Gateway mkdir/symlink on container `CLAW_WORK_ROOT`; e2b bind via `hostMountRoot` + relPath. **Do not** mix host path strings with container bind points — see **`docs/e2b-nas-workspace.md`**.
+9. **对外 HTTP API 明确类型（少泛型）**：Gateway 对外请求/响应 DTO 与 OpenAPI（`utoipa` `ToSchema` / `#[utoipa::path]`）必须用**明确结构类型与闭环枚举**表达契约。禁止为了省事把已有 Rust 结构压成 `Object`、`additionalProperties: true`，或用自由 `String` 冒充枚举。真正无固定形状的开放 JSON bag（如 `project_config` 的 `*Json`、工具 `input`、jsonl `trace_tail`）可保留 `Object`，但须在字段注释或 API 文档中写明「为何不能结构化」。OpenAPI **唯一来源**是 handler 注解 + DTO 类型；禁止维护第二份手写 schema。实践清单见 **`docs/http-gateway-rs-docs-practice.md`**。
 
 ## Where to change what
 
 | You want to… | Edit |
 | --- | --- |
 | e2b NAS layout, env, Mac podman / e2b bind | **`docs/e2b-nas-workspace.md`** + repo root `.env` (`CLAW_NAS_*`, `CLAW_E2B_*`) |
-| HTTP routes, timeout, inject MCP, 容器池、`SQLBOT_MCP_*`、`CLAW_DEFAULT_HTTP_MCP_*`、根 `.claw.json` | `rust/crates/http-gateway-rs/`（`main.rs`、`solve_pool.rs`、`pool/` 等） |
+| HTTP routes, timeout, inject MCP, OpenAPI DTO、`SQLBOT_MCP_*`、`CLAW_DEFAULT_HTTP_MCP_*`、根 `.claw.json` | `rust/crates/http-gateway-rs/`（`routes/`、`openapi.rs`、`solve_pool.rs`、`pool/` 等） |
 | Doris SQL guard / `doris_query` | `doris-mcp/src/` |
 | Remote→stdio wire | Your transport bridge（本仓库默认不内置） |
 | Claw tool naming / allowlist | `rust/crates/tools/` + env `CLAW_ALLOWED_TOOLS` + `project_config.allowed_tools_json` |

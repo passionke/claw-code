@@ -33,8 +33,7 @@ pub(crate) struct GatewayTurnSummaryJson {
     #[schema(value_type = Object)]
     extra_session: Option<Value>,
     #[serde(rename = "attachments", skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Object)]
-    attachments: Option<Value>,
+    attachments: Option<Vec<session_upload::SessionUploadedAttachment>>,
     #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
     pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]
@@ -58,32 +57,34 @@ pub(crate) struct ListSessionTurnsResponse {
     turns: Vec<GatewayTurnSummaryJson>,
 }
 
-pub(crate) fn sign_turn_attachments_for_response(attachments: Option<Value>) -> Option<Value> {
-    let mut atts = attachments?;
-    let arr = atts.as_array_mut()?;
+pub(crate) fn sign_turn_attachments_for_response(
+    attachments: Option<Value>,
+) -> Option<Vec<session_upload::SessionUploadedAttachment>> {
+    let atts = attachments?;
+    let arr = atts.as_array()?;
     let oss = crate::oss_object_store::OssConfig::from_env();
-    if !oss.enabled() {
-        return Some(atts);
-    }
     let now = chrono::Utc::now();
     let ttl = oss.signed_url_ttl_secs;
-    for item in arr.iter_mut() {
-        let Some(obj) = item.as_object_mut() else {
-            continue;
-        };
-        let Some(key) = obj
-            .get("ossKey")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        else {
-            continue;
-        };
-        if let Ok(url) = oss.presign_get(key, ttl, now) {
-            obj.insert("ossSignedUrl".into(), Value::String(url));
-        }
-    }
-    Some(atts)
+    let out: Vec<_> = arr
+        .iter()
+        .filter_map(|item| {
+            let mut att = session_upload::SessionUploadedAttachment::from_json_value(item)?;
+            if oss.enabled() {
+                if let Some(key) = att
+                    .oss_key
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    if let Ok(url) = oss.presign_get(key, ttl, now) {
+                        att.oss_signed_url = Some(url);
+                    }
+                }
+            }
+            Some(att)
+        })
+        .collect();
+    Some(out)
 }
 
 #[utoipa::path(

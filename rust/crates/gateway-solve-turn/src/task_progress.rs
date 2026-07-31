@@ -63,7 +63,7 @@ fn truncate_to_max_chars(s: &str, max: usize) -> String {
 }
 
 /// Append-only factual timeline entry (not todo snapshots). Author: kejiqing
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgressEvent {
     pub kind: String,
@@ -98,7 +98,7 @@ pub fn should_emit_tool_progress_event(
     is_registered_runtime_mcp && is_mcp_query_progress_tool(tool_name)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskProgressTodo {
     pub id: String,
@@ -106,7 +106,7 @@ pub struct TaskProgressTodo {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskProgressFile {
     pub version: u32,
