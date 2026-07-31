@@ -326,11 +326,15 @@ fn summarize_block(block: &ContentBlock) -> String {
             let label = name.as_deref().unwrap_or(path.as_str());
             format!("image {label} ({mime})")
         }
-        ContentBlock::Video { path, mime, name, .. } => {
+        ContentBlock::Video {
+            path, mime, name, ..
+        } => {
             let label = name.as_deref().unwrap_or(path.as_str());
             format!("video {label} ({mime})")
         }
-        ContentBlock::Audio { path, mime, name, .. } => {
+        ContentBlock::Audio {
+            path, mime, name, ..
+        } => {
             let label = name.as_deref().unwrap_or(path.as_str());
             format!("audio {label} ({mime})")
         }
@@ -473,10 +477,12 @@ fn estimate_message_tokens(message: &ConversationMessage) -> usize {
                 text.len() / 4 + 1
             }
             ContentBlock::Image { path, mime, name }
-            | ContentBlock::Video { path, mime, name, .. }
-            | ContentBlock::Audio { path, mime, name, .. } => {
-                (path.len() + mime.len() + name.as_ref().map_or(0, String::len)) / 4 + 1
+            | ContentBlock::Video {
+                path, mime, name, ..
             }
+            | ContentBlock::Audio {
+                path, mime, name, ..
+            } => (path.len() + mime.len() + name.as_ref().map_or(0, String::len)) / 4 + 1,
             ContentBlock::ToolUse { name, input, .. } => (name.len() + input.len()) / 4 + 1,
             ContentBlock::ToolResult {
                 tool_name, output, ..

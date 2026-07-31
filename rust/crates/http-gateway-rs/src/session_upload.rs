@@ -103,7 +103,10 @@ pub fn classify_attachment(mime: &str, name: &str) -> Result<SolveAttachmentKind
         return Ok(SolveAttachmentKind::Video);
     }
     if mime.starts_with("audio/")
-        || matches!(ext.as_str(), "wav" | "mp3" | "m4a" | "ogg" | "flac" | "aac" | "opus")
+        || matches!(
+            ext.as_str(),
+            "wav" | "mp3" | "m4a" | "ogg" | "flac" | "aac" | "opus"
+        )
     {
         return Ok(SolveAttachmentKind::Audio);
     }

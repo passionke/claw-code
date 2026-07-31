@@ -7692,7 +7692,10 @@ fn render_session_markdown(session: &Session, session_id: &str, session_path: &P
                     url,
                 } => {
                     let label = name.as_deref().unwrap_or(path.as_str());
-                    let url_note = url.as_deref().map(|u| format!(", url `{u}`")).unwrap_or_default();
+                    let url_note = url
+                        .as_deref()
+                        .map(|u| format!(", url `{u}`"))
+                        .unwrap_or_default();
                     lines.push(format!(
                         "**Video** `{label}` _(path `{path}`, {mime}{url_note})_"
                     ));
@@ -7705,7 +7708,10 @@ fn render_session_markdown(session: &Session, session_id: &str, session_path: &P
                     url,
                 } => {
                     let label = name.as_deref().unwrap_or(path.as_str());
-                    let url_note = url.as_deref().map(|u| format!(", url `{u}`")).unwrap_or_default();
+                    let url_note = url
+                        .as_deref()
+                        .map(|u| format!(", url `{u}`"))
+                        .unwrap_or_default();
                     lines.push(format!(
                         "**Audio** `{label}` _(path `{path}`, {mime}{url_note})_"
                     ));
