@@ -48,7 +48,7 @@ use telemetry::{JsonlTelemetrySink, SessionTracer};
 use tokio::sync::Semaphore;
 use tools::{
     execute_agent_with_mcp_context_and_spawn, execute_mcp_tool_with_meta, execute_tool,
-    initialize_mcp_bridge, mvp_tool_specs, AgentInput,
+    initialize_mcp_bridge, mvp_tool_specs, AgentInput, AGENT_STORE_REL,
 };
 
 pub mod agent_orchestration;
@@ -713,6 +713,7 @@ impl DirectToolExecutorInner {
             let bus = crate::multi_agent::EventBus::new(&self.session_home);
             let out = execute_agent_with_mcp_context_and_spawn(
                 agent_input,
+                &self.session_home.join(AGENT_STORE_REL),
                 Some(self.mcp_context.clone()),
                 Some(self.turn_model.as_str()),
                 |job| crate::agent_orchestration::spawn_gateway_agent_with_events(&bus, job),

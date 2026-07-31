@@ -3664,27 +3664,52 @@ const DEFAULT_AGENT_MODEL: &str = "claude-opus-4-6";
 const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
+/// Session-scoped agent artifact directory under session home / work root. Author: kejiqing
+pub const AGENT_STORE_REL: &str = ".claw/agents";
+
+/// Default store for CLI/REPL: prefer `CLAW_GATEWAY_WORK_ROOT/.claw/agents` (OVS/e2b), else `cwd/.claw/agents`. Author: kejiqing
+fn default_agent_store_dir() -> Result<std::path::PathBuf, String> {
+    if let Ok(root) = std::env::var("CLAW_GATEWAY_WORK_ROOT") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return Ok(std::path::PathBuf::from(trimmed).join(AGENT_STORE_REL));
+        }
+    }
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    Ok(cwd.join(AGENT_STORE_REL))
+}
+
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
-    execute_agent_with_mcp_context(input, None, None)
+    let store_dir = default_agent_store_dir()?;
+    execute_agent_with_mcp_context(input, &store_dir, None, None)
 }
 
 /// Spawn a sub-agent with optional MCP `_meta.extra_session` and parent turn model inheritance. Author: kejiqing
 pub(crate) fn execute_agent_with_mcp_context(
     input: AgentInput,
+    store_dir: &std::path::Path,
     mcp_call_context: Option<McpCallContext>,
     parent_turn_model: Option<&str>,
 ) -> Result<AgentOutput, String> {
-    execute_agent_with_spawn(input, mcp_call_context, parent_turn_model, spawn_agent_job)
+    execute_agent_with_spawn(
+        input,
+        store_dir,
+        mcp_call_context,
+        parent_turn_model,
+        spawn_agent_job,
+    )
 }
 
 /// Like [`execute_agent_with_mcp_context`], returning pretty-printed JSON for tool executors. Author: kejiqing
 pub fn execute_agent_with_mcp_context_json(
     input: AgentInput,
+    store_dir: &std::path::Path,
     mcp_call_context: Option<McpCallContext>,
     parent_turn_model: Option<&str>,
 ) -> Result<String, String> {
     to_pretty_json(execute_agent_with_mcp_context(
         input,
+        store_dir,
         mcp_call_context,
         parent_turn_model,
     )?)
@@ -3693,6 +3718,7 @@ pub fn execute_agent_with_mcp_context_json(
 /// Gateway solve: custom spawn (e.g. orchestration `agent_started` before background thread). Author: kejiqing
 pub fn execute_agent_with_mcp_context_and_spawn<F>(
     input: AgentInput,
+    store_dir: &std::path::Path,
     mcp_call_context: Option<McpCallContext>,
     parent_turn_model: Option<&str>,
     spawn_fn: F,
@@ -3700,11 +3726,12 @@ pub fn execute_agent_with_mcp_context_and_spawn<F>(
 where
     F: FnOnce(AgentJob) -> Result<(), String>,
 {
-    execute_agent_with_spawn(input, mcp_call_context, parent_turn_model, spawn_fn)
+    execute_agent_with_spawn(input, store_dir, mcp_call_context, parent_turn_model, spawn_fn)
 }
 
 fn execute_agent_with_spawn<F>(
     input: AgentInput,
+    store_dir: &std::path::Path,
     mcp_call_context: Option<McpCallContext>,
     parent_turn_model: Option<&str>,
     spawn_fn: F,
@@ -3720,7 +3747,7 @@ where
     }
 
     let agent_id = make_agent_id();
-    let output_dir = agent_store_dir()?;
+    let output_dir = store_dir.to_path_buf();
     std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
     let output_file = output_dir.join(format!("{agent_id}.md"));
     let manifest_file = output_dir.join(format!("{agent_id}.json"));
@@ -5244,17 +5271,6 @@ fn canonical_tool_token(value: &str) -> String {
     canonical
 }
 
-fn agent_store_dir() -> Result<std::path::PathBuf, String> {
-    if let Ok(path) = std::env::var("CLAWD_AGENT_STORE") {
-        return Ok(std::path::PathBuf::from(path));
-    }
-    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    if let Some(workspace_root) = cwd.ancestors().nth(2) {
-        return Ok(workspace_root.join(".clawd-agents"));
-    }
-    Ok(cwd.join(".clawd-agents"))
-}
-
 fn make_agent_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -6385,12 +6401,12 @@ mod tests {
 
     use super::{
         agent_permission_policy, allowed_tools_for_subagent, classify_lane_failure,
-        derive_agent_state, execute_agent_with_spawn, execute_tool, extract_recovery_outcome,
-        final_assistant_text, global_cron_registry, maybe_commit_provenance, mvp_tool_specs,
-        permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
-        resolve_agent_model, run_task_packet, AgentInput, AgentJob, GlobalToolRegistry,
-        LaneEventName, LaneFailureClass, ProviderRuntimeClient, SubagentToolExecutor,
-        DEFAULT_AGENT_MODEL,
+        default_agent_store_dir, derive_agent_state, execute_agent_with_spawn, execute_tool,
+        extract_recovery_outcome, final_assistant_text, global_cron_registry,
+        maybe_commit_provenance, mvp_tool_specs, permission_mode_from_plugin,
+        persist_agent_terminal_state, push_output_block, resolve_agent_model, run_task_packet,
+        AgentInput, AgentJob, GlobalToolRegistry, LaneEventName, LaneFailureClass,
+        ProviderRuntimeClient, SubagentToolExecutor, AGENT_STORE_REL, DEFAULT_AGENT_MODEL,
     };
     use api::OutputContentBlock;
     use runtime::ProviderFallbackConfig;
@@ -8049,7 +8065,6 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-store");
-        std::env::set_var("CLAWD_AGENT_STORE", &dir);
         let captured = Arc::new(Mutex::new(None::<AgentJob>));
         let captured_for_spawn = Arc::clone(&captured);
 
@@ -8061,6 +8076,7 @@ mod tests {
                 name: Some("ship-audit".to_string()),
                 model: None,
             },
+            &dir,
             None,
             None,
             move |job| {
@@ -8071,7 +8087,6 @@ mod tests {
             },
         )
         .expect("Agent should succeed");
-        std::env::remove_var("CLAWD_AGENT_STORE");
 
         assert_eq!(manifest.name, "ship-audit");
         assert_eq!(manifest.subagent_type.as_deref(), Some("Explore"));
@@ -8101,6 +8116,7 @@ mod tests {
         assert!(!captured_job.allowed_tools.contains("Agent"));
         assert!(captured_job.mcp_call_context.is_none());
 
+        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", &dir);
         let normalized = execute_tool(
             "Agent",
             &json!({
@@ -8125,6 +8141,7 @@ mod tests {
         .expect("Agent should normalize explicit names");
         let named_output: serde_json::Value = serde_json::from_str(&named).expect("valid json");
         assert_eq!(named_output["name"], "ship-audit");
+        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -8135,7 +8152,6 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-runner");
-        std::env::set_var("CLAWD_AGENT_STORE", &dir);
 
         let completed = execute_agent_with_spawn(
             AgentInput {
@@ -8145,6 +8161,7 @@ mod tests {
                 name: Some("complete-task".to_string()),
                 model: Some("claude-sonnet-4-6".to_string()),
             },
+            &dir,
             None,
             None,
             |job| {
@@ -8204,6 +8221,7 @@ mod tests {
                 name: Some("fail-task".to_string()),
                 model: None,
             },
+            &dir,
             None,
             None,
             |job| {
@@ -8253,6 +8271,7 @@ mod tests {
                 name: Some("summary-floor".to_string()),
                 model: None,
             },
+            &dir,
             None,
             None,
             |job| {
@@ -8300,6 +8319,7 @@ mod tests {
                 name: Some("recovery-lane".to_string()),
                 model: None,
             },
+            &dir,
             None,
             None,
             |job| {
@@ -8350,6 +8370,7 @@ mod tests {
                 name: Some("review-lane".to_string()),
                 model: None,
             },
+            &dir,
             None,
             None,
             |job| {
@@ -8392,6 +8413,7 @@ mod tests {
                 name: Some("backlog-scan".to_string()),
                 model: None,
             },
+            &dir,
             None,
             None,
             |job| {
@@ -8440,6 +8462,7 @@ mod tests {
                 name: Some("artifact-lane".to_string()),
                 model: None,
             },
+            &dir,
             None,
             None,
             |job| {
@@ -8512,6 +8535,7 @@ mod tests {
                 name: Some("cron-closeout".to_string()),
                 model: None,
             },
+            &dir,
             None,
             None,
             |job| {
@@ -8555,6 +8579,7 @@ mod tests {
                 name: Some("spawn-error".to_string()),
                 model: None,
             },
+            &dir,
             None,
             None,
             |_| Err(String::from("thread creation failed")),
@@ -8582,8 +8607,6 @@ mod tests {
             "infra"
         );
         assert_eq!(spawn_error_manifest_json["derivedState"], "truly_idle");
-
-        std::env::remove_var("CLAWD_AGENT_STORE");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -8787,7 +8810,6 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-parent-model");
-        std::env::set_var("CLAWD_AGENT_STORE", &dir);
         let captured = Arc::new(Mutex::new(None::<AgentJob>));
         let captured_for_spawn = Arc::clone(&captured);
 
@@ -8799,6 +8821,7 @@ mod tests {
                 name: None,
                 model: None,
             },
+            &dir,
             None,
             Some("openai/deepseek-v4-pro"),
             move |job| {
@@ -8809,7 +8832,6 @@ mod tests {
             },
         )
         .expect("Agent should succeed");
-        std::env::remove_var("CLAWD_AGENT_STORE");
 
         assert_eq!(manifest.model.as_deref(), Some("openai/deepseek-v4-pro"));
         let _ = std::fs::remove_dir_all(dir);
@@ -8821,7 +8843,6 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-mcp-ctx");
-        std::env::set_var("CLAWD_AGENT_STORE", &dir);
         let captured = Arc::new(Mutex::new(None::<AgentJob>));
         let captured_for_spawn = Arc::clone(&captured);
         let ctx = McpCallContext::new(
@@ -8839,6 +8860,7 @@ mod tests {
                 name: None,
                 model: None,
             },
+            &dir,
             Some(ctx.clone()),
             None,
             move |job| {
@@ -8849,7 +8871,6 @@ mod tests {
             },
         )
         .expect("Agent should succeed");
-        std::env::remove_var("CLAWD_AGENT_STORE");
 
         let job = captured
             .lock()
@@ -8865,6 +8886,50 @@ mod tests {
             meta["extra_session"][CLAW_EXTRA_SESSION_TURN_ID],
             "T_parent"
         );
+    }
+
+    #[test]
+    fn default_agent_store_dir_prefers_gateway_work_root() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let work = temp_path("agent-work-root");
+        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", &work);
+        let store = default_agent_store_dir().expect("default store");
+        assert_eq!(store, work.join(AGENT_STORE_REL));
+        assert!(!store.starts_with("/.claw"));
+        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
+        let cwd_store = default_agent_store_dir().expect("cwd store");
+        let cwd = std::env::current_dir().expect("cwd");
+        assert_eq!(cwd_store, cwd.join(AGENT_STORE_REL));
+        assert_ne!(cwd_store, PathBuf::from("/").join(AGENT_STORE_REL));
+    }
+
+    #[test]
+    fn execute_agent_with_spawn_uses_explicit_store_dir() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_path("agent-explicit-store");
+        let manifest = execute_agent_with_spawn(
+            AgentInput {
+                description: "explicit store".to_string(),
+                prompt: "write here".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: None,
+                model: None,
+            },
+            &dir,
+            None,
+            None,
+            |_| Ok(()),
+        )
+        .expect("spawn");
+        assert!(
+            PathBuf::from(&manifest.manifest_file).starts_with(&dir),
+            "manifest must live under explicit store_dir"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
