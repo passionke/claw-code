@@ -608,6 +608,8 @@ struct DirectToolExecutorInner {
     mcp_context: GatewayMcpCallContext,
     /// Parent solve turn model; sub-agents inherit when `Agent` omits `model`. Author: kejiqing
     turn_model: String,
+    /// Parent turn max iterations; sub-agents inherit verbatim. Author: kejiqing
+    turn_max_iterations: usize,
     allowed_tools: Vec<String>,
     runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
     runtime_mcp_tool_names: HashSet<String>,
@@ -627,6 +629,7 @@ impl DirectToolExecutorInner {
         session_home: PathBuf,
         mcp_context: GatewayMcpCallContext,
         turn_model: String,
+        turn_max_iterations: usize,
         allowed_tools: Vec<String>,
         runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
         runtime_mcp_tool_names: HashSet<String>,
@@ -640,6 +643,7 @@ impl DirectToolExecutorInner {
             session_home,
             mcp_context,
             turn_model,
+            turn_max_iterations,
             allowed_tools,
             runtime_mcp_manager,
             runtime_mcp_tool_names,
@@ -714,12 +718,14 @@ impl DirectToolExecutorInner {
                 .map_err(|e| ToolError::new(format!("invalid Agent tool JSON: {e}")))?;
             let run_in_background = agent_input.run_in_background.unwrap_or(false);
             let bus = crate::multi_agent::EventBus::new(&self.session_home);
+            let sub_agent_max_iterations = self.turn_max_iterations;
             let out = execute_agent_with_mcp_context_and_spawn(
                 agent_input,
                 &self.session_home.join(AGENT_STORE_REL),
                 Some(self.mcp_context.clone()),
                 Some(self.turn_model.as_str()),
                 |job| {
+                    let job = job.with_max_iterations(sub_agent_max_iterations);
                     if run_in_background {
                         crate::agent_orchestration::spawn_gateway_agent_with_events(&bus, job)?;
                         Ok(None)
@@ -855,6 +861,7 @@ impl DirectToolExecutor {
         session_home: PathBuf,
         mcp_context: GatewayMcpCallContext,
         turn_model: String,
+        turn_max_iterations: usize,
         allowed_tools: Vec<String>,
         runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
         runtime_mcp_tool_names: HashSet<String>,
@@ -869,6 +876,7 @@ impl DirectToolExecutor {
                 session_home,
                 mcp_context,
                 turn_model,
+                turn_max_iterations,
                 allowed_tools,
                 runtime_mcp_manager,
                 runtime_mcp_tool_names,
@@ -884,6 +892,12 @@ impl DirectToolExecutor {
     #[must_use]
     pub fn turn_timing(&self) -> Option<Arc<SolveTimingRecorder>> {
         self.inner.timing.clone()
+    }
+
+    /// Parent turn max iterations inherited by `Agent` sub-jobs. Author: kejiqing
+    #[must_use]
+    pub fn turn_max_iterations(&self) -> usize {
+        self.inner.turn_max_iterations
     }
 
     /// Normalized `extraSession` for this solve turn (`resolve_gateway_mcp_call_context`). Author: kejiqing
@@ -951,6 +965,7 @@ impl DirectToolExecutor {
                 session_home: self.inner.session_home.clone(),
                 mcp_context: self.inner.mcp_context.clone(),
                 turn_model: self.inner.turn_model.clone(),
+                turn_max_iterations: self.inner.turn_max_iterations,
                 allowed_tools,
                 runtime_mcp_manager: self.inner.runtime_mcp_manager.clone(),
                 runtime_mcp_tool_names: self.inner.runtime_mcp_tool_names.clone(),
@@ -1529,6 +1544,7 @@ pub fn run_gateway_solve_turn(
         work_dir.to_path_buf(),
         mcp,
         effective_model.clone(),
+        max_iterations,
         allowed_tools,
         runtime_mcp_manager,
         runtime_mcp_tool_names,
@@ -1997,5 +2013,42 @@ mod direct_api_client_tool_tests {
         let out = dedupe_tool_definitions_by_name(tools);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].name, REPORT_PROGRESS_TOOL_NAME);
+    }
+}
+
+#[cfg(test)]
+mod turn_max_iterations_inheritance_tests {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    use runtime::McpCallContext;
+
+    use super::DirectToolExecutor;
+
+    #[test]
+    fn clone_with_allowed_tools_preserves_turn_max_iterations() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let _enter = rt.enter();
+        let mcp = McpCallContext::new("sess", "T_1", "req", None);
+        let exec = DirectToolExecutor::new(
+            PathBuf::from("/tmp/claw-turn-max-iter-test"),
+            mcp,
+            "openai/test".to_string(),
+            1024,
+            vec![],
+            None,
+            HashSet::new(),
+            HashSet::new(),
+            HashSet::new(),
+            None,
+            None,
+            tokio::runtime::Handle::current(),
+        );
+        assert_eq!(exec.turn_max_iterations(), 1024);
+        let cloned = exec.clone_with_allowed_tools(vec!["read_file".to_string()]);
+        assert_eq!(cloned.turn_max_iterations(), 1024);
     }
 }

@@ -34,7 +34,7 @@ pub fn run_multi_agent_solve_turn(
     _timeout_seconds: u64,
     mcp: GatewayMcpCallContext,
     allowed_tools: Vec<String>,
-    _max_iterations: usize,
+    max_iterations: usize,
     orch: SolveOrchestrationConfig,
 ) -> Result<(i32, String, Option<serde_json::Value>), GatewaySolveTurnError> {
     let clawcode_session_id = mcp.clawcode_session_id();
@@ -115,6 +115,7 @@ pub fn run_multi_agent_solve_turn(
         work_dir.to_path_buf(),
         mcp.clone(),
         effective_model.clone(),
+        max_iterations,
         allowed_tools.clone(),
         runtime_mcp_manager.clone(),
         runtime_mcp_tool_names.clone(),
