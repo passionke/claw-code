@@ -138,6 +138,8 @@ pub async fn load_cluster_llm_store(
                 base_model_url: r.base_model_url.clone(),
                 model_name: r.model_name.clone(),
                 supports_vision: false,
+                supports_video: false,
+                supports_audio: false,
                 current_rev: r.current_rev.clone(),
                 created_at_ms: r.created_at_ms,
                 updated_at_ms: r.updated_at_ms,

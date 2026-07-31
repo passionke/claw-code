@@ -183,23 +183,28 @@ async fn llm_entry_to_public(
     } else {
         entry.current_rev.clone()
     };
-    let (name, base_model_url, model_name, supports_vision) = match db
-        .get_llm_project_revision(cluster_id, proj_id, &entry.id, &current_rev)
-        .await?
-    {
-        Some(row) => (
-            row.name,
-            row.base_model_url,
-            row.model_name,
-            row.supports_vision,
-        ),
-        None => (
-            entry.name.clone(),
-            entry.base_model_url.clone(),
-            entry.model_name.clone(),
-            entry.supports_vision,
-        ),
-    };
+    let (name, base_model_url, model_name, supports_vision, supports_video, supports_audio) =
+        match db
+            .get_llm_project_revision(cluster_id, proj_id, &entry.id, &current_rev)
+            .await?
+        {
+            Some(row) => (
+                row.name,
+                row.base_model_url,
+                row.model_name,
+                row.supports_vision,
+                row.supports_video,
+                row.supports_audio,
+            ),
+            None => (
+                entry.name.clone(),
+                entry.base_model_url.clone(),
+                entry.model_name.clone(),
+                entry.supports_vision,
+                entry.supports_video,
+                entry.supports_audio,
+            ),
+        };
     let is_active_model = !store.active_id.is_empty() && store.active_id == entry.id;
     Ok(LlmModelPublic {
         id: entry.id.clone(),
@@ -207,6 +212,8 @@ async fn llm_entry_to_public(
         base_model_url,
         model_name,
         supports_vision,
+        supports_video,
+        supports_audio,
         current_rev: current_rev.clone(),
         api_key_set: llm_api_key_for(store, &entry.id, &current_rev).is_some(),
         active: is_active_model,
@@ -258,6 +265,8 @@ pub async fn load_active_project_llm_runtime(
         model_name: row.model_name,
         api_key,
         supports_vision: row.supports_vision,
+        supports_video: row.supports_video,
+        supports_audio: row.supports_audio,
         applied_at_ms: store.active_applied_at_ms,
     }))
 }
@@ -333,6 +342,8 @@ pub async fn load_llm_runtime_for_project_model_id(
         model_name: row.model_name,
         api_key,
         supports_vision: row.supports_vision,
+        supports_video: row.supports_video,
+        supports_audio: row.supports_audio,
         applied_at_ms: None,
     })
 }
@@ -445,6 +456,8 @@ pub async fn upsert_project_llm_model(
         base_model_url: base.clone(),
         model_name: model.clone(),
         supports_vision: input.supports_vision,
+        supports_video: input.supports_video,
+        supports_audio: input.supports_audio,
         note: normalize_revision_note(input.note),
     };
     db.upsert_llm_project_revision(&row)
@@ -460,6 +473,8 @@ pub async fn upsert_project_llm_model(
         entry.base_model_url = base.clone();
         entry.model_name = model.clone();
         entry.supports_vision = input.supports_vision;
+        entry.supports_video = input.supports_video;
+        entry.supports_audio = input.supports_audio;
         entry.current_rev = rev.clone();
         entry.updated_at_ms = now;
     } else {
@@ -469,6 +484,8 @@ pub async fn upsert_project_llm_model(
             base_model_url: base,
             model_name: model,
             supports_vision: input.supports_vision,
+            supports_video: input.supports_video,
+            supports_audio: input.supports_audio,
             current_rev: rev.clone(),
             created_at_ms: now,
             updated_at_ms: now,

@@ -40,6 +40,20 @@ pub enum ContentBlock {
         mime: String,
         name: Option<String>,
     },
+    /// Video reference; prefer `url` (presigned OSS) for model wire. Author: kejiqing
+    Video {
+        path: String,
+        mime: String,
+        name: Option<String>,
+        url: Option<String>,
+    },
+    /// Audio reference; prefer `url` (presigned OSS) for model wire. Author: kejiqing
+    Audio {
+        path: String,
+        mime: String,
+        name: Option<String>,
+        url: Option<String>,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -334,7 +348,9 @@ impl Session {
                     }
                     ContentBlock::Text { .. }
                     | ContentBlock::ReasoningContent { .. }
-                    | ContentBlock::Image { .. } => {}
+                    | ContentBlock::Image { .. }
+                    | ContentBlock::Video { .. }
+                    | ContentBlock::Audio { .. } => {}
                 }
             }
         }
@@ -887,6 +903,38 @@ impl ContentBlock {
                     object.insert("name".to_string(), JsonValue::String(name.clone()));
                 }
             }
+            Self::Video {
+                path,
+                mime,
+                name,
+                url,
+            } => {
+                object.insert("type".to_string(), JsonValue::String("video".to_string()));
+                object.insert("path".to_string(), JsonValue::String(path.clone()));
+                object.insert("mime".to_string(), JsonValue::String(mime.clone()));
+                if let Some(name) = name {
+                    object.insert("name".to_string(), JsonValue::String(name.clone()));
+                }
+                if let Some(url) = url {
+                    object.insert("url".to_string(), JsonValue::String(url.clone()));
+                }
+            }
+            Self::Audio {
+                path,
+                mime,
+                name,
+                url,
+            } => {
+                object.insert("type".to_string(), JsonValue::String("audio".to_string()));
+                object.insert("path".to_string(), JsonValue::String(path.clone()));
+                object.insert("mime".to_string(), JsonValue::String(mime.clone()));
+                if let Some(name) = name {
+                    object.insert("name".to_string(), JsonValue::String(name.clone()));
+                }
+                if let Some(url) = url {
+                    object.insert("url".to_string(), JsonValue::String(url.clone()));
+                }
+            }
             Self::ToolResult {
                 tool_use_id,
                 tool_name,
@@ -932,6 +980,30 @@ impl ContentBlock {
                 mime: required_string(object, "mime")?,
                 name: object
                     .get("name")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string),
+            }),
+            "video" => Ok(Self::Video {
+                path: required_string(object, "path")?,
+                mime: required_string(object, "mime")?,
+                name: object
+                    .get("name")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string),
+                url: object
+                    .get("url")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string),
+            }),
+            "audio" => Ok(Self::Audio {
+                path: required_string(object, "path")?,
+                mime: required_string(object, "mime")?,
+                name: object
+                    .get("name")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string),
+                url: object
+                    .get("url")
                     .and_then(JsonValue::as_str)
                     .map(str::to_string),
             }),

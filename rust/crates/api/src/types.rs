@@ -114,6 +114,16 @@ pub enum InputContentBlock {
         media_type: String,
         data_base64: String,
     },
+    /// Video for VL models (`video_url` wire). Prefer HTTPS (presigned OSS). Author: kejiqing
+    Video {
+        media_type: String,
+        url: String,
+    },
+    /// Audio for Omni models (`input_audio` wire). `data` is HTTPS URL or base64. Author: kejiqing
+    Audio {
+        format: String,
+        data: String,
+    },
     ToolUse {
         id: String,
         name: String,

@@ -1259,7 +1259,10 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                         "arguments": input.to_string(),
                     }
                 })),
-                InputContentBlock::Image { .. } | InputContentBlock::ToolResult { .. } => {}
+                InputContentBlock::Image { .. }
+                | InputContentBlock::Video { .. }
+                | InputContentBlock::Audio { .. }
+                | InputContentBlock::ToolResult { .. } => {}
             }
         }
         if text.is_empty() && tool_calls.is_empty() {
@@ -1291,10 +1294,10 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
             vec![msg]
         }
     } else {
-        // User / mixed turns: keep plain string when text-only; array when images present.
+        // User / mixed turns: keep plain string when text-only; array when media present.
         // Author: kejiqing
         let mut text_parts = Vec::new();
-        let mut image_parts = Vec::new();
+        let mut media_parts = Vec::new();
         let mut out = Vec::new();
         for block in &message.content {
             match block {
@@ -1303,10 +1306,25 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                     media_type,
                     data_base64,
                 } => {
-                    image_parts.push(json!({
+                    media_parts.push(json!({
                         "type": "image_url",
                         "image_url": {
                             "url": format!("data:{media_type};base64,{data_base64}"),
+                        }
+                    }));
+                }
+                InputContentBlock::Video { url, .. } => {
+                    media_parts.push(json!({
+                        "type": "video_url",
+                        "video_url": { "url": url },
+                    }));
+                }
+                InputContentBlock::Audio { format, data } => {
+                    media_parts.push(json!({
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": data,
+                            "format": format,
                         }
                     }));
                 }
@@ -1316,10 +1334,10 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                     is_error,
                 } => {
                     // Flush pending multimodal user content before tool results.
-                    if !text_parts.is_empty() || !image_parts.is_empty() {
-                        out.push(openai_user_content_message(&text_parts, &image_parts));
+                    if !text_parts.is_empty() || !media_parts.is_empty() {
+                        out.push(openai_user_content_message(&text_parts, &media_parts));
                         text_parts.clear();
-                        image_parts.clear();
+                        media_parts.clear();
                     }
                     let mut msg = json!({
                         "role": "tool",
@@ -1334,15 +1352,15 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                 InputContentBlock::ReasoningContent { .. } | InputContentBlock::ToolUse { .. } => {}
             }
         }
-        if !text_parts.is_empty() || !image_parts.is_empty() {
-            out.push(openai_user_content_message(&text_parts, &image_parts));
+        if !text_parts.is_empty() || !media_parts.is_empty() {
+            out.push(openai_user_content_message(&text_parts, &media_parts));
         }
         out
     }
 }
 
-fn openai_user_content_message(text_parts: &[String], image_parts: &[Value]) -> Value {
-    if image_parts.is_empty() {
+fn openai_user_content_message(text_parts: &[String], media_parts: &[Value]) -> Value {
+    if media_parts.is_empty() {
         return json!({
             "role": "user",
             "content": text_parts.join("\n"),
@@ -1355,7 +1373,7 @@ fn openai_user_content_message(text_parts: &[String], image_parts: &[Value]) -> 
         }
         content.push(json!({ "type": "text", "text": text }));
     }
-    content.extend(image_parts.iter().cloned());
+    content.extend(media_parts.iter().cloned());
     if content.is_empty() {
         content.push(json!({ "type": "text", "text": "请查看附件" }));
     }
@@ -2955,6 +2973,42 @@ mod tests {
         assert!(
             !url.contains("file://") && !url.starts_with('/'),
             "must not use file paths, got {url}"
+        );
+    }
+
+    #[test]
+    fn translate_message_video_and_audio_emit_openai_compat_parts() {
+        use crate::types::{InputContentBlock, InputMessage};
+        let msg = InputMessage {
+            role: "user".into(),
+            content: vec![
+                InputContentBlock::Text {
+                    text: "watch".into(),
+                },
+                InputContentBlock::Video {
+                    media_type: "video/mp4".into(),
+                    url: "https://example.com/a.mp4?sig=1".into(),
+                },
+                InputContentBlock::Audio {
+                    format: "wav".into(),
+                    data: "https://example.com/a.wav?sig=1".into(),
+                },
+            ],
+        };
+        let out = super::translate_message(&msg, "qwen-omni");
+        assert_eq!(out.len(), 1);
+        let content = out[0]["content"].as_array().expect("content array");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "video_url");
+        assert_eq!(
+            content[1]["video_url"]["url"].as_str(),
+            Some("https://example.com/a.mp4?sig=1")
+        );
+        assert_eq!(content[2]["type"], "input_audio");
+        assert_eq!(content[2]["input_audio"]["format"].as_str(), Some("wav"));
+        assert_eq!(
+            content[2]["input_audio"]["data"].as_str(),
+            Some("https://example.com/a.wav?sig=1")
         );
     }
 }
