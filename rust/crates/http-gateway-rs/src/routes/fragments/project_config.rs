@@ -44,6 +44,7 @@ pub(crate) struct UpsertProjectConfigRequest {
     worker_profile_json: Option<Value>,
     /// Omit to keep; JSON `null` clears; positive int sets. Author: kejiqing
     #[serde(default, rename = "maxIterations")]
+    #[allow(clippy::option_option)]
     max_iterations: Option<Option<usize>>,
 }
 

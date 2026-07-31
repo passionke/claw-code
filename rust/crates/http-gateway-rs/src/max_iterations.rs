@@ -50,6 +50,7 @@ pub fn resolve_max_iterations(
 }
 
 /// Parse PUT `maxIterations`: omit keep; null clear; positive set; 0 reject.
+#[allow(clippy::option_option)]
 pub fn parse_project_max_iterations_put(
     patch: Option<Option<usize>>,
     existing: Option<usize>,

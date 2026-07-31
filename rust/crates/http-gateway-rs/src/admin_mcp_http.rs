@@ -68,6 +68,7 @@ struct DraftPatch<'a> {
     skills_json: Option<&'a Value>,
     worker_profile_json: Option<&'a Value>,
     /// `None` = omit (keep); `Some(None)` = clear; `Some(Some(n))` = set. Author: kejiqing
+    #[allow(clippy::option_option)]
     max_iterations: Option<Option<usize>>,
 }
 
