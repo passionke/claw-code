@@ -111,6 +111,8 @@ mod tests {
             derived_state: "working".to_string(),
             current_blocker: None,
             error: None,
+            result: None,
+            duration_ms: None,
         }
     }
 
