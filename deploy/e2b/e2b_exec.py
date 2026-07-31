@@ -170,6 +170,7 @@ def main() -> None:
                 "set -eu\n"
                 f"cd {session_root}\n"
                 f"export HOME={session_root}\n"
+                f"export CLAW_GATEWAY_WORK_ROOT={session_root}\n"
                 f"export XDG_CONFIG_HOME={session_root}/.config\n"
                 f"export XDG_DATA_HOME={session_root}/.local/share\n"
                 "export CLAW_PROJECT_CONFIG_ROOT=/claw_ds/project_home_def\n"

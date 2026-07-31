@@ -26,6 +26,13 @@ class FcExecStableProjectHomeTests(unittest.TestCase):
         self.assertIn(STABLE_ROOT, text)
         self.assertNotIn('CLAW_PROJECT_CONFIG_ROOT=/claw_ds"\n', text)
 
+    def test_exec_solve_exports_gateway_work_root(self) -> None:
+        text = FC_EXEC.read_text(encoding="utf-8")
+        self.assertIn(
+            "export CLAW_GATEWAY_WORK_ROOT={session_root}",
+            text,
+        )
+
 
 class FcExecRunShEnvTests(unittest.TestCase):
     def test_env_exports_sh_skips_blank_values(self) -> None:
