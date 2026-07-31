@@ -2689,8 +2689,7 @@ mod tests {
     }
 
     #[test]
-    fn given_child_exits_after_discovery_when_calling_twice_then_second_call_succeeds_after_reset()
-    {
+    fn given_child_exits_after_discovery_when_calling_then_succeeds_via_ensure_server_ready() {
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2711,27 +2710,25 @@ mod tests {
             let mut manager = McpServerManager::from_servers(&servers);
 
             manager.discover_tools().await.expect("discover tools");
-            let first_error = manager
-                .call_tool(
-                    &mcp_tool_name("alpha", "echo"),
-                    Some(json!({"text": "reconnect"})),
-                    None,
-                )
-                .await
-                .expect_err("first call should fail after transport drops");
 
-            match first_error {
-                McpServerManagerError::Transport {
-                    server_name,
-                    method,
-                    source,
-                } => {
-                    assert_eq!(server_name, "alpha");
-                    assert_eq!(method, "tools/call");
-                    assert_eq!(source.kind(), ErrorKind::UnexpectedEof);
+            // Wait until the post-tools/list exit is visible so ensure_server_ready
+            // reconnects before tools/call (avoids racing UnexpectedEof vs transparent reset).
+            // Author: kejiqing
+            let mut exited = false;
+            for _ in 0..50 {
+                if manager
+                    .server_process_exited("alpha")
+                    .expect("probe child exit")
+                {
+                    exited = true;
+                    break;
                 }
-                other => panic!("expected transport error, got {other:?}"),
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
+            assert!(
+                exited,
+                "child should exit after tools/list when MCP_EXIT_AFTER_TOOLS_LIST=1"
+            );
 
             let response = manager
                 .call_tool(
@@ -2740,7 +2737,7 @@ mod tests {
                     None,
                 )
                 .await
-                .expect("second tool call should succeed after reset");
+                .expect("tools/call should succeed after ensure_server_ready reconnect");
 
             assert_eq!(
                 response
