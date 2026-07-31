@@ -25,13 +25,21 @@ use runtime::{
     worker_boot::{WorkerReadySnapshot, WorkerRegistry, WorkerTaskReceipt},
     write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput, BashCommandOutput,
     BranchFreshness, ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime,
-    GrepSearchInput, LaneCommitProvenance, LaneEvent, LaneEventBlocker, LaneEventName,
-    LaneEventStatus, LaneFailureClass, McpCallContext, McpDegradedReport, PermissionMode,
-    PermissionPolicy, PromptCacheEvent, ProviderFallbackConfig, RuntimeError, Session, TaskPacket,
-    ToolError, ToolExecutor,
+    GrepSearchInput, HookAbortSignal, LaneCommitProvenance, LaneEvent, LaneEventBlocker,
+    LaneEventName, LaneEventStatus, LaneFailureClass, McpCallContext, McpDegradedReport,
+    PermissionMode, PermissionPolicy, PromptCacheEvent, ProviderFallbackConfig, RuntimeError,
+    Session, TaskPacket, ToolError, ToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+mod agent_live;
+
+pub use agent_live::{
+    is_live_agent, kill_all_subagents, live_agent_count, live_agent_test_lock,
+    mark_live_agent_finished, register_live_agent, reset_live_agents_for_test, wait_live_agent,
+    LiveAgentHandle,
+};
 
 /// Global task registry shared across tool invocations within a session.
 fn global_lsp_registry() -> &'static LspRegistry {
@@ -684,7 +692,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "Agent",
-            description: "Launch a specialized agent task and persist its handoff metadata.",
+            description: "Launch a specialized sub-agent. Default is Foreground: blocks until the sub-agent finishes and returns the terminal summary in the tool result (safe to call multiple times in one turn for parallel fan-out). Set run_in_background=true to get a running handle immediately, then join with AwaitAgent — do not Sleep or read .claw/agents files for results.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -692,12 +700,38 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                     "prompt": { "type": "string" },
                     "subagent_type": { "type": "string" },
                     "name": { "type": "string" },
-                    "model": { "type": "string" }
+                    "model": { "type": "string" },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "If true, return a running handle immediately; use AwaitAgent to get the terminal summary. Default false (Foreground)."
+                    }
                 },
                 "required": ["description", "prompt"],
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+        },
+        ToolSpec {
+            name: "AwaitAgent",
+            description: "Wait for a Background sub-agent (started with Agent run_in_background=true) to finish and return the same terminal summary shape as Foreground Agent. Do not use Sleep or read agent files.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": { "type": "string" },
+                    "wait": {
+                        "type": "boolean",
+                        "description": "If true (default), block until terminal or timeout."
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Max wait in milliseconds when wait=true (default 600000)."
+                    }
+                },
+                "required": ["agent_id"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::ReadOnly,
         },
         ToolSpec {
             name: "ToolSearch",
@@ -1342,6 +1376,9 @@ fn execute_tool_with_enforcer(
         "TodoWrite" => from_value::<TodoWriteInput>(input).and_then(run_todo_write),
         "Skill" => from_value::<SkillInput>(input).and_then(run_skill),
         "Agent" => from_value::<AgentInput>(input).and_then(run_agent),
+        "AwaitAgent" => {
+            from_value::<AwaitAgentInput>(input).and_then(|input| run_await_agent(&input))
+        }
         "ToolSearch" => from_value::<ToolSearchInput>(input).and_then(run_tool_search),
         "NotebookEdit" => from_value::<NotebookEditInput>(input).and_then(run_notebook_edit),
         "Sleep" => from_value::<SleepInput>(input).and_then(run_sleep),
@@ -2270,6 +2307,10 @@ fn run_agent(input: AgentInput) -> Result<String, String> {
     to_pretty_json(execute_agent(input)?)
 }
 
+fn run_await_agent(input: &AwaitAgentInput) -> Result<String, String> {
+    to_pretty_json(execute_await_agent(input)?)
+}
+
 fn run_tool_search(input: ToolSearchInput) -> Result<String, String> {
     to_pretty_json(execute_tool_search(input))
 }
@@ -2464,6 +2505,15 @@ pub struct AgentInput {
     subagent_type: Option<String>,
     name: Option<String>,
     model: Option<String>,
+    /// Default false = Foreground (block until terminal summary). Author: kejiqing
+    pub run_in_background: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AwaitAgentInput {
+    agent_id: String,
+    wait: Option<bool>,
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2762,6 +2812,12 @@ pub struct AgentOutput {
     derived_state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// Terminal summary text (Foreground result / `AwaitAgent`). Author: kejiqing
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// Overall sub-agent wall clock in ms. Author: kejiqing
+    #[serde(rename = "durationMs", skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
 }
 
 /// Optional hook for gateway orchestration timeline (`agent_done` / `agent_failed`). Author: kejiqing
@@ -2775,12 +2831,21 @@ pub struct AgentJob {
     allowed_tools: BTreeSet<String>,
     mcp_call_context: Option<McpCallContext>,
     terminal_hook: Option<AgentTerminalHook>,
+    /// Cooperative cancel for Background agents. Author: kejiqing
+    abort_signal: Option<HookAbortSignal>,
+    started_instant: Instant,
 }
 
 impl AgentJob {
     #[must_use]
     pub fn with_terminal_hook(mut self, hook: AgentTerminalHook) -> Self {
         self.terminal_hook = Some(hook);
+        self
+    }
+
+    #[must_use]
+    pub fn with_abort_signal(mut self, abort: HookAbortSignal) -> Self {
+        self.abort_signal = Some(abort);
         self
     }
 
@@ -3691,12 +3756,20 @@ pub(crate) fn execute_agent_with_mcp_context(
     mcp_call_context: Option<McpCallContext>,
     parent_turn_model: Option<&str>,
 ) -> Result<AgentOutput, String> {
+    let run_in_background = input.run_in_background.unwrap_or(false);
     execute_agent_with_spawn(
         input,
         store_dir,
         mcp_call_context,
         parent_turn_model,
-        spawn_agent_job,
+        |job| {
+            if run_in_background {
+                spawn_agent_job(job)?;
+                Ok(None)
+            } else {
+                Ok(Some(run_agent_job_to_terminal(&job)?))
+            }
+        },
     )
 }
 
@@ -3715,23 +3788,26 @@ pub fn execute_agent_with_mcp_context_json(
     )?)
 }
 
-/// Gateway solve: custom spawn (e.g. orchestration `agent_started` before background thread). Author: kejiqing
+/// Gateway solve: custom dispatch (Background spawn or Foreground run-to-terminal). Author: kejiqing
+///
+/// `dispatch` returns `Ok(None)` for Background (running handle already written) or
+/// `Ok(Some(terminal))` for Foreground. Author: kejiqing
 pub fn execute_agent_with_mcp_context_and_spawn<F>(
     input: AgentInput,
     store_dir: &std::path::Path,
     mcp_call_context: Option<McpCallContext>,
     parent_turn_model: Option<&str>,
-    spawn_fn: F,
+    dispatch: F,
 ) -> Result<AgentOutput, String>
 where
-    F: FnOnce(AgentJob) -> Result<(), String>,
+    F: FnOnce(AgentJob) -> Result<Option<AgentOutput>, String>,
 {
     execute_agent_with_spawn(
         input,
         store_dir,
         mcp_call_context,
         parent_turn_model,
-        spawn_fn,
+        dispatch,
     )
 }
 
@@ -3740,10 +3816,10 @@ fn execute_agent_with_spawn<F>(
     store_dir: &std::path::Path,
     mcp_call_context: Option<McpCallContext>,
     parent_turn_model: Option<&str>,
-    spawn_fn: F,
+    dispatch: F,
 ) -> Result<AgentOutput, String>
 where
-    F: FnOnce(AgentJob) -> Result<(), String>,
+    F: FnOnce(AgentJob) -> Result<Option<AgentOutput>, String>,
 {
     if input.description.trim().is_empty() {
         return Err(String::from("description must not be empty"));
@@ -3752,6 +3828,7 @@ where
         return Err(String::from("prompt must not be empty"));
     }
 
+    let run_in_background = input.run_in_background.unwrap_or(false);
     let agent_id = make_agent_id();
     let output_dir = store_dir.to_path_buf();
     std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
@@ -3768,7 +3845,6 @@ where
     let created_at = iso8601_now();
     let system_prompt = build_agent_system_prompt(&normalized_subagent_type)?;
     let mut allowed_tools = allowed_tools_for_subagent(&normalized_subagent_type);
-    // Gateway solve passes `mcp_call_context`; allow generic MCP tool on sub-agents. Author: kejiqing
     if mcp_call_context.is_some() {
         allowed_tools.insert(String::from("MCP"));
     }
@@ -3791,7 +3867,7 @@ where
     std::fs::write(&output_file, output_contents).map_err(|error| error.to_string())?;
 
     let manifest = AgentOutput {
-        agent_id,
+        agent_id: agent_id.clone(),
         name: agent_name,
         description: input.description,
         subagent_type: Some(normalized_subagent_type),
@@ -3806,35 +3882,59 @@ where
         current_blocker: None,
         derived_state: String::from("working"),
         error: None,
+        result: None,
+        duration_ms: None,
     };
     write_agent_manifest(&manifest)?;
 
-    let manifest_for_spawn = manifest.clone();
+    let started_instant = Instant::now();
     let job = AgentJob {
-        manifest: manifest_for_spawn,
+        manifest: manifest.clone(),
         prompt: input.prompt,
         system_prompt,
         allowed_tools,
         mcp_call_context,
         terminal_hook: None,
+        abort_signal: None,
+        started_instant,
     };
-    if let Err(error) = spawn_fn(job) {
-        let error = format!("failed to spawn sub-agent: {error}");
-        persist_agent_terminal_state(&manifest, "failed", None, Some(error.clone()))?;
-        return Err(error);
-    }
 
-    Ok(manifest)
+    match dispatch(job) {
+        Ok(None) => {
+            if !run_in_background {
+                return Err(String::from(
+                    "internal: Foreground Agent dispatch returned no terminal output",
+                ));
+            }
+            Ok(manifest)
+        }
+        Ok(Some(terminal)) => Ok(terminal),
+        Err(error) => {
+            let error = format!("failed to run sub-agent: {error}");
+            let _ = persist_agent_terminal_state(
+                &manifest,
+                "failed",
+                None,
+                Some(error.clone()),
+                Some(i64::try_from(started_instant.elapsed().as_millis()).unwrap_or(i64::MAX)),
+            );
+            Err(error)
+        }
+    }
 }
 
-/// Run sub-agent on a background thread (manifest already written). Author: kejiqing
+/// Run sub-agent on a background thread and register it for Await / turn-end kill. Author: kejiqing
 pub fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
+    let live = register_live_agent(job.manifest.agent_id.clone());
+    let job = job.with_abort_signal(live.abort.clone());
     let thread_name = format!("clawd-agent-{}", job.manifest.agent_id);
+    let agent_id = job.manifest.agent_id.clone();
     let mcp_ctx = job.mcp_call_context.clone();
     std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
-            let run = || run_agent_job(&job);
+            let job_for_hook = job.clone();
+            let run = || run_agent_job_to_terminal(&job);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if let Some(ctx) = mcp_ctx {
                     with_mcp_call_context(ctx, run)
@@ -3843,41 +3943,133 @@ pub fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
                 }
             }));
             match result {
-                Ok(Ok(())) => {
-                    job.invoke_terminal_hook("completed", None);
+                Ok(Ok(terminal)) => {
+                    let status = if terminal.status == "completed" {
+                        "completed"
+                    } else {
+                        "failed"
+                    };
+                    job_for_hook.invoke_terminal_hook(status, terminal.error.clone());
                 }
                 Ok(Err(error)) => {
-                    let _ = persist_agent_terminal_state(
-                        &job.manifest,
-                        "failed",
-                        None,
-                        Some(error.clone()),
-                    );
-                    job.invoke_terminal_hook("failed", Some(error));
+                    job_for_hook.invoke_terminal_hook("failed", Some(error));
                 }
                 Err(_) => {
                     let panic_msg = String::from("sub-agent thread panicked");
+                    let duration_ms =
+                        i64::try_from(job_for_hook.started_instant.elapsed().as_millis())
+                            .unwrap_or(i64::MAX);
                     let _ = persist_agent_terminal_state(
-                        &job.manifest,
+                        &job_for_hook.manifest,
                         "failed",
                         None,
                         Some(panic_msg.clone()),
+                        Some(duration_ms),
                     );
-                    job.invoke_terminal_hook("failed", Some(panic_msg));
+                    job_for_hook.invoke_terminal_hook("failed", Some(panic_msg));
                 }
             }
+            mark_live_agent_finished(&agent_id);
         })
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
 
-fn run_agent_job(job: &AgentJob) -> Result<(), String> {
+/// Run agent job to terminal state; returns final manifest. Author: kejiqing
+pub fn run_agent_job_to_terminal(job: &AgentJob) -> Result<AgentOutput, String> {
+    let duration_ms =
+        || i64::try_from(job.started_instant.elapsed().as_millis()).unwrap_or(i64::MAX);
+    if job
+        .abort_signal
+        .as_ref()
+        .is_some_and(HookAbortSignal::is_aborted)
+    {
+        persist_agent_terminal_state(
+            &job.manifest,
+            "cancelled",
+            None,
+            Some(String::from("sub-agent cancelled")),
+            Some(duration_ms()),
+        )?;
+        job.invoke_terminal_hook("failed", Some(String::from("sub-agent cancelled")));
+        return read_agent_manifest(&job.manifest.manifest_file);
+    }
     let mut runtime = build_agent_runtime(job)?.with_max_iterations(DEFAULT_AGENT_MAX_ITERATIONS);
-    let summary = runtime
-        .run_turn(job.prompt.clone(), None)
-        .map_err(|error| error.to_string())?;
+    if let Some(abort) = job.abort_signal.clone() {
+        runtime = runtime.with_hook_abort_signal(abort);
+    }
+    let summary = match runtime.run_turn(job.prompt.clone(), None) {
+        Ok(summary) => summary,
+        Err(error) => {
+            let msg = error.to_string();
+            let status = if msg.contains("aborted") {
+                "cancelled"
+            } else {
+                "failed"
+            };
+            persist_agent_terminal_state(
+                &job.manifest,
+                status,
+                None,
+                Some(msg.clone()),
+                Some(duration_ms()),
+            )?;
+            let terminal = read_agent_manifest(&job.manifest.manifest_file)?;
+            job.invoke_terminal_hook("failed", Some(msg.clone()));
+            return if status == "cancelled" {
+                Ok(terminal)
+            } else {
+                Err(msg)
+            };
+        }
+    };
     let final_text = final_assistant_text(&summary);
-    persist_agent_terminal_state(&job.manifest, "completed", Some(final_text.as_str()), None)
+    persist_agent_terminal_state(
+        &job.manifest,
+        "completed",
+        Some(final_text.as_str()),
+        None,
+        Some(duration_ms()),
+    )?;
+    let terminal = read_agent_manifest(&job.manifest.manifest_file)?;
+    job.invoke_terminal_hook("completed", None);
+    Ok(terminal)
+}
+
+fn read_agent_manifest(path: &str) -> Result<AgentOutput, String> {
+    let contents = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&contents).map_err(|e| e.to_string())
+}
+
+fn execute_await_agent(input: &AwaitAgentInput) -> Result<AgentOutput, String> {
+    let agent_id = input.agent_id.trim();
+    if agent_id.is_empty() {
+        return Err(String::from("agent_id must not be empty"));
+    }
+    let wait = input.wait.unwrap_or(true);
+    let timeout_ms = input.timeout_ms.unwrap_or(600_000);
+    let store = default_agent_store_dir()?;
+    let manifest_path = store.join(format!("{agent_id}.json"));
+    if !manifest_path.exists() {
+        return Err(format!("unknown agent_id: {agent_id}"));
+    }
+    if wait {
+        let finished = wait_live_agent(agent_id, Duration::from_millis(timeout_ms));
+        if !finished && is_live_agent(agent_id) {
+            return Err(format!(
+                "AwaitAgent timed out after {timeout_ms}ms waiting for {agent_id}"
+            ));
+        }
+    } else if is_live_agent(agent_id) {
+        return read_agent_manifest(&manifest_path.display().to_string());
+    }
+    let terminal = read_agent_manifest(&manifest_path.display().to_string())?;
+    if terminal.status == "running" {
+        return Err(format!(
+            "agent {agent_id} is not terminal yet (status=running); set wait=true or retry"
+        ));
+    }
+    Ok(terminal)
 }
 
 fn build_agent_runtime(
@@ -4038,6 +4230,7 @@ fn persist_agent_terminal_state(
     status: &str,
     result: Option<&str>,
     error: Option<String>,
+    duration_ms: Option<i64>,
 ) -> Result<(), String> {
     let blocker = error.as_deref().map(classify_lane_blocker);
     append_agent_output(
@@ -4051,6 +4244,8 @@ fn persist_agent_terminal_state(
     next_manifest.derived_state =
         derive_agent_state(status, result, error.as_deref(), blocker.as_ref()).to_string();
     next_manifest.error = error;
+    next_manifest.result = result.map(str::to_string);
+    next_manifest.duration_ms = duration_ms;
     if let Some(blocker) = blocker {
         next_manifest
             .lane_events
@@ -4650,6 +4845,9 @@ fn derive_agent_state(
 
     if normalized_status == "running" {
         return "working";
+    }
+    if normalized_status == "cancelled" {
+        return "blocked_cancelled";
     }
     if normalized_status == "completed" {
         return if result.is_some_and(|value| !value.trim().is_empty()) {
@@ -6407,12 +6605,15 @@ mod tests {
 
     use super::{
         agent_permission_policy, allowed_tools_for_subagent, classify_lane_failure,
-        default_agent_store_dir, derive_agent_state, execute_agent_with_spawn, execute_tool,
-        extract_recovery_outcome, final_assistant_text, global_cron_registry,
-        maybe_commit_provenance, mvp_tool_specs, permission_mode_from_plugin,
-        persist_agent_terminal_state, push_output_block, resolve_agent_model, run_task_packet,
-        AgentInput, AgentJob, GlobalToolRegistry, LaneEventName, LaneFailureClass,
-        ProviderRuntimeClient, SubagentToolExecutor, AGENT_STORE_REL, DEFAULT_AGENT_MODEL,
+        default_agent_store_dir, derive_agent_state, execute_agent_with_spawn, execute_await_agent,
+        execute_tool, extract_recovery_outcome, final_assistant_text, global_cron_registry,
+        is_live_agent, kill_all_subagents, live_agent_count, live_agent_test_lock,
+        mark_live_agent_finished, maybe_commit_provenance, mvp_tool_specs,
+        permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
+        read_agent_manifest, register_live_agent, reset_live_agents_for_test, resolve_agent_model,
+        run_task_packet, AgentInput, AgentJob, AwaitAgentInput, GlobalToolRegistry, LaneEventName,
+        LaneFailureClass, ProviderRuntimeClient, SubagentToolExecutor, AGENT_STORE_REL,
+        DEFAULT_AGENT_MODEL,
     };
     use api::OutputContentBlock;
     use runtime::ProviderFallbackConfig;
@@ -6504,6 +6705,7 @@ mod tests {
         assert!(names.contains(&"TodoWrite"));
         assert!(names.contains(&"Skill"));
         assert!(names.contains(&"Agent"));
+        assert!(names.contains(&"AwaitAgent"));
         assert!(names.contains(&"ToolSearch"));
         assert!(names.contains(&"NotebookEdit"));
         assert!(names.contains(&"Sleep"));
@@ -8081,6 +8283,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("ship-audit".to_string()),
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8089,7 +8292,7 @@ mod tests {
                 *captured_for_spawn
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
-                Ok(())
+                Ok(None)
             },
         )
         .expect("Agent should succeed");
@@ -8128,7 +8331,8 @@ mod tests {
             &json!({
                 "description": "Verify the branch",
                 "prompt": "Check tests.",
-                "subagent_type": "explorer"
+                "subagent_type": "explorer",
+                "run_in_background": true
             }),
         )
         .expect("Agent should normalize built-in aliases");
@@ -8141,7 +8345,8 @@ mod tests {
             &json!({
                 "description": "Review the branch",
                 "prompt": "Inspect diff.",
-                "name": "Ship Audit!!!"
+                "name": "Ship Audit!!!",
+                "run_in_background": true
             }),
         )
         .expect("Agent should normalize explicit names");
@@ -8166,6 +8371,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("complete-task".to_string()),
                 model: Some("claude-sonnet-4-6".to_string()),
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8176,7 +8382,9 @@ mod tests {
                     "completed",
                     Some("Finished successfully in commit abc1234"),
                     None,
-                )
+                    None,
+                );
+                Ok(None)
             },
         )
         .expect("completed agent should succeed");
@@ -8226,6 +8434,7 @@ mod tests {
                 subagent_type: Some("Verification".to_string()),
                 name: Some("fail-task".to_string()),
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8236,7 +8445,9 @@ mod tests {
                     "failed",
                     None,
                     Some(String::from("tool failed: simulated failure")),
-                )
+                    None,
+                );
+                Ok(None)
             },
         )
         .expect("failed agent should still spawn");
@@ -8276,6 +8487,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("summary-floor".to_string()),
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8286,7 +8498,9 @@ mod tests {
                     "completed",
                     Some("commit push everyting, keep sweeping $ralph"),
                     None,
-                )
+                    None,
+                );
+                Ok(None)
             },
         )
         .expect("normalized agent should succeed");
@@ -8324,6 +8538,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("recovery-lane".to_string()),
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8336,7 +8551,9 @@ mod tests {
                         "Team read-only-audit-only-for-roadm: worker panes stalled, no progress 2m30s. Next: omx team status read-only-audit-only-for-roadm; read worker messages; unblock/reassign or shutdown. [OMX_TMUX_INJECT]",
                     ),
                     None,
-                )
+                    None,
+                );
+                Ok(None)
             },
         )
         .expect("recovery agent should succeed");
@@ -8375,6 +8592,7 @@ mod tests {
                 subagent_type: Some("Verification".to_string()),
                 name: Some("review-lane".to_string()),
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8385,7 +8603,9 @@ mod tests {
                     "completed",
                     Some("APPROVE\n\nTarget: commit 1234abcd\nRationale: scoped diff is safe."),
                     None,
-                )
+                    None,
+                );
+                Ok(None)
             },
         )
         .expect("review agent should succeed");
@@ -8418,6 +8638,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("backlog-scan".to_string()),
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8430,7 +8651,9 @@ mod tests {
                         "Selected next backlog target.\nChosen: ROADMAP #65\nSkipped: ROADMAP #63, ROADMAP #64\nAction: execute\nRationale: #65 is the next repo-local lane-finished metadata task.",
                     ),
                     None,
-                )
+                    None,
+                );
+                Ok(None)
             },
         )
         .expect("selection agent should succeed");
@@ -8467,6 +8690,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("artifact-lane".to_string()),
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8479,7 +8703,9 @@ mod tests {
                         "Completed ROADMAP #64. Files: rust/crates/tools/src/lib.rs ROADMAP.md. Diff stat: 2 files, +12/-1. Tested, committed, pushed as commit deadbee.",
                     ),
                     None,
-                )
+                    None,
+                );
+                Ok(None)
             },
         )
         .expect("artifact agent should succeed");
@@ -8540,6 +8766,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("cron-closeout".to_string()),
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8550,7 +8777,9 @@ mod tests {
                     "completed",
                     Some("Completed ROADMAP #66 after verification."),
                     None,
-                )
+                    None,
+                );
+                Ok(None)
             },
         )
         .expect("reminder agent should succeed");
@@ -8584,6 +8813,7 @@ mod tests {
                 subagent_type: None,
                 name: Some("spawn-error".to_string()),
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8591,7 +8821,7 @@ mod tests {
             |_| Err(String::from("thread creation failed")),
         )
         .expect_err("spawn errors should surface");
-        assert!(spawn_error.contains("failed to spawn sub-agent"));
+        assert!(spawn_error.contains("failed to run sub-agent"));
         let spawn_error_manifest = std::fs::read_dir(&dir)
             .expect("agent dir should exist")
             .filter_map(Result::ok)
@@ -8826,6 +9056,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: None,
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
@@ -8834,7 +9065,7 @@ mod tests {
                 *captured_for_spawn
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
-                Ok(())
+                Ok(None)
             },
         )
         .expect("Agent should succeed");
@@ -8865,6 +9096,7 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: None,
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             Some(ctx.clone()),
@@ -8873,7 +9105,7 @@ mod tests {
                 *captured_for_spawn
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
-                Ok(())
+                Ok(None)
             },
         )
         .expect("Agent should succeed");
@@ -8924,11 +9156,12 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: None,
                 model: None,
+                run_in_background: Some(true),
             },
             &dir,
             None,
             None,
-            |_| Ok(()),
+            |_| Ok(None),
         )
         .expect("spawn");
         assert!(
@@ -9019,6 +9252,390 @@ mod tests {
         )
         .expect_err("blank prompt should fail");
         assert!(missing_prompt.contains("prompt must not be empty"));
+    }
+
+    #[test]
+    fn agent_foreground_default_returns_terminal_summary() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _live = live_agent_test_lock();
+        reset_live_agents_for_test();
+        let dir = temp_path("agent-fg-summary");
+        let out = execute_agent_with_spawn(
+            AgentInput {
+                description: "Foreground summary".to_string(),
+                prompt: "Do work".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: Some("fg-summary".to_string()),
+                model: None,
+                run_in_background: Some(false),
+            },
+            &dir,
+            None,
+            None,
+            |job| {
+                persist_agent_terminal_state(
+                    &job.manifest,
+                    "completed",
+                    Some("scope complete: found three files"),
+                    None,
+                    Some(55),
+                )?;
+                Ok(Some(read_agent_manifest(&job.manifest.manifest_file)?))
+            },
+        )
+        .expect("foreground should return terminal");
+        assert_eq!(out.status, "completed");
+        assert_eq!(
+            out.result.as_deref(),
+            Some("scope complete: found three files")
+        );
+        assert_eq!(out.duration_ms, Some(55));
+        assert!(out.completed_at.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+        reset_live_agents_for_test();
+    }
+
+    #[test]
+    fn agent_background_returns_running_handle() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _live = live_agent_test_lock();
+        reset_live_agents_for_test();
+        let dir = temp_path("agent-bg-handle");
+        let out = execute_agent_with_spawn(
+            AgentInput {
+                description: "Background handle".to_string(),
+                prompt: "Do work".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: Some("bg-handle".to_string()),
+                model: None,
+                run_in_background: Some(true),
+            },
+            &dir,
+            None,
+            None,
+            |job| {
+                let _ = register_live_agent(job.manifest.agent_id.clone());
+                Ok(None)
+            },
+        )
+        .expect("background should return running");
+        assert_eq!(out.status, "running");
+        assert!(out.result.is_none());
+        assert!(out.completed_at.is_none());
+        assert!(is_live_agent(&out.agent_id));
+        mark_live_agent_finished(&out.agent_id);
+        let _ = std::fs::remove_dir_all(dir);
+        reset_live_agents_for_test();
+    }
+
+    #[test]
+    fn await_agent_wait_true_returns_terminal_summary() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _live = live_agent_test_lock();
+        reset_live_agents_for_test();
+        let work = temp_path("agent-await");
+        let store = work.join(AGENT_STORE_REL);
+        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", &work);
+        let out = execute_agent_with_spawn(
+            AgentInput {
+                description: "Await me".to_string(),
+                prompt: "work".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: Some("await-me".to_string()),
+                model: None,
+                run_in_background: Some(true),
+            },
+            &store,
+            None,
+            None,
+            |job| {
+                let agent_id = job.manifest.agent_id.clone();
+                let manifest = job.manifest.clone();
+                let live = register_live_agent(agent_id.clone());
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(50));
+                    let _ = persist_agent_terminal_state(
+                        &manifest,
+                        "completed",
+                        Some("awaited result text"),
+                        None,
+                        Some(50),
+                    );
+                    live.abort.abort();
+                    mark_live_agent_finished(&agent_id);
+                });
+                Ok(None)
+            },
+        )
+        .expect("background spawn");
+        let awaited = execute_await_agent(&AwaitAgentInput {
+            agent_id: out.agent_id.clone(),
+            wait: Some(true),
+            timeout_ms: Some(5_000),
+        })
+        .expect("await should finish");
+        assert_eq!(awaited.status, "completed");
+        assert_eq!(awaited.result.as_deref(), Some("awaited result text"));
+        assert_eq!(awaited.duration_ms, Some(50));
+        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
+        let _ = std::fs::remove_dir_all(work);
+        reset_live_agents_for_test();
+    }
+
+    #[test]
+    fn await_agent_missing_id_errors() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _live = live_agent_test_lock();
+        let work = temp_path("agent-await-missing");
+        std::fs::create_dir_all(work.join(AGENT_STORE_REL)).expect("store");
+        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", &work);
+        let err = execute_await_agent(&AwaitAgentInput {
+            agent_id: "does-not-exist".to_string(),
+            wait: Some(true),
+            timeout_ms: Some(100),
+        })
+        .expect_err("missing id");
+        assert!(err.contains("unknown agent_id"));
+        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
+        let _ = std::fs::remove_dir_all(work);
+    }
+
+    #[test]
+    fn agent_tool_description_points_to_await_not_sleep() {
+        let agent = mvp_tool_specs()
+            .into_iter()
+            .find(|s| s.name == "Agent")
+            .expect("Agent spec");
+        assert!(agent.description.contains("AwaitAgent"));
+        assert!(agent.description.contains("do not Sleep") || agent.description.contains("Sleep"));
+        let await_spec = mvp_tool_specs()
+            .into_iter()
+            .find(|s| s.name == "AwaitAgent")
+            .expect("AwaitAgent spec");
+        assert!(await_spec.description.contains("Background"));
+    }
+
+    #[test]
+    fn agent_terminal_records_overall_duration_ms() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _live = live_agent_test_lock();
+        let dir = temp_path("agent-duration");
+        let out = execute_agent_with_spawn(
+            AgentInput {
+                description: "Duration".to_string(),
+                prompt: "x".to_string(),
+                subagent_type: None,
+                name: Some("dur".to_string()),
+                model: None,
+                run_in_background: Some(false),
+            },
+            &dir,
+            None,
+            None,
+            |job| {
+                persist_agent_terminal_state(
+                    &job.manifest,
+                    "completed",
+                    Some("done"),
+                    None,
+                    Some(1234),
+                )?;
+                Ok(Some(read_agent_manifest(&job.manifest.manifest_file)?))
+            },
+        )
+        .expect("fg");
+        assert_eq!(out.duration_ms, Some(1234));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn kill_all_on_turn_end_after_background_spawn() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _live = live_agent_test_lock();
+        reset_live_agents_for_test();
+        let handle = register_live_agent("turn-end-kill");
+        let abort = handle.abort.clone();
+        let agent_id = handle.agent_id.clone();
+        let t = std::thread::spawn(move || {
+            while !abort.is_aborted() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            mark_live_agent_finished(&agent_id);
+        });
+        assert_eq!(live_agent_count(), 1);
+        let n = kill_all_subagents(Duration::from_secs(2));
+        assert_eq!(n, 1);
+        assert_eq!(live_agent_count(), 0);
+        t.join().expect("join");
+        reset_live_agents_for_test();
+    }
+
+    #[test]
+    fn kill_all_on_abort_path() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _live = live_agent_test_lock();
+        reset_live_agents_for_test();
+        let handle = register_live_agent("abort-path-kill");
+        let abort = handle.abort.clone();
+        let agent_id = handle.agent_id.clone();
+        let t = std::thread::spawn(move || {
+            while !abort.is_aborted() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            mark_live_agent_finished(&agent_id);
+        });
+        // Simulate abort teardown: same kill_all as turn-end path.
+        assert_eq!(kill_all_subagents(Duration::from_secs(2)), 1);
+        assert_eq!(live_agent_count(), 0);
+        t.join().expect("join");
+        reset_live_agents_for_test();
+    }
+
+    #[test]
+    fn await_after_turn_end_fails_cleanly() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _live = live_agent_test_lock();
+        reset_live_agents_for_test();
+        let work = temp_path("await-after-kill");
+        let store = work.join(AGENT_STORE_REL);
+        std::env::set_var("CLAW_GATEWAY_WORK_ROOT", &work);
+        let out = execute_agent_with_spawn(
+            AgentInput {
+                description: "killed before await".to_string(),
+                prompt: "work".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: Some("killed-await".to_string()),
+                model: None,
+                run_in_background: Some(true),
+            },
+            &store,
+            None,
+            None,
+            |job| {
+                let agent_id = job.manifest.agent_id.clone();
+                let live = register_live_agent(agent_id.clone());
+                std::thread::spawn(move || {
+                    while !live.abort.is_aborted() {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    // Leave status=running on disk (turn-end kill without terminal write).
+                    mark_live_agent_finished(&agent_id);
+                });
+                Ok(None)
+            },
+        )
+        .expect("bg spawn");
+        let _ = kill_all_subagents(Duration::from_secs(2));
+        assert_eq!(live_agent_count(), 0);
+        let err = execute_await_agent(&AwaitAgentInput {
+            agent_id: out.agent_id.clone(),
+            wait: Some(true),
+            timeout_ms: Some(200),
+        })
+        .expect_err("await after kill must not hang");
+        assert!(
+            err.contains("not terminal") || err.contains("running") || err.contains("unknown"),
+            "unexpected await error: {err}"
+        );
+        std::env::remove_var("CLAW_GATEWAY_WORK_ROOT");
+        let _ = std::fs::remove_dir_all(work);
+        reset_live_agents_for_test();
+    }
+
+    #[test]
+    fn registry_empty_after_foreground_parallel() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _live = live_agent_test_lock();
+        reset_live_agents_for_test();
+        let dir = temp_path("fg-parallel-empty");
+        for name in ["fg-a", "fg-b"] {
+            let _ = execute_agent_with_spawn(
+                AgentInput {
+                    description: name.to_string(),
+                    prompt: "x".to_string(),
+                    subagent_type: None,
+                    name: Some(name.to_string()),
+                    model: None,
+                    run_in_background: Some(false),
+                },
+                &dir,
+                None,
+                None,
+                |job| {
+                    persist_agent_terminal_state(
+                        &job.manifest,
+                        "completed",
+                        Some("ok"),
+                        None,
+                        Some(1),
+                    )?;
+                    Ok(Some(read_agent_manifest(&job.manifest.manifest_file)?))
+                },
+            )
+            .expect("fg");
+        }
+        assert_eq!(live_agent_count(), 0);
+        assert_eq!(kill_all_subagents(Duration::from_millis(50)), 0);
+        let _ = std::fs::remove_dir_all(dir);
+        reset_live_agents_for_test();
+    }
+
+    #[test]
+    fn agent_tool_result_has_summary_fields_not_full_transcript() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _live = live_agent_test_lock();
+        let dir = temp_path("agent-summary-only");
+        let out = execute_agent_with_spawn(
+            AgentInput {
+                description: "Summary only".to_string(),
+                prompt: "x".to_string(),
+                subagent_type: None,
+                name: Some("sum".to_string()),
+                model: None,
+                run_in_background: Some(false),
+            },
+            &dir,
+            None,
+            None,
+            |job| {
+                persist_agent_terminal_state(
+                    &job.manifest,
+                    "completed",
+                    Some("short summary"),
+                    None,
+                    Some(10),
+                )?;
+                Ok(Some(read_agent_manifest(&job.manifest.manifest_file)?))
+            },
+        )
+        .expect("fg");
+        let json = serde_json::to_value(&out).expect("json");
+        assert!(json.get("result").is_some());
+        assert!(json.get("durationMs").is_some());
+        assert!(json.get("messages").is_none());
+        assert!(json.get("transcript").is_none());
+        assert!(json.get("toolCalls").is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

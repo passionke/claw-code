@@ -55,6 +55,8 @@ pub mod agent_orchestration;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
 pub mod gateway_stdout;
+#[cfg(test)]
+mod integ_subagent_escape;
 pub mod landlock_dsl;
 pub mod landlock_jail;
 pub mod mcp_call_context;
@@ -710,16 +712,33 @@ impl DirectToolExecutorInner {
         if tool_name == "Agent" {
             let agent_input: AgentInput = serde_json::from_str(input)
                 .map_err(|e| ToolError::new(format!("invalid Agent tool JSON: {e}")))?;
+            let run_in_background = agent_input.run_in_background.unwrap_or(false);
             let bus = crate::multi_agent::EventBus::new(&self.session_home);
             let out = execute_agent_with_mcp_context_and_spawn(
                 agent_input,
                 &self.session_home.join(AGENT_STORE_REL),
                 Some(self.mcp_context.clone()),
                 Some(self.turn_model.as_str()),
-                |job| crate::agent_orchestration::spawn_gateway_agent_with_events(&bus, job),
+                |job| {
+                    if run_in_background {
+                        crate::agent_orchestration::spawn_gateway_agent_with_events(&bus, job)?;
+                        Ok(None)
+                    } else {
+                        Ok(Some(
+                            crate::agent_orchestration::run_gateway_agent_foreground(&bus, job)?,
+                        ))
+                    }
+                },
             )
             .map_err(ToolError::new)?;
             return serde_json::to_string_pretty(&out).map_err(|e| ToolError::new(e.to_string()));
+        }
+        if tool_name == "AwaitAgent" {
+            return execute_tool(
+                tool_name,
+                &serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({})),
+            )
+            .map_err(ToolError::new);
         }
         let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
         execute_tool(tool_name, &parsed).map_err(ToolError::new)
@@ -793,7 +812,27 @@ impl SharedToolExecutor for DirectToolExecutorInner {
     }
 
     fn allows_concurrent_mcp_call(&self, tool_name: &str) -> bool {
-        self.concurrent_mcp_tools.contains(tool_name)
+        tool_name == "Agent" || self.concurrent_mcp_tools.contains(tool_name)
+    }
+}
+
+#[cfg(test)]
+mod agent_concurrent_whitelist_tests {
+    use std::collections::HashSet;
+
+    /// Mirrors `DirectToolExecutorInner::allows_concurrent_mcp_call`. Author: kejiqing
+    fn allows_concurrent(tool_name: &str, whitelist: &HashSet<String>) -> bool {
+        tool_name == "Agent" || whitelist.contains(tool_name)
+    }
+
+    #[test]
+    fn agent_is_always_on_concurrent_whitelist() {
+        let empty = HashSet::new();
+        assert!(allows_concurrent("Agent", &empty));
+        assert!(!allows_concurrent("Bash", &empty));
+        let with_mcp = HashSet::from(["mcp__x__y".to_string()]);
+        assert!(allows_concurrent("mcp__x__y", &with_mcp));
+        assert!(allows_concurrent("Agent", &with_mcp));
     }
 }
 
@@ -1558,6 +1597,8 @@ pub fn run_gateway_solve_turn(
     }
     // Turn deadline is enforced by the gateway pool (`timeout` on `docker exec` + `force_kill_slot`).
     let turn_result = runtime.run_turn_after_user_message(None);
+    // Turn-end: kill any Background sub-agents still live (sandbox escape prevention). Author: kejiqing
+    let _killed = tools::kill_all_subagents(std::time::Duration::from_secs(30));
     let result = turn_result.map_err(|e| {
         let message = format!("runtime prompt failed: {e}");
         otel_turn.mark_error(&message);

@@ -25,6 +25,9 @@ rust/.claw.json
 .clawhip/
 .local-claw-runs/
 .tmp-latency/
+# Sub-agent local run artifacts (Agent tool / tests)
+rust/.clawd-agents/
+**/.clawd-agents/
 # Env files (secrets / machine-local); templates use .env.example or *.example.env
 .env
 .env.*

@@ -448,6 +448,12 @@ where
 
         loop {
             iterations += 1;
+            // Cooperative cancel for Background sub-agents (turn-end kill_all). Author: kejiqing
+            if self.hook_abort_signal.is_aborted() {
+                let error = RuntimeError::new("conversation aborted");
+                self.record_turn_failed(iterations, &error);
+                return Err(error);
+            }
             if iterations > self.max_iterations {
                 let error = RuntimeError::new(
                     "conversation loop exceeded the maximum number of iterations",
@@ -2596,7 +2602,7 @@ mod tests {
         use std::collections::BTreeMap;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Mutex};
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
         const ANALYSIS: &str = "mcp__sqlbot-streamable__mcp_question_then_analysis";
 
@@ -2700,11 +2706,23 @@ mod tests {
                 outcomes: BTreeMap<String, Result<String, ToolError>>,
                 max_concurrent: Option<usize>,
             ) -> Arc<Self> {
+                Self::with_outcomes_tools_and_limit(
+                    outcomes,
+                    max_concurrent,
+                    std::collections::HashSet::from([ANALYSIS.to_string()]),
+                )
+            }
+
+            fn with_outcomes_tools_and_limit(
+                outcomes: BTreeMap<String, Result<String, ToolError>>,
+                max_concurrent: Option<usize>,
+                concurrent_tools: std::collections::HashSet<String>,
+            ) -> Arc<Self> {
                 Arc::new(Self {
                     active: AtomicUsize::new(0),
                     max_active: AtomicUsize::new(0),
                     max_concurrent,
-                    concurrent_tools: std::collections::HashSet::from([ANALYSIS.to_string()]),
+                    concurrent_tools,
                     calls: Mutex::new(Vec::new()),
                     outcomes: Mutex::new(outcomes),
                 })
@@ -2909,6 +2927,40 @@ mod tests {
             let mut ids: Vec<&str> = shared_calls.iter().map(|(id, _)| id.as_str()).collect();
             ids.sort_unstable();
             assert_eq!(ids, vec!["a1", "a2"]);
+        }
+
+        /// A2: same-turn multi-Agent uses concurrent spawn+join (wall clock ≪ serial). Author: kejiqing
+        #[test]
+        fn agent_concurrent_foreground_wall_clock_less_than_serial() {
+            const AGENT: &str = "Agent";
+            let tool_uses = vec![
+                ("ag1".to_string(), AGENT.to_string(), "ag1".to_string()),
+                ("ag2".to_string(), AGENT.to_string(), "ag2".to_string()),
+            ];
+            let inner = RecordingSharedInner::with_outcomes_tools_and_limit(
+                BTreeMap::new(),
+                None,
+                std::collections::HashSet::from([AGENT.to_string()]),
+            );
+            let started = Instant::now();
+            let (_summary, session) =
+                run_tool_turn(tool_uses, RecordingExecutor::new(Arc::clone(&inner), false));
+            let wall = started.elapsed();
+            assert!(
+                inner.max_active.load(Ordering::SeqCst) >= 2,
+                "Agent must overlap on concurrent path, max_active={}",
+                inner.max_active.load(Ordering::SeqCst)
+            );
+            // Each shared call sleeps 60ms; serial ≥120ms, parallel ≈60ms + overhead.
+            assert!(
+                wall < Duration::from_millis(110),
+                "parallel Agent wall clock should be well under serial, got {wall:?}"
+            );
+            let rows = session_tool_result_rows(&session);
+            assert_eq!(rows.len(), 2);
+            assert!(rows
+                .iter()
+                .all(|(_, _, is_error, out)| !is_error && out.starts_with("ok:")));
         }
 
         #[test]
