@@ -24,10 +24,12 @@ pub struct E2bExecOutcome {
 }
 
 /// Per-turn solve cwd routing for e2b guest. Task body is on NAS via nas-api (not shell). Author: kejiqing
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct GatewaySolveInputs<'a> {
     /// Session directory segment under `/claw_sessions/{segment}`.
     pub session_segment: &'a str,
+    /// Final per-turn timeout resolved by the gateway.
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Deserialize)]

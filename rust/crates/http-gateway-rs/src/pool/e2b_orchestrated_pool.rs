@@ -153,6 +153,7 @@ impl PoolOps for E2bOrchestratedPool {
         claw_bin: &str,
         _request_id: Option<&str>,
         turn_id: &str,
+        timeout_seconds: u64,
         worker_llm_env: Option<BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String> {
@@ -200,6 +201,7 @@ impl PoolOps for E2bOrchestratedPool {
                 worker_llm_env.unwrap_or_default(),
                 claw_e2b_sandbox_client::GatewaySolveInputs {
                     session_segment: &session_segment,
+                    timeout_seconds,
                 },
                 stdout_hook,
             )

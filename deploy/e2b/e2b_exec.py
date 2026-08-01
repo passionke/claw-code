@@ -132,6 +132,8 @@ def main() -> None:
 
     sandbox_id = payload.get("sandbox_id") or ""
     script = payload.get("script") or ""
+    # exec_solve: gateway should pass timeout; keep 600 as last-resort default when
+    # older callers omit it. Not controlled by env. Author: kejiqing
     timeout = int(payload.get("timeout") or (600 if op == "exec_solve" else 180))
     # connect() without an explicit timeout makes the e2b SDK reset the sandbox
     # lifetime to its 300s default; keep the create-time lifetime instead.
