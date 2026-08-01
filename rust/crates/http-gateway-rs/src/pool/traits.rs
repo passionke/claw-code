@@ -38,6 +38,7 @@ pub trait PoolOps: Send + Sync {
         claw_bin: &str,
         request_id: Option<&str>,
         turn_id: &str,
+        timeout_seconds: u64,
         worker_llm_env: Option<BTreeMap<String, String>>,
         on_stdout_line: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Result<TaskOutcome, String>;

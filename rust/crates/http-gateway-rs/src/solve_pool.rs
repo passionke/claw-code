@@ -379,6 +379,7 @@ pub(crate) async fn run_solve_request_docker(
         claw_bin_for_pool_exec(&state.cfg),
         Some(request_id.as_str()),
         &turn_id,
+        timeout_seconds,
         Some(exec_env),
         None,
     );

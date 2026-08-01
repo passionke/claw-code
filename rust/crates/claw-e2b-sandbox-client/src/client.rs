@@ -1485,7 +1485,7 @@ impl E2bSandboxClient {
             "session_segment": inputs.session_segment,
             "session_root": session_root,
             "env": env,
-            "timeout": 600,
+            "timeout": inputs.timeout_seconds,
         });
         Self::run_exec_helper(&self.config.exec_helper, &payload, on_stdout_line).await
     }
