@@ -119,6 +119,8 @@ mod tests {
     fn nas_api_missing_base() -> E2bNasApiSettingsPublic {
         E2bNasApiSettingsPublic {
             template_id: None,
+            build_id: None,
+            applied_build_id: None,
             effective_template_id: "claw-nas-api".into(),
             base_url: None,
             sandbox_id: None,
@@ -136,6 +138,8 @@ mod tests {
     fn observe_missing_live() -> E2bObserveSettingsPublic {
         E2bObserveSettingsPublic {
             template_id: None,
+            build_id: None,
+            applied_build_id: None,
             effective_template_id: "claw-observe".into(),
             updated_at_ms: 0,
             configured: true,
@@ -182,6 +186,8 @@ mod tests {
             sandbox_id: Some("sbx_test".into()),
             updated_at_ms: 1,
             template_id: None,
+            build_id: None,
+            applied_build_id: None,
             running: Some(true),
             reachable: true,
             last_checked_at_ms: Some(1),
@@ -205,6 +211,8 @@ mod tests {
             sandbox_id: Some("sbx_test".into()),
             updated_at_ms: 1,
             template_id: None,
+            build_id: None,
+            applied_build_id: None,
             running: Some(true),
             reachable: true,
             last_checked_at_ms: Some(1),
@@ -212,6 +220,8 @@ mod tests {
         };
         let obs = E2bObserveSettingsPublic {
             template_id: None,
+            build_id: None,
+            applied_build_id: None,
             effective_template_id: "claw-observe".into(),
             updated_at_ms: 1,
             configured: true,

@@ -10,6 +10,12 @@ use claw_e2b_sandbox_client::E2bSandboxClient;
 pub struct E2bObserveSettings {
     #[serde(rename = "templateId", default)]
     pub template_id: Option<String>,
+    /// Desired template build id (from build script). Author: kejiqing
+    #[serde(rename = "buildId", default)]
+    pub build_id: Option<String>,
+    /// Build id of the running observe sandbox (set on create). Author: kejiqing
+    #[serde(rename = "appliedBuildId", default)]
+    pub applied_build_id: Option<String>,
     #[serde(rename = "updatedAtMs", default)]
     pub updated_at_ms: i64,
 }
@@ -28,6 +34,10 @@ impl E2bObserveSettings {
 pub struct E2bObserveSettingsPublic {
     #[serde(rename = "templateId", skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
+    #[serde(rename = "buildId", skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+    #[serde(rename = "appliedBuildId", skip_serializing_if = "Option::is_none")]
+    pub applied_build_id: Option<String>,
     #[serde(rename = "effectiveTemplateId")]
     pub effective_template_id: String,
     #[serde(rename = "updatedAtMs")]
@@ -146,6 +156,11 @@ pub async fn e2b_observe_settings_public_with_runtime(
         .and_then(|d| i64::try_from(d.as_millis()).ok());
     Ok(E2bObserveSettingsPublic {
         template_id: settings.template_id,
+        build_id: settings.build_id.clone().filter(|t| !t.trim().is_empty()),
+        applied_build_id: settings
+            .applied_build_id
+            .clone()
+            .filter(|t| !t.trim().is_empty()),
         effective_template_id,
         updated_at_ms: settings.updated_at_ms,
         configured,
@@ -157,4 +172,15 @@ pub async fn e2b_observe_settings_public_with_runtime(
         last_checked_at_ms: now_ms,
         last_error: if healthy { None } else { last_error },
     })
+}
+
+/// Non-empty PG `e2bObserve.buildId`, if configured. Author: kejiqing
+pub async fn load_e2b_observe_build_id(
+    db: &GatewaySessionDb,
+) -> Result<Option<String>, sqlx::Error> {
+    let settings = load_e2b_observe_settings(db).await?;
+    Ok(settings
+        .build_id
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty()))
 }

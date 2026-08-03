@@ -4,6 +4,10 @@
 //! optional per-project `worker_profile_json.poolSize`, capped by `CLAW_E2B_POOL_SIZE_CAP`).
 //! Relaxed: 1 worker with built-in OVS. Full-pool reconcile on startup / Admin poolSize change;
 //! solve acquire picks one slot from memory and reconciles only on cache miss.
+//!
+//! Image / buildId: remote rebuild only updates PG. Healthy sandboxes are never killed because
+//! buildId/templateId changed at runtime. New image is applied on gateway startup
+//! (`image_refresh`), manual reset, or when the sandbox is dead/unhealthy.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,6 +20,7 @@ use tracing::{info, warn};
 
 use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
+    load_e2b_worker_build_id, load_e2b_worker_relaxed_build_id,
     load_e2b_worker_relaxed_template_id, load_e2b_worker_template_id,
 };
 use crate::project_config_draft;
@@ -33,8 +38,6 @@ use super::worker_profile::{
 use super::NasLayoutBackend;
 
 const PROJECT_WORKER_CONTRACT_VERSION: &str = "nas-session-root-v3";
-/// e2b alias for relaxed worker; PG may store `tpl_*` for the same template.
-const RELAXED_WORKER_ALIAS: &str = "claw-worker-relaxed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct WorkerSlotKey {
@@ -42,15 +45,33 @@ struct WorkerSlotKey {
     slot_index: u32,
 }
 
-fn worker_contract_key(template_id: &str, project_home_rev: &str, profile: &str) -> String {
-    format!(
-        "{template_id}#{PROJECT_WORKER_CONTRACT_VERSION}#home={project_home_rev}#profile={profile}"
-    )
+/// Split `{template}` or `{template}@{buildId}` head. Author: kejiqing
+fn split_template_build(head: &str) -> (String, Option<String>) {
+    match head.split_once('@') {
+        Some((tpl, build)) if !build.trim().is_empty() => {
+            (tpl.to_string(), Some(build.trim().to_string()))
+        }
+        _ => (head.to_string(), None),
+    }
+}
+
+fn worker_contract_key(
+    template_id: &str,
+    build_id: Option<&str>,
+    project_home_rev: &str,
+    profile: &str,
+) -> String {
+    let head = match build_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(b) => format!("{template_id}@{b}"),
+        None => template_id.to_string(),
+    };
+    format!("{head}#{PROJECT_WORKER_CONTRACT_VERSION}#home={project_home_rev}#profile={profile}")
 }
 
 async fn desired_worker_contract(
     db: &GatewaySessionDb,
     template_id: &str,
+    build_id: Option<&str>,
     proj_id: i64,
     profile: &str,
 ) -> Result<String, String> {
@@ -59,12 +80,18 @@ async fn desired_worker_contract(
         Ok(None) => "none".to_string(),
         Err(e) => return Err(format!("load project home rev for worker contract: {e}")),
     };
-    Ok(worker_contract_key(template_id, &home_rev, profile))
+    Ok(worker_contract_key(
+        template_id,
+        build_id,
+        &home_rev,
+        profile,
+    ))
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct WorkerContractParts {
     template: String,
+    build_id: Option<String>,
     version: String,
     home_rev: String,
     profile: String,
@@ -72,33 +99,21 @@ struct WorkerContractParts {
 
 fn parse_worker_contract(key: &str) -> Option<WorkerContractParts> {
     let mut parts = key.splitn(4, '#');
-    let template = parts.next()?.to_string();
+    let head = parts.next()?;
+    let (template, build_id) = split_template_build(head);
     let version = parts.next()?.to_string();
     let home = parts.next()?.strip_prefix("home=")?.to_string();
     let profile = parts.next()?.strip_prefix("profile=")?.to_string();
     Some(WorkerContractParts {
         template,
+        build_id,
         version,
         home_rev: home,
         profile,
     })
 }
 
-fn template_rotation_needed(stored_tpl: &str, desired_tpl: &str) -> bool {
-    if stored_tpl == desired_tpl {
-        return false;
-    }
-    let stored_is_alias = stored_tpl == RELAXED_WORKER_ALIAS;
-    let desired_is_alias = desired_tpl == RELAXED_WORKER_ALIAS;
-    if stored_is_alias || desired_is_alias {
-        return false;
-    }
-    if stored_tpl.starts_with("tpl_") && desired_tpl.starts_with("tpl_") {
-        return stored_tpl != desired_tpl;
-    }
-    true
-}
-
+/// Home / profile / contract-version mismatch (not image). Template/build alone never rotate. Author: kejiqing
 fn contract_requires_rotation(stored: &str, desired: &str) -> bool {
     if stored == desired {
         return false;
@@ -109,17 +124,54 @@ fn contract_requires_rotation(stored: &str, desired: &str) -> bool {
     let Some(desired_parts) = parse_worker_contract(desired) else {
         return true;
     };
-    if stored_parts.version != desired_parts.version
+    stored_parts.version != desired_parts.version
         || stored_parts.home_rev != desired_parts.home_rev
         || stored_parts.profile != desired_parts.profile
+}
+
+/// Startup / manual image window: desired build pin differs from applied. Author: kejiqing
+fn image_build_refresh_needed(stored: &str, desired: &str) -> bool {
+    let Some(desired_parts) = parse_worker_contract(desired) else {
+        return true;
+    };
+    let Some(desired_build) = desired_parts
+        .build_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        // No pin → never force image refresh for build alone.
+        return false;
+    };
+    let Some(stored_parts) = parse_worker_contract(stored) else {
+        return true;
+    };
+    match stored_parts
+        .build_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
     {
+        None => true, // legacy row without @build → align on startup
+        Some(applied) => applied != desired_build,
+    }
+}
+
+/// Unified recreate decision. `image_refresh` only on gateway startup (or callers that opt in).
+/// Remote rebuild must not set this at runtime. Author: kejiqing
+fn needs_recreate(stored: &str, desired: &str, image_refresh: bool, sandbox_alive: bool) -> bool {
+    if !sandbox_alive {
         return true;
     }
-    template_rotation_needed(&stored_parts.template, &desired_parts.template)
+    if contract_requires_rotation(stored, desired) {
+        return true;
+    }
+    image_refresh && image_build_refresh_needed(stored, desired)
 }
 
 struct WorkerSpec {
     e2b_template_id: String,
+    build_id: Option<String>,
     include_ovs: bool,
     profile_label: String,
 }
@@ -206,8 +258,12 @@ impl E2bProjWorkerRegistry {
                 let e2b_template_id = load_e2b_worker_relaxed_template_id(db.as_ref())
                     .await
                     .map_err(|e| format!("load e2bWorkerRelaxed template: {e}"))?;
+                let build_id = load_e2b_worker_relaxed_build_id(db.as_ref())
+                    .await
+                    .map_err(|e| format!("load e2bWorkerRelaxed buildId: {e}"))?;
                 Ok(WorkerSpec {
                     e2b_template_id,
+                    build_id,
                     include_ovs: true,
                     profile_label,
                 })
@@ -216,8 +272,12 @@ impl E2bProjWorkerRegistry {
                 let e2b_template_id = load_e2b_worker_template_id(db.as_ref())
                     .await
                     .map_err(|e| format!("load e2bWorker template: {e}"))?;
+                let build_id = load_e2b_worker_build_id(db.as_ref())
+                    .await
+                    .map_err(|e| format!("load e2bWorker buildId: {e}"))?;
                 Ok(WorkerSpec {
                     e2b_template_id,
+                    build_id,
                     include_ovs: false,
                     profile_label,
                 })
@@ -271,7 +331,7 @@ impl E2bProjWorkerRegistry {
             "reconcile project e2b workers on startup"
         );
         for proj_id in proj_ids {
-            if let Err(e) = self.reconcile_proj(proj_id).await {
+            if let Err(e) = self.reconcile_proj_image_refresh(proj_id).await {
                 warn!(
                     target: "claw_e2b_proj_worker",
                     proj_id,
@@ -286,6 +346,7 @@ impl E2bProjWorkerRegistry {
     }
 
     /// Best-effort reconcile every project (e.g. after Admin poolSize change).
+    /// Does **not** refresh image on buildId change (runtime path). Author: kejiqing
     pub async fn reconcile_all_projects(&self) -> Result<(), String> {
         let db = self.session_db().await?;
         let proj_ids = db
@@ -391,9 +452,23 @@ impl E2bProjWorkerRegistry {
     }
 
     pub async fn reconcile_proj(&self, proj_id: i64) -> Result<(), String> {
+        self.reconcile_proj_with_image_refresh(proj_id, false).await
+    }
+
+    /// Gateway startup: allow buildId-driven image refresh. Author: kejiqing
+    pub async fn reconcile_proj_image_refresh(&self, proj_id: i64) -> Result<(), String> {
+        self.reconcile_proj_with_image_refresh(proj_id, true).await
+    }
+
+    async fn reconcile_proj_with_image_refresh(
+        &self,
+        proj_id: i64,
+        image_refresh: bool,
+    ) -> Result<(), String> {
         let pool_size = self.desired_pool_size(proj_id).await?;
         for slot_index in 0..pool_size {
-            self.reconcile_proj_slot(proj_id, slot_index).await?;
+            self.reconcile_proj_slot(proj_id, slot_index, image_refresh)
+                .await?;
         }
         let db = self.session_db().await?;
         let existing = db
@@ -457,10 +532,16 @@ impl E2bProjWorkerRegistry {
         Ok(())
     }
 
-    async fn reconcile_proj_slot(&self, proj_id: i64, slot_index: u32) -> Result<(), String> {
+    async fn reconcile_proj_slot(
+        &self,
+        proj_id: i64,
+        slot_index: u32,
+        image_refresh: bool,
+    ) -> Result<(), String> {
         let db = self.session_db().await?;
         db.with_project_e2b_worker_slot_lock(proj_id, e2b_worker_slot_i32(slot_index), || async {
-            self.reconcile_proj_slot_locked(proj_id, slot_index).await
+            self.reconcile_proj_slot_locked(proj_id, slot_index, image_refresh)
+                .await
         })
         .await
     }
@@ -469,12 +550,14 @@ impl E2bProjWorkerRegistry {
         &self,
         proj_id: i64,
         slot_index: u32,
+        image_refresh: bool,
     ) -> Result<(), String> {
         let spec = self.desired_worker_spec(proj_id).await?;
         let db = self.session_db().await?;
         let desired_contract = desired_worker_contract(
             db.as_ref(),
             &spec.e2b_template_id,
+            spec.build_id.as_deref(),
             proj_id,
             &spec.profile_label,
         )
@@ -490,9 +573,14 @@ impl E2bProjWorkerRegistry {
         };
 
         if let Some(ref existing) = row {
-            let contract_ok = existing.template_id == desired_contract
-                || !contract_requires_rotation(&existing.template_id, &desired_contract);
-            if contract_ok && self.client.sandbox_running(&existing.sandbox_id).await {
+            let sandbox_alive = self.client.sandbox_running(&existing.sandbox_id).await;
+            let must_recreate = needs_recreate(
+                &existing.template_id,
+                &desired_contract,
+                image_refresh,
+                sandbox_alive,
+            );
+            if !must_recreate {
                 let handle = E2bSandboxClient::handle_from_json(&existing.handle_json)?;
                 let handle = self.normalize_handle(handle, spec.include_ovs);
                 let ovs_ok = !spec.include_ovs || self.relaxed_ovs_http_ok(&handle).await;
@@ -540,7 +628,8 @@ impl E2bProjWorkerRegistry {
                     proj_id,
                     slot_index,
                     old_sandbox = %existing.sandbox_id,
-                    "proj worker rotate (contract mismatch or offline)"
+                    image_refresh,
+                    "proj worker rotate (contract / image_refresh / offline)"
                 );
             }
             let pg_busy = db
@@ -605,6 +694,7 @@ impl E2bProjWorkerRegistry {
         let contract_key = desired_worker_contract(
             db.as_ref(),
             &spec.e2b_template_id,
+            spec.build_id.as_deref(),
             proj_id,
             &spec.profile_label,
         )
@@ -709,7 +799,7 @@ impl E2bProjWorkerRegistry {
 
     /// Ensure slot-0 worker (relaxed OVS / legacy callers).
     pub async fn ensure_worker(&self, proj_id: i64) -> Result<(E2bSandboxHandle, String), String> {
-        self.reconcile_proj_slot(proj_id, 0).await?;
+        self.reconcile_proj_slot(proj_id, 0, false).await?;
         let key = WorkerSlotKey {
             proj_id,
             slot_index: 0,
@@ -804,7 +894,8 @@ impl E2bProjWorkerRegistry {
             return Ok((handle, worker_id));
         }
         // Cache miss / missing slot: reconcile this slot only (create or PG→e2b probe).
-        self.reconcile_proj_slot(proj_id, slot_index).await?;
+        // Runtime path: no image_refresh (remote rebuild must not rotate). Author: kejiqing
+        self.reconcile_proj_slot(proj_id, slot_index, false).await?;
         let guard = self.workers.lock().await;
         let rt = guard.get(&key).ok_or_else(|| {
             format!("proj worker missing after reconcile proj_{proj_id} slot {slot_index}")
@@ -924,6 +1015,7 @@ impl E2bProjWorkerRegistry {
         });
     }
 
+    /// Admin force reset: always kill + create (manual recreate window). Author: kejiqing
     pub async fn force_rotate_proj(
         &self,
         proj_id: i64,
@@ -1048,9 +1140,17 @@ fn select_least_lease_slot(
 mod tests {
     use super::*;
 
+    /// e2b alias for relaxed worker; PG may store `tpl_*` for the same template.
+    const RELAXED_WORKER_ALIAS: &str = "claw-worker-relaxed";
+
     #[test]
     fn worker_contract_includes_project_home_rev_and_profile() {
-        let key = worker_contract_key("claw-worker-relaxed", "2026-07-01_12-00-00", "relaxed");
+        let key = worker_contract_key(
+            "claw-worker-relaxed",
+            None,
+            "2026-07-01_12-00-00",
+            "relaxed",
+        );
         assert!(key.contains("nas-session-root-v3"));
         assert!(key.contains("#home=2026-07-01_12-00-00"));
         assert!(key.ends_with("#profile=relaxed"));
@@ -1061,25 +1161,131 @@ mod tests {
     }
 
     #[test]
-    fn alias_vs_tpl_relaxed_relabels_without_rotation() {
-        let alias = worker_contract_key(RELAXED_WORKER_ALIAS, "rev-1", "relaxed");
-        let tpl = worker_contract_key("tpl_0153bc5c", "rev-1", "relaxed");
+    fn contract_with_build_id_roundtrip() {
+        let key = worker_contract_key("tpl_a", Some("build-1"), "r", "strict");
+        let parts = parse_worker_contract(&key).expect("parse");
+        assert_eq!(parts.template, "tpl_a");
+        assert_eq!(parts.build_id.as_deref(), Some("build-1"));
+        assert_eq!(parts.home_rev, "r");
+        assert_eq!(parts.profile, "strict");
+        assert!(key.starts_with("tpl_a@build-1#"));
+    }
+
+    #[test]
+    fn contract_without_build_id_legacy() {
+        let legacy = worker_contract_key("tpl_a", None, "r", "strict");
+        let parts = parse_worker_contract(&legacy).expect("parse");
+        assert_eq!(parts.template, "tpl_a");
+        assert!(parts.build_id.is_none());
+        let with_build = worker_contract_key("tpl_a", Some("b2"), "r", "strict");
+        // R1/legacy: runtime must not rotate solely because build is missing vs present.
+        assert!(
+            !needs_recreate(&legacy, &with_build, false, true),
+            "remote rebuild must not rotate at runtime"
+        );
+    }
+
+    #[test]
+    fn alias_vs_tpl_relabel_no_kill() {
+        let alias = worker_contract_key(RELAXED_WORKER_ALIAS, Some("b1"), "rev-1", "relaxed");
+        let tpl = worker_contract_key("tpl_0153bc5c", Some("b1"), "rev-1", "relaxed");
         assert!(!contract_requires_rotation(&alias, &tpl));
         assert!(!contract_requires_rotation(&tpl, &alias));
+        assert!(!needs_recreate(&alias, &tpl, false, true));
     }
 
+    // R1: runtime buildId change must not recreate.
     #[test]
-    fn tpl_change_requires_rotation() {
-        let a = worker_contract_key("tpl_aaaa", "rev-1", "strict");
-        let b = worker_contract_key("tpl_bbbb", "rev-1", "strict");
-        assert!(contract_requires_rotation(&a, &b));
+    fn r1_runtime_build_id_changed() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let b = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(
+            !needs_recreate(&a, &b, false, true),
+            "remote rebuild must not rotate at runtime"
+        );
     }
 
+    // R2: runtime tpl_* change must not recreate.
     #[test]
-    fn home_rev_change_requires_rotation() {
-        let a = worker_contract_key("tpl_aaaa", "rev-1", "strict");
-        let b = worker_contract_key("tpl_aaaa", "rev-2", "strict");
-        assert!(contract_requires_rotation(&a, &b));
+    fn r2_runtime_tpl_id_changed() {
+        let a = worker_contract_key("tpl_aaaa", Some("b1"), "rev-1", "strict");
+        let b = worker_contract_key("tpl_bbbb", Some("b1"), "rev-1", "strict");
+        assert!(
+            !needs_recreate(&a, &b, false, true),
+            "tpl change must not rotate at runtime"
+        );
+        assert!(!contract_requires_rotation(&a, &b));
+    }
+
+    // R3: home_rev change still recreates.
+    #[test]
+    fn r3_runtime_home_rev_changed() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev-1", "strict");
+        let b = worker_contract_key("tpl_a", Some("b1"), "rev-2", "strict");
+        assert!(needs_recreate(&a, &b, false, true));
+    }
+
+    // R4: profile change still recreates.
+    #[test]
+    fn r4_runtime_profile_changed() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let b = worker_contract_key("tpl_a", Some("b1"), "rev", "relaxed");
+        assert!(needs_recreate(&a, &b, false, true));
+    }
+
+    // R5: dead sandbox recreates even when contract matches.
+    #[test]
+    fn r5_runtime_dead_sandbox() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        assert!(needs_recreate(&a, &a, false, false));
+    }
+
+    // R6: same everything + alive → no recreate.
+    #[test]
+    fn r6_runtime_same_everything() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        assert!(!needs_recreate(&a, &a, false, true));
+    }
+
+    // S1: startup build mismatch → recreate.
+    #[test]
+    fn s1_startup_build_mismatch() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let b = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(needs_recreate(&a, &b, true, true));
+    }
+
+    // S2: startup same build → no recreate.
+    #[test]
+    fn s2_startup_build_same() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        assert!(!needs_recreate(&a, &a, true, true));
+    }
+
+    // S3: desired build empty → no force image refresh.
+    #[test]
+    fn s3_startup_desired_build_empty() {
+        let stored = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        let desired = worker_contract_key("tpl_a", None, "rev", "strict");
+        assert!(
+            !needs_recreate(&stored, &desired, true, true),
+            "empty desired build must not force image refresh"
+        );
+    }
+
+    // S4: legacy applied without @build, desired has build → recreate on startup.
+    #[test]
+    fn s4_startup_applied_legacy_no_build() {
+        let legacy = worker_contract_key("tpl_a", None, "rev", "strict");
+        let desired = worker_contract_key("tpl_a", Some("b2"), "rev", "strict");
+        assert!(needs_recreate(&legacy, &desired, true, true));
+    }
+
+    // S5: dead even with same build → recreate.
+    #[test]
+    fn s5_startup_dead_even_same_build() {
+        let a = worker_contract_key("tpl_a", Some("b1"), "rev", "strict");
+        assert!(needs_recreate(&a, &a, true, false));
     }
 
     #[test]

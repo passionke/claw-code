@@ -188,14 +188,22 @@ def main() -> int:
             "e2bWorkerRelaxed",
             {
                 "templateId": build.template_id,
+                "buildId": build.build_id,
                 "alias": alias,
                 "updatedAtMs": now_ms,
             },
             now_ms=now_ms,
         )
-        print(f"==> persisted e2bWorkerRelaxed.templateId={build.template_id!r} to PG")
+        print(
+            f"==> persisted e2bWorkerRelaxed.templateId={build.template_id!r} "
+            f"buildId={build.build_id!r} to PG"
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"warn: skip PG e2bWorkerRelaxed.templateId persist: {exc}", file=sys.stderr)
+    print(
+        "hint: rebuild only updates PG; new build is used after gateway restart, "
+        "manual worker reset, or when the sandbox is dead"
+    )
     print(f"OK: relaxed worker template {alias!r} ({build.template_id}) with built-in OVS")
 
     if _env("CLAW_E2B_TEMPLATE_SKIP_VERIFY", "0") not in ("1", "true", "yes"):

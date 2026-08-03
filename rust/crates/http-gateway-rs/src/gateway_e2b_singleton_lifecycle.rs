@@ -71,6 +71,45 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Whether ensure should reuse a healthy singleton or recreate for image. Author: kejiqing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SingletonImageAction {
+    Reuse,
+    Recreate,
+}
+
+/// Pure decision: remote rebuild must not recreate at runtime (`image_refresh=false`).
+/// Startup (`image_refresh=true`) recreates when desired build pin differs from applied.
+/// Empty desired = no pin → never force image refresh. Author: kejiqing
+pub(crate) fn singleton_image_action(
+    healthy: bool,
+    image_refresh: bool,
+    desired_build: Option<&str>,
+    applied_build: Option<&str>,
+) -> SingletonImageAction {
+    if !healthy {
+        return SingletonImageAction::Recreate;
+    }
+    if !image_refresh {
+        return SingletonImageAction::Reuse;
+    }
+    let desired = desired_build.map(str::trim).filter(|s| !s.is_empty());
+    let Some(desired) = desired else {
+        return SingletonImageAction::Reuse;
+    };
+    let applied = applied_build.map(str::trim).filter(|s| !s.is_empty());
+    match applied {
+        Some(a) if a == desired => SingletonImageAction::Reuse,
+        _ => SingletonImageAction::Recreate,
+    }
+}
+
+fn opt_build(s: Option<&String>) -> Option<&str> {
+    s.map(|t| t.as_str())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+}
+
 fn service_base_url(
     client: &E2bSandboxClient,
     port: u16,
@@ -247,11 +286,25 @@ async fn persist_nas_api(
     db: &GatewaySessionDb,
     base_url: &str,
     sandbox_id: &str,
+    applied_build_id: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let now = now_ms();
     let (settings, _, _) = get_gateway_global_settings(db).await?;
+    let applied = applied_build_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            settings
+                .e2b_nas_api
+                .applied_build_id
+                .clone()
+                .filter(|t| !t.trim().is_empty())
+        });
     let value = serde_json::json!({
         "templateId": settings.e2b_nas_api.template_id,
+        "buildId": settings.e2b_nas_api.build_id,
+        "appliedBuildId": applied,
         "baseUrl": base_url.trim_end_matches('/'),
         "sandboxId": sandbox_id,
         "updatedAtMs": now,
@@ -265,11 +318,25 @@ async fn persist_ovs(
     db: &GatewaySessionDb,
     base_url: &str,
     sandbox_id: &str,
+    applied_build_id: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let now = now_ms();
     let (settings, _, _) = get_gateway_global_settings(db).await?;
+    let applied = applied_build_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            settings
+                .e2b_ovs
+                .applied_build_id
+                .clone()
+                .filter(|t| !t.trim().is_empty())
+        });
     let value = serde_json::json!({
         "templateId": settings.e2b_ovs.template_id,
+        "buildId": settings.e2b_ovs.build_id,
+        "appliedBuildId": applied,
         "baseUrl": base_url.trim_end_matches('/'),
         "sandboxId": sandbox_id,
         "updatedAtMs": now,
@@ -284,6 +351,7 @@ async fn persist_observe_tap(
     handle: &E2bSandboxHandle,
     live_port: u16,
     live_base_url: &str,
+    applied_build_id: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let now = now_ms();
     let proxy_host = client.service_public_host(
@@ -311,8 +379,21 @@ async fn persist_observe_tap(
     db.merge_gateway_global_settings_json(&["clawTap"], &claw_tap)
         .await?;
     let (settings, _, _) = get_gateway_global_settings(db).await?;
+    let applied = applied_build_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            settings
+                .e2b_observe
+                .applied_build_id
+                .clone()
+                .filter(|t| !t.trim().is_empty())
+        });
     let observe = serde_json::json!({
         "templateId": settings.e2b_observe.template_id,
+        "buildId": settings.e2b_observe.build_id,
+        "appliedBuildId": applied,
         "updatedAtMs": now,
     });
     db.merge_gateway_global_settings_json(&["e2bObserve"], &observe)
@@ -339,6 +420,7 @@ async fn kill_existing_singleton(
 async fn ensure_nas_api(
     db: &GatewaySessionDb,
     client: &E2bSandboxClient,
+    image_refresh: bool,
 ) -> Result<E2bSingletonOutcome, String> {
     if !E2bNasApiSingleton::enabled_from_env() {
         return Ok(E2bSingletonOutcome {
@@ -353,10 +435,12 @@ async fn ensure_nas_api(
     let template = load_e2b_nas_api_template_id(db)
         .await
         .map_err(|e| format!("load nas-api template: {e}"))?;
-    let pg_sid = get_gateway_global_settings(db)
+    let (settings, _, _) = get_gateway_global_settings(db)
         .await
-        .ok()
-        .and_then(|(s, _, _)| s.e2b_nas_api.sandbox_id);
+        .map_err(|e| format!("load settings for nas-api: {e}"))?;
+    let desired_build = opt_build(settings.e2b_nas_api.build_id.as_ref());
+    let applied_build = opt_build(settings.e2b_nas_api.applied_build_id.as_ref());
+    let pg_sid = settings.e2b_nas_api.sandbox_id.clone();
 
     let candidate = resolve_sandbox_id(
         client,
@@ -369,26 +453,33 @@ async fn ensure_nas_api(
     if let Some(ref sid) = candidate {
         let domain = client.config().domain.clone();
         let base_url = service_base_url(client, port, sid, &domain);
-        if client.sandbox_running(sid).await && nas_api_health_ok(&base_url).await {
-            client.touch_persistent_sandbox(sid).await?;
-            let _ = persist_nas_api(db, &base_url, sid).await;
-            let _ = client
-                .reap_singleton_orphans(&cluster_id, SINGLETON_ROLE_NAS_API, sid)
-                .await;
-            info!(target: "claw_e2b_singleton", sandbox_id = %sid, "nas-api singleton online");
-            return Ok(E2bSingletonOutcome {
-                sandbox_id: Some(sid.clone()),
-                base_url: Some(base_url),
-                traffic_reachable: true,
-                message: None,
-            });
+        let healthy = client.sandbox_running(sid).await && nas_api_health_ok(&base_url).await;
+        match singleton_image_action(healthy, image_refresh, desired_build, applied_build) {
+            SingletonImageAction::Reuse => {
+                client.touch_persistent_sandbox(sid).await?;
+                let _ = persist_nas_api(db, &base_url, sid, applied_build).await;
+                let _ = client
+                    .reap_singleton_orphans(&cluster_id, SINGLETON_ROLE_NAS_API, sid)
+                    .await;
+                info!(target: "claw_e2b_singleton", sandbox_id = %sid, "nas-api singleton online");
+                return Ok(E2bSingletonOutcome {
+                    sandbox_id: Some(sid.clone()),
+                    base_url: Some(base_url),
+                    traffic_reachable: true,
+                    message: None,
+                });
+            }
+            SingletonImageAction::Recreate => {
+                warn!(
+                    target: "claw_e2b_singleton",
+                    sandbox_id = %sid,
+                    healthy,
+                    image_refresh,
+                    "nas-api singleton recreate"
+                );
+                let _ = client.kill_sandbox(sid).await;
+            }
         }
-        warn!(
-            target: "claw_e2b_singleton",
-            sandbox_id = %sid,
-            "nas-api singleton unhealthy — recreate"
-        );
-        let _ = client.kill_sandbox(sid).await;
     }
 
     info!(
@@ -407,7 +498,7 @@ async fn ensure_nas_api(
         let _ = client.kill_sandbox(&handle.sandbox_id).await;
         return Err(format!("nas-api healthz not reachable at {health_url}"));
     }
-    persist_nas_api(db, &base_url, &handle.sandbox_id)
+    persist_nas_api(db, &base_url, &handle.sandbox_id, desired_build)
         .await
         .map_err(|e| format!("persist e2bNasApi: {e}"))?;
     let _ = client
@@ -424,6 +515,7 @@ async fn ensure_nas_api(
 async fn ensure_observe(
     db: &GatewaySessionDb,
     client: &E2bSandboxClient,
+    image_refresh: bool,
 ) -> Result<E2bSingletonOutcome, String> {
     if !e2b_observe_is_enabled() {
         return Ok(E2bSingletonOutcome {
@@ -439,10 +531,12 @@ async fn ensure_observe(
         .map_err(|e| format!("load observe template: {e}"))?;
     let sandbox_db_url = sandbox_database_url()?;
     let live_port = observe_live_port();
-    let pg_sid = get_gateway_global_settings(db)
+    let (settings, _, _) = get_gateway_global_settings(db)
         .await
-        .ok()
-        .and_then(|(s, _, _)| s.claw_tap.e2b_observe_sandbox_id.clone());
+        .map_err(|e| format!("load settings for observe: {e}"))?;
+    let desired_build = opt_build(settings.e2b_observe.build_id.as_ref());
+    let applied_build = opt_build(settings.e2b_observe.applied_build_id.as_ref());
+    let pg_sid = settings.claw_tap.e2b_observe_sandbox_id.clone();
 
     let candidate = resolve_sandbox_id(
         client,
@@ -455,36 +549,44 @@ async fn ensure_observe(
     if let Some(ref sid) = candidate {
         let domain = client.config().domain.clone();
         let live_base = service_base_url(client, live_port, sid, &domain);
-        if client.sandbox_running(sid).await
-            && observe_traffic_ok(client, sid, &domain, live_port, &cluster_id).await
-        {
-            client.touch_persistent_sandbox(sid).await?;
-            let handle = E2bSandboxHandle {
-                sandbox_id: sid.clone(),
-                sandbox_domain: domain,
-                envd_access_token: None,
-                traffic_access_token: None,
-                ovs_public_host: None,
-                ovs_base_url: None,
-            };
-            let _ = persist_observe_tap(db, client, &handle, live_port, &live_base).await;
-            let _ = client
-                .reap_singleton_orphans(&cluster_id, SINGLETON_ROLE_OBSERVE, sid)
-                .await;
-            info!(target: "claw_e2b_singleton", sandbox_id = %sid, "observe singleton online");
-            return Ok(E2bSingletonOutcome {
-                sandbox_id: Some(sid.clone()),
-                base_url: Some(live_base),
-                traffic_reachable: true,
-                message: None,
-            });
+        let healthy = client.sandbox_running(sid).await
+            && observe_traffic_ok(client, sid, &domain, live_port, &cluster_id).await;
+        match singleton_image_action(healthy, image_refresh, desired_build, applied_build) {
+            SingletonImageAction::Reuse => {
+                client.touch_persistent_sandbox(sid).await?;
+                let handle = E2bSandboxHandle {
+                    sandbox_id: sid.clone(),
+                    sandbox_domain: domain,
+                    envd_access_token: None,
+                    traffic_access_token: None,
+                    ovs_public_host: None,
+                    ovs_base_url: None,
+                };
+                let _ =
+                    persist_observe_tap(db, client, &handle, live_port, &live_base, applied_build)
+                        .await;
+                let _ = client
+                    .reap_singleton_orphans(&cluster_id, SINGLETON_ROLE_OBSERVE, sid)
+                    .await;
+                info!(target: "claw_e2b_singleton", sandbox_id = %sid, "observe singleton online");
+                return Ok(E2bSingletonOutcome {
+                    sandbox_id: Some(sid.clone()),
+                    base_url: Some(live_base),
+                    traffic_reachable: true,
+                    message: None,
+                });
+            }
+            SingletonImageAction::Recreate => {
+                warn!(
+                    target: "claw_e2b_singleton",
+                    sandbox_id = %sid,
+                    healthy,
+                    image_refresh,
+                    "observe singleton recreate"
+                );
+                let _ = client.kill_sandbox(sid).await;
+            }
         }
-        warn!(
-            target: "claw_e2b_singleton",
-            sandbox_id = %sid,
-            "observe singleton unhealthy after retries — recreate"
-        );
-        let _ = client.kill_sandbox(sid).await;
     }
 
     info!(
@@ -507,7 +609,7 @@ async fn ensure_observe(
         let _ = client.kill_sandbox(&handle.sandbox_id).await;
         return Err(format!("observe Live not reachable at {live_base}"));
     }
-    persist_observe_tap(db, client, &handle, live_port, &live_base)
+    persist_observe_tap(db, client, &handle, live_port, &live_base, desired_build)
         .await
         .map_err(|e| format!("persist clawTap: {e}"))?;
     let _ = client
@@ -553,7 +655,7 @@ async fn ensure_ovs(
         };
         if client.sandbox_running(sid).await && http_get_ok(&check_url).await {
             client.touch_persistent_sandbox(sid).await?;
-            let _ = persist_ovs(db, &ovs_url, sid).await;
+            let _ = persist_ovs(db, &ovs_url, sid, None).await;
             let _ = client
                 .reap_singleton_orphans(&cluster_id, SINGLETON_ROLE_OVS, sid)
                 .await;
@@ -591,7 +693,7 @@ async fn ensure_ovs(
         let _ = client.kill_sandbox(&handle.sandbox_id).await;
         return Err(format!("OVS traffic not reachable at {check_url}"));
     }
-    persist_ovs(db, &ovs_url, &handle.sandbox_id)
+    persist_ovs(db, &ovs_url, &handle.sandbox_id, None)
         .await
         .map_err(|e| format!("persist e2bOvs: {e}"))?;
     let _ = client
@@ -619,8 +721,8 @@ pub async fn ensure_e2b_singleton(
     };
     db.with_e2b_singleton_role_lock(role, || async {
         match component {
-            E2bSingletonComponent::NasApi => ensure_nas_api(db, client).await,
-            E2bSingletonComponent::Observe => ensure_observe(db, client).await,
+            E2bSingletonComponent::NasApi => ensure_nas_api(db, client, false).await,
+            E2bSingletonComponent::Observe => ensure_observe(db, client, false).await,
             E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
         }
     })
@@ -654,7 +756,7 @@ pub async fn reset_e2b_singleton(
                     pg_sid.as_deref(),
                 )
                 .await;
-                ensure_nas_api(db, client).await
+                ensure_nas_api(db, client, true).await
             }
             E2bSingletonComponent::Observe => {
                 let pg_sid = get_gateway_global_settings(db)
@@ -668,7 +770,7 @@ pub async fn reset_e2b_singleton(
                     pg_sid.as_deref(),
                 )
                 .await;
-                ensure_observe(db, client).await
+                ensure_observe(db, client, true).await
             }
             E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
         }
@@ -749,7 +851,7 @@ pub async fn ensure_e2b_singletons_on_startup_strict(
     if !interactive_backend_is_e2b() {
         return Ok(());
     }
-    let nas = ensure_nas_api(db, client).await?;
+    let nas = ensure_nas_api(db, client, true).await?;
     verify_nas_api_strict(&nas)?;
     if E2bNasApiSingleton::enabled_from_env() {
         info!(
@@ -760,7 +862,7 @@ pub async fn ensure_e2b_singletons_on_startup_strict(
             "nas-api singleton ready (startup strict)"
         );
     }
-    let observe = ensure_observe(db, client).await?;
+    let observe = ensure_observe(db, client, true).await?;
     verify_observe_strict(&observe)?;
     if e2b_observe_is_enabled() {
         info!(
@@ -782,7 +884,7 @@ pub async fn reconcile_e2b_singletons_best_effort(
     if !interactive_backend_is_e2b() {
         return;
     }
-    if let Err(e) = ensure_nas_api(db, client).await {
+    if let Err(e) = ensure_nas_api(db, client, false).await {
         warn!(
             target: "claw_e2b_singleton",
             component = "nas-api",
@@ -790,7 +892,7 @@ pub async fn reconcile_e2b_singletons_best_effort(
             "singleton reconcile failed (best-effort)"
         );
     }
-    if let Err(e) = ensure_observe(db, client).await {
+    if let Err(e) = ensure_observe(db, client, false).await {
         warn!(
             target: "claw_e2b_singleton",
             component = "observe",
@@ -894,5 +996,67 @@ mod strict_tests {
         .await;
         assert!(ok);
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    // N1: healthy + runtime + build mismatch → Reuse
+    #[test]
+    fn n1_runtime_build_mismatch_reuses() {
+        assert_eq!(
+            singleton_image_action(true, false, Some("b2"), Some("b1")),
+            SingletonImageAction::Reuse
+        );
+    }
+
+    // N2: healthy + startup + build mismatch → Recreate
+    #[test]
+    fn n2_startup_build_mismatch_recreates() {
+        assert_eq!(
+            singleton_image_action(true, true, Some("b2"), Some("b1")),
+            SingletonImageAction::Recreate
+        );
+    }
+
+    // N3: healthy + startup + same build → Reuse
+    #[test]
+    fn n3_startup_same_build_reuses() {
+        assert_eq!(
+            singleton_image_action(true, true, Some("b1"), Some("b1")),
+            SingletonImageAction::Reuse
+        );
+    }
+
+    // N4: unhealthy → Recreate
+    #[test]
+    fn n4_unhealthy_recreates() {
+        assert_eq!(
+            singleton_image_action(false, false, Some("b1"), Some("b1")),
+            SingletonImageAction::Recreate
+        );
+        assert_eq!(
+            singleton_image_action(false, true, Some("b2"), Some("b1")),
+            SingletonImageAction::Recreate
+        );
+    }
+
+    // N5: healthy + runtime + same → Reuse
+    #[test]
+    fn n5_runtime_same_reuses() {
+        assert_eq!(
+            singleton_image_action(true, false, Some("b1"), Some("b1")),
+            SingletonImageAction::Reuse
+        );
+    }
+
+    // N6: desired empty → no pin → Reuse even on startup
+    #[test]
+    fn n6_desired_empty_reuses() {
+        assert_eq!(
+            singleton_image_action(true, true, None, Some("b1")),
+            SingletonImageAction::Reuse
+        );
+        assert_eq!(
+            singleton_image_action(true, true, Some(""), Some("b1")),
+            SingletonImageAction::Reuse
+        );
     }
 }

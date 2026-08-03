@@ -43,6 +43,9 @@ pub fn clamp_strict_worker_pool_size(n: u32) -> u32 {
 pub struct E2bWorkerSettings {
     #[serde(rename = "templateId", default)]
     pub template_id: Option<String>,
+    /// Template build id (version signal). Empty = no pin; startup does not force image refresh.
+    #[serde(rename = "buildId", default)]
+    pub build_id: Option<String>,
     #[serde(rename = "poolSize", default)]
     pub pool_size: Option<u32>,
     #[serde(rename = "alias", default)]
@@ -65,6 +68,8 @@ impl E2bWorkerSettings {
 pub struct E2bWorkerSettingsPublic {
     #[serde(rename = "templateId", skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
+    #[serde(rename = "buildId", skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
     #[serde(rename = "poolSize")]
     pub pool_size: u32,
     /// Env `CLAW_E2B_POOL_SIZE_CAP` (Admin write rejects values above this).
@@ -89,6 +94,7 @@ pub fn e2b_worker_settings_public(settings: &E2bWorkerSettings) -> E2bWorkerSett
             .template_id
             .clone()
             .filter(|t| !t.trim().is_empty()),
+        build_id: settings.build_id.clone().filter(|t| !t.trim().is_empty()),
         pool_size: clamp_strict_worker_pool_size(
             settings
                 .pool_size
@@ -97,6 +103,32 @@ pub fn e2b_worker_settings_public(settings: &E2bWorkerSettings) -> E2bWorkerSett
         pool_size_cap: strict_worker_pool_size_cap_from_env(),
         updated_at_ms: settings.updated_at_ms,
     }
+}
+
+/// Non-empty PG `buildId`, if configured. Author: kejiqing
+#[must_use]
+pub fn e2b_worker_build_id(settings: &E2bWorkerSettings) -> Option<String> {
+    settings
+        .build_id
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// PG `e2bWorker.buildId` (empty = no pin). Author: kejiqing
+pub async fn load_e2b_worker_build_id(
+    db: &GatewaySessionDb,
+) -> Result<Option<String>, sqlx::Error> {
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    Ok(e2b_worker_build_id(&settings.e2b_worker))
+}
+
+/// PG `e2bWorkerRelaxed.buildId` (empty = no pin). Author: kejiqing
+pub async fn load_e2b_worker_relaxed_build_id(
+    db: &GatewaySessionDb,
+) -> Result<Option<String>, sqlx::Error> {
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    Ok(e2b_worker_build_id(&settings.e2b_worker_relaxed))
 }
 
 pub async fn put_e2b_worker_settings(
@@ -349,5 +381,27 @@ mod tests {
             e2b_project_worker_renew_interval_secs_from_env(31_536_000),
             600
         );
+    }
+
+    #[test]
+    fn e2b_worker_settings_parses_build_id() {
+        let s: E2bWorkerSettings = serde_json::from_str(
+            r#"{"templateId":"tpl_a","buildId":"build-uuid-1","updatedAtMs":1}"#,
+        )
+        .expect("parse");
+        assert_eq!(s.build_id.as_deref(), Some("build-uuid-1"));
+        assert_eq!(e2b_worker_build_id(&s).as_deref(), Some("build-uuid-1"));
+        let public = e2b_worker_settings_public(&s);
+        assert_eq!(public.build_id.as_deref(), Some("build-uuid-1"));
+    }
+
+    #[test]
+    fn e2b_worker_settings_missing_build_id() {
+        let s: E2bWorkerSettings =
+            serde_json::from_str(r#"{"templateId":"tpl_a","updatedAtMs":1}"#).expect("parse");
+        assert!(s.build_id.is_none());
+        assert!(e2b_worker_build_id(&s).is_none());
+        let public = e2b_worker_settings_public(&s);
+        assert!(public.build_id.is_none());
     }
 }
