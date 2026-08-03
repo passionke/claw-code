@@ -12,6 +12,12 @@ pub const OVS_WORKSPACE_ROOT: &str = claw_e2b_sandbox_client::GUEST_CLAW_WS;
 pub struct E2bOvsSettings {
     #[serde(rename = "templateId", default)]
     pub template_id: Option<String>,
+    /// Desired template build id (from build script). Author: kejiqing
+    #[serde(rename = "buildId", default)]
+    pub build_id: Option<String>,
+    /// Build id of the running singleton (set on create; legacy). Author: kejiqing
+    #[serde(rename = "appliedBuildId", default)]
+    pub applied_build_id: Option<String>,
     #[serde(rename = "baseUrl", default)]
     pub base_url: Option<String>,
     #[serde(rename = "sandboxId", default)]
@@ -31,6 +37,10 @@ impl E2bOvsSettings {
 pub struct E2bOvsSettingsPublic {
     #[serde(rename = "templateId", skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
+    #[serde(rename = "buildId", skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+    #[serde(rename = "appliedBuildId", skip_serializing_if = "Option::is_none")]
+    pub applied_build_id: Option<String>,
     #[serde(rename = "effectiveTemplateId")]
     pub effective_template_id: String,
     #[serde(rename = "baseUrl", skip_serializing_if = "Option::is_none")]
@@ -75,6 +85,8 @@ pub async fn e2b_ovs_settings_public(
     let s = &settings.e2b_ovs;
     Ok(E2bOvsSettingsPublic {
         template_id: s.template_id.clone(),
+        build_id: s.build_id.clone().filter(|t| !t.trim().is_empty()),
+        applied_build_id: s.applied_build_id.clone().filter(|t| !t.trim().is_empty()),
         effective_template_id: "claw-worker-relaxed (built-in)".into(),
         base_url: s.base_url.clone(),
         sandbox_id: s.sandbox_id.clone(),
@@ -110,6 +122,16 @@ pub async fn load_e2b_ovs_template_id(db: &GatewaySessionDb) -> Result<String, s
         .template_id
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(e2b_ovs_template_from_env))
+}
+
+/// Non-empty PG `e2bOvs.buildId`, if configured. Author: kejiqing
+pub async fn load_e2b_ovs_build_id(db: &GatewaySessionDb) -> Result<Option<String>, sqlx::Error> {
+    let (settings, _, _) = get_gateway_global_settings(db).await?;
+    Ok(settings
+        .e2b_ovs
+        .build_id
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty()))
 }
 
 #[cfg(test)]

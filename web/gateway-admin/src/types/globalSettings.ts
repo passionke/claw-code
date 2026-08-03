@@ -151,6 +151,10 @@ export interface ObserveTapResetResponse {
 
 export interface E2bNasApiSettings {
   templateId?: string;
+  /** Desired template build id (from build script). */
+  buildId?: string;
+  /** Build id of the running singleton (set on create). */
+  appliedBuildId?: string;
   effectiveTemplateId: string;
   baseUrl?: string;
   sandboxId?: string;
@@ -166,6 +170,8 @@ export interface E2bNasApiSettings {
 
 export interface E2bOvsSettings {
   templateId?: string;
+  buildId?: string;
+  appliedBuildId?: string;
   effectiveTemplateId: string;
   baseUrl?: string;
   sandboxId?: string;
@@ -175,6 +181,8 @@ export interface E2bOvsSettings {
 
 export interface E2bObserveTemplateSettings {
   templateId?: string;
+  buildId?: string;
+  appliedBuildId?: string;
   effectiveTemplateId: string;
   updatedAtMs: number;
   configured: boolean;
@@ -222,6 +230,8 @@ export interface E2bTemplatesListResponse {
 
 export interface E2bWorkerSettings {
   templateId?: string;
+  /** Template build id (version signal). Empty = no pin. */
+  buildId?: string;
   /** Global default strict solve worker pool size per project (PG). Default 1. */
   poolSize?: number;
   /** Env CLAW_E2B_POOL_SIZE_CAP; Admin write rejects values above this. */

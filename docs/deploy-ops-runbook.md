@@ -51,13 +51,15 @@ cp deploy/stack/env.selfhosted-e2b.example .env   # 编辑 CLAW_CLUSTER_ID、PG 
 
 | 组件 | 构建脚本 | PG 键 | 默认 alias | 生效优先级 |
 |------|----------|-------|------------|------------|
-| Worker (strict) | `deploy/e2b/build-claw-worker-selfhosted.py` | `e2bWorker.templateId` | `claw-worker` | PG → `CLAW_E2B_TEMPLATE` → alias |
-| Worker (relaxed) | `deploy/e2b/build-claw-worker-relaxed-selfhosted.py` | **不写 PG** | `claw-worker-relaxed` | e2b alias；exec mode 由 gateway `worker_profile_json` 选 |
-| NAS API | `deploy/e2b/build-claw-nas-api-selfhosted.py` | `e2bNasApi.templateId` | `claw-nas-api` | PG → env → alias |
-| OVS | `deploy/e2b/build-claw-ovs-selfhosted.py` | `e2bOvs.templateId` | `claw-ovs` | 同上 |
-| Observe | `deploy/e2b/build-claw-observe-selfhosted.py` | `e2bObserve.templateId` | `claw-observe` | 同上 |
+| Worker (strict) | `deploy/e2b/build-claw-worker-selfhosted.py` | `e2bWorker.templateId` + `buildId` | `claw-worker` | PG → `CLAW_E2B_TEMPLATE` → alias |
+| Worker (relaxed) | `deploy/e2b/build-claw-worker-relaxed-selfhosted.py` | `e2bWorkerRelaxed.templateId` + `buildId` | `claw-worker-relaxed` | e2b alias；exec mode 由 gateway `worker_profile_json` 选 |
+| NAS API | `deploy/e2b/build-claw-nas-api-selfhosted.py` | `e2bNasApi.templateId` + `buildId` | `claw-nas-api` | PG → env → alias |
+| OVS | `deploy/e2b/build-claw-ovs-selfhosted.py` | `e2bOvs.templateId` + `buildId` | `claw-ovs` | 同上 |
+| Observe | `deploy/e2b/build-claw-observe-selfhosted.py` | `e2bObserve.templateId` + `buildId` | `claw-observe` | 同上 |
 
-单例运行时（非 templateId）：`e2bOvs.baseUrl` / `e2bObserve.baseUrl` / `e2bNasApi.baseUrl` + `clawTap`（observe 代理 URL）。
+单例运行时（非 templateId）：`e2bOvs.baseUrl` / `e2bObserve.baseUrl` / `e2bNasApi.baseUrl` + `clawTap`（observe 代理 URL）；create 后写 `appliedBuildId`。
+
+**rebuild 原则：** 构建只更新 PG；不会因远端升级自动换运行中沙箱。换镜像靠 gateway 重启、手工 reset，或沙箱失活重建。
 
 PG 写入 helper：[`deploy/e2b/e2b_pg_settings.py`](../deploy/e2b/e2b_pg_settings.py) 的 `merge_settings_json_key()`。需 `CLAW_GATEWAY_DATABASE_URL`。
 

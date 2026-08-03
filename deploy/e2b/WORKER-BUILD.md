@@ -9,8 +9,10 @@ Author: kejiqing
 | 层 | 谁负责 | 做什么 |
 |----|--------|--------|
 | **1. 打包** | 人 / CI | `e2b-worker-deploy` → 拿 amd64 `claw` + 打 e2b **strict + relaxed** 模板 |
-| **2. 上报 PG** | 构建脚本（自动） | 写 `e2bWorker.templateId` + `e2bWorkerRelaxed.templateId` |
+| **2. 上报 PG** | 构建脚本（自动） | 写 `e2bWorker.templateId` + `buildId`（及 relaxed 同构） |
 | **3. 初始化 + 续期** | gateway 启动 / 运行时（自动） | 读 PG → reconcile worker / singleton → TTL renewal ticker |
+
+**原则：** rebuild 只更新 PG（稳定 `templateId` + 新 `buildId`）。运行中健康沙箱**不会**因远端升级自动换镜像；换新镜像靠 **gateway 重启**、**手工 reset**，或沙箱失活后重建。
 
 改完 `rusty-claude-cli` 才需要 **1**；**2、3 不用手搓**。
 
@@ -32,8 +34,8 @@ Author: kejiqing
 
 1. 获得 linux/amd64 `claw`（编译，或从 `claw-code:<tag>` 抽出）
 2. stage → `deploy/stack/.e2b-worker-bins/`
-3. `Template.build(alias=claw-worker)` → 写 PG `e2bWorker.templateId`
-4. `Template.build(alias=claw-worker-relaxed)`（**同一份 claw** + OVS）→ 写 PG `e2bWorkerRelaxed.templateId`
+3. `Template.build(alias=claw-worker)` → 写 PG `e2bWorker.templateId` + `buildId`
+4. `Template.build(alias=claw-worker-relaxed)`（**同一份 claw** + OVS）→ 写 PG `e2bWorkerRelaxed.templateId` + `buildId`
 
 其它：
 
@@ -48,11 +50,13 @@ Author: kejiqing
 {
   "e2bWorker": {
     "templateId": "tpl_…",
+    "buildId": "uuid…",
     "alias": "claw-worker",
     "updatedAtMs": 1783…
   },
   "e2bWorkerRelaxed": {
     "templateId": "tpl_…",
+    "buildId": "uuid…",
     "alias": "claw-worker-relaxed",
     "updatedAtMs": 1783…
   }
@@ -81,16 +85,15 @@ CLAW_E2B_TEMPLATE_COPY_DIR=deploy/stack/.e2b-worker-bins \
 
 `main.rs` 启动时：
 
-- `ensure_e2b_singletons_on_startup` — ovs / observe / nas-api 单例
-- `reconcile_project_workers_on_startup` — 各 proj worker 与 PG `templateId` 对齐，**mismatch 自动轮换**
+- `ensure_e2b_singletons_on_startup` — ovs / observe / nas-api 单例（`image_refresh`：PG `buildId` ≠ `appliedBuildId` 时 recreate）
+- `reconcile_project_workers_on_startup` — 各 proj worker；**仅启动窗口**可因 `buildId` 差换镜像
 
 运行时：
 
-- `E2bProjWorkerRegistry::spawn_renewal_ticker` — 周期性 reconcile + TTL renew（默认 600s tick）
+- TTL renew / 健康检查；**不会**因远端 rebuild 写了新 `buildId` 就自动 kill 健康沙箱
+- 换新镜像：gateway 重启、Admin `POST …/e2b-worker/reset`，或沙箱失活后重建
 
-**新模板上传后**：重启 gateway **或** 等 renewal ticker；proj worker `templateContract` 不匹配会 `rotated_out` 并起新沙箱。
-
-急用（不等 ticker）：
+急用（手工重建）：
 
 ```bash
 curl -X POST http://127.0.0.1:8088/v1/projects/1/e2b-worker/reset

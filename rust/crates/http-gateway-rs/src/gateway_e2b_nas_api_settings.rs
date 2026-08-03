@@ -13,6 +13,12 @@ use claw_e2b_sandbox_client::E2bSandboxClient;
 pub struct E2bNasApiSettings {
     #[serde(rename = "templateId", default)]
     pub template_id: Option<String>,
+    /// Desired template build id (from build script). Author: kejiqing
+    #[serde(rename = "buildId", default)]
+    pub build_id: Option<String>,
+    /// Build id of the running singleton sandbox (set on create). Author: kejiqing
+    #[serde(rename = "appliedBuildId", default)]
+    pub applied_build_id: Option<String>,
     #[serde(rename = "baseUrl", default)]
     pub base_url: Option<String>,
     #[serde(rename = "sandboxId", default)]
@@ -33,6 +39,10 @@ impl E2bNasApiSettings {
 pub struct E2bNasApiSettingsPublic {
     #[serde(rename = "templateId", skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
+    #[serde(rename = "buildId", skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+    #[serde(rename = "appliedBuildId", skip_serializing_if = "Option::is_none")]
+    pub applied_build_id: Option<String>,
     #[serde(rename = "effectiveTemplateId")]
     pub effective_template_id: String,
     #[serde(rename = "baseUrl", skip_serializing_if = "Option::is_none")]
@@ -143,6 +153,8 @@ pub async fn e2b_nas_api_settings_public_with_runtime(
         .and_then(|d| i64::try_from(d.as_millis()).ok());
     Ok(E2bNasApiSettingsPublic {
         template_id: s.template_id.clone(),
+        build_id: s.build_id.clone().filter(|t| !t.trim().is_empty()),
+        applied_build_id: s.applied_build_id.clone().filter(|t| !t.trim().is_empty()),
         effective_template_id,
         base_url: s.base_url.clone(),
         sandbox_id: s.sandbox_id.clone(),
@@ -155,6 +167,16 @@ pub async fn e2b_nas_api_settings_public_with_runtime(
         last_error: if healthy { None } else { last_error },
         online: healthy,
     })
+}
+
+/// Non-empty PG `e2bNasApi.buildId`, if configured. Author: kejiqing
+pub async fn load_e2b_nas_api_build_id(
+    db: &GatewaySessionDb,
+) -> Result<Option<String>, sqlx::Error> {
+    let s = load_e2b_nas_api_settings(db).await?;
+    Ok(s.build_id
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty()))
 }
 
 pub async fn load_e2b_nas_api_settings(

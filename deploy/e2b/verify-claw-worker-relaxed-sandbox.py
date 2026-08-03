@@ -71,16 +71,23 @@ def _relaxed_template_id(api_url: str, api_key: str, explicit: str) -> str:
     try:
         from e2b_pg_settings import load_settings_json_key
 
-        tid = (load_settings_json_key("e2bWorkerRelaxed").get("templateId") or "").strip()
+        row = load_settings_json_key("e2bWorkerRelaxed")
+        tid = (row.get("templateId") or "").strip()
+        bid = (row.get("buildId") or "").strip()
         if tid:
-            print(f"==> template from PG e2bWorkerRelaxed: {tid!r}")
+            print(
+                f"==> template from PG e2bWorkerRelaxed: {tid!r}"
+                + (f" buildId={bid!r}" if bid else "")
+            )
             return tid
     except Exception as exc:  # noqa: BLE001
-        print(f"==> PG e2bWorkerRelaxed unavailable ({exc}); fall back to e2b health", file=sys.stderr)
-    return _latest_relaxed_template_from_health(api_url, api_key)
+        print(f"==> PG e2bWorkerRelaxed unavailable ({exc}); fall back to Panel", file=sys.stderr)
+    return _latest_relaxed_template_from_panel(api_url, api_key)
 
 
-def _latest_relaxed_template_from_health(api_url: str, api_key: str) -> str:
+def _latest_relaxed_template_from_panel(api_url: str, api_key: str) -> str:
+    """Prefer GET /templates/{id} latest ready; fall back to health alias match (not lex sort)."""
+    # Resolve alias → stable templateID via health, then ask Panel for builds.
     code, health = _http("GET", f"{api_url.rstrip('/')}/health", api_key)
     if code != 200:
         _fail(f"GET /health HTTP {code}")
@@ -92,9 +99,44 @@ def _latest_relaxed_template_from_health(api_url: str, api_key: str) -> str:
         and t.get("imagePresent") is True
     ]
     if not candidates:
-        _fail("no claw-worker-relaxed template with imagePresent=true — run build-claw-worker-relaxed-selfhosted.py")
-    # Prefer latest templateId lexicographically (rough proxy); user can pass CLAW_E2B_TEMPLATE_RELAXED tpl_*
-    tid = sorted(candidates, key=lambda t: t.get("templateId", ""))[-1]["templateId"]
+        _fail(
+            "no claw-worker-relaxed template with imagePresent=true — "
+            "run build-claw-worker-relaxed-selfhosted.py"
+        )
+    # Prefer a single stable templateID (alias may list one canonical id after Panel merge).
+    tid = (candidates[0].get("templateId") or "").strip()
+    if not tid:
+        _fail("claw-worker-relaxed health entry missing templateId")
+    detail_code, detail = _http("GET", f"{api_url.rstrip('/')}/templates/{tid}", api_key)
+    if detail_code == 200 and isinstance(detail, dict):
+        builds = detail.get("builds") or detail.get("Builds") or []
+        if isinstance(builds, list) and builds:
+            ready = [
+                b
+                for b in builds
+                if str(b.get("status") or b.get("Status") or "").lower()
+                in ("ready", "built", "success", "")
+            ] or builds
+            # Newest first if timestamps exist; else last entry.
+            def _ts(b: object) -> str:
+                if not isinstance(b, dict):
+                    return ""
+                return str(
+                    b.get("finishedAt")
+                    or b.get("createdAt")
+                    or b.get("FinishedAt")
+                    or b.get("CreatedAt")
+                    or ""
+                )
+
+            ready_sorted = sorted(ready, key=_ts)
+            last = ready_sorted[-1] if ready_sorted else None
+            if isinstance(last, dict):
+                print(
+                    f"==> template from Panel GET /templates/{tid} "
+                    f"(buildId={(last.get('buildID') or last.get('buildId') or '')!r})"
+                )
+    print(f"==> using stable templateId={tid!r} (create → latest ready)")
     return tid
 
 

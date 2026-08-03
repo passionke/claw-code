@@ -178,16 +178,24 @@ def main() -> int:
             "e2bNasApi",
             {
                 "templateId": build.template_id,
+                "buildId": build.build_id,
                 "alias": alias,
                 "updatedAtMs": now_ms,
             },
             now_ms=now_ms,
         )
-        print(f"==> persisted e2bNasApi.templateId={build.template_id!r} to PG")
+        print(
+            f"==> persisted e2bNasApi.templateId={build.template_id!r} "
+            f"buildId={build.build_id!r} to PG"
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"warn: skip PG e2bNasApi.templateId persist: {exc}", file=sys.stderr)
 
     print(f"OK: template {alias!r} ({build.template_id}) ready on {opts['api_url']}")
+    print(
+        "hint: rebuild only updates PG; new build is used after gateway restart, "
+        "manual singleton reset, or when the sandbox is dead"
+    )
     return 0
 
 
