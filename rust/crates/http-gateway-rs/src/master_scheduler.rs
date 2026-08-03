@@ -8,9 +8,7 @@ use tracing::{info, warn};
 
 use crate::admin_mcp_solve::AdminMcpSolveInput;
 use crate::app_state::AppState;
-use crate::master_observer::{
-    render_schedule_prompt, GatewayScheduledJobRow, PROJECT_ROLE_MASTER,
-};
+use crate::master_observer::{render_schedule_prompt, GatewayScheduledJobRow, PROJECT_ROLE_MASTER};
 use crate::session_db::now_ms_for_registry;
 
 const TICK_SECS: u64 = 60;
@@ -96,7 +94,10 @@ pub(crate) fn job_due_for_test(
 }
 
 /// Enqueue one master solve for a scheduled job (ticker or manual run). Author: kejiqing
-pub(crate) async fn fire_job(state: &AppState, job: &mut GatewayScheduledJobRow) -> Result<(), String> {
+pub(crate) async fn fire_job(
+    state: &AppState,
+    job: &mut GatewayScheduledJobRow,
+) -> Result<(), String> {
     let role = state
         .session_db
         .get_project_role(job.master_proj_id)

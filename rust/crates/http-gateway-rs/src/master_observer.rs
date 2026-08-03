@@ -601,7 +601,10 @@ impl GatewaySessionDb {
         Ok(())
     }
 
-    pub async fn upsert_scheduled_job(&self, job: &GatewayScheduledJobRow) -> Result<(), SqlxError> {
+    pub async fn upsert_scheduled_job(
+        &self,
+        job: &GatewayScheduledJobRow,
+    ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO gateway_scheduled_job (
                 cluster_id, job_id, master_proj_id, schedule_kind, run_at_hhmm, weekday,
@@ -671,7 +674,9 @@ impl GatewaySessionDb {
         Ok(rows.iter().map(row_to_scheduled_job).collect())
     }
 
-    pub async fn list_enabled_scheduled_jobs(&self) -> Result<Vec<GatewayScheduledJobRow>, SqlxError> {
+    pub async fn list_enabled_scheduled_jobs(
+        &self,
+    ) -> Result<Vec<GatewayScheduledJobRow>, SqlxError> {
         let rows = sqlx::query(
             r"SELECT job_id, master_proj_id, schedule_kind, run_at_hhmm, weekday, enabled,
                      prompt_template, last_run_at_ms, last_task_id, last_error,
@@ -687,13 +692,12 @@ impl GatewaySessionDb {
     }
 
     pub async fn delete_scheduled_job(&self, job_id: &str) -> Result<bool, SqlxError> {
-        let r = sqlx::query(
-            "DELETE FROM gateway_scheduled_job WHERE cluster_id = $1 AND job_id = $2",
-        )
-        .bind(self.cluster_id())
-        .bind(job_id)
-        .execute(self.pg_pool())
-        .await?;
+        let r =
+            sqlx::query("DELETE FROM gateway_scheduled_job WHERE cluster_id = $1 AND job_id = $2")
+                .bind(self.cluster_id())
+                .bind(job_id)
+                .execute(self.pg_pool())
+                .await?;
         Ok(r.rows_affected() > 0)
     }
 
@@ -843,7 +847,10 @@ pub async fn seed_master_project(db: &GatewaySessionDb, proj_id: i64) -> Result<
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("project {proj_id} not found"))?;
-    let role = db.get_project_role(proj_id).await.map_err(|e| e.to_string())?;
+    let role = db
+        .get_project_role(proj_id)
+        .await
+        .map_err(|e| e.to_string())?;
     if role == PROJECT_ROLE_OBSERVATION {
         return Err("cannot set observation project as master".into());
     }
@@ -1131,7 +1138,8 @@ mod tests {
 
     #[test]
     fn render_schedule_prompt_placeholders() {
-        let t = "执行 skill master-daily-digest，学徒={{apprentice_ids}}，窗口={{bizdate_yesterday}}";
+        let t =
+            "执行 skill master-daily-digest，学徒={{apprentice_ids}}，窗口={{bizdate_yesterday}}";
         let out = render_schedule_prompt(t, &[10, 11], "20260802");
         assert!(out.contains("10,11"));
         assert!(out.contains("20260802"));

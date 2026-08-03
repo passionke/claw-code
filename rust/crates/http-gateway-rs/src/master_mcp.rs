@@ -7,13 +7,15 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::admin_mcp_solve::{validate_admin_mcp_solve_input, AdminMcpSolveBackend, AdminMcpSolveInput};
+use crate::admin_mcp_solve::{
+    validate_admin_mcp_solve_input, AdminMcpSolveBackend, AdminMcpSolveInput,
+};
 use crate::gateway_admin_mcp_token::extract_bearer_token;
 use crate::master_observer::{
     can_transition_repair_status, clone_stable_config_onto_project, master_mcp_shared_token,
     new_repair_run_id, promote_observation_to_apprentice_draft, replayable_inventory_items,
-    validate_inventory_json, zero_pool_worker_profile_json, MasterRepairRunRow, PROJECT_ROLE_MASTER,
-    REPAIR_STATUS_ANALYZED, REPAIR_STATUS_DRAFT_PUSHED, REPAIR_STATUS_OPENED,
+    validate_inventory_json, zero_pool_worker_profile_json, MasterRepairRunRow,
+    PROJECT_ROLE_MASTER, REPAIR_STATUS_ANALYZED, REPAIR_STATUS_DRAFT_PUSHED, REPAIR_STATUS_OPENED,
     REPAIR_STATUS_PATCHED, REPAIR_STATUS_REPLAYED, REPAIR_STATUS_SYNCED,
 };
 use crate::project_config_draft;
@@ -242,11 +244,7 @@ pub async fn handle_master_mcp_post<B: AdminMcpSolveBackend>(
     body: Bytes,
 ) -> Response {
     if let Err(e) = verify_master_mcp_auth(headers) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": e})),
-        )
-            .into_response();
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": e}))).into_response();
     }
     let role = match db.get_project_role(master_proj_id).await {
         Ok(r) => r,
@@ -282,14 +280,13 @@ pub async fn handle_master_mcp_post<B: AdminMcpSolveBackend>(
                 "serverInfo": {"name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION}
             }),
         ),
-        "notifications/initialized" | "notifications/cancelled" => StatusCode::ACCEPTED.into_response(),
+        "notifications/initialized" | "notifications/cancelled" => {
+            StatusCode::ACCEPTED.into_response()
+        }
         "tools/list" => jsonrpc_result(id, tools_list()),
         "tools/call" => {
             let params = req.params.unwrap_or(json!({}));
-            let name = params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             match dispatch_tool(db, solve_backend, master_proj_id, name, &args).await {
                 Ok(v) => jsonrpc_result(id, text_result(v)),
@@ -424,7 +421,9 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                 created_at_ms: now,
                 updated_at_ms: now,
             };
-            db.insert_repair_run(&run).await.map_err(|e| e.to_string())?;
+            db.insert_repair_run(&run)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(json!({"run": run}))
         }
         "inventory_put" => {
@@ -443,7 +442,9 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
             validate_inventory_json(&inv)?;
             run.inventory_json = inv;
             run.updated_at_ms = now_ms_for_registry();
-            db.update_repair_run(&run).await.map_err(|e| e.to_string())?;
+            db.update_repair_run(&run)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(json!({"run": run}))
         }
         "observation_sync_from_apprentice" => {
@@ -485,7 +486,9 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
             run.observation_content_rev_before = before;
             run.observation_content_rev_after = Some(rev);
             run.updated_at_ms = now_ms_for_registry();
-            db.update_repair_run(&run).await.map_err(|e| e.to_string())?;
+            db.update_repair_run(&run)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(json!({"run": run}))
         }
         "observation_config_put_draft" => {
@@ -549,7 +552,9 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                 run.status = REPAIR_STATUS_PATCHED.into();
             }
             run.updated_at_ms = now_ms_for_registry();
-            db.update_repair_run(&run).await.map_err(|e| e.to_string())?;
+            db.update_repair_run(&run)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(json!({"run": run}))
         }
         "observation_replay" => {
@@ -567,10 +572,8 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                 return Err(format!("replay requires patched+; got {}", run.status));
             }
             let items = replayable_inventory_items(&run.inventory_json);
-            let filter_ids: Option<std::collections::HashSet<String>> = args
-                .get("itemIds")
-                .and_then(|v| v.as_array())
-                .map(|a| {
+            let filter_ids: Option<std::collections::HashSet<String>> =
+                args.get("itemIds").and_then(|v| v.as_array()).map(|a| {
                     a.iter()
                         .filter_map(|x| x.as_str().map(str::to_string))
                         .collect()
@@ -655,7 +658,9 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
             run.replay_session_ids = Value::Array(replayed);
             run.status = REPAIR_STATUS_REPLAYED.into();
             run.updated_at_ms = now_ms_for_registry();
-            db.update_repair_run(&run).await.map_err(|e| e.to_string())?;
+            db.update_repair_run(&run)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(json!({"run": run}))
         }
         "replay_results_get" => {
@@ -681,7 +686,9 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
             run.analysis_json = analysis;
             run.status = REPAIR_STATUS_ANALYZED.into();
             run.updated_at_ms = now_ms_for_registry();
-            db.update_repair_run(&run).await.map_err(|e| e.to_string())?;
+            db.update_repair_run(&run)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(json!({"run": run}))
         }
         "promote_to_apprentice_draft" => {
@@ -706,7 +713,9 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
             run.promote_status = "draft_pushed".into();
             run.apprentice_draft_note = Some(note);
             run.updated_at_ms = now_ms_for_registry();
-            db.update_repair_run(&run).await.map_err(|e| e.to_string())?;
+            db.update_repair_run(&run)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(json!({"run": run}))
         }
         "apprentice_config_put_draft" => {
@@ -825,8 +834,8 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{HeaderMap, HeaderValue};
     use crate::master_observer::MASTER_MCP_TOOL_NAMES;
+    use axum::http::{HeaderMap, HeaderValue};
 
     #[test]
     fn tools_list_matches_contract_names() {

@@ -12,10 +12,7 @@ use crate::routes::app::{
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
-        .route(
-            "/v1/projects/{proj_id}/role",
-            put(put_master_role),
-        )
+        .route("/v1/projects/{proj_id}/role", put(put_master_role))
         .route(
             "/v1/projects/{proj_id}/apprentices",
             get(get_master_apprentices).put(put_master_apprentices),
