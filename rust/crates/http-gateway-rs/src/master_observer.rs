@@ -106,11 +106,7 @@ You are a **master observer agent**. You observe paired apprentice projects via 
     )
 }
 
-#[must_use]
-pub fn master_daily_digest_skill() -> Value {
-    json!({
-                "skillName": "master-daily-digest",
-                "skillContent": r"# master-daily-digest
+const MASTER_DAILY_DIGEST_SKILL: &str = "# master-daily-digest
 
 Summarize paired apprentices' Q&A for a time window.
 
@@ -119,16 +115,9 @@ Summarize paired apprentices' Q&A for a time window.
 2. For each apprentice, call `apprentice_sessions_query` with the window from the user prompt.
 3. Skim turns/tools/transcripts; produce a concise Chinese report: volume, topics, failure patterns, notable good answers.
 4. Do **not** open a repair_run unless the user also asks for quality repair.
-",
-                "enabled": true
-            })
-}
+";
 
-#[must_use]
-pub fn master_quality_repair_skill() -> Value {
-    json!({
-        "skillName": "master-quality-repair",
-        "skillContent": r#"# master-quality-repair
+const MASTER_QUALITY_REPAIR_SKILL: &str = r#"# master-quality-repair
 
 Extract a replayable issue inventory, patch the observation space, replay, analyze, then promote draft.
 
@@ -144,7 +133,22 @@ Extract a replayable issue inventory, patch the observation space, replay, analy
 
 ## Quality criteria
 Define what "good" means for this domain in your analysis_json. Prefer minimal skill/CLAUDE.md patches over broad rewrites.
-"#,
+"#;
+
+#[must_use]
+pub fn master_daily_digest_skill() -> Value {
+    json!({
+        "skillName": "master-daily-digest",
+        "skillContent": MASTER_DAILY_DIGEST_SKILL,
+        "enabled": true
+    })
+}
+
+#[must_use]
+pub fn master_quality_repair_skill() -> Value {
+    json!({
+        "skillName": "master-quality-repair",
+        "skillContent": MASTER_QUALITY_REPAIR_SKILL,
         "enabled": true
     })
 }
