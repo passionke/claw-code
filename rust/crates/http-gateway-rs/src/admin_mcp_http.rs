@@ -363,9 +363,7 @@ async fn upsert_project_draft(
     let worker_profile_json = patch
         .worker_profile_json
         .unwrap_or(&existing.worker_profile_json);
-    let worker_env_json = patch
-        .worker_env_json
-        .unwrap_or(&existing.worker_env_json);
+    let worker_env_json = patch.worker_env_json.unwrap_or(&existing.worker_env_json);
     let max_iterations = crate::max_iterations::parse_project_max_iterations_put(
         patch.max_iterations,
         existing.max_iterations,

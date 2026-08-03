@@ -31,9 +31,7 @@ fn is_reserved_key(key: &str) -> bool {
     if RESERVED_EXACT.iter().any(|k| *k == upper) {
         return true;
     }
-    RESERVED_PREFIXES
-        .iter()
-        .any(|p| upper.starts_with(p))
+    RESERVED_PREFIXES.iter().any(|p| upper.starts_with(p))
 }
 
 fn key_is_valid_env_name(key: &str) -> bool {
@@ -58,9 +56,9 @@ pub fn validate_worker_env_json(value: &Value) -> Result<(), String> {
 
 /// Parse into sorted map for create-time `envVars`. Author: kejiqing
 pub fn parse_worker_env_map(value: &Value) -> Result<BTreeMap<String, String>, String> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| "workerEnvJson must be a JSON object of string keys to string values".to_string())?;
+    let obj = value.as_object().ok_or_else(|| {
+        "workerEnvJson must be a JSON object of string keys to string values".to_string()
+    })?;
     let mut out = BTreeMap::new();
     for (key, val) in obj {
         let key = key.trim();

@@ -1040,7 +1040,10 @@ mod tests {
         assert!(key.contains("nas-session-root-v3"));
         assert!(key.contains("#home=2026-07-01_12-00-00"));
         assert!(key.ends_with("#profile=relaxed"));
-        assert!(!key.contains("env="), "env must not be part of worker contract");
+        assert!(
+            !key.contains("env="),
+            "env must not be part of worker contract"
+        );
     }
 
     #[test]
