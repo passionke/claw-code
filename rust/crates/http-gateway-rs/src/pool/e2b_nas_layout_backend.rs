@@ -209,8 +209,29 @@ impl NasLayoutBackend {
         let scaffold = crate::gateway_global_settings::load_system_prompt_default(session_db)
             .await
             .map_err(|e| format!("load system prompt scaffold: {e}"))?;
-        let writes = project_config_apply::build_guest_materialize_writes(&row, &scaffold)
-            .map_err(|e| format!("build guest materialize writes: {e}"))?;
+        let role = session_db
+            .get_project_role(proj_id)
+            .await
+            .unwrap_or_else(|_| crate::master_observer::PROJECT_ROLE_NORMAL.to_string());
+        let gateway_base = std::env::var("CLAW_GATEWAY_BASE").unwrap_or_default();
+        let master_token = crate::master_observer::master_mcp_shared_token();
+        let writes = project_config_apply::build_guest_materialize_writes_with_settings_hook(
+            &row,
+            &scaffold,
+            |settings| {
+                if role == crate::master_observer::PROJECT_ROLE_MASTER {
+                    if let (Some(token), true) = (master_token.as_ref(), !gateway_base.is_empty()) {
+                        crate::master_observer::merge_master_mcp_into_settings(
+                            settings,
+                            proj_id,
+                            &gateway_base,
+                            token,
+                        );
+                    }
+                }
+            },
+        )
+        .map_err(|e| format!("build guest materialize writes: {e}"))?;
         let version_prefix = Self::project_home_version_prefix(&row.content_rev)?;
         for write in writes {
             let rel_under_home = format!("{version_prefix}/{}", write.rel_path.to_string_lossy());

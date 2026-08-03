@@ -344,6 +344,14 @@ pub async fn run() {
         poll_pool.spawn_singleton_health_reconcile_loop(poll_db);
     }
 
+    crate::master_scheduler::spawn_master_scheduler(state.clone());
+    info!(
+        target: "claw_master_scheduler",
+        component = "startup",
+        phase = "master_scheduler",
+        "master observer scheduler ticker enabled"
+    );
+
     {
         let poll_db = state.session_db.clone();
         let poll_llm = state.llm_runtime.clone();

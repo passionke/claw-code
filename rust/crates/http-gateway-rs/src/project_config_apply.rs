@@ -701,6 +701,15 @@ pub fn build_guest_materialize_writes(
     row: &ProjectConfigRow,
     system_prompt_scaffold: &str,
 ) -> ApplyResult<Vec<GuestMaterializeWrite>> {
+    build_guest_materialize_writes_with_settings_hook(row, system_prompt_scaffold, |_| {})
+}
+
+/// Same as [`build_guest_materialize_writes`] with a settings.json mutation hook (e.g. master MCP). Author: kejiqing
+pub fn build_guest_materialize_writes_with_settings_hook(
+    row: &ProjectConfigRow,
+    system_prompt_scaffold: &str,
+    mut settings_hook: impl FnMut(&mut Value),
+) -> ApplyResult<Vec<GuestMaterializeWrite>> {
     let mut out = Vec::new();
     push_system_prompt_sidecars(&mut out, row, system_prompt_scaffold);
     push_rules_writes(&mut out, &row.rules_json)?;
@@ -716,7 +725,8 @@ pub fn build_guest_materialize_writes(
         rel_path: PathBuf::from(APPLIED_REV_MARKER),
         bytes: row.content_rev.as_bytes().to_vec(),
     });
-    let settings = build_settings_json_from_row(row);
+    let mut settings = build_settings_json_from_row(row);
+    settings_hook(&mut settings);
     let settings_bytes = serde_json::to_vec_pretty(&settings)
         .map_err(|e| ProjectConfigApplyError::new(format!("serialize guest settings.json: {e}")))?;
     out.push(GuestMaterializeWrite {

@@ -20,21 +20,22 @@ pub fn strict_worker_pool_size_cap_from_env() -> u32 {
         .unwrap_or(STRICT_WORKER_POOL_SIZE_MAX)
 }
 
-/// Reject out-of-range poolSize (Admin write — do not silently clamp). Author: kejiqing
+/// Reject out-of-range poolSize (Admin write — do not silently clamp).
+/// `0` means no warm workers (on-demand acquire). Author: kejiqing
 pub fn validate_strict_worker_pool_size(n: u32) -> Result<u32, String> {
     let max = strict_worker_pool_size_cap_from_env();
-    if !(1..=max).contains(&n) {
+    if n > max {
         return Err(format!(
-            "poolSize must be 1..={max} (CLAW_E2B_POOL_SIZE_CAP); got {n}"
+            "poolSize must be 0..={max} (CLAW_E2B_POOL_SIZE_CAP); got {n}"
         ));
     }
     Ok(n)
 }
 
-/// Runtime clamp (legacy PG rows may exceed a later-lowered env cap).
+/// Runtime clamp (legacy PG rows may exceed a later-lowered env cap). Allows 0. Author: kejiqing
 #[must_use]
 pub fn clamp_strict_worker_pool_size(n: u32) -> u32 {
-    n.clamp(1, strict_worker_pool_size_cap_from_env())
+    n.min(strict_worker_pool_size_cap_from_env())
 }
 
 /// Gateway-desired claw-worker e2b template (`settings_json.e2bWorker.templateId`).
@@ -279,7 +280,7 @@ mod tests {
     #[test]
     fn pool_size_clamps_to_bounds() {
         with_env("CLAW_E2B_POOL_SIZE_CAP", None, || {
-            assert_eq!(clamp_strict_worker_pool_size(0), 1);
+            assert_eq!(clamp_strict_worker_pool_size(0), 0);
             assert_eq!(clamp_strict_worker_pool_size(1), 1);
             assert_eq!(
                 clamp_strict_worker_pool_size(STRICT_WORKER_POOL_SIZE_MAX),
@@ -296,7 +297,7 @@ mod tests {
     fn pool_size_validate_rejects_over_cap() {
         with_env("CLAW_E2B_POOL_SIZE_CAP", Some("32"), || {
             assert_eq!(strict_worker_pool_size_cap_from_env(), 32);
-            assert!(validate_strict_worker_pool_size(0).is_err());
+            assert!(validate_strict_worker_pool_size(0).is_ok());
             assert!(validate_strict_worker_pool_size(1).is_ok());
             assert!(validate_strict_worker_pool_size(32).is_ok());
             let err = validate_strict_worker_pool_size(33).unwrap_err();

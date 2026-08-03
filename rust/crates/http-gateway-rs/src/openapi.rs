@@ -110,7 +110,17 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::get_turn_tools,
         crate::routes::app::get_turn_timeline,
         crate::routes::app::cancel_session_turn,
-        crate::session_upload::upload_session_files
+        crate::session_upload::upload_session_files,
+        crate::routes::app::put_master_role,
+        crate::routes::app::get_master_apprentices,
+        crate::routes::app::put_master_apprentices,
+        crate::routes::app::list_master_repair_runs,
+        crate::routes::app::get_master_repair_run,
+        crate::routes::app::list_master_schedules,
+        crate::routes::app::put_master_schedule,
+        crate::routes::app::delete_master_schedule,
+        crate::routes::app::run_master_schedule,
+        crate::routes::app::master_mcp_http_handler
     ),
     components(schemas(
         crate::gateway_e2b_singleton_lifecycle::E2bSingletonComponent,
@@ -126,7 +136,8 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         (name = "Solve", description = "Synchronous and asynchronous solve execution"),
         (name = "Gateway Settings", description = "Cluster-wide gateway administration"),
         (name = "MCP", description = "MCP injection, probing, and admin operations"),
-        (name = "Pools", description = "Pools, endpoints, and preflight plugins")
+        (name = "Pools", description = "Pools, endpoints, and preflight plugins"),
+        (name = "Master", description = "Master observer role, apprentices, schedules, and MCP")
     )
 )]
 struct DerivedApi;

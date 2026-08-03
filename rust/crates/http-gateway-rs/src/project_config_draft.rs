@@ -530,6 +530,12 @@ impl DraftError {
     }
 }
 
+impl std::fmt::Display for DraftError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
 impl From<sqlx::Error> for DraftError {
     fn from(e: sqlx::Error) -> Self {
         Self {

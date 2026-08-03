@@ -981,7 +981,20 @@ pub(crate) async fn apply_settings_and_probe(
 
 pub(crate) async fn build_settings(state: &AppState, proj_id: i64) -> Value {
     if let Ok(Some(row)) = state.session_db.get_project_config(proj_id).await {
-        project_config_apply::build_settings_json_from_row(&row)
+        let mut settings = project_config_apply::build_settings_json_from_row(&row);
+        if let Ok(role) = state.session_db.get_project_role(proj_id).await {
+            if role == master_observer::PROJECT_ROLE_MASTER {
+                if let Some(token) = master_observer::master_mcp_shared_token() {
+                    master_observer::merge_master_mcp_into_settings(
+                        &mut settings,
+                        proj_id,
+                        &state.gateway_identity.gateway_base,
+                        &token,
+                    );
+                }
+            }
+        }
+        settings
     } else {
         json!({
             "mcpServers": serde_json::Map::new(),

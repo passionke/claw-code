@@ -1211,6 +1211,8 @@ impl GatewaySessionDb {
             .await?;
         Self::run_sql_migration_file(pool, include_str!("../migrations/017_worker_env_json.sql"))
             .await?;
+        Self::run_sql_migration_file(pool, include_str!("../migrations/018_master_observer.sql"))
+            .await?;
         Self::migrate_cluster_id_phase3(pool).await?;
 
         Ok(())
