@@ -109,7 +109,7 @@ pub struct ProjectConfigRow {
     pub mcp_servers_json: Value,
     /// Deprecated: git skill sources; kept for schema compat, not applied. Author: kejiqing
     pub skills_sources_json: Value,
-    /// `[{ "skillName", "skillContent" }, ...]` — sole skills source for materialize. Author: kejiqing
+    /// `[{ "skillName", "skillContent"?, "skillArchive"?, "skillArchiveFormat"?, "enabled"? }, ...]` — sole skills source for materialize. Author: kejiqing
     pub skills_json: Value,
     pub allowed_tools_json: Value,
     pub claude_md: Option<String>,

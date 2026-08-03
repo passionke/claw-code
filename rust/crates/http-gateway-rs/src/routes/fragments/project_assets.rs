@@ -524,8 +524,13 @@ pub(crate) fn skills_from_skills_json(skills_json: &Value) -> Vec<DsSkillEntry> 
         let content = obj
             .get("skillContent")
             .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+            .map(str::to_string)
+            .or_else(|| {
+                crate::skill_archive::package_from_skills_json_item(item)
+                    .ok()
+                    .map(|p| p.skill_md().to_string())
+            })
+            .unwrap_or_default();
         skills.push(DsSkillEntry {
             skill_name: name.to_string(),
             skill_content: content,
@@ -713,6 +718,332 @@ pub(crate) async fn get_proj_skill(
         proj_id,
         skill_name,
         skill_content,
+    }))
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub(crate) struct UploadSkillArchiveJsonRequest {
+    #[serde(rename = "skillName")]
+    skill_name: String,
+    #[serde(rename = "archiveBase64")]
+    archive_base64: String,
+    #[serde(rename = "skillArchiveFormat", default)]
+    skill_archive_format: Option<String>,
+    enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub(crate) struct PutSkillFilesRequest {
+    /// path → UTF-8 text content (archive root relative). Author: kejiqing
+    #[schema(value_type = Object)]
+    files: BTreeMap<String, String>,
+    enabled: Option<bool>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct SkillTreeResponse {
+    #[serde(rename = "projId")]
+    proj_id: i64,
+    #[serde(rename = "skillName")]
+    skill_name: String,
+    #[serde(rename = "hasArchive")]
+    has_archive: bool,
+    #[schema(value_type = Object)]
+    files: Vec<Value>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct SkillArchiveDownloadResponse {
+    #[serde(rename = "projId")]
+    proj_id: i64,
+    #[serde(rename = "skillName")]
+    skill_name: String,
+    #[serde(rename = "skillArchiveFormat")]
+    skill_archive_format: String,
+    #[serde(rename = "archiveBase64")]
+    archive_base64: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct SkillPackageSaveResponse {
+    #[serde(rename = "projId")]
+    proj_id: i64,
+    #[serde(rename = "skillName")]
+    skill_name: String,
+    created: bool,
+    updated: bool,
+    #[serde(rename = "fileCount")]
+    file_count: usize,
+}
+
+fn find_skill_item<'a>(skills_json: &'a Value, skill_name: &str) -> Option<&'a Value> {
+    skills_json.as_array()?.iter().find(|item| {
+        item.get("skillName").and_then(Value::as_str) == Some(skill_name)
+    })
+}
+
+async fn save_skill_package_to_draft(
+    state: &AppState,
+    proj_id: i64,
+    skill_name: &str,
+    package: &crate::skill_archive::SkillPackage,
+    enabled: Option<bool>,
+) -> Result<(bool, usize), ApiError> {
+    let Some(_) = state
+        .session_db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+    else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no project_config for proj {proj_id}; create project first"),
+        ));
+    };
+    project_config_draft::ensure_draft(&state.session_db, proj_id)
+        .await
+        .map_err(draft_err)?;
+    let mut row = state
+        .session_db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .expect("row exists");
+    let existed = row.skills_json.as_array().is_some_and(|a| {
+        a.iter()
+            .any(|item| item.get("skillName").and_then(Value::as_str) == Some(skill_name))
+    });
+    crate::skill_archive::merge_package_into_skills_json(
+        &mut row.skills_json,
+        skill_name,
+        package,
+        enabled,
+    )
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    crate::skill_archive::validate_skills_json_value(&row.skills_json)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    row.draft_open = true;
+    row.content_rev = project_config_draft::DRAFT_CONTENT_REV.to_string();
+    row.updated_at_ms = now_ms();
+    let skill_body = find_skill_item(&row.skills_json, skill_name)
+        .cloned()
+        .unwrap_or_else(|| json!({ "skillName": skill_name }));
+    state
+        .session_db
+        .upsert_project_config(project_config_draft::upsert_from_row(
+            &row,
+            project_config_draft::DRAFT_CONTENT_REV,
+            row.updated_at_ms,
+            row.claude_md.as_deref(),
+            row.stable_content_rev.as_deref(),
+        ))
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    project_entity_revision::append_skill(
+        &state.session_db,
+        proj_id,
+        skill_name,
+        skill_body,
+        row.updated_at_ms,
+    )
+    .await
+    .map_err(entity_revision_err)?;
+    Ok((!existed, package.files.len()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/project/skills/{proj_id}/archive",
+    tag = "ProjectAssets",
+    operation_id = "upload_project_skill_archive",
+    params(("proj_id" = i64, Path, description = "Project ID")),
+    request_body = UploadSkillArchiveJsonRequest,
+    responses(
+        (status = 200, description = "Skill archive saved to draft", body = SkillPackageSaveResponse),
+        (status = 400, description = "Invalid archive"),
+        (status = 404, description = "No project_config")
+    )
+)]
+pub(crate) async fn upload_project_skill_archive(
+    State(state): State<AppState>,
+    AxumPath(proj_id): AxumPath<i64>,
+    Json(req): Json<UploadSkillArchiveJsonRequest>,
+) -> Result<Json<SkillPackageSaveResponse>, ApiError> {
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
+    }
+    let skill_name = req.skill_name.trim().to_string();
+    validate_skill_name(&skill_name)?;
+    let format = req
+        .skill_archive_format
+        .as_deref()
+        .map(crate::skill_archive::SkillArchiveFormat::parse)
+        .transpose()
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let package = crate::skill_archive::unpack_archive_base64(&req.archive_base64, format)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let lock = get_proj_lock(&state, proj_id).await;
+    let _guard = lock.lock().await;
+    let (created, file_count) =
+        save_skill_package_to_draft(&state, proj_id, &skill_name, &package, req.enabled).await?;
+    Ok(Json(SkillPackageSaveResponse {
+        proj_id,
+        skill_name,
+        created,
+        updated: !created,
+        file_count,
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/project/skills/{proj_id}/{skill_name}/tree",
+    tag = "ProjectAssets",
+    operation_id = "get_project_skill_tree",
+    params(
+        ("proj_id" = i64, Path, description = "Project ID"),
+        ("skill_name" = String, Path, description = "Skill name")
+    ),
+    responses(
+        (status = 200, description = "Skill file tree preview", body = SkillTreeResponse),
+        (status = 404, description = "Skill not found")
+    )
+)]
+pub(crate) async fn get_project_skill_tree(
+    State(state): State<AppState>,
+    AxumPath((proj_id, skill_name)): AxumPath<(i64, String)>,
+) -> Result<Json<SkillTreeResponse>, ApiError> {
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
+    }
+    validate_skill_name(&skill_name)?;
+    let row = project_config_draft::row_for_editing(&state.session_db, proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("no project_config for proj {proj_id}"),
+            )
+        })?;
+    let item = find_skill_item(&row.skills_json, &skill_name).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("skill not found: {skill_name}"),
+        )
+    })?;
+    let has_archive = item
+        .get("skillArchive")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty());
+    let package = crate::skill_archive::package_from_skills_json_item(item)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(SkillTreeResponse {
+        proj_id,
+        skill_name,
+        has_archive,
+        files: crate::skill_archive::preview_entries(&package),
+    }))
+}
+
+#[utoipa::path(
+    put,
+    path = "/v1/project/skills/{proj_id}/{skill_name}/files",
+    tag = "ProjectAssets",
+    operation_id = "put_project_skill_files",
+    params(
+        ("proj_id" = i64, Path, description = "Project ID"),
+        ("skill_name" = String, Path, description = "Skill name")
+    ),
+    request_body = PutSkillFilesRequest,
+    responses(
+        (status = 200, description = "Skill files repacked into draft", body = SkillPackageSaveResponse),
+        (status = 400, description = "Invalid files")
+    )
+)]
+pub(crate) async fn put_project_skill_files(
+    State(state): State<AppState>,
+    AxumPath((proj_id, skill_name)): AxumPath<(i64, String)>,
+    Json(req): Json<PutSkillFilesRequest>,
+) -> Result<Json<SkillPackageSaveResponse>, ApiError> {
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
+    }
+    validate_skill_name(&skill_name)?;
+    let package = crate::skill_archive::SkillPackage::from_files(req.files)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let lock = get_proj_lock(&state, proj_id).await;
+    let _guard = lock.lock().await;
+    let (created, file_count) =
+        save_skill_package_to_draft(&state, proj_id, &skill_name, &package, req.enabled).await?;
+    Ok(Json(SkillPackageSaveResponse {
+        proj_id,
+        skill_name,
+        created,
+        updated: !created,
+        file_count,
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/project/skills/{proj_id}/{skill_name}/archive",
+    tag = "ProjectAssets",
+    operation_id = "download_project_skill_archive",
+    params(
+        ("proj_id" = i64, Path, description = "Project ID"),
+        ("skill_name" = String, Path, description = "Skill name")
+    ),
+    responses(
+        (status = 200, description = "Skill archive (base64)", body = SkillArchiveDownloadResponse),
+        (status = 404, description = "Skill not found")
+    )
+)]
+pub(crate) async fn download_project_skill_archive(
+    State(state): State<AppState>,
+    AxumPath((proj_id, skill_name)): AxumPath<(i64, String)>,
+) -> Result<Json<SkillArchiveDownloadResponse>, ApiError> {
+    if proj_id < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "projId must be >= 1",
+        ));
+    }
+    validate_skill_name(&skill_name)?;
+    let row = project_config_draft::row_for_editing(&state.session_db, proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("no project_config for proj {proj_id}"),
+            )
+        })?;
+    let item = find_skill_item(&row.skills_json, &skill_name).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("skill not found: {skill_name}"),
+        )
+    })?;
+    let package = crate::skill_archive::package_from_skills_json_item(item)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let (archive_base64, format) = package
+        .pack_base64(crate::skill_archive::SkillArchiveFormat::Tgz)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(SkillArchiveDownloadResponse {
+        proj_id,
+        skill_name,
+        skill_archive_format: format.as_str().to_string(),
+        archive_base64,
     }))
 }
 

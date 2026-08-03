@@ -72,7 +72,19 @@ pull 后网关 **`apply_project_config`** 叠加 PG，保证 Admin 配置仍为�
 
 ### `skills_json` 约定
 
-**`array`**，元素：
+**`array`**，元素（多文件包优先）：
+
+```json
+{
+  "skillName": "sql-safety",
+  "enabled": true,
+  "skillArchiveFormat": "tgz",
+  "skillArchive": "<base64 tar or tgz>",
+  "skillContent": "# Skill\n...（可选：包内 SKILL.md 缓存，便于列表/旧客户端）"
+}
+```
+
+兼容旧形态（仅文本）：
 
 ```json
 {
@@ -81,8 +93,12 @@ pull 后网关 **`apply_project_config`** 叠加 PG，保证 Admin 配置仍为�
 }
 ```
 
-- 物化到 **`home/skills/<skillName>/SKILL.md`**（`project_config_apply::write_skills_json`）。
-- 管理 API：`POST /v1/project/skills/{proj_id}` 合并写库；`GET /v1/skills/{proj_id}` 在 `draft_open` 时只读草稿 `skills_json`，**不回退**磁盘 `home/skills/`。
+规则：
+
+- **真源**：有非空 `skillArchive` 时以归档为准（包根 = skill 目录根，必须含 `SKILL.md`）；否则回退 `skillContent` → 只写 `SKILL.md`。
+- 归档限制：UTF-8 文本 only；禁路径穿越 / 绝对路径；单包解码后 ≤ 2 MiB；整表序列化建议 ≤ 16 MiB。
+- 物化到 **`home/skills/<skillName>/`** 整树（含 `scripts/` 等）；`project_config_apply::write_skills_json` 解包；`.sh` / shebang 文件 `chmod +x`。
+- 管理 API：`POST /v1/project/skills/{proj_id}` 合并写库；上传/预览/按文件保存见 `/v1/project/skills/{proj_id}/archive|…/tree|…/files`；`GET /v1/skills/{proj_id}` 在 `draft_open` 时只读草稿 `skills_json`，**不回退**磁盘 `home/skills/`。
 
 ### `rules_json` / `mcp_servers_json` / `allowed_tools_json`
 

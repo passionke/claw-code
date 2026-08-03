@@ -612,6 +612,8 @@ pub(crate) async fn load_project_config_or_default(
 }
 
 pub(crate) fn merge_skill_into_skills_json(skills_json: &mut Value, skill_name: &str, skill_content: &str) {
+    // Content-only upsert: keep legacy callers working; archive cleared so content is sole source.
+    // Author: kejiqing
     if !skills_json.is_array() {
         *skills_json = json!([]);
     }
@@ -620,6 +622,8 @@ pub(crate) fn merge_skill_into_skills_json(skills_json: &mut Value, skill_name: 
         if item.get("skillName").and_then(Value::as_str) == Some(skill_name) {
             if let Some(obj) = item.as_object_mut() {
                 obj.insert("skillContent".into(), json!(skill_content));
+                obj.remove("skillArchive");
+                obj.remove("skillArchiveFormat");
             }
             return;
         }
@@ -631,36 +635,8 @@ pub(crate) fn merge_skill_into_skills_json(skills_json: &mut Value, skill_name: 
 }
 
 pub(crate) fn validate_skills_json(skills: &Value) -> Result<(), ApiError> {
-    let arr = skills
-        .as_array()
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "skillsJson must be a JSON array"))?;
-    for (i, item) in arr.iter().enumerate() {
-        let obj = item.as_object().ok_or_else(|| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!("skillsJson[{i}] must be a JSON object"),
-            )
-        })?;
-        let name = obj
-            .get("skillName")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    format!("skillsJson[{i}] missing skillName"),
-                )
-            })?;
-        validate_skill_name(name)?;
-        if !obj.contains_key("skillContent") {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!("skillsJson[{i}] missing skillContent"),
-            ));
-        }
-    }
-    Ok(())
+    crate::skill_archive::validate_skills_json_value(skills)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))
 }
 
 pub(crate) fn reject_deprecated_skills_sources(sources: &Value) -> Result<(), ApiError> {

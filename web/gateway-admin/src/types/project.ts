@@ -95,6 +95,9 @@ export interface SkillJsonItem {
   skillContent: string;
   /** false = saved in DB but not materialized to solve. Author: kejiqing */
   enabled?: boolean;
+  /** Base64 tar/tgz when multi-file package is the source of truth. Author: kejiqing */
+  skillArchive?: string;
+  skillArchiveFormat?: "tar" | "tgz" | string;
 }
 
 export interface RuleJsonItem {
@@ -144,4 +147,5 @@ export interface SkillRow {
   skill_name: string;
   skill_content?: string;
   enabled?: boolean;
+  has_archive?: boolean;
 }

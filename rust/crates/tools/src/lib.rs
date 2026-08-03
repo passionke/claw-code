@@ -2779,6 +2779,11 @@ struct TodoWriteOutput {
 struct SkillOutput {
     skill: String,
     path: String,
+    /// Parent directory of SKILL.md (skill package root). Author: kejiqing
+    #[serde(rename = "skillDir")]
+    skill_dir: String,
+    /// Relative paths under skillDir (companion files for progressive disclosure). Author: kejiqing
+    files: Vec<String>,
     args: Option<String>,
     description: Option<String>,
     prompt: String,
@@ -3425,14 +3430,53 @@ fn execute_skill(input: SkillInput) -> Result<SkillOutput, String> {
     let skill_path = resolve_skill_path(&input.skill)?;
     let prompt = std::fs::read_to_string(&skill_path).map_err(|error| error.to_string())?;
     let description = parse_skill_description(&prompt);
+    let skill_dir = skill_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let files = list_skill_companion_files(&skill_dir);
 
     Ok(SkillOutput {
         skill: input.skill,
         path: skill_path.display().to_string(),
+        skill_dir: skill_dir.display().to_string(),
+        files,
         args: input.args,
         description,
         prompt,
     })
+}
+
+/// Relative file paths under a skill directory (excludes dirs; sorted). Author: kejiqing
+fn list_skill_companion_files(skill_dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![skill_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
+            if let Ok(rel) = path.strip_prefix(skill_dir) {
+                let s = rel.to_string_lossy().replace('\\', "/");
+                if !s.is_empty() {
+                    out.push(s);
+                }
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 fn validate_todos(todos: &[TodoItem]) -> Result<(), String> {
@@ -8178,6 +8222,14 @@ mod tests {
             .expect("path")
             .ends_with("skills/statusline/SKILL.md"));
         assert_eq!(direct_skill_output["description"], "Claude config skill");
+        assert!(direct_skill_output["skillDir"]
+            .as_str()
+            .expect("skillDir")
+            .ends_with("skills/statusline"));
+        let files = direct_skill_output["files"]
+            .as_array()
+            .expect("files array");
+        assert!(files.iter().any(|v| v.as_str() == Some("SKILL.md")));
 
         let legacy_command =
             execute_tool("Skill", &json!({ "skill": "doctor-check" })).expect("direct command");
@@ -8209,6 +8261,54 @@ mod tests {
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
         fs::remove_dir_all(root).expect("temp tree should clean up");
+    }
+
+    #[test]
+    fn skill_output_lists_companion_script_files() {
+        let _guard = env_guard();
+        let root = temp_path("skill-companion-files");
+        let home = root.join("home");
+        let skill_dir = home.join(".claw").join("skills").join("packaged");
+        fs::create_dir_all(skill_dir.join("scripts")).expect("scripts dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: packaged\ndescription: Multi-file skill\n---\n# Run scripts/run.sh\n",
+        )
+        .expect("skill md");
+        fs::write(skill_dir.join("scripts").join("run.sh"), "#!/bin/sh\necho hi\n")
+            .expect("script");
+        let original_home = std::env::var("HOME").ok();
+        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_codex_home = std::env::var("CODEX_HOME").ok();
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        std::env::remove_var("CODEX_HOME");
+
+        let out = execute_tool("Skill", &json!({ "skill": "packaged" })).expect("skill");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+        let files = v["files"].as_array().expect("files");
+        assert!(files.iter().any(|x| x.as_str() == Some("SKILL.md")));
+        assert!(files
+            .iter()
+            .any(|x| x.as_str() == Some("scripts/run.sh")));
+        assert!(v["skillDir"]
+            .as_str()
+            .expect("skillDir")
+            .ends_with("skills/packaged"));
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match original_config_home {
+            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
+            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+        }
+        match original_codex_home {
+            Some(value) => std::env::set_var("CODEX_HOME", value),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

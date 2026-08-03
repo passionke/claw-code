@@ -12,6 +12,7 @@ export function skillRowsFromConfig(cfg: ProjectConfig): SkillRow[] {
       skill_name: s.skillName,
       skill_content: s.skillContent ?? "",
       enabled: s.enabled,
+      has_archive: !!(s.skillArchive && String(s.skillArchive).trim()),
     }))
     .sort((a, b) => a.skill_name.localeCompare(b.skill_name));
 }
