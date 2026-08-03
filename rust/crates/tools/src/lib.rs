@@ -8275,8 +8275,11 @@ mod tests {
             "---\nname: packaged\ndescription: Multi-file skill\n---\n# Run scripts/run.sh\n",
         )
         .expect("skill md");
-        fs::write(skill_dir.join("scripts").join("run.sh"), "#!/bin/sh\necho hi\n")
-            .expect("script");
+        fs::write(
+            skill_dir.join("scripts").join("run.sh"),
+            "#!/bin/sh\necho hi\n",
+        )
+        .expect("script");
         let original_home = std::env::var("HOME").ok();
         let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
         let original_codex_home = std::env::var("CODEX_HOME").ok();
@@ -8288,9 +8291,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).expect("json");
         let files = v["files"].as_array().expect("files");
         assert!(files.iter().any(|x| x.as_str() == Some("SKILL.md")));
-        assert!(files
-            .iter()
-            .any(|x| x.as_str() == Some("scripts/run.sh")));
+        assert!(files.iter().any(|x| x.as_str() == Some("scripts/run.sh")));
         assert!(v["skillDir"]
             .as_str()
             .expect("skillDir")

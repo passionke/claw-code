@@ -71,10 +71,7 @@ impl SkillPackage {
     }
 
     pub fn skill_md(&self) -> &str {
-        self.files
-            .get("SKILL.md")
-            .map(String::as_str)
-            .unwrap_or("")
+        self.files.get("SKILL.md").map(String::as_str).unwrap_or("")
     }
 
     pub fn file_list(&self) -> Vec<SkillFileEntry> {
@@ -91,7 +88,10 @@ impl SkillPackage {
         pack_files(&self.files, format)
     }
 
-    pub fn pack_base64(&self, format: SkillArchiveFormat) -> Result<(String, SkillArchiveFormat), String> {
+    pub fn pack_base64(
+        &self,
+        format: SkillArchiveFormat,
+    ) -> Result<(String, SkillArchiveFormat), String> {
         let bytes = self.pack(format)?;
         Ok((
             base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -294,8 +294,8 @@ pub fn validate_skills_json_value(skills: &Value) -> Result<(), String> {
     let arr = skills
         .as_array()
         .ok_or_else(|| "skillsJson must be a JSON array".to_string())?;
-    let encoded = serde_json::to_string(skills)
-        .map_err(|e| format!("skillsJson serialize failed: {e}"))?;
+    let encoded =
+        serde_json::to_string(skills).map_err(|e| format!("skillsJson serialize failed: {e}"))?;
     if encoded.len() > MAX_SKILLS_JSON_BYTES {
         return Err(format!(
             "skillsJson exceeds {MAX_SKILLS_JSON_BYTES} bytes when serialized"
@@ -353,11 +353,7 @@ pub fn merge_package_into_skills_json(
     let arr = skills_json.as_array_mut().expect("skills_json is array");
     for existing in arr.iter_mut() {
         if existing.get("skillName").and_then(Value::as_str) == Some(skill_name) {
-            let keep_enabled = enabled.or_else(|| {
-                existing
-                    .get("enabled")
-                    .and_then(Value::as_bool)
-            });
+            let keep_enabled = enabled.or_else(|| existing.get("enabled").and_then(Value::as_bool));
             *existing = skill_item_from_package(skill_name, package, keep_enabled)?;
             return Ok(());
         }
@@ -440,7 +436,9 @@ fn validate_file_map(files: &BTreeMap<String, String>) -> Result<(), String> {
         }
         // Reject NULs as binary marker even if UTF-8.
         if content.as_bytes().contains(&0) {
-            return Err(format!("skill file '{rel}' contains NUL bytes (binary rejected)"));
+            return Err(format!(
+                "skill file '{rel}' contains NUL bytes (binary rejected)"
+            ));
         }
     }
     Ok(())
@@ -462,10 +460,7 @@ fn normalize_archive_rel_path(path: &Path) -> Result<String, String> {
             }
             Component::CurDir => {}
             Component::ParentDir => {
-                return Err(format!(
-                    "path traversal not allowed: {}",
-                    path.display()
-                ));
+                return Err(format!("path traversal not allowed: {}", path.display()));
             }
             Component::RootDir | Component::Prefix(_) => {
                 return Err(format!(
@@ -504,8 +499,7 @@ fn set_executable(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::metadata(path)
-            .map_err(|e| format!("stat {}: {e}", path.display()))?;
+        let meta = std::fs::metadata(path).map_err(|e| format!("stat {}: {e}", path.display()))?;
         let mut perms = meta.permissions();
         perms.set_mode(perms.mode() | 0o111);
         std::fs::set_permissions(path, perms)

@@ -310,9 +310,8 @@ async fn write_skills_json(work_dir: &Path, skills: &Value) -> ApplyResult<()> {
             .ok_or_else(|| {
                 ProjectConfigApplyError::new(format!("skillsJson[{i}] missing skillName"))
             })?;
-        let package = crate::skill_archive::package_from_skills_json_item(item).map_err(|e| {
-            ProjectConfigApplyError::new(format!("skillsJson[{i}] package: {e}"))
-        })?;
+        let package = crate::skill_archive::package_from_skills_json_item(item)
+            .map_err(|e| ProjectConfigApplyError::new(format!("skillsJson[{i}] package: {e}")))?;
         let skill_dir = skills_dst.join(skill_name);
         // Blocking unpack/write (small packs); keep sync fs for chmod +x. Author: kejiqing
         crate::skill_archive::materialize_package_to_dir(&package, &skill_dir).map_err(|e| {
@@ -818,12 +817,12 @@ fn push_skills_writes(out: &mut Vec<GuestMaterializeWrite>, skills: &Value) -> A
             .ok_or_else(|| {
                 ProjectConfigApplyError::new(format!("skillsJson[{i}] missing skillName"))
             })?;
-        let package = crate::skill_archive::package_from_skills_json_item(item).map_err(|e| {
-            ProjectConfigApplyError::new(format!("skillsJson[{i}] package: {e}"))
-        })?;
-        let writes = crate::skill_archive::package_guest_writes(&package, skill_name).map_err(
-            |e| ProjectConfigApplyError::new(format!("skillsJson[{i}] guest writes: {e}")),
-        )?;
+        let package = crate::skill_archive::package_from_skills_json_item(item)
+            .map_err(|e| ProjectConfigApplyError::new(format!("skillsJson[{i}] package: {e}")))?;
+        let writes =
+            crate::skill_archive::package_guest_writes(&package, skill_name).map_err(|e| {
+                ProjectConfigApplyError::new(format!("skillsJson[{i}] guest writes: {e}"))
+            })?;
         for (rel, bytes, _executable) in writes {
             // Guest FS may not honor mode via this write list; host materialize sets +x.
             // Author: kejiqing
