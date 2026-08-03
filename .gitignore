@@ -43,6 +43,10 @@ rust/crates/rusty-claude-cli/.claw/
 status-help.txt
 claw-server-data/
 rust/claw-server.db
+# Local operator / deploy logs — never commit. Prefer deploy/stack/*.log (or /tmp);
+# do not redirect pack-deploy / build output to the repo root.
+*.log
+.*.log
 deploy/podman/claude-tap.log
 deploy/podman/claude-tap.pid
 deploy/podman/claude-tap-data/
@@ -108,7 +112,7 @@ scripts/eval/**/cases/
 scripts/eval/**/scored/
 scripts/eval/**/results/
 scripts/eval/**/cases.bak-*/
-scripts/eval/**/*.log
+# Local logs covered by root *.log / .*.log
 
 # Business knowledge bases: crawl/sync artifacts only. Never commit KB content
 # (GPOS manuals and future domain KBs live on NAS / local disk, not in claw-code).
