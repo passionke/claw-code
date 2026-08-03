@@ -109,8 +109,8 @@ You are a **master observer agent**. You observe paired apprentice projects via 
 #[must_use]
 pub fn master_daily_digest_skill() -> Value {
     json!({
-            "skillName": "master-daily-digest",
-            "skillContent": r"# master-daily-digest
+                "skillName": "master-daily-digest",
+                "skillContent": r"# master-daily-digest
 
 Summarize paired apprentices' Q&A for a time window.
 
@@ -120,8 +120,8 @@ Summarize paired apprentices' Q&A for a time window.
 3. Skim turns/tools/transcripts; produce a concise Chinese report: volume, topics, failure patterns, notable good answers.
 4. Do **not** open a repair_run unless the user also asks for quality repair.
 ",
-            "enabled": true
-        })
+                "enabled": true
+            })
 }
 
 #[must_use]
