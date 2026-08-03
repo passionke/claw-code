@@ -92,7 +92,7 @@ pub fn master_default_worker_profile_json() -> Value {
 #[must_use]
 pub fn master_claude_md(proj_id: i64) -> String {
     format!(
-        r#"# Master Observer (proj_{proj_id})
+        r"# Master Observer (proj_{proj_id})
 
 You are a **master observer agent**. You observe paired apprentice projects via the
 `claw-master-observer` MCP tools. You do **not** run apprentice business skills yourself.
@@ -102,15 +102,15 @@ You are a **master observer agent**. You observe paired apprentice projects via 
 - Quality repair **must** follow skill `master-quality-repair` and the `master_repair_run` state machine.
 - Never claim you activated apprentice production config; promote only writes apprentice **draft**.
 - When reading apprentice config for repair baselines, use **stable** (effective) revision only.
-"#
+"
     )
 }
 
 #[must_use]
 pub fn master_daily_digest_skill() -> Value {
     json!({
-        "skillName": "master-daily-digest",
-        "skillContent": r#"# master-daily-digest
+            "skillName": "master-daily-digest",
+            "skillContent": r"# master-daily-digest
 
 Summarize paired apprentices' Q&A for a time window.
 
@@ -119,9 +119,9 @@ Summarize paired apprentices' Q&A for a time window.
 2. For each apprentice, call `apprentice_sessions_query` with the window from the user prompt.
 3. Skim turns/tools/transcripts; produce a concise Chinese report: volume, topics, failure patterns, notable good answers.
 4. Do **not** open a repair_run unless the user also asks for quality repair.
-"#,
-        "enabled": true
-    })
+",
+            "enabled": true
+        })
 }
 
 #[must_use]
@@ -206,6 +206,7 @@ pub fn validate_project_role(role: &str) -> Result<&str, String> {
 }
 
 /// Legal repair_run status transitions (plus abandon from any non-terminal). Author: kejiqing
+#[allow(clippy::unnested_or_patterns)]
 pub fn can_transition_repair_status(from: &str, to: &str) -> bool {
     if to == REPAIR_STATUS_ABANDONED {
         return from != REPAIR_STATUS_DRAFT_PUSHED && from != REPAIR_STATUS_ABANDONED;

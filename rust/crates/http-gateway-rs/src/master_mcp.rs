@@ -34,6 +34,7 @@ struct JsonRpcRequest {
     params: Option<Value>,
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn jsonrpc_result(id: Value, result: Value) -> Response {
     (
         StatusCode::OK,
@@ -46,6 +47,7 @@ fn jsonrpc_result(id: Value, result: Value) -> Response {
         .into_response()
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn jsonrpc_error(id: Value, code: i32, message: impl Into<String>) -> Response {
     (
         StatusCode::OK,
@@ -62,6 +64,7 @@ fn jsonrpc_error(id: Value, code: i32, message: impl Into<String>) -> Response {
         .into_response()
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn tool_def(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({
         "name": name,
@@ -230,6 +233,8 @@ fn verify_master_mcp_auth(headers: &HeaderMap) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value)]
 fn text_result(v: Value) -> Value {
     json!({
         "content": [{"type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())}]
@@ -598,22 +603,24 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                         continue;
                     }
                 }
-                let src_sid = item
+                let source_session_id = item
                     .get("sourceSessionId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| format!("item {item_id} missing sourceSessionId"))?;
-                let src_tid = item
+                let source_turn_id = item
                     .get("sourceTurnId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| format!("item {item_id} missing sourceTurnId"))?;
                 let (prompt, entry) = db
-                    .get_turn_for_replay(src_sid, run.apprentice_proj_id, src_tid)
+                    .get_turn_for_replay(source_session_id, run.apprentice_proj_id, source_turn_id)
                     .await
                     .map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("source turn {src_tid} not found"))?;
+                    .ok_or_else(|| format!("source turn {source_turn_id} not found"))?;
                 let user_prompt = prompt.unwrap_or_default();
                 if user_prompt.trim().is_empty() {
-                    return Err(format!("source turn {src_tid} has empty user_prompt"));
+                    return Err(format!(
+                        "source turn {source_turn_id} has empty user_prompt"
+                    ));
                 }
                 let mut extra = entry
                     .as_ref()
@@ -646,8 +653,8 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                     .map_err(|e| e.to_string())?;
                 replayed.push(json!({
                     "itemId": item_id,
-                    "sourceSessionId": src_sid,
-                    "sourceTurnId": src_tid,
+                    "sourceSessionId": source_session_id,
+                    "sourceTurnId": source_turn_id,
                     "observationSessionId": resp.get("sessionId").cloned().unwrap_or(Value::Null),
                     "observationTurnId": resp.get("turnId").cloned().unwrap_or(Value::Null),
                     "taskId": resp.get("taskId").cloned().unwrap_or(Value::Null),

@@ -39,7 +39,7 @@ async fn tick_once(state: &AppState) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let now = Local::now();
     let hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
-    let weekday = now.weekday().number_from_monday() as i32;
+    let weekday = i32::try_from(now.weekday().number_from_monday()).unwrap_or(1);
     let now_ms = now_ms_for_registry();
 
     for mut job in jobs {
