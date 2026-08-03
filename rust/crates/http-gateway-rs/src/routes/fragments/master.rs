@@ -51,6 +51,15 @@ fn default_true_sched() -> bool {
     true
 }
 
+#[utoipa::path(
+    put,
+    path = "/v1/projects/{proj_id}/role",
+    tag = "Master",
+    operation_id = "put_master_role",
+    params(("proj_id" = i64, Path, description = "Project id")),
+    request_body = PutProjectRoleRequest,
+    responses((status = 200, body = PutProjectRoleResponse), (status = 400, description = "bad role"))
+)]
 pub(crate) async fn put_master_role(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
@@ -82,6 +91,14 @@ pub(crate) async fn put_master_role(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/projects/{proj_id}/apprentices",
+    tag = "Master",
+    operation_id = "get_master_apprentices",
+    params(("proj_id" = i64, Path, description = "Master project id")),
+    responses((status = 200, body = ApprenticesResponse), (status = 400, description = "not master"))
+)]
 pub(crate) async fn get_master_apprentices(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
@@ -98,6 +115,15 @@ pub(crate) async fn get_master_apprentices(
     }))
 }
 
+#[utoipa::path(
+    put,
+    path = "/v1/projects/{proj_id}/apprentices",
+    tag = "Master",
+    operation_id = "put_master_apprentices",
+    params(("proj_id" = i64, Path, description = "Master project id")),
+    request_body = PutApprenticesRequest,
+    responses((status = 200, body = ApprenticesResponse), (status = 400, description = "bad request"))
+)]
 pub(crate) async fn put_master_apprentices(
     State(state): State<AppState>,
     AxumPath(master_proj_id): AxumPath<i64>,
@@ -253,6 +279,14 @@ async fn ensure_master_role(state: &AppState, proj_id: i64) -> Result<(), ApiErr
     Ok(())
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/projects/{proj_id}/repair-runs",
+    tag = "Master",
+    operation_id = "list_master_repair_runs",
+    params(("proj_id" = i64, Path, description = "Master project id")),
+    responses((status = 200, description = "repair runs"), (status = 400, description = "not master"))
+)]
 pub(crate) async fn list_master_repair_runs(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
@@ -266,6 +300,17 @@ pub(crate) async fn list_master_repair_runs(
     Ok(Json(json!({"runs": runs})))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/projects/{proj_id}/repair-runs/{run_id}",
+    tag = "Master",
+    operation_id = "get_master_repair_run",
+    params(
+        ("proj_id" = i64, Path, description = "Master project id"),
+        ("run_id" = String, Path, description = "Repair run id")
+    ),
+    responses((status = 200, description = "repair run"), (status = 404, description = "not found"))
+)]
 pub(crate) async fn get_master_repair_run(
     State(state): State<AppState>,
     AxumPath((proj_id, run_id)): AxumPath<(i64, String)>,
@@ -283,6 +328,14 @@ pub(crate) async fn get_master_repair_run(
     Ok(Json(json!({"run": run})))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/projects/{proj_id}/schedules",
+    tag = "Master",
+    operation_id = "list_master_schedules",
+    params(("proj_id" = i64, Path, description = "Master project id")),
+    responses((status = 200, description = "schedules"), (status = 400, description = "not master"))
+)]
 pub(crate) async fn list_master_schedules(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
@@ -296,6 +349,15 @@ pub(crate) async fn list_master_schedules(
     Ok(Json(json!({"jobs": jobs})))
 }
 
+#[utoipa::path(
+    put,
+    path = "/v1/projects/{proj_id}/schedules",
+    tag = "Master",
+    operation_id = "put_master_schedule",
+    params(("proj_id" = i64, Path, description = "Master project id")),
+    request_body = PutScheduleRequest,
+    responses((status = 200, description = "saved schedule"), (status = 400, description = "not master"))
+)]
 pub(crate) async fn put_master_schedule(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
@@ -346,6 +408,17 @@ pub(crate) async fn put_master_schedule(
     Ok(Json(json!({"job": job})))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/v1/projects/{proj_id}/schedules/{job_id}",
+    tag = "Master",
+    operation_id = "delete_master_schedule",
+    params(
+        ("proj_id" = i64, Path, description = "Master project id"),
+        ("job_id" = String, Path, description = "Job id")
+    ),
+    responses((status = 200, description = "deleted"), (status = 400, description = "not master"))
+)]
 pub(crate) async fn delete_master_schedule(
     State(state): State<AppState>,
     AxumPath((proj_id, job_id)): AxumPath<(i64, String)>,
@@ -396,6 +469,18 @@ pub(crate) async fn run_master_schedule(
     })))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/master/{master_proj_id}/mcp",
+    tag = "Master",
+    operation_id = "master_mcp_http_handler",
+    params(("master_proj_id" = i64, Path, description = "Master project id")),
+    request_body(content = inline(Object), content_type = "application/json", description = "MCP JSON-RPC request body"),
+    responses(
+        (status = 200, description = "MCP JSON-RPC response", content_type = "application/json"),
+        (status = 401, description = "unauthorized")
+    )
+)]
 pub(crate) async fn master_mcp_http_handler(
     State(state): State<AppState>,
     AxumPath(master_proj_id): AxumPath<i64>,
