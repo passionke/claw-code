@@ -43,6 +43,7 @@ const TAB_ITEMS: MenuProps["items"] = [
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
   { key: "/preflight", icon: <SettingOutlined />, label: "Preflight" },
   { key: "/worker-profile", icon: <SettingOutlined />, label: "Worker profile" },
+  { key: "/env", icon: <CodeOutlined />, label: "环境变量" },
   { key: "/inference", icon: <ThunderboltOutlined />, label: "项目推理" },
   { key: "/prompt", icon: <FileTextOutlined />, label: "系统提示词" },
   { key: "/tools", icon: <ToolOutlined />, label: "Tools" },

@@ -13,7 +13,9 @@ use crate::admin_mcp_solve::{
 };
 use crate::gateway_admin_mcp_token::{extract_bearer_token, verify_admin_mcp_token};
 use crate::gateway_global_settings;
-use crate::pool::{validate_worker_profile_json, NasLayoutBackend, PoolClients};
+use crate::pool::{
+    validate_worker_env_json, validate_worker_profile_json, NasLayoutBackend, PoolClients,
+};
 use crate::project_config_apply;
 use crate::project_config_draft;
 use crate::project_extra_session;
@@ -67,6 +69,7 @@ struct DraftPatch<'a> {
     mcp_servers_json: Option<&'a Value>,
     skills_json: Option<&'a Value>,
     worker_profile_json: Option<&'a Value>,
+    worker_env_json: Option<&'a Value>,
     /// `None` = omit (keep); `Some(None)` = clear; `Some(Some(n))` = set. Author: kejiqing
     #[allow(clippy::option_option)]
     max_iterations: Option<Option<usize>>,
@@ -80,6 +83,7 @@ impl Default for DraftPatch<'_> {
             mcp_servers_json: None,
             skills_json: None,
             worker_profile_json: None,
+            worker_env_json: None,
             max_iterations: None,
         }
     }
@@ -203,7 +207,7 @@ fn tools_list_result() -> Value {
             ),
             tool_def(
                 "project_config_put_draft",
-                "Write claudeMd / rulesJson / mcpServersJson / skillsJson / workerProfileJson into open draft; pass at least one field. workerProfileJson.poolSize overrides global e2bWorker.poolSize for strict projects.",
+                "Write claudeMd / rulesJson / mcpServersJson / skillsJson / workerProfileJson / workerEnvJson into open draft; pass at least one field. workerProfileJson.poolSize overrides global e2bWorker.poolSize for strict projects. workerEnvJson applies only on next worker create/rebuild.",
                 &json!({
                     "projId": { "type": "integer" },
                     "claudeMd": { "type": "string" },
@@ -213,6 +217,10 @@ fn tools_list_result() -> Value {
                     "workerProfileJson": {
                         "type": "object",
                         "description": "e2b worker profile sidecar: mode strict|relaxed; strict may set poolSize (1..CLAW_E2B_POOL_SIZE_CAP)."
+                    },
+                    "workerEnvJson": {
+                        "type": "object",
+                        "description": "Custom string env map injected at warm-proj create only; does not auto-rotate workers."
                     }
                 }),
                 &["projId"],
@@ -300,6 +308,19 @@ fn tools_list_result() -> Value {
                 }),
                 &["projId", "workerProfileJson"],
             ),
+            proj_id_only_tool(
+                "project_worker_env_get",
+                "Read workerEnvJson sidecar (custom env injected only at warm-proj create; rebuild required to apply changes).",
+            ),
+            tool_def(
+                "project_worker_env_put_draft",
+                "Write workerEnvJson sidecar (string map). Does not auto-rotate workers; takes effect on next create/rebuild only.",
+                &json!({
+                    "projId": { "type": "integer" },
+                    "workerEnvJson": { "type": "object" }
+                }),
+                &["projId", "workerEnvJson"],
+            ),
     ];
     tools.extend(solve_tools_schema());
     json!({ "tools": tools })
@@ -342,6 +363,9 @@ async fn upsert_project_draft(
     let worker_profile_json = patch
         .worker_profile_json
         .unwrap_or(&existing.worker_profile_json);
+    let worker_env_json = patch
+        .worker_env_json
+        .unwrap_or(&existing.worker_env_json);
     let max_iterations = crate::max_iterations::parse_project_max_iterations_put(
         patch.max_iterations,
         existing.max_iterations,
@@ -366,6 +390,7 @@ async fn upsert_project_draft(
         extra_session_fields_json: &existing.extra_session_fields_json,
         prompt_limits_json: &existing.prompt_limits_json,
         worker_profile_json,
+        worker_env_json,
         project_code: &existing.project_code,
         project_description: &existing.project_description,
         max_iterations,
@@ -486,6 +511,11 @@ fn parse_config_put_draft_patch(args: &Value) -> Result<DraftPatch<'_>, String> 
         validate_worker_profile_json(v)?;
         patch.worker_profile_json = Some(v);
     }
+    if let Some(v) = args.get("workerEnvJson") {
+        any = true;
+        validate_worker_env_json(v)?;
+        patch.worker_env_json = Some(v);
+    }
     if let Some(v) = args.get("maxIterations") {
         any = true;
         if v.is_null() {
@@ -503,7 +533,7 @@ fn parse_config_put_draft_patch(args: &Value) -> Result<DraftPatch<'_>, String> 
     }
     if !any {
         return Err(
-            "at least one of claudeMd, rulesJson, mcpServersJson, skillsJson, workerProfileJson, maxIterations is required".into(),
+            "at least one of claudeMd, rulesJson, mcpServersJson, skillsJson, workerProfileJson, workerEnvJson, maxIterations is required".into(),
         );
     }
     Ok(patch)
@@ -650,6 +680,7 @@ async fn handle_project_config_tool(
                 "mcpServersJson": row.mcp_servers_json,
                 "allowedToolsJson": row.allowed_tools_json,
                 "workerProfileJson": row.worker_profile_json,
+                "workerEnvJson": row.worker_env_json,
                 "maxIterations": row.max_iterations,
             });
             Ok(tool_text_result(&payload))
@@ -740,6 +771,13 @@ async fn handle_project_config_tool(
             Ok(tool_text_result(&json!({
                 "projId": proj_id,
                 "workerProfileJson": row.worker_profile_json
+            })))
+        }
+        "project_worker_env_get" => {
+            let row = row_for_editing_or_err(db, proj_id).await?;
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "workerEnvJson": row.worker_env_json
             })))
         }
         "project_claude_put_draft" => {
@@ -851,6 +889,27 @@ async fn handle_project_config_tool(
                 "workerProfileJson": worker_profile_json
             })))
         }
+        "project_worker_env_put_draft" => {
+            let worker_env_json = args
+                .get("workerEnvJson")
+                .ok_or_else(|| "arguments.workerEnvJson required".to_string())?;
+            validate_worker_env_json(worker_env_json)?;
+            upsert_project_draft(
+                db,
+                proj_id,
+                DraftPatch {
+                    worker_env_json: Some(worker_env_json),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "updated": true,
+                "workerEnvJson": worker_env_json,
+                "note": "env applies only on next worker create/rebuild; no auto-rotate"
+            })))
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -945,6 +1004,8 @@ mod tests {
         "project_skills_put_draft",
         "project_worker_profile_get",
         "project_worker_profile_put_draft",
+        "project_worker_env_get",
+        "project_worker_env_put_draft",
     ];
 
     #[test]
@@ -983,6 +1044,25 @@ mod tests {
         let args = json!({
             "projId": 1,
             "workerProfileJson": { "mode": "nope" }
+        });
+        assert!(parse_config_put_draft_patch(&args).is_err());
+    }
+
+    #[test]
+    fn parse_config_put_draft_accepts_worker_env_json() {
+        let args = json!({
+            "projId": 1,
+            "workerEnvJson": { "FOO_BAR": "x" }
+        });
+        let patch = parse_config_put_draft_patch(&args).unwrap();
+        assert!(patch.worker_env_json.is_some());
+    }
+
+    #[test]
+    fn parse_config_put_draft_rejects_reserved_worker_env_json() {
+        let args = json!({
+            "projId": 1,
+            "workerEnvJson": { "CLAW_FOO": "x" }
         });
         assert!(parse_config_put_draft_patch(&args).is_err());
     }

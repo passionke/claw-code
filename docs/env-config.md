@@ -36,6 +36,7 @@ Copy-paste starters:
 | `CLAW_E2B_API_KEY` / `ALIYUN_E2B_TOKEN` | e2b authentication |
 
 Project content lives in **PostgreSQL `project_config`**, not `.env`. See `docs/project-config-model.md`.
+Per-project custom worker env is also in PG (`worker_env_json` / Admin「环境变量」), injected only at warm-proj sandbox **create** (not via deploy `.env`).
 
 **LLM** lives in **PostgreSQL** (Admin → LLM). Gateway writes runtime files only:
 - `.claw/claw-llm-runtime.env`

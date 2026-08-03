@@ -1254,9 +1254,10 @@ pub(crate) async fn create_project(
             extra_session_fields_json: &empty_arr,
             prompt_limits_json: &empty_obj,
             worker_profile_json: &pool::default_worker_profile_json(),
+            worker_env_json: &pool::default_worker_env_json(),
             project_code: &project_code,
             project_description: &project_description,
-        max_iterations: None,
+            max_iterations: None,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
