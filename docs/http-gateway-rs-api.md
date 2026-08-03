@@ -134,7 +134,7 @@ Base URL 示例：`http://127.0.0.1:18088`
 
 ## Skills（按项目工作区）
 
-技能文件与 `POST /v1/project/skills` 一致：`<CLAW_WORK_ROOT>/proj_<projId>/home/skills/<skill_name>/SKILL.md`。`skill_name` 为目录名，不含 `/`、`\` 或 `..`。
+技能文件与 `POST /v1/project/skills` 一致：`<CLAW_WORK_ROOT>/proj_<projId>/home/skills/<skill_name>/`（整树；至少含 `SKILL.md`）。`skill_name` 为目录名，不含 `/`、`\` 或 `..`。多文件包真源为 `skillsJson[].skillArchive`（base64 tar/tgz）。
 
 - `GET /v1/skills/{proj_id}`
   - 用途：列出该 `projId` 下所有已存在的技能（仅包含存在 `SKILL.md` 的子目录）
@@ -277,9 +277,17 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
     - `projId`、`workDir`、`path`、`exists`、`content`
 
 - `POST /v1/project/skills/{proj_id}`
-  - 用途：合并写入 `project_config.skills_json` 并物化
+  - 用途：合并写入 `project_config.skills_json` **草稿**（`skillName` + `skillContent`；会清除同名项的 archive）
   - 请求体：`skillName`（`[a-zA-Z0-9._-]`）、`skillContent`
-  - 落盘：`proj_<projId>/home/skills/<skillName>/SKILL.md`
+- `POST /v1/project/skills/{proj_id}/archive`
+  - 用途：上传 tar/tgz（JSON：`skillName`、`archiveBase64`、可选 `skillArchiveFormat`/`enabled`）写入草稿；包根须含 `SKILL.md`，仅 UTF-8 文本
+- `GET /v1/project/skills/{proj_id}/{skill_name}/tree`
+  - 用途：解包预览文件树（`files[{path,size,text?}]`）；兼容仅 `skillContent` 的旧项
+- `PUT /v1/project/skills/{proj_id}/{skill_name}/files`
+  - 用途：按文件 map 重打包为 tgz 写入草稿
+- `GET /v1/project/skills/{proj_id}/{skill_name}/archive`
+  - 用途：下载当前编辑行 skill 的 tgz（`archiveBase64`）
+  - 落盘（activate 后）：`proj_<projId>/home/skills/<skillName>/` 整树
   - 返回：`projId`、`skillName`、`skillPath`、`created`、`updated`、`bytesWritten`、`workDir`
 
 ## Interactive worker（OVS `agent/ws`）

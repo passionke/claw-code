@@ -83,6 +83,7 @@ pub mod session_execution;
 pub mod session_merge;
 pub mod session_ovs_api;
 pub mod session_terminal_api;
+pub mod skill_archive;
 pub mod solve_llm_route;
 pub mod task_status;
 pub mod turn_id;

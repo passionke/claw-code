@@ -310,22 +310,13 @@ async fn write_skills_json(work_dir: &Path, skills: &Value) -> ApplyResult<()> {
             .ok_or_else(|| {
                 ProjectConfigApplyError::new(format!("skillsJson[{i}] missing skillName"))
             })?;
-        let content = obj
-            .get("skillContent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ProjectConfigApplyError::new(format!("skillsJson[{i}] missing skillContent"))
-            })?;
+        let package = crate::skill_archive::package_from_skills_json_item(item)
+            .map_err(|e| ProjectConfigApplyError::new(format!("skillsJson[{i}] package: {e}")))?;
         let skill_dir = skills_dst.join(skill_name);
-        fs::create_dir_all(&skill_dir).await.map_err(|e| {
-            ProjectConfigApplyError::new(format!("create skill dir {}: {e}", skill_dir.display()))
+        // Blocking unpack/write (small packs); keep sync fs for chmod +x. Author: kejiqing
+        crate::skill_archive::materialize_package_to_dir(&package, &skill_dir).map_err(|e| {
+            ProjectConfigApplyError::new(format!("materialize skill '{skill_name}': {e}"))
         })?;
-        let skill_path = skill_dir.join("SKILL.md");
-        fs::write(&skill_path, content.as_bytes())
-            .await
-            .map_err(|e| {
-                ProjectConfigApplyError::new(format!("write {}: {e}", skill_path.display()))
-            })?;
     }
     Ok(())
 }
@@ -826,19 +817,17 @@ fn push_skills_writes(out: &mut Vec<GuestMaterializeWrite>, skills: &Value) -> A
             .ok_or_else(|| {
                 ProjectConfigApplyError::new(format!("skillsJson[{i}] missing skillName"))
             })?;
-        let content = obj
-            .get("skillContent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ProjectConfigApplyError::new(format!("skillsJson[{i}] missing skillContent"))
+        let package = crate::skill_archive::package_from_skills_json_item(item)
+            .map_err(|e| ProjectConfigApplyError::new(format!("skillsJson[{i}] package: {e}")))?;
+        let writes =
+            crate::skill_archive::package_guest_writes(&package, skill_name).map_err(|e| {
+                ProjectConfigApplyError::new(format!("skillsJson[{i}] guest writes: {e}"))
             })?;
-        push_write(
-            out,
-            PathBuf::from(".claw/skills")
-                .join(skill_name)
-                .join("SKILL.md"),
-            content.as_bytes().to_vec(),
-        );
+        for (rel, bytes, _executable) in writes {
+            // Guest FS may not honor mode via this write list; host materialize sets +x.
+            // Author: kejiqing
+            push_write(out, rel, bytes);
+        }
     }
     Ok(())
 }
@@ -1061,6 +1050,45 @@ mod tests {
             .expect("claude");
         assert_eq!(claude, "claude body");
         let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn write_skills_json_expands_tgz_archive_with_scripts() {
+        let root = std::env::temp_dir().join(format!(
+            "claw-skill-archive-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root).await;
+        fs::create_dir_all(&root).await.expect("root");
+        let mut files = std::collections::BTreeMap::new();
+        files.insert(
+            "SKILL.md".into(),
+            "---\nname: pack\ndescription: d\n---\n# Pack\n".into(),
+        );
+        files.insert("scripts/run.sh".into(), "#!/bin/sh\necho hi\n".into());
+        let pkg = crate::skill_archive::SkillPackage::from_files(files).expect("pkg");
+        let (b64, fmt) = pkg
+            .pack_base64(crate::skill_archive::SkillArchiveFormat::Tgz)
+            .expect("pack");
+        let skills = json!([{
+            "skillName": "pack",
+            "skillArchive": b64,
+            "skillArchiveFormat": fmt.as_str(),
+            "skillContent": pkg.skill_md(),
+        }]);
+        write_skills_json(&root, &skills).await.expect("write");
+        let md = fs::read_to_string(root.join("home/skills/pack/SKILL.md"))
+            .await
+            .expect("skill md");
+        assert!(md.contains("# Pack"));
+        let script = fs::read_to_string(root.join("home/skills/pack/scripts/run.sh"))
+            .await
+            .expect("script");
+        assert!(script.contains("echo hi"));
+        let _ = fs::remove_dir_all(&root).await;
     }
 
     #[test]

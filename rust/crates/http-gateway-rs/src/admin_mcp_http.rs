@@ -288,12 +288,21 @@ fn tools_list_result() -> Value {
             ),
             tool_def(
                 "project_skills_put_draft",
-                "Write skillsJson into open draft (__draft__); does not activate. Items: skillName, skillContent, optional enabled.",
+                "Write skillsJson into open draft (__draft__); does not activate. Items: skillName plus skillArchive(+format) and/or skillContent; optional enabled.",
                 &json!({
                     "projId": { "type": "integer" },
                     "skillsJson": { "type": "array" }
                 }),
                 &["projId", "skillsJson"],
+            ),
+            tool_def(
+                "project_skill_preview",
+                "Unpack a skill from editing-row skillsJson into a file tree preview (path/size/text). Works for skillArchive or legacy skillContent.",
+                &json!({
+                    "projId": { "type": "integer" },
+                    "skillName": { "type": "string" }
+                }),
+                &["projId", "skillName"],
             ),
             proj_id_only_tool(
                 "project_worker_profile_get",
@@ -414,38 +423,11 @@ fn validate_mcp_servers_json(v: &Value) -> Result<(), String> {
 }
 
 fn validate_skill_name(skill_name: &str) -> Result<(), String> {
-    if skill_name.trim().is_empty() {
-        return Err("skillName cannot be empty".to_string());
-    }
-    if skill_name
-        .chars()
-        .any(|ch| !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.'))
-    {
-        return Err("skillName only allows [a-zA-Z0-9._-]".to_string());
-    }
-    Ok(())
+    crate::skill_archive::validate_skill_name(skill_name)
 }
 
 fn validate_skills_json(v: &Value) -> Result<(), String> {
-    let arr = v
-        .as_array()
-        .ok_or_else(|| "skillsJson must be a JSON array".to_string())?;
-    for (i, item) in arr.iter().enumerate() {
-        let obj = item
-            .as_object()
-            .ok_or_else(|| format!("skillsJson[{i}] must be a JSON object"))?;
-        let name = obj
-            .get("skillName")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| format!("skillsJson[{i}] missing skillName"))?;
-        validate_skill_name(name)?;
-        if !obj.contains_key("skillContent") {
-            return Err(format!("skillsJson[{i}] missing skillContent"));
-        }
-    }
-    Ok(())
+    crate::skill_archive::validate_skills_json_value(v)
 }
 
 fn proj_work_dir(work_root: &Path, proj_id: i64) -> PathBuf {
@@ -866,6 +848,35 @@ async fn handle_project_config_tool(
                 "skillCount": count
             })))
         }
+        "project_skill_preview" => {
+            let skill_name = args
+                .get("skillName")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "arguments.skillName required".to_string())?;
+            validate_skill_name(skill_name)?;
+            let row = row_for_editing_or_err(db, proj_id).await?;
+            let item = row
+                .skills_json
+                .as_array()
+                .and_then(|a| {
+                    a.iter()
+                        .find(|s| s.get("skillName").and_then(Value::as_str) == Some(skill_name))
+                })
+                .ok_or_else(|| format!("skill not found: {skill_name}"))?;
+            let has_archive = item
+                .get("skillArchive")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.trim().is_empty());
+            let package = crate::skill_archive::package_from_skills_json_item(item)?;
+            Ok(tool_text_result(&json!({
+                "projId": proj_id,
+                "skillName": skill_name,
+                "hasArchive": has_archive,
+                "files": crate::skill_archive::preview_entries(&package),
+            })))
+        }
         "project_worker_profile_put_draft" => {
             let worker_profile_json = args
                 .get("workerProfileJson")
@@ -1000,6 +1011,7 @@ mod tests {
         "project_mcp_put_draft",
         "project_skills_get",
         "project_skills_put_draft",
+        "project_skill_preview",
         "project_worker_profile_get",
         "project_worker_profile_put_draft",
         "project_worker_env_get",

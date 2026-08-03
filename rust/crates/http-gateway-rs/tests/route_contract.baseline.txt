@@ -60,6 +60,10 @@ POST	/v1/project/config/{proj_id}/versions/{content_rev}/activate	activate_proje
 GET	/v1/project/prompt/{proj_id}/effective	get_effective_prompt
 POST	/v1/project/prompt/{proj_id}/effective	post_effective_prompt
 POST	/v1/project/skills/{proj_id}	upsert_project_skill
+POST	/v1/project/skills/{proj_id}/archive	upload_project_skill_archive
+GET	/v1/project/skills/{proj_id}/{skill_name}/archive	download_project_skill_archive
+PUT	/v1/project/skills/{proj_id}/{skill_name}/files	put_project_skill_files
+GET	/v1/project/skills/{proj_id}/{skill_name}/tree	get_project_skill_tree
 GET	/v1/project/tools/catalog	get_project_tools_catalog
 GET	/v1/projects	list_projects
 POST	/v1/projects	create_project
