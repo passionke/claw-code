@@ -193,6 +193,7 @@ mod tests {
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_profile_json: json!({"mode": "strict"}),
+            worker_env_json: json!({}),
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,

@@ -84,6 +84,8 @@ export interface ProjectConfig {
   promptLimitsJson?: PromptLimitsJson;
   /** Pool worker strict/relaxed (`project_config.worker_profile_json`). Author: kejiqing */
   workerProfileJson?: WorkerProfileJson;
+  /** Custom env injected only at warm-proj create (`project_config.worker_env_json`). Author: kejiqing */
+  workerEnvJson?: Record<string, string>;
   /** Project default agent loop max iterations; null/omit = cluster CLAW_MAX_ITERATIONS. Author: kejiqing */
   maxIterations?: number | null;
 }

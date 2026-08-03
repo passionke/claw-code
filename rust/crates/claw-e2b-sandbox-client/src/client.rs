@@ -659,6 +659,7 @@ impl E2bSandboxClient {
         worker_id: &str,
         template_id: &str,
         include_ovs: bool,
+        env_vars: BTreeMap<String, String>,
     ) -> Result<E2bSandboxHandle, String> {
         self.prepare_self_hosted_create().await?;
         let warm_session_id = format!("warm-proj-{proj_id}");
@@ -678,6 +679,9 @@ impl E2bSandboxClient {
             "timeout": self.config.sandbox_timeout_secs,
             "metadata": metadata,
         });
+        if !env_vars.is_empty() {
+            body["envVars"] = json!(env_vars);
+        }
         let nas = self.require_nas_config_body(&mount_points)?;
         body["nasConfig"] = json!(nas);
         let nas_configured = true;

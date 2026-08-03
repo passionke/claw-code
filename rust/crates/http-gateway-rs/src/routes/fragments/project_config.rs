@@ -42,6 +42,9 @@ pub(crate) struct UpsertProjectConfigRequest {
     /// Omit on PUT to keep existing `worker_profile_json`. Author: kejiqing
     #[serde(rename = "workerProfileJson", default)]
     worker_profile_json: Option<Value>,
+    /// Omit on PUT to keep existing `worker_env_json`. Author: kejiqing
+    #[serde(rename = "workerEnvJson", default)]
+    worker_env_json: Option<Value>,
     /// Omit to keep; JSON `null` clears; positive int sets. Author: kejiqing
     #[serde(default, rename = "maxIterations")]
     #[allow(clippy::option_option)]
@@ -105,6 +108,10 @@ pub(crate) struct ProjectConfigResponse {
     #[serde(rename = "workerProfileJson")]
     #[schema(value_type = Object)]
     worker_profile_json: Value,
+    /// Custom env for warm-proj create only; sidecar. Author: kejiqing
+    #[serde(rename = "workerEnvJson")]
+    #[schema(value_type = Object)]
+    worker_env_json: Value,
     #[serde(rename = "projectCode")]
     project_code: String,
     #[serde(rename = "projectDescription")]
@@ -324,9 +331,10 @@ pub(crate) fn default_project_config_row(proj_id: i64) -> session_db::ProjectCon
         extra_session_fields_json: json!([]),
         prompt_limits_json: project_config_apply::default_prompt_limits_json(),
         worker_profile_json: pool::default_worker_profile_json(),
+        worker_env_json: pool::default_worker_env_json(),
         project_code: String::new(),
         project_description: String::new(),
-    max_iterations: None,
+        max_iterations: None,
     }
 }
 
@@ -486,9 +494,10 @@ pub(crate) async fn activate_project_config_revision_row(
             extra_session_fields_json: &sidecars.extra_session_fields_json,
             prompt_limits_json: &sidecars.prompt_limits_json,
             worker_profile_json: &sidecars.worker_profile_json,
+            worker_env_json: &sidecars.worker_env_json,
             project_code: &sidecars.project_code,
             project_description: &sidecars.project_description,
-        max_iterations: sidecars.max_iterations,
+            max_iterations: sidecars.max_iterations,
         })
         .await
         .map_err(|e| session_db_err(&e))?;
@@ -693,6 +702,7 @@ pub(crate) async fn project_config_row_to_response(
         extra_session_fields_json: row.extra_session_fields_json,
         prompt_limits_json: row.prompt_limits_json,
         worker_profile_json: row.worker_profile_json,
+        worker_env_json: row.worker_env_json,
         project_code: row.project_code,
         project_description: row.project_description,
         max_iterations: row.max_iterations,
@@ -825,6 +835,10 @@ pub(crate) fn validate_project_config_payload(req: &UpsertProjectConfigRequest) 
     }
     if let Some(ref wi) = req.worker_profile_json {
         pool::validate_worker_profile_json(wi)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
+    if let Some(ref we) = req.worker_env_json {
+        pool::validate_worker_env_json(we)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     }
     if let Some(Some(0)) = req.max_iterations {
@@ -1142,6 +1156,10 @@ pub(crate) async fn put_project_config(
         Some(incoming) => incoming.clone(),
         None => existing.worker_profile_json.clone(),
     };
+    let worker_env_json = match &req.worker_env_json {
+        Some(incoming) => incoming.clone(),
+        None => existing.worker_env_json.clone(),
+    };
     let max_iterations = crate::max_iterations::parse_project_max_iterations_put(
         req.max_iterations,
         existing.max_iterations,
@@ -1162,6 +1180,7 @@ pub(crate) async fn put_project_config(
         extra_session_fields_json: Some(extra_session_fields_json.clone()),
         prompt_limits_json: Some(prompt_limits_json.clone()),
         worker_profile_json: Some(worker_profile_json.clone()),
+        worker_env_json: Some(worker_env_json.clone()),
         max_iterations: Some(max_iterations),
     };
     validate_project_config_payload(&req_for_validate)?;
@@ -1200,6 +1219,7 @@ pub(crate) async fn put_project_config(
         extra_session_fields_json: &extra_session_fields_json,
         prompt_limits_json: &prompt_limits_json,
         worker_profile_json: &worker_profile_json,
+        worker_env_json: &worker_env_json,
         project_code: &existing.project_code,
         project_description: &existing.project_description,
         max_iterations,
@@ -1318,6 +1338,7 @@ pub(crate) async fn commit_project_config_draft(
             extra_session_fields_json: row.extra_session_fields_json.clone(),
             prompt_limits_json: row.prompt_limits_json.clone(),
             worker_profile_json: row.worker_profile_json.clone(),
+            worker_env_json: row.worker_env_json.clone(),
             project_code: row.project_code.clone(),
             project_description: row.project_description.clone(),
             max_iterations: row.max_iterations,
@@ -1511,6 +1532,7 @@ mod max_iterations_project_response_tests {
             extra_session_fields_json: json!([]),
             prompt_limits_json: json!({}),
             worker_profile_json: json!({"mode": "strict"}),
+            worker_env_json: json!({}),
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: Some(5),

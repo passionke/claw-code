@@ -613,6 +613,12 @@ impl E2bProjWorkerRegistry {
         self.nas_layout
             .prepare_e2b_worker_bind_sources(db.as_ref(), proj_id, &worker_id)
             .await?;
+        let worker_env_json = db
+            .get_worker_env_json(proj_id)
+            .await
+            .map_err(|e| format!("load worker_env_json for proj {proj_id}: {e}"))?;
+        let env_vars = crate::pool::parse_worker_env_map(&worker_env_json)
+            .map_err(|e| format!("invalid worker_env_json for proj {proj_id}: {e}"))?;
         let handle = self
             .client
             .create_warm_proj_sandbox(
@@ -621,6 +627,7 @@ impl E2bProjWorkerRegistry {
                 &worker_id,
                 &spec.e2b_template_id,
                 spec.include_ovs,
+                env_vars,
             )
             .await?;
         if spec.include_ovs && !self.relaxed_ovs_http_ok(&handle).await {
@@ -1033,6 +1040,10 @@ mod tests {
         assert!(key.contains("nas-session-root-v3"));
         assert!(key.contains("#home=2026-07-01_12-00-00"));
         assert!(key.ends_with("#profile=relaxed"));
+        assert!(
+            !key.contains("env="),
+            "env must not be part of worker contract"
+        );
     }
 
     #[test]

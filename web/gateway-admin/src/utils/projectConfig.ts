@@ -16,6 +16,7 @@ export function emptyProjectConfig(projId: number): ProjectConfig {
     extraSessionFieldsJson: [],
     promptLimitsJson: {},
     workerProfileJson: { mode: "strict" },
+    workerEnvJson: {},
     maxIterations: null,
   };
 }
@@ -77,6 +78,8 @@ export async function putProjectConfigDraft(
       patch.workerProfileJson !== undefined
         ? patch.workerProfileJson
         : cfg.workerProfileJson ?? { mode: "strict" },
+    workerEnvJson:
+      patch.workerEnvJson !== undefined ? patch.workerEnvJson : cfg.workerEnvJson ?? {},
     maxIterations:
       patch.maxIterations !== undefined ? patch.maxIterations : cfg.maxIterations ?? null,
   };
