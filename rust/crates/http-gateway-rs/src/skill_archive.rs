@@ -146,10 +146,7 @@ pub fn unpack_archive_bytes(
             EntryType::Directory => continue,
             EntryType::Regular | EntryType::Continuous => {}
             other => {
-                return Err(format!(
-                    "unsupported tar entry type {:?} for '{rel}'",
-                    other
-                ));
+                return Err(format!("unsupported tar entry type {other:?} for '{rel}'"));
             }
         }
         let mut buf = Vec::new();
@@ -488,8 +485,11 @@ fn bytes_to_utf8_text(buf: &[u8], rel: &str) -> Result<String, String> {
 }
 
 fn looks_executable(rel: &str, content: &str) -> bool {
-    let lower = rel.to_ascii_lowercase();
-    if lower.ends_with(".sh") || lower.ends_with(".bash") {
+    let path = Path::new(rel);
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("sh") || ext.eq_ignore_ascii_case("bash"))
+    {
         return true;
     }
     content.starts_with("#!")

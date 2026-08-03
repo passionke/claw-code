@@ -3430,10 +3430,10 @@ fn execute_skill(input: SkillInput) -> Result<SkillOutput, String> {
     let skill_path = resolve_skill_path(&input.skill)?;
     let prompt = std::fs::read_to_string(&skill_path).map_err(|error| error.to_string())?;
     let description = parse_skill_description(&prompt);
-    let skill_dir = skill_path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let skill_dir = skill_path.parent().map_or_else(
+        || std::path::PathBuf::from("."),
+        std::path::Path::to_path_buf,
+    );
     let files = list_skill_companion_files(&skill_dir);
 
     Ok(SkillOutput {
