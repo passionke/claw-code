@@ -1,7 +1,8 @@
 import { AppstoreOutlined, CodeOutlined } from "@ant-design/icons";
-import { Button, Layout, Select, Space, Typography } from "antd";
+import { Button, Layout, Select, Typography } from "antd";
 import { Link, Outlet } from "react-router-dom";
 import { useApp } from "../context/AppContext";
+import { formatProjectLabel } from "../utils/projectLabel";
 import { isOvsWorkerRelaxed, ovsIdeHref } from "../utils/ovsUrl";
 
 const { Header, Content } = Layout;
@@ -17,7 +18,7 @@ export default function ChatLayout() {
 
   const projOptions = projects.map((p) => ({
     value: p.projId,
-    label: `项目 ${p.projId} — ${p.environmentPrepared ? "就绪" : "未就绪"}`,
+    label: formatProjectLabel(p),
   }));
 
   return (
@@ -34,25 +35,22 @@ export default function ChatLayout() {
         style={{
           display: "flex",
           flexWrap: "wrap",
-          alignItems: "flex-end",
-          gap: 10,
-          padding: "12px 16px",
+          alignItems: "center",
+          gap: 12,
+          padding: "0 16px",
           background: "#1a2332",
           height: "auto",
+          minHeight: 64,
           lineHeight: 1.4,
         }}
       >
-        <Space direction="vertical" size={4}>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            项目
-          </Typography.Text>
-          <Select
-            style={{ minWidth: 160 }}
-            value={projId}
-            options={projOptions.length ? projOptions : [{ value: 1, label: "项目 1" }]}
-            onChange={setProjId}
-          />
-        </Space>
+        <Typography.Text type="secondary">项目</Typography.Text>
+        <Select
+          style={{ minWidth: 280 }}
+          value={projId}
+          options={projOptions.length ? projOptions : [{ value: 1, label: "#1" }]}
+          onChange={setProjId}
+        />
         {isOvsWorkerRelaxed(projectConfig?.workerProfileJson) ? (
           <Button href={ovsIdeHref(projId)} target="_blank" rel="noreferrer" icon={<CodeOutlined />}>
             Web IDE
