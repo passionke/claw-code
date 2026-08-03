@@ -54,6 +54,45 @@ export default function ProjectPage() {
   const [activatingRev, setActivatingRev] = useState<string | null>(null);
   const [savingMeta, setSavingMeta] = useState(false);
   const [savingMaxIter, setSavingMaxIter] = useState(false);
+  const [projectRole, setProjectRole] = useState<string>("normal");
+  const [apprenticeIds, setApprenticeIds] = useState<number[]>([]);
+  const [masterLinks, setMasterLinks] = useState<
+    {
+      apprenticeProjId: number;
+      observationProjId: number;
+      orphaned: boolean;
+    }[]
+  >([]);
+  const [repairRuns, setRepairRuns] = useState<
+    { runId: string; status: string; apprenticeProjId: number; promoteStatus: string }[]
+  >([]);
+  const [scheduleKind, setScheduleKind] = useState("daily");
+  const [scheduleHhmm, setScheduleHhmm] = useState("02:00");
+  const [schedulePrompt, setSchedulePrompt] = useState(
+    "执行 skill master-daily-digest，学徒={{apprentice_ids}}，窗口={{bizdate_yesterday}}"
+  );
+  const [scheduleJobId, setScheduleJobId] = useState<string | null>(null);
+  /** true = 上方表单用于新增（默认）。false = 正在编辑列表中某条。Author: kejiqing */
+  const [scheduleDraftMode, setScheduleDraftMode] = useState(true);
+  const [scheduleJobs, setScheduleJobs] = useState<
+    {
+      jobId: string;
+      scheduleKind: string;
+      runAtHhmm: string;
+      weekday: number | null;
+      enabled: boolean;
+      promptTemplate: string;
+      lastRunAtMs: number | null;
+      lastTaskId: string | null;
+      lastError: string | null;
+    }[]
+  >([]);
+  const [savingMaster, setSavingMaster] = useState(false);
+
+  const SCHEDULE_PRESET_DAILY =
+    "执行 skill master-daily-digest，学徒={{apprentice_ids}}，窗口={{bizdate_yesterday}}";
+  const SCHEDULE_PRESET_REPAIR =
+    "执行 skill master-quality-repair，学徒={{apprentice_ids}}，窗口 bizdate={{bizdate_yesterday}}";
 
   const CODE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
@@ -80,6 +119,59 @@ export default function ProjectPage() {
   useEffect(() => {
     loadVersions().catch(() => setVersions(null));
   }, [loadVersions, projectConfig?.contentRev, projectConfig?.draftOpen]);
+
+  const loadMaster = useCallback(async () => {
+    try {
+      const linksResp = await proxyHttp<{
+        links: {
+          apprenticeProjId: number;
+          observationProjId: number;
+          orphaned: boolean;
+        }[];
+      }>(gatewayBase, "GET", `/v1/projects/${projId}/apprentices`);
+      setProjectRole("master");
+      setMasterLinks(linksResp.links || []);
+      setApprenticeIds(
+        (linksResp.links || [])
+          .filter((l) => !l.orphaned)
+          .map((l) => l.apprenticeProjId)
+      );
+      const runs = await proxyHttp<{
+        runs: {
+          runId: string;
+          status: string;
+          apprenticeProjId: number;
+          promoteStatus: string;
+        }[];
+      }>(gatewayBase, "GET", `/v1/projects/${projId}/repair-runs`);
+      setRepairRuns(runs.runs || []);
+      const sched = await proxyHttp<{
+        jobs: {
+          jobId: string;
+          scheduleKind: string;
+          runAtHhmm: string;
+          weekday: number | null;
+          enabled: boolean;
+          promptTemplate: string;
+          lastRunAtMs: number | null;
+          lastTaskId: string | null;
+          lastError: string | null;
+        }[];
+      }>(gatewayBase, "GET", `/v1/projects/${projId}/schedules`);
+      setScheduleJobs(sched.jobs || []);
+    } catch {
+      setProjectRole("normal");
+      setMasterLinks([]);
+      setApprenticeIds([]);
+      setRepairRuns([]);
+      setScheduleJobs([]);
+      setScheduleJobId(null);
+    }
+  }, [gatewayBase, projId]);
+
+  useEffect(() => {
+    loadMaster().catch(() => undefined);
+  }, [loadMaster]);
 
   useEffect(() => {
     proxyHttp<{ gitPats?: { id: string; name: string; tokenSet?: boolean }[] }>(
@@ -378,6 +470,377 @@ export default function ProjectPage() {
             保存项目信息
           </Button>
         </Form>
+      </Card>
+
+      <Card title="Master / 观察空间" size="small" style={{ marginBottom: 16 }}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+          Master 通过内置 MCP 观察学徒；配对时自动创建观察空间（poolSize=0）。修复只推学徒草稿。
+          需设置 <Typography.Text code>CLAW_MASTER_MCP_TOKEN</Typography.Text>。
+        </Typography.Paragraph>
+        <Space wrap style={{ marginBottom: 12 }}>
+          <Tag color={projectRole === "master" ? "blue" : "default"}>
+            role={projectRole}
+          </Tag>
+          <Button
+            loading={savingMaster}
+            type={projectRole === "master" ? "default" : "primary"}
+            onClick={() =>
+              void (async () => {
+                setSavingMaster(true);
+                try {
+                  await proxyHttp(gatewayBase, "PUT", `/v1/projects/${projId}/role`, {
+                    projectRole: projectRole === "master" ? "normal" : "master",
+                  });
+                  message.success("角色已更新");
+                  await loadMaster();
+                  await refreshProjectConfig();
+                } catch (e) {
+                  message.error(e instanceof Error ? e.message : "设置角色失败");
+                } finally {
+                  setSavingMaster(false);
+                }
+              })()
+            }
+          >
+            {projectRole === "master" ? "取消 master" : "设为 master"}
+          </Button>
+        </Space>
+        {projectRole === "master" && (
+          <>
+            <Form layout="vertical">
+              <Form.Item label="学徒 projId（多选）">
+                <Select
+                  mode="multiple"
+                  style={{ width: "100%" }}
+                  value={apprenticeIds}
+                  onChange={(v: number[]) => setApprenticeIds(v)}
+                  options={projects
+                    .filter((p) => p.projId !== projId)
+                    .map((p) => ({
+                      value: p.projId,
+                      label: `${p.projId} ${p.projectCode || ""}`.trim(),
+                    }))}
+                />
+              </Form.Item>
+              <Button
+                type="primary"
+                loading={savingMaster}
+                onClick={() =>
+                  void (async () => {
+                    setSavingMaster(true);
+                    try {
+                      const r = await proxyHttp<{
+                        links: {
+                          apprenticeProjId: number;
+                          observationProjId: number;
+                          orphaned: boolean;
+                        }[];
+                      }>(gatewayBase, "PUT", `/v1/projects/${projId}/apprentices`, {
+                        apprenticeProjIds: apprenticeIds,
+                      });
+                      setMasterLinks(r.links || []);
+                      message.success("学徒配对已更新");
+                      await refreshProjects();
+                    } catch (e) {
+                      message.error(e instanceof Error ? e.message : "保存学徒失败");
+                    } finally {
+                      setSavingMaster(false);
+                    }
+                  })()
+                }
+              >
+                保存学徒配对
+              </Button>
+            </Form>
+            {masterLinks.length > 0 && (
+              <Table
+                size="small"
+                style={{ marginTop: 12 }}
+                pagination={false}
+                rowKey={(r) => `${r.apprenticeProjId}`}
+                dataSource={masterLinks}
+                columns={[
+                  { title: "学徒", dataIndex: "apprenticeProjId" },
+                  { title: "观察空间", dataIndex: "observationProjId" },
+                  {
+                    title: "状态",
+                    dataIndex: "orphaned",
+                    render: (v: boolean) =>
+                      v ? <Tag>orphaned</Tag> : <Tag color="green">active</Tag>,
+                  },
+                ]}
+              />
+            )}
+            <Typography.Paragraph type="secondary" style={{ marginTop: 16, marginBottom: 8 }}>
+              <b>定时任务 = 到点给本 master 发一段开场白</b>
+              。可任意新增多条（不限两种）；下面模板只是填表快捷方式。
+            </Typography.Paragraph>
+            <Space wrap style={{ marginBottom: 8 }}>
+              <Button
+                size="small"
+                type="dashed"
+                onClick={() => {
+                  setScheduleDraftMode(true);
+                  setScheduleJobId(null);
+                  setScheduleKind("daily");
+                  setScheduleHhmm("03:30");
+                  setSchedulePrompt(SCHEDULE_PRESET_DAILY);
+                }}
+              >
+                模板：日报
+              </Button>
+              <Button
+                size="small"
+                type="dashed"
+                onClick={() => {
+                  setScheduleDraftMode(true);
+                  setScheduleJobId(null);
+                  setScheduleKind("weekly");
+                  setScheduleHhmm("09:00");
+                  setSchedulePrompt(SCHEDULE_PRESET_REPAIR);
+                }}
+              >
+                模板：质量修复/回归
+              </Button>
+              <Button
+                size="small"
+                type="dashed"
+                onClick={() => {
+                  setScheduleDraftMode(true);
+                  setScheduleJobId(null);
+                  setScheduleKind("daily");
+                  setScheduleHhmm("12:00");
+                  setSchedulePrompt("");
+                }}
+              >
+                空白自定义
+              </Button>
+            </Space>
+            {scheduleJobId && !scheduleDraftMode ? (
+              <Typography.Text type="warning" style={{ display: "block", marginBottom: 8 }}>
+                正在修改已有任务（{scheduleJobId.slice(0, 12)}…）。要新增请点「空白自定义」或模板。
+              </Typography.Text>
+            ) : (
+              <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+                当前：新增一条定时任务
+              </Typography.Text>
+            )}
+            <Space wrap style={{ marginBottom: 8 }}>
+              <Select
+                value={scheduleKind}
+                style={{ width: 120 }}
+                onChange={setScheduleKind}
+                options={[
+                  { value: "daily", label: "每日" },
+                  { value: "weekly", label: "每周(周一)" },
+                ]}
+              />
+              <Input
+                value={scheduleHhmm}
+                onChange={(e) => setScheduleHhmm(e.target.value)}
+                style={{ width: 100 }}
+                placeholder="HH:MM"
+              />
+              <Button
+                loading={savingMaster}
+                type="primary"
+                onClick={() =>
+                  void (async () => {
+                    if (!schedulePrompt.trim()) {
+                      message.warning("请填写到点开场白");
+                      return;
+                    }
+                    setSavingMaster(true);
+                    try {
+                      const creating = scheduleDraftMode || !scheduleJobId;
+                      const body: Record<string, unknown> = {
+                        scheduleKind,
+                        runAtHhmm: scheduleHhmm,
+                        weekday: scheduleKind === "weekly" ? 1 : null,
+                        enabled: true,
+                        promptTemplate: schedulePrompt,
+                      };
+                      if (!creating && scheduleJobId) body.jobId = scheduleJobId;
+                      await proxyHttp<{ job: { jobId: string } }>(
+                        gatewayBase,
+                        "PUT",
+                        `/v1/projects/${projId}/schedules`,
+                        body
+                      );
+                      setScheduleDraftMode(true);
+                      setScheduleJobId(null);
+                      setSchedulePrompt("");
+                      message.success(creating ? "已新增定时任务" : "已保存修改");
+                      await loadMaster();
+                    } catch (e) {
+                      message.error(e instanceof Error ? e.message : "保存调度失败");
+                    } finally {
+                      setSavingMaster(false);
+                    }
+                  })()
+                }
+              >
+                {scheduleJobId && !scheduleDraftMode ? "保存修改" : "新增定时任务"}
+              </Button>
+              {scheduleJobId && !scheduleDraftMode && (
+                <Button
+                  onClick={() => {
+                    setScheduleDraftMode(true);
+                    setScheduleJobId(null);
+                    setSchedulePrompt("");
+                  }}
+                >
+                  取消编辑
+                </Button>
+              )}
+            </Space>
+            <Input.TextArea
+              rows={3}
+              value={schedulePrompt}
+              onChange={(e) => setSchedulePrompt(e.target.value)}
+              placeholder="到点发给 master 的开场白（可任意写，不限于模板）"
+              style={{ marginBottom: 8 }}
+            />
+            <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>
+              已配置的定时任务（{scheduleJobs.length}）
+            </Typography.Text>
+            {scheduleJobs.length > 0 && (
+              <Table
+                size="small"
+                pagination={false}
+                rowKey="jobId"
+                dataSource={scheduleJobs}
+                columns={[
+                  {
+                    title: "何时",
+                    width: 120,
+                    render: (_: unknown, r) =>
+                      r.scheduleKind === "weekly"
+                        ? `每周一 ${r.runAtHhmm}`
+                        : `每天 ${r.runAtHhmm}`,
+                  },
+                  {
+                    title: "到点开场白",
+                    dataIndex: "promptTemplate",
+                    ellipsis: true,
+                  },
+                  {
+                    title: "上次触发",
+                    width: 160,
+                    render: (_: unknown, r) =>
+                      r.lastRunAtMs
+                        ? new Date(r.lastRunAtMs).toLocaleString()
+                        : "尚未触发",
+                  },
+                  {
+                    title: "",
+                    width: 200,
+                    render: (_: unknown, r) => (
+                      <Space size={4}>
+                        <Button
+                          size="small"
+                          type="link"
+                          loading={savingMaster}
+                          onClick={() => {
+                            void (async () => {
+                              setSavingMaster(true);
+                              try {
+                                const resp = await proxyHttp<{
+                                  taskId?: string;
+                                }>(
+                                  gatewayBase,
+                                  "POST",
+                                  `/v1/projects/${projId}/schedules/${encodeURIComponent(r.jobId)}/run`
+                                );
+                                message.success(
+                                  resp.taskId
+                                    ? `已触发，task=${resp.taskId.slice(0, 8)}…`
+                                    : "已触发"
+                                );
+                                await loadMaster();
+                              } catch (e) {
+                                message.error(
+                                  e instanceof Error ? e.message : "触发失败"
+                                );
+                              } finally {
+                                setSavingMaster(false);
+                              }
+                            })();
+                          }}
+                        >
+                          立即触发
+                        </Button>
+                        <Button
+                          size="small"
+                          type="link"
+                          onClick={() => {
+                            setScheduleDraftMode(false);
+                            setScheduleJobId(r.jobId);
+                            setScheduleKind(r.scheduleKind || "daily");
+                            setScheduleHhmm(r.runAtHhmm || "02:00");
+                            setSchedulePrompt(r.promptTemplate || "");
+                          }}
+                        >
+                          编辑
+                        </Button>
+                        <Button
+                          size="small"
+                          danger
+                          loading={savingMaster}
+                          onClick={() => {
+                            void (async () => {
+                              setSavingMaster(true);
+                              try {
+                                await proxyHttp(
+                                  gatewayBase,
+                                  "DELETE",
+                                  `/v1/projects/${projId}/schedules/${encodeURIComponent(r.jobId)}`
+                                );
+                                if (scheduleJobId === r.jobId) {
+                                  setScheduleJobId(null);
+                                  setScheduleDraftMode(true);
+                                  setSchedulePrompt("");
+                                }
+                                message.success("已删除");
+                                await loadMaster();
+                              } catch (e) {
+                                message.error(
+                                  e instanceof Error ? e.message : "删除失败"
+                                );
+                              } finally {
+                                setSavingMaster(false);
+                              }
+                            })();
+                          }}
+                        >
+                          删
+                        </Button>
+                      </Space>
+                    ),
+                  },
+                ]}
+              />
+            )}
+            {scheduleJobs.length === 0 && (
+              <Typography.Text type="secondary">暂无定时任务，用上方表单新增。</Typography.Text>
+            )}
+            {repairRuns.length > 0 && (
+              <Table
+                size="small"
+                style={{ marginTop: 12 }}
+                pagination={false}
+                rowKey="runId"
+                dataSource={repairRuns}
+                columns={[
+                  { title: "runId", dataIndex: "runId", ellipsis: true },
+                  { title: "学徒", dataIndex: "apprenticeProjId", width: 80 },
+                  { title: "status", dataIndex: "status", width: 120 },
+                  { title: "promote", dataIndex: "promoteStatus", width: 120 },
+                ]}
+              />
+            )}
+          </>
+        )}
       </Card>
 
       <Space style={{ marginBottom: 16 }}>

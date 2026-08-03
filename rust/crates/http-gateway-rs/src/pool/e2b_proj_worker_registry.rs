@@ -732,6 +732,11 @@ impl E2bProjWorkerRegistry {
         _session_id: &str,
     ) -> Result<(E2bSandboxHandle, String, u32), String> {
         let pool_size = self.desired_pool_size(proj_id).await?;
+        // poolSize=0: on-demand create slot 0 (no warm pool). Author: kejiqing
+        if pool_size == 0 {
+            let (handle, worker_id) = self.acquire_slot(proj_id, 0).await?;
+            return Ok((handle, worker_id, 0));
+        }
         if pool_size == 1 {
             let (handle, worker_id) = self.acquire_slot(proj_id, 0).await?;
             return Ok((handle, worker_id, 0));
@@ -839,8 +844,17 @@ impl E2bProjWorkerRegistry {
                 .release_project_e2b_worker_in_use(proj_id, e2b_worker_slot_i32(slot_index))
                 .await;
         }
-        if self.pending_retire.lock().await.contains(&key) && self.active_leases(key).await == 0 {
-            let _ = self.try_retire_slot(proj_id, slot_index).await;
+        let leases_left = self.active_leases(key).await;
+        if leases_left == 0 {
+            let pending = self.pending_retire.lock().await.contains(&key);
+            let desired_zero = self
+                .desired_pool_size(proj_id)
+                .await
+                .map(|n| n == 0)
+                .unwrap_or(false);
+            if pending || desired_zero {
+                let _ = self.try_retire_slot(proj_id, slot_index).await;
+            }
         }
     }
 

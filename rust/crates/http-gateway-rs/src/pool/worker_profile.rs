@@ -302,6 +302,16 @@ mod tests {
     }
 
     #[test]
+    fn accepts_strict_with_zero_pool_size() {
+        with_env("CLAW_E2B_POOL_SIZE_CAP", Some("16"), || {
+            let json = json!({"mode": "strict", "poolSize": 0});
+            validate_worker_profile_json(&json).unwrap();
+            assert_eq!(pool_size_override_from_json(&json), Some(0));
+            assert_eq!(desired_strict_pool_size_from_profile(&json, 2), 0);
+        });
+    }
+
+    #[test]
     fn desired_strict_pool_size_prefers_project_override() {
         with_env("CLAW_E2B_POOL_SIZE_CAP", Some("16"), || {
             let json = json!({"mode": "strict", "poolSize": 3});

@@ -205,6 +205,20 @@ EDITING: draft_open=true，仅 1 个临时版 content_rev=__draft__，生效 E �
 
 Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历史（L2）」；`claude` 域 `entity_key` 固定为 `_`。
 
+## Master / 观察空间（观察者 Agent）
+
+**角色**：`project_config.project_role` = `normal` | `master` | `observation`。
+
+**配对**：`PUT /v1/projects/{master}/apprentices` body `{ "apprenticeProjIds": [...] }`。新增学徒时自动创建观察空间 project（克隆学徒 **stable** 配置包，`poolSize: 0`，`project_role=observation`），写入 `project_master_link`。
+
+**Master 内置 MCP**：solve 物化时若 `role=master` 且设置了 `CLAW_MASTER_MCP_TOKEN`，向 `settings.json.mcpServers.claw-master-observer` 注入 `POST {CLAW_GATEWAY_BASE}/v1/master/{projId}/mcp`。工具按配对授权：读学徒 stable/sessions、同步/改观察空间、`repair_run` 状态机、bizdate 重放、promote 到学徒 `__draft__`（不 activate）。
+
+**Skills**：设为 master 时种子 `master-daily-digest` / `master-quality-repair` + CLAUDE.md。质量口径在 skills；副作用只经 MCP。
+
+**调度**：表 `gateway_scheduled_job`；gateway 进程内分钟 ticker → `solve_async(master)`。模板占位符 `{{apprentice_ids}}`、`{{bizdate_yesterday}}`。
+
+**poolSize=0**：observation 默认 `strict`+`poolSize:0`（on-demand）；**master 默认 `relaxed`**。strict 允许 poolSize=0；reconcile 不保留 warm；solve 时 on-demand 创建 slot 0，release 后退休。
+
 ## 实现状态
 
 - DDL + `skills_json` 列（`session_db.rs` 迁移）。
@@ -212,3 +226,4 @@ Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历�
 - 物化：`project_config_apply.rs`（rules、claude、**skills_json**、MCP `settings.json`）；pool 每轮 `materialize_in` + **claw 路径软链**（见上节）。
 - System prompt 组装：`runtime/src/prompt.rs`；契约 **[`gateway-system-prompt-assembly.md`](gateway-system-prompt-assembly.md)**（改 prompt/物化前必读）。
 - 每项目 Git：`project_git_sync.rs` + `git_sync_json` 列；全局 `CLAW_PROJECTS_GIT_URL` mirror 已废弃（可选、默认不启用）。
+- Master：`018_master_observer.sql`、`master_observer.rs`、`master_mcp.rs`、`master_scheduler.rs`。
