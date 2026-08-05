@@ -716,6 +716,7 @@ impl E2bProjWorkerRegistry {
                 proj_id,
                 &worker_id,
                 &spec.e2b_template_id,
+                spec.build_id.as_deref(),
                 spec.include_ovs,
                 env_vars,
             )

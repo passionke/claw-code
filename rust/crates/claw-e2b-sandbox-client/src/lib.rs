@@ -7,9 +7,9 @@ mod nas_paths;
 mod types;
 
 pub use client::{
-    E2bSandboxClient, SandboxSnapshot, SANDBOX_LEASE_RENEW_LEAD_SECS, SANDBOX_LEASE_TICK_SECS,
-    SINGLETON_ROLE_NAS_API, SINGLETON_ROLE_OBSERVE, SINGLETON_ROLE_OBSERVE_PROJ,
-    SINGLETON_ROLE_OVS, WARM_PROJ_ROLE,
+    e2b_sandbox_template_ref, E2bSandboxClient, SandboxSnapshot, SANDBOX_LEASE_RENEW_LEAD_SECS,
+    SANDBOX_LEASE_TICK_SECS, SINGLETON_ROLE_NAS_API, SINGLETON_ROLE_OBSERVE,
+    SINGLETON_ROLE_OBSERVE_PROJ, SINGLETON_ROLE_OVS, WARM_PROJ_ROLE,
 };
 pub use config::E2bSandboxConfig;
 pub use e2b_platform::{nas_mount_source_addr, E2bNasPlatform, E2bTemplateEntry};

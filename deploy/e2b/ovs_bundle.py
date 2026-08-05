@@ -85,6 +85,11 @@ def pack_ovs_bundle(staging: Path) -> Path:
     return bundle
 
 
+# e2b bootstrap wraps startCmd in `bash -c` (non-login, no /etc/profile). Scripts must be
+# self-contained: explicit PATH, absolute paths for sleep/curl, no bare command -v. Author: kejiqing
+_NON_LOGIN_PATH = "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
 def _ovs_install_and_scripts_runfile(ovs_port_num: int, ext_ver: str, *, worker_relaxed: bool) -> str:
     """Install claw.claw-vscode + Machine settings (same as Containerfile.openvscode)."""
     port = ovs_port_num
@@ -94,15 +99,19 @@ def _ovs_install_and_scripts_runfile(ovs_port_num: int, ext_ver: str, *, worker_
     && printf '%s\n' \
         '#!/bin/sh' \
         'set -eu' \
-        '/usr/local/bin/claw-ovs-start >/tmp/claw-ovs.log 2>&1 &' \
-        'exec sleep infinity' \
+        '{_NON_LOGIN_PATH}' \
+        'mkdir -p /tmp' \
+        '/usr/local/bin/claw-ovs-start >>/tmp/claw-ovs.log 2>&1 &' \
+        'echo $! >/tmp/claw-ovs.pid' \
+        'exec /bin/sleep infinity' \
         > /usr/local/bin/claw-worker-relaxed-start \
     && printf '%s\n' \
         '#!/bin/sh' \
         'set -eu' \
-        'command -v claw >/dev/null 2>&1' \
+        '{_NON_LOGIN_PATH}' \
+        'test -x /usr/local/bin/claw' \
         'test -x /usr/local/bin/claw-ovs-ready' \
-        '/usr/local/bin/claw-ovs-ready' \
+        'exec /usr/local/bin/claw-ovs-ready' \
         > /usr/local/bin/claw-worker-relaxed-ready \
     && chmod +x /usr/local/bin/claw-worker-relaxed-start /usr/local/bin/claw-worker-relaxed-ready"""
     return rf"""RUN tar -xz -C /tmp/ovs-bundle -f /tmp/claw-ovs-bundle.tar.gz \
@@ -130,13 +139,16 @@ def _ovs_install_and_scripts_runfile(ovs_port_num: int, ext_ver: str, *, worker_
     && printf '%s\n' \
         '#!/bin/sh' \
         'set -eu' \
+        '{_NON_LOGIN_PATH}' \
         'export HOME=/opt/claw-ovs/home' \
         'mkdir -p /opt/claw-ovs/home /opt/claw-extensions /opt/claw-ovs/server-data/data/logs /opt/claw-ovs/server-data/data/Machine' \
         'exec /home/.openvscode-server/bin/openvscode-server --host=0.0.0.0 --port={port} --without-connection-token --server-base-path=/ovs --extensions-dir=/opt/claw-extensions --server-data-dir=/opt/claw-ovs/server-data --enable-proposed-api=claw.claw-vscode' \
         > /usr/local/bin/claw-ovs-start \
     && printf '%s\n' \
         '#!/bin/sh' \
-        'exec curl -fsS --connect-timeout 2 http://127.0.0.1:{port}/ovs/' \
+        'set -eu' \
+        '{_NON_LOGIN_PATH}' \
+        'exec /usr/bin/curl -fsS --connect-timeout 2 http://127.0.0.1:{port}/ovs/' \
         > /usr/local/bin/claw-ovs-ready \
     && chmod +x /usr/local/bin/claw-ovs-start /usr/local/bin/claw-ovs-ready{worker_start}
 """

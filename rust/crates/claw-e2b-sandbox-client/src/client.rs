@@ -26,6 +26,16 @@ pub const SINGLETON_ROLE_OBSERVE_PROJ: &str = "observe-proj";
 /// Per-project worker `metadata.clawRole`.
 pub const WARM_PROJ_ROLE: &str = "warm-proj";
 
+/// e2b `POST /sandboxes` `templateID`: pin a specific build when `build_id` is set.
+/// Self-hosted registry resolves raw build UUID via `build_index` (`resolve_target`).
+pub fn e2b_sandbox_template_ref(template_id: &str, build_id: Option<&str>) -> String {
+    if let Some(bid) = build_id.map(str::trim).filter(|s| !s.is_empty()) {
+        bid.to_string()
+    } else {
+        template_id.to_string()
+    }
+}
+
 /// POST /timeout then GET /sandboxes/{id} retries when `endAt` did not expand.
 const SANDBOX_TTL_VERIFY_MAX_ATTEMPTS: u32 = 3;
 
@@ -658,6 +668,7 @@ impl E2bSandboxClient {
         proj_id: i64,
         worker_id: &str,
         template_id: &str,
+        build_id: Option<&str>,
         include_ovs: bool,
         env_vars: BTreeMap<String, String>,
     ) -> Result<E2bSandboxHandle, String> {
@@ -674,8 +685,9 @@ impl E2bSandboxClient {
         }
 
         let mount_points = warm_worker_mounts(cluster_id, proj_id, worker_id);
+        let template_ref = e2b_sandbox_template_ref(template_id, build_id);
         let mut body = json!({
-            "templateID": template_id,
+            "templateID": template_ref,
             "timeout": self.config.sandbox_timeout_secs,
             "metadata": metadata,
         });
@@ -1776,6 +1788,16 @@ mod client_tests {
         assert!(sh.contains("mountpoint -q \"/claw_ds\""));
         assert!(sh.contains("mountpoint -q \"/claw_host_root\""));
         assert!(sh.contains("exit 1"));
+    }
+
+    #[test]
+    fn e2b_sandbox_template_ref_prefers_build_id() {
+        assert_eq!(
+            e2b_sandbox_template_ref("tpl_abc", Some("f015425d-1a3e-47c2-9d15-8d3de7871865")),
+            "f015425d-1a3e-47c2-9d15-8d3de7871865"
+        );
+        assert_eq!(e2b_sandbox_template_ref("tpl_abc", None), "tpl_abc");
+        assert_eq!(e2b_sandbox_template_ref("tpl_abc", Some("  ")), "tpl_abc");
     }
 
     #[test]
