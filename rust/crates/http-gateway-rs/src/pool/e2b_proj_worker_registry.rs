@@ -709,13 +709,17 @@ impl E2bProjWorkerRegistry {
             .map_err(|e| format!("load worker_env_json for proj {proj_id}: {e}"))?;
         let env_vars = crate::pool::parse_worker_env_map(&worker_env_json)
             .map_err(|e| format!("invalid worker_env_json for proj {proj_id}: {e}"))?;
+        let template_ref = claw_e2b_sandbox_client::e2b_sandbox_template_ref(
+            &spec.e2b_template_id,
+            spec.build_id.as_deref(),
+        );
         let handle = self
             .client
             .create_warm_proj_sandbox(
                 &self.nas_layout.cluster_id()?,
                 proj_id,
                 &worker_id,
-                &spec.e2b_template_id,
+                &template_ref,
                 spec.include_ovs,
                 env_vars,
             )
