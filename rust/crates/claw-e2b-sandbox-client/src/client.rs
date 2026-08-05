@@ -668,7 +668,6 @@ impl E2bSandboxClient {
         proj_id: i64,
         worker_id: &str,
         template_id: &str,
-        build_id: Option<&str>,
         include_ovs: bool,
         env_vars: BTreeMap<String, String>,
     ) -> Result<E2bSandboxHandle, String> {
@@ -685,9 +684,8 @@ impl E2bSandboxClient {
         }
 
         let mount_points = warm_worker_mounts(cluster_id, proj_id, worker_id);
-        let template_ref = e2b_sandbox_template_ref(template_id, build_id);
         let mut body = json!({
-            "templateID": template_ref,
+            "templateID": template_id,
             "timeout": self.config.sandbox_timeout_secs,
             "metadata": metadata,
         });
