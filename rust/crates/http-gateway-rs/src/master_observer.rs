@@ -99,23 +99,32 @@ You are a **master observer agent**. You observe paired apprentice projects via 
 
 ## Hard rules
 - All side effects go through master MCP tools only.
-- Quality repair **must** follow skill `master-quality-repair` and the `master_repair_run` state machine.
+- Scheduled / prompted work follows the matching **project skill** (multi-file pack when present).
+- Quality repair follows skill `master-quality-repair` and the `master_repair_run` state machine.
 - Never claim you activated apprentice production config; promote only writes apprentice **draft**.
 - When reading apprentice config for repair baselines, use **stable** (effective) revision only.
+- Domain metrics, locales, DingTalk folders, and robot credentials belong in **project config / skill files**, not in this stub.
 "
     )
 }
 
-const MASTER_DAILY_DIGEST_SKILL: &str = "# master-daily-digest
+/// Generic seed stub only. Domain playbooks live in project skill packs. Author: kejiqing
+const MASTER_DAILY_DIGEST_SKILL: &str = r#"# master-daily-digest
 
-Summarize paired apprentices' Q&A for a time window.
+Daily (or windowed) summary of paired apprentices via master MCP.
+
+## Contract
+- Read sessions/turns through `claw-master-observer` (or project scripts that call the same data).
+- Session list rows do **not** carry `extraSession`; dimensions such as `store_id` come from **turns**.
+- Delivery channels (docs folder, robot brief, timezone, report sections) come from **this project's** skill files / CLAUDE.md — do not invent N/A when scripts or turns already expose the field.
+- Do not open a repair_run unless the user also asks for quality repair.
 
 ## Steps
-1. Call `apprentice_list`.
-2. For each apprentice, call `apprentice_sessions_query` with the window from the user prompt.
-3. Skim turns/tools/transcripts; produce a concise Chinese report: volume, topics, failure patterns, notable good answers.
-4. Do **not** open a repair_run unless the user also asks for quality repair.
-";
+1. `apprentice_list` (respect ids from the user prompt).
+2. Load the window from the prompt (`bizdate` / yesterday) using the project timezone if specified.
+3. Aggregate objective stats (volume, latency, optional visit dimensions from turns) then write the narrative the project skill requires.
+4. Perform any configured side deliveries (e.g. docs MCP, brief script) exactly as the project skill states.
+"#;
 
 const MASTER_QUALITY_REPAIR_SKILL: &str = r#"# master-quality-repair
 
@@ -132,7 +141,7 @@ Extract a replayable issue inventory, patch the observation space, replay, analy
 8. If good enough: `promote_to_apprentice_draft` → `draft_pushed` (never activate).
 
 ## Quality criteria
-Define what "good" means for this domain in your analysis_json. Prefer minimal skill/CLAUDE.md patches over broad rewrites.
+Define what "good" means for this domain in your analysis_json (and any project-specific repair skills). Prefer minimal skill/CLAUDE.md patches over broad rewrites.
 "#;
 
 #[must_use]
@@ -153,6 +162,7 @@ pub fn master_quality_repair_skill() -> Value {
     })
 }
 
+/// Seed only universal master capabilities. Domain packs (e.g. locale CJK repair) are project skills. Author: kejiqing
 #[must_use]
 pub fn master_seed_skills_json() -> Value {
     json!([master_daily_digest_skill(), master_quality_repair_skill()])
@@ -1113,6 +1123,14 @@ mod tests {
             .collect();
         assert!(names.contains(&"master-daily-digest"));
         assert!(names.contains(&"master-quality-repair"));
+        assert!(!names.contains(&"master-cjk-thai-repair"));
+        let digest = arr
+            .iter()
+            .find(|s| s["skillName"] == "master-daily-digest")
+            .unwrap();
+        let digest_content = digest["skillContent"].as_str().unwrap();
+        assert!(digest_content.contains("turns"));
+        assert!(digest_content.contains("extraSession") || digest_content.contains("store_id"));
         let repair = arr
             .iter()
             .find(|s| s["skillName"] == "master-quality-repair")
@@ -1125,6 +1143,7 @@ mod tests {
         let claude = master_claude_md(9);
         assert!(claude.contains("proj_9"));
         assert!(claude.contains("master-quality-repair"));
+        assert!(claude.contains("project skill"));
         assert!(claude.contains("draft"));
     }
 

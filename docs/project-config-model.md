@@ -229,9 +229,9 @@ Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历�
 
 **Master 内置 MCP**：solve 物化时若 `role=master` 且设置了 `CLAW_MASTER_MCP_TOKEN`，向 `settings.json.mcpServers.claw-master-observer` 注入 `POST {CLAW_GATEWAY_BASE}/v1/master/{projId}/mcp`。工具按配对授权：读学徒 stable/sessions、同步/改观察空间、`repair_run` 状态机、bizdate 重放、promote 到学徒 `__draft__`（不 activate）。
 
-**Skills**：设为 master 时种子 `master-daily-digest` / `master-quality-repair` + CLAUDE.md。质量口径在 skills；副作用只经 MCP。
+**Skills**：设为 master 时种子仅通用 stub：`master-daily-digest` / `master-quality-repair` + CLAUDE.md。领域玩法（钉钉目录、复访口径、泰文 CJK 修复等）放在**项目 skill 多文件包**，不要写进 gateway 源码常量。质量副作用只经 MCP。
 
-**调度**：表 `gateway_scheduled_job`；gateway 进程内分钟 ticker → `solve_async(master)`。模板占位符 `{{apprentice_ids}}`、`{{bizdate_yesterday}}`。
+**调度**：表 `gateway_scheduled_job`；gateway 进程内分钟 ticker → `solve_async(master)`。模板占位符 `{{apprentice_ids}}`、`{{bizdate_yesterday}}`。`runAtHhmm` 按 **gateway 容器本地时区**（当前镜像默认 **UTC**；与北京时间差 8h）。Admin UI 须标明 UTC，避免与宿主机 CST 混淆。
 
 **poolSize=0**：observation 默认 `strict`+`poolSize:0`（on-demand）；**master 默认 `relaxed`**。strict 允许 poolSize=0；reconcile 不保留 warm；solve 时 on-demand 创建 slot 0，release 后退休。
 
