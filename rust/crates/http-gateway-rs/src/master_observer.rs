@@ -109,7 +109,7 @@ You are a **master observer agent**. You observe paired apprentice projects via 
 }
 
 /// Generic seed stub only. Domain playbooks live in project skill packs. Author: kejiqing
-const MASTER_DAILY_DIGEST_SKILL: &str = r#"# master-daily-digest
+const MASTER_DAILY_DIGEST_SKILL: &str = r"# master-daily-digest
 
 Daily (or windowed) summary of paired apprentices via master MCP.
 
@@ -124,7 +124,7 @@ Daily (or windowed) summary of paired apprentices via master MCP.
 2. Load the window from the prompt (`bizdate` / yesterday) using the project timezone if specified.
 3. Aggregate objective stats (volume, latency, optional visit dimensions from turns) then write the narrative the project skill requires.
 4. Perform any configured side deliveries (e.g. docs MCP, brief script) exactly as the project skill states.
-"#;
+";
 
 const MASTER_QUALITY_REPAIR_SKILL: &str = r#"# master-quality-repair
 
