@@ -13,6 +13,23 @@ GPOS/POS/Back Office **操作或配置步骤**（加商品、打印机、Grab、
 
 **不属于**：销售额/收款占比/菜品销量等经营问数 → SQLBot。
 
+## report_progress（强制，对商家可见）
+
+知识库 how-to **不得**静默直出终答。阶段变化时必须调用 `report_progress`，遵守 CLAUDE.md 的 STATE MUTEX（同一助手轮次：要么只 progress，要么只终答）。
+
+1. **查阅知识库文档**（调用 `grep_search` / `read_file` / `glob_search` **之前**的一轮）：仅 `report_progress`，无用户可见正文。
+   - `current_task_desc` / `plan_title` / `todos[].title`：纯业务语、`[LANG_TAG]`、≤80 字
+   - 中文示例：`查阅知识库文档`
+   - 英文示例：`Looking up the knowledge base`
+   - 泰文示例：`กำลังค้นหาเอกสารคู่มือ`
+2. **整理知识库文档**（已读到手册要点、输出终答**之前**的一轮）：再报一次，仅 progress。
+   - 中文示例：`整理知识库文档`
+   - 英文示例：`Organizing knowledge base notes`
+   - 泰文示例：`กำลังจัดเรียงเนื้อหาคู่มือ`
+3. **终答轮**：只输出用户可见步骤 + `source_url`；**禁止**同轮再调 `report_progress`。
+
+禁止在 progress 中暴露：`/claw_ds`、文件路径、工具名、`grep_search`、KB 目录等内部细节。
+
 ## 语言路由（强制）
 
 | 用户输入 | KB 目录 | 官方链接前缀 |
@@ -34,11 +51,13 @@ GPOS/POS/Back Office **操作或配置步骤**（加商品、打印机、Grab、
 
 ## 检索协议
 
-1. 按上表选定 `KB_LANG_ROOT`（`.../kb/th` 或 `.../kb/en`）。
-2. 可选 `read_file` → `$KB_LANG_ROOT/index.md`。
-3. `grep_search(path=$KB_LANG_ROOT, pattern=<关键词>)`。
-4. `read_file` 命中文章；使用 frontmatter 的 `source_url`（必须与语种一致：`/th/` 或 `/en/`）。
-5. 0 命中：`glob_search(path=$KB_LANG_ROOT, pattern=**/*.md)` 后再读 1–2 篇；仍无则回手册首页链接。
+1. 先按上一节完成「查阅知识库文档」progress。
+2. 按上表选定 `KB_LANG_ROOT`（`.../kb/th` 或 `.../kb/en`）。
+3. 可选 `read_file` → `$KB_LANG_ROOT/index.md`。
+4. `grep_search(path=$KB_LANG_ROOT, pattern=<关键词>)`。
+5. `read_file` 命中文章；使用 frontmatter 的 `source_url`（必须与语种一致：`/th/` 或 `/en/`）。
+6. 0 命中：`glob_search(path=$KB_LANG_ROOT, pattern=**/*.md)` 后再读 1–2 篇；仍无则回手册首页链接。
+7. 终答前完成「整理知识库文档」progress，再输出终答。
 
 ## 输出（对用户可见）
 
@@ -50,8 +69,7 @@ GPOS/POS/Back Office **操作或配置步骤**（加商品、打印机、Grab、
 
 ## 执行
 
-载入后立刻按语种路由检索并输出；不要调用经营分析 MCP。
-
+载入本 skill 后：先 `report_progress`（查阅）→ 按语种路由检索 → `report_progress`（整理）→ 输出终答。不要调用经营分析 MCP。
 
 ## Hard language lock (critical)
 
@@ -63,4 +81,3 @@ GPOS/POS/Back Office **操作或配置步骤**（加商品、打印机、Grab、
   - Final answer MUST contain `https://gpos.co.th/en/user-manual/...` and MUST NOT contain `/th/user-manual/`.
 - If you already opened the wrong language tree, stop and switch before answering.
 - Discount / tax / printer / sales-channel **setup how-to** is still product-manual — never SQLBot.
-

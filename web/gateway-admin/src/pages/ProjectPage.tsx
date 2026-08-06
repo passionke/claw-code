@@ -574,6 +574,10 @@ export default function ProjectPage() {
             <Typography.Paragraph type="secondary" style={{ marginTop: 16, marginBottom: 8 }}>
               <b>定时任务 = 到点给本 master 发一段开场白</b>
               。可任意新增多条（不限两种）；下面模板只是填表快捷方式。
+              <br />
+              <b>触发时刻按 UTC</b>
+              （gateway 容器本地时区；当前镜像默认 UTC，与北京时间差 8 小时：北京 02:10 ≈ 填{" "}
+              <code>18:10</code>）。勿按宿主机或浏览器本地时区理解。
             </Typography.Paragraph>
             <Space wrap style={{ marginBottom: 8 }}>
               <Button
@@ -638,8 +642,9 @@ export default function ProjectPage() {
               <Input
                 value={scheduleHhmm}
                 onChange={(e) => setScheduleHhmm(e.target.value)}
-                style={{ width: 100 }}
+                style={{ width: 140 }}
                 placeholder="HH:MM"
+                addonAfter="UTC"
               />
               <Button
                 loading={savingMaster}
@@ -712,12 +717,12 @@ export default function ProjectPage() {
                 dataSource={scheduleJobs}
                 columns={[
                   {
-                    title: "何时",
-                    width: 120,
+                    title: "何时 (UTC)",
+                    width: 140,
                     render: (_: unknown, r) =>
                       r.scheduleKind === "weekly"
-                        ? `每周一 ${r.runAtHhmm}`
-                        : `每天 ${r.runAtHhmm}`,
+                        ? `每周一 ${r.runAtHhmm} UTC`
+                        : `每天 ${r.runAtHhmm} UTC`,
                   },
                   {
                     title: "到点开场白",
