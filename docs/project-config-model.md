@@ -225,13 +225,20 @@ Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历�
 
 **角色**：`project_config.project_role` = `normal` | `master` | `observation`。
 
-**配对**：`PUT /v1/projects/{master}/apprentices` body `{ "apprenticeProjIds": [...] }`。新增学徒时自动创建观察空间 project（克隆学徒 **stable** 配置包，`poolSize: 0`，`project_role=observation`），写入 `project_master_link`。
+**配对**：`PUT /v1/projects/{master}/apprentices` body 推荐
+`{ "apprentices": [{ "apprenticeProjId", "gatewayBase?" }] }`（`gatewayBase` 空/省略 = 本 gateway；可填 IP、`host:port` 或 `http(s)://…`）。
+兼容旧字段 `{ "apprenticeProjIds": [...] }`。
+
+**拓扑**：学徒与其**影子观察空间**同 gateway；master 只做跨部署聚合，不必在每个集群各配一套。
+新增学徒时在**学徒所在 gateway** 创建观察空间（克隆学徒 **stable**，`poolSize: 0`，`project_role=observation`），master 侧仅写 `project_master_link`（含 `apprentice_gateway_base` + 远端 `observation_proj_id`）。
+
+跨 gateway：非本机 base 时，配对须带该 peer 的 `mcpToken`（= 对方 `CLAW_MASTER_MCP_TOKEN`）；各集群 token 可不同，一个 master 可连多台。master 经 `/v1/master-peer/...` 用**该学徒自己的 token** 创建影子、读会话、sync/patch/solve/promote。GET 只回 `mcpTokenSet`，不回明文。
 
 **Master 内置 MCP**：solve 物化时若 `role=master` 且设置了 `CLAW_MASTER_MCP_TOKEN`，向 `settings.json.mcpServers.claw-master-observer` 注入 `POST {CLAW_GATEWAY_BASE}/v1/master/{projId}/mcp`。工具按配对授权：读学徒 stable/sessions、同步/改观察空间、`repair_run` 状态机、bizdate 重放、promote 到学徒 `__draft__`（不 activate）。
 
-**Skills**：设为 master 时种子 `master-daily-digest` / `master-quality-repair` + CLAUDE.md。质量口径在 skills；副作用只经 MCP。
+**Skills**：设为 master 时种子仅通用 stub：`master-daily-digest` / `master-quality-repair` + CLAUDE.md。领域玩法（钉钉目录、复访口径、泰文 CJK 修复等）放在**项目 skill 多文件包**，不要写进 gateway 源码常量。质量副作用只经 MCP。
 
-**调度**：表 `gateway_scheduled_job`；gateway 进程内分钟 ticker → `solve_async(master)`。模板占位符 `{{apprentice_ids}}`、`{{bizdate_yesterday}}`。
+**调度**：表 `gateway_scheduled_job`；gateway 进程内分钟 ticker → `solve_async(master)`。模板占位符 `{{apprentice_ids}}`、`{{bizdate_yesterday}}`。`runAtHhmm` 按 **gateway 容器本地时区**（当前镜像默认 **UTC**；与北京时间差 8h）。Admin UI 须标明 UTC，避免与宿主机 CST 混淆。
 
 **poolSize=0**：observation 默认 `strict`+`poolSize:0`（on-demand）；**master 默认 `relaxed`**。strict 允许 poolSize=0；reconcile 不保留 warm；solve 时 on-demand 创建 slot 0，release 后退休。
 

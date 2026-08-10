@@ -6,7 +6,7 @@ use sqlx::types::Json;
 use sqlx::{Error as SqlxError, Row};
 use uuid::Uuid;
 
-use crate::project_config_draft::{self, DRAFT_CONTENT_REV};
+use crate::project_config_draft;
 use crate::session_db::{
     now_ms_for_registry, GatewaySessionDb, ProjectConfigRevisionRow, ProjectConfigRow,
     ProjectConfigUpsert,
@@ -33,9 +33,28 @@ pub struct ProjectMasterLinkRow {
     pub master_proj_id: i64,
     pub apprentice_proj_id: i64,
     pub observation_proj_id: i64,
+    /// Empty = this gateway / local cluster DB. Non-empty http(s) base for peer access. Author: kejiqing
+    #[serde(default)]
+    pub apprentice_gateway_base: String,
+    /// Peer gateway `CLAW_MASTER_MCP_TOKEN` (never serialized to clients). Author: kejiqing
+    #[serde(skip_serializing, default)]
+    #[schema(ignore)]
+    pub apprentice_mcp_token: String,
+    /// Whether a peer mcp token is stored (safe for Admin / MCP list). Author: kejiqing
+    #[serde(default)]
+    pub mcp_token_set: bool,
     pub orphaned: bool,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+}
+
+impl ProjectMasterLinkRow {
+    /// Fill `mcp_token_set` from stored secret. Author: kejiqing
+    #[must_use]
+    pub fn with_token_flags(mut self) -> Self {
+        self.mcp_token_set = !self.apprentice_mcp_token.trim().is_empty();
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -99,22 +118,31 @@ You are a **master observer agent**. You observe paired apprentice projects via 
 
 ## Hard rules
 - All side effects go through master MCP tools only.
-- Quality repair **must** follow skill `master-quality-repair` and the `master_repair_run` state machine.
+- Scheduled / prompted work follows the matching **project skill** (multi-file pack when present).
+- Quality repair follows skill `master-quality-repair` and the `master_repair_run` state machine.
 - Never claim you activated apprentice production config; promote only writes apprentice **draft**.
 - When reading apprentice config for repair baselines, use **stable** (effective) revision only.
+- Domain metrics, locales, DingTalk folders, and robot credentials belong in **project config / skill files**, not in this stub.
 "
     )
 }
 
-const MASTER_DAILY_DIGEST_SKILL: &str = "# master-daily-digest
+/// Generic seed stub only. Domain playbooks live in project skill packs. Author: kejiqing
+const MASTER_DAILY_DIGEST_SKILL: &str = r"# master-daily-digest
 
-Summarize paired apprentices' Q&A for a time window.
+Daily (or windowed) summary of paired apprentices via master MCP.
+
+## Contract
+- Read sessions/turns through `claw-master-observer` (or project scripts that call the same data).
+- Session list rows do **not** carry `extraSession`; dimensions such as `store_id` come from **turns**.
+- Delivery channels (docs folder, robot brief, timezone, report sections) come from **this project's** skill files / CLAUDE.md — do not invent N/A when scripts or turns already expose the field.
+- Do not open a repair_run unless the user also asks for quality repair.
 
 ## Steps
-1. Call `apprentice_list`.
-2. For each apprentice, call `apprentice_sessions_query` with the window from the user prompt.
-3. Skim turns/tools/transcripts; produce a concise Chinese report: volume, topics, failure patterns, notable good answers.
-4. Do **not** open a repair_run unless the user also asks for quality repair.
+1. `apprentice_list` (respect ids from the user prompt).
+2. Load the window from the prompt (`bizdate` / yesterday) using the project timezone if specified.
+3. Aggregate objective stats (volume, latency, optional visit dimensions from turns) then write the narrative the project skill requires.
+4. Perform any configured side deliveries (e.g. docs MCP, brief script) exactly as the project skill states.
 ";
 
 const MASTER_QUALITY_REPAIR_SKILL: &str = r#"# master-quality-repair
@@ -132,7 +160,7 @@ Extract a replayable issue inventory, patch the observation space, replay, analy
 8. If good enough: `promote_to_apprentice_draft` → `draft_pushed` (never activate).
 
 ## Quality criteria
-Define what "good" means for this domain in your analysis_json. Prefer minimal skill/CLAUDE.md patches over broad rewrites.
+Define what "good" means for this domain in your analysis_json (and any project-specific repair skills). Prefer minimal skill/CLAUDE.md patches over broad rewrites.
 "#;
 
 #[must_use]
@@ -153,6 +181,7 @@ pub fn master_quality_repair_skill() -> Value {
     })
 }
 
+/// Seed only universal master capabilities. Domain packs (e.g. locale CJK repair) are project skills. Author: kejiqing
 #[must_use]
 pub fn master_seed_skills_json() -> Value {
     json!([master_daily_digest_skill(), master_quality_repair_skill()])
@@ -367,8 +396,10 @@ impl GatewaySessionDb {
         master_proj_id: i64,
     ) -> Result<Vec<ProjectMasterLinkRow>, SqlxError> {
         let rows = sqlx::query(
-            r"SELECT master_proj_id, apprentice_proj_id, observation_proj_id, orphaned,
-                     created_at_ms, updated_at_ms
+            r"SELECT master_proj_id, apprentice_proj_id, observation_proj_id,
+                     COALESCE(apprentice_gateway_base, '') AS apprentice_gateway_base,
+                     COALESCE(apprentice_mcp_token, '') AS apprentice_mcp_token,
+                     orphaned, created_at_ms, updated_at_ms
               FROM project_master_link
               WHERE cluster_id = $1 AND master_proj_id = $2
               ORDER BY apprentice_proj_id",
@@ -379,13 +410,19 @@ impl GatewaySessionDb {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|r| ProjectMasterLinkRow {
-                master_proj_id: r.get("master_proj_id"),
-                apprentice_proj_id: r.get("apprentice_proj_id"),
-                observation_proj_id: r.get("observation_proj_id"),
-                orphaned: r.get("orphaned"),
-                created_at_ms: r.get("created_at_ms"),
-                updated_at_ms: r.get("updated_at_ms"),
+            .map(|r| {
+                ProjectMasterLinkRow {
+                    master_proj_id: r.get("master_proj_id"),
+                    apprentice_proj_id: r.get("apprentice_proj_id"),
+                    observation_proj_id: r.get("observation_proj_id"),
+                    apprentice_gateway_base: r.get("apprentice_gateway_base"),
+                    apprentice_mcp_token: r.get("apprentice_mcp_token"),
+                    mcp_token_set: false,
+                    orphaned: r.get("orphaned"),
+                    created_at_ms: r.get("created_at_ms"),
+                    updated_at_ms: r.get("updated_at_ms"),
+                }
+                .with_token_flags()
             })
             .collect())
     }
@@ -396,8 +433,10 @@ impl GatewaySessionDb {
         apprentice_proj_id: i64,
     ) -> Result<Option<ProjectMasterLinkRow>, SqlxError> {
         let row = sqlx::query(
-            r"SELECT master_proj_id, apprentice_proj_id, observation_proj_id, orphaned,
-                     created_at_ms, updated_at_ms
+            r"SELECT master_proj_id, apprentice_proj_id, observation_proj_id,
+                     COALESCE(apprentice_gateway_base, '') AS apprentice_gateway_base,
+                     COALESCE(apprentice_mcp_token, '') AS apprentice_mcp_token,
+                     orphaned, created_at_ms, updated_at_ms
               FROM project_master_link
               WHERE cluster_id = $1 AND master_proj_id = $2 AND apprentice_proj_id = $3",
         )
@@ -406,13 +445,19 @@ impl GatewaySessionDb {
         .bind(apprentice_proj_id)
         .fetch_optional(self.pg_pool())
         .await?;
-        Ok(row.map(|r| ProjectMasterLinkRow {
-            master_proj_id: r.get("master_proj_id"),
-            apprentice_proj_id: r.get("apprentice_proj_id"),
-            observation_proj_id: r.get("observation_proj_id"),
-            orphaned: r.get("orphaned"),
-            created_at_ms: r.get("created_at_ms"),
-            updated_at_ms: r.get("updated_at_ms"),
+        Ok(row.map(|r| {
+            ProjectMasterLinkRow {
+                master_proj_id: r.get("master_proj_id"),
+                apprentice_proj_id: r.get("apprentice_proj_id"),
+                observation_proj_id: r.get("observation_proj_id"),
+                apprentice_gateway_base: r.get("apprentice_gateway_base"),
+                apprentice_mcp_token: r.get("apprentice_mcp_token"),
+                mcp_token_set: false,
+                orphaned: r.get("orphaned"),
+                created_at_ms: r.get("created_at_ms"),
+                updated_at_ms: r.get("updated_at_ms"),
+            }
+            .with_token_flags()
         }))
     }
 
@@ -420,10 +465,12 @@ impl GatewaySessionDb {
         sqlx::query(
             r"INSERT INTO project_master_link (
                 cluster_id, master_proj_id, apprentice_proj_id, observation_proj_id,
-                orphaned, created_at_ms, updated_at_ms
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                apprentice_gateway_base, apprentice_mcp_token, orphaned, created_at_ms, updated_at_ms
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
               ON CONFLICT (cluster_id, master_proj_id, apprentice_proj_id) DO UPDATE SET
                 observation_proj_id = EXCLUDED.observation_proj_id,
+                apprentice_gateway_base = EXCLUDED.apprentice_gateway_base,
+                apprentice_mcp_token = EXCLUDED.apprentice_mcp_token,
                 orphaned = EXCLUDED.orphaned,
                 updated_at_ms = EXCLUDED.updated_at_ms",
         )
@@ -431,6 +478,8 @@ impl GatewaySessionDb {
         .bind(link.master_proj_id)
         .bind(link.apprentice_proj_id)
         .bind(link.observation_proj_id)
+        .bind(&link.apprentice_gateway_base)
+        .bind(&link.apprentice_mcp_token)
         .bind(link.orphaned)
         .bind(link.created_at_ms)
         .bind(link.updated_at_ms)
@@ -486,14 +535,19 @@ impl GatewaySessionDb {
             .list_master_links(master_proj_id)
             .await
             .map_err(|e| e.to_string())?;
-        links
+        let matches: Vec<_> = links
             .into_iter()
-            .find(|l| l.observation_proj_id == observation_proj_id && !l.orphaned)
-            .ok_or_else(|| {
-                format!(
-                    "observation {observation_proj_id} is not paired to master {master_proj_id}"
-                )
-            })
+            .filter(|l| l.observation_proj_id == observation_proj_id && !l.orphaned)
+            .collect();
+        match matches.len() {
+            0 => Err(format!(
+                "observation {observation_proj_id} is not paired to master {master_proj_id}"
+            )),
+            1 => Ok(matches.into_iter().next().expect("len checked")),
+            _ => Err(format!(
+                "observation {observation_proj_id} is ambiguous across gateways for master {master_proj_id}; use apprenticeProjId"
+            )),
+        }
     }
 
     pub async fn insert_repair_run(&self, row: &MasterRepairRunRow) -> Result<(), SqlxError> {
@@ -924,53 +978,22 @@ pub fn new_scheduled_job_id() -> String {
 /// Push observation formal package into apprentice `__draft__` (no activate). Author: kejiqing
 pub async fn promote_observation_to_apprentice_draft(
     db: &GatewaySessionDb,
-    observation_proj_id: i64,
-    apprentice_proj_id: i64,
+    self_gateway_base: &str,
+    link: &ProjectMasterLinkRow,
+    _observation_proj_id: i64,
     note: &str,
 ) -> Result<(), String> {
-    let obs = project_config_draft::row_for_materialize(db, observation_proj_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("observation {observation_proj_id} missing"))?;
-    let mut apprentice = project_config_draft::ensure_draft(db, apprentice_proj_id)
-        .await
-        .map_err(|e| e.to_string())?;
-    apprentice.rules_json = obs.rules_json;
-    apprentice.mcp_servers_json = obs.mcp_servers_json;
-    apprentice.skills_json = obs.skills_json;
-    apprentice.allowed_tools_json = obs.allowed_tools_json;
-    apprentice.claude_md = obs.claude_md;
-    apprentice.content_rev = DRAFT_CONTENT_REV.to_string();
-    apprentice.draft_open = true;
-    apprentice.updated_at_ms = now_ms_for_registry();
+    let obs = crate::master_apprentice_access::load_observation_stable(db, self_gateway_base, link)
+        .await?;
     let _ = note;
-    db.upsert_project_config(ProjectConfigUpsert {
-        proj_id: apprentice.proj_id,
-        content_rev: DRAFT_CONTENT_REV,
-        stable_content_rev: apprentice.stable_content_rev.as_deref(),
-        draft_open: true,
-        updated_at_ms: apprentice.updated_at_ms,
-        rules_json: &apprentice.rules_json,
-        mcp_servers_json: &apprentice.mcp_servers_json,
-        skills_sources_json: &apprentice.skills_sources_json,
-        skills_json: &apprentice.skills_json,
-        allowed_tools_json: &apprentice.allowed_tools_json,
-        claude_md: apprentice.claude_md.as_deref(),
-        git_sync_json: &apprentice.git_sync_json,
-        solve_preflight_json: &apprentice.solve_preflight_json,
-        solve_orchestration_json: &apprentice.solve_orchestration_json,
-        language_pipeline_json: &apprentice.language_pipeline_json,
-        extra_session_fields_json: &apprentice.extra_session_fields_json,
-        prompt_limits_json: &apprentice.prompt_limits_json,
-        worker_profile_json: &apprentice.worker_profile_json,
-        worker_env_json: &apprentice.worker_env_json,
-        project_code: &apprentice.project_code,
-        project_description: &apprentice.project_description,
-        max_iterations: apprentice.max_iterations,
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    let patch = crate::master_apprentice_access::ApprenticeDraftPutDto {
+        claude_md: obs.claude_md.clone(),
+        skills_json: Some(obs.skills_json.clone()),
+        rules_json: Some(obs.rules_json.clone()),
+        mcp_servers_json: Some(obs.mcp_servers_json.clone()),
+        allowed_tools_json: Some(obs.allowed_tools_json.clone()),
+    };
+    crate::master_apprentice_access::put_apprentice_draft(db, self_gateway_base, link, &patch).await
 }
 
 #[cfg(test)]
@@ -1113,6 +1136,14 @@ mod tests {
             .collect();
         assert!(names.contains(&"master-daily-digest"));
         assert!(names.contains(&"master-quality-repair"));
+        assert!(!names.contains(&"master-cjk-thai-repair"));
+        let digest = arr
+            .iter()
+            .find(|s| s["skillName"] == "master-daily-digest")
+            .unwrap();
+        let digest_content = digest["skillContent"].as_str().unwrap();
+        assert!(digest_content.contains("turns"));
+        assert!(digest_content.contains("extraSession") || digest_content.contains("store_id"));
         let repair = arr
             .iter()
             .find(|s| s["skillName"] == "master-quality-repair")
@@ -1125,6 +1156,7 @@ mod tests {
         let claude = master_claude_md(9);
         assert!(claude.contains("proj_9"));
         assert!(claude.contains("master-quality-repair"));
+        assert!(claude.contains("project skill"));
         assert!(claude.contains("draft"));
     }
 

@@ -35,6 +35,15 @@ POST	/v1/gateway/global-settings/observe-tap/reset	reset_gateway_observe_tap_han
 PUT	/v1/gateway/global-settings/strict-landlock-default	put_gateway_strict_landlock_default_handler
 POST	/v1/gateway/translate	post_gateway_translate
 POST	/v1/init	init_workspace
+PUT	/v1/master-peer/observations/{observation_proj_id}/draft	master_peer_observation_draft
+POST	/v1/master-peer/observations/{observation_proj_id}/solve	master_peer_observation_solve
+POST	/v1/master-peer/observations/{observation_proj_id}/sync-from/{apprentice_proj_id}	master_peer_sync_observation
+PUT	/v1/master-peer/projects/{proj_id}/draft	master_peer_put_draft
+POST	/v1/master-peer/projects/{proj_id}/observation	master_peer_create_observation
+GET	/v1/master-peer/projects/{proj_id}/replay-turn	master_peer_replay_turn
+GET	/v1/master-peer/projects/{proj_id}/sessions	master_peer_sessions
+GET	/v1/master-peer/projects/{proj_id}/sessions/{session_id}/turns	master_peer_session_turns
+GET	/v1/master-peer/projects/{proj_id}/stable-config	master_peer_stable_config
 POST	/v1/master/{master_proj_id}/mcp	master_mcp_http_handler
 POST	/v1/mcp/inject	inject_mcp
 DELETE	/v1/mcp/injected/{proj_id}	delete_injected_mcp

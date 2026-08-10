@@ -51,7 +51,8 @@ claw_apply_deploy_profile() {
         # shellcheck source=/dev/null
         source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env"
       fi
-      export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat}"
+      # e2b worker templates need linux/amd64 OVS; :ovs-chat alone is arm-only. Author: kejiqing
+      export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat-amd64}"
       export CLAW_OVS_IMAGE="${CLAW_OVS_IMAGE:-${CLAW_OVS_UPSTREAM_IMAGE}}"
       export CLAW_LLM_PROXY="${CLAW_LLM_PROXY:-local}"
       export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18088}"
@@ -86,7 +87,8 @@ claw_apply_deploy_profile() {
         # shellcheck source=/dev/null
         source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ovs-image.env"
       fi
-      export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat}"
+      # e2b workers are linux/amd64 — pin amd64 OVS, not the arm-only :ovs-chat tag. Author: kejiqing
+      export CLAW_OVS_UPSTREAM_IMAGE="${CLAW_OVS_UPSTREAM_IMAGE:-crpi-cf9vxpq3n8or17mw.cn-hangzhou.personal.cr.aliyuncs.com/passionke/openvscode-server:1.109.5-ovs-chat-amd64}"
       export CLAW_OVS_IMAGE="${CLAW_OVS_IMAGE:-${CLAW_OVS_UPSTREAM_IMAGE}}"
       ;;
   esac

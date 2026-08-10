@@ -6,8 +6,11 @@ use axum::Router;
 use crate::app_state::AppState;
 use crate::routes::app::{
     delete_master_schedule, get_master_apprentices, get_master_repair_run, list_master_repair_runs,
-    list_master_schedules, master_mcp_http_handler, put_master_apprentices, put_master_role,
-    put_master_schedule, run_master_schedule,
+    list_master_schedules, master_mcp_http_handler, master_peer_create_observation,
+    master_peer_observation_draft, master_peer_observation_solve, master_peer_put_draft,
+    master_peer_replay_turn, master_peer_session_turns, master_peer_sessions,
+    master_peer_stable_config, master_peer_sync_observation, put_master_apprentices,
+    put_master_role, put_master_schedule, run_master_schedule,
 };
 
 pub(crate) fn router() -> Router<AppState> {
@@ -40,5 +43,41 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/v1/master/{master_proj_id}/mcp",
             post(master_mcp_http_handler),
+        )
+        .route(
+            "/v1/master-peer/projects/{proj_id}/stable-config",
+            get(master_peer_stable_config),
+        )
+        .route(
+            "/v1/master-peer/projects/{proj_id}/sessions",
+            get(master_peer_sessions),
+        )
+        .route(
+            "/v1/master-peer/projects/{proj_id}/sessions/{session_id}/turns",
+            get(master_peer_session_turns),
+        )
+        .route(
+            "/v1/master-peer/projects/{proj_id}/replay-turn",
+            get(master_peer_replay_turn),
+        )
+        .route(
+            "/v1/master-peer/projects/{proj_id}/draft",
+            put(master_peer_put_draft),
+        )
+        .route(
+            "/v1/master-peer/projects/{proj_id}/observation",
+            post(master_peer_create_observation),
+        )
+        .route(
+            "/v1/master-peer/observations/{observation_proj_id}/sync-from/{apprentice_proj_id}",
+            post(master_peer_sync_observation),
+        )
+        .route(
+            "/v1/master-peer/observations/{observation_proj_id}/draft",
+            put(master_peer_observation_draft),
+        )
+        .route(
+            "/v1/master-peer/observations/{observation_proj_id}/solve",
+            post(master_peer_observation_solve),
         )
 }

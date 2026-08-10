@@ -1141,18 +1141,6 @@ impl GatewaySessionDb {
         .execute(pool)
         .await?;
         sqlx::query(
-            r"ALTER TABLE gateway_llm_project_revision
-               ADD COLUMN IF NOT EXISTS supports_video BOOLEAN NOT NULL DEFAULT FALSE",
-        )
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            r"ALTER TABLE gateway_llm_project_revision
-               ADD COLUMN IF NOT EXISTS supports_audio BOOLEAN NOT NULL DEFAULT FALSE",
-        )
-        .execute(pool)
-        .await?;
-        sqlx::query(
             r"CREATE INDEX IF NOT EXISTS idx_gateway_llm_cluster_revision_list
              ON gateway_llm_cluster_revision (cluster_id, model_id, created_at_ms DESC)",
         )
@@ -1209,10 +1197,38 @@ impl GatewaySessionDb {
             .await?;
         Self::run_sql_migration_file(pool, include_str!("../migrations/015_project_llm.sql"))
             .await?;
+        // After CREATE gateway_llm_project_revision (015). Author: kejiqing
+        sqlx::query(
+            r"ALTER TABLE gateway_llm_project_revision
+               ADD COLUMN IF NOT EXISTS supports_video BOOLEAN NOT NULL DEFAULT FALSE",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"ALTER TABLE gateway_llm_project_revision
+               ADD COLUMN IF NOT EXISTS supports_audio BOOLEAN NOT NULL DEFAULT FALSE",
+        )
+        .execute(pool)
+        .await?;
         Self::run_sql_migration_file(pool, include_str!("../migrations/017_worker_env_json.sql"))
             .await?;
         Self::run_sql_migration_file(pool, include_str!("../migrations/018_master_observer.sql"))
             .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/019_apprentice_gateway_base.sql"),
+        )
+        .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/020_master_link_obs_gateway_scope.sql"),
+        )
+        .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/021_apprentice_mcp_token.sql"),
+        )
+        .await?;
         Self::migrate_cluster_id_phase3(pool).await?;
 
         Ok(())
