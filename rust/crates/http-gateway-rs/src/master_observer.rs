@@ -50,6 +50,7 @@ pub struct ProjectMasterLinkRow {
 
 impl ProjectMasterLinkRow {
     /// Fill `mcp_token_set` from stored secret. Author: kejiqing
+    #[must_use]
     pub fn with_token_flags(mut self) -> Self {
         self.mcp_token_set = !self.apprentice_mcp_token.trim().is_empty();
         self

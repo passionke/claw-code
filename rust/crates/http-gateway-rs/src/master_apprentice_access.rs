@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::fmt::Write as _;
 
 use crate::gateway_admin_mcp_token::extract_bearer_token;
 use crate::gateway_endpoint::{normalize_gateway_base, parse_apprentice_gateway_base};
@@ -139,7 +140,7 @@ pub fn peer_auth_token(link: &ProjectMasterLinkRow) -> Result<String, String> {
     Ok(t.to_string())
 }
 
-async fn peer_client() -> Result<reqwest::Client, String> {
+fn peer_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
@@ -148,8 +149,7 @@ async fn peer_client() -> Result<reqwest::Client, String> {
 
 async fn peer_get_json(base: &str, token: &str, path: &str) -> Result<Value, String> {
     let url = format!("{}{path}", base.trim_end_matches('/'));
-    let resp = peer_client()
-        .await?
+    let resp = peer_client()?
         .get(&url)
         .header("Authorization", format!("Bearer {token}"))
         .send()
@@ -173,8 +173,7 @@ async fn peer_post_json(
     body: &Value,
 ) -> Result<Value, String> {
     let url = format!("{}{path}", base.trim_end_matches('/'));
-    let resp = peer_client()
-        .await?
+    let resp = peer_client()?
         .post(&url)
         .header("Authorization", format!("Bearer {token}"))
         .json(body)
@@ -197,8 +196,7 @@ async fn peer_post_json(
 
 async fn peer_put_json(base: &str, token: &str, path: &str, body: &Value) -> Result<Value, String> {
     let url = format!("{}{path}", base.trim_end_matches('/'));
-    let resp = peer_client()
-        .await?
+    let resp = peer_client()?
         .put(&url)
         .header("Authorization", format!("Bearer {token}"))
         .json(body)
@@ -492,10 +490,10 @@ pub async fn list_apprentice_sessions(
         let token = peer_auth_token(link)?;
         let mut q = format!("/v1/master-peer/projects/{aid}/sessions?limit={limit}");
         if let Some(a) = after {
-            q.push_str(&format!("&updatedAfterMs={a}"));
+            let _ = write!(q, "&updatedAfterMs={a}");
         }
         if let Some(b) = before {
-            q.push_str(&format!("&updatedBeforeMs={b}"));
+            let _ = write!(q, "&updatedBeforeMs={b}");
         }
         return peer_get_json(&peer, &token, &q).await;
     }
