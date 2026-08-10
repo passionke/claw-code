@@ -66,6 +66,17 @@ API 回传：`gatewayId` / `gatewayBase`（`solve_async`、`GET /v1/tasks`、`GE
 
 Admin 客户端始终连**当前选中的** `gatewayBase`；错机由后端反代，上游无感。
 
+## Master 学徒跨 gateway
+
+场景：N 个部署只维护一份 master；学徒可分布在不同 gateway/集群。
+
+- `project_master_link.apprentice_gateway_base`（空 = 本机）指向学徒入口
+- `apprentice_mcp_token`：对方集群的 `CLAW_MASTER_MCP_TOKEN`（各集群可不同；GET 仅 `mcpTokenSet`）
+- **影子 observation 与学徒同 gateway**（peer `POST …/observation` 在对方创建）
+- Master MCP 经 `/v1/master-peer/...`，Bearer 用**该学徒 link 上的 token**
+- 本机 `CLAW_MASTER_MCP_TOKEN` 仍只服务本机 master worker → `/v1/master/{id}/mcp` 与本机 peer 入站校验
+- `repair_run` / 配对表仍在 master 所在 cluster
+
 ---
 
 ## Worker 跨机互斥（e2b warm pool）

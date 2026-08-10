@@ -11,15 +11,16 @@ use crate::admin_mcp_solve::{
     validate_admin_mcp_solve_input, AdminMcpSolveBackend, AdminMcpSolveInput,
 };
 use crate::gateway_admin_mcp_token::extract_bearer_token;
-use crate::master_observer::{
-    can_transition_repair_status, clone_stable_config_onto_project, master_mcp_shared_token,
-    new_repair_run_id, promote_observation_to_apprentice_draft, replayable_inventory_items,
-    validate_inventory_json, zero_pool_worker_profile_json, MasterRepairRunRow,
-    PROJECT_ROLE_MASTER, REPAIR_STATUS_ANALYZED, REPAIR_STATUS_DRAFT_PUSHED, REPAIR_STATUS_OPENED,
-    REPAIR_STATUS_PATCHED, REPAIR_STATUS_REPLAYED, REPAIR_STATUS_SYNCED,
+use crate::master_apprentice_access::{
+    self, ApprenticeDraftPutDto, ApprenticeStableConfigDto, ObservationDraftPutDto,
 };
-use crate::project_config_draft;
-use crate::session_db::{now_ms_for_registry, GatewaySessionDb, ProjectConfigUpsert};
+use crate::master_observer::{
+    can_transition_repair_status, master_mcp_shared_token, new_repair_run_id,
+    promote_observation_to_apprentice_draft, replayable_inventory_items, validate_inventory_json,
+    MasterRepairRunRow, PROJECT_ROLE_MASTER, REPAIR_STATUS_ANALYZED, REPAIR_STATUS_DRAFT_PUSHED,
+    REPAIR_STATUS_OPENED, REPAIR_STATUS_PATCHED, REPAIR_STATUS_REPLAYED, REPAIR_STATUS_SYNCED,
+};
+use crate::session_db::{now_ms_for_registry, GatewaySessionDb};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SERVER_NAME: &str = "claw-master-observer";
@@ -245,6 +246,7 @@ pub async fn handle_master_mcp_post<B: AdminMcpSolveBackend>(
     db: &GatewaySessionDb,
     solve_backend: &B,
     master_proj_id: i64,
+    self_gateway_base: &str,
     headers: &HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -293,7 +295,16 @@ pub async fn handle_master_mcp_post<B: AdminMcpSolveBackend>(
             let params = req.params.unwrap_or(json!({}));
             let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            match dispatch_tool(db, solve_backend, master_proj_id, name, &args).await {
+            match dispatch_tool(
+                db,
+                solve_backend,
+                master_proj_id,
+                self_gateway_base,
+                name,
+                &args,
+            )
+            .await
+            {
                 Ok(v) => jsonrpc_result(id, text_result(v)),
                 Err(e) => jsonrpc_result(
                     id,
@@ -313,6 +324,7 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
     db: &GatewaySessionDb,
     solve_backend: &B,
     master_proj_id: i64,
+    self_gateway_base: &str,
     name: &str,
     args: &Value,
 ) -> Result<Value, String> {
@@ -326,27 +338,17 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
         }
         "apprentice_config_get" => {
             let aid = arg_i64(args, "apprenticeProjId")?;
-            let _ = db
+            let link = db
                 .assert_master_owns_apprentice(master_proj_id, aid)
                 .await?;
-            let row = project_config_draft::row_for_materialize(db, aid)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("apprentice {aid} missing"))?;
-            Ok(json!({
-                "projId": aid,
-                "stableContentRev": row.stable_content_rev,
-                "claudeMd": row.claude_md,
-                "skillsJson": row.skills_json,
-                "rulesJson": row.rules_json,
-                "mcpServersJson": row.mcp_servers_json,
-                "allowedToolsJson": row.allowed_tools_json,
-                "extraSessionFieldsJson": row.extra_session_fields_json
-            }))
+            let dto =
+                master_apprentice_access::load_apprentice_stable(db, self_gateway_base, &link)
+                    .await?;
+            Ok(stable_dto_to_tool_json(&dto))
         }
         "apprentice_sessions_query" => {
             let aid = arg_i64(args, "apprenticeProjId")?;
-            let _ = db
+            let link = db
                 .assert_master_owns_apprentice(master_proj_id, aid)
                 .await?;
             let limit = args
@@ -356,50 +358,38 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                 .clamp(1, 200);
             let after = args.get("updatedAfterMs").and_then(|v| v.as_i64());
             let before = args.get("updatedBeforeMs").and_then(|v| v.as_i64());
-            let sessions = db
-                .list_sessions_for_proj(aid, limit, None, None, after, before, None, None, None)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(json!({"sessions": sessions.iter().map(|s| json!({
-                "sessionId": s.session_id,
-                "createdAtMs": s.created_at_ms,
-                "updatedAtMs": s.updated_at_ms,
-                "turnCount": s.turn_count,
-                "previewPrompt": s.preview_prompt,
-                "clientOrigin": s.client_origin
-            })).collect::<Vec<_>>()}))
+            master_apprentice_access::list_apprentice_sessions(
+                db,
+                self_gateway_base,
+                &link,
+                limit,
+                after,
+                before,
+            )
+            .await
         }
         "apprentice_turns_list" => {
             let aid = arg_i64(args, "apprenticeProjId")?;
             let sid = arg_str(args, "sessionId")?;
-            let _ = db
+            let link = db
                 .assert_master_owns_apprentice(master_proj_id, aid)
                 .await?;
-            let turns = db
-                .list_turns_for_session(sid, aid)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(json!({"turns": turns.iter().map(|t| json!({
-                "turnId": t.turn_id,
-                "userPrompt": t.user_prompt,
-                "status": t.status,
-                "createdAtMs": t.created_at_ms,
-                "finishedAtMs": t.finished_at_ms,
-                "reportBody": t.report_body,
-                "failureDetail": t.failure_detail,
-                "extraSession": t.extra_session,
-                "feedback": t.feedback
-            })).collect::<Vec<_>>()}))
+            master_apprentice_access::list_apprentice_turns(
+                db,
+                self_gateway_base,
+                &link,
+                sid,
+            )
+            .await
         }
         "repair_run_open" => {
             let aid = arg_i64(args, "apprenticeProjId")?;
             let link = db
                 .assert_master_owns_apprentice(master_proj_id, aid)
                 .await?;
-            let apprentice = project_config_draft::row_for_materialize(db, aid)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("apprentice {aid} missing"))?;
+            let apprentice =
+                master_apprentice_access::load_apprentice_stable(db, self_gateway_base, &link)
+                    .await?;
             let now = now_ms_for_registry();
             let run = MasterRepairRunRow {
                 run_id: new_repair_run_id(),
@@ -465,31 +455,17 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
             if !can_transition_repair_status(&run.status, REPAIR_STATUS_SYNCED) {
                 return Err(format!("cannot sync from status {}", run.status));
             }
-            let source = project_config_draft::row_for_materialize(db, aid)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("apprentice {aid} missing"))?;
-            let obs = db
-                .get_project_config(link.observation_proj_id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "observation missing".to_string())?;
-            let before = obs.stable_content_rev.clone();
-            let rev = clone_stable_config_onto_project(
-                db,
-                &source,
-                link.observation_proj_id,
-                &obs.project_code,
-                &obs.project_description,
-                &zero_pool_worker_profile_json(),
-                None,
-                None,
-            )
-            .await?;
+            let (before, after, baseline) =
+                master_apprentice_access::sync_observation_from_apprentice(
+                    db,
+                    self_gateway_base,
+                    &link,
+                )
+                .await?;
             run.status = REPAIR_STATUS_SYNCED.into();
-            run.baseline_apprentice_content_rev = source.stable_content_rev.clone();
+            run.baseline_apprentice_content_rev = baseline;
             run.observation_content_rev_before = before;
-            run.observation_content_rev_after = Some(rev);
+            run.observation_content_rev_after = Some(after);
             run.updated_at_ms = now_ms_for_registry();
             db.update_repair_run(&run)
                 .await
@@ -499,7 +475,7 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
         "observation_config_put_draft" => {
             let oid = arg_i64(args, "observationProjId")?;
             let run_id = arg_str(args, "runId")?;
-            let _ = db
+            let link = db
                 .assert_master_owns_observation(master_proj_id, oid)
                 .await?;
             let mut run = load_owned_run(db, master_proj_id, run_id).await?;
@@ -513,43 +489,29 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
             {
                 return Err(format!("cannot patch from status {}", run.status));
             }
-            let mut draft = project_config_draft::ensure_draft(db, oid)
-                .await
-                .map_err(|e| e.to_string())?;
-            if let Some(s) = args.get("claudeMd").and_then(|v| v.as_str()) {
-                draft.claude_md = Some(s.to_string());
-            }
-            if let Some(v) = args.get("skillsJson") {
-                draft.skills_json = v.clone();
-            }
-            if let Some(v) = args.get("rulesJson") {
-                draft.rules_json = v.clone();
-            }
-            if let Some(v) = args.get("mcpServersJson") {
-                draft.mcp_servers_json = v.clone();
-            }
-            draft.updated_at_ms = now_ms_for_registry();
-            upsert_draft_row(db, &draft).await?;
             let commit_activate = args
                 .get("commitAndActivate")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            if commit_activate {
-                let committed = project_config_draft::commit_open_draft(
-                    db,
-                    oid,
-                    Some("master observation patch".into()),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-                let activated = project_config_draft::activate_formal_revision(
-                    db,
-                    oid,
-                    &committed.saved_content_rev,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-                run.observation_content_rev_after = activated.stable_content_rev.clone();
+            let patch = ObservationDraftPutDto {
+                claude_md: args
+                    .get("claudeMd")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                skills_json: args.get("skillsJson").cloned(),
+                rules_json: args.get("rulesJson").cloned(),
+                mcp_servers_json: args.get("mcpServersJson").cloned(),
+                commit_and_activate: commit_activate,
+            };
+            let rev = master_apprentice_access::put_observation_draft(
+                db,
+                self_gateway_base,
+                &link,
+                &patch,
+            )
+            .await?;
+            if rev.is_some() {
+                run.observation_content_rev_after = rev;
             }
             if can_transition_repair_status(&run.status, REPAIR_STATUS_PATCHED)
                 || run.status == REPAIR_STATUS_PATCHED
@@ -587,6 +549,9 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                 .get("bizdateOverride")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+            let apprentice_link = db
+                .assert_master_owns_apprentice(master_proj_id, run.apprentice_proj_id)
+                .await?;
             let mut replayed = run
                 .replay_session_ids
                 .as_array()
@@ -611,11 +576,15 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                     .get("sourceTurnId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| format!("item {item_id} missing sourceTurnId"))?;
-                let (prompt, entry) = db
-                    .get_turn_for_replay(source_session_id, run.apprentice_proj_id, source_turn_id)
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("source turn {source_turn_id} not found"))?;
+                let (prompt, entry) = master_apprentice_access::get_apprentice_turn_for_replay(
+                    db,
+                    self_gateway_base,
+                    &apprentice_link,
+                    source_session_id,
+                    source_turn_id,
+                )
+                .await?
+                .ok_or_else(|| format!("source turn {source_turn_id} not found"))?;
                 let user_prompt = prompt.unwrap_or_default();
                 if user_prompt.trim().is_empty() {
                     return Err(format!(
@@ -635,22 +604,36 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                         obj.insert("bizdate".into(), json!(bd));
                     }
                 }
-                let input = AdminMcpSolveInput {
-                    proj_id: run.observation_proj_id,
-                    user_prompt: user_prompt.clone(),
-                    session_id: None,
-                    model: None,
-                    timeout_seconds: None,
-                    extra_session: Some(extra.clone()),
-                    allowed_tools: None,
-                    max_iterations: None,
-                    attachments: None,
+                let resp = if let Some(peer) =
+                    master_apprentice_access::link_peer_base(&apprentice_link, self_gateway_base)
+                {
+                    master_apprentice_access::solve_observation_on_peer(
+                        &peer,
+                        &master_apprentice_access::peer_auth_token(&apprentice_link)?,
+                        run.observation_proj_id,
+                        &user_prompt,
+                        None,
+                        Some(extra.clone()),
+                    )
+                    .await?
+                } else {
+                    let input = AdminMcpSolveInput {
+                        proj_id: run.observation_proj_id,
+                        user_prompt: user_prompt.clone(),
+                        session_id: None,
+                        model: None,
+                        timeout_seconds: None,
+                        extra_session: Some(extra.clone()),
+                        allowed_tools: None,
+                        max_iterations: None,
+                        attachments: None,
+                    };
+                    validate_admin_mcp_solve_input(db, &input).await?;
+                    solve_backend
+                        .gateway_solve_async(input)
+                        .await
+                        .map_err(|e| e.to_string())?
                 };
-                validate_admin_mcp_solve_input(db, &input).await?;
-                let resp = solve_backend
-                    .gateway_solve_async(input)
-                    .await
-                    .map_err(|e| e.to_string())?;
                 replayed.push(json!({
                     "itemId": item_id,
                     "sourceSessionId": source_session_id,
@@ -709,10 +692,14 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
             if !can_transition_repair_status(&run.status, REPAIR_STATUS_DRAFT_PUSHED) {
                 return Err(format!("cannot promote from status {}", run.status));
             }
+            let link = db
+                .assert_master_owns_apprentice(master_proj_id, run.apprentice_proj_id)
+                .await?;
             promote_observation_to_apprentice_draft(
                 db,
+                self_gateway_base,
+                &link,
                 run.observation_proj_id,
-                run.apprentice_proj_id,
                 &note,
             )
             .await?;
@@ -727,41 +714,59 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
         }
         "apprentice_config_put_draft" => {
             let aid = arg_i64(args, "apprenticeProjId")?;
-            let _ = db
+            let link = db
                 .assert_master_owns_apprentice(master_proj_id, aid)
                 .await?;
-            let mut draft = project_config_draft::ensure_draft(db, aid)
-                .await
-                .map_err(|e| e.to_string())?;
-            if let Some(s) = args.get("claudeMd").and_then(|v| v.as_str()) {
-                draft.claude_md = Some(s.to_string());
-            }
-            if let Some(v) = args.get("skillsJson") {
-                draft.skills_json = v.clone();
-            }
-            if let Some(v) = args.get("rulesJson") {
-                draft.rules_json = v.clone();
-            }
-            draft.updated_at_ms = now_ms_for_registry();
-            upsert_draft_row(db, &draft).await?;
+            let patch = ApprenticeDraftPutDto {
+                claude_md: args
+                    .get("claudeMd")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                skills_json: args.get("skillsJson").cloned(),
+                rules_json: args.get("rulesJson").cloned(),
+                mcp_servers_json: None,
+                allowed_tools_json: None,
+            };
+            master_apprentice_access::put_apprentice_draft(
+                db,
+                self_gateway_base,
+                &link,
+                &patch,
+            )
+            .await?;
             Ok(json!({"projId": aid, "draftOpen": true}))
         }
         "observation_solve" => {
             let oid = arg_i64(args, "observationProjId")?;
-            let _ = db
+            let link = db
                 .assert_master_owns_observation(master_proj_id, oid)
                 .await?;
             let prompt = arg_str(args, "userPrompt")?;
+            let session_id = args
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let extra_session = args.get("extraSession").cloned();
+            if let Some(peer) =
+                master_apprentice_access::link_peer_base(&link, self_gateway_base)
+            {
+                return master_apprentice_access::solve_observation_on_peer(
+                    &peer,
+                    &master_apprentice_access::peer_auth_token(&link)?,
+                    oid,
+                    prompt,
+                    session_id,
+                    extra_session,
+                )
+                .await;
+            }
             let input = AdminMcpSolveInput {
                 proj_id: oid,
                 user_prompt: prompt.to_string(),
-                session_id: args
-                    .get("sessionId")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
+                session_id,
                 model: None,
                 timeout_seconds: None,
-                extra_session: args.get("extraSession").cloned(),
+                extra_session,
                 allowed_tools: None,
                 max_iterations: None,
                 attachments: None,
@@ -793,37 +798,19 @@ async fn load_owned_run(
     Ok(run)
 }
 
-async fn upsert_draft_row(
-    db: &GatewaySessionDb,
-    draft: &crate::session_db::ProjectConfigRow,
-) -> Result<(), String> {
-    use crate::project_config_draft::DRAFT_CONTENT_REV;
-    db.upsert_project_config(ProjectConfigUpsert {
-        proj_id: draft.proj_id,
-        content_rev: DRAFT_CONTENT_REV,
-        stable_content_rev: draft.stable_content_rev.as_deref(),
-        draft_open: true,
-        updated_at_ms: draft.updated_at_ms,
-        rules_json: &draft.rules_json,
-        mcp_servers_json: &draft.mcp_servers_json,
-        skills_sources_json: &draft.skills_sources_json,
-        skills_json: &draft.skills_json,
-        allowed_tools_json: &draft.allowed_tools_json,
-        claude_md: draft.claude_md.as_deref(),
-        git_sync_json: &draft.git_sync_json,
-        solve_preflight_json: &draft.solve_preflight_json,
-        solve_orchestration_json: &draft.solve_orchestration_json,
-        language_pipeline_json: &draft.language_pipeline_json,
-        extra_session_fields_json: &draft.extra_session_fields_json,
-        prompt_limits_json: &draft.prompt_limits_json,
-        worker_profile_json: &draft.worker_profile_json,
-        worker_env_json: &draft.worker_env_json,
-        project_code: &draft.project_code,
-        project_description: &draft.project_description,
-        max_iterations: draft.max_iterations,
+fn stable_dto_to_tool_json(dto: &ApprenticeStableConfigDto) -> Value {
+    json!({
+        "projId": dto.proj_id,
+        "gatewayBase": Value::Null,
+        "stableContentRev": dto.stable_content_rev,
+        "claudeMd": dto.claude_md,
+        "skillsJson": dto.skills_json,
+        "rulesJson": dto.rules_json,
+        "mcpServersJson": dto.mcp_servers_json,
+        "allowedToolsJson": dto.allowed_tools_json,
+        "extraSessionFieldsJson": dto.extra_session_fields_json,
+        "projectRole": dto.project_role
     })
-    .await
-    .map_err(|e| e.to_string())
 }
 
 fn arg_i64(args: &Value, key: &str) -> Result<i64, String> {

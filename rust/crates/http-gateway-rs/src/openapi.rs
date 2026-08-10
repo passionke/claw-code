@@ -124,7 +124,16 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::put_master_schedule,
         crate::routes::app::delete_master_schedule,
         crate::routes::app::run_master_schedule,
-        crate::routes::app::master_mcp_http_handler
+        crate::routes::app::master_mcp_http_handler,
+        crate::routes::app::master_peer_stable_config,
+        crate::routes::app::master_peer_sessions,
+        crate::routes::app::master_peer_session_turns,
+        crate::routes::app::master_peer_replay_turn,
+        crate::routes::app::master_peer_put_draft,
+        crate::routes::app::master_peer_create_observation,
+        crate::routes::app::master_peer_sync_observation,
+        crate::routes::app::master_peer_observation_draft,
+        crate::routes::app::master_peer_observation_solve
     ),
     components(schemas(
         crate::gateway_e2b_singleton_lifecycle::E2bSingletonComponent,

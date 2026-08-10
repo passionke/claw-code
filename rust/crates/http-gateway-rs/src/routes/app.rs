@@ -35,14 +35,15 @@ use crate::{
     admin_mcp_http, admin_mcp_solve, claw_tap_cluster_state, client_origin,
     gateway_admin_mcp_token, gateway_claw_tap_settings, gateway_e2b_core_readiness,
     gateway_e2b_nas_settings, gateway_e2b_observe_proxy, gateway_e2b_observe_reset,
-    gateway_e2b_singleton_api, gateway_e2b_worker_settings, gateway_global_settings,
-    gateway_llm_config_sync, gateway_project_e2b_worker, gateway_project_llm,
-    gateway_project_observe, gateway_strict_landlock_settings, gateway_translate, llm_probe,
-    master_mcp, master_observer, master_scheduler, mcp_probe, pool, pool_consumer_resolve,
-    preflight_plugin_api, project_config_apply, project_config_draft, project_config_version,
-    project_entity_revision, project_extra_session, project_git_sync, project_id, project_tools,
-    session_agent_api, session_db, session_execution, session_merge, session_ovs_api,
-    session_upload, solve_pool, task_status, turn_id, turn_timeline_api, turn_tools_api,
+    gateway_e2b_singleton_api, gateway_e2b_worker_settings, gateway_endpoint,
+    gateway_global_settings, gateway_llm_config_sync, gateway_project_e2b_worker,
+    gateway_project_llm, gateway_project_observe, gateway_strict_landlock_settings,
+    gateway_translate, llm_probe, master_apprentice_access, master_mcp, master_observer,
+    master_scheduler, mcp_probe, pool, pool_consumer_resolve, preflight_plugin_api,
+    project_config_apply, project_config_draft, project_config_version, project_entity_revision,
+    project_extra_session, project_git_sync, project_id, project_tools, session_agent_api,
+    session_db, session_execution, session_merge, session_ovs_api, session_upload, solve_pool,
+    task_status, turn_id, turn_timeline_api, turn_tools_api,
 };
 use axum::body::Bytes;
 use axum::extract::{Extension, Path as AxumPath, Query, Request, State};

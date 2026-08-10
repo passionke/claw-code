@@ -84,7 +84,8 @@ fn validate_gateway_id(raw: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
-fn normalize_gateway_base(raw: &str) -> Result<String, String> {
+/// Normalize a gateway ingress URL (strip trailing `/`, require http(s)). Author: kejiqing
+pub fn normalize_gateway_base(raw: &str) -> Result<String, String> {
     let s = raw.trim().trim_end_matches('/').to_string();
     if s.is_empty() {
         return Err("gateway_base is empty".into());
@@ -93,6 +94,27 @@ fn normalize_gateway_base(raw: &str) -> Result<String, String> {
         return Err(format!("gateway_base must be http(s) URL, got {s}"));
     }
     Ok(s)
+}
+
+/// Accept full URL, `host:port`, or bare host/IP (default port 18088). Author: kejiqing
+pub fn parse_apprentice_gateway_base(raw: &str) -> Result<String, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(String::new());
+    }
+    if s.starts_with("http://") || s.starts_with("https://") {
+        return normalize_gateway_base(s);
+    }
+    // host:port or bare host/IP → http://…
+    if s.contains("://") {
+        return Err(format!("unsupported gateway URL scheme: {s}"));
+    }
+    let with_scheme = if s.contains(':') {
+        format!("http://{s}")
+    } else {
+        format!("http://{s}:18088")
+    };
+    normalize_gateway_base(&with_scheme)
 }
 
 /// Resolve this process's gateway ingress identity from env. Author: kejiqing
@@ -228,6 +250,23 @@ mod tests {
         assert_eq!(
             normalize_gateway_base("http://10.0.0.1:18088/").unwrap(),
             "http://10.0.0.1:18088"
+        );
+    }
+
+    #[test]
+    fn parse_apprentice_gateway_accepts_ip_and_host_port() {
+        assert_eq!(parse_apprentice_gateway_base("").unwrap(), "");
+        assert_eq!(
+            parse_apprentice_gateway_base("10.0.0.1").unwrap(),
+            "http://10.0.0.1:18088"
+        );
+        assert_eq!(
+            parse_apprentice_gateway_base("10.0.0.1:19000").unwrap(),
+            "http://10.0.0.1:19000"
+        );
+        assert_eq!(
+            parse_apprentice_gateway_base("http://gw.example:18088/").unwrap(),
+            "http://gw.example:18088"
         );
     }
 

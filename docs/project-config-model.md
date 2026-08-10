@@ -225,7 +225,14 @@ Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历�
 
 **角色**：`project_config.project_role` = `normal` | `master` | `observation`。
 
-**配对**：`PUT /v1/projects/{master}/apprentices` body `{ "apprenticeProjIds": [...] }`。新增学徒时自动创建观察空间 project（克隆学徒 **stable** 配置包，`poolSize: 0`，`project_role=observation`），写入 `project_master_link`。
+**配对**：`PUT /v1/projects/{master}/apprentices` body 推荐
+`{ "apprentices": [{ "apprenticeProjId", "gatewayBase?" }] }`（`gatewayBase` 空/省略 = 本 gateway；可填 IP、`host:port` 或 `http(s)://…`）。
+兼容旧字段 `{ "apprenticeProjIds": [...] }`。
+
+**拓扑**：学徒与其**影子观察空间**同 gateway；master 只做跨部署聚合，不必在每个集群各配一套。
+新增学徒时在**学徒所在 gateway** 创建观察空间（克隆学徒 **stable**，`poolSize: 0`，`project_role=observation`），master 侧仅写 `project_master_link`（含 `apprentice_gateway_base` + 远端 `observation_proj_id`）。
+
+跨 gateway：非本机 base 时，配对须带该 peer 的 `mcpToken`（= 对方 `CLAW_MASTER_MCP_TOKEN`）；各集群 token 可不同，一个 master 可连多台。master 经 `/v1/master-peer/...` 用**该学徒自己的 token** 创建影子、读会话、sync/patch/solve/promote。GET 只回 `mcpTokenSet`，不回明文。
 
 **Master 内置 MCP**：solve 物化时若 `role=master` 且设置了 `CLAW_MASTER_MCP_TOKEN`，向 `settings.json.mcpServers.claw-master-observer` 注入 `POST {CLAW_GATEWAY_BASE}/v1/master/{projId}/mcp`。工具按配对授权：读学徒 stable/sessions、同步/改观察空间、`repair_run` 状态机、bizdate 重放、promote 到学徒 `__draft__`（不 activate）。
 

@@ -58,6 +58,7 @@ pub mod gateway_translate;
 pub mod live_report_audit;
 pub mod llm_probe;
 pub mod master_mcp;
+pub mod master_apprentice_access;
 pub mod master_observer;
 pub mod master_scheduler;
 pub mod max_iterations;

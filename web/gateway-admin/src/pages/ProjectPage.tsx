@@ -1,5 +1,6 @@
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   Collapse,
@@ -55,13 +56,28 @@ export default function ProjectPage() {
   const [savingMeta, setSavingMeta] = useState(false);
   const [savingMaxIter, setSavingMaxIter] = useState(false);
   const [projectRole, setProjectRole] = useState<string>("normal");
-  const [apprenticeIds, setApprenticeIds] = useState<number[]>([]);
+  /** Draft rows for apprentice pairing (gatewayBase empty = this gateway). Author: kejiqing */
+  const [apprenticeDrafts, setApprenticeDrafts] = useState<
+    {
+      key: string;
+      apprenticeProjId: number | null;
+      gatewayBase: string;
+      /** Typed token for save; empty = keep existing when mcpTokenSet. Author: kejiqing */
+      mcpToken: string;
+      mcpTokenSet: boolean;
+    }[]
+  >([]);
   const [masterLinks, setMasterLinks] = useState<
     {
       apprenticeProjId: number;
       observationProjId: number;
+      apprenticeGatewayBase?: string;
+      mcpTokenSet?: boolean;
       orphaned: boolean;
     }[]
+  >([]);
+  const [gatewayEndpointOptions, setGatewayEndpointOptions] = useState<
+    { value: string; label: string }[]
   >([]);
   const [repairRuns, setRepairRuns] = useState<
     { runId: string; status: string; apprenticeProjId: number; promoteStatus: string }[]
@@ -126,16 +142,51 @@ export default function ProjectPage() {
         links: {
           apprenticeProjId: number;
           observationProjId: number;
+          apprenticeGatewayBase?: string;
+          mcpTokenSet?: boolean;
           orphaned: boolean;
         }[];
       }>(gatewayBase, "GET", `/v1/projects/${projId}/apprentices`);
       setProjectRole("master");
       setMasterLinks(linksResp.links || []);
-      setApprenticeIds(
+      setApprenticeDrafts(
         (linksResp.links || [])
           .filter((l) => !l.orphaned)
-          .map((l) => l.apprenticeProjId)
+          .map((l, i) => ({
+            key: `link-${l.apprenticeProjId}-${i}`,
+            apprenticeProjId: l.apprenticeProjId,
+            gatewayBase: (l.apprenticeGatewayBase || "").trim(),
+            mcpToken: "",
+            mcpTokenSet: !!l.mcpTokenSet,
+          }))
       );
+      try {
+        const ep = await proxyHttp<{
+          endpoints?: { gatewayBase: string; hostname?: string; online?: boolean }[];
+          selfGatewayBase?: string;
+        }>(gatewayBase, "GET", "/v1/gateway/endpoints");
+        const opts = (ep.endpoints || [])
+          .filter((e) => (e.gatewayBase || "").trim())
+          .map((e) => {
+            const base = e.gatewayBase.replace(/\/$/, "");
+            const host = (() => {
+              try {
+                return new URL(base).host;
+              } catch {
+                return base;
+              }
+            })();
+            return {
+              value: base,
+              label: `${host}${e.online === false ? " (offline)" : ""}${
+                base === (ep.selfGatewayBase || "").replace(/\/$/, "") ? " · 本机" : ""
+              }`,
+            };
+          });
+        setGatewayEndpointOptions(opts);
+      } catch {
+        setGatewayEndpointOptions([]);
+      }
       const runs = await proxyHttp<{
         runs: {
           runId: string;
@@ -162,7 +213,7 @@ export default function ProjectPage() {
     } catch {
       setProjectRole("normal");
       setMasterLinks([]);
-      setApprenticeIds([]);
+      setApprenticeDrafts([]);
       setRepairRuns([]);
       setScheduleJobs([]);
       setScheduleJobId(null);
@@ -507,40 +558,166 @@ export default function ProjectPage() {
         </Space>
         {projectRole === "master" && (
           <>
-            <Form layout="vertical">
-              <Form.Item label="学徒 projId（多选）">
-                <Select
-                  mode="multiple"
-                  style={{ width: "100%" }}
-                  value={apprenticeIds}
-                  onChange={(v: number[]) => setApprenticeIds(v)}
-                  options={projects
-                    .filter((p) => p.projId !== projId)
-                    .map((p) => ({
-                      value: p.projId,
-                      label: `${p.projId} ${p.projectCode || ""}`.trim(),
-                    }))}
-                />
-              </Form.Item>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+              学徒 = projId + 可选 gateway + 对方 <Typography.Text code>mcpToken</Typography.Text>
+              。留空 gateway = 本机；跨 gateway 时填对方 IP/URL，并填对方集群的{" "}
+              <Typography.Text code>CLAW_MASTER_MCP_TOKEN</Typography.Text>
+              （各集群可不同；一个 master 可连多台）。影子与学徒同机。
+            </Typography.Paragraph>
+            <Table
+              size="small"
+              pagination={false}
+              rowKey={(r) => r.key}
+              style={{ marginBottom: 8 }}
+              dataSource={apprenticeDrafts}
+              columns={[
+                {
+                  title: "学徒 projId",
+                  width: 140,
+                  render: (_, row, idx) => (
+                    <InputNumber
+                      min={1}
+                      style={{ width: "100%" }}
+                      placeholder="projId"
+                      value={row.apprenticeProjId ?? undefined}
+                      onChange={(v) => {
+                        setApprenticeDrafts((prev) =>
+                          prev.map((x, i) =>
+                            i === idx
+                              ? { ...x, apprenticeProjId: typeof v === "number" ? v : null }
+                              : x
+                          )
+                        );
+                      }}
+                    />
+                  ),
+                },
+                {
+                  title: "Gateway（默认本机）",
+                  render: (_, row, idx) => (
+                    <AutoComplete
+                      allowClear
+                      style={{ width: "100%" }}
+                      placeholder="空=本 gateway；IP / host:port / URL"
+                      options={gatewayEndpointOptions}
+                      value={row.gatewayBase || undefined}
+                      onChange={(v) => {
+                        setApprenticeDrafts((prev) =>
+                          prev.map((x, i) =>
+                            i === idx ? { ...x, gatewayBase: (v || "").trim() } : x
+                          )
+                        );
+                      }}
+                    />
+                  ),
+                },
+                {
+                  title: "对方 mcpToken",
+                  width: 200,
+                  render: (_, row, idx) => (
+                    <Input.Password
+                      placeholder={
+                        row.mcpTokenSet ? "已设置，留空保持" : "远程必填"
+                      }
+                      value={row.mcpToken}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setApprenticeDrafts((prev) =>
+                          prev.map((x, i) => (i === idx ? { ...x, mcpToken: v } : x))
+                        );
+                      }}
+                    />
+                  ),
+                },
+                {
+                  title: "",
+                  width: 72,
+                  render: (_, __, idx) => (
+                    <Button
+                      type="link"
+                      danger
+                      size="small"
+                      onClick={() =>
+                        setApprenticeDrafts((prev) => prev.filter((_, i) => i !== idx))
+                      }
+                    >
+                      删除
+                    </Button>
+                  ),
+                },
+              ]}
+            />
+            <Space wrap style={{ marginBottom: 12 }}>
+              <Button
+                size="small"
+                onClick={() =>
+                  setApprenticeDrafts((prev) => [
+                    ...prev,
+                    {
+                      key: `new-${Date.now()}`,
+                      apprenticeProjId: null,
+                      gatewayBase: "",
+                      mcpToken: "",
+                      mcpTokenSet: false,
+                    },
+                  ])
+                }
+              >
+                添加学徒
+              </Button>
               <Button
                 type="primary"
                 loading={savingMaster}
                 onClick={() =>
                   void (async () => {
+                    const specs: {
+                      apprenticeProjId: number;
+                      gatewayBase: string;
+                      mcpToken?: string;
+                    }[] = [];
+                    for (const d of apprenticeDrafts) {
+                      if (d.apprenticeProjId == null || d.apprenticeProjId <= 0) continue;
+                      const gw = (d.gatewayBase || "").trim();
+                      const tok = (d.mcpToken || "").trim();
+                      if (gw && !tok && !d.mcpTokenSet) {
+                        message.error(
+                          `学徒 ${d.apprenticeProjId}：跨 gateway 必须填写对方 mcpToken`
+                        );
+                        return;
+                      }
+                      const item: {
+                        apprenticeProjId: number;
+                        gatewayBase: string;
+                        mcpToken?: string;
+                      } = {
+                        apprenticeProjId: d.apprenticeProjId,
+                        gatewayBase: gw,
+                      };
+                      if (tok) item.mcpToken = tok;
+                      specs.push(item);
+                    }
+                    const ids = specs.map((s) => s.apprenticeProjId);
+                    if (new Set(ids).size !== ids.length) {
+                      message.error("学徒 projId 不能重复");
+                      return;
+                    }
                     setSavingMaster(true);
                     try {
                       const r = await proxyHttp<{
                         links: {
                           apprenticeProjId: number;
                           observationProjId: number;
+                          apprenticeGatewayBase?: string;
+                          mcpTokenSet?: boolean;
                           orphaned: boolean;
                         }[];
                       }>(gatewayBase, "PUT", `/v1/projects/${projId}/apprentices`, {
-                        apprenticeProjIds: apprenticeIds,
+                        apprentices: specs,
                       });
                       setMasterLinks(r.links || []);
                       message.success("学徒配对已更新");
                       await refreshProjects();
+                      await loadMaster();
                     } catch (e) {
                       message.error(e instanceof Error ? e.message : "保存学徒失败");
                     } finally {
@@ -551,7 +728,7 @@ export default function ProjectPage() {
               >
                 保存学徒配对
               </Button>
-            </Form>
+            </Space>
             {masterLinks.length > 0 && (
               <Table
                 size="small"
@@ -561,6 +738,26 @@ export default function ProjectPage() {
                 dataSource={masterLinks}
                 columns={[
                   { title: "学徒", dataIndex: "apprenticeProjId" },
+                  {
+                    title: "Gateway",
+                    dataIndex: "apprenticeGatewayBase",
+                    render: (v: string | undefined) =>
+                      v && v.trim() ? (
+                        <Typography.Text code>{v}</Typography.Text>
+                      ) : (
+                        <Tag>本机</Tag>
+                      ),
+                  },
+                  {
+                    title: "mcpToken",
+                    dataIndex: "mcpTokenSet",
+                    render: (v: boolean | undefined, row) =>
+                      row.apprenticeGatewayBase?.trim()
+                        ? v
+                          ? <Tag color="green">已设置</Tag>
+                          : <Tag color="red">未设置</Tag>
+                        : <Tag>—</Tag>,
+                  },
                   { title: "观察空间", dataIndex: "observationProjId" },
                   {
                     title: "状态",

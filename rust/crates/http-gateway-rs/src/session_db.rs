@@ -1214,6 +1214,21 @@ impl GatewaySessionDb {
             .await?;
         Self::run_sql_migration_file(pool, include_str!("../migrations/018_master_observer.sql"))
             .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/019_apprentice_gateway_base.sql"),
+        )
+        .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/020_master_link_obs_gateway_scope.sql"),
+        )
+        .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/021_apprentice_mcp_token.sql"),
+        )
+        .await?;
         Self::migrate_cluster_id_phase3(pool).await?;
 
         Ok(())
