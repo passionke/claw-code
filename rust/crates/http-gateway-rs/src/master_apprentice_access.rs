@@ -166,7 +166,12 @@ async fn peer_get_json(base: &str, token: &str, path: &str) -> Result<Value, Str
     serde_json::from_str(&body).map_err(|e| format!("peer GET json: {e}; body={body}"))
 }
 
-async fn peer_post_json(base: &str, token: &str, path: &str, body: &Value) -> Result<Value, String> {
+async fn peer_post_json(
+    base: &str,
+    token: &str,
+    path: &str,
+    body: &Value,
+) -> Result<Value, String> {
     let url = format!("{}{path}", base.trim_end_matches('/'));
     let resp = peer_client()
         .await?
@@ -249,10 +254,7 @@ pub async fn load_observation_stable(
         .await?;
         return serde_json::from_value(v).map_err(|e| format!("peer obs stable decode: {e}"));
     }
-    let role = db
-        .get_project_role(oid)
-        .await
-        .map_err(|e| e.to_string())?;
+    let role = db.get_project_role(oid).await.map_err(|e| e.to_string())?;
     let row = project_config_draft::row_for_materialize(db, oid)
         .await
         .map_err(|e| e.to_string())?
@@ -434,10 +436,7 @@ pub async fn load_apprentice_stable(
         .await?;
         return serde_json::from_value(v).map_err(|e| format!("peer stable-config decode: {e}"));
     }
-    let role = db
-        .get_project_role(aid)
-        .await
-        .map_err(|e| e.to_string())?;
+    let role = db.get_project_role(aid).await.map_err(|e| e.to_string())?;
     let row = project_config_draft::row_for_materialize(db, aid)
         .await
         .map_err(|e| e.to_string())?
@@ -465,11 +464,10 @@ pub async fn assert_apprentice_pairable(
     };
     // Normalize stored form before routing. Author: kejiqing
     link.apprentice_gateway_base = parse_apprentice_gateway_base(gateway_base)?;
-    if link_peer_base(&link, self_gateway_base).is_some() && link.apprentice_mcp_token.trim().is_empty()
+    if link_peer_base(&link, self_gateway_base).is_some()
+        && link.apprentice_mcp_token.trim().is_empty()
     {
-        return Err(
-            "mcpToken is required when gatewayBase points to another gateway".into(),
-        );
+        return Err("mcpToken is required when gatewayBase points to another gateway".into());
     }
     let dto = load_apprentice_stable(db, self_gateway_base, &link).await?;
     if dto.project_role == PROJECT_ROLE_MASTER || dto.project_role == PROJECT_ROLE_OBSERVATION {

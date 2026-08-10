@@ -992,8 +992,7 @@ pub async fn promote_observation_to_apprentice_draft(
         mcp_servers_json: Some(obs.mcp_servers_json.clone()),
         allowed_tools_json: Some(obs.allowed_tools_json.clone()),
     };
-    crate::master_apprentice_access::put_apprentice_draft(db, self_gateway_base, link, &patch)
-        .await
+    crate::master_apprentice_access::put_apprentice_draft(db, self_gateway_base, link, &patch).await
 }
 
 #[cfg(test)]

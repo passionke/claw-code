@@ -374,13 +374,7 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
             let link = db
                 .assert_master_owns_apprentice(master_proj_id, aid)
                 .await?;
-            master_apprentice_access::list_apprentice_turns(
-                db,
-                self_gateway_base,
-                &link,
-                sid,
-            )
-            .await
+            master_apprentice_access::list_apprentice_turns(db, self_gateway_base, &link, sid).await
         }
         "repair_run_open" => {
             let aid = arg_i64(args, "apprenticeProjId")?;
@@ -727,13 +721,8 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                 mcp_servers_json: None,
                 allowed_tools_json: None,
             };
-            master_apprentice_access::put_apprentice_draft(
-                db,
-                self_gateway_base,
-                &link,
-                &patch,
-            )
-            .await?;
+            master_apprentice_access::put_apprentice_draft(db, self_gateway_base, &link, &patch)
+                .await?;
             Ok(json!({"projId": aid, "draftOpen": true}))
         }
         "observation_solve" => {
@@ -747,9 +736,7 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             let extra_session = args.get("extraSession").cloned();
-            if let Some(peer) =
-                master_apprentice_access::link_peer_base(&link, self_gateway_base)
-            {
+            if let Some(peer) = master_apprentice_access::link_peer_base(&link, self_gateway_base) {
                 return master_apprentice_access::solve_observation_on_peer(
                     &peer,
                     &master_apprentice_access::peer_auth_token(&link)?,
