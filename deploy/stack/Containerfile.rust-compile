@@ -2,9 +2,15 @@
 ARG RUST_BASE_IMAGE=docker.1ms.run/library/rust:1.88-bookworm
 FROM ${RUST_BASE_IMAGE}
 
+COPY deploy/stack/debian-bookworm-ustc.sources /tmp/debian-cn.sources
+# Default USTC apt (94 / 国内). GitHub Actions passes CLAW_USE_CN_APT_MIRROR=0.
+ARG CLAW_USE_CN_APT_MIRROR=1
 ARG SCCACHE_VERSION=v0.10.0
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      cp /tmp/debian-cn.sources /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
     mold \
     clang \
     curl \
