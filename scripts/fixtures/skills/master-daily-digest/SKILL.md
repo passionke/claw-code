@@ -2,10 +2,13 @@
 
 对配对学徒做**业务日日报**（默认 `bizdate=昨天`，时区以项目 CLAUDE / 调度为准，常见 Asia/Shanghai），并三写交付：
 1. **对话回复**：完整中文报告写在本轮最终回答
-2. **钉钉文档**：`folderId=gvNG4YZ7JneLjaZOs96YyobaV2LD0oRE`（[clawcode-output](https://alidocs.dingtalk.com/i/nodes/gvNG4YZ7JneLjaZOs96YyobaV2LD0oRE)）
-3. **钉钉群简报**：文档创建后，用加签机器人推送**简报**
+2. **Mind 文档**：写入 `magic-ai-daily-report`（[文件夹](https://mind.maxiot-inc.com/folders/5387be57-21dc-48ad-91d1-f18f3d059174)）下对应产品子目录
+   - IPOS → `IPOS/`（`parentId=179fe2f8-c0cf-494a-b082-a303aad48dce`）
+   - GPOS → `GPOS/`（`parentId=dd5fd1dc-c346-4675-9e14-b6b5ca17c1e6`）
+   - `docSpaceId=cd4984ca-26c4-4e1f-9f41-c443c88d9ad2`
+3. **钉钉群简报**：文档创建后，用加签机器人推送**简报**（群通知仍走钉钉机器人，完整报告不再写钉钉文档）
 
-结构对齐历史深度报告（例：[0731](https://alidocs.dingtalk.com/i/nodes/YMyQA2dXW792l14zsZRrOnzpJzlwrZgb)）。
+结构对齐历史深度报告（例：Mind 内 `IPOS 日报简报` / `GPOS 日报简报`）。
 
 ## 硬规则
 - 读学徒：**必须先**跑 `fetch_digest_inputs.py` + `aggregate_apprentice_day.py`，以产出的 **`stats.md`（及 day/prev/lookback json）为准**；无网才退回 master MCP，且 MCP 取 store 时必须 turns 上的 `extraSession`。
@@ -14,10 +17,15 @@
 - **需求满足率**与 store_id 无关；耗时用 `finishedAtMs-createdAtMs`。
 - **报告章节不得省略**（见「强制大纲」）；可写「本日无」但不可整节删除。
 - 客观量级（会话/轮次/store/耗时）**只允许来自 stats.md**；语言/意图/满足率/样例来自对 `day.json` turns 的研判，须与 stats 会话数对得上（样例须能在 day.json 找到）。
-- 完整报告只写 `dingtalk-docs`；群里只发简报。凭据只读 env `Webhook` / `security`。
+- 完整报告只写 **Mind MCP** `import_document`；群里只发简报。凭据只读 env `Webhook` / `security`。
+- **文档标题**按产品命名，禁止「学徒 / Master Observer」等字样：
+  - IPOS：`IPOS 日报简报 YYYYMMDD`
+  - GPOS：`GPOS 日报简报 YYYYMMDD`
+  - 汇总：`IPOS 整体汇总 YYYYMMDD-YYYYMMDD` / `GPOS 整体汇总 YYYYMMDD-YYYYMMDD`
+- GPOS：空间 10 无业务数据（曾临时用于全时段分析）；标题与对外表述不要写「学徒 10」。
 - 不改学徒配置、不开 repair_run（除非用户同时要求）。0 会话也要报告+文档+简报。
 
-## 强制大纲（钉钉正文 + 对话全文）
+## 强制大纲（Mind 正文 + 对话全文）
 1. 元信息：D / P / lookback / 时区 / 数据来源（须写明用了 stats.md）
 2. **昨日 vs 前日对照表**（数字抄 stats.md）
 3. **门店复访**（抄 stats.md，含名单；可截断但须有复访率）
@@ -43,8 +51,8 @@
      --out /tmp/digest_N/stats.md
    ```
 3. 读 `stats.md` + 抽样读 `day.json` turns：满足率 v2、语言分布、意图、样例表。
-4. 按**强制大纲**写全文 → `dingtalk-docs.create_document` → `docUrl`。
-5. `send_dingtalk_brief.py`（数字来自 stats.md）。
-6. 最终回答 = 全文 + docUrl + 简报结果。
+4. 按**强制大纲**写全文 → Mind MCP 服务器 `mind` 的 `import_document`（`docSpaceId` + 对应产品 `parentId` + 产品标题）→ 得到文档 URL（`https://mind.maxiot-inc.com/docs/{resourceId}`）。
+5. `send_dingtalk_brief.py`（数字来自 stats.md；`--doc-url` 用 Mind 链接）。
+6. 最终回答 = 全文 + Mind URL + 简报结果。
 
 Author: kejiqing

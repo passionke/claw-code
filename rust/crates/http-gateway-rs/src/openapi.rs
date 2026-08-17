@@ -118,6 +118,9 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::put_master_role,
         crate::routes::app::get_master_apprentices,
         crate::routes::app::put_master_apprentices,
+        crate::routes::app::get_delegate_targets,
+        crate::routes::app::put_delegate_targets,
+        crate::routes::app::resolve_delegate_session,
         crate::routes::app::list_master_repair_runs,
         crate::routes::app::get_master_repair_run,
         crate::routes::app::list_master_schedules,
@@ -150,7 +153,8 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         (name = "Gateway Settings", description = "Cluster-wide gateway administration"),
         (name = "MCP", description = "MCP injection, probing, and admin operations"),
         (name = "Pools", description = "Pools, endpoints, and preflight plugins"),
-        (name = "Master", description = "Master observer role, apprentices, schedules, and MCP")
+        (name = "Master", description = "Master observer role, apprentices, schedules, and MCP"),
+        (name = "Router", description = "Router delegate targets and session resolve")
     )
 )]
 struct DerivedApi;

@@ -4,6 +4,7 @@ pub(crate) mod app;
 pub(crate) mod biz_report;
 pub(crate) mod gateway_settings;
 pub(crate) mod health;
+pub(crate) mod delegate;
 pub(crate) mod master;
 pub(crate) mod mcp;
 pub(crate) mod meta;
@@ -42,6 +43,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .merge(gateway_settings::router())
         .merge(admin_mcp::router())
         .merge(master::router())
+        .merge(delegate::router())
         .merge(mcp::router())
         .layer(
             TraceLayer::new_for_http()

@@ -15,6 +15,7 @@ use crate::session_db::{
 pub const PROJECT_ROLE_NORMAL: &str = "normal";
 pub const PROJECT_ROLE_MASTER: &str = "master";
 pub const PROJECT_ROLE_OBSERVATION: &str = "observation";
+pub const PROJECT_ROLE_ROUTER: &str = "router";
 
 pub const MASTER_MCP_SERVER_NAME: &str = "claw-master-observer";
 pub const MASTER_MCP_HTTP_PATH_PREFIX: &str = "/v1/master";
@@ -187,6 +188,151 @@ pub fn master_seed_skills_json() -> Value {
     json!([master_daily_digest_skill(), master_quality_repair_skill()])
 }
 
+const ROUTER_CLAUDE_TEMPLATE: &str = r"# GPOS Router (entry project)
+
+You are the **GPOS router**: classify user intent and delegate to specialist projects via delegate_project.
+You do **not** answer product manual or business analytics yourself.
+
+## Intent routing
+1. **Off-topic / chitchat** → Skill(self-introduction) only; no delegate.
+2. **Product how-to** (POS / Back Office setup) → delegate_project to kb-qa target (see specialist-registry).
+3. **Business analytics / 问数** → delegate_project to ops-analysis target.
+4. **Mixed** (how-to + metrics in one message) → serial delegates: extract sub-questions; default order how-to then analytics.
+
+## Hard rules
+- Delegate **only** necessary targets; never delegate chitchat.
+- Pass extraSession unchanged; do not embed store_id in userPrompt.
+- Do **not** pass sessionId to delegate_project.
+- Read specialist-registry for target projIds (refreshed on activate).
+";
+
+#[must_use]
+pub fn router_seed_skills_json() -> Value {
+    json!([
+        {
+            "skillName": "specialist-registry",
+            "skillContent": include_str!("../../../../scripts/fixtures/skills/specialist-registry.SKILL.md"),
+            "enabled": true
+        },
+        {
+            "skillName": "self-introduction",
+            "skillContent": include_str!("../../../../scripts/fixtures/skills/self-introduction.SKILL.md"),
+            "enabled": true
+        }
+    ])
+}
+
+#[must_use]
+pub fn router_allowed_tools_json() -> Value {
+    json!(["delegate_project", "Skill"])
+}
+
+/// Apply router seed CLAUDE + skills and set role. Author: kejiqing
+pub async fn seed_router_project(db: &GatewaySessionDb, proj_id: i64) -> Result<(), String> {
+    let row = db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("project {proj_id} not found"))?;
+    let now = now_ms_for_registry();
+    let content_rev = project_config_draft::format_formal_content_rev_local_ms(now);
+    let claude = ROUTER_CLAUDE_TEMPLATE.to_string();
+    let skills = router_seed_skills_json();
+    let allowed = router_allowed_tools_json();
+    let empty_sources = json!([]);
+    let empty_mcp = json!({});
+    db.upsert_project_config(ProjectConfigUpsert {
+        proj_id,
+        content_rev: &content_rev,
+        stable_content_rev: Some(content_rev.as_str()),
+        draft_open: false,
+        updated_at_ms: now,
+        rules_json: &row.rules_json,
+        mcp_servers_json: &empty_mcp,
+        skills_sources_json: &empty_sources,
+        skills_json: &skills,
+        allowed_tools_json: &allowed,
+        claude_md: Some(&claude),
+        git_sync_json: &row.git_sync_json,
+        solve_preflight_json: &row.solve_preflight_json,
+        solve_orchestration_json: &row.solve_orchestration_json,
+        language_pipeline_json: &row.language_pipeline_json,
+        extra_session_fields_json: &row.extra_session_fields_json,
+        prompt_limits_json: &row.prompt_limits_json,
+        worker_profile_json: &row.worker_profile_json,
+        worker_env_json: &row.worker_env_json,
+        project_code: &row.project_code,
+        project_description: &row.project_description,
+        max_iterations: row.max_iterations,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let rev = ProjectConfigRevisionRow {
+        proj_id,
+        content_rev: content_rev.clone(),
+        created_at_ms: now,
+        note: Some("router role seed".into()),
+        rules_json: row.rules_json.clone(),
+        mcp_servers_json: empty_mcp,
+        skills_sources_json: empty_sources,
+        skills_json: skills,
+        allowed_tools_json: allowed,
+        claude_md: Some(claude),
+    };
+    let _ = db
+        .insert_project_config_revision_immutable(&rev)
+        .await
+        .map_err(|e| e.to_string())?;
+    db.set_project_role(proj_id, PROJECT_ROLE_ROUTER)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Enable nested delegate on ops specialist (scenario 7). Author: kejiqing
+pub async fn enable_ops_delegate_tool(db: &GatewaySessionDb, proj_id: i64) -> Result<(), String> {
+    let mut row = db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("project {proj_id} not found"))?;
+    let mut allowed: Vec<String> =
+        serde_json::from_value(row.allowed_tools_json.clone()).unwrap_or_default();
+    if !allowed.iter().any(|t| t == "delegate_project") {
+        allowed.push("delegate_project".to_string());
+    }
+    row.allowed_tools_json = json!(allowed);
+    let now = now_ms_for_registry();
+    let content_rev = project_config_draft::format_formal_content_rev_local_ms(now);
+    db.upsert_project_config(ProjectConfigUpsert {
+        proj_id,
+        content_rev: &content_rev,
+        stable_content_rev: row.stable_content_rev.as_deref(),
+        draft_open: row.draft_open,
+        updated_at_ms: now,
+        rules_json: &row.rules_json,
+        mcp_servers_json: &row.mcp_servers_json,
+        skills_sources_json: &row.skills_sources_json,
+        skills_json: &row.skills_json,
+        allowed_tools_json: &row.allowed_tools_json,
+        claude_md: row.claude_md.as_deref(),
+        git_sync_json: &row.git_sync_json,
+        solve_preflight_json: &row.solve_preflight_json,
+        solve_orchestration_json: &row.solve_orchestration_json,
+        language_pipeline_json: &row.language_pipeline_json,
+        extra_session_fields_json: &row.extra_session_fields_json,
+        prompt_limits_json: &row.prompt_limits_json,
+        worker_profile_json: &row.worker_profile_json,
+        worker_env_json: &row.worker_env_json,
+        project_code: &row.project_code,
+        project_description: &row.project_description,
+        max_iterations: row.max_iterations,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Shared bearer for master MCP (worker → gateway). Author: kejiqing
 #[must_use]
 pub fn master_mcp_shared_token() -> Option<String> {
@@ -231,9 +377,12 @@ pub fn merge_master_mcp_into_settings(
 
 pub fn validate_project_role(role: &str) -> Result<&str, String> {
     match role.trim() {
-        PROJECT_ROLE_NORMAL | PROJECT_ROLE_MASTER | PROJECT_ROLE_OBSERVATION => Ok(role.trim()),
+        PROJECT_ROLE_NORMAL
+        | PROJECT_ROLE_MASTER
+        | PROJECT_ROLE_OBSERVATION
+        | PROJECT_ROLE_ROUTER => Ok(role.trim()),
         other => Err(format!(
-            "invalid project_role={other:?}; expected normal|master|observation"
+            "invalid project_role={other:?}; expected normal|master|observation|router"
         )),
     }
 }
@@ -1007,6 +1156,7 @@ mod tests {
         assert_eq!(validate_project_role("normal").unwrap(), "normal");
         assert_eq!(validate_project_role(" master ").unwrap(), "master");
         assert_eq!(validate_project_role("observation").unwrap(), "observation");
+        assert_eq!(validate_project_role("router").unwrap(), "router");
         assert!(validate_project_role("boss").is_err());
         assert!(validate_project_role("").is_err());
     }

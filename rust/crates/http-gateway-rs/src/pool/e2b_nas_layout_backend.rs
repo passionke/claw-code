@@ -206,6 +206,9 @@ impl NasLayoutBackend {
                 .await?;
             return Ok(());
         };
+        let row = crate::delegate_router::prepare_router_materialize_row(session_db, proj_id, row)
+            .await
+            .map_err(|e| format!("prepare router materialize row: {e}"))?;
         let scaffold = crate::gateway_global_settings::load_system_prompt_default(session_db)
             .await
             .map_err(|e| format!("load system prompt scaffold: {e}"))?;

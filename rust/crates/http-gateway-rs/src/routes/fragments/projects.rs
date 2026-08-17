@@ -262,6 +262,9 @@ pub(crate) async fn apply_project_config_for_proj_inner(
     let Some(row) = row else {
         return Ok(());
     };
+    let row = crate::delegate_router::prepare_router_materialize_row(&state.session_db, proj_id, row)
+        .await
+        .map_err(|e| session_db_err(&e))?;
     let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     fs::create_dir_all(work_dir.join(".claw"))
         .await
