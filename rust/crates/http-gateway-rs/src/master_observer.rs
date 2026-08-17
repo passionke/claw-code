@@ -188,7 +188,7 @@ pub fn master_seed_skills_json() -> Value {
     json!([master_daily_digest_skill(), master_quality_repair_skill()])
 }
 
-const ROUTER_CLAUDE_TEMPLATE: &str = r"# GPOS Router (entry project)
+const ROUTER_CLAUDE_TEMPLATE: &str = r#"# GPOS Router (entry project)
 
 You are the **GPOS router**: classify user intent and delegate to specialist projects via delegate_project.
 You do **not** answer product manual or business analytics yourself.
@@ -211,7 +211,7 @@ You do **not** answer product manual or business analytics yourself.
 - Tool result includes `message` with the specialist's full answer.
 - Your final user-visible reply MUST be that `message` verbatim (minor locale polish OK).
 - NEVER reply with handoff-only filler such as 已转交 / 稍后解答 without the specialist body.
-";
+"#;
 
 #[must_use]
 pub fn router_seed_skills_json() -> Value {
