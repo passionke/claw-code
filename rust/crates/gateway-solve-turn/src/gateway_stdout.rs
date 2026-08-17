@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Serialize;
 use serde_json::Value;
 
-/// After `delegate_project` has already streamed the specialist body, further LLM
-/// token `report.delta` would duplicate Admin live text. One process = one turn.
+/// After `delegate_project` succeeds, the router model's own tokens must not
+/// enter live (third copy). Specialist passthrough still uses the other door.
+/// One process = one turn. Author: kejiqing
 static SUPPRESS_FURTHER_LIVE_DELTAS: AtomicBool = AtomicBool::new(false);
 
-/// Stop forwarding later `report.delta` (router restatement) into the live hub.
+/// Close the router-model live door. Specialist `emit_report_delta_passthrough` stays open.
 pub fn suppress_further_live_deltas() {
     SUPPRESS_FURTHER_LIVE_DELTAS.store(true, Ordering::SeqCst);
 }

@@ -30,13 +30,20 @@ pub fn live_report_sse_response(
         for chunk in snapshot_chunks {
             let _ = tx.send(BizReportStreamMsg::Delta(chunk));
         }
-        loop {
-            match sub.recv().await {
-                Ok(HubMsg::Delta(chunk)) => {
-                    let _ = tx.send(BizReportStreamMsg::Delta(chunk));
+        // Late subscribe after solve.done (or Lagged past the sentinel) must still emit Done.
+        if !hub.is_solve_done(&turn_id_worker) {
+            loop {
+                match sub.recv().await {
+                    Ok(HubMsg::Delta(chunk)) => {
+                        let _ = tx.send(BizReportStreamMsg::Delta(chunk));
+                    }
+                    Ok(HubMsg::SolveDone) | Err(RecvError::Closed) => break,
+                    Err(RecvError::Lagged(_)) => {
+                        if hub.is_solve_done(&turn_id_worker) {
+                            break;
+                        }
+                    }
                 }
-                Ok(HubMsg::SolveDone) | Err(RecvError::Closed) => break,
-                Err(RecvError::Lagged(_)) => {}
             }
         }
         let final_text = sanitize_external_report_text(&hub.snapshot_text(&turn_id_worker));
