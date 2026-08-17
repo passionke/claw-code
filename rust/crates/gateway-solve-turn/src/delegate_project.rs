@@ -100,6 +100,8 @@ fn initiator_proj_id() -> Result<i64, ToolError> {
 fn http_client() -> Result<Client, ToolError> {
     Client::builder()
         .timeout(Duration::from_secs(3600))
+        // Reverse-tunnel keep-alives go stale; reuse then fails with "error sending request".
+        .pool_max_idle_per_host(0)
         .build()
         .map_err(|e| ToolError::new(format!("http client: {e}")))
 }
@@ -206,7 +208,23 @@ fn fetch_terminal_report(
     let url = format!(
         "{base}/v1/biz_advice_report?sessionId={session_id}&turnId={turn_id}&projId={proj_id}&stream=false"
     );
-    let v = get_json(client, &url)?;
+    let v = {
+        let mut last = None;
+        let mut body = None;
+        for _ in 0..8 {
+            match get_json(client, &url) {
+                Ok(v) => {
+                    body = Some(v);
+                    break;
+                }
+                Err(e) => {
+                    last = Some(e);
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        }
+        body.ok_or_else(|| last.unwrap_or_else(|| ToolError::new("fetch terminal report failed")))?
+    };
     report_text_from_biz_payload(&v)
         .ok_or_else(|| ToolError::new("delegate specialist returned empty report"))
 }
@@ -330,6 +348,7 @@ fn passthrough_live_sse(
     rt.block_on(async {
         let async_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(0)
             .build()
             .map_err(|e| ToolError::new(format!("live sse client: {e}")))?;
         tokio::select! {
@@ -351,7 +370,13 @@ fn passthrough_live_sse(
 fn poll_task_terminal(client: &Client, base: &str, task_id: &str) -> Result<String, ToolError> {
     let url = format!("{base}/v1/tasks/{task_id}");
     for _ in 0..7200 {
-        let v = get_json(client, &url)?;
+        let v = match get_json(client, &url) {
+            Ok(v) => v,
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+        };
         let parsed: TaskGetResponse =
             serde_json::from_value(v).map_err(|e| ToolError::new(format!("task: {e}")))?;
         match parsed.status.as_str() {
