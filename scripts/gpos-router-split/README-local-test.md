@@ -49,6 +49,25 @@ export CLAW_ADMIN_TOKEN=...   # 本机 Admin MCP token
 3. `PUT .../delegate-targets`
 4. activate router（物化 registry 附录）
 
+## 2b. kb-qa 项目配置 + 手册 KB（99011）
+
+`apply_local.sh` **不会**给 99011 配 skill/KB。验收手册类问题前须执行：
+
+```bash
+export GW=http://127.0.0.1:18088   # 或 10.22.32.113:18088
+export CLAW_ADMIN_TOKEN=...
+
+./scripts/gpos-router-split/apply_kb_local.sh
+```
+
+脚本会：
+
+1. 从预发 NAS 快照拉双语手册（`en` 141 + `th` 140 页，只读 rsync，不改 271 配置）
+2. 合并 Git 内部文档 + **Mind FAQ**（[产品部 / Faq 文件夹](https://mind.maxiot-inc.com/folders/71bdd401-5be8-4005-996d-53b0f4287c40)）到 `en/internal/mind/faq/`
+3. Admin draft → commit → activate（`product-manual-qa` + kb 专用 CLAUDE + 限制 tools）
+4. rsync KB 到 94 e2b NAS `proj_99011/home/kb`
+5. reset 99011 worker
+
 ## 3. 冒烟 / 验收场景
 
 ```bash

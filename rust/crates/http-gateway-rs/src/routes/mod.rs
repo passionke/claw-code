@@ -2,9 +2,9 @@
 pub(crate) mod admin_mcp;
 pub(crate) mod app;
 pub(crate) mod biz_report;
+pub(crate) mod delegate;
 pub(crate) mod gateway_settings;
 pub(crate) mod health;
-pub(crate) mod delegate;
 pub(crate) mod master;
 pub(crate) mod mcp;
 pub(crate) mod meta;

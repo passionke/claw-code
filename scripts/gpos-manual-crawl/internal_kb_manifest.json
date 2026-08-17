@@ -1,0 +1,21 @@
+{
+  "git_docs": [
+    {
+      "path": "docs/gpos-user-manual-kb-usage.md",
+      "title": "GPOS Product Manual KB Usage",
+      "source_url": "git:docs/gpos-user-manual-kb-usage.md"
+    },
+    {
+      "path": "docs/gpos-assistant-prompt-content.md",
+      "title": "GPOS Assistant Prompt Reference (product-manual sections)",
+      "source_url": "git:docs/gpos-assistant-prompt-content.md"
+    }
+  ],
+  "mind_docs": [
+    {
+      "title": "GPOS FAQ (Mind folder)",
+      "mind_url": "https://mind.maxiot-inc.com/folders/71bdd401-5be8-4005-996d-53b0f4287c40",
+      "note": "40 docs via scripts/gpos-manual-crawl/mind_faq_manifest.json + export_mind_faq_to_kb.py"
+    }
+  ]
+}

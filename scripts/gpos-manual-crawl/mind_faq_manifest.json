@@ -1,0 +1,207 @@
+{
+  "folder_id": "71bdd401-5be8-4005-996d-53b0f4287c40",
+  "folder_url": "https://mind.maxiot-inc.com/folders/71bdd401-5be8-4005-996d-53b0f4287c40",
+  "doc_space_id": "6f790d29-77b6-48fc-a205-4f3f0d0b7043",
+  "docs": [
+    {
+      "id": "6a8291a1-204c-4c43-91b0-4a4ddd5fcd5c",
+      "title": "报表场景能力",
+      "category": "报表"
+    },
+    {
+      "id": "409fca4b-215b-458c-a3b3-cb4f6a44e775",
+      "title": "如何升级为Gpos Pro",
+      "category": "其他"
+    },
+    {
+      "id": "09ce6bd9-63d5-4bb3-90e6-d541801e7d3f",
+      "title": "如何登录后台管理系统",
+      "category": "其他"
+    },
+    {
+      "id": "bd62f88c-f49d-45ca-9122-55aec631a2e7",
+      "title": "如何清除测试数据",
+      "category": "其他"
+    },
+    {
+      "id": "9fb6c488-9b14-4e96-847e-c597986c66c8",
+      "title": "如何切换系统语言",
+      "category": "其他"
+    },
+    {
+      "id": "8dbeae94-9877-4f8e-a39e-c80240c264d7",
+      "title": "如何添加员工",
+      "category": "员工管理"
+    },
+    {
+      "id": "8f7aa311-ccba-4c30-a34c-15c44deaaef8",
+      "title": "如何设置员工权限",
+      "category": "员工管理"
+    },
+    {
+      "id": "edc7378f-e18c-4741-b135-9b5e27a5e38c",
+      "title": "如何修改账号密码（通过手机/邮箱）",
+      "category": "员工管理"
+    },
+    {
+      "id": "1ff2b62c-357d-4af4-97c0-5c77177155c5",
+      "title": "如何更改员工姓名",
+      "category": "员工管理"
+    },
+    {
+      "id": "7e04a81b-f6a2-4016-a0cb-fdc7e241f221",
+      "title": "如何自行创建折扣？",
+      "category": "会员营销"
+    },
+    {
+      "id": "46956ebe-616a-4f3c-bebf-d32f7be41f81",
+      "title": "如何设置扫码点餐？",
+      "category": "扫码点餐"
+    },
+    {
+      "id": "6e595031-7a63-4a84-8778-b4f6d735559f",
+      "title": "Grab里菜品图片不显示，怎么解决？",
+      "category": "接单网关"
+    },
+    {
+      "id": "fb83bd0d-ce8b-4b44-876f-6c62d8d94798",
+      "title": "可以创建仅在Grab上销售的商品吗？",
+      "category": "接单网关"
+    },
+    {
+      "id": "790b6562-aff4-447b-a01c-d105a77a3b80",
+      "title": "如何将菜单同步到 Grab",
+      "category": "接单网关"
+    },
+    {
+      "id": "168d0e57-10df-4749-8f59-8b0933d1d6ba",
+      "title": "如何删除 Grab 菜单",
+      "category": "接单网关"
+    },
+    {
+      "id": "9017ce29-a70d-40a7-a7ac-15423f5d685f",
+      "title": "如何在Grab上添加菜品",
+      "category": "接单网关"
+    },
+    {
+      "id": "11c3346f-0937-4c09-8a8b-31453a1bd1d7",
+      "title": "如何修改桌台布局？",
+      "category": "收银台"
+    },
+    {
+      "id": "1e644ada-ddba-459e-8257-f992189830db",
+      "title": "如何打印汇总收据",
+      "category": "打印"
+    },
+    {
+      "id": "c8a98f23-9250-485c-93da-329d0fc5ea83",
+      "title": "如何设置不打印收据？",
+      "category": "打印"
+    },
+    {
+      "id": "51cd9bc1-954d-48fa-86c0-87226f04aead",
+      "title": "如何添加另一台打印机",
+      "category": "打印"
+    },
+    {
+      "id": "e96131fa-66c0-4819-8b1f-42cb85419901",
+      "title": "如何将商品添加到厨房打印",
+      "category": "打印"
+    },
+    {
+      "id": "0207574a-44ed-44b6-a372-aeb7d6e2174f",
+      "title": "如何添加库存",
+      "category": "库存"
+    },
+    {
+      "id": "c22cdb33-3708-4f49-8c23-26d066a7921b",
+      "title": "如何添加商品",
+      "category": "商品"
+    },
+    {
+      "id": "0fe9ec4b-6bfa-4c52-a16d-478e45851efa",
+      "title": "如何设置商品规格",
+      "category": "商品"
+    },
+    {
+      "id": "d9be0a57-6c1b-4abe-8cca-c493b8e15a28",
+      "title": "如何创建套餐商品",
+      "category": "商品"
+    },
+    {
+      "id": "916fc1f9-14ba-48ba-ab4a-bbf6b2598e03",
+      "title": "如何删除/批量删除商品",
+      "category": "商品"
+    },
+    {
+      "id": "d4afb099-0db2-4d5b-b484-bb22a86bb883",
+      "title": "如何设置菜品做法/加料",
+      "category": "商品"
+    },
+    {
+      "id": "2ec8a429-639e-4657-90cb-d9092e2591d2",
+      "title": "如何修改商品名称",
+      "category": "商品"
+    },
+    {
+      "id": "b2aa145a-3fb6-4960-a51c-3e2b0e2fd2fa",
+      "title": "如何更改商品价格",
+      "category": "商品"
+    },
+    {
+      "id": "c5555606-aa26-440c-8c92-c53073a8d865",
+      "title": "如何设置商品成本价",
+      "category": "商品"
+    },
+    {
+      "id": "36e43eb3-83ce-407e-a956-7553793f1f8e",
+      "title": "如何批量设置菜品图片",
+      "category": "商品"
+    },
+    {
+      "id": "4edd9fd0-ecd6-423b-8a1f-dea036afe36c",
+      "title": "如何导入/导出商品",
+      "category": "商品"
+    },
+    {
+      "id": "2bd8289d-2c80-4290-b8bc-b84e38c21a23",
+      "title": "如何设置商品排序",
+      "category": "商品"
+    },
+    {
+      "id": "6bf658e4-54ca-4510-9269-7515a5a687b9",
+      "title": "如何创建菜单",
+      "category": "商品"
+    },
+    {
+      "id": "03b7c99d-6e6b-4b22-af5d-1018a9eef6bd",
+      "title": "如何修改菜品扫码点餐隐藏设置",
+      "category": "商品"
+    },
+    {
+      "id": "59c2718c-c238-4641-af7b-54d46d311b8a",
+      "title": "Grab里菜品图片不显示，怎么解决？",
+      "category": "接单网关"
+    },
+    {
+      "id": "a8348350-a19c-4a28-906a-02dc66655f48",
+      "title": "可以创建仅在Grab上销售的商品吗？",
+      "category": "接单网关"
+    },
+    {
+      "id": "83328845-0983-4388-aeea-b66c94bca0da",
+      "title": "如何将菜单同步到 Grab",
+      "category": "接单网关"
+    },
+    {
+      "id": "38ade2a3-a0e4-4eec-a3f2-9c3f1a36a437",
+      "title": "如何删除 Grab 菜单",
+      "category": "接单网关"
+    },
+    {
+      "id": "89fb5612-4982-4554-b1c1-d002320a1f2d",
+      "title": "如何在Grab上添加菜品",
+      "category": "接单网关"
+    }
+  ]
+}

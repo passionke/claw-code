@@ -10,7 +10,7 @@ use runtime::ToolError;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::gateway_stdout::emit_report_delta;
+use crate::gateway_stdout::{emit_report_delta_passthrough, suppress_further_live_deltas};
 use crate::mcp_call_context::GatewayMcpCallContext;
 
 pub const DELEGATE_PROJECT_TOOL_NAME: &str = "delegate_project";
@@ -180,13 +180,51 @@ fn extract_delta_text(data: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Live hub appends every delta. `biz.report.done` is a full snapshot — emit it
+/// only when no incremental deltas were seen.
+#[must_use]
+fn should_emit_done_snapshot(already_emitted_delta: bool) -> bool {
+    !already_emitted_delta
+}
+
+fn report_text_from_biz_payload(v: &Value) -> Option<String> {
+    v.get("reportText")
+        .and_then(|t| t.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            v.get("reportJson")
+                .and_then(|j| j.get("message"))
+                .and_then(|m| m.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn fetch_terminal_report(
+    client: &Client,
+    base: &str,
+    session_id: &str,
+    turn_id: &str,
+    proj_id: i64,
+) -> Result<String, ToolError> {
+    let url = format!(
+        "{base}/v1/biz_advice_report?sessionId={session_id}&turnId={turn_id}&projId={proj_id}&stream=false"
+    );
+    let v = get_json(client, &url)?;
+    report_text_from_biz_payload(&v)
+        .ok_or_else(|| ToolError::new("delegate specialist returned empty report"))
+}
+
 fn passthrough_live_sse(
     _client: &Client,
     base: &str,
     session_id: &str,
     turn_id: &str,
     proj_id: i64,
-) -> Result<(), ToolError> {
+) -> Result<bool, ToolError> {
     let url = format!(
         "{base}/v1/biz_advice_report?sessionId={session_id}&turnId={turn_id}&projId={proj_id}&stream=true"
     );
@@ -206,6 +244,7 @@ fn passthrough_live_sse(
         let mut stream = resp.bytes_stream();
         let mut buf = String::new();
         let mut event_name = String::new();
+        let mut emitted = false;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| ToolError::new(format!("sse chunk: {e}")))?;
             buf.push_str(&String::from_utf8_lossy(&chunk));
@@ -224,16 +263,30 @@ fn passthrough_live_sse(
                 if event_name == "biz.report.delta" {
                     let data = data_lines.join("\n");
                     if let Some(text) = extract_delta_text(&data) {
-                        emit_report_delta(&text)
+                        emit_report_delta_passthrough(&text)
                             .map_err(|e| ToolError::new(format!("emit delta: {e}")))?;
+                        emitted = true;
                     }
                 }
-                if event_name == "biz.report.done" || event_name == "biz.report.error" {
-                    return Ok(());
+                if event_name == "biz.report.done" {
+                    if should_emit_done_snapshot(emitted) {
+                        let data = data_lines.join("\n");
+                        if let Ok(v) = serde_json::from_str::<Value>(&data) {
+                            if let Some(text) = report_text_from_biz_payload(&v) {
+                                emit_report_delta_passthrough(&text)
+                                    .map_err(|e| ToolError::new(format!("emit delta: {e}")))?;
+                                emitted = true;
+                            }
+                        }
+                    }
+                    return Ok(emitted);
+                }
+                if event_name == "biz.report.error" {
+                    return Err(ToolError::new("specialist live report error"));
                 }
             }
         }
-        Ok(())
+        Ok(emitted)
     })
 }
 
@@ -292,8 +345,9 @@ pub fn run_delegate_project(
         parsed.extra_session.as_ref(),
     )?;
 
+    let mut passthrough_emitted = false;
     if async_resp.status == "running" || async_resp.status == "queued" {
-        passthrough_live_sse(
+        passthrough_emitted = passthrough_live_sse(
             &client,
             &base,
             &async_resp.task_id,
@@ -302,11 +356,27 @@ pub fn run_delegate_project(
         )?;
     }
     let terminal = poll_task_terminal(&client, &base, &async_resp.task_id)?;
+    let report = fetch_terminal_report(
+        &client,
+        &base,
+        &resolved.delegate_session_id,
+        &async_resp.turn_id,
+        parsed.proj_id,
+    )?;
+    if !passthrough_emitted {
+        emit_report_delta_passthrough(&report)
+            .map_err(|e| ToolError::new(format!("emit delegate report: {e}")))?;
+    }
+    // Live already has the specialist body. Router restatement must not stream again.
+    suppress_further_live_deltas();
 
     serde_json::to_string_pretty(&json!({
         "status": terminal,
         "projId": parsed.proj_id,
         "delegateSessionCreated": resolved.created,
+        "delegateSessionId": resolved.delegate_session_id,
+        "delegateTurnId": async_resp.turn_id,
+        "message": report,
     }))
     .map_err(|e| ToolError::new(e.to_string()))
 }
@@ -314,10 +384,29 @@ pub fn run_delegate_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn extract_delta_text_parses_json() {
         let t = extract_delta_text(r#"{"text":"hello"}"#).unwrap();
         assert_eq!(t, "hello");
+    }
+
+    #[test]
+    fn report_text_from_biz_payload_prefers_report_text() {
+        let v = json!({
+            "reportText": "steps here",
+            "reportJson": {"message": "ignored"}
+        });
+        assert_eq!(
+            report_text_from_biz_payload(&v).as_deref(),
+            Some("steps here")
+        );
+    }
+
+    #[test]
+    fn done_snapshot_not_emitted_after_incremental_deltas() {
+        assert!(!should_emit_done_snapshot(true));
+        assert!(should_emit_done_snapshot(false));
     }
 }

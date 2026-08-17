@@ -21,10 +21,77 @@ OPS_PROJ = int(os.environ.get("OPS_PROJ", "99012"))
 MCP_URL = os.environ.get("CLAW_ADMIN_MCP_URL", f"{GW}/v1/admin/mcp")
 OUT = Path(os.environ.get("ROUTER_ACCEPTANCE_OUT", "knowledge/router-test-local/eval"))
 EXTRA = {
-    "store_id": "S002501221841976200006188",
-    "org_id": "",
+    "store_id": "S20240930134500007303",
+    "org_id": "O20240930134500007302",
     "tenant_code": "GPOS",
 }
+
+HANDOFF_ONLY_MARKERS = ("已转交", "稍后为您", "转交给", "稍后再试")
+OPS_DATA_MARKERS = (
+    "销售额",
+    "订单",
+    "泰铢",
+    "THB",
+    "ยอดขาย",
+    "ออเดอร์",
+    "sales",
+    "order",
+    "经营数据",
+    "无经营数据",
+)
+MANUAL_URL_MARKERS = ("gpos.co.th/user-manual", "gpos.co.th/th/user-manual", "gpos.co.th/en/user-manual")
+
+
+def is_handoff_only(text: str) -> bool:
+    t = (text or "").strip()
+    if len(t) < 80:
+        return any(m in t for m in HANDOFF_ONLY_MARKERS)
+    return False
+
+
+def delegate_tool_message(tools: list) -> str:
+    for t in tools:
+        if not isinstance(t, dict) or t.get("toolName") != "delegate_project":
+            continue
+        raw = t.get("output") or ""
+        try:
+            out = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            continue
+        if isinstance(out, dict):
+            return (out.get("message") or "").strip()
+    return ""
+
+
+def delegate_target_proj(tools: list) -> int | None:
+    found: int | None = None
+    for t in tools:
+        if not isinstance(t, dict) or t.get("toolName") != "delegate_project":
+            continue
+        if t.get("isError"):
+            continue
+        raw = t.get("input") or t.get("arguments") or ""
+        try:
+            inp = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            continue
+        if isinstance(inp, dict):
+            pid = inp.get("projId")
+            if isinstance(pid, int):
+                found = pid
+            elif isinstance(pid, str) and pid.isdigit():
+                found = int(pid)
+    return found
+
+
+def looks_like_ops_answer(text: str) -> bool:
+    t = (text or "").lower()
+    return any(m.lower() in t for m in OPS_DATA_MARKERS)
+
+
+def has_manual_url(text: str) -> bool:
+    t = (text or "").lower()
+    return any(m in t for m in MANUAL_URL_MARKERS)
 
 
 def http(method: str, path: str, body: dict | None = None) -> dict:
@@ -170,19 +237,48 @@ def scenario_solve(prompt: str, session_id: str | None = None) -> dict:
         and not t.get("isError")
         for t in tools
     )
+    delegate_msg = delegate_tool_message(tools)
+    content_ok = bool(delegate_msg) and not is_handoff_only(delegate_msg)
+    user_visible_ok = bool(msg) and not is_handoff_only(msg)
     return {
         "check": "solve",
-        "pass": http_ok and delegate_ok,
+        "pass": http_ok and delegate_ok and content_ok and user_visible_ok,
         "sessionId": sid,
         "turnId": turn_id,
         "status": solve.get("status"),
         "clawExitCode": solve.get("clawExitCode"),
         "delegateProjectCalled": delegate_ok,
+        "delegateTargetProjId": delegate_target_proj(tools),
+        "delegateMessageLen": len(delegate_msg),
+        "userReportHandoffOnly": is_handoff_only(msg),
         "toolNames": [t.get("toolName") for t in tools if isinstance(t, dict)],
         "messagePreview": msg,
         "elapsedSec": round(time.time() - t0, 1),
         "userPrompt": prompt,
     }
+
+
+def scenario_solve_ops(prompt: str = "昨天的销售额和订单量是多少？") -> dict:
+    r = scenario_solve(prompt)
+    delegate_msg = ""
+    if r.get("sessionId") and r.get("turnId"):
+        try:
+            tools = http(
+                "GET",
+                f"/v1/sessions/{r['sessionId']}/turns/{r['turnId']}/tools?proj_id={ROUTER_PROJ}",
+            ).get("tools") or []
+            delegate_msg = delegate_tool_message(tools)
+        except urllib.error.HTTPError:
+            pass
+    body = delegate_msg or r.get("messagePreview") or ""
+    target_ok = r.get("delegateTargetProjId") == OPS_PROJ
+    ops_shape_ok = looks_like_ops_answer(body) and not has_manual_url(body)
+    r["check"] = "solve_ops"
+    r["pass"] = bool(r.get("pass")) and target_ok and ops_shape_ok
+    r["delegateTargetOk"] = target_ok
+    r["opsAnswerShapeOk"] = ops_shape_ok
+    r["hasManualUrl"] = has_manual_url(body)
+    return r
 
 
 def main() -> int:
@@ -191,7 +287,7 @@ def main() -> int:
         return 2
     ap = argparse.ArgumentParser()
     ap.add_argument("--check-config", action="store_true")
-    ap.add_argument("--scenario", choices=["session", "negative", "1", "4"])
+    ap.add_argument("--scenario", choices=["session", "negative", "1", "2", "4"])
     args = ap.parse_args()
 
     OUT.mkdir(parents=True, exist_ok=True)
@@ -213,6 +309,8 @@ def main() -> int:
             sid = r.get("sessionId") or sid
             r["round"] = i + 1
             rows.append(r)
+    elif args.scenario == "2":
+        rows.append(scenario_solve_ops())
     elif args.scenario == "4":
         rows.append(
             scenario_solve("怎么在后台添加商品还有昨天销售额多少？")

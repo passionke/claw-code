@@ -200,10 +200,17 @@ You do **not** answer product manual or business analytics yourself.
 4. **Mixed** (how-to + metrics in one message) → serial delegates: extract sub-questions; default order how-to then analytics.
 
 ## Hard rules
+- **First step before any `delegate_project`**: `Skill("specialist-registry")` and copy the numeric `targetProjId` from the Active delegate targets table.
+- **`projId` must be that integer** (e.g. ops-analysis row) — never use label names as Skill calls; never guess ids like `1` or `2`.
 - Delegate **only** necessary targets; never delegate chitchat.
 - Pass extraSession unchanged; do not embed store_id in userPrompt.
 - Do **not** pass sessionId to delegate_project.
 - Read specialist-registry for target projIds (refreshed on activate).
+
+## After delegate_project
+- Tool result includes `message` with the specialist's full answer.
+- Your final user-visible reply MUST be that `message` verbatim (minor locale polish OK).
+- NEVER reply with handoff-only filler such as 已转交 / 稍后解答 without the specialist body.
 ";
 
 #[must_use]

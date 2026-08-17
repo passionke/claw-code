@@ -4,9 +4,7 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use crate::app_state::AppState;
-use crate::routes::app::{
-    get_delegate_targets, put_delegate_targets, resolve_delegate_session,
-};
+use crate::routes::app::{get_delegate_targets, put_delegate_targets, resolve_delegate_session};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()

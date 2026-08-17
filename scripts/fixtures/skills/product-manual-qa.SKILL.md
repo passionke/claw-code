@@ -55,7 +55,9 @@ GPOS/POS/Back Office **操作或配置步骤**（加商品、打印机、Grab、
 2. 按上表选定 `KB_LANG_ROOT`（`.../kb/th` 或 `.../kb/en`）。
 3. 可选 `read_file` → `$KB_LANG_ROOT/index.md`。
 4. `grep_search(path=$KB_LANG_ROOT, pattern=<关键词>)`。
-5. `read_file` 命中文章；使用 frontmatter 的 `source_url`（必须与语种一致：`/th/` 或 `/en/`）。
+5. `read_file` 命中文章；  
+   - 官网页：使用 frontmatter `source_url`（`gpos.co.th`，语种与路由一致）。  
+   - 内部 FAQ：摘步骤即可；**勿**把 `internal:` / Mind URL 写进终答。
 6. 0 命中：`glob_search(path=$KB_LANG_ROOT, pattern=**/*.md)` 后再读 1–2 篇；仍无则回手册首页链接。
 7. 终答前完成「整理知识库文档」progress，再输出终答。
 
@@ -65,7 +67,10 @@ GPOS/POS/Back Office **操作或配置步骤**（加商品、打印机、Grab、
 
 1. 一句结论  
 2. 3–8 条步骤（摘自 KB，勿整页粘贴、勿二次创作）  
-3. **必须**给出该文章 `source_url`（泰文问题 → th 链接；否则 → en 链接）
+3. **必须**给出该文章 `source_url`，规则如下：  
+   - **官网手册**（`source_url` 以 `https://gpos.co.th/` 开头）：终答**必须**原样附上该链接。  
+   - **内部 FAQ**（`source_url` 以 `internal:` 开头，或路径含 `internal/mind/faq`）：**禁止**向用户输出任何 Mind / 内部文档 URL；只输出步骤，**不要**加「来源」「📎」链接行。  
+   - **禁止**输出 `mind.maxiot-inc.com` 任意链接。
 
 ## 执行
 
@@ -78,6 +83,7 @@ GPOS/POS/Back Office **操作或配置步骤**（加商品、打印机、Grab、
   - Final answer MUST contain a `https://gpos.co.th/th/user-manual/...` link and MUST NOT contain `/en/user-manual/`.
 - Otherwise (Chinese / English / mixed without Thai letters):  
   - path MUST be under `/claw_ds/home/kb/en` only.  
-  - Final answer MUST contain `https://gpos.co.th/en/user-manual/...` and MUST NOT contain `/th/user-manual/`.
+  - If answer cites **official** manual: MUST contain `https://gpos.co.th/en/user-manual/...` and MUST NOT contain `/th/user-manual/`.  
+  - If answer uses **internal FAQ only**: steps only; MUST NOT contain `mind.maxiot-inc.com` or `internal:` URLs.
 - If you already opened the wrong language tree, stop and switch before answering.
 - Discount / tax / printer / sales-channel **setup how-to** is still product-manual — never SQLBot.
