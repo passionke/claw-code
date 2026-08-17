@@ -121,6 +121,15 @@ impl LiveReportHub {
     }
 
     #[must_use]
+    pub fn is_solve_done(&self, turn_id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("live_report_hub lock")
+            .get(turn_id)
+            .is_some_and(|s| s.solve_done)
+    }
+
+    #[must_use]
     pub fn first_report_at_ms_for_turn(&self, turn_id: &str) -> Option<i64> {
         self.inner
             .lock()
@@ -247,6 +256,19 @@ mod tests {
         delta(turn_id, "done-body", &hub);
         hub.ingest_json(turn_id, &json!({ "ev": "solve.done" }));
         assert!(!hub.has_report_for_turn(turn_id));
+        assert!(!hub.is_solve_done(turn_id));
+    }
+
+    #[tokio::test]
+    async fn subscriber_keeps_solve_done_flag_until_removed() {
+        let hub = LiveReportHub::default();
+        let turn_id = "T_done_flag";
+        delta(turn_id, "body", &hub);
+        let (_rx, snap) = hub.subscribe_with_snapshot(turn_id);
+        assert_eq!(snap, vec!["body".to_string()]);
+        hub.ingest_json(turn_id, &json!({ "ev": "solve.done" }));
+        assert!(hub.is_solve_done(turn_id));
+        assert!(hub.has_report_for_turn(turn_id));
     }
 
     #[test]

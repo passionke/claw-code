@@ -12,7 +12,7 @@ runtime = { path = "../runtime" }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 telemetry = { path = "../telemetry" }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tools = { path = "../tools" }
 preflight-spi = { path = "../preflight-spi" }
 futures-util = "0.3"

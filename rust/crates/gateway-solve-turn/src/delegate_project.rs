@@ -180,13 +180,6 @@ fn extract_delta_text(data: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Live hub appends every delta. `biz.report.done` is a full snapshot — emit it
-/// only when no incremental deltas were seen.
-#[must_use]
-fn should_emit_done_snapshot(already_emitted_delta: bool) -> bool {
-    !already_emitted_delta
-}
-
 fn report_text_from_biz_payload(v: &Value) -> Option<String> {
     v.get("reportText")
         .and_then(|t| t.as_str())
@@ -218,6 +211,109 @@ fn fetch_terminal_report(
         .ok_or_else(|| ToolError::new("delegate specialist returned empty report"))
 }
 
+#[must_use]
+fn task_status_is_terminal(status: &str) -> bool {
+    matches!(status, "succeeded" | "failed" | "cancelled")
+}
+
+/// Apply one SSE event block. `true` means the live stream is finished. Author: kejiqing
+fn apply_sse_event_block(block: &str, emitted: &mut bool) -> Result<bool, ToolError> {
+    let mut event_name = String::new();
+    let mut data_lines = Vec::new();
+    for line in block.lines() {
+        if let Some(ev) = line.strip_prefix("event:") {
+            event_name = ev.trim().to_string();
+        } else if let Some(d) = line.strip_prefix("data:") {
+            data_lines.push(d.trim());
+        }
+    }
+    if event_name == "biz.report.delta" {
+        let data = data_lines.join("\n");
+        if let Some(text) = extract_delta_text(&data) {
+            emit_report_delta_passthrough(&text)
+                .map_err(|e| ToolError::new(format!("emit delta: {e}")))?;
+            *emitted = true;
+        }
+    }
+    if event_name == "biz.report.done" {
+        // Stop only. Done payload is a full snapshot, not another live paragraph.
+        return Ok(true);
+    }
+    if event_name == "biz.report.error" {
+        return Err(ToolError::new("specialist live report error"));
+    }
+    Ok(false)
+}
+
+fn feed_sse_bytes(buf: &mut String, bytes: &[u8], emitted: &mut bool) -> Result<bool, ToolError> {
+    buf.push_str(&String::from_utf8_lossy(bytes));
+    while let Some(pos) = buf.find("\n\n") {
+        let block = buf[..pos].to_string();
+        *buf = buf[pos + 2..].to_string();
+        if apply_sse_event_block(&block, emitted)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn fetch_task_status(client: &reqwest::Client, task_url: &str) -> Option<String> {
+    let resp = client.get(task_url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: Value = resp.json().await.ok()?;
+    v.get("status").and_then(Value::as_str).map(str::to_string)
+}
+
+async fn wait_task_terminal(client: &reqwest::Client, task_url: &str) {
+    let mut poll = tokio::time::interval(Duration::from_millis(500));
+    for _ in 0..7200 {
+        poll.tick().await;
+        if let Some(status) = fetch_task_status(client, task_url).await {
+            if task_status_is_terminal(&status) {
+                return;
+            }
+        }
+    }
+}
+
+async fn read_sse_until_done_or_task(
+    client: &reqwest::Client,
+    resp: reqwest::Response,
+    task_url: &str,
+) -> Result<bool, ToolError> {
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    let mut emitted = false;
+    let mut poll = tokio::time::interval(Duration::from_millis(500));
+    loop {
+        tokio::select! {
+            chunk = stream.next() => {
+                match chunk {
+                    None => break,
+                    Some(Err(e)) => return Err(ToolError::new(format!("sse chunk: {e}"))),
+                    Some(Ok(bytes)) => {
+                        if feed_sse_bytes(&mut buf, &bytes, &mut emitted)? {
+                            return Ok(emitted);
+                        }
+                    }
+                }
+            }
+            _ = poll.tick() => {
+                if let Some(status) = fetch_task_status(client, task_url).await {
+                    if task_status_is_terminal(&status) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Ok(emitted)
+}
+
+/// Copy specialist live deltas. Stop on `biz.report.done` **or** specialist task
+/// terminal — SSE may never see `done` (keep-alive / late hub subscribe). Author: kejiqing
 fn passthrough_live_sse(
     _client: &Client,
     base: &str,
@@ -225,68 +321,30 @@ fn passthrough_live_sse(
     turn_id: &str,
     proj_id: i64,
 ) -> Result<bool, ToolError> {
-    let url = format!(
+    let sse_url = format!(
         "{base}/v1/biz_advice_report?sessionId={session_id}&turnId={turn_id}&projId={proj_id}&stream=true"
     );
+    let task_url = format!("{base}/v1/tasks/{session_id}");
     let rt = tokio::runtime::Handle::try_current()
         .map_err(|_| ToolError::new("delegate_project passthrough requires tokio runtime"))?;
     rt.block_on(async {
-        let async_client = reqwest::Client::new();
-        let resp = async_client
-            .get(&url)
-            .header(ACCEPT, "text/event-stream")
-            .send()
-            .await
-            .map_err(|e| ToolError::new(format!("live SSE: {e}")))?;
-        if !resp.status().is_success() {
-            return Err(ToolError::new(format!("live SSE status {}", resp.status())));
-        }
-        let mut stream = resp.bytes_stream();
-        let mut buf = String::new();
-        let mut event_name = String::new();
-        let mut emitted = false;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| ToolError::new(format!("sse chunk: {e}")))?;
-            buf.push_str(&String::from_utf8_lossy(&chunk));
-            while let Some(pos) = buf.find("\n\n") {
-                let block = buf[..pos].to_string();
-                buf = buf[pos + 2..].to_string();
-                event_name.clear();
-                let mut data_lines = Vec::new();
-                for line in block.lines() {
-                    if let Some(ev) = line.strip_prefix("event:") {
-                        event_name = ev.trim().to_string();
-                    } else if let Some(d) = line.strip_prefix("data:") {
-                        data_lines.push(d.trim());
-                    }
+        let async_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| ToolError::new(format!("live sse client: {e}")))?;
+        tokio::select! {
+            resp = async_client
+                .get(&sse_url)
+                .header(ACCEPT, "text/event-stream")
+                .send() => {
+                let resp = resp.map_err(|e| ToolError::new(format!("live SSE: {e}")))?;
+                if !resp.status().is_success() {
+                    return Err(ToolError::new(format!("live SSE status {}", resp.status())));
                 }
-                if event_name == "biz.report.delta" {
-                    let data = data_lines.join("\n");
-                    if let Some(text) = extract_delta_text(&data) {
-                        emit_report_delta_passthrough(&text)
-                            .map_err(|e| ToolError::new(format!("emit delta: {e}")))?;
-                        emitted = true;
-                    }
-                }
-                if event_name == "biz.report.done" {
-                    if should_emit_done_snapshot(emitted) {
-                        let data = data_lines.join("\n");
-                        if let Ok(v) = serde_json::from_str::<Value>(&data) {
-                            if let Some(text) = report_text_from_biz_payload(&v) {
-                                emit_report_delta_passthrough(&text)
-                                    .map_err(|e| ToolError::new(format!("emit delta: {e}")))?;
-                                emitted = true;
-                            }
-                        }
-                    }
-                    return Ok(emitted);
-                }
-                if event_name == "biz.report.error" {
-                    return Err(ToolError::new("specialist live report error"));
-                }
+                read_sse_until_done_or_task(&async_client, resp, &task_url).await
             }
+            () = wait_task_terminal(&async_client, &task_url) => Ok(false)
         }
-        Ok(emitted)
     })
 }
 
@@ -405,8 +463,43 @@ mod tests {
     }
 
     #[test]
-    fn done_snapshot_not_emitted_after_incremental_deltas() {
-        assert!(!should_emit_done_snapshot(true));
-        assert!(should_emit_done_snapshot(false));
+    fn task_status_is_terminal_covers_end_states() {
+        assert!(task_status_is_terminal("succeeded"));
+        assert!(task_status_is_terminal("failed"));
+        assert!(task_status_is_terminal("cancelled"));
+        assert!(!task_status_is_terminal("running"));
+        assert!(!task_status_is_terminal("queued"));
+    }
+
+    #[test]
+    fn apply_sse_done_stops_without_marking_emitted() {
+        let mut emitted = false;
+        let finished = apply_sse_event_block(
+            "event: biz.report.done\ndata: {\"reportText\":\"full snapshot\"}",
+            &mut emitted,
+        )
+        .unwrap();
+        assert!(finished);
+        assert!(!emitted);
+    }
+
+    #[test]
+    fn apply_sse_done_after_delta_keeps_emitted_and_stops() {
+        let mut emitted = true;
+        let finished = apply_sse_event_block(
+            "event: biz.report.done\ndata: {\"reportText\":\"full snapshot\"}",
+            &mut emitted,
+        )
+        .unwrap();
+        assert!(finished);
+        assert!(emitted);
+    }
+
+    #[test]
+    fn apply_sse_error_is_err() {
+        let mut emitted = false;
+        let err =
+            apply_sse_event_block("event: biz.report.error\ndata: {}", &mut emitted).unwrap_err();
+        assert!(err.to_string().contains("live report error"));
     }
 }
