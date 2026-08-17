@@ -124,6 +124,12 @@ pub(crate) async fn put_master_role(
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
         apply_project_config_for_proj(&state, proj_id, true).await?;
         let _ = state.pool_clients.reconcile_project_worker(proj_id).await;
+    } else if role == master_observer::PROJECT_ROLE_ROUTER {
+        master_observer::seed_router_project(&state.session_db, proj_id)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+        apply_project_config_for_proj(&state, proj_id, true).await?;
+        let _ = state.pool_clients.reconcile_project_worker(proj_id).await;
     } else if role == master_observer::PROJECT_ROLE_NORMAL {
         state
             .session_db

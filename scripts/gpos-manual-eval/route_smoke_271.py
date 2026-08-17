@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Route smoke tests against pre proj 271 via Admin MCP HTTP. Author: kejiqing"""
+"""Route smoke tests via Admin MCP HTTP. Author: kejiqing
+
+Default projId: legacy monolith 271. Router mode: export GPOS_PROJ_ID=<router_projId>.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ from pathlib import Path
 
 URL = os.environ.get("CLAW_ADMIN_MCP_URL", "http://192.168.9.252:18088/v1/admin/mcp")
 TOKEN = os.environ.get("CLAW_ADMIN_TOKEN", "").strip()
+PROJ_ID = int(os.environ.get("GPOS_PROJ_ID", "271"))
 if not TOKEN:
     print("缺少环境变量 CLAW_ADMIN_TOKEN", file=sys.stderr)
     sys.exit(2)
@@ -175,7 +179,7 @@ def main() -> int:
             solve = mcp_call(
                 "gateway_solve",
                 {
-                    "projId": 271,
+                    "projId": PROJ_ID,
                     "userPrompt": case["userPrompt"],
                     "extraSession": EXTRA,
                     "timeoutSeconds": case["timeoutSeconds"],

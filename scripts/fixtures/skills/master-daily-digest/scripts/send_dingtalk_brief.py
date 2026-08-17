@@ -21,7 +21,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-FOLDER_URL = "https://alidocs.dingtalk.com/i/nodes/gvNG4YZ7JneLjaZOs96YyobaV2LD0oRE"
+# Mind: magic-ai-daily-report（完整报告落 Mind；本脚本只推群简报）
+FOLDER_URL = "https://mind.maxiot-inc.com/folders/5387be57-21dc-48ad-91d1-f18f3d059174"
 
 
 def load_robot_from_env() -> tuple[str, str]:
@@ -50,7 +51,8 @@ def signed_url(webhook: str, secret: str) -> str:
 def build_text(args: argparse.Namespace) -> str:
     highlights = [h.strip() for h in (args.highlights or "").split("|") if h.strip()]
     lines = [
-        f"### Master日报简报 · 学徒{args.apprentice_id} · {args.bizdate}",
+        # Heading = --title (e.g. "IPOS 日报简报 20260810"); Author: kejiqing
+        f"### {args.title}",
         "",
         f"- 会话/轮次：**{args.sessions}/{args.turns}**（前日 {args.prev_sessions}/{args.prev_turns}）",
     ]
@@ -68,9 +70,9 @@ def build_text(args: argparse.Namespace) -> str:
             lines.append(f"  - {h}")
     if args.doc_url:
         lines.append("")
-        lines.append(f"[打开完整钉钉文档]({args.doc_url})")
+        lines.append(f"[打开完整 Mind 文档]({args.doc_url})")
     lines.append("")
-    lines.append(f"目录：[clawcode-output]({FOLDER_URL})")
+    lines.append(f"目录：[magic-ai-daily-report]({FOLDER_URL})")
     return "\n".join(lines)
 
 

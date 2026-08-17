@@ -12,7 +12,15 @@ Author: kejiqing
 | **GPOS 经营助手** | claw 项目能力（预发 271 / 生产 27）：闲聊 + 产品手册 + 经营问数 |
 | **QueryX** | 对外 **Boss 报表 / 经营问数 BFF** 契约风格（见 [`analysis-api-queryx-bff.md`](analysis-api-queryx-bff.md)），不是整条助手、也不是手册 KB |
 
-目标 project：预发 **271**；生产 **27**（或灰度 id）。先完成 KB 同步与 Admin **commit + activate**。
+目标 project：
+
+| 环境 | 入口（BFF projId） | specialist |
+|------|-------------------|------------|
+| 预发（router 模式） | **gpos-router** projId | kb-qa + ops-analysis（271）经 `delegate_project` |
+| 预发（legacy） | **271** | 单 project 三路意图（迁移前） |
+| 生产 | **27** | 暂不动 |
+
+Router 模式回归详见 [`specialist-router-acceptance.md`](specialist-router-acceptance.md)；拆分步骤见 [`scripts/gpos-router-split/README.md`](../scripts/gpos-router-split/README.md)。
 
 前置：本地已 crawl 出 KB（默认 `knowledge/gpos-user-manual/`，**不入库**），并 `export CLAW_ADMIN_TOKEN=...`。
 
@@ -35,6 +43,11 @@ wc -l knowledge/gpos-user-manual/eval/core-questions.jsonl
 冒烟：
 
 ```bash
+# legacy 单 project（默认 projId=271）
+python3 scripts/gpos-manual-eval/route_smoke_271.py
+
+# router 模式
+export GPOS_PROJ_ID=<gpos-router-projId>
 python3 scripts/gpos-manual-eval/route_smoke_271.py
 ```
 
@@ -47,6 +60,11 @@ python3 scripts/gpos-manual-eval/route_smoke_271.py
 全量：
 
 ```bash
+# legacy
+python3 scripts/gpos-manual-eval/run_live_core_271.py --min 100
+
+# router 模式
+export GPOS_PROJ_ID=<gpos-router-projId>
 python3 scripts/gpos-manual-eval/run_live_core_271.py --min 100
 ```
 
@@ -90,4 +108,4 @@ python3 scripts/gpos-manual-eval/run_live_core_271.py --min 100
 
 ## 5. 协议
 
-外部 `SolveRequest` 字段不变；灰度仅允许换 `projId`。BFF 侧 QueryX 风格参数仍只服务问数链路，不因手册分流而改契约。
+外部 `SolveRequest` 字段不变；用户/BFF **sessionId 只对 router**（router 模式）。灰度允许换入口 `projId` 为 router。BFF 侧 QueryX 风格参数仍只服务问数链路。

@@ -242,6 +242,23 @@ Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历�
 
 **poolSize=0**：observation 默认 `strict`+`poolSize:0`（on-demand）；**master 默认 `relaxed`**。strict 允许 poolSize=0；reconcile 不保留 warm；solve 时 on-demand 创建 slot 0，release 后退休。
 
+## Router / 委托 specialist（入口 Agent）
+
+**角色**：`project_config.project_role` = **`router`**（与 `normal` | `master` | `observation` 并列）。
+
+**职责**：BFF / 用户 **只** 打 router 的 `projId`；router 本地路由（CLAUDE + `specialist-registry` skill）后通过 **`delegate_project`** tool 串行委托 specialist。
+
+**配对**：`PUT /v1/projects/{routerProjId}/delegate-targets` body
+`{ "targets": [{ "targetProjId", "enabled?", "label?", "capabilityHint?" }] }`（**独立表** `gateway_delegate_target`，**不**共用 `project_master_link`）。
+
+**Session**：用户 `sessionId` 只对 router；每次 `delegate_project` 查 `gateway_delegate_session_link` 换算 delegate sid（模型不传 `sessionId`）。
+
+**物化**：`role=router` activate 时注入 `delegate_project` allowed tool，并从 `gateway_delegate_target` 生成 **specialist-registry 附录**（projId + label + capabilityHint）。Admin 增删 target 后 **重 activate router**。
+
+**嵌套 delegate（场景 7）**：ops 等 specialist 可单独开 `delegate_project` + 自有 `delegate-targets`；kb **不开**。
+
+文档：[`docs/specialist-router.md`](specialist-router.md)。
+
 ## 实现状态
 
 - DDL + `skills_json` 列（`session_db.rs` 迁移）。
@@ -250,3 +267,4 @@ Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历�
 - System prompt 组装：`runtime/src/prompt.rs`；契约 **[`gateway-system-prompt-assembly.md`](gateway-system-prompt-assembly.md)**（改 prompt/物化前必读）。
 - 每项目 Git：`project_git_sync.rs` + `git_sync_json` 列；全局 `CLAW_PROJECTS_GIT_URL` mirror 已废弃（可选、默认不启用）。
 - Master：`018_master_observer.sql`、`master_observer.rs`、`master_mcp.rs`、`master_scheduler.rs`。
+- Router / delegate：`022_delegate_router.sql`、`delegate_router.rs`、`gateway-solve-turn::delegate_project`、Admin `delegate-targets` API。

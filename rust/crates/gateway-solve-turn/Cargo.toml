@@ -16,6 +16,7 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"]
 tools = { path = "../tools" }
 preflight-spi = { path = "../preflight-spi" }
 futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "blocking"] }
 tracing = "0.1"
 utoipa = { version = "5.5.0" }
 

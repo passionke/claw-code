@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build ≥100 bilingual core questions + live gateway_solve batch for proj 271.
+"""Build ≥100 bilingual core questions + live gateway_solve batch.
+
+Default projId: legacy monolith 271. Router mode: export GPOS_PROJ_ID=<router_projId>.
 
 Thai questions → expect gpos.co.th/th/... ; others → /en/...
 Author: kejiqing
@@ -23,6 +25,7 @@ ROOT = Path(os.environ.get("GPOS_MANUAL_KB", REPO / "knowledge" / "gpos-user-man
 EVAL = Path(os.environ.get("GPOS_MANUAL_EVAL_OUT", ROOT / "eval"))
 MCP_URL = os.environ.get("CLAW_ADMIN_MCP_URL", "http://192.168.9.252:18088/v1/admin/mcp")
 TOKEN = os.environ.get("CLAW_ADMIN_TOKEN", "").strip()
+PROJ_ID = int(os.environ.get("GPOS_PROJ_ID", "271"))
 EXTRA = {
     "store_id": "S002501221841976200006188",
     "store_name": "G&G Ratchaburi",
@@ -153,7 +156,7 @@ def mcp_solve(prompt: str, timeout: int = 180) -> dict:
         "params": {
             "name": "gateway_solve",
             "arguments": {
-                "projId": 271,
+                "projId": PROJ_ID,
                 "userPrompt": prompt,
                 "extraSession": EXTRA,
                 "timeoutSeconds": timeout,
@@ -298,14 +301,14 @@ def main() -> int:
         "pass_by_lang": dict(pass_by_lang),
         "failed_ids": [r["id"] for r in results if not r.get("pass")],
         "contentRev": "2026-07-13_05-49-00",
-        "projId": 271,
+        "projId": PROJ_ID,
     }
     fail_ids = summary["failed_ids"][:80]
     fail_block = [f"- `{i}`" for i in fail_ids] if fail_ids else ["_none_"]
     (EVAL / "summary.md").write_text(
         "\n".join(
             [
-                "# Live product-manual eval summary (proj 271)",
+                f"# Live product-manual eval summary (proj {PROJ_ID})",
                 "",
                 f"- total: **{summary['total']}**",
                 f"- passed: **{summary['passed']}** ({summary['pass_rate']:.1%})",

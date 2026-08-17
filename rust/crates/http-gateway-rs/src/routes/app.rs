@@ -97,6 +97,7 @@ include!("fragments/project_inference.rs");
 include!("fragments/gateway_settings.rs");
 include!("fragments/admin_mcp.rs");
 include!("fragments/master.rs");
+include!("fragments/delegate.rs");
 include!("fragments/sessions.rs");
 include!("fragments/turns.rs");
 include!("fragments/solve.rs");

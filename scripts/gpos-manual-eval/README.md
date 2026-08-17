@@ -10,14 +10,20 @@ GPOS 产品手册意图分流的评测工具。**KB 正文不入库**：默认�
 | `GPOS_MANUAL_EVAL_OUT` | 跑批产物目录（默认 `$GPOS_MANUAL_KB/eval`） |
 | `CLAW_ADMIN_TOKEN` | Admin MCP Bearer（live 必填） |
 | `CLAW_ADMIN_MCP_URL` | 默认预发 Admin MCP |
+| `GPOS_PROJ_ID` | 评测入口 projId（默认 **271** legacy；router 模式填 router projId） |
 
 ```bash
 # 先爬取（产出到 knowledge/，不 commit）
 python3 scripts/gpos-manual-crawl/crawl_gpos_user_manual.py --lang all
 
 export CLAW_ADMIN_TOKEN=...
+# legacy 单 project
 python3 scripts/gpos-manual-eval/route_smoke_271.py
 python3 scripts/gpos-manual-eval/run_live_core_271.py --min 100
+
+# router 模式（预发拆分后）
+export GPOS_PROJ_ID=<gpos-router-projId>
+python3 scripts/gpos-manual-eval/route_smoke_271.py
 ```
 
 运维真源：[`docs/gpos-user-manual-kb-ops.md`](../../docs/gpos-user-manual-kb-ops.md)

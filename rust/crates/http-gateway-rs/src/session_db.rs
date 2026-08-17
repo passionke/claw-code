@@ -1229,6 +1229,8 @@ impl GatewaySessionDb {
             include_str!("../migrations/021_apprentice_mcp_token.sql"),
         )
         .await?;
+        Self::run_sql_migration_file(pool, include_str!("../migrations/022_delegate_router.sql"))
+            .await?;
         Self::migrate_cluster_id_phase3(pool).await?;
 
         Ok(())

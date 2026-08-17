@@ -52,6 +52,7 @@ use tools::{
 };
 
 pub mod agent_orchestration;
+pub mod delegate_project;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
 pub mod gateway_stdout;
@@ -74,6 +75,9 @@ pub mod task_progress;
 pub mod turn_language;
 pub mod turn_tools;
 pub mod worker_env;
+pub use delegate_project::{
+    delegate_project_tool_definition, run_delegate_project, DELEGATE_PROJECT_TOOL_NAME,
+};
 pub use extra_session_bizdate::{
     apply_solve_env_from_config_and_extra, parse_extra_session_bizdate,
     resolve_system_date_for_solve, BizDate, ENV_BIZDATE, ENV_CURRENT_DATE,
@@ -521,6 +525,9 @@ impl DirectApiClient {
         if is_tool_allowed(REPORT_PROGRESS_TOOL_NAME, allowed_tools) {
             tools.push(report_progress_tool_definition());
         }
+        if is_tool_allowed(DELEGATE_PROJECT_TOOL_NAME, allowed_tools) {
+            tools.push(delegate_project_tool_definition());
+        }
         let tools = dedupe_tool_definitions_by_name(tools);
         Ok(Self {
             model,
@@ -684,6 +691,10 @@ impl DirectToolExecutorInner {
                 }
             }
             return Ok(result);
+        }
+        if tool_name == DELEGATE_PROJECT_TOOL_NAME {
+            let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
+            return run_delegate_project(&self.mcp_context, &parsed);
         }
         if tool_name == "MCP" {
             let args = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
