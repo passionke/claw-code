@@ -92,9 +92,7 @@ pub async fn resolve_consumer_turn_progress(
         );
         return Ok(TurnProgressSnapshot {
             events,
-            task_progress: spec_snap
-                .task_progress
-                .or(router_snap.task_progress),
+            task_progress: spec_snap.task_progress.or(router_snap.task_progress),
         });
     }
     let events = GatewaySessionDb::merged_delegate_progress_events(

@@ -482,72 +482,6 @@ pub(crate) async fn get_biz_advice_report(
     }
 
     if query.stream && matches!(ctx.status.as_str(), "running" | "queued") {
-        if let Some(active) = crate::delegate_fanin::active_delegate_for_router_live(
-            &state.session_db,
-            query.proj_id,
-            &ctx.turn_id,
-        )
-        .await
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?
-        {
-            match crate::gateway_owner_proxy::resolve_turn_owner_proxy_base(
-                &state.session_db,
-                state.gateway_identity.as_ref(),
-                &active.turn_id,
-                &active.session_id,
-                active.proj_id,
-            )
-            .await
-            {
-                Ok(Some(owner_base)) => {
-                    tracing::info!(
-                        target: "claw_live_report",
-                        component = "biz_advice_report",
-                        phase = "route",
-                        route = "delegate_fanin_owner_proxy_sse",
-                        router_turn_id = %ctx.turn_id,
-                        specialist_turn_id = %active.turn_id,
-                        owner_base = %owner_base,
-                        "biz_advice_report stream — delegate fan-in via owner gateway"
-                    );
-                    let path = format!(
-                        "/v1/biz_advice_report?sessionId={}&turnId={}&projId={}&stream=true",
-                        active.session_id, active.turn_id, active.proj_id
-                    );
-                    let headers = HeaderMap::new();
-                    return crate::gateway_owner_proxy::proxy_to_owner_gateway(
-                        &owner_base,
-                        "GET",
-                        &path,
-                        &headers,
-                    )
-                    .await
-                    .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e));
-                }
-                Ok(None) => {
-                    tracing::info!(
-                        target: "claw_live_report",
-                        component = "biz_advice_report",
-                        phase = "route",
-                        route = "delegate_fanin_hub_sse",
-                        router_turn_id = %ctx.turn_id,
-                        specialist_turn_id = %active.turn_id,
-                        specialist_session_id = %active.session_id,
-                        "biz_advice_report stream — delegate fan-in specialist LiveReportHub"
-                    );
-                    return Ok(pool::live_report_sse_response(
-                        Arc::clone(&state.live_report_hub),
-                        &active.turn_id,
-                        ctx.task_id.clone(),
-                        ctx.task_id.clone(),
-                        query.proj_id,
-                    ));
-                }
-                Err(e) => {
-                    return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e));
-                }
-            }
-        }
         match crate::gateway_owner_proxy::resolve_turn_owner_proxy_base(
             &state.session_db,
             state.gateway_identity.as_ref(),
@@ -585,6 +519,34 @@ pub(crate) async fn get_biz_advice_report(
             Err(e) => {
                 return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e));
             }
+        }
+        let is_router = state
+            .session_db
+            .get_project_role(query.proj_id)
+            .await
+            .map(|r| r == crate::master_observer::PROJECT_ROLE_ROUTER)
+            .unwrap_or(false);
+        if is_router {
+            tracing::info!(
+                target: "claw_live_report",
+                component = "biz_advice_report",
+                phase = "route",
+                route = "router_fanin_hub_rebind_sse",
+                turn_id = %ctx.turn_id,
+                session_id = %query.session_id,
+                proj_id = query.proj_id,
+                status = %ctx.status,
+                "biz_advice_report stream — router in-process hub rebind"
+            );
+            return Ok(pool::router_fanin_live_sse_response(
+                Arc::clone(&state.live_report_hub),
+                &state.session_db,
+                query.proj_id,
+                &ctx.turn_id,
+                ctx.task_id.clone(),
+                ctx.task_id.clone(),
+                query.proj_id,
+            ));
         }
         tracing::info!(
             target: "claw_live_report",

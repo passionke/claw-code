@@ -79,9 +79,7 @@ mod tests {
                 ts_ms: 3000,
             },
         ];
-        let merged = GatewaySessionDb::merged_delegate_progress_events(
-            &store, &router, &spec, 50,
-        );
+        let merged = GatewaySessionDb::merged_delegate_progress_events(&store, &router, &spec, 50);
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0].message, "kb");
         assert_eq!(merged[1].message, "router");

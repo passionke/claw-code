@@ -4245,11 +4245,18 @@ impl GatewaySessionDb {
         }
     }
 
-    fn progress_events_from_archive(store: &Value, limit: usize) -> Vec<gateway_solve_turn::ProgressEvent> {
+    fn progress_events_from_archive(
+        store: &Value,
+        limit: usize,
+    ) -> Vec<gateway_solve_turn::ProgressEvent> {
         let mut out = Vec::new();
-        if let Some(arr) = store.get("delegateProgressArchive").and_then(Value::as_array) {
+        if let Some(arr) = store
+            .get("delegateProgressArchive")
+            .and_then(Value::as_array)
+        {
             for v in arr {
-                if let Ok(ev) = serde_json::from_value::<gateway_solve_turn::ProgressEvent>(v.clone())
+                if let Ok(ev) =
+                    serde_json::from_value::<gateway_solve_turn::ProgressEvent>(v.clone())
                 {
                     out.push(ev);
                 }
@@ -4282,8 +4289,8 @@ impl GatewaySessionDb {
             .get_turn_solve_timing_json(router_turn_id)
             .await?
             .unwrap_or_else(Self::empty_turn_timing_store);
-        store["activeDelegate"] = serde_json::to_value(active)
-            .map_err(|e| SqlxError::Protocol(e.to_string()))?;
+        store["activeDelegate"] =
+            serde_json::to_value(active).map_err(|e| SqlxError::Protocol(e.to_string()))?;
         self.upsert_turn_timing_json(router_turn_id, &store).await
     }
 
