@@ -243,9 +243,7 @@ async fn run_router_fanin_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        follow_turn_deltas, run_router_fanin_loop, BizReportStreamMsg, FollowEnd,
-    };
+    use super::{follow_turn_deltas, run_router_fanin_loop, BizReportStreamMsg, FollowEnd};
     use crate::pool::live_report_hub::LiveReportHub;
     use crate::session_db::ActiveDelegateRecord;
     use serde_json::json;
