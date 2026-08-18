@@ -5,6 +5,7 @@ import AdminLayout from "./layout/AdminLayout";
 import ChatLayout from "./layout/ChatLayout";
 import LoginPage from "./pages/LoginPage";
 import RequireAuth from "./auth/RequireAuth";
+import GitImportPage from "./pages/GitImportPage";
 import ProjectPage from "./pages/ProjectPage";
 import SkillsPage from "./pages/SkillsPage";
 import McpPage from "./pages/McpPage";
@@ -57,7 +58,11 @@ export default function App() {
             }
           >
             <Route element={<AdminLayout />}>
-              <Route index element={<ProjectPage />} />
+              <Route index element={<Navigate to="/project-config" replace />} />
+              <Route path="project-config" element={<ProjectPage />} />
+              <Route path="git-import" element={<GitImportPage />} />
+              <Route path="project-role" element={<ProjectPage />} />
+              <Route path="project-relations" element={<Navigate to="/project-role" replace />} />
               <Route path="skills" element={<SkillsPage />} />
               <Route path="mcp" element={<McpPage />} />
               <Route path="claude" element={<ClaudePage />} />

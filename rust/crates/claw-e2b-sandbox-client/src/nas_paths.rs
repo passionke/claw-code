@@ -42,6 +42,30 @@ pub fn proj_home_rel(cluster_id: &str, proj_id: i64) -> String {
     format!("{cluster_id}/proj_{proj_id}/home")
 }
 
+/// Worker path after binding project home at `/claw_ds`. `rel_under_home` is e.g. `<destRel>/README`. Author: kejiqing
+#[must_use]
+pub fn guest_path_under_claw_ds(rel_under_home: &str) -> String {
+    let rel = rel_under_home.trim_start_matches('/');
+    if rel.is_empty() {
+        GUEST_CLAW_DS.to_string()
+    } else {
+        format!("{GUEST_CLAW_DS}/{rel}")
+    }
+}
+
+/// Map a NAS export-rel file/dir under project home to the worker guest path. Author: kejiqing
+#[must_use]
+pub fn guest_path_from_nas_proj_rel(cluster_id: &str, proj_id: i64, nas_rel: &str) -> Option<String> {
+    let home = proj_home_rel(cluster_id, proj_id);
+    let nas = nas_rel.trim_start_matches('/');
+    if nas == home {
+        return Some(GUEST_CLAW_DS.to_string());
+    }
+    let prefix = format!("{home}/");
+    let rest = nas.strip_prefix(&prefix)?;
+    Some(guest_path_under_claw_ds(rest))
+}
+
 /// `{clusterId}/proj_N/sessions`.
 #[must_use]
 pub fn sessions_root_rel(cluster_id: &str, proj_id: i64) -> String {
@@ -112,14 +136,19 @@ pub fn ovs_folder_url(ovs_base_url: &str) -> String {
     )
 }
 
-/// Warm worker: home (ro) + sessions + worker cache.
+/// Warm worker: home (ro in strict, rw in relaxed) + sessions + worker cache.
 #[must_use]
-pub fn warm_worker_mounts(cluster_id: &str, proj_id: i64, worker_id: &str) -> Vec<NasMountPoint> {
+pub fn warm_worker_mounts(
+    cluster_id: &str,
+    proj_id: i64,
+    worker_id: &str,
+    proj_home_read_only: bool,
+) -> Vec<NasMountPoint> {
     vec![
         NasMountPoint {
             rel_path: proj_home_rel(cluster_id, proj_id),
             mount_dir: GUEST_CLAW_DS.into(),
-            read_only: true,
+            read_only: proj_home_read_only,
         },
         NasMountPoint {
             rel_path: sessions_root_rel(cluster_id, proj_id),
@@ -213,11 +242,49 @@ mod tests {
 
     #[test]
     fn warm_mounts_include_sessions_and_ro_home() {
-        let warm = warm_worker_mounts(CID, 1, "wrk_1");
+        let warm = warm_worker_mounts(CID, 1, "wrk_1", true);
         assert_eq!(warm.len(), 3);
         assert!(warm[0].read_only);
         assert_eq!(warm[0].mount_dir, GUEST_CLAW_DS);
         assert_eq!(warm[1].mount_dir, GUEST_CLAW_SESSIONS);
         assert_eq!(warm[2].mount_dir, GUEST_CLAW_HOST_ROOT);
+        let relaxed = warm_worker_mounts(CID, 1, "wrk_1", false);
+        assert!(!relaxed[0].read_only);
+    }
+
+    #[test]
+    fn git_import_nas_rel_is_under_home_mount_and_maps_to_claw_ds() {
+        let dest = "Hello-World";
+        let file = "README";
+        let nas_dest = format!("{}/{dest}", proj_home_rel(CID, 12));
+        let nas_file = format!("{nas_dest}/{file}");
+        let mounts = warm_worker_mounts(CID, 12, "wrk_1", true);
+        let home = &mounts[0];
+        assert_eq!(home.rel_path, proj_home_rel(CID, 12));
+        assert_eq!(home.mount_dir, GUEST_CLAW_DS);
+        assert!(
+            nas_file.starts_with(&format!("{}/", home.rel_path)),
+            "git dest must sit inside the /claw_ds bind source so the worker can read it"
+        );
+        assert_eq!(
+            guest_path_from_nas_proj_rel(CID, 12, &nas_dest).as_deref(),
+            Some("/claw_ds/Hello-World")
+        );
+        assert_eq!(
+            guest_path_from_nas_proj_rel(CID, 12, &nas_file).as_deref(),
+            Some("/claw_ds/Hello-World/README")
+        );
+        assert!(home.read_only, "strict worker still reads /claw_ds (ro bind)");
+        assert!(guest_path_from_nas_proj_rel(CID, 12, "proj_12/home/Hello-World").is_none());
+        assert!(guest_path_from_nas_proj_rel(CID, 12, &format!("{CID}/proj_12/workers/w")).is_none());
+    }
+
+    #[test]
+    fn two_git_dests_are_siblings_under_claw_ds_not_flattened() {
+        let a = guest_path_from_nas_proj_rel(CID, 1, &format!("{}/a/README", proj_home_rel(CID, 1)));
+        let b = guest_path_from_nas_proj_rel(CID, 1, &format!("{}/b/README", proj_home_rel(CID, 1)));
+        assert_eq!(a.as_deref(), Some("/claw_ds/a/README"));
+        assert_eq!(b.as_deref(), Some("/claw_ds/b/README"));
+        assert_ne!(a, b);
     }
 }

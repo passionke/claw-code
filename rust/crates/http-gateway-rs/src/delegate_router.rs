@@ -8,6 +8,7 @@ use sqlx::{Error as SqlxError, Row};
 use uuid::Uuid;
 
 use crate::master_observer::PROJECT_ROLE_ROUTER;
+use crate::project_relation::{ProjectRelationRow, RELATION_TYPE_ROUTER_DELEGATE};
 use crate::session_db::{now_ms_for_registry, GatewaySessionDb, ProjectConfigRow};
 use crate::session_merge;
 
@@ -43,6 +44,15 @@ pub struct DelegateTargetSpec {
 
 fn default_enabled() -> bool {
     true
+}
+
+#[must_use]
+pub fn role_allows_delegate_target(role: &str) -> bool {
+    matches!(
+        role.trim(),
+        crate::master_observer::PROJECT_ROLE_NORMAL
+            | crate::master_observer::PROJECT_ROLE_KNOWLEDGE_BASE
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -88,28 +98,18 @@ impl GatewaySessionDb {
         initiator_proj_id: i64,
     ) -> Result<Vec<GatewayDelegateTargetRow>, SqlxError> {
         let rows = sqlx::query(
-            r"SELECT initiator_proj_id, target_proj_id, enabled, label, capability_hint,
+            r"SELECT relation_type, from_proj_id, to_proj_id, relation_label, relation_meta_json,
                      created_at_ms, updated_at_ms
-              FROM gateway_delegate_target
-              WHERE cluster_id = $1 AND initiator_proj_id = $2
-              ORDER BY target_proj_id",
+              FROM project_relation
+              WHERE cluster_id = $1 AND relation_type = $2 AND from_proj_id = $3
+              ORDER BY to_proj_id",
         )
         .bind(self.cluster_id())
+        .bind(RELATION_TYPE_ROUTER_DELEGATE)
         .bind(initiator_proj_id)
         .fetch_all(self.pg_pool())
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| GatewayDelegateTargetRow {
-                initiator_proj_id: r.get("initiator_proj_id"),
-                target_proj_id: r.get("target_proj_id"),
-                enabled: r.get("enabled"),
-                label: r.get("label"),
-                capability_hint: r.get("capability_hint"),
-                created_at_ms: r.get("created_at_ms"),
-                updated_at_ms: r.get("updated_at_ms"),
-            })
-            .collect())
+        Ok(rows.into_iter().map(delegate_target_row_from_relation).collect())
     }
 
     pub async fn replace_delegate_targets(
@@ -118,34 +118,27 @@ impl GatewaySessionDb {
         targets: &[DelegateTargetSpec],
     ) -> Result<(), SqlxError> {
         let now = now_ms_for_registry();
-        let mut tx = self.pg_pool().begin().await?;
-        sqlx::query(
-            "DELETE FROM gateway_delegate_target WHERE cluster_id = $1 AND initiator_proj_id = $2",
+        let rows: Vec<ProjectRelationRow> = targets
+            .iter()
+            .map(|t| ProjectRelationRow {
+                relation_type: RELATION_TYPE_ROUTER_DELEGATE.to_string(),
+                from_proj_id: initiator_proj_id,
+                to_proj_id: t.target_proj_id,
+                relation_label: t.label.clone(),
+                relation_meta_json: json!({
+                    "enabled": t.enabled,
+                    "capabilityHint": t.capability_hint
+                }),
+                created_at_ms: now,
+                updated_at_ms: now,
+            })
+            .collect();
+        self.replace_project_relations_for_source(
+            RELATION_TYPE_ROUTER_DELEGATE,
+            initiator_proj_id,
+            &rows,
         )
-        .bind(self.cluster_id())
-        .bind(initiator_proj_id)
-        .execute(&mut *tx)
-        .await?;
-        for t in targets {
-            sqlx::query(
-                r"INSERT INTO gateway_delegate_target (
-                    cluster_id, initiator_proj_id, target_proj_id, enabled, label,
-                    capability_hint, created_at_ms, updated_at_ms
-                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-            )
-            .bind(self.cluster_id())
-            .bind(initiator_proj_id)
-            .bind(t.target_proj_id)
-            .bind(t.enabled)
-            .bind(t.label.as_deref())
-            .bind(t.capability_hint.as_deref())
-            .bind(now)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(())
+        .await
     }
 
     pub async fn get_delegate_target(
@@ -154,25 +147,18 @@ impl GatewaySessionDb {
         target_proj_id: i64,
     ) -> Result<Option<GatewayDelegateTargetRow>, SqlxError> {
         let row = sqlx::query(
-            r"SELECT initiator_proj_id, target_proj_id, enabled, label, capability_hint,
+            r"SELECT relation_type, from_proj_id, to_proj_id, relation_label, relation_meta_json,
                      created_at_ms, updated_at_ms
-              FROM gateway_delegate_target
-              WHERE cluster_id = $1 AND initiator_proj_id = $2 AND target_proj_id = $3",
+              FROM project_relation
+              WHERE cluster_id = $1 AND relation_type = $2 AND from_proj_id = $3 AND to_proj_id = $4",
         )
         .bind(self.cluster_id())
+        .bind(RELATION_TYPE_ROUTER_DELEGATE)
         .bind(initiator_proj_id)
         .bind(target_proj_id)
         .fetch_optional(self.pg_pool())
         .await?;
-        Ok(row.map(|r| GatewayDelegateTargetRow {
-            initiator_proj_id: r.get("initiator_proj_id"),
-            target_proj_id: r.get("target_proj_id"),
-            enabled: r.get("enabled"),
-            label: r.get("label"),
-            capability_hint: r.get("capability_hint"),
-            created_at_ms: r.get("created_at_ms"),
-            updated_at_ms: r.get("updated_at_ms"),
-        }))
+        Ok(row.map(|r| delegate_target_row_from_relation(r)))
     }
 
     pub async fn get_delegate_session_link(
@@ -298,12 +284,29 @@ impl GatewaySessionDb {
             .get_project_role(target_proj_id)
             .await
             .map_err(|e| e.to_string())?;
-        if role != crate::master_observer::PROJECT_ROLE_NORMAL {
+        if !role_allows_delegate_target(&role) {
             return Err(format!(
-                "target projId={target_proj_id} must have project_role=normal (got {role})"
+                "target projId={target_proj_id} must have project_role=normal|knowledge_base (got {role})"
             ));
         }
         Ok(())
+    }
+}
+
+fn delegate_target_row_from_relation(r: sqlx::postgres::PgRow) -> GatewayDelegateTargetRow {
+    let meta: Option<sqlx::types::Json<Value>> = r.get("relation_meta_json");
+    let meta = meta.map(|sqlx::types::Json(v)| v).unwrap_or_else(|| json!({}));
+    GatewayDelegateTargetRow {
+        initiator_proj_id: r.get("from_proj_id"),
+        target_proj_id: r.get("to_proj_id"),
+        enabled: meta.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+        label: r.get("relation_label"),
+        capability_hint: meta
+            .get("capabilityHint")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        created_at_ms: r.get("created_at_ms"),
+        updated_at_ms: r.get("updated_at_ms"),
     }
 }
 

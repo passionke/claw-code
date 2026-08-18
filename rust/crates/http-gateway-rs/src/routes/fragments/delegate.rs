@@ -51,11 +51,11 @@ pub(crate) async fn put_delegate_targets(
             .get_project_role(spec.target_proj_id)
             .await
             .map_err(|e| session_db_err(&e))?;
-        if role != master_observer::PROJECT_ROLE_NORMAL {
+        if !crate::delegate_router::role_allows_delegate_target(&role) {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
                 format!(
-                    "target {} must be project_role=normal (got {role})",
+                    "target {} must be project_role=normal|knowledge_base (got {role})",
                     spec.target_proj_id
                 ),
             ));

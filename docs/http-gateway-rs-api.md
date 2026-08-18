@@ -219,7 +219,7 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - `DELETE /v1/gateway/global-settings/llm-models/{model_id}` — 删除模型及其全部 revision
   - `POST /v1/gateway/global-settings/git-pats` — 创建/更新 PAT；body `{ id?, name, note?, token? }`（新建须 `token`；更新可省略 `token` 保留原值）
   - `DELETE /v1/gateway/global-settings/git-pats/{pat_id}` — 删除 PAT
-  - 项目 `gitSyncJson` 使用 `gitPatId` 引用全局 PAT；拉取时由网关解析 token，**不在** `project_config` 存 PAT 明文（兼容旧 `gitToken` 内联）
+  - 项目 `gitSyncJson.remotes[]` 每行 `gitPatId` 引用全局 PAT；拉取时由网关解析 token，**不在** `project_config` 存 PAT 明文（兼容旧 `gitToken` 内联）
 
 - **项目级推理（可选 LLM 覆盖 + 项目 observe）**
   - `GET /v1/projects/{proj_id}/inference` — `{ mode: inherit|override, llmModels, activeLlm*, observe }`；无 active 项目模型时 `mode=inherit`
@@ -232,10 +232,10 @@ Solve 使用的 `mcpServers` **只来自** PostgreSQL `project_config.mcp_server
   - 验收（proj1）：配 `qwen3-plus` → override + 项目 observe proxy；切 `qwen3.7-max`；删光 → 回落全局
 
 - `POST /v1/projects/{proj_id}/git/pull`
-  - 用途：从远程拉取到 `home/` 下**非 DB 物化**路径（排除列表由当前 `project_config` 行计算）；pull 后 `apply_project_config` 叠加 PG
-  - 前置：`gitSyncJson.enabled=true` 且 URL/分支合法
-  - 成功：`{ "projId", "outcome": { "pulled", "commitId", "branch", "gitUrl" }, "gitSyncJson": { ... } }`（含 `lastPull*`）
-  - 失败：**502**，`gitSyncJson.lastPullError` 会写入 PG
+  - 用途：从 `gitSyncJson.remotes[]` 拉取到 NAS `{cluster}/proj_N/home/<destRel>/`（跳过 PG 物化路径）；**不**跑 `apply_project_config`
+  - 前置：`gitSyncJson.enabled=true` 且每行 URL/分支/PAT/destRel 合法
+  - 成功：`{ "projId", "outcome": { "pulled", "remotes": [...] }, "gitSyncJson": { remotes, ... } }`
+  - 失败：**502**，对应 remote 的 `lastPullError` 写入 PG（PAT 已掩码）
 
 ## Projects (proj workspace lifecycle)
 

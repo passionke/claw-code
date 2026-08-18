@@ -17,6 +17,7 @@ export function emptyProjectConfig(projId: number): ProjectConfig {
     promptLimitsJson: {},
     workerProfileJson: { mode: "strict" },
     workerEnvJson: {},
+    kbSourcesJson: [],
     maxIterations: null,
   };
 }
@@ -80,6 +81,8 @@ export async function putProjectConfigDraft(
         : cfg.workerProfileJson ?? { mode: "strict" },
     workerEnvJson:
       patch.workerEnvJson !== undefined ? patch.workerEnvJson : cfg.workerEnvJson ?? {},
+    kbSourcesJson:
+      patch.kbSourcesJson !== undefined ? patch.kbSourcesJson : cfg.kbSourcesJson ?? [],
     maxIterations:
       patch.maxIterations !== undefined ? patch.maxIterations : cfg.maxIterations ?? null,
   };

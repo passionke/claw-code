@@ -57,6 +57,8 @@ pub(crate) fn default_true() -> bool {
 pub(crate) struct ProjectListEntry {
     #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
     proj_id: i64,
+    #[serde(rename = "projectRole")]
+    project_role: String,
     #[serde(rename = "contentRev")]
     content_rev: String,
     #[serde(rename = "draftOpen")]
@@ -309,35 +311,74 @@ pub(crate) async fn try_pull_project_git(
     let pat_tokens = gateway_global_settings::load_git_pat_tokens(&state.session_db)
         .await
         .map_err(|e| project_git_sync::ProjectGitSyncError::new(format!("global settings: {e}")))?;
-    let sync = project_git_sync::resolve_git_sync_credentials(&sync_raw, &pat_tokens.tokens);
+    let mut sync = project_git_sync::resolve_git_sync_credentials(&sync_raw, &pat_tokens.tokens);
     if let Err(msg) = project_git_sync::validate_git_sync_resolved(&sync) {
         return Err(project_git_sync::ProjectGitSyncError::new(msg));
     }
     let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);
     let excluded = project_config_apply::git_excluded_home_relpaths(&row);
-    match project_git_sync::pull_home_oneway(&work_dir, &sync, &excluded).await {
-        Ok(outcome) => {
-            let mut updated = sync;
-            updated.last_pull_at_ms = Some(now_ms());
-            updated.last_pull_commit_id.clone_from(&outcome.commit_id);
-            updated.last_pull_error = None;
-            let git_sync_json = git_sync_to_json(&updated);
-            persist_git_sync_status(state, &row, &git_sync_json)
-                .await
-                .map_err(|e| {
-                    project_git_sync::ProjectGitSyncError::new(format!("db upsert: {e}"))
-                })?;
-            Ok(outcome)
-        }
-        Err(e) => {
-            let mut updated = sync;
-            updated.last_pull_at_ms = Some(now_ms());
-            updated.last_pull_error = Some(e.message.clone());
-            let git_sync_json = git_sync_to_json(&updated);
-            let _ = persist_git_sync_status(state, &row, &git_sync_json).await;
-            Err(e)
+    let nas = state.pool_clients.nas_layout();
+    let now = now_ms();
+    let mut outcomes = Vec::new();
+    let mut first_err: Option<String> = None;
+    for remote in &mut sync.remotes {
+        tracing::info!(
+            proj_id,
+            dest_rel = %remote.dest_rel,
+            git_url = %remote.git_url,
+            git_pat_id = remote.git_pat_id.as_deref().unwrap_or(""),
+            "git import pull remote"
+        );
+        let secret = remote.git_token.as_deref();
+        let cache = project_git_sync::git_import_cache_dir(&work_dir, &remote.id);
+        match project_git_sync::pull_remote_to_cache(&cache, remote, &excluded).await {
+            Ok((mut outcome, files)) => {
+                if let Err(e) = nas
+                    .replace_git_import_dest(proj_id, &remote.dest_rel, &files)
+                    .await
+                {
+                    let msg = project_git_sync::redact_git_secret(&format!("nas write: {e}"), secret);
+                    remote.last_pull_at_ms = Some(now);
+                    remote.last_pull_error = Some(msg.clone());
+                    outcome.error = Some(msg.clone());
+                    outcome.pulled = false;
+                    if first_err.is_none() {
+                        first_err = Some(msg);
+                    }
+                } else {
+                    remote.last_pull_at_ms = Some(now);
+                    remote.last_pull_commit_id.clone_from(&outcome.commit_id);
+                    remote.last_pull_error = None;
+                }
+                outcomes.push(outcome);
+            }
+            Err(e) => {
+                let msg = project_git_sync::redact_git_secret(&e.message, secret);
+                remote.last_pull_at_ms = Some(now);
+                remote.last_pull_error = Some(msg.clone());
+                outcomes.push(project_git_sync::GitRemotePullOutcome {
+                    id: remote.id.clone(),
+                    dest_rel: remote.dest_rel.clone(),
+                    git_url: remote.git_url.clone(),
+                    branch: remote.git_ref.clone(),
+                    pulled: false,
+                    commit_id: None,
+                    error: Some(msg.clone()),
+                });
+                if first_err.is_none() {
+                    first_err = Some(msg);
+                }
+            }
         }
     }
+    let git_sync_json = git_sync_to_json(&sync);
+    persist_git_sync_status(state, &row, &git_sync_json)
+        .await
+        .map_err(|e| project_git_sync::ProjectGitSyncError::new(format!("db upsert: {e}")))?;
+    if let Some(msg) = first_err {
+        return Err(project_git_sync::ProjectGitSyncError::new(msg));
+    }
+    Ok(GitPullOutcome::from_remotes(outcomes))
 }
 
 pub(crate) async fn persist_git_sync_status(
@@ -953,6 +994,7 @@ pub(crate) async fn build_project_list_entry(
     let db_synced_to_disk = applied_rev.as_deref() == Some(stable_rev);
     ProjectListEntry {
         proj_id: summary.proj_id,
+        project_role: summary.project_role.clone(),
         content_rev: stable_rev.to_string(),
         draft_open: summary.draft_open,
         updated_at_ms: summary.updated_at_ms,
@@ -1173,10 +1215,6 @@ pub(crate) async fn pull_project_git(
     let outcome = try_pull_project_git(&state, proj_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e.message))?;
-    apply_project_config_for_proj_inner(&state, proj_id, true).await?;
-    project_config_apply::link_claw_compat_symlinks(&proj_work_dir(&state.cfg.work_root, proj_id))
-        .await
-        .map_err(|e| map_project_config_apply_err(&e))?;
     let row = state
         .session_db
         .get_project_config(proj_id)
@@ -1258,6 +1296,7 @@ pub(crate) async fn create_project(
             prompt_limits_json: &empty_obj,
             worker_profile_json: &pool::default_worker_profile_json(),
             worker_env_json: &pool::default_worker_env_json(),
+            kb_sources_json: &empty_arr,
             project_code: &project_code,
             project_description: &project_description,
             max_iterations: None,
@@ -1384,6 +1423,11 @@ pub(crate) async fn delete_project(
             format!("project {proj_id} not registered in project_config"),
         ));
     }
+    state
+        .session_db
+        .assert_project_deletable(proj_id)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::CONFLICT, e))?;
     let lock = get_proj_lock(&state, proj_id).await;
     let _guard = lock.lock().await;
     let work_dir = proj_work_dir(&state.cfg.work_root, proj_id);

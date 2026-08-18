@@ -129,6 +129,8 @@ pub struct ProjectConfigRow {
     pub worker_profile_json: Value,
     /// Custom env injected only at e2b warm-proj create (`envVars`); sidecar. Author: kejiqing
     pub worker_env_json: Value,
+    /// Knowledge-base source mappings; sidecar. Author: kejiqing
+    pub kb_sources_json: Value,
     /// Human-readable slug within cluster (unique when non-empty). Author: kejiqing
     pub project_code: String,
     /// Admin-facing project description (sidecar). Author: kejiqing
@@ -185,6 +187,7 @@ pub struct ProjectConfigSummary {
     pub stable_content_rev: Option<String>,
     pub draft_open: bool,
     pub updated_at_ms: i64,
+    pub project_role: String,
     pub claude_in_db: bool,
     pub skills_count_db: i64,
     pub rules_count_db: i64,
@@ -427,6 +430,7 @@ pub struct ProjectConfigUpsert<'a> {
     pub prompt_limits_json: &'a Value,
     pub worker_profile_json: &'a Value,
     pub worker_env_json: &'a Value,
+    pub kb_sources_json: &'a Value,
     pub project_code: &'a str,
     pub project_description: &'a str,
     pub max_iterations: Option<usize>,
@@ -3017,7 +3021,8 @@ impl GatewaySessionDb {
         &self,
     ) -> Result<Vec<ProjectConfigSummary>, SqlxError> {
         let rows = sqlx::query(
-            r"SELECT proj_id, content_rev, stable_content_rev, draft_open, updated_at_ms, claude_md,
+            r"SELECT proj_id, content_rev, stable_content_rev, draft_open, updated_at_ms,
+                      project_role, claude_md,
                       skills_json, rules_json, mcp_servers_json, git_sync_json,
                       project_code, project_description
                FROM project_config WHERE cluster_id = $1 ORDER BY proj_id",
@@ -3033,6 +3038,9 @@ impl GatewaySessionDb {
             let stable_content_rev: Option<String> = row.try_get("stable_content_rev")?;
             let draft_open: bool = row.try_get("draft_open")?;
             let updated_at_ms: i64 = row.try_get("updated_at_ms")?;
+            let project_role: String = row
+                .try_get::<Option<String>, _>("project_role")?
+                .unwrap_or_else(|| "normal".to_string());
             let claude_md: Option<String> = row.try_get("claude_md")?;
             let skills_json: Value = row.try_get::<Json<Value>, _>("skills_json")?.0;
             let rules_json: Value = row.try_get::<Json<Value>, _>("rules_json")?.0;
@@ -3057,6 +3065,7 @@ impl GatewaySessionDb {
                 stable_content_rev,
                 draft_open,
                 updated_at_ms,
+                project_role,
                 claude_in_db,
                 skills_count_db,
                 rules_count_db,
@@ -3078,7 +3087,7 @@ impl GatewaySessionDb {
                       rules_json, mcp_servers_json, skills_sources_json, skills_json,
                       allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
                       solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
-                      prompt_limits_json, worker_profile_json, worker_env_json, project_code,
+                      prompt_limits_json, worker_profile_json, worker_env_json, kb_sources_json, project_code,
                       project_description, max_iterations
                FROM project_config WHERE cluster_id = $1 AND proj_id = $2",
         )
@@ -3115,6 +3124,10 @@ impl GatewaySessionDb {
             .try_get::<Json<Value>, _>("worker_env_json")
             .map(|j| j.0)
             .unwrap_or_else(|_| crate::pool::default_worker_env_json());
+        let kb_sources_json: Value = row
+            .try_get::<Json<Value>, _>("kb_sources_json")
+            .map(|j| j.0)
+            .unwrap_or_else(|_| json!([]));
         let project_code: String = row.try_get("project_code").unwrap_or_default();
         let project_description: String = row.try_get("project_description").unwrap_or_default();
         let max_iterations: Option<usize> = row
@@ -3147,6 +3160,7 @@ impl GatewaySessionDb {
             prompt_limits_json,
             worker_profile_json,
             worker_env_json,
+            kb_sources_json,
             project_code,
             project_description,
             max_iterations,
@@ -3627,9 +3641,9 @@ impl GatewaySessionDb {
                 rules_json, mcp_servers_json, skills_sources_json, skills_json,
                 allowed_tools_json, claude_md, git_sync_json, solve_preflight_json,
                 solve_orchestration_json, language_pipeline_json, extra_session_fields_json,
-                prompt_limits_json, worker_profile_json, worker_env_json, project_code,
+                prompt_limits_json, worker_profile_json, worker_env_json, kb_sources_json, project_code,
                 project_description, max_iterations
-            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
             ON CONFLICT (cluster_id, proj_id) DO UPDATE SET
                 ds_id = EXCLUDED.ds_id,
                 content_rev = EXCLUDED.content_rev,
@@ -3650,6 +3664,7 @@ impl GatewaySessionDb {
                 prompt_limits_json = EXCLUDED.prompt_limits_json,
                 worker_profile_json = EXCLUDED.worker_profile_json,
                 worker_env_json = EXCLUDED.worker_env_json,
+                kb_sources_json = EXCLUDED.kb_sources_json,
                 project_code = EXCLUDED.project_code,
                 project_description = EXCLUDED.project_description,
                 max_iterations = EXCLUDED.max_iterations",
@@ -3674,6 +3689,7 @@ impl GatewaySessionDb {
         .bind(Json(row.prompt_limits_json))
         .bind(Json(row.worker_profile_json))
         .bind(Json(row.worker_env_json))
+        .bind(Json(row.kb_sources_json))
         .bind(row.project_code)
         .bind(row.project_description)
         .bind(row.max_iterations.and_then(|n| i32::try_from(n).ok()))
@@ -6333,6 +6349,7 @@ mod tests {
                     prompt_limits_json: &json!({}),
                     worker_profile_json: &json!({"mode": "strict"}),
                     worker_env_json: &json!({}),
+                    kb_sources_json: &json!([]),
                     project_code: "",
                     project_description: "",
                     max_iterations: None,
@@ -6368,6 +6385,7 @@ mod tests {
                     prompt_limits_json: &json!({}),
                     worker_profile_json: &json!({"mode": "strict"}),
                     worker_env_json: &json!({}),
+                    kb_sources_json: &json!([]),
                     project_code: "",
                     project_description: "",
                     max_iterations: None,

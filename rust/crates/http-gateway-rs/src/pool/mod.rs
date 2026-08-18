@@ -62,7 +62,10 @@ pub use session_mount_ownership::{
     ensure_session_tree_owned_for_worker_with_runtime_fallback, path_for_pool_acquire,
 };
 pub use stdout_hooks::merge_stdout_hooks;
-pub use worker_env::{default_worker_env_json, parse_worker_env_map, validate_worker_env_json};
+pub use worker_env::{
+    default_kb_sync_worker_env_json, default_worker_env_json, merge_kb_sync_worker_env_defaults,
+    parse_worker_env_map, validate_worker_env_json,
+};
 pub use worker_profile::{
     default_worker_profile_json, desired_strict_pool_size_from_profile, effective_mode,
     load_desired_worker_pool_size, mode_from_json, pool_size_override_from_json,

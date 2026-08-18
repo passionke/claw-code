@@ -54,21 +54,20 @@ API：`GET /v1/preflight/plugins`、`PUT /v1/preflight/plugins/{pluginId}`。迁
 - 非空 `skills_json` → `home/skills/` 整树
 - `rules_json` 每条 `relativePath`（如 `home/.cursor/rules/*.mdc`）
 
-pull 后网关 **`apply_project_config`** 叠加 PG，保证 Admin 配置仍为准。远程仓库根目录对应 `home/` 下非 PG 路径。
+pull **不**跑 `apply_project_config`：PG 物化只走 activate → `project_home_def`。每个 remote 写入 NAS `home/<destRel>/`（整目录覆盖），与 PG 路径互不覆盖。
 
 **对象**（camelCase，存于 `git_sync_json`）：
 
 | 字段 | 说明 |
 | --- | --- |
 | `enabled` | 是否启用；`false` 时不拉取。 |
-| `gitUrl` | GitHub/GitLab 风格 HTTPS 或 `git@` / `ssh://`；HTTPS **禁止** URL 内嵌用户名密码。 |
-| `gitRef` | 分支名，默认 `main`。 |
-| `gitToken` / `gitPatId` | HTTPS 用 PAT（`gitPatId` 引用全局 PAT）；API **不返回** 明文 token。 |
-| `lastPullAtMs` / `lastPullCommitId` / `lastPullError` | 手动 pull 后回写。 |
+| `remotes[]` | 多仓库。每行：`id`、`gitUrl`、`gitRef`、`gitPatId`、`destRel`、`lastPull*`。 |
+| `destRel` | 写入 NAS `{cluster}/proj_N/home/<destRel>/` → worker `/claw_ds/<destRel>/`。禁止 `project_home_def` / `.claw` / `.vscode`。 |
+| 旧字段 `gitUrl`/`gitRef`/`gitPatId` | 读作 `remotes[0]`。 |
 
 - 保存：`PUT /v1/project/config/{proj_id}` 的 `gitSyncJson`；PUT **省略** `gitSyncJson` 时保留库内已有配置。
-- 拉取：`POST /v1/projects/{proj_id}/git/pull`（pull → `apply_project_config` → `link_claw_compat_symlinks`）；**仅手动**，无自动 poll。
-- Pool worker 通过 **`/claw_ds` 只读 bind** 读 project 层（含 Git 导入文件）；见下节。
+- 拉取：`POST /v1/projects/{proj_id}/git/pull`（gateway clone scratch → nas-api 写入 dest；**不**改 `project_home_def`）；**仅手动**，无自动 poll。
+- Pool worker 通过 **`/claw_ds` bind** 读 project home（strict 只读，relaxed 可写；再拉取覆盖 git dest）。skills / rules / CLAUDE 仍以 DB → `project_home_def` 为准。
 
 ### `skills_json` 约定
 
@@ -188,15 +187,15 @@ EDITING: draft_open=true，仅 1 个临时版 content_rev=__draft__，生效 E �
 
 | 层 | 宿主机 | Pool worker | `materialize_in` |
 | --- | --- | --- | --- |
-| **Project** | `proj_<id>/`（PG 物化 + Git pull） | **`/claw_ds` 只读 bind** | **不写** tmpfs |
+| **Project** | NAS `{cluster}/proj_<id>/home`（PG `project_home_def` + Git dest 目录） | **`/claw_ds` bind**（strict ro / relaxed rw） | **不写** tmpfs |
 | **Session** | `sessions/…`（可选 cache） | **`/claw_host_root` tmpfs 可写** | task / jsonl / workspace tar |
 
-1. solve 前网关 **`apply_project_config_for_proj`** 物化宿主机 `proj_<id>/`（skills、rules、CLAUDE、settings、Git 导入文件）。
+1. solve 前网关 **`apply_project_config_for_proj`** 物化宿主机 `proj_<id>/`（skills、rules、CLAUDE、settings）；Git 导入走 nas-api 写入 `{cluster}/proj_N/home/<destRel>/`，不扫文件清单。
 2. `materialize_in` **仅**写 session 制品：task、续聊 jsonl、解压 `workspace_tar_gz`；**不再**把 PG 配置复制进 `/claw_host_root`。
 3. `exec` 注入 **`CLAW_PROJECT_CONFIG_ROOT=/claw_ds/project_home_def`**（读 project 当前稳定版本）、**`CLAW_GATEWAY_WORK_ROOT=/claw_host_root`**（写 session）；`gateway-solve-once` 的 `cwd` 为 `/claw_host_root`。
 4. readback tar **不含** project 配置（本就不在 tmpfs）；session 产出（如 `home/schema.md`）在 tmpfs 的 `home/` 下可进 tar。
 
-宿主机 **`link_claw_compat_symlinks`**（`.claw/skills`、`.cursor/rules` → `home/`）供 claw 与 `/claw_ds` bind 发现路径。Git 导入清单：`home/.claw/git-import-manifest.txt`；pool prompt 段列出 `/claw_ds/home/…` 只读路径。
+宿主机 **`link_claw_compat_symlinks`**（`.claw/skills`、`.cursor/rules` → `home/`）供 claw 与 `/claw_ds` bind 发现路径。Git 导入目录：NAS `home/<destRel>/` → worker `/claw_ds/<destRel>/`。
 
 实现：`project_config_apply.rs`（宿主机物化）、`session_db_sync.rs`（session-only `materialize_in`）、`project_git_sync.rs`（pull）。
 

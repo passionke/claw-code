@@ -6,6 +6,9 @@ use sqlx::types::Json;
 use sqlx::{Error as SqlxError, Row};
 use uuid::Uuid;
 
+use crate::project_relation::{
+    ProjectRelationRow, RELATION_TYPE_MASTER_APPRENTICE, RELATION_TYPE_MASTER_OBSERVATION,
+};
 use crate::project_config_draft;
 use crate::session_db::{
     now_ms_for_registry, GatewaySessionDb, ProjectConfigRevisionRow, ProjectConfigRow,
@@ -16,6 +19,7 @@ pub const PROJECT_ROLE_NORMAL: &str = "normal";
 pub const PROJECT_ROLE_MASTER: &str = "master";
 pub const PROJECT_ROLE_OBSERVATION: &str = "observation";
 pub const PROJECT_ROLE_ROUTER: &str = "router";
+pub const PROJECT_ROLE_KNOWLEDGE_BASE: &str = "knowledge_base";
 
 pub const MASTER_MCP_SERVER_NAME: &str = "claw-master-observer";
 pub const MASTER_MCP_HTTP_PATH_PREFIX: &str = "/v1/master";
@@ -85,6 +89,7 @@ pub struct MasterRepairRunRow {
 pub struct GatewayScheduledJobRow {
     pub job_id: String,
     pub master_proj_id: i64,
+    pub job_kind: String,
     pub schedule_kind: String,
     pub run_at_hhmm: String,
     pub weekday: Option<i32>,
@@ -268,6 +273,7 @@ pub async fn seed_router_project(db: &GatewaySessionDb, proj_id: i64) -> Result<
         prompt_limits_json: &row.prompt_limits_json,
         worker_profile_json: &row.worker_profile_json,
         worker_env_json: &row.worker_env_json,
+        kb_sources_json: &row.kb_sources_json,
         project_code: &row.project_code,
         project_description: &row.project_description,
         max_iterations: row.max_iterations,
@@ -331,6 +337,7 @@ pub async fn enable_ops_delegate_tool(db: &GatewaySessionDb, proj_id: i64) -> Re
         prompt_limits_json: &row.prompt_limits_json,
         worker_profile_json: &row.worker_profile_json,
         worker_env_json: &row.worker_env_json,
+        kb_sources_json: &row.kb_sources_json,
         project_code: &row.project_code,
         project_description: &row.project_description,
         max_iterations: row.max_iterations,
@@ -387,9 +394,10 @@ pub fn validate_project_role(role: &str) -> Result<&str, String> {
         PROJECT_ROLE_NORMAL
         | PROJECT_ROLE_MASTER
         | PROJECT_ROLE_OBSERVATION
-        | PROJECT_ROLE_ROUTER => Ok(role.trim()),
+        | PROJECT_ROLE_ROUTER
+        | PROJECT_ROLE_KNOWLEDGE_BASE => Ok(role.trim()),
         other => Err(format!(
-            "invalid project_role={other:?}; expected normal|master|observation|router"
+            "invalid project_role={other:?}; expected normal|master|observation|router|knowledge_base"
         )),
     }
 }
@@ -641,6 +649,7 @@ impl GatewaySessionDb {
         .bind(link.updated_at_ms)
         .execute(self.pg_pool())
         .await?;
+        self.sync_project_relations_for_master_link(link).await?;
         Ok(())
     }
 
@@ -649,6 +658,7 @@ impl GatewaySessionDb {
         master_proj_id: i64,
         apprentice_proj_id: i64,
     ) -> Result<(), SqlxError> {
+        let existing = self.get_master_link(master_proj_id, apprentice_proj_id).await?;
         sqlx::query(
             "UPDATE project_master_link SET orphaned = TRUE, updated_at_ms = $4 \
              WHERE cluster_id = $1 AND master_proj_id = $2 AND apprentice_proj_id = $3",
@@ -659,6 +669,66 @@ impl GatewaySessionDb {
         .bind(now_ms_for_registry())
         .execute(self.pg_pool())
         .await?;
+        if let Some(mut link) = existing {
+            link.orphaned = true;
+            link.updated_at_ms = now_ms_for_registry();
+            self.sync_project_relations_for_master_link(&link).await?;
+        }
+        Ok(())
+    }
+
+    async fn sync_project_relations_for_master_link(
+        &self,
+        link: &ProjectMasterLinkRow,
+    ) -> Result<(), SqlxError> {
+        if link.orphaned {
+            let _ = self
+                .delete_project_relation(
+                    RELATION_TYPE_MASTER_APPRENTICE,
+                    link.master_proj_id,
+                    link.apprentice_proj_id,
+                )
+                .await?;
+            if link.observation_proj_id > 0 {
+                let _ = self
+                    .delete_project_relation(
+                        RELATION_TYPE_MASTER_OBSERVATION,
+                        link.master_proj_id,
+                        link.observation_proj_id,
+                    )
+                    .await?;
+            }
+            return Ok(());
+        }
+        self.upsert_project_relation(&ProjectRelationRow {
+            relation_type: RELATION_TYPE_MASTER_APPRENTICE.to_string(),
+            from_proj_id: link.master_proj_id,
+            to_proj_id: link.apprentice_proj_id,
+            relation_label: None,
+            relation_meta_json: json!({
+                "gatewayBase": link.apprentice_gateway_base,
+                "orphaned": false
+            }),
+            created_at_ms: link.created_at_ms,
+            updated_at_ms: link.updated_at_ms,
+        })
+        .await?;
+        if link.observation_proj_id > 0 {
+            self.upsert_project_relation(&ProjectRelationRow {
+                relation_type: RELATION_TYPE_MASTER_OBSERVATION.to_string(),
+                from_proj_id: link.master_proj_id,
+                to_proj_id: link.observation_proj_id,
+                relation_label: None,
+                relation_meta_json: json!({
+                    "apprenticeProjId": link.apprentice_proj_id,
+                    "gatewayBase": link.apprentice_gateway_base,
+                    "orphaned": false
+                }),
+                created_at_ms: link.created_at_ms,
+                updated_at_ms: link.updated_at_ms,
+            })
+            .await?;
+        }
         Ok(())
     }
 
@@ -822,12 +892,13 @@ impl GatewaySessionDb {
     ) -> Result<(), SqlxError> {
         sqlx::query(
             r"INSERT INTO gateway_scheduled_job (
-                cluster_id, job_id, master_proj_id, schedule_kind, run_at_hhmm, weekday,
+                cluster_id, job_id, master_proj_id, job_kind, schedule_kind, run_at_hhmm, weekday,
                 enabled, prompt_template, last_run_at_ms, last_task_id, last_error,
                 created_at_ms, updated_at_ms
-              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
               ON CONFLICT (cluster_id, job_id) DO UPDATE SET
                 master_proj_id = EXCLUDED.master_proj_id,
+                job_kind = EXCLUDED.job_kind,
                 schedule_kind = EXCLUDED.schedule_kind,
                 run_at_hhmm = EXCLUDED.run_at_hhmm,
                 weekday = EXCLUDED.weekday,
@@ -841,6 +912,7 @@ impl GatewaySessionDb {
         .bind(self.cluster_id())
         .bind(&job.job_id)
         .bind(job.master_proj_id)
+        .bind(&job.job_kind)
         .bind(&job.schedule_kind)
         .bind(&job.run_at_hhmm)
         .bind(job.weekday)
@@ -862,7 +934,7 @@ impl GatewaySessionDb {
     ) -> Result<Vec<GatewayScheduledJobRow>, SqlxError> {
         let rows = if let Some(mid) = master_proj_id {
             sqlx::query(
-                r"SELECT job_id, master_proj_id, schedule_kind, run_at_hhmm, weekday, enabled,
+                r"SELECT job_id, master_proj_id, job_kind, schedule_kind, run_at_hhmm, weekday, enabled,
                          prompt_template, last_run_at_ms, last_task_id, last_error,
                          created_at_ms, updated_at_ms
                   FROM gateway_scheduled_job
@@ -875,7 +947,7 @@ impl GatewaySessionDb {
             .await?
         } else {
             sqlx::query(
-                r"SELECT job_id, master_proj_id, schedule_kind, run_at_hhmm, weekday, enabled,
+                r"SELECT job_id, master_proj_id, job_kind, schedule_kind, run_at_hhmm, weekday, enabled,
                          prompt_template, last_run_at_ms, last_task_id, last_error,
                          created_at_ms, updated_at_ms
                   FROM gateway_scheduled_job
@@ -893,7 +965,7 @@ impl GatewaySessionDb {
         &self,
     ) -> Result<Vec<GatewayScheduledJobRow>, SqlxError> {
         let rows = sqlx::query(
-            r"SELECT job_id, master_proj_id, schedule_kind, run_at_hhmm, weekday, enabled,
+            r"SELECT job_id, master_proj_id, job_kind, schedule_kind, run_at_hhmm, weekday, enabled,
                      prompt_template, last_run_at_ms, last_task_id, last_error,
                      created_at_ms, updated_at_ms
               FROM gateway_scheduled_job
@@ -976,6 +1048,7 @@ fn row_to_scheduled_job(r: &sqlx::postgres::PgRow) -> GatewayScheduledJobRow {
     GatewayScheduledJobRow {
         job_id: r.get("job_id"),
         master_proj_id: r.get("master_proj_id"),
+        job_kind: r.get("job_kind"),
         schedule_kind: r.get("schedule_kind"),
         run_at_hhmm: r.get("run_at_hhmm"),
         weekday: r.get("weekday"),
@@ -1029,6 +1102,7 @@ pub async fn clone_stable_config_onto_project(
         prompt_limits_json: &source.prompt_limits_json,
         worker_profile_json,
         worker_env_json: &source.worker_env_json,
+        kb_sources_json: &source.kb_sources_json,
         project_code,
         project_description,
         max_iterations: source.max_iterations,
@@ -1095,6 +1169,7 @@ pub async fn seed_master_project(db: &GatewaySessionDb, proj_id: i64) -> Result<
         prompt_limits_json: &row.prompt_limits_json,
         worker_profile_json: &worker,
         worker_env_json: &row.worker_env_json,
+        kb_sources_json: &row.kb_sources_json,
         project_code: &row.project_code,
         project_description: &row.project_description,
         max_iterations: row.max_iterations,
@@ -1118,6 +1193,51 @@ pub async fn seed_master_project(db: &GatewaySessionDb, proj_id: i64) -> Result<
         .await
         .map_err(|e| e.to_string())?;
     db.set_project_role(proj_id, PROJECT_ROLE_MASTER)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Set role=knowledge_base and ensure default Mind runtime env keys exist. Author: kejiqing
+pub async fn seed_knowledge_base_project(
+    db: &GatewaySessionDb,
+    proj_id: i64,
+) -> Result<(), String> {
+    let mut row = db
+        .get_project_config(proj_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("project {proj_id} not found"))?;
+    row.worker_env_json = crate::pool::merge_kb_sync_worker_env_defaults(&row.worker_env_json);
+    let now = now_ms_for_registry();
+    db.upsert_project_config(ProjectConfigUpsert {
+        proj_id,
+        content_rev: &row.content_rev,
+        stable_content_rev: row.stable_content_rev.as_deref(),
+        draft_open: row.draft_open,
+        updated_at_ms: now,
+        rules_json: &row.rules_json,
+        mcp_servers_json: &row.mcp_servers_json,
+        skills_sources_json: &row.skills_sources_json,
+        skills_json: &row.skills_json,
+        allowed_tools_json: &row.allowed_tools_json,
+        claude_md: row.claude_md.as_deref(),
+        git_sync_json: &row.git_sync_json,
+        solve_preflight_json: &row.solve_preflight_json,
+        solve_orchestration_json: &row.solve_orchestration_json,
+        language_pipeline_json: &row.language_pipeline_json,
+        extra_session_fields_json: &row.extra_session_fields_json,
+        prompt_limits_json: &row.prompt_limits_json,
+        worker_profile_json: &row.worker_profile_json,
+        worker_env_json: &row.worker_env_json,
+        kb_sources_json: &row.kb_sources_json,
+        project_code: &row.project_code,
+        project_description: &row.project_description,
+        max_iterations: row.max_iterations,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    db.set_project_role(proj_id, PROJECT_ROLE_KNOWLEDGE_BASE)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

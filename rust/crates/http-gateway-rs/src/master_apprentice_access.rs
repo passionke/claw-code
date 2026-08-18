@@ -92,6 +92,7 @@ pub fn row_to_stable_dto(row: &ProjectConfigRow, project_role: &str) -> Apprenti
         extra_session_fields_json: row.extra_session_fields_json.clone(),
         prompt_limits_json: row.prompt_limits_json.clone(),
         worker_env_json: row.worker_env_json.clone(),
+        // Remote apprentice stable-config DTO does not yet carry KB sync sources.
         max_iterations: row.max_iterations,
         project_code: row.project_code.clone(),
         project_description: row.project_description.clone(),
@@ -123,6 +124,7 @@ pub fn dto_to_config_row(dto: &ApprenticeStableConfigDto) -> ProjectConfigRow {
         prompt_limits_json: dto.prompt_limits_json.clone(),
         worker_profile_json: json!({}),
         worker_env_json: dto.worker_env_json.clone(),
+        kb_sources_json: json!([]),
         project_code: dto.project_code.clone(),
         project_description: dto.project_description.clone(),
         max_iterations: dto.max_iterations,
@@ -646,6 +648,7 @@ pub async fn apply_draft_patch_local(
         prompt_limits_json: &draft.prompt_limits_json,
         worker_profile_json: &draft.worker_profile_json,
         worker_env_json: &draft.worker_env_json,
+        kb_sources_json: &draft.kb_sources_json,
         project_code: &draft.project_code,
         project_description: &draft.project_description,
         max_iterations: draft.max_iterations,

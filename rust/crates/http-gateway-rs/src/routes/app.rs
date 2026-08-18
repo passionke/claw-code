@@ -198,6 +198,7 @@ mod tests {
             prompt_limits_json: json!({}),
             worker_profile_json: json!({"mode": "strict"}),
             worker_env_json: json!({}),
+            kb_sources_json: json!([]),
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: None,

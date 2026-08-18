@@ -12,10 +12,12 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
     ca-certificates \
     curl \
     git \
+    openssh-client \
     podman \
     docker.io \
     python3 \
     python3-pip \
+    rsync \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -24,6 +26,8 @@ COPY deploy/stack/.linux-artifacts/release/http-gateway-rs /usr/local/bin/http-g
 # claw-vscode VSIX for e2b OVS bootstrap (package-claw-vscode-vsix.sh before image build). kejiqing
 COPY deploy/stack/claw.claw-vscode-*.vsix /app/deploy/stack/
 COPY deploy/e2b/e2b_exec.py /app/deploy/e2b/
+COPY scripts/mind-kb/ /app/scripts/mind-kb/
+COPY docs/gpos-assistant-prompt-content.md /app/docs/
 # Self-hosted e2b exec helper (CLAW_E2B_EXEC_HELPER default). Author: kejiqing
 RUN pip3 install --no-cache-dir --break-system-packages e2b e2b-code-interpreter \
     && chmod +x /app/deploy/e2b/e2b_exec.py

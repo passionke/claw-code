@@ -398,6 +398,7 @@ async fn upsert_project_draft(
         prompt_limits_json: &existing.prompt_limits_json,
         worker_profile_json,
         worker_env_json,
+        kb_sources_json: &existing.kb_sources_json,
         project_code: &existing.project_code,
         project_description: &existing.project_description,
         max_iterations,

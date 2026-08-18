@@ -45,6 +45,9 @@ pub(crate) struct UpsertProjectConfigRequest {
     /// Omit on PUT to keep existing `worker_env_json`. Author: kejiqing
     #[serde(rename = "workerEnvJson", default)]
     worker_env_json: Option<Value>,
+    /// Omit on PUT to keep existing `kb_sources_json`. Author: kejiqing
+    #[serde(rename = "kbSourcesJson", default)]
+    kb_sources_json: Option<Value>,
     /// Omit to keep; JSON `null` clears; positive int sets. Author: kejiqing
     #[serde(default, rename = "maxIterations")]
     #[allow(clippy::option_option)]
@@ -62,6 +65,8 @@ pub(crate) struct CommitProjectConfigDraftRequest {
 pub(crate) struct ProjectConfigResponse {
     #[serde(rename = "projId")]
     proj_id: i64,
+    #[serde(rename = "projectRole")]
+    project_role: String,
     #[serde(rename = "contentRev")]
     content_rev: String,
     #[serde(rename = "stableContentRev", skip_serializing_if = "Option::is_none")]
@@ -112,6 +117,9 @@ pub(crate) struct ProjectConfigResponse {
     #[serde(rename = "workerEnvJson")]
     #[schema(value_type = Object)]
     worker_env_json: Value,
+    #[serde(rename = "kbSourcesJson")]
+    #[schema(value_type = Object)]
+    kb_sources_json: Value,
     #[serde(rename = "projectCode")]
     project_code: String,
     #[serde(rename = "projectDescription")]
@@ -332,6 +340,7 @@ pub(crate) fn default_project_config_row(proj_id: i64) -> session_db::ProjectCon
         prompt_limits_json: project_config_apply::default_prompt_limits_json(),
         worker_profile_json: pool::default_worker_profile_json(),
         worker_env_json: pool::default_worker_env_json(),
+        kb_sources_json: json!([]),
         project_code: String::new(),
         project_description: String::new(),
         max_iterations: None,
@@ -495,6 +504,7 @@ pub(crate) async fn activate_project_config_revision_row(
             prompt_limits_json: &sidecars.prompt_limits_json,
             worker_profile_json: &sidecars.worker_profile_json,
             worker_env_json: &sidecars.worker_env_json,
+            kb_sources_json: &sidecars.kb_sources_json,
             project_code: &sidecars.project_code,
             project_description: &sidecars.project_description,
             max_iterations: sidecars.max_iterations,
@@ -528,39 +538,7 @@ pub(crate) async fn activate_project_config_revision_row(
 }
 
 pub(crate) fn merge_git_sync_from_put(incoming: &Value, existing: &Value) -> Value {
-    let mut inc = parse_git_sync_json(incoming);
-    let ex = parse_git_sync_json(existing);
-    let pat_id_in_incoming = incoming.get("gitPatId").is_some();
-    if !pat_id_in_incoming {
-        inc.git_pat_id = ex.git_pat_id;
-    } else if incoming
-        .get("gitPatId")
-        .is_some_and(serde_json::Value::is_null)
-    {
-        inc.git_pat_id = None;
-    }
-    let uses_global_pat = inc
-        .git_pat_id
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|s| !s.is_empty());
-    if uses_global_pat {
-        inc.git_token = None;
-    } else if inc
-        .git_token
-        .as_deref()
-        .map(str::trim)
-        .as_ref()
-        .is_none_or(|s| s.is_empty())
-    {
-        inc.git_token = ex.git_token;
-    }
-    if incoming.get("lastPullAtMs").is_none() {
-        inc.last_pull_at_ms = ex.last_pull_at_ms;
-        inc.last_pull_commit_id = ex.last_pull_commit_id;
-        inc.last_pull_error = ex.last_pull_error;
-    }
-    git_sync_to_json(&inc)
+    project_git_sync::merge_git_sync_from_put(incoming, existing)
 }
 
 pub(crate) async fn git_sync_json_for_api(state: &AppState, v: &Value) -> Value {
@@ -568,35 +546,26 @@ pub(crate) async fn git_sync_json_for_api(state: &AppState, v: &Value) -> Value 
     let tokens = gateway_global_settings::load_git_pat_tokens(&state.session_db)
         .await
         .ok();
-    let token_set = git_sync_token_set(&sync, tokens.as_ref());
+    let token_map = tokens.as_ref().map(|t| &t.tokens);
     let mut j = git_sync_to_json(&sync);
+    let mut any_set = false;
+    if let Some(arr) = j.get_mut("remotes").and_then(Value::as_array_mut) {
+        for (i, item) in arr.iter_mut().enumerate() {
+            let set = sync
+                .remotes
+                .get(i)
+                .is_some_and(|r| project_git_sync::remote_has_pat_token(r, token_map));
+            any_set |= set;
+            if let Some(obj) = item.as_object_mut() {
+                obj.remove("gitToken");
+                obj.insert("gitTokenSet".into(), json!(set));
+            }
+        }
+    }
     if let Some(obj) = j.as_object_mut() {
-        obj.insert("gitTokenSet".into(), json!(token_set));
+        obj.insert("gitTokenSet".into(), json!(any_set));
     }
     j
-}
-
-pub(crate) fn git_sync_token_set(
-    sync: &project_git_sync::ProjectGitSync,
-    tokens: Option<&gateway_global_settings::GitPatTokensStore>,
-) -> bool {
-    if sync
-        .git_token
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|s| !s.is_empty())
-    {
-        return true;
-    }
-    let Some(id) = sync
-        .git_pat_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
-        return false;
-    };
-    tokens.is_some_and(|t| t.tokens.contains_key(id))
 }
 
 pub(crate) async fn load_project_config_or_default(
@@ -655,6 +624,11 @@ pub(crate) async fn project_config_row_to_response(
 ) -> ProjectConfigResponse {
     ProjectConfigResponse {
         proj_id: row.proj_id,
+        project_role: state
+            .session_db
+            .get_project_role(row.proj_id)
+            .await
+            .unwrap_or_else(|_| crate::master_observer::PROJECT_ROLE_NORMAL.to_string()),
         content_rev: row.content_rev.clone(),
         stable_content_rev: row.stable_content_rev.clone(),
         draft_open: row.draft_open,
@@ -679,6 +653,7 @@ pub(crate) async fn project_config_row_to_response(
         prompt_limits_json: row.prompt_limits_json,
         worker_profile_json: row.worker_profile_json,
         worker_env_json: row.worker_env_json,
+        kb_sources_json: row.kb_sources_json,
         project_code: row.project_code,
         project_description: row.project_description,
         max_iterations: row.max_iterations,
@@ -816,6 +791,14 @@ pub(crate) fn validate_project_config_payload(req: &UpsertProjectConfigRequest) 
     if let Some(ref we) = req.worker_env_json {
         pool::validate_worker_env_json(we)
             .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    }
+    if let Some(ref ks) = req.kb_sources_json {
+        if !ks.is_array() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "kbSourcesJson must be a JSON array",
+            ));
+        }
     }
     if let Some(Some(0)) = req.max_iterations {
         return Err(ApiError::new(
@@ -1136,6 +1119,10 @@ pub(crate) async fn put_project_config(
         Some(incoming) => incoming.clone(),
         None => existing.worker_env_json.clone(),
     };
+    let kb_sources_json = match &req.kb_sources_json {
+        Some(incoming) => incoming.clone(),
+        None => existing.kb_sources_json.clone(),
+    };
     let max_iterations = crate::max_iterations::parse_project_max_iterations_put(
         req.max_iterations,
         existing.max_iterations,
@@ -1157,6 +1144,7 @@ pub(crate) async fn put_project_config(
         prompt_limits_json: Some(prompt_limits_json.clone()),
         worker_profile_json: Some(worker_profile_json.clone()),
         worker_env_json: Some(worker_env_json.clone()),
+        kb_sources_json: Some(kb_sources_json.clone()),
         max_iterations: Some(max_iterations),
     };
     validate_project_config_payload(&req_for_validate)?;
@@ -1196,6 +1184,7 @@ pub(crate) async fn put_project_config(
         prompt_limits_json: &prompt_limits_json,
         worker_profile_json: &worker_profile_json,
         worker_env_json: &worker_env_json,
+        kb_sources_json: &kb_sources_json,
         project_code: &existing.project_code,
         project_description: &existing.project_description,
         max_iterations,
@@ -1315,6 +1304,7 @@ pub(crate) async fn commit_project_config_draft(
             prompt_limits_json: row.prompt_limits_json.clone(),
             worker_profile_json: row.worker_profile_json.clone(),
             worker_env_json: row.worker_env_json.clone(),
+            kb_sources_json: row.kb_sources_json.clone(),
             project_code: row.project_code.clone(),
             project_description: row.project_description.clone(),
             max_iterations: row.max_iterations,
@@ -1491,6 +1481,7 @@ mod max_iterations_project_response_tests {
     fn project_response_serializes_max_iterations() {
         let response = ProjectConfigResponse {
             proj_id: 1,
+            project_role: "normal".into(),
             content_rev: "rev".into(),
             stable_content_rev: Some("rev".into()),
             draft_open: false,
@@ -1509,6 +1500,7 @@ mod max_iterations_project_response_tests {
             prompt_limits_json: json!({}),
             worker_profile_json: json!({"mode": "strict"}),
             worker_env_json: json!({}),
+            kb_sources_json: json!([]),
             project_code: String::new(),
             project_description: String::new(),
             max_iterations: Some(5),
