@@ -1008,18 +1008,93 @@ pub fn gateway_sqlbot_preflight_prompt_section(cwd: &Path) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// Pool worker: clarify `/claw_host_root` vs `/claw_ds` (config + git-imported repos). Author: kejiqing
+/// Names that must not be treated as git `destRel` (keep in sync with `project_git_sync::RESERVED_DEST_RELS`). Author: kejiqing
+const GIT_IMPORT_RESERVED_DEST_RELS: &[&str] =
+    &["project_home_def", ".claw", ".vscode", ".git", "home"];
+
+fn is_git_import_dest_rel_name(name: &str) -> bool {
+    let dest = name.trim();
+    if dest.is_empty() || dest == "." || dest == ".." {
+        return false;
+    }
+    if dest.contains('/') || dest.contains('\\') {
+        return false;
+    }
+    if GIT_IMPORT_RESERVED_DEST_RELS.contains(&dest) {
+        return false;
+    }
+    dest.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+/// Top-level git import dirs under `/claw_ds` (`Hello-World`, not `project_home_def`). Author: kejiqing
+#[must_use]
+pub fn list_git_import_dest_rels(claw_ds: &Path) -> Vec<String> {
+    let mut dests = Vec::new();
+    let Ok(entries) = fs::read_dir(claw_ds) else {
+        return dests;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !is_git_import_dest_rel_name(name) {
+            continue;
+        }
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_dir() {
+            dests.push(name.to_string());
+        }
+    }
+    dests.sort();
+    dests
+}
+
+fn render_gateway_pool_layout_prompt(session_root: &str, git_dest_rels: &[String]) -> String {
+    let mut lines = vec![
+        "# Worker filesystem".to_string(),
+        format!(
+            "- Writable session workspace: `{session_root}` (your cwd; create/edit files here)"
+        ),
+        format!(
+            "- Admin project config (skills/CLAUDE.md): `{GATEWAY_POOL_DS_CONFIG_ROOT}` — not the git trees"
+        ),
+    ];
+    if git_dest_rels.is_empty() {
+        lines.push(
+            "- Git-imported repositories: top-level dirs under `/claw_ds/<destRel>/` (siblings of `project_home_def`). Do not follow session `ds` → `../../home` (that symlink is NAS-relative and resolves to guest `/home`)."
+                .to_string(),
+        );
+    } else {
+        lines.push(
+            "- Git-imported repositories (use these paths; not under `project_home_def`; do not follow session `ds`):"
+                .to_string(),
+        );
+        for dest in git_dest_rels {
+            lines.push(format!("  - `/claw_ds/{dest}`"));
+        }
+        lines.push(
+            "- Session `ds` → `../../home` is NAS-relative and is not the git tree in this sandbox."
+                .to_string(),
+        );
+    }
+    lines.push(
+        "- Strict is read-only on `/claw_ds`; relaxed may edit git trees (next pull overwrites). You run as the pool worker user (`claw`); bash tools inherit that user (not container root).".to_string(),
+    );
+    lines.join("\n")
+}
+
+/// Pool worker: cwd vs `/claw_ds/project_home_def` vs git `/claw_ds/<destRel>`. Author: kejiqing
 #[must_use]
 pub fn gateway_pool_layout_prompt_section() -> Option<String> {
     let session_root = std::env::var("CLAW_GATEWAY_WORK_ROOT")
         .ok()
         .filter(|s| !s.trim().is_empty())?;
-    Some(format!(
-        "# Worker filesystem\n\
-         - Writable session workspace: `{session_root}` (your cwd; create/edit files here)\n\
-         - Project home: `{GATEWAY_POOL_DS_CONFIG_ROOT}` (`project_home_def` = Admin skills/CLAUDE.md; git-imported repos are `/claw_ds/<repo>/`). Strict is read-only; relaxed may edit git trees (next pull overwrites).\n\
-         You run as the pool worker user (`claw`); bash tools inherit that user (not container root)."
-    ))
+    let dests = list_git_import_dest_rels(Path::new("/claw_ds"));
+    Some(render_gateway_pool_layout_prompt(&session_root, &dests))
 }
 
 /// Load `home/schema.md` walking up from session cwd (e.g. `ds_1/sessions/<id>` → `ds_1/home/schema.md`).
@@ -1542,8 +1617,42 @@ mod tests {
         let _wr = crate::ScopedEnvVar::set("CLAW_GATEWAY_WORK_ROOT", "/claw_sessions/sess-1");
         let section = super::gateway_pool_layout_prompt_section().expect("pool section");
         assert!(section.contains("/claw_ds/project_home_def"));
-        assert!(section.contains("/claw_ds/<repo>/"));
+        assert!(section.contains("/claw_ds/<destRel>/"));
         assert!(section.contains("/claw_sessions/sess-1"));
+        assert!(section.contains("Do not follow session `ds`"));
+    }
+
+    #[test]
+    fn list_git_import_dest_rels_skips_reserved_and_lists_repos() {
+        let root = temp_dir();
+        for name in [
+            "project_home_def",
+            ".claw",
+            "home",
+            "Hello-World",
+            "workspace_test",
+        ] {
+            fs::create_dir_all(root.join(name)).expect("mkdir dest");
+        }
+        fs::write(root.join("CLAUDE.md"), "pg").expect("file not dest");
+        let dests = super::list_git_import_dest_rels(&root);
+        assert_eq!(
+            dests,
+            vec!["Hello-World".to_string(), "workspace_test".to_string()]
+        );
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn render_pool_layout_lists_concrete_git_dest_paths() {
+        let section = super::render_gateway_pool_layout_prompt(
+            "/claw_sessions/sess-1",
+            &["Hello-World".to_string(), "workspace_test".to_string()],
+        );
+        assert!(section.contains("/claw_ds/Hello-World"));
+        assert!(section.contains("/claw_ds/workspace_test"));
+        assert!(section.contains("not under `project_home_def`"));
+        assert!(!section.contains("/claw_ds/<destRel>/"));
     }
 
     #[test]
