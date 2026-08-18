@@ -28,6 +28,13 @@ struct MkdirBody<'a> {
 }
 
 #[derive(Serialize)]
+struct RmdirBody<'a> {
+    #[serde(rename = "relPath")]
+    rel_path: &'a str,
+    recursive: bool,
+}
+
+#[derive(Serialize)]
 struct SymlinkBody<'a> {
     #[serde(rename = "relPath")]
     rel_path: &'a str,
@@ -148,6 +155,28 @@ impl E2bNasApiSingleton {
             .await
             .map_err(|e| format!("nas-api get_file body: {e}"))?;
         Ok(Some(bytes.to_vec()))
+    }
+
+    /// `POST /v1/rmdir` — recursive delete of a git-import dest under proj home. Author: kejiqing
+    pub async fn rmdir_git_import_dest(&self, rel_path: &str) -> Result<(), String> {
+        let base = self.base_url().await?;
+        let url = format!("{base}/v1/rmdir");
+        let resp = self
+            .http
+            .post(&url)
+            .json(&RmdirBody {
+                rel_path,
+                recursive: true,
+            })
+            .send()
+            .await
+            .map_err(|e| format!("nas-api rmdir request: {e}"))?;
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        Err(format!("nas-api rmdir HTTP {status}: {text}"))
     }
 
     /// `POST /v1/symlink` — session → worker link.

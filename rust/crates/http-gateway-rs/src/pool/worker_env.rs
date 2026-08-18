@@ -12,6 +12,32 @@ pub fn default_worker_env_json() -> Value {
     json!({})
 }
 
+pub const KB_SYNC_MIND_API_URL: &str =
+    "https://mind.maxiot-inc.com/api/mind/tenants/455785b1-1358-45ce-89c0-5a66e56d7826/mcp";
+pub const KB_SYNC_MIND_API_URL_KEY: &str = "CLAW_MIND_API_URL";
+pub const KB_SYNC_MIND_API_AUTH_KEY: &str = "CLAW_MIND_API_AUTHORIZATION";
+pub const KB_SYNC_MIND_API_HEADERS_KEY: &str = "CLAW_MIND_API_HEADERS_JSON";
+pub const KB_SYNC_MIND_API_AUTHORIZATION: &str =
+    "Bearer ut_Xt6k1WUor-_6EtTdmO9e9H3DlgKqWqqgLeoCn2dBHO0";
+
+#[must_use]
+pub fn default_kb_sync_worker_env_json() -> Value {
+    json!({
+        KB_SYNC_MIND_API_URL_KEY: KB_SYNC_MIND_API_URL,
+        KB_SYNC_MIND_API_AUTH_KEY: KB_SYNC_MIND_API_AUTHORIZATION,
+    })
+}
+
+#[must_use]
+pub fn merge_kb_sync_worker_env_defaults(existing: &Value) -> Value {
+    let mut obj = existing.as_object().cloned().unwrap_or_default();
+    obj.entry(KB_SYNC_MIND_API_URL_KEY.to_string())
+        .or_insert_with(|| Value::String(KB_SYNC_MIND_API_URL.to_string()));
+    obj.entry(KB_SYNC_MIND_API_AUTH_KEY.to_string())
+        .or_insert_with(|| Value::String(KB_SYNC_MIND_API_AUTHORIZATION.to_string()));
+    Value::Object(obj)
+}
+
 /// Exact keys projects must not set (system / LLM / OTEL inject paths). Author: kejiqing
 const RESERVED_EXACT: &[&str] = &["TRACEPARENT", "TRACESTATE"];
 
@@ -28,6 +54,16 @@ const RESERVED_PREFIXES: &[&str] = &[
 
 fn is_reserved_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
+    if [
+        KB_SYNC_MIND_API_URL_KEY,
+        KB_SYNC_MIND_API_AUTH_KEY,
+        KB_SYNC_MIND_API_HEADERS_KEY,
+    ]
+    .iter()
+    .any(|k| *k == upper)
+    {
+        return false;
+    }
     if RESERVED_EXACT.iter().any(|k| *k == upper) {
         return true;
     }

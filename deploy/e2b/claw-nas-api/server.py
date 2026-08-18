@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import shutil
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -24,6 +25,22 @@ def _authorized(headers) -> bool:
     if auth.startswith("Bearer "):
         return secrets.compare_digest(auth[7:].strip(), INTERNAL_TOKEN)
     return secrets.compare_digest(headers.get("X-Claw-Internal-Token", "").strip(), INTERNAL_TOKEN)
+
+
+_RESERVED_HOME_NAMES = {"project_home_def", ".claw", ".vscode", ".git", "home"}
+
+
+def _git_import_dest_or_raise(rel: str) -> Path:
+    """Allow recursive rmdir only for `{cluster}/proj_N/home/{destRel}` (one dest segment). Author: kejiqing"""
+    parts = [p for p in rel.strip("/").split("/") if p]
+    if len(parts) != 4:
+        raise ValueError("rmdir only allowed for {cluster}/proj_N/home/{destRel}")
+    _cluster, proj, home, dest = parts
+    if not proj.startswith("proj_") or home != "home":
+        raise ValueError("rmdir path must be {cluster}/proj_N/home/{destRel}")
+    if dest in _RESERVED_HOME_NAMES or dest in {".", ".."}:
+        raise ValueError(f"refusing to delete reserved home path: {dest}")
+    return _safe_rel(rel)
 
 
 def _safe_rel(path: str) -> Path:
@@ -151,6 +168,27 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     target.mkdir(exist_ok=True)
                 _json(self, 200, {"relPath": rel, "created": True})
+            except ValueError as exc:
+                _json(self, 400, {"error": str(exc)})
+            except OSError as exc:
+                _json(self, 500, {"error": str(exc)})
+            return
+        if self.path == "/v1/rmdir":
+            try:
+                body = _read_json(self)
+                rel = str(body.get("relPath", "")).strip()
+                recursive = bool(body.get("recursive", False))
+                target = _git_import_dest_or_raise(rel)
+                if not target.exists() and not target.is_symlink():
+                    _json(self, 200, {"relPath": rel, "removed": False})
+                    return
+                if target.is_dir() and not target.is_symlink():
+                    if not recursive:
+                        raise ValueError("directory delete requires recursive=true")
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+                _json(self, 200, {"relPath": rel, "removed": True})
             except ValueError as exc:
                 _json(self, 400, {"error": str(exc)})
             except OSError as exc:

@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   ApiOutlined,
+  CloudDownloadOutlined,
   CodeOutlined,
   CommentOutlined,
   FileTextOutlined,
@@ -36,7 +37,9 @@ const GLOBAL_MENU_CHILDREN = [
 ];
 
 const TAB_ITEMS: MenuProps["items"] = [
-  { key: "/", icon: <AppstoreOutlined />, label: "项目" },
+  { key: "/project-config", icon: <AppstoreOutlined />, label: "项目配置" },
+  { key: "/git-import", icon: <CloudDownloadOutlined />, label: "Git 导入" },
+  { key: "/project-role", icon: <SettingOutlined />, label: "项目角色" },
   { key: "/skills", icon: <SettingOutlined />, label: "Skills" },
   { key: "/mcp", icon: <ApiOutlined />, label: "MCP" },
   { key: "/claude", icon: <FileTextOutlined />, label: "CLAUDE.md" },
@@ -81,10 +84,10 @@ export default function AdminLayout() {
     for (const t of TAB_ITEMS ?? []) {
       if (!t || typeof t !== "object" || !("key" in t)) continue;
       const k = String(t.key);
-      if (k === "/" || k === "global") continue;
+      if (k === "global") continue;
       if (loc.pathname.startsWith(k)) return k;
     }
-    return "/";
+    return "/project-config";
   })();
 
   useEffect(() => {
@@ -102,7 +105,7 @@ export default function AdminLayout() {
   }, []);
 
   useEffect(() => {
-    if (selectedKey === "/") {
+    if (selectedKey === "/project-config") {
       const t = window.setInterval(() => refreshProjects(true), 15000);
       return () => clearInterval(t);
     }

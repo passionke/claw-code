@@ -19,9 +19,15 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { proxyHttp } from "../api/client";
 import { useApp } from "../context/AppContext";
-import type { ProjectConfig, VersionEntry, VersionsResponse } from "../types/project";
+import type {
+  DelegateTargetsResponse,
+  KbSourceItem,
+  VersionEntry,
+  VersionsResponse,
+} from "../types/project";
 import VersionNoteCell from "../components/VersionNoteCell";
 import { formatVersionTime, formatVersionTitle } from "../utils/versionDisplay";
 import VersionComparePanel from "../components/VersionComparePanel";
@@ -31,6 +37,7 @@ import { putProjectConfigDraft } from "../utils/projectConfig";
 const CONFIG_VERSION_PAGE_SIZE = 20;
 
 export default function ProjectPage() {
+  const loc = useLocation();
   const {
     gatewayBase,
     projId,
@@ -44,18 +51,23 @@ export default function ProjectPage() {
   const [editingNoteRev, setEditingNoteRev] = useState<string | null>(null);
   const [editingNoteValue, setEditingNoteValue] = useState("");
   const [detailJson, setDetailJson] = useState("");
-  const [gitForm] = Form.useForm();
   const [metaForm] = Form.useForm<{ projectCode: string; projectDescription: string }>();
   const [orchestrationForm] = Form.useForm();
   const [maxIterForm] = Form.useForm<{ maxIterations?: number | null }>();
-  const [gitPatOptions, setGitPatOptions] = useState<{ value: string; label: string }[]>(
-    []
-  );
   /** NAS 物化较慢，切换生效时展示 loading。Author: kejiqing */
   const [activatingRev, setActivatingRev] = useState<string | null>(null);
   const [savingMeta, setSavingMeta] = useState(false);
   const [savingMaxIter, setSavingMaxIter] = useState(false);
   const [projectRole, setProjectRole] = useState<string>("normal");
+  const [savingRole, setSavingRole] = useState(false);
+  const [kbSources, setKbSources] = useState<
+    { key: string; sourceUrl: string; targetRelPath: string; enabled: boolean }[]
+  >([]);
+  const [savingKbSources, setSavingKbSources] = useState(false);
+  const [delegateTargets, setDelegateTargets] = useState<
+    { key: string; targetProjId: number | null; enabled: boolean; label: string; capabilityHint: string }[]
+  >([]);
+  const [savingDelegateTargets, setSavingDelegateTargets] = useState(false);
   /** Draft rows for apprentice pairing (gatewayBase empty = this gateway). Author: kejiqing */
   const [apprenticeDrafts, setApprenticeDrafts] = useState<
     {
@@ -121,6 +133,19 @@ export default function ProjectPage() {
   ] as const;
 
   const row = projects.find((p) => p.projId === projId);
+  const showRolePage = loc.pathname.startsWith("/project-role");
+  const showConfigPage = !showRolePage;
+  const delegateTargetOptions = projects
+    .filter(
+      (p) =>
+        p.projId !== projId &&
+        ((p.projectRole || "normal") === "normal" ||
+          (p.projectRole || "normal") === "knowledge_base")
+    )
+    .map((p) => ({
+      value: p.projId,
+      label: `${p.projId} · ${p.projectCode || p.projectDescription || p.projectRole || "project"}`,
+    }));
 
   const loadVersions = useCallback(async () => {
     const r = await proxyHttp<VersionsResponse>(
@@ -137,7 +162,22 @@ export default function ProjectPage() {
   }, [loadVersions, projectConfig?.contentRev, projectConfig?.draftOpen]);
 
   const loadMaster = useCallback(async () => {
+    const ownsSchedule = projectRole === "master" || projectRole === "knowledge_base";
+    if (!ownsSchedule) {
+      setMasterLinks([]);
+      setApprenticeDrafts([]);
+      setRepairRuns([]);
+      setScheduleJobs([]);
+      setScheduleJobId(null);
+      return;
+    }
     try {
+      if (projectRole !== "master") {
+        setMasterLinks([]);
+        setApprenticeDrafts([]);
+        setRepairRuns([]);
+        setGatewayEndpointOptions([]);
+      } else {
       const linksResp = await proxyHttp<{
         links: {
           apprenticeProjId: number;
@@ -147,7 +187,6 @@ export default function ProjectPage() {
           orphaned: boolean;
         }[];
       }>(gatewayBase, "GET", `/v1/projects/${projId}/apprentices`);
-      setProjectRole("master");
       setMasterLinks(linksResp.links || []);
       setApprenticeDrafts(
         (linksResp.links || [])
@@ -196,6 +235,7 @@ export default function ProjectPage() {
         }[];
       }>(gatewayBase, "GET", `/v1/projects/${projId}/repair-runs`);
       setRepairRuns(runs.runs || []);
+      }
       const sched = await proxyHttp<{
         jobs: {
           jobId: string;
@@ -211,34 +251,54 @@ export default function ProjectPage() {
       }>(gatewayBase, "GET", `/v1/projects/${projId}/schedules`);
       setScheduleJobs(sched.jobs || []);
     } catch {
-      setProjectRole("normal");
       setMasterLinks([]);
       setApprenticeDrafts([]);
       setRepairRuns([]);
       setScheduleJobs([]);
       setScheduleJobId(null);
     }
-  }, [gatewayBase, projId]);
+  }, [gatewayBase, projId, projectRole]);
 
   useEffect(() => {
     loadMaster().catch(() => undefined);
   }, [loadMaster]);
 
+  const loadDelegateTargets = useCallback(async () => {
+    if (projectRole !== "router") {
+      setDelegateTargets([]);
+      return;
+    }
+    try {
+      const resp = await proxyHttp<DelegateTargetsResponse>(
+        gatewayBase,
+        "GET",
+        `/v1/projects/${projId}/delegate-targets`
+      );
+      setDelegateTargets(
+        (resp.targets || []).map((t, i) => ({
+          key: `target-${t.targetProjId}-${i}`,
+          targetProjId: t.targetProjId,
+          enabled: t.enabled,
+          label: t.label || "",
+          capabilityHint: t.capabilityHint || "",
+        }))
+      );
+    } catch {
+      setDelegateTargets([]);
+    }
+  }, [gatewayBase, projId, projectRole]);
+
   useEffect(() => {
-    proxyHttp<{ gitPats?: { id: string; name: string; tokenSet?: boolean }[] }>(
-      gatewayBase,
-      "GET",
-      "/v1/gateway/global-settings"
-    )
-      .then((r) => {
-        setGitPatOptions(
-          (r.gitPats || [])
-            .filter((p) => p.tokenSet)
-            .map((p) => ({ value: p.id, label: `${p.name} (${p.id})` }))
-        );
-      })
-      .catch(() => setGitPatOptions([]));
-  }, [gatewayBase]);
+    loadDelegateTargets().catch(() => undefined);
+  }, [loadDelegateTargets]);
+
+  useEffect(() => {
+    const nextRole =
+      (projectConfig?.projectRole || row?.projectRole || "normal").trim() || "normal";
+    if (nextRole !== projectRole) {
+      setProjectRole(nextRole);
+    }
+  }, [projectConfig?.projectRole, row?.projectRole, projectRole]);
 
   useEffect(() => {
     if (!projectConfig) {
@@ -256,12 +316,6 @@ export default function ProjectPage() {
         2
       )
     );
-    gitForm.setFieldsValue({
-      enabled: !!projectConfig.gitSyncJson?.enabled,
-      gitUrl: projectConfig.gitSyncJson?.gitUrl || "",
-      gitRef: projectConfig.gitSyncJson?.gitRef || "main",
-      gitPatId: projectConfig.gitSyncJson?.gitPatId || undefined,
-    });
     const orchKind = projectConfig.solveOrchestrationJson?.kind || "single_turn";
     orchestrationForm.setFieldsValue({
       kind: SOLVE_ORCHESTRATION_KIND_OPTIONS.some((o) => o.value === orchKind)
@@ -279,7 +333,15 @@ export default function ProjectPage() {
     maxIterForm.setFieldsValue({
       maxIterations: projectConfig.maxIterations ?? null,
     });
-  }, [projectConfig, projId, row, gitForm, orchestrationForm, metaForm, maxIterForm]);
+    setKbSources(
+      ((projectConfig.kbSourcesJson || []) as KbSourceItem[]).map((item, idx) => ({
+        key: `kb-${idx}-${item.folderId || item.sourceUrl || idx}`,
+        sourceUrl: item.sourceUrl || "",
+        targetRelPath: item.targetRelPath || "",
+        enabled: item.enabled !== false,
+      }))
+    );
+  }, [projectConfig, projId, row, orchestrationForm, metaForm, maxIterForm]);
 
   const saveProjectMeta = async () => {
     const values = await metaForm.validateFields();
@@ -301,6 +363,86 @@ export default function ProjectPage() {
       message.error(e instanceof Error ? e.message : "保存项目信息失败");
     } finally {
       setSavingMeta(false);
+    }
+  };
+
+  const saveProjectRole = async () => {
+    if (projectRole === "observation") {
+      message.warning("observation 角色仅能通过学徒配对自动创建");
+      return;
+    }
+    setSavingRole(true);
+    try {
+      await proxyHttp(gatewayBase, "PUT", `/v1/projects/${projId}/role`, {
+        projectRole,
+      });
+      message.success("项目角色已更新");
+      await refreshProjects();
+      await refreshProjectConfig();
+      await loadDelegateTargets();
+      await loadMaster();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "设置项目角色失败");
+    } finally {
+      setSavingRole(false);
+    }
+  };
+
+  const saveDelegateTargets = async () => {
+    const targets = delegateTargets
+      .filter((t) => t.targetProjId != null && t.targetProjId > 0)
+      .map((t) => ({
+        targetProjId: t.targetProjId as number,
+        enabled: t.enabled,
+        label: t.label.trim() || undefined,
+        capabilityHint: t.capabilityHint.trim() || undefined,
+      }));
+    const ids = targets.map((t) => t.targetProjId);
+    if (new Set(ids).size !== ids.length) {
+      message.error("delegate target projId 不能重复");
+      return;
+    }
+    const allowedIds = new Set(delegateTargetOptions.map((o) => o.value));
+    if (ids.some((id) => !allowedIds.has(id))) {
+      message.error("delegate target 必须选择现有 normal / knowledge_base 项目");
+      return;
+    }
+    setSavingDelegateTargets(true);
+    try {
+      await proxyHttp(gatewayBase, "PUT", `/v1/projects/${projId}/delegate-targets`, {
+        targets,
+      });
+      message.success("Router targets 已更新");
+      await loadDelegateTargets();
+      await refreshProjectConfig();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "保存 router targets 失败");
+    } finally {
+      setSavingDelegateTargets(false);
+    }
+  };
+
+  const saveKbSources = async () => {
+    if (!projectConfig) return;
+    const payload = kbSources
+      .map((item) => ({
+        sourceType: "mind_folder",
+        sourceUrl: item.sourceUrl.trim(),
+        targetRelPath: item.targetRelPath.trim(),
+        enabled: item.enabled,
+      }))
+      .filter((item) => item.sourceUrl && item.targetRelPath);
+    setSavingKbSources(true);
+    try {
+      await putProjectConfigDraft(gatewayBase, projId, projectConfig, {
+        kbSourcesJson: payload,
+      });
+      message.success("知识库源配置已保存");
+      await refreshProjectConfig();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "保存知识库源失败");
+    } finally {
+      setSavingKbSources(false);
     }
   };
 
@@ -486,11 +628,24 @@ export default function ProjectPage() {
 
   return (
     <div>
-      <Typography.Title level={4}>项目管理</Typography.Title>
-      <Typography.Paragraph type="secondary">
-        顶栏切换项目；本页每 15s 静默同步项目列表。状态机：至多 1 个临时版；生效只能从正式版切换；保存为正式版不改生效。
-      </Typography.Paragraph>
+      {showConfigPage && (
+        <>
+          <Typography.Title level={4}>项目管理</Typography.Title>
+          <Typography.Paragraph type="secondary">
+            顶栏切换项目；本页每 15s 静默同步项目列表。状态机：至多 1 个临时版；生效只能从正式版切换；保存为正式版不改生效。
+          </Typography.Paragraph>
+        </>
+      )}
+      {showRolePage && (
+        <>
+          <Typography.Title level={4}>项目角色</Typography.Title>
+          <Typography.Paragraph type="secondary">
+            这里只配置当前项目的 role，以及这个 role 自带的内容。`router` 的委托目标、`master` 的学徒配对都写在对应角色配置里，不单独建关联页。
+          </Typography.Paragraph>
+        </>
+      )}
 
+      {showConfigPage && (
       <Card title="项目信息" size="small" style={{ marginBottom: 16 }}>
         <Form form={metaForm} layout="vertical">
           <Form.Item label="项目 ID">
@@ -522,40 +677,421 @@ export default function ProjectPage() {
           </Button>
         </Form>
       </Card>
+      )}
 
-      <Card title="Master / 观察空间" size="small" style={{ marginBottom: 16 }}>
+      {showRolePage && (
+      <Card title="项目角色" size="small" style={{ marginBottom: 16 }}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+          `router` 用于对外承接入口并串行委托 specialist；`master` 用于学徒 / 观察空间；
+          `knowledge_base` 用于承载 Mind 知识库源与同步任务；`observation` 仅能通过学徒配对自动生成。
+        </Typography.Paragraph>
+        <Space wrap style={{ marginBottom: 12 }}>
+          <Tag
+            color={
+              projectRole === "router"
+                ? "purple"
+                : projectRole === "master"
+                  ? "blue"
+                  : projectRole === "observation"
+                    ? "cyan"
+                    : "default"
+            }
+          >
+            role={projectRole}
+          </Tag>
+          <Select
+            style={{ width: 220 }}
+            value={projectRole}
+            onChange={setProjectRole}
+            options={[
+              { value: "normal", label: "normal" },
+              { value: "router", label: "router" },
+              { value: "master", label: "master" },
+              { value: "knowledge_base", label: "knowledge_base" },
+              { value: "observation", label: "observation（只读）", disabled: true },
+            ]}
+          />
+          <Button type="primary" loading={savingRole} onClick={() => void saveProjectRole()}>
+            保存角色
+          </Button>
+        </Space>
+      </Card>
+      )}
+
+      {showRolePage && projectRole === "router" && (
+      <Card title="委托目标" size="small" style={{ marginBottom: 16 }}>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+              Router delegate-targets 改为受控下拉选择，target 项目必须是现有
+              <Typography.Text code>project_role=normal</Typography.Text> 或
+              <Typography.Text code>project_role=knowledge_base</Typography.Text>。
+            </Typography.Paragraph>
+            <Table
+              size="small"
+              pagination={false}
+              rowKey={(r) => r.key}
+              style={{ marginBottom: 8 }}
+              dataSource={delegateTargets}
+              columns={[
+                {
+                  title: "target projId",
+                  width: 140,
+                  render: (_, row, idx) => (
+                    <Select
+                      showSearch
+                      allowClear
+                      style={{ width: "100%" }}
+                      value={row.targetProjId ?? undefined}
+                      options={delegateTargetOptions}
+                      placeholder="选择 target 项目"
+                      onChange={(v) =>
+                        setDelegateTargets((prev) =>
+                          prev.map((x, i) =>
+                            i === idx
+                              ? { ...x, targetProjId: typeof v === "number" ? v : null }
+                              : x
+                          )
+                        )
+                      }
+                    />
+                  ),
+                },
+                {
+                  title: "label",
+                  width: 180,
+                  render: (_, row, idx) => (
+                    <Input
+                      value={row.label}
+                      placeholder="例如 faq-kb"
+                      onChange={(e) =>
+                        setDelegateTargets((prev) =>
+                          prev.map((x, i) => (i === idx ? { ...x, label: e.target.value } : x))
+                        )
+                      }
+                    />
+                  ),
+                },
+                {
+                  title: "capabilityHint",
+                  render: (_, row, idx) => (
+                    <Input
+                      value={row.capabilityHint}
+                      placeholder="例如 product manual"
+                      onChange={(e) =>
+                        setDelegateTargets((prev) =>
+                          prev.map((x, i) =>
+                            i === idx ? { ...x, capabilityHint: e.target.value } : x
+                          )
+                        )
+                      }
+                    />
+                  ),
+                },
+                {
+                  title: "启用",
+                  width: 88,
+                  render: (_, row, idx) => (
+                    <Switch
+                      checked={row.enabled}
+                      onChange={(checked) =>
+                        setDelegateTargets((prev) =>
+                          prev.map((x, i) => (i === idx ? { ...x, enabled: checked } : x))
+                        )
+                      }
+                    />
+                  ),
+                },
+                {
+                  title: "",
+                  width: 72,
+                  render: (_, __, idx) => (
+                    <Button
+                      type="link"
+                      danger
+                      size="small"
+                      onClick={() =>
+                        setDelegateTargets((prev) => prev.filter((_, i) => i !== idx))
+                      }
+                    >
+                      删除
+                    </Button>
+                  ),
+                },
+              ]}
+            />
+            <Space wrap>
+              <Button
+                size="small"
+                onClick={() =>
+                  setDelegateTargets((prev) => [
+                    ...prev,
+                    {
+                      key: `target-new-${Date.now()}`,
+                      targetProjId: null,
+                      enabled: true,
+                      label: "",
+                      capabilityHint: "",
+                    },
+                  ])
+                }
+              >
+                添加 target
+              </Button>
+              <Button
+                type="primary"
+                loading={savingDelegateTargets}
+                onClick={() => void saveDelegateTargets()}
+              >
+                保存 delegate-targets
+              </Button>
+            </Space>
+      </Card>
+      )}
+
+      {showRolePage && projectRole === "knowledge_base" && (
+        <Card title="知识库源" size="small" style={{ marginBottom: 16 }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            每条来源指定 Mind 文件夹，以及它在本项目知识库根
+            <Typography.Text code>home/kb</Typography.Text> 下的路径。例如
+            <Typography.Text code>en/internal/mind/faq</Typography.Text> 会落到
+            <Typography.Text code>home/kb/en/internal/mind/faq</Typography.Text>
+            。同步任务沿用这里的路径，不再另配目标。
+          </Typography.Paragraph>
+          <Table
+            size="small"
+            pagination={false}
+            rowKey={(r) => r.key}
+            style={{ marginBottom: 8 }}
+            dataSource={kbSources}
+            columns={[
+              {
+                title: "Mind 链接",
+                render: (_, row, idx) => (
+                  <Input
+                    value={row.sourceUrl}
+                    placeholder="https://mind.maxiot-inc.com/folders/..."
+                    onChange={(e) =>
+                      setKbSources((prev) =>
+                        prev.map((x, i) => (i === idx ? { ...x, sourceUrl: e.target.value } : x))
+                      )
+                    }
+                  />
+                ),
+              },
+              {
+                title: "home/kb 下路径",
+                width: 260,
+                render: (_, row, idx) => (
+                  <Input
+                    value={row.targetRelPath}
+                    placeholder="en/internal/mind/faq"
+                    onChange={(e) =>
+                      setKbSources((prev) =>
+                        prev.map((x, i) =>
+                          i === idx ? { ...x, targetRelPath: e.target.value } : x
+                        )
+                      )
+                    }
+                  />
+                ),
+              },
+              {
+                title: "启用",
+                width: 80,
+                render: (_, row, idx) => (
+                  <Switch
+                    checked={row.enabled}
+                    onChange={(checked) =>
+                      setKbSources((prev) =>
+                        prev.map((x, i) => (i === idx ? { ...x, enabled: checked } : x))
+                      )
+                    }
+                  />
+                ),
+              },
+              {
+                title: "",
+                width: 72,
+                render: (_, __, idx) => (
+                  <Button type="link" danger size="small" onClick={() => setKbSources((prev) => prev.filter((_, i) => i !== idx))}>
+                    删除
+                  </Button>
+                ),
+              },
+            ]}
+          />
+          <Space>
+            <Button
+              size="small"
+              onClick={() =>
+                setKbSources((prev) => [
+                  ...prev,
+                  { key: `kb-${Date.now()}`, sourceUrl: "", targetRelPath: "", enabled: true },
+                ])
+              }
+            >
+              添加来源
+            </Button>
+            <Button type="primary" loading={savingKbSources} onClick={() => void saveKbSources()}>
+              保存知识库源
+            </Button>
+          </Space>
+        </Card>
+      )}
+
+      {showRolePage && projectRole === "knowledge_base" && (
+        <Card title="知识库同步任务" size="small" style={{ marginBottom: 16 }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            按上方知识库源拉取 Mind 文档，写入各自配置的
+            <Typography.Text code>home/kb/</Typography.Text>
+            下路径，校验通过后整棵知识库原子切换。也可手工立即触发。
+          </Typography.Paragraph>
+          <Space wrap style={{ marginBottom: 8 }}>
+            <Select
+              value={scheduleKind}
+              style={{ width: 120 }}
+              onChange={setScheduleKind}
+              options={[
+                { value: "daily", label: "每日" },
+                { value: "weekly", label: "每周(周一)" },
+              ]}
+            />
+            <Input
+              value={scheduleHhmm}
+              onChange={(e) => setScheduleHhmm(e.target.value)}
+              style={{ width: 140 }}
+              placeholder="HH:MM"
+              addonAfter="UTC"
+            />
+            <Button
+              type="primary"
+              loading={savingMaster}
+              onClick={() =>
+                void (async () => {
+                  setSavingMaster(true);
+                  try {
+                    await proxyHttp(gatewayBase, "PUT", `/v1/projects/${projId}/schedules`, {
+                      scheduleKind,
+                      runAtHhmm: scheduleHhmm,
+                      weekday: scheduleKind === "weekly" ? 1 : null,
+                      enabled: true,
+                      jobKind: "kb_sync",
+                      promptTemplate: "kb_sync",
+                    });
+                    message.success("已保存同步任务");
+                    await loadMaster();
+                  } catch (e) {
+                    message.error(e instanceof Error ? e.message : "保存调度失败");
+                  } finally {
+                    setSavingMaster(false);
+                  }
+                })()
+              }
+            >
+              保存同步任务
+            </Button>
+          </Space>
+          {scheduleJobs.length > 0 ? (
+            <Table
+              size="small"
+              pagination={false}
+              rowKey="jobId"
+              dataSource={scheduleJobs}
+              columns={[
+                {
+                  title: "何时 (UTC)",
+                  width: 160,
+                  render: (_: unknown, r) =>
+                    r.scheduleKind === "weekly"
+                      ? `每周一 ${r.runAtHhmm} UTC`
+                      : `每天 ${r.runAtHhmm} UTC`,
+                },
+                {
+                  title: "上次触发",
+                  width: 180,
+                  render: (_: unknown, r) =>
+                    r.lastRunAtMs ? new Date(r.lastRunAtMs).toLocaleString() : "尚未触发",
+                },
+                {
+                  title: "错误",
+                  dataIndex: "lastError",
+                  ellipsis: true,
+                  render: (v: string | null) =>
+                    v ? <Typography.Text type="danger">{v}</Typography.Text> : "—",
+                },
+                {
+                  title: "",
+                  width: 160,
+                  render: (_: unknown, r) => (
+                    <Space size={4}>
+                      <Button
+                        size="small"
+                        type="link"
+                        loading={savingMaster}
+                        onClick={() =>
+                          void (async () => {
+                            setSavingMaster(true);
+                            try {
+                              const resp = await proxyHttp<{ taskId?: string }>(
+                                gatewayBase,
+                                "POST",
+                                `/v1/projects/${projId}/schedules/${encodeURIComponent(r.jobId)}/run`
+                              );
+                              message.success(
+                                resp.taskId ? `已触发，task=${resp.taskId.slice(0, 8)}…` : "已触发"
+                              );
+                              await loadMaster();
+                            } catch (e) {
+                              message.error(e instanceof Error ? e.message : "触发失败");
+                            } finally {
+                              setSavingMaster(false);
+                            }
+                          })()
+                        }
+                      >
+                        立即同步
+                      </Button>
+                      <Button
+                        size="small"
+                        danger
+                        loading={savingMaster}
+                        onClick={() =>
+                          void (async () => {
+                            setSavingMaster(true);
+                            try {
+                              await proxyHttp(
+                                gatewayBase,
+                                "DELETE",
+                                `/v1/projects/${projId}/schedules/${encodeURIComponent(r.jobId)}`
+                              );
+                              message.success("已删除");
+                              await loadMaster();
+                            } catch (e) {
+                              message.error(e instanceof Error ? e.message : "删除失败");
+                            } finally {
+                              setSavingMaster(false);
+                            }
+                          })()
+                        }
+                      >
+                        删
+                      </Button>
+                    </Space>
+                  ),
+                },
+              ]}
+            />
+          ) : (
+            <Typography.Text type="secondary">暂无同步任务，用上方时间保存一条即可。</Typography.Text>
+          )}
+        </Card>
+      )}
+
+      {showRolePage && projectRole === "master" && (
+      <Card title="学徒 / 观察空间" size="small" style={{ marginBottom: 16 }}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
           Master 通过内置 MCP 观察学徒；配对时自动创建观察空间（poolSize=0）。修复只推学徒草稿。
           需设置 <Typography.Text code>CLAW_MASTER_MCP_TOKEN</Typography.Text>。
         </Typography.Paragraph>
-        <Space wrap style={{ marginBottom: 12 }}>
-          <Tag color={projectRole === "master" ? "blue" : "default"}>
-            role={projectRole}
-          </Tag>
-          <Button
-            loading={savingMaster}
-            type={projectRole === "master" ? "default" : "primary"}
-            onClick={() =>
-              void (async () => {
-                setSavingMaster(true);
-                try {
-                  await proxyHttp(gatewayBase, "PUT", `/v1/projects/${projId}/role`, {
-                    projectRole: projectRole === "master" ? "normal" : "master",
-                  });
-                  message.success("角色已更新");
-                  await loadMaster();
-                  await refreshProjectConfig();
-                } catch (e) {
-                  message.error(e instanceof Error ? e.message : "设置角色失败");
-                } finally {
-                  setSavingMaster(false);
-                }
-              })()
-            }
-          >
-            {projectRole === "master" ? "取消 master" : "设为 master"}
-          </Button>
-        </Space>
         {projectRole === "master" && (
           <>
             <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
@@ -1044,7 +1580,10 @@ export default function ProjectPage() {
           </>
         )}
       </Card>
+      )}
 
+      {showConfigPage && (
+      <>
       <Space style={{ marginBottom: 16 }}>
         <Button
           onClick={async () => {
@@ -1083,98 +1622,6 @@ export default function ProjectPage() {
           </Typography.Text>
         )}
       </Space>
-
-      <Card title="Git 导入" size="small" style={{ marginBottom: 16 }}>
-        {projectConfig?.gitSyncJson?.lastPullError ? (
-          <Alert
-            type="error"
-            showIcon
-            style={{ marginBottom: 8 }}
-            message="上次拉取失败"
-            description={projectConfig.gitSyncJson.lastPullError}
-          />
-        ) : projectConfig?.gitSyncJson?.lastPullAtMs ? (
-          <Alert
-            type="success"
-            showIcon
-            style={{ marginBottom: 8 }}
-            message="上次拉取成功"
-            description={
-              formatVersionTime(undefined, projectConfig.gitSyncJson.lastPullAtMs) +
-              (projectConfig.gitSyncJson.lastPullCommitId
-                ? ` · ${projectConfig.gitSyncJson.lastPullCommitId.slice(0, 8)}`
-                : "")
-            }
-          />
-        ) : null}
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-          拉取后文件写入宿主机 <Typography.Text code>proj_{projId}/home/</Typography.Text>
-          ，pool worker 通过 <Typography.Text code>/claw_ds/home/</Typography.Text>{" "}
-          只读可见；<strong>新开一轮 solve</strong> 后 Agent 会在 system prompt 看到文件清单。skills / rules /
-          CLAUDE 仍以 DB 物化为准。
-        </Typography.Paragraph>
-        <Form form={gitForm} layout="inline" style={{ gap: 8, flexWrap: "wrap" }}>
-          <Form.Item name="enabled" valuePropName="checked" label="启用">
-            <Switch />
-          </Form.Item>
-          <Form.Item name="gitUrl" label="仓库 URL">
-            <Input style={{ width: 280 }} placeholder="https://gitlab.com/org/repo.git" />
-          </Form.Item>
-          <Form.Item name="gitRef" label="分支">
-            <Input style={{ width: 100 }} />
-          </Form.Item>
-          <Form.Item name="gitPatId" label="PAT">
-            <Select
-              allowClear
-              placeholder="在「全局配置」中管理 PAT"
-              style={{ minWidth: 220 }}
-              options={gitPatOptions}
-              notFoundContent="请先在侧栏「全局配置」添加 PAT"
-            />
-          </Form.Item>
-        </Form>
-        <Space style={{ marginTop: 8 }}>
-          <Button
-            onClick={async () => {
-              if (!projectConfig) return;
-              const v = gitForm.getFieldsValue();
-              const gitSyncJson: Record<string, unknown> = {
-                enabled: !!v.enabled,
-                gitUrl: (v.gitUrl || "").trim(),
-                gitRef: (v.gitRef || "main").trim() || "main",
-                gitPatId: v.gitPatId || null,
-              };
-              await putProjectConfigDraft(gatewayBase, projId, projectConfig, {
-                gitSyncJson: gitSyncJson as ProjectConfig["gitSyncJson"],
-              });
-              message.success("Git 配置已保存到临时版");
-              await refreshProjectConfig();
-            }}
-          >
-            保存 Git 配置
-          </Button>
-          <Button
-            type="primary"
-            onClick={async () => {
-              const r = await proxyHttp<{
-                outcome?: { pulled?: boolean; commitId?: string };
-                gitSyncJson?: { lastPullError?: string };
-              }>(gatewayBase, "POST", `/v1/projects/${projId}/git/pull`);
-              if (r.gitSyncJson?.lastPullError) {
-                message.error(r.gitSyncJson.lastPullError);
-              } else {
-                message.success(
-                  (r.outcome?.pulled ? "已拉取" : "无变更") +
-                    (r.outcome?.commitId ? ` · ${r.outcome.commitId.slice(0, 8)}` : "")
-                );
-              }
-              await refreshProjectConfig();
-            }}
-          >
-            从 Git 拉取
-          </Button>
-        </Space>
-      </Card>
 
       <Card title="Agent 迭代上限" size="small" style={{ marginBottom: 16 }}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
@@ -1363,6 +1810,8 @@ export default function ProjectPage() {
           },
         ]}
       />
+      </>
+      )}
     </div>
   );
 }

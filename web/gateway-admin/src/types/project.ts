@@ -21,11 +21,26 @@ export interface LanguagePipelineJson {
   languageInferencePriorMaxChars?: number;
 }
 
-export interface GitSyncJson {
-  enabled?: boolean;
+export interface GitRemoteJson {
+  id?: string;
   gitUrl?: string;
   gitRef?: string;
-  gitPatId?: string;
+  gitPatId?: string | null;
+  gitToken?: string;
+  gitTokenSet?: boolean;
+  destRel?: string;
+  lastPullAtMs?: number;
+  lastPullCommitId?: string;
+  lastPullError?: string;
+}
+
+export interface GitSyncJson {
+  enabled?: boolean;
+  remotes?: GitRemoteJson[];
+  /** Legacy single-repo fields (read as remotes[0]). Author: kejiqing */
+  gitUrl?: string;
+  gitRef?: string;
+  gitPatId?: string | null;
   gitToken?: string;
   gitTokenSet?: boolean;
   lastPullAtMs?: number;
@@ -33,10 +48,12 @@ export interface GitSyncJson {
   lastPullError?: string;
   lastPullOk?: boolean;
   configured?: boolean;
+  remoteCount?: number;
 }
 
 export interface ProjectListItem {
   projId: number;
+  projectRole?: string;
   projectCode?: string;
   projectDescription?: string;
   contentRev?: string;
@@ -63,6 +80,7 @@ export type { WorkerProfileJson } from "./landlock";
 
 export interface ProjectConfig {
   projId: number;
+  projectRole?: string;
   projectCode?: string;
   projectDescription?: string;
   contentRev: string;
@@ -86,8 +104,33 @@ export interface ProjectConfig {
   workerProfileJson?: WorkerProfileJson;
   /** Custom env injected only at warm-proj create (`project_config.worker_env_json`). Author: kejiqing */
   workerEnvJson?: Record<string, string>;
+  /** Knowledge-base source mappings (`project_config.kb_sources_json`). Author: kejiqing */
+  kbSourcesJson?: KbSourceItem[];
   /** Project default agent loop max iterations; null/omit = cluster CLAW_MAX_ITERATIONS. Author: kejiqing */
   maxIterations?: number | null;
+}
+
+export interface KbSourceItem {
+  sourceType?: string;
+  sourceUrl?: string;
+  folderId?: string;
+  targetRelPath?: string;
+  enabled?: boolean;
+}
+
+export interface DelegateTargetRow {
+  initiatorProjId: number;
+  targetProjId: number;
+  enabled: boolean;
+  label?: string;
+  capabilityHint?: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface DelegateTargetsResponse {
+  initiatorProjId: number;
+  targets: DelegateTargetRow[];
 }
 
 export interface SkillJsonItem {

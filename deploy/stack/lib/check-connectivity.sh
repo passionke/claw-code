@@ -135,44 +135,81 @@ else:
     print("skip tools chain assert (solve had no tool lane — ping-style smoke)")
 PY
 
-echo "[3d/5] e2b OVS product entry (direct e2b traffic URL, not gateway proxy)"
-ws="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/projects/1/ovs/workspace")"
-folder_url="$(printf '%s' "${ws}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsFolderUrl') or '')")"
-hosts_line="$(printf '%s' "${ws}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsBrowserHostsLine') or '')")"
-[[ -n "${folder_url}" ]] || { echo "error: missing ovsFolderUrl: ${ws}" >&2; exit 1; }
-if [[ "${folder_url}" == *":13000"* ]] || [[ "${folder_url}" == *"/v1/fc-ovs"* ]]; then
-  echo "error: ovsFolderUrl must be direct e2b traffic (got ${folder_url})" >&2
-  exit 1
-fi
-if [[ "${folder_url}" != *"-sbx_"* ]]; then
-  echo "error: ovsFolderUrl must be e2b Host traffic URL: ${folder_url}" >&2
-  exit 1
-fi
-if [[ "${folder_url}" == *"/e2b/"* ]]; then
-  echo "error: ovsFolderUrl must not use legacy /e2b/ path: ${folder_url}" >&2
-  exit 1
-fi
-code="$(curl -sS -o /dev/null -w '%{http_code}' -m 15 "${folder_url}" || true)"
-[[ "${code}" == "200" ]] || { echo "error: direct OVS URL HTTP ${code} at ${folder_url}" >&2; exit 1; }
-PG_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
-PG_USER="${PLAYGROUND_ADMIN_USER:-admin}"
-PG_PASS="${PLAYGROUND_ADMIN_PASSWORD:-sunmi123}"
-PG_COOKIE="$(mktemp)"
-curl -fsS -c "${PG_COOKIE}" -X POST "http://127.0.0.1:${PG_PORT}/__admin_login__" \
-  -H "Content-Type: application/json" \
-  -d "{\"user\":\"${PG_USER}\",\"password\":\"${PG_PASS}\"}" >/dev/null
-LOC="$(
-  curl -sS -D - -o /dev/null "http://127.0.0.1:${PG_PORT}/ovs/?projId=1" -b "${PG_COOKIE}" \
-    | awk 'tolower($0) ~ /^location:/ { sub(/\r$/, ""); print $2; exit }'
+echo "[3d/5] e2b OVS product entry (relaxed worker only)"
+# OVS is built into relaxed workers. Strict proj (default proj 1) returns 403 by
+# contract — that is not a deploy failure. Probe the first relaxed project, or skip.
+# Author: kejiqing
+OVS_PROJ_ID="$(python3 <<PY
+import json
+import urllib.error
+import urllib.request
+
+port = ${GATEWAY_PORT}
+base = f"http://127.0.0.1:{port}"
+
+def load(path):
+    with urllib.request.urlopen(base + path, timeout=15) as resp:
+        return json.load(resp)
+
+try:
+    listed = load("/v1/projects").get("projects") or []
+except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+    listed = []
+for row in listed:
+    pid = row.get("projId")
+    if not isinstance(pid, int) or pid < 1:
+        continue
+    try:
+        cfg = load(f"/v1/project/config/{pid}")
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, urllib.error.HTTPError):
+        continue
+    mode = ((cfg.get("workerProfileJson") or {}).get("mode") or "strict").strip()
+    if mode == "relaxed":
+        print(pid)
+        break
+PY
 )"
-rm -f "${PG_COOKIE}"
-[[ "${LOC}" == "${folder_url}" ]] || {
-  echo "error: playground /ovs redirect mismatch" >&2
-  echo "  api: ${folder_url}" >&2
-  echo "  loc: ${LOC}" >&2
-  exit 1
-}
-echo "FC OVS direct entry ok → ${folder_url}"
+if [[ -z "${OVS_PROJ_ID}" ]]; then
+  echo "skip OVS product entry: no relaxed project (strict 403 is expected; dedicated check: verify-relaxed-worker-ovs.sh)"
+else
+  echo "OVS probe proj=${OVS_PROJ_ID} (relaxed)"
+  ws="$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/projects/${OVS_PROJ_ID}/ovs/workspace")"
+  folder_url="$(printf '%s' "${ws}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ovsFolderUrl') or '')")"
+  [[ -n "${folder_url}" ]] || { echo "error: missing ovsFolderUrl: ${ws}" >&2; exit 1; }
+  if [[ "${folder_url}" == *":13000"* ]] || [[ "${folder_url}" == *"/v1/fc-ovs"* ]]; then
+    echo "error: ovsFolderUrl must be direct e2b traffic (got ${folder_url})" >&2
+    exit 1
+  fi
+  if [[ "${folder_url}" != *"-sbx_"* ]]; then
+    echo "error: ovsFolderUrl must be e2b Host traffic URL: ${folder_url}" >&2
+    exit 1
+  fi
+  if [[ "${folder_url}" == *"/e2b/"* ]]; then
+    echo "error: ovsFolderUrl must not use legacy /e2b/ path: ${folder_url}" >&2
+    exit 1
+  fi
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -m 15 "${folder_url}" || true)"
+  [[ "${code}" == "200" ]] || { echo "error: direct OVS URL HTTP ${code} at ${folder_url}" >&2; exit 1; }
+  PG_PORT="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
+  PG_USER="${PLAYGROUND_ADMIN_USER:-admin}"
+  PG_PASS="${PLAYGROUND_ADMIN_PASSWORD:-sunmi123}"
+  PG_COOKIE="$(mktemp)"
+  curl -fsS -c "${PG_COOKIE}" -X POST "http://127.0.0.1:${PG_PORT}/__admin_login__" \
+    -H "Content-Type: application/json" \
+    -d "{\"user\":\"${PG_USER}\",\"password\":\"${PG_PASS}\"}" >/dev/null
+  LOC="$(
+    curl -sS -D - -o /dev/null "http://127.0.0.1:${PG_PORT}/ovs/?projId=${OVS_PROJ_ID}" -b "${PG_COOKIE}" \
+      | awk 'tolower($0) ~ /^location:/ { sub(/\r$/, ""); print $2; exit }'
+  )"
+  rm -f "${PG_COOKIE}"
+  [[ "${LOC}" == "${folder_url}" ]] || {
+    echo "error: playground /ovs redirect mismatch" >&2
+    echo "  api: ${folder_url}" >&2
+    echo "  loc: ${LOC}" >&2
+    exit 1
+  }
+  echo "FC OVS direct entry ok proj=${OVS_PROJ_ID} → ${folder_url}"
+fi
 
 TASK_POLL_JSON="$(mktemp)"
 curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/v1/tasks/${TASK_ID}" -o "${TASK_POLL_JSON}"

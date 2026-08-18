@@ -79,6 +79,7 @@ pub mod project_entity_revision;
 pub mod project_extra_session;
 pub mod project_git_sync;
 pub mod project_id;
+pub mod project_relation;
 pub mod project_tools;
 pub mod session_agent_api;
 pub mod session_db;

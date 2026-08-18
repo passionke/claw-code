@@ -41,7 +41,7 @@ Author: kejiqing
 
 **Pool solve 额外**（`gateway-solve-turn`）：
 
-9. **`# Git import (read-only)`** — `/claw_ds/home/` 下 Git 导入清单或 bounded scan（manifest：`home/.claw/git-import-manifest.txt`）
+9. **`# Worker filesystem`** — session cwd vs `/claw_ds`（`project_home_def` = Admin 配置；git 导入在 `/claw_ds/<repo>/`，**不**把文件清单塞进 prompt）
 
 ---
 
@@ -67,7 +67,7 @@ Admin「系统提示词」页与 clawTap 看到的 **不含** tool schema；缺 
 | scaffold（PG 默认） | `.claw/system_prompt_scaffold.md` | `/claw_ds/.claw/system_prompt_scaffold.md` |
 | `mcp_servers_json` | `.claw/settings.json`（`apply` 后 `write_ds_settings_json`） | `/claw_ds/.claw/settings.json` |
 | `prompt_limits_json` | `.claw/settings.json` → `instructionFileMaxChars` / `instructionTotalMaxChars` | 同左；`{}` 时用默认 8000 / 24000 |
-| Git 导入业务文件 | `home/` 下非 PG 路径 | `/claw_ds/home/…`（只读）；可选 manifest `home/.claw/git-import-manifest.txt` |
+| Git 导入业务文件 | NAS `{cluster}/proj_N/home/<destRel>/`（不经 PG） | `/claw_ds/<destRel>/`（strict 只读；relaxed 可写，再拉取覆盖） |
 | **已废弃** | ~~`.claw/system_prompt_user_override.md`~~ | **不得**再从 `claude_md` 写入；apply 会 **删除** 遗留文件 |
 
 **`prompt_limits_json`**（Admin「系统提示词」页）：单文件默认 **8000** 字符；`# Claude instructions` 与 `# Project rules` 段各有一份合计默认 **24000**。优先级：项目 settings → `CLAW_INSTRUCTION_*` 环境变量 → 默认。

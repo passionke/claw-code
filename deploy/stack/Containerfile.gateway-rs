@@ -43,13 +43,18 @@ RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
     ca-certificates \
     curl \
     git \
+    openssh-client \
     podman \
     docker.io \
+    python3 \
+    rsync \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=builder /rust/target/release/claw /usr/local/bin/claw
 COPY --from=builder /rust/target/release/http-gateway-rs /usr/local/bin/http-gateway-rs
+COPY scripts/mind-kb/ /app/scripts/mind-kb/
+COPY docs/gpos-assistant-prompt-content.md /app/docs/
 
 ENV CLAW_HTTP_ADDR=0.0.0.0:8080
 ENV CLAW_WORK_ROOT=/var/lib/claw/workspace

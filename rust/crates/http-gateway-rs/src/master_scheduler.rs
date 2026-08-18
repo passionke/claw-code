@@ -4,11 +4,15 @@ use std::time::Duration;
 
 use chrono::{Datelike, Local, Timelike};
 use serde_json::json;
+use tokio::process::Command;
 use tracing::{info, warn};
 
 use crate::admin_mcp_solve::AdminMcpSolveInput;
 use crate::app_state::AppState;
-use crate::master_observer::{render_schedule_prompt, GatewayScheduledJobRow, PROJECT_ROLE_MASTER};
+use crate::master_observer::{
+    render_schedule_prompt, GatewayScheduledJobRow, PROJECT_ROLE_KNOWLEDGE_BASE,
+    PROJECT_ROLE_MASTER,
+};
 use crate::session_db::now_ms_for_registry;
 
 const TICK_SECS: u64 = 60;
@@ -103,6 +107,16 @@ pub(crate) async fn fire_job(
         .get_project_role(job.master_proj_id)
         .await
         .map_err(|e| e.to_string())?;
+    if job.job_kind == "kb_sync" {
+        if role != PROJECT_ROLE_KNOWLEDGE_BASE {
+            return Err(format!(
+                "proj {} is not knowledge_base (role={role})",
+                job.master_proj_id
+            ));
+        }
+        run_kb_sync_job(state, job).await?;
+        return Ok(());
+    }
     if role != PROJECT_ROLE_MASTER {
         return Err(format!(
             "proj {} is not master (role={role})",
@@ -166,6 +180,83 @@ pub(crate) async fn fire_job(
     Ok(())
 }
 
+async fn run_kb_sync_job(state: &AppState, job: &mut GatewayScheduledJobRow) -> Result<(), String> {
+    let cfg = state
+        .session_db
+        .get_project_config(job.master_proj_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("project {} has no project_config", job.master_proj_id))?;
+    let kb_sources = if cfg.kb_sources_json.is_array() {
+        cfg.kb_sources_json.clone()
+    } else {
+        return Err("kbSourcesJson must be an array".into());
+    };
+    let script_path = std::env::var("CLAW_KB_SYNC_SCRIPT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/app/scripts/mind-kb/apploy_faq_kb_mind_only.py".to_string());
+    let gw_base =
+        gateway_loopback_base().unwrap_or_else(|| state.gateway_identity.gateway_base.clone());
+    let project_home = state
+        .cfg
+        .work_root
+        .join(format!("proj_{}", job.master_proj_id))
+        .join("home");
+    let worker_env = crate::pool::parse_worker_env_map(&cfg.worker_env_json).map_err(|e| {
+        format!(
+            "invalid worker_env_json for kb_sync proj {}: {e}",
+            job.master_proj_id
+        )
+    })?;
+    let mut cmd = Command::new("python3");
+    cmd.arg(&script_path)
+        .arg("--gw")
+        .arg(gw_base)
+        .arg("--faq-proj-id")
+        .arg(job.master_proj_id.to_string())
+        .arg("--kb-sources-json")
+        .arg(kb_sources.to_string())
+        .arg("--project-home")
+        .arg(project_home)
+        .arg("--skip-config");
+    for (k, v) in worker_env {
+        cmd.env(k, v);
+    }
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("spawn kb_sync script: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Err(format!(
+            "kb_sync script failed exit={}: {} {}",
+            output.status, stdout, stderr
+        ));
+    }
+    let now_ms = now_ms_for_registry();
+    job.last_run_at_ms = Some(now_ms);
+    job.last_task_id = Some(format!("kb_sync:{now_ms}"));
+    job.last_error = None;
+    job.updated_at_ms = now_ms;
+    state
+        .session_db
+        .upsert_scheduled_job(job)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn gateway_loopback_base() -> Option<String> {
+    let addr = std::env::var("CLAW_HTTP_ADDR").ok()?;
+    let port = addr.rsplit(':').next()?.trim();
+    if port.is_empty() {
+        return None;
+    }
+    Some(format!("http://127.0.0.1:{port}"))
+}
+
 /// Load job by id, fire now, persist last_run / last_task / last_error. Author: kejiqing
 pub(crate) async fn run_scheduled_job_now(
     state: &AppState,
@@ -217,6 +308,7 @@ mod tests {
         GatewayScheduledJobRow {
             job_id: "gsj_test".into(),
             master_proj_id: 1,
+            job_kind: "master_digest".into(),
             schedule_kind: kind.into(),
             run_at_hhmm: hhmm.into(),
             weekday,

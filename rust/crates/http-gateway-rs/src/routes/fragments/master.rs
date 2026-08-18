@@ -81,6 +81,8 @@ pub(crate) struct ApprenticesResponse {
 pub(crate) struct PutScheduleRequest {
     #[serde(rename = "jobId")]
     job_id: Option<String>,
+    #[serde(rename = "jobKind", default)]
+    job_kind: Option<String>,
     #[serde(rename = "scheduleKind", default = "default_daily_kind")]
     schedule_kind: String,
     #[serde(rename = "runAtHhmm", default = "default_hhmm")]
@@ -136,6 +138,12 @@ pub(crate) async fn put_master_role(
             .set_project_role(proj_id, role)
             .await
             .map_err(|e| session_db_err(&e))?;
+    } else if role == master_observer::PROJECT_ROLE_KNOWLEDGE_BASE {
+        master_observer::seed_knowledge_base_project(&state.session_db, proj_id)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+        apply_project_config_for_proj(&state, proj_id, true).await?;
+        let _ = state.pool_clients.reconcile_project_worker(proj_id).await;
     } else {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -464,7 +472,7 @@ pub(crate) async fn list_master_schedules(
     State(state): State<AppState>,
     AxumPath(proj_id): AxumPath<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    ensure_master_role(&state, proj_id).await?;
+    ensure_schedule_owner_role(&state, proj_id).await?;
     let jobs = state
         .session_db
         .list_scheduled_jobs(Some(proj_id))
@@ -487,7 +495,7 @@ pub(crate) async fn put_master_schedule(
     AxumPath(proj_id): AxumPath<i64>,
     Json(req): Json<PutScheduleRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    ensure_master_role(&state, proj_id).await?;
+    let role = ensure_schedule_owner_role(&state, proj_id).await?;
     let now = now_ms();
     let job_id = req
         .job_id
@@ -500,9 +508,30 @@ pub(crate) async fn put_master_schedule(
             master_scheduler::default_daily_prompt_template()
         }
     });
+    let job_kind = match req.job_kind.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some("master_digest") => "master_digest".to_string(),
+        Some("master_repair") => "master_repair".to_string(),
+        Some("kb_sync") => "kb_sync".to_string(),
+        Some(other) => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("unsupported jobKind={other}"),
+            ))
+        }
+        None => {
+            if role == master_observer::PROJECT_ROLE_KNOWLEDGE_BASE {
+                "kb_sync".to_string()
+            } else if req.schedule_kind == "weekly" {
+                "master_repair".to_string()
+            } else {
+                "master_digest".to_string()
+            }
+        }
+    };
     let job = master_observer::GatewayScheduledJobRow {
         job_id: job_id.clone(),
         master_proj_id: proj_id,
+        job_kind,
         schedule_kind: req.schedule_kind,
         run_at_hhmm: req.run_at_hhmm,
         weekday: req.weekday,
@@ -547,7 +576,7 @@ pub(crate) async fn delete_master_schedule(
     State(state): State<AppState>,
     AxumPath((proj_id, job_id)): AxumPath<(i64, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    ensure_master_role(&state, proj_id).await?;
+    ensure_schedule_owner_role(&state, proj_id).await?;
     let ok = state
         .session_db
         .delete_scheduled_job(&job_id)
@@ -576,7 +605,7 @@ pub(crate) async fn run_master_schedule(
     State(state): State<AppState>,
     AxumPath((proj_id, job_id)): AxumPath<(i64, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    ensure_master_role(&state, proj_id).await?;
+    ensure_schedule_owner_role(&state, proj_id).await?;
     let job = master_scheduler::run_scheduled_job_now(&state, proj_id, &job_id)
         .await
         .map_err(|e| {
@@ -591,6 +620,23 @@ pub(crate) async fn run_master_schedule(
         "taskId": job.last_task_id,
         "enqueued": true,
     })))
+}
+
+async fn ensure_schedule_owner_role(state: &AppState, proj_id: i64) -> Result<String, ApiError> {
+    let role = state
+        .session_db
+        .get_project_role(proj_id)
+        .await
+        .map_err(|e| session_db_err(&e))?;
+    if role != master_observer::PROJECT_ROLE_MASTER
+        && role != master_observer::PROJECT_ROLE_KNOWLEDGE_BASE
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("project {proj_id} cannot own schedules (role={role})"),
+        ));
+    }
+    Ok(role)
 }
 
 #[utoipa::path(

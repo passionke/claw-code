@@ -506,6 +506,7 @@ pub async fn restore_entity_revision_to_draft(
         prompt_limits_json: &row.prompt_limits_json,
         worker_profile_json: &row.worker_profile_json,
         worker_env_json: &row.worker_env_json,
+        kb_sources_json: &row.kb_sources_json,
         project_code: &row.project_code,
         project_description: &row.project_description,
         max_iterations: row.max_iterations,

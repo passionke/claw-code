@@ -683,7 +683,7 @@ impl E2bSandboxClient {
             metadata.insert("ovsBuiltin".to_string(), "true".to_string());
         }
 
-        let mount_points = warm_worker_mounts(cluster_id, proj_id, worker_id);
+        let mount_points = warm_worker_mounts(cluster_id, proj_id, worker_id, !include_ovs);
         let mut body = json!({
             "templateID": template_id,
             "timeout": self.config.sandbox_timeout_secs,
