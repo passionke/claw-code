@@ -41,7 +41,7 @@ Author: kejiqing
 
 **Pool solve 额外**（`gateway-solve-turn`）：
 
-9. **`# Worker filesystem`** — session cwd vs `/claw_ds`（`project_home_def` = Admin 配置；git 导入在 `/claw_ds/<repo>/`，**不**把文件清单塞进 prompt）
+9. **`# Worker filesystem`** — session cwd vs `/claw_ds`（`project_home_def` = Admin 配置；git `destRel` 列出 `/claw_ds/<destRel>` 根路径，**不**把仓库文件清单塞进 prompt；禁止引导 session `ds` 软链）
 
 ---
 
