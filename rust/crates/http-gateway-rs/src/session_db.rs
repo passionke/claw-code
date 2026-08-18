@@ -432,6 +432,47 @@ pub struct ProjectConfigUpsert<'a> {
     pub max_iterations: Option<usize>,
 }
 
+/// Running specialist target for router turn live SSE / progress fan-in. Author: kejiqing
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveDelegateRecord {
+    pub session_id: String,
+    pub turn_id: String,
+    #[serde(rename = "projId")]
+    pub proj_id: i64,
+    #[serde(rename = "delegateProjId")]
+    pub delegate_proj_id: i64,
+}
+
+impl ActiveDelegateRecord {
+    #[must_use]
+    pub fn from_timing_store(store: &Value) -> Option<Self> {
+        store
+            .get("activeDelegate")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    #[must_use]
+    pub fn from_stdout_value(value: &Value) -> Option<Self> {
+        let session_id = value.get("sessionId").and_then(Value::as_str)?.trim();
+        let turn_id = value.get("turnId").and_then(Value::as_str)?.trim();
+        if session_id.is_empty() || turn_id.is_empty() {
+            return None;
+        }
+        let proj_id = value.get("projId").and_then(Value::as_i64)?;
+        let delegate_proj_id = value
+            .get("delegateProjId")
+            .and_then(Value::as_i64)
+            .unwrap_or(proj_id);
+        Some(Self {
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            proj_id,
+            delegate_proj_id,
+        })
+    }
+}
+
 /// Gateway session index: one row per `(cluster_id, session_id, proj_id)`.
 pub struct GatewaySessionDb {
     pool: PgPool,
@@ -4122,12 +4163,14 @@ impl GatewaySessionDb {
         Ok(row.and_then(|(v,)| v))
     }
 
-    fn empty_turn_timing_store() -> Value {
+    #[must_use]
+    pub fn empty_turn_timing_store() -> Value {
         serde_json::json!({
             "solveTimingEvents": [],
             "orchestrationEvents": [],
             "progressEvents": [],
-            "taskProgress": null
+            "taskProgress": null,
+            "delegateProgressArchive": []
         })
     }
 
@@ -4186,6 +4229,102 @@ impl GatewaySessionDb {
         store
             .get("taskProgress")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    fn append_progress_events_dedupe(
+        existing: &mut Vec<gateway_solve_turn::ProgressEvent>,
+        incoming: &[gateway_solve_turn::ProgressEvent],
+    ) {
+        for ev in incoming {
+            let dup = existing
+                .iter()
+                .any(|e| e.kind == ev.kind && e.message == ev.message && e.ts_ms == ev.ts_ms);
+            if !dup {
+                existing.push(ev.clone());
+            }
+        }
+    }
+
+    fn progress_events_from_archive(store: &Value, limit: usize) -> Vec<gateway_solve_turn::ProgressEvent> {
+        let mut out = Vec::new();
+        if let Some(arr) = store.get("delegateProgressArchive").and_then(Value::as_array) {
+            for v in arr {
+                if let Ok(ev) = serde_json::from_value::<gateway_solve_turn::ProgressEvent>(v.clone())
+                {
+                    out.push(ev);
+                }
+            }
+        }
+        if out.len() > limit {
+            out = out.split_off(out.len() - limit);
+        }
+        out
+    }
+
+    /// Read `activeDelegate` for router turn fan-in. Author: kejiqing
+    pub async fn active_delegate_from_turn(
+        &self,
+        router_turn_id: &str,
+    ) -> Result<Option<ActiveDelegateRecord>, SqlxError> {
+        let Some(store) = self.get_turn_solve_timing_json(router_turn_id).await? else {
+            return Ok(None);
+        };
+        Ok(ActiveDelegateRecord::from_timing_store(&store))
+    }
+
+    /// Set active specialist delegate on router turn (`solve_timing_jsonb.activeDelegate`). Author: kejiqing
+    pub async fn set_turn_active_delegate(
+        &self,
+        router_turn_id: &str,
+        active: &ActiveDelegateRecord,
+    ) -> Result<(), SqlxError> {
+        let mut store = self
+            .get_turn_solve_timing_json(router_turn_id)
+            .await?
+            .unwrap_or_else(Self::empty_turn_timing_store);
+        store["activeDelegate"] = serde_json::to_value(active)
+            .map_err(|e| SqlxError::Protocol(e.to_string()))?;
+        self.upsert_turn_timing_json(router_turn_id, &store).await
+    }
+
+    /// Clear active delegate; optionally append specialist progress into archive. Author: kejiqing
+    pub async fn clear_turn_active_delegate(
+        &self,
+        router_turn_id: &str,
+        archive_events: &[gateway_solve_turn::ProgressEvent],
+    ) -> Result<(), SqlxError> {
+        const LIMIT: usize = 500;
+        let mut store = self
+            .get_turn_solve_timing_json(router_turn_id)
+            .await?
+            .unwrap_or_else(Self::empty_turn_timing_store);
+        if !archive_events.is_empty() {
+            let mut archived = Self::progress_events_from_archive(&store, LIMIT);
+            Self::append_progress_events_dedupe(&mut archived, archive_events);
+            if archived.len() > LIMIT {
+                archived = archived.split_off(archived.len() - LIMIT);
+            }
+            store["delegateProgressArchive"] = serde_json::json!(archived);
+        }
+        store["activeDelegate"] = Value::Null;
+        self.upsert_turn_timing_json(router_turn_id, &store).await
+    }
+
+    /// Archived + router + specialist progress for mixed serial delegates. Author: kejiqing
+    pub fn merged_delegate_progress_events(
+        store: &Value,
+        router_events: &[gateway_solve_turn::ProgressEvent],
+        specialist_events: &[gateway_solve_turn::ProgressEvent],
+        limit: usize,
+    ) -> Vec<gateway_solve_turn::ProgressEvent> {
+        let mut merged = Self::progress_events_from_archive(store, limit);
+        Self::append_progress_events_dedupe(&mut merged, router_events);
+        Self::append_progress_events_dedupe(&mut merged, specialist_events);
+        if merged.len() > limit {
+            merged.split_off(merged.len() - limit)
+        } else {
+            merged
+        }
     }
 
     /// Replace worker progress snapshot in `solve_timing_jsonb` (pool tmpfs → PG). Author: kejiqing

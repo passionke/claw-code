@@ -190,6 +190,7 @@ impl PoolOps for E2bOrchestratedPool {
         let stdout_hook = merge_stdout_hooks(
             turn_id,
             Some(Arc::clone(&self.live_report_hub)),
+            Some(Arc::clone(&db)),
             on_stdout_line,
         );
         let outcome = self

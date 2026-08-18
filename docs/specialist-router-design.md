@@ -43,7 +43,7 @@ GPOS 经营助手现网（预发 271 / 生产 27）在**单个 project** 内混�
          (normal)           (normal)
 ```
 
-**用户 SSE：始终只连 router 当轮 task**；specialist 正文经 passthrough 抄入 router stdout（见 [`live-report-contract.md`](live-report-contract.md)）。
+**用户 SSE：始终只连 router 当轮 task**；specialist 正文经 **gateway delegate fan-in** 直读 specialist LiveReportHub（见 [`live-report-contract.md`](live-report-contract.md) 路径 B′）。Worker **不**抄送 specialist SSE。
 
 ## 3. Project 拆分（v1）
 

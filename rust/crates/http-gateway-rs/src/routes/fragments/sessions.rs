@@ -95,17 +95,22 @@ pub(crate) async fn load_turn_progress_snapshot(
     status: &str,
     limit: usize,
 ) -> Result<pool_consumer_resolve::TurnProgressSnapshot, ApiError> {
-    if let Ok(pool) = state
+    let pool = state
         .pool_clients
         .pool_for_turn(&state.session_db, turn_id, session_id, proj_id)
         .await
-    {
-        pool_consumer_resolve::maybe_sync_running_turn_progress_from_worker(&pool, turn_id, status)
-            .await;
-    }
-    pool_consumer_resolve::resolve_turn_progress(&state.session_db, turn_id, limit)
-        .await
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))
+        .ok();
+    pool_consumer_resolve::resolve_consumer_turn_progress(
+        &state.session_db,
+        pool.as_ref(),
+        turn_id,
+        session_id,
+        proj_id,
+        status,
+        limit,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
 pub(crate) async fn refresh_task_progress(state: &AppState, task_id: &str) {

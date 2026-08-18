@@ -47,6 +47,68 @@ pub async fn resolve_turn_progress(
     Ok(snap)
 }
 
+/// Router turns: merge archive + active specialist progress for Admin poll. Author: kejiqing
+pub async fn resolve_consumer_turn_progress(
+    db: &GatewaySessionDb,
+    pool: Option<&Arc<dyn PoolOps + Send + Sync>>,
+    turn_id: &str,
+    _session_id: &str,
+    proj_id: i64,
+    status: &str,
+    event_limit: usize,
+) -> Result<TurnProgressSnapshot, String> {
+    if let Some(p) = pool {
+        maybe_sync_running_turn_progress_from_worker(p, turn_id, status).await;
+    }
+    let role = db
+        .get_project_role(proj_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let router_snap = resolve_turn_progress(db, turn_id, event_limit).await?;
+    if role != crate::master_observer::PROJECT_ROLE_ROUTER {
+        return Ok(router_snap);
+    }
+    let store = db
+        .get_turn_solve_timing_json(turn_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(GatewaySessionDb::empty_turn_timing_store);
+    if let Some(active) = crate::session_db::ActiveDelegateRecord::from_timing_store(&store) {
+        if let Some(p) = pool {
+            let spec_status = db
+                .get_turn_status(&active.turn_id, &active.session_id, active.proj_id)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "running".to_string());
+            maybe_sync_running_turn_progress_from_worker(p, &active.turn_id, &spec_status).await;
+        }
+        let spec_snap = resolve_turn_progress(db, &active.turn_id, event_limit).await?;
+        let events = GatewaySessionDb::merged_delegate_progress_events(
+            &store,
+            &router_snap.events,
+            &spec_snap.events,
+            event_limit,
+        );
+        return Ok(TurnProgressSnapshot {
+            events,
+            task_progress: spec_snap
+                .task_progress
+                .or(router_snap.task_progress),
+        });
+    }
+    let events = GatewaySessionDb::merged_delegate_progress_events(
+        &store,
+        &router_snap.events,
+        &[],
+        event_limit,
+    );
+    Ok(TurnProgressSnapshot {
+        events,
+        task_progress: router_snap.task_progress,
+    })
+}
+
 /// Timeline swimlane from `gateway_turns.solve_timing_jsonb`.
 pub async fn resolve_turn_timeline(
     db: &GatewaySessionDb,
