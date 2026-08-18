@@ -237,7 +237,7 @@ async fn run_kb_sync_job(state: &AppState, job: &mut GatewayScheduledJobRow) -> 
     }
     let now_ms = now_ms_for_registry();
     job.last_run_at_ms = Some(now_ms);
-    job.last_task_id = Some(format!("kb_sync:{}", now_ms));
+    job.last_task_id = Some(format!("kb_sync:{now_ms}"));
     job.last_error = None;
     job.updated_at_ms = now_ms;
     state

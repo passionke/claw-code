@@ -377,7 +377,7 @@ pub fn validate_dest_rel(dest: &str) -> Result<(), String> {
     if dest == "." || dest == ".." {
         return Err("invalid destRel".into());
     }
-    if RESERVED_DEST_RELS.iter().any(|r| *r == dest) {
+    if RESERVED_DEST_RELS.contains(&dest) {
         return Err(format!("`{dest}` is reserved"));
     }
     if !dest

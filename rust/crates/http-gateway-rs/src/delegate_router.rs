@@ -109,10 +109,7 @@ impl GatewaySessionDb {
         .bind(initiator_proj_id)
         .fetch_all(self.pg_pool())
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(delegate_target_row_from_relation)
-            .collect())
+        Ok(rows.iter().map(delegate_target_row_from_relation).collect())
     }
 
     pub async fn replace_delegate_targets(
@@ -161,7 +158,7 @@ impl GatewaySessionDb {
         .bind(target_proj_id)
         .fetch_optional(self.pg_pool())
         .await?;
-        Ok(row.map(|r| delegate_target_row_from_relation(r)))
+        Ok(row.as_ref().map(delegate_target_row_from_relation))
     }
 
     pub async fn get_delegate_session_link(
@@ -296,7 +293,7 @@ impl GatewaySessionDb {
     }
 }
 
-fn delegate_target_row_from_relation(r: sqlx::postgres::PgRow) -> GatewayDelegateTargetRow {
+fn delegate_target_row_from_relation(r: &sqlx::postgres::PgRow) -> GatewayDelegateTargetRow {
     let meta: Option<sqlx::types::Json<Value>> = r.get("relation_meta_json");
     let meta = meta
         .map(|sqlx::types::Json(v)| v)
