@@ -1,11 +1,5 @@
 -- Router role + delegate targets + delegate session links. Author: kejiqing
-
-ALTER TABLE project_config
-  DROP CONSTRAINT IF EXISTS project_config_project_role_check;
-
-ALTER TABLE project_config
-  ADD CONSTRAINT project_config_project_role_check
-  CHECK (project_role IN ('normal', 'master', 'observation', 'router'));
+-- project_role CHECK lives in 024 (replay-all migrator must not re-narrow). Author: kejiqing
 
 CREATE TABLE IF NOT EXISTS gateway_delegate_target (
   cluster_id TEXT NOT NULL,

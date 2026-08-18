@@ -3,12 +3,8 @@
 ALTER TABLE project_config
   ADD COLUMN IF NOT EXISTS project_role TEXT NOT NULL DEFAULT 'normal';
 
-ALTER TABLE project_config
-  DROP CONSTRAINT IF EXISTS project_config_project_role_check;
-
-ALTER TABLE project_config
-  ADD CONSTRAINT project_config_project_role_check
-  CHECK (project_role IN ('normal', 'master', 'observation'));
+-- Role CHECK is owned by 024: this migrator replays every file on startup, so an
+-- older ADD CONSTRAINT here would re-narrow and fail once router/knowledge_base rows exist. Author: kejiqing
 
 CREATE TABLE IF NOT EXISTS project_master_link (
   cluster_id TEXT NOT NULL,
