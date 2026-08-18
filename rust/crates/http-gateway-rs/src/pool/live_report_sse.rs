@@ -243,8 +243,11 @@ async fn run_router_fanin_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{run_router_fanin_loop, BizReportStreamMsg};
+    use super::{
+        follow_turn_deltas, run_router_fanin_loop, BizReportStreamMsg, FollowEnd,
+    };
     use crate::pool::live_report_hub::LiveReportHub;
+    use crate::session_db::ActiveDelegateRecord;
     use serde_json::json;
     use std::sync::Arc;
     use tokio::sync::{mpsc, watch};
@@ -263,6 +266,153 @@ mod tests {
             Ok(Some(BizReportStreamMsg::Delta(t))) => t,
             _ => panic!("expected delta, got non-delta or timeout"),
         }
+    }
+
+    #[tokio::test]
+    async fn follow_turn_deltas_replays_snapshot_then_exits_on_solve_done() {
+        let hub = LiveReportHub::default();
+        delta(&hub, "T_snap", "snap-");
+        delta(&hub, "T_snap", "shot");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let hub_task = hub.clone();
+        let join = tokio::spawn(async move {
+            let mut acc = String::new();
+            let end = follow_turn_deltas(
+                &hub_task,
+                "T_snap",
+                &tx,
+                &mut acc,
+                std::future::pending::<()>(),
+            )
+            .await;
+            (end, acc)
+        });
+        assert_eq!(next_delta(&mut rx).await, "snap-");
+        assert_eq!(next_delta(&mut rx).await, "shot");
+        solve_done(&hub, "T_snap");
+        let (end, acc) = join.await.expect("join");
+        assert_eq!(end, FollowEnd::HubDone);
+        assert_eq!(acc, "snap-shot");
+    }
+
+    #[tokio::test]
+    async fn follow_turn_deltas_returns_rebound_when_signaled() {
+        let hub = LiveReportHub::default();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (trigger_tx, trigger_rx) = watch::channel(false);
+        let hub_for_task = hub.clone();
+        let join = tokio::spawn(async move {
+            let mut acc = String::new();
+            let rebound = async move {
+                let mut rx = trigger_rx;
+                loop {
+                    if *rx.borrow() {
+                        return;
+                    }
+                    if rx.changed().await.is_err() {
+                        return;
+                    }
+                }
+            };
+            let end = follow_turn_deltas(&hub_for_task, "T_reb", &tx, &mut acc, rebound).await;
+            (end, acc)
+        });
+        delta(&hub, "T_reb", "live-");
+        assert_eq!(next_delta(&mut rx).await, "live-");
+        trigger_tx.send_replace(true);
+        let (end, acc) = join.await.expect("join");
+        assert_eq!(end, FollowEnd::Rebound);
+        assert_eq!(acc, "live-");
+    }
+
+    #[tokio::test]
+    async fn router_only_streams_router_hub_until_done() {
+        let hub = Arc::new(LiveReportHub::default());
+        let (_active_tx, active_rx) = watch::channel(None);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let loop_hub = Arc::clone(&hub);
+        let join = tokio::spawn(async move {
+            run_router_fanin_loop(
+                loop_hub,
+                "T_router_only".into(),
+                active_rx,
+                tx,
+                "task".into(),
+                "task".into(),
+                99010,
+            )
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        delta(hub.as_ref(), "T_router_only", "router-");
+        delta(hub.as_ref(), "T_router_only", "only");
+        assert_eq!(next_delta(&mut rx).await, "router-");
+        assert_eq!(next_delta(&mut rx).await, "only");
+        solve_done(hub.as_ref(), "T_router_only");
+        match timeout(Duration::from_secs(2), rx.recv()).await {
+            Ok(Some(BizReportStreamMsg::Done(d))) => {
+                assert_eq!(d.report_text.as_deref(), Some("router-only"));
+            }
+            _ => panic!("expected router done"),
+        }
+        join.await.expect("loop");
+    }
+
+    #[tokio::test]
+    async fn rebind_replays_specialist_snapshot_on_late_subscribe() {
+        let hub = Arc::new(LiveReportHub::default());
+        delta(hub.as_ref(), "T_spec_snap", "early-");
+        delta(hub.as_ref(), "T_spec_snap", "buf");
+        let (active_tx, active_rx) = watch::channel(None);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let loop_hub = Arc::clone(&hub);
+        tokio::spawn(async move {
+            run_router_fanin_loop(
+                loop_hub,
+                "T_router_snap".into(),
+                active_rx,
+                tx,
+                "task".into(),
+                "task".into(),
+                99010,
+            )
+            .await;
+        });
+
+        active_tx.send_replace(Some("T_spec_snap".into()));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(next_delta(&mut rx).await, "early-");
+        assert_eq!(next_delta(&mut rx).await, "buf");
+        delta(hub.as_ref(), "T_spec_snap", "tail");
+        assert_eq!(next_delta(&mut rx).await, "tail");
+    }
+
+    #[test]
+    fn active_delegate_record_from_stdout_value() {
+        let v = json!({
+            "ev": "delegate.active",
+            "sessionId": "dgt_sess",
+            "turnId": "T_spec_stdout",
+            "projId": 99012,
+            "delegateProjId": 99012
+        });
+        let rec = ActiveDelegateRecord::from_stdout_value(&v).expect("parse");
+        assert_eq!(rec.session_id, "dgt_sess");
+        assert_eq!(rec.turn_id, "T_spec_stdout");
+        assert_eq!(rec.proj_id, 99012);
+        assert_eq!(rec.delegate_proj_id, 99012);
+    }
+
+    #[test]
+    fn active_delegate_record_from_stdout_rejects_empty_turn_id() {
+        let v = json!({
+            "ev": "delegate.active",
+            "sessionId": "dgt_sess",
+            "turnId": "  ",
+            "projId": 99012
+        });
+        assert!(ActiveDelegateRecord::from_stdout_value(&v).is_none());
     }
 
     #[tokio::test]
