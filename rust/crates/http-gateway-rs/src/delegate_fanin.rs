@@ -55,6 +55,18 @@ mod tests {
     }
 
     #[test]
+    fn active_delegate_record_from_stdout_defaults_delegate_proj_id() {
+        let v = serde_json::json!({
+            "ev": "delegate.active",
+            "sessionId": "dgt_def",
+            "turnId": "T_def",
+            "projId": 99011
+        });
+        let rec = ActiveDelegateRecord::from_stdout_value(&v).expect("parse");
+        assert_eq!(rec.delegate_proj_id, 99011);
+    }
+
+    #[test]
     fn merged_delegate_progress_dedupes_events() {
         use gateway_solve_turn::ProgressEvent;
         let store = serde_json::json!({
@@ -79,9 +91,7 @@ mod tests {
                 ts_ms: 3000,
             },
         ];
-        let merged = GatewaySessionDb::merged_delegate_progress_events(
-            &store, &router, &spec, 50,
-        );
+        let merged = GatewaySessionDb::merged_delegate_progress_events(&store, &router, &spec, 50);
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0].message, "kb");
         assert_eq!(merged[1].message, "router");

@@ -33,9 +33,11 @@ Author: kejiqing
 | Worker | `delegate_project` 发 `delegate.active` / `delegate.clear` stdout（**不**抄 specialist SSE） |
 | Specialist live | 与单 agent 相同：specialist worker → specialist turn **LiveReportHub**（单跳） |
 | 用户 SSE URL | 仍 `GET /v1/biz_advice_report?sessionId=<router>&turnId=<router>&stream=true` |
-| Gateway | 读 `activeDelegate` → 订阅 **specialist turn** Hub（或 owner 反代）；progress 读时 merge specialist PG |
+| Gateway | 同一条用户 SSE 内改订 **specialist turn** 的同进程 LiveReportHub（控制面看 `activeDelegate`）；progress 读时 merge specialist PG |
 
-**禁止** worker 二次 HTTP 订阅 specialist SSE 再写 router stdout（旧 passthrough 已移除）。
+用户 SSE 开局即可订 router URL。Gateway **serving 期间**改订 hub，不关 HTTP、不改事件名。specialist `SolveDone` **不是**用户 `biz.report.done`；只有 router turn 终态才 `done`。
+
+**禁止** worker 二次 HTTP 订阅 specialist SSE 再写 router stdout（旧 passthrough 已移除）。**禁止**在用户这条 SSE 上再 GET specialist `/v1/biz_advice_report` 做数据面转发。
 
 ---
 

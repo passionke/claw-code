@@ -91,5 +91,25 @@ mod tests {
         assert!(is_delegate_registry_event(&json!({"ev":"delegate.active"})));
         assert!(is_delegate_registry_event(&json!({"ev":"delegate.clear"})));
         assert!(!is_delegate_registry_event(&json!({"ev":"report.delta"})));
+        assert!(!is_delegate_registry_event(&json!({"ev":"solve.done"})));
+    }
+
+    #[test]
+    fn delegate_active_stdout_requires_session_and_turn_ids() {
+        use crate::session_db::ActiveDelegateRecord;
+        assert!(ActiveDelegateRecord::from_stdout_value(&json!({
+            "ev": "delegate.active",
+            "sessionId": "s1",
+            "turnId": "T1",
+            "projId": 99012
+        }))
+        .is_some());
+        assert!(ActiveDelegateRecord::from_stdout_value(&json!({
+            "ev": "delegate.active",
+            "sessionId": "",
+            "turnId": "T1",
+            "projId": 99012
+        }))
+        .is_none());
     }
 }
