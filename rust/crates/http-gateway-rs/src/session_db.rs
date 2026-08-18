@@ -1276,6 +1276,16 @@ impl GatewaySessionDb {
         .await?;
         Self::run_sql_migration_file(pool, include_str!("../migrations/022_delegate_router.sql"))
             .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/023_project_relation_registry.sql"),
+        )
+        .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/024_kb_role_and_job_kind.sql"),
+        )
+        .await?;
         Self::migrate_cluster_id_phase3(pool).await?;
 
         Ok(())
