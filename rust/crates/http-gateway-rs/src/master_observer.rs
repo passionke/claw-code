@@ -6,10 +6,10 @@ use sqlx::types::Json;
 use sqlx::{Error as SqlxError, Row};
 use uuid::Uuid;
 
+use crate::project_config_draft;
 use crate::project_relation::{
     ProjectRelationRow, RELATION_TYPE_MASTER_APPRENTICE, RELATION_TYPE_MASTER_OBSERVATION,
 };
-use crate::project_config_draft;
 use crate::session_db::{
     now_ms_for_registry, GatewaySessionDb, ProjectConfigRevisionRow, ProjectConfigRow,
     ProjectConfigUpsert,
@@ -658,7 +658,9 @@ impl GatewaySessionDb {
         master_proj_id: i64,
         apprentice_proj_id: i64,
     ) -> Result<(), SqlxError> {
-        let existing = self.get_master_link(master_proj_id, apprentice_proj_id).await?;
+        let existing = self
+            .get_master_link(master_proj_id, apprentice_proj_id)
+            .await?;
         sqlx::query(
             "UPDATE project_master_link SET orphaned = TRUE, updated_at_ms = $4 \
              WHERE cluster_id = $1 AND master_proj_id = $2 AND apprentice_proj_id = $3",

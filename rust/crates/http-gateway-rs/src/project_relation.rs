@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{Error as SqlxError, Row};
 use sqlx::types::Json;
+use sqlx::{Error as SqlxError, Row};
 
 use crate::session_db::GatewaySessionDb;
 
@@ -49,8 +49,8 @@ pub struct ProjectReferenceRow {
 
 impl GatewaySessionDb {
     pub async fn upsert_project_relation(&self, row: &ProjectRelationRow) -> Result<(), SqlxError> {
-        let relation_type =
-            normalize_relation_type(&row.relation_type).map_err(|e| SqlxError::Configuration(e.into()))?;
+        let relation_type = normalize_relation_type(&row.relation_type)
+            .map_err(|e| SqlxError::Configuration(e.into()))?;
         if row.from_proj_id < 1 || row.to_proj_id < 1 {
             return Err(SqlxError::Configuration(
                 "project_relation proj ids must be >= 1".into(),
@@ -90,8 +90,8 @@ impl GatewaySessionDb {
         from_proj_id: i64,
         to_proj_id: i64,
     ) -> Result<bool, SqlxError> {
-        let relation_type =
-            normalize_relation_type(relation_type).map_err(|e| SqlxError::Configuration(e.into()))?;
+        let relation_type = normalize_relation_type(relation_type)
+            .map_err(|e| SqlxError::Configuration(e.into()))?;
         let r = sqlx::query(
             r"DELETE FROM project_relation
               WHERE cluster_id = $1 AND relation_type = $2 AND from_proj_id = $3 AND to_proj_id = $4",
@@ -111,8 +111,8 @@ impl GatewaySessionDb {
         from_proj_id: i64,
         rows: &[ProjectRelationRow],
     ) -> Result<(), SqlxError> {
-        let relation_type =
-            normalize_relation_type(relation_type).map_err(|e| SqlxError::Configuration(e.into()))?;
+        let relation_type = normalize_relation_type(relation_type)
+            .map_err(|e| SqlxError::Configuration(e.into()))?;
         let mut tx = self.pg_pool().begin().await?;
         sqlx::query(
             r"DELETE FROM project_relation
@@ -200,7 +200,12 @@ impl GatewaySessionDb {
         }
         let parts: Vec<String> = refs
             .iter()
-            .map(|r| format!("relationType={} refByProjId={}", r.relation_type, r.ref_by_proj_id))
+            .map(|r| {
+                format!(
+                    "relationType={} refByProjId={}",
+                    r.relation_type, r.ref_by_proj_id
+                )
+            })
             .collect();
         Err(format!(
             "project {proj_id} is still referenced; {}",
@@ -276,7 +281,9 @@ mod tests {
     #[tokio::test]
     async fn router_delegate_reference_blocks_delete() {
         let Some(db) = connect_gateway_test_db().await else {
-            eprintln!("skip router_delegate_reference_blocks_delete: set CLAW_GATEWAY_TEST_DATABASE_URL");
+            eprintln!(
+                "skip router_delegate_reference_blocks_delete: set CLAW_GATEWAY_TEST_DATABASE_URL"
+            );
             return;
         };
         let router = ephemeral_test_proj_id();
@@ -295,13 +302,18 @@ mod tests {
         })
         .await
         .unwrap();
-        let err = db.assert_project_deletable(target).await.expect_err("delete blocked");
+        let err = db
+            .assert_project_deletable(target)
+            .await
+            .expect_err("delete blocked");
         assert!(err.contains("relationType=router_delegate"), "{err}");
         assert!(err.contains(&format!("refByProjId={router}")), "{err}");
         db.delete_project_relation(RELATION_TYPE_ROUTER_DELEGATE, router, target)
             .await
             .unwrap();
-        db.assert_project_deletable(target).await.expect("unblocked after relation delete");
+        db.assert_project_deletable(target)
+            .await
+            .expect("unblocked after relation delete");
         cleanup_project(&db, router).await;
         cleanup_project(&db, target).await;
     }
@@ -317,7 +329,12 @@ mod tests {
         let observation = ephemeral_test_proj_id();
         ensure_project_row(&db, master, crate::master_observer::PROJECT_ROLE_MASTER).await;
         ensure_project_row(&db, apprentice, crate::master_observer::PROJECT_ROLE_NORMAL).await;
-        ensure_project_row(&db, observation, crate::master_observer::PROJECT_ROLE_OBSERVATION).await;
+        ensure_project_row(
+            &db,
+            observation,
+            crate::master_observer::PROJECT_ROLE_OBSERVATION,
+        )
+        .await;
         let now = now_ms();
         db.upsert_master_link(&ProjectMasterLinkRow {
             master_proj_id: master,
@@ -332,13 +349,31 @@ mod tests {
         })
         .await
         .unwrap();
-        let apprentice_err = db.assert_project_deletable(apprentice).await.expect_err("apprentice blocked");
-        assert!(apprentice_err.contains("relationType=master_apprentice"), "{apprentice_err}");
-        let obs_err = db.assert_project_deletable(observation).await.expect_err("observation blocked");
-        assert!(obs_err.contains("relationType=master_observation"), "{obs_err}");
-        db.mark_master_link_orphaned(master, apprentice).await.unwrap();
-        db.assert_project_deletable(apprentice).await.expect("apprentice unblocked");
-        db.assert_project_deletable(observation).await.expect("observation unblocked");
+        let apprentice_err = db
+            .assert_project_deletable(apprentice)
+            .await
+            .expect_err("apprentice blocked");
+        assert!(
+            apprentice_err.contains("relationType=master_apprentice"),
+            "{apprentice_err}"
+        );
+        let obs_err = db
+            .assert_project_deletable(observation)
+            .await
+            .expect_err("observation blocked");
+        assert!(
+            obs_err.contains("relationType=master_observation"),
+            "{obs_err}"
+        );
+        db.mark_master_link_orphaned(master, apprentice)
+            .await
+            .unwrap();
+        db.assert_project_deletable(apprentice)
+            .await
+            .expect("apprentice unblocked");
+        db.assert_project_deletable(observation)
+            .await
+            .expect("observation unblocked");
         cleanup_project(&db, master).await;
         cleanup_project(&db, apprentice).await;
         cleanup_project(&db, observation).await;

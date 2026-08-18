@@ -12,13 +12,7 @@ use serde_json::{json, Value};
 use tokio::fs;
 use tokio::process::Command;
 
-const RESERVED_DEST_RELS: &[&str] = &[
-    "project_home_def",
-    ".claw",
-    ".vscode",
-    ".git",
-    "home",
-];
+const RESERVED_DEST_RELS: &[&str] = &["project_home_def", ".claw", ".vscode", ".git", "home"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GitRemote {
@@ -309,7 +303,10 @@ pub fn validate_git_sync_resolved(sync: &ProjectGitSync) -> Result<(), String> {
     for (i, remote) in sync.remotes.iter().enumerate() {
         validate_remote(remote, i)?;
         if !ids.insert(remote.id.clone()) {
-            return Err(format!("gitSync.remotes[{i}].id `{}` is duplicated", remote.id));
+            return Err(format!(
+                "gitSync.remotes[{i}].id `{}` is duplicated",
+                remote.id
+            ));
         }
         if !dests.insert(remote.dest_rel.clone()) {
             return Err(format!(
@@ -393,7 +390,11 @@ pub fn validate_dest_rel(dest: &str) -> Result<(), String> {
 }
 
 /// NAS dest relative to export root: `{cluster}/proj_N/home/<destRel>`. Author: kejiqing
-pub fn git_import_nas_dest(cluster_id: &str, proj_id: i64, dest_rel: &str) -> Result<String, String> {
+pub fn git_import_nas_dest(
+    cluster_id: &str,
+    proj_id: i64,
+    dest_rel: &str,
+) -> Result<String, String> {
     let cluster = cluster_id.trim();
     if cluster.is_empty() {
         return Err("cluster_id must be non-empty".into());
@@ -409,7 +410,10 @@ pub fn git_import_home_file_rel(dest_rel: &str, rel_in_repo: &str) -> Result<Str
     if rel.is_empty() {
         return Err("file rel must be non-empty".into());
     }
-    if rel.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
+    if rel
+        .split('/')
+        .any(|p| p.is_empty() || p == "." || p == "..")
+    {
         return Err("file rel must stay inside destRel".into());
     }
     Ok(format!("{dest_rel}/{rel}"))
@@ -426,14 +430,8 @@ pub fn git_import_guest_file(dest_rel: &str, rel_in_repo: &str) -> Result<String
 #[must_use]
 pub fn default_dest_rel(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
-    let no_git = trimmed
-        .strip_suffix(".git")
-        .unwrap_or(trimmed);
-    let leaf = no_git
-        .rsplit(['/', ':'])
-        .next()
-        .unwrap_or("repo")
-        .trim();
+    let no_git = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+    let leaf = no_git.rsplit(['/', ':']).next().unwrap_or("repo").trim();
     let sanitized: String = leaf
         .chars()
         .map(|c| {
@@ -516,10 +514,7 @@ pub fn git_sync_list_summary(v: &Value) -> Value {
                 .is_some_and(|s| !s.is_empty())
     });
     let configured = sync.enabled && sync.remotes.iter().any(|r| !r.git_url.trim().is_empty());
-    let last_err = sync
-        .remotes
-        .iter()
-        .find_map(|r| r.last_pull_error.clone());
+    let last_err = sync.remotes.iter().find_map(|r| r.last_pull_error.clone());
     let last_ok = configured
         && last_err.as_deref().unwrap_or("").is_empty()
         && sync.remotes.iter().any(|r| r.last_pull_at_ms.is_some());
@@ -720,9 +715,7 @@ fn excluded_relpaths_under_home(excluded: &[PathBuf]) -> Vec<PathBuf> {
 
 #[must_use]
 pub fn git_import_cache_dir(work_dir: &Path, remote_id: &str) -> PathBuf {
-    work_dir
-        .join(".claw/project_git_remote")
-        .join(remote_id)
+    work_dir.join(".claw/project_git_remote").join(remote_id)
 }
 
 async fn ensure_git_repo(
@@ -734,7 +727,12 @@ async fn ensure_git_repo(
     ensure_safe_directory(cache_dir).await;
     let git_dir = cache_dir.join(".git");
     if fs::metadata(&git_dir).await.is_ok_and(|m| m.is_dir()) {
-        git_run(cache_dir, &["remote", "set-url", "origin", clone_url], secret).await?;
+        git_run(
+            cache_dir,
+            &["remote", "set-url", "origin", clone_url],
+            secret,
+        )
+        .await?;
         git_run(
             cache_dir,
             &["fetch", "--depth", "1", "origin", git_ref],
@@ -791,8 +789,7 @@ pub fn collect_import_files(
         let entries = std::fs::read_dir(&dir)
             .map_err(|e| ProjectGitSyncError::new(format!("read dir: {e}")))?;
         for entry in entries {
-            let entry =
-                entry.map_err(|e| ProjectGitSyncError::new(format!("read entry: {e}")))?;
+            let entry = entry.map_err(|e| ProjectGitSyncError::new(format!("read entry: {e}")))?;
             let name = entry.file_name();
             if name == ".git" {
                 continue;
@@ -857,10 +854,7 @@ pub async fn pull_remote_to_cache(
     ))
 }
 
-pub fn remote_has_pat_token(
-    remote: &GitRemote,
-    tokens: Option<&BTreeMap<String, String>>,
-) -> bool {
+pub fn remote_has_pat_token(remote: &GitRemote, tokens: Option<&BTreeMap<String, String>>) -> bool {
     if remote
         .git_token
         .as_deref()
@@ -883,7 +877,9 @@ pub fn remote_has_pat_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use claw_e2b_sandbox_client::{guest_path_from_nas_proj_rel, warm_worker_mounts, GUEST_CLAW_DS};
+    use claw_e2b_sandbox_client::{
+        guest_path_from_nas_proj_rel, warm_worker_mounts, GUEST_CLAW_DS,
+    };
     use std::fs as stdfs;
 
     #[test]
@@ -980,7 +976,10 @@ mod tests {
     fn git_import_nas_dest_joins_cluster_proj_home() {
         let dest = git_import_nas_dest("local-dev", 12, "workspace_test").unwrap();
         assert_eq!(dest, "local-dev/proj_12/home/workspace_test");
-        assert_eq!(dest, format!("{}/workspace_test", proj_home_rel("local-dev", 12)));
+        assert_eq!(
+            dest,
+            format!("{}/workspace_test", proj_home_rel("local-dev", 12))
+        );
         // nas-api POST /v1/rmdir only accepts this four-segment shape. Author: kejiqing
         let parts: Vec<&str> = dest.split('/').collect();
         assert_eq!(parts, ["local-dev", "proj_12", "home", "workspace_test"]);
@@ -1053,7 +1052,8 @@ mod tests {
         std::fs::write(root.path().join(".git/HEAD"), "ref").expect("head");
         std::fs::write(root.path().join("README.md"), "# repo").expect("readme");
         std::fs::write(root.path().join("CLAUDE.md"), "nope").expect("claude");
-        let files = collect_import_files(root.path(), &[PathBuf::from("CLAUDE.md")]).expect("collect");
+        let files =
+            collect_import_files(root.path(), &[PathBuf::from("CLAUDE.md")]).expect("collect");
         let rels: Vec<_> = files.iter().map(|f| f.rel.as_str()).collect();
         assert_eq!(rels, vec!["README.md"]);
     }
@@ -1152,7 +1152,11 @@ mod tests {
         let excluded = [PathBuf::from("CLAUDE.md")];
         let remotes = [
             ("Hello-World", "README", b"hello from github\n".as_slice()),
-            ("workspace_test", "docs/note.md", b"hello from gitlab\n".as_slice()),
+            (
+                "workspace_test",
+                "docs/note.md",
+                b"hello from gitlab\n".as_slice(),
+            ),
         ];
 
         for (dest, rel, body) in remotes {
@@ -1170,9 +1174,7 @@ mod tests {
             stdfs::create_dir_all(nas.path().join(&nas_dest)).expect("mkdir dest");
             for file in &files {
                 let under_home = git_import_home_file_rel(dest, &file.rel).expect("home rel");
-                let nas_file = format!(
-                    "{cluster}/proj_{proj_id}/home/{under_home}"
-                );
+                let nas_file = format!("{cluster}/proj_{proj_id}/home/{under_home}");
                 assert_eq!(
                     nas_file,
                     format!("{nas_dest}/{}", file.rel.replace('\\', "/"))
@@ -1195,10 +1197,7 @@ mod tests {
         );
 
         for (dest, rel, body) in remotes {
-            let nas_file = format!(
-                "{}/{dest}/{rel}",
-                proj_home_rel(cluster, proj_id)
-            );
+            let nas_file = format!("{}/{dest}/{rel}", proj_home_rel(cluster, proj_id));
             let guest = guest_path_from_nas_proj_rel(cluster, proj_id, &nas_file)
                 .expect("nas rel must map into /claw_ds");
             assert_eq!(guest, git_import_guest_file(dest, rel).unwrap());
@@ -1208,7 +1207,8 @@ mod tests {
                 .strip_prefix(&format!("{}/", home.rel_path))
                 .expect("file must be inside home mount");
             let bound = guest_root.join(under);
-            let got = stdfs::read(&bound).unwrap_or_else(|e| panic!("worker read {}: {e}", bound.display()));
+            let got = stdfs::read(&bound)
+                .unwrap_or_else(|e| panic!("worker read {}: {e}", bound.display()));
             assert_eq!(got, body, "worker bind must expose dest file {dest}/{rel}");
             assert!(!bound.starts_with(guest_root.join("project_home_def")));
         }
@@ -1216,6 +1216,10 @@ mod tests {
         let a = guest_root.join("Hello-World").join("README");
         let b = guest_root.join("workspace_test").join("docs/note.md");
         assert!(a.is_file() && b.is_file());
-        assert_ne!(a.parent(), b.parent(), "dest trees must not flatten onto each other");
+        assert_ne!(
+            a.parent(),
+            b.parent(),
+            "dest trees must not flatten onto each other"
+        );
     }
 }

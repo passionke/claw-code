@@ -55,7 +55,11 @@ pub fn guest_path_under_claw_ds(rel_under_home: &str) -> String {
 
 /// Map a NAS export-rel file/dir under project home to the worker guest path. Author: kejiqing
 #[must_use]
-pub fn guest_path_from_nas_proj_rel(cluster_id: &str, proj_id: i64, nas_rel: &str) -> Option<String> {
+pub fn guest_path_from_nas_proj_rel(
+    cluster_id: &str,
+    proj_id: i64,
+    nas_rel: &str,
+) -> Option<String> {
     let home = proj_home_rel(cluster_id, proj_id);
     let nas = nas_rel.trim_start_matches('/');
     if nas == home {
@@ -274,15 +278,22 @@ mod tests {
             guest_path_from_nas_proj_rel(CID, 12, &nas_file).as_deref(),
             Some("/claw_ds/Hello-World/README")
         );
-        assert!(home.read_only, "strict worker still reads /claw_ds (ro bind)");
+        assert!(
+            home.read_only,
+            "strict worker still reads /claw_ds (ro bind)"
+        );
         assert!(guest_path_from_nas_proj_rel(CID, 12, "proj_12/home/Hello-World").is_none());
-        assert!(guest_path_from_nas_proj_rel(CID, 12, &format!("{CID}/proj_12/workers/w")).is_none());
+        assert!(
+            guest_path_from_nas_proj_rel(CID, 12, &format!("{CID}/proj_12/workers/w")).is_none()
+        );
     }
 
     #[test]
     fn two_git_dests_are_siblings_under_claw_ds_not_flattened() {
-        let a = guest_path_from_nas_proj_rel(CID, 1, &format!("{}/a/README", proj_home_rel(CID, 1)));
-        let b = guest_path_from_nas_proj_rel(CID, 1, &format!("{}/b/README", proj_home_rel(CID, 1)));
+        let a =
+            guest_path_from_nas_proj_rel(CID, 1, &format!("{}/a/README", proj_home_rel(CID, 1)));
+        let b =
+            guest_path_from_nas_proj_rel(CID, 1, &format!("{}/b/README", proj_home_rel(CID, 1)));
         assert_eq!(a.as_deref(), Some("/claw_ds/a/README"));
         assert_eq!(b.as_deref(), Some("/claw_ds/b/README"));
         assert_ne!(a, b);

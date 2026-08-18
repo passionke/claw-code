@@ -73,11 +73,9 @@ impl NasLayoutBackend {
         self.nas_api.rmdir_git_import_dest(&dest_abs).await?;
         self.mkdir_rel(&dest_abs).await?;
         for file in files {
-            let rel_under_home = crate::project_git_sync::git_import_home_file_rel(
-                dest_rel,
-                &file.rel,
-            )
-            .map_err(|e| format!("git dest file: {e}"))?;
+            let rel_under_home =
+                crate::project_git_sync::git_import_home_file_rel(dest_rel, &file.rel)
+                    .map_err(|e| format!("git dest file: {e}"))?;
             self.put_proj_home_file(&cluster_id, proj_id, &rel_under_home, &file.bytes)
                 .await?;
         }

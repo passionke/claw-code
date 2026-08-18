@@ -10,7 +10,8 @@ use tracing::{info, warn};
 use crate::admin_mcp_solve::AdminMcpSolveInput;
 use crate::app_state::AppState;
 use crate::master_observer::{
-    render_schedule_prompt, GatewayScheduledJobRow, PROJECT_ROLE_KNOWLEDGE_BASE, PROJECT_ROLE_MASTER,
+    render_schedule_prompt, GatewayScheduledJobRow, PROJECT_ROLE_KNOWLEDGE_BASE,
+    PROJECT_ROLE_MASTER,
 };
 use crate::session_db::now_ms_for_registry;
 
@@ -195,14 +196,19 @@ async fn run_kb_sync_job(state: &AppState, job: &mut GatewayScheduledJobRow) -> 
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "/app/scripts/mind-kb/apploy_faq_kb_mind_only.py".to_string());
-    let gw_base = gateway_loopback_base().unwrap_or_else(|| state.gateway_identity.gateway_base.clone());
+    let gw_base =
+        gateway_loopback_base().unwrap_or_else(|| state.gateway_identity.gateway_base.clone());
     let project_home = state
         .cfg
         .work_root
         .join(format!("proj_{}", job.master_proj_id))
         .join("home");
-    let worker_env = crate::pool::parse_worker_env_map(&cfg.worker_env_json)
-        .map_err(|e| format!("invalid worker_env_json for kb_sync proj {}: {e}", job.master_proj_id))?;
+    let worker_env = crate::pool::parse_worker_env_map(&cfg.worker_env_json).map_err(|e| {
+        format!(
+            "invalid worker_env_json for kb_sync proj {}: {e}",
+            job.master_proj_id
+        )
+    })?;
     let mut cmd = Command::new("python3");
     cmd.arg(&script_path)
         .arg("--gw")
@@ -226,9 +232,7 @@ async fn run_kb_sync_job(state: &AppState, job: &mut GatewayScheduledJobRow) -> 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         return Err(format!(
             "kb_sync script failed exit={}: {} {}",
-            output.status,
-            stdout,
-            stderr
+            output.status, stdout, stderr
         ));
     }
     let now_ms = now_ms_for_registry();
