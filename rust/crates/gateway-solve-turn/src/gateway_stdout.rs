@@ -7,11 +7,11 @@ use serde::Serialize;
 use serde_json::Value;
 
 /// After `delegate_project` succeeds, the router model's own tokens must not
-/// enter live (third copy). Specialist passthrough still uses the other door.
+/// enter live. Gateway fan-in serves specialist Hub directly to user SSE.
 /// One process = one turn. Author: kejiqing
 static SUPPRESS_FURTHER_LIVE_DELTAS: AtomicBool = AtomicBool::new(false);
 
-/// Close the router-model live door. Specialist `emit_report_delta_passthrough` stays open.
+/// Close the router-model live door after delegate completes.
 pub fn suppress_further_live_deltas() {
     SUPPRESS_FURTHER_LIVE_DELTAS.store(true, Ordering::SeqCst);
 }
@@ -24,6 +24,14 @@ struct StdoutEnvelope<'a> {
     ev: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<&'a str>,
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    session_id: Option<&'a str>,
+    #[serde(rename = "turnId", skip_serializing_if = "Option::is_none")]
+    turn_id: Option<&'a str>,
+    #[serde(rename = "projId", skip_serializing_if = "Option::is_none")]
+    proj_id: Option<i64>,
+    #[serde(rename = "delegateProjId", skip_serializing_if = "Option::is_none")]
+    delegate_proj_id: Option<i64>,
     #[serde(rename = "clawExitCode", skip_serializing_if = "Option::is_none")]
     claw_exit_code: Option<i32>,
     #[serde(rename = "outputText", skip_serializing_if = "Option::is_none")]
@@ -70,6 +78,49 @@ fn emit_report_delta_inner(text: &str, passthrough: bool) -> io::Result<()> {
     emit_line(&StdoutEnvelope {
         ev: "report.delta",
         text: Some(text),
+        session_id: None,
+        turn_id: None,
+        proj_id: None,
+        delegate_proj_id: None,
+        claw_exit_code: None,
+        output_text: None,
+        output_json: None,
+        error: None,
+        http_status_hint: None,
+    })
+}
+
+/// Register active specialist delegate for gateway live SSE fan-in. Author: kejiqing
+pub fn emit_delegate_active(
+    session_id: &str,
+    turn_id: &str,
+    proj_id: i64,
+    delegate_proj_id: i64,
+) -> io::Result<()> {
+    emit_line(&StdoutEnvelope {
+        ev: "delegate.active",
+        text: None,
+        session_id: Some(session_id),
+        turn_id: Some(turn_id),
+        proj_id: Some(proj_id),
+        delegate_proj_id: Some(delegate_proj_id),
+        claw_exit_code: None,
+        output_text: None,
+        output_json: None,
+        error: None,
+        http_status_hint: None,
+    })
+}
+
+/// Clear active delegate; gateway archives progress before drop. Author: kejiqing
+pub fn emit_delegate_clear() -> io::Result<()> {
+    emit_line(&StdoutEnvelope {
+        ev: "delegate.clear",
+        text: None,
+        session_id: None,
+        turn_id: None,
+        proj_id: None,
+        delegate_proj_id: None,
         claw_exit_code: None,
         output_text: None,
         output_json: None,
@@ -87,6 +138,10 @@ pub fn emit_solve_done(
     emit_line(&StdoutEnvelope {
         ev: "solve.done",
         text: None,
+        session_id: None,
+        turn_id: None,
+        proj_id: None,
+        delegate_proj_id: None,
         claw_exit_code: Some(claw_exit_code),
         output_text: Some(output_text),
         output_json,
@@ -99,6 +154,10 @@ pub fn emit_solve_error(message: &str, http_status_hint: u16) -> io::Result<()> 
     emit_line(&StdoutEnvelope {
         ev: "solve.done",
         text: None,
+        session_id: None,
+        turn_id: None,
+        proj_id: None,
+        delegate_proj_id: None,
         claw_exit_code: Some(1),
         output_text: None,
         output_json: None,
@@ -136,5 +195,25 @@ mod tests {
         assert!(!should_forward_live_delta("hi", true, false));
         assert!(should_forward_live_delta("hi", true, true));
         assert!(!should_forward_live_delta("", false, true));
+    }
+
+    #[test]
+    fn parse_delegate_active_line() {
+        let line = format!(
+            "{GATEWAY_STDOUT_LINE_PREFIX}{}",
+            json!({
+                "ev":"delegate.active",
+                "sessionId":"dgt_x",
+                "turnId":"T_y",
+                "projId":99012,
+                "delegateProjId":99012
+            })
+        );
+        let v = parse_stdout_line(&line).expect("parse");
+        assert_eq!(
+            v.get("ev").and_then(|x| x.as_str()),
+            Some("delegate.active")
+        );
+        assert_eq!(v.get("sessionId").and_then(|x| x.as_str()), Some("dgt_x"));
     }
 }

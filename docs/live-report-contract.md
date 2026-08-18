@@ -24,6 +24,19 @@ Author: kejiqing
 
 **Legacy pool-daemon：** 入队预写 `CLAW_POOL_ID` + `claw_pool_join` 代理仅适用于已拆除的宿主机 pool；e2b 新部署勿依赖。
 
+### Router delegate fan-in（路径 B′，2026-08）
+
+`project_role=router` 且 router turn 存在 `solve_timing_jsonb.activeDelegate` 时：
+
+| 环节 | 行为 |
+|------|------|
+| Worker | `delegate_project` 发 `delegate.active` / `delegate.clear` stdout（**不**抄 specialist SSE） |
+| Specialist live | 与单 agent 相同：specialist worker → specialist turn **LiveReportHub**（单跳） |
+| 用户 SSE URL | 仍 `GET /v1/biz_advice_report?sessionId=<router>&turnId=<router>&stream=true` |
+| Gateway | 读 `activeDelegate` → 订阅 **specialist turn** Hub（或 owner 反代）；progress 读时 merge specialist PG |
+
+**禁止** worker 二次 HTTP 订阅 specialist SSE 再写 router stdout（旧 passthrough 已移除）。
+
 ---
 
 ## 2. 端到端数据流（路径 B）

@@ -14,6 +14,7 @@ mod result;
 mod session_db_sync;
 mod session_mount_ownership;
 mod stdout_hooks;
+mod delegate_active_ingest;
 mod traits;
 mod worker_env;
 mod worker_profile;
@@ -58,6 +59,9 @@ pub use session_mount_ownership::{
     ensure_session_tree_owned_for_worker_with_runtime_fallback, path_for_pool_acquire,
 };
 pub use stdout_hooks::merge_stdout_hooks;
+pub use delegate_active_ingest::{
+    ingest_delegate_stdout_event, is_delegate_registry_event, spawn_delegate_active_consumer,
+};
 pub use worker_env::{default_worker_env_json, parse_worker_env_map, validate_worker_env_json};
 pub use worker_profile::{
     default_worker_profile_json, desired_strict_pool_size_from_profile, effective_mode,
