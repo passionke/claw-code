@@ -27,6 +27,31 @@ Author: kejiqing
 | `CLAW_BOOTSTRAP_LLM_NAME` | Admin 里显示名 | `github-ci-llm` |
 | `CLAUDE_TAP_IMAGE` | claw-tap 镜像 | ACR `passionke/claw-tap:latest` |
 
+### claw-code-image（release 打 tag 自动跑）
+
+Workflow：`.github/workflows/claw-code-image.yaml`（push `release-v*` tag）。
+
+| Key | 类型 | 说明 |
+|-----|------|------|
+| `ACTIONS_RUNNER_LIST_TOKEN` | **Secret** | Classic PAT 或 fine-grained token，权限 **Administration: Read**。用于 `pick-runner` 列出在线 self-hosted runner；**未配置时默认 GITHUB_TOKEN 403，始终回退 `ubuntu-latest`**。 |
+| `CONTAINER_BASE_REGISTRY` | Variable | 可选；未设 → `docker.io`（github-hosted 推荐）。SG self-hosted 可设 `docker.1ms.run`。 |
+
+**release 编译 cache 验收**（`linux-compile-once` job 日志）：
+
+1. `Cache restored` 或 partial restore（非 `Cache not found`）— lock 不变且非首次 warm
+2. Post cache 无 `Permission denied` / `Failed to save`
+3. `ci-cache ownership ok for uid=...`
+4. sccache `Cache hits rate` > 0（lock 不变、第二次 release 起）
+
+本地脚本（需 `gh`）：
+
+```bash
+./deploy/stack/lib/ci-verify-linux-compile-cache.sh <run-id>
+# gh run list --workflow claw-code-image.yaml --limit 3
+```
+
+**GHCR 预构建 compile 镜像**：同 workflow 的 `rust-compile-image` job 推送 `ghcr.io/<owner>/claw-rust-compile:1.88-bookworm`；`linux-compile-once` 优先 pull，避免每次 apt 装 mold/sccache。
+
 ### Langfuse OTEL（可选）
 
 | Key | 类型 | 说明 |
@@ -159,4 +184,5 @@ curl -v --connect-timeout 15 "https://${HOST}/v2/"   # TLS 成功即可（401 �
 - 生成脚本：`deploy/stack/lib/render-env-from-ci.sh`
 - ACR VPN 路由：`deploy/stack/lib/ci-acr-vpn-route.sh`
 - Workflow：`.github/workflows/claw-ci-deploy.yml`、`.github/workflows/claw-code-image.yaml`
+- release 编译 cache 验收：`deploy/stack/lib/ci-verify-linux-compile-cache.sh`
 - Sunmi 对照：`deploy/stack/docs/gitlab-ci-variables.md`
