@@ -247,16 +247,71 @@ pub(crate) fn task_has_report_for_status(status: &str, live_biz_report_spill_ena
     status == "succeeded"
 }
 
-pub(crate) async fn task_has_report(state: &AppState, task: &TaskRecord) -> bool {
-    if task_has_report_for_status(&task.status, state.cfg.live_biz_report_spill_enabled) {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TaskHasReportSources {
+    self_turn: bool,
+    active_delegate: bool,
+}
+
+fn task_has_report_from_sources(
+    status: &str,
+    live_biz_report_spill_enabled: bool,
+    sources: TaskHasReportSources,
+) -> bool {
+    if task_has_report_for_status(status, live_biz_report_spill_enabled) {
         return true;
     }
-    matches!(task.status.as_str(), "running" | "queued")
-        && !task.turn_id.is_empty()
-        && state
-            .pool_clients
-            .has_report_for_turn(&state.session_db, &task.turn_id)
-            .await
+    matches!(status, "running" | "queued") && (sources.self_turn || sources.active_delegate)
+}
+
+async fn task_router_active_delegate_has_report(state: &AppState, task: &TaskRecord) -> bool {
+    let Ok(Some(active)) = crate::delegate_fanin::active_delegate_for_router_live(
+        &state.session_db,
+        task.proj_id,
+        &task.turn_id,
+    )
+    .await
+    else {
+        return false;
+    };
+    if !state
+        .pool_clients
+        .has_report_for_turn(&state.session_db, &active.turn_id)
+        .await
+    {
+        return false;
+    }
+    let first_report_at_ms = state
+        .pool_clients
+        .first_report_at_ms_for_turn(&state.session_db, &active.turn_id)
+        .await;
+    state
+        .live_report_hub
+        .promote_report_availability(&task.turn_id, first_report_at_ms);
+    true
+}
+
+pub(crate) async fn task_has_report(state: &AppState, task: &TaskRecord) -> bool {
+    if task.turn_id.is_empty() {
+        return task_has_report_for_status(&task.status, state.cfg.live_biz_report_spill_enabled);
+    }
+    let self_turn = state
+        .pool_clients
+        .has_report_for_turn(&state.session_db, &task.turn_id)
+        .await;
+    let active_delegate = if self_turn {
+        false
+    } else {
+        task_router_active_delegate_has_report(state, task).await
+    };
+    task_has_report_from_sources(
+        &task.status,
+        state.cfg.live_biz_report_spill_enabled,
+        TaskHasReportSources {
+            self_turn,
+            active_delegate,
+        },
+    )
 }
 
 pub(crate) async fn task_report_time_ms(state: &AppState, task: &TaskRecord) -> Option<i64> {
@@ -297,6 +352,125 @@ pub(crate) fn task_cancel_idempotent_response(record: TaskRecord) -> TaskRecord 
         "previousError": previous_error,
     }));
     out
+}
+
+#[cfg(test)]
+mod task_has_report_contract_tests {
+    use super::{task_has_report_for_status, task_has_report_from_sources, TaskHasReportSources};
+
+    #[test]
+    fn task_has_report_sources_non_router_running_without_report_stays_false() {
+        let got = task_has_report_from_sources(
+            "running",
+            false,
+            TaskHasReportSources {
+                self_turn: false,
+                active_delegate: false,
+            },
+        );
+        assert!(!got);
+    }
+
+    #[test]
+    fn task_has_report_sources_non_router_first_delta_flips_true() {
+        let got = task_has_report_from_sources(
+            "running",
+            false,
+            TaskHasReportSources {
+                self_turn: true,
+                active_delegate: false,
+            },
+        );
+        assert!(got);
+    }
+
+    #[test]
+    fn task_has_report_sources_router_delegate_report_flips_true() {
+        let got = task_has_report_from_sources(
+            "running",
+            false,
+            TaskHasReportSources {
+                self_turn: false,
+                active_delegate: true,
+            },
+        );
+        assert!(got);
+    }
+
+    #[test]
+    fn task_has_report_sources_active_delegate_without_report_stays_false() {
+        let got = task_has_report_from_sources(
+            "running",
+            false,
+            TaskHasReportSources {
+                self_turn: false,
+                active_delegate: false,
+            },
+        );
+        assert!(!got);
+    }
+
+    #[test]
+    fn task_has_report_sources_second_delegate_first_report_flips_once() {
+        let before = task_has_report_from_sources(
+            "running",
+            false,
+            TaskHasReportSources {
+                self_turn: false,
+                active_delegate: false,
+            },
+        );
+        let after = task_has_report_from_sources(
+            "running",
+            false,
+            TaskHasReportSources {
+                self_turn: false,
+                active_delegate: true,
+            },
+        );
+        assert!(!before);
+        assert!(after);
+    }
+
+    #[test]
+    fn task_has_report_sources_true_does_not_revert_after_segment_switch() {
+        let got = task_has_report_from_sources(
+            "running",
+            false,
+            TaskHasReportSources {
+                self_turn: true,
+                active_delegate: false,
+            },
+        );
+        assert!(got);
+    }
+
+    #[test]
+    fn task_has_report_contract_succeeded_is_true() {
+        let got = task_has_report_from_sources(
+            "succeeded",
+            false,
+            TaskHasReportSources::default(),
+        );
+        assert!(got);
+        assert!(task_has_report_for_status("succeeded", false));
+    }
+
+    #[test]
+    fn task_has_report_contract_failed_without_report_stays_false() {
+        let failed = task_has_report_from_sources(
+            "failed",
+            false,
+            TaskHasReportSources::default(),
+        );
+        let cancelled = task_has_report_from_sources(
+            "cancelled",
+            false,
+            TaskHasReportSources::default(),
+        );
+        assert!(!failed);
+        assert!(!cancelled);
+    }
 }
 
 pub(crate) async fn cancel_task_cold_db(
