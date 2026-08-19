@@ -138,6 +138,28 @@ impl LiveReportHub {
             .and_then(|s| s.first_report_at_ms)
     }
 
+    /// Latch report availability onto another turn without fabricating text deltas.
+    /// Used by router turns to inherit active specialist report visibility. Author: kejiqing
+    pub fn promote_report_availability(&self, turn_id: &str, first_report_at_ms: Option<i64>) {
+        let mut guard = self.inner.lock().expect("live_report_hub lock");
+        let state = guard
+            .entry(turn_id.to_string())
+            .or_insert_with(|| TurnStdoutState {
+                text: String::new(),
+                chunks: Vec::new(),
+                has_report: false,
+                solve_done: false,
+                first_report_at_ms: None,
+                tx: broadcast::channel(HUB_CHANNEL_CAP).0,
+            });
+        if !state.has_report {
+            state.has_report = true;
+        }
+        if state.first_report_at_ms.is_none() {
+            state.first_report_at_ms = first_report_at_ms.or_else(|| Some(now_ms()));
+        }
+    }
+
     /// Atomic (subscribe, snapshot-chunks): no overlap between replay and broadcast tail.
     #[must_use]
     pub fn subscribe_with_snapshot(
@@ -279,5 +301,24 @@ mod tests {
         hub.ingest_stdout_line(turn_id, line);
         assert_eq!(hub.snapshot_text(turn_id), "▸ 进度\n");
         assert!(hub.has_report_for_turn(turn_id));
+    }
+
+    #[test]
+    fn promote_report_availability_latches_without_text() {
+        let hub = LiveReportHub::default();
+        let turn_id = "T_router";
+        hub.promote_report_availability(turn_id, Some(1234));
+        assert!(hub.has_report_for_turn(turn_id));
+        assert_eq!(hub.snapshot_text(turn_id), "");
+        assert_eq!(hub.first_report_at_ms_for_turn(turn_id), Some(1234));
+    }
+
+    #[test]
+    fn promote_report_availability_keeps_earliest_timestamp() {
+        let hub = LiveReportHub::default();
+        let turn_id = "T_router_earliest";
+        hub.promote_report_availability(turn_id, Some(1234));
+        hub.promote_report_availability(turn_id, Some(5678));
+        assert_eq!(hub.first_report_at_ms_for_turn(turn_id), Some(1234));
     }
 }
