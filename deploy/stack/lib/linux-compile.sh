@@ -93,9 +93,10 @@ claw_linux_compile_release() {
 
   local sccache_size="${CLAW_SCCACHE_CACHE_SIZE:-10G}"
 
+  local ci_cache=""
   local -a vol_args=()
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
-    local ci_cache="${root_dir}/.ci-cache"
+    ci_cache="${root_dir}/.ci-cache"
     mkdir -p "${ci_cache}/cargo-registry" "${ci_cache}/cargo-git" "${ci_cache}/sccache"
     vol_args=(
       -v "${ci_cache}/cargo-registry:/usr/local/cargo/registry:Z"
@@ -166,11 +167,28 @@ claw_linux_compile_release() {
         ! -name claw ! -name http-gateway-rs -exec rm -rf {} + 2>/dev/null || true
       if [ -n "${CLAW_HOST_UID:-}" ] && [ -n "${CLAW_HOST_GID:-}" ]; then
         chown -R "${CLAW_HOST_UID}:${CLAW_HOST_GID}" /artifacts
+        chown -R "${CLAW_HOST_UID}:${CLAW_HOST_GID}" \
+          /usr/local/cargo/registry /usr/local/cargo/git /root/.cache/sccache
       fi
     '
 
   if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
     claw_linux_compile_prune_ci_bins "${out_dir}"
+    # Docker writes registry/sccache as root; actions/cache must tar as runner user. Author: kejiqing
+    if [[ -n "${ci_cache}" ]] && [[ -d "${ci_cache}" ]]; then
+      local host_uid host_gid
+      host_uid="$(id -u)"
+      host_gid="$(id -g)"
+      if chown -R "${host_uid}:${host_gid}" "${ci_cache}" 2>/dev/null; then
+        echo "linux compile: chown ci cache → ${host_uid}:${host_gid}"
+      elif command -v docker >/dev/null 2>&1; then
+        docker run --rm -v "${root_dir}:/w:rw" alpine:3.20 \
+          chown -R "${host_uid}:${host_gid}" /w/.ci-cache
+        echo "linux compile: chown ci cache via docker → ${host_uid}:${host_gid}"
+      else
+        echo "linux compile: warning: could not chown ${ci_cache} (actions/cache save may fail)" >&2
+      fi
+    fi
   fi
   for bin in http-gateway-rs claw; do
     if [[ ! -f "${out_dir}/${bin}" ]]; then
