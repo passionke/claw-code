@@ -6,6 +6,10 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import PurePosixPath
+from tempfile import SpooledTemporaryFile
+
+SPOOLED_FALLBACK_MAX_BYTES = 2 * 1024 * 1024
 
 
 def _fail(message: str, code: int = 1) -> None:
@@ -66,8 +70,53 @@ def _prepend_env_exports(script: str, env: dict) -> str:
     return f"set -eu\n{exports}{script}"
 
 
+def _normalize_sse_log_paths_for_session(env: dict, session_root: str) -> dict:
+    """Force SSE trace/debug logs into current session root. Author: kejiqing"""
+    if not env or not session_root.strip():
+        return env
+    out = dict(env)
+    for key in ("CLAW_SSE_BURST_LOG_FILE", "CLAW_SSE_LOG_FILE"):
+        raw = str(out.get(key) or "").strip()
+        if not raw:
+            continue
+        p = PurePosixPath(raw)
+        if p.is_absolute():
+            # Guardrail: `/claw_sessions/<file>` is sessions root, not current session root.
+            if (
+                len(p.parts) == 3
+                and p.parts[0] == "/"
+                and p.parts[1] == "claw_sessions"
+            ):
+                out[key] = str(PurePosixPath(session_root) / p.name)
+            continue
+        out[key] = str(PurePosixPath(session_root) / p)
+    return out
+
+
 def _emit_stdout_line(line: str) -> None:
     print(json.dumps({"ev": "stdout_line", "line": line}), flush=True)
+
+
+class _SpooledTextFallback:
+    """Bounded-memory text fallback; spills to temp file past threshold. Author: kejiqing"""
+
+    def __init__(self) -> None:
+        self._file = SpooledTemporaryFile(
+            max_size=SPOOLED_FALLBACK_MAX_BYTES,
+            mode="w+",
+            encoding="utf-8",
+        )
+
+    def write(self, text: str) -> None:
+        if text:
+            self._file.write(text)
+
+    def read_all(self) -> str:
+        self._file.seek(0)
+        return self._file.read()
+
+    def close(self) -> None:
+        self._file.close()
 
 
 class _LineAssembler:
@@ -76,17 +125,20 @@ class _LineAssembler:
     def __init__(self) -> None:
         self._buf = ""
 
-    def push(self, chunk: str) -> None:
+    def push(self, chunk: str) -> int:
         if not chunk:
-            return
-        self._buf += chunk
-        while True:
-            pos = self._buf.find("\n")
-            if pos < 0:
-                break
-            line = self._buf[: pos + 1]
-            self._buf = self._buf[pos + 1 :]
-            _emit_stdout_line(line)
+            return 0
+        combined = self._buf + chunk
+        parts = combined.splitlines(keepends=True)
+        emitted = 0
+        self._buf = ""
+        for part in parts:
+            if part.endswith("\n"):
+                _emit_stdout_line(part)
+                emitted += 1
+            else:
+                self._buf = part
+        return emitted
 
     def flush_tail(self) -> None:
         if self._buf:
@@ -96,28 +148,35 @@ class _LineAssembler:
 
 def _run_streaming(sandbox, script: str, timeout: int):
     assembler = _LineAssembler()
-    stdout_parts: list[str] = []
-    stderr_parts: list[str] = []
+    stdout_fallback = _SpooledTextFallback()
+    stderr_fallback = _SpooledTextFallback()
+    stdout_obs = {"chunks": 0, "lines": 0, "bytes": 0}
 
     def on_stdout(data) -> None:
         text = data if isinstance(data, str) else str(data)
-        stdout_parts.append(text)
-        assembler.push(text)
+        stdout_fallback.write(text)
+        stdout_obs["chunks"] += 1
+        stdout_obs["bytes"] += len(text.encode("utf-8"))
+        stdout_obs["lines"] += assembler.push(text)
 
     def on_stderr(data) -> None:
         text = data if isinstance(data, str) else str(data)
-        stderr_parts.append(text)
+        stderr_fallback.write(text)
 
-    result = sandbox.commands.run(
-        script,
-        timeout=timeout,
-        on_stdout=on_stdout,
-        on_stderr=on_stderr,
-    )
-    assembler.flush_tail()
-    stderr = result.stderr or "".join(stderr_parts)
-    stdout = result.stdout if result.stdout else "".join(stdout_parts)
-    return result, stdout, stderr
+    try:
+        result = sandbox.commands.run(
+            script,
+            timeout=timeout,
+            on_stdout=on_stdout,
+            on_stderr=on_stderr,
+        )
+        assembler.flush_tail()
+        stderr = result.stderr or stderr_fallback.read_all()
+        stdout = result.stdout if result.stdout else stdout_fallback.read_all()
+        return result, stdout, stderr, stdout_obs
+    finally:
+        stdout_fallback.close()
+        stderr_fallback.close()
 
 
 def main() -> None:
@@ -158,7 +217,6 @@ def main() -> None:
             sandbox = Sandbox.connect(sandbox_id, **connect)
         if op == "exec_solve":
             env = payload.get("env") or {}
-            exports = _env_exports_sh(env)
             claw_bin = payload.get("claw_bin") or "claw"
             session_segment = str(payload.get("session_segment") or "").strip()
             session_root = str(payload.get("session_root") or "").strip()
@@ -166,6 +224,8 @@ def main() -> None:
                 session_root = f"/claw_sessions/{session_segment}"
             if not session_root:
                 session_root = "/claw_host_root"
+            env = _normalize_sse_log_paths_for_session(env, session_root)
+            exports = _env_exports_sh(env)
             task_file = payload.get("task_file") or f"{session_root}/gateway-solve-task.json"
             # Task body is on NAS (gateway nas-api PUT); never embed in shell (ARG_MAX). Author: kejiqing
             inner = (
@@ -181,7 +241,7 @@ def main() -> None:
                 f"{claw_bin} gateway-solve-once --task-file {task_file}\n"
             )
             script = _run_as_claw_user_script(inner)
-            result, stdout, stderr = _run_streaming(sandbox, script, timeout)
+            result, stdout, stderr, stdout_obs = _run_streaming(sandbox, script, timeout)
             print(
                 json.dumps(
                     {
@@ -189,6 +249,7 @@ def main() -> None:
                         "exit_code": result.exit_code,
                         "stdout": stdout,
                         "stderr": stderr,
+                        "stdoutObs": stdout_obs,
                     }
                 ),
                 flush=True,
@@ -196,7 +257,7 @@ def main() -> None:
             return
         run_env = payload.get("env") or {}
         script = _prepend_env_exports(script, run_env)
-        result, stdout, stderr = _run_streaming(sandbox, script, timeout)
+        result, stdout, stderr, _stdout_obs = _run_streaming(sandbox, script, timeout)
         if result.exit_code != 0:
             stderr = (stderr or "").strip()
             stdout = (stdout or "").strip()
