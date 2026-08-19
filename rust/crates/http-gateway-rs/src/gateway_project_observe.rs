@@ -7,6 +7,11 @@ use tracing::{info, warn};
 
 use crate::cluster_identity::{gateway_cluster_id, sandbox_database_url};
 use crate::gateway_claw_tap_settings::{DEFAULT_CLAW_TAP_LIVE_PORT, DEFAULT_CLAW_TAP_PROXY_PORT};
+use crate::gateway_e2b_lifecycle_decision::{
+    decide_lifecycle_action, lifecycle_probe_registry, probe_verdict_from_bools,
+    project_observe_probe_key, LifecycleAction, LifecycleDecisionInput, ProbeVerdict,
+    PROBE_MAX_ATTEMPTS,
+};
 use crate::gateway_e2b_observe_settings::load_e2b_observe_template_id;
 use crate::gateway_llm_cluster_store::resolve_llm_cluster_id;
 use crate::gateway_project_llm::{
@@ -142,6 +147,46 @@ pub async fn ensure_project_observe(
     client: &E2bSandboxClient,
     proj_id: i64,
 ) -> Result<ProjectObserveResetResponse, String> {
+    db.with_e2b_project_observe_lock(proj_id, || async {
+        ensure_project_observe_inner(db, client, proj_id).await
+    })
+    .await
+}
+
+async fn probe_project_observe_live(live_base: &str) -> bool {
+    let max = PROBE_MAX_ATTEMPTS.max(1);
+    for attempt in 1..=max {
+        if probe_http_ok_once(live_base).await {
+            return true;
+        }
+        if attempt < max {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
+    false
+}
+
+async fn probe_http_ok_once(url: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    else {
+        return false;
+    };
+    client
+        .get(url)
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+async fn ensure_project_observe_inner(
+    db: &GatewaySessionDb,
+    client: &E2bSandboxClient,
+    proj_id: i64,
+) -> Result<ProjectObserveResetResponse, String> {
     if !e2b_observe_is_enabled() {
         return Ok(ProjectObserveResetResponse {
             proj_id,
@@ -190,11 +235,24 @@ pub async fn ensure_project_observe(
     let candidate = resolve_project_observe_sandbox_id(client, &cluster_id, proj_id, pg_sid).await;
 
     if let Some(ref sid) = candidate {
+        let probe_key = project_observe_probe_key(proj_id);
         let domain = client.config().domain.clone();
         let live_base = service_base_url(client, live_port, sid, &domain);
-        if client.sandbox_running(sid).await
-            && wait_http_ok(&live_base, "observe-proj Live", 3).await
-        {
+        let registry = lifecycle_probe_registry();
+        let now = now_ms();
+        let (last_ok, consecutive) = registry.snapshot(&probe_key);
+        let (cache_action, _) = decide_lifecycle_action(&LifecycleDecisionInput {
+            now_ms: now,
+            last_ok_ms: last_ok,
+            consecutive_failures: consecutive,
+            probe_verdict: ProbeVerdict::NotRunning,
+            force_recreate: false,
+            busy: false,
+        });
+        if matches!(
+            cache_action,
+            LifecycleAction::ReuseSkipProbe | LifecycleAction::Reuse
+        ) {
             client.touch_persistent_sandbox(sid).await?;
             let handle = E2bSandboxHandle {
                 sandbox_id: sid.clone(),
@@ -215,7 +273,6 @@ pub async fn ensure_project_observe(
             )
             .await
             .map_err(|e| e.to_string())?;
-            info!(target: "claw_project_observe", proj_id, sandbox_id = %sid, "project observe online");
             let settings = load_project_inference_settings(db, proj_id).await?;
             return Ok(ProjectObserveResetResponse {
                 proj_id,
@@ -224,13 +281,84 @@ pub async fn ensure_project_observe(
                 message: None,
             });
         }
-        warn!(
-            target: "claw_project_observe",
-            proj_id,
-            sandbox_id = %sid,
-            "project observe unhealthy — recreate"
-        );
-        let _ = client.kill_sandbox(sid).await;
+        let running = {
+            let max = PROBE_MAX_ATTEMPTS.max(1);
+            let mut ok = false;
+            for attempt in 1..=max {
+                if client.sandbox_running(sid).await {
+                    ok = true;
+                    break;
+                }
+                if attempt < max {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+            ok
+        };
+        let live_ok = if running {
+            probe_project_observe_live(&live_base).await
+        } else {
+            false
+        };
+        let verdict = probe_verdict_from_bools(running, live_ok);
+        let (action, new_cf) = decide_lifecycle_action(&LifecycleDecisionInput {
+            now_ms: now,
+            last_ok_ms: last_ok,
+            consecutive_failures: consecutive,
+            probe_verdict: verdict,
+            force_recreate: false,
+            busy: false,
+        });
+        registry.apply_decision(&probe_key, now, action, new_cf);
+        match action {
+            LifecycleAction::Reuse | LifecycleAction::ReuseSkipProbe => {
+                registry.record_success(&probe_key, now);
+                client.touch_persistent_sandbox(sid).await?;
+                let handle = E2bSandboxHandle {
+                    sandbox_id: sid.clone(),
+                    sandbox_domain: domain,
+                    envd_access_token: None,
+                    traffic_access_token: None,
+                    ovs_public_host: None,
+                    ovs_base_url: None,
+                };
+                persist_project_observe(
+                    db,
+                    client,
+                    &cluster_id,
+                    proj_id,
+                    &handle,
+                    live_port,
+                    &live_base,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+                info!(target: "claw_project_observe", proj_id, sandbox_id = %sid, "project observe online");
+                let settings = load_project_inference_settings(db, proj_id).await?;
+                return Ok(ProjectObserveResetResponse {
+                    proj_id,
+                    observe: settings.observe,
+                    sandbox_id: Some(sid.clone()),
+                    message: None,
+                });
+            }
+            LifecycleAction::FailNoKill => {
+                return Err(format!(
+                    "project observe traffic probe failed (sandbox {sid}); not killing yet (hysteresis)"
+                ));
+            }
+            LifecycleAction::Recreate => {
+                warn!(
+                    target: "claw_project_observe",
+                    proj_id,
+                    sandbox_id = %sid,
+                    ?verdict,
+                    "project observe unhealthy — recreate"
+                );
+                let _ = client.kill_sandbox(sid).await;
+            }
+            LifecycleAction::Defer => {}
+        }
     }
 
     info!(

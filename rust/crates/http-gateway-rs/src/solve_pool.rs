@@ -122,6 +122,11 @@ pub(crate) async fn run_solve_request_docker(
         .unwrap_or(state.cfg.default_timeout_seconds);
 
     let (llm_route, worker_llm_env) = if pool_id == E2B_POOL_ID {
+        state
+            .pool_clients
+            .ensure_e2b_runtime_for_proj(&state.session_db, req.proj_id)
+            .await
+            .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
         let material = prepare_e2b_worker_llm_material(
             &state.session_db,
             req.proj_id,

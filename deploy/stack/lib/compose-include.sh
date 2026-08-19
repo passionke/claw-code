@@ -1001,6 +1001,13 @@ claw_compose_gateway_up() {
   claw_compose_pg_wait_healthy
   claw_compose_append_pg_network_override "${podman_dir}" "${rel}"
   if [[ "${CLAW_COMPOSE_GATEWAY_ONLY:-0}" == "1" ]]; then
+    if ! claw_compose_uses_local_postgres; then
+      # External PG: no compose postgres to join; start like primary. Author: kejiqing
+      echo "gateway-only: external postgres ($(claw_redact_database_url "${CLAW_GATEWAY_DATABASE_URL}")); skip docker PG network attach" >&2
+      claw_compose_with_root_env "${podman_dir}" "${repo_env}" \
+        "${CLAW_PODMAN_COMPOSE_ARGS[@]}" up -d --no-deps "${extra[@]}" "${svcs[@]}"
+      return $?
+    fi
     local rt gw_ctn pg_ctn
     gw_ctn="${CLAW_GATEWAY_CONTAINER:-claw-gateway-rs}"
     pg_ctn="${CLAW_GATEWAY_PLAYGROUND_CONTAINER:-claw-gateway-playground}"

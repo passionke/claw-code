@@ -151,6 +151,7 @@ pub async fn get_ovs_workspace(
     ctx: OvsApiContext,
     session_db: &GatewaySessionDb,
     e2b_workers: Option<&E2bProjWorkerRegistry>,
+    e2b_client: Option<&claw_e2b_sandbox_client::E2bSandboxClient>,
     proj_id: i64,
 ) -> Result<Json<OvsWorkspaceResponse>, OvsApiError> {
     if proj_id < 1 {
@@ -165,6 +166,13 @@ pub async fn get_ovs_workspace(
     let (_mode, worker_profile) = assert_ovs_available_for_proj(session_db, proj_id).await?;
 
     if ovs_backend_is_e2b() {
+        if let Some(client) = e2b_client {
+            crate::gateway_e2b_singleton_lifecycle::ensure_e2b_runtime_for_proj(
+                session_db, client, proj_id,
+            )
+            .await
+            .map_err(|e| OvsApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+        }
         let registry = e2b_workers.ok_or_else(|| {
             OvsApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,

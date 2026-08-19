@@ -314,4 +314,18 @@ impl PoolClients {
             Arc::clone(&self.e2b_client),
         );
     }
+
+    /// Request-path ensure: nas-api + observe (global or project) before solve/interactive.
+    pub async fn ensure_e2b_runtime_for_proj(
+        &self,
+        db: &GatewaySessionDb,
+        proj_id: i64,
+    ) -> Result<(), String> {
+        crate::gateway_e2b_singleton_lifecycle::ensure_e2b_runtime_for_proj(
+            db,
+            self.e2b_client.as_ref(),
+            proj_id,
+        )
+        .await
+    }
 }
