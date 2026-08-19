@@ -180,12 +180,18 @@ mod tests {
     fn extend_env_from_gateway_process_forwards_sse_trace_and_debug_keys() {
         let _guard = env_lock();
         std::env::set_var("CLAW_SSE_BURST_TRACE", "1");
-        std::env::set_var("CLAW_SSE_BURST_LOG_FILE", "/claw_sessions/sse-burst-trace.ndjson");
+        std::env::set_var(
+            "CLAW_SSE_BURST_LOG_FILE",
+            "/claw_sessions/sse-burst-trace.ndjson",
+        );
         std::env::set_var("CLAW_SSE_DEBUG", "1");
         std::env::set_var("CLAW_SSE_LOG_FILE", "/claw_sessions/sse-debug.log");
         std::env::set_var("CLAW_SSE_DEBUG_PREVIEW_CHARS", "2500");
         let out = extend_env_from_gateway_process(BTreeMap::new(), E2B_SOLVE_PASSTHROUGH_ENV_KEYS);
-        assert_eq!(out.get("CLAW_SSE_BURST_TRACE").map(String::as_str), Some("1"));
+        assert_eq!(
+            out.get("CLAW_SSE_BURST_TRACE").map(String::as_str),
+            Some("1")
+        );
         assert_eq!(
             out.get("CLAW_SSE_BURST_LOG_FILE").map(String::as_str),
             Some("/claw_sessions/sse-burst-trace.ndjson")
