@@ -82,6 +82,11 @@ def main() -> int:
     ap.add_argument("--ds-id", type=int, default=None, dest="ds_id", help="legacy alias for --proj-id")
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--out", default="")
+    ap.add_argument(
+        "--dump-deltas",
+        default="",
+        help="If set, write full biz.report.delta records (with clientDeltaMs) as JSON array",
+    )
     args = ap.parse_args()
     if args.ds_id is not None:
         args.proj_id = args.ds_id
@@ -125,6 +130,31 @@ def main() -> int:
         "deltas_head": deltas[:5],
         "deltas_tail": deltas[-3:] if len(deltas) >= 3 else deltas,
     }
+
+    if args.dump_deltas:
+        simplified: list[dict[str, Any]] = []
+        for r in deltas:
+            # Normalize to the keys align_sse_trunks.py expects.
+            seq = r.get("seq")
+            server_delta_ms = r.get("serverDeltaMs")
+            tl = r.get("textLen")
+            text = r.get("text")
+            if tl is None and "text" in r:
+                tl = len(str(text or ""))
+            simplified.append(
+                {
+                    "seq": seq,
+                    "serverDeltaMs": server_delta_ms,
+                    "clientDeltaMs": r.get("_clientRecvMs"),
+                    "textLen": tl,
+                    "text": text,
+                    "emitSeq": r.get("emitSeq"),
+                }
+            )
+        dump_path = args.dump_deltas
+        with open(dump_path, "w", encoding="utf-8") as f:
+            json.dump(simplified, f, ensure_ascii=False, indent=2)
+
     out = json.dumps(report, ensure_ascii=False, indent=2)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

@@ -281,6 +281,7 @@ export function useBizReportStream(
         serverDeltaMs: numField(data, "serverDeltaMs"),
         clientDeltaMs,
         textLen: numField(data, "textLen") ?? chunk.length,
+        text: chunk,
       });
       pendingRef.current += chunk;
       scheduleFlush();

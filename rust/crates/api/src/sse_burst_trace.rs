@@ -20,6 +20,7 @@ static LOG_FILE: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
 static START_INSTANT: OnceLock<Instant> = OnceLock::new();
 static EMIT_SEQ: AtomicU64 = AtomicU64::new(0);
 static INGEST_SEQ: AtomicU64 = AtomicU64::new(0);
+const TEXT_PREVIEW_MAX_CHARS: usize = 120;
 
 /// Per-stream counters set by `MessageStream` (HTTP chunk boundaries).
 #[derive(Debug, Default)]
@@ -41,14 +42,15 @@ impl BurstStreamCtx {
         );
     }
 
-    pub fn on_text_delta(&mut self, text_len: usize) {
+    pub fn on_text_delta(&mut self, text: &str) {
         self.delta_in_chunk = self.delta_in_chunk.saturating_add(1);
         log_event(
             "text_delta",
             json!({
                 "rawChunk": self.raw_chunk,
                 "deltaInChunk": self.delta_in_chunk,
-                "textLen": text_len,
+                "textLen": text.len(),
+                "textPreview": text_preview(text),
             }),
         );
     }
@@ -64,18 +66,20 @@ pub fn burst_trace_enabled() -> bool {
     })
 }
 
-pub fn log_worker_emit(text_len: usize) {
-    if !burst_trace_enabled() {
-        return;
-    }
+pub fn log_worker_emit(text: &str) -> u64 {
     let seq = EMIT_SEQ.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+    if !burst_trace_enabled() {
+        return seq;
+    }
     log_event(
         "worker_emit",
         json!({
             "emitSeq": seq,
-            "textLen": text_len,
+            "textLen": text.len(),
+            "textPreview": text_preview(text),
         }),
     );
+    seq
 }
 
 #[derive(Debug, Default)]
@@ -87,7 +91,7 @@ struct TurnIngestBatch {
 
 static INGEST_BATCH: OnceLock<Mutex<HashMap<String, TurnIngestBatch>>> = OnceLock::new();
 
-pub fn log_pool_ingest(turn_id: &str, text_len: usize) {
+pub fn log_pool_ingest(turn_id: &str, text: &str, emit_seq: Option<u64>) {
     if !burst_trace_enabled() {
         return;
     }
@@ -113,7 +117,9 @@ pub fn log_pool_ingest(turn_id: &str, text_len: usize) {
         json!({
             "turnId": turn_id,
             "ingestSeq": seq,
-            "textLen": text_len,
+            "textLen": text.len(),
+            "textPreview": text_preview(text),
+            "emitSeq": emit_seq,
             "readerBatchId": batch_id,
             "linesInBatch": lines_in_batch,
         }),
@@ -176,4 +182,12 @@ fn append_line(line: &str) {
         let _ = writeln!(file, "{line}");
         let _ = file.flush();
     }
+}
+
+fn text_preview(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= TEXT_PREVIEW_MAX_CHARS {
+        return text.to_string();
+    }
+    chars.into_iter().take(TEXT_PREVIEW_MAX_CHARS).collect()
 }

@@ -559,7 +559,7 @@ impl MessageStream {
                             for event in &emitted_events {
                                 if let StreamEvent::ContentBlockDelta(delta_ev) = event {
                                     if let ContentBlockDelta::TextDelta { text } = &delta_ev.delta {
-                                        self.burst_ctx.on_text_delta(text.len());
+                                        self.burst_ctx.on_text_delta(text);
                                     }
                                 }
                             }

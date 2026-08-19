@@ -24,6 +24,8 @@ struct StdoutEnvelope<'a> {
     ev: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<&'a str>,
+    #[serde(rename = "emitSeq", skip_serializing_if = "Option::is_none")]
+    emit_seq: Option<u64>,
     #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
     session_id: Option<&'a str>,
     #[serde(rename = "turnId", skip_serializing_if = "Option::is_none")]
@@ -74,10 +76,11 @@ fn emit_report_delta_inner(text: &str, passthrough: bool) -> io::Result<()> {
     ) {
         return Ok(());
     }
-    api::sse_burst_trace::log_worker_emit(text.len());
+    let emit_seq = api::sse_burst_trace::log_worker_emit(text);
     emit_line(&StdoutEnvelope {
         ev: "report.delta",
         text: Some(text),
+        emit_seq: Some(emit_seq),
         session_id: None,
         turn_id: None,
         proj_id: None,
@@ -100,6 +103,7 @@ pub fn emit_delegate_active(
     emit_line(&StdoutEnvelope {
         ev: "delegate.active",
         text: None,
+        emit_seq: None,
         session_id: Some(session_id),
         turn_id: Some(turn_id),
         proj_id: Some(proj_id),
@@ -117,6 +121,7 @@ pub fn emit_delegate_clear() -> io::Result<()> {
     emit_line(&StdoutEnvelope {
         ev: "delegate.clear",
         text: None,
+        emit_seq: None,
         session_id: None,
         turn_id: None,
         proj_id: None,
@@ -138,6 +143,7 @@ pub fn emit_solve_done(
     emit_line(&StdoutEnvelope {
         ev: "solve.done",
         text: None,
+        emit_seq: None,
         session_id: None,
         turn_id: None,
         proj_id: None,
@@ -154,6 +160,7 @@ pub fn emit_solve_error(message: &str, http_status_hint: u16) -> io::Result<()> 
     emit_line(&StdoutEnvelope {
         ev: "solve.done",
         text: None,
+        emit_seq: None,
         session_id: None,
         turn_id: None,
         proj_id: None,

@@ -202,9 +202,15 @@ pub struct BizAdviceReportPayload {
     pub report_json: Option<Value>,
 }
 
+#[derive(Debug, Clone)]
+pub struct BizReportDeltaChunk {
+    pub text: String,
+    pub emit_seq: Option<u64>,
+}
+
 /// Messages from the in-process polish worker to the HTTP SSE stream.
 pub enum BizReportStreamMsg {
-    Delta(String),
+    Delta(BizReportDeltaChunk),
     Done(BizAdviceReportPayload),
     Error(String),
 }
@@ -236,6 +242,7 @@ pub fn biz_report_delta_json(
     seq: u64,
     stream_started_at_ms: u64,
     server_delta_ms: u64,
+    emit_seq: Option<u64>,
 ) -> String {
     let clean = sanitize_external_report_text(text);
     serde_json::json!({
@@ -244,6 +251,7 @@ pub fn biz_report_delta_json(
         "serverDeltaMs": server_delta_ms,
         "serverTsMs": stream_started_at_ms.saturating_add(server_delta_ms),
         "textLen": clean.len(),
+        "emitSeq": emit_seq,
     })
     .to_string()
 }
@@ -254,11 +262,21 @@ pub fn stream_msg_to_event(msg: &BizReportStreamMsg) -> Event {
 
 pub fn stream_msg_to_event_obs(msg: &BizReportStreamMsg, obs: Option<(u64, u64, u64)>) -> Event {
     match msg {
-        BizReportStreamMsg::Delta(text) => {
+        BizReportStreamMsg::Delta(delta) => {
             let body = if let Some((seq, stream_started_at_ms, server_delta_ms)) = obs {
-                biz_report_delta_json(text, seq, stream_started_at_ms, server_delta_ms)
+                biz_report_delta_json(
+                    &delta.text,
+                    seq,
+                    stream_started_at_ms,
+                    server_delta_ms,
+                    delta.emit_seq,
+                )
             } else {
-                serde_json::json!({ "text": sanitize_external_report_text(text) }).to_string()
+                serde_json::json!({
+                    "text": sanitize_external_report_text(&delta.text),
+                    "emitSeq": delta.emit_seq,
+                })
+                .to_string()
             };
             Event::default().event("biz.report.delta").data(body)
         }
@@ -307,7 +325,10 @@ pub fn enqueue_snapshot_biz_report_sse(
 ) {
     let clean = sanitize_external_report_text(report_text);
     if !clean.is_empty() {
-        let _ = tx.send(BizReportStreamMsg::Delta(clean));
+        let _ = tx.send(BizReportStreamMsg::Delta(BizReportDeltaChunk {
+            text: clean,
+            emit_seq: None,
+        }));
     }
     sanitize_report_payload(&mut payload);
     let _ = tx.send(BizReportStreamMsg::Done(payload));
@@ -339,11 +360,11 @@ pub fn biz_report_sse_event_stream(
         |(mut rx, t0, stream_started_at_ms, mut seq, mut acc, task_id)| async move {
             let msg = rx.recv().await?;
             let event = match &msg {
-                BizReportStreamMsg::Delta(text) => {
+                BizReportStreamMsg::Delta(delta) => {
                     seq += 1;
                     let server_delta_ms =
                         u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    let clean = sanitize_external_report_text(text);
+                    let clean = sanitize_external_report_text(&delta.text);
                     let text_len = u64::try_from(clean.len()).unwrap_or(u64::MAX);
                     acc.on_delta(server_delta_ms, text_len);
                     log_sse_delta(
@@ -479,13 +500,14 @@ mod tests {
 
     #[test]
     fn delta_json_includes_observability_fields() {
-        let raw = biz_report_delta_json("ab", 3, 1_700_000_000_000, 42);
+        let raw = biz_report_delta_json("ab", 3, 1_700_000_000_000, 42, Some(9));
         let v: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["text"].as_str(), Some("ab"));
         assert_eq!(v["seq"].as_u64(), Some(3));
         assert_eq!(v["serverDeltaMs"].as_u64(), Some(42));
         assert_eq!(v["serverTsMs"].as_u64(), Some(1_700_000_000_042));
         assert_eq!(v["textLen"].as_u64(), Some(2));
+        assert_eq!(v["emitSeq"].as_u64(), Some(9));
     }
 
     #[test]

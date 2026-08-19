@@ -712,7 +712,12 @@ pub(crate) fn biz_report_llm_stream_response(
         let mut send_delta = |delta: &str| {
             let clean = export_sanitizer.push_chunk(delta);
             if !clean.is_empty() {
-                let _ = tx.send(BizReportStreamMsg::Delta(clean));
+                let _ = tx.send(BizReportStreamMsg::Delta(
+                    crate::biz_advice_report::BizReportDeltaChunk {
+                        text: clean,
+                        emit_seq: None,
+                    },
+                ));
             }
         };
         match run_gateway_biz_polish_llm_async(
