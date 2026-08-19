@@ -466,6 +466,10 @@ async fn run_ovs_interactive_prompt(
             .await
             .map_err(|e| format!("ensure ovs session root: {e}"))?;
     }
+    ctx.pool_clients
+        .ensure_e2b_runtime_for_proj(&ctx.session_db, proj_id)
+        .await
+        .map_err(|e| format!("ensure e2b runtime: {e}"))?;
     let material = prepare_e2b_worker_llm_material(
         &ctx.session_db,
         proj_id,

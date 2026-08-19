@@ -457,6 +457,11 @@ pub async fn terminal_start(
         .await
         .map_err(|e| TerminalApiError::new(StatusCode::BAD_REQUEST, e))?;
 
+    ctx.pool_clients
+        .ensure_e2b_runtime_for_proj(&ctx.session_db, req.proj_id)
+        .await
+        .map_err(|e| TerminalApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+
     let material = prepare_e2b_worker_llm_material(
         &ctx.session_db,
         req.proj_id,

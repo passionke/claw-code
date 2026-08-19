@@ -45,6 +45,7 @@ pub(crate) async fn ovs_workspace_handler(
         state.ovs_api_ctx(),
         &state.session_db,
         Some(state.pool_clients.e2b_worker_registry()),
+        state.pool_clients.e2b_sandbox_client().map(|c| c.as_ref()),
         proj_id,
     )
     .await

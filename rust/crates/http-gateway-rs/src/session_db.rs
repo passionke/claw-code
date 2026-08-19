@@ -3491,6 +3491,20 @@ impl GatewaySessionDb {
             .await
     }
 
+    /// Serialize per-project observe ensure across gateways. Author: kejiqing
+    pub async fn with_e2b_project_observe_lock<T, F, Fut>(
+        &self,
+        proj_id: i64,
+        f: F,
+    ) -> Result<T, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let key = format!("{}:observe-proj:{}", self.cluster_id(), proj_id);
+        self.with_pg_advisory_lock("project observe", &key, f).await
+    }
+
     /// Field-level merge into gateway_global_settings.settings_json. Author: kejiqing
     pub async fn merge_gateway_global_settings_json(
         &self,

@@ -18,6 +18,10 @@ use claw_e2b_sandbox_client::{E2bSandboxClient, E2bSandboxHandle, SANDBOX_LEASE_
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
+use crate::gateway_e2b_lifecycle_decision::{
+    decide_lifecycle_action, lifecycle_probe_registry, worker_slot_probe_key, LifecycleAction,
+    LifecycleDecisionInput, ProbeVerdict, PROBE_MAX_ATTEMPTS,
+};
 use crate::gateway_e2b_worker_settings::{
     e2b_project_worker_renew_interval_secs_from_env, e2b_project_worker_ttl_secs_from_env,
     load_e2b_worker_build_id, load_e2b_worker_relaxed_build_id,
@@ -818,8 +822,8 @@ impl E2bProjWorkerRegistry {
     /// Strict solve: least-lease among pool slots. Relaxed: slot 0 only.
     ///
     /// Hot path: memory `pick_least_lease_slot` → `acquire_slot` for **one** slot only.
-    /// Full-pool `reconcile_proj` runs on gateway startup / Admin poolSize change / background
-    /// ticker — not on every solve acquire. Author: kejiqing
+    /// Full-pool `reconcile_proj` runs on gateway startup / Admin poolSize change — not on
+    /// background TTL ticker (that only touches leases). Author: kejiqing
     pub async fn acquire_for_solve(
         &self,
         proj_id: i64,
@@ -868,6 +872,45 @@ impl E2bProjWorkerRegistry {
         Ok((handle, worker_id))
     }
 
+    async fn ensure_warm_worker_running(
+        &self,
+        proj_id: i64,
+        slot_index: u32,
+        sandbox_id: &str,
+    ) -> Result<(), String> {
+        let probe_key = worker_slot_probe_key(proj_id, slot_index);
+        let registry = lifecycle_probe_registry();
+        let now = chrono::Utc::now().timestamp_millis();
+        let (last_ok, consecutive) = registry.snapshot(&probe_key);
+        let (cache_action, _) = decide_lifecycle_action(&LifecycleDecisionInput {
+            now_ms: now,
+            last_ok_ms: last_ok,
+            consecutive_failures: consecutive,
+            probe_verdict: ProbeVerdict::NotRunning,
+            force_recreate: false,
+            busy: false,
+        });
+        if cache_action == LifecycleAction::ReuseSkipProbe {
+            return Ok(());
+        }
+        let max = PROBE_MAX_ATTEMPTS.max(1);
+        let mut running = false;
+        for attempt in 1..=max {
+            if self.client.sandbox_running(sandbox_id).await {
+                running = true;
+                break;
+            }
+            if attempt < max {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+        if running {
+            registry.record_success(&probe_key, now);
+            return Ok(());
+        }
+        self.reconcile_proj_slot(proj_id, slot_index, false).await
+    }
+
     async fn acquire_slot(
         &self,
         proj_id: i64,
@@ -877,13 +920,26 @@ impl E2bProjWorkerRegistry {
             proj_id,
             slot_index,
         };
-        // Warm hit: in-memory handle + lease bump only (no e2b HTTP on acquire hot path).
-        if let Some((handle, worker_id)) = {
+        let warm_hit = {
             let guard = self.workers.lock().await;
-            guard
-                .get(&key)
-                .map(|rt| (rt.handle.clone(), rt.worker_id.clone()))
-        } {
+            if let Some(rt) = guard.get(&key) {
+                let sandbox_id = rt.handle.sandbox_id.clone();
+                drop(guard);
+                self.ensure_warm_worker_running(proj_id, slot_index, &sandbox_id)
+                    .await?;
+                true
+            } else {
+                false
+            }
+        };
+        if warm_hit {
+            let guard = self.workers.lock().await;
+            let rt = guard.get(&key).ok_or_else(|| {
+                format!("proj worker missing after warm verify proj_{proj_id} slot {slot_index}")
+            })?;
+            let handle = rt.handle.clone();
+            let worker_id = rt.worker_id.clone();
+            drop(guard);
             let mut leases = self.leases.lock().await;
             *leases.entry(key).or_insert(0) += 1;
             if let Ok(db) = self.session_db().await {
@@ -998,6 +1054,7 @@ impl E2bProjWorkerRegistry {
     }
 
     /// Best-effort TTL touch for persisted workers (`spawn_lease_ticker` is primary at 60s).
+    /// Does not run full `reconcile_proj`. Author: kejiqing
     pub fn spawn_renewal_ticker(self: Arc<Self>) {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(self.renew_interval_secs));

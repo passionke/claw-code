@@ -16,6 +16,10 @@ use crate::cluster_identity::{
 use crate::gateway_claw_tap_settings::{
     live_session_viewer_url_template, DEFAULT_CLAW_TAP_LIVE_PORT, DEFAULT_CLAW_TAP_PROXY_PORT,
 };
+use crate::gateway_e2b_lifecycle_decision::{
+    decide_lifecycle_action, lifecycle_probe_registry, probe_verdict_from_bools,
+    singleton_probe_key, LifecycleAction, LifecycleDecisionInput, ProbeVerdict, PROBE_MAX_ATTEMPTS,
+};
 use crate::gateway_e2b_nas_api_settings::load_e2b_nas_api_template_id;
 use crate::gateway_e2b_observe_settings::load_e2b_observe_template_id;
 use crate::gateway_e2b_ovs_settings::load_e2b_ovs_template_id;
@@ -104,6 +108,121 @@ pub(crate) fn singleton_image_action(
     }
 }
 
+/// Startup/admin image pin mismatch while sandbox is otherwise healthy.
+#[must_use]
+fn singleton_image_pin_force_recreate(
+    image_refresh: bool,
+    desired_build: Option<&str>,
+    applied_build: Option<&str>,
+) -> bool {
+    matches!(
+        singleton_image_action(true, image_refresh, desired_build, applied_build),
+        SingletonImageAction::Recreate
+    )
+}
+
+fn probe_sleep_secs_for_context(image_refresh: bool) -> u64 {
+    if image_refresh {
+        OBSERVE_PROBE_RETRY_SLEEP_SECS
+    } else {
+        1
+    }
+}
+
+async fn probe_sandbox_running(client: &E2bSandboxClient, sid: &str, sleep_secs: u64) -> bool {
+    let max = PROBE_MAX_ATTEMPTS.max(1);
+    for attempt in 1..=max {
+        if client.sandbox_running(sid).await {
+            return true;
+        }
+        if attempt < max && sleep_secs > 0 {
+            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+        }
+    }
+    false
+}
+
+async fn probe_nas_api_traffic(base_url: &str, sleep_secs: u64) -> bool {
+    let max = PROBE_MAX_ATTEMPTS.max(1);
+    for attempt in 1..=max {
+        if nas_api_health_ok(base_url).await {
+            return true;
+        }
+        if attempt < max && sleep_secs > 0 {
+            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+        }
+    }
+    false
+}
+
+async fn probe_singleton_verdict_nas_api(
+    client: &E2bSandboxClient,
+    sid: &str,
+    base_url: &str,
+    sleep_secs: u64,
+) -> ProbeVerdict {
+    if !probe_sandbox_running(client, sid, sleep_secs).await {
+        return ProbeVerdict::NotRunning;
+    }
+    let traffic = probe_nas_api_traffic(base_url, sleep_secs).await;
+    probe_verdict_from_bools(true, traffic)
+}
+
+async fn probe_singleton_verdict_observe(
+    client: &E2bSandboxClient,
+    sid: &str,
+    domain: &str,
+    live_port: u16,
+    cluster_id: &str,
+    sleep_secs: u64,
+) -> ProbeVerdict {
+    if !probe_sandbox_running(client, sid, sleep_secs).await {
+        return ProbeVerdict::NotRunning;
+    }
+    let max = PROBE_MAX_ATTEMPTS.max(1);
+    let mut traffic_ok = false;
+    for attempt in 1..=max {
+        if observe_traffic_ok(client, sid, domain, live_port, cluster_id).await {
+            traffic_ok = true;
+            break;
+        }
+        if attempt < max && sleep_secs > 0 {
+            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+        }
+    }
+    probe_verdict_from_bools(true, traffic_ok)
+}
+
+fn decide_singleton_action(
+    probe_key: &str,
+    verdict: ProbeVerdict,
+    image_refresh: bool,
+    desired_build: Option<&str>,
+    applied_build: Option<&str>,
+) -> LifecycleAction {
+    let registry = lifecycle_probe_registry();
+    let now = now_ms();
+    let (last_ok, consecutive) = registry.snapshot(probe_key);
+    let force_recreate =
+        singleton_image_pin_force_recreate(image_refresh, desired_build, applied_build);
+    let (action, new_cf) = decide_lifecycle_action(&LifecycleDecisionInput {
+        now_ms: now,
+        last_ok_ms: last_ok,
+        consecutive_failures: consecutive,
+        probe_verdict: verdict,
+        force_recreate,
+        busy: false,
+    });
+    registry.apply_decision(probe_key, now, action, new_cf);
+    if matches!(
+        action,
+        LifecycleAction::Reuse | LifecycleAction::ReuseSkipProbe
+    ) {
+        registry.record_success(probe_key, now);
+    }
+    action
+}
+
 fn opt_build(s: Option<&String>) -> Option<&str> {
     s.map(|t| t.as_str())
         .map(str::trim)
@@ -159,7 +278,11 @@ const OBSERVE_PROBE_MAX_ATTEMPTS: u32 = 3;
 const OBSERVE_PROBE_RETRY_SLEEP_SECS: u64 = 3;
 
 /// Retry wrapper used by observe clawTap probe (sleep injectable for unit tests). Author: kejiqing
-async fn probe_with_retries<F, Fut>(max_attempts: u32, sleep_secs: u64, mut probe: F) -> bool
+pub(crate) async fn probe_with_retries<F, Fut>(
+    max_attempts: u32,
+    sleep_secs: u64,
+    mut probe: F,
+) -> bool
 where
     F: FnMut(u32) -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -421,6 +544,7 @@ async fn ensure_nas_api(
     db: &GatewaySessionDb,
     client: &E2bSandboxClient,
     image_refresh: bool,
+    best_effort: bool,
 ) -> Result<E2bSingletonOutcome, String> {
     if !E2bNasApiSingleton::enabled_from_env() {
         return Ok(E2bSingletonOutcome {
@@ -451,11 +575,20 @@ async fn ensure_nas_api(
     .await;
 
     if let Some(ref sid) = candidate {
+        let probe_key = singleton_probe_key(SINGLETON_ROLE_NAS_API);
         let domain = client.config().domain.clone();
         let base_url = service_base_url(client, port, sid, &domain);
-        let healthy = client.sandbox_running(sid).await && nas_api_health_ok(&base_url).await;
-        match singleton_image_action(healthy, image_refresh, desired_build, applied_build) {
-            SingletonImageAction::Reuse => {
+        let sleep_secs = probe_sleep_secs_for_context(image_refresh);
+        let verdict = probe_singleton_verdict_nas_api(client, sid, &base_url, sleep_secs).await;
+        let action = decide_singleton_action(
+            &probe_key,
+            verdict,
+            image_refresh,
+            desired_build,
+            applied_build,
+        );
+        match action {
+            LifecycleAction::ReuseSkipProbe | LifecycleAction::Reuse => {
                 client.touch_persistent_sandbox(sid).await?;
                 let _ = persist_nas_api(db, &base_url, sid, applied_build).await;
                 let _ = client
@@ -469,16 +602,32 @@ async fn ensure_nas_api(
                     message: None,
                 });
             }
-            SingletonImageAction::Recreate => {
+            LifecycleAction::FailNoKill => {
+                let msg = format!(
+                    "nas-api traffic probe failed at {base_url} (sandbox {sid}); not killing yet (hysteresis)"
+                );
+                if best_effort {
+                    warn!(target: "claw_e2b_singleton", sandbox_id = %sid, "{msg}");
+                    return Ok(E2bSingletonOutcome {
+                        sandbox_id: Some(sid.clone()),
+                        base_url: Some(base_url),
+                        traffic_reachable: false,
+                        message: Some(msg),
+                    });
+                }
+                return Err(msg);
+            }
+            LifecycleAction::Recreate => {
                 warn!(
                     target: "claw_e2b_singleton",
                     sandbox_id = %sid,
-                    healthy,
+                    ?verdict,
                     image_refresh,
                     "nas-api singleton recreate"
                 );
                 let _ = client.kill_sandbox(sid).await;
             }
+            LifecycleAction::Defer => {}
         }
     }
 
@@ -516,6 +665,7 @@ async fn ensure_observe(
     db: &GatewaySessionDb,
     client: &E2bSandboxClient,
     image_refresh: bool,
+    best_effort: bool,
 ) -> Result<E2bSingletonOutcome, String> {
     if !e2b_observe_is_enabled() {
         return Ok(E2bSingletonOutcome {
@@ -547,12 +697,28 @@ async fn ensure_observe(
     .await;
 
     if let Some(ref sid) = candidate {
+        let probe_key = singleton_probe_key(SINGLETON_ROLE_OBSERVE);
         let domain = client.config().domain.clone();
         let live_base = service_base_url(client, live_port, sid, &domain);
-        let healthy = client.sandbox_running(sid).await
-            && observe_traffic_ok(client, sid, &domain, live_port, &cluster_id).await;
-        match singleton_image_action(healthy, image_refresh, desired_build, applied_build) {
-            SingletonImageAction::Reuse => {
+        let sleep_secs = probe_sleep_secs_for_context(image_refresh);
+        let verdict = probe_singleton_verdict_observe(
+            client,
+            sid,
+            &domain,
+            live_port,
+            &cluster_id,
+            sleep_secs,
+        )
+        .await;
+        let action = decide_singleton_action(
+            &probe_key,
+            verdict,
+            image_refresh,
+            desired_build,
+            applied_build,
+        );
+        match action {
+            LifecycleAction::ReuseSkipProbe | LifecycleAction::Reuse => {
                 client.touch_persistent_sandbox(sid).await?;
                 let handle = E2bSandboxHandle {
                     sandbox_id: sid.clone(),
@@ -576,16 +742,32 @@ async fn ensure_observe(
                     message: None,
                 });
             }
-            SingletonImageAction::Recreate => {
+            LifecycleAction::FailNoKill => {
+                let msg = format!(
+                    "observe traffic probe failed (sandbox {sid}); not killing yet (hysteresis)"
+                );
+                if best_effort {
+                    warn!(target: "claw_e2b_singleton", sandbox_id = %sid, "{msg}");
+                    return Ok(E2bSingletonOutcome {
+                        sandbox_id: Some(sid.clone()),
+                        base_url: Some(live_base),
+                        traffic_reachable: false,
+                        message: Some(msg),
+                    });
+                }
+                return Err(msg);
+            }
+            LifecycleAction::Recreate => {
                 warn!(
                     target: "claw_e2b_singleton",
                     sandbox_id = %sid,
-                    healthy,
+                    ?verdict,
                     image_refresh,
                     "observe singleton recreate"
                 );
                 let _ = client.kill_sandbox(sid).await;
             }
+            LifecycleAction::Defer => {}
         }
     }
 
@@ -721,8 +903,8 @@ pub async fn ensure_e2b_singleton(
     };
     db.with_e2b_singleton_role_lock(role, || async {
         match component {
-            E2bSingletonComponent::NasApi => ensure_nas_api(db, client, false).await,
-            E2bSingletonComponent::Observe => ensure_observe(db, client, false).await,
+            E2bSingletonComponent::NasApi => ensure_nas_api(db, client, false, false).await,
+            E2bSingletonComponent::Observe => ensure_observe(db, client, false, false).await,
             E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
         }
     })
@@ -756,7 +938,7 @@ pub async fn reset_e2b_singleton(
                     pg_sid.as_deref(),
                 )
                 .await;
-                ensure_nas_api(db, client, true).await
+                ensure_nas_api(db, client, true, false).await
             }
             E2bSingletonComponent::Observe => {
                 let pg_sid = get_gateway_global_settings(db)
@@ -770,7 +952,7 @@ pub async fn reset_e2b_singleton(
                     pg_sid.as_deref(),
                 )
                 .await;
-                ensure_observe(db, client, true).await
+                ensure_observe(db, client, true, false).await
             }
             E2bSingletonComponent::Ovs => deprecated_ovs_singleton_outcome(db, client).await,
         }
@@ -851,7 +1033,11 @@ pub async fn ensure_e2b_singletons_on_startup_strict(
     if !interactive_backend_is_e2b() {
         return Ok(());
     }
-    let nas = ensure_nas_api(db, client, true).await?;
+    let nas = db
+        .with_e2b_singleton_role_lock(SINGLETON_ROLE_NAS_API, || async {
+            ensure_nas_api(db, client, true, false).await
+        })
+        .await?;
     verify_nas_api_strict(&nas)?;
     if E2bNasApiSingleton::enabled_from_env() {
         info!(
@@ -862,7 +1048,11 @@ pub async fn ensure_e2b_singletons_on_startup_strict(
             "nas-api singleton ready (startup strict)"
         );
     }
-    let observe = ensure_observe(db, client, true).await?;
+    let observe = db
+        .with_e2b_singleton_role_lock(SINGLETON_ROLE_OBSERVE, || async {
+            ensure_observe(db, client, true, false).await
+        })
+        .await?;
     verify_observe_strict(&observe)?;
     if e2b_observe_is_enabled() {
         info!(
@@ -884,7 +1074,12 @@ pub async fn reconcile_e2b_singletons_best_effort(
     if !interactive_backend_is_e2b() {
         return;
     }
-    if let Err(e) = ensure_nas_api(db, client, false).await {
+    if let Err(e) = db
+        .with_e2b_singleton_role_lock(SINGLETON_ROLE_NAS_API, || async {
+            ensure_nas_api(db, client, false, true).await
+        })
+        .await
+    {
         warn!(
             target: "claw_e2b_singleton",
             component = "nas-api",
@@ -892,7 +1087,12 @@ pub async fn reconcile_e2b_singletons_best_effort(
             "singleton reconcile failed (best-effort)"
         );
     }
-    if let Err(e) = ensure_observe(db, client, false).await {
+    if let Err(e) = db
+        .with_e2b_singleton_role_lock(SINGLETON_ROLE_OBSERVE, || async {
+            ensure_observe(db, client, false, true).await
+        })
+        .await
+    {
         warn!(
             target: "claw_e2b_singleton",
             component = "observe",
@@ -900,6 +1100,34 @@ pub async fn reconcile_e2b_singletons_best_effort(
             "singleton reconcile failed (best-effort)"
         );
     }
+}
+
+/// Request-path gate: ensure nas-api + observe (global or project) before solve/interactive.
+/// Author: kejiqing
+pub async fn ensure_e2b_runtime_for_proj(
+    db: &GatewaySessionDb,
+    client: &E2bSandboxClient,
+    proj_id: i64,
+) -> Result<(), String> {
+    if !interactive_backend_is_e2b() {
+        return Ok(());
+    }
+    ensure_e2b_singleton(db, client, E2bSingletonComponent::NasApi)
+        .await
+        .map(|_| ())?;
+    let project_active = crate::gateway_project_llm::load_active_project_llm_runtime(db, proj_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if project_active.is_some() {
+        crate::gateway_project_observe::ensure_project_observe(db, client, proj_id)
+            .await
+            .map(|_| ())?;
+    } else {
+        ensure_e2b_singleton(db, client, E2bSingletonComponent::Observe)
+            .await
+            .map(|_| ())?;
+    }
+    Ok(())
 }
 
 /// Periodic health reconcile — recreate unhealthy singletons (TTL handled by lease ticker).
