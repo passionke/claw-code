@@ -91,7 +91,11 @@ fn log_loaded_sse_env() {
     ];
     let pairs: Vec<String> = keys
         .into_iter()
-        .filter_map(|key| std::env::var(key).ok().map(|value| format!("{key}={value}")))
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| format!("{key}={value}"))
+        })
         .collect();
     tracing::info!(
         target: "claw_sse_env",
