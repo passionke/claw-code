@@ -14,6 +14,45 @@ use super::interactive_backend::{
     e2b_worker_llm_env, e2b_worker_solve_route, load_e2b_observe_proxy_base_url,
 };
 
+const E2B_SOLVE_PASSTHROUGH_ENV_KEYS: &[&str] = &[
+    "CLAW_SSE_BURST_TRACE",
+    "CLAW_SSE_BURST_LOG_FILE",
+    "CLAW_SSE_DEBUG",
+    "CLAW_SSE_LOG_FILE",
+    "CLAW_SSE_DEBUG_PREVIEW_CHARS",
+];
+
+fn extend_env_from_gateway_process(
+    mut env: BTreeMap<String, String>,
+    passthrough_keys: &[&str],
+) -> BTreeMap<String, String> {
+    for key in passthrough_keys {
+        let Ok(value) = std::env::var(key) else {
+            continue;
+        };
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        env.insert((*key).to_string(), value);
+    }
+    env
+}
+
+fn log_sse_env_passthrough(proj_id: i64, env: &BTreeMap<String, String>) {
+    let pairs: Vec<String> = E2B_SOLVE_PASSTHROUGH_ENV_KEYS
+        .iter()
+        .filter_map(|key| env.get(*key).map(|value| format!("{key}={value}")))
+        .collect();
+    tracing::info!(
+        target: "claw_sse_env",
+        proj_id = proj_id,
+        count = pairs.len(),
+        values = %pairs.join(" "),
+        "e2b.solve_env_passthrough"
+    );
+}
+
 /// Prepared LLM route + worker env + claw `--model` for e2b exec paths.
 #[derive(Debug, Clone)]
 pub struct WorkerLlmMaterial {
@@ -88,6 +127,8 @@ pub async fn prepare_e2b_worker_llm_material(
     );
     let mut env = BTreeMap::new();
     env.insert("CLAW_DEFAULT_MODEL".to_string(), claw_model.clone());
+    env = extend_env_from_gateway_process(env, E2B_SOLVE_PASSTHROUGH_ENV_KEYS);
+    log_sse_env_passthrough(proj_id, &env);
     let env = e2b_worker_llm_env(env, &proxy_base);
     Ok(WorkerLlmMaterial {
         route,
@@ -100,6 +141,14 @@ pub async fn prepare_e2b_worker_llm_material(
 mod tests {
     use super::*;
     use crate::pool::interactive_backend::E2B_WORKER_TAP_PLACEHOLDER_API_KEY;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[test]
     fn prepare_options_default_not_repl() {
@@ -125,5 +174,35 @@ mod tests {
             out.get("CLAW_DEFAULT_MODEL").map(String::as_str),
             Some("openai/mimo-v2.5")
         );
+    }
+
+    #[test]
+    fn extend_env_from_gateway_process_forwards_sse_trace_and_debug_keys() {
+        let _guard = env_lock();
+        std::env::set_var("CLAW_SSE_BURST_TRACE", "1");
+        std::env::set_var("CLAW_SSE_BURST_LOG_FILE", "/claw_sessions/sse-burst-trace.ndjson");
+        std::env::set_var("CLAW_SSE_DEBUG", "1");
+        std::env::set_var("CLAW_SSE_LOG_FILE", "/claw_sessions/sse-debug.log");
+        std::env::set_var("CLAW_SSE_DEBUG_PREVIEW_CHARS", "2500");
+        let out = extend_env_from_gateway_process(BTreeMap::new(), E2B_SOLVE_PASSTHROUGH_ENV_KEYS);
+        assert_eq!(out.get("CLAW_SSE_BURST_TRACE").map(String::as_str), Some("1"));
+        assert_eq!(
+            out.get("CLAW_SSE_BURST_LOG_FILE").map(String::as_str),
+            Some("/claw_sessions/sse-burst-trace.ndjson")
+        );
+        assert_eq!(out.get("CLAW_SSE_DEBUG").map(String::as_str), Some("1"));
+        assert_eq!(
+            out.get("CLAW_SSE_LOG_FILE").map(String::as_str),
+            Some("/claw_sessions/sse-debug.log")
+        );
+        assert_eq!(
+            out.get("CLAW_SSE_DEBUG_PREVIEW_CHARS").map(String::as_str),
+            Some("2500")
+        );
+        std::env::remove_var("CLAW_SSE_BURST_TRACE");
+        std::env::remove_var("CLAW_SSE_BURST_LOG_FILE");
+        std::env::remove_var("CLAW_SSE_DEBUG");
+        std::env::remove_var("CLAW_SSE_LOG_FILE");
+        std::env::remove_var("CLAW_SSE_DEBUG_PREVIEW_CHARS");
     }
 }

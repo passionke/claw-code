@@ -10,16 +10,22 @@ use tokio::sync::broadcast;
 const HUB_CHANNEL_CAP: usize = 4096;
 
 /// Broadcast message: `Delta` for streaming chunks, `SolveDone` as an in-band terminal sentinel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HubDeltaChunk {
+    pub text: String,
+    pub emit_seq: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub enum HubMsg {
-    Delta(String),
+    Delta(HubDeltaChunk),
     SolveDone,
 }
 
 #[derive(Debug)]
 struct TurnStdoutState {
     text: String,
-    chunks: Vec<String>,
+    chunks: Vec<HubDeltaChunk>,
     has_report: bool,
     solve_done: bool,
     first_report_at_ms: Option<i64>,
@@ -68,12 +74,16 @@ impl LiveReportHub {
                     state.has_report = true;
                     state.first_report_at_ms = Some(now_ms());
                 }
-                let chunk_len = chunk.len();
+                let emit_seq = value.get("emitSeq").and_then(Value::as_u64);
                 state.text.push_str(chunk);
-                state.chunks.push(chunk.to_string());
-                let _ = state.tx.send(HubMsg::Delta(chunk.to_string()));
-                api::sse_burst_trace::log_pool_ingest(turn_id, chunk_len);
-                crate::biz_report_sse_log::log_stdout_ingest(turn_id, chunk_len);
+                let delta = HubDeltaChunk {
+                    text: chunk.to_string(),
+                    emit_seq,
+                };
+                state.chunks.push(delta.clone());
+                let _ = state.tx.send(HubMsg::Delta(delta));
+                api::sse_burst_trace::log_pool_ingest(turn_id, chunk, emit_seq);
+                crate::biz_report_sse_log::log_stdout_ingest(turn_id, chunk.len());
             }
             "solve.done" => {
                 state.solve_done = true;
@@ -165,7 +175,7 @@ impl LiveReportHub {
     pub fn subscribe_with_snapshot(
         &self,
         turn_id: &str,
-    ) -> (broadcast::Receiver<HubMsg>, Vec<String>) {
+    ) -> (broadcast::Receiver<HubMsg>, Vec<HubDeltaChunk>) {
         let mut guard = self.inner.lock().expect("live_report_hub lock");
         let state = guard
             .entry(turn_id.to_string())
@@ -219,7 +229,7 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{HubMsg, LiveReportHub};
+    use super::{HubDeltaChunk, HubMsg, LiveReportHub};
     use serde_json::json;
     use tokio::sync::broadcast;
     use tokio::sync::broadcast::error::RecvError;
@@ -231,7 +241,7 @@ mod tests {
     async fn recv_delta(rx: &mut broadcast::Receiver<HubMsg>) -> String {
         loop {
             match rx.recv().await {
-                Ok(HubMsg::Delta(chunk)) => return chunk,
+                Ok(HubMsg::Delta(delta)) => return delta.text,
                 Ok(HubMsg::SolveDone) => panic!("unexpected SolveDone"),
                 Err(RecvError::Lagged(_)) => {}
                 Err(RecvError::Closed) => panic!("broadcast closed"),
@@ -250,7 +260,13 @@ mod tests {
         assert_eq!(recv_delta(&mut rx_a).await, "chunk-1");
 
         let (mut rx_b, snap_b) = hub.subscribe_with_snapshot(turn_id);
-        assert_eq!(snap_b, vec!["chunk-1".to_string()]);
+        assert_eq!(
+            snap_b,
+            vec![HubDeltaChunk {
+                text: "chunk-1".to_string(),
+                emit_seq: None,
+            }]
+        );
 
         delta(turn_id, "chunk-2", &hub);
         assert_eq!(recv_delta(&mut rx_a).await, "chunk-2");
@@ -266,7 +282,19 @@ mod tests {
         delta(turn_id, "b", &hub);
 
         let (mut rx, snapshot) = hub.subscribe_with_snapshot(turn_id);
-        assert_eq!(snapshot, vec!["a", "b"]);
+        assert_eq!(
+            snapshot,
+            vec![
+                HubDeltaChunk {
+                    text: "a".to_string(),
+                    emit_seq: None,
+                },
+                HubDeltaChunk {
+                    text: "b".to_string(),
+                    emit_seq: None,
+                },
+            ]
+        );
         delta(turn_id, "c", &hub);
         assert_eq!(recv_delta(&mut rx).await, "c");
     }
@@ -287,7 +315,13 @@ mod tests {
         let turn_id = "T_done_flag";
         delta(turn_id, "body", &hub);
         let (_rx, snap) = hub.subscribe_with_snapshot(turn_id);
-        assert_eq!(snap, vec!["body".to_string()]);
+        assert_eq!(
+            snap,
+            vec![HubDeltaChunk {
+                text: "body".to_string(),
+                emit_seq: None,
+            }]
+        );
         hub.ingest_json(turn_id, &json!({ "ev": "solve.done" }));
         assert!(hub.is_solve_done(turn_id));
         assert!(hub.has_report_for_turn(turn_id));

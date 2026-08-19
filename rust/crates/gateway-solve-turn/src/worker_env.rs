@@ -50,6 +50,9 @@ pub const WORKER_ENV_KEYS: &[&str] = &[
     "CLAW_WORKER_NAME",
     "CLAW_SSE_BURST_TRACE",
     "CLAW_SSE_BURST_LOG_FILE",
+    "CLAW_SSE_DEBUG",
+    "CLAW_SSE_LOG_FILE",
+    "CLAW_SSE_DEBUG_PREVIEW_CHARS",
     "CLAW_OTEL_ENABLED",
     "CLAW_OTEL_LOG_PROMPTS",
     "LANGFUSE_PUBLIC_KEY",
@@ -75,6 +78,27 @@ fn worker_env_search_paths() -> Vec<PathBuf> {
 /// Existing process env wins (compose `env_file`, `docker exec -e`, exports). Author: kejiqing
 pub fn apply_worker_env() {
     apply_dotenv_keys_from_paths(&worker_env_search_paths(), WORKER_ENV_KEYS);
+    log_loaded_sse_env();
+}
+
+fn log_loaded_sse_env() {
+    let keys = [
+        "CLAW_SSE_BURST_TRACE",
+        "CLAW_SSE_BURST_LOG_FILE",
+        "CLAW_SSE_DEBUG",
+        "CLAW_SSE_LOG_FILE",
+        "CLAW_SSE_DEBUG_PREVIEW_CHARS",
+    ];
+    let pairs: Vec<String> = keys
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| format!("{key}={value}")))
+        .collect();
+    tracing::info!(
+        target: "claw_sse_env",
+        count = pairs.len(),
+        values = %pairs.join(" "),
+        "worker_env_loaded"
+    );
 }
 
 /// Langfuse / OTEL keys to forward into worker `docker exec -e` (pool host may not inherit compose env).

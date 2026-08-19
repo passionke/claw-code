@@ -5,6 +5,12 @@ export type BizReportDeltaRecord = {
   serverDeltaMs?: number;
   clientDeltaMs: number;
   textLen: number;
+  /**
+   * Client-observed delta text (from `data.text`) for debugging/verification.
+   * Not used in density metrics.
+   * Author: kejiqing
+   */
+  text?: string;
 };
 
 export type BizReportDensity = {

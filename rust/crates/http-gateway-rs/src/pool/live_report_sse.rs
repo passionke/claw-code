@@ -12,9 +12,9 @@ use tokio::sync::{mpsc, watch};
 
 use crate::biz_advice_report::{
     biz_report_sse_event_stream, sanitize_external_report_text, BizAdviceReportPayload,
-    BizReportStreamMsg,
+    BizReportDeltaChunk, BizReportStreamMsg,
 };
-use crate::pool::live_report_hub::{HubMsg, LiveReportHub};
+use crate::pool::live_report_hub::{HubDeltaChunk, HubMsg, LiveReportHub};
 use crate::session_db::GatewaySessionDb;
 
 const ACTIVE_DELEGATE_POLL: Duration = Duration::from_millis(250);
@@ -134,11 +134,17 @@ async fn follow_turn_deltas(
     tokio::pin!(rebound);
     let (mut sub, snapshot_chunks) = hub.subscribe_with_snapshot(turn_id);
     for chunk in snapshot_chunks {
-        if chunk.is_empty() {
+        if chunk.text.is_empty() {
             continue;
         }
-        acc.push_str(&chunk);
-        if tx.send(BizReportStreamMsg::Delta(chunk)).is_err() {
+        acc.push_str(&chunk.text);
+        if tx
+            .send(BizReportStreamMsg::Delta(BizReportDeltaChunk {
+                text: chunk.text,
+                emit_seq: chunk.emit_seq,
+            }))
+            .is_err()
+        {
             return FollowEnd::HubDone;
         }
     }
@@ -153,12 +159,18 @@ async fn follow_turn_deltas(
             }
             msg = sub.recv() => {
                 match msg {
-                    Ok(HubMsg::Delta(chunk)) => {
-                        if chunk.is_empty() {
+                    Ok(HubMsg::Delta(HubDeltaChunk { text, emit_seq })) => {
+                        if text.is_empty() {
                             continue;
                         }
-                        acc.push_str(&chunk);
-                        if tx.send(BizReportStreamMsg::Delta(chunk)).is_err() {
+                        acc.push_str(&text);
+                        if tx
+                            .send(BizReportStreamMsg::Delta(BizReportDeltaChunk {
+                                text,
+                                emit_seq,
+                            }))
+                            .is_err()
+                        {
                             return FollowEnd::HubDone;
                         }
                     }
@@ -261,7 +273,7 @@ mod tests {
 
     async fn next_delta(rx: &mut mpsc::UnboundedReceiver<BizReportStreamMsg>) -> String {
         match timeout(Duration::from_secs(2), rx.recv()).await {
-            Ok(Some(BizReportStreamMsg::Delta(t))) => t,
+            Ok(Some(BizReportStreamMsg::Delta(t))) => t.text,
             _ => panic!("expected delta, got non-delta or timeout"),
         }
     }
