@@ -113,9 +113,7 @@ claw_linux_compile_release() {
   fi
 
   local -a uid_args=()
-  if [[ "${CLAW_LINUX_COMPILE_CI:-0}" == "1" ]]; then
-    uid_args=(-e "CLAW_HOST_UID=$(id -u)" -e "CLAW_HOST_GID=$(id -g)")
-  fi
+  uid_args=(-e "CLAW_HOST_UID=$(id -u)" -e "CLAW_HOST_GID=$(id -g)")
 
   # Only forward when set — empty CARGO_BUILD_JOBS makes cargo error. Author: kejiqing
   local -a cargo_env_args=()
@@ -195,7 +193,19 @@ claw_linux_compile_release() {
       echo "error: missing ${out_dir}/${bin} after linux compile" >&2
       exit 1
     fi
-    chmod +x "${out_dir}/${bin}"
+    if ! chmod +x "${out_dir}/${bin}" 2>/dev/null; then
+      local host_uid host_gid
+      host_uid="$(id -u)"
+      host_gid="$(id -g)"
+      if command -v docker >/dev/null 2>&1; then
+        docker run --rm -v "${out_root}:/w:rw" alpine:3.20 \
+          chown -R "${host_uid}:${host_gid}" /w
+        chmod +x "${out_dir}/${bin}"
+      else
+        echo "error: cannot chmod ${out_dir}/${bin} (root-owned artifact?)" >&2
+        exit 1
+      fi
+    fi
   done
   echo "linux compile: ok → ${out_dir}"
 }
