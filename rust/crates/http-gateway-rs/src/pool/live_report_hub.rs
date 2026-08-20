@@ -60,16 +60,6 @@ impl LiveReportHub {
                 tx: broadcast::channel(HUB_CHANNEL_CAP).0,
             });
         match ev {
-            "report.yield" => {
-                drop(guard);
-                let Some(chunk) = value.get("text").and_then(Value::as_str) else {
-                    return;
-                };
-                if chunk.trim().is_empty() {
-                    return;
-                }
-                self.merge_persist_yield(turn_id, chunk);
-            }
             "report.delta" => {
                 let Some(chunk) = value.get("text").and_then(Value::as_str) else {
                     tracing::warn!(
@@ -142,21 +132,6 @@ impl LiveReportHub {
             .get(turn_id)
             .filter(|s| !s.trim().is_empty())
             .cloned()
-    }
-
-    /// Persist-only child adopt from worker `report.yield` (no live broadcast). Author: kejiqing
-    fn merge_persist_yield(&self, turn_id: &str, chunk: &str) {
-        let mut guard = self
-            .fanin_acc
-            .lock()
-            .expect("live_report_hub fanin_acc lock");
-        let entry = guard.entry(turn_id.to_string()).or_default();
-        if entry.is_empty() {
-            *entry = chunk.to_string();
-        } else if !entry.contains(chunk) {
-            entry.push_str("\n\n");
-            entry.push_str(chunk);
-        }
     }
 
     #[must_use]
@@ -410,24 +385,6 @@ mod tests {
         hub.promote_report_availability(turn_id, Some(1234));
         hub.promote_report_availability(turn_id, Some(5678));
         assert_eq!(hub.first_report_at_ms_for_turn(turn_id), Some(1234));
-    }
-
-    #[test]
-    fn report_yield_persist_only_no_live_broadcast() {
-        let hub = LiveReportHub::default();
-        let turn_id = "T_yield";
-        let (mut rx, snap) = hub.subscribe_with_snapshot(turn_id);
-        assert!(snap.is_empty());
-        hub.ingest_json(
-            turn_id,
-            &json!({ "ev": "report.yield", "text": "child body" }),
-        );
-        assert_eq!(hub.snapshot_text(turn_id), "");
-        assert_eq!(
-            hub.router_fanin_acc_snapshot(turn_id).as_deref(),
-            Some("child body")
-        );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]

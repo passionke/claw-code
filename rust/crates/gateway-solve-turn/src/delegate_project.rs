@@ -8,11 +8,7 @@ use runtime::ToolError;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::delegate_output::adopt_child_output;
-use crate::gateway_stdout::{
-    emit_delegate_active, emit_delegate_clear, emit_report_yield,
-    mark_post_delegate_routing_pending,
-};
+use crate::gateway_stdout::{emit_delegate_active, emit_delegate_clear};
 use crate::mcp_call_context::GatewayMcpCallContext;
 
 pub const DELEGATE_PROJECT_TOOL_NAME: &str = "delegate_project";
@@ -306,16 +302,13 @@ pub fn run_delegate_project(
         parsed.proj_id,
     )?;
 
-    adopt_child_output(&report);
-    let _ = emit_report_yield(&report);
-    mark_post_delegate_routing_pending();
-
     serde_json::to_string_pretty(&json!({
         "status": terminal,
         "projId": parsed.proj_id,
         "delegateSessionCreated": resolved.created,
         "delegateSessionId": resolved.delegate_session_id,
         "delegateTurnId": async_resp.turn_id,
+        "message": report,
     }))
     .map_err(|e| ToolError::new(e.to_string()))
 }
@@ -338,15 +331,19 @@ mod tests {
     }
 
     #[test]
-    fn thin_tool_result_excludes_message_field() {
+    fn tool_result_includes_specialist_message() {
         let body = json!({
             "status": "succeeded",
             "projId": 99011,
             "delegateSessionCreated": true,
             "delegateSessionId": "dgt_test",
             "delegateTurnId": "T_child",
+            "message": "manual steps here",
         });
-        assert!(body.get("message").is_none());
+        assert_eq!(
+            body.get("message").and_then(|v| v.as_str()),
+            Some("manual steps here")
+        );
         assert_eq!(
             body.get("delegateTurnId").and_then(|v| v.as_str()),
             Some("T_child")

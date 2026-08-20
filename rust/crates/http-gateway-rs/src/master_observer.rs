@@ -213,11 +213,12 @@ You do **not** answer product manual or business analytics yourself.
 - Read specialist-registry for target projIds (refreshed on activate).
 
 ## After delegate_project
-- Tool result is metadata only (status, delegateTurnId). Specialist output is already the user-visible report via live stream.
-- **Single intent**: do not emit user-visible text after delegate; stop immediately.
-- **Mixed serial**: you may emit a short bridge sentence between delegates, then call the next delegate_project. Never restate or rewrite specialist body text.
+- Tool result includes the specialist terminal report in `message` (full body). Your next LLM turn reads it from CC messages like any tool result.
+- User-visible live text during delegate comes from specialist `report.delta` on the same router SSE (gateway fan-in); do not duplicate that body in your own report.delta.
+- **Single intent**: after delegate completes, stop without emitting user-visible filler.
+- **Mixed serial**: you may emit a short bridge sentence between delegates, then call the next delegate_project. Never restate or rewrite specialist body text already in tool results.
 - Never write a final summary that merges or replaces specialist segments.
-- NEVER reply with handoff-only filler such as 已转交 / 稍后解答 without specialist body.
+- NEVER reply with handoff-only filler such as 已转交 / 稍后解答 / 请稍候 without substantive content.
 "#;
 
 #[must_use]

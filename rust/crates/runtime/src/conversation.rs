@@ -167,9 +167,6 @@ pub struct AutoCompactionEvent {
 }
 
 /// Coordinates the model loop, tool execution, hooks, and session updates.
-/// Predicate for omitting terminal assistant from `TurnSummary` (e.g. delegate yield). Author: kejiqing
-pub type SkipFinalAssistantPredicate = dyn Fn(&ConversationMessage) -> bool + Send + Sync;
-
 pub struct ConversationRuntime<C, T> {
     session: Session,
     api_client: C,
@@ -184,8 +181,6 @@ pub struct ConversationRuntime<C, T> {
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
     turn_timing: Option<Arc<dyn TurnTimingSink>>,
-    /// When true, final assistant (no tools) is omitted from `TurnSummary.assistant_messages`. Author: kejiqing
-    skip_final_assistant_for_report: Option<Box<SkipFinalAssistantPredicate>>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -236,19 +231,7 @@ where
             hook_progress_reporter: None,
             session_tracer: None,
             turn_timing: None,
-            skip_final_assistant_for_report: None,
         }
-    }
-
-    /// Skip pushing the terminal assistant message into `TurnSummary` when predicate returns true
-    /// (e.g. post-delegate routing prose replaced by adopted child output). Author: kejiqing
-    #[must_use]
-    pub fn with_skip_final_assistant_for_report(
-        mut self,
-        predicate: Box<SkipFinalAssistantPredicate>,
-    ) -> Self {
-        self.skip_final_assistant_for_report = Some(predicate);
-        self
     }
 
     #[must_use]
@@ -553,13 +536,7 @@ where
                 self.session
                     .push_message(assistant_message.clone())
                     .map_err(|error| RuntimeError::new(error.to_string()))?;
-                let skip_for_report = self
-                    .skip_final_assistant_for_report
-                    .as_ref()
-                    .is_some_and(|f| f(&assistant_message));
-                if !skip_for_report {
-                    assistant_messages.push(assistant_message);
-                }
+                assistant_messages.push(assistant_message);
                 break;
             }
 

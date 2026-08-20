@@ -15,7 +15,7 @@ Author: kejiqing
 |------|------|------|
 | 2026-08-14 | kejiqing | v1.0 六场景 + 全局不变量 |
 | 2026-08-14 | kejiqing | v1.2 Mind 迁入 NeruoGate/Specialist Router 子目录；本机验收 runbook |
-| 2026-08-20 | kejiqing | v1.3 delegate output yield：SSE done = task message = PG；tool 薄结果 |
+| 2026-08-20 | kejiqing | v1.4 harness restore：tool result 含 message；SSE=task=PG；撤 output yield |
 
 ---
 
@@ -36,8 +36,8 @@ v1 以本节为 **验收真源**。实现服务于可观测断言，不以内部
 | SSE 订阅 | **只**订 router task | 抓包 |
 | SSE 内容 | 嵌套时下游 delta **链式**出现在 router 流；同级无交错 | 单连接顺序 |
 | executionMode | v1 serial：每级 tool 顺序完成 | 时间线 |
-| output yield | delegate 后 parent 终稿 = adopt child 段（+ optional bridge）；`SSE done` = `GET /v1/tasks` message = PG `report_message` | 场景 1/4 + refresh |
-| tool result | `delegate_project` tool result **无** specialist 正文；含 `delegateTurnId` 可回溯 | jsonl / tools API |
+| output align | router 终稿：`SSE done` = `GET /v1/tasks` message = PG `report_message` | 场景 1/4 + refresh |
+| tool result | `delegate_project` tool result **含** specialist 正文 `message` + `delegateTurnId` 可回溯 | jsonl / tools API |
 
 ## 2. 场景（1–7）
 

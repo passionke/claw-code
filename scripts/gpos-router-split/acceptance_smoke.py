@@ -238,12 +238,13 @@ def scenario_solve(prompt: str, session_id: str | None = None) -> dict:
         for t in tools
     )
     delegate_msg = delegate_tool_message(tools)
-    # Specialist body is parent output (task message), not tool result message.
+    tool_message_ok = (not delegate_ok) or bool(delegate_msg)
+    # User-visible report should align with SSE; tool result must carry specialist body for CC messages.
     content_ok = bool(msg) and not is_handoff_only(msg)
     user_visible_ok = content_ok
     return {
         "check": "solve",
-        "pass": http_ok and delegate_ok and content_ok and user_visible_ok,
+        "pass": http_ok and delegate_ok and tool_message_ok and content_ok and user_visible_ok,
         "sessionId": sid,
         "turnId": turn_id,
         "status": solve.get("status"),
