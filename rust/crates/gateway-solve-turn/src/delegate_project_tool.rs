@@ -288,7 +288,7 @@ fn stream_specialist_into_router_file(
     }
     let mut event_name = String::new();
     let reader = BufReader::new(resp);
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         if stop.load(Ordering::Relaxed) {
             break;
         }
