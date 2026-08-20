@@ -243,19 +243,31 @@ impl PoolOps for E2bOrchestratedPool {
                         &task_outcome.stdout,
                         task_outcome.exit_code,
                     );
-                    let report = parsed.output_json.as_ref().and_then(|j| {
+                    let worker_report = parsed.output_json.as_ref().and_then(|j| {
                         crate::biz_advice_report::report_body_from_solve_output(
                             &parsed.output_text,
                             Some(j),
                         )
                         .ok()
                     });
+                    let fanin_report = self.live_report_hub.router_fanin_acc_snapshot(turn_id);
+                    let report = fanin_report
+                        .as_deref()
+                        .filter(|s| !s.trim().is_empty())
+                        .map(str::to_string)
+                        .or(worker_report);
+                    let mut output_json = parsed.output_json.clone();
+                    if let (Some(ref body), Some(ref mut j)) = (&report, &mut output_json) {
+                        if let Some(obj) = j.as_object_mut() {
+                            obj.insert("message".to_string(), serde_json::json!(body));
+                        }
+                    }
                     let _ = finalize_turn_after_readback(
                         db.as_ref(),
                         turn_id,
                         parsed.claw_exit_code,
                         report.as_deref(),
-                        parsed.output_json.as_ref(),
+                        output_json.as_ref(),
                     )
                     .await;
                 }

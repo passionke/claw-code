@@ -8,8 +8,10 @@ use runtime::ToolError;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::delegate_output::adopt_child_output;
 use crate::gateway_stdout::{
-    emit_delegate_active, emit_delegate_clear, suppress_further_live_deltas,
+    emit_delegate_active, emit_delegate_clear, emit_report_yield,
+    mark_post_delegate_routing_pending,
 };
 use crate::mcp_call_context::GatewayMcpCallContext;
 
@@ -304,7 +306,9 @@ pub fn run_delegate_project(
         parsed.proj_id,
     )?;
 
-    suppress_further_live_deltas();
+    adopt_child_output(&report);
+    let _ = emit_report_yield(&report);
+    mark_post_delegate_routing_pending();
 
     serde_json::to_string_pretty(&json!({
         "status": terminal,
@@ -312,7 +316,6 @@ pub fn run_delegate_project(
         "delegateSessionCreated": resolved.created,
         "delegateSessionId": resolved.delegate_session_id,
         "delegateTurnId": async_resp.turn_id,
-        "message": report,
     }))
     .map_err(|e| ToolError::new(e.to_string()))
 }
@@ -331,6 +334,22 @@ mod tests {
         assert_eq!(
             report_text_from_biz_payload(&v).as_deref(),
             Some("steps here")
+        );
+    }
+
+    #[test]
+    fn thin_tool_result_excludes_message_field() {
+        let body = json!({
+            "status": "succeeded",
+            "projId": 99011,
+            "delegateSessionCreated": true,
+            "delegateSessionId": "dgt_test",
+            "delegateTurnId": "T_child",
+        });
+        assert!(body.get("message").is_none());
+        assert_eq!(
+            body.get("delegateTurnId").and_then(|v| v.as_str()),
+            Some("T_child")
         );
     }
 }

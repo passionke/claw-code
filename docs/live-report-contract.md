@@ -39,6 +39,9 @@ Author: kejiqing
 
 **禁止** worker 二次 HTTP 订阅 specialist SSE 再写 router stdout（旧 passthrough 已移除）。**禁止**在用户这条 SSE 上再 GET specialist `/v1/biz_advice_report` 做数据面转发。
 
+**Delegate output yield（2026-08）：** `delegate_project` tool result 仅元数据；specialist 终稿 adopt 为 parent turn `outputJson.message`。混合 serial 允许 parent bridge 段；禁止 post-delegate 终稿复述。`report.yield` stdout 与 fan-in delta 同源落盘。
+
+
 ---
 
 ## 2. 端到端数据流（路径 B）

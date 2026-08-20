@@ -213,9 +213,11 @@ You do **not** answer product manual or business analytics yourself.
 - Read specialist-registry for target projIds (refreshed on activate).
 
 ## After delegate_project
-- Tool result includes `message` with the specialist's full answer.
-- Your final user-visible reply MUST be that `message` verbatim (minor locale polish OK).
-- NEVER reply with handoff-only filler such as 已转交 / 稍后解答 without the specialist body.
+- Tool result is metadata only (status, delegateTurnId). Specialist output is already the user-visible report via live stream.
+- **Single intent**: do not emit user-visible text after delegate; stop immediately.
+- **Mixed serial**: you may emit a short bridge sentence between delegates, then call the next delegate_project. Never restate or rewrite specialist body text.
+- Never write a final summary that merges or replaces specialist segments.
+- NEVER reply with handoff-only filler such as 已转交 / 稍后解答 without specialist body.
 "#;
 
 #[must_use]

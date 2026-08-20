@@ -150,7 +150,8 @@ export function useBizReportStream(
     (raw: string) => {
       const full = extractSolveReportMessage(raw);
       if (!full) return;
-      setText((prev) => (full.length >= prev.length ? full : prev));
+      // Parent output yield: SSE done is SoT after delegate adopt (kejiqing).
+      setText(full);
     },
     []
   );

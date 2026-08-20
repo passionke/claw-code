@@ -236,9 +236,11 @@ async fn run_router_fanin_loop(
         };
         match follow_turn_deltas(hub.as_ref(), &follow_id, &tx, &mut acc, rebound).await {
             FollowEnd::HubDone if following_spec => {
+                hub.set_router_fanin_acc(&router_turn_id, &acc);
                 wait_until_active_ne(&mut active_rx, spec.as_deref()).await;
             }
             FollowEnd::HubDone => {
+                hub.set_router_fanin_acc(&router_turn_id, &acc);
                 let text = if acc.is_empty() {
                     hub.snapshot_text(&router_turn_id)
                 } else {

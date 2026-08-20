@@ -52,6 +52,7 @@ use tools::{
 };
 
 pub mod agent_orchestration;
+pub mod delegate_output;
 pub mod delegate_project;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
@@ -75,6 +76,14 @@ pub mod task_progress;
 pub mod turn_language;
 pub mod turn_tools;
 pub mod worker_env;
+use crate::gateway_stdout::{
+    delegate_routing_iteration_active, set_delegate_routing_iteration,
+    suppress_further_live_deltas, take_post_delegate_routing_pending,
+};
+pub use delegate_output::{
+    adopt_child_output, append_parent_bridge, had_adopted_child_output, reset_parent_output_acc,
+    take_parent_output,
+};
 pub use delegate_project::{
     delegate_project_tool_definition, run_delegate_project, DELEGATE_PROJECT_TOOL_NAME,
 };
@@ -85,7 +94,7 @@ pub use extra_session_bizdate::{
 };
 pub use gateway_stdout::{
     emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
-    GATEWAY_STDOUT_LINE_PREFIX,
+    reset_delegate_stdout_state, GATEWAY_STDOUT_LINE_PREFIX,
 };
 pub use landlock_dsl::{
     default_landlock_dsl, expand_landlock_dsl, landlock_from_global_settings,
@@ -556,12 +565,22 @@ fn dedupe_tool_definitions_by_name(tools: Vec<ToolDefinition>) -> Vec<ToolDefini
 
 impl RuntimeApiClient for DirectApiClient {
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        const DELEGATE_ROUTING_MAX_TOKENS: u32 = 512;
         let system =
             (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n"));
         let messages = convert_runtime_messages_to_api(&request.messages);
+        let routing = take_post_delegate_routing_pending();
+        if routing {
+            set_delegate_routing_iteration(true);
+        }
+        let max_tokens = if routing {
+            DELEGATE_ROUTING_MAX_TOKENS
+        } else {
+            api::max_tokens_for_model(&self.model)
+        };
         let req = MessageRequest {
             model: self.model.clone(),
-            max_tokens: api::max_tokens_for_model(&self.model),
+            max_tokens,
             messages,
             system,
             tools: Some(self.tools.clone()),
@@ -584,17 +603,30 @@ impl RuntimeApiClient for DirectApiClient {
         let stream_report_deltas = self.stream_report_deltas;
         let mut on_delta = move |text: &str| {
             if stream_report_deltas {
+                if delegate_routing_iteration_active() {
+                    crate::delegate_output::append_parent_bridge(text);
+                }
                 let _ = emit_report_delta(text);
             }
         };
-        tokio::task::block_in_place(|| {
+        let events = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(stream_events(
                 &self.provider,
                 &req,
                 Some(&mut on_delta),
             ))
         })
-        .map_err(|e| RuntimeError::new(e.to_string()))
+        .map_err(|e| RuntimeError::new(e.to_string()))?;
+        if delegate_routing_iteration_active() {
+            set_delegate_routing_iteration(false);
+            let has_tool_use = events
+                .iter()
+                .any(|ev| matches!(ev, AssistantEvent::ToolUse { .. }));
+            if !has_tool_use {
+                suppress_further_live_deltas();
+            }
+        }
+        Ok(events)
     }
 }
 
@@ -1411,6 +1443,9 @@ pub fn run_gateway_solve_turn(
     )>,
     attachments: &[SolveAttachment],
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
+    reset_parent_output_acc();
+    reset_delegate_stdout_state();
+
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
 
@@ -1615,6 +1650,14 @@ pub fn run_gateway_solve_turn(
     let mut runtime =
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
     runtime = runtime.with_max_iterations(max_iterations);
+    runtime = runtime.with_skip_final_assistant_for_report(Box::new(|msg| {
+        if !had_adopted_child_output() {
+            return false;
+        }
+        msg.blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { .. }))
+    }));
     runtime = runtime.with_turn_timing(turn_timing);
     if let Some(tracer) = session_tracer {
         runtime = runtime.with_session_tracer(tracer);
@@ -1628,7 +1671,9 @@ pub fn run_gateway_solve_turn(
         otel_turn.mark_error(&message);
         err(HTTP_INTERNAL, message)
     })?;
-    let message = assistant_report_text_from_turn(&result.assistant_messages);
+    let message = take_parent_output()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| assistant_report_text_from_turn(&result.assistant_messages));
     let mut out_json = json!({
         "model": effective_model,
         "iterations": result.iterations,

@@ -35,6 +35,8 @@ struct TurnStdoutState {
 #[derive(Clone, Default)]
 pub struct LiveReportHub {
     inner: std::sync::Arc<Mutex<HashMap<String, TurnStdoutState>>>,
+    /// Router fan-in SSE accumulator (user-visible live text). Author: kejiqing
+    fanin_acc: std::sync::Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl std::fmt::Debug for LiveReportHub {
@@ -58,6 +60,16 @@ impl LiveReportHub {
                 tx: broadcast::channel(HUB_CHANNEL_CAP).0,
             });
         match ev {
+            "report.yield" => {
+                drop(guard);
+                let Some(chunk) = value.get("text").and_then(Value::as_str) else {
+                    return;
+                };
+                if chunk.trim().is_empty() {
+                    return;
+                }
+                self.merge_persist_yield(turn_id, chunk);
+            }
             "report.delta" => {
                 let Some(chunk) = value.get("text").and_then(Value::as_str) else {
                     tracing::warn!(
@@ -109,6 +121,42 @@ impl LiveReportHub {
             return;
         };
         self.ingest_json(turn_id, &value);
+    }
+
+    /// Mirror router fan-in SSE `acc` for persist / done alignment. Author: kejiqing
+    pub fn set_router_fanin_acc(&self, turn_id: &str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.fanin_acc
+            .lock()
+            .expect("live_report_hub fanin_acc lock")
+            .insert(turn_id.to_string(), text.to_string());
+    }
+
+    #[must_use]
+    pub fn router_fanin_acc_snapshot(&self, turn_id: &str) -> Option<String> {
+        self.fanin_acc
+            .lock()
+            .expect("live_report_hub fanin_acc lock")
+            .get(turn_id)
+            .filter(|s| !s.trim().is_empty())
+            .cloned()
+    }
+
+    /// Persist-only child adopt from worker `report.yield` (no live broadcast). Author: kejiqing
+    fn merge_persist_yield(&self, turn_id: &str, chunk: &str) {
+        let mut guard = self
+            .fanin_acc
+            .lock()
+            .expect("live_report_hub fanin_acc lock");
+        let entry = guard.entry(turn_id.to_string()).or_default();
+        if entry.is_empty() {
+            *entry = chunk.to_string();
+        } else if !entry.contains(chunk) {
+            entry.push_str("\n\n");
+            entry.push_str(chunk);
+        }
     }
 
     #[must_use]
@@ -205,6 +253,10 @@ impl LiveReportHub {
             return;
         }
         guard.remove(turn_id);
+        self.fanin_acc
+            .lock()
+            .expect("live_report_hub fanin_acc lock")
+            .remove(turn_id);
         tracing::debug!(
             target: "claw_live_report",
             turn_id = %turn_id,
@@ -216,6 +268,10 @@ impl LiveReportHub {
         self.inner
             .lock()
             .expect("live_report_hub lock")
+            .remove(turn_id);
+        self.fanin_acc
+            .lock()
+            .expect("live_report_hub fanin_acc lock")
             .remove(turn_id);
     }
 }
@@ -354,5 +410,33 @@ mod tests {
         hub.promote_report_availability(turn_id, Some(1234));
         hub.promote_report_availability(turn_id, Some(5678));
         assert_eq!(hub.first_report_at_ms_for_turn(turn_id), Some(1234));
+    }
+
+    #[test]
+    fn report_yield_persist_only_no_live_broadcast() {
+        let hub = LiveReportHub::default();
+        let turn_id = "T_yield";
+        let (mut rx, snap) = hub.subscribe_with_snapshot(turn_id);
+        assert!(snap.is_empty());
+        hub.ingest_json(
+            turn_id,
+            &json!({ "ev": "report.yield", "text": "child body" }),
+        );
+        assert_eq!(hub.snapshot_text(turn_id), "");
+        assert_eq!(
+            hub.router_fanin_acc_snapshot(turn_id).as_deref(),
+            Some("child body")
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn router_fanin_acc_tracks_sse_mirror() {
+        let hub = LiveReportHub::default();
+        hub.set_router_fanin_acc("T_router", "live acc");
+        assert_eq!(
+            hub.router_fanin_acc_snapshot("T_router").as_deref(),
+            Some("live acc")
+        );
     }
 }

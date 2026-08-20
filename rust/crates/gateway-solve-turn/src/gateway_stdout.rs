@@ -10,10 +10,60 @@ use serde_json::Value;
 /// enter live. Gateway fan-in serves specialist Hub directly to user SSE.
 /// One process = one turn. Author: kejiqing
 static SUPPRESS_FURTHER_LIVE_DELTAS: AtomicBool = AtomicBool::new(false);
+static POST_DELEGATE_ROUTING_PENDING: AtomicBool = AtomicBool::new(false);
+static DELEGATE_ROUTING_ITERATION: AtomicBool = AtomicBool::new(false);
 
-/// Close the router-model live door after delegate completes.
+/// Reset stdout delegate flags at turn start. Author: kejiqing
+pub fn reset_delegate_stdout_state() {
+    SUPPRESS_FURTHER_LIVE_DELTAS.store(false, Ordering::SeqCst);
+    POST_DELEGATE_ROUTING_PENDING.store(false, Ordering::SeqCst);
+    DELEGATE_ROUTING_ITERATION.store(false, Ordering::SeqCst);
+}
+
+/// Close the parent-model live door when turn ends after delegate routing.
 pub fn suppress_further_live_deltas() {
     SUPPRESS_FURTHER_LIVE_DELTAS.store(true, Ordering::SeqCst);
+}
+
+/// After `delegate_project` succeeds; next LLM stream is a routing iteration (bridge / re-delegate).
+pub fn mark_post_delegate_routing_pending() {
+    POST_DELEGATE_ROUTING_PENDING.store(true, Ordering::SeqCst);
+}
+
+#[must_use]
+pub fn take_post_delegate_routing_pending() -> bool {
+    POST_DELEGATE_ROUTING_PENDING.swap(false, Ordering::SeqCst)
+}
+
+#[must_use]
+pub fn delegate_routing_iteration_active() -> bool {
+    DELEGATE_ROUTING_ITERATION.load(Ordering::SeqCst)
+}
+
+pub fn set_delegate_routing_iteration(active: bool) {
+    DELEGATE_ROUTING_ITERATION.store(active, Ordering::SeqCst);
+}
+
+/// Parent turn output acc snapshot for gateway persist (optional cross-check).
+pub fn emit_report_yield(text: &str) -> io::Result<()> {
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    let emit_seq = api::sse_burst_trace::log_worker_emit(text);
+    emit_line(&StdoutEnvelope {
+        ev: "report.yield",
+        text: Some(text),
+        emit_seq: Some(emit_seq),
+        session_id: None,
+        turn_id: None,
+        proj_id: None,
+        delegate_proj_id: None,
+        claw_exit_code: None,
+        output_text: None,
+        output_json: None,
+        error: None,
+        http_status_hint: None,
+    })
 }
 
 /// Prefix for every structured stdout line (plain logs must not use this prefix).
