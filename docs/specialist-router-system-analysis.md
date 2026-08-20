@@ -26,8 +26,8 @@ Author: kejiqing
 | delegate 配对 | 新 `delegate_target.rs` 或 `master_observer` 旁新模块 | CRUD `gateway_delegate_target` |
 | session link | `session_db.rs` + 新 repository | CRUD `gateway_delegate_session_link` |
 | Admin API | `routes/fragments/` | `GET/PUT .../delegate-targets` |
-| 物化 | `project_config_apply.rs` | `role=router` 注入 `delegate_project`；registry 附录 |
-| tool | `tools/` 或 `gateway-solve-turn` | `delegate_project` 执行器 |
+| 物化 | `project_config_apply.rs` | `role=router` 注入 `delegate_project_tool`；registry 附录 |
+| tool | `tools/` 或 `gateway-solve-turn` | `delegate_project_tool` 执行器 |
 | live passthrough | `live_report_hub.rs` 等 | 订 specialist live → 抄 router stdout |
 
 ## 2. 数据模型
@@ -40,8 +40,8 @@ CHECK (project_role IN ('normal', 'master', 'observation', 'router'))
 
 | role | 说明 |
 |------|------|
-| `router` | 对外入口；必物化 `delegate_project` |
-| `normal` | specialist；可作 delegate target；**ops 另开** `delegate_project` 供嵌套 |
+| `router` | 对外入口；必物化 `delegate_project_tool` |
+| `normal` | specialist；可作 delegate target；**ops 另开** `delegate_project_tool` 供嵌套 |
 | `master` / `observation` | 观测拓扑；**不可**作 target |
 
 可选列：`delegate_execution_mode TEXT DEFAULT 'serial'`（或 JSON 配置字段）。
@@ -98,7 +98,7 @@ PUT  /v1/projects/{routerProjId}/delegate-targets
 
 校验：
 
-- initiator 已物化 `delegate_project` 且在其 `delegate-targets` 行中
+- initiator 已物化 `delegate_project_tool` 且在其 `delegate-targets` 行中
 - 各 target `project_role=normal` 且存在 stable
 
 **嵌套示例：** `PUT /v1/projects/271/delegate-targets` 登记 marketing；router 不必直接登记 marketing。
@@ -107,13 +107,13 @@ PUT  /v1/projects/{routerProjId}/delegate-targets
 
 复用现有 `PUT /v1/projects/{id}/role`，接受 `router`。
 
-## 4. `delegate_project` tool
+## 4. `delegate_project_tool`
 
 ### 4.1 入参（与 `SolveRequest` 同形）
 
 ```json
 {
-  "name": "delegate_project",
+  "name": "delegate_project_tool",
   "arguments": {
     "projId": 271,
     "userPrompt": "…",
@@ -152,7 +152,7 @@ PUT  /v1/projects/{routerProjId}/delegate-targets
 
 | role | 注入 |
 |------|------|
-| `router` | `delegate_project`；`specialist-registry` skill；从 `gateway_delegate_target` 生成 registry 附录 |
+| `router` | `delegate_project_tool`；`specialist-registry` skill；从 `gateway_delegate_target` 生成 registry 附录 |
 | `normal` | 各 specialist 原有 MCP/skills |
 | `master` | `claw-master-observer`（不变） |
 
@@ -169,7 +169,7 @@ router **无** SQLBot MCP、**无** KB 挂载。
 1. 迁移：`router` role + 两表
 2. Admin API：`delegate-targets`
 3. 预发拆 project + router skill
-4. `delegate_project` tool（维护者实现）
+4. `delegate_project_tool`（维护者实现）
 5. BFF/评测改打 router；跑验收矩阵
 
 ## 8. 预发拓扑（目标）

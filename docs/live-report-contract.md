@@ -30,7 +30,7 @@ Author: kejiqing
 
 | 环节 | 行为 |
 |------|------|
-| Worker | `delegate_project` 发 `delegate.active` / `delegate.clear` stdout（**不**抄 specialist SSE） |
+| Worker | `delegate_project_tool` 发 `delegate.active` / `delegate.clear` stdout（**不**抄 specialist SSE） |
 | Specialist live | 与单 agent 相同：specialist worker → specialist turn **LiveReportHub**（单跳） |
 | 用户 SSE URL | 仍 `GET /v1/biz_advice_report?sessionId=<router>&turnId=<router>&stream=true` |
 | Gateway | 同一条用户 SSE 内改订 **specialist turn** 的同进程 LiveReportHub（控制面看 `activeDelegate`）；progress 读时 merge specialist PG |
@@ -39,7 +39,7 @@ Author: kejiqing
 
 **禁止** worker 二次 HTTP 订阅 specialist SSE 再写 router stdout（旧 passthrough 已移除）。**禁止**在用户这条 SSE 上再 GET specialist `/v1/biz_advice_report` 做数据面转发。
 
-**Delegate harness（2026-08）：** `delegate_project` tool result **含** specialist 终稿 `message`，进入主 agent CC messages。子占窗口时用户 SSE 仍订 router URL，gateway fan-in 直连 specialist hub。终稿对齐：`SSE 累加` = `GET /v1/tasks` message = PG `report_message`（router fan-in acc 或 worker outputJson）。
+**Delegate harness（2026-08）：** `delegate_project_tool` 把正文写入 **router session** `.claw/delegate-agents-results/<routerTurnId>.md`，tool result 只回 `reportPath`（不内嵌 `message`）。用户 SSE 仍订 router URL，gateway fan-in 直连 specialist hub。终稿对齐：`SSE 累加` / fan-in acc / router 落盘文件 = PG `report_message`。
 
 
 ---

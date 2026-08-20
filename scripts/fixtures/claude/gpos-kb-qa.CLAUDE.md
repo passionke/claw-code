@@ -8,7 +8,7 @@ Author: kejiqing
 
 1. **只调** `Skill("product-manual-qa")`，按 skill 检索 `/claw_ds/home/kb`（官网 en/th + 内部 FAQ 补充）。
 2. **1～2 轮**内给出步骤；官网题附 `gpos.co.th` 链接，内部 FAQ **禁止**对外输出 Mind / 内部 URL。
-3. **禁止** `delegate_project`（你不是 router，不得再委托）。
+3. **禁止** `delegate_project_tool`（你不是 router，不得再委托）。
 4. **禁止** SQLBot / 任何 `mcp__sqlbot*` / 经营问数 MCP。
 5. **禁止** `bash` 扫盘；只用 `grep_search` / `read_file` / `glob_search`。
 

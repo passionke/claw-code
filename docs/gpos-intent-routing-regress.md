@@ -16,7 +16,7 @@ Author: kejiqing
 
 | 环境 | 入口（BFF projId） | specialist |
 |------|-------------------|------------|
-| 预发（router 模式） | **gpos-router** projId | kb-qa + ops-analysis（271）经 `delegate_project` |
+| 预发（router 模式） | **gpos-router** projId | kb-qa + ops-analysis（271）经 `delegate_project_tool` |
 | 预发（legacy） | **271** | 单 project 三路意图（迁移前） |
 | 生产 | **27** | 暂不动 |
 

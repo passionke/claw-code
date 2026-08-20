@@ -245,16 +245,16 @@ Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历�
 
 **角色**：`project_config.project_role` = **`router`**（与 `normal` | `master` | `observation` 并列）。
 
-**职责**：BFF / 用户 **只** 打 router 的 `projId`；router 本地路由（CLAUDE + `specialist-registry` skill）后通过 **`delegate_project`** tool 串行委托 specialist。
+**职责**：BFF / 用户 **只** 打 router 的 `projId`；router 本地路由（CLAUDE + `specialist-registry` skill）后通过 **`delegate_project_tool`** tool 串行委托 specialist。
 
 **配对**：`PUT /v1/projects/{routerProjId}/delegate-targets` body
 `{ "targets": [{ "targetProjId", "enabled?", "label?", "capabilityHint?" }] }`（**独立表** `gateway_delegate_target`，**不**共用 `project_master_link`）。
 
-**Session**：用户 `sessionId` 只对 router；每次 `delegate_project` 查 `gateway_delegate_session_link` 换算 delegate sid（模型不传 `sessionId`）。
+**Session**：用户 `sessionId` 只对 router；每次 `delegate_project_tool` 查 `gateway_delegate_session_link` 换算 delegate sid（模型不传 `sessionId`）。
 
-**物化**：`role=router` activate 时注入 `delegate_project` allowed tool，并从 `gateway_delegate_target` 生成 **specialist-registry 附录**（projId + label + capabilityHint）。Admin 增删 target 后 **重 activate router**。
+**物化**：`role=router` activate 时注入 `delegate_project_tool` allowed tool，并从 `gateway_delegate_target` 生成 **specialist-registry 附录**（projId + label + capabilityHint）。Admin 增删 target 后 **重 activate router**。
 
-**嵌套 delegate（场景 7）**：ops 等 specialist 可单独开 `delegate_project` + 自有 `delegate-targets`；kb **不开**。
+**嵌套 delegate（场景 7）**：ops 等 specialist 可单独开 `delegate_project_tool` + 自有 `delegate-targets`；kb **不开**。
 
 文档：[`docs/specialist-router.md`](specialist-router.md)。
 
@@ -266,4 +266,4 @@ Admin：Rules / Skills / MCP / **CLAUDE.md** 编辑页折叠面板「条目历�
 - System prompt 组装：`runtime/src/prompt.rs`；契约 **[`gateway-system-prompt-assembly.md`](gateway-system-prompt-assembly.md)**（改 prompt/物化前必读）。
 - 每项目 Git：`project_git_sync.rs` + `git_sync_json` 列；全局 `CLAW_PROJECTS_GIT_URL` mirror 已废弃（可选、默认不启用）。
 - Master：`018_master_observer.sql`、`master_observer.rs`、`master_mcp.rs`、`master_scheduler.rs`。
-- Router / delegate：`022_delegate_router.sql`、`delegate_router.rs`、`gateway-solve-turn::delegate_project`、Admin `delegate-targets` API。
+- Router / delegate：`022_delegate_router.sql`、`delegate_router.rs`、`gateway-solve-turn::delegate_project_tool`、Admin `delegate-targets` API。

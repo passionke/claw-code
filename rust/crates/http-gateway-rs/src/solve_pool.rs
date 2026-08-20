@@ -378,7 +378,7 @@ pub(crate) async fn run_solve_request_docker(
     if let Some(tp) = task.otel_traceparent.as_deref() {
         exec_env.insert("TRACEPARENT".to_string(), tp.to_string());
     }
-    // delegate_project in e2b worker callbacks gateway HTTP APIs. Author: kejiqing
+    // delegate_project_tool in e2b worker callbacks gateway HTTP APIs. Author: kejiqing
     if pool_id == E2B_POOL_ID {
         let base = state.gateway_identity.gateway_base.trim();
         if !base.is_empty() {

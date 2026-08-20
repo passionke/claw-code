@@ -251,11 +251,23 @@ impl PoolOps for E2bOrchestratedPool {
                         .ok()
                     });
                     let fanin_report = self.live_report_hub.router_fanin_acc_snapshot(turn_id);
+                    let disk_report = self
+                        .nas_layout
+                        .read_session_claw_utf8(
+                            proj_id,
+                            &crate::session_merge::sessions_directory_segment(&session_id),
+                            &gateway_solve_turn::router_delegate_report_claw_file(turn_id),
+                        )
+                        .await
+                        .ok()
+                        .flatten()
+                        .filter(|s| !s.trim().is_empty());
                     let report = fanin_report
                         .as_deref()
                         .filter(|s| !s.trim().is_empty())
                         .map(str::to_string)
-                        .or(worker_report);
+                        .or(worker_report)
+                        .or(disk_report);
                     let mut output_json = parsed.output_json.clone();
                     if let (Some(ref body), Some(ref mut j)) = (&report, &mut output_json) {
                         if let Some(obj) = j.as_object_mut() {

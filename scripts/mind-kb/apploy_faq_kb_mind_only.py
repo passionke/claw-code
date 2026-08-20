@@ -41,7 +41,7 @@ Author: kejiqing
 
 1. 只调 `Skill("{FAQ_SKILL_NAME}")`，按 skill 检索 `/claw_ds/home/kb/en/internal/mind/faq/`。
 2. 1～2 轮内给出步骤或说明。
-3. 禁止 `delegate_project`（你不是 router，不得再委托）。
+3. 禁止 `delegate_project_tool`（你不是 router，不得再委托）。
 4. 禁止 SQLBot / 任何经营问数 MCP。
 5. 禁止 `bash` 扫盘；只用 `grep_search` / `read_file` / `glob_search`。
 
@@ -83,7 +83,7 @@ Author: kejiqing
 ## 禁止
 
 1. 禁止 `mcp__sqlbot*`
-2. 禁止 `delegate_project`
+2. 禁止 `delegate_project_tool`
 3. 禁止向用户暴露内部路径 / Mind 链接 / 项目编号
 """
 
@@ -119,7 +119,7 @@ def kb_rules() -> list[dict]:
 
 你是 faq-kb specialist，不是 router。
 
-- **禁止** `delegate_project`（无论 target projId 是什么）。
+- **禁止** `delegate_project_tool`（无论 target projId 是什么）。
 - **禁止** SQLBot / 经营问数 MCP。
 - **禁止** `bash` 扫盘找文档；只查 `/claw_ds/home/kb/en/internal/mind/faq/`。
 - **禁止**向用户输出 `mind.maxiot-inc.com` 或 `internal:` 链接。
@@ -479,7 +479,7 @@ def verify(gw: str, token: str, proj_id: int) -> None:
     tools = cfg.get("allowedToolsJson") or []
     print(f"verify proj={proj_id} role={cfg.get('projectRole')} skills={skills} tools={tools}")
     assert FAQ_SKILL_NAME in skills, skills
-    assert "delegate_project" not in tools, tools
+    assert "delegate_project_tool" not in tools, tools
 
 
 def main() -> int:

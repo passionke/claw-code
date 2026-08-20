@@ -26,7 +26,7 @@ v1 以本节为 **验收真源**。实现服务于可观测断言，不以内部
 | 维度 | 标准 | 验证 |
 |------|------|------|
 | 用户 session | 续聊同一 `sessionId` → router；新开 = 新 sid | DB / `GET /v1/sessions` |
-| 模型不传 sid | 各级 `delegate_project` 均无 `sessionId` | tool 日志 |
+| 模型不传 sid | 各级 `delegate_project_tool` 均无 `sessionId` | tool 日志 |
 | root 锚点 | **所有** link 行 `root_session_id` = 用户 router session（含嵌套跳） | SQL |
 | sid 复用 | 同 `(parent_session_id, parent_proj_id, delegate_proj_id)` 复用 delegate sid | 多轮对比 |
 | sid 隔离 | 不同 target / 不同 parent 上下文不得串 sid | 多行 link 对比 |
@@ -37,7 +37,7 @@ v1 以本节为 **验收真源**。实现服务于可观测断言，不以内部
 | SSE 内容 | 嵌套时下游 delta **链式**出现在 router 流；同级无交错 | 单连接顺序 |
 | executionMode | v1 serial：每级 tool 顺序完成 | 时间线 |
 | output align | router 终稿：`SSE done` = `GET /v1/tasks` message = PG `report_message` | 场景 1/4 + refresh |
-| tool result | `delegate_project` tool result **含** specialist 正文 `message` + `delegateTurnId` 可回溯 | jsonl / tools API |
+| tool result | `delegate_project_tool` 回 `reportPath`（router session 下文件可读全文）+ ids；**不含**内嵌 `message` | jsonl / tools API + 打开文件 |
 
 ## 2. 场景（1–7）
 
@@ -58,16 +58,16 @@ v1 以本节为 **验收真源**。实现服务于可观测断言，不以内部
 **拓扑（示例）：**
 
 ```text
-用户 SSE ← router stdout ← router.delegate_project 订 ops live
+用户 SSE ← router stdout ← router.delegate_project_tool 订 ops live
                               ↑
-                    ops stdout ← ops.delegate_project 订 marketing live
+                    ops stdout ← ops.delegate_project_tool 订 marketing live
                                       ↑
                               marketing solve
 ```
 
 **前置：**
 
-- ops（271）物化 `delegate_project`；kb **不**开
+- ops（271）物化 `delegate_project_tool`；kb **不**开
 - `PUT /v1/projects/{ops}/delegate-targets` 登记 marketing（`project_role=normal`）
 - router 的 `delegate-targets` 仍含 ops；**不**要求 router 直接登记 marketing
 

@@ -31,8 +31,8 @@ curl -X PUT "$GW/v1/projects/$ROUTER_PROJ/delegate-targets" \
 ## 3. ops 嵌套 delegate（场景 7，可选 marketing）
 
 ```bash
-# 271 启用 delegate_project tool
-# Admin draft allowedTools 增加 delegate_project 后 activate，或调用 seed 后手工 merge
+# 271 启用 delegate_project_tool
+# Admin draft allowedTools 增加 delegate_project_tool 后 activate，或调用 seed 后手工 merge
 
 curl -X PUT "$GW/v1/projects/271/delegate-targets" \
   -H "Authorization: Bearer $CLAW_ADMIN_TOKEN" \

@@ -52,7 +52,7 @@ use tools::{
 };
 
 pub mod agent_orchestration;
-pub mod delegate_project;
+pub mod delegate_project_tool;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
 pub mod gateway_stdout;
@@ -75,8 +75,9 @@ pub mod task_progress;
 pub mod turn_language;
 pub mod turn_tools;
 pub mod worker_env;
-pub use delegate_project::{
-    delegate_project_tool_definition, run_delegate_project, DELEGATE_PROJECT_TOOL_NAME,
+pub use delegate_project_tool::{
+    delegate_project_tool_definition, router_delegate_report_claw_file, run_delegate_project,
+    DELEGATE_PROJECT_TOOL_NAME, DELEGATE_AGENTS_RESULTS_DIR_REL,
 };
 pub use extra_session_bizdate::{
     apply_solve_env_from_config_and_extra, parse_extra_session_bizdate,
