@@ -233,7 +233,8 @@ fn ensure_router_report_file(
             .map_err(|e| ToolError::new(format!("create {}: {e}", parent.display())))?;
     }
     if !path.exists() {
-        fs::write(&path, "").map_err(|e| ToolError::new(format!("create {}: {e}", path.display())))?;
+        fs::write(&path, "")
+            .map_err(|e| ToolError::new(format!("create {}: {e}", path.display())))?;
     }
     Ok((rel, path))
 }
@@ -340,9 +341,7 @@ fn fill_router_file_from_terminal_if_empty(
     specialist_proj_id: i64,
     out_path: &Path,
 ) -> Result<(), ToolError> {
-    let empty = fs::metadata(out_path)
-        .map(|m| m.len() == 0)
-        .unwrap_or(true);
+    let empty = fs::metadata(out_path).map(|m| m.len() == 0).unwrap_or(true);
     if !empty {
         return Ok(());
     }
@@ -353,9 +352,8 @@ fn fill_router_file_from_terminal_if_empty(
     for _ in 0..8 {
         match get_json(client, &url) {
             Ok(v) => {
-                let text = report_text_from_biz_payload(&v).ok_or_else(|| {
-                    ToolError::new("delegate specialist returned empty report")
-                })?;
+                let text = report_text_from_biz_payload(&v)
+                    .ok_or_else(|| ToolError::new("delegate specialist returned empty report"))?;
                 append_router_report(out_path, &text)?;
                 return Ok(());
             }
@@ -430,8 +428,7 @@ pub fn run_delegate_project(
         parsed.extra_session.as_ref(),
     )?;
 
-    let (report_path, out_path) =
-        ensure_router_report_file(&session_home_dir(), &router_turn)?;
+    let (report_path, out_path) = ensure_router_report_file(&session_home_dir(), &router_turn)?;
     append_serial_separator(&out_path)?;
 
     emit_delegate_active(
