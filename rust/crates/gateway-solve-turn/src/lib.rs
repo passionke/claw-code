@@ -85,7 +85,7 @@ pub use extra_session_bizdate::{
 };
 pub use gateway_stdout::{
     emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
-    GATEWAY_STDOUT_LINE_PREFIX,
+    reset_delegate_stdout_state, GATEWAY_STDOUT_LINE_PREFIX,
 };
 pub use landlock_dsl::{
     default_landlock_dsl, expand_landlock_dsl, landlock_from_global_settings,
@@ -1411,6 +1411,8 @@ pub fn run_gateway_solve_turn(
     )>,
     attachments: &[SolveAttachment],
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
+    reset_delegate_stdout_state();
+
     std::env::set_current_dir(work_dir)
         .map_err(|e| err(HTTP_INTERNAL, format!("set current dir failed: {e}")))?;
 

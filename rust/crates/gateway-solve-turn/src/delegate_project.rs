@@ -8,9 +8,7 @@ use runtime::ToolError;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::gateway_stdout::{
-    emit_delegate_active, emit_delegate_clear, suppress_further_live_deltas,
-};
+use crate::gateway_stdout::{emit_delegate_active, emit_delegate_clear};
 use crate::mcp_call_context::GatewayMcpCallContext;
 
 pub const DELEGATE_PROJECT_TOOL_NAME: &str = "delegate_project";
@@ -304,8 +302,6 @@ pub fn run_delegate_project(
         parsed.proj_id,
     )?;
 
-    suppress_further_live_deltas();
-
     serde_json::to_string_pretty(&json!({
         "status": terminal,
         "projId": parsed.proj_id,
@@ -331,6 +327,26 @@ mod tests {
         assert_eq!(
             report_text_from_biz_payload(&v).as_deref(),
             Some("steps here")
+        );
+    }
+
+    #[test]
+    fn tool_result_includes_specialist_message() {
+        let body = json!({
+            "status": "succeeded",
+            "projId": 99011,
+            "delegateSessionCreated": true,
+            "delegateSessionId": "dgt_test",
+            "delegateTurnId": "T_child",
+            "message": "manual steps here",
+        });
+        assert_eq!(
+            body.get("message").and_then(|v| v.as_str()),
+            Some("manual steps here")
+        );
+        assert_eq!(
+            body.get("delegateTurnId").and_then(|v| v.as_str()),
+            Some("T_child")
         );
     }
 }

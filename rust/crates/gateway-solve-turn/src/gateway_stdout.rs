@@ -1,20 +1,12 @@
 //! Line-delimited stdout events from `claw gateway-solve-once` for pool exec streaming. Author: kejiqing
 
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
 
-/// After `delegate_project` succeeds, the router model's own tokens must not
-/// enter live. Gateway fan-in serves specialist Hub directly to user SSE.
-/// One process = one turn. Author: kejiqing
-static SUPPRESS_FURTHER_LIVE_DELTAS: AtomicBool = AtomicBool::new(false);
-
-/// Close the router-model live door after delegate completes.
-pub fn suppress_further_live_deltas() {
-    SUPPRESS_FURTHER_LIVE_DELTAS.store(true, Ordering::SeqCst);
-}
+/// Reset stdout delegate flags at turn start. Author: kejiqing
+pub fn reset_delegate_stdout_state() {}
 
 /// Prefix for every structured stdout line (plain logs must not use this prefix).
 pub const GATEWAY_STDOUT_LINE_PREFIX: &str = "__CLAW_GATEWAY_STDOUT__";
@@ -52,28 +44,9 @@ fn emit_line(value: &StdoutEnvelope<'_>) -> io::Result<()> {
     io::stdout().flush()
 }
 
-/// Live hub should receive this token unless empty or post-delegate suppress is on.
-#[must_use]
-pub(crate) fn should_forward_live_delta(text: &str, suppressed: bool, passthrough: bool) -> bool {
-    !text.is_empty() && (passthrough || !suppressed)
-}
-
 /// `{"ev":"report.delta","text":"…"}` — pool exec reads stdout line-by-line and forwards to gateway hub.
 pub fn emit_report_delta(text: &str) -> io::Result<()> {
-    emit_report_delta_inner(text, false)
-}
-
-/// Specialist SSE / snapshot: still live even after a prior delegate in this process.
-pub fn emit_report_delta_passthrough(text: &str) -> io::Result<()> {
-    emit_report_delta_inner(text, true)
-}
-
-fn emit_report_delta_inner(text: &str, passthrough: bool) -> io::Result<()> {
-    if !should_forward_live_delta(
-        text,
-        SUPPRESS_FURTHER_LIVE_DELTAS.load(Ordering::SeqCst),
-        passthrough,
-    ) {
+    if text.is_empty() {
         return Ok(());
     }
     let emit_seq = api::sse_burst_trace::log_worker_emit(text);
@@ -134,7 +107,7 @@ pub fn emit_delegate_clear() -> io::Result<()> {
     })
 }
 
-/// Terminal solve result (last structured line on stdout).
+/// Terminal solve result (last structured stdout line on stdout).
 pub fn emit_solve_done(
     claw_exit_code: i32,
     output_text: &str,
@@ -194,14 +167,6 @@ mod tests {
         );
         let v = parse_stdout_line(&line).expect("parse");
         assert_eq!(v.get("ev").and_then(|x| x.as_str()), Some("report.delta"));
-    }
-
-    #[test]
-    fn router_restatement_suppressed_but_specialist_passthrough_is_not() {
-        assert!(should_forward_live_delta("hi", false, false));
-        assert!(!should_forward_live_delta("hi", true, false));
-        assert!(should_forward_live_delta("hi", true, true));
-        assert!(!should_forward_live_delta("", false, true));
     }
 
     #[test]

@@ -39,6 +39,9 @@ Author: kejiqing
 
 **禁止** worker 二次 HTTP 订阅 specialist SSE 再写 router stdout（旧 passthrough 已移除）。**禁止**在用户这条 SSE 上再 GET specialist `/v1/biz_advice_report` 做数据面转发。
 
+**Delegate harness（2026-08）：** `delegate_project` tool result **含** specialist 终稿 `message`，进入主 agent CC messages。子占窗口时用户 SSE 仍订 router URL，gateway fan-in 直连 specialist hub。终稿对齐：`SSE 累加` = `GET /v1/tasks` message = PG `report_message`（router fan-in acc 或 worker outputJson）。
+
+
 ---
 
 ## 2. 端到端数据流（路径 B）
