@@ -16,20 +16,20 @@ Author: kejiqing
 | PG | `10.22.28.94:5433` |
 | Router / kb / ops | 99010 / 99011 / 99012 |
 | Worker | ACR amd64 `claw-code:<branch-tag>` → e2b 模板 |
-| Gateway | ACR amd64 `claw-code:<branch-tag>`（`up --release`；**不**本机 cargo） |
+| Gateway | workPi **arm64 本地** `gateway.sh build local`（ACR amd64 在 aarch64 上 `exec format error`；无可用 qemu） |
 
 ## A. 发布对齐（一条线）
 
 | 步 | 在哪做 | 命令 / 动作 | 成功标志 |
 |----|--------|-------------|----------|
-| A1 | GitHub | push 分支 → `claw-code-branch-worker` 跑绿 | ACR 有 `claw-code:branch-<分支名>`（含 `http-gateway-rs` + `claw`） |
+| A1 | GitHub | push 分支 → `claw-code-branch-worker` 跑绿 | ACR 有 `claw-code:branch-<分支名>`（amd64，给 e2b） |
 | A2 | workPi | `git pull` 同分支 | 部署脚本/配置对齐 |
-| A3 | workPi | `cp -n .env.workpi .env`（首次）后 `./deploy/stack/lib/workpi-branch-deploy.sh branch-<分支名>` | e2b 模板 PG `buildId` 更新；**`up --release` 拉 ACR**（无 `build local`） |
-| A4 | workPi | `curl http://127.0.0.1:18088/healthz` | `ok=true`；pin/tag = 该 branch tag |
+| A3 | workPi | `cp -n .env.workpi .env`（首次）后 `./deploy/stack/lib/workpi-branch-deploy.sh branch-<分支名>` | e2b 模板 PG `buildId` 更新；**本地 arm64** `build local` + `restart` |
+| A4 | workPi | `curl http://127.0.0.1:18088/healthz` | `ok=true`；worker 合同含新 `buildId`；`deployImageTag=local` |
 
-Tag 示例：`branch-feat-router-finish`（勿用 `release-v*`）。
+Tag 示例：`branch-feat-delegate-project-tool-results`（勿用 `release-v*`）。
 
-**禁止**在 workPi 默认跑 `gateway.sh build local`（慢）。仅排障可加 `--local-gateway-build`。
+**说明**：分支 CI 的 gateway 镜像是 amd64（给 e2b/release 机）。workPi 是 aarch64，只能本机编 gateway；worker 二进制仍从 ACR 抽到 e2b，无需本机编 claw。
 
 ## B. 三层验收（harness 合同）
 

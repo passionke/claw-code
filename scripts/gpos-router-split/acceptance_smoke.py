@@ -219,6 +219,23 @@ def scenario_solve(prompt: str, session_id: str | None = None) -> dict:
     msg = ""
     if isinstance(oj, dict):
         msg = (oj.get("message") or oj.get("report") or "")[:500]
+    # ToolCompleteTurn: sync MCP may leave message empty; canonical body is task/PG. Author: kejiqing
+    if sid and not (msg or "").strip():
+        try:
+            task = http("GET", f"/v1/tasks/{sid}")
+            result = task.get("result") or {}
+            toj = result.get("outputJson") or {}
+            if isinstance(toj, str):
+                try:
+                    toj = json.loads(toj)
+                except json.JSONDecodeError:
+                    toj = {}
+            if isinstance(toj, dict):
+                msg = (toj.get("message") or toj.get("report") or "")[:500]
+            if not (msg or "").strip():
+                msg = (result.get("outputText") or "")[:500]
+        except urllib.error.HTTPError:
+            pass
     http_ok = (
         solve.get("status") in ("succeeded", "completed", None)
         and solve.get("clawExitCode", 0) == 0
