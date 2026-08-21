@@ -365,18 +365,22 @@ pub fn merge_specialist_registry_appendix(skills_json: &Value, appendix: &str) -
     Value::Array(out)
 }
 
-/// Ensure router materialize exposes delegate_project (symmetric to master MCP injection). Author: kejiqing
+/// Ensure router materialize exposes delegate + finish tools (migrate legacy name). Author: kejiqing
 #[must_use]
 pub fn ensure_delegate_project_allowed_tools(allowed_tools_json: &Value) -> Value {
     let mut tools: Vec<String> =
         serde_json::from_value(allowed_tools_json.clone()).unwrap_or_default();
-    if !tools.iter().any(|t| t == "delegate_project") {
-        tools.push("delegate_project".to_string());
+    tools.retain(|t| t != "delegate_project");
+    if !tools.iter().any(|t| t == "delegate_project_tool") {
+        tools.push("delegate_project_tool".to_string());
+    }
+    if !tools.iter().any(|t| t == "complete_router_turn") {
+        tools.push("complete_router_turn".to_string());
     }
     json!(tools)
 }
 
-/// Inject delegate-target registry appendix + delegate_project tool for router role at materialize. Author: kejiqing
+/// Inject delegate-target registry appendix + delegate_project_tool for router role at materialize. Author: kejiqing
 pub async fn prepare_router_materialize_row(
     db: &GatewaySessionDb,
     proj_id: i64,
@@ -433,10 +437,8 @@ mod tests {
     #[test]
     fn ensure_delegate_project_tool_present() {
         let out = ensure_delegate_project_allowed_tools(&json!(["Skill"]));
-        assert!(out
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "delegate_project"));
+        let arr = out.as_array().unwrap();
+        assert!(arr.iter().any(|v| v == "delegate_project_tool"));
+        assert!(arr.iter().any(|v| v == "complete_router_turn"));
     }
 }

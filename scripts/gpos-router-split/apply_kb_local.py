@@ -64,7 +64,7 @@ def kb_rules() -> list[dict]:
 
 你是 kb-qa specialist，不是 router。
 
-- **禁止** `delegate_project`（无论 target projId 是什么）。
+- **禁止** `delegate_project_tool`（无论 target projId 是什么）。
 - **禁止** SQLBot / 经营问数 MCP。
 - **禁止** `bash` 扫盘找文档；只查 `/claw_ds/home/kb`。
 - **禁止**向用户输出 `mind.maxiot-inc.com` 或 `internal:` 链接（内部 FAQ 只给步骤）。
@@ -185,7 +185,7 @@ def verify() -> None:
     tools = cfg.get("allowedToolsJson") or []
     print(f"verify proj={KB_PROJ} skills={skills} tools={tools} rev={cfg.get('stableContentRev')}")
     assert "product-manual-qa" in skills, skills
-    assert "delegate_project" not in tools, tools
+    assert "delegate_project_tool" not in tools, tools
     assert "bash" not in tools, tools
 
 

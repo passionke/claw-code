@@ -1,23 +1,23 @@
 //! Live SSE from pool-local stdout hub (`GET /v1/biz_advice_report/live`). Author: kejiqing
+//!
+//! Router and normal turns share one path: subscribe the **router/own** turn Hub only.
+//! Specialist body reaches that Hub via worker `delegate_project_tool` passthrough
+//! (`report.delta` on router stdout). Author: kejiqing
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::http::{header, HeaderValue};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{AppendHeaders, IntoResponse, Response};
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 use crate::biz_advice_report::{
     biz_report_sse_event_stream, sanitize_external_report_text, BizAdviceReportPayload,
     BizReportDeltaChunk, BizReportStreamMsg,
 };
 use crate::pool::live_report_hub::{HubDeltaChunk, HubMsg, LiveReportHub};
-use crate::session_db::GatewaySessionDb;
-
-const ACTIVE_DELEGATE_POLL: Duration = Duration::from_millis(250);
 
 pub fn live_report_sse_response(
     hub: Arc<LiveReportHub>,
@@ -50,53 +50,6 @@ pub fn live_report_sse_response(
     sse_response(turn_id, rx)
 }
 
-/// Router running SSE: same HTTP connection; rebind in-process hub when `activeDelegate` appears.
-/// Specialist `SolveDone` does not emit `biz.report.done`. Author: kejiqing
-pub fn router_fanin_live_sse_response(
-    hub: Arc<LiveReportHub>,
-    db: &Arc<GatewaySessionDb>,
-    router_proj_id: i64,
-    router_turn_id: &str,
-    task_id: String,
-    source_request_id: String,
-    source_proj_id: i64,
-) -> Response {
-    let (tx, rx) = mpsc::unbounded_channel::<BizReportStreamMsg>();
-    let router_turn = router_turn_id.to_string();
-    let (active_tx, active_rx) = watch::channel(None);
-    let poll_db = Arc::clone(db);
-    let poll_turn = router_turn.clone();
-    let poller = tokio::spawn(async move {
-        loop {
-            let next = crate::delegate_fanin::active_delegate_for_router_live(
-                poll_db.as_ref(),
-                router_proj_id,
-                &poll_turn,
-            )
-            .await
-            .ok()
-            .flatten()
-            .map(|a| a.turn_id);
-            active_tx.send_replace(next);
-            tokio::time::sleep(ACTIVE_DELEGATE_POLL).await;
-        }
-    });
-    tokio::spawn(async move {
-        run_router_fanin_loop(
-            hub,
-            router_turn,
-            active_rx,
-            tx,
-            task_id,
-            source_request_id,
-            source_proj_id,
-        )
-        .await;
-        poller.abort();
-    });
-    sse_response(router_turn_id, rx)
-}
-
 fn sse_response(stream_id: &str, rx: mpsc::UnboundedReceiver<BizReportStreamMsg>) -> Response {
     let no_buffer = header::HeaderName::from_static("x-accel-buffering");
     let no_buffer_val = HeaderValue::from_static("no");
@@ -111,17 +64,6 @@ fn sse_response(stream_id: &str, rx: mpsc::UnboundedReceiver<BizReportStreamMsg>
 enum FollowEnd {
     HubDone,
     Rebound,
-}
-
-async fn wait_until_active_ne(rx: &mut watch::Receiver<Option<String>>, current: Option<&str>) {
-    if rx.borrow().as_deref() != current {
-        return;
-    }
-    while rx.changed().await.is_ok() {
-        if rx.borrow().as_deref() != current {
-            return;
-        }
-    }
 }
 
 async fn follow_turn_deltas(
@@ -207,57 +149,9 @@ fn send_done(
     let _ = tx.send(BizReportStreamMsg::Done(done));
 }
 
-async fn run_router_fanin_loop(
-    hub: Arc<LiveReportHub>,
-    router_turn_id: String,
-    mut active_rx: watch::Receiver<Option<String>>,
-    tx: mpsc::UnboundedSender<BizReportStreamMsg>,
-    task_id: String,
-    source_request_id: String,
-    source_proj_id: i64,
-) {
-    let mut acc = String::new();
-    loop {
-        let spec = active_rx.borrow().clone();
-        let follow_id = spec.clone().unwrap_or_else(|| router_turn_id.clone());
-        let following_spec = spec.is_some();
-        tracing::info!(
-            target: "claw_live_report",
-            component = "router_fanin_sse",
-            router_turn_id = %router_turn_id,
-            follow_turn_id = %follow_id,
-            following_specialist = following_spec,
-            "biz_advice_report stream — in-process hub rebind"
-        );
-        let mut wait_rx = active_rx.clone();
-        let spec_wait = spec.clone();
-        let rebound = async move {
-            wait_until_active_ne(&mut wait_rx, spec_wait.as_deref()).await;
-        };
-        match follow_turn_deltas(hub.as_ref(), &follow_id, &tx, &mut acc, rebound).await {
-            FollowEnd::HubDone if following_spec => {
-                hub.set_router_fanin_acc(&router_turn_id, &acc);
-                wait_until_active_ne(&mut active_rx, spec.as_deref()).await;
-            }
-            FollowEnd::HubDone => {
-                hub.set_router_fanin_acc(&router_turn_id, &acc);
-                let text = if acc.is_empty() {
-                    hub.snapshot_text(&router_turn_id)
-                } else {
-                    acc
-                };
-                send_done(&tx, &task_id, &source_request_id, source_proj_id, &text);
-                hub.try_remove_turn(&router_turn_id);
-                return;
-            }
-            FollowEnd::Rebound => {}
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{follow_turn_deltas, run_router_fanin_loop, BizReportStreamMsg, FollowEnd};
+    use super::{follow_turn_deltas, send_done, BizReportStreamMsg, FollowEnd};
     use crate::pool::live_report_hub::LiveReportHub;
     use crate::session_db::ActiveDelegateRecord;
     use serde_json::json;
@@ -338,25 +232,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn router_only_streams_router_hub_until_done() {
+    async fn router_turn_streams_only_own_hub_until_done() {
         let hub = Arc::new(LiveReportHub::default());
-        let (_active_tx, active_rx) = watch::channel(None);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let loop_hub = Arc::clone(&hub);
         let join = tokio::spawn(async move {
-            run_router_fanin_loop(
-                loop_hub,
-                "T_router_only".into(),
-                active_rx,
-                tx,
-                "task".into(),
-                "task".into(),
-                99010,
+            let mut acc = String::new();
+            let _ = follow_turn_deltas(
+                loop_hub.as_ref(),
+                "T_router_only",
+                &tx,
+                &mut acc,
+                std::future::pending::<()>(),
             )
             .await;
+            send_done(&tx, "task", "task", 99010, &acc);
         });
 
         tokio::time::sleep(Duration::from_millis(20)).await;
+        // Specialist hub deltas must NOT appear on router SSE (worker passthrough copies
+        // into router hub instead). Author: kejiqing
+        delta(hub.as_ref(), "T_spec", "leak-");
         delta(hub.as_ref(), "T_router_only", "router-");
         delta(hub.as_ref(), "T_router_only", "only");
         assert_eq!(next_delta(&mut rx).await, "router-");
@@ -372,32 +268,116 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rebind_replays_specialist_snapshot_on_late_subscribe() {
+    async fn worker_passthrough_serial_deltas_appear_once_on_router_hub() {
         let hub = Arc::new(LiveReportHub::default());
-        delta(hub.as_ref(), "T_spec_snap", "early-");
-        delta(hub.as_ref(), "T_spec_snap", "buf");
-        let (active_tx, active_rx) = watch::channel(None);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let loop_hub = Arc::clone(&hub);
         tokio::spawn(async move {
-            run_router_fanin_loop(
-                loop_hub,
-                "T_router_snap".into(),
-                active_rx,
-                tx,
-                "task".into(),
-                "task".into(),
-                99010,
+            let mut acc = String::new();
+            let _ = follow_turn_deltas(
+                loop_hub.as_ref(),
+                "T_router2",
+                &tx,
+                &mut acc,
+                std::future::pending::<()>(),
             )
             .await;
+            send_done(&tx, "task", "task", 99010, &acc);
         });
 
-        active_tx.send_replace(Some("T_spec_snap".into()));
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        assert_eq!(next_delta(&mut rx).await, "early-");
-        assert_eq!(next_delta(&mut rx).await, "buf");
-        delta(hub.as_ref(), "T_spec_snap", "tail");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Passthrough copies specialist body onto the router turn hub once each. Author: kejiqing
+        delta(hub.as_ref(), "T_router2", "kb-");
+        assert_eq!(next_delta(&mut rx).await, "kb-");
+        delta(hub.as_ref(), "T_router2", "ops");
+        assert_eq!(next_delta(&mut rx).await, "ops");
+        solve_done(hub.as_ref(), "T_router2");
+        match timeout(Duration::from_secs(2), rx.recv()).await {
+            Ok(Some(BizReportStreamMsg::Done(d))) => {
+                assert_eq!(d.report_text.as_deref(), Some("kb-ops"));
+            }
+            _ => panic!("expected router done"),
+        }
+    }
+
+    #[tokio::test]
+    async fn specialist_hub_solve_done_does_not_close_router_sse() {
+        let hub = Arc::new(LiveReportHub::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let loop_hub = Arc::clone(&hub);
+        let join = tokio::spawn(async move {
+            let mut acc = String::new();
+            let _ = follow_turn_deltas(
+                loop_hub.as_ref(),
+                "T_router_keep",
+                &tx,
+                &mut acc,
+                std::future::pending::<()>(),
+            )
+            .await;
+            send_done(&tx, "task", "task", 99010, &acc);
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        delta(hub.as_ref(), "T_router_keep", "live-");
+        assert_eq!(next_delta(&mut rx).await, "live-");
+        // Specialist terminal must not end the user SSE (only router solve.done). Author: kejiqing
+        solve_done(hub.as_ref(), "T_spec_other");
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        match timeout(Duration::from_millis(80), rx.recv()).await {
+            Ok(Some(BizReportStreamMsg::Done(_))) => {
+                panic!("specialist solve.done must not emit biz.report.done on router SSE")
+            }
+            _ => {}
+        }
+        delta(hub.as_ref(), "T_router_keep", "tail");
         assert_eq!(next_delta(&mut rx).await, "tail");
+        solve_done(hub.as_ref(), "T_router_keep");
+        match timeout(Duration::from_secs(2), rx.recv()).await {
+            Ok(Some(BizReportStreamMsg::Done(d))) => {
+                assert_eq!(d.report_text.as_deref(), Some("live-tail"));
+            }
+            _ => panic!("expected single router done"),
+        }
+        join.await.expect("join");
+    }
+
+    #[tokio::test]
+    async fn specialist_hub_text_never_leaks_into_router_follow() {
+        let hub = Arc::new(LiveReportHub::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let loop_hub = Arc::clone(&hub);
+        tokio::spawn(async move {
+            let mut acc = String::new();
+            let _ = follow_turn_deltas(
+                loop_hub.as_ref(),
+                "T_router_iso",
+                &tx,
+                &mut acc,
+                std::future::pending::<()>(),
+            )
+            .await;
+            send_done(&tx, "task", "task", 99010, &acc);
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Without worker passthrough copy, specialist hub content must stay invisible.
+        delta(hub.as_ref(), "T_spec_iso", "SHOULD_NOT_SEE");
+        delta(hub.as_ref(), "T_spec_iso", "ALSO_HIDDEN");
+        delta(hub.as_ref(), "T_router_iso", "only-router");
+        assert_eq!(next_delta(&mut rx).await, "only-router");
+        solve_done(hub.as_ref(), "T_router_iso");
+        match timeout(Duration::from_secs(2), rx.recv()).await {
+            Ok(Some(BizReportStreamMsg::Done(d))) => {
+                assert_eq!(d.report_text.as_deref(), Some("only-router"));
+                assert!(!d
+                    .report_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("SHOULD_NOT"));
+            }
+            _ => panic!("expected done"),
+        }
     }
 
     #[test]
@@ -425,94 +405,5 @@ mod tests {
             "projId": 99012
         });
         assert!(ActiveDelegateRecord::from_stdout_value(&v).is_none());
-    }
-
-    #[tokio::test]
-    async fn rebind_forwards_specialist_deltas_before_router_done() {
-        let hub = Arc::new(LiveReportHub::default());
-        let (active_tx, active_rx) = watch::channel(None);
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let loop_hub = Arc::clone(&hub);
-        let join = tokio::spawn(async move {
-            run_router_fanin_loop(
-                loop_hub,
-                "T_router".into(),
-                active_rx,
-                tx,
-                "task".into(),
-                "task".into(),
-                99010,
-            )
-            .await;
-        });
-
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        active_tx.send_replace(Some("T_spec".into()));
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        delta(hub.as_ref(), "T_spec", "hello-");
-        delta(hub.as_ref(), "T_spec", "world");
-        assert_eq!(next_delta(&mut rx).await, "hello-");
-        assert_eq!(next_delta(&mut rx).await, "world");
-
-        solve_done(hub.as_ref(), "T_spec");
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        match timeout(Duration::from_millis(80), rx.recv()).await {
-            Ok(Some(BizReportStreamMsg::Done(_))) => panic!("specialist done must not close SSE"),
-            _ => {}
-        }
-
-        active_tx.send_replace(None);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        solve_done(hub.as_ref(), "T_router");
-        match timeout(Duration::from_secs(2), rx.recv()).await {
-            Ok(Some(BizReportStreamMsg::Done(d))) => {
-                assert_eq!(d.report_text.as_deref(), Some("hello-world"));
-            }
-            _ => panic!("expected router done"),
-        }
-        join.await.expect("loop");
-    }
-
-    #[tokio::test]
-    async fn mixed_serial_second_specialist_still_streams() {
-        let hub = Arc::new(LiveReportHub::default());
-        let (active_tx, active_rx) = watch::channel(None);
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let loop_hub = Arc::clone(&hub);
-        tokio::spawn(async move {
-            run_router_fanin_loop(
-                loop_hub,
-                "T_router2".into(),
-                active_rx,
-                tx,
-                "task".into(),
-                "task".into(),
-                99010,
-            )
-            .await;
-        });
-
-        active_tx.send_replace(Some("T_kb".into()));
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        delta(hub.as_ref(), "T_kb", "kb-");
-        assert_eq!(next_delta(&mut rx).await, "kb-");
-        solve_done(hub.as_ref(), "T_kb");
-        active_tx.send_replace(None);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-
-        active_tx.send_replace(Some("T_ops".into()));
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        delta(hub.as_ref(), "T_ops", "ops");
-        assert_eq!(next_delta(&mut rx).await, "ops");
-        solve_done(hub.as_ref(), "T_ops");
-        active_tx.send_replace(None);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        solve_done(hub.as_ref(), "T_router2");
-        match timeout(Duration::from_secs(2), rx.recv()).await {
-            Ok(Some(BizReportStreamMsg::Done(d))) => {
-                assert_eq!(d.report_text.as_deref(), Some("kb-ops"));
-            }
-            _ => panic!("expected router done"),
-        }
     }
 }

@@ -47,14 +47,28 @@ claw_image_registry_prefix_from_env() {
 }
 
 # After sourcing .env: set GATEWAY_IMAGE + worker image to <prefix>/...:<tag>.
+# Optional overrides (branch CI has no playground / relaxed host images). Author: kejiqing
+#   CLAW_RELEASE_PLAYGROUND_IMAGE  — pin playground (e.g. claw-gateway-playground:local)
+#   CLAW_RELEASE_RELAXED_IMAGE     — pin relaxed worker image
+#   CLAW_RELEASE_OMIT_RELAXED_IMAGE=1 — do not set CLAW_RELAXED_PODMAN_IMAGE (e2b templates only)
 claw_apply_release_image_tag() {
   local tag="${1:?}"
   local prefix
   prefix="$(claw_image_registry_prefix_from_env)"
   export GATEWAY_IMAGE="${prefix}/claw-code:${tag}"
-  export GATEWAY_PLAYGROUND_IMAGE="${prefix}/claw-gateway-playground:${tag}"
+  if [[ -n "${CLAW_RELEASE_PLAYGROUND_IMAGE:-}" ]]; then
+    export GATEWAY_PLAYGROUND_IMAGE="${CLAW_RELEASE_PLAYGROUND_IMAGE}"
+  else
+    export GATEWAY_PLAYGROUND_IMAGE="${prefix}/claw-gateway-playground:${tag}"
+  fi
   export CLAW_DOCKER_IMAGE="${prefix}/claw-gateway-worker:${tag}"
-  export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-gateway-worker-relaxed:${tag}"
+  if [[ -n "${CLAW_RELEASE_RELAXED_IMAGE:-}" ]]; then
+    export CLAW_RELAXED_PODMAN_IMAGE="${CLAW_RELEASE_RELAXED_IMAGE}"
+  elif [[ "${CLAW_RELEASE_OMIT_RELAXED_IMAGE:-0}" == "1" ]]; then
+    unset CLAW_RELAXED_PODMAN_IMAGE || true
+  else
+    export CLAW_RELAXED_PODMAN_IMAGE="${prefix}/claw-gateway-worker-relaxed:${tag}"
+  fi
 }
 
 # One upgrade knob: pool worker image follows GATEWAY_IMAGE tag/registry (unless explicit opt-out). kejiqing
@@ -68,7 +82,13 @@ claw_export_pool_worker_image_matched_to_gateway() {
   local derived="${gw/claw-code/claw-gateway-worker}"
   local derived_relaxed="${gw/claw-code/claw-gateway-worker-relaxed}"
   export CLAW_DOCKER_IMAGE="$derived"
-  export CLAW_RELAXED_PODMAN_IMAGE="$derived_relaxed"
+  if [[ "${CLAW_RELEASE_OMIT_RELAXED_IMAGE:-0}" == "1" ]]; then
+    unset CLAW_RELAXED_PODMAN_IMAGE || true
+  elif [[ -n "${CLAW_RELEASE_RELAXED_IMAGE:-}" ]]; then
+    export CLAW_RELAXED_PODMAN_IMAGE="${CLAW_RELEASE_RELAXED_IMAGE}"
+  else
+    export CLAW_RELAXED_PODMAN_IMAGE="$derived_relaxed"
+  fi
 }
 
 # Same worker image ref as solve pool / pack-deploy build (no separate CLAW_E2B_WORKER_IMAGE). kejiqing
@@ -142,17 +162,29 @@ claw_write_release_pin_env() {
     printf '%s\n' "GATEWAY_IMAGE=${GATEWAY_IMAGE}"
     printf '%s\n' "GATEWAY_PLAYGROUND_IMAGE=${GATEWAY_PLAYGROUND_IMAGE}"
     printf '%s\n' "CLAW_DOCKER_IMAGE=${CLAW_DOCKER_IMAGE}"
-    [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]] && printf '%s\n' "CLAW_RELAXED_PODMAN_IMAGE=${CLAW_RELAXED_PODMAN_IMAGE}"
+    if [[ -n "${CLAW_RELAXED_PODMAN_IMAGE:-}" ]]; then
+      printf '%s\n' "CLAW_RELAXED_PODMAN_IMAGE=${CLAW_RELAXED_PODMAN_IMAGE}"
+    fi
   } >"${f}"
 }
 
 # Skip remote pull when CI built images on this host (CLAW_RELEASE_SKIP_PULL=1 + image exists). kejiqing
+# Short local names (no `/`, e.g. claw-gateway-playground:local) must not hit docker.io. Author: kejiqing
 claw_release_pull_image_if_needed() {
   local rt="$1"
   local image="$2"
-  if [[ "${CLAW_RELEASE_SKIP_PULL:-0}" == "1" ]] && "${rt}" image inspect "${image}" >/dev/null 2>&1; then
-    echo "skip pull ${image} (CLAW_RELEASE_SKIP_PULL=1, local image present)" >&2
-    return 0
+  if "${rt}" image inspect "${image}" >/dev/null 2>&1; then
+    case "${image}" in
+      */*) ;;
+      *)
+        echo "skip pull ${image} (local short name present)" >&2
+        return 0
+        ;;
+    esac
+    if [[ "${CLAW_RELEASE_SKIP_PULL:-0}" == "1" ]]; then
+      echo "skip pull ${image} (CLAW_RELEASE_SKIP_PULL=1, local image present)" >&2
+      return 0
+    fi
   fi
   echo "pull ${image} …" >&2
   "${rt}" pull "${image}"

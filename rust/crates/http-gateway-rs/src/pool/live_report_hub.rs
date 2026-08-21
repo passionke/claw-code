@@ -35,8 +35,6 @@ struct TurnStdoutState {
 #[derive(Clone, Default)]
 pub struct LiveReportHub {
     inner: std::sync::Arc<Mutex<HashMap<String, TurnStdoutState>>>,
-    /// Router fan-in SSE accumulator (user-visible live text). Author: kejiqing
-    fanin_acc: std::sync::Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl std::fmt::Debug for LiveReportHub {
@@ -111,27 +109,6 @@ impl LiveReportHub {
             return;
         };
         self.ingest_json(turn_id, &value);
-    }
-
-    /// Mirror router fan-in SSE `acc` for persist / done alignment. Author: kejiqing
-    pub fn set_router_fanin_acc(&self, turn_id: &str, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        self.fanin_acc
-            .lock()
-            .expect("live_report_hub fanin_acc lock")
-            .insert(turn_id.to_string(), text.to_string());
-    }
-
-    #[must_use]
-    pub fn router_fanin_acc_snapshot(&self, turn_id: &str) -> Option<String> {
-        self.fanin_acc
-            .lock()
-            .expect("live_report_hub fanin_acc lock")
-            .get(turn_id)
-            .filter(|s| !s.trim().is_empty())
-            .cloned()
     }
 
     #[must_use]
@@ -228,10 +205,6 @@ impl LiveReportHub {
             return;
         }
         guard.remove(turn_id);
-        self.fanin_acc
-            .lock()
-            .expect("live_report_hub fanin_acc lock")
-            .remove(turn_id);
         tracing::debug!(
             target: "claw_live_report",
             turn_id = %turn_id,
@@ -243,10 +216,6 @@ impl LiveReportHub {
         self.inner
             .lock()
             .expect("live_report_hub lock")
-            .remove(turn_id);
-        self.fanin_acc
-            .lock()
-            .expect("live_report_hub fanin_acc lock")
             .remove(turn_id);
     }
 }
@@ -262,14 +231,13 @@ fn now_ms() -> i64 {
 mod tests {
     use super::{HubDeltaChunk, HubMsg, LiveReportHub};
     use serde_json::json;
-    use tokio::sync::broadcast;
     use tokio::sync::broadcast::error::RecvError;
 
     fn delta(turn_id: &str, text: &str, hub: &LiveReportHub) {
         hub.ingest_json(turn_id, &json!({ "ev": "report.delta", "text": text }));
     }
 
-    async fn recv_delta(rx: &mut broadcast::Receiver<HubMsg>) -> String {
+    async fn recv_delta(rx: &mut tokio::sync::broadcast::Receiver<HubMsg>) -> String {
         loop {
             match rx.recv().await {
                 Ok(HubMsg::Delta(delta)) => return delta.text,
@@ -385,15 +353,5 @@ mod tests {
         hub.promote_report_availability(turn_id, Some(1234));
         hub.promote_report_availability(turn_id, Some(5678));
         assert_eq!(hub.first_report_at_ms_for_turn(turn_id), Some(1234));
-    }
-
-    #[test]
-    fn router_fanin_acc_tracks_sse_mirror() {
-        let hub = LiveReportHub::default();
-        hub.set_router_fanin_acc("T_router", "live acc");
-        assert_eq!(
-            hub.router_fanin_acc_snapshot("T_router").as_deref(),
-            Some("live acc")
-        );
     }
 }

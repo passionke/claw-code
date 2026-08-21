@@ -31,7 +31,7 @@ podman machine start
 curl -fsS http://127.0.0.1:18088/healthz | head -c 200
 ```
 
-**注意：** e2b worker 内 `delegate_project` 回调 `CLAW_GATEWAY_BASE`（`.env` 常为 `http://10.22.28.145:18088`），须确保 sandbox 能访问该地址；仅 `127.0.0.1` 监听时 worker 无法回调。
+**注意：** e2b worker 内 `delegate_project_tool` 回调 `CLAW_GATEWAY_BASE`（`.env` 常为 `http://10.22.28.145:18088`），须确保 sandbox 能访问该地址；仅 `127.0.0.1` 监听时 worker 无法回调。
 
 ## 2. 创建测试 project + delegate-targets
 

@@ -1,5 +1,8 @@
 //! Gateway tool catalog and per-`proj_id` allowed-tools resolution (DB only). Author: kejiqing
 
+use gateway_solve_turn::{
+    COMPLETE_ROUTER_TURN_TOOL_NAME, DELEGATE_PROJECT_TOOL_NAME, REPORT_PROGRESS_TOOL_NAME,
+};
 use serde_json::Value;
 use tools::mvp_tool_specs;
 
@@ -12,7 +15,7 @@ pub struct ToolCatalogEntry {
     pub source: String,
 }
 
-/// Built-in tools from `mvp_tool_specs` plus the MCP qualified-name pattern.
+/// Built-in tools from `mvp_tool_specs` plus gateway-only tools and the MCP pattern. Author: kejiqing
 #[must_use]
 pub fn gateway_registered_tool_catalog() -> Vec<ToolCatalogEntry> {
     let mut out: Vec<ToolCatalogEntry> = mvp_tool_specs()
@@ -23,6 +26,22 @@ pub fn gateway_registered_tool_catalog() -> Vec<ToolCatalogEntry> {
             source: "builtin".to_string(),
         })
         .collect();
+    out.push(ToolCatalogEntry {
+        name: DELEGATE_PROJECT_TOOL_NAME.to_string(),
+        description: "Delegate to a specialist project (router / nested delegate)".to_string(),
+        source: "builtin".to_string(),
+    });
+    out.push(ToolCatalogEntry {
+        name: COMPLETE_ROUTER_TURN_TOOL_NAME.to_string(),
+        description: "End router turn after successful delegate(s); no user-visible text"
+            .to_string(),
+        source: "builtin".to_string(),
+    });
+    out.push(ToolCatalogEntry {
+        name: REPORT_PROGRESS_TOOL_NAME.to_string(),
+        description: "Report turn progress to the live UI".to_string(),
+        source: "builtin".to_string(),
+    });
     out.push(ToolCatalogEntry {
         name: "mcp__*".to_string(),
         description: "Qualified MCP tools discovered at runtime (mcp__<server>__<tool>)"
@@ -178,6 +197,8 @@ mod tests {
         let c = gateway_registered_tool_catalog();
         assert!(c.iter().any(|e| e.name == "bash"));
         assert!(c.iter().any(|e| e.name == "mcp__*"));
+        assert!(c.iter().any(|e| e.name == DELEGATE_PROJECT_TOOL_NAME));
+        assert!(c.iter().any(|e| e.name == REPORT_PROGRESS_TOOL_NAME));
     }
 
     #[test]

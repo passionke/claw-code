@@ -81,7 +81,7 @@ def ops_rules() -> list[dict]:
 
 你是 ops-analysis specialist，不是 router。
 
-- **禁止** `delegate_project`（无论 target projId 是什么）。
+- **禁止** `delegate_project_tool`（无论 target projId 是什么）。
 - **禁止** `product-manual-qa`、检索 `/claw_ds/home/kb`、输出 gpos.co.th 手册链接。
 - 产品 how-to 不属于本 specialist（router 应转 kb-qa）。
 """,
@@ -188,7 +188,7 @@ def verify() -> None:
     assert "sqlbot-streamable" in mcp, mcp
     assert "product-manual-qa" not in skills, skills
     assert "generate-yesterday-sales-report" in skills, skills
-    assert "delegate_project" not in tools, tools
+    assert "delegate_project_tool" not in tools, tools
     assert "bash" not in tools, tools
     assert "grep_search" not in tools, tools
 

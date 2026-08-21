@@ -120,7 +120,7 @@ pub(crate) async fn resolve_delegate_session(
             initiator_proj_id,
             req.parent_session_id.trim(),
             req.delegate_proj_id,
-            Some("delegate_project"),
+            Some("delegate_project_tool"),
         )
         .await
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;

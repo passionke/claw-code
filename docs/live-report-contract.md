@@ -24,22 +24,22 @@ Author: kejiqing
 
 **Legacy pool-daemon：** 入队预写 `CLAW_POOL_ID` + `claw_pool_join` 代理仅适用于已拆除的宿主机 pool；e2b 新部署勿依赖。
 
-### Router delegate fan-in（路径 B′，2026-08）
+### Router delegate worker passthrough（路径 B′，2026-08）
 
-`project_role=router` 且 router turn 存在 `solve_timing_jsonb.activeDelegate` 时：
+`project_role=router` 时，用户只订 **router turn** LiveReportHub。正文唯一数据面：
 
 | 环节 | 行为 |
 |------|------|
-| Worker | `delegate_project` 发 `delegate.active` / `delegate.clear` stdout（**不**抄 specialist SSE） |
-| Specialist live | 与单 agent 相同：specialist worker → specialist turn **LiveReportHub**（单跳） |
+| Worker | `delegate_project_tool` 订阅 specialist `/v1/biz_advice_report?stream=true`，把每个 `biz.report.delta` 写成 router stdout `report.delta`，并追加 `.claw/delegate-agents-results/<routerTurnId>.md` |
+| Worker 控制 | 同时发 `delegate.active` / `delegate.clear`（进度/关联；**不**切换用户 SSE 数据源） |
 | 用户 SSE URL | 仍 `GET /v1/biz_advice_report?sessionId=<router>&turnId=<router>&stream=true` |
-| Gateway | 同一条用户 SSE 内改订 **specialist turn** 的同进程 LiveReportHub（控制面看 `activeDelegate`）；progress 读时 merge specialist PG |
+| Gateway | 始终订 **router turn** Hub；与普通 turn 共用 `live_report_sse_response` |
 
-用户 SSE 开局即可订 router URL。Gateway **serving 期间**改订 hub，不关 HTTP、不改事件名。specialist `SolveDone` **不是**用户 `biz.report.done`；只有 router turn 终态才 `done`。
+用户 SSE 开局即可订 router URL。specialist `SolveDone` **不是**用户 `biz.report.done`；只有 router turn 终态才 `done`。
 
-**禁止** worker 二次 HTTP 订阅 specialist SSE 再写 router stdout（旧 passthrough 已移除）。**禁止**在用户这条 SSE 上再 GET specialist `/v1/biz_advice_report` 做数据面转发。
+**禁止** Gateway 按 `activeDelegate` 改订 specialist Hub（旧 rebind 已移除）。**禁止**对用户这条 SSE 再 GET specialist URL。
 
-**Delegate harness（2026-08）：** `delegate_project` tool result **含** specialist 终稿 `message`，进入主 agent CC messages。子占窗口时用户 SSE 仍订 router URL，gateway fan-in 直连 specialist hub。终稿对齐：`SSE 累加` = `GET /v1/tasks` message = PG `report_message`（router fan-in acc 或 worker outputJson）。
+**Delegate harness：** tool result 只回 `status` / ids / `reportPath`（不内嵌 `message`）。终稿对齐：`router Hub 累加` / `reportPath` 落盘 = PG `report_message`。
 
 
 ---

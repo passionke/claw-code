@@ -14,7 +14,7 @@ Author: kejiqing
 
 ## 禁止
 
-- **禁止** `delegate_project`（你不是 router）。
+- **禁止** `delegate_project_tool`（你不是 router）。
 - **禁止** `product-manual-qa` / 检索 `/claw_ds/home/kb` / 输出 `gpos.co.th` 手册链接。
 - **禁止** `bash`；手册 grep 不属于本 specialist。
 

@@ -61,11 +61,24 @@ pub struct PromptCacheEvent {
 /// Minimal streaming API contract required by [`ConversationRuntime`].
 pub trait ApiClient {
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError>;
+
+    /// When false, the client must not mirror assistant text into user-visible report SSE.
+    /// Default is a no-op (clients that stream elsewhere ignore this). Author: kejiqing
+    fn set_user_visible_text_stream(&mut self, enabled: bool) {
+        let _ = enabled;
+    }
 }
 
 /// Trait implemented by tool dispatchers that execute model-requested tools.
 pub trait ToolExecutor {
     fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError>;
+
+    /// Structured tool result with harness loop directive. Default wraps [`Self::execute`]
+    /// as [`ToolLoopDirective::Continue`]. Author: kejiqing
+    fn execute_outcome(&mut self, tool_name: &str, input: &str) -> Result<ToolOutcome, ToolError> {
+        self.execute(tool_name, input)
+            .map(ToolOutcome::continue_with)
+    }
 
     /// When set, specific tools may run on background threads via [`SharedToolExecutor`].
     fn shared_executor(&self) -> Option<Arc<dyn SharedToolExecutor>> {
@@ -84,9 +97,63 @@ pub trait SharedToolExecutor: Send + Sync {
     }
 }
 
+/// How the conversation harness should proceed after a tool result. Author: kejiqing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolLoopDirective {
+    /// Keep looping; next LLM iteration may emit user-visible text.
+    Continue,
+    /// Keep looping, but next LLM iteration is control-only (single `tool_use`; no user text).
+    ContinueControlOnly,
+    /// Persist the tool exchange and end the turn without another LLM call.
+    CompleteTurn,
+}
+
+/// Tool execution result plus harness directive. Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOutcome {
+    pub output: String,
+    pub directive: ToolLoopDirective,
+}
+
+impl ToolOutcome {
+    #[must_use]
+    pub fn continue_with(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            directive: ToolLoopDirective::Continue,
+        }
+    }
+
+    #[must_use]
+    pub fn continue_control_only(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            directive: ToolLoopDirective::ContinueControlOnly,
+        }
+    }
+
+    #[must_use]
+    pub fn complete_turn(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            directive: ToolLoopDirective::CompleteTurn,
+        }
+    }
+}
+
+/// Why a turn ended. Author: kejiqing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnCompletionReason {
+    /// Assistant returned content with no `tool_use`.
+    ModelEndTurn,
+    /// A tool returned [`ToolLoopDirective::CompleteTurn`].
+    ToolCompleteTurn,
+}
+
 struct ToolExecuteRawOutcome {
     output: String,
     is_error: bool,
+    directive: ToolLoopDirective,
 }
 
 struct BackgroundToolJob {
@@ -158,6 +225,8 @@ pub struct TurnSummary {
     pub iterations: usize,
     pub usage: TokenUsage,
     pub auto_compaction: Option<AutoCompactionEvent>,
+    /// How the turn ended (model end vs terminal tool). Author: kejiqing
+    pub completion_reason: TurnCompletionReason,
 }
 
 /// Details about automatic session compaction applied during a turn.
@@ -181,6 +250,11 @@ pub struct ConversationRuntime<C, T> {
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
     turn_timing: Option<Arc<dyn TurnTimingSink>>,
+    /// After a successful control-only tool, the next LLM iteration must be a single
+    /// `tool_use` with no user-visible text. Author: kejiqing
+    control_only_next_iteration: bool,
+    /// When set, control-only iterations may only call these tool names. Author: kejiqing
+    control_tool_allowlist: Option<std::collections::HashSet<String>>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -231,6 +305,8 @@ where
             hook_progress_reporter: None,
             session_tracer: None,
             turn_timing: None,
+            control_only_next_iteration: false,
+            control_tool_allowlist: None,
         }
     }
 
@@ -270,6 +346,17 @@ where
     #[must_use]
     pub fn with_turn_timing(mut self, turn_timing: Arc<dyn TurnTimingSink>) -> Self {
         self.turn_timing = Some(turn_timing);
+        self
+    }
+
+    /// Restrict control-only iterations to these tool names (e.g. router finish protocol).
+    /// Author: kejiqing
+    #[must_use]
+    pub fn with_control_tool_allowlist(
+        mut self,
+        tools: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.control_tool_allowlist = Some(tools.into_iter().map(Into::into).collect());
         self
     }
 
@@ -445,6 +532,7 @@ where
         let mut tool_results = Vec::new();
         let mut prompt_cache_events = Vec::new();
         let mut iterations = 0;
+        let completion_reason;
 
         loop {
             iterations += 1;
@@ -475,6 +563,9 @@ where
                 Value::from(request.messages.len() as u64),
             );
             self.emit_turn_timing("llm_stream_started", llm_attrs);
+
+            let control_only = self.control_only_next_iteration;
+            self.api_client.set_user_visible_text_stream(!control_only);
 
             let llm_started = Instant::now();
             let events = match self.api_client.stream(request) {
@@ -532,15 +623,26 @@ where
                 pending_tool_uses.len(),
             );
 
+            if control_only {
+                if let Err(error) = validate_control_only_assistant(
+                    &assistant_message,
+                    self.control_tool_allowlist.as_ref(),
+                ) {
+                    self.record_turn_failed(iterations, &error);
+                    return Err(error);
+                }
+            }
+
             if pending_tool_uses.is_empty() {
                 self.session
                     .push_message(assistant_message.clone())
                     .map_err(|error| RuntimeError::new(error.to_string()))?;
                 assistant_messages.push(assistant_message);
+                completion_reason = TurnCompletionReason::ModelEndTurn;
                 break;
             }
 
-            let collected_tool_results = self.execute_pending_tool_uses(
+            let (collected_tool_results, loop_directive) = self.execute_pending_tool_uses(
                 iterations,
                 &turn_id,
                 pending_tool_uses,
@@ -551,7 +653,23 @@ where
                 .push_tool_exchange(assistant_message.clone(), &collected_tool_results)
                 .map_err(|error| RuntimeError::new(error.to_string()))?;
             assistant_messages.push(assistant_message);
+
+            match loop_directive {
+                ToolLoopDirective::CompleteTurn => {
+                    self.control_only_next_iteration = false;
+                    completion_reason = TurnCompletionReason::ToolCompleteTurn;
+                    break;
+                }
+                ToolLoopDirective::ContinueControlOnly => {
+                    self.control_only_next_iteration = true;
+                }
+                ToolLoopDirective::Continue => {
+                    self.control_only_next_iteration = false;
+                }
+            }
         }
+
+        self.api_client.set_user_visible_text_stream(true);
 
         let auto_compaction = self.maybe_auto_compact();
 
@@ -562,6 +680,7 @@ where
             iterations,
             usage: self.usage_tracker.cumulative_usage(),
             auto_compaction,
+            completion_reason,
         };
         self.record_turn_completed(&summary, turn_wall_started.elapsed().as_millis());
 
@@ -614,9 +733,10 @@ where
         pending_tool_uses: Vec<(String, String, String)>,
         prompter: &mut Option<&mut dyn PermissionPrompter>,
         tool_results: &mut Vec<ConversationMessage>,
-    ) -> Result<Vec<ConversationMessage>, RuntimeError> {
+    ) -> Result<(Vec<ConversationMessage>, ToolLoopDirective), RuntimeError> {
         let dispatch_order = pending_tool_uses.clone();
         let mut collected = Vec::with_capacity(pending_tool_uses.len());
+        let mut strongest_directive = ToolLoopDirective::Continue;
         let shared_executor = self.tool_executor.shared_executor();
         let mut background_jobs: HashMap<String, BackgroundToolJob> = HashMap::new();
         let mut prebuilt_results: HashMap<String, ConversationMessage> = HashMap::new();
@@ -667,10 +787,12 @@ where
                                 Ok(output) => ToolExecuteRawOutcome {
                                     output,
                                     is_error: false,
+                                    directive: ToolLoopDirective::Continue,
                                 },
                                 Err(error) => ToolExecuteRawOutcome {
                                     output: error.to_string(),
                                     is_error: true,
+                                    directive: ToolLoopDirective::Continue,
                                 },
                             }
                         });
@@ -708,7 +830,9 @@ where
                     let raw = job.handle.join().unwrap_or(ToolExecuteRawOutcome {
                         output: String::from("background tool thread panicked"),
                         is_error: true,
+                        directive: ToolLoopDirective::Continue,
                     });
+                    let directive = raw.directive;
                     let result_message = self.tool_result_from_raw_execution(
                         &tool_use_id,
                         &tool_name,
@@ -716,6 +840,8 @@ where
                         &job.effective_input,
                         raw,
                     );
+                    strongest_directive =
+                        merge_tool_loop_directives(strongest_directive, directive);
                     self.record_tool_finished(
                         iterations,
                         turn_id,
@@ -740,7 +866,7 @@ where
                     &pre_hook_result,
                     prompter,
                 );
-                let result_message = match permission_outcome {
+                let (result_message, directive) = match permission_outcome {
                     PermissionOutcome::Allow => {
                         self.record_tool_started(
                             iterations,
@@ -749,31 +875,42 @@ where
                             &tool_name,
                             effective_input.len(),
                         );
-                        let raw = match self.tool_executor.execute(&tool_name, &effective_input) {
-                            Ok(output) => ToolExecuteRawOutcome {
-                                output,
+                        let raw = match self
+                            .tool_executor
+                            .execute_outcome(&tool_name, &effective_input)
+                        {
+                            Ok(outcome) => ToolExecuteRawOutcome {
+                                output: outcome.output,
                                 is_error: false,
+                                directive: outcome.directive,
                             },
                             Err(error) => ToolExecuteRawOutcome {
                                 output: error.to_string(),
                                 is_error: true,
+                                directive: ToolLoopDirective::Continue,
                             },
                         };
-                        self.tool_result_from_raw_execution(
+                        let directive = raw.directive;
+                        let result_message = self.tool_result_from_raw_execution(
                             &tool_use_id,
                             &tool_name,
                             &pre_hook_result,
                             &effective_input,
                             raw,
-                        )
+                        );
+                        (result_message, directive)
                     }
-                    PermissionOutcome::Deny { reason } => ConversationMessage::tool_result(
-                        tool_use_id.clone(),
-                        tool_name.clone(),
-                        merge_hook_feedback(pre_hook_result.messages(), reason, true),
-                        true,
+                    PermissionOutcome::Deny { reason } => (
+                        ConversationMessage::tool_result(
+                            tool_use_id.clone(),
+                            tool_name.clone(),
+                            merge_hook_feedback(pre_hook_result.messages(), reason, true),
+                            true,
+                        ),
+                        ToolLoopDirective::Continue,
                     ),
                 };
+                strongest_directive = merge_tool_loop_directives(strongest_directive, directive);
                 self.record_tool_finished(
                     iterations,
                     turn_id,
@@ -811,7 +948,14 @@ where
                 collected.push(guard_result);
             }
         }
-        Ok(collected)
+
+        if strongest_directive == ToolLoopDirective::CompleteTurn && collected.len() != 1 {
+            return Err(RuntimeError::new(
+                "protocol error: CompleteTurn tool must be the only tool_use in the assistant turn",
+            ));
+        }
+
+        Ok((collected, strongest_directive))
     }
 
     fn permission_outcome_for_tool(
@@ -1201,6 +1345,64 @@ fn parse_auto_compaction_threshold(value: Option<&str>) -> u32 {
         .unwrap_or(DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD)
 }
 
+/// After a control-only tool, the next assistant message must be exactly one `tool_use`
+/// with no user-visible Text. Author: kejiqing
+fn validate_control_only_assistant(
+    message: &ConversationMessage,
+    allowlist: Option<&std::collections::HashSet<String>>,
+) -> Result<(), RuntimeError> {
+    let mut tool_names = Vec::new();
+    for block in &message.blocks {
+        match block {
+            ContentBlock::Text { text } if !text.trim().is_empty() => {
+                return Err(RuntimeError::new(
+                    "protocol error: control-only iteration must not emit user-visible text",
+                ));
+            }
+            ContentBlock::ToolUse { name, .. } => tool_names.push(name.clone()),
+            ContentBlock::Text { .. }
+            | ContentBlock::ReasoningContent { .. }
+            | ContentBlock::Image { .. }
+            | ContentBlock::Video { .. }
+            | ContentBlock::Audio { .. }
+            | ContentBlock::ToolResult { .. } => {}
+        }
+    }
+    if tool_names.is_empty() {
+        return Err(RuntimeError::new(
+            "protocol error: control-only iteration must call exactly one control tool",
+        ));
+    }
+    if tool_names.len() != 1 {
+        return Err(RuntimeError::new(
+            "protocol error: control-only iteration must call exactly one tool",
+        ));
+    }
+    if let Some(allowed) = allowlist {
+        let name = &tool_names[0];
+        if !allowed.contains(name) {
+            return Err(RuntimeError::new(format!(
+                "protocol error: control-only iteration tool `{name}` is not allowed"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn merge_tool_loop_directives(
+    current: ToolLoopDirective,
+    next: ToolLoopDirective,
+) -> ToolLoopDirective {
+    match (current, next) {
+        (_, ToolLoopDirective::CompleteTurn) | (ToolLoopDirective::CompleteTurn, _) => {
+            ToolLoopDirective::CompleteTurn
+        }
+        (_, ToolLoopDirective::ContinueControlOnly)
+        | (ToolLoopDirective::ContinueControlOnly, _) => ToolLoopDirective::ContinueControlOnly,
+        _ => ToolLoopDirective::Continue,
+    }
+}
+
 fn build_assistant_message(
     events: Vec<AssistantEvent>,
 ) -> Result<
@@ -1300,11 +1502,13 @@ fn merge_hook_feedback(messages: &[String], output: String, is_error: bool) -> S
 }
 
 type ToolHandler = Box<dyn FnMut(&str) -> Result<String, ToolError>>;
+type ToolOutcomeHandler = Box<dyn FnMut(&str) -> Result<ToolOutcome, ToolError>>;
 
 /// Simple in-memory tool executor for tests and lightweight integrations.
 #[derive(Default)]
 pub struct StaticToolExecutor {
     handlers: BTreeMap<String, ToolHandler>,
+    outcome_handlers: BTreeMap<String, ToolOutcomeHandler>,
 }
 
 impl StaticToolExecutor {
@@ -1322,23 +1526,48 @@ impl StaticToolExecutor {
         self.handlers.insert(tool_name.into(), Box::new(handler));
         self
     }
+
+    /// Register a handler that returns a full [`ToolOutcome`] (for harness directive tests).
+    /// Author: kejiqing
+    #[must_use]
+    pub fn register_outcome(
+        mut self,
+        tool_name: impl Into<String>,
+        handler: impl FnMut(&str) -> Result<ToolOutcome, ToolError> + 'static,
+    ) -> Self {
+        self.outcome_handlers
+            .insert(tool_name.into(), Box::new(handler));
+        self
+    }
 }
 
 impl ToolExecutor for StaticToolExecutor {
     fn execute(&mut self, tool_name: &str, input: &str) -> Result<String, ToolError> {
+        if let Some(handler) = self.outcome_handlers.get_mut(tool_name) {
+            return handler(input).map(|o| o.output);
+        }
         self.handlers
             .get_mut(tool_name)
             .ok_or_else(|| ToolError::new(format!("unknown tool: {tool_name}")))?(input)
+    }
+
+    fn execute_outcome(&mut self, tool_name: &str, input: &str) -> Result<ToolOutcome, ToolError> {
+        if let Some(handler) = self.outcome_handlers.get_mut(tool_name) {
+            return handler(input);
+        }
+        self.execute(tool_name, input)
+            .map(ToolOutcome::continue_with)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_assistant_message, join_remaining_background_jobs, parse_auto_compaction_threshold,
-        ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent, BackgroundToolJob,
-        ConversationRuntime, HookRunResult, PromptCacheEvent, RuntimeError, SharedToolExecutor,
-        StaticToolExecutor, ToolExecuteRawOutcome, ToolExecutor,
+        build_assistant_message, join_remaining_background_jobs, merge_tool_loop_directives,
+        parse_auto_compaction_threshold, validate_control_only_assistant, ApiClient, ApiRequest,
+        AssistantEvent, AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
+        PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
+        ToolExecuteRawOutcome, ToolExecutor, ToolLoopDirective, ToolOutcome, TurnCompletionReason,
         DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
     use crate::compact::CompactionConfig;
@@ -2580,6 +2809,7 @@ mod tests {
             ToolExecuteRawOutcome {
                 output: String::new(),
                 is_error: false,
+                directive: ToolLoopDirective::Continue,
             }
         });
         let mut jobs = HashMap::new();
@@ -3284,5 +3514,535 @@ mod tests {
                 rows[0].3
             );
         }
+    }
+
+    #[test]
+    fn complete_turn_directive_skips_second_llm_call() {
+        struct OneShotThenPanic {
+            calls: usize,
+        }
+        impl ApiClient for OneShotThenPanic {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls += 1;
+                if self.calls > 1 {
+                    return Err(RuntimeError::new("unexpected second LLM call"));
+                }
+                Ok(vec![
+                    AssistantEvent::ToolUse {
+                        id: "finish_1".into(),
+                        name: "complete_router_turn".into(),
+                        input: "{}".into(),
+                    },
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            OneShotThenPanic { calls: 0 },
+            StaticToolExecutor::new().register_outcome("complete_router_turn", |_input| {
+                Ok(ToolOutcome::complete_turn(r#"{"status":"completed"}"#))
+            }),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        let summary = runtime
+            .run_turn("route me", None)
+            .expect("terminal tool should end turn");
+        assert_eq!(summary.iterations, 1);
+        assert_eq!(
+            summary.completion_reason,
+            TurnCompletionReason::ToolCompleteTurn
+        );
+        assert_eq!(summary.assistant_messages.len(), 1);
+        assert_eq!(summary.tool_results.len(), 1);
+        // user + assistant(tool_use) + tool_result; no final assistant text
+        assert_eq!(runtime.session().messages.len(), 3);
+    }
+
+    #[test]
+    fn control_only_iteration_rejects_user_visible_text() {
+        struct TwoCallControl {
+            calls: usize,
+        }
+        impl ApiClient for TwoCallControl {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls += 1;
+                match self.calls {
+                    1 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "d1".into(),
+                            name: "delegate_project_tool".into(),
+                            input: r#"{"projId":1}"#.into(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    _ => Ok(vec![
+                        AssistantEvent::TextDelta("复述一下".into()),
+                        AssistantEvent::MessageStop,
+                    ]),
+                }
+            }
+        }
+
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            TwoCallControl { calls: 0 },
+            StaticToolExecutor::new().register_outcome("delegate_project_tool", |_input| {
+                Ok(ToolOutcome::continue_control_only(
+                    r#"{"status":"succeeded","reportPath":"x.md"}"#,
+                ))
+            }),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        let err = runtime
+            .run_turn("ask specialist", None)
+            .expect_err("control-only text must fail");
+        assert!(err.to_string().contains("control-only"), "error={}", err);
+    }
+
+    #[test]
+    fn control_only_then_complete_turn_ends_without_extra_llm() {
+        struct ControlThenFinish {
+            calls: usize,
+        }
+        impl ApiClient for ControlThenFinish {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls += 1;
+                match self.calls {
+                    1 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "d1".into(),
+                            name: "delegate_project_tool".into(),
+                            input: r#"{"projId":1}"#.into(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    2 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "f1".into(),
+                            name: "complete_router_turn".into(),
+                            input: "{}".into(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    _ => Err(RuntimeError::new("unexpected third LLM call")),
+                }
+            }
+        }
+
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            ControlThenFinish { calls: 0 },
+            StaticToolExecutor::new()
+                .register_outcome("delegate_project_tool", |_input| {
+                    Ok(ToolOutcome::continue_control_only(
+                        r#"{"status":"succeeded"}"#,
+                    ))
+                })
+                .register_outcome("complete_router_turn", |_input| {
+                    Ok(ToolOutcome::complete_turn(r#"{"status":"completed"}"#))
+                }),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        let summary = runtime
+            .run_turn("mixed", None)
+            .expect("delegate then finish");
+        assert_eq!(summary.iterations, 2);
+        assert_eq!(
+            summary.completion_reason,
+            TurnCompletionReason::ToolCompleteTurn
+        );
+        assert_eq!(summary.tool_results.len(), 2);
+    }
+
+    #[test]
+    fn validate_control_only_assistant_requires_single_tool() {
+        let ok = ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "complete_router_turn".into(),
+            input: "{}".into(),
+        }]);
+        assert!(validate_control_only_assistant(&ok, None).is_ok());
+
+        let with_text = ConversationMessage::assistant(vec![
+            ContentBlock::Text {
+                text: "hello".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "complete_router_turn".into(),
+                input: "{}".into(),
+            },
+        ]);
+        assert!(validate_control_only_assistant(&with_text, None).is_err());
+
+        let empty = ConversationMessage::assistant(vec![ContentBlock::Text { text: "".into() }]);
+        assert!(validate_control_only_assistant(&empty, None).is_err());
+
+        let two_tools = ConversationMessage::assistant(vec![
+            ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "delegate_project_tool".into(),
+                input: "{}".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "t2".into(),
+                name: "complete_router_turn".into(),
+                input: "{}".into(),
+            },
+        ]);
+        assert!(validate_control_only_assistant(&two_tools, None).is_err());
+
+        let allow = std::collections::HashSet::from([
+            "delegate_project_tool".to_string(),
+            "complete_router_turn".to_string(),
+        ]);
+        let skill = ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "Skill".into(),
+            input: r#"{"skill":"x"}"#.into(),
+        }]);
+        let err = validate_control_only_assistant(&skill, Some(&allow)).expect_err("skill");
+        assert!(err.to_string().contains("not allowed"));
+    }
+
+    #[test]
+    fn control_only_iteration_rejects_empty_end_without_tool() {
+        struct TwoCallEmptyEnd {
+            calls: usize,
+        }
+        impl ApiClient for TwoCallEmptyEnd {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls += 1;
+                match self.calls {
+                    1 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "d1".into(),
+                            name: "delegate_project_tool".into(),
+                            input: r#"{"projId":1}"#.into(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    _ => Ok(vec![
+                        // Whitespace-only text still counts as empty for content flush,
+                        // but MessageStop with only empty text may fail build_assistant_message.
+                        // Use a Reasoning-free empty Text block via zero text is rejected by
+                        // build_assistant_message ("no content"). Prefer explicit empty tool-less
+                        // with a zero-width? Safer: TextDelta of spaces then MessageStop —
+                        // validate_control_only catches non-empty trimmed? spaces trim to empty,
+                        // then tool_count==0 fails.
+                        AssistantEvent::TextDelta("   ".into()),
+                        AssistantEvent::MessageStop,
+                    ]),
+                }
+            }
+        }
+
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            TwoCallEmptyEnd { calls: 0 },
+            StaticToolExecutor::new().register_outcome("delegate_project_tool", |_input| {
+                Ok(ToolOutcome::continue_control_only(
+                    r#"{"status":"succeeded"}"#,
+                ))
+            }),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        let err = runtime
+            .run_turn("ask", None)
+            .expect_err("control-only must require a tool");
+        assert!(err.to_string().contains("control-only"), "error={}", err);
+    }
+
+    #[test]
+    fn complete_turn_concurrent_with_other_tool_is_protocol_error() {
+        struct ConcurrentFinish {
+            calls: usize,
+        }
+        impl ApiClient for ConcurrentFinish {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls += 1;
+                Ok(vec![
+                    AssistantEvent::ToolUse {
+                        id: "d1".into(),
+                        name: "delegate_project_tool".into(),
+                        input: r#"{"projId":1}"#.into(),
+                    },
+                    AssistantEvent::ToolUse {
+                        id: "f1".into(),
+                        name: "complete_router_turn".into(),
+                        input: "{}".into(),
+                    },
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            ConcurrentFinish { calls: 0 },
+            StaticToolExecutor::new()
+                .register_outcome("delegate_project_tool", |_input| {
+                    Ok(ToolOutcome::continue_control_only(
+                        r#"{"status":"succeeded"}"#,
+                    ))
+                })
+                .register_outcome("complete_router_turn", |_input| {
+                    Ok(ToolOutcome::complete_turn(r#"{"status":"completed"}"#))
+                }),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        let err = runtime
+            .run_turn("bad concurrent", None)
+            .expect_err("CompleteTurn must be sole tool");
+        assert!(err.to_string().contains("CompleteTurn"), "error={}", err);
+    }
+
+    #[test]
+    fn serial_two_delegates_then_finish_uses_exactly_three_llm_calls() {
+        struct SerialDelegates {
+            calls: usize,
+        }
+        impl ApiClient for SerialDelegates {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls += 1;
+                match self.calls {
+                    1 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "d1".into(),
+                            name: "delegate_project_tool".into(),
+                            input: r#"{"projId":1,"userPrompt":"kb"}"#.into(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    2 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "d2".into(),
+                            name: "delegate_project_tool".into(),
+                            input: r#"{"projId":2,"userPrompt":"ops"}"#.into(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    3 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "f1".into(),
+                            name: "complete_router_turn".into(),
+                            input: "{}".into(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    _ => Err(RuntimeError::new("unexpected fourth LLM call")),
+                }
+            }
+        }
+
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            SerialDelegates { calls: 0 },
+            StaticToolExecutor::new()
+                .register_outcome("delegate_project_tool", |_input| {
+                    Ok(ToolOutcome::continue_control_only(
+                        r#"{"status":"succeeded"}"#,
+                    ))
+                })
+                .register_outcome("complete_router_turn", |_input| {
+                    Ok(ToolOutcome::complete_turn(r#"{"status":"completed"}"#))
+                }),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        )
+        .with_control_tool_allowlist(["delegate_project_tool", "complete_router_turn"]);
+
+        let summary = runtime
+            .run_turn("mixed how-to and metrics", None)
+            .expect("serial delegate then finish");
+        assert_eq!(summary.iterations, 3);
+        assert_eq!(summary.tool_results.len(), 3);
+        assert_eq!(
+            summary.completion_reason,
+            TurnCompletionReason::ToolCompleteTurn
+        );
+        // user + 3*(assistant tool_use + tool_result); no trailing assistant text
+        assert_eq!(runtime.session().messages.len(), 7);
+        let has_final_text = runtime.session().messages.iter().any(|m| {
+            m.role == MessageRole::Assistant
+                && m.blocks
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()))
+        });
+        assert!(!has_final_text);
+    }
+
+    #[test]
+    fn control_only_hides_user_visible_text_stream() {
+        use std::sync::{Arc, Mutex};
+
+        struct VisibilitySpy {
+            calls: usize,
+            flags: Arc<Mutex<Vec<bool>>>,
+        }
+        impl ApiClient for VisibilitySpy {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls += 1;
+                match self.calls {
+                    1 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "d1".into(),
+                            name: "delegate_project_tool".into(),
+                            input: "{}".into(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    2 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "f1".into(),
+                            name: "complete_router_turn".into(),
+                            input: "{}".into(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    _ => Err(RuntimeError::new("too many calls")),
+                }
+            }
+
+            fn set_user_visible_text_stream(&mut self, enabled: bool) {
+                self.flags.lock().expect("lock").push(enabled);
+            }
+        }
+
+        let flags = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            VisibilitySpy {
+                calls: 0,
+                flags: Arc::clone(&flags),
+            },
+            StaticToolExecutor::new()
+                .register_outcome("delegate_project_tool", |_input| {
+                    Ok(ToolOutcome::continue_control_only("{}"))
+                })
+                .register_outcome("complete_router_turn", |_input| {
+                    Ok(ToolOutcome::complete_turn("{}"))
+                }),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        runtime.run_turn("q", None).expect("ok");
+        let seen = flags.lock().expect("lock").clone();
+        // First LLM: user-visible true; second (control-only): false; finally restored true
+        assert!(
+            seen.iter().any(|&v| !v),
+            "control-only must disable user-visible stream: {seen:?}"
+        );
+        assert_eq!(*seen.last().unwrap(), true);
+    }
+
+    #[test]
+    fn failed_tool_keeps_continue_and_allows_model_end_turn() {
+        struct FailThenAnswer {
+            calls: usize,
+        }
+        impl ApiClient for FailThenAnswer {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                self.calls += 1;
+                match self.calls {
+                    1 => Ok(vec![
+                        AssistantEvent::ToolUse {
+                            id: "d1".into(),
+                            name: "delegate_project_tool".into(),
+                            input: "{}".into(),
+                        },
+                        AssistantEvent::MessageStop,
+                    ]),
+                    2 => Ok(vec![
+                        AssistantEvent::TextDelta("fallback reply".into()),
+                        AssistantEvent::MessageStop,
+                    ]),
+                    _ => Err(RuntimeError::new("unexpected")),
+                }
+            }
+        }
+
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            FailThenAnswer { calls: 0 },
+            StaticToolExecutor::new().register_outcome("delegate_project_tool", |_input| {
+                Err(ToolError::new("delegate failed"))
+            }),
+            PermissionPolicy::new(PermissionMode::DangerFullAccess),
+            vec!["system".to_string()],
+        );
+
+        let summary = runtime.run_turn("q", None).expect("retry path");
+        assert_eq!(summary.iterations, 2);
+        assert_eq!(
+            summary.completion_reason,
+            TurnCompletionReason::ModelEndTurn
+        );
+        assert!(matches!(
+            &summary.tool_results[0].blocks[0],
+            ContentBlock::ToolResult { is_error: true, .. }
+        ));
+    }
+
+    #[test]
+    fn merge_tool_loop_directives_prefers_complete_turn() {
+        assert_eq!(
+            merge_tool_loop_directives(
+                ToolLoopDirective::Continue,
+                ToolLoopDirective::ContinueControlOnly
+            ),
+            ToolLoopDirective::ContinueControlOnly
+        );
+        assert_eq!(
+            merge_tool_loop_directives(
+                ToolLoopDirective::ContinueControlOnly,
+                ToolLoopDirective::CompleteTurn
+            ),
+            ToolLoopDirective::CompleteTurn
+        );
+        assert_eq!(
+            merge_tool_loop_directives(
+                ToolLoopDirective::CompleteTurn,
+                ToolLoopDirective::ContinueControlOnly
+            ),
+            ToolLoopDirective::CompleteTurn
+        );
     }
 }

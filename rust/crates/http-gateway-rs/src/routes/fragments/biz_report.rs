@@ -520,34 +520,8 @@ pub(crate) async fn get_biz_advice_report(
                 return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e));
             }
         }
-        let is_router = state
-            .session_db
-            .get_project_role(query.proj_id)
-            .await
-            .map(|r| r == crate::master_observer::PROJECT_ROLE_ROUTER)
-            .unwrap_or(false);
-        if is_router {
-            tracing::info!(
-                target: "claw_live_report",
-                component = "biz_advice_report",
-                phase = "route",
-                route = "router_fanin_hub_rebind_sse",
-                turn_id = %ctx.turn_id,
-                session_id = %query.session_id,
-                proj_id = query.proj_id,
-                status = %ctx.status,
-                "biz_advice_report stream — router in-process hub rebind"
-            );
-            return Ok(pool::router_fanin_live_sse_response(
-                Arc::clone(&state.live_report_hub),
-                &state.session_db,
-                query.proj_id,
-                &ctx.turn_id,
-                ctx.task_id.clone(),
-                ctx.task_id.clone(),
-                query.proj_id,
-            ));
-        }
+        // Router and normal turns share one Hub path. Specialist body reaches the
+        // router turn Hub via worker `delegate_project_tool` passthrough. Author: kejiqing
         tracing::info!(
             target: "claw_live_report",
             component = "biz_advice_report",

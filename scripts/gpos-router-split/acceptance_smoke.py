@@ -49,9 +49,9 @@ def is_handoff_only(text: str) -> bool:
     return False
 
 
-def delegate_tool_message(tools: list) -> str:
+def delegate_tool_output(tools: list) -> dict:
     for t in tools:
-        if not isinstance(t, dict) or t.get("toolName") != "delegate_project":
+        if not isinstance(t, dict) or t.get("toolName") != "delegate_project_tool":
             continue
         raw = t.get("output") or ""
         try:
@@ -59,14 +59,23 @@ def delegate_tool_message(tools: list) -> str:
         except json.JSONDecodeError:
             continue
         if isinstance(out, dict):
-            return (out.get("message") or "").strip()
-    return ""
+            return out
+    return {}
+
+
+def delegate_tool_report_path(tools: list) -> str:
+    return (delegate_tool_output(tools).get("reportPath") or "").strip()
+
+
+def delegate_tool_message(tools: list) -> str:
+    """Legacy helper: body is no longer inlined; prefer reportPath + user report."""
+    return (delegate_tool_output(tools).get("message") or "").strip()
 
 
 def delegate_target_proj(tools: list) -> int | None:
     found: int | None = None
     for t in tools:
-        if not isinstance(t, dict) or t.get("toolName") != "delegate_project":
+        if not isinstance(t, dict) or t.get("toolName") != "delegate_project_tool":
             continue
         if t.get("isError"):
             continue
@@ -210,6 +219,23 @@ def scenario_solve(prompt: str, session_id: str | None = None) -> dict:
     msg = ""
     if isinstance(oj, dict):
         msg = (oj.get("message") or oj.get("report") or "")[:500]
+    # ToolCompleteTurn: sync MCP may leave message empty; canonical body is task/PG. Author: kejiqing
+    if sid and not (msg or "").strip():
+        try:
+            task = http("GET", f"/v1/tasks/{sid}")
+            result = task.get("result") or {}
+            toj = result.get("outputJson") or {}
+            if isinstance(toj, str):
+                try:
+                    toj = json.loads(toj)
+                except json.JSONDecodeError:
+                    toj = {}
+            if isinstance(toj, dict):
+                msg = (toj.get("message") or toj.get("report") or "")[:500]
+            if not (msg or "").strip():
+                msg = (result.get("outputText") or "")[:500]
+        except urllib.error.HTTPError:
+            pass
     http_ok = (
         solve.get("status") in ("succeeded", "completed", None)
         and solve.get("clawExitCode", 0) == 0
@@ -233,25 +259,26 @@ def scenario_solve(prompt: str, session_id: str | None = None) -> dict:
             tools = [{"error": f"tools fetch HTTP {e.code}"}]
     delegate_ok = any(
         isinstance(t, dict)
-        and t.get("toolName") == "delegate_project"
+        and t.get("toolName") == "delegate_project_tool"
         and not t.get("isError")
         for t in tools
     )
-    delegate_msg = delegate_tool_message(tools)
-    tool_message_ok = (not delegate_ok) or bool(delegate_msg)
-    # User-visible report should align with SSE; tool result must carry specialist body for CC messages.
+    report_path = delegate_tool_report_path(tools)
+    tool_path_ok = (not delegate_ok) or bool(report_path)
+    # User-visible report from task/PG; tool result must point at router-session file.
     content_ok = bool(msg) and not is_handoff_only(msg)
     user_visible_ok = content_ok
     return {
         "check": "solve",
-        "pass": http_ok and delegate_ok and tool_message_ok and content_ok and user_visible_ok,
+        "pass": http_ok and delegate_ok and tool_path_ok and content_ok and user_visible_ok,
         "sessionId": sid,
         "turnId": turn_id,
         "status": solve.get("status"),
         "clawExitCode": solve.get("clawExitCode"),
         "delegateProjectCalled": delegate_ok,
         "delegateTargetProjId": delegate_target_proj(tools),
-        "delegateMessageLen": len(delegate_msg),
+        "delegateReportPath": report_path,
+        "delegateMessageLen": len(delegate_tool_message(tools)),
         "userReportHandoffOnly": is_handoff_only(msg),
         "toolNames": [t.get("toolName") for t in tools if isinstance(t, dict)],
         "messagePreview": msg,
@@ -262,21 +289,12 @@ def scenario_solve(prompt: str, session_id: str | None = None) -> dict:
 
 def scenario_solve_ops(prompt: str = "昨天的销售额和订单量是多少？") -> dict:
     r = scenario_solve(prompt)
-    delegate_msg = ""
-    if r.get("sessionId") and r.get("turnId"):
-        try:
-            tools = http(
-                "GET",
-                f"/v1/sessions/{r['sessionId']}/turns/{r['turnId']}/tools?proj_id={ROUTER_PROJ}",
-            ).get("tools") or []
-            delegate_msg = delegate_tool_message(tools)
-        except urllib.error.HTTPError:
-            pass
-    body = delegate_msg or r.get("messagePreview") or ""
+    body = r.get("messagePreview") or ""
     target_ok = r.get("delegateTargetProjId") == OPS_PROJ
     ops_shape_ok = looks_like_ops_answer(body) and not has_manual_url(body)
+    path_ok = bool(r.get("delegateReportPath"))
     r["check"] = "solve_ops"
-    r["pass"] = bool(r.get("pass")) and target_ok and ops_shape_ok
+    r["pass"] = bool(r.get("pass")) and target_ok and ops_shape_ok and path_ok
     r["delegateTargetOk"] = target_ok
     r["opsAnswerShapeOk"] = ops_shape_ok
     r["hasManualUrl"] = has_manual_url(body)

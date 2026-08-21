@@ -195,30 +195,31 @@ pub fn master_seed_skills_json() -> Value {
 
 const ROUTER_CLAUDE_TEMPLATE: &str = r#"# GPOS Router (entry project)
 
-You are the **GPOS router**: classify user intent and delegate to specialist projects via delegate_project.
+You are the **GPOS router**: classify user intent and delegate to specialist projects via delegate_project_tool.
 You do **not** answer product manual or business analytics yourself.
 
 ## Intent routing
 1. **Off-topic / chitchat** → Skill(self-introduction) only; no delegate.
-2. **Product how-to** (POS / Back Office setup) → delegate_project to kb-qa target (see specialist-registry).
-3. **Business analytics / 问数** → delegate_project to ops-analysis target.
+2. **Product how-to** (POS / Back Office setup) → delegate_project_tool to kb-qa target (see specialist-registry).
+3. **Business analytics / 问数** → delegate_project_tool to ops-analysis target.
 4. **Mixed** (how-to + metrics in one message) → serial delegates: extract sub-questions; default order how-to then analytics.
 
 ## Hard rules
-- **First step before any `delegate_project`**: `Skill("specialist-registry")` and copy the numeric `targetProjId` from the Active delegate targets table.
+- **First step before any `delegate_project_tool`**: `Skill("specialist-registry")` and copy the numeric `targetProjId` from the Active delegate targets table.
 - **`projId` must be that integer** (e.g. ops-analysis row) — never use label names as Skill calls; never guess ids like `1` or `2`.
 - Delegate **only** necessary targets; never delegate chitchat.
 - Pass extraSession unchanged; do not embed store_id in userPrompt.
-- Do **not** pass sessionId to delegate_project.
+- Do **not** pass sessionId to delegate_project_tool.
 - Read specialist-registry for target projIds (refreshed on activate).
+- Each assistant turn after the first successful delegate is **control-only**: emit exactly one tool_use and **no user-visible text**.
 
-## After delegate_project
-- Tool result includes the specialist terminal report in `message` (full body). Your next LLM turn reads it from CC messages like any tool result.
-- User-visible live text during delegate comes from specialist `report.delta` on the same router SSE (gateway fan-in); do not duplicate that body in your own report.delta.
-- **Single intent**: after delegate completes, stop without emitting user-visible filler.
-- **Mixed serial**: you may emit a short bridge sentence between delegates, then call the next delegate_project. Never restate or rewrite specialist body text already in tool results.
+## After delegate_project_tool
+- Tool result has `status`, ids, and `reportPath` under **this router session** (`.claw/delegate-agents-results/<routerTurnId>.md`). Body is **not** inlined as `message`.
+- User-visible live text during delegate comes from specialist body pushed onto this router turn SSE (worker passthrough). Do **not** paste `reportPath` contents into your own report.delta.
+- **Still more specialists needed**: call exactly one next `delegate_project_tool` (no text).
+- **Done**: call `complete_router_turn` (no text). Harness ends the turn; do not summarize.
 - Never write a final summary that merges or replaces specialist segments.
-- NEVER reply with handoff-only filler such as 已转交 / 稍后解答 / 请稍候 without substantive content.
+- NEVER reply with handoff-only filler such as 已转交 / 稍后解答 / 请稍候.
 "#;
 
 #[must_use]
@@ -239,7 +240,7 @@ pub fn router_seed_skills_json() -> Value {
 
 #[must_use]
 pub fn router_allowed_tools_json() -> Value {
-    json!(["delegate_project", "Skill"])
+    json!(["delegate_project_tool", "complete_router_turn", "Skill"])
 }
 
 /// Apply router seed CLAUDE + skills and set role. Author: kejiqing
@@ -314,8 +315,8 @@ pub async fn enable_ops_delegate_tool(db: &GatewaySessionDb, proj_id: i64) -> Re
         .ok_or_else(|| format!("project {proj_id} not found"))?;
     let mut allowed: Vec<String> =
         serde_json::from_value(row.allowed_tools_json.clone()).unwrap_or_default();
-    if !allowed.iter().any(|t| t == "delegate_project") {
-        allowed.push("delegate_project".to_string());
+    if !allowed.iter().any(|t| t == "delegate_project_tool") {
+        allowed.push("delegate_project_tool".to_string());
     }
     row.allowed_tools_json = json!(allowed);
     let now = now_ms_for_registry();

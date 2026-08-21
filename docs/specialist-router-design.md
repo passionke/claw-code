@@ -35,7 +35,7 @@ GPOS 经营助手现网（预发 271 / 生产 27）在**单个 project** 内混�
                               │
                     意图判别 (CLAUDE + specialist-registry)
                               │
-                    delegate_project (serial, passthrough)
+                    delegate_project_tool (serial, passthrough)
                               │
               ┌───────────────┼───────────────┐
               ▼               ▼               ▼
@@ -49,7 +49,7 @@ GPOS 经营助手现网（预发 271 / 生产 27）在**单个 project** 内混�
 
 | project | project_role | 职责 | 有 | 无 |
 |---------|--------------|------|-----|-----|
-| **router**（新建） | `router` | 判意图、委托 | `delegate_project`、`self-introduction` | SQLBot、KB |
+| **router**（新建） | `router` | 判意图、委托 | `delegate_project_tool`、`self-introduction` | SQLBot、KB |
 | **kb-qa**（新建） | `normal` | 产品手册 how-to | `product-manual-qa`、`/home/kb` | SQLBot |
 | **ops-analysis**（271） | `normal` | 经营问数 | SQLBot、分析 skills | 手册 KB |
 
@@ -63,14 +63,14 @@ GPOS 经营助手现网（预发 271 / 生产 27）在**单个 project** 内混�
 |------|------|
 | 路由知识在 router | CLAUDE + `specialist-registry`；**不做** specialist 快问 |
 | 只派必要一路 | 禁止经营题顺带查 KB |
-| 混合问 | 同轮多次 `delegate_project`，**serial**；router 不写合并稿 |
+| 混合问 | 同轮多次 `delegate_project_tool`，**serial**；router 不写合并稿 |
 | Mesh | 后续专章；v1 不实现 agent 间协商 |
 
 三路意图从 [`gpos-assistant-prompt-content.md`](gpos-assistant-prompt-content.md) 迁移至 router。
 
 ### 4.2 `project_role=router`
 
-- 对外入口唯一 role；物化注入 `delegate_project`
+- 对外入口唯一 role；物化注入 `delegate_project_tool`
 - specialist 保持 `normal`；仅被 delegate
 - 与 `master` / `observation` **不同 role、不同生命周期**
 
