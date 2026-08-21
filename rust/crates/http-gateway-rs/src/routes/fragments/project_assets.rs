@@ -91,7 +91,7 @@ pub(crate) async fn project_selected_allowed_tools(
     };
     let mut selected = project_tools::parse_allowed_tools_json(&row.allowed_tools_json)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    // Match materialize: non-empty router allowlists must expose delegate_project_tool. Author: kejiqing
+    // Match materialize: non-empty router allowlists must expose delegate + finish tools. Author: kejiqing
     if !selected.is_empty() {
         let role = state
             .session_db

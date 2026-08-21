@@ -40,7 +40,7 @@ use runtime::{
     ApiClient as RuntimeApiClient, ApiRequest, AssistantEvent, ConfigLoader, ContentBlock,
     ConversationMessage, ConversationRuntime, McpServerManager, McpTool, MessageRole,
     PermissionMode, PermissionPolicy, RuntimeConfig, RuntimeError, Session, SharedToolExecutor,
-    ToolError, ToolExecutor as RuntimeToolExecutor,
+    ToolError, ToolExecutor as RuntimeToolExecutor, ToolOutcome,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -52,6 +52,7 @@ use tools::{
 };
 
 pub mod agent_orchestration;
+pub mod complete_router_turn;
 pub mod delegate_project_tool;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
@@ -75,6 +76,9 @@ pub mod task_progress;
 pub mod turn_language;
 pub mod turn_tools;
 pub mod worker_env;
+pub use complete_router_turn::{
+    complete_router_turn_tool_definition, run_complete_router_turn, COMPLETE_ROUTER_TURN_TOOL_NAME,
+};
 pub use delegate_project_tool::{
     delegate_project_tool_definition, router_delegate_report_claw_file, run_delegate_project,
     DELEGATE_AGENTS_RESULTS_DIR_REL, DELEGATE_PROJECT_TOOL_NAME,
@@ -529,6 +533,9 @@ impl DirectApiClient {
         if is_tool_allowed(DELEGATE_PROJECT_TOOL_NAME, allowed_tools) {
             tools.push(delegate_project_tool_definition());
         }
+        if is_tool_allowed(COMPLETE_ROUTER_TURN_TOOL_NAME, allowed_tools) {
+            tools.push(complete_router_turn_tool_definition());
+        }
         let tools = dedupe_tool_definitions_by_name(tools);
         Ok(Self {
             model,
@@ -596,6 +603,10 @@ impl RuntimeApiClient for DirectApiClient {
             ))
         })
         .map_err(|e| RuntimeError::new(e.to_string()))
+    }
+
+    fn set_user_visible_text_stream(&mut self, enabled: bool) {
+        self.stream_report_deltas = enabled;
     }
 }
 
@@ -859,6 +870,27 @@ impl RuntimeToolExecutor for DirectToolExecutor {
         self.inner.execute_impl(tool_name, input)
     }
 
+    fn execute_outcome(
+        &mut self,
+        tool_name: &str,
+        input: &str,
+    ) -> Result<ToolOutcome, ToolError> {
+        if tool_name == DELEGATE_PROJECT_TOOL_NAME {
+            let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
+            let output = run_delegate_project(&self.inner.mcp_context, &parsed)?;
+            return Ok(tool_outcome_for_delegate_success(
+                output,
+                &self.inner.allowed_tools,
+            ));
+        }
+        if tool_name == COMPLETE_ROUTER_TURN_TOOL_NAME {
+            let output = run_complete_router_turn(&self.inner.mcp_context)?;
+            return Ok(ToolOutcome::complete_turn(output));
+        }
+        self.execute(tool_name, input)
+            .map(ToolOutcome::continue_with)
+    }
+
     fn shared_executor(&self) -> Option<Arc<dyn SharedToolExecutor>> {
         if default_mcp_max_concurrent() <= 1 {
             return None;
@@ -1012,6 +1044,23 @@ fn is_tool_allowed(tool_name: &str, allowed_tools: &[String]) -> bool {
         }
     }
     false
+}
+
+/// Router role (finish tool allowed) enters control-only; nested specialist stays Continue.
+/// Author: kejiqing
+#[must_use]
+pub(crate) fn tool_outcome_for_delegate_success(
+    output: String,
+    allowed_tools: &[String],
+) -> ToolOutcome {
+    if allowed_tools
+        .iter()
+        .any(|t| t == COMPLETE_ROUTER_TURN_TOOL_NAME)
+    {
+        ToolOutcome::continue_control_only(output)
+    } else {
+        ToolOutcome::continue_with(output)
+    }
 }
 
 fn convert_runtime_messages_to_api(messages: &[ConversationMessage]) -> Vec<InputMessage> {
@@ -1554,6 +1603,9 @@ pub fn run_gateway_solve_turn(
         )
     })?;
     let mcp_extra_session = mcp.extra_session.clone();
+    let router_protocol_enabled = allowed_tools
+        .iter()
+        .any(|t| t == COMPLETE_ROUTER_TURN_TOOL_NAME);
     let mut tool_executor = DirectToolExecutor::new(
         work_dir.to_path_buf(),
         mcp,
@@ -1574,6 +1626,10 @@ pub fn run_gateway_solve_turn(
     }
     policy = policy.with_tool_requirement(
         REPORT_PROGRESS_TOOL_NAME.to_string(),
+        PermissionMode::ReadOnly,
+    );
+    policy = policy.with_tool_requirement(
+        COMPLETE_ROUTER_TURN_TOOL_NAME.to_string(),
         PermissionMode::ReadOnly,
     );
 
@@ -1619,6 +1675,12 @@ pub fn run_gateway_solve_turn(
         ConversationRuntime::new(session, api_client, tool_executor, policy, system_prompt);
     runtime = runtime.with_max_iterations(max_iterations);
     runtime = runtime.with_turn_timing(turn_timing);
+    if router_protocol_enabled {
+        runtime = runtime.with_control_tool_allowlist([
+            DELEGATE_PROJECT_TOOL_NAME,
+            COMPLETE_ROUTER_TURN_TOOL_NAME,
+        ]);
+    }
     if let Some(tracer) = session_tracer {
         runtime = runtime.with_session_tracer(tracer);
     }
@@ -1631,11 +1693,23 @@ pub fn run_gateway_solve_turn(
         otel_turn.mark_error(&message);
         err(HTTP_INTERNAL, message)
     })?;
-    let message = assistant_report_text_from_turn(&result.assistant_messages);
+    // ToolCompleteTurn: specialist body already on reportPath / live hub; do not use
+    // empty router control text as the final message. Author: kejiqing
+    let message = if result.completion_reason
+        == runtime::TurnCompletionReason::ToolCompleteTurn
+    {
+        String::new()
+    } else {
+        assistant_report_text_from_turn(&result.assistant_messages)
+    };
     let mut out_json = json!({
         "model": effective_model,
         "iterations": result.iterations,
         "message": message,
+        "completionReason": match result.completion_reason {
+            runtime::TurnCompletionReason::ModelEndTurn => "model_end_turn",
+            runtime::TurnCompletionReason::ToolCompleteTurn => "tool_complete_turn",
+        },
         "usage": {
             "input_tokens": result.usage.input_tokens,
             "output_tokens": result.usage.output_tokens,
@@ -2061,5 +2135,46 @@ mod turn_max_iterations_inheritance_tests {
         assert_eq!(exec.turn_max_iterations(), 1024);
         let cloned = exec.clone_with_allowed_tools(vec!["read_file".to_string()]);
         assert_eq!(cloned.turn_max_iterations(), 1024);
+    }
+}
+
+#[cfg(test)]
+mod router_protocol_outcome_tests {
+    use runtime::{ToolLoopDirective, ToolOutcome};
+
+    use super::{
+        tool_outcome_for_delegate_success, COMPLETE_ROUTER_TURN_TOOL_NAME,
+        DELEGATE_PROJECT_TOOL_NAME,
+    };
+
+    #[test]
+    fn router_with_finish_tool_enters_control_only() {
+        let allowed = vec![
+            DELEGATE_PROJECT_TOOL_NAME.to_string(),
+            COMPLETE_ROUTER_TURN_TOOL_NAME.to_string(),
+        ];
+        let out = tool_outcome_for_delegate_success(r#"{"status":"succeeded"}"#.into(), &allowed);
+        assert_eq!(out.directive, ToolLoopDirective::ContinueControlOnly);
+        assert!(out.output.contains("succeeded"));
+    }
+
+    #[test]
+    fn nested_specialist_without_finish_stays_continue() {
+        let allowed = vec![DELEGATE_PROJECT_TOOL_NAME.to_string()];
+        let out = tool_outcome_for_delegate_success(r#"{"status":"succeeded"}"#.into(), &allowed);
+        assert_eq!(out.directive, ToolLoopDirective::Continue);
+    }
+
+    #[test]
+    fn tool_complete_turn_clears_worker_message_for_disk_canonical() {
+        // Mirrors run_gateway_solve_turn: ToolCompleteTurn must not publish router control text.
+        let completion = runtime::TurnCompletionReason::ToolCompleteTurn;
+        let message = if completion == runtime::TurnCompletionReason::ToolCompleteTurn {
+            String::new()
+        } else {
+            "should not appear".into()
+        };
+        assert!(message.is_empty());
+        let _ = ToolOutcome::complete_turn("{}");
     }
 }

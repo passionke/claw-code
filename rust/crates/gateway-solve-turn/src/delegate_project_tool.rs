@@ -551,6 +551,22 @@ mod tests {
     }
 
     #[test]
+    fn serial_separator_only_when_file_non_empty() {
+        let dir = tempdir().expect("temp");
+        let path = dir.path().join("acc.md");
+        fs::write(&path, "").expect("create");
+        append_serial_separator(&path).expect("noop on empty");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+        append_router_report(&path, "first").expect("append");
+        append_serial_separator(&path).expect("sep");
+        append_router_report(&path, "second").expect("append2");
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(body.starts_with("first"));
+        assert!(body.contains("\n---\n"));
+        assert!(body.ends_with("second"));
+    }
+
+    #[test]
     fn router_report_path_is_under_claw_by_turn() {
         let rel = router_delegate_report_rel("T_b");
         assert_eq!(rel, ".claw/delegate-agents-results/T_b.md");

@@ -1,6 +1,8 @@
 //! Gateway tool catalog and per-`proj_id` allowed-tools resolution (DB only). Author: kejiqing
 
-use gateway_solve_turn::{DELEGATE_PROJECT_TOOL_NAME, REPORT_PROGRESS_TOOL_NAME};
+use gateway_solve_turn::{
+    COMPLETE_ROUTER_TURN_TOOL_NAME, DELEGATE_PROJECT_TOOL_NAME, REPORT_PROGRESS_TOOL_NAME,
+};
 use serde_json::Value;
 use tools::mvp_tool_specs;
 
@@ -27,6 +29,12 @@ pub fn gateway_registered_tool_catalog() -> Vec<ToolCatalogEntry> {
     out.push(ToolCatalogEntry {
         name: DELEGATE_PROJECT_TOOL_NAME.to_string(),
         description: "Delegate to a specialist project (router / nested delegate)".to_string(),
+        source: "builtin".to_string(),
+    });
+    out.push(ToolCatalogEntry {
+        name: COMPLETE_ROUTER_TURN_TOOL_NAME.to_string(),
+        description: "End router turn after successful delegate(s); no user-visible text"
+            .to_string(),
         source: "builtin".to_string(),
     });
     out.push(ToolCatalogEntry {

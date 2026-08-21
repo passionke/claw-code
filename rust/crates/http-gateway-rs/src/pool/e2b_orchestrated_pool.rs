@@ -250,7 +250,8 @@ impl PoolOps for E2bOrchestratedPool {
                         )
                         .ok()
                     });
-                    let fanin_report = self.live_report_hub.router_fanin_acc_snapshot(turn_id);
+                    // Delegated turns: reportPath (worker passthrough disk) is canonical.
+                    // Undelegated turns fall back to worker final answer. Author: kejiqing
                     let disk_report = self
                         .nas_layout
                         .read_session_claw_utf8(
@@ -262,13 +263,7 @@ impl PoolOps for E2bOrchestratedPool {
                         .ok()
                         .flatten()
                         .filter(|s| !s.trim().is_empty());
-                    // Prefer specialist body (fan-in / disk) over router worker handoff text. Author: kejiqing
-                    let report = fanin_report
-                        .as_deref()
-                        .filter(|s| !s.trim().is_empty())
-                        .map(str::to_string)
-                        .or(disk_report)
-                        .or(worker_report);
+                    let report = disk_report.or(worker_report);
                     let mut output_json = parsed.output_json.clone();
                     if let (Some(ref body), Some(ref mut j)) = (&report, &mut output_json) {
                         if let Some(obj) = j.as_object_mut() {

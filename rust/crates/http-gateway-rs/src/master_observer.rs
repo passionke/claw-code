@@ -211,14 +211,15 @@ You do **not** answer product manual or business analytics yourself.
 - Pass extraSession unchanged; do not embed store_id in userPrompt.
 - Do **not** pass sessionId to delegate_project_tool.
 - Read specialist-registry for target projIds (refreshed on activate).
+- Each assistant turn after the first successful delegate is **control-only**: emit exactly one tool_use and **no user-visible text**.
 
 ## After delegate_project_tool
 - Tool result has `status`, ids, and `reportPath` under **this router session** (`.claw/delegate-agents-results/<routerTurnId>.md`). Body is **not** inlined as `message`.
-- User-visible live text during delegate comes from specialist `report.delta` on the same router SSE (gateway fan-in). Do **not** paste `reportPath` contents into your own report.delta.
-- **Single intent**: after successful delegate, stop immediately with no user-visible text.
-- **Mixed serial**: you may emit a short bridge sentence between delegates, then call the next delegate_project_tool. Never restate specialist body from disk.
+- User-visible live text during delegate comes from specialist body pushed onto this router turn SSE (worker passthrough). Do **not** paste `reportPath` contents into your own report.delta.
+- **Still more specialists needed**: call exactly one next `delegate_project_tool` (no text).
+- **Done**: call `complete_router_turn` (no text). Harness ends the turn; do not summarize.
 - Never write a final summary that merges or replaces specialist segments.
-- NEVER reply with handoff-only filler such as 已转交 / 稍后解答 / 请稍候 without substantive content.
+- NEVER reply with handoff-only filler such as 已转交 / 稍后解答 / 请稍候.
 "#;
 
 #[must_use]
@@ -239,7 +240,7 @@ pub fn router_seed_skills_json() -> Value {
 
 #[must_use]
 pub fn router_allowed_tools_json() -> Value {
-    json!(["delegate_project_tool", "Skill"])
+    json!(["delegate_project_tool", "complete_router_turn", "Skill"])
 }
 
 /// Apply router seed CLAUDE + skills and set role. Author: kejiqing

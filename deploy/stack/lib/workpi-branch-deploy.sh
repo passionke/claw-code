@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# workPi: rebuild e2b templates from branch CI image + local arm64 gateway, then restart.
-# Usage: ./deploy/stack/lib/workpi-branch-deploy.sh <branch-tag> [--skip-gateway-build]
-# Example: ./deploy/stack/lib/workpi-branch-deploy.sh branch-feat-delegate-output-yield
+# workPi: deploy from branch CI ACR images only (no local rust compile).
+# Usage: ./deploy/stack/lib/workpi-branch-deploy.sh <branch-tag> [--local-gateway-build]
+# Example: ./deploy/stack/lib/workpi-branch-deploy.sh branch-feat-router-finish
+#
+# Default path (fast):
+#   1) e2b-worker-deploy --from-ci-image <tag>   # claw from ACR → e2b templates
+#   2) gateway.sh up --release <tag>            # http-gateway-rs from ACR claw-code
+#
+# Opt-in `--local-gateway-build` keeps the old arm64 cargo path (slow; avoid).
 # Author: kejiqing
 set -euo pipefail
 
@@ -9,12 +15,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 GATEWAY="${REPO_ROOT}/deploy/stack/gateway.sh"
 
-TAG="${1:?usage: $0 <branch-tag> [--skip-gateway-build]}"
-SKIP_GATEWAY_BUILD=0
+TAG="${1:?usage: $0 <branch-tag> [--local-gateway-build]}"
+LOCAL_GATEWAY_BUILD=0
 shift || true
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --skip-gateway-build) SKIP_GATEWAY_BUILD=1 ;;
+    --local-gateway-build) LOCAL_GATEWAY_BUILD=1 ;;
+    --skip-gateway-build)
+      echo "error: --skip-gateway-build removed; default already skips local compile" >&2
+      echo "  use: $0 ${TAG}   # ACR up --release" >&2
+      exit 2
+      ;;
     *) echo "error: unknown arg: $1" >&2; exit 2 ;;
   esac
   shift || true
@@ -34,22 +45,23 @@ fi
 export CLAW_IMAGE_REGISTRY="${CLAW_IMAGE_REGISTRY:-acr}"
 export CLAW_IMAGE_RELEASE_TAG="${TAG}"
 
-echo "==> workPi branch deploy: CI tag=${TAG} (ACR claw-code + local gateway)"
+echo "==> workPi branch deploy: CI tag=${TAG} (ACR only; no local package by default)"
 echo "    repo=${REPO_ROOT}"
+echo "    CLAW_IMAGE_REGISTRY=${CLAW_IMAGE_REGISTRY}"
 
-echo "==> 1/3 e2b-worker-deploy --from-ci-image ${TAG}"
+echo "==> 1/2 e2b-worker-deploy --from-ci-image ${TAG}"
 "${GATEWAY}" e2b-worker-deploy --from-ci-image "${TAG}"
 
-if [[ "${SKIP_GATEWAY_BUILD}" -eq 0 ]]; then
-  echo "==> 2/3 gateway build local (arm64 http-gateway-rs + fan-in changes)"
+if [[ "${LOCAL_GATEWAY_BUILD}" -eq 1 ]]; then
+  echo "==> 2/2 local arm64 gateway build + restart (SLOW; prefer ACR)"
   "${GATEWAY}" build local
+  "${GATEWAY}" restart
 else
-  echo "==> 2/3 skip gateway build (--skip-gateway-build)"
+  echo "==> 2/2 gateway up --release ${TAG} (pull ACR claw-code; no cargo)"
+  "${GATEWAY}" up --release "${TAG}"
 fi
-
-echo "==> 3/3 gateway restart (pick up new PG buildId + local gateway)"
-"${GATEWAY}" restart
 
 echo "==> done. verify:"
 echo "    curl -sS http://127.0.0.1:\${GATEWAY_HOST_PORT:-18088}/healthz | jq ."
 echo "    ${GATEWAY} check"
+echo "    expect deployImageTag / image pin = ${TAG}"

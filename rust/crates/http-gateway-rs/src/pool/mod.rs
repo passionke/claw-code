@@ -49,7 +49,7 @@ pub use interactive_backend::{
     InteractiveSandboxBackend, InteractiveSessionSpec, E2B_WORKER_TAP_PLACEHOLDER_API_KEY,
 };
 pub use live_report_hub::{HubMsg, LiveReportHub};
-pub use live_report_sse::{live_report_sse_response, router_fanin_live_sse_response};
+pub use live_report_sse::live_report_sse_response;
 #[allow(unused_imports)]
 pub use result::parse_gateway_solve_exec_stdout;
 pub use session_db_sync::{

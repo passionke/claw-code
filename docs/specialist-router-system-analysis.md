@@ -160,10 +160,11 @@ router **无** SQLBot MCP、**无** KB 挂载。
 
 ## 6. SSE / Live
 
-- 客户端只订 **router** turn live（[`live-report-contract.md`](live-report-contract.md) 路径 B）
-- passthrough：specialist `report.delta` → router stdout ingest → 同一 Hub 广播
-- serial：同轮 tool₂ 在 tool₁ 终态后开始；禁止双路同时抄同一 stdout
-
+- 客户端只订 **router** turn live（[`live-report-contract.md`](live-report-contract.md) 路径 B′）
+- 正文唯一数据面：specialist SSE → `delegate_project_tool` passthrough → router stdout → router Hub → 用户 SSE
+- `delegate.active` / `delegate.clear` 只做控制/进度，**不**改订用户 SSE 数据源
+- serial：同轮 tool₂ 在 tool₁ 终态后开始；禁止双路正文同时写入 router Hub
+- 委派结束后必须调用 `complete_router_turn`；harness 直接结束 turn，禁止复述
 ## 7. 实施顺序
 
 1. 迁移：`router` role + 两表
