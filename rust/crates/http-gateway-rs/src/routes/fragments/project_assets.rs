@@ -89,8 +89,23 @@ pub(crate) async fn project_selected_allowed_tools(
     let Some(row) = row else {
         return Ok(None);
     };
-    let selected = project_tools::parse_allowed_tools_json(&row.allowed_tools_json)
+    let mut selected = project_tools::parse_allowed_tools_json(&row.allowed_tools_json)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    // Match materialize: non-empty router allowlists must expose delegate_project_tool. Author: kejiqing
+    if !selected.is_empty() {
+        let role = state
+            .session_db
+            .get_project_role(proj_id)
+            .await
+            .map_err(|e| session_db_err(&e))?;
+        if role == crate::master_observer::PROJECT_ROLE_ROUTER {
+            let injected = crate::delegate_router::ensure_delegate_project_allowed_tools(
+                &serde_json::json!(selected),
+            );
+            selected = project_tools::parse_allowed_tools_json(&injected)
+                .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        }
+    }
     if selected.is_empty() {
         Ok(None)
     } else {

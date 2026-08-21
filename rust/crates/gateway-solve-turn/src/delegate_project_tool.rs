@@ -1,7 +1,10 @@
-//! `delegate_project_tool`: enqueue specialist solve, fan-in live, persist body into **router session**. Author: kejiqing
+//! `delegate_project_tool`: enqueue specialist solve; dual-path body into **router** turn. Author: kejiqing
 //!
-//! Specialist only speaks. This tool writes the body under the router's own session home and
-//! returns `reportPath` (no inlined `message`).
+//! Two paths (both required):
+//! 1. **Push** — `emit_report_delta` on router worker stdout → LiveReportHub for this router turn
+//! 2. **Disk** — append under router session `.claw/delegate-agents-results/<routerTurnId>.md` (`reportPath`)
+//!
+//! Tool result: status + ids + `reportPath` only (no inlined `message`).
 
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -17,7 +20,7 @@ use runtime::ToolError;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::gateway_stdout::{emit_delegate_active, emit_delegate_clear};
+use crate::gateway_stdout::{emit_delegate_active, emit_delegate_clear, emit_report_delta};
 use crate::mcp_call_context::GatewayMcpCallContext;
 
 pub const DELEGATE_PROJECT_TOOL_NAME: &str = "delegate_project_tool";
@@ -67,8 +70,8 @@ pub fn delegate_project_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: DELEGATE_PROJECT_TOOL_NAME.to_string(),
         description: Some(
-            "Delegate the user question to a specialist project. Live report streams via gateway fan-in. \
-             On success the body is stored under this router session at reportPath (not inlined). \
+            "Delegate the user question to a specialist project. Specialist body is pushed into this \
+             router turn's live report hub and written to reportPath under the router session (not inlined). \
              Required: projId, userPrompt. Pass extraSession unchanged. Do not pass sessionId."
                 .to_string(),
         ),
@@ -239,6 +242,7 @@ fn ensure_router_report_file(
     Ok((rel, path))
 }
 
+/// Disk path only. Prefer [`push_specialist_chunk`] for live + disk. Author: kejiqing
 fn append_router_report(path: &Path, chunk: &str) -> Result<(), ToolError> {
     if chunk.is_empty() {
         return Ok(());
@@ -251,6 +255,15 @@ fn append_router_report(path: &Path, chunk: &str) -> Result<(), ToolError> {
     f.write_all(chunk.as_bytes())
         .map_err(|e| ToolError::new(format!("append {}: {e}", path.display())))?;
     Ok(())
+}
+
+/// Push into router LiveReportHub (stdout) and append `reportPath` file. Author: kejiqing
+fn push_specialist_chunk(path: &Path, chunk: &str) -> Result<(), ToolError> {
+    if chunk.is_empty() {
+        return Ok(());
+    }
+    emit_report_delta(chunk).map_err(|e| ToolError::new(format!("report.delta stdout: {e}")))?;
+    append_router_report(path, chunk)
 }
 
 fn append_serial_separator(path: &Path) -> Result<(), ToolError> {
@@ -267,8 +280,8 @@ fn append_serial_separator(path: &Path) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// Follow specialist live SSE and write into the router-session file. Author: kejiqing
-fn stream_specialist_into_router_file(
+/// Follow specialist live SSE → push hub + write `reportPath` file. Author: kejiqing
+fn stream_specialist_to_hub_and_disk(
     client: &Client,
     base: &str,
     specialist_session_id: &str,
@@ -304,7 +317,7 @@ fn stream_specialist_into_router_file(
             if event_name == "biz.report.delta" {
                 if let Ok(v) = serde_json::from_str::<Value>(data) {
                     if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
-                        let _ = append_router_report(out_path, text);
+                        let _ = push_specialist_chunk(out_path, text);
                     }
                 }
             } else if event_name == "biz.report.done" {
@@ -313,13 +326,13 @@ fn stream_specialist_into_router_file(
                     let empty = fs::metadata(out_path).map(|m| m.len() == 0).unwrap_or(true);
                     if empty {
                         if let Some(text) = report_text_from_biz_payload(&v) {
-                            let _ = append_router_report(out_path, &text);
+                            let _ = push_specialist_chunk(out_path, &text);
                         } else if let Some(text) = v
                             .get("reportText")
                             .and_then(|t| t.as_str())
                             .filter(|s| !s.is_empty())
                         {
-                            let _ = append_router_report(out_path, text);
+                            let _ = push_specialist_chunk(out_path, text);
                         }
                     }
                 }
@@ -354,7 +367,7 @@ fn fill_router_file_from_terminal_if_empty(
             Ok(v) => {
                 let text = report_text_from_biz_payload(&v)
                     .ok_or_else(|| ToolError::new("delegate specialist returned empty report"))?;
-                append_router_report(out_path, &text)?;
+                push_specialist_chunk(out_path, &text)?;
                 return Ok(());
             }
             Err(e) => {
@@ -448,7 +461,7 @@ pub fn run_delegate_project(
     let out_t = out_path.clone();
     let stream_client = http_client()?;
     let stream_join = thread::spawn(move || {
-        stream_specialist_into_router_file(
+        stream_specialist_to_hub_and_disk(
             &stream_client,
             &base_t,
             &spec_session,
