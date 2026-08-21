@@ -107,11 +107,7 @@ mod tests {
         fs::write(&path, "").expect("write empty");
         let mcp = McpCallContext::new("sess", "T_empty", "req", None);
         let err = run_complete_router_turn(&mcp).expect_err("empty");
-        assert!(
-            err.to_string().contains("empty"),
-            "error={}",
-            err
-        );
+        assert!(err.to_string().contains("empty"), "error={}", err);
         if let Some(p) = prev {
             let _ = std::env::set_current_dir(p);
         }

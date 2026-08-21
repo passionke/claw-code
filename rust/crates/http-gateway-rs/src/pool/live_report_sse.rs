@@ -370,7 +370,11 @@ mod tests {
         match timeout(Duration::from_secs(2), rx.recv()).await {
             Ok(Some(BizReportStreamMsg::Done(d))) => {
                 assert_eq!(d.report_text.as_deref(), Some("only-router"));
-                assert!(!d.report_text.as_deref().unwrap_or("").contains("SHOULD_NOT"));
+                assert!(!d
+                    .report_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("SHOULD_NOT"));
             }
             _ => panic!("expected done"),
         }

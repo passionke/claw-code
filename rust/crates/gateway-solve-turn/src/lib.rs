@@ -870,11 +870,7 @@ impl RuntimeToolExecutor for DirectToolExecutor {
         self.inner.execute_impl(tool_name, input)
     }
 
-    fn execute_outcome(
-        &mut self,
-        tool_name: &str,
-        input: &str,
-    ) -> Result<ToolOutcome, ToolError> {
+    fn execute_outcome(&mut self, tool_name: &str, input: &str) -> Result<ToolOutcome, ToolError> {
         if tool_name == DELEGATE_PROJECT_TOOL_NAME {
             let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
             let output = run_delegate_project(&self.inner.mcp_context, &parsed)?;
@@ -1695,9 +1691,7 @@ pub fn run_gateway_solve_turn(
     })?;
     // ToolCompleteTurn: specialist body already on reportPath / live hub; do not use
     // empty router control text as the final message. Author: kejiqing
-    let message = if result.completion_reason
-        == runtime::TurnCompletionReason::ToolCompleteTurn
-    {
+    let message = if result.completion_reason == runtime::TurnCompletionReason::ToolCompleteTurn {
         String::new()
     } else {
         assistant_report_text_from_turn(&result.assistant_messages)

@@ -75,11 +75,7 @@ pub trait ToolExecutor {
 
     /// Structured tool result with harness loop directive. Default wraps [`Self::execute`]
     /// as [`ToolLoopDirective::Continue`]. Author: kejiqing
-    fn execute_outcome(
-        &mut self,
-        tool_name: &str,
-        input: &str,
-    ) -> Result<ToolOutcome, ToolError> {
+    fn execute_outcome(&mut self, tool_name: &str, input: &str) -> Result<ToolOutcome, ToolError> {
         self.execute(tool_name, input)
             .map(ToolOutcome::continue_with)
     }
@@ -569,8 +565,7 @@ where
             self.emit_turn_timing("llm_stream_started", llm_attrs);
 
             let control_only = self.control_only_next_iteration;
-            self.api_client
-                .set_user_visible_text_stream(!control_only);
+            self.api_client.set_user_visible_text_stream(!control_only);
 
             let llm_started = Instant::now();
             let events = match self.api_client.stream(request) {
@@ -629,9 +624,10 @@ where
             );
 
             if control_only {
-                if let Err(error) =
-                    validate_control_only_assistant(&assistant_message, self.control_tool_allowlist.as_ref())
-                {
+                if let Err(error) = validate_control_only_assistant(
+                    &assistant_message,
+                    self.control_tool_allowlist.as_ref(),
+                ) {
                     self.record_turn_failed(iterations, &error);
                     return Err(error);
                 }
@@ -1555,11 +1551,7 @@ impl ToolExecutor for StaticToolExecutor {
             .ok_or_else(|| ToolError::new(format!("unknown tool: {tool_name}")))?(input)
     }
 
-    fn execute_outcome(
-        &mut self,
-        tool_name: &str,
-        input: &str,
-    ) -> Result<ToolOutcome, ToolError> {
+    fn execute_outcome(&mut self, tool_name: &str, input: &str) -> Result<ToolOutcome, ToolError> {
         if let Some(handler) = self.outcome_handlers.get_mut(tool_name) {
             return handler(input);
         }
@@ -1571,12 +1563,12 @@ impl ToolExecutor for StaticToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_assistant_message, join_remaining_background_jobs, parse_auto_compaction_threshold,
-        validate_control_only_assistant, ApiClient, ApiRequest, AssistantEvent,
-        AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
+        build_assistant_message, join_remaining_background_jobs, merge_tool_loop_directives,
+        parse_auto_compaction_threshold, validate_control_only_assistant, ApiClient, ApiRequest,
+        AssistantEvent, AutoCompactionEvent, BackgroundToolJob, ConversationRuntime, HookRunResult,
         PromptCacheEvent, RuntimeError, SharedToolExecutor, StaticToolExecutor,
         ToolExecuteRawOutcome, ToolExecutor, ToolLoopDirective, ToolOutcome, TurnCompletionReason,
-        DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD, merge_tool_loop_directives,
+        DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
     use crate::compact::CompactionConfig;
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
@@ -3530,7 +3522,10 @@ mod tests {
             calls: usize,
         }
         impl ApiClient for OneShotThenPanic {
-            fn stream(&mut self, _request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 self.calls += 1;
                 if self.calls > 1 {
                     return Err(RuntimeError::new("unexpected second LLM call"));
@@ -3576,7 +3571,10 @@ mod tests {
             calls: usize,
         }
         impl ApiClient for TwoCallControl {
-            fn stream(&mut self, _request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 self.calls += 1;
                 match self.calls {
                     1 => Ok(vec![
@@ -3610,11 +3608,7 @@ mod tests {
         let err = runtime
             .run_turn("ask specialist", None)
             .expect_err("control-only text must fail");
-        assert!(
-            err.to_string().contains("control-only"),
-            "error={}",
-            err
-        );
+        assert!(err.to_string().contains("control-only"), "error={}", err);
     }
 
     #[test]
@@ -3623,7 +3617,10 @@ mod tests {
             calls: usize,
         }
         impl ApiClient for ControlThenFinish {
-            fn stream(&mut self, _request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 self.calls += 1;
                 match self.calls {
                     1 => Ok(vec![
@@ -3695,9 +3692,7 @@ mod tests {
         ]);
         assert!(validate_control_only_assistant(&with_text, None).is_err());
 
-        let empty = ConversationMessage::assistant(vec![ContentBlock::Text {
-            text: "".into(),
-        }]);
+        let empty = ConversationMessage::assistant(vec![ContentBlock::Text { text: "".into() }]);
         assert!(validate_control_only_assistant(&empty, None).is_err());
 
         let two_tools = ConversationMessage::assistant(vec![
@@ -3733,7 +3728,10 @@ mod tests {
             calls: usize,
         }
         impl ApiClient for TwoCallEmptyEnd {
-            fn stream(&mut self, _request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 self.calls += 1;
                 match self.calls {
                     1 => Ok(vec![
@@ -3763,7 +3761,9 @@ mod tests {
             Session::new(),
             TwoCallEmptyEnd { calls: 0 },
             StaticToolExecutor::new().register_outcome("delegate_project_tool", |_input| {
-                Ok(ToolOutcome::continue_control_only(r#"{"status":"succeeded"}"#))
+                Ok(ToolOutcome::continue_control_only(
+                    r#"{"status":"succeeded"}"#,
+                ))
             }),
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
@@ -3772,11 +3772,7 @@ mod tests {
         let err = runtime
             .run_turn("ask", None)
             .expect_err("control-only must require a tool");
-        assert!(
-            err.to_string().contains("control-only"),
-            "error={}",
-            err
-        );
+        assert!(err.to_string().contains("control-only"), "error={}", err);
     }
 
     #[test]
@@ -3785,7 +3781,10 @@ mod tests {
             calls: usize,
         }
         impl ApiClient for ConcurrentFinish {
-            fn stream(&mut self, _request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 self.calls += 1;
                 Ok(vec![
                     AssistantEvent::ToolUse {
@@ -3808,7 +3807,9 @@ mod tests {
             ConcurrentFinish { calls: 0 },
             StaticToolExecutor::new()
                 .register_outcome("delegate_project_tool", |_input| {
-                    Ok(ToolOutcome::continue_control_only(r#"{"status":"succeeded"}"#))
+                    Ok(ToolOutcome::continue_control_only(
+                        r#"{"status":"succeeded"}"#,
+                    ))
                 })
                 .register_outcome("complete_router_turn", |_input| {
                     Ok(ToolOutcome::complete_turn(r#"{"status":"completed"}"#))
@@ -3820,11 +3821,7 @@ mod tests {
         let err = runtime
             .run_turn("bad concurrent", None)
             .expect_err("CompleteTurn must be sole tool");
-        assert!(
-            err.to_string().contains("CompleteTurn"),
-            "error={}",
-            err
-        );
+        assert!(err.to_string().contains("CompleteTurn"), "error={}", err);
     }
 
     #[test]
@@ -3833,7 +3830,10 @@ mod tests {
             calls: usize,
         }
         impl ApiClient for SerialDelegates {
-            fn stream(&mut self, _request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 self.calls += 1;
                 match self.calls {
                     1 => Ok(vec![
@@ -3870,7 +3870,9 @@ mod tests {
             SerialDelegates { calls: 0 },
             StaticToolExecutor::new()
                 .register_outcome("delegate_project_tool", |_input| {
-                    Ok(ToolOutcome::continue_control_only(r#"{"status":"succeeded"}"#))
+                    Ok(ToolOutcome::continue_control_only(
+                        r#"{"status":"succeeded"}"#,
+                    ))
                 })
                 .register_outcome("complete_router_turn", |_input| {
                     Ok(ToolOutcome::complete_turn(r#"{"status":"completed"}"#))
@@ -3893,9 +3895,9 @@ mod tests {
         assert_eq!(runtime.session().messages.len(), 7);
         let has_final_text = runtime.session().messages.iter().any(|m| {
             m.role == MessageRole::Assistant
-                && m.blocks.iter().any(|b| {
-                    matches!(b, ContentBlock::Text { text } if !text.trim().is_empty())
-                })
+                && m.blocks
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()))
         });
         assert!(!has_final_text);
     }
@@ -3909,7 +3911,10 @@ mod tests {
             flags: Arc<Mutex<Vec<bool>>>,
         }
         impl ApiClient for VisibilitySpy {
-            fn stream(&mut self, _request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 self.calls += 1;
                 match self.calls {
                     1 => Ok(vec![
@@ -3971,7 +3976,10 @@ mod tests {
             calls: usize,
         }
         impl ApiClient for FailThenAnswer {
-            fn stream(&mut self, _request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
                 self.calls += 1;
                 match self.calls {
                     1 => Ok(vec![
