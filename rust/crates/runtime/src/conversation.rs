@@ -102,7 +102,7 @@ pub trait SharedToolExecutor: Send + Sync {
 pub enum ToolLoopDirective {
     /// Keep looping; next LLM iteration may emit user-visible text.
     Continue,
-    /// Keep looping, but next LLM iteration is control-only (single tool_use; no user text).
+    /// Keep looping, but next LLM iteration is control-only (single `tool_use`; no user text).
     ContinueControlOnly,
     /// Persist the tool exchange and end the turn without another LLM call.
     CompleteTurn,
@@ -144,7 +144,7 @@ impl ToolOutcome {
 /// Why a turn ended. Author: kejiqing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnCompletionReason {
-    /// Assistant returned content with no tool_use.
+    /// Assistant returned content with no `tool_use`.
     ModelEndTurn,
     /// A tool returned [`ToolLoopDirective::CompleteTurn`].
     ToolCompleteTurn,
@@ -251,7 +251,7 @@ pub struct ConversationRuntime<C, T> {
     session_tracer: Option<SessionTracer>,
     turn_timing: Option<Arc<dyn TurnTimingSink>>,
     /// After a successful control-only tool, the next LLM iteration must be a single
-    /// tool_use with no user-visible text. Author: kejiqing
+    /// `tool_use` with no user-visible text. Author: kejiqing
     control_only_next_iteration: bool,
     /// When set, control-only iterations may only call these tool names. Author: kejiqing
     control_tool_allowlist: Option<std::collections::HashSet<String>>,
@@ -1345,7 +1345,7 @@ fn parse_auto_compaction_threshold(value: Option<&str>) -> u32 {
         .unwrap_or(DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD)
 }
 
-/// After a control-only tool, the next assistant message must be exactly one tool_use
+/// After a control-only tool, the next assistant message must be exactly one `tool_use`
 /// with no user-visible Text. Author: kejiqing
 fn validate_control_only_assistant(
     message: &ConversationMessage,
