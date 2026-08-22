@@ -21,14 +21,15 @@ pub struct AgentCompletionRequest {
     pub extra_session: Option<Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct ChatMessage {
     pub role: String,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub content: Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct ChatCompletionsRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
@@ -40,15 +41,18 @@ pub struct ChatCompletionsRequest {
     #[serde(default)]
     pub timeout: Option<u64>,
     #[serde(default)]
+    #[schema(value_type = Option<Vec<Object>>)]
     pub tools: Option<Vec<Value>>,
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     pub extra_session: Option<Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct ResponsesRequest {
     pub model: String,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub input: Value,
     #[serde(default)]
     pub instructions: Option<String>,
@@ -59,10 +63,12 @@ pub struct ResponsesRequest {
     #[serde(default)]
     pub previous_response_id: Option<String>,
     #[serde(default)]
+    #[schema(value_type = Option<Vec<Object>>)]
     pub tools: Option<Vec<Value>>,
     #[serde(default)]
     pub timeout: Option<u64>,
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     pub extra_session: Option<Value>,
 }
 

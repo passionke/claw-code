@@ -252,7 +252,18 @@ fn with_session_header(mut resp: Response, session_id: &str) -> Response {
     resp
 }
 
-async fn chat_completions(
+#[utoipa::path(
+    post,
+    path = "/v1/chat/completions",
+    tag = "OpenAI Compat",
+    operation_id = "chat_completions",
+    responses(
+        (status = 200, description = "Chat Completions response (or SSE when stream=true)"),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Invalid API key")
+    )
+)]
+pub(crate) async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<ChatCompletionsRequest>,
@@ -299,7 +310,18 @@ async fn chat_completions(
     with_session_header(Json(body).into_response(), &session_id)
 }
 
-async fn responses(
+#[utoipa::path(
+    post,
+    path = "/v1/responses",
+    tag = "OpenAI Compat",
+    operation_id = "responses",
+    responses(
+        (status = 200, description = "Responses API object (or SSE when stream=true)"),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Invalid API key")
+    )
+)]
+pub(crate) async fn responses(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<ResponsesRequest>,
@@ -340,8 +362,8 @@ async fn responses(
     with_session_header(Json(body).into_response(), &session_id)
 }
 
-#[derive(Debug, Deserialize)]
-struct IssueKeyBody {
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub(crate) struct IssueKeyBody {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -366,7 +388,15 @@ async fn require_admin_or_open(state: &AppState, headers: &HeaderMap) -> Result<
     Ok(())
 }
 
-async fn list_model_api_keys(
+#[utoipa::path(
+    get,
+    path = "/v1/projects/{proj_id}/model-api-keys",
+    tag = "OpenAI Compat",
+    operation_id = "list_model_api_keys",
+    params(("proj_id" = i64, Path, description = "Project ID")),
+    responses((status = 200, description = "Project model API keys"))
+)]
+pub(crate) async fn list_model_api_keys(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::extract::Path(proj_id): axum::extract::Path<i64>,
@@ -380,7 +410,16 @@ async fn list_model_api_keys(
     Ok(Json(json!({ "keys": list })))
 }
 
-async fn issue_model_api_key(
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{proj_id}/model-api-keys",
+    tag = "OpenAI Compat",
+    operation_id = "issue_model_api_key",
+    params(("proj_id" = i64, Path, description = "Project ID")),
+    request_body = IssueKeyBody,
+    responses((status = 200, description = "Issued key (token plaintext once)"))
+)]
+pub(crate) async fn issue_model_api_key(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::extract::Path(proj_id): axum::extract::Path<i64>,
@@ -412,7 +451,18 @@ async fn issue_model_api_key(
     Ok(Json(issued))
 }
 
-async fn revoke_model_api_key(
+#[utoipa::path(
+    delete,
+    path = "/v1/projects/{proj_id}/model-api-keys/{token_id}",
+    tag = "OpenAI Compat",
+    operation_id = "revoke_model_api_key",
+    params(
+        ("proj_id" = i64, Path, description = "Project ID"),
+        ("token_id" = String, Path, description = "Model API key id")
+    ),
+    responses((status = 200, description = "Revoked"))
+)]
+pub(crate) async fn revoke_model_api_key(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::extract::Path((_proj_id, token_id)): axum::extract::Path<(i64, String)>,
