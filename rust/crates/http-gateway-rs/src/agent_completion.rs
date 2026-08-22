@@ -169,15 +169,13 @@ pub fn normalize_chat_completions(
             }
         }
     }
-    let user_prompt = last_user
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            openai_error(
-                "messages must include a non-empty user message",
-                "invalid_request",
-                "invalid_request_error",
-            )
-        })?;
+    let user_prompt = last_user.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+        openai_error(
+            "messages must include a non-empty user message",
+            "invalid_request",
+            "invalid_request_error",
+        )
+    })?;
     let mut prompt = String::new();
     if !history_parts.is_empty() {
         prompt.push_str("## Prior conversation\n");
@@ -266,7 +264,8 @@ pub fn normalize_responses(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
     {
-        prompt = format!("## Supplemental instructions\n{instr}\n\n## Current user request\n{prompt}");
+        prompt =
+            format!("## Supplemental instructions\n{instr}\n\n## Current user request\n{prompt}");
     }
     Ok((
         AgentCompletionRequest {
@@ -396,10 +395,7 @@ pub fn extract_solve_message(output_json: Option<&Value>, output_text: &str) -> 
                 return msg.to_string();
             }
         }
-        if let Some(msg) = v
-            .pointer("/outputJson/message")
-            .and_then(Value::as_str)
-        {
+        if let Some(msg) = v.pointer("/outputJson/message").and_then(Value::as_str) {
             if !msg.is_empty() {
                 return msg.to_string();
             }

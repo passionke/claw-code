@@ -275,7 +275,8 @@ async fn chat_completions(
         Err(r) => return r,
     };
     if stream {
-        let chunks = chat_completion_stream_chunks(&model, &turn_id, &session_id, &content, now_secs());
+        let chunks =
+            chat_completion_stream_chunks(&model, &turn_id, &session_id, &content, now_secs());
         let events = chunks.into_iter().map(|c| {
             // strip "data: " prefix for Event::data
             let data = c
