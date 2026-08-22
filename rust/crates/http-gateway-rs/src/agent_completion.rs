@@ -118,7 +118,7 @@ fn content_to_text(content: &Value) -> String {
     }
 }
 
-fn reject_nonempty_tools(tools: &Option<Vec<Value>>) -> Result<(), OpenAiErrorBody> {
+fn reject_nonempty_tools(tools: Option<&Vec<Value>>) -> Result<(), OpenAiErrorBody> {
     if let Some(tools) = tools {
         if !tools.is_empty() {
             return Err(openai_error(
@@ -135,7 +135,7 @@ fn reject_nonempty_tools(tools: &Option<Vec<Value>>) -> Result<(), OpenAiErrorBo
 pub fn normalize_chat_completions(
     req: &ChatCompletionsRequest,
 ) -> Result<(AgentCompletionRequest, String), OpenAiErrorBody> {
-    reject_nonempty_tools(&req.tools)?;
+    reject_nonempty_tools(req.tools.as_ref())?;
     if req.messages.is_empty() {
         return Err(openai_error(
             "messages must be a non-empty array",
@@ -256,7 +256,7 @@ fn responses_input_to_text(input: &Value) -> Result<String, OpenAiErrorBody> {
 pub fn normalize_responses(
     req: &ResponsesRequest,
 ) -> Result<(AgentCompletionRequest, String), OpenAiErrorBody> {
-    reject_nonempty_tools(&req.tools)?;
+    reject_nonempty_tools(req.tools.as_ref())?;
     let mut prompt = responses_input_to_text(&req.input)?;
     if let Some(instr) = req
         .instructions

@@ -121,10 +121,10 @@ impl GatewaySessionDb {
         let now = now_ms();
         let cluster_id = self.cluster_id().to_string();
         sqlx::query(
-            r#"INSERT INTO gateway_project_model_api_key (
+            r"INSERT INTO gateway_project_model_api_key (
                 id, cluster_id, proj_id, model_alias, name, note, token_hash, token_prefix,
                 status, created_at_ms, revoked_at_ms, last_used_at_ms
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,NULL,NULL)"#,
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,NULL,NULL)",
         )
         .bind(&id)
         .bind(&cluster_id)
@@ -163,11 +163,11 @@ impl GatewaySessionDb {
         proj_id: i64,
     ) -> Result<Vec<ProjectModelApiKeyPublic>, String> {
         let rows = sqlx::query(
-            r#"SELECT id, cluster_id, proj_id, model_alias, name, note, token_hash, token_prefix,
+            r"SELECT id, cluster_id, proj_id, model_alias, name, note, token_hash, token_prefix,
                       status, created_at_ms, revoked_at_ms, last_used_at_ms
                FROM gateway_project_model_api_key
                WHERE proj_id = $1 AND cluster_id = $2
-               ORDER BY created_at_ms DESC"#,
+               ORDER BY created_at_ms DESC",
         )
         .bind(proj_id)
         .bind(self.cluster_id())
@@ -180,9 +180,9 @@ impl GatewaySessionDb {
     pub async fn revoke_project_model_api_key(&self, token_id: &str) -> Result<bool, String> {
         let now = now_ms();
         let res = sqlx::query(
-            r#"UPDATE gateway_project_model_api_key
+            r"UPDATE gateway_project_model_api_key
                SET status = 'revoked', revoked_at_ms = $1
-               WHERE id = $2 AND cluster_id = $3 AND status = 'active'"#,
+               WHERE id = $2 AND cluster_id = $3 AND status = 'active'",
         )
         .bind(now)
         .bind(token_id.trim())
@@ -206,11 +206,11 @@ impl GatewaySessionDb {
         }
         let token_hash = hash_token(plain);
         let row = sqlx::query(
-            r#"SELECT id, cluster_id, proj_id, model_alias, name, note, token_hash, token_prefix,
+            r"SELECT id, cluster_id, proj_id, model_alias, name, note, token_hash, token_prefix,
                       status, created_at_ms, revoked_at_ms, last_used_at_ms
                FROM gateway_project_model_api_key
                WHERE token_hash = $1
-               LIMIT 1"#,
+               LIMIT 1",
         )
         .bind(&token_hash)
         .fetch_optional(self.pg_pool())
@@ -223,7 +223,7 @@ impl GatewaySessionDb {
         }
         let now = now_ms();
         let _ = sqlx::query(
-            r#"UPDATE gateway_project_model_api_key SET last_used_at_ms = $1 WHERE id = $2"#,
+            r"UPDATE gateway_project_model_api_key SET last_used_at_ms = $1 WHERE id = $2",
         )
         .bind(now)
         .bind(&entry.id)
@@ -251,14 +251,14 @@ impl GatewaySessionDb {
             .replace('-', "")[..32]
         );
         sqlx::query(
-            r#"INSERT INTO gateway_openai_conversation (
+            r"INSERT INTO gateway_openai_conversation (
                 id, cluster_id, api_key_id, proj_id, client_conversation_key, session_id,
                 created_at_ms, updated_at_ms
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
             ON CONFLICT (api_key_id, client_conversation_key) DO UPDATE SET
                 session_id = EXCLUDED.session_id,
                 updated_at_ms = EXCLUDED.updated_at_ms,
-                proj_id = EXCLUDED.proj_id"#,
+                proj_id = EXCLUDED.proj_id",
         )
         .bind(&id)
         .bind(self.cluster_id())
@@ -279,9 +279,9 @@ impl GatewaySessionDb {
         client_conversation_key: &str,
     ) -> Result<Option<(i64, String)>, String> {
         let row = sqlx::query(
-            r#"SELECT proj_id, session_id FROM gateway_openai_conversation
+            r"SELECT proj_id, session_id FROM gateway_openai_conversation
                WHERE api_key_id = $1 AND client_conversation_key = $2
-               LIMIT 1"#,
+               LIMIT 1",
         )
         .bind(api_key_id)
         .bind(client_conversation_key)
@@ -301,10 +301,10 @@ impl GatewaySessionDb {
     ) -> Result<(), String> {
         let now = now_ms();
         sqlx::query(
-            r#"INSERT INTO gateway_openai_response (
+            r"INSERT INTO gateway_openai_response (
                 response_id, cluster_id, api_key_id, proj_id, session_id, turn_id, created_at_ms
             ) VALUES ($1,$2,$3,$4,$5,$6,$7)
-            ON CONFLICT (response_id) DO NOTHING"#,
+            ON CONFLICT (response_id) DO NOTHING",
         )
         .bind(response_id)
         .bind(self.cluster_id())
@@ -324,8 +324,8 @@ impl GatewaySessionDb {
         response_id: &str,
     ) -> Result<Option<(String, i64, String, String)>, String> {
         let row = sqlx::query(
-            r#"SELECT api_key_id, proj_id, session_id, turn_id
-               FROM gateway_openai_response WHERE response_id = $1 LIMIT 1"#,
+            r"SELECT api_key_id, proj_id, session_id, turn_id
+               FROM gateway_openai_response WHERE response_id = $1 LIMIT 1",
         )
         .bind(response_id)
         .fetch_optional(self.pg_pool())
