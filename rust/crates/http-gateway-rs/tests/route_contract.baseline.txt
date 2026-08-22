@@ -8,6 +8,7 @@ GET	/v1/agent/feedback	get_agent_feedback
 POST	/v1/agent/feedback	post_agent_feedback
 GET	/v1/biz_advice_report	get_biz_advice_report
 GET	/v1/biz_advice_report_bak	get_biz_advice_report_bak
+POST	/v1/chat/completions	chat_completions
 POST	/v1/dev/biz_report_seed_task	dev_seed_biz_report_task
 GET	/v1/gateway/endpoints	list_gateway_endpoints_handler
 DELETE	/v1/gateway/endpoints/{gateway_id}	delete_gateway_endpoint_handler
@@ -95,6 +96,9 @@ GET	/v1/projects/{proj_id}/inference/llm-models/{model_id}/versions	list_project
 POST	/v1/projects/{proj_id}/inference/llm-models/{model_id}/versions/{model_rev}/apply	apply_project_llm_model_revision_handler
 GET	/v1/projects/{proj_id}/inference/observe	get_project_observe_handler
 POST	/v1/projects/{proj_id}/inference/observe/reset	reset_project_observe_handler
+GET	/v1/projects/{proj_id}/model-api-keys	list_model_api_keys
+POST	/v1/projects/{proj_id}/model-api-keys	issue_model_api_key
+DELETE	/v1/projects/{proj_id}/model-api-keys/{token_id}	revoke_model_api_key
 GET	/v1/projects/{proj_id}/ovs/workspace	ovs_workspace_handler
 GET	/v1/projects/{proj_id}/repair-runs	list_master_repair_runs
 GET	/v1/projects/{proj_id}/repair-runs/{run_id}	get_master_repair_run
@@ -104,6 +108,7 @@ PUT	/v1/projects/{proj_id}/schedules	put_master_schedule
 DELETE	/v1/projects/{proj_id}/schedules/{job_id}	delete_master_schedule
 POST	/v1/projects/{proj_id}/schedules/{job_id}/run	run_master_schedule
 GET	/v1/projects/{proj_id}/sessions	list_project_sessions
+POST	/v1/responses	responses
 GET	/v1/sessions/{session_id}/agent/ws	agent_ws_handler
 GET	/v1/sessions/{session_id}/conversation_translate	get_conversation_translate
 POST	/v1/sessions/{session_id}/conversation_translate	rebuild_conversation_translate
