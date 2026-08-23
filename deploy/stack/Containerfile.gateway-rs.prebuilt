@@ -29,7 +29,15 @@ COPY deploy/e2b/e2b_exec.py /app/deploy/e2b/
 COPY scripts/mind-kb/ /app/scripts/mind-kb/
 COPY docs/gpos-assistant-prompt-content.md /app/docs/
 # Self-hosted e2b exec helper (CLAW_E2B_EXEC_HELPER default). Author: kejiqing
-RUN pip3 install --no-cache-dir --break-system-packages e2b e2b-code-interpreter \
+# CN apt flag also drives pip: Tsinghua, same path as workPi crates/apt. Author: kejiqing
+RUN if [ "${CLAW_USE_CN_APT_MIRROR}" = "1" ]; then \
+      pip3 install --no-cache-dir --break-system-packages \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        e2b e2b-code-interpreter; \
+    else \
+      pip3 install --no-cache-dir --break-system-packages e2b e2b-code-interpreter; \
+    fi \
     && chmod +x /app/deploy/e2b/e2b_exec.py
 # Artifact upload may drop +x; enforce before ENTRYPOINT. kejiqing
 RUN chmod +x /usr/local/bin/claw /usr/local/bin/http-gateway-rs

@@ -8,6 +8,7 @@ pub(crate) mod health;
 pub(crate) mod master;
 pub(crate) mod mcp;
 pub(crate) mod meta;
+pub(crate) mod openai_compat;
 pub(crate) mod pools;
 pub(crate) mod project_assets;
 pub(crate) mod project_config;
@@ -45,6 +46,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .merge(master::router())
         .merge(delegate::router())
         .merge(mcp::router())
+        .merge(openai_compat::router())
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &http::Request<axum::body::Body>| {

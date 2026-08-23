@@ -136,11 +136,17 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::master_peer_create_observation,
         crate::routes::app::master_peer_sync_observation,
         crate::routes::app::master_peer_observation_draft,
-        crate::routes::app::master_peer_observation_solve
+        crate::routes::app::master_peer_observation_solve,
+        crate::routes::openai_compat::chat_completions,
+        crate::routes::openai_compat::responses,
+        crate::routes::openai_compat::list_model_api_keys,
+        crate::routes::openai_compat::issue_model_api_key,
+        crate::routes::openai_compat::revoke_model_api_key
     ),
     components(schemas(
         crate::gateway_e2b_singleton_lifecycle::E2bSingletonComponent,
-        crate::project_entity_revision::ProjectEntityDomain
+        crate::project_entity_revision::ProjectEntityDomain,
+        crate::routes::openai_compat::IssueKeyBody
     )),
     tags(
         (name = "System", description = "Gateway health and API metadata"),
@@ -154,7 +160,8 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         (name = "MCP", description = "MCP injection, probing, and admin operations"),
         (name = "Pools", description = "Pools, endpoints, and preflight plugins"),
         (name = "Master", description = "Master observer role, apprentices, schedules, and MCP"),
-        (name = "Router", description = "Router delegate targets and session resolve")
+        (name = "Router", description = "Router delegate targets and session resolve"),
+        (name = "OpenAI Compat", description = "OpenAI Chat Completions and Responses agent ingress")
     )
 )]
 struct DerivedApi;
