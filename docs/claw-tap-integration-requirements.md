@@ -156,6 +156,27 @@ Gateway `output_json.llmRoute` 快照字段（供审计，非 tap 接口）：
 
 ---
 
+## 6.1 Turn usage（`gateway_model_usage`）
+
+Worker 出站 LLM 请求经 observe `:8080` 上的 tap。Gateway 在 worker env 注入 `CLAW_SESSION_ID` / `CLAW_TURN_ID`，出站 HTTP 头：
+
+| 头 | 含义 |
+|----|------|
+| `claw-session-id`（及兼容 `clawcode-session-id`） | gateway `sessionId`；用于 JSONL 会话 trace |
+| `claw-turn-id` | 本轮 `T_…`（与 OpenAI 响应 `id` / `nerogate.turnId` 相同） |
+
+**Tap 要求（账单真源）：**
+
+1. 转发上游前 **strip** `claw-turn-id`（与 strip session 头同层）。
+2. **仅当**请求带了非空 `claw-turn-id`：上游完成后解析 usage + model，**INSERT** `gateway_model_usage`（`source=tap`；列口径为 Anthropic 风格 `input` / `output` / `cache_*`）。
+3. **缺 `claw-turn-id`**：代理照常，**不 INSERT、不报错**；不得猜 turn 或挂到上一轮 session。
+4. INSERT 失败只打 warn，**不阻断**代理响应。
+5. 解析 OpenAI（`prompt_tokens` / `completion_tokens` / `prompt_tokens_details.cached_tokens`）与 Anthropic（`input_tokens` / `output_tokens` / `cache_*`）。OpenAI 的 `prompt_tokens` 含 cached 时，落库须拆成 `input = prompt - cached`、`cache_read = cached`，以便 Gateway 再合成 `prompt = input + cache_creation + cache_read`。
+
+**Gateway（本仓库）**：OpenAI 兼容响应按该 `turn_id` **SUM** `gateway_model_usage`，填顶层 `usage` 与 `nerogate.usageByModel`；表空则 `usage: null`（不编造）。**禁止**扫 Live HTML / `tap-traces/` 或用 worker `TokenUsage` 当账单。Worker **不**注入 `CLAW_GATEWAY_DATABASE_URL`、**不**写 PG。
+
+---
+
 ## 7. claude-tap 实现清单（Checklist）
 
 - [ ] 读取 **`CLAW_CLUSTER_ID`**、**`CLAW_GATEWAY_DATABASE_URL`**（与 gateway 同值）
@@ -164,6 +185,7 @@ Gateway `output_json.llmRoute` 快照字段（供审计，非 tap 接口）：
 - [ ] 连接**同一 PG** 读取 gateway 全局 LLM 配置（与 gateway Admin 一致）
 - [ ] 提供 OpenAI 兼容代理（worker 只连 tap，不连 upstream 根地址）
 - [ ] 与 gateway 联调：probe 成功 → `readyz` 200 → solve 通
+- [ ] 读 `claw-turn-id`；有则 INSERT `gateway_model_usage`，无则代理不记账（§6.1）
 
 ---
 
@@ -172,6 +194,7 @@ Gateway `output_json.llmRoute` 快照字段（供审计，非 tap 接口）：
 - 无「cluster 不一致仍放行 solve、worker 直连 upstream」模式。
 - 无通过 gateway HTTP API **修改** `CLAW_CLUSTER_ID`。
 - clusterId **不是** `postgres://user@host:port/dbname` 形式（除非运维故意把 `CLAW_CLUSTER_ID` 设成该字符串，**不推荐**）。
+- 无「Gateway 解析 Live / 扫 NAS `tap-traces/` 当 token 账单」。
 
 ---
 
@@ -184,6 +207,7 @@ Gateway `output_json.llmRoute` 快照字段（供审计，非 tap 接口）：
 | `GET /healthz` | 含 `clawTapCluster` 状态 |
 | `GET /readyz` | `strict` 前 503 |
 | `GET /v1/gateway/global-settings` | `clusterId` 只读回显 gateway 的 `CLAW_CLUSTER_ID` |
+| OpenAI `/v1/chat/completions`、`/v1/responses` | 按 turn SUM `gateway_model_usage` → `usage` / `nerogate.usageByModel` |
 
 ---
 
@@ -194,4 +218,6 @@ Gateway `output_json.llmRoute` 快照字段（供审计，非 tap 接口）：
 | Hash / health 解析 | `rust/crates/http-gateway-rs/src/cluster_identity.rs` |
 | 轮询与 solve 门禁 | `rust/crates/http-gateway-rs/src/claw_tap_cluster_state.rs` |
 | Admin probe | `rust/crates/http-gateway-rs/src/gateway_claw_tap_settings.rs` |
+| LLM 出站头（session + turn） | `rust/crates/api/src/llm_trace_headers.rs` |
+| OpenAI usage 映射 | `rust/crates/http-gateway-rs/src/agent_completion.rs` |
 | 部署变量示例 | `deploy/stack/env.local.example`、`env.production.example` |

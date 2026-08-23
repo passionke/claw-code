@@ -285,6 +285,11 @@ pub(crate) async fn chat_completions(
         Ok(v) => v,
         Err(r) => return r,
     };
+    let usage_rows = state
+        .session_db
+        .list_model_usage_for_turn(&turn_id)
+        .await
+        .unwrap_or_default();
     if stream {
         let chunks =
             chat_completion_stream_chunks(&model, &turn_id, &session_id, &content, now_secs());
@@ -306,7 +311,14 @@ pub(crate) async fn chat_completions(
         );
         return with_session_header(resp, &session_id);
     }
-    let body = chat_completion_response(&model, &turn_id, &session_id, &content, now_secs());
+    let body = chat_completion_response(
+        &model,
+        &turn_id,
+        &session_id,
+        &content,
+        now_secs(),
+        &usage_rows,
+    );
     with_session_header(Json(body).into_response(), &session_id)
 }
 
@@ -343,8 +355,20 @@ pub(crate) async fn responses(
         Ok(v) => v,
         Err(r) => return r,
     };
+    let usage_rows = state
+        .session_db
+        .list_model_usage_for_turn(&turn_id)
+        .await
+        .unwrap_or_default();
     if stream {
-        let created = responses_api_response(&model, &turn_id, &session_id, &content, now_ms());
+        let created = responses_api_response(
+            &model,
+            &turn_id,
+            &session_id,
+            &content,
+            now_ms(),
+            &usage_rows,
+        );
         let events = vec![
             Ok::<Event, Infallible>(
                 Event::default()
@@ -358,7 +382,14 @@ pub(crate) async fn responses(
             .into_response();
         return with_session_header(resp, &session_id);
     }
-    let body = responses_api_response(&model, &turn_id, &session_id, &content, now_ms());
+    let body = responses_api_response(
+        &model,
+        &turn_id,
+        &session_id,
+        &content,
+        now_ms(),
+        &usage_rows,
+    );
     with_session_header(Json(body).into_response(), &session_id)
 }
 

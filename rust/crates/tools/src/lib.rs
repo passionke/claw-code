@@ -5154,6 +5154,7 @@ impl ApiClient for ProviderRuntimeClient {
                 tools: (!tools.is_empty()).then(|| tools.clone()),
                 tool_choice: tool_choice.clone(),
                 stream: true,
+                extra_headers: api::llm_trace_headers_from_env(),
                 ..Default::default()
             };
 

@@ -35,6 +35,18 @@ pub struct GatewaySessionSummary {
     pub has_good_feedback: bool,
 }
 
+/// One LLM call recorded by observe tap into `gateway_model_usage`. Author: kejiqing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnModelUsageRow {
+    pub provider: Option<String>,
+    pub model: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_creation_input_tokens: u32,
+    pub cache_read_input_tokens: u32,
+    pub source: String,
+}
+
 /// One row for [`GatewaySessionDb::list_turns_for_session`]. Author: kejiqing
 #[derive(Debug, Clone)]
 pub struct GatewayTurnSummary {
@@ -4712,6 +4724,45 @@ impl GatewaySessionDb {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Per-call LLM usage rows written by observe tap for this turn. Author: kejiqing
+    pub async fn list_model_usage_for_turn(
+        &self,
+        turn_id: &str,
+    ) -> Result<Vec<TurnModelUsageRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT provider, model, input_tokens, output_tokens,
+                     cache_creation_input_tokens, cache_read_input_tokens, source
+              FROM gateway_model_usage
+              WHERE turn_id = $1
+              ORDER BY usage_id ASC",
+        )
+        .bind(turn_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| TurnModelUsageRow {
+                provider: row.try_get::<Option<String>, _>("provider").ok().flatten(),
+                model: row
+                    .try_get::<String, _>("model")
+                    .unwrap_or_else(|_| "unknown".to_string()),
+                input_tokens: row.try_get::<i32, _>("input_tokens").unwrap_or(0).max(0) as u32,
+                output_tokens: row.try_get::<i32, _>("output_tokens").unwrap_or(0).max(0) as u32,
+                cache_creation_input_tokens: row
+                    .try_get::<i32, _>("cache_creation_input_tokens")
+                    .unwrap_or(0)
+                    .max(0) as u32,
+                cache_read_input_tokens: row
+                    .try_get::<i32, _>("cache_read_input_tokens")
+                    .unwrap_or(0)
+                    .max(0) as u32,
+                source: row
+                    .try_get::<String, _>("source")
+                    .unwrap_or_else(|_| "unknown".to_string()),
+            })
+            .collect())
     }
 
     pub async fn finalize_turn_with_artifacts_ready(

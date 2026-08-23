@@ -24,7 +24,7 @@
     clippy::useless_format
 )]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -575,16 +575,7 @@ impl RuntimeApiClient for DirectApiClient {
             tools: Some(self.tools.clone()),
             tool_choice: Some(ToolChoice::Auto),
             stream: true,
-            extra_headers: BTreeMap::from([
-                (
-                    "clawcode-session-id".to_string(),
-                    self.clawcode_session_id.clone(),
-                ),
-                (
-                    "claw-session-id".to_string(),
-                    self.clawcode_session_id.clone(),
-                ),
-            ]),
+            extra_headers: api::llm_trace_headers_for_session(&self.clawcode_session_id),
             // Boss report needs visible `content` text (live SSE + outputJson.message).
             thinking_enabled: Some(false),
             ..Default::default()
@@ -1374,16 +1365,7 @@ where
         // Polish must return plain assistant text only; DeepSeek defaults thinking on.
         thinking_enabled: Some(false),
         stream: true,
-        extra_headers: BTreeMap::from([
-            (
-                "clawcode-session-id".to_string(),
-                clawcode_session_id.to_string(),
-            ),
-            (
-                "claw-session-id".to_string(),
-                clawcode_session_id.to_string(),
-            ),
-        ]),
+        extra_headers: api::llm_trace_headers_for_session(clawcode_session_id),
         ..Default::default()
     };
     let events = stream_events(&provider, &req, on_text_delta.as_mut())
