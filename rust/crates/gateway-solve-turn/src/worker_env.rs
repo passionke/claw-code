@@ -160,16 +160,17 @@ fn read_gateway_record_session_id_file(work_root: &Path) -> Option<String> {
     }
 }
 
-/// LLM outbound headers — same keys as [`crate::DirectApiClient`] / `/v1/solve`. Author: kejiqing
+/// LLM outbound headers — session + turn for observe tap usage aggregation.
+/// Prefer [`api::llm_trace_headers_from_env`] / [`api::llm_trace_headers_for_session`]
+/// at call sites that already have a session id. Author: kejiqing
 #[must_use]
 pub fn gateway_llm_session_extra_headers() -> BTreeMap<String, String> {
-    let Some(session_id) = resolve_gateway_llm_session_id() else {
-        return BTreeMap::new();
-    };
-    BTreeMap::from([
-        ("clawcode-session-id".to_string(), session_id.clone()),
-        ("claw-session-id".to_string(), session_id),
-    ])
+    let session = resolve_gateway_llm_session_id();
+    let turn = std::env::var("CLAW_TURN_ID")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    api::llm_trace_headers(session.as_deref(), turn.as_deref())
 }
 
 /// Idempotent guest shell: stage dialogue `record_session_id` for the next `claw` LLM call. Author: kejiqing
@@ -278,13 +279,16 @@ mod tests {
     fn gateway_llm_session_extra_headers_match_solve_contract() {
         let _guard = env_lock();
         std::env::set_var("CLAW_SESSION_ID", "sess-x");
+        std::env::set_var("CLAW_TURN_ID", "T_x");
         let h = gateway_llm_session_extra_headers();
         assert_eq!(h.get("claw-session-id").map(String::as_str), Some("sess-x"));
         assert_eq!(
             h.get("clawcode-session-id").map(String::as_str),
             Some("sess-x")
         );
+        assert_eq!(h.get("claw-turn-id").map(String::as_str), Some("T_x"));
         std::env::remove_var("CLAW_SESSION_ID");
+        std::env::remove_var("CLAW_TURN_ID");
     }
 
     #[test]

@@ -15,6 +15,19 @@ Base URL 示例：`http://127.0.0.1:18088`
   - **`clawTapCluster`**：内存态 clawTap 集群校验快照（`strict` / `mismatch` 等）；端点主机与 Live URL 在 Admin **`GET /v1/gateway/global-settings`** 的 **`clawTap`**（PG）中维护：`host`、`proxyPort`、`livePort`，以及派生字段 `proxyBaseUrl`、`liveBaseUrl`、`liveSessionUrlTemplate`（统一为 `http://…:3000/api/sessions/traces?session={sessionId}`）
   - **`liveReport`**：求解过程 stdout 实时 SSE（经 pool 代理），与 claude-tap Live 查看器无关
 
+## OpenAI Compat（Agent 完成）
+
+面向外部 SDK（OpenAI / LangChain / SQLBot 等）的标准协议入口；底层与 `/v1/solve` **同一 Agent kernel**。Usage 系列见 [`openai-compat-agent-completion.md`](openai-compat-agent-completion.md) 与 [`usage/openai-compat/`](usage/openai-compat/)。
+
+| Method | Path | Auth | 说明 |
+|--------|------|------|------|
+| `POST` | `/v1/chat/completions` | Bearer `ngmk_…` | Chat Completions 形状；Key 绑定 `projId`+`modelAlias` |
+| `POST` | `/v1/responses` | Bearer `ngmk_…` | Responses 形状；可用 `conversation` / `previous_response_id` 续聊 |
+| `GET` / `POST` | `/v1/projects/{proj_id}/model-api-keys` | 可选 `camt_…` | 列表 / 签发（明文 `token` 仅创建时返回） |
+| `DELETE` | `/v1/projects/{proj_id}/model-api-keys/{token_id}` | 可选 `camt_…` | 吊销 |
+
+要点：非空 OpenAI `tools` → `400 unsupported_feature`；`stream=true` 先同步跑完再推最终内容（非 token 流）；响应 `id`=`turnId`，头 `x-nerogate-session-id`=`sessionId`。本路径不暴露 `allowedTools` / `attachments`。
+
 ## Solve
 
 - `POST /v1/solve`

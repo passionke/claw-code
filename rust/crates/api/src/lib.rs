@@ -2,6 +2,7 @@ mod boundary_log;
 mod client;
 mod error;
 mod http_client;
+pub mod llm_trace_headers;
 mod message_convert;
 mod otel_llm;
 mod prompt_cache;
@@ -18,6 +19,10 @@ pub use client::{
 pub use error::ApiError;
 pub use http_client::{
     build_http_client, build_http_client_or_default, build_http_client_with, ProxyConfig,
+};
+pub use llm_trace_headers::{
+    llm_trace_headers, llm_trace_headers_for_session, llm_trace_headers_from_env,
+    CLAWCODE_SESSION_HEADER, CLAW_SESSION_HEADER, CLAW_TURN_HEADER,
 };
 pub use message_convert::{
     convert_runtime_messages, convert_runtime_messages_gateway, image_input_from_path,

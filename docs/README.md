@@ -68,6 +68,8 @@ Author: kejiqing
 |------|------|
 | [`http-gateway-rs-quickstart.md`](http-gateway-rs-quickstart.md) | API 速查 |
 | [`http-gateway-rs-api.md`](http-gateway-rs-api.md) | 接口详表 |
+| [`openai-compat-agent-completion.md`](openai-compat-agent-completion.md) | **OpenAI 兼容 Agent 完成** Usage 索引（`/v1/chat/completions`、`/v1/responses`） |
+| [`usage/openai-compat/`](usage/openai-compat/) | 对外 usage 系列：选型 / 快速开始 / Chat / Responses / SDK |
 | [`http-gateway-rs-docs-practice.md`](http-gateway-rs-docs-practice.md) | 对外契约类型 / OpenAPI 实践 |
 | [`deploy-ops-truth.md`](deploy-ops-truth.md) | 脚本实际行为（与 README 对照） |
 | [`project-config-model.md`](project-config-model.md) | PG `project_config` |

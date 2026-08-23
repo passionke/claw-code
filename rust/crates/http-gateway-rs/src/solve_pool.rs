@@ -378,6 +378,9 @@ pub(crate) async fn run_solve_request_docker(
     if let Some(tp) = task.otel_traceparent.as_deref() {
         exec_env.insert("TRACEPARENT".to_string(), tp.to_string());
     }
+    // Tap usage aggregation keys every LLM call by turn. Author: kejiqing
+    exec_env.insert("CLAW_SESSION_ID".to_string(), session_id.clone());
+    exec_env.insert("CLAW_TURN_ID".to_string(), turn_id.clone());
     // delegate_project_tool in e2b worker callbacks gateway HTTP APIs. Author: kejiqing
     if pool_id == E2B_POOL_ID {
         let base = state.gateway_identity.gateway_base.trim();

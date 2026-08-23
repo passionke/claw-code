@@ -1,6 +1,5 @@
 //! Per-turn response language inference (step 0) and system-prompt injection. Author: kejiqing
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -285,13 +284,7 @@ async fn run_language_inference_llm(
         tool_choice: None,
         stream: true,
         thinking_enabled: Some(false),
-        extra_headers: BTreeMap::from([
-            (
-                "clawcode-session-id".to_string(),
-                session_id.to_string(),
-            ),
-            ("claw-session-id".to_string(), session_id.to_string()),
-        ]),
+        extra_headers: api::llm_trace_headers_for_session(session_id),
         ..Default::default()
     };
     let mut noop_delta = |_delta: &str| {};

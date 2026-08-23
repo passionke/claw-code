@@ -1,5 +1,7 @@
 //! Normalize OpenAI Chat Completions / Responses into AgentCompletionRequest.
 //! Author: kejiqing
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -304,7 +306,16 @@ pub fn chat_completion_response(
     session_id: &str,
     content: &str,
     created: i64,
+    usage_rows: &[crate::session_db::TurnModelUsageRow],
 ) -> Value {
+    let (usage, usage_by_model) = openai_usage_from_rows(usage_rows);
+    let mut nerogate = json!({
+        "sessionId": session_id,
+        "turnId": turn_id
+    });
+    if let Some(by_model) = usage_by_model {
+        nerogate["usageByModel"] = by_model;
+    }
     json!({
         "id": turn_id,
         "object": "chat.completion",
@@ -318,11 +329,8 @@ pub fn chat_completion_response(
             },
             "finish_reason": "stop"
         }],
-        "usage": Value::Null,
-        "nerogate": {
-            "sessionId": session_id,
-            "turnId": turn_id
-        }
+        "usage": usage,
+        "nerogate": nerogate
     })
 }
 
@@ -370,7 +378,16 @@ pub fn responses_api_response(
     session_id: &str,
     content: &str,
     created_ms: i64,
+    usage_rows: &[crate::session_db::TurnModelUsageRow],
 ) -> Value {
+    let (usage, usage_by_model) = responses_usage_from_rows(usage_rows);
+    let mut nerogate = json!({
+        "sessionId": session_id,
+        "turnId": turn_id
+    });
+    if let Some(by_model) = usage_by_model {
+        nerogate["usageByModel"] = by_model;
+    }
     json!({
         "id": turn_id,
         "object": "response",
@@ -386,12 +403,115 @@ pub fn responses_api_response(
                 "text": content
             }]
         }],
-        "usage": Value::Null,
-        "nerogate": {
-            "sessionId": session_id,
-            "turnId": turn_id
-        }
+        "usage": usage,
+        "nerogate": nerogate
     })
+}
+
+/// Map tap `gateway_model_usage` rows → OpenAI Chat Completions `usage` + by-model breakdown.
+/// Empty rows → `(Null, None)` — never invent tokens. Author: kejiqing
+#[must_use]
+pub fn openai_usage_from_rows(
+    rows: &[crate::session_db::TurnModelUsageRow],
+) -> (Value, Option<Value>) {
+    if rows.is_empty() {
+        return (Value::Null, None);
+    }
+    let mut by_model: BTreeMap<String, (u32, u32, u32, u32)> = BTreeMap::new();
+    for row in rows {
+        let entry = by_model.entry(row.model.clone()).or_default();
+        entry.0 = entry.0.saturating_add(row.input_tokens);
+        entry.1 = entry.1.saturating_add(row.output_tokens);
+        entry.2 = entry.2.saturating_add(row.cache_creation_input_tokens);
+        entry.3 = entry.3.saturating_add(row.cache_read_input_tokens);
+    }
+    let mut prompt_tokens = 0u32;
+    let mut completion_tokens = 0u32;
+    let mut cached_tokens = 0u32;
+    let mut usage_by_model = Vec::new();
+    for (model, (input, output, cache_create, cache_read)) in &by_model {
+        let model_prompt = input
+            .saturating_add(*cache_create)
+            .saturating_add(*cache_read);
+        prompt_tokens = prompt_tokens.saturating_add(model_prompt);
+        completion_tokens = completion_tokens.saturating_add(*output);
+        cached_tokens = cached_tokens.saturating_add(*cache_read);
+        usage_by_model.push(json!({
+            "model": model,
+            "prompt_tokens": model_prompt,
+            "completion_tokens": output,
+            "total_tokens": model_prompt.saturating_add(*output),
+            "prompt_tokens_details": { "cached_tokens": cache_read }
+        }));
+    }
+    let usage = json!({
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens.saturating_add(completion_tokens),
+        "prompt_tokens_details": { "cached_tokens": cached_tokens }
+    });
+    (usage, Some(Value::Array(usage_by_model)))
+}
+
+/// Responses API usage shape (`input_tokens` / `output_tokens`). Author: kejiqing
+#[must_use]
+pub fn responses_usage_from_rows(
+    rows: &[crate::session_db::TurnModelUsageRow],
+) -> (Value, Option<Value>) {
+    let (chat_usage, by_model) = openai_usage_from_rows(rows);
+    if chat_usage.is_null() {
+        return (Value::Null, None);
+    }
+    let prompt = chat_usage
+        .get("prompt_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let completion = chat_usage
+        .get("completion_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cached = chat_usage
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let usage = json!({
+        "input_tokens": prompt,
+        "output_tokens": completion,
+        "total_tokens": prompt.saturating_add(completion),
+        "input_tokens_details": { "cached_tokens": cached }
+    });
+    let by_model = by_model.map(|arr| {
+        Value::Array(
+            arr.as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| {
+                    let model = item.get("model").cloned().unwrap_or(Value::Null);
+                    let input = item
+                        .get("prompt_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let output = item
+                        .get("completion_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let cached = item
+                        .pointer("/prompt_tokens_details/cached_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    json!({
+                        "model": model,
+                        "input_tokens": input,
+                        "output_tokens": output,
+                        "total_tokens": input.saturating_add(output),
+                        "input_tokens_details": { "cached_tokens": cached }
+                    })
+                })
+                .collect(),
+        )
+    });
+    (usage, by_model)
 }
 
 pub fn extract_solve_message(output_json: Option<&Value>, output_text: &str) -> String {
@@ -464,5 +584,58 @@ mod tests {
             extra_session: None,
         };
         assert!(normalize_chat_completions(&req).is_err());
+    }
+
+    #[test]
+    fn openai_usage_empty_is_null() {
+        let (usage, by_model) = openai_usage_from_rows(&[]);
+        assert!(usage.is_null());
+        assert!(by_model.is_none());
+    }
+
+    #[test]
+    fn openai_usage_sums_turn_and_by_model() {
+        use crate::session_db::TurnModelUsageRow;
+        let rows = vec![
+            TurnModelUsageRow {
+                provider: Some("openai".into()),
+                model: "m1".into(),
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_creation_input_tokens: 2,
+                cache_read_input_tokens: 3,
+                source: "tap".into(),
+            },
+            TurnModelUsageRow {
+                provider: Some("openai".into()),
+                model: "m1".into(),
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                source: "tap".into(),
+            },
+            TurnModelUsageRow {
+                provider: Some("anthropic".into()),
+                model: "m2".into(),
+                input_tokens: 100,
+                output_tokens: 20,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 7,
+                source: "tap".into(),
+            },
+        ];
+        let (usage, by_model) = openai_usage_from_rows(&rows);
+        // m1 prompt = (10+2+3)+(1+0+0)=16; m2 prompt = 100+0+7=107 → 123
+        assert_eq!(usage["prompt_tokens"], 123);
+        assert_eq!(usage["completion_tokens"], 26);
+        assert_eq!(usage["total_tokens"], 149);
+        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 10);
+        let arr = by_model.expect("by model").as_array().cloned().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["model"], "m1");
+        assert_eq!(arr[0]["prompt_tokens"], 16);
+        assert_eq!(arr[1]["model"], "m2");
+        assert_eq!(arr[1]["prompt_tokens"], 107);
     }
 }
