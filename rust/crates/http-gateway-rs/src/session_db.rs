@@ -4743,24 +4743,27 @@ impl GatewaySessionDb {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|row| TurnModelUsageRow {
-                provider: row.try_get::<Option<String>, _>("provider").ok().flatten(),
-                model: row
-                    .try_get::<String, _>("model")
-                    .unwrap_or_else(|_| "unknown".to_string()),
-                input_tokens: row.try_get::<i32, _>("input_tokens").unwrap_or(0).max(0) as u32,
-                output_tokens: row.try_get::<i32, _>("output_tokens").unwrap_or(0).max(0) as u32,
-                cache_creation_input_tokens: row
-                    .try_get::<i32, _>("cache_creation_input_tokens")
-                    .unwrap_or(0)
-                    .max(0) as u32,
-                cache_read_input_tokens: row
-                    .try_get::<i32, _>("cache_read_input_tokens")
-                    .unwrap_or(0)
-                    .max(0) as u32,
-                source: row
-                    .try_get::<String, _>("source")
-                    .unwrap_or_else(|_| "unknown".to_string()),
+            .map(|row| {
+                let nonneg = |v: i32| -> u32 { u32::try_from(v.max(0)).unwrap_or(0) };
+                TurnModelUsageRow {
+                    provider: row.try_get::<Option<String>, _>("provider").ok().flatten(),
+                    model: row
+                        .try_get::<String, _>("model")
+                        .unwrap_or_else(|_| "unknown".to_string()),
+                    input_tokens: nonneg(row.try_get::<i32, _>("input_tokens").unwrap_or(0)),
+                    output_tokens: nonneg(row.try_get::<i32, _>("output_tokens").unwrap_or(0)),
+                    cache_creation_input_tokens: nonneg(
+                        row.try_get::<i32, _>("cache_creation_input_tokens")
+                            .unwrap_or(0),
+                    ),
+                    cache_read_input_tokens: nonneg(
+                        row.try_get::<i32, _>("cache_read_input_tokens")
+                            .unwrap_or(0),
+                    ),
+                    source: row
+                        .try_get::<String, _>("source")
+                        .unwrap_or_else(|_| "unknown".to_string()),
+                }
             })
             .collect())
     }
