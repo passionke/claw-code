@@ -779,6 +779,31 @@ impl GatewaySessionDb {
         .execute(pool)
         .await?;
 
+        // No FK to gateway_turns(turn_id): after cluster migration the turns PK is
+        // (cluster_id, turn_id). Tap inserts by turn_id only; turn ids are globally unique.
+        // Author: kejiqing
+        sqlx::query(
+            r"CREATE TABLE IF NOT EXISTS gateway_model_usage (
+                usage_id BIGSERIAL PRIMARY KEY,
+                turn_id TEXT NOT NULL,
+                provider TEXT,
+                model TEXT NOT NULL,
+                input_tokens INT NOT NULL DEFAULT 0,
+                output_tokens INT NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INT NOT NULL DEFAULT 0,
+                cache_read_input_tokens INT NOT NULL DEFAULT 0,
+                latency_ms BIGINT,
+                source TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_gateway_model_usage_turn ON gateway_model_usage(turn_id)",
+        )
+        .execute(pool)
+        .await?;
+
         sqlx::query(
             r"CREATE TABLE IF NOT EXISTS gateway_session_artifacts (
                 artifact_id UUID PRIMARY KEY,
