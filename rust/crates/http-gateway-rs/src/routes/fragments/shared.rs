@@ -94,6 +94,10 @@ pub(crate) fn build_turn_entry_params_json(
         "allowedTools": req.allowed_tools,
         "attachments": req.attachments,
         "clientOrigin": client_origin,
+        "interactionMode": req.interaction_mode,
+        "sealedPlanId": req.sealed_plan_id,
+        "sealedPlanMarkdown": req.sealed_plan_markdown,
+        "forceSingleTurn": req.force_single_turn,
     })
 }
 
@@ -676,6 +680,10 @@ mod max_iterations_entry_params_tests {
             allowed_tools: None,
             max_iterations,
             attachments: None,
+            interaction_mode: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
+            force_single_turn: None,
         }
     }
 

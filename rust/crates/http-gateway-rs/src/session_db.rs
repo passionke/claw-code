@@ -80,6 +80,24 @@ pub struct GatewayTurnSummary {
     pub gateway_base: Option<String>,
 }
 
+/// First-class Plan mode artifact (`gateway_session_plans`). Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct SessionPlanRow {
+    pub plan_id: String,
+    pub session_id: String,
+    pub proj_id: i64,
+    pub cluster_id: String,
+    pub title: String,
+    pub body_markdown: String,
+    pub status: String,
+    pub plan_turn_id: String,
+    pub execute_turn_id: Option<String>,
+    pub sealed_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub created_by_prompt: Option<String>,
+}
+
 /// Row for tools API: session path + turn times + 1-based user turn index (single query). Author: kejiqing
 #[derive(Debug, Clone)]
 pub struct TurnToolsContext {
@@ -1326,6 +1344,11 @@ impl GatewaySessionDb {
         Self::run_sql_migration_file(
             pool,
             include_str!("../migrations/025_project_model_api_key.sql"),
+        )
+        .await?;
+        Self::run_sql_migration_file(
+            pool,
+            include_str!("../migrations/026_gateway_session_plans.sql"),
         )
         .await?;
         Self::migrate_cluster_id_phase3(pool).await?;
@@ -4222,6 +4245,231 @@ impl GatewaySessionDb {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.and_then(|(j,)| j.map(|v| v.0)))
+    }
+
+    /// Insert a new awaiting_confirm plan; supersede other awaiting plans in the session. Author: kejiqing
+    pub async fn insert_awaiting_session_plan(
+        &self,
+        plan_id: &str,
+        session_id: &str,
+        proj_id: i64,
+        title: &str,
+        body_markdown: &str,
+        plan_turn_id: &str,
+        created_by_prompt: Option<&str>,
+        now_ms: i64,
+    ) -> Result<(), SqlxError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r"UPDATE gateway_session_plans
+               SET status = 'superseded', updated_at_ms = $4
+               WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3
+                 AND status = 'awaiting_confirm'",
+        )
+        .bind(self.cluster_id())
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r"INSERT INTO gateway_session_plans (
+                plan_id, session_id, proj_id, cluster_id, title, body_markdown, status,
+                plan_turn_id, execute_turn_id, sealed_at_ms, created_at_ms, updated_at_ms,
+                created_by_prompt
+              ) VALUES ($1,$2,$3,$4,$5,$6,'awaiting_confirm',$7,NULL,NULL,$8,$8,$9)",
+        )
+        .bind(plan_id)
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(self.cluster_id())
+        .bind(title)
+        .bind(body_markdown)
+        .bind(plan_turn_id)
+        .bind(now_ms)
+        .bind(created_by_prompt)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn get_session_plan(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+        plan_id: &str,
+    ) -> Result<Option<SessionPlanRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT plan_id, session_id, proj_id, cluster_id, title, body_markdown, status,
+                     plan_turn_id, execute_turn_id, sealed_at_ms, created_at_ms, updated_at_ms,
+                     created_by_prompt
+              FROM gateway_session_plans
+              WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3 AND plan_id = $4",
+        )
+        .bind(self.cluster_id())
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(plan_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| SessionPlanRow {
+            plan_id: r.get("plan_id"),
+            session_id: r.get("session_id"),
+            proj_id: r.get("proj_id"),
+            cluster_id: r.get("cluster_id"),
+            title: r.get("title"),
+            body_markdown: r.get("body_markdown"),
+            status: r.get("status"),
+            plan_turn_id: r.get("plan_turn_id"),
+            execute_turn_id: r.get("execute_turn_id"),
+            sealed_at_ms: r.get("sealed_at_ms"),
+            created_at_ms: r.get("created_at_ms"),
+            updated_at_ms: r.get("updated_at_ms"),
+            created_by_prompt: r.get("created_by_prompt"),
+        }))
+    }
+
+    pub async fn get_session_plan_by_turn(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+        plan_turn_id: &str,
+    ) -> Result<Option<SessionPlanRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT plan_id, session_id, proj_id, cluster_id, title, body_markdown, status,
+                     plan_turn_id, execute_turn_id, sealed_at_ms, created_at_ms, updated_at_ms,
+                     created_by_prompt
+              FROM gateway_session_plans
+              WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3 AND plan_turn_id = $4
+              ORDER BY created_at_ms DESC
+              LIMIT 1",
+        )
+        .bind(self.cluster_id())
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(plan_turn_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| SessionPlanRow {
+            plan_id: r.get("plan_id"),
+            session_id: r.get("session_id"),
+            proj_id: r.get("proj_id"),
+            cluster_id: r.get("cluster_id"),
+            title: r.get("title"),
+            body_markdown: r.get("body_markdown"),
+            status: r.get("status"),
+            plan_turn_id: r.get("plan_turn_id"),
+            execute_turn_id: r.get("execute_turn_id"),
+            sealed_at_ms: r.get("sealed_at_ms"),
+            created_at_ms: r.get("created_at_ms"),
+            updated_at_ms: r.get("updated_at_ms"),
+            created_by_prompt: r.get("created_by_prompt"),
+        }))
+    }
+
+    pub async fn list_session_plans(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+        limit: i64,
+    ) -> Result<Vec<SessionPlanRow>, SqlxError> {
+        let rows = sqlx::query(
+            r"SELECT plan_id, session_id, proj_id, cluster_id, title, body_markdown, status,
+                     plan_turn_id, execute_turn_id, sealed_at_ms, created_at_ms, updated_at_ms,
+                     created_by_prompt
+              FROM gateway_session_plans
+              WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3
+              ORDER BY created_at_ms DESC
+              LIMIT $4",
+        )
+        .bind(self.cluster_id())
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(limit.clamp(1, 100))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| SessionPlanRow {
+                plan_id: r.get("plan_id"),
+                session_id: r.get("session_id"),
+                proj_id: r.get("proj_id"),
+                cluster_id: r.get("cluster_id"),
+                title: r.get("title"),
+                body_markdown: r.get("body_markdown"),
+                status: r.get("status"),
+                plan_turn_id: r.get("plan_turn_id"),
+                execute_turn_id: r.get("execute_turn_id"),
+                sealed_at_ms: r.get("sealed_at_ms"),
+                created_at_ms: r.get("created_at_ms"),
+                updated_at_ms: r.get("updated_at_ms"),
+                created_by_prompt: r.get("created_by_prompt"),
+            })
+            .collect())
+    }
+
+    pub async fn get_session_plan_by_execute_turn(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+        execute_turn_id: &str,
+    ) -> Result<Option<SessionPlanRow>, SqlxError> {
+        let row = sqlx::query(
+            r"SELECT plan_id, session_id, proj_id, cluster_id, title, body_markdown, status,
+                     plan_turn_id, execute_turn_id, sealed_at_ms, created_at_ms, updated_at_ms,
+                     created_by_prompt
+              FROM gateway_session_plans
+              WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3 AND execute_turn_id = $4
+              LIMIT 1",
+        )
+        .bind(self.cluster_id())
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(execute_turn_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| SessionPlanRow {
+            plan_id: r.get("plan_id"),
+            session_id: r.get("session_id"),
+            proj_id: r.get("proj_id"),
+            cluster_id: r.get("cluster_id"),
+            title: r.get("title"),
+            body_markdown: r.get("body_markdown"),
+            status: r.get("status"),
+            plan_turn_id: r.get("plan_turn_id"),
+            execute_turn_id: r.get("execute_turn_id"),
+            sealed_at_ms: r.get("sealed_at_ms"),
+            created_at_ms: r.get("created_at_ms"),
+            updated_at_ms: r.get("updated_at_ms"),
+            created_by_prompt: r.get("created_by_prompt"),
+        }))
+    }
+
+    /// Seal awaiting plan and attach execute turn id. Returns false if not awaiting. Author: kejiqing
+    pub async fn seal_session_plan(
+        &self,
+        session_id: &str,
+        proj_id: i64,
+        plan_id: &str,
+        execute_turn_id: &str,
+        now_ms: i64,
+    ) -> Result<bool, SqlxError> {
+        let res = sqlx::query(
+            r"UPDATE gateway_session_plans
+               SET status = 'sealed', execute_turn_id = $5, sealed_at_ms = $6, updated_at_ms = $6
+               WHERE cluster_id = $1 AND session_id = $2 AND proj_id = $3 AND plan_id = $4
+                 AND status = 'awaiting_confirm'",
+        )
+        .bind(self.cluster_id())
+        .bind(session_id)
+        .bind(proj_id)
+        .bind(plan_id)
+        .bind(execute_turn_id)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     pub fn get_turn_runtime_settings_json(

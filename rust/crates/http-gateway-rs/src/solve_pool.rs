@@ -240,6 +240,10 @@ pub(crate) async fn run_solve_request_docker(
         otel_traceparent,
         landlock_dsl,
         landlock_dsl_source,
+        interaction_mode: req.interaction_mode.clone(),
+        force_single_turn: req.force_single_turn,
+        sealed_plan_id: req.sealed_plan_id.clone(),
+        sealed_plan_markdown: req.sealed_plan_markdown.clone(),
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(

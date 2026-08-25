@@ -127,7 +127,7 @@ pub(crate) struct GatewayConfig {
     pub(crate) live_biz_report_spill_enabled: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize, Deserialize, Clone, utoipa::ToSchema)]
 pub(crate) struct SolveRequest {
     #[serde(rename = "projId", alias = "proj_id", alias = "dsId", alias = "ds_id")]
     pub(crate) proj_id: i64,
@@ -150,6 +150,21 @@ pub(crate) struct SolveRequest {
     /// Session-relative attachments (uploaded via `/v1/sessions/{id}/files`). Author: kejiqing
     #[serde(default, rename = "attachments")]
     pub(crate) attachments: Option<Vec<gateway_solve_turn::SolveAttachment>>,
+    /// `agent` (default) or `plan` (read-only alignment; relaxed only). Author: kejiqing
+    #[serde(default, rename = "interactionMode")]
+    pub(crate) interaction_mode: Option<String>,
+    /// Confirm-execute: inject sealed plan (internal / confirm_plan). Author: kejiqing
+    #[serde(default, rename = "sealedPlanId", skip_serializing_if = "Option::is_none")]
+    pub(crate) sealed_plan_id: Option<String>,
+    #[serde(
+        default,
+        rename = "sealedPlanMarkdown",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) sealed_plan_markdown: Option<String>,
+    /// Skip multi_agent_analysis for confirm-execute. Author: kejiqing
+    #[serde(default, rename = "forceSingleTurn", skip_serializing_if = "Option::is_none")]
+    pub(crate) force_single_turn: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, utoipa::ToSchema)]
@@ -281,6 +296,16 @@ pub(crate) struct TaskRecord {
     pub(crate) plan_title: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) todos: Vec<gateway_solve_turn::TaskProgressTodo>,
+    #[serde(rename = "interactionMode", skip_serializing_if = "Option::is_none")]
+    pub(crate) interaction_mode: Option<String>,
+    #[serde(rename = "planPhase", skip_serializing_if = "Option::is_none")]
+    pub(crate) plan_phase: Option<String>,
+    #[serde(rename = "planId", skip_serializing_if = "Option::is_none")]
+    pub(crate) plan_id: Option<String>,
+    #[serde(rename = "planMarkdown", skip_serializing_if = "Option::is_none")]
+    pub(crate) plan_markdown: Option<String>,
+    #[serde(rename = "planTurnId", skip_serializing_if = "Option::is_none")]
+    pub(crate) plan_turn_id: Option<String>,
     #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
     pub(crate) pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]

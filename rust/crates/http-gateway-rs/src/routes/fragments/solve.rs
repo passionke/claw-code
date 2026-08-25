@@ -189,6 +189,27 @@ pub(crate) async fn enqueue_solve_async(
     endpoint: &'static str,
     client_origin: Option<String>,
 ) -> Result<SolveAsyncResponse, ApiError> {
+    enqueue_solve_async_with_turn(
+        state,
+        http_request_id,
+        id_kind,
+        req,
+        endpoint,
+        client_origin,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn enqueue_solve_async_with_turn(
+    state: AppState,
+    http_request_id: HttpRequestId,
+    id_kind: session_merge::HttpRequestIdKind,
+    req: SolveRequest,
+    endpoint: &'static str,
+    client_origin: Option<String>,
+    preassigned_turn_id: Option<String>,
+) -> Result<SolveAsyncResponse, ApiError> {
     let body_sid = session_merge::trim_session_id(req.session_id.as_deref());
     let effective =
         session_merge::merge_effective_session_id(body_sid, &http_request_id.0, id_kind)
@@ -235,7 +256,7 @@ pub(crate) async fn enqueue_solve_async(
         .assert_proj_worker_profile_supported(&state.session_db, proj_id)
         .await
         .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
-    let new_turn_id = turn_id::mint_turn_id();
+    let new_turn_id = preassigned_turn_id.unwrap_or_else(turn_id::mint_turn_id);
     let (_, prebind_pool_id) = state
         .pool_clients
         .pool_and_id_for_proj(&state.session_db, proj_id)
@@ -297,6 +318,19 @@ pub(crate) async fn enqueue_solve_async(
                     report_time_ms: None,
                     plan_title: None,
                     todos: Vec::new(),
+                    interaction_mode: req.interaction_mode.clone(),
+                    plan_phase: if gateway_solve_turn::InteractionMode::parse(
+                        req.interaction_mode.as_deref(),
+                    )
+                    .is_plan()
+                    {
+                        Some("planning".into())
+                    } else {
+                        None
+                    },
+                    plan_id: None,
+                    plan_markdown: None,
+                    plan_turn_id: None,
                     pool_id: Some(prebind_pool_id.clone()),
                     worker_name: None,
                     worker_profile: state
@@ -353,7 +387,7 @@ pub(crate) async fn enqueue_solve_async(
         );
         let result = run_solve_request(
             state_clone.clone(),
-            req,
+            req.clone(),
             RunSolveContext {
                 request_id: rid.clone(),
                 task_id: Some(task_id_for_worker.clone()),
@@ -363,6 +397,10 @@ pub(crate) async fn enqueue_solve_async(
             },
         )
         .await;
+        let success_for_plan = match &result {
+            Ok(v) => Some(v.clone()),
+            Err(_) => None,
+        };
         let refresh_progress = {
             let mut tasks = state_clone.tasks.lock().await;
             let Some(inner) = tasks.get_mut(&task_id_for_worker) else {
@@ -414,6 +452,13 @@ pub(crate) async fn enqueue_solve_async(
             }
             true
         };
+        if let Some(ref v) = success_for_plan {
+            maybe_persist_plan_after_solve(&state_clone, &req, &rid, &turn_id_for_worker, v).await;
+            let mut tasks = state_clone.tasks.lock().await;
+            if let Some(inner) = tasks.get_mut(&task_id_for_worker) {
+                enrich_task_record_with_plan(&state_clone, &mut inner.record).await;
+            }
+        }
         if refresh_progress {
             refresh_task_progress(&state_clone, &task_id_for_worker).await;
         }
@@ -690,7 +735,30 @@ pub(crate) async fn validate_solve_request(
             }
         }
     }
-    validate_solve_extra_session_for_ds(db, req.proj_id, req.extra_session.as_ref()).await
+    validate_solve_extra_session_for_ds(db, req.proj_id, req.extra_session.as_ref()).await?;
+    let mode = gateway_solve_turn::InteractionMode::parse(req.interaction_mode.as_deref());
+    if mode.is_plan() {
+        let profile = db
+            .get_worker_profile_json(req.proj_id)
+            .await
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("load worker profile failed: {e}"),
+                )
+            })?;
+        let relaxed = crate::pool::effective_mode(
+            crate::pool::relaxed_worker_allowed_from_env(),
+            &profile,
+        ) == crate::pool::WorkerProfileMode::Relaxed;
+        if !relaxed {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "interactionMode=plan requires relaxed worker profile",
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_extra_session(extra_session: Option<&Value>) -> Result<(), ApiError> {

@@ -50,6 +50,13 @@ export interface SolveTask {
   planTitle?: string;
   /** Multi-agent todo checklist with status. Author: kejiqing */
   todos?: TaskProgressTodo[];
+  /** `agent` | `plan`. Author: kejiqing */
+  interactionMode?: string | null;
+  /** planning | awaiting_confirm | confirmed | executing | done | superseded. Author: kejiqing */
+  planPhase?: string | null;
+  planId?: string | null;
+  planMarkdown?: string | null;
+  planTurnId?: string | null;
   progressHistory?: ProgressEvent[];
   result?: { outputText?: string };
   error?: unknown;

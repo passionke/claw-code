@@ -57,6 +57,7 @@ pub mod delegate_project_tool;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
 pub mod gateway_stdout;
+pub mod interaction_mode;
 #[cfg(test)]
 mod integ_subagent_escape;
 pub mod landlock_dsl;
@@ -299,6 +300,96 @@ pub struct GatewaySolveTaskFile {
     pub landlock_dsl: Option<crate::landlock_dsl::LandlockDsl>,
     #[serde(rename = "landlockDslSource", skip_serializing_if = "Option::is_none")]
     pub landlock_dsl_source: Option<crate::landlock_dsl::LandlockDslSource>,
+    /// `agent` (default) or `plan`. Author: kejiqing
+    #[serde(default, rename = "interactionMode", skip_serializing_if = "Option::is_none")]
+    pub interaction_mode: Option<String>,
+    /// Skip multi_agent_analysis (confirm-execute path). Author: kejiqing
+    #[serde(default, rename = "forceSingleTurn", skip_serializing_if = "Option::is_none")]
+    pub force_single_turn: Option<bool>,
+    #[serde(default, rename = "sealedPlanId", skip_serializing_if = "Option::is_none")]
+    pub sealed_plan_id: Option<String>,
+    #[serde(default, rename = "sealedPlanMarkdown", skip_serializing_if = "Option::is_none")]
+    pub sealed_plan_markdown: Option<String>,
+}
+
+pub use interaction_mode::{
+    plan_title_from_markdown, todos_from_plan_markdown, InteractionMode, SolveTurnOptions,
+};
+
+/// System section injected for Plan mode (read-only alignment). Author: kejiqing
+const PLAN_MODE_SYSTEM_SECTION: &str = r#"# Plan mode (read-only)
+
+You are in **Plan mode**. Explore with read-only tools only. Do NOT modify files, run destructive commands, or implement changes.
+
+Your job:
+1. Gather enough intelligence about the current codebase/constraints.
+2. Clarify boundaries and assumptions; ask if critical info is missing.
+3. Record options and a recommended decision.
+4. Output a **human-readable markdown plan** as your final assistant message using this template:
+
+# 方案：<short title>
+
+## 目标
+…
+
+## 现状与情报
+…
+
+## 边界与假设
+…
+
+## 选型
+…
+
+## 实施步骤
+1. …
+2. …
+
+## 验收
+…
+
+The final message MUST be that markdown plan (no code edits). Implementation happens only after the user confirms."#;
+
+const SEALED_PLAN_EXECUTE_SECTION_HEADER: &str = r#"# Sealed plan (execute)
+
+The user confirmed the following plan. Implement it faithfully. Do not reopen major design choices unless blocked; prefer following the sealed steps."#;
+
+fn publish_sealed_plan_todos(
+    session_home: &Path,
+    session_id: &str,
+    plan_id: &str,
+    body_markdown: &str,
+) -> Result<(), String> {
+    use crate::task_progress::{
+        write_task_progress, TaskProgressFile, TaskProgressTodo,
+    };
+    let steps = todos_from_plan_markdown(body_markdown);
+    let title = plan_title_from_markdown(body_markdown);
+    let todos: Vec<TaskProgressTodo> = steps
+        .into_iter()
+        .enumerate()
+        .map(|(i, step_title)| TaskProgressTodo {
+            id: format!("step-{}", i + 1),
+            title: step_title,
+            status: "pending".into(),
+        })
+        .collect();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let progress = TaskProgressFile {
+        version: 1,
+        session_id: session_id.to_string(),
+        current_task_desc: format!("执行已确认方案：{title}"),
+        phase: "executing".into(),
+        plan_title: Some(title),
+        todos,
+        current_todo_id: None,
+        updated_at_ms: now_ms,
+    };
+    let _ = plan_id;
+    write_task_progress(session_home, &progress)
 }
 
 pub(crate) fn default_system_date() -> String {
@@ -1438,6 +1529,7 @@ pub fn run_gateway_solve_turn(
         crate::landlock_dsl::LandlockDslSource,
     )>,
     attachments: &[SolveAttachment],
+    turn_opts: SolveTurnOptions,
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
     reset_delegate_stdout_state();
 
@@ -1477,7 +1569,10 @@ pub fn run_gateway_solve_turn(
     );
 
     let orch_cfg = project_orchestration::resolve_solve_orchestration_config(work_dir);
-    if orch_cfg.is_multi_agent_analysis() {
+    let skip_multi_agent = turn_opts.force_single_turn
+        || turn_opts.interaction_mode.is_plan()
+        || turn_opts.sealed_plan_markdown.is_some();
+    if orch_cfg.is_multi_agent_analysis() && !skip_multi_agent {
         let result = multi_agent::run_multi_agent_solve_turn(
             work_dir,
             work_root,
@@ -1530,6 +1625,18 @@ pub fn run_gateway_solve_turn(
         mcp.extra_session.clone(),
     )
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
+    if turn_opts.interaction_mode.is_plan() {
+        system_prompt.push(PLAN_MODE_SYSTEM_SECTION.to_string());
+    }
+    if let Some(ref sealed) = turn_opts.sealed_plan_markdown {
+        let sealed = sealed.trim();
+        if !sealed.is_empty() {
+            system_prompt.push(format!(
+                "{}\n\n{}",
+                SEALED_PLAN_EXECUTE_SECTION_HEADER, sealed
+            ));
+        }
+    }
     let _ = append_solve_timing_point(
         work_dir,
         "bootstrap_system_prompt_loaded",
@@ -1598,7 +1705,11 @@ pub fn run_gateway_solve_turn(
         Some(Arc::clone(&turn_timing)),
         async_runtime,
     );
-    let mut policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
+    let mut policy = if turn_opts.interaction_mode.is_plan() {
+        PermissionPolicy::new(PermissionMode::ReadOnly)
+    } else {
+        PermissionPolicy::new(PermissionMode::DangerFullAccess)
+    };
     for spec in mvp_tool_specs() {
         policy = policy.with_tool_requirement(spec.name.to_string(), spec.required_permission);
     }
@@ -1610,6 +1721,13 @@ pub fn run_gateway_solve_turn(
         COMPLETE_ROUTER_TURN_TOOL_NAME.to_string(),
         PermissionMode::ReadOnly,
     );
+
+    if let (Some(plan_id), Some(md)) = (
+        turn_opts.sealed_plan_id.as_deref(),
+        turn_opts.sealed_plan_markdown.as_deref(),
+    ) {
+        let _ = publish_sealed_plan_todos(work_dir, &clawcode_session_id, plan_id, md);
+    }
 
     session
         .push_message(build_user_turn_message(prompt, attachments))
@@ -1693,6 +1811,15 @@ pub fn run_gateway_solve_turn(
             "cache_read_input_tokens": result.usage.cache_read_input_tokens
         }
     });
+    if turn_opts.interaction_mode.is_plan() {
+        out_json["interactionMode"] = json!("plan");
+        out_json["planPhase"] = json!("awaiting_confirm");
+    }
+    if let Some(ref plan_id) = turn_opts.sealed_plan_id {
+        out_json["sealedPlanId"] = json!(plan_id);
+        out_json["interactionMode"] = json!("agent");
+        out_json["planPhase"] = json!("executing");
+    }
     if let Some(route) = llm_route {
         if !route.is_null() {
             out_json["llmRoute"] = route;
@@ -1995,6 +2122,10 @@ mod gateway_solve_task_file_tests {
             otel_traceparent: None,
             landlock_dsl: None,
             landlock_dsl_source: None,
+            interaction_mode: None,
+            force_single_turn: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();

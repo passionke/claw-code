@@ -173,6 +173,20 @@
   margin-bottom: 6px;
 }
 
+.planMarkdownBody {
+  margin: 4px 0 8px;
+  max-height: 420px;
+  overflow: auto;
+  font-size: 13px;
+  color: #d0d7de;
+}
+
+.planConfirmRow {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+
 .planTodos {
   list-style: none;
   margin: 0;

@@ -99,6 +99,10 @@ mod tests {
             otel_traceparent: None,
             landlock_dsl: None,
             landlock_dsl_source: None,
+            interaction_mode: None,
+            force_single_turn: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
         };
         let ctx = gateway_mcp_call_context_from_task(&task);
         assert_eq!(ctx.session_id, "sess-stable");
@@ -126,6 +130,10 @@ mod tests {
             otel_traceparent: None,
             landlock_dsl: None,
             landlock_dsl_source: None,
+            interaction_mode: None,
+            force_single_turn: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
         };
         let from_task = gateway_mcp_call_context_from_task(&task);
         let resolved = resolve_gateway_mcp_call_context(

@@ -48,6 +48,10 @@ pub(crate) fn admin_mcp_input_to_solve_request(input: admin_mcp_solve::AdminMcpS
         allowed_tools: input.allowed_tools,
         max_iterations: input.max_iterations,
         attachments: input.attachments,
+        interaction_mode: None,
+        sealed_plan_id: None,
+        sealed_plan_markdown: None,
+        force_single_turn: None,
     }
 }
 

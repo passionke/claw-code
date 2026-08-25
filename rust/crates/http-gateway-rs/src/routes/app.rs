@@ -105,6 +105,7 @@ include!("fragments/tasks.rs");
 include!("fragments/biz_report.rs");
 include!("fragments/mcp.rs");
 include!("fragments/pools.rs");
+include!("fragments/plan_mode.rs");
 
 #[cfg(test)]
 mod tests {
