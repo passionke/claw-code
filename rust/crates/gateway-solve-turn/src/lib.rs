@@ -57,9 +57,9 @@ pub mod delegate_project_tool;
 pub mod entity_labels;
 pub mod extra_session_bizdate;
 pub mod gateway_stdout;
-pub mod interaction_mode;
 #[cfg(test)]
 mod integ_subagent_escape;
+pub mod interaction_mode;
 pub mod landlock_dsl;
 pub mod landlock_jail;
 pub mod mcp_call_context;
@@ -301,14 +301,30 @@ pub struct GatewaySolveTaskFile {
     #[serde(rename = "landlockDslSource", skip_serializing_if = "Option::is_none")]
     pub landlock_dsl_source: Option<crate::landlock_dsl::LandlockDslSource>,
     /// `agent` (default) or `plan`. Author: kejiqing
-    #[serde(default, rename = "interactionMode", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "interactionMode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub interaction_mode: Option<String>,
     /// Skip multi_agent_analysis (confirm-execute path). Author: kejiqing
-    #[serde(default, rename = "forceSingleTurn", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "forceSingleTurn",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub force_single_turn: Option<bool>,
-    #[serde(default, rename = "sealedPlanId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "sealedPlanId",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sealed_plan_id: Option<String>,
-    #[serde(default, rename = "sealedPlanMarkdown", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "sealedPlanMarkdown",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sealed_plan_markdown: Option<String>,
 }
 
@@ -360,9 +376,7 @@ fn publish_sealed_plan_todos(
     plan_id: &str,
     body_markdown: &str,
 ) -> Result<(), String> {
-    use crate::task_progress::{
-        write_task_progress, TaskProgressFile, TaskProgressTodo,
-    };
+    use crate::task_progress::{write_task_progress, TaskProgressFile, TaskProgressTodo};
     let steps = todos_from_plan_markdown(body_markdown);
     let title = plan_title_from_markdown(body_markdown);
     let todos: Vec<TaskProgressTodo> = steps

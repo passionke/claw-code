@@ -154,7 +154,11 @@ pub(crate) struct SolveRequest {
     #[serde(default, rename = "interactionMode")]
     pub(crate) interaction_mode: Option<String>,
     /// Confirm-execute: inject sealed plan (internal / confirm_plan). Author: kejiqing
-    #[serde(default, rename = "sealedPlanId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "sealedPlanId",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) sealed_plan_id: Option<String>,
     #[serde(
         default,
@@ -163,7 +167,11 @@ pub(crate) struct SolveRequest {
     )]
     pub(crate) sealed_plan_markdown: Option<String>,
     /// Skip multi_agent_analysis for confirm-execute. Author: kejiqing
-    #[serde(default, rename = "forceSingleTurn", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "forceSingleTurn",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) force_single_turn: Option<bool>,
 }
 
