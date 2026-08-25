@@ -1,12 +1,14 @@
 // Fragment of routes::app (include!). Plan mode persist + confirm. Author: kejiqing
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct PlanProjQuery {
     #[serde(rename = "projId", alias = "proj_id")]
+    #[param(rename = "projId")]
     pub proj_id: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct ConfirmPlanBody {
     #[serde(rename = "projId", alias = "proj_id")]
     pub proj_id: i64,
@@ -143,6 +145,20 @@ pub(crate) async fn enrich_task_record_with_plan(state: &AppState, record: &mut 
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}/plans",
+    tag = "Solve",
+    operation_id = "list_session_plans",
+    params(
+        ("session_id" = String, Path, description = "Gateway session id"),
+        PlanProjQuery
+    ),
+    responses(
+        (status = 200, description = "Session plans"),
+        (status = 400, description = "Bad request")
+    )
+)]
 pub(crate) async fn list_session_plans(
     State(state): State<AppState>,
     AxumPath(session_id): AxumPath<String>,
@@ -160,6 +176,21 @@ pub(crate) async fn list_session_plans(
     })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}/plans/{plan_id}",
+    tag = "Solve",
+    operation_id = "get_session_plan",
+    params(
+        ("session_id" = String, Path, description = "Gateway session id"),
+        ("plan_id" = String, Path, description = "Plan id"),
+        PlanProjQuery
+    ),
+    responses(
+        (status = 200, description = "Plan detail"),
+        (status = 404, description = "Plan not found")
+    )
+)]
 pub(crate) async fn get_session_plan(
     State(state): State<AppState>,
     AxumPath((session_id, plan_id)): AxumPath<(String, String)>,
@@ -174,6 +205,22 @@ pub(crate) async fn get_session_plan(
     Ok(Json(plan_row_json(&row)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/plans/{plan_id}/confirm",
+    tag = "Solve",
+    operation_id = "confirm_session_plan",
+    params(
+        ("session_id" = String, Path, description = "Gateway session id"),
+        ("plan_id" = String, Path, description = "Plan id")
+    ),
+    request_body = ConfirmPlanBody,
+    responses(
+        (status = 200, description = "Execute turn enqueued", body = SolveAsyncResponse),
+        (status = 404, description = "Plan not found"),
+        (status = 409, description = "Plan not awaiting confirm")
+    )
+)]
 pub(crate) async fn confirm_session_plan(
     State(state): State<AppState>,
     AxumPath((session_id, plan_id)): AxumPath<(String, String)>,

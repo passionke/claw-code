@@ -114,6 +114,9 @@ GET	/v1/sessions/{session_id}/conversation_translate	get_conversation_translate
 POST	/v1/sessions/{session_id}/conversation_translate	rebuild_conversation_translate
 GET	/v1/sessions/{session_id}/execution	get_session_execution
 POST	/v1/sessions/{session_id}/files	session_upload::upload_session_files
+GET	/v1/sessions/{session_id}/plans	list_session_plans
+GET	/v1/sessions/{session_id}/plans/{plan_id}	get_session_plan
+POST	/v1/sessions/{session_id}/plans/{plan_id}/confirm	confirm_session_plan
 GET	/v1/sessions/{session_id}/turns	list_session_turns
 POST	/v1/sessions/{session_id}/turns/{turn_id}/cancel	cancel_session_turn
 GET	/v1/sessions/{session_id}/turns/{turn_id}/timeline	get_turn_timeline
