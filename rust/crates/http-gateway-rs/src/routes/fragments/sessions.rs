@@ -158,6 +158,7 @@ pub(crate) async fn refresh_task_progress(state: &AppState, task_id: &str) {
         inner.record.progress_history = snapshot.2;
         inner.record.plan_title = snapshot.3;
         inner.record.todos = snapshot.4;
+        enrich_task_record_with_ask_user(state, &mut inner.record);
     }
 }
 
@@ -170,7 +171,10 @@ pub(crate) fn spawn_task_progress_poller(state: AppState, task_id: String) {
             let active = {
                 let tasks = state.tasks.lock().await;
                 tasks.get(&task_id).is_some_and(|inner| {
-                    matches!(inner.record.status.as_str(), "queued" | "running")
+                    matches!(
+                        inner.record.status.as_str(),
+                        "queued" | "running" | "awaiting_user"
+                    )
                 })
             };
             if !active {

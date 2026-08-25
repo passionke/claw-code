@@ -133,11 +133,17 @@ fn run_narrator_batch(
     }
     let system = load_phase_prompt(work_dir, "narrator.md", DEFAULT_NARRATOR_MD);
     let allowed = vec![REPORT_PROGRESS_TOOL_NAME.to_string()];
-    let api = DirectApiClient::new(model.to_string(), &allowed, vec![], session_id.to_string())
-        .map_err(|e| GatewaySolveTurnError {
-            status: 500,
-            message: e.message,
-        })?;
+    let api = DirectApiClient::new(
+        model.to_string(),
+        &allowed,
+        vec![],
+        session_id.to_string(),
+        false,
+    )
+    .map_err(|e| GatewaySolveTurnError {
+        status: 500,
+        message: e.message,
+    })?;
     let phase_executor = executor.clone_with_allowed_tools(allowed);
     let user = format_events_for_narrator(batch);
     let _ = run_phase_turn(

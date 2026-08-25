@@ -331,6 +331,10 @@ pub(crate) async fn enqueue_solve_async_with_turn(
                     plan_id: None,
                     plan_markdown: None,
                     plan_turn_id: None,
+                    ask_user_question_id: None,
+                    ask_user_question: None,
+                    ask_user_options: None,
+                    ask_user_a2ui: None,
                     pool_id: Some(prebind_pool_id.clone()),
                     worker_name: None,
                     worker_profile: state

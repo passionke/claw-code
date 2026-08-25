@@ -52,6 +52,7 @@ use tools::{
 };
 
 pub mod agent_orchestration;
+pub mod ask_user;
 pub mod complete_router_turn;
 pub mod delegate_project_tool;
 pub mod entity_labels;
@@ -77,6 +78,10 @@ pub mod task_progress;
 pub mod turn_language;
 pub mod turn_tools;
 pub mod worker_env;
+pub use ask_user::{
+    apply_ask_user_tool_gate, ask_user_question_in_agent_from_profile,
+    resolve_ask_user_question_enabled, ASK_USER_QUESTION_TOOL_NAME,
+};
 pub use complete_router_turn::{
     complete_router_turn_tool_definition, run_complete_router_turn, COMPLETE_ROUTER_TURN_TOOL_NAME,
 };
@@ -90,7 +95,7 @@ pub use extra_session_bizdate::{
     EXTRA_SESSION_BIZDATE_KEY,
 };
 pub use gateway_stdout::{
-    emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
+    emit_raw_json, emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
     reset_delegate_stdout_state, GATEWAY_STDOUT_LINE_PREFIX,
 };
 pub use landlock_dsl::{
@@ -326,6 +331,13 @@ pub struct GatewaySolveTaskFile {
         skip_serializing_if = "Option::is_none"
     )]
     pub sealed_plan_markdown: Option<String>,
+    /// When true, register AskUserQuestion for this turn. Author: kejiqing
+    #[serde(
+        default,
+        rename = "askUserQuestionEnabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ask_user_question_enabled: Option<bool>,
 }
 
 pub use interaction_mode::{
@@ -339,8 +351,8 @@ You are in **Plan mode**. Explore with read-only tools only. Do NOT modify files
 
 Your job:
 1. Gather enough intelligence about the current codebase/constraints.
-2. Clarify boundaries and assumptions; ask if critical info is missing.
-3. Record options and a recommended decision.
+2. When requirements, scope, or choices are ambiguous or under-specified, you MUST call **AskUserQuestion** before drafting the final plan. Do not guess critical product decisions.
+3. Record options and a recommended decision after answers (if any).
 4. Output a **human-readable markdown plan** as your final assistant message using this template:
 
 # 方案：<short title>
@@ -365,6 +377,11 @@ Your job:
 …
 
 The final message MUST be that markdown plan (no code edits). Implementation happens only after the user confirms.";
+
+/// Injected when AskUserQuestion is enabled in Agent mode. Author: kejiqing
+const AGENT_ASK_USER_SYSTEM_SECTION: &str = r"# Asking the user
+
+You have **AskUserQuestion**. When a critical choice or missing requirement would block correct work, call it once with a clear question (and options when helpful). Do not over-ask for trivia.";
 
 const SEALED_PLAN_EXECUTE_SECTION_HEADER: &str = r"# Sealed plan (execute)
 
@@ -616,12 +633,18 @@ impl DirectApiClient {
         allowed_tools: &[String],
         runtime_mcp_tools: Vec<ToolDefinition>,
         clawcode_session_id: String,
+        ask_user_question_enabled: bool,
     ) -> Result<Self, GatewaySolveTurnError> {
         let provider = ProviderClient::from_model(&model)
             .map_err(|e| err(HTTP_INTERNAL, format!("provider init failed: {e}")))?;
         let mut tools: Vec<ToolDefinition> = mvp_tool_specs()
             .into_iter()
-            .filter(|spec| is_tool_allowed(spec.name, allowed_tools))
+            .filter(|spec| {
+                if spec.name == ASK_USER_QUESTION_TOOL_NAME && !ask_user_question_enabled {
+                    return false;
+                }
+                is_tool_allowed(spec.name, allowed_tools)
+            })
             .map(|spec| ToolDefinition {
                 name: spec.name.to_string(),
                 description: Some(spec.description.to_string()),
@@ -727,6 +750,8 @@ struct DirectToolExecutorInner {
     /// Parent turn max iterations; sub-agents inherit verbatim. Author: kejiqing
     turn_max_iterations: usize,
     allowed_tools: Vec<String>,
+    ask_user_question_enabled: bool,
+    ask_user_timeout_secs: u64,
     runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
     runtime_mcp_tool_names: HashSet<String>,
     concurrent_mcp_tools: HashSet<String>,
@@ -747,6 +772,8 @@ impl DirectToolExecutorInner {
         turn_model: String,
         turn_max_iterations: usize,
         allowed_tools: Vec<String>,
+        ask_user_question_enabled: bool,
+        ask_user_timeout_secs: u64,
         runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
         runtime_mcp_tool_names: HashSet<String>,
         concurrent_mcp_tools: HashSet<String>,
@@ -761,6 +788,8 @@ impl DirectToolExecutorInner {
             turn_model,
             turn_max_iterations,
             allowed_tools,
+            ask_user_question_enabled,
+            ask_user_timeout_secs,
             runtime_mcp_manager,
             runtime_mcp_tool_names,
             concurrent_mcp_tools,
@@ -779,6 +808,22 @@ impl DirectToolExecutorInner {
     fn execute_impl_inner(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
         if !is_tool_allowed(tool_name, &self.allowed_tools) {
             return Err(ToolError::new(format!("tool not allowed: {tool_name}")));
+        }
+        if tool_name == ASK_USER_QUESTION_TOOL_NAME {
+            if !self.ask_user_question_enabled {
+                return Err(ToolError::new(
+                    "AskUserQuestion is disabled for this turn (Agent default off; enable via workerProfileJson.askUserQuestionInAgent)",
+                ));
+            }
+            let parsed: ask_user::AskUserQuestionInput = serde_json::from_str(input)
+                .map_err(|e| ToolError::new(format!("invalid AskUserQuestion input: {e}")))?;
+            return ask_user::run_ask_user_question_gateway(
+                &self.session_home,
+                self.mcp_context.turn_id.as_str(),
+                &parsed,
+                Some(self.ask_user_timeout_secs),
+            )
+            .map_err(ToolError::new);
         }
         if tool_name == REPORT_PROGRESS_TOOL_NAME {
             let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
@@ -1000,6 +1045,8 @@ impl DirectToolExecutor {
         turn_model: String,
         turn_max_iterations: usize,
         allowed_tools: Vec<String>,
+        ask_user_question_enabled: bool,
+        ask_user_timeout_secs: u64,
         runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
         runtime_mcp_tool_names: HashSet<String>,
         concurrent_mcp_tools: HashSet<String>,
@@ -1015,6 +1062,8 @@ impl DirectToolExecutor {
                 turn_model,
                 turn_max_iterations,
                 allowed_tools,
+                ask_user_question_enabled,
+                ask_user_timeout_secs,
                 runtime_mcp_manager,
                 runtime_mcp_tool_names,
                 concurrent_mcp_tools,
@@ -1104,6 +1153,8 @@ impl DirectToolExecutor {
                 turn_model: self.inner.turn_model.clone(),
                 turn_max_iterations: self.inner.turn_max_iterations,
                 allowed_tools,
+                ask_user_question_enabled: self.inner.ask_user_question_enabled,
+                ask_user_timeout_secs: self.inner.ask_user_timeout_secs,
                 runtime_mcp_manager: self.inner.runtime_mcp_manager.clone(),
                 runtime_mcp_tool_names: self.inner.runtime_mcp_tool_names.clone(),
                 concurrent_mcp_tools: self.inner.concurrent_mcp_tools.clone(),
@@ -1642,6 +1693,8 @@ pub fn run_gateway_solve_turn(
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
     if turn_opts.interaction_mode.is_plan() {
         system_prompt.push(PLAN_MODE_SYSTEM_SECTION.to_string());
+    } else if turn_opts.ask_user_question_enabled {
+        system_prompt.push(AGENT_ASK_USER_SYSTEM_SECTION.to_string());
     }
     if let Some(ref sealed) = turn_opts.sealed_plan_markdown {
         let sealed = sealed.trim();
@@ -1671,6 +1724,7 @@ pub fn run_gateway_solve_turn(
         &allowed_tools,
         runtime_mcp_tools,
         clawcode_session_id.clone(),
+        turn_opts.ask_user_question_enabled,
     )?;
     reset_task_progress(work_dir, &clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
@@ -1709,6 +1763,8 @@ pub fn run_gateway_solve_turn(
         effective_model.clone(),
         max_iterations,
         allowed_tools,
+        turn_opts.ask_user_question_enabled,
+        timeout_seconds,
         runtime_mcp_manager,
         runtime_mcp_tool_names,
         concurrent_mcp_tool_names,
@@ -2138,6 +2194,7 @@ mod gateway_solve_task_file_tests {
             force_single_turn: None,
             sealed_plan_id: None,
             sealed_plan_markdown: None,
+            ask_user_question_enabled: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
@@ -2243,6 +2300,8 @@ mod turn_max_iterations_inheritance_tests {
             "openai/test".to_string(),
             1024,
             vec![],
+            false,
+            120,
             None,
             HashSet::new(),
             HashSet::new(),

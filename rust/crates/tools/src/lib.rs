@@ -876,7 +876,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "AskUserQuestion",
-            description: "Ask the user a question and wait for their response.",
+            description: "Ask the user a clarifying question and wait for their structured response before continuing. Use when requirements or choices are ambiguous.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1477,6 +1477,19 @@ fn maybe_enforce_permission_check_with_mode(
 #[allow(clippy::needless_pass_by_value)]
 fn run_ask_user_question(input: AskUserQuestionInput) -> Result<String, String> {
     use std::io::{self, BufRead, Write};
+
+    // Gateway solve must not block on stdin; handled by gateway-solve-turn. Author: kejiqing
+    if std::env::var_os("CLAW_GATEWAY_WORK_ROOT").is_some()
+        || std::env::var("CLAW_ASK_USER_VIA_GATEWAY")
+            .ok()
+            .as_deref()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    {
+        return Err(
+            "AskUserQuestion is unavailable via stdin in gateway workers; use gateway HITL path"
+                .into(),
+        );
+    }
 
     // Display the question to the user via stdout
     let stdout = io::stdout();

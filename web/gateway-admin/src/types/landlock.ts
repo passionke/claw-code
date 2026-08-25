@@ -17,6 +17,8 @@ export interface WorkerProfileJson {
   mode: "strict" | "relaxed";
   /** Optional per-project override; omit to inherit global e2bWorker.poolSize. */
   poolSize?: number | null;
+  /** When true, Agent mode registers AskUserQuestion (Plan always has it). Author: kejiqing */
+  askUserQuestionInAgent?: boolean;
   strict?: WorkerProfileStrictJson;
 }
 

@@ -222,6 +222,16 @@ pub(crate) async fn run_solve_request_docker(
             &crate::oss_object_store::OssConfig::from_env(),
         );
     }
+    let interaction_mode =
+        gateway_solve_turn::InteractionMode::parse(req.interaction_mode.as_deref());
+    let ask_in_agent = gateway_solve_turn::ask_user_question_in_agent_from_profile(&worker_profile);
+    let ask_user_question_enabled =
+        gateway_solve_turn::resolve_ask_user_question_enabled(interaction_mode, ask_in_agent);
+    let mut effective_allowed_tools = effective_allowed_tools;
+    gateway_solve_turn::apply_ask_user_tool_gate(
+        &mut effective_allowed_tools,
+        ask_user_question_enabled,
+    );
     let task = GatewaySolveTaskFile {
         request_id: request_id.clone(),
         user_prompt: req.user_prompt.clone(),
@@ -244,6 +254,7 @@ pub(crate) async fn run_solve_request_docker(
         force_single_turn: req.force_single_turn,
         sealed_plan_id: req.sealed_plan_id.clone(),
         sealed_plan_markdown: req.sealed_plan_markdown.clone(),
+        ask_user_question_enabled: Some(ask_user_question_enabled),
     };
     let task_bytes = serde_json::to_vec(&task).map_err(|e| {
         ApiError::new(

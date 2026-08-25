@@ -129,6 +129,15 @@ fn validate_worker_profile_pool_size(value: &Value) -> Result<(), String> {
     }
 }
 
+fn validate_ask_user_question_in_agent_flag(value: &Value) -> Result<(), String> {
+    if let Some(flag) = value.get("askUserQuestionInAgent") {
+        if !flag.is_null() && !flag.is_boolean() {
+            return Err("worker_profile_json.askUserQuestionInAgent must be a boolean".into());
+        }
+    }
+    Ok(())
+}
+
 /// Validate Admin `worker_profile_json` shape (+ env gate for relaxed / poolSize cap).
 pub fn validate_worker_profile_json(value: &Value) -> Result<(), String> {
     let mode = value
@@ -143,6 +152,7 @@ pub fn validate_worker_profile_json(value: &Value) -> Result<(), String> {
                 validate_worker_profile_strict_block(strict)?;
             }
             validate_worker_profile_pool_size(value)?;
+            validate_ask_user_question_in_agent_flag(value)?;
             Ok(())
         }
         "relaxed" => {
@@ -162,6 +172,7 @@ pub fn validate_worker_profile_json(value: &Value) -> Result<(), String> {
                         .into(),
                 );
             }
+            validate_ask_user_question_in_agent_flag(value)?;
             Ok(())
         }
         other => Err(format!("invalid worker_profile_json.mode={other:?}")),

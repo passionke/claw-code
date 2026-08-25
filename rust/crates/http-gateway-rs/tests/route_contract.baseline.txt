@@ -117,6 +117,7 @@ POST	/v1/sessions/{session_id}/files	session_upload::upload_session_files
 GET	/v1/sessions/{session_id}/plans	list_session_plans
 GET	/v1/sessions/{session_id}/plans/{plan_id}	get_session_plan
 POST	/v1/sessions/{session_id}/plans/{plan_id}/confirm	confirm_session_plan
+POST	/v1/sessions/{session_id}/turns/{turn_id}/ask-user-answer	post_ask_user_answer
 GET	/v1/sessions/{session_id}/turns	list_session_turns
 POST	/v1/sessions/{session_id}/turns/{turn_id}/cancel	cancel_session_turn
 GET	/v1/sessions/{session_id}/turns/{turn_id}/timeline	get_turn_timeline

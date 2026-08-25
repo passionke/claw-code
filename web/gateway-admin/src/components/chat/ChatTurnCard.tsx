@@ -15,6 +15,7 @@ import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import { isAdminOrigin } from "../../utils/clientOrigin";
 import ReportMarkdown from "./ReportMarkdown";
+import AskUserA2ui from "./AskUserA2ui";
 import TurnFeedbackButtons from "./TurnFeedbackButtons";
 import TurnToolsDrawer from "./TurnToolsDrawer";
 import TurnTimelineDrawer from "./TurnTimelineDrawer";
@@ -73,6 +74,7 @@ function todoStatusMark(status: string): string {
 
 function statusLabel(task: SolveTask): string {
   const st = task.status || "unknown";
+  if (st === "awaiting_user") return "等待用户回答";
   if (task.planPhase === "awaiting_confirm") return "待确认方案";
   if (task.planPhase === "planning" && st === "running") return "规划中…";
   if (task.planPhase === "confirmed") return "方案已确认";
@@ -175,6 +177,7 @@ export default function ChatTurnCard({
   );
   const [cancelLoading, setCancelLoading] = useState(false);
   const [confirmLoading, setConfirmLoading] = useState(false);
+  const [askLoading, setAskLoading] = useState(false);
   const {
     text: streamText,
     live: streamLive,
@@ -537,6 +540,49 @@ export default function ChatTurnCard({
           </Space>
         </div>
       </div>
+
+      {task.status === "awaiting_user" && task.askUserQuestionId && !historyMode ? (
+        <AskUserA2ui
+          questionId={task.askUserQuestionId}
+          a2ui={task.askUserA2ui}
+          question={task.askUserQuestion}
+          options={task.askUserOptions}
+          submitting={askLoading}
+          onSubmit={({ answer, selected }) => {
+            void (async () => {
+              if (!task.askUserQuestionId) return;
+              setAskLoading(true);
+              try {
+                await proxyHttp(
+                  gatewayBase,
+                  "POST",
+                  `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/ask-user-answer`,
+                  {
+                    projId,
+                    questionId: task.askUserQuestionId,
+                    answer,
+                    selected,
+                  }
+                );
+                setTask((prev) => ({
+                  ...prev,
+                  status: "running",
+                  askUserQuestionId: null,
+                  askUserQuestion: null,
+                  askUserOptions: null,
+                  askUserA2ui: null,
+                  currentTaskDesc: "继续执行…",
+                }));
+                message.success("已提交回答");
+              } catch (e) {
+                message.error(String((e as Error).message || e));
+              } finally {
+                setAskLoading(false);
+              }
+            })();
+          }}
+        />
+      ) : null}
 
       {(task.planMarkdown || task.planTitle || (task.todos && task.todos.length > 0)) && (
         <div className={styles.planOutline}>

@@ -47,6 +47,9 @@ pub struct SolveTurnOptions {
     pub sealed_plan_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sealed_plan_markdown: Option<String>,
+    /// Whether AskUserQuestion is registered for this turn. Author: kejiqing
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ask_user_question_enabled: bool,
 }
 
 /// Extract a short title from plan markdown (`#` heading or first non-empty line). Author: kejiqing

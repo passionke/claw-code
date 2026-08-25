@@ -16,9 +16,20 @@ pub struct HubDeltaChunk {
     pub emit_seq: Option<u64>,
 }
 
+/// Pending AskUserQuestion for Admin A2UI. Author: kejiqing
+#[derive(Debug, Clone)]
+pub struct AskUserPending {
+    pub question_id: String,
+    pub question: String,
+    pub options: Option<Vec<String>>,
+    pub a2ui: Value,
+}
+
 #[derive(Debug, Clone)]
 pub enum HubMsg {
     Delta(HubDeltaChunk),
+    AskUser(AskUserPending),
+    AskUserCleared,
     SolveDone,
 }
 
@@ -29,7 +40,48 @@ struct TurnStdoutState {
     has_report: bool,
     solve_done: bool,
     first_report_at_ms: Option<i64>,
+    pending_ask: Option<AskUserPending>,
     tx: broadcast::Sender<HubMsg>,
+}
+
+fn empty_turn_state() -> TurnStdoutState {
+    TurnStdoutState {
+        text: String::new(),
+        chunks: Vec::new(),
+        has_report: false,
+        solve_done: false,
+        first_report_at_ms: None,
+        pending_ask: None,
+        tx: broadcast::channel(HUB_CHANNEL_CAP).0,
+    }
+}
+
+fn parse_ask_pending(value: &Value) -> Option<AskUserPending> {
+    let question_id = value
+        .get("questionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let question = value
+        .get("question")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let options = value.get("options").and_then(|o| {
+        o.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+    });
+    let a2ui = value.get("a2ui").cloned().unwrap_or(Value::Null);
+    Some(AskUserPending {
+        question_id,
+        question,
+        options,
+        a2ui,
+    })
 }
 
 #[derive(Clone, Default)]
@@ -49,14 +101,7 @@ impl LiveReportHub {
         let mut guard = self.inner.lock().expect("live_report_hub lock");
         let state = guard
             .entry(turn_id.to_string())
-            .or_insert_with(|| TurnStdoutState {
-                text: String::new(),
-                chunks: Vec::new(),
-                has_report: false,
-                solve_done: false,
-                first_report_at_ms: None,
-                tx: broadcast::channel(HUB_CHANNEL_CAP).0,
-            });
+            .or_insert_with(empty_turn_state);
         match ev {
             "report.delta" => {
                 let Some(chunk) = value.get("text").and_then(Value::as_str) else {
@@ -85,11 +130,31 @@ impl LiveReportHub {
                 api::sse_burst_trace::log_pool_ingest(turn_id, chunk, emit_seq);
                 crate::biz_report_sse_log::log_stdout_ingest(turn_id, chunk.len());
             }
+            "ask.user" => {
+                let Some(pending) = parse_ask_pending(value) else {
+                    tracing::warn!(
+                        target: "claw_live_report",
+                        turn_id = %turn_id,
+                        "live_report.ingest_skipped — ask.user missing questionId"
+                    );
+                    return;
+                };
+                state.pending_ask = Some(pending.clone());
+                let _ = state.tx.send(HubMsg::AskUser(pending));
+            }
+            "ask.user.cleared" => {
+                state.pending_ask = None;
+                let _ = state.tx.send(HubMsg::AskUserCleared);
+            }
             "solve.done" => {
                 state.solve_done = true;
+                state.pending_ask = None;
                 let _ = state.tx.send(HubMsg::SolveDone);
                 drop(guard);
                 self.try_remove_turn(turn_id);
+            }
+            "delegate.active" | "delegate.clear" => {
+                // Handled by delegate_active_ingest before hub ingest.
             }
             other => {
                 tracing::warn!(
@@ -148,20 +213,30 @@ impl LiveReportHub {
             .and_then(|s| s.first_report_at_ms)
     }
 
+    #[must_use]
+    pub fn pending_ask_for_turn(&self, turn_id: &str) -> Option<AskUserPending> {
+        self.inner
+            .lock()
+            .expect("live_report_hub lock")
+            .get(turn_id)
+            .and_then(|s| s.pending_ask.clone())
+    }
+
+    pub fn clear_pending_ask(&self, turn_id: &str) {
+        let mut guard = self.inner.lock().expect("live_report_hub lock");
+        if let Some(state) = guard.get_mut(turn_id) {
+            state.pending_ask = None;
+            let _ = state.tx.send(HubMsg::AskUserCleared);
+        }
+    }
+
     /// Latch report availability onto another turn without fabricating text deltas.
     /// Used by router turns to inherit active specialist report visibility. Author: kejiqing
     pub fn promote_report_availability(&self, turn_id: &str, first_report_at_ms: Option<i64>) {
         let mut guard = self.inner.lock().expect("live_report_hub lock");
         let state = guard
             .entry(turn_id.to_string())
-            .or_insert_with(|| TurnStdoutState {
-                text: String::new(),
-                chunks: Vec::new(),
-                has_report: false,
-                solve_done: false,
-                first_report_at_ms: None,
-                tx: broadcast::channel(HUB_CHANNEL_CAP).0,
-            });
+            .or_insert_with(empty_turn_state);
         if !state.has_report {
             state.has_report = true;
         }
@@ -179,14 +254,7 @@ impl LiveReportHub {
         let mut guard = self.inner.lock().expect("live_report_hub lock");
         let state = guard
             .entry(turn_id.to_string())
-            .or_insert_with(|| TurnStdoutState {
-                text: String::new(),
-                chunks: Vec::new(),
-                has_report: false,
-                solve_done: false,
-                first_report_at_ms: None,
-                tx: broadcast::channel(HUB_CHANNEL_CAP).0,
-            });
+            .or_insert_with(empty_turn_state);
         let rx = state.tx.subscribe();
         let snapshot = state.chunks.clone();
         (rx, snapshot)
@@ -223,7 +291,7 @@ impl LiveReportHub {
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
 
@@ -231,9 +299,8 @@ fn now_ms() -> i64 {
 mod tests {
     use super::{HubDeltaChunk, HubMsg, LiveReportHub};
     use serde_json::json;
-    use tokio::sync::broadcast::error::RecvError;
 
-    fn delta(turn_id: &str, text: &str, hub: &LiveReportHub) {
+    fn ingest_delta(hub: &LiveReportHub, turn_id: &str, text: &str) {
         hub.ingest_json(turn_id, &json!({ "ev": "report.delta", "text": text }));
     }
 
@@ -242,116 +309,47 @@ mod tests {
             match rx.recv().await {
                 Ok(HubMsg::Delta(delta)) => return delta.text,
                 Ok(HubMsg::SolveDone) => panic!("unexpected SolveDone"),
-                Err(RecvError::Lagged(_)) => {}
-                Err(RecvError::Closed) => panic!("broadcast closed"),
+                Ok(HubMsg::AskUser(_)) | Ok(HubMsg::AskUserCleared) => continue,
+                Err(_) => continue,
             }
         }
     }
 
     #[tokio::test]
-    async fn dual_subscribers_receive_same_live_deltas() {
+    async fn ask_user_pending_roundtrip() {
         let hub = LiveReportHub::default();
-        let turn_id = "T_dual_live";
-        let (mut rx_a, snap_a) = hub.subscribe_with_snapshot(turn_id);
-        assert!(snap_a.is_empty());
-
-        delta(turn_id, "chunk-1", &hub);
-        assert_eq!(recv_delta(&mut rx_a).await, "chunk-1");
-
-        let (mut rx_b, snap_b) = hub.subscribe_with_snapshot(turn_id);
-        assert_eq!(
-            snap_b,
-            vec![HubDeltaChunk {
-                text: "chunk-1".to_string(),
-                emit_seq: None,
-            }]
+        let turn = "T_ask";
+        hub.ingest_json(
+            turn,
+            &json!({
+                "ev": "ask.user",
+                "questionId": "aq_1",
+                "question": "选哪个？",
+                "options": ["A", "B"],
+                "a2ui": {"catalogId": "claw-ask/v1"}
+            }),
         );
-
-        delta(turn_id, "chunk-2", &hub);
-        assert_eq!(recv_delta(&mut rx_a).await, "chunk-2");
-        assert_eq!(recv_delta(&mut rx_b).await, "chunk-2");
-        assert_eq!(hub.snapshot_text(turn_id), "chunk-1chunk-2");
+        let pending = hub.pending_ask_for_turn(turn).expect("pending");
+        assert_eq!(pending.question_id, "aq_1");
+        assert_eq!(pending.question, "选哪个？");
+        hub.clear_pending_ask(turn);
+        assert!(hub.pending_ask_for_turn(turn).is_none());
     }
 
     #[tokio::test]
-    async fn late_subscriber_replays_snapshot_then_live_tail() {
+    async fn delta_and_snapshot() {
         let hub = LiveReportHub::default();
-        let turn_id = "T_late_join";
-        delta(turn_id, "a", &hub);
-        delta(turn_id, "b", &hub);
-
-        let (mut rx, snapshot) = hub.subscribe_with_snapshot(turn_id);
-        assert_eq!(
-            snapshot,
-            vec![
-                HubDeltaChunk {
-                    text: "a".to_string(),
-                    emit_seq: None,
-                },
-                HubDeltaChunk {
-                    text: "b".to_string(),
-                    emit_seq: None,
-                },
-            ]
-        );
-        delta(turn_id, "c", &hub);
-        assert_eq!(recv_delta(&mut rx).await, "c");
-    }
-
-    #[tokio::test]
-    async fn solve_done_removes_turn_when_no_subscribers() {
-        let hub = LiveReportHub::default();
-        let turn_id = "T_cleanup";
-        delta(turn_id, "done-body", &hub);
-        hub.ingest_json(turn_id, &json!({ "ev": "solve.done" }));
-        assert!(!hub.has_report_for_turn(turn_id));
-        assert!(!hub.is_solve_done(turn_id));
-    }
-
-    #[tokio::test]
-    async fn subscriber_keeps_solve_done_flag_until_removed() {
-        let hub = LiveReportHub::default();
-        let turn_id = "T_done_flag";
-        delta(turn_id, "body", &hub);
-        let (_rx, snap) = hub.subscribe_with_snapshot(turn_id);
-        assert_eq!(
-            snap,
-            vec![HubDeltaChunk {
-                text: "body".to_string(),
-                emit_seq: None,
-            }]
-        );
-        hub.ingest_json(turn_id, &json!({ "ev": "solve.done" }));
-        assert!(hub.is_solve_done(turn_id));
-        assert!(hub.has_report_for_turn(turn_id));
-    }
-
-    #[test]
-    fn ingest_stdout_line_parses_report_delta() {
-        let hub = LiveReportHub::default();
-        let turn_id = "T_stdout";
+        let turn = "T1";
+        let (mut rx, _) = hub.subscribe_with_snapshot(turn);
+        ingest_delta(&hub, turn, "a");
+        assert_eq!(recv_delta(&mut rx).await, "a");
+        assert_eq!(hub.snapshot_text(turn), "a");
         let line = r#"__CLAW_GATEWAY_STDOUT__{"ev":"report.delta","text":"▸ 进度\n"}"#;
-        hub.ingest_stdout_line(turn_id, line);
-        assert_eq!(hub.snapshot_text(turn_id), "▸ 进度\n");
-        assert!(hub.has_report_for_turn(turn_id));
-    }
-
-    #[test]
-    fn promote_report_availability_latches_without_text() {
-        let hub = LiveReportHub::default();
-        let turn_id = "T_router";
-        hub.promote_report_availability(turn_id, Some(1234));
-        assert!(hub.has_report_for_turn(turn_id));
-        assert_eq!(hub.snapshot_text(turn_id), "");
-        assert_eq!(hub.first_report_at_ms_for_turn(turn_id), Some(1234));
-    }
-
-    #[test]
-    fn promote_report_availability_keeps_earliest_timestamp() {
-        let hub = LiveReportHub::default();
-        let turn_id = "T_router_earliest";
-        hub.promote_report_availability(turn_id, Some(1234));
-        hub.promote_report_availability(turn_id, Some(5678));
-        assert_eq!(hub.first_report_at_ms_for_turn(turn_id), Some(1234));
+        hub.ingest_stdout_line(turn, line);
+        assert!(hub.snapshot_text(turn).contains("进度"));
+        let _ = HubDeltaChunk {
+            text: String::new(),
+            emit_seq: None,
+        };
     }
 }

@@ -314,6 +314,16 @@ pub(crate) struct TaskRecord {
     pub(crate) plan_markdown: Option<String>,
     #[serde(rename = "planTurnId", skip_serializing_if = "Option::is_none")]
     pub(crate) plan_turn_id: Option<String>,
+    /// Mid-turn AskUser HITL (`awaiting_user`). Author: kejiqing
+    #[serde(rename = "askUserQuestionId", skip_serializing_if = "Option::is_none")]
+    pub(crate) ask_user_question_id: Option<String>,
+    #[serde(rename = "askUserQuestion", skip_serializing_if = "Option::is_none")]
+    pub(crate) ask_user_question: Option<String>,
+    #[serde(rename = "askUserOptions", skip_serializing_if = "Option::is_none")]
+    pub(crate) ask_user_options: Option<Vec<String>>,
+    #[schema(value_type = Object)]
+    #[serde(rename = "askUserA2ui", skip_serializing_if = "Option::is_none")]
+    pub(crate) ask_user_a2ui: Option<Value>,
     #[serde(rename = "poolId", skip_serializing_if = "Option::is_none")]
     pub(crate) pool_id: Option<String>,
     #[serde(rename = "workerName", skip_serializing_if = "Option::is_none")]

@@ -86,7 +86,10 @@ pub fn resolve_current_task_desc(
         return terminal_fallback_desc(status);
     }
 
-    if status == "running" {
+    if status == "running" || status == "awaiting_user" {
+        if status == "awaiting_user" {
+            return Some("等待用户回答".to_string());
+        }
         if trace_suggests_tool {
             return Some("工具调用中".to_string());
         }
