@@ -333,7 +333,7 @@ pub use interaction_mode::{
 };
 
 /// System section injected for Plan mode (read-only alignment). Author: kejiqing
-const PLAN_MODE_SYSTEM_SECTION: &str = r#"# Plan mode (read-only)
+const PLAN_MODE_SYSTEM_SECTION: &str = r"# Plan mode (read-only)
 
 You are in **Plan mode**. Explore with read-only tools only. Do NOT modify files, run destructive commands, or implement changes.
 
@@ -364,11 +364,11 @@ Your job:
 ## 验收
 …
 
-The final message MUST be that markdown plan (no code edits). Implementation happens only after the user confirms."#;
+The final message MUST be that markdown plan (no code edits). Implementation happens only after the user confirms.";
 
-const SEALED_PLAN_EXECUTE_SECTION_HEADER: &str = r#"# Sealed plan (execute)
+const SEALED_PLAN_EXECUTE_SECTION_HEADER: &str = r"# Sealed plan (execute)
 
-The user confirmed the following plan. Implement it faithfully. Do not reopen major design choices unless blocked; prefer following the sealed steps."#;
+The user confirmed the following plan. Implement it faithfully. Do not reopen major design choices unless blocked; prefer following the sealed steps.";
 
 fn publish_sealed_plan_todos(
     session_home: &Path,
@@ -390,7 +390,8 @@ fn publish_sealed_plan_todos(
         .collect();
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
         .unwrap_or(0);
     let progress = TaskProgressFile {
         version: 1,
@@ -1645,10 +1646,7 @@ pub fn run_gateway_solve_turn(
     if let Some(ref sealed) = turn_opts.sealed_plan_markdown {
         let sealed = sealed.trim();
         if !sealed.is_empty() {
-            system_prompt.push(format!(
-                "{}\n\n{}",
-                SEALED_PLAN_EXECUTE_SECTION_HEADER, sealed
-            ));
+            system_prompt.push(format!("{SEALED_PLAN_EXECUTE_SECTION_HEADER}\n\n{sealed}"));
         }
     }
     let _ = append_solve_timing_point(
