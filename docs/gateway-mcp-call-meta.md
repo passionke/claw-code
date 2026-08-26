@@ -50,6 +50,8 @@ SQLBot 在 **`mcp_start` 时**把 `store_id` / `org_id` 等写入 MCP 业务会�
 
 注入 MCP `_meta` 时统一调用 `inject_mcp_call_meta(&ctx)`（`runtime::McpCallContext`）。
 
+参数类型门禁与 schema 避坑见 [`mcp-arg-schema-pitfalls.md`](mcp-arg-schema-pitfalls.md)。
+
 ## Subagent（`Agent` 工具）
 
 主 solve turn 通过 `DirectToolExecutor` 调用 `Agent` 时，会将父 turn 的 `McpCallContext` **克隆**进子线程（`AgentJob.mcp_call_context`）。子代理内 `MCP` 工具调用与主 agent 使用相同的 `_claw_session_id` / `_claw_turn_id`（**继承主 turnId**，不派生子 turn）。
