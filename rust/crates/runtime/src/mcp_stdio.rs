@@ -701,10 +701,8 @@ impl McpServerManager {
             self.clear_routes_for_server(&server_name);
 
             for tool in server_tools {
-                self.tool_index.insert(
-                    tool.qualified_name.clone(),
-                    tool_route_from_managed(&tool),
-                );
+                self.tool_index
+                    .insert(tool.qualified_name.clone(), tool_route_from_managed(&tool));
                 discovered_tools.push(tool);
             }
         }
@@ -724,10 +722,8 @@ impl McpServerManager {
                     working_servers.push(server_name.clone());
                     self.clear_routes_for_server(&server_name);
                     for tool in server_tools {
-                        self.tool_index.insert(
-                            tool.qualified_name.clone(),
-                            tool_route_from_managed(&tool),
-                        );
+                        self.tool_index
+                            .insert(tool.qualified_name.clone(), tool_route_from_managed(&tool));
                         discovered_tools.push(tool);
                     }
                 }

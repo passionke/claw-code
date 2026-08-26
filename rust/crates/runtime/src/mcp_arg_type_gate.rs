@@ -53,11 +53,7 @@ pub fn validate_mcp_tool_arguments_with_limits(
         return Ok(());
     }
     if !arguments.is_object() {
-        return Err(type_mismatch_at(
-            "$",
-            "object",
-            json_type_name(arguments),
-        ));
+        return Err(type_mismatch_at("$", "object", json_type_name(arguments)));
     }
     let mut nodes = 0u32;
     validate_node(schema, arguments, "$", 0, limits, &mut nodes)
@@ -141,9 +137,7 @@ fn validate_node(
 }
 
 fn schema_has_combinator(schema: &Value) -> bool {
-    schema.get("oneOf").is_some()
-        || schema.get("anyOf").is_some()
-        || schema.get("allOf").is_some()
+    schema.get("oneOf").is_some() || schema.get("anyOf").is_some() || schema.get("allOf").is_some()
 }
 
 /// Returns a single concrete type name, or `None` to skip type check. Author: kejiqing
@@ -218,10 +212,7 @@ mod tests {
     fn assert_err_contains(result: Result<(), String>, needles: &[&str]) {
         let err = result.expect_err("expected Err");
         for needle in needles {
-            assert!(
-                err.contains(needle),
-                "error `{err}` missing `{needle}`"
-            );
+            assert!(err.contains(needle), "error `{err}` missing `{needle}`");
         }
     }
 
@@ -323,12 +314,14 @@ mod tests {
 
     #[test]
     fn experiment_s2_root_object_array_as_string_fails() {
-        let schema = object_schema(&json!({
+        let schema = object_schema(
+            &json!({
                 "items": {
                     "type": "array",
                     "items": { "type": "object" }
                 }
-            }), &json!(["items"]),
+            }),
+            &json!(["items"]),
         );
         let args = json!({"items": "[{\"a\":1}]"});
         assert_err_contains(
@@ -344,21 +337,22 @@ mod tests {
 
     #[test]
     fn experiment_s1_tags_string_array_ok() {
-        let schema = object_schema(&json!({
+        let schema = object_schema(
+            &json!({
                 "tags": {
                     "type": "array",
                     "items": { "type": "string" }
                 }
-            }), &json!([]),
+            }),
+            &json!([]),
         );
-        assert!(
-            validate_mcp_tool_arguments(Some(&schema), &json!({"tags": ["a", "b"]})).is_ok()
-        );
+        assert!(validate_mcp_tool_arguments(Some(&schema), &json!({"tags": ["a", "b"]})).is_ok());
     }
 
     #[test]
     fn experiment_s3_nested_item_list_ok_and_bad() {
-        let schema = object_schema(&json!({
+        let schema = object_schema(
+            &json!({
                 "payload": {
                     "type": "object",
                     "properties": {
@@ -368,7 +362,8 @@ mod tests {
                         }
                     }
                 }
-            }), &json!([]),
+            }),
+            &json!([]),
         );
         assert!(validate_mcp_tool_arguments(
             Some(&schema),
@@ -388,7 +383,8 @@ mod tests {
 
     #[test]
     fn nested_property_path_and_array_index_path() {
-        let schema = object_schema(&json!({
+        let schema = object_schema(
+            &json!({
                 "a": {
                     "type": "object",
                     "properties": {
@@ -404,43 +400,41 @@ mod tests {
                         }
                     }
                 }
-            }), &json!([]),
+            }),
+            &json!([]),
         );
         assert_err_contains(
             validate_mcp_tool_arguments(Some(&schema), &json!({"a": {"b": 1}})),
             &["$.a.b", "expects string", "got number"],
         );
         assert_err_contains(
-            validate_mcp_tool_arguments(
-                Some(&schema),
-                &json!({"items": [{"x": "nope"}]}),
-            ),
+            validate_mcp_tool_arguments(Some(&schema), &json!({"items": [{"x": "nope"}]})),
             &["$.items[0].x", "expects number", "got string"],
         );
         assert_err_contains(
-            validate_mcp_tool_arguments(
-                Some(&schema),
-                &json!({"items": ["bad"]}),
-            ),
+            validate_mcp_tool_arguments(Some(&schema), &json!({"items": ["bad"]})),
             &["$.items[0]", "expects object", "got string"],
         );
     }
 
     #[test]
     fn empty_array_with_items_constraint_ok() {
-        let schema = object_schema(&json!({
+        let schema = object_schema(
+            &json!({
                 "items": {
                     "type": "array",
                     "items": { "type": "object" }
                 }
-            }), &json!([]),
+            }),
+            &json!([]),
         );
         assert!(validate_mcp_tool_arguments(Some(&schema), &json!({"items": []})).is_ok());
     }
 
     #[test]
     fn deep_nesting_path_three_levels() {
-        let schema = object_schema(&json!({
+        let schema = object_schema(
+            &json!({
                 "l1": {
                     "type": "object",
                     "properties": {
@@ -452,13 +446,11 @@ mod tests {
                         }
                     }
                 }
-            }), &json!([]),
+            }),
+            &json!([]),
         );
         assert_err_contains(
-            validate_mcp_tool_arguments(
-                Some(&schema),
-                &json!({"l1": {"l2": {"l3": 1}}}),
-            ),
+            validate_mcp_tool_arguments(Some(&schema), &json!({"l1": {"l2": {"l3": 1}}})),
             &["$.l1.l2.l3", "expects boolean"],
         );
     }
@@ -467,10 +459,12 @@ mod tests {
 
     #[test]
     fn required_missing_reports_first() {
-        let schema = object_schema(&json!({
+        let schema = object_schema(
+            &json!({
                 "foo": { "type": "string" },
                 "bar": { "type": "string" }
-            }), &json!(["foo", "bar"]),
+            }),
+            &json!(["foo", "bar"]),
         );
         assert_err_contains(
             validate_mcp_tool_arguments(Some(&schema), &json!({})),
@@ -480,21 +474,22 @@ mod tests {
                 "Call not sent",
             ],
         );
-        assert!(validate_mcp_tool_arguments(
-            Some(&schema),
-            &json!({"foo": "a", "bar": "b"})
-        )
-        .is_ok());
+        assert!(
+            validate_mcp_tool_arguments(Some(&schema), &json!({"foo": "a", "bar": "b"})).is_ok()
+        );
         assert!(validate_mcp_tool_arguments(Some(&schema), &json!({"foo": "a"})).is_err());
     }
 
     #[test]
     fn required_present_but_wrong_type_prefers_type_error() {
-        let schema = object_schema(&json!({"foo": {"type": "string"}}), &json!(["foo"]),
-        );
+        let schema = object_schema(&json!({"foo": {"type": "string"}}), &json!(["foo"]));
         assert_err_contains(
             validate_mcp_tool_arguments(Some(&schema), &json!({"foo": 1})),
-            &["MCP arg type mismatch at $.foo:", "expects string", "got number"],
+            &[
+                "MCP arg type mismatch at $.foo:",
+                "expects string",
+                "got number",
+            ],
         );
     }
 
@@ -529,13 +524,15 @@ mod tests {
 
     #[test]
     fn property_without_type_still_recurses() {
-        let schema = object_schema(&json!({
+        let schema = object_schema(
+            &json!({
                 "wrap": {
                     "properties": {
                         "inner": { "type": "string" }
                     }
                 }
-            }), &json!([]),
+            }),
+            &json!([]),
         );
         assert_err_contains(
             validate_mcp_tool_arguments(Some(&schema), &json!({"wrap": {"inner": 1}})),
@@ -545,20 +542,21 @@ mod tests {
 
     #[test]
     fn union_type_array_skips_type_check() {
-        let schema = object_schema(&json!({"v": {"type": ["string", "null"]}}), &json!([]),
-        );
+        let schema = object_schema(&json!({"v": {"type": ["string", "null"]}}), &json!([]));
         assert!(validate_mcp_tool_arguments(Some(&schema), &json!({"v": 123})).is_ok());
     }
 
     #[test]
     fn one_of_any_of_all_of_skip_subtree() {
         for key in ["oneOf", "anyOf", "allOf"] {
-            let schema = object_schema(&json!({
+            let schema = object_schema(
+                &json!({
                     "v": {
                         key: [{"type": "string"}, {"type": "number"}],
                         "type": "string"
                     }
-                }), &json!([]),
+                }),
+                &json!([]),
             );
             // Combinator present → skip entire subtree (including type: string).
             assert!(
@@ -577,9 +575,7 @@ mod tests {
             },
             "additionalProperties": false
         });
-        assert!(
-            validate_mcp_tool_arguments(Some(&schema), &json!({"a": "x", "extra": 1})).is_ok()
-        );
+        assert!(validate_mcp_tool_arguments(Some(&schema), &json!({"a": "x", "extra": 1})).is_ok());
     }
 
     #[test]
@@ -593,7 +589,8 @@ mod tests {
 
     #[test]
     fn max_depth_fail_closed() {
-        let schema = object_schema(&json!({
+        let schema = object_schema(
+            &json!({
                 "a": {
                     "type": "object",
                     "properties": {
@@ -605,7 +602,8 @@ mod tests {
                         }
                     }
                 }
-            }), &json!([]),
+            }),
+            &json!([]),
         );
         let limits = McpArgGateLimits {
             max_depth: 1,
@@ -623,12 +621,14 @@ mod tests {
 
     #[test]
     fn max_nodes_fail_closed() {
-        let schema = object_schema(&json!({
+        let schema = object_schema(
+            &json!({
                 "items": {
                     "type": "array",
                     "items": { "type": "number" }
                 }
-            }), &json!([]),
+            }),
+            &json!([]),
         );
         let limits = McpArgGateLimits {
             max_depth: 32,
@@ -649,11 +649,7 @@ mod tests {
     #[test]
     fn no_coerce_stringified_array_number_bool() {
         let arr = object_schema(&json!({"items": {"type": "array"}}), &json!([]));
-        assert!(validate_mcp_tool_arguments(
-            Some(&arr),
-            &json!({"items": "[{\"a\":1}]"})
-        )
-        .is_err());
+        assert!(validate_mcp_tool_arguments(Some(&arr), &json!({"items": "[{\"a\":1}]"})).is_err());
 
         let num = object_schema(&json!({"n": {"type": "number"}}), &json!([]));
         assert!(validate_mcp_tool_arguments(Some(&num), &json!({"n": "123"})).is_err());
@@ -669,7 +665,9 @@ mod tests {
 
     #[test]
     fn error_message_contract_type_and_missing() {
-        let schema = object_schema(&json!({"items": {"type": "array"}, "foo": {"type": "string"}}), &json!(["foo"]),
+        let schema = object_schema(
+            &json!({"items": {"type": "array"}, "foo": {"type": "string"}}),
+            &json!(["foo"]),
         );
         assert_err_contains(
             validate_mcp_tool_arguments(Some(&schema), &json!({"items": "x", "foo": "y"})),
