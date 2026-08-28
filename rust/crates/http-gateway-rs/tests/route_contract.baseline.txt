@@ -10,6 +10,9 @@ GET	/v1/biz_advice_report	get_biz_advice_report
 GET	/v1/biz_advice_report_bak	get_biz_advice_report_bak
 POST	/v1/chat/completions	chat_completions
 POST	/v1/dev/biz_report_seed_task	dev_seed_biz_report_task
+POST	/v1/gateway/bootstrap/apply-llm-from-env	post_gateway_bootstrap_apply_llm_from_env_handler
+POST	/v1/gateway/bootstrap/ensure-core	post_gateway_bootstrap_ensure_core_handler
+GET	/v1/gateway/bootstrap/status	get_gateway_bootstrap_status_handler
 GET	/v1/gateway/endpoints	list_gateway_endpoints_handler
 DELETE	/v1/gateway/endpoints/{gateway_id}	delete_gateway_endpoint_handler
 GET	/v1/gateway/global-settings	get_gateway_global_settings_handler

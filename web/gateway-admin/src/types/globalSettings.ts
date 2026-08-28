@@ -287,3 +287,53 @@ export interface AdminMcpTokenIssueResponse {
   mcpEndpointPath: string;
   mcpTransport: string;
 }
+
+/** GET /v1/gateway/bootstrap/status — first-run cluster bootstrap. Author: kejiqing */
+export type BootstrapPhaseId =
+  | "cluster_identity"
+  | "llm_config"
+  | "e2b_templates"
+  | "e2b_singletons"
+  | "claw_tap_strict";
+
+export interface BootstrapPhaseStatus {
+  phase: BootstrapPhaseId;
+  complete: boolean;
+  detail?: string;
+}
+
+export interface BootstrapTemplateEntry {
+  key: string;
+  alias: string;
+  buildId?: string;
+  ready: boolean;
+}
+
+export interface BootstrapCommand {
+  label: string;
+  command: string;
+  hint?: string;
+}
+
+export interface ClusterBootstrapSnapshot {
+  needsBootstrap: boolean;
+  clusterId: string;
+  phases: BootstrapPhaseStatus[];
+  blockingReason?: string;
+  envLlmAvailable: boolean;
+  templateCommands: BootstrapCommand[];
+  templateEntries: BootstrapTemplateEntry[];
+  completedAtMs?: number;
+}
+
+export interface BootstrapApplyLlmResponse {
+  applied: boolean;
+  modelName?: string;
+  message?: string;
+}
+
+export interface BootstrapEnsureCoreResponse {
+  ok: boolean;
+  message?: string;
+  needsBootstrap: boolean;
+}

@@ -14,6 +14,7 @@ import {
   message,
 } from "antd";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { proxyHttp } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import type {
@@ -283,7 +284,13 @@ export default function GlobalInferencePage() {
             showIcon
             style={{ marginBottom: 16 }}
             message="observe 尚未初始化"
-            description="gateway 启动后会自动 ensure observe 单例；也可点击「重置 observe」。"
+            description={
+              <>
+                新集群请先完成{" "}
+                <Link to="/global/bootstrap">首次引导</Link>
+                ；已配置集群可在 gateway 启动后自动 ensure observe，或点击「重置 observe」。
+              </>
+            }
           />
         ) : null}
 

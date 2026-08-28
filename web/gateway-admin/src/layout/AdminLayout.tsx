@@ -20,6 +20,7 @@ import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { adminLogout, fetchAdminMe } from "../api/client";
 import CreateProjectModal from "../components/CreateProjectModal";
+import BootstrapBanner from "../components/BootstrapBanner";
 import { useApp } from "../context/AppContext";
 import { formatProjectLabel } from "../utils/projectLabel";
 import { isOvsWorkerRelaxed, ovsIdeHref } from "../utils/ovsUrl";
@@ -27,6 +28,7 @@ import { isOvsWorkerRelaxed, ovsIdeHref } from "../utils/ovsUrl";
 const { Header, Sider, Content } = Layout;
 
 const GLOBAL_MENU_CHILDREN = [
+  { key: "/global/bootstrap", label: "首次引导" },
   { key: "/global/inference", label: "全局推理" },
   { key: "/global/e2b-platform", label: "e2b 平台" },
   { key: "/global/e2b-core", label: "核心组件" },
@@ -214,6 +216,7 @@ export default function AdminLayout() {
           />
         </Sider>
         <Content style={{ padding: 16, overflow: "auto" }}>
+          <BootstrapBanner />
           <Outlet />
         </Content>
       </Layout>

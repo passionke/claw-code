@@ -3,21 +3,35 @@ use crate::app_state::AppState;
 use crate::routes::app::{
     apply_gateway_llm_model_head_handler, apply_gateway_llm_model_revision_handler,
     delete_gateway_git_pat_handler, delete_gateway_llm_model_handler,
-    ensure_gateway_e2b_singleton_handler, get_gateway_e2b_singletons_handler,
-    get_gateway_e2b_templates_handler, get_gateway_global_settings_handler,
-    issue_gateway_admin_mcp_token_handler, list_gateway_llm_model_versions_handler,
-    probe_gateway_claw_tap_handler, put_gateway_active_llm_config_handler,
-    put_gateway_claw_tap_handler, put_gateway_e2b_singleton_templates_handler,
-    put_gateway_e2b_worker_settings_handler, put_gateway_strict_landlock_default_handler,
-    reset_gateway_e2b_singleton_handler, reset_gateway_observe_tap_handler,
-    revoke_gateway_admin_mcp_token_handler, test_gateway_llm_model_handler,
-    upsert_gateway_git_pat_handler, upsert_gateway_llm_model_handler,
+    ensure_gateway_e2b_singleton_handler, get_gateway_bootstrap_status_handler,
+    get_gateway_e2b_singletons_handler, get_gateway_e2b_templates_handler,
+    get_gateway_global_settings_handler, issue_gateway_admin_mcp_token_handler,
+    list_gateway_llm_model_versions_handler, post_gateway_bootstrap_apply_llm_from_env_handler,
+    post_gateway_bootstrap_ensure_core_handler, probe_gateway_claw_tap_handler,
+    put_gateway_active_llm_config_handler, put_gateway_claw_tap_handler,
+    put_gateway_e2b_singleton_templates_handler, put_gateway_e2b_worker_settings_handler,
+    put_gateway_strict_landlock_default_handler, reset_gateway_e2b_singleton_handler,
+    reset_gateway_observe_tap_handler, revoke_gateway_admin_mcp_token_handler,
+    test_gateway_llm_model_handler, upsert_gateway_git_pat_handler,
+    upsert_gateway_llm_model_handler,
 };
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
+        .route(
+            "/v1/gateway/bootstrap/status",
+            get(get_gateway_bootstrap_status_handler),
+        )
+        .route(
+            "/v1/gateway/bootstrap/apply-llm-from-env",
+            post(post_gateway_bootstrap_apply_llm_from_env_handler),
+        )
+        .route(
+            "/v1/gateway/bootstrap/ensure-core",
+            post(post_gateway_bootstrap_ensure_core_handler),
+        )
         .route(
             "/v1/gateway/global-settings",
             get(get_gateway_global_settings_handler),

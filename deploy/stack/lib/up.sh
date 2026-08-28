@@ -138,6 +138,7 @@ claw_compose_gateway_up "${PODMAN_DIR}" "${ENV_FILE}" --force-recreate
 # shellcheck disable=SC1091
 source "${LIB_DIR}/bootstrap-runtime.sh"
 claw_wait_gateway_http_ready 60 || exit 1
+claw_print_cluster_bootstrap_hint || true
 
 echo "FC interactive backend — solve/OVS on e2b sandboxes" >&2
 

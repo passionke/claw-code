@@ -235,7 +235,6 @@ fn verify_master_mcp_auth(headers: &HeaderMap) -> Result<(), String> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-#[allow(clippy::needless_pass_by_value)]
 fn text_result(v: Value) -> Value {
     json!({
         "content": [{"type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())}]
@@ -623,10 +622,7 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                         attachments: None,
                     };
                     validate_admin_mcp_solve_input(db, &input).await?;
-                    solve_backend
-                        .gateway_solve_async(input)
-                        .await
-                        .map_err(|e| e.to_string())?
+                    solve_backend.gateway_solve_async(input).await?
                 };
                 replayed.push(json!({
                     "itemId": item_id,
@@ -759,10 +755,7 @@ async fn dispatch_tool<B: AdminMcpSolveBackend>(
                 attachments: None,
             };
             validate_admin_mcp_solve_input(db, &input).await?;
-            let resp = solve_backend
-                .gateway_solve_async(input)
-                .await
-                .map_err(|e| e.to_string())?;
+            let resp = solve_backend.gateway_solve_async(input).await?;
             Ok(resp)
         }
         other => Err(format!("unknown tool: {other}")),

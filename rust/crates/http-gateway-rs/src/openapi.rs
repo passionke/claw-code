@@ -22,6 +22,9 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::app::post_agent_feedback,
         crate::routes::app::get_agent_feedback,
         crate::routes::app::get_gateway_global_settings_handler,
+        crate::routes::app::get_gateway_bootstrap_status_handler,
+        crate::routes::app::post_gateway_bootstrap_apply_llm_from_env_handler,
+        crate::routes::app::post_gateway_bootstrap_ensure_core_handler,
         crate::routes::app::reset_gateway_observe_tap_handler,
         crate::routes::app::get_gateway_e2b_singletons_handler,
         crate::routes::app::get_gateway_e2b_templates_handler,
@@ -144,6 +147,13 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         crate::routes::openai_compat::revoke_model_api_key
     ),
     components(schemas(
+        crate::gateway_cluster_bootstrap::BootstrapPhaseId,
+        crate::gateway_cluster_bootstrap::BootstrapPhaseStatus,
+        crate::gateway_cluster_bootstrap::BootstrapTemplateEntry,
+        crate::gateway_cluster_bootstrap::BootstrapCommand,
+        crate::gateway_cluster_bootstrap::ClusterBootstrapSnapshot,
+        crate::gateway_cluster_bootstrap::BootstrapApplyLlmResponse,
+        crate::gateway_cluster_bootstrap::BootstrapEnsureCoreResponse,
         crate::gateway_e2b_singleton_lifecycle::E2bSingletonComponent,
         crate::project_entity_revision::ProjectEntityDomain,
         crate::routes::openai_compat::IssueKeyBody
@@ -157,6 +167,7 @@ const ROUTE_CONTRACT: &str = include_str!("../tests/route_contract.baseline.txt"
         (name = "Sessions", description = "Sessions, turns, execution, files, and reports"),
         (name = "Solve", description = "Synchronous and asynchronous solve execution"),
         (name = "Gateway Settings", description = "Cluster-wide gateway administration"),
+        (name = "Gateway Bootstrap", description = "First-run cluster bootstrap (LLM, e2b templates, core singletons)"),
         (name = "MCP", description = "MCP injection, probing, and admin operations"),
         (name = "Pools", description = "Pools, endpoints, and preflight plugins"),
         (name = "Master", description = "Master observer role, apprentices, schedules, and MCP"),
