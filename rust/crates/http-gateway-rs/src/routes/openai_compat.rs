@@ -201,6 +201,10 @@ async fn run_agent_completion(
         allowed_tools: None,
         max_iterations: None,
         attachments: None,
+        interaction_mode: None,
+        sealed_plan_id: None,
+        sealed_plan_markdown: None,
+        force_single_turn: None,
     };
     validate_solve_request(&state.session_db, &solve_req)
         .await

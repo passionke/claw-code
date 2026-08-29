@@ -117,6 +117,8 @@ pub fn run_multi_agent_solve_turn(
         effective_model.clone(),
         max_iterations,
         allowed_tools.clone(),
+        false,
+        _timeout_seconds,
         runtime_mcp_manager.clone(),
         runtime_mcp_tool_names.clone(),
         concurrent_mcp_tool_names,

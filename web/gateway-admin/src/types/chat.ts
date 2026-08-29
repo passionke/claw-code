@@ -26,6 +26,24 @@ export interface TaskProgressTodo {
   status: string;
 }
 
+/** Minimal A2UI surface for AskUserQuestion (claw-ask/v1). Author: kejiqing */
+export interface AskUserA2uiComponent {
+  id?: string;
+  component?: string;
+  text?: string;
+  label?: string;
+  placeholder?: string;
+  options?: string[];
+  action?: string;
+}
+
+export interface AskUserA2uiSurface {
+  version?: string;
+  catalogId?: string;
+  surfaceId?: string;
+  components?: AskUserA2uiComponent[];
+}
+
 /** `POST /v1/sessions/{sessionId}/turns/{turnId}/cancel`. Author: kejiqing */
 export interface TurnCancelResponse {
   sessionId: string;
@@ -50,6 +68,18 @@ export interface SolveTask {
   planTitle?: string;
   /** Multi-agent todo checklist with status. Author: kejiqing */
   todos?: TaskProgressTodo[];
+  /** `agent` | `plan`. Author: kejiqing */
+  interactionMode?: string | null;
+  /** planning | awaiting_confirm | confirmed | executing | done | superseded. Author: kejiqing */
+  planPhase?: string | null;
+  planId?: string | null;
+  planMarkdown?: string | null;
+  planTurnId?: string | null;
+  /** Mid-turn AskUser HITL. Author: kejiqing */
+  askUserQuestionId?: string | null;
+  askUserQuestion?: string | null;
+  askUserOptions?: string[] | null;
+  askUserA2ui?: AskUserA2uiSurface | null;
   progressHistory?: ProgressEvent[];
   result?: { outputText?: string };
   error?: unknown;

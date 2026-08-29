@@ -11,6 +11,7 @@ use tracing::{info, warn};
 
 use crate::config::{McpTransport, RuntimeConfig, ScopedMcpServerConfig};
 use crate::mcp::mcp_tool_name;
+use crate::mcp_arg_type_gate::validate_mcp_tool_arguments;
 use crate::mcp_client::{default_mcp_tool_call_timeout_ms, McpClientBootstrap, McpClientTransport};
 use crate::mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase,
@@ -388,6 +389,10 @@ pub enum McpServerManagerError {
     UnknownServer {
         server_name: String,
     },
+    /// Local `inputSchema` type gate failed; RPC was not sent. Author: kejiqing
+    ArgTypeGate {
+        message: String,
+    },
 }
 
 impl std::fmt::Display for McpServerManagerError {
@@ -431,6 +436,7 @@ impl std::fmt::Display for McpServerManagerError {
                 write!(f, "unknown MCP tool `{qualified_name}`")
             }
             Self::UnknownServer { server_name } => write!(f, "unknown MCP server `{server_name}`"),
+            Self::ArgTypeGate { message } => write!(f, "{message}"),
         }
     }
 }
@@ -444,7 +450,8 @@ impl std::error::Error for McpServerManagerError {
             | Self::InvalidResponse { .. }
             | Self::Timeout { .. }
             | Self::UnknownTool { .. }
-            | Self::UnknownServer { .. } => None,
+            | Self::UnknownServer { .. }
+            | Self::ArgTypeGate { .. } => None,
         }
     }
 }
@@ -465,6 +472,7 @@ impl McpServerManagerError {
             | Self::Timeout { method, .. } => lifecycle_phase_for_method(method),
             Self::UnknownTool { .. } => McpLifecyclePhase::ToolDiscovery,
             Self::UnknownServer { .. } => McpLifecyclePhase::ServerRegistration,
+            Self::ArgTypeGate { .. } => McpLifecyclePhase::Invocation,
         }
     }
 
@@ -534,6 +542,9 @@ impl McpServerManagerError {
             Self::UnknownServer { server_name } => {
                 BTreeMap::from([("server".to_string(), server_name.clone())])
             }
+            Self::ArgTypeGate { message } => {
+                BTreeMap::from([("arg_type_gate".to_string(), message.clone())])
+            }
         }
     }
 }
@@ -562,10 +573,19 @@ fn unsupported_server_failed_server(server: &UnsupportedMcpServer) -> McpFailedS
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct ToolRoute {
     server_name: String,
     raw_name: String,
+    input_schema: Option<JsonValue>,
+}
+
+fn tool_route_from_managed(tool: &ManagedMcpTool) -> ToolRoute {
+    ToolRoute {
+        server_name: tool.server_name.clone(),
+        raw_name: tool.raw_name.clone(),
+        input_schema: tool.tool.input_schema.clone(),
+    }
 }
 
 struct ConcurrentHttpPrep {
@@ -667,13 +687,8 @@ impl McpServerManager {
     pub fn prime_tool_routes(&mut self, discovered_tools: &[ManagedMcpTool]) {
         self.tool_index.clear();
         for tool in discovered_tools {
-            self.tool_index.insert(
-                tool.qualified_name.clone(),
-                ToolRoute {
-                    server_name: tool.server_name.clone(),
-                    raw_name: tool.raw_name.clone(),
-                },
-            );
+            self.tool_index
+                .insert(tool.qualified_name.clone(), tool_route_from_managed(tool));
         }
     }
 
@@ -686,13 +701,8 @@ impl McpServerManager {
             self.clear_routes_for_server(&server_name);
 
             for tool in server_tools {
-                self.tool_index.insert(
-                    tool.qualified_name.clone(),
-                    ToolRoute {
-                        server_name: tool.server_name.clone(),
-                        raw_name: tool.raw_name.clone(),
-                    },
-                );
+                self.tool_index
+                    .insert(tool.qualified_name.clone(), tool_route_from_managed(&tool));
                 discovered_tools.push(tool);
             }
         }
@@ -712,13 +722,8 @@ impl McpServerManager {
                     working_servers.push(server_name.clone());
                     self.clear_routes_for_server(&server_name);
                     for tool in server_tools {
-                        self.tool_index.insert(
-                            tool.qualified_name.clone(),
-                            ToolRoute {
-                                server_name: tool.server_name.clone(),
-                                raw_name: tool.raw_name.clone(),
-                            },
-                        );
+                        self.tool_index
+                            .insert(tool.qualified_name.clone(), tool_route_from_managed(&tool));
                         discovered_tools.push(tool);
                     }
                 }
@@ -783,6 +788,8 @@ impl McpServerManager {
             .ok_or_else(|| McpServerManagerError::UnknownTool {
                 qualified_name: qualified_tool_name.to_string(),
             })?;
+
+        Self::gate_tool_arguments(&route, arguments.as_ref())?;
 
         let timeout_ms = self.tool_call_timeout_ms(&route.server_name)?;
         let tool_name = route.raw_name.clone();
@@ -1005,6 +1012,8 @@ impl McpServerManager {
                 qualified_name: qualified_tool_name.to_string(),
             })?;
 
+        Self::gate_tool_arguments(&route, arguments)?;
+
         self.ensure_server_ready(&route.server_name).await?;
 
         let server = self.servers.get(&route.server_name).ok_or_else(|| {
@@ -1144,6 +1153,17 @@ impl McpServerManager {
                 details: format!("unsupported MCP transport for manager: {other:?}"),
             }),
         }
+    }
+
+    /// Fail closed on `inputSchema` type mismatch before any MCP RPC. Author: kejiqing
+    fn gate_tool_arguments(
+        route: &ToolRoute,
+        arguments: Option<&JsonValue>,
+    ) -> Result<(), McpServerManagerError> {
+        let empty = JsonValue::Object(JsonMap::new());
+        let args = arguments.unwrap_or(&empty);
+        validate_mcp_tool_arguments(route.input_schema.as_ref(), args)
+            .map_err(|message| McpServerManagerError::ArgTypeGate { message })
     }
 
     fn server_process_exited(&mut self, server_name: &str) -> Result<bool, McpServerManagerError> {
@@ -1573,10 +1593,11 @@ mod tests {
     use crate::mcp_transport::http::extract_sse_message_url;
 
     use super::{
-        spawn_mcp_stdio_process, unsupported_server_failed_server, JsonRpcId, JsonRpcRequest,
-        JsonRpcResponse, McpInitializeClientInfo, McpInitializeParams, McpInitializeResult,
-        McpInitializeServerInfo, McpListToolsResult, McpReadResourceParams, McpReadResourceResult,
-        McpServerManager, McpServerManagerError, McpStdioProcess, McpTool, McpToolCallParams,
+        spawn_mcp_stdio_process, tool_route_from_managed, unsupported_server_failed_server,
+        JsonRpcId, JsonRpcRequest, JsonRpcResponse, ManagedMcpTool, McpInitializeClientInfo,
+        McpInitializeParams, McpInitializeResult, McpInitializeServerInfo, McpListToolsResult,
+        McpReadResourceParams, McpReadResourceResult, McpServerManager, McpServerManagerError,
+        McpStdioProcess, McpTool, McpToolCallParams, ToolRoute,
     };
     use crate::McpLifecyclePhase;
 
@@ -3299,5 +3320,84 @@ mod tests {
         super::apply_mcp_tool_annotations_from_config(&mut tools, &servers);
         let names = super::concurrent_mcp_tool_names(&tools);
         assert!(names.contains("mcp__srv__analysis"));
+    }
+
+    #[test]
+    fn arg_type_gate_fail_closed_before_rpc() {
+        let route = ToolRoute {
+            server_name: "probe".to_string(),
+            raw_name: "write_items".to_string(),
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": { "type": "object" }
+                    }
+                },
+                "required": ["items"]
+            })),
+        };
+        let bad = json!({"items": "[{\"a\":1}]"});
+        let err = McpServerManager::gate_tool_arguments(&route, Some(&bad)).unwrap_err();
+        match err {
+            McpServerManagerError::ArgTypeGate { message } => {
+                assert!(message.contains("MCP arg type mismatch at $.items:"));
+                assert!(message.contains("schema expects array, got string"));
+                assert!(message.contains("(model tool_use)"));
+                assert!(message.contains("Call not sent"));
+            }
+            other => panic!("expected ArgTypeGate, got {other}"),
+        }
+    }
+
+    #[test]
+    fn arg_type_gate_pass_leaves_arguments_untouched() {
+        let route = ToolRoute {
+            server_name: "probe".to_string(),
+            raw_name: "write_items".to_string(),
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": { "type": "object" }
+                    }
+                }
+            })),
+        };
+        let args = json!({"items": [{"a": 1}], "extra": "keep"});
+        let before = args.clone();
+        McpServerManager::gate_tool_arguments(&route, Some(&args)).unwrap();
+        assert_eq!(args, before);
+    }
+
+    #[test]
+    fn arg_type_gate_skips_when_schema_absent() {
+        let route = ToolRoute {
+            server_name: "probe".to_string(),
+            raw_name: "loose".to_string(),
+            input_schema: None,
+        };
+        McpServerManager::gate_tool_arguments(&route, Some(&json!({"items": "not-array"})))
+            .unwrap();
+    }
+
+    #[test]
+    fn tool_route_from_managed_keeps_input_schema() {
+        let managed = ManagedMcpTool {
+            server_name: "s".to_string(),
+            qualified_name: "mcp__s__t".to_string(),
+            raw_name: "t".to_string(),
+            tool: McpTool {
+                name: "t".to_string(),
+                description: None,
+                input_schema: Some(json!({"type": "object"})),
+                annotations: None,
+                meta: None,
+            },
+        };
+        let route = tool_route_from_managed(&managed);
+        assert_eq!(route.input_schema, Some(json!({"type": "object"})));
     }
 }

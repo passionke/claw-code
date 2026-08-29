@@ -74,6 +74,8 @@ Author: kejiqing
 | [`deploy-ops-truth.md`](deploy-ops-truth.md) | 脚本实际行为（与 README 对照） |
 | [`project-config-model.md`](project-config-model.md) | PG `project_config` |
 | [`gateway-solve-preflight.md`](gateway-solve-preflight.md) | Solve preflight 插件化管道（`steps` / scope / SPI） |
+| [`gateway-mcp-call-meta.md`](gateway-mcp-call-meta.md) | MCP `tools/call` `_meta.extra_session` |
+| [`mcp-arg-schema-pitfalls.md`](mcp-arg-schema-pitfalls.md) | MCP `inputSchema` 类型门禁与 object[] 避坑 |
 | [`preflight-spi-v1.md`](preflight-spi-v1.md) | Preflight 子进程 SPI v1 契约 |
 | [`claw-tap-cluster-identity.md`](claw-tap-cluster-identity.md) | clawTap `clusterHash` |
 | [`langfuse-otel.md`](langfuse-otel.md) | OTEL span 命名 |

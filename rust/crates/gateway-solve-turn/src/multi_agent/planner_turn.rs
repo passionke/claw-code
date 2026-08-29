@@ -40,6 +40,7 @@ pub fn run_planner_turn(
                 .collect()
         },
         session_id.to_string(),
+        false,
     )
     .map_err(|e| crate::GatewaySolveTurnError {
         status: 500,

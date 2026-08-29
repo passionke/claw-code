@@ -146,6 +146,13 @@ pub fn emit_solve_error(message: &str, http_status_hint: u16) -> io::Result<()> 
     })
 }
 
+/// Emit an arbitrary structured stdout event (must include `"ev"`). Author: kejiqing
+pub fn emit_raw_json(value: &Value) -> io::Result<()> {
+    let body = serde_json::to_string(value).map_err(|e| io::Error::other(e.to_string()))?;
+    writeln!(io::stdout(), "{GATEWAY_STDOUT_LINE_PREFIX}{body}")?;
+    io::stdout().flush()
+}
+
 /// Parse one stdout line; returns `Some(event)` when prefixed.
 #[must_use]
 pub fn parse_stdout_line(line: &str) -> Option<Value> {

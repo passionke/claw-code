@@ -395,6 +395,22 @@ fn run_gateway_solve_once(task_file: &Path) -> Result<(), Box<dyn std::error::Er
             task.llm_route.clone(),
             task.landlock_dsl.clone().zip(task.landlock_dsl_source),
             task.attachments.as_deref().unwrap_or(&[]),
+            gateway_solve_turn::SolveTurnOptions {
+                interaction_mode: gateway_solve_turn::InteractionMode::parse(
+                    task.interaction_mode.as_deref(),
+                ),
+                force_single_turn: task.force_single_turn.unwrap_or(false),
+                sealed_plan_id: task.sealed_plan_id.clone(),
+                sealed_plan_markdown: task.sealed_plan_markdown.clone(),
+                ask_user_question_enabled: task.ask_user_question_enabled.unwrap_or_else(|| {
+                    gateway_solve_turn::resolve_ask_user_question_enabled(
+                        gateway_solve_turn::InteractionMode::parse(
+                            task.interaction_mode.as_deref(),
+                        ),
+                        false,
+                    )
+                }),
+            },
         )
     };
     let run_result = match result {

@@ -33,6 +33,7 @@ pub fn run_writer_turn(
         &allowed,
         vec![], // writer: no MCP
         session_id.to_string(),
+        false,
     )
     .map_err(|e| GatewaySolveTurnError {
         status: 500,

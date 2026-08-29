@@ -1,4 +1,4 @@
-import { Alert, Button, Image, Input, Spin, Tooltip, Upload, message } from "antd";
+import { Alert, Button, Image, Input, Segmented, Spin, Tooltip, Upload, message } from "antd";
 import { PaperClipOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChatHistorySidebar from "../components/chat/ChatHistorySidebar";
@@ -32,6 +32,7 @@ import {
 import { extractSolveReportMessage } from "../utils/solveReportBody";
 import { turnViewModeForStatus } from "../utils/turnViewMode";
 import type { TurnFeedbackValue } from "../types/chat";
+import { isOvsWorkerRelaxed } from "../utils/ovsUrl";
 
 interface TurnEntry {
   id: string;
@@ -97,8 +98,17 @@ export default function ChatPage() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [translateOpen, setTranslateOpen] = useState(false);
   const [extraKv, setExtraKv] = useState<ExtraSessionKv>({});
+  /** Session-level Plan | Agent; Plan only when worker is relaxed. Author: kejiqing */
+  const [interactionMode, setInteractionMode] = useState<"agent" | "plan">("agent");
   const sessionIdRef = useRef<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  const planModeAllowed = isOvsWorkerRelaxed(projectConfig?.workerProfileJson);
+  useEffect(() => {
+    if (!planModeAllowed && interactionMode === "plan") {
+      setInteractionMode("agent");
+    }
+  }, [planModeAllowed, interactionMode]);
 
   const fieldDefs = useMemo(
     () =>
@@ -296,6 +306,9 @@ export default function ChatPage() {
     };
     if (sid) payload.sessionId = sid;
     if (attachments?.length) payload.attachments = attachments;
+    if (planModeAllowed && interactionMode === "plan") {
+      payload.interactionMode = "plan";
+    }
 
     let asyncRes: SolveAsyncResponse;
     try {
@@ -549,6 +562,32 @@ export default function ChatPage() {
                         message.error(String((e as Error).message || e));
                       });
                   }}
+                  onPlanConfirmed={(asyncRes) => {
+                    sessionIdRef.current = asyncRes.sessionId;
+                    setActiveSessionId(asyncRes.sessionId);
+                    setHistoryRefreshKey((k) => k + 1);
+                    setThread((prev) => [
+                      ...prev,
+                      {
+                        id: asyncRes.turnId,
+                        userText: `执行：已确认方案`,
+                        taskId: asyncRes.taskId,
+                        sessionId: asyncRes.sessionId,
+                        turnId: asyncRes.turnId,
+                        initialStatus: asyncRes.status || "queued",
+                        viewMode: "live",
+                        clientOrigin: CLIENT_ORIGIN_GATEWAY_ADMIN,
+                        createdAtMs: Date.now(),
+                        poolId: asyncRes.poolId ?? undefined,
+                        gatewayId: asyncRes.gatewayId ?? undefined,
+                        gatewayBase: asyncRes.gatewayBase ?? undefined,
+                        workerName: asyncRes.workerName ?? undefined,
+                        workerProfile: asyncRes.workerProfile ?? undefined,
+                        workerExecUser: asyncRes.workerExecUser ?? undefined,
+                      },
+                    ]);
+                    scrollLog();
+                  }}
                 />
               </div>
             );
@@ -594,6 +633,18 @@ export default function ChatPage() {
             ))}
           </div>
           <div className={styles.composerRow}>
+            {planModeAllowed ? (
+              <Segmented
+                size="small"
+                value={interactionMode}
+                disabled={composerDisabled || sending}
+                options={[
+                  { label: "Agent", value: "agent" },
+                  { label: "Plan", value: "plan" },
+                ]}
+                onChange={(v) => setInteractionMode(v as "agent" | "plan")}
+              />
+            ) : null}
             <Upload
               multiple
               showUploadList={false}
@@ -617,7 +668,9 @@ export default function ChatPage() {
                   ? CHAT_AUDIT_ONLY
                     ? "只读审计：请在 Coding 终端进行交互"
                     : "外部会话，仅可查看历史"
-                  : "输入任务描述（自然语言），Enter 发送；Shift+Enter 换行；可附加图片/PDF/CSV"
+                  : interactionMode === "plan" && planModeAllowed
+                    ? "Plan 模式：先对齐方案（只读探查），确认后再执行；Enter 发送"
+                    : "输入任务描述（自然语言），Enter 发送；Shift+Enter 换行；可附加图片/PDF/CSV"
               }
               disabled={composerDisabled}
               autoSize={{ minRows: 2, maxRows: 6 }}

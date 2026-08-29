@@ -120,6 +120,15 @@ pub(crate) async fn task_record_from_latest_turn_row(
         report_time_ms: None,
         plan_title: None,
         todos: Vec::new(),
+        interaction_mode: None,
+        plan_phase: None,
+        plan_id: None,
+        plan_markdown: None,
+        plan_turn_id: None,
+        ask_user_question_id: None,
+        ask_user_question: None,
+        ask_user_options: None,
+        ask_user_a2ui: None,
         pool_id: row.pool_id.clone(),
         worker_name: row.worker_name.clone(),
         worker_profile: state
@@ -148,6 +157,8 @@ pub(crate) async fn task_record_from_latest_turn_row(
         &mut record,
     )
     .await;
+    enrich_task_record_with_plan(state, &mut record).await;
+    enrich_task_record_with_ask_user(state, &mut record);
     record.has_report = task_has_report(state, &record).await;
     record.report_time_ms = task_report_time_ms(state, &record).await;
     Ok((record, proj_id))
@@ -191,6 +202,8 @@ pub(crate) async fn get_task(
     task.progress_history = progress_snap.events;
     task.plan_title = plan_title;
     task.todos = todos;
+    enrich_task_record_with_plan(&state, &mut task).await;
+    enrich_task_record_with_ask_user(&state, &mut task);
     let queue = {
         let tasks = state.tasks.lock().await;
         gateway_queue_snapshot(&tasks)

@@ -6,6 +6,7 @@ import { useBizReportStream } from "../../hooks/useBizReportStream";
 import type {
   BizAdviceReportResponse,
   ProgressEvent,
+  SolveAsyncResponse,
   SolveTask,
   TurnCancelResponse,
   TurnFeedbackValue,
@@ -14,6 +15,7 @@ import { claudeTapSessionUrl, isValidHttpUrl } from "../../utils/claudeTap";
 import { extractSolveReportMessage } from "../../utils/solveReportBody";
 import { isAdminOrigin } from "../../utils/clientOrigin";
 import ReportMarkdown from "./ReportMarkdown";
+import AskUserA2ui from "./AskUserA2ui";
 import TurnFeedbackButtons from "./TurnFeedbackButtons";
 import TurnToolsDrawer from "./TurnToolsDrawer";
 import TurnTimelineDrawer from "./TurnTimelineDrawer";
@@ -58,6 +60,8 @@ export interface ChatTurnCardProps {
   initialWorkerName?: string | null;
   initialWorkerProfile?: string | null;
   initialWorkerExecUser?: string | null;
+  /** After Plan confirm, parent appends T2 turn card. Author: kejiqing */
+  onPlanConfirmed?: (res: SolveAsyncResponse) => void;
 }
 
 function todoStatusMark(status: string): string {
@@ -70,6 +74,10 @@ function todoStatusMark(status: string): string {
 
 function statusLabel(task: SolveTask): string {
   const st = task.status || "unknown";
+  if (st === "awaiting_user") return "等待用户回答";
+  if (task.planPhase === "awaiting_confirm") return "待确认方案";
+  if (task.planPhase === "planning" && st === "running") return "规划中…";
+  if (task.planPhase === "confirmed") return "方案已确认";
   if (st === "queued") return "排队中";
   if (st === "running") {
     if (task.hasReport) return "生成报告中…";
@@ -139,6 +147,7 @@ export default function ChatTurnCard({
   initialWorkerName,
   initialWorkerProfile,
   initialWorkerExecUser,
+  onPlanConfirmed,
 }: ChatTurnCardProps) {
   const prefilledReport = extractSolveReportMessage(initialHistoricalReport?.trim() ?? "");
   const prefilledFailure = initialFailureDetail?.trim() ?? "";
@@ -167,6 +176,8 @@ export default function ChatTurnCard({
     historyMode && !prefilledReport
   );
   const [cancelLoading, setCancelLoading] = useState(false);
+  const [confirmLoading, setConfirmLoading] = useState(false);
+  const [askLoading, setAskLoading] = useState(false);
   const {
     text: streamText,
     live: streamLive,
@@ -530,10 +541,94 @@ export default function ChatTurnCard({
         </div>
       </div>
 
-      {(task.planTitle || (task.todos && task.todos.length > 0)) && (
+      {task.status === "awaiting_user" && task.askUserQuestionId && !historyMode ? (
+        <AskUserA2ui
+          questionId={task.askUserQuestionId}
+          a2ui={task.askUserA2ui}
+          question={task.askUserQuestion}
+          options={task.askUserOptions}
+          submitting={askLoading}
+          onSubmit={({ answer, selected }) => {
+            void (async () => {
+              if (!task.askUserQuestionId) return;
+              setAskLoading(true);
+              try {
+                await proxyHttp(
+                  gatewayBase,
+                  "POST",
+                  `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/ask-user-answer`,
+                  {
+                    projId,
+                    questionId: task.askUserQuestionId,
+                    answer,
+                    selected,
+                  }
+                );
+                setTask((prev) => ({
+                  ...prev,
+                  status: "running",
+                  askUserQuestionId: null,
+                  askUserQuestion: null,
+                  askUserOptions: null,
+                  askUserA2ui: null,
+                  currentTaskDesc: "继续执行…",
+                }));
+                message.success("已提交回答");
+              } catch (e) {
+                message.error(String((e as Error).message || e));
+              } finally {
+                setAskLoading(false);
+              }
+            })();
+          }}
+        />
+      ) : null}
+
+      {(task.planMarkdown || task.planTitle || (task.todos && task.todos.length > 0)) && (
         <div className={styles.planOutline}>
           {task.planTitle ? (
             <div className={styles.planTitle}>{task.planTitle}</div>
+          ) : null}
+          {task.planMarkdown ? (
+            <div className={styles.planMarkdownBody}>
+              <ReportMarkdown text={task.planMarkdown} />
+            </div>
+          ) : null}
+          {task.planPhase === "awaiting_confirm" && task.planId && !historyMode ? (
+            <div className={styles.planConfirmRow}>
+              <Button
+                type="primary"
+                size="small"
+                loading={confirmLoading}
+                onClick={() => {
+                  void (async () => {
+                    if (!task.planId) return;
+                    setConfirmLoading(true);
+                    try {
+                      const res = await proxyHttp<SolveAsyncResponse>(
+                        gatewayBase,
+                        "POST",
+                        `/v1/sessions/${encodeURIComponent(sessionId)}/plans/${encodeURIComponent(task.planId)}/confirm`,
+                        { projId }
+                      );
+                      setTask((prev) => ({
+                        ...prev,
+                        planPhase: "confirmed",
+                        currentTaskDesc: "方案已确认",
+                      }));
+                      onPlanConfirmed?.(res);
+                      message.success("已确认，开始执行");
+                    } catch (e) {
+                      message.error(String((e as Error).message || e));
+                    } finally {
+                      setConfirmLoading(false);
+                    }
+                  })();
+                }}
+              >
+                确认执行
+              </Button>
+            </div>
           ) : null}
           {task.todos && task.todos.length > 0 ? (
             <ul className={styles.planTodos}>
@@ -580,13 +675,13 @@ export default function ChatTurnCard({
         {showStreamingPlaceholder && (
           <div className={styles.turnBodyPlaceholder}>报告流式生成中…</div>
         )}
-        {reportVisible && (
+        {reportVisible && !(task.planPhase === "awaiting_confirm" && task.planMarkdown) && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>报告</div>
             <ReportMarkdown text={reportText} streaming={reportStreaming} />
           </div>
         )}
-        {fallbackOutput && !reportVisible && (
+        {fallbackOutput && !reportVisible && !(task.planPhase === "awaiting_confirm" && task.planMarkdown) && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>回复</div>
             <ReportMarkdown text={fallbackOutput} />

@@ -35,6 +35,7 @@ type Mode = WorkerProfileJson["mode"];
 type FormValues = {
   mode: Mode;
   poolSize?: number | null;
+  askUserQuestionInAgent?: boolean;
   landlockInherit: boolean;
   landlockEnabled: boolean;
   landlockRw: string[];
@@ -106,6 +107,7 @@ export default function WorkerProfilePage() {
     form.setFieldsValue({
       mode: rawMode,
       poolSize: typeof wp?.poolSize === "number" ? wp.poolSize : null,
+      askUserQuestionInAgent: wp?.askUserQuestionInAgent === true,
       landlockInherit: inherit,
       landlockEnabled: landlock?.enabled ?? systemDefault?.enabled ?? true,
       landlockRw: landlock?.rw ?? systemDefault?.rw ?? ["${session_root}"],
@@ -123,8 +125,12 @@ export default function WorkerProfilePage() {
   };
 
   const buildWorkerProfileJson = (v: FormValues): WorkerProfileJson => {
+    const askUser =
+      v.askUserQuestionInAgent === true
+        ? { askUserQuestionInAgent: true as const }
+        : {};
     if (v.mode === "relaxed") {
-      return { mode: "relaxed" };
+      return { mode: "relaxed", ...askUser };
     }
     const poolSize =
       typeof v.poolSize === "number" && Number.isFinite(v.poolSize) ? v.poolSize : undefined;
@@ -132,6 +138,7 @@ export default function WorkerProfilePage() {
       return {
         mode: "strict",
         ...(poolSize != null ? { poolSize } : {}),
+        ...askUser,
         strict: { useSystemDefault: true },
       };
     }
@@ -143,6 +150,7 @@ export default function WorkerProfilePage() {
     return {
       mode: "strict",
       ...(poolSize != null ? { poolSize } : {}),
+      ...askUser,
       strict: { useSystemDefault: false, landlock },
     };
   };
@@ -383,6 +391,14 @@ export default function WorkerProfilePage() {
               <Radio value="relaxed">Relaxed（OVS：root + 可写容器）</Radio>
             ) : null}
           </Radio.Group>
+        </Form.Item>
+        <Form.Item
+          name="askUserQuestionInAgent"
+          label="Agent 模式允许向用户提问"
+          valuePropName="checked"
+          extra="Plan 模式始终可用 AskUserQuestion；开启后 Agent 模式也会注册该工具。"
+        >
+          <Switch />
         </Form.Item>
         {!relaxedAllowed ? (
           <Alert

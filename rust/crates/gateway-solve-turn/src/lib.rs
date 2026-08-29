@@ -52,6 +52,7 @@ use tools::{
 };
 
 pub mod agent_orchestration;
+pub mod ask_user;
 pub mod complete_router_turn;
 pub mod delegate_project_tool;
 pub mod entity_labels;
@@ -59,6 +60,7 @@ pub mod extra_session_bizdate;
 pub mod gateway_stdout;
 #[cfg(test)]
 mod integ_subagent_escape;
+pub mod interaction_mode;
 pub mod landlock_dsl;
 pub mod landlock_jail;
 pub mod mcp_call_context;
@@ -76,6 +78,10 @@ pub mod task_progress;
 pub mod turn_language;
 pub mod turn_tools;
 pub mod worker_env;
+pub use ask_user::{
+    apply_ask_user_tool_gate, ask_user_question_in_agent_from_profile,
+    resolve_ask_user_question_enabled, ASK_USER_QUESTION_TOOL_NAME,
+};
 pub use complete_router_turn::{
     complete_router_turn_tool_definition, run_complete_router_turn, COMPLETE_ROUTER_TURN_TOOL_NAME,
 };
@@ -89,7 +95,7 @@ pub use extra_session_bizdate::{
     EXTRA_SESSION_BIZDATE_KEY,
 };
 pub use gateway_stdout::{
-    emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
+    emit_raw_json, emit_report_delta, emit_solve_done, emit_solve_error, parse_stdout_line,
     reset_delegate_stdout_state, GATEWAY_STDOUT_LINE_PREFIX,
 };
 pub use landlock_dsl::{
@@ -299,6 +305,123 @@ pub struct GatewaySolveTaskFile {
     pub landlock_dsl: Option<crate::landlock_dsl::LandlockDsl>,
     #[serde(rename = "landlockDslSource", skip_serializing_if = "Option::is_none")]
     pub landlock_dsl_source: Option<crate::landlock_dsl::LandlockDslSource>,
+    /// `agent` (default) or `plan`. Author: kejiqing
+    #[serde(
+        default,
+        rename = "interactionMode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub interaction_mode: Option<String>,
+    /// Skip multi_agent_analysis (confirm-execute path). Author: kejiqing
+    #[serde(
+        default,
+        rename = "forceSingleTurn",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub force_single_turn: Option<bool>,
+    #[serde(
+        default,
+        rename = "sealedPlanId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sealed_plan_id: Option<String>,
+    #[serde(
+        default,
+        rename = "sealedPlanMarkdown",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sealed_plan_markdown: Option<String>,
+    /// When true, register AskUserQuestion for this turn. Author: kejiqing
+    #[serde(
+        default,
+        rename = "askUserQuestionEnabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ask_user_question_enabled: Option<bool>,
+}
+
+pub use interaction_mode::{
+    plan_title_from_markdown, todos_from_plan_markdown, InteractionMode, SolveTurnOptions,
+};
+
+/// System section injected for Plan mode (read-only alignment). Author: kejiqing
+const PLAN_MODE_SYSTEM_SECTION: &str = r"# Plan mode (read-only)
+
+You are in **Plan mode**. Explore with read-only tools only. Do NOT modify files, run destructive commands, or implement changes.
+
+Your job:
+1. Gather enough intelligence about the current codebase/constraints.
+2. When requirements, scope, or choices are ambiguous or under-specified, you MUST call **AskUserQuestion** before drafting the final plan. Do not guess critical product decisions.
+3. Record options and a recommended decision after answers (if any).
+4. Output a **human-readable markdown plan** as your final assistant message using this template:
+
+# 方案：<short title>
+
+## 目标
+…
+
+## 现状与情报
+…
+
+## 边界与假设
+…
+
+## 选型
+…
+
+## 实施步骤
+1. …
+2. …
+
+## 验收
+…
+
+The final message MUST be that markdown plan (no code edits). Implementation happens only after the user confirms.";
+
+/// Injected when AskUserQuestion is enabled in Agent mode. Author: kejiqing
+const AGENT_ASK_USER_SYSTEM_SECTION: &str = r"# Asking the user
+
+You have **AskUserQuestion**. When a critical choice or missing requirement would block correct work, call it once with a clear question (and options when helpful). Do not over-ask for trivia.";
+
+const SEALED_PLAN_EXECUTE_SECTION_HEADER: &str = r"# Sealed plan (execute)
+
+The user confirmed the following plan. Implement it faithfully. Do not reopen major design choices unless blocked; prefer following the sealed steps.";
+
+fn publish_sealed_plan_todos(
+    session_home: &Path,
+    session_id: &str,
+    plan_id: &str,
+    body_markdown: &str,
+) -> Result<(), String> {
+    use crate::task_progress::{write_task_progress, TaskProgressFile, TaskProgressTodo};
+    let steps = todos_from_plan_markdown(body_markdown);
+    let title = plan_title_from_markdown(body_markdown);
+    let todos: Vec<TaskProgressTodo> = steps
+        .into_iter()
+        .enumerate()
+        .map(|(i, step_title)| TaskProgressTodo {
+            id: format!("step-{}", i + 1),
+            title: step_title,
+            status: "pending".into(),
+        })
+        .collect();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0);
+    let progress = TaskProgressFile {
+        version: 1,
+        session_id: session_id.to_string(),
+        current_task_desc: format!("执行已确认方案：{title}"),
+        phase: "executing".into(),
+        plan_title: Some(title),
+        todos,
+        current_todo_id: None,
+        updated_at_ms: now_ms,
+    };
+    let _ = plan_id;
+    write_task_progress(session_home, &progress)
 }
 
 pub(crate) fn default_system_date() -> String {
@@ -510,12 +633,18 @@ impl DirectApiClient {
         allowed_tools: &[String],
         runtime_mcp_tools: Vec<ToolDefinition>,
         clawcode_session_id: String,
+        ask_user_question_enabled: bool,
     ) -> Result<Self, GatewaySolveTurnError> {
         let provider = ProviderClient::from_model(&model)
             .map_err(|e| err(HTTP_INTERNAL, format!("provider init failed: {e}")))?;
         let mut tools: Vec<ToolDefinition> = mvp_tool_specs()
             .into_iter()
-            .filter(|spec| is_tool_allowed(spec.name, allowed_tools))
+            .filter(|spec| {
+                if spec.name == ASK_USER_QUESTION_TOOL_NAME && !ask_user_question_enabled {
+                    return false;
+                }
+                is_tool_allowed(spec.name, allowed_tools)
+            })
             .map(|spec| ToolDefinition {
                 name: spec.name.to_string(),
                 description: Some(spec.description.to_string()),
@@ -621,6 +750,8 @@ struct DirectToolExecutorInner {
     /// Parent turn max iterations; sub-agents inherit verbatim. Author: kejiqing
     turn_max_iterations: usize,
     allowed_tools: Vec<String>,
+    ask_user_question_enabled: bool,
+    ask_user_timeout_secs: u64,
     runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
     runtime_mcp_tool_names: HashSet<String>,
     concurrent_mcp_tools: HashSet<String>,
@@ -641,6 +772,8 @@ impl DirectToolExecutorInner {
         turn_model: String,
         turn_max_iterations: usize,
         allowed_tools: Vec<String>,
+        ask_user_question_enabled: bool,
+        ask_user_timeout_secs: u64,
         runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
         runtime_mcp_tool_names: HashSet<String>,
         concurrent_mcp_tools: HashSet<String>,
@@ -655,6 +788,8 @@ impl DirectToolExecutorInner {
             turn_model,
             turn_max_iterations,
             allowed_tools,
+            ask_user_question_enabled,
+            ask_user_timeout_secs,
             runtime_mcp_manager,
             runtime_mcp_tool_names,
             concurrent_mcp_tools,
@@ -673,6 +808,22 @@ impl DirectToolExecutorInner {
     fn execute_impl_inner(&self, tool_name: &str, input: &str) -> Result<String, ToolError> {
         if !is_tool_allowed(tool_name, &self.allowed_tools) {
             return Err(ToolError::new(format!("tool not allowed: {tool_name}")));
+        }
+        if tool_name == ASK_USER_QUESTION_TOOL_NAME {
+            if !self.ask_user_question_enabled {
+                return Err(ToolError::new(
+                    "AskUserQuestion is disabled for this turn (Agent default off; enable via workerProfileJson.askUserQuestionInAgent)",
+                ));
+            }
+            let parsed: ask_user::AskUserQuestionInput = serde_json::from_str(input)
+                .map_err(|e| ToolError::new(format!("invalid AskUserQuestion input: {e}")))?;
+            return ask_user::run_ask_user_question_gateway(
+                &self.session_home,
+                self.mcp_context.turn_id.as_str(),
+                &parsed,
+                Some(self.ask_user_timeout_secs),
+            )
+            .map_err(ToolError::new);
         }
         if tool_name == REPORT_PROGRESS_TOOL_NAME {
             let parsed = serde_json::from_str::<Value>(input).unwrap_or_else(|_| json!({}));
@@ -894,6 +1045,8 @@ impl DirectToolExecutor {
         turn_model: String,
         turn_max_iterations: usize,
         allowed_tools: Vec<String>,
+        ask_user_question_enabled: bool,
+        ask_user_timeout_secs: u64,
         runtime_mcp_manager: Option<Arc<StdMutex<McpServerManager>>>,
         runtime_mcp_tool_names: HashSet<String>,
         concurrent_mcp_tools: HashSet<String>,
@@ -909,6 +1062,8 @@ impl DirectToolExecutor {
                 turn_model,
                 turn_max_iterations,
                 allowed_tools,
+                ask_user_question_enabled,
+                ask_user_timeout_secs,
                 runtime_mcp_manager,
                 runtime_mcp_tool_names,
                 concurrent_mcp_tools,
@@ -998,6 +1153,8 @@ impl DirectToolExecutor {
                 turn_model: self.inner.turn_model.clone(),
                 turn_max_iterations: self.inner.turn_max_iterations,
                 allowed_tools,
+                ask_user_question_enabled: self.inner.ask_user_question_enabled,
+                ask_user_timeout_secs: self.inner.ask_user_timeout_secs,
                 runtime_mcp_manager: self.inner.runtime_mcp_manager.clone(),
                 runtime_mcp_tool_names: self.inner.runtime_mcp_tool_names.clone(),
                 concurrent_mcp_tools: self.inner.concurrent_mcp_tools.clone(),
@@ -1438,6 +1595,7 @@ pub fn run_gateway_solve_turn(
         crate::landlock_dsl::LandlockDslSource,
     )>,
     attachments: &[SolveAttachment],
+    turn_opts: SolveTurnOptions,
 ) -> Result<(i32, String, Option<Value>), GatewaySolveTurnError> {
     reset_delegate_stdout_state();
 
@@ -1477,7 +1635,10 @@ pub fn run_gateway_solve_turn(
     );
 
     let orch_cfg = project_orchestration::resolve_solve_orchestration_config(work_dir);
-    if orch_cfg.is_multi_agent_analysis() {
+    let skip_multi_agent = turn_opts.force_single_turn
+        || turn_opts.interaction_mode.is_plan()
+        || turn_opts.sealed_plan_markdown.is_some();
+    if orch_cfg.is_multi_agent_analysis() && !skip_multi_agent {
         let result = multi_agent::run_multi_agent_solve_turn(
             work_dir,
             work_root,
@@ -1530,6 +1691,17 @@ pub fn run_gateway_solve_turn(
         mcp.extra_session.clone(),
     )
     .map_err(|e| err(HTTP_INTERNAL, format!("load system prompt failed: {e}")))?;
+    if turn_opts.interaction_mode.is_plan() {
+        system_prompt.push(PLAN_MODE_SYSTEM_SECTION.to_string());
+    } else if turn_opts.ask_user_question_enabled {
+        system_prompt.push(AGENT_ASK_USER_SYSTEM_SECTION.to_string());
+    }
+    if let Some(ref sealed) = turn_opts.sealed_plan_markdown {
+        let sealed = sealed.trim();
+        if !sealed.is_empty() {
+            system_prompt.push(format!("{SEALED_PLAN_EXECUTE_SECTION_HEADER}\n\n{sealed}"));
+        }
+    }
     let _ = append_solve_timing_point(
         work_dir,
         "bootstrap_system_prompt_loaded",
@@ -1552,6 +1724,7 @@ pub fn run_gateway_solve_turn(
         &allowed_tools,
         runtime_mcp_tools,
         clawcode_session_id.clone(),
+        turn_opts.ask_user_question_enabled,
     )?;
     reset_task_progress(work_dir, &clawcode_session_id)
         .map_err(|e| err(HTTP_INTERNAL, format!("reset task progress failed: {e}")))?;
@@ -1590,6 +1763,8 @@ pub fn run_gateway_solve_turn(
         effective_model.clone(),
         max_iterations,
         allowed_tools,
+        turn_opts.ask_user_question_enabled,
+        timeout_seconds,
         runtime_mcp_manager,
         runtime_mcp_tool_names,
         concurrent_mcp_tool_names,
@@ -1598,7 +1773,11 @@ pub fn run_gateway_solve_turn(
         Some(Arc::clone(&turn_timing)),
         async_runtime,
     );
-    let mut policy = PermissionPolicy::new(PermissionMode::DangerFullAccess);
+    let mut policy = if turn_opts.interaction_mode.is_plan() {
+        PermissionPolicy::new(PermissionMode::ReadOnly)
+    } else {
+        PermissionPolicy::new(PermissionMode::DangerFullAccess)
+    };
     for spec in mvp_tool_specs() {
         policy = policy.with_tool_requirement(spec.name.to_string(), spec.required_permission);
     }
@@ -1610,6 +1789,13 @@ pub fn run_gateway_solve_turn(
         COMPLETE_ROUTER_TURN_TOOL_NAME.to_string(),
         PermissionMode::ReadOnly,
     );
+
+    if let (Some(plan_id), Some(md)) = (
+        turn_opts.sealed_plan_id.as_deref(),
+        turn_opts.sealed_plan_markdown.as_deref(),
+    ) {
+        let _ = publish_sealed_plan_todos(work_dir, &clawcode_session_id, plan_id, md);
+    }
 
     session
         .push_message(build_user_turn_message(prompt, attachments))
@@ -1693,6 +1879,15 @@ pub fn run_gateway_solve_turn(
             "cache_read_input_tokens": result.usage.cache_read_input_tokens
         }
     });
+    if turn_opts.interaction_mode.is_plan() {
+        out_json["interactionMode"] = json!("plan");
+        out_json["planPhase"] = json!("awaiting_confirm");
+    }
+    if let Some(ref plan_id) = turn_opts.sealed_plan_id {
+        out_json["sealedPlanId"] = json!(plan_id);
+        out_json["interactionMode"] = json!("agent");
+        out_json["planPhase"] = json!("executing");
+    }
     if let Some(route) = llm_route {
         if !route.is_null() {
             out_json["llmRoute"] = route;
@@ -1995,6 +2190,11 @@ mod gateway_solve_task_file_tests {
             otel_traceparent: None,
             landlock_dsl: None,
             landlock_dsl_source: None,
+            interaction_mode: None,
+            force_single_turn: None,
+            sealed_plan_id: None,
+            sealed_plan_markdown: None,
+            ask_user_question_enabled: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         let back: GatewaySolveTaskFile = serde_json::from_value(v).unwrap();
@@ -2100,6 +2300,8 @@ mod turn_max_iterations_inheritance_tests {
             "openai/test".to_string(),
             1024,
             vec![],
+            false,
+            120,
             None,
             HashSet::new(),
             HashSet::new(),
