@@ -147,12 +147,20 @@ pub(crate) async fn readyz(State(state): State<AppState>) -> Result<impl IntoRes
     .await
     .map_err(|e| session_db_err(&e))?;
     let landlock = probe_landlock();
+    let bootstrap = gateway_cluster_bootstrap::cluster_bootstrap_status(
+        &state.session_db,
+        state.pool_clients.e2b_sandbox_client().map(|v| &**v),
+        Some(&state.claw_tap_cluster),
+    )
+    .await
+    .ok();
     if core.ready {
         return Ok((
             StatusCode::OK,
             Json(json!({
                 "ok": true,
                 "e2bCore": core,
+                "clusterBootstrap": bootstrap,
                 "strictLandlockProbe": {
                     "supported": landlock.supported,
                     "enforcing": landlock.enforcing,
@@ -163,9 +171,20 @@ pub(crate) async fn readyz(State(state): State<AppState>) -> Result<impl IntoRes
     }
     Err(ApiError::new(
         StatusCode::SERVICE_UNAVAILABLE,
-        core.reason.unwrap_or_else(|| {
-            "e2b core components not ready (nas-api / observe / clawTap)".into()
-        }),
+        {
+            let mut reason = core.reason.unwrap_or_else(|| {
+                "e2b core components not ready (nas-api / observe / clawTap)".into()
+            });
+            if bootstrap.as_ref().is_some_and(|b| b.needs_bootstrap) {
+                if let Some(br) = bootstrap
+                    .as_ref()
+                    .and_then(|b| b.blocking_reason.clone())
+                {
+                    reason = format!("{reason}; bootstrap: {br}");
+                }
+            }
+            reason
+        },
     ))
 }
 

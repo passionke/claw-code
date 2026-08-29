@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::{
-    claw_tap_cluster_state, gateway_llm_config_sync, gateway_logging, pool, session_db,
-    session_terminal_api,
+    claw_tap_cluster_state, gateway_cluster_bootstrap, gateway_llm_config_sync, gateway_logging,
+    pool, session_db, session_terminal_api,
 };
 use gateway_solve_turn::ReportPolishDeepseek;
 use tokio::sync::Mutex;
@@ -287,7 +287,43 @@ pub async fn run() {
             "gateway_endpoint register failed (best-effort)"
         );
     }
-    if let Err(e) = pool_clients
+
+    let llm_runtime: gateway_llm_config_sync::LlmRuntimeHandle =
+        Arc::new(tokio::sync::RwLock::new(None));
+    let bootstrap_mode = match crate::gateway_cluster_bootstrap::cluster_needs_bootstrap(
+        session_db.as_ref(),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                target: "claw_gateway_bootstrap",
+                error = %e,
+                "bootstrap status check failed; assuming normal startup"
+            );
+            false
+        }
+    };
+
+    if bootstrap_mode {
+        info!(
+            target: "claw_gateway_bootstrap",
+            "cluster needs bootstrap — deferring strict e2b singleton ensure"
+        );
+        if let Ok(resp) =
+            crate::gateway_cluster_bootstrap::apply_llm_from_env(session_db.as_ref(), &llm_runtime)
+                .await
+        {
+            if resp.applied {
+                info!(
+                    target: "claw_gateway_bootstrap",
+                    model = ?resp.model_name,
+                    "startup: active LLM applied from env"
+                );
+            }
+        }
+    } else if let Err(e) = pool_clients
         .ensure_e2b_singletons_on_startup_strict(session_db.as_ref())
         .await
     {
@@ -319,7 +355,7 @@ pub async fn run() {
         pool_clients,
         live_report_hub,
         projects_git_mirror_lock: Arc::new(Mutex::new(())),
-        llm_runtime: Arc::new(tokio::sync::RwLock::new(None)),
+        llm_runtime,
         claw_tap_cluster: Arc::new(tokio::sync::RwLock::new(None)),
         terminal_registry: session_terminal_api::TerminalSessionRegistry::new(),
         nas_api,
@@ -338,7 +374,20 @@ pub async fn run() {
         *state.claw_tap_cluster.write().await = Some(cluster);
     }
 
-    {
+    if bootstrap_mode {
+        gateway_cluster_bootstrap::spawn_bootstrap_reconcile_loop(
+            Arc::clone(&state.session_db),
+            state.pool_clients.clone(),
+            state.llm_runtime.clone(),
+            state.claw_tap_cluster.clone(),
+        );
+        info!(
+            target: "claw_gateway_bootstrap",
+            component = "startup",
+            phase = "bootstrap_reconcile",
+            "background cluster bootstrap reconcile enabled"
+        );
+    } else {
         let poll_db = state.session_db.clone();
         let poll_pool = state.pool_clients.clone();
         poll_pool.spawn_singleton_health_reconcile_loop(poll_db);

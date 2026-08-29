@@ -1,5 +1,6 @@
 # shellcheck shell=bash
 # Gateway up: optional LLM + project + claude-tap auto-register from repo .env / CI variables.
+# Cluster first-run: GET /v1/gateway/bootstrap/status + Admin /admin/global/bootstrap (kejiqing).
 # Author: kejiqing
 
 claw_print_gateway_deploy_failure() {
@@ -32,6 +33,26 @@ claw_wait_gateway_http_ready() {
   echo "error: gateway HTTP not ready on :${port}" >&2
   claw_print_gateway_deploy_failure
   return 1
+}
+
+# GET /v1/gateway/bootstrap/status → needsBootstrap (cluster first-run). Author: kejiqing
+claw_gateway_bootstrap_needs_bootstrap() {
+  local port="${GATEWAY_HOST_PORT:-18088}"
+  curl -fsS --connect-timeout 5 "http://127.0.0.1:${port}/v1/gateway/bootstrap/status" 2>/dev/null \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("needsBootstrap") else 1)' 2>/dev/null
+}
+
+claw_print_cluster_bootstrap_hint() {
+  local port="${GATEWAY_HOST_PORT:-18088}"
+  local admin_port="${GATEWAY_PLAYGROUND_HOST_PORT:-18765}"
+  if ! claw_gateway_bootstrap_needs_bootstrap; then
+    return 0
+  fi
+  echo "==> cluster bootstrap required (new CLAW_CLUSTER_ID or missing e2b templates / LLM)" >&2
+  echo "    Admin: http://127.0.0.1:${admin_port}/admin/global/bootstrap" >&2
+  echo "    API:   http://127.0.0.1:${port}/v1/gateway/bootstrap/status" >&2
+  echo "    Build e2b templates on dev machine (same CLAW_CLUSTER_ID + CLAW_GATEWAY_DATABASE_URL)" >&2
+  return 0
 }
 
 claw_bootstrap_llm_api_key() {
@@ -219,6 +240,14 @@ claw_bootstrap_pool_tap_runtime() {
   local podman_dir="$1"
   local root_dir="$2"
   local auto="${CLAW_AUTO_BOOTSTRAP:-0}"
+
+  if claw_gateway_bootstrap_needs_bootstrap 2>/dev/null; then
+    claw_print_cluster_bootstrap_hint
+    if ! claw_gateway_has_active_llm; then
+      echo "note: skip claude-tap — cluster bootstrap in progress (no active LLM yet)" >&2
+      return 0
+    fi
+  fi
 
   if ! claw_gateway_has_active_llm || [[ "${CLAW_BOOTSTRAP_LLM_FORCE:-0}" == "1" ]]; then
     if claw_bootstrap_llm_from_env; then
